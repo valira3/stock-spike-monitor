@@ -75,14 +75,14 @@ def send_telegram(text):
             logger.error(f"Telegram failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC BULLISH STOCKS WITH FMP + FILTER
+# DYNAMIC BULLISH STOCKS WITH FMP
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
     logger.info("Fetching dynamic BULLISH candidates...")
     candidates = []
+    low_price = []
 
     try:
-        # Most Active + Gainers
         r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}", timeout=10)
         data = r.json()
         if isinstance(data, list):
@@ -93,7 +93,6 @@ def get_dynamic_hot_stocks():
         if isinstance(data, list):
             candidates.extend([item.get('symbol') for item in data[:20] if isinstance(item, dict)])
 
-        # QQQ and SPY status
         qqq_chg = yf.Ticker("^QQQ").fast_info.get('regularMarketChangePercent', 0)
         spy_chg = yf.Ticker("^GSPC").fast_info.get('regularMarketChangePercent', 0)
         index_up = qqq_chg > 0 or spy_chg > 0
@@ -117,7 +116,7 @@ def get_dynamic_hot_stocks():
         low_price = [s for s in bullish if 1 <= yf.Ticker(s).fast_info.get('lastPrice', 0) <= 10][:10]
 
     except Exception as e:
-        logger.warning(f"FMP/Bullish filter failed: {e}. Using core list.")
+        logger.warning(f"FMP filter failed: {e}. Using core list.")
 
     combined = list(dict.fromkeys(CORE_TICKERS + bullish + low_price))[:60]
     logger.info(f"Bullish list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
@@ -254,7 +253,7 @@ def check_stocks():
         last_prices[ticker] = c
 
 # ────────────────────────────────────────────────
-# Morning & Daily Summary (now defined)
+# Morning, Daily & Startup Messages (NOW DEFINED)
 # ────────────────────────────────────────────────
 def send_morning_briefing():
     global daily_alerts
@@ -266,6 +265,25 @@ def send_daily_close_summary():
     global daily_alerts
     logger.info("Daily close summary")
     send_telegram(f"📉 Daily close - {daily_alerts} alerts today")
+
+def send_startup_message():
+    session = get_trading_session()
+    status = "OPEN Regular" if session == "regular" else "OPEN Extended" if session == "extended" else "CLOSED"
+    grok_prompt = "Current market sentiment in 6 words."
+    ai_sentiment = get_grok_response(grok_prompt)
+
+    message = f"""🚀 MONITOR STARTED
+
+Watching {len(TICKERS)} stocks (dynamic BULLISH)
+Status: {status}
+Grok: {ai_sentiment}
+
+Morning brief: 8:30 AM CT
+Daily summary: 3:00 PM CT
+
+Live scanning now."""
+
+    send_telegram(message)
 
 # ────────────────────────────────────────────────
 # Scheduler & startup – AFTER ALL FUNCTIONS
