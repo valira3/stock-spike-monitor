@@ -48,6 +48,9 @@ last_prices = {}
 last_alert_time = {}
 price_history = {t: deque(maxlen=10) for t in CORE_TICKERS}
 
+# 55-day SMA storage
+SMA55 = {}
+
 # ────────────────────────────────────────────────
 # SAFE MULTI-PART TELEGRAM SENDER
 # ────────────────────────────────────────────────
@@ -76,23 +79,20 @@ def send_telegram(text):
             logger.error(f"Telegram part {i} failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC HOT + LOW-PRICED STOCKS (FIXED)
+# DYNAMIC HOT + LOW-PRICED STOCKS + 55-DAY SMA
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
     logger.info("Fetching dynamic hot stocks + low-priced rockets...")
     hot = []
-    low_price = []  # ← FIXED: always defined
+    low_price = []
 
     try:
-        # Most Active
         df_active = pd.read_html("https://finance.yahoo.com/screener/predefined/most_actives")[0]
         hot.extend(df_active["Symbol"].head(20).tolist())
 
-        # Top Gainers
         df_gainers = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
         hot.extend(df_gainers["Symbol"].head(15).tolist())
 
-        # Low-priced explosion candidates ($1–$10 with strong momentum)
         low_price = df_gainers[
             (df_gainers.get("Price (Intraday)", pd.Series(0)).astype(float, errors='ignore') >= 1) &
             (df_gainers.get("Price (Intraday)", pd.Series(0)).astype(float, errors='ignore') <= 10) &
@@ -102,15 +102,24 @@ def get_dynamic_hot_stocks():
     except Exception as e:
         logger.warning(f"Dynamic fetch failed: {e}. Using core list only.")
 
-    # Clean + dedupe
     hot = [t.upper() for t in hot if isinstance(t, str) and 1 <= len(t) <= 6]
     combined = list(dict.fromkeys(CORE_TICKERS + hot + low_price))[:60]
-
     logger.info(f"Dynamic list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
     return combined
 
-# Update list at startup and every morning
 TICKERS = get_dynamic_hot_stocks()
+
+# Pre-calculate 55-day SMA for all tickers
+logger.info("Calculating 55-day SMA (Institutional Support Line) for all stocks...")
+for t in TICKERS:
+    try:
+        hist = yf.Ticker(t).history(period="3mo")
+        if len(hist) >= 55:
+            SMA55[t] = hist['Close'].rolling(window=55).mean().iloc[-1]
+        else:
+            SMA55[t] = None
+    except:
+        SMA55[t] = None
 
 # ────────────────────────────────────────────────
 # Helper functions
@@ -155,6 +164,17 @@ def get_grok_response(prompt):
         logger.error(f"Grok error: {e}")
         return "Grok unavailable"
 
+def get_sma55_status(ticker, current_price):
+    sma = SMA55.get(ticker)
+    if not sma: return "SMA55 unavailable"
+    diff = (current_price - sma) / sma * 100
+    if abs(diff) < 1.0:
+        return f"**Bouncing off 55-day SMA** (institutional support)"
+    elif diff > 0:
+        return f"Above 55-day SMA (+{diff:.1f}%)"
+    else:
+        return f"Below 55-day SMA ({diff:.1f}%)"
+
 # ────────────────────────────────────────────────
 # Messages
 # ────────────────────────────────────────────────
@@ -196,12 +216,15 @@ def send_alert(ticker, pct_change, current_price):
     grok_prompt = f"Analyze spike: {ticker} {pct_change:+.1f}% ~5 min. Price ${current_price:.2f}. Short analysis."
     ai_analysis = get_grok_response(grok_prompt)
     news_text = "\n".join([f"• {h[:80]}" for h,_ in news_items]) if news_items else "No news"
+    sma_status = get_sma55_status(ticker, current_price)
 
     message = f"""🚨 {ticker} SPIKE
 
 {pct_change:+.1f}% | ${current_price:.2f}
 
 Grok: {ai_analysis}
+
+55-day SMA: {sma_status}
 
 News:
 {news_text}"""
@@ -233,14 +256,14 @@ def check_stocks():
         last_prices[ticker] = c
 
 # ────────────────────────────────────────────────
-# Scheduler & startup – AFTER all definitions
+# Scheduler & startup
 # ────────────────────────────────────────────────
 schedule.every(CHECK_INTERVAL_MIN).minutes.do(check_stocks)
 schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic_hot_stocks()))
 schedule.every().day.at("08:30").do(send_morning_briefing)
 schedule.every().day.at("15:00").do(send_daily_close_summary)
 
-logger.info("✅ DYNAMIC HOT + LOW-PRICED ROCKET MONITOR STARTED")
+logger.info("✅ DYNAMIC MONITOR WITH 55-DAY SMA INSTITUTIONAL SUPPORT STARTED")
 send_startup_message()
 check_stocks()
 
