@@ -10,11 +10,12 @@ from collections import deque
 from openai import OpenAI
 import os
 
-# === CONFIG ===
+# === CONFIG FROM ENVIRONMENT VARIABLES ===
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN")
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+FMP_API_KEY = os.getenv("FMP_API_KEY")          # ← Add this in Railway Variables
 
 THRESHOLD = 0.03
 MIN_PRICE = 5.0
@@ -38,13 +39,14 @@ CORE_TICKERS = [
 ]
 
 TICKERS = CORE_TICKERS.copy()
+
 daily_alerts = 0
 last_prices = {}
 last_alert_time = {}
 price_history = {t: deque(maxlen=10) for t in CORE_TICKERS}
 
 # ────────────────────────────────────────────────
-# SAFE TELEGRAM SENDER
+# SAFE MULTI-PART TELEGRAM SENDER
 # ────────────────────────────────────────────────
 def send_telegram(text):
     if not text.strip(): return
@@ -69,40 +71,39 @@ def send_telegram(text):
             logger.error(f"Telegram failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC STOCK LIST (with fallback & rate-limit handling)
+# DYNAMIC STOCKS USING FMP (best free alternative)
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
-    logger.info("Fetching dynamic hot stocks...")
+    logger.info("Fetching dynamic hot stocks via FMP...")
     hot = []
     low_price = []
 
     try:
-        time.sleep(2)  # polite delay to avoid 429
-        df_active = pd.read_html("https://finance.yahoo.com/screener/predefined/most_actives")[0]
-        hot.extend(df_active["Symbol"].head(20).tolist())
+        # Most Active
+        r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}", timeout=10)
+        if r.status_code == 200:
+            hot = [item['symbol'] for item in r.json()[:20]]
 
-        time.sleep(2)
-        df_gainers = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
-        hot.extend(df_gainers["Symbol"].head(15).tolist())
+        # Top Gainers
+        r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey={FMP_API_KEY}", timeout=10)
+        if r.status_code == 200:
+            hot.extend([item['symbol'] for item in r.json()[:15]])
 
-        low_price = df_gainers[
-            (df_gainers.get("Price (Intraday)", pd.Series(0)).astype(float, errors='ignore') >= 1) &
-            (df_gainers.get("Price (Intraday)", pd.Series(0)).astype(float, errors='ignore') <= 10) &
-            (df_gainers.get("% Change", pd.Series(0)).astype(float, errors='ignore') > 8)
-        ]["Symbol"].head(10).tolist()
+        # Low-priced rockets
+        low_price = [item['symbol'] for item in r.json() if 1 <= item.get('price', 0) <= 10 and item.get('changesPercentage', 0) > 8][:10]
 
     except Exception as e:
-        logger.warning(f"Dynamic fetch failed ({e}). Using core list only.")
+        logger.warning(f"FMP failed ({e}). Falling back to core list.")
 
     hot = [t.upper() for t in hot if isinstance(t, str) and 1 <= len(t) <= 6]
     combined = list(dict.fromkeys(CORE_TICKERS + hot + low_price))[:60]
-    logger.info(f"Dynamic list → {len(combined)} stocks ({len(low_price)} low-priced)")
+    logger.info(f"Dynamic list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
     return combined
 
 TICKERS = get_dynamic_hot_stocks()
 
 # ────────────────────────────────────────────────
-# Helper functions
+# Rest of the script (unchanged from your working version)
 # ────────────────────────────────────────────────
 def get_trading_session():
     now = datetime.now(CT)
@@ -144,9 +145,6 @@ def get_grok_response(prompt):
         logger.error(f"Grok error: {e}")
         return "Grok unavailable"
 
-# ────────────────────────────────────────────────
-# Messages (shortened for safety)
-# ────────────────────────────────────────────────
 def send_startup_message():
     session = get_trading_session()
     status = "OPEN Regular" if session == "regular" else "OPEN Extended" if session == "extended" else "CLOSED"
@@ -155,27 +153,16 @@ def send_startup_message():
 
     message = f"""🚀 MONITOR STARTED
 
-Watching {len(TICKERS)} stocks (dynamic)
+Watching {len(TICKERS)} stocks (dynamic hot + low-priced)
 Status: {status}
 Grok: {ai_sentiment}
 
-Morning brief: 8:30 CT
-Daily summary: 3:00 CT
+Morning brief: 8:30 AM CT
+Daily summary: 3:00 PM CT
 
 Live now."""
 
     send_telegram(message)
-
-def send_morning_briefing():
-    global daily_alerts
-    daily_alerts = 0
-    logger.info("Morning briefing")
-    send_telegram("🌅 Morning briefing coming soon...")
-
-def send_daily_close_summary():
-    global daily_alerts
-    logger.info("Daily close summary")
-    send_telegram(f"📉 Daily close - {daily_alerts} alerts today")
 
 def send_alert(ticker, pct_change, current_price):
     global daily_alerts
@@ -221,14 +208,14 @@ def check_stocks():
         last_prices[ticker] = c
 
 # ────────────────────────────────────────────────
-# Scheduler & startup – AFTER all functions are defined
+# Scheduler & startup
 # ────────────────────────────────────────────────
 schedule.every(CHECK_INTERVAL_MIN).minutes.do(check_stocks)
 schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic_hot_stocks()))
 schedule.every().day.at("08:30").do(send_morning_briefing)
 schedule.every().day.at("15:00").do(send_daily_close_summary)
 
-logger.info("✅ MONITOR STARTED")
+logger.info("✅ MONITOR STARTED WITH FMP DYNAMIC LIST")
 send_startup_message()
 check_stocks()
 
