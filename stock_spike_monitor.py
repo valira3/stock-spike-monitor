@@ -75,33 +75,55 @@ def send_telegram(text):
             logger.error(f"Telegram failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC STOCKS USING FMP (robust error handling)
+# DYNAMIC BULLISH STOCKS WITH FMP + NEW FILTER
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
-    logger.info("Fetching dynamic hot stocks via FMP...")
+    logger.info("Fetching dynamic hot + low-priced BULLISH candidates...")
     hot = []
     low_price = []
 
     try:
+        # Most Active + Gainers from FMP
         r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}", timeout=10)
         data = r.json()
         if isinstance(data, list):
-            hot = [item.get('symbol') for item in data[:20] if isinstance(item, dict)]
+            hot = [item.get('symbol') for item in data[:25] if isinstance(item, dict)]
 
         r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey={FMP_API_KEY}", timeout=10)
         data = r.json()
         if isinstance(data, list):
             hot.extend([item.get('symbol') for item in data[:15] if isinstance(item, dict)])
 
-        low_price = [item.get('symbol') for item in data 
-                     if isinstance(item, dict) and 1 <= item.get('price', 0) <= 10 and item.get('changesPercentage', 0) > 8][:10]
+        # QQQ & SPY status (must be UP)
+        qqq_up = yf.Ticker("^QQQ").fast_info.get('regularMarketChangePercent', 0) > 0
+        spy_up = yf.Ticker("^GSPC").fast_info.get('regularMarketChangePercent', 0) > 0
+
+        # Filter for bullish candidates
+        bullish = []
+        for symbol in hot[:40]:
+            try:
+                profile = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={FMP_API_KEY}", timeout=8).json()[0]
+                mcap = profile.get('mktCap', 0)
+                if mcap < 100_000_000_000: continue  # Market Cap > 100B
+
+                # Relative Strength (stock gain vs QQQ today)
+                ticker_info = yf.Ticker(symbol).fast_info
+                stock_chg = ticker_info.get('regularMarketChangePercent', 0)
+                if stock_chg > 0 and (qqq_up or spy_up):
+                    rel_strength = stock_chg / max(qqq_up and yf.Ticker("^QQQ").fast_info.get('regularMarketChangePercent', 1) or 1, 0.1)
+                    if rel_strength > 1.0:
+                        bullish.append(symbol)
+            except:
+                continue
+
+        low_price = [s for s in bullish if 1 <= yf.Ticker(s).fast_info.get('lastPrice', 0) <= 10][:10]
 
     except Exception as e:
-        logger.warning(f"FMP fetch failed: {e}. Using core list only.")
+        logger.warning(f"FMP fetch failed: {e}. Using core list.")
 
     hot = [t.upper() for t in hot if isinstance(t, str) and 1 <= len(t) <= 6]
     combined = list(dict.fromkeys(CORE_TICKERS + hot + low_price))[:60]
-    logger.info(f"Dynamic list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
+    logger.info(f"Dynamic BULLISH list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
     return combined
 
 TICKERS = get_dynamic_hot_stocks()
@@ -242,7 +264,7 @@ schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic
 schedule.every().day.at("08:30").do(send_morning_briefing)
 schedule.every().day.at("15:00").do(send_daily_close_summary)
 
-logger.info("✅ MONITOR STARTED WITH FMP + INTERACTIVE BOT")
+logger.info("✅ FULL INTERACTIVE MONITOR WITH BULLISH FILTER STARTED")
 
 def run_telegram_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
