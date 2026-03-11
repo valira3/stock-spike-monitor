@@ -1,0 +1,5 @@
+yfinance
+requests
+schedule
+pytz
+openai
