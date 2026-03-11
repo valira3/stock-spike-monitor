@@ -3,3 +3,5 @@ requests
 schedule
 pytz
 openai
+pandas
+lxml

@@ -41,7 +41,7 @@ CORE_TICKERS = [
     "AMC", "GME", "LCID", "BYND", "PFE", "BAC", "JPM", "XOM", "CVX", "AAL"
 ]
 
-TICKERS = CORE_TICKERS.copy()  # will be updated dynamically
+TICKERS = CORE_TICKERS.copy()
 
 daily_alerts = 0
 last_prices = {}
@@ -52,19 +52,16 @@ price_history = {t: deque(maxlen=10) for t in CORE_TICKERS}
 # SAFE MULTI-PART TELEGRAM SENDER
 # ────────────────────────────────────────────────
 def send_telegram(text):
-    if not text.strip():
-        return
+    if not text.strip(): return
     parts = []
     current = ""
     for line in text.splitlines(keepends=True):
         if len(current) + len(line) > 3800:
-            if current:
-                parts.append(current.rstrip())
+            if current: parts.append(current.rstrip())
             current = line
         else:
             current += line
-    if current:
-        parts.append(current.rstrip())
+    if current: parts.append(current.rstrip())
 
     total = len(parts)
     for i, part in enumerate(parts, 1):
@@ -79,11 +76,13 @@ def send_telegram(text):
             logger.error(f"Telegram part {i} failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC HOT + LOW-PRICED STOCKS
+# DYNAMIC HOT + LOW-PRICED STOCKS (FIXED)
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
     logger.info("Fetching dynamic hot stocks + low-priced rockets...")
     hot = []
+    low_price = []  # ← FIXED: always defined
+
     try:
         # Most Active
         df_active = pd.read_html("https://finance.yahoo.com/screener/predefined/most_actives")[0]
@@ -95,18 +94,18 @@ def get_dynamic_hot_stocks():
 
         # Low-priced explosion candidates ($1–$10 with strong momentum)
         low_price = df_gainers[
-            (df_gainers["Price (Intraday)"].astype(float, errors='ignore') >= 1) &
-            (df_gainers["Price (Intraday)"].astype(float, errors='ignore') <= 10) &
-            (df_gainers["% Change"].astype(float, errors='ignore') > 8)
+            (df_gainers.get("Price (Intraday)", pd.Series(0)).astype(float, errors='ignore') >= 1) &
+            (df_gainers.get("Price (Intraday)", pd.Series(0)).astype(float, errors='ignore') <= 10) &
+            (df_gainers.get("% Change", pd.Series(0)).astype(float, errors='ignore') > 8)
         ]["Symbol"].head(10).tolist()
-        hot.extend(low_price)
 
     except Exception as e:
-        logger.warning(f"Dynamic fetch failed ({e}). Using core list only.")
+        logger.warning(f"Dynamic fetch failed: {e}. Using core list only.")
 
-    # Clean and dedupe
+    # Clean + dedupe
     hot = [t.upper() for t in hot if isinstance(t, str) and 1 <= len(t) <= 6]
-    combined = list(dict.fromkeys(CORE_TICKERS + hot))[:60]  # max 60 for speed
+    combined = list(dict.fromkeys(CORE_TICKERS + hot + low_price))[:60]
+
     logger.info(f"Dynamic list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
     return combined
 
@@ -183,13 +182,11 @@ def send_morning_briefing():
     global daily_alerts
     daily_alerts = 0
     logger.info("Morning briefing")
-    # (placeholder - add your full morning briefing if you want)
     send_telegram("🌅 Morning briefing coming soon...")
 
 def send_daily_close_summary():
     global daily_alerts
     logger.info("Daily close summary")
-    # (placeholder - add your full daily summary if you want)
     send_telegram(f"📉 Daily close - {daily_alerts} alerts today")
 
 def send_alert(ticker, pct_change, current_price):
