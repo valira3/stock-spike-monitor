@@ -45,7 +45,54 @@ last_alert_time = {}
 price_history = {t: deque(maxlen=10) for t in TICKERS}
 
 # ────────────────────────────────────────────────
-# Helper functions
+# Safe multi-part Telegram sender
+# ────────────────────────────────────────────────
+
+def send_telegram(text, max_chunk=3800):
+    """
+    Send text, splitting into multiple messages if necessary.
+    Adds (1/N) numbering for multi-part messages.
+    """
+    if not text.strip():
+        return
+
+    parts = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        if len(current) + len(line) > max_chunk:
+            if current:
+                parts.append(current.rstrip())
+            current = line
+        else:
+            current += line
+
+    if current:
+        parts.append(current.rstrip())
+
+    total_parts = len(parts)
+
+    for i, part in enumerate(parts, 1):
+        prefix = f"({i}/{total_parts}) " if total_parts > 1 else ""
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": prefix + part,
+            "parse_mode": "HTML"
+        }
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json=payload,
+                timeout=10
+            )
+            r.raise_for_status()
+            logger.info(f"Telegram part {i}/{total_parts} sent")
+            time.sleep(0.4)  # polite rate limit avoidance
+        except Exception as e:
+            logger.error(f"Telegram part {i} failed: {e}")
+
+
+# ────────────────────────────────────────────────
+# Helper functions (unchanged except for send_telegram call)
 # ────────────────────────────────────────────────
 
 def get_trading_session():
@@ -75,57 +122,52 @@ def fetch_latest_news(ticker):
         return []
 
 def get_grok_response(prompt):
-    if not grok_client: return "AI off"
+    if not grok_client: return "AI disabled"
     try:
         resp = grok_client.chat.completions.create(
             model="grok-4-1-fast-non-reasoning",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
+            max_tokens=140,
             temperature=0.4
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Grok error: {e}")
-        return "Grok off"
+        return "Grok unavailable"
+
+def get_market_summary():
+    indices = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^DJI": "Dow"}
+    lines = []
+    for sym, name in indices.items():
+        try:
+            info = yf.Ticker(sym).fast_info
+            chg = info.get('regularMarketChangePercent', 0) or 0
+            lines.append(f"{name}: {chg:+.2f}%")
+        except:
+            lines.append(f"{name}: N/A")
+    return " | ".join(lines)
 
 # ────────────────────────────────────────────────
-# Safe Telegram sender (POST + JSON)
-# ────────────────────────────────────────────────
-def send_telegram(text):
-    """Ultra-safe Telegram sender using POST"""
-    if len(text) > 3500:
-        text = text[:3400] + "\n...[truncated]"
-    try:
-        payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json=payload,
-            timeout=10
-        )
-        r.raise_for_status()
-        logger.info("Telegram message sent successfully")
-    except Exception as e:
-        logger.error(f"Telegram failed: {e}")
-
-# ────────────────────────────────────────────────
-# Messages (all ultra-short now)
+# Messages – now using send_telegram (safe splitting)
 # ────────────────────────────────────────────────
 
 def send_startup_message():
     session = get_trading_session()
-    status = "OPEN Regular" if session == "regular" else "OPEN Extended" if session == "extended" else "CLOSED"
-    
+    status = "OPEN (Regular)" if session == "regular" else "OPEN (Extended)" if session == "extended" else "CLOSED"
+    market_summary = get_market_summary()
+
     grok_prompt = "Current market sentiment in 6 words."
     ai_sentiment = get_grok_response(grok_prompt)
 
     message = f"""🚀 MONITOR STARTED
 
-30 stocks | 3% spikes + Grok AI
+Watching {len(TICKERS)} stocks | 3% spikes + Grok AI + news
+
+Market now: {market_summary}
+Grok view: {ai_sentiment}
 
 Status: {status}
-Grok: {ai_sentiment}
-
-Morning brief: 8:30 CT
+Morning brief: 8:30 AM CT
 Daily summary: 3:00 PM CT
 
 Live scanning now."""
@@ -137,25 +179,92 @@ def send_morning_briefing():
     daily_alerts = 0
     logger.info("Morning briefing")
 
-    # (kept your existing code here - already short)
-    # ... (same as previous version)
+    gaps = []
+    for t in TICKERS:
+        c, pc = fetch_finnhub_quote(t)
+        if c and pc:
+            gap_pct = (c - pc) / pc * 100
+            gaps.append((t, gap_pct, c))
+    gaps.sort(key=lambda x: abs(x[1]), reverse=True)
+
+    gap_text = "\n".join([f"• {t} {g:+.1f}% → ${p:.2f}" for t,g,p in gaps[:4]])
+
+    grok_prompt = f"Pre-market outlook for {datetime.now(CT).strftime('%A')}. List: {', '.join(TICKERS[:10])}. Give sentiment + 1-2 ideas."
+    ai_outlook = get_grok_response(grok_prompt)
+
+    message = f"""🌅 MARKET OPEN – {datetime.now(CT).strftime('%b %d')}
+
+Pre-market:
+{gap_text or "No big gaps"}
+
+Grok outlook:
+{ai_outlook}
+
+Monitor active."""
+
+    send_telegram(message)
 
 def send_daily_close_summary():
     global daily_alerts
     logger.info("Daily close summary")
 
-    # (kept your existing code here - already short)
-    # ... (same as previous version)
+    performance = []
+    for t in TICKERS:
+        try:
+            hist = yf.Ticker(t).history(period="2d")
+            if len(hist) >= 2:
+                change = (hist['Close'][-1] / hist['Close'][-2] - 1) * 100
+                performance.append((t, change))
+        except:
+            pass
+    performance.sort(key=lambda x: x[1], reverse=True)
+
+    gainers = "\n".join([f"• {t} +{c:.1f}%" for t,c in performance[:4]])
+    losers  = "\n".join([f"• {t} {c:.1f}%" for t,c in performance[-4:]])
+
+    grok_prompt = f"Daily recap: {daily_alerts} alerts. Top movers: {', '.join([t for t,c in performance[:6]])}. Summarize + 1 lesson."
+    ai_recap = get_grok_response(grok_prompt)
+
+    message = f"""📉 CLOSE – {datetime.now(CT).strftime('%b %d')}
+
+Gainers:
+{gainers}
+
+Losers:
+{losers}
+
+Alerts: {daily_alerts}
+
+Grok recap:
+{ai_recap}"""
+
+    send_telegram(message)
 
 def send_alert(ticker, pct_change, current_price):
     global daily_alerts
     daily_alerts += 1
-    # (kept your existing code here - already short)
-    # ... (same as previous version)
+    news_items = fetch_latest_news(ticker)
+    grok_prompt = f"Analyze spike: {ticker} {pct_change:+.1f}% ~5 min. Price ${current_price:.2f}. News: {[h for h,_ in news_items]}. Short: Why / Pred / Risk / Action."
+    ai_analysis = get_grok_response(grok_prompt)
+
+    news_text = "\n".join([f"• {h[:100]}" for h,_ in news_items]) if news_items else "No news"
+
+    message = f"""🚨 {ticker} SPIKE
+
+{pct_change:+.1f}% | ${current_price:.2f}
+
+Grok:
+{ai_analysis}
+
+News:
+{news_text}"""
+
+    send_telegram(message)
 
 def check_stocks():
     if get_trading_session() == "closed":
         return
+
     now = datetime.now(CT)
     logger.info(f"Scanning {len(TICKERS)} stocks at {now.strftime('%H:%M:%S %Z')}")
 
