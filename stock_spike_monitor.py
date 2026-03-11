@@ -75,55 +75,52 @@ def send_telegram(text):
             logger.error(f"Telegram failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC BULLISH STOCKS WITH FMP + NEW FILTER
+# DYNAMIC BULLISH STOCKS WITH FMP + FILTER
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
-    logger.info("Fetching dynamic hot + low-priced BULLISH candidates...")
-    hot = []
-    low_price = []
+    logger.info("Fetching dynamic BULLISH candidates...")
+    candidates = []
 
     try:
-        # Most Active + Gainers from FMP
+        # Most Active + Gainers
         r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}", timeout=10)
         data = r.json()
         if isinstance(data, list):
-            hot = [item.get('symbol') for item in data[:25] if isinstance(item, dict)]
+            candidates.extend([item.get('symbol') for item in data[:30] if isinstance(item, dict)])
 
         r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey={FMP_API_KEY}", timeout=10)
         data = r.json()
         if isinstance(data, list):
-            hot.extend([item.get('symbol') for item in data[:15] if isinstance(item, dict)])
+            candidates.extend([item.get('symbol') for item in data[:20] if isinstance(item, dict)])
 
-        # QQQ & SPY status (must be UP)
-        qqq_up = yf.Ticker("^QQQ").fast_info.get('regularMarketChangePercent', 0) > 0
-        spy_up = yf.Ticker("^GSPC").fast_info.get('regularMarketChangePercent', 0) > 0
+        # QQQ and SPY status
+        qqq_chg = yf.Ticker("^QQQ").fast_info.get('regularMarketChangePercent', 0)
+        spy_chg = yf.Ticker("^GSPC").fast_info.get('regularMarketChangePercent', 0)
+        index_up = qqq_chg > 0 or spy_chg > 0
 
-        # Filter for bullish candidates
         bullish = []
-        for symbol in hot[:40]:
+        for symbol in list(dict.fromkeys(candidates))[:50]:
             try:
-                profile = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={FMP_API_KEY}", timeout=8).json()[0]
-                mcap = profile.get('mktCap', 0)
-                if mcap < 100_000_000_000: continue  # Market Cap > 100B
+                info = yf.Ticker(symbol).fast_info
+                mcap = info.get('marketCap', 0)
+                if mcap < 100_000_000_000: continue
 
-                # Relative Strength (stock gain vs QQQ today)
-                ticker_info = yf.Ticker(symbol).fast_info
-                stock_chg = ticker_info.get('regularMarketChangePercent', 0)
-                if stock_chg > 0 and (qqq_up or spy_up):
-                    rel_strength = stock_chg / max(qqq_up and yf.Ticker("^QQQ").fast_info.get('regularMarketChangePercent', 1) or 1, 0.1)
-                    if rel_strength > 1.0:
-                        bullish.append(symbol)
+                stock_chg = info.get('regularMarketChangePercent', 0)
+                if stock_chg <= 0 or not index_up: continue
+
+                rel_strength = stock_chg / max(qqq_chg, spy_chg, 0.1)
+                if rel_strength > 1.0:
+                    bullish.append(symbol)
             except:
                 continue
 
         low_price = [s for s in bullish if 1 <= yf.Ticker(s).fast_info.get('lastPrice', 0) <= 10][:10]
 
     except Exception as e:
-        logger.warning(f"FMP fetch failed: {e}. Using core list.")
+        logger.warning(f"FMP/Bullish filter failed: {e}. Using core list.")
 
-    hot = [t.upper() for t in hot if isinstance(t, str) and 1 <= len(t) <= 6]
-    combined = list(dict.fromkeys(CORE_TICKERS + hot + low_price))[:60]
-    logger.info(f"Dynamic BULLISH list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
+    combined = list(dict.fromkeys(CORE_TICKERS + bullish + low_price))[:60]
+    logger.info(f"Bullish list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
     return combined
 
 TICKERS = get_dynamic_hot_stocks()
@@ -255,6 +252,20 @@ def check_stocks():
                     send_alert(ticker, change * 100, c)
                     last_alert_time[ticker] = now
         last_prices[ticker] = c
+
+# ────────────────────────────────────────────────
+# Morning & Daily Summary (now defined)
+# ────────────────────────────────────────────────
+def send_morning_briefing():
+    global daily_alerts
+    daily_alerts = 0
+    logger.info("Morning briefing")
+    send_telegram("🌅 Morning briefing coming soon...")
+
+def send_daily_close_summary():
+    global daily_alerts
+    logger.info("Daily close summary")
+    send_telegram(f"📉 Daily close - {daily_alerts} alerts today")
 
 # ────────────────────────────────────────────────
 # Scheduler & startup – AFTER ALL FUNCTIONS
