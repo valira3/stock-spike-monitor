@@ -18,7 +18,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 THRESHOLD = 0.03
 MIN_PRICE = 5.0
-COOLDOWN_MINUTES = 30
+COOLDOWN_MINUTES = 5
 CHECK_INTERVAL_MIN = 1
 
 LOG_FILE = "stock_spike_monitor.log"
