@@ -10,7 +10,7 @@ from collections import deque
 from openai import OpenAI
 import os
 
-# === CONFIG FROM ENVIRONMENT VARIABLES ===
+# === CONFIG ===
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN")
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -18,23 +18,19 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 THRESHOLD = 0.03
 MIN_PRICE = 5.0
-COOLDOWN_MINUTES = 5          # ← CHANGED TO 5 MINUTES
+COOLDOWN_MINUTES = 5
 CHECK_INTERVAL_MIN = 1
 
 LOG_FILE = "stock_spike_monitor.log"
 
 # Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.FileHandler(LOG_FILE, encoding='utf-8'), logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
+                    handlers=[logging.FileHandler(LOG_FILE, encoding='utf-8'), logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 CT = pytz.timezone('America/Chicago')
 
 grok_client = OpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1") if GROK_API_KEY else None
 
-# Core stable stocks
 CORE_TICKERS = [
     "NVDA", "TSLA", "AMD", "AAPL", "AMZN", "META", "MSFT", "GOOGL", "SMCI", "ARM",
     "MU", "AVGO", "QCOM", "INTC", "HIMS", "PLTR", "SOFI", "RIVN", "NIO", "MARA",
@@ -42,14 +38,13 @@ CORE_TICKERS = [
 ]
 
 TICKERS = CORE_TICKERS.copy()
-
 daily_alerts = 0
 last_prices = {}
 last_alert_time = {}
 price_history = {t: deque(maxlen=10) for t in CORE_TICKERS}
 
 # ────────────────────────────────────────────────
-# SAFE MULTI-PART TELEGRAM SENDER
+# SAFE TELEGRAM SENDER
 # ────────────────────────────────────────────────
 def send_telegram(text):
     if not text.strip(): return
@@ -68,25 +63,25 @@ def send_telegram(text):
         prefix = f"({i}/{total}) " if total > 1 else ""
         payload = {"chat_id": CHAT_ID, "text": prefix + part}
         try:
-            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=payload, timeout=10)
-            r.raise_for_status()
-            logger.info(f"Telegram part {i}/{total} sent")
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=payload, timeout=10)
             time.sleep(0.3)
         except Exception as e:
-            logger.error(f"Telegram part {i} failed: {e}")
+            logger.error(f"Telegram failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC HOT + LOW-PRICED STOCKS
+# DYNAMIC STOCK LIST (with fallback & rate-limit handling)
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
-    logger.info("Fetching dynamic hot stocks + low-priced rockets...")
+    logger.info("Fetching dynamic hot stocks...")
     hot = []
     low_price = []
 
     try:
+        time.sleep(2)  # polite delay to avoid 429
         df_active = pd.read_html("https://finance.yahoo.com/screener/predefined/most_actives")[0]
         hot.extend(df_active["Symbol"].head(20).tolist())
 
+        time.sleep(2)
         df_gainers = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
         hot.extend(df_gainers["Symbol"].head(15).tolist())
 
@@ -97,11 +92,11 @@ def get_dynamic_hot_stocks():
         ]["Symbol"].head(10).tolist()
 
     except Exception as e:
-        logger.warning(f"Dynamic fetch failed: {e}. Using core list only.")
+        logger.warning(f"Dynamic fetch failed ({e}). Using core list only.")
 
     hot = [t.upper() for t in hot if isinstance(t, str) and 1 <= len(t) <= 6]
     combined = list(dict.fromkeys(CORE_TICKERS + hot + low_price))[:60]
-    logger.info(f"Dynamic list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
+    logger.info(f"Dynamic list → {len(combined)} stocks ({len(low_price)} low-priced)")
     return combined
 
 TICKERS = get_dynamic_hot_stocks()
@@ -150,7 +145,7 @@ def get_grok_response(prompt):
         return "Grok unavailable"
 
 # ────────────────────────────────────────────────
-# Messages
+# Messages (shortened for safety)
 # ────────────────────────────────────────────────
 def send_startup_message():
     session = get_trading_session()
@@ -160,15 +155,14 @@ def send_startup_message():
 
     message = f"""🚀 MONITOR STARTED
 
-Watching {len(TICKERS)} stocks (dynamic hot + low-priced rockets) | 3% spikes + Grok AI
-
+Watching {len(TICKERS)} stocks (dynamic)
 Status: {status}
 Grok: {ai_sentiment}
 
-Morning brief: 8:30 AM CT
-Daily summary: 3:00 PM CT
+Morning brief: 8:30 CT
+Daily summary: 3:00 CT
 
-Live scanning now."""
+Live now."""
 
     send_telegram(message)
 
@@ -206,7 +200,7 @@ def check_stocks():
     if get_trading_session() == "closed":
         return
     now = datetime.now(CT)
-    logger.info(f"Scanning {len(TICKERS)} stocks at {now.strftime('%H:%M:%S %Z')}")
+    logger.info(f"Scanning {len(TICKERS)} stocks...")
 
     for ticker in TICKERS:
         c = fetch_finnhub_quote(ticker)
@@ -227,14 +221,14 @@ def check_stocks():
         last_prices[ticker] = c
 
 # ────────────────────────────────────────────────
-# Scheduler & startup
+# Scheduler & startup – AFTER all functions are defined
 # ────────────────────────────────────────────────
 schedule.every(CHECK_INTERVAL_MIN).minutes.do(check_stocks)
 schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic_hot_stocks()))
 schedule.every().day.at("08:30").do(send_morning_briefing)
 schedule.every().day.at("15:00").do(send_daily_close_summary)
 
-logger.info("✅ DYNAMIC HOT + LOW-PRICED ROCKET MONITOR STARTED")
+logger.info("✅ MONITOR STARTED")
 send_startup_message()
 check_stocks()
 
