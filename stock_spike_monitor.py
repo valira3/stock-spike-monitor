@@ -44,7 +44,7 @@ daily_alerts = 0
 last_prices = {}
 last_alert_time = {}
 price_history = {t: deque(maxlen=10) for t in CORE_TICKERS}
-recent_alerts = []  # to store last 30 min spikes
+recent_alerts = []  # for /spikes command
 
 # ────────────────────────────────────────────────
 # Safe Telegram Sender
@@ -64,15 +64,15 @@ def send_telegram(text):
     total = len(parts)
     for i, part in enumerate(parts, 1):
         prefix = f"({i}/{total}) " if total > 1 else ""
+        payload = {"chat_id": CHAT_ID, "text": prefix + part}
         try:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                          json={"chat_id": CHAT_ID, "text": prefix + part}, timeout=10)
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=payload, timeout=10)
             time.sleep(0.3)
         except Exception as e:
             logger.error(f"Telegram failed: {e}")
 
 # ────────────────────────────────────────────────
-# Dynamic Stock List (unchanged)
+# Dynamic Stock List
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
     logger.info("Fetching dynamic hot + low-priced rockets...")
@@ -98,56 +98,42 @@ def get_dynamic_hot_stocks():
 TICKERS = get_dynamic_hot_stocks()
 
 # ────────────────────────────────────────────────
-# Telegram Bot Commands
+# Telegram Commands
 # ────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """Commands:
-
-/status    - Monitoring status + stock count
-/list      - Current monitored stocks
-/alerts    - Alerts sent today
-/market    - Current market snapshot
-/spikes    - Recent spikes (last 30 min)
-/pause     - Pause monitoring
-/resume    - Resume monitoring
-/help      - This help"""
-    await update.message.reply_text(help_text)
+    await update.message.reply_text("""Commands:
+/status   - Status + stock count
+/list     - Monitored stocks
+/alerts   - Alerts today
+/market   - Current market snapshot
+/spikes   - Recent spikes (last 30 min)
+/pause    - Pause monitoring
+/resume   - Resume monitoring
+/help     - This help""")
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "PAUSED" if monitoring_paused else "RUNNING"
     await update.message.reply_text(f"Status: {status}\nStocks: {len(TICKERS)}\nAlerts today: {daily_alerts}")
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "Current tickers:\n" + "\n".join(sorted(TICKERS))
-    await update.message.reply_text(text)
+    await update.message.reply_text("Monitoring:\n" + "\n".join(sorted(TICKERS)))
 
 async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Alerts today: {daily_alerts}")
 
 async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
     indices = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^DJI": "Dow"}
-    lines = []
-    for sym, name in indices.items():
-        try:
-            info = yf.Ticker(sym).fast_info
-            chg = info.get('regularMarketChangePercent', 0) or 0
-            lines.append(f"{name}: {chg:+.2f}%")
-        except:
-            lines.append(f"{name}: N/A")
-    market_summary = " | ".join(lines)
-
-    grok_prompt = f"Market snapshot: {market_summary}. Short sentiment in 1 sentence."
-    ai_sentiment = get_grok_response(grok_prompt)
-
-    text = f"Current Market:\n{market_summary}\n\nGrok: {ai_sentiment}"
-    await update.message.reply_text(text)
+    lines = [f"{name}: {yf.Ticker(sym).fast_info.get('regularMarketChangePercent', 0):+.2f}%" for sym, name in indices.items()]
+    summary = " | ".join(lines)
+    grok_prompt = f"Market snapshot: {summary}. Short sentiment."
+    ai = get_grok_response(grok_prompt)
+    await update.message.reply_text(f"Market now:\n{summary}\n\nGrok: {ai}")
 
 async def cmd_spikes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not recent_alerts:
-        await update.message.reply_text("No spikes in the last 30 minutes.")
+        await update.message.reply_text("No spikes in last 30 minutes.")
         return
-    text = "Recent spikes (last 30 min):\n" + "\n".join(recent_alerts)
-    await update.message.reply_text(text)
+    await update.message.reply_text("Recent spikes:\n" + "\n".join(recent_alerts[-10:]))
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global monitoring_paused
@@ -160,24 +146,7 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Monitoring RESUMED")
 
 # ────────────────────────────────────────────────
-# Run Telegram bot in background
-# ────────────────────────────────────────────────
-def run_telegram_bot():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("list", cmd_list))
-    app.add_handler(CommandHandler("alerts", cmd_alerts))
-    app.add_handler(CommandHandler("market", cmd_market))
-    app.add_handler(CommandHandler("spikes", cmd_spikes))
-    app.add_handler(CommandHandler("pause", cmd_pause))
-    app.add_handler(CommandHandler("resume", cmd_resume))
-    app.run_polling()
-
-threading.Thread(target=run_telegram_bot, daemon=True).start()
-
-# ────────────────────────────────────────────────
-# Original functions (check_stocks, send_alert, etc.)
+# Original functions
 # ────────────────────────────────────────────────
 def get_trading_session():
     now = datetime.now(CT)
@@ -190,8 +159,7 @@ def get_trading_session():
 def fetch_finnhub_quote(ticker):
     try:
         r = requests.get(f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}", timeout=10)
-        data = r.json()
-        return data.get('c')
+        return r.json().get('c')
     except:
         return None
 
@@ -208,15 +176,9 @@ def fetch_latest_news(ticker):
 def get_grok_response(prompt):
     if not grok_client: return "AI disabled"
     try:
-        resp = grok_client.chat.completions.create(
-            model="grok-4-1-fast-non-reasoning",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=140,
-            temperature=0.4
-        )
+        resp = grok_client.chat.completions.create(model="grok-4-1-fast-non-reasoning", messages=[{"role": "user", "content": prompt}], max_tokens=140, temperature=0.4)
         return resp.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Grok error: {e}")
+    except:
         return "Grok unavailable"
 
 def send_alert(ticker, pct_change, current_price):
@@ -224,25 +186,19 @@ def send_alert(ticker, pct_change, current_price):
     daily_alerts += 1
     news_items = fetch_latest_news(ticker)
     grok_prompt = f"Analyze spike: {ticker} {pct_change:+.1f}% ~5 min. Price ${current_price:.2f}. Short analysis."
-    ai_analysis = get_grok_response(grok_prompt)
+    ai = get_grok_response(grok_prompt)
     news_text = "\n".join([f"• {h[:80]}" for h,_ in news_items]) if news_items else "No news"
 
     message = f"""🚨 {ticker} SPIKE
 
 {pct_change:+.1f}% | ${current_price:.2f}
 
-Grok: {ai_analysis}
+Grok: {ai}
 
 News:
 {news_text}"""
-
     send_telegram(message)
-
-    # Store for /spikes command
     recent_alerts.append(f"{ticker} {pct_change:+.1f}% at {datetime.now(CT).strftime('%H:%M')}")
-
-    # Clean old entries
-    recent_alerts[:] = [a for a in recent_alerts if "at" in a and (datetime.now(CT) - datetime.strptime(a.split("at ")[1], "%H:%M")).total_seconds() < 1800]
 
 def check_stocks():
     if monitoring_paused or get_trading_session() == "closed":
@@ -276,7 +232,7 @@ schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic
 schedule.every().day.at("08:30").do(send_morning_briefing)
 schedule.every().day.at("15:00").do(send_daily_close_summary)
 
-logger.info("✅ INTERACTIVE MONITOR STARTED - Talk to the bot with /status, /market, /spikes, etc.")
+logger.info("✅ INTERACTIVE MONITOR STARTED - Use /market and /spikes!")
 
 def run_telegram_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()

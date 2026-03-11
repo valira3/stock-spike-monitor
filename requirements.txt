@@ -5,3 +5,4 @@ pytz
 openai
 pandas
 lxml
+python-telegram-bot
