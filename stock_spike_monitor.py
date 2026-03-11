@@ -18,7 +18,7 @@ FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN")
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-FMP_API_KEY = os.getenv("FMP_API_KEY")          # ← Add your free FMP key here in Railway
+FMP_API_KEY = os.getenv("FMP_API_KEY")
 
 THRESHOLD = 0.03
 MIN_PRICE = 5.0
@@ -47,7 +47,7 @@ daily_alerts = 0
 last_prices = {}
 last_alert_time = {}
 price_history = {t: deque(maxlen=10) for t in CORE_TICKERS}
-recent_alerts = []  # for /spikes command
+recent_alerts = []
 
 # ────────────────────────────────────────────────
 # SAFE MULTI-PART TELEGRAM SENDER
@@ -75,35 +75,39 @@ def send_telegram(text):
             logger.error(f"Telegram failed: {e}")
 
 # ────────────────────────────────────────────────
-# DYNAMIC STOCKS USING FMP (stable, no 429)
+# DYNAMIC STOCKS USING FMP (robust error handling)
 # ────────────────────────────────────────────────
 def get_dynamic_hot_stocks():
     logger.info("Fetching dynamic hot stocks via FMP...")
     hot = []
     low_price = []
+
     try:
         r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}", timeout=10)
-        if r.status_code == 200:
-            hot = [item['symbol'] for item in r.json()[:20]]
+        data = r.json()
+        if isinstance(data, list):
+            hot = [item.get('symbol') for item in data[:20] if isinstance(item, dict)]
 
         r = requests.get(f"https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey={FMP_API_KEY}", timeout=10)
-        if r.status_code == 200:
-            hot.extend([item['symbol'] for item in r.json()[:15]])
+        data = r.json()
+        if isinstance(data, list):
+            hot.extend([item.get('symbol') for item in data[:15] if isinstance(item, dict)])
 
-        low_price = [item['symbol'] for item in r.json() 
-                     if 1 <= item.get('price', 0) <= 10 and item.get('changesPercentage', 0) > 8][:10]
+        low_price = [item.get('symbol') for item in data 
+                     if isinstance(item, dict) and 1 <= item.get('price', 0) <= 10 and item.get('changesPercentage', 0) > 8][:10]
+
     except Exception as e:
-        logger.warning(f"FMP fetch failed: {e}. Using core list.")
+        logger.warning(f"FMP fetch failed: {e}. Using core list only.")
 
     hot = [t.upper() for t in hot if isinstance(t, str) and 1 <= len(t) <= 6]
     combined = list(dict.fromkeys(CORE_TICKERS + hot + low_price))[:60]
-    logger.info(f"Dynamic list → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
+    logger.info(f"Dynamic list updated → {len(combined)} stocks ({len(low_price)} low-priced rockets)")
     return combined
 
 TICKERS = get_dynamic_hot_stocks()
 
 # ────────────────────────────────────────────────
-# Telegram Commands (full interactive bot)
+# Telegram Commands
 # ────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("""Commands:
@@ -151,7 +155,7 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Monitoring RESUMED")
 
 # ────────────────────────────────────────────────
-# Original functions
+# Helper functions
 # ────────────────────────────────────────────────
 def get_trading_session():
     now = datetime.now(CT)
@@ -231,14 +235,14 @@ def check_stocks():
         last_prices[ticker] = c
 
 # ────────────────────────────────────────────────
-# Scheduler & startup
+# Scheduler & startup – AFTER ALL FUNCTIONS
 # ────────────────────────────────────────────────
 schedule.every(CHECK_INTERVAL_MIN).minutes.do(check_stocks)
 schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic_hot_stocks()))
 schedule.every().day.at("08:30").do(send_morning_briefing)
 schedule.every().day.at("15:00").do(send_daily_close_summary)
 
-logger.info("✅ INTERACTIVE MONITOR WITH FMP DYNAMIC LIST STARTED")
+logger.info("✅ MONITOR STARTED WITH FMP + INTERACTIVE BOT")
 
 def run_telegram_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
