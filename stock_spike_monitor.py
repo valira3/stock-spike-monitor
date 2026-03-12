@@ -223,7 +223,7 @@ BOT_DESCRIPTION = (
     " /paper positions  live P&L\n"
     " /paper trades     today's trades\n"
     " /paper history    win rate stats\n"
-    " /paper signal T   8-factor score\n"
+    " /paper signal T   9-factor score\n"
     " /paper log   download trade log\n"
     " /paper reset start over at $100k\n"
     " /overnight   gap risk on holdings\n"
@@ -265,6 +265,7 @@ conversation_history= {}   # {chat_id: [messages]} for multi-turn Q&A
 squeeze_scores      = {}   # {ticker: score} updated each scan cycle
 ai_watchlist_suggestions = {}  # {ticker: {"conviction": int, "thesis": str, "category": str, "added_at": str}}
 ai_watchlist_last_refresh = ""  # e.g. "10:30 AM CT (intraday)"
+daily_candles = {}  # {ticker: list of dicts [{date, open, high, low, close, volume}, ...]}  — ephemeral, NOT persisted
 
 # ============================================================
 # TELEGRAM: SAFE MULTI-PART SENDER WITH EXPONENTIAL BACKOFF
@@ -1894,8 +1895,10 @@ def _compute_macd(prices: list) -> tuple:
 
 def compute_paper_signal(ticker: str) -> dict:
     """
-    Composite signal engine. Returns score 0-100 plus component breakdown.
-    Caches for 60 seconds to avoid hammering Grok.
+    Composite signal engine (9 components, max 125 pts).
+    Components: RSI(20) + BB(15) + MACD(15) + Volume(15) + Squeeze(10) +
+    Slope(10) + AI Direction(15) + AI Watchlist(10) + Multi-Day Trend(15).
+    Caches for 60 seconds to avoid hammering AI.
     """
     now = datetime.now(CT)
 
@@ -2065,8 +2068,68 @@ def compute_paper_signal(ticker: str) -> dict:
         comps["ai_category"] = ai_info.get("category", "")
         detail.append(f"AI={ai_info['conviction']}({pts}pts)")
 
+    # ── 9. Multi-Day Trend (15 pts) ───────────────────────────
+    daily = daily_candles.get(ticker)
+    if daily and len(daily) >= 10:
+        closes = [d["close"] for d in daily]
+        volumes = [d["volume"] for d in daily]
+
+        # 9a. SMA Trend (6 pts)
+        sma5 = sum(closes[-5:]) / 5
+        sma20 = sum(closes[-20:]) / min(20, len(closes))
+        current_close = closes[-1]
+
+        sma_pts = 0
+        if current_close > sma5 > sma20:
+            sma_pts = 6  # Strong uptrend alignment
+        elif current_close > sma5 and sma5 <= sma20:
+            sma_pts = 3  # Short-term bounce
+        elif current_close < sma5 and sma5 > sma20:
+            sma_pts = 1  # Pullback in uptrend
+
+        score += sma_pts
+        comps["sma5"] = round(sma5, 2)
+        comps["sma20"] = round(sma20, 2)
+        comps["sma_pts"] = sma_pts
+
+        # 9b. Multi-Day Momentum (5 pts)
+        mom_pts = 0
+        if len(closes) >= 6:
+            ret_5d = (closes[-1] - closes[-6]) / closes[-6]
+            if -0.08 <= ret_5d < -0.03:
+                mom_pts = 5  # Oversold bounce setup
+            elif 0.01 <= ret_5d <= 0.05:
+                mom_pts = 4  # Steady uptrend
+            elif 0.05 < ret_5d <= 0.10:
+                mom_pts = 2  # Hot but extended
+            elif -0.03 <= ret_5d < 0.01:
+                mom_pts = 1  # Flat
+            # >10% or <-8%: 0 pts
+
+            score += mom_pts
+            comps["ret_5d"] = round(ret_5d * 100, 2)
+            comps["mom_pts"] = mom_pts
+
+        # 9c. Daily Volume Trend (4 pts)
+        avg_daily_vol = sum(volumes[-10:]) / min(10, len(volumes[-10:]))
+        today_vol = volumes[-1]
+        vol_d_pts = 0
+        if avg_daily_vol > 0:
+            vol_d_ratio = today_vol / avg_daily_vol
+            if vol_d_ratio >= 1.5:
+                vol_d_pts = 4
+            elif vol_d_ratio >= 1.2:
+                vol_d_pts = 2
+            comps["daily_vol_ratio"] = round(vol_d_ratio, 2)
+
+        score += vol_d_pts
+        comps["vol_d_pts"] = vol_d_pts
+
+        total_multi = sma_pts + mom_pts + vol_d_pts if len(closes) >= 6 else sma_pts + vol_d_pts
+        detail.append(f"MultiDay={total_multi}pts(SMA{sma_pts}+Mom{mom_pts if len(closes) >= 6 else '?'}+DVol{vol_d_pts})")
+
     result = {
-        "score":   round(min(score, 110), 1),  # max 110 with AI bonus
+        "score":   round(min(score, 125), 1),  # max 125 with multi-day + AI bonus
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -2300,6 +2363,15 @@ def paper_evaluate_ticker(ticker: str):
             f"AI Pick {c['ai_conviction']}/10 ({c.get('ai_category','')}) ({c['ai_conviction']}pts)"
         )
 
+    # Multi-day context line for buy notification
+    multi_day_line = ""
+    daily = daily_candles.get(ticker)
+    if daily and len(daily) >= 6:
+        d_closes = [d["close"] for d in daily]
+        ret_5d = (d_closes[-1] - d_closes[-6]) / d_closes[-6] * 100
+        d_sma5 = sum(d_closes[-5:]) / 5
+        multi_day_line = f"  5d: {ret_5d:+.1f}%  SMA5: ${d_sma5:.2f}\n"
+
     # AI thesis line for buy notification
     ai_thesis_line = ""
     ai_info = ai_watchlist_suggestions.get(ticker)
@@ -2317,6 +2389,7 @@ def paper_evaluate_ticker(ticker: str):
         f"Signal:    {sig['score']:.0f}/100\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
+        + multi_day_line
         + ai_thesis_line
         + f"{'─'*28}\n"
         f"Cash left: ${paper_cash:,.0f}\n"
@@ -2620,7 +2693,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [
             f"SIGNAL: {arg2}  @${price:.2f}" if price else f"SIGNAL: {arg2}",
             f"",
-            f"Composite Score: {sig['score']:.0f}/110  -> {verdict}",
+            f"Composite Score: {sig['score']:.0f}/125  -> {verdict}",
             f"",
             f"BREAKDOWN:",
             f"  RSI Momentum    {c.get('rsi','N/A')} -> {c.get('rsi_pts',0)} pts",
@@ -2635,6 +2708,18 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"({c.get('ai_category','')}) -> {c.get('ai_conviction',0) if c.get('ai_conviction') else 0} pts"
             if c.get('ai_conviction') else
             f"  AI Conviction   N/A",
+        ]
+        # Multi-day trend breakdown
+        if c.get("sma5") is not None:
+            lines.append(f"  Multi-Day Trend:")
+            lines.append(f"    SMA5=${c['sma5']:.2f}  SMA20=${c.get('sma20','N/A')} -> {c.get('sma_pts',0)} pts")
+            if c.get("ret_5d") is not None:
+                lines.append(f"    5d Return: {c['ret_5d']:+.2f}% -> {c.get('mom_pts',0)} pts")
+            if c.get("daily_vol_ratio") is not None:
+                lines.append(f"    Daily Vol: {c['daily_vol_ratio']:.2f}x avg -> {c.get('vol_d_pts',0)} pts")
+        else:
+            lines.append(f"  Multi-Day Trend  N/A (no daily candles)")
+        lines += [
             f"",
             f"Grok: {c.get('grok_reason', '')}",
         ]
@@ -4966,6 +5051,34 @@ def _prime_price_history():
     logger.info(f"Primed price_history for {count} tickers")
 
 
+def _load_daily_candles():
+    """Load 30 trading days of daily candles from yfinance for all monitored tickers.
+    Called on startup and once daily (at 07:05 CT before market open)."""
+    global daily_candles
+    logger.info("Loading daily candles from yfinance...")
+    count = 0
+    for ticker in list(TICKERS)[:60]:
+        try:
+            tk = yf.Ticker(ticker)
+            hist = tk.history(period="2mo", interval="1d")
+            if hist is not None and len(hist) >= 5:
+                candles = []
+                for idx, row in hist.iterrows():
+                    candles.append({
+                        "date": idx.strftime("%Y-%m-%d"),
+                        "open": float(row["Open"]),
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "close": float(row["Close"]),
+                        "volume": int(row["Volume"]),
+                    })
+                daily_candles[ticker] = candles[-30:]
+                count += 1
+        except Exception as e:
+            logger.debug(f"Daily candles {ticker}: {e}")
+    logger.info(f"Loaded daily candles for {count} tickers")
+
+
 # ============================================================
 # BACKGROUND SCANNER
 # ============================================================
@@ -4987,6 +5100,7 @@ def scanner_thread():
     JOBS = [
         # day            CT time   function
         ("daily",        "07:00",  lambda: ai_refresh_watchlist(mode="premarket")),
+        ("daily",        "07:05",  _load_daily_candles),  # Refresh daily candles before market open
         ("daily",        "08:00",  send_premarket_dashboard),
         ("daily",        "08:30",  _merge_dynamic_stocks),
         ("daily",        "08:30",  send_morning_briefing),
@@ -5139,6 +5253,7 @@ threading.Thread(target=_refresh_tickers_bg, daemon=True).start()
 # Startup: prime price_history so technical indicators work immediately
 if get_trading_session() != "closed":
     threading.Thread(target=_prime_price_history, daemon=True).start()
+    threading.Thread(target=_load_daily_candles, daemon=True).start()
 
 # Startup: prime scanner and AI watchlist if market is open
 if get_trading_session() != "closed":
