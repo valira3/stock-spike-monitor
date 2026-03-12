@@ -936,8 +936,8 @@ def get_dynamic_hot_stocks():
             if not q:
                 return None
             price = q.get("c") or 0
-            vol   = q.get("v") or 0
-            if price >= 1.0 and vol >= 50_000:
+            # Only filter sub-penny stocks — volume check removed (fails off-hours)
+            if price >= 0.50:
                 return sym
         except:
             pass
@@ -949,11 +949,14 @@ def get_dynamic_hot_stocks():
 
     verified = [s for s in results if s]
 
-    logger.info(f"Watchlist updated -> {len(verified)} stocks "
-                f"(from {len(unique)} candidates)")
-    return verified[:80]
+    # Always guarantee CORE_TICKERS are included even if all external calls fail
+    combined = list(dict.fromkeys(verified + CORE_TICKERS))
 
-TICKERS = get_dynamic_hot_stocks()
+    logger.info(f"Watchlist updated -> {len(combined)} stocks "
+                f"(from {len(unique)} candidates)")
+    return combined[:80]
+
+TICKERS = list(CORE_TICKERS)   # seed immediately; refreshed at startup and 8:30 AM daily
 
 # ============================================================
 # ALERT ENGINE
@@ -1259,7 +1262,8 @@ def load_bot_state():
 
         saved_tickers = state.get("tickers", [])
         if saved_tickers:
-            TICKERS = set(saved_tickers)
+            # Merge saved tickers with CORE_TICKERS — never drop the anchor list
+            TICKERS = list(dict.fromkeys(saved_tickers + CORE_TICKERS))
             logger.info(f"Restored {len(TICKERS)} tickers")
 
         user_watchlists     = state.get("user_watchlists", {})
@@ -2979,16 +2983,37 @@ def build_dashboard_image() -> BytesIO:
         return out
 
     def _fetch_movers():
+        # Build a broader scan pool: TICKERS + FMP actives
+        scan_pool = list(dict.fromkeys(list(TICKERS)))
+        if len(scan_pool) < 20:
+            # Supplement with FMP actives if watchlist is thin
+            try:
+                r = requests.get(
+                    f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}",
+                    timeout=8
+                )
+                fmp_data = r.json()
+                if isinstance(fmp_data, list):
+                    scan_pool += [d.get("symbol") for d in fmp_data[:30] if d.get("symbol")]
+                    scan_pool = list(dict.fromkeys(scan_pool))
+            except:
+                pass
+
         items = []
-        for t in TICKERS:
+        def _quote_one(t):
             q = _finnhub_quote(t)
             if not q or not q.get("c"):
-                continue
+                return None
             price = q["c"]
             pc    = q.get("pc") or 0
             if price and pc:
-                chg = (price - pc) / pc * 100
-                items.append((t, chg, price))
+                return (t, (price - pc) / pc * 100, price)
+            return None
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(_quote_one, scan_pool[:60]))
+
+        items = [r for r in results if r]
         items.sort(key=lambda x: x[1])
         return items[-5:][::-1], items[:5]   # gainers, losers
 
@@ -3037,6 +3062,20 @@ def build_dashboard_image() -> BytesIO:
     fg_val           = int(fg_val) if fg_val else 50
 
     top_squeeze = sorted(squeeze_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+    # If squeeze_scores empty (first run), compute on-demand from CORE_TICKERS
+    if not top_squeeze:
+        def _seed_sq(t):
+            try:
+                sq = compute_squeeze_score(t)
+                if sq.get("score") is not None:
+                    return (t, sq["score"])
+            except:
+                pass
+            return None
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            seed_results = list(pool.map(_seed_sq, CORE_TICKERS[:20]))
+        seeded = [r for r in seed_results if r]
+        top_squeeze = sorted(seeded, key=lambda x: x[1], reverse=True)[:5]
 
     idx_summary = "  ".join(f"{n} {c:+.1f}%" for n, _, c in indices[:4])
     grok_line = get_ai_response(
@@ -4136,9 +4175,29 @@ def run_telegram_bot():
 # ============================================================
 # ENTRY POINT
 # ============================================================
-threading.Thread(target=scanner_thread, daemon=True).start()
-logger.info("FULL INTERACTIVE MONITOR WITH BULLISH FILTER STARTED")
+# Load saved state FIRST so we immediately have a working ticker list
 load_paper_state()   # restore paper trading state from disk
 load_bot_state()     # restore watchlists, alerts, tickers, conversations
+
+# If TICKERS ended up empty for any reason, fall back to CORE_TICKERS immediately
+if not TICKERS:
+    TICKERS = list(CORE_TICKERS)
+    logger.warning("TICKERS was empty after state load — reset to CORE_TICKERS")
+
+# Background ticker refresh — runs get_dynamic_hot_stocks() without blocking startup
+def _refresh_tickers_bg():
+    global TICKERS
+    try:
+        fresh = get_dynamic_hot_stocks()
+        if fresh:
+            TICKERS = fresh
+            save_bot_state()
+            logger.info(f"Background ticker refresh complete: {len(TICKERS)} stocks")
+    except Exception as e:
+        logger.error(f"Background ticker refresh failed: {e}")
+
+threading.Thread(target=_refresh_tickers_bg, daemon=True).start()
+threading.Thread(target=scanner_thread, daemon=True).start()
+logger.info("STOCK SPIKE MONITOR STARTED")
 send_startup_message()
 run_telegram_bot()
