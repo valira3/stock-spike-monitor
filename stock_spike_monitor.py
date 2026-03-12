@@ -110,12 +110,14 @@ BOT_DESCRIPTION = (
     "  /paper log           download investment.log\n"
     "  /paper reset         reset to $100k\n"
     "\n"
+    "  /ask <question>    chat with Grok AI (multi-turn memory)\n"
     "  /dashboard          send visual dashboard now\n"
     "  /list               all monitored tickers\n"
     "  /monitoring         pause · resume · status\n"
     "  /help               this menu\n"
     "\n"
-    "💬 Type any question — Grok AI answers in plain English.\n"
+    "💬 /ask <question>   — ask Grok AI anything about the market\n"
+    "     e.g. /ask Is NVDA overbought?  /ask What does RSI 72 mean?\n"
     "📊 Auto dashboards: 8:00 pre-mkt · 8:30 open · 12:00 mid · 3:00 close · Sun digest"
 )
 
@@ -2786,28 +2788,36 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # NATURAL LANGUAGE HANDLER — the "ask anything" feature
 # ============================================================
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Catch all plain-text messages and route to Grok AI for Q&A."""
-    # Guard: edited messages, channel posts, etc. have no .message
-    if not update.message or not update.message.text:
+async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /ask <question> — ask Grok AI anything about the market.
+    Maintains multi-turn memory per chat (last 20 messages).
+    """
+    if not update.message:
         return
 
-    user_msg = update.message.text.strip()
-    if not user_msg:
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /ask <your question>\n\n"
+            "Examples:\n"
+            "  /ask What's happening with NVDA today?\n"
+            "  /ask Is the market overbought right now?\n"
+            "  /ask Explain RSI to me\n"
+            "  /ask Should I be worried about the VIX spike?"
+        )
         return
 
-    chat_id = str(update.effective_chat.id)
-    logger.info(f"Q&A from {chat_id}: {user_msg[:80]}")
+    user_msg = " ".join(context.args).strip()
+    chat_id  = str(update.effective_chat.id)
+    logger.info(f"/ask from {chat_id}: {user_msg[:80]}")
 
-    # Acknowledge immediately so the user knows it's working
     await update.message.reply_text("Thinking…")
 
-    # Enrich with live price ONLY if user mentions a known watched ticker
-    # (check TICKERS set only — avoids yfinance calls on common English words)
+    # Enrich with live price if a watched ticker is mentioned
     enriched = user_msg
     words = user_msg.upper().split()
     for word in words:
-        clean = ''.join(c for c in word if c.isalpha())   # strip punctuation
+        clean = ''.join(c for c in word if c.isalpha())
         if clean and clean in TICKERS:
             try:
                 info  = yf.Ticker(clean).fast_info
@@ -2817,19 +2827,19 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     enriched += f" [Live: {clean}=${price:.2f}, {chg:+.2f}% today]"
             except:
                 pass
-            break   # enrich at most one ticker per message
+            break
 
     try:
         reply = get_grok_conversation(chat_id, enriched)
         if not reply or reply.strip() in ("", "Grok unavailable", "Grok unavailable right now."):
             await update.message.reply_text(
-                "Grok is not responding right now. "
+                "Grok is not responding. "
                 "Check that GROK_API_KEY is set in Railway and try again."
             )
         else:
             await update.message.reply_text(reply)
     except Exception as e:
-        logger.error(f"handle_text_message error: {e}", exc_info=True)
+        logger.error(f"cmd_ask error: {e}", exc_info=True)
         await update.message.reply_text(f"Error reaching Grok: {e}")
 
 # ============================================================
@@ -3028,8 +3038,7 @@ def run_telegram_bot():
     # ── Paper Trading ─────────────────────────────────────────
     app.add_handler(CommandHandler("paper",       cmd_paper))
 
-    # Natural language Q&A — catches ALL non-command text messages
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    app.add_handler(CommandHandler("ask",        cmd_ask))
 
     app.run_polling()
 
