@@ -92,11 +92,7 @@ BOT_DESCRIPTION = (
     "  /earnings            next 7 days\n"
     "\n"
     "MOVERS\n"
-    "  /movers              gainers + losers summary\n"
-    "  /movers gainers      top 5 up\n"
-    "  /movers losers       top 5 down\n"
-    "  /movers volume       most active\n"
-    "  /movers lowprice     $1-$10 rockets\n"
+    "  /movers              gainers | losers | most active | low-price rockets\n"
     "\n"
     "STOCK TOOLS\n"
     "  /price TICK          live quote + day range\n"
@@ -414,6 +410,44 @@ def _finnhub_metrics(ticker: str) -> dict:
     except Exception as e:
         logger.debug(f"Finnhub metrics {ticker}: {e}")
     return {}
+
+
+def _finnhub_candles(ticker: str, resolution: str = "5", count: int = 300) -> list:
+    """
+    Fetch OHLCV candles from Finnhub.
+    resolution: "1","5","15","30","60","D","W","M"
+    Returns list of dicts: [{t, o, h, l, c, v}, ...] sorted oldest->newest.
+    Returns [] on failure.
+    """
+    try:
+        now_ts   = int(time.time())
+        # Go back far enough to get `count` candles
+        mins_map = {"1":1,"5":5,"15":15,"30":30,"60":60,"D":1440,"W":10080,"M":43200}
+        lookback = mins_map.get(resolution, 5) * count * 60
+        from_ts  = now_ts - lookback
+        r = requests.get(
+            f"https://finnhub.io/api/v1/stock/candle"
+            f"?symbol={ticker}&resolution={resolution}"
+            f"&from={from_ts}&to={now_ts}&token={FINNHUB_TOKEN}",
+            timeout=10
+        )
+        d = r.json()
+        if d.get("s") != "ok":
+            return []
+        closes  = d.get("c", [])
+        opens   = d.get("o", [])
+        highs   = d.get("h", [])
+        lows    = d.get("l", [])
+        vols    = d.get("v", [])
+        stamps  = d.get("t", [])
+        return [
+            {"t": stamps[i], "o": opens[i], "h": highs[i],
+             "l": lows[i],   "c": closes[i], "v": vols[i]}
+            for i in range(len(closes))
+        ]
+    except Exception as e:
+        logger.debug(f"Finnhub candles {ticker} {resolution}: {e}")
+    return []
 
 
 def get_ticker_data(ticker: str) -> dict:
@@ -872,12 +906,18 @@ def get_dynamic_hot_stocks():
         bullish = []
         for symbol in list(dict.fromkeys(candidates))[:50]:
             try:
-                info        = yf.Ticker(symbol).fast_info
-                mcap        = info.get('marketCap', 0)
-                if mcap < 100_000_000_000:
+                q = _finnhub_quote(symbol)
+                if not q or not q.get("c"):
                     continue
-                stock_chg   = info.get('regularMarketChangePercent', 0)
+                price = q["c"]
+                pc    = q.get("pc") or 0
+                stock_chg = (price - pc) / pc * 100 if pc else 0
                 if stock_chg <= 0 or not index_up:
+                    continue
+                # mcap check via metrics (in millions)
+                m    = _finnhub_metrics(symbol)
+                mcap = (m.get("marketCapitalization") or 0) * 1_000_000
+                if mcap > 0 and mcap < 100_000_000_000:
                     continue
                 rel_strength = stock_chg / max(qqq_chg, spy_chg, 0.1)
                 if rel_strength > 1.0:
@@ -886,7 +926,7 @@ def get_dynamic_hot_stocks():
                 continue
 
         low_price = [s for s in bullish
-                     if 1 <= yf.Ticker(s).fast_info.get('lastPrice', 0) <= 10][:10]
+                     if 1 <= (_finnhub_quote(s) or {}).get("c", 0) <= 10][:10]
 
     except Exception as e:
         logger.warning(f"FMP filter failed: {e}. Using core list.")
@@ -975,9 +1015,9 @@ def _scan_ticker(ticker: str, now: datetime):
                 vol_spike = False
                 if vol and pc:
                     try:
-                        hist     = yf.Ticker(ticker).history(period="5d")
-                        if not hist.empty:
-                            avg_vol   = hist['Volume'].mean()
+                        m = _finnhub_metrics(ticker)
+                        avg_vol = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
+                        if avg_vol > 0:
                             vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
                     except:
                         pass
@@ -1366,10 +1406,10 @@ def compute_paper_signal(ticker: str) -> dict:
     # ── 4. Volume Confirmation (15 pts) ───────────────────────
     try:
         _, vol, _ = fetch_finnhub_quote(ticker)
-        hist_yf   = yf.Ticker(ticker).history(period="5d")
-        if vol and not hist_yf.empty:
-            avg_vol = hist_yf["Volume"].mean()
-            ratio   = vol / avg_vol if avg_vol > 0 else 1
+        m = _finnhub_metrics(ticker)
+        avg_vol = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
+        if vol and avg_vol > 0:
+            ratio   = vol / avg_vol
             if ratio >= 2.0:
                 pts = 15
             elif ratio >= 1.5:
@@ -2181,10 +2221,10 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vol     = d["volume"]
         high52  = d["high52"]
         low52   = d["low52"]
-        # day high/low still best from fast_info
-        fi      = yf.Ticker(ticker).fast_info
-        day_hi  = fi.get("dayHigh") or 0
-        day_lo  = fi.get("dayLow")  or 0
+        # day high/low from Finnhub quote
+        q      = _finnhub_quote(ticker)
+        day_hi = q.get("h") or 0
+        day_lo = q.get("l") or 0
         chg_abs = price * chg / 100
         arrow   = "+" if chg >= 0 else "-"
 
@@ -2238,69 +2278,125 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /movers [gainers|losers|volume|lowprice]
-    Defaults to showing a compact summary of all four if no arg.
+    /movers — top gainers, losers, most active, and low-price rockets.
+    Uses FMP as primary source, falls back to watchlist Finnhub scan.
+    Always shows all categories in one combined message.
     """
-    mode = context.args[0].lower() if context.args else "all"
+    await update.message.reply_text("Fetching market movers...")
 
-    async def _gainers():
+    def _fmp(endpoint):
+        """Fetch from FMP market data endpoint."""
         try:
-            df = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
-            return "Top Gainers:\n" + "\n".join(
-                f"• {r['Symbol']} +{r['% Change']:.1f}%"
-                for _, r in df.head(5).iterrows()
+            r = requests.get(
+                f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
+                timeout=10
             )
-        except:
-            return "Gainers unavailable."
+            data = r.json()
+            if isinstance(data, list) and data:
+                return data
+        except Exception as e:
+            logger.debug(f"FMP {endpoint} failed: {e}")
+        return []
 
-    async def _losers():
-        try:
-            df = pd.read_html("https://finance.yahoo.com/screener/predefined/day_losers")[0]
-            return "Top Losers:\n" + "\n".join(
-                f"• {r['Symbol']} {r['% Change']:.1f}%"
-                for _, r in df.head(5).iterrows()
-            )
-        except:
-            return "Losers unavailable."
+    def _watchlist_scan():
+        """Fallback: scan our tracked tickers via Finnhub."""
+        items = []
+        for t in list(TICKERS)[:50]:
+            q = _finnhub_quote(t)
+            if not q or not q.get("c"):
+                continue
+            price = q["c"]
+            pc    = q.get("pc") or 0
+            vol   = q.get("v") or 0
+            if price and pc:
+                chg = (price - pc) / pc * 100
+                items.append({"symbol": t, "price": price, "changesPercentage": chg, "volume": vol})
+        return items
 
-    async def _volume():
-        try:
-            df = pd.read_html("https://finance.yahoo.com/screener/predefined/most_actives")[0]
-            return "Most Active:\n" + "\n".join(
-                f"• {r['Symbol']}" for _, r in df.head(8).iterrows()
-            )
-        except:
-            return "Volume data unavailable."
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_gain = pool.submit(_fmp, "stock_market/gainers")
+        f_lose = pool.submit(_fmp, "stock_market/losers")
+        f_act  = pool.submit(_fmp, "stock_market/actives")
 
-    async def _lowprice():
-        try:
-            df  = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
-            col = "Price (Intraday)"
-            low = df[(df.get(col, 0).astype(float, errors='ignore') >= 1) &
-                     (df.get(col, 0).astype(float, errors='ignore') <= 10)]
-            return "Low-Price Rockets ($1-$10):\n" + "\n".join(
-                f"• {r['Symbol']} +{r['% Change']:.1f}%"
-                for _, r in low.head(8).iterrows()
-            )
-        except:
-            return "Low-price data unavailable."
+    gainers_raw = f_gain.result()
+    losers_raw  = f_lose.result()
+    actives_raw = f_act.result()
 
-    if mode == "gainers":
-        await update.message.reply_text(await _gainers())
-    elif mode == "losers":
-        await update.message.reply_text(await _losers())
-    elif mode == "volume":
-        await update.message.reply_text(await _volume())
-    elif mode == "lowprice":
-        await update.message.reply_text(await _lowprice())
-    else:
-        # compact all-four summary
-        g = await _gainers()
-        l = await _losers()
-        await update.message.reply_text(
-            g + "\n\n" + l +
-            "\n\nFor more: /movers volume  or  /movers lowprice"
-        )
+    # If FMP returns nothing, fall back to watchlist scan
+    if not gainers_raw and not losers_raw:
+        all_items    = _watchlist_scan()
+        sorted_items = sorted(all_items, key=lambda x: x["changesPercentage"], reverse=True)
+        gainers_raw  = sorted_items[:10]
+        losers_raw   = sorted_items[-10:][::-1]
+        actives_raw  = sorted(all_items, key=lambda x: x.get("volume", 0), reverse=True)[:10]
+
+    def _fmt_row(item):
+        sym  = item.get("symbol") or item.get("ticker", "?")
+        chg  = float(item.get("changesPercentage") or item.get("change") or 0)
+        price = float(item.get("price") or 0)
+        sign = "+" if chg >= 0 else ""
+        return f"  {sym:<6} ${price:>8.2f}  {sign}{chg:.2f}%"
+
+    def _section(title, rows, limit=8):
+        if not rows:
+            return f"{title}\n  (unavailable)"
+        return title + "\n" + "\n".join(_fmt_row(r) for r in rows[:limit])
+
+    # Low-price rockets: gainers under $10
+    low_price = [r for r in gainers_raw
+                 if float(r.get("price") or 0) <= 10
+                 and float(r.get("changesPercentage") or 0) > 0]
+
+    # Most active by volume
+    actives_fmt = []
+    for item in actives_raw[:8]:
+        sym  = item.get("symbol", "?")
+        vol  = item.get("volume") or 0
+        chg  = float(item.get("changesPercentage") or 0)
+        price = float(item.get("price") or 0)
+        sign = "+" if chg >= 0 else ""
+        vol_str = f"{vol/1e6:.1f}M" if vol >= 1_000_000 else f"{vol/1e3:.0f}K" if vol >= 1000 else str(vol)
+        actives_fmt.append(f"  {sym:<6} ${price:>8.2f}  {sign}{chg:.2f}%  vol {vol_str}")
+
+    now_str = datetime.now(CT).strftime("%I:%M %p CT")
+    lines = [
+        f"Market Movers — {now_str}",
+        "",
+        "TOP GAINERS",
+        "  Ticker    Price      Chg%",
+        "  " + "-" * 28,
+    ]
+    for r in gainers_raw[:8]:
+        lines.append(_fmt_row(r))
+
+    lines += [
+        "",
+        "TOP LOSERS",
+        "  Ticker    Price      Chg%",
+        "  " + "-" * 28,
+    ]
+    for r in losers_raw[:8]:
+        lines.append(_fmt_row(r))
+
+    lines += [
+        "",
+        "MOST ACTIVE (by volume)",
+        "  Ticker    Price      Chg%     Volume",
+        "  " + "-" * 38,
+    ]
+    lines += actives_fmt or ["  (unavailable)"]
+
+    if low_price:
+        lines += [
+            "",
+            "LOW-PRICE ROCKETS ($1-$10)",
+            "  Ticker    Price      Chg%",
+            "  " + "-" * 28,
+        ]
+        for r in low_price[:6]:
+            lines.append(_fmt_row(r))
+
+    await update.message.reply_text("\n".join(lines))
 
 
 
@@ -2622,14 +2718,14 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     ticker = context.args[0].upper()
 
-    # Fetch fresh 1-day 5-min candles from yfinance for accurate indicators
+    # Fetch 5-min candles from Finnhub for accurate indicators
     await update.message.reply_text(f"Calculating technicals for {ticker}...")
     try:
-        hist   = yf.Ticker(ticker).history(period="5d", interval="5m")
-        if hist.empty:
+        candles = _finnhub_candles(ticker, resolution="5", count=300)
+        if not candles:
             await update.message.reply_text(f"No price history available for {ticker}.")
             return
-        prices = hist['Close'].tolist()
+        prices = [c["c"] for c in candles]
         price  = prices[-1]
 
         rsi             = compute_rsi(prices)
@@ -2684,13 +2780,13 @@ def build_chart_image(ticker: str) -> BytesIO:
     BG = "#0d1117"; PANEL = "#161b22"; TEXT = "#e6edf3"
     DIM = "#8b949e"; GREEN = "#2ecc71"; RED = "#e74c3c"; GOLD = "#f0b429"
 
-    hist = yf.Ticker(ticker).history(period="1d", interval="5m")
-    if hist.empty:
+    candles = _finnhub_candles(ticker, resolution="5", count=100)
+    if not candles:
         raise ValueError(f"No intraday data for {ticker}")
 
-    prices  = hist['Close'].tolist()
-    volumes = hist['Volume'].tolist()
-    times   = [t.strftime("%H:%M") for t in hist.index]
+    prices  = [c["c"] for c in candles]
+    volumes = [c["v"] for c in candles]
+    times   = [datetime.fromtimestamp(c["t"], tz=CT).strftime("%H:%M") for c in candles]
     open_p  = prices[0]
     color   = GREEN if prices[-1] >= open_p else RED
 
@@ -2774,20 +2870,21 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         loop = asyncio.get_event_loop()
         buf  = await loop.run_in_executor(None, build_chart_image, ticker)
 
-        # Quick Grok read on the chart shape
-        info    = yf.Ticker(ticker).fast_info
-        price   = info.get('lastPrice', 0)
-        chg     = info.get('regularMarketChangePercent', 0)
+        # Quick read on the chart shape
+        d       = get_ticker_data(ticker)
+        price   = d["price"]
+        chg     = d["chg"]
         sq      = compute_squeeze_score(ticker)
         rsi_str = f"RSI {sq['rsi']:.0f}" if sq.get('rsi') else ""
+        sign    = "+" if chg >= 0 else ""
         ai = get_ai_response(
-            f"{ticker} intraday: ${price:.2f} ({chg:+.2f}% today). "
+            f"{ticker} intraday: ${price:.2f} ({sign}{chg:.2f}% today). "
             f"{rsi_str}. What does this intraday move suggest? One sentence.",
             fast=True
         )
         await update.message.reply_photo(
             photo=buf,
-            caption=f"{ticker}  ${price:.2f}  ({chg:+.2f}%)\n{rsi_str}\nClaude: {ai}"
+            caption=f"{ticker}  ${price:.2f}  ({sign}{chg:.2f}%)\n{rsi_str}\nClaude: {ai}"
         )
     except Exception as e:
         logger.error(f"Chart error for {ticker}: {e}")
@@ -3451,9 +3548,9 @@ async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             sq = compute_squeeze_score(ticker)
             if sq.get("score") is not None:
-                info  = yf.Ticker(ticker).fast_info
-                price = info.get("lastPrice", 0)
-                chg   = info.get("regularMarketChangePercent", 0)
+                d     = get_ticker_data(ticker)
+                price = d["price"]
+                chg   = d["chg"]
                 scored.append((ticker, sq["score"], price, chg,
                                 sq.get("rsi", 0), sq.get("bandwidth", 0)))
         except:
@@ -3765,19 +3862,10 @@ def send_premarket_dashboard():
     logger.info("Pre-market dashboard")
     s = fetch_market_snapshot()
 
-    # Pre-market futures via yfinance extended hours
-    futures_lines = []
-    for sym, label in [("ES=F","S&P Fut"),("NQ=F","Nasdaq Fut"),("YM=F","Dow Fut")]:
-        try:
-            fi    = yf.Ticker(sym).fast_info
-            price = fi.get("lastPrice") or 0
-            chg   = fi.get("regularMarketChangePercent") or 0
-            arrow = "+" if chg >= 0 else "-"
-            futures_lines.append(f"{arrow} {label}: {price:,.0f} ({chg:+.2f}%)")
-        except:
-            pass
-
-    futures_str = " | ".join(futures_lines) or "futures unavailable"
+    # Pre-market futures — use ETF proxies via Finnhub (ES=F not available on free tier)
+    # SPY/QQQ pre-market quotes serve as reliable proxies for S&P/Nasdaq futures
+    futures_lines = s["futures_lines"]   # already fetched in fetch_market_snapshot
+    futures_str   = s["futures_str"]
 
     prompt = (
         f"Today is {s['now_label']}. Pre-market 8:00 AM CT. "
@@ -3847,28 +3935,21 @@ def send_evening_recap():
     """6:00 PM CT — after-hours recap + tomorrow setup."""
     if get_trading_session() != "closed":
         return   # skip if still in extended hours
-    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
-    snap = []
-    for sym, name in [("^GSPC","S&P 500"),("^IXIC","Nasdaq"),("^DJI","Dow")]:
-        try:
-            info = yf.Ticker(sym).fast_info
-            chg  = info.get("regularMarketChangePercent", 0)
-            snap.append(f"{name} {chg:+.2f}%")
-        except:
-            pass
-    snap_str = " | ".join(snap)
-    fg_val, fg_label = get_fear_greed()
+    s = fetch_market_snapshot()
     ai = get_ai_response(
-        f"Today is {now_label}. Market closed. Final: {snap_str}. "
-        f"Fear & Greed: {fg_val} ({fg_label}). "
-        f"(1) One sentence on today's key theme. "
+        f"Today is {s['now_label']}. Market closed. Final: {s['indices_str']}. "
+        f"Sectors: {s['sector_str']}. "
+        f"Fear & Greed: {s['fg_val']} ({s['fg_label']}). "
+        f"VIX: {s['vix']:.1f}. "
+        f"(1) One sentence on today's key theme based on this data. "
         f"(2) Two things to watch for tomorrow's open. "
         f"Keep it to 3 sentences total. Plain text.",
         max_tokens=180
     )
     send_telegram(
         f"Evening Recap — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
-        f"{snap_str}\n\n"
+        f"{s['indices_str']}\n\n"
+        f"Fear & Greed: {s['fg_str']}  VIX: {s['vix']:.1f}\n\n"
         f"Claude: {ai}\n\n"
         f"Use /prep for tomorrow's game plan  |  /overnight for position risk"
     )
@@ -3881,9 +3962,9 @@ def send_saturday_prep():
     for ticker in list(TICKERS)[:20]:
         try:
             sq    = compute_squeeze_score(ticker)
-            info  = yf.Ticker(ticker).fast_info
-            price = info.get("lastPrice", 0)
-            chg   = info.get("regularMarketChangePercent", 0)
+            d     = get_ticker_data(ticker)
+            price = d["price"]
+            chg   = d["chg"]
             if sq.get("score") and price > 0:
                 scored.append((ticker, sq["score"], price, chg, sq.get("rsi", 0)))
         except:
