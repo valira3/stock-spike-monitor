@@ -3555,10 +3555,27 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     ticker = context.args[0].upper()
 
-    # Fetch 5-min candles from Finnhub for accurate indicators
+    # Fetch 5-min candles via yfinance (Finnhub candles require paid plan)
     await update.message.reply_text(f"Calculating technicals for {ticker}...")
     try:
-        candles = _finnhub_candles(ticker, resolution="5", count=300)
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period="5d", interval="5m")
+        if hist is None or hist.empty:
+            await update.message.reply_text(f"No price history available for {ticker}.")
+            return
+        candles = []
+        for idx, row in hist.iterrows():
+            ts = idx.to_pydatetime()
+            if ts.tzinfo:
+                ts = ts.astimezone(CT)
+            candles.append({
+                "t": int(ts.timestamp()),
+                "o": float(row["Open"]),
+                "h": float(row["High"]),
+                "l": float(row["Low"]),
+                "c": float(row["Close"]),
+                "v": int(row["Volume"]),
+            })
         if not candles:
             await update.message.reply_text(f"No price history available for {ticker}.")
             return
@@ -3617,9 +3634,30 @@ def build_chart_image(ticker: str) -> BytesIO:
     BG = "#0d1117"; PANEL = "#161b22"; TEXT = "#e6edf3"
     DIM = "#8b949e"; GREEN = "#2ecc71"; RED = "#e74c3c"; GOLD = "#f0b429"
 
-    candles = _finnhub_candles(ticker, resolution="5", count=100)
-    if not candles:
-        raise ValueError(f"No intraday data for {ticker}")
+    try:
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period="1d", interval="5m")
+        if hist is None or hist.empty:
+            raise ValueError(f"No intraday data for {ticker}")
+        candles = []
+        for idx, row in hist.iterrows():
+            ts = idx.to_pydatetime()
+            if ts.tzinfo:
+                ts = ts.astimezone(CT)
+            candles.append({
+                "t": int(ts.timestamp()),
+                "o": float(row["Open"]),
+                "h": float(row["High"]),
+                "l": float(row["Low"]),
+                "c": float(row["Close"]),
+                "v": int(row["Volume"]),
+            })
+        if not candles:
+            raise ValueError(f"No intraday data for {ticker}")
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"No intraday data for {ticker}: {e}")
 
     prices  = [c["c"] for c in candles]
     volumes = [c["v"] for c in candles]
