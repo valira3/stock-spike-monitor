@@ -1417,37 +1417,62 @@ TICKERS = list(CORE_TICKERS)   # seed immediately; refreshed at startup and 8:30
 # ============================================================
 # ALERT ENGINE
 # ============================================================
-def send_alert(ticker, pct_change, current_price, volume_spike=False):
+def send_alert(ticker, pct_change, current_price, volume_spike=False, alert_type="spike"):
     global daily_alerts
     daily_alerts += 1
     news_items   = fetch_latest_news(ticker)
-    spike_label  = "VOLUME+PRICE SPIKE" if volume_spike else "SPIKE"
 
-    # Pull live technicals from accumulated price history
-    sq       = compute_squeeze_score(ticker)
-    rsi_str  = f"RSI {sq['rsi']:.0f}" if sq['rsi'] is not None else ""
-    pb_str   = f"%B {sq['pct_b']:.2f}" if sq['pct_b'] is not None else ""
-    tech_str = "  ".join(filter(None, [rsi_str, pb_str, f"Squeeze {sq['score']:.0f}/100"]))
+    if alert_type == "day":
+        # Day-change mover alert — simpler format
+        spike_label = "MOVER"
+        direction   = "up" if pct_change > 0 else "down"
+        grok_prompt = (
+            f"Analyze daily mover: {ticker} {pct_change:+.1f}% today. "
+            f"Price ${current_price:.2f}. "
+            f"Stock is {direction} from previous close. Short analysis."
+        )
+        ai        = get_ai_response(grok_prompt)
+        news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
 
-    grok_prompt = (
-        f"Analyze {spike_label}: {ticker} {pct_change:+.1f}% in ~5 min. "
-        f"Price ${current_price:.2f}. {tech_str}. "
-        + ("HIGH VOLUME detected. " if volume_spike else "")
-        + "Short analysis."
-    )
-    ai        = get_ai_response(grok_prompt)
-    news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
+        message = (
+            f"📊 MOVER ALERT: {ticker} {pct_change:+.1f}% (${current_price:.2f})"
+            f" — daily move from prev close"
+            + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
+            + f"\nClaude: {ai}\n\n"
+            f"News:\n{news_text}"
+        )
+        send_telegram(message)
+        recent_alerts.append(f"{ticker} {pct_change:+.1f}% day at {datetime.now(CT).strftime('%H:%M')}")
+    else:
+        # Original spike alert — unchanged
+        spike_label  = "VOLUME+PRICE SPIKE" if volume_spike else "SPIKE"
 
-    message = (
-        f"🚨 {ticker} {spike_label}\n"
-        f"{pct_change:+.1f}% | ${current_price:.2f}"
-        + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
-        + (f"{tech_str}\n" if tech_str else "")
-        + f"\nClaude: {ai}\n\n"
-        f"News:\n{news_text}"
-    )
-    send_telegram(message)
-    recent_alerts.append(f"{ticker} {pct_change:+.1f}% at {datetime.now(CT).strftime('%H:%M')}")
+        # Pull live technicals from accumulated price history
+        sq       = compute_squeeze_score(ticker)
+        rsi_str  = f"RSI {sq['rsi']:.0f}" if sq['rsi'] is not None else ""
+        pb_str   = f"%B {sq['pct_b']:.2f}" if sq['pct_b'] is not None else ""
+        tech_str = "  ".join(filter(None, [rsi_str, pb_str, f"Squeeze {sq['score']:.0f}/100"]))
+
+        grok_prompt = (
+            f"Analyze {spike_label}: {ticker} {pct_change:+.1f}% in ~5 min. "
+            f"Price ${current_price:.2f}. {tech_str}. "
+            + ("HIGH VOLUME detected. " if volume_spike else "")
+            + "Short analysis."
+        )
+        ai        = get_ai_response(grok_prompt)
+        news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
+
+        message = (
+            f"🚨 {ticker} {spike_label}\n"
+            f"{pct_change:+.1f}% | ${current_price:.2f}"
+            + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
+            + (f"{tech_str}\n" if tech_str else "")
+            + f"\nClaude: {ai}\n\n"
+            f"News:\n{news_text}"
+        )
+        send_telegram(message)
+        recent_alerts.append(f"{ticker} {pct_change:+.1f}% at {datetime.now(CT).strftime('%H:%M')}")
+
     # Cap recent_alerts at runtime to prevent unbounded memory growth
     while len(recent_alerts) > 200:
         recent_alerts.pop(0)
@@ -1509,6 +1534,24 @@ def _scan_ticker(ticker: str, now: datetime):
                         logger.debug(f"Vol spike check {ticker}: {e}")
                 send_alert(ticker, change * 100, c, vol_spike)
                 last_alert_time[ticker] = now
+
+    # ── Day-change alerts: catch sustained moves vs prev close ──
+    if pc and pc > 0:
+        day_change = (c - pc) / pc
+        if abs(day_change) >= THRESHOLD:
+            day_alert_key = f"{ticker}:day:{datetime.now(CT).strftime('%Y-%m-%d')}"
+            if day_alert_key not in last_alert_time:
+                # Only fire once per ticker per day for day-change alerts
+                last_alert_time[day_alert_key] = now
+                # Check volume spike
+                vol_spike = False
+                if vol:
+                    cached_m = _metrics_cache.get(f"metrics:{ticker}")
+                    if cached_m:
+                        avg_vol = (cached_m.get("10DayAverageTradingVolume") or 0) * 1_000_000
+                        if avg_vol > 0:
+                            vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
+                send_alert(ticker, day_change * 100, c, vol_spike, alert_type="day")
 
     last_prices[ticker] = c
 
@@ -1858,7 +1901,7 @@ def compute_paper_signal(ticker: str) -> dict:
 
     # Return cached signal if fresh
     cached = paper_signals_cache.get(ticker)
-    if cached and (now - cached["ts"]).total_seconds() < 60:
+    if cached and (now - cached["ts"]).total_seconds() < 120:
         return cached
 
     hist_raw = list(price_history.get(ticker, deque()))
@@ -2292,6 +2335,10 @@ def paper_scan():
     if get_trading_session() not in ("regular", "extended"):
         return
     for ticker in list(TICKERS):
+        # Skip tickers without enough history for meaningful signals
+        hist = price_history.get(ticker, deque())
+        if len(hist) < 10:
+            continue
         try:
             paper_evaluate_ticker(ticker)
         except Exception as e:
@@ -4888,6 +4935,38 @@ def send_saturday_prep():
 
 
 # ============================================================
+# STARTUP: PRIME PRICE HISTORY WITH YFINANCE
+# ============================================================
+def _prime_price_history():
+    """Bootstrap price_history with recent intraday data from yfinance so
+    technical indicators work immediately instead of waiting 20+ minutes."""
+    logger.info("Priming price_history with yfinance intraday data...")
+    count = 0
+    for ticker in list(TICKERS)[:50]:  # Cap at 50 to not overload yfinance
+        try:
+            if len(price_history.get(ticker, deque())) >= 15:
+                continue  # Already has enough data
+            tk = yf.Ticker(ticker)
+            hist = tk.history(period="1d", interval="1m")
+            if hist is not None and len(hist) > 0:
+                dq = price_history.setdefault(ticker, deque(maxlen=60))
+                for idx, row in hist.tail(30).iterrows():
+                    ts = idx.to_pydatetime()
+                    if ts.tzinfo:
+                        ts = ts.astimezone(CT)
+                    else:
+                        ts = CT.localize(ts)
+                    dq.append((ts, float(row['Close'])))
+                count += 1
+                # Also prime last_prices
+                if ticker not in last_prices and len(dq) > 0:
+                    last_prices[ticker] = dq[-1][1]
+        except Exception as e:
+            logger.debug(f"Prime {ticker}: {e}")
+    logger.info(f"Primed price_history for {count} tickers")
+
+
+# ============================================================
 # BACKGROUND SCANNER
 # ============================================================
 def scanner_thread():
@@ -5056,6 +5135,10 @@ def _refresh_tickers_bg():
         logger.error(f"Background ticker refresh failed: {e}")
 
 threading.Thread(target=_refresh_tickers_bg, daemon=True).start()
+
+# Startup: prime price_history so technical indicators work immediately
+if get_trading_session() != "closed":
+    threading.Thread(target=_prime_price_history, daemon=True).start()
 
 # Startup: prime scanner and AI watchlist if market is open
 if get_trading_session() != "closed":
