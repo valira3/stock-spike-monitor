@@ -183,8 +183,8 @@ class _TTLCache:
                 "hit_rate": f"{self._hits / max(1, self._hits + self._misses) * 100:.0f}%",
             }
 
-_quote_cache = _TTLCache(ttl_seconds=45.0, max_size=500)
-_metrics_cache = _TTLCache(ttl_seconds=90.0, max_size=300)
+_quote_cache = _TTLCache(ttl_seconds=55.0, max_size=500)
+_metrics_cache = _TTLCache(ttl_seconds=300.0, max_size=300)
 
 # ============================================================
 # BOT DESCRIPTION (used by /about and natural-language handler)
@@ -506,7 +506,7 @@ def _finnhub_quote(ticker: str) -> dict:
     if cached is not None:
         return cached
     # Rate limit
-    if not _finnhub_limiter.acquire(timeout=15):
+    if not _finnhub_limiter.acquire(timeout=5):
         logger.warning(f"Finnhub rate limit: skipping quote for {ticker}")
         return {}
     try:
@@ -535,7 +535,7 @@ def _finnhub_metrics(ticker: str) -> dict:
     cached = _metrics_cache.get(f"metrics:{ticker}")
     if cached is not None:
         return cached
-    if not _finnhub_limiter.acquire(timeout=15):
+    if not _finnhub_limiter.acquire(timeout=5):
         logger.warning(f"Finnhub rate limit: skipping metrics for {ticker}")
         return {}
     try:
@@ -562,7 +562,7 @@ def _finnhub_candles(ticker: str, resolution: str = "5", count: int = 300) -> li
     Returns list of dicts: [{t, o, h, l, c, v}, ...] sorted oldest->newest.
     Returns [] on failure.
     """
-    if not _finnhub_limiter.acquire(timeout=15):
+    if not _finnhub_limiter.acquire(timeout=5):
         logger.warning(f"Finnhub rate limit: skipping candles for {ticker}")
         return []
     try:
@@ -751,15 +751,14 @@ def compute_squeeze_score(ticker: str) -> dict:
             components['price_trend_pct'] = round(vol_trend * 100, 1)
             components['vt_pts']          = round(vt_pts, 1)
 
-    try:
-        m = _finnhub_metrics(ticker)
-        si     = (m.get('shortRatioAnnual') or 0)
+    # Use cached metrics only for short interest — don't burn an API call for 10 pts
+    cached_metrics = _metrics_cache.get(f"metrics:{ticker}")
+    if cached_metrics is not None:
+        si     = (cached_metrics.get('shortRatioAnnual') or 0)
         si_pts = min(10, si / 2)
         score += si_pts
         components['short_ratio'] = si
         components['si_pts']      = round(si_pts, 1)
-    except Exception as e:
-        logger.debug(f"Squeeze short interest {ticker}: {e}")
 
     return {
         "score":     round(min(score, 100), 1),
@@ -806,8 +805,8 @@ def get_sector_performance():
     return lines
 
 def _finnhub_crypto_candle(fsym: str) -> dict:
-    """Rate-limited Finnhub crypto candle call. Returns raw JSON or {}."""
-    if not _finnhub_limiter.acquire(timeout=15):
+    """DEPRECATED: Use _finnhub_quote() with crypto symbols instead. Kept for reference."""
+    if not _finnhub_limiter.acquire(timeout=5):
         return {}
     try:
         r = requests.get(
@@ -826,22 +825,27 @@ def _finnhub_crypto_candle(fsym: str) -> dict:
 
 def get_crypto_prices():
     coins = [
-        ("BINANCE:BTCUSDT","BTC"), ("BINANCE:ETHUSDT","ETH"),
-        ("BINANCE:SOLUSDT","SOL"), ("BINANCE:DOGEUSDT","DOGE"),
-        ("BINANCE:XRPUSDT","XRP"),
+        ("BINANCE:BTCUSDT", "BTC"), ("BINANCE:ETHUSDT", "ETH"),
+        ("BINANCE:SOLUSDT", "SOL"), ("BINANCE:DOGEUSDT", "DOGE"),
+        ("BINANCE:XRPUSDT", "XRP"),
     ]
     lines = []
     for fsym, name in coins:
         try:
-            d = _finnhub_crypto_candle(fsym)
-            closes = d.get("c", [])
-            if len(closes) >= 2:
-                price = closes[-1]
-                pc    = closes[-2]
-                chg   = (price - pc) / pc * 100 if pc else 0
-                sign  = "+" if chg >= 0 else ""
-                p_fmt = f"${price:,.0f}" if price >= 1000 else f"${price:,.4f}"
-                lines.append(f"{name}: {p_fmt} ({sign}{chg:.2f}%)")
+            q = _finnhub_quote(fsym)
+            if q:
+                price = q.get("c") or 0
+                pc = q.get("pc") or 0
+                if price > 0 and pc > 0:
+                    chg = (price - pc) / pc * 100
+                    sign = "+" if chg >= 0 else ""
+                    if price >= 1000:
+                        p_fmt = f"${price:,.0f}"
+                    elif price >= 1:
+                        p_fmt = f"${price:,.2f}"
+                    else:
+                        p_fmt = f"${price:.4f}"
+                    lines.append(f"{name}: {p_fmt} ({sign}{chg:.2f}%)")
         except Exception as e:
             logger.debug(f"Crypto price {name}: {e}")
     return lines
@@ -942,21 +946,21 @@ def fetch_market_snapshot() -> dict:
 
     def _fetch_crypto():
         coins = [
-            ("BINANCE:BTCUSDT","BTC"), ("BINANCE:ETHUSDT","ETH"),
-            ("BINANCE:SOLUSDT","SOL"),
+            ("BINANCE:BTCUSDT", "BTC"), ("BINANCE:ETHUSDT", "ETH"),
+            ("BINANCE:SOLUSDT", "SOL"),
         ]
         lines = []
         for fsym, name in coins:
             try:
-                d = _finnhub_crypto_candle(fsym)
-                closes = d.get("c", [])
-                if len(closes) >= 2:
-                    price = closes[-1]
-                    pc    = closes[-2]
-                    chg   = (price - pc) / pc * 100 if pc else 0
-                    sign  = "+" if chg >= 0 else ""
-                    p_fmt = f"${price:,.0f}" if price >= 1000 else f"${price:,.4f}"
-                    lines.append(f"  {name}: {p_fmt} ({sign}{chg:.2f}%)")
+                q = _finnhub_quote(fsym)
+                if q:
+                    price = q.get("c") or 0
+                    pc = q.get("pc") or 0
+                    if price > 0 and pc > 0:
+                        chg = (price - pc) / pc * 100
+                        sign = "+" if chg >= 0 else ""
+                        p_fmt = f"${price:,.0f}" if price >= 1000 else f"${price:,.4f}"
+                        lines.append(f"  {name}: {p_fmt} ({sign}{chg:.2f}%)")
             except Exception as e:
                 logger.debug(f"Snapshot crypto {name}: {e}")
         return lines
@@ -1109,6 +1113,34 @@ def get_dynamic_hot_stocks():
     logger.info(f"Watchlist updated -> {len(combined)} stocks "
                 f"(from {len(unique)} candidates)")
     return combined[:80]
+
+
+def _merge_dynamic_stocks():
+    """Refresh dynamic stocks without losing AI picks or paper positions."""
+    global TICKERS
+    dynamic = get_dynamic_hot_stocks()
+    # Start with core + paper positions + AI picks
+    merged = list(CORE_TICKERS)
+    for t in paper_positions:
+        if t not in merged:
+            merged.append(t)
+    # Add AI picks sorted by conviction
+    if ai_watchlist_suggestions:
+        ai_sorted = sorted(ai_watchlist_suggestions.keys(),
+                          key=lambda t: ai_watchlist_suggestions[t].get("conviction", 0),
+                          reverse=True)
+        for t in ai_sorted:
+            if t not in merged and len(merged) < 80:
+                merged.append(t)
+    # Fill with dynamic/FMP stocks
+    for t in dynamic:
+        if t not in merged and len(merged) < 80:
+            merged.append(t)
+    TICKERS = merged
+    for t in TICKERS:
+        if t not in price_history:
+            price_history[t] = deque(maxlen=60)
+    save_bot_state()
 
 
 def ai_refresh_watchlist(mode="premarket"):
@@ -1485,16 +1517,22 @@ def check_stocks():
     if monitoring_paused or get_trading_session() == "closed":
         return
     now = datetime.now(CT)
-    logger.info(f"Scanning {len(TICKERS)} stocks (concurrent)...")
+    tickers = list(TICKERS)
+    logger.info(f"Scanning {len(tickers)} stocks (batched)...")
 
-    with ThreadPoolExecutor(max_workers=min(5, len(TICKERS))) as pool:
-        futures = {pool.submit(_scan_ticker, t, now): t for t in TICKERS}
-        for future in as_completed(futures):
-            t = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                logger.error(f"Scan error for {t}: {e}")
+    BATCH = 20
+    for i in range(0, len(tickers), BATCH):
+        batch = tickers[i:i+BATCH]
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(_scan_ticker, t, now): t for t in batch}
+            for future in as_completed(futures):
+                t = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Scan error for {t}: {e}")
+        if i + BATCH < len(tickers):
+            time.sleep(2)  # Let rate limiter replenish between batches
 
     # Paper trading evaluation runs after every scan cycle
     try:
@@ -1664,6 +1702,7 @@ def save_bot_state():
         "monitoring_paused":    monitoring_paused,
         "ai_watchlist_suggestions": ai_watchlist_suggestions,
         "ai_watchlist_last_refresh": ai_watchlist_last_refresh,
+        "last_prices": {k: v for k, v in last_prices.items()},
         "saved_at":             datetime.now(CT).isoformat(),
     }
     with _bot_save_lock:
@@ -1722,6 +1761,7 @@ def load_bot_state():
         monitoring_paused   = state.get("monitoring_paused", False)
         ai_watchlist_suggestions = state.get("ai_watchlist_suggestions", {})
         ai_watchlist_last_refresh = state.get("ai_watchlist_last_refresh", "")
+        last_prices.update(state.get("last_prices", {}))
 
         # Only restore daily_alerts if saved today
         saved_at   = state.get("saved_at", "")
@@ -2666,7 +2706,11 @@ async def cmd_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_spikes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not recent_alerts:
-        await update.message.reply_text("No spikes in the last 30 minutes.")
+        await update.message.reply_text(
+            "No spikes detected yet.\n"
+            f"Monitoring {len(TICKERS)} stocks, threshold {THRESHOLD*100:.0f}%.\n"
+            "Spikes trigger when a stock moves ≥3% within ~5 min."
+        )
         return
     await update.message.reply_text(
         "Recent spikes:\n" + "\n".join(recent_alerts[-10:])
@@ -2975,7 +3019,7 @@ async def cmd_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── 1. Primary: Finnhub earnings calendar ──────────────────
     if FINNHUB_TOKEN:
         try:
-            if not _finnhub_limiter.acquire(timeout=15):
+            if not _finnhub_limiter.acquire(timeout=5):
                 logger.warning("Finnhub rate limit: skipping earnings calendar")
             else:
                 r = requests.get(
@@ -3683,12 +3727,13 @@ def build_dashboard_image() -> BytesIO:
         out = []
         for fsym, name in CRYPTO_SYMS:
             try:
-                d = _finnhub_crypto_candle(fsym)
-                closes = d.get("c", [])
-                if len(closes) >= 2:
-                    price = closes[-1]; pc = closes[-2]
-                    chg   = (price - pc) / pc * 100 if pc else 0
-                    out.append((name, price, chg))
+                q = _finnhub_quote(fsym)
+                if q:
+                    price = q.get("c") or 0
+                    pc = q.get("pc") or 0
+                    if price > 0 and pc > 0:
+                        chg = (price - pc) / pc * 100
+                        out.append((name, price, chg))
             except Exception as e:
                 logger.debug(f"Dashboard crypto {name}: {e}")
         return out
@@ -3809,7 +3854,7 @@ def build_dashboard_image() -> BytesIO:
                         transform=ax.transAxes, clip_on=False)
 
     # ── Figure & grid (portrait/mobile layout) ──────────────
-    fig = plt.figure(figsize=(12, 24), facecolor=BG)
+    fig = plt.figure(figsize=(14, 24), facecolor=BG)
     fig.patch.set_facecolor(BG)
     gs = gridspec.GridSpec(
         8, 2, figure=fig,
@@ -4864,7 +4909,7 @@ def scanner_thread():
         # day            CT time   function
         ("daily",        "07:00",  lambda: ai_refresh_watchlist(mode="premarket")),
         ("daily",        "08:00",  send_premarket_dashboard),
-        ("daily",        "08:30",  lambda: globals().update(TICKERS=get_dynamic_hot_stocks())),
+        ("daily",        "08:30",  _merge_dynamic_stocks),
         ("daily",        "08:30",  send_morning_briefing),
         ("daily",        "08:31",  paper_morning_report),
         ("daily",        "10:30",  lambda: ai_refresh_watchlist(mode="intraday")),
@@ -5011,6 +5056,14 @@ def _refresh_tickers_bg():
         logger.error(f"Background ticker refresh failed: {e}")
 
 threading.Thread(target=_refresh_tickers_bg, daemon=True).start()
+
+# Startup: prime scanner and AI watchlist if market is open
+if get_trading_session() != "closed":
+    logger.info("Startup: market is open, priming scanner and AI watchlist...")
+    threading.Thread(target=check_stocks, daemon=True).start()
+    if not ai_watchlist_suggestions:
+        threading.Thread(target=lambda: ai_refresh_watchlist(mode="intraday"), daemon=True).start()
+
 threading.Thread(target=scanner_thread, daemon=True).start()
 logger.info("STOCK SPIKE MONITOR STARTED")
 send_startup_message()
