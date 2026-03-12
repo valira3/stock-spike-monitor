@@ -12,7 +12,15 @@ import os
 import threading
 import json
 import math
+from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyBboxPatch
+from matplotlib.colors import LinearSegmentedColormap
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, ContextTypes,
@@ -94,6 +102,7 @@ Commands:
 /setalert      — Set a custom price alert
 /squeeze       — Top squeeze candidates (RSI + BB + volume score)
 /rsi TICK      — RSI + Bollinger Bands for any ticker
+/dashboard     — 📊 Full visual market dashboard image
 /pause         — Pause spike monitoring
 /resume        — Resume spike monitoring
 /help          — This help menu
@@ -1047,6 +1056,460 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error computing technicals for {ticker}: {e}")
 
 
+
+# ============================================================
+# DASHBOARD — visual market snapshot image
+# ============================================================
+
+def _clamp_color(val, lo, hi):
+    """Map val in [lo,hi] to 0–1 for a red-white-green colormap."""
+    span = hi - lo
+    if span == 0:
+        return 0.5
+    return max(0.0, min(1.0, (val - lo) / span))
+
+def _rg_cmap():
+    return LinearSegmentedColormap.from_list(
+        "rg", ["#e74c3c", "#f5f5f5", "#2ecc71"]
+    )
+
+def _bar_color(val):
+    """Green for positive, red for negative."""
+    return "#2ecc71" if val >= 0 else "#e74c3c"
+
+def build_dashboard_image() -> BytesIO:
+    """
+    Fetches live data across all bot dimensions and renders a
+    multi-panel PNG dashboard. Returns a BytesIO object.
+
+    Panels:
+      [A] Major indices bar chart
+      [B] Fear & Greed gauge
+      [C] Sector heatmap
+      [D] Top gainers / losers from monitored list
+      [E] Squeeze leaderboard
+      [F] Crypto prices
+      [G] Recent spike alerts ticker
+      [H] Grok AI one-liner sentiment
+    """
+
+    BG    = "#0d1117"
+    PANEL = "#161b22"
+    TEXT  = "#e6edf3"
+    DIM   = "#8b949e"
+    GREEN = "#2ecc71"
+    RED   = "#e74c3c"
+    GOLD  = "#f0b429"
+    BLUE  = "#58a6ff"
+
+    now_str = datetime.now(CT).strftime("%a %b %d %Y  %I:%M %p CT")
+    session = get_trading_session()
+    session_color = GREEN if session == "regular" else GOLD if session == "extended" else RED
+
+    # ── Fetch all data concurrently ───────────────────────────
+    def _fetch_indices():
+        syms = {"^GSPC":"S&P 500","^IXIC":"Nasdaq","^DJI":"Dow",
+                "^RUT":"Russell","^VIX":"VIX"}
+        out = {}
+        for sym, name in syms.items():
+            try:
+                info = yf.Ticker(sym).fast_info
+                out[name] = {
+                    "price": info.get("lastPrice", 0),
+                    "chg":   info.get("regularMarketChangePercent", 0),
+                }
+            except:
+                out[name] = {"price": 0, "chg": 0}
+        return out
+
+    def _fetch_sectors():
+        sectors = {
+            "XLK":"Tech","XLF":"Fin","XLE":"Energy","XLV":"Health",
+            "XLI":"Indust","XLC":"Comm","XLY":"Cons D","XLP":"Cons S",
+            "XLB":"Mat","XLRE":"RE","XLU":"Util"
+        }
+        out = {}
+        for sym, name in sectors.items():
+            try:
+                chg = yf.Ticker(sym).fast_info.get("regularMarketChangePercent", 0)
+                out[name] = round(chg, 2)
+            except:
+                out[name] = 0.0
+        return out
+
+    def _fetch_movers():
+        items = []
+        for t in TICKERS:
+            try:
+                info = yf.Ticker(t).fast_info
+                chg  = info.get("regularMarketChangePercent", 0)
+                price = info.get("lastPrice", 0)
+                if price > 0:
+                    items.append((t, chg, price))
+            except:
+                pass
+        items.sort(key=lambda x: x[1])
+        losers  = items[:5]
+        gainers = items[-5:][::-1]
+        return gainers, losers
+
+    def _fetch_crypto():
+        coins = [("BTC-USD","BTC"),("ETH-USD","ETH"),
+                 ("SOL-USD","SOL"),("DOGE-USD","DOGE"),("XRP-USD","XRP")]
+        out = []
+        for sym, name in coins:
+            try:
+                info  = yf.Ticker(sym).fast_info
+                price = info.get("lastPrice", 0)
+                chg   = info.get("regularMarketChangePercent", 0)
+                out.append((name, price, chg))
+            except:
+                pass
+        return out
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_idx     = pool.submit(_fetch_indices)
+        f_sec     = pool.submit(_fetch_sectors)
+        f_mov     = pool.submit(_fetch_movers)
+        f_cry     = pool.submit(_fetch_crypto)
+        f_fg      = pool.submit(get_fear_greed)
+
+    indices  = f_idx.result()
+    sectors  = f_sec.result()
+    gainers, losers = f_mov.result()
+    crypto   = f_cry.result()
+    fg_val, fg_label = f_fg.result()
+    fg_val   = int(fg_val) if fg_val else 50
+
+    # Squeeze top 5
+    top_squeeze = sorted(squeeze_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Grok one-liner
+    idx_summary = "  ".join(
+        [f"{n} {d['chg']:+.1f}%" for n, d in list(indices.items())[:4]]
+    )
+    grok_line = get_grok_response(
+        f"Market now: {idx_summary}. Fear&Greed={fg_val}({fg_label}). "
+        f"One sentence market call.",
+        max_tokens=80
+    )
+
+    # ── Layout ────────────────────────────────────────────────
+    fig = plt.figure(figsize=(20, 14), facecolor=BG)
+    fig.patch.set_facecolor(BG)
+
+    gs = gridspec.GridSpec(
+        4, 4,
+        figure=fig,
+        hspace=0.55,
+        wspace=0.35,
+        top=0.90, bottom=0.05,
+        left=0.04, right=0.97
+    )
+
+    def panel(ax, title):
+        ax.set_facecolor(PANEL)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#30363d")
+            spine.set_linewidth(0.8)
+        ax.set_title(title, color=DIM, fontsize=9,
+                     fontweight="bold", loc="left", pad=6)
+        ax.tick_params(colors=TEXT, labelsize=8)
+
+    # ── Header ────────────────────────────────────────────────
+    fig.text(0.04, 0.955, "STOCK SPIKE MONITOR  //  LIVE DASHBOARD",
+             color=TEXT, fontsize=15, fontweight="bold")
+    fig.text(0.04, 0.930, now_str, color=DIM, fontsize=9)
+    fig.text(0.30, 0.930,
+             f"Market: {session.upper()}",
+             color=session_color, fontsize=9, fontweight="bold")
+    fig.text(0.04, 0.915,
+             f"Grok AI: {grok_line}",
+             color=GOLD, fontsize=8.5, style="italic",
+             wrap=True)
+
+    # ── [A] Indices bar chart ─────────────────────────────────
+    ax_idx = fig.add_subplot(gs[0, :2])
+    panel(ax_idx, "MAJOR INDICES  (% change)")
+    names  = list(indices.keys())
+    chgs   = [indices[n]["chg"] for n in names]
+    colors = [_bar_color(c) for c in chgs]
+    bars   = ax_idx.barh(names, chgs, color=colors, height=0.55, zorder=3)
+    ax_idx.axvline(0, color=DIM, linewidth=0.7, zorder=2)
+    ax_idx.set_facecolor(PANEL)
+    ax_idx.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
+    ax_idx.set_axisbelow(True)
+    for bar, chg, name in zip(bars, chgs, names):
+        price = indices[name]["price"]
+        label = f" {chg:+.2f}%  ${price:,.2f}" if name != "VIX" else f" {chg:+.2f}%  {price:.2f}"
+        ax_idx.text(chg + (0.05 if chg >= 0 else -0.05),
+                    bar.get_y() + bar.get_height() / 2,
+                    label, va="center",
+                    ha="left" if chg >= 0 else "right",
+                    color=TEXT, fontsize=8)
+    ax_idx.tick_params(axis="y", colors=TEXT, labelsize=9)
+    ax_idx.tick_params(axis="x", colors=DIM,  labelsize=7)
+
+    # ── [B] Fear & Greed gauge ────────────────────────────────
+    ax_fg = fig.add_subplot(gs[0, 2])
+    ax_fg.set_facecolor(PANEL)
+    for spine in ax_fg.spines.values():
+        spine.set_edgecolor("#30363d")
+    ax_fg.set_title("FEAR & GREED", color=DIM, fontsize=9, fontweight="bold", loc="left", pad=6)
+    ax_fg.set_aspect("equal")
+    ax_fg.set_xlim(-1.3, 1.3)
+    ax_fg.set_ylim(-0.3, 1.3)
+    ax_fg.axis("off")
+
+    import numpy as np
+    # Arc background segments: Extreme Fear → Greed
+    seg_colors = ["#c0392b","#e74c3c","#e67e22","#f1c40f","#2ecc71","#27ae60"]
+    seg_labels = ["Ext\nFear","Fear","Neutral","Greed","Ext\nGreed",""]
+    for i, (sc, sl) in enumerate(zip(seg_colors, seg_labels)):
+        theta1 = 180 - i * 30
+        theta2 = 180 - (i + 1) * 30
+        theta  = np.linspace(np.radians(theta2), np.radians(theta1), 50)
+        x_out  = np.cos(theta)
+        y_out  = np.sin(theta)
+        x_in   = 0.65 * np.cos(theta)
+        y_in   = 0.65 * np.sin(theta)
+        xs = np.concatenate([x_out, x_in[::-1]])
+        ys = np.concatenate([y_out, y_in[::-1]])
+        ax_fg.fill(xs, ys, color=sc, alpha=0.85, zorder=2)
+        mid_theta = np.radians((theta1 + theta2) / 2)
+        if sl:
+            ax_fg.text(0.82 * np.cos(mid_theta), 0.82 * np.sin(mid_theta),
+                       sl, ha="center", va="center", fontsize=5.5,
+                       color="white", fontweight="bold", zorder=3)
+
+    # Needle
+    needle_angle = np.radians(180 - fg_val * 1.8)
+    ax_fg.annotate("",
+        xy=(0.6 * np.cos(needle_angle), 0.6 * np.sin(needle_angle)),
+        xytext=(0, 0),
+        arrowprops=dict(arrowstyle="->, head_width=0.08, head_length=0.05",
+                        color="white", lw=2),
+        zorder=5
+    )
+    ax_fg.add_patch(plt.Circle((0, 0), 0.07, color=PANEL, zorder=4))
+
+    # Score + label
+    ax_fg.text(0, -0.18, str(fg_val), ha="center", va="center",
+               fontsize=22, fontweight="bold", color=TEXT, zorder=5)
+    ax_fg.text(0, -0.28, fg_label or "", ha="center", va="center",
+               fontsize=7.5, color=GOLD, zorder=5)
+
+    # ── [C] Sector heatmap ────────────────────────────────────
+    ax_sec = fig.add_subplot(gs[0, 3])
+    panel(ax_sec, "SECTOR HEATMAP")
+    ax_sec.axis("off")
+    sec_names = list(sectors.keys())
+    sec_vals  = list(sectors.values())
+    max_abs   = max(abs(v) for v in sec_vals) or 1
+    ncols, nrows = 3, 4
+    cmap = _rg_cmap()
+    for idx, (name, val) in enumerate(zip(sec_names, sec_vals)):
+        row = idx // ncols
+        col = idx % ncols
+        cx  = col / ncols + 0.5 / ncols
+        cy  = 1 - row / nrows - 0.5 / nrows
+        norm_val = _clamp_color(val, -max_abs, max_abs)
+        bg_color = cmap(norm_val)
+        rect = FancyBboxPatch(
+            (col / ncols + 0.01, 1 - (row + 1) / nrows + 0.01),
+            1 / ncols - 0.02, 1 / nrows - 0.02,
+            boxstyle="round,pad=0.01", facecolor=bg_color,
+            edgecolor="#0d1117", linewidth=1, transform=ax_sec.transAxes
+        )
+        ax_sec.add_patch(rect)
+        txt_color = "white" if abs(norm_val - 0.5) > 0.2 else "#0d1117"
+        ax_sec.text(cx, cy + 0.05, name, ha="center", va="center",
+                    fontsize=7, fontweight="bold", color=txt_color,
+                    transform=ax_sec.transAxes)
+        ax_sec.text(cx, cy - 0.05, f"{val:+.2f}%", ha="center", va="center",
+                    fontsize=6.5, color=txt_color, transform=ax_sec.transAxes)
+
+    # ── [D] Top Gainers ───────────────────────────────────────
+    ax_gn = fig.add_subplot(gs[1, :2])
+    panel(ax_gn, "TOP GAINERS  (monitored list)")
+    if gainers:
+        g_names = [t for t, _, _ in gainers]
+        g_vals  = [c for _, c, _ in gainers]
+        g_bars  = ax_gn.barh(g_names, g_vals, color=GREEN, height=0.55, zorder=3)
+        ax_gn.set_facecolor(PANEL)
+        ax_gn.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
+        ax_gn.set_axisbelow(True)
+        ax_gn.axvline(0, color=DIM, linewidth=0.7)
+        for bar, (t, chg, price) in zip(g_bars, gainers):
+            ax_gn.text(chg + 0.05, bar.get_y() + bar.get_height() / 2,
+                       f" +{chg:.2f}%  ${price:.2f}",
+                       va="center", color=TEXT, fontsize=8)
+        ax_gn.tick_params(axis="y", colors=TEXT, labelsize=9)
+        ax_gn.tick_params(axis="x", colors=DIM, labelsize=7)
+
+    # ── [E] Top Losers ────────────────────────────────────────
+    ax_ls = fig.add_subplot(gs[1, 2:])
+    panel(ax_ls, "TOP LOSERS  (monitored list)")
+    if losers:
+        l_names = [t for t, _, _ in losers]
+        l_vals  = [c for _, c, _ in losers]
+        l_bars  = ax_ls.barh(l_names, l_vals, color=RED, height=0.55, zorder=3)
+        ax_ls.set_facecolor(PANEL)
+        ax_ls.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
+        ax_ls.set_axisbelow(True)
+        ax_ls.axvline(0, color=DIM, linewidth=0.7)
+        for bar, (t, chg, price) in zip(l_bars, losers):
+            ax_ls.text(chg - 0.05, bar.get_y() + bar.get_height() / 2,
+                       f"{chg:.2f}%  ${price:.2f}  ",
+                       va="center", ha="right", color=TEXT, fontsize=8)
+        ax_ls.tick_params(axis="y", colors=TEXT, labelsize=9)
+        ax_ls.tick_params(axis="x", colors=DIM, labelsize=7)
+
+    # ── [F] Squeeze Leaderboard ───────────────────────────────
+    ax_sq = fig.add_subplot(gs[2, :2])
+    panel(ax_sq, "SQUEEZE LEADERBOARD  (score 0–100)")
+    if top_squeeze:
+        sq_names  = [t for t, _ in top_squeeze]
+        sq_scores = [s for _, s in top_squeeze]
+        sq_colors = [plt.cm.YlOrRd(s / 100) for s in sq_scores]
+        sq_bars   = ax_sq.barh(sq_names, sq_scores, color=sq_colors, height=0.55, zorder=3)
+        ax_sq.set_xlim(0, 105)
+        ax_sq.set_facecolor(PANEL)
+        ax_sq.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
+        ax_sq.set_axisbelow(True)
+        for bar, (t, score) in zip(sq_bars, top_squeeze):
+            sq_data = compute_squeeze_score(t)
+            rsi_s   = f"RSI {sq_data['rsi']:.0f}" if sq_data.get("rsi") else ""
+            bw_s    = f"BW {sq_data['bandwidth']:.3f}" if sq_data.get("bandwidth") else ""
+            detail  = "  ".join(filter(None, [rsi_s, bw_s]))
+            ax_sq.text(score + 1, bar.get_y() + bar.get_height() / 2,
+                       f" {score:.0f}  {detail}",
+                       va="center", color=TEXT, fontsize=8)
+        ax_sq.tick_params(axis="y", colors=TEXT, labelsize=9)
+        ax_sq.tick_params(axis="x", colors=DIM, labelsize=7)
+    else:
+        ax_sq.text(0.5, 0.5, "Building… (needs 2–3 scan cycles)",
+                   ha="center", va="center", color=DIM, fontsize=9,
+                   transform=ax_sq.transAxes)
+        ax_sq.axis("off")
+
+    # ── [G] Crypto ────────────────────────────────────────────
+    ax_cr = fig.add_subplot(gs[2, 2:])
+    panel(ax_cr, "CRYPTO  (% change today)")
+    if crypto:
+        cr_names  = [c[0] for c in crypto]
+        cr_chgs   = [c[2] for c in crypto]
+        cr_prices = [c[1] for c in crypto]
+        cr_colors = [_bar_color(v) for v in cr_chgs]
+        cr_bars   = ax_cr.barh(cr_names, cr_chgs, color=cr_colors, height=0.55, zorder=3)
+        ax_cr.axvline(0, color=DIM, linewidth=0.7)
+        ax_cr.set_facecolor(PANEL)
+        ax_cr.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
+        ax_cr.set_axisbelow(True)
+        for bar, (name, price, chg) in zip(cr_bars, crypto):
+            label = f"  {chg:+.2f}%   ${price:,.2f}" if price < 1000 else f"  {chg:+.2f}%  ${price:,.0f}"
+            ax_cr.text(chg + (0.05 if chg >= 0 else -0.05),
+                       bar.get_y() + bar.get_height() / 2,
+                       label, va="center",
+                       ha="left" if chg >= 0 else "right",
+                       color=TEXT, fontsize=8)
+        ax_cr.tick_params(axis="y", colors=TEXT, labelsize=9)
+        ax_cr.tick_params(axis="x", colors=DIM, labelsize=7)
+
+    # ── [H] Recent Spike Alerts timeline ─────────────────────
+    ax_al = fig.add_subplot(gs[3, :3])
+    ax_al.set_facecolor(PANEL)
+    for spine in ax_al.spines.values():
+        spine.set_edgecolor("#30363d")
+    ax_al.set_title("RECENT SPIKE ALERTS", color=DIM, fontsize=9,
+                    fontweight="bold", loc="left", pad=6)
+    ax_al.axis("off")
+    alerts_display = recent_alerts[-12:] if recent_alerts else ["No spikes yet today"]
+    ncols_al = 3
+    for idx, alert in enumerate(alerts_display):
+        col = idx % ncols_al
+        row = idx // ncols_al
+        ax_al.text(col / ncols_al + 0.02,
+                   0.88 - row * 0.28,
+                   f">> {alert}",
+                   ha="left", va="top",
+                   color=GOLD if "%" in alert else DIM,
+                   fontsize=8.5,
+                   transform=ax_al.transAxes)
+
+    # ── [I] Bot Stats ─────────────────────────────────────────
+    ax_st = fig.add_subplot(gs[3, 3])
+    ax_st.set_facecolor(PANEL)
+    for spine in ax_st.spines.values():
+        spine.set_edgecolor("#30363d")
+    ax_st.set_title("BOT STATUS", color=DIM, fontsize=9,
+                    fontweight="bold", loc="left", pad=6)
+    ax_st.axis("off")
+    status_str = "[RUNNING]" if not monitoring_paused else "[PAUSED]"
+    status_color = GREEN if not monitoring_paused else GOLD
+    stats_lines = [
+        (status_str,  status_color),
+        (f"Watching: {len(TICKERS)} stocks", TEXT),
+        (f"Alerts today: {daily_alerts}", GOLD if daily_alerts > 0 else DIM),
+        (f"Threshold: {THRESHOLD*100:.0f}% spike", DIM),
+        (f"Scan: every {CHECK_INTERVAL_MIN} min", DIM),
+        (f"Session: {session.upper()}", session_color),
+    ]
+    for i, (line, color) in enumerate(stats_lines):
+        ax_st.text(0.05, 0.92 - i * 0.16, line,
+                   ha="left", va="top", color=color,
+                   fontsize=8.5, transform=ax_st.transAxes)
+
+    # ── Save ──────────────────────────────────────────────────
+    buf = BytesIO()
+    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+                facecolor=BG, edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate and send the full visual market dashboard."""
+    await update.message.reply_text("Building dashboard… this takes ~10 seconds ⏳")
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        buf  = await loop.run_in_executor(None, build_dashboard_image)
+        await update.message.reply_photo(
+            photo=buf,
+            caption=(
+                f"📊 Live Dashboard — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
+                f"Indices • Sectors • Gainers/Losers • Squeeze • Crypto • Alerts"
+            )
+        )
+    except Exception as e:
+        logger.error(f"Dashboard error: {e}", exc_info=True)
+        await update.message.reply_text(f"Dashboard error: {e}")
+
+
+def send_dashboard_sync(label: str = ""):
+    """
+    Build the dashboard and push it to Telegram using the raw Bot API.
+    Safe to call from any background thread or scheduler (no async needed).
+    """
+    try:
+        buf = build_dashboard_image()
+        caption = f"📊 Dashboard — {label}  {datetime.now(CT).strftime('%I:%M %p CT')}"
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+            data={"chat_id": CHAT_ID, "caption": caption},
+            files={"photo": ("dashboard.png", buf, "image/png")},
+            timeout=30
+        )
+        if not resp.ok:
+            logger.error(f"Dashboard send failed ({label}): {resp.text}")
+        else:
+            logger.info(f"Dashboard sent: {label}")
+    except Exception as e:
+        logger.error(f"send_dashboard_sync error ({label}): {e}", exc_info=True)
+
+
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global monitoring_paused
     monitoring_paused = True
@@ -1123,6 +1586,7 @@ def send_morning_briefing():
         f"Top Sectors:\n" + "\n".join(sector_lines) + "\n\n"
         f"Grok:\n{ai}"
     )
+    send_dashboard_sync("Market Open")
 
 def send_daily_close_summary():
     logger.info("Daily close summary")
@@ -1135,6 +1599,7 @@ def send_daily_close_summary():
         f"Alerts today: {daily_alerts}\n\n"
         f"Grok Recap: {ai}"
     )
+    send_dashboard_sync("Market Close")
 
 def send_startup_message():
     session      = get_trading_session()
@@ -1147,11 +1612,24 @@ def send_startup_message():
         f"Spike threshold: {THRESHOLD*100:.0f}%\n"
         f"Check interval: {CHECK_INTERVAL_MIN} min\n\n"
         f"Grok: {ai_sentiment}\n\n"
-        f"Morning brief: 8:30 AM CT\n"
-        f"Daily close: 3:00 PM CT\n\n"
+        f"Dashboard auto-sends: startup, 8:30 AM, 12:00 PM, 3:00 PM CT\n"
         f"Type any question to chat with Grok AI!\n"
         f"Send /help for all commands."
     )
+    send_dashboard_sync("Startup")
+
+def send_midday_dashboard():
+    """12:00 PM CT mid-session dashboard snapshot."""
+    if get_trading_session() == "closed":
+        return
+    logger.info("Mid-day dashboard")
+    ai = get_grok_response(
+        f"Mid-session check: {daily_alerts} spike alerts so far today. "
+        f"One-sentence mid-day market read."
+    )
+    send_telegram(f"📊 Mid-Day Check-In\nAlerts so far: {daily_alerts}\nGrok: {ai}")
+    send_dashboard_sync("Mid-Day")
+
 
 # ============================================================
 # BACKGROUND SCANNER
@@ -1161,8 +1639,9 @@ def scanner_thread():
     schedule.every().day.at("08:30").do(
         lambda: globals().update(TICKERS=get_dynamic_hot_stocks())
     )
-    schedule.every().day.at("08:30").do(send_morning_briefing)
-    schedule.every().day.at("15:00").do(send_daily_close_summary)
+    schedule.every().day.at("08:30").do(send_morning_briefing)   # open + dashboard
+    schedule.every().day.at("12:00").do(send_midday_dashboard)   # mid-day dashboard
+    schedule.every().day.at("15:00").do(send_daily_close_summary) # close + dashboard
     while True:
         schedule.run_pending()
         time.sleep(10)
@@ -1197,6 +1676,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("setalert",    cmd_setalert))
     app.add_handler(CommandHandler("squeeze",     cmd_squeeze))
     app.add_handler(CommandHandler("rsi",         cmd_rsi))
+    app.add_handler(CommandHandler("dashboard",   cmd_dashboard))
     app.add_handler(CommandHandler("pause",       cmd_pause))
     app.add_handler(CommandHandler("resume",      cmd_resume))
 

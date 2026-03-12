@@ -7,3 +7,5 @@ pandas
 lxml
 python-telegram-bot
 html5lib
+matplotlib
+numpy
