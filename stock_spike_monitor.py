@@ -44,8 +44,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.10"
+BOT_VERSION = "1.11"
 RELEASE_NOTES = [
+    "1.11 — Smart Trading: trailing stops, adaptive thresholds, sector guards, earnings filter, /perf dashboard, /set config, signal learning, support/resistance, /paper chart, daily P&L.",
     "1.10 — News Sentiment Scoring: AI-powered news analysis now feeds into trading signals (component 10/10, up to 15 pts). /news shows sentiment + source timestamps.",
     "1.9 — Extended Hours Pricing: pre-market and after-hours prices from yfinance. Dashboard and quotes now show live extended session data.",
     "1.8 — Dashboard Sharpness: 220 DPI rendering, larger fonts, sent as document for crisp mobile viewing.",
@@ -238,9 +239,11 @@ BOT_DESCRIPTION = (
     " /paper positions  live P&L\n"
     " /paper trades     today's trades\n"
     " /paper history    win rate stats\n"
-    " /paper signal T   9-factor score\n"
+    " /paper signal T   10-factor score\n"
+    " /paper chart intraday value chart\n"
     " /paper log   download trade log\n"
     " /paper reset start over at $100k\n"
+    " /perf        performance dashboard\n"
     " /overnight   gap risk on holdings\n"
     "\n"
     "AI & TOOLS\n"
@@ -251,6 +254,7 @@ BOT_DESCRIPTION = (
     "\n"
     "BOT\n"
     " /list        monitored tickers\n"
+    " /set         adjust thresholds\n"
     " /monitoring  pause|resume|status\n"
     " /version     release notes\n"
     " /help        this menu\n"
@@ -1805,8 +1809,9 @@ def check_stocks():
 #   7. Grok AI Signal    — directional confidence 0-100, scaled = 15 pts
 #
 # Trade rules (bullish only, no shorts):
-#   • BUY  when composite ≥ PAPER_MIN_SIGNAL and RSI < 72 and cash available
-#   • SELL on 8% take-profit, 4% stop-loss, or signal collapse (≤30 + positive)
+#   • BUY  when composite ≥ adaptive threshold and RSI < 72 and cash available
+#   • SELL on 3% trailing stop from high-water, 6% hard stop from entry,
+#     10% take-profit, or signal collapse (≤30 + positive)
 #   • Max PAPER_MAX_ACTIONS actions per ticker per day
 #   • Max PAPER_MAX_POSITIONS open positions at once
 #   • Max PAPER_MAX_POS_PCT of total portfolio in a single name
@@ -1818,9 +1823,10 @@ PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
 PAPER_MAX_ACTIONS      = 3        # per ticker per trading day
 PAPER_MAX_POSITIONS    = 8        # simultaneous open positions
 PAPER_MAX_POS_PCT      = 0.20     # 20% of portfolio per position
-PAPER_TAKE_PROFIT_PCT  = 0.08     # 8% take-profit
-PAPER_STOP_LOSS_PCT    = 0.04     # 4% stop-loss
-PAPER_MIN_SIGNAL       = 65       # min composite score (0-100) to open a position
+PAPER_TRAILING_STOP_PCT = 0.03    # 3% trailing stop from high-water mark
+PAPER_STOP_LOSS_PCT     = 0.06    # 6% hard stop from entry (safety net)
+PAPER_TAKE_PROFIT_PCT   = 0.10    # 10% take-profit (wider to let winners run)
+PAPER_MIN_SIGNAL       = 65       # min composite score (0-140) to open a position
 
 # Bot-wide persistence (watchlists, alerts, tickers, conversation history …)
 # Set BOT_STATE_PATH env var to a Railway Volume path, e.g. /data/bot_state.json
@@ -1837,6 +1843,22 @@ paper_trades_today  = []
 paper_daily_counts  = {}
 paper_all_trades    = []
 paper_signals_cache = {}
+
+# ── Adaptive threshold cache (Feature #2) ──────────────────
+_adaptive_threshold_cache = {"val": 65, "ts": datetime.min.replace(tzinfo=CT)}
+
+# ── Portfolio snapshots for intraday chart (Feature #7) ────
+_portfolio_snapshots = []  # [(datetime, value), ...]
+_last_snapshot_time = datetime.min.replace(tzinfo=CT)
+
+# ── Morning value capture for daily P&L (Feature #6) ──────
+_paper_morning_value = None  # captured at 8:31 AM CT
+
+# ── Earnings cache (Feature #9) ──────────────────────────
+_earnings_cache = {}  # {ticker: {"has_earnings": bool, "ts": float}}
+
+# ── User config overrides (Feature #12) ──────────────────
+_user_config = {}
 
 _paper_save_lock = threading.Lock()
 
@@ -1891,6 +1913,11 @@ def load_paper_state():
         paper_cash       = float(state.get("paper_cash", PAPER_STARTING_CAPITAL))
         paper_positions  = state.get("paper_positions", {})
         paper_all_trades = state.get("paper_all_trades", [])
+
+        # Migrate existing positions: ensure each has a "high" key for trailing stop
+        for _t, _pos in paper_positions.items():
+            if "high" not in _pos:
+                _pos["high"] = max(_pos.get("avg_cost", 0), _pos.get("entry_price", _pos.get("avg_cost", 0)))
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -2106,6 +2133,126 @@ def _compute_macd(prices: list) -> tuple:
         hist = macd - sig if sig else 0
         return round(macd, 4), round(sig, 4), round(hist, 4)
     return round(macd, 4), None, None
+
+
+# ── Feature #2: Adaptive threshold ──────────────────────────
+def _get_adaptive_threshold() -> int:
+    """Adjust buy threshold based on market regime (F&G + VIX). Cached 5 min."""
+    global _adaptive_threshold_cache
+    now = datetime.now(CT)
+    if (now - _adaptive_threshold_cache["ts"]).total_seconds() < 300:
+        return _adaptive_threshold_cache["val"]
+
+    fg_val, _ = get_fear_greed()
+    fg = int(fg_val) if fg_val else 50
+
+    try:
+        vix_q = _finnhub_quote("^VIX") or {}
+        vix = vix_q.get("c", 20) or 20
+    except Exception:
+        vix = 20
+
+    base = PAPER_MIN_SIGNAL  # 65
+
+    # Fear & Greed adjustment
+    if fg >= 75:
+        base += 10
+    elif fg >= 60:
+        base += 5
+    elif fg <= 25:
+        base -= 10
+    elif fg <= 40:
+        base -= 5
+
+    # VIX adjustment
+    if vix >= 30:
+        base += 5
+    elif vix <= 15:
+        base -= 3
+
+    result = max(45, min(85, base))
+    logger.info(f"Adaptive threshold: {result} (F&G={fg}, VIX={vix:.1f})")
+    _adaptive_threshold_cache = {"val": result, "ts": now}
+    return result
+
+
+# ── Feature #4: Support/Resistance ──────────────────────────
+def _compute_support_resistance(ticker: str) -> dict:
+    """Compute basic support/resistance from daily candles."""
+    candles = daily_candles.get(ticker)
+    if not candles or len(candles) < 10:
+        return {"support": None, "resistance": None, "pivot": None}
+
+    highs = [c["high"] for c in candles[-20:]]
+    lows = [c["low"] for c in candles[-20:]]
+
+    resistance = max(highs)
+    support = min(lows)
+
+    last = candles[-1]
+    pivot = (last["high"] + last["low"] + last["close"]) / 3
+
+    return {
+        "support": round(support, 2),
+        "resistance": round(resistance, 2),
+        "pivot": round(pivot, 2),
+    }
+
+
+# ── Feature #5: Sector maps ────────────────────────────────
+TICKER_SECTORS = {
+    "AAPL": "Technology", "MSFT": "Technology", "GOOGL": "Technology",
+    "AMZN": "Consumer Discretionary", "META": "Technology", "NVDA": "Technology",
+    "TSLA": "Consumer Discretionary", "AMD": "Technology", "INTC": "Technology",
+    "NFLX": "Communication", "DIS": "Communication",
+    "JPM": "Financials", "BAC": "Financials", "GS": "Financials",
+    "XOM": "Energy", "CVX": "Energy", "COP": "Energy",
+    "JNJ": "Healthcare", "UNH": "Healthcare", "PFE": "Healthcare",
+    "BA": "Industrials", "CAT": "Industrials", "GE": "Industrials",
+    "WMT": "Consumer Staples", "PG": "Consumer Staples", "KO": "Consumer Staples",
+    "AVGO": "Technology", "QCOM": "Technology", "MU": "Technology",
+    "ARM": "Technology", "SMCI": "Technology", "PLTR": "Technology",
+    "SOFI": "Financials", "HIMS": "Healthcare",
+    "RIVN": "Consumer Discretionary", "NIO": "Consumer Discretionary",
+    "LCID": "Consumer Discretionary", "MARA": "Financials",
+    "AMC": "Communication", "GME": "Consumer Discretionary",
+    "BYND": "Consumer Staples", "AAL": "Industrials",
+}
+
+SECTOR_ETF = {
+    "Technology": "XLK", "Financials": "XLF", "Energy": "XLE",
+    "Healthcare": "XLV", "Industrials": "XLI", "Communication": "XLC",
+    "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
+    "Materials": "XLB", "Real Estate": "XLRE", "Utilities": "XLU",
+}
+
+
+# ── Feature #9: Earnings proximity guard ────────────────────
+def _has_upcoming_earnings(ticker: str, days: int = 2) -> bool:
+    """Check if ticker has earnings within N days. Cached 12 hours."""
+    now = time.time()
+    cached = _earnings_cache.get(ticker)
+    if cached and (now - cached["ts"]) < 43200:  # 12 hours
+        return cached["has_earnings"]
+
+    result = False
+    try:
+        today = datetime.now(CT).date()
+        end = today + timedelta(days=days)
+        if FINNHUB_TOKEN and _finnhub_limiter.acquire(timeout=2):
+            r = requests.get(
+                f"https://finnhub.io/api/v1/calendar/earnings"
+                f"?from={today}&to={end}&symbol={ticker}&token={FINNHUB_TOKEN}",
+                timeout=5
+            )
+            if r.status_code == 200:
+                cal = r.json().get("earningsCalendar", [])
+                result = any(e.get("symbol") == ticker for e in cal)
+    except Exception as e:
+        logger.debug(f"Earnings check {ticker}: {e}")
+
+    _earnings_cache[ticker] = {"has_earnings": result, "ts": now}
+    return result
 
 
 def compute_paper_signal(ticker: str) -> dict:
@@ -2360,8 +2507,25 @@ def compute_paper_signal(ticker: str) -> dict:
     except Exception as e:
         logger.debug(f"News sentiment error for {ticker}: {e}")
 
+    # ── Feature #4: Support/Resistance modifier (±5 pts) ────────
+    try:
+        sr = _compute_support_resistance(ticker)
+        cur_price, _, _ = fetch_finnhub_quote(ticker)
+        if sr["resistance"] and sr["support"] and cur_price:
+            comps["support"] = sr["support"]
+            comps["resistance"] = sr["resistance"]
+            comps["pivot"] = sr.get("pivot")
+            if sr["resistance"] > 0 and abs(cur_price - sr["resistance"]) / sr["resistance"] <= 0.01:
+                score -= 5
+                detail.append(f"NearResist(-5)")
+            elif sr["support"] > 0 and abs(cur_price - sr["support"]) / sr["support"] <= 0.01 and cur_price > sr["support"]:
+                score += 5
+                detail.append(f"NearSupport(+5)")
+    except Exception as e:
+        logger.debug(f"S/R modifier {ticker}: {e}")
+
     result = {
-        "score":   round(min(score, 140), 1),  # max 140 with 10 components
+        "score":   round(min(score, 140), 1),
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -2441,7 +2605,11 @@ def paper_evaluate_ticker(ticker: str):
             sell_reason = f"TAKE-PROFIT +{pnl_pct*100:.1f}%"
         elif pnl_pct <= -PAPER_STOP_LOSS_PCT:
             should_sell = True
-            sell_reason = f"STOP-LOSS {pnl_pct*100:.1f}%"
+            sell_reason = f"HARD-STOP {pnl_pct*100:.1f}%"
+        elif price <= pos.get("high", cost) * (1 - PAPER_TRAILING_STOP_PCT):
+            should_sell = True
+            peak_pnl = ((pos.get("high", cost) - cost) / cost) * 100
+            sell_reason = f"TRAILING-STOP {pnl_pct*100:+.1f}% (peak +{peak_pnl:.1f}%)"
         else:
             sig = compute_paper_signal(ticker)
             if sig["score"] <= 30 and pnl_pct > 0:
@@ -2494,7 +2662,8 @@ def paper_evaluate_ticker(ticker: str):
             pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
             reason_map = {
                 "TAKE-PROFIT": "✅ Take-profit hit",
-                "STOP-LOSS":   "🛑 Stop-loss triggered",
+                "HARD-STOP":   "🛑 Hard stop triggered",
+                "TRAILING-STOP": "📉 Trailing stop hit",
                 "SIGNAL-COLLAPSE": "📉 Signal deteriorated",
             }
             reason_label = next(
@@ -2528,11 +2697,49 @@ def paper_evaluate_ticker(ticker: str):
         return
 
     sig = compute_paper_signal(ticker)
-    if sig["score"] < PAPER_MIN_SIGNAL:
+    threshold = _get_adaptive_threshold()
+    if sig["score"] < threshold:
         return
 
     rsi = sig.get("rsi")
     if rsi and rsi > 72:   # avoid chasing overbought
+        return
+
+    # Feature #8: Sector concentration guard — max 2 per sector
+    ticker_sector = TICKER_SECTORS.get(ticker)
+    if ticker_sector:
+        same_sector = sum(1 for t in paper_positions
+                          if TICKER_SECTORS.get(t) == ticker_sector)
+        if same_sector >= 2:
+            logger.debug(f"Skip {ticker}: already 2 positions in {ticker_sector}")
+            return
+
+    # Feature #5: Sector rotation — check sector ETF performance
+    if ticker_sector:
+        etf = SECTOR_ETF.get(ticker_sector)
+        if etf:
+            try:
+                etf_price, _, _ = fetch_finnhub_quote(etf)
+                etf_prev = _finnhub_quote(etf)
+                if etf_price and etf_prev:
+                    pc = etf_prev.get("pc") or etf_prev.get("c")
+                    if pc and pc > 0:
+                        sector_chg = (etf_price - pc) / pc * 100
+                        if sector_chg < -1.5:
+                            sig["score"] = sig["score"] - 5
+                            logger.debug(f"{ticker}: sector {ticker_sector} down {sector_chg:.1f}%, -5pts")
+                        elif sector_chg > 1.0:
+                            sig["score"] = sig["score"] + 3
+                            logger.debug(f"{ticker}: sector {ticker_sector} up {sector_chg:.1f}%, +3pts")
+            except Exception as e:
+                logger.debug(f"Sector check {ticker}: {e}")
+        # Re-check threshold after sector adjustment
+        if sig["score"] < threshold:
+            return
+
+    # Feature #9: Earnings proximity guard
+    if _has_upcoming_earnings(ticker):
+        logger.info(f"Skip BUY {ticker}: earnings within 2 days")
         return
 
     shares = _paper_position_size(ticker, sig["score"])
@@ -2580,6 +2787,7 @@ def paper_evaluate_ticker(ticker: str):
     lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
     tp_price     = price * (1 + PAPER_TAKE_PROFIT_PCT)
     sl_price     = price * (1 - PAPER_STOP_LOSS_PCT)
+    trail_price  = price * (1 - PAPER_TRAILING_STOP_PCT)
 
     # Readable signal summary
     sig_lines = []
@@ -2626,9 +2834,10 @@ def paper_evaluate_ticker(ticker: str):
         f"Shares:    {shares} @ ${price:.2f}\n"
         f"Cost:      ${cost:,.0f}\n"
         f"Target:    ${tp_price:.2f} (+{PAPER_TAKE_PROFIT_PCT*100:.0f}%)\n"
-        f"Stop:      ${sl_price:.2f} (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
+        f"Trail:     ${trail_price:.2f} (-{PAPER_TRAILING_STOP_PCT*100:.0f}% from peak)\n"
+        f"Hard Stop: ${sl_price:.2f} (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
         f"{'─'*28}\n"
-        f"Signal:    {sig['score']:.0f}/140\n"
+        f"Signal:    {sig['score']:.0f}/140 (thresh={threshold})\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
         + news_catalyst_line
@@ -2661,13 +2870,59 @@ def paper_scan():
             logger.error(f"paper_evaluate_ticker({ticker}): {e}")
 
 
+def _analyze_signal_effectiveness():
+    """Analyze which signal components predicted winning trades."""
+    sells = [t for t in paper_all_trades if t["action"] == "SELL"]
+    if len(sells) < 5:
+        return  # not enough data
+
+    winners = [t for t in sells if t.get("pnl", 0) > 0]
+    losers = [t for t in sells if t.get("pnl", 0) <= 0]
+
+    if not winners and not losers:
+        return
+
+    win_rate = len(winners) / len(sells) * 100
+    avg_win = sum(t["pnl"] for t in winners) / len(winners) if winners else 0
+    avg_loss = sum(t["pnl"] for t in losers) / len(losers) if losers else 0
+
+    trade_summary = f"Win rate: {win_rate:.0f}%, Avg win: ${avg_win:.2f}, Avg loss: ${avg_loss:.2f}, Total sells: {len(sells)}"
+
+    recent = paper_all_trades[-20:]
+    trade_details = []
+    for t in recent:
+        detail = t.get("signal_detail", "")
+        pnl = t.get("pnl", t.get("pnl_pct", ""))
+        trade_details.append(f"{t['action']} {t['ticker']} sig={t.get('signal_score','?')} pnl={pnl} {detail}")
+
+    prompt = (
+        f"Analyze these paper trading results and identify patterns.\n"
+        f"Overall: {trade_summary}\n"
+        f"Recent trades:\n" + "\n".join(trade_details[-15:]) + "\n\n"
+        f"In 3-4 bullet points, identify:\n"
+        f"1. Which signal components (RSI, MACD, Volume, News, etc) correlate with winners?\n"
+        f"2. Any patterns in losing trades (time of day, specific conditions)?\n"
+        f"3. One specific actionable suggestion to improve.\n"
+        f"Be concise, data-driven."
+    )
+    analysis = get_ai_response(prompt, max_tokens=300)
+
+    logger.info(f"Signal analysis: {analysis[:200]}")
+
+    # Only send to Telegram on Fridays (weekly learning report)
+    if datetime.now(CT).weekday() == 4:  # Friday
+        send_telegram(f"WEEKLY SIGNAL ANALYSIS\n\n{trade_summary}\n\n{analysis}")
+
+
 def paper_morning_report():
     """Send portfolio snapshot at market open."""
-    global paper_trades_today, paper_daily_counts
+    global paper_trades_today, paper_daily_counts, _paper_morning_value, _portfolio_snapshots
     paper_trades_today = []
+    _portfolio_snapshots = []  # clear daily snapshots
     paper_daily_counts = {}
 
     val      = paper_portfolio_value()
+    _paper_morning_value = val  # capture for daily P&L calc
     starting = PAPER_STARTING_CAPITAL
     total_pnl = val - starting
     total_pct = total_pnl / starting * 100
@@ -2700,6 +2955,24 @@ def paper_morning_report():
     else:
         lines.append("No open positions — scanning for entries.")
 
+    # Feature #11: Stale position warnings
+    stale = []
+    for _ticker, _pos in paper_positions.items():
+        entry_date = _pos.get("entry_date")
+        if entry_date:
+            try:
+                days_held = (datetime.now(CT).date() - datetime.strptime(entry_date, "%Y-%m-%d").date()).days
+                if days_held >= 3:
+                    _sig = compute_paper_signal(_ticker)
+                    if _sig["score"] < 50:
+                        stale.append(f"  {_ticker} held {days_held}d, sig={_sig['score']:.0f}")
+            except (ValueError, TypeError):
+                pass
+    if stale:
+        lines.append("")
+        lines.append("STALE POSITIONS:")
+        lines.extend(stale)
+
     report = "\n".join(lines)
     paper_log(f"=== MORNING REPORT ===\n{report}")
     send_telegram(report)
@@ -2717,6 +2990,27 @@ def paper_eod_report():
     sells = [t for t in paper_trades_today if t["action"] == "SELL"]
     day_realized = sum(t.get("pnl", 0) for t in sells)
 
+    # Feature #6: Today's portfolio change from morning
+    today_change_line = ""
+    if _paper_morning_value and _paper_morning_value > 0:
+        day_chg = val - _paper_morning_value
+        day_chg_pct = day_chg / _paper_morning_value * 100
+        today_change_line = f"Today's Change:  ${day_chg:>+12,.2f} ({day_chg_pct:+.2f}%)"
+
+    # Best/worst position of the day (unrealized)
+    best_pos = worst_pos = ""
+    if paper_positions:
+        pos_pnls = []
+        for _t, _p in paper_positions.items():
+            _pr, _, _ = fetch_finnhub_quote(_t)
+            if _pr:
+                _pnl_pct = (_pr - _p["avg_cost"]) / _p["avg_cost"] * 100
+                pos_pnls.append((_t, _pnl_pct))
+        if pos_pnls:
+            pos_pnls.sort(key=lambda x: x[1])
+            best_pos = f"Best:  {pos_pnls[-1][0]} {pos_pnls[-1][1]:+.1f}%"
+            worst_pos = f"Worst: {pos_pnls[0][0]} {pos_pnls[0][1]:+.1f}%"
+
     lines = [
         f"PAPER PORTFOLIO — Market Close",
         f"{datetime.now(CT).strftime('%A %B %d, %Y')}",
@@ -2724,11 +3018,19 @@ def paper_eod_report():
         f"Total Value:     ${val:>12,.2f}",
         f"All-Time P&L:    ${total_pnl:>+12,.2f} ({total_pct:+.2f}%)",
         f"Today Realized:  ${day_realized:>+12,.2f}",
+    ]
+    if today_change_line:
+        lines.append(today_change_line)
+    lines.extend([
         f"Cash:            ${paper_cash:>12,.2f}",
+    ])
+    if best_pos:
+        lines.append(f"{best_pos} | {worst_pos}")
+    lines.extend([
         f"",
         f"TODAY'S TRADES ({len(paper_trades_today)} total  "
         f"↑{len(buys)} buys  ↓{len(sells)} sells):",
-    ]
+    ])
 
     for t in paper_trades_today:
         if t["action"] == "BUY":
@@ -2762,10 +3064,71 @@ def paper_eod_report():
     else:
         lines.append("  (all positions closed)")
 
+    # Feature #11: Stale position warnings in EOD
+    stale = []
+    for _ticker, _pos in paper_positions.items():
+        entry_date = _pos.get("entry_date")
+        if entry_date:
+            try:
+                days_held = (datetime.now(CT).date() - datetime.strptime(entry_date, "%Y-%m-%d").date()).days
+                if days_held >= 3:
+                    _sig = compute_paper_signal(_ticker)
+                    if _sig["score"] < 50:
+                        stale.append(f"  {_ticker} held {days_held}d, sig={_sig['score']:.0f}")
+            except (ValueError, TypeError):
+                pass
+    if stale:
+        lines.append("")
+        lines.append("STALE POSITIONS:")
+        lines.extend(stale)
+
     report = "\n".join(lines)
     paper_log(f"=== EOD REPORT ===\n{report}")
     send_telegram(report)
     save_paper_state()   # persist end-of-day snapshot
+
+
+def send_daily_pnl_summary():
+    """Send compact daily P&L summary at 16:05 CT."""
+    val = paper_portfolio_value()
+    sells = [t for t in paper_trades_today if t["action"] == "SELL"]
+    buys = [t for t in paper_trades_today if t["action"] == "BUY"]
+    today_realized = sum(t.get("pnl", 0) for t in sells)
+    today_winners = [t for t in sells if t.get("pnl", 0) > 0]
+    today_win_rate = len(today_winners) / len(sells) * 100 if sells else 0
+
+    # Today's change
+    today_chg = ""
+    if _paper_morning_value and _paper_morning_value > 0:
+        chg = val - _paper_morning_value
+        today_chg = f" ({chg:+$,.0f} today)"
+
+    # Best/worst unrealized
+    best = worst = ""
+    if paper_positions:
+        pos_pnls = []
+        for _t, _p in paper_positions.items():
+            _pr, _, _ = fetch_finnhub_quote(_t)
+            if _pr:
+                _pnl_pct = (_pr - _p["avg_cost"]) / _p["avg_cost"] * 100
+                pos_pnls.append((_t, _pnl_pct))
+        if pos_pnls:
+            pos_pnls.sort(key=lambda x: x[1])
+            best = f"{pos_pnls[-1][0]} {pos_pnls[-1][1]:+.1f}%"
+            worst = f"{pos_pnls[0][0]} {pos_pnls[0][1]:+.1f}%"
+
+    lines = [
+        f"TODAY'S P&L SUMMARY",
+        f"Portfolio: ${val:,.0f}{today_chg}",
+        f"Trades: {len(buys)} buys, {len(sells)} sells",
+        f"Realized: ${today_realized:+,.2f}",
+    ]
+    if best and worst:
+        lines.append(f"Best: {best} | Worst: {worst}")
+    if sells:
+        lines.append(f"Win rate (today): {today_win_rate:.1f}%")
+
+    send_telegram("\n".join(lines))
 
 
 # ── Paper Trading Telegram Commands ───────────────────────────
@@ -2777,6 +3140,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /paper trades           — today's trade log
     /paper history          — all-time trade summary
     /paper signal TICK      — show current signal breakdown for a ticker
+    /paper chart            — intraday portfolio value chart
     /paper log              — send investment.log as a file download
     /paper reset            — reset portfolio to $100k (with confirmation)
     """
@@ -2839,13 +3203,19 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pnl   = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
             unrealized = (price - pos["avg_cost"]) * pos["shares"]
             arrow = "+" if pnl >= 0 else "-"
+            days_held = ""
+            try:
+                dh = (datetime.now(CT).date() - datetime.strptime(pos.get("entry_date", ""), "%Y-%m-%d").date()).days
+                days_held = f"  Held: {dh}d"
+            except (ValueError, TypeError):
+                pass
             lines += [
                 f"",
                 f"{arrow} {ticker}",
                 f"  Shares: {pos['shares']}  Entry: ${pos['avg_cost']:.2f}  Now: ${price:.2f}",
                 f"  Unrealized: ${unrealized:+.2f} ({pnl:+.1f}%)",
                 f"  Market value: ${mkt:,.2f}",
-                f"  Entry: {pos['entry_date']} {pos['entry_time']}",
+                f"  Entry: {pos['entry_date']} {pos['entry_time']}{days_held}",
             ]
         await update.message.reply_text("\n".join(lines))
 
@@ -2997,6 +3367,65 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not sent:
             await update.message.reply_text("No log files found yet — no trades recorded.")
 
+    # ── /paper chart ──────────────────────────────────────────
+    elif sub == "chart":
+        if len(_portfolio_snapshots) < 2:
+            await update.message.reply_text("Not enough data yet — snapshots collected every 5 min during market hours.")
+            return
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+
+            times = [s[0] for s in _portfolio_snapshots]
+            values = [s[1] for s in _portfolio_snapshots]
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            fig.patch.set_facecolor("#1a1a2e")
+            ax.set_facecolor("#16213e")
+
+            ax.plot(times, values, color="#00d4ff", linewidth=2)
+            ax.fill_between(times, values, alpha=0.15, color="#00d4ff")
+
+            # Starting capital line
+            ax.axhline(y=PAPER_STARTING_CAPITAL, color="#555555", linestyle="--", linewidth=1, label="$100k start")
+
+            # Mark BUY/SELL points
+            for t in paper_trades_today:
+                try:
+                    t_time = datetime.strptime(f"{t['date']} {t['time']}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
+                    t_val = t.get("portfolio_value", PAPER_STARTING_CAPITAL)
+                    color = "#00ff88" if t["action"] == "BUY" else "#ff4444"
+                    ax.plot(t_time, t_val, "o", color=color, markersize=6, zorder=5)
+                except (ValueError, KeyError):
+                    pass
+
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"${x:,.0f}"))
+            ax.tick_params(colors="white")
+            ax.set_xlabel("Time (CT)", color="white")
+            ax.set_ylabel("Portfolio Value", color="white")
+            ax.set_title(f"Paper Portfolio — {datetime.now(CT).strftime('%Y-%m-%d')}", color="white", fontsize=14)
+            ax.spines["bottom"].set_color("#444")
+            ax.spines["left"].set_color("#444")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.grid(True, alpha=0.2, color="#444")
+
+            buf = BytesIO()
+            fig.savefig(buf, format="png", dpi=220, bbox_inches="tight", facecolor=fig.get_facecolor())
+            plt.close(fig)
+            buf.seek(0)
+
+            await update.message.reply_document(
+                document=buf,
+                filename=f"paper_portfolio_{datetime.now(CT).strftime('%Y%m%d')}.png",
+                caption=f"Portfolio: ${values[-1]:,.0f} | Snapshots: {len(values)}"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Chart error: {e}")
+
     # ── /paper reset ──────────────────────────────────────────
     elif sub == "reset":
         if arg2 == "CONFIRM":
@@ -3028,9 +3457,111 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  /paper trades        — today's actions\n"
             "  /paper history       — all-time performance\n"
             "  /paper signal TICK   — signal breakdown for any stock\n"
+            "  /paper chart         — intraday portfolio chart\n"
             "  /paper log           — download investment.log\n"
-            "  /paper reset         — reset to $100,000"
+            "  /paper reset         — reset to $100,000\n"
+            "  /perf                — performance dashboard\n"
+            "  /set                 — adjust thresholds"
         )
+
+
+async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """One-screen performance dashboard."""
+    val = paper_portfolio_value()
+    starting = PAPER_STARTING_CAPITAL
+    total_pnl = val - starting
+    total_pct = total_pnl / starting * 100
+
+    sells = [t for t in paper_all_trades if t["action"] == "SELL"]
+    winners = [t for t in sells if t.get("pnl", 0) > 0]
+    win_rate = len(winners) / len(sells) * 100 if sells else 0
+
+    today_sells = [t for t in paper_trades_today if t["action"] == "SELL"]
+    today_buys = [t for t in paper_trades_today if t["action"] == "BUY"]
+    today_pnl = sum(t.get("pnl", 0) for t in today_sells)
+
+    pos_lines = []
+    for t, pos in paper_positions.items():
+        price, _, _ = fetch_finnhub_quote(t)
+        if price:
+            pnl = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
+            icon = "+" if pnl >= 0 else "-"
+            pos_lines.append(f"{icon}{t} {pnl:+.1f}%")
+
+    threshold = _get_adaptive_threshold()
+
+    lines = [
+        f"PERFORMANCE DASHBOARD",
+        f"{'─'*31}",
+        f"Portfolio:  ${val:>10,.0f}",
+        f"All-Time:   {total_pct:>+9.2f}%",
+        f"Today P&L:  ${today_pnl:>+10,.2f}",
+        f"{'─'*31}",
+        f"Win Rate:   {win_rate:>9.1f}%",
+        f"Trades:     {len(paper_all_trades):>9}",
+        f"Open:       {len(paper_positions):>9}/{PAPER_MAX_POSITIONS}",
+        f"Cash:       ${paper_cash:>10,.0f}",
+        f"Threshold:  {threshold:>9}/140",
+        f"{'─'*31}",
+    ]
+
+    if pos_lines:
+        lines.append("POSITIONS:")
+        lines.append(" ".join(pos_lines[:8]))
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Adjust key trading parameters via Telegram."""
+    global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
+    global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
+
+    args = context.args
+    if not args:
+        lines = [
+            "CONFIGURABLE SETTINGS",
+            f"",
+            f"stop_loss    {PAPER_STOP_LOSS_PCT*100:.0f}%",
+            f"take_profit  {PAPER_TAKE_PROFIT_PCT*100:.0f}%",
+            f"trailing     {PAPER_TRAILING_STOP_PCT*100:.0f}%",
+            f"max_positions {PAPER_MAX_POSITIONS}",
+            f"threshold    {PAPER_MIN_SIGNAL}  (base)",
+            f"",
+            f"Usage: /set <param> <value>",
+            f"Example: /set stop_loss 5",
+        ]
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /set <param> <value>")
+        return
+
+    param = args[0].lower()
+    try:
+        value = float(args[1])
+    except ValueError:
+        await update.message.reply_text("Value must be a number.")
+        return
+
+    if param == "stop_loss" and 1 <= value <= 20:
+        PAPER_STOP_LOSS_PCT = value / 100
+        await update.message.reply_text(f"Stop loss set to {value:.0f}%")
+    elif param == "take_profit" and 1 <= value <= 50:
+        PAPER_TAKE_PROFIT_PCT = value / 100
+        await update.message.reply_text(f"Take profit set to {value:.0f}%")
+    elif param == "trailing" and 1 <= value <= 15:
+        PAPER_TRAILING_STOP_PCT = value / 100
+        await update.message.reply_text(f"Trailing stop set to {value:.0f}%")
+    elif param == "max_positions" and 1 <= value <= 20:
+        PAPER_MAX_POSITIONS = int(value)
+        await update.message.reply_text(f"Max positions set to {int(value)}")
+    elif param == "threshold" and 30 <= value <= 100:
+        PAPER_MIN_SIGNAL = int(value)
+        await update.message.reply_text(f"Base threshold set to {int(value)}")
+    else:
+        await update.message.reply_text(f"Unknown param or invalid range: {param}={value}")
 
 
 # ============================================================
@@ -3125,11 +3656,17 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         range_str = (f"52w High ${high52:.2f} ({pct_from_high:+.1f}% from high), 52w Low ${low52:.2f}"
                      if high52 and low52 else "52w range unavailable")
 
+        # Feature #4: Include support/resistance levels
+        sr = _compute_support_resistance(ticker)
+        sr_str = ""
+        if sr.get("support") and sr.get("resistance"):
+            sr_str = f" Support ${sr['support']:.2f}, Resistance ${sr['resistance']:.2f}, Pivot ${sr.get('pivot', 0):.2f}."
+
         prompt = (
             f"{'Last-close analysis' if note else 'Analysis'} of {ticker}: "
             f"Price ${price:.2f} ({chg:+.2f}%), "
             f"Mkt Cap ${mcap:.1f}B, Volume {vol:,}, "
-            f"{range_str}. "
+            f"{range_str}.{sr_str} "
             f"Recent news: {news_str}. "
             f"{'Market is closed — focus on setup for next session. ' if note else ''}"
             f"Provide: (1) technical assessment (2) near-term catalyst (3) key risk. Be specific."
@@ -3138,6 +3675,9 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         range_display = (f"${low52:.2f} - ${high52:.2f}" if high52 and low52 else "n/a")
         pct_display   = (f"{pct_from_high:+.1f}%" if high52 else "n/a")
+        sr_display = ""
+        if sr.get("support") and sr.get("resistance"):
+            sr_display = f"\nSupport:      ${sr['support']:.2f}\nResistance:   ${sr['resistance']:.2f}"
 
         await update.message.reply_text(
             f"{ticker} Analysis{f'  {note}' if note else ''}\n"
@@ -3145,7 +3685,8 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Mkt Cap:      ${mcap:.1f}B\n"
             f"Volume:       {vol:,}\n"
             f"52w Range:    {range_display}\n"
-            f"From 52w High: {pct_display}\n\n"
+            f"From 52w High: {pct_display}"
+            f"{sr_display}\n\n"
             f"Claude Analysis:\n{ai}"
         )
     except Exception as e:
@@ -5482,6 +6023,8 @@ def scanner_thread():
         ("daily",        "14:30",  lambda: ai_refresh_watchlist(mode="intraday")),
         ("daily",        "15:00",  send_daily_close_summary),
         ("daily",        "15:01",  paper_eod_report),
+        ("daily",        "15:05",  _analyze_signal_effectiveness),
+        ("daily",        "16:05",  send_daily_pnl_summary),
         ("daily",        "18:00",  send_evening_recap),
         ("sunday",       "18:00",  send_weekly_digest),
         ("saturday",     "09:00",  send_saturday_prep),
@@ -5535,6 +6078,16 @@ def scanner_thread():
             except Exception as e:
                 logger.error(f"check_stocks error: {e}", exc_info=True)
 
+        # ── Feature #7: Portfolio snapshot every 5 minutes during market ──
+        if get_trading_session() in ("regular", "extended"):
+            snap_elapsed = (now_ct - _last_snapshot_time).total_seconds() / 60
+            if snap_elapsed >= 5:
+                globals()["_last_snapshot_time"] = now_ct
+                try:
+                    _portfolio_snapshots.append((now_ct, paper_portfolio_value()))
+                except Exception:
+                    pass
+
         # ── Periodic state persistence — every 5 minutes ─────
         state_elapsed = (now_ct - last_state_save).total_seconds() / 60
         if state_elapsed >= 5:
@@ -5585,6 +6138,8 @@ def run_telegram_bot():
 
     # ── Paper Trading ─────────────────────────────────────────
     app.add_handler(CommandHandler("paper",       cmd_paper))
+    app.add_handler(CommandHandler("perf",        cmd_perf))
+    app.add_handler(CommandHandler("set",         cmd_set))
     app.add_handler(CommandHandler("overnight",   cmd_overnight))
     app.add_handler(CommandHandler("aistocks",    cmd_aistocks))
 
