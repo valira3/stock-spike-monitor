@@ -1079,12 +1079,45 @@ def paper_evaluate_ticker(ticker: str):
                 f"Portfolio: ${paper_portfolio_value():,.0f}"
             )
             paper_log(msg)
+
+            # ── Enriched SELL notification ─────────────────────
+            hold_mins = ""
+            try:
+                entry_dt = datetime.strptime(
+                    f"{pos.get('entry_date', today)} {pos.get('entry_time', '00:00:00')}",
+                    "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=CT)
+                held = int((now - entry_dt).total_seconds() / 60)
+                hold_mins = f"{held}m" if held < 60 else f"{held//60}h {held%60}m"
+            except:
+                pass
+
+            pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
+            reason_map = {
+                "TAKE-PROFIT": "✅ Take-profit hit",
+                "STOP-LOSS":   "🛑 Stop-loss triggered",
+                "SIGNAL-COLLAPSE": "📉 Signal deteriorated",
+            }
+            reason_label = next(
+                (v for k, v in reason_map.items() if k in sell_reason), sell_reason
+            )
+
+            new_val     = paper_portfolio_value()
+            lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
+
             send_telegram(
-                f"📉 Paper SELL: {ticker}\n"
-                f"{shares} shares @ ${price:.2f}\n"
-                f"P&L: ${realized_pnl:+.2f} ({pnl_pct*100:+.1f}%)\n"
-                f"Reason: {sell_reason}\n"
-                f"Portfolio value: ${paper_portfolio_value():,.0f}"
+                f"{pnl_emoji} PAPER SELL — {ticker}\n"
+                f"{'─'*28}\n"
+                f"Shares:    {shares} @ ${price:.2f}\n"
+                f"Entry:     ${pos['avg_cost']:.2f}"
+                + (f"  (held {hold_mins})" if hold_mins else "") + "\n"
+                f"P&L:       ${realized_pnl:+.2f}  ({pnl_pct*100:+.1f}%)\n"
+                f"Reason:    {reason_label}\n"
+                f"{'─'*28}\n"
+                f"Cash:      ${paper_cash:,.0f}\n"
+                f"Positions: {len(paper_positions)}/{PAPER_MAX_POSITIONS}\n"
+                f"Portfolio: ${new_val:,.0f}  ({lifetime_pct:+.2f}% all-time)\n"
+                f"Trades today: {len(paper_trades_today)}"
             )
             save_paper_state()
         return  # one action per scan cycle per ticker
@@ -1136,12 +1169,43 @@ def paper_evaluate_ticker(ticker: str):
         f"Portfolio: ${paper_portfolio_value():,.0f}"
     )
     paper_log(msg)
+
+    # ── Enriched BUY notification ──────────────────────────────
+    c            = sig["comps"]
+    new_val      = paper_portfolio_value()
+    lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
+    tp_price     = price * (1 + PAPER_TAKE_PROFIT_PCT)
+    sl_price     = price * (1 - PAPER_STOP_LOSS_PCT)
+
+    # Readable signal summary
+    sig_lines = []
+    if c.get("rsi"):
+        sig_lines.append(f"RSI {c['rsi']:.0f} ({c.get('rsi_pts',0)}pts)")
+    if c.get("macd") is not None:
+        sig_lines.append(f"MACD {c['macd']:+.4f} ({c.get('macd_pts',0)}pts)")
+    if c.get("vol_ratio"):
+        sig_lines.append(f"Vol {c['vol_ratio']:.1f}x avg ({c.get('vol_pts',0)}pts)")
+    if c.get("grok_signal"):
+        sig_lines.append(
+            f"Grok {c['grok_signal']} conf={c.get('grok_confidence','?')} ({c.get('grok_pts',0)}pts)"
+        )
+
     send_telegram(
-        f"📈 Paper BUY: {ticker}\n"
-        f"{shares} shares @ ${price:.2f}  (${cost:,.0f})\n"
-        f"Signal: {sig['score']:.0f}/100\n"
-        f"{sig['detail']}\n"
-        f"Portfolio value: ${paper_portfolio_value():,.0f}"
+        f"📈 PAPER BUY — {ticker}\n"
+        f"{'─'*28}\n"
+        f"Shares:    {shares} @ ${price:.2f}\n"
+        f"Cost:      ${cost:,.0f}\n"
+        f"Target:    ${tp_price:.2f} (+{PAPER_TAKE_PROFIT_PCT*100:.0f}%)\n"
+        f"Stop:      ${sl_price:.2f} (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
+        f"{'─'*28}\n"
+        f"Signal:    {sig['score']:.0f}/100\n"
+        + "\n".join(f"  · {l}" for l in sig_lines) + "\n"
+        + (f"  · {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
+        + f"{'─'*28}\n"
+        f"Cash left: ${paper_cash:,.0f}\n"
+        f"Positions: {len(paper_positions)}/{PAPER_MAX_POSITIONS}\n"
+        f"Portfolio: ${new_val:,.0f}  ({lifetime_pct:+.2f}% all-time)\n"
+        f"Trades today: {len(paper_trades_today)}"
     )
     save_paper_state()
 
