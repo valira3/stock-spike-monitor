@@ -79,6 +79,107 @@ else:
     logger.warning("AI: No AI client available — set ANTHROPIC_API_KEY in Railway")
 
 # ============================================================
+# FINNHUB RATE LIMITER + RESPONSE CACHE
+# ============================================================
+# Token-bucket rate limiter: 55 calls/min safety margin (API limit: 60/min)
+# All Finnhub API calls MUST go through finnhub_rate_limit() before making
+# the HTTP request.  The cache avoids duplicate calls for the same data.
+
+class _FinnhubRateLimiter:
+    """Thread-safe token-bucket rate limiter for Finnhub API."""
+    def __init__(self, max_calls: int = 55, period: float = 60.0):
+        self._max_calls = max_calls
+        self._period = period
+        self._lock = threading.Lock()
+        self._tokens = float(max_calls)
+        self._last_refill = time.monotonic()
+        self._total_calls = 0
+        self._limited_calls = 0
+
+    def acquire(self, timeout: float = 30.0) -> bool:
+        """Block until a token is available or timeout. Returns True if acquired."""
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                self._refill()
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    self._total_calls += 1
+                    return True
+            # No token — wait a bit and retry
+            if time.monotonic() >= deadline:
+                with self._lock:
+                    self._limited_calls += 1
+                logger.warning("Finnhub rate limiter: timeout waiting for token")
+                return False
+            time.sleep(0.5)
+
+    def _refill(self):
+        """Refill tokens based on elapsed time (must hold lock)."""
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        new_tokens = elapsed * (self._max_calls / self._period)
+        self._tokens = min(self._max_calls, self._tokens + new_tokens)
+        self._last_refill = now
+
+    @property
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "total_calls": self._total_calls,
+                "limited_calls": self._limited_calls,
+                "tokens_available": round(self._tokens, 1),
+            }
+
+_finnhub_limiter = _FinnhubRateLimiter(max_calls=55, period=60.0)
+
+
+class _TTLCache:
+    """Thread-safe TTL cache for API responses."""
+    def __init__(self, ttl_seconds: float = 45.0, max_size: int = 500):
+        self._ttl = ttl_seconds
+        self._max_size = max_size
+        self._lock = threading.Lock()
+        self._store: dict = {}  # key -> (timestamp, value)
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key: str):
+        """Return cached value or None if missing/expired."""
+        with self._lock:
+            entry = self._store.get(key)
+            if entry:
+                ts, val = entry
+                if time.monotonic() - ts < self._ttl:
+                    self._hits += 1
+                    return val
+                del self._store[key]
+            self._misses += 1
+        return None
+
+    def put(self, key: str, value):
+        with self._lock:
+            # Evict oldest entries if over max size
+            if len(self._store) >= self._max_size:
+                oldest_keys = sorted(self._store, key=lambda k: self._store[k][0])
+                for k in oldest_keys[:self._max_size // 4]:
+                    del self._store[k]
+            self._store[key] = (time.monotonic(), value)
+
+    @property
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "size": len(self._store),
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": f"{self._hits / max(1, self._hits + self._misses) * 100:.0f}%",
+            }
+
+_quote_cache = _TTLCache(ttl_seconds=45.0, max_size=500)
+_metrics_cache = _TTLCache(ttl_seconds=90.0, max_size=300)
+
+# ============================================================
 # BOT DESCRIPTION (used by /about and natural-language handler)
 # ============================================================
 BOT_DESCRIPTION = (
@@ -345,15 +446,12 @@ def get_ai_conversation(chat_id: str, user_message: str) -> str:
 # MARKET DATA HELPERS
 # ============================================================
 def fetch_finnhub_quote(ticker):
-    try:
-        r = requests.get(
-            f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}",
-            timeout=10
-        )
-        data = r.json()
-        return data.get('c'), data.get('v'), data.get('pc')  # current, volume, prev close
-    except:
-        return None, None, None
+    """Legacy wrapper — returns (current, volume, prev_close) tuple.
+    Now uses the rate-limited + cached _finnhub_quote() internally."""
+    q = _finnhub_quote(ticker)
+    if q:
+        return q.get('c'), q.get('v'), q.get('pc')
+    return None, None, None
 
 def fetch_latest_news(ticker, count=3):
     try:
@@ -366,7 +464,8 @@ def fetch_latest_news(ticker, count=3):
         )
         news = r.json()[:count]
         return [(item.get('headline',''), item.get('url','')) for item in news]
-    except:
+    except Exception as e:
+        logger.debug(f"fetch_latest_news {ticker}: {e}")
         return []
 
 def get_trading_session():
@@ -381,25 +480,38 @@ def get_trading_session():
 def get_yf_info(ticker):
     try:
         return yf.Ticker(ticker).fast_info
-    except:
+    except Exception as e:
+        logger.debug(f"get_yf_info {ticker}: {e}")
         return None
 
 def _finnhub_quote(ticker: str) -> dict:
     """
-    Raw Finnhub quote. Returns dict with keys:
+    Rate-limited + cached Finnhub quote. Returns dict with keys:
       c (current), pc (prev close), h (day high), l (day low), v (volume)
     NOTE: During off-hours Finnhub sets c=0 but pc still holds the last close price.
           We return the dict as long as pc > 0 so off-hours callers can use pc.
     Returns {} on failure.
     """
+    # Check cache first
+    cached = _quote_cache.get(f"quote:{ticker}")
+    if cached is not None:
+        return cached
+    # Rate limit
+    if not _finnhub_limiter.acquire(timeout=15):
+        logger.warning(f"Finnhub rate limit: skipping quote for {ticker}")
+        return {}
     try:
         r = requests.get(
             f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}",
             timeout=8
         )
+        if r.status_code == 429:
+            logger.warning(f"Finnhub 429 on quote {ticker}")
+            return {}
         d = r.json()
         # Accept quote if current price OR previous close is valid
         if d.get("c", 0) > 0 or d.get("pc", 0) > 0:
+            _quote_cache.put(f"quote:{ticker}", d)
             return d
     except Exception as e:
         logger.debug(f"Finnhub quote {ticker}: {e}")
@@ -408,15 +520,27 @@ def _finnhub_quote(ticker: str) -> dict:
 
 def _finnhub_metrics(ticker: str) -> dict:
     """
-    Finnhub fundamental metrics — 52w high/low, market cap, avg volume.
+    Rate-limited + cached Finnhub fundamental metrics — 52w high/low, market cap, avg volume.
     Returns {} on failure.
     """
+    cached = _metrics_cache.get(f"metrics:{ticker}")
+    if cached is not None:
+        return cached
+    if not _finnhub_limiter.acquire(timeout=15):
+        logger.warning(f"Finnhub rate limit: skipping metrics for {ticker}")
+        return {}
     try:
         r = requests.get(
             f"https://finnhub.io/api/v1/stock/metric?symbol={ticker}&metric=all&token={FINNHUB_TOKEN}",
             timeout=8
         )
-        return r.json().get("metric", {})
+        if r.status_code == 429:
+            logger.warning(f"Finnhub 429 on metrics {ticker}")
+            return {}
+        result = r.json().get("metric", {})
+        if result:
+            _metrics_cache.put(f"metrics:{ticker}", result)
+        return result
     except Exception as e:
         logger.debug(f"Finnhub metrics {ticker}: {e}")
     return {}
@@ -424,11 +548,14 @@ def _finnhub_metrics(ticker: str) -> dict:
 
 def _finnhub_candles(ticker: str, resolution: str = "5", count: int = 300) -> list:
     """
-    Fetch OHLCV candles from Finnhub.
+    Rate-limited Finnhub OHLCV candles.
     resolution: "1","5","15","30","60","D","W","M"
     Returns list of dicts: [{t, o, h, l, c, v}, ...] sorted oldest->newest.
     Returns [] on failure.
     """
+    if not _finnhub_limiter.acquire(timeout=15):
+        logger.warning(f"Finnhub rate limit: skipping candles for {ticker}")
+        return []
     try:
         now_ts   = int(time.time())
         # Go back far enough to get `count` candles
@@ -441,6 +568,9 @@ def _finnhub_candles(ticker: str, resolution: str = "5", count: int = 300) -> li
             f"&from={from_ts}&to={now_ts}&token={FINNHUB_TOKEN}",
             timeout=10
         )
+        if r.status_code == 429:
+            logger.warning(f"Finnhub 429 on candles {ticker}")
+            return []
         d = r.json()
         if d.get("s") != "ok":
             return []
@@ -613,18 +743,14 @@ def compute_squeeze_score(ticker: str) -> dict:
             components['vt_pts']          = round(vt_pts, 1)
 
     try:
-        r  = requests.get(
-            f"https://finnhub.io/api/v1/stock/metric?symbol={ticker}"
-            f"&metric=all&token={FINNHUB_TOKEN}",
-            timeout=6
-        )
-        si     = r.json().get('metric', {}).get('shortRatioAnnual', 0) or 0
+        m = _finnhub_metrics(ticker)
+        si     = (m.get('shortRatioAnnual') or 0)
         si_pts = min(10, si / 2)
         score += si_pts
         components['short_ratio'] = si
         components['si_pts']      = round(si_pts, 1)
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Squeeze short interest {ticker}: {e}")
 
     return {
         "score":     round(min(score, 100), 1),
@@ -640,7 +766,8 @@ def get_fear_greed():
         r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
         d = r.json()['data'][0]
         return d.get('value'), d.get('value_classification')
-    except:
+    except Exception as e:
+        logger.debug(f"get_fear_greed: {e}")
         return None, None
 
 def get_sector_performance():
@@ -665,9 +792,28 @@ def get_sector_performance():
                 chg   = (price - pc) / pc * 100 if price and pc else 0
             sign = "+" if chg >= 0 else ""
             lines.append(f"{sign}{chg:.2f}% {name}")
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Sector perf {sym}: {e}")
     return lines
+
+def _finnhub_crypto_candle(fsym: str) -> dict:
+    """Rate-limited Finnhub crypto candle call. Returns raw JSON or {}."""
+    if not _finnhub_limiter.acquire(timeout=15):
+        return {}
+    try:
+        r = requests.get(
+            f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
+            f"&resolution=D&count=2&token={FINNHUB_TOKEN}",
+            timeout=8
+        )
+        if r.status_code == 429:
+            logger.warning(f"Finnhub 429 on crypto candle {fsym}")
+            return {}
+        return r.json()
+    except Exception as e:
+        logger.debug(f"Finnhub crypto candle {fsym}: {e}")
+    return {}
+
 
 def get_crypto_prices():
     coins = [
@@ -678,12 +824,7 @@ def get_crypto_prices():
     lines = []
     for fsym, name in coins:
         try:
-            r = requests.get(
-                f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
-                f"&resolution=D&count=2&token={FINNHUB_TOKEN}",
-                timeout=8
-            )
-            d = r.json()
+            d = _finnhub_crypto_candle(fsym)
             closes = d.get("c", [])
             if len(closes) >= 2:
                 price = closes[-1]
@@ -692,8 +833,8 @@ def get_crypto_prices():
                 sign  = "+" if chg >= 0 else ""
                 p_fmt = f"${price:,.0f}" if price >= 1000 else f"${price:,.4f}"
                 lines.append(f"{name}: {p_fmt} ({sign}{chg:.2f}%)")
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Crypto price {name}: {e}")
     return lines
 
 
@@ -742,7 +883,8 @@ def fetch_market_snapshot() -> dict:
             pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
             chg   = (price - pc) / pc * 100 if price and pc else 0
             return price, chg
-        except:
+        except Exception as e:
+            logger.debug(f"fetch_market_snapshot _q yfinance fallback {sym}: {e}")
             return 0, 0
 
     def _fmt(price, chg, name, is_index=True):
@@ -797,12 +939,7 @@ def fetch_market_snapshot() -> dict:
         lines = []
         for fsym, name in coins:
             try:
-                r = requests.get(
-                    f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
-                    f"&resolution=D&count=2&token={FINNHUB_TOKEN}",
-                    timeout=8
-                )
-                d = r.json()
+                d = _finnhub_crypto_candle(fsym)
                 closes = d.get("c", [])
                 if len(closes) >= 2:
                     price = closes[-1]
@@ -811,8 +948,8 @@ def fetch_market_snapshot() -> dict:
                     sign  = "+" if chg >= 0 else ""
                     p_fmt = f"${price:,.0f}" if price >= 1000 else f"${price:,.4f}"
                     lines.append(f"  {name}: {p_fmt} ({sign}{chg:.2f}%)")
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Snapshot crypto {name}: {e}")
         return lines
 
     def _fetch_movers():
@@ -829,8 +966,8 @@ def fetch_market_snapshot() -> dict:
                 return None
             chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
             return (t, chg, price)
-        with ThreadPoolExecutor(max_workers=10) as p:
-            results = list(p.map(_q_one, tickers_to_scan[:60]))
+        with ThreadPoolExecutor(max_workers=5) as p:
+            results = list(p.map(_q_one, tickers_to_scan[:40]))
         items = [r for r in results if r]
         if not items:
             return "movers unavailable"
@@ -950,13 +1087,13 @@ def get_dynamic_hot_stocks():
             price = c if c > 0 else pc   # off-hours: c==0, use prev close
             if price >= 0.50:
                 return sym
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Ticker verify {sym}: {e}")
         return None
 
-    # Run verification concurrently (cap at 100 candidates to stay within rate limits)
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        results = list(pool.map(_verify, unique[:100]))
+    # Run verification concurrently (cap at 60 candidates to stay within rate limits)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(_verify, unique[:60]))
 
     verified = [s for s in results if s]
 
@@ -1060,8 +1197,8 @@ def _scan_ticker(ticker: str, now: datetime):
                         avg_vol = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
                         if avg_vol > 0:
                             vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Vol spike check {ticker}: {e}")
                 send_alert(ticker, change * 100, c, vol_spike)
                 last_alert_time[ticker] = now
 
@@ -1074,7 +1211,7 @@ def check_stocks():
     now = datetime.now(CT)
     logger.info(f"Scanning {len(TICKERS)} stocks (concurrent)...")
 
-    with ThreadPoolExecutor(max_workers=min(32, len(TICKERS))) as pool:
+    with ThreadPoolExecutor(max_workers=min(5, len(TICKERS))) as pool:
         futures = {pool.submit(_scan_ticker, t, now): t for t in TICKERS}
         for future in as_completed(futures):
             t = futures[future]
@@ -1346,7 +1483,8 @@ def paper_portfolio_value() -> float:
             price, _, _ = fetch_finnhub_quote(ticker)
             if price:
                 total += pos["shares"] * price
-        except:
+        except Exception as e:
+            logger.debug(f"paper_portfolio_value {ticker}: {e}")
             total += pos["shares"] * pos["avg_cost"]  # fallback to cost
     return total
 
@@ -1476,8 +1614,8 @@ def compute_paper_signal(ticker: str) -> dict:
             comps["vol_ratio"] = round(ratio, 2)
             comps["vol_pts"]   = pts
             detail.append(f"VolRatio={ratio:.1f}x({pts}pts)")
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Signal score vol ratio {ticker}: {e}")
 
     # ── 5. Squeeze Score (10 pts, scaled from existing) ───────
     sq = compute_squeeze_score(ticker)
@@ -1533,7 +1671,7 @@ def compute_paper_signal(ticker: str) -> dict:
             ai_signal = "BUY"
             try:
                 ai_score = int([w for w in raw_ai.split() if w.startswith("CONFIDENCE:")][0].split(":")[1])
-            except:
+            except (IndexError, ValueError, TypeError):
                 ai_score = 70
             pts = int(15 * ai_score / 100)
         elif "AVOID" in raw_ai.upper():
@@ -1543,7 +1681,7 @@ def compute_paper_signal(ticker: str) -> dict:
             pts = 5
         try:
             ai_reason = raw_ai.split("REASON:")[-1].strip()[:60] if "REASON:" in raw_ai else raw_ai[:60]
-        except:
+        except (IndexError, AttributeError):
             pass
         score += pts
         comps["grok_signal"]     = ai_signal
@@ -1656,6 +1794,8 @@ def paper_evaluate_ticker(ticker: str):
             }
             paper_trades_today.append(trade)
             paper_all_trades.append(trade)
+            if len(paper_all_trades) > 5000:
+                paper_all_trades[:] = paper_all_trades[-4000:]
 
             msg = (
                 f"SELL | {ticker} | {shares} shares @ ${price:.2f} | "
@@ -1674,8 +1814,8 @@ def paper_evaluate_ticker(ticker: str):
                 ).replace(tzinfo=CT)
                 held = int((now - entry_dt).total_seconds() / 60)
                 hold_mins = f"{held}m" if held < 60 else f"{held//60}h {held%60}m"
-            except:
-                pass
+            except (ValueError, TypeError, KeyError) as e:
+                logger.debug(f"Hold time calc: {e}")
 
             pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
             reason_map = {
@@ -1746,6 +1886,8 @@ def paper_evaluate_ticker(ticker: str):
     }
     paper_trades_today.append(trade)
     paper_all_trades.append(trade)
+    if len(paper_all_trades) > 5000:
+        paper_all_trades[:] = paper_all_trades[-4000:]
 
     msg = (
         f"BUY | {ticker} | {shares} shares @ ${price:.2f} | "
@@ -2335,16 +2477,17 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /movers — top gainers, losers, most active, low-price rockets.
     Strategy:
       1. Fetch symbol universe from FMP (gainers + losers + actives)
-      2. Re-fetch LIVE prices from Finnhub for every symbol
+      2. Re-fetch LIVE prices from Finnhub for every symbol (rate-limited)
       3. Re-sort by actual live % change — not FMP's (possibly stale) ranking
-      4. Falls back to Finnhub scan of full TICKERS watchlist if FMP unavailable
+      4. Falls back to FMP-only data if Finnhub rate-limited
+      5. Falls back to yfinance if both FMP and Finnhub unavailable
     """
     await update.message.reply_text("Fetching live movers...")
 
-    def _fmp_symbols(endpoint):
-        """Get symbol list from FMP endpoint."""
+    def _fmp_symbols_with_data(endpoint):
+        """Get symbol list WITH price data from FMP endpoint."""
         if not FMP_API_KEY:
-            return []
+            return [], []
         try:
             r = requests.get(
                 f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
@@ -2352,60 +2495,115 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             data = r.json()
             if isinstance(data, list) and data:
-                return [item.get("symbol") for item in data[:60] if item.get("symbol")]
+                syms = [item.get("symbol") for item in data[:40] if item.get("symbol")]
+                # Also extract FMP's own price/change data as fallback
+                fmp_items = []
+                for item in data[:40]:
+                    sym = item.get("symbol")
+                    price = item.get("price", 0) or 0
+                    chg = item.get("changesPercentage", 0) or 0
+                    if sym and price > 0.10:
+                        fmp_items.append({
+                            "symbol": sym, "price": float(price),
+                            "chg": float(chg), "volume": int(item.get("volume", 0) or 0),
+                            "source": "FMP"
+                        })
+                return syms, fmp_items
         except Exception as e:
             logger.debug(f"FMP {endpoint}: {e}")
-        return []
+        return [], []
 
     def _live_quote(sym):
-        """Return live-verified dict for a symbol via Finnhub.
-        Off-hours: Finnhub returns c=0, so fall back to pc (prev close) for price.
-        """
+        """Return live-verified dict for a symbol via Finnhub."""
         try:
             q = _finnhub_quote(sym)
             if not q:
                 return None
             c  = float(q.get("c") or 0)
             pc = float(q.get("pc") or 0)
-            # Use current price if available, else previous close (off-hours)
             price = c if c > 0 else pc
             if price < 0.10:
                 return None
             vol = int(q.get("v") or 0)
-            # chg% vs prev close; zero if no live price available
             chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0.0
-            return {"symbol": sym, "price": price, "chg": chg, "volume": vol}
-        except:
+            return {"symbol": sym, "price": price, "chg": chg, "volume": vol, "source": "Finnhub"}
+        except Exception as e:
+            logger.debug(f"Movers live quote {sym}: {e}")
             return None
 
-    # ── Step 1: collect symbol universe from FMP ─────────────────
+    def _yf_quote(sym):
+        """yfinance fallback for a single symbol."""
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = fi.get("lastPrice") or fi.get("previousClose") or 0
+            pc = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+            if not price or price < 0.10:
+                return None
+            chg = (price - pc) / pc * 100 if price and pc else 0
+            vol = int(fi.get("lastVolume") or 0)
+            return {"symbol": sym, "price": float(price), "chg": float(chg), "volume": vol, "source": "yfinance"}
+        except Exception as e:
+            logger.debug(f"yfinance movers {sym}: {e}")
+            return None
+
+    # ── Step 1: collect symbol universe from FMP (with fallback data) ─
+    fmp_data_items = []
     with ThreadPoolExecutor(max_workers=3) as pool:
-        f_gain = pool.submit(_fmp_symbols, "stock_market/gainers")
-        f_lose = pool.submit(_fmp_symbols, "stock_market/losers")
-        f_act  = pool.submit(_fmp_symbols, "stock_market/actives")
+        f_gain = pool.submit(_fmp_symbols_with_data, "stock_market/gainers")
+        f_lose = pool.submit(_fmp_symbols_with_data, "stock_market/losers")
+        f_act  = pool.submit(_fmp_symbols_with_data, "stock_market/actives")
 
-    gain_syms = f_gain.result()
-    lose_syms = f_lose.result()
-    act_syms  = f_act.result()
+    gain_syms, gain_data = f_gain.result()
+    lose_syms, lose_data = f_lose.result()
+    act_syms, act_data   = f_act.result()
+    fmp_data_items = gain_data + lose_data + act_data
 
-    all_syms = list(dict.fromkeys(gain_syms + lose_syms + act_syms))   # deduplicated
+    all_syms = list(dict.fromkeys(gain_syms + lose_syms + act_syms))
 
-    # Fallback: if FMP returned nothing, use full live watchlist
     if not all_syms:
         logger.warning("FMP returned no symbols — falling back to TICKERS watchlist")
         all_syms = list(TICKERS)
 
-    # Also always include current TICKERS so we never miss a tracked spike
-    all_syms = list(dict.fromkeys(all_syms + list(TICKERS)))[:150]
+    # Include TICKERS but cap total to avoid overwhelming the rate limiter
+    all_syms = list(dict.fromkeys(all_syms + list(TICKERS)))[:80]
 
-    # ── Step 2: live-verify every symbol via Finnhub concurrently ─
-    with ThreadPoolExecutor(max_workers=15) as pool:
+    # ── Step 2: live-verify via Finnhub (rate-limited, max 4 workers) ─
+    with ThreadPoolExecutor(max_workers=4) as pool:
         live_results = list(pool.map(_live_quote, all_syms))
 
     live = [r for r in live_results if r is not None]
 
+    # ── Step 2b: if Finnhub returned too few, use FMP data directly ─
+    data_source = "Finnhub"
+    if len(live) < 5 and fmp_data_items:
+        logger.info(f"Finnhub returned only {len(live)} quotes — using FMP data as primary")
+        # Merge: FMP data for symbols not already in live
+        live_syms = {r["symbol"] for r in live}
+        for item in fmp_data_items:
+            if item["symbol"] not in live_syms:
+                live.append(item)
+                live_syms.add(item["symbol"])
+        data_source = "FMP + Finnhub"
+
+    # ── Step 2c: if still empty, try yfinance on core tickers ─
+    if len(live) < 5:
+        logger.info("Falling back to yfinance for movers data")
+        yf_syms = list(TICKERS)[:30]
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            yf_results = list(pool.map(_yf_quote, yf_syms))
+        yf_live = [r for r in yf_results if r is not None]
+        live_syms = {r["symbol"] for r in live}
+        for item in yf_live:
+            if item["symbol"] not in live_syms:
+                live.append(item)
+        data_source = "yfinance fallback"
+
     if not live:
-        await update.message.reply_text("Unable to fetch live market data right now.")
+        await update.message.reply_text(
+            "Unable to fetch market data right now.\n"
+            "All data sources (Finnhub, FMP, yfinance) returned no results.\n"
+            "This usually means the market is closed or APIs are temporarily down."
+        )
         return
 
     # ── Step 3: sort into categories by live data ─────────────────
@@ -2429,9 +2627,8 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return str(v)
 
     now_str = datetime.now(CT).strftime("%I:%M %p CT")
-    src_note = "live Finnhub" if all_syms else "watchlist only"
 
-    lines = [f"Market Movers — {now_str}", f"({len(live)} stocks scanned)", ""]
+    lines = [f"Market Movers — {now_str}", f"({len(live)} stocks via {data_source})", ""]
 
     lines += ["TOP GAINERS", "  Ticker    Price      Chg%", "  " + "-"*28]
     lines += [_row(r) for r in gainers] or ["  (none)"]
@@ -2709,7 +2906,8 @@ async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chg   = d["chg"]
                 sign  = "+" if chg >= 0 else ""
                 lines.append(f"  {t}: ${price:.2f} ({sign}{chg:.2f}%)")
-            except:
+            except Exception as e:
+                logger.debug(f"Watchlist show {t}: {e}")
                 lines.append(f"  {t}: unavailable")
         await update.message.reply_text("\n".join(lines))
     else:
@@ -2734,7 +2932,7 @@ async def cmd_setalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.args[0].upper()
     try:
         target = float(context.args[1])
-    except:
+    except (ValueError, IndexError):
         await update.message.reply_text("Invalid price. Example: /setalert NVDA 150.00")
         return
     if target <= 0:
@@ -2781,7 +2979,8 @@ async def cmd_myalerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             price, _, _ = fetch_finnhub_quote(ticker)
             price_str = f"  (now ${price:.2f})" if price else ""
-        except:
+        except Exception as e:
+            logger.debug(f"myalerts price fetch {ticker}: {e}")
             price_str = ""
         for target in sorted(targets):
             direction = "above" if price and target > price else "below" if price and target < price else ""
@@ -2822,7 +3021,7 @@ async def cmd_delalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         target = float(context.args[1])
-    except:
+    except (ValueError, IndexError):
         await update.message.reply_text("Invalid price. Example: /delalert NVDA 150.00")
         return
 
@@ -3132,7 +3331,8 @@ def build_dashboard_image() -> BytesIO:
             pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
             chg   = (price - pc) / pc * 100 if price and pc else 0
             return price, chg
-        except:
+        except Exception as e:
+            logger.debug(f"Dashboard _fq yfinance fallback {sym}: {e}")
             return 0, 0
 
     def _fetch_indices():
@@ -3163,8 +3363,8 @@ def build_dashboard_image() -> BytesIO:
                 if isinstance(fmp_data, list):
                     scan_pool += [d.get("symbol") for d in fmp_data[:30] if d.get("symbol")]
                     scan_pool = list(dict.fromkeys(scan_pool))
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Dashboard FMP actives: {e}")
 
         items = []
         def _quote_one(t):
@@ -3179,8 +3379,8 @@ def build_dashboard_image() -> BytesIO:
             chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
             return (t, chg, price)
 
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            results = list(pool.map(_quote_one, scan_pool[:60]))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(_quote_one, scan_pool[:30]))
 
         items = [r for r in results if r]
         items.sort(key=lambda x: x[1])
@@ -3190,17 +3390,14 @@ def build_dashboard_image() -> BytesIO:
         out = []
         for fsym, name in CRYPTO_SYMS:
             try:
-                r = requests.get(
-                    f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
-                    f"&resolution=D&count=2&token={FINNHUB_TOKEN}", timeout=8)
-                d = r.json()
+                d = _finnhub_crypto_candle(fsym)
                 closes = d.get("c", [])
                 if len(closes) >= 2:
                     price = closes[-1]; pc = closes[-2]
                     chg   = (price - pc) / pc * 100 if pc else 0
                     out.append((name, price, chg))
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Dashboard crypto {name}: {e}")
         return out
 
 
@@ -3211,12 +3408,36 @@ def build_dashboard_image() -> BytesIO:
         f_cry = pool.submit(_fetch_crypto)
         f_fg  = pool.submit(get_fear_greed)
 
-    indices          = f_idx.result()
-    sectors          = f_sec.result()
-    gainers, losers  = f_mov.result()
-    crypto           = f_cry.result()
-    fg_val, fg_label = f_fg.result()
-    fg_val           = int(fg_val) if fg_val else 50
+    try:
+        indices = f_idx.result()
+    except Exception as e:
+        logger.error(f"Dashboard indices fetch failed: {e}")
+        indices = [(n, 0, 0) for _, n in INDEX_SYMS]
+
+    try:
+        sectors = f_sec.result()
+    except Exception as e:
+        logger.error(f"Dashboard sectors fetch failed: {e}")
+        sectors = [(n, 0) for _, n in SECTOR_SYMS]
+
+    try:
+        gainers, losers = f_mov.result()
+    except Exception as e:
+        logger.error(f"Dashboard movers fetch failed: {e}")
+        gainers, losers = [], []
+
+    try:
+        crypto = f_cry.result()
+    except Exception as e:
+        logger.error(f"Dashboard crypto fetch failed: {e}")
+        crypto = []
+
+    try:
+        fg_val, fg_label = f_fg.result()
+    except Exception as e:
+        logger.error(f"Dashboard fear&greed fetch failed: {e}")
+        fg_val, fg_label = 50, "N/A"
+    fg_val = int(fg_val) if fg_val else 50
 
     top_squeeze = sorted(squeeze_scores.items(), key=lambda x: x[1], reverse=True)[:5]
     # If squeeze_scores empty (first run), compute on-demand from CORE_TICKERS
@@ -3226,11 +3447,11 @@ def build_dashboard_image() -> BytesIO:
                 sq = compute_squeeze_score(t)
                 if sq.get("score") is not None:
                     return (t, sq["score"])
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Squeeze seed {t}: {e}")
             return None
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            seed_results = list(pool.map(_seed_sq, CORE_TICKERS[:20]))
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            seed_results = list(pool.map(_seed_sq, CORE_TICKERS[:10]))
         seeded = [r for r in seed_results if r]
         top_squeeze = sorted(seeded, key=lambda x: x[1], reverse=True)[:5]
 
@@ -3655,8 +3876,8 @@ async def cmd_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 snap_lines.append(
                     f"{t} ${price:.2f} ({sign}{chg:.2f}%) {pct_off:+.1f}% from 52w high"
                 )
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Premarket snap {t}: {e}")
 
     fg_val, fg_label = get_fear_greed()
     snap_str = " | ".join(snap_lines[:10])
@@ -3704,7 +3925,8 @@ async def cmd_overnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{ticker}: entry ${pos['avg_cost']:.2f}, now ${price:.2f}, "
                 f"P&L {pnl_pct:+.1f}%, held since {pos['entry_date']}"
             )
-        except:
+        except Exception as e:
+            logger.debug(f"Overnight review {ticker}: {e}")
             pos_lines.append(f"{ticker}: entry ${pos['avg_cost']:.2f}")
 
     pos_str   = " | ".join(pos_lines)
@@ -3758,8 +3980,8 @@ async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 chg   = d["chg"]
                 scored.append((ticker, sq["score"], price, chg,
                                 sq.get("rsi", 0), sq.get("bandwidth", 0)))
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Watchlist scan {ticker}: {e}")
 
     scored.sort(key=lambda x: x[1], reverse=True)
     top = scored[:8]
@@ -3850,8 +4072,8 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             news = fetch_latest_news(ticker, 4)
             if news:
                 return f"\n{ticker} NEWS:\n" + "\n".join(f"- {h[:100]}" for h, _ in news)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Chat ticker news {ticker}: {e}")
         return ""
 
     def _get_ticker_price(ticker):
@@ -3866,8 +4088,8 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if d["volume"]:
                     parts.append(f"vol: {d['volume']:,}")
                 return " | ".join(parts)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Chat ticker price {ticker}: {e}")
         return ""
 
     # Detect mentioned tickers
@@ -4172,8 +4394,8 @@ def send_saturday_prep():
             chg   = d["chg"]
             if sq.get("score") and price > 0:
                 scored.append((ticker, sq["score"], price, chg, sq.get("rsi", 0)))
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Weekend scan {ticker}: {e}")
     scored.sort(key=lambda x: x[1], reverse=True)
     top     = scored[:6]
     top_str = " | ".join(f"{t} score={sc:.0f} RSI={r:.0f}" for t, sc, _, _, r in top)
