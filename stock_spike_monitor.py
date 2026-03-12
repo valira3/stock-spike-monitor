@@ -381,6 +381,8 @@ def _finnhub_quote(ticker: str) -> dict:
     """
     Raw Finnhub quote. Returns dict with keys:
       c (current), pc (prev close), h (day high), l (day low), v (volume)
+    NOTE: During off-hours Finnhub sets c=0 but pc still holds the last close price.
+          We return the dict as long as pc > 0 so off-hours callers can use pc.
     Returns {} on failure.
     """
     try:
@@ -389,7 +391,8 @@ def _finnhub_quote(ticker: str) -> dict:
             timeout=8
         )
         d = r.json()
-        if d.get("c") and d["c"] > 0:
+        # Accept quote if current price OR previous close is valid
+        if d.get("c", 0) > 0 or d.get("pc", 0) > 0:
             return d
     except Exception as e:
         logger.debug(f"Finnhub quote {ticker}: {e}")
@@ -464,13 +467,16 @@ def get_ticker_data(ticker: str) -> dict:
     # ── Tier 1: Finnhub quote (primary — works on Railway) ────
     q = _finnhub_quote(ticker)
     if q:
-        d["price"]      = q.get("c") or 0
-        d["prev_close"] = q.get("pc") or 0
+        c  = q.get("c") or 0
+        pc = q.get("pc") or 0
+        # Off-hours: c==0 but pc has last close — use pc as price
+        d["price"]      = c if c > 0 else pc
+        d["prev_close"] = pc
         d["day_high"]   = q.get("h") or 0
         d["day_low"]    = q.get("l") or 0
         d["volume"]     = q.get("v") or 0
-        if d["price"] and d["prev_close"]:
-            d["chg"] = (d["price"] - d["prev_close"]) / d["prev_close"] * 100
+        if c > 0 and pc > 0:
+            d["chg"] = (c - pc) / pc * 100
 
     # ── Tier 2: Finnhub metrics (52w range, mcap) ─────────────
     m = _finnhub_metrics(ticker)
@@ -642,14 +648,14 @@ def get_sector_performance():
         try:
             q = _finnhub_quote(sym)
             if q:
-                price = q.get("c") or 0
-                pc    = q.get("pc") or 0
-                chg   = (price - pc) / pc * 100 if pc else 0
+                c  = q.get("c") or 0
+                pc = q.get("pc") or 0
+                chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
             else:
                 fi  = yf.Ticker(sym).fast_info
                 price = fi.get("lastPrice") or 0
                 pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
-                chg   = (price - pc) / pc * 100 if pc else 0
+                chg   = (price - pc) / pc * 100 if price and pc else 0
             sign = "+" if chg >= 0 else ""
             lines.append(f"{sign}{chg:.2f}% {name}")
         except:
@@ -714,18 +720,20 @@ def fetch_market_snapshot() -> dict:
     ]
 
     def _q(sym):
-        """Finnhub quote -> (price, chg_pct). Falls back to yfinance."""
+        """Finnhub quote -> (price, chg_pct). Off-hours uses prev close as price."""
         q = _finnhub_quote(sym)
         if q:
-            price = q.get("c") or 0
-            pc    = q.get("pc") or 0
-            chg   = (price - pc) / pc * 100 if pc else 0
-            return price, chg
+            c  = q.get("c") or 0
+            pc = q.get("pc") or 0
+            price = c if c > 0 else pc   # off-hours: c==0, use pc
+            chg   = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
+            if price:
+                return price, chg
         try:
             fi    = yf.Ticker(sym).fast_info
             price = fi.get("lastPrice") or fi.get("previousClose") or 0
             pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
-            chg   = (price - pc) / pc * 100 if pc else 0
+            chg   = (price - pc) / pc * 100 if price and pc else 0
             return price, chg
         except:
             return 0, 0
@@ -807,11 +815,13 @@ def fetch_market_snapshot() -> dict:
             q = _finnhub_quote(t)
             if not q:
                 return None
-            price = q.get("c") or 0
-            pc    = q.get("pc") or 0
-            if price and pc:
-                return (t, (price - pc) / pc * 100, price)
-            return None
+            c  = q.get("c") or 0
+            pc = q.get("pc") or 0
+            price = c if c > 0 else pc
+            if not price:
+                return None
+            chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
+            return (t, chg, price)
         with ThreadPoolExecutor(max_workers=10) as p:
             results = list(p.map(_q_one, tickers_to_scan[:60]))
         items = [r for r in results if r]
@@ -873,9 +883,12 @@ def get_dynamic_hot_stocks():
     """
     def _fq_simple(sym):
         q = _finnhub_quote(sym)
-        if q and q.get("c"):
-            price = q["c"]; pc = q.get("pc") or price
-            return price, (price - pc) / pc * 100 if pc else 0
+        if q:
+            c  = q.get("c") or 0
+            pc = q.get("pc") or 0
+            price = c if c > 0 else pc
+            chg   = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
+            return price, chg
         return 0, 0
 
     logger.info("Fetching dynamic watchlist candidates...")
@@ -918,15 +931,16 @@ def get_dynamic_hot_stocks():
             seen.add(s)
             unique.append(s)
 
-    # ── Live-verify via Finnhub: require price >= $1 + vol > 50k ──
+    # ── Live-verify via Finnhub: require price >= $0.50 ──────────
     verified = []
     def _verify(sym):
         try:
             q = _finnhub_quote(sym)
             if not q:
                 return None
-            price = q.get("c") or 0
-            # Only filter sub-penny stocks — volume check removed (fails off-hours)
+            c  = q.get("c") or 0
+            pc = q.get("pc") or 0
+            price = c if c > 0 else pc   # off-hours: c==0, use prev close
             if price >= 0.50:
                 return sym
         except:
@@ -2316,17 +2330,22 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return []
 
     def _live_quote(sym):
-        """Return live-verified dict for a symbol via Finnhub."""
+        """Return live-verified dict for a symbol via Finnhub.
+        Off-hours: Finnhub returns c=0, so fall back to pc (prev close) for price.
+        """
         try:
             q = _finnhub_quote(sym)
-            if not q or not q.get("c"):
+            if not q:
                 return None
-            price = float(q["c"])
-            pc    = float(q.get("pc") or price)
-            vol   = int(q.get("v") or 0)
-            if price < 0.10:   # only filter genuine sub-penny stocks
+            c  = float(q.get("c") or 0)
+            pc = float(q.get("pc") or 0)
+            # Use current price if available, else previous close (off-hours)
+            price = c if c > 0 else pc
+            if price < 0.10:
                 return None
-            chg = (price - pc) / pc * 100 if pc else 0
+            vol = int(q.get("v") or 0)
+            # chg% vs prev close; zero if no live price available
+            chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0.0
             return {"symbol": sym, "price": price, "chg": chg, "volume": vol}
         except:
             return None
@@ -2956,17 +2975,20 @@ def build_dashboard_image() -> BytesIO:
     ]
 
     def _fq(sym):
-        """Finnhub -> (price, chg%). Falls back to yfinance."""
+        """Finnhub -> (price, chg%). Off-hours returns prev close as price with 0% chg."""
         q = _finnhub_quote(sym)
-        if q and q.get("c"):
-            price = q["c"]
-            pc    = q.get("pc") or price
-            return price, (price - pc) / pc * 100 if pc else 0
+        if q:
+            c  = q.get("c") or 0
+            pc = q.get("pc") or 0
+            price = c if c > 0 else pc
+            chg   = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
+            if price:
+                return price, chg
         try:
             fi    = yf.Ticker(sym).fast_info
             price = fi.get("lastPrice") or fi.get("previousClose") or 0
             pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
-            chg   = (price - pc) / pc * 100 if pc else 0
+            chg   = (price - pc) / pc * 100 if price and pc else 0
             return price, chg
         except:
             return 0, 0
@@ -3005,13 +3027,15 @@ def build_dashboard_image() -> BytesIO:
         items = []
         def _quote_one(t):
             q = _finnhub_quote(t)
-            if not q or not q.get("c"):
+            if not q:
                 return None
-            price = q["c"]
-            pc    = q.get("pc") or 0
-            if price and pc:
-                return (t, (price - pc) / pc * 100, price)
-            return None
+            c  = q.get("c") or 0
+            pc = q.get("pc") or 0
+            price = c if c > 0 else pc
+            if not price:
+                return None
+            chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
+            return (t, chg, price)
 
         with ThreadPoolExecutor(max_workers=12) as pool:
             results = list(pool.map(_quote_one, scan_pool[:60]))
