@@ -46,7 +46,7 @@ FMP_ENDPOINTS = {
 
 THRESHOLD           = 0.03
 MIN_PRICE           = 5.0
-COOLDOWN_MINUTES    = 5
+COOLDOWN_MINUTES    = 15
 CHECK_INTERVAL_MIN  = 1
 VOLUME_SPIKE_MULT   = 2.0
 LOG_FILE            = "stock_spike_monitor.log"
@@ -257,6 +257,8 @@ monitoring_paused   = False
 daily_alerts        = 0
 last_prices         = {}
 last_alert_time     = {}
+last_alert_pct      = {}   # {ticker: last_pct_change_alerted} for smart spike suppression
+_startup_time       = datetime.now(CT)  # grace period: skip spike alerts for 300s after startup
 price_history       = {t: deque(maxlen=60) for t in CORE_TICKERS}  # 60 ticks for RSI(14)
 recent_alerts       = []
 custom_price_alerts = {}   # {ticker: [target_prices]}
@@ -1515,26 +1517,47 @@ def _scan_ticker(ticker: str, now: datetime):
     squeeze_scores[ticker] = sq["score"]
 
     if ticker in last_prices:
-        old_price = last_prices[ticker]
-        for ts, p in list(price_history[ticker]):
-            if (now - ts).total_seconds() > 280:
-                old_price = p
+        # Fix 4: Skip spike detection during startup grace period (primed data → false spikes)
+        if (now - _startup_time).total_seconds() < 300:
+            last_prices[ticker] = c
+            # Fall through to day-change alerts below (they use prev close, not history)
+        else:
+            old_price = last_prices[ticker]
+            for ts, p in list(price_history[ticker]):
+                if (now - ts).total_seconds() > 280:
+                    old_price = p
 
-        change = (c - old_price) / old_price
-        if abs(change) >= THRESHOLD:
-            last_alert = last_alert_time.get(ticker, now - timedelta(days=1))
-            if (now - last_alert).total_seconds() / 60 >= COOLDOWN_MINUTES:
-                vol_spike = False
-                if vol and pc:
-                    try:
-                        m = _finnhub_metrics(ticker)
-                        avg_vol = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
-                        if avg_vol > 0:
-                            vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
-                    except Exception as e:
-                        logger.debug(f"Vol spike check {ticker}: {e}")
-                send_alert(ticker, change * 100, c, vol_spike)
-                last_alert_time[ticker] = now
+            change = (c - old_price) / old_price
+            if abs(change) >= THRESHOLD:
+                last_alert = last_alert_time.get(ticker, now - timedelta(days=1))
+                if (now - last_alert).total_seconds() / 60 >= COOLDOWN_MINUTES:
+                    # Fix 3: Suppress spike if day-change alert already covers this direction
+                    day_alert_key = f"{ticker}:day:{datetime.now(CT).strftime('%Y-%m-%d')}"
+                    if day_alert_key in last_alert_time:
+                        day_pct = last_alert_pct.get(day_alert_key, 0)
+                        day_direction = "up" if day_pct > 0 else "down"
+                        spike_direction = "up" if change > 0 else "down"
+                        if day_direction == spike_direction:
+                            last_prices[ticker] = c
+                            return  # Already covered by MOVER alert
+
+                    # Fix 2: Suppress if move hasn't grown by at least 1% since last alert
+                    prev_pct = last_alert_pct.get(ticker, 0)
+                    if abs(change * 100) < abs(prev_pct) + 1.0:
+                        pass  # No new info — skip alert
+                    else:
+                        vol_spike = False
+                        if vol and pc:
+                            try:
+                                m = _finnhub_metrics(ticker)
+                                avg_vol = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
+                                if avg_vol > 0:
+                                    vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
+                            except Exception as e:
+                                logger.debug(f"Vol spike check {ticker}: {e}")
+                        send_alert(ticker, change * 100, c, vol_spike)
+                        last_alert_time[ticker] = now
+                        last_alert_pct[ticker] = change * 100
 
     # ── Day-change alerts: catch sustained moves vs prev close ──
     if pc and pc > 0:
@@ -1553,6 +1576,7 @@ def _scan_ticker(ticker: str, now: datetime):
                         if avg_vol > 0:
                             vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
                 send_alert(ticker, day_change * 100, c, vol_spike, alert_type="day")
+                last_alert_pct[day_alert_key] = day_change * 100
 
     last_prices[ticker] = c
 
@@ -1747,6 +1771,7 @@ def save_bot_state():
         "ai_watchlist_suggestions": ai_watchlist_suggestions,
         "ai_watchlist_last_refresh": ai_watchlist_last_refresh,
         "last_prices": {k: v for k, v in last_prices.items()},
+        "last_alert_time": {k: v.isoformat() if isinstance(v, datetime) else str(v) for k, v in last_alert_time.items()},
         "saved_at":             datetime.now(CT).isoformat(),
     }
     with _bot_save_lock:
@@ -1806,6 +1831,13 @@ def load_bot_state():
         ai_watchlist_suggestions = state.get("ai_watchlist_suggestions", {})
         ai_watchlist_last_refresh = state.get("ai_watchlist_last_refresh", "")
         last_prices.update(state.get("last_prices", {}))
+
+        raw_lat = state.get("last_alert_time", {})
+        for k, v in raw_lat.items():
+            try:
+                last_alert_time[k] = datetime.fromisoformat(v)
+            except (ValueError, TypeError):
+                pass
 
         # Only restore daily_alerts if saved today
         saved_at   = state.get("saved_at", "")
