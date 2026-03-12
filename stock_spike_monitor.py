@@ -480,6 +480,121 @@ def fetch_latest_news(ticker, count=3):
         logger.debug(f"fetch_latest_news {ticker}: {e}")
         return []
 
+def fetch_news_with_details(ticker, count=5):
+    """Fetch news with full details: headline, summary, source, datetime, url."""
+    try:
+        today     = datetime.now().date()
+        yesterday = today - timedelta(days=2)
+        if not _finnhub_limiter.acquire(timeout=5):
+            logger.warning(f"Finnhub rate limit: skipping news for {ticker}")
+            return []
+        r = requests.get(
+            f"https://finnhub.io/api/v1/company-news?symbol={ticker}"
+            f"&from={yesterday}&to={today}&token={FINNHUB_TOKEN}",
+            timeout=10
+        )
+        news = r.json()[:count]
+        return [
+            {
+                "headline": item.get("headline", ""),
+                "summary":  item.get("summary", ""),
+                "source":   item.get("source", ""),
+                "datetime": item.get("datetime", 0),
+                "url":      item.get("url", ""),
+            }
+            for item in news
+        ]
+    except Exception as e:
+        logger.debug(f"fetch_news_with_details {ticker}: {e}")
+        return []
+
+
+# ── News sentiment cache (5-min TTL) ─────────────────────────
+news_sentiment_cache = {}
+
+
+def _score_news_sentiment(ticker: str) -> dict:
+    """
+    AI-powered news sentiment scoring (Component 10 of signal engine).
+    Fetches recent news, sends to Claude Haiku for sentiment analysis.
+    Returns {"sentiment": int, "pts": int, "catalyst": str}.
+    Cached for 5 minutes.
+    """
+    now = time.time()
+    cached = news_sentiment_cache.get(ticker)
+    if cached and (now - cached["ts"]) < 300:
+        return cached
+
+    result = {"sentiment": 0, "pts": 5, "catalyst": "", "ts": now}
+
+    articles = fetch_news_with_details(ticker, count=5)
+    if not articles:
+        news_sentiment_cache[ticker] = result
+        return result
+
+    # Format news as bullet points
+    bullets = []
+    for a in articles:
+        line = f"- {a['headline']}"
+        if a["summary"]:
+            line += f": {a['summary'][:200]}"
+        bullets.append(line)
+    news_block = "\n".join(bullets)
+
+    prompt = (
+        f"Analyze these news headlines+summaries for {ticker} and score "
+        f"the overall sentiment for short-term trading.\n\n"
+        f"{news_block}\n\n"
+        f"Score from -100 (extremely bearish) to +100 (extremely bullish). "
+        f"0 is neutral.\n"
+        f"Consider: earnings surprises, analyst upgrades/downgrades, "
+        f"product launches, regulatory actions, insider buying/selling, "
+        f"sector catalysts.\n\n"
+        f"Respond ONLY with: SENTIMENT:<score> CATALYST:<one-line reason>"
+    )
+
+    try:
+        raw = get_ai_response(prompt, max_tokens=80, fast=True)
+        sentiment = 0
+        catalyst = ""
+
+        # Parse SENTIMENT:<score>
+        if "SENTIMENT:" in raw:
+            try:
+                sent_part = raw.split("SENTIMENT:")[1].split()[0]
+                sentiment = int(sent_part)
+                sentiment = max(-100, min(100, sentiment))
+            except (ValueError, IndexError):
+                pass
+
+        # Parse CATALYST:<reason>
+        if "CATALYST:" in raw:
+            catalyst = raw.split("CATALYST:")[-1].strip()[:100]
+
+        # Map -100..+100 to 0-15 pts
+        if sentiment >= 50:
+            pts = 15
+        elif sentiment >= 25:
+            pts = 12
+        elif sentiment >= 10:
+            pts = 8
+        elif sentiment >= -10:
+            pts = 5
+        elif sentiment >= -25:
+            pts = 2
+        else:
+            pts = 0
+
+        result = {"sentiment": sentiment, "pts": pts, "catalyst": catalyst, "ts": now}
+        logger.info(f"NewsSentiment {ticker}: score={sentiment}, pts={pts}, catalyst={catalyst}")
+
+    except Exception as e:
+        logger.debug(f"_score_news_sentiment {ticker}: {e}")
+
+    news_sentiment_cache[ticker] = result
+    return result
+
+
 def get_trading_session():
     now     = datetime.now(CT)
     if now.weekday() > 4:
@@ -1979,9 +2094,10 @@ def _compute_macd(prices: list) -> tuple:
 
 def compute_paper_signal(ticker: str) -> dict:
     """
-    Composite signal engine (9 components, max 125 pts).
+    Composite signal engine (10 components, max 140 pts).
     Components: RSI(20) + BB(15) + MACD(15) + Volume(15) + Squeeze(10) +
-    Slope(10) + AI Direction(15) + AI Watchlist(10) + Multi-Day Trend(15).
+    Slope(10) + AI Direction(15) + AI Watchlist(10) + Multi-Day Trend(15) +
+    News Sentiment(15).
     Caches for 60 seconds to avoid hammering AI.
     """
     now = datetime.now(CT)
@@ -2105,12 +2221,16 @@ def compute_paper_signal(ticker: str) -> dict:
         price_now = prices[-1] if prices else 0
         chg_5m    = ((prices[-1] - prices[-6]) / prices[-6] * 100
                      if len(prices) >= 6 and prices[-6] else 0)
+        # Grab top headline for AI context (cheap — uses existing function)
+        _top_news = fetch_latest_news(ticker, 1)
+        _headline_ctx = f"Latest news: {_top_news[0][0]}. " if _top_news else ""
         grok_prompt = (
             f"Paper trading signal for {ticker}: "
             f"price ${price_now:.2f}, 5-min change {chg_5m:+.2f}%, "
             f"RSI={rsi:.1f if rsi else 'N/A'}, "
             f"MACD={macd_line:.4f if macd_line else 'N/A'}, "
             f"squeeze={sq['score']:.0f}/100. "
+            f"{_headline_ctx}"
             f"Bullish strategies only. "
             f"Respond ONLY with: SIGNAL:<BUY|HOLD|AVOID> CONFIDENCE:<0-100> REASON:<10 words max>"
         )
@@ -2212,8 +2332,20 @@ def compute_paper_signal(ticker: str) -> dict:
         total_multi = sma_pts + mom_pts + vol_d_pts if len(closes) >= 6 else sma_pts + vol_d_pts
         detail.append(f"MultiDay={total_multi}pts(SMA{sma_pts}+Mom{mom_pts if len(closes) >= 6 else '?'}+DVol{vol_d_pts})")
 
+    # ── 10. News Sentiment (15 pts) ──────────────────────────────
+    try:
+        news_sent = _score_news_sentiment(ticker)
+        n_pts = news_sent["pts"]
+        score += n_pts
+        comps["news_sentiment"] = news_sent["sentiment"]
+        comps["news_pts"] = n_pts
+        comps["news_catalyst"] = news_sent.get("catalyst", "")
+        detail.append(f"News={news_sent['sentiment']}({n_pts}pts)")
+    except Exception as e:
+        logger.debug(f"News sentiment error for {ticker}: {e}")
+
     result = {
-        "score":   round(min(score, 125), 1),  # max 125 with multi-day + AI bonus
+        "score":   round(min(score, 140), 1),  # max 140 with 10 components
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -2415,10 +2547,13 @@ def paper_evaluate_ticker(ticker: str):
     if len(paper_all_trades) > 5000:
         paper_all_trades[:] = paper_all_trades[-4000:]
 
+    # Include news catalyst in log if available
+    _catalyst = sig["comps"].get("news_catalyst", "")
+    _catalyst_str = f" | catalyst={_catalyst}" if _catalyst else ""
     msg = (
         f"BUY | {ticker} | {shares} shares @ ${price:.2f} | "
-        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/100 | "
-        f"Detail: {sig['detail']} | "
+        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/140 | "
+        f"Detail: {sig['detail']}{_catalyst_str} | "
         f"Portfolio: ${paper_portfolio_value():,.0f}"
     )
     paper_log(msg)
@@ -2446,6 +2581,13 @@ def paper_evaluate_ticker(ticker: str):
         sig_lines.append(
             f"AI Pick {c['ai_conviction']}/10 ({c.get('ai_category','')}) ({c['ai_conviction']}pts)"
         )
+    if c.get("news_pts") is not None:
+        sig_lines.append(f"News {c.get('news_sentiment', 0):+d} ({c['news_pts']}pts)")
+
+    # News catalyst line for buy notification
+    news_catalyst_line = ""
+    if c.get("news_catalyst"):
+        news_catalyst_line = f"  Catalyst: {c['news_catalyst']}\n"
 
     # Multi-day context line for buy notification
     multi_day_line = ""
@@ -2470,9 +2612,10 @@ def paper_evaluate_ticker(ticker: str):
         f"Target:    ${tp_price:.2f} (+{PAPER_TAKE_PROFIT_PCT*100:.0f}%)\n"
         f"Stop:      ${sl_price:.2f} (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
         f"{'─'*28}\n"
-        f"Signal:    {sig['score']:.0f}/100\n"
+        f"Signal:    {sig['score']:.0f}/140\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
+        + news_catalyst_line
         + multi_day_line
         + ai_thesis_line
         + f"{'─'*28}\n"
@@ -2709,7 +2852,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(
                     f"↑ {t['time']}  BUY  {t['ticker']} "
                     f"{t['shares']}sh @ ${t['price']:.2f}  "
-                    f"sig={t.get('signal_score','?'):.0f}/100"
+                    f"sig={t.get('signal_score','?'):.0f}/140"
                 )
             else:
                 lines.append(
@@ -2813,7 +2956,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"AI: {ai_sig_info['thesis']} (conviction {ai_sig_info['conviction']}/10)")
         lines += [
             f"",
-            f"Action threshold: {PAPER_MIN_SIGNAL}/100  "
+            f"Action threshold: {PAPER_MIN_SIGNAL}/140  "
             f"Daily actions today: "
             + str(paper_daily_counts.get(f'{arg2}:{datetime.now(CT).strftime("%Y-%m-%d")}', 0))
             + f"/{PAPER_MAX_ACTIONS}",
@@ -3416,16 +3559,39 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /news TICKER (e.g. /news NVDA)")
         return
-    ticker     = context.args[0].upper()
-    news_items = fetch_latest_news(ticker, 5)
-    if not news_items:
+    ticker = context.args[0].upper()
+    articles = fetch_news_with_details(ticker, count=5)
+    if not articles:
         await update.message.reply_text(f"No recent news for {ticker}.")
         return
+    now_ts = time.time()
     lines = [f"Latest news for {ticker}:"]
-    for headline, url in news_items:
-        lines.append(f"• {headline[:100]}")
-        if url:
-            lines.append(f"  {url}")
+    for a in articles:
+        # Relative time
+        age = ""
+        if a["datetime"]:
+            diff = now_ts - a["datetime"]
+            if diff < 3600:
+                age = f"{int(diff/60)}m ago"
+            elif diff < 86400:
+                age = f"{int(diff/3600)}h ago"
+            else:
+                age = f"{int(diff/86400)}d ago"
+        src = a["source"][:12] if a["source"] else ""
+        tag = f"[{src}] " if src else ""
+        time_tag = f" ({age})" if age else ""
+        lines.append(f"• {tag}{a['headline'][:80]}{time_tag}")
+        if a["url"]:
+            lines.append(f"  {a['url']}")
+    # AI sentiment summary at the bottom
+    try:
+        sent = _score_news_sentiment(ticker)
+        if sent["catalyst"]:
+            lines.append(f"\nSentiment: {sent['sentiment']:+d}/100 — {sent['catalyst']}")
+        else:
+            lines.append(f"\nSentiment: {sent['sentiment']:+d}/100")
+    except Exception:
+        pass
     await update.message.reply_text("\n".join(lines))
 
 async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
