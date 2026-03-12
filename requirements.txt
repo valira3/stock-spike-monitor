@@ -2,6 +2,7 @@ yfinance
 requests
 schedule
 pytz
+anthropic
 openai
 pandas
 lxml

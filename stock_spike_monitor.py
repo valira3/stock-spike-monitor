@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 import pytz
 import logging
 from collections import deque
-from openai import OpenAI
+import anthropic
+from openai import OpenAI   # kept for Grok fallback only
 import os
 import threading
 import json
@@ -30,19 +31,26 @@ from telegram.ext import (
 # ============================================================
 # CONFIG FROM ENVIRONMENT VARIABLES
 # ============================================================
-FINNHUB_TOKEN   = os.getenv("FINNHUB_TOKEN")
-GROK_API_KEY    = os.getenv("GROK_API_KEY")
-TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID         = os.getenv("CHAT_ID")
-FMP_API_KEY     = os.getenv("FMP_API_KEY")
+FINNHUB_TOKEN     = os.getenv("FINNHUB_TOKEN")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+GROK_API_KEY      = os.getenv("GROK_API_KEY")        # fallback only
+TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID           = os.getenv("CHAT_ID")
+FMP_API_KEY       = os.getenv("FMP_API_KEY")
 
-THRESHOLD           = 0.03   # 3% spike
+THRESHOLD           = 0.03
 MIN_PRICE           = 5.0
 COOLDOWN_MINUTES    = 5
 CHECK_INTERVAL_MIN  = 1
-VOLUME_SPIKE_MULT   = 2.0    # alert if volume 2× average
+VOLUME_SPIKE_MULT   = 2.0
 LOG_FILE            = "stock_spike_monitor.log"
-GROK_MODEL          = "grok-4-1-fast-non-reasoning"
+
+# ── Claude models ─────────────────────────────────────────────
+# Sonnet  → deep analysis, /ask, briefings, macro, compare
+# Haiku   → high-frequency: spike alerts, signal scores, dashboard one-liner
+CLAUDE_SONNET = "claude-sonnet-4-5"
+CLAUDE_HAIKU  = "claude-haiku-4-5-20251001"
+GROK_MODEL    = "grok-4-1-fast-non-reasoning"   # fallback
 
 # ============================================================
 # LOGGING
@@ -59,19 +67,24 @@ logger = logging.getLogger(__name__)
 CT = pytz.timezone('America/Chicago')
 
 # ============================================================
-# GROK CLIENT
+# AI CLIENTS — Claude primary, Grok fallback
 # ============================================================
-grok_client = OpenAI(
-    api_key=GROK_API_KEY,
-    base_url="https://api.x.ai/v1"
-) if GROK_API_KEY else None
+claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+grok_client   = OpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1") if GROK_API_KEY else None
+
+if claude_client:
+    logger.info("AI: Claude (primary) initialised")
+elif grok_client:
+    logger.info("AI: Grok (fallback only — no ANTHROPIC_API_KEY set)")
+else:
+    logger.warning("AI: No AI client available — set ANTHROPIC_API_KEY in Railway")
 
 # ============================================================
 # BOT DESCRIPTION (used by /about and natural-language handler)
 # ============================================================
 BOT_DESCRIPTION = (
     "📡 Stock Spike Monitor\n"
-    "24/7 · 60+ stocks · ≥3% spike alerts · Grok AI · RSI/BB/Squeeze\n"
+    "24/7 · 60+ stocks · ≥3% spike alerts · Claude AI · RSI/BB/Squeeze\n"
     "\n"
     "MARKET PULSE\n"
     "  /overview   indices · sectors · Fear & Greed · AI outlook\n"
@@ -110,13 +123,13 @@ BOT_DESCRIPTION = (
     "  /paper log           download investment.log\n"
     "  /paper reset         reset to $100k\n"
     "\n"
-    "  /ask <question>    chat with Grok AI (multi-turn memory)\n"
+    "  /ask <question>    chat with Claude AI (multi-turn memory)\n"
     "  /dashboard          send visual dashboard now\n"
     "  /list               all monitored tickers\n"
     "  /monitoring         pause · resume · status\n"
     "  /help               this menu\n"
     "\n"
-    "💬 /ask <question>   — ask Grok AI anything about the market\n"
+    "💬 /ask <question>   — ask Claude AI anything about the market\n"
     "     e.g. /ask Is NVDA overbought?  /ask What does RSI 72 mean?\n"
     "📊 Auto dashboards: 8:00 pre-mkt · 8:30 open · 12:00 mid · 3:00 close · Sun digest"
 )
@@ -182,78 +195,140 @@ def send_telegram(text, chat_id=None):
                 time.sleep(wait)
 
 # ============================================================
-# GROK HELPERS — with exponential backoff
+# AI HELPERS — Claude primary, Grok fallback, exponential backoff
 # ============================================================
-def get_grok_response(prompt, system=None, max_tokens=300):
-    if not grok_client:
-        return "AI unavailable (no GROK_API_KEY)"
-    today_stamp = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
-    sys_msg = system or (
+
+def _build_system(today_stamp: str) -> str:
+    return (
         f"You are a concise stock market analyst assistant. "
         f"Today is {today_stamp}. "
         f"STRICT RULES: "
         f"(1) Only state facts you are confident are true as of this date. "
         f"(2) Do NOT invent specific events, earnings dates, economic reports, "
-        f"strikes, executive statements, or price levels — if you are not certain "
-        f"something is scheduled or happened, say so or omit it. "
+        f"strikes, executive statements, or price levels — if uncertain, omit or say so. "
         f"(3) When live data is provided in the prompt, use it. "
         f"When it is not, give general analysis and clearly flag uncertainty. "
         f"(4) Never reference events, prices, or news from prior years unless asked. "
         f"Be direct and data-driven. No fluff. Max 3 sentences unless asked for more."
     )
-    for attempt in range(4):
-        try:
-            resp = grok_client.chat.completions.create(
-                model=GROK_MODEL,
-                messages=[
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user",   "content": prompt}
-                ],
-                max_tokens=max_tokens,
-                temperature=0.4
-            )
-            return resp.choices[0].message.content.strip()
-        except Exception as e:
-            wait = 2 ** attempt
-            logger.error(f"Grok error (attempt {attempt+1}): {e}. Retry in {wait}s")
-            time.sleep(wait)
-    return "Grok unavailable"
 
-def get_grok_conversation(chat_id, user_message):
-    """Multi-turn conversational Grok with memory."""
-    if not grok_client:
-        return "AI unavailable (no GROK_API_KEY)"
-    history = conversation_history.setdefault(chat_id, [])
-    history.append({"role": "user", "content": user_message})
-    # Keep last 10 turns
-    if len(history) > 20:
-        history = history[-20:]
-        conversation_history[chat_id] = history
 
+def get_ai_response(prompt, system=None, max_tokens=300, fast=False):
+    """
+    Single-turn AI response.
+    fast=True  → Claude Haiku  (spike alerts, signals, dashboard — high frequency)
+    fast=False → Claude Sonnet (analysis, briefings, /ask — quality matters)
+    Falls back to Grok if Claude is unavailable.
+    """
+    today_stamp = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
+    sys_msg     = system or _build_system(today_stamp)
+    model       = CLAUDE_HAIKU if fast else CLAUDE_SONNET
+
+    # ── Claude (primary) ──────────────────────────────────────
+    if claude_client:
+        for attempt in range(4):
+            try:
+                resp = claude_client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=sys_msg,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return resp.content[0].text.strip()
+            except anthropic.RateLimitError:
+                wait = 2 ** attempt
+                logger.warning(f"Claude rate limit (attempt {attempt+1}), retry in {wait}s")
+                time.sleep(wait)
+            except anthropic.APIStatusError as e:
+                logger.error(f"Claude API error (attempt {attempt+1}): {e.status_code} {e.message}")
+                if e.status_code < 500:
+                    break   # 4xx won't fix on retry
+                time.sleep(2 ** attempt)
+            except Exception as e:
+                logger.error(f"Claude error (attempt {attempt+1}): {e}")
+                time.sleep(2 ** attempt)
+        logger.warning("Claude failed all retries — falling back to Grok")
+
+    # ── Grok (fallback) ───────────────────────────────────────
+    if grok_client:
+        for attempt in range(3):
+            try:
+                resp = grok_client.chat.completions.create(
+                    model=GROK_MODEL,
+                    messages=[
+                        {"role": "system", "content": sys_msg},
+                        {"role": "user",   "content": prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=0.4
+                )
+                logger.info("Used Grok fallback")
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                logger.error(f"Grok fallback error (attempt {attempt+1}): {e}")
+                time.sleep(2 ** attempt)
+
+    return "AI unavailable — set ANTHROPIC_API_KEY in Railway"
+
+
+def get_ai_conversation(chat_id: str, user_message: str) -> str:
+    """
+    Multi-turn conversational AI with per-chat memory (last 20 messages).
+    Uses Claude Sonnet for quality. Falls back to Grok.
+    """
+    today_stamp = datetime.now(CT).strftime("%A %B %d %Y %I:%M %p CT")
     system = (
         f"You are a stock market assistant on Telegram. "
-        f"Today is {datetime.now(CT).strftime('%A %B %d %Y %I:%M %p CT')}. "
+        f"Today is {today_stamp}. "
         f"STRICT RULES: "
         f"(1) Only state specific events, dates, or prices you are confident are accurate. "
         f"(2) Do NOT fabricate earnings dates, economic reports, executive statements, "
-        f"strikes, mergers, or any scheduled events — if uncertain, say so explicitly. "
+        f"strikes, mergers, or scheduled events — if uncertain, say so explicitly. "
         f"(3) When the user's message contains live price data in [brackets], use it. "
         f"(4) Distinguish clearly between what you know vs. what is uncertain. "
         f"Be concise. Use plain text, no markdown."
     )
-    try:
-        resp = grok_client.chat.completions.create(
-            model=GROK_MODEL,
-            messages=[{"role": "system", "content": system}] + history,
-            max_tokens=400,
-            temperature=0.5
-        )
-        reply = resp.choices[0].message.content.strip()
-        history.append({"role": "assistant", "content": reply})
-        return reply
-    except Exception as e:
-        logger.error(f"Grok conversation error: {e}")
-        return "Grok unavailable right now."
+
+    history = conversation_history.setdefault(chat_id, [])
+    history.append({"role": "user", "content": user_message})
+    if len(history) > 20:
+        history = history[-20:]
+        conversation_history[chat_id] = history
+
+    # ── Claude (primary) ──────────────────────────────────────
+    if claude_client:
+        try:
+            resp = claude_client.messages.create(
+                model=CLAUDE_SONNET,
+                max_tokens=500,
+                system=system,
+                messages=history
+            )
+            reply = resp.content[0].text.strip()
+            history.append({"role": "assistant", "content": reply})
+            return reply
+        except anthropic.RateLimitError:
+            logger.warning("Claude rate limit in conversation — trying Grok fallback")
+        except Exception as e:
+            logger.error(f"Claude conversation error: {e} — trying Grok fallback")
+
+    # ── Grok (fallback) ───────────────────────────────────────
+    if grok_client:
+        try:
+            resp = grok_client.chat.completions.create(
+                model=GROK_MODEL,
+                messages=[{"role": "system", "content": system}] + history,
+                max_tokens=500,
+                temperature=0.5
+            )
+            reply = resp.choices[0].message.content.strip()
+            history.append({"role": "assistant", "content": reply})
+            logger.info("Used Grok fallback for conversation")
+            return reply
+        except Exception as e:
+            logger.error(f"Grok conversation fallback error: {e}")
+
+    return "AI unavailable — set ANTHROPIC_API_KEY in Railway"
 
 # ============================================================
 # MARKET DATA HELPERS
@@ -536,7 +611,7 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False):
         + ("HIGH VOLUME detected. " if volume_spike else "")
         + "Short analysis."
     )
-    ai        = get_grok_response(grok_prompt)
+    ai        = get_ai_response(grok_prompt)
     news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
 
     message = (
@@ -544,7 +619,7 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False):
         f"{pct_change:+.1f}% | ${current_price:.2f}"
         + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
         + (f"{tech_str}\n" if tech_str else "")
-        + f"\nGrok: {ai}\n\n"
+        + f"\nClaude: {ai}\n\n"
         f"News:\n{news_text}"
     )
     send_telegram(message)
@@ -951,7 +1026,7 @@ def compute_paper_signal(ticker: str) -> dict:
             f"Bullish strategies only. "
             f"Respond ONLY with: SIGNAL:<BUY|HOLD|AVOID> CONFIDENCE:<0-100> REASON:<10 words max>"
         )
-        raw_ai = get_grok_response(grok_prompt, max_tokens=60)
+        raw_ai = get_ai_response(grok_prompt, max_tokens=60, fast=True)
         ai_score = 50   # default neutral
         ai_signal = "HOLD"
         ai_reason = ""
@@ -976,7 +1051,7 @@ def compute_paper_signal(ticker: str) -> dict:
         comps["grok_confidence"] = ai_score
         comps["grok_reason"]     = ai_reason
         comps["grok_pts"]        = pts
-        detail.append(f"Grok={ai_signal}@{ai_score}({pts}pts)")
+        detail.append(f"Claude={ai_signal}@{ai_score}({pts}pts)")
     except Exception as e:
         logger.debug(f"Grok signal error for {ticker}: {e}")
 
@@ -1629,7 +1704,7 @@ async def cmd_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fg_str = f"{fg_val} — {fg_label}" if fg_val else "unavailable"
 
     summary = " | ".join(idx_lines[:4]) + f" | F&G {fg_val}"
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"Market snapshot: {summary}. Top sectors: {', '.join(sec_lines[:3])}. "
         f"2-sentence outlook + one sector to watch."
     )
@@ -1637,7 +1712,7 @@ async def cmd_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Indices:\n" + "\n".join(idx_lines) +
         f"\n\nFear & Greed: {fg_str}" +
         "\n\nSectors:\n" + "\n".join(sec_lines) +
-        f"\n\nGrok: {ai}"
+        f"\n\nClaude: {ai}"
     )
 
 async def cmd_spikes(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1675,7 +1750,7 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Recent news: {news_str}. "
             f"Provide: (1) technical assessment (2) near-term catalyst (3) key risk. Be specific."
         )
-        ai = get_grok_response(prompt, max_tokens=500)
+        ai = get_ai_response(prompt, max_tokens=500)
 
         await update.message.reply_text(
             f"{ticker} Analysis\n"
@@ -1684,7 +1759,7 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Volume: {vol:,}\n"
             f"52w Range: ${low52:.2f} – ${high52:.2f}\n"
             f"From 52w High: {pct_from_high:+.1f}%\n\n"
-            f"Grok Analysis:\n{ai}"
+            f"Claude Analysis:\n{ai}"
         )
     except Exception as e:
         await update.message.reply_text(f"Unable to analyze {ticker}: {e}")
@@ -1746,8 +1821,8 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{t2} ${stats[t2]['price']:.2f} ({stats[t2]['chg']:+.2f}%). "
             f"Which is the better buy right now and why?"
         )
-        ai = get_grok_response(summary)
-        await update.message.reply_text("\n".join(lines) + f"\n\nGrok: {ai}")
+        ai = get_ai_response(summary)
+        await update.message.reply_text("\n".join(lines) + f"\n\nClaude: {ai}")
     except Exception as e:
         await update.message.reply_text(f"Compare failed: {e}")
 
@@ -1847,7 +1922,7 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Upcoming macro events — sources in priority order:
       1. Finnhub economic calendar (free tier, live dates)
       2. FMP economic calendar
-      3. Grok AI fallback with today's date explicitly injected
+      3. Claude AI fallback with today's date explicitly injected
     """
     today     = datetime.now(CT).date()
     end       = today + timedelta(days=14)
@@ -1964,7 +2039,7 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── 3. Grok fallback — date anchored ─────────────────────
     if not events:
         logger.warning("Macro: both APIs failed, using date-anchored Grok fallback")
-        ai = get_grok_response(
+        ai = get_ai_response(
             f"Today is {now_label}. "
             f"List the actual scheduled US macro events for the next 14 days "
             f"(from {today_str} to {end_str}), including real scheduled dates. "
@@ -1984,12 +2059,12 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Format + Grok commentary ──────────────────────────────
     body       = _format_events(events, source)
     event_names = ", ".join([e["event"] for e in events[:5]])
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"Today is {now_label}. "
         f"Upcoming macro events this week: {event_names}. "
         f"Which is most market-moving and why? One sentence, current context only."
     )
-    await update.message.reply_text(body + f"\n\nGrok: {ai}")
+    await update.message.reply_text(body + f"\n\nClaude: {ai}")
 
 
 
@@ -1999,9 +2074,9 @@ async def cmd_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Unable to fetch crypto prices.")
         return
     summary = " | ".join(lines[:3])
-    ai = get_grok_response(f"Crypto snapshot: {summary}. One-sentence crypto market outlook.")
+    ai = get_ai_response(f"Crypto snapshot: {summary}. One-sentence crypto market outlook.", fast=True)
     await update.message.reply_text(
-        "Crypto Prices:\n" + "\n".join(lines) + f"\n\nGrok: {ai}"
+        "Crypto Prices:\n" + "\n".join(lines) + f"\n\nClaude: {ai}"
     )
 
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2120,11 +2195,11 @@ async def cmd_squeeze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{score:>5.1f} [{bar}] {ticker:<6} {rsi_str} {bw_str} {pb_str}")
 
     top_names = ", ".join([t for t, _ in ranked[:3]])
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"These stocks have the highest squeeze scores right now: {top_names}. "
         f"Are any of them actual short-squeeze or momentum candidates? Be specific."
     )
-    await update.message.reply_text("\n".join(lines) + f"\n\nGrok: {ai}")
+    await update.message.reply_text("\n".join(lines) + f"\n\nClaude: {ai}")
 
 
 async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2163,7 +2238,7 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sq    = compute_squeeze_score(ticker)
         score = sq.get("score", 0)
 
-        ai = get_grok_response(
+        ai = get_ai_response(
             f"{ticker} technicals: RSI={rsi} ({rsi_label}), "
             f"BB %B={pct_b} ({bb_label}), bandwidth={bw} ({squeeze_label}), "
             f"squeeze score={score}/100. "
@@ -2181,7 +2256,7 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  %B: {pct_b} — {bb_label}\n"
             f"  Bandwidth: {bw} — {squeeze_label}\n\n"
             f"Squeeze Score: {score}/100\n\n"
-            f"Grok: {ai}"
+            f"Claude: {ai}"
         )
     except Exception as e:
         await update.message.reply_text(f"Error computing technicals for {ticker}: {e}")
@@ -2292,13 +2367,14 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chg     = info.get('regularMarketChangePercent', 0)
         sq      = compute_squeeze_score(ticker)
         rsi_str = f"RSI {sq['rsi']:.0f}" if sq.get('rsi') else ""
-        ai = get_grok_response(
+        ai = get_ai_response(
             f"{ticker} intraday: ${price:.2f} ({chg:+.2f}% today). "
-            f"{rsi_str}. What does this intraday move suggest? One sentence."
+            f"{rsi_str}. What does this intraday move suggest? One sentence.",
+            fast=True
         )
         await update.message.reply_photo(
             photo=buf,
-            caption=f"{ticker}  ${price:.2f}  ({chg:+.2f}%)\n{rsi_str}\nGrok: {ai}"
+            caption=f"{ticker}  ${price:.2f}  ({chg:+.2f}%)\n{rsi_str}\nClaude: {ai}"
         )
     except Exception as e:
         logger.error(f"Chart error for {ticker}: {e}")
@@ -2417,10 +2493,10 @@ def build_dashboard_image() -> BytesIO:
     top_squeeze = sorted(squeeze_scores.items(), key=lambda x: x[1], reverse=True)[:5]
 
     idx_summary = "  ".join(f"{n} {c:+.1f}%" for n, _, c in indices[:4])
-    grok_line = get_grok_response(
+    grok_line = get_ai_response(
         f"Market now: {idx_summary}. Fear&Greed={fg_val}({fg_label}). "
         f"One sentence market call.",
-        max_tokens=80
+        max_tokens=80, fast=True
     )
 
     # ── Helpers ───────────────────────────────────────────────
@@ -2495,7 +2571,7 @@ def build_dashboard_image() -> BytesIO:
              color=session_color, fontsize=9, fontweight="bold")
     # Grok one-liner — wrap manually to avoid matplotlib wrap quirks
     gl = grok_line[:120] + ("…" if len(grok_line) > 120 else "")
-    fig.text(0.05, 0.918, f"Grok AI: {gl}",
+    fig.text(0.05, 0.918, f"Claude AI: {gl}",
              color=GOLD, fontsize=8, style="italic")
 
     # ── [A] Indices ───────────────────────────────────────────
@@ -2799,7 +2875,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /ask <question> — ask Grok AI anything about the market.
+    /ask <question> — ask Claude AI anything about the market.
     Maintains multi-turn memory per chat (last 20 messages).
     """
     if not update.message:
@@ -2839,17 +2915,17 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
     try:
-        reply = get_grok_conversation(chat_id, enriched)
-        if not reply or reply.strip() in ("", "Grok unavailable", "Grok unavailable right now."):
+        reply = get_ai_conversation(chat_id, enriched)
+        if not reply or reply.strip() in ("", "AI unavailable", "AI unavailable right now."):
             await update.message.reply_text(
-                "Grok is not responding. "
+                "Claude AI is not responding. "
                 "Check that GROK_API_KEY is set in Railway and try again."
             )
         else:
             await update.message.reply_text(reply)
     except Exception as e:
         logger.error(f"cmd_ask error: {e}", exc_info=True)
-        await update.message.reply_text(f"Error reaching Grok: {e}")
+        await update.message.reply_text(f"Error reaching Claude AI: {e}")
 
 # ============================================================
 # SCHEDULED MESSAGES
@@ -2874,7 +2950,7 @@ def send_morning_briefing():
 
     summary = " | ".join(lines)
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"Today is {now_label}. Morning market brief: {summary}. "
         f"Fear&Greed={fg_val}({fg_label}). "
         f"Top sectors: {', '.join(sector_lines)}. "
@@ -2886,14 +2962,14 @@ def send_morning_briefing():
         f"Indices:\n" + "\n".join(lines) + "\n\n"
         f"Fear & Greed: {fg_val} ({fg_label})\n\n"
         f"Top Sectors:\n" + "\n".join(sector_lines) + "\n\n"
-        f"Grok:\n{ai}"
+        f"Claude:\n{ai}"
     )
     send_dashboard_sync("Market Open")
 
 def send_daily_close_summary():
     logger.info("Daily close summary")
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"Today is {now_label}. Market just closed. "
         f"We had {daily_alerts} spike alerts today. "
         f"Give a 2-sentence close recap specific to today and 1 thing to watch overnight."
@@ -2901,7 +2977,7 @@ def send_daily_close_summary():
     send_telegram(
         f"🔔 Daily Close Summary\n"
         f"Alerts today: {daily_alerts}\n\n"
-        f"Grok Recap: {ai}"
+        f"Claude Recap: {ai}"
     )
     send_dashboard_sync("Market Close")
 
@@ -2909,8 +2985,9 @@ def send_startup_message():
     session      = get_trading_session()
     status_str   = "OPEN Regular" if session == "regular" else "OPEN Extended" if session == "extended" else "CLOSED"
     now_label    = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
-    ai_sentiment = get_grok_response(
-        f"Today is {now_label}. Current market sentiment in 6 words."
+    ai_sentiment = get_ai_response(
+        f"Today is {now_label}. Current market sentiment in 6 words.",
+        fast=True
     )
     send_telegram(
         f"🚀 STOCK SPIKE MONITOR STARTED\n\n"
@@ -2918,9 +2995,9 @@ def send_startup_message():
         f"Market: {status_str}\n"
         f"Spike threshold: {THRESHOLD*100:.0f}%\n"
         f"Check interval: {CHECK_INTERVAL_MIN} min\n\n"
-        f"Grok: {ai_sentiment}\n\n"
+        f"Claude: {ai_sentiment}\n\n"
         f"Dashboard auto-sends: startup, 8:30 AM, 12:00 PM, 3:00 PM CT\n"
-        f"Type any question to chat with Grok AI!\n"
+        f"Type /ask <question> to chat with Claude AI!\n"
         f"Send /help for all commands."
     )
     send_dashboard_sync("Startup")
@@ -2942,7 +3019,7 @@ def send_weekly_digest():
     top_str = ", ".join([f"{t}({n})" for t, n in ranked[:5]])
 
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"Today is {now_label}. Weekly spike recap: {len(recent_alerts)} total alerts. "
         f"Most active: {top_str}. "
         f"Give a 2-sentence week summary specific to this week and one stock to watch next week."
@@ -2953,7 +3030,7 @@ def send_weekly_digest():
              "Most active tickers:"]
     for t, n in ranked[:8]:
         lines.append(f"  {t}: {n} alert{'s' if n > 1 else ''}")
-    lines += ["", f"Grok: {ai}"]
+    lines += ["", f"Claude: {ai}"]
     send_telegram("\n".join(lines))
 
 
@@ -2961,14 +3038,15 @@ def send_premarket_dashboard():
     """8:00 AM CT — pre-market snapshot before regular open."""
     logger.info("Pre-market dashboard")
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"Today is {now_label}. Pre-market trading has begun. "
         f"Give a 1-sentence pre-market mood based on current conditions "
-        f"and the one sector to watch at open."
+        f"and the one sector to watch at open.",
+        fast=True
     )
     send_telegram(
         f"Pre-Market Snapshot — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
-        f"Grok: {ai}"
+        f"Claude: {ai}"
     )
     send_dashboard_sync("Pre-Market")
 
@@ -2979,11 +3057,12 @@ def send_midday_dashboard():
         return
     logger.info("Mid-day dashboard")
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
-    ai = get_grok_response(
+    ai = get_ai_response(
         f"Today is {now_label}. Mid-session check: {daily_alerts} spike alerts so far. "
-        f"One-sentence mid-day market read based on current conditions."
+        f"One-sentence mid-day market read based on current conditions.",
+        fast=True
     )
-    send_telegram(f"Mid-Day Check-In\nAlerts so far: {daily_alerts}\nGrok: {ai}")
+    send_telegram(f"Mid-Day Check-In\nAlerts so far: {daily_alerts}\nClaude: {ai}")
     send_dashboard_sync("Mid-Day")
 
 
