@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import pytz
 import logging
-from collections import deque
+from collections import defaultdict, deque
 import anthropic
 from openai import OpenAI   # kept for Grok fallback only
 import os
@@ -36,6 +36,13 @@ GROK_API_KEY      = os.getenv("GROK_API_KEY")        # fallback only
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID           = os.getenv("CHAT_ID")
 FMP_API_KEY       = os.getenv("FMP_API_KEY")
+
+# FMP stable API endpoints (v3 is deprecated for newer accounts)
+FMP_ENDPOINTS = {
+    "actives": "https://financialmodelingprep.com/stable/most-actives",
+    "gainers": "https://financialmodelingprep.com/stable/biggest-gainers",
+    "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
+}
 
 THRESHOLD           = 0.03
 MIN_PRICE           = 5.0
@@ -1041,14 +1048,11 @@ def get_dynamic_hot_stocks():
     candidates = list(CORE_TICKERS)  # always anchor with core 30
 
     # ── Pool 1: FMP market data (actives + gainers + losers) ──────
-    for endpoint in ("stock_market/actives", "stock_market/gainers", "stock_market/losers"):
+    for name, url in FMP_ENDPOINTS.items():
         if not FMP_API_KEY:
             break
         try:
-            r = requests.get(
-                f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
-                timeout=10
-            )
+            r = requests.get(f"{url}?apikey={FMP_API_KEY}", timeout=10)
             data = r.json()
             if isinstance(data, list):
                 candidates.extend(
@@ -1056,7 +1060,7 @@ def get_dynamic_hot_stocks():
                     if isinstance(item, dict) and item.get("symbol")
                 )
         except Exception as e:
-            logger.debug(f"FMP {endpoint}: {e}")
+            logger.debug(f"FMP {name}: {e}")
 
     # ── Pool 2: Recent spike alerts (tickers that already moved) ──
     for alert_str in list(recent_alerts)[-50:]:
@@ -1127,16 +1131,12 @@ def ai_refresh_watchlist(mode="premarket"):
     context_parts.append(f"Core tickers (always kept): {', '.join(CORE_TICKERS)}")
 
     # FMP market data — yesterday's movers
-    for endpoint_label, endpoint in [("Most Active", "stock_market/actives"),
-                                      ("Top Gainers", "stock_market/gainers"),
-                                      ("Top Losers", "stock_market/losers")]:
+    fmp_labels = {"actives": "Most Active", "gainers": "Top Gainers", "losers": "Top Losers"}
+    for name, url in FMP_ENDPOINTS.items():
         if not FMP_API_KEY:
             break
         try:
-            r = requests.get(
-                f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
-                timeout=10
-            )
+            r = requests.get(f"{url}?apikey={FMP_API_KEY}", timeout=10)
             data = r.json()
             if isinstance(data, list):
                 items = []
@@ -1146,9 +1146,9 @@ def ai_refresh_watchlist(mode="premarket"):
                         chg = item.get("changesPercentage", 0)
                         items.append(f"{sym} ({chg:+.1f}%)" if chg else sym)
                 if items:
-                    context_parts.append(f"{endpoint_label}: {', '.join(items)}")
+                    context_parts.append(f"{fmp_labels[name]}: {', '.join(items)}")
         except Exception as e:
-            logger.debug(f"AI watchlist FMP {endpoint}: {e}")
+            logger.debug(f"AI watchlist FMP {name}: {e}")
 
     # Top squeeze scores
     if squeeze_scores:
@@ -2801,15 +2801,12 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     await update.message.reply_text("Fetching live movers...")
 
-    def _fmp_symbols_with_data(endpoint):
-        """Get symbol list WITH price data from FMP endpoint."""
+    def _fmp_symbols_with_data(url):
+        """Get symbol list WITH price data from FMP stable endpoint."""
         if not FMP_API_KEY:
             return [], []
         try:
-            r = requests.get(
-                f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
-                timeout=10
-            )
+            r = requests.get(f"{url}?apikey={FMP_API_KEY}", timeout=10)
             data = r.json()
             if isinstance(data, list) and data:
                 syms = [item.get("symbol") for item in data[:40] if item.get("symbol")]
@@ -2827,7 +2824,7 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         })
                 return syms, fmp_items
         except Exception as e:
-            logger.debug(f"FMP {endpoint}: {e}")
+            logger.debug(f"FMP movers {url}: {e}")
         return [], []
 
     def _live_quote(sym):
@@ -2866,9 +2863,9 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Step 1: collect symbol universe from FMP (with fallback data) ─
     fmp_data_items = []
     with ThreadPoolExecutor(max_workers=3) as pool:
-        f_gain = pool.submit(_fmp_symbols_with_data, "stock_market/gainers")
-        f_lose = pool.submit(_fmp_symbols_with_data, "stock_market/losers")
-        f_act  = pool.submit(_fmp_symbols_with_data, "stock_market/actives")
+        f_gain = pool.submit(_fmp_symbols_with_data, FMP_ENDPOINTS["gainers"])
+        f_lose = pool.submit(_fmp_symbols_with_data, FMP_ENDPOINTS["losers"])
+        f_act  = pool.submit(_fmp_symbols_with_data, FMP_ENDPOINTS["actives"])
 
     gain_syms, gain_data = f_gain.result()
     lose_syms, lose_data = f_lose.result()
@@ -2967,182 +2964,161 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not FMP_API_KEY:
-        await update.message.reply_text(
-            "Earnings calendar requires FMP_API_KEY.\n"
-            "Get a free key at financialmodelingprep.com and add it to Railway env vars."
-        )
-        return
-    try:
-        today = datetime.now().date()
-        end   = today + timedelta(days=7)
-        r = requests.get(
-            f"https://financialmodelingprep.com/api/v3/earning_calendar"
-            f"?from={today}&to={end}&apikey={FMP_API_KEY}",
-            timeout=10
-        )
-        data = r.json()
-        if not isinstance(data, list) or not data:
-            await update.message.reply_text("No upcoming earnings found.")
-            return
-        lines = ["Upcoming Earnings (7 days):"]
-        for item in data[:15]:
-            sym  = item.get('symbol','')
-            date = item.get('date','')
-            eps  = item.get('epsEstimated','?')
-            lines.append(f"• {sym} on {date} (EPS est: {eps})")
-        await update.message.reply_text("\n".join(lines))
-    except Exception as e:
-        await update.message.reply_text(f"Unable to fetch earnings: {e}")
-
-async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Upcoming macro events — sources in priority order:
-      1. Finnhub economic calendar (free tier, live dates)
-      2. FMP economic calendar
-      3. Claude AI fallback with today's date explicitly injected
-    """
-    today     = datetime.now(CT).date()
-    end       = today + timedelta(days=14)
+    today = datetime.now(CT).date()
+    end = today + timedelta(days=7)
     today_str = today.strftime("%Y-%m-%d")
-    end_str   = end.strftime("%Y-%m-%d")
-    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
+    end_str = end.strftime("%Y-%m-%d")
 
-    HIGH_IMPACT_KEYWORDS = [
-        "CPI", "PPI", "GDP", "NFP", "Nonfarm", "FOMC", "Federal Reserve",
-        "Unemployment", "Jobless", "Retail Sales", "PCE", "ISM", "PMI",
-        "Housing", "Consumer Confidence", "Durable Goods", "Trade Balance",
-        "Interest Rate", "Inflation", "Payroll"
-    ]
-
-    def _is_relevant(name: str, impact: str) -> bool:
-        if impact in ("High", "Medium", "3", "2"):
-            return True
-        name_up = name.upper()
-        return any(k.upper() in name_up for k in HIGH_IMPACT_KEYWORDS)
-
-    def _parse_finnhub(data) -> list:
-        events = []
-        if not isinstance(data, list):
-            return events
-        for item in data:
-            name   = item.get("event", "") or ""
-            impact = item.get("impact", "") or ""
-            date   = (item.get("time", "") or "")[:10]
-            if not date or date < today_str:        # skip past events
-                continue
-            if _is_relevant(name, impact):
-                events.append({
-                    "date":   date,
-                    "event":  name,
-                    "impact": impact,
-                    "est":    str(item.get("estimate", "") or ""),
-                    "prev":   str(item.get("prev", "") or ""),
-                    "actual": str(item.get("actual", "") or ""),
-                })
-        return sorted(events, key=lambda x: x["date"])[:15]
-
-    def _parse_fmp(data) -> list:
-        events = []
-        if not isinstance(data, list):
-            return events
-        for item in data:
-            name   = item.get("event", "") or ""
-            impact = item.get("impact", "") or ""
-            date   = (item.get("date", "") or "")[:10]
-            if not date or date < today_str:
-                continue
-            if _is_relevant(name, impact):
-                events.append({
-                    "date":   date,
-                    "event":  name,
-                    "impact": impact,
-                    "est":    str(item.get("estimate", "") or ""),
-                    "prev":   str(item.get("previous", "") or ""),
-                    "actual": str(item.get("actual", "") or ""),
-                })
-        return sorted(events, key=lambda x: x["date"])[:15]
-
-    def _format_events(events: list, source: str) -> str:
-        lines = [f"Macro Calendar — next 14 days (from {now_label})",
-                 f"Source: {source}", ""]
-        for e in events:
-            tag = "[HIGH]" if e["impact"] in ("High", "3") else "[MED] "
-            parts = [f"{tag} {e['date']}  {e['event']}"]
-            if e["est"]:
-                parts.append(f"est={e['est']}")
-            if e["prev"]:
-                parts.append(f"prev={e['prev']}")
-            if e["actual"]:
-                parts.append(f"actual={e['actual']}")
-            lines.append("  ".join(parts))
-        return "\n".join(lines)
-
-    events = []
+    earnings = []
     source = ""
 
-    # ── 1. Finnhub (free tier supports economic calendar) ─────
-    try:
-        r = requests.get(
-            f"https://finnhub.io/api/v1/calendar/economic"
-            f"?from={today_str}&to={end_str}&token={FINNHUB_TOKEN}",
-            timeout=10
-        )
-        raw = r.json()
-        # Finnhub wraps results in {"economicCalendar": [...]}
-        if isinstance(raw, dict):
-            raw = raw.get("economicCalendar", raw)
-        events = _parse_finnhub(raw)
-        if events:
-            source = "Finnhub"
-            logger.info(f"Macro: {len(events)} events from Finnhub")
-    except Exception as e:
-        logger.warning(f"Finnhub macro failed: {e}")
+    # ── 1. Primary: Finnhub earnings calendar ──────────────────
+    if FINNHUB_TOKEN:
+        try:
+            if not _finnhub_limiter.acquire(timeout=15):
+                logger.warning("Finnhub rate limit: skipping earnings calendar")
+            else:
+                r = requests.get(
+                    f"https://finnhub.io/api/v1/calendar/earnings"
+                    f"?from={today_str}&to={end_str}&token={FINNHUB_TOKEN}",
+                    timeout=10
+                )
+                if r.status_code == 200:
+                    raw = r.json()
+                    cal = raw.get("earningsCalendar", []) if isinstance(raw, dict) else []
+                    if cal:
+                        total_count = len(cal)
+                        # Prioritize well-known names from TICKERS
+                        known = set(TICKERS) | set(CORE_TICKERS)
+                        priority = [e for e in cal if e.get("symbol") in known]
+                        others = [e for e in cal if e.get("symbol") not in known]
+                        combined = priority + others
+                        earnings = combined[:20]
+                        source = f"Finnhub ({total_count} companies reporting)"
+                        logger.info(f"Earnings: {len(earnings)} shown from {total_count} via Finnhub")
+        except Exception as e:
+            logger.warning(f"Finnhub earnings failed: {e}")
 
-    # ── 2. FMP fallback ───────────────────────────────────────
-    if not events and FMP_API_KEY:
+    # ── 2. Fallback: FMP stable earnings calendar ──────────────
+    if not earnings and FMP_API_KEY:
         try:
             r = requests.get(
-                f"https://financialmodelingprep.com/api/v3/economic_calendar"
+                f"https://financialmodelingprep.com/stable/earnings-calendar"
                 f"?from={today_str}&to={end_str}&apikey={FMP_API_KEY}",
                 timeout=10
             )
-            events = _parse_fmp(r.json())
-            if events:
+            data = r.json()
+            if isinstance(data, list) and data:
+                earnings = data[:20]
                 source = "FMP"
-                logger.info(f"Macro: {len(events)} events from FMP")
+                logger.info(f"Earnings: {len(earnings)} from FMP stable")
         except Exception as e:
-            logger.warning(f"FMP macro failed: {e}")
+            logger.warning(f"FMP earnings failed: {e}")
 
-    # ── 3. Grok fallback — date anchored ─────────────────────
-    if not events:
-        logger.warning("Macro: both APIs failed, using date-anchored Grok fallback")
+    # ── 3. Fallback: AI ────────────────────────────────────────
+    if not earnings:
+        now_label = datetime.now(CT).strftime("%A %B %d, %Y")
         ai = get_ai_response(
-            f"Today is {now_label}. "
-            f"List the actual scheduled US macro events for the next 14 days "
-            f"(from {today_str} to {end_str}), including real scheduled dates. "
-            f"Include: CPI, PPI, FOMC meetings, NFP, PCE, Retail Sales, GDP if applicable. "
-            f"Format each line as: DATE  EVENT  (est: X). "
-            f"Only include events actually scheduled in this window. "
-            f"Do not reference any events from 2024.",
-            max_tokens=500
+            f"Today is {now_label}. List the most notable US stock earnings "
+            f"reports scheduled from {today_str} to {end_str}. "
+            f"For each, show: symbol, date, before/after market, EPS estimate. "
+            f"Focus on large-cap and well-known companies. Max 20 entries.",
+            max_tokens=600
         )
         await update.message.reply_text(
-            f"Macro Calendar — {now_label}\n"
-            f"(Live calendar unavailable — Grok estimate)\n\n"
-            f"{ai}"
+            f"EARNINGS — Next 7 Days\n\n{ai}\n\n"
+            f"Source: Claude AI"
         )
         return
 
-    # ── Format + Grok commentary ──────────────────────────────
-    body       = _format_events(events, source)
-    event_names = ", ".join([e["event"] for e in events[:5]])
-    ai = get_ai_response(
-        f"Today is {now_label}. "
-        f"Upcoming macro events this week: {event_names}. "
-        f"Which is most market-moving and why? One sentence, current context only."
+    # ── Format grouped by date ─────────────────────────────────
+    by_date = defaultdict(list)
+    for item in earnings:
+        sym = item.get("symbol", "")
+        date_str = item.get("date", "")
+        if not sym or not date_str:
+            continue
+        # Finnhub uses epsEstimate, FMP uses epsEstimated
+        eps = item.get("epsEstimate") or item.get("epsEstimated") or ""
+        hour = item.get("hour", "")
+        if hour == "bmo":
+            hour_label = "Before Open"
+        elif hour == "amc":
+            hour_label = "After Close"
+        else:
+            hour_label = ""
+        by_date[date_str].append((sym, hour_label, eps))
+
+    lines = ["EARNINGS — Next 7 Days", ""]
+    for date_str in sorted(by_date.keys()):
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            day_label = dt.strftime("%b %d (%a)")
+        except ValueError:
+            day_label = date_str
+        lines.append(day_label)
+        for sym, hour_label, eps in by_date[date_str]:
+            parts = [f"  {sym:<6}"]
+            if hour_label:
+                parts.append(f"{hour_label:<13}")
+            if eps:
+                try:
+                    parts.append(f"EPS est ${float(eps):.2f}")
+                except (ValueError, TypeError):
+                    parts.append(f"EPS est {eps}")
+            lines.append(" ".join(parts))
+    lines.append(f"\nSource: {source}")
+
+    await update.message.reply_text("\n".join(lines))
+
+async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Upcoming macro events — Claude AI primary source.
+    (Finnhub economic calendar requires paid tier; FMP economic calendar
+    returns 402 on this plan. Both removed to avoid wasted API calls.)
+    """
+    today = datetime.now(CT)
+    today_str = today.strftime("%Y-%m-%d")
+    now_label = today.strftime("%A %B %d, %Y")
+    end = today + timedelta(days=14)
+    end_str = end.strftime("%Y-%m-%d")
+
+    await update.message.reply_text("Fetching macro calendar...")
+
+    prompt = (
+        f"Today is {now_label}. List the scheduled US macroeconomic "
+        f"events from {today_str} to {end_str}. Include ONLY events "
+        f"that are actually on the official economic calendar:\n"
+        f"- FOMC meetings/minutes/rate decisions\n"
+        f"- CPI, Core CPI\n"
+        f"- PPI, Core PPI\n"
+        f"- Nonfarm Payrolls (NFP)\n"
+        f"- Unemployment Rate\n"
+        f"- PCE Price Index\n"
+        f"- GDP (advance/preliminary/final)\n"
+        f"- Retail Sales\n"
+        f"- ISM Manufacturing/Services PMI\n"
+        f"- Consumer Confidence\n"
+        f"- Durable Goods Orders\n"
+        f"- Housing Starts/Existing Home Sales\n"
+        f"- Initial Jobless Claims (weekly, Thursdays)\n\n"
+        f"Format EXACTLY as:\n"
+        f"DATE (Day)\n"
+        f"  TIME EVENT [Impact]\n\n"
+        f"Example:\n"
+        f"Mar 14 (Fri)\n"
+        f"  8:30am  CPI (Feb) [HIGH]\n"
+        f"  10:00am Consumer Sentiment [MED]\n\n"
+        f"Only include events you are confident about. "
+        f"Mark impact as [HIGH] or [MED]. "
+        f"If you're not sure about a date, skip it."
     )
-    await update.message.reply_text(body + f"\n\nClaude: {ai}")
+
+    ai = get_ai_response(prompt, max_tokens=800)
+
+    header = f"MACRO CALENDAR\n{now_label} — next 14 days\n"
+    footer = "\nSource: Claude AI"
+    await update.message.reply_text(header + "\n" + ai + footer)
 
 
 
@@ -3673,7 +3649,7 @@ def build_dashboard_image() -> BytesIO:
             # Supplement with FMP actives if watchlist is thin
             try:
                 r = requests.get(
-                    f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}",
+                    f"{FMP_ENDPOINTS['actives']}?apikey={FMP_API_KEY}",
                     timeout=8
                 )
                 fmp_data = r.json()
@@ -3833,7 +3809,7 @@ def build_dashboard_image() -> BytesIO:
                         transform=ax.transAxes, clip_on=False)
 
     # ── Figure & grid (portrait/mobile layout) ──────────────
-    fig = plt.figure(figsize=(10, 24), facecolor=BG)
+    fig = plt.figure(figsize=(12, 24), facecolor=BG)
     fig.patch.set_facecolor(BG)
     gs = gridspec.GridSpec(
         8, 2, figure=fig,
@@ -4093,7 +4069,7 @@ def build_dashboard_image() -> BytesIO:
 
     # ── Save ──────────────────────────────────────────────────
     buf = BytesIO()
-    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight",
                 facecolor=BG, edgecolor="none")
     plt.close(fig)
     buf.seek(0)
