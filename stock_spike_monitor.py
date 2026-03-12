@@ -44,9 +44,9 @@ CHECK_INTERVAL_MIN  = 1
 VOLUME_SPIKE_MULT   = 2.0
 LOG_FILE            = "stock_spike_monitor.log"
 
-# -- Claude models ---------------------------------------------
-# Sonnet  ? deep analysis, /ask, briefings, macro, compare
-# Haiku   ? high-frequency: spike alerts, signal scores, dashboard one-liner
+# ── Claude models ─────────────────────────────────────────────
+# Sonnet  -> deep analysis, /ask, briefings, macro, compare
+# Haiku   -> high-frequency: spike alerts, signal scores, dashboard one-liner
 CLAUDE_SONNET = "claude-sonnet-4-5"
 CLAUDE_HAIKU  = "claude-haiku-4-5-20251001"
 GROK_MODEL    = "grok-4-1-fast-non-reasoning"   # fallback
@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 CT = pytz.timezone('America/Chicago')
 
 # ============================================================
-# AI CLIENTS ï¿½ Claude primary, Grok fallback
+# AI CLIENTS — Claude primary, Grok fallback
 # ============================================================
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 grok_client   = OpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1") if GROK_API_KEY else None
@@ -74,21 +74,21 @@ grok_client   = OpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1") if 
 if claude_client:
     logger.info("AI: Claude (primary) initialised")
 elif grok_client:
-    logger.info("AI: Grok (fallback only ï¿½ no ANTHROPIC_API_KEY set)")
+    logger.info("AI: Grok (fallback only — no ANTHROPIC_API_KEY set)")
 else:
-    logger.warning("AI: No AI client available ï¿½ set ANTHROPIC_API_KEY in Railway")
+    logger.warning("AI: No AI client available — set ANTHROPIC_API_KEY in Railway")
 
 # ============================================================
 # BOT DESCRIPTION (used by /about and natural-language handler)
 # ============================================================
 BOT_DESCRIPTION = (
-    "?? Stock Spike Monitor\n"
-    "24/7 ï¿½ 60+ stocks ï¿½ =3% spike alerts ï¿½ Claude AI ï¿½ RSI/BB/Squeeze\n"
+    "📡 Stock Spike Monitor\n"
+    "24/7 | 60+ stocks | ≥3% spike alerts | Claude AI | RSI/BB/Squeeze\n"
     "\n"
     "MARKET PULSE\n"
-    "  /overview            indices ï¿½ sectors ï¿½ Fear & Greed ï¿½ AI outlook\n"
+    "  /overview            indices | sectors | Fear & Greed | AI outlook\n"
     "  /crypto              BTC ETH SOL DOGE XRP\n"
-    "  /macro               CPI ï¿½ Fed ï¿½ NFP ï¿½ FOMC calendar\n"
+    "  /macro               CPI | Fed | NFP | FOMC calendar\n"
     "  /earnings            next 7 days\n"
     "\n"
     "MOVERS\n"
@@ -96,24 +96,24 @@ BOT_DESCRIPTION = (
     "  /movers gainers      top 5 up\n"
     "  /movers losers       top 5 down\n"
     "  /movers volume       most active\n"
-    "  /movers lowprice     $1ï¿½$10 rockets\n"
+    "  /movers lowprice     $1-$10 rockets\n"
     "\n"
     "STOCK TOOLS\n"
     "  /price TICK          live quote + day range\n"
-    "  /analyze TICK        AI deep dive: catalyst ï¿½ risk ï¿½ technicals\n"
+    "  /analyze TICK        AI deep dive: catalyst | risk | technicals\n"
     "  /compare TICK TICK   side-by-side AI verdict\n"
     "  /chart TICK          intraday sparkline + VWAP + volume\n"
-    "  /rsi TICK            RSI(14) ï¿½ Bollinger Bands ï¿½ squeeze score\n"
+    "  /rsi TICK            RSI(14) | Bollinger Bands | squeeze score\n"
     "  /news TICK           latest headlines\n"
     "\n"
     "ALERTS\n"
     "  /spikes              recent spikes (last 30 min)\n"
     "  /alerts              all alerts fired today\n"
-    "  /squeeze             top squeeze candidates (0ï¿½100 score)\n"
+    "  /squeeze             top squeeze candidates (0-100 score)\n"
     "  /setalert TICK $     custom price target\n"
-    "  /watchlist           add ï¿½ remove ï¿½ scan your list\n"
+    "  /watchlist           add | remove | scan your list\n"
     "\n"
-    "PAPER TRADING  (simulated ï¿½ $100k ï¿½ bullish only)\n"
+    "PAPER TRADING  (simulated | $100k | bullish only)\n"
     "  /paper               portfolio value + open positions\n"
     "  /paper positions     live P&L on each position\n"
     "  /paper trades        today's buys & sells\n"
@@ -131,11 +131,11 @@ BOT_DESCRIPTION = (
     "BOT\n"
     "  /dashboard           send visual dashboard now\n"
     "  /list                all monitored tickers\n"
-    "  /monitoring          pause ï¿½ resume ï¿½ status\n"
+    "  /monitoring          pause | resume | status\n"
     "  /help                this menu\n"
     "\n"
-    "?? Auto: 8am pre-mkt ï¿½ 8:30 open ï¿½ 12pm mid-day ï¿½ 3pm close ï¿½ 6pm recap\n"
-    "         Sat 9am watchlist prep ï¿½ Sun 6pm weekly digest  (all times CT)"
+    "📊 Auto: 8am pre-mkt | 8:30 open | 12pm mid-day | 3pm close | 6pm recap\n"
+    "         Sat 9am watchlist prep | Sun 6pm weekly digest  (all times CT)"
 )
 
 # ============================================================
@@ -188,7 +188,7 @@ def send_telegram(text, chat_id=None):
                 )
                 if r.status_code == 429:          # rate-limited
                     wait = int(r.json().get("parameters", {}).get("retry_after", 2 ** attempt))
-                    logger.warning(f"Telegram 429 ï¿½ sleeping {wait}s")
+                    logger.warning(f"Telegram 429 — sleeping {wait}s")
                     time.sleep(wait)
                     continue
                 time.sleep(0.3)
@@ -199,7 +199,7 @@ def send_telegram(text, chat_id=None):
                 time.sleep(wait)
 
 # ============================================================
-# AI HELPERS ï¿½ Claude primary, Grok fallback, exponential backoff
+# AI HELPERS — Claude primary, Grok fallback, exponential backoff
 # ============================================================
 
 def _build_system(today_stamp: str) -> str:
@@ -209,7 +209,7 @@ def _build_system(today_stamp: str) -> str:
         f"STRICT RULES: "
         f"(1) Only state facts you are confident are true as of this date. "
         f"(2) Do NOT invent specific events, earnings dates, economic reports, "
-        f"strikes, executive statements, or price levels ï¿½ if uncertain, omit or say so. "
+        f"strikes, executive statements, or price levels — if uncertain, omit or say so. "
         f"(3) When live data is provided in the prompt, use it. "
         f"When it is not, give general analysis and clearly flag uncertainty. "
         f"(4) Never reference events, prices, or news from prior years unless asked. "
@@ -220,15 +220,15 @@ def _build_system(today_stamp: str) -> str:
 def get_ai_response(prompt, system=None, max_tokens=300, fast=False):
     """
     Single-turn AI response.
-    fast=True  ? Claude Haiku  (spike alerts, signals, dashboard ï¿½ high frequency)
-    fast=False ? Claude Sonnet (analysis, briefings, /ask ï¿½ quality matters)
+    fast=True  -> Claude Haiku  (spike alerts, signals, dashboard — high frequency)
+    fast=False -> Claude Sonnet (analysis, briefings, /ask — quality matters)
     Falls back to Grok if Claude is unavailable.
     """
     today_stamp = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
     sys_msg     = system or _build_system(today_stamp)
     model       = CLAUDE_HAIKU if fast else CLAUDE_SONNET
 
-    # -- Claude (primary) --------------------------------------
+    # ── Claude (primary) ──────────────────────────────────────
     if claude_client:
         for attempt in range(4):
             try:
@@ -251,9 +251,9 @@ def get_ai_response(prompt, system=None, max_tokens=300, fast=False):
             except Exception as e:
                 logger.error(f"Claude error (attempt {attempt+1}): {e}")
                 time.sleep(2 ** attempt)
-        logger.warning("Claude failed all retries ï¿½ falling back to Grok")
+        logger.warning("Claude failed all retries — falling back to Grok")
 
-    # -- Grok (fallback) ---------------------------------------
+    # ── Grok (fallback) ───────────────────────────────────────
     if grok_client:
         for attempt in range(3):
             try:
@@ -272,7 +272,7 @@ def get_ai_response(prompt, system=None, max_tokens=300, fast=False):
                 logger.error(f"Grok fallback error (attempt {attempt+1}): {e}")
                 time.sleep(2 ** attempt)
 
-    return "AI unavailable ï¿½ set ANTHROPIC_API_KEY in Railway"
+    return "AI unavailable — set ANTHROPIC_API_KEY in Railway"
 
 
 def get_ai_conversation(chat_id: str, user_message: str) -> str:
@@ -287,7 +287,7 @@ def get_ai_conversation(chat_id: str, user_message: str) -> str:
         f"STRICT RULES: "
         f"(1) Only state specific events, dates, or prices you are confident are accurate. "
         f"(2) Do NOT fabricate earnings dates, economic reports, executive statements, "
-        f"strikes, mergers, or scheduled events ï¿½ if uncertain, say so explicitly. "
+        f"strikes, mergers, or scheduled events — if uncertain, say so explicitly. "
         f"(3) When the user's message contains live price data in [brackets], use it. "
         f"(4) Distinguish clearly between what you know vs. what is uncertain. "
         f"Be concise. Use plain text, no markdown."
@@ -299,7 +299,7 @@ def get_ai_conversation(chat_id: str, user_message: str) -> str:
         history = history[-20:]
         conversation_history[chat_id] = history
 
-    # -- Claude (primary) --------------------------------------
+    # ── Claude (primary) ──────────────────────────────────────
     if claude_client:
         try:
             resp = claude_client.messages.create(
@@ -312,11 +312,11 @@ def get_ai_conversation(chat_id: str, user_message: str) -> str:
             history.append({"role": "assistant", "content": reply})
             return reply
         except anthropic.RateLimitError:
-            logger.warning("Claude rate limit in conversation ï¿½ trying Grok fallback")
+            logger.warning("Claude rate limit in conversation — trying Grok fallback")
         except Exception as e:
-            logger.error(f"Claude conversation error: {e} ï¿½ trying Grok fallback")
+            logger.error(f"Claude conversation error: {e} — trying Grok fallback")
 
-    # -- Grok (fallback) ---------------------------------------
+    # ── Grok (fallback) ───────────────────────────────────────
     if grok_client:
         try:
             resp = grok_client.chat.completions.create(
@@ -332,7 +332,7 @@ def get_ai_conversation(chat_id: str, user_message: str) -> str:
         except Exception as e:
             logger.error(f"Grok conversation fallback error: {e}")
 
-    return "AI unavailable ï¿½ set ANTHROPIC_API_KEY in Railway"
+    return "AI unavailable — set ANTHROPIC_API_KEY in Railway"
 
 # ============================================================
 # MARKET DATA HELPERS
@@ -377,76 +377,94 @@ def get_yf_info(ticker):
     except:
         return None
 
+def _finnhub_quote(ticker: str) -> dict:
+    """
+    Raw Finnhub quote. Returns dict with keys:
+      c (current), pc (prev close), h (day high), l (day low), v (volume)
+    Returns {} on failure.
+    """
+    try:
+        r = requests.get(
+            f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}",
+            timeout=8
+        )
+        d = r.json()
+        if d.get("c") and d["c"] > 0:
+            return d
+    except Exception as e:
+        logger.debug(f"Finnhub quote {ticker}: {e}")
+    return {}
+
+
+def _finnhub_metrics(ticker: str) -> dict:
+    """
+    Finnhub fundamental metrics — 52w high/low, market cap, avg volume.
+    Returns {} on failure.
+    """
+    try:
+        r = requests.get(
+            f"https://finnhub.io/api/v1/stock/metric?symbol={ticker}&metric=all&token={FINNHUB_TOKEN}",
+            timeout=8
+        )
+        return r.json().get("metric", {})
+    except Exception as e:
+        logger.debug(f"Finnhub metrics {ticker}: {e}")
+    return {}
+
+
 def get_ticker_data(ticker: str) -> dict:
     """
-    Robust ticker data fetch with 3-tier fallback for fields that
-    fast_info commonly returns as 0 (e.g. 52w high/low, avg volume).
+    Robust ticker data with Finnhub as primary source, yfinance as fallback.
 
-    Returns a normalised dict with keys:
-      price, chg, mcap, volume, high52, low52, avg_volume
+    Returns normalised dict:
+      price, chg, mcap, volume, high52, low52, avg_volume,
+      day_high, day_low, prev_close
     """
-    t = yf.Ticker(ticker)
-    d = {}
+    d = {k: 0 for k in ("price","chg","mcap","volume","high52","low52",
+                         "avg_volume","day_high","day_low","prev_close")}
 
-    # -- Tier 1: fast_info (fastest, least complete) -----------
-    try:
-        fi = t.fast_info
-        d["price"]      = fi.get("lastPrice") or 0
-        d["chg"]        = fi.get("regularMarketChangePercent") or 0
-        d["mcap"]       = fi.get("marketCap") or 0
-        d["volume"]     = fi.get("lastVolume") or 0
-        d["high52"]     = fi.get("fiftyTwoWeekHigh") or 0
-        d["low52"]      = fi.get("fiftyTwoWeekLow") or 0
-        d["avg_volume"] = fi.get("threeMonthAverageVolume") or 0
-    except Exception as e:
-        logger.debug(f"fast_info failed for {ticker}: {e}")
+    # ── Tier 1: Finnhub quote (primary — works on Railway) ────
+    q = _finnhub_quote(ticker)
+    if q:
+        d["price"]      = q.get("c") or 0
+        d["prev_close"] = q.get("pc") or 0
+        d["day_high"]   = q.get("h") or 0
+        d["day_low"]    = q.get("l") or 0
+        d["volume"]     = q.get("v") or 0
+        if d["price"] and d["prev_close"]:
+            d["chg"] = (d["price"] - d["prev_close"]) / d["prev_close"] * 100
 
-    # -- Tier 2: full .info dict (slower but complete) ---------
-    missing = [k for k in ("high52", "low52", "avg_volume") if not d.get(k)]
-    if missing:
+    # ── Tier 2: Finnhub metrics (52w range, mcap) ─────────────
+    m = _finnhub_metrics(ticker)
+    if m:
+        d["high52"]     = m.get("52WeekHigh") or 0
+        d["low52"]      = m.get("52WeekLow")  or 0
+        d["avg_volume"] = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
+        mcap_m          = m.get("marketCapitalization") or 0   # in millions
+        d["mcap"]       = mcap_m * 1_000_000
+
+    # ── Tier 3: yfinance fallback (if Finnhub returned nothing) ──
+    if not d["price"]:
         try:
-            info = t.info
-            if not d.get("price"):
-                d["price"]  = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-            if not d.get("chg"):
-                prev = info.get("regularMarketPreviousClose") or 0
-                curr = d["price"]
-                d["chg"] = ((curr - prev) / prev * 100) if prev else 0
-            if not d.get("mcap"):
-                d["mcap"]  = info.get("marketCap") or 0
-            if not d.get("volume"):
-                d["volume"] = info.get("volume") or 0
-            if not d.get("high52"):
-                d["high52"] = info.get("fiftyTwoWeekHigh") or 0
-            if not d.get("low52"):
-                d["low52"]  = info.get("fiftyTwoWeekLow") or 0
-            if not d.get("avg_volume"):
-                d["avg_volume"] = info.get("averageVolume") or info.get("averageVolume10days") or 0
+            t  = yf.Ticker(ticker)
+            fi = t.fast_info
+            d["price"]  = fi.get("lastPrice")    or fi.get("previousClose") or 0
+            d["volume"] = fi.get("lastVolume")   or 0
+            d["mcap"]   = fi.get("marketCap")    or 0
+            d["high52"] = fi.get("yearHigh")     or 0
+            d["low52"]  = fi.get("yearLow")      or 0
+            pc          = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+            if d["price"] and pc:
+                d["chg"] = (d["price"] - pc) / pc * 100
         except Exception as e:
-            logger.debug(f".info failed for {ticker}: {e}")
-
-    # -- Tier 3: compute from 1y history if still missing ------
-    if not d.get("high52") or not d.get("low52"):
-        try:
-            hist = t.history(period="1y")
-            if not hist.empty:
-                d["high52"] = float(hist["High"].max())
-                d["low52"]  = float(hist["Low"].min())
-                if not d.get("price"):
-                    d["price"] = float(hist["Close"].iloc[-1])
-        except Exception as e:
-            logger.debug(f"history fallback failed for {ticker}: {e}")
-
-    # -- Ensure all keys exist ---------------------------------
-    for k in ("price", "chg", "mcap", "volume", "high52", "low52", "avg_volume"):
-        d.setdefault(k, 0)
+            logger.debug(f"yfinance fallback {ticker}: {e}")
 
     return d
 
 
 
 # ============================================================
-# TECHNICALS ï¿½ RSI (Wilder), Bollinger Bands, Squeeze Score
+# TECHNICALS — RSI (Wilder), Bollinger Bands, Squeeze Score
 # ============================================================
 
 def compute_rsi(prices: list, period: int = 14):
@@ -475,8 +493,8 @@ def compute_rsi(prices: list, period: int = 14):
 def compute_bollinger(prices: list, period: int = 20, num_std: float = 2.0):
     """
     Returns (middle, upper, lower, pct_b, bandwidth).
-    pct_b = (price - lower) / (upper - lower)  ï¿½ 0=at lower, 1=at upper
-    bandwidth = (upper - lower) / middle        ï¿½ squeeze proxy (lower=tighter)
+    pct_b = (price - lower) / (upper - lower)  — 0=at lower, 1=at upper
+    bandwidth = (upper - lower) / middle        — squeeze proxy (lower=tighter)
     """
     if len(prices) < period:
         return None, None, None, None, None
@@ -494,12 +512,12 @@ def compute_bollinger(prices: list, period: int = 20, num_std: float = 2.0):
 
 def compute_squeeze_score(ticker: str) -> dict:
     """
-    Squeeze score 0ï¿½100 combining:
-      RSI distance from 40 (building momentum)  ï¿½ up to 30 pts
-      Bollinger bandwidth squeeze (low = tight)  ï¿½ up to 25 pts
-      %B near lower band (coiled spring)         ï¿½ up to 20 pts
-      Volume trend (rising vs prior scans)       ï¿½ up to 15 pts
-      Short interest ratio (Finnhub)             ï¿½ up to 10 pts
+    Squeeze score 0-100 combining:
+      RSI distance from 40 (building momentum)  — up to 30 pts
+      Bollinger bandwidth squeeze (low = tight)  — up to 25 pts
+      %B near lower band (coiled spring)         — up to 20 pts
+      Volume trend (rising vs prior scans)       — up to 15 pts
+      Short interest ratio (Finnhub)             — up to 10 pts
     Higher score = more squeeze-ready.
     """
     hist_raw = list(price_history.get(ticker, deque()))
@@ -584,25 +602,55 @@ def get_sector_performance():
     lines = []
     for sym, name in sectors.items():
         try:
-            info = yf.Ticker(sym).fast_info
-            chg  = info.get('regularMarketChangePercent', 0)
-            arrow = "?" if chg >= 0 else "?"
-            lines.append(f"{arrow} {name}: {chg:+.2f}%")
+            q = _finnhub_quote(sym)
+            if q:
+                price = q.get("c") or 0
+                pc    = q.get("pc") or 0
+                chg   = (price - pc) / pc * 100 if pc else 0
+            else:
+                fi  = yf.Ticker(sym).fast_info
+                price = fi.get("lastPrice") or 0
+                pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+                chg   = (price - pc) / pc * 100 if pc else 0
+            sign = "+" if chg >= 0 else ""
+            lines.append(f"{sign}{chg:.2f}% {name}")
         except:
             pass
     return lines
 
 def get_crypto_prices():
-    coins = ["BTC-USD","ETH-USD","SOL-USD","DOGE-USD","XRP-USD"]
+    coins = [("BTC-USD","BTC"), ("ETH-USD","ETH"), ("SOL-USD","SOL"),
+             ("DOGE-USD","DOGE"), ("XRP-USD","XRP")]
     lines = []
-    for coin in coins:
+    for sym, name in coins:
         try:
-            info = yf.Ticker(coin).fast_info
-            price = info.get('lastPrice', 0)
-            chg   = info.get('regularMarketChangePercent', 0)
-            name  = coin.replace("-USD","")
-            arrow = "?" if chg >= 0 else "?"
-            lines.append(f"{arrow} {name}: ${price:,.2f} ({chg:+.2f}%)")
+            # Try Finnhub crypto candle
+            fsym = f"BINANCE:{name}USDT"
+            r = requests.get(
+                f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
+                f"&resolution=D&count=2&token={FINNHUB_TOKEN}",
+                timeout=8
+            )
+            d = r.json()
+            closes = d.get("c", [])
+            if len(closes) >= 2:
+                price = closes[-1]
+                pc    = closes[-2]
+                chg   = (price - pc) / pc * 100 if pc else 0
+                sign  = "+" if chg >= 0 else ""
+                lines.append(f"{name}: ${price:,.2f} ({sign}{chg:.2f}%)")
+                continue
+        except:
+            pass
+        # yfinance fallback
+        try:
+            fi    = yf.Ticker(sym).fast_info
+            price = fi.get("lastPrice") or 0
+            pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+            chg   = (price - pc) / pc * 100 if pc else 0
+            if price:
+                sign = "+" if chg >= 0 else ""
+                lines.append(f"{name}: ${price:,.2f} ({sign}{chg:.2f}%)")
         except:
             pass
     return lines
@@ -610,74 +658,122 @@ def get_crypto_prices():
 
 def fetch_market_snapshot() -> dict:
     """
-    Fetch a comprehensive live market snapshot concurrently.
-    Returns a dict with all data pre-formatted for both display
-    and Claude prompt injection.
+    Live market snapshot using Finnhub as primary data source.
+    ETF proxies used for indices (Finnhub handles ETFs reliably):
+      SPY -> S&P 500 | QQQ -> Nasdaq | DIA -> Dow | IWM -> Russell
 
-    Keys:
-      indices_lines  ï¿½ list of formatted index strings
-      indices_str    ï¿½ single-line summary for Claude prompts
-      sector_lines   ï¿½ list of formatted sector strings
-      sector_str     ï¿½ top 3 sectors for Claude prompts
-      fg_val         ï¿½ Fear & Greed value (int)
-      fg_label       ï¿½ Fear & Greed label (str)
-      fg_str         ï¿½ formatted F&G string
-      vix            ï¿½ VIX price (float)
-      crypto_lines   ï¿½ list of formatted crypto strings
-      crypto_str     ï¿½ top 3 crypto for Claude prompts
-      movers_str     ï¿½ top gainers/losers from watchlist for Claude
-      now_label      ï¿½ formatted date string
-      session        ï¿½ trading session string
+    Returns dict with display-ready strings and Claude prompt strings.
     """
+    INDEX_MAP = [
+        ("SPY",  "S&P 500"),
+        ("QQQ",  "Nasdaq"),
+        ("DIA",  "Dow"),
+        ("IWM",  "Russell 2K"),
+        ("VXX",  "VIX ETF"),
+    ]
+    SECTOR_MAP = [
+        ("XLK","Tech"), ("XLF","Fin"), ("XLE","Energy"),
+        ("XLV","Health"), ("XLI","Indust"), ("XLC","Comm"),
+        ("XLY","Cons D"), ("XLP","Cons S"), ("XLB","Mat"),
+        ("XLRE","RE"), ("XLU","Util"),
+    ]
+    FUTURES_MAP = [
+        ("ES=F","S&P Fut"), ("NQ=F","Ndaq Fut"), ("YM=F","Dow Fut"),
+    ]
+
+    def _q(sym):
+        """Finnhub quote -> (price, chg_pct). Falls back to yfinance."""
+        q = _finnhub_quote(sym)
+        if q:
+            price = q.get("c") or 0
+            pc    = q.get("pc") or 0
+            chg   = (price - pc) / pc * 100 if pc else 0
+            return price, chg
+        try:
+            fi    = yf.Ticker(sym).fast_info
+            price = fi.get("lastPrice") or fi.get("previousClose") or 0
+            pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+            chg   = (price - pc) / pc * 100 if pc else 0
+            return price, chg
+        except:
+            return 0, 0
+
+    def _fmt(price, chg, name, is_index=True):
+        sign = "+" if chg >= 0 else ""
+        if is_index:
+            return f"  {name}: ${price:,.2f} ({sign}{chg:.2f}%)"
+        return f"  {name}: {sign}{chg:.2f}%"
+
     def _fetch_indices():
-        syms = [("^GSPC","S&P 500"),("^IXIC","Nasdaq"),("^DJI","Dow"),
-                ("^RUT","Russell"),("^VIX","VIX")]
-        lines, summary_parts, vix = [], [], 0.0
-        for sym, name in syms:
-            try:
-                fi    = yf.Ticker(sym).fast_info
-                price = fi.get("lastPrice") or 0
-                chg   = fi.get("regularMarketChangePercent") or 0
-                arrow = "?" if chg >= 0 else "?"
-                if name == "VIX":
-                    vix = price
-                    lines.append(f"{arrow} VIX: {price:.2f} ({chg:+.2f}%)")
-                else:
-                    lines.append(f"{arrow} {name}: {price:,.2f} ({chg:+.2f}%)")
-                    summary_parts.append(f"{name} {chg:+.2f}%")
-            except:
-                pass
-        return lines, " | ".join(summary_parts), vix
+        lines, summary, vix = [], [], 0.0
+        for sym, name in INDEX_MAP:
+            price, chg = _q(sym)
+            if not price:
+                continue
+            sign = "+" if chg >= 0 else ""
+            if "VIX" in name:
+                vix = price
+                lines.append(f"  {name}: ${price:.2f} ({sign}{chg:.2f}%)")
+            else:
+                lines.append(f"  {name}: ${price:,.2f} ({sign}{chg:.2f}%)")
+                summary.append(f"{name} {sign}{chg:.2f}%")
+        return lines, " | ".join(summary) or "indices unavailable", vix
 
     def _fetch_sectors():
-        syms = [("XLK","Tech"),("XLF","Fin"),("XLE","Energy"),
-                ("XLV","Health"),("XLI","Indust"),("XLC","Comm"),
-                ("XLY","Cons D"),("XLP","Cons S"),("XLB","Mat"),
-                ("XLRE","RE"),("XLU","Util")]
+        rows = []
+        for sym, name in SECTOR_MAP:
+            price, chg = _q(sym)
+            if not price:
+                continue
+            rows.append((name, chg))
+        rows.sort(key=lambda x: x[1], reverse=True)
+        lines = [f"  {n}: {'+'if c>=0 else ''}{c:.2f}%" for n, c in rows]
+        top3  = ", ".join(f"{n} {'+'if c>=0 else ''}{c:.2f}%" for n, c in rows[:3])
+        bot3  = ", ".join(f"{n} {'+'if c>=0 else ''}{c:.2f}%" for n, c in rows[-3:])
+        return lines, (f"Top: {top3} | Weak: {bot3}" if rows else "sectors unavailable")
+
+    def _fetch_futures():
         lines = []
-        for sym, name in syms:
-            try:
-                chg   = yf.Ticker(sym).fast_info.get("regularMarketChangePercent") or 0
-                arrow = "?" if chg >= 0 else "?"
-                lines.append((name, chg, f"{arrow} {name}: {chg:+.2f}%"))
-            except:
-                pass
-        lines.sort(key=lambda x: x[1], reverse=True)
-        display = [l for _, _, l in lines]
-        top3    = ", ".join(f"{n} {c:+.2f}%" for n, c, _ in lines[:3])
-        bot3    = ", ".join(f"{n} {c:+.2f}%" for n, c, _ in lines[-3:])
-        return display, f"Top: {top3} | Weak: {bot3}"
+        for sym, name in FUTURES_MAP:
+            price, chg = _q(sym)
+            if not price:
+                continue
+            sign = "+" if chg >= 0 else ""
+            lines.append(f"  {name}: {price:,.0f} ({sign}{chg:.2f}%)")
+        return lines
 
     def _fetch_crypto():
-        coins = [("BTC-USD","BTC"),("ETH-USD","ETH"),("SOL-USD","SOL")]
+        coins = [("BTC-USD","BTC"), ("ETH-USD","ETH"), ("SOL-USD","SOL")]
         lines = []
         for sym, name in coins:
             try:
+                # Try Finnhub crypto
+                fsym = f"BINANCE:{name}USDT"
+                r = requests.get(
+                    f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
+                    f"&resolution=D&count=2&token={FINNHUB_TOKEN}",
+                    timeout=8
+                )
+                d = r.json()
+                closes = d.get("c", [])
+                if len(closes) >= 2:
+                    price = closes[-1]
+                    pc    = closes[-2]
+                    chg   = (price - pc) / pc * 100 if pc else 0
+                    sign  = "+" if chg >= 0 else ""
+                    lines.append(f"  {name}: ${price:,.0f} ({sign}{chg:.2f}%)")
+                    continue
+            except:
+                pass
+            # yfinance fallback
+            try:
                 fi    = yf.Ticker(sym).fast_info
                 price = fi.get("lastPrice") or 0
-                chg   = fi.get("regularMarketChangePercent") or 0
-                arrow = "?" if chg >= 0 else "?"
-                lines.append(f"{arrow} {name}: ${price:,.0f} ({chg:+.2f}%)")
+                pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+                if price and pc:
+                    chg  = (price - pc) / pc * 100
+                    sign = "+" if chg >= 0 else ""
+                    lines.append(f"  {name}: ${price:,.0f} ({sign}{chg:.2f}%)")
             except:
                 pass
         return lines
@@ -685,30 +781,34 @@ def fetch_market_snapshot() -> dict:
     def _fetch_movers():
         items = []
         for t in list(TICKERS)[:30]:
-            try:
-                fi    = yf.Ticker(t).fast_info
-                chg   = fi.get("regularMarketChangePercent") or 0
-                price = fi.get("lastPrice") or 0
-                if price > 0:
-                    items.append((t, chg, price))
-            except:
-                pass
+            q = _finnhub_quote(t)
+            if not q:
+                continue
+            price = q.get("c") or 0
+            pc    = q.get("pc") or 0
+            if price and pc:
+                chg = (price - pc) / pc * 100
+                items.append((t, chg))
+        if not items:
+            return "movers unavailable"
         items.sort(key=lambda x: x[1])
         gainers = items[-3:][::-1]
         losers  = items[:3]
-        g_str = " ".join(f"{t} {c:+.2f}%" for t, c, _ in gainers)
-        l_str = " ".join(f"{t} {c:+.2f}%" for t, c, _ in losers)
-        return f"Gainers: {g_str} | Losers: {l_str}"
+        g = " ".join(f"{t} {'+'if c>=0 else ''}{c:.2f}%" for t, c in gainers)
+        l = " ".join(f"{t} {c:.2f}%" for t, c in losers)
+        return f"Gainers: {g} | Losers: {l}"
 
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         f_idx = pool.submit(_fetch_indices)
         f_sec = pool.submit(_fetch_sectors)
+        f_fut = pool.submit(_fetch_futures)
         f_cry = pool.submit(_fetch_crypto)
         f_mov = pool.submit(_fetch_movers)
         f_fg  = pool.submit(get_fear_greed)
 
     idx_lines, idx_str, vix = f_idx.result()
     sec_lines, sec_str      = f_sec.result()
+    futures_lines           = f_fut.result()
     cry_lines               = f_cry.result()
     movers_str              = f_mov.result()
     fg_val, fg_label        = f_fg.result()
@@ -716,27 +816,32 @@ def fetch_market_snapshot() -> dict:
     fg_label = fg_label or "Unknown"
 
     return {
-        "indices_lines": idx_lines,
-        "indices_str":   idx_str,
-        "sector_lines":  sec_lines,
-        "sector_str":    sec_str,
-        "fg_val":        fg_val,
-        "fg_label":      fg_label,
-        "fg_str":        f"{fg_val} ï¿½ {fg_label}",
-        "vix":           vix,
-        "crypto_lines":  cry_lines,
-        "crypto_str":    " | ".join(cry_lines),
-        "movers_str":    movers_str,
-        "now_label":     datetime.now(CT).strftime("%A %B %d, %Y"),
-        "session":       get_trading_session(),
+        "indices_lines":  idx_lines,
+        "indices_str":    idx_str,
+        "sector_lines":   sec_lines,
+        "sector_str":     sec_str,
+        "futures_lines":  futures_lines,
+        "futures_str":    " | ".join(futures_lines) or "futures unavailable",
+        "fg_val":         fg_val,
+        "fg_label":       fg_label,
+        "fg_str":         f"{fg_val} - {fg_label}",
+        "vix":            vix,
+        "crypto_lines":   cry_lines,
+        "crypto_str":     " | ".join(cry_lines),
+        "movers_str":     movers_str,
+        "now_label":      datetime.now(CT).strftime("%A %B %d, %Y"),
+        "session":        get_trading_session(),
     }
 
 
-
-# ============================================================
-# DYNAMIC BULLISH LIST
-# ============================================================
 def get_dynamic_hot_stocks():
+    def _fq_simple(sym):
+        """Quick Finnhub quote returning (price, chg_pct)."""
+        q = _finnhub_quote(sym)
+        if q and q.get("c"):
+            price = q["c"]; pc = q.get("pc") or price
+            return price, (price - pc) / pc * 100 if pc else 0
+        return 0, 0
     logger.info("Fetching dynamic BULLISH candidates...")
     candidates, low_price = [], []
     try:
@@ -756,8 +861,8 @@ def get_dynamic_hot_stocks():
         if isinstance(data, list):
             candidates.extend([item.get('symbol') for item in data[:20] if isinstance(item, dict)])
 
-        qqq_chg = yf.Ticker("^QQQ").fast_info.get('regularMarketChangePercent', 0)
-        spy_chg = yf.Ticker("^GSPC").fast_info.get('regularMarketChangePercent', 0)
+        _, qqq_chg = _fq_simple("QQQ")   # ETF proxy
+        _, spy_chg = _fq_simple("SPY")
         index_up = qqq_chg > 0 or spy_chg > 0
 
         bullish = []
@@ -783,7 +888,7 @@ def get_dynamic_hot_stocks():
         logger.warning(f"FMP filter failed: {e}. Using core list.")
 
     combined = list(dict.fromkeys(CORE_TICKERS + bullish + low_price))[:60]
-    logger.info(f"Watchlist updated ? {len(combined)} stocks ({len(low_price)} low-price rockets)")
+    logger.info(f"Watchlist updated -> {len(combined)} stocks ({len(low_price)} low-price rockets)")
     return combined
 
 TICKERS = get_dynamic_hot_stocks()
@@ -810,12 +915,12 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False):
         + "Short analysis."
     )
     ai        = get_ai_response(grok_prompt)
-    news_text = "\n".join([f"ï¿½ {h[:80]}" for h, _ in news_items]) if news_items else "No news"
+    news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
 
     message = (
-        f"?? {ticker} {spike_label}\n"
+        f"🚨 {ticker} {spike_label}\n"
         f"{pct_change:+.1f}% | ${current_price:.2f}"
-        + (" | ?? Vol Spike" if volume_spike else "") + "\n"
+        + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
         + (f"{tech_str}\n" if tech_str else "")
         + f"\nClaude: {ai}\n\n"
         f"News:\n{news_text}"
@@ -830,14 +935,14 @@ def check_custom_price_alerts(ticker, current_price):
     for target in custom_price_alerts[ticker]:
         if abs(current_price - target) / target < 0.005:   # within 0.5%
             send_telegram(
-                f"?? Price Alert Hit!\n{ticker} reached ${current_price:.2f}\n(Target: ${target:.2f})"
+                f"🎯 Price Alert Hit!\n{ticker} reached ${current_price:.2f}\n(Target: ${target:.2f})"
             )
             triggered.append(target)
     for t in triggered:
         custom_price_alerts[ticker].remove(t)
 
 def _scan_ticker(ticker: str, now: datetime):
-    """Scan a single ticker ï¿½ runs in thread pool."""
+    """Scan a single ticker — runs in thread pool."""
     c, vol, pc = fetch_finnhub_quote(ticker)
     if not c or c < MIN_PRICE:
         return
@@ -900,20 +1005,20 @@ def check_stocks():
 # ============================================================
 #
 # Signal stack (research-backed, bullish-only):
-#   1. RSI Momentum      ï¿½ 50ï¿½65 trending zone = 20 pts
-#   2. BB Breakout/Bounce ï¿½ price above mid or %B recovering = 15 pts
-#   3. MACD Crossover    ï¿½ fast/slow EMA divergence direction = 15 pts
-#   4. Volume Confirm    ï¿½ current vol vs 5-day avg = 15 pts
-#   5. Squeeze Momentum  ï¿½ existing score (reused, scaled) = 10 pts
-#   6. Price Slope       ï¿½ 5-min linear regression slope = 10 pts
-#   7. Grok AI Signal    ï¿½ directional confidence 0-100, scaled = 15 pts
+#   1. RSI Momentum      — 50-65 trending zone = 20 pts
+#   2. BB Breakout/Bounce — price above mid or %B recovering = 15 pts
+#   3. MACD Crossover    — fast/slow EMA divergence direction = 15 pts
+#   4. Volume Confirm    — current vol vs 5-day avg = 15 pts
+#   5. Squeeze Momentum  — existing score (reused, scaled) = 10 pts
+#   6. Price Slope       — 5-min linear regression slope = 10 pts
+#   7. Grok AI Signal    — directional confidence 0-100, scaled = 15 pts
 #
 # Trade rules (bullish only, no shorts):
-#   ï¿½ BUY  when composite = PAPER_MIN_SIGNAL and RSI < 72 and cash available
-#   ï¿½ SELL on 8% take-profit, 4% stop-loss, or signal collapse (=30 + positive)
-#   ï¿½ Max PAPER_MAX_ACTIONS actions per ticker per day
-#   ï¿½ Max PAPER_MAX_POSITIONS open positions at once
-#   ï¿½ Max PAPER_MAX_POS_PCT of total portfolio in a single name
+#   • BUY  when composite ≥ PAPER_MIN_SIGNAL and RSI < 72 and cash available
+#   • SELL on 8% take-profit, 4% stop-loss, or signal collapse (≤30 + positive)
+#   • Max PAPER_MAX_ACTIONS actions per ticker per day
+#   • Max PAPER_MAX_POSITIONS open positions at once
+#   • Max PAPER_MAX_POS_PCT of total portfolio in a single name
 # ============================================================
 
 PAPER_STARTING_CAPITAL = 100_000.0
@@ -926,7 +1031,7 @@ PAPER_TAKE_PROFIT_PCT  = 0.08     # 8% take-profit
 PAPER_STOP_LOSS_PCT    = 0.04     # 4% stop-loss
 PAPER_MIN_SIGNAL       = 65       # min composite score (0-100) to open a position
 
-# -- Live state (populated by load_paper_state on startup) -----
+# ── Live state (populated by load_paper_state on startup) ─────
 paper_cash          = PAPER_STARTING_CAPITAL
 paper_positions     = {}
 paper_trades_today  = []
@@ -958,7 +1063,7 @@ def save_paper_state():
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, default=str)
             os.replace(tmp, PAPER_STATE_FILE)   # atomic rename
-            logger.info(f"Paper state saved ? {PAPER_STATE_FILE}")
+            logger.info(f"Paper state saved -> {PAPER_STATE_FILE}")
         except Exception as e:
             logger.error(f"save_paper_state failed: {e}")
 
@@ -1007,7 +1112,7 @@ def load_paper_state():
             paper_trades_today = []
             paper_daily_counts = {}
             paper_log(
-                f"State restored (new day ï¿½ intraday counters reset). "
+                f"State restored (new day — intraday counters reset). "
                 f"Cash: ${paper_cash:,.2f} | "
                 f"Positions: {len(paper_positions)} | "
                 f"Lifetime trades: {len(paper_all_trades)}"
@@ -1022,7 +1127,7 @@ def load_paper_state():
         paper_daily_counts = {}
 
 
-# -- Dedicated investment logger -------------------------------
+# ── Dedicated investment logger ───────────────────────────────
 inv_logger = logging.getLogger("investment")
 inv_logger.setLevel(logging.INFO)
 _inv_fh = logging.FileHandler(PAPER_LOG, encoding="utf-8")
@@ -1108,7 +1213,7 @@ def compute_paper_signal(ticker: str) -> dict:
     comps  = {}
     detail = []
 
-    # -- 1. RSI Momentum (20 pts) ------------------------------
+    # ── 1. RSI Momentum (20 pts) ──────────────────────────────
     rsi = compute_rsi(prices) if len(prices) >= 15 else None
     if rsi is not None:
         if 50 <= rsi <= 65:
@@ -1124,7 +1229,7 @@ def compute_paper_signal(ticker: str) -> dict:
         comps["rsi_pts"] = pts
         detail.append(f"RSI={rsi:.1f}({pts}pts)")
 
-    # -- 2. Bollinger Band Position (15 pts) -------------------
+    # ── 2. Bollinger Band Position (15 pts) ───────────────────
     _, _, _, pct_b, bw = compute_bollinger(prices) if len(prices) >= 20 else (None,)*5
     if pct_b is not None:
         if 0.5 <= pct_b <= 0.85:
@@ -1140,15 +1245,15 @@ def compute_paper_signal(ticker: str) -> dict:
         comps["bw_pts"] = pts
         detail.append(f"%B={pct_b:.2f}({pts}pts)")
 
-    # -- 3. MACD Crossover (15 pts) ----------------------------
+    # ── 3. MACD Crossover (15 pts) ────────────────────────────
     macd_line, sig_line, hist_val = _compute_macd(prices)
     if macd_line is not None:
         if macd_line > 0 and (sig_line is None or macd_line > sig_line):
             pts = 15   # bullish: MACD above zero and above signal
         elif macd_line > 0:
-            pts = 8    # above zero but below signal ï¿½ weakening
+            pts = 8    # above zero but below signal — weakening
         elif hist_val is not None and hist_val > 0:
-            pts = 5    # histogram turning positive ï¿½ early signal
+            pts = 5    # histogram turning positive — early signal
         else:
             pts = 0
         score += pts
@@ -1156,7 +1261,7 @@ def compute_paper_signal(ticker: str) -> dict:
         comps["macd_pts"] = pts
         detail.append(f"MACD={macd_line:.4f}({pts}pts)")
 
-    # -- 4. Volume Confirmation (15 pts) -----------------------
+    # ── 4. Volume Confirmation (15 pts) ───────────────────────
     try:
         _, vol, _ = fetch_finnhub_quote(ticker)
         hist_yf   = yf.Ticker(ticker).history(period="5d")
@@ -1178,15 +1283,15 @@ def compute_paper_signal(ticker: str) -> dict:
     except:
         pass
 
-    # -- 5. Squeeze Score (10 pts, scaled from existing) -------
+    # ── 5. Squeeze Score (10 pts, scaled from existing) ───────
     sq = compute_squeeze_score(ticker)
-    sq_pts = round(sq["score"] / 10, 1)   # 0-100 ? 0-10 pts
+    sq_pts = round(sq["score"] / 10, 1)   # 0-100 -> 0-10 pts
     score += sq_pts
     comps["squeeze"] = sq["score"]
     comps["sq_pts"]  = sq_pts
     detail.append(f"Squeeze={sq['score']:.0f}({sq_pts}pts)")
 
-    # -- 6. Price Slope / Linear Momentum (10 pts) -------------
+    # ── 6. Price Slope / Linear Momentum (10 pts) ─────────────
     if len(prices) >= 10:
         xs      = list(range(len(prices[-10:])))
         ys      = prices[-10:]
@@ -1210,7 +1315,7 @@ def compute_paper_signal(ticker: str) -> dict:
         comps["slope_pts"] = pts
         detail.append(f"Slope={slope_pct:.3f}%({pts}pts)")
 
-    # -- 7. Grok AI Directional Signal (15 pts) ----------------
+    # ── 7. Grok AI Directional Signal (15 pts) ────────────────
     try:
         price_now = prices[-1] if prices else 0
         chg_5m    = ((prices[-1] - prices[-6]) / prices[-6] * 100
@@ -1273,7 +1378,7 @@ def _paper_position_size(ticker: str, signal_score: float) -> int:
     portfolio_val = paper_portfolio_value()
     max_dollars   = portfolio_val * PAPER_MAX_POS_PCT
 
-    # Scale position size with signal confidence (65?100 maps to 50%?100% of max)
+    # Scale position size with signal confidence (65->100 maps to 50%->100% of max)
     strength   = min(1.0, (signal_score - PAPER_MIN_SIGNAL) / (100 - PAPER_MIN_SIGNAL))
     dollars    = max_dollars * (0.5 + 0.5 * strength)
     dollars    = min(dollars, paper_cash * 0.95)   # never use more than 95% of cash
@@ -1310,7 +1415,7 @@ def paper_evaluate_ticker(ticker: str):
     if not price or price < MIN_PRICE:
         return
 
-    # -- Check existing position: take-profit / stop-loss / signal exit --
+    # ── Check existing position: take-profit / stop-loss / signal exit ──
     if ticker in paper_positions:
         pos       = paper_positions[ticker]
         cost      = pos["avg_cost"]
@@ -1364,7 +1469,7 @@ def paper_evaluate_ticker(ticker: str):
             )
             paper_log(msg)
 
-            # -- Enriched SELL notification ---------------------
+            # ── Enriched SELL notification ─────────────────────
             hold_mins = ""
             try:
                 entry_dt = datetime.strptime(
@@ -1376,11 +1481,11 @@ def paper_evaluate_ticker(ticker: str):
             except:
                 pass
 
-            pnl_emoji = "??" if realized_pnl >= 0 else "??"
+            pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
             reason_map = {
-                "TAKE-PROFIT": "? Take-profit hit",
-                "STOP-LOSS":   "?? Stop-loss triggered",
-                "SIGNAL-COLLAPSE": "?? Signal deteriorated",
+                "TAKE-PROFIT": "✅ Take-profit hit",
+                "STOP-LOSS":   "🛑 Stop-loss triggered",
+                "SIGNAL-COLLAPSE": "📉 Signal deteriorated",
             }
             reason_label = next(
                 (v for k, v in reason_map.items() if k in sell_reason), sell_reason
@@ -1390,14 +1495,14 @@ def paper_evaluate_ticker(ticker: str):
             lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
 
             send_telegram(
-                f"{pnl_emoji} PAPER SELL ï¿½ {ticker}\n"
-                f"{'-'*28}\n"
+                f"{pnl_emoji} PAPER SELL — {ticker}\n"
+                f"{'─'*28}\n"
                 f"Shares:    {shares} @ ${price:.2f}\n"
                 f"Entry:     ${pos['avg_cost']:.2f}"
                 + (f"  (held {hold_mins})" if hold_mins else "") + "\n"
                 f"P&L:       ${realized_pnl:+.2f}  ({pnl_pct*100:+.1f}%)\n"
                 f"Reason:    {reason_label}\n"
-                f"{'-'*28}\n"
+                f"{'─'*28}\n"
                 f"Cash:      ${paper_cash:,.0f}\n"
                 f"Positions: {len(paper_positions)}/{PAPER_MAX_POSITIONS}\n"
                 f"Portfolio: ${new_val:,.0f}  ({lifetime_pct:+.2f}% all-time)\n"
@@ -1406,7 +1511,7 @@ def paper_evaluate_ticker(ticker: str):
             save_paper_state()
         return  # one action per scan cycle per ticker
 
-    # -- Check for new buy opportunity ------------------------
+    # ── Check for new buy opportunity ────────────────────────
     if len(paper_positions) >= PAPER_MAX_POSITIONS:
         return
     if paper_cash < 200:
@@ -1454,7 +1559,7 @@ def paper_evaluate_ticker(ticker: str):
     )
     paper_log(msg)
 
-    # -- Enriched BUY notification ------------------------------
+    # ── Enriched BUY notification ──────────────────────────────
     c            = sig["comps"]
     new_val      = paper_portfolio_value()
     lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
@@ -1475,17 +1580,17 @@ def paper_evaluate_ticker(ticker: str):
         )
 
     send_telegram(
-        f"?? PAPER BUY ï¿½ {ticker}\n"
-        f"{'-'*28}\n"
+        f"📈 PAPER BUY — {ticker}\n"
+        f"{'─'*28}\n"
         f"Shares:    {shares} @ ${price:.2f}\n"
         f"Cost:      ${cost:,.0f}\n"
         f"Target:    ${tp_price:.2f} (+{PAPER_TAKE_PROFIT_PCT*100:.0f}%)\n"
         f"Stop:      ${sl_price:.2f} (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
-        f"{'-'*28}\n"
+        f"{'─'*28}\n"
         f"Signal:    {sig['score']:.0f}/100\n"
-        + "\n".join(f"  ï¿½ {l}" for l in sig_lines) + "\n"
-        + (f"  ï¿½ {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
-        + f"{'-'*28}\n"
+        + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
+        + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
+        + f"{'─'*28}\n"
         f"Cash left: ${paper_cash:,.0f}\n"
         f"Positions: {len(paper_positions)}/{PAPER_MAX_POSITIONS}\n"
         f"Portfolio: ${new_val:,.0f}  ({lifetime_pct:+.2f}% all-time)\n"
@@ -1520,7 +1625,7 @@ def paper_morning_report():
     total_pct = total_pnl / starting * 100
 
     lines = [
-        f"PAPER PORTFOLIO ï¿½ Market Open",
+        f"PAPER PORTFOLIO — Market Open",
         f"{datetime.now(CT).strftime('%A %B %d, %Y')}",
         f"",
         f"Total Value:  ${val:>12,.2f}",
@@ -1538,14 +1643,14 @@ def paper_morning_report():
             price = price or pos["avg_cost"]
             mkt_val = pos["shares"] * price
             pnl     = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
-            arrow   = "?" if pnl >= 0 else "?"
+            arrow   = "+" if pnl >= 0 else "-"
             lines.append(
                 f"  {arrow} {ticker:<6} {pos['shares']:>5} sh  "
-                f"avg ${pos['avg_cost']:.2f} ? ${price:.2f}  "
+                f"avg ${pos['avg_cost']:.2f} -> ${price:.2f}  "
                 f"({pnl:+.1f}%)  ${mkt_val:,.0f}"
             )
     else:
-        lines.append("No open positions ï¿½ scanning for entries.")
+        lines.append("No open positions — scanning for entries.")
 
     report = "\n".join(lines)
     paper_log(f"=== MORNING REPORT ===\n{report}")
@@ -1565,7 +1670,7 @@ def paper_eod_report():
     day_realized = sum(t.get("pnl", 0) for t in sells)
 
     lines = [
-        f"PAPER PORTFOLIO ï¿½ Market Close",
+        f"PAPER PORTFOLIO — Market Close",
         f"{datetime.now(CT).strftime('%A %B %d, %Y')}",
         f"",
         f"Total Value:     ${val:>12,.2f}",
@@ -1574,20 +1679,20 @@ def paper_eod_report():
         f"Cash:            ${paper_cash:>12,.2f}",
         f"",
         f"TODAY'S TRADES ({len(paper_trades_today)} total  "
-        f"?{len(buys)} buys  ?{len(sells)} sells):",
+        f"↑{len(buys)} buys  ↓{len(sells)} sells):",
     ]
 
     for t in paper_trades_today:
         if t["action"] == "BUY":
             lines.append(
-                f"  ? {t['time']}  BUY  {t['ticker']:<6} "
+                f"  ↑ {t['time']}  BUY  {t['ticker']:<6} "
                 f"{t['shares']} sh @ ${t['price']:.2f}  "
                 f"(${t['cost']:,.0f})  sig={t.get('signal_score','?'):.0f}"
             )
         else:
             pnl_str = f"${t['pnl']:+.2f} ({t['pnl_pct']:+.1f}%)"
             lines.append(
-                f"  ? {t['time']}  SELL {t['ticker']:<6} "
+                f"  ↓ {t['time']}  SELL {t['ticker']:<6} "
                 f"{t['shares']} sh @ ${t['price']:.2f}  "
                 f"{pnl_str}  [{t['reason']}]"
             )
@@ -1600,7 +1705,7 @@ def paper_eod_report():
             price = price or pos["avg_cost"]
             mkt_val = pos["shares"] * price
             pnl     = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
-            arrow   = "?" if pnl >= 0 else "?"
+            arrow   = "+" if pnl >= 0 else "-"
             lines.append(
                 f"  {arrow} {ticker:<6} {pos['shares']:>5} sh  "
                 f"cost ${pos['avg_cost']:.2f}  now ${price:.2f}  "
@@ -1615,17 +1720,17 @@ def paper_eod_report():
     save_paper_state()   # persist end-of-day snapshot
 
 
-# -- Paper Trading Telegram Commands ---------------------------
+# ── Paper Trading Telegram Commands ───────────────────────────
 
 async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /paper                  ï¿½ current portfolio snapshot
-    /paper positions        ï¿½ open positions with live P&L
-    /paper trades           ï¿½ today's trade log
-    /paper history          ï¿½ all-time trade summary
-    /paper signal TICK      ï¿½ show current signal breakdown for a ticker
-    /paper log              ï¿½ send investment.log as a file download
-    /paper reset            ï¿½ reset portfolio to $100k (with confirmation)
+    /paper                  — current portfolio snapshot
+    /paper positions        — open positions with live P&L
+    /paper trades           — today's trade log
+    /paper history          — all-time trade summary
+    /paper signal TICK      — show current signal breakdown for a ticker
+    /paper log              — send investment.log as a file download
+    /paper reset            — reset portfolio to $100k (with confirmation)
     """
     global paper_cash, paper_positions, paper_trades_today, paper_daily_counts
     global paper_all_trades, paper_signals_cache
@@ -1633,7 +1738,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sub  = context.args[0].lower() if context.args else "portfolio"
     arg2 = context.args[1].upper() if len(context.args) > 1 else ""
 
-    # -- /paper  or  /paper portfolio -------------------------
+    # ── /paper  or  /paper portfolio ─────────────────────────
     if sub in ("portfolio", "p"):
         val       = paper_portfolio_value()
         total_pnl = val - PAPER_STARTING_CAPITAL
@@ -1656,10 +1761,10 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 price = price or pos["avg_cost"]
                 mkt   = pos["shares"] * price
                 pnl   = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
-                arrow = "?" if pnl >= 0 else "?"
+                arrow = "+" if pnl >= 0 else "-"
                 lines.append(
                     f"  {arrow} {ticker:<6} {pos['shares']} sh  "
-                    f"${pos['avg_cost']:.2f}?${price:.2f}  "
+                    f"${pos['avg_cost']:.2f}->${price:.2f}  "
                     f"{pnl:+.1f}%  ${mkt:,.0f}"
                 )
         else:
@@ -1669,23 +1774,23 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"",
             f"Trades today: {len(paper_trades_today)}  |  "
             f"Lifetime: {len(paper_all_trades)}",
-            f"Use /paper trades ï¿½ /paper signal TICK ï¿½ /paper log",
+            f"Use /paper trades | /paper signal TICK | /paper log",
         ]
         await update.message.reply_text("\n".join(lines))
 
-    # -- /paper positions -------------------------------------
+    # ── /paper positions ─────────────────────────────────────
     elif sub == "positions":
         if not paper_positions:
             await update.message.reply_text("No open positions.")
             return
-        lines = [f"OPEN POSITIONS ï¿½ {datetime.now(CT).strftime('%H:%M CT')}"]
+        lines = [f"OPEN POSITIONS — {datetime.now(CT).strftime('%H:%M CT')}"]
         for ticker, pos in paper_positions.items():
             price, _, _ = fetch_finnhub_quote(ticker)
             price = price or pos["avg_cost"]
             mkt   = pos["shares"] * price
             pnl   = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
             unrealized = (price - pos["avg_cost"]) * pos["shares"]
-            arrow = "?" if pnl >= 0 else "?"
+            arrow = "+" if pnl >= 0 else "-"
             lines += [
                 f"",
                 f"{arrow} {ticker}",
@@ -1696,7 +1801,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         await update.message.reply_text("\n".join(lines))
 
-    # -- /paper trades -----------------------------------------
+    # ── /paper trades ─────────────────────────────────────────
     elif sub == "trades":
         if not paper_trades_today:
             await update.message.reply_text("No trades today.")
@@ -1706,27 +1811,27 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         real   = sum(t.get("pnl", 0) for t in sells)
         lines  = [
             f"TODAY'S TRADES",
-            f"?{len(buys)} buys  ?{len(sells)} sells  "
+            f"↑{len(buys)} buys  ↓{len(sells)} sells  "
             f"Realized: ${real:+.2f}",
             f"",
         ]
         for t in paper_trades_today:
             if t["action"] == "BUY":
                 lines.append(
-                    f"? {t['time']}  BUY  {t['ticker']} "
+                    f"↑ {t['time']}  BUY  {t['ticker']} "
                     f"{t['shares']}sh @ ${t['price']:.2f}  "
                     f"sig={t.get('signal_score','?'):.0f}/100"
                 )
             else:
                 lines.append(
-                    f"? {t['time']}  SELL {t['ticker']} "
+                    f"↓ {t['time']}  SELL {t['ticker']} "
                     f"{t['shares']}sh @ ${t['price']:.2f}  "
                     f"${t['pnl']:+.2f} ({t['pnl_pct']:+.1f}%)  "
                     f"[{t['reason']}]"
                 )
         await update.message.reply_text("\n".join(lines))
 
-    # -- /paper history ----------------------------------------
+    # ── /paper history ────────────────────────────────────────
     elif sub == "history":
         if not paper_all_trades:
             await update.message.reply_text("No trades on record yet.")
@@ -1742,7 +1847,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         val      = paper_portfolio_value()
 
         lines = [
-            f"PAPER TRADING ï¿½ ALL-TIME SUMMARY",
+            f"PAPER TRADING — ALL-TIME SUMMARY",
             f"",
             f"Portfolio value: ${val:,.2f}",
             f"P&L: ${val - PAPER_STARTING_CAPITAL:+,.2f} "
@@ -1767,7 +1872,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         await update.message.reply_text("\n".join(lines))
 
-    # -- /paper signal TICK ------------------------------------
+    # ── /paper signal TICK ────────────────────────────────────
     elif sub == "signal":
         if not arg2:
             await update.message.reply_text("Usage: /paper signal TICKER  (e.g. /paper signal NVDA)")
@@ -1783,17 +1888,17 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [
             f"SIGNAL: {arg2}  @${price:.2f}" if price else f"SIGNAL: {arg2}",
             f"",
-            f"Composite Score: {sig['score']:.0f}/100  ? {verdict}",
+            f"Composite Score: {sig['score']:.0f}/100  -> {verdict}",
             f"",
             f"BREAKDOWN:",
-            f"  RSI Momentum    {c.get('rsi','N/A')} ? {c.get('rsi_pts',0)} pts",
-            f"  BB Position     %B={c.get('pct_b','N/A')} ? {c.get('bw_pts',0)} pts",
-            f"  MACD            {c.get('macd','N/A')} ? {c.get('macd_pts',0)} pts",
-            f"  Volume Ratio    {c.get('vol_ratio','N/A')}x ? {c.get('vol_pts',0)} pts",
-            f"  Squeeze Score   {c.get('squeeze','N/A')}/100 ? {c.get('sq_pts',0)} pts",
-            f"  Price Slope     {c.get('slope_pct','N/A')}%/tick ? {c.get('slope_pts',0)} pts",
+            f"  RSI Momentum    {c.get('rsi','N/A')} -> {c.get('rsi_pts',0)} pts",
+            f"  BB Position     %B={c.get('pct_b','N/A')} -> {c.get('bw_pts',0)} pts",
+            f"  MACD            {c.get('macd','N/A')} -> {c.get('macd_pts',0)} pts",
+            f"  Volume Ratio    {c.get('vol_ratio','N/A')}x -> {c.get('vol_pts',0)} pts",
+            f"  Squeeze Score   {c.get('squeeze','N/A')}/100 -> {c.get('sq_pts',0)} pts",
+            f"  Price Slope     {c.get('slope_pct','N/A')}%/tick -> {c.get('slope_pts',0)} pts",
             f"  Grok AI         {c.get('grok_signal','N/A')} "
-            f"conf={c.get('grok_confidence','?')} ? {c.get('grok_pts',0)} pts",
+            f"conf={c.get('grok_confidence','?')} -> {c.get('grok_pts',0)} pts",
             f"",
             f"Grok: {c.get('grok_reason', '')}",
             f"",
@@ -1804,7 +1909,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text("\n".join(lines))
 
-    # -- /paper log --------------------------------------------
+    # ── /paper log ────────────────────────────────────────────
     elif sub == "log":
         sent = False
         for path, fname in [
@@ -1816,13 +1921,13 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_document(
                         document=f,
                         filename=fname,
-                        caption=f"{fname} ï¿½ Portfolio: ${paper_portfolio_value():,.0f}"
+                        caption=f"{fname} — Portfolio: ${paper_portfolio_value():,.0f}"
                     )
                 sent = True
         if not sent:
-            await update.message.reply_text("No log files found yet ï¿½ no trades recorded.")
+            await update.message.reply_text("No log files found yet — no trades recorded.")
 
-    # -- /paper reset ------------------------------------------
+    # ── /paper reset ──────────────────────────────────────────
     elif sub == "reset":
         if arg2 == "CONFIRM":
             paper_cash          = PAPER_STARTING_CAPITAL
@@ -1848,13 +1953,13 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(
             "Paper Trading commands:\n"
-            "  /paper               ï¿½ portfolio snapshot\n"
-            "  /paper positions     ï¿½ open positions + live P&L\n"
-            "  /paper trades        ï¿½ today's actions\n"
-            "  /paper history       ï¿½ all-time performance\n"
-            "  /paper signal TICK   ï¿½ signal breakdown for any stock\n"
-            "  /paper log           ï¿½ download investment.log\n"
-            "  /paper reset         ï¿½ reset to $100,000"
+            "  /paper               — portfolio snapshot\n"
+            "  /paper positions     — open positions + live P&L\n"
+            "  /paper trades        — today's actions\n"
+            "  /paper history       — all-time performance\n"
+            "  /paper signal TICK   — signal breakdown for any stock\n"
+            "  /paper log           — download investment.log\n"
+            "  /paper reset         — reset to $100,000"
         )
 
 
@@ -1882,41 +1987,27 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Indices + sectors + Fear & Greed in one shot."""
     note = _offhours_note()
-    indices = {
-        "^GSPC": "S&P 500", "^IXIC": "Nasdaq",
-        "^DJI":  "Dow",     "^RUT":  "Russell 2000",
-        "^VIX":  "VIX"
-    }
-    idx_lines = []
-    for sym, name in indices.items():
-        try:
-            info  = yf.Ticker(sym).fast_info
-            price = info.get('lastPrice', 0)
-            chg   = info.get('regularMarketChangePercent', 0)
-            arrow = "?" if chg >= 0 else "?"
-            idx_lines.append(f"{arrow} {name}: {price:,.2f} ({chg:+.2f}%)")
-        except:
-            pass
+    s = fetch_market_snapshot()
+    fg_str = f"{s['fg_val']} - {s['fg_label']}" if s["fg_val"] else "unavailable"
 
-    sec_lines = get_sector_performance()
-    fg_val, fg_label = get_fear_greed()
-    fg_str = f"{fg_val} ï¿½ {fg_label}" if fg_val else "unavailable"
-
-    session = get_trading_session()
-    summary = " | ".join(idx_lines[:4]) + f" | F&G {fg_val}"
+    summary = s["indices_str"] + f" | F&G {s['fg_val']}"
     ai = get_ai_response(
-        f"Market snapshot ({session}): {summary}. Top sectors: {', '.join(sec_lines[:3])}. "
+        f"Market snapshot ({s['session']}): {summary}. "
+        f"Sectors: {s['sector_str']}. "
+        f"VIX: {s['vix']:.1f}. "
         f"{'This is last-close data. ' if note else ''}"
-        f"2-sentence outlook + one sector to watch."
+        f"2-sentence outlook + one sector to watch. Be specific to the numbers."
     )
     header = f"Market Overview{f'  {note}' if note else ''}"
-    await update.message.reply_text(
-        f"{header}\n"
-        "Indices:\n" + "\n".join(idx_lines) +
-        f"\n\nFear & Greed: {fg_str}" +
-        "\n\nSectors:\n" + "\n".join(sec_lines) +
-        f"\n\nClaude: {ai}"
+    msg_lines = (
+        [header, "", "Indices (ETF proxies):"] +
+        s["indices_lines"] +
+        [f"", f"Fear & Greed: {fg_str}",
+         f"", "Sectors:"] +
+        s["sector_lines"] +
+        [f"", f"Claude: {ai}"]
     )
+    await update.message.reply_text("\n".join(msg_lines))
 
 async def cmd_spikes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not recent_alerts:
@@ -1955,12 +2046,12 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Mkt Cap ${mcap:.1f}B, Volume {vol:,}, "
             f"{range_str}. "
             f"Recent news: {news_str}. "
-            f"{'Market is closed ï¿½ focus on setup for next session. ' if note else ''}"
+            f"{'Market is closed — focus on setup for next session. ' if note else ''}"
             f"Provide: (1) technical assessment (2) near-term catalyst (3) key risk. Be specific."
         )
         ai = get_ai_response(prompt, max_tokens=500)
 
-        range_display = (f"${low52:.2f} ï¿½ ${high52:.2f}" if high52 and low52 else "n/a")
+        range_display = (f"${low52:.2f} - ${high52:.2f}" if high52 and low52 else "n/a")
         pct_display   = (f"{pct_from_high:+.1f}%" if high52 else "n/a")
 
         await update.message.reply_text(
@@ -1993,10 +2084,10 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         day_hi  = fi.get("dayHigh") or 0
         day_lo  = fi.get("dayLow")  or 0
         chg_abs = price * chg / 100
-        arrow   = "?" if chg >= 0 else "?"
+        arrow   = "+" if chg >= 0 else "-"
 
-        day_range = f"${day_lo:.2f} ï¿½ ${day_hi:.2f}" if day_hi and day_lo else "n/a"
-        yr_range  = f"${low52:.2f} ï¿½ ${high52:.2f}"   if high52 and low52  else "n/a"
+        day_range = f"${day_lo:.2f} - ${day_hi:.2f}" if day_hi and day_lo else "n/a"
+        yr_range  = f"${low52:.2f} - ${high52:.2f}"   if high52 and low52  else "n/a"
 
         await update.message.reply_text(
             f"{arrow} {ticker}: ${price:.2f}{f'  {note}' if note else ''}\n"
@@ -2033,9 +2124,9 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         summary = (
             f"{t1} ${stats[t1]['price']:.2f} ({stats[t1]['chg']:+.2f}%) "
-            f"52w range ${stats[t1]['low52']:.2f}ï¿½${stats[t1]['high52']:.2f} vs "
+            f"52w range ${stats[t1]['low52']:.2f}-${stats[t1]['high52']:.2f} vs "
             f"{t2} ${stats[t2]['price']:.2f} ({stats[t2]['chg']:+.2f}%) "
-            f"52w range ${stats[t2]['low52']:.2f}ï¿½${stats[t2]['high52']:.2f}. "
+            f"52w range ${stats[t2]['low52']:.2f}-${stats[t2]['high52']:.2f}. "
             f"Which is the better buy right now and why? Be specific."
         )
         ai = get_ai_response(summary)
@@ -2054,7 +2145,7 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             df = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
             return "Top Gainers:\n" + "\n".join(
-                f"ï¿½ {r['Symbol']} +{r['% Change']:.1f}%"
+                f"• {r['Symbol']} +{r['% Change']:.1f}%"
                 for _, r in df.head(5).iterrows()
             )
         except:
@@ -2064,7 +2155,7 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             df = pd.read_html("https://finance.yahoo.com/screener/predefined/day_losers")[0]
             return "Top Losers:\n" + "\n".join(
-                f"ï¿½ {r['Symbol']} {r['% Change']:.1f}%"
+                f"• {r['Symbol']} {r['% Change']:.1f}%"
                 for _, r in df.head(5).iterrows()
             )
         except:
@@ -2074,7 +2165,7 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             df = pd.read_html("https://finance.yahoo.com/screener/predefined/most_actives")[0]
             return "Most Active:\n" + "\n".join(
-                f"ï¿½ {r['Symbol']}" for _, r in df.head(8).iterrows()
+                f"• {r['Symbol']}" for _, r in df.head(8).iterrows()
             )
         except:
             return "Volume data unavailable."
@@ -2086,7 +2177,7 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             low = df[(df.get(col, 0).astype(float, errors='ignore') >= 1) &
                      (df.get(col, 0).astype(float, errors='ignore') <= 10)]
             return "Low-Price Rockets ($1-$10):\n" + "\n".join(
-                f"ï¿½ {r['Symbol']} +{r['% Change']:.1f}%"
+                f"• {r['Symbol']} +{r['% Change']:.1f}%"
                 for _, r in low.head(8).iterrows()
             )
         except:
@@ -2129,14 +2220,14 @@ async def cmd_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sym  = item.get('symbol','')
             date = item.get('date','')
             eps  = item.get('epsEstimated','?')
-            lines.append(f"ï¿½ {sym} on {date} (EPS est: {eps})")
+            lines.append(f"• {sym} on {date} (EPS est: {eps})")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"Unable to fetch earnings: {e}")
 
 async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Upcoming macro events ï¿½ sources in priority order:
+    Upcoming macro events — sources in priority order:
       1. Finnhub economic calendar (free tier, live dates)
       2. FMP economic calendar
       3. Claude AI fallback with today's date explicitly injected
@@ -2203,7 +2294,7 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return sorted(events, key=lambda x: x["date"])[:15]
 
     def _format_events(events: list, source: str) -> str:
-        lines = [f"Macro Calendar ï¿½ next 14 days (from {now_label})",
+        lines = [f"Macro Calendar — next 14 days (from {now_label})",
                  f"Source: {source}", ""]
         for e in events:
             tag = "[HIGH]" if e["impact"] in ("High", "3") else "[MED] "
@@ -2220,7 +2311,7 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     events = []
     source = ""
 
-    # -- 1. Finnhub (free tier supports economic calendar) -----
+    # ── 1. Finnhub (free tier supports economic calendar) ─────
     try:
         r = requests.get(
             f"https://finnhub.io/api/v1/calendar/economic"
@@ -2238,7 +2329,7 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"Finnhub macro failed: {e}")
 
-    # -- 2. FMP fallback ---------------------------------------
+    # ── 2. FMP fallback ───────────────────────────────────────
     if not events and FMP_API_KEY:
         try:
             r = requests.get(
@@ -2253,7 +2344,7 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"FMP macro failed: {e}")
 
-    # -- 3. Grok fallback ï¿½ date anchored ---------------------
+    # ── 3. Grok fallback — date anchored ─────────────────────
     if not events:
         logger.warning("Macro: both APIs failed, using date-anchored Grok fallback")
         ai = get_ai_response(
@@ -2267,13 +2358,13 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=500
         )
         await update.message.reply_text(
-            f"Macro Calendar ï¿½ {now_label}\n"
-            f"(Live calendar unavailable ï¿½ Grok estimate)\n\n"
+            f"Macro Calendar — {now_label}\n"
+            f"(Live calendar unavailable — Grok estimate)\n\n"
             f"{ai}"
         )
         return
 
-    # -- Format + Grok commentary ------------------------------
+    # ── Format + Grok commentary ──────────────────────────────
     body       = _format_events(events, source)
     event_names = ", ".join([e["event"] for e in events[:5]])
     ai = get_ai_response(
@@ -2307,7 +2398,7 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = [f"Latest news for {ticker}:"]
     for headline, url in news_items:
-        lines.append(f"ï¿½ {headline[:100]}")
+        lines.append(f"• {headline[:100]}")
         if url:
             lines.append(f"  {url}")
     await update.message.reply_text("\n".join(lines))
@@ -2358,7 +2449,7 @@ async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 info  = yf.Ticker(t).fast_info
                 price = info.get('lastPrice', 0)
                 chg   = info.get('regularMarketChangePercent', 0)
-                arrow = "?" if chg >= 0 else "?"
+                arrow = "+" if chg >= 0 else "-"
                 lines.append(f"{arrow} {t}: ${price:.2f} ({chg:+.2f}%)")
             except:
                 lines.append(f"? {t}: unavailable")
@@ -2395,8 +2486,8 @@ async def cmd_squeeze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show top squeeze candidates ranked by squeeze score."""
     if not squeeze_scores:
         await update.message.reply_text(
-            "No squeeze data yet ï¿½ scores build up after a few scan cycles.\n"
-            "Try again in 2ï¿½3 minutes."
+            "No squeeze data yet — scores build up after a few scan cycles.\n"
+            "Try again in 2-3 minutes."
         )
         return
 
@@ -2408,7 +2499,7 @@ async def cmd_squeeze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rsi_str  = f"RSI {sq['rsi']:.0f}" if sq['rsi'] is not None else "RSI n/a"
         bw_str   = f"BW {sq['bandwidth']:.3f}" if sq['bandwidth'] is not None else ""
         pb_str   = f"%B {sq['pct_b']:.2f}" if sq['pct_b'] is not None else ""
-        bar      = "ï¿½" * int(score / 10) + "ï¿½" * (10 - int(score / 10))
+        bar      = "█" * int(score / 10) + "░" * (10 - int(score / 10))
         lines.append(f"{score:>5.1f} [{bar}] {ticker:<6} {rsi_str} {bw_str} {pb_str}")
 
     top_names = ", ".join([t for t, _ in ranked[:3]])
@@ -2445,10 +2536,10 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Neutral"
         )
         bb_label = (
-            "Above upper band ï¿½ extended" if pct_b and pct_b > 1 else
-            "Below lower band ï¿½ oversold" if pct_b and pct_b < 0 else
-            "Upper half ï¿½ bullish"        if pct_b and pct_b > 0.5 else
-            "Lower half ï¿½ building"
+            "Above upper band — extended" if pct_b and pct_b > 1 else
+            "Below lower band — oversold" if pct_b and pct_b < 0 else
+            "Upper half — bullish"        if pct_b and pct_b > 0.5 else
+            "Lower half — building"
         )
         squeeze_label = "TIGHT SQUEEZE" if bw and bw < 0.04 else ("Moderate" if bw and bw < 0.08 else "Wide")
 
@@ -2465,13 +2556,13 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"{ticker} Technicals (5-min candles)\n"
             f"Price: ${price:.2f}\n\n"
-            f"RSI (14): {rsi if rsi else 'n/a'} ï¿½ {rsi_label}\n\n"
-            f"Bollinger Bands (20, 2s):\n"
+            f"RSI (14): {rsi if rsi else 'n/a'} — {rsi_label}\n\n"
+            f"Bollinger Bands (20, 2σ):\n"
             f"  Upper: ${upper}\n"
             f"  Middle: ${mid}\n"
             f"  Lower: ${lower}\n"
-            f"  %B: {pct_b} ï¿½ {bb_label}\n"
-            f"  Bandwidth: {bw} ï¿½ {squeeze_label}\n\n"
+            f"  %B: {pct_b} — {bb_label}\n"
+            f"  Bandwidth: {bw} — {squeeze_label}\n\n"
             f"Squeeze Score: {score}/100\n\n"
             f"Claude: {ai}"
         )
@@ -2481,7 +2572,7 @@ async def cmd_rsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# CHART ï¿½ intraday sparkline with volume bars
+# CHART — intraday sparkline with volume bars
 # ============================================================
 
 def build_chart_image(ticker: str) -> BytesIO:
@@ -2498,7 +2589,7 @@ def build_chart_image(ticker: str) -> BytesIO:
     open_p  = prices[0]
     color   = GREEN if prices[-1] >= open_p else RED
 
-    # Tick labels ï¿½ show every ~60 min
+    # Tick labels — show every ~60 min
     n = len(times)
     step = max(1, n // 6)
     tick_pos    = list(range(0, n, step))
@@ -2599,11 +2690,11 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# DASHBOARD ï¿½ visual market snapshot image
+# DASHBOARD — visual market snapshot image
 # ============================================================
 
 def _clamp_color(val, lo, hi):
-    """Map val in [lo,hi] to 0ï¿½1 for a red-white-green colormap."""
+    """Map val in [lo,hi] to 0-1 for a red-white-green colormap."""
     span = hi - lo
     if span == 0:
         return 0.5
@@ -2636,62 +2727,89 @@ def build_dashboard_image() -> BytesIO:
     session = get_trading_session()
     session_color = GREEN if session == "regular" else GOLD if session == "extended" else RED
 
-    # -- Fetch all data concurrently ---------------------------
+    # ── Fetch all data concurrently using Finnhub as primary ─────
+    INDEX_SYMS = [("SPY","S&P 500"),("QQQ","Nasdaq"),
+                  ("DIA","Dow"),("IWM","Russell"),("VXX","VIX ETF")]
+    SECTOR_SYMS = [("XLK","Tech"),("XLF","Fin"),("XLE","Energy"),
+                   ("XLV","Health"),("XLI","Indust"),("XLC","Comm"),
+                   ("XLY","Cons D"),("XLP","Cons S"),("XLB","Mat"),
+                   ("XLRE","RE"),("XLU","Util")]
+    CRYPTO_SYMS = [("BTC-USD","BTC"),("ETH-USD","ETH"),
+                   ("SOL-USD","SOL"),("DOGE-USD","DOGE"),("XRP-USD","XRP")]
+
+    def _fq(sym):
+        """Finnhub -> (price, chg%). Falls back to yfinance."""
+        q = _finnhub_quote(sym)
+        if q and q.get("c"):
+            price = q["c"]
+            pc    = q.get("pc") or price
+            return price, (price - pc) / pc * 100 if pc else 0
+        try:
+            fi    = yf.Ticker(sym).fast_info
+            price = fi.get("lastPrice") or fi.get("previousClose") or 0
+            pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+            chg   = (price - pc) / pc * 100 if pc else 0
+            return price, chg
+        except:
+            return 0, 0
+
     def _fetch_indices():
-        syms = [("^GSPC","S&P 500"),("^IXIC","Nasdaq"),
-                ("^DJI","Dow"),("^RUT","Russell"),("^VIX","VIX")]
         out = []
-        for sym, name in syms:
-            try:
-                info = yf.Ticker(sym).fast_info
-                out.append((name,
-                             info.get("lastPrice", 0),
-                             info.get("regularMarketChangePercent", 0)))
-            except:
-                out.append((name, 0, 0))
+        for sym, name in INDEX_SYMS:
+            price, chg = _fq(sym)
+            out.append((name, price, chg))
         return out
 
     def _fetch_sectors():
-        syms = [("XLK","Tech"),("XLF","Fin"),("XLE","Energy"),
-                ("XLV","Health"),("XLI","Indust"),("XLC","Comm"),
-                ("XLY","Cons D"),("XLP","Cons S"),("XLB","Mat"),
-                ("XLRE","RE"),("XLU","Util")]
         out = []
-        for sym, name in syms:
-            try:
-                chg = yf.Ticker(sym).fast_info.get("regularMarketChangePercent", 0)
-                out.append((name, round(chg, 2)))
-            except:
-                out.append((name, 0.0))
+        for sym, name in SECTOR_SYMS:
+            _, chg = _fq(sym)
+            out.append((name, round(chg, 2)))
         return out
 
     def _fetch_movers():
         items = []
         for t in TICKERS:
-            try:
-                info  = yf.Ticker(t).fast_info
-                chg   = info.get("regularMarketChangePercent", 0)
-                price = info.get("lastPrice", 0)
-                if price > 0:
-                    items.append((t, chg, price))
-            except:
-                pass
+            q = _finnhub_quote(t)
+            if not q or not q.get("c"):
+                continue
+            price = q["c"]
+            pc    = q.get("pc") or 0
+            if price and pc:
+                chg = (price - pc) / pc * 100
+                items.append((t, chg, price))
         items.sort(key=lambda x: x[1])
         return items[-5:][::-1], items[:5]   # gainers, losers
 
     def _fetch_crypto():
-        coins = [("BTC-USD","BTC"),("ETH-USD","ETH"),
-                 ("SOL-USD","SOL"),("DOGE-USD","DOGE"),("XRP-USD","XRP")]
         out = []
-        for sym, name in coins:
+        for sym, name in CRYPTO_SYMS:
             try:
-                info  = yf.Ticker(sym).fast_info
-                out.append((name,
-                             info.get("lastPrice", 0),
-                             info.get("regularMarketChangePercent", 0)))
+                fsym = f"BINANCE:{name}USDT"
+                r = requests.get(
+                    f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
+                    f"&resolution=D&count=2&token={FINNHUB_TOKEN}", timeout=8)
+                d = r.json()
+                closes = d.get("c", [])
+                if len(closes) >= 2:
+                    price = closes[-1]; pc = closes[-2]
+                    chg   = (price - pc) / pc * 100 if pc else 0
+                    out.append((name, price, chg))
+                    continue
+            except:
+                pass
+            # yfinance fallback
+            try:
+                fi    = yf.Ticker(sym).fast_info
+                price = fi.get("lastPrice") or 0
+                pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
+                chg   = (price - pc) / pc * 100 if pc else 0
+                if price:
+                    out.append((name, price, chg))
             except:
                 pass
         return out
+
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         f_idx = pool.submit(_fetch_indices)
@@ -2716,7 +2834,7 @@ def build_dashboard_image() -> BytesIO:
         max_tokens=80, fast=True
     )
 
-    # -- Helpers -----------------------------------------------
+    # ── Helpers ───────────────────────────────────────────────
     def _setup_panel(ax, title):
         ax.set_facecolor(PANEL)
         for sp in ax.spines.values():
@@ -2769,7 +2887,7 @@ def build_dashboard_image() -> BytesIO:
                         color=DIM, fontsize=7.5,
                         transform=ax.transAxes, clip_on=False)
 
-    # -- Figure & grid -----------------------------------------
+    # ── Figure & grid ─────────────────────────────────────────
     fig = plt.figure(figsize=(22, 15), facecolor=BG)
     fig.patch.set_facecolor(BG)
     gs = gridspec.GridSpec(
@@ -2779,19 +2897,19 @@ def build_dashboard_image() -> BytesIO:
         left=0.05, right=0.95
     )
 
-    # -- Header ------------------------------------------------
+    # ── Header ────────────────────────────────────────────────
     fig.text(0.05, 0.957, "STOCK SPIKE MONITOR  //  LIVE DASHBOARD",
              color=TEXT, fontsize=15, fontweight="bold")
     fig.text(0.05, 0.934, now_str, color=DIM, fontsize=9)
     fig.text(0.32, 0.934,
              f"Market: {session.upper()}",
              color=session_color, fontsize=9, fontweight="bold")
-    # Grok one-liner ï¿½ wrap manually to avoid matplotlib wrap quirks
-    gl = grok_line[:120] + ("ï¿½" if len(grok_line) > 120 else "")
+    # Grok one-liner — wrap manually to avoid matplotlib wrap quirks
+    gl = grok_line[:120] + ("…" if len(grok_line) > 120 else "")
     fig.text(0.05, 0.918, f"Claude AI: {gl}",
              color=GOLD, fontsize=8, style="italic")
 
-    # -- [A] Indices -------------------------------------------
+    # ── [A] Indices ───────────────────────────────────────────
     ax_idx = fig.add_subplot(gs[0, :2])
     _setup_panel(ax_idx, "MAJOR INDICES  (% change)")
     i_names  = [n for n, _, _ in indices]
@@ -2802,7 +2920,7 @@ def build_dashboard_image() -> BytesIO:
                 [_bar_color(c) for c in i_chgs],
                 price_strs=i_prices)
 
-    # -- [B] Fear & Greed gauge --------------------------------
+    # ── [B] Fear & Greed gauge ────────────────────────────────
     ax_fg = fig.add_subplot(gs[0, 2])
     ax_fg.set_facecolor(PANEL)
     for sp in ax_fg.spines.values():
@@ -2842,7 +2960,7 @@ def build_dashboard_image() -> BytesIO:
     ax_fg.text(0, -0.29, fg_label or "", ha="center", va="center",
                fontsize=7.5, color=GOLD, zorder=5)
 
-    # -- [C] Sector heatmap ------------------------------------
+    # ── [C] Sector heatmap ────────────────────────────────────
     ax_sec = fig.add_subplot(gs[0, 3])
     _setup_panel(ax_sec, "SECTOR HEATMAP")
     ax_sec.axis("off")
@@ -2872,7 +2990,7 @@ def build_dashboard_image() -> BytesIO:
         ax_sec.text(cx, cy - 0.045, f"{val:+.2f}%", ha="center", va="center",
                     fontsize=6.5, color=tc, transform=ax_sec.transAxes)
 
-    # -- [D] Top Gainers ---------------------------------------
+    # ── [D] Top Gainers ───────────────────────────────────────
     ax_gn = fig.add_subplot(gs[1, :2])
     _setup_panel(ax_gn, "TOP GAINERS  (monitored list)")
     if gainers:
@@ -2886,7 +3004,7 @@ def build_dashboard_image() -> BytesIO:
                    color=DIM, fontsize=9, transform=ax_gn.transAxes)
         ax_gn.axis("off")
 
-    # -- [E] Top Losers ----------------------------------------
+    # ── [E] Top Losers ────────────────────────────────────────
     ax_ls = fig.add_subplot(gs[1, 2:])
     _setup_panel(ax_ls, "TOP LOSERS  (monitored list)")
     if losers:
@@ -2900,9 +3018,9 @@ def build_dashboard_image() -> BytesIO:
                    color=DIM, fontsize=9, transform=ax_ls.transAxes)
         ax_ls.axis("off")
 
-    # -- [F] Squeeze Leaderboard -------------------------------
+    # ── [F] Squeeze Leaderboard ───────────────────────────────
     ax_sq = fig.add_subplot(gs[2, :2])
-    _setup_panel(ax_sq, "SQUEEZE LEADERBOARD  (score 0ï¿½100)")
+    _setup_panel(ax_sq, "SQUEEZE LEADERBOARD  (score 0-100)")
     if top_squeeze:
         sq_names  = [t for t, _ in top_squeeze]
         sq_scores = [s for _, s in top_squeeze]
@@ -2927,12 +3045,12 @@ def build_dashboard_image() -> BytesIO:
             ax_sq.text(sc + 1.5, i, f"{sc:.0f}  {detail}",
                        va="center", ha="left", color=TEXT, fontsize=8)
     else:
-        ax_sq.text(0.5, 0.5, "Buildingï¿½ (needs 2ï¿½3 scan cycles)",
+        ax_sq.text(0.5, 0.5, "Building… (needs 2-3 scan cycles)",
                    ha="center", va="center", color=DIM, fontsize=9,
                    transform=ax_sq.transAxes)
         ax_sq.axis("off")
 
-    # -- [G] Crypto --------------------------------------------
+    # ── [G] Crypto ────────────────────────────────────────────
     ax_cr = fig.add_subplot(gs[2, 2:])
     _setup_panel(ax_cr, "CRYPTO  (% change today)")
     if crypto:
@@ -2950,7 +3068,7 @@ def build_dashboard_image() -> BytesIO:
                    color=DIM, fontsize=9, transform=ax_cr.transAxes)
         ax_cr.axis("off")
 
-    # -- [H] Recent Spike Alerts -------------------------------
+    # ── [H] Recent Spike Alerts ───────────────────────────────
     ax_al = fig.add_subplot(gs[3, :3])
     ax_al.set_facecolor(PANEL)
     for sp in ax_al.spines.values():
@@ -2968,13 +3086,13 @@ def build_dashboard_image() -> BytesIO:
         row = idx // ncols_al
         ax_al.text(col / ncols_al + 0.02,
                    0.92 - row * row_h * 0.85,
-                   f"? {alert}",
+                   f"▸ {alert}",
                    ha="left", va="top",
                    color=GOLD if "%" in alert else DIM,
                    fontsize=8, transform=ax_al.transAxes,
                    clip_on=True)
 
-    # -- [I] Bot Status ----------------------------------------
+    # ── [I] Bot Status ────────────────────────────────────────
     ax_st = fig.add_subplot(gs[3, 3])
     ax_st.set_facecolor(PANEL)
     for sp in ax_st.spines.values():
@@ -3003,7 +3121,7 @@ def build_dashboard_image() -> BytesIO:
                    ha="left", va="top", color=color,
                    fontsize=8.5, transform=ax_st.transAxes)
 
-    # -- Save --------------------------------------------------
+    # ── Save ──────────────────────────────────────────────────
     buf = BytesIO()
     plt.savefig(buf, format="png", dpi=130, bbox_inches="tight",
                 facecolor=BG, edgecolor="none")
@@ -3015,7 +3133,7 @@ def build_dashboard_image() -> BytesIO:
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate and send the full visual market dashboard."""
-    await update.message.reply_text("Building dashboardï¿½ this takes ~10 seconds ?")
+    await update.message.reply_text("Building dashboard… this takes ~10 seconds ⏳")
     try:
         import asyncio
         loop = asyncio.get_event_loop()
@@ -3023,8 +3141,8 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(
             photo=buf,
             caption=(
-                f"?? Live Dashboard ï¿½ {datetime.now(CT).strftime('%I:%M %p CT')}\n"
-                f"Indices ï¿½ Sectors ï¿½ Gainers/Losers ï¿½ Squeeze ï¿½ Crypto ï¿½ Alerts"
+                f"📊 Live Dashboard — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
+                f"Indices • Sectors • Gainers/Losers • Squeeze • Crypto • Alerts"
             )
         )
     except Exception as e:
@@ -3039,7 +3157,7 @@ def send_dashboard_sync(label: str = ""):
     """
     try:
         buf = build_dashboard_image()
-        caption = f"?? Dashboard ï¿½ {label}  {datetime.now(CT).strftime('%I:%M %p CT')}"
+        caption = f"📊 Dashboard — {label}  {datetime.now(CT).strftime('%I:%M %p CT')}"
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
             data={"chat_id": CHAT_ID, "caption": caption},
@@ -3088,7 +3206,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# NATURAL LANGUAGE HANDLER ï¿½ the "ask anything" feature
+# NATURAL LANGUAGE HANDLER — the "ask anything" feature
 # ============================================================
 def _offhours_note() -> str:
     """Returns a contextual note string when market is closed, empty string otherwise."""
@@ -3098,19 +3216,19 @@ def _offhours_note() -> str:
     now = datetime.now(CT)
     if now.weekday() >= 5:
         days_to_open = 7 - now.weekday()   # Mon = 0
-        return f"(Weekend ï¿½ market reopens Monday)"
+        return f"(Weekend — market reopens Monday)"
     t = now.time()
     if t < datetime.strptime("07:00", "%H:%M").time():
-        return "(Pre-market ï¿½ last close data)"
-    return "(After hours ï¿½ last close data)"
+        return "(Pre-market — last close data)"
+    return "(After hours — last close data)"
 
 
 async def cmd_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /prep ï¿½ Claude-powered game plan for the next trading session.
+    /prep — Claude-powered game plan for the next trading session.
     Pulls last-close data for the watchlist and asks Claude what to watch.
     """
-    await update.message.reply_text("Building tomorrow's game planï¿½")
+    await update.message.reply_text("Building tomorrow's game plan…")
     now_label = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
     session   = get_trading_session()
 
@@ -3118,14 +3236,15 @@ async def cmd_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     snap_lines = []
     for t in list(TICKERS)[:15]:
         try:
-            info  = yf.Ticker(t).fast_info
-            price = info.get("lastPrice", 0)
-            chg   = info.get("regularMarketChangePercent", 0)
-            high52 = info.get("fiftyTwoWeekHigh", 0)
+            d      = get_ticker_data(t)
+            price  = d["price"]
+            chg    = d["chg"]
+            high52 = d["high52"]
             pct_off = ((price - high52) / high52 * 100) if high52 else 0
             if price > 0:
+                sign = "+" if chg >= 0 else ""
                 snap_lines.append(
-                    f"{t} ${price:.2f} ({chg:+.2f}%) {pct_off:+.1f}% from 52w high"
+                    f"{t} ${price:.2f} ({sign}{chg:.2f}%) {pct_off:+.1f}% from 52w high"
                 )
         except:
             pass
@@ -3156,14 +3275,14 @@ async def cmd_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_overnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /overnight ï¿½ overnight risk assessment for open paper positions.
+    /overnight — overnight risk assessment for open paper positions.
     Checks for earnings, gap risk, macro exposure.
     """
     if not paper_positions:
         await update.message.reply_text("No open paper positions to assess.")
         return
 
-    await update.message.reply_text("Checking overnight risk on open positionsï¿½")
+    await update.message.reply_text("Checking overnight risk on open positions…")
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
 
     pos_lines = []
@@ -3189,7 +3308,7 @@ async def cmd_overnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"(1) Overnight gap risk (high/medium/low and why). "
         f"(2) Whether to hold, tighten stop, or consider trimming before close. "
         f"(3) Any known catalysts overnight (earnings, macro). "
-        f"If uncertain about specific dates, say so ï¿½ don't invent events. "
+        f"If uncertain about specific dates, say so — don't invent events. "
         f"Be direct, one paragraph per position. Plain text."
     )
     ai = get_ai_response(prompt, max_tokens=600)
@@ -3210,11 +3329,11 @@ async def cmd_overnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /wlprep ï¿½ deep dive on the full watchlist with technicals.
+    /wlprep — deep dive on the full watchlist with technicals.
     Useful on weekends to rank stocks by setup quality going into Monday.
     """
     await update.message.reply_text(
-        f"Running technical scan on {len(TICKERS)} watched stocksï¿½ "
+        f"Running technical scan on {len(TICKERS)} watched stocks… "
         f"(this takes ~20 seconds)"
     )
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
@@ -3238,7 +3357,7 @@ async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     lines = [f"WATCHLIST TECHNICAL SCAN {note}", now_label, ""]
     for ticker, score, price, chg, rsi, bw in top:
-        rsi_flag = "?? overbought" if rsi and rsi > 70 else ("?? oversold" if rsi and rsi < 35 else "")
+        rsi_flag = "⚠️ overbought" if rsi and rsi > 70 else ("🟢 oversold" if rsi and rsi < 35 else "")
         lines.append(
             f"{ticker:6}  score={score:.0f}  RSI={rsi:.0f}  BW={bw:.3f}  "
             f"${price:.2f} ({chg:+.2f}%)  {rsi_flag}"
@@ -3262,7 +3381,7 @@ async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /ask <question> ï¿½ ask Claude AI anything about the market.
+    /ask <question> — ask Claude AI anything about the market.
     Maintains multi-turn memory per chat (last 20 messages).
     """
     if not update.message:
@@ -3283,7 +3402,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id  = str(update.effective_chat.id)
     logger.info(f"/ask from {chat_id}: {user_msg[:80]}")
 
-    await update.message.reply_text("Thinkingï¿½")
+    await update.message.reply_text("Thinking…")
 
     # Enrich with live price if a watched ticker is mentioned
     enriched = user_msg
@@ -3319,7 +3438,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SCHEDULED MESSAGES
 # ============================================================
 def send_morning_briefing():
-    """8:30 AM CT ï¿½ market open briefing with full live data."""
+    """8:30 AM CT — market open briefing with full live data."""
     global daily_alerts
     daily_alerts = 0
     logger.info("Morning briefing")
@@ -3338,7 +3457,7 @@ def send_morning_briefing():
     ai = get_ai_response(prompt, max_tokens=350)
 
     msg_lines = (
-        [f"?? Morning Briefing ï¿½ {datetime.now(CT).strftime('%B %d, %Y')}",
+        [f"🌅 Morning Briefing — {datetime.now(CT).strftime('%B %d, %Y')}",
          f"{datetime.now(CT).strftime('%I:%M %p CT')}", ""] +
         s["indices_lines"] +
         [f"", f"Fear & Greed: {s['fg_str']}  VIX: {s['vix']:.1f}",
@@ -3349,7 +3468,7 @@ def send_morning_briefing():
     send_dashboard_sync("Market Open")
 
 def send_daily_close_summary():
-    """3:00 PM CT ï¿½ closing bell summary with full live data."""
+    """3:00 PM CT — closing bell summary with full live data."""
     logger.info("Daily close summary")
     s = fetch_market_snapshot()
 
@@ -3373,7 +3492,7 @@ def send_daily_close_summary():
     ai = get_ai_response(prompt, max_tokens=200)
 
     msg_lines = (
-        [f"?? Market Close ï¿½ {datetime.now(CT).strftime('%I:%M %p CT')}",
+        [f"🔔 Market Close — {datetime.now(CT).strftime('%I:%M %p CT')}",
          s["now_label"], ""] +
         s["indices_lines"] +
         [f"", f"Fear & Greed: {s['fg_str']}  VIX: {s['vix']:.1f}",
@@ -3402,7 +3521,7 @@ def send_startup_message():
     ai = get_ai_response(prompt, fast=True, max_tokens=30)
 
     msg_lines = (
-        [f"?? STOCK SPIKE MONITOR STARTED",
+        [f"🚀 STOCK SPIKE MONITOR STARTED",
          f"{s['now_label']}",
          f"Market: {status_str}",
          f"Watching: {len(TICKERS)} stocks",
@@ -3417,7 +3536,7 @@ def send_startup_message():
     send_dashboard_sync("Startup")
 
 def send_weekly_digest():
-    """Sunday 6 PM CT ï¿½ week-in-review with live snapshot."""
+    """Sunday 6 PM CT — week-in-review with live snapshot."""
     if not recent_alerts:
         logger.info("Weekly digest: no alerts to report")
         return
@@ -3446,7 +3565,7 @@ def send_weekly_digest():
     ai = get_ai_response(prompt, max_tokens=250)
 
     lines = (
-        [f"?? Weekly Digest ï¿½ {s['now_label']}",
+        [f"📅 Weekly Digest — {s['now_label']}",
          f"Total spike alerts this week: {len(recent_alerts)}", ""] +
         s["indices_lines"] +
         [f"", f"Fear & Greed: {s['fg_str']}  VIX: {s['vix']:.1f}",
@@ -3458,7 +3577,7 @@ def send_weekly_digest():
 
 
 def send_premarket_dashboard():
-    """8:00 AM CT ï¿½ pre-market snapshot with live data before regular open."""
+    """8:00 AM CT — pre-market snapshot with live data before regular open."""
     logger.info("Pre-market dashboard")
     s = fetch_market_snapshot()
 
@@ -3469,7 +3588,7 @@ def send_premarket_dashboard():
             fi    = yf.Ticker(sym).fast_info
             price = fi.get("lastPrice") or 0
             chg   = fi.get("regularMarketChangePercent") or 0
-            arrow = "?" if chg >= 0 else "?"
+            arrow = "+" if chg >= 0 else "-"
             futures_lines.append(f"{arrow} {label}: {price:,.0f} ({chg:+.2f}%)")
         except:
             pass
@@ -3492,7 +3611,7 @@ def send_premarket_dashboard():
     ai = get_ai_response(prompt[0], max_tokens=200, fast=True)
 
     msg_lines = [
-        f"?? Pre-Market Snapshot ï¿½ {datetime.now(CT).strftime('%I:%M %p CT')}",
+        f"🌅 Pre-Market Snapshot — {datetime.now(CT).strftime('%I:%M %p CT')}",
         f"{s['now_label']}",
         "",
     ]
@@ -3529,7 +3648,7 @@ def send_midday_dashboard():
     ai = get_ai_response(prompt, max_tokens=150, fast=True)
 
     msg_lines = (
-        [f"?? Mid-Day Check-In ï¿½ {datetime.now(CT).strftime('%I:%M %p CT')}",
+        [f"📊 Mid-Day Check-In — {datetime.now(CT).strftime('%I:%M %p CT')}",
          s["now_label"], ""] +
         s["indices_lines"] +
         [f"", f"Fear & Greed: {s['fg_str']}  VIX: {s['vix']:.1f}",
@@ -3541,7 +3660,7 @@ def send_midday_dashboard():
 
 
 def send_evening_recap():
-    """6:00 PM CT ï¿½ after-hours recap + tomorrow setup."""
+    """6:00 PM CT — after-hours recap + tomorrow setup."""
     if get_trading_session() != "closed":
         return   # skip if still in extended hours
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
@@ -3564,15 +3683,15 @@ def send_evening_recap():
         max_tokens=180
     )
     send_telegram(
-        f"Evening Recap ï¿½ {datetime.now(CT).strftime('%I:%M %p CT')}\n"
+        f"Evening Recap — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
         f"{snap_str}\n\n"
         f"Claude: {ai}\n\n"
-        f"Use /prep for tomorrow's game plan  ï¿½  /overnight for position risk"
+        f"Use /prep for tomorrow's game plan  |  /overnight for position risk"
     )
 
 
 def send_saturday_prep():
-    """Saturday 9:00 AM CT ï¿½ weekend watchlist prep digest."""
+    """Saturday 9:00 AM CT — weekend watchlist prep digest."""
     now_label = datetime.now(CT).strftime("%A %B %d, %Y")
     scored = []
     for ticker in list(TICKERS)[:20]:
@@ -3596,7 +3715,7 @@ def send_saturday_prep():
         f"Plain text, be specific.",
         max_tokens=400
     )
-    lines = [f"Weekend Watchlist Prep ï¿½ {now_label}", f"Fear & Greed: {fg_val} ({fg_label})", ""]
+    lines = [f"Weekend Watchlist Prep — {now_label}", f"Fear & Greed: {fg_val} ({fg_label})", ""]
     for ticker, score, price, chg, rsi in top:
         lines.append(f"  {ticker:6}  score={score:.0f}  RSI={rsi:.0f}  ${price:.2f} ({chg:+.2f}%)")
     lines += ["", f"Claude: {ai}", "", "Use /prep or /wlprep for deeper analysis"]
@@ -3608,7 +3727,7 @@ def send_saturday_prep():
 # ============================================================
 def scanner_thread():
     """
-    Background thread ï¿½ timezone-independent scheduler.
+    Background thread — timezone-independent scheduler.
 
     All job times are defined in CT (America/Chicago).
     The loop reads datetime.now(CT) directly, so it fires correctly
@@ -3617,10 +3736,10 @@ def scanner_thread():
 
     Job table format:
         (day, "HH:MM", function)
-        day = "daily" | "monday"ï¿½"sunday"
+        day = "daily" | "monday"…"sunday"
     """
 
-    # -- Define all scheduled jobs in CT -----------------------
+    # ── Define all scheduled jobs in CT ───────────────────────
     JOBS = [
         # day            CT time   function
         ("daily",        "08:00",  send_premarket_dashboard),
@@ -3643,7 +3762,7 @@ def scanner_thread():
     last_scan   = datetime.now(CT) - timedelta(minutes=CHECK_INTERVAL_MIN + 1)
 
     logger.info(
-        f"Scheduler started ï¿½ all times in CT "
+        f"Scheduler started — all times in CT "
         f"(server local: {datetime.now().strftime('%Z %z') or 'unknown'})"
     )
 
@@ -3653,24 +3772,24 @@ def scanner_thread():
         now_day   = DAY_NAMES[now_ct.weekday()]
         fire_key  = f"{now_ct.strftime('%Y-%m-%d')}-{now_hhmm}"  # unique per day+minute
 
-        # -- Timed jobs ----------------------------------------
+        # ── Timed jobs ────────────────────────────────────────
         for day, hhmm, fn in JOBS:
             job_key = f"{fire_key}-{day}-{hhmm}"
             if now_hhmm == hhmm and (day == "daily" or day == now_day):
                 if job_key not in fired:
                     fired.add(job_key)
-                    logger.info(f"Firing scheduled job: {day} {hhmm} CT ? {fn.__name__ if hasattr(fn,'__name__') else 'lambda'}")
+                    logger.info(f"Firing scheduled job: {day} {hhmm} CT -> {fn.__name__ if hasattr(fn,'__name__') else 'lambda'}")
                     try:
                         fn()
                     except Exception as e:
                         logger.error(f"Scheduled job error ({day} {hhmm}): {e}", exc_info=True)
 
-        # -- Prune fired set daily to avoid unbounded growth ---
+        # ── Prune fired set daily to avoid unbounded growth ───
         if len(fired) > 500:
             today_prefix = now_ct.strftime("%Y-%m-%d")
             fired = {k for k in fired if k.startswith(today_prefix)}
 
-        # -- Stock scanner ï¿½ every CHECK_INTERVAL_MIN minutes --
+        # ── Stock scanner — every CHECK_INTERVAL_MIN minutes ──
         elapsed = (now_ct - last_scan).total_seconds() / 60
         if elapsed >= CHECK_INTERVAL_MIN:
             last_scan = now_ct
@@ -3679,25 +3798,25 @@ def scanner_thread():
             except Exception as e:
                 logger.error(f"check_stocks error: {e}", exc_info=True)
 
-        time.sleep(30)   # check twice per minute ï¿½ plenty for minute-precision jobs
+        time.sleep(30)   # check twice per minute — plenty for minute-precision jobs
 
 
 # ============================================================
-# MAIN ï¿½ Telegram bot
+# MAIN — Telegram bot
 # ============================================================
 def run_telegram_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # -- Market Pulse ------------------------------------------
+    # ── Market Pulse ──────────────────────────────────────────
     app.add_handler(CommandHandler("overview",    cmd_overview))
     app.add_handler(CommandHandler("crypto",      cmd_crypto))
     app.add_handler(CommandHandler("macro",       cmd_macro))
     app.add_handler(CommandHandler("earnings",    cmd_earnings))
 
-    # -- Movers ------------------------------------------------
+    # ── Movers ────────────────────────────────────────────────
     app.add_handler(CommandHandler("movers",      cmd_movers))
 
-    # -- Stock Tools -------------------------------------------
+    # ── Stock Tools ───────────────────────────────────────────
     app.add_handler(CommandHandler("price",       cmd_price))
     app.add_handler(CommandHandler("analyze",     cmd_analyze))
     app.add_handler(CommandHandler("compare",     cmd_compare))
@@ -3705,24 +3824,24 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("rsi",         cmd_rsi))
     app.add_handler(CommandHandler("news",        cmd_news))
 
-    # -- Alerts & Scanning -------------------------------------
+    # ── Alerts & Scanning ─────────────────────────────────────
     app.add_handler(CommandHandler("spikes",      cmd_spikes))
     app.add_handler(CommandHandler("alerts",      cmd_alerts))
     app.add_handler(CommandHandler("squeeze",     cmd_squeeze))
     app.add_handler(CommandHandler("setalert",    cmd_setalert))
     app.add_handler(CommandHandler("watchlist",   cmd_watchlist))
 
-    # -- Bot Control -------------------------------------------
+    # ── Bot Control ───────────────────────────────────────────
     app.add_handler(CommandHandler("dashboard",   cmd_dashboard))
     app.add_handler(CommandHandler("list",        cmd_list))
     app.add_handler(CommandHandler("monitoring",  cmd_monitoring))
     app.add_handler(CommandHandler("help",        cmd_help))
 
-    # -- Paper Trading -----------------------------------------
+    # ── Paper Trading ─────────────────────────────────────────
     app.add_handler(CommandHandler("paper",       cmd_paper))
     app.add_handler(CommandHandler("overnight",   cmd_overnight))
 
-    # -- Off-hours / prep --------------------------------------
+    # ── Off-hours / prep ──────────────────────────────────────
     app.add_handler(CommandHandler("prep",        cmd_prep))
     app.add_handler(CommandHandler("wlprep",      cmd_watchlist_prep))
 
