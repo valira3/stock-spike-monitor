@@ -253,7 +253,7 @@ def check_stocks():
         last_prices[ticker] = c
 
 # ────────────────────────────────────────────────
-# Morning, Daily & Startup Messages (NOW DEFINED)
+# Morning, Daily & Startup Messages
 # ────────────────────────────────────────────────
 def send_morning_briefing():
     global daily_alerts
@@ -286,15 +286,21 @@ Live scanning now."""
     send_telegram(message)
 
 # ────────────────────────────────────────────────
-# Scheduler & startup – AFTER ALL FUNCTIONS
+# Background scanner thread
 # ────────────────────────────────────────────────
-schedule.every(CHECK_INTERVAL_MIN).minutes.do(check_stocks)
-schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic_hot_stocks()))
-schedule.every().day.at("08:30").do(send_morning_briefing)
-schedule.every().day.at("15:00").do(send_daily_close_summary)
+def scanner_thread():
+    schedule.every(CHECK_INTERVAL_MIN).minutes.do(check_stocks)
+    schedule.every().day.at("08:30").do(lambda: globals().update(TICKERS=get_dynamic_hot_stocks()))
+    schedule.every().day.at("08:30").do(send_morning_briefing)
+    schedule.every().day.at("15:00").do(send_daily_close_summary)
 
-logger.info("✅ FULL INTERACTIVE MONITOR WITH BULLISH FILTER STARTED")
+    while True:
+        schedule.run_pending()
+        time.sleep(10)
 
+# ────────────────────────────────────────────────
+# Main thread: Telegram bot + start scanner
+# ────────────────────────────────────────────────
 def run_telegram_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("help", cmd_help))
@@ -307,11 +313,10 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.run_polling()
 
-threading.Thread(target=run_telegram_bot, daemon=True).start()
+# Start scanner in background thread
+threading.Thread(target=scanner_thread, daemon=True).start()
+
+logger.info("✅ FULL INTERACTIVE MONITOR WITH BULLISH FILTER STARTED")
 
 send_startup_message()
-check_stocks()
-
-while True:
-    schedule.run_pending()
-    time.sleep(10)
+run_telegram_bot()   # runs in main thread
