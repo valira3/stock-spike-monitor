@@ -86,32 +86,32 @@ BOT_DESCRIPTION = (
     "24/7 · 60+ stocks · ≥3% spike alerts · Claude AI · RSI/BB/Squeeze\n"
     "\n"
     "MARKET PULSE\n"
-    "  /overview   indices · sectors · Fear & Greed · AI outlook\n"
-    "  /crypto     BTC ETH SOL DOGE XRP\n"
-    "  /macro      CPI · Fed · NFP · FOMC calendar\n"
-    "  /earnings   next 7 days\n"
+    "  /overview            indices · sectors · Fear & Greed · AI outlook\n"
+    "  /crypto              BTC ETH SOL DOGE XRP\n"
+    "  /macro               CPI · Fed · NFP · FOMC calendar\n"
+    "  /earnings            next 7 days\n"
     "\n"
     "MOVERS\n"
-    "  /movers             gainers + losers summary\n"
-    "  /movers gainers     top 5 up\n"
-    "  /movers losers      top 5 down\n"
-    "  /movers volume      most active\n"
-    "  /movers lowprice    $1–$10 rockets\n"
+    "  /movers              gainers + losers summary\n"
+    "  /movers gainers      top 5 up\n"
+    "  /movers losers       top 5 down\n"
+    "  /movers volume       most active\n"
+    "  /movers lowprice     $1–$10 rockets\n"
     "\n"
     "STOCK TOOLS\n"
-    "  /price TICK         live quote + day range\n"
-    "  /analyze TICK       AI deep dive: catalyst · risk · tech\n"
-    "  /compare TICK TICK  side-by-side + Grok verdict\n"
-    "  /chart TICK         intraday sparkline + VWAP + volume\n"
-    "  /rsi TICK           RSI(14) · Bollinger Bands · squeeze score\n"
-    "  /news TICK          latest headlines\n"
+    "  /price TICK          live quote + day range\n"
+    "  /analyze TICK        AI deep dive: catalyst · risk · technicals\n"
+    "  /compare TICK TICK   side-by-side AI verdict\n"
+    "  /chart TICK          intraday sparkline + VWAP + volume\n"
+    "  /rsi TICK            RSI(14) · Bollinger Bands · squeeze score\n"
+    "  /news TICK           latest headlines\n"
     "\n"
     "ALERTS\n"
-    "  /spikes             recent spikes (last 30 min)\n"
-    "  /alerts             all alerts fired today\n"
-    "  /squeeze            top squeeze candidates (0–100 score)\n"
-    "  /setalert TICK $    custom price target\n"
-    "  /watchlist          add · remove · scan your list\n"
+    "  /spikes              recent spikes (last 30 min)\n"
+    "  /alerts              all alerts fired today\n"
+    "  /squeeze             top squeeze candidates (0–100 score)\n"
+    "  /setalert TICK $     custom price target\n"
+    "  /watchlist           add · remove · scan your list\n"
     "\n"
     "PAPER TRADING  (simulated · $100k · bullish only)\n"
     "  /paper               portfolio value + open positions\n"
@@ -119,21 +119,23 @@ BOT_DESCRIPTION = (
     "  /paper trades        today's buys & sells\n"
     "  /paper history       all-time win rate + summary\n"
     "  /paper signal TICK   7-factor signal breakdown\n"
-    "  /paper log           download investment.log\n"
+    "  /paper log           download trade log\n"
     "  /paper reset         reset to $100k\n"
+    "  /overnight           overnight gap risk on open positions\n"
     "\n"
-    "  /ask <question>    chat with Claude AI (multi-turn memory)\n"
-    "  /prep              next session game plan (works anytime)\n"
-    "  /wlprep            full watchlist technical scan + Claude setup read\n"
-    "  /overnight         overnight risk on open paper positions\n"
-    "  /dashboard          send visual dashboard now\n"
-    "  /list               all monitored tickers\n"
-    "  /monitoring         pause · resume · status\n"
-    "  /help               this menu\n"
+    "OFF-HOURS & PREP\n"
+    "  /prep                next session game plan (works anytime)\n"
+    "  /wlprep              full watchlist technical scan + AI setup read\n"
+    "  /ask <question>      chat with Claude AI (multi-turn memory)\n"
     "\n"
-    "💬 /ask <question>   — ask Claude AI anything about the market\n"
-    "     e.g. /ask Is NVDA overbought?  /ask What does RSI 72 mean?\n"
-    "📊 Auto dashboards: 8:00 pre-mkt · 8:30 open · 12:00 mid · 3:00 close · Sun digest"
+    "BOT\n"
+    "  /dashboard           send visual dashboard now\n"
+    "  /list                all monitored tickers\n"
+    "  /monitoring          pause · resume · status\n"
+    "  /help                this menu\n"
+    "\n"
+    "📊 Auto: 8am pre-mkt · 8:30 open · 12pm mid-day · 3pm close · 6pm recap\n"
+    "         Sat 9am watchlist prep · Sun 6pm weekly digest  (all times CT)"
 )
 
 # ============================================================
@@ -3053,6 +3055,7 @@ async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /ask <question> — ask Claude AI anything about the market.
     Maintains multi-turn memory per chat (last 20 messages).
@@ -3098,13 +3101,14 @@ async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not reply or reply.strip() in ("", "AI unavailable", "AI unavailable right now."):
             await update.message.reply_text(
                 "Claude AI is not responding. "
-                "Check that GROK_API_KEY is set in Railway and try again."
+                "Check that ANTHROPIC_API_KEY is set in Railway and try again."
             )
         else:
             await update.message.reply_text(reply)
     except Exception as e:
         logger.error(f"cmd_ask error: {e}", exc_info=True)
         await update.message.reply_text(f"Error reaching Claude AI: {e}")
+
 
 # ============================================================
 # SCHEDULED MESSAGES
