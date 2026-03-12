@@ -3761,7 +3761,7 @@ def build_chart_image(ticker: str) -> BytesIO:
 
     plt.tight_layout(pad=0.5)
     buf = BytesIO()
-    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+    plt.savefig(buf, format="png", dpi=200, bbox_inches="tight",
                 facecolor=BG, edgecolor="none")
     plt.close(fig)
     buf.seek(0)
@@ -3792,8 +3792,9 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{rsi_str}. What does this intraday move suggest? One sentence.",
             fast=True
         )
-        await update.message.reply_photo(
-            photo=buf,
+        await update.message.reply_document(
+            document=buf,
+            filename="chart.png",
             caption=f"{ticker}  ${price:.2f}  ({sign}{chg:.2f}%)\n{rsi_str}\nClaude: {ai}"
         )
     except Exception as e:
@@ -4008,7 +4009,7 @@ def build_dashboard_image() -> BytesIO:
         for sp in ax.spines.values():
             sp.set_edgecolor(EDGE)
             sp.set_linewidth(0.8)
-        ax.set_title(title, color=DIM, fontsize=10,
+        ax.set_title(title, color=DIM, fontsize=14,
                      fontweight="bold", loc="left", pad=5)
 
     def _barh_chart(ax, names, values, bar_colors, *, price_strs=None):
@@ -4019,13 +4020,13 @@ def build_dashboard_image() -> BytesIO:
         - X axis always has a minimum range so bars are visible near-zero.
         """
         ys = list(range(len(names)))
-        ax.barh(ys, values, color=bar_colors, height=0.55, zorder=3)
+        ax.barh(ys, values, color=bar_colors, height=0.65, zorder=3)
         ax.set_yticks(ys)
-        ax.set_yticklabels(names, color=TEXT, fontsize=10)
+        ax.set_yticklabels(names, color=TEXT, fontsize=14)
         ax.axvline(0, color=DIM, linewidth=0.7, zorder=2)
-        ax.xaxis.grid(True, color=GRID, linewidth=0.5, zorder=1)
+        ax.xaxis.grid(True, color=GRID, linewidth=0.7, zorder=1)
         ax.set_axisbelow(True)
-        ax.tick_params(axis="x", colors=DIM, labelsize=7)
+        ax.tick_params(axis="x", colors=DIM, labelsize=10)
         ax.tick_params(axis="y", length=0)
 
         # Ensure a sensible x range so tiny/zero bars are still visible
@@ -4040,11 +4041,11 @@ def build_dashboard_image() -> BytesIO:
             x_offset = pad * 0.4
             if v >= 0:
                 ax.text(v + x_offset, i, pct_label,
-                        va="center", ha="left", color=TEXT, fontsize=8,
+                        va="center", ha="left", color=TEXT, fontsize=12,
                         clip_on=False)
             else:
                 ax.text(v - x_offset, i, pct_label,
-                        va="center", ha="right", color=TEXT, fontsize=8,
+                        va="center", ha="right", color=TEXT, fontsize=12,
                         clip_on=False)
 
         # Price label: always at fixed right edge in axes coords
@@ -4052,7 +4053,7 @@ def build_dashboard_image() -> BytesIO:
             for i, ps in enumerate(price_strs):
                 ax.text(1.01, (i + 0.5) / len(names),
                         ps, va="center", ha="left",
-                        color=DIM, fontsize=9,
+                        color=DIM, fontsize=13,
                         transform=ax.transAxes, clip_on=False)
 
     # ── Figure & grid (portrait/mobile layout) ──────────────
@@ -4067,15 +4068,15 @@ def build_dashboard_image() -> BytesIO:
 
     # ── Header ────────────────────────────────────────────────
     fig.text(0.08, 0.982, "STOCK SPIKE MONITOR  //  LIVE DASHBOARD",
-             color=TEXT, fontsize=14, fontweight="bold")
-    fig.text(0.08, 0.974, now_str, color=DIM, fontsize=10)
+             color=TEXT, fontsize=20, fontweight="bold")
+    fig.text(0.08, 0.974, now_str, color=DIM, fontsize=14)
     fig.text(0.55, 0.974,
              f"Market: {session.upper()}",
-             color=session_color, fontsize=10, fontweight="bold")
+             color=session_color, fontsize=14, fontweight="bold")
     # Claude AI one-liner — truncate to ~80 chars for narrow layout
     gl = grok_line[:80] + ("\u2026" if len(grok_line) > 80 else "")
     fig.text(0.08, 0.966, f"Claude AI: {gl}",
-             color=GOLD, fontsize=9, style="italic")
+             color=GOLD, fontsize=13, style="italic")
 
     # ── [A] Indices (full width) ──────────────────────────────
     ax_idx = fig.add_subplot(gs[0, :])
@@ -4093,7 +4094,7 @@ def build_dashboard_image() -> BytesIO:
     ax_fg.set_facecolor(PANEL)
     for sp in ax_fg.spines.values():
         sp.set_edgecolor(EDGE)
-    ax_fg.set_title("FEAR & GREED", color=DIM, fontsize=10,
+    ax_fg.set_title("FEAR & GREED", color=DIM, fontsize=14,
                     fontweight="bold", loc="left", pad=5)
     ax_fg.set_aspect("equal")
     ax_fg.set_xlim(-1.3, 1.3)
@@ -4114,7 +4115,7 @@ def build_dashboard_image() -> BytesIO:
         if sl:
             mt = np.radians((t1 + t2) / 2)
             ax_fg.text(0.82 * np.cos(mt), 0.82 * np.sin(mt), sl,
-                       ha="center", va="center", fontsize=5.5,
+                       ha="center", va="center", fontsize=8,
                        color="white", fontweight="bold", zorder=3)
 
     na = np.radians(180 - fg_val * 1.8)
@@ -4124,9 +4125,9 @@ def build_dashboard_image() -> BytesIO:
                         color="white", lw=2), zorder=5)
     ax_fg.add_patch(plt.Circle((0, 0), 0.07, color=PANEL, zorder=4))
     ax_fg.text(0, -0.18, str(fg_val), ha="center", va="center",
-               fontsize=22, fontweight="bold", color=TEXT, zorder=5)
+               fontsize=30, fontweight="bold", color=TEXT, zorder=5)
     ax_fg.text(0, -0.29, fg_label or "", ha="center", va="center",
-               fontsize=8, color=GOLD, zorder=5)
+               fontsize=12, color=GOLD, zorder=5)
 
     # ── [C] Sector heatmap ────────────────────────────────────
     ax_sec = fig.add_subplot(gs[1, 1])
@@ -4153,10 +4154,10 @@ def build_dashboard_image() -> BytesIO:
         ))
         tc = "white" if abs(norm_v - 0.5) > 0.18 else "#111111"
         ax_sec.text(cx, cy + 0.045, name, ha="center", va="center",
-                    fontsize=7, fontweight="bold", color=tc,
+                    fontsize=11, fontweight="bold", color=tc,
                     transform=ax_sec.transAxes)
         ax_sec.text(cx, cy - 0.045, f"{val:+.2f}%", ha="center", va="center",
-                    fontsize=6.5, color=tc, transform=ax_sec.transAxes)
+                    fontsize=10, color=tc, transform=ax_sec.transAxes)
 
     # ── [D] Top Gainers (full width) ──────────────────────────
     ax_gn = fig.add_subplot(gs[2, :])
@@ -4169,7 +4170,7 @@ def build_dashboard_image() -> BytesIO:
                     price_strs=[f"${p:.2f}" for _, _, p in gainers])
     else:
         ax_gn.text(0.5, 0.5, "No data", ha="center", va="center",
-                   color=DIM, fontsize=9, transform=ax_gn.transAxes)
+                   color=DIM, fontsize=13, transform=ax_gn.transAxes)
         ax_gn.axis("off")
 
     # ── [E] Top Losers (full width) ───────────────────────────
@@ -4183,7 +4184,7 @@ def build_dashboard_image() -> BytesIO:
                     price_strs=[f"${p:.2f}" for _, _, p in losers])
     else:
         ax_ls.text(0.5, 0.5, "No data", ha="center", va="center",
-                   color=DIM, fontsize=9, transform=ax_ls.transAxes)
+                   color=DIM, fontsize=13, transform=ax_ls.transAxes)
         ax_ls.axis("off")
 
     # ── [F] Squeeze Leaderboard (full width) ──────────────────
@@ -4194,13 +4195,13 @@ def build_dashboard_image() -> BytesIO:
         sq_scores = [s for _, s in top_squeeze]
         ys_sq = list(range(len(sq_names)))
         sq_cols = [plt.cm.YlOrRd(s / 100) for s in sq_scores]
-        ax_sq.barh(ys_sq, sq_scores, color=sq_cols, height=0.55, zorder=3)
+        ax_sq.barh(ys_sq, sq_scores, color=sq_cols, height=0.65, zorder=3)
         ax_sq.set_xlim(0, 115)
         ax_sq.set_yticks(ys_sq)
-        ax_sq.set_yticklabels(sq_names, color=TEXT, fontsize=10)
-        ax_sq.tick_params(axis="x", colors=DIM, labelsize=7)
+        ax_sq.set_yticklabels(sq_names, color=TEXT, fontsize=14)
+        ax_sq.tick_params(axis="x", colors=DIM, labelsize=10)
         ax_sq.tick_params(axis="y", length=0)
-        ax_sq.xaxis.grid(True, color=GRID, linewidth=0.5, zorder=1)
+        ax_sq.xaxis.grid(True, color=GRID, linewidth=0.7, zorder=1)
         ax_sq.set_axisbelow(True)
         for i, (t, sc) in enumerate(top_squeeze):
             sd    = compute_squeeze_score(t)
@@ -4211,10 +4212,10 @@ def build_dashboard_image() -> BytesIO:
                 parts.append(f"BW {sd['bandwidth']:.3f}")
             detail = "  ".join(parts)
             ax_sq.text(sc + 1.5, i, f"{sc:.0f}  {detail}",
-                       va="center", ha="left", color=TEXT, fontsize=8)
+                       va="center", ha="left", color=TEXT, fontsize=12)
     else:
         ax_sq.text(0.5, 0.5, "Building\u2026 (needs 2-3 scan cycles)",
-                   ha="center", va="center", color=DIM, fontsize=9,
+                   ha="center", va="center", color=DIM, fontsize=13,
                    transform=ax_sq.transAxes)
         ax_sq.axis("off")
 
@@ -4233,7 +4234,7 @@ def build_dashboard_image() -> BytesIO:
                     price_strs=[_fmt_crypto_price(c[1]) for c in crypto])
     else:
         ax_cr.text(0.5, 0.5, "No data", ha="center", va="center",
-                   color=DIM, fontsize=9, transform=ax_cr.transAxes)
+                   color=DIM, fontsize=13, transform=ax_cr.transAxes)
         ax_cr.axis("off")
 
     # ── [H] Recent Spike Alerts (full width) ──────────────────
@@ -4241,7 +4242,7 @@ def build_dashboard_image() -> BytesIO:
     ax_al.set_facecolor(PANEL)
     for sp in ax_al.spines.values():
         sp.set_edgecolor(EDGE)
-    ax_al.set_title("RECENT SPIKE ALERTS", color=DIM, fontsize=10,
+    ax_al.set_title("RECENT SPIKE ALERTS", color=DIM, fontsize=14,
                     fontweight="bold", loc="left", pad=5)
     ax_al.axis("off")
     alerts_display = (recent_alerts[-12:] if recent_alerts
@@ -4257,7 +4258,7 @@ def build_dashboard_image() -> BytesIO:
                    f"\u25b8 {alert}",
                    ha="left", va="top",
                    color=GOLD if "%" in alert else DIM,
-                   fontsize=9, transform=ax_al.transAxes,
+                   fontsize=13, transform=ax_al.transAxes,
                    clip_on=True)
 
     # ── [I] Bot Status ────────────────────────────────────────
@@ -4265,7 +4266,7 @@ def build_dashboard_image() -> BytesIO:
     ax_st.set_facecolor(PANEL)
     for sp in ax_st.spines.values():
         sp.set_edgecolor(EDGE)
-    ax_st.set_title("BOT STATUS", color=DIM, fontsize=10,
+    ax_st.set_title("BOT STATUS", color=DIM, fontsize=14,
                     fontweight="bold", loc="left", pad=5)
     ax_st.axis("off")
     status_str   = "[RUNNING]" if not monitoring_paused else "[PAUSED]"
@@ -4287,14 +4288,14 @@ def build_dashboard_image() -> BytesIO:
     for i, (line, color) in enumerate(stats):
         ax_st.text(0.05, 0.96 - i * 0.11, line,
                    ha="left", va="top", color=color,
-                   fontsize=9.5, transform=ax_st.transAxes)
+                   fontsize=13, transform=ax_st.transAxes)
 
     # ── [J] AI Picks Summary (NEW panel) ──────────────────────
     ax_ai = fig.add_subplot(gs[7, 1])
     ax_ai.set_facecolor(PANEL)
     for sp in ax_ai.spines.values():
         sp.set_edgecolor(EDGE)
-    ax_ai.set_title("AI PICKS", color=DIM, fontsize=10,
+    ax_ai.set_title("AI PICKS", color=DIM, fontsize=14,
                     fontweight="bold", loc="left", pad=5)
     ax_ai.axis("off")
 
@@ -4308,15 +4309,15 @@ def build_dashboard_image() -> BytesIO:
             color = GREEN if conv >= 8 else GOLD if conv >= 6 else DIM
             ax_ai.text(0.05, 0.90 - i * 0.15,
                        f"{ticker} ({conv}/10) {cat}",
-                       ha="left", va="top", color=color, fontsize=9,
+                       ha="left", va="top", color=color, fontsize=13,
                        transform=ax_ai.transAxes)
     else:
         ax_ai.text(0.5, 0.5, "No AI picks yet", ha="center", va="center",
-                   color=DIM, fontsize=9, transform=ax_ai.transAxes)
+                   color=DIM, fontsize=13, transform=ax_ai.transAxes)
 
     # ── Save ──────────────────────────────────────────────────
     buf = BytesIO()
-    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight",
+    plt.savefig(buf, format="png", dpi=220, bbox_inches="tight",
                 facecolor=BG, edgecolor="none")
     plt.close(fig)
     buf.seek(0)
@@ -4331,8 +4332,9 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         import asyncio
         loop = asyncio.get_event_loop()
         buf  = await loop.run_in_executor(None, build_dashboard_image)
-        await update.message.reply_photo(
-            photo=buf,
+        await update.message.reply_document(
+            document=buf,
+            filename="dashboard.png",
             caption=(
                 f"📊 Live Dashboard — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
                 f"Indices • Sectors • Gainers/Losers • Squeeze • Crypto • Alerts"
@@ -4352,9 +4354,9 @@ def send_dashboard_sync(label: str = ""):
         buf = build_dashboard_image()
         caption = f"📊 Dashboard — {label}  {datetime.now(CT).strftime('%I:%M %p CT')}"
         resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
             data={"chat_id": CHAT_ID, "caption": caption},
-            files={"photo": ("dashboard.png", buf, "image/png")},
+            files={"document": ("dashboard.png", buf, "image/png")},
             timeout=30
         )
         if not resp.ok:
