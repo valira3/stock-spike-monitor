@@ -107,6 +107,8 @@ BOT_DESCRIPTION = (
     "  /alerts            all alerts today\n"
     "  /squeeze           top squeeze candidates\n"
     "  /setalert TICK $   custom price target\n"
+    "  /myalerts          view all price alerts\n"
+    "  /delalert TICK $   remove a price alert\n"
     "  /watchlist         add | remove | scan\n"
     "\n"
     "PAPER TRADING  ($100k simulated)\n"
@@ -296,8 +298,13 @@ def get_ai_conversation(chat_id: str, user_message: str) -> str:
     history = conversation_history.setdefault(chat_id, [])
     history.append({"role": "user", "content": user_message})
     if len(history) > 20:
-        history = history[-20:]
-        conversation_history[chat_id] = history
+        conversation_history[chat_id] = history[-20:]
+        history = conversation_history[chat_id]
+    # Cap total conversations to prevent unbounded memory growth
+    if len(conversation_history) > 50:
+        oldest_keys = sorted(conversation_history.keys())[:-50]
+        for k in oldest_keys:
+            del conversation_history[k]
 
     # ── Claude (primary) ──────────────────────────────────────
     if claude_client:
@@ -996,21 +1003,30 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False):
     )
     send_telegram(message)
     recent_alerts.append(f"{ticker} {pct_change:+.1f}% at {datetime.now(CT).strftime('%H:%M')}")
+    # Cap recent_alerts at runtime to prevent unbounded memory growth
+    while len(recent_alerts) > 200:
+        recent_alerts.pop(0)
     # Persist alert history (non-blocking — best-effort)
     threading.Thread(target=save_bot_state, daemon=True).start()
 
 def check_custom_price_alerts(ticker, current_price):
-    if ticker not in custom_price_alerts:
+    if ticker not in custom_price_alerts or not custom_price_alerts[ticker]:
+        return
+    if current_price <= 0:
         return
     triggered = []
     for target in custom_price_alerts[ticker]:
-        if abs(current_price - target) / target < 0.005:   # within 0.5%
+        if abs(current_price - target) / max(target, 0.01) < 0.005:   # within 0.5%
             send_telegram(
                 f"Price Alert Hit!\n{ticker} reached ${current_price:.2f}\n(Target: ${target:.2f})"
             )
             triggered.append(target)
     for t in triggered:
-        custom_price_alerts[ticker].remove(t)
+        if t in custom_price_alerts.get(ticker, []):
+            custom_price_alerts[ticker].remove(t)
+    # Clean up empty ticker entries
+    if ticker in custom_price_alerts and not custom_price_alerts[ticker]:
+        del custom_price_alerts[ticker]
     if triggered:
         threading.Thread(target=save_bot_state, daemon=True).start()
 
@@ -1271,8 +1287,20 @@ def load_bot_state():
             logger.info(f"Restored {len(TICKERS)} tickers")
 
         user_watchlists     = state.get("user_watchlists", {})
-        custom_price_alerts = state.get("custom_price_alerts", {})
-        recent_alerts       = state.get("recent_alerts", [])
+        raw_alerts          = state.get("custom_price_alerts", {})
+        # Clean up: remove empty alert lists and ensure values are lists of floats
+        custom_price_alerts = {}
+        for ticker, targets in raw_alerts.items():
+            if isinstance(targets, list) and targets:
+                clean_targets = []
+                for t in targets:
+                    try:
+                        clean_targets.append(float(t))
+                    except (ValueError, TypeError):
+                        pass
+                if clean_targets:
+                    custom_price_alerts[ticker] = clean_targets
+        recent_alerts       = state.get("recent_alerts", [])[-200:]  # cap on load
         conversation_history= state.get("conversation_history", {})
         squeeze_scores      = state.get("squeeze_scores", {})
         monitoring_paused   = state.get("monitoring_paused", False)
@@ -2698,7 +2726,9 @@ async def cmd_setalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Usage: /setalert TICKER PRICE\n"
             "Example: /setalert NVDA 150.00\n\n"
-            "You'll be notified when the stock is within 0.5% of your target."
+            "You'll be notified when the stock is within 0.5% of your target.\n"
+            "View active alerts: /myalerts\n"
+            "Remove an alert: /delalert TICKER PRICE"
         )
         return
     ticker = context.args[0].upper()
@@ -2707,11 +2737,120 @@ async def cmd_setalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Invalid price. Example: /setalert NVDA 150.00")
         return
+    if target <= 0:
+        await update.message.reply_text("Price must be positive.")
+        return
+    existing = custom_price_alerts.get(ticker, [])
+    # Prevent duplicate alerts (within 0.1% of an existing target)
+    for ex_target in existing:
+        if abs(ex_target - target) / max(target, 0.01) < 0.001:
+            await update.message.reply_text(
+                f"Alert already exists for {ticker} @ ${ex_target:.2f}"
+            )
+            return
+    # Cap at 10 alerts per ticker
+    if len(existing) >= 10:
+        await update.message.reply_text(
+            f"Max 10 alerts per ticker. Remove one first with /delalert {ticker} PRICE"
+        )
+        return
     custom_price_alerts.setdefault(ticker, []).append(target)
     save_bot_state()
+    total_alerts = sum(len(v) for v in custom_price_alerts.values())
     await update.message.reply_text(
-        f"Price alert set!\n{ticker} @ ${target:.2f}\nYou'll be alerted when within 0.5% of this target."
+        f"Price alert set!\n{ticker} @ ${target:.2f}\n"
+        f"You'll be alerted when within 0.5% of this target.\n"
+        f"Active alerts: {total_alerts} total  |  /myalerts to view all"
     )
+
+async def cmd_myalerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all active custom price alerts."""
+    if not custom_price_alerts:
+        await update.message.reply_text(
+            "No active price alerts.\n"
+            "Set one with: /setalert TICKER PRICE"
+        )
+        return
+    lines = ["Active Price Alerts:"]
+    total = 0
+    for ticker in sorted(custom_price_alerts.keys()):
+        targets = custom_price_alerts[ticker]
+        if not targets:
+            continue
+        # Get live price for context
+        try:
+            price, _, _ = fetch_finnhub_quote(ticker)
+            price_str = f"  (now ${price:.2f})" if price else ""
+        except:
+            price_str = ""
+        for target in sorted(targets):
+            direction = "above" if price and target > price else "below" if price and target < price else ""
+            dist = ""
+            if price and price > 0:
+                dist_pct = abs(target - price) / price * 100
+                dist = f"  [{dist_pct:.1f}% {direction}]" if direction else ""
+            lines.append(f"  {ticker} @ ${target:.2f}{dist}")
+            total += 1
+    lines.append(f"\nTotal: {total} alerts")
+    lines.append("Remove with: /delalert TICKER PRICE")
+    lines.append("Remove all for ticker: /delalert TICKER all")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_delalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete a custom price alert."""
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage:\n"
+            "  /delalert TICKER PRICE   — remove specific alert\n"
+            "  /delalert TICKER all     — remove all alerts for ticker\n"
+            "Example: /delalert NVDA 150.00"
+        )
+        return
+    ticker = context.args[0].upper()
+    if ticker not in custom_price_alerts or not custom_price_alerts[ticker]:
+        await update.message.reply_text(f"No active alerts for {ticker}.")
+        return
+
+    arg2 = context.args[1].lower()
+    if arg2 == "all":
+        count = len(custom_price_alerts[ticker])
+        del custom_price_alerts[ticker]
+        save_bot_state()
+        await update.message.reply_text(f"Removed all {count} alerts for {ticker}.")
+        return
+
+    try:
+        target = float(context.args[1])
+    except:
+        await update.message.reply_text("Invalid price. Example: /delalert NVDA 150.00")
+        return
+
+    # Find and remove the closest matching alert (within 0.5%)
+    closest = None
+    closest_dist = float('inf')
+    for existing in custom_price_alerts[ticker]:
+        dist = abs(existing - target)
+        if dist < closest_dist:
+            closest_dist = dist
+            closest = existing
+
+    if closest is not None and closest_dist / max(target, 0.01) < 0.005:
+        custom_price_alerts[ticker].remove(closest)
+        if not custom_price_alerts[ticker]:
+            del custom_price_alerts[ticker]
+        save_bot_state()
+        await update.message.reply_text(
+            f"Removed alert: {ticker} @ ${closest:.2f}\n"
+            f"Use /myalerts to see remaining alerts."
+        )
+    else:
+        targets_str = ", ".join(f"${t:.2f}" for t in sorted(custom_price_alerts[ticker]))
+        await update.message.reply_text(
+            f"No alert found for {ticker} @ ${target:.2f}.\n"
+            f"Active alerts for {ticker}: {targets_str}"
+        )
+
 
 async def cmd_squeeze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show top squeeze candidates ranked by squeeze score."""
@@ -2840,8 +2979,11 @@ def build_chart_image(ticker: str) -> BytesIO:
     ax_p.fill_between(xs, prices, min(prices), alpha=0.15, color=color, zorder=2)
     ax_p.axhline(open_p, color=DIM, linewidth=0.8, linestyle="--", zorder=1)
 
-    # VWAP line
-    typical = [(h + l + c) / 3 for h, l, c in zip(hist['High'], hist['Low'], hist['Close'])]
+    # VWAP line — compute from candle OHLCV data
+    highs_c  = [c["h"] for c in candles]
+    lows_c   = [c["l"] for c in candles]
+    closes_c = [c["c"] for c in candles]
+    typical = [(h + l + c) / 3 for h, l, c in zip(highs_c, lows_c, closes_c)]
     cum_tp_vol = [tp * v for tp, v in zip(typical, volumes)]
     vwap = []
     cum_vol = 0; cum_tpv = 0
@@ -3941,9 +4083,9 @@ def send_premarket_dashboard():
         f"Watchlist movers: {s['movers_str']}. "
         f"Give: (1) one-sentence pre-market mood based on this data, "
         f"(2) the one sector or theme most likely to lead at open and why. "
-        f"Base your answer strictly on the numbers above. Plain text.",
-        )
-    ai = get_ai_response(prompt[0], max_tokens=200, fast=True)
+        f"Base your answer strictly on the numbers above. Plain text."
+    )
+    ai = get_ai_response(prompt, max_tokens=200, fast=True)
 
     msg_lines = [
         f"🌅 Pre-Market Snapshot — {datetime.now(CT).strftime('%I:%M %p CT')}",
@@ -4167,6 +4309,8 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("alerts",      cmd_alerts))
     app.add_handler(CommandHandler("squeeze",     cmd_squeeze))
     app.add_handler(CommandHandler("setalert",    cmd_setalert))
+    app.add_handler(CommandHandler("myalerts",    cmd_myalerts))
+    app.add_handler(CommandHandler("delalert",    cmd_delalert))
     app.add_handler(CommandHandler("watchlist",   cmd_watchlist))
 
     # ── Bot Control ───────────────────────────────────────────

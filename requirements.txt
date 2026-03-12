@@ -1,11 +1,24 @@
-yfinance
-requests
-pytz
-anthropic
-openai
-pandas
-lxml
-python-telegram-bot
-html5lib
-matplotlib
-numpy
+# ── Core Telegram bot ─────────────────────────────────────────
+python-telegram-bot==21.11.1
+
+# ── AI / LLM clients ─────────────────────────────────────────
+anthropic==0.51.0
+openai==1.78.0        # used for Grok via xAI-compatible endpoint
+
+# ── Market data ───────────────────────────────────────────────
+requests==2.32.5
+yfinance==1.2.0       # fallback only; Finnhub is primary on Railway
+
+# ── Charting / chart image generation ────────────────────────
+matplotlib==3.10.8
+numpy==2.4.2
+
+# ── Data wrangling ────────────────────────────────────────────
+pandas==3.0.1
+
+# ── Timezone ─────────────────────────────────────────────────
+pytz==2026.1.post1
+
+# ── HTML parsing (yfinance dep) ───────────────────────────────
+lxml>=5.0
+html5lib>=1.1
