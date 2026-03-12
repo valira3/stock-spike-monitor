@@ -1,6 +1,5 @@
 import yfinance as yf
 import time
-import schedule
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -124,6 +123,9 @@ BOT_DESCRIPTION = (
     "  /paper reset         reset to $100k\n"
     "\n"
     "  /ask <question>    chat with Claude AI (multi-turn memory)\n"
+    "  /prep              next session game plan (works anytime)\n"
+    "  /wlprep            full watchlist technical scan + Claude setup read\n"
+    "  /overnight         overnight risk on open paper positions\n"
     "  /dashboard          send visual dashboard now\n"
     "  /list               all monitored tickers\n"
     "  /monitoring         pause · resume · status\n"
@@ -1683,6 +1685,7 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Indices + sectors + Fear & Greed in one shot."""
+    note = _offhours_note()
     indices = {
         "^GSPC": "S&P 500", "^IXIC": "Nasdaq",
         "^DJI":  "Dow",     "^RUT":  "Russell 2000",
@@ -1703,12 +1706,16 @@ async def cmd_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fg_val, fg_label = get_fear_greed()
     fg_str = f"{fg_val} — {fg_label}" if fg_val else "unavailable"
 
+    session = get_trading_session()
     summary = " | ".join(idx_lines[:4]) + f" | F&G {fg_val}"
     ai = get_ai_response(
-        f"Market snapshot: {summary}. Top sectors: {', '.join(sec_lines[:3])}. "
+        f"Market snapshot ({session}): {summary}. Top sectors: {', '.join(sec_lines[:3])}. "
+        f"{'This is last-close data. ' if note else ''}"
         f"2-sentence outlook + one sector to watch."
     )
+    header = f"Market Overview{f'  {note}' if note else ''}"
     await update.message.reply_text(
+        f"{header}\n"
         "Indices:\n" + "\n".join(idx_lines) +
         f"\n\nFear & Greed: {fg_str}" +
         "\n\nSectors:\n" + "\n".join(sec_lines) +
@@ -1729,6 +1736,7 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     ticker = context.args[0].upper()
     await update.message.reply_text(f"Analyzing {ticker}...")
+    note = _offhours_note()
     try:
         info  = yf.Ticker(ticker).fast_info
         price = info.get('lastPrice', 0)
@@ -1743,17 +1751,19 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         news_str   = "; ".join([h[:60] for h, _ in news_items]) if news_items else "no recent news"
 
         prompt = (
-            f"Deep analysis of {ticker}: Price ${price:.2f} ({chg:+.2f}%), "
+            f"{'Last-close analysis' if note else 'Analysis'} of {ticker}: "
+            f"Price ${price:.2f} ({chg:+.2f}%), "
             f"Mkt Cap ${mcap:.1f}B, Volume {vol:,}, "
             f"52w High ${high52:.2f} ({pct_from_high:+.1f}% from high), "
             f"52w Low ${low52:.2f}. "
             f"Recent news: {news_str}. "
+            f"{'Market is closed — focus on setup for next session. ' if note else ''}"
             f"Provide: (1) technical assessment (2) near-term catalyst (3) key risk. Be specific."
         )
         ai = get_ai_response(prompt, max_tokens=500)
 
         await update.message.reply_text(
-            f"{ticker} Analysis\n"
+            f"{ticker} Analysis{f'  {note}' if note else ''}\n"
             f"Price: ${price:.2f} ({chg:+.2f}%)\n"
             f"Mkt Cap: ${mcap:.1f}B\n"
             f"Volume: {vol:,}\n"
@@ -2873,7 +2883,176 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # NATURAL LANGUAGE HANDLER — the "ask anything" feature
 # ============================================================
-async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def _offhours_note() -> str:
+    """Returns a contextual note string when market is closed, empty string otherwise."""
+    session = get_trading_session()
+    if session != "closed":
+        return ""
+    now = datetime.now(CT)
+    if now.weekday() >= 5:
+        days_to_open = 7 - now.weekday()   # Mon = 0
+        return f"(Weekend — market reopens Monday)"
+    t = now.time()
+    if t < datetime.strptime("07:00", "%H:%M").time():
+        return "(Pre-market — last close data)"
+    return "(After hours — last close data)"
+
+
+async def cmd_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /prep — Claude-powered game plan for the next trading session.
+    Pulls last-close data for the watchlist and asks Claude what to watch.
+    """
+    await update.message.reply_text("Building tomorrow's game plan…")
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
+    session   = get_trading_session()
+
+    # Gather last-close snapshot for top watched tickers
+    snap_lines = []
+    for t in list(TICKERS)[:15]:
+        try:
+            info  = yf.Ticker(t).fast_info
+            price = info.get("lastPrice", 0)
+            chg   = info.get("regularMarketChangePercent", 0)
+            high52 = info.get("fiftyTwoWeekHigh", 0)
+            pct_off = ((price - high52) / high52 * 100) if high52 else 0
+            if price > 0:
+                snap_lines.append(
+                    f"{t} ${price:.2f} ({chg:+.2f}%) {pct_off:+.1f}% from 52w high"
+                )
+        except:
+            pass
+
+    fg_val, fg_label = get_fear_greed()
+    snap_str = " | ".join(snap_lines[:10])
+
+    prompt = (
+        f"Today is {now_label}. Market is currently {session}. "
+        f"Last-close snapshot of key watchlist stocks: {snap_str}. "
+        f"Fear & Greed Index: {fg_val} ({fg_label}). "
+        f"Give me: "
+        f"(1) 3 specific stocks from this list with the most interesting setups for the next session and why. "
+        f"(2) Key price levels to watch (support/resistance based on 52w range). "
+        f"(3) One macro factor that could drive direction tomorrow. "
+        f"Be specific and concise. Plain text, no markdown."
+    )
+    ai = get_ai_response(prompt, max_tokens=500)
+
+    note = _offhours_note()
+    await update.message.reply_text(
+        f"NEXT SESSION GAME PLAN {note}\n"
+        f"{datetime.now(CT).strftime('%a %b %d  %I:%M %p CT')}\n\n"
+        f"{ai}\n\n"
+        f"Use /analyze TICK or /chart TICK to dig deeper."
+    )
+
+
+async def cmd_overnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /overnight — overnight risk assessment for open paper positions.
+    Checks for earnings, gap risk, macro exposure.
+    """
+    if not paper_positions:
+        await update.message.reply_text("No open paper positions to assess.")
+        return
+
+    await update.message.reply_text("Checking overnight risk on open positions…")
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
+
+    pos_lines = []
+    for ticker, pos in paper_positions.items():
+        try:
+            price, _, _ = fetch_finnhub_quote(ticker)
+            price = price or pos["avg_cost"]
+            pnl_pct = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
+            pos_lines.append(
+                f"{ticker}: entry ${pos['avg_cost']:.2f}, now ${price:.2f}, "
+                f"P&L {pnl_pct:+.1f}%, held since {pos['entry_date']}"
+            )
+        except:
+            pos_lines.append(f"{ticker}: entry ${pos['avg_cost']:.2f}")
+
+    pos_str   = " | ".join(pos_lines)
+    fg_val, fg_label = get_fear_greed()
+
+    prompt = (
+        f"Today is {now_label}. These are open paper trading positions held overnight: {pos_str}. "
+        f"Fear & Greed: {fg_val} ({fg_label}). "
+        f"For each position assess: "
+        f"(1) Overnight gap risk (high/medium/low and why). "
+        f"(2) Whether to hold, tighten stop, or consider trimming before close. "
+        f"(3) Any known catalysts overnight (earnings, macro). "
+        f"If uncertain about specific dates, say so — don't invent events. "
+        f"Be direct, one paragraph per position. Plain text."
+    )
+    ai = get_ai_response(prompt, max_tokens=600)
+
+    header_lines = [
+        f"OVERNIGHT RISK ASSESSMENT",
+        f"{now_label}",
+        f"Open positions: {len(paper_positions)}",
+        "",
+    ]
+    for line in pos_lines:
+        header_lines.append(f"  {line}")
+
+    await update.message.reply_text(
+        "\n".join(header_lines) + f"\n\nClaude Assessment:\n{ai}"
+    )
+
+
+async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /wlprep — deep dive on the full watchlist with technicals.
+    Useful on weekends to rank stocks by setup quality going into Monday.
+    """
+    await update.message.reply_text(
+        f"Running technical scan on {len(TICKERS)} watched stocks… "
+        f"(this takes ~20 seconds)"
+    )
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
+    note      = _offhours_note()
+
+    scored = []
+    for ticker in list(TICKERS)[:20]:
+        try:
+            sq = compute_squeeze_score(ticker)
+            if sq.get("score") is not None:
+                info  = yf.Ticker(ticker).fast_info
+                price = info.get("lastPrice", 0)
+                chg   = info.get("regularMarketChangePercent", 0)
+                scored.append((ticker, sq["score"], price, chg,
+                                sq.get("rsi", 0), sq.get("bandwidth", 0)))
+        except:
+            pass
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[:8]
+
+    lines = [f"WATCHLIST TECHNICAL SCAN {note}", now_label, ""]
+    for ticker, score, price, chg, rsi, bw in top:
+        rsi_flag = "⚠️ overbought" if rsi and rsi > 70 else ("🟢 oversold" if rsi and rsi < 35 else "")
+        lines.append(
+            f"{ticker:6}  score={score:.0f}  RSI={rsi:.0f}  BW={bw:.3f}  "
+            f"${price:.2f} ({chg:+.2f}%)  {rsi_flag}"
+        )
+
+    summary_str = " | ".join(
+        f"{t} score={sc:.0f} RSI={r:.0f}" for t, sc, _, _, r, _ in top[:5]
+    )
+    ai = get_ai_response(
+        f"Today is {now_label}. Weekend watchlist technical scan results: {summary_str}. "
+        f"Which 2-3 look most ready for a move next week and what setup are they forming? "
+        f"Be specific about the pattern. Plain text.",
+        max_tokens=400
+    )
+
+    await update.message.reply_text(
+        "\n".join(lines) + f"\n\nClaude Setup Read:\n{ai}\n\n"
+        f"Top pick: /analyze {top[0][0] if top else '?'}"
+    )
+
+
     """
     /ask <question> — ask Claude AI anything about the market.
     Maintains multi-turn memory per chat (last 20 messages).
@@ -3066,26 +3245,147 @@ def send_midday_dashboard():
     send_dashboard_sync("Mid-Day")
 
 
+def send_evening_recap():
+    """6:00 PM CT — after-hours recap + tomorrow setup."""
+    if get_trading_session() != "closed":
+        return   # skip if still in extended hours
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
+    snap = []
+    for sym, name in [("^GSPC","S&P 500"),("^IXIC","Nasdaq"),("^DJI","Dow")]:
+        try:
+            info = yf.Ticker(sym).fast_info
+            chg  = info.get("regularMarketChangePercent", 0)
+            snap.append(f"{name} {chg:+.2f}%")
+        except:
+            pass
+    snap_str = " | ".join(snap)
+    fg_val, fg_label = get_fear_greed()
+    ai = get_ai_response(
+        f"Today is {now_label}. Market closed. Final: {snap_str}. "
+        f"Fear & Greed: {fg_val} ({fg_label}). "
+        f"(1) One sentence on today's key theme. "
+        f"(2) Two things to watch for tomorrow's open. "
+        f"Keep it to 3 sentences total. Plain text.",
+        max_tokens=180
+    )
+    send_telegram(
+        f"Evening Recap — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
+        f"{snap_str}\n\n"
+        f"Claude: {ai}\n\n"
+        f"Use /prep for tomorrow's game plan  ·  /overnight for position risk"
+    )
+
+
+def send_saturday_prep():
+    """Saturday 9:00 AM CT — weekend watchlist prep digest."""
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
+    scored = []
+    for ticker in list(TICKERS)[:20]:
+        try:
+            sq    = compute_squeeze_score(ticker)
+            info  = yf.Ticker(ticker).fast_info
+            price = info.get("lastPrice", 0)
+            chg   = info.get("regularMarketChangePercent", 0)
+            if sq.get("score") and price > 0:
+                scored.append((ticker, sq["score"], price, chg, sq.get("rsi", 0)))
+        except:
+            pass
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top     = scored[:6]
+    top_str = " | ".join(f"{t} score={sc:.0f} RSI={r:.0f}" for t, sc, _, _, r in top)
+    fg_val, fg_label = get_fear_greed()
+    ai = get_ai_response(
+        f"Today is {now_label} (weekend). Watchlist technical scores: {top_str}. "
+        f"Fear & Greed: {fg_val} ({fg_label}). "
+        f"Top 3 setups to watch Monday open and what each needs to confirm the move. "
+        f"Plain text, be specific.",
+        max_tokens=400
+    )
+    lines = [f"Weekend Watchlist Prep — {now_label}", f"Fear & Greed: {fg_val} ({fg_label})", ""]
+    for ticker, score, price, chg, rsi in top:
+        lines.append(f"  {ticker:6}  score={score:.0f}  RSI={rsi:.0f}  ${price:.2f} ({chg:+.2f}%)")
+    lines += ["", f"Claude: {ai}", "", "Use /prep or /wlprep for deeper analysis"]
+    send_telegram("\n".join(lines))
+
+
 # ============================================================
 # BACKGROUND SCANNER
 # ============================================================
 def scanner_thread():
-    schedule.every(CHECK_INTERVAL_MIN).minutes.do(check_stocks)
-    # Watchlist refresh + open events
-    schedule.every().day.at("08:00").do(send_premarket_dashboard)
-    schedule.every().day.at("08:30").do(
-        lambda: globals().update(TICKERS=get_dynamic_hot_stocks())
+    """
+    Background thread — timezone-independent scheduler.
+
+    All job times are defined in CT (America/Chicago).
+    The loop reads datetime.now(CT) directly, so it fires correctly
+    regardless of the server's system timezone (UTC on Railway, local
+    time on a dev machine, etc.).
+
+    Job table format:
+        (day, "HH:MM", function)
+        day = "daily" | "monday"…"sunday"
+    """
+
+    # ── Define all scheduled jobs in CT ───────────────────────
+    JOBS = [
+        # day            CT time   function
+        ("daily",        "08:00",  send_premarket_dashboard),
+        ("daily",        "08:30",  lambda: globals().update(TICKERS=get_dynamic_hot_stocks())),
+        ("daily",        "08:30",  send_morning_briefing),
+        ("daily",        "08:31",  paper_morning_report),
+        ("daily",        "12:00",  send_midday_dashboard),
+        ("daily",        "15:00",  send_daily_close_summary),
+        ("daily",        "15:01",  paper_eod_report),
+        ("daily",        "18:00",  send_evening_recap),
+        ("sunday",       "18:00",  send_weekly_digest),
+        ("saturday",     "09:00",  send_saturday_prep),
+    ]
+
+    DAY_NAMES = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+
+    # Track which (day, time) combos have already fired to prevent
+    # double-firing within the same minute
+    fired: set = set()
+    last_scan   = datetime.now(CT) - timedelta(minutes=CHECK_INTERVAL_MIN + 1)
+
+    logger.info(
+        f"Scheduler started — all times in CT "
+        f"(server local: {datetime.now().strftime('%Z %z') or 'unknown'})"
     )
-    schedule.every().day.at("08:30").do(send_morning_briefing)    # open + dashboard
-    schedule.every().day.at("08:31").do(paper_morning_report)     # paper portfolio at open
-    schedule.every().day.at("12:00").do(send_midday_dashboard)    # mid-day dashboard
-    schedule.every().day.at("15:00").do(send_daily_close_summary) # close + dashboard
-    schedule.every().day.at("15:01").do(paper_eod_report)         # paper EOD P&L
-    # Weekly digest — Sunday 18:00
-    schedule.every().sunday.at("18:00").do(send_weekly_digest)
+
     while True:
-        schedule.run_pending()
-        time.sleep(10)
+        now_ct    = datetime.now(CT)
+        now_hhmm  = now_ct.strftime("%H:%M")
+        now_day   = DAY_NAMES[now_ct.weekday()]
+        fire_key  = f"{now_ct.strftime('%Y-%m-%d')}-{now_hhmm}"  # unique per day+minute
+
+        # ── Timed jobs ────────────────────────────────────────
+        for day, hhmm, fn in JOBS:
+            job_key = f"{fire_key}-{day}-{hhmm}"
+            if now_hhmm == hhmm and (day == "daily" or day == now_day):
+                if job_key not in fired:
+                    fired.add(job_key)
+                    logger.info(f"Firing scheduled job: {day} {hhmm} CT → {fn.__name__ if hasattr(fn,'__name__') else 'lambda'}")
+                    try:
+                        fn()
+                    except Exception as e:
+                        logger.error(f"Scheduled job error ({day} {hhmm}): {e}", exc_info=True)
+
+        # ── Prune fired set daily to avoid unbounded growth ───
+        if len(fired) > 500:
+            today_prefix = now_ct.strftime("%Y-%m-%d")
+            fired = {k for k in fired if k.startswith(today_prefix)}
+
+        # ── Stock scanner — every CHECK_INTERVAL_MIN minutes ──
+        elapsed = (now_ct - last_scan).total_seconds() / 60
+        if elapsed >= CHECK_INTERVAL_MIN:
+            last_scan = now_ct
+            try:
+                check_stocks()
+            except Exception as e:
+                logger.error(f"check_stocks error: {e}", exc_info=True)
+
+        time.sleep(30)   # check twice per minute — plenty for minute-precision jobs
+
 
 # ============================================================
 # MAIN — Telegram bot
@@ -3125,8 +3425,13 @@ def run_telegram_bot():
 
     # ── Paper Trading ─────────────────────────────────────────
     app.add_handler(CommandHandler("paper",       cmd_paper))
+    app.add_handler(CommandHandler("overnight",   cmd_overnight))
 
-    app.add_handler(CommandHandler("ask",        cmd_ask))
+    # ── Off-hours / prep ──────────────────────────────────────
+    app.add_handler(CommandHandler("prep",        cmd_prep))
+    app.add_handler(CommandHandler("wlprep",      cmd_watchlist_prep))
+
+    app.add_handler(CommandHandler("ask",         cmd_ask))
 
     app.run_polling()
 

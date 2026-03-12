@@ -1,6 +1,5 @@
 yfinance
 requests
-schedule
 pytz
 anthropic
 openai
