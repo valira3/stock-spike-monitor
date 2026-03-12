@@ -633,7 +633,8 @@ def check_stocks():
 # ============================================================
 
 PAPER_STARTING_CAPITAL = 100_000.0
-PAPER_LOG              = "investment.log"
+PAPER_LOG              = os.getenv("PAPER_LOG_PATH", "investment.log")
+PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
 PAPER_MAX_ACTIONS      = 3        # per ticker per trading day
 PAPER_MAX_POSITIONS    = 8        # simultaneous open positions
 PAPER_MAX_POS_PCT      = 0.20     # 20% of portfolio per position
@@ -641,13 +642,101 @@ PAPER_TAKE_PROFIT_PCT  = 0.08     # 8% take-profit
 PAPER_STOP_LOSS_PCT    = 0.04     # 4% stop-loss
 PAPER_MIN_SIGNAL       = 65       # min composite score (0-100) to open a position
 
-# ── Live state ────────────────────────────────────────────────
+# ── Live state (populated by load_paper_state on startup) ─────
 paper_cash          = PAPER_STARTING_CAPITAL
-paper_positions     = {}   # {ticker: {shares, avg_cost, entry_price, entry_time, high}}
-paper_trades_today  = []   # trade dicts for current session
-paper_daily_counts  = {}   # {ticker: int} — reset at market open
-paper_all_trades    = []   # lifetime trade history (in-memory)
-paper_signals_cache = {}   # {ticker: {score, components, ts}} — avoid spam API calls
+paper_positions     = {}
+paper_trades_today  = []
+paper_daily_counts  = {}
+paper_all_trades    = []
+paper_signals_cache = {}
+
+_paper_save_lock = threading.Lock()
+
+
+def save_paper_state():
+    """
+    Persist all paper trading state to PAPER_STATE_FILE (JSON).
+    Thread-safe. Called after every buy/sell and at EOD.
+    Point PAPER_STATE_PATH env var at a Railway Volume mount for
+    true cross-deploy persistence (e.g. /data/paper_state.json).
+    """
+    state = {
+        "paper_cash":         paper_cash,
+        "paper_positions":    paper_positions,
+        "paper_all_trades":   paper_all_trades,
+        "paper_trades_today": paper_trades_today,
+        "paper_daily_counts": paper_daily_counts,
+        "saved_at":           datetime.now(CT).isoformat(),
+    }
+    with _paper_save_lock:
+        tmp = PAPER_STATE_FILE + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, default=str)
+            os.replace(tmp, PAPER_STATE_FILE)   # atomic rename
+            logger.info(f"Paper state saved → {PAPER_STATE_FILE}")
+        except Exception as e:
+            logger.error(f"save_paper_state failed: {e}")
+
+
+def load_paper_state():
+    """
+    Load paper trading state from disk on startup.
+    Falls back to clean $100k state if file missing or corrupt.
+    Skips paper_trades_today and paper_daily_counts if the saved
+    date is not today (i.e. restarted on a new trading day).
+    """
+    global paper_cash, paper_positions, paper_all_trades
+    global paper_trades_today, paper_daily_counts
+
+    if not os.path.exists(PAPER_STATE_FILE):
+        paper_log(
+            f"No saved state found at {PAPER_STATE_FILE}. "
+            f"Starting fresh with ${PAPER_STARTING_CAPITAL:,.0f}."
+        )
+        return
+
+    try:
+        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        paper_cash       = float(state.get("paper_cash", PAPER_STARTING_CAPITAL))
+        paper_positions  = state.get("paper_positions", {})
+        paper_all_trades = state.get("paper_all_trades", [])
+
+        # Only restore intraday state if saved today
+        saved_at   = state.get("saved_at", "")
+        saved_date = saved_at[:10] if saved_at else ""
+        today      = datetime.now(CT).strftime("%Y-%m-%d")
+
+        if saved_date == today:
+            paper_trades_today = state.get("paper_trades_today", [])
+            paper_daily_counts = state.get("paper_daily_counts", {})
+            paper_log(
+                f"State restored (same day). "
+                f"Cash: ${paper_cash:,.2f} | "
+                f"Positions: {len(paper_positions)} | "
+                f"Trades today: {len(paper_trades_today)} | "
+                f"Lifetime trades: {len(paper_all_trades)}"
+            )
+        else:
+            paper_trades_today = []
+            paper_daily_counts = {}
+            paper_log(
+                f"State restored (new day — intraday counters reset). "
+                f"Cash: ${paper_cash:,.2f} | "
+                f"Positions: {len(paper_positions)} | "
+                f"Lifetime trades: {len(paper_all_trades)}"
+            )
+
+    except Exception as e:
+        logger.error(f"load_paper_state failed: {e}. Starting fresh.")
+        paper_cash       = PAPER_STARTING_CAPITAL
+        paper_positions  = {}
+        paper_all_trades = []
+        paper_trades_today = []
+        paper_daily_counts = {}
+
 
 # ── Dedicated investment logger ───────────────────────────────
 inv_logger = logging.getLogger("investment")
@@ -997,6 +1086,7 @@ def paper_evaluate_ticker(ticker: str):
                 f"Reason: {sell_reason}\n"
                 f"Portfolio value: ${paper_portfolio_value():,.0f}"
             )
+            save_paper_state()
         return  # one action per scan cycle per ticker
 
     # ── Check for new buy opportunity ────────────────────────
@@ -1053,6 +1143,7 @@ def paper_evaluate_ticker(ticker: str):
         f"{sig['detail']}\n"
         f"Portfolio value: ${paper_portfolio_value():,.0f}"
     )
+    save_paper_state()
 
 
 def paper_scan():
@@ -1111,6 +1202,7 @@ def paper_morning_report():
     report = "\n".join(lines)
     paper_log(f"=== MORNING REPORT ===\n{report}")
     send_telegram(report)
+    save_paper_state()   # persist the daily reset
 
 
 def paper_eod_report():
@@ -1172,6 +1264,7 @@ def paper_eod_report():
     report = "\n".join(lines)
     paper_log(f"=== EOD REPORT ===\n{report}")
     send_telegram(report)
+    save_paper_state()   # persist end-of-day snapshot
 
 
 # ── Paper Trading Telegram Commands ───────────────────────────
@@ -1365,19 +1458,21 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── /paper log ────────────────────────────────────────────
     elif sub == "log":
-        try:
-            if not os.path.exists(PAPER_LOG) or os.path.getsize(PAPER_LOG) == 0:
-                await update.message.reply_text("investment.log is empty — no trades recorded yet.")
-                return
-            with open(PAPER_LOG, "rb") as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename="investment.log",
-                    caption=f"investment.log  |  {len(paper_all_trades)} lifetime trades  "
-                            f"|  Portfolio: ${paper_portfolio_value():,.0f}"
-                )
-        except Exception as e:
-            await update.message.reply_text(f"Could not send log: {e}")
+        sent = False
+        for path, fname in [
+            (PAPER_LOG,        "investment.log"),
+            (PAPER_STATE_FILE, "paper_state.json"),
+        ]:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                with open(path, "rb") as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=fname,
+                        caption=f"{fname} — Portfolio: ${paper_portfolio_value():,.0f}"
+                    )
+                sent = True
+        if not sent:
+            await update.message.reply_text("No log files found yet — no trades recorded.")
 
     # ── /paper reset ──────────────────────────────────────────
     elif sub == "reset":
@@ -1389,6 +1484,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paper_all_trades    = []
             paper_signals_cache = {}
             paper_log("=== PORTFOLIO RESET TO $100,000 ===")
+            save_paper_state()
             await update.message.reply_text(
                 f"Portfolio reset to ${PAPER_STARTING_CAPITAL:,.0f}.\n"
                 f"All positions and history cleared.\n"
@@ -2857,5 +2953,6 @@ def run_telegram_bot():
 # ============================================================
 threading.Thread(target=scanner_thread, daemon=True).start()
 logger.info("FULL INTERACTIVE MONITOR WITH BULLISH FILTER STARTED")
+load_paper_state()   # restore paper trading state from disk
 send_startup_message()
 run_telegram_bot()
