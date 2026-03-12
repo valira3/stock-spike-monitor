@@ -187,14 +187,19 @@ def send_telegram(text, chat_id=None):
 def get_grok_response(prompt, system=None, max_tokens=300):
     if not grok_client:
         return "AI unavailable (no GROK_API_KEY)"
-    # Always stamp today's date so Grok never answers from stale training data
     today_stamp = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
     sys_msg = system or (
-        f"You are a sharp, concise stock market analyst. "
+        f"You are a concise stock market analyst assistant. "
         f"Today is {today_stamp}. "
-        f"Always answer based on what is current as of this date. "
-        f"Never reference data, events, or prices from prior years unless explicitly asked. "
-        f"Give direct, data-driven insights. No fluff. Max 3 sentences unless asked for more."
+        f"STRICT RULES: "
+        f"(1) Only state facts you are confident are true as of this date. "
+        f"(2) Do NOT invent specific events, earnings dates, economic reports, "
+        f"strikes, executive statements, or price levels — if you are not certain "
+        f"something is scheduled or happened, say so or omit it. "
+        f"(3) When live data is provided in the prompt, use it. "
+        f"When it is not, give general analysis and clearly flag uncertainty. "
+        f"(4) Never reference events, prices, or news from prior years unless asked. "
+        f"Be direct and data-driven. No fluff. Max 3 sentences unless asked for more."
     )
     for attempt in range(4):
         try:
@@ -226,11 +231,15 @@ def get_grok_conversation(chat_id, user_message):
         conversation_history[chat_id] = history
 
     system = (
-        "You are a real-time stock market assistant bot on Telegram. "
-        "You have access to live market data and Grok AI. "
-        "Answer questions about stocks, markets, investing, and finance. "
-        "Be concise and direct. Use plain text (no markdown). "
-        f"Today is {datetime.now(CT).strftime('%A %B %d %Y %I:%M %p CT')}."
+        f"You are a stock market assistant on Telegram. "
+        f"Today is {datetime.now(CT).strftime('%A %B %d %Y %I:%M %p CT')}. "
+        f"STRICT RULES: "
+        f"(1) Only state specific events, dates, or prices you are confident are accurate. "
+        f"(2) Do NOT fabricate earnings dates, economic reports, executive statements, "
+        f"strikes, mergers, or any scheduled events — if uncertain, say so explicitly. "
+        f"(3) When the user's message contains live price data in [brackets], use it. "
+        f"(4) Distinguish clearly between what you know vs. what is uncertain. "
+        f"Be concise. Use plain text, no markdown."
     )
     try:
         resp = grok_client.chat.completions.create(
