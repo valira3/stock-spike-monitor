@@ -2788,6 +2788,10 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Catch all plain-text messages and route to Grok AI for Q&A."""
+    # Guard: edited messages, channel posts, etc. have no .message
+    if not update.message or not update.message.text:
+        return
+
     user_msg = update.message.text.strip()
     if not user_msg:
         return
@@ -2795,24 +2799,38 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = str(update.effective_chat.id)
     logger.info(f"Q&A from {chat_id}: {user_msg[:80]}")
 
-    # Enrich with live data if user asks about a known ticker
+    # Acknowledge immediately so the user knows it's working
+    await update.message.reply_text("Thinking…")
+
+    # Enrich with live price ONLY if user mentions a known watched ticker
+    # (check TICKERS set only — avoids yfinance calls on common English words)
     enriched = user_msg
     words = user_msg.upper().split()
     for word in words:
-        if word in TICKERS or (len(word) <= 5 and word.isalpha()):
+        clean = ''.join(c for c in word if c.isalpha())   # strip punctuation
+        if clean and clean in TICKERS:
             try:
-                info  = yf.Ticker(word).fast_info
+                info  = yf.Ticker(clean).fast_info
                 price = info.get('lastPrice', 0)
                 chg   = info.get('regularMarketChangePercent', 0)
                 if price > 0:
-                    enriched += f" [Live data: {word} = ${price:.2f}, {chg:+.2f}% today]"
-                    break
+                    enriched += f" [Live: {clean}=${price:.2f}, {chg:+.2f}% today]"
             except:
                 pass
+            break   # enrich at most one ticker per message
 
-    await update.message.reply_text("Thinking...")
-    reply = get_grok_conversation(chat_id, enriched)
-    await update.message.reply_text(reply)
+    try:
+        reply = get_grok_conversation(chat_id, enriched)
+        if not reply or reply.strip() in ("", "Grok unavailable", "Grok unavailable right now."):
+            await update.message.reply_text(
+                "Grok is not responding right now. "
+                "Check that GROK_API_KEY is set in Railway and try again."
+            )
+        else:
+            await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"handle_text_message error: {e}", exc_info=True)
+        await update.message.reply_text(f"Error reaching Grok: {e}")
 
 # ============================================================
 # SCHEDULED MESSAGES
