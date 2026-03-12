@@ -657,13 +657,14 @@ def get_sector_performance():
     return lines
 
 def get_crypto_prices():
-    coins = [("BTC-USD","BTC"), ("ETH-USD","ETH"), ("SOL-USD","SOL"),
-             ("DOGE-USD","DOGE"), ("XRP-USD","XRP")]
+    coins = [
+        ("BINANCE:BTCUSDT","BTC"), ("BINANCE:ETHUSDT","ETH"),
+        ("BINANCE:SOLUSDT","SOL"), ("BINANCE:DOGEUSDT","DOGE"),
+        ("BINANCE:XRPUSDT","XRP"),
+    ]
     lines = []
-    for sym, name in coins:
+    for fsym, name in coins:
         try:
-            # Try Finnhub crypto candle
-            fsym = f"BINANCE:{name}USDT"
             r = requests.get(
                 f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
                 f"&resolution=D&count=2&token={FINNHUB_TOKEN}",
@@ -676,19 +677,8 @@ def get_crypto_prices():
                 pc    = closes[-2]
                 chg   = (price - pc) / pc * 100 if pc else 0
                 sign  = "+" if chg >= 0 else ""
-                lines.append(f"{name}: ${price:,.2f} ({sign}{chg:.2f}%)")
-                continue
-        except:
-            pass
-        # yfinance fallback
-        try:
-            fi    = yf.Ticker(sym).fast_info
-            price = fi.get("lastPrice") or 0
-            pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
-            chg   = (price - pc) / pc * 100 if pc else 0
-            if price:
-                sign = "+" if chg >= 0 else ""
-                lines.append(f"{name}: ${price:,.2f} ({sign}{chg:.2f}%)")
+                p_fmt = f"${price:,.0f}" if price >= 1000 else f"${price:,.4f}"
+                lines.append(f"{name}: {p_fmt} ({sign}{chg:.2f}%)")
         except:
             pass
     return lines
@@ -716,7 +706,11 @@ def fetch_market_snapshot() -> dict:
         ("XLRE","RE"), ("XLU","Util"),
     ]
     FUTURES_MAP = [
-        ("ES=F","S&P Fut"), ("NQ=F","Ndaq Fut"), ("YM=F","Dow Fut"),
+        # Finnhub free tier doesn't serve futures symbols (ES=F etc.)
+        # Use liquid ETFs as pre-market proxies instead
+        ("SPY",  "S&P ETF"),
+        ("QQQ",  "Ndaq ETF"),
+        ("DIA",  "Dow ETF"),
     ]
 
     def _q(sym):
@@ -781,12 +775,13 @@ def fetch_market_snapshot() -> dict:
         return lines
 
     def _fetch_crypto():
-        coins = [("BTC-USD","BTC"), ("ETH-USD","ETH"), ("SOL-USD","SOL")]
+        coins = [
+            ("BINANCE:BTCUSDT","BTC"), ("BINANCE:ETHUSDT","ETH"),
+            ("BINANCE:SOLUSDT","SOL"),
+        ]
         lines = []
-        for sym, name in coins:
+        for fsym, name in coins:
             try:
-                # Try Finnhub crypto
-                fsym = f"BINANCE:{name}USDT"
                 r = requests.get(
                     f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
                     f"&resolution=D&count=2&token={FINNHUB_TOKEN}",
@@ -799,41 +794,34 @@ def fetch_market_snapshot() -> dict:
                     pc    = closes[-2]
                     chg   = (price - pc) / pc * 100 if pc else 0
                     sign  = "+" if chg >= 0 else ""
-                    lines.append(f"  {name}: ${price:,.0f} ({sign}{chg:.2f}%)")
-                    continue
-            except:
-                pass
-            # yfinance fallback
-            try:
-                fi    = yf.Ticker(sym).fast_info
-                price = fi.get("lastPrice") or 0
-                pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
-                if price and pc:
-                    chg  = (price - pc) / pc * 100
-                    sign = "+" if chg >= 0 else ""
-                    lines.append(f"  {name}: ${price:,.0f} ({sign}{chg:.2f}%)")
+                    p_fmt = f"${price:,.0f}" if price >= 1000 else f"${price:,.4f}"
+                    lines.append(f"  {name}: {p_fmt} ({sign}{chg:.2f}%)")
             except:
                 pass
         return lines
 
     def _fetch_movers():
+        tickers_to_scan = list(TICKERS)  # scan full watchlist
         items = []
-        for t in list(TICKERS)[:30]:
+        def _q_one(t):
             q = _finnhub_quote(t)
             if not q:
-                continue
+                return None
             price = q.get("c") or 0
             pc    = q.get("pc") or 0
             if price and pc:
-                chg = (price - pc) / pc * 100
-                items.append((t, chg))
+                return (t, (price - pc) / pc * 100, price)
+            return None
+        with ThreadPoolExecutor(max_workers=10) as p:
+            results = list(p.map(_q_one, tickers_to_scan[:60]))
+        items = [r for r in results if r]
         if not items:
             return "movers unavailable"
         items.sort(key=lambda x: x[1])
         gainers = items[-3:][::-1]
         losers  = items[:3]
-        g = " ".join(f"{t} {'+'if c>=0 else ''}{c:.2f}%" for t, c in gainers)
-        l = " ".join(f"{t} {c:.2f}%" for t, c in losers)
+        g = " ".join(f"{t} {'+'if c>=0 else ''}{c:.2f}%" for t, c, _ in gainers)
+        l = " ".join(f"{t} {c:.2f}%" for t, c, _ in losers)
         return f"Gainers: {g} | Losers: {l}"
 
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -895,6 +883,8 @@ def get_dynamic_hot_stocks():
 
     # ── Pool 1: FMP market data (actives + gainers + losers) ──────
     for endpoint in ("stock_market/actives", "stock_market/gainers", "stock_market/losers"):
+        if not FMP_API_KEY:
+            break
         try:
             r = requests.get(
                 f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
@@ -2311,6 +2301,8 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     def _fmp_symbols(endpoint):
         """Get symbol list from FMP endpoint."""
+        if not FMP_API_KEY:
+            return []
         try:
             r = requests.get(
                 f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
@@ -2332,7 +2324,7 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             price = float(q["c"])
             pc    = float(q.get("pc") or price)
             vol   = int(q.get("v") or 0)
-            if price < 0.10 or vol < 10_000:   # filter sub-penny / illiquid
+            if price < 0.10:   # only filter genuine sub-penny stocks
                 return None
             chg = (price - pc) / pc * 100 if pc else 0
             return {"symbol": sym, "price": price, "chg": chg, "volume": vol}
@@ -2414,6 +2406,12 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not FMP_API_KEY:
+        await update.message.reply_text(
+            "Earnings calendar requires FMP_API_KEY.\n"
+            "Get a free key at financialmodelingprep.com and add it to Railway env vars."
+        )
+        return
     try:
         today = datetime.now().date()
         end   = today + timedelta(days=7)
@@ -2949,8 +2947,13 @@ def build_dashboard_image() -> BytesIO:
                    ("XLV","Health"),("XLI","Indust"),("XLC","Comm"),
                    ("XLY","Cons D"),("XLP","Cons S"),("XLB","Mat"),
                    ("XLRE","RE"),("XLU","Util")]
-    CRYPTO_SYMS = [("BTC-USD","BTC"),("ETH-USD","ETH"),
-                   ("SOL-USD","SOL"),("DOGE-USD","DOGE"),("XRP-USD","XRP")]
+    CRYPTO_SYMS = [
+        ("BINANCE:BTCUSDT","BTC"),
+        ("BINANCE:ETHUSDT","ETH"),
+        ("BINANCE:SOLUSDT","SOL"),
+        ("BINANCE:DOGEUSDT","DOGE"),
+        ("BINANCE:XRPUSDT","XRP"),
+    ]
 
     def _fq(sym):
         """Finnhub -> (price, chg%). Falls back to yfinance."""
@@ -2985,7 +2988,7 @@ def build_dashboard_image() -> BytesIO:
     def _fetch_movers():
         # Build a broader scan pool: TICKERS + FMP actives
         scan_pool = list(dict.fromkeys(list(TICKERS)))
-        if len(scan_pool) < 20:
+        if len(scan_pool) < 20 and FMP_API_KEY:
             # Supplement with FMP actives if watchlist is thin
             try:
                 r = requests.get(
@@ -3019,9 +3022,8 @@ def build_dashboard_image() -> BytesIO:
 
     def _fetch_crypto():
         out = []
-        for sym, name in CRYPTO_SYMS:
+        for fsym, name in CRYPTO_SYMS:
             try:
-                fsym = f"BINANCE:{name}USDT"
                 r = requests.get(
                     f"https://finnhub.io/api/v1/crypto/candle?symbol={fsym}"
                     f"&resolution=D&count=2&token={FINNHUB_TOKEN}", timeout=8)
@@ -3030,17 +3032,6 @@ def build_dashboard_image() -> BytesIO:
                 if len(closes) >= 2:
                     price = closes[-1]; pc = closes[-2]
                     chg   = (price - pc) / pc * 100 if pc else 0
-                    out.append((name, price, chg))
-                    continue
-            except:
-                pass
-            # yfinance fallback
-            try:
-                fi    = yf.Ticker(sym).fast_info
-                price = fi.get("lastPrice") or 0
-                pc    = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or 0
-                chg   = (price - pc) / pc * 100 if pc else 0
-                if price:
                     out.append((name, price, chg))
             except:
                 pass
