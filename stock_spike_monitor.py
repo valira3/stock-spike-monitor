@@ -83,55 +83,55 @@ else:
 # ============================================================
 BOT_DESCRIPTION = (
     "📡 Stock Spike Monitor\n"
-    "24/7 | 60+ stocks | ≥3% spike alerts | Claude AI | RSI/BB/Squeeze\n"
+    "60+ stocks | ≥3% alerts | Claude AI | RSI/BB/Squeeze\n"
     "\n"
     "MARKET PULSE\n"
-    "  /overview            indices | sectors | Fear & Greed | AI outlook\n"
-    "  /crypto              BTC ETH SOL DOGE XRP\n"
-    "  /macro               CPI | Fed | NFP | FOMC calendar\n"
-    "  /earnings            next 7 days\n"
+    "  /overview    indices | sectors | F&G | AI\n"
+    "  /crypto      BTC ETH SOL DOGE XRP\n"
+    "  /macro       CPI | Fed | NFP | FOMC calendar\n"
+    "  /earnings    next 7 days\n"
     "\n"
     "MOVERS\n"
-    "  /movers              gainers | losers | most active | low-price rockets\n"
+    "  /movers      gainers | losers | active | rockets\n"
     "\n"
     "STOCK TOOLS\n"
-    "  /price TICK          live quote + day range\n"
-    "  /analyze TICK        AI deep dive: catalyst | risk | technicals\n"
-    "  /compare TICK TICK   side-by-side AI verdict\n"
-    "  /chart TICK          intraday sparkline + VWAP + volume\n"
-    "  /rsi TICK            RSI(14) | Bollinger Bands | squeeze score\n"
-    "  /news TICK           latest headlines\n"
+    "  /price TICK        live quote + day range\n"
+    "  /analyze TICK      AI: catalyst | risk | setup\n"
+    "  /compare T1 T2     side-by-side AI verdict\n"
+    "  /chart TICK        intraday chart + volume\n"
+    "  /rsi TICK          RSI | Bollinger | squeeze\n"
+    "  /news TICK         latest headlines\n"
     "\n"
     "ALERTS\n"
-    "  /spikes              recent spikes (last 30 min)\n"
-    "  /alerts              all alerts fired today\n"
-    "  /squeeze             top squeeze candidates (0-100 score)\n"
-    "  /setalert TICK $     custom price target\n"
-    "  /watchlist           add | remove | scan your list\n"
+    "  /spikes            recent spikes (30 min)\n"
+    "  /alerts            all alerts today\n"
+    "  /squeeze           top squeeze candidates\n"
+    "  /setalert TICK $   custom price target\n"
+    "  /watchlist         add | remove | scan\n"
     "\n"
-    "PAPER TRADING  (simulated | $100k | bullish only)\n"
-    "  /paper               portfolio value + open positions\n"
-    "  /paper positions     live P&L on each position\n"
-    "  /paper trades        today's buys & sells\n"
-    "  /paper history       all-time win rate + summary\n"
-    "  /paper signal TICK   7-factor signal breakdown\n"
-    "  /paper log           download trade log\n"
-    "  /paper reset         reset to $100k\n"
-    "  /overnight           overnight gap risk on open positions\n"
+    "PAPER TRADING  ($100k simulated)\n"
+    "  /paper             portfolio + positions\n"
+    "  /paper positions   live P&L\n"
+    "  /paper trades      today's activity\n"
+    "  /paper history     win rate + summary\n"
+    "  /paper signal TICK 7-factor breakdown\n"
+    "  /paper log         download trade log\n"
+    "  /paper reset       reset to $100k\n"
+    "  /overnight         gap risk on positions\n"
     "\n"
     "OFF-HOURS & PREP\n"
-    "  /prep                next session game plan (works anytime)\n"
-    "  /wlprep              full watchlist technical scan + AI setup read\n"
-    "  /ask <question>      chat with Claude AI (multi-turn memory)\n"
+    "  /prep              next session game plan\n"
+    "  /wlprep            watchlist scan + AI read\n"
+    "  /ask <question>    chat with Claude (memory)\n"
     "\n"
     "BOT\n"
-    "  /dashboard           send visual dashboard now\n"
-    "  /list                all monitored tickers\n"
-    "  /monitoring          pause | resume | status\n"
-    "  /help                this menu\n"
+    "  /dashboard         visual snapshot now\n"
+    "  /list              all monitored tickers\n"
+    "  /monitoring        pause | resume | status\n"
+    "  /help              this menu\n"
     "\n"
-    "📊 Auto: 8am pre-mkt | 8:30 open | 12pm mid-day | 3pm close | 6pm recap\n"
-    "         Sat 9am watchlist prep | Sun 6pm weekly digest  (all times CT)"
+    "📊 Daily CT: 8am pre-mkt | 8:30 open | 12pm mid\n"
+    "   3pm close | 6pm recap | Sat 9am | Sun 6pm"
 )
 
 # ============================================================
@@ -873,67 +873,85 @@ def fetch_market_snapshot() -> dict:
 
 
 def get_dynamic_hot_stocks():
+    """
+    Build the live scan watchlist from multiple real-time signals:
+      1. FMP most-active, gainers, losers (broad market universe)
+      2. Recent spike alerts fired by the bot
+      3. Top squeeze-score candidates from last scan cycle
+      4. CORE_TICKERS anchor (always included)
+    Then verify each candidate via Finnhub live quote and keep only
+    liquid stocks (price >= $1, volume > 50k).  No arbitrary mcap wall.
+    Returns up to 80 symbols, deduplicated.
+    """
     def _fq_simple(sym):
-        """Quick Finnhub quote returning (price, chg_pct)."""
         q = _finnhub_quote(sym)
         if q and q.get("c"):
             price = q["c"]; pc = q.get("pc") or price
             return price, (price - pc) / pc * 100 if pc else 0
         return 0, 0
-    logger.info("Fetching dynamic BULLISH candidates...")
-    candidates, low_price = [], []
-    try:
-        r = requests.get(
-            f"https://financialmodelingprep.com/api/v3/stock_market/actives?apikey={FMP_API_KEY}",
-            timeout=10
-        )
-        data = r.json()
-        if isinstance(data, list):
-            candidates.extend([item.get('symbol') for item in data[:30] if isinstance(item, dict)])
 
-        r = requests.get(
-            f"https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey={FMP_API_KEY}",
-            timeout=10
-        )
-        data = r.json()
-        if isinstance(data, list):
-            candidates.extend([item.get('symbol') for item in data[:20] if isinstance(item, dict)])
+    logger.info("Fetching dynamic watchlist candidates...")
+    candidates = list(CORE_TICKERS)  # always anchor with core 30
 
-        _, qqq_chg = _fq_simple("QQQ")   # ETF proxy
-        _, spy_chg = _fq_simple("SPY")
-        index_up = qqq_chg > 0 or spy_chg > 0
+    # ── Pool 1: FMP market data (actives + gainers + losers) ──────
+    for endpoint in ("stock_market/actives", "stock_market/gainers", "stock_market/losers"):
+        try:
+            r = requests.get(
+                f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
+                timeout=10
+            )
+            data = r.json()
+            if isinstance(data, list):
+                candidates.extend(
+                    item.get("symbol") for item in data[:50]
+                    if isinstance(item, dict) and item.get("symbol")
+                )
+        except Exception as e:
+            logger.debug(f"FMP {endpoint}: {e}")
 
-        bullish = []
-        for symbol in list(dict.fromkeys(candidates))[:50]:
-            try:
-                q = _finnhub_quote(symbol)
-                if not q or not q.get("c"):
-                    continue
-                price = q["c"]
-                pc    = q.get("pc") or 0
-                stock_chg = (price - pc) / pc * 100 if pc else 0
-                if stock_chg <= 0 or not index_up:
-                    continue
-                # mcap check via metrics (in millions)
-                m    = _finnhub_metrics(symbol)
-                mcap = (m.get("marketCapitalization") or 0) * 1_000_000
-                if mcap > 0 and mcap < 100_000_000_000:
-                    continue
-                rel_strength = stock_chg / max(qqq_chg, spy_chg, 0.1)
-                if rel_strength > 1.0:
-                    bullish.append(symbol)
-            except:
-                continue
+    # ── Pool 2: Recent spike alerts (tickers that already moved) ──
+    for alert_str in list(recent_alerts)[-50:]:
+        sym = alert_str.split()[0]
+        if sym:
+            candidates.append(sym)
 
-        low_price = [s for s in bullish
-                     if 1 <= (_finnhub_quote(s) or {}).get("c", 0) <= 10][:10]
+    # ── Pool 3: Top squeeze candidates from last scan ─────────────
+    if squeeze_scores:
+        top_squeeze = sorted(squeeze_scores, key=squeeze_scores.get, reverse=True)[:20]
+        candidates.extend(top_squeeze)
 
-    except Exception as e:
-        logger.warning(f"FMP filter failed: {e}. Using core list.")
+    # ── Deduplicate preserving order ──────────────────────────────
+    seen = set()
+    unique = []
+    for s in candidates:
+        if s and s not in seen:
+            seen.add(s)
+            unique.append(s)
 
-    combined = list(dict.fromkeys(CORE_TICKERS + bullish + low_price))[:60]
-    logger.info(f"Watchlist updated -> {len(combined)} stocks ({len(low_price)} low-price rockets)")
-    return combined
+    # ── Live-verify via Finnhub: require price >= $1 + vol > 50k ──
+    verified = []
+    def _verify(sym):
+        try:
+            q = _finnhub_quote(sym)
+            if not q:
+                return None
+            price = q.get("c") or 0
+            vol   = q.get("v") or 0
+            if price >= 1.0 and vol >= 50_000:
+                return sym
+        except:
+            pass
+        return None
+
+    # Run verification concurrently (cap at 100 candidates to stay within rate limits)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(_verify, unique[:100]))
+
+    verified = [s for s in results if s]
+
+    logger.info(f"Watchlist updated -> {len(verified)} stocks "
+                f"(from {len(unique)} candidates)")
+    return verified[:80]
 
 TICKERS = get_dynamic_hot_stocks()
 
@@ -2278,14 +2296,17 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /movers — top gainers, losers, most active, and low-price rockets.
-    Uses FMP as primary source, falls back to watchlist Finnhub scan.
-    Always shows all categories in one combined message.
+    /movers — top gainers, losers, most active, low-price rockets.
+    Strategy:
+      1. Fetch symbol universe from FMP (gainers + losers + actives)
+      2. Re-fetch LIVE prices from Finnhub for every symbol
+      3. Re-sort by actual live % change — not FMP's (possibly stale) ranking
+      4. Falls back to Finnhub scan of full TICKERS watchlist if FMP unavailable
     """
-    await update.message.reply_text("Fetching market movers...")
+    await update.message.reply_text("Fetching live movers...")
 
-    def _fmp(endpoint):
-        """Fetch from FMP market data endpoint."""
+    def _fmp_symbols(endpoint):
+        """Get symbol list from FMP endpoint."""
         try:
             r = requests.get(
                 f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
@@ -2293,108 +2314,96 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             data = r.json()
             if isinstance(data, list) and data:
-                return data
+                return [item.get("symbol") for item in data[:60] if item.get("symbol")]
         except Exception as e:
-            logger.debug(f"FMP {endpoint} failed: {e}")
+            logger.debug(f"FMP {endpoint}: {e}")
         return []
 
-    def _watchlist_scan():
-        """Fallback: scan our tracked tickers via Finnhub."""
-        items = []
-        for t in list(TICKERS)[:50]:
-            q = _finnhub_quote(t)
+    def _live_quote(sym):
+        """Return live-verified dict for a symbol via Finnhub."""
+        try:
+            q = _finnhub_quote(sym)
             if not q or not q.get("c"):
-                continue
-            price = q["c"]
-            pc    = q.get("pc") or 0
-            vol   = q.get("v") or 0
-            if price and pc:
-                chg = (price - pc) / pc * 100
-                items.append({"symbol": t, "price": price, "changesPercentage": chg, "volume": vol})
-        return items
+                return None
+            price = float(q["c"])
+            pc    = float(q.get("pc") or price)
+            vol   = int(q.get("v") or 0)
+            if price < 0.10 or vol < 10_000:   # filter sub-penny / illiquid
+                return None
+            chg = (price - pc) / pc * 100 if pc else 0
+            return {"symbol": sym, "price": price, "chg": chg, "volume": vol}
+        except:
+            return None
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        f_gain = pool.submit(_fmp, "stock_market/gainers")
-        f_lose = pool.submit(_fmp, "stock_market/losers")
-        f_act  = pool.submit(_fmp, "stock_market/actives")
+    # ── Step 1: collect symbol universe from FMP ─────────────────
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_gain = pool.submit(_fmp_symbols, "stock_market/gainers")
+        f_lose = pool.submit(_fmp_symbols, "stock_market/losers")
+        f_act  = pool.submit(_fmp_symbols, "stock_market/actives")
 
-    gainers_raw = f_gain.result()
-    losers_raw  = f_lose.result()
-    actives_raw = f_act.result()
+    gain_syms = f_gain.result()
+    lose_syms = f_lose.result()
+    act_syms  = f_act.result()
 
-    # If FMP returns nothing, fall back to watchlist scan
-    if not gainers_raw and not losers_raw:
-        all_items    = _watchlist_scan()
-        sorted_items = sorted(all_items, key=lambda x: x["changesPercentage"], reverse=True)
-        gainers_raw  = sorted_items[:10]
-        losers_raw   = sorted_items[-10:][::-1]
-        actives_raw  = sorted(all_items, key=lambda x: x.get("volume", 0), reverse=True)[:10]
+    all_syms = list(dict.fromkeys(gain_syms + lose_syms + act_syms))   # deduplicated
 
-    def _fmt_row(item):
-        sym  = item.get("symbol") or item.get("ticker", "?")
-        chg  = float(item.get("changesPercentage") or item.get("change") or 0)
-        price = float(item.get("price") or 0)
-        sign = "+" if chg >= 0 else ""
+    # Fallback: if FMP returned nothing, use full live watchlist
+    if not all_syms:
+        logger.warning("FMP returned no symbols — falling back to TICKERS watchlist")
+        all_syms = list(TICKERS)
+
+    # Also always include current TICKERS so we never miss a tracked spike
+    all_syms = list(dict.fromkeys(all_syms + list(TICKERS)))[:150]
+
+    # ── Step 2: live-verify every symbol via Finnhub concurrently ─
+    with ThreadPoolExecutor(max_workers=15) as pool:
+        live_results = list(pool.map(_live_quote, all_syms))
+
+    live = [r for r in live_results if r is not None]
+
+    if not live:
+        await update.message.reply_text("Unable to fetch live market data right now.")
+        return
+
+    # ── Step 3: sort into categories by live data ─────────────────
+    by_chg    = sorted(live, key=lambda x: x["chg"], reverse=True)
+    gainers   = [x for x in by_chg if x["chg"] > 0][:10]
+    losers    = [x for x in reversed(by_chg) if x["chg"] < 0][:10]
+    actives   = sorted(live, key=lambda x: x["volume"], reverse=True)[:10]
+    rockets   = [x for x in gainers if 1.0 <= x["price"] <= 15.0][:6]
+
+    # ── Step 4: format ────────────────────────────────────────────
+    def _row(item):
+        sym   = item["symbol"]
+        price = item["price"]
+        chg   = item["chg"]
+        sign  = "+" if chg >= 0 else ""
         return f"  {sym:<6} ${price:>8.2f}  {sign}{chg:.2f}%"
 
-    def _section(title, rows, limit=8):
-        if not rows:
-            return f"{title}\n  (unavailable)"
-        return title + "\n" + "\n".join(_fmt_row(r) for r in rows[:limit])
-
-    # Low-price rockets: gainers under $10
-    low_price = [r for r in gainers_raw
-                 if float(r.get("price") or 0) <= 10
-                 and float(r.get("changesPercentage") or 0) > 0]
-
-    # Most active by volume
-    actives_fmt = []
-    for item in actives_raw[:8]:
-        sym  = item.get("symbol", "?")
-        vol  = item.get("volume") or 0
-        chg  = float(item.get("changesPercentage") or 0)
-        price = float(item.get("price") or 0)
-        sign = "+" if chg >= 0 else ""
-        vol_str = f"{vol/1e6:.1f}M" if vol >= 1_000_000 else f"{vol/1e3:.0f}K" if vol >= 1000 else str(vol)
-        actives_fmt.append(f"  {sym:<6} ${price:>8.2f}  {sign}{chg:.2f}%  vol {vol_str}")
+    def _vol_str(v):
+        if v >= 1_000_000: return f"{v/1e6:.1f}M"
+        if v >= 1_000:     return f"{v/1e3:.0f}K"
+        return str(v)
 
     now_str = datetime.now(CT).strftime("%I:%M %p CT")
-    lines = [
-        f"Market Movers — {now_str}",
-        "",
-        "TOP GAINERS",
-        "  Ticker    Price      Chg%",
-        "  " + "-" * 28,
-    ]
-    for r in gainers_raw[:8]:
-        lines.append(_fmt_row(r))
+    src_note = "live Finnhub" if all_syms else "watchlist only"
 
-    lines += [
-        "",
-        "TOP LOSERS",
-        "  Ticker    Price      Chg%",
-        "  " + "-" * 28,
-    ]
-    for r in losers_raw[:8]:
-        lines.append(_fmt_row(r))
+    lines = [f"Market Movers — {now_str}", f"({len(live)} stocks scanned)", ""]
 
-    lines += [
-        "",
-        "MOST ACTIVE (by volume)",
-        "  Ticker    Price      Chg%     Volume",
-        "  " + "-" * 38,
-    ]
-    lines += actives_fmt or ["  (unavailable)"]
+    lines += ["TOP GAINERS", "  Ticker    Price      Chg%", "  " + "-"*28]
+    lines += [_row(r) for r in gainers] or ["  (none)"]
 
-    if low_price:
-        lines += [
-            "",
-            "LOW-PRICE ROCKETS ($1-$10)",
-            "  Ticker    Price      Chg%",
-            "  " + "-" * 28,
-        ]
-        for r in low_price[:6]:
-            lines.append(_fmt_row(r))
+    lines += ["", "TOP LOSERS", "  Ticker    Price      Chg%", "  " + "-"*28]
+    lines += [_row(r) for r in losers] or ["  (none)"]
+
+    lines += ["", "MOST ACTIVE (volume)", "  Ticker    Price      Chg%     Vol", "  " + "-"*36]
+    for r in actives:
+        sign = "+" if r["chg"] >= 0 else ""
+        lines.append(f"  {r['symbol']:<6} ${r['price']:>8.2f}  {sign}{r['chg']:.2f}%  {_vol_str(r['volume'])}")
+
+    if rockets:
+        lines += ["", "LOW-PRICE ROCKETS ($1-$15)", "  Ticker    Price      Chg%", "  " + "-"*28]
+        lines += [_row(r) for r in rockets]
 
     await update.message.reply_text("\n".join(lines))
 
