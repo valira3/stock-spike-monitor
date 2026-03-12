@@ -2315,20 +2315,7 @@ def _bar_color(val):
     return "#2ecc71" if val >= 0 else "#e74c3c"
 
 def build_dashboard_image() -> BytesIO:
-    """
-    Fetches live data across all bot dimensions and renders a
-    multi-panel PNG dashboard. Returns a BytesIO object.
-
-    Panels:
-      [A] Major indices bar chart
-      [B] Fear & Greed gauge
-      [C] Sector heatmap
-      [D] Top gainers / losers from monitored list
-      [E] Squeeze leaderboard
-      [F] Crypto prices
-      [G] Recent spike alerts ticker
-      [H] Grok AI one-liner sentiment
-    """
+    import numpy as np
 
     BG    = "#0d1117"
     PANEL = "#161b22"
@@ -2338,6 +2325,8 @@ def build_dashboard_image() -> BytesIO:
     RED   = "#e74c3c"
     GOLD  = "#f0b429"
     BLUE  = "#58a6ff"
+    GRID  = "#21262d"
+    EDGE  = "#30363d"
 
     now_str = datetime.now(CT).strftime("%a %b %d %Y  %I:%M %p CT")
     session = get_trading_session()
@@ -2345,50 +2334,46 @@ def build_dashboard_image() -> BytesIO:
 
     # ── Fetch all data concurrently ───────────────────────────
     def _fetch_indices():
-        syms = {"^GSPC":"S&P 500","^IXIC":"Nasdaq","^DJI":"Dow",
-                "^RUT":"Russell","^VIX":"VIX"}
-        out = {}
-        for sym, name in syms.items():
+        syms = [("^GSPC","S&P 500"),("^IXIC","Nasdaq"),
+                ("^DJI","Dow"),("^RUT","Russell"),("^VIX","VIX")]
+        out = []
+        for sym, name in syms:
             try:
                 info = yf.Ticker(sym).fast_info
-                out[name] = {
-                    "price": info.get("lastPrice", 0),
-                    "chg":   info.get("regularMarketChangePercent", 0),
-                }
+                out.append((name,
+                             info.get("lastPrice", 0),
+                             info.get("regularMarketChangePercent", 0)))
             except:
-                out[name] = {"price": 0, "chg": 0}
+                out.append((name, 0, 0))
         return out
 
     def _fetch_sectors():
-        sectors = {
-            "XLK":"Tech","XLF":"Fin","XLE":"Energy","XLV":"Health",
-            "XLI":"Indust","XLC":"Comm","XLY":"Cons D","XLP":"Cons S",
-            "XLB":"Mat","XLRE":"RE","XLU":"Util"
-        }
-        out = {}
-        for sym, name in sectors.items():
+        syms = [("XLK","Tech"),("XLF","Fin"),("XLE","Energy"),
+                ("XLV","Health"),("XLI","Indust"),("XLC","Comm"),
+                ("XLY","Cons D"),("XLP","Cons S"),("XLB","Mat"),
+                ("XLRE","RE"),("XLU","Util")]
+        out = []
+        for sym, name in syms:
             try:
                 chg = yf.Ticker(sym).fast_info.get("regularMarketChangePercent", 0)
-                out[name] = round(chg, 2)
+                out.append((name, round(chg, 2)))
             except:
-                out[name] = 0.0
+                out.append((name, 0.0))
         return out
 
     def _fetch_movers():
         items = []
         for t in TICKERS:
             try:
-                info = yf.Ticker(t).fast_info
-                chg  = info.get("regularMarketChangePercent", 0)
+                info  = yf.Ticker(t).fast_info
+                chg   = info.get("regularMarketChangePercent", 0)
                 price = info.get("lastPrice", 0)
                 if price > 0:
                     items.append((t, chg, price))
             except:
                 pass
         items.sort(key=lambda x: x[1])
-        losers  = items[:5]
-        gainers = items[-5:][::-1]
-        return gainers, losers
+        return items[-5:][::-1], items[:5]   # gainers, losers
 
     def _fetch_crypto():
         coins = [("BTC-USD","BTC"),("ETH-USD","ETH"),
@@ -2397,233 +2382,246 @@ def build_dashboard_image() -> BytesIO:
         for sym, name in coins:
             try:
                 info  = yf.Ticker(sym).fast_info
-                price = info.get("lastPrice", 0)
-                chg   = info.get("regularMarketChangePercent", 0)
-                out.append((name, price, chg))
+                out.append((name,
+                             info.get("lastPrice", 0),
+                             info.get("regularMarketChangePercent", 0)))
             except:
                 pass
         return out
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        f_idx     = pool.submit(_fetch_indices)
-        f_sec     = pool.submit(_fetch_sectors)
-        f_mov     = pool.submit(_fetch_movers)
-        f_cry     = pool.submit(_fetch_crypto)
-        f_fg      = pool.submit(get_fear_greed)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        f_idx = pool.submit(_fetch_indices)
+        f_sec = pool.submit(_fetch_sectors)
+        f_mov = pool.submit(_fetch_movers)
+        f_cry = pool.submit(_fetch_crypto)
+        f_fg  = pool.submit(get_fear_greed)
 
-    indices  = f_idx.result()
-    sectors  = f_sec.result()
-    gainers, losers = f_mov.result()
-    crypto   = f_cry.result()
+    indices          = f_idx.result()
+    sectors          = f_sec.result()
+    gainers, losers  = f_mov.result()
+    crypto           = f_cry.result()
     fg_val, fg_label = f_fg.result()
-    fg_val   = int(fg_val) if fg_val else 50
+    fg_val           = int(fg_val) if fg_val else 50
 
-    # Squeeze top 5
     top_squeeze = sorted(squeeze_scores.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    # Grok one-liner
-    idx_summary = "  ".join(
-        [f"{n} {d['chg']:+.1f}%" for n, d in list(indices.items())[:4]]
-    )
+    idx_summary = "  ".join(f"{n} {c:+.1f}%" for n, _, c in indices[:4])
     grok_line = get_grok_response(
         f"Market now: {idx_summary}. Fear&Greed={fg_val}({fg_label}). "
         f"One sentence market call.",
         max_tokens=80
     )
 
-    # ── Layout ────────────────────────────────────────────────
-    fig = plt.figure(figsize=(20, 14), facecolor=BG)
-    fig.patch.set_facecolor(BG)
+    # ── Helpers ───────────────────────────────────────────────
+    def _setup_panel(ax, title):
+        ax.set_facecolor(PANEL)
+        for sp in ax.spines.values():
+            sp.set_edgecolor(EDGE)
+            sp.set_linewidth(0.8)
+        ax.set_title(title, color=DIM, fontsize=8.5,
+                     fontweight="bold", loc="left", pad=5)
 
+    def _barh_chart(ax, names, values, bar_colors, *, price_strs=None):
+        """
+        Draw a clean horizontal bar chart.
+        - Labels placed at a FIXED right-edge position (axes coords) so they
+          never collide with the y-axis or each other regardless of value.
+        - X axis always has a minimum range so bars are visible near-zero.
+        """
+        ys = list(range(len(names)))
+        ax.barh(ys, values, color=bar_colors, height=0.55, zorder=3)
+        ax.set_yticks(ys)
+        ax.set_yticklabels(names, color=TEXT, fontsize=9)
+        ax.axvline(0, color=DIM, linewidth=0.7, zorder=2)
+        ax.xaxis.grid(True, color=GRID, linewidth=0.5, zorder=1)
+        ax.set_axisbelow(True)
+        ax.tick_params(axis="x", colors=DIM, labelsize=7)
+        ax.tick_params(axis="y", length=0)
+
+        # Ensure a sensible x range so tiny/zero bars are still visible
+        abs_max = max((abs(v) for v in values), default=0.1)
+        pad     = max(abs_max * 0.15, 0.05)
+        ax.set_xlim(-abs_max - pad, abs_max + pad)
+
+        # Pct label: just right of bar end, min distance from zero line
+        for i, (v, name) in enumerate(zip(values, names)):
+            pct_label = f"{v:+.2f}%"
+            # Place slightly beyond bar end; flip side if negative
+            x_offset = pad * 0.4
+            if v >= 0:
+                ax.text(v + x_offset, i, pct_label,
+                        va="center", ha="left", color=TEXT, fontsize=8,
+                        clip_on=False)
+            else:
+                ax.text(v - x_offset, i, pct_label,
+                        va="center", ha="right", color=TEXT, fontsize=8,
+                        clip_on=False)
+
+        # Price label: always at fixed right edge in axes coords
+        if price_strs:
+            for i, ps in enumerate(price_strs):
+                ax.text(1.01, (i + 0.5) / len(names),
+                        ps, va="center", ha="left",
+                        color=DIM, fontsize=7.5,
+                        transform=ax.transAxes, clip_on=False)
+
+    # ── Figure & grid ─────────────────────────────────────────
+    fig = plt.figure(figsize=(22, 15), facecolor=BG)
+    fig.patch.set_facecolor(BG)
     gs = gridspec.GridSpec(
-        4, 4,
-        figure=fig,
-        hspace=0.55,
-        wspace=0.35,
-        top=0.90, bottom=0.05,
-        left=0.04, right=0.97
+        4, 4, figure=fig,
+        hspace=0.60, wspace=0.45,
+        top=0.91, bottom=0.04,
+        left=0.05, right=0.95
     )
 
-    def panel(ax, title):
-        ax.set_facecolor(PANEL)
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#30363d")
-            spine.set_linewidth(0.8)
-        ax.set_title(title, color=DIM, fontsize=9,
-                     fontweight="bold", loc="left", pad=6)
-        ax.tick_params(colors=TEXT, labelsize=8)
-
     # ── Header ────────────────────────────────────────────────
-    fig.text(0.04, 0.955, "STOCK SPIKE MONITOR  //  LIVE DASHBOARD",
+    fig.text(0.05, 0.957, "STOCK SPIKE MONITOR  //  LIVE DASHBOARD",
              color=TEXT, fontsize=15, fontweight="bold")
-    fig.text(0.04, 0.930, now_str, color=DIM, fontsize=9)
-    fig.text(0.30, 0.930,
+    fig.text(0.05, 0.934, now_str, color=DIM, fontsize=9)
+    fig.text(0.32, 0.934,
              f"Market: {session.upper()}",
              color=session_color, fontsize=9, fontweight="bold")
-    fig.text(0.04, 0.915,
-             f"Grok AI: {grok_line}",
-             color=GOLD, fontsize=8.5, style="italic",
-             wrap=True)
+    # Grok one-liner — wrap manually to avoid matplotlib wrap quirks
+    gl = grok_line[:120] + ("…" if len(grok_line) > 120 else "")
+    fig.text(0.05, 0.918, f"Grok AI: {gl}",
+             color=GOLD, fontsize=8, style="italic")
 
-    # ── [A] Indices bar chart ─────────────────────────────────
+    # ── [A] Indices ───────────────────────────────────────────
     ax_idx = fig.add_subplot(gs[0, :2])
-    panel(ax_idx, "MAJOR INDICES  (% change)")
-    names  = list(indices.keys())
-    chgs   = [indices[n]["chg"] for n in names]
-    colors = [_bar_color(c) for c in chgs]
-    bars   = ax_idx.barh(names, chgs, color=colors, height=0.55, zorder=3)
-    ax_idx.axvline(0, color=DIM, linewidth=0.7, zorder=2)
-    ax_idx.set_facecolor(PANEL)
-    ax_idx.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
-    ax_idx.set_axisbelow(True)
-    for bar, chg, name in zip(bars, chgs, names):
-        price = indices[name]["price"]
-        label = f" {chg:+.2f}%  ${price:,.2f}" if name != "VIX" else f" {chg:+.2f}%  {price:.2f}"
-        ax_idx.text(chg + (0.05 if chg >= 0 else -0.05),
-                    bar.get_y() + bar.get_height() / 2,
-                    label, va="center",
-                    ha="left" if chg >= 0 else "right",
-                    color=TEXT, fontsize=8)
-    ax_idx.tick_params(axis="y", colors=TEXT, labelsize=9)
-    ax_idx.tick_params(axis="x", colors=DIM,  labelsize=7)
+    _setup_panel(ax_idx, "MAJOR INDICES  (% change)")
+    i_names  = [n for n, _, _ in indices]
+    i_chgs   = [c for _, _, c in indices]
+    i_prices = [f"${p:,.2f}" if p < 10000 else f"${p:,.0f}"
+                for _, p, _ in indices]
+    _barh_chart(ax_idx, i_names, i_chgs,
+                [_bar_color(c) for c in i_chgs],
+                price_strs=i_prices)
 
     # ── [B] Fear & Greed gauge ────────────────────────────────
     ax_fg = fig.add_subplot(gs[0, 2])
     ax_fg.set_facecolor(PANEL)
-    for spine in ax_fg.spines.values():
-        spine.set_edgecolor("#30363d")
-    ax_fg.set_title("FEAR & GREED", color=DIM, fontsize=9, fontweight="bold", loc="left", pad=6)
+    for sp in ax_fg.spines.values():
+        sp.set_edgecolor(EDGE)
+    ax_fg.set_title("FEAR & GREED", color=DIM, fontsize=8.5,
+                    fontweight="bold", loc="left", pad=5)
     ax_fg.set_aspect("equal")
     ax_fg.set_xlim(-1.3, 1.3)
-    ax_fg.set_ylim(-0.3, 1.3)
+    ax_fg.set_ylim(-0.35, 1.3)
     ax_fg.axis("off")
 
-    import numpy as np
-    # Arc background segments: Extreme Fear → Greed
     seg_colors = ["#c0392b","#e74c3c","#e67e22","#f1c40f","#2ecc71","#27ae60"]
     seg_labels = ["Ext\nFear","Fear","Neutral","Greed","Ext\nGreed",""]
     for i, (sc, sl) in enumerate(zip(seg_colors, seg_labels)):
-        theta1 = 180 - i * 30
-        theta2 = 180 - (i + 1) * 30
-        theta  = np.linspace(np.radians(theta2), np.radians(theta1), 50)
-        x_out  = np.cos(theta)
-        y_out  = np.sin(theta)
-        x_in   = 0.65 * np.cos(theta)
-        y_in   = 0.65 * np.sin(theta)
-        xs = np.concatenate([x_out, x_in[::-1]])
-        ys = np.concatenate([y_out, y_in[::-1]])
-        ax_fg.fill(xs, ys, color=sc, alpha=0.85, zorder=2)
-        mid_theta = np.radians((theta1 + theta2) / 2)
+        t1  = 180 - i * 30
+        t2  = 180 - (i + 1) * 30
+        th  = np.linspace(np.radians(t2), np.radians(t1), 50)
+        xo, yo = np.cos(th), np.sin(th)
+        xi, yi = 0.65 * np.cos(th), 0.65 * np.sin(th)
+        ax_fg.fill(np.concatenate([xo, xi[::-1]]),
+                   np.concatenate([yo, yi[::-1]]),
+                   color=sc, alpha=0.85, zorder=2)
         if sl:
-            ax_fg.text(0.82 * np.cos(mid_theta), 0.82 * np.sin(mid_theta),
-                       sl, ha="center", va="center", fontsize=5.5,
+            mt = np.radians((t1 + t2) / 2)
+            ax_fg.text(0.82 * np.cos(mt), 0.82 * np.sin(mt), sl,
+                       ha="center", va="center", fontsize=5.5,
                        color="white", fontweight="bold", zorder=3)
 
-    # Needle
-    needle_angle = np.radians(180 - fg_val * 1.8)
+    na = np.radians(180 - fg_val * 1.8)
     ax_fg.annotate("",
-        xy=(0.6 * np.cos(needle_angle), 0.6 * np.sin(needle_angle)),
-        xytext=(0, 0),
-        arrowprops=dict(arrowstyle="->, head_width=0.08, head_length=0.05",
-                        color="white", lw=2),
-        zorder=5
-    )
+        xy=(0.6 * np.cos(na), 0.6 * np.sin(na)), xytext=(0, 0),
+        arrowprops=dict(arrowstyle="->,head_width=0.08,head_length=0.05",
+                        color="white", lw=2), zorder=5)
     ax_fg.add_patch(plt.Circle((0, 0), 0.07, color=PANEL, zorder=4))
-
-    # Score + label
     ax_fg.text(0, -0.18, str(fg_val), ha="center", va="center",
                fontsize=22, fontweight="bold", color=TEXT, zorder=5)
-    ax_fg.text(0, -0.28, fg_label or "", ha="center", va="center",
+    ax_fg.text(0, -0.29, fg_label or "", ha="center", va="center",
                fontsize=7.5, color=GOLD, zorder=5)
 
     # ── [C] Sector heatmap ────────────────────────────────────
     ax_sec = fig.add_subplot(gs[0, 3])
-    panel(ax_sec, "SECTOR HEATMAP")
+    _setup_panel(ax_sec, "SECTOR HEATMAP")
     ax_sec.axis("off")
-    sec_names = list(sectors.keys())
-    sec_vals  = list(sectors.values())
-    max_abs   = max(abs(v) for v in sec_vals) or 1
-    ncols, nrows = 3, 4
+    ncols_s, nrows_s = 3, 4
+    max_abs_s = max((abs(v) for _, v in sectors), default=1) or 1
     cmap = _rg_cmap()
-    for idx, (name, val) in enumerate(zip(sec_names, sec_vals)):
-        row = idx // ncols
-        col = idx % ncols
-        cx  = col / ncols + 0.5 / ncols
-        cy  = 1 - row / nrows - 0.5 / nrows
-        norm_val = _clamp_color(val, -max_abs, max_abs)
-        bg_color = cmap(norm_val)
-        rect = FancyBboxPatch(
-            (col / ncols + 0.01, 1 - (row + 1) / nrows + 0.01),
-            1 / ncols - 0.02, 1 / nrows - 0.02,
-            boxstyle="round,pad=0.01", facecolor=bg_color,
-            edgecolor="#0d1117", linewidth=1, transform=ax_sec.transAxes
-        )
-        ax_sec.add_patch(rect)
-        txt_color = "white" if abs(norm_val - 0.5) > 0.2 else "#0d1117"
-        ax_sec.text(cx, cy + 0.05, name, ha="center", va="center",
-                    fontsize=7, fontweight="bold", color=txt_color,
+    for idx, (name, val) in enumerate(sectors):
+        row = idx // ncols_s
+        col = idx % ncols_s
+        x0  = col / ncols_s + 0.01
+        y0  = 1 - (row + 1) / nrows_s + 0.01
+        w   = 1 / ncols_s - 0.02
+        h   = 1 / nrows_s - 0.025
+        cx, cy = x0 + w / 2, y0 + h / 2
+        norm_v = _clamp_color(val, -max_abs_s, max_abs_s)
+        bg     = cmap(norm_v)
+        ax_sec.add_patch(FancyBboxPatch(
+            (x0, y0), w, h,
+            boxstyle="round,pad=0.01", facecolor=bg,
+            edgecolor=BG, linewidth=1.2,
+            transform=ax_sec.transAxes
+        ))
+        tc = "white" if abs(norm_v - 0.5) > 0.18 else "#111111"
+        ax_sec.text(cx, cy + 0.045, name, ha="center", va="center",
+                    fontsize=7, fontweight="bold", color=tc,
                     transform=ax_sec.transAxes)
-        ax_sec.text(cx, cy - 0.05, f"{val:+.2f}%", ha="center", va="center",
-                    fontsize=6.5, color=txt_color, transform=ax_sec.transAxes)
+        ax_sec.text(cx, cy - 0.045, f"{val:+.2f}%", ha="center", va="center",
+                    fontsize=6.5, color=tc, transform=ax_sec.transAxes)
 
     # ── [D] Top Gainers ───────────────────────────────────────
     ax_gn = fig.add_subplot(gs[1, :2])
-    panel(ax_gn, "TOP GAINERS  (monitored list)")
+    _setup_panel(ax_gn, "TOP GAINERS  (monitored list)")
     if gainers:
-        g_names = [t for t, _, _ in gainers]
-        g_vals  = [c for _, c, _ in gainers]
-        g_bars  = ax_gn.barh(g_names, g_vals, color=GREEN, height=0.55, zorder=3)
-        ax_gn.set_facecolor(PANEL)
-        ax_gn.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
-        ax_gn.set_axisbelow(True)
-        ax_gn.axvline(0, color=DIM, linewidth=0.7)
-        for bar, (t, chg, price) in zip(g_bars, gainers):
-            ax_gn.text(chg + 0.05, bar.get_y() + bar.get_height() / 2,
-                       f" +{chg:.2f}%  ${price:.2f}",
-                       va="center", color=TEXT, fontsize=8)
-        ax_gn.tick_params(axis="y", colors=TEXT, labelsize=9)
-        ax_gn.tick_params(axis="x", colors=DIM, labelsize=7)
+        _barh_chart(ax_gn,
+                    [t for t, _, _ in gainers],
+                    [c for _, c, _ in gainers],
+                    [GREEN] * len(gainers),
+                    price_strs=[f"${p:.2f}" for _, _, p in gainers])
+    else:
+        ax_gn.text(0.5, 0.5, "No data", ha="center", va="center",
+                   color=DIM, fontsize=9, transform=ax_gn.transAxes)
+        ax_gn.axis("off")
 
     # ── [E] Top Losers ────────────────────────────────────────
     ax_ls = fig.add_subplot(gs[1, 2:])
-    panel(ax_ls, "TOP LOSERS  (monitored list)")
+    _setup_panel(ax_ls, "TOP LOSERS  (monitored list)")
     if losers:
-        l_names = [t for t, _, _ in losers]
-        l_vals  = [c for _, c, _ in losers]
-        l_bars  = ax_ls.barh(l_names, l_vals, color=RED, height=0.55, zorder=3)
-        ax_ls.set_facecolor(PANEL)
-        ax_ls.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
-        ax_ls.set_axisbelow(True)
-        ax_ls.axvline(0, color=DIM, linewidth=0.7)
-        for bar, (t, chg, price) in zip(l_bars, losers):
-            ax_ls.text(chg - 0.05, bar.get_y() + bar.get_height() / 2,
-                       f"{chg:.2f}%  ${price:.2f}  ",
-                       va="center", ha="right", color=TEXT, fontsize=8)
-        ax_ls.tick_params(axis="y", colors=TEXT, labelsize=9)
-        ax_ls.tick_params(axis="x", colors=DIM, labelsize=7)
+        _barh_chart(ax_ls,
+                    [t for t, _, _ in losers],
+                    [c for _, c, _ in losers],
+                    [RED] * len(losers),
+                    price_strs=[f"${p:.2f}" for _, _, p in losers])
+    else:
+        ax_ls.text(0.5, 0.5, "No data", ha="center", va="center",
+                   color=DIM, fontsize=9, transform=ax_ls.transAxes)
+        ax_ls.axis("off")
 
     # ── [F] Squeeze Leaderboard ───────────────────────────────
     ax_sq = fig.add_subplot(gs[2, :2])
-    panel(ax_sq, "SQUEEZE LEADERBOARD  (score 0–100)")
+    _setup_panel(ax_sq, "SQUEEZE LEADERBOARD  (score 0–100)")
     if top_squeeze:
         sq_names  = [t for t, _ in top_squeeze]
         sq_scores = [s for _, s in top_squeeze]
-        sq_colors = [plt.cm.YlOrRd(s / 100) for s in sq_scores]
-        sq_bars   = ax_sq.barh(sq_names, sq_scores, color=sq_colors, height=0.55, zorder=3)
-        ax_sq.set_xlim(0, 105)
-        ax_sq.set_facecolor(PANEL)
-        ax_sq.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
-        ax_sq.set_axisbelow(True)
-        for bar, (t, score) in zip(sq_bars, top_squeeze):
-            sq_data = compute_squeeze_score(t)
-            rsi_s   = f"RSI {sq_data['rsi']:.0f}" if sq_data.get("rsi") else ""
-            bw_s    = f"BW {sq_data['bandwidth']:.3f}" if sq_data.get("bandwidth") else ""
-            detail  = "  ".join(filter(None, [rsi_s, bw_s]))
-            ax_sq.text(score + 1, bar.get_y() + bar.get_height() / 2,
-                       f" {score:.0f}  {detail}",
-                       va="center", color=TEXT, fontsize=8)
-        ax_sq.tick_params(axis="y", colors=TEXT, labelsize=9)
+        ys_sq = list(range(len(sq_names)))
+        sq_cols = [plt.cm.YlOrRd(s / 100) for s in sq_scores]
+        ax_sq.barh(ys_sq, sq_scores, color=sq_cols, height=0.55, zorder=3)
+        ax_sq.set_xlim(0, 115)
+        ax_sq.set_yticks(ys_sq)
+        ax_sq.set_yticklabels(sq_names, color=TEXT, fontsize=9)
         ax_sq.tick_params(axis="x", colors=DIM, labelsize=7)
+        ax_sq.tick_params(axis="y", length=0)
+        ax_sq.xaxis.grid(True, color=GRID, linewidth=0.5, zorder=1)
+        ax_sq.set_axisbelow(True)
+        for i, (t, sc) in enumerate(top_squeeze):
+            sd    = compute_squeeze_score(t)
+            parts = []
+            if sd.get("rsi"):
+                parts.append(f"RSI {sd['rsi']:.0f}")
+            if sd.get("bandwidth"):
+                parts.append(f"BW {sd['bandwidth']:.3f}")
+            detail = "  ".join(parts)
+            ax_sq.text(sc + 1.5, i, f"{sc:.0f}  {detail}",
+                       va="center", ha="left", color=TEXT, fontsize=8)
     else:
         ax_sq.text(0.5, 0.5, "Building… (needs 2–3 scan cycles)",
                    ha="center", va="center", color=DIM, fontsize=9,
@@ -2632,68 +2630,72 @@ def build_dashboard_image() -> BytesIO:
 
     # ── [G] Crypto ────────────────────────────────────────────
     ax_cr = fig.add_subplot(gs[2, 2:])
-    panel(ax_cr, "CRYPTO  (% change today)")
+    _setup_panel(ax_cr, "CRYPTO  (% change today)")
     if crypto:
-        cr_names  = [c[0] for c in crypto]
-        cr_chgs   = [c[2] for c in crypto]
-        cr_prices = [c[1] for c in crypto]
-        cr_colors = [_bar_color(v) for v in cr_chgs]
-        cr_bars   = ax_cr.barh(cr_names, cr_chgs, color=cr_colors, height=0.55, zorder=3)
-        ax_cr.axvline(0, color=DIM, linewidth=0.7)
-        ax_cr.set_facecolor(PANEL)
-        ax_cr.xaxis.grid(True, color="#21262d", linewidth=0.5, zorder=1)
-        ax_cr.set_axisbelow(True)
-        for bar, (name, price, chg) in zip(cr_bars, crypto):
-            label = f"  {chg:+.2f}%   ${price:,.2f}" if price < 1000 else f"  {chg:+.2f}%  ${price:,.0f}"
-            ax_cr.text(chg + (0.05 if chg >= 0 else -0.05),
-                       bar.get_y() + bar.get_height() / 2,
-                       label, va="center",
-                       ha="left" if chg >= 0 else "right",
-                       color=TEXT, fontsize=8)
-        ax_cr.tick_params(axis="y", colors=TEXT, labelsize=9)
-        ax_cr.tick_params(axis="x", colors=DIM, labelsize=7)
+        def _fmt_crypto_price(p):
+            if p >= 10000:  return f"${p:,.0f}"
+            if p >= 1:      return f"${p:,.2f}"
+            return f"${p:.4f}"
+        _barh_chart(ax_cr,
+                    [c[0] for c in crypto],
+                    [c[2] for c in crypto],
+                    [_bar_color(c[2]) for c in crypto],
+                    price_strs=[_fmt_crypto_price(c[1]) for c in crypto])
+    else:
+        ax_cr.text(0.5, 0.5, "No data", ha="center", va="center",
+                   color=DIM, fontsize=9, transform=ax_cr.transAxes)
+        ax_cr.axis("off")
 
-    # ── [H] Recent Spike Alerts timeline ─────────────────────
+    # ── [H] Recent Spike Alerts ───────────────────────────────
     ax_al = fig.add_subplot(gs[3, :3])
     ax_al.set_facecolor(PANEL)
-    for spine in ax_al.spines.values():
-        spine.set_edgecolor("#30363d")
-    ax_al.set_title("RECENT SPIKE ALERTS", color=DIM, fontsize=9,
-                    fontweight="bold", loc="left", pad=6)
+    for sp in ax_al.spines.values():
+        sp.set_edgecolor(EDGE)
+    ax_al.set_title("RECENT SPIKE ALERTS", color=DIM, fontsize=8.5,
+                    fontweight="bold", loc="left", pad=5)
     ax_al.axis("off")
-    alerts_display = recent_alerts[-12:] if recent_alerts else ["No spikes yet today"]
+    alerts_display = (recent_alerts[-12:] if recent_alerts
+                      else ["No spikes yet today"])
     ncols_al = 3
+    rows_al  = math.ceil(len(alerts_display) / ncols_al)
+    row_h    = 1.0 / max(rows_al, 1)
     for idx, alert in enumerate(alerts_display):
         col = idx % ncols_al
         row = idx // ncols_al
         ax_al.text(col / ncols_al + 0.02,
-                   0.88 - row * 0.28,
-                   f">> {alert}",
+                   0.92 - row * row_h * 0.85,
+                   f"▸ {alert}",
                    ha="left", va="top",
                    color=GOLD if "%" in alert else DIM,
-                   fontsize=8.5,
-                   transform=ax_al.transAxes)
+                   fontsize=8, transform=ax_al.transAxes,
+                   clip_on=True)
 
-    # ── [I] Bot Stats ─────────────────────────────────────────
+    # ── [I] Bot Status ────────────────────────────────────────
     ax_st = fig.add_subplot(gs[3, 3])
     ax_st.set_facecolor(PANEL)
-    for spine in ax_st.spines.values():
-        spine.set_edgecolor("#30363d")
-    ax_st.set_title("BOT STATUS", color=DIM, fontsize=9,
-                    fontweight="bold", loc="left", pad=6)
+    for sp in ax_st.spines.values():
+        sp.set_edgecolor(EDGE)
+    ax_st.set_title("BOT STATUS", color=DIM, fontsize=8.5,
+                    fontweight="bold", loc="left", pad=5)
     ax_st.axis("off")
-    status_str = "[RUNNING]" if not monitoring_paused else "[PAUSED]"
+    status_str   = "[RUNNING]" if not monitoring_paused else "[PAUSED]"
     status_color = GREEN if not monitoring_paused else GOLD
-    stats_lines = [
-        (status_str,  status_color),
-        (f"Watching: {len(TICKERS)} stocks", TEXT),
-        (f"Alerts today: {daily_alerts}", GOLD if daily_alerts > 0 else DIM),
-        (f"Threshold: {THRESHOLD*100:.0f}% spike", DIM),
-        (f"Scan: every {CHECK_INTERVAL_MIN} min", DIM),
-        (f"Session: {session.upper()}", session_color),
+    pv = paper_portfolio_value()
+    paper_pnl = pv - PAPER_STARTING_CAPITAL
+    stats = [
+        (status_str,                                   status_color),
+        (f"Watching: {len(TICKERS)} stocks",           TEXT),
+        (f"Alerts today: {daily_alerts}",              GOLD if daily_alerts > 0 else DIM),
+        (f"Threshold: {THRESHOLD*100:.0f}%  "
+         f"Scan: {CHECK_INTERVAL_MIN}m",               DIM),
+        (f"Session: {session.upper()}",                session_color),
+        ("",                                           DIM),
+        (f"Paper: ${pv:,.0f}",                        GREEN if paper_pnl >= 0 else RED),
+        (f"  P&L: ${paper_pnl:+,.0f}",               GREEN if paper_pnl >= 0 else RED),
+        (f"  Positions: {len(paper_positions)}",       DIM),
     ]
-    for i, (line, color) in enumerate(stats_lines):
-        ax_st.text(0.05, 0.92 - i * 0.16, line,
+    for i, (line, color) in enumerate(stats):
+        ax_st.text(0.05, 0.96 - i * 0.11, line,
                    ha="left", va="top", color=color,
                    fontsize=8.5, transform=ax_st.transAxes)
 
@@ -2704,6 +2706,7 @@ def build_dashboard_image() -> BytesIO:
     plt.close(fig)
     buf.seek(0)
     return buf
+
 
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
