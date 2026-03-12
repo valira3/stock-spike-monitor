@@ -44,6 +44,21 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
+BOT_VERSION = "1.10"
+RELEASE_NOTES = [
+    "1.10 — News Sentiment Scoring: AI-powered news analysis now feeds into trading signals (component 10/10, up to 15 pts). /news shows sentiment + source timestamps.",
+    "1.9 — Extended Hours Pricing: pre-market and after-hours prices from yfinance. Dashboard and quotes now show live extended session data.",
+    "1.8 — Dashboard Sharpness: 220 DPI rendering, larger fonts, sent as document for crisp mobile viewing.",
+    "1.7 — Alert Spam Fix: 15-min cooldown with 1% escalation threshold. Startup grace period prevents false alerts.",
+    "1.6 — Chart & RSI: yfinance-based /chart and /rsi commands (replaced Finnhub candles). VWAP crash fix.",
+    "1.5 — Startup Rate Fix: removed duplicate scan on boot, eliminated 75+ Finnhub 429 errors.",
+    "1.4 — Multi-Day Trends: 5-day SMA trend + momentum + volume component (15 pts) for longer-term signals.",
+    "1.3 — Paper Trading Boost: day-change MOVER alerts, price history primed on startup, signal cache 120s.",
+    "1.2 — Crypto & Batching: rewritten /crypto, TTL caching, batch scanning, wider dashboard.",
+    "1.1 — Mobile & AI Watchlist: compact /help, mobile dashboard, AI-driven watchlist rotation.",
+    "1.0 — Initial Release: 30-stock scanner, paper trading, spike alerts, Claude AI integration.",
+]
+
 THRESHOLD           = 0.03
 MIN_PRICE           = 5.0
 COOLDOWN_MINUTES    = 15
@@ -237,6 +252,7 @@ BOT_DESCRIPTION = (
     "BOT\n"
     " /list        monitored tickers\n"
     " /monitoring  pause|resume|status\n"
+    " /version     release notes\n"
     " /help        this menu\n"
     "\n"
     "Auto: 7am AI | 8am dash | 8:30 open\n"
@@ -3024,6 +3040,17 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(BOT_DESCRIPTION)
 
+async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show full release history."""
+    lines = [f"📋 Stock Spike Monitor v{BOT_VERSION}", ""]
+    lines.append("Recent Changes:")
+    for note in RELEASE_NOTES:
+        # Extract "X.Y — Feature Name" (title only)
+        parts = note.split(": ", 1)
+        title = parts[0]  # "X.Y — Feature Name"
+        lines.append(title)
+    await update.message.reply_text("\n".join(lines))
+
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Monitoring {len(TICKERS)} stocks:\n" + "  ".join(sorted(TICKERS))
@@ -5155,9 +5182,31 @@ def send_startup_message():
     )
     ai = get_ai_response(prompt, fast=True, max_tokens=30)
 
+    # Build compact What's New from latest 2 release notes
+    whats_new = []
+    for note in RELEASE_NOTES[:2]:
+        # Extract "Feature Name: brief..." after the "X.Y — "
+        parts = note.split(" — ", 1)
+        if len(parts) == 2:
+            # Take title before colon, add short summary
+            title_rest = parts[1].split(": ", 1)
+            title = title_rest[0]
+            summary = title_rest[1][:30] if len(title_rest) > 1 else ""
+            line = f"• {title}: {summary}" if summary else f"• {title}"
+            # Trim to 64 chars for mobile
+            if len(line) > 64:
+                line = line[:61] + "..."
+            whats_new.append(line)
+
+    separator = "─" * 31
+
     msg_lines = (
-        [f"🚀 STOCK SPIKE MONITOR STARTED",
+        [f"🚀 STOCK SPIKE MONITOR v{BOT_VERSION}",
          f"{s['now_label']}",
+         separator,
+         f"📋 What's New:"] +
+        whats_new +
+        [separator,
          f"Market: {status_str}",
          f"Watching: {len(TICKERS)} stocks",
          f"Spike threshold: {THRESHOLD*100:.0f}%  Scan: every {CHECK_INTERVAL_MIN} min",
@@ -5532,6 +5581,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("list",        cmd_list))
     app.add_handler(CommandHandler("monitoring",  cmd_monitoring))
     app.add_handler(CommandHandler("help",        cmd_help))
+    app.add_handler(CommandHandler("version",     cmd_version))
 
     # ── Paper Trading ─────────────────────────────────────────
     app.add_handler(CommandHandler("paper",       cmd_paper))
@@ -5584,6 +5634,6 @@ if get_trading_session() != "closed":
         threading.Thread(target=lambda: ai_refresh_watchlist(mode="intraday"), daemon=True).start()
 
 threading.Thread(target=scanner_thread, daemon=True).start()
-logger.info("STOCK SPIKE MONITOR STARTED")
+logger.info(f"Stock Spike Monitor v{BOT_VERSION} started")
 send_startup_message()
 run_telegram_bot()
