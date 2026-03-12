@@ -931,6 +931,8 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False):
     )
     send_telegram(message)
     recent_alerts.append(f"{ticker} {pct_change:+.1f}% at {datetime.now(CT).strftime('%H:%M')}")
+    # Persist alert history (non-blocking — best-effort)
+    threading.Thread(target=save_bot_state, daemon=True).start()
 
 def check_custom_price_alerts(ticker, current_price):
     if ticker not in custom_price_alerts:
@@ -939,11 +941,13 @@ def check_custom_price_alerts(ticker, current_price):
     for target in custom_price_alerts[ticker]:
         if abs(current_price - target) / target < 0.005:   # within 0.5%
             send_telegram(
-                f"🎯 Price Alert Hit!\n{ticker} reached ${current_price:.2f}\n(Target: ${target:.2f})"
+                f"Price Alert Hit!\n{ticker} reached ${current_price:.2f}\n(Target: ${target:.2f})"
             )
             triggered.append(target)
     for t in triggered:
         custom_price_alerts[ticker].remove(t)
+    if triggered:
+        threading.Thread(target=save_bot_state, daemon=True).start()
 
 def _scan_ticker(ticker: str, now: datetime):
     """Scan a single ticker — runs in thread pool."""
@@ -1034,6 +1038,14 @@ PAPER_MAX_POS_PCT      = 0.20     # 20% of portfolio per position
 PAPER_TAKE_PROFIT_PCT  = 0.08     # 8% take-profit
 PAPER_STOP_LOSS_PCT    = 0.04     # 4% stop-loss
 PAPER_MIN_SIGNAL       = 65       # min composite score (0-100) to open a position
+
+# Bot-wide persistence (watchlists, alerts, tickers, conversation history …)
+# Set BOT_STATE_PATH env var to a Railway Volume path, e.g. /data/bot_state.json
+_data_dir = os.path.dirname(os.getenv("PAPER_STATE_PATH", "paper_state.json"))
+BOT_STATE_FILE = os.getenv(
+    "BOT_STATE_PATH",
+    os.path.join(_data_dir, "bot_state.json") if _data_dir else "bot_state.json"
+)
 
 # ── Live state (populated by load_paper_state on startup) ─────
 paper_cash          = PAPER_STARTING_CAPITAL
@@ -1129,6 +1141,92 @@ def load_paper_state():
         paper_all_trades = []
         paper_trades_today = []
         paper_daily_counts = {}
+
+
+
+_bot_save_lock = threading.Lock()
+
+def save_bot_state():
+    """
+    Persist all non-paper bot state to BOT_STATE_FILE (JSON).
+    Saves: TICKERS, user_watchlists, custom_price_alerts,
+           recent_alerts, conversation_history, squeeze_scores,
+           daily_alerts, monitoring_paused.
+
+    Called automatically after every mutation of the above.
+    Set BOT_STATE_PATH=/data/bot_state.json in Railway to use the Volume.
+    """
+    state = {
+        "tickers":              list(TICKERS),
+        "user_watchlists":      user_watchlists,
+        "custom_price_alerts":  custom_price_alerts,
+        "recent_alerts":        list(recent_alerts)[-200:],  # cap at 200
+        "conversation_history": {
+            cid: msgs[-20:]                                  # cap at 20 per chat
+            for cid, msgs in conversation_history.items()
+        },
+        "squeeze_scores":       squeeze_scores,
+        "daily_alerts":         daily_alerts,
+        "monitoring_paused":    monitoring_paused,
+        "saved_at":             datetime.now(CT).isoformat(),
+    }
+    with _bot_save_lock:
+        tmp = BOT_STATE_FILE + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, default=str)
+            os.replace(tmp, BOT_STATE_FILE)
+            logger.debug(f"Bot state saved -> {BOT_STATE_FILE}")
+        except Exception as e:
+            logger.error(f"save_bot_state failed: {e}")
+
+
+def load_bot_state():
+    """
+    Restore bot state from disk on startup.
+    Safely skips missing keys — graceful forward/backward compat.
+    daily_alerts is only restored if saved_at is today (intraday counter).
+    """
+    global TICKERS, user_watchlists, custom_price_alerts
+    global recent_alerts, conversation_history, squeeze_scores
+    global daily_alerts, monitoring_paused
+
+    if not os.path.exists(BOT_STATE_FILE):
+        logger.info(f"No bot state file at {BOT_STATE_FILE} — starting fresh.")
+        return
+
+    try:
+        with open(BOT_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        saved_tickers = state.get("tickers", [])
+        if saved_tickers:
+            TICKERS = set(saved_tickers)
+            logger.info(f"Restored {len(TICKERS)} tickers")
+
+        user_watchlists     = state.get("user_watchlists", {})
+        custom_price_alerts = state.get("custom_price_alerts", {})
+        recent_alerts       = state.get("recent_alerts", [])
+        conversation_history= state.get("conversation_history", {})
+        squeeze_scores      = state.get("squeeze_scores", {})
+        monitoring_paused   = state.get("monitoring_paused", False)
+
+        # Only restore daily_alerts if saved today
+        saved_at   = state.get("saved_at", "")
+        saved_date = saved_at[:10] if saved_at else ""
+        today      = datetime.now(CT).strftime("%Y-%m-%d")
+        daily_alerts = state.get("daily_alerts", 0) if saved_date == today else 0
+
+        logger.info(
+            f"Bot state restored from {BOT_STATE_FILE} | "
+            f"tickers={len(TICKERS)} | watchlists={len(user_watchlists)} | "
+            f"alerts={len(custom_price_alerts)} | "
+            f"conversations={len(conversation_history)} | "
+            f"monitoring_paused={monitoring_paused}"
+        )
+
+    except Exception as e:
+        logger.error(f"load_bot_state failed: {e} — using defaults.")
 
 
 # ── Dedicated investment logger ───────────────────────────────
@@ -2435,12 +2533,14 @@ async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wl = user_watchlists.setdefault(cid, [])
         if ticker not in wl:
             wl.append(ticker)
+        save_bot_state()
         await update.message.reply_text(f"Added {ticker} to your watchlist.")
     elif cmd == "remove" and len(context.args) > 1:
         ticker = context.args[1].upper()
         wl = user_watchlists.get(cid, [])
         if ticker in wl:
             wl.remove(ticker)
+        save_bot_state()
         await update.message.reply_text(f"Removed {ticker} from watchlist.")
     elif cmd == "scan":
         wl = user_watchlists.get(cid, [])
@@ -2450,13 +2550,13 @@ async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [f"Watchlist snapshot:"]
         for t in wl:
             try:
-                info  = yf.Ticker(t).fast_info
-                price = info.get('lastPrice', 0)
-                chg   = info.get('regularMarketChangePercent', 0)
-                arrow = "+" if chg >= 0 else "-"
-                lines.append(f"{arrow} {t}: ${price:.2f} ({chg:+.2f}%)")
+                d     = get_ticker_data(t)
+                price = d["price"]
+                chg   = d["chg"]
+                sign  = "+" if chg >= 0 else ""
+                lines.append(f"  {t}: ${price:.2f} ({sign}{chg:.2f}%)")
             except:
-                lines.append(f"? {t}: unavailable")
+                lines.append(f"  {t}: unavailable")
         await update.message.reply_text("\n".join(lines))
     else:
         await update.message.reply_text(
@@ -2482,6 +2582,7 @@ async def cmd_setalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Invalid price. Example: /setalert NVDA 150.00")
         return
     custom_price_alerts.setdefault(ticker, []).append(target)
+    save_bot_state()
     await update.message.reply_text(
         f"Price alert set!\n{ticker} @ ${target:.2f}\nYou'll be alerted when within 0.5% of this target."
     )
@@ -3185,6 +3286,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if mode == "pause":
         monitoring_paused = True
+        save_bot_state()
         await update.message.reply_text(
             "Monitoring PAUSED.\n"
             "Spike scanning stopped. Dashboards and scheduled messages continue.\n"
@@ -3192,6 +3294,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif mode == "resume":
         monitoring_paused = False
+        save_bot_state()
         await update.message.reply_text(
             "Monitoring RESUMED.\n"
             f"Scanning {len(TICKERS)} stocks every {CHECK_INTERVAL_MIN} min."
@@ -3840,7 +3943,8 @@ def scanner_thread():
     # Track which (day, time) combos have already fired to prevent
     # double-firing within the same minute
     fired: set = set()
-    last_scan   = datetime.now(CT) - timedelta(minutes=CHECK_INTERVAL_MIN + 1)
+    last_scan      = datetime.now(CT) - timedelta(minutes=CHECK_INTERVAL_MIN + 1)
+    last_state_save = datetime.now(CT) - timedelta(minutes=6)  # save every 5 min
 
     logger.info(
         f"Scheduler started — all times in CT "
@@ -3862,6 +3966,9 @@ def scanner_thread():
                     logger.info(f"Firing scheduled job: {day} {hhmm} CT -> {fn.__name__ if hasattr(fn,'__name__') else 'lambda'}")
                     try:
                         fn()
+                        # Save state after ticker refresh so new TICKERS list persists
+                        if hhmm == "08:30":
+                            save_bot_state()
                     except Exception as e:
                         logger.error(f"Scheduled job error ({day} {hhmm}): {e}", exc_info=True)
 
@@ -3878,6 +3985,12 @@ def scanner_thread():
                 check_stocks()
             except Exception as e:
                 logger.error(f"check_stocks error: {e}", exc_info=True)
+
+        # ── Periodic state persistence — every 5 minutes ─────
+        state_elapsed = (now_ct - last_state_save).total_seconds() / 60
+        if state_elapsed >= 5:
+            last_state_save = now_ct
+            threading.Thread(target=save_bot_state, daemon=True).start()
 
         time.sleep(30)   # check twice per minute — plenty for minute-precision jobs
 
@@ -3936,5 +4049,6 @@ def run_telegram_bot():
 threading.Thread(target=scanner_thread, daemon=True).start()
 logger.info("FULL INTERACTIVE MONITOR WITH BULLISH FILTER STARTED")
 load_paper_state()   # restore paper trading state from disk
+load_bot_state()     # restore watchlists, alerts, tickers, conversations
 send_startup_message()
 run_telegram_bot()
