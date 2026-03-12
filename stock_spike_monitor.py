@@ -183,59 +183,58 @@ _metrics_cache = _TTLCache(ttl_seconds=90.0, max_size=300)
 # BOT DESCRIPTION (used by /about and natural-language handler)
 # ============================================================
 BOT_DESCRIPTION = (
-    "📡 Stock Spike Monitor\n"
-    "60+ stocks | ≥3% alerts | Claude AI | RSI/BB/Squeeze\n"
+    "STOCK SPIKE MONITOR\n"
+    "60+ stocks | 3% alerts | AI-driven\n"
     "\n"
-    "MARKET PULSE\n"
-    "  /overview    indices | sectors | F&G | AI\n"
-    "  /crypto      BTC ETH SOL DOGE XRP\n"
-    "  /macro       CPI | Fed | NFP | FOMC calendar\n"
-    "  /earnings    next 7 days\n"
+    "MARKET\n"
+    " /overview    indices+sectors+AI read\n"
+    " /movers      gainers, losers, active\n"
+    " /crypto      BTC ETH SOL DOGE XRP\n"
+    " /macro       CPI, Fed, NFP, FOMC\n"
+    " /earnings    next 7 days calendar\n"
+    " /dashboard   visual market snapshot\n"
     "\n"
-    "MOVERS\n"
-    "  /movers      gainers | losers | active | rockets\n"
-    "\n"
-    "STOCK TOOLS\n"
-    "  /price TICK        live quote + day range\n"
-    "  /analyze TICK      AI: catalyst | risk | setup\n"
-    "  /compare T1 T2     side-by-side AI verdict\n"
-    "  /chart TICK        intraday chart + volume\n"
-    "  /rsi TICK          RSI | Bollinger | squeeze\n"
-    "  /news TICK         latest headlines\n"
+    "STOCKS\n"
+    " /price TICK  live quote + range\n"
+    " /chart TICK  intraday + volume\n"
+    " /analyze T   AI catalyst/risk/setup\n"
+    " /compare A B side-by-side AI\n"
+    " /rsi TICK    RSI, BB, squeeze score\n"
+    " /news TICK   latest headlines\n"
     "\n"
     "ALERTS\n"
-    "  /spikes            recent spikes (30 min)\n"
-    "  /alerts            all alerts today\n"
-    "  /squeeze           top squeeze candidates\n"
-    "  /setalert TICK $   custom price target\n"
-    "  /myalerts          view all price alerts\n"
-    "  /delalert TICK $   remove a price alert\n"
-    "  /watchlist         add | remove | scan\n"
+    " /spikes      recent spike alerts\n"
+    " /alerts      all alerts today\n"
+    " /squeeze     top squeeze candidates\n"
+    " /setalert T $  set price alert\n"
+    " /myalerts    view active alerts\n"
+    " /delalert T  remove alert(s)\n"
+    " /watchlist   add|remove|show|scan\n"
     "\n"
-    "PAPER TRADING  ($100k simulated)\n"
-    "  /paper             portfolio + positions\n"
-    "  /paper positions   live P&L\n"
-    "  /paper trades      today's activity\n"
-    "  /paper history     win rate + summary\n"
-    "  /paper signal TICK 8-factor breakdown\n"
-    "  /paper log         download trade log\n"
-    "  /paper reset       reset to $100k\n"
-    "  /overnight         gap risk on positions\n"
-    "  /aistocks          AI watchlist picks + conviction\n"
+    "PAPER TRADING  ($100k sim)\n"
+    " /paper       portfolio overview\n"
+    " /paper positions  live P&L\n"
+    " /paper trades     today's trades\n"
+    " /paper history    win rate stats\n"
+    " /paper signal T   8-factor score\n"
+    " /paper log   download trade log\n"
+    " /paper reset start over at $100k\n"
+    " /overnight   gap risk on holdings\n"
     "\n"
-    "OFF-HOURS & PREP\n"
-    "  /prep              next session game plan\n"
-    "  /wlprep            watchlist scan + AI read\n"
-    "  /ask <question>    chat with Claude (memory)\n"
+    "AI & TOOLS\n"
+    " /aistocks    AI picks + conviction\n"
+    " /ask <q>     chat with Claude\n"
+    " /prep        next session plan\n"
+    " /wlprep      watchlist deep scan\n"
     "\n"
     "BOT\n"
-    "  /dashboard         visual snapshot now\n"
-    "  /list              all monitored tickers\n"
-    "  /monitoring        pause | resume | status\n"
-    "  /help              this menu\n"
+    " /list        monitored tickers\n"
+    " /monitoring  pause|resume|status\n"
+    " /help        this menu\n"
     "\n"
-    "📊 Daily CT: 8am pre-mkt | 8:30 open | 12pm mid\n"
-    "   3pm close | 6pm recap | Sat 9am | Sun 6pm"
+    "Auto: 7am AI | 8am dash | 8:30 open\n"
+    " 10:30/12:30/2:30 AI | 3pm close\n"
+    " 6pm recap | Sat 9am | Sun 6pm"
 )
 
 # ============================================================
@@ -3786,7 +3785,7 @@ def build_dashboard_image() -> BytesIO:
         for sp in ax.spines.values():
             sp.set_edgecolor(EDGE)
             sp.set_linewidth(0.8)
-        ax.set_title(title, color=DIM, fontsize=8.5,
+        ax.set_title(title, color=DIM, fontsize=10,
                      fontweight="bold", loc="left", pad=5)
 
     def _barh_chart(ax, names, values, bar_colors, *, price_strs=None):
@@ -3799,7 +3798,7 @@ def build_dashboard_image() -> BytesIO:
         ys = list(range(len(names)))
         ax.barh(ys, values, color=bar_colors, height=0.55, zorder=3)
         ax.set_yticks(ys)
-        ax.set_yticklabels(names, color=TEXT, fontsize=9)
+        ax.set_yticklabels(names, color=TEXT, fontsize=10)
         ax.axvline(0, color=DIM, linewidth=0.7, zorder=2)
         ax.xaxis.grid(True, color=GRID, linewidth=0.5, zorder=1)
         ax.set_axisbelow(True)
@@ -3830,33 +3829,33 @@ def build_dashboard_image() -> BytesIO:
             for i, ps in enumerate(price_strs):
                 ax.text(1.01, (i + 0.5) / len(names),
                         ps, va="center", ha="left",
-                        color=DIM, fontsize=7.5,
+                        color=DIM, fontsize=9,
                         transform=ax.transAxes, clip_on=False)
 
-    # ── Figure & grid ─────────────────────────────────────────
-    fig = plt.figure(figsize=(22, 15), facecolor=BG)
+    # ── Figure & grid (portrait/mobile layout) ──────────────
+    fig = plt.figure(figsize=(10, 24), facecolor=BG)
     fig.patch.set_facecolor(BG)
     gs = gridspec.GridSpec(
-        4, 4, figure=fig,
-        hspace=0.60, wspace=0.45,
-        top=0.91, bottom=0.04,
-        left=0.05, right=0.95
+        8, 2, figure=fig,
+        hspace=0.45, wspace=0.35,
+        top=0.96, bottom=0.02,
+        left=0.08, right=0.95
     )
 
     # ── Header ────────────────────────────────────────────────
-    fig.text(0.05, 0.957, "STOCK SPIKE MONITOR  //  LIVE DASHBOARD",
-             color=TEXT, fontsize=15, fontweight="bold")
-    fig.text(0.05, 0.934, now_str, color=DIM, fontsize=9)
-    fig.text(0.32, 0.934,
+    fig.text(0.08, 0.982, "STOCK SPIKE MONITOR  //  LIVE DASHBOARD",
+             color=TEXT, fontsize=14, fontweight="bold")
+    fig.text(0.08, 0.974, now_str, color=DIM, fontsize=10)
+    fig.text(0.55, 0.974,
              f"Market: {session.upper()}",
-             color=session_color, fontsize=9, fontweight="bold")
-    # Grok one-liner — wrap manually to avoid matplotlib wrap quirks
-    gl = grok_line[:120] + ("…" if len(grok_line) > 120 else "")
-    fig.text(0.05, 0.918, f"Claude AI: {gl}",
-             color=GOLD, fontsize=8, style="italic")
+             color=session_color, fontsize=10, fontweight="bold")
+    # Claude AI one-liner — truncate to ~80 chars for narrow layout
+    gl = grok_line[:80] + ("\u2026" if len(grok_line) > 80 else "")
+    fig.text(0.08, 0.966, f"Claude AI: {gl}",
+             color=GOLD, fontsize=9, style="italic")
 
-    # ── [A] Indices ───────────────────────────────────────────
-    ax_idx = fig.add_subplot(gs[0, :2])
+    # ── [A] Indices (full width) ──────────────────────────────
+    ax_idx = fig.add_subplot(gs[0, :])
     _setup_panel(ax_idx, "MAJOR INDICES  (% change)")
     i_names  = [n for n, _, _ in indices]
     i_chgs   = [c for _, _, c in indices]
@@ -3867,11 +3866,11 @@ def build_dashboard_image() -> BytesIO:
                 price_strs=i_prices)
 
     # ── [B] Fear & Greed gauge ────────────────────────────────
-    ax_fg = fig.add_subplot(gs[0, 2])
+    ax_fg = fig.add_subplot(gs[1, 0])
     ax_fg.set_facecolor(PANEL)
     for sp in ax_fg.spines.values():
         sp.set_edgecolor(EDGE)
-    ax_fg.set_title("FEAR & GREED", color=DIM, fontsize=8.5,
+    ax_fg.set_title("FEAR & GREED", color=DIM, fontsize=10,
                     fontweight="bold", loc="left", pad=5)
     ax_fg.set_aspect("equal")
     ax_fg.set_xlim(-1.3, 1.3)
@@ -3904,10 +3903,10 @@ def build_dashboard_image() -> BytesIO:
     ax_fg.text(0, -0.18, str(fg_val), ha="center", va="center",
                fontsize=22, fontweight="bold", color=TEXT, zorder=5)
     ax_fg.text(0, -0.29, fg_label or "", ha="center", va="center",
-               fontsize=7.5, color=GOLD, zorder=5)
+               fontsize=8, color=GOLD, zorder=5)
 
     # ── [C] Sector heatmap ────────────────────────────────────
-    ax_sec = fig.add_subplot(gs[0, 3])
+    ax_sec = fig.add_subplot(gs[1, 1])
     _setup_panel(ax_sec, "SECTOR HEATMAP")
     ax_sec.axis("off")
     ncols_s, nrows_s = 3, 4
@@ -3936,8 +3935,8 @@ def build_dashboard_image() -> BytesIO:
         ax_sec.text(cx, cy - 0.045, f"{val:+.2f}%", ha="center", va="center",
                     fontsize=6.5, color=tc, transform=ax_sec.transAxes)
 
-    # ── [D] Top Gainers ───────────────────────────────────────
-    ax_gn = fig.add_subplot(gs[1, :2])
+    # ── [D] Top Gainers (full width) ──────────────────────────
+    ax_gn = fig.add_subplot(gs[2, :])
     _setup_panel(ax_gn, "TOP GAINERS  (monitored list)")
     if gainers:
         _barh_chart(ax_gn,
@@ -3950,8 +3949,8 @@ def build_dashboard_image() -> BytesIO:
                    color=DIM, fontsize=9, transform=ax_gn.transAxes)
         ax_gn.axis("off")
 
-    # ── [E] Top Losers ────────────────────────────────────────
-    ax_ls = fig.add_subplot(gs[1, 2:])
+    # ── [E] Top Losers (full width) ───────────────────────────
+    ax_ls = fig.add_subplot(gs[3, :])
     _setup_panel(ax_ls, "TOP LOSERS  (monitored list)")
     if losers:
         _barh_chart(ax_ls,
@@ -3964,8 +3963,8 @@ def build_dashboard_image() -> BytesIO:
                    color=DIM, fontsize=9, transform=ax_ls.transAxes)
         ax_ls.axis("off")
 
-    # ── [F] Squeeze Leaderboard ───────────────────────────────
-    ax_sq = fig.add_subplot(gs[2, :2])
+    # ── [F] Squeeze Leaderboard (full width) ──────────────────
+    ax_sq = fig.add_subplot(gs[4, :])
     _setup_panel(ax_sq, "SQUEEZE LEADERBOARD  (score 0-100)")
     if top_squeeze:
         sq_names  = [t for t, _ in top_squeeze]
@@ -3975,7 +3974,7 @@ def build_dashboard_image() -> BytesIO:
         ax_sq.barh(ys_sq, sq_scores, color=sq_cols, height=0.55, zorder=3)
         ax_sq.set_xlim(0, 115)
         ax_sq.set_yticks(ys_sq)
-        ax_sq.set_yticklabels(sq_names, color=TEXT, fontsize=9)
+        ax_sq.set_yticklabels(sq_names, color=TEXT, fontsize=10)
         ax_sq.tick_params(axis="x", colors=DIM, labelsize=7)
         ax_sq.tick_params(axis="y", length=0)
         ax_sq.xaxis.grid(True, color=GRID, linewidth=0.5, zorder=1)
@@ -3991,13 +3990,13 @@ def build_dashboard_image() -> BytesIO:
             ax_sq.text(sc + 1.5, i, f"{sc:.0f}  {detail}",
                        va="center", ha="left", color=TEXT, fontsize=8)
     else:
-        ax_sq.text(0.5, 0.5, "Building… (needs 2-3 scan cycles)",
+        ax_sq.text(0.5, 0.5, "Building\u2026 (needs 2-3 scan cycles)",
                    ha="center", va="center", color=DIM, fontsize=9,
                    transform=ax_sq.transAxes)
         ax_sq.axis("off")
 
-    # ── [G] Crypto ────────────────────────────────────────────
-    ax_cr = fig.add_subplot(gs[2, 2:])
+    # ── [G] Crypto (full width) ───────────────────────────────
+    ax_cr = fig.add_subplot(gs[5, :])
     _setup_panel(ax_cr, "CRYPTO  (% change today)")
     if crypto:
         def _fmt_crypto_price(p):
@@ -4014,17 +4013,17 @@ def build_dashboard_image() -> BytesIO:
                    color=DIM, fontsize=9, transform=ax_cr.transAxes)
         ax_cr.axis("off")
 
-    # ── [H] Recent Spike Alerts ───────────────────────────────
-    ax_al = fig.add_subplot(gs[3, :3])
+    # ── [H] Recent Spike Alerts (full width) ──────────────────
+    ax_al = fig.add_subplot(gs[6, :])
     ax_al.set_facecolor(PANEL)
     for sp in ax_al.spines.values():
         sp.set_edgecolor(EDGE)
-    ax_al.set_title("RECENT SPIKE ALERTS", color=DIM, fontsize=8.5,
+    ax_al.set_title("RECENT SPIKE ALERTS", color=DIM, fontsize=10,
                     fontweight="bold", loc="left", pad=5)
     ax_al.axis("off")
     alerts_display = (recent_alerts[-12:] if recent_alerts
                       else ["No spikes yet today"])
-    ncols_al = 3
+    ncols_al = 2
     rows_al  = math.ceil(len(alerts_display) / ncols_al)
     row_h    = 1.0 / max(rows_al, 1)
     for idx, alert in enumerate(alerts_display):
@@ -4032,18 +4031,18 @@ def build_dashboard_image() -> BytesIO:
         row = idx // ncols_al
         ax_al.text(col / ncols_al + 0.02,
                    0.92 - row * row_h * 0.85,
-                   f"▸ {alert}",
+                   f"\u25b8 {alert}",
                    ha="left", va="top",
                    color=GOLD if "%" in alert else DIM,
-                   fontsize=8, transform=ax_al.transAxes,
+                   fontsize=9, transform=ax_al.transAxes,
                    clip_on=True)
 
     # ── [I] Bot Status ────────────────────────────────────────
-    ax_st = fig.add_subplot(gs[3, 3])
+    ax_st = fig.add_subplot(gs[7, 0])
     ax_st.set_facecolor(PANEL)
     for sp in ax_st.spines.values():
         sp.set_edgecolor(EDGE)
-    ax_st.set_title("BOT STATUS", color=DIM, fontsize=8.5,
+    ax_st.set_title("BOT STATUS", color=DIM, fontsize=10,
                     fontweight="bold", loc="left", pad=5)
     ax_st.axis("off")
     status_str   = "[RUNNING]" if not monitoring_paused else "[PAUSED]"
@@ -4065,7 +4064,32 @@ def build_dashboard_image() -> BytesIO:
     for i, (line, color) in enumerate(stats):
         ax_st.text(0.05, 0.96 - i * 0.11, line,
                    ha="left", va="top", color=color,
-                   fontsize=8.5, transform=ax_st.transAxes)
+                   fontsize=9.5, transform=ax_st.transAxes)
+
+    # ── [J] AI Picks Summary (NEW panel) ──────────────────────
+    ax_ai = fig.add_subplot(gs[7, 1])
+    ax_ai.set_facecolor(PANEL)
+    for sp in ax_ai.spines.values():
+        sp.set_edgecolor(EDGE)
+    ax_ai.set_title("AI PICKS", color=DIM, fontsize=10,
+                    fontweight="bold", loc="left", pad=5)
+    ax_ai.axis("off")
+
+    if ai_watchlist_suggestions:
+        top_ai = sorted(ai_watchlist_suggestions.items(),
+                        key=lambda x: x[1].get("conviction", 0),
+                        reverse=True)[:6]
+        for i, (ticker, info) in enumerate(top_ai):
+            conv = info.get("conviction", 0)
+            cat = info.get("category", "")[:8]
+            color = GREEN if conv >= 8 else GOLD if conv >= 6 else DIM
+            ax_ai.text(0.05, 0.90 - i * 0.15,
+                       f"{ticker} ({conv}/10) {cat}",
+                       ha="left", va="top", color=color, fontsize=9,
+                       transform=ax_ai.transAxes)
+    else:
+        ax_ai.text(0.5, 0.5, "No AI picks yet", ha="center", va="center",
+                   color=DIM, fontsize=9, transform=ax_ai.transAxes)
 
     # ── Save ──────────────────────────────────────────────────
     buf = BytesIO()
@@ -4225,17 +4249,47 @@ async def cmd_aistocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /aistocks — show current AI watchlist suggestions, conviction levels,
     categories, and paper trading performance on AI picks.
+    /aistocks refresh — trigger an on-demand AI watchlist refresh.
     """
+    # Handle /aistocks refresh sub-command
+    if context.args and context.args[0].lower() == "refresh":
+        await update.message.reply_text("Running AI watchlist refresh...")
+        try:
+            ai_refresh_watchlist(mode="intraday")
+            await update.message.reply_text("AI watchlist refreshed. Run /aistocks to see results.")
+        except Exception as e:
+            await update.message.reply_text(f"Refresh failed: {e}")
+        return
+
+    # Calculate next refresh time
+    refresh_times = ["07:00", "10:30", "12:30", "14:30"]
+    now_ct = datetime.now(CT)
+    now_hhmm = now_ct.strftime("%H:%M")
+    next_refresh = next((t for t in refresh_times if t > now_hhmm), refresh_times[0] + " (tomorrow)")
+    # Format for display (e.g. "07:00" -> "7:00 AM", "14:30" -> "2:30 PM")
+    def _fmt_refresh(t_str):
+        raw = t_str.replace(" (tomorrow)", "")
+        suffix = " (tomorrow)" if "(tomorrow)" in t_str else ""
+        h, m = int(raw.split(":")[0]), raw.split(":")[1]
+        ampm = "AM" if h < 12 else "PM"
+        h12 = h if h <= 12 else h - 12
+        if h12 == 0:
+            h12 = 12
+        return f"{h12}:{m} {ampm} CT{suffix}"
+
     if not ai_watchlist_suggestions:
         await update.message.reply_text(
             "AI WATCHLIST STATUS\n\n"
-            "No AI suggestions yet. Next refresh at 7:00 AM CT (premarket)."
+            "No AI picks yet.\n"
+            "Refresh schedule: 7am \u00b7 10:30am \u00b7 12:30pm \u00b7 2:30pm CT"
         )
         return
 
     lines = ["AI WATCHLIST STATUS"]
     if ai_watchlist_last_refresh:
-        lines.append(f"Last refresh: {ai_watchlist_last_refresh}")
+        lines.append(f"Last: {ai_watchlist_last_refresh}  |  Next: {_fmt_refresh(next_refresh)}")
+    else:
+        lines.append(f"Next: {_fmt_refresh(next_refresh)}")
     lines.append("")
 
     # Sort by conviction
