@@ -5255,10 +5255,9 @@ if get_trading_session() != "closed":
     threading.Thread(target=_prime_price_history, daemon=True).start()
     threading.Thread(target=_load_daily_candles, daemon=True).start()
 
-# Startup: prime scanner and AI watchlist if market is open
+# Startup: prime AI watchlist if market is open (scanner_thread handles first scan)
 if get_trading_session() != "closed":
-    logger.info("Startup: market is open, priming scanner and AI watchlist...")
-    threading.Thread(target=check_stocks, daemon=True).start()
+    logger.info("Startup: market is open, priming AI watchlist...")
     if not ai_watchlist_suggestions:
         threading.Thread(target=lambda: ai_refresh_watchlist(mode="intraday"), daemon=True).start()
 
