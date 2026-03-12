@@ -101,7 +101,15 @@ BOT_DESCRIPTION = (
     "  /setalert TICK $    custom price target\n"
     "  /watchlist          add · remove · scan your list\n"
     "\n"
-    "BOT\n"
+    "PAPER TRADING  (simulated · $100k · bullish only)\n"
+    "  /paper               portfolio value + open positions\n"
+    "  /paper positions     live P&L on each position\n"
+    "  /paper trades        today's buys & sells\n"
+    "  /paper history       all-time win rate + summary\n"
+    "  /paper signal TICK   7-factor signal breakdown\n"
+    "  /paper log           download investment.log\n"
+    "  /paper reset         reset to $100k\n"
+    "\n"
     "  /dashboard          send visual dashboard now\n"
     "  /list               all monitored tickers\n"
     "  /monitoring         pause · resume · status\n"
@@ -596,6 +604,815 @@ def check_stocks():
                 future.result()
             except Exception as e:
                 logger.error(f"Scan error for {t}: {e}")
+
+    # Paper trading evaluation runs after every scan cycle
+    try:
+        paper_scan()
+    except Exception as e:
+        logger.error(f"paper_scan error: {e}")
+
+# ============================================================
+# PAPER TRADING ENGINE
+# ============================================================
+#
+# Signal stack (research-backed, bullish-only):
+#   1. RSI Momentum      — 50–65 trending zone = 20 pts
+#   2. BB Breakout/Bounce — price above mid or %B recovering = 15 pts
+#   3. MACD Crossover    — fast/slow EMA divergence direction = 15 pts
+#   4. Volume Confirm    — current vol vs 5-day avg = 15 pts
+#   5. Squeeze Momentum  — existing score (reused, scaled) = 10 pts
+#   6. Price Slope       — 5-min linear regression slope = 10 pts
+#   7. Grok AI Signal    — directional confidence 0-100, scaled = 15 pts
+#
+# Trade rules (bullish only, no shorts):
+#   • BUY  when composite ≥ PAPER_MIN_SIGNAL and RSI < 72 and cash available
+#   • SELL on 8% take-profit, 4% stop-loss, or signal collapse (≤30 + positive)
+#   • Max PAPER_MAX_ACTIONS actions per ticker per day
+#   • Max PAPER_MAX_POSITIONS open positions at once
+#   • Max PAPER_MAX_POS_PCT of total portfolio in a single name
+# ============================================================
+
+PAPER_STARTING_CAPITAL = 100_000.0
+PAPER_LOG              = "investment.log"
+PAPER_MAX_ACTIONS      = 3        # per ticker per trading day
+PAPER_MAX_POSITIONS    = 8        # simultaneous open positions
+PAPER_MAX_POS_PCT      = 0.20     # 20% of portfolio per position
+PAPER_TAKE_PROFIT_PCT  = 0.08     # 8% take-profit
+PAPER_STOP_LOSS_PCT    = 0.04     # 4% stop-loss
+PAPER_MIN_SIGNAL       = 65       # min composite score (0-100) to open a position
+
+# ── Live state ────────────────────────────────────────────────
+paper_cash          = PAPER_STARTING_CAPITAL
+paper_positions     = {}   # {ticker: {shares, avg_cost, entry_price, entry_time, high}}
+paper_trades_today  = []   # trade dicts for current session
+paper_daily_counts  = {}   # {ticker: int} — reset at market open
+paper_all_trades    = []   # lifetime trade history (in-memory)
+paper_signals_cache = {}   # {ticker: {score, components, ts}} — avoid spam API calls
+
+# ── Dedicated investment logger ───────────────────────────────
+inv_logger = logging.getLogger("investment")
+inv_logger.setLevel(logging.INFO)
+_inv_fh = logging.FileHandler(PAPER_LOG, encoding="utf-8")
+_inv_fh.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+inv_logger.addHandler(_inv_fh)
+inv_logger.propagate = False
+
+
+def paper_log(msg: str):
+    """Write a timestamped line to investment.log and the main logger."""
+    inv_logger.info(msg)
+    logger.info(f"[PAPER] {msg}")
+
+
+def paper_portfolio_value() -> float:
+    """Total portfolio value: cash + market value of all open positions."""
+    total = paper_cash
+    for ticker, pos in paper_positions.items():
+        try:
+            price, _, _ = fetch_finnhub_quote(ticker)
+            if price:
+                total += pos["shares"] * price
+        except:
+            total += pos["shares"] * pos["avg_cost"]  # fallback to cost
+    return total
+
+
+def _compute_ema(prices: list, period: int) -> float | None:
+    """Exponential moving average."""
+    if len(prices) < period:
+        return None
+    k   = 2.0 / (period + 1)
+    ema = sum(prices[:period]) / period   # SMA seed
+    for p in prices[period:]:
+        ema = p * k + ema * (1 - k)
+    return ema
+
+
+def _compute_macd(prices: list) -> tuple:
+    """
+    Returns (macd_line, signal_line, histogram).
+    Uses standard 12/26/9 parameters on the available price_history.
+    Returns (None, None, None) if insufficient data.
+    """
+    if len(prices) < 26:
+        return None, None, None
+    ema12 = _compute_ema(prices, 12)
+    ema26 = _compute_ema(prices, 26)
+    if ema12 is None or ema26 is None:
+        return None, None, None
+    macd = ema12 - ema26
+    # Approximate signal as EMA(9) of last few MACD values
+    # Build a mini MACD series from rolling windows
+    macd_series = []
+    for i in range(26, len(prices) + 1):
+        e12 = _compute_ema(prices[:i], 12)
+        e26 = _compute_ema(prices[:i], 26)
+        if e12 and e26:
+            macd_series.append(e12 - e26)
+    if len(macd_series) >= 9:
+        sig = _compute_ema(macd_series, 9)
+        hist = macd - sig if sig else 0
+        return round(macd, 4), round(sig, 4), round(hist, 4)
+    return round(macd, 4), None, None
+
+
+def compute_paper_signal(ticker: str) -> dict:
+    """
+    Composite signal engine. Returns score 0-100 plus component breakdown.
+    Caches for 60 seconds to avoid hammering Grok.
+    """
+    now = datetime.now(CT)
+
+    # Return cached signal if fresh
+    cached = paper_signals_cache.get(ticker)
+    if cached and (now - cached["ts"]).total_seconds() < 60:
+        return cached
+
+    hist_raw = list(price_history.get(ticker, deque()))
+    prices   = [p for _, p in hist_raw] if hist_raw and isinstance(hist_raw[0], tuple) else hist_raw
+
+    score  = 0
+    comps  = {}
+    detail = []
+
+    # ── 1. RSI Momentum (20 pts) ──────────────────────────────
+    rsi = compute_rsi(prices) if len(prices) >= 15 else None
+    if rsi is not None:
+        if 50 <= rsi <= 65:
+            pts = 20                                   # sweet spot
+        elif 65 < rsi <= 72:
+            pts = 10                                   # still bullish but overbought warning
+        elif 40 <= rsi < 50:
+            pts = 8                                    # recovering
+        else:
+            pts = 0
+        score += pts
+        comps["rsi"] = round(rsi, 1)
+        comps["rsi_pts"] = pts
+        detail.append(f"RSI={rsi:.1f}({pts}pts)")
+
+    # ── 2. Bollinger Band Position (15 pts) ───────────────────
+    _, _, _, pct_b, bw = compute_bollinger(prices) if len(prices) >= 20 else (None,)*5
+    if pct_b is not None:
+        if 0.5 <= pct_b <= 0.85:
+            pts = 15                                   # above mid, not at extreme
+        elif 0.85 < pct_b <= 1.0:
+            pts = 8                                    # near upper (slightly extended)
+        elif 0.3 <= pct_b < 0.5:
+            pts = 10                                   # just below mid, potential bounce
+        else:
+            pts = max(0, int(pct_b * 10))
+        score += pts
+        comps["pct_b"] = pct_b
+        comps["bw_pts"] = pts
+        detail.append(f"%B={pct_b:.2f}({pts}pts)")
+
+    # ── 3. MACD Crossover (15 pts) ────────────────────────────
+    macd_line, sig_line, hist_val = _compute_macd(prices)
+    if macd_line is not None:
+        if macd_line > 0 and (sig_line is None or macd_line > sig_line):
+            pts = 15   # bullish: MACD above zero and above signal
+        elif macd_line > 0:
+            pts = 8    # above zero but below signal — weakening
+        elif hist_val is not None and hist_val > 0:
+            pts = 5    # histogram turning positive — early signal
+        else:
+            pts = 0
+        score += pts
+        comps["macd"] = macd_line
+        comps["macd_pts"] = pts
+        detail.append(f"MACD={macd_line:.4f}({pts}pts)")
+
+    # ── 4. Volume Confirmation (15 pts) ───────────────────────
+    try:
+        _, vol, _ = fetch_finnhub_quote(ticker)
+        hist_yf   = yf.Ticker(ticker).history(period="5d")
+        if vol and not hist_yf.empty:
+            avg_vol = hist_yf["Volume"].mean()
+            ratio   = vol / avg_vol if avg_vol > 0 else 1
+            if ratio >= 2.0:
+                pts = 15
+            elif ratio >= 1.5:
+                pts = 10
+            elif ratio >= 1.0:
+                pts = 5
+            else:
+                pts = 0
+            score += pts
+            comps["vol_ratio"] = round(ratio, 2)
+            comps["vol_pts"]   = pts
+            detail.append(f"VolRatio={ratio:.1f}x({pts}pts)")
+    except:
+        pass
+
+    # ── 5. Squeeze Score (10 pts, scaled from existing) ───────
+    sq = compute_squeeze_score(ticker)
+    sq_pts = round(sq["score"] / 10, 1)   # 0-100 → 0-10 pts
+    score += sq_pts
+    comps["squeeze"] = sq["score"]
+    comps["sq_pts"]  = sq_pts
+    detail.append(f"Squeeze={sq['score']:.0f}({sq_pts}pts)")
+
+    # ── 6. Price Slope / Linear Momentum (10 pts) ─────────────
+    if len(prices) >= 10:
+        xs      = list(range(len(prices[-10:])))
+        ys      = prices[-10:]
+        n       = len(xs)
+        x_mean  = sum(xs) / n
+        y_mean  = sum(ys) / n
+        num     = sum((xs[i] - x_mean) * (ys[i] - y_mean) for i in range(n))
+        den     = sum((xs[i] - x_mean) ** 2 for i in range(n))
+        slope   = num / den if den != 0 else 0
+        slope_pct = slope / y_mean * 100 if y_mean else 0
+        if slope_pct >= 0.3:
+            pts = 10
+        elif slope_pct >= 0.1:
+            pts = 6
+        elif slope_pct >= 0:
+            pts = 2
+        else:
+            pts = 0
+        score += pts
+        comps["slope_pct"] = round(slope_pct, 3)
+        comps["slope_pts"] = pts
+        detail.append(f"Slope={slope_pct:.3f}%({pts}pts)")
+
+    # ── 7. Grok AI Directional Signal (15 pts) ────────────────
+    try:
+        price_now = prices[-1] if prices else 0
+        chg_5m    = ((prices[-1] - prices[-6]) / prices[-6] * 100
+                     if len(prices) >= 6 and prices[-6] else 0)
+        grok_prompt = (
+            f"Paper trading signal for {ticker}: "
+            f"price ${price_now:.2f}, 5-min change {chg_5m:+.2f}%, "
+            f"RSI={rsi:.1f if rsi else 'N/A'}, "
+            f"MACD={macd_line:.4f if macd_line else 'N/A'}, "
+            f"squeeze={sq['score']:.0f}/100. "
+            f"Bullish strategies only. "
+            f"Respond ONLY with: SIGNAL:<BUY|HOLD|AVOID> CONFIDENCE:<0-100> REASON:<10 words max>"
+        )
+        raw_ai = get_grok_response(grok_prompt, max_tokens=60)
+        ai_score = 50   # default neutral
+        ai_signal = "HOLD"
+        ai_reason = ""
+        if "BUY" in raw_ai.upper():
+            ai_signal = "BUY"
+            try:
+                ai_score = int([w for w in raw_ai.split() if w.startswith("CONFIDENCE:")][0].split(":")[1])
+            except:
+                ai_score = 70
+            pts = int(15 * ai_score / 100)
+        elif "AVOID" in raw_ai.upper():
+            ai_signal = "AVOID"
+            pts = 0
+        else:
+            pts = 5
+        try:
+            ai_reason = raw_ai.split("REASON:")[-1].strip()[:60] if "REASON:" in raw_ai else raw_ai[:60]
+        except:
+            pass
+        score += pts
+        comps["grok_signal"]     = ai_signal
+        comps["grok_confidence"] = ai_score
+        comps["grok_reason"]     = ai_reason
+        comps["grok_pts"]        = pts
+        detail.append(f"Grok={ai_signal}@{ai_score}({pts}pts)")
+    except Exception as e:
+        logger.debug(f"Grok signal error for {ticker}: {e}")
+
+    result = {
+        "score":   round(min(score, 100), 1),
+        "detail":  " | ".join(detail),
+        "comps":   comps,
+        "rsi":     rsi,
+        "macd":    macd_line,
+        "ts":      now,
+    }
+    paper_signals_cache[ticker] = result
+    return result
+
+
+def _paper_position_size(ticker: str, signal_score: float) -> int:
+    """
+    Calculate shares to buy based on signal strength and portfolio rules.
+    Returns 0 if no trade should be made.
+    """
+    portfolio_val = paper_portfolio_value()
+    max_dollars   = portfolio_val * PAPER_MAX_POS_PCT
+
+    # Scale position size with signal confidence (65→100 maps to 50%→100% of max)
+    strength   = min(1.0, (signal_score - PAPER_MIN_SIGNAL) / (100 - PAPER_MIN_SIGNAL))
+    dollars    = max_dollars * (0.5 + 0.5 * strength)
+    dollars    = min(dollars, paper_cash * 0.95)   # never use more than 95% of cash
+
+    if dollars < 100:
+        return 0
+
+    price, _, _ = fetch_finnhub_quote(ticker)
+    if not price or price <= 0:
+        return 0
+
+    return max(1, int(dollars / price))
+
+
+def paper_evaluate_ticker(ticker: str):
+    """
+    Evaluate a single ticker for paper trading actions.
+    Called from within the scanner thread for every scan cycle.
+    """
+    global paper_cash
+
+    if get_trading_session() not in ("regular", "extended"):
+        return
+
+    now   = datetime.now(CT)
+    today = now.strftime("%Y-%m-%d")
+
+    # Respect daily action limit
+    count_key = f"{ticker}:{today}"
+    if paper_daily_counts.get(count_key, 0) >= PAPER_MAX_ACTIONS:
+        return
+
+    price, _, _ = fetch_finnhub_quote(ticker)
+    if not price or price < MIN_PRICE:
+        return
+
+    # ── Check existing position: take-profit / stop-loss / signal exit ──
+    if ticker in paper_positions:
+        pos       = paper_positions[ticker]
+        cost      = pos["avg_cost"]
+        pnl_pct   = (price - cost) / cost
+
+        # Update high-water mark for trailing context
+        if price > pos.get("high", cost):
+            paper_positions[ticker]["high"] = price
+
+        should_sell = False
+        sell_reason = ""
+
+        if pnl_pct >= PAPER_TAKE_PROFIT_PCT:
+            should_sell = True
+            sell_reason = f"TAKE-PROFIT +{pnl_pct*100:.1f}%"
+        elif pnl_pct <= -PAPER_STOP_LOSS_PCT:
+            should_sell = True
+            sell_reason = f"STOP-LOSS {pnl_pct*100:.1f}%"
+        else:
+            sig = compute_paper_signal(ticker)
+            if sig["score"] <= 30 and pnl_pct > 0:
+                should_sell = True
+                sell_reason = f"SIGNAL-COLLAPSE score={sig['score']:.0f} pnl={pnl_pct*100:+.1f}%"
+
+        if should_sell:
+            shares    = pos["shares"]
+            proceeds  = shares * price
+            cost_basis = shares * cost
+            realized_pnl = proceeds - cost_basis
+
+            paper_cash += proceeds
+            del paper_positions[ticker]
+            paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
+
+            trade = {
+                "action": "SELL", "ticker": ticker, "shares": shares,
+                "price": price, "proceeds": proceeds,
+                "cost": cost_basis, "pnl": realized_pnl,
+                "pnl_pct": pnl_pct * 100, "reason": sell_reason,
+                "time": now.strftime("%H:%M:%S"), "date": today,
+                "portfolio_value": paper_portfolio_value(),
+            }
+            paper_trades_today.append(trade)
+            paper_all_trades.append(trade)
+
+            msg = (
+                f"SELL | {ticker} | {shares} shares @ ${price:.2f} | "
+                f"P&L: ${realized_pnl:+.2f} ({pnl_pct*100:+.1f}%) | "
+                f"Reason: {sell_reason} | "
+                f"Portfolio: ${paper_portfolio_value():,.0f}"
+            )
+            paper_log(msg)
+            send_telegram(
+                f"📉 Paper SELL: {ticker}\n"
+                f"{shares} shares @ ${price:.2f}\n"
+                f"P&L: ${realized_pnl:+.2f} ({pnl_pct*100:+.1f}%)\n"
+                f"Reason: {sell_reason}\n"
+                f"Portfolio value: ${paper_portfolio_value():,.0f}"
+            )
+        return  # one action per scan cycle per ticker
+
+    # ── Check for new buy opportunity ────────────────────────
+    if len(paper_positions) >= PAPER_MAX_POSITIONS:
+        return
+    if paper_cash < 200:
+        return
+
+    sig = compute_paper_signal(ticker)
+    if sig["score"] < PAPER_MIN_SIGNAL:
+        return
+
+    rsi = sig.get("rsi")
+    if rsi and rsi > 72:   # avoid chasing overbought
+        return
+
+    shares = _paper_position_size(ticker, sig["score"])
+    if shares <= 0:
+        return
+
+    cost         = shares * price
+    paper_cash  -= cost
+    paper_positions[ticker] = {
+        "shares":     shares,
+        "avg_cost":   price,
+        "entry_price": price,
+        "entry_time": now.strftime("%H:%M:%S"),
+        "entry_date": today,
+        "high":       price,
+    }
+    paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
+
+    trade = {
+        "action": "BUY", "ticker": ticker, "shares": shares,
+        "price": price, "cost": cost,
+        "signal_score": sig["score"], "signal_detail": sig["detail"],
+        "time": now.strftime("%H:%M:%S"), "date": today,
+        "portfolio_value": paper_portfolio_value(),
+    }
+    paper_trades_today.append(trade)
+    paper_all_trades.append(trade)
+
+    msg = (
+        f"BUY | {ticker} | {shares} shares @ ${price:.2f} | "
+        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/100 | "
+        f"Detail: {sig['detail']} | "
+        f"Portfolio: ${paper_portfolio_value():,.0f}"
+    )
+    paper_log(msg)
+    send_telegram(
+        f"📈 Paper BUY: {ticker}\n"
+        f"{shares} shares @ ${price:.2f}  (${cost:,.0f})\n"
+        f"Signal: {sig['score']:.0f}/100\n"
+        f"{sig['detail']}\n"
+        f"Portfolio value: ${paper_portfolio_value():,.0f}"
+    )
+
+
+def paper_scan():
+    """
+    Run paper trading evaluation for all monitored tickers.
+    Plugged into check_stocks() cadence via scheduler.
+    """
+    if get_trading_session() not in ("regular", "extended"):
+        return
+    for ticker in list(TICKERS):
+        try:
+            paper_evaluate_ticker(ticker)
+        except Exception as e:
+            logger.error(f"paper_evaluate_ticker({ticker}): {e}")
+
+
+def paper_morning_report():
+    """Send portfolio snapshot at market open."""
+    global paper_trades_today, paper_daily_counts
+    paper_trades_today = []
+    paper_daily_counts = {}
+
+    val      = paper_portfolio_value()
+    starting = PAPER_STARTING_CAPITAL
+    total_pnl = val - starting
+    total_pct = total_pnl / starting * 100
+
+    lines = [
+        f"PAPER PORTFOLIO — Market Open",
+        f"{datetime.now(CT).strftime('%A %B %d, %Y')}",
+        f"",
+        f"Total Value:  ${val:>12,.2f}",
+        f"Starting Cap: ${starting:>12,.2f}",
+        f"All-Time P&L: ${total_pnl:>+12,.2f} ({total_pct:+.2f}%)",
+        f"Cash:         ${paper_cash:>12,.2f}",
+        f"Positions:    {len(paper_positions)}",
+        f"",
+    ]
+
+    if paper_positions:
+        lines.append("OPEN POSITIONS:")
+        for ticker, pos in paper_positions.items():
+            price, _, _ = fetch_finnhub_quote(ticker)
+            price = price or pos["avg_cost"]
+            mkt_val = pos["shares"] * price
+            pnl     = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
+            arrow   = "▲" if pnl >= 0 else "▼"
+            lines.append(
+                f"  {arrow} {ticker:<6} {pos['shares']:>5} sh  "
+                f"avg ${pos['avg_cost']:.2f} → ${price:.2f}  "
+                f"({pnl:+.1f}%)  ${mkt_val:,.0f}"
+            )
+    else:
+        lines.append("No open positions — scanning for entries.")
+
+    report = "\n".join(lines)
+    paper_log(f"=== MORNING REPORT ===\n{report}")
+    send_telegram(report)
+
+
+def paper_eod_report():
+    """Send end-of-day P&L report with all actions taken."""
+    val       = paper_portfolio_value()
+    starting  = PAPER_STARTING_CAPITAL
+    total_pnl = val - starting
+    total_pct = total_pnl / starting * 100
+
+    buys  = [t for t in paper_trades_today if t["action"] == "BUY"]
+    sells = [t for t in paper_trades_today if t["action"] == "SELL"]
+    day_realized = sum(t.get("pnl", 0) for t in sells)
+
+    lines = [
+        f"PAPER PORTFOLIO — Market Close",
+        f"{datetime.now(CT).strftime('%A %B %d, %Y')}",
+        f"",
+        f"Total Value:     ${val:>12,.2f}",
+        f"All-Time P&L:    ${total_pnl:>+12,.2f} ({total_pct:+.2f}%)",
+        f"Today Realized:  ${day_realized:>+12,.2f}",
+        f"Cash:            ${paper_cash:>12,.2f}",
+        f"",
+        f"TODAY'S TRADES ({len(paper_trades_today)} total  "
+        f"↑{len(buys)} buys  ↓{len(sells)} sells):",
+    ]
+
+    for t in paper_trades_today:
+        if t["action"] == "BUY":
+            lines.append(
+                f"  ↑ {t['time']}  BUY  {t['ticker']:<6} "
+                f"{t['shares']} sh @ ${t['price']:.2f}  "
+                f"(${t['cost']:,.0f})  sig={t.get('signal_score','?'):.0f}"
+            )
+        else:
+            pnl_str = f"${t['pnl']:+.2f} ({t['pnl_pct']:+.1f}%)"
+            lines.append(
+                f"  ↓ {t['time']}  SELL {t['ticker']:<6} "
+                f"{t['shares']} sh @ ${t['price']:.2f}  "
+                f"{pnl_str}  [{t['reason']}]"
+            )
+
+    lines.append("")
+    lines.append("REMAINING POSITIONS:")
+    if paper_positions:
+        for ticker, pos in paper_positions.items():
+            price, _, _ = fetch_finnhub_quote(ticker)
+            price = price or pos["avg_cost"]
+            mkt_val = pos["shares"] * price
+            pnl     = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
+            arrow   = "▲" if pnl >= 0 else "▼"
+            lines.append(
+                f"  {arrow} {ticker:<6} {pos['shares']:>5} sh  "
+                f"cost ${pos['avg_cost']:.2f}  now ${price:.2f}  "
+                f"({pnl:+.1f}%)  ${mkt_val:,.0f}"
+            )
+    else:
+        lines.append("  (all positions closed)")
+
+    report = "\n".join(lines)
+    paper_log(f"=== EOD REPORT ===\n{report}")
+    send_telegram(report)
+
+
+# ── Paper Trading Telegram Commands ───────────────────────────
+
+async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /paper                  — current portfolio snapshot
+    /paper positions        — open positions with live P&L
+    /paper trades           — today's trade log
+    /paper history          — all-time trade summary
+    /paper signal TICK      — show current signal breakdown for a ticker
+    /paper log              — send investment.log as a file download
+    /paper reset            — reset portfolio to $100k (with confirmation)
+    """
+    global paper_cash, paper_positions, paper_trades_today, paper_daily_counts
+    global paper_all_trades, paper_signals_cache
+
+    sub  = context.args[0].lower() if context.args else "portfolio"
+    arg2 = context.args[1].upper() if len(context.args) > 1 else ""
+
+    # ── /paper  or  /paper portfolio ─────────────────────────
+    if sub in ("portfolio", "p"):
+        val       = paper_portfolio_value()
+        total_pnl = val - PAPER_STARTING_CAPITAL
+        total_pct = total_pnl / PAPER_STARTING_CAPITAL * 100
+
+        lines = [
+            f"PAPER PORTFOLIO",
+            f"",
+            f"Value:    ${val:>12,.2f}",
+            f"Start:    ${PAPER_STARTING_CAPITAL:>12,.2f}",
+            f"P&L:      ${total_pnl:>+12,.2f} ({total_pct:+.2f}%)",
+            f"Cash:     ${paper_cash:>12,.2f}",
+            f"Invested: ${val - paper_cash:>12,.2f}",
+            f"",
+        ]
+        if paper_positions:
+            lines.append(f"POSITIONS ({len(paper_positions)}/{PAPER_MAX_POSITIONS}):")
+            for ticker, pos in paper_positions.items():
+                price, _, _ = fetch_finnhub_quote(ticker)
+                price = price or pos["avg_cost"]
+                mkt   = pos["shares"] * price
+                pnl   = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
+                arrow = "▲" if pnl >= 0 else "▼"
+                lines.append(
+                    f"  {arrow} {ticker:<6} {pos['shares']} sh  "
+                    f"${pos['avg_cost']:.2f}→${price:.2f}  "
+                    f"{pnl:+.1f}%  ${mkt:,.0f}"
+                )
+        else:
+            lines.append("No open positions.")
+
+        lines += [
+            f"",
+            f"Trades today: {len(paper_trades_today)}  |  "
+            f"Lifetime: {len(paper_all_trades)}",
+            f"Use /paper trades · /paper signal TICK · /paper log",
+        ]
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /paper positions ─────────────────────────────────────
+    elif sub == "positions":
+        if not paper_positions:
+            await update.message.reply_text("No open positions.")
+            return
+        lines = [f"OPEN POSITIONS — {datetime.now(CT).strftime('%H:%M CT')}"]
+        for ticker, pos in paper_positions.items():
+            price, _, _ = fetch_finnhub_quote(ticker)
+            price = price or pos["avg_cost"]
+            mkt   = pos["shares"] * price
+            pnl   = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
+            unrealized = (price - pos["avg_cost"]) * pos["shares"]
+            arrow = "▲" if pnl >= 0 else "▼"
+            lines += [
+                f"",
+                f"{arrow} {ticker}",
+                f"  Shares: {pos['shares']}  Entry: ${pos['avg_cost']:.2f}  Now: ${price:.2f}",
+                f"  Unrealized: ${unrealized:+.2f} ({pnl:+.1f}%)",
+                f"  Market value: ${mkt:,.2f}",
+                f"  Entry: {pos['entry_date']} {pos['entry_time']}",
+            ]
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /paper trades ─────────────────────────────────────────
+    elif sub == "trades":
+        if not paper_trades_today:
+            await update.message.reply_text("No trades today.")
+            return
+        buys   = [t for t in paper_trades_today if t["action"] == "BUY"]
+        sells  = [t for t in paper_trades_today if t["action"] == "SELL"]
+        real   = sum(t.get("pnl", 0) for t in sells)
+        lines  = [
+            f"TODAY'S TRADES",
+            f"↑{len(buys)} buys  ↓{len(sells)} sells  "
+            f"Realized: ${real:+.2f}",
+            f"",
+        ]
+        for t in paper_trades_today:
+            if t["action"] == "BUY":
+                lines.append(
+                    f"↑ {t['time']}  BUY  {t['ticker']} "
+                    f"{t['shares']}sh @ ${t['price']:.2f}  "
+                    f"sig={t.get('signal_score','?'):.0f}/100"
+                )
+            else:
+                lines.append(
+                    f"↓ {t['time']}  SELL {t['ticker']} "
+                    f"{t['shares']}sh @ ${t['price']:.2f}  "
+                    f"${t['pnl']:+.2f} ({t['pnl_pct']:+.1f}%)  "
+                    f"[{t['reason']}]"
+                )
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /paper history ────────────────────────────────────────
+    elif sub == "history":
+        if not paper_all_trades:
+            await update.message.reply_text("No trades on record yet.")
+            return
+        sells    = [t for t in paper_all_trades if t["action"] == "SELL"]
+        buys     = [t for t in paper_all_trades if t["action"] == "BUY"]
+        winners  = [t for t in sells if t.get("pnl", 0) > 0]
+        losers   = [t for t in sells if t.get("pnl", 0) <= 0]
+        total_pl = sum(t.get("pnl", 0) for t in sells)
+        win_rate = len(winners) / len(sells) * 100 if sells else 0
+        avg_win  = sum(t["pnl"] for t in winners) / len(winners) if winners else 0
+        avg_loss = sum(t["pnl"] for t in losers) / len(losers) if losers else 0
+        val      = paper_portfolio_value()
+
+        lines = [
+            f"PAPER TRADING — ALL-TIME SUMMARY",
+            f"",
+            f"Portfolio value: ${val:,.2f}",
+            f"P&L: ${val - PAPER_STARTING_CAPITAL:+,.2f} "
+            f"({(val - PAPER_STARTING_CAPITAL)/PAPER_STARTING_CAPITAL*100:+.2f}%)",
+            f"",
+            f"Total trades:  {len(paper_all_trades)}",
+            f"  Buys:  {len(buys)}",
+            f"  Sells: {len(sells)}",
+            f"Win rate:      {win_rate:.1f}%",
+            f"Avg winner:    ${avg_win:+.2f}",
+            f"Avg loser:     ${avg_loss:+.2f}",
+            f"Total realized:${total_pl:+.2f}",
+        ]
+
+        # Top 5 best trades
+        if winners:
+            lines += ["", "TOP TRADES:"]
+            for t in sorted(winners, key=lambda x: x["pnl"], reverse=True)[:5]:
+                lines.append(
+                    f"  {t['ticker']} {t['date']}  "
+                    f"+${t['pnl']:.2f} ({t['pnl_pct']:+.1f}%)"
+                )
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /paper signal TICK ────────────────────────────────────
+    elif sub == "signal":
+        if not arg2:
+            await update.message.reply_text("Usage: /paper signal TICKER  (e.g. /paper signal NVDA)")
+            return
+        await update.message.reply_text(f"Computing signal for {arg2}...")
+        # Force refresh by clearing cache
+        paper_signals_cache.pop(arg2, None)
+        sig = compute_paper_signal(arg2)
+        price, _, _ = fetch_finnhub_quote(arg2)
+        verdict = "BUY" if sig["score"] >= PAPER_MIN_SIGNAL else \
+                  "WATCH" if sig["score"] >= 50 else "AVOID"
+        c = sig["comps"]
+        lines = [
+            f"SIGNAL: {arg2}  @${price:.2f}" if price else f"SIGNAL: {arg2}",
+            f"",
+            f"Composite Score: {sig['score']:.0f}/100  → {verdict}",
+            f"",
+            f"BREAKDOWN:",
+            f"  RSI Momentum    {c.get('rsi','N/A')} → {c.get('rsi_pts',0)} pts",
+            f"  BB Position     %B={c.get('pct_b','N/A')} → {c.get('bw_pts',0)} pts",
+            f"  MACD            {c.get('macd','N/A')} → {c.get('macd_pts',0)} pts",
+            f"  Volume Ratio    {c.get('vol_ratio','N/A')}x → {c.get('vol_pts',0)} pts",
+            f"  Squeeze Score   {c.get('squeeze','N/A')}/100 → {c.get('sq_pts',0)} pts",
+            f"  Price Slope     {c.get('slope_pct','N/A')}%/tick → {c.get('slope_pts',0)} pts",
+            f"  Grok AI         {c.get('grok_signal','N/A')} "
+            f"conf={c.get('grok_confidence','?')} → {c.get('grok_pts',0)} pts",
+            f"",
+            f"Grok: {c.get('grok_reason', '')}",
+            f"",
+            f"Action threshold: {PAPER_MIN_SIGNAL}/100  "
+            f"Daily actions today: "
+            + str(paper_daily_counts.get(f'{arg2}:{datetime.now(CT).strftime("%Y-%m-%d")}', 0))
+            + f"/{PAPER_MAX_ACTIONS}",
+        ]
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /paper log ────────────────────────────────────────────
+    elif sub == "log":
+        try:
+            if not os.path.exists(PAPER_LOG) or os.path.getsize(PAPER_LOG) == 0:
+                await update.message.reply_text("investment.log is empty — no trades recorded yet.")
+                return
+            with open(PAPER_LOG, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="investment.log",
+                    caption=f"investment.log  |  {len(paper_all_trades)} lifetime trades  "
+                            f"|  Portfolio: ${paper_portfolio_value():,.0f}"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"Could not send log: {e}")
+
+    # ── /paper reset ──────────────────────────────────────────
+    elif sub == "reset":
+        if arg2 == "CONFIRM":
+            paper_cash          = PAPER_STARTING_CAPITAL
+            paper_positions     = {}
+            paper_trades_today  = []
+            paper_daily_counts  = {}
+            paper_all_trades    = []
+            paper_signals_cache = {}
+            paper_log("=== PORTFOLIO RESET TO $100,000 ===")
+            await update.message.reply_text(
+                f"Portfolio reset to ${PAPER_STARTING_CAPITAL:,.0f}.\n"
+                f"All positions and history cleared.\n"
+                f"trade log preserved in investment.log."
+            )
+        else:
+            await update.message.reply_text(
+                f"This will reset the portfolio to ${PAPER_STARTING_CAPITAL:,.0f} "
+                f"and clear all positions and history.\n\n"
+                f"Type /paper reset CONFIRM to proceed."
+            )
+
+    else:
+        await update.message.reply_text(
+            "Paper Trading commands:\n"
+            "  /paper               — portfolio snapshot\n"
+            "  /paper positions     — open positions + live P&L\n"
+            "  /paper trades        — today's actions\n"
+            "  /paper history       — all-time performance\n"
+            "  /paper signal TICK   — signal breakdown for any stock\n"
+            "  /paper log           — download investment.log\n"
+            "  /paper reset         — reset to $100,000"
+        )
+
 
 # ============================================================
 # TELEGRAM COMMANDS
@@ -1981,8 +2798,10 @@ def scanner_thread():
         lambda: globals().update(TICKERS=get_dynamic_hot_stocks())
     )
     schedule.every().day.at("08:30").do(send_morning_briefing)    # open + dashboard
+    schedule.every().day.at("08:31").do(paper_morning_report)     # paper portfolio at open
     schedule.every().day.at("12:00").do(send_midday_dashboard)    # mid-day dashboard
     schedule.every().day.at("15:00").do(send_daily_close_summary) # close + dashboard
+    schedule.every().day.at("15:01").do(paper_eod_report)         # paper EOD P&L
     # Weekly digest — Sunday 18:00
     schedule.every().sunday.at("18:00").do(send_weekly_digest)
     while True:
@@ -2024,6 +2843,9 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("list",        cmd_list))
     app.add_handler(CommandHandler("monitoring",  cmd_monitoring))
     app.add_handler(CommandHandler("help",        cmd_help))
+
+    # ── Paper Trading ─────────────────────────────────────────
+    app.add_handler(CommandHandler("paper",       cmd_paper))
 
     # Natural language Q&A — catches ALL non-command text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
