@@ -217,10 +217,11 @@ BOT_DESCRIPTION = (
     "  /paper positions   live P&L\n"
     "  /paper trades      today's activity\n"
     "  /paper history     win rate + summary\n"
-    "  /paper signal TICK 7-factor breakdown\n"
+    "  /paper signal TICK 8-factor breakdown\n"
     "  /paper log         download trade log\n"
     "  /paper reset       reset to $100k\n"
     "  /overnight         gap risk on positions\n"
+    "  /aistocks          AI watchlist picks + conviction\n"
     "\n"
     "OFF-HOURS & PREP\n"
     "  /prep              next session game plan\n"
@@ -256,6 +257,8 @@ custom_price_alerts = {}   # {ticker: [target_prices]}
 user_watchlists     = {}   # {chat_id: [tickers]}
 conversation_history= {}   # {chat_id: [messages]} for multi-turn Q&A
 squeeze_scores      = {}   # {ticker: score} updated each scan cycle
+ai_watchlist_suggestions = {}  # {ticker: {"conviction": int, "thesis": str, "category": str, "added_at": str}}
+ai_watchlist_last_refresh = ""  # e.g. "10:30 AM CT (intraday)"
 
 # ============================================================
 # TELEGRAM: SAFE MULTI-PART SENDER WITH EXPONENTIAL BACKOFF
@@ -1104,6 +1107,280 @@ def get_dynamic_hot_stocks():
                 f"(from {len(unique)} candidates)")
     return combined[:80]
 
+
+def ai_refresh_watchlist(mode="premarket"):
+    """
+    AI-driven watchlist rotation.
+    mode="premarket" — 7:00 AM CT, uses Claude Sonnet, suggests 10-15 tickers.
+    mode="intraday"  — 10:30/12:30/14:30 CT, uses Claude Haiku, suggests 3-5 tickers.
+    Falls back to get_dynamic_hot_stocks() on failure.
+    """
+    global TICKERS, ai_watchlist_suggestions, ai_watchlist_last_refresh
+
+    now_ct = datetime.now(CT)
+    is_premarket = (mode == "premarket")
+    logger.info(f"AI watchlist refresh starting — mode={mode}")
+
+    # ── 1. Gather context ──────────────────────────────────────
+    context_parts = []
+
+    # Core tickers
+    context_parts.append(f"Core tickers (always kept): {', '.join(CORE_TICKERS)}")
+
+    # FMP market data — yesterday's movers
+    for endpoint_label, endpoint in [("Most Active", "stock_market/actives"),
+                                      ("Top Gainers", "stock_market/gainers"),
+                                      ("Top Losers", "stock_market/losers")]:
+        if not FMP_API_KEY:
+            break
+        try:
+            r = requests.get(
+                f"https://financialmodelingprep.com/api/v3/{endpoint}?apikey={FMP_API_KEY}",
+                timeout=10
+            )
+            data = r.json()
+            if isinstance(data, list):
+                items = []
+                for item in data[:15]:
+                    if isinstance(item, dict) and item.get("symbol"):
+                        sym = item["symbol"]
+                        chg = item.get("changesPercentage", 0)
+                        items.append(f"{sym} ({chg:+.1f}%)" if chg else sym)
+                if items:
+                    context_parts.append(f"{endpoint_label}: {', '.join(items)}")
+        except Exception as e:
+            logger.debug(f"AI watchlist FMP {endpoint}: {e}")
+
+    # Top squeeze scores
+    if squeeze_scores:
+        top_sq = sorted(squeeze_scores, key=squeeze_scores.get, reverse=True)[:20]
+        sq_strs = [f"{t}({squeeze_scores[t]:.0f})" for t in top_sq]
+        context_parts.append(f"Top squeeze scores: {', '.join(sq_strs)}")
+
+    # Current paper positions
+    if paper_positions:
+        pos_strs = list(paper_positions.keys())
+        context_parts.append(f"Current paper positions (don't suggest these): {', '.join(pos_strs)}")
+
+    # Recent alerts (last 24h)
+    if recent_alerts:
+        recent = list(recent_alerts)[-30:]
+        context_parts.append(f"Recent alerts (last 24h): {'; '.join(recent[-10:])}")
+
+    # Current AI suggestions (for intraday context)
+    if ai_watchlist_suggestions and mode == "intraday":
+        current_ai = [f"{t}({ai_watchlist_suggestions[t]['conviction']}/10)"
+                      for t in list(ai_watchlist_suggestions.keys())[:15]]
+        context_parts.append(f"Current AI picks: {', '.join(current_ai)}")
+
+    context_str = "\n".join(context_parts)
+
+    # ── 2. Build prompt and ask AI ──────────────────────────────
+    if is_premarket:
+        count_hint = "10-15"
+        prompt = (
+            "You are a stock scanner assistant. Based on the current market context below, "
+            f"suggest {count_hint} tickers to ADD to today's watchlist beyond the core 30. Focus on:\n"
+            "- Stocks with upcoming catalysts (earnings, FDA, product launches this week)\n"
+            "- Sector sympathy plays based on yesterday's movers\n"
+            "- Momentum setups showing volume/price breakout patterns\n"
+            "- Small/mid-cap names that institutional flows suggest are building positions\n\n"
+            "For each ticker, provide:\n"
+            "- Symbol\n"
+            "- Conviction (1-10): how confident you are this will move today\n"
+            "- Thesis: one sentence on why\n"
+            "- Category: one of [earnings_catalyst, sympathy_play, momentum, sector_rotation, breakout, news_driven]\n\n"
+            f"Context:\n{context_str}\n\n"
+            'Respond ONLY with valid JSON: [{"symbol": "TICKER", "conviction": 8, "thesis": "...", "category": "..."}]'
+        )
+    else:
+        count_hint = "3-5"
+        prompt = (
+            "You are a stock scanner assistant. Based on current market activity, "
+            f"suggest {count_hint} NEW tickers to add to the intraday watchlist. Focus on:\n"
+            "- What's moving RIGHT NOW with unusual volume\n"
+            "- Sector rotation plays happening today\n"
+            "- Breaking news catalysts\n"
+            "Also suggest up to 3 tickers to DROP (not in core list, not moving) to free API budget.\n\n"
+            "For each ADD, provide: symbol, conviction (1-10), thesis, category.\n"
+            "For each DROP, provide: symbol, reason.\n\n"
+            f"Context:\n{context_str}\n\n"
+            'Respond ONLY with valid JSON: {"add": [{"symbol": "TICKER", "conviction": 8, "thesis": "...", "category": "..."}], '
+            '"drop": [{"symbol": "TICKER", "reason": "..."}]}'
+        )
+
+    # Use Sonnet for premarket (quality), Haiku for intraday (speed)
+    try:
+        raw = get_ai_response(prompt, max_tokens=1500, fast=not is_premarket)
+    except Exception as e:
+        logger.error(f"AI watchlist call failed: {e}")
+        raw = None
+
+    # ── 3. Parse response ───────────────────────────────────────
+    added_tickers = []
+    dropped_tickers = []
+
+    if raw:
+        # Try JSON parsing first
+        try:
+            # Strip markdown code fences if present
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = "\n".join(cleaned.split("\n")[1:])
+            if cleaned.endswith("```"):
+                cleaned = cleaned.rsplit("```", 1)[0]
+            cleaned = cleaned.strip()
+
+            parsed = json.loads(cleaned)
+
+            # Handle both response formats
+            if isinstance(parsed, list):
+                suggestions = parsed
+                drops = []
+            elif isinstance(parsed, dict):
+                suggestions = parsed.get("add", [])
+                drops = parsed.get("drop", [])
+            else:
+                suggestions = []
+                drops = []
+
+            for item in suggestions:
+                if not isinstance(item, dict):
+                    continue
+                sym = str(item.get("symbol", "")).upper().strip()
+                if not sym or len(sym) > 5:
+                    continue
+                conviction = int(item.get("conviction", 5))
+                conviction = max(1, min(10, conviction))
+                thesis = str(item.get("thesis", ""))[:120]
+                category = str(item.get("category", "momentum"))
+
+                ai_watchlist_suggestions[sym] = {
+                    "conviction": conviction,
+                    "thesis": thesis,
+                    "category": category,
+                    "added_at": now_ct.isoformat(),
+                }
+                added_tickers.append(sym)
+
+            for item in drops:
+                if isinstance(item, dict):
+                    sym = str(item.get("symbol", "")).upper().strip()
+                    if sym and sym not in CORE_TICKERS and sym not in paper_positions:
+                        dropped_tickers.append(sym)
+
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            logger.warning(f"AI watchlist JSON parse failed, trying regex: {e}")
+            # Fallback: extract ticker-like symbols from response
+            import re
+            matches = re.findall(r'"symbol"\s*:\s*"([A-Z]{1,5})"', raw)
+            for sym in matches[:15 if is_premarket else 5]:
+                if sym not in ai_watchlist_suggestions:
+                    ai_watchlist_suggestions[sym] = {
+                        "conviction": 6,
+                        "thesis": "AI suggested",
+                        "category": "momentum",
+                        "added_at": now_ct.isoformat(),
+                    }
+                    added_tickers.append(sym)
+
+    if not added_tickers:
+        # Fallback: use existing dynamic hot stocks
+        logger.warning("AI watchlist returned no tickers — falling back to FMP dynamic stocks")
+        try:
+            TICKERS = get_dynamic_hot_stocks()
+            for t in TICKERS:
+                if t not in price_history:
+                    price_history[t] = deque(maxlen=60)
+            save_bot_state()
+        except Exception as e:
+            logger.error(f"Fallback get_dynamic_hot_stocks failed: {e}")
+        return
+
+    # ── 4. Rebuild TICKERS list ──────────────────────────────────
+    new_tickers = list(CORE_TICKERS)  # always start with core 30
+
+    # Keep tickers with open paper positions
+    for t in paper_positions:
+        if t not in new_tickers:
+            new_tickers.append(t)
+
+    # Add AI-suggested tickers (sorted by conviction, highest first)
+    ai_sorted = sorted(ai_watchlist_suggestions.keys(),
+                       key=lambda t: ai_watchlist_suggestions[t].get("conviction", 0),
+                       reverse=True)
+    for t in ai_sorted:
+        if t not in new_tickers and len(new_tickers) < 80:
+            new_tickers.append(t)
+
+    # Add top squeeze score tickers not already included (up to 10)
+    if squeeze_scores:
+        top_sq = sorted(squeeze_scores, key=squeeze_scores.get, reverse=True)[:10]
+        for t in top_sq:
+            if t not in new_tickers and len(new_tickers) < 80:
+                new_tickers.append(t)
+
+    # Fill remaining with FMP dynamic stocks
+    try:
+        fmp_stocks = get_dynamic_hot_stocks()
+        for t in fmp_stocks:
+            if t not in new_tickers and len(new_tickers) < 80:
+                new_tickers.append(t)
+    except Exception as e:
+        logger.debug(f"FMP fill failed: {e}")
+
+    # Drop tickers AI suggested removing
+    for t in dropped_tickers:
+        if t in new_tickers and t not in CORE_TICKERS and t not in paper_positions:
+            new_tickers.remove(t)
+            ai_watchlist_suggestions.pop(t, None)
+
+    # Cap at 80
+    new_tickers = new_tickers[:80]
+
+    old_set = set(TICKERS)
+    TICKERS = new_tickers
+
+    # Initialize price_history for new tickers
+    for t in TICKERS:
+        if t not in price_history:
+            price_history[t] = deque(maxlen=60)
+
+    # ── 5. Send Telegram summary ─────────────────────────────────
+    time_label = now_ct.strftime("%I:%M %p CT")
+    mode_label = "Premarket" if is_premarket else "Intraday"
+    ai_watchlist_last_refresh = f"{time_label} ({mode_label.lower()})"
+
+    added_strs = []
+    for t in added_tickers[:10]:
+        info = ai_watchlist_suggestions.get(t, {})
+        conv = info.get("conviction", "?")
+        cat = info.get("category", "")
+        short_cat = cat.replace("_", " ")[:12]
+        added_strs.append(f"{t} ({conv}/10 - {short_cat})")
+
+    removed = [t for t in old_set if t not in set(TICKERS) and t not in CORE_TICKERS]
+
+    msg_lines = [f"AI WATCHLIST UPDATE ({mode_label})"]
+    if added_strs:
+        msg_lines.append(f"Added: {', '.join(added_strs)}")
+        if len(added_tickers) > 10:
+            msg_lines.append(f"  +{len(added_tickers) - 10} more")
+    if removed:
+        msg_lines.append(f"Dropped: {', '.join(removed[:10])}")
+    if dropped_tickers:
+        msg_lines.append(f"AI suggested drop: {', '.join(dropped_tickers[:5])}")
+
+    core_count = len([t for t in TICKERS if t in CORE_TICKERS])
+    dynamic_count = len(TICKERS) - core_count
+    msg_lines.append(f"Now monitoring: {len(TICKERS)} stocks ({core_count} core + {dynamic_count} dynamic)")
+
+    send_telegram("\n".join(msg_lines))
+    save_bot_state()
+    logger.info(f"AI watchlist refresh complete — mode={mode}, added={len(added_tickers)}, "
+                f"dropped={len(dropped_tickers)}, total={len(TICKERS)}")
+
+
 TICKERS = list(CORE_TICKERS)   # seed immediately; refreshed at startup and 8:30 AM daily
 
 # ============================================================
@@ -1386,6 +1663,8 @@ def save_bot_state():
         "squeeze_scores":       squeeze_scores,
         "daily_alerts":         daily_alerts,
         "monitoring_paused":    monitoring_paused,
+        "ai_watchlist_suggestions": ai_watchlist_suggestions,
+        "ai_watchlist_last_refresh": ai_watchlist_last_refresh,
         "saved_at":             datetime.now(CT).isoformat(),
     }
     with _bot_save_lock:
@@ -1408,6 +1687,7 @@ def load_bot_state():
     global TICKERS, user_watchlists, custom_price_alerts
     global recent_alerts, conversation_history, squeeze_scores
     global daily_alerts, monitoring_paused
+    global ai_watchlist_suggestions, ai_watchlist_last_refresh
 
     if not os.path.exists(BOT_STATE_FILE):
         logger.info(f"No bot state file at {BOT_STATE_FILE} — starting fresh.")
@@ -1441,6 +1721,8 @@ def load_bot_state():
         conversation_history= state.get("conversation_history", {})
         squeeze_scores      = state.get("squeeze_scores", {})
         monitoring_paused   = state.get("monitoring_paused", False)
+        ai_watchlist_suggestions = state.get("ai_watchlist_suggestions", {})
+        ai_watchlist_last_refresh = state.get("ai_watchlist_last_refresh", "")
 
         # Only restore daily_alerts if saved today
         saved_at   = state.get("saved_at", "")
@@ -1692,8 +1974,17 @@ def compute_paper_signal(ticker: str) -> dict:
     except Exception as e:
         logger.debug(f"Grok signal error for {ticker}: {e}")
 
+    # ── 8. AI Watchlist Conviction (10 pts bonus) ──────────────
+    ai_info = ai_watchlist_suggestions.get(ticker)
+    if ai_info and ai_info.get("conviction", 0) >= 7:
+        pts = min(10, ai_info["conviction"])  # 7->7pts, 8->8pts, 9->9pts, 10->10pts
+        score += pts
+        comps["ai_conviction"] = ai_info["conviction"]
+        comps["ai_category"] = ai_info.get("category", "")
+        detail.append(f"AI={ai_info['conviction']}({pts}pts)")
+
     result = {
-        "score":   round(min(score, 100), 1),
+        "score":   round(min(score, 110), 1),  # max 110 with AI bonus
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -1716,6 +2007,12 @@ def _paper_position_size(ticker: str, signal_score: float) -> int:
     strength   = min(1.0, (signal_score - PAPER_MIN_SIGNAL) / (100 - PAPER_MIN_SIGNAL))
     dollars    = max_dollars * (0.5 + 0.5 * strength)
     dollars    = min(dollars, paper_cash * 0.95)   # never use more than 95% of cash
+
+    # AI conviction boost: 15% larger position for high-conviction AI picks
+    ai_info = ai_watchlist_suggestions.get(ticker)
+    if ai_info and ai_info.get("conviction", 0) >= 8:
+        dollars *= 1.15
+        dollars = min(dollars, portfolio_val * PAPER_MAX_POS_PCT)  # still respect max
 
     if dollars < 100:
         return 0
@@ -1916,6 +2213,16 @@ def paper_evaluate_ticker(ticker: str):
         sig_lines.append(
             f"Grok {c['grok_signal']} conf={c.get('grok_confidence','?')} ({c.get('grok_pts',0)}pts)"
         )
+    if c.get("ai_conviction"):
+        sig_lines.append(
+            f"AI Pick {c['ai_conviction']}/10 ({c.get('ai_category','')}) ({c['ai_conviction']}pts)"
+        )
+
+    # AI thesis line for buy notification
+    ai_thesis_line = ""
+    ai_info = ai_watchlist_suggestions.get(ticker)
+    if ai_info:
+        ai_thesis_line = f"  AI: {ai_info['thesis']} (conviction {ai_info['conviction']}/10)\n"
 
     send_telegram(
         f"📈 PAPER BUY — {ticker}\n"
@@ -1928,6 +2235,7 @@ def paper_evaluate_ticker(ticker: str):
         f"Signal:    {sig['score']:.0f}/100\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
+        + ai_thesis_line
         + f"{'─'*28}\n"
         f"Cash left: ${paper_cash:,.0f}\n"
         f"Positions: {len(paper_positions)}/{PAPER_MAX_POSITIONS}\n"
@@ -2226,7 +2534,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [
             f"SIGNAL: {arg2}  @${price:.2f}" if price else f"SIGNAL: {arg2}",
             f"",
-            f"Composite Score: {sig['score']:.0f}/100  -> {verdict}",
+            f"Composite Score: {sig['score']:.0f}/110  -> {verdict}",
             f"",
             f"BREAKDOWN:",
             f"  RSI Momentum    {c.get('rsi','N/A')} -> {c.get('rsi_pts',0)} pts",
@@ -2237,8 +2545,18 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  Price Slope     {c.get('slope_pct','N/A')}%/tick -> {c.get('slope_pts',0)} pts",
             f"  Grok AI         {c.get('grok_signal','N/A')} "
             f"conf={c.get('grok_confidence','?')} -> {c.get('grok_pts',0)} pts",
+            f"  AI Conviction   {c.get('ai_conviction','N/A')}/10 "
+            f"({c.get('ai_category','')}) -> {c.get('ai_conviction',0) if c.get('ai_conviction') else 0} pts"
+            if c.get('ai_conviction') else
+            f"  AI Conviction   N/A",
             f"",
             f"Grok: {c.get('grok_reason', '')}",
+        ]
+        # Add AI thesis if available
+        ai_sig_info = ai_watchlist_suggestions.get(arg2)
+        if ai_sig_info:
+            lines.append(f"AI: {ai_sig_info['thesis']} (conviction {ai_sig_info['conviction']}/10)")
+        lines += [
             f"",
             f"Action threshold: {PAPER_MIN_SIGNAL}/100  "
             f"Daily actions today: "
@@ -3903,6 +4221,86 @@ async def cmd_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_aistocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /aistocks — show current AI watchlist suggestions, conviction levels,
+    categories, and paper trading performance on AI picks.
+    """
+    if not ai_watchlist_suggestions:
+        await update.message.reply_text(
+            "AI WATCHLIST STATUS\n\n"
+            "No AI suggestions yet. Next refresh at 7:00 AM CT (premarket)."
+        )
+        return
+
+    lines = ["AI WATCHLIST STATUS"]
+    if ai_watchlist_last_refresh:
+        lines.append(f"Last refresh: {ai_watchlist_last_refresh}")
+    lines.append("")
+
+    # Sort by conviction
+    sorted_picks = sorted(
+        ai_watchlist_suggestions.items(),
+        key=lambda x: x[1].get("conviction", 0),
+        reverse=True,
+    )
+
+    # High conviction (8-10)
+    high = [(t, info) for t, info in sorted_picks if info.get("conviction", 0) >= 8]
+    if high:
+        lines.append("HIGH CONVICTION (8-10):")
+        for t, info in high:
+            cat = info.get("category", "").replace("_", " ")
+            thesis = info.get("thesis", "")[:60]
+            lines.append(f"  {t} ({info['conviction']}/10) - {thesis}")
+
+    # Moderate (6-7)
+    moderate = [(t, info) for t, info in sorted_picks if 6 <= info.get("conviction", 0) <= 7]
+    if moderate:
+        lines.append("")
+        lines.append("MODERATE (6-7):")
+        for t, info in moderate:
+            thesis = info.get("thesis", "")[:60]
+            lines.append(f"  {t} ({info['conviction']}/10) - {thesis}")
+
+    # Lower (1-5)
+    lower = [(t, info) for t, info in sorted_picks if info.get("conviction", 0) <= 5]
+    if lower:
+        lines.append("")
+        lines.append(f"LOWER (1-5): {len(lower)} picks")
+
+    # Category breakdown
+    cats = {}
+    for _, info in sorted_picks:
+        cat = info.get("category", "other").replace("_", " ")
+        cats[cat] = cats.get(cat, 0) + 1
+    cat_strs = [f"{v} {k}" for k, v in sorted(cats.items(), key=lambda x: -x[1])]
+    lines.append("")
+    lines.append(f"Categories: {', '.join(cat_strs)}")
+
+    # Paper positions on AI picks
+    ai_positions = []
+    for t in ai_watchlist_suggestions:
+        if t in paper_positions:
+            pos = paper_positions[t]
+            price, _, _ = fetch_finnhub_quote(t)
+            price = price or pos["avg_cost"]
+            pnl_pct = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
+            ai_positions.append(f"{t} ({pnl_pct:+.1f}%)")
+
+    if ai_positions:
+        lines.append("")
+        lines.append(f"Paper positions on AI picks: {', '.join(ai_positions)}")
+
+    # Count AI picks in TICKERS
+    ai_in_tickers = sum(1 for t in ai_watchlist_suggestions if t in TICKERS)
+    lines.append("")
+    lines.append(f"AI picks in scan list: {ai_in_tickers}/{len(ai_watchlist_suggestions)}")
+    lines.append(f"Total monitoring: {len(TICKERS)} tickers")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def cmd_overnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /overnight — overnight risk assessment for open paper positions.
@@ -4434,11 +4832,15 @@ def scanner_thread():
     # ── Define all scheduled jobs in CT ───────────────────────
     JOBS = [
         # day            CT time   function
+        ("daily",        "07:00",  lambda: ai_refresh_watchlist(mode="premarket")),
         ("daily",        "08:00",  send_premarket_dashboard),
         ("daily",        "08:30",  lambda: globals().update(TICKERS=get_dynamic_hot_stocks())),
         ("daily",        "08:30",  send_morning_briefing),
         ("daily",        "08:31",  paper_morning_report),
+        ("daily",        "10:30",  lambda: ai_refresh_watchlist(mode="intraday")),
         ("daily",        "12:00",  send_midday_dashboard),
+        ("daily",        "12:30",  lambda: ai_refresh_watchlist(mode="intraday")),
+        ("daily",        "14:30",  lambda: ai_refresh_watchlist(mode="intraday")),
         ("daily",        "15:00",  send_daily_close_summary),
         ("daily",        "15:01",  paper_eod_report),
         ("daily",        "18:00",  send_evening_recap),
@@ -4475,7 +4877,7 @@ def scanner_thread():
                     try:
                         fn()
                         # Save state after ticker refresh so new TICKERS list persists
-                        if hhmm == "08:30":
+                        if hhmm in ("08:30", "07:00", "10:30", "12:30", "14:30"):
                             save_bot_state()
                     except Exception as e:
                         logger.error(f"Scheduled job error ({day} {hhmm}): {e}", exc_info=True)
@@ -4544,6 +4946,7 @@ def run_telegram_bot():
     # ── Paper Trading ─────────────────────────────────────────
     app.add_handler(CommandHandler("paper",       cmd_paper))
     app.add_handler(CommandHandler("overnight",   cmd_overnight))
+    app.add_handler(CommandHandler("aistocks",    cmd_aistocks))
 
     # ── Off-hours / prep ──────────────────────────────────────
     app.add_handler(CommandHandler("prep",        cmd_prep))
