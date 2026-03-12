@@ -282,15 +282,19 @@ def get_ai_conversation(chat_id: str, user_message: str) -> str:
     """
     today_stamp = datetime.now(CT).strftime("%A %B %d %Y %I:%M %p CT")
     system = (
-        f"You are a stock market assistant on Telegram. "
+        f"You are a live stock market assistant on Telegram. "
         f"Today is {today_stamp}. "
-        f"STRICT RULES: "
-        f"(1) Only state specific events, dates, or prices you are confident are accurate. "
-        f"(2) Do NOT fabricate earnings dates, economic reports, executive statements, "
-        f"strikes, mergers, or scheduled events — if uncertain, say so explicitly. "
-        f"(3) When the user's message contains live price data in [brackets], use it. "
-        f"(4) Distinguish clearly between what you know vs. what is uncertain. "
-        f"Be concise. Use plain text, no markdown."
+        f"IMPORTANT: The user's message includes LIVE MARKET DATA, NEWS HEADLINES, and "
+        f"LIVE PRICES fetched right now from Finnhub and other real-time sources. "
+        f"This data is current as of this moment — use it to answer questions directly "
+        f"and specifically. Do NOT say you lack real-time data or news access. "
+        f"The data in the message IS the real-time data. "
+        f"RULES: "
+        f"(1) Always base your answer on the live data provided in the message. "
+        f"(2) Do NOT fabricate earnings dates, analyst targets, or executive statements. "
+        f"(3) If a specific fact is not in the provided data, say so briefly then reason "
+        f"from what IS provided. "
+        f"(4) Be concise and direct. No markdown, plain text only."
     )
 
     history = conversation_history.setdefault(chat_id, [])
@@ -3382,7 +3386,8 @@ async def cmd_watchlist_prep(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /ask <question> — ask Claude AI anything about the market.
-    Maintains multi-turn memory per chat (last 20 messages).
+    Automatically injects live prices, market snapshot, and news headlines
+    so Claude always has current data to answer with.
     """
     if not update.message:
         return
@@ -3393,7 +3398,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Examples:\n"
             "  /ask What's happening with NVDA today?\n"
             "  /ask Is the market overbought right now?\n"
-            "  /ask Explain RSI to me\n"
+            "  /ask What's driving the market today?\n"
             "  /ask Should I be worried about the VIX spike?"
         )
         return
@@ -3401,24 +3406,99 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_msg = " ".join(context.args).strip()
     chat_id  = str(update.effective_chat.id)
     logger.info(f"/ask from {chat_id}: {user_msg[:80]}")
+    await update.message.reply_text("Thinking...")
 
-    await update.message.reply_text("Thinking…")
+    # ── Gather live context concurrently ─────────────────────
+    def _get_snapshot():
+        try:
+            s = fetch_market_snapshot()
+            return (
+                f"LIVE MARKET DATA:\n"
+                f"Indices: {s['indices_str']}\n"
+                f"Sectors: {s['sector_str']}\n"
+                f"Fear & Greed: {s['fg_str']}\n"
+                f"VIX: {s['vix']:.1f}\n"
+                f"Crypto: {s['crypto_str']}\n"
+                f"Watchlist movers: {s['movers_str']}"
+            )
+        except Exception as e:
+            logger.debug(f"snapshot in /ask failed: {e}")
+            return ""
 
-    # Enrich with live price if a watched ticker is mentioned
-    enriched = user_msg
+    def _get_market_news():
+        """Fetch general market news headlines from Finnhub."""
+        try:
+            r = requests.get(
+                f"https://finnhub.io/api/v1/news?category=general&token={FINNHUB_TOKEN}",
+                timeout=8
+            )
+            items = r.json()[:8]
+            headlines = [item.get("headline", "") for item in items if item.get("headline")]
+            return "TODAY'S NEWS HEADLINES:\n" + "\n".join(f"- {h[:100]}" for h in headlines[:6])
+        except Exception as e:
+            logger.debug(f"market news fetch failed: {e}")
+            return ""
+
+    def _get_ticker_news(ticker):
+        """Fetch company-specific news if a ticker was mentioned."""
+        try:
+            news = fetch_latest_news(ticker, 4)
+            if news:
+                return f"\n{ticker} NEWS:\n" + "\n".join(f"- {h[:100]}" for h, _ in news)
+        except:
+            pass
+        return ""
+
+    def _get_ticker_price(ticker):
+        """Fetch live price for a mentioned ticker."""
+        try:
+            d = get_ticker_data(ticker)
+            if d["price"]:
+                sign = "+" if d["chg"] >= 0 else ""
+                parts = [f"{ticker}: ${d['price']:.2f} ({sign}{d['chg']:.2f}%)"]
+                if d["high52"] and d["low52"]:
+                    parts.append(f"52w range: ${d['low52']:.2f}-${d['high52']:.2f}")
+                if d["volume"]:
+                    parts.append(f"vol: {d['volume']:,}")
+                return " | ".join(parts)
+        except:
+            pass
+        return ""
+
+    # Detect mentioned tickers
     words = user_msg.upper().split()
+    mentioned_tickers = []
     for word in words:
         clean = ''.join(c for c in word if c.isalpha())
-        if clean and clean in TICKERS:
-            try:
-                info  = yf.Ticker(clean).fast_info
-                price = info.get('lastPrice', 0)
-                chg   = info.get('regularMarketChangePercent', 0)
-                if price > 0:
-                    enriched += f" [Live: {clean}=${price:.2f}, {chg:+.2f}% today]"
-            except:
-                pass
-            break
+        if clean and (clean in TICKERS or len(clean) <= 5):
+            mentioned_tickers.append(clean)
+            if len(mentioned_tickers) >= 3:
+                break
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_snap = pool.submit(_get_snapshot)
+        f_news = pool.submit(_get_market_news)
+        f_tick_news  = [pool.submit(_get_ticker_news, t)  for t in mentioned_tickers[:2]]
+        f_tick_price = [pool.submit(_get_ticker_price, t) for t in mentioned_tickers[:2]]
+
+    snapshot_str   = f_snap.result()
+    market_news    = f_news.result()
+    ticker_news    = "\n".join(f.result() for f in f_tick_news  if f.result())
+    ticker_prices  = "\n".join(f.result() for f in f_tick_price if f.result())
+
+    # Build enriched message with all live data prepended
+    context_block = "\n\n".join(filter(None, [
+        snapshot_str,
+        f"LIVE PRICES:\n{ticker_prices}" if ticker_prices else "",
+        ticker_news,
+        market_news,
+    ]))
+
+    enriched = (
+        f"{context_block}\n\n"
+        f"USER QUESTION: {user_msg}"
+        if context_block else user_msg
+    )
 
     try:
         reply = get_ai_conversation(chat_id, enriched)
@@ -3432,6 +3512,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"cmd_ask error: {e}", exc_info=True)
         await update.message.reply_text(f"Error reaching Claude AI: {e}")
+
 
 
 # ============================================================
