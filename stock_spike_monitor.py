@@ -69,49 +69,47 @@ grok_client = OpenAI(
 # ============================================================
 # BOT DESCRIPTION (used by /about and natural-language handler)
 # ============================================================
-BOT_DESCRIPTION = """
-Stock Spike Monitor — 24/7 real-time market intelligence.
-
-Scans 60+ stocks every minute for >=3% spikes. Alerts include Grok AI
-analysis, live technicals (RSI, Bollinger Bands, squeeze score), and
-latest news. Dashboards auto-send at pre-market, open, mid-day, and close.
-
-── MARKET PULSE ──────────────────────────
-/overview      — Indices + sectors + Fear & Greed + Grok read
-/crypto        — BTC/ETH/SOL/DOGE/XRP live prices + AI outlook
-/macro         — Upcoming macro events (CPI, Fed, jobs, FOMC)
-/earnings      — Earnings calendar for next 7 days
-
-── MOVERS ────────────────────────────────
-/movers        — gainers · losers · volume · lowprice
-               e.g. /movers gainers   /movers volume
-
-── STOCK TOOLS ───────────────────────────
-/price TICK    — Quick price, day range, volume
-/analyze TICK  — Deep AI: technicals + catalyst + risk
-/compare A B   — Side-by-side with Grok verdict
-/chart TICK    — Intraday sparkline + volume bars
-/rsi TICK      — RSI(14) + Bollinger Bands breakdown
-/news TICK     — Latest headlines
-
-── ALERTS & SCANNING ─────────────────────
-/spikes        — Spikes in last 30 min
-/alerts        — All alerts fired today
-/squeeze       — Top squeeze candidates (scored 0-100)
-/setalert      — Custom price target alert
-/watchlist     — Personal watchlist (add/remove/scan)
-
-── BOT CONTROL ───────────────────────────
-/dashboard     — Full visual dashboard image now
-/list          — All monitored tickers
-/monitoring    — pause · resume · status
-               e.g. /monitoring pause
-/help          — This menu
-
-Type any question in plain English — Grok AI will answer it.
-Dashboards auto-send: 8:00 AM pre-market, 8:30 AM open,
-12:00 PM mid-day, 3:00 PM close CT. Weekly digest: Sunday 6 PM.
-"""
+BOT_DESCRIPTION = (
+    "📡 Stock Spike Monitor\n"
+    "24/7 · 60+ stocks · ≥3% spike alerts · Grok AI · RSI/BB/Squeeze\n"
+    "\n"
+    "MARKET PULSE\n"
+    "  /overview   indices · sectors · Fear & Greed · AI outlook\n"
+    "  /crypto     BTC ETH SOL DOGE XRP\n"
+    "  /macro      CPI · Fed · NFP · FOMC calendar\n"
+    "  /earnings   next 7 days\n"
+    "\n"
+    "MOVERS\n"
+    "  /movers             gainers + losers summary\n"
+    "  /movers gainers     top 5 up\n"
+    "  /movers losers      top 5 down\n"
+    "  /movers volume      most active\n"
+    "  /movers lowprice    $1–$10 rockets\n"
+    "\n"
+    "STOCK TOOLS\n"
+    "  /price TICK         live quote + day range\n"
+    "  /analyze TICK       AI deep dive: catalyst · risk · tech\n"
+    "  /compare TICK TICK  side-by-side + Grok verdict\n"
+    "  /chart TICK         intraday sparkline + VWAP + volume\n"
+    "  /rsi TICK           RSI(14) · Bollinger Bands · squeeze score\n"
+    "  /news TICK          latest headlines\n"
+    "\n"
+    "ALERTS\n"
+    "  /spikes             recent spikes (last 30 min)\n"
+    "  /alerts             all alerts fired today\n"
+    "  /squeeze            top squeeze candidates (0–100 score)\n"
+    "  /setalert TICK $    custom price target\n"
+    "  /watchlist          add · remove · scan your list\n"
+    "\n"
+    "BOT\n"
+    "  /dashboard          send visual dashboard now\n"
+    "  /list               all monitored tickers\n"
+    "  /monitoring         pause · resume · status\n"
+    "  /help               this menu\n"
+    "\n"
+    "💬 Type any question — Grok AI answers in plain English.\n"
+    "📊 Auto dashboards: 8:00 pre-mkt · 8:30 open · 12:00 mid · 3:00 close · Sun digest"
+)
 
 # ============================================================
 # STATE
@@ -179,9 +177,14 @@ def send_telegram(text, chat_id=None):
 def get_grok_response(prompt, system=None, max_tokens=300):
     if not grok_client:
         return "AI unavailable (no GROK_API_KEY)"
+    # Always stamp today's date so Grok never answers from stale training data
+    today_stamp = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
     sys_msg = system or (
-        "You are a sharp, concise stock market analyst. "
-        "Give direct, data-driven insights. No fluff. Max 3 sentences unless asked for more."
+        f"You are a sharp, concise stock market analyst. "
+        f"Today is {today_stamp}. "
+        f"Always answer based on what is current as of this date. "
+        f"Never reference data, events, or prices from prior years unless explicitly asked. "
+        f"Give direct, data-driven insights. No fluff. Max 3 sentences unless asked for more."
     )
     for attempt in range(4):
         try:
@@ -853,61 +856,153 @@ async def cmd_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Upcoming macro events via FMP economic calendar.
-    Falls back to a hardcoded awareness list if API unavailable.
+    Upcoming macro events — sources in priority order:
+      1. Finnhub economic calendar (free tier, live dates)
+      2. FMP economic calendar
+      3. Grok AI fallback with today's date explicitly injected
     """
+    today     = datetime.now(CT).date()
+    end       = today + timedelta(days=14)
+    today_str = today.strftime("%Y-%m-%d")
+    end_str   = end.strftime("%Y-%m-%d")
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
+
+    HIGH_IMPACT_KEYWORDS = [
+        "CPI", "PPI", "GDP", "NFP", "Nonfarm", "FOMC", "Federal Reserve",
+        "Unemployment", "Jobless", "Retail Sales", "PCE", "ISM", "PMI",
+        "Housing", "Consumer Confidence", "Durable Goods", "Trade Balance",
+        "Interest Rate", "Inflation", "Payroll"
+    ]
+
+    def _is_relevant(name: str, impact: str) -> bool:
+        if impact in ("High", "Medium", "3", "2"):
+            return True
+        name_up = name.upper()
+        return any(k.upper() in name_up for k in HIGH_IMPACT_KEYWORDS)
+
+    def _parse_finnhub(data) -> list:
+        events = []
+        if not isinstance(data, list):
+            return events
+        for item in data:
+            name   = item.get("event", "") or ""
+            impact = item.get("impact", "") or ""
+            date   = (item.get("time", "") or "")[:10]
+            if not date or date < today_str:        # skip past events
+                continue
+            if _is_relevant(name, impact):
+                events.append({
+                    "date":   date,
+                    "event":  name,
+                    "impact": impact,
+                    "est":    str(item.get("estimate", "") or ""),
+                    "prev":   str(item.get("prev", "") or ""),
+                    "actual": str(item.get("actual", "") or ""),
+                })
+        return sorted(events, key=lambda x: x["date"])[:15]
+
+    def _parse_fmp(data) -> list:
+        events = []
+        if not isinstance(data, list):
+            return events
+        for item in data:
+            name   = item.get("event", "") or ""
+            impact = item.get("impact", "") or ""
+            date   = (item.get("date", "") or "")[:10]
+            if not date or date < today_str:
+                continue
+            if _is_relevant(name, impact):
+                events.append({
+                    "date":   date,
+                    "event":  name,
+                    "impact": impact,
+                    "est":    str(item.get("estimate", "") or ""),
+                    "prev":   str(item.get("previous", "") or ""),
+                    "actual": str(item.get("actual", "") or ""),
+                })
+        return sorted(events, key=lambda x: x["date"])[:15]
+
+    def _format_events(events: list, source: str) -> str:
+        lines = [f"Macro Calendar — next 14 days (from {now_label})",
+                 f"Source: {source}", ""]
+        for e in events:
+            tag = "[HIGH]" if e["impact"] in ("High", "3") else "[MED] "
+            parts = [f"{tag} {e['date']}  {e['event']}"]
+            if e["est"]:
+                parts.append(f"est={e['est']}")
+            if e["prev"]:
+                parts.append(f"prev={e['prev']}")
+            if e["actual"]:
+                parts.append(f"actual={e['actual']}")
+            lines.append("  ".join(parts))
+        return "\n".join(lines)
+
+    events = []
+    source = ""
+
+    # ── 1. Finnhub (free tier supports economic calendar) ─────
     try:
-        today = datetime.now().date()
-        end   = today + timedelta(days=14)
         r = requests.get(
-            f"https://financialmodelingprep.com/api/v3/economic_calendar"
-            f"?from={today}&to={end}&apikey={FMP_API_KEY}",
+            f"https://finnhub.io/api/v1/calendar/economic"
+            f"?from={today_str}&to={end_str}&token={FINNHUB_TOKEN}",
             timeout=10
         )
-        data = r.json()
-        # Filter to high-impact events only
-        HIGH_IMPACT = ["CPI","PPI","GDP","NFP","Nonfarm","FOMC","Fed","Unemployment",
-                       "Retail Sales","PCE","ISM","PMI","Housing","Consumer Confidence"]
-        events = []
-        if isinstance(data, list):
-            for item in data:
-                name   = item.get('event','')
-                impact = item.get('impact','')
-                if impact in ('High','Medium') or any(k.lower() in name.lower() for k in HIGH_IMPACT):
-                    events.append({
-                        "date":    item.get('date','')[:10],
-                        "event":   name,
-                        "impact":  impact,
-                        "actual":  item.get('actual',''),
-                        "est":     item.get('estimate',''),
-                    })
-        events = events[:15]
-
-        if not events:
-            raise ValueError("no events returned")
-
-        lines = ["Macro Calendar (14 days):"]
-        for e in events:
-            impact_tag = "[HIGH]" if e['impact'] == 'High' else "[MED] "
-            actual_str = f"  actual={e['actual']}" if e['actual'] else ""
-            est_str    = f"  est={e['est']}"       if e['est']    else ""
-            lines.append(f"{impact_tag} {e['date']}  {e['event']}{est_str}{actual_str}")
-
-        event_names = ", ".join([e['event'] for e in events[:4]])
-        ai = get_grok_response(
-            f"Upcoming macro events: {event_names}. "
-            f"Which one is most market-moving right now and why? One sentence."
-        )
-        await update.message.reply_text("\n".join(lines) + f"\n\nGrok: {ai}")
-
+        raw = r.json()
+        # Finnhub wraps results in {"economicCalendar": [...]}
+        if isinstance(raw, dict):
+            raw = raw.get("economicCalendar", raw)
+        events = _parse_finnhub(raw)
+        if events:
+            source = "Finnhub"
+            logger.info(f"Macro: {len(events)} events from Finnhub")
     except Exception as e:
-        logger.warning(f"Macro calendar fetch failed: {e}")
-        # Graceful fallback — static awareness message
+        logger.warning(f"Finnhub macro failed: {e}")
+
+    # ── 2. FMP fallback ───────────────────────────────────────
+    if not events and FMP_API_KEY:
+        try:
+            r = requests.get(
+                f"https://financialmodelingprep.com/api/v3/economic_calendar"
+                f"?from={today_str}&to={end_str}&apikey={FMP_API_KEY}",
+                timeout=10
+            )
+            events = _parse_fmp(r.json())
+            if events:
+                source = "FMP"
+                logger.info(f"Macro: {len(events)} events from FMP")
+        except Exception as e:
+            logger.warning(f"FMP macro failed: {e}")
+
+    # ── 3. Grok fallback — date anchored ─────────────────────
+    if not events:
+        logger.warning("Macro: both APIs failed, using date-anchored Grok fallback")
         ai = get_grok_response(
-            "What are the key macro events traders should watch this week "
-            "(CPI, FOMC, jobs, etc.)? Be specific about timing."
+            f"Today is {now_label}. "
+            f"List the actual scheduled US macro events for the next 14 days "
+            f"(from {today_str} to {end_str}), including real scheduled dates. "
+            f"Include: CPI, PPI, FOMC meetings, NFP, PCE, Retail Sales, GDP if applicable. "
+            f"Format each line as: DATE  EVENT  (est: X). "
+            f"Only include events actually scheduled in this window. "
+            f"Do not reference any events from 2024.",
+            max_tokens=500
         )
-        await update.message.reply_text(f"Macro Events (Grok):\n{ai}")
+        await update.message.reply_text(
+            f"Macro Calendar — {now_label}\n"
+            f"(Live calendar unavailable — Grok estimate)\n\n"
+            f"{ai}"
+        )
+        return
+
+    # ── Format + Grok commentary ──────────────────────────────
+    body       = _format_events(events, source)
+    event_names = ", ".join([e["event"] for e in events[:5]])
+    ai = get_grok_response(
+        f"Today is {now_label}. "
+        f"Upcoming macro events this week: {event_names}. "
+        f"Which is most market-moving and why? One sentence, current context only."
+    )
+    await update.message.reply_text(body + f"\n\nGrok: {ai}")
+
 
 
 async def cmd_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1761,10 +1856,12 @@ def send_morning_briefing():
     sector_lines     = get_sector_performance()[:3]
 
     summary = " | ".join(lines)
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
     ai = get_grok_response(
-        f"Morning market brief: {summary}. Fear&Greed={fg_val}({fg_label}). "
+        f"Today is {now_label}. Morning market brief: {summary}. "
+        f"Fear&Greed={fg_val}({fg_label}). "
         f"Top sectors: {', '.join(sector_lines)}. "
-        f"Give 3 key things to watch today.",
+        f"Give 3 key things to watch today, specific to current conditions.",
         max_tokens=400
     )
     send_telegram(
@@ -1778,9 +1875,11 @@ def send_morning_briefing():
 
 def send_daily_close_summary():
     logger.info("Daily close summary")
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
     ai = get_grok_response(
-        f"Market just closed. We had {daily_alerts} spike alerts today. "
-        f"Give a 2-sentence close recap and 1 thing to watch overnight."
+        f"Today is {now_label}. Market just closed. "
+        f"We had {daily_alerts} spike alerts today. "
+        f"Give a 2-sentence close recap specific to today and 1 thing to watch overnight."
     )
     send_telegram(
         f"🔔 Daily Close Summary\n"
@@ -1792,7 +1891,10 @@ def send_daily_close_summary():
 def send_startup_message():
     session      = get_trading_session()
     status_str   = "OPEN Regular" if session == "regular" else "OPEN Extended" if session == "extended" else "CLOSED"
-    ai_sentiment = get_grok_response("Current market sentiment in 6 words.")
+    now_label    = datetime.now(CT).strftime("%A %B %d, %Y  %I:%M %p CT")
+    ai_sentiment = get_grok_response(
+        f"Today is {now_label}. Current market sentiment in 6 words."
+    )
     send_telegram(
         f"🚀 STOCK SPIKE MONITOR STARTED\n\n"
         f"Watching {len(TICKERS)} stocks (dynamic BULLISH)\n"
@@ -1822,10 +1924,11 @@ def send_weekly_digest():
     ranked  = sorted(tally.items(), key=lambda x: x[1], reverse=True)
     top_str = ", ".join([f"{t}({n})" for t, n in ranked[:5]])
 
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
     ai = get_grok_response(
-        f"Weekly spike recap: {len(recent_alerts)} total alerts. "
+        f"Today is {now_label}. Weekly spike recap: {len(recent_alerts)} total alerts. "
         f"Most active: {top_str}. "
-        f"Give a 2-sentence week summary and one stock to watch next week."
+        f"Give a 2-sentence week summary specific to this week and one stock to watch next week."
     )
     lines = [f"Weekly Digest — {datetime.now(CT).strftime('%B %d, %Y')}",
              f"Total spike alerts: {len(recent_alerts)}",
@@ -1840,9 +1943,11 @@ def send_weekly_digest():
 def send_premarket_dashboard():
     """8:00 AM CT — pre-market snapshot before regular open."""
     logger.info("Pre-market dashboard")
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
     ai = get_grok_response(
-        "Pre-market trading has begun. Give a 1-sentence pre-market mood "
-        "and the one sector to watch at open."
+        f"Today is {now_label}. Pre-market trading has begun. "
+        f"Give a 1-sentence pre-market mood based on current conditions "
+        f"and the one sector to watch at open."
     )
     send_telegram(
         f"Pre-Market Snapshot — {datetime.now(CT).strftime('%I:%M %p CT')}\n"
@@ -1856,9 +1961,10 @@ def send_midday_dashboard():
     if get_trading_session() == "closed":
         return
     logger.info("Mid-day dashboard")
+    now_label = datetime.now(CT).strftime("%A %B %d, %Y")
     ai = get_grok_response(
-        f"Mid-session check: {daily_alerts} spike alerts so far today. "
-        f"One-sentence mid-day market read."
+        f"Today is {now_label}. Mid-session check: {daily_alerts} spike alerts so far. "
+        f"One-sentence mid-day market read based on current conditions."
     )
     send_telegram(f"Mid-Day Check-In\nAlerts so far: {daily_alerts}\nGrok: {ai}")
     send_dashboard_sync("Mid-Day")
