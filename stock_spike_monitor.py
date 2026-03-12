@@ -652,8 +652,53 @@ def get_ticker_data(ticker: str) -> dict:
         except Exception as e:
             logger.debug(f"yfinance fallback {ticker}: {e}")
 
+    # ── Extended hours: overlay post/pre-market price if available ──
+    session = get_trading_session()
+    if session in ("extended", "closed"):
+        ext = _get_extended_price(ticker)
+        if ext and ext.get("price"):
+            d["ext_price"] = ext["price"]
+            d["ext_change"] = ext.get("change", 0)
+            d["ext_change_pct"] = ext.get("change_pct", 0)
+            d["ext_session"] = ext.get("session", "")
+            d["ext_regular_close"] = ext.get("regular_close", 0)
+
     return d
 
+
+def _get_extended_price(ticker: str) -> dict:
+    """Get extended hours price data from yfinance.
+    Returns dict with keys: price, change, change_pct, regular_close, session, source.
+    Returns {} if no extended data available."""
+    try:
+        info = yf.Ticker(ticker).info
+        state = (info.get("marketState") or "").upper()
+
+        if state == "POST" and info.get("postMarketPrice"):
+            pm_price = info["postMarketPrice"]
+            reg_close = info.get("regularMarketPrice") or info.get("currentPrice") or 0
+            return {
+                "price": pm_price,
+                "change": info.get("postMarketChange", 0),
+                "change_pct": info.get("postMarketChangePercent", 0),
+                "regular_close": reg_close,
+                "session": "After Hours",
+                "source": "yfinance",
+            }
+        elif state == "PRE" and info.get("preMarketPrice"):
+            pm_price = info["preMarketPrice"]
+            prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose") or 0
+            return {
+                "price": pm_price,
+                "change": info.get("preMarketChange", 0),
+                "change_pct": info.get("preMarketChangePercent", 0),
+                "regular_close": prev_close,
+                "session": "Pre-Market",
+                "source": "yfinance",
+            }
+    except Exception as e:
+        logger.debug(f"Extended price {ticker}: {e}")
+    return {}
 
 
 # ============================================================
@@ -1560,8 +1605,15 @@ def _scan_ticker(ticker: str, now: datetime):
                         last_alert_pct[ticker] = change * 100
 
     # ── Day-change alerts: catch sustained moves vs prev close ──
+    # During extended hours, use extended price to catch big AH/PM moves
+    day_c = c
+    if get_trading_session() == "extended":
+        ext = _get_extended_price(ticker)
+        if ext and ext.get("price"):
+            day_c = ext["price"]
+
     if pc and pc > 0:
-        day_change = (c - pc) / pc
+        day_change = (day_c - pc) / pc
         if abs(day_change) >= THRESHOLD:
             day_alert_key = f"{ticker}:day:{datetime.now(CT).strftime('%Y-%m-%d')}"
             if day_alert_key not in last_alert_time:
@@ -1575,7 +1627,7 @@ def _scan_ticker(ticker: str, now: datetime):
                         avg_vol = (cached_m.get("10DayAverageTradingVolume") or 0) * 1_000_000
                         if avg_vol > 0:
                             vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
-                send_alert(ticker, day_change * 100, c, vol_spike, alert_type="day")
+                send_alert(ticker, day_change * 100, day_c, vol_spike, alert_type="day")
                 last_alert_pct[day_alert_key] = day_change * 100
 
     last_prices[ticker] = c
@@ -2946,18 +2998,37 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         q      = _finnhub_quote(ticker)
         day_hi = q.get("h") or 0
         day_lo = q.get("l") or 0
-        chg_abs = price * chg / 100
-        arrow   = "+" if chg >= 0 else "-"
+
+        # Extended hours: show real-time AH/PM price as main price
+        display_price = d.get("ext_price") or price
+        display_chg_pct = d.get("ext_change_pct") or chg
+        session_tag = f"  ({d['ext_session']})" if d.get("ext_session") else ""
+        chg_abs = display_price * display_chg_pct / 100 if display_chg_pct else price * chg / 100
+        arrow   = "+" if display_chg_pct >= 0 else "-"
 
         day_range = f"${day_lo:.2f} - ${day_hi:.2f}" if day_hi and day_lo else "n/a"
         yr_range  = f"${low52:.2f} - ${high52:.2f}"   if high52 and low52  else "n/a"
 
+        ext_line = ""
+        if d.get("ext_price"):
+            ext_p = d["ext_price"]
+            ext_chg = d.get("ext_change_pct", 0)
+            ext_session = d.get("ext_session", "Extended")
+            ext_reg = d.get("ext_regular_close", price)
+            moon = "\U0001f319" if ext_session == "After Hours" else "\U0001f305"
+            ext_line = (
+                f"\n\n{moon} {ext_session}:\n"
+                f"  Price: ${ext_p:.2f} ({ext_chg:+.2f}%)\n"
+                f"  vs Close: ${ext_reg:.2f} \u2192 ${ext_p:.2f}"
+            )
+
         await update.message.reply_text(
-            f"{arrow} {ticker}: ${price:.2f}{f'  {note}' if note else ''}\n"
-            f"Change:    {chg_abs:+.2f} ({chg:+.2f}%)\n"
+            f"{arrow} {ticker}: ${display_price:.2f}{session_tag}{f'  {note}' if note else ''}\n"
+            f"Change:    {chg_abs:+.2f} ({display_chg_pct:+.2f}%)\n"
             f"Day range: {day_range}\n"
             f"52w range: {yr_range}\n"
             f"Volume:    {vol:,}"
+            f"{ext_line}"
         )
     except Exception as e:
         await update.message.reply_text(f"Could not fetch {ticker}: {e}")
@@ -3907,6 +3978,8 @@ def build_dashboard_image() -> BytesIO:
                 logger.debug(f"Dashboard FMP actives: {e}")
 
         items = []
+        _ext_session = get_trading_session() != "regular"
+
         def _quote_one(t):
             q = _finnhub_quote(t)
             if not q:
@@ -3917,6 +3990,15 @@ def build_dashboard_image() -> BytesIO:
             if not price:
                 return None
             chg = (c - pc) / pc * 100 if c > 0 and pc > 0 else 0
+            # During extended/closed hours, try real extended price
+            if _ext_session:
+                ext = _get_extended_price(t)
+                if ext and ext.get("price"):
+                    ext_p = ext["price"]
+                    reg_p = ext.get("regular_close") or price
+                    if reg_p:
+                        chg = (ext_p - reg_p) / reg_p * 100
+                    price = ext_p
             return (t, chg, price)
 
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -4406,18 +4488,20 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # NATURAL LANGUAGE HANDLER — the "ask anything" feature
 # ============================================================
 def _offhours_note() -> str:
-    """Returns a contextual note string when market is closed, empty string otherwise."""
+    """Returns a contextual note string when market is closed or in extended hours."""
     session = get_trading_session()
-    if session != "closed":
+    if session == "regular":
         return ""
+    if session == "extended":
+        return "(Extended hours \u2014 live)"
+    # closed
     now = datetime.now(CT)
     if now.weekday() >= 5:
-        days_to_open = 7 - now.weekday()   # Mon = 0
-        return f"(Weekend — market reopens Monday)"
+        return "(Weekend \u2014 market reopens Monday)"
     t = now.time()
     if t < datetime.strptime("07:00", "%H:%M").time():
-        return "(Pre-market — last close data)"
-    return "(After hours — last close data)"
+        return "(Pre-market \u2014 updating)"
+    return "(After hours \u2014 updating)"
 
 
 async def cmd_prep(update: Update, context: ContextTypes.DEFAULT_TYPE):
