@@ -129,14 +129,19 @@ TICKERS = get_dynamic_hot_stocks()
 # ────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("""Commands:
-/status   - Status + stock count
-/list     - Monitored stocks
-/alerts   - Alerts today
-/market   - Current market snapshot
-/spikes   - Recent spikes (last 30 min)
-/pause    - Pause monitoring
-/resume   - Resume monitoring
-/help     - This help""")
+/status      - Status + stock count
+/list        - Monitored stocks
+/alerts      - Alerts today
+/market      - Current market snapshot
+/spikes      - Recent spikes (last 30 min)
+/topgainers  - Top 5 gainers today
+/toplosers   - Top 5 losers today
+/highvolume  - Most active stocks
+/lowprice    - Low-priced rockets ($1–$10)
+/news TICKER - Latest news for a ticker
+/pause       - Pause monitoring
+/resume      - Resume monitoring
+/help        - This help""")
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "PAUSED" if monitoring_paused else "RUNNING"
@@ -161,6 +166,52 @@ async def cmd_spikes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No spikes in last 30 minutes.")
         return
     await update.message.reply_text("Recent spikes:\n" + "\n".join(recent_alerts[-10:]))
+
+async def cmd_topgainers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        df = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
+        text = "Top Gainers:\n" + "\n".join([f"• {row['Symbol']} +{row['% Change']:.1f}%" for _, row in df.head(5).iterrows()])
+        await update.message.reply_text(text)
+    except:
+        await update.message.reply_text("Unable to fetch top gainers right now.")
+
+async def cmd_toplosers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        df = pd.read_html("https://finance.yahoo.com/screener/predefined/day_losers")[0]
+        text = "Top Losers:\n" + "\n".join([f"• {row['Symbol']} {row['% Change']:.1f}%" for _, row in df.head(5).iterrows()])
+        await update.message.reply_text(text)
+    except:
+        await update.message.reply_text("Unable to fetch top losers right now.")
+
+async def cmd_highvolume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        df = pd.read_html("https://finance.yahoo.com/screener/predefined/most_actives")[0]
+        text = "Most Active:\n" + "\n".join([f"• {row['Symbol']}" for _, row in df.head(8).iterrows()])
+        await update.message.reply_text(text)
+    except:
+        await update.message.reply_text("Unable to fetch most active stocks.")
+
+async def cmd_lowprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        df = pd.read_html("https://finance.yahoo.com/screener/predefined/day_gainers")[0]
+        low = df[(df.get("Price (Intraday)", 0).astype(float, errors='ignore') >= 1) & 
+                 (df.get("Price (Intraday)", 0).astype(float, errors='ignore') <= 10)]
+        text = "Low-Priced Rockets:\n" + "\n".join([f"• {row['Symbol']} +{row['% Change']:.1f}%" for _, row in low.head(8).iterrows()])
+        await update.message.reply_text(text)
+    except:
+        await update.message.reply_text("Unable to fetch low-priced rockets.")
+
+async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /news TICKER (e.g. /news NVDA)")
+        return
+    ticker = context.args[0].upper()
+    news_items = fetch_latest_news(ticker)
+    if not news_items:
+        await update.message.reply_text(f"No recent news for {ticker}")
+        return
+    text = f"Latest news for {ticker}:\n" + "\n".join([f"• {headline}" for headline, _ in news_items])
+    await update.message.reply_text(text)
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global monitoring_paused
@@ -309,14 +360,18 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("alerts", cmd_alerts))
     app.add_handler(CommandHandler("market", cmd_market))
     app.add_handler(CommandHandler("spikes", cmd_spikes))
+    app.add_handler(CommandHandler("topgainers", cmd_topgainers))
+    app.add_handler(CommandHandler("toplosers", cmd_toplosers))
+    app.add_handler(CommandHandler("highvolume", cmd_highvolume))
+    app.add_handler(CommandHandler("lowprice", cmd_lowprice))
+    app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.run_polling()
 
-# Start scanner in background thread
 threading.Thread(target=scanner_thread, daemon=True).start()
 
 logger.info("✅ FULL INTERACTIVE MONITOR WITH BULLISH FILTER STARTED")
 
 send_startup_message()
-run_telegram_bot()   # runs in main thread
+run_telegram_bot()   # Main thread
