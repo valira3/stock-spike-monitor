@@ -4447,21 +4447,23 @@ async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Try to get current price for P&L
         cur_price = avg  # fallback
         try:
-            cur_price = _get_best_price(tick) or avg
+            result = _get_best_price(tick)
+            if isinstance(result, tuple):
+                cur_price = result[0] or avg
+            elif result:
+                cur_price = result
         except Exception:
             pass
         mkt_val = shares * cur_price
         pnl = mkt_val - cost
         pnl_pct = (pnl / cost * 100) if cost else 0
         sign = "+" if pnl >= 0 else ""
-        entry = p.get("entry_date", "")
 
         lines.append(
             f"{tick}: {shares} @ ${avg:,.2f}"
         )
         lines.append(
-            f"  Val: ${mkt_val:,.0f} "
-            f"({sign}{pnl_pct:.1f}%) {entry}"
+            f"  ${mkt_val:,.0f} ({sign}{pnl_pct:.1f}%)"
         )
         total_value += mkt_val
         total_cost += cost
@@ -4478,7 +4480,27 @@ async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"({port_sign}{port_pnl / sp_start * 100:.2f}%)"
     )
 
-    await update.message.reply_text("\n".join(lines))
+    # Split into chunks if too long (Telegram 4096 limit)
+    text = "\n".join(lines)
+    if len(text) <= 4000:
+        await update.message.reply_text(text)
+    else:
+        # Send in chunks
+        chunk = []
+        chunk_len = 0
+        for line in lines:
+            if chunk_len + len(line) + 1 > 3900 and chunk:
+                await update.message.reply_text(
+                    "\n".join(chunk)
+                )
+                chunk = []
+                chunk_len = 0
+            chunk.append(line)
+            chunk_len += len(line) + 1
+        if chunk:
+            await update.message.reply_text(
+                "\n".join(chunk)
+            )
 
 
 async def cmd_tpsync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7369,9 +7391,16 @@ async def cmd_tp_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Status: {shadow_str}\n"
         f"Webhook: {webhook_str}\n"
         f"PDT: {pdt_used}/3 day trades used\n"
-        f"\n"
-        f"Type /help for commands.\n"
-        f"{sep}"
+        f"{sep}\n"
+        f"/shadow  Toggle shadow mode\n"
+        f"/tp      Status & recent orders\n"
+        f"/tppos   Shadow positions\n"
+        f"/pdt     PDT tracker\n"
+        f"/tpsync  Sync shadow portfolio\n"
+        f"/tpedit  Edit shadow portfolio\n"
+        f"/paper   Paper positions\n"
+        f"/set     Trading config\n"
+        f"/help    Full help menu"
     )
 
 
