@@ -44,8 +44,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.11"
+BOT_VERSION = "1.12"
 RELEASE_NOTES = [
+    "1.12 — Extended Hours Paper Trading: portfolio, positions, and sell logic now use live pre-market/after-hours prices.",
     "1.11 — Smart Trading: trailing stops, adaptive thresholds, sector guards, earnings filter, /perf dashboard, /set config, signal learning, support/resistance, /paper chart, daily P&L.",
     "1.10 — News Sentiment Scoring: AI-powered news analysis now feeds into trading signals (component 10/10, up to 15 pts). /news shows sentiment + source timestamps.",
     "1.9 — Extended Hours Pricing: pre-market and after-hours prices from yfinance. Dashboard and quotes now show live extended session data.",
@@ -834,6 +835,21 @@ def _get_extended_price(ticker: str) -> dict:
     except Exception as e:
         logger.debug(f"Extended price {ticker}: {e}")
     return {}
+
+
+def _get_best_price(ticker: str) -> tuple:
+    """Get the best available price: extended hours if available, else Finnhub quote.
+    Returns (price, volume, prev_close) like fetch_finnhub_quote."""
+    session = get_trading_session()
+
+    # During extended/closed sessions, try extended price first
+    if session in ("extended", "closed"):
+        ext = _get_extended_price(ticker)
+        if ext and ext.get("price"):
+            return ext["price"], None, ext.get("regular_close")
+
+    # Fall back to Finnhub (works best during regular hours)
+    return fetch_finnhub_quote(ticker)
 
 
 # ============================================================
@@ -2087,7 +2103,7 @@ def paper_portfolio_value() -> float:
     total = paper_cash
     for ticker, pos in paper_positions.items():
         try:
-            price, _, _ = fetch_finnhub_quote(ticker)
+            price, _, _ = _get_best_price(ticker)
             if price:
                 total += pos["shares"] * price
         except Exception as e:
@@ -2558,7 +2574,7 @@ def _paper_position_size(ticker: str, signal_score: float) -> int:
     if dollars < 100:
         return 0
 
-    price, _, _ = fetch_finnhub_quote(ticker)
+    price, _, _ = _get_best_price(ticker)
     if not price or price <= 0:
         return 0
 
@@ -2583,7 +2599,7 @@ def paper_evaluate_ticker(ticker: str):
     if paper_daily_counts.get(count_key, 0) >= PAPER_MAX_ACTIONS:
         return
 
-    price, _, _ = fetch_finnhub_quote(ticker)
+    price, _, _ = _get_best_price(ticker)
     if not price or price < MIN_PRICE:
         return
 
@@ -3002,7 +3018,7 @@ def paper_eod_report():
     if paper_positions:
         pos_pnls = []
         for _t, _p in paper_positions.items():
-            _pr, _, _ = fetch_finnhub_quote(_t)
+            _pr, _, _ = _get_best_price(_t)
             if _pr:
                 _pnl_pct = (_pr - _p["avg_cost"]) / _p["avg_cost"] * 100
                 pos_pnls.append((_t, _pnl_pct))
@@ -3051,7 +3067,7 @@ def paper_eod_report():
     lines.append("REMAINING POSITIONS:")
     if paper_positions:
         for ticker, pos in paper_positions.items():
-            price, _, _ = fetch_finnhub_quote(ticker)
+            price, _, _ = _get_best_price(ticker)
             price = price or pos["avg_cost"]
             mkt_val = pos["shares"] * price
             pnl     = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
@@ -3108,7 +3124,7 @@ def send_daily_pnl_summary():
     if paper_positions:
         pos_pnls = []
         for _t, _p in paper_positions.items():
-            _pr, _, _ = fetch_finnhub_quote(_t)
+            _pr, _, _ = _get_best_price(_t)
             if _pr:
                 _pnl_pct = (_pr - _p["avg_cost"]) / _p["avg_cost"] * 100
                 pos_pnls.append((_t, _pnl_pct))
@@ -3169,7 +3185,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if paper_positions:
             lines.append(f"POSITIONS ({len(paper_positions)}/{PAPER_MAX_POSITIONS}):")
             for ticker, pos in paper_positions.items():
-                price, _, _ = fetch_finnhub_quote(ticker)
+                price, _, _ = _get_best_price(ticker)
                 price = price or pos["avg_cost"]
                 mkt   = pos["shares"] * price
                 pnl   = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
@@ -3195,10 +3211,37 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not paper_positions:
             await update.message.reply_text("No open positions.")
             return
-        lines = [f"OPEN POSITIONS — {datetime.now(CT).strftime('%H:%M CT')}"]
+        session = get_trading_session()
+        session_label = ""
+        if session == "extended":
+            # Determine pre/post from yfinance market state
+            try:
+                sample_ticker = next(iter(paper_positions))
+                info = yf.Ticker(sample_ticker).info
+                state = (info.get("marketState") or "").upper()
+                if state == "PRE":
+                    session_label = " (Pre-Market)"
+                elif state == "POST":
+                    session_label = " (After Hours)"
+                else:
+                    session_label = " (Extended)"
+            except Exception:
+                session_label = " (Extended)"
+        elif session == "closed":
+            session_label = " (Closed)"
+        lines = [f"OPEN POSITIONS — {datetime.now(CT).strftime('%H:%M CT')}{session_label}"]
         for ticker, pos in paper_positions.items():
-            price, _, _ = fetch_finnhub_quote(ticker)
+            price, _, _ = _get_best_price(ticker)
             price = price or pos["avg_cost"]
+            # Determine if this is an extended-hours price
+            price_tag = ""
+            if session in ("extended", "closed"):
+                ext = _get_extended_price(ticker)
+                if ext and ext.get("price"):
+                    if ext.get("session") == "Pre-Market":
+                        price_tag = " (pre)"
+                    elif ext.get("session") == "After Hours":
+                        price_tag = " (post)"
             mkt   = pos["shares"] * price
             pnl   = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
             unrealized = (price - pos["avg_cost"]) * pos["shares"]
@@ -3212,7 +3255,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines += [
                 f"",
                 f"{arrow} {ticker}",
-                f"  Shares: {pos['shares']}  Entry: ${pos['avg_cost']:.2f}  Now: ${price:.2f}",
+                f"  Shares: {pos['shares']}  Entry: ${pos['avg_cost']:.2f}  Now: ${price:.2f}{price_tag}",
                 f"  Unrealized: ${unrealized:+.2f} ({pnl:+.1f}%)",
                 f"  Market value: ${mkt:,.2f}",
                 f"  Entry: {pos['entry_date']} {pos['entry_time']}{days_held}",
@@ -3299,7 +3342,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Force refresh by clearing cache
         paper_signals_cache.pop(arg2, None)
         sig = compute_paper_signal(arg2)
-        price, _, _ = fetch_finnhub_quote(arg2)
+        price, _, _ = _get_best_price(arg2)
         verdict = "BUY" if sig["score"] >= PAPER_MIN_SIGNAL else \
                   "WATCH" if sig["score"] >= 50 else "AVOID"
         c = sig["comps"]
@@ -3482,7 +3525,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pos_lines = []
     for t, pos in paper_positions.items():
-        price, _, _ = fetch_finnhub_quote(t)
+        price, _, _ = _get_best_price(t)
         if price:
             pnl = (price - pos["avg_cost"]) / pos["avg_cost"] * 100
             icon = "+" if pnl >= 0 else "-"
