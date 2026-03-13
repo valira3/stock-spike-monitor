@@ -2263,19 +2263,26 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
         return
 
     if action == "buy" and quantity_dollars and price > 0:
-        shares = round(quantity_dollars / price, 4)
-        sp["cash"] = sp.get("cash", 0) - quantity_dollars
+        shares = math.floor(quantity_dollars / price)
+        if shares < 1:
+            tp_log(
+                f"Shadow BUY skipped: {ticker} — "
+                f"${quantity_dollars:,.0f} not enough for 1 share @ ${price:,.2f}"
+            )
+            return
+        actual_cost = round(shares * price, 2)
+        sp["cash"] = sp.get("cash", 0) - actual_cost
         sp.setdefault("positions", {})[ticker] = {
             "shares": shares,
             "avg_price": round(price, 2),
             "entry_date": today,
             "entry_time": now_hm,
-            "dollar_amount": round(quantity_dollars, 2),
+            "dollar_amount": actual_cost,
         }
         tp_log(
-            f"Shadow BUY: ~{shares:.2f} shares of "
+            f"Shadow BUY: {shares} shares of "
             f"{ticker} @ ${price:,.2f} "
-            f"(${quantity_dollars:,.0f} allocated)"
+            f"(${actual_cost:,.0f} allocated)"
         )
 
     elif action == "exit":
@@ -2400,8 +2407,15 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
     }
 
     if action == "buy" and quantity_dollars:
-        payload["quantityType"] = "dollar_amount"
-        payload["quantity"] = round(quantity_dollars, 2)
+        shares = math.floor(quantity_dollars / price) if price > 0 else 0
+        if shares < 1:
+            logger.warning(
+                f"[TP] Skipping BUY {ticker}: calculated {shares} shares "
+                f"(${quantity_dollars:,.0f} / ${price:,.2f} = {quantity_dollars/price:.2f})"
+            )
+            return None
+        payload["quantityType"] = "fixed_quantity"
+        payload["quantity"] = shares
         # Add stop loss with trailing stop %
         payload["stopLoss"] = {
             "trailPercent": round(PAPER_TRAILING_STOP_PCT * 100, 1),
@@ -2418,7 +2432,7 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
         payload["extendedHours"] = True
 
     try:
-        logger.info(f"[TP] Sending {action.upper()} {ticker}: {json.dumps(payload)}")
+        logger.info(f"[TP] Sending {action.upper()} {ticker} ({payload.get('quantity', '')} shares): {json.dumps(payload)}")
         r = requests.post(
             TRADERSPOST_WEBHOOK_URL,
             json=payload,
@@ -3412,7 +3426,8 @@ def paper_evaluate_ticker(ticker: str):
                 ticker, "buy", price, cost, success,
             )
             if tp_result:
-                tp_log(f"BUY {ticker} sent: ${cost:,.0f}")
+                _shares = math.floor(cost / price) if price > 0 else 0
+                tp_log(f"BUY {ticker} sent: {_shares} shares (${cost:,.0f})")
             else:
                 tp_log(f"BUY {ticker} FAILED to send")
         except Exception as e:
