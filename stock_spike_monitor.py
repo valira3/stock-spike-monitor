@@ -4513,6 +4513,188 @@ async def cmd_tpsync(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def cmd_tpedit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual shadow portfolio editor."""
+    _capture_tp_chat(update)
+    args = context.args
+    sub = (args[0].lower() if args else "").strip()
+    sp = tp_state.setdefault(
+        "shadow_portfolio", _default_shadow_portfolio()
+    )
+
+    # ── add TICKER SHARES PRICE ─────────────────────────
+    if sub == "add":
+        if len(args) < 4:
+            await update.message.reply_text(
+                "Usage: /tpedit add TICK QTY PRICE"
+            )
+            return
+        ticker = args[1].upper()
+        try:
+            shares = float(args[2])
+        except ValueError:
+            await update.message.reply_text(
+                f"Invalid number: {args[2]}"
+            )
+            return
+        try:
+            price = float(args[3])
+        except ValueError:
+            await update.message.reply_text(
+                f"Invalid number: {args[3]}"
+            )
+            return
+        dollar_amt = round(shares * price, 2)
+        # If replacing, refund old position first
+        if ticker in sp["positions"]:
+            old = sp["positions"][ticker]
+            old_val = round(
+                old["shares"] * old["avg_price"], 2
+            )
+            sp["cash"] = round(sp["cash"] + old_val, 2)
+        sp["positions"][ticker] = {
+            "shares": shares,
+            "avg_price": round(price, 2),
+            "entry_date": datetime.now(CT).strftime(
+                "%Y-%m-%d"
+            ),
+            "entry_time": datetime.now(CT).strftime(
+                "%H:%M"
+            ),
+            "dollar_amount": dollar_amt,
+        }
+        sp["cash"] = round(sp["cash"] - dollar_amt, 2)
+        # Clear drift warnings for this ticker
+        sp["drift_warnings"] = [
+            w for w in sp.get("drift_warnings", [])
+            if ticker not in str(w)
+        ]
+        save_paper_state()
+        await update.message.reply_text(
+            f"📡 Added: {ticker} {shares:g} shares"
+            f" @ ${price:,.2f} (${dollar_amt:,.0f})"
+        )
+
+    # ── remove TICKER ───────────────────────────────────
+    elif sub == "remove":
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Usage: /tpedit remove TICK"
+            )
+            return
+        ticker = args[1].upper()
+        if ticker not in sp["positions"]:
+            await update.message.reply_text(
+                f"Position {ticker} not found"
+                " in shadow portfolio"
+            )
+            return
+        pos = sp["positions"].pop(ticker)
+        refund = round(
+            pos["shares"] * pos["avg_price"], 2
+        )
+        sp["cash"] = round(sp["cash"] + refund, 2)
+        # Clear drift warnings for this ticker
+        sp["drift_warnings"] = [
+            w for w in sp.get("drift_warnings", [])
+            if ticker not in str(w)
+        ]
+        save_paper_state()
+        await update.message.reply_text(
+            f"📡 Removed: {ticker}"
+            f" ({pos['shares']:g} shares,"
+            f" +${refund:,.0f} to cash)"
+        )
+
+    # ── cash AMOUNT ─────────────────────────────────────
+    elif sub == "cash":
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Usage: /tpedit cash AMOUNT"
+            )
+            return
+        try:
+            amount = float(args[1])
+        except ValueError:
+            await update.message.reply_text(
+                f"Invalid number: {args[1]}"
+            )
+            return
+        sp["cash"] = round(amount, 2)
+        save_paper_state()
+        await update.message.reply_text(
+            f"📡 Shadow cash set to ${amount:,.2f}"
+        )
+
+    # ── shares TICKER SHARES ────────────────────────────
+    elif sub == "shares":
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage: /tpedit shares TICK QTY"
+            )
+            return
+        ticker = args[1].upper()
+        if ticker not in sp["positions"]:
+            await update.message.reply_text(
+                f"Position {ticker} not found"
+                " in shadow portfolio"
+            )
+            return
+        try:
+            new_shares = float(args[2])
+        except ValueError:
+            await update.message.reply_text(
+                f"Invalid number: {args[2]}"
+            )
+            return
+        pos = sp["positions"][ticker]
+        old_shares = pos["shares"]
+        diff = new_shares - old_shares
+        cash_adj = round(diff * pos["avg_price"], 2)
+        sp["cash"] = round(sp["cash"] - cash_adj, 2)
+        pos["shares"] = new_shares
+        pos["dollar_amount"] = round(
+            new_shares * pos["avg_price"], 2
+        )
+        save_paper_state()
+        await update.message.reply_text(
+            f"📡 {ticker} shares updated:"
+            f" {old_shares:g} → {new_shares:g}"
+        )
+
+    # ── clear ───────────────────────────────────────────
+    elif sub == "clear":
+        sp["positions"] = {}
+        sp["cash"] = PAPER_STARTING_CAPITAL
+        sp["starting_cash"] = PAPER_STARTING_CAPITAL
+        sp["closed_trades"] = []
+        sp["total_value_estimate"] = PAPER_STARTING_CAPITAL
+        sp["drift_warnings"] = []
+        save_paper_state()
+        await update.message.reply_text(
+            "📡 Shadow portfolio cleared."
+            f" Cash: ${PAPER_STARTING_CAPITAL:,.0f}"
+        )
+
+    # ── help (no args / unknown subcommand) ─────────────
+    else:
+        await update.message.reply_text(
+            "📡 Shadow Portfolio Editor\n"
+            "━" * 27 + "\n"
+            "/tpedit add TICK QTY PRICE\n"
+            "  Add/replace a position\n"
+            "/tpedit remove TICK\n"
+            "  Remove a position\n"
+            "/tpedit shares TICK QTY\n"
+            "  Adjust share count\n"
+            "/tpedit cash AMOUNT\n"
+            "  Set cash balance\n"
+            "/tpedit clear\n"
+            "  Reset to empty portfolio\n"
+            "━" * 27
+        )
+
+
 # ============================================================
 # TELEGRAM COMMANDS
 # ============================================================
@@ -7186,6 +7368,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("tp",      cmd_tp))
     tp_app.add_handler(CommandHandler("pdt",     cmd_pdt))
     tp_app.add_handler(CommandHandler("tpsync",  cmd_tpsync))
+    tp_app.add_handler(CommandHandler("tpedit",  cmd_tpedit))
     tp_app.add_handler(CommandHandler("paper",   cmd_paper))
     tp_app.add_handler(CommandHandler("set",     cmd_set))
     tp_app.add_handler(CommandHandler("start",   cmd_tp_start))
