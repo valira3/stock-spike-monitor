@@ -38,6 +38,7 @@ CHAT_ID           = os.getenv("CHAT_ID")
 FMP_API_KEY       = os.getenv("FMP_API_KEY")
 TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
+TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 
 # FMP stable API endpoints (v3 is deprecated for newer accounts)
 FMP_ENDPOINTS = {
@@ -348,9 +349,10 @@ def send_tp_telegram(message):
     if not TELEGRAM_TP_CHAT_ID:
         send_telegram(f"📡 [TP] {message}")
         return
+    token = TELEGRAM_TP_TOKEN or TELEGRAM_TOKEN
     try:
         url = (f"https://api.telegram.org/bot"
-               f"{TELEGRAM_TOKEN}/sendMessage")
+               f"{token}/sendMessage")
         payload = {
             "chat_id": TELEGRAM_TP_CHAT_ID,
             "text": message,
@@ -7049,6 +7051,18 @@ def scanner_thread():
 # ============================================================
 # MAIN — Telegram bot
 # ============================================================
+async def _tp_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Help command for the TP bot — lists only TP-available commands."""
+    await update.message.reply_text(
+        "📡 TradersPost Bot Commands:\n"
+        " /shadow — toggle shadow mode\n"
+        " /tp     — order status + history\n"
+        " /pdt    — PDT day trade tracker\n"
+        " /tpsync — sync shadow portfolio\n"
+        " /help   — this message"
+    )
+
+
 def run_telegram_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -7104,7 +7118,39 @@ def run_telegram_bot():
 
     app.add_handler(CommandHandler("ask",         cmd_ask))
 
-    app.run_polling()
+    # ── Second bot for TP channel (separate token) ───────────
+    if not TELEGRAM_TP_TOKEN:
+        app.run_polling()
+        return
+
+    tp_app = Application.builder().token(TELEGRAM_TP_TOKEN).build()
+    tp_app.add_handler(CommandHandler("shadow",  cmd_shadow))
+    tp_app.add_handler(CommandHandler("tp",      cmd_tp))
+    tp_app.add_handler(CommandHandler("pdt",     cmd_pdt))
+    tp_app.add_handler(CommandHandler("tpsync",  cmd_tpsync))
+    tp_app.add_handler(CommandHandler("start",   _tp_help))
+    tp_app.add_handler(CommandHandler("help",    _tp_help))
+
+    import asyncio, signal
+
+    async def _run_both():
+        loop = asyncio.get_running_loop()
+        stop = asyncio.Event()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        async with app:
+            async with tp_app:
+                await app.updater.start_polling()
+                await tp_app.updater.start_polling()
+                await app.start()
+                await tp_app.start()
+                await stop.wait()
+                await tp_app.updater.stop()
+                await app.updater.stop()
+                await tp_app.stop()
+                await app.stop()
+
+    asyncio.run(_run_both())
 
 # ============================================================
 # ENTRY POINT
