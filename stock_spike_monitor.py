@@ -44,8 +44,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.12"
+BOT_VERSION = "1.13"
 RELEASE_NOTES = [
+    "1.13 — Adaptive Trading: all params auto-adjust to market conditions (F&G + VIX). /set persists across deploys.",
     "1.12 — Extended Hours Paper Trading: portfolio, positions, and sell logic now use live pre-market/after-hours prices.",
     "1.11 — Smart Trading: trailing stops, adaptive thresholds, sector guards, earnings filter, /perf dashboard, /set config, signal learning, support/resistance, /paper chart, daily P&L.",
     "1.10 — News Sentiment Scoring: AI-powered news analysis now feeds into trading signals (component 10/10, up to 15 pts). /news shows sentiment + source timestamps.",
@@ -1863,6 +1864,17 @@ paper_signals_cache = {}
 # ── Adaptive threshold cache (Feature #2) ──────────────────
 _adaptive_threshold_cache = {"val": 65, "ts": datetime.min.replace(tzinfo=CT)}
 
+# ── Persistent user config (restored from paper_state.json) ──
+DEFAULT_CONFIG = {
+    "stop_loss": 0.06,
+    "take_profit": 0.10,
+    "trailing": 0.03,
+    "max_positions": 8,
+    "threshold": 65,
+    "auto_adjust": True,
+}
+user_config = dict(DEFAULT_CONFIG)
+
 # ── Portfolio snapshots for intraday chart (Feature #7) ────
 _portfolio_snapshots = []  # [(datetime, value), ...]
 _last_snapshot_time = datetime.min.replace(tzinfo=CT)
@@ -1892,6 +1904,7 @@ def save_paper_state():
         "paper_all_trades":   paper_all_trades,
         "paper_trades_today": paper_trades_today,
         "paper_daily_counts": paper_daily_counts,
+        "user_config":        user_config,
         "saved_at":           datetime.now(CT).isoformat(),
     }
     with _paper_save_lock:
@@ -1914,6 +1927,9 @@ def load_paper_state():
     """
     global paper_cash, paper_positions, paper_all_trades
     global paper_trades_today, paper_daily_counts
+    global user_config
+    global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
+    global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log(
@@ -1934,6 +1950,14 @@ def load_paper_state():
         for _t, _pos in paper_positions.items():
             if "high" not in _pos:
                 _pos["high"] = max(_pos.get("avg_cost", 0), _pos.get("entry_price", _pos.get("avg_cost", 0)))
+
+        # Restore user config (persisted /set values)
+        user_config = state.get("user_config", dict(DEFAULT_CONFIG))
+        PAPER_STOP_LOSS_PCT = user_config["stop_loss"]
+        PAPER_TAKE_PROFIT_PCT = user_config["take_profit"]
+        PAPER_TRAILING_STOP_PCT = user_config["trailing"]
+        PAPER_MAX_POSITIONS = user_config["max_positions"]
+        PAPER_MIN_SIGNAL = user_config["threshold"]
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -2151,10 +2175,20 @@ def _compute_macd(prices: list) -> tuple:
     return round(macd, 4), None, None
 
 
-# ── Feature #2: Adaptive threshold ──────────────────────────
-def _get_adaptive_threshold() -> int:
-    """Adjust buy threshold based on market regime (F&G + VIX). Cached 5 min."""
+# ── Feature #2: Adaptive config (threshold + all trading params) ──
+def _apply_adaptive_config() -> int:
+    """Auto-adjust trading parameters based on market regime (F&G + VIX).
+    Called every 5 minutes during market hours (cached).
+    Only adjusts if user_config["auto_adjust"] is True.
+    Returns the adaptive threshold value (same interface as old _get_adaptive_threshold).
+    """
+    global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
+    global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
     global _adaptive_threshold_cache
+
+    if not user_config.get("auto_adjust", True):
+        return _adaptive_threshold_cache["val"]
+
     now = datetime.now(CT)
     if (now - _adaptive_threshold_cache["ts"]).total_seconds() < 300:
         return _adaptive_threshold_cache["val"]
@@ -2168,28 +2202,62 @@ def _get_adaptive_threshold() -> int:
     except Exception:
         vix = 20
 
-    base = PAPER_MIN_SIGNAL  # 65
+    # ── Threshold ─────────────────────────────────────
+    base_threshold = user_config["threshold"]
+    threshold = base_threshold
+    if fg >= 75:    threshold += 10
+    elif fg >= 60:  threshold += 5
+    elif fg <= 25:  threshold -= 10
+    elif fg <= 40:  threshold -= 5
+    if vix >= 30:   threshold += 5
+    elif vix <= 15: threshold -= 3
+    threshold = max(45, min(85, threshold))
 
-    # Fear & Greed adjustment
-    if fg >= 75:
-        base += 10
-    elif fg >= 60:
-        base += 5
-    elif fg <= 25:
-        base -= 10
-    elif fg <= 40:
-        base -= 5
+    # ── Take Profit ───────────────────────────────────
+    base_tp = user_config["take_profit"]
+    if fg <= 25:      tp = base_tp * 1.3
+    elif fg <= 40:    tp = base_tp * 1.15
+    elif fg >= 75:    tp = base_tp * 0.85
+    elif fg >= 60:    tp = base_tp * 0.9
+    else:             tp = base_tp
+    PAPER_TAKE_PROFIT_PCT = round(max(0.05, min(0.20, tp)), 3)
 
-    # VIX adjustment
-    if vix >= 30:
-        base += 5
-    elif vix <= 15:
-        base -= 3
+    # ── Stop Loss ─────────────────────────────────────
+    base_sl = user_config["stop_loss"]
+    if vix >= 30:     sl = base_sl * 1.3
+    elif vix >= 25:   sl = base_sl * 1.15
+    elif vix <= 15:   sl = base_sl * 0.85
+    else:             sl = base_sl
+    PAPER_STOP_LOSS_PCT = round(max(0.03, min(0.12, sl)), 3)
 
-    result = max(45, min(85, base))
-    logger.info(f"Adaptive threshold: {result} (F&G={fg}, VIX={vix:.1f})")
-    _adaptive_threshold_cache = {"val": result, "ts": now}
-    return result
+    # ── Trailing Stop ─────────────────────────────────
+    base_trail = user_config["trailing"]
+    if vix >= 30:     trail = base_trail * 1.3
+    elif vix >= 25:   trail = base_trail * 1.15
+    elif vix <= 15:   trail = base_trail * 0.85
+    else:             trail = base_trail
+    PAPER_TRAILING_STOP_PCT = round(max(0.02, min(0.08, trail)), 3)
+
+    # ── Max Positions ─────────────────────────────────
+    base_max = user_config["max_positions"]
+    if fg <= 25:      max_pos = min(base_max + 3, 15)
+    elif fg <= 40:    max_pos = min(base_max + 1, 12)
+    elif fg >= 75:    max_pos = max(base_max - 2, 4)
+    elif fg >= 60:    max_pos = max(base_max - 1, 5)
+    else:             max_pos = base_max
+    PAPER_MAX_POSITIONS = max_pos
+
+    PAPER_MIN_SIGNAL = threshold
+
+    _adaptive_threshold_cache = {"val": threshold, "ts": now}
+
+    logger.info(
+        f"Adaptive config: thresh={threshold} TP={PAPER_TAKE_PROFIT_PCT*100:.1f}% "
+        f"SL={PAPER_STOP_LOSS_PCT*100:.1f}% trail={PAPER_TRAILING_STOP_PCT*100:.1f}% "
+        f"max_pos={PAPER_MAX_POSITIONS} (F&G={fg} VIX={vix:.1f})"
+    )
+
+    return threshold
 
 
 # ── Feature #4: Support/Resistance ──────────────────────────
@@ -2713,7 +2781,7 @@ def paper_evaluate_ticker(ticker: str):
         return
 
     sig = compute_paper_signal(ticker)
-    threshold = _get_adaptive_threshold()
+    threshold = _apply_adaptive_config()
     if sig["score"] < threshold:
         return
 
@@ -3531,7 +3599,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             icon = "+" if pnl >= 0 else "-"
             pos_lines.append(f"{icon}{t} {pnl:+.1f}%")
 
-    threshold = _get_adaptive_threshold()
+    threshold = _apply_adaptive_config()
 
     lines = [
         f"PERFORMANCE DASHBOARD",
@@ -3556,23 +3624,26 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adjust key trading parameters via Telegram."""
+    """Adjust key trading parameters via Telegram. Values persist across deploys."""
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
 
     args = context.args
     if not args:
+        aa = "ON (adapts to market)" if user_config.get("auto_adjust", True) else "OFF (using base values)"
         lines = [
             "CONFIGURABLE SETTINGS",
+            f"Auto-adjust: {aa}",
             f"",
-            f"stop_loss    {PAPER_STOP_LOSS_PCT*100:.0f}%",
-            f"take_profit  {PAPER_TAKE_PROFIT_PCT*100:.0f}%",
-            f"trailing     {PAPER_TRAILING_STOP_PCT*100:.0f}%",
-            f"max_positions {PAPER_MAX_POSITIONS}",
-            f"threshold    {PAPER_MIN_SIGNAL}  (base)",
+            f"{'':14s} Base   Active",
+            f"stop_loss    {user_config['stop_loss']*100:5.0f}%  {PAPER_STOP_LOSS_PCT*100:5.1f}%",
+            f"take_profit  {user_config['take_profit']*100:5.0f}%  {PAPER_TAKE_PROFIT_PCT*100:5.1f}%",
+            f"trailing     {user_config['trailing']*100:5.0f}%  {PAPER_TRAILING_STOP_PCT*100:5.1f}%",
+            f"max_positions {user_config['max_positions']:4}   {PAPER_MAX_POSITIONS:5}",
+            f"threshold    {user_config['threshold']:5}   {PAPER_MIN_SIGNAL:5}",
             f"",
             f"Usage: /set <param> <value>",
-            f"Example: /set stop_loss 5",
+            f"       /set auto_adjust on|off",
         ]
         await update.message.reply_text("\n".join(lines))
         return
@@ -3582,6 +3653,16 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     param = args[0].lower()
+
+    # Handle auto_adjust toggle (non-numeric)
+    if param == "auto_adjust":
+        val = args[1].lower()
+        user_config["auto_adjust"] = val in ("1", "on", "true", "yes")
+        save_paper_state()
+        status = "ON" if user_config["auto_adjust"] else "OFF"
+        await update.message.reply_text(f"Auto-adjust set to {status} (persisted)")
+        return
+
     try:
         value = float(args[1])
     except ValueError:
@@ -3590,19 +3671,29 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if param == "stop_loss" and 1 <= value <= 20:
         PAPER_STOP_LOSS_PCT = value / 100
-        await update.message.reply_text(f"Stop loss set to {value:.0f}%")
+        user_config["stop_loss"] = value / 100
+        save_paper_state()
+        await update.message.reply_text(f"Stop loss set to {value:.0f}% (persisted)")
     elif param == "take_profit" and 1 <= value <= 50:
         PAPER_TAKE_PROFIT_PCT = value / 100
-        await update.message.reply_text(f"Take profit set to {value:.0f}%")
+        user_config["take_profit"] = value / 100
+        save_paper_state()
+        await update.message.reply_text(f"Take profit set to {value:.0f}% (persisted)")
     elif param == "trailing" and 1 <= value <= 15:
         PAPER_TRAILING_STOP_PCT = value / 100
-        await update.message.reply_text(f"Trailing stop set to {value:.0f}%")
+        user_config["trailing"] = value / 100
+        save_paper_state()
+        await update.message.reply_text(f"Trailing stop set to {value:.0f}% (persisted)")
     elif param == "max_positions" and 1 <= value <= 20:
         PAPER_MAX_POSITIONS = int(value)
-        await update.message.reply_text(f"Max positions set to {int(value)}")
+        user_config["max_positions"] = int(value)
+        save_paper_state()
+        await update.message.reply_text(f"Max positions set to {int(value)} (persisted)")
     elif param == "threshold" and 30 <= value <= 100:
         PAPER_MIN_SIGNAL = int(value)
-        await update.message.reply_text(f"Base threshold set to {int(value)}")
+        user_config["threshold"] = int(value)
+        save_paper_state()
+        await update.message.reply_text(f"Base threshold set to {int(value)} (persisted)")
     else:
         await update.message.reply_text(f"Unknown param or invalid range: {param}={value}")
 
