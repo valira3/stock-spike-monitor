@@ -4414,6 +4414,73 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all shadow portfolio positions."""
+    _capture_tp_chat(update)
+    sp = tp_state.get("shadow_portfolio",
+                       _default_shadow_portfolio())
+    positions = sp.get("positions", {})
+    sp_cash = sp.get("cash", 0)
+    sp_start = sp.get("starting_cash", PAPER_STARTING_CAPITAL)
+
+    if not positions:
+        await update.message.reply_text(
+            "📡 Shadow Portfolio Positions\n"
+            f"{'━' * 31}\n"
+            "No positions.\n"
+            f"Cash: ${sp_cash:,.0f}"
+        )
+        return
+
+    lines = [
+        "📡 Shadow Portfolio Positions",
+        "━" * 31,
+    ]
+
+    total_value = 0
+    total_cost = 0
+    for tick in sorted(positions.keys()):
+        p = positions[tick]
+        shares = p.get("shares", 0)
+        avg = p.get("avg_price", 0)
+        cost = shares * avg
+        # Try to get current price for P&L
+        cur_price = avg  # fallback
+        try:
+            cur_price = _get_best_price(tick) or avg
+        except Exception:
+            pass
+        mkt_val = shares * cur_price
+        pnl = mkt_val - cost
+        pnl_pct = (pnl / cost * 100) if cost else 0
+        sign = "+" if pnl >= 0 else ""
+        entry = p.get("entry_date", "")
+
+        lines.append(
+            f"{tick}: {shares} @ ${avg:,.2f}"
+        )
+        lines.append(
+            f"  Val: ${mkt_val:,.0f} "
+            f"({sign}{pnl_pct:.1f}%) {entry}"
+        )
+        total_value += mkt_val
+        total_cost += cost
+
+    port_value = sp_cash + total_value
+    port_pnl = port_value - sp_start
+    port_sign = "+" if port_pnl >= 0 else ""
+
+    lines.append("━" * 31)
+    lines.append(f"Positions: {len(positions)}")
+    lines.append(f"Cash: ${sp_cash:,.0f}")
+    lines.append(
+        f"Total: ${port_value:,.0f} "
+        f"({port_sign}{port_pnl / sp_start * 100:.2f}%)"
+    )
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def cmd_tpsync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manual sync/reset for the TradersPost shadow portfolio."""
     _capture_tp_chat(update)
@@ -7266,10 +7333,11 @@ async def cmd_tp_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{sep}\n"
         f"/shadow  Toggle shadow mode\n"
         f"/tp      Status & recent orders\n"
+        f"/tppos   Shadow portfolio positions\n"
         f"/pdt     PDT tracker (day trades)\n"
         f"/tpsync  Sync shadow portfolio\n"
-        f"  reset — match to paper\n"
-        f"  status — side-by-side compare\n"
+        f"  reset \u2014 match to paper\n"
+        f"  status \u2014 side-by-side compare\n"
         f"/tpedit  Edit shadow portfolio\n"
         f"  add TICK QTY PRICE\n"
         f"  remove TICK\n"
@@ -7354,6 +7422,7 @@ def run_telegram_bot():
     if not TELEGRAM_TP_TOKEN:
         app.add_handler(CommandHandler("shadow",  cmd_shadow))
         app.add_handler(CommandHandler("tp",      cmd_tp))
+        app.add_handler(CommandHandler("tppos",   cmd_tppos))
         app.add_handler(CommandHandler("pdt",     cmd_pdt))
         app.add_handler(CommandHandler("tpsync",  cmd_tpsync))
 
@@ -7374,6 +7443,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("pdt",     cmd_pdt))
     tp_app.add_handler(CommandHandler("tpsync",  cmd_tpsync))
     tp_app.add_handler(CommandHandler("tpedit",  cmd_tpedit))
+    tp_app.add_handler(CommandHandler("tppos",   cmd_tppos))
     tp_app.add_handler(CommandHandler("paper",   cmd_paper))
     tp_app.add_handler(CommandHandler("set",     cmd_set))
     tp_app.add_handler(CommandHandler("start",   cmd_tp_start))
