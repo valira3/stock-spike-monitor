@@ -47,8 +47,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.16"
+BOT_VERSION = "1.17"
 RELEASE_NOTES = [
+    "1.17 — Full channel separation: TP commands exclusive to TradersPost bot.",
     "1.16 — Separate Telegram channel for TradersPost/shadow trading.",
     "1.15 — Shadow portfolio tracker with drift detection, /tpsync command.",
     "1.14 — Shadow Mode: TradersPost webhook integration, PDT tracker, /shadow /pdt /tp commands.",
@@ -253,11 +254,6 @@ BOT_DESCRIPTION = (
     " /paper reset start over at $100k\n"
     " /perf        performance dashboard\n"
     " /overnight   gap risk on holdings\n"
-    "\n"
-    "TRADERSPOST\n"
-    " /shadow      toggle shadow mode\n"
-    " /tp          order status + history\n"
-    " /pdt         PDT day trade tracker\n"
     "\n"
     "AI & TOOLS\n"
     " /aistocks    AI picks + conviction\n"
@@ -3205,10 +3201,6 @@ def paper_evaluate_ticker(ticker: str):
                         )
                         if tp_result:
                             tp_log(f"EXIT {ticker} sent")
-                            send_telegram(
-                                f"📡 Shadow EXIT: {ticker}"
-                                f" → TradersPost ✅"
-                            )
                             # Check if day trade
                             if _entry_date == today:
                                 record_day_trade(ticker)
@@ -3400,10 +3392,6 @@ def paper_evaluate_ticker(ticker: str):
             )
             if tp_result:
                 tp_log(f"BUY {ticker} sent: ${cost:,.0f}")
-                send_telegram(
-                    f"📡 Shadow BUY: {ticker}"
-                    f" ${cost:,.0f} → TradersPost ✅"
-                )
             else:
                 tp_log(f"BUY {ticker} FAILED to send")
         except Exception as e:
@@ -7051,15 +7039,47 @@ def scanner_thread():
 # ============================================================
 # MAIN — Telegram bot
 # ============================================================
-async def _tp_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Help command for the TP bot — lists only TP-available commands."""
+async def cmd_tp_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Help command for the TP bot — TP commands only."""
+    mode = user_config.get("trading_mode", "paper")
+    sep = "━" * 29
     await update.message.reply_text(
-        "📡 TradersPost Bot Commands:\n"
-        " /shadow — toggle shadow mode\n"
-        " /tp     — order status + history\n"
-        " /pdt    — PDT day trade tracker\n"
-        " /tpsync — sync shadow portfolio\n"
-        " /help   — this message"
+        f"📡 TradersPost Bot — Help\n"
+        f"{sep}\n"
+        f"/shadow  Toggle shadow mode on/off\n"
+        f"/tp      TradersPost status & orders\n"
+        f"/pdt     PDT tracker (day trades)\n"
+        f"/tpsync  Sync shadow portfolio\n"
+        f"         reset — match to paper\n"
+        f"         status — compare side-by-side\n"
+        f"/paper   View paper positions\n"
+        f"/set     View/change trading config\n"
+        f"/help    Show this menu\n"
+        f"{sep}\n"
+        f"Mode: {mode}"
+    )
+
+
+async def cmd_tp_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Welcome message for the TP bot."""
+    mode = user_config.get("trading_mode", "paper")
+    shadow_str = "ON" if mode == "shadow" else "OFF"
+    webhook_str = ("connected" if TRADERSPOST_WEBHOOK_URL
+                   else "not set")
+    pdt_used, _ = count_day_trades_rolling()
+    sep = "━" * 29
+    await update.message.reply_text(
+        f"📡 TradersPost Trading Bot\n"
+        f"{sep}\n"
+        f"Shadow mode mirrors paper trades\n"
+        f"to your TradersPost account.\n"
+        f"\n"
+        f"Status: {shadow_str}\n"
+        f"Webhook: {webhook_str}\n"
+        f"PDT: {pdt_used}/3 day trades used\n"
+        f"\n"
+        f"Type /help for commands.\n"
+        f"{sep}"
     )
 
 
@@ -7106,11 +7126,12 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("overnight",   cmd_overnight))
     app.add_handler(CommandHandler("aistocks",    cmd_aistocks))
 
-    # ── TradersPost ──────────────────────────────────────────
-    app.add_handler(CommandHandler("shadow",      cmd_shadow))
-    app.add_handler(CommandHandler("tp",          cmd_tp))
-    app.add_handler(CommandHandler("pdt",         cmd_pdt))
-    app.add_handler(CommandHandler("tpsync",      cmd_tpsync))
+    # ── TradersPost (main bot only if no separate TP token) ──
+    if not TELEGRAM_TP_TOKEN:
+        app.add_handler(CommandHandler("shadow",  cmd_shadow))
+        app.add_handler(CommandHandler("tp",      cmd_tp))
+        app.add_handler(CommandHandler("pdt",     cmd_pdt))
+        app.add_handler(CommandHandler("tpsync",  cmd_tpsync))
 
     # ── Off-hours / prep ──────────────────────────────────────
     app.add_handler(CommandHandler("prep",        cmd_prep))
@@ -7128,8 +7149,10 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("tp",      cmd_tp))
     tp_app.add_handler(CommandHandler("pdt",     cmd_pdt))
     tp_app.add_handler(CommandHandler("tpsync",  cmd_tpsync))
-    tp_app.add_handler(CommandHandler("start",   _tp_help))
-    tp_app.add_handler(CommandHandler("help",    _tp_help))
+    tp_app.add_handler(CommandHandler("paper",   cmd_paper))
+    tp_app.add_handler(CommandHandler("set",     cmd_set))
+    tp_app.add_handler(CommandHandler("start",   cmd_tp_start))
+    tp_app.add_handler(CommandHandler("help",    cmd_tp_help))
 
     import asyncio, signal
 
