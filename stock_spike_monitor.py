@@ -37,6 +37,7 @@ TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID           = os.getenv("CHAT_ID")
 FMP_API_KEY       = os.getenv("FMP_API_KEY")
 TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
+TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 
 # FMP stable API endpoints (v3 is deprecated for newer accounts)
 FMP_ENDPOINTS = {
@@ -45,8 +46,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.15"
+BOT_VERSION = "1.16"
 RELEASE_NOTES = [
+    "1.16 — Separate Telegram channel for TradersPost/shadow trading.",
     "1.15 — Shadow portfolio tracker with drift detection, /tpsync command.",
     "1.14 — Shadow Mode: TradersPost webhook integration, PDT tracker, /shadow /pdt /tp commands.",
     "1.13 — Adaptive Trading: all params auto-adjust to market conditions (F&G + VIX). /set persists across deploys.",
@@ -338,6 +340,24 @@ def send_telegram(text, chat_id=None):
                 wait = 2 ** attempt
                 logger.error(f"Telegram send error (attempt {attempt+1}): {e}. Retry in {wait}s")
                 time.sleep(wait)
+
+
+def send_tp_telegram(message):
+    """Send to TradersPost Telegram channel.
+    Falls back to main channel if TP chat ID not set."""
+    if not TELEGRAM_TP_CHAT_ID:
+        send_telegram(f"📡 [TP] {message}")
+        return
+    try:
+        url = (f"https://api.telegram.org/bot"
+               f"{TELEGRAM_TOKEN}/sendMessage")
+        payload = {
+            "chat_id": TELEGRAM_TP_CHAT_ID,
+            "text": message,
+        }
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"[TP] TP channel send failed: {e}")
 
 # ============================================================
 # AI HELPERS — Claude primary, Grok fallback, exponential backoff
@@ -2187,9 +2207,9 @@ def paper_log(msg: str):
 # ============================================================
 
 def tp_log(message: str):
-    """Log TradersPost events with [TP] prefix and send Telegram notification."""
+    """Log TradersPost events to TP channel."""
     logger.info(f"[TP] {message}")
-    send_telegram(f"📡 [TP] {message}")
+    send_tp_telegram(f"📡 {message}")
 
 
 def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
@@ -3183,6 +3203,10 @@ def paper_evaluate_ticker(ticker: str):
                         )
                         if tp_result:
                             tp_log(f"EXIT {ticker} sent")
+                            send_telegram(
+                                f"📡 Shadow EXIT: {ticker}"
+                                f" → TradersPost ✅"
+                            )
                             # Check if day trade
                             if _entry_date == today:
                                 record_day_trade(ticker)
@@ -3374,6 +3398,10 @@ def paper_evaluate_ticker(ticker: str):
             )
             if tp_result:
                 tp_log(f"BUY {ticker} sent: ${cost:,.0f}")
+                send_telegram(
+                    f"📡 Shadow BUY: {ticker}"
+                    f" ${cost:,.0f} → TradersPost ✅"
+                )
             else:
                 tp_log(f"BUY {ticker} FAILED to send")
         except Exception as e:
@@ -6658,6 +6686,29 @@ def send_startup_message():
     send_telegram("\n".join(msg_lines))
     send_dashboard_sync("Startup")
 
+
+def send_tp_startup_message():
+    """Send startup message to TP channel if configured."""
+    if not TELEGRAM_TP_CHAT_ID:
+        return
+    mode = user_config.get("trading_mode", "paper")
+    pdt_used, _pdt_left = count_day_trades_rolling()
+    sp = tp_state.get("shadow_portfolio",
+                       _default_shadow_portfolio())
+    sp_val = sp.get("total_value_estimate",
+                     PAPER_STARTING_CAPITAL)
+    sep = "━" * 31
+    lines = [
+        f"📡 Stock Spike Monitor v{BOT_VERSION}",
+        f"TradersPost Channel Active",
+        sep,
+        f"Mode: {mode}",
+        f"PDT: {pdt_used}/3 day trades used",
+        f"Shadow Portfolio: ${sp_val:,.0f}",
+    ]
+    send_tp_telegram("\n".join(lines))
+
+
 def send_weekly_digest():
     """Sunday 6 PM CT — week-in-review with live snapshot."""
     if not recent_alerts:
@@ -7095,4 +7146,5 @@ if get_trading_session() != "closed":
 threading.Thread(target=scanner_thread, daemon=True).start()
 logger.info(f"Stock Spike Monitor v{BOT_VERSION} started")
 send_startup_message()
+send_tp_startup_message()
 run_telegram_bot()
