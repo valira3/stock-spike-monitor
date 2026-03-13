@@ -45,8 +45,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.14"
+BOT_VERSION = "1.15"
 RELEASE_NOTES = [
+    "1.15 — Shadow portfolio tracker with drift detection, /tpsync command.",
     "1.14 — Shadow Mode: TradersPost webhook integration, PDT tracker, /shadow /pdt /tp commands.",
     "1.13 — Adaptive Trading: all params auto-adjust to market conditions (F&G + VIX). /set persists across deploys.",
     "1.12 — Extended Hours Paper Trading: portfolio, positions, and sell logic now use live pre-market/after-hours prices.",
@@ -1884,6 +1885,19 @@ DEFAULT_CONFIG = {
 user_config = dict(DEFAULT_CONFIG)
 
 # ── TradersPost shadow mode state ────────────────────────────
+
+def _default_shadow_portfolio():
+    """Return a fresh shadow portfolio dict."""
+    return {
+        "cash": PAPER_STARTING_CAPITAL,
+        "starting_cash": PAPER_STARTING_CAPITAL,
+        "positions": {},
+        "closed_trades": [],
+        "total_value_estimate": PAPER_STARTING_CAPITAL,
+        "last_sync_check": None,
+        "drift_warnings": [],
+    }
+
 tp_state = {
     "day_trades": [],
     "total_orders_sent": 0,
@@ -1891,6 +1905,7 @@ tp_state = {
     "total_orders_failed": 0,
     "last_order_time": None,
     "recent_orders": [],
+    "shadow_portfolio": _default_shadow_portfolio(),
 }
 
 # ── Portfolio snapshots for intraday chart (Feature #7) ────
@@ -1989,7 +2004,11 @@ def load_paper_state():
             "total_orders_failed": 0,
             "last_order_time": None,
             "recent_orders": [],
+            "shadow_portfolio": _default_shadow_portfolio(),
         })
+        # Migrate: ensure shadow_portfolio exists
+        if "shadow_portfolio" not in tp_state:
+            tp_state["shadow_portfolio"] = _default_shadow_portfolio()
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -2030,6 +2049,7 @@ def load_paper_state():
             "total_orders_failed": 0,
             "last_order_time": None,
             "recent_orders": [],
+            "shadow_portfolio": _default_shadow_portfolio(),
         }
 
 
@@ -2170,6 +2190,154 @@ def tp_log(message: str):
     """Log TradersPost events with [TP] prefix and send Telegram notification."""
     logger.info(f"[TP] {message}")
     send_telegram(f"📡 [TP] {message}")
+
+
+def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
+    """Update the shadow portfolio after a TradersPost webhook call.
+
+    - On success: update shadow positions/cash to reflect the trade.
+    - On failure: log a drift warning (paper traded, TP didn't).
+    """
+    sp = tp_state.setdefault("shadow_portfolio",
+                             _default_shadow_portfolio())
+    now = datetime.now(CT)
+    today = now.strftime("%Y-%m-%d")
+    now_hm = now.strftime("%H:%M")
+
+    if not success:
+        # Trade didn't go through on TradersPost — drift
+        warn = {
+            "ticker": ticker,
+            "action": action,
+            "reason": "webhook_failed",
+            "time": now.isoformat(),
+        }
+        sp.setdefault("drift_warnings", []).append(warn)
+        if len(sp["drift_warnings"]) > 50:
+            sp["drift_warnings"] = sp["drift_warnings"][-50:]
+        tp_log(
+            f"⚠️ DRIFT: {action.upper()} {ticker} sent but "
+            "webhook failed — paper has position, "
+            "TradersPost may not"
+        )
+        save_paper_state()
+        return
+
+    if action == "buy" and quantity_dollars and price > 0:
+        shares = round(quantity_dollars / price, 4)
+        sp["cash"] = sp.get("cash", 0) - quantity_dollars
+        sp.setdefault("positions", {})[ticker] = {
+            "shares": shares,
+            "avg_price": round(price, 2),
+            "entry_date": today,
+            "entry_time": now_hm,
+            "dollar_amount": round(quantity_dollars, 2),
+        }
+        tp_log(
+            f"Shadow BUY: ~{shares:.2f} shares of "
+            f"{ticker} @ ${price:,.2f} "
+            f"(${quantity_dollars:,.0f} allocated)"
+        )
+
+    elif action == "exit":
+        positions = sp.get("positions", {})
+        pos = positions.pop(ticker, None)
+        if pos:
+            shares = pos.get("shares", 0)
+            entry_px = pos.get("avg_price", price)
+            proceeds = round(shares * price, 2)
+            pnl = round(proceeds - pos.get("dollar_amount",
+                                           shares * entry_px), 2)
+            sp["cash"] = sp.get("cash", 0) + proceeds
+            closed = {
+                "ticker": ticker,
+                "shares": shares,
+                "entry_price": entry_px,
+                "exit_price": round(price, 2),
+                "pnl": pnl,
+                "entry_date": pos.get("entry_date", ""),
+                "exit_date": today,
+                "exit_time": now_hm,
+            }
+            sp.setdefault("closed_trades", []).append(closed)
+            if len(sp["closed_trades"]) > 50:
+                sp["closed_trades"] = sp["closed_trades"][-50:]
+            sign = "+" if pnl >= 0 else ""
+            tp_log(
+                f"Shadow EXIT: {ticker} ~{shares:.2f} "
+                f"shares @ ${price:,.2f} "
+                f"(est P&L: {sign}${pnl:,.2f})"
+            )
+        else:
+            tp_log(
+                f"Shadow EXIT: {ticker} — no shadow "
+                "position found (already synced?)"
+            )
+
+    # Update total value estimate
+    pos_value = sum(
+        p.get("shares", 0) * p.get("avg_price", 0)
+        for p in sp.get("positions", {}).values()
+    )
+    sp["total_value_estimate"] = round(
+        sp.get("cash", 0) + pos_value, 2
+    )
+    sp["last_sync_check"] = now.isoformat()
+    save_paper_state()
+
+
+def _log_pdt_drift(ticker):
+    """Log drift when PDT blocks an EXIT on TradersPost side."""
+    sp = tp_state.setdefault("shadow_portfolio",
+                             _default_shadow_portfolio())
+    now = datetime.now(CT)
+    warn = {
+        "ticker": ticker,
+        "action": "exit",
+        "reason": "pdt_blocked",
+        "time": now.isoformat(),
+    }
+    sp.setdefault("drift_warnings", []).append(warn)
+    if len(sp["drift_warnings"]) > 50:
+        sp["drift_warnings"] = sp["drift_warnings"][-50:]
+    tp_log(
+        f"⚠️ DRIFT: EXIT {ticker} blocked by PDT — "
+        "paper sold, TradersPost still holds"
+    )
+    save_paper_state()
+
+
+def check_tp_drift():
+    """Compare shadow_portfolio positions vs paper_positions.
+
+    Returns a list of drift dicts:
+      [{"ticker": ..., "issue": ..., "detail": ...}, ...]
+    """
+    sp = tp_state.get("shadow_portfolio",
+                       _default_shadow_portfolio())
+    shadow_pos = set(sp.get("positions", {}).keys())
+    paper_pos = set(paper_positions.keys())
+    drifts = []
+
+    # In paper but not shadow
+    for t in sorted(paper_pos - shadow_pos):
+        drifts.append({
+            "ticker": t,
+            "issue": "paper_only",
+            "detail": f"Paper has {t}, TradersPost may not",
+        })
+
+    # In shadow but not paper
+    for t in sorted(shadow_pos - paper_pos):
+        drifts.append({
+            "ticker": t,
+            "issue": "shadow_only",
+            "detail": f"TradersPost may hold {t}, "
+                      "paper doesn't",
+        })
+
+    sp["last_sync_check"] = datetime.now(CT).isoformat()
+    return drifts
 
 
 def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars=None):
@@ -2997,12 +3165,21 @@ def paper_evaluate_ticker(ticker: str):
                         tp_log(
                             f"EXIT {ticker} BLOCKED: {reason}"
                         )
+                        _log_pdt_drift(ticker)
                     else:
                         tp_result = send_traderspost_order(
                             ticker=ticker,
                             action="exit",
                             signal_score=0,
                             price=price,
+                        )
+                        success = bool(
+                            tp_result
+                            and tp_result.get("success")
+                        )
+                        update_shadow_portfolio(
+                            ticker, "exit", price,
+                            None, success,
                         )
                         if tp_result:
                             tp_log(f"EXIT {ticker} sent")
@@ -3188,6 +3365,12 @@ def paper_evaluate_ticker(ticker: str):
                 signal_score=sig["score"],
                 price=price,
                 quantity_dollars=cost,
+            )
+            success = bool(
+                tp_result and tp_result.get("success")
+            )
+            update_shadow_portfolio(
+                ticker, "buy", price, cost, success,
             )
             if tp_result:
                 tp_log(f"BUY {ticker} sent: ${cost:,.0f}")
@@ -3990,6 +4173,11 @@ async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ts = tp_state.get("total_orders_sent", 0)
         tok = tp_state.get("total_orders_success", 0)
         tfl = tp_state.get("total_orders_failed", 0)
+        drifts = check_tp_drift()
+        drift_str = (
+            f"⚠️ {len(drifts)} drift issues"
+            if drifts else "✅ In Sync"
+        )
         await update.message.reply_text(
             "📡 Shadow Mode: ON\n"
             f"{'─'*28}\n"
@@ -3998,7 +4186,8 @@ async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"PDT Status: {count}/3 day trades "
             f"({remaining} remaining)\n"
             f"Orders Sent: {ts} "
-            f"({tok} success, {tfl} failed)"
+            f"({tok} success, {tfl} failed)\n"
+            f"Drift: {drift_str}"
         )
 
 
@@ -4063,7 +4252,7 @@ async def cmd_pdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show TradersPost status and recent orders."""
+    """Show TradersPost status, shadow portfolio, and drift."""
     mode = user_config.get("trading_mode", "paper")
     mode_label = (
         "Shadow (Paper Mirror)"
@@ -4102,6 +4291,32 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Last Order: {last_str}",
     ]
 
+    # ── Shadow portfolio summary ─────────────────────
+    sp = tp_state.get("shadow_portfolio",
+                       _default_shadow_portfolio())
+    sp_cash = sp.get("cash", 0)
+    sp_positions = sp.get("positions", {})
+    sp_start = sp.get("starting_cash", PAPER_STARTING_CAPITAL)
+    pos_value = sum(
+        p.get("shares", 0) * p.get("avg_price", 0)
+        for p in sp_positions.values()
+    )
+    est_value = sp_cash + pos_value
+    est_pnl = est_value - sp_start
+    pnl_pct = (est_pnl / sp_start * 100) if sp_start else 0
+    sign = "+" if est_pnl >= 0 else ""
+
+    lines.append("")
+    lines.append("Shadow Portfolio:")
+    lines.append(f" Cash: ${sp_cash:,.0f}")
+    lines.append(f" Positions: {len(sp_positions)}")
+    lines.append(f" Est. Value: ${est_value:,.0f}")
+    lines.append(
+        f" Est. P&L: {sign}${est_pnl:,.0f} "
+        f"({sign}{pnl_pct:.2f}%)"
+    )
+
+    # ── Recent orders ────────────────────────────────
     recent = tp_state.get("recent_orders", [])
     if recent:
         lines.append("")
@@ -4110,7 +4325,6 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tick = o.get("ticker", "?")
             act = o.get("action", "?")
             ok = "✅" if o.get("success") else "❌"
-            # Time ago
             t_ago = ""
             try:
                 ot = datetime.fromisoformat(o["time"])
@@ -4135,8 +4349,117 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("")
         lines.append("No orders sent yet.")
 
+    # ── Drift check ──────────────────────────────────
     lines.append("━" * 31)
+    drifts = check_tp_drift()
+    if drifts:
+        lines.append(
+            f"⚠️ Drift Detected ({len(drifts)} issues):"
+        )
+        for d in drifts:
+            lines.append(f"• {d['detail']}")
+    else:
+        lines.append("Drift Check: ✅ In Sync")
+
     await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_tpsync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual sync/reset for the TradersPost shadow portfolio."""
+    args = context.args
+    sub = (args[0].lower() if args else "").strip()
+
+    if sub == "reset":
+        sp = tp_state.setdefault(
+            "shadow_portfolio", _default_shadow_portfolio()
+        )
+        sp["positions"] = {}
+        total_dollars = 0.0
+        now = datetime.now(CT)
+        today = now.strftime("%Y-%m-%d")
+        now_hm = now.strftime("%H:%M")
+        for t, pos in paper_positions.items():
+            px = pos.get("avg_cost", pos.get("entry_price", 0))
+            shares = pos.get("shares", 0)
+            dollar_amt = round(shares * px, 2)
+            total_dollars += dollar_amt
+            sp["positions"][t] = {
+                "shares": shares,
+                "avg_price": round(px, 2),
+                "entry_date": pos.get("entry_date", today),
+                "entry_time": pos.get(
+                    "entry_time", now_hm
+                ),
+                "dollar_amount": dollar_amt,
+            }
+        start = sp.get(
+            "starting_cash", PAPER_STARTING_CAPITAL
+        )
+        sp["cash"] = round(start - total_dollars, 2)
+        sp["drift_warnings"] = []
+        sp["last_sync_check"] = now.isoformat()
+        pos_value = sum(
+            p.get("shares", 0) * p.get("avg_price", 0)
+            for p in sp["positions"].values()
+        )
+        sp["total_value_estimate"] = round(
+            sp["cash"] + pos_value, 2
+        )
+        save_paper_state()
+        tp_log("Shadow portfolio synced to paper portfolio")
+        n = len(paper_positions)
+        await update.message.reply_text(
+            "📡 Shadow portfolio reset to match paper.\n"
+            f"{n} position{'s' if n != 1 else ''} synced."
+        )
+
+    elif sub == "status":
+        sp = tp_state.get(
+            "shadow_portfolio", _default_shadow_portfolio()
+        )
+        shadow_pos = sp.get("positions", {})
+        all_tickers = sorted(
+            set(paper_positions.keys())
+            | set(shadow_pos.keys())
+        )
+        lines = [
+            "📡 Sync Status: Paper vs TradersPost",
+            "━" * 35,
+        ]
+        for t in all_tickers:
+            in_paper = "✅" if t in paper_positions else "❌"
+            in_tp = "✅" if t in shadow_pos else "❌"
+            match = (
+                "✓ Match"
+                if (t in paper_positions) == (t in shadow_pos)
+                else "⚠️ Drift"
+            )
+            lines.append(
+                f"{t:5s} Paper: {in_paper}  "
+                f"TP: {in_tp}  {match}"
+            )
+        if not all_tickers:
+            lines.append("No positions in either.")
+
+        sp_cash = sp.get("cash", 0)
+        lines.append("")
+        lines.append(
+            f"Cash: Paper ${paper_cash:,.0f} "
+            f"| TP est ${sp_cash:,.0f}"
+        )
+        lines.append("━" * 35)
+        lines.append("Tip: /tpsync reset to re-sync")
+        await update.message.reply_text("\n".join(lines))
+
+    else:
+        await update.message.reply_text(
+            "📡 /tpsync commands:\n"
+            f"{'─'*28}\n"
+            "/tpsync reset — Reset shadow to\n"
+            "  match paper portfolio\n"
+            "/tpsync status — Side-by-side\n"
+            "  comparison of paper vs shadow"
+        )
 
 
 # ============================================================
@@ -6722,6 +7045,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("shadow",      cmd_shadow))
     app.add_handler(CommandHandler("tp",          cmd_tp))
     app.add_handler(CommandHandler("pdt",         cmd_pdt))
+    app.add_handler(CommandHandler("tpsync",      cmd_tpsync))
 
     # ── Off-hours / prep ──────────────────────────────────────
     app.add_handler(CommandHandler("prep",        cmd_prep))
