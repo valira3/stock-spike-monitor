@@ -2416,15 +2416,6 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
             return None
         payload["quantityType"] = "fixed_quantity"
         payload["quantity"] = shares
-        # Add stop loss with trailing stop %
-        payload["stopLoss"] = {
-            "trailPercent": round(PAPER_TRAILING_STOP_PCT * 100, 1),
-        }
-        # Add take profit target
-        tp_target = round(price * (1 + PAPER_TAKE_PROFIT_PCT), 2)
-        payload["takeProfit"] = {
-            "limitPrice": tp_target,
-        }
 
     # Extended hours during pre/post-market
     session = get_trading_session()
