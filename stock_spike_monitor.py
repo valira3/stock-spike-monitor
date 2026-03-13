@@ -36,6 +36,7 @@ GROK_API_KEY      = os.getenv("GROK_API_KEY")        # fallback only
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID           = os.getenv("CHAT_ID")
 FMP_API_KEY       = os.getenv("FMP_API_KEY")
+TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 
 # FMP stable API endpoints (v3 is deprecated for newer accounts)
 FMP_ENDPOINTS = {
@@ -44,8 +45,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.13"
+BOT_VERSION = "1.14"
 RELEASE_NOTES = [
+    "1.14 — Shadow Mode: TradersPost webhook integration, PDT tracker, /shadow /pdt /tp commands.",
     "1.13 — Adaptive Trading: all params auto-adjust to market conditions (F&G + VIX). /set persists across deploys.",
     "1.12 — Extended Hours Paper Trading: portfolio, positions, and sell logic now use live pre-market/after-hours prices.",
     "1.11 — Smart Trading: trailing stops, adaptive thresholds, sector guards, earnings filter, /perf dashboard, /set config, signal learning, support/resistance, /paper chart, daily P&L.",
@@ -247,6 +249,11 @@ BOT_DESCRIPTION = (
     " /paper reset start over at $100k\n"
     " /perf        performance dashboard\n"
     " /overnight   gap risk on holdings\n"
+    "\n"
+    "TRADERSPOST\n"
+    " /shadow      toggle shadow mode\n"
+    " /tp          order status + history\n"
+    " /pdt         PDT day trade tracker\n"
     "\n"
     "AI & TOOLS\n"
     " /aistocks    AI picks + conviction\n"
@@ -1872,8 +1879,19 @@ DEFAULT_CONFIG = {
     "max_positions": 8,
     "threshold": 65,
     "auto_adjust": True,
+    "trading_mode": "paper",
 }
 user_config = dict(DEFAULT_CONFIG)
+
+# ── TradersPost shadow mode state ────────────────────────────
+tp_state = {
+    "day_trades": [],
+    "total_orders_sent": 0,
+    "total_orders_success": 0,
+    "total_orders_failed": 0,
+    "last_order_time": None,
+    "recent_orders": [],
+}
 
 # ── Portfolio snapshots for intraday chart (Feature #7) ────
 _portfolio_snapshots = []  # [(datetime, value), ...]
@@ -1905,6 +1923,7 @@ def save_paper_state():
         "paper_trades_today": paper_trades_today,
         "paper_daily_counts": paper_daily_counts,
         "user_config":        user_config,
+        "tp_state":           tp_state,
         "saved_at":           datetime.now(CT).isoformat(),
     }
     with _paper_save_lock:
@@ -1927,7 +1946,7 @@ def load_paper_state():
     """
     global paper_cash, paper_positions, paper_all_trades
     global paper_trades_today, paper_daily_counts
-    global user_config
+    global user_config, tp_state
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
 
@@ -1953,11 +1972,24 @@ def load_paper_state():
 
         # Restore user config (persisted /set values)
         user_config = state.get("user_config", dict(DEFAULT_CONFIG))
+        # Migrate: ensure trading_mode exists in restored config
+        if "trading_mode" not in user_config:
+            user_config["trading_mode"] = "paper"
         PAPER_STOP_LOSS_PCT = user_config["stop_loss"]
         PAPER_TAKE_PROFIT_PCT = user_config["take_profit"]
         PAPER_TRAILING_STOP_PCT = user_config["trailing"]
         PAPER_MAX_POSITIONS = user_config["max_positions"]
         PAPER_MIN_SIGNAL = user_config["threshold"]
+
+        # Restore TradersPost state
+        tp_state = state.get("tp_state", {
+            "day_trades": [],
+            "total_orders_sent": 0,
+            "total_orders_success": 0,
+            "total_orders_failed": 0,
+            "last_order_time": None,
+            "recent_orders": [],
+        })
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -1991,6 +2023,14 @@ def load_paper_state():
         paper_all_trades = []
         paper_trades_today = []
         paper_daily_counts = {}
+        tp_state = {
+            "day_trades": [],
+            "total_orders_sent": 0,
+            "total_orders_success": 0,
+            "total_orders_failed": 0,
+            "last_order_time": None,
+            "recent_orders": [],
+        }
 
 
 
@@ -2120,6 +2160,179 @@ def paper_log(msg: str):
     """Write a timestamped line to investment.log and the main logger."""
     inv_logger.info(msg)
     logger.info(f"[PAPER] {msg}")
+
+
+# ============================================================
+# TRADERSPOST SHADOW MODE
+# ============================================================
+
+def tp_log(message: str):
+    """Log TradersPost events with [TP] prefix and send Telegram notification."""
+    logger.info(f"[TP] {message}")
+    send_telegram(f"📡 [TP] {message}")
+
+
+def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars=None):
+    """
+    Send an order to TradersPost via webhook POST.
+    action: "buy" or "exit"
+    Returns response dict or None on failure.
+    """
+    if not TRADERSPOST_WEBHOOK_URL:
+        logger.warning("[TP] No TRADERSPOST_WEBHOOK_URL configured")
+        return None
+
+    now = datetime.now(CT)
+    tp_state["total_orders_sent"] = tp_state.get("total_orders_sent", 0) + 1
+
+    # Build payload
+    payload = {
+        "ticker": ticker,
+        "action": action,
+        "orderType": "market",
+    }
+
+    if action == "buy" and quantity_dollars:
+        payload["quantityType"] = "dollar_amount"
+        payload["quantity"] = round(quantity_dollars, 2)
+        # Add stop loss with trailing stop %
+        payload["stopLoss"] = {
+            "trailPercent": round(PAPER_TRAILING_STOP_PCT * 100, 1),
+        }
+        # Add take profit target
+        tp_target = round(price * (1 + PAPER_TAKE_PROFIT_PCT), 2)
+        payload["takeProfit"] = {
+            "limitPrice": tp_target,
+        }
+
+    # Extended hours during pre/post-market
+    session = get_trading_session()
+    if session == "extended":
+        payload["extendedHours"] = True
+
+    try:
+        logger.info(f"[TP] Sending {action.upper()} {ticker}: {json.dumps(payload)}")
+        r = requests.post(
+            TRADERSPOST_WEBHOOK_URL,
+            json=payload,
+            timeout=10,
+        )
+        resp = r.json()
+        logger.info(f"[TP] Response {r.status_code}: {resp}")
+
+        if resp.get("success"):
+            tp_state["total_orders_success"] = tp_state.get("total_orders_success", 0) + 1
+        else:
+            tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
+
+        tp_state["last_order_time"] = now.isoformat()
+
+        # Store in recent orders (keep last 20)
+        order_record = {
+            "ticker": ticker,
+            "action": action.upper(),
+            "price": price,
+            "dollars": quantity_dollars,
+            "success": resp.get("success", False),
+            "time": now.isoformat(),
+            "response_id": resp.get("id"),
+        }
+        recent = tp_state.get("recent_orders", [])
+        recent.append(order_record)
+        if len(recent) > 20:
+            recent[:] = recent[-20:]
+        tp_state["recent_orders"] = recent
+
+        save_paper_state()
+        return resp
+
+    except Exception as e:
+        logger.error(f"[TP] Webhook failed for {action} {ticker}: {e}")
+        tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
+        tp_state["last_order_time"] = now.isoformat()
+
+        order_record = {
+            "ticker": ticker,
+            "action": action.upper(),
+            "price": price,
+            "dollars": quantity_dollars,
+            "success": False,
+            "time": now.isoformat(),
+            "error": str(e),
+        }
+        recent = tp_state.get("recent_orders", [])
+        recent.append(order_record)
+        if len(recent) > 20:
+            recent[:] = recent[-20:]
+        tp_state["recent_orders"] = recent
+
+        save_paper_state()
+        return None
+
+
+# ── PDT (Pattern Day Trader) Tracker ─────────────────────────
+
+def _business_days_ago(n: int) -> str:
+    """Return date string n business days ago."""
+    d = datetime.now(CT).date()
+    count = 0
+    while count < n:
+        d -= timedelta(days=1)
+        if d.weekday() < 5:  # Mon-Fri
+            count += 1
+    return d.strftime("%Y-%m-%d")
+
+
+def count_day_trades_rolling():
+    """Count day trades in last 5 business days.
+    Returns (count, remaining)."""
+    cutoff = _business_days_ago(5)
+    trades = tp_state.get("day_trades", [])
+    recent = [t for t in trades if t.get("sell_date", "") >= cutoff]
+    count = len(recent)
+    return count, max(0, 3 - count)
+
+
+def can_sell_today(ticker, entry_date=None):
+    """Check if selling this ticker would violate PDT rule.
+    entry_date: override for position entry date (if position already removed).
+    Returns (allowed: bool, reason: str)."""
+    today = datetime.now(CT).strftime("%Y-%m-%d")
+
+    # Was this ticker bought today? If not, it's not a day trade.
+    if entry_date is None:
+        pos = paper_positions.get(ticker, {})
+        entry_date = pos.get("entry_date", "")
+    if entry_date != today:
+        return True, "not a day trade (held overnight)"
+
+    # It would be a day trade — check if we have room
+    count, remaining = count_day_trades_rolling()
+    if remaining <= 0:
+        return False, f"PDT limit reached ({count}/3 day trades in 5 days)"
+
+    return True, f"day trade OK ({count}/3 used, {remaining} left)"
+
+
+def record_day_trade(ticker):
+    """Record a day trade (buy + sell same day)."""
+    today = datetime.now(CT).strftime("%Y-%m-%d")
+    now = datetime.now(CT).strftime("%H:%M")
+    trades = tp_state.get("day_trades", [])
+    trades.append({
+        "ticker": ticker,
+        "buy_date": today,
+        "sell_date": today,
+        "sell_time": now,
+    })
+    tp_state["day_trades"] = trades
+    # Clean up old entries (older than 10 business days)
+    cutoff = _business_days_ago(10)
+    tp_state["day_trades"] = [
+        t for t in tp_state["day_trades"]
+        if t.get("sell_date", "") >= cutoff
+    ]
+    save_paper_state()
 
 
 def paper_portfolio_value() -> float:
@@ -2772,6 +2985,37 @@ def paper_evaluate_ticker(ticker: str):
                 f"Trades today: {len(paper_trades_today)}"
             )
             save_paper_state()
+
+            # ── Shadow mode: mirror EXIT to TradersPost ───────
+            if user_config.get("trading_mode") == "shadow":
+                try:
+                    _entry_date = pos.get("entry_date", "")
+                    allowed, reason = can_sell_today(
+                        ticker, entry_date=_entry_date
+                    )
+                    if not allowed:
+                        tp_log(
+                            f"EXIT {ticker} BLOCKED: {reason}"
+                        )
+                    else:
+                        tp_result = send_traderspost_order(
+                            ticker=ticker,
+                            action="exit",
+                            signal_score=0,
+                            price=price,
+                        )
+                        if tp_result:
+                            tp_log(f"EXIT {ticker} sent")
+                            # Check if day trade
+                            if _entry_date == today:
+                                record_day_trade(ticker)
+                        else:
+                            tp_log(
+                                f"EXIT {ticker} FAILED to send"
+                            )
+                except Exception as e:
+                    logger.error(f"[TP] Shadow EXIT error: {e}")
+
         return  # one action per scan cycle per ticker
 
     # ── Check for new buy opportunity ────────────────────────
@@ -2934,6 +3178,23 @@ def paper_evaluate_ticker(ticker: str):
         f"Trades today: {len(paper_trades_today)}"
     )
     save_paper_state()
+
+    # ── Shadow mode: mirror BUY to TradersPost ────────────────
+    if user_config.get("trading_mode") == "shadow":
+        try:
+            tp_result = send_traderspost_order(
+                ticker=ticker,
+                action="buy",
+                signal_score=sig["score"],
+                price=price,
+                quantity_dollars=cost,
+            )
+            if tp_result:
+                tp_log(f"BUY {ticker} sent: ${cost:,.0f}")
+            else:
+                tp_log(f"BUY {ticker} FAILED to send")
+        except Exception as e:
+            logger.error(f"[TP] Shadow BUY error: {e}")
 
 
 def paper_scan():
@@ -3696,6 +3957,186 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Base threshold set to {int(value)} (persisted)")
     else:
         await update.message.reply_text(f"Unknown param or invalid range: {param}={value}")
+
+
+# ============================================================
+# TRADERSPOST COMMANDS
+# ============================================================
+
+async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle shadow mode on/off."""
+    mode = user_config.get("trading_mode", "paper")
+    if mode == "shadow":
+        user_config["trading_mode"] = "paper"
+        save_paper_state()
+        await update.message.reply_text(
+            "📡 Shadow Mode: OFF\n"
+            f"{'─'*28}\n"
+            "Trading Mode: paper\n"
+            "TradersPost sends disabled."
+        )
+    else:
+        if not TRADERSPOST_WEBHOOK_URL:
+            await update.message.reply_text(
+                "📡 Shadow Mode: ERROR\n"
+                f"{'─'*28}\n"
+                "TRADERSPOST_WEBHOOK_URL not set.\n"
+                "Add it as a Railway env var first."
+            )
+            return
+        user_config["trading_mode"] = "shadow"
+        save_paper_state()
+        count, remaining = count_day_trades_rolling()
+        ts = tp_state.get("total_orders_sent", 0)
+        tok = tp_state.get("total_orders_success", 0)
+        tfl = tp_state.get("total_orders_failed", 0)
+        await update.message.reply_text(
+            "📡 Shadow Mode: ON\n"
+            f"{'─'*28}\n"
+            "Trading Mode: shadow\n"
+            "TradersPost: Connected ✓\n"
+            f"PDT Status: {count}/3 day trades "
+            f"({remaining} remaining)\n"
+            f"Orders Sent: {ts} "
+            f"({tok} success, {tfl} failed)"
+        )
+
+
+async def cmd_pdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show PDT (Pattern Day Trader) status."""
+    count, remaining = count_day_trades_rolling()
+    cutoff = _business_days_ago(5)
+    trades = tp_state.get("day_trades", [])
+    recent = [t for t in trades if t.get("sell_date", "") >= cutoff]
+
+    lines = [
+        "📊 PDT Tracker (Rolling 5 Days)",
+        "━" * 31,
+        f"Day Trades Used: {count}/3",
+        f"Remaining: {remaining}",
+    ]
+
+    if recent:
+        lines.append("")
+        lines.append("Recent Day Trades:")
+        for t in recent[-5:]:
+            d = t.get("sell_date", "")
+            try:
+                dt = datetime.strptime(d, "%Y-%m-%d")
+                d_fmt = dt.strftime("%b %d, %Y")
+            except ValueError:
+                d_fmt = d
+            tm = t.get("sell_time", "")
+            lines.append(
+                f"• {t['ticker']} — {d_fmt}"
+                + (f" at {tm}" if tm else "")
+            )
+    else:
+        lines.append("")
+        lines.append("No day trades in window.")
+
+    # Next reset: find earliest day trade's date + 5 biz days
+    if recent:
+        earliest = min(
+            t.get("sell_date", "9999") for t in recent
+        )
+        try:
+            ed = datetime.strptime(earliest, "%Y-%m-%d").date()
+            reset = ed
+            biz = 0
+            while biz < 5:
+                reset += timedelta(days=1)
+                if reset.weekday() < 5:
+                    biz += 1
+            lines.append(
+                f"\nNext Reset: {reset.strftime('%b %d')} "
+                f"({reset.strftime('%a')})"
+            )
+        except ValueError:
+            pass
+
+    lines.append("━" * 31)
+    lines.append("⚠️ PDT Rule: Max 3 day trades")
+    lines.append("per 5 business days (<$25k acct)")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show TradersPost status and recent orders."""
+    mode = user_config.get("trading_mode", "paper")
+    mode_label = (
+        "Shadow (Paper Mirror)"
+        if mode == "shadow" else "Disabled (Paper Only)"
+    )
+    wh = "Connected ✓" if TRADERSPOST_WEBHOOK_URL else "Not Set ✗"
+    ts = tp_state.get("total_orders_sent", 0)
+    tok = tp_state.get("total_orders_success", 0)
+    tfl = tp_state.get("total_orders_failed", 0)
+
+    # Last order time
+    last_str = "None"
+    lot = tp_state.get("last_order_time")
+    if lot:
+        try:
+            lt = datetime.fromisoformat(lot)
+            ago = datetime.now(CT) - lt.replace(tzinfo=CT)
+            mins = int(ago.total_seconds() / 60)
+            if mins < 60:
+                last_str = f"{mins}m ago"
+            elif mins < 1440:
+                last_str = f"{mins // 60}h ago"
+            else:
+                last_str = f"{mins // 1440}d ago"
+        except (ValueError, TypeError):
+            last_str = str(lot)[:16]
+
+    lines = [
+        "📡 TradersPost Status",
+        "━" * 31,
+        f"Mode: {mode_label}",
+        f"Webhook: {wh}",
+        f"Orders Sent: {ts}",
+        f" ✅ Success: {tok}",
+        f" ❌ Failed: {tfl}",
+        f"Last Order: {last_str}",
+    ]
+
+    recent = tp_state.get("recent_orders", [])
+    if recent:
+        lines.append("")
+        lines.append("Recent Orders:")
+        for o in reversed(recent[-10:]):
+            tick = o.get("ticker", "?")
+            act = o.get("action", "?")
+            ok = "✅" if o.get("success") else "❌"
+            # Time ago
+            t_ago = ""
+            try:
+                ot = datetime.fromisoformat(o["time"])
+                delta = datetime.now(CT) - ot.replace(
+                    tzinfo=CT
+                )
+                m = int(delta.total_seconds() / 60)
+                if m < 60:
+                    t_ago = f"{m}m ago"
+                elif m < 1440:
+                    t_ago = f"{m // 60}h ago"
+                else:
+                    t_ago = f"{m // 1440}d ago"
+            except (ValueError, TypeError, KeyError):
+                pass
+            dl = o.get("dollars")
+            dl_str = f" ${dl:,.0f}" if dl else ""
+            lines.append(
+                f"• {tick} {act}{dl_str} — {ok} {t_ago}"
+            )
+    else:
+        lines.append("")
+        lines.append("No orders sent yet.")
+
+    lines.append("━" * 31)
+    await update.message.reply_text("\n".join(lines))
 
 
 # ============================================================
@@ -6276,6 +6717,11 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("set",         cmd_set))
     app.add_handler(CommandHandler("overnight",   cmd_overnight))
     app.add_handler(CommandHandler("aistocks",    cmd_aistocks))
+
+    # ── TradersPost ──────────────────────────────────────────
+    app.add_handler(CommandHandler("shadow",      cmd_shadow))
+    app.add_handler(CommandHandler("tp",          cmd_tp))
+    app.add_handler(CommandHandler("pdt",         cmd_pdt))
 
     # ── Off-hours / prep ──────────────────────────────────────
     app.add_handler(CommandHandler("prep",        cmd_prep))
