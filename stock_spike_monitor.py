@@ -339,10 +339,23 @@ def send_telegram(text, chat_id=None):
                 time.sleep(wait)
 
 
+def _capture_tp_chat(update):
+    """Auto-capture the TP bot DM chat ID from any command."""
+    global tp_dm_chat_id
+    if update.effective_chat and update.effective_chat.type == "private":
+        new_id = update.effective_chat.id
+        if new_id != tp_dm_chat_id:
+            tp_dm_chat_id = new_id
+            tp_state["dm_chat_id"] = new_id
+            save_paper_state()
+            logger.info(f"[TP] Captured DM chat ID: {new_id}")
+
+
 def send_tp_telegram(message):
-    """Send to TradersPost Telegram channel.
-    Falls back to main channel if TP chat ID not set."""
-    if not TELEGRAM_TP_CHAT_ID:
+    """Send to TP user's DM chat.
+    Falls back to TP channel, then main channel."""
+    chat_id = tp_dm_chat_id or TELEGRAM_TP_CHAT_ID
+    if not chat_id:
         send_telegram(f"📡 [TP] {message}")
         return
     token = TELEGRAM_TP_TOKEN or TELEGRAM_TOKEN
@@ -350,12 +363,12 @@ def send_tp_telegram(message):
         url = (f"https://api.telegram.org/bot"
                f"{token}/sendMessage")
         payload = {
-            "chat_id": TELEGRAM_TP_CHAT_ID,
+            "chat_id": chat_id,
             "text": message,
         }
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        logger.error(f"[TP] TP channel send failed: {e}")
+        logger.error(f"[TP] Failed to send DM: {e}")
 
 # ============================================================
 # AI HELPERS — Claude primary, Grok fallback, exponential backoff
@@ -1926,6 +1939,9 @@ tp_state = {
     "shadow_portfolio": _default_shadow_portfolio(),
 }
 
+# ── TP DM chat ID (auto-captured from user's first command) ──
+tp_dm_chat_id = None
+
 # ── Portfolio snapshots for intraday chart (Feature #7) ────
 _portfolio_snapshots = []  # [(datetime, value), ...]
 _last_snapshot_time = datetime.min.replace(tzinfo=CT)
@@ -1979,7 +1995,7 @@ def load_paper_state():
     """
     global paper_cash, paper_positions, paper_all_trades
     global paper_trades_today, paper_daily_counts
-    global user_config, tp_state
+    global user_config, tp_state, tp_dm_chat_id
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
 
@@ -2027,6 +2043,11 @@ def load_paper_state():
         # Migrate: ensure shadow_portfolio exists
         if "shadow_portfolio" not in tp_state:
             tp_state["shadow_portfolio"] = _default_shadow_portfolio()
+
+        # Restore TP DM chat ID
+        if tp_state.get("dm_chat_id"):
+            tp_dm_chat_id = tp_state["dm_chat_id"]
+            logger.info(f"[TP] Restored DM chat ID: {tp_dm_chat_id}")
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -3690,6 +3711,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /paper log              — send investment.log as a file download
     /paper reset            — reset portfolio to $100k (with confirmation)
     """
+    _capture_tp_chat(update)
     global paper_cash, paper_positions, paper_trades_today, paper_daily_counts
     global paper_all_trades, paper_signals_cache
 
@@ -4087,6 +4109,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Adjust key trading parameters via Telegram. Values persist across deploys."""
+    _capture_tp_chat(update)
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
 
@@ -4166,6 +4189,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle shadow mode on/off."""
+    _capture_tp_chat(update)
     mode = user_config.get("trading_mode", "paper")
     if mode == "shadow":
         user_config["trading_mode"] = "paper"
@@ -4211,6 +4235,7 @@ async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_pdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show PDT (Pattern Day Trader) status."""
+    _capture_tp_chat(update)
     count, remaining = count_day_trades_rolling()
     cutoff = _business_days_ago(5)
     trades = tp_state.get("day_trades", [])
@@ -4271,6 +4296,7 @@ async def cmd_pdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show TradersPost status, shadow portfolio, and drift."""
+    _capture_tp_chat(update)
     mode = user_config.get("trading_mode", "paper")
     mode_label = (
         "Shadow (Paper Mirror)"
@@ -4384,6 +4410,7 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_tpsync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manual sync/reset for the TradersPost shadow portfolio."""
+    _capture_tp_chat(update)
     args = context.args
     sub = (args[0].lower() if args else "").strip()
 
@@ -6678,8 +6705,9 @@ def send_startup_message():
 
 
 def send_tp_startup_message():
-    """Send startup message to TP channel if configured."""
-    if not TELEGRAM_TP_CHAT_ID:
+    """Send startup message to TP user's DM (or channel fallback)."""
+    chat_id = tp_dm_chat_id or TELEGRAM_TP_CHAT_ID
+    if not chat_id:
         return
     mode = user_config.get("trading_mode", "paper")
     pdt_used, _pdt_left = count_day_trades_rolling()
@@ -6688,9 +6716,10 @@ def send_tp_startup_message():
     sp_val = sp.get("total_value_estimate",
                      PAPER_STARTING_CAPITAL)
     sep = "━" * 31
+    dest = "DM" if tp_dm_chat_id else "Channel"
     lines = [
         f"📡 Stock Spike Monitor v{BOT_VERSION}",
-        f"TradersPost Channel Active",
+        f"TradersPost {dest} Active",
         sep,
         f"Mode: {mode}",
         f"PDT: {pdt_used}/3 day trades used",
@@ -7041,6 +7070,7 @@ def scanner_thread():
 # ============================================================
 async def cmd_tp_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Help command for the TP bot — TP commands only."""
+    _capture_tp_chat(update)
     mode = user_config.get("trading_mode", "paper")
     sep = "━" * 29
     await update.message.reply_text(
@@ -7062,6 +7092,7 @@ async def cmd_tp_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_tp_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message for the TP bot."""
+    _capture_tp_chat(update)
     mode = user_config.get("trading_mode", "paper")
     shadow_str = "ON" if mode == "shadow" else "OFF"
     webhook_str = ("connected" if TRADERSPOST_WEBHOOK_URL
