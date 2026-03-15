@@ -1,6 +1,6 @@
 # Architecture
 
-Stock Spike Monitor is a single-file Python application (`stock_spike_monitor.py`, ~7,700 lines) that combines real-time market scanning, paper trading, AI analysis, and Telegram bot interaction into one process.
+Stock Spike Monitor is a single-file Python application (`stock_spike_monitor.py`, ~8,600 lines) that combines real-time market scanning, paper trading, AI analysis, and Telegram bot interaction into one process.
 
 ---
 
@@ -100,15 +100,19 @@ get_ai_response(prompt, system=None, max_tokens=300, fast=False)
 **Capital:** $100,000 simulated starting balance
 
 **Buy Logic:**
-1. `compute_paper_signal(ticker)` generates a 10-factor composite score (0–140)
+1. `compute_paper_signal(ticker)` generates an 11-factor composite score (0–150)
 2. If score ≥ adaptive threshold (default 65) and RSI < 72 and cash available → BUY
 3. Position size scales with signal strength: stronger signals get larger allocations
 4. Max 20% of portfolio per position, max 8 simultaneous positions
+
+**AVWAP Entry Gate:**
+During regular trading hours, the bot only opens new positions when price is above the Anchored VWAP (session-anchored to 9:30 AM ET open). This filters out entries into overhead supply zones. Gate is skipped in extended hours or when AVWAP data is unavailable.
 
 **Sell Logic (checked every scan cycle):**
 - **Take Profit:** +10% from entry (adaptive: widens in low-fear markets)
 - **Trailing Stop:** -3% from high-water mark (adaptive)
 - **Hard Stop:** -6% from entry (adaptive: tightens in high-fear markets)
+- **AVWAP Stop:** Exit if price drops below AVWAP after having reclaimed it ("price lost AVWAP — overhead supply")
 
 **Adaptive Rebalancing:**
 Every 30 minutes, the bot adjusts trading parameters based on:
@@ -116,9 +120,9 @@ Every 30 minutes, the bot adjusts trading parameters based on:
 - VIX level
 - Thresholds widen in calm markets (let winners run), tighten in volatile markets (protect capital)
 
-### 5. 10-Factor Signal Scoring
+### 5. 11-Factor Signal Scoring
 
-Maximum score: 140 points. Components:
+Maximum score: 150 points. Components:
 
 | # | Component | Max Pts | Source |
 |---|-----------|---------|--------|
@@ -132,8 +136,39 @@ Maximum score: 140 points. Components:
 | 8 | AI Watchlist Conviction | 10 | Bonus if ticker is on AI watchlist with conviction ≥ 7 |
 | 9 | Multi-Day Trend | 15 | SMA alignment (6) + 5-day momentum (5) + daily volume trend (4) |
 | 10 | News Sentiment | 15 | AI-scored headline sentiment |
+| 11 | AVWAP | 10 (-5) | Anchored VWAP: +10 if price comfortably above, +6 if just above, -5 if below (overhead supply penalty) |
 
-### 6. Shadow Trading (TradersPost)
+### 6. Persistent Signal Logger
+
+Every time `compute_paper_signal()` runs (each scan cycle per ticker), a complete snapshot is appended to `signal_log.jsonl`:
+
+```json
+{"type": "signal", "ts": "2026-03-14T10:31:22", "ticker": "NVDA",
+ "score": 87.5, "rsi": 58.2, "pct_b": 0.72, "macd": 0.0034,
+ "vol_ratio": 1.8, "squeeze": 45, "slope_pct": 0.21,
+ "avwap": 142.50, "pct_from_avwap": 1.2, "reclaimed": true,
+ "ai_signal": "BUY", "ai_confidence": 75,
+ "news_sentiment": "bullish", "fg_index": 35, "vix": 22.1,
+ "threshold": 65, "session": "regular", ...}
+```
+
+BUY and SELL actions are also logged with full trade details (shares, cost, P&L, exit reason).
+
+- **Storage:** JSONL (append-only), ~3 MB/day
+- **Retention:** Auto-trimmed to 30 days on morning reset
+- **Location:** Same Railway Volume mount as `paper_state.json`
+
+### 7. Backtesting Engine
+
+**In-bot (`/backtest` command):**
+Replays logged signal data from `signal_log.jsonl` with custom trading parameters. No API calls needed — uses the exact scores and prices that were recorded live. Generates a 2-page dark-themed PDF report with equity curve, KPIs, trade statistics, exit reason breakdown, drawdown chart, per-ticker P&L, and best/worst trades.
+
+**Standalone (`backtest.py` script):**
+Fetches historical data from yfinance/Finnhub and simulates the full signal engine from scratch. Useful for backtesting periods before signal logging was enabled. Outputs `backtest_report.pdf`.
+
+Both engines support custom parameters: take-profit, stop-loss, trailing stop, signal threshold, and max positions.
+
+### 8. Shadow Trading (TradersPost)
 
 When shadow mode is ON, every paper trade triggers a webhook POST to TradersPost:
 
@@ -150,7 +185,7 @@ Since the linked Robinhood account is a cash account (no margin), sells don't se
 - Settled vs. unsettled cash
 - Available buying power (settled cash only)
 
-### 7. Telegram Bot Architecture
+### 9. Telegram Bot Architecture
 
 Two bot instances run in the same process:
 
@@ -182,10 +217,12 @@ check_stocks()
   │     │     └── If spike → AI analysis → send_telegram() alert
   │     ├── Check custom price alerts
   │     └── paper_evaluate_ticker(ticker)
-  │           ├── Check sell conditions (TP/SL/trailing)
+  │           ├── compute_paper_signal() → 11-factor score
+  │           ├── log_signal_data() → append to signal_log.jsonl
+  │           ├── Check sell conditions (TP/SL/trailing/AVWAP-stop)
   │           │     └── If sell → update positions, log, notify, webhook
-  │           └── Check buy conditions (signal ≥ threshold)
-  │                 └── If buy → compute_paper_signal() → size → execute
+  │           └── Check buy conditions (signal ≥ threshold + AVWAP gate)
+  │                 └── If buy → size position → execute
   │
   ├── check_vix_put_alert()
   │     └── If VIX > 33 → estimate put premiums → alert
@@ -221,6 +258,13 @@ All mutable state is stored in `paper_state.json`:
   "custom_alerts": { "NVDA": [150.0, 160.0] },
   "watchlists": { "12345": ["AAPL", "TSLA"] }
 }
+```
+
+**signal_log.jsonl** (append-only, auto-trimmed to 30 days):
+```json
+{"type": "signal", "ts": "...", "ticker": "NVDA", "score": 87.5, ...}
+{"type": "buy", "ts": "...", "ticker": "NVDA", "shares": 5, "cost": 142.50, ...}
+{"type": "sell", "ts": "...", "ticker": "NVDA", "pnl": 215.00, "reason": "trailing_stop", ...}
 ```
 
 State is saved atomically (write to `.tmp` then `os.replace()`) after every trade, config change, or significant state mutation.

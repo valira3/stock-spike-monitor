@@ -7,11 +7,14 @@ A real-time stock scanner and paper trading bot for Telegram, powered by Claude 
 - **Real-Time Scanner** — Polls Finnhub every 60 seconds for price/volume changes across 30 core tickers + dynamically added movers
 - **Spike Alerts** — Notifies on 3%+ moves with 15-min cooldown and 1% escalation threshold
 - **Paper Trading** — Fully automated $100k simulated portfolio with trailing stops, take-profit, and adaptive thresholds
-- **10-Factor Signal Scoring** — RSI, Bollinger Bands, MACD, volume, squeeze, slope, AI direction, AI watchlist conviction, multi-day trend, and news sentiment (max 140 pts)
+- **11-Factor Signal Scoring** — RSI, Bollinger Bands, MACD, volume, squeeze, slope, AI direction, AI watchlist conviction, multi-day trend, news sentiment, and AVWAP (max 150 pts)
 - **Shadow Trading** — Mirrors paper trades to a real brokerage account via TradersPost webhooks
 - **T+1 Settlement Tracking** — Cash account aware; tracks settled vs. unsettled funds
 - **AI Integration** — Claude Sonnet for deep analysis, Claude Haiku for high-frequency scoring; Grok as fallback
 - **VIX Put-Selling Alerts** — Auto-alerts when VIX crosses 33 with estimated put premiums on GOOG/NVDA/AMZN/META
+- **Backtesting** — `/backtest` command replays logged signal data with custom parameters and generates a PDF report. Standalone `backtest.py` script for historical backtests against API data
+- **Persistent Signal Logger** — Every signal evaluation is logged to `signal_log.jsonl` (all indicators, scores, market context, trades) for future backtesting
+- **AVWAP Integration** — Anchored VWAP as entry gate (only buy above AVWAP) and stop-loss trigger (exit if price loses AVWAP)
 - **Scheduled Reports** — Morning briefing, pre-market dashboard, midday update, close summary, evening recap, weekly digest, Saturday prep
 - **Market Data** — Macro calendar, earnings, crypto, movers, sector overview, news sentiment
 - **Charts** — Intraday price/volume charts, RSI/Bollinger charts, portfolio value charts, performance dashboards
@@ -82,8 +85,8 @@ The bot is a single-file Python application (~7,700 lines). See [ARCHITECTURE.md
 
 ```
 Scheduler (1-min loop)
-  ├── check_stocks() → scan all tickers → spike alerts + paper trading
-  ├── paper_scan() → evaluate buy/sell for each position
+  ├── check_stocks() → scan all tickers → spike alerts + paper trading + signal logging
+  ├── paper_scan() → evaluate buy/sell for each position (AVWAP gate + AVWAP stop)
   ├── check_vix_put_alert() → VIX threshold monitoring
   └── Scheduled reports (morning, midday, close, evening, weekly)
 
@@ -102,6 +105,7 @@ See [COMMANDS.md](COMMANDS.md) for the full command reference.
 - `/paper` — Paper portfolio overview
 - `/analyze TICK` — AI catalyst/risk/setup analysis
 - `/chart TICK` — Intraday price + volume chart
+- `/backtest 10 tp=8 sl=5` — Replay logged signals with custom parameters, generates PDF
 - `/dashboard` — Visual market snapshot (220 DPI)
 - `/help` — Full command menu
 

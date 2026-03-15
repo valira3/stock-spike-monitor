@@ -50,7 +50,9 @@ All commands are available via the main Telegram bot. TradersPost-specific comma
 
 ## Paper Trading ($100k Simulated Portfolio)
 
-The paper trading engine runs automatically every scan cycle (~1 minute). It uses a 10-factor composite signal (max 140 pts) to decide buys, and trailing stops / take-profit / hard stops for exits.
+The paper trading engine runs automatically every scan cycle (~1 minute). It uses an 11-factor composite signal (max 150 pts) to decide buys, and trailing stops / take-profit / hard stops / AVWAP stops for exits.
+
+AVWAP (Anchored VWAP) acts as both an entry gate (only buys when price is above AVWAP) and a stop-loss trigger (exits if price drops below AVWAP after reclaiming it).
 
 | Command | Description |
 |---------|-------------|
@@ -58,7 +60,7 @@ The paper trading engine runs automatically every scan cycle (~1 minute). It use
 | `/paper positions` | All open positions with live P&L per ticker |
 | `/paper trades` | Trades executed today |
 | `/paper history` | Historical win rate, average P&L, total trades |
-| `/paper signal TICK` | Show the full 10-factor signal breakdown for a ticker |
+| `/paper signal TICK` | Show the full 11-factor signal breakdown for a ticker |
 | `/paper chart` | Intraday portfolio value chart |
 | `/paper log` | Download the full trade log file |
 | `/paper reset` | Reset portfolio to $100k (requires confirmation) |
@@ -91,6 +93,46 @@ Parameters auto-adjust based on market conditions (Fear & Greed Index + VIX) via
 | `/vixalert check` | Manually scan for put premiums now (regardless of VIX level) |
 
 When VIX crosses the threshold (default: 33), the bot automatically sends put-selling setups for GOOG, NVDA, AMZN, and META — including strike, expiry, and estimated premium.
+
+---
+
+## Backtesting
+
+The bot continuously logs all signal evaluations to `signal_log.jsonl` during market hours. This data powers the backtest engine.
+
+### In-Bot Command
+
+| Command | Description |
+|---------|-------------|
+| `/backtest` | Run a 10-day backtest with current bot parameters |
+| `/backtest 30` | Specify look-back period (1–60 days) |
+| `/backtest 10 tp=8 sl=5` | Custom take-profit (8%) and stop-loss (5%) |
+| `/backtest 10 trail=2.5 threshold=80` | Custom trailing stop and signal threshold |
+| `/backtest 10 max_pos=5` | Limit maximum simultaneous positions |
+
+Overridable parameters: `tp`, `sl`, `trail`, `threshold`, `max_pos`. Values > 1 are treated as percentages (e.g., `tp=10` = 10%).
+
+The replay engine uses logged signal scores (no API calls needed) and applies your custom trading rules. Generates a dark-themed PDF report with equity curve, KPIs, trade stats, exit reasons, drawdown, per-ticker P&L, and best/worst trades.
+
+### Standalone Script
+
+```bash
+python backtest.py                    # default 30 trading days
+python backtest.py --days 60          # custom look-back period
+python backtest.py --capital 50000    # custom starting capital
+```
+
+The standalone script fetches historical data from APIs (yfinance, Finnhub) and simulates the full signal engine. Outputs `backtest_report.pdf`.
+
+### Signal Logger
+
+Every scan cycle, the bot logs a complete snapshot per ticker to `signal_log.jsonl`:
+- All indicator values (RSI, Bollinger, MACD, volume, squeeze, slope, SMA5/20, AVWAP, news sentiment, AI signals)
+- Composite score and signal detail
+- Market context (Fear & Greed, VIX, active threshold, trading session)
+- BUY and SELL actions with full trade details
+
+Auto-trimmed to 30 days on morning reset. At ~3 MB/day, 30 days of data provides ~60,000 signal snapshots.
 
 ---
 
