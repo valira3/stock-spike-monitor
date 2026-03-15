@@ -21,7 +21,10 @@ import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch
 from matplotlib.colors import LinearSegmentedColormap
-from telegram import BotCommand, Update
+from telegram import (
+    BotCommand, BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats, Update,
+)
 from telegram.ext import (
     Application, CommandHandler, ContextTypes,
     MessageHandler, filters
@@ -47,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.0"
+BOT_VERSION = "2.1"
 RELEASE_NOTES = [
+    "2.1 — Fix: /tp portfolio value now uses live prices instead of cost basis. Command menu registered for group + private chats.",
     "2.0 — Major: AVWAP entry gate & stop, backtesting engine (/backtest), persistent signal logger, 11-factor scoring (150 pts).",
     "1.19 — Cash Account: removed PDT tracker & drift detection, added T+1 settlement tracking.",
     "1.18 — VIX Put-Selling Alert: auto-alerts when VIX crosses 33 with put premiums on GOOG/NVDA/AMZN/META.",
@@ -4795,10 +4799,20 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sp_cash = sp.get("cash", 0)
     sp_positions = sp.get("positions", {})
     sp_start = sp.get("starting_cash", PAPER_STARTING_CAPITAL)
-    pos_value = sum(
-        p.get("shares", 0) * p.get("avg_price", 0)
-        for p in sp_positions.values()
-    )
+    pos_value = 0
+    for tick, p in sp_positions.items():
+        shares = p.get("shares", 0)
+        avg = p.get("avg_price", 0)
+        cur_price = avg  # fallback to cost basis
+        try:
+            result = _get_best_price(tick)
+            if isinstance(result, tuple):
+                cur_price = result[0] or avg
+            elif result:
+                cur_price = result
+        except Exception:
+            pass
+        pos_value += shares * cur_price
     est_value = sp_cash + pos_value
     est_pnl = est_value - sp_start
     pnl_pct = (est_pnl / sp_start * 100) if sp_start else 0
@@ -8499,8 +8513,18 @@ TP_BOT_COMMANDS = [
 async def _set_bot_commands(app: Application) -> None:
     """Register / menu commands on startup (post_init callback)."""
     try:
-        await app.bot.set_my_commands(MAIN_BOT_COMMANDS)
-        logger.info(f"Registered {len(MAIN_BOT_COMMANDS)} main bot commands")
+        await app.bot.set_my_commands(
+            MAIN_BOT_COMMANDS,
+            scope=BotCommandScopeAllPrivateChats(),
+        )
+        await app.bot.set_my_commands(
+            MAIN_BOT_COMMANDS,
+            scope=BotCommandScopeAllGroupChats(),
+        )
+        logger.info(
+            f"Registered {len(MAIN_BOT_COMMANDS)} main "
+            f"bot commands (private + group scope)"
+        )
     except Exception as e:
         logger.warning(f"Failed to set main bot commands: {e}")
 
@@ -8508,8 +8532,18 @@ async def _set_bot_commands(app: Application) -> None:
 async def _set_tp_bot_commands(app: Application) -> None:
     """Register / menu commands for TP bot on startup."""
     try:
-        await app.bot.set_my_commands(TP_BOT_COMMANDS)
-        logger.info(f"Registered {len(TP_BOT_COMMANDS)} TP bot commands")
+        await app.bot.set_my_commands(
+            TP_BOT_COMMANDS,
+            scope=BotCommandScopeAllPrivateChats(),
+        )
+        await app.bot.set_my_commands(
+            TP_BOT_COMMANDS,
+            scope=BotCommandScopeAllGroupChats(),
+        )
+        logger.info(
+            f"Registered {len(TP_BOT_COMMANDS)} TP "
+            f"bot commands (private + group scope)"
+        )
     except Exception as e:
         logger.warning(f"Failed to set TP bot commands: {e}")
 

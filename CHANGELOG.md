@@ -4,6 +4,17 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.1 — Portfolio Value Fix & Command Menu (2026-03-15)
+
+### Bug Fixes
+- `/tp` portfolio value now uses live market prices instead of cost basis (avg_price). Previously always showed ~$100,000 regardless of actual market value.
+
+### Improvements
+- Command menus registered for both private and group chat scopes via `set_my_commands`. Previously only registered for default scope, which didn't show the `/` autocomplete menu in group chats.
+- Imported `BotCommandScopeAllGroupChats` and `BotCommandScopeAllPrivateChats` for explicit scope targeting.
+
+---
+
 ## v2.0 — AVWAP, Backtesting & Cash Account (2026-03-15)
 
 Major version bump reflecting three significant feature additions.
