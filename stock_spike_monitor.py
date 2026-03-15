@@ -47,8 +47,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "1.19"
+BOT_VERSION = "2.0"
 RELEASE_NOTES = [
+    "2.0 — Major: AVWAP entry gate & stop, backtesting engine (/backtest), persistent signal logger, 11-factor scoring (150 pts).",
     "1.19 — Cash Account: removed PDT tracker & drift detection, added T+1 settlement tracking.",
     "1.18 — VIX Put-Selling Alert: auto-alerts when VIX crosses 33 with put premiums on GOOG/NVDA/AMZN/META.",
     "1.17 — Full channel separation: TP commands exclusive to TradersPost bot.",
@@ -250,7 +251,7 @@ BOT_DESCRIPTION = (
     " /paper positions  live P&L\n"
     " /paper trades     today's trades\n"
     " /paper history    win rate stats\n"
-    " /paper signal T   10-factor score\n"
+    " /paper signal T   11-factor score\n"
     " /paper chart intraday value chart\n"
     " /paper log   download trade log\n"
     " /paper reset start over at $100k\n"

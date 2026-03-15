@@ -4,7 +4,23 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
-## v1.19 — Cash Account + AVWAP + Backtesting (2026-03-14)
+## v2.0 — AVWAP, Backtesting & Cash Account (2026-03-15)
+
+Major version bump reflecting three significant feature additions.
+
+### AVWAP Integration
+- Added Anchored VWAP (session-anchored to 9:30 AM ET open) as signal component 11/11 (up to 10 pts, or -5 penalty if below)
+- AVWAP entry gate: during regular hours, only opens new positions when price is above AVWAP
+- AVWAP stop-loss: exits position if price drops below AVWAP after having reclaimed it
+- Signal scoring raised from 140 to 150 max points
+- BUY notifications now show AVWAP price, % distance, points, and AVWAP stop level
+
+### Backtesting Engine
+- Persistent signal logger: every signal evaluation is appended to `signal_log.jsonl` with all 20+ indicator values, composite score, market context (F&G, VIX), and trade actions
+- `/backtest` Telegram command: replays logged signal data with custom parameters (tp, sl, trail, threshold, max_pos), generates and sends a dark-themed PDF report
+- Report includes: equity curve, KPIs, trade statistics, exit reason breakdown, drawdown chart, per-ticker P&L, best/worst trades
+- Signal log auto-trimmed to 30 days on morning reset (~3 MB/day)
+- Standalone `backtest.py` script also available for historical backtests using API data
 
 ### Cash Account
 - Removed PDT (Pattern Day Trader) tracker — no longer needed with cash account
@@ -15,20 +31,6 @@ All notable changes to Stock Spike Monitor.
   - `/settlement` command shows settlement status
 - Replaced `/pdt` command with `/settlement`
 - Updated `/start`, `/shadow`, and `/tp` displays to show settlement info
-
-### AVWAP Integration
-- Added Anchored VWAP (session-anchored to 9:30 AM ET open) as signal component 11/11 (up to 10 pts, or -5 penalty if below)
-- AVWAP entry gate: during regular hours, only opens new positions when price is above AVWAP
-- AVWAP stop-loss: exits position if price drops below AVWAP after having reclaimed it
-- Signal scoring raised from 140 to 150 max points
-- BUY notifications now show AVWAP price, % distance, points, and AVWAP stop level
-
-### Backtesting
-- Persistent signal logger: every signal evaluation is appended to `signal_log.jsonl` with all 20+ indicator values, composite score, market context (F&G, VIX), and trade actions
-- `/backtest` Telegram command: replays logged signal data with custom parameters (tp, sl, trail, threshold, max_pos), generates and sends a dark-themed PDF report
-- Report includes: equity curve, KPIs, trade statistics, exit reason breakdown, drawdown chart, per-ticker P&L, best/worst trades
-- Signal log auto-trimmed to 30 days on morning reset (~3 MB/day)
-- Standalone `backtest.py` script also available for historical backtests using API data
 
 ## v1.18 — VIX Put-Selling Alert (2026-03-14)
 
