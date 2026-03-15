@@ -4,6 +4,24 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.2 — Graduated Trailing Stop (2026-03-15)
+
+### Exit Strategy Overhaul
+- Removed fixed 10% take-profit exit. Winners now ride with a graduated trailing stop that widens as profit grows:
+  - `<5% profit`: 3% trail (base)
+  - `5–10%`: 4% trail
+  - `10–15%`: 5% trail
+  - `15%+`: 6% trail (wide, let runners run)
+- Hard stop (-6% from entry) remains as a safety net.
+- Applied to both paper trading and backtest engine.
+
+### Updated Notifications & Config
+- BUY notifications now show graduated trail zones instead of a fixed target price.
+- `/set` display shows the graduated trail table. `/set take_profit` now explains the new system.
+- Adaptive config no longer adjusts `PAPER_TAKE_PROFIT_PCT` (graduated trail replaces it).
+
+---
+
 ## v2.1 — Portfolio Value Fix, Command Menu & TP Bot Cleanup (2026-03-15)
 
 ### Bug Fixes

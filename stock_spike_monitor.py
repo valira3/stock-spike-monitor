@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.1"
+BOT_VERSION = "2.2"
 RELEASE_NOTES = [
+    "2.2 — Graduated trailing stop replaces fixed take-profit. Winners now run with widening trail (3%/4%/5%/6% by profit zone).",
     "2.1 — Fix: /tp portfolio value uses live prices. Command menu for groups. Removed /paper from TP bot. Renamed shadow→TP portfolio.",
     "2.0 — Major: AVWAP entry gate & stop, backtesting engine (/backtest), persistent signal logger, 11-factor scoring (150 pts).",
     "1.19 — Cash Account: removed PDT tracker & drift detection, added T+1 settlement tracking.",
@@ -1905,9 +1906,30 @@ PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
 PAPER_MAX_ACTIONS      = 3        # per ticker per trading day
 PAPER_MAX_POSITIONS    = 8        # simultaneous open positions
 PAPER_MAX_POS_PCT      = 0.20     # 20% of portfolio per position
-PAPER_TRAILING_STOP_PCT = 0.03    # 3% trailing stop from high-water mark
+PAPER_TRAILING_STOP_PCT = 0.03    # 3% base trailing stop from high-water mark
 PAPER_STOP_LOSS_PCT     = 0.06    # 6% hard stop from entry (safety net)
-PAPER_TAKE_PROFIT_PCT   = 0.10    # 10% take-profit (wider to let winners run)
+PAPER_TAKE_PROFIT_PCT   = 0.10    # legacy — used as graduated trail reference
+
+# ── Graduated trailing stop zones ─────────────────────────────
+# Instead of a fixed take-profit exit, the trail widens as
+# profit grows so big winners can run while locking in gains.
+GRADUATED_TRAIL_ZONES = [
+    # (min_pnl_pct, trail_pct)  — checked top-down
+    (0.15, 0.06),   # 15%+ profit → 6% trail (wide, let it run)
+    (0.10, 0.05),   # 10-15%      → 5% trail
+    (0.05, 0.04),   # 5-10%       → 4% trail (lock some gains)
+]
+# Below 5% profit: use PAPER_TRAILING_STOP_PCT (default 3%)
+
+
+def _graduated_trail_pct(pnl_pct: float) -> float:
+    """Return the trailing stop % based on current profit zone.
+    Higher profits get a wider trail to let winners run."""
+    for threshold, trail in GRADUATED_TRAIL_ZONES:
+        if pnl_pct >= threshold:
+            return trail
+    return PAPER_TRAILING_STOP_PCT  # base trail for <5%
+
 PAPER_MIN_SIGNAL       = 65       # min composite score (0-140) to open a position
 
 # Bot-wide persistence (watchlists, alerts, tickers, conversation history …)
@@ -2655,14 +2677,8 @@ def _apply_adaptive_config() -> int:
     elif vix <= 15: threshold -= 3
     threshold = max(45, min(85, threshold))
 
-    # ── Take Profit ───────────────────────────────────
-    base_tp = user_config["take_profit"]
-    if fg <= 25:      tp = base_tp * 1.3
-    elif fg <= 40:    tp = base_tp * 1.15
-    elif fg >= 75:    tp = base_tp * 0.85
-    elif fg >= 60:    tp = base_tp * 0.9
-    else:             tp = base_tp
-    PAPER_TAKE_PROFIT_PCT = round(max(0.05, min(0.20, tp)), 3)
+    # ── Take Profit (legacy — graduated trail replaces)
+    # No longer adjusts TP; kept for backcompat config.
 
     # ── Stop Loss ─────────────────────────────────────
     base_sl = user_config["stop_loss"]
@@ -2694,7 +2710,7 @@ def _apply_adaptive_config() -> int:
     _adaptive_threshold_cache = {"val": threshold, "ts": now}
 
     logger.info(
-        f"Adaptive config: thresh={threshold} TP={PAPER_TAKE_PROFIT_PCT*100:.1f}% "
+        f"Adaptive config: thresh={threshold} "
         f"SL={PAPER_STOP_LOSS_PCT*100:.1f}% trail={PAPER_TRAILING_STOP_PCT*100:.1f}% "
         f"max_pos={PAPER_MAX_POSITIONS} (F&G={fg} VIX={vix:.1f})"
     )
@@ -3280,17 +3296,25 @@ def paper_evaluate_ticker(ticker: str):
         should_sell = False
         sell_reason = ""
 
-        if pnl_pct >= PAPER_TAKE_PROFIT_PCT:
-            should_sell = True
-            sell_reason = f"TAKE-PROFIT +{pnl_pct*100:.1f}%"
-        elif pnl_pct <= -PAPER_STOP_LOSS_PCT:
+        # Hard stop: safety net at entry - X%
+        if pnl_pct <= -PAPER_STOP_LOSS_PCT:
             should_sell = True
             sell_reason = f"HARD-STOP {pnl_pct*100:.1f}%"
-        elif price <= pos.get("high", cost) * (1 - PAPER_TRAILING_STOP_PCT):
-            should_sell = True
-            peak_pnl = ((pos.get("high", cost) - cost) / cost) * 100
-            sell_reason = f"TRAILING-STOP {pnl_pct*100:+.1f}% (peak +{peak_pnl:.1f}%)"
         else:
+            # Graduated trailing stop: trail widens with profit
+            high = pos.get("high", cost)
+            peak_pnl_pct = (high - cost) / cost
+            trail = _graduated_trail_pct(peak_pnl_pct)
+            if price <= high * (1 - trail):
+                should_sell = True
+                peak_pnl = peak_pnl_pct * 100
+                sell_reason = (
+                    f"TRAILING-STOP {pnl_pct*100:+.1f}%"
+                    f" (peak +{peak_pnl:.1f}%,"
+                    f" trail {trail*100:.0f}%)"
+                )
+
+        if not should_sell:
             sig = compute_paper_signal(ticker)
             if sig["score"] <= 30 and pnl_pct > 0:
                 should_sell = True
@@ -3550,7 +3574,6 @@ def paper_evaluate_ticker(ticker: str):
     c            = sig["comps"]
     new_val      = paper_portfolio_value()
     lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
-    tp_price     = price * (1 + PAPER_TAKE_PROFIT_PCT)
     sl_price     = price * (1 - PAPER_STOP_LOSS_PCT)
     trail_price  = price * (1 - PAPER_TRAILING_STOP_PCT)
 
@@ -3600,9 +3623,13 @@ def paper_evaluate_ticker(ticker: str):
         f"{'─'*28}\n"
         f"Shares:    {shares} @ ${price:.2f}\n"
         f"Cost:      ${cost:,.0f}\n"
-        f"Target:    ${tp_price:.2f} (+{PAPER_TAKE_PROFIT_PCT*100:.0f}%)\n"
-        f"Trail:     ${trail_price:.2f} (-{PAPER_TRAILING_STOP_PCT*100:.0f}% from peak)\n"
-        f"Hard Stop: ${sl_price:.2f} (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
+        f"Trail:     {PAPER_TRAILING_STOP_PCT*100:.0f}%"
+        f" / {GRADUATED_TRAIL_ZONES[2][1]*100:.0f}%"
+        f" / {GRADUATED_TRAIL_ZONES[1][1]*100:.0f}%"
+        f" / {GRADUATED_TRAIL_ZONES[0][1]*100:.0f}%"
+        f" (graduated)\n"
+        f"Hard Stop: ${sl_price:.2f}"
+        f" (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
         + (f"AVWAP Stop: ${c.get('avwap', 0):.2f} (exit if lost)\n" if c.get('avwap') else "")
         + f"{'─'*28}\n"
         f"Signal:    {sig['score']:.0f}/150 (thresh={threshold})\n"
@@ -4345,16 +4372,30 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         aa = "ON (adapts to market)" if user_config.get("auto_adjust", True) else "OFF (using base values)"
+        # Build graduated trail display
+        z = GRADUATED_TRAIL_ZONES
+        trail_str = (
+            f"{PAPER_TRAILING_STOP_PCT*100:.0f}%"
+            f"/{z[2][1]*100:.0f}%"
+            f"/{z[1][1]*100:.0f}%"
+            f"/{z[0][1]*100:.0f}%"
+        )
         lines = [
             "CONFIGURABLE SETTINGS",
             f"Auto-adjust: {aa}",
             f"",
             f"{'':14s} Base   Active",
             f"stop_loss    {user_config['stop_loss']*100:5.0f}%  {PAPER_STOP_LOSS_PCT*100:5.1f}%",
-            f"take_profit  {user_config['take_profit']*100:5.0f}%  {PAPER_TAKE_PROFIT_PCT*100:5.1f}%",
             f"trailing     {user_config['trailing']*100:5.0f}%  {PAPER_TRAILING_STOP_PCT*100:5.1f}%",
             f"max_positions {user_config['max_positions']:4}   {PAPER_MAX_POSITIONS:5}",
             f"threshold    {user_config['threshold']:5}   {PAPER_MIN_SIGNAL:5}",
+            f"",
+            f"Graduated Trail: {trail_str}",
+            f"  <5%: {PAPER_TRAILING_STOP_PCT*100:.0f}%"
+            f"  5-10%: {z[2][1]*100:.0f}%"
+            f"  10-15%: {z[1][1]*100:.0f}%"
+            f"  15%+: {z[0][1]*100:.0f}%",
+            f"  (no fixed take-profit)",
             f"",
             f"Usage: /set <param> <value>",
             f"       /set auto_adjust on|off",
@@ -4388,11 +4429,16 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_config["stop_loss"] = value / 100
         save_paper_state()
         await update.message.reply_text(f"Stop loss set to {value:.0f}% (persisted)")
-    elif param == "take_profit" and 1 <= value <= 50:
-        PAPER_TAKE_PROFIT_PCT = value / 100
-        user_config["take_profit"] = value / 100
-        save_paper_state()
-        await update.message.reply_text(f"Take profit set to {value:.0f}% (persisted)")
+    elif param == "take_profit":
+        await update.message.reply_text(
+            "Fixed take-profit removed in v2.2.\n"
+            "Now using graduated trailing stop:\n"
+            f"  <5%: {PAPER_TRAILING_STOP_PCT*100:.0f}% trail\n"
+            f"  5-10%: {GRADUATED_TRAIL_ZONES[2][1]*100:.0f}% trail\n"
+            f"  10-15%: {GRADUATED_TRAIL_ZONES[1][1]*100:.0f}% trail\n"
+            f"  15%+: {GRADUATED_TRAIL_ZONES[0][1]*100:.0f}% trail\n"
+            "Use /set trailing to change base."
+        )
     elif param == "trailing" and 1 <= value <= 15:
         PAPER_TRAILING_STOP_PCT = value / 100
         user_config["trailing"] = value / 100
@@ -7451,14 +7497,22 @@ def _run_replay_backtest(entries, tp, sl, trail, threshold, max_pos):
                 positions[ticker]["high"] = price
 
             sell_reason = ""
-            if pnl_pct >= tp:
-                sell_reason = f"TAKE-PROFIT +{pnl_pct*100:.1f}%"
-            elif pnl_pct <= -sl:
+            if pnl_pct <= -sl:
                 sell_reason = f"HARD-STOP {pnl_pct*100:.1f}%"
-            elif price <= pos.get("high", cost) * (1 - trail):
-                peak_pnl = ((pos.get("high", cost) - cost) / cost) * 100
-                sell_reason = f"TRAILING-STOP {pnl_pct*100:+.1f}% (peak +{peak_pnl:.1f}%)"
             else:
+                # Graduated trailing stop
+                high = pos.get("high", cost)
+                peak_pnl_pct = (high - cost) / cost
+                g_trail = _graduated_trail_pct(peak_pnl_pct)
+                if price <= high * (1 - g_trail):
+                    peak_pnl = peak_pnl_pct * 100
+                    sell_reason = (
+                        f"TRAILING-STOP {pnl_pct*100:+.1f}%"
+                        f" (peak +{peak_pnl:.1f}%,"
+                        f" trail {g_trail*100:.0f}%)"
+                    )
+
+            if not sell_reason:
                 # Check signal collapse using logged score
                 if ticker in ticker_signals:
                     sig_score = ticker_signals[ticker].get("composite_score", 50)
