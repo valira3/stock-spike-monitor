@@ -1,300 +1,116 @@
-# Stock Spike Monitor 📈
+# Stock Spike Monitor
 
-A real-time stock monitoring Telegram bot with AI analysis, paper trading, live market dashboards, and squeeze detection.
-
----
+A real-time stock scanner and paper trading bot for Telegram, powered by Claude AI. Monitors 60+ stocks every minute, fires spike alerts, runs a $100k paper portfolio with 10-factor signal scoring, and mirrors trades to a live brokerage via TradersPost.
 
 ## Features
 
-| Category | What it does |
-|---|---|
-| **Real-time scanning** | Scans 60-80 tickers every 60s, fires spike alerts on ≥3% moves |
-| **AI analysis** | Claude Sonnet (primary) + Grok (fallback) explain every alert and answer questions |
-| **Paper trading** | Automated buy/sell engine with RSI, Bollinger, MACD, squeeze, and AI signals |
-| **Market dashboards** | Pre-market, midday, close, and evening recaps sent automatically |
-| **25 commands** | `/movers`, `/overview`, `/analyze`, `/chart`, `/rsi`, `/squeeze`, `/ask`, and more |
-| **Off-hours aware** | All commands work 24/7 — uses previous close when live price unavailable |
-| **Persistence** | Watchlists, alerts, and paper positions survive restarts via JSON state files |
+- **Real-Time Scanner** — Polls Finnhub every 60 seconds for price/volume changes across 30 core tickers + dynamically added movers
+- **Spike Alerts** — Notifies on 3%+ moves with 15-min cooldown and 1% escalation threshold
+- **Paper Trading** — Fully automated $100k simulated portfolio with trailing stops, take-profit, and adaptive thresholds
+- **10-Factor Signal Scoring** — RSI, Bollinger Bands, MACD, volume, squeeze, slope, AI direction, AI watchlist conviction, multi-day trend, and news sentiment (max 140 pts)
+- **Shadow Trading** — Mirrors paper trades to a real brokerage account via TradersPost webhooks
+- **T+1 Settlement Tracking** — Cash account aware; tracks settled vs. unsettled funds
+- **AI Integration** — Claude Sonnet for deep analysis, Claude Haiku for high-frequency scoring; Grok as fallback
+- **VIX Put-Selling Alerts** — Auto-alerts when VIX crosses 33 with estimated put premiums on GOOG/NVDA/AMZN/META
+- **Scheduled Reports** — Morning briefing, pre-market dashboard, midday update, close summary, evening recap, weekly digest, Saturday prep
+- **Market Data** — Macro calendar, earnings, crypto, movers, sector overview, news sentiment
+- **Charts** — Intraday price/volume charts, RSI/Bollinger charts, portfolio value charts, performance dashboards
 
----
+## Tech Stack
 
-## Quick Deploy to Railway
+| Component | Technology |
+|-----------|-----------|
+| Language | Python 3.11+ |
+| Bot Framework | python-telegram-bot |
+| AI (primary) | Anthropic Claude (Sonnet + Haiku) |
+| AI (fallback) | xAI Grok |
+| Market Data | Finnhub (real-time quotes), FMP (movers/gainers), yfinance (charts/candles) |
+| Brokerage Bridge | TradersPost (webhook-based) |
+| Charts | matplotlib |
+| Hosting | Railway (auto-deploys from `main`) |
+| State | JSON file on Railway Volume mount |
 
-### 1 — Fork / upload to GitHub
-Push this entire folder to a GitHub repo.
+## Environment Variables
 
-### 2 — Create Railway project
-1. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
-2. Select your repo
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `FINNHUB_TOKEN` | Yes | Finnhub API key for real-time quotes |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
+| `TELEGRAM_TOKEN` | Yes | Main Telegram bot token |
+| `CHAT_ID` | Yes | Main Telegram chat/group ID |
+| `FMP_API_KEY` | Yes | Financial Modeling Prep API key |
+| `TRADERSPOST_WEBHOOK_URL` | No | TradersPost webhook for live trade mirroring |
+| `TELEGRAM_TP_TOKEN` | No | Separate Telegram bot token for TradersPost commands |
+| `TELEGRAM_TP_CHAT_ID` | No | TradersPost Telegram chat ID |
+| `GROK_API_KEY` | No | xAI Grok API key (fallback only) |
+| `PAPER_STATE_PATH` | No | Path for paper trading state file (default: `paper_state.json`) |
+| `PAPER_LOG_PATH` | No | Path for investment log (default: `investment.log`) |
 
-### 3 — Add a Volume (required for persistence)
-1. In your Railway project → **+ New** → **Volume**
-2. Mount path: `/data`
+## Deployment
 
-### 4 — Set environment variables
-In Railway → your service → **Variables**, add:
+The bot is deployed on [Railway](https://railway.app) and auto-deploys on every push to `main`.
 
-| Variable | Required | Notes |
-|---|---|---|
-| `TELEGRAM_TOKEN` | ✅ | From @BotFather |
-| `CHAT_ID` | ✅ | Your group chat ID (negative number) |
-| `FINNHUB_TOKEN` | ✅ | Free at [finnhub.io](https://finnhub.io) |
-| `ANTHROPIC_API_KEY` | ✅ | From [console.anthropic.com](https://console.anthropic.com) |
-| `GROK_API_KEY` | recommended | From [console.x.ai](https://console.x.ai) |
-| `FMP_API_KEY` | recommended | Free at [financialmodelingprep.com](https://financialmodelingprep.com) |
-| `PAPER_STATE_PATH` | ✅ | `/data/paper_state.json` |
-| `PAPER_LOG_PATH` | ✅ | `/data/investment.log` |
-| `BOT_STATE_PATH` | ✅ | `/data/bot_state.json` |
+### Railway Setup
 
-> ⚠️ **Do NOT set `TZ`** — the bot manages timezones internally via pytz (US/Central).
+1. Connect GitHub repo to Railway
+2. Set all environment variables above
+3. Attach a **Volume** and set `PAPER_STATE_PATH` to a path on the volume (e.g., `/data/paper_state.json`) so state persists across deploys
+4. Railway auto-builds and deploys on push
 
-### 5 — Deploy
-Railway auto-deploys on every push. Check the logs tab for startup confirmation.
-
----
-
-## Deploy to Docker / Fly.io / Render
-
-```bash
-# Build
-docker build -t stock-spike-monitor .
-
-# Run (mount a volume for persistence)
-docker run -d \
-  --name spike-bot \
-  -v $(pwd)/data:/data \
-  -e TELEGRAM_TOKEN=your_token \
-  -e CHAT_ID=your_chat_id \
-  -e FINNHUB_TOKEN=your_key \
-  -e ANTHROPIC_API_KEY=your_key \
-  -e FMP_API_KEY=your_key \
-  -e GROK_API_KEY=your_key \
-  stock-spike-monitor
-```
-
----
-
-## Local Development
+### Local Development
 
 ```bash
-# 1. Clone / download this folder
-cd stock_spike_package
+# Install dependencies
+pip install yfinance requests pandas pytz anthropic openai python-telegram-bot matplotlib
 
-# 2. Create virtual environment
-python3.11 -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+# Set environment variables
+export FINNHUB_TOKEN="..."
+export ANTHROPIC_API_KEY="..."
+export TELEGRAM_TOKEN="..."
+export CHAT_ID="..."
+export FMP_API_KEY="..."
 
-# 3. Install deps
-pip install -r requirements.txt
-
-# 4. Copy and fill env vars
-cp .env.example .env
-# Edit .env with your keys
-
-# 5. Load env and run
-export $(cat .env | grep -v '^#' | xargs)
+# Run
 python stock_spike_monitor.py
 ```
 
----
-
-## Telegram Commands Reference
-
-### Market Pulse
-| Command | Description |
-|---|---|
-| `/overview` | Indices + sectors + Fear & Greed with AI commentary |
-| `/crypto` | Live BTC, ETH, SOL, DOGE, XRP prices |
-| `/macro` | Upcoming economic events (Fed, CPI, GDP, etc.) |
-| `/earnings` | Upcoming earnings calendar (7-day window) |
-
-### Movers
-| Command | Description |
-|---|---|
-| `/movers` | Top gainers, losers, most active, low-price rockets |
-
-### Stock Tools
-| Command | Description |
-|---|---|
-| `/price AAPL` | Live quote with day range, volume, 52w range |
-| `/analyze NVDA` | AI-powered fundamental + technical analysis |
-| `/compare TSLA RIVN` | Side-by-side AI comparison of two stocks |
-| `/chart MSFT` | ASCII price chart (last 78 candles) |
-| `/rsi AAPL` | RSI indicator with AI interpretation |
-| `/news TSLA` | Latest headlines for a ticker |
-
-### Alerts & Watchlist
-| Command | Description |
-|---|---|
-| `/spikes` | Show all spike alerts fired today |
-| `/alerts` | Show today's alert count and recent triggers |
-| `/squeeze` | Top squeeze candidates ranked by score |
-| `/setalert AAPL 200` | Set a price alert for any ticker |
-| `/watchlist add NVDA` | Add ticker to personal watchlist |
-| `/watchlist remove NVDA` | Remove ticker from watchlist |
-| `/watchlist` | Show your watchlist |
-
-### Paper Trading
-| Command | Description |
-|---|---|
-| `/paper` | Portfolio value, P&L, positions summary |
-| `/paper positions` | All open positions with entry price and P&L |
-| `/paper trades` | Today's executed trades |
-| `/paper history` | All-time trade log |
-| `/paper signal AAPL` | Compute buy/sell signal score for any ticker |
-| `/paper log` | Full investment journal |
-| `/paper reset` | Reset paper portfolio to $100k |
-| `/overnight` | After-hours AI briefing on your positions |
-
-### Off-Hours & AI
-| Command | Description |
-|---|---|
-| `/prep` | Pre-market prep for tomorrow (macro, technicals, AI picks) |
-| `/wlprep` | Watchlist-specific prep report |
-| `/ask What will NVDA do tomorrow?` | Direct AI chat with live market context |
-
-### Bot Management
-| Command | Description |
-|---|---|
-| `/dashboard` | Full real-time dashboard (indices + sectors + movers + crypto) |
-| `/list` | Show all monitored tickers |
-| `/monitoring pause` | Pause spike scanning |
-| `/monitoring resume` | Resume spike scanning |
-| `/monitoring status` | Show current scan state |
-| `/help` | Command reference |
-
----
-
 ## Architecture
 
-```
-stock_spike_monitor.py  (single file, ~4,200 lines)
-│
-├── Background thread: scanner_thread()
-│     CT-aware scheduler — checks/fires jobs every 30s
-│     check_stocks() — concurrent Finnhub scan of all TICKERS
-│     paper_scan()   — automated paper trade execution
-│
-├── Main thread: run_telegram_bot()
-│     python-telegram-bot async polling
-│     25 command handlers
-│
-└── Shared state (module globals)
-      TICKERS           — dynamic watchlist (refreshed daily at 8:30 AM CT)
-      price_history     — deque of (datetime, price) per ticker
-      squeeze_scores    — latest squeeze score per ticker
-      paper_positions   — open paper trade positions
-      conversation_history — per-chat AI conversation history
-```
+The bot is a single-file Python application (~7,700 lines). See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed internals.
 
-### Data Flow
-```
-Market Data:  Finnhub (primary) → yfinance (fallback, rarely fires on Railway)
-              FMP actives/gainers/losers → /movers universe building
-
-AI:           Claude Sonnet (primary) → Claude Haiku (fast/bulk) → Grok (fallback)
-
-Persistence:  bot_state.json   → watchlists, alerts, tickers, conversations
-              paper_state.json → positions, cash, trade history
-```
-
-### Scheduled Messages (all CT)
-| Time | Message |
-|---|---|
-| 8:00 AM | Pre-market dashboard |
-| 8:30 AM | Morning briefing + paper open report + ticker refresh |
-| 12:00 PM | Midday dashboard |
-| 3:00 PM | Daily close summary + paper EOD report |
-| 6:00 PM | Evening recap |
-| Sunday 6:00 PM | Weekly digest |
-| Saturday 9:00 AM | Next-week prep |
-
----
-
-## Configuration Constants
-
-Edit these at the top of `stock_spike_monitor.py`:
-
-```python
-THRESHOLD          = 0.03    # 3% move triggers a spike alert
-MIN_PRICE          = 5.0     # ignore stocks below this price in scanner
-COOLDOWN_MINUTES   = 5       # minimum minutes between alerts per ticker
-CHECK_INTERVAL_MIN = 1       # scan interval (minutes)
-VOLUME_SPIKE_MULT  = 2.0     # volume must be 2x avg to count as volume spike
-
-# AI models
-CLAUDE_SONNET = "claude-sonnet-4-5"
-CLAUDE_HAIKU  = "claude-haiku-4-5-20251001"
-GROK_MODEL    = "grok-4-1-fast-non-reasoning"
-
-# Paper trading
-PAPER_STARTING_CAPITAL = 100_000.0
-PAPER_MAX_POSITIONS    = 8       # max simultaneous open positions
-PAPER_MAX_POS_PCT      = 0.20    # max 20% of portfolio per position
-PAPER_TAKE_PROFIT_PCT  = 0.08    # take profit at +8%
-PAPER_STOP_LOSS_PCT    = 0.04    # stop loss at -4%
-PAPER_MIN_SIGNAL       = 65      # min composite score to trigger buy
-```
-
----
-
-## API Keys — Where to Get Them
-
-| Service | URL | Free Tier |
-|---|---|---|
-| Telegram Bot | t.me/BotFather | Free |
-| Finnhub | finnhub.io/register | 60 calls/min free |
-| Anthropic | console.anthropic.com | Pay-per-token |
-| Grok (xAI) | console.x.ai | Credit-based |
-| FMP | financialmodelingprep.com/register | 250 calls/day free |
-
----
-
-## Troubleshooting
-
-**"Unable to fetch live market data"**  
-→ Check `FINNHUB_TOKEN` is set correctly in Railway variables. Test: `curl "https://finnhub.io/api/v1/quote?symbol=AAPL&token=YOUR_TOKEN"`
-
-**Bot not responding to commands**  
-→ Check `TELEGRAM_TOKEN` and `CHAT_ID`. Make sure the bot is an admin in the group.
-
-**Paper state resets on redeploy**  
-→ Railway Volume is not mounted. Verify Volume is attached at `/data` in Railway dashboard.
-
-**Scheduled messages not sending**  
-→ Do NOT set `TZ` env var. The bot uses pytz US/Central internally.
-
-**FMP commands returning errors**  
-→ Add `FMP_API_KEY` to Railway variables. Get a free key at financialmodelingprep.com.
-
-**AI responses slow or failing**  
-→ Check `ANTHROPIC_API_KEY`. Bot falls back to Grok if Anthropic fails, and to basic text if both fail.
-
----
-
-## Platform Compatibility
-
-| Platform | Status | Notes |
-|---|---|---|
-| Railway | ✅ Recommended | Set Volume for persistence |
-| Docker | ✅ | Mount `/data` volume |
-| Fly.io | ✅ | Use persistent volumes, set env vars |
-| Render | ✅ | Use worker dyno type |
-| Heroku | ✅ | Use worker Procfile entry |
-| Local / VPS | ✅ | Use `.env` file or export vars |
-
----
-
-## File Structure
+**High-level flow:**
 
 ```
-stock_spike_package/
-├── stock_spike_monitor.py   # Main bot (single file, all logic)
-├── requirements.txt          # Pinned Python dependencies
-├── .env.example              # Environment variable template
-├── railway.json              # Railway deployment config
-├── nixpacks.toml             # Railway build config
-├── Dockerfile                # Docker / container deployment
-├── Procfile                  # Heroku / Render deployment
-└── README.md                 # This file
+Scheduler (1-min loop)
+  ├── check_stocks() → scan all tickers → spike alerts + paper trading
+  ├── paper_scan() → evaluate buy/sell for each position
+  ├── check_vix_put_alert() → VIX threshold monitoring
+  └── Scheduled reports (morning, midday, close, evening, weekly)
+
+Telegram Bot (async, polling)
+  ├── Main bot: all market/paper/analysis commands
+  └── TP bot: shadow trading commands via DM
 ```
+
+## Commands
+
+See [COMMANDS.md](COMMANDS.md) for the full command reference.
+
+**Quick overview:**
+
+- `/overview` — Market indices, sectors, AI read
+- `/paper` — Paper portfolio overview
+- `/analyze TICK` — AI catalyst/risk/setup analysis
+- `/chart TICK` — Intraday price + volume chart
+- `/dashboard` — Visual market snapshot (220 DPI)
+- `/help` — Full command menu
+
+## Documentation
+
+- [COMMANDS.md](COMMANDS.md) — Full command reference with usage examples
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Internal architecture, signal scoring, scheduler, data flow
+- [CHANGELOG.md](CHANGELOG.md) — Version history from v1.0 to v1.19
+
+## License
+
+Private repository. Not licensed for redistribution.
