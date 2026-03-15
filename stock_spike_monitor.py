@@ -52,7 +52,7 @@ FMP_ENDPOINTS = {
 
 BOT_VERSION = "2.1"
 RELEASE_NOTES = [
-    "2.1 — Fix: /tp portfolio value now uses live prices instead of cost basis. Command menu registered for group + private chats.",
+    "2.1 — Fix: /tp portfolio value uses live prices. Command menu for groups. Removed /paper from TP bot. Renamed shadow→TP portfolio.",
     "2.0 — Major: AVWAP entry gate & stop, backtesting engine (/backtest), persistent signal logger, 11-factor scoring (150 pts).",
     "1.19 — Cash Account: removed PDT tracker & drift detection, added T+1 settlement tracking.",
     "1.18 — VIX Put-Selling Alert: auto-alerts when VIX crosses 33 with put premiums on GOOG/NVDA/AMZN/META.",
@@ -4819,7 +4819,7 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sign = "+" if est_pnl >= 0 else ""
 
     lines.append("")
-    lines.append("Shadow Portfolio:")
+    lines.append("TP Portfolio:")
     lines.append(f" Cash: ${sp_cash:,.0f}")
     lines.append(f" Positions: {len(sp_positions)}")
     lines.append(f" Est. Value: ${est_value:,.0f}")
@@ -4875,7 +4875,7 @@ async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not positions:
         await update.message.reply_text(
-            "📡 Shadow Portfolio Positions\n"
+            "📡 TP Portfolio Positions\n"
             f"{'━' * 31}\n"
             "No positions.\n"
             f"Cash: ${sp_cash:,.0f}"
@@ -4883,7 +4883,7 @@ async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lines = [
-        "📡 Shadow Portfolio Positions",
+        "📡 TP Portfolio Positions",
         "━" * 31,
     ]
 
@@ -4995,10 +4995,10 @@ async def cmd_tpsync(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sp["cash"] + pos_value, 2
         )
         save_paper_state()
-        tp_log("Shadow portfolio synced to paper portfolio")
+        tp_log("TP portfolio synced to paper portfolio")
         n = len(paper_positions)
         await update.message.reply_text(
-            "📡 Shadow portfolio reset to match paper.\n"
+            "📡 TP portfolio reset to match paper.\n"
             f"{n} position{'s' if n != 1 else ''} synced."
         )
 
@@ -5119,7 +5119,7 @@ async def cmd_tpedit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ticker not in sp["positions"]:
             await update.message.reply_text(
                 f"Position {ticker} not found"
-                " in shadow portfolio"
+                " in TP portfolio"
             )
             return
         pos = sp["positions"].pop(ticker)
@@ -5165,7 +5165,7 @@ async def cmd_tpedit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ticker not in sp["positions"]:
             await update.message.reply_text(
                 f"Position {ticker} not found"
-                " in shadow portfolio"
+                " in TP portfolio"
             )
             return
         try:
@@ -5199,14 +5199,14 @@ async def cmd_tpedit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sp["total_value_estimate"] = PAPER_STARTING_CAPITAL
         save_paper_state()
         await update.message.reply_text(
-            "📡 Shadow portfolio cleared."
+            "📡 TP portfolio cleared."
             f" Cash: ${PAPER_STARTING_CAPITAL:,.0f}"
         )
 
     # ── help (no args / unknown subcommand) ─────────────
     else:
         await update.message.reply_text(
-            "📡 Shadow Portfolio Editor\n"
+            "📡 TP Portfolio Editor\n"
             "━" * 27 + "\n"
             "/tpedit add TICK QTY PRICE\n"
             "  Add/replace a position\n"
@@ -8055,7 +8055,7 @@ def send_tp_startup_message():
         f"Mode: {mode}",
         f"Account: Cash (no PDT limits)",
         f"Settlement: {settle_str}",
-        f"Shadow Portfolio: ${sp_val:,.0f}",
+        f"TP Portfolio: ${sp_val:,.0f}",
     ]
     send_tp_telegram("\n".join(lines))
 
@@ -8408,19 +8408,18 @@ async def cmd_tp_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📡 TradersPost Bot — Help\n"
         f"{sep}\n"
-        f"/shadow  Toggle shadow mode\n"
+        f"/shadow  Toggle live trading\n"
         f"/tp      Status & recent orders\n"
-        f"/tppos   Shadow portfolio positions\n"
-        f"/settlement  T+1 settlement status\n"
-        f"/tpsync  Sync shadow portfolio\n"
-        f"  reset \u2014 match to paper\n"
-        f"  status \u2014 side-by-side compare\n"
-        f"/tpedit  Edit shadow portfolio\n"
+        f"/tppos   Portfolio positions\n"
+        f"/settlement  T+1 settlement\n"
+        f"/tpsync  Sync portfolio\n"
+        f"  reset \u2014 reset to starting cash\n"
+        f"  status \u2014 current breakdown\n"
+        f"/tpedit  Edit portfolio\n"
         f"  add TICK QTY PRICE\n"
         f"  remove TICK\n"
         f"  shares TICK QTY\n"
         f"  cash AMOUNT | clear\n"
-        f"/paper   View paper positions\n"
         f"/set     View/change trading config\n"
         f"/help    Show this menu\n"
         f"{sep}\n"
@@ -8440,21 +8439,20 @@ async def cmd_tp_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📡 TradersPost Trading Bot\n"
         f"{sep}\n"
-        f"Shadow mode mirrors paper trades\n"
-        f"to your TradersPost account.\n"
+        f"Executes trades via TradersPost\n"
+        f"using signals from the main bot.\n"
         f"\n"
-        f"Status: {shadow_str}\n"
+        f"Live trading: {shadow_str}\n"
         f"Webhook: {webhook_str}\n"
         f"Cash: ${settled:,.2f} settled\n"
         f"      ${unsettled:,.2f} pending\n"
         f"{sep}\n"
-        f"/shadow  Toggle shadow mode\n"
+        f"/shadow  Toggle live trading\n"
         f"/tp      Status & recent orders\n"
-        f"/tppos   Shadow positions\n"
+        f"/tppos   Portfolio positions\n"
         f"/settlement  Settlement status\n"
-        f"/tpsync  Sync shadow portfolio\n"
-        f"/tpedit  Edit shadow portfolio\n"
-        f"/paper   Paper positions\n"
+        f"/tpsync  Sync portfolio\n"
+        f"/tpedit  Edit portfolio\n"
         f"/set     Trading config\n"
         f"/help    Full help menu"
     )
@@ -8499,13 +8497,12 @@ MAIN_BOT_COMMANDS = [
 
 TP_BOT_COMMANDS = [
     BotCommand("help",       "Full help menu"),
-    BotCommand("shadow",     "Toggle shadow mode"),
+    BotCommand("shadow",     "Toggle live trading"),
     BotCommand("tp",         "Status + recent orders"),
-    BotCommand("tppos",      "Shadow positions"),
+    BotCommand("tppos",      "Portfolio positions"),
     BotCommand("settlement", "T+1 settlement status"),
-    BotCommand("tpsync",     "Sync shadow portfolio"),
-    BotCommand("tpedit",     "Edit shadow portfolio"),
-    BotCommand("paper",      "Paper positions"),
+    BotCommand("tpsync",     "Sync portfolio"),
+    BotCommand("tpedit",     "Edit portfolio"),
     BotCommand("set",        "Trading config"),
 ]
 
@@ -8619,7 +8616,6 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("tpsync",  cmd_tpsync))
     tp_app.add_handler(CommandHandler("tpedit",  cmd_tpedit))
     tp_app.add_handler(CommandHandler("tppos",   cmd_tppos))
-    tp_app.add_handler(CommandHandler("paper",   cmd_paper))
     tp_app.add_handler(CommandHandler("set",     cmd_set))
     tp_app.add_handler(CommandHandler("start",   cmd_tp_start))
     tp_app.add_handler(CommandHandler("help",    cmd_tp_help))

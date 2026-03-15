@@ -4,14 +4,17 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
-## v2.1 — Portfolio Value Fix & Command Menu (2026-03-15)
+## v2.1 — Portfolio Value Fix, Command Menu & TP Bot Cleanup (2026-03-15)
 
 ### Bug Fixes
 - `/tp` portfolio value now uses live market prices instead of cost basis (avg_price). Previously always showed ~$100,000 regardless of actual market value.
+- `post_init` callback for `set_my_commands` wasn't firing in dual-bot mode. Moved command registration inline into `_run_both()`.
 
 ### Improvements
-- Command menus registered for both private and group chat scopes via `set_my_commands`. Previously only registered for default scope, which didn't show the `/` autocomplete menu in group chats.
-- Imported `BotCommandScopeAllGroupChats` and `BotCommandScopeAllPrivateChats` for explicit scope targeting.
+- Command menus registered for both private and group chat scopes (`BotCommandScopeAllPrivateChats` + `BotCommandScopeAllGroupChats`).
+- Removed `/paper` command from TP bot — TP bot now focuses exclusively on TradersPost trading.
+- Renamed all user-visible "Shadow Portfolio" references to "TP Portfolio" throughout the TP bot.
+- Updated TP bot welcome, help, and command descriptions to reflect independent trading (not shadow/mirror).
 
 ---
 
