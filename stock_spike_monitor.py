@@ -8633,6 +8633,41 @@ def run_telegram_bot():
             loop.add_signal_handler(sig, stop.set)
         async with app:
             async with tp_app:
+                # Register / menus after init
+                try:
+                    await app.bot.set_my_commands(
+                        MAIN_BOT_COMMANDS,
+                        scope=BotCommandScopeAllPrivateChats(),
+                    )
+                    await app.bot.set_my_commands(
+                        MAIN_BOT_COMMANDS,
+                        scope=BotCommandScopeAllGroupChats(),
+                    )
+                    logger.info(
+                        f"Registered {len(MAIN_BOT_COMMANDS)}"
+                        f" main bot cmds (priv + group)"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to set main cmds: {e}"
+                    )
+                try:
+                    await tp_app.bot.set_my_commands(
+                        TP_BOT_COMMANDS,
+                        scope=BotCommandScopeAllPrivateChats(),
+                    )
+                    await tp_app.bot.set_my_commands(
+                        TP_BOT_COMMANDS,
+                        scope=BotCommandScopeAllGroupChats(),
+                    )
+                    logger.info(
+                        f"Registered {len(TP_BOT_COMMANDS)}"
+                        f" TP bot cmds (priv + group)"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to set TP cmds: {e}"
+                    )
                 await app.updater.start_polling()
                 await tp_app.updater.start_polling()
                 await app.start()
