@@ -21,7 +21,7 @@ import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch
 from matplotlib.colors import LinearSegmentedColormap
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import (
     Application, CommandHandler, ContextTypes,
     MessageHandler, filters
@@ -8446,8 +8446,76 @@ async def cmd_tp_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Telegram command menus (/ autocomplete) ──────────────────
+MAIN_BOT_COMMANDS = [
+    BotCommand("help",       "Full command menu"),
+    BotCommand("overview",   "Market indices + AI read"),
+    BotCommand("dashboard",  "Visual market snapshot"),
+    BotCommand("paper",      "Paper portfolio overview"),
+    BotCommand("perf",       "Performance dashboard"),
+    BotCommand("price",      "Live quote — /price TICK"),
+    BotCommand("chart",      "Price chart — /chart TICK"),
+    BotCommand("analyze",    "AI analysis — /analyze TICK"),
+    BotCommand("compare",    "Side-by-side — /compare A B"),
+    BotCommand("rsi",        "RSI + Bollinger — /rsi TICK"),
+    BotCommand("news",       "Headlines — /news TICK"),
+    BotCommand("movers",     "Gainers, losers, active"),
+    BotCommand("crypto",     "BTC ETH SOL DOGE XRP"),
+    BotCommand("macro",      "CPI, Fed, NFP, FOMC"),
+    BotCommand("earnings",   "Earnings calendar"),
+    BotCommand("spikes",     "Recent spike alerts"),
+    BotCommand("alerts",     "All alerts today"),
+    BotCommand("squeeze",    "Top squeeze candidates"),
+    BotCommand("setalert",   "Set price alert"),
+    BotCommand("myalerts",   "View active alerts"),
+    BotCommand("delalert",   "Remove alert"),
+    BotCommand("watchlist",  "Manage watchlist"),
+    BotCommand("backtest",   "Replay backtest"),
+    BotCommand("aistocks",   "AI picks + conviction"),
+    BotCommand("ask",        "Chat with Claude"),
+    BotCommand("prep",       "Next session plan"),
+    BotCommand("wlprep",     "Watchlist deep scan"),
+    BotCommand("overnight",  "Gap risk on holdings"),
+    BotCommand("vixalert",   "VIX put-selling setup"),
+    BotCommand("set",        "Adjust trading config"),
+    BotCommand("list",       "Monitored tickers"),
+    BotCommand("monitoring", "Pause/resume scanner"),
+    BotCommand("version",    "Release notes"),
+]
+
+TP_BOT_COMMANDS = [
+    BotCommand("help",       "Full help menu"),
+    BotCommand("shadow",     "Toggle shadow mode"),
+    BotCommand("tp",         "Status + recent orders"),
+    BotCommand("tppos",      "Shadow positions"),
+    BotCommand("settlement", "T+1 settlement status"),
+    BotCommand("tpsync",     "Sync shadow portfolio"),
+    BotCommand("tpedit",     "Edit shadow portfolio"),
+    BotCommand("paper",      "Paper positions"),
+    BotCommand("set",        "Trading config"),
+]
+
+
+async def _set_bot_commands(app: Application) -> None:
+    """Register / menu commands on startup (post_init callback)."""
+    try:
+        await app.bot.set_my_commands(MAIN_BOT_COMMANDS)
+        logger.info(f"Registered {len(MAIN_BOT_COMMANDS)} main bot commands")
+    except Exception as e:
+        logger.warning(f"Failed to set main bot commands: {e}")
+
+
+async def _set_tp_bot_commands(app: Application) -> None:
+    """Register / menu commands for TP bot on startup."""
+    try:
+        await app.bot.set_my_commands(TP_BOT_COMMANDS)
+        logger.info(f"Registered {len(TP_BOT_COMMANDS)} TP bot commands")
+    except Exception as e:
+        logger.warning(f"Failed to set TP bot commands: {e}")
+
+
 def run_telegram_bot():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(_set_bot_commands).build()
 
     # ── Market Pulse ──────────────────────────────────────────
     app.add_handler(CommandHandler("overview",    cmd_overview))
@@ -8510,7 +8578,7 @@ def run_telegram_bot():
         app.run_polling()
         return
 
-    tp_app = Application.builder().token(TELEGRAM_TP_TOKEN).build()
+    tp_app = Application.builder().token(TELEGRAM_TP_TOKEN).post_init(_set_tp_bot_commands).build()
     tp_app.add_handler(CommandHandler("shadow",  cmd_shadow))
     tp_app.add_handler(CommandHandler("tp",      cmd_tp))
     tp_app.add_handler(CommandHandler("settlement", cmd_settlement))
