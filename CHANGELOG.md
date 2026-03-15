@@ -4,6 +4,21 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.3 — AI Reasoning in Signal Log (2026-03-15)
+
+### Enhanced Signal Logger
+- Signal log (`signal_log.jsonl`) now captures `grok_reason` — Claude's text explanation for BUY/HOLD/AVOID calls.
+- Signal log now captures `news_catalyst` — the key news catalyst identified by AI sentiment analysis.
+- BUY action log entries now include full AI context: `grok_signal`, `grok_reason`, `news_sentiment`, `news_catalyst`, `fg_index`.
+- These fields enable future backtests to analyze why AI recommended or avoided specific trades, and to filter by AI sentiment in replay mode.
+
+### Existing Backtest Engine
+- `/backtest` already replays from `signal_log.jsonl` with the full AI-scored composite signals.
+- Adaptive thresholds (F&G + VIX) are replayed from logged values.
+- AVWAP gates, RSI overbought guards, and signal-collapse exits all use logged data.
+
+---
+
 ## v2.2 — Graduated Trailing Stop (2026-03-15)
 
 ### Exit Strategy Overhaul

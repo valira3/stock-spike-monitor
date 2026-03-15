@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.2"
+BOT_VERSION = "2.3"
 RELEASE_NOTES = [
+    "2.3 — Signal logger now captures AI reasoning (grok_reason, news_catalyst) for richer backtesting. BUY log entries include full AI context.",
     "2.2 — Graduated trailing stop replaces fixed take-profit. Winners now run with widening trail (3%/4%/5%/6% by profit zone).",
     "2.1 — Fix: /tp portfolio value uses live prices. Command menu for groups. Removed /paper from TP bot. Renamed shadow→TP portfolio.",
     "2.0 — Major: AVWAP entry gate & stop, backtesting engine (/backtest), persistent signal logger, 11-factor scoring (150 pts).",
@@ -3208,6 +3209,8 @@ def compute_paper_signal(ticker: str) -> dict:
             "grok_signal": comps.get("grok_signal"),
             "grok_confidence": comps.get("grok_confidence"),
             "grok_pts": comps.get("grok_pts"),
+            "grok_reason": comps.get("grok_reason"),
+            "news_catalyst": comps.get("news_catalyst"),
             "ai_conviction": comps.get("ai_conviction"),
             "support": comps.get("support"),
             "resistance": comps.get("resistance"),
@@ -3556,6 +3559,11 @@ def paper_evaluate_ticker(ticker: str):
         "cost": cost,
         "signal_score": sig["score"],
         "signal_detail": sig["detail"],
+        "grok_signal": sig["comps"].get("grok_signal"),
+        "grok_reason": sig["comps"].get("grok_reason"),
+        "news_sentiment": sig["comps"].get("news_sentiment"),
+        "news_catalyst": sig["comps"].get("news_catalyst"),
+        "fg_index": sig["comps"].get("fg_index"),
         "session": get_trading_session(),
     })
 
