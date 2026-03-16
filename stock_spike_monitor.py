@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.6.2"
+BOT_VERSION = "2.6.3"
 RELEASE_NOTES = [
+    "2.6.3 — Performance tuning: adaptive threshold floor 60 (was 45), 15-min hold before signal-collapse exit, 429 cache to cut Finnhub rate-limit storms.",
     "2.6.2 — TP notifications now include exit reason, P&L, and signal score/ToD zone on BUY.",
     "2.6.1 — Settlement cleanup on startup: purges stale T+1 entries, logs what was cleared.",
     "2.6 — Intraday time-of-day awareness: signal score modifier (±8 pts) and position sizing (65-100%) based on U-shaped volume pattern. Power hours boosted, lunch lull penalized.",
@@ -223,7 +224,7 @@ class _TTLCache:
                 "hit_rate": f"{self._hits / max(1, self._hits + self._misses) * 100:.0f}%",
             }
 
-_quote_cache = _TTLCache(ttl_seconds=55.0, max_size=500)
+_quote_cache = _TTLCache(ttl_seconds=90.0, max_size=500)  # 90s: survive across scan cycles
 _metrics_cache = _TTLCache(ttl_seconds=300.0, max_size=300)
 
 # ============================================================
@@ -729,6 +730,7 @@ def _finnhub_quote(ticker: str) -> dict:
         )
         if r.status_code == 429:
             logger.warning(f"Finnhub 429 on quote {ticker}")
+            _quote_cache.put(f"quote:{ticker}", {})  # cache empty for TTL to avoid retry storm
             return {}
         d = r.json()
         # Accept quote if current price OR previous close is valid
@@ -758,6 +760,7 @@ def _finnhub_metrics(ticker: str) -> dict:
         )
         if r.status_code == 429:
             logger.warning(f"Finnhub 429 on metrics {ticker}")
+            _metrics_cache.put(f"metrics:{ticker}", {})  # cache empty to avoid retry storm
             return {}
         result = r.json().get("metric", {})
         if result:
@@ -2787,7 +2790,7 @@ def _apply_adaptive_config() -> int:
     elif fg <= 40:  threshold -= 5
     if vix >= 30:   threshold += 5
     elif vix <= 15: threshold -= 3
-    threshold = max(45, min(85, threshold))
+    threshold = max(60, min(85, threshold))  # Floor=60: don't let fear loosen too much
 
     # ── Take Profit (legacy — graduated trail replaces)
     # No longer adjusts TP; kept for backcompat config.
@@ -3453,8 +3456,16 @@ def paper_evaluate_ticker(ticker: str):
         if not should_sell:
             sig = compute_paper_signal(ticker)
             if sig["score"] <= 30 and pnl_pct > 0:
-                should_sell = True
-                sell_reason = f"SIGNAL-COLLAPSE score={sig['score']:.0f} pnl={pnl_pct*100:+.1f}%"
+                # Minimum 15-min hold before signal-collapse exit
+                entry_dt_str = f"{pos.get('entry_date', '')} {pos.get('entry_time', '00:00:00')}"
+                try:
+                    entry_dt = datetime.strptime(entry_dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
+                    hold_minutes = (datetime.now(CT) - entry_dt).total_seconds() / 60
+                except Exception:
+                    hold_minutes = 999  # fail-open: allow sell if parse fails
+                if hold_minutes >= 15:
+                    should_sell = True
+                    sell_reason = f"SIGNAL-COLLAPSE score={sig['score']:.0f} pnl={pnl_pct*100:+.1f}% held={hold_minutes:.0f}m"
 
         # Feature #11: AVWAP stop — if price drops below AVWAP, exit
         # "AVWAP as a stop — if price drops back below it, exit."
@@ -7673,7 +7684,8 @@ def _run_replay_backtest(entries, tp, sl, trail, threshold, max_pos):
 
             if not sell_reason:
                 # Check signal collapse using logged score
-                if ticker in ticker_signals:
+                # Skip same-day entries (min hold ~1 day in backtester)
+                if ticker in ticker_signals and pos.get("entry_date") != date_str:
                     sig_score = ticker_signals[ticker].get("composite_score", 50)
                     if sig_score <= 30 and pnl_pct > 0:
                         sell_reason = f"SIGNAL-COLLAPSE score={sig_score:.0f}"
