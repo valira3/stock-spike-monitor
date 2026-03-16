@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.6.1"
+BOT_VERSION = "2.6.2"
 RELEASE_NOTES = [
+    "2.6.2 — TP notifications now include exit reason, P&L, and signal score/ToD zone on BUY.",
     "2.6.1 — Settlement cleanup on startup: purges stale T+1 entries, logs what was cleared.",
     "2.6 — Intraday time-of-day awareness: signal score modifier (±8 pts) and position sizing (65-100%) based on U-shaped volume pattern. Power hours boosted, lunch lull penalized.",
     "2.5.1 — TP Portfolio fully independent. /tpsync reset wipes to clean $100k.",
@@ -3578,13 +3579,20 @@ def paper_evaluate_ticker(ticker: str):
                     )
                     if tp_result:
                         _lp = round(price * (1 - LIMIT_ORDER_SELL_BUFFER), 2)
-                        tp_log(f"LIMIT EXIT {ticker} sent @ ${_lp:.2f}")
+                        tp_log(
+                            f"LIMIT EXIT {ticker} "
+                            f"{shares} shares @ ${_lp:.2f}\n"
+                            f"  P&L: ${realized_pnl:+,.0f} "
+                            f"({pnl_pct*100:+.1f}%)\n"
+                            f"  Reason: {sell_reason}"
+                        )
                         # Record settlement (T+1)
                         sell_amount = shares * price
                         record_settlement(ticker, sell_amount)
                     else:
                         tp_log(
-                            f"LIMIT EXIT {ticker} FAILED to send"
+                            f"LIMIT EXIT {ticker} FAILED\n"
+                            f"  Reason: {sell_reason}"
                         )
 
                 except Exception as e:
@@ -3813,9 +3821,17 @@ def paper_evaluate_ticker(ticker: str):
             if tp_result:
                 _shares = math.floor(cost / price) if price > 0 else 0
                 _lp = round(price * (1 + LIMIT_ORDER_BUY_BUFFER), 2)
-                tp_log(f"LIMIT BUY {ticker} sent: {_shares} shares @ ${_lp:.2f} (${cost:,.0f})")
+                _tod = sig.get("comps", {}).get("tod_zone", "")
+                _tod_str = f" [{_tod}]" if _tod else ""
+                tp_log(
+                    f"LIMIT BUY {ticker} "
+                    f"{_shares} shares @ ${_lp:.2f}"
+                    f" (${cost:,.0f})\n"
+                    f"  Signal: {sig['score']:.0f}/158"
+                    f"{_tod_str}"
+                )
             else:
-                tp_log(f"LIMIT BUY {ticker} FAILED to send")
+                tp_log(f"LIMIT BUY {ticker} FAILED")
         except Exception as e:
             logger.error(f"[TP] BUY error: {e}")
 
