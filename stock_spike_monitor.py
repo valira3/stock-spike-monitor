@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.3"
+BOT_VERSION = "2.4"
 RELEASE_NOTES = [
+    "2.4 — Robinhood hours fix: extended session now 7 AM–8 PM ET. All TradersPost orders use limit pricing (±0.5% buffer) for safety and extended-hours compliance.",
     "2.3 — Signal logger now captures AI reasoning (grok_reason, news_catalyst) for richer backtesting. BUY log entries include full AI context.",
     "2.2 — Graduated trailing stop replaces fixed take-profit. Winners now run with widening trail (3%/4%/5%/6% by profit zone).",
     "2.1 — Fix: /tp portfolio value uses live prices. Command menu for groups. Removed /paper from TP bot. Renamed shadow→TP portfolio.",
@@ -679,11 +680,17 @@ def _score_news_sentiment(ticker: str) -> dict:
 
 
 def get_trading_session():
+    """Return current trading session aligned with Robinhood hours.
+    All times in CT (Central Time = ET - 1 hour).
+      Robinhood regular:  9:30 AM - 4:00 PM ET  →  8:30 - 15:00 CT
+      Robinhood extended: 7:00 AM - 8:00 PM ET  →  6:00 - 19:00 CT
+    """
     now     = datetime.now(CT)
     if now.weekday() > 4:
         return "closed"
     current = now.time()
-    if datetime.strptime("07:00", "%H:%M").time() <= current < datetime.strptime("20:00", "%H:%M").time():
+    # Robinhood extended hours: 7 AM - 8 PM ET = 6 AM - 7 PM CT
+    if datetime.strptime("06:00", "%H:%M").time() <= current < datetime.strptime("19:00", "%H:%M").time():
         return "regular" if datetime.strptime("08:30", "%H:%M").time() <= current < datetime.strptime("15:00", "%H:%M").time() else "extended"
     return "closed"
 
@@ -2442,9 +2449,17 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
     save_paper_state()
 
 
+# Limit order buffer: how much above/below current price to set limit
+# 0.5% buffer gives room for normal spread while preventing runaway fills
+LIMIT_ORDER_BUY_BUFFER  = 0.005   # +0.5% above current price for buys
+LIMIT_ORDER_SELL_BUFFER = 0.005   # -0.5% below current price for sells
+
+
 def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars=None):
     """
-    Send an order to TradersPost via webhook POST.
+    Send a LIMIT order to TradersPost via webhook POST.
+    All orders use limit pricing to prevent slippage and comply with
+    Robinhood's extended-hours requirement (no market orders).
     action: "buy" or "exit"
     Returns response dict or None on failure.
     """
@@ -2455,19 +2470,28 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
     now = datetime.now(CT)
     tp_state["total_orders_sent"] = tp_state.get("total_orders_sent", 0) + 1
 
-    # Build payload
+    # Calculate limit price with buffer
+    # BUY:  limit slightly above current price (willing to pay up to +0.5%)
+    # EXIT: limit slightly below current price (willing to sell down to -0.5%)
+    if action == "buy":
+        limit_price = round(price * (1 + LIMIT_ORDER_BUY_BUFFER), 2)
+    else:
+        limit_price = round(price * (1 - LIMIT_ORDER_SELL_BUFFER), 2)
+
+    # Build payload — always use limit orders
     payload = {
         "ticker": ticker,
         "action": action,
-        "orderType": "market",
+        "orderType": "limit",
+        "limitPrice": limit_price,
     }
 
     if action == "buy" and quantity_dollars:
-        shares = math.floor(quantity_dollars / price) if price > 0 else 0
+        shares = math.floor(quantity_dollars / limit_price) if limit_price > 0 else 0
         if shares < 1:
             logger.warning(
                 f"[TP] Skipping BUY {ticker}: calculated {shares} shares "
-                f"(${quantity_dollars:,.0f} / ${price:,.2f} = {quantity_dollars/price:.2f})"
+                f"(${quantity_dollars:,.0f} / ${limit_price:,.2f} = {quantity_dollars/limit_price:.2f})"
             )
             return None
         payload["quantityType"] = "fixed_quantity"
@@ -2479,7 +2503,7 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
         payload["extendedHours"] = True
 
     try:
-        logger.info(f"[TP] Sending {action.upper()} {ticker} ({payload.get('quantity', '')} shares): {json.dumps(payload)}")
+        logger.info(f"[TP] Sending LIMIT {action.upper()} {ticker} ({payload.get('quantity', '')} shares) @ ${limit_price:.2f} (mkt ${price:.2f}): {json.dumps(payload)}")
         r = requests.post(
             TRADERSPOST_WEBHOOK_URL,
             json=payload,
@@ -2500,6 +2524,7 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
             "ticker": ticker,
             "action": action.upper(),
             "price": price,
+            "limit_price": limit_price,
             "dollars": quantity_dollars,
             "success": resp.get("success", False),
             "time": now.isoformat(),
@@ -2523,6 +2548,7 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
             "ticker": ticker,
             "action": action.upper(),
             "price": price,
+            "limit_price": limit_price,
             "dollars": quantity_dollars,
             "success": False,
             "time": now.isoformat(),
@@ -3445,13 +3471,14 @@ def paper_evaluate_ticker(ticker: str):
                         None, success,
                     )
                     if tp_result:
-                        tp_log(f"EXIT {ticker} sent")
+                        _lp = round(price * (1 - LIMIT_ORDER_SELL_BUFFER), 2)
+                        tp_log(f"LIMIT EXIT {ticker} sent @ ${_lp:.2f}")
                         # Record settlement (T+1)
                         sell_amount = shares * price
                         record_settlement(ticker, sell_amount)
                     else:
                         tp_log(
-                            f"EXIT {ticker} FAILED to send"
+                            f"LIMIT EXIT {ticker} FAILED to send"
                         )
 
                 except Exception as e:
@@ -3672,9 +3699,10 @@ def paper_evaluate_ticker(ticker: str):
             )
             if tp_result:
                 _shares = math.floor(cost / price) if price > 0 else 0
-                tp_log(f"BUY {ticker} sent: {_shares} shares (${cost:,.0f})")
+                _lp = round(price * (1 + LIMIT_ORDER_BUY_BUFFER), 2)
+                tp_log(f"LIMIT BUY {ticker} sent: {_shares} shares @ ${_lp:.2f} (${cost:,.0f})")
             else:
-                tp_log(f"BUY {ticker} FAILED to send")
+                tp_log(f"LIMIT BUY {ticker} FAILED to send")
         except Exception as e:
             logger.error(f"[TP] Shadow BUY error: {e}")
 

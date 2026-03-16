@@ -4,6 +4,24 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.4 — Robinhood Hours + Limit Orders (2026-03-16)
+
+### Trading Hours Fix
+- Extended session now correctly matches Robinhood: **7:00 AM – 8:00 PM ET**.
+- Previous: bot ran 8:00 AM – 9:00 PM ET — missed 1 hour of pre-market and traded 1 hour past Robinhood's close.
+- `get_trading_session()` updated: extended = 6:00–19:00 CT (= 7:00 AM–8:00 PM ET).
+
+### All Orders Now Use Limit Pricing
+- Every TradersPost order is now a **limit order** instead of market.
+- BUY orders: limit price = current price + 0.5% buffer.
+- EXIT orders: limit price = current price − 0.5% buffer.
+- Eliminates slippage risk and complies with Robinhood's extended-hours rule (market orders rejected during pre/post-market).
+- Constants `LIMIT_ORDER_BUY_BUFFER` and `LIMIT_ORDER_SELL_BUFFER` (default 0.5%) are tunable.
+- TP notifications now show "LIMIT BUY" / "LIMIT EXIT" with the limit price.
+- Order records include `limit_price` for audit trail.
+
+---
+
 ## v2.3 — AI Reasoning in Signal Log (2026-03-15)
 
 ### Enhanced Signal Logger
