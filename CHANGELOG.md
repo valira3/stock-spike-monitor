@@ -4,6 +4,34 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.6 — Intraday Time-of-Day Awareness (2026-03-16)
+
+### Signal Score Modifier (Component #12, ±8 pts)
+- New `Time-of-Day` component added to the 12-component signal engine (max score now 158).
+- Based on the well-documented U-shaped intraday volume/volatility pattern:
+  - **Power Open** (9:30–10:30 AM ET): +8 pts — highest volume and volatility, most reliable signals.
+  - **Morning** (10:30–11:30 AM ET): +3 pts — still elevated activity.
+  - **Transition** (11:30 AM–12:00 PM ET): 0 pts — neutral.
+  - **Lunch Lull** (12:00–2:00 PM ET): -8 pts — lowest volume, more false breakouts, less conviction.
+  - **Transition** (2:00–3:00 PM ET): -3 pts — volume recovering.
+  - **Afternoon** (3:00–3:30 PM ET): +3 pts — building toward close.
+  - **Power Close** (3:30–4:00 PM ET): +6 pts — strong close activity, rebalancing flows.
+- Naturally raises the effective threshold during lunch and lowers it during power hours.
+
+### Position Sizing by Time Zone
+- Position size now scaled by intraday zone:
+  - **Power hours** (open/close): 100% of calculated size.
+  - **Morning/Afternoon**: 90%.
+  - **Transition**: 80–85%.
+  - **Lunch Lull**: 65% — even if a signal passes threshold, trade smaller during low-conviction periods.
+  - **Extended hours**: 85%.
+
+### Signal Log & BUY Notification
+- `signal_log.jsonl` now captures `tod_zone`, `tod_pts`, `tod_size_mult` for backtesting.
+- BUY notification shows the time-of-day zone, point adjustment, and size multiplier.
+
+---
+
 ## v2.5.1 — TP Portfolio Independence (2026-03-16)
 
 ### TP Portfolio is fully independent from Paper

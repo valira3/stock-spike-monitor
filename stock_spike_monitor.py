@@ -50,9 +50,10 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.5.1"
+BOT_VERSION = "2.6"
 RELEASE_NOTES = [
-    "2.5.1 — TP Portfolio is now fully independent. /tpsync reset wipes to clean $100k (not paper clone). Removed all shadow terminology.",
+    "2.6 — Intraday time-of-day awareness: signal score modifier (±8 pts) and position sizing (65-100%) based on U-shaped volume pattern. Power hours boosted, lunch lull penalized.",
+    "2.5.1 — TP Portfolio fully independent. /tpsync reset wipes to clean $100k.",
     "2.5 — TP Portfolio sync fix: cash guard on BUY, forced EXIT sync on webhook failure.",
     "2.4 — Robinhood hours fix: extended session now 7 AM–8 PM ET. All TradersPost orders use limit pricing (±0.5% buffer) for safety and extended-hours compliance.",
     "2.3 — Signal logger now captures AI reasoning (grok_reason, news_catalyst) for richer backtesting. BUY log entries include full AI context.",
@@ -1942,6 +1943,38 @@ def _graduated_trail_pct(pnl_pct: float) -> float:
 
 PAPER_MIN_SIGNAL       = 65       # min composite score (0-140) to open a position
 
+# ── Intraday time-of-day adjustments ─────────────────────────
+# U-shaped volume/volatility pattern: high at open & close,
+# low during lunch. Signals during high-volume windows are
+# more reliable; midday signals carry more false-breakout risk.
+# All times in CT (Central Time = ET - 1 hour).
+INTRADAY_ZONES = {
+    # (CT start, CT end): (signal_pts, pos_size_mult, label)
+    "power_open":  ("08:30", "09:30", 8, 1.00, "PowerOpen"),
+    "morning":     ("09:30", "10:30", 3, 0.90, "Morning"),
+    "transition1": ("10:30", "11:00", 0, 0.85, "Transition"),
+    "lunch":       ("11:00", "13:00",-8, 0.65, "LunchLull"),
+    "transition2": ("13:00", "14:00",-3, 0.80, "Transition"),
+    "afternoon":   ("14:00", "14:30", 3, 0.90, "Afternoon"),
+    "power_close": ("14:30", "15:00", 6, 1.00, "PowerClose"),
+}
+# Extended hours (pre/post market): no modifier — volume is
+# naturally thin but we already gate on session type elsewhere.
+
+
+def _get_intraday_zone() -> tuple:
+    """Return (signal_pts, size_mult, label) for current
+    time of day. Returns (0, 0.85, 'Extended') outside
+    regular hours."""
+    now = datetime.now(CT)
+    ct = now.strftime("%H:%M")
+    for _name, (start, end, pts, mult, label) in (
+        INTRADAY_ZONES.items()
+    ):
+        if start <= ct < end:
+            return pts, mult, label
+    return 0, 0.85, "Extended"
+
 # Bot-wide persistence (watchlists, alerts, tickers, conversation history …)
 # Set BOT_STATE_PATH env var to a Railway Volume path, e.g. /data/bot_state.json
 _data_dir = os.path.dirname(os.getenv("PAPER_STATE_PATH", "paper_state.json"))
@@ -2932,12 +2965,13 @@ def compute_avwap(ticker: str) -> dict:
 
 def compute_paper_signal(ticker: str) -> dict:
     """
-    Composite signal engine (11 components, max 150 pts).
+    Composite signal engine (12 components, max 158 pts).
     Components: RSI(20) + BB(15) + MACD(15) + Volume(15) + Squeeze(10) +
     Slope(10) + AI Direction(15) + AI Watchlist(10) + Multi-Day Trend(15) +
-    News Sentiment(15) + AVWAP(10).
+    News Sentiment(15) + AVWAP(10) + Time-of-Day(±8).
     S/R modifier: ±5 pts.
     AVWAP can also go -5 if price is below VWAP (overhead supply penalty).
+    ToD boosts power hours (open/close), penalizes lunch lull.
     Caches for 60 seconds to avoid hammering AI.
     """
     now = datetime.now(CT)
@@ -3224,8 +3258,20 @@ def compute_paper_signal(ticker: str) -> dict:
     except Exception as e:
         logger.debug(f"AVWAP signal {ticker}: {e}")
 
+    # ── 12. Intraday time-of-day modifier (±8 pts) ──────────
+    # U-shaped volume pattern: boost signals during power
+    # hours (open/close), penalize during lunch lull where
+    # false breakouts are more common.
+    tod_pts, tod_mult, tod_label = _get_intraday_zone()
+    if tod_pts != 0:
+        score += tod_pts
+        detail.append(f"ToD={tod_label}({tod_pts:+d}pts)")
+    comps["tod_zone"] = tod_label
+    comps["tod_pts"] = tod_pts
+    comps["tod_size_mult"] = tod_mult
+
     result = {
-        "score":   round(min(score, 150), 1),   # raised cap: 140 base + 10 AVWAP
+        "score":   round(min(score, 158), 1),   # cap: 150 base + 8 ToD
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -3277,6 +3323,9 @@ def compute_paper_signal(ticker: str) -> dict:
             "vix": _vix_val,
             "threshold": _thresh,
             "session": get_trading_session(),
+            "tod_zone": comps.get("tod_zone"),
+            "tod_pts": comps.get("tod_pts"),
+            "tod_size_mult": comps.get("tod_size_mult"),
             "daily_ohlcv": {
                 "open": _daily_today.get("open"),
                 "high": _daily_today.get("high"),
@@ -3294,7 +3343,8 @@ def compute_paper_signal(ticker: str) -> dict:
 
 def _paper_position_size(ticker: str, signal_score: float) -> int:
     """
-    Calculate shares to buy based on signal strength and portfolio rules.
+    Calculate shares to buy based on signal strength, portfolio
+    rules, and intraday time-of-day zone.
     Returns 0 if no trade should be made.
     """
     portfolio_val = paper_portfolio_value()
@@ -3310,6 +3360,11 @@ def _paper_position_size(ticker: str, signal_score: float) -> int:
     if ai_info and ai_info.get("conviction", 0) >= 8:
         dollars *= 1.15
         dollars = min(dollars, portfolio_val * PAPER_MAX_POS_PCT)  # still respect max
+
+    # Time-of-day sizing: reduce position during lunch lull,
+    # full size during power hours (open & close)
+    _, tod_mult, _ = _get_intraday_zone()
+    dollars *= tod_mult
 
     if dollars < 100:
         return 0
@@ -3663,6 +3718,13 @@ def paper_evaluate_ticker(ticker: str):
         sig_lines.append(f"News {c.get('news_sentiment', 0):+d} ({c['news_pts']}pts)")
     if c.get("avwap"):
         sig_lines.append(f"AVWAP ${c['avwap']:.2f} ({c.get('pct_from_avwap', 0):+.1f}%) ({c.get('avwap_pts', 0)}pts)")
+    if c.get("tod_zone"):
+        _tp = c.get('tod_pts', 0)
+        _tm = c.get('tod_size_mult', 1.0)
+        sig_lines.append(
+            f"ToD {c['tod_zone']} ({_tp:+d}pts,"
+            f" size {_tm:.0%})"
+        )
 
     # News catalyst line for buy notification
     news_catalyst_line = ""
@@ -3698,7 +3760,7 @@ def paper_evaluate_ticker(ticker: str):
         f" (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
         + (f"AVWAP Stop: ${c.get('avwap', 0):.2f} (exit if lost)\n" if c.get('avwap') else "")
         + f"{'─'*28}\n"
-        f"Signal:    {sig['score']:.0f}/150 (thresh={threshold})\n"
+        f"Signal:    {sig['score']:.0f}/158 (thresh={threshold})\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
         + news_catalyst_line
