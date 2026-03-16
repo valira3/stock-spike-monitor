@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.6"
+BOT_VERSION = "2.6.1"
 RELEASE_NOTES = [
+    "2.6.1 — Settlement cleanup on startup: purges stale T+1 entries, logs what was cleared.",
     "2.6 — Intraday time-of-day awareness: signal score modifier (±8 pts) and position sizing (65-100%) based on U-shaped volume pattern. Power hours boosted, lunch lull penalized.",
     "2.5.1 — TP Portfolio fully independent. /tpsync reset wipes to clean $100k.",
     "2.5 — TP Portfolio sync fix: cash guard on BUY, forced EXIT sync on webhook failure.",
@@ -2210,6 +2211,25 @@ def load_paper_state():
         if tp_state.get("dm_chat_id"):
             tp_dm_chat_id = tp_state["dm_chat_id"]
             logger.info(f"[TP] Restored DM chat ID: {tp_dm_chat_id}")
+
+        # Purge stale settlements on startup
+        _today_str = datetime.now(CT).strftime("%Y-%m-%d")
+        _old_pending = tp_state.get("pending_settlements", [])
+        _still = [p for p in _old_pending
+                  if p.get("settles_on", "") > _today_str]
+        _purged = len(_old_pending) - len(_still)
+        if _purged > 0:
+            _purged_amt = sum(
+                p["amount"] for p in _old_pending
+                if p.get("settles_on", "") <= _today_str
+            )
+            tp_state["pending_settlements"] = _still
+            logger.info(
+                f"[TP] Settlement cleanup: purged "
+                f"{_purged} settled entries "
+                f"(${_purged_amt:,.0f}), "
+                f"{len(_still)} still pending"
+            )
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -8214,22 +8234,40 @@ def send_tp_startup_message():
     if not chat_id:
         return
     mode = user_config.get("trading_mode", "paper")
-    settled, unsettled, _ = get_settled_cash()
+    settled, unsettled, pending = get_settled_cash()
     sp = tp_state.get("shadow_portfolio",
                        _default_shadow_portfolio())
-    sp_val = sp.get("total_value_estimate",
-                     PAPER_STARTING_CAPITAL)
+    sp_cash = sp.get("cash", 0)
+    sp_positions = sp.get("positions", {})
+    # Compute live TP portfolio value
+    pos_value = 0
+    for tick, p in sp_positions.items():
+        s = p.get("shares", 0)
+        a = p.get("avg_price", 0)
+        try:
+            r = _get_best_price(tick)
+            cp = (r[0] if isinstance(r, tuple) else r) or a
+        except Exception:
+            cp = a
+        pos_value += s * cp
+    sp_val = sp_cash + pos_value
     sep = "━" * 31
     dest = "DM" if tp_dm_chat_id else "Channel"
-    settle_str = (
-        f"${unsettled:,.0f} unsettled"
-        if unsettled > 0 else "all settled"
+    if unsettled > 0:
+        settle_str = (
+            f"${unsettled:,.0f} unsettled"
+            f" ({len(pending)} sells)"
+        )
+    else:
+        settle_str = "all settled"
+    mode_label = (
+        "Active" if mode == "shadow" else "Disabled"
     )
     lines = [
         f"📡 Stock Spike Monitor v{BOT_VERSION}",
         f"TradersPost {dest} Active",
         sep,
-        f"Mode: {mode}",
+        f"TP Trading: {mode_label}",
         f"Account: Cash (no PDT limits)",
         f"Settlement: {settle_str}",
         f"TP Portfolio: ${sp_val:,.0f}",
