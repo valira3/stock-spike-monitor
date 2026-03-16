@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.4"
+BOT_VERSION = "2.5"
 RELEASE_NOTES = [
+    "2.5 — TP Portfolio sync fix: cash guard prevents shadow portfolio from going negative on BUY. Failed EXIT webhooks now force-sync shadow (remove position, return cash) to stay aligned with paper.",
     "2.4 — Robinhood hours fix: extended session now 7 AM–8 PM ET. All TradersPost orders use limit pricing (±0.5% buffer) for safety and extended-hours compliance.",
     "2.3 — Signal logger now captures AI reasoning (grok_reason, news_catalyst) for richer backtesting. BUY log entries include full AI context.",
     "2.2 — Graduated trailing stop replaces fixed take-profit. Winners now run with widening trail (3%/4%/5%/6% by profit zone).",
@@ -2376,6 +2377,19 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
             "webhook failed — paper has position, "
             "TradersPost may not"
         )
+        # Still update shadow on EXIT failures so cash stays in sync
+        # with paper. Paper already sold; shadow must reflect that.
+        if action == "exit":
+            positions = sp.get("positions", {})
+            pos = positions.pop(ticker, None)
+            if pos:
+                shares = pos.get("shares", 0)
+                proceeds = round(shares * price, 2)
+                sp["cash"] = round(sp.get("cash", 0) + proceeds, 2)
+                tp_log(
+                    f"Shadow EXIT (forced sync): {ticker} "
+                    f"${proceeds:,.0f} returned to cash"
+                )
         save_paper_state()
         return
 
@@ -2388,7 +2402,22 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
             )
             return
         actual_cost = round(shares * price, 2)
-        sp["cash"] = sp.get("cash", 0) - actual_cost
+
+        # Guard: don't let shadow cash go negative
+        current_cash = sp.get("cash", 0)
+        if actual_cost > current_cash:
+            tp_log(
+                f"⚠️ Shadow BUY {ticker} capped: "
+                f"cost ${actual_cost:,.0f} > cash ${current_cash:,.0f}"
+            )
+            # Scale down to what cash allows
+            shares = math.floor(current_cash * 0.95 / price)
+            if shares < 1:
+                tp_log(f"Shadow BUY {ticker} skipped — insufficient cash")
+                return
+            actual_cost = round(shares * price, 2)
+
+        sp["cash"] = round(sp.get("cash", 0) - actual_cost, 2)
         sp.setdefault("positions", {})[ticker] = {
             "shares": shares,
             "avg_price": round(price, 2),
@@ -5007,6 +5036,10 @@ async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("━" * 31)
     lines.append(f"Positions: {len(positions)}")
     lines.append(f"Cash: ${sp_cash:,.0f}")
+    if sp_cash < 0:
+        lines.append("⚠️ NEGATIVE CASH")
+        lines.append("Fix: /tpsync reset")
+        lines.append(" or /tpedit cash AMOUNT")
     lines.append(
         f"Total: ${port_value:,.0f} "
         f"({port_sign}{port_pnl / sp_start * 100:.2f}%)"

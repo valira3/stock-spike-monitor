@@ -4,6 +4,23 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.5 — TP Portfolio Sync Fix (2026-03-16)
+
+### Cash Guard on BUY
+- Shadow portfolio BUY path now checks available cash before deducting.
+- If cost exceeds cash, shares are capped to 95% of available cash.
+- If less than 1 share is affordable, the BUY is skipped entirely.
+- Prevents shadow cash from ever going negative on new buys.
+
+### Failed EXIT Webhook Sync
+- When a TradersPost EXIT webhook fails, the shadow portfolio now still removes the position and returns proceeds to cash.
+- Previously, a failed EXIT left the position in shadow while paper already sold — causing cash drift on subsequent buy cycles.
+
+### Negative Cash Warning
+- `/tppos` now displays a warning if shadow cash is negative, with instructions to fix via `/tpsync reset` or `/tpedit cash`.
+
+---
+
 ## v2.4 — Robinhood Hours + Limit Orders (2026-03-16)
 
 ### Trading Hours Fix
