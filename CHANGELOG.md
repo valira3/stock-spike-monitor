@@ -4,20 +4,31 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.5.1 — TP Portfolio Independence (2026-03-16)
+
+### TP Portfolio is fully independent from Paper
+- `/tpsync reset` now wipes all TP positions and restores starting cash ($100k). Previously it cloned the paper portfolio.
+- `/tpsync status` shows TP portfolio snapshot on its own (no paper comparison).
+- Removed all "shadow" and "mirror" terminology from user-facing messages and comments.
+- `/shadow` command now shows "TP Trading: ON/OFF" instead of "Shadow Mode".
+- `/tp` mode label now shows "Active" / "Disabled" instead of "Shadow (Paper Mirror)".
+
+---
+
 ## v2.5 — TP Portfolio Sync Fix (2026-03-16)
 
 ### Cash Guard on BUY
-- Shadow portfolio BUY path now checks available cash before deducting.
+- TP portfolio BUY path now checks available cash before deducting.
 - If cost exceeds cash, shares are capped to 95% of available cash.
 - If less than 1 share is affordable, the BUY is skipped entirely.
-- Prevents shadow cash from ever going negative on new buys.
+- Prevents TP cash from ever going negative on new buys.
 
 ### Failed EXIT Webhook Sync
-- When a TradersPost EXIT webhook fails, the shadow portfolio now still removes the position and returns proceeds to cash.
-- Previously, a failed EXIT left the position in shadow while paper already sold — causing cash drift on subsequent buy cycles.
+- When a TradersPost EXIT webhook fails, the TP portfolio now still removes the position and returns proceeds to cash.
+- Previously, a failed EXIT left the position in TP while the scanner had already exited — causing cash drift on subsequent buy cycles.
 
 ### Negative Cash Warning
-- `/tppos` now displays a warning if shadow cash is negative, with instructions to fix via `/tpsync reset` or `/tpedit cash`.
+- `/tppos` now displays a warning if TP cash is negative, with instructions to fix via `/tpsync reset` or `/tpedit cash`.
 
 ---
 

@@ -50,9 +50,10 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.5"
+BOT_VERSION = "2.5.1"
 RELEASE_NOTES = [
-    "2.5 — TP Portfolio sync fix: cash guard prevents shadow portfolio from going negative on BUY. Failed EXIT webhooks now force-sync shadow (remove position, return cash) to stay aligned with paper.",
+    "2.5.1 — TP Portfolio is now fully independent. /tpsync reset wipes to clean $100k (not paper clone). Removed all shadow terminology.",
+    "2.5 — TP Portfolio sync fix: cash guard on BUY, forced EXIT sync on webhook failure.",
     "2.4 — Robinhood hours fix: extended session now 7 AM–8 PM ET. All TradersPost orders use limit pricing (±0.5% buffer) for safety and extended-hours compliance.",
     "2.3 — Signal logger now captures AI reasoning (grok_reason, news_catalyst) for richer backtesting. BUY log entries include full AI context.",
     "2.2 — Graduated trailing stop replaces fixed take-profit. Winners now run with widening trail (3%/4%/5%/6% by profit zone).",
@@ -1972,10 +1973,10 @@ DEFAULT_CONFIG = {
 }
 user_config = dict(DEFAULT_CONFIG)
 
-# ── TradersPost shadow mode state ────────────────────────────
+# ── TradersPost (TP) portfolio state ─────────────────────────
 
 def _default_shadow_portfolio():
-    """Return a fresh shadow portfolio dict."""
+    """Return a fresh TP portfolio dict."""
     return {
         "cash": PAPER_STARTING_CAPITAL,
         "starting_cash": PAPER_STARTING_CAPITAL,
@@ -2168,7 +2169,7 @@ def load_paper_state():
             "recent_orders": [],
             "shadow_portfolio": _default_shadow_portfolio(),
         })
-        # Migrate: ensure shadow_portfolio exists
+        # Migrate: ensure TP portfolio exists
         if "shadow_portfolio" not in tp_state:
             tp_state["shadow_portfolio"] = _default_shadow_portfolio()
 
@@ -2350,7 +2351,7 @@ def paper_log(msg: str):
 
 
 # ============================================================
-# TRADERSPOST SHADOW MODE
+# TRADERSPOST PORTFOLIO TRACKING
 # ============================================================
 
 def tp_log(message: str):
@@ -2360,10 +2361,11 @@ def tp_log(message: str):
 
 
 def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
-    """Update the shadow portfolio after a TradersPost webhook call.
+    """Update the TP portfolio after a TradersPost webhook call.
 
-    - On success: update shadow positions/cash to reflect the trade.
-    - On failure: log a warning (paper traded, TP didn't).
+    - On success: update TP positions/cash to reflect the trade.
+    - On failure: log a warning; still update on EXIT to keep
+      TP portfolio accurate (the exit intent was acted on).
     """
     sp = tp_state.setdefault("shadow_portfolio",
                              _default_shadow_portfolio())
@@ -2377,8 +2379,8 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
             "webhook failed — paper has position, "
             "TradersPost may not"
         )
-        # Still update shadow on EXIT failures so cash stays in sync
-        # with paper. Paper already sold; shadow must reflect that.
+        # Still update TP on EXIT failures to keep portfolio
+        # accurate — the exit intent was acted on by the scanner.
         if action == "exit":
             positions = sp.get("positions", {})
             pos = positions.pop(ticker, None)
@@ -2387,7 +2389,7 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
                 proceeds = round(shares * price, 2)
                 sp["cash"] = round(sp.get("cash", 0) + proceeds, 2)
                 tp_log(
-                    f"Shadow EXIT (forced sync): {ticker} "
+                    f"TP EXIT (forced): {ticker} "
                     f"${proceeds:,.0f} returned to cash"
                 )
         save_paper_state()
@@ -2397,23 +2399,23 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
         shares = math.floor(quantity_dollars / price)
         if shares < 1:
             tp_log(
-                f"Shadow BUY skipped: {ticker} — "
+                f"TP BUY skipped: {ticker} — "
                 f"${quantity_dollars:,.0f} not enough for 1 share @ ${price:,.2f}"
             )
             return
         actual_cost = round(shares * price, 2)
 
-        # Guard: don't let shadow cash go negative
+        # Guard: don't let TP cash go negative
         current_cash = sp.get("cash", 0)
         if actual_cost > current_cash:
             tp_log(
-                f"⚠️ Shadow BUY {ticker} capped: "
+                f"⚠️ TP BUY {ticker} capped: "
                 f"cost ${actual_cost:,.0f} > cash ${current_cash:,.0f}"
             )
             # Scale down to what cash allows
             shares = math.floor(current_cash * 0.95 / price)
             if shares < 1:
-                tp_log(f"Shadow BUY {ticker} skipped — insufficient cash")
+                tp_log(f"TP BUY {ticker} skipped — insufficient cash")
                 return
             actual_cost = round(shares * price, 2)
 
@@ -2426,7 +2428,7 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
             "dollar_amount": actual_cost,
         }
         tp_log(
-            f"Shadow BUY: {shares} shares of "
+            f"TP BUY: {shares} shares of "
             f"{ticker} @ ${price:,.2f} "
             f"(${actual_cost:,.0f} allocated)"
         )
@@ -2456,13 +2458,13 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
                 sp["closed_trades"] = sp["closed_trades"][-50:]
             sign = "+" if pnl >= 0 else ""
             tp_log(
-                f"Shadow EXIT: {ticker} ~{shares:.2f} "
+                f"TP EXIT: {ticker} ~{shares:.2f} "
                 f"shares @ ${price:,.2f} "
                 f"(est P&L: {sign}${pnl:,.2f})"
             )
         else:
             tp_log(
-                f"Shadow EXIT: {ticker} — no shadow "
+                f"TP EXIT: {ticker} — no TP "
                 "position found (already synced?)"
             )
 
@@ -3482,7 +3484,7 @@ def paper_evaluate_ticker(ticker: str):
             )
             save_paper_state()
 
-            # ── Shadow mode: mirror EXIT to TradersPost ───────
+            # ── TP mode: send EXIT to TradersPost ───────────
             if user_config.get("trading_mode") == "shadow":
                 try:
                     tp_result = send_traderspost_order(
@@ -3511,7 +3513,7 @@ def paper_evaluate_ticker(ticker: str):
                         )
 
                 except Exception as e:
-                    logger.error(f"[TP] Shadow EXIT error: {e}")
+                    logger.error(f"[TP] EXIT error: {e}")
 
         return  # one action per scan cycle per ticker
 
@@ -3710,7 +3712,7 @@ def paper_evaluate_ticker(ticker: str):
     )
     save_paper_state()
 
-    # ── Shadow mode: mirror BUY to TradersPost ────────────────
+    # ── TP mode: send BUY to TradersPost ────────────────────
     if user_config.get("trading_mode") == "shadow":
         try:
             tp_result = send_traderspost_order(
@@ -3733,7 +3735,7 @@ def paper_evaluate_ticker(ticker: str):
             else:
                 tp_log(f"LIMIT BUY {ticker} FAILED to send")
         except Exception as e:
-            logger.error(f"[TP] Shadow BUY error: {e}")
+            logger.error(f"[TP] BUY error: {e}")
 
 
 def paper_scan():
@@ -4781,22 +4783,22 @@ async def cmd_vixalert(update: Update,
 # ============================================================
 
 async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Toggle shadow mode on/off."""
+    """Toggle TP trading mode on/off."""
     _capture_tp_chat(update)
     mode = user_config.get("trading_mode", "paper")
     if mode == "shadow":
         user_config["trading_mode"] = "paper"
         save_paper_state()
         await update.message.reply_text(
-            "📡 Shadow Mode: OFF\n"
+            "📡 TP Trading: OFF\n"
             f"{'─'*28}\n"
-            "Trading Mode: paper\n"
-            "TradersPost sends disabled."
+            "TradersPost sends disabled.\n"
+            "Paper trading continues."
         )
     else:
         if not TRADERSPOST_WEBHOOK_URL:
             await update.message.reply_text(
-                "📡 Shadow Mode: ERROR\n"
+                "📡 TP Trading: ERROR\n"
                 f"{'─'*28}\n"
                 "TRADERSPOST_WEBHOOK_URL not set.\n"
                 "Add it as a Railway env var first."
@@ -4813,9 +4815,8 @@ async def cmd_shadow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if unsettled > 0 else "all settled"
         )
         await update.message.reply_text(
-            "📡 Shadow Mode: ON\n"
+            "📡 TP Trading: ON\n"
             f"{'─'*28}\n"
-            "Trading Mode: shadow\n"
             "TradersPost: Connected ✓\n"
             "Account: Cash (no PDT limits)\n"
             f"Settlement: {settle_str}\n"
@@ -4864,12 +4865,12 @@ async def cmd_settlement(update: Update,
 
 
 async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show TradersPost status and shadow portfolio."""
+    """Show TradersPost status and TP Portfolio."""
     _capture_tp_chat(update)
     mode = user_config.get("trading_mode", "paper")
     mode_label = (
-        "Shadow (Paper Mirror)"
-        if mode == "shadow" else "Disabled (Paper Only)"
+        "Active"
+        if mode == "shadow" else "Disabled"
     )
     wh = "Connected ✓" if TRADERSPOST_WEBHOOK_URL else "Not Set ✗"
     ts = tp_state.get("total_orders_sent", 0)
@@ -4904,7 +4905,7 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Last Order: {last_str}",
     ]
 
-    # ── Shadow portfolio summary ─────────────────────
+    # ── TP Portfolio summary ─────────────────────────
     sp = tp_state.get("shadow_portfolio",
                        _default_shadow_portfolio())
     sp_cash = sp.get("cash", 0)
@@ -4976,7 +4977,7 @@ async def cmd_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all shadow portfolio positions."""
+    """List all TP Portfolio positions."""
     _capture_tp_chat(update)
     sp = tp_state.get("shadow_portfolio",
                        _default_shadow_portfolio())
@@ -5069,100 +5070,91 @@ async def cmd_tppos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_tpsync(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual sync/reset for the TradersPost shadow portfolio."""
+    """Manual reset/status for the TP Portfolio."""
     _capture_tp_chat(update)
     args = context.args
     sub = (args[0].lower() if args else "").strip()
 
     if sub == "reset":
+        # Full reset: wipe positions, restore starting cash
         sp = tp_state.setdefault(
             "shadow_portfolio", _default_shadow_portfolio()
         )
+        old_pos_count = len(sp.get("positions", {}))
+        old_cash = sp.get("cash", 0)
         sp["positions"] = {}
-        total_dollars = 0.0
-        now = datetime.now(CT)
-        today = now.strftime("%Y-%m-%d")
-        now_hm = now.strftime("%H:%M")
-        for t, pos in paper_positions.items():
-            px = pos.get("avg_cost", pos.get("entry_price", 0))
-            shares = pos.get("shares", 0)
-            dollar_amt = round(shares * px, 2)
-            total_dollars += dollar_amt
-            sp["positions"][t] = {
-                "shares": shares,
-                "avg_price": round(px, 2),
-                "entry_date": pos.get("entry_date", today),
-                "entry_time": pos.get(
-                    "entry_time", now_hm
-                ),
-                "dollar_amount": dollar_amt,
-            }
-        start = sp.get(
-            "starting_cash", PAPER_STARTING_CAPITAL
+        sp["cash"] = PAPER_STARTING_CAPITAL
+        sp["starting_cash"] = PAPER_STARTING_CAPITAL
+        sp["total_value_estimate"] = PAPER_STARTING_CAPITAL
+        sp["last_sync_check"] = (
+            datetime.now(CT).isoformat()
         )
-        sp["cash"] = round(start - total_dollars, 2)
-        sp["last_sync_check"] = now.isoformat()
-        pos_value = sum(
-            p.get("shares", 0) * p.get("avg_price", 0)
-            for p in sp["positions"].values()
-        )
-        sp["total_value_estimate"] = round(
-            sp["cash"] + pos_value, 2
-        )
+        sp["trade_history"] = []
         save_paper_state()
-        tp_log("TP portfolio synced to paper portfolio")
-        n = len(paper_positions)
+        tp_log(
+            f"TP portfolio reset: "
+            f"{old_pos_count} positions cleared, "
+            f"cash ${old_cash:,.0f} → "
+            f"${PAPER_STARTING_CAPITAL:,.0f}"
+        )
         await update.message.reply_text(
-            "📡 TP portfolio reset to match paper.\n"
-            f"{n} position{'s' if n != 1 else ''} synced."
+            "📡 TP Portfolio Reset\n"
+            f"{'━' * 28}\n"
+            f"Positions cleared: {old_pos_count}\n"
+            f"Cash: ${PAPER_STARTING_CAPITAL:,.0f}\n"
+            "Ready for fresh trades."
         )
 
     elif sub == "status":
         sp = tp_state.get(
             "shadow_portfolio", _default_shadow_portfolio()
         )
-        shadow_pos = sp.get("positions", {})
-        all_tickers = sorted(
-            set(paper_positions.keys())
-            | set(shadow_pos.keys())
+        tp_pos = sp.get("positions", {})
+        sp_cash = sp.get("cash", 0)
+        sp_start = sp.get(
+            "starting_cash", PAPER_STARTING_CAPITAL
         )
         lines = [
-            "📡 Sync Status: Paper vs TradersPost",
-            "━" * 35,
+            "📡 TP Portfolio Status",
+            "━" * 28,
         ]
-        for t in all_tickers:
-            in_paper = "✅" if t in paper_positions else "❌"
-            in_tp = "✅" if t in shadow_pos else "❌"
-            match = (
-                "✓ Match"
-                if (t in paper_positions) == (t in shadow_pos)
-                else "⚠️ Mismatch"
-            )
+        total_val = 0
+        for t in sorted(tp_pos.keys()):
+            p = tp_pos[t]
+            shares = p.get("shares", 0)
+            avg = p.get("avg_price", 0)
+            val = shares * avg
+            total_val += val
             lines.append(
-                f"{t:5s} Paper: {in_paper}  "
-                f"TP: {in_tp}  {match}"
+                f"{t}: {shares} @ ${avg:,.2f}"
+                f" (${val:,.0f})"
             )
-        if not all_tickers:
-            lines.append("No positions in either.")
-
-        sp_cash = sp.get("cash", 0)
-        lines.append("")
+        if not tp_pos:
+            lines.append("No open positions.")
+        port_val = sp_cash + total_val
+        pnl = port_val - sp_start
+        sign = "+" if pnl >= 0 else ""
+        lines.append("━" * 28)
+        lines.append(f"Positions: {len(tp_pos)}")
+        lines.append(f"Cash: ${sp_cash:,.0f}")
+        if sp_cash < 0:
+            lines.append("⚠️ NEGATIVE — /tpsync reset")
         lines.append(
-            f"Cash: Paper ${paper_cash:,.0f} "
-            f"| TP est ${sp_cash:,.0f}"
+            f"Total: ${port_val:,.0f} "
+            f"({sign}{pnl / sp_start * 100:.2f}%)"
         )
-        lines.append("━" * 35)
-        lines.append("Tip: /tpsync reset to re-sync")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(
+            "\n".join(lines)
+        )
 
     else:
         await update.message.reply_text(
             "📡 /tpsync commands:\n"
-            f"{'─'*28}\n"
-            "/tpsync reset — Reset shadow to\n"
-            "  match paper portfolio\n"
-            "/tpsync status — Side-by-side\n"
-            "  comparison of paper vs shadow"
+            f"{'─' * 28}\n"
+            "/tpsync reset — Wipe all TP\n"
+            "  positions, restore starting cash\n"
+            "/tpsync status — Current TP\n"
+            "  portfolio snapshot"
         )
 
 
