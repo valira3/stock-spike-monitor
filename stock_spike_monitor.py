@@ -50,11 +50,11 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.1"
+BOT_VERSION = "2.7.2"
 RELEASE_NOTES = [
     "2.7.1 — /strategy command: full end-to-end trading strategy overview with live parameters.",
     "2.7.0 — Full gap analysis implementation: ATR-based dynamic stops, volatility-normalized position sizing, portfolio heat limit (6%), per-ticker re-entry cooldown (4h/8h), multi-regime market classification (4-regime), signal decay weighting, correlation-aware position limits.",
-    "2.6.3 — Performance tuning: adaptive threshold floor 60 (was 45), 15-min hold before signal-collapse exit, 429 cache to cut Finnhub rate-limit storms.",
+    "2.6.3 — Performance tuning: adaptive threshold floor 60 (was 45), 30-min hold before signal-collapse exit, 429 cache to cut Finnhub rate-limit storms.",
     "2.6.2 — TP notifications now include exit reason, P&L, and signal score/ToD zone on BUY.",
     "2.6.1 — Settlement cleanup on startup: purges stale T+1 entries, logs what was cleared.",
     "2.6 — Intraday time-of-day awareness: signal score modifier (±8 pts) and position sizing (65-100%) based on U-shaped volume pattern. Power hours boosted, lunch lull penalized.",
@@ -1950,6 +1950,7 @@ def _graduated_trail_pct(pnl_pct: float) -> float:
     return PAPER_TRAILING_STOP_PCT  # base trail for <5%
 
 PAPER_MIN_SIGNAL       = 65       # min composite score (0-140) to open a position
+PAPER_MIN_HOLD_MINUTES = 30       # v2.7.2: minimum hold before non-hard-stop exits
 
 # ── Intraday time-of-day adjustments ─────────────────────────
 # U-shaped volume/volatility pattern: high at open & close,
@@ -2077,8 +2078,8 @@ _RETURNS_CACHE_TTL = 3600  # 1 hour
 PORTFOLIO_HEAT_LIMIT = 6.0  # max % portfolio at risk
 
 # Re-entry cooldown hours (Rec #4)
-COOLDOWN_HOURS_LOSS = 8  # hours to wait after a losing sell
-COOLDOWN_HOURS_WIN = 4   # hours to wait after a winning sell
+COOLDOWN_HOURS_LOSS = 12  # v2.7.2: was 8h — reduce churn
+COOLDOWN_HOURS_WIN = 6   # v2.7.2: was 4h — reduce churn
 
 # ── Earnings cache (Feature #9) ──────────────────────────
 _earnings_cache = {}  # {ticker: {"has_earnings": bool, "ts": float}}
@@ -2453,6 +2454,60 @@ def tp_log(message: str):
     send_tp_telegram(f"📡 {message}")
 
 
+
+def _tp_portfolio_stats_msg() -> str:
+    """Build a compact TP portfolio stats summary."""
+    sp = tp_state.get("shadow_portfolio", _default_shadow_portfolio())
+    positions = sp.get("positions", {})
+    cash = sp.get("cash", 0)
+    # Calculate total value with current prices where possible
+    pos_value = 0
+    pos_lines = []
+    for tk, p in sorted(positions.items()):
+        shares = p.get("shares", 0)
+        entry_px = p.get("avg_price", 0)
+        cost = shares * entry_px
+        # Try to get current price
+        try:
+            cur_px, _, _ = fetch_finnhub_quote(tk)
+        except Exception:
+            cur_px = entry_px
+        if not cur_px:
+            cur_px = entry_px
+        mkt_val = shares * cur_px
+        pos_value += mkt_val
+        pnl = mkt_val - cost
+        pnl_pct = (pnl / cost * 100) if cost > 0 else 0
+        sign = "+" if pnl >= 0 else ""
+        pos_lines.append(
+            f"  {tk}: {shares}sh ${mkt_val:,.0f}"
+            f" ({sign}{pnl_pct:.1f}%)"
+        )
+    total = cash + pos_value
+    starting = sp.get("starting_capital", 100000)
+    total_pnl = total - starting
+    total_pct = (total_pnl / starting * 100) if starting > 0 else 0
+    closed = sp.get("closed_trades", [])
+    wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
+    losses = sum(1 for t in closed if t.get("pnl", 0) <= 0)
+    SEP = chr(9472) * 28
+    lines = [
+        f"{SEP}",
+        f"TP Portfolio Stats",
+        f"{SEP}",
+    ]
+    if pos_lines:
+        lines.extend(pos_lines)
+        lines.append(f"{SEP}")
+    lines.extend([
+        f"Positions: {len(positions)}",
+        f"Cash:      ${cash:,.0f}",
+        f"Value:     ${total:,.0f}",
+        f"P&L:       ${total_pnl:+,.0f} ({total_pct:+.1f}%)",
+        f"W/L:       {wins}/{losses}",
+    ])
+    return "\n".join(lines)
+
 def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
     """Update the TP portfolio after a TradersPost webhook call.
 
@@ -2525,6 +2580,11 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
             f"{ticker} @ ${price:,.2f} "
             f"(${actual_cost:,.0f} allocated)"
         )
+        # v2.7.2: Print portfolio stats after every action
+        try:
+            tp_log(_tp_portfolio_stats_msg())
+        except Exception as e:
+            logger.debug(f"TP stats after BUY: {e}")
 
     elif action == "exit":
         positions = sp.get("positions", {})
@@ -2555,6 +2615,11 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
                 f"shares @ ${price:,.2f} "
                 f"(est P&L: {sign}${pnl:,.2f})"
             )
+            # v2.7.2: Print portfolio stats after every action
+            try:
+                tp_log(_tp_portfolio_stats_msg())
+            except Exception as e:
+                logger.debug(f"TP stats after EXIT: {e}")
         else:
             tp_log(
                 f"TP EXIT: {ticker} — no TP "
@@ -3420,33 +3485,39 @@ def compute_paper_signal(ticker: str) -> dict:
     comps  = {}
     detail = []
 
-    # ── 1. RSI Momentum (20 pts) ──────────────────────────────
+    # ── 1. RSI Mean-Reversion Entry (20 pts) ─────────────────
+    # v2.7.2: Reward trough entries (oversold pullbacks), penalize peaks
     rsi = compute_rsi(prices) if len(prices) >= 15 else None
     if rsi is not None:
-        if 50 <= rsi <= 65:
-            pts = 20                                   # sweet spot
-        elif 65 < rsi <= 72:
-            pts = 10                                   # still bullish but overbought warning
-        elif 40 <= rsi < 50:
-            pts = 8                                    # recovering
+        if 30 <= rsi <= 45:
+            pts = 20                                   # trough / oversold pullback
+        elif 45 < rsi <= 55:
+            pts = 15                                   # recovery zone
+        elif 55 < rsi <= 65:
+            pts = 10                                   # momentum (still OK)
+        elif 65 < rsi <= 68:
+            pts = 5                                    # getting hot, reduced reward
         else:
-            pts = 0
+            pts = 0                                    # overbought or deeply oversold
         score += pts
         comps["rsi"] = round(rsi, 1)
         comps["rsi_pts"] = pts
         detail.append(f"RSI={rsi:.1f}({pts}pts)")
 
-    # ── 2. Bollinger Band Position (15 pts) ───────────────────
+    # ── 2. Bollinger Band Mean-Reversion (15 pts) ────────────
+    # v2.7.2: Reward trough entries (low %B), penalize peak entries
     _, _, _, pct_b, bw = compute_bollinger(prices) if len(prices) >= 20 else (None,)*5
     if pct_b is not None:
-        if 0.5 <= pct_b <= 0.85:
-            pts = 15                                   # above mid, not at extreme
-        elif 0.85 < pct_b <= 1.0:
-            pts = 8                                    # near upper (slightly extended)
-        elif 0.3 <= pct_b < 0.5:
-            pts = 10                                   # just below mid, potential bounce
+        if 0.15 <= pct_b <= 0.40:
+            pts = 15                                   # trough / pullback to lower band
+        elif 0.40 < pct_b <= 0.60:
+            pts = 12                                   # mid-band, decent entry
+        elif 0.60 < pct_b <= 0.80:
+            pts = 8                                    # upper-mid, less ideal
+        elif 0.80 < pct_b <= 0.92:
+            pts = 4                                    # extended, caution
         else:
-            pts = max(0, int(pct_b * 10))
+            pts = 0                                    # at/above upper band = peak
         score += pts
         comps["pct_b"] = pct_b
         comps["bw_pts"] = pts
@@ -3873,15 +3944,16 @@ def paper_evaluate_ticker(ticker: str):
             atr_hard_stop = cost - (atr_entry * 2.5)
 
             # Dynamic trailing: multiplier tightens with profit
+            # v2.7.2: Wider trails to reduce churn, give trades room
             profit_pct_raw = pnl_pct * 100
             if profit_pct_raw >= 15:
-                atr_mult = 1.5
-            elif profit_pct_raw >= 10:
                 atr_mult = 2.0
-            elif profit_pct_raw >= 5:
+            elif profit_pct_raw >= 10:
                 atr_mult = 2.5
-            else:
+            elif profit_pct_raw >= 5:
                 atr_mult = 3.0
+            else:
+                atr_mult = 3.5
 
             # Apply regime stop multiplier
             regime = _classify_market_regime()
@@ -3900,13 +3972,23 @@ def paper_evaluate_ticker(ticker: str):
                         f" ATR=${atr_entry:.2f})"
                     )
                 else:
-                    peak_pnl = (high - cost) / cost * 100
-                    sell_reason = (
-                        f"ATR-TRAIL {pnl_pct*100:+.1f}%"
-                        f" (peak +{peak_pnl:.1f}%,"
-                        f" mult={atr_mult:.1f},"
-                        f" stop=${atr_trail_stop:.2f})"
-                    )
+                    # v2.7.2: Minimum hold period for trailing exits
+                    _et_str = f"{pos.get('entry_date', '')} {pos.get('entry_time', '00:00:00')}"
+                    try:
+                        _et_dt = datetime.strptime(_et_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
+                        _held_min = (datetime.now(CT) - _et_dt).total_seconds() / 60
+                    except Exception:
+                        _held_min = 999
+                    if _held_min >= PAPER_MIN_HOLD_MINUTES:
+                        peak_pnl = (high - cost) / cost * 100
+                        sell_reason = (
+                            f"ATR-TRAIL {pnl_pct*100:+.1f}%"
+                            f" (peak +{peak_pnl:.1f}%,"
+                            f" mult={atr_mult:.1f},"
+                            f" stop=${atr_trail_stop:.2f})"
+                        )
+                    else:
+                        logger.debug(f"{ticker}: ATR trail triggered but held only {_held_min:.0f}m < {PAPER_MIN_HOLD_MINUTES}m min")
         else:
             # Fallback: fixed % stops (pre-2.7.0 positions)
             if pnl_pct <= -PAPER_STOP_LOSS_PCT:
@@ -3917,25 +3999,35 @@ def paper_evaluate_ticker(ticker: str):
                 peak_pnl_pct = (high - cost) / cost
                 trail = _graduated_trail_pct(peak_pnl_pct)
                 if price <= high * (1 - trail):
-                    should_sell = True
-                    peak_pnl = peak_pnl_pct * 100
-                    sell_reason = (
-                        f"TRAILING-STOP {pnl_pct*100:+.1f}%"
-                        f" (peak +{peak_pnl:.1f}%,"
-                        f" trail {trail*100:.0f}%)"
-                    )
+                    # v2.7.2: Minimum hold period for trailing exits
+                    _et_str2 = f"{pos.get('entry_date', '')} {pos.get('entry_time', '00:00:00')}"
+                    try:
+                        _et_dt2 = datetime.strptime(_et_str2, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
+                        _held_min2 = (datetime.now(CT) - _et_dt2).total_seconds() / 60
+                    except Exception:
+                        _held_min2 = 999
+                    if _held_min2 >= PAPER_MIN_HOLD_MINUTES:
+                        should_sell = True
+                        peak_pnl = peak_pnl_pct * 100
+                        sell_reason = (
+                            f"TRAILING-STOP {pnl_pct*100:+.1f}%"
+                            f" (peak +{peak_pnl:.1f}%,"
+                            f" trail {trail*100:.0f}%)"
+                        )
+                    else:
+                        logger.debug(f"{ticker}: trail triggered but held only {_held_min2:.0f}m < {PAPER_MIN_HOLD_MINUTES}m min")
 
         if not should_sell:
             sig = compute_paper_signal(ticker)
             if sig["score"] <= 30 and pnl_pct > 0:
-                # Minimum 15-min hold before signal-collapse exit
+                # Minimum 30-min hold before signal-collapse exit
                 entry_dt_str = f"{pos.get('entry_date', '')} {pos.get('entry_time', '00:00:00')}"
                 try:
                     entry_dt = datetime.strptime(entry_dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
                     hold_minutes = (datetime.now(CT) - entry_dt).total_seconds() / 60
                 except Exception:
                     hold_minutes = 999  # fail-open: allow sell if parse fails
-                if hold_minutes >= 15:
+                if hold_minutes >= PAPER_MIN_HOLD_MINUTES:  # v2.7.2: was 15
                     should_sell = True
                     sell_reason = f"SIGNAL-COLLAPSE score={sig['score']:.0f} pnl={pnl_pct*100:+.1f}% held={hold_minutes:.0f}m"
 
@@ -3948,12 +4040,20 @@ def paper_evaluate_ticker(ticker: str):
                 av_cached = avwap_cache.get(ticker)
                 if av_cached and av_cached.get("avwap", 0) > 0:
                     avwap_val = av_cached["avwap"]
-                    # Only trigger if price has been above AVWAP (reclaimed then lost)
-                    # and current price is meaningfully below AVWAP (>0.2% to avoid noise)
                     if price < avwap_val * 0.998 and pos.get("high", cost) > avwap_val:
-                        should_sell = True
-                        sell_reason = (f"AVWAP-STOP: price ${price:.2f} < AVWAP ${avwap_val:.2f} "
-                                       f"({pnl_pct*100:+.1f}%)")
+                        # v2.7.2: Minimum hold period for AVWAP exits
+                        _et_avwap = f"{pos.get('entry_date', '')} {pos.get('entry_time', '00:00:00')}"
+                        try:
+                            _et_avwap_dt = datetime.strptime(_et_avwap, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
+                            _held_avwap = (datetime.now(CT) - _et_avwap_dt).total_seconds() / 60
+                        except Exception:
+                            _held_avwap = 999
+                        if _held_avwap >= PAPER_MIN_HOLD_MINUTES:
+                            should_sell = True
+                            sell_reason = (f"AVWAP-STOP: price ${price:.2f} < AVWAP ${avwap_val:.2f} "
+                                           f"({pnl_pct*100:+.1f}%)")
+                        else:
+                            logger.debug(f"{ticker}: AVWAP stop triggered but held only {_held_avwap:.0f}m < {PAPER_MIN_HOLD_MINUTES}m")
 
         if should_sell:
             shares    = pos["shares"]
@@ -4112,7 +4212,11 @@ def paper_evaluate_ticker(ticker: str):
         return
 
     rsi = sig.get("rsi")
-    if rsi and rsi > 72:   # avoid chasing overbought
+    if rsi and rsi > 68:   # v2.7.2: tighter — avoid buying peaks
+        return
+
+    # v2.7.2: Block buys at Bollinger Band peaks
+    if sig.get("comps", {}).get("pct_b") and sig["comps"]["pct_b"] > 0.92:
         return
 
     # Feature #8: Sector concentration guard — max 2 per sector
@@ -4236,7 +4340,7 @@ def paper_evaluate_ticker(ticker: str):
     _buy_atr = get_atr(ticker)
     if _buy_atr and _buy_atr > 0:
         sl_price = price - (_buy_atr * 2.5)
-        trail_price = price - (_buy_atr * 3.0)
+        trail_price = price - (_buy_atr * 3.5)  # v2.7.2: wider initial trail
         _stop_label = f"ATR×2.5 (ATR=${_buy_atr:.2f})"
     else:
         sl_price = price * (1 - PAPER_STOP_LOSS_PCT)
@@ -5986,8 +6090,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\n"
         f"\U0001f3af SIGNAL ENGINE (12 components)\n"
         f"Max score: 158 pts\n"
-        f" 1. RSI Momentum      0-20 pts\n"
-        f" 2. Bollinger Band    0-15 pts\n"
+        f" 1. RSI Mean-Revert   0-20 pts\n"
+        f" 2. BB Mean-Revert    0-15 pts\n"
         f" 3. MACD Crossover    0-15 pts\n"
         f" 4. Volume Confirm    0-15 pts\n"
         f" 5. Squeeze Score     0-10 pts\n"
@@ -6007,7 +6111,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{SEP}\n"
         f" 1. Score \u2265 adaptive threshold\n"
         f"    Current: {thresh}\n"
-        f" 2. RSI < 72 (no overbought)\n"
+        f" 2. RSI < 68 (no overbought)\n"
+        f"    + %%B < 0.92 (no BB peak)\n"
         f" 3. Max 2 per sector\n"
         f" 4. Sector ETF momentum\n"
         f" 5. No earnings within 2 days\n"
@@ -6042,14 +6147,14 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"ATR-based dynamic stops:\n"
         f" Hard: entry \u2212 (ATR\u00d72.5)\n"
         f" Trail: high \u2212 (ATR\u00d7mult)\n"
-        f"   At entry:  3.0\u00d7 ATR\n"
-        f"   At +5%:    2.5\u00d7 ATR\n"
-        f"   At +10%:   2.0\u00d7 ATR\n"
-        f"   At +15%:   1.5\u00d7 ATR\n"
+        f"   At entry:  3.5\u00d7 ATR\n"
+        f"   At +5%:    3.0\u00d7 ATR\n"
+        f"   At +10%:   2.5\u00d7 ATR\n"
+        f"   At +15%:   2.0\u00d7 ATR\n"
         f" Regime stop mult: \u00d7{r_params.get('stop_multiplier', 1.0):.2f}\n"
         f"\n"
         f"Other exits:\n"
-        f" \u2022 Signal collapse (\u226430, 15m hold)\n"
+        f" \u2022 Signal collapse (\u226430, 30m hold)\n"
         f" \u2022 AVWAP lost (same-day only)\n"
         f" \u2022 Fallback: {PAPER_STOP_LOSS_PCT*100:.0f}% hard /"
         f" {PAPER_TRAILING_STOP_PCT*100:.0f}% trail\n"
