@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.4"
+BOT_VERSION = "2.7.5"
 RELEASE_NOTES = [
+    "2.7.5 — Risk appetite 5% per trade (was 1%), portfolio heat limit 30% (was 6%).",
     "2.7.4 — Falling-knife guard: block buys on stocks that surged 15%+ in 5d and are now declining.",
     "2.7.3 — Speculative buys ($1-5 viral/volume stocks, 5% cap, max 2), hold duration on all SELL messages.",
     "2.7.2 — Anti-churn: trough-buying bias (RSI/BB mean-reversion), 30-min min hold, wider ATR trails, TP portfolio stats.",
@@ -2082,7 +2083,7 @@ _daily_returns_cache = {}  # {ticker: {"returns": list, "ts": float}}
 _RETURNS_CACHE_TTL = 3600  # 1 hour
 
 # Portfolio heat constant (Rec #3)
-PORTFOLIO_HEAT_LIMIT = 6.0  # max % portfolio at risk
+PORTFOLIO_HEAT_LIMIT = 30.0  # v2.7.5: was 6% — scaled for 5% risk per trade
 
 # Re-entry cooldown hours (Rec #4)
 COOLDOWN_HOURS_LOSS = 12  # v2.7.2: was 8h — reduce churn
@@ -3886,8 +3887,8 @@ def _paper_position_size(ticker: str, signal_score: float) -> int:
     # v2.7.0: ATR-based volatility-normalized sizing
     atr = get_atr(ticker)
     if atr and atr > 0:
-        # Risk budget: 1% of portfolio per trade
-        risk_per_trade = portfolio_val * 0.01
+        # v2.7.5: Risk budget: 5% of portfolio per trade (was 1%)
+        risk_per_trade = portfolio_val * 0.05
         stop_distance = atr * 2.5
         # Position size = risk / stop distance
         ideal_shares = risk_per_trade / stop_distance
@@ -6232,7 +6233,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg3 = (
         f"\n\U0001f4b0 POSITION SIZING (ATR-based)\n"
         f"{SEP}\n"
-        f"Risk budget: 1% of portfolio\n"
+        f"Risk budget: 5% of portfolio\n"
         f"Size = risk / (ATR\u00d72.5 stop)\n"
         f"Then scaled by:\n"
         f" \u2022 Signal strength  50-100%\n"
