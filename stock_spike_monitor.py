@@ -5963,6 +5963,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n_cool = sum(1 for t in _ticker_cooldowns
                  if _check_cooldown(t)[0])
     _, tod_mult, tod_label = _get_intraday_zone()
+    # Separator line (pre-computed to avoid backslash-in-fstring)
+    SEP = "\u2500" * 32
     # Signal weights summary
     wt_deviations = []
     if _signal_weights:
@@ -5975,7 +5977,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg1 = (
         f"\U0001f9e0 TRADING STRATEGY v{BOT_VERSION}\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"\n"
         f"\U0001f3af SIGNAL ENGINE (12 components)\n"
         f"Max score: 158 pts\n"
@@ -5997,7 +5999,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg2 = (
         f"\n\U0001f6a8 ENTRY GATES (all must pass)\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f" 1. Score \u2265 adaptive threshold\n"
         f"    Current: {thresh}\n"
         f" 2. RSI < 72 (no overbought)\n"
@@ -6016,7 +6018,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg3 = (
         f"\n\U0001f4b0 POSITION SIZING (ATR-based)\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"Risk budget: 1% of portfolio\n"
         f"Size = risk / (ATR\u00d72.5 stop)\n"
         f"Then scaled by:\n"
@@ -6031,7 +6033,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg4 = (
         f"\n\U0001f6d1 EXIT STRATEGY\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"ATR-based dynamic stops:\n"
         f" Hard: entry \u2212 (ATR\u00d72.5)\n"
         f" Trail: high \u2212 (ATR\u00d7mult)\n"
@@ -6050,7 +6052,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg5 = (
         f"\n\U0001f30d MARKET REGIME\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"Current: {regime_name.upper()}\n"
         f"Confidence: {regime_conf:.0%}\n"
         f"SPY: ${regime_spy}  SMA20: ${regime_sma20}\n"
@@ -6071,7 +6073,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg6 = (
         f"\n\U0001f6e1 RISK MANAGEMENT\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"Portfolio heat: {heat:.1f}% / {PORTFOLIO_HEAT_LIMIT:.0f}% max\n"
         f"  (total risk if all stops hit)\n"
         f"Positions: {n_pos}/{PAPER_MAX_POSITIONS}\n"
@@ -6084,7 +6086,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Max actions: {PAPER_MAX_ACTIONS}/ticker/day\n"
         f"\n"
         f"\U0001f4c8 ADAPTIVE CONFIG\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"F&G: {fg_str}\n"
         f"VIX: {regime_vix}\n"
         f"Threshold: {thresh} (floor 60, cap 90)\n"
@@ -6094,14 +6096,14 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg7 = (
         f"\n\U0001f4e1 EXECUTION\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"Order type: LIMIT only\n"
         f"Buy buffer:  +{LIMIT_ORDER_BUY_BUFFER*100:.1f}%\n"
         f"Sell buffer: -{LIMIT_ORDER_SELL_BUFFER*100:.1f}%\n"
         f"Min price: ${MIN_PRICE:.0f}\n"
         f"\n"
         f"\u23f0 SCHEDULE\n"
-        f"{'\u2500'*32}\n"
+        f"{SEP}\n"
         f"Scanner: every ~60s during market\n"
         f"7am AI prep | 8am dashboard\n"
         f"8:30 open | 10:30/12:30/2:30 AI\n"
