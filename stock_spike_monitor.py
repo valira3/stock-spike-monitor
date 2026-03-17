@@ -2058,6 +2058,7 @@ _market_regime_cache = {
     "params": {"threshold_adjust": 0, "max_positions_adjust": 0,
                "stop_multiplier": 1.0, "size_multiplier": 1.0},
     "ts": None,
+    "vix": None, "spy": None, "sma_20": None, "sma_50": None,
 }
 
 # Signal component weights (Rec #6) — refreshed every 24h
@@ -5950,10 +5951,14 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     regime = _classify_market_regime()
     regime_name = regime.get("regime", "unknown")
     regime_conf = regime.get("confidence", 0)
-    regime_vix = regime.get("vix", "?")
-    regime_spy = regime.get("spy", "?")
-    regime_sma20 = regime.get("sma_20", "?")
-    regime_sma50 = regime.get("sma_50", "?")
+    _rv = regime.get("vix")
+    regime_vix = f"{_rv:.1f}" if _rv else "N/A (market closed)"
+    _rs = regime.get("spy")
+    regime_spy = f"${_rs:.2f}" if _rs else "N/A"
+    _r20 = regime.get("sma_20")
+    regime_sma20 = f"${_r20:.2f}" if _r20 else "N/A"
+    _r50 = regime.get("sma_50")
+    regime_sma50 = f"${_r50:.2f}" if _r50 else "N/A"
     r_params = regime.get("params", {})
     heat = _calculate_portfolio_heat()
     fg_val, fg_label = get_fear_greed()
@@ -6053,10 +6058,13 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg5 = (
         f"\n\U0001f30d MARKET REGIME\n"
         f"{SEP}\n"
-        f"Current: {regime_name.upper()}\n"
+        f"Current: {regime_name.upper()}"
+        + (" (market closed)" if regime_name == "unknown" else "")
+        + "\n"
         f"Confidence: {regime_conf:.0%}\n"
-        f"SPY: ${regime_spy}  SMA20: ${regime_sma20}\n"
-        f"SMA50: ${regime_sma50}  VIX: {regime_vix}\n"
+        f"SPY: {regime_spy}\n"
+        f"SMA20: {regime_sma20}  SMA50: {regime_sma50}\n"
+        f"VIX: {regime_vix}\n"
         f"\n"
         f"Regime effects:\n"
         f" Threshold: {r_params.get('threshold_adjust', 0):+d}\n"
