@@ -4,6 +4,71 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v2.7.0 — Full Gap Analysis Implementation (2026-03-17)
+
+Comprehensive upgrade based on deep industry research across quantitative finance
+literature and professional systematic trading practices. Implements all 7
+recommendations from the gap analysis report.
+
+### 1. ATR-Based Dynamic Stops (Rec #1 — CRITICAL)
+- Replaced fixed 3–6% trailing and 6% hard stops with ATR(14)-based dynamic stops.
+- Initial hard stop: entry − (ATR × 2.5).
+- Trailing stop: highest high − (ATR × multiplier), where multiplier tightens with profit:
+  - At entry: 3.0× ATR → At +5%: 2.5× → At +10%: 2.0× → At +15%: 1.5×
+- Market regime multiplier applied to stop distances.
+- Backward compatible: positions without ATR data fall back to fixed % stops.
+
+### 2. Volatility-Normalized Position Sizing (Rec #2 — CRITICAL)
+- Position sizes now based on equal-risk contribution using ATR.
+- Risk budget: 1% of portfolio per trade.
+- Position size = risk_budget / (ATR × 2.5 stop distance).
+- Still applies signal-strength scaling (50–100%), ToD multiplier, and AI boost.
+- Falls back to dollar-based sizing if ATR unavailable.
+
+### 3. Portfolio Heat Limit (Rec #3 — HIGH)
+- New `_calculate_portfolio_heat()` tracks total risk if all stops hit simultaneously.
+- New buys blocked if portfolio heat ≥ 6% of total portfolio value.
+- Prevents catastrophic drawdowns in correlated selloffs.
+- Heat logged in scan status messages.
+
+### 4. Per-Ticker Re-Entry Cooldown (Rec #4 — HIGH)
+- After any SELL, the same ticker is blocked from re-entry:
+  - 4 hours after a winning sell.
+  - 8 hours after a losing sell.
+- Prevents buy→stop→rebuy→stop churn cycle.
+- Cooldown tracked per-ticker with `_record_cooldown()` / `_check_cooldown()`.
+
+### 5. Multi-Regime Market Classification (Rec #5 — MEDIUM-HIGH)
+- Replaces binary Fear & Greed model with 4-regime system:
+  - **trending_up**: SPY > SMA20 > SMA50, VIX < 22 → easier entry, larger positions.
+  - **trending_down**: SPY < SMA20 < SMA50 → +10 threshold, smaller positions, tighter stops.
+  - **range_bound**: SMAs converged → +5 threshold, slightly smaller.
+  - **crisis**: VIX > 30 or SPY < SMA50 by >3% → +15 threshold, half size, very tight stops.
+- Regime cached for 15 minutes. Adjusts threshold, max positions, stop multiplier, and sizing.
+
+### 6. Signal Decay / Dynamic Weighting (Rec #6 — MEDIUM)
+- New `_recalculate_signal_weights()` analyzes signal_log.jsonl trade outcomes.
+- Correlates each signal component (RSI, MACD, etc.) with winning vs losing trades.
+- Components that predict winners get up to 1.5× weight; losers down to 0.5×.
+- Requires 10+ wins and 5+ losses to activate (defaults to 1.0× until then).
+- Recalculated daily during morning reset.
+
+### 7. Correlation-Aware Position Limits (Rec #7 — MEDIUM)
+- New `_check_correlation()` calculates 20-day Pearson correlation between
+  a candidate ticker and all held positions.
+- Blocks entry if 2+ existing positions have correlation > 0.7 with the candidate.
+- Catches crypto clustering (BITO + IBIT + MARA) that sector labels miss.
+- Daily returns cached for 1 hour to reduce API calls.
+
+### Integration & Infrastructure
+- `get_atr()`: New ATR(14) calculation using Finnhub daily candles, 5-min cache.
+- Regime + heat + cooldown info logged in scan cycle messages.
+- BUY notifications now show ATR-based stop/trail levels.
+- SELL notifications include ATR-HARD-STOP and ATR-TRAIL reason types.
+- All changes backward compatible with existing position data.
+
+---
+
 ## v2.6 — Intraday Time-of-Day Awareness (2026-03-16)
 
 ### Signal Score Modifier (Component #12, ±8 pts)

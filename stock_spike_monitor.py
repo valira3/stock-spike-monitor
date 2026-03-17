@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.6.3"
+BOT_VERSION = "2.7.0"
 RELEASE_NOTES = [
+    "2.7.0 — Full gap analysis implementation: ATR-based dynamic stops, volatility-normalized position sizing, portfolio heat limit (6%), per-ticker re-entry cooldown (4h/8h), multi-regime market classification (4-regime), signal decay weighting, correlation-aware position limits.",
     "2.6.3 — Performance tuning: adaptive threshold floor 60 (was 45), 15-min hold before signal-collapse exit, 429 cache to cut Finnhub rate-limit storms.",
     "2.6.2 — TP notifications now include exit reason, P&L, and signal score/ToD zone on BUY.",
     "2.6.1 — Settlement cleanup on startup: purges stale T+1 entries, logs what was cleared.",
@@ -2044,6 +2045,38 @@ _last_snapshot_time = datetime.min.replace(tzinfo=CT)
 # ── Morning value capture for daily P&L (Feature #6) ──────
 _paper_morning_value = None  # captured at 8:31 AM CT
 
+
+# ── v2.7.0: Gap Analysis State ──────────────────────────────
+# Per-ticker re-entry cooldown (Rec #4)
+_ticker_cooldowns = {}  # {ticker: {"last_sell": datetime, "was_loss": bool}}
+
+# Market regime cache (Rec #5) — refreshed every 15 min
+_market_regime_cache = {
+    "regime": "unknown", "confidence": 0.0,
+    "params": {"threshold_adjust": 0, "max_positions_adjust": 0,
+               "stop_multiplier": 1.0, "size_multiplier": 1.0},
+    "ts": None,
+}
+
+# Signal component weights (Rec #6) — refreshed every 24h
+_signal_weights = {}  # component -> multiplier (0.5-1.5)
+_signal_weights_ts = None  # last recalc time
+
+# ATR cache (Rec #1, #2, #3) — 5-min TTL
+_atr_cache = {}  # {ticker: {"atr": float, "ts": float}}
+_ATR_CACHE_TTL = 300  # 5 minutes
+
+# Daily returns cache for correlation (Rec #7) — 1-hour TTL
+_daily_returns_cache = {}  # {ticker: {"returns": list, "ts": float}}
+_RETURNS_CACHE_TTL = 3600  # 1 hour
+
+# Portfolio heat constant (Rec #3)
+PORTFOLIO_HEAT_LIMIT = 6.0  # max % portfolio at risk
+
+# Re-entry cooldown hours (Rec #4)
+COOLDOWN_HOURS_LOSS = 8  # hours to wait after a losing sell
+COOLDOWN_HOURS_WIN = 4   # hours to wait after a winning sell
+
 # ── Earnings cache (Feature #9) ──────────────────────────
 _earnings_cache = {}  # {ticker: {"has_earnings": bool, "ts": float}}
 
@@ -2792,6 +2825,11 @@ def _apply_adaptive_config() -> int:
     elif vix <= 15: threshold -= 3
     threshold = max(60, min(85, threshold))  # Floor=60: don't let fear loosen too much
 
+    # v2.7.0: Multi-regime adjustment
+    regime = _classify_market_regime()
+    regime_adj = regime["params"].get("threshold_adjust", 0)
+    threshold = max(60, min(90, threshold + regime_adj))
+
     # ── Take Profit (legacy — graduated trail replaces)
     # No longer adjusts TP; kept for backcompat config.
 
@@ -2818,6 +2856,9 @@ def _apply_adaptive_config() -> int:
     elif fg >= 75:    max_pos = max(base_max - 2, 4)
     elif fg >= 60:    max_pos = max(base_max - 1, 5)
     else:             max_pos = base_max
+    # v2.7.0: Regime-adjusted max positions
+    regime_pos_adj = regime["params"].get("max_positions_adjust", 0)
+    max_pos = max(3, min(15, max_pos + regime_pos_adj))
     PAPER_MAX_POSITIONS = max_pos
 
     PAPER_MIN_SIGNAL = threshold
@@ -2985,6 +3026,370 @@ def compute_avwap(ticker: str) -> dict:
         logger.debug(f"AVWAP calc {ticker}: {e}")
 
     return result
+
+
+
+# ── v2.7.0: ATR Calculation (Foundation for Recs #1, #2, #3) ───
+def get_atr(ticker: str, period: int = 14) -> float:
+    """Calculate ATR(period) using Finnhub daily candles. 5-min cache."""
+    now = time.time()
+    cached = _atr_cache.get(ticker)
+    if cached and (now - cached["ts"]) < _ATR_CACHE_TTL:
+        return cached["atr"]
+
+    try:
+        candles = _finnhub_candles(ticker, resolution="D", count=period + 10)
+        if not candles or len(candles) < period + 1:
+            return None
+        # True Range calculation
+        true_ranges = []
+        for i in range(1, len(candles)):
+            tr = max(
+                candles[i]["h"] - candles[i]["l"],
+                abs(candles[i]["h"] - candles[i-1]["c"]),
+                abs(candles[i]["l"] - candles[i-1]["c"])
+            )
+            true_ranges.append(tr)
+        if len(true_ranges) < period:
+            return None
+        atr = sum(true_ranges[-period:]) / period
+        atr = round(atr, 4)
+        _atr_cache[ticker] = {"atr": atr, "ts": now}
+        return atr
+    except Exception as e:
+        logger.error(f"ATR calc error {ticker}: {e}")
+        return None
+
+
+# ── v2.7.0: Portfolio Heat (Rec #3) ────────────────────────────
+def _calculate_portfolio_heat() -> float:
+    """Calculate total portfolio heat = sum of position risk if all stops hit.
+    Returns heat as % of total portfolio value."""
+    portfolio_val = paper_portfolio_value()
+    if portfolio_val <= 0:
+        return 0.0
+    total_risk = 0.0
+    for ticker, pos in paper_positions.items():
+        shares = pos.get("shares", 0)
+        entry = pos.get("entry_price", pos.get("avg_cost", 0))
+        if entry <= 0 or shares <= 0:
+            continue
+        atr = pos.get("atr_at_entry")
+        if atr and atr > 0:
+            stop_distance = atr * 2.5
+            risk_per_share = min(stop_distance, entry * 0.06)  # cap at 6%
+        else:
+            risk_per_share = entry * PAPER_STOP_LOSS_PCT
+        total_risk += shares * risk_per_share
+    return (total_risk / portfolio_val) * 100
+
+
+# ── v2.7.0: Re-entry Cooldown (Rec #4) ────────────────────────
+def _check_cooldown(ticker: str) -> tuple:
+    """Check if ticker is in re-entry cooldown.
+    Returns (is_blocked: bool, remaining_hours: float)."""
+    cd = _ticker_cooldowns.get(ticker)
+    if not cd:
+        return (False, 0.0)
+    now = datetime.now(CT)
+    elapsed_sec = (now - cd["last_sell"]).total_seconds()
+    cooldown_h = COOLDOWN_HOURS_LOSS if cd["was_loss"] else COOLDOWN_HOURS_WIN
+    cooldown_sec = cooldown_h * 3600
+    if elapsed_sec < cooldown_sec:
+        remaining = (cooldown_sec - elapsed_sec) / 3600
+        return (True, round(remaining, 1))
+    return (False, 0.0)
+
+
+def _record_cooldown(ticker: str, was_loss: bool):
+    """Record a sell event for re-entry cooldown tracking."""
+    _ticker_cooldowns[ticker] = {
+        "last_sell": datetime.now(CT),
+        "was_loss": was_loss,
+    }
+
+
+# ── v2.7.0: Multi-Regime Market Classification (Rec #5) ───────
+def _classify_market_regime() -> dict:
+    """Classify market into 4 regimes using SPY SMAs + VIX.
+    Cached for 15 minutes.
+    Returns: {"regime": str, "confidence": float, "params": dict}
+    Regimes: trending_up, trending_down, range_bound, crisis
+    """
+    global _market_regime_cache
+    now = datetime.now(CT)
+    if (_market_regime_cache["ts"] and
+            (now - _market_regime_cache["ts"]).total_seconds() < 900):
+        return _market_regime_cache
+
+    try:
+        # Get SPY daily candles for SMA calculation
+        spy_candles = _finnhub_candles("SPY", resolution="D", count=55)
+        if not spy_candles or len(spy_candles) < 20:
+            return _market_regime_cache
+
+        closes = [c["c"] for c in spy_candles]
+        current_spy = closes[-1]
+
+        # Calculate SMAs
+        sma_20 = sum(closes[-20:]) / 20
+        sma_50 = (sum(closes[-50:]) / 50
+                  if len(closes) >= 50
+                  else sum(closes) / len(closes))
+
+        # Get VIX
+        try:
+            vix_q = _finnhub_quote("^VIX") or {}
+            vix = vix_q.get("c", 20) or 20
+        except Exception:
+            vix = 20
+
+        # Spread between SMAs
+        sma_spread = ((sma_20 - sma_50) / sma_50 * 100
+                      if sma_50 > 0 else 0)
+        spy_vs_50 = ((current_spy - sma_50) / sma_50 * 100
+                     if sma_50 > 0 else 0)
+
+        # Classification
+        if vix > 30 or spy_vs_50 < -3:
+            regime = "crisis"
+            confidence = min(0.9, max(0.5, (vix - 25) / 15))
+        elif (current_spy > sma_20 > sma_50
+              and (vix is None or vix < 22)):
+            regime = "trending_up"
+            confidence = min(0.9, max(0.4, sma_spread / 3))
+        elif current_spy < sma_20 and sma_20 < sma_50:
+            regime = "trending_down"
+            confidence = min(0.9, max(0.4, abs(sma_spread) / 3))
+        else:
+            regime = "range_bound"
+            confidence = 0.6
+
+        # Map to parameters
+        REGIME_PARAMS = {
+            "trending_up": {
+                "threshold_adjust": -5,
+                "max_positions_adjust": 2,
+                "stop_multiplier": 1.0,
+                "size_multiplier": 1.1,
+            },
+            "trending_down": {
+                "threshold_adjust": 10,
+                "max_positions_adjust": -3,
+                "stop_multiplier": 0.8,
+                "size_multiplier": 0.7,
+            },
+            "crisis": {
+                "threshold_adjust": 15,
+                "max_positions_adjust": -5,
+                "stop_multiplier": 0.6,
+                "size_multiplier": 0.5,
+            },
+            "range_bound": {
+                "threshold_adjust": 5,
+                "max_positions_adjust": 0,
+                "stop_multiplier": 0.9,
+                "size_multiplier": 0.85,
+            },
+        }
+        params = REGIME_PARAMS.get(regime, REGIME_PARAMS["range_bound"])
+        _market_regime_cache = {
+            "regime": regime,
+            "confidence": round(confidence, 2),
+            "params": params,
+            "ts": now,
+            "vix": vix,
+            "sma_20": round(sma_20, 2),
+            "sma_50": round(sma_50, 2),
+            "spy": round(current_spy, 2),
+        }
+        logger.info(
+            f"Market regime: {regime} (conf={confidence:.0%},"
+            f" VIX={vix:.1f}, SPY={current_spy:.2f},"
+            f" SMA20={sma_20:.2f}, SMA50={sma_50:.2f})"
+        )
+        return _market_regime_cache
+    except Exception as e:
+        logger.error(f"Regime classification error: {e}")
+        return _market_regime_cache
+
+
+# ── v2.7.0: Signal Decay / Dynamic Weighting (Rec #6) ─────────
+def _recalculate_signal_weights():
+    """Analyze signal_log.jsonl + trade outcomes to weight components.
+    Components that predicted winners get higher weights (up to 1.5x).
+    Components that predicted losers get lower weights (down to 0.5x).
+    Recalculated every 24 hours or on startup.
+    """
+    global _signal_weights, _signal_weights_ts
+    default = {
+        "rsi_pts": 1.0, "bw_pts": 1.0, "macd_pts": 1.0,
+        "vol_pts": 1.0, "sq_pts": 1.0, "slope_pts": 1.0,
+        "grok_pts": 1.0, "news_pts": 1.0, "avwap_pts": 1.0,
+    }
+
+    try:
+        if not os.path.exists(SIGNAL_LOG_FILE):
+            _signal_weights = default
+            _signal_weights_ts = datetime.now(CT)
+            return
+
+        # Gather BUY and SELL pairs from signal log
+        buys = {}   # ticker -> list of {ts, score, components...}
+        sells = {}  # ticker -> list of {ts, pnl_pct}
+
+        cutoff = (datetime.now(CT) - timedelta(days=30)).isoformat()
+        with open(SIGNAL_LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("ts", "") < cutoff:
+                    continue
+                t = entry.get("ticker", "")
+                if entry.get("type") == "BUY":
+                    buys.setdefault(t, []).append(entry)
+                elif entry.get("type") == "SELL":
+                    sells.setdefault(t, []).append(entry)
+
+        # Match buys to sells (chronological order)
+        wins = []
+        losses = []
+        for ticker in buys:
+            b_list = sorted(buys[ticker], key=lambda x: x.get("ts", ""))
+            s_list = sorted(sells.get(ticker, []),
+                            key=lambda x: x.get("ts", ""))
+            s_idx = 0
+            for b in b_list:
+                # Find next sell after this buy
+                while (s_idx < len(s_list)
+                       and s_list[s_idx].get("ts", "") <= b.get("ts", "")):
+                    s_idx += 1
+                if s_idx < len(s_list):
+                    pnl = s_list[s_idx].get("pnl_pct", 0)
+                    if pnl > 0:
+                        wins.append(b)
+                    else:
+                        losses.append(b)
+                    s_idx += 1
+
+        if len(wins) < 10 or len(losses) < 5:
+            # Not enough data — use defaults
+            _signal_weights = default
+            _signal_weights_ts = datetime.now(CT)
+            logger.info(
+                f"Signal weights: insufficient data "
+                f"(wins={len(wins)}, losses={len(losses)}), "
+                f"using defaults"
+            )
+            return
+
+        weights = {}
+        for comp in default:
+            w_avg = (sum(e.get(comp, 0) for e in wins)
+                     / len(wins)) if wins else 0
+            l_avg = (sum(e.get(comp, 0) for e in losses)
+                     / len(losses)) if losses else 0
+            if l_avg > 0:
+                ratio = w_avg / l_avg
+                weights[comp] = max(0.5, min(1.5, ratio))
+            elif w_avg > 0:
+                weights[comp] = 1.3  # component only in wins
+            else:
+                weights[comp] = 1.0
+
+        _signal_weights = weights
+        _signal_weights_ts = datetime.now(CT)
+        # Log significant deviations
+        deviations = {k: v for k, v in weights.items()
+                      if abs(v - 1.0) > 0.15}
+        if deviations:
+            logger.info(
+                f"Signal weights adjusted: "
+                + ", ".join(f"{k}={v:.2f}" for k, v in deviations.items())
+                + f" (from {len(wins)}W/{len(losses)}L trades)"
+            )
+        else:
+            logger.info(
+                f"Signal weights: all near 1.0 "
+                f"({len(wins)}W/{len(losses)}L trades)"
+            )
+    except Exception as e:
+        logger.error(f"Signal weight calc error: {e}")
+        _signal_weights = default
+        _signal_weights_ts = datetime.now(CT)
+
+
+# ── v2.7.0: Correlation-Aware Position Limits (Rec #7) ────────
+def _get_daily_returns(ticker: str, days: int = 25):
+    """Get daily returns for correlation. 1-hour cache."""
+    now = time.time()
+    cached = _daily_returns_cache.get(ticker)
+    if cached and (now - cached["ts"]) < _RETURNS_CACHE_TTL:
+        return cached["returns"]
+
+    try:
+        candles = _finnhub_candles(ticker, resolution="D", count=days)
+        if not candles or len(candles) < 10:
+            return None
+        closes = [c["c"] for c in candles]
+        returns = [(closes[i] - closes[i-1]) / closes[i-1]
+                   for i in range(1, len(closes))
+                   if closes[i-1] != 0]
+        _daily_returns_cache[ticker] = {"returns": returns, "ts": now}
+        return returns
+    except Exception:
+        return None
+
+
+def _pearson_corr(x: list, y: list) -> float:
+    """Pearson correlation coefficient. Returns None if insufficient data."""
+    n = min(len(x), len(y))
+    if n < 8:
+        return None
+    x, y = x[-n:], y[-n:]
+    mx = sum(x) / n
+    my = sum(y) / n
+    cov = sum((x[i] - mx) * (y[i] - my) for i in range(n))
+    sx = sum((xi - mx) ** 2 for xi in x) ** 0.5
+    sy = sum((yi - my) ** 2 for yi in y) ** 0.5
+    if sx * sy == 0:
+        return None
+    return cov / (sx * sy)
+
+
+def _check_correlation(new_ticker: str, threshold: float = 0.7) -> tuple:
+    """Check if new_ticker is too correlated with existing positions.
+    Returns (is_ok, blocking_tickers, max_corr)."""
+    if not paper_positions:
+        return (True, [], 0.0)
+
+    new_ret = _get_daily_returns(new_ticker)
+    if not new_ret:
+        return (True, [], 0.0)  # can't calc, allow
+
+    highly_correlated = []
+    max_corr = 0.0
+
+    for held in paper_positions:
+        held_ret = _get_daily_returns(held)
+        if not held_ret:
+            continue
+        corr = _pearson_corr(new_ret, held_ret)
+        if corr is not None:
+            max_corr = max(max_corr, corr)
+            if corr > threshold:
+                highly_correlated.append((held, round(corr, 2)))
+
+    # Block if 2+ highly correlated positions already held
+    if len(highly_correlated) >= 2:
+        return (False, [t for t, c in highly_correlated], round(max_corr, 2))
+    return (True, [], round(max_corr, 2))
+
 
 
 def compute_paper_signal(ticker: str) -> dict:
@@ -3367,34 +3772,57 @@ def compute_paper_signal(ticker: str) -> dict:
 
 def _paper_position_size(ticker: str, signal_score: float) -> int:
     """
-    Calculate shares to buy based on signal strength, portfolio
-    rules, and intraday time-of-day zone.
+    Calculate shares to buy based on ATR-normalized risk,
+    signal strength, market regime, and time-of-day zone.
+    v2.7.0: Volatility-normalized sizing (equal-risk per trade).
     Returns 0 if no trade should be made.
     """
     portfolio_val = paper_portfolio_value()
-    max_dollars   = portfolio_val * PAPER_MAX_POS_PCT
-
-    # Scale position size with signal confidence (65->100 maps to 50%->100% of max)
-    strength   = min(1.0, (signal_score - PAPER_MIN_SIGNAL) / (100 - PAPER_MIN_SIGNAL))
-    dollars    = max_dollars * (0.5 + 0.5 * strength)
-    dollars    = min(dollars, paper_cash * 0.95)   # never use more than 95% of cash
-
-    # AI conviction boost: 15% larger position for high-conviction AI picks
-    ai_info = ai_watchlist_suggestions.get(ticker)
-    if ai_info and ai_info.get("conviction", 0) >= 8:
-        dollars *= 1.15
-        dollars = min(dollars, portfolio_val * PAPER_MAX_POS_PCT)  # still respect max
-
-    # Time-of-day sizing: reduce position during lunch lull,
-    # full size during power hours (open & close)
-    _, tod_mult, _ = _get_intraday_zone()
-    dollars *= tod_mult
-
-    if dollars < 100:
-        return 0
 
     price, _, _ = _get_best_price(ticker)
     if not price or price <= 0:
+        return 0
+
+    # v2.7.0: ATR-based volatility-normalized sizing
+    atr = get_atr(ticker)
+    if atr and atr > 0:
+        # Risk budget: 1% of portfolio per trade
+        risk_per_trade = portfolio_val * 0.01
+        stop_distance = atr * 2.5
+        # Position size = risk / stop distance
+        ideal_shares = risk_per_trade / stop_distance
+        dollars = ideal_shares * price
+    else:
+        # Fallback: old dollar-based sizing
+        max_dollars = portfolio_val * PAPER_MAX_POS_PCT
+        strength = min(1.0, (signal_score - PAPER_MIN_SIGNAL)
+                       / (100 - PAPER_MIN_SIGNAL))
+        dollars = max_dollars * (0.5 + 0.5 * strength)
+
+    # Signal strength scaling (50%-100% of computed size)
+    strength = min(1.0, (signal_score - PAPER_MIN_SIGNAL)
+                   / (100 - PAPER_MIN_SIGNAL))
+    dollars *= (0.5 + 0.5 * strength)
+
+    # Cap at max 20% of portfolio and 95% of cash
+    dollars = min(dollars, portfolio_val * PAPER_MAX_POS_PCT)
+    dollars = min(dollars, paper_cash * 0.95)
+
+    # AI conviction boost: 15% larger position for high-conviction
+    ai_info = ai_watchlist_suggestions.get(ticker)
+    if ai_info and ai_info.get("conviction", 0) >= 8:
+        dollars *= 1.15
+        dollars = min(dollars, portfolio_val * PAPER_MAX_POS_PCT)
+
+    # Time-of-day sizing
+    _, tod_mult, _ = _get_intraday_zone()
+    dollars *= tod_mult
+
+    # v2.7.0: Market regime sizing multiplier
+    regime = _classify_market_regime()
+    dollars *= regime["params"].get("size_multiplier", 1.0)
+
+    if dollars < 100:
         return 0
 
     return max(1, int(dollars / price))
@@ -3435,23 +3863,64 @@ def paper_evaluate_ticker(ticker: str):
         should_sell = False
         sell_reason = ""
 
-        # Hard stop: safety net at entry - X%
-        if pnl_pct <= -PAPER_STOP_LOSS_PCT:
-            should_sell = True
-            sell_reason = f"HARD-STOP {pnl_pct*100:.1f}%"
-        else:
-            # Graduated trailing stop: trail widens with profit
+        # v2.7.0: ATR-based dynamic stops (Rec #1)
+        atr_entry = pos.get("atr_at_entry")
+        if atr_entry and atr_entry > 0:
+            # ATR-based hard stop
+            atr_hard_stop = cost - (atr_entry * 2.5)
+
+            # Dynamic trailing: multiplier tightens with profit
+            profit_pct_raw = pnl_pct * 100
+            if profit_pct_raw >= 15:
+                atr_mult = 1.5
+            elif profit_pct_raw >= 10:
+                atr_mult = 2.0
+            elif profit_pct_raw >= 5:
+                atr_mult = 2.5
+            else:
+                atr_mult = 3.0
+
+            # Apply regime stop multiplier
+            regime = _classify_market_regime()
+            atr_mult *= regime["params"].get("stop_multiplier", 1.0)
+
             high = pos.get("high", cost)
-            peak_pnl_pct = (high - cost) / cost
-            trail = _graduated_trail_pct(peak_pnl_pct)
-            if price <= high * (1 - trail):
+            atr_trail_stop = high - (atr_entry * atr_mult)
+            effective_stop = max(atr_trail_stop, atr_hard_stop)
+
+            if price <= effective_stop:
                 should_sell = True
-                peak_pnl = peak_pnl_pct * 100
-                sell_reason = (
-                    f"TRAILING-STOP {pnl_pct*100:+.1f}%"
-                    f" (peak +{peak_pnl:.1f}%,"
-                    f" trail {trail*100:.0f}%)"
-                )
+                if price <= atr_hard_stop:
+                    sell_reason = (
+                        f"ATR-HARD-STOP {pnl_pct*100:.1f}%"
+                        f" (stop=${atr_hard_stop:.2f},"
+                        f" ATR=${atr_entry:.2f})"
+                    )
+                else:
+                    peak_pnl = (high - cost) / cost * 100
+                    sell_reason = (
+                        f"ATR-TRAIL {pnl_pct*100:+.1f}%"
+                        f" (peak +{peak_pnl:.1f}%,"
+                        f" mult={atr_mult:.1f},"
+                        f" stop=${atr_trail_stop:.2f})"
+                    )
+        else:
+            # Fallback: fixed % stops (pre-2.7.0 positions)
+            if pnl_pct <= -PAPER_STOP_LOSS_PCT:
+                should_sell = True
+                sell_reason = f"HARD-STOP {pnl_pct*100:.1f}%"
+            else:
+                high = pos.get("high", cost)
+                peak_pnl_pct = (high - cost) / cost
+                trail = _graduated_trail_pct(peak_pnl_pct)
+                if price <= high * (1 - trail):
+                    should_sell = True
+                    peak_pnl = peak_pnl_pct * 100
+                    sell_reason = (
+                        f"TRAILING-STOP {pnl_pct*100:+.1f}%"
+                        f" (peak +{peak_pnl:.1f}%,"
+                        f" trail {trail*100:.0f}%)"
+                    )
 
         if not should_sell:
             sig = compute_paper_signal(ticker)
@@ -3506,6 +3975,9 @@ def paper_evaluate_ticker(ticker: str):
             if len(paper_all_trades) > 5000:
                 paper_all_trades[:] = paper_all_trades[-4000:]
 
+            # v2.7.0: Record re-entry cooldown (Rec #4)
+            _record_cooldown(ticker, was_loss=(realized_pnl < 0))
+
             # Log SELL action for backtesting
             log_signal_data({
                 "ts": now.isoformat(),
@@ -3545,6 +4017,8 @@ def paper_evaluate_ticker(ticker: str):
                 "TAKE-PROFIT": "✅ Take-profit hit",
                 "HARD-STOP":   "🛑 Hard stop triggered",
                 "TRAILING-STOP": "📉 Trailing stop hit",
+                "ATR-HARD-STOP": "🛑 ATR hard stop",
+                "ATR-TRAIL":   "📉 ATR trailing stop",
                 "SIGNAL-COLLAPSE": "📉 Signal deteriorated",
                 "AVWAP-STOP": "📉 Price lost AVWAP (overhead supply)",
             }
@@ -3617,6 +4091,18 @@ def paper_evaluate_ticker(ticker: str):
     if paper_cash < 200:
         return
 
+    # v2.7.0: Re-entry cooldown check (Rec #4)
+    is_blocked, cd_remaining = _check_cooldown(ticker)
+    if is_blocked:
+        logger.debug(f"Skip {ticker}: re-entry cooldown ({cd_remaining:.1f}h remaining)")
+        return
+
+    # v2.7.0: Portfolio heat check (Rec #3)
+    heat = _calculate_portfolio_heat()
+    if heat >= PORTFOLIO_HEAT_LIMIT:
+        logger.debug(f"Skip {ticker}: portfolio heat {heat:.1f}% >= {PORTFOLIO_HEAT_LIMIT}% limit")
+        return
+
     sig = compute_paper_signal(ticker)
     threshold = _apply_adaptive_config()
     if sig["score"] < threshold:
@@ -3663,6 +4149,12 @@ def paper_evaluate_ticker(ticker: str):
         logger.info(f"Skip BUY {ticker}: earnings within 2 days")
         return
 
+    # v2.7.0: Correlation check (Rec #7)
+    corr_ok, corr_blockers, max_corr = _check_correlation(ticker)
+    if not corr_ok:
+        logger.info(f"Skip {ticker}: high correlation ({max_corr:.2f}) with {corr_blockers}")
+        return
+
     # Feature #11: AVWAP entry gate — only enter if price has reclaimed AVWAP
     # "The moment price reclaims AVWAP, long entry with AVWAP as stop."
     # During regular session, require AVWAP reclaim. Skip gate in extended hours
@@ -3679,6 +4171,8 @@ def paper_evaluate_ticker(ticker: str):
 
     cost         = shares * price
     paper_cash  -= cost
+    # v2.7.0: Store ATR for dynamic stops (Rec #1)
+    _entry_atr = get_atr(ticker)
     paper_positions[ticker] = {
         "shares":     shares,
         "avg_cost":   price,
@@ -3686,6 +4180,7 @@ def paper_evaluate_ticker(ticker: str):
         "entry_time": now.strftime("%H:%M:%S"),
         "entry_date": today,
         "high":       price,
+        "atr_at_entry": _entry_atr,
     }
     paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
 
@@ -3734,8 +4229,16 @@ def paper_evaluate_ticker(ticker: str):
     c            = sig["comps"]
     new_val      = paper_portfolio_value()
     lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
-    sl_price     = price * (1 - PAPER_STOP_LOSS_PCT)
-    trail_price  = price * (1 - PAPER_TRAILING_STOP_PCT)
+    # v2.7.0: ATR-based stop levels
+    _buy_atr = get_atr(ticker)
+    if _buy_atr and _buy_atr > 0:
+        sl_price = price - (_buy_atr * 2.5)
+        trail_price = price - (_buy_atr * 3.0)
+        _stop_label = f"ATR×2.5 (ATR=${_buy_atr:.2f})"
+    else:
+        sl_price = price * (1 - PAPER_STOP_LOSS_PCT)
+        trail_price = price * (1 - PAPER_TRAILING_STOP_PCT)
+        _stop_label = f"-{PAPER_STOP_LOSS_PCT*100:.0f}%"
 
     # Readable signal summary
     sig_lines = []
@@ -3790,13 +4293,8 @@ def paper_evaluate_ticker(ticker: str):
         f"{'─'*28}\n"
         f"Shares:    {shares} @ ${price:.2f}\n"
         f"Cost:      ${cost:,.0f}\n"
-        f"Trail:     {PAPER_TRAILING_STOP_PCT*100:.0f}%"
-        f" / {GRADUATED_TRAIL_ZONES[2][1]*100:.0f}%"
-        f" / {GRADUATED_TRAIL_ZONES[1][1]*100:.0f}%"
-        f" / {GRADUATED_TRAIL_ZONES[0][1]*100:.0f}%"
-        f" (graduated)\n"
-        f"Hard Stop: ${sl_price:.2f}"
-        f" (-{PAPER_STOP_LOSS_PCT*100:.0f}%)\n"
+        f"Stop:      ${sl_price:.2f} ({_stop_label})\n"
+        f"Trail:     ${trail_price:.2f} (tightens)\n"
         + (f"AVWAP Stop: ${c.get('avwap', 0):.2f} (exit if lost)\n" if c.get('avwap') else "")
         + f"{'─'*28}\n"
         f"Signal:    {sig['score']:.0f}/158 (thresh={threshold})\n"
@@ -3918,6 +4416,8 @@ def paper_morning_report():
 
     # Trim old signal log entries (keep 30 days)
     trim_signal_log(30)
+    # v2.7.0: Recalculate signal weights daily
+    _recalculate_signal_weights()
 
     val      = paper_portfolio_value()
     _paper_morning_value = val  # capture for daily P&L calc
