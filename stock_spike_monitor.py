@@ -50,7 +50,7 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.2"
+BOT_VERSION = "2.7.3"
 RELEASE_NOTES = [
     "2.7.1 — /strategy command: full end-to-end trading strategy overview with live parameters.",
     "2.7.0 — Full gap analysis implementation: ATR-based dynamic stops, volatility-normalized position sizing, portfolio heat limit (6%), per-ticker re-entry cooldown (4h/8h), multi-regime market classification (4-regime), signal decay weighting, correlation-aware position limits.",
@@ -89,6 +89,10 @@ RELEASE_NOTES = [
 
 THRESHOLD           = 0.03
 MIN_PRICE           = 5.0
+MIN_PRICE_SPECULATIVE = 1.0    # v2.7.3: speculative low-price stocks
+SPEC_MAX_POS_PCT    = 0.05     # v2.7.3: max 5% of portfolio per speculative position
+SPEC_MAX_POSITIONS  = 2        # v2.7.3: max 2 speculative positions at once
+SPEC_MIN_VOL_RATIO  = 3.0      # v2.7.3: require 3x avg volume for speculative buys
 COOLDOWN_MINUTES    = 15
 CHECK_INTERVAL_MIN  = 1
 VOLUME_SPIKE_MULT   = 2.0
@@ -2610,10 +2614,29 @@ def update_shadow_portfolio(ticker, action, price, quantity_dollars, success):
             if len(sp["closed_trades"]) > 50:
                 sp["closed_trades"] = sp["closed_trades"][-50:]
             sign = "+" if pnl >= 0 else ""
+            # v2.7.3: Calculate hold duration for TP EXIT
+            _tp_hold_str = ""
+            _tp_entry_d = pos.get("entry_date", "")
+            _tp_entry_t = pos.get("entry_time", "")
+            if _tp_entry_d and _tp_entry_t:
+                try:
+                    _tp_entry_dt = datetime.strptime(
+                        f"{_tp_entry_d} {_tp_entry_t}",
+                        "%Y-%m-%d %H:%M"
+                    ).replace(tzinfo=CT)
+                    _tp_held_s = int((now - _tp_entry_dt).total_seconds())
+                    if _tp_held_s < 3600:
+                        _tp_hold_str = f" held {_tp_held_s // 60}m"
+                    elif _tp_held_s < 86400:
+                        _tp_hold_str = f" held {_tp_held_s // 3600}h{(_tp_held_s % 3600) // 60}m"
+                    else:
+                        _tp_hold_str = f" held {_tp_held_s // 86400}d{(_tp_held_s % 86400) // 3600}h"
+                except Exception:
+                    pass
             tp_log(
                 f"TP EXIT: {ticker} ~{shares:.2f} "
                 f"shares @ ${price:,.2f} "
-                f"(est P&L: {sign}${pnl:,.2f})"
+                f"(est P&L: {sign}${pnl:,.2f}){_tp_hold_str}"
             )
             # v2.7.2: Print portfolio stats after every action
             try:
@@ -3921,8 +3944,11 @@ def paper_evaluate_ticker(ticker: str):
         return
 
     price, _, _ = _get_best_price(ticker)
-    if not price or price < MIN_PRICE:
+    if not price or price < MIN_PRICE_SPECULATIVE:
         return
+
+    # v2.7.3: Classify as speculative if below normal MIN_PRICE
+    is_speculative = price < MIN_PRICE
 
     # ── Check existing position: take-profit / stop-loss / signal exit ──
     if ticker in paper_positions:
@@ -4061,6 +4087,23 @@ def paper_evaluate_ticker(ticker: str):
             cost_basis = shares * cost
             realized_pnl = proceeds - cost_basis
 
+            # v2.7.3: Compute hold duration early for all SELL messages
+            hold_mins = ""
+            try:
+                _sell_entry_dt = datetime.strptime(
+                    f"{pos.get('entry_date', today)} {pos.get('entry_time', '00:00:00')}",
+                    "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=CT)
+                _sell_held_sec = int((now - _sell_entry_dt).total_seconds())
+                if _sell_held_sec < 3600:
+                    hold_mins = f"{_sell_held_sec // 60}m"
+                elif _sell_held_sec < 86400:
+                    hold_mins = f"{_sell_held_sec // 3600}h{(_sell_held_sec % 3600) // 60}m"
+                else:
+                    hold_mins = f"{_sell_held_sec // 86400}d{(_sell_held_sec % 86400) // 3600}h"
+            except (ValueError, TypeError, KeyError):
+                pass
+
             paper_cash += proceeds
             del paper_positions[ticker]
             paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
@@ -4095,25 +4138,17 @@ def paper_evaluate_ticker(ticker: str):
                 "session": get_trading_session(),
             })
 
+            _sell_held = hold_mins if hold_mins else ""
             msg = (
                 f"SELL | {ticker} | {shares} shares @ ${price:.2f} | "
                 f"P&L: ${realized_pnl:+.2f} ({pnl_pct*100:+.1f}%) | "
+                f"Held: {_sell_held} | "
                 f"Reason: {sell_reason} | "
                 f"Portfolio: ${paper_portfolio_value():,.0f}"
             )
             paper_log(msg)
 
             # ── Enriched SELL notification ─────────────────────
-            hold_mins = ""
-            try:
-                entry_dt = datetime.strptime(
-                    f"{pos.get('entry_date', today)} {pos.get('entry_time', '00:00:00')}",
-                    "%Y-%m-%d %H:%M:%S"
-                ).replace(tzinfo=CT)
-                held = int((now - entry_dt).total_seconds() / 60)
-                hold_mins = f"{held}m" if held < 60 else f"{held//60}h {held%60}m"
-            except (ValueError, TypeError, KeyError) as e:
-                logger.debug(f"Hold time calc: {e}")
 
             pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
             reason_map = {
@@ -4167,11 +4202,13 @@ def paper_evaluate_ticker(ticker: str):
                     )
                     if tp_result:
                         _lp = round(price * (1 - LIMIT_ORDER_SELL_BUFFER), 2)
+                        _tp_held = hold_mins if hold_mins else ""
                         tp_log(
                             f"LIMIT EXIT {ticker} "
                             f"{shares} shares @ ${_lp:.2f}\n"
                             f"  P&L: ${realized_pnl:+,.0f} "
-                            f"({pnl_pct*100:+.1f}%)\n"
+                            f"({pnl_pct*100:+.1f}%)"
+                            f"  Held: {_tp_held}\n"
                             f"  Reason: {sell_reason}"
                         )
                         # Record settlement (T+1)
@@ -4272,11 +4309,35 @@ def paper_evaluate_ticker(ticker: str):
             logger.debug(f"Skip BUY {ticker}: price below AVWAP (overhead supply)")
             return
 
+    # v2.7.3: Speculative buy gates
+    if is_speculative:
+        # Count current speculative positions
+        spec_count = sum(
+            1 for t, p in paper_positions.items()
+            if p.get("speculative", False)
+        )
+        if spec_count >= SPEC_MAX_POSITIONS:
+            logger.debug(f"Skip {ticker}: max {SPEC_MAX_POSITIONS} speculative positions reached")
+            return
+        # Require high volume ratio for speculative
+        vol_ratio = sig.get("comps", {}).get("vol_ratio", 0)
+        has_news = sig.get("comps", {}).get("news_pts", 0) >= 5
+        has_ai = sig.get("comps", {}).get("grok_signal") == "BUY"
+        if vol_ratio < SPEC_MIN_VOL_RATIO and not has_news and not has_ai:
+            logger.debug(f"Skip speculative {ticker}: vol {vol_ratio:.1f}x < {SPEC_MIN_VOL_RATIO}x and no catalyst")
+            return
+
     shares = _paper_position_size(ticker, sig["score"])
     if shares <= 0:
         return
 
+    # v2.7.3: Cap speculative position size at SPEC_MAX_POS_PCT
     cost         = shares * price
+    if is_speculative:
+        max_spec_dollars = paper_portfolio_value() * SPEC_MAX_POS_PCT
+        if cost > max_spec_dollars:
+            shares = max(1, int(max_spec_dollars / price))
+            cost = shares * price
     paper_cash  -= cost
     # v2.7.0: Store ATR for dynamic stops (Rec #1)
     _entry_atr = get_atr(ticker)
@@ -4288,6 +4349,7 @@ def paper_evaluate_ticker(ticker: str):
         "entry_date": today,
         "high":       price,
         "atr_at_entry": _entry_atr,
+        "speculative": is_speculative,
     }
     paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
 
@@ -4324,8 +4386,9 @@ def paper_evaluate_ticker(ticker: str):
     # Include news catalyst in log if available
     _catalyst = sig["comps"].get("news_catalyst", "")
     _catalyst_str = f" | catalyst={_catalyst}" if _catalyst else ""
+    _spec_log = " [SPEC]" if is_speculative else ""
     msg = (
-        f"BUY | {ticker} | {shares} shares @ ${price:.2f} | "
+        f"BUY{_spec_log} | {ticker} | {shares} shares @ ${price:.2f} | "
         f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/150 | "
         f"Detail: {sig['detail']}{_catalyst_str} | "
         f"Portfolio: ${paper_portfolio_value():,.0f}"
@@ -4395,8 +4458,9 @@ def paper_evaluate_ticker(ticker: str):
     if ai_info:
         ai_thesis_line = f"  AI: {ai_info['thesis']} (conviction {ai_info['conviction']}/10)\n"
 
+    _spec_tag = " [SPEC]" if is_speculative else ""
     send_telegram(
-        f"📈 PAPER BUY — {ticker}\n"
+        f"📈 PAPER BUY{_spec_tag} — {ticker}\n"
         f"{'─'*28}\n"
         f"Shares:    {shares} @ ${price:.2f}\n"
         f"Cost:      ${cost:,.0f}\n"
@@ -4439,8 +4503,9 @@ def paper_evaluate_ticker(ticker: str):
                 _lp = round(price * (1 + LIMIT_ORDER_BUY_BUFFER), 2)
                 _tod = sig.get("comps", {}).get("tod_zone", "")
                 _tod_str = f" [{_tod}]" if _tod else ""
+                _spec_tp = " [SPEC]" if is_speculative else ""
                 tp_log(
-                    f"LIMIT BUY {ticker} "
+                    f"LIMIT BUY{_spec_tp} {ticker} "
                     f"{_shares} shares @ ${_lp:.2f}"
                     f" (${cost:,.0f})\n"
                     f"  Signal: {sig['score']:.0f}/158"
@@ -6213,7 +6278,10 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Order type: LIMIT only\n"
         f"Buy buffer:  +{LIMIT_ORDER_BUY_BUFFER*100:.1f}%\n"
         f"Sell buffer: -{LIMIT_ORDER_SELL_BUFFER*100:.1f}%\n"
-        f"Min price: ${MIN_PRICE:.0f}\n"
+        f"Min price: ${MIN_PRICE:.0f} (${MIN_PRICE_SPECULATIVE:.0f} spec)\n"
+        f"Speculative: ${MIN_PRICE_SPECULATIVE}-${MIN_PRICE}\n"
+        f"  Max {SPEC_MAX_POSITIONS} positions, {SPEC_MAX_POS_PCT*100:.0f}% cap\n"
+        f"  Req: {SPEC_MIN_VOL_RATIO:.0f}x vol OR catalyst\n"
         f"\n"
         f"\u23f0 SCHEDULE\n"
         f"{SEP}\n"
