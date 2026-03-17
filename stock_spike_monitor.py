@@ -50,8 +50,11 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.3"
+BOT_VERSION = "2.7.4"
 RELEASE_NOTES = [
+    "2.7.4 — Falling-knife guard: block buys on stocks that surged 15%+ in 5d and are now declining.",
+    "2.7.3 — Speculative buys ($1-5 viral/volume stocks, 5% cap, max 2), hold duration on all SELL messages.",
+    "2.7.2 — Anti-churn: trough-buying bias (RSI/BB mean-reversion), 30-min min hold, wider ATR trails, TP portfolio stats.",
     "2.7.1 — /strategy command: full end-to-end trading strategy overview with live parameters.",
     "2.7.0 — Full gap analysis implementation: ATR-based dynamic stops, volatility-normalized position sizing, portfolio heat limit (6%), per-ticker re-entry cooldown (4h/8h), multi-regime market classification (4-regime), signal decay weighting, correlation-aware position limits.",
     "2.6.3 — Performance tuning: adaptive threshold floor 60 (was 45), 30-min hold before signal-collapse exit, 429 cache to cut Finnhub rate-limit storms.",
@@ -4256,6 +4259,38 @@ def paper_evaluate_ticker(ticker: str):
     if sig.get("comps", {}).get("pct_b") and sig["comps"]["pct_b"] > 0.92:
         return
 
+    # v2.7.4: Falling-knife guard — block stocks that surged then reversed
+    # If a stock ran up 15%+ over 5 days but is now declining (below SMA5
+    # AND today is red), it's distributing — don't catch the knife.
+    _fk_daily = daily_candles.get(ticker)
+    if _fk_daily and len(_fk_daily) >= 6:
+        _fk_closes = [d["close"] for d in _fk_daily]
+        _fk_opens = [d["open"] for d in _fk_daily]
+        _fk_ret_5d = (_fk_closes[-1] - _fk_closes[-6]) / _fk_closes[-6]
+        _fk_sma5 = sum(_fk_closes[-5:]) / 5
+        _fk_today_red = _fk_closes[-1] < _fk_opens[-1]
+        _fk_below_sma5 = _fk_closes[-1] < _fk_sma5
+        # How far off the recent 5-day peak
+        _fk_peak = max(_fk_closes[-5:])
+        _fk_off_peak = (_fk_peak - _fk_closes[-1]) / _fk_peak if _fk_peak > 0 else 0
+        # Block: surged 15%+ in 5d, now below SMA5 and today is red
+        if _fk_ret_5d >= 0.15 and _fk_below_sma5 and _fk_today_red:
+            logger.info(
+                f"Skip {ticker}: falling-knife "
+                f"(5d +{_fk_ret_5d*100:.1f}%, "
+                f"off peak -{_fk_off_peak*100:.1f}%, "
+                f"below SMA5, today red)"
+            )
+            return
+        # Block: 10%+ run-up AND already 5%+ off the peak (sharp reversal)
+        if _fk_ret_5d >= 0.10 and _fk_off_peak >= 0.05:
+            logger.info(
+                f"Skip {ticker}: sharp reversal "
+                f"(5d +{_fk_ret_5d*100:.1f}%, "
+                f"off peak -{_fk_off_peak*100:.1f}%)"
+            )
+            return
+
     # Feature #8: Sector concentration guard — max 2 per sector
     ticker_sector = TICKER_SECTORS.get(ticker)
     if ticker_sector:
@@ -6189,6 +6224,9 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"    Current: {heat:.1f}%\n"
         f" 9. Correlation < 0.7 with 2+\n"
         f"    held positions\n"
+        f"10. Falling-knife guard\n"
+        f"    No 15%+ surge + decline\n"
+        f"    No 10%+ surge + 5% off peak\n"
     )
 
     msg3 = (
