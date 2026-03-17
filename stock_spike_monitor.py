@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.0"
+BOT_VERSION = "2.7.1"
 RELEASE_NOTES = [
+    "2.7.1 — /strategy command: full end-to-end trading strategy overview with live parameters.",
     "2.7.0 — Full gap analysis implementation: ATR-based dynamic stops, volatility-normalized position sizing, portfolio heat limit (6%), per-ticker re-entry cooldown (4h/8h), multi-regime market classification (4-regime), signal decay weighting, correlation-aware position limits.",
     "2.6.3 — Performance tuning: adaptive threshold floor 60 (was 45), 15-min hold before signal-collapse exit, 429 cache to cut Finnhub rate-limit storms.",
     "2.6.2 — TP notifications now include exit reason, P&L, and signal score/ToD zone on BUY.",
@@ -287,6 +288,7 @@ BOT_DESCRIPTION = (
     " /list        monitored tickers\n"
     " /set         adjust thresholds\n"
     " /monitoring  pause|resume|status\n"
+    " /strategy    full trading strategy\n"
     " /version     release notes\n"
     " /help        this menu\n"
     "\n"
@@ -5942,6 +5944,177 @@ async def cmd_tpedit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # TELEGRAM COMMANDS
 # ============================================================
 
+async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Full end-to-end trading strategy summary with live params."""
+    # Gather live values
+    regime = _classify_market_regime()
+    regime_name = regime.get("regime", "unknown")
+    regime_conf = regime.get("confidence", 0)
+    regime_vix = regime.get("vix", "?")
+    regime_spy = regime.get("spy", "?")
+    regime_sma20 = regime.get("sma_20", "?")
+    regime_sma50 = regime.get("sma_50", "?")
+    r_params = regime.get("params", {})
+    heat = _calculate_portfolio_heat()
+    fg_val, fg_label = get_fear_greed()
+    fg_str = f"{fg_val} ({fg_label})" if fg_val else "N/A"
+    thresh = _adaptive_threshold_cache.get("val", 65)
+    n_pos = len(paper_positions)
+    n_cool = sum(1 for t in _ticker_cooldowns
+                 if _check_cooldown(t)[0])
+    _, tod_mult, tod_label = _get_intraday_zone()
+    # Signal weights summary
+    wt_deviations = []
+    if _signal_weights:
+        for k, v in _signal_weights.items():
+            if abs(v - 1.0) > 0.1:
+                name = k.replace("_pts", "")
+                wt_deviations.append(f"{name}={v:.2f}")
+    wt_str = (", ".join(wt_deviations)
+              if wt_deviations else "all 1.0x (default)")
+
+    msg1 = (
+        f"\U0001f9e0 TRADING STRATEGY v{BOT_VERSION}\n"
+        f"{'\u2500'*32}\n"
+        f"\n"
+        f"\U0001f3af SIGNAL ENGINE (12 components)\n"
+        f"Max score: 158 pts\n"
+        f" 1. RSI Momentum      0-20 pts\n"
+        f" 2. Bollinger Band    0-15 pts\n"
+        f" 3. MACD Crossover    0-15 pts\n"
+        f" 4. Volume Confirm    0-15 pts\n"
+        f" 5. Squeeze Score     0-10 pts\n"
+        f" 6. Price Slope       0-10 pts\n"
+        f" 7. AI Direction      0-15 pts\n"
+        f" 8. AI Watchlist      0-10 pts\n"
+        f" 9. Multi-Day Trend   0-15 pts\n"
+        f"10. News Sentiment    0-15 pts\n"
+        f"11. AVWAP             -5 to +10\n"
+        f"12. Time-of-Day       -8 to +8\n"
+        f"    S/R modifier      \u00b15 pts\n"
+        f"Signal weights: {wt_str}\n"
+    )
+
+    msg2 = (
+        f"\n\U0001f6a8 ENTRY GATES (all must pass)\n"
+        f"{'\u2500'*32}\n"
+        f" 1. Score \u2265 adaptive threshold\n"
+        f"    Current: {thresh}\n"
+        f" 2. RSI < 72 (no overbought)\n"
+        f" 3. Max 2 per sector\n"
+        f" 4. Sector ETF momentum\n"
+        f" 5. No earnings within 2 days\n"
+        f" 6. AVWAP reclaimed (reg hrs)\n"
+        f" 7. Cooldown clear\n"
+        f"    Win: {COOLDOWN_HOURS_WIN}h, Loss: {COOLDOWN_HOURS_LOSS}h\n"
+        f"    Active: {n_cool} tickers blocked\n"
+        f" 8. Portfolio heat < {PORTFOLIO_HEAT_LIMIT:.0f}%\n"
+        f"    Current: {heat:.1f}%\n"
+        f" 9. Correlation < 0.7 with 2+\n"
+        f"    held positions\n"
+    )
+
+    msg3 = (
+        f"\n\U0001f4b0 POSITION SIZING (ATR-based)\n"
+        f"{'\u2500'*32}\n"
+        f"Risk budget: 1% of portfolio\n"
+        f"Size = risk / (ATR\u00d72.5 stop)\n"
+        f"Then scaled by:\n"
+        f" \u2022 Signal strength  50-100%\n"
+        f" \u2022 ToD zone: {tod_label} ({tod_mult:.0%})\n"
+        f" \u2022 AI conviction  +15% if \u22658\n"
+        f" \u2022 Regime: {regime_name} (\u00d7{r_params.get('size_multiplier', 1.0):.2f})\n"
+        f"Max per position: {PAPER_MAX_POS_PCT*100:.0f}%\n"
+        f"Max positions: {PAPER_MAX_POSITIONS}\n"
+        f"Fallback: dollar-based if no ATR\n"
+    )
+
+    msg4 = (
+        f"\n\U0001f6d1 EXIT STRATEGY\n"
+        f"{'\u2500'*32}\n"
+        f"ATR-based dynamic stops:\n"
+        f" Hard: entry \u2212 (ATR\u00d72.5)\n"
+        f" Trail: high \u2212 (ATR\u00d7mult)\n"
+        f"   At entry:  3.0\u00d7 ATR\n"
+        f"   At +5%:    2.5\u00d7 ATR\n"
+        f"   At +10%:   2.0\u00d7 ATR\n"
+        f"   At +15%:   1.5\u00d7 ATR\n"
+        f" Regime stop mult: \u00d7{r_params.get('stop_multiplier', 1.0):.2f}\n"
+        f"\n"
+        f"Other exits:\n"
+        f" \u2022 Signal collapse (\u226430, 15m hold)\n"
+        f" \u2022 AVWAP lost (same-day only)\n"
+        f" \u2022 Fallback: {PAPER_STOP_LOSS_PCT*100:.0f}% hard /"
+        f" {PAPER_TRAILING_STOP_PCT*100:.0f}% trail\n"
+    )
+
+    msg5 = (
+        f"\n\U0001f30d MARKET REGIME\n"
+        f"{'\u2500'*32}\n"
+        f"Current: {regime_name.upper()}\n"
+        f"Confidence: {regime_conf:.0%}\n"
+        f"SPY: ${regime_spy}  SMA20: ${regime_sma20}\n"
+        f"SMA50: ${regime_sma50}  VIX: {regime_vix}\n"
+        f"\n"
+        f"Regime effects:\n"
+        f" Threshold: {r_params.get('threshold_adjust', 0):+d}\n"
+        f" Max pos:   {r_params.get('max_positions_adjust', 0):+d}\n"
+        f" Stop mult: \u00d7{r_params.get('stop_multiplier', 1.0):.2f}\n"
+        f" Size mult: \u00d7{r_params.get('size_multiplier', 1.0):.2f}\n"
+        f"\n"
+        f"Regimes: trending_up (-5 thresh,\n"
+        f" +2 pos, \u00d71.1 size) | trending_down\n"
+        f" (+10, -3 pos, \u00d70.7) | range_bound\n"
+        f" (+5, \u00d70.85) | crisis (+15, -5 pos,\n"
+        f" \u00d70.5 size, \u00d70.6 stops)\n"
+    )
+
+    msg6 = (
+        f"\n\U0001f6e1 RISK MANAGEMENT\n"
+        f"{'\u2500'*32}\n"
+        f"Portfolio heat: {heat:.1f}% / {PORTFOLIO_HEAT_LIMIT:.0f}% max\n"
+        f"  (total risk if all stops hit)\n"
+        f"Positions: {n_pos}/{PAPER_MAX_POSITIONS}\n"
+        f"Sector guard: max 2 per sector\n"
+        f"Correlation: block if 2+ held\n"
+        f"  positions corr > 0.7\n"
+        f"Cooldowns: {n_cool} active\n"
+        f"  Win sell: {COOLDOWN_HOURS_WIN}h block\n"
+        f"  Loss sell: {COOLDOWN_HOURS_LOSS}h block\n"
+        f"Max actions: {PAPER_MAX_ACTIONS}/ticker/day\n"
+        f"\n"
+        f"\U0001f4c8 ADAPTIVE CONFIG\n"
+        f"{'\u2500'*32}\n"
+        f"F&G: {fg_str}\n"
+        f"VIX: {regime_vix}\n"
+        f"Threshold: {thresh} (floor 60, cap 90)\n"
+        f"Adjusts: threshold, SL, trail,\n"
+        f"  max positions every 5 min\n"
+    )
+
+    msg7 = (
+        f"\n\U0001f4e1 EXECUTION\n"
+        f"{'\u2500'*32}\n"
+        f"Order type: LIMIT only\n"
+        f"Buy buffer:  +{LIMIT_ORDER_BUY_BUFFER*100:.1f}%\n"
+        f"Sell buffer: -{LIMIT_ORDER_SELL_BUFFER*100:.1f}%\n"
+        f"Min price: ${MIN_PRICE:.0f}\n"
+        f"\n"
+        f"\u23f0 SCHEDULE\n"
+        f"{'\u2500'*32}\n"
+        f"Scanner: every ~60s during market\n"
+        f"7am AI prep | 8am dashboard\n"
+        f"8:30 open | 10:30/12:30/2:30 AI\n"
+        f"3pm close | 6pm recap\n"
+        f"Sat 9am weekly | Sun 6pm prep\n"
+    )
+
+    full_msg = msg1 + msg2 + msg3 + msg4 + msg5 + msg6 + msg7
+    # send_telegram handles splitting if > 4096 chars
+    cid = update.effective_chat.id
+    send_telegram(full_msg, chat_id=str(cid))
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(BOT_DESCRIPTION)
 
@@ -9323,6 +9496,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("monitoring",  cmd_monitoring))
     app.add_handler(CommandHandler("help",        cmd_help))
     app.add_handler(CommandHandler("version",     cmd_version))
+    app.add_handler(CommandHandler("strategy",    cmd_strategy))
 
     # ── Paper Trading ─────────────────────────────────────────
     app.add_handler(CommandHandler("paper",       cmd_paper))
