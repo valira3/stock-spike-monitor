@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.5"
+BOT_VERSION = "2.7.6"
 RELEASE_NOTES = [
+    "2.7.6 — Fix asymmetric P&L: threshold floor 70 (was 60), signal-collapse ≤20 with 1% min profit gate.",
     "2.7.5 — Risk appetite 5% per trade (was 1%), portfolio heat limit 30% (was 6%).",
     "2.7.4 — Falling-knife guard: block buys on stocks that surged 15%+ in 5d and are now declining.",
     "2.7.3 — Speculative buys ($1-5 viral/volume stocks, 5% cap, max 2), hold duration on all SELL messages.",
@@ -2918,12 +2919,12 @@ def _apply_adaptive_config() -> int:
     elif fg <= 40:  threshold -= 5
     if vix >= 30:   threshold += 5
     elif vix <= 15: threshold -= 3
-    threshold = max(60, min(85, threshold))  # Floor=60: don't let fear loosen too much
+    threshold = max(70, min(85, threshold))  # v2.7.6: floor 70 (was 60) — stop marginal entries in fear
 
     # v2.7.0: Multi-regime adjustment
     regime = _classify_market_regime()
     regime_adj = regime["params"].get("threshold_adjust", 0)
-    threshold = max(60, min(90, threshold + regime_adj))
+    threshold = max(70, min(90, threshold + regime_adj))  # v2.7.6: floor 70 here too
 
     # ── Take Profit (legacy — graduated trail replaces)
     # No longer adjusts TP; kept for backcompat config.
@@ -4049,15 +4050,21 @@ def paper_evaluate_ticker(ticker: str):
 
         if not should_sell:
             sig = compute_paper_signal(ticker)
-            if sig["score"] <= 30 and pnl_pct > 0:
-                # Minimum 30-min hold before signal-collapse exit
+            # v2.7.6: Signal-collapse exit — tighter threshold (≤20 vs ≤30)
+            # and require at least +1% profit to exit on collapse.
+            # If score is low but P&L < 1%, keep holding — stops protect downside.
+            # This prevents exiting winners too early on signal noise.
+            _sc_score_thresh = 20
+            _sc_min_profit = 0.01  # 1% minimum profit to trigger collapse exit
+            if sig["score"] <= _sc_score_thresh and pnl_pct >= _sc_min_profit:
+                # Minimum hold before signal-collapse exit
                 entry_dt_str = f"{pos.get('entry_date', '')} {pos.get('entry_time', '00:00:00')}"
                 try:
                     entry_dt = datetime.strptime(entry_dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
                     hold_minutes = (datetime.now(CT) - entry_dt).total_seconds() / 60
                 except Exception:
-                    hold_minutes = 999  # fail-open: allow sell if parse fails
-                if hold_minutes >= PAPER_MIN_HOLD_MINUTES:  # v2.7.2: was 15
+                    hold_minutes = 999
+                if hold_minutes >= PAPER_MIN_HOLD_MINUTES:
                     should_sell = True
                     sell_reason = f"SIGNAL-COLLAPSE score={sig['score']:.0f} pnl={pnl_pct*100:+.1f}% held={hold_minutes:.0f}m"
 
@@ -6258,7 +6265,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f" Regime stop mult: \u00d7{r_params.get('stop_multiplier', 1.0):.2f}\n"
         f"\n"
         f"Other exits:\n"
-        f" \u2022 Signal collapse (\u226430, 30m hold)\n"
+        f" \u2022 Signal collapse (\u226420, +1% min, 30m)\n"
         f" \u2022 AVWAP lost (same-day only)\n"
         f" \u2022 Fallback: {PAPER_STOP_LOSS_PCT*100:.0f}% hard /"
         f" {PAPER_TRAILING_STOP_PCT*100:.0f}% trail\n"
@@ -6306,7 +6313,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{SEP}\n"
         f"F&G: {fg_str}\n"
         f"VIX: {regime_vix}\n"
-        f"Threshold: {thresh} (floor 60, cap 90)\n"
+        f"Threshold: {thresh} (floor 70, cap 90)\n"
         f"Adjusts: threshold, SL, trail,\n"
         f"  max positions every 5 min\n"
     )
@@ -8582,7 +8589,7 @@ def _run_replay_backtest(entries, tp, sl, trail, threshold, max_pos):
                 # Skip same-day entries (min hold ~1 day in backtester)
                 if ticker in ticker_signals and pos.get("entry_date") != date_str:
                     sig_score = ticker_signals[ticker].get("composite_score", 50)
-                    if sig_score <= 30 and pnl_pct > 0:
+                    if sig_score <= 20 and pnl_pct >= 0.01:  # v2.7.6: match live params
                         sell_reason = f"SIGNAL-COLLAPSE score={sig_score:.0f}"
 
             # Check AVWAP stop for same-day entries
