@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.6"
+BOT_VERSION = "2.7.7"
 RELEASE_NOTES = [
+    "2.7.7 — Regime-aware pause (F&G<20), wider ATR stops (4.0/3.5/3.0/2.5), hard stop ATR×3.0, signal-collapse 2% min, position caps by F&G.",
     "2.7.6 — Fix asymmetric P&L: threshold floor 70 (was 60), signal-collapse ≤20 with 1% min profit gate.",
     "2.7.5 — Risk appetite 5% per trade (was 1%), portfolio heat limit 30% (was 6%).",
     "2.7.4 — Falling-knife guard: block buys on stocks that surged 15%+ in 5d and are now declining.",
@@ -3172,7 +3173,7 @@ def _calculate_portfolio_heat() -> float:
             continue
         atr = pos.get("atr_at_entry")
         if atr and atr > 0:
-            stop_distance = atr * 2.5
+            stop_distance = atr * 3.0  # v2.7.7: match widened hard stop
             risk_per_share = min(stop_distance, entry * 0.06)  # cap at 6%
         else:
             risk_per_share = entry * PAPER_STOP_LOSS_PCT
@@ -3890,7 +3891,7 @@ def _paper_position_size(ticker: str, signal_score: float) -> int:
     if atr and atr > 0:
         # v2.7.5: Risk budget: 5% of portfolio per trade (was 1%)
         risk_per_trade = portfolio_val * 0.05
-        stop_distance = atr * 2.5
+        stop_distance = atr * 3.0  # v2.7.7: match widened hard stop
         # Position size = risk / stop distance
         ideal_shares = risk_per_trade / stop_distance
         dollars = ideal_shares * price
@@ -3971,20 +3972,20 @@ def paper_evaluate_ticker(ticker: str):
         # v2.7.0: ATR-based dynamic stops (Rec #1)
         atr_entry = pos.get("atr_at_entry")
         if atr_entry and atr_entry > 0:
-            # ATR-based hard stop
-            atr_hard_stop = cost - (atr_entry * 2.5)
+            # ATR-based hard stop — v2.7.7: widened to ATR×3.0 (was 2.5)
+            atr_hard_stop = cost - (atr_entry * 3.0)
 
             # Dynamic trailing: multiplier tightens with profit
-            # v2.7.2: Wider trails to reduce churn, give trades room
+            # v2.7.7: Wider trails for better win ratio (was 3.5/3.0/2.5/2.0)
             profit_pct_raw = pnl_pct * 100
-            if profit_pct_raw >= 15:
-                atr_mult = 2.0
-            elif profit_pct_raw >= 10:
+            if profit_pct_raw >= 10:
                 atr_mult = 2.5
-            elif profit_pct_raw >= 5:
+            elif profit_pct_raw >= 6:
                 atr_mult = 3.0
-            else:
+            elif profit_pct_raw >= 3:
                 atr_mult = 3.5
+            else:
+                atr_mult = 4.0
 
             # Apply regime stop multiplier
             regime = _classify_market_regime()
@@ -4055,7 +4056,7 @@ def paper_evaluate_ticker(ticker: str):
             # If score is low but P&L < 1%, keep holding — stops protect downside.
             # This prevents exiting winners too early on signal noise.
             _sc_score_thresh = 20
-            _sc_min_profit = 0.01  # 1% minimum profit to trigger collapse exit
+            _sc_min_profit = 0.02  # v2.7.7: 2% minimum profit to trigger collapse exit (was 1%)
             if sig["score"] <= _sc_score_thresh and pnl_pct >= _sc_min_profit:
                 # Minimum hold before signal-collapse exit
                 entry_dt_str = f"{pos.get('entry_date', '')} {pos.get('entry_time', '00:00:00')}"
@@ -4237,6 +4238,31 @@ def paper_evaluate_ticker(ticker: str):
         return  # one action per scan cycle per ticker
 
     # ── Check for new buy opportunity ────────────────────────
+
+    # v2.7.7: Regime-aware pause & position cap by F&G
+    _fg_val_raw, _ = get_fear_greed()
+    _fg_int = int(_fg_val_raw) if _fg_val_raw else 50
+    if _fg_int < 20:
+        logger.info(
+            f"REGIME PAUSE: F&G={_fg_int} < 20, "
+            f"skipping entry for {ticker}"
+        )
+        return
+    # v2.7.7: Position cap by regime
+    if _fg_int < 30:
+        _regime_max_pos = 3
+    elif _fg_int <= 50:
+        _regime_max_pos = 5
+    else:
+        _regime_max_pos = 10
+    _n_open = len(paper_positions)
+    if _n_open >= _regime_max_pos:
+        logger.info(
+            f"POSITION CAP: {_n_open}/{_regime_max_pos} "
+            f"positions (F&G={_fg_int}), skipping {ticker}"
+        )
+        return
+
     if len(paper_positions) >= PAPER_MAX_POSITIONS:
         return
     if paper_cash < 200:
@@ -4445,9 +4471,9 @@ def paper_evaluate_ticker(ticker: str):
     # v2.7.0: ATR-based stop levels
     _buy_atr = get_atr(ticker)
     if _buy_atr and _buy_atr > 0:
-        sl_price = price - (_buy_atr * 2.5)
-        trail_price = price - (_buy_atr * 3.5)  # v2.7.2: wider initial trail
-        _stop_label = f"ATR×2.5 (ATR=${_buy_atr:.2f})"
+        sl_price = price - (_buy_atr * 3.0)   # v2.7.7: widened hard stop
+        trail_price = price - (_buy_atr * 4.0)  # v2.7.7: wider initial trail
+        _stop_label = f"ATR×3.0 (ATR=${_buy_atr:.2f})"
     else:
         sl_price = price * (1 - PAPER_STOP_LOSS_PCT)
         trail_price = price * (1 - PAPER_TRAILING_STOP_PCT)
@@ -6241,7 +6267,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\n\U0001f4b0 POSITION SIZING (ATR-based)\n"
         f"{SEP}\n"
         f"Risk budget: 5% of portfolio\n"
-        f"Size = risk / (ATR\u00d72.5 stop)\n"
+        f"Size = risk / (ATR\u00d73.0 stop)\n"
         f"Then scaled by:\n"
         f" \u2022 Signal strength  50-100%\n"
         f" \u2022 ToD zone: {tod_label} ({tod_mult:.0%})\n"
@@ -6256,16 +6282,16 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\n\U0001f6d1 EXIT STRATEGY\n"
         f"{SEP}\n"
         f"ATR-based dynamic stops:\n"
-        f" Hard: entry \u2212 (ATR\u00d72.5)\n"
+        f" Hard: entry \u2212 (ATR\u00d73.0)\n"
         f" Trail: high \u2212 (ATR\u00d7mult)\n"
-        f"   At entry:  3.5\u00d7 ATR\n"
-        f"   At +5%:    3.0\u00d7 ATR\n"
-        f"   At +10%:   2.5\u00d7 ATR\n"
-        f"   At +15%:   2.0\u00d7 ATR\n"
+        f"   0-3%:   4.0\u00d7 ATR\n"
+        f"   3-6%:   3.5\u00d7 ATR\n"
+        f"   6-10%:  3.0\u00d7 ATR\n"
+        f"   10%+:   2.5\u00d7 ATR\n"
         f" Regime stop mult: \u00d7{r_params.get('stop_multiplier', 1.0):.2f}\n"
         f"\n"
         f"Other exits:\n"
-        f" \u2022 Signal collapse (\u226420, +1% min, 30m)\n"
+        f" \u2022 Signal collapse (\u226420, +2% min, 30m)\n"
         f" \u2022 AVWAP lost (same-day only)\n"
         f" \u2022 Fallback: {PAPER_STOP_LOSS_PCT*100:.0f}% hard /"
         f" {PAPER_TRAILING_STOP_PCT*100:.0f}% trail\n"
@@ -6295,12 +6321,35 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f" \u00d70.5 size, \u00d70.6 stops)\n"
     )
 
+    # v2.7.7: Compute regime position cap for display
+    _strat_fg = int(fg_val) if fg_val else 50
+    if _strat_fg < 20:
+        _strat_cap = 0
+        _strat_cap_label = "PAUSED"
+    elif _strat_fg < 30:
+        _strat_cap = 3
+        _strat_cap_label = str(_strat_cap)
+    elif _strat_fg <= 50:
+        _strat_cap = 5
+        _strat_cap_label = str(_strat_cap)
+    else:
+        _strat_cap = 10
+        _strat_cap_label = str(_strat_cap)
+
     msg6 = (
         f"\n\U0001f6e1 RISK MANAGEMENT\n"
         f"{SEP}\n"
         f"Portfolio heat: {heat:.1f}% / {PORTFOLIO_HEAT_LIMIT:.0f}% max\n"
         f"  (total risk if all stops hit)\n"
-        f"Positions: {n_pos}/{PAPER_MAX_POSITIONS}\n"
+        f"Positions: {n_pos}/{_strat_cap_label}\n"
+        f"\n"
+        f"v2.7.7 Regime position caps:\n"
+        f" F&G < 20:  PAUSED (no entries)\n"
+        f" F&G 20-30: max 3 positions\n"
+        f" F&G 30-50: max 5 positions\n"
+        f" F&G > 50:  max 10 positions\n"
+        f" Current: F&G={_strat_fg} cap={_strat_cap_label}\n"
+        f"\n"
         f"Sector guard: max 2 per sector\n"
         f"Correlation: block if 2+ held\n"
         f"  positions corr > 0.7\n"
@@ -8589,7 +8638,7 @@ def _run_replay_backtest(entries, tp, sl, trail, threshold, max_pos):
                 # Skip same-day entries (min hold ~1 day in backtester)
                 if ticker in ticker_signals and pos.get("entry_date") != date_str:
                     sig_score = ticker_signals[ticker].get("composite_score", 50)
-                    if sig_score <= 20 and pnl_pct >= 0.01:  # v2.7.6: match live params
+                    if sig_score <= 20 and pnl_pct >= 0.02:  # v2.7.7: match live params (2% min profit)
                         sell_reason = f"SIGNAL-COLLAPSE score={sig_score:.0f}"
 
             # Check AVWAP stop for same-day entries
