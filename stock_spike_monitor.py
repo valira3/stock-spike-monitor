@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.7"
+BOT_VERSION = "2.7.8"
 RELEASE_NOTES = [
+    "2.7.8 — Real-time F&G: switched to CNN intraday endpoint (updates every few minutes) with alternative.me fallback.",
     "2.7.7 — Regime-aware pause (F&G<20), wider ATR stops (4.0/3.5/3.0/2.5), hard stop ATR×3.0, signal-collapse 2% min, position caps by F&G.",
     "2.7.6 — Fix asymmetric P&L: threshold floor 70 (was 60), signal-collapse ≤20 with 1% min profit gate.",
     "2.7.5 — Risk appetite 5% per trade (was 1%), portfolio heat limit 30% (was 6%).",
@@ -1059,12 +1060,39 @@ def compute_squeeze_score(ticker: str) -> dict:
 
 
 def get_fear_greed():
+    """Fetch Fear & Greed Index. Primary: CNN real-time (intraday updates).
+    Fallback: alternative.me (daily updates, can lag)."""
+    # Primary: CNN real-time endpoint (updates every few minutes during market hours)
+    try:
+        cnn_headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.cnn.com/markets/fear-and-greed",
+            "Origin": "https://www.cnn.com",
+        }
+        r = requests.get(
+            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+            headers=cnn_headers, timeout=10,
+        )
+        if r.status_code == 200:
+            fg = r.json().get("fear_and_greed", {})
+            score = fg.get("score")
+            rating = fg.get("rating", "")
+            if score is not None:
+                val = int(round(float(score)))
+                label = rating.replace("_", " ").title() if rating else "Unknown"
+                logger.debug("F&G from CNN: %s (%s)", val, label)
+                return val, label
+    except Exception as e:
+        logger.debug("CNN F&G failed, trying fallback: %s", e)
+    # Fallback: alternative.me (updates once daily)
     try:
         r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
-        d = r.json()['data'][0]
-        return d.get('value'), d.get('value_classification')
+        d = r.json()["data"][0]
+        return d.get("value"), d.get("value_classification")
     except Exception as e:
-        logger.debug(f"get_fear_greed: {e}")
+        logger.debug("get_fear_greed fallback failed: %s", e)
         return None, None
 
 def get_sector_performance():
