@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.10"
+BOT_VERSION = "2.7.11"
 RELEASE_NOTES = [
+    "2.7.11 — Fix social buzz: periodic refresh, better error logging, resilient /buzz command.",
     "2.7.10 — /buzz command (Reddit buzz leaderboard), morning cool-off (block first 15min entries).",
     "2.7.9 — Social buzz (Reddit/ApeWisdom), compact mover alerts, fear override for high-conviction viral stocks.",
     "2.7.8 — Real-time F&G: switched to CNN intraday endpoint (updates every few minutes) with alternative.me fallback.",
@@ -1117,12 +1118,12 @@ def get_social_buzz(ticker=None):
     try:
         # Fetch first 2 pages (~200 tickers) - covers all meaningful mentions
         buzz = {}
+        _hdrs = {"User-Agent": "StockSpikeMonitor/2.7"}
         for page in range(1, 3):
-            r = requests.get(
-                f"https://apewisdom.io/api/v1.0/filter/all-stocks/page/{page}",
-                timeout=10
-            )
+            _url = f"https://apewisdom.io/api/v1.0/filter/all-stocks/page/{page}"
+            r = requests.get(_url, timeout=15, headers=_hdrs)
             if r.status_code != 200:
+                logger.warning("ApeWisdom page %d returned %d", page, r.status_code)
                 break
             results = r.json().get("results", [])
             for s in results:
@@ -1144,9 +1145,9 @@ def get_social_buzz(ticker=None):
                 }
         cache["data"] = buzz
         cache["ts"] = now
-        logger.debug("Social buzz updated: %d tickers", len(buzz))
+        logger.info("Social buzz updated: %d tickers", len(buzz))
     except Exception as e:
-        logger.debug("Social buzz fetch failed: %s", e)
+        logger.warning("Social buzz fetch failed: %s", e)
 
     if ticker:
         return cache["data"].get(ticker)
@@ -2015,6 +2016,13 @@ def check_stocks():
     now = datetime.now(CT)
     tickers = list(TICKERS)
     logger.info(f"Scanning {len(tickers)} stocks (batched)...")
+
+    # v2.7.11: Refresh social buzz data early in scan cycle
+    # so it's warm for signal computation and /buzz command
+    try:
+        get_social_buzz()
+    except Exception as e:
+        logger.warning(f"Social buzz pre-fetch failed: {e}")
 
     BATCH = 20
     for i in range(0, len(tickers), BATCH):
@@ -7225,7 +7233,14 @@ async def cmd_buzz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buzz_data = get_social_buzz()
     if not buzz_data:
-        await update.message.reply_text("No social buzz data available.")
+        # Force cache invalidation and retry
+        _social_buzz_cache["ts"] = None
+        buzz_data = get_social_buzz()
+    if not buzz_data:
+        await update.message.reply_text(
+            "Could not fetch Reddit buzz data.\n"
+            "ApeWisdom API may be down."
+        )
         return
 
     # Sort by mentions descending, take top 15
