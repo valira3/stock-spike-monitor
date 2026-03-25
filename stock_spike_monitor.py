@@ -52,7 +52,7 @@ FMP_ENDPOINTS = {
 
 BOT_VERSION = "2.7.11"
 RELEASE_NOTES = [
-    "2.7.11 — Fix social buzz: periodic refresh, better error logging, resilient /buzz command.",
+    "2.7.11 — Viral stock discovery: auto-add Reddit viral stocks to watchlist, fix social buzz (null handling, periodic refresh, resilient /buzz).",
     "2.7.10 — /buzz command (Reddit buzz leaderboard), morning cool-off (block first 15min entries).",
     "2.7.9 — Social buzz (Reddit/ApeWisdom), compact mover alerts, fear override for high-conviction viral stocks.",
     "2.7.8 — Real-time F&G: switched to CNN intraday endpoint (updates every few minutes) with alternative.me fallback.",
@@ -1507,6 +1507,30 @@ def _merge_dynamic_stocks():
         for t in ai_sorted:
             if t not in merged and len(merged) < 80:
                 merged.append(t)
+    # v2.7.11: Add viral Reddit stocks from ApeWisdom
+    try:
+        _buzz_all = get_social_buzz()
+        if _buzz_all:
+            _viral = [
+                (t, d) for t, d in _buzz_all.items()
+                if d["velocity"] >= 100
+                and d["mentions"] >= 15
+                and d["rank"] <= 50
+                and len(t) <= 5  # skip indices/ETF-like tickers
+                and t not in merged
+            ]
+            _viral.sort(key=lambda x: x[1]["mentions"], reverse=True)
+            for t, d in _viral[:5]:  # max 5 viral additions
+                if len(merged) < 80:
+                    merged.append(t)
+                    logger.info(
+                        "Viral watchlist add: %s "
+                        "(mentions=%d, vel=%+.0f%%, rank#%d)",
+                        t, d["mentions"], d["velocity"], d["rank"]
+                    )
+    except Exception as e:
+        logger.warning("Viral watchlist merge failed: %s", e)
+
     # Fill with dynamic/FMP stocks
     for t in dynamic:
         if t not in merged and len(merged) < 80:
@@ -1725,6 +1749,30 @@ def ai_refresh_watchlist(mode="premarket"):
         for t in top_sq:
             if t not in new_tickers and len(new_tickers) < 80:
                 new_tickers.append(t)
+
+    # v2.7.11: Add viral Reddit stocks from ApeWisdom
+    try:
+        _buzz_all = get_social_buzz()
+        if _buzz_all:
+            _viral = [
+                (t, d) for t, d in _buzz_all.items()
+                if d["velocity"] >= 100
+                and d["mentions"] >= 15
+                and d["rank"] <= 50
+                and len(t) <= 5
+                and t not in new_tickers
+            ]
+            _viral.sort(key=lambda x: x[1]["mentions"], reverse=True)
+            for t, d in _viral[:5]:
+                if len(new_tickers) < 80:
+                    new_tickers.append(t)
+                    logger.info(
+                        "Viral watchlist add: %s "
+                        "(mentions=%d, vel=%+.0f%%, rank#%d)",
+                        t, d["mentions"], d["velocity"], d["rank"]
+                    )
+    except Exception as e:
+        logger.warning("Viral watchlist merge failed: %s", e)
 
     # Fill remaining with FMP dynamic stocks
     try:
@@ -6677,7 +6725,19 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"leaderboard from ApeWisdom.\n"
     )
 
-    full_msg = msg1 + msg2 + msg3 + msg4 + msg5 + msg6 + msg7 + msg8 + msg9
+    msg10 = (
+        f"\n\U0001f4e1 v2.7.11 ADDITIONS\n"
+        f"{SEP}\n"
+        f"Viral stock discovery: Stocks going\n"
+        f"viral on Reddit (100%+ mention vel,\n"
+        f"15+ mentions, rank top 50) are auto-\n"
+        f"added to watchlist. Max 5 at a time.\n"
+        f"Scanned every cycle alongside core\n"
+        f"tickers. /buzz shows which are active.\n"
+    )
+
+    full_msg = (msg1 + msg2 + msg3 + msg4 + msg5
+                + msg6 + msg7 + msg8 + msg9 + msg10)
     # send_telegram handles splitting if > 4096 chars
     cid = update.effective_chat.id
     send_telegram(full_msg, chat_id=str(cid))
@@ -7289,12 +7349,36 @@ async def cmd_buzz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if buzzing_ours:
         buzzing_ours.sort(key=lambda x: x[1]["velocity"], reverse=True)
         lines.append("")
-        lines.append("IN OUR WATCHLIST:")
+        lines.append("ON OUR WATCHLIST:")
         for ticker, d in buzzing_ours[:5]:
             bm = d["mentions"]
             bv = d["velocity"]
             lines.append(
                 f"  {ticker}: {bm} mentions"
+                f" ({bv:+.0f}%)"
+            )
+
+    # Show viral stocks auto-added to watchlist
+    _viral_added = [
+        (t, d) for t, d in buzz_data.items()
+        if d["velocity"] >= 100
+        and d["mentions"] >= 15
+        and d["rank"] <= 50
+        and len(t) <= 5
+        and t not in CORE_TICKERS
+        and t in set(TICKERS)
+    ]
+    if _viral_added:
+        _viral_added.sort(
+            key=lambda x: x[1]["mentions"], reverse=True
+        )
+        lines.append("")
+        lines.append("AUTO-ADDED (viral):")
+        for t, d in _viral_added[:5]:
+            bm = d["mentions"]
+            bv = d["velocity"]
+            lines.append(
+                f"  {t}: {bm} mentions"
                 f" ({bv:+.0f}%)"
             )
 
