@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.9"
+BOT_VERSION = "2.7.10"
 RELEASE_NOTES = [
+    "2.7.10 — /buzz command (Reddit buzz leaderboard), morning cool-off (block first 15min entries).",
     "2.7.9 — Social buzz (Reddit/ApeWisdom), compact mover alerts, fear override for high-conviction viral stocks.",
     "2.7.8 — Real-time F&G: switched to CNN intraday endpoint (updates every few minutes) with alternative.me fallback.",
     "2.7.7 — Regime-aware pause (F&G<20), wider ATR stops (4.0/3.5/3.0/2.5), hard stop ATR×3.0, signal-collapse 2% min, position caps by F&G.",
@@ -254,6 +255,7 @@ BOT_DESCRIPTION = (
     " /crypto      BTC ETH SOL DOGE XRP\n"
     " /macro       CPI, Fed, NFP, FOMC\n"
     " /earnings    next 7 days calendar\n"
+    " /buzz        Reddit social buzz leaderboard\n"
     " /dashboard   visual market snapshot\n"
     "\n"
     "STOCKS\n"
@@ -2110,7 +2112,8 @@ PAPER_MIN_HOLD_MINUTES = 30       # v2.7.2: minimum hold before non-hard-stop ex
 # All times in CT (Central Time = ET - 1 hour).
 INTRADAY_ZONES = {
     # (CT start, CT end): (signal_pts, pos_size_mult, label)
-    "power_open":  ("08:30", "09:30", 8, 1.00, "PowerOpen"),
+    "cool_off":    ("08:30", "08:45", -99, 0.00, "CoolOff"),    # v2.7.10: block entries first 15 min
+    "power_open":  ("08:45", "09:30", 5, 0.90, "PowerOpen"),    # v2.7.10: reduced from +8/1.00
     "morning":     ("09:30", "10:30", 3, 0.90, "Morning"),
     "transition1": ("10:30", "11:00", 0, 0.85, "Transition"),
     "lunch":       ("11:00", "13:00",-8, 0.65, "LunchLull"),
@@ -4508,6 +4511,12 @@ def paper_evaluate_ticker(ticker: str):
         logger.debug(f"Skip {ticker}: portfolio heat {heat:.1f}% >= {PORTFOLIO_HEAT_LIMIT}% limit")
         return
 
+    # v2.7.10: Cool-off period — block entries in first 15 min
+    _ct_now = datetime.now(CT).strftime("%H:%M")
+    if "08:30" <= _ct_now < "08:45":
+        logger.info(f"COOL-OFF: blocking {ticker} (first 15min after open)")
+        return
+
     sig = compute_paper_signal(ticker)
     threshold = _apply_adaptive_config()
     if sig["score"] < threshold:
@@ -6649,7 +6658,18 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f" Spike alerts still individual\n"
     )
 
-    full_msg = msg1 + msg2 + msg3 + msg4 + msg5 + msg6 + msg7 + msg8
+    msg9 = (
+        f"\n\U0001f195 v2.7.10 ADDITIONS\n"
+        f"{SEP}\n"
+        f"Morning cool-off: No entries first\n"
+        f"15 min after open (9:30-9:45 ET).\n"
+        f"Avoids opening pop/deflation traps.\n"
+        f"\n"
+        f"/buzz command: Reddit social buzz\n"
+        f"leaderboard from ApeWisdom.\n"
+    )
+
+    full_msg = msg1 + msg2 + msg3 + msg4 + msg5 + msg6 + msg7 + msg8 + msg9
     # send_telegram handles splitting if > 4096 chars
     cid = update.effective_chat.id
     send_telegram(full_msg, chat_id=str(cid))
@@ -7198,6 +7218,73 @@ async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(header + "\n" + ai + footer)
 
 
+
+async def cmd_buzz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show Reddit social buzz leaderboard from ApeWisdom."""
+    await update.message.reply_text("Fetching Reddit buzz...")
+
+    buzz_data = get_social_buzz()
+    if not buzz_data:
+        await update.message.reply_text("No social buzz data available.")
+        return
+
+    # Sort by mentions descending, take top 15
+    sorted_buzz = sorted(
+        buzz_data.items(),
+        key=lambda x: x[1]["mentions"],
+        reverse=True
+    )[:15]
+
+    SEP = "\u2500" * 32
+    lines = [
+        "REDDIT BUZZ (ApeWisdom)",
+        SEP,
+        f"{'#':>2} {'Ticker':<6} {'Ment':>5} {'Vel':>7} {'Rank':>4}",
+        SEP,
+    ]
+
+    for i, (ticker, d) in enumerate(sorted_buzz, 1):
+        vel = d["velocity"]
+        if vel >= 100:
+            flag = " \U0001f525"  # fire emoji for viral
+        elif vel >= 50:
+            flag = " \u2B06"  # up arrow
+        elif vel < -30:
+            flag = " \u2B07"  # down arrow
+        else:
+            flag = ""
+        mention_ct = d["mentions"]
+        rank_val = d["rank"]
+        lines.append(
+            f"{i:>2} {ticker:<6} {mention_ct:>5}"
+            f" {vel:>+6.0f}% #{rank_val:<3}{flag}"
+        )
+
+    lines.append(SEP)
+    lines.append("Vel = 24h mention change %")
+    lines.append("\U0001f525 = viral (100%+)")
+
+    # Show which of our watchlist tickers have buzz
+    our_tickers = set(TICKERS)
+    buzzing_ours = []
+    for ticker, d in buzz_data.items():
+        if ticker in our_tickers and d["velocity"] >= 25 and d["mentions"] >= 5:
+            buzzing_ours.append((ticker, d))
+
+    if buzzing_ours:
+        buzzing_ours.sort(key=lambda x: x[1]["velocity"], reverse=True)
+        lines.append("")
+        lines.append("IN OUR WATCHLIST:")
+        for ticker, d in buzzing_ours[:5]:
+            bm = d["mentions"]
+            bv = d["velocity"]
+            lines.append(
+                f"  {ticker}: {bm} mentions"
+                f" ({bv:+.0f}%)"
+            )
+
+    msg = "\n".join(lines)
+    await update.message.reply_text(msg, parse_mode=None)
 
 async def cmd_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = get_crypto_prices()
@@ -10060,6 +10147,7 @@ def run_telegram_bot():
 
     app.add_handler(CommandHandler("ask",         cmd_ask))
     app.add_handler(CommandHandler("backtest",    cmd_backtest))
+    app.add_handler(CommandHandler("buzz",        cmd_buzz))
 
     # ── Second bot for TP channel (separate token) ───────────
     if not TELEGRAM_TP_TOKEN:
