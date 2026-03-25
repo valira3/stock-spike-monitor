@@ -50,8 +50,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.8"
+BOT_VERSION = "2.7.9"
 RELEASE_NOTES = [
+    "2.7.9 — Social buzz (Reddit/ApeWisdom), compact mover alerts, fear override for high-conviction viral stocks.",
     "2.7.8 — Real-time F&G: switched to CNN intraday endpoint (updates every few minutes) with alternative.me fallback.",
     "2.7.7 — Regime-aware pause (F&G<20), wider ATR stops (4.0/3.5/3.0/2.5), hard stop ATR×3.0, signal-collapse 2% min, position caps by F&G.",
     "2.7.6 — Fix asymmetric P&L: threshold floor 70 (was 60), signal-collapse ≤20 with 1% min profit gate.",
@@ -325,6 +326,7 @@ last_alert_pct      = {}   # {ticker: last_pct_change_alerted} for smart spike s
 _startup_time       = datetime.now(CT)  # grace period: skip spike alerts for 300s after startup
 price_history       = {t: deque(maxlen=60) for t in CORE_TICKERS}  # 60 ticks for RSI(14)
 recent_alerts       = []
+_pending_mover_alerts = []  # v2.7.9: batch day-change mover alerts
 custom_price_alerts = {}   # {ticker: [target_prices]}
 user_watchlists     = {}   # {chat_id: [tickers]}
 conversation_history= {}   # {chat_id: [messages]} for multi-turn Q&A
@@ -1094,6 +1096,59 @@ def get_fear_greed():
     except Exception as e:
         logger.debug("get_fear_greed fallback failed: %s", e)
         return None, None
+
+# Cache for social buzz data (refresh every 5 minutes)
+_social_buzz_cache = {"data": {}, "ts": None}
+
+def get_social_buzz(ticker=None):
+    """Fetch Reddit social buzz data from ApeWisdom.
+    Returns dict mapping ticker -> {mentions, mentions_24h_ago, velocity, rank}.
+    If ticker provided, returns that ticker's data or None.
+    Caches for 5 minutes."""
+    now = datetime.now(CT)
+    cache = _social_buzz_cache
+    if cache["ts"] and (now - cache["ts"]).total_seconds() < 300:
+        if ticker:
+            return cache["data"].get(ticker)
+        return cache["data"]
+
+    try:
+        # Fetch first 2 pages (~200 tickers) - covers all meaningful mentions
+        buzz = {}
+        for page in range(1, 3):
+            r = requests.get(
+                f"https://apewisdom.io/api/v1.0/filter/all-stocks/page/{page}",
+                timeout=10
+            )
+            if r.status_code != 200:
+                break
+            results = r.json().get("results", [])
+            for s in results:
+                t = s.get("ticker", "")
+                m = s.get("mentions", 0)
+                m24 = s.get("mentions_24h_ago", 0)
+                if m24 > 0:
+                    velocity = ((m - m24) / m24) * 100
+                elif m > 0:
+                    velocity = 999
+                else:
+                    velocity = 0
+                buzz[t] = {
+                    "mentions": m,
+                    "mentions_24h_ago": m24,
+                    "velocity": round(velocity, 1),
+                    "rank": s.get("rank", 999),
+                    "upvotes": s.get("upvotes", 0),
+                }
+        cache["data"] = buzz
+        cache["ts"] = now
+        logger.debug("Social buzz updated: %d tickers", len(buzz))
+    except Exception as e:
+        logger.debug("Social buzz fetch failed: %s", e)
+
+    if ticker:
+        return cache["data"].get(ticker)
+    return cache["data"]
 
 def get_sector_performance():
     sectors = {
@@ -1896,10 +1951,60 @@ def _scan_ticker(ticker: str, now: datetime):
                         avg_vol = (cached_m.get("10DayAverageTradingVolume") or 0) * 1_000_000
                         if avg_vol > 0:
                             vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
-                send_alert(ticker, day_change * 100, day_c, vol_spike, alert_type="day")
+                # v2.7.9: batch day-change movers instead of individual alerts
+                _pending_mover_alerts.append({
+                    "ticker": ticker,
+                    "pct": day_change * 100,
+                    "price": day_c,
+                    "vol_spike": vol_spike,
+                })
                 last_alert_pct[day_alert_key] = day_change * 100
 
     last_prices[ticker] = c
+
+
+def _flush_mover_alerts():
+    """Send batched mover alerts as compact messages."""
+    alerts = list(_pending_mover_alerts)
+    if not alerts:
+        return
+
+    if len(alerts) == 1:
+        # Single alert: use existing format but shorter
+        a = alerts[0]
+        vol_tag = " Vol" if a["vol_spike"] else ""
+        message = (
+            f"MOVER: {a['ticker']} {a['pct']:+.1f}%"
+            f" (${a['price']:.2f}){vol_tag}"
+        )
+        send_telegram(message)
+    else:
+        # Multiple alerts: compact table
+        # Sort by absolute change descending
+        alerts.sort(key=lambda x: abs(x["pct"]), reverse=True)
+        header = f"MOVERS ({len(alerts)} stocks):"
+        lines = [header]
+        for a in alerts[:10]:  # cap at 10 in one message
+            vol_tag = " V" if a["vol_spike"] else ""
+            lines.append(
+                f"  {a['ticker']:>6} {a['pct']:+6.1f}%"
+                f" ${a['price']:>8.2f}{vol_tag}"
+            )
+        if len(alerts) > 10:
+            remaining = len(alerts) - 10
+            lines.append(f"  ... +{remaining} more")
+        message = "\n".join(lines)
+        send_telegram(message)
+
+    # Update recent_alerts for all
+    for a in alerts:
+        ts_str = datetime.now(CT).strftime('%H:%M')
+        recent_alerts.append(
+            f"{a['ticker']} {a['pct']:+.1f}% day at {ts_str}"
+        )
+
+    global daily_alerts
+    daily_alerts += len(alerts)
 
 
 def check_stocks():
@@ -1922,6 +2027,14 @@ def check_stocks():
                     logger.error(f"Scan error for {t}: {e}")
         if i + BATCH < len(tickers):
             time.sleep(2)  # Let rate limiter replenish between batches
+
+    # v2.7.9: Flush batched mover alerts as compact message
+    if _pending_mover_alerts:
+        try:
+            _flush_mover_alerts()
+        except Exception as e:
+            logger.error(f"_flush_mover_alerts error: {e}")
+        _pending_mover_alerts.clear()
 
     # Paper trading evaluation runs after every scan cycle
     try:
@@ -3519,10 +3632,10 @@ def _check_correlation(new_ticker: str, threshold: float = 0.7) -> tuple:
 
 def compute_paper_signal(ticker: str) -> dict:
     """
-    Composite signal engine (12 components, max 158 pts).
+    Composite signal engine (13 components, max 168 pts).
     Components: RSI(20) + BB(15) + MACD(15) + Volume(15) + Squeeze(10) +
     Slope(10) + AI Direction(15) + AI Watchlist(10) + Multi-Day Trend(15) +
-    News Sentiment(15) + AVWAP(10) + Time-of-Day(±8).
+    News Sentiment(15) + AVWAP(10) + Time-of-Day(±8) + Social Buzz(10).
     S/R modifier: ±5 pts.
     AVWAP can also go -5 if price is below VWAP (overhead supply penalty).
     ToD boosts power hours (open/close), penalizes lunch lull.
@@ -3830,8 +3943,46 @@ def compute_paper_signal(ticker: str) -> dict:
     comps["tod_pts"] = tod_pts
     comps["tod_size_mult"] = tod_mult
 
+    # ── 13. Social Buzz / Reddit Mentions (10 pts) ──────────
+    # Measures Reddit mention velocity (growth rate) from ApeWisdom.
+    # High velocity = stock going viral = momentum indicator.
+    try:
+        buzz = get_social_buzz(ticker)
+        if buzz:
+            velocity = buzz["velocity"]
+            mentions = buzz["mentions"]
+            rank = buzz["rank"]
+            comps["social_mentions"] = mentions
+            comps["social_velocity"] = velocity
+            comps["social_rank"] = rank
+
+            # Score based on velocity AND absolute mentions
+            # Need both: high velocity on 2 mentions is noise
+            if mentions >= 20 and velocity >= 200:
+                buzz_pts = 10  # Viral breakout
+            elif mentions >= 15 and velocity >= 100:
+                buzz_pts = 7   # Strong buzz
+            elif mentions >= 10 and velocity >= 50:
+                buzz_pts = 5   # Notable interest
+            elif mentions >= 5 and velocity >= 25:
+                buzz_pts = 3   # Mild buzz
+            else:
+                buzz_pts = 0   # Normal/no buzz
+
+            # Declining mentions = fading interest (warning)
+            if velocity < -30 and mentions >= 10:
+                buzz_pts = -3  # Fading stock
+
+            score += buzz_pts
+            comps["social_pts"] = buzz_pts
+            if buzz_pts != 0:
+                _vel_str = f"{velocity:+.0f}"
+                detail.append(f"Social={_vel_str}%vel({buzz_pts}pts,rank#{rank})")
+    except Exception as e:
+        logger.debug("Social buzz signal %s: %s", ticker, e)
+
     result = {
-        "score":   round(min(score, 158), 1),   # cap: 150 base + 8 ToD
+        "score":   round(min(score, 168), 1),   # cap: 160 base + 8 ToD
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -3886,6 +4037,10 @@ def compute_paper_signal(ticker: str) -> dict:
             "tod_zone": comps.get("tod_zone"),
             "tod_pts": comps.get("tod_pts"),
             "tod_size_mult": comps.get("tod_size_mult"),
+            "social_mentions": comps.get("social_mentions"),
+            "social_velocity": comps.get("social_velocity"),
+            "social_rank": comps.get("social_rank"),
+            "social_pts": comps.get("social_pts"),
             "daily_ohlcv": {
                 "open": _daily_today.get("open"),
                 "high": _daily_today.get("high"),
@@ -4001,7 +4156,9 @@ def paper_evaluate_ticker(ticker: str):
         atr_entry = pos.get("atr_at_entry")
         if atr_entry and atr_entry > 0:
             # ATR-based hard stop — v2.7.7: widened to ATR×3.0 (was 2.5)
-            atr_hard_stop = cost - (atr_entry * 3.0)
+            # v2.7.9: tighter ATR×2.0 for fear override positions
+            _hard_stop_mult = 2.0 if pos.get("fear_override", False) else 3.0
+            atr_hard_stop = cost - (atr_entry * _hard_stop_mult)
 
             # Dynamic trailing: multiplier tightens with profit
             # v2.7.7: Wider trails for better win ratio (was 3.5/3.0/2.5/2.0)
@@ -4270,12 +4427,55 @@ def paper_evaluate_ticker(ticker: str):
     # v2.7.7: Regime-aware pause & position cap by F&G
     _fg_val_raw, _ = get_fear_greed()
     _fg_int = int(_fg_val_raw) if _fg_val_raw else 50
+    _fear_override_active = False  # v2.7.9: track fear override for this entry
     if _fg_int < 20:
-        logger.info(
-            f"REGIME PAUSE: F&G={_fg_int} < 20, "
-            f"skipping entry for {ticker}"
-        )
-        return
+        # v2.7.9: Check for fear override — high-conviction entries allowed
+        # even in extreme fear if signal is very strong + social buzz/catalyst
+        _override = False
+        _override_reason = ""
+        _sig_early = compute_paper_signal(ticker)
+        if _sig_early["score"] >= 85:
+            _buzz = get_social_buzz(ticker)
+            _has_buzz = (
+                _buzz is not None
+                and _buzz.get("velocity", 0) >= 100
+                and _buzz.get("mentions", 0) >= 15
+            )
+            _has_catalyst = _sig_early.get("comps", {}).get("news_pts", 0) >= 10
+            if _has_buzz:
+                _bv = _buzz["velocity"]
+                _br = _buzz["rank"]
+                _override = True
+                _override_reason = f"viral Reddit buzz (vel={_bv:+.0f}%, rank#{_br})"
+            elif _has_catalyst:
+                _np = _sig_early["comps"].get("news_pts", 0)
+                _override = True
+                _override_reason = f"strong news catalyst (news={_np}pts)"
+
+        if _override:
+            # Check max 1 fear override position at a time
+            _fear_override_count = sum(
+                1 for pos in paper_positions.values()
+                if pos.get("fear_override", False)
+            )
+            if _fear_override_count >= 1:
+                logger.info(
+                    f"FEAR OVERRIDE CAP: already have 1 fear-override "
+                    f"position, skipping {ticker}"
+                )
+                return
+            logger.info(
+                f"FEAR OVERRIDE: F&G={_fg_int}, allowing {ticker} "
+                f"(score={_sig_early['score']}, reason={_override_reason})"
+            )
+            _fear_override_active = True
+            # Continue to entry logic with reduced position size (applied below)
+        else:
+            logger.info(
+                f"REGIME PAUSE: F&G={_fg_int} < 20, "
+                f"skipping entry for {ticker}"
+            )
+            return
     # v2.7.7: Position cap by regime
     if _fg_int < 30:
         _regime_max_pos = 3
@@ -4428,6 +4628,11 @@ def paper_evaluate_ticker(ticker: str):
     if shares <= 0:
         return
 
+    # v2.7.9: Fear override — half position size
+    if _fear_override_active:
+        shares = max(1, shares // 2)
+        logger.info(f"Fear override half-size: {ticker} {shares} shares")
+
     # v2.7.3: Cap speculative position size at SPEC_MAX_POS_PCT
     cost         = shares * price
     if is_speculative:
@@ -4447,6 +4652,7 @@ def paper_evaluate_ticker(ticker: str):
         "high":       price,
         "atr_at_entry": _entry_atr,
         "speculative": is_speculative,
+        "fear_override": _fear_override_active,  # v2.7.9
     }
     paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
 
@@ -4486,7 +4692,7 @@ def paper_evaluate_ticker(ticker: str):
     _spec_log = " [SPEC]" if is_speculative else ""
     msg = (
         f"BUY{_spec_log} | {ticker} | {shares} shares @ ${price:.2f} | "
-        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/150 | "
+        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/168 | "
         f"Detail: {sig['detail']}{_catalyst_str} | "
         f"Portfolio: ${paper_portfolio_value():,.0f}"
     )
@@ -4499,9 +4705,12 @@ def paper_evaluate_ticker(ticker: str):
     # v2.7.0: ATR-based stop levels
     _buy_atr = get_atr(ticker)
     if _buy_atr and _buy_atr > 0:
-        sl_price = price - (_buy_atr * 3.0)   # v2.7.7: widened hard stop
+        # v2.7.9: tighter hard stop for fear override entries
+        _hard_mult = 2.0 if _fear_override_active else 3.0
+        sl_price = price - (_buy_atr * _hard_mult)
         trail_price = price - (_buy_atr * 4.0)  # v2.7.7: wider initial trail
-        _stop_label = f"ATR×3.0 (ATR=${_buy_atr:.2f})"
+        _mult_label = f"{_hard_mult:.1f}"
+        _stop_label = f"ATR x{_mult_label} (ATR=${_buy_atr:.2f})"
     else:
         sl_price = price * (1 - PAPER_STOP_LOSS_PCT)
         trail_price = price * (1 - PAPER_TRAILING_STOP_PCT)
@@ -4535,6 +4744,13 @@ def paper_evaluate_ticker(ticker: str):
             f" size {_tm:.0%})"
         )
 
+    # Social buzz line for buy notification
+    if c.get("social_pts") is not None and c.get("social_pts", 0) != 0:
+        _sv = c.get("social_velocity", 0)
+        _sr = c.get("social_rank", "?")
+        _sp = c["social_pts"]
+        sig_lines.append(f"Reddit {_sv:+.0f}% buzz ({_sp}pts, rank#{_sr})")
+
     # News catalyst line for buy notification
     news_catalyst_line = ""
     if c.get("news_catalyst"):
@@ -4565,7 +4781,7 @@ def paper_evaluate_ticker(ticker: str):
         f"Trail:     ${trail_price:.2f} (tightens)\n"
         + (f"AVWAP Stop: ${c.get('avwap', 0):.2f} (exit if lost)\n" if c.get('avwap') else "")
         + f"{'─'*28}\n"
-        f"Signal:    {sig['score']:.0f}/158 (thresh={threshold})\n"
+        f"Signal:    {sig['score']:.0f}/168 (thresh={threshold})\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
         + news_catalyst_line
@@ -4605,7 +4821,7 @@ def paper_evaluate_ticker(ticker: str):
                     f"LIMIT BUY{_spec_tp} {ticker} "
                     f"{_shares} shares @ ${_lp:.2f}"
                     f" (${cost:,.0f})\n"
-                    f"  Signal: {sig['score']:.0f}/158"
+                    f"  Signal: {sig['score']:.0f}/168"
                     f"{_tod_str}"
                 )
             else:
@@ -6250,8 +6466,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\U0001f9e0 TRADING STRATEGY v{BOT_VERSION}\n"
         f"{SEP}\n"
         f"\n"
-        f"\U0001f3af SIGNAL ENGINE (12 components)\n"
-        f"Max score: 158 pts\n"
+        f"\U0001f3af SIGNAL ENGINE (13 components)\n"
+        f"Max score: 168 pts\n"
         f" 1. RSI Mean-Revert   0-20 pts\n"
         f" 2. BB Mean-Revert    0-15 pts\n"
         f" 3. MACD Crossover    0-15 pts\n"
@@ -6264,6 +6480,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"10. News Sentiment    0-15 pts\n"
         f"11. AVWAP             -5 to +10\n"
         f"12. Time-of-Day       -8 to +8\n"
+        f"13. Social Buzz       0-10 pts\n"
+        f"    Reddit mention velocity (ApeWisdom)\n"
         f"    S/R modifier      \u00b15 pts\n"
         f"Signal weights: {wt_str}\n"
     )
@@ -6372,7 +6590,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Positions: {n_pos}/{_strat_cap_label}\n"
         f"\n"
         f"v2.7.7 Regime position caps:\n"
-        f" F&G < 20:  PAUSED (no entries)\n"
+        f" F&G < 20:  PAUSED (fear override*)\n"
         f" F&G 20-30: max 3 positions\n"
         f" F&G 30-50: max 5 positions\n"
         f" F&G > 50:  max 10 positions\n"
@@ -6415,7 +6633,23 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Sat 9am weekly | Sun 6pm prep\n"
     )
 
-    full_msg = msg1 + msg2 + msg3 + msg4 + msg5 + msg6 + msg7
+    msg8 = (
+        f"\n\U0001f525 v2.7.9 ADDITIONS\n"
+        f"{SEP}\n"
+        f"Fear Override:\n"
+        f" Entries in F&G<20 IF signal>=85\n"
+        f" + viral Reddit buzz (vel>=100%,\n"
+        f"   mentions>=15) OR news>=10pts\n"
+        f" Half position, ATR x2.0 stop\n"
+        f" Max 1 fear-override at a time\n"
+        f"\n"
+        f"Compact Alerts:\n"
+        f" Mover alerts batched into one\n"
+        f" message when multiple trigger\n"
+        f" Spike alerts still individual\n"
+    )
+
+    full_msg = msg1 + msg2 + msg3 + msg4 + msg5 + msg6 + msg7 + msg8
     # send_telegram handles splitting if > 4096 chars
     cid = update.effective_chat.id
     send_telegram(full_msg, chat_id=str(cid))
