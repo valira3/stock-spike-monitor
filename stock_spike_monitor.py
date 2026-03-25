@@ -1128,8 +1128,8 @@ def get_social_buzz(ticker=None):
             results = r.json().get("results", [])
             for s in results:
                 t = s.get("ticker", "")
-                m = s.get("mentions", 0)
-                m24 = s.get("mentions_24h_ago", 0)
+                m = s.get("mentions") or 0
+                m24 = s.get("mentions_24h_ago") or 0
                 if m24 > 0:
                     velocity = ((m - m24) / m24) * 100
                 elif m > 0:
