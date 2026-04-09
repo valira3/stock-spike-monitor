@@ -2,7 +2,8 @@ import yfinance as yf
 import time
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+import asyncio
+from datetime import datetime, timedelta, timezone
 import pytz
 import logging
 from collections import defaultdict, deque
@@ -50,8 +51,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.12"
+BOT_VERSION = "2.7.13"
 RELEASE_NOTES = [
+    "2.7.13 — /analysis command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /analysis_apply, /analysis_reset.",
     "2.7.12 — Tiered stops: category-matched SL/trail/threshold by volatility tier (semi_ai, mid_small, large_cap, leveraged, etf).",
     "2.7.11 — Viral stock discovery: auto-add Reddit viral stocks to watchlist, fix social buzz (null handling, periodic refresh, resilient /buzz).",
     "2.7.10 — /buzz command (Reddit buzz leaderboard), morning cool-off (block first 15min entries).",
@@ -2211,6 +2213,17 @@ paper_daily_counts  = {}
 paper_all_trades    = []
 paper_signals_cache = {}
 
+# v2.7.13: Closed paper trade history (in-memory)
+paper_trade_history: list = []
+PAPER_HISTORY_MAX = 500  # keep last 500 closed trades
+
+# v2.7.13: Runtime tier parameter overrides (applied immediately, reset on redeploy)
+RUNTIME_TIER_OVERRIDES: dict = {}
+
+# v2.7.13: Last generated recommendations + auto-report flag
+_last_recs: list = []
+_auto_report_sent_today = False
+
 # ── Adaptive threshold cache (Feature #2) ──────────────────
 _adaptive_threshold_cache = {"val": 65, "ts": datetime.min.replace(tzinfo=CT)}
 
@@ -3271,9 +3284,13 @@ def get_ticker_tier(ticker: str) -> str:
     return TICKER_TIER.get(ticker, "default")
 
 def get_tier_params(ticker: str) -> dict:
-    """Return the tier-specific trading parameters for a ticker."""
+    """Return the tier-specific trading parameters for a ticker.
+    v2.7.13: Merges any RUNTIME_TIER_OVERRIDES on top of defaults."""
     tier = get_ticker_tier(ticker)
-    return TIER_PARAMS.get(tier, TIER_PARAMS["default"])
+    params = TIER_PARAMS.get(tier, TIER_PARAMS["default"]).copy()
+    if tier in RUNTIME_TIER_OVERRIDES:
+        params.update(RUNTIME_TIER_OVERRIDES[tier])
+    return params
 
 def _graduated_trail_pct_tiered(pnl_pct: float, ticker: str) -> float:
     """Return the trailing stop % based on profit zone AND ticker tier."""
@@ -3282,6 +3299,440 @@ def _graduated_trail_pct_tiered(pnl_pct: float, ticker: str) -> float:
         if pnl_pct >= threshold:
             return trail
     return params["trail"]  # base trail for low-profit zone
+
+
+# ============================================================
+# v2.7.13: ANALYSIS ENGINE — trade analysis & recommendations
+# ============================================================
+
+def analyze_paper_trades(hours: int = 24) -> dict:
+    """Analyze closed paper trades for the last N hours."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    trades = []
+    for t in paper_trade_history:
+        try:
+            exit_dt = datetime.fromisoformat(t["exit_time"])
+            if exit_dt.tzinfo is None:
+                exit_dt = exit_dt.replace(tzinfo=timezone.utc)
+            if exit_dt >= cutoff:
+                trades.append(t)
+        except Exception:
+            continue
+
+    if not trades:
+        return {"trades": [], "period_hours": hours, "empty": True}
+
+    # --- Overall stats ---
+    total_pnl = sum(t["pnl"] for t in trades)
+    wins = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] <= 0]
+    win_rate = len(wins) / len(trades) * 100 if trades else 0
+    avg_win = (sum(t["pnl"] for t in wins) / len(wins)
+               if wins else 0)
+    avg_loss = (sum(t["pnl"] for t in losses) / len(losses)
+                if losses else 0)
+    loss_sum = sum(t["pnl"] for t in losses)
+    has_real_losses = loss_sum < 0
+    if has_real_losses and wins:
+        profit_factor = abs(sum(t["pnl"] for t in wins) / loss_sum)
+    else:
+        profit_factor = float("inf")
+
+    # Max drawdown (running)
+    running_pnl = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for t in sorted(trades, key=lambda x: x["exit_time"]):
+        running_pnl += t["pnl"]
+        peak = max(peak, running_pnl)
+        dd = peak - running_pnl
+        max_dd = max(max_dd, dd)
+
+    # Avg hold time
+    avg_hold = (sum(t.get("hold_hours", 0) for t in trades)
+                / len(trades)) if trades else 0
+
+    # Best/worst trades
+    best = max(trades, key=lambda x: x["pnl"])
+    worst = min(trades, key=lambda x: x["pnl"])
+
+    # --- Per-tier breakdown ---
+    tier_stats = {}
+    all_tiers = [
+        "semi_ai", "mid_small", "large_cap",
+        "leveraged", "etf", "default",
+    ]
+    for tier in all_tiers:
+        tt = [t for t in trades if t.get("tier") == tier]
+        if not tt:
+            continue
+        tw = [t for t in tt if t["pnl"] > 0]
+        tl = [t for t in tt if t["pnl"] <= 0]
+        tl_sum = sum(t["pnl"] for t in tl)
+        has_tl = tl_sum < 0
+        tier_stats[tier] = {
+            "count": len(tt),
+            "win_rate": len(tw) / len(tt) * 100,
+            "total_pnl": sum(t["pnl"] for t in tt),
+            "avg_win": (sum(t["pnl"] for t in tw) / len(tw)
+                        if tw else 0),
+            "avg_loss": (sum(t["pnl"] for t in tl) / len(tl)
+                         if tl else 0),
+            "profit_factor": (
+                abs(sum(t["pnl"] for t in tw) / tl_sum)
+                if has_tl and tw else float("inf")
+            ),
+        }
+
+    # --- Time-of-day breakdown (CT hours) ---
+    tod_stats = {}
+    for t in trades:
+        h = t.get("entry_hour_ct", -1)
+        if h < 0:
+            continue
+        if h not in tod_stats:
+            tod_stats[h] = {"count": 0, "wins": 0, "pnl": 0.0}
+        tod_stats[h]["count"] += 1
+        tod_stats[h]["pnl"] += t["pnl"]
+        if t["pnl"] > 0:
+            tod_stats[h]["wins"] += 1
+
+    # --- Exit reason breakdown ---
+    exit_reasons = {}
+    for t in trades:
+        r = t.get("exit_reason", "unknown")
+        if r not in exit_reasons:
+            exit_reasons[r] = {"count": 0, "pnl": 0.0}
+        exit_reasons[r]["count"] += 1
+        exit_reasons[r]["pnl"] += t["pnl"]
+
+    return {
+        "trades": trades,
+        "period_hours": hours,
+        "empty": False,
+        "total_pnl": total_pnl,
+        "trade_count": len(trades),
+        "win_rate": win_rate,
+        "wins": len(wins),
+        "losses": len(losses),
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "profit_factor": profit_factor,
+        "max_dd": max_dd,
+        "avg_hold_hours": avg_hold,
+        "best_trade": best,
+        "worst_trade": worst,
+        "tier_stats": tier_stats,
+        "tod_stats": tod_stats,
+        "exit_reasons": exit_reasons,
+    }
+
+
+def _get_spy_change_pct(hours: int):
+    """Get SPY % change for the period. Returns float or None."""
+    try:
+        q = _finnhub_quote("SPY")
+        if q and q.get("c") and q.get("pc"):
+            # Day change as proxy (best we can do w/o candles)
+            return (q["c"] - q["pc"]) / q["pc"] * 100
+    except Exception as e:
+        logger.debug("_get_spy_change_pct error: %s", e)
+    return None
+
+
+def generate_recommendations(analysis: dict) -> list:
+    """Generate tier parameter adjustment recommendations."""
+    recs = []
+    tier_stats = analysis.get("tier_stats", {})
+
+    for tier, ts in tier_stats.items():
+        base = TIER_PARAMS.get(tier, TIER_PARAMS["default"])
+        count = ts["count"]
+        wr = ts["win_rate"]
+        pf = ts["profit_factor"]
+        aw = ts["avg_win"]
+        al = ts["avg_loss"]
+
+        # Low win rate — tighten filters
+        if wr < 30 and count >= 3:
+            cur_tf = base["thresh_floor"]
+            recs.append({
+                "tier": tier,
+                "param": "thresh_floor",
+                "current": cur_tf,
+                "suggested": cur_tf + 5,
+                "delta": "+5",
+                "reason": "Low win rate (%.0f%%) -- filter tighter"
+                    % wr,
+                "impact": "high",
+            })
+            cur_sl = base["sl"]
+            new_sl = round(max(0.02, cur_sl - 0.01), 3)
+            if new_sl != cur_sl:
+                recs.append({
+                    "tier": tier,
+                    "param": "sl",
+                    "current": cur_sl,
+                    "suggested": new_sl,
+                    "delta": "-1%",
+                    "reason": "Low win rate (%.0f%%) -- tighter SL"
+                        % wr,
+                    "impact": "medium",
+                })
+
+        # Profit factor < 1 — losses outweigh wins
+        if pf < 1.0 and al != 0:
+            ratio = abs(al / aw) if aw > 0 else 999
+            if ratio > 2:
+                cur_sl = base["sl"]
+                new_sl = round(max(0.02, cur_sl - 0.01), 3)
+                if new_sl != cur_sl:
+                    recs.append({
+                        "tier": tier,
+                        "param": "sl",
+                        "current": cur_sl,
+                        "suggested": new_sl,
+                        "delta": "-1%",
+                        "reason": "Losses ($%.1f) outweigh wins ($%.1f)"
+                            % (al, aw),
+                        "impact": "high",
+                    })
+
+        # High win rate — reward with looser threshold
+        if wr > 55 and count >= 5:
+            cur_tf = base["thresh_floor"]
+            new_tf = max(50, cur_tf - 3)
+            if new_tf != cur_tf:
+                recs.append({
+                    "tier": tier,
+                    "param": "thresh_floor",
+                    "current": cur_tf,
+                    "suggested": new_tf,
+                    "delta": "-3",
+                    "reason": "High win rate (%.0f%%) -- allow more"
+                        % wr,
+                    "impact": "medium",
+                })
+
+        # Leveraged underperforming
+        if tier == "leveraged" and wr < 25 and count >= 1:
+            cur_rsi = base.get("rsi_max", 45)
+            recs.append({
+                "tier": tier,
+                "param": "rsi_max",
+                "current": cur_rsi,
+                "suggested": max(30, cur_rsi - 5),
+                "delta": "-5",
+                "reason": "Leveraged ETF underperforming -- "
+                    "tighter RSI filter",
+                "impact": "medium",
+            })
+
+    return recs
+
+
+def format_analysis_report(
+    analysis: dict,
+    spy_chg,
+    recs: list,
+    period_label: str,
+) -> list:
+    """Format analysis into a list of Telegram messages.
+    All lines <= 64 chars wide."""
+    msgs = []
+    SEP = "=" * 36
+    THIN = "-" * 36
+
+    # --- Message 1: Summary ---
+    now_ct = datetime.now(CT)
+    ts_str = now_ct.strftime("%b %d %H:%M CT")
+    total = analysis["total_pnl"]
+    tc = analysis["trade_count"]
+    w = analysis["wins"]
+    lo = analysis["losses"]
+    wr = analysis["win_rate"]
+    aw = analysis["avg_win"]
+    al = analysis["avg_loss"]
+    pf = analysis["profit_factor"]
+    mdd = analysis["max_dd"]
+    ah = analysis["avg_hold_hours"]
+
+    pf_str = "%.2f" % pf if pf < 1000 else "inf"
+
+    lines = [
+        SEP,
+        "ANALYSIS REPORT -- Last %s" % period_label,
+        "Generated: %s" % ts_str,
+        SEP,
+        "OVERALL P&L",
+        " Total:      $%+.2f" % total,
+        " Trades:     %d total (%dW / %dL)" % (tc, w, lo),
+        " Win Rate:   %.1f%%" % wr,
+        " Avg Win:    $%+.2f  Avg Loss: $%.2f"
+            % (aw, al),
+        " Prof. Factor: %s" % pf_str,
+        " Max Drawdown: -$%.2f" % mdd,
+        " Avg Hold:   %.1fh" % ah,
+    ]
+    if spy_chg is not None:
+        alpha = total / max(1, tc) - spy_chg if tc else 0
+        lines.append(
+            " vs SPY:     SPY %+.1f%%  Alpha: %+.1f%%"
+            % (spy_chg, alpha)
+        )
+    msgs.append("\n".join(lines))
+
+    # --- Message 2: Tier breakdown ---
+    tier_stats = analysis.get("tier_stats", {})
+    if tier_stats:
+        t_lines = [THIN, "PERFORMANCE BY TIER", THIN]
+        for tier in [
+            "semi_ai", "mid_small", "large_cap",
+            "leveraged", "etf", "default",
+        ]:
+            ts = tier_stats.get(tier)
+            if not ts:
+                continue
+            name = tier[:12].ljust(12)
+            cnt = str(ts["count"]).rjust(3)
+            tw = ("%.0f%%" % ts["win_rate"]).rjust(4)
+            pnl_s = "$%+.0f" % ts["total_pnl"]
+            t_lines.append(
+                " %s %s  %s  %s" % (name, cnt, tw, pnl_s)
+            )
+        msgs.append("\n".join(t_lines))
+
+    # --- Message 3: Time-of-day ---
+    tod = analysis.get("tod_stats", {})
+    if tod:
+        tod_lines = [THIN, "TIME OF DAY (CT)", THIN]
+        # Find best/worst hours
+        best_h = max(tod, key=lambda h: tod[h]["pnl"])
+        worst_h = min(tod, key=lambda h: tod[h]["pnl"])
+        for h in sorted(tod):
+            s = tod[h]
+            twr = (s["wins"] / s["count"] * 100
+                   if s["count"] else 0)
+            bar_len = min(4, max(1, int(twr / 25) + 1))
+            bar_full = "=" * bar_len
+            bar_empty = "-" * (4 - bar_len)
+            bar = bar_full + bar_empty
+            tag = ""
+            if h == best_h:
+                tag = " <- best"
+            elif h == worst_h and tod[h]["pnl"] < 0:
+                tag = " <- avoid"
+            suffix = "trade" if s["count"] == 1 else "trades"
+            tod_lines.append(
+                " %02d:00 %s  %d %s %3.0f%% WR%s"
+                % (h, bar, s["count"], suffix, twr, tag)
+            )
+        msgs.append("\n".join(tod_lines))
+
+    # --- Message 4: Exit reasons ---
+    exits = analysis.get("exit_reasons", {})
+    if exits:
+        e_lines = [THIN, "EXIT REASONS", THIN]
+        for reason, data in sorted(
+            exits.items(), key=lambda x: -x[1]["count"]
+        ):
+            avg_pnl = (data["pnl"] / data["count"]
+                       if data["count"] else 0)
+            label = reason.replace("_", " ").title()
+            e_lines.append(
+                " %-16s %d exits  avg $%+.2f"
+                % (label, data["count"], avg_pnl)
+            )
+        msgs.append("\n".join(e_lines))
+
+    # --- Message 5: Best/worst trades ---
+    best_t = analysis["best_trade"]
+    worst_t = analysis["worst_trade"]
+    bw_lines = [THIN, "BEST TRADE"]
+    bw_lines.append(
+        " %s (%s) $%+.2f (%+.1f%%)"
+        % (best_t["ticker"], best_t.get("tier", "?"),
+           best_t["pnl"], best_t["pnl_pct"])
+    )
+    bw_lines.append(
+        " Score: %d  Exit: %s  Hold: %.1fh"
+        % (best_t.get("entry_score", 0),
+           best_t.get("exit_reason", "?"),
+           best_t.get("hold_hours", 0))
+    )
+    bw_lines.append("")
+    bw_lines.append("WORST TRADE")
+    bw_lines.append(
+        " %s (%s) $%+.2f (%+.1f%%)"
+        % (worst_t["ticker"], worst_t.get("tier", "?"),
+           worst_t["pnl"], worst_t["pnl_pct"])
+    )
+    bw_lines.append(
+        " Score: %d  Exit: %s  Hold: %.1fh"
+        % (worst_t.get("entry_score", 0),
+           worst_t.get("exit_reason", "?"),
+           worst_t.get("hold_hours", 0))
+    )
+    msgs.append("\n".join(bw_lines))
+
+    # --- Message 6: Recommendations ---
+    if recs:
+        r_lines = [SEP, "RECOMMENDATIONS", SEP]
+        # Group by tier
+        seen_tiers = []
+        for rec in recs:
+            t = rec["tier"]
+            if t not in seen_tiers:
+                seen_tiers.append(t)
+        for tier in seen_tiers:
+            tier_recs = [r for r in recs if r["tier"] == tier]
+            t_ts = tier_stats.get(tier, {})
+            t_wr = t_ts.get("win_rate", 0)
+            t_cnt = t_ts.get("count", 0)
+            r_lines.append(
+                " %s tier (%.0f%% WR, %d trades)"
+                % (tier, t_wr, t_cnt)
+            )
+            for r in tier_recs:
+                r_lines.append(
+                    "  %s: %s -> %s"
+                    % (r["param"], r["current"],
+                       r["suggested"])
+                )
+            reason_txt = tier_recs[0]["reason"]
+            r_lines.append("  Reason: %s" % reason_txt)
+            r_lines.append("")
+
+        r_lines.append(
+            "Send /analysis_apply to apply all"
+        )
+        r_lines.append(
+            "Send /analysis_apply <tier> to apply"
+        )
+        r_lines.append(
+            "  only that tier's adjustments"
+        )
+        r_lines.append(
+            "Send /analysis_reset to revert all"
+        )
+
+        # Show current overrides if any
+        if RUNTIME_TIER_OVERRIDES:
+            r_lines.append("")
+            r_lines.append("Active overrides:")
+            for ot, ov in RUNTIME_TIER_OVERRIDES.items():
+                for op, oval in ov.items():
+                    r_lines.append(
+                        "  %s.%s = %s" % (ot, op, oval)
+                    )
+        else:
+            r_lines.append("Current overrides: none")
+
+        msgs.append("\n".join(r_lines))
+
+    return msgs
+
 
 SECTOR_ETF = {
     "Technology": "XLK", "Financials": "XLF", "Energy": "XLE",
@@ -4439,6 +4890,49 @@ def paper_evaluate_ticker(ticker: str):
                 pass
 
             paper_cash += proceeds
+
+            # v2.7.13: Append to closed trade history for /analysis
+            _exit_reason_norm = "unknown"
+            _sr = sell_reason.upper()
+            if "ATR-HARD" in _sr or "HARD-STOP" in _sr:
+                _exit_reason_norm = "hard_stop"
+            elif "ATR-TRAIL" in _sr or "TRAILING" in _sr:
+                _exit_reason_norm = "trailing_stop"
+            elif "SIGNAL" in _sr:
+                _exit_reason_norm = "signal_collapse"
+            elif "AVWAP" in _sr:
+                _exit_reason_norm = "avwap_stop"
+            _hold_hours_val = 0.0
+            try:
+                _hist_entry_dt = datetime.strptime(
+                    pos.get("entry_date", today) + " "
+                    + pos.get("entry_time", "00:00:00"),
+                    "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=CT)
+                _hold_hours_val = (now - _hist_entry_dt).total_seconds() / 3600
+                _entry_hour_ct = _hist_entry_dt.hour
+            except Exception:
+                _hold_hours_val = 0.0
+                _entry_hour_ct = -1
+            paper_trade_history.append({
+                "ticker": ticker,
+                "tier": pos.get("tier", get_ticker_tier(ticker)),
+                "entry_time": pos.get("entry_date", today)
+                    + "T" + pos.get("entry_time", "00:00:00"),
+                "exit_time": now.isoformat(),
+                "entry_price": cost,
+                "exit_price": price,
+                "shares": shares,
+                "pnl": realized_pnl,
+                "pnl_pct": pnl_pct * 100,
+                "exit_reason": _exit_reason_norm,
+                "entry_score": pos.get("entry_score", 0),
+                "hold_hours": round(_hold_hours_val, 2),
+                "entry_hour_ct": _entry_hour_ct,
+            })
+            if len(paper_trade_history) > PAPER_HISTORY_MAX:
+                paper_trade_history[:] = paper_trade_history[-PAPER_HISTORY_MAX:]
+
             del paper_positions[ticker]
             paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
 
@@ -4805,6 +5299,7 @@ def paper_evaluate_ticker(ticker: str):
         "speculative": is_speculative,
         "fear_override": _fear_override_active,  # v2.7.9
         "tier": get_ticker_tier(ticker),  # v2.7.12
+        "entry_score": sig["score"],  # v2.7.13: for analysis
     }
     paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
 
@@ -9644,6 +10139,135 @@ def _generate_replay_report(results, output_path, num_days, param_str,
 
 
 # ============================================================
+# v2.7.13: /analysis COMMAND + AUTO-REPORT
+# ============================================================
+
+async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/analysis [period] — full trade analysis report.
+    Examples: /analysis, /analysis 7d, /analysis 48h"""
+    global _last_recs
+    args = context.args or []
+    hours = 24  # default
+    if args:
+        arg = args[0].lower().strip()
+        if arg.endswith("d"):
+            try:
+                hours = int(arg[:-1]) * 24
+            except ValueError:
+                pass
+        elif arg.endswith("h"):
+            try:
+                hours = int(arg[:-1])
+            except ValueError:
+                pass
+
+    if hours < 48:
+        period_label = "%dh" % hours
+    else:
+        period_label = "%dd" % (hours // 24)
+
+    await update.message.reply_text("Generating analysis...")
+
+    analysis = analyze_paper_trades(hours=hours)
+
+    if analysis.get("empty"):
+        await update.message.reply_text(
+            "No closed trades in the last %s.\n"
+            "Paper trading may not have had any exits yet."
+            % period_label
+        )
+        return
+
+    spy_chg = _get_spy_change_pct(hours)
+    recs = generate_recommendations(analysis)
+    _last_recs = recs
+    messages = format_analysis_report(
+        analysis, spy_chg, recs, period_label
+    )
+
+    for msg in messages:
+        send_telegram(msg)
+        await asyncio.sleep(0.3)
+
+
+async def cmd_analysis_apply(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Apply recommended tier parameter overrides at runtime."""
+    global RUNTIME_TIER_OVERRIDES
+
+    if not _last_recs:
+        await update.message.reply_text(
+            "No pending recommendations. "
+            "Run /analysis first."
+        )
+        return
+
+    target_tier = (
+        context.args[0].lower() if context.args else None
+    )
+    applied = []
+
+    for rec in _last_recs:
+        if target_tier and rec["tier"] != target_tier:
+            continue
+        tier = rec["tier"]
+        param = rec["param"]
+        val = rec["suggested"]
+        if tier not in RUNTIME_TIER_OVERRIDES:
+            RUNTIME_TIER_OVERRIDES[tier] = {}
+        RUNTIME_TIER_OVERRIDES[tier][param] = val
+        applied.append(
+            "%s.%s: %s -> %s"
+            % (tier, param, rec["current"], val)
+        )
+
+    if applied:
+        applied_str = "\n".join("  " + a for a in applied)
+        msg = (
+            "Overrides applied:\n"
+            + applied_str
+            + "\n\nSend /analysis_reset to revert."
+        )
+    else:
+        msg = "No matching recommendations found."
+
+    send_telegram(msg)
+
+
+async def cmd_analysis_reset(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Reset all runtime overrides back to tier defaults."""
+    global RUNTIME_TIER_OVERRIDES
+    RUNTIME_TIER_OVERRIDES = {}
+    send_telegram(
+        "All runtime overrides cleared.\n"
+        "Using default tier parameters."
+    )
+
+
+async def _send_auto_daily_report():
+    """Auto-send daily analysis report at 17:15 CT."""
+    global _last_recs
+    try:
+        analysis = analyze_paper_trades(hours=24)
+        if analysis.get("empty"):
+            return  # Don't send if no trades
+        spy_chg = _get_spy_change_pct(24)
+        recs = generate_recommendations(analysis)
+        _last_recs = recs
+        messages = format_analysis_report(
+            analysis, spy_chg, recs, "1d"
+        )
+        for msg in messages:
+            send_telegram(msg)
+            await asyncio.sleep(0.4)
+    except Exception as e:
+        logger.error("_send_auto_daily_report error: %s", e)
+
+
+# ============================================================
 # SCHEDULED MESSAGES
 # ============================================================
 def send_morning_briefing():
@@ -10148,6 +10772,29 @@ def scanner_thread():
             last_state_save = now_ct
             threading.Thread(target=save_bot_state, daemon=True).start()
 
+        # ── v2.7.13: Auto analysis report at 17:15 CT ──────────
+        global _auto_report_sent_today
+        if (now_ct.weekday() < 5
+                and now_ct.hour == 17
+                and 15 <= now_ct.minute < 16
+                and not _auto_report_sent_today):
+            _auto_report_sent_today = True
+            try:
+                import asyncio as _aio
+                loop = _aio.get_event_loop()
+                if loop.is_running():
+                    _aio.ensure_future(_send_auto_daily_report())
+                else:
+                    loop.run_until_complete(
+                        _send_auto_daily_report()
+                    )
+            except Exception as e:
+                logger.error("Auto daily report error: %s", e)
+
+        # Reset auto-report flag after midnight
+        if now_ct.hour == 0 and now_ct.minute < 1:
+            _auto_report_sent_today = False
+
         time.sleep(30)   # check twice per minute — plenty for minute-precision jobs
 
 
@@ -10359,6 +11006,11 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("ask",         cmd_ask))
     app.add_handler(CommandHandler("backtest",    cmd_backtest))
     app.add_handler(CommandHandler("buzz",        cmd_buzz))
+
+    # ── v2.7.13: Analysis & runtime overrides ──────────────────
+    app.add_handler(CommandHandler("analysis",       cmd_analysis))
+    app.add_handler(CommandHandler("analysis_apply", cmd_analysis_apply))
+    app.add_handler(CommandHandler("analysis_reset", cmd_analysis_reset))
 
     # ── Second bot for TP channel (separate token) ───────────
     if not TELEGRAM_TP_TOKEN:
