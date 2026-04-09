@@ -51,7 +51,7 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.13"
+BOT_VERSION = "2.7.13a"
 RELEASE_NOTES = [
     "2.7.13 — /analysis command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /analysis_apply, /analysis_reset.",
     "2.7.12 — Tiered stops: category-matched SL/trail/threshold by volatility tier (semi_ai, mid_small, large_cap, leveraged, etf).",
@@ -2399,6 +2399,7 @@ def save_paper_state():
         "paper_all_trades":   paper_all_trades,
         "paper_trades_today": paper_trades_today,
         "paper_daily_counts": paper_daily_counts,
+        "paper_trade_history": paper_trade_history,
         "user_config":        user_config,
         "tp_state":           tp_state,
         "saved_at":           datetime.now(CT).isoformat(),
@@ -2423,6 +2424,7 @@ def load_paper_state():
     """
     global paper_cash, paper_positions, paper_all_trades
     global paper_trades_today, paper_daily_counts
+    global paper_trade_history
     global user_config, tp_state, tp_dm_chat_id
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
@@ -2441,6 +2443,52 @@ def load_paper_state():
         paper_cash       = float(state.get("paper_cash", PAPER_STARTING_CAPITAL))
         paper_positions  = state.get("paper_positions", {})
         paper_all_trades = state.get("paper_all_trades", [])
+        paper_trade_history = state.get("paper_trade_history", [])
+
+        # v2.7.13 migration: backfill paper_trade_history from paper_all_trades
+        if not paper_trade_history and paper_all_trades:
+            _sells = [t for t in paper_all_trades if t.get("action") == "SELL"]
+            for _st in _sells[-PAPER_HISTORY_MAX:]:
+                _tk = _st.get("ticker", "")
+                _pnl_val = float(_st.get("pnl", 0))
+                _price_val = float(_st.get("price", 0))
+                _shares_val = int(_st.get("shares", 0))
+                _cost_val = float(_st.get("cost", 0))
+                _pnl_pct_val = float(_st.get("pnl_pct", 0))
+                _reason_raw = str(_st.get("reason", "unknown")).upper()
+                _er = "unknown"
+                if "ATR-HARD" in _reason_raw or "HARD" in _reason_raw:
+                    _er = "hard_stop"
+                elif "TRAIL" in _reason_raw:
+                    _er = "trailing_stop"
+                elif "SIGNAL" in _reason_raw:
+                    _er = "signal_collapse"
+                elif "AVWAP" in _reason_raw:
+                    _er = "avwap_stop"
+                _date_str = _st.get("date", "")
+                _time_str = _st.get("time", "00:00:00")
+                _entry_p = _cost_val / _shares_val if _shares_val else 0
+                paper_trade_history.append({
+                    "ticker": _tk,
+                    "tier": get_ticker_tier(_tk) if _tk else "default",
+                    "entry_time": _date_str + "T00:00:00",
+                    "exit_time": _date_str + "T" + _time_str,
+                    "entry_price": round(_entry_p, 2),
+                    "exit_price": _price_val,
+                    "shares": _shares_val,
+                    "pnl": round(_pnl_val, 2),
+                    "pnl_pct": round(_pnl_pct_val, 2),
+                    "exit_reason": _er,
+                    "entry_score": 0,
+                    "hold_hours": 0,
+                    "entry_hour_ct": -1,
+                })
+            if paper_trade_history:
+                logger.info(
+                    "v2.7.13 migration: backfilled %d trades "
+                    "into paper_trade_history",
+                    len(paper_trade_history),
+                )
 
         # Migrate existing positions: ensure each has a "high" key for trailing stop
         for _t, _pos in paper_positions.items():
@@ -2509,7 +2557,8 @@ def load_paper_state():
                 f"Cash: ${paper_cash:,.2f} | "
                 f"Positions: {len(paper_positions)} | "
                 f"Trades today: {len(paper_trades_today)} | "
-                f"Lifetime trades: {len(paper_all_trades)}"
+                f"Lifetime: {len(paper_all_trades)} | "
+                f"History: {len(paper_trade_history)}"
             )
         else:
             paper_trades_today = []
@@ -2518,7 +2567,8 @@ def load_paper_state():
                 f"State restored (new day — intraday counters reset). "
                 f"Cash: ${paper_cash:,.2f} | "
                 f"Positions: {len(paper_positions)} | "
-                f"Lifetime trades: {len(paper_all_trades)}"
+                f"Lifetime: {len(paper_all_trades)} | "
+                f"History: {len(paper_trade_history)}"
             )
 
     except Exception as e:
@@ -10144,13 +10194,17 @@ def _generate_replay_report(results, output_path, num_days, param_str,
 
 async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/analysis [period] — full trade analysis report.
-    Examples: /analysis, /analysis 7d, /analysis 48h"""
+    Examples: /analysis, /analysis 7d, /analysis 48h, /analysis all"""
     global _last_recs
     args = context.args or []
     hours = 24  # default
+    show_all = False
     if args:
         arg = args[0].lower().strip()
-        if arg.endswith("d"):
+        if arg == "all":
+            hours = 24 * 365  # ~1 year
+            show_all = True
+        elif arg.endswith("d"):
             try:
                 hours = int(arg[:-1]) * 24
             except ValueError:
@@ -10161,7 +10215,9 @@ async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 pass
 
-    if hours < 48:
+    if show_all:
+        period_label = "all time"
+    elif hours < 48:
         period_label = "%dh" % hours
     else:
         period_label = "%dd" % (hours // 24)
@@ -10171,10 +10227,16 @@ async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     analysis = analyze_paper_trades(hours=hours)
 
     if analysis.get("empty"):
+        _hist_n = len(paper_trade_history)
+        _hint = ""
+        if _hist_n > 0:
+            _hint = (
+                "\n\nTip: %d trades in history."
+                "\nTry /analysis all or /analysis 30d"
+            ) % _hist_n
         await update.message.reply_text(
-            "No closed trades in the last %s.\n"
-            "Paper trading may not have had any exits yet."
-            % period_label
+            "No closed trades in the last %s.%s"
+            % (period_label, _hint)
         )
         return
 
