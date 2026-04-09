@@ -51,7 +51,7 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.13a"
+BOT_VERSION = "2.7.13b"
 RELEASE_NOTES = [
     "2.7.13 — /analysis command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /analysis_apply, /analysis_reset.",
     "2.7.12 — Tiered stops: category-matched SL/trail/threshold by volatility tier (semi_ai, mid_small, large_cap, leveraged, etf).",
@@ -388,6 +388,23 @@ def send_telegram(text, chat_id=None):
                 wait = 2 ** attempt
                 logger.error(f"Telegram send error (attempt {attempt+1}): {e}. Retry in {wait}s")
                 time.sleep(wait)
+
+
+def _send_photo_sync(buf, chat_id=None):
+    """Send a PNG photo BytesIO to Telegram using raw HTTP (sync)."""
+    cid = chat_id or CHAT_ID
+    try:
+        url = "https://api.telegram.org/bot%s/sendPhoto" % TELEGRAM_TOKEN
+        resp = requests.post(
+            url,
+            data={"chat_id": cid},
+            files={"photo": ("chart.png", buf, "image/png")},
+            timeout=30,
+        )
+        if not resp.ok:
+            logger.error("_send_photo_sync failed: %s", resp.text)
+    except Exception as e:
+        logger.error("_send_photo_sync error: %s", e)
 
 
 def _capture_tp_chat(update):
@@ -3580,6 +3597,304 @@ def generate_recommendations(analysis: dict) -> list:
             })
 
     return recs
+
+
+def _generate_analysis_charts(analysis, spy_chg, recs, period_label):
+    """Generate graphical analysis charts as PNG BytesIO objects."""
+    _BG = "#0f1117"
+    _PANEL = "#1a1d27"
+    _TXT = "#e0e0e0"
+    _ACC = "#4fc3f7"
+    _GRN = "#66bb6a"
+    _RD = "#ef5350"
+    _AMB = "#ffa726"
+    _GRD = "#2a2d37"
+    _MUT = "#888888"
+
+    def _style_ax(ax, title=""):
+        ax.set_facecolor(_PANEL)
+        ax.tick_params(colors=_TXT, labelsize=8)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color(_GRD)
+        ax.spines["bottom"].set_color(_GRD)
+        ax.grid(True, color=_GRD, linewidth=0.5, alpha=0.5)
+        if title:
+            ax.set_title(title, fontsize=11, color=_TXT,
+                         fontweight="bold", pad=8, loc="left")
+
+    charts = []
+    now_str = datetime.now(CT).strftime("%Y-%m-%d %H:%M CT")
+
+    # ── CHART 1: Summary Dashboard ──
+    fig = plt.figure(figsize=(10, 7), facecolor=_BG)
+    fig.text(0.04, 0.96, "ANALYSIS REPORT", fontsize=16, color=_ACC,
+             fontweight="bold", fontfamily="monospace")
+    _subtitle = "Last %s  |  v%s  |  %s" % (period_label, BOT_VERSION, now_str)
+    fig.text(0.04, 0.93, _subtitle, fontsize=8, color=_MUT,
+             fontfamily="monospace")
+
+    gs = gridspec.GridSpec(2, 2, figure=fig, top=0.89, bottom=0.08,
+                           left=0.08, right=0.95, hspace=0.35, wspace=0.3)
+
+    # Top-left: Key Metrics text block
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor(_PANEL)
+    ax1.axis("off")
+    ax1.set_title("Key Metrics", fontsize=11, color=_TXT,
+                  fontweight="bold", pad=8, loc="left")
+
+    _pnl = analysis["total_pnl"]
+    _pnl_color = _GRN if _pnl >= 0 else _RD
+    _alpha_str = ""
+    _alpha_val = 0.0
+    if spy_chg is not None:
+        _port_ret = _pnl / 100000 * 100
+        _alpha_val = _port_ret - spy_chg
+        _alpha_str = "Alpha vs SPY: %+.1f%%" % _alpha_val
+
+    _pf = analysis["profit_factor"]
+    _pf_str = "%.2f" % _pf if _pf < 100 else "inf"
+    _spy_str = "%.1f%%" % spy_chg if spy_chg is not None else "N/A"
+    _wr_str = "%.0f%% (%dW / %dL)" % (
+        analysis["win_rate"], analysis["wins"], analysis["losses"])
+
+    metrics_lines = [
+        ("Total P&L", "$%+,.0f" % _pnl, _pnl_color),
+        ("Win Rate", _wr_str, _TXT),
+        ("Profit Factor", _pf_str, _ACC),
+        ("Max Drawdown", "$%.0f" % analysis["max_dd"],
+         _RD if analysis["max_dd"] > 0 else _TXT),
+        ("Avg Hold", "%.1fh" % analysis["avg_hold_hours"], _TXT),
+        ("SPY Change", _spy_str, _TXT),
+    ]
+    if _alpha_str:
+        _alpha_display = _alpha_str.split(": ")[1]
+        _alpha_color = _GRN if _alpha_val >= 0 else _RD
+        metrics_lines.append(("Alpha", _alpha_display, _alpha_color))
+
+    for i, (label, value, color) in enumerate(metrics_lines):
+        y = 0.88 - i * 0.13
+        ax1.text(0.05, y, label, fontsize=9, color=_MUT,
+                 fontfamily="monospace", transform=ax1.transAxes)
+        ax1.text(0.65, y, value, fontsize=9, color=color, fontweight="bold",
+                 fontfamily="monospace", transform=ax1.transAxes)
+
+    # Top-right: Win/Loss donut
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor(_PANEL)
+    _wins = analysis["wins"]
+    _losses = analysis["losses"]
+    if _wins + _losses > 0:
+        ax2.pie(
+            [_wins, _losses], labels=None,
+            colors=[_GRN, _RD], startangle=90,
+            wedgeprops={"width": 0.4, "edgecolor": _BG, "linewidth": 2}
+        )
+        _donut_label = "%d/%d" % (_wins, _wins + _losses)
+        ax2.text(0, 0, _donut_label, ha="center", va="center",
+                 fontsize=14, color=_TXT, fontweight="bold",
+                 fontfamily="monospace")
+    ax2.set_title("Win / Loss", fontsize=11, color=_TXT,
+                  fontweight="bold", pad=8, loc="left")
+    ax2.legend(["%d Wins" % _wins, "%d Losses" % _losses],
+               loc="lower center", fontsize=8, facecolor=_PANEL,
+               edgecolor=_GRD, labelcolor=_TXT)
+
+    # Bottom-left: Cumulative P&L curve
+    ax3 = fig.add_subplot(gs[1, 0])
+    _style_ax(ax3, "Cumulative P&L")
+    trades_sorted = sorted(analysis["trades"],
+                           key=lambda x: x.get("exit_time", ""))
+    cum_pnl = []
+    running = 0
+    for t in trades_sorted:
+        running += t["pnl"]
+        cum_pnl.append(running)
+    if cum_pnl:
+        x_vals = range(1, len(cum_pnl) + 1)
+        _line_color = _GRN if cum_pnl[-1] >= 0 else _RD
+        ax3.plot(x_vals, cum_pnl, color=_line_color, linewidth=2)
+        ax3.fill_between(x_vals, cum_pnl, alpha=0.15, color=_line_color)
+        ax3.axhline(y=0, color=_MUT, linewidth=0.5, linestyle="--")
+    ax3.set_xlabel("Trade #", fontsize=8, color=_MUT)
+    ax3.set_ylabel("P&L ($)", fontsize=8, color=_MUT)
+
+    # Bottom-right: P&L distribution
+    ax4 = fig.add_subplot(gs[1, 1])
+    _style_ax(ax4, "P&L Distribution")
+    pnls = [t["pnl"] for t in analysis["trades"]]
+    if pnls:
+        _pos = [p for p in pnls if p >= 0]
+        _neg = [p for p in pnls if p < 0]
+        _bins = 15
+        if _pos:
+            ax4.hist(_pos, bins=_bins, color=_GRN, alpha=0.7, label="Wins")
+        if _neg:
+            ax4.hist(_neg, bins=_bins, color=_RD, alpha=0.7, label="Losses")
+        ax4.axvline(x=0, color=_MUT, linewidth=0.5, linestyle="--")
+        ax4.legend(fontsize=8, facecolor=_PANEL, edgecolor=_GRD,
+                   labelcolor=_TXT)
+    ax4.set_xlabel("P&L ($)", fontsize=8, color=_MUT)
+    ax4.set_ylabel("Count", fontsize=8, color=_MUT)
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    charts.append(buf)
+
+    # ── CHART 2: Tier Performance ──
+    tier_stats = analysis.get("tier_stats", {})
+    if tier_stats:
+        fig2, ax = plt.subplots(figsize=(10, 5), facecolor=_BG)
+        _style_ax(ax, "PERFORMANCE BY TIER")
+
+        tiers = sorted(tier_stats.keys(),
+                       key=lambda t: tier_stats[t]["total_pnl"],
+                       reverse=True)
+        y_pos = range(len(tiers))
+        pnls_t = [tier_stats[t]["total_pnl"] for t in tiers]
+        colors_t = [_GRN if p >= 0 else _RD for p in pnls_t]
+
+        ax.barh(y_pos, pnls_t, color=colors_t, height=0.6, edgecolor=_BG)
+        ax.set_yticks(list(y_pos))
+        ax.set_yticklabels(tiers, fontsize=9, color=_TXT,
+                           fontfamily="monospace")
+        ax.set_xlabel("P&L ($)", fontsize=9, color=_MUT)
+        ax.axvline(x=0, color=_MUT, linewidth=0.5)
+
+        for i, t in enumerate(tiers):
+            s = tier_stats[t]
+            _pf_val = s["profit_factor"]
+            _pf_disp = "%.1f" % _pf_val if _pf_val < 100 else "inf"
+            _ann = "%dT  %.0f%% WR  PF:%s" % (s["count"], s["win_rate"],
+                                                _pf_disp)
+            _x = pnls_t[i]
+            _ha = "left" if _x >= 0 else "right"
+            _offset = 5 if _x >= 0 else -5
+            ax.annotate(_ann, xy=(_x, i), xytext=(_offset, 0),
+                        textcoords="offset points", fontsize=7, color=_MUT,
+                        fontfamily="monospace", va="center", ha=_ha)
+
+        fig2.text(0.04, 0.02, "T=trades  WR=win rate  PF=profit factor",
+                  fontsize=7, color=_MUT, fontfamily="monospace")
+
+        buf2 = BytesIO()
+        fig2.savefig(buf2, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig2)
+        buf2.seek(0)
+        charts.append(buf2)
+
+    # ── CHART 3: Time-of-Day + Exit Analysis ──
+    tod = analysis.get("tod_stats", {})
+    exits = analysis.get("exit_reasons", {})
+    if tod or exits:
+        fig3 = plt.figure(figsize=(10, 5), facecolor=_BG)
+        gs3 = gridspec.GridSpec(1, 2, figure=fig3, left=0.08, right=0.95,
+                                wspace=0.3)
+
+        if tod:
+            ax_tod = fig3.add_subplot(gs3[0, 0])
+            _style_ax(ax_tod, "P&L by Hour (CT)")
+            hours_sorted = sorted(tod.keys())
+            hrs = ["%d:00" % h for h in hours_sorted]
+            pnl_by_hr = [tod[h]["pnl"] for h in hours_sorted]
+            wr_by_hr = []
+            for h in hours_sorted:
+                cnt = tod[h]["count"]
+                w = tod[h]["wins"]
+                wr_by_hr.append(w / cnt * 100 if cnt > 0 else 0)
+            colors_h = [_GRN if p >= 0 else _RD for p in pnl_by_hr]
+            ax_tod.bar(hrs, pnl_by_hr, color=colors_h, width=0.6,
+                       edgecolor=_BG)
+            ax_tod.set_ylabel("P&L ($)", fontsize=8, color=_MUT)
+            ax_tod.tick_params(axis="x", rotation=45, labelsize=7)
+            for i, wr in enumerate(wr_by_hr):
+                ax_tod.text(i, pnl_by_hr[i], "%.0f%%" % wr,
+                            ha="center", va="bottom", fontsize=7,
+                            color=_ACC, fontfamily="monospace")
+
+        if exits:
+            ax_exit = fig3.add_subplot(gs3[0, 1])
+            _style_ax(ax_exit, "Exit Reasons")
+            reasons = sorted(exits.keys(),
+                             key=lambda r: exits[r]["count"], reverse=True)
+            counts = [exits[r]["count"] for r in reasons]
+            avg_pnl = []
+            for r in reasons:
+                cnt = exits[r]["count"]
+                avg_pnl.append(exits[r]["pnl"] / cnt if cnt > 0 else 0)
+            colors_e = [_GRN if p >= 0 else _RD for p in avg_pnl]
+            y_e = range(len(reasons))
+            ax_exit.barh(y_e, counts, color=colors_e, height=0.5,
+                         edgecolor=_BG)
+            _labels = [r.replace("_", " ").title() for r in reasons]
+            ax_exit.set_yticks(list(y_e))
+            ax_exit.set_yticklabels(_labels, fontsize=8, color=_TXT,
+                                    fontfamily="monospace")
+            ax_exit.set_xlabel("Count", fontsize=8, color=_MUT)
+            for i, r in enumerate(reasons):
+                _avg = avg_pnl[i]
+                ax_exit.annotate("avg $%+.0f" % _avg,
+                                 xy=(counts[i], i),
+                                 xytext=(4, 0),
+                                 textcoords="offset points",
+                                 fontsize=7, color=_MUT,
+                                 fontfamily="monospace", va="center")
+
+        buf3 = BytesIO()
+        fig3.savefig(buf3, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig3)
+        buf3.seek(0)
+        charts.append(buf3)
+
+    # ── CHART 4: Recommendations ──
+    if recs:
+        _fig_h = max(3, 1.5 + len(recs) * 0.6)
+        fig4, ax = plt.subplots(figsize=(10, _fig_h), facecolor=_BG)
+        ax.set_facecolor(_PANEL)
+        ax.axis("off")
+        ax.set_title("RECOMMENDATIONS", fontsize=13, color=_AMB,
+                      fontweight="bold", pad=10, loc="left")
+
+        headers = ["Tier", "Parameter", "Current", "Suggested", "Reason"]
+        col_x = [0.02, 0.18, 0.35, 0.50, 0.65]
+
+        for i, h in enumerate(headers):
+            ax.text(col_x[i], 0.92, h, fontsize=9, color=_ACC,
+                    fontweight="bold", fontfamily="monospace",
+                    transform=ax.transAxes)
+
+        for j, rec in enumerate(recs):
+            y = 0.82 - j * 0.12
+            ax.text(col_x[0], y, rec["tier"], fontsize=8, color=_TXT,
+                    fontfamily="monospace", transform=ax.transAxes)
+            ax.text(col_x[1], y, rec["param"], fontsize=8, color=_TXT,
+                    fontfamily="monospace", transform=ax.transAxes)
+            ax.text(col_x[2], y, str(rec["current"]), fontsize=8,
+                    color=_RD, fontfamily="monospace",
+                    transform=ax.transAxes)
+            ax.text(col_x[3], y, str(rec["suggested"]), fontsize=8,
+                    color=_GRN, fontfamily="monospace",
+                    transform=ax.transAxes)
+            reason_text = rec.get("reason", "")[:35]
+            ax.text(col_x[4], y, reason_text, fontsize=7, color=_MUT,
+                    fontfamily="monospace", transform=ax.transAxes)
+
+        _footer_y = 0.82 - len(recs) * 0.12 - 0.08
+        ax.text(0.02, _footer_y,
+                "/analysis_apply to apply  |  /analysis_reset to revert",
+                fontsize=8, color=_ACC, fontfamily="monospace",
+                transform=ax.transAxes)
+
+        buf4 = BytesIO()
+        fig4.savefig(buf4, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig4)
+        buf4.seek(0)
+        charts.append(buf4)
+
+    return charts
 
 
 def format_analysis_report(
@@ -10243,13 +10558,25 @@ async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     spy_chg = _get_spy_change_pct(hours)
     recs = generate_recommendations(analysis)
     _last_recs = recs
-    messages = format_analysis_report(
-        analysis, spy_chg, recs, period_label
-    )
 
-    for msg in messages:
-        send_telegram(msg)
+    # Generate graphical charts
+    charts = _generate_analysis_charts(analysis, spy_chg, recs, period_label)
+
+    # Send each chart as a photo
+    chat_id = update.effective_chat.id
+    for buf in charts:
+        await context.bot.send_photo(chat_id=chat_id, photo=buf)
         await asyncio.sleep(0.3)
+
+    # Brief text summary
+    _tc = analysis["trade_count"]
+    _wr = analysis["win_rate"]
+    _pnl_val = analysis["total_pnl"]
+    _summary = "%s | %d trades | %.0f%% WR | $%+,.0f" % (
+        period_label, _tc, _wr, _pnl_val)
+    if recs:
+        _summary += "\n%d recommendations -- /analysis_apply" % len(recs)
+    await update.message.reply_text(_summary)
 
 
 async def cmd_analysis_apply(
@@ -10319,11 +10646,10 @@ async def _send_auto_daily_report():
         spy_chg = _get_spy_change_pct(24)
         recs = generate_recommendations(analysis)
         _last_recs = recs
-        messages = format_analysis_report(
-            analysis, spy_chg, recs, "1d"
-        )
-        for msg in messages:
-            send_telegram(msg)
+
+        charts = _generate_analysis_charts(analysis, spy_chg, recs, "1d")
+        for buf in charts:
+            _send_photo_sync(buf)
             await asyncio.sleep(0.4)
     except Exception as e:
         logger.error("_send_auto_daily_report error: %s", e)
