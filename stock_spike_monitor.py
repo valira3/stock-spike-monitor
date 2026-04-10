@@ -51,9 +51,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.13b"
+BOT_VERSION = "2.7.13c"
 RELEASE_NOTES = [
-    "2.7.13 — /analysis command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /analysis_apply, /analysis_reset.",
+    "2.7.13 — /dayreport command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /dayreport_apply, /dayreport_reset.",
     "2.7.12 — Tiered stops: category-matched SL/trail/threshold by volatility tier (semi_ai, mid_small, large_cap, leveraged, etf).",
     "2.7.11 — Viral stock discovery: auto-add Reddit viral stocks to watchlist, fix social buzz (null handling, periodic refresh, resilient /buzz).",
     "2.7.10 — /buzz command (Reddit buzz leaderboard), morning cool-off (block first 15min entries).",
@@ -3660,7 +3660,7 @@ def _generate_analysis_charts(analysis, spy_chg, recs, period_label):
         analysis["win_rate"], analysis["wins"], analysis["losses"])
 
     metrics_lines = [
-        ("Total P&L", "$%+,.0f" % _pnl, _pnl_color),
+        ("Total P&L", "$%+.0f" % _pnl, _pnl_color),
         ("Win Rate", _wr_str, _TXT),
         ("Profit Factor", _pf_str, _ACC),
         ("Max Drawdown", "$%.0f" % analysis["max_dd"],
@@ -3884,7 +3884,7 @@ def _generate_analysis_charts(analysis, spy_chg, recs, period_label):
 
         _footer_y = 0.82 - len(recs) * 0.12 - 0.08
         ax.text(0.02, _footer_y,
-                "/analysis_apply to apply  |  /analysis_reset to revert",
+                "/dayreport_apply to apply  |  /dayreport_reset to revert",
                 fontsize=8, color=_ACC, fontfamily="monospace",
                 transform=ax.transAxes)
 
@@ -4070,16 +4070,16 @@ def format_analysis_report(
             r_lines.append("")
 
         r_lines.append(
-            "Send /analysis_apply to apply all"
+            "Send /dayreport_apply to apply all"
         )
         r_lines.append(
-            "Send /analysis_apply <tier> to apply"
+            "Send /dayreport_apply <tier> to apply"
         )
         r_lines.append(
             "  only that tier's adjustments"
         )
         r_lines.append(
-            "Send /analysis_reset to revert all"
+            "Send /dayreport_reset to revert all"
         )
 
         # Show current overrides if any
@@ -5256,7 +5256,7 @@ def paper_evaluate_ticker(ticker: str):
 
             paper_cash += proceeds
 
-            # v2.7.13: Append to closed trade history for /analysis
+            # v2.7.13: Append to closed trade history for /dayreport
             _exit_reason_norm = "unknown"
             _sr = sell_reason.upper()
             if "ATR-HARD" in _sr or "HARD-STOP" in _sr:
@@ -10504,12 +10504,12 @@ def _generate_replay_report(results, output_path, num_days, param_str,
 
 
 # ============================================================
-# v2.7.13: /analysis COMMAND + AUTO-REPORT
+# v2.7.13: /dayreport COMMAND + AUTO-REPORT
 # ============================================================
 
-async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/analysis [period] — full trade analysis report.
-    Examples: /analysis, /analysis 7d, /analysis 48h, /analysis all"""
+async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/dayreport [period] — full trade analysis report.
+    Examples: /dayreport, /dayreport 7d, /dayreport 48h, /dayreport all"""
     global _last_recs
     args = context.args or []
     hours = 24  # default
@@ -10547,7 +10547,7 @@ async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _hist_n > 0:
             _hint = (
                 "\n\nTip: %d trades in history."
-                "\nTry /analysis all or /analysis 30d"
+                "\nTry /dayreport all or /dayreport 30d"
             ) % _hist_n
         await update.message.reply_text(
             "No closed trades in the last %s.%s"
@@ -10572,14 +10572,14 @@ async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _tc = analysis["trade_count"]
     _wr = analysis["win_rate"]
     _pnl_val = analysis["total_pnl"]
-    _summary = "%s | %d trades | %.0f%% WR | $%+,.0f" % (
+    _summary = "%s | %d trades | %.0f%% WR | $%+.0f" % (
         period_label, _tc, _wr, _pnl_val)
     if recs:
-        _summary += "\n%d recommendations -- /analysis_apply" % len(recs)
+        _summary += "\n%d recommendations -- /dayreport_apply" % len(recs)
     await update.message.reply_text(_summary)
 
 
-async def cmd_analysis_apply(
+async def cmd_dayreport_apply(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     """Apply recommended tier parameter overrides at runtime."""
@@ -10588,7 +10588,7 @@ async def cmd_analysis_apply(
     if not _last_recs:
         await update.message.reply_text(
             "No pending recommendations. "
-            "Run /analysis first."
+            "Run /dayreport first."
         )
         return
 
@@ -10616,7 +10616,7 @@ async def cmd_analysis_apply(
         msg = (
             "Overrides applied:\n"
             + applied_str
-            + "\n\nSend /analysis_reset to revert."
+            + "\n\nSend /dayreport_reset to revert."
         )
     else:
         msg = "No matching recommendations found."
@@ -10624,7 +10624,7 @@ async def cmd_analysis_apply(
     send_telegram(msg)
 
 
-async def cmd_analysis_reset(
+async def cmd_dayreport_reset(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     """Reset all runtime overrides back to tier defaults."""
@@ -11396,9 +11396,9 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("buzz",        cmd_buzz))
 
     # ── v2.7.13: Analysis & runtime overrides ──────────────────
-    app.add_handler(CommandHandler("analysis",       cmd_analysis))
-    app.add_handler(CommandHandler("analysis_apply", cmd_analysis_apply))
-    app.add_handler(CommandHandler("analysis_reset", cmd_analysis_reset))
+    app.add_handler(CommandHandler("dayreport",       cmd_dayreport))
+    app.add_handler(CommandHandler("dayreport_apply", cmd_dayreport_apply))
+    app.add_handler(CommandHandler("dayreport_reset", cmd_dayreport_reset))
 
     # ── Second bot for TP channel (separate token) ───────────
     if not TELEGRAM_TP_TOKEN:
