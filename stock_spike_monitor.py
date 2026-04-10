@@ -51,8 +51,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.13e"
+BOT_VERSION = "2.7.14"
 RELEASE_NOTES = [
+    "2.7.14 — Runtime signal gates + /fix command. Applied from weekly analysis: slope gate (default >=0.15%) blocks weak-momentum entries, PowerOpen blocked (default) removes +5 zone bonus 08:45-09:30 CT, /fix command to view/set slope/poweropen/macd gates at runtime, gates persisted in paper_state.json, /dayreport suggests signal-gate fixes, paper_trade_history stores entry_slope/zone/macd.",
     "2.7.13d — Multi-period /dayreport: always analyzes 1d/10d/30d trends, trend-aware recommendations, grouped tier performance charts, period comparison dashboard.",
     "2.7.13 — /dayreport command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /dayreport_apply, /dayreport_reset.",
     "2.7.12 — Tiered stops: category-matched SL/trail/threshold by volatility tier (semi_ai, mid_small, large_cap, leveraged, etf).",
@@ -2212,6 +2213,9 @@ def _get_intraday_zone() -> tuple:
         INTRADAY_ZONES.items()
     ):
         if start <= ct < end:
+            # v2.7.14: neutralize PowerOpen if blocked
+            if _name == "power_open" and RUNTIME_BLOCK_POWEROPEN:
+                return 0, mult, "PowerOpen[blocked]"
             return pts, mult, label
     return 0, 0.85, "Extended"
 
@@ -2237,6 +2241,11 @@ PAPER_HISTORY_MAX = 500  # keep last 500 closed trades
 
 # v2.7.13: Runtime tier parameter overrides (applied immediately, reset on redeploy)
 RUNTIME_TIER_OVERRIDES: dict = {}
+
+# v2.7.14: Runtime signal-level gates (applied without redeploy)
+RUNTIME_MIN_SLOPE_PCT: float = 0.15      # block entries with slope < this. 0.0 = off
+RUNTIME_BLOCK_POWEROPEN: bool = True     # neutralize PowerOpen +5 zone bonus
+RUNTIME_MIN_MACD_PTS: int = 0           # block entries where macd_pts < this. 0 = off
 
 # v2.7.13: Last generated recommendations + auto-report flag
 _last_recs: list = []
@@ -2420,6 +2429,11 @@ def save_paper_state():
         "paper_trade_history": paper_trade_history,
         "user_config":        user_config,
         "tp_state":           tp_state,
+        "runtime_gates": {
+            "min_slope_pct": RUNTIME_MIN_SLOPE_PCT,
+            "block_poweropen": RUNTIME_BLOCK_POWEROPEN,
+            "min_macd_pts": RUNTIME_MIN_MACD_PTS,
+        },
         "saved_at":           datetime.now(CT).isoformat(),
     }
     with _paper_save_lock:
@@ -2446,6 +2460,7 @@ def load_paper_state():
     global user_config, tp_state, tp_dm_chat_id
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
+    global RUNTIME_MIN_SLOPE_PCT, RUNTIME_BLOCK_POWEROPEN, RUNTIME_MIN_MACD_PTS
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log(
@@ -2561,6 +2576,12 @@ def load_paper_state():
                 f"(${_purged_amt:,.0f}), "
                 f"{len(_still)} still pending"
             )
+
+        # v2.7.14: Restore runtime signal gates
+        _gates = state.get("runtime_gates", {})
+        RUNTIME_MIN_SLOPE_PCT = float(_gates.get("min_slope_pct", 0.15))
+        RUNTIME_BLOCK_POWEROPEN = bool(_gates.get("block_poweropen", True))
+        RUNTIME_MIN_MACD_PTS = int(_gates.get("min_macd_pts", 0))
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -4044,6 +4065,47 @@ def generate_recommendations_multi(multi):
                 "delta": "-5",
                 "reason": "Leveraged ETFs need stricter mean-reversion",
                 "trend": trend_str,
+                "impact": "high",
+            })
+
+    # v2.7.14: Signal-level recs from multi-period data
+    # Use 30d data (largest sample) for signal analysis
+    a30 = multi["30d"]["analysis"]
+    trades_30d = a30.get("trades", []) if not a30.get("empty") else []
+
+    if len(trades_30d) >= 5:
+        # Check slope patterns
+        low_slope_losses = [
+            t for t in trades_30d
+            if t.get("pnl", 0) < 0
+            and t.get("entry_slope_pct") is not None
+            and t.get("entry_slope_pct", 999) < 0.15
+        ]
+        if len(low_slope_losses) >= 2:
+            recs.append({
+                "tier": "all",
+                "param": "min_slope_pct",
+                "current": RUNTIME_MIN_SLOPE_PCT,
+                "suggested": 0.15,
+                "delta": "->0.15%",
+                "reason": "%d losses had slope<0.15%%" % len(low_slope_losses),
+                "trend": "signal gate",
+                "impact": "high",
+            })
+
+        # Check avg loss vs avg win (profit factor helper)
+        avg_loss_30 = abs(a30.get("avg_loss", 0))
+        avg_win_30 = a30.get("avg_win", 1) or 1
+        if avg_loss_30 > avg_win_30 * 1.3 and len(trades_30d) >= 5:
+            ratio_str = "%.2f" % (avg_loss_30 / avg_win_30)
+            recs.append({
+                "tier": "all",
+                "param": "avg_win/loss ratio",
+                "current": ratio_str,
+                "suggested": "< 1.2",
+                "delta": "tighten SL",
+                "reason": "Avg loss $%.0f > avg win $%.0f" % (avg_loss_30, avg_win_30),
+                "trend": "cross-tier",
                 "impact": "high",
             })
 
@@ -5928,6 +5990,9 @@ def paper_evaluate_ticker(ticker: str):
                 "entry_score": pos.get("entry_score", 0),
                 "hold_hours": round(_hold_hours_val, 2),
                 "entry_hour_ct": _entry_hour_ct,
+                "entry_slope_pct": pos.get("entry_slope_pct", 0),   # v2.7.14
+                "entry_zone": pos.get("entry_zone", ""),             # v2.7.14
+                "entry_macd_pts": pos.get("entry_macd_pts", 0),     # v2.7.14
             })
             if len(paper_trade_history) > PAPER_HISTORY_MAX:
                 paper_trade_history[:] = paper_trade_history[-PAPER_HISTORY_MAX:]
@@ -6250,6 +6315,26 @@ def paper_evaluate_ticker(ticker: str):
             logger.debug(f"Skip BUY {ticker}: price below AVWAP (overhead supply)")
             return
 
+    # v2.7.14: Runtime slope gate
+    if RUNTIME_MIN_SLOPE_PCT > 0:
+        _slope = sig.get("comps", {}).get("slope_pct", 0) or 0
+        if _slope < RUNTIME_MIN_SLOPE_PCT:
+            logger.debug(
+                "Slope gate: %s slope=%.3f%% < min %.3f%% -- skip",
+                ticker, _slope, RUNTIME_MIN_SLOPE_PCT,
+            )
+            return
+
+    # v2.7.14: Runtime MACD floor gate
+    if RUNTIME_MIN_MACD_PTS > 0:
+        _macd_pts = sig.get("comps", {}).get("macd_pts", 0) or 0
+        if _macd_pts < RUNTIME_MIN_MACD_PTS:
+            logger.debug(
+                "MACD gate: %s macd_pts=%d < min %d -- skip",
+                ticker, _macd_pts, RUNTIME_MIN_MACD_PTS,
+            )
+            return
+
     # v2.7.3: Speculative buy gates
     if is_speculative:
         # Count current speculative positions
@@ -6299,6 +6384,9 @@ def paper_evaluate_ticker(ticker: str):
         "fear_override": _fear_override_active,  # v2.7.9
         "tier": get_ticker_tier(ticker),  # v2.7.12
         "entry_score": sig["score"],  # v2.7.13: for analysis
+        "entry_slope_pct": sig.get("comps", {}).get("slope_pct", 0),  # v2.7.14
+        "entry_zone": sig.get("comps", {}).get("tod_zone", ""),       # v2.7.14
+        "entry_macd_pts": sig.get("comps", {}).get("macd_pts", 0),    # v2.7.14
     }
     paper_daily_counts[count_key] = paper_daily_counts.get(count_key, 0) + 1
 
@@ -11207,6 +11295,7 @@ async def cmd_dayreport_apply(
 ):
     """Apply recommended tier parameter overrides at runtime."""
     global RUNTIME_TIER_OVERRIDES
+    global RUNTIME_MIN_SLOPE_PCT
 
     if not _last_recs:
         await update.message.reply_text(
@@ -11226,6 +11315,13 @@ async def cmd_dayreport_apply(
         tier = rec["tier"]
         param = rec["param"]
         val = rec["suggested"]
+
+        # v2.7.14: Signal gate recs
+        if param == "min_slope_pct":
+            RUNTIME_MIN_SLOPE_PCT = float(val)
+            applied.append("min_slope: %.2f%%" % RUNTIME_MIN_SLOPE_PCT)
+            continue
+
         if tier not in RUNTIME_TIER_OVERRIDES:
             RUNTIME_TIER_OVERRIDES[tier] = {}
         RUNTIME_TIER_OVERRIDES[tier][param] = val
@@ -11257,6 +11353,97 @@ async def cmd_dayreport_reset(
         "All runtime overrides cleared.\n"
         "Using default tier parameters."
     )
+
+
+async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/fix -- view or set runtime signal gates.
+
+    Usage:
+      /fix                       -- show all active gates
+      /fix slope 0.15            -- set min slope threshold
+      /fix slope off             -- disable slope gate
+      /fix poweropen off         -- block PowerOpen zone bonus
+      /fix poweropen on          -- re-enable PowerOpen bonus
+      /fix macd 8                -- set min MACD pts required
+      /fix macd off              -- disable MACD gate
+    """
+    global RUNTIME_MIN_SLOPE_PCT, RUNTIME_BLOCK_POWEROPEN, RUNTIME_MIN_MACD_PTS
+
+    args = context.args or []
+
+    if not args:
+        sep = "\u2500" * 32
+        slope_status = "(active)" if RUNTIME_MIN_SLOPE_PCT > 0 else "(off)"
+        po_status = "BLOCKED (0pts)" if RUNTIME_BLOCK_POWEROPEN else "normal (+5pts)"
+        macd_status = "(active)" if RUNTIME_MIN_MACD_PTS > 0 else "(off)"
+        lines = [
+            "\u26a1 RUNTIME SIGNAL GATES",
+            sep,
+            "Slope min:   %.2f%% %s" % (RUNTIME_MIN_SLOPE_PCT, slope_status),
+            "PowerOpen:   %s" % po_status,
+            "MACD min:    %d pts %s" % (RUNTIME_MIN_MACD_PTS, macd_status),
+            "",
+            "Tier overrides: %d active" % len(RUNTIME_TIER_OVERRIDES),
+            "",
+            "/fix slope 0.15 | /fix slope off",
+            "/fix poweropen on|off",
+            "/fix macd 8 | /fix macd off",
+            "/dayreport_reset to clear tier overrides",
+        ]
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    gate = args[0].lower()
+    val = args[1].lower() if len(args) > 1 else ""
+
+    if gate == "slope":
+        if val in ("off", "0"):
+            RUNTIME_MIN_SLOPE_PCT = 0.0
+            await update.message.reply_text("Slope gate disabled.")
+        else:
+            try:
+                RUNTIME_MIN_SLOPE_PCT = float(val)
+                await update.message.reply_text(
+                    "Slope gate set: entries require slope >= %.2f%%."
+                    % RUNTIME_MIN_SLOPE_PCT
+                )
+            except ValueError:
+                await update.message.reply_text("Usage: /fix slope 0.15")
+
+    elif gate == "poweropen":
+        if val == "off":
+            RUNTIME_BLOCK_POWEROPEN = True
+            await update.message.reply_text(
+                "PowerOpen blocked: 08:45-09:30 CT zone bonus set to 0pts."
+            )
+        elif val == "on":
+            RUNTIME_BLOCK_POWEROPEN = False
+            await update.message.reply_text(
+                "PowerOpen restored: +5pts bonus re-enabled."
+            )
+        else:
+            await update.message.reply_text("Usage: /fix poweropen on|off")
+
+    elif gate == "macd":
+        if val in ("off", "0"):
+            RUNTIME_MIN_MACD_PTS = 0
+            await update.message.reply_text("MACD gate disabled.")
+        else:
+            try:
+                RUNTIME_MIN_MACD_PTS = int(val)
+                await update.message.reply_text(
+                    "MACD gate set: entries require macd_pts >= %d."
+                    % RUNTIME_MIN_MACD_PTS
+                )
+            except ValueError:
+                await update.message.reply_text("Usage: /fix macd 8")
+
+    else:
+        await update.message.reply_text(
+            "Unknown gate. Options: slope, poweropen, macd"
+        )
+
+    save_paper_state()
 
 
 async def _send_auto_daily_report():
@@ -11905,6 +12092,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("watchlist",  "Manage watchlist"),
     BotCommand("backtest",   "Replay backtest"),
     BotCommand("dayreport",  "1d/10d/30d trade analysis"),
+    BotCommand("fix",        "Runtime signal gates"),
     BotCommand("aistocks",   "AI picks + conviction"),
     BotCommand("ask",        "Chat with Claude"),
     BotCommand("prep",       "Next session plan"),
@@ -12032,6 +12220,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("dayreport",       cmd_dayreport))
     app.add_handler(CommandHandler("dayreport_apply", cmd_dayreport_apply))
     app.add_handler(CommandHandler("dayreport_reset", cmd_dayreport_reset))
+    app.add_handler(CommandHandler("fix",             cmd_fix))
 
     # ── Second bot for TP channel (separate token) ───────────
     if not TELEGRAM_TP_TOKEN:
