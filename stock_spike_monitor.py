@@ -51,8 +51,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.13c"
+BOT_VERSION = "2.7.13d"
 RELEASE_NOTES = [
+    "2.7.13d — Multi-period /dayreport: always analyzes 1d/10d/30d trends, trend-aware recommendations, grouped tier performance charts, period comparison dashboard.",
     "2.7.13 — /dayreport command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /dayreport_apply, /dayreport_reset.",
     "2.7.12 — Tiered stops: category-matched SL/trail/threshold by volatility tier (semi_ai, mid_small, large_cap, leveraged, etf).",
     "2.7.11 — Viral stock discovery: auto-add Reddit viral stocks to watchlist, fix social buzz (null handling, periodic refresh, resilient /buzz).",
@@ -3508,7 +3509,7 @@ def _get_spy_change_pct(hours: int):
     return None
 
 
-def generate_recommendations(analysis: dict) -> list:
+def generate_recommendations_single(analysis: dict) -> list:
     """Generate tier parameter adjustment recommendations."""
     recs = []
     tier_stats = analysis.get("tier_stats", {})
@@ -3599,7 +3600,7 @@ def generate_recommendations(analysis: dict) -> list:
     return recs
 
 
-def _generate_analysis_charts(analysis, spy_chg, recs, period_label):
+def _generate_analysis_charts_single(analysis, spy_chg, recs, period_label):
     """Generate graphical analysis charts as PNG BytesIO objects."""
     _BG = "#0f1117"
     _PANEL = "#1a1d27"
@@ -3883,6 +3884,639 @@ def _generate_analysis_charts(analysis, spy_chg, recs, period_label):
                     fontfamily="monospace", transform=ax.transAxes)
 
         _footer_y = 0.82 - len(recs) * 0.12 - 0.08
+        ax.text(0.02, _footer_y,
+                "/dayreport_apply to apply  |  /dayreport_reset to revert",
+                fontsize=8, color=_ACC, fontfamily="monospace",
+                transform=ax.transAxes)
+
+        buf4 = BytesIO()
+        fig4.savefig(buf4, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig4)
+        buf4.seek(0)
+        charts.append(buf4)
+
+    return charts
+
+
+# ── v2.7.13d: Multi-period recommendation engine ──
+
+def _impact_rank(impact):
+    return {"high": 3, "medium": 2, "low": 1}.get(impact, 0)
+
+
+def generate_recommendations_multi(multi):
+    """Generate trend-aware recommendations from 1d/10d/30d analyses."""
+    recs = []
+
+    tiers_30d = multi["30d"]["analysis"].get("tier_stats", {}) if not multi["30d"]["analysis"].get("empty") else {}
+    tiers_10d = multi["10d"]["analysis"].get("tier_stats", {}) if not multi["10d"]["analysis"].get("empty") else {}
+    tiers_1d = multi["1d"]["analysis"].get("tier_stats", {}) if not multi["1d"]["analysis"].get("empty") else {}
+
+    all_tiers = set(list(tiers_30d.keys()) + list(tiers_10d.keys()) + list(tiers_1d.keys()))
+
+    for tier in all_tiers:
+        s30 = tiers_30d.get(tier, {})
+        s10 = tiers_10d.get(tier, {})
+        s1 = tiers_1d.get(tier, {})
+
+        primary = s30 or s10 or s1
+        if not primary:
+            continue
+
+        wr_30 = s30.get("win_rate", None)
+        wr_10 = s10.get("win_rate", None)
+        wr_1 = s1.get("win_rate", None)
+        count_30 = s30.get("count", 0)
+        pf_30 = s30.get("profit_factor", 1.0)
+
+        params = TIER_PARAMS.get(tier, TIER_PARAMS["default"])
+
+        # Determine trend
+        trend = "stable"
+        if wr_30 is not None and wr_10 is not None:
+            if wr_10 > wr_30 + 10:
+                trend = "improving"
+            elif wr_10 < wr_30 - 10:
+                trend = "degrading"
+
+        trend_str = ""
+        _parts = []
+        if wr_30 is not None:
+            _parts.append("30d: %.0f%% WR" % wr_30)
+        if wr_10 is not None:
+            _parts.append("10d: %.0f%%" % wr_10)
+        if wr_1 is not None:
+            _parts.append("1d: %.0f%%" % wr_1)
+        if _parts:
+            trend_str = " | ".join(_parts)
+
+        # Rule 1: Consistently poor (30d WR < 30%, 3+ trades, not improving)
+        if wr_30 is not None and wr_30 < 30 and count_30 >= 3 and trend != "improving":
+            delta_thresh = 5
+            delta_sl = -0.01
+            if trend == "degrading":
+                delta_thresh = 8
+            recs.append({
+                "tier": tier,
+                "param": "thresh_floor",
+                "current": params["thresh_floor"],
+                "suggested": params["thresh_floor"] + delta_thresh,
+                "delta": "+%d" % delta_thresh,
+                "reason": "Weak across periods",
+                "trend": trend_str,
+                "impact": "high",
+            })
+            new_sl = round(params["sl"] + delta_sl, 3)
+            if new_sl >= 0.02:
+                recs.append({
+                    "tier": tier,
+                    "param": "sl",
+                    "current": params["sl"],
+                    "suggested": new_sl,
+                    "delta": "%.1f%%" % (delta_sl * 100),
+                    "reason": "Tighten to cut losses",
+                    "trend": trend_str,
+                    "impact": "high",
+                })
+
+        # Rule 2: Poor long-term but improving short-term
+        elif wr_30 is not None and wr_30 < 35 and count_30 >= 3 and trend == "improving":
+            recs.append({
+                "tier": tier,
+                "param": "thresh_floor",
+                "current": params["thresh_floor"],
+                "suggested": params["thresh_floor"] + 3,
+                "delta": "+3",
+                "reason": "Improving but still weak long-term",
+                "trend": trend_str,
+                "impact": "medium",
+            })
+
+        # Rule 3: Good long-term but degrading short-term
+        elif wr_30 is not None and wr_30 >= 45 and trend == "degrading":
+            recs.append({
+                "tier": tier,
+                "param": "sl",
+                "current": params["sl"],
+                "suggested": round(params["sl"] - 0.005, 3),
+                "delta": "-0.5%",
+                "reason": "Recent degradation -- protect gains",
+                "trend": trend_str,
+                "impact": "medium",
+            })
+
+        # Rule 4: Profit factor < 1 across periods
+        if pf_30 < 1.0 and count_30 >= 5:
+            avg_win_30 = s30.get("avg_win", 0)
+            avg_loss_30 = s30.get("avg_loss", 0)
+            if avg_loss_30 != 0 and abs(avg_loss_30) > 1.5 * avg_win_30:
+                recs.append({
+                    "tier": tier,
+                    "param": "trail",
+                    "current": params["trail"],
+                    "suggested": round(max(0.015, params["trail"] - 0.005), 3),
+                    "delta": "-0.5%",
+                    "reason": "Losses outsize wins (PF=%.2f)" % pf_30,
+                    "trend": trend_str,
+                    "impact": "high",
+                })
+
+        # Rule 5: Strong performer -- loosen to capture more
+        if wr_30 is not None and wr_30 > 55 and count_30 >= 5 and trend != "degrading":
+            recs.append({
+                "tier": tier,
+                "param": "thresh_floor",
+                "current": params["thresh_floor"],
+                "suggested": max(60, params["thresh_floor"] - 3),
+                "delta": "-3",
+                "reason": "Consistent winner -- allow more entries",
+                "trend": trend_str,
+                "impact": "low",
+            })
+
+        # Rule 6: Leveraged-specific ultra-strict RSI
+        if tier == "leveraged" and wr_30 is not None and wr_30 < 25:
+            recs.append({
+                "tier": tier,
+                "param": "rsi_max",
+                "current": params["rsi_max"],
+                "suggested": max(35, params["rsi_max"] - 5),
+                "delta": "-5",
+                "reason": "Leveraged ETFs need stricter mean-reversion",
+                "trend": trend_str,
+                "impact": "high",
+            })
+
+    # Deduplicate: same tier+param -> keep highest impact
+    seen = {}
+    for r in recs:
+        key = (r["tier"], r["param"])
+        if key not in seen or _impact_rank(r["impact"]) > _impact_rank(seen[key]["impact"]):
+            seen[key] = r
+
+    return list(seen.values())
+
+
+# ── v2.7.13d: Multi-period chart generation ──
+
+def _generate_analysis_charts_multi(multi, recs):
+    """Generate multi-period analysis charts as PNG BytesIO objects."""
+    _BG = "#0f1117"
+    _PANEL = "#1a1d27"
+    _TXT = "#e0e0e0"
+    _ACC = "#4fc3f7"
+    _GRN = "#66bb6a"
+    _RD = "#ef5350"
+    _AMB = "#ffa726"
+    _GRD = "#2a2d37"
+    _MUT = "#888888"
+
+    def _style_ax(ax, title=""):
+        ax.set_facecolor(_PANEL)
+        ax.tick_params(colors=_TXT, labelsize=8)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color(_GRD)
+        ax.spines["bottom"].set_color(_GRD)
+        ax.grid(True, color=_GRD, linewidth=0.5, alpha=0.5)
+        if title:
+            ax.set_title(title, fontsize=11, color=_TXT,
+                         fontweight="bold", pad=8, loc="left")
+
+    def _cell_color(val, metric):
+        """Color-code a cell value based on metric type."""
+        if val is None:
+            return _MUT
+        if metric in ("pnl", "alpha", "avg_win"):
+            return _GRN if val >= 0 else _RD
+        if metric == "win_rate":
+            if val >= 50:
+                return _GRN
+            if val >= 30:
+                return _AMB
+            return _RD
+        if metric == "profit_factor":
+            if val >= 1.5:
+                return _GRN
+            if val >= 1.0:
+                return _AMB
+            return _RD
+        if metric == "max_dd":
+            return _RD if val > 0 else _TXT
+        return _TXT
+
+    charts = []
+    now_str = datetime.now(CT).strftime("%Y-%m-%d %H:%M CT")
+    periods = ["1d", "10d", "30d"]
+
+    # Helper to get analysis safely
+    def _a(period):
+        return multi[period]["analysis"]
+
+    def _spy(period):
+        return multi[period]["spy"]
+
+    # Find longest non-empty period for detailed charts
+    _longest = None
+    _longest_spy = None
+    for p in ["30d", "10d", "1d"]:
+        if not _a(p).get("empty"):
+            _longest = _a(p)
+            _longest_spy = _spy(p)
+            break
+
+    if _longest is None:
+        return charts  # all empty
+
+    # ── CHART 1: Multi-Period Summary Dashboard ──
+    fig = plt.figure(figsize=(10, 7), facecolor=_BG)
+    fig.text(0.04, 0.96, "MULTI-PERIOD ANALYSIS", fontsize=16, color=_ACC,
+             fontweight="bold", fontfamily="monospace")
+    fig.text(0.04, 0.93, "1d / 10d / 30d  |  v%s  |  %s" % (BOT_VERSION, now_str),
+             fontsize=8, color=_MUT, fontfamily="monospace")
+
+    gs = gridspec.GridSpec(2, 2, figure=fig, top=0.89, bottom=0.08,
+                           left=0.06, right=0.97, hspace=0.35, wspace=0.25)
+
+    # Top section: Period Comparison Table
+    ax_tbl = fig.add_subplot(gs[0, :])
+    ax_tbl.set_facecolor(_PANEL)
+    ax_tbl.axis("off")
+    ax_tbl.set_title("Period Comparison", fontsize=11, color=_TXT,
+                      fontweight="bold", pad=8, loc="left")
+
+    row_labels = ["Trades", "Win Rate", "P&L", "Avg Win", "Avg Loss",
+                  "Profit Factor", "Max Drawdown", "Alpha vs SPY"]
+    col_x = [0.30, 0.55, 0.80]  # x positions for 1d, 10d, 30d
+
+    # Column headers
+    for ci, p in enumerate(periods):
+        ax_tbl.text(col_x[ci], 0.95, p.upper(), fontsize=10, color=_ACC,
+                    fontweight="bold", fontfamily="monospace",
+                    transform=ax_tbl.transAxes, ha="center")
+
+    for ri, label in enumerate(row_labels):
+        y = 0.83 - ri * 0.105
+        ax_tbl.text(0.02, y, label, fontsize=8, color=_MUT,
+                    fontfamily="monospace", transform=ax_tbl.transAxes)
+
+        for ci, p in enumerate(periods):
+            a = _a(p)
+            spy = _spy(p)
+            if a.get("empty"):
+                ax_tbl.text(col_x[ci], y, "--", fontsize=8, color=_MUT,
+                            fontfamily="monospace", transform=ax_tbl.transAxes,
+                            ha="center")
+                continue
+
+            val = None
+            metric = label.lower().replace(" ", "_")
+            if label == "Trades":
+                val = a["trade_count"]
+                txt = "%d" % val
+                clr = _TXT
+            elif label == "Win Rate":
+                val = a["win_rate"]
+                txt = "%.0f%%" % val
+                clr = _cell_color(val, "win_rate")
+            elif label == "P&L":
+                val = a["total_pnl"]
+                txt = "$%+.0f" % val
+                clr = _cell_color(val, "pnl")
+            elif label == "Avg Win":
+                val = a["avg_win"]
+                txt = "$%+.0f" % val
+                clr = _cell_color(val, "avg_win")
+            elif label == "Avg Loss":
+                val = a["avg_loss"]
+                txt = "$%+.0f" % val
+                clr = _cell_color(val, "pnl")
+            elif label == "Profit Factor":
+                val = a["profit_factor"]
+                if val >= 100:
+                    txt = "inf"
+                else:
+                    txt = "%.2f" % val
+                clr = _cell_color(val, "profit_factor")
+            elif label == "Max Drawdown":
+                val = a["max_dd"]
+                txt = "$%.0f" % val
+                clr = _cell_color(val, "max_dd")
+            elif label == "Alpha vs SPY":
+                if spy is not None:
+                    port_ret = a["total_pnl"] / 100000 * 100
+                    val = port_ret - spy
+                    txt = "%+.1f%%" % val
+                    clr = _cell_color(val, "alpha")
+                else:
+                    txt = "N/A"
+                    clr = _MUT
+            else:
+                txt = "--"
+                clr = _MUT
+
+            ax_tbl.text(col_x[ci], y, txt, fontsize=8, color=clr,
+                        fontweight="bold", fontfamily="monospace",
+                        transform=ax_tbl.transAxes, ha="center")
+
+    # Add trend arrows between columns
+    for ri, label in enumerate(row_labels):
+        y = 0.83 - ri * 0.105
+        if label in ("Win Rate", "P&L", "Profit Factor"):
+            vals = []
+            for p in periods:
+                a = _a(p)
+                if a.get("empty"):
+                    vals.append(None)
+                elif label == "Win Rate":
+                    vals.append(a["win_rate"])
+                elif label == "P&L":
+                    vals.append(a["total_pnl"])
+                elif label == "Profit Factor":
+                    vals.append(a["profit_factor"])
+                else:
+                    vals.append(None)
+            # Compare 30d vs 1d for trend
+            v_30 = vals[2]
+            v_1 = vals[0]
+            if v_30 is not None and v_1 is not None:
+                if v_1 > v_30 * 1.05:
+                    arrow = " ^"  # improving
+                    aclr = _GRN
+                elif v_1 < v_30 * 0.95:
+                    arrow = " v"  # degrading
+                    aclr = _RD
+                else:
+                    arrow = " ="
+                    aclr = _MUT
+                ax_tbl.text(0.93, y, arrow, fontsize=9, color=aclr,
+                            fontweight="bold", fontfamily="monospace",
+                            transform=ax_tbl.transAxes)
+
+    # Bottom-left: Cumulative P&L curve using longest period
+    ax_pnl = fig.add_subplot(gs[1, 0])
+    _style_ax(ax_pnl, "Cumulative P&L")
+    trades_sorted = sorted(_longest["trades"],
+                           key=lambda x: x.get("exit_time", ""))
+    cum_pnl = []
+    running = 0.0
+    for t in trades_sorted:
+        running += t["pnl"]
+        cum_pnl.append(running)
+
+    if cum_pnl:
+        x_vals = range(1, len(cum_pnl) + 1)
+        _line_color = _GRN if cum_pnl[-1] >= 0 else _RD
+        ax_pnl.plot(x_vals, cum_pnl, color=_line_color, linewidth=2)
+        ax_pnl.fill_between(x_vals, cum_pnl, alpha=0.15, color=_line_color)
+        ax_pnl.axhline(y=0, color=_MUT, linewidth=0.5, linestyle="--")
+
+        # Add period boundary markers
+        total = len(cum_pnl)
+        a_10d = _a("10d")
+        a_1d = _a("1d")
+        if not a_10d.get("empty"):
+            n_10d = a_10d["trade_count"]
+            if n_10d < total:
+                boundary_10d = total - n_10d
+                ax_pnl.axvline(x=boundary_10d, color=_AMB,
+                               linewidth=1, linestyle="--", alpha=0.7)
+                ax_pnl.text(boundary_10d, max(cum_pnl) * 0.9, "10d",
+                            fontsize=7, color=_AMB, fontfamily="monospace")
+        if not a_1d.get("empty"):
+            n_1d = a_1d["trade_count"]
+            if n_1d < total:
+                boundary_1d = total - n_1d
+                ax_pnl.axvline(x=boundary_1d, color=_ACC,
+                               linewidth=1, linestyle="--", alpha=0.7)
+                ax_pnl.text(boundary_1d, max(cum_pnl) * 0.8, "1d",
+                            fontsize=7, color=_ACC, fontfamily="monospace")
+
+    ax_pnl.set_xlabel("Trade #", fontsize=8, color=_MUT)
+    ax_pnl.set_ylabel("P&L ($)", fontsize=8, color=_MUT)
+
+    # Bottom-right: Win Rate Trend bars
+    ax_wr = fig.add_subplot(gs[1, 1])
+    _style_ax(ax_wr, "Win Rate Trend")
+
+    wr_vals = []
+    wr_labels = []
+    wr_colors = []
+    bar_colors = [_ACC, "#5d9ecf", "#3a6b8a"]  # bright, medium, muted
+    for i, p in enumerate(periods):
+        a = _a(p)
+        if not a.get("empty"):
+            wr_vals.append(a["win_rate"])
+            wr_labels.append(p)
+            wr_colors.append(bar_colors[i])
+        else:
+            wr_vals.append(0)
+            wr_labels.append(p)
+            wr_colors.append(_MUT)
+
+    bars = ax_wr.bar(wr_labels, wr_vals, color=wr_colors, width=0.5,
+                     edgecolor=_BG)
+    ax_wr.set_ylabel("Win Rate (%)", fontsize=8, color=_MUT)
+    ax_wr.axhline(y=50, color=_MUT, linewidth=0.5, linestyle="--")
+    for bar, val in zip(bars, wr_vals):
+        if val > 0:
+            ax_wr.text(bar.get_x() + bar.get_width() / 2, val + 1,
+                       "%.0f%%" % val, ha="center", fontsize=8, color=_TXT,
+                       fontfamily="monospace")
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    charts.append(buf)
+
+    # ── CHART 2: Tier Performance by Period ──
+    all_tier_names = set()
+    for p in periods:
+        a = _a(p)
+        if not a.get("empty"):
+            all_tier_names.update(a.get("tier_stats", {}).keys())
+
+    if all_tier_names:
+        # Sort tiers by 30d P&L (or longest available)
+        def _tier_sort_key(t):
+            for pp in ["30d", "10d", "1d"]:
+                aa = _a(pp)
+                if not aa.get("empty"):
+                    ts = aa.get("tier_stats", {}).get(t)
+                    if ts:
+                        return ts["total_pnl"]
+            return 0
+        tiers_sorted = sorted(all_tier_names, key=_tier_sort_key, reverse=True)
+
+        n_tiers = len(tiers_sorted)
+        bar_height = 0.25
+        fig2, ax = plt.subplots(figsize=(10, max(4, 1.5 + n_tiers * 1.2)),
+                                facecolor=_BG)
+        _style_ax(ax, "TIER PERFORMANCE BY PERIOD")
+
+        y_positions = list(range(n_tiers))
+        period_colors_pos = [_ACC, "#5d9ecf", "#3a6b8a"]
+        period_colors_neg = ["#ef5350", "#c0453e", "#8a3230"]
+
+        for pi, p in enumerate(periods):
+            a = _a(p)
+            if a.get("empty"):
+                continue
+            ts_dict = a.get("tier_stats", {})
+            pnl_vals = []
+            for t in tiers_sorted:
+                ts = ts_dict.get(t)
+                if ts:
+                    pnl_vals.append(ts["total_pnl"])
+                else:
+                    pnl_vals.append(0)
+
+            offsets = [y + (pi - 1) * bar_height for y in y_positions]
+            colors = []
+            for v in pnl_vals:
+                if v >= 0:
+                    colors.append(period_colors_pos[pi])
+                else:
+                    colors.append(period_colors_neg[pi])
+
+            ax.barh(offsets, pnl_vals, height=bar_height, color=colors,
+                    edgecolor=_BG, label=p)
+
+            # Annotations
+            for i, t in enumerate(tiers_sorted):
+                ts = ts_dict.get(t)
+                if ts and ts["count"] > 0:
+                    _ann = "%dT %.0f%%WR" % (ts["count"], ts["win_rate"])
+                    _x = pnl_vals[i]
+                    _ha = "left" if _x >= 0 else "right"
+                    _xoff = 4 if _x >= 0 else -4
+                    ax.annotate(_ann, xy=(_x, offsets[i]),
+                                xytext=(_xoff, 0),
+                                textcoords="offset points",
+                                fontsize=6, color=_MUT,
+                                fontfamily="monospace", va="center",
+                                ha=_ha)
+
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(tiers_sorted, fontsize=9, color=_TXT,
+                           fontfamily="monospace")
+        ax.set_xlabel("P&L ($)", fontsize=9, color=_MUT)
+        ax.axvline(x=0, color=_MUT, linewidth=0.5)
+        ax.legend(fontsize=8, facecolor=_PANEL, edgecolor=_GRD,
+                  labelcolor=_TXT, loc="lower right")
+
+        buf2 = BytesIO()
+        fig2.savefig(buf2, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig2)
+        buf2.seek(0)
+        charts.append(buf2)
+
+    # ── CHART 3: Time-of-Day + Exit Analysis (longest period) ──
+    tod = _longest.get("tod_stats", {})
+    exits = _longest.get("exit_reasons", {})
+    if tod or exits:
+        fig3 = plt.figure(figsize=(10, 5), facecolor=_BG)
+        gs3 = gridspec.GridSpec(1, 2, figure=fig3, left=0.08, right=0.95,
+                                wspace=0.3)
+
+        if tod:
+            ax_tod = fig3.add_subplot(gs3[0, 0])
+            _style_ax(ax_tod, "P&L by Hour (CT)")
+            hours_sorted = sorted(tod.keys())
+            hrs = ["%d:00" % h for h in hours_sorted]
+            pnl_by_hr = [tod[h]["pnl"] for h in hours_sorted]
+            wr_by_hr = []
+            for h in hours_sorted:
+                cnt = tod[h]["count"]
+                w = tod[h]["wins"]
+                wr_by_hr.append(w / cnt * 100 if cnt > 0 else 0)
+            colors_h = [_GRN if p >= 0 else _RD for p in pnl_by_hr]
+            ax_tod.bar(hrs, pnl_by_hr, color=colors_h, width=0.6,
+                       edgecolor=_BG)
+            ax_tod.set_ylabel("P&L ($)", fontsize=8, color=_MUT)
+            ax_tod.tick_params(axis="x", rotation=45, labelsize=7)
+            for i, wr in enumerate(wr_by_hr):
+                ax_tod.text(i, pnl_by_hr[i], "%.0f%%" % wr,
+                            ha="center", va="bottom", fontsize=7,
+                            color=_ACC, fontfamily="monospace")
+
+        if exits:
+            ax_exit = fig3.add_subplot(gs3[0, 1])
+            _style_ax(ax_exit, "Exit Reasons")
+            reasons = sorted(exits.keys(),
+                             key=lambda r: exits[r]["count"], reverse=True)
+            counts = [exits[r]["count"] for r in reasons]
+            avg_pnl = []
+            for r in reasons:
+                cnt = exits[r]["count"]
+                avg_pnl.append(exits[r]["pnl"] / cnt if cnt > 0 else 0)
+            colors_e = [_GRN if p >= 0 else _RD for p in avg_pnl]
+            y_e = range(len(reasons))
+            ax_exit.barh(y_e, counts, color=colors_e, height=0.5,
+                         edgecolor=_BG)
+            _labels = [r.replace("_", " ").title() for r in reasons]
+            ax_exit.set_yticks(list(y_e))
+            ax_exit.set_yticklabels(_labels, fontsize=8, color=_TXT,
+                                    fontfamily="monospace")
+            ax_exit.set_xlabel("Count", fontsize=8, color=_MUT)
+            for i, r in enumerate(reasons):
+                _avg = avg_pnl[i]
+                ax_exit.annotate("avg $%+.0f" % _avg,
+                                 xy=(counts[i], i),
+                                 xytext=(4, 0),
+                                 textcoords="offset points",
+                                 fontsize=7, color=_MUT,
+                                 fontfamily="monospace", va="center")
+
+        buf3 = BytesIO()
+        fig3.savefig(buf3, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig3)
+        buf3.seek(0)
+        charts.append(buf3)
+
+    # ── CHART 4: Multi-Period Recommendations ──
+    if recs:
+        _fig_h = max(3, 1.5 + len(recs) * 0.7)
+        fig4, ax = plt.subplots(figsize=(10, _fig_h), facecolor=_BG)
+        ax.set_facecolor(_PANEL)
+        ax.axis("off")
+        ax.set_title("RECOMMENDATIONS", fontsize=13, color=_AMB,
+                      fontweight="bold", pad=10, loc="left")
+
+        headers = ["Tier", "Param", "Current", "New", "Reason", "Trend"]
+        col_x = [0.02, 0.16, 0.30, 0.42, 0.54, 0.78]
+
+        for i, h in enumerate(headers):
+            ax.text(col_x[i], 0.92, h, fontsize=9, color=_ACC,
+                    fontweight="bold", fontfamily="monospace",
+                    transform=ax.transAxes)
+
+        for j, rec in enumerate(recs):
+            y = 0.82 - j * 0.11
+            if y < 0.05:
+                break
+            imp_color = _RD if rec["impact"] == "high" else (
+                _AMB if rec["impact"] == "medium" else _GRN)
+
+            ax.text(col_x[0], y, rec["tier"], fontsize=8, color=imp_color,
+                    fontfamily="monospace", transform=ax.transAxes)
+            ax.text(col_x[1], y, rec["param"], fontsize=8, color=_TXT,
+                    fontfamily="monospace", transform=ax.transAxes)
+            ax.text(col_x[2], y, str(rec["current"]), fontsize=8,
+                    color=_RD, fontfamily="monospace",
+                    transform=ax.transAxes)
+            ax.text(col_x[3], y, str(rec["suggested"]), fontsize=8,
+                    color=_GRN, fontfamily="monospace",
+                    transform=ax.transAxes)
+            reason_text = rec.get("reason", "")[:22]
+            ax.text(col_x[4], y, reason_text, fontsize=7, color=_MUT,
+                    fontfamily="monospace", transform=ax.transAxes)
+            trend_text = rec.get("trend", "")[:25]
+            ax.text(col_x[5], y, trend_text, fontsize=6, color=_MUT,
+                    fontfamily="monospace", transform=ax.transAxes)
+
+        _footer_y = max(0.02, 0.82 - len(recs) * 0.11 - 0.06)
         ax.text(0.02, _footer_y,
                 "/dayreport_apply to apply  |  /dayreport_reset to revert",
                 fontsize=8, color=_ACC, fontfamily="monospace",
@@ -10508,75 +11142,64 @@ def _generate_replay_report(results, output_path, num_days, param_str,
 # ============================================================
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/dayreport [period] — full trade analysis report.
-    Examples: /dayreport, /dayreport 7d, /dayreport 48h, /dayreport all"""
+    """/dayreport — multi-period trade analysis (1d/10d/30d)."""
     global _last_recs
-    args = context.args or []
-    hours = 24  # default
-    show_all = False
-    if args:
-        arg = args[0].lower().strip()
-        if arg == "all":
-            hours = 24 * 365  # ~1 year
-            show_all = True
-        elif arg.endswith("d"):
-            try:
-                hours = int(arg[:-1]) * 24
-            except ValueError:
-                pass
-        elif arg.endswith("h"):
-            try:
-                hours = int(arg[:-1])
-            except ValueError:
-                pass
 
-    if show_all:
-        period_label = "all time"
-    elif hours < 48:
-        period_label = "%dh" % hours
-    else:
-        period_label = "%dd" % (hours // 24)
+    await update.message.reply_text("Generating multi-period report...")
 
-    await update.message.reply_text("Generating analysis...")
+    # Always run all 3 periods
+    a_1d = analyze_paper_trades(hours=24)
+    a_10d = analyze_paper_trades(hours=240)
+    a_30d = analyze_paper_trades(hours=720)
 
-    analysis = analyze_paper_trades(hours=hours)
-
-    if analysis.get("empty"):
+    # If ALL are empty, show empty message
+    if a_1d.get("empty") and a_10d.get("empty") and a_30d.get("empty"):
         _hist_n = len(paper_trade_history)
         _hint = ""
         if _hist_n > 0:
             _hint = (
                 "\n\nTip: %d trades in history."
-                "\nTry /dayreport all or /dayreport 30d"
+                "\nTry waiting for more trades to close."
             ) % _hist_n
         await update.message.reply_text(
-            "No closed trades in the last %s.%s"
-            % (period_label, _hint)
+            "No closed trades in the last 30 days.%s" % _hint
         )
         return
 
-    spy_chg = _get_spy_change_pct(hours)
-    recs = generate_recommendations(analysis)
+    spy_1d = _get_spy_change_pct(24)
+    spy_10d = _get_spy_change_pct(240)
+    spy_30d = _get_spy_change_pct(720)
+
+    multi = {
+        "1d": {"analysis": a_1d, "spy": spy_1d},
+        "10d": {"analysis": a_10d, "spy": spy_10d},
+        "30d": {"analysis": a_30d, "spy": spy_30d},
+    }
+
+    recs = generate_recommendations_multi(multi)
     _last_recs = recs
 
-    # Generate graphical charts
-    charts = _generate_analysis_charts(analysis, spy_chg, recs, period_label)
+    charts = _generate_analysis_charts_multi(multi, recs)
 
-    # Send each chart as a photo
     chat_id = update.effective_chat.id
     for buf in charts:
         await context.bot.send_photo(chat_id=chat_id, photo=buf)
         await asyncio.sleep(0.3)
 
-    # Brief text summary
-    _tc = analysis["trade_count"]
-    _wr = analysis["win_rate"]
-    _pnl_val = analysis["total_pnl"]
-    _summary = "%s | %d trades | %.0f%% WR | $%+.0f" % (
-        period_label, _tc, _wr, _pnl_val)
-    if recs:
-        _summary += "\n%d recommendations -- /dayreport_apply" % len(recs)
-    await update.message.reply_text(_summary)
+    # Brief text summary using best available period
+    _best = None
+    for period in ["30d", "10d", "1d"]:
+        a = multi[period]["analysis"]
+        if not a.get("empty"):
+            _best = (period, a)
+            break
+    if _best:
+        p, a = _best
+        _summary = "%s: %d trades | %.0f%% WR | $%+.0f" % (
+            p, a["trade_count"], a["win_rate"], a["total_pnl"])
+        if recs:
+            _summary += "\n%d suggestions -- /dayreport_apply" % len(recs)
+        await update.message.reply_text(_summary)
 
 
 async def cmd_dayreport_apply(
@@ -10637,17 +11260,26 @@ async def cmd_dayreport_reset(
 
 
 async def _send_auto_daily_report():
-    """Auto-send daily analysis report at 17:15 CT."""
+    """Auto-send daily multi-period analysis report at 17:15 CT."""
     global _last_recs
     try:
-        analysis = analyze_paper_trades(hours=24)
-        if analysis.get("empty"):
-            return  # Don't send if no trades
-        spy_chg = _get_spy_change_pct(24)
-        recs = generate_recommendations(analysis)
+        a_1d = analyze_paper_trades(hours=24)
+        a_10d = analyze_paper_trades(hours=240)
+        a_30d = analyze_paper_trades(hours=720)
+
+        if a_1d.get("empty") and a_10d.get("empty") and a_30d.get("empty"):
+            return
+
+        multi = {
+            "1d": {"analysis": a_1d, "spy": _get_spy_change_pct(24)},
+            "10d": {"analysis": a_10d, "spy": _get_spy_change_pct(240)},
+            "30d": {"analysis": a_30d, "spy": _get_spy_change_pct(720)},
+        }
+
+        recs = generate_recommendations_multi(multi)
         _last_recs = recs
 
-        charts = _generate_analysis_charts(analysis, spy_chg, recs, "1d")
+        charts = _generate_analysis_charts_multi(multi, recs)
         for buf in charts:
             _send_photo_sync(buf)
             await asyncio.sleep(0.4)
