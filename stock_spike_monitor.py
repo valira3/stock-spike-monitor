@@ -51,7 +51,7 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.13d"
+BOT_VERSION = "2.7.13e"
 RELEASE_NOTES = [
     "2.7.13d — Multi-period /dayreport: always analyzes 1d/10d/30d trends, trend-aware recommendations, grouped tier performance charts, period comparison dashboard.",
     "2.7.13 — /dayreport command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /dayreport_apply, /dayreport_reset.",
@@ -11904,6 +11904,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("delalert",   "Remove alert"),
     BotCommand("watchlist",  "Manage watchlist"),
     BotCommand("backtest",   "Replay backtest"),
+    BotCommand("dayreport",  "1d/10d/30d trade analysis"),
     BotCommand("aistocks",   "AI picks + conviction"),
     BotCommand("ask",        "Chat with Claude"),
     BotCommand("prep",       "Next session plan"),
