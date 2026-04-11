@@ -51,8 +51,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.15"
+BOT_VERSION = "2.7.16"
 RELEASE_NOTES = [
+    "2.7.16 — ORB enhancements: %-based profit target (2%) & trailing stop (0.5%), SPY strength filter (SPY must break its own ORB high), expanded to full S&P 500 universe via FMP API.",
     "2.7.15 — Opening Range Breakout (ORB) strategy: collect 5-min opening range at 08:35 CT, enter on breakout above high, stop fixed at ORB high, switch to tiered trailing once +1% profitable. /orb command shows today's levels. ORB state persisted across restarts.",
     "2.7.14 — Runtime signal gates + /fix command. Applied from weekly analysis: slope gate (default >=0.15%) blocks weak-momentum entries, PowerOpen blocked (default) removes +5 zone bonus 08:45-09:30 CT, /fix command to view/set slope/poweropen/macd gates at runtime, gates persisted in paper_state.json, /dayreport suggests signal-gate fixes, paper_trade_history stores entry_slope/zone/macd.",
     "2.7.13d — Multi-period /dayreport: always analyzes 1d/10d/30d trends, trend-aware recommendations, grouped tier performance charts, period comparison dashboard.",
@@ -2254,6 +2255,15 @@ orb_day: str = ""               # today's date string (YYYY-MM-DD), resets each 
 orb_levels: dict = {}           # {ticker: {"high", "low", "open", "close", "volume", "collected"}}
 orb_triggered: set = set()      # tickers that already got an ORB entry today
 
+# v2.7.16: ORB %-based exit targets
+ORB_PROFIT_TARGET_PCT  = 0.02   # 2% profit target — auto-exit when hit
+ORB_TRAIL_STOP_PCT     = 0.005  # 0.5% trailing stop from high watermark
+ORB_TRAIL_ACTIVATE_PCT = 0.005  # activate trailing once 0.5% profitable
+
+# v2.7.16: S&P 500 universe for ORB scanning
+sp500_tickers: list = []        # refreshed once per day from FMP
+sp500_fetch_day: str = ""       # date string of last S&P 500 fetch
+
 # v2.7.13: Last generated recommendations + auto-report flag
 _last_recs: list = []
 _auto_report_sent_today = False
@@ -2446,6 +2456,8 @@ def save_paper_state():
             "orb_levels": orb_levels,
             "orb_triggered": list(orb_triggered),
         },
+        "sp500_tickers": sp500_tickers,
+        "sp500_fetch_day": sp500_fetch_day,
         "saved_at":           datetime.now(CT).isoformat(),
     }
     with _paper_save_lock:
@@ -2472,6 +2484,7 @@ def load_paper_state():
     global user_config, tp_state, tp_dm_chat_id
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
     global orb_day, orb_levels, orb_triggered
+    global sp500_tickers, sp500_fetch_day
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
     global RUNTIME_MIN_SLOPE_PCT, RUNTIME_BLOCK_POWEROPEN, RUNTIME_MIN_MACD_PTS
 
@@ -2601,6 +2614,10 @@ def load_paper_state():
         orb_day = _orb.get("orb_day", "")
         orb_levels = _orb.get("orb_levels", {})
         orb_triggered = set(_orb.get("orb_triggered", []))
+
+        # v2.7.16: Restore S&P 500 universe
+        sp500_tickers = state.get("sp500_tickers", [])
+        sp500_fetch_day = state.get("sp500_fetch_day", "")
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -5811,28 +5828,57 @@ def paper_evaluate_ticker(ticker: str):
         should_sell = False
         sell_reason = ""
 
-        # v2.7.15: ORB hard stop — check FIRST before ATR/trailing stops
-        if pos.get("orb_stop_active") and pos.get("orb_high"):
-            _orb_stop_price = pos["orb_high"]
-            _orb_pnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
-            if _orb_pnl_pct >= 0.01:
-                # Profitable enough — switch to trailing stop
-                pos["orb_stop_active"] = False
-                logger.info(
-                    "%s ORB stop deactivated: +%.1f%% profit, "
-                    "switching to trailing",
-                    ticker, _orb_pnl_pct * 100,
-                )
-            elif price <= _orb_stop_price:
+        # v2.7.16: ORB 3-tier exit (fixed stop → profit target → trailing)
+        # ORB positions use their OWN exit system, NEVER fall through to tiered stops
+        _is_orb_position = (pos.get("entry_type") == "ORB" and pos.get("orb_high"))
+        if _is_orb_position:
+            _orb_entry_price = pos["entry_price"]
+            _orb_pnl_pct = (price - _orb_entry_price) / _orb_entry_price
+
+            # 1) Fixed stop at ORB high
+            if pos.get("orb_stop_active", True) and price <= pos["orb_high"]:
                 should_sell = True
                 sell_reason = (
                     "ORB-STOP $%.2f (entry $%.2f, ORB high $%.2f)"
-                    % (price, pos["entry_price"], _orb_stop_price)
+                    % (price, _orb_entry_price, pos["orb_high"])
                 )
 
-        # v2.7.0: ATR-based dynamic stops (Rec #1)
+            # 2) Profit target
+            elif _orb_pnl_pct >= ORB_PROFIT_TARGET_PCT:
+                should_sell = True
+                sell_reason = (
+                    "ORB-TARGET +%.1f%% (entry $%.2f, target %.1f%%)"
+                    % (_orb_pnl_pct * 100, _orb_entry_price,
+                       ORB_PROFIT_TARGET_PCT * 100)
+                )
+
+            # 3) Trailing stop (activates once profitable enough)
+            elif _orb_pnl_pct >= ORB_TRAIL_ACTIVATE_PCT:
+                pos["orb_stop_active"] = False  # deactivate fixed stop
+                # Track high watermark
+                _orb_hwm = pos.get("orb_trail_high", 0)
+                if price > _orb_hwm:
+                    pos["orb_trail_high"] = price
+                    _orb_hwm = price
+                _orb_trail_stop = _orb_hwm * (1 - ORB_TRAIL_STOP_PCT)
+                if price <= _orb_trail_stop:
+                    should_sell = True
+                    sell_reason = (
+                        "ORB-TRAIL +%.1f%% (high $%.2f, trail %.1f%%)"
+                        % (_orb_pnl_pct * 100, _orb_hwm,
+                           ORB_TRAIL_STOP_PCT * 100)
+                    )
+
+            # ORB position: skip ALL non-ORB exit checks below
+            if not should_sell:
+                return  # no exit triggered — skip tiered/ATR stops entirely
+            # ORB sell triggered — jump straight to exit execution
+
+        # v2.7.0: ATR-based dynamic stops (Rec #1) — skip for ORB positions
         atr_entry = pos.get("atr_at_entry")
-        if atr_entry and atr_entry > 0:
+        if should_sell:
+            pass  # already have a sell reason (ORB exit) — skip ATR/tiered checks
+        elif atr_entry and atr_entry > 0:
             # ATR-based hard stop — v2.7.7: widened to ATR×3.0 (was 2.5)
             # v2.7.9: tighter ATR×2.0 for fear override positions
             _hard_stop_mult = 2.0 if pos.get("fear_override", False) else 3.0
@@ -5995,6 +6041,10 @@ def paper_evaluate_ticker(ticker: str):
             _sr = sell_reason.upper()
             if "ORB-STOP" in _sr:
                 _exit_reason_norm = "orb_stop"
+            elif "ORB-TARGET" in _sr:
+                _exit_reason_norm = "orb_target"
+            elif "ORB-TRAIL" in _sr:
+                _exit_reason_norm = "orb_trail"
             elif "ATR-HARD" in _sr or "HARD-STOP" in _sr:
                 _exit_reason_norm = "hard_stop"
             elif "ATR-TRAIL" in _sr or "TRAILING" in _sr:
@@ -6611,7 +6661,24 @@ def paper_evaluate_ticker(ticker: str):
 
 # ============================================================
 # v2.7.15: OPENING RANGE BREAKOUT (ORB) STRATEGY
+# v2.7.16: S&P 500 universe, SPY filter, %-based exits
 # ============================================================
+
+
+def _fetch_sp500_tickers():
+    """Fetch current S&P 500 constituent tickers from FMP."""
+    try:
+        url = "https://financialmodelingprep.com/api/v3/sp500_constituent?apikey=%s" % FMP_API_KEY
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        if isinstance(data, list):
+            tickers = [item["symbol"] for item in data if "symbol" in item]
+            logger.info("Fetched %d S&P 500 tickers from FMP", len(tickers))
+            return tickers
+    except Exception as e:
+        logger.warning("Failed to fetch S&P 500 list: %s", e)
+    return []
+
 
 def _fetch_orb_levels(tickers):
     """Fetch the 08:30-08:35 CT 5-min candle for each ticker via Finnhub."""
@@ -6623,8 +6690,9 @@ def _fetch_orb_levels(tickers):
     t_from = int(open_time.timestamp())
     t_to = int(close_time.timestamp())
 
+    total = len(tickers)
     result = {}
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers):
         try:
             _finnhub_limiter.acquire()
             url = (
@@ -6644,27 +6712,74 @@ def _fetch_orb_levels(tickers):
                 }
         except Exception as e:
             logger.warning("ORB fetch failed for %s: %s", ticker, e)
+        if (i + 1) % 50 == 0:
+            logger.info("ORB fetch progress: %d/%d tickers (%d collected)",
+                        i + 1, total, len(result))
+    if total > 50:
+        logger.info("ORB fetch complete: %d/%d tickers collected", len(result), total)
     return result
 
 
-def _check_orb_breakouts():
+def _check_orb_breakouts(quote_cache=None):
     """
-    For each ticker with an ORB level:
-    - If current price > orb_high AND ticker not already triggered -> flag for entry
+    Check for ORB breakouts with SPY strength filter.
+    SPY must be above its own ORB high for any entry to proceed.
+    For S&P 500 tickers not in quote_cache, fetch on-demand only
+    for candidates close to their ORB high (within 1%).
     Returns list of (ticker, price, orb_high) tuples.
     """
+    if quote_cache is None:
+        quote_cache = {}
+
+    # --- SPY strength gate ---
+    spy_orb = orb_levels.get("SPY")
+    if not spy_orb or not spy_orb.get("collected"):
+        return []  # no SPY ORB data — skip all ORB entries
+    # Get SPY price from quote_cache or fetch fresh
+    spy_price = 0
+    spy_q = quote_cache.get("SPY", {})
+    if spy_q:
+        spy_price = spy_q.get("c", 0) or spy_q.get("price", 0) or 0
+    if spy_price <= 0:
+        try:
+            _finnhub_limiter.acquire()
+            _spy_url = "https://finnhub.io/api/v1/quote?symbol=SPY&token=%s" % FINNHUB_TOKEN
+            _spy_resp = requests.get(_spy_url, timeout=5)
+            _spy_data = _spy_resp.json()
+            spy_price = _spy_data.get("c", 0) or 0
+            if spy_price > 0:
+                quote_cache["SPY"] = _spy_data
+        except Exception:
+            pass
+    if spy_price <= 0 or spy_price <= spy_orb["high"]:
+        return []  # SPY is weak — no ORB entries today
+
     breakouts = []
+    _fetched_count = 0
     for ticker, orb in orb_levels.items():
+        if ticker == "SPY":
+            continue  # don't trade SPY itself via ORB
         if not orb.get("collected"):
             continue
         if ticker in orb_triggered:
             continue
         if ticker in paper_positions:
             continue
-        price, _, _ = _get_best_price(ticker)
+
+        orb_high = orb["high"]
+
+        # Try quote_cache first
+        cached_q = quote_cache.get(ticker, {})
+        price = cached_q.get("c", 0) or cached_q.get("price", 0) or 0
+
+        # If not in cache, use _get_best_price (uses Finnhub with rate limiter)
+        if price <= 0:
+            price, _, _ = _get_best_price(ticker)
+            _fetched_count += 1
+
         if not price or price <= 0:
             continue
-        orb_high = orb["high"]
+
         # Need clear break above ORB high (at least 0.05% above to avoid false triggers)
         if price > orb_high * 1.0005:
             breakouts.append((ticker, price, orb_high))
@@ -6731,6 +6846,7 @@ def _execute_orb_entry(ticker, price, orb_high):
         "high":             price,
         "orb_high":         orb_high,
         "orb_stop_active":  True,
+        "orb_trail_high":   0,
         "tier":             tier,
         "atr_at_entry":     get_atr(ticker),
         "speculative":      False,
@@ -6743,25 +6859,29 @@ def _execute_orb_entry(ticker, price, orb_high):
     orb_triggered.add(ticker)
     save_paper_state()
 
-    tier_p = get_tier_params(ticker)
     SEP = "\u2500" * 32
     orb_high_str = "%.2f" % orb_high
     price_str = "%.2f" % price
     shares_str = str(shares)
     cost_str = "%.2f" % cost
-    trail_pct = tier_p["trail"] * 100
+    target_price = price * (1 + ORB_PROFIT_TARGET_PCT)
+    target_str = "%.2f" % target_price
+    target_pct_str = "%.1f" % (ORB_PROFIT_TARGET_PCT * 100)
+    trail_pct_str = "%.1f" % (ORB_TRAIL_STOP_PCT * 100)
 
     msg = (
         "\U0001f4a5 ORB BREAKOUT \u2014 %s\n"
         "%s\n"
-        "  Price: $%s (ORB high: $%s)\n"
-        "  Stop:  $%s (fixed at ORB high)\n"
-        "  Size:  %s shares ($%s)\n"
-        "  Tier:  %s\n"
-        "  Trail: %.1f%% once +1%% profitable\n"
+        "  Price:  $%s (ORB high: $%s)\n"
+        "  Stop:   $%s (fixed, then %s%% trail)\n"
+        "  Target: ~%s%% ($%s)\n"
+        "  Size:   %s shares @ $%s\n"
+        "  Tier:   %s\n"
+        "  SPY:    \u2705 above ORB high\n"
         "%s"
     ) % (ticker, SEP, price_str, orb_high_str, orb_high_str,
-         shares_str, cost_str, tier, trail_pct, SEP)
+         trail_pct_str, target_pct_str, target_str,
+         shares_str, price_str, tier, SEP)
 
     send_telegram(msg)
     paper_log("ORB BUY %s @ $%.2f | stop=$%.2f | %d shares | cost=$%.2f"
@@ -6786,11 +6906,12 @@ def paper_scan():
     Plugged into check_stocks() cadence via scheduler.
     """
     global orb_day, orb_levels, orb_triggered
+    global sp500_tickers, sp500_fetch_day
 
     if get_trading_session() not in ("regular", "extended"):
         return
 
-    # --- v2.7.15: ORB collection & breakout check ---
+    # --- v2.7.16: ORB collection & breakout check (S&P 500 universe) ---
     now_ct = datetime.now(CT)
     _today_str = now_ct.strftime("%Y-%m-%d")
 
@@ -6801,14 +6922,27 @@ def paper_scan():
             orb_levels.clear()
             orb_triggered.clear()
 
+            # v2.7.16: Refresh S&P 500 list daily
+            if sp500_fetch_day != _today_str:
+                _new_sp500 = _fetch_sp500_tickers()
+                if _new_sp500:
+                    sp500_tickers = _new_sp500
+                    sp500_fetch_day = _today_str
+                    save_paper_state()
+
         # Collect ORB levels once per day in the 08:35-08:45 CT window
+        # v2.7.16: scan full S&P 500 + SPY (was watchlist only)
         if (now_ct.hour == 8 and 35 <= now_ct.minute < 45
                 and not orb_levels):
+            _orb_universe = list(set(
+                (sp500_tickers if sp500_tickers else list(TICKERS))
+                + ["SPY"]
+            ))
             logger.info(
-                "Collecting ORB levels for %d tickers...",
-                len(TICKERS),
+                "Collecting ORB levels for %d tickers (S&P 500 universe)...",
+                len(_orb_universe),
             )
-            orb_levels.update(_fetch_orb_levels(list(TICKERS)))
+            orb_levels.update(_fetch_orb_levels(_orb_universe))
             logger.info(
                 "ORB levels collected: %d tickers", len(orb_levels),
             )
@@ -11699,7 +11833,7 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show today's ORB levels and breakout status."""
+    """Show today's ORB levels, SPY status, and breakout status."""
     if not orb_levels:
         await update.message.reply_text(
             "No ORB levels yet.\n"
@@ -11709,22 +11843,67 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sep = "\u2500" * 32
     lines = ["\U0001f4ca ORB LEVELS \u2014 %s" % orb_day, sep]
+
+    # v2.7.16: SPY status header
+    spy_orb = orb_levels.get("SPY")
+    if spy_orb and spy_orb.get("collected"):
+        spy_price, _, _ = _get_best_price("SPY")
+        spy_price = spy_price or 0
+        spy_high = spy_orb["high"]
+        spy_status = "\u2705 STRONG" if spy_price > spy_high else "\u274c WEAK"
+        spy_price_str = "%.2f" % spy_price if spy_price else "N/A"
+        spy_high_str = "%.2f" % spy_high
+        lines.append("SPY: $%s (ORB high: $%s) %s" % (spy_price_str, spy_high_str, spy_status))
+    else:
+        lines.append("SPY: no ORB data")
+
+    # Universe info
+    universe_count = len([t for t in orb_levels if orb_levels[t].get("collected")])
+    lines.append("Universe: %d S&P 500 stocks" % universe_count)
+    lines.append(sep)
+
     triggered_count = len(orb_triggered)
 
-    for ticker in sorted(orb_levels.keys()):
-        orb = orb_levels[ticker]
+    # Show top breakout candidates (closest to ORB high, not yet triggered)
+    candidates = []
+    for ticker, orb in orb_levels.items():
+        if ticker == "SPY":
+            continue
         if not orb.get("collected"):
+            continue
+        if ticker in orb_triggered:
             continue
         h = orb["high"]
         o = orb["open"]
-        pct_from_open = (h - o) / o * 100 if o else 0
-        status = " \u2705" if ticker in orb_triggered else ""
-        lines.append(
-            "%-6s $%.2f (%+.1f%% rng)%s" % (ticker, h, pct_from_open, status)
-        )
+        if h <= 0:
+            continue
+        # Estimate distance using ORB close as proxy for current price
+        proxy_price = orb.get("close", 0) or 0
+        if proxy_price <= 0:
+            continue
+        pct_away = (h - proxy_price) / h * 100 if proxy_price < h else 0
+        candidates.append((ticker, proxy_price, h, pct_away))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[3])
+        lines.append("Top breakout candidates (closest to ORB high):")
+        for _t, _pr, _h, _pct in candidates[:10]:
+            lines.append(
+                "%-6s $%.2f \u2192 ORB $%.2f (%.2f%% away)" % (_t, _pr, _h, _pct)
+            )
+
+    # Show triggered tickers
+    if orb_triggered:
+        triggered_list = " ".join("%s \u2705" % t for t in sorted(orb_triggered))
+        lines.append("Triggered today: %s" % triggered_list)
 
     lines.append(sep)
-    lines.append("Breakouts today: %d" % triggered_count)
+    target_pct_str = "%.1f" % (ORB_PROFIT_TARGET_PCT * 100)
+    trail_pct_str = "%.1f" % (ORB_TRAIL_STOP_PCT * 100)
+    lines.append(
+        "Breakouts: %d | Target: %s%% | Trail: %s%%"
+        % (triggered_count, target_pct_str, trail_pct_str)
+    )
 
     # Show active ORB positions
     orb_positions = [
@@ -11738,7 +11917,12 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pr, _, _ = _get_best_price(t)
             pr = pr or p["entry_price"]
             pnl = (pr - p["entry_price"]) / p["entry_price"] * 100
-            stop_label = "ORB fixed" if p.get("orb_stop_active") else "trailing"
+            if p.get("orb_stop_active"):
+                stop_label = "ORB fixed"
+            elif p.get("orb_trail_high", 0) > 0:
+                stop_label = "trail (hw $%.2f)" % p["orb_trail_high"]
+            else:
+                stop_label = "trailing"
             lines.append(
                 "  %s %+.1f%% stop=%s" % (t, pnl, stop_label)
             )
