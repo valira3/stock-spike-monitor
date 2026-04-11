@@ -51,8 +51,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.14"
+BOT_VERSION = "2.7.15"
 RELEASE_NOTES = [
+    "2.7.15 — Opening Range Breakout (ORB) strategy: collect 5-min opening range at 08:35 CT, enter on breakout above high, stop fixed at ORB high, switch to tiered trailing once +1% profitable. /orb command shows today's levels. ORB state persisted across restarts.",
     "2.7.14 — Runtime signal gates + /fix command. Applied from weekly analysis: slope gate (default >=0.15%) blocks weak-momentum entries, PowerOpen blocked (default) removes +5 zone bonus 08:45-09:30 CT, /fix command to view/set slope/poweropen/macd gates at runtime, gates persisted in paper_state.json, /dayreport suggests signal-gate fixes, paper_trade_history stores entry_slope/zone/macd.",
     "2.7.13d — Multi-period /dayreport: always analyzes 1d/10d/30d trends, trend-aware recommendations, grouped tier performance charts, period comparison dashboard.",
     "2.7.13 — /dayreport command + daily auto-report: full trade analysis (P&L, tier breakdown, time-of-day, drawdown), auto-report at 17:15 CT, recommendation engine with runtime override via /dayreport_apply, /dayreport_reset.",
@@ -293,6 +294,7 @@ BOT_DESCRIPTION = (
     " /perf        performance dashboard\n"
     " /overnight   gap risk on holdings\n"
     " /backtest [days] [tp=X sl=X] replay backtest\n"
+    " /orb         opening range breakout levels\n"
     "\n"
     "OPTIONS\n"
     " /vixalert    VIX put-selling setup\n"
@@ -2247,6 +2249,11 @@ RUNTIME_MIN_SLOPE_PCT: float = 0.15      # block entries with slope < this. 0.0 
 RUNTIME_BLOCK_POWEROPEN: bool = True     # neutralize PowerOpen +5 zone bonus
 RUNTIME_MIN_MACD_PTS: int = 0           # block entries where macd_pts < this. 0 = off
 
+# v2.7.15: Opening Range Breakout (ORB) state
+orb_day: str = ""               # today's date string (YYYY-MM-DD), resets each morning
+orb_levels: dict = {}           # {ticker: {"high", "low", "open", "close", "volume", "collected"}}
+orb_triggered: set = set()      # tickers that already got an ORB entry today
+
 # v2.7.13: Last generated recommendations + auto-report flag
 _last_recs: list = []
 _auto_report_sent_today = False
@@ -2434,6 +2441,11 @@ def save_paper_state():
             "block_poweropen": RUNTIME_BLOCK_POWEROPEN,
             "min_macd_pts": RUNTIME_MIN_MACD_PTS,
         },
+        "orb_state": {
+            "orb_day": orb_day,
+            "orb_levels": orb_levels,
+            "orb_triggered": list(orb_triggered),
+        },
         "saved_at":           datetime.now(CT).isoformat(),
     }
     with _paper_save_lock:
@@ -2459,6 +2471,7 @@ def load_paper_state():
     global paper_trade_history
     global user_config, tp_state, tp_dm_chat_id
     global PAPER_STOP_LOSS_PCT, PAPER_TAKE_PROFIT_PCT, PAPER_TRAILING_STOP_PCT
+    global orb_day, orb_levels, orb_triggered
     global PAPER_MAX_POSITIONS, PAPER_MIN_SIGNAL
     global RUNTIME_MIN_SLOPE_PCT, RUNTIME_BLOCK_POWEROPEN, RUNTIME_MIN_MACD_PTS
 
@@ -2582,6 +2595,12 @@ def load_paper_state():
         RUNTIME_MIN_SLOPE_PCT = float(_gates.get("min_slope_pct", 0.15))
         RUNTIME_BLOCK_POWEROPEN = bool(_gates.get("block_poweropen", True))
         RUNTIME_MIN_MACD_PTS = int(_gates.get("min_macd_pts", 0))
+
+        # v2.7.15: Restore ORB state
+        _orb = state.get("orb_state", {})
+        orb_day = _orb.get("orb_day", "")
+        orb_levels = _orb.get("orb_levels", {})
+        orb_triggered = set(_orb.get("orb_triggered", []))
 
         # Only restore intraday state if saved today
         saved_at   = state.get("saved_at", "")
@@ -5792,6 +5811,25 @@ def paper_evaluate_ticker(ticker: str):
         should_sell = False
         sell_reason = ""
 
+        # v2.7.15: ORB hard stop — check FIRST before ATR/trailing stops
+        if pos.get("orb_stop_active") and pos.get("orb_high"):
+            _orb_stop_price = pos["orb_high"]
+            _orb_pnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
+            if _orb_pnl_pct >= 0.01:
+                # Profitable enough — switch to trailing stop
+                pos["orb_stop_active"] = False
+                logger.info(
+                    "%s ORB stop deactivated: +%.1f%% profit, "
+                    "switching to trailing",
+                    ticker, _orb_pnl_pct * 100,
+                )
+            elif price <= _orb_stop_price:
+                should_sell = True
+                sell_reason = (
+                    "ORB-STOP $%.2f (entry $%.2f, ORB high $%.2f)"
+                    % (price, pos["entry_price"], _orb_stop_price)
+                )
+
         # v2.7.0: ATR-based dynamic stops (Rec #1)
         atr_entry = pos.get("atr_at_entry")
         if atr_entry and atr_entry > 0:
@@ -5955,7 +5993,9 @@ def paper_evaluate_ticker(ticker: str):
             # v2.7.13: Append to closed trade history for /dayreport
             _exit_reason_norm = "unknown"
             _sr = sell_reason.upper()
-            if "ATR-HARD" in _sr or "HARD-STOP" in _sr:
+            if "ORB-STOP" in _sr:
+                _exit_reason_norm = "orb_stop"
+            elif "ATR-HARD" in _sr or "HARD-STOP" in _sr:
                 _exit_reason_norm = "hard_stop"
             elif "ATR-TRAIL" in _sr or "TRAILING" in _sr:
                 _exit_reason_norm = "trailing_stop"
@@ -5993,6 +6033,8 @@ def paper_evaluate_ticker(ticker: str):
                 "entry_slope_pct": pos.get("entry_slope_pct", 0),   # v2.7.14
                 "entry_zone": pos.get("entry_zone", ""),             # v2.7.14
                 "entry_macd_pts": pos.get("entry_macd_pts", 0),     # v2.7.14
+                "entry_type": pos.get("entry_type", "signal"),       # v2.7.15
+                "orb_high": pos.get("orb_high"),                     # v2.7.15
             })
             if len(paper_trade_history) > PAPER_HISTORY_MAX:
                 paper_trade_history[:] = paper_trade_history[-PAPER_HISTORY_MAX:]
@@ -6044,6 +6086,7 @@ def paper_evaluate_ticker(ticker: str):
 
             pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
             reason_map = {
+                "ORB-STOP":    "🛑 ORB stop (below opening range)",
                 "TAKE-PROFIT": "✅ Take-profit hit",
                 "HARD-STOP":   "🛑 Hard stop triggered",
                 "TRAILING-STOP": "📉 Trailing stop hit",
@@ -6566,13 +6609,222 @@ def paper_evaluate_ticker(ticker: str):
             logger.error(f"[TP] BUY error: {e}")
 
 
+# ============================================================
+# v2.7.15: OPENING RANGE BREAKOUT (ORB) STRATEGY
+# ============================================================
+
+def _fetch_orb_levels(tickers):
+    """Fetch the 08:30-08:35 CT 5-min candle for each ticker via Finnhub."""
+    from datetime import date as _date_cls
+    today = _date_cls.today()
+    # Build UNIX timestamps for 08:30 and 08:36 CT (slightly past 08:35 to ensure candle complete)
+    open_time = datetime(today.year, today.month, today.day, 8, 30, 0, tzinfo=CT)
+    close_time = datetime(today.year, today.month, today.day, 8, 36, 0, tzinfo=CT)
+    t_from = int(open_time.timestamp())
+    t_to = int(close_time.timestamp())
+
+    result = {}
+    for ticker in tickers:
+        try:
+            _finnhub_limiter.acquire()
+            url = (
+                "https://finnhub.io/api/v1/stock/candle"
+                "?symbol=%s&resolution=5&from=%d&to=%d&token=%s"
+            ) % (ticker, t_from, t_to, FINNHUB_TOKEN)
+            resp = requests.get(url, timeout=5)
+            data = resp.json()
+            if data.get("s") == "ok" and data.get("h"):
+                result[ticker] = {
+                    "high":      data["h"][0],
+                    "low":       data["l"][0],
+                    "open":      data["o"][0],
+                    "close":     data["c"][0],
+                    "volume":    data["v"][0],
+                    "collected": True,
+                }
+        except Exception as e:
+            logger.warning("ORB fetch failed for %s: %s", ticker, e)
+    return result
+
+
+def _check_orb_breakouts():
+    """
+    For each ticker with an ORB level:
+    - If current price > orb_high AND ticker not already triggered -> flag for entry
+    Returns list of (ticker, price, orb_high) tuples.
+    """
+    breakouts = []
+    for ticker, orb in orb_levels.items():
+        if not orb.get("collected"):
+            continue
+        if ticker in orb_triggered:
+            continue
+        if ticker in paper_positions:
+            continue
+        price, _, _ = _get_best_price(ticker)
+        if not price or price <= 0:
+            continue
+        orb_high = orb["high"]
+        # Need clear break above ORB high (at least 0.05% above to avoid false triggers)
+        if price > orb_high * 1.0005:
+            breakouts.append((ticker, price, orb_high))
+    return breakouts
+
+
+def _execute_orb_entry(ticker, price, orb_high):
+    """Execute an ORB paper buy with stop fixed at orb_high."""
+    global paper_cash
+
+    if ticker in paper_positions:
+        return
+    if len(paper_positions) >= PAPER_MAX_POSITIONS:
+        return
+
+    # Quality gates (lighter than full signal gates)
+    # Regime check: F&G > 20 (not in fear pause)
+    _fg_val, _ = get_fear_greed()
+    _fg = int(_fg_val) if _fg_val else 50
+    if _fg < 20:
+        logger.info("ORB skip %s: F&G=%d < 20", ticker, _fg)
+        return
+
+    # Earnings blackout
+    if _has_upcoming_earnings(ticker):
+        logger.info("ORB skip %s: earnings proximity", ticker)
+        return
+
+    # Position sizing: risk 1% of equity on this trade
+    equity = paper_cash + sum(
+        p["shares"] * (p.get("entry_price", p["avg_cost"]))
+        for p in paper_positions.values()
+    )
+    stop_distance = price - orb_high
+    if stop_distance <= 0:
+        return
+
+    risk_amount = equity * 0.01
+    shares = int(risk_amount / stop_distance)
+    if shares < 1:
+        shares = 1
+
+    tier = get_ticker_tier(ticker)
+
+    cost = round(shares * price, 2)
+    if cost > paper_cash:
+        shares = int(paper_cash * 0.95 / price)
+        if shares < 1:
+            return
+        cost = round(shares * price, 2)
+
+    paper_cash -= cost
+
+    now_ct = datetime.now(CT)
+
+    paper_positions[ticker] = {
+        "shares":           shares,
+        "avg_cost":         price,
+        "entry_price":      price,
+        "entry_time":       now_ct.strftime("%H:%M:%S"),
+        "entry_date":       now_ct.strftime("%Y-%m-%d"),
+        "entry_score":      0,
+        "entry_type":       "ORB",
+        "high":             price,
+        "orb_high":         orb_high,
+        "orb_stop_active":  True,
+        "tier":             tier,
+        "atr_at_entry":     get_atr(ticker),
+        "speculative":      False,
+        "fear_override":    False,
+        "entry_slope_pct":  0,
+        "entry_zone":       "ORB",
+        "entry_macd_pts":   0,
+    }
+
+    orb_triggered.add(ticker)
+    save_paper_state()
+
+    tier_p = get_tier_params(ticker)
+    SEP = "\u2500" * 32
+    orb_high_str = "%.2f" % orb_high
+    price_str = "%.2f" % price
+    shares_str = str(shares)
+    cost_str = "%.2f" % cost
+    trail_pct = tier_p["trail"] * 100
+
+    msg = (
+        "\U0001f4a5 ORB BREAKOUT \u2014 %s\n"
+        "%s\n"
+        "  Price: $%s (ORB high: $%s)\n"
+        "  Stop:  $%s (fixed at ORB high)\n"
+        "  Size:  %s shares ($%s)\n"
+        "  Tier:  %s\n"
+        "  Trail: %.1f%% once +1%% profitable\n"
+        "%s"
+    ) % (ticker, SEP, price_str, orb_high_str, orb_high_str,
+         shares_str, cost_str, tier, trail_pct, SEP)
+
+    send_telegram(msg)
+    paper_log("ORB BUY %s @ $%.2f | stop=$%.2f | %d shares | cost=$%.2f"
+              % (ticker, price, orb_high, shares, cost))
+
+    # Record trade
+    trade = {
+        "action": "BUY", "ticker": ticker, "shares": shares,
+        "price": price, "cost": cost,
+        "signal_score": 0, "signal_detail": "ORB breakout",
+        "time": now_ct.strftime("%H:%M:%S"),
+        "date": now_ct.strftime("%Y-%m-%d"),
+        "portfolio_value": paper_portfolio_value(),
+    }
+    paper_trades_today.append(trade)
+    paper_all_trades.append(trade)
+
+
 def paper_scan():
     """
     Run paper trading evaluation for all monitored tickers.
     Plugged into check_stocks() cadence via scheduler.
     """
+    global orb_day, orb_levels, orb_triggered
+
     if get_trading_session() not in ("regular", "extended"):
         return
+
+    # --- v2.7.15: ORB collection & breakout check ---
+    now_ct = datetime.now(CT)
+    _today_str = now_ct.strftime("%Y-%m-%d")
+
+    if now_ct.weekday() < 5:  # weekday only
+        # Reset ORB data on new day
+        if orb_day != _today_str:
+            orb_day = _today_str
+            orb_levels.clear()
+            orb_triggered.clear()
+
+        # Collect ORB levels once per day in the 08:35-08:45 CT window
+        if (now_ct.hour == 8 and 35 <= now_ct.minute < 45
+                and not orb_levels):
+            logger.info(
+                "Collecting ORB levels for %d tickers...",
+                len(TICKERS),
+            )
+            orb_levels.update(_fetch_orb_levels(list(TICKERS)))
+            logger.info(
+                "ORB levels collected: %d tickers", len(orb_levels),
+            )
+            save_paper_state()
+
+        # Check for ORB breakouts after 08:35
+        _past_open = (now_ct.hour > 8 or
+                      (now_ct.hour == 8 and now_ct.minute >= 35))
+        if _past_open and orb_levels:
+            try:
+                breakout_list = _check_orb_breakouts()
+                for _ob_ticker, _ob_price, _ob_high in breakout_list:
+                    _execute_orb_entry(_ob_ticker, _ob_price, _ob_high)
+            except Exception as e:
+                logger.error("ORB breakout check error: %s", e)
+
     for ticker in list(TICKERS):
         # Skip tickers without enough history for meaningful signals
         hist = price_history.get(ticker, deque())
@@ -11446,6 +11698,54 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_paper_state()
 
 
+async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show today's ORB levels and breakout status."""
+    if not orb_levels:
+        await update.message.reply_text(
+            "No ORB levels yet.\n"
+            "Levels are collected at 08:35 CT each trading day."
+        )
+        return
+
+    sep = "\u2500" * 32
+    lines = ["\U0001f4ca ORB LEVELS \u2014 %s" % orb_day, sep]
+    triggered_count = len(orb_triggered)
+
+    for ticker in sorted(orb_levels.keys()):
+        orb = orb_levels[ticker]
+        if not orb.get("collected"):
+            continue
+        h = orb["high"]
+        o = orb["open"]
+        pct_from_open = (h - o) / o * 100 if o else 0
+        status = " \u2705" if ticker in orb_triggered else ""
+        lines.append(
+            "%-6s $%.2f (%+.1f%% rng)%s" % (ticker, h, pct_from_open, status)
+        )
+
+    lines.append(sep)
+    lines.append("Breakouts today: %d" % triggered_count)
+
+    # Show active ORB positions
+    orb_positions = [
+        (t, p) for t, p in paper_positions.items()
+        if p.get("entry_type") == "ORB"
+    ]
+    if orb_positions:
+        lines.append("")
+        lines.append("ACTIVE ORB POSITIONS:")
+        for t, p in orb_positions:
+            pr, _, _ = _get_best_price(t)
+            pr = pr or p["entry_price"]
+            pnl = (pr - p["entry_price"]) / p["entry_price"] * 100
+            stop_label = "ORB fixed" if p.get("orb_stop_active") else "trailing"
+            lines.append(
+                "  %s %+.1f%% stop=%s" % (t, pnl, stop_label)
+            )
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def _send_auto_daily_report():
     """Auto-send daily multi-period analysis report at 17:15 CT."""
     global _last_recs
@@ -12093,6 +12393,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("backtest",   "Replay backtest"),
     BotCommand("dayreport",  "1d/10d/30d trade analysis"),
     BotCommand("fix",        "Runtime signal gates"),
+    BotCommand("orb",        "Today's opening range levels"),
     BotCommand("aistocks",   "AI picks + conviction"),
     BotCommand("ask",        "Chat with Claude"),
     BotCommand("prep",       "Next session plan"),
@@ -12221,6 +12522,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("dayreport_apply", cmd_dayreport_apply))
     app.add_handler(CommandHandler("dayreport_reset", cmd_dayreport_reset))
     app.add_handler(CommandHandler("fix",             cmd_fix))
+    app.add_handler(CommandHandler("orb",             cmd_orb))
 
     # ── Second bot for TP channel (separate token) ───────────
     if not TELEGRAM_TP_TOKEN:
