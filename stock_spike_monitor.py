@@ -66,7 +66,7 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.18"
+BOT_VERSION = "2.7.18a"
 RELEASE_NOTES = [
     "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
@@ -376,7 +376,7 @@ _analyst_cache: dict = {}        # {ticker: {"score": int, "label": str, "buy_pc
 _analyst_cache_date: str = ""    # refresh daily
 
 # ── v2.7.18: API Health Monitoring ────────────────────────────────
-# {endpoint: {"ok": int, "fail": int, "consec_fail": int,
+# {endpoint: {"ok": int, "fail": int, "rl": int, "consec_fail": int,
 #             "last_fail": str, "last_ok": str, "last_err": str,
 #             "alerted": bool, "alert_time": datetime|None}}
 _api_health: dict = {}
@@ -518,19 +518,25 @@ def send_tp_telegram(message):
 # v2.7.18: API HEALTH MONITORING — record, alert, recover
 # ============================================================
 
-def _api_health_record(endpoint: str, success: bool, error: str = "") -> None:
+def _api_health_record(endpoint: str, success: bool, error: str = "",
+                       rate_limit: bool = False) -> None:
     """
     Record an API call outcome. Thread-safe.
-    Triggers a Telegram alert if consecutive failures exceed threshold.
+    rate_limit=True: counts as a 429 throttle (not a true failure, no alert triggered).
+    Triggers a Telegram alert if consecutive TRUE failures exceed threshold.
     Triggers a recovery alert when an alerted endpoint comes back.
     """
     now_str = datetime.now(CT).strftime("%H:%M:%S")
     with _api_health_lock:
         h = _api_health.setdefault(endpoint, {
-            "ok": 0, "fail": 0, "consec_fail": 0,
+            "ok": 0, "fail": 0, "rl": 0, "consec_fail": 0,
             "last_fail": "", "last_ok": "", "last_err": "",
             "alerted": False, "alert_time": None,
         })
+        # 429 rate limits are informational -- track separately, never alert
+        if rate_limit:
+            h["rl"] += 1
+            return
         if success:
             was_alerted = h["alerted"]
             h["ok"] += 1
@@ -939,7 +945,7 @@ def _finnhub_quote(ticker: str) -> dict:
         )
         if r.status_code == 429:
             logger.warning(f"Finnhub 429 on quote {ticker}")
-            _api_health_record("finnhub_quote", False, "429 rate limited")
+            _api_health_record("finnhub_quote", False, rate_limit=True)
             _quote_cache.put(f"quote:{ticker}", {})  # cache empty for TTL to avoid retry storm
             return {}
         d = r.json()
@@ -973,7 +979,7 @@ def _finnhub_metrics(ticker: str) -> dict:
         )
         if r.status_code == 429:
             logger.warning(f"Finnhub 429 on metrics {ticker}")
-            _api_health_record("finnhub_metric", False, "429 rate limited")
+            _api_health_record("finnhub_metric", False, rate_limit=True)
             _metrics_cache.put(f"metrics:{ticker}", {})  # cache empty to avoid retry storm
             return {}
         result = r.json().get("metric", {})
@@ -13156,7 +13162,9 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
             short_name = name.split("(")[0].strip()
             ok_count = h.get("ok", 0)
             fail_count = h.get("fail", 0)
-            line = "%s %-24s ok=%d fail=%d" % (icon, short_name, ok_count, fail_count)
+            rl_count = h.get("rl", 0)
+            rl_str = " rl=%d" % rl_count if rl_count > 0 else ""
+            line = "%s %-24s ok=%d fail=%d%s" % (icon, short_name, ok_count, fail_count, rl_str)
             lines.append(line)
             if cf > 0 and h.get("last_err"):
                 err_preview = h["last_err"][:60]
