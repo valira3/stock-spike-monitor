@@ -51,8 +51,24 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.17"
+# Hardcoded fallback list — roughly 100 most liquid S&P 500 names
+# Used if all dynamic sources (FMP stable + Wikipedia) fail
+SP500_FALLBACK = [
+    "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","TSLA","BRK.B","JPM",
+    "V","UNH","XOM","WMT","MA","LLY","JNJ","PG","HD","MRK","AVGO","CVX",
+    "ABBV","KO","PEP","COST","TMO","MCD","CRM","ABT","CSCO","NFLX","AMD",
+    "BAC","DHR","NEE","ACN","TXN","WFC","PM","INTC","IBM","QCOM","AMGN",
+    "HON","ORCL","CAT","INTU","SPGI","GE","AXP","AMAT","BKNG","SBUX","GS",
+    "MS","MDLZ","ADP","MMC","PLD","ISRG","GILD","CI","SYK","BLK","T","MO",
+    "C","ZTS","DE","VRTX","ADI","LRCX","KLAC","PANW","MELI","REGN","TGT",
+    "DUK","SO","D","PNC","USB","TFC","COF","MET","PRU","HUM","ELV","CVS",
+    "MCK","AIG","AFL","MMM","ITW","ETN","EMR","DOW","LIN","APD","ECL","PPG",
+    "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
+]
+
+BOT_VERSION = "2.7.18"
 RELEASE_NOTES = [
+    "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
     "2.7.16 — ORB enhancements: %-based profit target (2%) & trailing stop (0.5%), SPY strength filter (SPY must break its own ORB high), expanded to full S&P 500 universe via FMP API.",
     "2.7.15 — Opening Range Breakout (ORB) strategy: collect 5-min opening range at 08:35 CT, enter on breakout above high, stop fixed at ORB high, switch to tiered trailing once +1% profitable. /orb command shows today's levels. ORB state persisted across restarts.",
@@ -359,6 +375,34 @@ INSIDER_MSPR_SELL = -20.0        # threshold for -1 pt (caution)
 _analyst_cache: dict = {}        # {ticker: {"score": int, "label": str, "buy_pct": float}}
 _analyst_cache_date: str = ""    # refresh daily
 
+# ── v2.7.18: API Health Monitoring ────────────────────────────────
+# {endpoint: {"ok": int, "fail": int, "consec_fail": int,
+#             "last_fail": str, "last_ok": str, "last_err": str,
+#             "alerted": bool, "alert_time": datetime|None}}
+_api_health: dict = {}
+_api_health_lock = threading.Lock()
+
+# Endpoint registry — human-readable name + what it powers
+API_REGISTRY = {
+    "finnhub_quote":        "Finnhub /quote (price data)",
+    "finnhub_metric":       "Finnhub /stock/metric (fundamentals)",
+    "finnhub_news":         "Finnhub /company-news + /news",
+    "finnhub_earnings_cal": "Finnhub /calendar/earnings",
+    "finnhub_insider":      "Finnhub /stock/insider-sentiment",
+    "finnhub_analyst":      "Finnhub /stock/recommendation",
+    "fmp_movers":           "FMP gainers/losers/actives",
+    "fmp_earnings_cal":     "FMP /stable/earnings-calendar",
+    "fmp_sp500":            "FMP S&P 500 constituent list",
+    "yahoo_chart":          "Yahoo Finance 5m candles (ORB)",
+    "alternative_fng":      "Alternative.me Fear & Greed",
+    "anthropic_claude":     "Anthropic Claude AI (news analysis)",
+    "traderspost":          "TradersPost webhook (TP orders)",
+    "telegram":             "Telegram Bot API",
+}
+
+HEALTH_ALERT_CONSEC = 3    # alert after this many consecutive failures
+HEALTH_ALERT_COOLDOWN = 60 # minutes between repeated alerts for same endpoint
+
 # ── Signal data logger for future backtesting ──────────────────
 _signal_log_lock = threading.Lock()
 SIGNAL_LOG_FILE = os.path.join(
@@ -385,9 +429,12 @@ def send_telegram(text, chat_id=None):
         parts.append(current.rstrip())
 
     total = len(parts)
+    _tg_ok = True
+    _tg_last_err = ""
     for i, part in enumerate(parts, 1):
         prefix  = f"{i}/{total} " if total > 1 else ""
         payload = {"chat_id": cid, "text": prefix + part}
+        sent = False
         for attempt in range(5):
             try:
                 r = requests.post(
@@ -399,12 +446,21 @@ def send_telegram(text, chat_id=None):
                     logger.warning(f"Telegram 429 — sleeping {wait}s")
                     time.sleep(wait)
                     continue
+                sent = True
                 time.sleep(0.3)
                 break
             except Exception as e:
+                _tg_last_err = str(e)
                 wait = 2 ** attempt
                 logger.error(f"Telegram send error (attempt {attempt+1}): {e}. Retry in {wait}s")
                 time.sleep(wait)
+        if not sent:
+            _tg_ok = False
+    # Record health once per call (not per part)
+    if _tg_ok:
+        _api_health_record("telegram", True)
+    else:
+        _api_health_record("telegram", False, _tg_last_err)
 
 
 def _send_photo_sync(buf, chat_id=None):
@@ -452,8 +508,99 @@ def send_tp_telegram(message):
             "text": message,
         }
         requests.post(url, json=payload, timeout=10)
+        _api_health_record("telegram", True)
     except Exception as e:
+        _api_health_record("telegram", False, str(e))
         logger.error(f"[TP] Failed to send DM: {e}")
+
+
+# ============================================================
+# v2.7.18: API HEALTH MONITORING — record, alert, recover
+# ============================================================
+
+def _api_health_record(endpoint: str, success: bool, error: str = "") -> None:
+    """
+    Record an API call outcome. Thread-safe.
+    Triggers a Telegram alert if consecutive failures exceed threshold.
+    Triggers a recovery alert when an alerted endpoint comes back.
+    """
+    now_str = datetime.now(CT).strftime("%H:%M:%S")
+    with _api_health_lock:
+        h = _api_health.setdefault(endpoint, {
+            "ok": 0, "fail": 0, "consec_fail": 0,
+            "last_fail": "", "last_ok": "", "last_err": "",
+            "alerted": False, "alert_time": None,
+        })
+        if success:
+            was_alerted = h["alerted"]
+            h["ok"] += 1
+            h["consec_fail"] = 0
+            h["last_ok"] = now_str
+            h["alerted"] = False
+            # Recovery alert — only if we previously sent a failure alert
+            if was_alerted:
+                threading.Thread(
+                    target=_send_health_recovery,
+                    args=(endpoint,),
+                    daemon=True,
+                ).start()
+        else:
+            h["fail"] += 1
+            h["consec_fail"] += 1
+            h["last_fail"] = now_str
+            h["last_err"] = error[:120] if error else "unknown error"
+
+            # Alert if threshold crossed and not already alerted
+            should_alert = (
+                h["consec_fail"] >= HEALTH_ALERT_CONSEC
+                and not h["alerted"]
+            )
+            if should_alert:
+                h["alerted"] = True
+                h["alert_time"] = datetime.now(CT)
+                # Fire alert in background thread to avoid blocking
+                threading.Thread(
+                    target=_send_health_alert,
+                    args=(endpoint, h["consec_fail"], h["last_err"]),
+                    daemon=True,
+                ).start()
+
+
+def _send_health_alert(endpoint: str, consec: int, error: str) -> None:
+    """Send a Telegram alert when an API endpoint starts failing."""
+    # If Telegram itself is the failing endpoint, do NOT try to send — just log
+    if endpoint == "telegram":
+        logger.error("Health alert for Telegram — cannot send via Telegram. consec=%d err=%s", consec, error)
+        return
+    name = API_REGISTRY.get(endpoint, endpoint)
+    SEP = "\u2500" * 32
+    msg = (
+        "\u26a0\ufe0f API HEALTH ALERT\n"
+        + SEP + "\n"
+        + "Endpoint: %s\n" % name
+        + "Failures: %d consecutive\n" % consec
+        + "Error: %s\n" % error
+        + SEP + "\n"
+        + "Use /health to see full status."
+    )
+    try:
+        send_telegram(msg)
+    except Exception:
+        logger.error("Failed to send health alert for %s", endpoint)
+
+
+def _send_health_recovery(endpoint: str) -> None:
+    """Send a recovery notification when a previously-alerted endpoint recovers."""
+    if endpoint == "telegram":
+        logger.info("Telegram recovered — skipping recovery alert via Telegram.")
+        return
+    name = API_REGISTRY.get(endpoint, endpoint)
+    msg = "\u2705 API RECOVERED: %s is responding normally." % name
+    try:
+        send_telegram(msg)
+    except Exception:
+        logger.error("Failed to send health recovery for %s", endpoint)
+
 
 # ============================================================
 # AI HELPERS — Claude primary, Grok fallback, exponential backoff
@@ -495,6 +642,7 @@ def get_ai_response(prompt, system=None, max_tokens=300, fast=False):
                     system=sys_msg,
                     messages=[{"role": "user", "content": prompt}]
                 )
+                _api_health_record("anthropic_claude", True)
                 return resp.content[0].text.strip()
             except anthropic.RateLimitError:
                 wait = 2 ** attempt
@@ -508,6 +656,7 @@ def get_ai_response(prompt, system=None, max_tokens=300, fast=False):
             except Exception as e:
                 logger.error(f"Claude error (attempt {attempt+1}): {e}")
                 time.sleep(2 ** attempt)
+        _api_health_record("anthropic_claude", False, "all retries failed")
         logger.warning("Claude failed all retries — falling back to Grok")
 
     # ── Grok (fallback) ───────────────────────────────────────
@@ -621,8 +770,10 @@ def fetch_latest_news(ticker, count=3):
             timeout=10
         )
         news = r.json()[:count]
+        _api_health_record("finnhub_news", True)
         return [(item.get('headline',''), item.get('url','')) for item in news]
     except Exception as e:
+        _api_health_record("finnhub_news", False, str(e))
         logger.debug(f"fetch_latest_news {ticker}: {e}")
         return []
 
@@ -640,6 +791,7 @@ def fetch_news_with_details(ticker, count=5):
             timeout=10
         )
         news = r.json()[:count]
+        _api_health_record("finnhub_news", True)
         return [
             {
                 "headline": item.get("headline", ""),
@@ -651,6 +803,7 @@ def fetch_news_with_details(ticker, count=5):
             for item in news
         ]
     except Exception as e:
+        _api_health_record("finnhub_news", False, str(e))
         logger.debug(f"fetch_news_with_details {ticker}: {e}")
         return []
 
@@ -786,14 +939,18 @@ def _finnhub_quote(ticker: str) -> dict:
         )
         if r.status_code == 429:
             logger.warning(f"Finnhub 429 on quote {ticker}")
+            _api_health_record("finnhub_quote", False, "429 rate limited")
             _quote_cache.put(f"quote:{ticker}", {})  # cache empty for TTL to avoid retry storm
             return {}
         d = r.json()
         # Accept quote if current price OR previous close is valid
         if d.get("c", 0) > 0 or d.get("pc", 0) > 0:
+            _api_health_record("finnhub_quote", True)
             _quote_cache.put(f"quote:{ticker}", d)
             return d
+        _api_health_record("finnhub_quote", False, "no valid price data")
     except Exception as e:
+        _api_health_record("finnhub_quote", False, str(e))
         logger.debug(f"Finnhub quote {ticker}: {e}")
     return {}
 
@@ -816,13 +973,18 @@ def _finnhub_metrics(ticker: str) -> dict:
         )
         if r.status_code == 429:
             logger.warning(f"Finnhub 429 on metrics {ticker}")
+            _api_health_record("finnhub_metric", False, "429 rate limited")
             _metrics_cache.put(f"metrics:{ticker}", {})  # cache empty to avoid retry storm
             return {}
         result = r.json().get("metric", {})
         if result:
+            _api_health_record("finnhub_metric", True)
             _metrics_cache.put(f"metrics:{ticker}", result)
+        else:
+            _api_health_record("finnhub_metric", False, "empty metric response")
         return result
     except Exception as e:
+        _api_health_record("finnhub_metric", False, str(e))
         logger.debug(f"Finnhub metrics {ticker}: {e}")
     return {}
 
@@ -1125,6 +1287,7 @@ def get_fear_greed():
                 val = int(round(float(score)))
                 label = rating.replace("_", " ").title() if rating else "Unknown"
                 logger.debug("F&G from CNN: %s (%s)", val, label)
+                _api_health_record("alternative_fng", True)
                 return val, label
     except Exception as e:
         logger.debug("CNN F&G failed, trying fallback: %s", e)
@@ -1132,8 +1295,10 @@ def get_fear_greed():
     try:
         r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
         d = r.json()["data"][0]
+        _api_health_record("alternative_fng", True)
         return d.get("value"), d.get("value_classification")
     except Exception as e:
+        _api_health_record("alternative_fng", False, str(e))
         logger.debug("get_fear_greed fallback failed: %s", e)
         return None, None
 
@@ -3083,8 +3248,10 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
 
         if resp.get("success"):
             tp_state["total_orders_success"] = tp_state.get("total_orders_success", 0) + 1
+            _api_health_record("traderspost", True)
         else:
             tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
+            _api_health_record("traderspost", False, "webhook returned success=false")
 
         tp_state["last_order_time"] = now.isoformat()
 
@@ -3109,6 +3276,7 @@ def send_traderspost_order(ticker, action, signal_score, price, quantity_dollars
         return resp
 
     except Exception as e:
+        _api_health_record("traderspost", False, str(e))
         logger.error(f"[TP] Webhook failed for {action} {ticker}: {e}")
         tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
         tp_state["last_order_time"] = now.isoformat()
@@ -4871,8 +5039,12 @@ def _has_upcoming_earnings(ticker: str, days: int = 2) -> bool:
             )
             if r.status_code == 200:
                 cal = r.json().get("earningsCalendar", [])
+                _api_health_record("finnhub_earnings_cal", True)
                 result = any(e.get("symbol") == ticker for e in cal)
+            else:
+                _api_health_record("finnhub_earnings_cal", False, "status %d" % r.status_code)
     except Exception as e:
+        _api_health_record("finnhub_earnings_cal", False, str(e))
         logger.debug(f"Earnings check {ticker}: {e}")
 
     _earnings_cache[ticker] = {"has_earnings": result, "ts": now}
@@ -6757,6 +6929,7 @@ def _fetch_insider_signal(ticker: str) -> dict:
         )
         resp = requests.get(url, timeout=8)
         data = resp.json().get("data", [])
+        _api_health_record("finnhub_insider", True)
 
         if not data:
             _insider_cache[ticker] = result
@@ -6783,6 +6956,7 @@ def _fetch_insider_signal(ticker: str) -> dict:
         # else neutral, score=0
 
     except Exception as e:
+        _api_health_record("finnhub_insider", False, str(e))
         logger.debug("Insider sentiment error %s: %s", ticker, e)
 
     _insider_cache[ticker] = result
@@ -6806,6 +6980,7 @@ def _fetch_analyst_signal(ticker: str) -> dict:
                "?symbol=%s&token=%s" % (ticker, FINNHUB_TOKEN))
         resp = requests.get(url, timeout=8)
         data = resp.json()
+        _api_health_record("finnhub_analyst", True)
         if not data or not isinstance(data, list):
             _analyst_cache[ticker] = result
             return result
@@ -6837,6 +7012,7 @@ def _fetch_analyst_signal(ticker: str) -> dict:
             result["label"] = "Analyst Sell"
 
     except Exception as e:
+        _api_health_record("finnhub_analyst", False, str(e))
         logger.debug("Analyst signal error %s: %s", ticker, e)
 
     _analyst_cache[ticker] = result
@@ -6849,19 +7025,54 @@ def _fetch_analyst_signal(ticker: str) -> dict:
 # ============================================================
 
 
-def _fetch_sp500_tickers():
-    """Fetch current S&P 500 constituent tickers from FMP."""
+def _fetch_sp500_tickers() -> list:
+    """
+    Fetch S&P 500 constituent tickers.
+    Tries FMP stable endpoint, then Wikipedia parse, then hardcoded fallback.
+    """
+    # Source 1: FMP stable endpoint (new URL pattern)
     try:
-        url = "https://financialmodelingprep.com/api/v3/sp500_constituent?apikey=%s" % FMP_API_KEY
+        url = "https://financialmodelingprep.com/stable/sp500-constituent?apikey=%s" % FMP_API_KEY
         resp = requests.get(url, timeout=10)
         data = resp.json()
-        if isinstance(data, list):
-            tickers = [item["symbol"] for item in data if "symbol" in item]
-            logger.info("Fetched %d S&P 500 tickers from FMP", len(tickers))
+        if isinstance(data, list) and len(data) > 100:
+            tickers = [item["symbol"] for item in data if item.get("symbol")]
+            _api_health_record("fmp_sp500", True)
+            logger.info("S&P 500 list: %d tickers from FMP stable", len(tickers))
             return tickers
+        _api_health_record("fmp_sp500", False, "empty or short response")
     except Exception as e:
-        logger.warning("Failed to fetch S&P 500 list: %s", e)
-    return []
+        _api_health_record("fmp_sp500", False, str(e))
+        logger.warning("FMP S&P 500 fetch failed: %s", e)
+
+    # Source 2: Wikipedia
+    try:
+        import re as _re
+        resp = requests.get(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        # Wikipedia table: ticker symbols are in the first column of the wikitable
+        tickers = _re.findall(
+            r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',
+            resp.text,
+        )
+        # Deduplicate preserving order
+        seen = set()
+        unique = [t for t in tickers if not (t in seen or seen.add(t))]
+        if len(unique) > 50:
+            _api_health_record("fmp_sp500", True)  # Wikipedia worked
+            logger.info("S&P 500 list: %d tickers from Wikipedia", len(unique))
+            return unique
+        logger.warning("Wikipedia S&P 500 parse yielded only %d tickers — too few", len(unique))
+    except Exception as e:
+        logger.warning("Wikipedia S&P 500 parse failed: %s", e)
+
+    # Source 3: Hardcoded fallback
+    logger.warning("S&P 500 fetch: using hardcoded fallback (%d tickers)", len(SP500_FALLBACK))
+    _api_health_record("fmp_sp500", False, "using hardcoded fallback")
+    return list(SP500_FALLBACK)
 
 
 def _fetch_orb_levels(tickers):
@@ -6951,6 +7162,11 @@ def _fetch_orb_levels(tickers):
             logger.info("ORB fetch progress: %d/%d", i + 1, total)
 
     logger.info("ORB levels collected: %d/%d tickers", len(result), total)
+    # Record health once per batch
+    if result:
+        _api_health_record("yahoo_chart", True)
+    elif total > 0:
+        _api_health_record("yahoo_chart", False, "no ORB candles collected from %d tickers" % total)
     return result
 
 
@@ -9300,6 +9516,7 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             r = requests.get(f"{url}?apikey={FMP_API_KEY}", timeout=10)
             data = r.json()
             if isinstance(data, list) and data:
+                _api_health_record("fmp_movers", True)
                 syms = [item.get("symbol") for item in data[:40] if item.get("symbol")]
                 # Also extract FMP's own price/change data as fallback
                 fmp_items = []
@@ -9314,7 +9531,9 @@ async def cmd_movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             "source": "FMP"
                         })
                 return syms, fmp_items
+            _api_health_record("fmp_movers", False, "empty or non-list response")
         except Exception as e:
+            _api_health_record("fmp_movers", False, str(e))
             logger.debug(f"FMP movers {url}: {e}")
         return [], []
 
@@ -9486,8 +9705,14 @@ async def cmd_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         combined = priority + others
                         earnings = combined[:20]
                         source = f"Finnhub ({total_count} companies reporting)"
+                        _api_health_record("finnhub_earnings_cal", True)
                         logger.info(f"Earnings: {len(earnings)} shown from {total_count} via Finnhub")
+                    else:
+                        _api_health_record("finnhub_earnings_cal", False, "empty calendar")
+                else:
+                    _api_health_record("finnhub_earnings_cal", False, "status %d" % r.status_code)
         except Exception as e:
+            _api_health_record("finnhub_earnings_cal", False, str(e))
             logger.warning(f"Finnhub earnings failed: {e}")
 
     # ── 2. Fallback: FMP stable earnings calendar ──────────────
@@ -9502,8 +9727,12 @@ async def cmd_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if isinstance(data, list) and data:
                 earnings = data[:20]
                 source = "FMP"
+                _api_health_record("fmp_earnings_cal", True)
                 logger.info(f"Earnings: {len(earnings)} from FMP stable")
+            else:
+                _api_health_record("fmp_earnings_cal", False, "empty or non-list response")
         except Exception as e:
+            _api_health_record("fmp_earnings_cal", False, str(e))
             logger.warning(f"FMP earnings failed: {e}")
 
     # ── 3. Fallback: AI ────────────────────────────────────────
@@ -11154,9 +11383,11 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 timeout=8
             )
             items = r.json()[:8]
+            _api_health_record("finnhub_news", True)
             headlines = [item.get("headline", "") for item in items if item.get("headline")]
             return "TODAY'S NEWS HEADLINES:\n" + "\n".join(f"- {h[:100]}" for h in headlines[:6])
         except Exception as e:
+            _api_health_record("finnhub_news", False, str(e))
             logger.debug(f"market news fetch failed: {e}")
             return ""
 
@@ -12278,6 +12509,13 @@ async def _send_auto_daily_report():
         for buf in charts:
             _send_photo_sync(buf)
             await asyncio.sleep(0.4)
+
+        # v2.7.18: append health summary line
+        try:
+            health_line = _get_health_summary_line()
+            send_telegram(health_line)
+        except Exception:
+            pass
     except Exception as e:
         logger.error("_send_auto_daily_report error: %s", e)
 
@@ -12874,6 +13112,93 @@ async def cmd_tp_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ============================================================
+# v2.7.18: /health COMMAND + STARTUP CHECK + HEALTH SUMMARY
+# ============================================================
+
+def _get_health_summary_line() -> str:
+    """One-line health summary for daily report."""
+    with _api_health_lock:
+        total = len(API_REGISTRY)
+        degraded = []
+        for ep in API_REGISTRY:
+            h = _api_health.get(ep)
+            if h and h.get("consec_fail", 0) > 0:
+                degraded.append(API_REGISTRY[ep].split(" ")[0])  # short name
+        ok_count = total - len(degraded)
+    if not degraded:
+        return "API Health: %d/%d endpoints OK" % (ok_count, total)
+    dg_str = ", ".join(degraded)
+    return "API Health: %d/%d OK | \u26a0\ufe0f %s" % (ok_count, total, dg_str)
+
+
+async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/health — show all API endpoint statuses."""
+    now_str = datetime.now(CT).strftime("%I:%M %p CT")
+    sep = "\u2500" * 32
+    lines = [
+        "\U0001fa7a API HEALTH \u2014 %s" % now_str,
+        sep,
+    ]
+    with _api_health_lock:
+        for ep, name in API_REGISTRY.items():
+            h = _api_health.get(ep)
+            if not h:
+                lines.append("\u2705 %-24s (no data yet)" % name.split("(")[0].strip())
+                continue
+            cf = h.get("consec_fail", 0)
+            if cf >= HEALTH_ALERT_CONSEC:
+                icon = "\u274c"
+            elif cf > 0:
+                icon = "\u26a0\ufe0f"
+            else:
+                icon = "\u2705"
+            short_name = name.split("(")[0].strip()
+            ok_count = h.get("ok", 0)
+            fail_count = h.get("fail", 0)
+            line = "%s %-24s ok=%d fail=%d" % (icon, short_name, ok_count, fail_count)
+            lines.append(line)
+            if cf > 0 and h.get("last_err"):
+                err_preview = h["last_err"][:60]
+                lines.append("   \u2514\u2500 %s" % err_preview)
+    lines.append(sep)
+    lines.append("\u26a0\ufe0f = 1+ consec failures")
+    lines.append("\u274c = 3+ consec failures (alerted)")
+    await update.message.reply_text("\n".join(lines))
+
+
+def _startup_health_check() -> None:
+    """Run once on startup to verify all external APIs are reachable."""
+    logger.info("Running startup API health check...")
+
+    checks = [
+        ("Finnhub quote", lambda: requests.get(
+            "https://finnhub.io/api/v1/quote?symbol=SPY&token=%s" % FINNHUB_TOKEN,
+            timeout=8).json().get("c", 0) > 0),
+        ("Alternative.me", lambda: bool(requests.get(
+            "https://api.alternative.me/fng/?limit=1",
+            timeout=8).json().get("data"))),
+        ("FMP movers", lambda: isinstance(requests.get(
+            "https://financialmodelingprep.com/stable/biggest-gainers?apikey=%s" % FMP_API_KEY,
+            timeout=8).json(), list)),
+        ("Yahoo Finance", lambda: bool(requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=5m&range=1d",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=10
+        ).json().get("chart", {}).get("result"))),
+    ]
+
+    for name, check_fn in checks:
+        try:
+            ok = check_fn()
+            status = "OK" if ok else "DEGRADED"
+        except Exception as e:
+            ok = False
+            status = "FAILED: %s" % e
+        logger.info("  Startup check [%s]: %s", name, status)
+
+    logger.info("Startup health check complete.")
+
+
 # ── Telegram command menus (/ autocomplete) ──────────────────
 MAIN_BOT_COMMANDS = [
     BotCommand("help",       "Full command menu"),
@@ -12914,6 +13239,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("list",       "Monitored tickers"),
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("version",    "Release notes"),
+    BotCommand("health",     "API endpoint health"),
 ]
 
 TP_BOT_COMMANDS = [
@@ -13001,6 +13327,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("monitoring",  cmd_monitoring))
     app.add_handler(CommandHandler("help",        cmd_help))
     app.add_handler(CommandHandler("version",     cmd_version))
+    app.add_handler(CommandHandler("health",      cmd_health))
     app.add_handler(CommandHandler("strategy",    cmd_strategy))
 
     # ── Paper Trading ─────────────────────────────────────────
@@ -13146,6 +13473,7 @@ if get_trading_session() != "closed":
         threading.Thread(target=lambda: ai_refresh_watchlist(mode="intraday"), daemon=True).start()
 
 threading.Thread(target=scanner_thread, daemon=True).start()
+threading.Thread(target=_startup_health_check, daemon=True).start()
 logger.info(f"Stock Spike Monitor v{BOT_VERSION} started")
 send_startup_message()
 send_tp_startup_message()
