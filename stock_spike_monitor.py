@@ -51,8 +51,9 @@ FMP_ENDPOINTS = {
     "losers":  "https://financialmodelingprep.com/stable/biggest-losers",
 }
 
-BOT_VERSION = "2.7.16"
+BOT_VERSION = "2.7.17"
 RELEASE_NOTES = [
+    "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
     "2.7.16 — ORB enhancements: %-based profit target (2%) & trailing stop (0.5%), SPY strength filter (SPY must break its own ORB high), expanded to full S&P 500 universe via FMP API.",
     "2.7.15 — Opening Range Breakout (ORB) strategy: collect 5-min opening range at 08:35 CT, enter on breakout above high, stop fixed at ORB high, switch to tiered trailing once +1% profitable. /orb command shows today's levels. ORB state persisted across restarts.",
     "2.7.14 — Runtime signal gates + /fix command. Applied from weekly analysis: slope gate (default >=0.15%) blocks weak-momentum entries, PowerOpen blocked (default) removes +5 zone bonus 08:45-09:30 CT, /fix command to view/set slope/poweropen/macd gates at runtime, gates persisted in paper_state.json, /dayreport suggests signal-gate fixes, paper_trade_history stores entry_slope/zone/macd.",
@@ -296,6 +297,8 @@ BOT_DESCRIPTION = (
     " /overnight   gap risk on holdings\n"
     " /backtest [days] [tp=X sl=X] replay backtest\n"
     " /orb         opening range breakout levels\n"
+    " /insider T   insider MSPR sentiment\n"
+    " /analyst T   analyst consensus score\n"
     "\n"
     "OPTIONS\n"
     " /vixalert    VIX put-selling setup\n"
@@ -346,6 +349,15 @@ ai_watchlist_suggestions = {}  # {ticker: {"conviction": int, "thesis": str, "ca
 ai_watchlist_last_refresh = ""  # e.g. "10:30 AM CT (intraday)"
 daily_candles = {}  # {ticker: list of dicts [{date, open, high, low, close, volume}, ...]}  — ephemeral, NOT persisted
 avwap_cache   = {}  # {ticker: {"avwap": float, "reclaimed": bool, "ts": datetime}} — intraday AVWAP state
+
+# ── v2.7.17: Insider sentiment + analyst consensus caches ─────
+_insider_cache: dict = {}        # {ticker: {"score": int, "label": str, "mspr": float}}
+_insider_cache_date: str = ""    # refresh daily
+INSIDER_MSPR_STRONG = 20.0       # threshold for +2 pts
+INSIDER_MSPR_MILD = 5.0          # threshold for +1 pt
+INSIDER_MSPR_SELL = -20.0        # threshold for -1 pt (caution)
+_analyst_cache: dict = {}        # {ticker: {"score": int, "label": str, "buy_pct": float}}
+_analyst_cache_date: str = ""    # refresh daily
 
 # ── Signal data logger for future backtesting ──────────────────
 _signal_log_lock = threading.Lock()
@@ -5308,10 +5320,11 @@ def _check_correlation(new_ticker: str, threshold: float = 0.7) -> tuple:
 
 def compute_paper_signal(ticker: str) -> dict:
     """
-    Composite signal engine (13 components, max 168 pts).
+    Composite signal engine (15 components, max 172 pts).
     Components: RSI(20) + BB(15) + MACD(15) + Volume(15) + Squeeze(10) +
     Slope(10) + AI Direction(15) + AI Watchlist(10) + Multi-Day Trend(15) +
-    News Sentiment(15) + AVWAP(10) + Time-of-Day(±8) + Social Buzz(10).
+    News Sentiment(15) + AVWAP(10) + Time-of-Day(±8) + Social Buzz(10) +
+    Insider Sentiment(2) + Analyst Consensus(2).
     S/R modifier: ±5 pts.
     AVWAP can also go -5 if price is below VWAP (overhead supply penalty).
     ToD boosts power hours (open/close), penalizes lunch lull.
@@ -5657,8 +5670,36 @@ def compute_paper_signal(ticker: str) -> dict:
     except Exception as e:
         logger.debug("Social buzz signal %s: %s", ticker, e)
 
+    # ── 14. Insider Sentiment (v2.7.17, max +2 / -1 pts) ──────
+    try:
+        insider = _fetch_insider_signal(ticker)
+        insider_pts = max(-1, min(2, insider["score"]))
+        score += insider_pts
+        comps["insider_pts"] = insider_pts
+        comps["insider_label"] = insider.get("label", "")
+        comps["insider_mspr"] = insider.get("mspr", 0.0)
+        if insider_pts != 0:
+            _mspr_str = "%+.1f" % insider["mspr"]
+            detail.append("Insider=%s(%+dpts)" % (_mspr_str, insider_pts))
+    except Exception as e:
+        logger.debug("Insider signal %s: %s", ticker, e)
+
+    # ── 15. Analyst Consensus (v2.7.17, max +2 / -1 pts) ──────
+    try:
+        analyst = _fetch_analyst_signal(ticker)
+        analyst_pts = max(-1, min(2, analyst["score"]))
+        score += analyst_pts
+        comps["analyst_pts"] = analyst_pts
+        comps["analyst_label"] = analyst.get("label", "")
+        comps["analyst_buy_pct"] = analyst.get("buy_pct", 0.0)
+        if analyst_pts != 0:
+            _bpct_str = "%.0f" % analyst["buy_pct"]
+            detail.append("Analyst=%s%%buy(%+dpts)" % (_bpct_str, analyst_pts))
+    except Exception as e:
+        logger.debug("Analyst signal %s: %s", ticker, e)
+
     result = {
-        "score":   round(min(score, 168), 1),   # cap: 160 base + 8 ToD
+        "score":   round(min(score, 172), 1),   # cap: 164 base + 8 ToD (v2.7.17: +4 insider/analyst)
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -5717,6 +5758,10 @@ def compute_paper_signal(ticker: str) -> dict:
             "social_velocity": comps.get("social_velocity"),
             "social_rank": comps.get("social_rank"),
             "social_pts": comps.get("social_pts"),
+            "insider_pts": comps.get("insider_pts"),
+            "insider_mspr": comps.get("insider_mspr"),
+            "analyst_pts": comps.get("analyst_pts"),
+            "analyst_buy_pct": comps.get("analyst_buy_pct"),
             "daily_ohlcv": {
                 "open": _daily_today.get("open"),
                 "high": _daily_today.get("high"),
@@ -6519,7 +6564,7 @@ def paper_evaluate_ticker(ticker: str):
     _spec_log = " [SPEC]" if is_speculative else ""
     msg = (
         f"BUY{_spec_log} | {ticker} | {shares} shares @ ${price:.2f} | "
-        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/168 | "
+        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/172 | "
         f"Detail: {sig['detail']}{_catalyst_str} | "
         f"Portfolio: ${paper_portfolio_value():,.0f}"
     )
@@ -6578,6 +6623,26 @@ def paper_evaluate_ticker(ticker: str):
         _sp = c["social_pts"]
         sig_lines.append(f"Reddit {_sv:+.0f}% buzz ({_sp}pts, rank#{_sr})")
 
+    # v2.7.17: Insider sentiment line (only when score != 0)
+    _insider_p = c.get("insider_pts", 0)
+    if _insider_p != 0:
+        _insider_lbl = c.get("insider_label", "")
+        _insider_mspr = c.get("insider_mspr", 0.0)
+        _mspr_fmt = "%+.1f" % _insider_mspr
+        sig_lines.append(
+            "\U0001f3db %s (MSPR: %s) (%+dpts)" % (_insider_lbl, _mspr_fmt, _insider_p)
+        )
+
+    # v2.7.17: Analyst consensus line (only when score != 0)
+    _analyst_p = c.get("analyst_pts", 0)
+    if _analyst_p != 0:
+        _analyst_lbl = c.get("analyst_label", "")
+        _analyst_bpct = c.get("analyst_buy_pct", 0.0)
+        _bpct_fmt = "%.0f" % _analyst_bpct
+        sig_lines.append(
+            "\U0001f4ca %s (%s%% buy) (%+dpts)" % (_analyst_lbl, _bpct_fmt, _analyst_p)
+        )
+
     # News catalyst line for buy notification
     news_catalyst_line = ""
     if c.get("news_catalyst"):
@@ -6610,7 +6675,7 @@ def paper_evaluate_ticker(ticker: str):
         f"Trail:     ${trail_price:.2f} (tightens)\n"
         + (f"AVWAP Stop: ${c.get('avwap', 0):.2f} (exit if lost)\n" if c.get('avwap') else "")
         + f"{'─'*28}\n"
-        f"Signal:    {sig['score']:.0f}/168 (thresh={threshold})\n"
+        f"Signal:    {sig['score']:.0f}/172 (thresh={threshold})\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
         + news_catalyst_line
@@ -6650,13 +6715,132 @@ def paper_evaluate_ticker(ticker: str):
                     f"LIMIT BUY{_spec_tp} {ticker} "
                     f"{_shares} shares @ ${_lp:.2f}"
                     f" (${cost:,.0f})\n"
-                    f"  Signal: {sig['score']:.0f}/168"
+                    f"  Signal: {sig['score']:.0f}/172"
                     f"{_tod_str}"
                 )
             else:
                 tp_log(f"LIMIT BUY {ticker} FAILED")
         except Exception as e:
             logger.error(f"[TP] BUY error: {e}")
+
+
+# ============================================================
+# v2.7.17: INSIDER SENTIMENT + ANALYST CONSENSUS
+# ============================================================
+
+
+def _fetch_insider_signal(ticker: str) -> dict:
+    """Fetch insider MSPR sentiment from Finnhub. Cached daily."""
+    global _insider_cache, _insider_cache_date
+    import datetime as _dt
+    today = datetime.now(CT).strftime("%Y-%m-%d")
+
+    if _insider_cache_date != today:
+        _insider_cache.clear()
+        _insider_cache_date = today
+
+    if ticker in _insider_cache:
+        return _insider_cache[ticker]
+
+    result = {"score": 0, "label": "", "mspr": 0.0}
+    try:
+        # Last 3 months window
+        now = _dt.datetime.now()
+        from_date = (now - _dt.timedelta(days=90)).strftime("%Y-%m-%d")
+        to_date = now.strftime("%Y-%m-%d")
+
+        _finnhub_limiter.acquire()
+        url = (
+            "https://finnhub.io/api/v1/stock/insider-sentiment"
+            "?symbol=%s&from=%s&to=%s&token=%s"
+            % (ticker, from_date, to_date, FINNHUB_TOKEN)
+        )
+        resp = requests.get(url, timeout=8)
+        data = resp.json().get("data", [])
+
+        if not data:
+            _insider_cache[ticker] = result
+            return result
+
+        # Average MSPR over last 3 months (ignore zeros)
+        msprs = [d["mspr"] for d in data if d.get("mspr") != 0]
+        if not msprs:
+            _insider_cache[ticker] = result
+            return result
+
+        avg_mspr = sum(msprs) / len(msprs)
+        result["mspr"] = round(avg_mspr, 1)
+
+        if avg_mspr >= INSIDER_MSPR_STRONG:
+            result["score"] = 2
+            result["label"] = "Insider Cluster Buy"
+        elif avg_mspr >= INSIDER_MSPR_MILD:
+            result["score"] = 1
+            result["label"] = "Insider Buy"
+        elif avg_mspr <= INSIDER_MSPR_SELL:
+            result["score"] = -1
+            result["label"] = "Insider Selling"
+        # else neutral, score=0
+
+    except Exception as e:
+        logger.debug("Insider sentiment error %s: %s", ticker, e)
+
+    _insider_cache[ticker] = result
+    return result
+
+
+def _fetch_analyst_signal(ticker: str) -> dict:
+    """Fetch analyst consensus from Finnhub. Cached daily."""
+    global _analyst_cache, _analyst_cache_date
+    today = datetime.now(CT).strftime("%Y-%m-%d")
+    if _analyst_cache_date != today:
+        _analyst_cache.clear()
+        _analyst_cache_date = today
+    if ticker in _analyst_cache:
+        return _analyst_cache[ticker]
+
+    result = {"score": 0, "label": "", "buy_pct": 0.0}
+    try:
+        _finnhub_limiter.acquire()
+        url = ("https://finnhub.io/api/v1/stock/recommendation"
+               "?symbol=%s&token=%s" % (ticker, FINNHUB_TOKEN))
+        resp = requests.get(url, timeout=8)
+        data = resp.json()
+        if not data or not isinstance(data, list):
+            _analyst_cache[ticker] = result
+            return result
+
+        latest = data[0]  # most recent month
+        buy = latest.get("buy", 0)
+        strong_buy = latest.get("strongBuy", 0)
+        hold = latest.get("hold", 0)
+        sell = latest.get("sell", 0)
+        strong_sell = latest.get("strongSell", 0)
+        total = buy + strong_buy + hold + sell + strong_sell
+
+        if total == 0:
+            _analyst_cache[ticker] = result
+            return result
+
+        buy_pct = (buy + strong_buy) / total
+        sell_pct = (sell + strong_sell) / total
+        result["buy_pct"] = round(buy_pct * 100, 1)
+
+        if buy_pct >= 0.70 and sell_pct < 0.05:
+            result["score"] = 2
+            result["label"] = "Strong Analyst Buy"
+        elif buy_pct >= 0.55:
+            result["score"] = 1
+            result["label"] = "Analyst Buy"
+        elif sell_pct >= 0.30:
+            result["score"] = -1
+            result["label"] = "Analyst Sell"
+
+    except Exception as e:
+        logger.debug("Analyst signal error %s: %s", ticker, e)
+
+    _analyst_cache[ticker] = result
+    return result
 
 
 # ============================================================
@@ -6681,42 +6865,92 @@ def _fetch_sp500_tickers():
 
 
 def _fetch_orb_levels(tickers):
-    """Fetch the 08:30-08:35 CT 5-min candle for each ticker via Finnhub."""
-    from datetime import date as _date_cls
-    today = _date_cls.today()
-    # Build UNIX timestamps for 08:30 and 08:36 CT (slightly past 08:35 to ensure candle complete)
-    open_time = datetime(today.year, today.month, today.day, 8, 30, 0, tzinfo=CT)
-    close_time = datetime(today.year, today.month, today.day, 8, 36, 0, tzinfo=CT)
-    t_from = int(open_time.timestamp())
-    t_to = int(close_time.timestamp())
-
-    total = len(tickers)
+    """
+    Fetch the 08:30-08:35 CT 5-min opening range candle for each ticker.
+    Uses Yahoo Finance (free, no key). Returns dict of {ticker: orb_data}.
+    v2.7.17: replaced Finnhub /stock/candle (paywalled) with Yahoo Finance.
+    """
+    import datetime as _dt
     result = {}
+    today_str = datetime.now(CT).strftime("%Y-%m-%d")
+    total = len(tickers)
+
     for i, ticker in enumerate(tickers):
         try:
-            _finnhub_limiter.acquire()
             url = (
-                "https://finnhub.io/api/v1/stock/candle"
-                "?symbol=%s&resolution=5&from=%d&to=%d&token=%s"
-            ) % (ticker, t_from, t_to, FINNHUB_TOKEN)
-            resp = requests.get(url, timeout=5)
+                "https://query1.finance.yahoo.com/v8/finance/chart/%s"
+                "?interval=5m&range=5d&includePrePost=true" % ticker
+            )
+            resp = requests.get(url, timeout=10,
+                                headers={"User-Agent": "Mozilla/5.0"})
             data = resp.json()
-            if data.get("s") == "ok" and data.get("h"):
+            chart_result = data.get("chart", {}).get("result", [])
+            if not chart_result:
+                continue
+
+            cr = chart_result[0]
+            timestamps = cr.get("timestamp", [])
+            quotes = cr.get("indicators", {}).get("quote", [{}])[0]
+            opens = quotes.get("open", [])
+            highs = quotes.get("high", [])
+            lows = quotes.get("low", [])
+            closes = quotes.get("close", [])
+
+            # Find today's 08:30 CT candle (CDT = UTC-5 in April)
+            orb_high = None
+            orb_low = None
+            orb_open = None
+            orb_close = None
+
+            for j, ts in enumerate(timestamps):
+                if j >= len(opens):
+                    break
+                # Convert to CT
+                dt_utc = _dt.datetime.utcfromtimestamp(ts)
+                dt_ct = dt_utc - _dt.timedelta(hours=5)  # CDT offset (Apr-Oct)
+                # Check it's today and exactly 08:30
+                if (dt_ct.strftime("%Y-%m-%d") == today_str
+                        and dt_ct.hour == 8 and dt_ct.minute == 30):
+                    orb_high = highs[j]
+                    orb_low = lows[j]
+                    orb_open = opens[j]
+                    orb_close = closes[j]
+                    break
+
+            # Fallback: try 08:35 if no 08:30 candle found
+            if orb_high is None:
+                for j, ts in enumerate(timestamps):
+                    if j >= len(opens):
+                        break
+                    dt_utc = _dt.datetime.utcfromtimestamp(ts)
+                    dt_ct = dt_utc - _dt.timedelta(hours=5)
+                    if (dt_ct.strftime("%Y-%m-%d") == today_str
+                            and dt_ct.hour == 8 and dt_ct.minute == 35):
+                        orb_high = highs[j]
+                        orb_low = lows[j]
+                        orb_open = opens[j]
+                        orb_close = closes[j]
+                        break
+
+            if orb_high is not None and orb_high > 0:
                 result[ticker] = {
-                    "high":      data["h"][0],
-                    "low":       data["l"][0],
-                    "open":      data["o"][0],
-                    "close":     data["c"][0],
-                    "volume":    data["v"][0],
+                    "high": orb_high,
+                    "low": orb_low,
+                    "open": orb_open,
+                    "close": orb_close,
                     "collected": True,
                 }
+                logger.debug("ORB %s: H=%.2f L=%.2f", ticker, orb_high, orb_low)
+            else:
+                logger.debug("ORB %s: no 08:30 CT candle found", ticker)
+
         except Exception as e:
-            logger.warning("ORB fetch failed for %s: %s", ticker, e)
+            logger.warning("ORB Yahoo fetch failed for %s: %s", ticker, e)
+
         if (i + 1) % 50 == 0:
-            logger.info("ORB fetch progress: %d/%d tickers (%d collected)",
-                        i + 1, total, len(result))
-    if total > 50:
-        logger.info("ORB fetch complete: %d/%d tickers collected", len(result), total)
+            logger.info("ORB fetch progress: %d/%d", i + 1, total)
+
+    logger.info("ORB levels collected: %d/%d tickers", len(result), total)
     return result
 
 
@@ -7440,7 +7674,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [
             f"SIGNAL: {arg2}  @${price:.2f}" if price else f"SIGNAL: {arg2}",
             f"",
-            f"Composite Score: {sig['score']:.0f}/125  -> {verdict}",
+            f"Composite Score: {sig['score']:.0f}/172  -> {verdict}",
             f"",
             f"BREAKDOWN:",
             f"  RSI Momentum    {c.get('rsi','N/A')} -> {c.get('rsi_pts',0)} pts",
@@ -7466,6 +7700,17 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"    Daily Vol: {c['daily_vol_ratio']:.2f}x avg -> {c.get('vol_d_pts',0)} pts")
         else:
             lines.append(f"  Multi-Day Trend  N/A (no daily candles)")
+        # v2.7.17: Insider + Analyst breakdown
+        _i_pts = c.get("insider_pts", 0)
+        _i_mspr = c.get("insider_mspr", 0.0)
+        _i_label = c.get("insider_label", "")
+        _i_info = "%+.1f %s" % (_i_mspr, _i_label) if _i_label else "%+.1f" % _i_mspr
+        lines.append(f"  Insider MSPR    {_i_info} -> {_i_pts} pts")
+        _a_pts = c.get("analyst_pts", 0)
+        _a_bpct = c.get("analyst_buy_pct", 0.0)
+        _a_label = c.get("analyst_label", "")
+        _a_info = "%.0f%% buy %s" % (_a_bpct, _a_label) if _a_label else "%.0f%% buy" % _a_bpct
+        lines.append(f"  Analyst Cons.   {_a_info} -> {_a_pts} pts")
         lines += [
             f"",
             f"Grok: {c.get('grok_reason', '')}",
@@ -8588,8 +8833,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\U0001f9e0 TRADING STRATEGY v{BOT_VERSION}\n"
         f"{SEP}\n"
         f"\n"
-        f"\U0001f3af SIGNAL ENGINE (13 components)\n"
-        f"Max score: 168 pts\n"
+        f"\U0001f3af SIGNAL ENGINE (15 components)\n"
+        f"Max score: 172 pts\n"
         f" 1. RSI Mean-Revert   0-20 pts\n"
         f" 2. BB Mean-Revert    0-15 pts\n"
         f" 3. MACD Crossover    0-15 pts\n"
@@ -8603,7 +8848,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"11. AVWAP             -5 to +10\n"
         f"12. Time-of-Day       -8 to +8\n"
         f"13. Social Buzz       0-10 pts\n"
-        f"    Reddit mention velocity (ApeWisdom)\n"
+        f"14. Insider Sentiment -1 to +2\n"
+        f"15. Analyst Consensus -1 to +2\n"
         f"    S/R modifier      \u00b15 pts\n"
         f"Signal weights: {wt_str}\n"
     )
@@ -11832,6 +12078,84 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_paper_state()
 
 
+async def cmd_insider(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show insider MSPR sentiment for a ticker."""
+    if not context.args:
+        await update.message.reply_text("Usage: /insider TICKER")
+        return
+    ticker = context.args[0].upper()
+    sep = "\u2500" * 32
+    try:
+        data = _fetch_insider_signal(ticker)
+        mspr = data.get("mspr", 0.0)
+        label = data.get("label", "Neutral")
+        pts = data.get("score", 0)
+        mspr_fmt = "%+.1f" % mspr
+        pts_fmt = "%+d" % pts
+        label_display = label if label else "Neutral"
+        msg = (
+            "\U0001f3db INSIDER \u2014 %s (last 90d)\n"
+            "%s\n"
+            "MSPR Score: %s (%s)\n"
+            "Signal pts: %s\n"
+            "%s\n"
+            "Avg of last 3 months data.\n"
+            "Positive = net insider buying.\n"
+            "Negative = net insider selling."
+        ) % (ticker, sep, mspr_fmt, label_display, pts_fmt, sep)
+    except Exception as e:
+        msg = "Insider data error for %s: %s" % (ticker, e)
+    await update.message.reply_text(msg)
+
+
+async def cmd_analyst(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show analyst consensus for a ticker."""
+    if not context.args:
+        await update.message.reply_text("Usage: /analyst TICKER")
+        return
+    ticker = context.args[0].upper()
+    sep = "\u2500" * 32
+    try:
+        # Fetch the raw recommendation data for detailed display
+        _finnhub_limiter.acquire()
+        url = ("https://finnhub.io/api/v1/stock/recommendation"
+               "?symbol=%s&token=%s" % (ticker, FINNHUB_TOKEN))
+        resp = requests.get(url, timeout=8)
+        raw = resp.json()
+
+        sig = _fetch_analyst_signal(ticker)
+        pts = sig.get("score", 0)
+        label = sig.get("label", "")
+        buy_pct = sig.get("buy_pct", 0.0)
+        pts_fmt = "%+d" % pts
+        label_str = " (%s)" % label if label else ""
+
+        if raw and isinstance(raw, list):
+            latest = raw[0]
+            period = latest.get("period", "N/A")
+            sb = latest.get("strongBuy", 0)
+            b = latest.get("buy", 0)
+            h = latest.get("hold", 0)
+            s = latest.get("sell", 0)
+            ss = latest.get("strongSell", 0)
+            msg = (
+                "\U0001f4ca ANALYST \u2014 %s\n"
+                "%s\n"
+                "Period: %s\n"
+                "Strong Buy: %d  Buy: %d\n"
+                "Hold:  %d   Sell: %d  Strong Sell: %d\n"
+                "Buy rate: %.1f%%\n"
+                "Signal pts: %s%s\n"
+                "%s"
+            ) % (ticker, sep, period, sb, b, h, s, ss,
+                 buy_pct, pts_fmt, label_str, sep)
+        else:
+            msg = "No analyst data available for %s" % ticker
+    except Exception as e:
+        msg = "Analyst data error for %s: %s" % (ticker, e)
+    await update.message.reply_text(msg)
+
+
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's ORB levels, SPY status, and breakout status."""
     if not orb_levels:
@@ -12578,6 +12902,8 @@ MAIN_BOT_COMMANDS = [
     BotCommand("dayreport",  "1d/10d/30d trade analysis"),
     BotCommand("fix",        "Runtime signal gates"),
     BotCommand("orb",        "Today's opening range levels"),
+    BotCommand("insider",    "Insider MSPR sentiment"),
+    BotCommand("analyst",    "Analyst consensus score"),
     BotCommand("aistocks",   "AI picks + conviction"),
     BotCommand("ask",        "Chat with Claude"),
     BotCommand("prep",       "Next session plan"),
@@ -12707,6 +13033,8 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("dayreport_reset", cmd_dayreport_reset))
     app.add_handler(CommandHandler("fix",             cmd_fix))
     app.add_handler(CommandHandler("orb",             cmd_orb))
+    app.add_handler(CommandHandler("insider",         cmd_insider))
+    app.add_handler(CommandHandler("analyst",         cmd_analyst))
 
     # ── Second bot for TP channel (separate token) ───────────
     if not TELEGRAM_TP_TOKEN:
