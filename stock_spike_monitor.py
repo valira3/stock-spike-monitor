@@ -66,7 +66,7 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.18b"
+BOT_VERSION = "2.7.18c"
 RELEASE_NOTES = [
     "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
@@ -394,7 +394,7 @@ API_REGISTRY = {
     "fmp_earnings_cal":     "FMP /stable/earnings-calendar",
     "fmp_sp500":            "FMP S&P 500 constituent list",
     "yahoo_chart":          "Yahoo Finance 5m candles (ORB)",
-    "alternative_fng":      "Alternative.me Fear & Greed",
+    "cnn_fng":              "CNN Fear & Greed (equity)",
     "anthropic_claude":     "Anthropic Claude AI (news analysis)",
     "traderspost":          "TradersPost webhook (TP orders)",
     "telegram":             "Telegram Bot API",
@@ -1276,43 +1276,39 @@ def compute_squeeze_score(ticker: str) -> dict:
 
 
 def get_fear_greed():
-    """Fetch Fear & Greed Index. Primary: CNN real-time (intraday updates).
-    Fallback: alternative.me (daily updates, can lag)."""
-    # Primary: CNN real-time endpoint (updates every few minutes during market hours)
-    try:
-        cnn_headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.cnn.com/markets/fear-and-greed",
-            "Origin": "https://www.cnn.com",
-        }
-        r = requests.get(
-            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
-            headers=cnn_headers, timeout=10,
-        )
-        if r.status_code == 200:
-            fg = r.json().get("fear_and_greed", {})
-            score = fg.get("score")
-            rating = fg.get("rating", "")
-            if score is not None:
-                val = int(round(float(score)))
-                label = rating.replace("_", " ").title() if rating else "Unknown"
-                logger.debug("F&G from CNN: %s (%s)", val, label)
-                _api_health_record("alternative_fng", True)
-                return val, label
-    except Exception as e:
-        logger.debug("CNN F&G failed, trying fallback: %s", e)
-    # Fallback: alternative.me (updates once daily)
-    try:
-        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
-        d = r.json()["data"][0]
-        _api_health_record("alternative_fng", True)
-        return d.get("value"), d.get("value_classification")
-    except Exception as e:
-        _api_health_record("alternative_fng", False, str(e))
-        logger.debug("get_fear_greed fallback failed: %s", e)
-        return None, None
+    """Fetch CNN Fear & Greed Index (equity market sentiment, intraday updates).
+    Retries once on failure. Returns (50, 'Neutral') as safe default if unavailable.
+    NOTE: alternative.me was removed — it tracks crypto sentiment, not equities."""
+    CNN_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+    CNN_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.cnn.com/markets/fear-and-greed",
+        "Origin": "https://www.cnn.com",
+    }
+    for attempt in range(2):  # try twice before giving up
+        try:
+            r = requests.get(CNN_URL, headers=CNN_HEADERS, timeout=10)
+            if r.status_code == 200:
+                fg = r.json().get("fear_and_greed", {})
+                score = fg.get("score")
+                rating = fg.get("rating", "")
+                if score is not None:
+                    val = int(round(float(score)))
+                    label = rating.replace("_", " ").title() if rating else "Unknown"
+                    logger.debug("F&G from CNN: %s (%s)", val, label)
+                    _api_health_record("cnn_fng", True)
+                    return val, label
+            _api_health_record("cnn_fng", False,
+                               "HTTP %d" % r.status_code if attempt == 1 else "")
+        except Exception as e:
+            if attempt == 1:
+                _api_health_record("cnn_fng", False, str(e)[:80])
+            logger.debug("CNN F&G attempt %d failed: %s", attempt + 1, e)
+    # Safe default — neutral, won't over-restrict or over-permit trading
+    logger.warning("CNN F&G unavailable after 2 attempts — defaulting to 50 (Neutral)")
+    return 50, "Neutral"
 
 # Cache for social buzz data (refresh every 5 minutes)
 _social_buzz_cache = {"data": {}, "ts": None}
@@ -13189,9 +13185,12 @@ def _startup_health_check() -> None:
         ("Finnhub quote", lambda: requests.get(
             "https://finnhub.io/api/v1/quote?symbol=SPY&token=%s" % FINNHUB_TOKEN,
             timeout=8).json().get("c", 0) > 0),
-        ("Alternative.me", lambda: bool(requests.get(
-            "https://api.alternative.me/fng/?limit=1",
-            timeout=8).json().get("data"))),
+        ("CNN F&G", lambda: requests.get(
+            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+            headers={"Referer": "https://www.cnn.com/markets/fear-and-greed",
+                     "Origin": "https://www.cnn.com",
+                     "User-Agent": "Mozilla/5.0"},
+            timeout=8).json().get("fear_and_greed", {}).get("score") is not None),
         ("FMP movers", lambda: isinstance(requests.get(
             "https://financialmodelingprep.com/stable/biggest-gainers?apikey=%s" % FMP_API_KEY,
             timeout=8).json(), list)),
