@@ -44,6 +44,12 @@ TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 
+# Multi-instance support: set BOT_INSTANCE to a short label (e.g. "bot2")
+# to distinguish multiple deployments running the same codebase.
+# Default is empty string (no prefix) for the original/main bot.
+BOT_INSTANCE = os.getenv("BOT_INSTANCE", "")
+_INST_TAG = ("[%s] " % BOT_INSTANCE) if BOT_INSTANCE else ""
+
 # FMP stable API endpoints (v3 is deprecated for newer accounts)
 FMP_ENDPOINTS = {
     "actives": "https://financialmodelingprep.com/stable/most-actives",
@@ -66,7 +72,7 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.18c"
+BOT_VERSION = "2.7.19"
 RELEASE_NOTES = [
     "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
@@ -587,7 +593,7 @@ def _send_health_alert(endpoint: str, consec: int, error: str) -> None:
     name = API_REGISTRY.get(endpoint, endpoint)
     SEP = "\u2500" * 32
     msg = (
-        "\u26a0\ufe0f API HEALTH ALERT\n"
+        "%s\u26a0\ufe0f API HEALTH ALERT\n" % _INST_TAG
         + SEP + "\n"
         + "Endpoint: %s\n" % name
         + "Failures: %d consecutive\n" % consec
@@ -2068,7 +2074,7 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False, alert_type
         news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
 
         message = (
-            f"📊 MOVER ALERT: {ticker} {pct_change:+.1f}% (${current_price:.2f})"
+            f"{_INST_TAG}📊 MOVER ALERT: {ticker} {pct_change:+.1f}% (${current_price:.2f})"
             f" — daily move from prev close"
             + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
             + f"\nClaude: {ai}\n\n"
@@ -2096,7 +2102,7 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False, alert_type
         news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
 
         message = (
-            f"🚨 {ticker} {spike_label}\n"
+            f"{_INST_TAG}🚨 {ticker} {spike_label}\n"
             f"{pct_change:+.1f}% | ${current_price:.2f}"
             + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
             + (f"{tech_str}\n" if tech_str else "")
@@ -6378,7 +6384,7 @@ def paper_evaluate_ticker(ticker: str):
             lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
 
             send_telegram(
-                f"{pnl_emoji} PAPER SELL — {ticker}\n"
+                f"{_INST_TAG}{pnl_emoji} PAPER SELL — {ticker}\n"
                 f"{'─'*28}\n"
                 f"Shares:    {shares} @ ${price:.2f}\n"
                 f"Entry:     ${pos['avg_cost']:.2f}"
@@ -6847,7 +6853,7 @@ def paper_evaluate_ticker(ticker: str):
     _tier_label = get_ticker_tier(ticker)
     _tier_tag = f" [{_tier_label}]"
     send_telegram(
-        f"📈 PAPER BUY{_spec_tag}{_tier_tag} — {ticker}\n"
+        f"{_INST_TAG}📈 PAPER BUY{_spec_tag}{_tier_tag} — {ticker}\n"
         f"{'─'*28}\n"
         f"Shares:    {shares} @ ${price:.2f}\n"
         f"Cost:      ${cost:,.0f}\n"
@@ -11004,7 +11010,7 @@ def send_dashboard_sync(label: str = ""):
     """
     try:
         buf = build_dashboard_image()
-        caption = f"📊 Dashboard — {label}  {datetime.now(CT).strftime('%I:%M %p CT')}"
+        caption = f"{_INST_TAG}📊 Dashboard — {label}  {datetime.now(CT).strftime('%I:%M %p CT')}"
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
             data={"chat_id": CHAT_ID, "caption": caption},
@@ -13145,7 +13151,7 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_str = datetime.now(CT).strftime("%I:%M %p CT")
     sep = "\u2500" * 32
     lines = [
-        "\U0001fa7a API HEALTH \u2014 %s" % now_str,
+        "%s\U0001fa7a API HEALTH \u2014 %s" % (_INST_TAG, now_str),
         sep,
     ]
     with _api_health_lock:
