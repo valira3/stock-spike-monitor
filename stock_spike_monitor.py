@@ -66,7 +66,7 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.18a"
+BOT_VERSION = "2.7.18b"
 RELEASE_NOTES = [
     "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
@@ -400,8 +400,9 @@ API_REGISTRY = {
     "telegram":             "Telegram Bot API",
 }
 
-HEALTH_ALERT_CONSEC = 3    # alert after this many consecutive failures
+HEALTH_ALERT_CONSEC = 10   # alert after this many consecutive failures
 HEALTH_ALERT_COOLDOWN = 60 # minutes between repeated alerts for same endpoint
+HEALTH_RECOVER_CONSEC = 5  # consecutive successes required before declaring recovered
 
 # ── Signal data logger for future backtesting ──────────────────
 _signal_log_lock = threading.Lock()
@@ -538,21 +539,26 @@ def _api_health_record(endpoint: str, success: bool, error: str = "",
             h["rl"] += 1
             return
         if success:
-            was_alerted = h["alerted"]
             h["ok"] += 1
-            h["consec_fail"] = 0
+            h["consec_ok"] = h.get("consec_ok", 0) + 1
             h["last_ok"] = now_str
-            h["alerted"] = False
-            # Recovery alert — only if we previously sent a failure alert
-            if was_alerted:
+            # Only declare recovered after sustained consecutive successes
+            if h["alerted"] and h["consec_ok"] >= HEALTH_RECOVER_CONSEC:
+                h["alerted"] = False
+                h["consec_fail"] = 0
+                h["consec_ok"] = 0
                 threading.Thread(
                     target=_send_health_recovery,
                     args=(endpoint,),
                     daemon=True,
                 ).start()
+            elif not h["alerted"]:
+                # Not in alerted state — just reset consec_fail normally
+                h["consec_fail"] = 0
         else:
             h["fail"] += 1
             h["consec_fail"] += 1
+            h["consec_ok"] = 0   # reset consecutive successes on any failure
             h["last_fail"] = now_str
             h["last_err"] = error[:120] if error else "unknown error"
 
