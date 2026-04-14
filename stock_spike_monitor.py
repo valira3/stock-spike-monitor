@@ -72,7 +72,7 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.19"
+BOT_VERSION = "2.7.19a"
 RELEASE_NOTES = [
     "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
@@ -13040,10 +13040,12 @@ def scanner_thread():
             threading.Thread(target=save_bot_state, daemon=True).start()
 
         # ── v2.7.13: Auto analysis report at 17:15 CT ──────────
+        # Uses "past 17:15 and not yet sent today" so a late restart
+        # still fires the report rather than silently skipping it.
         global _auto_report_sent_today
+        _past_report_time = (now_ct.hour > 17) or (now_ct.hour == 17 and now_ct.minute >= 15)
         if (now_ct.weekday() < 5
-                and now_ct.hour == 17
-                and 15 <= now_ct.minute < 16
+                and _past_report_time
                 and not _auto_report_sent_today):
             _auto_report_sent_today = True
             try:
