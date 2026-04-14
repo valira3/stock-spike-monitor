@@ -72,7 +72,7 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.19a"
+BOT_VERSION = "2.7.20"
 RELEASE_NOTES = [
     "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
@@ -6375,6 +6375,7 @@ def paper_evaluate_ticker(ticker: str):
                 "ATR-TRAIL":   "📉 ATR trailing stop",
                 "SIGNAL-COLLAPSE": "📉 Signal deteriorated",
                 "AVWAP-STOP": "📉 Price lost AVWAP (overhead supply)",
+                "EOD-CLOSE":  "🔔 EOD auto-close (intraday)",
             }
             reason_label = next(
                 (v for k, v in reason_map.items() if k in sell_reason), sell_reason
@@ -7547,6 +7548,124 @@ def paper_morning_report():
     paper_log(f"=== MORNING REPORT ===\n{report}")
     send_telegram(report)
     save_paper_state()   # persist the daily reset
+
+
+def paper_eod_close():
+    """
+    v2.7.20: Force-close ALL open paper positions at end of day (3:55 PM CT).
+    Intraday strategy should not hold overnight. Frees slots for next session.
+    """
+    global paper_cash, paper_positions
+    if not paper_positions:
+        logger.info("EOD close: no open positions to close.")
+        return
+
+    tickers = list(paper_positions.keys())
+    closed = 0
+    skipped = 0
+    SEP = "\u2500" * 28
+    summary_lines = []
+
+    logger.info("EOD FORCE-CLOSE: closing %d position(s)", len(tickers))
+    send_telegram(
+        "\U0001f514 EOD AUTO-CLOSE\n"
+        + SEP + "\n"
+        + "Forcing close of %d open position(s)\n" % len(tickers)
+        + "Intraday strategy — no overnight holds.\n"
+        + SEP
+    )
+
+    for ticker in tickers:
+        pos = paper_positions.get(ticker)
+        if not pos:
+            continue
+        price, src, _ = _get_best_price(ticker)
+        if not price or price <= 0:
+            # Try one more time via Finnhub direct
+            try:
+                import requests as _req
+                r = _req.get(
+                    "https://finnhub.io/api/v1/quote?symbol=%s&token=%s" % (ticker, FINNHUB_TOKEN),
+                    timeout=8
+                )
+                price = r.json().get("c") or r.json().get("pc") or 0
+            except Exception:
+                pass
+        if not price or price <= 0:
+            logger.warning("EOD close: could not get price for %s, skipping", ticker)
+            skipped += 1
+            continue
+
+        shares = pos["shares"]
+        avg_cost = pos["avg_cost"]
+        realized_pnl = (price - avg_cost) * shares
+        pnl_pct = (price - avg_cost) / avg_cost
+        pnl_emoji = "\U0001f7e2" if realized_pnl >= 0 else "\U0001f534"
+
+        # Compute hold time
+        try:
+            entry_dt_str = "%s %s" % (
+                pos.get("entry_date", ""),
+                pos.get("entry_time", "00:00:00")
+            )
+            from datetime import datetime as _dt2
+            entry_dt = _dt2.strptime(entry_dt_str.strip(), "%Y-%m-%d %H:%M:%S")
+            held_mins = int((datetime.now() - entry_dt).total_seconds() / 60)
+            hold_str = "%dh %dm" % (held_mins // 60, held_mins % 60)
+        except Exception:
+            hold_str = ""
+
+        # Record the trade
+        trade_record = {
+            "action":      "SELL",
+            "ticker":      ticker,
+            "shares":      shares,
+            "price":       price,
+            "pnl":         realized_pnl,
+            "pnl_pct":     pnl_pct,
+            "exit_reason": "EOD-CLOSE",
+            "timestamp":   datetime.now(CT).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        paper_trades_today.append(trade_record)
+        paper_trade_history.append(trade_record)
+
+        # Return cash
+        paper_cash += price * shares
+
+        summary_lines.append(
+            "%s %s %s @ $%.2f  P&L: $%+.2f (%+.1f%%)  held %s"
+            % (pnl_emoji, ticker, shares, price, realized_pnl, pnl_pct * 100, hold_str)
+        )
+        logger.info(
+            "EOD CLOSE %s: %s shares @ $%.2f  pnl=$%.2f  held=%s",
+            ticker, shares, price, realized_pnl, hold_str
+        )
+        closed += 1
+
+    # Remove all closed positions
+    for ticker in tickers:
+        if ticker in paper_positions:
+            paper_positions.pop(ticker)
+
+    total_eod_pnl = sum(t["pnl"] for t in paper_trades_today if t.get("exit_reason") == "EOD-CLOSE")
+    new_val = paper_portfolio_value()
+    lifetime_pct = (new_val - PAPER_STARTING_CAPITAL) / PAPER_STARTING_CAPITAL * 100
+
+    # Send summary
+    summary_msg = (
+        "\U0001f514 EOD CLOSE SUMMARY\n"
+        + SEP + "\n"
+        + "\n".join(summary_lines) + "\n"
+        + SEP + "\n"
+        + "Closed: %d  Skipped: %d\n" % (closed, skipped)
+        + "Session P&L:  $%+.2f\n" % total_eod_pnl
+        + "Portfolio:    $%,.0f (%+.2f%% all-time)\n" % (new_val, lifetime_pct)
+        + "Cash avail:   $%,.0f\n" % paper_cash
+        + "Slots free:   %d / %d" % (PAPER_MAX_POSITIONS, PAPER_MAX_POSITIONS)
+    )
+    send_telegram(summary_msg)
+    save_paper_state()
+    logger.info("EOD close complete: %d closed, %d skipped", closed, skipped)
 
 
 def paper_eod_report():
@@ -12967,7 +13086,8 @@ def scanner_thread():
         ("daily",        "12:30",  lambda: ai_refresh_watchlist(mode="intraday")),
         ("daily",        "14:30",  lambda: ai_refresh_watchlist(mode="intraday")),
         ("daily",        "15:00",  send_daily_close_summary),
-        ("daily",        "15:01",  paper_eod_report),
+        ("daily",        "15:55",  paper_eod_close),   # v2.7.20: force-close all intraday positions
+        ("daily",        "15:58",  paper_eod_report),
         ("daily",        "15:05",  _analyze_signal_effectiveness),
         ("daily",        "16:05",  send_daily_pnl_summary),
         ("daily",        "18:00",  send_evening_recap),
