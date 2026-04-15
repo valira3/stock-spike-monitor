@@ -1,6 +1,6 @@
 """
-Stock Spike Monitor v2.8.0 — Clean ORB Momentum Breakout
-=========================================================
+Stock Spike Monitor v2.8.3 — ORB Momentum Breakout + Full Feature Suite
+=========================================================================
 10-ticker universe, Opening Range breakout, $0.50 stepped trail.
 Infrastructure: Telegram bot, paper trading, TradersPost webhook, scheduler.
 """
@@ -31,11 +31,13 @@ CHAT_ID                 = os.getenv("CHAT_ID")
 TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
+TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.8.2"
+BOT_VERSION = "2.8.3"
 RELEASE_NOTE = (
-    "v2.8.2: Rich deployment card + /dashboard + "
-    "enhanced /help + /log + /replay"
+    "v2.8.3: Notification routing (paper/TP separated), /reset, "
+    "trade history persistence, daily loss limit, morning OR card, "
+    "auto EOD report, /perf, /price, /orb, /monitoring, weekly digest"
 )
 
 # ============================================================
@@ -140,6 +142,19 @@ tp_positions: dict = {}
 tp_paper_trades: list = []
 tp_paper_cash: float = PAPER_STARTING_CAPITAL
 
+# Trade history persistence (Feature 1)
+trade_history: list = []        # ALL closed paper trades, max 500
+tp_trade_history: list = []     # ALL closed TP trades, max 500
+TRADE_HISTORY_MAX = 500
+
+# Daily loss limit (Feature 2)
+DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
+_trading_halted: bool = False
+_trading_halted_reason: str = ""
+
+# Scan pause (Feature 8)
+_scan_paused: bool = False
+
 # TradersPost state
 tp_state: dict = {
     "total_orders_sent": 0,
@@ -155,6 +170,17 @@ user_config: dict = {"trading_mode": "paper"}
 
 # Thread safety
 _paper_save_lock = threading.Lock()
+
+
+# ============================================================
+# NOTIFICATION ROUTING HELPER (Fix B)
+# ============================================================
+def is_tp_update(update) -> bool:
+    """Check if the Telegram update came from the TP bot."""
+    try:
+        return update.get_bot().token == TP_TOKEN
+    except Exception:
+        return False
 
 
 # ============================================================
@@ -174,6 +200,7 @@ def save_paper_state():
         "or_collected_date": or_collected_date,
         "user_config": user_config,
         "tp_state": tp_state,
+        "trade_history": trade_history,
         "saved_at": datetime.now(ET).isoformat(),
     }
     with _paper_save_lock:
@@ -193,6 +220,7 @@ def load_paper_state():
     global daily_entry_count, daily_entry_date
     global or_high, pdc, or_collected_date
     global user_config, tp_state, tp_dm_chat_id
+    global trade_history
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
@@ -214,6 +242,7 @@ def load_paper_state():
         or_collected_date = state.get("or_collected_date", "")
         user_config.update(state.get("user_config", {}))
         tp_state.update(state.get("tp_state", {}))
+        trade_history.extend(state.get("trade_history", []))
 
         # Reset daily counts if saved on a different day
         today = datetime.now(ET).strftime("%Y-%m-%d")
@@ -239,6 +268,7 @@ def save_tp_state():
         "tp_paper_cash": tp_paper_cash,
         "tp_positions": tp_positions,
         "tp_paper_trades": tp_paper_trades,
+        "tp_trade_history": tp_trade_history,
         "saved_at": datetime.now(ET).isoformat(),
     }
     with _tp_save_lock:
@@ -254,7 +284,7 @@ def save_tp_state():
 
 def load_tp_state():
     """Load TP portfolio state from disk on startup."""
-    global tp_paper_cash
+    global tp_paper_cash, tp_trade_history
 
     if not os.path.exists(TP_STATE_FILE):
         logger.info("No TP state at %s. Starting fresh $%.0f.",
@@ -268,6 +298,7 @@ def load_tp_state():
         tp_paper_cash = float(state.get("tp_paper_cash", PAPER_STARTING_CAPITAL))
         tp_positions.update(state.get("tp_positions", {}))
         tp_paper_trades.extend(state.get("tp_paper_trades", []))
+        tp_trade_history.extend(state.get("tp_trade_history", []))
 
         logger.info("Loaded TP state: cash=$%.2f, %d positions",
                     tp_paper_cash, len(tp_positions))
@@ -649,12 +680,37 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
 # ============================================================
 def execute_entry(ticker, current_price):
     """Place a limit buy for 10 shares. Record position + paper trade."""
-    global paper_cash, tp_paper_cash
+    global paper_cash, tp_paper_cash, _trading_halted, _trading_halted_reason
+
+    # Feature 2: Check daily loss limit
+    now_et = datetime.now(ET)
+    today_str = now_et.strftime("%Y-%m-%d")
+
+    if _trading_halted:
+        logger.info("Trading halted — skipping entry for %s", ticker)
+        return
+
+    today_pnl = sum(
+        t["pnl"] for t in paper_trades
+        if t.get("date") == today_str and t.get("action") == "SELL"
+    )
+    if today_pnl <= DAILY_LOSS_LIMIT:
+        _trading_halted = True
+        pnl_fmt = "%+.2f" % today_pnl
+        limit_fmt = "%.2f" % DAILY_LOSS_LIMIT
+        _trading_halted_reason = "Daily loss limit hit: $%s" % pnl_fmt
+        halt_msg = (
+            "STOP Trading halted — daily loss limit hit\n"
+            "Today P&L: $%s\n"
+            "Limit: $%s\n"
+            "No new entries until tomorrow."
+        ) % (pnl_fmt, limit_fmt)
+        send_telegram(halt_msg)
+        return
 
     limit_price = round(current_price + 0.02, 2)
     stop_price = round(current_price - STOP_OFFSET, 2)
     entry_num = daily_entry_count.get(ticker, 0) + 1
-    now_et = datetime.now(ET)
     now_str = now_et.isoformat()
     now_hhmm = now_et.strftime("%H:%M")
     now_date = now_et.strftime("%Y-%m-%d")
@@ -694,7 +750,7 @@ def execute_entry(ticker, current_price):
     # TradersPost webhook
     send_traderspost_order(ticker, "buy", current_price)
 
-    # Telegram notification
+    # Fix B: Paper BUY notification → send_telegram() ONLY
     or_h = or_high.get(ticker, 0)
     msg = (
         "ENTRY %s\n"
@@ -717,6 +773,8 @@ def execute_entry(ticker, current_price):
     }
     tp_paper_cash -= cost
     tp_paper_trades.append(trade.copy())
+
+    # Fix B: TP BUY notification → send_tp_telegram() ONLY
     tp_msg = (
         "[TP] ENTRY %s\n"
         "  Price:  $%.2f  (limit $%.2f)\n"
@@ -743,11 +801,21 @@ def close_position(ticker, price, reason="STOP"):
     pos = positions.pop(ticker)
     entry_price = pos["entry_price"]
     shares = pos["shares"]
-    pnl = (price - entry_price) * shares
+    pnl_val = (price - entry_price) * shares
     pnl_pct = ((price - entry_price) / entry_price * 100) if entry_price else 0
     now_et = datetime.now(ET)
     now_hhmm = now_et.strftime("%H:%M")
     now_date = now_et.strftime("%Y-%m-%d")
+
+    # Compute entry time from position
+    entry_time_str = pos.get("entry_time", "")
+    entry_hhmm = ""
+    if entry_time_str:
+        try:
+            et_dt = datetime.fromisoformat(entry_time_str)
+            entry_hhmm = et_dt.strftime("%H:%M")
+        except Exception:
+            entry_hhmm = ""
 
     # Paper accounting
     proceeds = price * shares
@@ -758,7 +826,7 @@ def close_position(ticker, price, reason="STOP"):
         "ticker": ticker,
         "price": price,
         "shares": shares,
-        "pnl": round(pnl, 2),
+        "pnl": round(pnl_val, 2),
         "pnl_pct": round(pnl_pct, 2),
         "reason": reason,
         "entry_price": entry_price,
@@ -768,19 +836,37 @@ def close_position(ticker, price, reason="STOP"):
     paper_trades.append(trade)
     paper_all_trades.append(trade)
 
+    # Feature 1: Append to trade_history
+    history_record = {
+        "ticker": ticker,
+        "action": "SELL",
+        "shares": shares,
+        "entry_price": entry_price,
+        "exit_price": price,
+        "pnl": round(pnl_val, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "reason": reason,
+        "entry_time": entry_hhmm,
+        "exit_time": now_hhmm,
+        "date": now_date,
+    }
+    trade_history.append(history_record)
+    if len(trade_history) > TRADE_HISTORY_MAX:
+        trade_history[:] = trade_history[-TRADE_HISTORY_MAX:]
+
     paper_log("SELL %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
-              % (ticker, shares, price, reason, pnl, pnl_pct))
+              % (ticker, shares, price, reason, pnl_val, pnl_pct))
 
     # TradersPost webhook
     send_traderspost_order(ticker, "sell", price, shares)
 
-    # Telegram
+    # Fix B: Paper EXIT → send_telegram() ONLY
     msg = (
         "EXIT %s  [%s]\n"
         "  Entry:  $%.2f\n"
         "  Exit:   $%.2f\n"
         "  P&L:    $%+.2f  (%+.1f%%)"
-    ) % (ticker, reason, entry_price, price, pnl, pnl_pct)
+    ) % (ticker, reason, entry_price, price, pnl_val, pnl_pct)
     send_telegram(msg)
 
     # TP Portfolio — mirror close
@@ -791,6 +877,16 @@ def close_position(ticker, price, reason="STOP"):
         tp_pnl = (price - tp_entry) * tp_shares
         tp_pnl_pct = ((price - tp_entry) / tp_entry * 100) if tp_entry else 0
         tp_paper_cash += price * tp_shares
+
+        tp_entry_time_str = tp_pos.get("entry_time", "")
+        tp_entry_hhmm = ""
+        if tp_entry_time_str:
+            try:
+                tp_et_dt = datetime.fromisoformat(tp_entry_time_str)
+                tp_entry_hhmm = tp_et_dt.strftime("%H:%M")
+            except Exception:
+                tp_entry_hhmm = ""
+
         tp_paper_trades.append({
             "action": "SELL",
             "ticker": ticker,
@@ -803,6 +899,26 @@ def close_position(ticker, price, reason="STOP"):
             "time": now_hhmm,
             "date": now_date,
         })
+
+        # Feature 1: Append to tp_trade_history
+        tp_hist_record = {
+            "ticker": ticker,
+            "action": "SELL",
+            "shares": tp_shares,
+            "entry_price": tp_entry,
+            "exit_price": price,
+            "pnl": round(tp_pnl, 2),
+            "pnl_pct": round(tp_pnl_pct, 2),
+            "reason": reason,
+            "entry_time": tp_entry_hhmm,
+            "exit_time": now_hhmm,
+            "date": now_date,
+        }
+        tp_trade_history.append(tp_hist_record)
+        if len(tp_trade_history) > TRADE_HISTORY_MAX:
+            tp_trade_history[:] = tp_trade_history[-TRADE_HISTORY_MAX:]
+
+        # Fix B: TP EXIT → send_tp_telegram() ONLY
         tp_msg = (
             "[TP] EXIT %s  [%s]\n"
             "  Entry:  $%.2f\n"
@@ -884,7 +1000,7 @@ def eod_close():
     for ticker, price in tickers_to_close:
         close_position(ticker, price, reason="EOD")
 
-    # Summary
+    # Fix B: Paper EOD summary → send_telegram(), TP EOD summary → send_tp_telegram()
     today_sells = [t for t in paper_trades if t.get("action") == "SELL"]
     total_pnl = sum(t.get("pnl", 0) for t in today_sells)
     wins = sum(1 for t in today_sells if t.get("pnl", 0) > 0)
@@ -897,7 +1013,285 @@ def eod_close():
         f"  Cash: ${paper_cash:,.2f}"
     )
     send_telegram(msg)
+
+    # TP EOD summary
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+    tp_today_sells = [
+        t for t in tp_paper_trades
+        if t.get("action") == "SELL" and t.get("date", "") == today
+    ]
+    tp_total_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
+    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) > 0)
+    tp_losses = sum(1 for t in tp_today_sells if t.get("pnl", 0) <= 0)
+    tp_msg = (
+        f"[TP] EOD CLOSE Complete\n"
+        f"  Trades: {len(tp_today_sells)}  W/L: {tp_wins}/{tp_losses}\n"
+        f"  Day P&L: ${tp_total_pnl:+.2f}\n"
+        f"  Cash: ${tp_paper_cash:,.2f}"
+    )
+    send_tp_telegram(tp_msg)
     save_paper_state()
+
+
+# ============================================================
+# MORNING OR NOTIFICATION (Feature 3)
+# ============================================================
+def send_or_notification():
+    """Send morning OR card at 09:36 ET. Retry if OR data not ready."""
+    def _do_send():
+        now_et = datetime.now(ET)
+        today = now_et.strftime("%Y-%m-%d")
+
+        for attempt in range(3):
+            if or_collected_date == today and len(or_high) > 0:
+                break
+            if attempt < 2:
+                logger.info("OR notification: data not ready, retry %d/3 in 30s", attempt + 1)
+                time.sleep(30)
+
+        if or_collected_date != today:
+            logger.warning("OR notification: OR data not ready after retries, skipping")
+            return
+
+        SEP = "\u2500" * 34
+        lines = [
+            "\U0001f4d0 Opening Range Collected \u2014 09:35 ET",
+            SEP,
+            "Ticker  OR High  PDC    Status",
+        ]
+
+        for t in TRADE_TICKERS:
+            orh = or_high.get(t)
+            pdc_val = pdc.get(t)
+            if orh is None or pdc_val is None:
+                lines.append("%s   --       --     --" % t)
+                continue
+            # Fetch current price for status
+            bars = fetch_1min_bars(t)
+            cur_price = bars["current_price"] if bars else 0
+            if cur_price > pdc_val:
+                status_icon = "\U0001f7e2 Green"
+            else:
+                status_icon = "\U0001f534 Red"
+            lines.append(
+                "%s   $%.2f  $%.2f  %s"
+                % (t, orh, pdc_val, status_icon)
+            )
+
+        lines.append(SEP)
+
+        # SPY/QQQ AVWAP
+        spy_bars = fetch_1min_bars("SPY")
+        qqq_bars = fetch_1min_bars("QQQ")
+        spy_price = spy_bars["current_price"] if spy_bars else 0
+        qqq_price = qqq_bars["current_price"] if qqq_bars else 0
+        spy_avwap = avwap_data["SPY"]["avwap"]
+        qqq_avwap = avwap_data["QQQ"]["avwap"]
+
+        spy_above = spy_price > spy_avwap if spy_avwap > 0 else False
+        qqq_above = qqq_price > qqq_avwap if qqq_avwap > 0 else False
+        spy_icon = "\u2705 above" if spy_above else "\u274c below"
+        qqq_icon = "\u2705 above" if qqq_above else "\u274c below"
+
+        spy_avwap_fmt = "%.2f" % spy_avwap if spy_avwap > 0 else "n/a"
+        qqq_avwap_fmt = "%.2f" % qqq_avwap if qqq_avwap > 0 else "n/a"
+
+        lines.append("SPY AVWAP: $%s  %s" % (spy_avwap_fmt, spy_icon))
+        lines.append("QQQ AVWAP: $%s  %s" % (qqq_avwap_fmt, qqq_icon))
+
+        both_active = spy_above and qqq_above
+        filter_status = "ACTIVE" if both_active else "PARTIAL/INACTIVE"
+        lines.append("Index filters: %s" % filter_status)
+        lines.append(SEP)
+        lines.append("Watching for breakouts above OR highs.")
+
+        msg = "\n".join(lines)
+        send_telegram(msg)
+        send_tp_telegram(msg)
+
+    threading.Thread(target=_do_send, daemon=True).start()
+
+
+# ============================================================
+# AUTO EOD REPORT (Feature 4)
+# ============================================================
+def send_eod_report():
+    """Auto EOD report at 15:58 ET. Paper → send_telegram(), TP → send_tp_telegram()."""
+    SEP = "\u2500" * 34
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+
+    # --- Paper report ---
+    today_sells = [
+        t for t in paper_trades
+        if t.get("action") == "SELL"
+    ]
+    n_trades = len(today_sells)
+    wins = sum(1 for t in today_sells if t.get("pnl", 0) > 0)
+    losses = n_trades - wins
+    win_rate = (wins / n_trades * 100) if n_trades > 0 else 0
+    day_pnl = sum(t.get("pnl", 0) for t in today_sells)
+
+    # All-time from trade_history
+    all_time_pnl = sum(t.get("pnl", 0) for t in trade_history)
+    all_wins = sum(1 for t in trade_history if t.get("pnl", 0) > 0)
+    all_losses = len(trade_history) - all_wins
+    all_wr = (all_wins / len(trade_history) * 100) if trade_history else 0
+
+    lines = [
+        "\U0001f4ca EOD Report \u2014 %s" % today,
+        SEP,
+        "PAPER PORTFOLIO",
+        "  Trades today:  %d" % n_trades,
+        "  Wins / Losses: %d / %d" % (wins, losses),
+        "  Win Rate:      %.1f%%" % win_rate,
+        "  Day P&L:      $%+.2f" % day_pnl,
+        SEP,
+    ]
+    for t in today_sells:
+        tk = t.get("ticker", "?")
+        sh = t.get("shares", 0)
+        t_pnl = t.get("pnl", 0)
+        t_pct = t.get("pnl_pct", 0)
+        t_reason = t.get("reason", "?")
+        lines.append("  %s  %dsh  $%+.2f (%+.1f%%)  %s" % (tk, sh, t_pnl, t_pct, t_reason))
+    lines.append(SEP)
+    lines.append("  All-time P&L:  $%+.2f" % all_time_pnl)
+    lines.append("  All-time W/L:  %d / %d  (%.1f%%)" % (all_wins, all_losses, all_wr))
+
+    paper_msg = "\n".join(lines)
+    if len(paper_msg) > 4000:
+        paper_msg = paper_msg[:3990] + "\n... (truncated)"
+    send_telegram(paper_msg)
+
+    # --- TP report ---
+    tp_today_sells = [
+        t for t in tp_paper_trades
+        if t.get("action") == "SELL" and t.get("date", "") == today
+    ]
+    tp_n = len(tp_today_sells)
+    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) > 0)
+    tp_losses_n = tp_n - tp_wins
+    tp_wr = (tp_wins / tp_n * 100) if tp_n > 0 else 0
+    tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
+
+    tp_all_pnl = sum(t.get("pnl", 0) for t in tp_trade_history)
+    tp_all_wins = sum(1 for t in tp_trade_history if t.get("pnl", 0) > 0)
+    tp_all_losses = len(tp_trade_history) - tp_all_wins
+    tp_all_wr = (tp_all_wins / len(tp_trade_history) * 100) if tp_trade_history else 0
+
+    tp_lines = [
+        "\U0001f4ca EOD Report \u2014 %s" % today,
+        SEP,
+        "TP PORTFOLIO",
+        "  Trades today:  %d" % tp_n,
+        "  Wins / Losses: %d / %d" % (tp_wins, tp_losses_n),
+        "  Win Rate:      %.1f%%" % tp_wr,
+        "  Day P&L:      $%+.2f" % tp_day_pnl,
+        SEP,
+    ]
+    for t in tp_today_sells:
+        tk = t.get("ticker", "?")
+        sh = t.get("shares", 0)
+        t_pnl = t.get("pnl", 0)
+        t_pct = t.get("pnl_pct", 0)
+        t_reason = t.get("reason", "?")
+        tp_lines.append("  %s  %dsh  $%+.2f (%+.1f%%)  %s" % (tk, sh, t_pnl, t_pct, t_reason))
+    tp_lines.append(SEP)
+    tp_lines.append("  All-time P&L:  $%+.2f" % tp_all_pnl)
+    tp_lines.append("  All-time W/L:  %d / %d  (%.1f%%)" % (tp_all_wins, tp_all_losses, tp_all_wr))
+
+    tp_report_msg = "\n".join(tp_lines)
+    if len(tp_report_msg) > 4000:
+        tp_report_msg = tp_report_msg[:3990] + "\n... (truncated)"
+    send_tp_telegram(tp_report_msg)
+
+
+# ============================================================
+# WEEKLY DIGEST (Feature 9)
+# ============================================================
+def send_weekly_digest():
+    """Weekly digest — Sunday 18:00 ET. Paper → send_telegram(), TP → send_tp_telegram()."""
+    SEP = "\u2500" * 34
+    now_et = datetime.now(ET)
+    cutoff = now_et - timedelta(days=7)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+    week_label = now_et.strftime("Week of %b %d")
+
+    def _build_digest(history, label):
+        week_trades = [
+            t for t in history
+            if t.get("date", "") >= cutoff_str
+        ]
+        if not week_trades:
+            return "\U0001f4c5 Weekly Digest \u2014 %s\n%s\n%s\nNo trades this week." % (
+                week_label, SEP, label
+            )
+
+        n = len(week_trades)
+        wins = sum(1 for t in week_trades if t.get("pnl", 0) > 0)
+        losses = n - wins
+        wr = (wins / n * 100) if n > 0 else 0
+        week_pnl = sum(t.get("pnl", 0) for t in week_trades)
+
+        # Best day
+        day_pnls = {}
+        for t in week_trades:
+            d = t.get("date", "")
+            day_pnls[d] = day_pnls.get(d, 0) + t.get("pnl", 0)
+        best_day_date = max(day_pnls, key=day_pnls.get)
+        # Convert date to day name
+        try:
+            best_day_dt = datetime.strptime(best_day_date, "%Y-%m-%d")
+            best_day_name = best_day_dt.strftime("%a")
+        except Exception:
+            best_day_name = best_day_date
+        best_day_pnl = day_pnls[best_day_date]
+
+        # Best trade
+        best_trade = max(week_trades, key=lambda t: t.get("pnl", 0))
+        best_ticker = best_trade.get("ticker", "?")
+        best_pnl = best_trade.get("pnl", 0)
+
+        # Top performers by ticker
+        ticker_pnls = {}
+        ticker_counts = {}
+        for t in week_trades:
+            tk = t.get("ticker", "?")
+            ticker_pnls[tk] = ticker_pnls.get(tk, 0) + t.get("pnl", 0)
+            ticker_counts[tk] = ticker_counts.get(tk, 0) + 1
+        sorted_tickers = sorted(ticker_pnls.keys(), key=lambda k: ticker_pnls[k], reverse=True)
+        top3 = sorted_tickers[:3]
+
+        lines = [
+            "\U0001f4c5 Weekly Digest \u2014 %s" % week_label,
+            SEP,
+            label,
+            "  Trades:    %d  (W:%d  L:%d)" % (n, wins, losses),
+            "  Win Rate:  %.1f%%" % wr,
+            "  Week P&L: $%+.2f" % week_pnl,
+            "  Best day:  %s $%+.2f" % (best_day_name, best_day_pnl),
+            "  Best trade: %s $%+.2f" % (best_ticker, best_pnl),
+            SEP,
+            "Top performers this week:",
+        ]
+        for tk in top3:
+            lines.append("  %s  %d trades  $%+.2f" % (tk, ticker_counts[tk], ticker_pnls[tk]))
+        lines.append(SEP)
+        lines.append("Next week: OR strategy continues.")
+        lines.append("All 8 tickers monitored from 09:35 ET.")
+
+        msg = "\n".join(lines)
+        if len(msg) > 4000:
+            msg = msg[:3990] + "\n... (truncated)"
+        return msg
+
+    paper_digest = _build_digest(trade_history, "PAPER PORTFOLIO")
+    send_telegram(paper_digest)
+
+    tp_digest = _build_digest(tp_trade_history, "TP PORTFOLIO")
+    send_tp_telegram(tp_digest)
 
 
 # ============================================================
@@ -905,6 +1299,10 @@ def eod_close():
 # ============================================================
 def scan_loop():
     """Main scan: manage positions, check new entries. Runs every 60s."""
+    # Feature 8: scan pause
+    if _scan_paused:
+        return
+
     now_et = datetime.now(ET)
 
     # Skip weekends
@@ -943,7 +1341,7 @@ def scan_loop():
 # ============================================================
 def reset_daily_state():
     """Reset AVWAP, OR data, and daily counts for new trading day."""
-    global or_collected_date, daily_entry_date
+    global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason
 
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
@@ -962,6 +1360,10 @@ def reset_daily_state():
     for t in ("SPY", "QQQ"):
         avwap_data[t] = {"cum_pv": 0.0, "cum_vol": 0.0, "avwap": 0.0}
         avwap_last_ts[t] = 0
+
+    # Feature 2: Reset trading halt for new day
+    _trading_halted = False
+    _trading_halted_reason = ""
 
 
 # ============================================================
@@ -983,7 +1385,10 @@ def scheduler_thread():
         ("daily", "09:30", reset_daily_state),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
+        ("daily", "09:36", send_or_notification),
         ("daily", "15:55", eod_close),
+        ("daily", "15:58", send_eod_report),
+        ("sunday", "18:00", send_weekly_digest),
     ]
 
     logger.info("Scheduler started — all times in ET (server: %s)",
@@ -1050,30 +1455,86 @@ def health_ping():
 
 
 # ============================================================
+# PERFORMANCE STATS HELPER
+# ============================================================
+def _compute_perf_stats(history, date_filter=None):
+    """Compute performance stats from a trade history list.
+    If date_filter is given, only include trades on/after that date string.
+    Returns dict with stats or None if no trades.
+    """
+    trades = history
+    if date_filter:
+        trades = [t for t in history if t.get("date", "") >= date_filter]
+    if not trades:
+        return None
+    n = len(trades)
+    wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+    losses = n - wins
+    wr = (wins / n * 100) if n > 0 else 0
+    total_pnl = sum(t.get("pnl", 0) for t in trades)
+    win_trades = [t for t in trades if t.get("pnl", 0) > 0]
+    loss_trades = [t for t in trades if t.get("pnl", 0) <= 0]
+    avg_win = (sum(t["pnl"] for t in win_trades) / len(win_trades)) if win_trades else 0
+    avg_loss = (sum(t["pnl"] for t in loss_trades) / len(loss_trades)) if loss_trades else 0
+    best = max(trades, key=lambda t: t.get("pnl", 0))
+    worst = min(trades, key=lambda t: t.get("pnl", 0))
+    return {
+        "n": n, "wins": wins, "losses": losses, "wr": wr,
+        "total_pnl": total_pnl, "avg_win": avg_win, "avg_loss": avg_loss,
+        "best": best, "worst": worst,
+    }
+
+
+def _compute_streak(history):
+    """Compute current consecutive win/loss streak from most recent trade backward."""
+    if not history:
+        return "N/A"
+    sorted_h = sorted(history, key=lambda t: (t.get("date", ""), t.get("exit_time", "")))
+    last = sorted_h[-1]
+    is_win = last.get("pnl", 0) > 0
+    count = 0
+    for t in reversed(sorted_h):
+        t_win = t.get("pnl", 0) > 0
+        if t_win == is_win:
+            count += 1
+        else:
+            break
+    label = "W" if is_win else "L"
+    return "%d%s (current)" % (count, label)
+
+
+# ============================================================
 # TELEGRAM COMMANDS
 # ============================================================
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show formatted command list and strategy summary."""
     SEP = "\u2500" * 34
+    loss_limit_int = int(DAILY_LOSS_LIMIT)
+    loss_limit_str = "$%d" % loss_limit_int
     text = (
         "\U0001f4d6 Commands\n"
         f"{SEP}\n"
-        "/dashboard   Full market snapshot\n"
-        "/positions   Open positions + live P&L\n"
-        "/status      Same as /positions\n"
-        "/log         Today's trade log\n"
-        "/replay      Replay today's trades timeline\n"
-        "/dayreport   Daily P&L summary\n"
-        "/version     Bot version info\n"
-        "/help        This menu\n"
+        "/dashboard    Full market snapshot\n"
+        "/positions    Open positions + live P&L\n"
+        "/orb          Today's OR levels + status\n"
+        "/perf         All-time performance stats\n"
+        "/price TICK   Live quote for any ticker\n"
+        "/log          Today's trade log\n"
+        "/replay       Trade timeline replay\n"
+        "/dayreport    Daily P&L summary\n"
+        "/monitoring   Pause/resume scanner\n"
+        "/reset        Reset portfolio\n"
+        "/version      Bot version info\n"
+        "/help         This menu\n"
         f"{SEP}\n"
-        "Strategy: ORB Breakout\n"
-        "Entry: close > OR_High + price > PDC\n"
-        "       + SPY/QQQ above AVWAP\n"
+        "Strategy: ORB Momentum Breakout\n"
+        "Entry: 1min close > OR_High\n"
+        "       + price > PDC (green stocks only)\n"
+        "       + SPY & QQQ above AVWAP\n"
         "Stop:  Entry \u2212 $0.50\n"
-        "Trail: +$1.00 \u2192 stop at Entry+$0.50\n"
-        "       ratchets $0.50 per $0.50 gain\n"
-        "Max:   2 entries per ticker per day"
+        "Trail: +$1.00 triggers, ratchets $0.50/$0.50\n"
+        "Max:   2 entries per ticker per day\n"
+        f"Halt:  Auto-halt if day P&L < {loss_limit_str}"
     )
     await update.message.reply_text(text)
 
@@ -1178,6 +1639,67 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show open positions with live prices, unrealized P&L, and TP summary."""
     now_et = datetime.now(ET)
     sep = "\u2500" * 34
+
+    # Fix B: Route based on which bot received the command
+    if is_tp_update(update):
+        # Show TP portfolio
+        n_pos = len(tp_positions)
+        header = "[TP] Open Positions (%d)" % n_pos
+        lines = [header, sep]
+
+        total_unreal_pnl = 0.0
+        total_market_value = 0.0
+
+        if not tp_positions:
+            lines.append("No open positions")
+        else:
+            for ticker, pos in tp_positions.items():
+                bars = fetch_1min_bars(ticker)
+                entry_p = pos["entry_price"]
+                shares = pos["shares"]
+                if bars:
+                    cur = bars["current_price"]
+                    pos_pnl = (cur - entry_p) * shares
+                    pos_pnl_pct = ((cur - entry_p) / entry_p * 100) if entry_p else 0
+                    mkt_val = cur * shares
+                    total_unreal_pnl += pos_pnl
+                    total_market_value += mkt_val
+                    stop_tag = "[trail active]" if pos["trail_active"] else "[stop]"
+                    lines.append("%s  %d shares" % (ticker, shares))
+                    lines.append("  Entry:  $%.2f  ->  Now: $%.2f" % (entry_p, cur))
+                    lines.append("  P&L:   $%+.2f (%+.1f%%)" % (pos_pnl, pos_pnl_pct))
+                    mkt_val_fmt = format(mkt_val, ",.2f")
+                    lines.append("  Value:  $%s" % mkt_val_fmt)
+                    lines.append("  Stop:   $%.2f %s" % (pos["stop"], stop_tag))
+                else:
+                    mkt_val = entry_p * shares
+                    total_market_value += mkt_val
+                    lines.append("%s  %d shares" % (ticker, shares))
+                    lines.append("  Entry:  $%.2f  ->  price unavailable" % entry_p)
+                    lines.append("  Stop:   $%.2f" % pos["stop"])
+                lines.append(sep)
+
+        if tp_positions:
+            lines.append("Total Unrealized P&L: $%+.2f" % total_unreal_pnl)
+            tmv_fmt = format(total_market_value, ",.2f")
+            lines.append("Total Market Value:   $%s" % tmv_fmt)
+
+        today = now_et.strftime("%Y-%m-%d")
+        tp_today_sells = [
+            t for t in tp_paper_trades
+            if t.get("action") == "SELL" and t.get("date", "") == today
+        ]
+        if tp_today_sells:
+            tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
+            lines.append("Today: %d trades, P&L=$%+.2f" % (len(tp_today_sells), tp_day_pnl))
+
+        tp_cash_fmt = format(tp_paper_cash, ",.2f")
+        lines.append("TP Cash: $%s" % tp_cash_fmt)
+
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # Paper portfolio (default)
     n_pos = len(positions)
     header = "Open Positions (%d)" % n_pos
     lines = [header, sep]
@@ -1268,30 +1790,67 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = now_et.strftime("%Y-%m-%d")
     sep = "-" * 32
 
+    # Fix B: Route based on which bot
+    if is_tp_update(update):
+        tp_today_sells = [
+            t for t in tp_paper_trades
+            if t.get("action") == "SELL" and t.get("date", "") == today
+        ]
+        if not tp_today_sells:
+            await update.message.reply_text(
+                "[TP] Day Report \u2014 %s\n%s\nNo completed trades today." % (today, sep))
+            return
+        lines = ["[TP] Day Report \u2014 %s" % today, sep]
+        total_pnl = 0.0
+        for t in tp_today_sells:
+            ticker = t.get("ticker", "?")
+            t_pnl = t.get("pnl", 0)
+            pnl_pct = t.get("pnl_pct", 0)
+            reason = t.get("reason", "?")
+            entry_p = t.get("entry_price", 0)
+            exit_p = t.get("price", 0)
+            total_pnl += t_pnl
+            lines.append(
+                "%s: $%.2f -> $%.2f  P&L=$%+.2f (%+.1f%%) [%s]"
+                % (ticker, entry_p, exit_p, t_pnl, pnl_pct, reason)
+            )
+        wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) > 0)
+        losses = len(tp_today_sells) - wins
+        win_rate = (wins / len(tp_today_sells) * 100) if tp_today_sells else 0
+        lines.append(sep)
+        lines.append("Total P&L: $%+.2f" % total_pnl)
+        lines.append("Trades: %d  W/L: %d/%d  Win%%: %.0f%%" % (
+            len(tp_today_sells), wins, losses, win_rate))
+        tp_cash_fmt = format(tp_paper_cash, ",.2f")
+        lines.append("Cash: $%s" % tp_cash_fmt)
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # Paper portfolio
     today_sells = [t for t in paper_trades if t.get("action") == "SELL"]
 
     if not today_sells:
         await update.message.reply_text(
-            "Day Report — %s\n%s\nNo completed trades today." % (today, sep))
+            "Day Report \u2014 %s\n%s\nNo completed trades today." % (today, sep))
         return
 
     lines = [
-        "Day Report — %s" % today,
+        "Day Report \u2014 %s" % today,
         sep,
     ]
 
     total_pnl = 0.0
     for t in today_sells:
         ticker = t.get("ticker", "?")
-        pnl = t.get("pnl", 0)
+        t_pnl = t.get("pnl", 0)
         pnl_pct = t.get("pnl_pct", 0)
         reason = t.get("reason", "?")
         entry_p = t.get("entry_price", 0)
         exit_p = t.get("price", 0)
-        total_pnl += pnl
+        total_pnl += t_pnl
         lines.append(
             "%s: $%.2f -> $%.2f  P&L=$%+.2f (%+.1f%%) [%s]"
-            % (ticker, entry_p, exit_p, pnl, pnl_pct, reason)
+            % (ticker, entry_p, exit_p, t_pnl, pnl_pct, reason)
         )
 
     wins = sum(1 for t in today_sells if t.get("pnl", 0) > 0)
@@ -1313,6 +1872,46 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
 
+    # Fix B: Route based on which bot
+    if is_tp_update(update):
+        today_trades = [t for t in tp_paper_trades if t.get("date", "") == today]
+        today_trades.sort(key=lambda t: t.get("time", ""))
+        if not today_trades:
+            await update.message.reply_text("[TP] No trades today.")
+            return
+        lines = [
+            "\U0001f4cb [TP] Trade Log \u2014 %s" % today,
+            SEP,
+        ]
+        for t in today_trades:
+            tm = t.get("time", "--:--")
+            ticker = t.get("ticker", "?")
+            action = t.get("action", "?")
+            shares = t.get("shares", 0)
+            price = t.get("price", 0)
+            if action == "BUY":
+                stop = t.get("stop", 0)
+                lines.append(
+                    f"{tm}  BUY   {ticker}  {shares} @ ${price:.2f}  stop ${stop:.2f}"
+                )
+            else:
+                pnl_v = t.get("pnl", 0)
+                pnl_p = t.get("pnl_pct", 0)
+                lines.append(
+                    f"{tm}  EXIT  {ticker}  {shares} @ ${price:.2f}"
+                    f"  P&L: ${pnl_v:+.2f} ({pnl_p:+.2f}%)"
+                )
+        lines.append(SEP)
+        n_closed = sum(1 for t in today_trades if t.get("action") == "SELL")
+        n_open = len(tp_positions)
+        day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
+        day_pnl_fmt = f"{day_pnl:+,.2f}"
+        lines.append(f"Completed: {n_closed} trades  Open: {n_open} positions")
+        lines.append(f"Day P&L: ${day_pnl_fmt}")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # Paper portfolio
     today_trades = [t for t in paper_trades if t.get("date", "") == today]
     today_trades.sort(key=lambda t: t.get("time", ""))
 
@@ -1362,6 +1961,57 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
 
+    # Fix B: Route based on which bot
+    if is_tp_update(update):
+        today_trades = [t for t in tp_paper_trades if t.get("date", "") == today]
+        today_trades.sort(key=lambda t: t.get("time", ""))
+        if not today_trades:
+            await update.message.reply_text("[TP] No trades today.")
+            return
+        lines = [
+            "\U0001f504 [TP] Trade Replay \u2014 %s" % today,
+            SEP,
+        ]
+        cum_pnl = 0.0
+        open_count = 0
+        wins = 0
+        losses = 0
+        for t in today_trades:
+            tm = t.get("time", "--:--")
+            ticker = t.get("ticker", "?")
+            action = t.get("action", "?")
+            price = t.get("price", 0)
+            if action == "BUY":
+                open_count += 1
+                lines.append(
+                    f"{tm} \u2192 BUY  {ticker}  ${price:.2f}  [positions: {open_count}]"
+                )
+            else:
+                open_count = max(0, open_count - 1)
+                pnl_val = t.get("pnl", 0)
+                cum_pnl += pnl_val
+                if pnl_val > 0:
+                    wins += 1
+                else:
+                    losses += 1
+                cum_fmt = f"{cum_pnl:+.2f}"
+                lines.append(
+                    f"{tm} \u2192 EXIT {ticker}  ${price:.2f}"
+                    f"  ${pnl_val:+.2f}   cumP&L: ${cum_fmt}"
+                )
+        lines.append(SEP)
+        n_sells = wins + losses
+        cum_pnl_fmt = f"{cum_pnl:+.2f}"
+        lines.append(
+            f"Final P&L: ${cum_pnl_fmt}  |  Trades: {n_sells}  |  W: {wins}  L: {losses}"
+        )
+        msg = "\n".join(lines)
+        if len(msg) > 4000:
+            msg = msg[:3990] + "\n... (truncated)"
+        await update.message.reply_text(msg)
+        return
+
+    # Paper portfolio
     today_trades = [t for t in paper_trades if t.get("date", "") == today]
     today_trades.sort(key=lambda t: t.get("time", ""))
 
@@ -1425,6 +2075,320 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /reset COMMAND (Fix C)
+# ============================================================
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/reset paper | /reset tp | /reset both — clear portfolio and start fresh."""
+    global paper_cash, paper_trades, paper_all_trades
+    global daily_entry_count, daily_entry_date
+    global tp_paper_cash, tp_paper_trades
+    global trade_history, tp_trade_history
+    global _trading_halted, _trading_halted_reason
+
+    args = context.args
+    target = args[0].lower() if args else "paper"
+
+    if target not in ("paper", "tp", "both"):
+        await update.message.reply_text("Usage: /reset paper | /reset tp | /reset both")
+        return
+
+    msgs = []
+
+    if target in ("paper", "both"):
+        positions.clear()
+        paper_trades.clear()
+        paper_all_trades.clear()
+        trade_history.clear()
+        daily_entry_count.clear()
+        daily_entry_date = ""
+        paper_cash = PAPER_STARTING_CAPITAL
+        _trading_halted = False
+        _trading_halted_reason = ""
+        save_paper_state()
+        msgs.append("Paper portfolio reset to $%s" % format(PAPER_STARTING_CAPITAL, ",.0f"))
+
+    if target in ("tp", "both"):
+        tp_positions.clear()
+        tp_paper_trades.clear()
+        tp_trade_history.clear()
+        tp_paper_cash = PAPER_STARTING_CAPITAL
+        save_tp_state()
+        msgs.append("TP portfolio reset to $%s" % format(PAPER_STARTING_CAPITAL, ",.0f"))
+
+    confirmation = "\u2705 Reset complete\n" + "\n".join(msgs)
+    await update.message.reply_text(confirmation)
+
+
+# ============================================================
+# /perf COMMAND (Feature 5)
+# ============================================================
+async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all-time performance stats from trade history."""
+    SEP = "\u2500" * 34
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+    seven_days_ago = (now_et - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    # Select history based on which bot
+    if is_tp_update(update):
+        history = tp_trade_history
+        label = "TP Portfolio"
+    else:
+        history = trade_history
+        label = "Paper Portfolio"
+
+    if not history:
+        await update.message.reply_text("No completed trades yet.")
+        return
+
+    lines = [
+        "\U0001f4c8 Performance \u2014 %s" % label,
+        SEP,
+    ]
+
+    # All-Time
+    all_stats = _compute_perf_stats(history)
+    if all_stats:
+        best_tk = all_stats["best"].get("ticker", "?")
+        best_pnl = all_stats["best"].get("pnl", 0)
+        worst_tk = all_stats["worst"].get("ticker", "?")
+        worst_pnl = all_stats["worst"].get("pnl", 0)
+        lines.append("All-Time")
+        lines.append("  Trades:    %d  (W:%d  L:%d)" % (
+            all_stats["n"], all_stats["wins"], all_stats["losses"]))
+        lines.append("  Win Rate:  %.1f%%" % all_stats["wr"])
+        lines.append("  Total P&L: $%+.2f" % all_stats["total_pnl"])
+        lines.append("  Avg Win:   $%+.2f" % all_stats["avg_win"])
+        lines.append("  Avg Loss:  $%+.2f" % all_stats["avg_loss"])
+        lines.append("  Best:      %s $%+.2f" % (best_tk, best_pnl))
+        lines.append("  Worst:     %s $%+.2f" % (worst_tk, worst_pnl))
+    lines.append(SEP)
+
+    # Last 7 Days
+    week_stats = _compute_perf_stats(history, date_filter=seven_days_ago)
+    lines.append("Last 7 Days")
+    if week_stats:
+        lines.append("  Trades: %d  Win Rate: %.1f%%" % (week_stats["n"], week_stats["wr"]))
+        lines.append("  P&L:   $%+.2f" % week_stats["total_pnl"])
+    else:
+        lines.append("  No trades")
+    lines.append(SEP)
+
+    # Today
+    today_stats = _compute_perf_stats(history, date_filter=today)
+    lines.append("Today")
+    if today_stats:
+        lines.append("  Trades: %d  Win Rate: %.1f%%" % (today_stats["n"], today_stats["wr"]))
+        lines.append("  P&L:   $%+.2f" % today_stats["total_pnl"])
+    else:
+        lines.append("  No trades")
+    lines.append(SEP)
+
+    # Streak
+    streak = _compute_streak(history)
+    lines.append("Streak: %s" % streak)
+
+    msg = "\n".join(lines)
+    if len(msg) > 4000:
+        msg = msg[:3990] + "\n... (truncated)"
+    await update.message.reply_text(msg)
+
+
+# ============================================================
+# /price COMMAND (Feature 6)
+# ============================================================
+async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/price AAPL — live quote from Yahoo Finance."""
+    SEP = "\u2500" * 34
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /price AAPL")
+        return
+
+    ticker = args[0].upper()
+
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        await update.message.reply_text("Could not fetch data for %s" % ticker)
+        return
+
+    cur_price = bars["current_price"]
+    pdc_val = bars["pdc"]
+    change = cur_price - pdc_val
+    change_pct = (change / pdc_val * 100) if pdc_val else 0
+
+    header = "\U0001f4b0 %s  $%.2f  $%+.2f (%+.2f%%)" % (ticker, cur_price, change, change_pct)
+
+    if ticker not in TRADE_TICKERS:
+        # Not a trade ticker — just show price
+        await update.message.reply_text(header)
+        return
+
+    lines = [header, SEP]
+
+    # OR High
+    orh = or_high.get(ticker)
+    if orh is not None:
+        dist = cur_price - orh
+        if cur_price > orh:
+            or_status = "\u2705 Above (by $%.2f)" % dist
+        else:
+            or_status = "\u274c Below (by $%.2f)" % abs(dist)
+        lines.append("OR High:  $%.2f  %s" % (orh, or_status))
+    else:
+        lines.append("OR High:  not collected")
+
+    # PDC
+    pdc_strat = pdc.get(ticker)
+    if pdc_strat is not None:
+        if cur_price > pdc_strat:
+            pdc_status = "\u2705 Above (green)"
+        else:
+            pdc_status = "\u274c Below (red)"
+        lines.append("PDC:      $%.2f  %s" % (pdc_strat, pdc_status))
+    else:
+        lines.append("PDC:      $%.2f" % pdc_val)
+
+    # SPY/QQQ
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    spy_bars = fetch_1min_bars("SPY")
+    qqq_bars = fetch_1min_bars("QQQ")
+    spy_ok = (spy_bars["current_price"] > spy_avwap) if (spy_bars and spy_avwap > 0) else False
+    qqq_ok = (qqq_bars["current_price"] > qqq_avwap) if (qqq_bars and qqq_avwap > 0) else False
+    spy_icon = "\u2705" if spy_ok else "\u274c"
+    qqq_icon = "\u2705" if qqq_ok else "\u274c"
+    filter_status = "active" if (spy_ok and qqq_ok) else "inactive"
+    lines.append("SPY/QQQ:  %s %s Index filters %s" % (spy_icon, qqq_icon, filter_status))
+    lines.append(SEP)
+
+    # Entry eligible?
+    in_position = ticker in positions
+    at_max_entries = daily_entry_count.get(ticker, 0) >= 2
+    index_ok = spy_ok and qqq_ok
+    eligible = not in_position and not at_max_entries and index_ok and not _trading_halted
+
+    if eligible:
+        lines.append("Entry eligible: YES")
+    else:
+        reasons = []
+        if in_position:
+            reasons.append("in position")
+        if at_max_entries:
+            reasons.append("2 entries today")
+        if not index_ok:
+            reasons.append("index filter fails")
+        if _trading_halted:
+            reasons.append("trading halted")
+        reason_str = ", ".join(reasons)
+        lines.append("Entry eligible: NO (%s)" % reason_str)
+
+    await update.message.reply_text("\n".join(lines))
+
+
+# ============================================================
+# /orb COMMAND (Feature 7)
+# ============================================================
+async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show today's OR levels and current price for all 8 trade tickers."""
+    SEP = "\u2500" * 34
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+
+    if or_collected_date != today:
+        await update.message.reply_text(
+            "OR not collected yet \u2014 runs at 09:35 ET."
+        )
+        return
+
+    lines = [
+        "\U0001f4d0 Opening Range \u2014 %s" % today,
+        SEP,
+        "Ticker  OR High   Now     Status",
+    ]
+
+    for t in TRADE_TICKERS:
+        orh = or_high.get(t)
+        if orh is None:
+            lines.append("%s   --       --     --" % t)
+            continue
+        bars = fetch_1min_bars(t)
+        cur = bars["current_price"] if bars else 0
+        diff = cur - orh
+        if cur > orh:
+            status = "\u2705 $%+.2f" % diff
+        else:
+            status = "\u274c $%+.2f" % diff
+        lines.append("%s   $%.2f  $%.2f  %s" % (t, orh, cur, status))
+
+    lines.append(SEP)
+
+    # SPY/QQQ AVWAP
+    spy_bars = fetch_1min_bars("SPY")
+    qqq_bars = fetch_1min_bars("QQQ")
+    spy_price = spy_bars["current_price"] if spy_bars else 0
+    qqq_price = qqq_bars["current_price"] if qqq_bars else 0
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    spy_ok = spy_price > spy_avwap if spy_avwap > 0 else False
+    qqq_ok = qqq_price > qqq_avwap if qqq_avwap > 0 else False
+    spy_icon = "\u2705" if spy_ok else "\u274c"
+    qqq_icon = "\u2705" if qqq_ok else "\u274c"
+
+    spy_avwap_fmt = "%.2f" % spy_avwap if spy_avwap > 0 else "n/a"
+    qqq_avwap_fmt = "%.2f" % qqq_avwap if qqq_avwap > 0 else "n/a"
+    lines.append("SPY AVWAP: $%s  %s" % (spy_avwap_fmt, spy_icon))
+    lines.append("QQQ AVWAP: $%s  %s" % (qqq_avwap_fmt, qqq_icon))
+
+    # Entries today
+    entry_parts = []
+    for t in TRADE_TICKERS:
+        cnt = daily_entry_count.get(t, 0)
+        if cnt > 0:
+            entry_parts.append("%sx%d" % (t, cnt))
+    if entry_parts:
+        entries_str = " ".join(entry_parts)
+        lines.append("Entries today: %s" % entries_str)
+
+    msg = "\n".join(lines)
+    if len(msg) > 4000:
+        msg = msg[:3990] + "\n... (truncated)"
+    await update.message.reply_text(msg)
+
+
+# ============================================================
+# /monitoring COMMAND (Feature 8)
+# ============================================================
+async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pause/resume scanner. /monitoring pause | resume | (no arg = show status)."""
+    global _scan_paused
+    args = context.args
+    action = args[0].lower() if args else ""
+
+    if action == "pause":
+        _scan_paused = True
+        await update.message.reply_text(
+            "\U0001f50d Scanner: PAUSED\n"
+            "  /monitoring resume \u2014 resume entries\n"
+            "  Note: existing positions still managed when paused."
+        )
+    elif action == "resume":
+        _scan_paused = False
+        await update.message.reply_text(
+            "\U0001f50d Scanner: ACTIVE\n"
+            "  Scanner resumed. Watching for breakouts."
+        )
+    else:
+        status = "PAUSED" if _scan_paused else "ACTIVE"
+        await update.message.reply_text(
+            "\U0001f50d Scanner: %s\n"
+            "  /monitoring pause  \u2014 pause new entries\n"
+            "  /monitoring resume \u2014 resume entries\n"
+            "  Note: existing positions still managed when paused." % status
+        )
+
+
+# ============================================================
 # TELEGRAM BOT SETUP
 # ============================================================
 MAIN_BOT_COMMANDS = [
@@ -1432,15 +2396,30 @@ MAIN_BOT_COMMANDS = [
     BotCommand("help", "Command menu"),
     BotCommand("status", "Open positions + P&L"),
     BotCommand("positions", "Alias for /status"),
+    BotCommand("orb", "Today's OR levels + status"),
+    BotCommand("perf", "All-time performance stats"),
+    BotCommand("price", "Live quote for a ticker"),
     BotCommand("log", "Today's trade log"),
     BotCommand("replay", "Replay today's trades timeline"),
     BotCommand("dayreport", "Today's trades + P&L"),
+    BotCommand("monitoring", "Pause/resume scanner"),
+    BotCommand("reset", "Reset portfolio"),
     BotCommand("version", "Release notes"),
 ]
 
 TP_BOT_COMMANDS = [
     BotCommand("help", "Command menu"),
     BotCommand("status", "Open positions + P&L"),
+    BotCommand("positions", "Alias for /status"),
+    BotCommand("orb", "Today's OR levels + status"),
+    BotCommand("perf", "All-time performance stats"),
+    BotCommand("price", "Live quote for a ticker"),
+    BotCommand("log", "Today's trade log"),
+    BotCommand("replay", "Replay today's trades timeline"),
+    BotCommand("dayreport", "Today's trades + P&L"),
+    BotCommand("monitoring", "Pause/resume scanner"),
+    BotCommand("reset", "Reset portfolio"),
+    BotCommand("version", "Release notes"),
 ]
 
 
@@ -1509,7 +2488,11 @@ def send_startup_message():
         f"/help for all commands"
     )
     send_telegram(msg)
-    send_tp_telegram(msg)
+    # Fix A: TP send failure → logger.debug (never raise/stop)
+    try:
+        send_tp_telegram(msg)
+    except Exception as e:
+        logger.debug("TP startup message failed: %s", e)
 
 
 def run_telegram_bot():
@@ -1527,6 +2510,11 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("replay", cmd_replay))
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     app.add_handler(CommandHandler("version", cmd_version))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("perf", cmd_perf))
+    app.add_handler(CommandHandler("price", cmd_price))
+    app.add_handler(CommandHandler("orb", cmd_orb))
+    app.add_handler(CommandHandler("monitoring", cmd_monitoring))
 
     # If no separate TP token, run single bot
     if not TELEGRAM_TP_TOKEN:
@@ -1541,6 +2529,16 @@ def run_telegram_bot():
 
     tp_app.add_handler(CommandHandler("help", cmd_help))
     tp_app.add_handler(CommandHandler("status", cmd_status))
+    tp_app.add_handler(CommandHandler("positions", cmd_positions))
+    tp_app.add_handler(CommandHandler("log", cmd_log))
+    tp_app.add_handler(CommandHandler("replay", cmd_replay))
+    tp_app.add_handler(CommandHandler("dayreport", cmd_dayreport))
+    tp_app.add_handler(CommandHandler("version", cmd_version))
+    tp_app.add_handler(CommandHandler("reset", cmd_reset))
+    tp_app.add_handler(CommandHandler("perf", cmd_perf))
+    tp_app.add_handler(CommandHandler("price", cmd_price))
+    tp_app.add_handler(CommandHandler("orb", cmd_orb))
+    tp_app.add_handler(CommandHandler("monitoring", cmd_monitoring))
 
     async def _run_both():
         loop = asyncio.get_running_loop()
