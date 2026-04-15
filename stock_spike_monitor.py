@@ -779,11 +779,11 @@ def eod_close():
     losses = sum(1 for t in today_sells if t.get("pnl", 0) <= 0)
 
     msg = (
-        "EOD CLOSE Complete\n"
-        "  Trades: %d  W/L: %d/%d\n"
-        "  Day P&L: $%+.2f\n"
-        "  Cash: $%,.2f"
-    ) % (len(today_sells), wins, losses, total_pnl, paper_cash)
+        f"EOD CLOSE Complete\n"
+        f"  Trades: {len(today_sells)}  W/L: {wins}/{losses}\n"
+        f"  Day P&L: ${total_pnl:+.2f}\n"
+        f"  Cash: ${paper_cash:,.2f}"
+    )
     send_telegram(msg)
     save_paper_state()
 
@@ -989,7 +989,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("Today: %d trades, P&L=$%+.2f" % (len(today_sells), total_pnl))
 
     lines.append(sep)
-    lines.append("Cash: $%,.2f" % paper_cash)
+    lines.append(f"Cash: ${paper_cash:,.2f}")
 
     # OR status
     if or_collected_date == now_et.strftime("%Y-%m-%d"):
@@ -1053,7 +1053,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("Total P&L: $%+.2f" % total_pnl)
     lines.append("Trades: %d  W/L: %d/%d  Win%%: %.0f%%" % (
         len(today_sells), wins, losses, win_rate))
-    lines.append("Cash: $%,.2f" % paper_cash)
+    lines.append(f"Cash: ${paper_cash:,.2f}")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -1125,23 +1125,24 @@ def send_startup_message():
     status = "OPEN" if in_hours else "CLOSED"
 
     sep = "-" * 32
+    universe = ", ".join(TRADE_TICKERS)
+    n_pos = len(positions)
+    cash_fmt = f"{paper_cash:,.2f}"
+    time_str = now_et.strftime("%Y-%m-%d %I:%M %p ET")
     msg = (
-        "Stock Spike Monitor v%s\n"
-        "%s\n"
-        "%s\n"
-        "%s\n"
-        "Market: %s\n"
-        "Universe: %s\n"
-        "Strategy: ORB Momentum Breakout\n"
-        "Scan: every %ds\n"
-        "Positions: %d open\n"
-        "Cash: $%,.2f\n"
-        "%s\n"
-        "/help for commands"
-    ) % (BOT_VERSION, now_et.strftime("%Y-%m-%d %I:%M %p ET"),
-         RELEASE_NOTE, sep, status,
-         ", ".join(TRADE_TICKERS), SCAN_INTERVAL,
-         len(positions), paper_cash, sep)
+        f"Stock Spike Monitor v{BOT_VERSION}\n"
+        f"{time_str}\n"
+        f"{RELEASE_NOTE}\n"
+        f"{sep}\n"
+        f"Market: {status}\n"
+        f"Universe: {universe}\n"
+        f"Strategy: ORB Momentum Breakout\n"
+        f"Scan: every {SCAN_INTERVAL}s\n"
+        f"Positions: {n_pos} open\n"
+        f"Cash: ${cash_fmt}\n"
+        f"{sep}\n"
+        f"/help for commands"
+    )
     send_telegram(msg)
 
 
