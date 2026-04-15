@@ -72,9 +72,10 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.20"
+BOT_VERSION = "2.7.21"
 RELEASE_NOTES = [
-    "2.7.18 — API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
+    "2.7.21 \u2014 Quantum basket (QBTS/IONQ/RGTI/QUBT/ARQQ) + quantum tier params + sector strength signal + short squeeze proxy via volume ratio (+2 pts), /quantum command.",
+    "2.7.18 \u2014 API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
     "2.7.16 — ORB enhancements: %-based profit target (2%) & trailing stop (0.5%), SPY strength filter (SPY must break its own ORB high), expanded to full S&P 500 universe via FMP API.",
     "2.7.15 — Opening Range Breakout (ORB) strategy: collect 5-min opening range at 08:35 CT, enter on breakout above high, stop fixed at ORB high, switch to tiered trailing once +1% profitable. /orb command shows today's levels. ORB state persisted across restarts.",
@@ -353,7 +354,8 @@ CORE_TICKERS = [
     "MU","AVGO","QCOM","INTC","HIMS","PLTR","SOFI","RIVN","NIO","MARA",
     "AMC","GME","LCID","BYND","PFE","BAC","JPM","XOM","CVX","AAL"
 ]
-TICKERS             = CORE_TICKERS.copy()
+QUANTUM_TICKERS = ["QBTS", "IONQ", "RGTI", "QUBT", "ARQQ"]
+TICKERS             = list(set(CORE_TICKERS + QUANTUM_TICKERS))
 monitoring_paused   = False
 daily_alerts        = 0
 last_prices         = {}
@@ -2056,7 +2058,7 @@ TICKERS = list(CORE_TICKERS)   # seed immediately; refreshed at startup and 8:30
 # ============================================================
 # ALERT ENGINE
 # ============================================================
-def send_alert(ticker, pct_change, current_price, volume_spike=False, alert_type="spike"):
+def send_alert(ticker, pct_change, current_price, volume_spike=False, alert_type="spike", vol_ratio=0.0):
     global daily_alerts
     daily_alerts += 1
     news_items   = fetch_latest_news(ticker)
@@ -2073,10 +2075,16 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False, alert_type
         ai        = get_ai_response(grok_prompt)
         news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
 
+        _vol_tag = ""
+        if volume_spike:
+            if vol_ratio >= 1.5:
+                _vol_tag = " | \U0001f50a Vol %.1fx avg" % vol_ratio
+            else:
+                _vol_tag = " | \U0001f50a Vol Spike"
         message = (
-            f"{_INST_TAG}📊 MOVER ALERT: {ticker} {pct_change:+.1f}% (${current_price:.2f})"
-            f" — daily move from prev close"
-            + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
+            f"{_INST_TAG}\U0001f4ca MOVER ALERT: {ticker} {pct_change:+.1f}% (${current_price:.2f})"
+            f" \u2014 daily move from prev close"
+            + _vol_tag + "\n"
             + f"\nClaude: {ai}\n\n"
             f"News:\n{news_text}"
         )
@@ -2101,10 +2109,16 @@ def send_alert(ticker, pct_change, current_price, volume_spike=False, alert_type
         ai        = get_ai_response(grok_prompt)
         news_text = "\n".join([f"• {h[:80]}" for h, _ in news_items]) if news_items else "No news"
 
+        _vol_tag2 = ""
+        if volume_spike:
+            if vol_ratio >= 1.5:
+                _vol_tag2 = " | \U0001f50a Vol %.1fx avg" % vol_ratio
+            else:
+                _vol_tag2 = " | \U0001f50a Vol Spike"
         message = (
-            f"{_INST_TAG}🚨 {ticker} {spike_label}\n"
+            f"{_INST_TAG}\U0001f6a8 {ticker} {spike_label}\n"
             f"{pct_change:+.1f}% | ${current_price:.2f}"
-            + (" | 🔊 Vol Spike" if volume_spike else "") + "\n"
+            + _vol_tag2 + "\n"
             + (f"{tech_str}\n" if tech_str else "")
             + f"\nClaude: {ai}\n\n"
             f"News:\n{news_text}"
@@ -2183,15 +2197,17 @@ def _scan_ticker(ticker: str, now: datetime):
                         pass  # No new info — skip alert
                     else:
                         vol_spike = False
+                        _vr = 0.0
                         if vol and pc:
                             try:
                                 m = _finnhub_metrics(ticker)
                                 avg_vol = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
                                 if avg_vol > 0:
-                                    vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
+                                    _vr = vol / avg_vol
+                                    vol_spike = _vr >= VOLUME_SPIKE_MULT
                             except Exception as e:
                                 logger.debug(f"Vol spike check {ticker}: {e}")
-                        send_alert(ticker, change * 100, c, vol_spike)
+                        send_alert(ticker, change * 100, c, vol_spike, vol_ratio=_vr)
                         last_alert_time[ticker] = now
                         last_alert_pct[ticker] = change * 100
 
@@ -2212,18 +2228,21 @@ def _scan_ticker(ticker: str, now: datetime):
                 last_alert_time[day_alert_key] = now
                 # Check volume spike
                 vol_spike = False
+                _day_vr = 0.0
                 if vol:
                     cached_m = _metrics_cache.get(f"metrics:{ticker}")
                     if cached_m:
                         avg_vol = (cached_m.get("10DayAverageTradingVolume") or 0) * 1_000_000
                         if avg_vol > 0:
-                            vol_spike = vol > avg_vol * VOLUME_SPIKE_MULT
+                            _day_vr = vol / avg_vol
+                            vol_spike = _day_vr >= VOLUME_SPIKE_MULT
                 # v2.7.9: batch day-change movers instead of individual alerts
                 _pending_mover_alerts.append({
                     "ticker": ticker,
                     "pct": day_change * 100,
                     "price": day_c,
                     "vol_spike": vol_spike,
+                    "vol_ratio": _day_vr,
                 })
                 last_alert_pct[day_alert_key] = day_change * 100
 
@@ -2239,7 +2258,13 @@ def _flush_mover_alerts():
     if len(alerts) == 1:
         # Single alert: use existing format but shorter
         a = alerts[0]
-        vol_tag = " Vol" if a["vol_spike"] else ""
+        _avr = a.get("vol_ratio", 0.0)
+        if a["vol_spike"] and _avr >= 1.5:
+            vol_tag = " Vol %.1fx" % _avr
+        elif a["vol_spike"]:
+            vol_tag = " Vol"
+        else:
+            vol_tag = ""
         message = (
             f"MOVER: {a['ticker']} {a['pct']:+.1f}%"
             f" (${a['price']:.2f}){vol_tag}"
@@ -2252,7 +2277,13 @@ def _flush_mover_alerts():
         header = f"MOVERS ({len(alerts)} stocks):"
         lines = [header]
         for a in alerts[:10]:  # cap at 10 in one message
-            vol_tag = " V" if a["vol_spike"] else ""
+            _avr = a.get("vol_ratio", 0.0)
+            if a["vol_spike"] and _avr >= 1.5:
+                vol_tag = " %.1fx" % _avr
+            elif a["vol_spike"]:
+                vol_tag = " V"
+            else:
+                vol_tag = ""
             lines.append(
                 f"  {a['ticker']:>6} {a['pct']:+6.1f}%"
                 f" ${a['price']:>8.2f}{vol_tag}"
@@ -3580,6 +3611,9 @@ TICKER_TIER = {
     # Non-leveraged ETFs — 1.9% daily vol, 2.3% range
     "SPY": "etf", "QQQ": "etf", "IWM": "etf", "XLE": "etf", "USO": "etf",
     "DIA": "etf", "XLK": "etf", "XLF": "etf",
+    # Quantum Computing — high-volatility story stocks, speculative
+    "QBTS": "quantum", "IONQ": "quantum", "RGTI": "quantum",
+    "QUBT": "quantum", "ARQQ": "quantum",
 }
 
 TIER_PARAMS = {
@@ -3593,6 +3627,9 @@ TIER_PARAMS = {
     "leveraged":  {"sl": 0.10, "trail": 0.05, "thresh_floor": 80, "rsi_max": 45,
                    "grad_trail": [(0.20, 0.10), (0.15, 0.08), (0.10, 0.06)]},
     "etf":        {"sl": 0.08, "trail": 0.04, "thresh_floor": 65, "rsi_max": 68,
+                   "grad_trail": [(0.20, 0.08), (0.15, 0.06), (0.10, 0.05)]},
+    "quantum":    {"sl": 0.08, "trail": 0.04, "thresh_floor": 68, "rsi_max": 72,
+                   "max_size_pct": 0.05, "atr_mult": 2.0,
                    "grad_trail": [(0.20, 0.08), (0.15, 0.06), (0.10, 0.05)]},
     "default":    {"sl": 0.06, "trail": 0.03, "thresh_floor": 70, "rsi_max": 68,
                    "grad_trail": [(0.15, 0.06), (0.10, 0.05), (0.05, 0.04)]},
@@ -3618,6 +3655,24 @@ def _graduated_trail_pct_tiered(pnl_pct: float, ticker: str) -> float:
         if pnl_pct >= threshold:
             return trail
     return params["trail"]  # base trail for low-profit zone
+
+
+def _quantum_sector_strength(ticker: str, quote_cache: dict) -> int:
+    """
+    Returns +1 if 2+ quantum peers are up >3% today (sector momentum).
+    Only applies to quantum tier tickers.
+    """
+    if get_ticker_tier(ticker) != "quantum":
+        return 0
+    peers = [t for t in QUANTUM_TICKERS if t != ticker]
+    strong = 0
+    for p in peers:
+        q = quote_cache.get(p, {})
+        c = q.get("c", 0)
+        pc = q.get("pc", 0)
+        if c and pc and ((c - pc) / pc) >= 0.03:
+            strong += 1
+    return 1 if strong >= 2 else 0
 
 
 # ============================================================
@@ -5506,11 +5561,12 @@ def _check_correlation(new_ticker: str, threshold: float = 0.7) -> tuple:
 
 def compute_paper_signal(ticker: str) -> dict:
     """
-    Composite signal engine (15 components, max 172 pts).
+    Composite signal engine (17 components, max 175 pts).
     Components: RSI(20) + BB(15) + MACD(15) + Volume(15) + Squeeze(10) +
     Slope(10) + AI Direction(15) + AI Watchlist(10) + Multi-Day Trend(15) +
     News Sentiment(15) + AVWAP(10) + Time-of-Day(±8) + Social Buzz(10) +
-    Insider Sentiment(2) + Analyst Consensus(2).
+    Insider Sentiment(2) + Analyst Consensus(2) +
+    Quantum Sector(1) + Squeeze Proxy(2).
     S/R modifier: ±5 pts.
     AVWAP can also go -5 if price is below VWAP (overhead supply penalty).
     ToD boosts power hours (open/close), penalizes lunch lull.
@@ -5884,8 +5940,38 @@ def compute_paper_signal(ticker: str) -> dict:
     except Exception as e:
         logger.debug("Analyst signal %s: %s", ticker, e)
 
+    # ── 16. Quantum Sector Strength (v2.7.21, max +1 pt) ──────
+    # Only applies to quantum-tier tickers: +1 if 2+ peers up >3%
+    try:
+        _qcache = {}
+        if get_ticker_tier(ticker) == "quantum":
+            for _qt in QUANTUM_TICKERS:
+                _qcache[_qt] = _finnhub_quote(_qt)
+            quantum_pts = _quantum_sector_strength(ticker, _qcache)
+            score += quantum_pts
+            comps["quantum_sector_pts"] = quantum_pts
+            if quantum_pts > 0:
+                detail.append("QuantumSector(+%dpts)" % quantum_pts)
+    except Exception as e:
+        logger.debug("Quantum sector signal %s: %s", ticker, e)
+
+    # ── 17. Short Squeeze Proxy (v2.7.21, max +2 pts) ──────
+    # Volume ratio + price momentum — only positive contribution
+    try:
+        _sq_quote = _finnhub_quote(ticker)
+        squeeze_sig = _fetch_squeeze_signal(ticker, {ticker: _sq_quote})
+        squeeze_pts = max(0, min(2, squeeze_sig["score"]))
+        score += squeeze_pts
+        comps["squeeze_pts"] = squeeze_pts
+        comps["squeeze_label"] = squeeze_sig.get("label", "")
+        comps["vol_ratio_squeeze"] = squeeze_sig.get("vol_ratio", 0.0)
+        if squeeze_pts > 0:
+            detail.append("Squeeze=%s(%+dpts)" % (squeeze_sig["label"], squeeze_pts))
+    except Exception as e:
+        logger.debug("Squeeze signal %s: %s", ticker, e)
+
     result = {
-        "score":   round(min(score, 172), 1),   # cap: 164 base + 8 ToD (v2.7.17: +4 insider/analyst)
+        "score":   round(min(score, 175), 1),   # cap: v2.7.21 +1 quantum +2 squeeze = 175
         "detail":  " | ".join(detail),
         "comps":   comps,
         "rsi":     rsi,
@@ -6751,7 +6837,7 @@ def paper_evaluate_ticker(ticker: str):
     _spec_log = " [SPEC]" if is_speculative else ""
     msg = (
         f"BUY{_spec_log} | {ticker} | {shares} shares @ ${price:.2f} | "
-        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/172 | "
+        f"Cost: ${cost:,.2f} | Signal: {sig['score']:.0f}/175 | "
         f"Detail: {sig['detail']}{_catalyst_str} | "
         f"Portfolio: ${paper_portfolio_value():,.0f}"
     )
@@ -6830,6 +6916,17 @@ def paper_evaluate_ticker(ticker: str):
             "\U0001f4ca %s (%s%% buy) (%+dpts)" % (_analyst_lbl, _bpct_fmt, _analyst_p)
         )
 
+    # v2.7.21: Quantum sector strength line
+    _quantum_p = c.get("quantum_sector_pts", 0)
+    if _quantum_p > 0:
+        sig_lines.append("\u269b Quantum sector momentum (+%dpts)" % _quantum_p)
+
+    # v2.7.21: Squeeze signal line
+    _squeeze_p = c.get("squeeze_pts", 0)
+    if _squeeze_p > 0:
+        _sq_lbl = c.get("squeeze_label", "")
+        sig_lines.append("\U0001f525 %s (%+dpts)" % (_sq_lbl, _squeeze_p))
+
     # News catalyst line for buy notification
     news_catalyst_line = ""
     if c.get("news_catalyst"):
@@ -6862,7 +6959,7 @@ def paper_evaluate_ticker(ticker: str):
         f"Trail:     ${trail_price:.2f} (tightens)\n"
         + (f"AVWAP Stop: ${c.get('avwap', 0):.2f} (exit if lost)\n" if c.get('avwap') else "")
         + f"{'─'*28}\n"
-        f"Signal:    {sig['score']:.0f}/172 (thresh={threshold})\n"
+        f"Signal:    {sig['score']:.0f}/175 (thresh={threshold})\n"
         + "\n".join(f"  | {l}" for l in sig_lines) + "\n"
         + (f"  | {c.get('grok_reason','')}\n" if c.get("grok_reason") else "")
         + news_catalyst_line
@@ -6902,7 +6999,7 @@ def paper_evaluate_ticker(ticker: str):
                     f"LIMIT BUY{_spec_tp} {ticker} "
                     f"{_shares} shares @ ${_lp:.2f}"
                     f" (${cost:,.0f})\n"
-                    f"  Signal: {sig['score']:.0f}/172"
+                    f"  Signal: {sig['score']:.0f}/175"
                     f"{_tod_str}"
                 )
             else:
@@ -7031,6 +7128,65 @@ def _fetch_analyst_signal(ticker: str) -> dict:
         logger.debug("Analyst signal error %s: %s", ticker, e)
 
     _analyst_cache[ticker] = result
+    return result
+
+
+# ── v2.7.21: Short squeeze proxy signal ────────────────────────
+# {ticker: {"score": int, "vol_ratio": float, "label": str}}
+_squeeze_vol_cache: dict = {}
+_squeeze_vol_cache_date: str = ""
+
+SQUEEZE_VOL_RATIO_STRONG = 2.5   # 2.5× average volume = strong squeeze signal (+2)
+SQUEEZE_VOL_RATIO_MILD   = 1.5   # 1.5× average volume = mild signal (+1)
+SQUEEZE_MIN_PRICE_MOVE   = 0.03  # price must also be up >3% to confirm
+
+
+def _fetch_squeeze_signal(ticker: str, quote_cache: dict) -> dict:
+    """
+    Short squeeze proxy using volume ratio + price momentum.
+    No paid API needed — uses data already in quote_cache.
+    Returns {"score": int, "label": str, "vol_ratio": float}
+    """
+    global _squeeze_vol_cache, _squeeze_vol_cache_date
+    today = datetime.now(CT).strftime("%Y-%m-%d")
+    if _squeeze_vol_cache_date != today:
+        _squeeze_vol_cache.clear()
+        _squeeze_vol_cache_date = today
+    if ticker in _squeeze_vol_cache:
+        return _squeeze_vol_cache[ticker]
+
+    result = {"score": 0, "label": "", "vol_ratio": 0.0}
+    try:
+        q = quote_cache.get(ticker, {})
+        current_vol = q.get("v", 0) or 0         # today's volume so far
+        current_price = q.get("c", 0) or 0
+        prev_close = q.get("pc", 0) or 0
+
+        # Get average volume from Finnhub metrics (already cached)
+        m = _finnhub_metrics(ticker)
+        avg_vol = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
+
+        if not avg_vol or not current_price or not prev_close:
+            _squeeze_vol_cache[ticker] = result
+            return result
+
+        vol_ratio = current_vol / avg_vol
+        price_move = (current_price - prev_close) / prev_close
+        result["vol_ratio"] = round(vol_ratio, 2)
+
+        # Must have both volume spike AND price move to confirm squeeze
+        if price_move >= SQUEEZE_MIN_PRICE_MOVE:
+            if vol_ratio >= SQUEEZE_VOL_RATIO_STRONG:
+                result["score"] = 2
+                result["label"] = "Vol Squeeze %.1fx" % vol_ratio
+            elif vol_ratio >= SQUEEZE_VOL_RATIO_MILD:
+                result["score"] = 1
+                result["label"] = "Vol Spike %.1fx" % vol_ratio
+
+    except Exception as e:
+        logger.debug("Squeeze signal error %s: %s", ticker, e)
+
+    _squeeze_vol_cache[ticker] = result
     return result
 
 
@@ -7397,11 +7553,13 @@ def paper_scan():
 
         # Collect ORB levels once per day in the 08:35-08:45 CT window
         # v2.7.16: scan full S&P 500 + SPY (was watchlist only)
+        # v2.7.21: always include quantum tickers + QQQ/IWM
         if (now_ct.hour == 8 and 35 <= now_ct.minute < 45
                 and not orb_levels):
+            ORB_ALWAYS_INCLUDE = list(QUANTUM_TICKERS) + ["SPY", "QQQ", "IWM"]
             _orb_universe = list(set(
                 (sp500_tickers if sp500_tickers else list(TICKERS))
-                + ["SPY"]
+                + ORB_ALWAYS_INCLUDE + list(TICKERS)
             ))
             logger.info(
                 "Collecting ORB levels for %d tickers (S&P 500 universe)...",
@@ -8023,7 +8181,7 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [
             f"SIGNAL: {arg2}  @${price:.2f}" if price else f"SIGNAL: {arg2}",
             f"",
-            f"Composite Score: {sig['score']:.0f}/172  -> {verdict}",
+            f"Composite Score: {sig['score']:.0f}/175  -> {verdict}",
             f"",
             f"BREAKDOWN:",
             f"  RSI Momentum    {c.get('rsi','N/A')} -> {c.get('rsi_pts',0)} pts",
@@ -12520,6 +12678,52 @@ async def cmd_analyst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def cmd_quantum(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/quantum — real-time quantum computing basket snapshot."""
+    now_str = datetime.now(CT).strftime("%I:%M %p CT")
+    sep = "\u2500" * 32
+    lines = [
+        "\u269b\ufe0f QUANTUM BASKET \u2014 %s" % now_str,
+        sep,
+    ]
+    strong_count = 0
+    total_with_data = 0
+    for t in QUANTUM_TICKERS:
+        q = _finnhub_quote(t)
+        c_price = q.get("c", 0) or 0
+        pc_price = q.get("pc", 0) or 0
+        vol_now = q.get("v", 0) or 0
+        # Get average volume for ratio
+        m = _finnhub_metrics(t)
+        avg_v = (m.get("10DayAverageTradingVolume") or 0) * 1_000_000
+        if c_price and pc_price:
+            pct = (c_price - pc_price) / pc_price * 100
+            vr = vol_now / avg_v if avg_v > 0 else 0.0
+            vr_str = "%.1fx" % vr if vr >= 0.1 else "N/A"
+            lines.append(
+                "%-5s $%6.2f  %+5.1f%%  Vol %s" % (t, c_price, pct, vr_str)
+            )
+            total_with_data += 1
+            if pct >= 3.0:
+                strong_count += 1
+        else:
+            lines.append("%-5s  --  no data" % t)
+    lines.append(sep)
+    # Sector strength label
+    if total_with_data == 0:
+        sector_label = "\u2753 NO DATA"
+    elif strong_count >= 4:
+        sector_label = "\U0001f525 STRONG (%d/%d up >3%%)" % (strong_count, total_with_data)
+    elif strong_count >= 2:
+        sector_label = "\u26a1 MODERATE (%d/%d up >3%%)" % (strong_count, total_with_data)
+    elif strong_count >= 1:
+        sector_label = "\U0001f7e1 MILD (%d/%d up >3%%)" % (strong_count, total_with_data)
+    else:
+        sector_label = "\U0001f534 WEAK (0/%d up >3%%)" % total_with_data
+    lines.append("Sector: %s" % sector_label)
+    await update.message.reply_text("\n".join(lines))
+
+
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's ORB levels, SPY status, and breakout status."""
     if not orb_levels:
@@ -13381,6 +13585,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("version",    "Release notes"),
     BotCommand("health",     "API endpoint health"),
+    BotCommand("quantum",    "Quantum basket snapshot"),
 ]
 
 TP_BOT_COMMANDS = [
@@ -13503,6 +13708,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("orb",             cmd_orb))
     app.add_handler(CommandHandler("insider",         cmd_insider))
     app.add_handler(CommandHandler("analyst",         cmd_analyst))
+    app.add_handler(CommandHandler("quantum",         cmd_quantum))
 
     # ── Second bot for TP channel (separate token) ───────────
     if not TELEGRAM_TP_TOKEN:
