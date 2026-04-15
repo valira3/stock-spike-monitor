@@ -32,10 +32,10 @@ TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 
-BOT_VERSION = "2.8.1"
+BOT_VERSION = "2.8.2"
 RELEASE_NOTE = (
-    "v2.8.1: TP Portfolio tracking (independent) + "
-    "/positions shows live market value"
+    "v2.8.2: Rich deployment card + /dashboard + "
+    "enhanced /help + /log + /replay"
 )
 
 # ============================================================
@@ -654,7 +654,10 @@ def execute_entry(ticker, current_price):
     limit_price = round(current_price + 0.02, 2)
     stop_price = round(current_price - STOP_OFFSET, 2)
     entry_num = daily_entry_count.get(ticker, 0) + 1
-    now_str = datetime.now(ET).isoformat()
+    now_et = datetime.now(ET)
+    now_str = now_et.isoformat()
+    now_hhmm = now_et.strftime("%H:%M")
+    now_date = now_et.strftime("%Y-%m-%d")
 
     positions[ticker] = {
         "entry_price": current_price,
@@ -679,7 +682,8 @@ def execute_entry(ticker, current_price):
         "cost": cost,
         "stop": stop_price,
         "entry_num": entry_num,
-        "time": now_str,
+        "time": now_hhmm,
+        "date": now_date,
     }
     paper_trades.append(trade)
     paper_all_trades.append(trade)
@@ -741,7 +745,9 @@ def close_position(ticker, price, reason="STOP"):
     shares = pos["shares"]
     pnl = (price - entry_price) * shares
     pnl_pct = ((price - entry_price) / entry_price * 100) if entry_price else 0
-    now_str = datetime.now(ET).isoformat()
+    now_et = datetime.now(ET)
+    now_hhmm = now_et.strftime("%H:%M")
+    now_date = now_et.strftime("%Y-%m-%d")
 
     # Paper accounting
     proceeds = price * shares
@@ -756,7 +762,8 @@ def close_position(ticker, price, reason="STOP"):
         "pnl_pct": round(pnl_pct, 2),
         "reason": reason,
         "entry_price": entry_price,
-        "time": now_str,
+        "time": now_hhmm,
+        "date": now_date,
     }
     paper_trades.append(trade)
     paper_all_trades.append(trade)
@@ -793,7 +800,8 @@ def close_position(ticker, price, reason="STOP"):
             "pnl_pct": round(tp_pnl_pct, 2),
             "reason": reason,
             "entry_price": tp_entry,
-            "time": now_str,
+            "time": now_hhmm,
+            "date": now_date,
         })
         tp_msg = (
             "[TP] EXIT %s  [%s]\n"
@@ -1045,22 +1053,125 @@ def health_ping():
 # TELEGRAM COMMANDS
 # ============================================================
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show available commands."""
-    sep = "-" * 32
+    """Show formatted command list and strategy summary."""
+    SEP = "\u2500" * 34
     text = (
-        "Stock Spike Monitor v%s\n"
-        "%s\n"
-        "/help      — This menu\n"
-        "/status    — Open positions + P&L\n"
-        "/positions — Alias for /status\n"
-        "/dayreport — Today's trades + P&L\n"
-        "%s\n"
-        "Strategy: ORB Momentum Breakout\n"
-        "Universe: %s\n"
-        "Scan: every %ds during market hours"
-    ) % (BOT_VERSION, sep, sep,
-         ", ".join(TRADE_TICKERS), SCAN_INTERVAL)
+        "\U0001f4d6 Commands\n"
+        f"{SEP}\n"
+        "/dashboard   Full market snapshot\n"
+        "/positions   Open positions + live P&L\n"
+        "/status      Same as /positions\n"
+        "/log         Today's trade log\n"
+        "/replay      Replay today's trades timeline\n"
+        "/dayreport   Daily P&L summary\n"
+        "/version     Bot version info\n"
+        "/help        This menu\n"
+        f"{SEP}\n"
+        "Strategy: ORB Breakout\n"
+        "Entry: close > OR_High + price > PDC\n"
+        "       + SPY/QQQ above AVWAP\n"
+        "Stop:  Entry \u2212 $0.50\n"
+        "Trail: +$1.00 \u2192 stop at Entry+$0.50\n"
+        "       ratchets $0.50 per $0.50 gain\n"
+        "Max:   2 entries per ticker per day"
+    )
     await update.message.reply_text(text)
+
+
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Full market snapshot: portfolios, index filters, OR levels."""
+    SEP = "\u2500" * 34
+    now_et = datetime.now(ET)
+    time_et = now_et.strftime("%I:%M %p ET")
+    today = now_et.strftime("%Y-%m-%d")
+
+    weekday = now_et.weekday() < 5
+    in_hours = (
+        weekday
+        and now_et.hour >= 9
+        and (now_et.hour < 16 or (now_et.hour == 15 and now_et.minute < 55))
+    )
+    market_status = "OPEN" if in_hours else "CLOSED"
+
+    # Paper portfolio
+    n_pos = len(positions)
+    today_sells = [t for t in paper_trades
+                   if t.get("action") == "SELL" and t.get("pnl") is not None]
+    day_pnl = sum(t.get("pnl", 0) for t in today_sells)
+
+    total_value = paper_cash
+    for ticker, pos in positions.items():
+        bars = fetch_1min_bars(ticker)
+        if bars:
+            total_value += bars["current_price"] * pos["shares"]
+        else:
+            total_value += pos["entry_price"] * pos["shares"]
+
+    paper_cash_fmt = f"{paper_cash:,.2f}"
+    total_value_fmt = f"{total_value:,.2f}"
+    day_pnl_fmt = f"{day_pnl:+,.2f}"
+
+    # TP portfolio
+    n_tp_pos = len(tp_positions)
+    tp_today_sells = [t for t in tp_paper_trades
+                      if t.get("action") == "SELL" and t.get("pnl") is not None
+                      and t.get("date", "") == today]
+    tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
+    tp_cash_fmt = f"{tp_paper_cash:,.2f}"
+    tp_day_pnl_fmt = f"{tp_day_pnl:+,.2f}"
+
+    # Index filters — fetch live prices
+    spy_bars = fetch_1min_bars("SPY")
+    qqq_bars = fetch_1min_bars("QQQ")
+    spy_price = spy_bars["current_price"] if spy_bars else 0.0
+    qqq_price = qqq_bars["current_price"] if qqq_bars else 0.0
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    spy_ok = spy_price > spy_avwap if spy_avwap > 0 else False
+    qqq_ok = qqq_price > qqq_avwap if qqq_avwap > 0 else False
+    spy_icon = "\u2705" if spy_ok else "\u274c"
+    qqq_icon = "\u2705" if qqq_ok else "\u274c"
+
+    lines = [
+        f"\U0001f4ca DASHBOARD  {time_et}",
+        SEP,
+        "\U0001f4c4 PAPER PORTFOLIO",
+        f"  Cash:       ${paper_cash_fmt}",
+        f"  Positions:  {n_pos} open",
+        f"  Today P&L:  ${day_pnl_fmt}",
+        f"  Est. Value: ${total_value_fmt}",
+        SEP,
+        "\U0001f4cb TP PORTFOLIO",
+        f"  Cash:       ${tp_cash_fmt}",
+        f"  Positions:  {n_tp_pos} open",
+        f"  Today P&L:  ${tp_day_pnl_fmt}",
+        SEP,
+        "\U0001f4c8 INDEX FILTERS",
+        f"  SPY  ${spy_price:.2f}  AVWAP ${spy_avwap:.2f}  {spy_icon}",
+        f"  QQQ  ${qqq_price:.2f}  AVWAP ${qqq_avwap:.2f}  {qqq_icon}",
+        f"  Market: {market_status}",
+        SEP,
+        "\U0001f4d0 TODAY'S OR LEVELS",
+    ]
+
+    # OR levels
+    or_ready = or_collected_date == today
+    if or_ready:
+        or_line_parts = []
+        for t in TRADE_TICKERS:
+            val = or_high.get(t)
+            if val is not None:
+                or_line_parts.append(f"  {t} ${val:.2f}")
+            else:
+                or_line_parts.append(f"  {t} --")
+        # Two tickers per line
+        for i in range(0, len(or_line_parts), 2):
+            chunk = or_line_parts[i:i + 2]
+            lines.append("".join(chunk))
+    else:
+        lines.append("  (OR not collected yet)")
+
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1196,6 +1307,117 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show today's completed trades (entries and exits) chronologically."""
+    SEP = "\u2500" * 34
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+
+    today_trades = [t for t in paper_trades if t.get("date", "") == today]
+    today_trades.sort(key=lambda t: t.get("time", ""))
+
+    if not today_trades:
+        await update.message.reply_text("No trades today.")
+        return
+
+    lines = [
+        f"\U0001f4cb Trade Log \u2014 {today}",
+        SEP,
+    ]
+
+    for t in today_trades:
+        tm = t.get("time", "--:--")
+        ticker = t.get("ticker", "?")
+        action = t.get("action", "?")
+        shares = t.get("shares", 0)
+        price = t.get("price", 0)
+        if action == "BUY":
+            stop = t.get("stop", 0)
+            lines.append(
+                f"{tm}  BUY   {ticker}  {shares} @ ${price:.2f}  stop ${stop:.2f}"
+            )
+        else:
+            pnl_val = t.get("pnl", 0)
+            pnl_pct = t.get("pnl_pct", 0)
+            lines.append(
+                f"{tm}  EXIT  {ticker}  {shares} @ ${price:.2f}"
+                f"  P&L: ${pnl_val:+.2f} ({pnl_pct:+.2f}%)"
+            )
+
+    lines.append(SEP)
+
+    n_closed = sum(1 for t in today_trades if t.get("action") == "SELL")
+    n_open = len(positions)
+    day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
+    day_pnl_fmt = f"{day_pnl:+,.2f}"
+    lines.append(f"Completed: {n_closed} trades  Open: {n_open} positions")
+    lines.append(f"Day P&L: ${day_pnl_fmt}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Timeline replay of today's trades with running cumulative P&L."""
+    SEP = "\u2500" * 34
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+
+    today_trades = [t for t in paper_trades if t.get("date", "") == today]
+    today_trades.sort(key=lambda t: t.get("time", ""))
+
+    if not today_trades:
+        await update.message.reply_text("No trades today.")
+        return
+
+    lines = [
+        f"\U0001f504 Trade Replay \u2014 {today}",
+        SEP,
+    ]
+
+    cum_pnl = 0.0
+    open_count = 0
+    wins = 0
+    losses = 0
+
+    for t in today_trades:
+        tm = t.get("time", "--:--")
+        ticker = t.get("ticker", "?")
+        action = t.get("action", "?")
+        price = t.get("price", 0)
+
+        if action == "BUY":
+            open_count += 1
+            lines.append(
+                f"{tm} \u2192 BUY  {ticker}  ${price:.2f}  [positions: {open_count}]"
+            )
+        else:
+            open_count = max(0, open_count - 1)
+            pnl_val = t.get("pnl", 0)
+            cum_pnl += pnl_val
+            if pnl_val > 0:
+                wins += 1
+            else:
+                losses += 1
+            cum_fmt = f"{cum_pnl:+.2f}"
+            lines.append(
+                f"{tm} \u2192 EXIT {ticker}  ${price:.2f}"
+                f"  ${pnl_val:+.2f}   cumP&L: ${cum_fmt}"
+            )
+
+    lines.append(SEP)
+    n_sells = wins + losses
+    cum_pnl_fmt = f"{cum_pnl:+.2f}"
+    lines.append(
+        f"Final P&L: ${cum_pnl_fmt}  |  Trades: {n_sells}  |  W: {wins}  L: {losses}"
+    )
+
+    msg = "\n".join(lines)
+    # Telegram 4096 char limit
+    if len(msg) > 4000:
+        msg = msg[:3990] + "\n... (truncated)"
+    await update.message.reply_text(msg)
+
+
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show version info."""
     await update.message.reply_text(
@@ -1206,9 +1428,12 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # TELEGRAM BOT SETUP
 # ============================================================
 MAIN_BOT_COMMANDS = [
+    BotCommand("dashboard", "Full market snapshot"),
     BotCommand("help", "Command menu"),
     BotCommand("status", "Open positions + P&L"),
     BotCommand("positions", "Alias for /status"),
+    BotCommand("log", "Today's trade log"),
+    BotCommand("replay", "Replay today's trades timeline"),
     BotCommand("dayreport", "Today's trades + P&L"),
     BotCommand("version", "Release notes"),
 ]
@@ -1252,7 +1477,8 @@ async def _set_tp_bot_commands(app: Application) -> None:
 
 
 def send_startup_message():
-    """Send startup notification."""
+    """Send rich deployment card to BOTH main and TP bots."""
+    SEP = "\u2500" * 34
     now_et = datetime.now(ET)
     weekday = now_et.weekday() < 5
     in_hours = (
@@ -1260,28 +1486,30 @@ def send_startup_message():
         and now_et.hour >= 9
         and (now_et.hour < 16 or (now_et.hour == 15 and now_et.minute < 55))
     )
-    status = "OPEN" if in_hours else "CLOSED"
+    market_status = "OPEN" if in_hours else "CLOSED"
 
-    sep = "-" * 32
-    universe = ", ".join(TRADE_TICKERS)
-    n_pos = len(positions)
-    cash_fmt = f"{paper_cash:,.2f}"
-    time_str = now_et.strftime("%Y-%m-%d %I:%M %p ET")
+    universe = " ".join(TRADE_TICKERS)
+    n_paper_pos = len(positions)
+    n_tp_pos = len(tp_positions)
+    paper_cash_fmt = f"{paper_cash:,.2f}"
+    tp_cash_fmt = f"{tp_paper_cash:,.2f}"
+
     msg = (
-        f"Stock Spike Monitor v{BOT_VERSION}\n"
-        f"{time_str}\n"
+        f"\U0001f680 v{BOT_VERSION} deployed\n"
         f"{RELEASE_NOTE}\n"
-        f"{sep}\n"
-        f"Market: {status}\n"
+        f"{SEP}\n"
         f"Universe: {universe}\n"
-        f"Strategy: ORB Momentum Breakout\n"
-        f"Scan: every {SCAN_INTERVAL}s\n"
-        f"Positions: {n_pos} open\n"
-        f"Cash: ${cash_fmt}\n"
-        f"{sep}\n"
-        f"/help for commands"
+        f"Strategy: ORB Breakout | PDC Filter | SPY+QQQ AVWAP\n"
+        f"Scan:     every {SCAN_INTERVAL}s  |  Stop: $0.50  |  Trail: $1.00\u2192$0.50\n"
+        f"{SEP}\n"
+        f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
+        f"\U0001f4cb TP:     ${tp_cash_fmt} cash | {n_tp_pos} positions\n"
+        f"Market:   {market_status}\n"
+        f"{SEP}\n"
+        f"/help for all commands"
     )
     send_telegram(msg)
+    send_tp_telegram(msg)
 
 
 def run_telegram_bot():
@@ -1292,8 +1520,11 @@ def run_telegram_bot():
            .build())
 
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("positions", cmd_positions))
+    app.add_handler(CommandHandler("log", cmd_log))
+    app.add_handler(CommandHandler("replay", cmd_replay))
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     app.add_handler(CommandHandler("version", cmd_version))
 
