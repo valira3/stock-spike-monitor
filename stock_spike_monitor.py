@@ -1,5 +1,5 @@
 """
-Stock Spike Monitor v2.8.3 — ORB Momentum Breakout + Full Feature Suite
+Stock Spike Monitor v2.8.3c — ORB Momentum Breakout + Full Feature Suite
 =========================================================================
 10-ticker universe, Opening Range breakout, $0.50 stepped trail.
 Infrastructure: Telegram bot, paper trading, TradersPost webhook, scheduler.
@@ -33,11 +33,10 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.8.3"
+BOT_VERSION = "2.8.3c"
 RELEASE_NOTE = (
-    "v2.8.3: Notification routing (paper/TP separated), /reset, "
-    "trade history persistence, daily loss limit, morning OR card, "
-    "auto EOD report, /perf, /price, /orb, /monitoring, weekly digest"
+    "v2.8.3c: Fix monitoring pause stops, market hours display, "
+    "tp_trades cleanup, date filters, win stats, /help accuracy"
 )
 
 # ============================================================
@@ -1001,10 +1000,13 @@ def eod_close():
         close_position(ticker, price, reason="EOD")
 
     # Fix B: Paper EOD summary → send_telegram(), TP EOD summary → send_tp_telegram()
-    today_sells = [t for t in paper_trades if t.get("action") == "SELL"]
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+    today_sells = [t for t in paper_trades
+                   if t.get("action") == "SELL" and t.get("date", "") == today]
     total_pnl = sum(t.get("pnl", 0) for t in today_sells)
-    wins = sum(1 for t in today_sells if t.get("pnl", 0) > 0)
-    losses = sum(1 for t in today_sells if t.get("pnl", 0) <= 0)
+    wins = sum(1 for t in today_sells if t.get("pnl", 0) >= 0)
+    losses = sum(1 for t in today_sells if t.get("pnl", 0) < 0)
 
     msg = (
         f"EOD CLOSE Complete\n"
@@ -1015,15 +1017,13 @@ def eod_close():
     send_telegram(msg)
 
     # TP EOD summary
-    now_et = datetime.now(ET)
-    today = now_et.strftime("%Y-%m-%d")
     tp_today_sells = [
         t for t in tp_paper_trades
         if t.get("action") == "SELL" and t.get("date", "") == today
     ]
     tp_total_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
-    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) > 0)
-    tp_losses = sum(1 for t in tp_today_sells if t.get("pnl", 0) <= 0)
+    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) >= 0)
+    tp_losses = sum(1 for t in tp_today_sells if t.get("pnl", 0) < 0)
     tp_msg = (
         f"[TP] EOD CLOSE Complete\n"
         f"  Trades: {len(tp_today_sells)}  W/L: {tp_wins}/{tp_losses}\n"
@@ -1128,14 +1128,14 @@ def send_eod_report():
         if t.get("action") == "SELL"
     ]
     n_trades = len(today_sells)
-    wins = sum(1 for t in today_sells if t.get("pnl", 0) > 0)
+    wins = sum(1 for t in today_sells if t.get("pnl", 0) >= 0)
     losses = n_trades - wins
     win_rate = (wins / n_trades * 100) if n_trades > 0 else 0
     day_pnl = sum(t.get("pnl", 0) for t in today_sells)
 
     # All-time from trade_history
     all_time_pnl = sum(t.get("pnl", 0) for t in trade_history)
-    all_wins = sum(1 for t in trade_history if t.get("pnl", 0) > 0)
+    all_wins = sum(1 for t in trade_history if t.get("pnl", 0) >= 0)
     all_losses = len(trade_history) - all_wins
     all_wr = (all_wins / len(trade_history) * 100) if trade_history else 0
 
@@ -1171,13 +1171,13 @@ def send_eod_report():
         if t.get("action") == "SELL" and t.get("date", "") == today
     ]
     tp_n = len(tp_today_sells)
-    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) > 0)
+    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) >= 0)
     tp_losses_n = tp_n - tp_wins
     tp_wr = (tp_wins / tp_n * 100) if tp_n > 0 else 0
     tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
 
     tp_all_pnl = sum(t.get("pnl", 0) for t in tp_trade_history)
-    tp_all_wins = sum(1 for t in tp_trade_history if t.get("pnl", 0) > 0)
+    tp_all_wins = sum(1 for t in tp_trade_history if t.get("pnl", 0) >= 0)
     tp_all_losses = len(tp_trade_history) - tp_all_wins
     tp_all_wr = (tp_all_wins / len(tp_trade_history) * 100) if tp_trade_history else 0
 
@@ -1230,7 +1230,7 @@ def send_weekly_digest():
             )
 
         n = len(week_trades)
-        wins = sum(1 for t in week_trades if t.get("pnl", 0) > 0)
+        wins = sum(1 for t in week_trades if t.get("pnl", 0) >= 0)
         losses = n - wins
         wr = (wins / n * 100) if n > 0 else 0
         week_pnl = sum(t.get("pnl", 0) for t in week_trades)
@@ -1299,10 +1299,6 @@ def send_weekly_digest():
 # ============================================================
 def scan_loop():
     """Main scan: manage positions, check new entries. Runs every 60s."""
-    # Feature 8: scan pause
-    if _scan_paused:
-        return
-
     now_et = datetime.now(ET)
 
     # Skip weekends
@@ -1321,8 +1317,12 @@ def scan_loop():
     update_avwap("SPY")
     update_avwap("QQQ")
 
-    # Manage existing positions
+    # Always manage existing positions (stops/trails) even when paused
     manage_positions()
+
+    # Feature 8: scan pause — only block NEW entries
+    if _scan_paused:
+        return
 
     # Check for new entries on tradable tickers
     for ticker in TRADE_TICKERS:
@@ -1341,7 +1341,7 @@ def scan_loop():
 # ============================================================
 def reset_daily_state():
     """Reset AVWAP, OR data, and daily counts for new trading day."""
-    global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason
+    global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason, tp_paper_trades
 
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
@@ -1354,6 +1354,8 @@ def reset_daily_state():
     if daily_entry_date != today:
         daily_entry_count.clear()
         paper_trades.clear()
+        tp_paper_trades.clear()
+        save_tp_state()
         daily_entry_date = today
 
     # Reset AVWAP
@@ -1468,12 +1470,12 @@ def _compute_perf_stats(history, date_filter=None):
     if not trades:
         return None
     n = len(trades)
-    wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+    wins = sum(1 for t in trades if t.get("pnl", 0) >= 0)
     losses = n - wins
     wr = (wins / n * 100) if n > 0 else 0
     total_pnl = sum(t.get("pnl", 0) for t in trades)
-    win_trades = [t for t in trades if t.get("pnl", 0) > 0]
-    loss_trades = [t for t in trades if t.get("pnl", 0) <= 0]
+    win_trades = [t for t in trades if t.get("pnl", 0) >= 0]
+    loss_trades = [t for t in trades if t.get("pnl", 0) < 0]
     avg_win = (sum(t["pnl"] for t in win_trades) / len(win_trades)) if win_trades else 0
     avg_loss = (sum(t["pnl"] for t in loss_trades) / len(loss_trades)) if loss_trades else 0
     best = max(trades, key=lambda t: t.get("pnl", 0))
@@ -1491,10 +1493,10 @@ def _compute_streak(history):
         return "N/A"
     sorted_h = sorted(history, key=lambda t: (t.get("date", ""), t.get("exit_time", "")))
     last = sorted_h[-1]
-    is_win = last.get("pnl", 0) > 0
+    is_win = last.get("pnl", 0) >= 0
     count = 0
     for t in reversed(sorted_h):
-        t_win = t.get("pnl", 0) > 0
+        t_win = t.get("pnl", 0) >= 0
         if t_win == is_win:
             count += 1
         else:
@@ -1516,6 +1518,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{SEP}\n"
         "/dashboard    Full market snapshot\n"
         "/positions    Open positions + live P&L\n"
+        "/status       Alias for /positions\n"
         "/orb          Today's OR levels + status\n"
         "/perf         All-time performance stats\n"
         "/price TICK   Live quote for any ticker\n"
@@ -1550,7 +1553,7 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     in_hours = (
         weekday
         and now_et.hour >= 9
-        and (now_et.hour < 16 or (now_et.hour == 15 and now_et.minute < 55))
+        and (now_et.hour < 15 or (now_et.hour == 15 and now_et.minute < 55))
     )
     market_status = "OPEN" if in_hours else "CLOSED"
 
@@ -1814,7 +1817,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "%s: $%.2f -> $%.2f  P&L=$%+.2f (%+.1f%%) [%s]"
                 % (ticker, entry_p, exit_p, t_pnl, pnl_pct, reason)
             )
-        wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) > 0)
+        wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) >= 0)
         losses = len(tp_today_sells) - wins
         win_rate = (wins / len(tp_today_sells) * 100) if tp_today_sells else 0
         lines.append(sep)
@@ -1827,7 +1830,8 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Paper portfolio
-    today_sells = [t for t in paper_trades if t.get("action") == "SELL"]
+    today_sells = [t for t in paper_trades
+                   if t.get("action") == "SELL" and t.get("date", "") == today]
 
     if not today_sells:
         await update.message.reply_text(
@@ -1853,7 +1857,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
             % (ticker, entry_p, exit_p, t_pnl, pnl_pct, reason)
         )
 
-    wins = sum(1 for t in today_sells if t.get("pnl", 0) > 0)
+    wins = sum(1 for t in today_sells if t.get("pnl", 0) >= 0)
     losses = len(today_sells) - wins
     win_rate = (wins / len(today_sells) * 100) if today_sells else 0
 
@@ -2464,7 +2468,7 @@ def send_startup_message():
     in_hours = (
         weekday
         and now_et.hour >= 9
-        and (now_et.hour < 16 or (now_et.hour == 15 and now_et.minute < 55))
+        and (now_et.hour < 15 or (now_et.hour == 15 and now_et.minute < 55))
     )
     market_status = "OPEN" if in_hours else "CLOSED"
 
