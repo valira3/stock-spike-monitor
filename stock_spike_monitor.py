@@ -2408,6 +2408,7 @@ MAIN_BOT_COMMANDS = [
 ]
 
 TP_BOT_COMMANDS = [
+    BotCommand("dashboard", "Full market snapshot"),
     BotCommand("help", "Command menu"),
     BotCommand("status", "Open positions + P&L"),
     BotCommand("positions", "Alias for /status"),
@@ -2528,6 +2529,7 @@ def run_telegram_bot():
               .build())
 
     tp_app.add_handler(CommandHandler("help", cmd_help))
+    tp_app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     tp_app.add_handler(CommandHandler("status", cmd_status))
     tp_app.add_handler(CommandHandler("positions", cmd_positions))
     tp_app.add_handler(CommandHandler("log", cmd_log))
