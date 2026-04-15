@@ -379,7 +379,7 @@ def send_tp_telegram(message):
         )
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
-        logger.error("[TP] Failed to send DM: %s", e)
+        logger.debug("[TP] Failed to send DM: %s", e)
 
 
 # ============================================================
