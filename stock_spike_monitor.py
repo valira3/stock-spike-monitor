@@ -72,8 +72,9 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.22"
+BOT_VERSION = "2.7.23"
 RELEASE_NOTES = [
+    "2.7.23 \u2014 Yahoo Finance quote fallback when Finnhub rate-limits \u2014 no ticker ever skipped due to rate limits.",
     "2.7.22 \u2014 ORB collection non-blocking (background thread) + news sentiment pre-market warmup at 08:00 CT + catch-up on market-hours restart.",
     "2.7.21 \u2014 Quantum basket (QBTS/IONQ/RGTI/QUBT/ARQQ) + quantum tier params + sector strength signal + short squeeze proxy via volume ratio (+2 pts), /quantum command.",
     "2.7.18 \u2014 API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
@@ -962,6 +963,37 @@ def get_yf_info(ticker):
         logger.debug(f"get_yf_info {ticker}: {e}")
         return None
 
+def _yahoo_quote_fallback(ticker: str):
+    """Fetch quote from Yahoo Finance when Finnhub rate-limits."""
+    import urllib.request as _ur
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/%s"
+        "?interval=1m&range=1d&includePrePost=false" % ticker
+    )
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        req = _ur.Request(url, headers=headers)
+        with _ur.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+        meta = data["chart"]["result"][0]["meta"]
+        c = meta.get("regularMarketPrice") or meta.get("chartPreviousClose")
+        pc = meta.get("previousClose") or meta.get("chartPreviousClose") or c
+        h = meta.get("regularMarketDayHigh") or c
+        lo = meta.get("regularMarketDayLow") or c
+        v = meta.get("regularMarketVolume") or 0
+        if not c:
+            _api_health_record("yahoo_quote_fallback", False, "no price data")
+            return {}
+        dp = round((c - pc) / pc * 100, 4) if pc else 0.0
+        result = {"c": c, "pc": pc, "h": h, "l": lo, "v": v, "dp": dp}
+        _api_health_record("yahoo_quote_fallback", True)
+        return result
+    except Exception as e:
+        logger.debug("Yahoo quote fallback failed for %s: %s", ticker, e)
+        _api_health_record("yahoo_quote_fallback", False, str(e))
+        return {}
+
+
 def _finnhub_quote(ticker: str) -> dict:
     """
     Rate-limited + cached Finnhub quote. Returns dict with keys:
@@ -976,18 +1008,17 @@ def _finnhub_quote(ticker: str) -> dict:
         return cached
     # Rate limit
     if not _finnhub_limiter.acquire(timeout=5):
-        logger.warning(f"Finnhub rate limit: skipping quote for {ticker}")
-        return {}
+        logger.debug(f"Finnhub rate limit: Yahoo fallback for {ticker}")
+        return _yahoo_quote_fallback(ticker)
     try:
         r = requests.get(
             f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}",
             timeout=8
         )
         if r.status_code == 429:
-            logger.warning(f"Finnhub 429 on quote {ticker}")
+            logger.debug(f"Finnhub 429: Yahoo fallback for {ticker}")
             _api_health_record("finnhub_quote", False, rate_limit=True)
-            _quote_cache.put(f"quote:{ticker}", {})  # cache empty for TTL to avoid retry storm
-            return {}
+            return _yahoo_quote_fallback(ticker)
         d = r.json()
         # Accept quote if current price OR previous close is valid
         if d.get("c", 0) > 0 or d.get("pc", 0) > 0:
