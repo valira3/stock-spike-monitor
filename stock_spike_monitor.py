@@ -72,8 +72,9 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.21"
+BOT_VERSION = "2.7.22"
 RELEASE_NOTES = [
+    "2.7.22 \u2014 ORB collection non-blocking (background thread) + news sentiment pre-market warmup at 08:00 CT + catch-up on market-hours restart.",
     "2.7.21 \u2014 Quantum basket (QBTS/IONQ/RGTI/QUBT/ARQQ) + quantum tier params + sector strength signal + short squeeze proxy via volume ratio (+2 pts), /quantum command.",
     "2.7.18 \u2014 API health monitoring system: per-endpoint success/fail tracking, auto-alert on 3 consecutive failures, /health command, startup checks, S&P 500 list fallback chain (FMP stable + Wikipedia + hardcoded).",
     "2.7.17 — ORB candle fix (Yahoo Finance), insider sentiment (MSPR +/-2pts), analyst consensus (+/-2pts), /insider + /analyst commands.",
@@ -912,6 +913,31 @@ def _score_news_sentiment(ticker: str) -> dict:
 
     news_sentiment_cache[ticker] = result
     return result
+
+
+# v2.7.22: track when news sentiment warmup last ran (date string)
+_news_sentiment_warmup_date = ""
+
+
+def _warmup_news_sentiment():
+    """v2.7.22: Pre-market batch warmup of news sentiment cache for all watchlist tickers."""
+    global _news_sentiment_warmup_date
+    tickers = list(TICKERS)
+    logger.info("News sentiment warmup: scoring %d tickers...", len(tickers))
+    count = 0
+    for ticker in tickers:
+        try:
+            _score_news_sentiment(ticker)
+            count += 1
+        except Exception as e:
+            logger.debug("News sentiment warmup %s: %s", ticker, e)
+    _news_sentiment_warmup_date = datetime.now(CT).strftime("%Y-%m-%d")
+    logger.info("News sentiment warmup done: %d/%d tickers scored", count, len(tickers))
+
+
+def _warmup_news_sentiment_bg():
+    """v2.7.22: Launch news sentiment warmup in background thread."""
+    threading.Thread(target=_warmup_news_sentiment, daemon=True, name="news-sentiment").start()
 
 
 def get_trading_session():
@@ -2476,6 +2502,7 @@ RUNTIME_MIN_MACD_PTS: int = 0           # block entries where macd_pts < this. 0
 orb_day: str = ""               # today's date string (YYYY-MM-DD), resets each morning
 orb_levels: dict = {}           # {ticker: {"high", "low", "open", "close", "volume", "collected"}}
 orb_triggered: set = set()      # tickers that already got an ORB entry today
+_orb_collect_running = False    # v2.7.22: guard to prevent duplicate background ORB collection
 
 # v2.7.16: ORB %-based exit targets
 ORB_PROFIT_TARGET_PCT  = 0.02   # 2% profit target — auto-exit when hit
@@ -7341,6 +7368,37 @@ def _fetch_orb_levels(tickers):
     return result
 
 
+def _start_orb_collect_bg():
+    """v2.7.22: Launch ORB collection in a background thread (non-blocking)."""
+    global _orb_collect_running
+    _orb_collect_running = True
+
+    def _run():
+        global _orb_collect_running
+        try:
+            ORB_ALWAYS_INCLUDE = list(QUANTUM_TICKERS) + ["SPY", "QQQ", "IWM"]
+            _orb_universe = list(set(
+                (sp500_tickers if sp500_tickers else list(TICKERS))
+                + ORB_ALWAYS_INCLUDE + list(TICKERS)
+            ))
+            logger.info(
+                "ORB background collect: %d tickers (S&P 500 universe)...",
+                len(_orb_universe),
+            )
+            collected = _fetch_orb_levels(_orb_universe)
+            orb_levels.update(collected)
+            logger.info(
+                "ORB background collect done: %d tickers", len(orb_levels),
+            )
+            save_paper_state()
+        except Exception as e:
+            logger.error("ORB background collect error: %s", e, exc_info=True)
+        finally:
+            _orb_collect_running = False
+
+    threading.Thread(target=_run, daemon=True, name="orb-collect").start()
+
+
 def _check_orb_breakouts(quote_cache=None):
     """
     Check for ORB breakouts with SPY strength filter.
@@ -7554,22 +7612,10 @@ def paper_scan():
         # Collect ORB levels once per day in the 08:35-08:45 CT window
         # v2.7.16: scan full S&P 500 + SPY (was watchlist only)
         # v2.7.21: always include quantum tickers + QQQ/IWM
+        # v2.7.22: non-blocking — runs in background thread so scan loop continues
         if (now_ct.hour == 8 and 35 <= now_ct.minute < 45
-                and not orb_levels):
-            ORB_ALWAYS_INCLUDE = list(QUANTUM_TICKERS) + ["SPY", "QQQ", "IWM"]
-            _orb_universe = list(set(
-                (sp500_tickers if sp500_tickers else list(TICKERS))
-                + ORB_ALWAYS_INCLUDE + list(TICKERS)
-            ))
-            logger.info(
-                "Collecting ORB levels for %d tickers (S&P 500 universe)...",
-                len(_orb_universe),
-            )
-            orb_levels.update(_fetch_orb_levels(_orb_universe))
-            logger.info(
-                "ORB levels collected: %d tickers", len(orb_levels),
-            )
-            save_paper_state()
+                and not orb_levels and not _orb_collect_running):
+            _start_orb_collect_bg()
 
         # Check for ORB breakouts after 08:35
         _past_open = (now_ct.hour > 8 or
@@ -13281,6 +13327,7 @@ def scanner_thread():
         # day            CT time   function
         ("daily",        "07:00",  lambda: ai_refresh_watchlist(mode="premarket")),
         ("daily",        "07:05",  _load_daily_candles),  # Refresh daily candles before market open
+        ("daily",        "08:00",  _warmup_news_sentiment_bg),  # v2.7.22: pre-market news sentiment warmup (background)
         ("daily",        "08:00",  send_premarket_dashboard),
         ("daily",        "08:30",  _merge_dynamic_stocks),
         ("daily",        "08:30",  send_morning_briefing),
@@ -13818,6 +13865,28 @@ if get_trading_session() != "closed":
     logger.info("Startup: market is open, priming AI watchlist...")
     if not ai_watchlist_suggestions:
         threading.Thread(target=lambda: ai_refresh_watchlist(mode="intraday"), daemon=True).start()
+
+# v2.7.22: Catch-up on restart — if market is open and ORB/news data is stale, fire immediately
+def _startup_catchup():
+    now_ct = datetime.now(CT)
+    today_str = now_ct.strftime("%Y-%m-%d")
+    if now_ct.weekday() >= 5:
+        return  # weekend
+    # ORB catch-up: if past 08:35 CT and no ORB data collected today
+    if (now_ct.hour > 8 or (now_ct.hour == 8 and now_ct.minute >= 35)):
+        if orb_day != today_str or not orb_levels:
+            logger.info("Catch-up: ORB data stale on restart, starting background collection")
+            # Reset orb_day so paper_scan doesn't also try to collect
+            globals()["orb_day"] = today_str
+            _start_orb_collect_bg()
+    # News sentiment catch-up: if past 08:00 CT and warmup hasn't run today
+    if (now_ct.hour >= 8):
+        if _news_sentiment_warmup_date != today_str:
+            logger.info("Catch-up: news sentiment stale on restart, starting background warmup")
+            _warmup_news_sentiment_bg()
+
+if get_trading_session() != "closed":
+    _startup_catchup()
 
 threading.Thread(target=scanner_thread, daemon=True).start()
 threading.Thread(target=_startup_health_check, daemon=True).start()
