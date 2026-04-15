@@ -72,8 +72,9 @@ SP500_FALLBACK = [
     "PLTR","SOFI","RIVN","COIN","SQ","SHOP","SNAP","RBLX","LYFT","UBER",
 ]
 
-BOT_VERSION = "2.7.23"
+BOT_VERSION = "2.7.24"
 RELEASE_NOTES = [
+    "2.7.24 \u2014 Fix news sentiment flood \u2014 daily per-ticker cache + warmup silent mode + daily warmup gate + near-miss signal logging.",
     "2.7.23 \u2014 Yahoo Finance quote fallback when Finnhub rate-limits \u2014 no ticker ever skipped due to rate limits.",
     "2.7.22 \u2014 ORB collection non-blocking (background thread) + news sentiment pre-market warmup at 08:00 CT + catch-up on market-hours restart.",
     "2.7.21 \u2014 Quantum basket (QBTS/IONQ/RGTI/QUBT/ARQQ) + quantum tier params + sector strength signal + short squeeze proxy via volume ratio (+2 pts), /quantum command.",
@@ -830,23 +831,25 @@ def fetch_news_with_details(ticker, count=5):
         return []
 
 
-# ── News sentiment cache (5-min TTL) ─────────────────────────
-news_sentiment_cache = {}
+# ── News sentiment cache (daily per-ticker) ──────────────────
+news_sentiment_cache: dict = {}  # ticker -> {"score": int, "pts": int, "catalyst": str, "date": str, "ts": float}
 
 
-def _score_news_sentiment(ticker: str) -> dict:
+def _score_news_sentiment(ticker: str, silent: bool = False) -> dict:
     """
     AI-powered news sentiment scoring (Component 10 of signal engine).
     Fetches recent news, sends to Claude Haiku for sentiment analysis.
     Returns {"sentiment": int, "pts": int, "catalyst": str}.
-    Cached for 5 minutes.
+    Cached per ticker per calendar day (CT).
+    silent=True suppresses Telegram alerts (used during warmup).
     """
-    now = time.time()
+    today = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
     cached = news_sentiment_cache.get(ticker)
-    if cached and (now - cached["ts"]) < 300:
+    if cached and cached.get("date") == today:
         return cached
 
-    result = {"sentiment": 0, "pts": 5, "catalyst": "", "ts": now}
+    now = time.time()
+    result = {"sentiment": 0, "pts": 5, "catalyst": "", "ts": now, "date": today}
 
     articles = fetch_news_with_details(ticker, count=5)
     if not articles:
@@ -906,8 +909,9 @@ def _score_news_sentiment(ticker: str) -> dict:
         else:
             pts = 0
 
-        result = {"sentiment": sentiment, "pts": pts, "catalyst": catalyst, "ts": now}
-        logger.info(f"NewsSentiment {ticker}: score={sentiment}, pts={pts}, catalyst={catalyst}")
+        result = {"sentiment": sentiment, "pts": pts, "catalyst": catalyst, "ts": now, "date": today}
+        if not silent:
+            logger.info(f"NewsSentiment {ticker}: score={sentiment}, pts={pts}, catalyst={catalyst}")
 
     except Exception as e:
         logger.debug(f"_score_news_sentiment {ticker}: {e}")
@@ -923,16 +927,20 @@ _news_sentiment_warmup_date = ""
 def _warmup_news_sentiment():
     """v2.7.22: Pre-market batch warmup of news sentiment cache for all watchlist tickers."""
     global _news_sentiment_warmup_date
+    today = datetime.now(CT).strftime("%Y-%m-%d")
+    if _news_sentiment_warmup_date == today:
+        logger.debug("News sentiment warmup: already ran today, skipping")
+        return
     tickers = list(TICKERS)
     logger.info("News sentiment warmup: scoring %d tickers...", len(tickers))
     count = 0
     for ticker in tickers:
         try:
-            _score_news_sentiment(ticker)
+            _score_news_sentiment(ticker, silent=True)
             count += 1
         except Exception as e:
             logger.debug("News sentiment warmup %s: %s", ticker, e)
-    _news_sentiment_warmup_date = datetime.now(CT).strftime("%Y-%m-%d")
+    _news_sentiment_warmup_date = today
     logger.info("News sentiment warmup done: %d/%d tickers scored", count, len(tickers))
 
 
@@ -6685,6 +6693,26 @@ def paper_evaluate_ticker(ticker: str):
     _tier_thresh = _tier_params["thresh_floor"]
     threshold = max(threshold, _tier_thresh)
     if sig["score"] < threshold:
+        # v2.7.24: Near-miss log for diagnostic — show full signal breakdown
+        if sig["score"] >= 50:
+            c = sig.get("comps", {})
+            breakdown = (
+                "rsi_pts=%s slope_pts=%s macd_pts=%s vol_pts=%s bw_pts=%s "
+                "news_pts=%s ai_pts=%s trend_pts=%s squeeze_pts=%s "
+                "avwap_pts=%s tod_pts=%s social_pts=%s quantum_pts=%s"
+            ) % (
+                c.get("rsi_pts", "?"), c.get("slope_pts", "?"),
+                c.get("macd_pts", "?"), c.get("vol_pts", "?"),
+                c.get("bw_pts", "?"), c.get("news_pts", "?"),
+                c.get("ai_pts", "?"), c.get("trend_pts", "?"),
+                c.get("squeeze_pts", "?"), c.get("avwap_pts", "?"),
+                c.get("tod_pts", "?"), c.get("social_pts", "?"),
+                c.get("quantum_pts", "?"),
+            )
+            logger.info(
+                "NEAR-MISS %s: score=%s thresh=%s | %s",
+                ticker, sig["score"], threshold, breakdown,
+            )
         return
 
     rsi = sig.get("rsi")
@@ -6761,6 +6789,25 @@ def paper_evaluate_ticker(ticker: str):
                 logger.debug(f"Sector check {ticker}: {e}")
         # Re-check threshold after sector adjustment
         if sig["score"] < threshold:
+            if sig["score"] >= 50:
+                c = sig.get("comps", {})
+                breakdown = (
+                    "rsi_pts=%s slope_pts=%s macd_pts=%s vol_pts=%s bw_pts=%s "
+                    "news_pts=%s ai_pts=%s trend_pts=%s squeeze_pts=%s "
+                    "avwap_pts=%s tod_pts=%s social_pts=%s quantum_pts=%s"
+                ) % (
+                    c.get("rsi_pts", "?"), c.get("slope_pts", "?"),
+                    c.get("macd_pts", "?"), c.get("vol_pts", "?"),
+                    c.get("bw_pts", "?"), c.get("news_pts", "?"),
+                    c.get("ai_pts", "?"), c.get("trend_pts", "?"),
+                    c.get("squeeze_pts", "?"), c.get("avwap_pts", "?"),
+                    c.get("tod_pts", "?"), c.get("social_pts", "?"),
+                    c.get("quantum_pts", "?"),
+                )
+                logger.info(
+                    "NEAR-MISS %s: score=%s thresh=%s (post-sector) | %s",
+                    ticker, sig["score"], threshold, breakdown,
+                )
             return
 
     # Feature #9: Earnings proximity guard
