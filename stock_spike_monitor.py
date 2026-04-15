@@ -32,10 +32,10 @@ TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 
-BOT_VERSION = "2.8.0"
+BOT_VERSION = "2.8.1"
 RELEASE_NOTE = (
-    "v2.8.0: Clean slate — ORB momentum breakout only, "
-    "10-ticker universe, $0.50 stop, stepped trail"
+    "v2.8.1: TP Portfolio tracking (independent) + "
+    "/positions shows live market value"
 )
 
 # ============================================================
@@ -59,6 +59,7 @@ ET = ZoneInfo("America/New_York")
 # ============================================================
 PAPER_LOG              = os.getenv("PAPER_LOG_PATH", "investment.log")
 PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
+TP_STATE_FILE          = os.getenv("TP_STATE_FILE", "tp_state.json")
 PAPER_STARTING_CAPITAL = 100_000.0
 PAPER_MODE             = True  # True = paper only, False = send webhook
 
@@ -133,6 +134,11 @@ paper_trades: list = []
 # Paper cash and all-time trades
 paper_cash: float = PAPER_STARTING_CAPITAL
 paper_all_trades: list = []
+
+# TP Portfolio (independent, parallel tracking)
+tp_positions: dict = {}
+tp_paper_trades: list = []
+tp_paper_cash: float = PAPER_STARTING_CAPITAL
 
 # TradersPost state
 tp_state: dict = {
@@ -219,6 +225,54 @@ def load_paper_state():
                     paper_cash, len(positions))
     except Exception as e:
         logger.error("load_paper_state failed: %s — starting fresh", e)
+
+
+# ============================================================
+# TP STATE PERSISTENCE
+# ============================================================
+_tp_save_lock = threading.Lock()
+
+
+def save_tp_state():
+    """Persist TP portfolio state to disk. Thread-safe, atomic."""
+    state = {
+        "tp_paper_cash": tp_paper_cash,
+        "tp_positions": tp_positions,
+        "tp_paper_trades": tp_paper_trades,
+        "saved_at": datetime.now(ET).isoformat(),
+    }
+    with _tp_save_lock:
+        tmp = TP_STATE_FILE + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, default=str)
+            os.replace(tmp, TP_STATE_FILE)
+            logger.debug("TP state saved -> %s", TP_STATE_FILE)
+        except Exception as e:
+            logger.error("save_tp_state failed: %s", e)
+
+
+def load_tp_state():
+    """Load TP portfolio state from disk on startup."""
+    global tp_paper_cash
+
+    if not os.path.exists(TP_STATE_FILE):
+        logger.info("No TP state at %s. Starting fresh $%.0f.",
+                     TP_STATE_FILE, PAPER_STARTING_CAPITAL)
+        return
+
+    try:
+        with open(TP_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        tp_paper_cash = float(state.get("tp_paper_cash", PAPER_STARTING_CAPITAL))
+        tp_positions.update(state.get("tp_positions", {}))
+        tp_paper_trades.extend(state.get("tp_paper_trades", []))
+
+        logger.info("Loaded TP state: cash=$%.2f, %d positions",
+                    tp_paper_cash, len(tp_positions))
+    except Exception as e:
+        logger.error("load_tp_state failed: %s — starting fresh", e)
 
 
 # ============================================================
@@ -595,7 +649,7 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
 # ============================================================
 def execute_entry(ticker, current_price):
     """Place a limit buy for 10 shares. Record position + paper trade."""
-    global paper_cash
+    global paper_cash, tp_paper_cash
 
     limit_price = round(current_price + 0.02, 2)
     stop_price = round(current_price - STOP_OFFSET, 2)
@@ -647,6 +701,28 @@ def execute_entry(ticker, current_price):
     ) % (ticker, current_price, limit_price, stop_price, or_h, entry_num)
     send_telegram(msg)
 
+    # TP Portfolio — mirror entry
+    tp_positions[ticker] = {
+        "entry_price": current_price,
+        "shares": SHARES,
+        "stop": stop_price,
+        "trail_active": False,
+        "trail_high": current_price,
+        "entry_count": entry_num,
+        "entry_time": now_str,
+    }
+    tp_paper_cash -= cost
+    tp_paper_trades.append(trade.copy())
+    tp_msg = (
+        "[TP] ENTRY %s\n"
+        "  Price:  $%.2f  (limit $%.2f)\n"
+        "  Stop:   $%.2f\n"
+        "  OR High: $%.2f\n"
+        "  Entry #%d today"
+    ) % (ticker, current_price, limit_price, stop_price, or_h, entry_num)
+    send_tp_telegram(tp_msg)
+    save_tp_state()
+
     save_paper_state()
 
 
@@ -655,7 +731,7 @@ def execute_entry(ticker, current_price):
 # ============================================================
 def close_position(ticker, price, reason="STOP"):
     """Close position: remove, log P&L, send webhook + Telegram."""
-    global paper_cash
+    global paper_cash, tp_paper_cash
 
     if ticker not in positions:
         return
@@ -699,6 +775,34 @@ def close_position(ticker, price, reason="STOP"):
         "  P&L:    $%+.2f  (%+.1f%%)"
     ) % (ticker, reason, entry_price, price, pnl, pnl_pct)
     send_telegram(msg)
+
+    # TP Portfolio — mirror close
+    if ticker in tp_positions:
+        tp_pos = tp_positions.pop(ticker)
+        tp_entry = tp_pos["entry_price"]
+        tp_shares = tp_pos["shares"]
+        tp_pnl = (price - tp_entry) * tp_shares
+        tp_pnl_pct = ((price - tp_entry) / tp_entry * 100) if tp_entry else 0
+        tp_paper_cash += price * tp_shares
+        tp_paper_trades.append({
+            "action": "SELL",
+            "ticker": ticker,
+            "price": price,
+            "shares": tp_shares,
+            "pnl": round(tp_pnl, 2),
+            "pnl_pct": round(tp_pnl_pct, 2),
+            "reason": reason,
+            "entry_price": tp_entry,
+            "time": now_str,
+        })
+        tp_msg = (
+            "[TP] EXIT %s  [%s]\n"
+            "  Entry:  $%.2f\n"
+            "  Exit:   $%.2f\n"
+            "  P&L:    $%+.2f  (%+.1f%%)"
+        ) % (ticker, reason, tp_entry, price, tp_pnl, tp_pnl_pct)
+        send_tp_telegram(tp_msg)
+        save_tp_state()
 
     save_paper_state()
 
@@ -960,36 +1064,70 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show open positions and today's P&L."""
+    """Show open positions with live prices, unrealized P&L, and TP summary."""
     now_et = datetime.now(ET)
-    sep = "-" * 32
-    lines = [
-        "STATUS — %s" % now_et.strftime("%I:%M %p ET"),
-        sep,
-    ]
+    sep = "\u2500" * 34
+    n_pos = len(positions)
+    header = "Open Positions (%d)" % n_pos
+    lines = [header, sep]
+
+    total_unreal_pnl = 0.0
+    total_market_value = 0.0
 
     if not positions:
         lines.append("No open positions")
     else:
         for ticker, pos in positions.items():
             bars = fetch_1min_bars(ticker)
-            cur = bars["current_price"] if bars else pos["entry_price"]
-            pnl = (cur - pos["entry_price"]) * pos["shares"]
-            trail_str = "ON" if pos["trail_active"] else "OFF"
-            lines.append(
-                "%s: entry=$%.2f cur=$%.2f pnl=$%+.2f stop=$%.2f trail=%s"
-                % (ticker, pos["entry_price"], cur, pnl, pos["stop"], trail_str)
-            )
+            entry_p = pos["entry_price"]
+            shares = pos["shares"]
+            if bars:
+                cur = bars["current_price"]
+                pos_pnl = (cur - entry_p) * shares
+                pos_pnl_pct = ((cur - entry_p) / entry_p * 100) if entry_p else 0
+                mkt_val = cur * shares
+                total_unreal_pnl += pos_pnl
+                total_market_value += mkt_val
+                stop_tag = "[trail active]" if pos["trail_active"] else "[stop]"
+                lines.append("%s  %d shares" % (ticker, shares))
+                lines.append(
+                    "  Entry:  $%.2f  ->  Now: $%.2f" % (entry_p, cur)
+                )
+                lines.append(
+                    "  P&L:   $%+.2f (%+.1f%%)" % (pos_pnl, pos_pnl_pct)
+                )
+                lines.append(
+                    "  Value:  $%s" % format(mkt_val, ",.2f")
+                )
+                lines.append(
+                    "  Stop:   $%.2f %s" % (pos["stop"], stop_tag)
+                )
+            else:
+                mkt_val = entry_p * shares
+                total_market_value += mkt_val
+                lines.append("%s  %d shares" % (ticker, shares))
+                lines.append("  Entry:  $%.2f  ->  price unavailable" % entry_p)
+                lines.append("  Stop:   $%.2f" % pos["stop"])
+            lines.append(sep)
+
+    # Totals
+    if positions:
+        lines.append("Total Unrealized P&L: $%+.2f" % total_unreal_pnl)
+        lines.append("Total Market Value:   $%s" % format(total_market_value, ",.2f"))
 
     # Today's completed trades
     today_sells = [t for t in paper_trades if t.get("action") == "SELL"]
     if today_sells:
-        total_pnl = sum(t.get("pnl", 0) for t in today_sells)
-        lines.append(sep)
-        lines.append("Today: %d trades, P&L=$%+.2f" % (len(today_sells), total_pnl))
+        day_pnl = sum(t.get("pnl", 0) for t in today_sells)
+        lines.append("Today: %d trades, P&L=$%+.2f" % (len(today_sells), day_pnl))
 
+    lines.append("Paper Cash:           $%s" % format(paper_cash, ",.2f"))
     lines.append(sep)
-    lines.append(f"Cash: ${paper_cash:,.2f}")
+
+    # TP Portfolio summary
+    tp_n = len(tp_positions)
+    lines.append("TP Portfolio: %d positions" % tp_n)
+    lines.append("  TP Cash: $%s" % format(tp_paper_cash, ",.2f"))
 
     # OR status
     if or_collected_date == now_et.strftime("%Y-%m-%d"):
@@ -1214,6 +1352,7 @@ def startup_catchup():
 # ENTRY POINT
 # ============================================================
 load_paper_state()
+load_tp_state()
 
 # Startup catch-up
 startup_catchup()
