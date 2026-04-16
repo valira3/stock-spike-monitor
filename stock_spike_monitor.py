@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.1"
-RELEASE_NOTE = "v2.9.1: UTC internal timestamps, CDT display for all user-facing times"
+BOT_VERSION = "2.9.2"
+RELEASE_NOTE = "v2.9.2: /algo command with algorithm reference PDF"
 
 # ============================================================
 # LOGGING
@@ -2588,9 +2588,26 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(summary)
 
-    # Send PDF if available on disk
+    # Send PDF — try local file first, fall back to GitHub raw download
+    _ALGO_PDF_URL = (
+        "https://raw.githubusercontent.com/valira3/"
+        "stock-spike-monitor/main/stock_spike_monitor_algo.pdf"
+    )
     pdf_path = Path("stock_spike_monitor_algo.pdf")
-    if pdf_path.exists():
+    tmp_path = None
+    if not pdf_path.exists():
+        logger.info("/algo: PDF not found locally — downloading from GitHub")
+        try:
+            import tempfile
+            tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
+            os.close(tmp_fd)
+            await asyncio.to_thread(urllib.request.urlretrieve, _ALGO_PDF_URL, tmp_name)
+            pdf_path = Path(tmp_name)
+            tmp_path = tmp_name
+        except Exception as e:
+            logger.warning("/algo: GitHub PDF download failed: %s", e)
+            pdf_path = None
+    if pdf_path and pdf_path.exists():
         try:
             with open(pdf_path, "rb") as pdf_file:
                 await context.bot.send_document(
@@ -2602,9 +2619,14 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
             await update.message.reply_text("(PDF unavailable \u2014 contact admin)")
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
     else:
-        logger.warning("/algo: PDF not found at %s", pdf_path.resolve())
-        await update.message.reply_text("(PDF file not deployed \u2014 contact admin)")
+        await update.message.reply_text("(PDF unavailable \u2014 contact admin)")
 
 
 # ============================================================
