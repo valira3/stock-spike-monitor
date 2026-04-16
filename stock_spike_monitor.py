@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.12"
-RELEASE_NOTE = "v2.9.12 \u2014 RED_CANDLE fires on price < Open OR price < PDC"
+BOT_VERSION = "2.9.13"
+RELEASE_NOTE = "v2.9.13 \u2014 /dayreport full log with timestamps"
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -92,6 +92,17 @@ def _to_cdt_hhmm(iso_str: str) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=ET)   # legacy ET-stored fallback
         return dt.astimezone(CDT).strftime("%H:%M CDT")
+    except Exception:
+        return iso_str
+
+
+def _to_cdt_hhmmss(iso_str: str) -> str:
+    """Decode a stored ISO timestamp to 'HH:MM:SS' (CDT) for display."""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ET)
+        return dt.astimezone(CDT).strftime("%H:%M:%S")
     except Exception:
         return iso_str
 
@@ -959,6 +970,7 @@ def close_position(ticker, price, reason="STOP"):
     # Feature 1: Append to trade_history
     history_record = {
         "ticker": ticker,
+        "side": "long",
         "action": "SELL",
         "shares": shares,
         "entry_price": entry_price,
@@ -968,6 +980,9 @@ def close_position(ticker, price, reason="STOP"):
         "reason": reason,
         "entry_time": entry_hhmm,
         "exit_time": now_hhmm,
+        "entry_time_iso": entry_time_str,
+        "exit_time_iso": _utc_now_iso(),
+        "entry_num": pos.get("entry_count", 1),
         "date": now_date,
     }
     trade_history.append(history_record)
@@ -1029,8 +1044,10 @@ def close_position(ticker, price, reason="STOP"):
         })
 
         # Feature 1: Append to tp_trade_history
+        tp_entry_time_str = tp_pos.get("entry_time", "")
         tp_hist_record = {
             "ticker": ticker,
+            "side": "long",
             "action": "SELL",
             "shares": tp_shares,
             "entry_price": tp_entry,
@@ -1040,6 +1057,9 @@ def close_position(ticker, price, reason="STOP"):
             "reason": reason,
             "entry_time": tp_entry_hhmm,
             "exit_time": now_hhmm,
+            "entry_time_iso": tp_entry_time_str,
+            "exit_time_iso": _utc_now_iso(),
+            "entry_num": tp_pos.get("entry_count", 1),
             "date": now_date,
         }
         tp_trade_history.append(tp_hist_record)
@@ -1195,6 +1215,7 @@ def close_tp_position(ticker, price, reason="STOP"):
 
     tp_trade_history.append({
         "ticker": ticker,
+        "side": "long",
         "action": "SELL",
         "shares": tp_shares,
         "entry_price": tp_entry,
@@ -1204,6 +1225,9 @@ def close_tp_position(ticker, price, reason="STOP"):
         "reason": reason,
         "entry_time": tp_entry_hhmm,
         "exit_time": now_hhmm,
+        "entry_time_iso": tp_entry_time_str,
+        "exit_time_iso": _utc_now_iso(),
+        "entry_num": tp_pos.get("entry_count", 1),
         "date": now_date,
     })
     if len(tp_trade_history) > TRADE_HISTORY_MAX:
@@ -1621,7 +1645,7 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
 
     trade_record = {
         "ticker": ticker,
-        "side": "SHORT",
+        "side": "short",
         "action": "COVER",
         "shares": shares,
         "entry_price": entry_price,
@@ -1631,6 +1655,9 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         "reason": reason,
         "entry_time": pos.get("entry_time", "?"),
         "exit_time": exit_time,
+        "entry_time_iso": pos.get("entry_time", ""),
+        "exit_time_iso": _utc_now_iso(),
+        "entry_num": pos.get("entry_count", 1),
         "date": date_str,
     }
 
@@ -2682,87 +2709,142 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await cmd_status(update, context)
 
 
+def _dayreport_time(t, key):
+    """Extract display time HH:MM:SS from a trade record."""
+    iso = t.get(key + "_iso", "")
+    if iso:
+        return _to_cdt_hhmmss(iso)
+    raw = t.get(key, "")
+    if raw and ":" in raw:
+        return raw.replace(" CDT", "")
+    return "..."
+
+
+def _dayreport_sort_key(t):
+    """Sort key for chronological ordering of trades."""
+    iso = t.get("exit_time_iso", "")
+    if iso:
+        return iso
+    return t.get("exit_time", "") or t.get("date", "")
+
+
+def _format_dayreport_section(trades, label, cash):
+    """Format one portfolio section for /dayreport."""
+    sep = "\u2500" * 30
+    if not trades:
+        return "%s\n%s\nNo completed trades today." % (label, sep)
+
+    trades_sorted = sorted(trades, key=_dayreport_sort_key)
+    lines = [label, sep]
+    total_pnl = 0.0
+
+    for idx, t in enumerate(trades_sorted, 1):
+        ticker = t.get("ticker", "?")
+        side = t.get("side", "long")
+        side_label = "Long" if side == "long" else "Short"
+        entry_num = t.get("entry_num", 1)
+        entry_p = t.get("entry_price", 0)
+        exit_p = t.get("exit_price", t.get("price", 0))
+        t_pnl = t.get("pnl", 0)
+        reason = t.get("reason", "?")
+        reason_label = REASON_LABELS.get(reason, reason)
+        in_time = _dayreport_time(t, "entry_time")
+        out_time = _dayreport_time(t, "exit_time")
+        total_pnl += t_pnl
+
+        pnl_str = "$%+.2f" % t_pnl
+        # Use unicode minus for negative
+        if t_pnl < 0:
+            pnl_str = "\u2212$%.2f" % abs(t_pnl)
+
+        lines.append(
+            "%d. %s %s #%d" % (idx, ticker, side_label, entry_num)
+        )
+        lines.append(
+            "   In : %s  @ $%.2f" % (in_time, entry_p)
+        )
+        lines.append(
+            "   Out: %s  @ $%.2f" % (out_time, exit_p)
+        )
+        lines.append(
+            "   P&L: %s  Reason: %s" % (pnl_str, reason_label)
+        )
+        lines.append("")
+
+    # Remove trailing blank line
+    if lines and lines[-1] == "":
+        lines.pop()
+
+    lines.append(sep)
+    day_pnl_str = "$%+.2f" % total_pnl
+    if total_pnl < 0:
+        day_pnl_str = "\u2212$%.2f" % abs(total_pnl)
+    lines.append("Day P&L: %s" % day_pnl_str)
+
+    return "\n".join(lines)
+
+
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's completed trades with P&L summary."""
     now_et = _now_et()
+    now_cdt = _now_cdt()
     today = now_et.strftime("%Y-%m-%d")
-    sep = "-" * 32
+    day_label = now_cdt.strftime("%a %b %d")
+    header = "\U0001f4ca Day Report \u2014 %s" % day_label
 
     # Fix B: Route based on which bot
     if is_tp_update(update):
-        tp_today_sells = [
-            t for t in tp_paper_trades
-            if t.get("action") == "SELL" and t.get("date", "") == today
+        tp_long = [
+            t for t in tp_trade_history
+            if t.get("date", "") == today
         ]
-        if not tp_today_sells:
-            await update.message.reply_text(
-                "[TP] Day Report \u2014 %s\n%s\nNo completed trades today." % (today, sep))
-            return
-        lines = ["[TP] Day Report \u2014 %s" % today, sep]
-        total_pnl = 0.0
-        for t in tp_today_sells:
-            ticker = t.get("ticker", "?")
-            t_pnl = t.get("pnl", 0)
-            pnl_pct = t.get("pnl_pct", 0)
-            reason = t.get("reason", "?")
-            entry_p = t.get("entry_price", 0)
-            exit_p = t.get("price", 0)
-            total_pnl += t_pnl
-            lines.append(
-                "%s: $%.2f -> $%.2f  P&L=$%+.2f (%+.1f%%) [%s]"
-                % (ticker, entry_p, exit_p, t_pnl, pnl_pct, reason)
-            )
-        wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) >= 0)
-        losses = len(tp_today_sells) - wins
-        win_rate = (wins / len(tp_today_sells) * 100) if tp_today_sells else 0
-        lines.append(sep)
-        lines.append("Total P&L: $%+.2f" % total_pnl)
-        lines.append("Trades: %d  W/L: %d/%d  Win%%: %.0f%%" % (
-            len(tp_today_sells), wins, losses, win_rate))
-        tp_cash_fmt = format(tp_paper_cash, ",.2f")
-        lines.append("Cash: $%s" % tp_cash_fmt)
-        await update.message.reply_text("\n".join(lines))
+        tp_short = [
+            t for t in tp_short_trade_history
+            if t.get("date", "") == today
+        ]
+        all_tp = tp_long + tp_short
+        body = _format_dayreport_section(
+            all_tp, "%s\nTP Portfolio" % header, tp_paper_cash
+        )
+        await update.message.reply_text(body)
         return
 
     # Paper portfolio
-    today_sells = [t for t in paper_trades
-                   if t.get("action") == "SELL" and t.get("date", "") == today]
-
-    if not today_sells:
-        await update.message.reply_text(
-            "Day Report \u2014 %s\n%s\nNo completed trades today." % (today, sep))
-        return
-
-    lines = [
-        "Day Report \u2014 %s" % today,
-        sep,
+    paper_long = [
+        t for t in trade_history
+        if t.get("date", "") == today
     ]
+    paper_short = [
+        t for t in short_trade_history
+        if t.get("date", "") == today
+    ]
+    all_paper = paper_long + paper_short
 
-    total_pnl = 0.0
-    for t in today_sells:
-        ticker = t.get("ticker", "?")
-        t_pnl = t.get("pnl", 0)
-        pnl_pct = t.get("pnl_pct", 0)
-        reason = t.get("reason", "?")
-        entry_p = t.get("entry_price", 0)
-        exit_p = t.get("price", 0)
-        total_pnl += t_pnl
-        lines.append(
-            "%s: $%.2f -> $%.2f  P&L=$%+.2f (%+.1f%%) [%s]"
-            % (ticker, entry_p, exit_p, t_pnl, pnl_pct, reason)
+    paper_body = _format_dayreport_section(
+        all_paper, "%s\nPaper Portfolio" % header, paper_cash
+    )
+
+    # Also include TP section for paper bot
+    tp_long = [
+        t for t in tp_trade_history
+        if t.get("date", "") == today
+    ]
+    tp_short = [
+        t for t in tp_short_trade_history
+        if t.get("date", "") == today
+    ]
+    all_tp = tp_long + tp_short
+
+    if all_tp:
+        tp_sep = "\u2500" * 30
+        tp_body = _format_dayreport_section(
+            all_tp, "TP Portfolio", tp_paper_cash
         )
+        full_msg = "%s\n%s\n%s" % (paper_body, tp_sep, tp_body)
+    else:
+        full_msg = paper_body
 
-    wins = sum(1 for t in today_sells if t.get("pnl", 0) >= 0)
-    losses = len(today_sells) - wins
-    win_rate = (wins / len(today_sells) * 100) if today_sells else 0
-
-    lines.append(sep)
-    lines.append("Total P&L: $%+.2f" % total_pnl)
-    lines.append("Trades: %d  W/L: %d/%d  Win%%: %.0f%%" % (
-        len(today_sells), wins, losses, win_rate))
-    lines.append(f"Cash: ${paper_cash:,.2f}")
-
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(full_msg)
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
