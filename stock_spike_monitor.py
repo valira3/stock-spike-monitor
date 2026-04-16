@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telegram import (
     BotCommand, BotCommandScopeAllGroupChats,
-    BotCommandScopeAllPrivateChats, Update,
+    BotCommandScopeAllPrivateChats, BotCommandScopeDefault, Update,
 )
 from telegram.ext import (
     Application, CommandHandler, ContextTypes,
@@ -2429,33 +2429,25 @@ TP_BOT_COMMANDS = [
 
 
 async def _set_bot_commands(app: Application) -> None:
-    """Register / menu commands on startup."""
+    """Register / menu commands on startup (all scopes)."""
     try:
-        await app.bot.set_my_commands(
-            MAIN_BOT_COMMANDS,
-            scope=BotCommandScopeAllPrivateChats(),
-        )
-        await app.bot.set_my_commands(
-            MAIN_BOT_COMMANDS,
-            scope=BotCommandScopeAllGroupChats(),
-        )
-        logger.info("Registered %d bot commands", len(MAIN_BOT_COMMANDS))
+        # Clear default scope first (removes any stale commands from old versions)
+        await app.bot.set_my_commands(MAIN_BOT_COMMANDS, scope=BotCommandScopeDefault())
+        await app.bot.set_my_commands(MAIN_BOT_COMMANDS, scope=BotCommandScopeAllPrivateChats())
+        await app.bot.set_my_commands(MAIN_BOT_COMMANDS, scope=BotCommandScopeAllGroupChats())
+        logger.info("Registered %d bot commands (all scopes)", len(MAIN_BOT_COMMANDS))
     except Exception as e:
         logger.warning("Failed to set bot commands: %s", e)
 
 
 async def _set_tp_bot_commands(app: Application) -> None:
-    """Register TP bot commands."""
+    """Register TP bot commands (all scopes)."""
     try:
-        await app.bot.set_my_commands(
-            TP_BOT_COMMANDS,
-            scope=BotCommandScopeAllPrivateChats(),
-        )
-        await app.bot.set_my_commands(
-            TP_BOT_COMMANDS,
-            scope=BotCommandScopeAllGroupChats(),
-        )
-        logger.info("Registered %d TP bot commands", len(TP_BOT_COMMANDS))
+        # Clear default scope first (removes any stale commands from old versions)
+        await app.bot.set_my_commands(TP_BOT_COMMANDS, scope=BotCommandScopeDefault())
+        await app.bot.set_my_commands(TP_BOT_COMMANDS, scope=BotCommandScopeAllPrivateChats())
+        await app.bot.set_my_commands(TP_BOT_COMMANDS, scope=BotCommandScopeAllGroupChats())
+        logger.info("Registered %d TP bot commands (all scopes)", len(TP_BOT_COMMANDS))
     except Exception as e:
         logger.warning("Failed to set TP bot commands: %s", e)
 
