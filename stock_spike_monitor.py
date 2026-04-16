@@ -14,7 +14,7 @@ import threading
 import urllib.request
 import asyncio
 import signal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from telegram import (
     BotCommand, BotCommandScopeAllGroupChats,
@@ -34,11 +34,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.0"
-RELEASE_NOTE = (
-    "v2.9.0: Wounded Buffalo short selling — OR breakdown, PDC polarity, "
-    "index anchor, stepped trail, cover orders, /positions and /orb show shorts"
-)
+BOT_VERSION = "2.9.1"
+RELEASE_NOTE = "v2.9.1: UTC internal timestamps, CDT display for all user-facing times"
 
 # ============================================================
 # LOGGING
@@ -55,6 +52,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
+CDT = ZoneInfo("America/Chicago")   # user display timezone
+
+
+def _now_et() -> datetime:
+    """Current time in ET — for market-hour gate logic only."""
+    return datetime.now(timezone.utc).astimezone(ET)
+
+
+def _now_cdt() -> datetime:
+    """Current time in CDT — for all user-facing display."""
+    return datetime.now(timezone.utc).astimezone(CDT)
+
+
+def _utc_now_iso() -> str:
+    """UTC ISO timestamp string for internal storage."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _to_cdt_hhmm(iso_str: str) -> str:
+    """Decode a stored ISO timestamp to 'HH:MM CDT' for display.
+    Handles both UTC-stored (new) and ET-stored (legacy) strings."""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ET)   # legacy ET-stored fallback
+        return dt.astimezone(CDT).strftime("%H:%M CDT")
+    except Exception:
+        return iso_str
+
 
 # ============================================================
 # PAPER TRADING CONFIG
@@ -212,7 +238,7 @@ def save_paper_state():
         "trade_history": trade_history,
         "short_positions": short_positions,
         "short_trade_history": short_trade_history[-500:],
-        "saved_at": datetime.now(ET).isoformat(),
+        "saved_at": _utc_now_iso(),
     }
     with _paper_save_lock:
         tmp = PAPER_STATE_FILE + ".tmp"
@@ -260,7 +286,7 @@ def load_paper_state():
         short_trade_history.extend(state.get("short_trade_history", []))
 
         # Reset daily counts if saved on a different day
-        today = datetime.now(ET).strftime("%Y-%m-%d")
+        today = _now_et().strftime("%Y-%m-%d")
         if daily_entry_date != today:
             daily_entry_count.clear()
             paper_trades.clear()
@@ -286,7 +312,7 @@ def save_tp_state():
         "tp_trade_history": tp_trade_history,
         "tp_short_positions": tp_short_positions,
         "tp_short_trade_history": tp_short_trade_history[-500:],
-        "saved_at": datetime.now(ET).isoformat(),
+        "saved_at": _utc_now_iso(),
     }
     with _tp_save_lock:
         tmp = TP_STATE_FILE + ".tmp"
@@ -458,7 +484,7 @@ def collect_or():
     and previous day close as PDC.
     """
     global or_collected_date
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     if or_collected_date == today:
@@ -567,7 +593,7 @@ def update_avwap(ticker):
 # ============================================================
 def check_entry(ticker):
     """Return (True, bars) if all entry conditions met, else (False, None)."""
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     # Reset daily entry counts if new day
@@ -686,7 +712,7 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
         else:
             tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
 
-        now_str = datetime.now(ET).isoformat()
+        now_str = _utc_now_iso()
         tp_state["last_order_time"] = now_str
         recent = tp_state.get("recent_orders", [])
         recent.append({
@@ -715,7 +741,7 @@ def execute_entry(ticker, current_price):
     global paper_cash, tp_paper_cash, _trading_halted, _trading_halted_reason
 
     # Feature 2: Check daily loss limit
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today_str = now_et.strftime("%Y-%m-%d")
 
     if _trading_halted:
@@ -748,8 +774,8 @@ def execute_entry(ticker, current_price):
     limit_price = round(current_price + 0.02, 2)
     stop_price = round(current_price - STOP_OFFSET, 2)
     entry_num = daily_entry_count.get(ticker, 0) + 1
-    now_str = now_et.isoformat()
-    now_hhmm = now_et.strftime("%H:%M")
+    now_str = _utc_now_iso()
+    now_hhmm = _now_cdt().strftime("%H:%M CDT")
     now_date = now_et.strftime("%Y-%m-%d")
 
     positions[ticker] = {
@@ -840,19 +866,13 @@ def close_position(ticker, price, reason="STOP"):
     shares = pos["shares"]
     pnl_val = (price - entry_price) * shares
     pnl_pct = ((price - entry_price) / entry_price * 100) if entry_price else 0
-    now_et = datetime.now(ET)
-    now_hhmm = now_et.strftime("%H:%M")
+    now_et = _now_et()
+    now_hhmm = _now_cdt().strftime("%H:%M CDT")
     now_date = now_et.strftime("%Y-%m-%d")
 
     # Compute entry time from position
     entry_time_str = pos.get("entry_time", "")
-    entry_hhmm = ""
-    if entry_time_str:
-        try:
-            et_dt = datetime.fromisoformat(entry_time_str)
-            entry_hhmm = et_dt.strftime("%H:%M")
-        except Exception:
-            entry_hhmm = ""
+    entry_hhmm = _to_cdt_hhmm(entry_time_str) if entry_time_str else ""
 
     # Paper accounting
     proceeds = price * shares
@@ -916,13 +936,7 @@ def close_position(ticker, price, reason="STOP"):
         tp_paper_cash += price * tp_shares
 
         tp_entry_time_str = tp_pos.get("entry_time", "")
-        tp_entry_hhmm = ""
-        if tp_entry_time_str:
-            try:
-                tp_et_dt = datetime.fromisoformat(tp_entry_time_str)
-                tp_entry_hhmm = tp_et_dt.strftime("%H:%M")
-            except Exception:
-                tp_entry_hhmm = ""
+        tp_entry_hhmm = _to_cdt_hhmm(tp_entry_time_str) if tp_entry_time_str else ""
 
         tp_paper_trades.append({
             "action": "SELL",
@@ -1028,7 +1042,7 @@ def check_short_entry(ticker):
     if _scan_paused:
         return
 
-    now_et = datetime.now(ET)
+    now_et = _now_et()
 
     # Time gate: must be after 09:35 ET
     if now_et.hour < 9:
@@ -1101,8 +1115,9 @@ def execute_short_entry(ticker, price):
     shares = 10
     entry_price = round(price, 2)
     stop = round(entry_price + 0.50, 2)   # hard stop: $0.50 ABOVE entry
-    now_et = datetime.now(ET)
-    entry_time = now_et.strftime("%H:%M")
+    now_et = _now_et()
+    entry_time_iso = _utc_now_iso()
+    entry_time_display = _now_cdt().strftime("%H:%M CDT")
     date_str = now_et.strftime("%Y-%m-%d")
 
     # Paper short
@@ -1112,7 +1127,7 @@ def execute_short_entry(ticker, price):
         "stop": stop,
         "trail_stop": None,
         "trail_active": False,
-        "entry_time": entry_time,
+        "entry_time": entry_time_iso,
         "date": date_str,
         "side": "SHORT",
     }
@@ -1127,7 +1142,7 @@ def execute_short_entry(ticker, price):
         "stop": stop,
         "trail_stop": None,
         "trail_active": False,
-        "entry_time": entry_time,
+        "entry_time": entry_time_iso,
         "date": date_str,
         "side": "SHORT",
     }
@@ -1151,11 +1166,11 @@ def execute_short_entry(ticker, price):
         "OR Low : $%.2f\n"
         "PDC    : $%.2f\n"
         "Shares : %d\n"
-        "Time   : %s ET\n"
+        "Time   : %s\n"
         "%s\n"
         "\U0001f403 Wounded Buffalo \u2014 hunting the bleed"
     ) % (entry_count, SEP, ticker, entry_price, stop,
-         or_low_val, pdc_val, shares, entry_time, SEP)
+         or_low_val, pdc_val, shares, entry_time_display, SEP)
     send_telegram(msg)
 
     tp_msg = msg.replace("SHORT ENTRY", "TP SHORT ENTRY")
@@ -1273,8 +1288,8 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
 
     pnl = round((entry_price - cover_price) * shares, 2)
     pnl_pct = round((entry_price - cover_price) / entry_price * 100, 2) if entry_price else 0
-    now_et = datetime.now(ET)
-    exit_time = now_et.strftime("%H:%M")
+    now_et = _now_et()
+    exit_time = _now_cdt().strftime("%H:%M CDT")
     date_str = pos.get("date", now_et.strftime("%Y-%m-%d"))
 
     trade_record = {
@@ -1314,7 +1329,7 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
             "Cover  : $%.2f\n"
             "P&L    : %s$%.2f (%s%.1f%%)\n"
             "Shares : %d\n"
-            "Time   : %s ET\n"
+            "Time   : %s\n"
         ) % (emoji, reason, SEP, ticker, entry_price, cover_price,
              pnl_sign, pnl, pnl_sign, pnl_pct, shares, exit_time)
         send_telegram(msg)
@@ -1337,7 +1352,7 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
             "Cover  : $%.2f\n"
             "P&L    : %s$%.2f (%s%.1f%%)\n"
             "Shares : %d\n"
-            "Time   : %s ET\n"
+            "Time   : %s\n"
         ) % (emoji, reason, SEP, ticker, entry_price, cover_price,
              pnl_sign, pnl, pnl_sign, pnl_pct, shares, exit_time)
         send_tp_telegram(tp_msg)
@@ -1399,7 +1414,7 @@ def eod_close():
             close_short_position(ticker, price, "EOD", portfolio="tp")
 
     # Fix B: Paper EOD summary → send_telegram(), TP EOD summary → send_tp_telegram()
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
     today_sells = [t for t in paper_trades
                    if t.get("action") == "SELL" and t.get("date", "") == today]
@@ -1439,7 +1454,7 @@ def eod_close():
 def send_or_notification():
     """Send morning OR card at 09:36 ET. Retry if OR data not ready."""
     def _do_send():
-        now_et = datetime.now(ET)
+        now_et = _now_et()
         today = now_et.strftime("%Y-%m-%d")
 
         for attempt in range(3):
@@ -1522,7 +1537,7 @@ def send_or_notification():
 def send_eod_report():
     """Auto EOD report at 15:58 ET. Paper → send_telegram(), TP → send_tp_telegram()."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     # --- Paper report ---
@@ -1617,10 +1632,10 @@ def send_eod_report():
 def send_weekly_digest():
     """Weekly digest — Sunday 18:00 ET. Paper → send_telegram(), TP → send_tp_telegram()."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     cutoff = now_et - timedelta(days=7)
     cutoff_str = cutoff.strftime("%Y-%m-%d")
-    week_label = now_et.strftime("Week of %b %d")
+    week_label = _now_cdt().strftime("Week of %b %d")
 
     def _build_digest(history, label):
         week_trades = [
@@ -1702,7 +1717,7 @@ def send_weekly_digest():
 # ============================================================
 def scan_loop():
     """Main scan: manage positions, check new entries. Runs every 60s."""
-    now_et = datetime.now(ET)
+    now_et = _now_et()
 
     # Skip weekends
     if now_et.weekday() >= 5:
@@ -1753,7 +1768,7 @@ def reset_daily_state():
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason, tp_paper_trades
     global daily_short_entry_count
 
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     if or_collected_date != today:
@@ -1791,8 +1806,8 @@ def scheduler_thread():
     ]
 
     fired = set()
-    last_scan = datetime.now(ET) - timedelta(seconds=SCAN_INTERVAL + 1)
-    last_state_save = datetime.now(ET) - timedelta(minutes=6)
+    last_scan = _now_et() - timedelta(seconds=SCAN_INTERVAL + 1)
+    last_state_save = _now_et() - timedelta(minutes=6)
 
     # Job table: (day, "HH:MM", function)
     JOBS = [
@@ -1805,11 +1820,11 @@ def scheduler_thread():
         ("sunday", "18:00", send_weekly_digest),
     ]
 
-    logger.info("Scheduler started — all times in ET (server: %s)",
-                datetime.now().strftime("%Z %z") or "unknown")
+    logger.info("Scheduler started — market times ET, display CDT (UTC offset: %s)",
+                datetime.now(timezone.utc).strftime("%z"))
 
     while True:
-        now_et = datetime.now(ET)
+        now_et = _now_et()
         now_hhmm = now_et.strftime("%H:%M")
         now_day = DAY_NAMES[now_et.weekday()]
         fire_key = now_et.strftime("%Y-%m-%d") + "-" + now_hhmm
@@ -1964,8 +1979,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Full market snapshot: portfolios, index filters, OR levels."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
-    time_et = now_et.strftime("%I:%M %p ET")
+    now_et = _now_et()
+    time_cdt = _now_cdt().strftime("%I:%M %p CDT")
     today = now_et.strftime("%Y-%m-%d")
 
     weekday = now_et.weekday() < 5
@@ -2016,7 +2031,7 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qqq_icon = "\u2705" if qqq_ok else "\u274c"
 
     lines = [
-        f"\U0001f4ca DASHBOARD  {time_et}",
+        f"\U0001f4ca DASHBOARD  {time_cdt}",
         SEP,
         "\U0001f4c4 PAPER PORTFOLIO",
         f"  Cash:       ${paper_cash_fmt}",
@@ -2056,7 +2071,7 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show open positions with live prices, unrealized P&L, and TP summary."""
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     sep = "\u2500" * 34
 
     # Fix B: Route based on which bot received the command
@@ -2249,7 +2264,7 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's completed trades with P&L summary."""
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
     sep = "-" * 32
 
@@ -2333,7 +2348,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's completed trades (entries and exits) chronologically."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     # Fix B: Route based on which bot
@@ -2422,7 +2437,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Timeline replay of today's trades with running cumulative P&L."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     # Fix B: Route based on which bot
@@ -2595,7 +2610,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show all-time performance stats from trade history."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
     seven_days_ago = (now_et - timedelta(days=7)).strftime("%Y-%m-%d")
 
@@ -2825,7 +2840,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's OR levels and current price for all 8 trade tickers."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     if or_collected_date != today:
@@ -2983,7 +2998,7 @@ async def _set_tp_bot_commands(app: Application) -> None:
 def send_startup_message():
     """Send rich deployment card to BOTH main and TP bots."""
     SEP = "\u2500" * 34
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     weekday = now_et.weekday() < 5
     in_hours = (
         weekday
@@ -3095,7 +3110,7 @@ def run_telegram_bot():
 # ============================================================
 def startup_catchup():
     """If restarting after 09:35 ET on a weekday, collect OR immediately."""
-    now_et = datetime.now(ET)
+    now_et = _now_et()
     if now_et.weekday() >= 5:
         return
     today = now_et.strftime("%Y-%m-%d")
