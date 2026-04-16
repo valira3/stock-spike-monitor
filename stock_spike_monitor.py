@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.5"
-RELEASE_NOTE = "v2.9.5: TP state persistence fix + OR result to TP bot"
+BOT_VERSION = "2.9.6"
+RELEASE_NOTE = "v2.9.6: Rich entry/exit notifications + regime change alerts"
 
 # ============================================================
 # LOGGING
@@ -192,6 +192,7 @@ _trading_halted_reason: str = ""
 
 # Scan pause (Feature 8)
 _scan_paused: bool = False
+_regime_bullish = None          # None=unknown, True/False tracks last known regime
 
 # TradersPost state
 tp_state: dict = {
@@ -821,13 +822,21 @@ def execute_entry(ticker, current_price):
 
     # Fix B: Paper BUY notification → send_telegram() ONLY
     or_h = or_high.get(ticker, 0)
+    pdc_e = pdc.get(ticker, 0)
+    SEP_E = "\u2500" * 34
     msg = (
-        "ENTRY %s\n"
-        "  Price:  $%.2f  (limit $%.2f)\n"
-        "  Stop:   $%.2f\n"
-        "  OR High: $%.2f\n"
-        "  Entry #%d today"
-    ) % (ticker, current_price, limit_price, stop_price, or_h, entry_num)
+        "\U0001f4c8 LONG ENTRY %s  #%d\n"
+        "%s\n"
+        "Price  : $%.2f  (limit $%.2f)\n"
+        "Shares : %d   Cost: $%s\n"
+        "Stop   : $%.2f  (OR_High-$0.90)\n"
+        "OR High: $%.2f   PDC: $%.2f\n"
+        "Time   : %s\n"
+        "%s"
+    ) % (ticker, entry_num, SEP_E,
+         current_price, limit_price,
+         SHARES, format(cost, ",.2f"),
+         stop_price, or_h, pdc_e, now_hhmm, SEP_E)
     send_telegram(msg)
 
     # TP Portfolio — mirror entry
@@ -845,12 +854,18 @@ def execute_entry(ticker, current_price):
 
     # Fix B: TP BUY notification → send_tp_telegram() ONLY
     tp_msg = (
-        "[TP] ENTRY %s\n"
-        "  Price:  $%.2f  (limit $%.2f)\n"
-        "  Stop:   $%.2f\n"
-        "  OR High: $%.2f\n"
-        "  Entry #%d today"
-    ) % (ticker, current_price, limit_price, stop_price, or_h, entry_num)
+        "[TP] \U0001f4c8 LONG ENTRY %s  #%d\n"
+        "%s\n"
+        "Price  : $%.2f  (limit $%.2f)\n"
+        "Shares : %d   Cost: $%s\n"
+        "Stop   : $%.2f  (OR_High-$0.90)\n"
+        "OR High: $%.2f   PDC: $%.2f\n"
+        "Time   : %s\n"
+        "%s"
+    ) % (ticker, entry_num, SEP_E,
+         current_price, limit_price,
+         SHARES, format(cost, ",.2f"),
+         stop_price, or_h, pdc_e, now_hhmm, SEP_E)
     send_tp_telegram(tp_msg)
     save_tp_state()
 
@@ -924,12 +939,22 @@ def close_position(ticker, price, reason="STOP"):
     send_traderspost_order(ticker, "sell", price, shares)
 
     # Fix B: Paper EXIT → send_telegram() ONLY
+    exit_emoji = "\u2705" if pnl_val >= 0 else "\u274c"
+    entry_cost_val = round(entry_price * shares, 2)
+    SEP_X = "\u2500" * 34
     msg = (
-        "EXIT %s  [%s]\n"
-        "  Entry:  $%.2f\n"
-        "  Exit:   $%.2f\n"
-        "  P&L:    $%+.2f  (%+.1f%%)"
-    ) % (ticker, reason, entry_price, price, pnl_val, pnl_pct)
+        "%s EXIT %s  [%s]\n"
+        "%s\n"
+        "Shares : %d\n"
+        "Entry  : $%.2f  \u2192  $%.2f\n"
+        "Cost   : $%s  \u2192  $%s\n"
+        "P&L    : $%+.2f  (%+.1f%%)\n"
+        "In: %s   Out: %s\n"
+        "%s"
+    ) % (exit_emoji, ticker, reason, SEP_X,
+         shares, entry_price, price,
+         format(entry_cost_val, ",.2f"), format(proceeds, ",.2f"),
+         pnl_val, pnl_pct, entry_hhmm, now_hhmm, SEP_X)
     send_telegram(msg)
 
     # TP Portfolio — mirror close
@@ -976,12 +1001,22 @@ def close_position(ticker, price, reason="STOP"):
             tp_trade_history[:] = tp_trade_history[-TRADE_HISTORY_MAX:]
 
         # Fix B: TP EXIT → send_tp_telegram() ONLY
+        tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
+        tp_entry_cost = round(tp_entry * tp_shares, 2)
+        tp_proceeds = round(price * tp_shares, 2)
         tp_msg = (
-            "[TP] EXIT %s  [%s]\n"
-            "  Entry:  $%.2f\n"
-            "  Exit:   $%.2f\n"
-            "  P&L:    $%+.2f  (%+.1f%%)"
-        ) % (ticker, reason, tp_entry, price, tp_pnl, tp_pnl_pct)
+            "[TP] %s EXIT %s  [%s]\n"
+            "%s\n"
+            "Shares : %d\n"
+            "Entry  : $%.2f  \u2192  $%.2f\n"
+            "Cost   : $%s  \u2192  $%s\n"
+            "P&L    : $%+.2f  (%+.1f%%)\n"
+            "In: %s   Out: %s\n"
+            "%s"
+        ) % (tp_exit_emoji, ticker, reason, SEP_X,
+             tp_shares, tp_entry, price,
+             format(tp_entry_cost, ",.2f"), format(tp_proceeds, ",.2f"),
+             tp_pnl, tp_pnl_pct, tp_entry_hhmm, now_hhmm, SEP_X)
         send_tp_telegram(tp_msg)
         save_tp_state()
 
@@ -1191,20 +1226,22 @@ def execute_short_entry(ticker, price):
     or_low_val = or_low.get(ticker, 0)
     SEP = "\u2500" * 34
     entry_count = daily_short_entry_count.get(ticker, 1)
+    short_proceeds = entry_price * shares
     msg = (
         "\U0001fa78 SHORT ENTRY #%d\n"
         "%s\n"
-        "Ticker : %s\n"
-        "Entry  : $%.2f (limit)\n"
-        "Stop   : $%.2f (PDC+$0.90)\n"
-        "OR Low : $%.2f\n"
-        "PDC    : $%.2f\n"
-        "Shares : %d\n"
-        "Time   : %s\n"
+        "Ticker   : %s\n"
+        "Entry    : $%.2f (limit)\n"
+        "Shares   : %d   Proceeds: $%s\n"
+        "Stop     : $%.2f (PDC+$0.90)\n"
+        "OR Low   : $%.2f\n"
+        "PDC      : $%.2f\n"
+        "Time     : %s\n"
         "%s\n"
         "\U0001f403 Wounded Buffalo \u2014 hunting the bleed"
-    ) % (entry_count, SEP, ticker, entry_price, stop,
-         or_low_val, pdc_val, shares, entry_time_display, SEP)
+    ) % (entry_count, SEP, ticker, entry_price,
+         shares, format(short_proceeds, ",.2f"),
+         stop, or_low_val, pdc_val, entry_time_display, SEP)
     send_telegram(msg)
 
     tp_msg = msg.replace("SHORT ENTRY", "TP SHORT ENTRY")
@@ -1389,17 +1426,24 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         pnl_sign = "+" if pnl >= 0 else ""
         emoji = "\u2705" if pnl >= 0 else "\u274c"
         SEP = "\u2500" * 34
+        sc_entry_total = round(entry_price * shares, 2)
+        sc_cover_total = round(cover_price * shares, 2)
+        sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
         msg = (
             "%s SHORT CLOSED (%s)\n"
             "%s\n"
             "Ticker : %s\n"
-            "Entry  : $%.2f\n"
-            "Cover  : $%.2f\n"
-            "P&L    : %s$%.2f (%s%.1f%%)\n"
             "Shares : %d\n"
-            "Time   : %s\n"
-        ) % (emoji, reason, SEP, ticker, entry_price, cover_price,
-             pnl_sign, pnl, pnl_sign, pnl_pct, shares, exit_time)
+            "Entry  : $%.2f  (total $%s)\n"
+            "Cover  : $%.2f  (total $%s)\n"
+            "P&L    : %s$%.2f  (%s%.1f%%)\n"
+            "In: %s   Out: %s\n"
+            "%s"
+        ) % (emoji, reason, SEP, ticker, shares,
+             entry_price, format(sc_entry_total, ",.2f"),
+             cover_price, format(sc_cover_total, ",.2f"),
+             pnl_sign, pnl, pnl_sign, pnl_pct,
+             sc_in_time, exit_time, SEP)
         send_telegram(msg)
 
     else:  # TP
@@ -1412,17 +1456,24 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         pnl_sign = "+" if pnl >= 0 else ""
         emoji = "\u2705" if pnl >= 0 else "\u274c"
         SEP = "\u2500" * 34
+        tp_sc_entry_total = round(entry_price * shares, 2)
+        tp_sc_cover_total = round(cover_price * shares, 2)
+        tp_sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
         tp_msg = (
             "%s TP SHORT CLOSED (%s)\n"
             "%s\n"
             "Ticker : %s\n"
-            "Entry  : $%.2f\n"
-            "Cover  : $%.2f\n"
-            "P&L    : %s$%.2f (%s%.1f%%)\n"
             "Shares : %d\n"
-            "Time   : %s\n"
-        ) % (emoji, reason, SEP, ticker, entry_price, cover_price,
-             pnl_sign, pnl, pnl_sign, pnl_pct, shares, exit_time)
+            "Entry  : $%.2f  (total $%s)\n"
+            "Cover  : $%.2f  (total $%s)\n"
+            "P&L    : %s$%.2f  (%s%.1f%%)\n"
+            "In: %s   Out: %s\n"
+            "%s"
+        ) % (emoji, reason, SEP, ticker, shares,
+             entry_price, format(tp_sc_entry_total, ",.2f"),
+             cover_price, format(tp_sc_cover_total, ",.2f"),
+             pnl_sign, pnl, pnl_sign, pnl_pct,
+             tp_sc_in_time, exit_time, SEP)
         send_tp_telegram(tp_msg)
 
 
@@ -1802,6 +1853,39 @@ def scan_loop():
     # Update AVWAP for index anchors
     update_avwap("SPY")
     update_avwap("QQQ")
+
+    # ── Regime change alert ───────────────────────────────────────────────
+    global _regime_bullish
+    spy_avwap_r = avwap_data["SPY"]["avwap"]
+    qqq_avwap_r = avwap_data["QQQ"]["avwap"]
+    if spy_avwap_r > 0 and qqq_avwap_r > 0:
+        spy_bars_r = fetch_1min_bars("SPY")
+        qqq_bars_r = fetch_1min_bars("QQQ")
+        if spy_bars_r and qqq_bars_r:
+            spy_cur_r = spy_bars_r["current_price"]
+            qqq_cur_r = qqq_bars_r["current_price"]
+            now_bullish = (spy_cur_r > spy_avwap_r) and (qqq_cur_r > qqq_avwap_r)
+            if _regime_bullish is None:
+                _regime_bullish = now_bullish
+            elif now_bullish != _regime_bullish:
+                _regime_bullish = now_bullish
+                now_hhmm_r = _now_cdt().strftime("%H:%M CDT")
+                if now_bullish:
+                    regime_msg = (
+                        "\U0001f7e2 REGIME: BULLISH\n"
+                        "SPY $%.2f > AVWAP $%.2f\n"
+                        "QQQ $%.2f > AVWAP $%.2f\n"
+                        "The Lords are back.  %s"
+                    ) % (spy_cur_r, spy_avwap_r, qqq_cur_r, qqq_avwap_r, now_hhmm_r)
+                else:
+                    regime_msg = (
+                        "\U0001f534 REGIME: BEARISH\n"
+                        "SPY $%.2f < AVWAP $%.2f\n"
+                        "QQQ $%.2f  AVWAP $%.2f\n"
+                        "The Lords have left.  %s"
+                    ) % (spy_cur_r, spy_avwap_r, qqq_cur_r, qqq_avwap_r, now_hhmm_r)
+                send_telegram(regime_msg)
+                send_tp_telegram(regime_msg)
 
     # Always manage existing positions (stops/trails) even when paused
     manage_positions()
