@@ -31,12 +31,12 @@ from telegram.ext import (
 TELEGRAM_TOKEN          = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID                 = os.getenv("CHAT_ID")
 TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
-TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
+TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.13"
-RELEASE_NOTE = "v2.9.13 \u2014 /dayreport full log with timestamps"
+BOT_VERSION = "2.9.14"
+RELEASE_NOTE = "v2.9.14 \u2014 Fix dayreport chunks + TP chat_id"
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -2784,6 +2784,23 @@ def _format_dayreport_section(trades, label, cash):
     return "\n".join(lines)
 
 
+async def _reply_in_chunks(message, text, max_len=3800):
+    """Send text in ≤max_len-char chunks, splitting on newlines."""
+    lines = text.split('\n')
+    chunk = []
+    length = 0
+    for line in lines:
+        line_len = len(line) + 1  # +1 for newline
+        if length + line_len > max_len and chunk:
+            await message.reply_text('\n'.join(chunk))
+            chunk = []
+            length = 0
+        chunk.append(line)
+        length += line_len
+    if chunk:
+        await message.reply_text('\n'.join(chunk))
+
+
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's completed trades with P&L summary."""
     now_et = _now_et()
@@ -2806,7 +2823,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = _format_dayreport_section(
             all_tp, "%s\nTP Portfolio" % header, tp_paper_cash
         )
-        await update.message.reply_text(body)
+        await _reply_in_chunks(update.message, body)
         return
 
     # Paper portfolio
@@ -2844,7 +2861,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         full_msg = paper_body
 
-    await update.message.reply_text(full_msg)
+    await _reply_in_chunks(update.message, full_msg)
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
