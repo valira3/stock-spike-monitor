@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.6"
-RELEASE_NOTE = "v2.9.6: Rich entry/exit notifications + regime change alerts"
+BOT_VERSION = "2.9.7"
+RELEASE_NOTE = "v2.9.7 \u2014 Fix TP entry not firing"
 
 # ============================================================
 # LOGGING
@@ -851,6 +851,8 @@ def execute_entry(ticker, current_price):
     }
     tp_paper_cash -= cost
     tp_paper_trades.append(trade.copy())
+    logger.info("[TP] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
+                ticker, SHARES, current_price, limit_price, stop_price, entry_num)
 
     # Fix B: TP BUY notification → send_tp_telegram() ONLY
     tp_msg = (
@@ -965,6 +967,8 @@ def close_position(ticker, price, reason="STOP"):
         tp_pnl = (price - tp_entry) * tp_shares
         tp_pnl_pct = ((price - tp_entry) / tp_entry * 100) if tp_entry else 0
         tp_paper_cash += price * tp_shares
+        logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
+                    ticker, tp_shares, price, reason, tp_pnl)
 
         tp_entry_time_str = tp_pos.get("entry_time", "")
         tp_entry_hhmm = _to_cdt_hhmm(tp_entry_time_str) if tp_entry_time_str else ""
@@ -1094,6 +1098,152 @@ def manage_positions():
     # Close positions outside the loop to avoid mutation during iteration
     for ticker, price, reason in tickers_to_close:
         close_position(ticker, price, reason)
+
+
+# ============================================================
+# CLOSE TP POSITION (independent TP long close)
+# ============================================================
+def close_tp_position(ticker, price, reason="STOP"):
+    """Close a TP long position independently (when paper already closed or diverged)."""
+    global tp_paper_cash
+
+    if ticker not in tp_positions:
+        return
+
+    tp_pos = tp_positions.pop(ticker)
+    tp_entry = tp_pos["entry_price"]
+    tp_shares = tp_pos["shares"]
+    tp_pnl = (price - tp_entry) * tp_shares
+    tp_pnl_pct = ((price - tp_entry) / tp_entry * 100) if tp_entry else 0
+    tp_paper_cash += price * tp_shares
+
+    now_et = _now_et()
+    now_hhmm = _now_cdt().strftime("%H:%M CDT")
+    now_date = now_et.strftime("%Y-%m-%d")
+    tp_entry_time_str = tp_pos.get("entry_time", "")
+    tp_entry_hhmm = _to_cdt_hhmm(tp_entry_time_str) if tp_entry_time_str else ""
+
+    logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
+                ticker, tp_shares, price, reason, tp_pnl)
+
+    tp_paper_trades.append({
+        "action": "SELL",
+        "ticker": ticker,
+        "price": price,
+        "shares": tp_shares,
+        "pnl": round(tp_pnl, 2),
+        "pnl_pct": round(tp_pnl_pct, 2),
+        "reason": reason,
+        "entry_price": tp_entry,
+        "time": now_hhmm,
+        "date": now_date,
+    })
+
+    tp_trade_history.append({
+        "ticker": ticker,
+        "action": "SELL",
+        "shares": tp_shares,
+        "entry_price": tp_entry,
+        "exit_price": price,
+        "pnl": round(tp_pnl, 2),
+        "pnl_pct": round(tp_pnl_pct, 2),
+        "reason": reason,
+        "entry_time": tp_entry_hhmm,
+        "exit_time": now_hhmm,
+        "date": now_date,
+    })
+    if len(tp_trade_history) > TRADE_HISTORY_MAX:
+        tp_trade_history[:] = tp_trade_history[-TRADE_HISTORY_MAX:]
+
+    SEP_X = "\u2500" * 34
+    tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
+    tp_entry_cost = round(tp_entry * tp_shares, 2)
+    tp_proceeds = round(price * tp_shares, 2)
+    tp_msg = (
+        "[TP] %s EXIT %s  [%s]\n"
+        "%s\n"
+        "Shares : %d\n"
+        "Entry  : $%.2f  \u2192  $%.2f\n"
+        "Cost   : $%s  \u2192  $%s\n"
+        "P&L    : $%+.2f  (%+.1f%%)\n"
+        "In: %s   Out: %s\n"
+        "%s"
+    ) % (tp_exit_emoji, ticker, reason, SEP_X,
+         tp_shares, tp_entry, price,
+         format(tp_entry_cost, ",.2f"), format(tp_proceeds, ",.2f"),
+         tp_pnl, tp_pnl_pct, tp_entry_hhmm, now_hhmm, SEP_X)
+    send_tp_telegram(tp_msg)
+    save_tp_state()
+
+
+# ============================================================
+# MANAGE TP POSITIONS (independent stop + trail logic)
+# ============================================================
+def manage_tp_positions():
+    """Check stops and update trailing stops for all open TP positions."""
+    tickers_to_close = []
+
+    # ── Eye of the Tiger: "The Lords have left" ──────────────────────────────
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    lords_left = False
+    if spy_avwap > 0 and qqq_avwap > 0:
+        spy_bars = fetch_1min_bars("SPY")
+        qqq_bars = fetch_1min_bars("QQQ")
+        if spy_bars and qqq_bars:
+            spy_cur = spy_bars["current_price"]
+            qqq_cur = qqq_bars["current_price"]
+            if spy_cur < spy_avwap or qqq_cur < qqq_avwap:
+                lords_left = True
+
+    for ticker in list(tp_positions.keys()):
+        bars = fetch_1min_bars(ticker)
+        if not bars:
+            continue
+
+        current_price = bars["current_price"]
+        pos = tp_positions[ticker]
+
+        # Check hard stop hit
+        if current_price <= pos["stop"]:
+            tickers_to_close.append((ticker, current_price, "STOP"))
+            continue
+
+        # ── Eye of the Tiger: "The Lords have left" — SPY or QQQ < AVWAP ────
+        if lords_left:
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
+            continue
+
+        # ── Eye of the Tiger: "The Red Candle" — Price < today's Open ────────
+        opens = [o for o in bars.get("opens", []) if o is not None]
+        if opens:
+            day_open = opens[0]
+            if current_price < day_open:
+                tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
+                continue
+
+        entry_price = pos["entry_price"]
+
+        # Trail logic
+        if not pos["trail_active"]:
+            if current_price >= entry_price + TRAIL_TRIGGER:
+                pos["trail_active"] = True
+                pos["stop"] = round(entry_price + TRAIL_STEP, 2)
+                pos["trail_high"] = entry_price + TRAIL_TRIGGER
+                logger.info("[TP] Trail activated for %s: stop raised to $%.2f",
+                            ticker, pos["stop"])
+        else:
+            if current_price > pos["trail_high"] + TRAIL_STEP:
+                steps = int((current_price - pos["trail_high"]) / TRAIL_STEP)
+                pos["stop"] = round(pos["stop"] + steps * TRAIL_STEP, 2)
+                pos["trail_high"] = round(
+                    pos["trail_high"] + steps * TRAIL_STEP, 2)
+                logger.info("[TP] Trail ratchet %s: stop=$%.2f trail_high=$%.2f",
+                            ticker, pos["stop"], pos["trail_high"])
+
+    # Close TP positions outside the loop
+    for ticker, price, reason in tickers_to_close:
+        close_tp_position(ticker, price, reason)
 
 
 # ============================================================
@@ -1486,7 +1636,7 @@ def eod_close():
     n_short = len(short_positions)
     n_tp_short = len(tp_short_positions)
 
-    if not positions and not short_positions and not tp_short_positions:
+    if not positions and not tp_positions and not short_positions and not tp_short_positions:
         logger.info("EOD close: no open positions (long or short)")
         # Still fall through to show summary
 
@@ -1503,6 +1653,20 @@ def eod_close():
             longs_to_close.append((ticker, price))
         for ticker, price in longs_to_close:
             close_position(ticker, price, reason="EOD")
+
+    # Close any remaining TP long positions (orphaned if paper already closed)
+    if tp_positions:
+        logger.info("EOD close: closing %d TP long positions", len(tp_positions))
+        tp_longs_to_close = []
+        for ticker in list(tp_positions.keys()):
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                price = bars["current_price"]
+            else:
+                price = tp_positions[ticker]["entry_price"]
+            tp_longs_to_close.append((ticker, price))
+        for ticker, price in tp_longs_to_close:
+            close_tp_position(ticker, price, reason="EOD")
 
     # Close paper short positions
     if short_positions:
@@ -1889,6 +2053,7 @@ def scan_loop():
 
     # Always manage existing positions (stops/trails) even when paused
     manage_positions()
+    manage_tp_positions()
     manage_short_positions()
 
     # Feature 8: scan pause — only block NEW entries
