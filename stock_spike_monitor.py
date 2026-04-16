@@ -32,11 +32,11 @@ TELEGRAM_TOKEN          = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID                 = os.getenv("CHAT_ID")
 TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
-TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
+TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.8"
-RELEASE_NOTE = "v2.9.8 \u2014 Index Regime Shield: Tiger exits require 1-min bar close confirmation"
+BOT_VERSION = "2.9.9"
+RELEASE_NOTE = "v2.9.9 \u2014 Fix TP Telegram notifications on entry/exit"
 
 # ============================================================
 # LOGGING
@@ -430,7 +430,7 @@ def send_tp_telegram(message):
         )
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
-        logger.debug("[TP] Failed to send DM: %s", e)
+        logger.warning("[TP] Failed to send DM: %s", e)
 
 
 # ============================================================
