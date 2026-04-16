@@ -7,6 +7,7 @@ TradersPost webhook, scheduler.
 """
 
 import os
+from pathlib import Path
 import json
 import time
 import logging
@@ -1954,6 +1955,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/dayreport    Daily P&L summary\n"
         "/monitoring   Pause/resume scanner\n"
         "/reset        Reset portfolio\n"
+        "/algo         Algorithm reference PDF\n"
         "/version      Bot version info\n"
         "/help         This menu\n"
         f"{SEP}\n"
@@ -2554,6 +2556,58 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /algo COMMAND
+# ============================================================
+async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send algorithm summary + downloadable PDF reference."""
+    SEP = "\u2500" * 34
+    summary = (
+        "\U0001f4d8 ALGORITHM REFERENCE v2.9\n"
+        f"{SEP}\n"
+        "Two independent strategies:\n\n"
+        "\U0001f4c8 ORB LONG BREAKOUT\n"
+        "  Entry: 1-min close > OR_High\n"
+        "         + price > PDC (green stock)\n"
+        "         + SPY & QQQ > AVWAP\n"
+        "  Stop : Entry \u2212 $0.50\n"
+        "  Trail: \u02001.00 trigger \u2192 $0.50 ratchet up\n\n"
+        "\U0001f9b7 WOUNDED BUFFALO SHORT\n"
+        "  Entry: 1-min close < OR_Low\n"
+        "         + price < PDC (red stock)\n"
+        "         + SPY & QQQ < AVWAP\n"
+        "  Stop : Entry + $0.50\n"
+        "  Trail: +$1.00 trigger \u2192 $0.50 ratchet down\n\n"
+        f"{SEP}\n"
+        "Size : 10 shares (limit orders only)\n"
+        "Max  : 2 long + 2 short per ticker/day\n"
+        "OR   : 09:30\u201309:35 ET (first 5 min)\n"
+        "Scan : every 60s \u2192 09:35\u201315:55 ET\n"
+        "EOD  : force-close all at 15:55 ET\n"
+        f"{SEP}\n"
+        "Full reference guide attached \u2193"
+    )
+    await update.message.reply_text(summary)
+
+    # Send PDF if available on disk
+    pdf_path = Path("stock_spike_monitor_algo.pdf")
+    if pdf_path.exists():
+        try:
+            with open(pdf_path, "rb") as pdf_file:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=pdf_file,
+                    filename="StockSpikeMonitor_Algorithm_v2.9.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v2.9",
+                )
+        except Exception as e:
+            logger.warning("Failed to send algo PDF: %s", e)
+            await update.message.reply_text("(PDF unavailable \u2014 contact admin)")
+    else:
+        logger.warning("/algo: PDF not found at %s", pdf_path.resolve())
+        await update.message.reply_text("(PDF file not deployed \u2014 contact admin)")
+
+
+# ============================================================
 # /reset COMMAND (Fix C)
 # ============================================================
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2951,6 +3005,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("dayreport", "Today's trades + P&L"),
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("reset", "Reset portfolio"),
+    BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -2967,6 +3022,7 @@ TP_BOT_COMMANDS = [
     BotCommand("dayreport", "Today's trades + P&L"),
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("reset", "Reset portfolio"),
+    BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -3055,6 +3111,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("price", cmd_price))
     app.add_handler(CommandHandler("orb", cmd_orb))
     app.add_handler(CommandHandler("monitoring", cmd_monitoring))
+    app.add_handler(CommandHandler("algo", cmd_algo))
 
     # If no separate TP token, run single bot
     if not TELEGRAM_TP_TOKEN:
@@ -3080,6 +3137,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("price", cmd_price))
     tp_app.add_handler(CommandHandler("orb", cmd_orb))
     tp_app.add_handler(CommandHandler("monitoring", cmd_monitoring))
+    tp_app.add_handler(CommandHandler("algo", cmd_algo))
 
     async def _run_both():
         loop = asyncio.get_running_loop()
