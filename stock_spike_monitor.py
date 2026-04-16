@@ -35,8 +35,10 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.16"
-RELEASE_NOTE = "v2.9.16 \u2014 Bot separation + /strategy command"
+BOT_VERSION = "2.9.17"
+RELEASE_NOTE = "v2.9.17 \u2014 FMP quotes + OR sanity check (prevent stale-data entries)"
+
+FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -555,6 +557,34 @@ def get_last_1min_close(ticker):
 
 
 # ============================================================
+# FMP REAL-TIME QUOTES
+# ============================================================
+def get_fmp_quote(ticker):
+    """Fetch real-time quote from FMP. Returns dict or None on error."""
+    try:
+        url = (
+            "https://financialmodelingprep.com/api/v3/quote/%s"
+            "?apikey=%s" % (ticker, FMP_API_KEY)
+        )
+        req = urllib.request.Request(url, headers=YAHOO_HEADERS)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        if data and isinstance(data, list) and len(data) > 0:
+            return data[0]
+    except Exception as e:
+        logger.warning("FMP quote error for %s: %s", ticker, e)
+    return None
+
+
+def _or_price_sane(or_price, live_price, threshold=0.015):
+    """Return True if OR price is within threshold of live price."""
+    if not or_price or not live_price:
+        return True  # can't validate, allow
+    diff = abs(or_price - live_price) / live_price
+    return diff <= threshold
+
+
+# ============================================================
 # OR COLLECTION (Opening Range)
 # ============================================================
 def collect_or():
@@ -610,6 +640,28 @@ def collect_or():
             if min_low is not None:
                 or_low[ticker] = min_low
             pdc[ticker] = bars["pdc"]
+
+            # FMP cross-check: prefer tighter (smaller) OR range
+            fmp_q = get_fmp_quote(ticker)
+            if fmp_q:
+                fmp_high = fmp_q.get("dayHigh")
+                fmp_low = fmp_q.get("dayLow")
+                fmp_pdc = fmp_q.get("previousClose")
+                if fmp_high and fmp_high < or_high[ticker]:
+                    pct = abs(fmp_high - or_high[ticker]) / or_high[ticker] * 100
+                    if pct > 2:
+                        logger.info("OR FMP adj %s High: %.2f->%.2f (%.1f%%)",
+                                    ticker, or_high[ticker], fmp_high, pct)
+                        or_high[ticker] = fmp_high
+                if fmp_low and ticker in or_low and fmp_low > or_low[ticker]:
+                    pct = abs(fmp_low - or_low[ticker]) / or_low[ticker] * 100
+                    if pct > 2:
+                        logger.info("OR FMP adj %s Low: %.2f->%.2f (%.1f%%)",
+                                    ticker, or_low[ticker], fmp_low, pct)
+                        or_low[ticker] = fmp_low
+                if fmp_pdc and fmp_pdc > 0:
+                    pdc[ticker] = fmp_pdc
+
             or_low_val = or_low.get(ticker, 0)
             logger.info("OR collected: %s OR_high=%.2f OR_low=%.2f PDC=%.2f",
                         ticker, or_high[ticker], or_low_val, pdc[ticker])
@@ -705,7 +757,7 @@ def check_entry(ticker):
     if ticker in positions:
         return False, None
 
-    # Fetch current bar
+    # Fetch current bar (Finnhub/Yahoo as fallback)
     bars = fetch_1min_bars(ticker)
     if not bars:
         return False, None
@@ -713,6 +765,26 @@ def check_entry(ticker):
     current_price = bars["current_price"]
     closes = [c for c in bars["closes"] if c is not None]
     last_close = closes[-1] if closes else current_price
+
+    # FMP primary quote — override price and PDC if available
+    fmp_q = get_fmp_quote(ticker)
+    if fmp_q:
+        fmp_price = fmp_q.get("price")
+        if fmp_price and fmp_price > 0:
+            current_price = fmp_price
+            last_close = fmp_price
+        fmp_pdc = fmp_q.get("previousClose")
+        if fmp_pdc and fmp_pdc > 0:
+            pdc[ticker] = fmp_pdc
+
+    # OR sanity check: OR High must be within 1.5% of live price
+    if not _or_price_sane(or_high[ticker], current_price):
+        pct = abs(or_high[ticker] - current_price) / current_price * 100
+        logger.warning(
+            "SKIP %s long — OR High $%.2f is %.1f%% from live $%.2f (stale?)",
+            ticker, or_high[ticker], pct, current_price
+        )
+        return False, None
 
     # Breakout: last 1-min bar close > OR_High
     if last_close <= or_high[ticker]:
@@ -1414,6 +1486,27 @@ def check_short_entry(ticker):
         return
     current_close = closes[-1]
     current_price = current_close  # use close as limit price proxy
+
+    # FMP primary quote — override price and PDC if available
+    fmp_q = get_fmp_quote(ticker)
+    if fmp_q:
+        fmp_price = fmp_q.get("price")
+        if fmp_price and fmp_price > 0:
+            current_close = fmp_price
+            current_price = fmp_price
+        fmp_pdc = fmp_q.get("previousClose")
+        if fmp_pdc and fmp_pdc > 0:
+            pdc_val = fmp_pdc
+            pdc[ticker] = fmp_pdc
+
+    # OR sanity check: OR Low must be within 1.5% of live price
+    if not _or_price_sane(or_low_val, current_price):
+        pct = abs(or_low_val - current_price) / current_price * 100
+        logger.warning(
+            "SKIP %s short — OR Low $%.2f is %.1f%% from live $%.2f (stale?)",
+            ticker, or_low_val, pct, current_price
+        )
+        return
 
     # Entry conditions — ALL must be true:
     # 1. Last 1-min close < OR_Low (breakdown)
