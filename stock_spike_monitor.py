@@ -35,8 +35,21 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.9"
-RELEASE_NOTE = "v2.9.9 \u2014 Fix TP Telegram notifications on entry/exit"
+BOT_VERSION = "2.9.10"
+RELEASE_NOTE = "v2.9.10 \u2014 Entry/exit reasons in notifications"
+
+# Human-readable exit reason labels
+REASON_LABELS = {
+    "STOP": "\U0001f6d1 Hard Stop",
+    "TRAIL": "\U0001f512 Trail Stop",
+    "RED_CANDLE": "\U0001f56f Red Candle (price < day open)",
+    "LORDS_LEFT": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
+    "LORDS_LEFT[1m]": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
+    "POLARITY_SHIFT": "\U0001f504 Polarity Shift (price > PDC)",
+    "BULL_VACUUM": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
+    "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
+    "EOD": "\U0001f514 End of Day",
+}
 
 # ============================================================
 # LOGGING
@@ -842,6 +855,11 @@ def execute_entry(ticker, current_price):
     or_h = or_high.get(ticker, 0)
     pdc_e = pdc.get(ticker, 0)
     SEP_E = "\u2500" * 34
+    sig_lines = "Signal : ORB Breakout \u2191\n"
+    sig_lines += "  1m close > OR High \u2713\n"
+    sig_lines += "  Price > PDC \u2713\n"
+    sig_lines += "  SPY > AVWAP \u2713\n"
+    sig_lines += "  QQQ > AVWAP \u2713\n"
     msg = (
         "\U0001f4c8 LONG ENTRY %s  #%d\n"
         "%s\n"
@@ -849,12 +867,13 @@ def execute_entry(ticker, current_price):
         "Shares : %d   Cost: $%s\n"
         "Stop   : $%.2f  (OR_High-$0.90)\n"
         "OR High: $%.2f   PDC: $%.2f\n"
+        "%s"
         "Time   : %s\n"
         "%s"
     ) % (ticker, entry_num, SEP_E,
          current_price, limit_price,
          SHARES, format(cost, ",.2f"),
-         stop_price, or_h, pdc_e, now_hhmm, SEP_E)
+         stop_price, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
     # TP Portfolio — mirror entry
@@ -880,12 +899,13 @@ def execute_entry(ticker, current_price):
         "Shares : %d   Cost: $%s\n"
         "Stop   : $%.2f  (OR_High-$0.90)\n"
         "OR High: $%.2f   PDC: $%.2f\n"
+        "%s"
         "Time   : %s\n"
         "%s"
     ) % (ticker, entry_num, SEP_E,
          current_price, limit_price,
          SHARES, format(cost, ",.2f"),
-         stop_price, or_h, pdc_e, now_hhmm, SEP_E)
+         stop_price, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_tp_telegram(tp_msg)
     save_tp_state()
 
@@ -962,19 +982,21 @@ def close_position(ticker, price, reason="STOP"):
     exit_emoji = "\u2705" if pnl_val >= 0 else "\u274c"
     entry_cost_val = round(entry_price * shares, 2)
     SEP_X = "\u2500" * 34
+    reason_label = REASON_LABELS.get(reason, reason)
     msg = (
-        "%s EXIT %s  [%s]\n"
+        "%s EXIT %s\n"
         "%s\n"
         "Shares : %d\n"
         "Entry  : $%.2f  \u2192  $%.2f\n"
         "Cost   : $%s  \u2192  $%s\n"
         "P&L    : $%+.2f  (%+.1f%%)\n"
+        "Reason : %s\n"
         "In: %s   Out: %s\n"
         "%s"
-    ) % (exit_emoji, ticker, reason, SEP_X,
+    ) % (exit_emoji, ticker, SEP_X,
          shares, entry_price, price,
          format(entry_cost_val, ",.2f"), format(proceeds, ",.2f"),
-         pnl_val, pnl_pct, entry_hhmm, now_hhmm, SEP_X)
+         pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
     send_telegram(msg)
 
     # TP Portfolio — mirror close
@@ -1026,19 +1048,21 @@ def close_position(ticker, price, reason="STOP"):
         tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
         tp_entry_cost = round(tp_entry * tp_shares, 2)
         tp_proceeds = round(price * tp_shares, 2)
+        tp_reason_label = REASON_LABELS.get(reason, reason)
         tp_msg = (
-            "[TP] %s EXIT %s  [%s]\n"
+            "[TP] %s EXIT %s\n"
             "%s\n"
             "Shares : %d\n"
             "Entry  : $%.2f  \u2192  $%.2f\n"
             "Cost   : $%s  \u2192  $%s\n"
             "P&L    : $%+.2f  (%+.1f%%)\n"
+            "Reason : %s\n"
             "In: %s   Out: %s\n"
             "%s"
-        ) % (tp_exit_emoji, ticker, reason, SEP_X,
+        ) % (tp_exit_emoji, ticker, SEP_X,
              tp_shares, tp_entry, price,
              format(tp_entry_cost, ",.2f"), format(tp_proceeds, ",.2f"),
-             tp_pnl, tp_pnl_pct, tp_entry_hhmm, now_hhmm, SEP_X)
+             tp_pnl, tp_pnl_pct, tp_reason_label, tp_entry_hhmm, now_hhmm, SEP_X)
         send_tp_telegram(tp_msg)
         save_tp_state()
 
@@ -1179,19 +1203,21 @@ def close_tp_position(ticker, price, reason="STOP"):
     tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
     tp_entry_cost = round(tp_entry * tp_shares, 2)
     tp_proceeds = round(price * tp_shares, 2)
+    tp_reason_label = REASON_LABELS.get(reason, reason)
     tp_msg = (
-        "[TP] %s EXIT %s  [%s]\n"
+        "[TP] %s EXIT %s\n"
         "%s\n"
         "Shares : %d\n"
         "Entry  : $%.2f  \u2192  $%.2f\n"
         "Cost   : $%s  \u2192  $%s\n"
         "P&L    : $%+.2f  (%+.1f%%)\n"
+        "Reason : %s\n"
         "In: %s   Out: %s\n"
         "%s"
-    ) % (tp_exit_emoji, ticker, reason, SEP_X,
+    ) % (tp_exit_emoji, ticker, SEP_X,
          tp_shares, tp_entry, price,
          format(tp_entry_cost, ",.2f"), format(tp_proceeds, ",.2f"),
-         tp_pnl, tp_pnl_pct, tp_entry_hhmm, now_hhmm, SEP_X)
+         tp_pnl, tp_pnl_pct, tp_reason_label, tp_entry_hhmm, now_hhmm, SEP_X)
     send_tp_telegram(tp_msg)
     save_tp_state()
 
@@ -1398,6 +1424,11 @@ def execute_short_entry(ticker, price):
     SEP = "\u2500" * 34
     entry_count = daily_short_entry_count.get(ticker, 1)
     short_proceeds = entry_price * shares
+    short_sig = "Signal   : Wounded Buffalo \u2193\n"
+    short_sig += "  1m close < OR Low \u2713\n"
+    short_sig += "  Price < PDC \u2713\n"
+    short_sig += "  SPY < AVWAP \u2713\n"
+    short_sig += "  QQQ < AVWAP \u2713\n"
     msg = (
         "\U0001fa78 SHORT ENTRY #%d\n"
         "%s\n"
@@ -1407,12 +1438,12 @@ def execute_short_entry(ticker, price):
         "Stop     : $%.2f (PDC+$0.90)\n"
         "OR Low   : $%.2f\n"
         "PDC      : $%.2f\n"
+        "%s"
         "Time     : %s\n"
-        "%s\n"
-        "\U0001f403 Wounded Buffalo \u2014 hunting the bleed"
+        "%s"
     ) % (entry_count, SEP, ticker, entry_price,
          shares, format(short_proceeds, ",.2f"),
-         stop, or_low_val, pdc_val, entry_time_display, SEP)
+         stop, or_low_val, pdc_val, short_sig, entry_time_display, SEP)
     send_telegram(msg)
 
     tp_msg = msg.replace("SHORT ENTRY", "TP SHORT ENTRY")
@@ -1602,21 +1633,23 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         sc_entry_total = round(entry_price * shares, 2)
         sc_cover_total = round(cover_price * shares, 2)
         sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
+        sc_reason_label = REASON_LABELS.get(reason, reason)
         msg = (
-            "%s SHORT CLOSED (%s)\n"
+            "%s SHORT CLOSED\n"
             "%s\n"
             "Ticker : %s\n"
             "Shares : %d\n"
             "Entry  : $%.2f  (total $%s)\n"
             "Cover  : $%.2f  (total $%s)\n"
             "P&L    : %s$%.2f  (%s%.1f%%)\n"
+            "Reason : %s\n"
             "In: %s   Out: %s\n"
             "%s"
-        ) % (emoji, reason, SEP, ticker, shares,
+        ) % (emoji, SEP, ticker, shares,
              entry_price, format(sc_entry_total, ",.2f"),
              cover_price, format(sc_cover_total, ",.2f"),
              pnl_sign, pnl, pnl_sign, pnl_pct,
-             sc_in_time, exit_time, SEP)
+             sc_reason_label, sc_in_time, exit_time, SEP)
         send_telegram(msg)
 
     else:  # TP
@@ -1632,21 +1665,23 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         tp_sc_entry_total = round(entry_price * shares, 2)
         tp_sc_cover_total = round(cover_price * shares, 2)
         tp_sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
+        tp_sc_reason_label = REASON_LABELS.get(reason, reason)
         tp_msg = (
-            "%s TP SHORT CLOSED (%s)\n"
+            "%s TP SHORT CLOSED\n"
             "%s\n"
             "Ticker : %s\n"
             "Shares : %d\n"
             "Entry  : $%.2f  (total $%s)\n"
             "Cover  : $%.2f  (total $%s)\n"
             "P&L    : %s$%.2f  (%s%.1f%%)\n"
+            "Reason : %s\n"
             "In: %s   Out: %s\n"
             "%s"
-        ) % (emoji, reason, SEP, ticker, shares,
+        ) % (emoji, SEP, ticker, shares,
              entry_price, format(tp_sc_entry_total, ",.2f"),
              cover_price, format(tp_sc_cover_total, ",.2f"),
              pnl_sign, pnl, pnl_sign, pnl_pct,
-             tp_sc_in_time, exit_time, SEP)
+             tp_sc_reason_label, tp_sc_in_time, exit_time, SEP)
         send_tp_telegram(tp_msg)
 
 
