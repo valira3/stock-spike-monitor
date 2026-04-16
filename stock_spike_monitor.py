@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.3"
-RELEASE_NOTE = "v2.9.3: OR_High/PDC-based hard stops + day P&L in /positions"
+BOT_VERSION = "2.9.4"
+RELEASE_NOTE = "v2.9.4: Eye of the Tiger exits (Lords Left, Red Candle, Bull Vacuum, Polarity Shift)"
 
 # ============================================================
 # LOGGING
@@ -991,6 +991,20 @@ def manage_positions():
     """Check stops and update trailing stops for all open positions."""
     tickers_to_close = []
 
+    # ── Eye of the Tiger: "The Lords have left" ──────────────────────────────
+    # Exit all longs if SPY or QQQ has fallen below its AVWAP.
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    lords_left = False
+    if spy_avwap > 0 and qqq_avwap > 0:
+        spy_bars = fetch_1min_bars("SPY")
+        qqq_bars = fetch_1min_bars("QQQ")
+        if spy_bars and qqq_bars:
+            spy_cur = spy_bars["current_price"]
+            qqq_cur = qqq_bars["current_price"]
+            if spy_cur < spy_avwap or qqq_cur < qqq_avwap:
+                lords_left = True
+
     for ticker in list(positions.keys()):
         bars = fetch_1min_bars(ticker)
         if not bars:
@@ -999,10 +1013,23 @@ def manage_positions():
         current_price = bars["current_price"]
         pos = positions[ticker]
 
-        # Check stop hit
+        # Check hard stop hit
         if current_price <= pos["stop"]:
             tickers_to_close.append((ticker, current_price, "STOP"))
             continue
+
+        # ── Eye of the Tiger: "The Lords have left" — SPY or QQQ < AVWAP ────
+        if lords_left:
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
+            continue
+
+        # ── Eye of the Tiger: "The Red Candle" — Price < today's Open ────────
+        opens = [o for o in bars.get("opens", []) if o is not None]
+        if opens:
+            day_open = opens[0]
+            if current_price < day_open:
+                tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
+                continue
 
         entry_price = pos["entry_price"]
 
@@ -1187,6 +1214,20 @@ def manage_short_positions():
     """Check stops and trailing stops for all open short positions."""
     global short_positions, tp_short_positions
 
+    # ── Eye of the Tiger: "The Bullish Vacuum" ───────────────────────────────
+    # Exit all shorts if SPY or QQQ has risen above its AVWAP.
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    bull_vacuum = False
+    if spy_avwap > 0 and qqq_avwap > 0:
+        spy_bars = fetch_1min_bars("SPY")
+        qqq_bars = fetch_1min_bars("QQQ")
+        if spy_bars and qqq_bars:
+            spy_cur = spy_bars["current_price"]
+            qqq_cur = qqq_bars["current_price"]
+            if spy_cur > spy_avwap or qqq_cur > qqq_avwap:
+                bull_vacuum = True
+
     for ticker in list(short_positions.keys()):
         pos = short_positions[ticker]
         entry_price = pos["entry_price"]
@@ -1224,6 +1265,16 @@ def manage_short_positions():
         else:
             if current_price >= stop:
                 exit_reason = "STOP"
+
+        # ── Eye of the Tiger: "The Bullish Vacuum" — SPY or QQQ > AVWAP ─────
+        if not exit_reason and bull_vacuum:
+            exit_reason = "BULL_VACUUM"
+
+        # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
+        if not exit_reason:
+            ticker_pdc = pdc.get(ticker, 0)
+            if ticker_pdc > 0 and current_price > ticker_pdc:
+                exit_reason = "POLARITY_SHIFT"
 
         if exit_reason:
             close_short_position(ticker, current_price, exit_reason, portfolio="paper")
@@ -1263,6 +1314,16 @@ def manage_short_positions():
         else:
             if current_price >= stop:
                 exit_reason = "STOP"
+
+        # ── Eye of the Tiger: "The Bullish Vacuum" — SPY or QQQ > AVWAP ─────
+        if not exit_reason and bull_vacuum:
+            exit_reason = "BULL_VACUUM"
+
+        # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
+        if not exit_reason:
+            ticker_pdc = pdc.get(ticker, 0)
+            if ticker_pdc > 0 and current_price > ticker_pdc:
+                exit_reason = "POLARITY_SHIFT"
 
         if exit_reason:
             close_short_position(ticker, current_price, exit_reason, portfolio="tp")
