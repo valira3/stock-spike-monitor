@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.2"
-RELEASE_NOTE = "v2.9.2: /algo command with algorithm reference PDF"
+BOT_VERSION = "2.9.3"
+RELEASE_NOTE = "v2.9.3: OR_High/PDC-based hard stops + day P&L in /positions"
 
 # ============================================================
 # LOGGING
@@ -773,7 +773,8 @@ def execute_entry(ticker, current_price):
         return
 
     limit_price = round(current_price + 0.02, 2)
-    stop_price = round(current_price - STOP_OFFSET, 2)
+    or_high_val = or_high.get(ticker, current_price)
+    stop_price = round(or_high_val - 0.90, 2)
     entry_num = daily_entry_count.get(ticker, 0) + 1
     now_str = _utc_now_iso()
     now_hhmm = _now_cdt().strftime("%H:%M CDT")
@@ -1115,7 +1116,8 @@ def execute_short_entry(ticker, price):
 
     shares = 10
     entry_price = round(price, 2)
-    stop = round(entry_price + 0.50, 2)   # hard stop: $0.50 ABOVE entry
+    pdc_val = pdc.get(ticker, entry_price)
+    stop = round(pdc_val + 0.90, 2)   # hard stop: $0.90 ABOVE PDC
     now_et = _now_et()
     entry_time_iso = _utc_now_iso()
     entry_time_display = _now_cdt().strftime("%H:%M CDT")
@@ -1163,7 +1165,7 @@ def execute_short_entry(ticker, price):
         "%s\n"
         "Ticker : %s\n"
         "Entry  : $%.2f (limit)\n"
-        "Stop   : $%.2f (+$0.50)\n"
+        "Stop   : $%.2f (PDC+$0.90)\n"
         "OR Low : $%.2f\n"
         "PDC    : $%.2f\n"
         "Shares : %d\n"
@@ -1963,13 +1965,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  Entry: 1min close > OR_High\n"
         "         + price > PDC (green)\n"
         "         + SPY & QQQ > AVWAP\n"
-        "  Stop:  Entry \u2212 $0.50\n"
+        "  Stop:  OR_High \u2212 $0.90\n"
         f"{SEP}\n"
         "SHORT: Wounded Buffalo\n"
         "  Entry: 1min close < OR_Low\n"
         "         + price < PDC (red)\n"
         "         + SPY & QQQ < AVWAP\n"
-        "  Stop:  Entry + $0.50\n"
+        "  Stop:  PDC + $0.90\n"
         f"{SEP}\n"
         "Trail: +$1.00 triggers, ratchets $0.50/$0.50\n"
         "Max:   2 entries per ticker per day (each side)\n"
@@ -2123,11 +2125,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today = now_et.strftime("%Y-%m-%d")
         tp_today_sells = [
             t for t in tp_paper_trades
-            if t.get("action") == "SELL" and t.get("date", "") == today
+            if t.get("action") == "SELL" and t.get("date") == today
         ]
-        if tp_today_sells:
-            tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
-            lines.append("Today: %d trades, P&L=$%+.2f" % (len(tp_today_sells), tp_day_pnl))
+        tp_short_today = [t for t in tp_short_trade_history if t.get("date") == today]
+        tp_day_pnl = (sum(t.get("pnl", 0) for t in tp_today_sells)
+                      + sum(t.get("pnl", 0) for t in tp_short_today))
+        tp_day_trades = len(tp_today_sells) + len(tp_short_today)
+        lines.append("Day P&L: $%+.2f  (%d trades)" % (tp_day_pnl, tp_day_trades))
 
         # TP Short positions
         lines.append(sep)
@@ -2206,11 +2210,15 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("Total Unrealized P&L: $%+.2f" % total_unreal_pnl)
         lines.append("Total Market Value:   $%s" % format(total_market_value, ",.2f"))
 
-    # Today's completed trades
-    today_sells = [t for t in paper_trades if t.get("action") == "SELL"]
-    if today_sells:
-        day_pnl = sum(t.get("pnl", 0) for t in today_sells)
-        lines.append("Today: %d trades, P&L=$%+.2f" % (len(today_sells), day_pnl))
+    # Today's completed trades (always show, date-filtered, includes shorts)
+    today_date = now_et.strftime("%Y-%m-%d")
+    today_sells = [t for t in paper_trades
+                   if t.get("action") == "SELL" and t.get("date") == today_date]
+    short_today = [t for t in short_trade_history if t.get("date") == today_date]
+    day_pnl = (sum(t.get("pnl", 0) for t in today_sells)
+               + sum(t.get("pnl", 0) for t in short_today))
+    day_trades = len(today_sells) + len(short_today)
+    lines.append("Day P&L: $%+.2f  (%d trades)" % (day_pnl, day_trades))
 
     # Short positions (paper)
     lines.append(sep)
@@ -2569,13 +2577,13 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  Entry: 1-min close > OR_High\n"
         "         + price > PDC (green stock)\n"
         "         + SPY & QQQ > AVWAP\n"
-        "  Stop : Entry \u2212 $0.50\n"
+        "  Stop : OR_High \u2212 $0.90\n"
         "  Trail: \u02001.00 trigger \u2192 $0.50 ratchet up\n\n"
         "\U0001f9b7 WOUNDED BUFFALO SHORT\n"
         "  Entry: 1-min close < OR_Low\n"
         "         + price < PDC (red stock)\n"
         "         + SPY & QQQ < AVWAP\n"
-        "  Stop : Entry + $0.50\n"
+        "  Stop : PDC + $0.90\n"
         "  Trail: +$1.00 trigger \u2192 $0.50 ratchet down\n\n"
         f"{SEP}\n"
         "Size : 10 shares (limit orders only)\n"
@@ -3097,7 +3105,8 @@ def send_startup_message():
         f"{SEP}\n"
         f"Universe: {universe}\n"
         f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
-        f"Scan:     every {SCAN_INTERVAL}s  |  Stop: $0.50  |  Trail: $1.00\u2192$0.50\n"
+        f"Scan:     every {SCAN_INTERVAL}s  |  Trail: $1.00\u2192$0.50\n"
+        f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
         f"{SEP}\n"
         f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
         f"\U0001f4cb TP:     ${tp_cash_fmt} cash | {n_tp_pos} positions\n"
