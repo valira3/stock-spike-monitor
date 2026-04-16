@@ -2545,6 +2545,10 @@ def run_telegram_bot():
             loop.add_signal_handler(sig, stop.set)
         async with app:
             async with tp_app:
+                # Explicitly register commands on all scopes (post_init does not
+                # fire when using manual start/stop instead of run_polling)
+                await _set_bot_commands(app)
+                await _set_tp_bot_commands(tp_app)
                 await app.updater.start_polling()
                 await tp_app.updater.start_polling()
                 await app.start()
