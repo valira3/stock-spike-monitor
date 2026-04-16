@@ -1,8 +1,9 @@
 """
-Stock Spike Monitor v2.8.3c — ORB Momentum Breakout + Full Feature Suite
-=========================================================================
-10-ticker universe, Opening Range breakout, $0.50 stepped trail.
-Infrastructure: Telegram bot, paper trading, TradersPost webhook, scheduler.
+Stock Spike Monitor v2.9.0 — ORB Momentum Breakout + Wounded Buffalo Short
+===========================================================================
+10-ticker universe, Opening Range breakout (long) + breakdown (short),
+$0.50 stepped trail. Infrastructure: Telegram bot, paper trading,
+TradersPost webhook, scheduler.
 """
 
 import os
@@ -33,10 +34,10 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.8.3c"
+BOT_VERSION = "2.9.0"
 RELEASE_NOTE = (
-    "v2.8.3c: Fix monitoring pause stops, market hours display, "
-    "tp_trades cleanup, date filters, win stats, /help accuracy"
+    "v2.9.0: Wounded Buffalo short selling — OR breakdown, PDC polarity, "
+    "index anchor, stepped trail, cover orders, /positions and /orb show shorts"
 )
 
 # ============================================================
@@ -103,6 +104,7 @@ YAHOO_HEADERS  = {"User-Agent": "Mozilla/5.0"}
 
 # OR data — populated at 09:35 ET
 or_high: dict = {}                  # ticker -> OR high price
+or_low: dict = {}                   # ticker -> OR low price (Wounded Buffalo)
 pdc: dict = {}                      # ticker -> previous day close
 or_collected_date: str = ""         # date string, prevents re-collection
 
@@ -145,6 +147,13 @@ tp_paper_cash: float = PAPER_STARTING_CAPITAL
 trade_history: list = []        # ALL closed paper trades, max 500
 tp_trade_history: list = []     # ALL closed TP trades, max 500
 TRADE_HISTORY_MAX = 500
+
+# Short positions (Wounded Buffalo strategy)
+short_positions: dict = {}           # paper short: {ticker: {entry_price, shares, stop, trail_stop, trail_active, entry_time, date, side}}
+tp_short_positions: dict = {}        # TP short positions
+daily_short_entry_count: dict = {}   # {ticker: int} — resets daily, separate from long count
+short_trade_history: list = []       # max 500 closed paper shorts
+tp_short_trade_history: list = []    # max 500 closed TP shorts
 
 # Daily loss limit (Feature 2)
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
@@ -195,11 +204,14 @@ def save_paper_state():
         "daily_entry_count": daily_entry_count,
         "daily_entry_date": daily_entry_date,
         "or_high": or_high,
+        "or_low": or_low,
         "pdc": pdc,
         "or_collected_date": or_collected_date,
         "user_config": user_config,
         "tp_state": tp_state,
         "trade_history": trade_history,
+        "short_positions": short_positions,
+        "short_trade_history": short_trade_history[-500:],
         "saved_at": datetime.now(ET).isoformat(),
     }
     with _paper_save_lock:
@@ -217,9 +229,10 @@ def load_paper_state():
     """Load paper trading state from disk on startup."""
     global paper_cash, positions, paper_trades, paper_all_trades
     global daily_entry_count, daily_entry_date
-    global or_high, pdc, or_collected_date
+    global or_high, or_low, pdc, or_collected_date
     global user_config, tp_state, tp_dm_chat_id
     global trade_history
+    global short_positions, short_trade_history
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
@@ -237,11 +250,14 @@ def load_paper_state():
         daily_entry_count.update(state.get("daily_entry_count", {}))
         daily_entry_date = state.get("daily_entry_date", "")
         or_high.update(state.get("or_high", {}))
+        or_low.update(state.get("or_low", {}))
         pdc.update(state.get("pdc", {}))
         or_collected_date = state.get("or_collected_date", "")
         user_config.update(state.get("user_config", {}))
         tp_state.update(state.get("tp_state", {}))
         trade_history.extend(state.get("trade_history", []))
+        short_positions.update(state.get("short_positions", {}))
+        short_trade_history.extend(state.get("short_trade_history", []))
 
         # Reset daily counts if saved on a different day
         today = datetime.now(ET).strftime("%Y-%m-%d")
@@ -268,6 +284,8 @@ def save_tp_state():
         "tp_positions": tp_positions,
         "tp_paper_trades": tp_paper_trades,
         "tp_trade_history": tp_trade_history,
+        "tp_short_positions": tp_short_positions,
+        "tp_short_trade_history": tp_short_trade_history[-500:],
         "saved_at": datetime.now(ET).isoformat(),
     }
     with _tp_save_lock:
@@ -284,6 +302,7 @@ def save_tp_state():
 def load_tp_state():
     """Load TP portfolio state from disk on startup."""
     global tp_paper_cash, tp_trade_history
+    global tp_short_positions, tp_short_trade_history
 
     if not os.path.exists(TP_STATE_FILE):
         logger.info("No TP state at %s. Starting fresh $%.0f.",
@@ -298,6 +317,8 @@ def load_tp_state():
         tp_positions.update(state.get("tp_positions", {}))
         tp_paper_trades.extend(state.get("tp_paper_trades", []))
         tp_trade_history.extend(state.get("tp_trade_history", []))
+        tp_short_positions.update(state.get("tp_short_positions", {}))
+        tp_short_trade_history.extend(state.get("tp_short_trade_history", []))
 
         logger.info("Loaded TP state: cash=$%.2f, %d positions",
                     tp_paper_cash, len(tp_positions))
@@ -459,6 +480,7 @@ def collect_or():
 
             # Filter bars in [09:30, 09:35) window
             max_high = None
+            min_low = None
             for i, ts in enumerate(bars["timestamps"]):
                 if open_ts <= ts < end_ts:
                     h = bars["highs"][i]
@@ -467,15 +489,24 @@ def collect_or():
                     if h is not None:
                         if max_high is None or h > max_high:
                             max_high = h
+                    lo = bars["lows"][i]
+                    if lo is None:
+                        lo = bars["closes"][i]
+                    if lo is not None:
+                        if min_low is None or lo < min_low:
+                            min_low = lo
 
             if max_high is None:
                 logger.warning("OR: No bars in [09:30,09:35) for %s", ticker)
                 continue
 
             or_high[ticker] = max_high
+            if min_low is not None:
+                or_low[ticker] = min_low
             pdc[ticker] = bars["pdc"]
-            logger.info("OR collected: %s OR_high=%.2f PDC=%.2f",
-                        ticker, or_high[ticker], pdc[ticker])
+            or_low_val = or_low.get(ticker, 0)
+            logger.info("OR collected: %s OR_high=%.2f OR_low=%.2f PDC=%.2f",
+                        ticker, or_high[ticker], or_low_val, pdc[ticker])
         except Exception as e:
             logger.error("OR collection error for %s: %s", ticker, e)
 
@@ -486,7 +517,9 @@ def collect_or():
     lines = ["Opening Range Collected (%s):" % today]
     for t in TICKERS:
         if t in or_high:
-            lines.append("  %s  OR_H=%.2f  PDC=%.2f" % (t, or_high[t], pdc.get(t, 0)))
+            orl = or_low.get(t, 0)
+            lines.append("  %s  OR_H=%.2f  OR_L=%.2f  PDC=%.2f"
+                          % (t, or_high[t], orl, pdc.get(t, 0)))
         else:
             lines.append("  %s  MISSING" % t)
     send_telegram("\n".join(lines))
@@ -611,7 +644,7 @@ def check_entry(ticker):
 def send_traderspost_order(ticker, action, price, shares=SHARES):
     """Send a limit order to TradersPost via webhook.
 
-    action: 'buy' or 'sell'
+    action: 'buy', 'sell', 'sell_short', or 'buy_to_cover'
     Returns response dict or None.
     """
     if PAPER_MODE or not TRADERSPOST_WEBHOOK_URL:
@@ -619,8 +652,8 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
             logger.debug("[TP] No webhook URL configured")
         return None
 
-    # Limit price: buy slightly above, sell slightly below
-    if action == "buy":
+    # Limit price: buy/buy_to_cover slightly above, sell/sell_short slightly below
+    if action in ("buy", "buy_to_cover"):
         limit_price = round(price + 0.02, 2)
     else:
         limit_price = round(price - 0.01, 2)
@@ -692,6 +725,11 @@ def execute_entry(ticker, current_price):
     today_pnl = sum(
         t["pnl"] for t in paper_trades
         if t.get("date") == today_str and t.get("action") == "SELL"
+    )
+    # Include closed short P&L in daily loss check
+    today_pnl += sum(
+        t["pnl"] for t in short_trade_history
+        if t.get("date") == today_str
     )
     if today_pnl <= DAILY_LOSS_LIMIT:
         _trading_halted = True
@@ -977,27 +1015,388 @@ def manage_positions():
 
 
 # ============================================================
+# SHORT ENTRY CHECK (Wounded Buffalo)
+# ============================================================
+def check_short_entry(ticker):
+    """Wounded Buffalo: enter short if 1-min close breaks OR_Low with all filters valid."""
+    global short_positions, tp_short_positions, daily_short_entry_count
+    global paper_cash, tp_paper_cash
+
+    if _trading_halted:
+        return
+
+    if _scan_paused:
+        return
+
+    now_et = datetime.now(ET)
+
+    # Time gate: must be after 09:35 ET
+    if now_et.hour < 9:
+        return
+    if now_et.hour == 9 and now_et.minute < 35:
+        return
+
+    # Max 2 short entries per ticker per day
+    if daily_short_entry_count.get(ticker, 0) >= 2:
+        return
+
+    # Already in a short position for this ticker (paper)
+    if ticker in short_positions:
+        return
+
+    # OR data must be available (need or_low)
+    if ticker not in or_low or ticker not in pdc:
+        return
+
+    or_low_val = or_low[ticker]
+    pdc_val = pdc[ticker]
+
+    # Fetch current quote (sync — no await)
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return
+    closes = [c for c in bars["closes"] if c is not None]
+    if not closes:
+        return
+    current_close = closes[-1]
+    current_price = current_close  # use close as limit price proxy
+
+    # Entry conditions — ALL must be true:
+    # 1. Last 1-min close < OR_Low (breakdown)
+    if current_close >= or_low_val:
+        return
+    # 2. Current price < PDC (polarity — "Red" stock only)
+    if current_price >= pdc_val:
+        return
+    # 3. SPY < SPY_AVWAP
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    if spy_avwap and spy_avwap > 0:
+        spy_bars = fetch_1min_bars("SPY")
+        if spy_bars:
+            spy_price = spy_bars["current_price"]
+            if spy_price >= spy_avwap:
+                return
+    # 4. QQQ < QQQ_AVWAP
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    if qqq_avwap and qqq_avwap > 0:
+        qqq_bars = fetch_1min_bars("QQQ")
+        if qqq_bars:
+            qqq_price = qqq_bars["current_price"]
+            if qqq_price >= qqq_avwap:
+                return
+
+    # All checks passed — enter short
+    execute_short_entry(ticker, current_price)
+
+
+# ============================================================
+# EXECUTE SHORT ENTRY (Wounded Buffalo)
+# ============================================================
+def execute_short_entry(ticker, price):
+    """Open a paper short position (Wounded Buffalo)."""
+    global short_positions, tp_short_positions
+    global paper_cash, tp_paper_cash
+    global daily_short_entry_count
+
+    shares = 10
+    entry_price = round(price, 2)
+    stop = round(entry_price + 0.50, 2)   # hard stop: $0.50 ABOVE entry
+    now_et = datetime.now(ET)
+    entry_time = now_et.strftime("%H:%M")
+    date_str = now_et.strftime("%Y-%m-%d")
+
+    # Paper short
+    short_positions[ticker] = {
+        "entry_price": entry_price,
+        "shares": shares,
+        "stop": stop,
+        "trail_stop": None,
+        "trail_active": False,
+        "entry_time": entry_time,
+        "date": date_str,
+        "side": "SHORT",
+    }
+    paper_cash += entry_price * shares  # short sale proceeds credited
+    daily_short_entry_count[ticker] = daily_short_entry_count.get(ticker, 0) + 1
+    save_paper_state()
+
+    # TP short (independent)
+    tp_short_positions[ticker] = {
+        "entry_price": entry_price,
+        "shares": shares,
+        "stop": stop,
+        "trail_stop": None,
+        "trail_active": False,
+        "entry_time": entry_time,
+        "date": date_str,
+        "side": "SHORT",
+    }
+    tp_paper_cash += entry_price * shares
+    save_tp_state()
+
+    # TradersPost webhook (short entry)
+    send_traderspost_order(ticker, "sell_short", entry_price, shares)
+
+    # Notification
+    pdc_val = pdc.get(ticker, 0)
+    or_low_val = or_low.get(ticker, 0)
+    SEP = "\u2500" * 34
+    entry_count = daily_short_entry_count.get(ticker, 1)
+    msg = (
+        "\U0001fa78 SHORT ENTRY #%d\n"
+        "%s\n"
+        "Ticker : %s\n"
+        "Entry  : $%.2f (limit)\n"
+        "Stop   : $%.2f (+$0.50)\n"
+        "OR Low : $%.2f\n"
+        "PDC    : $%.2f\n"
+        "Shares : %d\n"
+        "Time   : %s ET\n"
+        "%s\n"
+        "\U0001f403 Wounded Buffalo \u2014 hunting the bleed"
+    ) % (entry_count, SEP, ticker, entry_price, stop,
+         or_low_val, pdc_val, shares, entry_time, SEP)
+    send_telegram(msg)
+
+    tp_msg = msg.replace("SHORT ENTRY", "TP SHORT ENTRY")
+    send_tp_telegram(tp_msg)
+
+
+# ============================================================
+# MANAGE SHORT POSITIONS (stop + trail logic)
+# ============================================================
+def manage_short_positions():
+    """Check stops and trailing stops for all open short positions."""
+    global short_positions, tp_short_positions
+
+    for ticker in list(short_positions.keys()):
+        pos = short_positions[ticker]
+        entry_price = pos["entry_price"]
+        shares = pos["shares"]
+        stop = pos["stop"]
+        trail_stop = pos.get("trail_stop")
+        trail_active = pos.get("trail_active", False)
+
+        bars = fetch_1min_bars(ticker)
+        if not bars:
+            continue
+        current_price = bars["current_price"]
+
+        # Activate trail when profit >= $1.00/share
+        if not trail_active and (entry_price - current_price) >= 1.00:
+            trail_active = True
+            trail_stop = round(entry_price - 0.50, 2)
+            short_positions[ticker]["trail_active"] = True
+            short_positions[ticker]["trail_stop"] = trail_stop
+
+        # Ratchet trail down
+        if trail_active and trail_stop is not None:
+            trail_anchor = entry_price - 0.50
+            steps = int((trail_anchor - current_price) / 0.50)
+            new_trail = round(entry_price - 0.50 - (steps * 0.50), 2)
+            if new_trail < trail_stop:
+                short_positions[ticker]["trail_stop"] = new_trail
+                trail_stop = new_trail
+
+        # Check stop conditions
+        exit_reason = None
+        if trail_active and trail_stop is not None:
+            if current_price >= trail_stop:
+                exit_reason = "TRAIL"
+        else:
+            if current_price >= stop:
+                exit_reason = "STOP"
+
+        if exit_reason:
+            close_short_position(ticker, current_price, exit_reason, portfolio="paper")
+
+    # Same logic for TP short positions
+    for ticker in list(tp_short_positions.keys()):
+        pos = tp_short_positions[ticker]
+        entry_price = pos["entry_price"]
+        shares = pos["shares"]
+        stop = pos["stop"]
+        trail_stop = pos.get("trail_stop")
+        trail_active = pos.get("trail_active", False)
+
+        bars = fetch_1min_bars(ticker)
+        if not bars:
+            continue
+        current_price = bars["current_price"]
+
+        if not trail_active and (entry_price - current_price) >= 1.00:
+            trail_active = True
+            trail_stop = round(entry_price - 0.50, 2)
+            tp_short_positions[ticker]["trail_active"] = True
+            tp_short_positions[ticker]["trail_stop"] = trail_stop
+
+        if trail_active and trail_stop is not None:
+            trail_anchor = entry_price - 0.50
+            steps = int((trail_anchor - current_price) / 0.50)
+            new_trail = round(entry_price - 0.50 - (steps * 0.50), 2)
+            if new_trail < trail_stop:
+                tp_short_positions[ticker]["trail_stop"] = new_trail
+                trail_stop = new_trail
+
+        exit_reason = None
+        if trail_active and trail_stop is not None:
+            if current_price >= trail_stop:
+                exit_reason = "TRAIL"
+        else:
+            if current_price >= stop:
+                exit_reason = "STOP"
+
+        if exit_reason:
+            close_short_position(ticker, current_price, exit_reason, portfolio="tp")
+
+
+# ============================================================
+# CLOSE SHORT POSITION
+# ============================================================
+def close_short_position(ticker, price, reason, portfolio="paper"):
+    """Cover a short position and record the trade."""
+    global short_positions, tp_short_positions
+    global paper_cash, tp_paper_cash
+    global short_trade_history, tp_short_trade_history
+
+    if portfolio == "paper":
+        pos = short_positions.pop(ticker, None)
+    else:
+        pos = tp_short_positions.pop(ticker, None)
+
+    if not pos:
+        return
+
+    entry_price = pos["entry_price"]
+    shares = pos["shares"]
+    cover_price = round(price, 2)
+
+    pnl = round((entry_price - cover_price) * shares, 2)
+    pnl_pct = round((entry_price - cover_price) / entry_price * 100, 2) if entry_price else 0
+    now_et = datetime.now(ET)
+    exit_time = now_et.strftime("%H:%M")
+    date_str = pos.get("date", now_et.strftime("%Y-%m-%d"))
+
+    trade_record = {
+        "ticker": ticker,
+        "side": "SHORT",
+        "action": "COVER",
+        "shares": shares,
+        "entry_price": entry_price,
+        "exit_price": cover_price,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct,
+        "reason": reason,
+        "entry_time": pos.get("entry_time", "?"),
+        "exit_time": exit_time,
+        "date": date_str,
+    }
+
+    if portfolio == "paper":
+        paper_cash -= cover_price * shares
+        short_trade_history.append(trade_record)
+        if len(short_trade_history) > 500:
+            short_trade_history.pop(0)
+        save_paper_state()
+
+        # TradersPost webhook
+        send_traderspost_order(ticker, "buy_to_cover", cover_price, shares)
+
+        # Notification
+        pnl_sign = "+" if pnl >= 0 else ""
+        emoji = "\u2705" if pnl >= 0 else "\u274c"
+        SEP = "\u2500" * 34
+        msg = (
+            "%s SHORT CLOSED (%s)\n"
+            "%s\n"
+            "Ticker : %s\n"
+            "Entry  : $%.2f\n"
+            "Cover  : $%.2f\n"
+            "P&L    : %s$%.2f (%s%.1f%%)\n"
+            "Shares : %d\n"
+            "Time   : %s ET\n"
+        ) % (emoji, reason, SEP, ticker, entry_price, cover_price,
+             pnl_sign, pnl, pnl_sign, pnl_pct, shares, exit_time)
+        send_telegram(msg)
+
+    else:  # TP
+        tp_paper_cash -= cover_price * shares
+        tp_short_trade_history.append(trade_record)
+        if len(tp_short_trade_history) > 500:
+            tp_short_trade_history.pop(0)
+        save_tp_state()
+
+        pnl_sign = "+" if pnl >= 0 else ""
+        emoji = "\u2705" if pnl >= 0 else "\u274c"
+        SEP = "\u2500" * 34
+        tp_msg = (
+            "%s TP SHORT CLOSED (%s)\n"
+            "%s\n"
+            "Ticker : %s\n"
+            "Entry  : $%.2f\n"
+            "Cover  : $%.2f\n"
+            "P&L    : %s$%.2f (%s%.1f%%)\n"
+            "Shares : %d\n"
+            "Time   : %s ET\n"
+        ) % (emoji, reason, SEP, ticker, entry_price, cover_price,
+             pnl_sign, pnl, pnl_sign, pnl_pct, shares, exit_time)
+        send_tp_telegram(tp_msg)
+
+
+# ============================================================
 # EOD CLOSE
 # ============================================================
 def eod_close():
-    """Force-close all open positions at 15:55 ET."""
-    if not positions:
-        logger.info("EOD close: no open positions")
-        return
+    """Force-close all open long AND short positions at 15:55 ET."""
+    n_long = len(positions)
+    n_short = len(short_positions)
+    n_tp_short = len(tp_short_positions)
 
-    logger.info("EOD close: closing %d positions", len(positions))
-    tickers_to_close = []
+    if not positions and not short_positions and not tp_short_positions:
+        logger.info("EOD close: no open positions (long or short)")
+        # Still fall through to show summary
 
-    for ticker in list(positions.keys()):
-        bars = fetch_1min_bars(ticker)
-        if bars:
-            price = bars["current_price"]
-        else:
-            price = positions[ticker]["entry_price"]
-        tickers_to_close.append((ticker, price))
+    # Close long positions
+    if positions:
+        logger.info("EOD close: closing %d long positions", n_long)
+        longs_to_close = []
+        for ticker in list(positions.keys()):
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                price = bars["current_price"]
+            else:
+                price = positions[ticker]["entry_price"]
+            longs_to_close.append((ticker, price))
+        for ticker, price in longs_to_close:
+            close_position(ticker, price, reason="EOD")
 
-    for ticker, price in tickers_to_close:
-        close_position(ticker, price, reason="EOD")
+    # Close paper short positions
+    if short_positions:
+        logger.info("EOD close: closing %d paper short positions", n_short)
+        shorts_to_close = []
+        for ticker in list(short_positions.keys()):
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                price = bars["current_price"]
+            else:
+                price = short_positions[ticker]["entry_price"]
+            shorts_to_close.append((ticker, price))
+        for ticker, price in shorts_to_close:
+            close_short_position(ticker, price, "EOD", portfolio="paper")
+
+    # Close TP short positions
+    if tp_short_positions:
+        logger.info("EOD close: closing %d TP short positions", n_tp_short)
+        tp_shorts_to_close = []
+        for ticker in list(tp_short_positions.keys()):
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                price = bars["current_price"]
+            else:
+                price = tp_short_positions[ticker]["entry_price"]
+            tp_shorts_to_close.append((ticker, price))
+        for ticker, price in tp_shorts_to_close:
+            close_short_position(ticker, price, "EOD", portfolio="tp")
 
     # Fix B: Paper EOD summary → send_telegram(), TP EOD summary → send_tp_telegram()
     now_et = datetime.now(ET)
@@ -1056,27 +1455,30 @@ def send_or_notification():
 
         SEP = "\u2500" * 34
         lines = [
-            "\U0001f4d0 Opening Range Collected \u2014 09:35 ET",
+            "\U0001f4d0 OR LEVELS \u2014 09:36 ET",
             SEP,
-            "Ticker  OR High  PDC    Status",
         ]
 
         for t in TRADE_TICKERS:
             orh = or_high.get(t)
+            orl = or_low.get(t)
             pdc_val = pdc.get(t)
             if orh is None or pdc_val is None:
-                lines.append("%s   --       --     --" % t)
+                lines.append("%s   --" % t)
                 continue
             # Fetch current price for status
             bars = fetch_1min_bars(t)
             cur_price = bars["current_price"] if bars else 0
             if cur_price > pdc_val:
-                status_icon = "\U0001f7e2 Green"
+                status_icon = "\U0001f7e2"
+            elif cur_price < pdc_val:
+                status_icon = "\U0001f534"
             else:
-                status_icon = "\U0001f534 Red"
+                status_icon = "\u2b1c"
+            orl_str = "%.2f" % orl if orl is not None else "--"
             lines.append(
-                "%s   $%.2f  $%.2f  %s"
-                % (t, orh, pdc_val, status_icon)
+                "%s  H:$%.2f  L:$%s  PDC:$%.2f  %s"
+                % (t, orh, orl_str, pdc_val, status_icon)
             )
 
         lines.append(SEP)
@@ -1101,10 +1503,11 @@ def send_or_notification():
         lines.append("QQQ AVWAP: $%s  %s" % (qqq_avwap_fmt, qqq_icon))
 
         both_active = spy_above and qqq_above
-        filter_status = "ACTIVE" if both_active else "PARTIAL/INACTIVE"
+        both_bearish = (not spy_above) and (not qqq_above)
+        filter_status = "LONG ACTIVE" if both_active else ("SHORT ACTIVE" if both_bearish else "PARTIAL/INACTIVE")
         lines.append("Index filters: %s" % filter_status)
         lines.append(SEP)
-        lines.append("Watching for breakouts above OR highs.")
+        lines.append("Watching for breakouts (long) and breakdowns (short).")
 
         msg = "\n".join(lines)
         send_telegram(msg)
@@ -1319,21 +1722,27 @@ def scan_loop():
 
     # Always manage existing positions (stops/trails) even when paused
     manage_positions()
+    manage_short_positions()
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
         return
 
-    # Check for new entries on tradable tickers
+    # Check for new entries on tradable tickers (long + short)
     for ticker in TRADE_TICKERS:
-        if ticker in positions:
-            continue
+        # Long entry check
+        if ticker not in positions:
+            try:
+                ok, bars = check_entry(ticker)
+                if ok and bars:
+                    execute_entry(ticker, bars["current_price"])
+            except Exception as e:
+                logger.error("Entry check error %s: %s", ticker, e)
+        # Short entry check (Wounded Buffalo)
         try:
-            ok, bars = check_entry(ticker)
-            if ok and bars:
-                execute_entry(ticker, bars["current_price"])
+            check_short_entry(ticker)
         except Exception as e:
-            logger.error("Entry check error %s: %s", ticker, e)
+            logger.error("Short entry check error %s: %s", ticker, e)
 
 
 # ============================================================
@@ -1342,17 +1751,20 @@ def scan_loop():
 def reset_daily_state():
     """Reset AVWAP, OR data, and daily counts for new trading day."""
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason, tp_paper_trades
+    global daily_short_entry_count
 
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
 
     if or_collected_date != today:
         or_high.clear()
+        or_low.clear()
         pdc.clear()
         or_collected_date = ""
 
     if daily_entry_date != today:
         daily_entry_count.clear()
+        daily_short_entry_count.clear()
         paper_trades.clear()
         tp_paper_trades.clear()
         save_tp_state()
@@ -1530,13 +1942,20 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/version      Bot version info\n"
         "/help         This menu\n"
         f"{SEP}\n"
-        "Strategy: ORB Momentum Breakout\n"
-        "Entry: 1min close > OR_High\n"
-        "       + price > PDC (green stocks only)\n"
-        "       + SPY & QQQ above AVWAP\n"
-        "Stop:  Entry \u2212 $0.50\n"
+        "LONG: ORB Momentum Breakout\n"
+        "  Entry: 1min close > OR_High\n"
+        "         + price > PDC (green)\n"
+        "         + SPY & QQQ > AVWAP\n"
+        "  Stop:  Entry \u2212 $0.50\n"
+        f"{SEP}\n"
+        "SHORT: Wounded Buffalo\n"
+        "  Entry: 1min close < OR_Low\n"
+        "         + price < PDC (red)\n"
+        "         + SPY & QQQ < AVWAP\n"
+        "  Stop:  Entry + $0.50\n"
+        f"{SEP}\n"
         "Trail: +$1.00 triggers, ratchets $0.50/$0.50\n"
-        "Max:   2 entries per ticker per day\n"
+        "Max:   2 entries per ticker per day (each side)\n"
         f"Halt:  Auto-halt if day P&L < {loss_limit_str}"
     )
     await update.message.reply_text(text)
@@ -1618,20 +2037,17 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\U0001f4d0 TODAY'S OR LEVELS",
     ]
 
-    # OR levels
+    # OR levels (High + Low)
     or_ready = or_collected_date == today
     if or_ready:
-        or_line_parts = []
         for t in TRADE_TICKERS:
-            val = or_high.get(t)
-            if val is not None:
-                or_line_parts.append(f"  {t} ${val:.2f}")
+            orh_val = or_high.get(t)
+            orl_val = or_low.get(t)
+            if orh_val is not None:
+                orl_str = "%.2f" % orl_val if orl_val is not None else "--"
+                lines.append("  %s  H:$%.2f  L:$%s" % (t, orh_val, orl_str))
             else:
-                or_line_parts.append(f"  {t} --")
-        # Two tickers per line
-        for i in range(0, len(or_line_parts), 2):
-            chunk = or_line_parts[i:i + 2]
-            lines.append("".join(chunk))
+                lines.append("  %s --" % t)
     else:
         lines.append("  (OR not collected yet)")
 
@@ -1696,6 +2112,28 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
             lines.append("Today: %d trades, P&L=$%+.2f" % (len(tp_today_sells), tp_day_pnl))
 
+        # TP Short positions
+        lines.append(sep)
+        lines.append("\U0001fa78 SHORT POSITIONS (Wounded Buffalo)")
+        lines.append(sep)
+        if not tp_short_positions:
+            lines.append("No short positions open.")
+        else:
+            for s_ticker, s_pos in tp_short_positions.items():
+                s_entry = s_pos["entry_price"]
+                s_shares = s_pos["shares"]
+                s_bars = fetch_1min_bars(s_ticker)
+                if s_bars:
+                    s_cur = s_bars["current_price"]
+                    s_pnl = (s_entry - s_cur) * s_shares
+                    lines.append("%s  Entry $%.2f  Stop $%.2f"
+                                 % (s_ticker, s_entry, s_pos["stop"]))
+                    lines.append("      Current $%.2f  P&L $%+.2f"
+                                 % (s_cur, s_pnl))
+                else:
+                    lines.append("%s  Entry $%.2f  Stop $%.2f  (price unavailable)"
+                                 % (s_ticker, s_entry, s_pos["stop"]))
+
         tp_cash_fmt = format(tp_paper_cash, ",.2f")
         lines.append("TP Cash: $%s" % tp_cash_fmt)
 
@@ -1756,6 +2194,28 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if today_sells:
         day_pnl = sum(t.get("pnl", 0) for t in today_sells)
         lines.append("Today: %d trades, P&L=$%+.2f" % (len(today_sells), day_pnl))
+
+    # Short positions (paper)
+    lines.append(sep)
+    lines.append("\U0001fa78 SHORT POSITIONS (Wounded Buffalo)")
+    lines.append(sep)
+    if not short_positions:
+        lines.append("No short positions open.")
+    else:
+        for s_ticker, s_pos in short_positions.items():
+            s_entry = s_pos["entry_price"]
+            s_shares = s_pos["shares"]
+            s_bars = fetch_1min_bars(s_ticker)
+            if s_bars:
+                s_cur = s_bars["current_price"]
+                s_pnl = (s_entry - s_cur) * s_shares
+                lines.append("%s  Entry $%.2f  Stop $%.2f"
+                             % (s_ticker, s_entry, s_pos["stop"]))
+                lines.append("      Current $%.2f  P&L $%+.2f"
+                             % (s_cur, s_pnl))
+            else:
+                lines.append("%s  Entry $%.2f  Stop $%.2f  (price unavailable)"
+                             % (s_ticker, s_entry, s_pos["stop"]))
 
     lines.append("Paper Cash:           $%s" % format(paper_cash, ",.2f"))
     lines.append(sep)
@@ -2088,6 +2548,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global tp_paper_cash, tp_paper_trades
     global trade_history, tp_trade_history
     global _trading_halted, _trading_halted_reason
+    global daily_short_entry_count
 
     args = context.args
     target = args[0].lower() if args else "paper"
@@ -2100,10 +2561,13 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if target in ("paper", "both"):
         positions.clear()
+        short_positions.clear()
         paper_trades.clear()
         paper_all_trades.clear()
         trade_history.clear()
+        short_trade_history.clear()
         daily_entry_count.clear()
+        daily_short_entry_count.clear()
         daily_entry_date = ""
         paper_cash = PAPER_STARTING_CAPITAL
         _trading_halted = False
@@ -2113,8 +2577,10 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if target in ("tp", "both"):
         tp_positions.clear()
+        tp_short_positions.clear()
         tp_paper_trades.clear()
         tp_trade_history.clear()
+        tp_short_trade_history.clear()
         tp_paper_cash = PAPER_STARTING_CAPITAL
         save_tp_state()
         msgs.append("TP portfolio reset to $%s" % format(PAPER_STARTING_CAPITAL, ",.0f"))
@@ -2135,13 +2601,15 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Select history based on which bot
     if is_tp_update(update):
-        history = tp_trade_history
+        long_history = tp_trade_history
+        short_hist = tp_short_trade_history
         label = "TP Portfolio"
     else:
-        history = trade_history
+        long_history = trade_history
+        short_hist = short_trade_history
         label = "Paper Portfolio"
 
-    if not history:
+    if not long_history and not short_hist:
         await update.message.reply_text("No completed trades yet.")
         return
 
@@ -2150,46 +2618,63 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         SEP,
     ]
 
-    # All-Time
-    all_stats = _compute_perf_stats(history)
+    # LONG Performance
+    lines.append("\U0001f4c8 LONG Performance")
+    all_stats = _compute_perf_stats(long_history)
     if all_stats:
         best_tk = all_stats["best"].get("ticker", "?")
         best_pnl = all_stats["best"].get("pnl", 0)
         worst_tk = all_stats["worst"].get("ticker", "?")
         worst_pnl = all_stats["worst"].get("pnl", 0)
-        lines.append("All-Time")
         lines.append("  Trades:    %d  (W:%d  L:%d)" % (
             all_stats["n"], all_stats["wins"], all_stats["losses"]))
         lines.append("  Win Rate:  %.1f%%" % all_stats["wr"])
         lines.append("  Total P&L: $%+.2f" % all_stats["total_pnl"])
-        lines.append("  Avg Win:   $%+.2f" % all_stats["avg_win"])
-        lines.append("  Avg Loss:  $%+.2f" % all_stats["avg_loss"])
+        lines.append("  Avg Win:   $%+.2f  Avg Loss: $%+.2f"
+                     % (all_stats["avg_win"], all_stats["avg_loss"]))
         lines.append("  Best:      %s $%+.2f" % (best_tk, best_pnl))
         lines.append("  Worst:     %s $%+.2f" % (worst_tk, worst_pnl))
-    lines.append(SEP)
-
-    # Last 7 Days
-    week_stats = _compute_perf_stats(history, date_filter=seven_days_ago)
-    lines.append("Last 7 Days")
-    if week_stats:
-        lines.append("  Trades: %d  Win Rate: %.1f%%" % (week_stats["n"], week_stats["wr"]))
-        lines.append("  P&L:   $%+.2f" % week_stats["total_pnl"])
     else:
-        lines.append("  No trades")
+        lines.append("  No long trades")
     lines.append(SEP)
 
-    # Today
-    today_stats = _compute_perf_stats(history, date_filter=today)
+    # SHORT Performance
+    lines.append("\U0001f4c9 SHORT Performance")
+    short_stats = _compute_perf_stats(short_hist)
+    if short_stats:
+        s_best_tk = short_stats["best"].get("ticker", "?")
+        s_best_pnl = short_stats["best"].get("pnl", 0)
+        s_worst_tk = short_stats["worst"].get("ticker", "?")
+        s_worst_pnl = short_stats["worst"].get("pnl", 0)
+        lines.append("  Trades:    %d  (W:%d  L:%d)" % (
+            short_stats["n"], short_stats["wins"], short_stats["losses"]))
+        lines.append("  Win Rate:  %.1f%%" % short_stats["wr"])
+        lines.append("  Total P&L: $%+.2f" % short_stats["total_pnl"])
+        lines.append("  Avg Win:   $%+.2f  Avg Loss: $%+.2f"
+                     % (short_stats["avg_win"], short_stats["avg_loss"]))
+        lines.append("  Best:      %s $%+.2f" % (s_best_tk, s_best_pnl))
+        lines.append("  Worst:     %s $%+.2f" % (s_worst_tk, s_worst_pnl))
+    else:
+        lines.append("  No short trades")
+    lines.append(SEP)
+
+    # Combined today
+    today_long = _compute_perf_stats(long_history, date_filter=today)
+    today_short = _compute_perf_stats(short_hist, date_filter=today)
     lines.append("Today")
-    if today_stats:
-        lines.append("  Trades: %d  Win Rate: %.1f%%" % (today_stats["n"], today_stats["wr"]))
-        lines.append("  P&L:   $%+.2f" % today_stats["total_pnl"])
-    else:
-        lines.append("  No trades")
+    if today_long:
+        lines.append("  Long:  %d trades  P&L $%+.2f"
+                     % (today_long["n"], today_long["total_pnl"]))
+    if today_short:
+        lines.append("  Short: %d trades  P&L $%+.2f"
+                     % (today_short["n"], today_short["total_pnl"]))
+    if not today_long and not today_short:
+        lines.append("  No trades today")
     lines.append(SEP)
 
-    # Streak
-    streak = _compute_streak(history)
+    # Streak (combined)
+    combined = long_history + short_hist
+    streak = _compute_streak(combined)
     lines.append("Streak: %s" % streak)
 
     msg = "\n".join(lines)
@@ -2242,6 +2727,18 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("OR High:  not collected")
 
+    # OR Low
+    orl = or_low.get(ticker)
+    if orl is not None:
+        dist_low = cur_price - orl
+        if cur_price < orl:
+            orl_status = "\U0001fa78 Below (by $%.2f)" % abs(dist_low)
+        else:
+            orl_status = "\u2705 Above (by $%.2f)" % dist_low
+        lines.append("OR Low:   $%.2f  %s" % (orl, orl_status))
+    else:
+        lines.append("OR Low:   not collected")
+
     # PDC
     pdc_strat = pdc.get(ticker)
     if pdc_strat is not None:
@@ -2258,22 +2755,26 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qqq_avwap = avwap_data["QQQ"]["avwap"]
     spy_bars = fetch_1min_bars("SPY")
     qqq_bars = fetch_1min_bars("QQQ")
-    spy_ok = (spy_bars["current_price"] > spy_avwap) if (spy_bars and spy_avwap > 0) else False
-    qqq_ok = (qqq_bars["current_price"] > qqq_avwap) if (qqq_bars and qqq_avwap > 0) else False
+    spy_price_val = spy_bars["current_price"] if spy_bars else 0
+    qqq_price_val = qqq_bars["current_price"] if qqq_bars else 0
+    spy_ok = (spy_price_val > spy_avwap) if (spy_bars and spy_avwap > 0) else False
+    qqq_ok = (qqq_price_val > qqq_avwap) if (qqq_bars and qqq_avwap > 0) else False
+    spy_below = (spy_price_val < spy_avwap) if (spy_bars and spy_avwap > 0) else False
+    qqq_below = (qqq_price_val < qqq_avwap) if (qqq_bars and qqq_avwap > 0) else False
     spy_icon = "\u2705" if spy_ok else "\u274c"
     qqq_icon = "\u2705" if qqq_ok else "\u274c"
     filter_status = "active" if (spy_ok and qqq_ok) else "inactive"
     lines.append("SPY/QQQ:  %s %s Index filters %s" % (spy_icon, qqq_icon, filter_status))
     lines.append(SEP)
 
-    # Entry eligible?
+    # Long entry eligible?
     in_position = ticker in positions
     at_max_entries = daily_entry_count.get(ticker, 0) >= 2
     index_ok = spy_ok and qqq_ok
-    eligible = not in_position and not at_max_entries and index_ok and not _trading_halted
+    long_eligible = not in_position and not at_max_entries and index_ok and not _trading_halted
 
-    if eligible:
-        lines.append("Entry eligible: YES")
+    if long_eligible:
+        lines.append("Long eligible:  YES")
     else:
         reasons = []
         if in_position:
@@ -2285,7 +2786,35 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _trading_halted:
             reasons.append("trading halted")
         reason_str = ", ".join(reasons)
-        lines.append("Entry eligible: NO (%s)" % reason_str)
+        lines.append("Long eligible:  NO (%s)" % reason_str)
+
+    # Short entry eligible?
+    in_short = ticker in short_positions
+    at_max_shorts = daily_short_entry_count.get(ticker, 0) >= 2
+    index_bearish = spy_below and qqq_below
+    below_or_low = (orl is not None and cur_price < orl)
+    below_pdc_short = (pdc_strat is not None and cur_price < pdc_strat)
+    short_eligible = (not in_short and not at_max_shorts and index_bearish
+                      and below_or_low and below_pdc_short and not _trading_halted)
+
+    if short_eligible:
+        lines.append("Short eligible: YES")
+    else:
+        s_reasons = []
+        if in_short:
+            s_reasons.append("in short position")
+        if at_max_shorts:
+            s_reasons.append("2 short entries today")
+        if not index_bearish:
+            s_reasons.append("index filter not bearish")
+        if not below_or_low:
+            s_reasons.append("above OR Low")
+        if not below_pdc_short:
+            s_reasons.append("above PDC")
+        if _trading_halted:
+            s_reasons.append("trading halted")
+        s_reason_str = ", ".join(s_reasons)
+        lines.append("Short eligible: NO (%s)" % s_reason_str)
 
     await update.message.reply_text("\n".join(lines))
 
@@ -2306,24 +2835,23 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lines = [
-        "\U0001f4d0 Opening Range \u2014 %s" % today,
+        "\U0001f4d0 TODAY'S OR LEVELS \u2014 %s" % today,
         SEP,
-        "Ticker  OR High   Now     Status",
     ]
 
     for t in TRADE_TICKERS:
         orh = or_high.get(t)
+        orl = or_low.get(t)
+        pdc_val = pdc.get(t)
         if orh is None:
-            lines.append("%s   --       --     --" % t)
+            lines.append("%s   --" % t)
             continue
-        bars = fetch_1min_bars(t)
-        cur = bars["current_price"] if bars else 0
-        diff = cur - orh
-        if cur > orh:
-            status = "\u2705 $%+.2f" % diff
-        else:
-            status = "\u274c $%+.2f" % diff
-        lines.append("%s   $%.2f  $%.2f  %s" % (t, orh, cur, status))
+        orl_str = "%.2f" % orl if orl is not None else "--"
+        pdc_str = "%.2f" % pdc_val if pdc_val is not None else "--"
+        lines.append(
+            "%s   High $%.2f  Low $%s  PDC $%s"
+            % (t, orh, orl_str, pdc_str)
+        )
 
     lines.append(SEP)
 
@@ -2475,7 +3003,7 @@ def send_startup_message():
         f"{RELEASE_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
-        f"Strategy: ORB Breakout | PDC Filter | SPY+QQQ AVWAP\n"
+        f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
         f"Scan:     every {SCAN_INTERVAL}s  |  Stop: $0.50  |  Trail: $1.00\u2192$0.50\n"
         f"{SEP}\n"
         f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
