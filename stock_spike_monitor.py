@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.15"
-RELEASE_NOTE = "v2.9.15 \u2014 /dayreport compact format + timestamp fix"
+BOT_VERSION = "2.9.16"
+RELEASE_NOTE = "v2.9.16 \u2014 Bot separation + /strategy command"
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -2424,6 +2424,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/monitoring   Pause/resume scanner\n"
         "/reset        Reset portfolio\n"
         "/algo         Algorithm reference PDF\n"
+        "/strategy     Strategy summary\n"
         "/version      Bot version info\n"
         "/help         This menu\n"
         f"{SEP}\n"
@@ -2451,7 +2452,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Full market snapshot: portfolios, index filters, OR levels."""
+    """Full market snapshot: portfolio, index filters, OR levels."""
     SEP = "\u2500" * 34
     now_et = _now_et()
     time_cdt = _now_cdt().strftime("%I:%M %p CDT")
@@ -2464,33 +2465,6 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and (now_et.hour < 15 or (now_et.hour == 15 and now_et.minute < 55))
     )
     market_status = "OPEN" if in_hours else "CLOSED"
-
-    # Paper portfolio
-    n_pos = len(positions)
-    today_sells = [t for t in paper_trades
-                   if t.get("action") == "SELL" and t.get("pnl") is not None]
-    day_pnl = sum(t.get("pnl", 0) for t in today_sells)
-
-    total_value = paper_cash
-    for ticker, pos in positions.items():
-        bars = fetch_1min_bars(ticker)
-        if bars:
-            total_value += bars["current_price"] * pos["shares"]
-        else:
-            total_value += pos["entry_price"] * pos["shares"]
-
-    paper_cash_fmt = f"{paper_cash:,.2f}"
-    total_value_fmt = f"{total_value:,.2f}"
-    day_pnl_fmt = f"{day_pnl:+,.2f}"
-
-    # TP portfolio
-    n_tp_pos = len(tp_positions)
-    tp_today_sells = [t for t in tp_paper_trades
-                      if t.get("action") == "SELL" and t.get("pnl") is not None
-                      and t.get("date", "") == today]
-    tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
-    tp_cash_fmt = f"{tp_paper_cash:,.2f}"
-    tp_day_pnl_fmt = f"{tp_day_pnl:+,.2f}"
 
     # Index filters — fetch live prices
     spy_bars = fetch_1min_bars("SPY")
@@ -2507,16 +2481,50 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
         f"\U0001f4ca DASHBOARD  {time_cdt}",
         SEP,
-        "\U0001f4c4 PAPER PORTFOLIO",
-        f"  Cash:       ${paper_cash_fmt}",
-        f"  Positions:  {n_pos} open",
-        f"  Today P&L:  ${day_pnl_fmt}",
-        f"  Est. Value: ${total_value_fmt}",
-        SEP,
-        "\U0001f4cb TP PORTFOLIO",
-        f"  Cash:       ${tp_cash_fmt}",
-        f"  Positions:  {n_tp_pos} open",
-        f"  Today P&L:  ${tp_day_pnl_fmt}",
+    ]
+
+    if is_tp_update(update):
+        # TP portfolio only
+        n_tp_pos = len(tp_positions)
+        tp_today_sells = [t for t in tp_paper_trades
+                          if t.get("action") == "SELL" and t.get("pnl") is not None
+                          and t.get("date", "") == today]
+        tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
+        tp_cash_fmt = f"{tp_paper_cash:,.2f}"
+        tp_day_pnl_fmt = f"{tp_day_pnl:+,.2f}"
+        lines += [
+            "\U0001f4cb TP PORTFOLIO",
+            f"  Cash:       ${tp_cash_fmt}",
+            f"  Positions:  {n_tp_pos} open",
+            f"  Today P&L:  ${tp_day_pnl_fmt}",
+        ]
+    else:
+        # Paper portfolio only
+        n_pos = len(positions)
+        today_sells = [t for t in paper_trades
+                       if t.get("action") == "SELL" and t.get("pnl") is not None]
+        day_pnl = sum(t.get("pnl", 0) for t in today_sells)
+
+        total_value = paper_cash
+        for ticker, pos in positions.items():
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                total_value += bars["current_price"] * pos["shares"]
+            else:
+                total_value += pos["entry_price"] * pos["shares"]
+
+        paper_cash_fmt = f"{paper_cash:,.2f}"
+        total_value_fmt = f"{total_value:,.2f}"
+        day_pnl_fmt = f"{day_pnl:+,.2f}"
+        lines += [
+            "\U0001f4c4 PAPER PORTFOLIO",
+            f"  Cash:       ${paper_cash_fmt}",
+            f"  Positions:  {n_pos} open",
+            f"  Today P&L:  ${day_pnl_fmt}",
+            f"  Est. Value: ${total_value_fmt}",
+        ]
+
+    lines += [
         SEP,
         "\U0001f4c8 INDEX FILTERS",
         f"  SPY  ${spy_price:.2f}  AVWAP ${spy_avwap:.2f}  {spy_icon}",
@@ -2715,11 +2723,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("Paper Cash:           $%s" % format(paper_cash, ",.2f"))
     lines.append(sep)
 
-    # TP Portfolio summary
-    tp_n = len(tp_positions)
-    lines.append("TP Portfolio: %d positions" % tp_n)
-    lines.append("  TP Cash: $%s" % format(tp_paper_cash, ",.2f"))
-
     # OR status
     if or_collected_date == now_et.strftime("%Y-%m-%d"):
         lines.append("OR: collected")
@@ -2877,25 +2880,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     all_paper = paper_long + paper_short
 
     paper_body = _format_dayreport_section(all_paper, header, "Paper")
-
-    # Also include TP section for paper bot
-    tp_long = [
-        t for t in tp_trade_history
-        if t.get("date", "") == today
-    ]
-    tp_short = [
-        t for t in tp_short_trade_history
-        if t.get("date", "") == today
-    ]
-    all_tp = tp_long + tp_short
-
-    if all_tp:
-        tp_body = _format_dayreport_section(all_tp, "", "TP")
-        full_msg = "%s\n%s" % (paper_body, tp_body)
-    else:
-        full_msg = paper_body
-
-    await _reply_in_chunks(update.message, full_msg)
+    await _reply_in_chunks(update.message, paper_body)
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3183,6 +3168,64 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
     else:
         await update.message.reply_text("(PDF unavailable \u2014 contact admin)")
+
+
+# ============================================================
+# /strategy COMMAND
+# ============================================================
+async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show compact strategy summary."""
+    SEP = "\u2500" * 26
+    text = (
+        f"\U0001f4d8 Strategy v{BOT_VERSION}\n"
+        f"{SEP}\n"
+        "\U0001f4c8 LONG \u2014 ORB Breakout\n"
+        "Entry (all must be true):\n"
+        "  \u2022 1m close > OR High\n"
+        "  \u2022 Price > PDC\n"
+        "  \u2022 SPY > AVWAP\n"
+        "  \u2022 QQQ > AVWAP\n"
+        "Stop: OR High \u2212 $0.90\n"
+        "Trail: +$1.00 trigger\n"
+        "       ratchets $0.50/step\n"
+        "Size: 10 shares \u00b7 limit order\n"
+        "Max: 2 entries/ticker/day\n"
+        "EOD: closes at 15:55 ET\n"
+        "\n"
+        "Eye of the Tiger exits:\n"
+        "  \U0001f56f Red Candle\n"
+        "     price < Open OR < PDC\n"
+        "  \U0001f451 Lords Left\n"
+        "     SPY or QQQ < AVWAP\n"
+        "  (both confirmed on 1m close)\n"
+        f"{SEP}\n"
+        "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
+        "Entry (all must be true):\n"
+        "  \u2022 1m close < OR Low\n"
+        "  \u2022 Price < PDC\n"
+        "  \u2022 SPY < AVWAP\n"
+        "  \u2022 QQQ < AVWAP\n"
+        "Stop: PDC + $0.90\n"
+        "Trail: +$1.00 trigger\n"
+        "       ratchets $0.50/step\n"
+        "Size: 10 shares \u00b7 limit order\n"
+        "Max: 2 entries/ticker/day\n"
+        "EOD: closes at 15:55 ET\n"
+        "\n"
+        "Eye of the Tiger exits:\n"
+        "  \U0001f300 Bull Vacuum\n"
+        "     SPY or QQQ > AVWAP\n"
+        "  \U0001f504 Polarity Shift\n"
+        "     price > PDC\n"
+        "  (both confirmed on 1m close)\n"
+        f"{SEP}\n"
+        "\U0001f6e1 Index Regime Shield\n"
+        "  Tiger exits only fire on\n"
+        "  completed 1m bar close\n"
+        "  \u2014 no wick-outs\n"
+        f"{SEP}"
+    )
+    await update.message.reply_text(text)
 
 
 # ============================================================
@@ -3584,6 +3627,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("reset", "Reset portfolio"),
     BotCommand("algo", "Algorithm reference PDF"),
+    BotCommand("strategy", "Strategy summary"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -3601,6 +3645,7 @@ TP_BOT_COMMANDS = [
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("reset", "Reset portfolio"),
     BotCommand("algo", "Algorithm reference PDF"),
+    BotCommand("strategy", "Strategy summary"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -3691,6 +3736,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("orb", cmd_orb))
     app.add_handler(CommandHandler("monitoring", cmd_monitoring))
     app.add_handler(CommandHandler("algo", cmd_algo))
+    app.add_handler(CommandHandler("strategy", cmd_strategy))
 
     # If no separate TP token, run single bot
     if not TELEGRAM_TP_TOKEN:
@@ -3717,6 +3763,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("orb", cmd_orb))
     tp_app.add_handler(CommandHandler("monitoring", cmd_monitoring))
     tp_app.add_handler(CommandHandler("algo", cmd_algo))
+    tp_app.add_handler(CommandHandler("strategy", cmd_strategy))
 
     async def _run_both():
         loop = asyncio.get_running_loop()
