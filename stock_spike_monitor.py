@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.4"
-RELEASE_NOTE = "v2.9.4: Eye of the Tiger exits (Lords Left, Red Candle, Bull Vacuum, Polarity Shift)"
+BOT_VERSION = "2.9.5"
+RELEASE_NOTE = "v2.9.5: TP state persistence fix + OR result to TP bot"
 
 # ============================================================
 # LOGGING
@@ -88,7 +88,10 @@ def _to_cdt_hhmm(iso_str: str) -> str:
 # ============================================================
 PAPER_LOG              = os.getenv("PAPER_LOG_PATH", "investment.log")
 PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
-TP_STATE_FILE          = os.getenv("TP_STATE_FILE", "tp_state.json")
+TP_STATE_FILE          = os.getenv(
+    "TP_STATE_FILE",
+    os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "tp_state.json")
+)
 PAPER_STARTING_CAPITAL = 100_000.0
 PAPER_MODE             = True  # True = paper only, False = send webhook
 
@@ -550,6 +553,7 @@ def collect_or():
         else:
             lines.append("  %s  MISSING" % t)
     send_telegram("\n".join(lines))
+    send_tp_telegram("\n".join(lines))
 
 
 # ============================================================
