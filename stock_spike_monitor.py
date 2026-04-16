@@ -35,21 +35,20 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.11"
-RELEASE_NOTE = "v2.9.11 \u2014 Fix scan loop + PDC break exit"
+BOT_VERSION = "2.9.12"
+RELEASE_NOTE = "v2.9.12 \u2014 RED_CANDLE fires on price < Open OR price < PDC"
 
 # Human-readable exit reason labels
 REASON_LABELS = {
     "STOP": "\U0001f6d1 Hard Stop",
     "TRAIL": "\U0001f512 Trail Stop",
-    "RED_CANDLE": "\U0001f56f Red Candle (price < day open)",
+    "RED_CANDLE": "\U0001f56f Red Candle (lost daily polarity)",
     "LORDS_LEFT": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
     "LORDS_LEFT[1m]": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
     "POLARITY_SHIFT": "\U0001f504 Polarity Shift (price > PDC)",
     "BULL_VACUUM": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
     "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
     "EOD": "\U0001f514 End of Day",
-    "PDC_BREAK": "\U0001f4c9 PDC Break (price < prev close)",
 }
 
 # ============================================================
@@ -1113,22 +1112,21 @@ def manage_positions():
             tickers_to_close.append((ticker, current_price, "LORDS_LEFT[1m]"))
             continue
 
-        # ── Eye of the Tiger: "The Red Candle" — Price < today's Open ────────
+        # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
+        # Fires when 1-min confirmed close < day open OR < PDC
+        closes = [c for c in bars.get("closes", []) if c is not None]
+        ticker_1min_close = closes[-1] if closes else current_price
         opens = [o for o in bars.get("opens", []) if o is not None]
-        if opens:
-            day_open = opens[0]
-            if current_price < day_open:
-                tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
-                continue
-
-        # ── PDC Break: 1-min close < PDC (breakout thesis invalidated) ────
+        day_open = opens[0] if opens else None
         pos_pdc = pos.get("pdc") or pos.get("prev_close")
-        if pos_pdc:
-            closes = [c for c in bars.get("closes", []) if c is not None]
-            price_for_pdc_check = closes[-1] if closes else current_price
-            if price_for_pdc_check < pos_pdc:
-                tickers_to_close.append((ticker, current_price, "PDC_BREAK"))
-                continue
+        lost_polarity = False
+        if day_open is not None and ticker_1min_close < day_open:
+            lost_polarity = True
+        if pos_pdc and ticker_1min_close < pos_pdc:
+            lost_polarity = True
+        if lost_polarity:
+            tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
+            continue
 
         entry_price = pos["entry_price"]
 
@@ -1273,22 +1271,21 @@ def manage_tp_positions():
             tickers_to_close.append((ticker, current_price, "LORDS_LEFT[1m]"))
             continue
 
-        # ── Eye of the Tiger: "The Red Candle" — Price < today's Open ────────
+        # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
+        # Fires when 1-min confirmed close < day open OR < PDC
+        closes = [c for c in bars.get("closes", []) if c is not None]
+        ticker_1min_close = closes[-1] if closes else current_price
         opens = [o for o in bars.get("opens", []) if o is not None]
-        if opens:
-            day_open = opens[0]
-            if current_price < day_open:
-                tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
-                continue
-
-        # ── PDC Break: 1-min close < PDC (breakout thesis invalidated) ────
+        day_open = opens[0] if opens else None
         pos_pdc = pos.get("pdc") or pos.get("prev_close")
-        if pos_pdc:
-            closes = [c for c in bars.get("closes", []) if c is not None]
-            price_for_pdc_check = closes[-1] if closes else current_price
-            if price_for_pdc_check < pos_pdc:
-                tickers_to_close.append((ticker, current_price, "PDC_BREAK"))
-                continue
+        lost_polarity = False
+        if day_open is not None and ticker_1min_close < day_open:
+            lost_polarity = True
+        if pos_pdc and ticker_1min_close < pos_pdc:
+            lost_polarity = True
+        if lost_polarity:
+            tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
+            continue
 
         entry_price = pos["entry_price"]
 
