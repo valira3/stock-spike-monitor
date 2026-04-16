@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.14"
-RELEASE_NOTE = "v2.9.14 \u2014 Fix dayreport chunks + TP chat_id"
+BOT_VERSION = "2.9.15"
+RELEASE_NOTE = "v2.9.15 \u2014 /dayreport compact format + timestamp fix"
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -105,6 +105,39 @@ def _to_cdt_hhmmss(iso_str: str) -> str:
         return dt.astimezone(CDT).strftime("%H:%M:%S")
     except Exception:
         return iso_str
+
+
+def _parse_time_to_cdt(ts):
+    """Normalise any stored timestamp format to HH:MM CDT."""
+    if not ts:
+        return "??:??"
+    ts = str(ts).strip()
+    # ISO format with timezone offset (stored as UTC)
+    if "T" in ts and ("+" in ts or ts.endswith("Z")):
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            cdt_dt = dt.astimezone(timezone(timedelta(hours=-5)))
+            return cdt_dt.strftime("%H:%M")
+        except Exception:
+            pass
+    # HH:MM:SS or HH:MM — already local (CDT), just truncate
+    parts = ts.split(":")
+    if len(parts) >= 2:
+        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
+    return ts[:5]
+
+
+# Short reason labels for compact /dayreport display
+_SHORT_REASON = {
+    "\U0001f6d1": "\U0001f6d1 Stop",
+    "\U0001f512": "\U0001f512 Trail",
+    "\U0001f56f": "\U0001f56f Red Candle",
+    "\U0001f451": "\U0001f451 Lords Left",
+    "\U0001f504": "\U0001f504 Polarity Shift",
+    "\U0001f300": "\U0001f300 Bull Vacuum",
+    "\U0001f4c9": "\U0001f4c9 PDC Break",
+    "\U0001f514": "\U0001f514 EOD",
+}
 
 
 # ============================================================
@@ -823,7 +856,7 @@ def execute_entry(ticker, current_price):
     or_high_val = or_high.get(ticker, current_price)
     stop_price = round(or_high_val - 0.90, 2)
     entry_num = daily_entry_count.get(ticker, 0) + 1
-    now_str = _utc_now_iso()
+    now_str = _now_cdt().strftime("%H:%M:%S")
     now_hhmm = _now_cdt().strftime("%H:%M CDT")
     now_date = now_et.strftime("%Y-%m-%d")
 
@@ -1424,7 +1457,7 @@ def execute_short_entry(ticker, price):
     pdc_val = pdc.get(ticker, entry_price)
     stop = round(pdc_val + 0.90, 2)   # hard stop: $0.90 ABOVE PDC
     now_et = _now_et()
-    entry_time_iso = _utc_now_iso()
+    entry_time_cdt = _now_cdt().strftime("%H:%M:%S")
     entry_time_display = _now_cdt().strftime("%H:%M CDT")
     date_str = now_et.strftime("%Y-%m-%d")
 
@@ -1435,7 +1468,7 @@ def execute_short_entry(ticker, price):
         "stop": stop,
         "trail_stop": None,
         "trail_active": False,
-        "entry_time": entry_time_iso,
+        "entry_time": entry_time_cdt,
         "date": date_str,
         "side": "SHORT",
     }
@@ -1450,7 +1483,7 @@ def execute_short_entry(ticker, price):
         "stop": stop,
         "trail_stop": None,
         "trail_active": False,
-        "entry_time": entry_time_iso,
+        "entry_time": entry_time_cdt,
         "date": date_str,
         "side": "SHORT",
     }
@@ -2710,13 +2743,13 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _dayreport_time(t, key):
-    """Extract display time HH:MM:SS from a trade record."""
+    """Extract display time HH:MM from a trade record (CDT)."""
     iso = t.get(key + "_iso", "")
     if iso:
-        return _to_cdt_hhmmss(iso)
+        return _parse_time_to_cdt(iso)
     raw = t.get(key, "")
     if raw and ":" in raw:
-        return raw.replace(" CDT", "")
+        return _parse_time_to_cdt(raw)
     return "..."
 
 
@@ -2728,58 +2761,66 @@ def _dayreport_sort_key(t):
     return t.get("exit_time", "") or t.get("date", "")
 
 
-def _format_dayreport_section(trades, label, cash):
-    """Format one portfolio section for /dayreport."""
-    sep = "\u2500" * 30
-    if not trades:
-        return "%s\n%s\nNo completed trades today." % (label, sep)
+def _short_reason(reason_key):
+    """Map a reason key to short dayreport label."""
+    full = REASON_LABELS.get(reason_key, reason_key)
+    # Match by leading emoji character
+    if full:
+        first_char = full[0]
+        if first_char in _SHORT_REASON:
+            return _SHORT_REASON[first_char]
+    return full
 
-    trades_sorted = sorted(trades, key=_dayreport_sort_key)
-    lines = [label, sep]
-    total_pnl = 0.0
+
+def _fmt_pnl(val):
+    """Format P&L with unicode minus."""
+    if val < 0:
+        return "\u2212$%.2f" % abs(val)
+    return "+$%.2f" % val
+
+
+def _format_dayreport_section(trades, header, count_label):
+    """Format one portfolio section for /dayreport (compact 2-line).
+
+    header: e.g. '📊 Day Report — Thu Apr 16' or '' for subsequent sections.
+    count_label: e.g. 'Paper' or 'TP'.
+    """
+    SEP = "\u2500" * 26
+    lines = []
+    if header:
+        lines.append(header)
+
+    trades_sorted = sorted(trades, key=_dayreport_sort_key) if trades else []
+    total_pnl = sum(t.get("pnl", 0) for t in trades_sorted)
+
+    lines.append(SEP)
+    lines.append("%s: %d trades  P&L: %s" % (count_label, len(trades_sorted), _fmt_pnl(total_pnl)))
+    lines.append(SEP)
 
     for idx, t in enumerate(trades_sorted, 1):
         ticker = t.get("ticker", "?")
         side = t.get("side", "long")
-        side_label = "Long" if side == "long" else "Short"
-        entry_num = t.get("entry_num", 1)
+        arrow = "\u2191" if side == "long" else "\u2193"
         entry_p = t.get("entry_price", 0)
         exit_p = t.get("exit_price", t.get("price", 0))
         t_pnl = t.get("pnl", 0)
         reason = t.get("reason", "?")
-        reason_label = REASON_LABELS.get(reason, reason)
         in_time = _dayreport_time(t, "entry_time")
         out_time = _dayreport_time(t, "exit_time")
-        total_pnl += t_pnl
 
-        pnl_str = "$%+.2f" % t_pnl
-        # Use unicode minus for negative
-        if t_pnl < 0:
-            pnl_str = "\u2212$%.2f" % abs(t_pnl)
+        # Open position: no exit yet
+        has_exit = bool(t.get("exit_time_iso") or t.get("exit_time"))
+        if has_exit:
+            time_span = "%s\u2192%s" % (in_time, out_time)
+            price_str = "$%.2f\u2192$%.2f" % (entry_p, exit_p)
+        else:
+            time_span = "%s\u2192open" % in_time
+            price_str = "$%.2f" % entry_p
 
-        lines.append(
-            "%d. %s %s #%d" % (idx, ticker, side_label, entry_num)
-        )
-        lines.append(
-            "   In : %s  @ $%.2f" % (in_time, entry_p)
-        )
-        lines.append(
-            "   Out: %s  @ $%.2f" % (out_time, exit_p)
-        )
-        lines.append(
-            "   P&L: %s  Reason: %s" % (pnl_str, reason_label)
-        )
-        lines.append("")
-
-    # Remove trailing blank line
-    if lines and lines[-1] == "":
-        lines.pop()
-
-    lines.append(sep)
-    day_pnl_str = "$%+.2f" % total_pnl
-    if total_pnl < 0:
-        day_pnl_str = "\u2212$%.2f" % abs(total_pnl)
-    lines.append("Day P&L: %s" % day_pnl_str)
+        line1 = "%2d. %s %s  %s  %s" % (idx, ticker, arrow, time_span, _fmt_pnl(t_pnl))
+        line2 = "    %s  %s" % (price_str, _short_reason(reason))
+        lines.append(line1)
+        lines.append(line2)
 
     return "\n".join(lines)
 
@@ -2820,9 +2861,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if t.get("date", "") == today
         ]
         all_tp = tp_long + tp_short
-        body = _format_dayreport_section(
-            all_tp, "%s\nTP Portfolio" % header, tp_paper_cash
-        )
+        body = _format_dayreport_section(all_tp, header, "TP")
         await _reply_in_chunks(update.message, body)
         return
 
@@ -2837,9 +2876,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     all_paper = paper_long + paper_short
 
-    paper_body = _format_dayreport_section(
-        all_paper, "%s\nPaper Portfolio" % header, paper_cash
-    )
+    paper_body = _format_dayreport_section(all_paper, header, "Paper")
 
     # Also include TP section for paper bot
     tp_long = [
@@ -2853,11 +2890,8 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     all_tp = tp_long + tp_short
 
     if all_tp:
-        tp_sep = "\u2500" * 30
-        tp_body = _format_dayreport_section(
-            all_tp, "TP Portfolio", tp_paper_cash
-        )
-        full_msg = "%s\n%s\n%s" % (paper_body, tp_sep, tp_body)
+        tp_body = _format_dayreport_section(all_tp, "", "TP")
+        full_msg = "%s\n%s" % (paper_body, tp_body)
     else:
         full_msg = paper_body
 
