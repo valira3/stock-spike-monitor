@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.7"
-RELEASE_NOTE = "v2.9.7 \u2014 Fix TP entry not firing"
+BOT_VERSION = "2.9.8"
+RELEASE_NOTE = "v2.9.8 \u2014 Index Regime Shield: Tiger exits require 1-min bar close confirmation"
 
 # ============================================================
 # LOGGING
@@ -477,6 +477,24 @@ def fetch_1min_bars(ticker):
     except Exception as e:
         logger.debug("fetch_1min_bars %s failed: %s", ticker, e)
         return None
+
+
+def get_last_1min_close(ticker):
+    """Return the close price of the most recently completed 1-min bar.
+
+    Uses the existing Yahoo Finance fetch.  The last element in the closes
+    array may be the currently-forming bar, so we prefer the second-to-last
+    entry when available.  Returns None on any failure (fail-safe).
+    """
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return None
+    closes = [c for c in bars.get("closes", []) if c is not None]
+    if len(closes) >= 2:
+        return closes[-2]          # last completed bar
+    if len(closes) == 1:
+        return closes[-1]          # only one bar — best we have
+    return None
 
 
 # ============================================================
@@ -1035,18 +1053,20 @@ def manage_positions():
     tickers_to_close = []
 
     # ── Eye of the Tiger: "The Lords have left" ──────────────────────────────
-    # Exit all longs if SPY or QQQ has fallen below its AVWAP.
+    # Exit all longs if the last COMPLETED 1-min bar close of SPY or QQQ
+    # crossed below its AVWAP.  Uses bar close (not live tick) to avoid
+    # wick-out ejections.  (Index Regime Shield v2.9.8)
     spy_avwap = avwap_data["SPY"]["avwap"]
     qqq_avwap = avwap_data["QQQ"]["avwap"]
     lords_left = False
     if spy_avwap > 0 and qqq_avwap > 0:
-        spy_bars = fetch_1min_bars("SPY")
-        qqq_bars = fetch_1min_bars("QQQ")
-        if spy_bars and qqq_bars:
-            spy_cur = spy_bars["current_price"]
-            qqq_cur = qqq_bars["current_price"]
-            if spy_cur < spy_avwap or qqq_cur < qqq_avwap:
+        spy_1min = get_last_1min_close("SPY")
+        qqq_1min = get_last_1min_close("QQQ")
+        if spy_1min is not None and qqq_1min is not None:
+            if spy_1min < spy_avwap or qqq_1min < qqq_avwap:
                 lords_left = True
+        else:
+            logger.warning("SPY/QQQ 1min close unavailable — skipping Tiger check")
 
     for ticker in list(positions.keys()):
         bars = fetch_1min_bars(ticker)
@@ -1063,7 +1083,7 @@ def manage_positions():
 
         # ── Eye of the Tiger: "The Lords have left" — SPY or QQQ < AVWAP ────
         if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[1m]"))
             continue
 
         # ── Eye of the Tiger: "The Red Candle" — Price < today's Open ────────
@@ -1184,17 +1204,18 @@ def manage_tp_positions():
     tickers_to_close = []
 
     # ── Eye of the Tiger: "The Lords have left" ──────────────────────────────
+    # Uses last completed 1-min bar close (Index Regime Shield v2.9.8)
     spy_avwap = avwap_data["SPY"]["avwap"]
     qqq_avwap = avwap_data["QQQ"]["avwap"]
     lords_left = False
     if spy_avwap > 0 and qqq_avwap > 0:
-        spy_bars = fetch_1min_bars("SPY")
-        qqq_bars = fetch_1min_bars("QQQ")
-        if spy_bars and qqq_bars:
-            spy_cur = spy_bars["current_price"]
-            qqq_cur = qqq_bars["current_price"]
-            if spy_cur < spy_avwap or qqq_cur < qqq_avwap:
+        spy_1min = get_last_1min_close("SPY")
+        qqq_1min = get_last_1min_close("QQQ")
+        if spy_1min is not None and qqq_1min is not None:
+            if spy_1min < spy_avwap or qqq_1min < qqq_avwap:
                 lords_left = True
+        else:
+            logger.warning("[TP] SPY/QQQ 1min close unavailable — skipping Tiger check")
 
     for ticker in list(tp_positions.keys()):
         bars = fetch_1min_bars(ticker)
@@ -1211,7 +1232,7 @@ def manage_tp_positions():
 
         # ── Eye of the Tiger: "The Lords have left" — SPY or QQQ < AVWAP ────
         if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[1m]"))
             continue
 
         # ── Eye of the Tiger: "The Red Candle" — Price < today's Open ────────
@@ -1406,18 +1427,20 @@ def manage_short_positions():
     global short_positions, tp_short_positions
 
     # ── Eye of the Tiger: "The Bullish Vacuum" ───────────────────────────────
-    # Exit all shorts if SPY or QQQ has risen above its AVWAP.
+    # Exit all shorts if the last COMPLETED 1-min bar close of SPY or QQQ
+    # crossed above its AVWAP.  Uses bar close (not live tick) to avoid
+    # wick-out ejections.  (Index Regime Shield v2.9.8)
     spy_avwap = avwap_data["SPY"]["avwap"]
     qqq_avwap = avwap_data["QQQ"]["avwap"]
     bull_vacuum = False
     if spy_avwap > 0 and qqq_avwap > 0:
-        spy_bars = fetch_1min_bars("SPY")
-        qqq_bars = fetch_1min_bars("QQQ")
-        if spy_bars and qqq_bars:
-            spy_cur = spy_bars["current_price"]
-            qqq_cur = qqq_bars["current_price"]
-            if spy_cur > spy_avwap or qqq_cur > qqq_avwap:
+        spy_1min = get_last_1min_close("SPY")
+        qqq_1min = get_last_1min_close("QQQ")
+        if spy_1min is not None and qqq_1min is not None:
+            if spy_1min > spy_avwap or qqq_1min > qqq_avwap:
                 bull_vacuum = True
+        else:
+            logger.warning("SPY/QQQ 1min close unavailable — skipping Tiger check")
 
     for ticker in list(short_positions.keys()):
         pos = short_positions[ticker]
@@ -1459,7 +1482,7 @@ def manage_short_positions():
 
         # ── Eye of the Tiger: "The Bullish Vacuum" — SPY or QQQ > AVWAP ─────
         if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM"
+            exit_reason = "BULL_VACUUM[1m]"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
         if not exit_reason:
@@ -1508,7 +1531,7 @@ def manage_short_positions():
 
         # ── Eye of the Tiger: "The Bullish Vacuum" — SPY or QQQ > AVWAP ─────
         if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM"
+            exit_reason = "BULL_VACUUM[1m]"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
         if not exit_reason:
@@ -2289,7 +2312,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{SEP}\n"
         "Trail: +$1.00 triggers, ratchets $0.50/$0.50\n"
         "Max:   2 entries per ticker per day (each side)\n"
-        f"Halt:  Auto-halt if day P&L < {loss_limit_str}"
+        f"Halt:  Auto-halt if day P&L < {loss_limit_str}\n"
+        f"{SEP}\n"
+        "Index Regime Shield (v2.9.8)\n"
+        "  Tiger exits (Lords Left / Bull Vacuum)\n"
+        "  use 1-min bar close, not live tick"
     )
     await update.message.reply_text(text)
 
@@ -2905,6 +2932,11 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "OR   : 09:30\u201309:35 ET (first 5 min)\n"
         "Scan : every 60s \u2192 09:35\u201315:55 ET\n"
         "EOD  : force-close all at 15:55 ET\n"
+        f"{SEP}\n"
+        "\U0001f6e1 INDEX REGIME SHIELD (v2.9.8)\n"
+        "  Lords Left & Bull Vacuum exits now\n"
+        "  use last completed 1-min bar close\n"
+        "  instead of live tick \u2192 no wick-outs\n"
         f"{SEP}\n"
         "Full reference guide attached \u2193"
     )
