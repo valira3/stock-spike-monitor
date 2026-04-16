@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.10"
-RELEASE_NOTE = "v2.9.10 \u2014 Entry/exit reasons in notifications"
+BOT_VERSION = "2.9.11"
+RELEASE_NOTE = "v2.9.11 \u2014 Fix scan loop + PDC break exit"
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -49,6 +49,7 @@ REASON_LABELS = {
     "BULL_VACUUM": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
     "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
     "EOD": "\U0001f514 End of Day",
+    "PDC_BREAK": "\U0001f4c9 PDC Break (price < prev close)",
 }
 
 # ============================================================
@@ -443,7 +444,7 @@ def send_tp_telegram(message):
         )
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
-        logger.warning("[TP] Failed to send DM: %s", e)
+        logger.warning("[TP] Failed to send DM (chat_id=%s): %s", chat_id, e)
 
 
 # ============================================================
@@ -824,6 +825,7 @@ def execute_entry(ticker, current_price):
         "trail_high": current_price,
         "entry_count": entry_num,
         "entry_time": now_str,
+        "pdc": pdc.get(ticker, 0),
     }
     daily_entry_count[ticker] = entry_num
 
@@ -885,6 +887,7 @@ def execute_entry(ticker, current_price):
         "trail_high": current_price,
         "entry_count": entry_num,
         "entry_time": now_str,
+        "pdc": pdc.get(ticker, 0),
     }
     tp_paper_cash -= cost
     tp_paper_trades.append(trade.copy())
@@ -1118,6 +1121,15 @@ def manage_positions():
                 tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
                 continue
 
+        # ── PDC Break: 1-min close < PDC (breakout thesis invalidated) ────
+        pos_pdc = pos.get("pdc") or pos.get("prev_close")
+        if pos_pdc:
+            closes = [c for c in bars.get("closes", []) if c is not None]
+            price_for_pdc_check = closes[-1] if closes else current_price
+            if price_for_pdc_check < pos_pdc:
+                tickers_to_close.append((ticker, current_price, "PDC_BREAK"))
+                continue
+
         entry_price = pos["entry_price"]
 
         # Trail logic
@@ -1267,6 +1279,15 @@ def manage_tp_positions():
             day_open = opens[0]
             if current_price < day_open:
                 tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
+                continue
+
+        # ── PDC Break: 1-min close < PDC (breakout thesis invalidated) ────
+        pos_pdc = pos.get("pdc") or pos.get("prev_close")
+        if pos_pdc:
+            closes = [c for c in bars.get("closes", []) if c is not None]
+            price_for_pdc_check = closes[-1] if closes else current_price
+            if price_for_pdc_check < pos_pdc:
+                tickers_to_close.append((ticker, current_price, "PDC_BREAK"))
                 continue
 
         entry_price = pos["entry_price"]
@@ -2072,6 +2093,13 @@ def scan_loop():
     if now_et.hour == 15 and now_et.minute >= 55:
         return
 
+    n_pos = len(positions)
+    n_tp = len(tp_positions)
+    n_short = len(short_positions)
+    n_tp_short = len(tp_short_positions)
+    logger.info("Scanning %d stocks | pos=%d tp=%d short=%d tp_short=%d",
+                len(TRADE_TICKERS), n_pos, n_tp, n_short, n_tp_short)
+
     # Update AVWAP for index anchors
     update_avwap("SPY")
     update_avwap("QQQ")
@@ -2103,16 +2131,25 @@ def scan_loop():
                     regime_msg = (
                         "\U0001f534 REGIME: BEARISH\n"
                         "SPY $%.2f < AVWAP $%.2f\n"
-                        "QQQ $%.2f  AVWAP $%.2f\n"
+                        "QQQ $%.2f < AVWAP $%.2f\n"
                         "The Lords have left.  %s"
                     ) % (spy_cur_r, spy_avwap_r, qqq_cur_r, qqq_avwap_r, now_hhmm_r)
                 send_telegram(regime_msg)
                 send_tp_telegram(regime_msg)
 
     # Always manage existing positions (stops/trails) even when paused
-    manage_positions()
-    manage_tp_positions()
-    manage_short_positions()
+    try:
+        manage_positions()
+    except Exception as e:
+        logger.error("manage_positions crashed: %s", e, exc_info=True)
+    try:
+        manage_tp_positions()
+    except Exception as e:
+        logger.error("manage_tp_positions crashed: %s", e, exc_info=True)
+    try:
+        manage_short_positions()
+    except Exception as e:
+        logger.error("manage_short_positions crashed: %s", e, exc_info=True)
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
