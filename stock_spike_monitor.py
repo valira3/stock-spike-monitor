@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.24"
-RELEASE_NOTE = "v2.9.24 \u2014 fix ChatAction import (telegram.constants)"
+BOT_VERSION = "2.9.25"
+RELEASE_NOTE = "v2.9.25 \u2014 display times in CT not ET"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -2054,7 +2054,7 @@ def send_or_notification():
 
         SEP = "\u2500" * 34
         lines = [
-            "\U0001f4d0 OR LEVELS \u2014 09:36 ET",
+            "\U0001f4d0 OR LEVELS \u2014 8:36 CT",
             SEP,
         ]
 
@@ -2282,7 +2282,7 @@ def send_weekly_digest():
             lines.append("  %s  %d trades  $%+.2f" % (tk, ticker_counts[tk], ticker_pnls[tk]))
         lines.append(SEP)
         lines.append("Next week: OR strategy continues.")
-        lines.append("All 8 tickers monitored from 09:45 ET.")
+        lines.append("All 8 tickers monitored from 8:45 CT.")
 
         msg = "\n".join(lines)
         if len(msg) > 4000:
@@ -3500,9 +3500,9 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{SEP}\n"
         "Size : 10 shares (limit orders only)\n"
         "Max  : 2 long + 2 short per ticker/day\n"
-        "OR   : 09:30\u201309:35 ET (first 5 min)\n"
-        "Scan : every 60s \u2192 09:35\u201315:55 ET\n"
-        "EOD  : force-close all at 15:55 ET\n"
+        "OR   : 8:30\u20138:35 CT (first 5 min)\n"
+        "Scan : every 60s \u2192 8:35\u20142:55 CT\n"
+        "EOD  : force-close all at 2:55 CT\n"
         f"{SEP}\n"
         "\U0001f6e1 INDEX REGIME SHIELD (v2.9.8)\n"
         "  Lords Left & Bull Vacuum exits now\n"
@@ -3564,7 +3564,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\U0001f4d8 Strategy v{BOT_VERSION}\n"
         f"{SEP}\n"
         "\U0001f4c8 LONG \u2014 ORB Breakout\n"
-        "Entry after 9:45 ET (15-min buffer)\n"
+        "Entry after 8:45 CT (15-min buffer)\n"
         "Entry (all must be true):\n"
         "  \u2022 1m close > OR High\n"
         "  \u2022 Price > PDC\n"
@@ -3574,7 +3574,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Trail: +0.50% trigger | max(0.50%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 2 entries/ticker/day\n"
-        "EOD: closes at 15:55 ET\n"
+        "EOD: closes at 2:55 CT\n"
         "\n"
         "Eye of the Tiger exits:\n"
         "  \U0001f56f Red Candle\n"
@@ -3584,7 +3584,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  (both confirmed on 1m close)\n"
         f"{SEP}\n"
         "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
-        "Entry after 9:45 ET (15-min buffer)\n"
+        "Entry after 8:45 CT (15-min buffer)\n"
         "Entry (all must be true):\n"
         "  \u2022 1m close < OR Low\n"
         "  \u2022 Price < PDC\n"
@@ -3594,7 +3594,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Trail: +0.50% trigger | max(0.50%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 2 entries/ticker/day\n"
-        "EOD: closes at 15:55 ET\n"
+        "EOD: closes at 2:55 CT\n"
         "\n"
         "Eye of the Tiger exits:\n"
         "  \U0001f300 Bull Vacuum\n"
@@ -3975,7 +3975,7 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if or_collected_date != today:
         await update.message.reply_text(
-            "OR not collected yet \u2014 runs at 09:35 ET."
+            "OR not collected yet \u2014 runs at 8:35 CT."
         )
         return
 
@@ -4152,8 +4152,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         SEP = "\u2500" * 26
         text = (
             "Strategy v%s\n%s\n" % (BOT_VERSION, SEP)
-            + "Long: ORB Breakout after 9:45 ET\n"
-            "Short: Wounded Buffalo after 9:45 ET\n"
+            + "Long: ORB Breakout after 8:45 CT\n"
+            "Short: Wounded Buffalo after 8:45 CT\n"
             "Trail: +0.50%% trigger | min $1.00\n"
             "Size: 10 shares | Max 2/ticker/day\n"
             "%s\nUse /strategy for full details" % SEP
@@ -4184,7 +4184,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now_et = _now_et()
         today = now_et.strftime("%Y-%m-%d")
         if or_collected_date != today:
-            await query.message.reply_text("OR not collected yet \u2014 runs at 09:35 ET.")
+            await query.message.reply_text("OR not collected yet \u2014 runs at 8:35 CT.")
         else:
             orb_lines = ["\U0001f4d0 TODAY'S OR LEVELS \u2014 %s" % today]
             for t in TRADE_TICKERS:
