@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.29"
-RELEASE_NOTE = "v2.9.29 \u2014 fix /positions equity: cash + market value (not unrealized)"
+BOT_VERSION = "2.9.30"
+RELEASE_NOTE = "v2.9.30 \u2014 /positions: live trail stop + peak when trail active"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -2948,13 +2948,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     mkt_val = cur * shares
                     total_unreal_pnl += pos_pnl
                     total_market_value += mkt_val
-                    stop_tag = "[trail active]" if pos["trail_active"] else "[stop]"
+                    if pos.get("trail_active") and pos.get("trail_stop") and pos["trail_stop"] > 0:
+                        peak = pos.get("trail_high", 0)
+                        stop_line = "  Stop:   $%.2f [\U0001f3af trail | peak $%.2f]" % (pos["trail_stop"], peak)
+                    else:
+                        stop_line = "  Stop:   $%.2f [stop]" % pos["stop"]
                     lines.append("%s  %d shares" % (ticker, shares))
                     lines.append("  Entry:  $%.2f  ->  Now: $%.2f" % (entry_p, cur))
                     lines.append("  P&L:   $%+.2f (%+.1f%%)" % (pos_pnl, pos_pnl_pct))
                     mkt_val_fmt = format(mkt_val, ",.2f")
                     lines.append("  Value:  $%s" % mkt_val_fmt)
-                    lines.append("  Stop:   $%.2f %s" % (pos["stop"], stop_tag))
+                    lines.append(stop_line)
                 else:
                     mkt_val = entry_p * shares
                     total_market_value += mkt_val
@@ -2993,8 +2997,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if s_bars:
                     s_cur = s_bars["current_price"]
                     s_pnl = (s_entry - s_cur) * s_shares
-                    lines.append("%s  Entry $%.2f  Stop $%.2f"
-                                 % (s_ticker, s_entry, s_pos["stop"]))
+                    if s_pos.get("trail_active") and s_pos.get("trail_stop") and s_pos["trail_stop"] > 0:
+                        s_low = s_pos.get("trail_low", 0)
+                        s_stop_txt = "$%.2f [\U0001f3af trail | low  $%.2f]" % (s_pos["trail_stop"], s_low)
+                    else:
+                        s_stop_txt = "$%.2f [stop]" % s_pos["stop"]
+                    lines.append("%s  Entry $%.2f  Stop %s"
+                                 % (s_ticker, s_entry, s_stop_txt))
                     lines.append("      Current $%.2f  P&L $%+.2f"
                                  % (s_cur, s_pnl))
                 else:
@@ -3054,7 +3063,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mkt_val = cur * shares
                 total_unreal_pnl += pos_pnl
                 total_market_value += mkt_val
-                stop_tag = "[trail active]" if pos["trail_active"] else "[stop]"
+                if pos.get("trail_active") and pos.get("trail_stop") and pos["trail_stop"] > 0:
+                    peak = pos.get("trail_high", 0)
+                    stop_line = "  Stop:   $%.2f [\U0001f3af trail | peak $%.2f]" % (pos["trail_stop"], peak)
+                else:
+                    stop_line = "  Stop:   $%.2f [stop]" % pos["stop"]
                 lines.append("%s  %d shares" % (ticker, shares))
                 lines.append(
                     "  Entry:  $%.2f  ->  Now: $%.2f" % (entry_p, cur)
@@ -3065,9 +3078,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(
                     "  Value:  $%s" % format(mkt_val, ",.2f")
                 )
-                lines.append(
-                    "  Stop:   $%.2f %s" % (pos["stop"], stop_tag)
-                )
+                lines.append(stop_line)
             else:
                 mkt_val = entry_p * shares
                 total_market_value += mkt_val
@@ -3105,8 +3116,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if s_bars:
                 s_cur = s_bars["current_price"]
                 s_pnl = (s_entry - s_cur) * s_shares
-                lines.append("%s  Entry $%.2f  Stop $%.2f"
-                             % (s_ticker, s_entry, s_pos["stop"]))
+                if s_pos.get("trail_active") and s_pos.get("trail_stop") and s_pos["trail_stop"] > 0:
+                    s_low = s_pos.get("trail_low", 0)
+                    s_stop_txt = "$%.2f [\U0001f3af trail | low  $%.2f]" % (s_pos["trail_stop"], s_low)
+                else:
+                    s_stop_txt = "$%.2f [stop]" % s_pos["stop"]
+                lines.append("%s  Entry $%.2f  Stop %s"
+                             % (s_ticker, s_entry, s_stop_txt))
                 lines.append("      Current $%.2f  P&L $%+.2f"
                              % (s_cur, s_pnl))
             else:
@@ -3201,12 +3217,16 @@ def _build_positions_text(is_tp=False):
                 mkt_val = cur * sh
                 total_unreal += pnl
                 total_market_value += mkt_val
-                stop_tag = "[trail active]" if pos["trail_active"] else "[stop]"
+                if pos.get("trail_active") and pos.get("trail_stop") and pos["trail_stop"] > 0:
+                    peak = pos.get("trail_high", 0)
+                    stop_line = "  Stop:   $%.2f [\U0001f3af trail | peak $%.2f]" % (pos["trail_stop"], peak)
+                else:
+                    stop_line = "  Stop:   $%.2f [stop]" % pos["stop"]
                 lines.append("%s  %d shares" % (ticker, sh))
                 lines.append("  Entry:  $%.2f  ->  Now: $%.2f" % (ep, cur))
                 lines.append("  P&L:   $%+.2f (%+.1f%%)" % (pnl, pct))
                 lines.append("  Value:  $%s" % format(mkt_val, ",.2f"))
-                lines.append("  Stop:   $%.2f %s" % (pos["stop"], stop_tag))
+                lines.append(stop_line)
             else:
                 mkt_val = ep * sh
                 total_market_value += mkt_val
@@ -3235,7 +3255,12 @@ def _build_positions_text(is_tp=False):
             if s_bars:
                 s_cur = s_bars["current_price"]
                 s_pnl = (s_entry - s_cur) * s_shares
-                lines.append("%s  Entry $%.2f  Stop $%.2f" % (s_ticker, s_entry, s_pos["stop"]))
+                if s_pos.get("trail_active") and s_pos.get("trail_stop") and s_pos["trail_stop"] > 0:
+                    s_low = s_pos.get("trail_low", 0)
+                    s_stop_txt = "$%.2f [\U0001f3af trail | low  $%.2f]" % (s_pos["trail_stop"], s_low)
+                else:
+                    s_stop_txt = "$%.2f [stop]" % s_pos["stop"]
+                lines.append("%s  Entry $%.2f  Stop %s" % (s_ticker, s_entry, s_stop_txt))
                 lines.append("      Current $%.2f  P&L $%+.2f" % (s_cur, s_pnl))
             else:
                 lines.append("%s  Entry $%.2f  Stop $%.2f  (price unavailable)"
