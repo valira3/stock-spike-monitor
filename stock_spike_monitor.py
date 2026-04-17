@@ -20,8 +20,9 @@ from zoneinfo import ZoneInfo
 from telegram import (
     BotCommand, BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats, BotCommandScopeDefault, Update,
-    InlineKeyboardMarkup, InlineKeyboardButton, ChatAction,
+    InlineKeyboardMarkup, InlineKeyboardButton,
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, CallbackQueryHandler,
 )
@@ -36,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.23"
-RELEASE_NOTE = "v2.9.23 \u2014 polished UX: inline keyboards, typing indicators, /menu, /help categories, stale copy fixes"
+BOT_VERSION = "2.9.24"
+RELEASE_NOTE = "v2.9.24 \u2014 fix ChatAction import (telegram.constants)"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
