@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.17"
-RELEASE_NOTE = "v2.9.17 \u2014 FMP quotes + OR sanity check (prevent stale-data entries)"
+BOT_VERSION = "2.9.18"
+RELEASE_NOTE = "v2.9.18 \u2014 FMP stable endpoint (v3 was deprecated)"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 
@@ -563,8 +563,8 @@ def get_fmp_quote(ticker):
     """Fetch real-time quote from FMP. Returns dict or None on error."""
     try:
         url = (
-            "https://financialmodelingprep.com/api/v3/quote/%s"
-            "?apikey=%s" % (ticker, FMP_API_KEY)
+            "https://financialmodelingprep.com/stable/quote"
+            "?symbol=%s&apikey=%s" % (ticker, FMP_API_KEY)
         )
         req = urllib.request.Request(url, headers=YAHOO_HEADERS)
         with urllib.request.urlopen(req, timeout=5) as resp:
