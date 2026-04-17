@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.19"
-RELEASE_NOTE = "v2.9.19 \u2014 pre-market self-test + /test command"
+BOT_VERSION = "2.9.20"
+RELEASE_NOTE = "v2.9.20 \u2014 percentage-based trailing stop (Bison Standard)"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -44,7 +44,7 @@ FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
 # Human-readable exit reason labels
 REASON_LABELS = {
     "STOP": "\U0001f6d1 Hard Stop",
-    "TRAIL": "\U0001f512 Trail Stop",
+    "TRAIL": "\U0001f3af Trail Stop",
     "RED_CANDLE": "\U0001f56f Red Candle (lost daily polarity)",
     "LORDS_LEFT": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
     "LORDS_LEFT[1m]": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
@@ -1107,6 +1107,10 @@ def close_position(ticker, price, reason="STOP"):
     entry_cost_val = round(entry_price * shares, 2)
     SEP_X = "\u2500" * 34
     reason_label = REASON_LABELS.get(reason, reason)
+    if reason == "TRAIL":
+        t_high = pos.get("trail_high", price)
+        t_dist = max(round(t_high * 0.005, 2), 1.00)
+        reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % t_dist
     msg = (
         "%s EXIT %s\n"
         "%s\n"
@@ -1178,6 +1182,10 @@ def close_position(ticker, price, reason="STOP"):
         tp_entry_cost = round(tp_entry * tp_shares, 2)
         tp_proceeds = round(price * tp_shares, 2)
         tp_reason_label = REASON_LABELS.get(reason, reason)
+        if reason == "TRAIL":
+            tp_t_high = tp_pos.get("trail_high", price)
+            tp_t_dist = max(round(tp_t_high * 0.005, 2), 1.00)
+            tp_reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % tp_t_dist
         tp_msg = (
             "[TP] %s EXIT %s\n"
             "%s\n"
@@ -1257,24 +1265,25 @@ def manage_positions():
 
         entry_price = pos["entry_price"]
 
-        # Trail logic
-        if not pos["trail_active"]:
-            # Activate trail at +$1.00/share above entry
-            if current_price >= entry_price + TRAIL_TRIGGER:
-                pos["trail_active"] = True
-                pos["stop"] = round(entry_price + TRAIL_STEP, 2)
-                pos["trail_high"] = entry_price + TRAIL_TRIGGER
-                logger.info("Trail activated for %s: stop raised to $%.2f",
-                            ticker, pos["stop"])
-        else:
-            # Ratchet: for every $0.50 above trail_high, move stop up $0.50
-            if current_price > pos["trail_high"] + TRAIL_STEP:
-                steps = int((current_price - pos["trail_high"]) / TRAIL_STEP)
-                pos["stop"] = round(pos["stop"] + steps * TRAIL_STEP, 2)
-                pos["trail_high"] = round(
-                    pos["trail_high"] + steps * TRAIL_STEP, 2)
-                logger.info("Trail ratchet %s: stop=$%.2f trail_high=$%.2f",
-                            ticker, pos["stop"], pos["trail_high"])
+        # Percentage trail: trigger +0.50%, trail max(price*0.5%, $1.00)
+        trail_trigger_price = entry_price * 1.005
+
+        if not pos["trail_active"] and current_price >= trail_trigger_price:
+            pos["trail_active"] = True
+            pos["trail_high"] = current_price
+            logger.info("Trail activated for %s at $%.2f", ticker, current_price)
+
+        if pos["trail_active"]:
+            if current_price > pos.get("trail_high", current_price):
+                pos["trail_high"] = current_price
+            best = pos["trail_high"]
+            trail_dist = max(round(best * 0.005, 2), 1.00)
+            new_trail_stop = round(best - trail_dist, 2)
+            if new_trail_stop > pos.get("trail_stop", 0):
+                pos["trail_stop"] = new_trail_stop
+            if current_price <= pos["trail_stop"]:
+                tickers_to_close.append((ticker, current_price, "TRAIL"))
+                continue
 
     # Close positions outside the loop to avoid mutation during iteration
     for ticker, price, reason in tickers_to_close:
@@ -1420,22 +1429,25 @@ def manage_tp_positions():
 
         entry_price = pos["entry_price"]
 
-        # Trail logic
-        if not pos["trail_active"]:
-            if current_price >= entry_price + TRAIL_TRIGGER:
-                pos["trail_active"] = True
-                pos["stop"] = round(entry_price + TRAIL_STEP, 2)
-                pos["trail_high"] = entry_price + TRAIL_TRIGGER
-                logger.info("[TP] Trail activated for %s: stop raised to $%.2f",
-                            ticker, pos["stop"])
-        else:
-            if current_price > pos["trail_high"] + TRAIL_STEP:
-                steps = int((current_price - pos["trail_high"]) / TRAIL_STEP)
-                pos["stop"] = round(pos["stop"] + steps * TRAIL_STEP, 2)
-                pos["trail_high"] = round(
-                    pos["trail_high"] + steps * TRAIL_STEP, 2)
-                logger.info("[TP] Trail ratchet %s: stop=$%.2f trail_high=$%.2f",
-                            ticker, pos["stop"], pos["trail_high"])
+        # Percentage trail: trigger +0.50%, trail max(price*0.5%, $1.00)
+        trail_trigger_price = entry_price * 1.005
+
+        if not pos["trail_active"] and current_price >= trail_trigger_price:
+            pos["trail_active"] = True
+            pos["trail_high"] = current_price
+            logger.info("[TP] Trail activated for %s at $%.2f", ticker, current_price)
+
+        if pos["trail_active"]:
+            if current_price > pos.get("trail_high", current_price):
+                pos["trail_high"] = current_price
+            best = pos["trail_high"]
+            trail_dist = max(round(best * 0.005, 2), 1.00)
+            new_trail_stop = round(best - trail_dist, 2)
+            if new_trail_stop > pos.get("trail_stop", 0):
+                pos["trail_stop"] = new_trail_stop
+            if current_price <= pos["trail_stop"]:
+                tickers_to_close.append((ticker, current_price, "TRAIL"))
+                continue
 
     # Close TP positions outside the loop
     for ticker, price, reason in tickers_to_close:
@@ -1656,21 +1668,25 @@ def manage_short_positions():
             continue
         current_price = bars["current_price"]
 
-        # Activate trail when profit >= $1.00/share
-        if not trail_active and (entry_price - current_price) >= 1.00:
-            trail_active = True
-            trail_stop = round(entry_price - 0.50, 2)
-            short_positions[ticker]["trail_active"] = True
-            short_positions[ticker]["trail_stop"] = trail_stop
+        # Percentage trail: trigger -0.50%, trail max(price*0.5%, $1.00)
+        trail_trigger_price = entry_price * 0.995
 
-        # Ratchet trail down
-        if trail_active and trail_stop is not None:
-            trail_anchor = entry_price - 0.50
-            steps = int((trail_anchor - current_price) / 0.50)
-            new_trail = round(entry_price - 0.50 - (steps * 0.50), 2)
-            if new_trail < trail_stop:
-                short_positions[ticker]["trail_stop"] = new_trail
-                trail_stop = new_trail
+        if not trail_active and current_price <= trail_trigger_price:
+            trail_active = True
+            short_positions[ticker]["trail_active"] = True
+            short_positions[ticker]["trail_low"] = current_price
+
+        if trail_active:
+            trail_low = short_positions[ticker].get("trail_low", current_price)
+            if current_price < trail_low:
+                trail_low = current_price
+                short_positions[ticker]["trail_low"] = trail_low
+            trail_dist = max(round(trail_low * 0.005, 2), 1.00)
+            new_trail_stop = round(trail_low + trail_dist, 2)
+            old_trail_stop = short_positions[ticker].get("trail_stop")
+            if old_trail_stop is None or new_trail_stop < old_trail_stop:
+                short_positions[ticker]["trail_stop"] = new_trail_stop
+            trail_stop = short_positions[ticker]["trail_stop"]
 
         # Check stop conditions
         exit_reason = None
@@ -1708,19 +1724,25 @@ def manage_short_positions():
             continue
         current_price = bars["current_price"]
 
-        if not trail_active and (entry_price - current_price) >= 1.00:
-            trail_active = True
-            trail_stop = round(entry_price - 0.50, 2)
-            tp_short_positions[ticker]["trail_active"] = True
-            tp_short_positions[ticker]["trail_stop"] = trail_stop
+        # Percentage trail: trigger -0.50%, trail max(price*0.5%, $1.00)
+        trail_trigger_price = entry_price * 0.995
 
-        if trail_active and trail_stop is not None:
-            trail_anchor = entry_price - 0.50
-            steps = int((trail_anchor - current_price) / 0.50)
-            new_trail = round(entry_price - 0.50 - (steps * 0.50), 2)
-            if new_trail < trail_stop:
-                tp_short_positions[ticker]["trail_stop"] = new_trail
-                trail_stop = new_trail
+        if not trail_active and current_price <= trail_trigger_price:
+            trail_active = True
+            tp_short_positions[ticker]["trail_active"] = True
+            tp_short_positions[ticker]["trail_low"] = current_price
+
+        if trail_active:
+            trail_low = tp_short_positions[ticker].get("trail_low", current_price)
+            if current_price < trail_low:
+                trail_low = current_price
+                tp_short_positions[ticker]["trail_low"] = trail_low
+            trail_dist = max(round(trail_low * 0.005, 2), 1.00)
+            new_trail_stop = round(trail_low + trail_dist, 2)
+            old_trail_stop = tp_short_positions[ticker].get("trail_stop")
+            if old_trail_stop is None or new_trail_stop < old_trail_stop:
+                tp_short_positions[ticker]["trail_stop"] = new_trail_stop
+            trail_stop = tp_short_positions[ticker]["trail_stop"]
 
         exit_reason = None
         if trail_active and trail_stop is not None:
@@ -1807,6 +1829,10 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         sc_cover_total = round(cover_price * shares, 2)
         sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
         sc_reason_label = REASON_LABELS.get(reason, reason)
+        if reason == "TRAIL":
+            sc_t_low = pos.get("trail_low", cover_price)
+            sc_t_dist = max(round(sc_t_low * 0.005, 2), 1.00)
+            sc_reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % sc_t_dist
         msg = (
             "%s SHORT CLOSED\n"
             "%s\n"
@@ -1839,6 +1865,10 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         tp_sc_cover_total = round(cover_price * shares, 2)
         tp_sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
         tp_sc_reason_label = REASON_LABELS.get(reason, reason)
+        if reason == "TRAIL":
+            tp_sc_t_low = pos.get("trail_low", cover_price)
+            tp_sc_t_dist = max(round(tp_sc_t_low * 0.005, 2), 1.00)
+            tp_sc_reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % tp_sc_t_dist
         tp_msg = (
             "%s TP SHORT CLOSED\n"
             "%s\n"
@@ -3407,8 +3437,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 SPY > AVWAP\n"
         "  \u2022 QQQ > AVWAP\n"
         "Stop: OR High \u2212 $0.90\n"
-        "Trail: +$1.00 trigger\n"
-        "       ratchets $0.50/step\n"
+        "Trail: +0.50% trigger | max(0.50%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 2 entries/ticker/day\n"
         "EOD: closes at 15:55 ET\n"
@@ -3427,8 +3456,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 SPY < AVWAP\n"
         "  \u2022 QQQ < AVWAP\n"
         "Stop: PDC + $0.90\n"
-        "Trail: +$1.00 trigger\n"
-        "       ratchets $0.50/step\n"
+        "Trail: +0.50% trigger | max(0.50%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 2 entries/ticker/day\n"
         "EOD: closes at 15:55 ET\n"
