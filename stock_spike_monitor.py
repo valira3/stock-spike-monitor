@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.28"
-RELEASE_NOTE = "v2.9.27 \u2014 /or_now command: manual OR recovery for missing tickers"
+BOT_VERSION = "2.9.29"
+RELEASE_NOTE = "v2.9.29 \u2014 fix /positions equity: cash + market value (not unrealized)"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -3006,19 +3006,23 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Portfolio equity summary
         tp_short_unreal = 0.0
+        tp_short_mkt_val = 0.0
         for s_ticker, s_pos in tp_short_positions.items():
             s_bars = fetch_1min_bars(s_ticker)
             if s_bars:
                 tp_short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
+            tp_short_mkt_val += s_pos["entry_price"] * s_pos["shares"]
         tp_all_unreal = total_unreal_pnl + tp_short_unreal
-        tp_equity = tp_paper_cash + tp_all_unreal
+        tp_all_mkt_val = total_market_value + tp_short_mkt_val
+        tp_equity = tp_paper_cash + tp_all_mkt_val
         tp_vs_start = tp_equity - PAPER_STARTING_CAPITAL
         lines.append(sep)
         lines.append("\U0001f4bc Portfolio Snapshot")
-        lines.append("  Cash:      $%s" % format(tp_paper_cash, ",.2f"))
-        lines.append("  Unrealized:   $%+.2f" % tp_all_unreal)
-        lines.append("  Total Equity: $%s" % format(tp_equity, ",.2f"))
-        lines.append("  vs Start:      $%+.2f  (started at $%s)"
+        lines.append("  Cash:          $%s" % format(tp_paper_cash, ",.2f"))
+        lines.append("  Market Value:  $%s" % format(tp_all_mkt_val, ",.2f"))
+        lines.append("  Total Equity:  $%s" % format(tp_equity, ",.2f"))
+        lines.append("  Unrealized P&L:    $%+.2f" % tp_all_unreal)
+        lines.append("  vs Start:        $%+.2f  (started at $%s)"
                      % (tp_vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
         lines.append(sep)
 
@@ -3113,19 +3117,23 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Portfolio equity summary
     short_unreal = 0.0
+    short_mkt_val = 0.0
     for s_ticker, s_pos in short_positions.items():
         s_bars = fetch_1min_bars(s_ticker)
         if s_bars:
             short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
+        short_mkt_val += s_pos["entry_price"] * s_pos["shares"]
     all_unreal = total_unreal_pnl + short_unreal
-    equity = paper_cash + all_unreal
+    all_mkt_val = total_market_value + short_mkt_val
+    equity = paper_cash + all_mkt_val
     vs_start = equity - PAPER_STARTING_CAPITAL
     lines.append(sep)
     lines.append("\U0001f4bc Portfolio Snapshot")
-    lines.append("  Cash:      $%s" % format(paper_cash, ",.2f"))
-    lines.append("  Unrealized:   $%+.2f" % all_unreal)
-    lines.append("  Total Equity: $%s" % format(equity, ",.2f"))
-    lines.append("  vs Start:      $%+.2f  (started at $%s)"
+    lines.append("  Cash:          $%s" % format(paper_cash, ",.2f"))
+    lines.append("  Market Value:  $%s" % format(all_mkt_val, ",.2f"))
+    lines.append("  Total Equity:  $%s" % format(equity, ",.2f"))
+    lines.append("  Unrealized P&L:    $%+.2f" % all_unreal)
+    lines.append("  vs Start:        $%+.2f  (started at $%s)"
                  % (vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
     lines.append(sep)
 
@@ -3178,6 +3186,7 @@ def _build_positions_text(is_tp=False):
     n_pos = len(pos_dict)
     lines = ["%s (%d)" % (label, n_pos), sep]
     total_unreal = 0.0
+    total_market_value = 0.0
     if not pos_dict:
         lines.append("No open positions")
     else:
@@ -3189,18 +3198,24 @@ def _build_positions_text(is_tp=False):
                 cur = bars["current_price"]
                 pnl = (cur - ep) * sh
                 pct = ((cur - ep) / ep * 100) if ep else 0
+                mkt_val = cur * sh
                 total_unreal += pnl
+                total_market_value += mkt_val
                 stop_tag = "[trail active]" if pos["trail_active"] else "[stop]"
                 lines.append("%s  %d shares" % (ticker, sh))
                 lines.append("  Entry:  $%.2f  ->  Now: $%.2f" % (ep, cur))
                 lines.append("  P&L:   $%+.2f (%+.1f%%)" % (pnl, pct))
+                lines.append("  Value:  $%s" % format(mkt_val, ",.2f"))
                 lines.append("  Stop:   $%.2f %s" % (pos["stop"], stop_tag))
             else:
+                mkt_val = ep * sh
+                total_market_value += mkt_val
                 lines.append("%s  %d shares" % (ticker, sh))
                 lines.append("  Entry:  $%.2f  ->  price unavailable" % ep)
             lines.append(sep)
     if pos_dict:
         lines.append("Total Unrealized P&L: $%+.2f" % total_unreal)
+        lines.append("Total Market Value:   $%s" % format(total_market_value, ",.2f"))
     today = now_et.strftime("%Y-%m-%d")
     today_sells = [t for t in trades_list if t.get("action") == "SELL" and t.get("date") == today]
     short_today = [t for t in short_hist if t.get("date") == today]
@@ -3229,19 +3244,23 @@ def _build_positions_text(is_tp=False):
 
     # Portfolio equity summary
     short_unreal = 0.0
+    short_mkt_val = 0.0
     for s_ticker, s_pos in short_dict.items():
         s_bars = fetch_1min_bars(s_ticker)
         if s_bars:
             short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
+        short_mkt_val += s_pos["entry_price"] * s_pos["shares"]
     all_unreal = total_unreal + short_unreal
-    equity = cash + all_unreal
+    all_mkt_val = total_market_value + short_mkt_val
+    equity = cash + all_mkt_val
     vs_start = equity - PAPER_STARTING_CAPITAL
     lines.append(sep)
     lines.append("\U0001f4bc Portfolio Snapshot")
-    lines.append("  Cash:      $%s" % format(cash, ",.2f"))
-    lines.append("  Unrealized:   $%+.2f" % all_unreal)
-    lines.append("  Total Equity: $%s" % format(equity, ",.2f"))
-    lines.append("  vs Start:      $%+.2f  (started at $%s)"
+    lines.append("  Cash:          $%s" % format(cash, ",.2f"))
+    lines.append("  Market Value:  $%s" % format(all_mkt_val, ",.2f"))
+    lines.append("  Total Equity:  $%s" % format(equity, ",.2f"))
+    lines.append("  Unrealized P&L:    $%+.2f" % all_unreal)
+    lines.append("  vs Start:        $%+.2f  (started at $%s)"
                  % (vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
     lines.append(sep)
 
