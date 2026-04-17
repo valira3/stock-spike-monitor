@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.31"
-RELEASE_NOTE = "v2.9.31 \u2014 trail 0.5% \u2192 1.0% trigger and distance"
+BOT_VERSION = "2.9.32"
+RELEASE_NOTE = "v2.9.32 \u2014 daily entry cap 2 \u2192 4 per ticker"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -221,7 +221,7 @@ positions: dict = {}
 # }
 
 # Entry counts per day (reset daily)
-daily_entry_count: dict = {}   # ticker -> count (max 2)
+daily_entry_count: dict = {}   # ticker -> count (max 4)
 daily_entry_date: str = ""
 
 # Paper trading log (today's trades)
@@ -841,8 +841,8 @@ def check_entry(ticker):
     if ticker not in or_high or ticker not in pdc:
         return False, None
 
-    # Daily entry cap (max 2)
-    if daily_entry_count.get(ticker, 0) >= 2:
+    # Daily entry cap (max 4)
+    if daily_entry_count.get(ticker, 0) >= 4:
         return False, None
 
     # Not already in position
@@ -1581,8 +1581,8 @@ def check_short_entry(ticker):
     if now_et.hour == 9 and now_et.minute < 45:
         return
 
-    # Max 2 short entries per ticker per day
-    if daily_short_entry_count.get(ticker, 0) >= 2:
+    # Max 4 short entries per ticker per day
+    if daily_short_entry_count.get(ticker, 0) >= 4:
         return
 
     # Already in a short position for this ticker (paper)
@@ -3746,7 +3746,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Stop: OR High \u2212 $0.90\n"
         "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
-        "Max: 2 entries/ticker/day\n"
+        "Max: 4 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
         "\n"
         "Eye of the Tiger exits:\n"
@@ -3766,7 +3766,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Stop: PDC + $0.90\n"
         "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
-        "Max: 2 entries/ticker/day\n"
+        "Max: 4 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
         "\n"
         "Eye of the Tiger exits:\n"
@@ -4086,7 +4086,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Long entry eligible?
     in_position = ticker in positions
-    at_max_entries = daily_entry_count.get(ticker, 0) >= 2
+    at_max_entries = daily_entry_count.get(ticker, 0) >= 4
     index_ok = spy_ok and qqq_ok
     long_eligible = not in_position and not at_max_entries and index_ok and not _trading_halted
 
@@ -4097,7 +4097,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if in_position:
             reasons.append("in position")
         if at_max_entries:
-            reasons.append("2 entries today")
+            reasons.append("4 entries today")
         if not index_ok:
             reasons.append("index filter fails")
         if _trading_halted:
@@ -4107,7 +4107,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Short entry eligible?
     in_short = ticker in short_positions
-    at_max_shorts = daily_short_entry_count.get(ticker, 0) >= 2
+    at_max_shorts = daily_short_entry_count.get(ticker, 0) >= 4
     index_bearish = spy_below and qqq_below
     below_or_low = (orl is not None and cur_price < orl)
     below_pdc_short = (pdc_strat is not None and cur_price < pdc_strat)
@@ -4121,7 +4121,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if in_short:
             s_reasons.append("in short position")
         if at_max_shorts:
-            s_reasons.append("2 short entries today")
+            s_reasons.append("4 short entries today")
         if not index_bearish:
             s_reasons.append("index filter not bearish")
         if not below_or_low:
@@ -4328,7 +4328,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "Long: ORB Breakout after 8:45 CT\n"
             "Short: Wounded Buffalo after 8:45 CT\n"
             "Trail: +1.0%% trigger | min $1.00\n"
-            "Size: 10 shares | Max 2/ticker/day\n"
+            "Size: 10 shares | Max 4/ticker/day\n"
             "%s\nUse /strategy for full details" % SEP
         )
         await query.message.reply_text(text)
