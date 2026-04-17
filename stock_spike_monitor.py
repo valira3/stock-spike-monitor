@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.25"
-RELEASE_NOTE = "v2.9.25 \u2014 display times in CT not ET"
+BOT_VERSION = "2.9.26"
+RELEASE_NOTE = "v2.9.26 \u2014 OR retry (3x, 60s) + FMP fallback for missing tickers"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -684,6 +684,81 @@ def collect_or():
                         ticker, or_high[ticker], or_low_val, pdc[ticker])
         except Exception as e:
             logger.error("OR collection error for %s: %s", ticker, e)
+
+    # ------ Retry missing tickers (3 attempts, 60s apart) ------
+    OR_RETRY_MAX = 3
+    for attempt in range(1, OR_RETRY_MAX + 1):
+        missing = [t for t in TICKERS if t not in or_high]
+        if not missing:
+            break
+        logger.info("OR retry %d/%d for: %s", attempt, OR_RETRY_MAX,
+                     ", ".join(missing))
+        time.sleep(60)
+        for ticker in missing:
+            try:
+                bars = fetch_1min_bars(ticker)
+                if not bars:
+                    continue
+                max_high = None
+                min_low = None
+                for i, ts in enumerate(bars["timestamps"]):
+                    if open_ts <= ts < end_ts:
+                        h = bars["highs"][i]
+                        if h is None:
+                            h = bars["closes"][i]
+                        if h is not None:
+                            if max_high is None or h > max_high:
+                                max_high = h
+                        lo = bars["lows"][i]
+                        if lo is None:
+                            lo = bars["closes"][i]
+                        if lo is not None:
+                            if min_low is None or lo < min_low:
+                                min_low = lo
+                if max_high is None:
+                    continue
+                or_high[ticker] = max_high
+                if min_low is not None:
+                    or_low[ticker] = min_low
+                pdc[ticker] = bars["pdc"]
+                # FMP cross-check on retry too
+                fmp_q = get_fmp_quote(ticker)
+                if fmp_q:
+                    fmp_high = fmp_q.get("dayHigh")
+                    fmp_low = fmp_q.get("dayLow")
+                    fmp_pdc = fmp_q.get("previousClose")
+                    if fmp_high and fmp_high < or_high[ticker]:
+                        or_high[ticker] = fmp_high
+                    if fmp_low and ticker in or_low and fmp_low > or_low[ticker]:
+                        or_low[ticker] = fmp_low
+                    if fmp_pdc and fmp_pdc > 0:
+                        pdc[ticker] = fmp_pdc
+                logger.info("OR retry OK: %s OR_H=%.2f OR_L=%.2f",
+                            ticker, or_high[ticker], or_low.get(ticker, 0))
+            except Exception as e:
+                logger.warning("OR retry failed for %s: %s", ticker, e)
+
+    # ------ FMP fallback for anything still missing ------
+    still_missing = [t for t in TICKERS if t not in or_high]
+    for ticker in still_missing:
+        try:
+            fmp = get_fmp_quote(ticker)
+            if fmp and fmp.get("dayHigh") and fmp.get("dayLow"):
+                or_high[ticker] = fmp["dayHigh"]
+                or_low[ticker] = fmp["dayLow"]
+                if fmp.get("previousClose") and fmp["previousClose"] > 0:
+                    pdc[ticker] = fmp["previousClose"]
+                logger.warning("OR fallback to FMP for %s: high=%.2f low=%.2f",
+                               ticker, fmp["dayHigh"], fmp["dayLow"])
+        except Exception as e:
+            logger.warning("OR FMP fallback failed for %s: %s", ticker, e)
+
+    final_missing = [t for t in TICKERS if t not in or_high]
+    if final_missing:
+        logger.warning("OR FINAL: still missing after retries: %s",
+                        ", ".join(final_missing))
+        send_telegram("\u26a0\ufe0f OR missing after retries + FMP: %s"
+                      % ", ".join(final_missing))
 
     or_collected_date = today
     save_paper_state()
