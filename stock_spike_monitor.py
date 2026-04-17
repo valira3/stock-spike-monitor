@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.21"
-RELEASE_NOTE = "v2.9.21 \u2014 QW fixes: Red Candle bar close, unrealized P&L in loss limit, AVWAP persistence, trail_low init, error alerts, TP retry, 9:50 ET entry buffer"
+BOT_VERSION = "2.9.22"
+RELEASE_NOTE = "v2.9.22 \u2014 fix entry buffer: 9:50 \u2192 9:45 ET (15 min after open)"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -750,8 +750,8 @@ def check_entry(ticker):
         daily_entry_count.clear()
         daily_entry_date = today
 
-    # Timing gate: after 09:50 ET (15-min buffer)
-    market_open = now_et.replace(hour=9, minute=50, second=0, microsecond=0)
+    # Timing gate: after 09:45 ET (15-min buffer)
+    market_open = now_et.replace(hour=9, minute=45, second=0, microsecond=0)
     if now_et < market_open:
         return False, None
 
@@ -1498,10 +1498,10 @@ def check_short_entry(ticker):
 
     now_et = _now_et()
 
-    # Time gate: must be after 09:50 ET (15-min buffer)
+    # Time gate: must be after 09:45 ET (15-min buffer)
     if now_et.hour < 9:
         return
-    if now_et.hour == 9 and now_et.minute < 50:
+    if now_et.hour == 9 and now_et.minute < 45:
         return
 
     # Max 2 short entries per ticker per day
@@ -3472,7 +3472,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\U0001f4d8 Strategy v{BOT_VERSION}\n"
         f"{SEP}\n"
         "\U0001f4c8 LONG \u2014 ORB Breakout\n"
-        "Entry after 9:50 ET (15-min buffer)\n"
+        "Entry after 9:45 ET (15-min buffer)\n"
         "Entry (all must be true):\n"
         "  \u2022 1m close > OR High\n"
         "  \u2022 Price > PDC\n"
@@ -3492,7 +3492,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  (both confirmed on 1m close)\n"
         f"{SEP}\n"
         "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
-        "Entry after 9:50 ET (15-min buffer)\n"
+        "Entry after 9:45 ET (15-min buffer)\n"
         "Entry (all must be true):\n"
         "  \u2022 1m close < OR Low\n"
         "  \u2022 Price < PDC\n"
