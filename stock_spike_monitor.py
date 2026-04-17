@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.32"
-RELEASE_NOTE = "v2.9.32 \u2014 daily entry cap 2 \u2192 4 per ticker"
+BOT_VERSION = "2.9.33"
+RELEASE_NOTE = "v2.9.33 \u2014 anti-whipsaw: 15-min cooldown, 1.5x volume gate, -$50 ticker loss cap. Entry cap 5."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -132,6 +132,18 @@ def _parse_time_to_cdt(ts):
     return ts[:5]
 
 
+def _is_today(ts_str: str) -> bool:
+    """Check if an ISO timestamp string is from today (UTC)."""
+    if not ts_str:
+        return False
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        today = datetime.utcnow().date()
+        return dt.date() == today
+    except Exception:
+        return False
+
+
 # Short reason labels for compact /dayreport display
 _SHORT_REASON = {
     "\U0001f6d1": "\U0001f6d1 Stop",
@@ -221,7 +233,7 @@ positions: dict = {}
 # }
 
 # Entry counts per day (reset daily)
-daily_entry_count: dict = {}   # ticker -> count (max 4)
+daily_entry_count: dict = {}   # ticker -> count (max 5)
 daily_entry_date: str = ""
 
 # Paper trading log (today's trades)
@@ -256,6 +268,7 @@ _trading_halted_reason: str = ""
 # Scan pause (Feature 8)
 _scan_paused: bool = False
 _regime_bullish = None          # None=unknown, True/False tracks last known regime
+_last_exit_time: dict = {}     # ticker -> datetime (UTC) of last exit
 _last_scan_time = None           # datetime (UTC), updated each scan cycle
 
 # TradersPost state
@@ -310,6 +323,7 @@ def save_paper_state():
         "avwap_data": avwap_data,
         "avwap_last_ts": avwap_last_ts,
         "daily_short_entry_count": daily_short_entry_count,
+        "last_exit_time": {k: v.isoformat() for k, v in _last_exit_time.items()},
         "saved_at": _utc_now_iso(),
     }
     with _paper_save_lock:
@@ -332,6 +346,7 @@ def load_paper_state():
     global trade_history
     global short_positions, short_trade_history
     global avwap_data, avwap_last_ts, daily_short_entry_count
+    global _last_exit_time
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
@@ -360,6 +375,8 @@ def load_paper_state():
         avwap_data.update(state.get("avwap_data", {}))
         avwap_last_ts.update(state.get("avwap_last_ts", {}))
         daily_short_entry_count.update(state.get("daily_short_entry_count", {}))
+        raw_exit = state.get("last_exit_time", {})
+        _last_exit_time = {k: datetime.fromisoformat(v) for k, v in raw_exit.items()}
 
         # Reset daily counts if saved on a different day
         today = _now_et().strftime("%Y-%m-%d")
@@ -841,8 +858,26 @@ def check_entry(ticker):
     if ticker not in or_high or ticker not in pdc:
         return False, None
 
-    # Daily entry cap (max 4)
-    if daily_entry_count.get(ticker, 0) >= 4:
+    # Daily entry cap (max 5)
+    if daily_entry_count.get(ticker, 0) >= 5:
+        return False, None
+
+    # Re-entry cooldown: 15 min after any exit on this ticker
+    last_exit = _last_exit_time.get(ticker)
+    if last_exit:
+        elapsed = (datetime.utcnow() - last_exit).total_seconds()
+        if elapsed < 900:
+            mins_left = int((900 - elapsed) / 60) + 1
+            logger.info("SKIP %s [COOLDOWN] %dm left", ticker, mins_left)
+            return False, None
+
+    # Per-ticker daily loss cap: skip if down > $50 on this ticker today
+    ticker_pnl_today = sum(
+        t.get("pnl", 0) for t in trade_history
+        if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
+    )
+    if ticker_pnl_today < -50.0:
+        logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
         return False, None
 
     # Not already in position
@@ -877,6 +912,15 @@ def check_entry(ticker):
             ticker, or_high[ticker], pct, current_price
         )
         return False, None
+
+    # Volume confirmation: entry bar volume >= 1.5x session average
+    volumes = bars.get("volumes", [])
+    if len(volumes) >= 5:
+        avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
+        entry_bar_vol = volumes[-2]
+        if avg_vol > 0 and entry_bar_vol is not None and entry_bar_vol < avg_vol * 1.5:
+            logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
+            return False, None
 
     # Breakout: last 1-min bar close > OR_High
     if last_close <= or_high[ticker]:
@@ -1147,6 +1191,8 @@ def close_position(ticker, price, reason="STOP"):
     if ticker not in positions:
         return
 
+    _last_exit_time[ticker] = datetime.utcnow()
+
     pos = positions.pop(ticker)
     entry_price = pos["entry_price"]
     shares = pos["shares"]
@@ -1405,6 +1451,8 @@ def close_tp_position(ticker, price, reason="STOP"):
     if ticker not in tp_positions:
         return
 
+    _last_exit_time[ticker] = datetime.utcnow()
+
     tp_pos = tp_positions.pop(ticker)
     tp_entry = tp_pos["entry_price"]
     tp_shares = tp_pos["shares"]
@@ -1581,8 +1629,26 @@ def check_short_entry(ticker):
     if now_et.hour == 9 and now_et.minute < 45:
         return
 
-    # Max 4 short entries per ticker per day
-    if daily_short_entry_count.get(ticker, 0) >= 4:
+    # Max 5 short entries per ticker per day
+    if daily_short_entry_count.get(ticker, 0) >= 5:
+        return
+
+    # Re-entry cooldown: 15 min after any exit on this ticker
+    last_exit = _last_exit_time.get(ticker)
+    if last_exit:
+        elapsed = (datetime.utcnow() - last_exit).total_seconds()
+        if elapsed < 900:
+            mins_left = int((900 - elapsed) / 60) + 1
+            logger.info("SKIP %s [COOLDOWN] %dm left", ticker, mins_left)
+            return
+
+    # Per-ticker daily loss cap: skip if down > $50 on this ticker today
+    ticker_pnl_today = sum(
+        t.get("pnl", 0) for t in short_trade_history
+        if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
+    )
+    if ticker_pnl_today < -50.0:
+        logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
         return
 
     # Already in a short position for this ticker (paper)
@@ -1626,6 +1692,15 @@ def check_short_entry(ticker):
             ticker, or_low_val, pct, current_price
         )
         return
+
+    # Volume confirmation: entry bar volume >= 1.5x session average
+    volumes = bars.get("volumes", [])
+    if len(volumes) >= 5:
+        avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
+        entry_bar_vol = volumes[-2]
+        if avg_vol > 0 and entry_bar_vol is not None and entry_bar_vol < avg_vol * 1.5:
+            logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
+            return
 
     # Entry conditions — ALL must be true:
     # 1. Last 1-min close < OR_Low (breakdown)
@@ -1897,6 +1972,8 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
 
     if not pos:
         return
+
+    _last_exit_time[ticker] = datetime.utcnow()
 
     entry_price = pos["entry_price"]
     shares = pos["shares"]
@@ -4086,7 +4163,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Long entry eligible?
     in_position = ticker in positions
-    at_max_entries = daily_entry_count.get(ticker, 0) >= 4
+    at_max_entries = daily_entry_count.get(ticker, 0) >= 5
     index_ok = spy_ok and qqq_ok
     long_eligible = not in_position and not at_max_entries and index_ok and not _trading_halted
 
@@ -4097,7 +4174,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if in_position:
             reasons.append("in position")
         if at_max_entries:
-            reasons.append("4 entries today")
+            reasons.append("5 entries today")
         if not index_ok:
             reasons.append("index filter fails")
         if _trading_halted:
@@ -4107,7 +4184,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Short entry eligible?
     in_short = ticker in short_positions
-    at_max_shorts = daily_short_entry_count.get(ticker, 0) >= 4
+    at_max_shorts = daily_short_entry_count.get(ticker, 0) >= 5
     index_bearish = spy_below and qqq_below
     below_or_low = (orl is not None and cur_price < orl)
     below_pdc_short = (pdc_strat is not None and cur_price < pdc_strat)
@@ -4121,7 +4198,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if in_short:
             s_reasons.append("in short position")
         if at_max_shorts:
-            s_reasons.append("4 short entries today")
+            s_reasons.append("5 short entries today")
         if not index_bearish:
             s_reasons.append("index filter not bearish")
         if not below_or_low:
@@ -4328,7 +4405,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "Long: ORB Breakout after 8:45 CT\n"
             "Short: Wounded Buffalo after 8:45 CT\n"
             "Trail: +1.0%% trigger | min $1.00\n"
-            "Size: 10 shares | Max 4/ticker/day\n"
+            "Size: 10 shares | Max 5/ticker/day\n"
             "%s\nUse /strategy for full details" % SEP
         )
         await query.message.reply_text(text)
