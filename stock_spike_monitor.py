@@ -35,10 +35,11 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.18"
-RELEASE_NOTE = "v2.9.18 \u2014 FMP stable endpoint (v3 was deprecated)"
+BOT_VERSION = "2.9.19"
+RELEASE_NOTE = "v2.9.19 \u2014 pre-market self-test + /test command"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
+FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -252,6 +253,7 @@ _trading_halted_reason: str = ""
 # Scan pause (Feature 8)
 _scan_paused: bool = False
 _regime_bullish = None          # None=unknown, True/False tracks last known regime
+_last_scan_time = None           # datetime (UTC), updated each scan cycle
 
 # TradersPost state
 tp_state: dict = {
@@ -2225,6 +2227,126 @@ def send_weekly_digest():
 
 
 # ============================================================
+# SYSTEM HEALTH TEST
+# ============================================================
+async def run_system_test(label: str) -> None:
+    """Run system health checks and send compact report to both bots."""
+    SEP = "\u2500" * 30
+    issues = 0
+    lines = []
+
+    # A. FMP API check
+    try:
+        spy_q = get_fmp_quote("SPY")
+        qqq_q = get_fmp_quote("QQQ")
+        spy_price = float(spy_q.get("price", 0)) if spy_q else 0
+        qqq_price = float(qqq_q.get("price", 0)) if qqq_q else 0
+        if spy_price > 0 and qqq_price > 0:
+            lines.append(
+                "FMP: \u2705 SPY $%.2f | QQQ $%.2f" % (spy_price, qqq_price)
+            )
+        else:
+            issues += 1
+            lines.append("FMP: \u274c no price data")
+    except Exception as exc:
+        issues += 1
+        lines.append("FMP: \u274c %s" % exc)
+
+    # B. Finnhub fallback check
+    try:
+        fhb_url = (
+            "https://finnhub.io/api/v1/quote?symbol=SPY&token=%s"
+            % FINNHUB_TOKEN
+        )
+        req = urllib.request.Request(fhb_url, headers=YAHOO_HEADERS)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            fhb_data = json.loads(resp.read())
+        fhb_price = float(fhb_data.get("c", 0))
+        if fhb_price > 0:
+            lines.append("FHB: \u2705 SPY $%.2f" % fhb_price)
+        else:
+            issues += 1
+            lines.append("FHB: \u274c no price data")
+    except Exception as exc:
+        issues += 1
+        lines.append("FHB: \u274c %s" % exc)
+
+    # C. State health check
+    try:
+        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
+            ps = json.load(f)
+        with open(TP_STATE_FILE, "r", encoding="utf-8") as f:
+            ts = json.load(f)
+        p_cash = ps.get("paper_cash", 0)
+        t_cash = ts.get("tp_paper_cash", 0)
+        lines.append(
+            "State: \u2705 paper $%s | TP $%s"
+            % (format(int(p_cash), ","), format(int(t_cash), ","))
+        )
+    except Exception as exc:
+        issues += 1
+        lines.append("State: \u274c %s" % exc)
+
+    # D. Positions count
+    n_paper = len(positions) + len(short_positions)
+    n_tp = len(tp_positions) + len(tp_short_positions)
+    lines.append("Pos: %d paper | %d TP" % (n_paper, n_tp))
+
+    # E. Scanner health
+    if _last_scan_time is None:
+        lines.append("Scanner: \u23f8 Not started")
+    else:
+        age = (datetime.now(timezone.utc) - _last_scan_time).total_seconds()
+        if age < 90:
+            lines.append("Scanner: \u2705 Active (%ds ago)" % int(age))
+        else:
+            mins = int(age) // 60
+            secs = int(age) % 60
+            issues += 1
+            lines.append(
+                "Scanner: \u274c STALLED (%dm %ds ago)" % (mins, secs)
+            )
+
+    # F. OR status — only for 8:31 CT label
+    if label == "8:31 CT":
+        n_or = sum(1 for t in TRADE_TICKERS if t in or_high)
+        lines.append("ORs set: %d / %d tickers" % (n_or, len(TRADE_TICKERS)))
+
+    # Build message
+    if issues == 0:
+        footer = "\u2705 All systems GO"
+    else:
+        footer = "\u26a0\ufe0f %d issue(s) found \u2014 check logs" % issues
+
+    body = "\n".join(lines)
+    msg = (
+        "\U0001f9ea System Test [%s]\n"
+        "%s\n"
+        "%s\n"
+        "%s\n"
+        "%s"
+    ) % (label, SEP, body, SEP, footer)
+
+    send_telegram(msg)
+    send_tp_telegram(msg)
+
+
+def _fire_system_test(label: str) -> None:
+    """Sync wrapper to fire run_system_test from scheduler thread."""
+    try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(run_system_test(label))
+        loop.close()
+    except Exception as exc:
+        logger.error("System test (%s) failed: %s", label, exc, exc_info=True)
+
+
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /test command — run system health test."""
+    await run_system_test("Manual")
+
+
+# ============================================================
 # SCAN LOOP
 # ============================================================
 def scan_loop():
@@ -2242,6 +2364,9 @@ def scan_loop():
         return
     if now_et.hour == 15 and now_et.minute >= 55:
         return
+
+    global _last_scan_time
+    _last_scan_time = datetime.now(timezone.utc)
 
     n_pos = len(positions)
     n_tp = len(tp_positions)
@@ -2372,8 +2497,11 @@ def scheduler_thread():
     last_state_save = _now_et() - timedelta(minutes=6)
 
     # Job table: (day, "HH:MM", function)
+    # Note: times are ET.  8:20 CT = 9:20 ET, 8:31 CT = 9:31 ET
     JOBS = [
+        ("daily", "09:20", lambda: _fire_system_test("8:20 CT")),
         ("daily", "09:30", reset_daily_state),
+        ("daily", "09:31", lambda: _fire_system_test("8:31 CT")),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
@@ -3721,6 +3849,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("reset", "Reset portfolio"),
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("strategy", "Strategy summary"),
+    BotCommand("test", "Run system health test"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -3739,6 +3868,7 @@ TP_BOT_COMMANDS = [
     BotCommand("reset", "Reset portfolio"),
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("strategy", "Strategy summary"),
+    BotCommand("test", "Run system health test"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -3830,6 +3960,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("monitoring", cmd_monitoring))
     app.add_handler(CommandHandler("algo", cmd_algo))
     app.add_handler(CommandHandler("strategy", cmd_strategy))
+    app.add_handler(CommandHandler("test", cmd_test))
 
     # If no separate TP token, run single bot
     if not TELEGRAM_TP_TOKEN:
@@ -3857,6 +3988,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("monitoring", cmd_monitoring))
     tp_app.add_handler(CommandHandler("algo", cmd_algo))
     tp_app.add_handler(CommandHandler("strategy", cmd_strategy))
+    tp_app.add_handler(CommandHandler("test", cmd_test))
 
     async def _run_both():
         loop = asyncio.get_running_loop()
