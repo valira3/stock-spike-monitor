@@ -2,7 +2,7 @@
 Stock Spike Monitor v2.9.0 — ORB Momentum Breakout + Wounded Buffalo Short
 ===========================================================================
 10-ticker universe, Opening Range breakout (long) + breakdown (short),
-$0.50 stepped trail. Infrastructure: Telegram bot, paper trading,
+$1.00 stepped trail. Infrastructure: Telegram bot, paper trading,
 TradersPost webhook, scheduler.
 """
 
@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.30"
-RELEASE_NOTE = "v2.9.30 \u2014 /positions: live trail stop + peak when trail active"
+BOT_VERSION = "2.9.31"
+RELEASE_NOTE = "v2.9.31 \u2014 trail 0.5% \u2192 1.0% trigger and distance"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -183,7 +183,7 @@ TRADE_TICKERS = [t for t in TICKERS if t not in ("SPY", "QQQ")]
 
 SHARES         = 10
 STOP_OFFSET    = 0.50    # Initial stop: entry - $0.50
-# Trail: +0.50% trigger, max(price*0.5%, $1.00) distance — see manage_positions()
+# Trail: +1.0% trigger, max(price*1.0%, $1.00) distance — see manage_positions()
 TRAIL_TRIGGER  = 1.00    # Legacy constant (unused — trail is now percentage-based)
 TRAIL_STEP     = 0.50    # Legacy constant (unused — trail is now percentage-based)
 
@@ -1214,8 +1214,8 @@ def close_position(ticker, price, reason="STOP"):
     reason_label = REASON_LABELS.get(reason, reason)
     if reason == "TRAIL":
         t_high = pos.get("trail_high", price)
-        t_dist = max(round(t_high * 0.005, 2), 1.00)
-        reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % t_dist
+        t_dist = max(round(t_high * 0.010, 2), 1.00)
+        reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % t_dist
     msg = (
         "%s EXIT %s\n"
         "%s\n"
@@ -1289,8 +1289,8 @@ def close_position(ticker, price, reason="STOP"):
         tp_reason_label = REASON_LABELS.get(reason, reason)
         if reason == "TRAIL":
             tp_t_high = tp_pos.get("trail_high", price)
-            tp_t_dist = max(round(tp_t_high * 0.005, 2), 1.00)
-            tp_reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % tp_t_dist
+            tp_t_dist = max(round(tp_t_high * 0.010, 2), 1.00)
+            tp_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % tp_t_dist
         tp_msg = (
             "[TP] %s EXIT %s\n"
             "%s\n"
@@ -1370,8 +1370,8 @@ def manage_positions():
 
         entry_price = pos["entry_price"]
 
-        # Percentage trail: trigger +0.50%, trail max(price*0.5%, $1.00)
-        trail_trigger_price = entry_price * 1.005
+        # Percentage trail: trigger +1.0%, trail max(price*1.0%, $1.00)
+        trail_trigger_price = entry_price * 1.010
 
         if not pos["trail_active"] and current_price >= trail_trigger_price:
             pos["trail_active"] = True
@@ -1382,7 +1382,7 @@ def manage_positions():
             if current_price > pos.get("trail_high", current_price):
                 pos["trail_high"] = current_price
             best = pos["trail_high"]
-            trail_dist = max(round(best * 0.005, 2), 1.00)
+            trail_dist = max(round(best * 0.010, 2), 1.00)
             new_trail_stop = round(best - trail_dist, 2)
             if new_trail_stop > pos.get("trail_stop", 0):
                 pos["trail_stop"] = new_trail_stop
@@ -1534,8 +1534,8 @@ def manage_tp_positions():
 
         entry_price = pos["entry_price"]
 
-        # Percentage trail: trigger +0.50%, trail max(price*0.5%, $1.00)
-        trail_trigger_price = entry_price * 1.005
+        # Percentage trail: trigger +1.0%, trail max(price*1.0%, $1.00)
+        trail_trigger_price = entry_price * 1.010
 
         if not pos["trail_active"] and current_price >= trail_trigger_price:
             pos["trail_active"] = True
@@ -1546,7 +1546,7 @@ def manage_tp_positions():
             if current_price > pos.get("trail_high", current_price):
                 pos["trail_high"] = current_price
             best = pos["trail_high"]
-            trail_dist = max(round(best * 0.005, 2), 1.00)
+            trail_dist = max(round(best * 0.010, 2), 1.00)
             new_trail_stop = round(best - trail_dist, 2)
             if new_trail_stop > pos.get("trail_stop", 0):
                 pos["trail_stop"] = new_trail_stop
@@ -1775,8 +1775,8 @@ def manage_short_positions():
             continue
         current_price = bars["current_price"]
 
-        # Percentage trail: trigger -0.50%, trail max(price*0.5%, $1.00)
-        trail_trigger_price = entry_price * 0.995
+        # Percentage trail: trigger -1.0%, trail max(price*1.0%, $1.00)
+        trail_trigger_price = entry_price * 0.990
 
         if not trail_active and current_price <= trail_trigger_price:
             trail_active = True
@@ -1788,7 +1788,7 @@ def manage_short_positions():
             if current_price < trail_low:
                 trail_low = current_price
                 short_positions[ticker]["trail_low"] = trail_low
-            trail_dist = max(round(trail_low * 0.005, 2), 1.00)
+            trail_dist = max(round(trail_low * 0.010, 2), 1.00)
             new_trail_stop = round(trail_low + trail_dist, 2)
             old_trail_stop = short_positions[ticker].get("trail_stop")
             if old_trail_stop is None or new_trail_stop < old_trail_stop:
@@ -1835,8 +1835,8 @@ def manage_short_positions():
             continue
         current_price = bars["current_price"]
 
-        # Percentage trail: trigger -0.50%, trail max(price*0.5%, $1.00)
-        trail_trigger_price = entry_price * 0.995
+        # Percentage trail: trigger -1.0%, trail max(price*1.0%, $1.00)
+        trail_trigger_price = entry_price * 0.990
 
         if not trail_active and current_price <= trail_trigger_price:
             trail_active = True
@@ -1848,7 +1848,7 @@ def manage_short_positions():
             if current_price < trail_low:
                 trail_low = current_price
                 tp_short_positions[ticker]["trail_low"] = trail_low
-            trail_dist = max(round(trail_low * 0.005, 2), 1.00)
+            trail_dist = max(round(trail_low * 0.010, 2), 1.00)
             new_trail_stop = round(trail_low + trail_dist, 2)
             old_trail_stop = tp_short_positions[ticker].get("trail_stop")
             if old_trail_stop is None or new_trail_stop < old_trail_stop:
@@ -1946,8 +1946,8 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         sc_reason_label = REASON_LABELS.get(reason, reason)
         if reason == "TRAIL":
             sc_t_low = pos.get("trail_low", cover_price)
-            sc_t_dist = max(round(sc_t_low * 0.005, 2), 1.00)
-            sc_reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % sc_t_dist
+            sc_t_dist = max(round(sc_t_low * 0.010, 2), 1.00)
+            sc_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % sc_t_dist
         msg = (
             "%s SHORT CLOSED\n"
             "%s\n"
@@ -1982,8 +1982,8 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         tp_sc_reason_label = REASON_LABELS.get(reason, reason)
         if reason == "TRAIL":
             tp_sc_t_low = pos.get("trail_low", cover_price)
-            tp_sc_t_dist = max(round(tp_sc_t_low * 0.005, 2), 1.00)
-            tp_sc_reason_label = "\U0001f3af Trail Stop (0.50%% / $%.2f)" % tp_sc_t_dist
+            tp_sc_t_dist = max(round(tp_sc_t_low * 0.010, 2), 1.00)
+            tp_sc_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % tp_sc_t_dist
         tp_msg = (
             "%s TP SHORT CLOSED\n"
             "%s\n"
@@ -3663,13 +3663,13 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "         + price > PDC (green stock)\n"
         "         + SPY & QQQ > AVWAP\n"
         "  Stop : OR_High \u2212 $0.90\n"
-        "  Trail: \u02001.00 trigger \u2192 $0.50 ratchet up\n\n"
+        "  Trail: +1.0% trigger | max(1.0%, $1.00) distance\n\n"
         "\U0001f9b7 WOUNDED BUFFALO SHORT\n"
         "  Entry: 1-min close < OR_Low\n"
         "         + price < PDC (red stock)\n"
         "         + SPY & QQQ < AVWAP\n"
         "  Stop : PDC + $0.90\n"
-        "  Trail: +$1.00 trigger \u2192 $0.50 ratchet down\n\n"
+        "  Trail: +1.0% trigger | max(1.0%, $1.00) distance\n\n"
         f"{SEP}\n"
         "Size : 10 shares (limit orders only)\n"
         "Max  : 2 long + 2 short per ticker/day\n"
@@ -3744,7 +3744,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 SPY > AVWAP\n"
         "  \u2022 QQQ > AVWAP\n"
         "Stop: OR High \u2212 $0.90\n"
-        "Trail: +0.50% trigger | max(0.50%, $1.00) distance\n"
+        "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 2 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
@@ -3764,7 +3764,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 SPY < AVWAP\n"
         "  \u2022 QQQ < AVWAP\n"
         "Stop: PDC + $0.90\n"
-        "Trail: +0.50% trigger | max(0.50%, $1.00) distance\n"
+        "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 2 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
@@ -4327,7 +4327,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Strategy v%s\n%s\n" % (BOT_VERSION, SEP)
             + "Long: ORB Breakout after 8:45 CT\n"
             "Short: Wounded Buffalo after 8:45 CT\n"
-            "Trail: +0.50%% trigger | min $1.00\n"
+            "Trail: +1.0%% trigger | min $1.00\n"
             "Size: 10 shares | Max 2/ticker/day\n"
             "%s\nUse /strategy for full details" % SEP
         )
@@ -4580,7 +4580,7 @@ def send_startup_message():
         f"{SEP}\n"
         f"Universe: {universe}\n"
         f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
-        f"Scan:     every {SCAN_INTERVAL}s  |  Trail: Bison +0.50% / min $1.00\n"
+        f"Scan:     every {SCAN_INTERVAL}s  |  Trail: Bison +1.0% / min $1.00\n"
         f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
         f"{SEP}\n"
         f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
