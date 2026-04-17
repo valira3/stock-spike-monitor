@@ -35,8 +35,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.20"
-RELEASE_NOTE = "v2.9.20 \u2014 percentage-based trailing stop (Bison Standard)"
+BOT_VERSION = "2.9.21"
+RELEASE_NOTE = "v2.9.21 \u2014 QW fixes: Red Candle bar close, unrealized P&L in loss limit, AVWAP persistence, trail_low init, error alerts, TP retry, 9:50 ET entry buffer"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -181,8 +181,9 @@ TRADE_TICKERS = [t for t in TICKERS if t not in ("SPY", "QQQ")]
 
 SHARES         = 10
 STOP_OFFSET    = 0.50    # Initial stop: entry - $0.50
-TRAIL_TRIGGER  = 1.00    # Activate trail at +$1.00/share above entry
-TRAIL_STEP     = 0.50    # Ratchet step
+# Trail: +0.50% trigger, max(price*0.5%, $1.00) distance — see manage_positions()
+TRAIL_TRIGGER  = 1.00    # Legacy constant (unused — trail is now percentage-based)
+TRAIL_STEP     = 0.50    # Legacy constant (unused — trail is now percentage-based)
 
 SCAN_INTERVAL  = 60      # seconds between scans
 YAHOO_TIMEOUT  = 8       # seconds
@@ -304,6 +305,9 @@ def save_paper_state():
         "trade_history": trade_history,
         "short_positions": short_positions,
         "short_trade_history": short_trade_history[-500:],
+        "avwap_data": avwap_data,
+        "avwap_last_ts": avwap_last_ts,
+        "daily_short_entry_count": daily_short_entry_count,
         "saved_at": _utc_now_iso(),
     }
     with _paper_save_lock:
@@ -325,6 +329,7 @@ def load_paper_state():
     global user_config, tp_state, tp_dm_chat_id
     global trade_history
     global short_positions, short_trade_history
+    global avwap_data, avwap_last_ts, daily_short_entry_count
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
@@ -350,6 +355,9 @@ def load_paper_state():
         trade_history.extend(state.get("trade_history", []))
         short_positions.update(state.get("short_positions", {}))
         short_trade_history.extend(state.get("short_trade_history", []))
+        avwap_data.update(state.get("avwap_data", {}))
+        avwap_last_ts.update(state.get("avwap_last_ts", {}))
+        daily_short_entry_count.update(state.get("daily_short_entry_count", {}))
 
         # Reset daily counts if saved on a different day
         today = _now_et().strftime("%Y-%m-%d")
@@ -473,7 +481,7 @@ def send_telegram(text, chat_id=None):
 
 
 def send_tp_telegram(message):
-    """Send to TP user's DM chat. Falls back to main channel."""
+    """Send to TP user's DM chat. Falls back to main channel. 3-attempt retry."""
     chat_id = tp_dm_chat_id or TELEGRAM_TP_CHAT_ID
     if not chat_id:
         send_telegram("[TP] %s" % message)
@@ -481,17 +489,22 @@ def send_tp_telegram(message):
     token = TELEGRAM_TP_TOKEN or TELEGRAM_TOKEN
     if not token:
         return
-    try:
-        payload = json.dumps({"chat_id": chat_id, "text": message}).encode()
-        url = "https://api.telegram.org/bot%s/sendMessage" % token
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as e:
-        logger.warning("[TP] Failed to send DM (chat_id=%s): %s", chat_id, e)
+    for attempt in range(3):
+        try:
+            payload = json.dumps({"chat_id": chat_id, "text": message}).encode()
+            url = "https://api.telegram.org/bot%s/sendMessage" % token
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=10)
+            return  # success
+        except Exception as e:
+            if attempt == 2:
+                logger.warning("send_tp_telegram failed after 3 attempts: %s", e)
+            else:
+                time.sleep(1)
 
 
 # ============================================================
@@ -737,8 +750,8 @@ def check_entry(ticker):
         daily_entry_count.clear()
         daily_entry_date = today
 
-    # Timing gate: after 09:35 ET
-    market_open = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+    # Timing gate: after 09:50 ET (15-min buffer)
+    market_open = now_et.replace(hour=9, minute=50, second=0, microsecond=0)
     if now_et < market_open:
         return False, None
 
@@ -912,6 +925,21 @@ def execute_entry(ticker, current_price):
         t["pnl"] for t in short_trade_history
         if t.get("date") == today_str
     )
+
+    # Add unrealized P&L from open long positions
+    for pos_ticker, pos in list(positions.items()):
+        fmp = get_fmp_quote(pos_ticker)
+        live_px = fmp.get("price", 0) if fmp else 0
+        if live_px > 0:
+            today_pnl += (live_px - pos["entry_price"]) * pos.get("shares", 10)
+
+    # Add unrealized P&L from open short positions
+    for pos_ticker, pos in list(short_positions.items()):
+        fmp = get_fmp_quote(pos_ticker)
+        live_px = fmp.get("price", 0) if fmp else 0
+        if live_px > 0:
+            today_pnl += (pos["entry_price"] - live_px) * pos.get("shares", 10)
+
     if today_pnl <= DAILY_LOSS_LIMIT:
         _trading_halted = True
         pnl_fmt = "%+.2f" % today_pnl
@@ -1250,7 +1278,7 @@ def manage_positions():
         # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
         # Fires when 1-min confirmed close < day open OR < PDC
         closes = [c for c in bars.get("closes", []) if c is not None]
-        ticker_1min_close = closes[-1] if closes else current_price
+        ticker_1min_close = closes[-2] if len(closes) >= 2 else (closes[-1] if closes else current_price)
         opens = [o for o in bars.get("opens", []) if o is not None]
         day_open = opens[0] if opens else None
         pos_pdc = pos.get("pdc") or pos.get("prev_close")
@@ -1414,7 +1442,7 @@ def manage_tp_positions():
         # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
         # Fires when 1-min confirmed close < day open OR < PDC
         closes = [c for c in bars.get("closes", []) if c is not None]
-        ticker_1min_close = closes[-1] if closes else current_price
+        ticker_1min_close = closes[-2] if len(closes) >= 2 else (closes[-1] if closes else current_price)
         opens = [o for o in bars.get("opens", []) if o is not None]
         day_open = opens[0] if opens else None
         pos_pdc = pos.get("pdc") or pos.get("prev_close")
@@ -1470,10 +1498,10 @@ def check_short_entry(ticker):
 
     now_et = _now_et()
 
-    # Time gate: must be after 09:35 ET
+    # Time gate: must be after 09:50 ET (15-min buffer)
     if now_et.hour < 9:
         return
-    if now_et.hour == 9 and now_et.minute < 35:
+    if now_et.hour == 9 and now_et.minute < 50:
         return
 
     # Max 2 short entries per ticker per day
@@ -1575,6 +1603,7 @@ def execute_short_entry(ticker, price):
         "stop": stop,
         "trail_stop": None,
         "trail_active": False,
+        "trail_low": entry_price,
         "entry_time": entry_time_cdt,
         "date": date_str,
         "side": "SHORT",
@@ -1590,6 +1619,7 @@ def execute_short_entry(ticker, price):
         "stop": stop,
         "trail_stop": None,
         "trail_active": False,
+        "trail_low": entry_price,
         "entry_time": entry_time_cdt,
         "date": date_str,
         "side": "SHORT",
@@ -1702,10 +1732,14 @@ def manage_short_positions():
             exit_reason = "BULL_VACUUM[1m]"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
+        # Uses completed 1m bar close (same pattern as Lords Left / Bull Vacuum)
         if not exit_reason:
             ticker_pdc = pdc.get(ticker, 0)
-            if ticker_pdc > 0 and current_price > ticker_pdc:
-                exit_reason = "POLARITY_SHIFT"
+            if ticker_pdc > 0:
+                ps_closes = [c for c in bars.get("closes", []) if c is not None]
+                ps_1min_close = ps_closes[-2] if len(ps_closes) >= 2 else (ps_closes[-1] if ps_closes else current_price)
+                if ps_1min_close > ticker_pdc:
+                    exit_reason = "POLARITY_SHIFT"
 
         if exit_reason:
             close_short_position(ticker, current_price, exit_reason, portfolio="paper")
@@ -1757,10 +1791,14 @@ def manage_short_positions():
             exit_reason = "BULL_VACUUM[1m]"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
+        # Uses completed 1m bar close (same pattern as Lords Left / Bull Vacuum)
         if not exit_reason:
             ticker_pdc = pdc.get(ticker, 0)
-            if ticker_pdc > 0 and current_price > ticker_pdc:
-                exit_reason = "POLARITY_SHIFT"
+            if ticker_pdc > 0:
+                ps_closes = [c for c in bars.get("closes", []) if c is not None]
+                ps_1min_close = ps_closes[-2] if len(ps_closes) >= 2 else (ps_closes[-1] if ps_closes else current_price)
+                if ps_1min_close > ticker_pdc:
+                    exit_reason = "POLARITY_SHIFT"
 
         if exit_reason:
             close_short_position(ticker, current_price, exit_reason, portfolio="tp")
@@ -2447,14 +2485,17 @@ def scan_loop():
         manage_positions()
     except Exception as e:
         logger.error("manage_positions crashed: %s", e, exc_info=True)
+        send_telegram("⚠️ Bot error in manage_positions: %s" % str(e)[:200])
     try:
         manage_tp_positions()
     except Exception as e:
         logger.error("manage_tp_positions crashed: %s", e, exc_info=True)
+        send_telegram("⚠️ Bot error in manage_tp_positions: %s" % str(e)[:200])
     try:
         manage_short_positions()
     except Exception as e:
         logger.error("manage_short_positions crashed: %s", e, exc_info=True)
+        send_telegram("⚠️ Bot error in manage_short_positions: %s" % str(e)[:200])
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
@@ -3431,6 +3472,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\U0001f4d8 Strategy v{BOT_VERSION}\n"
         f"{SEP}\n"
         "\U0001f4c8 LONG \u2014 ORB Breakout\n"
+        "Entry after 9:50 ET (15-min buffer)\n"
         "Entry (all must be true):\n"
         "  \u2022 1m close > OR High\n"
         "  \u2022 Price > PDC\n"
@@ -3450,6 +3492,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  (both confirmed on 1m close)\n"
         f"{SEP}\n"
         "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
+        "Entry after 9:50 ET (15-min buffer)\n"
         "Entry (all must be true):\n"
         "  \u2022 1m close < OR Low\n"
         "  \u2022 Price < PDC\n"
