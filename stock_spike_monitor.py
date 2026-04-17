@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.27"
+BOT_VERSION = "2.9.28"
 RELEASE_NOTE = "v2.9.27 \u2014 /or_now command: manual OR recovery for missing tickers"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -3004,6 +3004,24 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tp_cash_fmt = format(tp_paper_cash, ",.2f")
         lines.append("TP Cash: $%s" % tp_cash_fmt)
 
+        # Portfolio equity summary
+        tp_short_unreal = 0.0
+        for s_ticker, s_pos in tp_short_positions.items():
+            s_bars = fetch_1min_bars(s_ticker)
+            if s_bars:
+                tp_short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
+        tp_all_unreal = total_unreal_pnl + tp_short_unreal
+        tp_equity = tp_paper_cash + tp_all_unreal
+        tp_vs_start = tp_equity - PAPER_STARTING_CAPITAL
+        lines.append(sep)
+        lines.append("\U0001f4bc Portfolio Snapshot")
+        lines.append("  Cash:      $%s" % format(tp_paper_cash, ",.2f"))
+        lines.append("  Unrealized:   $%+.2f" % tp_all_unreal)
+        lines.append("  Total Equity: $%s" % format(tp_equity, ",.2f"))
+        lines.append("  vs Start:      $%+.2f  (started at $%s)"
+                     % (tp_vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
+        lines.append(sep)
+
         refresh_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
         ]])
@@ -3092,6 +3110,23 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                              % (s_ticker, s_entry, s_pos["stop"]))
 
     lines.append("Paper Cash:           $%s" % format(paper_cash, ",.2f"))
+
+    # Portfolio equity summary
+    short_unreal = 0.0
+    for s_ticker, s_pos in short_positions.items():
+        s_bars = fetch_1min_bars(s_ticker)
+        if s_bars:
+            short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
+    all_unreal = total_unreal_pnl + short_unreal
+    equity = paper_cash + all_unreal
+    vs_start = equity - PAPER_STARTING_CAPITAL
+    lines.append(sep)
+    lines.append("\U0001f4bc Portfolio Snapshot")
+    lines.append("  Cash:      $%s" % format(paper_cash, ",.2f"))
+    lines.append("  Unrealized:   $%+.2f" % all_unreal)
+    lines.append("  Total Equity: $%s" % format(equity, ",.2f"))
+    lines.append("  vs Start:      $%+.2f  (started at $%s)"
+                 % (vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
     lines.append(sep)
 
     # OR status
@@ -3191,6 +3226,25 @@ def _build_positions_text(is_tp=False):
                 lines.append("%s  Entry $%.2f  Stop $%.2f  (price unavailable)"
                              % (s_ticker, s_entry, s_pos["stop"]))
     lines.append("%s:           $%s" % (cash_label, format(cash, ",.2f")))
+
+    # Portfolio equity summary
+    short_unreal = 0.0
+    for s_ticker, s_pos in short_dict.items():
+        s_bars = fetch_1min_bars(s_ticker)
+        if s_bars:
+            short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
+    all_unreal = total_unreal + short_unreal
+    equity = cash + all_unreal
+    vs_start = equity - PAPER_STARTING_CAPITAL
+    lines.append(sep)
+    lines.append("\U0001f4bc Portfolio Snapshot")
+    lines.append("  Cash:      $%s" % format(cash, ",.2f"))
+    lines.append("  Unrealized:   $%+.2f" % all_unreal)
+    lines.append("  Total Equity: $%s" % format(equity, ",.2f"))
+    lines.append("  vs Start:      $%+.2f  (started at $%s)"
+                 % (vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
+    lines.append(sep)
+
     return "\n".join(lines)
 
 
