@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.26"
-RELEASE_NOTE = "v2.9.26 \u2014 OR retry (3x, 60s) + FMP fallback for missing tickers"
+BOT_VERSION = "2.9.27"
+RELEASE_NOTE = "v2.9.27 \u2014 /or_now command: manual OR recovery for missing tickers"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -4294,6 +4294,100 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await run_system_test("Manual")
 
 
+async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually re-collect OR data for tickers missing or_high."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    now_et = _now_et()
+    market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    or_end = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+    open_ts = int(market_open.timestamp())
+    end_ts = int(or_end.timestamp())
+
+    missing = [t for t in TICKERS if t not in or_high]
+    if not missing:
+        await update.message.reply_text("All tickers have OR data already.")
+        return
+
+    results = []
+    recovered = 0
+    still_fail = 0
+
+    for ticker in missing:
+        source = None
+        got_high = None
+        got_low = None
+
+        # Try Yahoo 1-min bars first
+        try:
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                max_high = None
+                min_low = None
+                for i, ts in enumerate(bars["timestamps"]):
+                    if open_ts <= ts < end_ts:
+                        h = bars["highs"][i]
+                        if h is None:
+                            h = bars["closes"][i]
+                        if h is not None:
+                            if max_high is None or h > max_high:
+                                max_high = h
+                        lo = bars["lows"][i]
+                        if lo is None:
+                            lo = bars["closes"][i]
+                        if lo is not None:
+                            if min_low is None or lo < min_low:
+                                min_low = lo
+                if max_high is not None:
+                    or_high[ticker] = max_high
+                    if min_low is not None:
+                        or_low[ticker] = min_low
+                    if bars.get("pdc") and bars["pdc"] > 0:
+                        pdc[ticker] = bars["pdc"]
+                    got_high = max_high
+                    got_low = min_low
+                    source = "Yahoo"
+        except Exception as e:
+            logger.warning("or_now Yahoo failed for %s: %s", ticker, e)
+
+        # FMP fallback if Yahoo didn't work
+        if source is None:
+            try:
+                fmp = get_fmp_quote(ticker)
+                if fmp and fmp.get("dayHigh") and fmp.get("dayLow"):
+                    or_high[ticker] = fmp["dayHigh"]
+                    or_low[ticker] = fmp["dayLow"]
+                    if fmp.get("previousClose") and fmp["previousClose"] > 0:
+                        pdc[ticker] = fmp["previousClose"]
+                    got_high = fmp["dayHigh"]
+                    got_low = fmp["dayLow"]
+                    source = "FMP"
+            except Exception as e:
+                logger.warning("or_now FMP failed for %s: %s", ticker, e)
+
+        if source is not None:
+            recovered += 1
+            results.append(
+                "%s: \u2705 high=%.2f low=%.2f (%s)"
+                % (ticker, got_high, got_low if got_low else 0, source)
+            )
+            logger.info("or_now recovered %s: high=%.2f low=%.2f (%s)",
+                        ticker, got_high, got_low if got_low else 0, source)
+        else:
+            still_fail += 1
+            results.append("%s: \u274c still missing" % ticker)
+            logger.warning("or_now: %s still missing after Yahoo + FMP", ticker)
+
+    if recovered > 0:
+        save_paper_state()
+
+    SEP = "\u2500" * 34
+    lines = ["\U0001f504 OR Recovery Complete", SEP]
+    lines.extend(results)
+    lines.append(SEP)
+    lines.append("%d recovered | %d still missing" % (recovered, still_fail))
+    await update.message.reply_text("\n".join(lines))
+
+
 # ============================================================
 # TELEGRAM BOT SETUP
 # ============================================================
@@ -4314,6 +4408,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("strategy", "Strategy summary"),
     BotCommand("test", "Run system health test"),
+    BotCommand("or_now", "Re-collect missing OR levels"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -4334,6 +4429,7 @@ TP_BOT_COMMANDS = [
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("strategy", "Strategy summary"),
     BotCommand("test", "Run system health test"),
+    BotCommand("or_now", "Re-collect missing OR levels"),
     BotCommand("version", "Release notes"),
 ]
 
@@ -4426,6 +4522,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("algo", cmd_algo))
     app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("or_now", cmd_or_now))
     app.add_handler(CommandHandler("menu", cmd_menu))
 
     # Callback query handlers
@@ -4461,6 +4558,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("algo", cmd_algo))
     tp_app.add_handler(CommandHandler("strategy", cmd_strategy))
     tp_app.add_handler(CommandHandler("test", cmd_test))
+    tp_app.add_handler(CommandHandler("or_now", cmd_or_now))
     tp_app.add_handler(CommandHandler("menu", cmd_menu))
 
     # Callback query handlers (TP bot)
