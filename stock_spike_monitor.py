@@ -20,9 +20,10 @@ from zoneinfo import ZoneInfo
 from telegram import (
     BotCommand, BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats, BotCommandScopeDefault, Update,
+    InlineKeyboardMarkup, InlineKeyboardButton, ChatAction,
 )
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes,
+    Application, CommandHandler, ContextTypes, CallbackQueryHandler,
 )
 
 # ============================================================
@@ -35,8 +36,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.22"
-RELEASE_NOTE = "v2.9.22 \u2014 fix entry buffer: 9:50 \u2192 9:45 ET (15 min after open)"
+BOT_VERSION = "2.9.23"
+RELEASE_NOTE = "v2.9.23 \u2014 polished UX: inline keyboards, typing indicators, /menu, /help categories, stale copy fixes"
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -2280,7 +2281,7 @@ def send_weekly_digest():
             lines.append("  %s  %d trades  $%+.2f" % (tk, ticker_counts[tk], ticker_pnls[tk]))
         lines.append(SEP)
         lines.append("Next week: OR strategy continues.")
-        lines.append("All 8 tickers monitored from 09:35 ET.")
+        lines.append("All 8 tickers monitored from 09:45 ET.")
 
         msg = "\n".join(lines)
         if len(msg) > 4000:
@@ -2411,6 +2412,7 @@ def _fire_system_test(label: str) -> None:
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /test command — run system health test."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     await run_system_test("Manual")
 
 
@@ -2485,17 +2487,23 @@ def scan_loop():
         manage_positions()
     except Exception as e:
         logger.error("manage_positions crashed: %s", e, exc_info=True)
-        send_telegram("⚠️ Bot error in manage_positions: %s" % str(e)[:200])
+        err_msg = "⚠️ Bot error in manage_positions: %s" % str(e)[:200]
+        send_telegram(err_msg)
+        send_tp_telegram(err_msg)
     try:
         manage_tp_positions()
     except Exception as e:
         logger.error("manage_tp_positions crashed: %s", e, exc_info=True)
-        send_telegram("⚠️ Bot error in manage_tp_positions: %s" % str(e)[:200])
+        err_msg = "⚠️ Bot error in manage_tp_positions: %s" % str(e)[:200]
+        send_telegram(err_msg)
+        send_tp_telegram(err_msg)
     try:
         manage_short_positions()
     except Exception as e:
         logger.error("manage_short_positions crashed: %s", e, exc_info=True)
-        send_telegram("⚠️ Bot error in manage_short_positions: %s" % str(e)[:200])
+        err_msg = "⚠️ Bot error in manage_short_positions: %s" % str(e)[:200]
+        send_telegram(err_msg)
+        send_tp_telegram(err_msg)
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
@@ -2697,54 +2705,45 @@ def _compute_streak(history):
 # TELEGRAM COMMANDS
 # ============================================================
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show formatted command list and strategy summary."""
-    SEP = "\u2500" * 34
-    loss_limit_int = int(DAILY_LOSS_LIMIT)
-    loss_limit_str = "$%d" % loss_limit_int
+    """Show categorized command list."""
+    SEP = "\u2500" * 30
     text = (
         "\U0001f4d6 Commands\n"
         f"{SEP}\n"
-        "/dashboard    Full market snapshot\n"
-        "/positions    Open positions + live P&L\n"
-        "/status       Alias for /positions\n"
-        "/orb          Today's OR levels + status\n"
-        "/perf         All-time performance stats\n"
-        "/price TICK   Live quote for any ticker\n"
-        "/log          Today's trade log\n"
-        "/replay       Trade timeline replay\n"
-        "/dayreport    Daily P&L summary\n"
-        "/monitoring   Pause/resume scanner\n"
-        "/reset        Reset portfolio\n"
-        "/algo         Algorithm reference PDF\n"
-        "/strategy     Strategy summary\n"
-        "/version      Bot version info\n"
-        "/help         This menu\n"
-        f"{SEP}\n"
-        "LONG: ORB Momentum Breakout\n"
-        "  Entry: 1min close > OR_High\n"
-        "         + price > PDC (green)\n"
-        "         + SPY & QQQ > AVWAP\n"
-        "  Stop:  OR_High \u2212 $0.90\n"
-        f"{SEP}\n"
-        "SHORT: Wounded Buffalo\n"
-        "  Entry: 1min close < OR_Low\n"
-        "         + price < PDC (red)\n"
-        "         + SPY & QQQ < AVWAP\n"
-        "  Stop:  PDC + $0.90\n"
-        f"{SEP}\n"
-        "Trail: +$1.00 triggers, ratchets $0.50/$0.50\n"
-        "Max:   2 entries per ticker per day (each side)\n"
-        f"Halt:  Auto-halt if day P&L < {loss_limit_str}\n"
-        f"{SEP}\n"
-        "Index Regime Shield (v2.9.8)\n"
-        "  Tiger exits (Lords Left / Bull Vacuum)\n"
-        "  use 1-min bar close, not live tick"
+        "\U0001f4ca Portfolio\n"
+        "  /dashboard   Full market snapshot\n"
+        "  /positions   Open positions + live P&L\n"
+        "  /perf        All-time performance stats\n"
+        "\n"
+        "\U0001f4c8 Market Data\n"
+        "  /price TICK  Live quote for a ticker\n"
+        "  /orb         Today's OR levels\n"
+        "\n"
+        "\U0001f4c5 Reports\n"
+        "  /dayreport   Today's trades + P&L\n"
+        "  /log         Trade log\n"
+        "  /replay      Trade timeline replay\n"
+        "\n"
+        "\u2699\ufe0f System\n"
+        "  /monitoring  Pause/resume scanner\n"
+        "  /test        System health check\n"
+        "  /menu        Quick tap menu\n"
+        "\n"
+        "\U0001f4d8 Reference\n"
+        "  /strategy    Strategy summary\n"
+        "  /algo        Algorithm reference PDF\n"
+        "  /version     Release notes\n"
+        "\n"
+        "\U0001f527 Admin\n"
+        "  /reset       Reset portfolio\n"
+        f"{SEP}"
     )
     await update.message.reply_text(text)
 
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Full market snapshot: portfolio, index filters, OR levels."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
     now_et = _now_et()
     time_cdt = _now_cdt().strftime("%I:%M %p CDT")
@@ -2845,6 +2844,7 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show open positions with live prices, unrealized P&L, and TP summary."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     now_et = _now_et()
     sep = "\u2500" * 34
 
@@ -2928,7 +2928,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tp_cash_fmt = format(tp_paper_cash, ",.2f")
         lines.append("TP Cash: $%s" % tp_cash_fmt)
 
-        await update.message.reply_text("\n".join(lines))
+        refresh_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
+        ]])
+        await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
         return
 
     # Paper portfolio (default)
@@ -3029,12 +3032,102 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if qqq_avwap > 0:
         lines.append("QQQ AVWAP: $%.2f" % qqq_avwap)
 
-    await update.message.reply_text("\n".join(lines))
+    refresh_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
+    ]])
+    await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
 
 
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Alias for /status."""
     await cmd_status(update, context)
+
+
+def _build_positions_text(is_tp=False):
+    """Build positions text for refresh callback."""
+    now_et = _now_et()
+    sep = "\u2500" * 34
+    if is_tp:
+        pos_dict = tp_positions
+        short_dict = tp_short_positions
+        trades_list = tp_paper_trades
+        short_hist = tp_short_trade_history
+        cash = tp_paper_cash
+        label = "[TP] Open Positions"
+        cash_label = "TP Cash"
+    else:
+        pos_dict = positions
+        short_dict = short_positions
+        trades_list = paper_trades
+        short_hist = short_trade_history
+        cash = paper_cash
+        label = "Open Positions"
+        cash_label = "Paper Cash"
+
+    n_pos = len(pos_dict)
+    lines = ["%s (%d)" % (label, n_pos), sep]
+    total_unreal = 0.0
+    if not pos_dict:
+        lines.append("No open positions")
+    else:
+        for ticker, pos in pos_dict.items():
+            bars = fetch_1min_bars(ticker)
+            ep = pos["entry_price"]
+            sh = pos["shares"]
+            if bars:
+                cur = bars["current_price"]
+                pnl = (cur - ep) * sh
+                pct = ((cur - ep) / ep * 100) if ep else 0
+                total_unreal += pnl
+                stop_tag = "[trail active]" if pos["trail_active"] else "[stop]"
+                lines.append("%s  %d shares" % (ticker, sh))
+                lines.append("  Entry:  $%.2f  ->  Now: $%.2f" % (ep, cur))
+                lines.append("  P&L:   $%+.2f (%+.1f%%)" % (pnl, pct))
+                lines.append("  Stop:   $%.2f %s" % (pos["stop"], stop_tag))
+            else:
+                lines.append("%s  %d shares" % (ticker, sh))
+                lines.append("  Entry:  $%.2f  ->  price unavailable" % ep)
+            lines.append(sep)
+    if pos_dict:
+        lines.append("Total Unrealized P&L: $%+.2f" % total_unreal)
+    today = now_et.strftime("%Y-%m-%d")
+    today_sells = [t for t in trades_list if t.get("action") == "SELL" and t.get("date") == today]
+    short_today = [t for t in short_hist if t.get("date") == today]
+    day_pnl = sum(t.get("pnl", 0) for t in today_sells) + sum(t.get("pnl", 0) for t in short_today)
+    day_trades = len(today_sells) + len(short_today)
+    lines.append("Day P&L: $%+.2f  (%d trades)" % (day_pnl, day_trades))
+    lines.append(sep)
+    lines.append("\U0001fa78 SHORT POSITIONS (Wounded Buffalo)")
+    lines.append(sep)
+    if not short_dict:
+        lines.append("No short positions open.")
+    else:
+        for s_ticker, s_pos in short_dict.items():
+            s_entry = s_pos["entry_price"]
+            s_shares = s_pos["shares"]
+            s_bars = fetch_1min_bars(s_ticker)
+            if s_bars:
+                s_cur = s_bars["current_price"]
+                s_pnl = (s_entry - s_cur) * s_shares
+                lines.append("%s  Entry $%.2f  Stop $%.2f" % (s_ticker, s_entry, s_pos["stop"]))
+                lines.append("      Current $%.2f  P&L $%+.2f" % (s_cur, s_pnl))
+            else:
+                lines.append("%s  Entry $%.2f  Stop $%.2f  (price unavailable)"
+                             % (s_ticker, s_entry, s_pos["stop"]))
+    lines.append("%s:           $%s" % (cash_label, format(cash, ",.2f")))
+    return "\n".join(lines)
+
+
+async def positions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle refresh button tap on /positions."""
+    query = update.callback_query
+    await query.answer("Refreshing...")
+    is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+    msg = _build_positions_text(is_tp=is_tp)
+    refresh_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
+    ]])
+    await query.edit_message_text(msg, reply_markup=refresh_kb)
 
 
 def _dayreport_time(t, key):
@@ -3139,6 +3232,7 @@ async def _reply_in_chunks(message, text, max_len=3800):
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's completed trades with P&L summary."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     now_et = _now_et()
     now_cdt = _now_cdt()
     today = now_et.strftime("%Y-%m-%d")
@@ -3177,6 +3271,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's completed trades (entries and exits) chronologically."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -3217,7 +3312,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         day_pnl_fmt = f"{day_pnl:+,.2f}"
         lines.append(f"Completed: {n_closed} trades  Open: {n_open} positions")
         lines.append(f"Day P&L: ${day_pnl_fmt}")
-        await update.message.reply_text("\n".join(lines))
+        await _reply_in_chunks(update.message, "\n".join(lines))
         return
 
     # Paper portfolio
@@ -3261,11 +3356,12 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"Completed: {n_closed} trades  Open: {n_open} positions")
     lines.append(f"Day P&L: ${day_pnl_fmt}")
 
-    await update.message.reply_text("\n".join(lines))
+    await _reply_in_chunks(update.message, "\n".join(lines))
 
 
 async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Timeline replay of today's trades with running cumulative P&L."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -3315,9 +3411,7 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Final P&L: ${cum_pnl_fmt}  |  Trades: {n_sells}  |  W: {wins}  L: {losses}"
         )
         msg = "\n".join(lines)
-        if len(msg) > 4000:
-            msg = msg[:3990] + "\n... (truncated)"
-        await update.message.reply_text(msg)
+        await _reply_in_chunks(update.message, msg)
         return
 
     # Paper portfolio
@@ -3371,10 +3465,7 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     msg = "\n".join(lines)
-    # Telegram 4096 char limit
-    if len(msg) > 4000:
-        msg = msg[:3990] + "\n... (truncated)"
-    await update.message.reply_text(msg)
+    await _reply_in_chunks(update.message, msg)
 
 
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3517,58 +3608,128 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2014 no wick-outs\n"
         f"{SEP}"
     )
-    await update.message.reply_text(text)
+    await _reply_in_chunks(update.message, text)
 
 
 # ============================================================
 # /reset COMMAND (Fix C)
 # ============================================================
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reset paper | /reset tp | /reset both — clear portfolio and start fresh."""
-    global paper_cash, paper_trades, paper_all_trades
-    global daily_entry_count, daily_entry_date
-    global tp_paper_cash, tp_paper_trades
-    global trade_history, tp_trade_history
-    global _trading_halted, _trading_halted_reason
-    global daily_short_entry_count
-
+    """/reset paper | /reset tp | /reset both — show confirmation before reset."""
     args = context.args
-    target = args[0].lower() if args else "paper"
+    target = args[0].lower() if args else ""
 
-    if target not in ("paper", "tp", "both"):
-        await update.message.reply_text("Usage: /reset paper | /reset tp | /reset both")
-        return
+    if target == "paper":
+        await update.message.reply_text(
+            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_paper_confirm"),
+                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
+            ]])
+        )
+    elif target == "tp":
+        await update.message.reply_text(
+            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_tp_confirm"),
+                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
+            ]])
+        )
+    elif target == "both":
+        await update.message.reply_text(
+            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_both_confirm"),
+                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
+            ]])
+        )
+    else:
+        await update.message.reply_text(
+            "Choose what to reset:",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("\U0001f4c4 Reset Paper", callback_data="reset_paper"),
+                    InlineKeyboardButton("\U0001f4cb Reset TP", callback_data="reset_tp"),
+                ],
+                [
+                    InlineKeyboardButton("\U0001f504 Reset Both", callback_data="reset_both"),
+                ],
+            ])
+        )
 
-    msgs = []
 
-    if target in ("paper", "both"):
-        positions.clear()
-        short_positions.clear()
-        paper_trades.clear()
-        paper_all_trades.clear()
-        trade_history.clear()
-        short_trade_history.clear()
-        daily_entry_count.clear()
-        daily_short_entry_count.clear()
-        daily_entry_date = ""
-        paper_cash = PAPER_STARTING_CAPITAL
-        _trading_halted = False
-        _trading_halted_reason = ""
-        save_paper_state()
-        msgs.append("Paper portfolio reset to $%s" % format(PAPER_STARTING_CAPITAL, ",.0f"))
+def _do_reset_paper():
+    """Execute paper portfolio reset."""
+    global paper_cash, daily_entry_date
+    global _trading_halted, _trading_halted_reason
+    positions.clear()
+    short_positions.clear()
+    paper_trades.clear()
+    paper_all_trades.clear()
+    trade_history.clear()
+    short_trade_history.clear()
+    daily_entry_count.clear()
+    daily_short_entry_count.clear()
+    daily_entry_date = ""
+    paper_cash = PAPER_STARTING_CAPITAL
+    _trading_halted = False
+    _trading_halted_reason = ""
+    save_paper_state()
 
-    if target in ("tp", "both"):
-        tp_positions.clear()
-        tp_short_positions.clear()
-        tp_paper_trades.clear()
-        tp_trade_history.clear()
-        tp_short_trade_history.clear()
-        tp_paper_cash = PAPER_STARTING_CAPITAL
-        save_tp_state()
-        msgs.append("TP portfolio reset to $%s" % format(PAPER_STARTING_CAPITAL, ",.0f"))
 
-    confirmation = "\u2705 Reset complete\n" + "\n".join(msgs)
-    await update.message.reply_text(confirmation)
+def _do_reset_tp():
+    """Execute TP portfolio reset."""
+    global tp_paper_cash
+    tp_positions.clear()
+    tp_short_positions.clear()
+    tp_paper_trades.clear()
+    tp_trade_history.clear()
+    tp_short_trade_history.clear()
+    tp_paper_cash = PAPER_STARTING_CAPITAL
+    save_tp_state()
+
+
+async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard taps for /reset confirmation."""
+    query = update.callback_query
+    await query.answer()
+    capital_fmt = format(PAPER_STARTING_CAPITAL, ",.0f")
+    if query.data == "reset_paper_confirm":
+        _do_reset_paper()
+        await query.edit_message_text("\u2705 Paper portfolio reset to $%s." % capital_fmt)
+    elif query.data == "reset_tp_confirm":
+        _do_reset_tp()
+        await query.edit_message_text("\u2705 TP portfolio reset to $%s." % capital_fmt)
+    elif query.data == "reset_both_confirm":
+        _do_reset_paper()
+        _do_reset_tp()
+        await query.edit_message_text("\u2705 Both portfolios reset to $%s." % capital_fmt)
+    elif query.data == "reset_cancel":
+        await query.edit_message_text("\u274c Reset cancelled.")
+    elif query.data == "reset_paper":
+        await query.edit_message_text(
+            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_paper_confirm"),
+                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
+            ]])
+        )
+    elif query.data == "reset_tp":
+        await query.edit_message_text(
+            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_tp_confirm"),
+                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
+            ]])
+        )
+    elif query.data == "reset_both":
+        await query.edit_message_text(
+            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_both_confirm"),
+                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
+            ]])
+        )
 
 
 # ============================================================
@@ -3576,6 +3737,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show all-time performance stats from trade history."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -3660,9 +3822,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("Streak: %s" % streak)
 
     msg = "\n".join(lines)
-    if len(msg) > 4000:
-        msg = msg[:3990] + "\n... (truncated)"
-    await update.message.reply_text(msg)
+    await _reply_in_chunks(update.message, msg)
 
 
 # ============================================================
@@ -3670,6 +3830,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/price AAPL — live quote from Yahoo Finance."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
     args = context.args
     if not args:
@@ -3806,6 +3967,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's OR levels and current price for all 8 trade tickers."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -3865,9 +4027,7 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("Entries today: %s" % entries_str)
 
     msg = "\n".join(lines)
-    if len(msg) > 4000:
-        msg = msg[:3990] + "\n... (truncated)"
-    await update.message.reply_text(msg)
+    await _reply_in_chunks(update.message, msg)
 
 
 # ============================================================
@@ -3883,23 +4043,179 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _scan_paused = True
         await update.message.reply_text(
             "\U0001f50d Scanner: PAUSED\n"
-            "  /monitoring resume \u2014 resume entries\n"
-            "  Note: existing positions still managed when paused."
+            "  Tap below to resume.\n"
+            "  Existing positions still managed.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume")
+            ]])
         )
     elif action == "resume":
         _scan_paused = False
         await update.message.reply_text(
             "\U0001f50d Scanner: ACTIVE\n"
-            "  Scanner resumed. Watching for breakouts."
+            "  Watching for breakouts.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")
+            ]])
         )
     else:
         status = "PAUSED" if _scan_paused else "ACTIVE"
+        if _scan_paused:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume")
+            ]])
+        else:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")
+            ]])
         await update.message.reply_text(
             "\U0001f50d Scanner: %s\n"
-            "  /monitoring pause  \u2014 pause new entries\n"
-            "  /monitoring resume \u2014 resume entries\n"
-            "  Note: existing positions still managed when paused." % status
+            "  Existing positions still managed." % status,
+            reply_markup=kb
         )
+
+
+async def monitoring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard taps for /monitoring."""
+    global _scan_paused
+    query = update.callback_query
+    await query.answer()
+    if query.data == "monitoring_pause":
+        _scan_paused = True
+        await query.edit_message_text(
+            "\U0001f50d Scanner: PAUSED\n  Tap below to resume.\n  Existing positions still managed.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume")
+            ]])
+        )
+    elif query.data == "monitoring_resume":
+        _scan_paused = False
+        await query.edit_message_text(
+            "\U0001f50d Scanner: ACTIVE\n  Watching for breakouts.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")
+            ]])
+        )
+
+
+# ============================================================
+# /menu COMMAND — Quick tap-grid
+# ============================================================
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show a quick tap-grid of all commands."""
+    keyboard = [
+        [
+            InlineKeyboardButton("\U0001f4ca Dashboard", callback_data="menu_dashboard"),
+            InlineKeyboardButton("\U0001f4c8 Positions", callback_data="menu_positions"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f4b0 Price", callback_data="menu_price_prompt"),
+            InlineKeyboardButton("\U0001f4d0 ORs", callback_data="menu_orb"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f4c5 Day Report", callback_data="menu_dayreport"),
+            InlineKeyboardButton("\U0001f4c8 Performance", callback_data="menu_perf"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f50d Monitor", callback_data="menu_monitoring"),
+            InlineKeyboardButton("\U0001f9ea System Test", callback_data="menu_test"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f4d8 Strategy", callback_data="menu_strategy"),
+            InlineKeyboardButton("\u2139\ufe0f Version", callback_data="menu_version"),
+        ],
+    ]
+    await update.message.reply_text(
+        "\U0001f4f1 Quick Menu\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle taps on /menu inline buttons."""
+    query = update.callback_query
+    await query.answer()
+    is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+
+    if query.data == "menu_price_prompt":
+        await query.edit_message_text("Use /price TICKER (e.g. /price AAPL)")
+        return
+
+    if query.data == "menu_version":
+        await query.edit_message_text(
+            "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, RELEASE_NOTE))
+        return
+
+    if query.data == "menu_strategy":
+        await query.edit_message_text("\u23f3 Loading...")
+        SEP = "\u2500" * 26
+        text = (
+            "Strategy v%s\n%s\n" % (BOT_VERSION, SEP)
+            + "Long: ORB Breakout after 9:45 ET\n"
+            "Short: Wounded Buffalo after 9:45 ET\n"
+            "Trail: +0.50%% trigger | min $1.00\n"
+            "Size: 10 shares | Max 2/ticker/day\n"
+            "%s\nUse /strategy for full details" % SEP
+        )
+        await query.message.reply_text(text)
+        return
+
+    await query.edit_message_text("\u23f3 Loading...")
+
+    if query.data == "menu_dashboard":
+        # Build a lightweight dashboard summary
+        time_cdt = _now_cdt().strftime("%I:%M %p CDT")
+        n_paper = len(positions)
+        n_tp = len(tp_positions)
+        msg = (
+            "\U0001f4ca DASHBOARD  %s\n" % time_cdt
+            + "Paper: %d positions | TP: %d positions\n" % (n_paper, n_tp)
+            + "Use /dashboard for full snapshot"
+        )
+        await query.message.reply_text(msg)
+    elif query.data == "menu_positions":
+        msg = _build_positions_text(is_tp=is_tp)
+        refresh_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
+        ]])
+        await query.message.reply_text(msg, reply_markup=refresh_kb)
+    elif query.data == "menu_orb":
+        now_et = _now_et()
+        today = now_et.strftime("%Y-%m-%d")
+        if or_collected_date != today:
+            await query.message.reply_text("OR not collected yet \u2014 runs at 09:35 ET.")
+        else:
+            orb_lines = ["\U0001f4d0 TODAY'S OR LEVELS \u2014 %s" % today]
+            for t in TRADE_TICKERS:
+                orh = or_high.get(t)
+                if orh is None:
+                    orb_lines.append("%s   --" % t)
+                else:
+                    orl = or_low.get(t)
+                    pdc_val = pdc.get(t)
+                    orl_s = "%.2f" % orl if orl else "--"
+                    pdc_s = "%.2f" % pdc_val if pdc_val else "--"
+                    orb_lines.append("%s  H:$%.2f  L:$%s  PDC:$%s" % (t, orh, orl_s, pdc_s))
+            await query.message.reply_text("\n".join(orb_lines))
+    elif query.data == "menu_dayreport":
+        await query.message.reply_text("Use /dayreport for today's trades + P&L")
+    elif query.data == "menu_perf":
+        await query.message.reply_text("Use /perf for all-time performance stats")
+    elif query.data == "menu_monitoring":
+        status = "PAUSED" if _scan_paused else "ACTIVE"
+        if _scan_paused:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume")
+            ]])
+        else:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")
+            ]])
+        await query.message.reply_text(
+            "\U0001f50d Scanner: %s" % status, reply_markup=kb)
+    elif query.data == "menu_test":
+        await query.message.reply_text("Running /test ...")
+        await run_system_test("Manual")
 
 
 # ============================================================
@@ -3908,6 +4224,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
 MAIN_BOT_COMMANDS = [
     BotCommand("dashboard", "Full market snapshot"),
     BotCommand("help", "Command menu"),
+    BotCommand("menu", "Quick command menu"),
     BotCommand("status", "Open positions + P&L"),
     BotCommand("positions", "Alias for /status"),
     BotCommand("orb", "Today's OR levels + status"),
@@ -3927,6 +4244,7 @@ MAIN_BOT_COMMANDS = [
 TP_BOT_COMMANDS = [
     BotCommand("dashboard", "Full market snapshot"),
     BotCommand("help", "Command menu"),
+    BotCommand("menu", "Quick command menu"),
     BotCommand("status", "Open positions + P&L"),
     BotCommand("positions", "Alias for /status"),
     BotCommand("orb", "Today's OR levels + status"),
@@ -3992,7 +4310,7 @@ def send_startup_message():
         f"{SEP}\n"
         f"Universe: {universe}\n"
         f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
-        f"Scan:     every {SCAN_INTERVAL}s  |  Trail: $1.00\u2192$0.50\n"
+        f"Scan:     every {SCAN_INTERVAL}s  |  Trail: Bison +0.50% / min $1.00\n"
         f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
         f"{SEP}\n"
         f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
@@ -4032,6 +4350,13 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("algo", cmd_algo))
     app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+
+    # Callback query handlers
+    app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
+    app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
+    app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
 
     # If no separate TP token, run single bot
     if not TELEGRAM_TP_TOKEN:
@@ -4060,6 +4385,13 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("algo", cmd_algo))
     tp_app.add_handler(CommandHandler("strategy", cmd_strategy))
     tp_app.add_handler(CommandHandler("test", cmd_test))
+    tp_app.add_handler(CommandHandler("menu", cmd_menu))
+
+    # Callback query handlers (TP bot)
+    tp_app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
+    tp_app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
+    tp_app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
+    tp_app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
 
     async def _run_both():
         loop = asyncio.get_running_loop()
