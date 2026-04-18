@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.38"
-RELEASE_NOTE = "v2.9.38 \u2014 Fix /perf blocking: timeout + matplotlib warmup + executor isolation."
+BOT_VERSION = "2.9.39"
+RELEASE_NOTE = "v2.9.39 \u2014 Fix trade_history wipe on restart; /log now reads history for past dates; add data-loss guard."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -317,6 +317,9 @@ trade_history: list = []        # ALL closed paper trades, max 500
 tp_trade_history: list = []     # ALL closed TP trades, max 500
 TRADE_HISTORY_MAX = 500
 
+# Guard: prevent scheduler from saving empty state before load completes
+_state_loaded = False
+
 # Short positions (Wounded Buffalo strategy)
 short_positions: dict = {}           # paper short: {ticker: {entry_price, shares, stop, trail_stop, trail_active, entry_time, date, side}}
 tp_short_positions: dict = {}        # TP short positions
@@ -368,6 +371,16 @@ def is_tp_update(update) -> bool:
 # ============================================================
 def save_paper_state():
     """Persist paper trading + strategy state to disk. Thread-safe, atomic."""
+    if not _state_loaded:
+        logger.warning("save_paper_state skipped — state not yet loaded")
+        return
+    # Data-loss guard: warn if history empty but cash changed (trades happened then vanished)
+    if not trade_history and paper_cash != PAPER_STARTING_CAPITAL:
+        logger.warning(
+            "DATA LOSS GUARD: trade_history is empty but cash=$%.2f (start=$%.0f) — "
+            "possible trade history wipe!",
+            paper_cash, PAPER_STARTING_CAPITAL,
+        )
     state = {
         "paper_cash": paper_cash,
         "positions": positions,
@@ -410,11 +423,12 @@ def load_paper_state():
     global trade_history
     global short_positions, short_trade_history
     global avwap_data, avwap_last_ts, daily_short_entry_count
-    global _last_exit_time
+    global _last_exit_time, _state_loaded
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
                   % (PAPER_STATE_FILE, PAPER_STARTING_CAPITAL))
+        _state_loaded = True
         return
 
     try:
@@ -448,9 +462,11 @@ def load_paper_state():
             daily_entry_count.clear()
             paper_trades.clear()
 
-        logger.info("Loaded paper state: cash=$%.2f, %d positions",
-                    paper_cash, len(positions))
+        _state_loaded = True
+        logger.info("Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
+                    paper_cash, len(positions), len(trade_history))
     except Exception as e:
+        _state_loaded = True  # allow saves after failed load (fresh start)
         logger.error("load_paper_state failed: %s — starting fresh", e)
 
 
@@ -3984,9 +4000,15 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply_in_chunks(update.message, "\n".join(lines))
         return
 
-    # Paper portfolio
-    today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
-    today_trades.sort(key=lambda t: t.get("time", ""))
+    # Paper portfolio — use paper_trades for today, trade_history for past dates
+    today_str = _now_et().strftime("%Y-%m-%d")
+    if target_str == today_str:
+        today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
+    else:
+        # Past date: paper_trades is daily-only; pull from persistent trade_history
+        today_trades = [t for t in trade_history if t.get("date", "") == target_str]
+        today_trades += [t for t in short_trade_history if t.get("date", "") == target_str]
+    today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
 
     if not today_trades:
         await update.message.reply_text("No trades on %s." % day_label)
@@ -3998,11 +4020,11 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     for t in today_trades:
-        tm = t.get("time", "--:--")
+        tm = t.get("time", t.get("exit_time", "--:--"))
         ticker = t.get("ticker", "?")
         action = t.get("action", "?")
         shares = t.get("shares", 0)
-        price = t.get("price", 0)
+        price = t.get("price", t.get("exit_price", 0))
         if action == "BUY":
             stop = t.get("stop", 0)
             lines.append(
@@ -4084,9 +4106,14 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply_in_chunks(update.message, msg)
         return
 
-    # Paper portfolio
-    today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
-    today_trades.sort(key=lambda t: t.get("time", ""))
+    # Paper portfolio — use paper_trades for today, trade_history for past dates
+    today_str = _now_et().strftime("%Y-%m-%d")
+    if target_str == today_str:
+        today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
+    else:
+        today_trades = [t for t in trade_history if t.get("date", "") == target_str]
+        today_trades += [t for t in short_trade_history if t.get("date", "") == target_str]
+    today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
 
     if not today_trades:
         await update.message.reply_text("No trades on %s." % day_label)
