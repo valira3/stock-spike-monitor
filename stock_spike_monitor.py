@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.40"
-RELEASE_NOTE = "v2.9.40 \u2014 Full bug sweep: datetime crash, halted state persist, loss cap, EOD gate, DST fix, state dedup, TP guards."
+BOT_VERSION = "2.9.41"
+RELEASE_NOTE = "v2.9.41 \u2014 fix /log blocking; add command timing, scan cycle, API, trade, startup instrumentation."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -371,6 +371,7 @@ def is_tp_update(update) -> bool:
 # ============================================================
 def save_paper_state():
     """Persist paper trading + strategy state to disk. Thread-safe, atomic."""
+    t0 = time.time()
     if not _state_loaded:
         logger.warning("save_paper_state skipped — state not yet loaded")
         return
@@ -412,7 +413,7 @@ def save_paper_state():
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, default=str)
             os.replace(tmp, PAPER_STATE_FILE)
-            logger.debug("Paper state saved -> %s", PAPER_STATE_FILE)
+            logger.debug("Paper state saved -> %s (%.3fs)", PAPER_STATE_FILE, time.time() - t0)
         except Exception as e:
             logger.error("save_paper_state failed: %s", e)
 
@@ -494,6 +495,7 @@ _tp_state_loaded = False
 
 def save_tp_state():
     """Persist TP portfolio state to disk. Thread-safe, atomic."""
+    t0 = time.time()
     if not _tp_state_loaded:
         logger.warning("save_tp_state skipped — state not yet loaded")
         return
@@ -512,7 +514,7 @@ def save_tp_state():
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, default=str)
             os.replace(tmp, TP_STATE_FILE)
-            logger.debug("TP state saved -> %s", TP_STATE_FILE)
+            logger.debug("TP state saved -> %s (%.3fs)", TP_STATE_FILE, time.time() - t0)
         except Exception as e:
             logger.error("save_tp_state failed: %s", e)
 
@@ -641,6 +643,7 @@ def fetch_1min_bars(ticker):
     Returns dict with keys: timestamps, opens, highs, lows, closes,
     volumes, current_price, pdc.  Returns None on failure.
     """
+    t0 = time.time()
     url = (
         "https://query1.finance.yahoo.com/v8/finance/chart/%s"
         "?interval=1m&range=1d&includePrePost=false" % ticker
@@ -652,6 +655,7 @@ def fetch_1min_bars(ticker):
 
         result = data.get("chart", {}).get("result")
         if not result:
+            logger.debug("Yahoo %s: empty result (%.2fs)", ticker, time.time() - t0)
             return None
         r = result[0]
         meta = r.get("meta", {})
@@ -659,8 +663,10 @@ def fetch_1min_bars(ticker):
         timestamps = r.get("timestamp", [])
 
         if not timestamps:
+            logger.debug("Yahoo %s: no timestamps (%.2fs)", ticker, time.time() - t0)
             return None
 
+        logger.debug("Yahoo %s: %.2fs", ticker, time.time() - t0)
         return {
             "timestamps": timestamps,
             "opens": quote.get("open", []),
@@ -674,7 +680,7 @@ def fetch_1min_bars(ticker):
                     or 0),
         }
     except Exception as e:
-        logger.debug("fetch_1min_bars %s failed: %s", ticker, e)
+        logger.debug("fetch_1min_bars %s failed: %s (%.2fs)", ticker, e, time.time() - t0)
         return None
 
 
@@ -701,6 +707,7 @@ def get_last_1min_close(ticker):
 # ============================================================
 def get_fmp_quote(ticker):
     """Fetch real-time quote from FMP. Returns dict or None on error."""
+    t0 = time.time()
     try:
         url = (
             "https://financialmodelingprep.com/stable/quote"
@@ -710,9 +717,10 @@ def get_fmp_quote(ticker):
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         if data and isinstance(data, list) and len(data) > 0:
+            logger.debug("FMP %s: %.2fs", ticker, time.time() - t0)
             return data[0]
     except Exception as e:
-        logger.warning("FMP quote error for %s: %s", ticker, e)
+        logger.warning("FMP quote error for %s: %s (%.2fs)", ticker, e, time.time() - t0)
     return None
 
 
@@ -1172,6 +1180,7 @@ def execute_entry(ticker, current_price):
         if live_px > 0:
             today_pnl += (pos["entry_price"] - live_px) * pos.get("shares", 10)
 
+    logger.info("Daily P&L check: $%.2f (limit $%.2f)", today_pnl, DAILY_LOSS_LIMIT)
     if today_pnl <= DAILY_LOSS_LIMIT:
         _trading_halted = True
         pnl_fmt = "%+.2f" % today_pnl
@@ -2781,6 +2790,7 @@ def _build_test_progress(results):
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /test command — run system health test with live progress."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     results = {}
     prog = await update.message.reply_text(_build_test_progress(results))
@@ -2822,6 +2832,8 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pass
 
+    logger.info("CMD test completed in %.2fs", asyncio.get_event_loop().time() - t0)
+
 
 # ============================================================
 # SCAN LOOP
@@ -2842,6 +2854,7 @@ def scan_loop():
     if now_et.hour == 15 and now_et.minute >= 55:
         return
 
+    cycle_start = time.time()
     global _last_scan_time
     _last_scan_time = datetime.now(timezone.utc)
 
@@ -2914,6 +2927,7 @@ def scan_loop():
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
+        logger.info("SCAN CYCLE done in %.2fs — paused (manage only)", time.time() - cycle_start)
         return
 
     # Check for new entries on tradable tickers (long + short)
@@ -2931,6 +2945,8 @@ def scan_loop():
             check_short_entry(ticker)
         except Exception as e:
             logger.error("Short entry check error %s: %s", ticker, e)
+
+    logger.info("SCAN CYCLE done in %.2fs — %d tickers", time.time() - cycle_start, len(TRADE_TICKERS))
 
 
 # ============================================================
@@ -3250,6 +3266,7 @@ def _dashboard_sync(is_tp):
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Full market snapshot: portfolio, index filters, OR levels."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     prog = await update.message.reply_text("\u23f3 Loading dashboard (~3s)...")
     is_tp = is_tp_update(update)
@@ -3263,6 +3280,7 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await prog.edit_text(text)
     except Exception:
         pass
+    logger.info("CMD dashboard completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 def _status_text_sync(is_tp):
@@ -3512,6 +3530,7 @@ def _status_text_sync(is_tp):
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show open positions with live prices, unrealized P&L, and TP summary."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
@@ -3533,6 +3552,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
             if buf:
                 await update.message.reply_photo(photo=buf, caption="Portfolio Allocation")
+    logger.info("CMD status completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3923,6 +3943,7 @@ async def _reply_in_chunks(message, text, max_len=3800):
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show completed trades with P&L summary (optional date)."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     target_date = _parse_date_arg(context.args)
     target_str = target_date.strftime("%Y-%m-%d")
@@ -3958,6 +3979,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
                 except Exception:
                     pass
+        logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
         return
 
     # Paper portfolio
@@ -3990,19 +4012,15 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
             except Exception:
                 pass
+    logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
-async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show completed trades (entries and exits) chronologically (optional date)."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
+def _log_sync(target_str, day_label, is_tp):
+    """Build trade log text (pure CPU — run in executor). Returns text or None."""
     SEP = "\u2500" * 34
-    target_date = _parse_date_arg(context.args)
-    target_str = target_date.strftime("%Y-%m-%d")
-    day_label = target_date.strftime("%a %b %d, %Y")
+    today_str = _now_et().strftime("%Y-%m-%d")
 
-    # Fix B: Route based on which bot
-    if is_tp_update(update):
-        today_str = _now_et().strftime("%Y-%m-%d")
+    if is_tp:
         if target_str == today_str:
             today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
         else:
@@ -4010,8 +4028,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
             today_trades += [t for t in tp_short_trade_history if t.get("date", "") == target_str]
         today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
         if not today_trades:
-            await update.message.reply_text("[TP] No trades on %s." % day_label)
-            return
+            return None
         lines = [
             "\U0001f4cb [TP] Trade Log \u2014 %s" % day_label,
             SEP,
@@ -4025,38 +4042,35 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if action == "BUY":
                 stop = t.get("stop", 0)
                 lines.append(
-                    f"{tm}  BUY   {ticker}  {shares} @ ${price:.2f}  stop ${stop:.2f}"
+                    "%s  BUY   %s  %d @ $%.2f  stop $%.2f"
+                    % (tm, ticker, shares, price, stop)
                 )
             else:
                 pnl_v = t.get("pnl", 0)
                 pnl_p = t.get("pnl_pct", 0)
                 lines.append(
-                    f"{tm}  EXIT  {ticker}  {shares} @ ${price:.2f}"
-                    f"  P&L: ${pnl_v:+.2f} ({pnl_p:+.2f}%)"
+                    "%s  EXIT  %s  %d @ $%.2f  P&L: $%+.2f (%+.2f%%)"
+                    % (tm, ticker, shares, price, pnl_v, pnl_p)
                 )
         lines.append(SEP)
         n_closed = sum(1 for t in today_trades if t.get("action") == "SELL")
         n_open = len(tp_positions)
         day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
-        day_pnl_fmt = f"{day_pnl:+,.2f}"
-        lines.append(f"Completed: {n_closed} trades  Open: {n_open} positions")
-        lines.append(f"Day P&L: ${day_pnl_fmt}")
-        await _reply_in_chunks(update.message, "\n".join(lines))
-        return
+        day_pnl_fmt = "%+,.2f" % day_pnl
+        lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
+        lines.append("Day P&L: $%s" % day_pnl_fmt)
+        return "\n".join(lines)
 
     # Paper portfolio — use paper_trades for today, trade_history for past dates
-    today_str = _now_et().strftime("%Y-%m-%d")
     if target_str == today_str:
         today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
     else:
-        # Past date: paper_trades is daily-only; pull from persistent trade_history
         today_trades = [t for t in trade_history if t.get("date", "") == target_str]
         today_trades += [t for t in short_trade_history if t.get("date", "") == target_str]
     today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
 
     if not today_trades:
-        await update.message.reply_text("No trades on %s." % day_label)
-        return
+        return None
 
     lines = [
         "\U0001f4cb Trade Log \u2014 %s" % day_label,
@@ -4091,103 +4105,92 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
     lines.append("Day P&L: $%+,.2f" % day_pnl)
 
-    await _reply_in_chunks(update.message, "\n".join(lines))
+    return "\n".join(lines)
 
 
-async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Timeline replay of trades with running cumulative P&L (optional date)."""
+async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show completed trades (entries and exits) chronologically (optional date)."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
-    SEP = "\u2500" * 34
+    prog = await update.message.reply_text("\u23f3 Loading log...")
     target_date = _parse_date_arg(context.args)
     target_str = target_date.strftime("%Y-%m-%d")
     day_label = target_date.strftime("%a %b %d, %Y")
+    is_tp = is_tp_update(update)
 
-    # Fix B: Route based on which bot
-    if is_tp_update(update):
-        today_str = _now_et().strftime("%Y-%m-%d")
+    loop = asyncio.get_event_loop()
+    try:
+        text = await asyncio.wait_for(
+            loop.run_in_executor(None, _log_sync, target_str, day_label, is_tp),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("cmd_log: executor timed out after 15s")
+        try:
+            await prog.edit_text("\u26a0\ufe0f Trade log timed out. Try again.")
+        except Exception:
+            pass
+        return
+
+    if text is None:
+        prefix = "[TP] " if is_tp else ""
+        try:
+            await prog.edit_text("%sNo trades on %s." % (prefix, day_label))
+        except Exception:
+            pass
+        logger.info("CMD log completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
+        return
+
+    try:
+        await prog.delete()
+    except Exception:
+        pass
+    await _reply_in_chunks(update.message, text)
+    logger.info("CMD log completed in %.2fs", asyncio.get_event_loop().time() - t0)
+
+
+def _replay_sync(target_str, day_label, is_tp):
+    """Build replay text (pure CPU — run in executor). Returns text or None."""
+    SEP = "\u2500" * 34
+    today_str = _now_et().strftime("%Y-%m-%d")
+
+    if is_tp:
         if target_str == today_str:
             today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
         else:
             today_trades = [t for t in tp_trade_history if t.get("date", "") == target_str]
             today_trades += [t for t in tp_short_trade_history if t.get("date", "") == target_str]
-        today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
-        if not today_trades:
-            await update.message.reply_text("[TP] No trades on %s." % day_label)
-            return
-        lines = [
-            "\U0001f504 [TP] Trade Replay \u2014 %s" % day_label,
-            SEP,
-        ]
-        cum_pnl = 0.0
-        open_count = 0
-        wins = 0
-        losses = 0
-        for t in today_trades:
-            tm = t.get("time", "--:--")
-            ticker = t.get("ticker", "?")
-            action = t.get("action", "?")
-            price = t.get("price", 0)
-            if action == "BUY":
-                open_count += 1
-                lines.append(
-                    f"{tm} \u2192 BUY  {ticker}  ${price:.2f}  [positions: {open_count}]"
-                )
-            else:
-                open_count = max(0, open_count - 1)
-                pnl_val = t.get("pnl", 0)
-                cum_pnl += pnl_val
-                if pnl_val > 0:
-                    wins += 1
-                else:
-                    losses += 1
-                cum_fmt = f"{cum_pnl:+.2f}"
-                lines.append(
-                    f"{tm} \u2192 EXIT {ticker}  ${price:.2f}"
-                    f"  ${pnl_val:+.2f}   cumP&L: ${cum_fmt}"
-                )
-        lines.append(SEP)
-        n_sells = wins + losses
-        cum_pnl_fmt = f"{cum_pnl:+.2f}"
-        lines.append(
-            f"Final P&L: ${cum_pnl_fmt}  |  Trades: {n_sells}  |  W: {wins}  L: {losses}"
-        )
-        msg = "\n".join(lines)
-        await _reply_in_chunks(update.message, msg)
-        return
-
-    # Paper portfolio — use paper_trades for today, trade_history for past dates
-    today_str = _now_et().strftime("%Y-%m-%d")
-    if target_str == today_str:
-        today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
+        prefix = "[TP] "
     else:
-        today_trades = [t for t in trade_history if t.get("date", "") == target_str]
-        today_trades += [t for t in short_trade_history if t.get("date", "") == target_str]
-    today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
+        if target_str == today_str:
+            today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
+        else:
+            today_trades = [t for t in trade_history if t.get("date", "") == target_str]
+            today_trades += [t for t in short_trade_history if t.get("date", "") == target_str]
+        prefix = ""
 
+    today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
     if not today_trades:
-        await update.message.reply_text("No trades on %s." % day_label)
-        return
+        return None
 
     lines = [
-        "\U0001f504 Trade Replay \u2014 %s" % day_label,
+        "\U0001f504 %sTrade Replay \u2014 %s" % (prefix, day_label),
         SEP,
     ]
-
     cum_pnl = 0.0
     open_count = 0
     wins = 0
     losses = 0
-
     for t in today_trades:
         tm = t.get("time", "--:--")
         ticker = t.get("ticker", "?")
         action = t.get("action", "?")
         price = t.get("price", 0)
-
         if action == "BUY":
             open_count += 1
             lines.append(
-                f"{tm} \u2192 BUY  {ticker}  ${price:.2f}  [positions: {open_count}]"
+                "%s \u2192 BUY  %s  $%.2f  [positions: %d]"
+                % (tm, ticker, price, open_count)
             )
         else:
             open_count = max(0, open_count - 1)
@@ -4197,21 +4200,49 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 wins += 1
             else:
                 losses += 1
-            cum_fmt = f"{cum_pnl:+.2f}"
+            cum_fmt = "%+.2f" % cum_pnl
             lines.append(
-                f"{tm} \u2192 EXIT {ticker}  ${price:.2f}"
-                f"  ${pnl_val:+.2f}   cumP&L: ${cum_fmt}"
+                "%s \u2192 EXIT %s  $%.2f  $%+.2f   cumP&L: $%s"
+                % (tm, ticker, price, pnl_val, cum_fmt)
             )
-
     lines.append(SEP)
     n_sells = wins + losses
-    cum_pnl_fmt = f"{cum_pnl:+.2f}"
+    cum_pnl_fmt = "%+.2f" % cum_pnl
     lines.append(
-        f"Final P&L: ${cum_pnl_fmt}  |  Trades: {n_sells}  |  W: {wins}  L: {losses}"
+        "Final P&L: $%s  |  Trades: %d  |  W: %d  L: %d"
+        % (cum_pnl_fmt, n_sells, wins, losses)
     )
+    return "\n".join(lines)
 
-    msg = "\n".join(lines)
-    await _reply_in_chunks(update.message, msg)
+
+async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Timeline replay of trades with running cumulative P&L (optional date)."""
+    t0 = asyncio.get_event_loop().time()
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    target_date = _parse_date_arg(context.args)
+    target_str = target_date.strftime("%Y-%m-%d")
+    day_label = target_date.strftime("%a %b %d, %Y")
+    is_tp = is_tp_update(update)
+
+    loop = asyncio.get_event_loop()
+    try:
+        text = await asyncio.wait_for(
+            loop.run_in_executor(None, _replay_sync, target_str, day_label, is_tp),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("cmd_replay: executor timed out after 15s")
+        await update.message.reply_text("\u26a0\ufe0f Replay timed out. Try again.")
+        return
+
+    if text is None:
+        prefix = "[TP] " if is_tp else ""
+        await update.message.reply_text("%sNo trades on %s." % (prefix, day_label))
+        logger.info("CMD replay completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
+        return
+
+    await _reply_in_chunks(update.message, text)
+    logger.info("CMD replay completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4573,6 +4604,7 @@ def _perf_compute(long_history, short_hist, date_filter, single_day, today, labe
 
 async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show performance stats (optional date or N days)."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -4630,6 +4662,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(photo=chart_buf, caption="Equity Curve")
     elif MATPLOTLIB_AVAILABLE and (long_history or short_hist):
         await update.message.reply_text("\U0001f4ca Chart unavailable (timeout or no data)")
+    logger.info("CMD perf completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 # ============================================================
@@ -4761,6 +4794,7 @@ def _price_sync(ticker):
 
 async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/price AAPL — live quote from Yahoo Finance."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     args = context.args
     if not args:
@@ -4781,6 +4815,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await prog.edit_text(text)
     except Exception:
         pass
+    logger.info("CMD price completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 # ============================================================
@@ -4848,6 +4883,7 @@ def _orb_sync():
 
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's OR levels and current price for all 8 trade tickers."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     loop = asyncio.get_event_loop()
     text = await loop.run_in_executor(None, _orb_sync)
@@ -4855,8 +4891,10 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "OR not collected yet \u2014 runs at 8:35 CT."
         )
+        logger.info("CMD orb completed in %.2fs (no data)", asyncio.get_event_loop().time() - t0)
         return
     await _reply_in_chunks(update.message, text)
+    logger.info("CMD orb completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 # ============================================================
@@ -5140,11 +5178,13 @@ def _or_now_sync():
 
 async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manually re-collect OR data for tickers missing or_high."""
+    t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
 
     missing = [t for t in TICKERS if t not in or_high]
     if not missing:
         await update.message.reply_text("\u2705 All ORs already collected.")
+        logger.info("CMD or_now completed in %.2fs (none missing)", asyncio.get_event_loop().time() - t0)
         return
 
     lines = {t: "\u23f3" for t in missing}
@@ -5178,6 +5218,7 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await prog.edit_text(summary)
     except Exception:
         pass
+    logger.info("CMD or_now completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 # ============================================================
@@ -5405,6 +5446,13 @@ def startup_catchup():
 # ============================================================
 load_paper_state()
 load_tp_state()
+
+# Startup summary
+logger.info(
+    "=== STARTUP SUMMARY === v%s | paper: $%.2f cash, %d pos, %d trades | TP: $%.2f cash, %d pos",
+    BOT_VERSION, paper_cash, len(positions), len(trade_history),
+    tp_paper_cash, len(tp_positions),
+)
 
 # Startup catch-up
 startup_catchup()
