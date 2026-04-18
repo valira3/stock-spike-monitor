@@ -4,6 +4,54 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.1.1 — Help Menu Cleanup + Command Consolidation (2026-04-18)
+
+Small UX release. No behavior changes to scanning, entries, exits, sizing, or
+observers — purely command surface cleanup.
+
+**/help additions**
+- `/status` now listed (was registered but missing from `/help`).
+- `/mode` now listed under Market Data (was missing from `/help`).
+- `/orb recover` documented — folds in the old `/or_now` as a subcommand.
+
+**Consolidation (backward compatible)**
+- `/positions` stays as a silent alias of `/status`. Removed from `/help` and
+  from the Telegram / menu to tighten the surface; the command itself still
+  works for anyone who has it in muscle memory.
+- `/or_now` stays as a silent alias of `/orb recover`. Same treatment —
+  removed from `/help` and the Telegram / menu, command still works.
+- `/orb` gains `recover` / `recollect` / `refresh` subcommand that dispatches
+  to the existing OR-recovery flow.
+
+**Telegram / menu reorganized**
+- Grouped by use: portfolio → market data → reports → system → reference →
+  admin. Aliases (`/positions`, `/or_now`) dropped from the menu.
+- `TP_BOT_COMMANDS = list(MAIN_BOT_COMMANDS)` — single source of truth for
+  both bots.
+
+---
+
+## v3.1.0 — MarketMode Observers (2026-04-18)
+
+Adds three observation-only signals on top of v3.0.0 scaffolding.
+
+- **Breadth observer** — SPY/QQQ vs AVWAP with ±0.1% tolerance →
+  BULLISH / NEUTRAL / BEARISH.
+- **RSI observer** — Wilder RSI(14) on 5-min bars resampled from the existing
+  1-min Yahoo feed. Aggregate = mean(SPY, QQQ) → OVERBOUGHT (≥70) /
+  NEUTRAL / OVERSOLD (≤30). Plus per-ticker RSI map for all TRADE_TICKERS.
+- **Ticker heat** — per-ticker realized P&L today + per-ticker RSI extremes;
+  red list (P&L ≤ -$5) and extremes list surfaced in `/mode`.
+- **Per-cycle 1-min bar cache** — `fetch_1min_bars` dedupes within a scan
+  cycle with a `__FAILED__` negative-cache sentinel, so observers add ~0
+  network calls over v3.0.0.
+- Each observer lives in its own try/except and short-circuits when
+  `mode=CLOSED`. Nothing reads observer state for trading decisions.
+- 8 unit tests for `_resample_to_5min` and `_compute_rsi` (Wilder 1978
+  reference sample verified at 74.21).
+
+---
+
 ## v3.0.0 — MarketMode Scaffolding + Platform Hardening (2026-04-18)
 
 Milestone release rolling up the significant work of the past week. No breaking

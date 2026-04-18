@@ -37,15 +37,13 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.1.0"
+BOT_VERSION = "3.1.1"
 RELEASE_NOTE = (
-    "v3.1.0 \u2014 MarketMode observers (still observation only).\n"
-    "\u2022 Breadth observer: SPY/QQQ vs AVWAP \u2192 BULLISH/NEUTRAL/BEARISH.\n"
-    "\u2022 RSI observer: Wilder RSI(14) on 5-min resampled bars; SPY+QQQ aggregate + per-ticker map.\n"
-    "\u2022 Ticker heat: per-ticker today P&L + per-ticker RSI extremes surfaced in /mode.\n"
-    "\u2022 Per-cycle 1-min bar cache so observers add ~0 network calls over v3.0.0.\n"
-    "\u2022 /mode now shows Breadth, RSI, per-ticker preview, red list, extremes list.\n"
-    "No trading parameter is adaptive yet. Observe for a week, then wire knobs."
+    "v3.1.1 \u2014 Help menu cleanup + command consolidation.\n"
+    "\u2022 /help now lists /status, /mode, and OR recovery.\n"
+    "\u2022 /orb recover folds in the old /or_now (both still work).\n"
+    "\u2022 /positions remains as a silent alias for /status.\n"
+    "No behavior changes to scanning, entries, exits, or sizing."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -3636,13 +3634,15 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\U0001f4d6 Commands\n"
         f"{SEP}\n"
         "\U0001f4ca Portfolio\n"
-        "  /dashboard   Full market snapshot\n"
-        "  /positions   Open positions + live P&L\n"
-        "  /perf [date] Performance stats (optional date)\n"
+        "  /dashboard    Full market snapshot\n"
+        "  /status       Open positions + live P&L\n"
+        "  /perf [date]  Performance stats (optional date)\n"
         "\n"
         "\U0001f4c8 Market Data\n"
-        "  /price TICK  Live quote for a ticker\n"
-        "  /orb         Today's OR levels\n"
+        "  /price TICK   Live quote for a ticker\n"
+        "  /orb          Today's OR levels\n"
+        "  /orb recover  Re-collect any missing ORs\n"
+        "  /mode         Current market mode + observers\n"
         "\n"
         "\U0001f4c5 Reports\n"
         "  /dayreport [date]  Trades + P&L (optional date)\n"
@@ -3650,17 +3650,17 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /replay [date]     Trade timeline (optional date)\n"
         "\n"
         "\u2699\ufe0f System\n"
-        "  /monitoring  Pause/resume scanner\n"
-        "  /test        System health check\n"
-        "  /menu        Quick tap menu\n"
+        "  /monitoring   Pause/resume scanner\n"
+        "  /test         System health check\n"
+        "  /menu         Quick tap menu\n"
         "\n"
         "\U0001f4d8 Reference\n"
-        "  /strategy    Strategy summary\n"
-        "  /algo        Algorithm reference PDF\n"
-        "  /version     Release notes\n"
+        "  /strategy     Strategy summary\n"
+        "  /algo         Algorithm reference PDF\n"
+        "  /version      Release notes\n"
         "\n"
         "\U0001f527 Admin\n"
-        "  /reset       Reset portfolio\n"
+        "  /reset        Reset portfolio\n"
         f"{SEP}"
     )
     await update.message.reply_text(text, reply_markup=_menu_button())
@@ -5538,7 +5538,12 @@ def _orb_sync():
 
 
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show today's OR levels and current price for all 8 trade tickers."""
+    """Show today's OR levels. `/orb recover` re-collects any missing ORs."""
+    # Subcommand: /orb recover (folds in legacy /or_now)
+    args = context.args if context.args else []
+    if args and args[0].lower() in ("recover", "recollect", "refresh"):
+        await cmd_or_now(update, context)
+        return
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     loop = asyncio.get_event_loop()
@@ -5915,49 +5920,30 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # TELEGRAM BOT SETUP
 # ============================================================
+# Commands shown in the Telegram / menu (user-facing). /positions and /or_now
+# remain registered as silent aliases in add_handler() but are intentionally
+# omitted here to keep the menu tight.
 MAIN_BOT_COMMANDS = [
     BotCommand("dashboard", "Full market snapshot"),
-    BotCommand("help", "Command menu"),
-    BotCommand("menu", "Quick command menu"),
     BotCommand("status", "Open positions + P&L"),
-    BotCommand("positions", "Alias for /status"),
-    BotCommand("orb", "Today's OR levels + status"),
     BotCommand("perf", "Performance stats (optional date)"),
     BotCommand("price", "Live quote for a ticker"),
+    BotCommand("orb", "OR levels (add 'recover' to recollect)"),
+    BotCommand("mode", "Current market mode (observation)"),
+    BotCommand("dayreport", "Trades + P&L (optional date)"),
     BotCommand("log", "Trade log (optional date)"),
     BotCommand("replay", "Trade timeline (optional date)"),
-    BotCommand("dayreport", "Trades + P&L (optional date)"),
     BotCommand("monitoring", "Pause/resume scanner"),
-    BotCommand("reset", "Reset portfolio"),
-    BotCommand("algo", "Algorithm reference PDF"),
-    BotCommand("strategy", "Strategy summary"),
     BotCommand("test", "Run system health test"),
-    BotCommand("or_now", "Re-collect missing OR levels"),
+    BotCommand("menu", "Quick command menu"),
+    BotCommand("strategy", "Strategy summary"),
+    BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
-    BotCommand("mode", "Current market mode (observation)"),
+    BotCommand("help", "Command menu"),
+    BotCommand("reset", "Reset portfolio"),
 ]
 
-TP_BOT_COMMANDS = [
-    BotCommand("dashboard", "Full market snapshot"),
-    BotCommand("help", "Command menu"),
-    BotCommand("menu", "Quick command menu"),
-    BotCommand("status", "Open positions + P&L"),
-    BotCommand("positions", "Alias for /status"),
-    BotCommand("orb", "Today's OR levels + status"),
-    BotCommand("perf", "Performance stats (optional date)"),
-    BotCommand("price", "Live quote for a ticker"),
-    BotCommand("log", "Trade log (optional date)"),
-    BotCommand("replay", "Trade timeline (optional date)"),
-    BotCommand("dayreport", "Trades + P&L (optional date)"),
-    BotCommand("monitoring", "Pause/resume scanner"),
-    BotCommand("reset", "Reset portfolio"),
-    BotCommand("algo", "Algorithm reference PDF"),
-    BotCommand("strategy", "Strategy summary"),
-    BotCommand("test", "Run system health test"),
-    BotCommand("or_now", "Re-collect missing OR levels"),
-    BotCommand("version", "Release notes"),
-    BotCommand("mode", "Current market mode (observation)"),
-]
+TP_BOT_COMMANDS = list(MAIN_BOT_COMMANDS)
 
 
 async def _set_bot_commands(app: Application) -> None:
