@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.39"
-RELEASE_NOTE = "v2.9.39 \u2014 Fix trade_history wipe on restart; /log now reads history for past dates; add data-loss guard."
+BOT_VERSION = "2.9.40"
+RELEASE_NOTE = "v2.9.40 \u2014 Full bug sweep: datetime crash, halted state persist, loss cap, EOD gate, DST fix, state dedup, TP guards."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -121,7 +121,7 @@ def _parse_time_to_cdt(ts):
     if "T" in ts and ("+" in ts or ts.endswith("Z")):
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            cdt_dt = dt.astimezone(timezone(timedelta(hours=-5)))
+            cdt_dt = dt.astimezone(CDT)
             return cdt_dt.strftime("%H:%M")
         except Exception:
             pass
@@ -133,13 +133,13 @@ def _parse_time_to_cdt(ts):
 
 
 def _is_today(ts_str: str) -> bool:
-    """Check if an ISO timestamp string is from today (UTC)."""
+    """Check if an ISO timestamp string is from today (ET-based)."""
     if not ts_str:
         return False
     try:
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        today = datetime.utcnow().date()
-        return dt.date() == today
+        today_et = _now_et().date()
+        return dt.astimezone(ET).date() == today_et
     except Exception:
         return False
 
@@ -385,7 +385,7 @@ def save_paper_state():
         "paper_cash": paper_cash,
         "positions": positions,
         "paper_trades": paper_trades,
-        "paper_all_trades": paper_all_trades,
+        "paper_all_trades": paper_all_trades[-500:],
         "daily_entry_count": daily_entry_count,
         "daily_entry_date": daily_entry_date,
         "or_high": or_high,
@@ -401,6 +401,9 @@ def save_paper_state():
         "avwap_last_ts": avwap_last_ts,
         "daily_short_entry_count": daily_short_entry_count,
         "last_exit_time": {k: v.isoformat() for k, v in _last_exit_time.items()},
+        "_scan_paused": _scan_paused,
+        "_trading_halted": _trading_halted,
+        "_trading_halted_reason": _trading_halted_reason,
         "saved_at": _utc_now_iso(),
     }
     with _paper_save_lock:
@@ -424,6 +427,7 @@ def load_paper_state():
     global short_positions, short_trade_history
     global avwap_data, avwap_last_ts, daily_short_entry_count
     global _last_exit_time, _state_loaded
+    global _scan_paused, _trading_halted, _trading_halted_reason
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
@@ -437,7 +441,9 @@ def load_paper_state():
 
         paper_cash = float(state.get("paper_cash", PAPER_STARTING_CAPITAL))
         positions.update(state.get("positions", {}))
+        paper_trades.clear()
         paper_trades.extend(state.get("paper_trades", []))
+        paper_all_trades.clear()
         paper_all_trades.extend(state.get("paper_all_trades", []))
         daily_entry_count.update(state.get("daily_entry_count", {}))
         daily_entry_date = state.get("daily_entry_date", "")
@@ -447,8 +453,10 @@ def load_paper_state():
         or_collected_date = state.get("or_collected_date", "")
         user_config.update(state.get("user_config", {}))
         tp_state.update(state.get("tp_state", {}))
+        trade_history.clear()
         trade_history.extend(state.get("trade_history", []))
         short_positions.update(state.get("short_positions", {}))
+        short_trade_history.clear()
         short_trade_history.extend(state.get("short_trade_history", []))
         avwap_data.update(state.get("avwap_data", {}))
         avwap_last_ts.update(state.get("avwap_last_ts", {}))
@@ -456,11 +464,18 @@ def load_paper_state():
         raw_exit = state.get("last_exit_time", {})
         _last_exit_time = {k: datetime.fromisoformat(v) for k, v in raw_exit.items()}
 
+        # Load persisted flags
+        _scan_paused = state.get("_scan_paused", False)
+        _trading_halted = state.get("_trading_halted", False)
+        _trading_halted_reason = state.get("_trading_halted_reason", "")
+
         # Reset daily counts if saved on a different day
         today = _now_et().strftime("%Y-%m-%d")
         if daily_entry_date != today:
             daily_entry_count.clear()
             paper_trades.clear()
+            _trading_halted = False
+            _trading_halted_reason = ""
 
         _state_loaded = True
         logger.info("Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
@@ -474,10 +489,14 @@ def load_paper_state():
 # TP STATE PERSISTENCE
 # ============================================================
 _tp_save_lock = threading.Lock()
+_tp_state_loaded = False
 
 
 def save_tp_state():
     """Persist TP portfolio state to disk. Thread-safe, atomic."""
+    if not _tp_state_loaded:
+        logger.warning("save_tp_state skipped — state not yet loaded")
+        return
     state = {
         "tp_paper_cash": tp_paper_cash,
         "tp_positions": tp_positions,
@@ -502,10 +521,12 @@ def load_tp_state():
     """Load TP portfolio state from disk on startup."""
     global tp_paper_cash, tp_trade_history
     global tp_short_positions, tp_short_trade_history
+    global _tp_state_loaded
 
     if not os.path.exists(TP_STATE_FILE):
         logger.info("No TP state at %s. Starting fresh $%.0f.",
                      TP_STATE_FILE, PAPER_STARTING_CAPITAL)
+        _tp_state_loaded = True
         return
 
     try:
@@ -514,14 +535,19 @@ def load_tp_state():
 
         tp_paper_cash = float(state.get("tp_paper_cash", PAPER_STARTING_CAPITAL))
         tp_positions.update(state.get("tp_positions", {}))
+        tp_paper_trades.clear()
         tp_paper_trades.extend(state.get("tp_paper_trades", []))
+        tp_trade_history.clear()
         tp_trade_history.extend(state.get("tp_trade_history", []))
         tp_short_positions.update(state.get("tp_short_positions", {}))
+        tp_short_trade_history.clear()
         tp_short_trade_history.extend(state.get("tp_short_trade_history", []))
 
+        _tp_state_loaded = True
         logger.info("Loaded TP state: cash=$%.2f, %d positions",
                     tp_paper_cash, len(tp_positions))
     except Exception as e:
+        _tp_state_loaded = True
         logger.error("load_tp_state failed: %s — starting fresh", e)
 
 
@@ -945,15 +971,19 @@ def check_entry(ticker):
     # Re-entry cooldown: 15 min after any exit on this ticker
     last_exit = _last_exit_time.get(ticker)
     if last_exit:
-        elapsed = (datetime.utcnow() - last_exit).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - last_exit).total_seconds()
         if elapsed < 900:
             mins_left = int((900 - elapsed) / 60) + 1
             logger.info("SKIP %s [COOLDOWN] %dm left", ticker, mins_left)
             return False, None
 
-    # Per-ticker daily loss cap: skip if down > $50 on this ticker today
+    # Per-ticker daily loss cap: skip if down > $50 on this ticker today (both sides)
     ticker_pnl_today = sum(
         (t.get("pnl") or 0) for t in trade_history
+        if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
+    )
+    ticker_pnl_today += sum(
+        (t.get("pnl") or 0) for t in short_trade_history
         if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
     )
     if ticker_pnl_today < -50.0:
@@ -1272,7 +1302,7 @@ def close_position(ticker, price, reason="STOP"):
     if ticker not in positions:
         return
 
-    _last_exit_time[ticker] = datetime.utcnow()
+    _last_exit_time[ticker] = datetime.now(timezone.utc)
 
     pos = positions.pop(ticker)
     entry_price = pos["entry_price"]
@@ -1532,7 +1562,7 @@ def close_tp_position(ticker, price, reason="STOP"):
     if ticker not in tp_positions:
         return
 
-    _last_exit_time[ticker] = datetime.utcnow()
+    _last_exit_time[ticker] = datetime.now(timezone.utc)
 
     tp_pos = tp_positions.pop(ticker)
     tp_entry = tp_pos["entry_price"]
@@ -1710,6 +1740,11 @@ def check_short_entry(ticker):
     if now_et.hour == 9 and now_et.minute < 45:
         return
 
+    # EOD gate: no new shorts after 15:55 ET
+    eod_time = now_et.replace(hour=15, minute=55, second=0, microsecond=0)
+    if now_et >= eod_time:
+        return
+
     # Max 5 short entries per ticker per day
     if daily_short_entry_count.get(ticker, 0) >= 5:
         return
@@ -1717,15 +1752,19 @@ def check_short_entry(ticker):
     # Re-entry cooldown: 15 min after any exit on this ticker
     last_exit = _last_exit_time.get(ticker)
     if last_exit:
-        elapsed = (datetime.utcnow() - last_exit).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - last_exit).total_seconds()
         if elapsed < 900:
             mins_left = int((900 - elapsed) / 60) + 1
             logger.info("SKIP %s [COOLDOWN] %dm left", ticker, mins_left)
             return
 
-    # Per-ticker daily loss cap: skip if down > $50 on this ticker today
+    # Per-ticker daily loss cap: skip if down > $50 on this ticker today (both sides)
     ticker_pnl_today = sum(
         (t.get("pnl") or 0) for t in short_trade_history
+        if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
+    )
+    ticker_pnl_today += sum(
+        (t.get("pnl") or 0) for t in trade_history
         if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
     )
     if ticker_pnl_today < -50.0:
@@ -1750,7 +1789,7 @@ def check_short_entry(ticker):
     closes = [c for c in bars["closes"] if c is not None]
     if not closes:
         return
-    current_close = closes[-1]
+    current_close = closes[-2] if len(closes) >= 2 else closes[-1]
     current_price = current_close  # use close as limit price proxy
 
     # FMP primary quote — override price and PDC if available
@@ -2055,7 +2094,7 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
     if not pos:
         return
 
-    _last_exit_time[ticker] = datetime.utcnow()
+    _last_exit_time[ticker] = datetime.now(timezone.utc)
 
     entry_price = pos["entry_price"]
     shares = pos["shares"]
@@ -3963,8 +4002,13 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Fix B: Route based on which bot
     if is_tp_update(update):
-        today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
-        today_trades.sort(key=lambda t: t.get("time", ""))
+        today_str = _now_et().strftime("%Y-%m-%d")
+        if target_str == today_str:
+            today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
+        else:
+            today_trades = [t for t in tp_trade_history if t.get("date", "") == target_str]
+            today_trades += [t for t in tp_short_trade_history if t.get("date", "") == target_str]
+        today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
         if not today_trades:
             await update.message.reply_text("[TP] No trades on %s." % day_label)
             return
@@ -4060,8 +4104,13 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Fix B: Route based on which bot
     if is_tp_update(update):
-        today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
-        today_trades.sort(key=lambda t: t.get("time", ""))
+        today_str = _now_et().strftime("%Y-%m-%d")
+        if target_str == today_str:
+            today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
+        else:
+            today_trades = [t for t in tp_trade_history if t.get("date", "") == target_str]
+            today_trades += [t for t in tp_short_trade_history if t.get("date", "") == target_str]
+        today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
         if not today_trades:
             await update.message.reply_text("[TP] No trades on %s." % day_label)
             return
@@ -4195,7 +4244,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  Trail: +1.0% trigger | max(1.0%, $1.00) distance\n\n"
         f"{SEP}\n"
         "Size : 10 shares (limit orders only)\n"
-        "Max  : 2 long + 2 short per ticker/day\n"
+        "Max  : 5 entries per ticker/day (long + short combined)\n"
         "OR   : 8:30\u20138:35 CT (first 5 min)\n"
         "Scan : every 60s \u2192 8:35\u20142:55 CT\n"
         "EOD  : force-close all at 2:55 CT\n"
@@ -4269,7 +4318,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Stop: OR High \u2212 $0.90\n"
         "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
-        "Max: 4 entries/ticker/day\n"
+        "Max: 5 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
         "\n"
         "Eye of the Tiger exits:\n"
@@ -4289,7 +4338,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Stop: PDC + $0.90\n"
         "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
-        "Max: 4 entries/ticker/day\n"
+        "Max: 5 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
         "\n"
         "Eye of the Tiger exits:\n"
