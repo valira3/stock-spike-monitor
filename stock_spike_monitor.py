@@ -37,15 +37,15 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.0.0"
+BOT_VERSION = "3.1.0"
 RELEASE_NOTE = (
-    "v3.0.0 \u2014 Major release.\n"
-    "\u2022 MarketMode scaffolding: OPEN/CHOP/POWER/DEFENSIVE/CLOSED classifier + /mode (observation only; no behavior change).\n"
-    "\u2022 /replay historical field mapping fixed; Menu \u2192 Dashboard now renders the full snapshot.\n"
-    "\u2022 /dayreport threaded chart generation + empty-data guard; /log & /replay executor offload with 15s timeout.\n"
-    "\u2022 /positions full equity snapshot (cash, unrealized, total, vs-start) on paper + TP; refresh + trail details.\n"
-    "\u2022 Opt-in Menu button after commands (removed auto-menu); global error handler surfaces failures in Telegram.\n"
-    "\u2022 TP Portfolio independence hardened; multi-instance env-var config for second valstradebot."
+    "v3.1.0 \u2014 MarketMode observers (still observation only).\n"
+    "\u2022 Breadth observer: SPY/QQQ vs AVWAP \u2192 BULLISH/NEUTRAL/BEARISH.\n"
+    "\u2022 RSI observer: Wilder RSI(14) on 5-min resampled bars; SPY+QQQ aggregate + per-ticker map.\n"
+    "\u2022 Ticker heat: per-ticker today P&L + per-ticker RSI extremes surfaced in /mode.\n"
+    "\u2022 Per-cycle 1-min bar cache so observers add ~0 network calls over v3.0.0.\n"
+    "\u2022 /mode now shows Breadth, RSI, per-ticker preview, red list, extremes list.\n"
+    "No trading parameter is adaptive yet. Observe for a week, then wire knobs."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -429,6 +429,243 @@ _current_mode_reason: str = "not yet classified"
 _current_mode_pnl: float = 0.0
 _current_mode_ts = None
 
+# ============================================================
+# MARKET MODE OBSERVERS (v3.1 scaffolding — observation only)
+# ============================================================
+# Three independent observers that do NOT gate any trade. They run
+# alongside the MarketMode classifier, are logged on transitions, and
+# surface in /mode. After a week of observation we'll decide which
+# (if any) deserve to actually influence trading behavior.
+#
+# 1) BREADTH   — SPY/QQQ vs their AVWAP → BULLISH/NEUTRAL/BEARISH
+# 2) RSI       — 14-period on resampled 5-min bars, SPY+QQQ aggregate
+#                  → OVERBOUGHT/NEUTRAL/OVERSOLD; plus a per-ticker dict
+# 3) TICKER    — per-ticker today realized P&L + current per-ticker RSI
+#    HEAT        → lists of tickers that are already red or already at
+#                  extremes, surfaced in /mode for pattern-spotting
+#
+# Thresholds are deliberately conservative for the observation phase.
+# If a knob is eventually wired, it'll use these same thresholds or
+# tighter ones, never looser.
+
+BREADTH_TOLERANCE_PCT    = 0.001   # ±0.1% around AVWAP counts as NEUTRAL
+RSI_OVERBOUGHT           = 70.0
+RSI_OVERSOLD             = 30.0
+RSI_PERIOD               = 14
+RSI_BAR_MINUTES          = 5
+RSI_MIN_BARS_REQUIRED    = RSI_PERIOD + 1   # Wilder RSI needs P+1 closes
+TICKER_RED_THRESHOLD_USD = -5.0    # tickers with today P&L <= this are "red"
+
+# Observer snapshot — refreshed each scan.
+_current_breadth: str = "UNKNOWN"
+_current_breadth_detail: str = ""
+_current_rsi_regime: str = "UNKNOWN"
+_current_rsi_detail: str = ""
+_current_rsi_per_ticker: dict = {}      # ticker -> float RSI
+_current_ticker_pnl: dict = {}          # ticker -> realized P&L today
+_current_ticker_red: list = []          # list of (ticker, pnl) sorted worst-first
+_current_ticker_extremes: list = []     # list of (ticker, rsi, "OB"/"OS")
+
+
+def _classify_breadth():
+    """Observer 1: breadth from SPY/QQQ vs their AVWAP.
+    Returns (label, detail). Never raises.
+    """
+    try:
+        # fetch_1min_bars is cycle-cached — if the scan loop already
+        # fetched SPY/QQQ this cycle we reuse; otherwise we fetch once.
+        spy_bars = fetch_1min_bars("SPY")
+        qqq_bars = fetch_1min_bars("QQQ")
+        spy_px = spy_bars.get("current_price") if spy_bars else None
+        qqq_px = qqq_bars.get("current_price") if qqq_bars else None
+        spy_av = avwap_data.get("SPY", {}).get("avwap", 0) or 0
+        qqq_av = avwap_data.get("QQQ", {}).get("avwap", 0) or 0
+        if not (spy_px and qqq_px and spy_av and qqq_av):
+            return ("UNKNOWN", "SPY/QQQ price or AVWAP not ready")
+
+        spy_diff = (spy_px - spy_av) / spy_av
+        qqq_diff = (qqq_px - qqq_av) / qqq_av
+        tol = BREADTH_TOLERANCE_PCT
+
+        def _side(d):
+            if d >  tol: return "above"
+            if d < -tol: return "below"
+            return "at"
+
+        spy_side = _side(spy_diff)
+        qqq_side = _side(qqq_diff)
+        detail = "SPY %+.2f%% %s AVWAP | QQQ %+.2f%% %s AVWAP" % (
+            spy_diff * 100, spy_side, qqq_diff * 100, qqq_side)
+
+        if spy_side == "above" and qqq_side == "above":
+            return ("BULLISH", detail)
+        if spy_side == "below" and qqq_side == "below":
+            return ("BEARISH", detail)
+        return ("NEUTRAL", detail)
+    except Exception as e:
+        logger.debug("_classify_breadth failed: %s", e)
+        return ("UNKNOWN", "breadth computation failed")
+
+
+def _resample_to_5min(timestamps, closes):
+    """Resample a 1-min close series into 5-min bar closes.
+
+    Each 5-min bar closes on the last 1-min close whose epoch second falls
+    inside the [bar_start, bar_start+300) window aligned to UTC minute
+    boundaries (9:30:00, 9:35:00, 9:40:00, …). Partial/forming bars are
+    dropped — only complete 5-min intervals contribute.
+
+    Returns a list of floats (oldest-first). Robust to None closes and to
+    timestamps in any order (will sort).
+    """
+    if not timestamps or not closes or len(timestamps) != len(closes):
+        return []
+    # Pair and drop Nones, then sort by timestamp ascending.
+    pairs = [(int(t), float(c)) for t, c in zip(timestamps, closes)
+             if t is not None and c is not None]
+    if not pairs:
+        return []
+    pairs.sort(key=lambda p: p[0])
+
+    # Bucket by floor(ts / 300). Last close in each bucket is the bar close.
+    buckets = {}
+    for ts, c in pairs:
+        bucket = ts // 300
+        buckets[bucket] = c   # overwrites — last wins
+
+    # Drop the most recent (possibly forming) bucket so we only return
+    # closed bars. Safe heuristic: if the last pair's ts doesn't reach
+    # (bucket+1)*300 - 60, the bar is still forming. We conservatively
+    # drop the newest bucket always — partial bars are noisy for RSI.
+    ordered = sorted(buckets.keys())
+    if len(ordered) >= 1:
+        ordered = ordered[:-1]   # drop newest (possibly partial)
+    return [buckets[b] for b in ordered]
+
+
+def _compute_rsi(closes, period=RSI_PERIOD):
+    """Wilder's RSI on a list of closes (oldest-first).
+    Returns float in [0, 100], or None if not enough data.
+    """
+    if not closes or len(closes) < period + 1:
+        return None
+    try:
+        gains = 0.0
+        losses = 0.0
+        # Seed average gain/loss over the first `period` deltas.
+        for i in range(1, period + 1):
+            delta = closes[i] - closes[i - 1]
+            if delta > 0: gains += delta
+            else:         losses += -delta
+        avg_gain = gains / period
+        avg_loss = losses / period
+
+        # Wilder smoothing for remaining deltas.
+        for i in range(period + 1, len(closes)):
+            delta = closes[i] - closes[i - 1]
+            gain = delta if delta > 0 else 0.0
+            loss = -delta if delta < 0 else 0.0
+            avg_gain = (avg_gain * (period - 1) + gain) / period
+            avg_loss = (avg_loss * (period - 1) + loss) / period
+
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+    except Exception:
+        return None
+
+
+def _rsi_for_ticker(ticker):
+    """Compute current RSI(14) on 5-min bars for a ticker, using cached bars.
+    Returns float or None. Never raises.
+    """
+    try:
+        bars = fetch_1min_bars(ticker)   # cached per cycle
+        if not bars:
+            return None
+        closes_5m = _resample_to_5min(bars.get("timestamps", []),
+                                      bars.get("closes", []))
+        if len(closes_5m) < RSI_MIN_BARS_REQUIRED:
+            return None
+        return _compute_rsi(closes_5m)
+    except Exception as e:
+        logger.debug("_rsi_for_ticker %s failed: %s", ticker, e)
+        return None
+
+
+def _classify_rsi_regime():
+    """Observer 2: aggregate RSI regime from SPY+QQQ 5-min RSI.
+    Returns (label, detail, per_ticker_dict). Never raises.
+    """
+    per_ticker = {}
+    try:
+        spy_rsi = _rsi_for_ticker("SPY")
+        qqq_rsi = _rsi_for_ticker("QQQ")
+        if spy_rsi is not None: per_ticker["SPY"] = spy_rsi
+        if qqq_rsi is not None: per_ticker["QQQ"] = qqq_rsi
+
+        # Per-ticker RSI for the trade universe. Uses the cycle cache,
+        # so if scan_loop already fetched these bars this cycle there's
+        # no extra network call.
+        for t in TRADE_TICKERS:
+            v = _rsi_for_ticker(t)
+            if v is not None:
+                per_ticker[t] = v
+
+        if spy_rsi is None or qqq_rsi is None:
+            return ("UNKNOWN", "SPY/QQQ RSI not ready (need %d closed 5m bars)" %
+                    RSI_MIN_BARS_REQUIRED, per_ticker)
+
+        avg = (spy_rsi + qqq_rsi) / 2.0
+        detail = "SPY %.1f | QQQ %.1f | avg %.1f" % (spy_rsi, qqq_rsi, avg)
+        if avg >= RSI_OVERBOUGHT: return ("OVERBOUGHT", detail, per_ticker)
+        if avg <= RSI_OVERSOLD:   return ("OVERSOLD",   detail, per_ticker)
+        return ("NEUTRAL", detail, per_ticker)
+    except Exception as e:
+        logger.debug("_classify_rsi_regime failed: %s", e)
+        return ("UNKNOWN", "RSI regime computation failed", per_ticker)
+
+
+def _per_ticker_today_pnl():
+    """Observer 3a: realized P&L today, bucketed by ticker.
+    Returns dict ticker -> float. Never raises.
+    """
+    try:
+        today_str = _now_et().strftime("%Y-%m-%d")
+        out = {}
+        for t in paper_trades:
+            if t.get("date") != today_str: continue
+            if t.get("action") not in ("SELL", "COVER"): continue
+            tk = t.get("ticker", "?")
+            out[tk] = out.get(tk, 0.0) + (t.get("pnl", 0) or 0)
+        return out
+    except Exception as e:
+        logger.debug("_per_ticker_today_pnl failed: %s", e)
+        return {}
+
+
+def _classify_ticker_heat(per_ticker_pnl, per_ticker_rsi):
+    """Observer 3b: build the ticker-heat lists for /mode and logs.
+    Returns (red_list, extremes_list):
+      red_list:       [(ticker, pnl), …] worst-first, pnl <= RED threshold
+      extremes_list:  [(ticker, rsi, "OB"|"OS"), …] tickers in RSI extremes
+    """
+    try:
+        red = [(tk, p) for tk, p in per_ticker_pnl.items()
+               if p <= TICKER_RED_THRESHOLD_USD]
+        red.sort(key=lambda x: x[1])   # most negative first
+
+        extremes = []
+        for tk, r in per_ticker_rsi.items():
+            if r >= RSI_OVERBOUGHT: extremes.append((tk, r, "OB"))
+            elif r <= RSI_OVERSOLD: extremes.append((tk, r, "OS"))
+        extremes.sort(key=lambda x: x[1], reverse=True)   # highest RSI first
+        return (red, extremes)
+    except Exception as e:
+        logger.debug("_classify_ticker_heat failed: %s", e)
+        return ([], [])
+
 
 def _compute_today_realized_pnl(is_tp: bool = False) -> float:
     """Realized P&L today across longs + shorts for the given portfolio.
@@ -481,20 +718,77 @@ def get_current_mode(now_et=None) -> tuple:
 
 
 def _refresh_market_mode():
-    """Recompute the cached mode. Called at the top of every scan cycle.
-    Pure observation — no side effects beyond updating _current_mode_* and
-    emitting a log line when the mode transitions.
+    """Recompute the cached mode + observers. Called at the top of every
+    scan cycle. Pure observation — no side effects beyond updating module
+    state and emitting log lines on transitions.
     """
     global _current_mode, _current_mode_reason, _current_mode_pnl, _current_mode_ts
-    prev = _current_mode
+    global _current_breadth, _current_breadth_detail
+    global _current_rsi_regime, _current_rsi_detail, _current_rsi_per_ticker
+    global _current_ticker_pnl, _current_ticker_red, _current_ticker_extremes
+
+    prev_mode     = _current_mode
+    prev_breadth  = _current_breadth
+    prev_rsi      = _current_rsi_regime
+
     now_et = _now_et()
+
+    # Core mode classifier.
     mode, reason, pnl = get_current_mode(now_et)
     _current_mode        = mode
     _current_mode_reason = reason
     _current_mode_pnl    = pnl
     _current_mode_ts     = now_et
-    if mode != prev:
-        logger.info("MarketMode: %s -> %s (%s)", prev, mode, reason)
+    if mode != prev_mode:
+        logger.info("MarketMode: %s -> %s (%s)", prev_mode, mode, reason)
+
+    # Observers — each is individually safe and independent. A failure in
+    # one never blocks the others or affects the core mode. All skipped
+    # entirely when market is CLOSED (no meaningful data to classify).
+    if mode == MarketMode.CLOSED:
+        _current_breadth = "UNKNOWN"
+        _current_breadth_detail = "market closed"
+        _current_rsi_regime = "UNKNOWN"
+        _current_rsi_detail = "market closed"
+        _current_rsi_per_ticker = {}
+        _current_ticker_pnl = {}
+        _current_ticker_red = []
+        _current_ticker_extremes = []
+        return
+
+    try:
+        _current_breadth, _current_breadth_detail = _classify_breadth()
+    except Exception:
+        logger.exception("breadth observer failed (ignored)")
+        _current_breadth, _current_breadth_detail = ("UNKNOWN", "observer crashed")
+    if _current_breadth != prev_breadth:
+        logger.info("MarketMode.breadth: %s -> %s (%s)",
+                    prev_breadth, _current_breadth, _current_breadth_detail)
+
+    try:
+        rsi_label, rsi_detail, rsi_map = _classify_rsi_regime()
+        _current_rsi_regime      = rsi_label
+        _current_rsi_detail      = rsi_detail
+        _current_rsi_per_ticker  = rsi_map
+    except Exception:
+        logger.exception("RSI observer failed (ignored)")
+        _current_rsi_regime, _current_rsi_detail, _current_rsi_per_ticker = (
+            "UNKNOWN", "observer crashed", {})
+    if _current_rsi_regime != prev_rsi:
+        logger.info("MarketMode.rsi: %s -> %s (%s)",
+                    prev_rsi, _current_rsi_regime, _current_rsi_detail)
+
+    try:
+        _current_ticker_pnl = _per_ticker_today_pnl()
+        red, extremes = _classify_ticker_heat(_current_ticker_pnl,
+                                              _current_rsi_per_ticker)
+        _current_ticker_red      = red
+        _current_ticker_extremes = extremes
+    except Exception:
+        logger.exception("ticker-heat observer failed (ignored)")
+        _current_ticker_pnl = {}
+        _current_ticker_red = []
+        _current_ticker_extremes = []
 
 
 # Scan pause (Feature 8)
@@ -802,12 +1096,33 @@ def send_tp_telegram(message):
 # ============================================================
 # YAHOO FINANCE DATA
 # ============================================================
+# Per-scan-cycle cache for 1-min bars. scan_loop() calls
+# _clear_cycle_bar_cache() at the start of each cycle; any call to
+# fetch_1min_bars within the same cycle reuses the cached response.
+# This lets observers (RSI, breadth) read the same bars the scan loop
+# already fetched without doubling network calls.
+_cycle_bar_cache: dict = {}
+
+
+def _clear_cycle_bar_cache():
+    """Reset the per-cycle bar cache. Called at the top of scan_loop()."""
+    _cycle_bar_cache.clear()
+
+
 def fetch_1min_bars(ticker):
     """Fetch 1-min intraday bars from Yahoo Finance.
 
     Returns dict with keys: timestamps, opens, highs, lows, closes,
     volumes, current_price, pdc.  Returns None on failure.
+
+    Results are cached per scan cycle (see _cycle_bar_cache).
     """
+    cached = _cycle_bar_cache.get(ticker)
+    if cached is not None:
+        # Sentinel for negative cache (prior fetch failed): keep returning
+        # None for the rest of the cycle rather than retrying.
+        return cached if cached != "__FAILED__" else None
+
     t0 = time.time()
     url = (
         "https://query1.finance.yahoo.com/v8/finance/chart/%s"
@@ -821,6 +1136,7 @@ def fetch_1min_bars(ticker):
         result = data.get("chart", {}).get("result")
         if not result:
             logger.debug("Yahoo %s: empty result (%.2fs)", ticker, time.time() - t0)
+            _cycle_bar_cache[ticker] = "__FAILED__"
             return None
         r = result[0]
         meta = r.get("meta", {})
@@ -829,10 +1145,11 @@ def fetch_1min_bars(ticker):
 
         if not timestamps:
             logger.debug("Yahoo %s: no timestamps (%.2fs)", ticker, time.time() - t0)
+            _cycle_bar_cache[ticker] = "__FAILED__"
             return None
 
         logger.debug("Yahoo %s: %.2fs", ticker, time.time() - t0)
-        return {
+        out = {
             "timestamps": timestamps,
             "opens": quote.get("open", []),
             "highs": quote.get("high", []),
@@ -844,8 +1161,11 @@ def fetch_1min_bars(ticker):
                     or meta.get("chartPreviousClose")
                     or 0),
         }
+        _cycle_bar_cache[ticker] = out
+        return out
     except Exception as e:
         logger.debug("fetch_1min_bars %s failed: %s (%.2fs)", ticker, e, time.time() - t0)
+        _cycle_bar_cache[ticker] = "__FAILED__"
         return None
 
 
@@ -3028,8 +3348,13 @@ def scan_loop():
     global _last_scan_time
     _last_scan_time = datetime.now(timezone.utc)
 
-    # MarketMode: observation only — no parameter is read from this yet.
-    # Safe to fail silently; it cannot affect trading.
+    # Clear the per-cycle 1-min bar cache BEFORE anything else. Any call
+    # to fetch_1min_bars inside this cycle will populate it on first hit
+    # and reuse on subsequent hits. Observers read through the same cache.
+    _clear_cycle_bar_cache()
+
+    # MarketMode + observers: observation only — no parameter is read from
+    # this yet. Safe to fail silently; it cannot affect trading.
     try:
         _refresh_market_mode()
     except Exception:
@@ -4522,12 +4847,41 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shorts = "ON" if profile.get("allow_shorts") else "OFF"
     trail_bps = int(round(profile.get("trail_pct", 0) * 10000))
 
+    # Build compact per-ticker RSI preview (top 6 by value, highest first)
+    if _current_rsi_per_ticker:
+        sorted_rsis = sorted(_current_rsi_per_ticker.items(),
+                             key=lambda kv: kv[1], reverse=True)
+        rsi_preview = " | ".join("%s %.0f" % (tk, r) for tk, r in sorted_rsis[:6])
+    else:
+        rsi_preview = "—"
+
+    if _current_ticker_red:
+        red_preview = ", ".join("%s $%+.0f" % (tk, p)
+                                for tk, p in _current_ticker_red[:5])
+    else:
+        red_preview = "none"
+
+    if _current_ticker_extremes:
+        ext_preview = ", ".join("%s %.0f %s" % (tk, r, tag)
+                                for tk, r, tag in _current_ticker_extremes[:5])
+    else:
+        ext_preview = "none"
+
     lines = [
         "\U0001f9ed MARKET MODE  %s" % ts_str,
         SEP,
         "Mode:       %s" % mode,
         "Reason:     %s" % reason,
         "Realized:   $%+.2f  (loss limit $%+.2f)" % (pnl, DAILY_LOSS_LIMIT),
+        SEP,
+        "Observers (advisory — not yet applied):",
+        "  Breadth:  %s" % _current_breadth,
+        "            %s" % (_current_breadth_detail or "—"),
+        "  RSI:      %s" % _current_rsi_regime,
+        "            %s" % (_current_rsi_detail or "—"),
+        "  Per-tkr:  %s" % rsi_preview,
+        "  Red:      %s" % red_preview,
+        "  Extremes: %s" % ext_preview,
         SEP,
         "Profile (advisory — not yet applied):",
         "  trail_pct       %.3f%%  (%d bps)" % (profile.get("trail_pct", 0) * 100, trail_bps),
