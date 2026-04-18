@@ -4,6 +4,37 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.1.3 — /menu Covers Every /help Command (2026-04-18)
+
+Makes the `/help` ↔ `/menu` split useful: `/help` is the polished reference
+(non-tappable monospace), `/menu` is the tap grid that covers **every single
+command** listed in `/help`.
+
+**New buttons** (in addition to the 10 that were already there):
+- Perf, Mode, Log, Replay, OR Recover, Algo, Help, Reset — 8 new taps.
+- Total grid: 17 buttons across 7 rows, grouped portfolio → market data →
+  reports → system → reference → admin.
+
+**Taps now execute the command**
+- Previously `menu_dayreport` and `menu_perf` just echoed "Use /dayreport"
+  instead of running the command. Now they actually run it.
+- New `_CallbackUpdateShim` + `_invoke_from_callback` helper forwards a
+  callback_query through any `cmd_*` handler by faking the Update fields the
+  handlers touch (`message`, `effective_message`, `effective_user`,
+  `effective_chat`). Keeps the helpers reusable for future tap-button work.
+- `context.args` is scoped per invocation and restored after, so passing a
+  date through the shim wouldn't leak across taps.
+- `/reset` tap delegates to `cmd_reset`, which runs the same two-step
+  confirmation flow as the typed command — no accidental resets from a tap.
+
+**/help footer**
+- Added one-line tip: `Tip: /menu for tap buttons`. Still within the 33-char
+  mobile-code-block width limit.
+
+No behavior changes to scanning, entries, exits, sizing, or observers.
+
+---
+
 ## v3.1.2 — /help Rendering Fix (2026-04-18)
 
 Cosmetic fix. Telegram renders regular text in a proportional font, so the
