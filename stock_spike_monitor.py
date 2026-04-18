@@ -37,11 +37,12 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.1.2"
+BOT_VERSION = "3.1.3"
 RELEASE_NOTE = (
-    "v3.1.2 \u2014 /help rendering fix.\n"
-    "\u2022 Body wrapped in a monospace code block so columns align on mobile.\n"
-    "\u2022 Descriptions trimmed so no line wraps at phone widths.\n"
+    "v3.1.3 \u2014 /menu covers every /help command.\n"
+    "\u2022 Every command in /help is now a tappable /menu button.\n"
+    "\u2022 Adds Perf, Mode, Log, Replay, OR Recover, Algo, Help, Reset buttons.\n"
+    "\u2022 Taps now execute the command (previous behavior only echoed a hint).\n"
     "No behavior changes to scanning, entries, exits, or sizing."
 )
 
@@ -3666,6 +3667,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n"
         "Admin\n"
         "  /reset       Reset portfolio\n"
+        "\n"
+        "Tip: /menu for tap buttons\n"
         "```"
     )
     await update.message.reply_text(
@@ -5641,27 +5644,49 @@ async def monitoring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 # MENU KEYBOARD BUILDER + MENU BUTTON HELPER
 # ============================================================
 def _build_menu_keyboard():
-    """Return the standard inline menu keyboard (shared by cmd_menu, _cb_open_menu, startup)."""
+    """Return the standard inline menu keyboard (shared by cmd_menu, _cb_open_menu, startup).
+
+    Covers every command listed in /help so the user can run anything with a
+    single tap. Grouped roughly: portfolio -> market data -> reports ->
+    system -> reference -> admin.
+    """
     return [
+        # Portfolio
         [
             InlineKeyboardButton("\U0001f4ca Dashboard", callback_data="menu_dashboard"),
-            InlineKeyboardButton("\U0001f4c8 Positions", callback_data="menu_positions"),
+            InlineKeyboardButton("\U0001f4c8 Status", callback_data="menu_positions"),
+            InlineKeyboardButton("\U0001f4c9 Perf", callback_data="menu_perf"),
         ],
+        # Market data
         [
             InlineKeyboardButton("\U0001f4b0 Price", callback_data="menu_price_prompt"),
-            InlineKeyboardButton("\U0001f4d0 ORs", callback_data="menu_orb"),
+            InlineKeyboardButton("\U0001f4d0 OR", callback_data="menu_orb"),
+            InlineKeyboardButton("\U0001f504 OR Recover", callback_data="menu_or_recover"),
         ],
+        [
+            InlineKeyboardButton("\U0001f39b\ufe0f Mode", callback_data="menu_mode"),
+        ],
+        # Reports
         [
             InlineKeyboardButton("\U0001f4c5 Day Report", callback_data="menu_dayreport"),
-            InlineKeyboardButton("\U0001f4c8 Performance", callback_data="menu_perf"),
+            InlineKeyboardButton("\U0001f4dc Log", callback_data="menu_log"),
+            InlineKeyboardButton("\U0001f3ac Replay", callback_data="menu_replay"),
         ],
+        # System
         [
             InlineKeyboardButton("\U0001f50d Monitor", callback_data="menu_monitoring"),
-            InlineKeyboardButton("\U0001f9ea System Test", callback_data="menu_test"),
+            InlineKeyboardButton("\U0001f9ea Test", callback_data="menu_test"),
         ],
+        # Reference
         [
             InlineKeyboardButton("\U0001f4d8 Strategy", callback_data="menu_strategy"),
+            InlineKeyboardButton("\U0001f4d6 Algo", callback_data="menu_algo"),
             InlineKeyboardButton("\u2139\ufe0f Version", callback_data="menu_version"),
+        ],
+        # Admin
+        [
+            InlineKeyboardButton("\u2753 Help", callback_data="menu_help"),
+            InlineKeyboardButton("\u26a0\ufe0f Reset", callback_data="menu_reset"),
         ],
     ]
 
@@ -5693,12 +5718,62 @@ async def _cb_open_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+class _CallbackUpdateShim:
+    """Minimal Update-like wrapper that lets cmd_* handlers be invoked from
+    an inline-button callback. The handlers only touch update.message.*
+    (reply_text / reply_photo / reply_chat_action / reply_document) and
+    update.effective_message / update.effective_user, so we forward those
+    to the callback_query's message/user.
+    """
+    __slots__ = ("_query",)
+
+    def __init__(self, query):
+        self._query = query
+
+    @property
+    def message(self):
+        return self._query.message
+
+    @property
+    def effective_message(self):
+        return self._query.message
+
+    @property
+    def effective_user(self):
+        return self._query.from_user
+
+    @property
+    def effective_chat(self):
+        return self._query.message.chat
+
+    @property
+    def callback_query(self):
+        # Some code paths may still want the raw query; preserve it.
+        return self._query
+
+
+async def _invoke_from_callback(query, context, handler, *, args=None):
+    """Run a cmd_* handler as if it came from a regular message.
+
+    `args` optionally overrides context.args (e.g. to inject a date). The
+    override is scoped to this call only; context.args is restored after.
+    """
+    shim = _CallbackUpdateShim(query)
+    saved_args = context.args
+    try:
+        context.args = list(args) if args is not None else []
+        await handler(shim, context)
+    finally:
+        context.args = saved_args
+
+
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle taps on /menu inline buttons."""
     query = update.callback_query
     await query.answer()
     is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
 
+    # --- Lightweight callbacks that replace the menu message in-place ---
     if query.data == "menu_price_prompt":
         await query.edit_message_text("Use /price TICKER (e.g. /price AAPL)")
         return
@@ -5720,6 +5795,32 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "%s\nUse /strategy for full details" % SEP
         )
         await query.message.reply_text(text)
+        return
+
+    # --- Handlers that execute a real command via the shim ---
+    # These don't edit the menu message; they reply with the command's output.
+    if query.data == "menu_help":
+        await _invoke_from_callback(query, context, cmd_help)
+        return
+    if query.data == "menu_algo":
+        await _invoke_from_callback(query, context, cmd_algo)
+        return
+    if query.data == "menu_mode":
+        await _invoke_from_callback(query, context, cmd_mode)
+        return
+    if query.data == "menu_log":
+        await _invoke_from_callback(query, context, cmd_log)
+        return
+    if query.data == "menu_replay":
+        await _invoke_from_callback(query, context, cmd_replay)
+        return
+    if query.data == "menu_or_recover":
+        await _invoke_from_callback(query, context, cmd_or_now)
+        return
+    if query.data == "menu_reset":
+        # /reset is a two-step confirm flow; delegate to its handler and let
+        # it show the same confirmation keyboard it shows on the typed command.
+        await _invoke_from_callback(query, context, cmd_reset)
         return
 
     await query.edit_message_text("\u23f3 Loading...")
@@ -5771,9 +5872,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     orb_lines.append("%s  H:$%.2f  L:$%s  PDC:$%s" % (t, orh, orl_s, pdc_s))
             await query.message.reply_text("\n".join(orb_lines))
     elif query.data == "menu_dayreport":
-        await query.message.reply_text("Use /dayreport for today's trades + P&L")
+        await _invoke_from_callback(query, context, cmd_dayreport)
     elif query.data == "menu_perf":
-        await query.message.reply_text("Use /perf for all-time performance stats")
+        await _invoke_from_callback(query, context, cmd_perf)
     elif query.data == "menu_monitoring":
         status = "PAUSED" if _scan_paused else "ACTIVE"
         if _scan_paused:
