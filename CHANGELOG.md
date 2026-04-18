@@ -4,6 +4,23 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.1.2 — /help Rendering Fix (2026-04-18)
+
+Cosmetic fix. Telegram renders regular text in a proportional font, so the
+column alignment in v3.1.1's `/help` didn't line up on mobile and several
+descriptions wrapped awkwardly onto a second line.
+
+- Help body is now wrapped in a Markdown code block, so Telegram renders it
+  in monospace and space-padded columns actually align.
+- Descriptions trimmed so every line stays ≤ 33 chars and nothing wraps at
+  phone widths. Section headers simplified (no emoji, single word per row).
+- Removed the horizontal rule separators (the code block provides its own
+  visual frame).
+
+No behavior changes to scanning, entries, exits, sizing, or observers.
+
+---
+
 ## v3.1.1 — Help Menu Cleanup + Command Consolidation (2026-04-18)
 
 Small UX release. No behavior changes to scanning, entries, exits, sizing, or
