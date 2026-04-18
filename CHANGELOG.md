@@ -4,6 +4,40 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.1.4 — /menu Main + Advanced Submenu (2026-04-18)
+
+v3.1.3's 17-button grid felt cluttered and some labels truncated on mobile.
+Split into a lean main menu and an Advanced submenu so the daily-use stuff
+is one tap and everything else is two.
+
+**Main /menu (10 tiles, 2 columns)**
+- Dashboard, Status
+- Perf, Price
+- OR, Day Report
+- Mode, Help
+- Monitor (full width)
+- Advanced (full width, opens submenu)
+
+**Advanced submenu (8 tiles + Back)**
+- Log, Replay
+- OR Recover, Test
+- Strategy, Algo
+- Version, Reset
+- ⬅️ Back (returns to main)
+
+**Implementation**
+- New `_build_advanced_menu_keyboard()` alongside `_build_menu_keyboard()`.
+- `menu_advanced` callback edits the existing menu message in place to swap
+  keyboards (no new messages, clean UX).
+- `menu_back` callback does the reverse.
+- All nine command-executing callbacks from v3.1.3 still work; they're just
+  reachable from either menu depending on placement.
+- No button callbacks removed — only regrouped.
+
+No behavior changes to scanning, entries, exits, sizing, or observers.
+
+---
+
 ## v3.1.3 — /menu Covers Every /help Command (2026-04-18)
 
 Makes the `/help` ↔ `/menu` split useful: `/help` is the polished reference

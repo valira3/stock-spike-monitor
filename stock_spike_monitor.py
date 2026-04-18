@@ -37,12 +37,12 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.1.3"
+BOT_VERSION = "3.1.4"
 RELEASE_NOTE = (
-    "v3.1.3 \u2014 /menu covers every /help command.\n"
-    "\u2022 Every command in /help is now a tappable /menu button.\n"
-    "\u2022 Adds Perf, Mode, Log, Replay, OR Recover, Algo, Help, Reset buttons.\n"
-    "\u2022 Taps now execute the command (previous behavior only echoed a hint).\n"
+    "v3.1.4 \u2014 /menu main + Advanced submenu.\n"
+    "\u2022 Main menu trimmed to 10 daily-use tiles + Advanced.\n"
+    "\u2022 Log, Replay, OR Recover, Test, Strategy, Algo, Version, Reset moved to Advanced.\n"
+    "\u2022 Back button returns to the main menu.\n"
     "No behavior changes to scanning, entries, exits, or sizing."
 )
 
@@ -5644,49 +5644,66 @@ async def monitoring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 # MENU KEYBOARD BUILDER + MENU BUTTON HELPER
 # ============================================================
 def _build_menu_keyboard():
-    """Return the standard inline menu keyboard (shared by cmd_menu, _cb_open_menu, startup).
+    """Main /menu keyboard \u2014 daily-use commands only.
 
-    Covers every command listed in /help so the user can run anything with a
-    single tap. Grouped roughly: portfolio -> market data -> reports ->
-    system -> reference -> admin.
+    Ten tiles in a 2-column grid plus a full-width Advanced button that
+    opens the secondary keyboard built by `_build_advanced_menu_keyboard`.
     """
     return [
-        # Portfolio
         [
             InlineKeyboardButton("\U0001f4ca Dashboard", callback_data="menu_dashboard"),
             InlineKeyboardButton("\U0001f4c8 Status", callback_data="menu_positions"),
-            InlineKeyboardButton("\U0001f4c9 Perf", callback_data="menu_perf"),
         ],
-        # Market data
         [
+            InlineKeyboardButton("\U0001f4c9 Perf", callback_data="menu_perf"),
             InlineKeyboardButton("\U0001f4b0 Price", callback_data="menu_price_prompt"),
+        ],
+        [
             InlineKeyboardButton("\U0001f4d0 OR", callback_data="menu_orb"),
-            InlineKeyboardButton("\U0001f504 OR Recover", callback_data="menu_or_recover"),
+            InlineKeyboardButton("\U0001f4c5 Day Report", callback_data="menu_dayreport"),
         ],
         [
             InlineKeyboardButton("\U0001f39b\ufe0f Mode", callback_data="menu_mode"),
+            InlineKeyboardButton("\u2753 Help", callback_data="menu_help"),
         ],
+        [
+            InlineKeyboardButton("\U0001f50d Monitor", callback_data="menu_monitoring"),
+        ],
+        [
+            InlineKeyboardButton("\u2699\ufe0f Advanced", callback_data="menu_advanced"),
+        ],
+    ]
+
+
+def _build_advanced_menu_keyboard():
+    """Advanced /menu keyboard \u2014 rarely-needed commands.
+
+    Accessible via the 'Advanced' button on the main menu. Includes a
+    Back button to return to the main keyboard.
+    """
+    return [
         # Reports
         [
-            InlineKeyboardButton("\U0001f4c5 Day Report", callback_data="menu_dayreport"),
             InlineKeyboardButton("\U0001f4dc Log", callback_data="menu_log"),
             InlineKeyboardButton("\U0001f3ac Replay", callback_data="menu_replay"),
         ],
-        # System
+        # Market data recovery / system
         [
-            InlineKeyboardButton("\U0001f50d Monitor", callback_data="menu_monitoring"),
+            InlineKeyboardButton("\U0001f504 OR Recover", callback_data="menu_or_recover"),
             InlineKeyboardButton("\U0001f9ea Test", callback_data="menu_test"),
         ],
         # Reference
         [
             InlineKeyboardButton("\U0001f4d8 Strategy", callback_data="menu_strategy"),
             InlineKeyboardButton("\U0001f4d6 Algo", callback_data="menu_algo"),
-            InlineKeyboardButton("\u2139\ufe0f Version", callback_data="menu_version"),
         ],
-        # Admin
         [
-            InlineKeyboardButton("\u2753 Help", callback_data="menu_help"),
+            InlineKeyboardButton("\u2139\ufe0f Version", callback_data="menu_version"),
             InlineKeyboardButton("\u26a0\ufe0f Reset", callback_data="menu_reset"),
+        ],
+        # Nav
+        [
+            InlineKeyboardButton("\u2b05\ufe0f Back", callback_data="menu_back"),
         ],
     ]
 
@@ -5772,6 +5789,32 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+
+    # --- Navigation between main and advanced submenus ---
+    if query.data == "menu_advanced":
+        try:
+            await query.edit_message_text(
+                "\u2699\ufe0f Advanced\n" + "\u2500" * 30,
+                reply_markup=InlineKeyboardMarkup(_build_advanced_menu_keyboard()),
+            )
+        except Exception:
+            await query.message.reply_text(
+                "\u2699\ufe0f Advanced",
+                reply_markup=InlineKeyboardMarkup(_build_advanced_menu_keyboard()),
+            )
+        return
+    if query.data == "menu_back":
+        try:
+            await query.edit_message_text(
+                "\U0001f4f1 Quick Menu\n" + "\u2500" * 30,
+                reply_markup=InlineKeyboardMarkup(_build_menu_keyboard()),
+            )
+        except Exception:
+            await query.message.reply_text(
+                "\U0001f4f1 Quick Menu",
+                reply_markup=InlineKeyboardMarkup(_build_menu_keyboard()),
+            )
+        return
 
     # --- Lightweight callbacks that replace the menu message in-place ---
     if query.data == "menu_price_prompt":
