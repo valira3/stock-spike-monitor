@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.35"
-RELEASE_NOTE = "v2.9.35 \u2014 Non-blocking charts via run_in_executor."
+BOT_VERSION = "2.9.36"
+RELEASE_NOTE = "v2.9.36 \u2014 Fix blocking calls in all async command handlers."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -2506,8 +2506,8 @@ def send_weekly_digest():
 # ============================================================
 # SYSTEM HEALTH TEST
 # ============================================================
-async def run_system_test(label: str) -> None:
-    """Run system health checks and send compact report to both bots."""
+def _run_system_test_sync(label: str) -> None:
+    """Run system health checks and send report (blocking I/O — run in executor)."""
     SEP = "\u2500" * 30
     issues = 0
     lines = []
@@ -2609,11 +2609,9 @@ async def run_system_test(label: str) -> None:
 
 
 def _fire_system_test(label: str) -> None:
-    """Sync wrapper to fire run_system_test from scheduler thread."""
+    """Sync wrapper to fire _run_system_test_sync from scheduler thread."""
     try:
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(run_system_test(label))
-        loop.close()
+        _run_system_test_sync(label)
     except Exception as exc:
         logger.error("System test (%s) failed: %s", label, exc, exc_info=True)
 
@@ -2621,7 +2619,8 @@ def _fire_system_test(label: str) -> None:
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /test command — run system health test."""
     await update.message.reply_chat_action(ChatAction.TYPING)
-    await run_system_test("Manual")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _run_system_test_sync, "Manual")
 
 
 # ============================================================
@@ -2949,9 +2948,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Full market snapshot: portfolio, index filters, OR levels."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
+def _dashboard_sync(is_tp):
+    """Build dashboard text (blocking I/O — run in executor)."""
     SEP = "\u2500" * 34
     now_et = _now_et()
     time_cdt = _now_cdt().strftime("%I:%M %p CDT")
@@ -2978,24 +2976,24 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qqq_icon = "\u2705" if qqq_ok else "\u274c"
 
     lines = [
-        f"\U0001f4ca DASHBOARD  {time_cdt}",
+        "\U0001f4ca DASHBOARD  %s" % time_cdt,
         SEP,
     ]
 
-    if is_tp_update(update):
+    if is_tp:
         # TP portfolio only
         n_tp_pos = len(tp_positions)
         tp_today_sells = [t for t in tp_paper_trades
                           if t.get("action") == "SELL" and t.get("pnl") is not None
                           and t.get("date", "") == today]
         tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
-        tp_cash_fmt = f"{tp_paper_cash:,.2f}"
-        tp_day_pnl_fmt = f"{tp_day_pnl:+,.2f}"
+        tp_cash_fmt = "%s" % format(tp_paper_cash, ",.2f")
+        tp_day_pnl_fmt = "%s" % format(tp_day_pnl, "+,.2f")
         lines += [
             "\U0001f4cb TP PORTFOLIO",
-            f"  Cash:       ${tp_cash_fmt}",
-            f"  Positions:  {n_tp_pos} open",
-            f"  Today P&L:  ${tp_day_pnl_fmt}",
+            "  Cash:       $%s" % tp_cash_fmt,
+            "  Positions:  %d open" % n_tp_pos,
+            "  Today P&L:  $%s" % tp_day_pnl_fmt,
         ]
     else:
         # Paper portfolio only
@@ -3012,23 +3010,23 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 total_value += pos["entry_price"] * pos["shares"]
 
-        paper_cash_fmt = f"{paper_cash:,.2f}"
-        total_value_fmt = f"{total_value:,.2f}"
-        day_pnl_fmt = f"{day_pnl:+,.2f}"
+        paper_cash_fmt = format(paper_cash, ",.2f")
+        total_value_fmt = format(total_value, ",.2f")
+        day_pnl_fmt = format(day_pnl, "+,.2f")
         lines += [
             "\U0001f4c4 PAPER PORTFOLIO",
-            f"  Cash:       ${paper_cash_fmt}",
-            f"  Positions:  {n_pos} open",
-            f"  Today P&L:  ${day_pnl_fmt}",
-            f"  Est. Value: ${total_value_fmt}",
+            "  Cash:       $%s" % paper_cash_fmt,
+            "  Positions:  %d open" % n_pos,
+            "  Today P&L:  $%s" % day_pnl_fmt,
+            "  Est. Value: $%s" % total_value_fmt,
         ]
 
     lines += [
         SEP,
         "\U0001f4c8 INDEX FILTERS",
-        f"  SPY  ${spy_price:.2f}  AVWAP ${spy_avwap:.2f}  {spy_icon}",
-        f"  QQQ  ${qqq_price:.2f}  AVWAP ${qqq_avwap:.2f}  {qqq_icon}",
-        f"  Market: {market_status}",
+        "  SPY  $%.2f  AVWAP $%.2f  %s" % (spy_price, spy_avwap, spy_icon),
+        "  QQQ  $%.2f  AVWAP $%.2f  %s" % (qqq_price, qqq_avwap, qqq_icon),
+        "  Market: %s" % market_status,
         SEP,
         "\U0001f4d0 TODAY'S OR LEVELS",
     ]
@@ -3047,17 +3045,24 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("  (OR not collected yet)")
 
-    await update.message.reply_text("\n".join(lines))
+    return "\n".join(lines)
 
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show open positions with live prices, unrealized P&L, and TP summary."""
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Full market snapshot: portfolio, index filters, OR levels."""
     await update.message.reply_chat_action(ChatAction.TYPING)
+    is_tp = is_tp_update(update)
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(None, _dashboard_sync, is_tp)
+    await update.message.reply_text(text)
+
+
+def _status_text_sync(is_tp):
+    """Build full status text (blocking I/O — run in executor)."""
     now_et = _now_et()
     sep = "\u2500" * 34
 
-    # Fix B: Route based on which bot received the command
-    if is_tp_update(update):
+    if is_tp:
         # Show TP portfolio
         n_pos = len(tp_positions)
         header = "[TP] Open Positions (%d)" % n_pos
@@ -3166,19 +3171,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("  vs Start:        $%+.2f  (started at $%s)"
                      % (tp_vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
         lines.append(sep)
-
-        refresh_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
-        ]])
-        await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
-
-        # TP Portfolio pie chart (run in thread to avoid blocking event loop)
-        if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
-            loop = asyncio.get_event_loop()
-            buf = await loop.run_in_executor(None, _chart_portfolio_pie, tp_positions, tp_short_positions, tp_paper_cash)
-            if buf:
-                await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation")
-        return
+        return "\n".join(lines)
 
     # Paper portfolio (default)
     n_pos = len(positions)
@@ -3306,17 +3299,32 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if qqq_avwap > 0:
         lines.append("QQQ AVWAP: $%.2f" % qqq_avwap)
 
+    return "\n".join(lines)
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show open positions with live prices, unrealized P&L, and TP summary."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    is_tp = is_tp_update(update)
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(None, _status_text_sync, is_tp)
+
     refresh_kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
     ]])
-    await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
+    await update.message.reply_text(text, reply_markup=refresh_kb)
 
     # Portfolio pie chart (run in thread to avoid blocking event loop)
-    if MATPLOTLIB_AVAILABLE and (positions or short_positions):
-        loop = asyncio.get_event_loop()
-        buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
-        if buf:
-            await update.message.reply_photo(photo=buf, caption="Portfolio Allocation")
+    if is_tp:
+        if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
+            buf = await loop.run_in_executor(None, _chart_portfolio_pie, tp_positions, tp_short_positions, tp_paper_cash)
+            if buf:
+                await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation")
+    else:
+        if MATPLOTLIB_AVAILABLE and (positions or short_positions):
+            buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
+            if buf:
+                await update.message.reply_photo(photo=buf, caption="Portfolio Allocation")
 
 
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3443,7 +3451,8 @@ async def positions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer("Refreshing...")
     is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
-    msg = _build_positions_text(is_tp=is_tp)
+    loop = asyncio.get_event_loop()
+    msg = await loop.run_in_executor(None, _build_positions_text, is_tp)
     refresh_kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
     ]])
@@ -4352,21 +4361,13 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # /price COMMAND (Feature 6)
 # ============================================================
-async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/price AAPL — live quote from Yahoo Finance."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
+def _price_sync(ticker):
+    """Build price text (blocking I/O — run in executor). Returns text or None."""
     SEP = "\u2500" * 34
-    args = context.args
-    if not args:
-        await update.message.reply_text("Usage: /price AAPL")
-        return
-
-    ticker = args[0].upper()
 
     bars = fetch_1min_bars(ticker)
     if not bars:
-        await update.message.reply_text("Could not fetch data for %s" % ticker)
-        return
+        return None
 
     cur_price = bars["current_price"]
     pdc_val = bars["pdc"]
@@ -4376,9 +4377,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     header = "\U0001f4b0 %s  $%.2f  $%+.2f (%+.2f%%)" % (ticker, cur_price, change, change_pct)
 
     if ticker not in TRADE_TICKERS:
-        # Not a trade ticker — just show price
-        await update.message.reply_text(header)
-        return
+        return header
 
     lines = [header, SEP]
 
@@ -4483,24 +4482,37 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s_reason_str = ", ".join(s_reasons)
         lines.append("Short eligible: NO (%s)" % s_reason_str)
 
-    await update.message.reply_text("\n".join(lines))
+    return "\n".join(lines)
+
+
+async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/price AAPL — live quote from Yahoo Finance."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /price AAPL")
+        return
+
+    ticker = args[0].upper()
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(None, _price_sync, ticker)
+    if text is None:
+        await update.message.reply_text("Could not fetch data for %s" % ticker)
+        return
+    await update.message.reply_text(text)
 
 
 # ============================================================
 # /orb COMMAND (Feature 7)
 # ============================================================
-async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show today's OR levels and current price for all 8 trade tickers."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
+def _orb_sync():
+    """Build ORB text (blocking I/O — run in executor). Returns text or None."""
     SEP = "\u2500" * 34
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
     if or_collected_date != today:
-        await update.message.reply_text(
-            "OR not collected yet \u2014 runs at 8:35 CT."
-        )
-        return
+        return None
 
     lines = [
         "\U0001f4d0 TODAY'S OR LEVELS \u2014 %s" % today,
@@ -4550,8 +4562,20 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entries_str = " ".join(entry_parts)
         lines.append("Entries today: %s" % entries_str)
 
-    msg = "\n".join(lines)
-    await _reply_in_chunks(update.message, msg)
+    return "\n".join(lines)
+
+
+async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show today's OR levels and current price for all 8 trade tickers."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(None, _orb_sync)
+    if text is None:
+        await update.message.reply_text(
+            "OR not collected yet \u2014 runs at 8:35 CT."
+        )
+        return
+    await _reply_in_chunks(update.message, text)
 
 
 # ============================================================
@@ -4698,7 +4722,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.message.reply_text(msg)
     elif query.data == "menu_positions":
-        msg = _build_positions_text(is_tp=is_tp)
+        loop = asyncio.get_event_loop()
+        msg = await loop.run_in_executor(None, _build_positions_text, is_tp)
         refresh_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
         ]])
@@ -4739,12 +4764,12 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\U0001f50d Scanner: %s" % status, reply_markup=kb)
     elif query.data == "menu_test":
         await query.message.reply_text("Running /test ...")
-        await run_system_test("Manual")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _run_system_test_sync, "Manual")
 
 
-async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually re-collect OR data for tickers missing or_high."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
+def _or_now_sync():
+    """Re-collect missing OR data (blocking I/O — run in executor). Returns text or None."""
     now_et = _now_et()
     market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     or_end = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
@@ -4753,8 +4778,7 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     missing = [t for t in TICKERS if t not in or_high]
     if not missing:
-        await update.message.reply_text("All tickers have OR data already.")
-        return
+        return None
 
     results = []
     recovered = 0
@@ -4833,7 +4857,18 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.extend(results)
     lines.append(SEP)
     lines.append("%d recovered | %d still missing" % (recovered, still_fail))
-    await update.message.reply_text("\n".join(lines))
+    return "\n".join(lines)
+
+
+async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually re-collect OR data for tickers missing or_high."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(None, _or_now_sync)
+    if text is None:
+        await update.message.reply_text("All tickers have OR data already.")
+        return
+    await update.message.reply_text(text)
 
 
 # ============================================================
