@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.37"
-RELEASE_NOTE = "v2.9.37 \u2014 Progress indicators for long commands."
+BOT_VERSION = "2.9.38"
+RELEASE_NOTE = "v2.9.38 \u2014 Fix /perf blocking: timeout + matplotlib warmup + executor isolation."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -153,6 +153,17 @@ try:
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
+
+# Pre-warm matplotlib font manager in background thread so first chart
+# call doesn't block the event loop for ~30-50 seconds.
+if MATPLOTLIB_AVAILABLE:
+    def _warm_matplotlib():
+        try:
+            fig, ax = plt.subplots()
+            plt.close(fig)
+        except Exception:
+            pass
+    threading.Thread(target=_warm_matplotlib, daemon=True).start()
 
 
 def _parse_date_arg(args):
@@ -4394,54 +4405,19 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # /perf COMMAND (Feature 5)
 # ============================================================
-async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show performance stats (optional date or N days)."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
+def _perf_compute(long_history, short_hist, date_filter, single_day, today, label, perf_label):
+    """Synchronous helper: crunch all perf stats + chart. Runs in executor."""
     SEP = "\u2500" * 34
-    now_et = _now_et()
-    today = now_et.strftime("%Y-%m-%d")
-
-    # Select history based on which bot
-    if is_tp_update(update):
-        long_history = tp_trade_history
-        short_hist = tp_short_trade_history
-        label = "TP Portfolio"
-    else:
-        long_history = trade_history
-        short_hist = short_trade_history
-        label = "Paper Portfolio"
-
-    if not long_history and not short_hist:
-        await update.message.reply_text("No completed trades yet.")
-        return
-
-    # Date filtering: /perf = all time, /perf 7 = last 7 days, /perf Apr 17 = single day
-    date_filter = None
-    single_day = False
-    perf_label = "All Time"
-    if context.args:
-        raw = " ".join(context.args).strip()
-        try:
-            n = int(raw)
-            if 1 <= n <= 365:
-                date_filter = (now_et - timedelta(days=n)).strftime("%Y-%m-%d")
-                perf_label = "Last %d days" % n
-        except ValueError:
-            target_date = _parse_date_arg(context.args)
-            date_filter = target_date.strftime("%Y-%m-%d")
-            single_day = True
-            perf_label = target_date.strftime("%a %b %d, %Y")
 
     if single_day:
-        # Filter to exact date
         filt_long = [t for t in long_history if t.get("date", "") == date_filter]
         filt_short = [t for t in short_hist if t.get("date", "") == date_filter]
     elif date_filter:
         filt_long = [t for t in long_history if t.get("date", "") >= date_filter]
         filt_short = [t for t in short_hist if t.get("date", "") >= date_filter]
     else:
-        filt_long = long_history
-        filt_short = short_hist
+        filt_long = list(long_history)
+        filt_short = list(short_hist)
 
     lines = [
         "\U0001f4c8 Performance \u2014 %s \u2014 %s" % (label, perf_label),
@@ -4503,31 +4479,81 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(SEP)
 
     # Streak (combined)
-    combined = long_history + short_hist
+    combined = list(long_history) + list(short_hist)
     streak = _compute_streak(combined)
     lines.append("Streak: %s" % streak)
 
     msg = "\n".join(lines)
-    await _reply_in_chunks(update.message, msg)
 
     # Chart: Equity curve
+    chart_buf = None
     if MATPLOTLIB_AVAILABLE:
         chart_hist = filt_long + filt_short
         if chart_hist:
-            chart_msg = await update.message.reply_text("\U0001f4ca Generating equity curve...")
-            loop = asyncio.get_event_loop()
-            buf = await loop.run_in_executor(None, _chart_equity_curve, chart_hist, perf_label)
-            if buf:
-                try:
-                    await chart_msg.delete()
-                except Exception:
-                    pass
-                await update.message.reply_photo(photo=buf, caption="Equity Curve")
-            else:
-                try:
-                    await chart_msg.edit_text("\U0001f4ca Chart unavailable (no data or matplotlib missing)")
-                except Exception:
-                    pass
+            chart_buf = _chart_equity_curve(chart_hist, perf_label)
+
+    return msg, chart_buf
+
+
+async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show performance stats (optional date or N days)."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    now_et = _now_et()
+    today = now_et.strftime("%Y-%m-%d")
+
+    # Select history based on which bot
+    if is_tp_update(update):
+        long_history = tp_trade_history
+        short_hist = tp_short_trade_history
+        label = "TP Portfolio"
+    else:
+        long_history = trade_history
+        short_hist = short_trade_history
+        label = "Paper Portfolio"
+
+    if not long_history and not short_hist:
+        await update.message.reply_text("No completed trades yet.")
+        return
+
+    # Date filtering: /perf = all time, /perf 7 = last 7 days, /perf Apr 17 = single day
+    date_filter = None
+    single_day = False
+    perf_label = "All Time"
+    if context.args:
+        raw = " ".join(context.args).strip()
+        try:
+            n = int(raw)
+            if 1 <= n <= 365:
+                date_filter = (now_et - timedelta(days=n)).strftime("%Y-%m-%d")
+                perf_label = "Last %d days" % n
+        except ValueError:
+            target_date = _parse_date_arg(context.args)
+            date_filter = target_date.strftime("%Y-%m-%d")
+            single_day = True
+            perf_label = target_date.strftime("%a %b %d, %Y")
+
+    # Run ALL data processing + chart generation in executor (non-blocking)
+    loop = asyncio.get_event_loop()
+    try:
+        msg, chart_buf = await asyncio.wait_for(
+            loop.run_in_executor(
+                None, _perf_compute,
+                long_history, short_hist, date_filter, single_day,
+                today, label, perf_label,
+            ),
+            timeout=10.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("cmd_perf: executor timed out after 10s")
+        await update.message.reply_text("\u26a0\ufe0f Performance report timed out. Try again.")
+        return
+
+    await _reply_in_chunks(update.message, msg)
+
+    if chart_buf:
+        await update.message.reply_photo(photo=chart_buf, caption="Equity Curve")
+    elif MATPLOTLIB_AVAILABLE and (long_history or short_hist):
+        await update.message.reply_text("\U0001f4ca Chart unavailable (timeout or no data)")
 
 
 # ============================================================
