@@ -4,6 +4,53 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.0.0 — MarketMode Scaffolding + Platform Hardening (2026-04-18)
+
+Milestone release rolling up the significant work of the past week. No breaking
+changes; all behavior at the trading layer is backward compatible with v2.9.x.
+
+**MarketMode scaffolding (new)**
+- Classifier tags each scan cycle as `OPEN` / `CHOP` / `POWER` / `DEFENSIVE` / `CLOSED`.
+- Frozen per-mode advisory profiles with hard clamp bounds on every adaptive
+  parameter: `trail_pct` ∈ [0.6%, 1.8%], `max_entries` ∈ [1, 5], `shares` ∈ [1, 10],
+  `min_score_delta` ∈ [0.00, 0.15]. `_clamp()` is applied at profile construction
+  so out-of-range values are impossible.
+- Hard floors (`DAILY_LOSS_LIMIT`, min trail distance $1.00, min 1 share) remain
+  constants outside the profile system.
+- `scan_loop()` logs `mode=<X>` each cycle and `MarketMode: X -> Y (reason)` on
+  transitions.
+- `/mode` command shows current classification, advisory profile, and bounds.
+- **Observation only in v3.0.0** — no entry, exit, sizing, score, or trail code
+  reads the profile yet. Observe in production before wiring the first knob.
+
+**Reliability & UX fixes**
+- `/replay` historical view: normalize all four sources (`paper_trades`,
+  `trade_history`, `short_trade_history`, TP variants) into a common row shape;
+  synthesize both open and close rows from each closed-trade record using
+  `entry_time`/`entry_price` + `exit_time`/`exit_price`. Past-date replays no
+  longer show `--:--` / `$0.00` placeholders.
+- `/dayreport`: threaded chart generation + empty-trades guard (was hanging on
+  no-trade days); inline `Text must be non-empty` path fixed.
+- `/log` and `/replay`: moved sync work to the executor with 15s timeout and a
+  loading message. Historical queries read the correct source (`trade_history`,
+  not `paper_trades`).
+- `/positions`: full equity snapshot (cash, unrealized P&L, total equity,
+  vs-start performance) on paper + TP; refresh action with live-price updates;
+  trail-stop details for active trails.
+- Menu → Dashboard now renders the same full snapshot `/dashboard` produces (was
+  a 2-line summary).
+- Menu UX: removed auto-menu after every command; replaced with an opt-in
+  `[🗂 Menu]` button.
+- Silent-crash fix: replaced Python `%` formatting of `+,.2f` with `.format()`;
+  added a global error handler so Telegram surfaces failures instead of freezing.
+
+**Platform**
+- TP Portfolio independence hardened (shares signals, separate tracking/UI).
+- Multi-instance deployment: env-var-driven config for a second `valstradebot`
+  instance on a separate Railway service.
+
+---
+
 ## v2.7.0 — Full Gap Analysis Implementation (2026-03-17)
 
 Comprehensive upgrade based on deep industry research across quantitative finance
