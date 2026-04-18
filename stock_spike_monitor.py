@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.46"
-RELEASE_NOTE = "v2.9.46 \u2014 fix /replay historical field mapping (entry/exit); Menu \u2192 Dashboard now shows full snapshot."
+BOT_VERSION = "2.9.47"
+RELEASE_NOTE = "v2.9.47 \u2014 MarketMode scaffolding: classifier logs OPEN/CHOP/POWER/DEFENSIVE/CLOSED every scan + /mode command. Observation only; no parameter is adaptive yet."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -331,6 +331,163 @@ tp_short_trade_history: list = []    # max 500 closed TP shorts
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
 _trading_halted: bool = False
 _trading_halted_reason: str = ""
+
+# ============================================================
+# MARKET MODE (scaffolding — NO behavior change in this version)
+# ============================================================
+# Classifies each scan cycle into one of four behavioral regimes and
+# exposes a corresponding (frozen, clamped) profile of parameters.
+# This version ONLY logs the classification and exposes it via /mode;
+# no entry/exit code reads the profile yet. The goal is to observe the
+# classifier in production for a week before wiring any parameter to it.
+#
+# Design principles for when this is wired up:
+#   1. Adaptive logic only makes things MORE conservative than baseline,
+#      never looser. The baseline is the floor; profiles can raise it.
+#   2. Every adaptive parameter is bounded — see CLAMP_* below. A runaway
+#      classifier cannot push any value outside these bounds.
+#   3. Hard floors (DAILY_LOSS_LIMIT, min trail distance $1.00, min 1
+#      share) are constants outside the profile system. They never move.
+
+class MarketMode:
+    OPEN       = "OPEN"        # 09:35 - 11:00 ET — OR breakout window
+    CHOP       = "CHOP"        # 11:00 - 14:00 ET — lunch chop
+    POWER      = "POWER"       # 14:00 - 15:30 ET — power hour
+    DEFENSIVE  = "DEFENSIVE"   # triggered by realized P&L <= half loss limit
+    CLOSED     = "CLOSED"      # outside market hours / weekend
+
+# Clamps: hard bounds any adaptive value must stay inside.
+# baseline values (what the bot uses TODAY, before this scaffold):
+#   trail_pct      = 0.010    max entries/ticker/day = 5
+#   shares         = 10       min score gate         = (none, all signals pass)
+CLAMP_TRAIL_PCT         = (0.006, 0.018)   # 0.6% - 1.8%
+CLAMP_MAX_ENTRIES       = (1, 5)
+CLAMP_SHARES            = (1, 10)
+CLAMP_MIN_SCORE_DELTA   = (0.0, 0.15)      # added to baseline score gate
+
+def _clamp(val, bounds):
+    lo, hi = bounds
+    return max(lo, min(hi, val))
+
+# Each profile is a frozen dict of the tunables + the rationale.
+# All numeric values are pre-clamped by construction via _clamp().
+# If you edit these, keep every value inside its CLAMP_* range.
+MODE_PROFILES = {
+    MarketMode.OPEN: {
+        "trail_pct":         _clamp(0.012, CLAMP_TRAIL_PCT),
+        "max_entries":       _clamp(5,     CLAMP_MAX_ENTRIES),
+        "shares":            _clamp(10,    CLAMP_SHARES),
+        "min_score_delta":   _clamp(0.00,  CLAMP_MIN_SCORE_DELTA),
+        "allow_shorts":      True,
+        "note":              "OR breakout window — baseline risk",
+    },
+    MarketMode.CHOP: {
+        "trail_pct":         _clamp(0.008, CLAMP_TRAIL_PCT),
+        "max_entries":       _clamp(2,     CLAMP_MAX_ENTRIES),
+        "shares":            _clamp(10,    CLAMP_SHARES),
+        "min_score_delta":   _clamp(0.10,  CLAMP_MIN_SCORE_DELTA),
+        "allow_shorts":      True,
+        "note":              "Lunch chop — tighter trails, fewer re-entries",
+    },
+    MarketMode.POWER: {
+        "trail_pct":         _clamp(0.010, CLAMP_TRAIL_PCT),
+        "max_entries":       _clamp(3,     CLAMP_MAX_ENTRIES),
+        "shares":            _clamp(10,    CLAMP_SHARES),
+        "min_score_delta":   _clamp(0.05,  CLAMP_MIN_SCORE_DELTA),
+        "allow_shorts":      True,
+        "note":              "Power hour — baseline with entry cutoff at 15:30",
+    },
+    MarketMode.DEFENSIVE: {
+        "trail_pct":         _clamp(0.006, CLAMP_TRAIL_PCT),
+        "max_entries":       _clamp(1,     CLAMP_MAX_ENTRIES),
+        "shares":            _clamp(5,     CLAMP_SHARES),
+        "min_score_delta":   _clamp(0.15,  CLAMP_MIN_SCORE_DELTA),
+        "allow_shorts":      False,
+        "note":              "Down >=50% of daily loss limit — size down, shorts off",
+    },
+    MarketMode.CLOSED: {
+        "trail_pct":         _clamp(0.010, CLAMP_TRAIL_PCT),
+        "max_entries":       _clamp(5,     CLAMP_MAX_ENTRIES),
+        "shares":            _clamp(10,    CLAMP_SHARES),
+        "min_score_delta":   _clamp(0.00,  CLAMP_MIN_SCORE_DELTA),
+        "allow_shorts":      True,
+        "note":              "Market closed — no action",
+    },
+}
+
+# Last-computed mode snapshot, refreshed each scan. Read by /mode.
+_current_mode: str = MarketMode.CLOSED
+_current_mode_reason: str = "not yet classified"
+_current_mode_pnl: float = 0.0
+_current_mode_ts = None
+
+
+def _compute_today_realized_pnl(is_tp: bool = False) -> float:
+    """Realized P&L today across longs + shorts for the given portfolio.
+    Unrealized P&L is excluded on purpose — we want the number that
+    drives the DAILY_LOSS_LIMIT halt, which is realized-only.
+    """
+    today_str = _now_et().strftime("%Y-%m-%d")
+    pnl = 0.0
+    if is_tp:
+        for t in tp_paper_trades:
+            if t.get("date") == today_str and t.get("action") in ("SELL", "COVER"):
+                pnl += t.get("pnl", 0) or 0
+    else:
+        for t in paper_trades:
+            if t.get("date") == today_str and t.get("action") in ("SELL", "COVER"):
+                pnl += t.get("pnl", 0) or 0
+    return pnl
+
+
+def get_current_mode(now_et=None) -> tuple:
+    """Classify the current market mode. Returns (mode, reason, pnl_used).
+    Priority: CLOSED > DEFENSIVE > time-of-day bucket.
+    """
+    if now_et is None:
+        now_et = _now_et()
+
+    # CLOSED: weekends and outside the same window scan_loop() skips.
+    if now_et.weekday() >= 5:
+        return (MarketMode.CLOSED, "weekend", 0.0)
+    before_open = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35)
+    after_close = now_et.hour >= 16 or (now_et.hour == 15 and now_et.minute >= 55)
+    if before_open or after_close:
+        return (MarketMode.CLOSED, "outside market hours", 0.0)
+
+    # DEFENSIVE: realized P&L today is at or below half the daily loss limit.
+    # Uses paper portfolio's P&L as the canonical risk signal (TP mirrors it).
+    today_pnl = _compute_today_realized_pnl(is_tp=False)
+    half_limit = DAILY_LOSS_LIMIT / 2.0   # e.g. -500 / 2 = -250
+    if today_pnl <= half_limit:
+        reason = "realized P&L $%+.2f <= half limit $%+.2f" % (today_pnl, half_limit)
+        return (MarketMode.DEFENSIVE, reason, today_pnl)
+
+    # Time-of-day buckets.
+    hm = now_et.hour * 60 + now_et.minute
+    if hm < 11 * 60:
+        return (MarketMode.OPEN,  "09:35-11:00 ET", today_pnl)
+    if hm < 14 * 60:
+        return (MarketMode.CHOP,  "11:00-14:00 ET", today_pnl)
+    return (MarketMode.POWER,     "14:00-15:55 ET", today_pnl)
+
+
+def _refresh_market_mode():
+    """Recompute the cached mode. Called at the top of every scan cycle.
+    Pure observation — no side effects beyond updating _current_mode_* and
+    emitting a log line when the mode transitions.
+    """
+    global _current_mode, _current_mode_reason, _current_mode_pnl, _current_mode_ts
+    prev = _current_mode
+    now_et = _now_et()
+    mode, reason, pnl = get_current_mode(now_et)
+    _current_mode        = mode
+    _current_mode_reason = reason
+    _current_mode_pnl    = pnl
+    _current_mode_ts     = now_et
+    if mode != prev:
+        logger.info("MarketMode: %s -> %s (%s)", prev, mode, reason)
+
 
 # Scan pause (Feature 8)
 _scan_paused: bool = False
@@ -2863,12 +3020,19 @@ def scan_loop():
     global _last_scan_time
     _last_scan_time = datetime.now(timezone.utc)
 
+    # MarketMode: observation only — no parameter is read from this yet.
+    # Safe to fail silently; it cannot affect trading.
+    try:
+        _refresh_market_mode()
+    except Exception:
+        logger.exception("_refresh_market_mode failed (ignored — observation only)")
+
     n_pos = len(positions)
     n_tp = len(tp_positions)
     n_short = len(short_positions)
     n_tp_short = len(tp_short_positions)
-    logger.info("Scanning %d stocks | pos=%d tp=%d short=%d tp_short=%d",
-                len(TRADE_TICKERS), n_pos, n_tp, n_short, n_tp_short)
+    logger.info("Scanning %d stocks | pos=%d tp=%d short=%d tp_short=%d | mode=%s",
+                len(TRADE_TICKERS), n_pos, n_tp, n_short, n_tp_short, _current_mode)
 
     # Update AVWAP for index anchors
     update_avwap("SPY")
@@ -4327,6 +4491,58 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /mode COMMAND — market mode classifier (observation only)
+# ============================================================
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the current MarketMode classification and its profile.
+    OBSERVATION ONLY in this version — no trading parameter reads from it yet.
+    """
+    SEP = "\u2500" * 34
+    # Refresh once on demand so manual checks outside scan cadence are fresh.
+    try:
+        _refresh_market_mode()
+    except Exception:
+        logger.exception("/mode: refresh failed")
+
+    mode    = _current_mode
+    reason  = _current_mode_reason
+    pnl     = _current_mode_pnl
+    ts      = _current_mode_ts
+    profile = MODE_PROFILES.get(mode, {})
+
+    ts_str = ts.strftime("%H:%M ET") if ts else "—"
+    shorts = "ON" if profile.get("allow_shorts") else "OFF"
+    trail_bps = int(round(profile.get("trail_pct", 0) * 10000))
+
+    lines = [
+        "\U0001f9ed MARKET MODE  %s" % ts_str,
+        SEP,
+        "Mode:       %s" % mode,
+        "Reason:     %s" % reason,
+        "Realized:   $%+.2f  (loss limit $%+.2f)" % (pnl, DAILY_LOSS_LIMIT),
+        SEP,
+        "Profile (advisory — not yet applied):",
+        "  trail_pct       %.3f%%  (%d bps)" % (profile.get("trail_pct", 0) * 100, trail_bps),
+        "  max_entries     %d / ticker / day" % profile.get("max_entries", 0),
+        "  shares          %d" % profile.get("shares", 0),
+        "  min_score_delta +%.2f" % profile.get("min_score_delta", 0),
+        "  allow_shorts    %s" % shorts,
+        SEP,
+        profile.get("note", ""),
+        "",
+        "Bounds: trail %.1f-%.1f%% | entries %d-%d | shares %d-%d | score +%.2f-+%.2f" % (
+            CLAMP_TRAIL_PCT[0]*100, CLAMP_TRAIL_PCT[1]*100,
+            CLAMP_MAX_ENTRIES[0],   CLAMP_MAX_ENTRIES[1],
+            CLAMP_SHARES[0],        CLAMP_SHARES[1],
+            CLAMP_MIN_SCORE_DELTA[0], CLAMP_MIN_SCORE_DELTA[1],
+        ),
+        "",
+        "(v%s scaffolding — logs only)" % BOT_VERSION,
+    ]
+    await update.message.reply_text("\n".join(lines), reply_markup=_menu_button())
+
+
+# ============================================================
 # /algo COMMAND
 # ============================================================
 async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5356,6 +5572,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("test", "Run system health test"),
     BotCommand("or_now", "Re-collect missing OR levels"),
     BotCommand("version", "Release notes"),
+    BotCommand("mode", "Current market mode (observation)"),
 ]
 
 TP_BOT_COMMANDS = [
@@ -5377,6 +5594,7 @@ TP_BOT_COMMANDS = [
     BotCommand("test", "Run system health test"),
     BotCommand("or_now", "Re-collect missing OR levels"),
     BotCommand("version", "Release notes"),
+    BotCommand("mode", "Current market mode (observation)"),
 ]
 
 
@@ -5482,6 +5700,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("replay", cmd_replay))
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     app.add_handler(CommandHandler("version", cmd_version))
+    app.add_handler(CommandHandler("mode", cmd_mode))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("perf", cmd_perf))
     app.add_handler(CommandHandler("price", cmd_price))
@@ -5531,6 +5750,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("replay", cmd_replay))
     tp_app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     tp_app.add_handler(CommandHandler("version", cmd_version))
+    tp_app.add_handler(CommandHandler("mode", cmd_mode))
     tp_app.add_handler(CommandHandler("reset", cmd_reset))
     tp_app.add_handler(CommandHandler("perf", cmd_perf))
     tp_app.add_handler(CommandHandler("price", cmd_price))
