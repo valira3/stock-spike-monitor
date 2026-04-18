@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.43"
-RELEASE_NOTE = "v2.9.43 \u2014 auto-menu after every command; startup menu on deploy."
+BOT_VERSION = "2.9.44"
+RELEASE_NOTE = "v2.9.44 \u2014 replace auto-menu with single tap-to-open Menu button after commands."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -2832,8 +2832,12 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pass
 
+    # Final edit with menu button
+    try:
+        await prog.edit_text(_build_test_progress(results), reply_markup=_menu_button())
+    except Exception:
+        pass
     logger.info("CMD test completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 # ============================================================
@@ -3162,8 +3166,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /reset       Reset portfolio\n"
         f"{SEP}"
     )
-    await update.message.reply_text(text)
-    await _send_menu_after(update, context)
+    await update.message.reply_text(text, reply_markup=_menu_button())
 
 
 def _dashboard_sync(is_tp):
@@ -3277,13 +3280,12 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if len(text) > 3800:
             await prog.delete()
-            await _reply_in_chunks(update.message, text)
+            await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
         else:
-            await prog.edit_text(text)
+            await prog.edit_text(text, reply_markup=_menu_button())
     except Exception:
         pass
     logger.info("CMD dashboard completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 def _status_text_sync(is_tp):
@@ -3545,18 +3547,22 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=refresh_kb)
 
     # Portfolio pie chart (run in thread to avoid blocking event loop)
+    sent_photo = False
     if is_tp:
         if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
             buf = await loop.run_in_executor(None, _chart_portfolio_pie, tp_positions, tp_short_positions, tp_paper_cash)
             if buf:
                 await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation")
+                sent_photo = True
     else:
         if MATPLOTLIB_AVAILABLE and (positions or short_positions):
             buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
             if buf:
                 await update.message.reply_photo(photo=buf, caption="Portfolio Allocation")
+                sent_photo = True
+
+    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
     logger.info("CMD status completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3928,7 +3934,7 @@ def _format_dayreport_section(trades, header, count_label):
     return "\n".join(lines)
 
 
-async def _reply_in_chunks(message, text, max_len=3800):
+async def _reply_in_chunks(message, text, max_len=3800, reply_markup=None):
     """Send text in ≤max_len-char chunks, splitting on newlines."""
     lines = text.split('\n')
     chunk = []
@@ -3942,7 +3948,7 @@ async def _reply_in_chunks(message, text, max_len=3800):
         chunk.append(line)
         length += line_len
     if chunk:
-        await message.reply_text('\n'.join(chunk))
+        await message.reply_text('\n'.join(chunk), reply_markup=reply_markup)
 
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3983,8 +3989,8 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
                 except Exception:
                     pass
+        await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
         logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
-        await _send_menu_after(update, context)
         return
 
     # Paper portfolio
@@ -4017,8 +4023,8 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
             except Exception:
                 pass
+    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
     logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 def _log_sync(target_str, day_label, is_tp):
@@ -4133,29 +4139,26 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except asyncio.TimeoutError:
         logger.warning("cmd_log: executor timed out after 15s")
         try:
-            await prog.edit_text("\u26a0\ufe0f Trade log timed out. Try again.")
+            await prog.edit_text("\u26a0\ufe0f Trade log timed out. Try again.", reply_markup=_menu_button())
         except Exception:
             pass
-        await _send_menu_after(update, context)
         return
 
     if text is None:
         prefix = "[TP] " if is_tp else ""
         try:
-            await prog.edit_text("%sNo trades on %s." % (prefix, day_label))
+            await prog.edit_text("%sNo trades on %s." % (prefix, day_label), reply_markup=_menu_button())
         except Exception:
             pass
         logger.info("CMD log completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
-        await _send_menu_after(update, context)
         return
 
     try:
         await prog.delete()
     except Exception:
         pass
-    await _reply_in_chunks(update.message, text)
+    await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
     logger.info("CMD log completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 def _replay_sync(target_str, day_label, is_tp):
@@ -4241,27 +4244,24 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except asyncio.TimeoutError:
         logger.warning("cmd_replay: executor timed out after 15s")
-        await update.message.reply_text("\u26a0\ufe0f Replay timed out. Try again.")
-        await _send_menu_after(update, context)
+        await update.message.reply_text("\u26a0\ufe0f Replay timed out. Try again.", reply_markup=_menu_button())
         return
 
     if text is None:
         prefix = "[TP] " if is_tp else ""
-        await update.message.reply_text("%sNo trades on %s." % (prefix, day_label))
+        await update.message.reply_text("%sNo trades on %s." % (prefix, day_label), reply_markup=_menu_button())
         logger.info("CMD replay completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
-        await _send_menu_after(update, context)
         return
 
-    await _reply_in_chunks(update.message, text)
+    await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
     logger.info("CMD replay completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show version info."""
     await update.message.reply_text(
-        "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, RELEASE_NOTE))
-    await _send_menu_after(update, context)
+        "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, RELEASE_NOTE),
+        reply_markup=_menu_button())
 
 
 # ============================================================
@@ -4341,7 +4341,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
     else:
         await update.message.reply_text("(PDF unavailable \u2014 contact admin)")
-    await _send_menu_after(update, context)
+    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
 
 
 # ============================================================
@@ -4399,8 +4399,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2014 no wick-outs\n"
         f"{SEP}"
     )
-    await _reply_in_chunks(update.message, text)
-    await _send_menu_after(update, context)
+    await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
 
 
 # ============================================================
@@ -4635,8 +4634,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = "Paper Portfolio"
 
     if not long_history and not short_hist:
-        await update.message.reply_text("No completed trades yet.")
-        await _send_menu_after(update, context)
+        await update.message.reply_text("No completed trades yet.", reply_markup=_menu_button())
         return
 
     # Date filtering: /perf = all time, /perf 7 = last 7 days, /perf Apr 17 = single day
@@ -4669,18 +4667,19 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except asyncio.TimeoutError:
         logger.warning("cmd_perf: executor timed out after 10s")
-        await update.message.reply_text("\u26a0\ufe0f Performance report timed out. Try again.")
-        await _send_menu_after(update, context)
+        await update.message.reply_text("\u26a0\ufe0f Performance report timed out. Try again.", reply_markup=_menu_button())
         return
 
     await _reply_in_chunks(update.message, msg)
 
     if chart_buf:
         await update.message.reply_photo(photo=chart_buf, caption="Equity Curve")
+        await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
     elif MATPLOTLIB_AVAILABLE and (long_history or short_hist):
-        await update.message.reply_text("\U0001f4ca Chart unavailable (timeout or no data)")
+        await update.message.reply_text("\U0001f4ca Chart unavailable (timeout or no data)", reply_markup=_menu_button())
+    else:
+        await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
     logger.info("CMD perf completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 # ============================================================
@@ -4816,8 +4815,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_chat_action(ChatAction.TYPING)
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /price AAPL")
-        await _send_menu_after(update, context)
+        await update.message.reply_text("Usage: /price AAPL", reply_markup=_menu_button())
         return
 
     ticker = args[0].upper()
@@ -4826,16 +4824,15 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = await loop.run_in_executor(None, _price_sync, ticker)
     try:
         if text is None:
-            await prog.edit_text("Could not fetch data for %s" % ticker)
+            await prog.edit_text("Could not fetch data for %s" % ticker, reply_markup=_menu_button())
         elif len(text) > 3800:
             await prog.delete()
-            await _reply_in_chunks(update.message, text)
+            await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
         else:
-            await prog.edit_text(text)
+            await prog.edit_text(text, reply_markup=_menu_button())
     except Exception:
         pass
     logger.info("CMD price completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 # ============================================================
@@ -4909,14 +4906,13 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = await loop.run_in_executor(None, _orb_sync)
     if text is None:
         await update.message.reply_text(
-            "OR not collected yet \u2014 runs at 8:35 CT."
+            "OR not collected yet \u2014 runs at 8:35 CT.",
+            reply_markup=_menu_button()
         )
         logger.info("CMD orb completed in %.2fs (no data)", asyncio.get_event_loop().time() - t0)
-        await _send_menu_after(update, context)
         return
-    await _reply_in_chunks(update.message, text)
+    await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
     logger.info("CMD orb completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 # ============================================================
@@ -4962,7 +4958,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  Existing positions still managed." % status,
             reply_markup=kb
         )
-    await _send_menu_after(update, context)
+    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
 
 
 async def monitoring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4989,10 +4985,10 @@ async def monitoring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 # ============================================================
-# MENU KEYBOARD BUILDER + AUTO-MENU AFTER COMMANDS
+# MENU KEYBOARD BUILDER + MENU BUTTON HELPER
 # ============================================================
 def _build_menu_keyboard():
-    """Return the standard inline menu keyboard (shared by cmd_menu, _send_menu_after, startup)."""
+    """Return the standard inline menu keyboard (shared by cmd_menu, _cb_open_menu, startup)."""
     return [
         [
             InlineKeyboardButton("\U0001f4ca Dashboard", callback_data="menu_dashboard"),
@@ -5017,17 +5013,9 @@ def _build_menu_keyboard():
     ]
 
 
-async def _send_menu_after(update, context):
-    """Send the interactive menu keyboard after any command completes."""
-    reply_markup = InlineKeyboardMarkup(_build_menu_keyboard())
-    try:
-        await update.effective_message.reply_text(
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\U0001f5c2 Menu",
-            reply_markup=reply_markup,
-            parse_mode=None,
-        )
-    except Exception as e:
-        logger.debug("_send_menu_after failed: %s", e)
+def _menu_button():
+    """Return a one-button InlineKeyboardMarkup with a Menu tap."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f5c2 Menu", callback_data="open_menu")]])
 
 
 # ============================================================
@@ -5037,6 +5025,16 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show a quick tap-grid of all commands."""
     keyboard = _build_menu_keyboard()
     await update.message.reply_text(
+        "\U0001f4f1 Quick Menu\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def _cb_open_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the single Menu button tap — show full menu."""
+    await update.callback_query.answer()
+    keyboard = _build_menu_keyboard()
+    await update.callback_query.message.reply_text(
         "\U0001f4f1 Quick Menu\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -5227,9 +5225,8 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     missing = [t for t in TICKERS if t not in or_high]
     if not missing:
-        await update.message.reply_text("\u2705 All ORs already collected.")
+        await update.message.reply_text("\u2705 All ORs already collected.", reply_markup=_menu_button())
         logger.info("CMD or_now completed in %.2fs (none missing)", asyncio.get_event_loop().time() - t0)
-        await _send_menu_after(update, context)
         return
 
     lines = {t: "\u23f3" for t in missing}
@@ -5260,11 +5257,10 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed = len(missing) - recovered
     summary = _fmt() + "\n%s\n%d recovered | %d failed" % ("\u2500" * 26, recovered, failed)
     try:
-        await prog.edit_text(summary)
+        await prog.edit_text(summary, reply_markup=_menu_button())
     except Exception:
         pass
     logger.info("CMD or_now completed in %.2fs", asyncio.get_event_loop().time() - t0)
-    await _send_menu_after(update, context)
 
 
 # ============================================================
@@ -5431,6 +5427,7 @@ def run_telegram_bot():
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
     app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+    app.add_handler(CallbackQueryHandler(_cb_open_menu, pattern="^open_menu$"))
 
     async def _error_handler(update, context):
         logger.error("Unhandled exception: %s", context.error, exc_info=context.error)
@@ -5479,6 +5476,7 @@ def run_telegram_bot():
     tp_app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
     tp_app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
     tp_app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+    tp_app.add_handler(CallbackQueryHandler(_cb_open_menu, pattern="^open_menu$"))
 
     tp_app.add_error_handler(_error_handler)
 
