@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.36"
-RELEASE_NOTE = "v2.9.36 \u2014 Fix blocking calls in all async command handlers."
+BOT_VERSION = "2.9.37"
+RELEASE_NOTE = "v2.9.37 \u2014 Progress indicators for long commands."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -2616,11 +2616,145 @@ def _fire_system_test(label: str) -> None:
         logger.error("System test (%s) failed: %s", label, exc, exc_info=True)
 
 
+def _test_fmp():
+    """Test FMP API — returns status string."""
+    try:
+        spy_q = get_fmp_quote("SPY")
+        qqq_q = get_fmp_quote("QQQ")
+        spy_price = float(spy_q.get("price", 0)) if spy_q else 0
+        qqq_price = float(qqq_q.get("price", 0)) if qqq_q else 0
+        if spy_price > 0 and qqq_price > 0:
+            return "\u2705 SPY $%.2f | QQQ $%.2f" % (spy_price, qqq_price)
+        return "\u274c no price data"
+    except Exception as exc:
+        return "\u274c %s" % exc
+
+
+def _test_finnhub():
+    """Test Finnhub API — returns status string."""
+    try:
+        fhb_url = (
+            "https://finnhub.io/api/v1/quote?symbol=SPY&token=%s"
+            % FINNHUB_TOKEN
+        )
+        req = urllib.request.Request(fhb_url, headers=YAHOO_HEADERS)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            fhb_data = json.loads(resp.read())
+        fhb_price = float(fhb_data.get("c", 0))
+        if fhb_price > 0:
+            return "\u2705 SPY $%.2f" % fhb_price
+        return "\u274c no price data"
+    except Exception as exc:
+        return "\u274c %s" % exc
+
+
+def _test_state():
+    """Test state files — returns status string."""
+    try:
+        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
+            ps = json.load(f)
+        with open(TP_STATE_FILE, "r", encoding="utf-8") as f:
+            ts = json.load(f)
+        p_cash = ps.get("paper_cash", 0)
+        t_cash = ts.get("tp_paper_cash", 0)
+        return "\u2705 paper $%s | TP $%s" % (format(int(p_cash), ","), format(int(t_cash), ","))
+    except Exception as exc:
+        return "\u274c %s" % exc
+
+
+def _test_positions():
+    """Test positions — returns status string."""
+    n_paper = len(positions) + len(short_positions)
+    n_tp = len(tp_positions) + len(tp_short_positions)
+    return "%d paper | %d TP" % (n_paper, n_tp)
+
+
+def _test_scanner():
+    """Test scanner health — returns status string."""
+    if _last_scan_time is None:
+        return "\u23f8 Not started"
+    age = (datetime.now(timezone.utc) - _last_scan_time).total_seconds()
+    if age < 90:
+        return "\u2705 Active (%ds ago)" % int(age)
+    mins = int(age) // 60
+    secs = int(age) % 60
+    return "\u274c STALLED (%dm %ds ago)" % (mins, secs)
+
+
+def _build_test_progress(results):
+    """Format the interactive test progress message."""
+    SEP = "\u2500" * 30
+    steps = [
+        ("FMP API", "fmp"),
+        ("Finnhub", "fhb"),
+        ("State files", "state"),
+        ("Positions", "pos"),
+        ("Scanner", "scanner"),
+    ]
+    body_lines = []
+    for label, key in steps:
+        status = results.get(key, "\u23f3")
+        body_lines.append("  %-12s %s" % (label + ":", status))
+    body = "\n".join(body_lines)
+
+    issues = 0
+    for key in ("fmp", "fhb", "state", "scanner"):
+        val = results.get(key, "")
+        if val.startswith("\u274c"):
+            issues += 1
+
+    if all(k in results for _, k in steps):
+        if issues == 0:
+            footer = "\u2705 All systems GO"
+        else:
+            footer = "\u26a0\ufe0f %d issue(s) found \u2014 check logs" % issues
+        return "\U0001f9ea System Test [Manual]\n%s\n%s\n%s\n%s" % (SEP, body, SEP, footer)
+
+    return "\U0001f9ea System Test [Manual]\n%s\n%s" % (SEP, body)
+
+
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /test command — run system health test."""
+    """Handle /test command — run system health test with live progress."""
     await update.message.reply_chat_action(ChatAction.TYPING)
+    results = {}
+    prog = await update.message.reply_text(_build_test_progress(results))
+
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _run_system_test_sync, "Manual")
+
+    # Step 1 — FMP
+    results["fmp"] = await loop.run_in_executor(None, _test_fmp)
+    try:
+        await prog.edit_text(_build_test_progress(results))
+    except Exception:
+        pass
+
+    # Step 2 — Finnhub
+    results["fhb"] = await loop.run_in_executor(None, _test_finnhub)
+    try:
+        await prog.edit_text(_build_test_progress(results))
+    except Exception:
+        pass
+
+    # Step 3 — State files
+    results["state"] = await loop.run_in_executor(None, _test_state)
+    try:
+        await prog.edit_text(_build_test_progress(results))
+    except Exception:
+        pass
+
+    # Step 4 — Positions
+    results["pos"] = _test_positions()
+    try:
+        await prog.edit_text(_build_test_progress(results))
+    except Exception:
+        pass
+
+    # Step 5 — Scanner
+    results["scanner"] = _test_scanner()
+    try:
+        await prog.edit_text(_build_test_progress(results))
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -3051,10 +3185,18 @@ def _dashboard_sync(is_tp):
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Full market snapshot: portfolio, index filters, OR levels."""
     await update.message.reply_chat_action(ChatAction.TYPING)
+    prog = await update.message.reply_text("\u23f3 Loading dashboard (~3s)...")
     is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
     text = await loop.run_in_executor(None, _dashboard_sync, is_tp)
-    await update.message.reply_text(text)
+    try:
+        if len(text) > 3800:
+            await prog.delete()
+            await _reply_in_chunks(update.message, text)
+        else:
+            await prog.edit_text(text)
+    except Exception:
+        pass
 
 
 def _status_text_sync(is_tp):
@@ -3734,12 +3876,22 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
         all_tp = tp_long + tp_short
         body = _format_dayreport_section(all_tp, header, "TP")
         await _reply_in_chunks(update.message, body)
-        # Chart: Trade P&L bar chart (run in thread to avoid blocking event loop)
+        # Chart: Trade P&L bar chart
         if MATPLOTLIB_AVAILABLE and all_tp:
+            chart_msg = await update.message.reply_text("\U0001f4ca Generating chart...")
             loop = asyncio.get_event_loop()
             buf = await loop.run_in_executor(None, _chart_dayreport, all_tp, day_label)
             if buf:
-                await update.message.reply_photo(photo=buf, caption="Trade P&L chart")
+                try:
+                    await chart_msg.delete()
+                except Exception:
+                    pass
+                await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label)
+            else:
+                try:
+                    await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
+                except Exception:
+                    pass
         return
 
     # Paper portfolio
@@ -3756,12 +3908,22 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     paper_body = _format_dayreport_section(all_paper, header, "Paper")
     await _reply_in_chunks(update.message, paper_body)
 
-    # Chart: Trade P&L bar chart (run in thread to avoid blocking event loop)
+    # Chart: Trade P&L bar chart
     if MATPLOTLIB_AVAILABLE and all_paper:
+        chart_msg = await update.message.reply_text("\U0001f4ca Generating chart...")
         loop = asyncio.get_event_loop()
         buf = await loop.run_in_executor(None, _chart_dayreport, all_paper, day_label)
         if buf:
-            await update.message.reply_photo(photo=buf, caption="Trade P&L chart")
+            try:
+                await chart_msg.delete()
+            except Exception:
+                pass
+            await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label)
+        else:
+            try:
+                await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
+            except Exception:
+                pass
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4348,14 +4510,24 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "\n".join(lines)
     await _reply_in_chunks(update.message, msg)
 
-    # Chart: Equity curve (run in thread to avoid blocking event loop)
+    # Chart: Equity curve
     if MATPLOTLIB_AVAILABLE:
         chart_hist = filt_long + filt_short
         if chart_hist:
+            chart_msg = await update.message.reply_text("\U0001f4ca Generating equity curve...")
             loop = asyncio.get_event_loop()
             buf = await loop.run_in_executor(None, _chart_equity_curve, chart_hist, perf_label)
             if buf:
+                try:
+                    await chart_msg.delete()
+                except Exception:
+                    pass
                 await update.message.reply_photo(photo=buf, caption="Equity Curve")
+            else:
+                try:
+                    await chart_msg.edit_text("\U0001f4ca Chart unavailable (no data or matplotlib missing)")
+                except Exception:
+                    pass
 
 
 # ============================================================
@@ -4494,12 +4666,19 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ticker = args[0].upper()
+    prog = await update.message.reply_text("\u23f3 Fetching %s..." % ticker)
     loop = asyncio.get_event_loop()
     text = await loop.run_in_executor(None, _price_sync, ticker)
-    if text is None:
-        await update.message.reply_text("Could not fetch data for %s" % ticker)
-        return
-    await update.message.reply_text(text)
+    try:
+        if text is None:
+            await prog.edit_text("Could not fetch data for %s" % ticker)
+        elif len(text) > 3800:
+            await prog.delete()
+            await _reply_in_chunks(update.message, text)
+        else:
+            await prog.edit_text(text)
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -4768,14 +4947,61 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await loop.run_in_executor(None, _run_system_test_sync, "Manual")
 
 
-def _or_now_sync():
-    """Re-collect missing OR data (blocking I/O — run in executor). Returns text or None."""
+def _fetch_or_for_ticker(ticker):
+    """Try Yahoo then FMP to recover OR data for a single ticker. Returns dict or None."""
     now_et = _now_et()
     market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     or_end = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
     open_ts = int(market_open.timestamp())
     end_ts = int(or_end.timestamp())
 
+    # Try Yahoo 1-min bars first
+    try:
+        bars = fetch_1min_bars(ticker)
+        if bars:
+            max_high = None
+            min_low = None
+            for i, ts in enumerate(bars["timestamps"]):
+                if open_ts <= ts < end_ts:
+                    h = bars["highs"][i]
+                    if h is None:
+                        h = bars["closes"][i]
+                    if h is not None:
+                        if max_high is None or h > max_high:
+                            max_high = h
+                    lo = bars["lows"][i]
+                    if lo is None:
+                        lo = bars["closes"][i]
+                    if lo is not None:
+                        if min_low is None or lo < min_low:
+                            min_low = lo
+            if max_high is not None:
+                or_high[ticker] = max_high
+                if min_low is not None:
+                    or_low[ticker] = min_low
+                if bars.get("pdc") and bars["pdc"] > 0:
+                    pdc[ticker] = bars["pdc"]
+                return {"high": max_high, "low": min_low if min_low else 0, "src": "Yahoo"}
+    except Exception as e:
+        logger.warning("or_now Yahoo failed for %s: %s", ticker, e)
+
+    # FMP fallback
+    try:
+        fmp = get_fmp_quote(ticker)
+        if fmp and fmp.get("dayHigh") and fmp.get("dayLow"):
+            or_high[ticker] = fmp["dayHigh"]
+            or_low[ticker] = fmp["dayLow"]
+            if fmp.get("previousClose") and fmp["previousClose"] > 0:
+                pdc[ticker] = fmp["previousClose"]
+            return {"high": fmp["dayHigh"], "low": fmp["dayLow"], "src": "FMP"}
+    except Exception as e:
+        logger.warning("or_now FMP failed for %s: %s", ticker, e)
+
+    return None
+
+
+def _or_now_sync():
+    """Re-collect missing OR data (blocking I/O — run in executor). Returns text or None."""
     missing = [t for t in TICKERS if t not in or_high]
     if not missing:
         return None
@@ -4785,65 +5011,15 @@ def _or_now_sync():
     still_fail = 0
 
     for ticker in missing:
-        source = None
-        got_high = None
-        got_low = None
-
-        # Try Yahoo 1-min bars first
-        try:
-            bars = fetch_1min_bars(ticker)
-            if bars:
-                max_high = None
-                min_low = None
-                for i, ts in enumerate(bars["timestamps"]):
-                    if open_ts <= ts < end_ts:
-                        h = bars["highs"][i]
-                        if h is None:
-                            h = bars["closes"][i]
-                        if h is not None:
-                            if max_high is None or h > max_high:
-                                max_high = h
-                        lo = bars["lows"][i]
-                        if lo is None:
-                            lo = bars["closes"][i]
-                        if lo is not None:
-                            if min_low is None or lo < min_low:
-                                min_low = lo
-                if max_high is not None:
-                    or_high[ticker] = max_high
-                    if min_low is not None:
-                        or_low[ticker] = min_low
-                    if bars.get("pdc") and bars["pdc"] > 0:
-                        pdc[ticker] = bars["pdc"]
-                    got_high = max_high
-                    got_low = min_low
-                    source = "Yahoo"
-        except Exception as e:
-            logger.warning("or_now Yahoo failed for %s: %s", ticker, e)
-
-        # FMP fallback if Yahoo didn't work
-        if source is None:
-            try:
-                fmp = get_fmp_quote(ticker)
-                if fmp and fmp.get("dayHigh") and fmp.get("dayLow"):
-                    or_high[ticker] = fmp["dayHigh"]
-                    or_low[ticker] = fmp["dayLow"]
-                    if fmp.get("previousClose") and fmp["previousClose"] > 0:
-                        pdc[ticker] = fmp["previousClose"]
-                    got_high = fmp["dayHigh"]
-                    got_low = fmp["dayLow"]
-                    source = "FMP"
-            except Exception as e:
-                logger.warning("or_now FMP failed for %s: %s", ticker, e)
-
-        if source is not None:
+        result = _fetch_or_for_ticker(ticker)
+        if result is not None:
             recovered += 1
             results.append(
                 "%s: \u2705 high=%.2f low=%.2f (%s)"
-                % (ticker, got_high, got_low if got_low else 0, source)
+                % (ticker, result["high"], result["low"], result["src"])
             )
             logger.info("or_now recovered %s: high=%.2f low=%.2f (%s)",
-                        ticker, got_high, got_low if got_low else 0, source)
+                        ticker, result["high"], result["low"], result["src"])
         else:
             still_fail += 1
             results.append("%s: \u274c still missing" % ticker)
@@ -4863,12 +5039,43 @@ def _or_now_sync():
 async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manually re-collect OR data for tickers missing or_high."""
     await update.message.reply_chat_action(ChatAction.TYPING)
-    loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(None, _or_now_sync)
-    if text is None:
-        await update.message.reply_text("All tickers have OR data already.")
+
+    missing = [t for t in TICKERS if t not in or_high]
+    if not missing:
+        await update.message.reply_text("\u2705 All ORs already collected.")
         return
-    await update.message.reply_text(text)
+
+    lines = {t: "\u23f3" for t in missing}
+
+    def _fmt():
+        body = "\n".join("  %-6s %s" % (t, lines[t]) for t in missing)
+        return "\U0001f504 OR Recovery (%d tickers)\n%s\n%s" % (len(missing), "\u2500" * 26, body)
+
+    prog = await update.message.reply_text(_fmt())
+
+    loop = asyncio.get_event_loop()
+    recovered = 0
+    for ticker in missing:
+        result = await loop.run_in_executor(None, _fetch_or_for_ticker, ticker)
+        if result:
+            recovered += 1
+            lines[ticker] = "\u2705 $%.2f\u2013$%.2f (%s)" % (result["high"], result["low"], result["src"])
+        else:
+            lines[ticker] = "\u274c failed"
+        try:
+            await prog.edit_text(_fmt())
+        except Exception:
+            pass
+
+    if recovered > 0:
+        save_paper_state()
+
+    failed = len(missing) - recovered
+    summary = _fmt() + "\n%s\n%d recovered | %d failed" % ("\u2500" * 26, recovered, failed)
+    try:
+        await prog.edit_text(summary)
+    except Exception:
+        pass
 
 
 # ============================================================
