@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.44"
-RELEASE_NOTE = "v2.9.44 \u2014 replace auto-menu with single tap-to-open Menu button after commands."
+BOT_VERSION = "2.9.45"
+RELEASE_NOTE = "v2.9.45 \u2014 fix \\u200b empty text; fix dayreport hang on empty data."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -3552,16 +3552,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
             buf = await loop.run_in_executor(None, _chart_portfolio_pie, tp_positions, tp_short_positions, tp_paper_cash)
             if buf:
-                await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation")
+                await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation", reply_markup=_menu_button())
                 sent_photo = True
     else:
         if MATPLOTLIB_AVAILABLE and (positions or short_positions):
             buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
             if buf:
-                await update.message.reply_photo(photo=buf, caption="Portfolio Allocation")
+                await update.message.reply_photo(photo=buf, caption="Portfolio Allocation", reply_markup=_menu_button())
                 sent_photo = True
 
-    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
+    if not sent_photo:
+        await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
     logger.info("CMD status completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
@@ -3971,10 +3972,17 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if t.get("date", "") == target_str
         ]
         all_tp = tp_long + tp_short
+        if not all_tp:
+            await update.effective_message.reply_text(
+                "No trades on {date}.".format(date=target_str),
+                reply_markup=_menu_button()
+            )
+            logger.info("CMD dayreport completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
+            return
         body = _format_dayreport_section(all_tp, header, "TP")
         await _reply_in_chunks(update.message, body)
         # Chart: Trade P&L bar chart
-        if MATPLOTLIB_AVAILABLE and all_tp:
+        if MATPLOTLIB_AVAILABLE:
             chart_msg = await update.message.reply_text("\U0001f4ca Generating chart...")
             loop = asyncio.get_event_loop()
             buf = await loop.run_in_executor(None, _chart_dayreport, all_tp, day_label)
@@ -3983,13 +3991,14 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await chart_msg.delete()
                 except Exception:
                     pass
-                await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label)
+                await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label, reply_markup=_menu_button())
             else:
                 try:
-                    await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
+                    await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)", reply_markup=_menu_button())
                 except Exception:
                     pass
-        await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
+        else:
+            await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
         logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
         return
 
@@ -4004,11 +4013,19 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     all_paper = paper_long + paper_short
 
+    if not all_paper:
+        await update.effective_message.reply_text(
+            "No trades on {date}.".format(date=target_str),
+            reply_markup=_menu_button()
+        )
+        logger.info("CMD dayreport completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
+        return
+
     paper_body = _format_dayreport_section(all_paper, header, "Paper")
     await _reply_in_chunks(update.message, paper_body)
 
     # Chart: Trade P&L bar chart
-    if MATPLOTLIB_AVAILABLE and all_paper:
+    if MATPLOTLIB_AVAILABLE:
         chart_msg = await update.message.reply_text("\U0001f4ca Generating chart...")
         loop = asyncio.get_event_loop()
         buf = await loop.run_in_executor(None, _chart_dayreport, all_paper, day_label)
@@ -4017,13 +4034,14 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await chart_msg.delete()
             except Exception:
                 pass
-            await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label)
+            await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label, reply_markup=_menu_button())
         else:
             try:
-                await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)")
+                await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)", reply_markup=_menu_button())
             except Exception:
                 pass
-    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
+    else:
+        await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
     logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
@@ -4341,7 +4359,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
     else:
         await update.message.reply_text("(PDF unavailable \u2014 contact admin)")
-    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
+    await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
 
 
 # ============================================================
@@ -4673,12 +4691,11 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply_in_chunks(update.message, msg)
 
     if chart_buf:
-        await update.message.reply_photo(photo=chart_buf, caption="Equity Curve")
-        await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
+        await update.message.reply_photo(photo=chart_buf, caption="Equity Curve", reply_markup=_menu_button())
     elif MATPLOTLIB_AVAILABLE and (long_history or short_hist):
         await update.message.reply_text("\U0001f4ca Chart unavailable (timeout or no data)", reply_markup=_menu_button())
     else:
-        await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
+        await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
     logger.info("CMD perf completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
@@ -4958,7 +4975,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  Existing positions still managed." % status,
             reply_markup=kb
         )
-    await update.effective_message.reply_text("\u200b", reply_markup=_menu_button())
+    await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
 
 
 async def monitoring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
