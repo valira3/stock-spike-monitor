@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.34"
-RELEASE_NOTE = "v2.9.34 \u2014 Bug fix: None guard in volume/pnl checks. Date params for /log /replay /dayreport /perf. Charts: trade P&L bars, equity curve, portfolio pie."
+BOT_VERSION = "2.9.35"
+RELEASE_NOTE = "v2.9.35 \u2014 Non-blocking charts via run_in_executor."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -3172,9 +3172,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
 
-        # TP Portfolio pie chart
+        # TP Portfolio pie chart (run in thread to avoid blocking event loop)
         if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
-            buf = _chart_portfolio_pie(tp_positions, tp_short_positions, tp_paper_cash)
+            loop = asyncio.get_event_loop()
+            buf = await loop.run_in_executor(None, _chart_portfolio_pie, tp_positions, tp_short_positions, tp_paper_cash)
             if buf:
                 await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation")
         return
@@ -3310,9 +3311,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]])
     await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
 
-    # Portfolio pie chart (only when positions are open)
+    # Portfolio pie chart (run in thread to avoid blocking event loop)
     if MATPLOTLIB_AVAILABLE and (positions or short_positions):
-        buf = _chart_portfolio_pie(positions, short_positions, paper_cash)
+        loop = asyncio.get_event_loop()
+        buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
         if buf:
             await update.message.reply_photo(photo=buf, caption="Portfolio Allocation")
 
@@ -3723,9 +3725,10 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
         all_tp = tp_long + tp_short
         body = _format_dayreport_section(all_tp, header, "TP")
         await _reply_in_chunks(update.message, body)
-        # Chart: Trade P&L bar chart
+        # Chart: Trade P&L bar chart (run in thread to avoid blocking event loop)
         if MATPLOTLIB_AVAILABLE and all_tp:
-            buf = _chart_dayreport(all_tp, day_label)
+            loop = asyncio.get_event_loop()
+            buf = await loop.run_in_executor(None, _chart_dayreport, all_tp, day_label)
             if buf:
                 await update.message.reply_photo(photo=buf, caption="Trade P&L chart")
         return
@@ -3744,9 +3747,10 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     paper_body = _format_dayreport_section(all_paper, header, "Paper")
     await _reply_in_chunks(update.message, paper_body)
 
-    # Chart: Trade P&L bar chart
+    # Chart: Trade P&L bar chart (run in thread to avoid blocking event loop)
     if MATPLOTLIB_AVAILABLE and all_paper:
-        buf = _chart_dayreport(all_paper, day_label)
+        loop = asyncio.get_event_loop()
+        buf = await loop.run_in_executor(None, _chart_dayreport, all_paper, day_label)
         if buf:
             await update.message.reply_photo(photo=buf, caption="Trade P&L chart")
 
@@ -4335,11 +4339,12 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "\n".join(lines)
     await _reply_in_chunks(update.message, msg)
 
-    # Chart: Equity curve
+    # Chart: Equity curve (run in thread to avoid blocking event loop)
     if MATPLOTLIB_AVAILABLE:
         chart_hist = filt_long + filt_short
         if chart_hist:
-            buf = _chart_equity_curve(chart_hist, perf_label)
+            loop = asyncio.get_event_loop()
+            buf = await loop.run_in_executor(None, _chart_equity_curve, chart_hist, perf_label)
             if buf:
                 await update.message.reply_photo(photo=buf, caption="Equity Curve")
 
