@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.33"
-RELEASE_NOTE = "v2.9.33 \u2014 anti-whipsaw: 15-min cooldown, 1.5x volume gate, -$50 ticker loss cap. Entry cap 5."
+BOT_VERSION = "2.9.34"
+RELEASE_NOTE = "v2.9.34 \u2014 Bug fix: None guard in volume/pnl checks. Date params for /log /replay /dayreport /perf. Charts: trade P&L bars, equity curve, portfolio pie."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -142,6 +142,59 @@ def _is_today(ts_str: str) -> bool:
         return dt.date() == today
     except Exception:
         return False
+
+
+# ── Matplotlib (optional — graceful skip if not installed) ──────────────
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import io as _io
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+
+
+def _parse_date_arg(args):
+    """Parse optional date argument from command args. Returns date in ET."""
+    import datetime as _dt
+    today = _now_et().date()
+    if not args:
+        return today
+    raw = " ".join(args).strip().lower()
+    if raw == "yesterday":
+        d = today - timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+        return d
+    # Try YYYY-MM-DD
+    try:
+        return _dt.date.fromisoformat(raw)
+    except ValueError:
+        pass
+    # Try integer = last N days (for /perf)
+    try:
+        n = int(raw)
+        if 1 <= n <= 365:
+            return today - timedelta(days=n)
+    except ValueError:
+        pass
+    # Try "Apr 17" or "April 17"
+    for fmt in ["%b %d", "%B %d"]:
+        try:
+            parsed = _dt.datetime.strptime(raw, fmt)
+            return parsed.replace(year=today.year).date()
+        except ValueError:
+            pass
+    # Try weekday names
+    days_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+    for abbr, num in days_map.items():
+        if raw.startswith(abbr):
+            delta = (today.weekday() - num) % 7
+            if delta == 0:
+                delta = 7
+            return today - timedelta(days=delta)
+    return today  # fallback
 
 
 # Short reason labels for compact /dayreport display
@@ -873,7 +926,7 @@ def check_entry(ticker):
 
     # Per-ticker daily loss cap: skip if down > $50 on this ticker today
     ticker_pnl_today = sum(
-        t.get("pnl", 0) for t in trade_history
+        (t.get("pnl") or 0) for t in trade_history
         if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
     )
     if ticker_pnl_today < -50.0:
@@ -916,9 +969,10 @@ def check_entry(ticker):
     # Volume confirmation: entry bar volume >= 1.5x session average
     volumes = bars.get("volumes", [])
     if len(volumes) >= 5:
-        avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-        entry_bar_vol = volumes[-2]
-        if avg_vol > 0 and entry_bar_vol is not None and entry_bar_vol < avg_vol * 1.5:
+        valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
+        avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
+        entry_bar_vol = volumes[-2] if volumes[-2] is not None else 0
+        if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
             logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
             return False, None
 
@@ -1644,7 +1698,7 @@ def check_short_entry(ticker):
 
     # Per-ticker daily loss cap: skip if down > $50 on this ticker today
     ticker_pnl_today = sum(
-        t.get("pnl", 0) for t in short_trade_history
+        (t.get("pnl") or 0) for t in short_trade_history
         if t.get("ticker") == ticker and _is_today(t.get("exit_time_iso") or t.get("entry_time_iso", ""))
     )
     if ticker_pnl_today < -50.0:
@@ -1696,9 +1750,10 @@ def check_short_entry(ticker):
     # Volume confirmation: entry bar volume >= 1.5x session average
     volumes = bars.get("volumes", [])
     if len(volumes) >= 5:
-        avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-        entry_bar_vol = volumes[-2]
-        if avg_vol > 0 and entry_bar_vol is not None and entry_bar_vol < avg_vol * 1.5:
+        valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
+        avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
+        entry_bar_vol = volumes[-2] if volumes[-2] is not None else 0
+        if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
             logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
             return
 
@@ -2866,16 +2921,16 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\U0001f4ca Portfolio\n"
         "  /dashboard   Full market snapshot\n"
         "  /positions   Open positions + live P&L\n"
-        "  /perf        All-time performance stats\n"
+        "  /perf [date] Performance stats (optional date)\n"
         "\n"
         "\U0001f4c8 Market Data\n"
         "  /price TICK  Live quote for a ticker\n"
         "  /orb         Today's OR levels\n"
         "\n"
         "\U0001f4c5 Reports\n"
-        "  /dayreport   Today's trades + P&L\n"
-        "  /log         Trade log\n"
-        "  /replay      Trade timeline replay\n"
+        "  /dayreport [date]  Trades + P&L (optional date)\n"
+        "  /log [date]        Trade log (optional date)\n"
+        "  /replay [date]     Trade timeline (optional date)\n"
         "\n"
         "\u2699\ufe0f System\n"
         "  /monitoring  Pause/resume scanner\n"
@@ -3116,6 +3171,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
         ]])
         await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
+
+        # TP Portfolio pie chart
+        if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
+            buf = _chart_portfolio_pie(tp_positions, tp_short_positions, tp_paper_cash)
+            if buf:
+                await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation")
         return
 
     # Paper portfolio (default)
@@ -3248,6 +3309,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
     ]])
     await update.message.reply_text("\n".join(lines), reply_markup=refresh_kb)
+
+    # Portfolio pie chart (only when positions are open)
+    if MATPLOTLIB_AVAILABLE and (positions or short_positions):
+        buf = _chart_portfolio_pie(positions, short_positions, paper_cash)
+        if buf:
+            await update.message.reply_photo(photo=buf, caption="Portfolio Allocation")
 
 
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3418,6 +3485,160 @@ def _fmt_pnl(val):
     return "+$%.2f" % val
 
 
+def _chart_dayreport(trades, day_label):
+    """Generate trade P&L bar chart with cumulative line. Returns BytesIO or None."""
+    if not MATPLOTLIB_AVAILABLE or not trades:
+        return None
+    try:
+        pnls = [(t.get("pnl") or 0) for t in trades]
+        colors = ["#00cc66" if p >= 0 else "#ff4444" for p in pnls]
+        fig, ax = plt.subplots(figsize=(8, 4))
+        xs = list(range(1, len(pnls) + 1))
+        ax.bar(xs, pnls, color=colors)
+        ax.axhline(0, color="white", linewidth=0.5)
+        ax.set_facecolor("#1a1a2e")
+        fig.patch.set_facecolor("#1a1a2e")
+        ax.tick_params(colors="white")
+        ax.set_title("Trade P&L \u2014 %s" % day_label, color="white")
+        ax.set_xlabel("Trade #", color="white")
+        ax.set_ylabel("P&L ($)", color="white")
+        for spine in ax.spines.values():
+            spine.set_color("#444")
+        # Cumulative line
+        cum = []
+        running = 0
+        for p in pnls:
+            running += p
+            cum.append(running)
+        ax2 = ax.twinx()
+        ax2.plot(xs, cum, color="cyan", linewidth=2, label="Cumulative")
+        ax2.tick_params(colors="white")
+        ax2.set_ylabel("Cumulative ($)", color="white")
+        for spine in ax2.spines.values():
+            spine.set_color("#444")
+        plt.tight_layout()
+        buf = _io.BytesIO()
+        plt.savefig(buf, format="png", dpi=100, facecolor=fig.get_facecolor())
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    except Exception as e:
+        logger.warning("Chart generation failed: %s", e)
+        return None
+
+
+def _chart_equity_curve(history, label):
+    """Generate equity curve line chart. Returns BytesIO or None."""
+    if not MATPLOTLIB_AVAILABLE or not history:
+        return None
+    try:
+        # Group by date and compute daily P&L
+        daily = {}
+        for t in history:
+            d = t.get("date", "")
+            if d:
+                daily[d] = daily.get(d, 0) + (t.get("pnl") or 0)
+        if not daily:
+            return None
+        dates_sorted = sorted(daily.keys())
+        daily_pnls = [daily[d] for d in dates_sorted]
+        cum = []
+        running = 0
+        for p in daily_pnls:
+            running += p
+            cum.append(running)
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(range(len(cum)), cum, color="cyan", linewidth=2)
+        ax.fill_between(range(len(cum)), cum, alpha=0.15, color="cyan")
+        ax.axhline(0, color="white", linewidth=0.5)
+        ax.set_facecolor("#1a1a2e")
+        fig.patch.set_facecolor("#1a1a2e")
+        ax.tick_params(colors="white")
+        ax.set_title("Equity Curve \u2014 %s" % label, color="white")
+        ax.set_xlabel("Trading Day", color="white")
+        ax.set_ylabel("Cumulative P&L ($)", color="white")
+        for spine in ax.spines.values():
+            spine.set_color("#444")
+        # X-axis date labels
+        if len(dates_sorted) <= 15:
+            ax.set_xticks(range(len(dates_sorted)))
+            short_labels = [d[5:] for d in dates_sorted]  # MM-DD
+            ax.set_xticklabels(short_labels, rotation=45, ha="right", fontsize=8, color="white")
+        plt.tight_layout()
+        buf = _io.BytesIO()
+        plt.savefig(buf, format="png", dpi=100, facecolor=fig.get_facecolor())
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    except Exception as e:
+        logger.warning("Equity chart generation failed: %s", e)
+        return None
+
+
+def _chart_portfolio_pie(pos_dict, short_dict, cash):
+    """Generate portfolio allocation pie chart. Returns BytesIO or None."""
+    if not MATPLOTLIB_AVAILABLE:
+        return None
+    if not pos_dict and not short_dict:
+        return None
+    try:
+        from collections import OrderedDict
+        slices = OrderedDict()
+        for ticker, pos in pos_dict.items():
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                mkt_val = bars["current_price"] * pos["shares"]
+            else:
+                mkt_val = pos["entry_price"] * pos["shares"]
+            lbl = "%s (L)" % ticker
+            slices[lbl] = abs(mkt_val)
+        for ticker, pos in short_dict.items():
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                mkt_val = bars["current_price"] * pos["shares"]
+            else:
+                mkt_val = pos["entry_price"] * pos["shares"]
+            lbl = "%s (S)" % ticker
+            slices[lbl] = abs(mkt_val)
+        if cash > 0:
+            slices["Cash"] = cash
+        if not slices:
+            return None
+        labels = list(slices.keys())
+        sizes = list(slices.values())
+        # Color palette
+        base_colors = ["#00cc66", "#ff4444", "#4488ff", "#ffaa00", "#cc44ff",
+                       "#00cccc", "#ff6688", "#88cc00", "#ff8800", "#8844ff"]
+        colors = []
+        ci = 0
+        for lbl in labels:
+            if lbl == "Cash":
+                colors.append("#666666")
+            else:
+                colors.append(base_colors[ci % len(base_colors)])
+                ci += 1
+        fig, ax = plt.subplots(figsize=(6, 6))
+        fig.patch.set_facecolor("#1a1a2e")
+        ax.set_facecolor("#1a1a2e")
+        wedges, texts, autotexts = ax.pie(
+            sizes, labels=labels, colors=colors, autopct="%.1f%%",
+            startangle=90, textprops={"color": "white", "fontsize": 10}
+        )
+        for t in autotexts:
+            t.set_color("white")
+            t.set_fontsize(9)
+        ax.set_title("Portfolio Allocation", color="white", fontsize=14)
+        plt.tight_layout()
+        buf = _io.BytesIO()
+        plt.savefig(buf, format="png", dpi=100, facecolor=fig.get_facecolor())
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    except Exception as e:
+        logger.warning("Pie chart generation failed: %s", e)
+        return None
+
+
 def _format_dayreport_section(trades, header, count_label):
     """Format one portfolio section for /dayreport (compact 2-line).
 
@@ -3482,60 +3703,71 @@ async def _reply_in_chunks(message, text, max_len=3800):
 
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show today's completed trades with P&L summary."""
+    """Show completed trades with P&L summary (optional date)."""
     await update.message.reply_chat_action(ChatAction.TYPING)
-    now_et = _now_et()
-    now_cdt = _now_cdt()
-    today = now_et.strftime("%Y-%m-%d")
-    day_label = now_cdt.strftime("%a %b %d")
+    target_date = _parse_date_arg(context.args)
+    target_str = target_date.strftime("%Y-%m-%d")
+    day_label = target_date.strftime("%a %b %d, %Y")
     header = "\U0001f4ca Day Report \u2014 %s" % day_label
 
     # Fix B: Route based on which bot
     if is_tp_update(update):
         tp_long = [
             t for t in tp_trade_history
-            if t.get("date", "") == today
+            if t.get("date", "") == target_str
         ]
         tp_short = [
             t for t in tp_short_trade_history
-            if t.get("date", "") == today
+            if t.get("date", "") == target_str
         ]
         all_tp = tp_long + tp_short
         body = _format_dayreport_section(all_tp, header, "TP")
         await _reply_in_chunks(update.message, body)
+        # Chart: Trade P&L bar chart
+        if MATPLOTLIB_AVAILABLE and all_tp:
+            buf = _chart_dayreport(all_tp, day_label)
+            if buf:
+                await update.message.reply_photo(photo=buf, caption="Trade P&L chart")
         return
 
     # Paper portfolio
     paper_long = [
         t for t in trade_history
-        if t.get("date", "") == today
+        if t.get("date", "") == target_str
     ]
     paper_short = [
         t for t in short_trade_history
-        if t.get("date", "") == today
+        if t.get("date", "") == target_str
     ]
     all_paper = paper_long + paper_short
 
     paper_body = _format_dayreport_section(all_paper, header, "Paper")
     await _reply_in_chunks(update.message, paper_body)
 
+    # Chart: Trade P&L bar chart
+    if MATPLOTLIB_AVAILABLE and all_paper:
+        buf = _chart_dayreport(all_paper, day_label)
+        if buf:
+            await update.message.reply_photo(photo=buf, caption="Trade P&L chart")
+
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show today's completed trades (entries and exits) chronologically."""
+    """Show completed trades (entries and exits) chronologically (optional date)."""
     await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
-    now_et = _now_et()
-    today = now_et.strftime("%Y-%m-%d")
+    target_date = _parse_date_arg(context.args)
+    target_str = target_date.strftime("%Y-%m-%d")
+    day_label = target_date.strftime("%a %b %d, %Y")
 
     # Fix B: Route based on which bot
     if is_tp_update(update):
-        today_trades = [t for t in tp_paper_trades if t.get("date", "") == today]
+        today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
         today_trades.sort(key=lambda t: t.get("time", ""))
         if not today_trades:
-            await update.message.reply_text("[TP] No trades today.")
+            await update.message.reply_text("[TP] No trades on %s." % day_label)
             return
         lines = [
-            "\U0001f4cb [TP] Trade Log \u2014 %s" % today,
+            "\U0001f4cb [TP] Trade Log \u2014 %s" % day_label,
             SEP,
         ]
         for t in today_trades:
@@ -3567,15 +3799,15 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Paper portfolio
-    today_trades = [t for t in paper_trades if t.get("date", "") == today]
+    today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
     today_trades.sort(key=lambda t: t.get("time", ""))
 
     if not today_trades:
-        await update.message.reply_text("No trades today.")
+        await update.message.reply_text("No trades on %s." % day_label)
         return
 
     lines = [
-        f"\U0001f4cb Trade Log \u2014 {today}",
+        "\U0001f4cb Trade Log \u2014 %s" % day_label,
         SEP,
     ]
 
@@ -3588,14 +3820,15 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "BUY":
             stop = t.get("stop", 0)
             lines.append(
-                f"{tm}  BUY   {ticker}  {shares} @ ${price:.2f}  stop ${stop:.2f}"
+                "%s  BUY   %s  %d @ $%.2f  stop $%.2f"
+                % (tm, ticker, shares, price, stop)
             )
         else:
             pnl_val = t.get("pnl", 0)
             pnl_pct = t.get("pnl_pct", 0)
             lines.append(
-                f"{tm}  EXIT  {ticker}  {shares} @ ${price:.2f}"
-                f"  P&L: ${pnl_val:+.2f} ({pnl_pct:+.2f}%)"
+                "%s  EXIT  %s  %d @ $%.2f  P&L: $%+.2f (%+.2f%%)"
+                % (tm, ticker, shares, price, pnl_val, pnl_pct)
             )
 
     lines.append(SEP)
@@ -3603,29 +3836,29 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n_closed = sum(1 for t in today_trades if t.get("action") == "SELL")
     n_open = len(positions)
     day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
-    day_pnl_fmt = f"{day_pnl:+,.2f}"
-    lines.append(f"Completed: {n_closed} trades  Open: {n_open} positions")
-    lines.append(f"Day P&L: ${day_pnl_fmt}")
+    lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
+    lines.append("Day P&L: $%+,.2f" % day_pnl)
 
     await _reply_in_chunks(update.message, "\n".join(lines))
 
 
 async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Timeline replay of today's trades with running cumulative P&L."""
+    """Timeline replay of trades with running cumulative P&L (optional date)."""
     await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
-    now_et = _now_et()
-    today = now_et.strftime("%Y-%m-%d")
+    target_date = _parse_date_arg(context.args)
+    target_str = target_date.strftime("%Y-%m-%d")
+    day_label = target_date.strftime("%a %b %d, %Y")
 
     # Fix B: Route based on which bot
     if is_tp_update(update):
-        today_trades = [t for t in tp_paper_trades if t.get("date", "") == today]
+        today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
         today_trades.sort(key=lambda t: t.get("time", ""))
         if not today_trades:
-            await update.message.reply_text("[TP] No trades today.")
+            await update.message.reply_text("[TP] No trades on %s." % day_label)
             return
         lines = [
-            "\U0001f504 [TP] Trade Replay \u2014 %s" % today,
+            "\U0001f504 [TP] Trade Replay \u2014 %s" % day_label,
             SEP,
         ]
         cum_pnl = 0.0
@@ -3666,15 +3899,15 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Paper portfolio
-    today_trades = [t for t in paper_trades if t.get("date", "") == today]
+    today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
     today_trades.sort(key=lambda t: t.get("time", ""))
 
     if not today_trades:
-        await update.message.reply_text("No trades today.")
+        await update.message.reply_text("No trades on %s." % day_label)
         return
 
     lines = [
-        f"\U0001f504 Trade Replay \u2014 {today}",
+        "\U0001f504 Trade Replay \u2014 %s" % day_label,
         SEP,
     ]
 
@@ -3987,12 +4220,11 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /perf COMMAND (Feature 5)
 # ============================================================
 async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show all-time performance stats from trade history."""
+    """Show performance stats (optional date or N days)."""
     await update.message.reply_chat_action(ChatAction.TYPING)
     SEP = "\u2500" * 34
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
-    seven_days_ago = (now_et - timedelta(days=7)).strftime("%Y-%m-%d")
 
     # Select history based on which bot
     if is_tp_update(update):
@@ -4008,14 +4240,42 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No completed trades yet.")
         return
 
+    # Date filtering: /perf = all time, /perf 7 = last 7 days, /perf Apr 17 = single day
+    date_filter = None
+    single_day = False
+    perf_label = "All Time"
+    if context.args:
+        raw = " ".join(context.args).strip()
+        try:
+            n = int(raw)
+            if 1 <= n <= 365:
+                date_filter = (now_et - timedelta(days=n)).strftime("%Y-%m-%d")
+                perf_label = "Last %d days" % n
+        except ValueError:
+            target_date = _parse_date_arg(context.args)
+            date_filter = target_date.strftime("%Y-%m-%d")
+            single_day = True
+            perf_label = target_date.strftime("%a %b %d, %Y")
+
+    if single_day:
+        # Filter to exact date
+        filt_long = [t for t in long_history if t.get("date", "") == date_filter]
+        filt_short = [t for t in short_hist if t.get("date", "") == date_filter]
+    elif date_filter:
+        filt_long = [t for t in long_history if t.get("date", "") >= date_filter]
+        filt_short = [t for t in short_hist if t.get("date", "") >= date_filter]
+    else:
+        filt_long = long_history
+        filt_short = short_hist
+
     lines = [
-        "\U0001f4c8 Performance \u2014 %s" % label,
+        "\U0001f4c8 Performance \u2014 %s \u2014 %s" % (label, perf_label),
         SEP,
     ]
 
     # LONG Performance
     lines.append("\U0001f4c8 LONG Performance")
-    all_stats = _compute_perf_stats(long_history)
+    all_stats = _compute_perf_stats(filt_long)
     if all_stats:
         best_tk = all_stats["best"].get("ticker", "?")
         best_pnl = all_stats["best"].get("pnl", 0)
@@ -4035,7 +4295,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # SHORT Performance
     lines.append("\U0001f4c9 SHORT Performance")
-    short_stats = _compute_perf_stats(short_hist)
+    short_stats = _compute_perf_stats(filt_short)
     if short_stats:
         s_best_tk = short_stats["best"].get("ticker", "?")
         s_best_pnl = short_stats["best"].get("pnl", 0)
@@ -4074,6 +4334,14 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "\n".join(lines)
     await _reply_in_chunks(update.message, msg)
+
+    # Chart: Equity curve
+    if MATPLOTLIB_AVAILABLE:
+        chart_hist = filt_long + filt_short
+        if chart_hist:
+            buf = _chart_equity_curve(chart_hist, perf_label)
+            if buf:
+                await update.message.reply_photo(photo=buf, caption="Equity Curve")
 
 
 # ============================================================
@@ -4573,11 +4841,11 @@ MAIN_BOT_COMMANDS = [
     BotCommand("status", "Open positions + P&L"),
     BotCommand("positions", "Alias for /status"),
     BotCommand("orb", "Today's OR levels + status"),
-    BotCommand("perf", "All-time performance stats"),
+    BotCommand("perf", "Performance stats (optional date)"),
     BotCommand("price", "Live quote for a ticker"),
-    BotCommand("log", "Today's trade log"),
-    BotCommand("replay", "Replay today's trades timeline"),
-    BotCommand("dayreport", "Today's trades + P&L"),
+    BotCommand("log", "Trade log (optional date)"),
+    BotCommand("replay", "Trade timeline (optional date)"),
+    BotCommand("dayreport", "Trades + P&L (optional date)"),
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("reset", "Reset portfolio"),
     BotCommand("algo", "Algorithm reference PDF"),
@@ -4594,11 +4862,11 @@ TP_BOT_COMMANDS = [
     BotCommand("status", "Open positions + P&L"),
     BotCommand("positions", "Alias for /status"),
     BotCommand("orb", "Today's OR levels + status"),
-    BotCommand("perf", "All-time performance stats"),
+    BotCommand("perf", "Performance stats (optional date)"),
     BotCommand("price", "Live quote for a ticker"),
-    BotCommand("log", "Today's trade log"),
-    BotCommand("replay", "Replay today's trades timeline"),
-    BotCommand("dayreport", "Today's trades + P&L"),
+    BotCommand("log", "Trade log (optional date)"),
+    BotCommand("replay", "Trade timeline (optional date)"),
+    BotCommand("dayreport", "Trades + P&L (optional date)"),
     BotCommand("monitoring", "Pause/resume scanner"),
     BotCommand("reset", "Reset portfolio"),
     BotCommand("algo", "Algorithm reference PDF"),
