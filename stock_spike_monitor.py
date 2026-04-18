@@ -37,8 +37,8 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.45"
-RELEASE_NOTE = "v2.9.45 \u2014 fix \\u200b empty text; fix dayreport hang on empty data."
+BOT_VERSION = "2.9.46"
+RELEASE_NOTE = "v2.9.46 \u2014 fix /replay historical field mapping (entry/exit); Menu \u2192 Dashboard now shows full snapshot."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -4184,23 +4184,66 @@ def _replay_sync(target_str, day_label, is_tp):
     SEP = "\u2500" * 34
     today_str = _now_et().strftime("%Y-%m-%d")
 
-    if is_tp:
-        if target_str == today_str:
-            today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
-        else:
-            today_trades = [t for t in tp_trade_history if t.get("date", "") == target_str]
-            today_trades += [t for t in tp_short_trade_history if t.get("date", "") == target_str]
-        prefix = "[TP] "
-    else:
-        if target_str == today_str:
-            today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
-        else:
-            today_trades = [t for t in trade_history if t.get("date", "") == target_str]
-            today_trades += [t for t in short_trade_history if t.get("date", "") == target_str]
-        prefix = ""
+    # Normalize every source into a common row shape:
+    #   {"tm": "HH:MM", "ticker": str, "action": "BUY"|"SELL"|"SHORT"|"COVER",
+    #    "price": float, "pnl": float (0 for opens)}
+    # Same-day sources (paper_trades / tp_paper_trades) already use
+    # time/price/action. Historical sources (trade_history /
+    # short_trade_history) store one record per CLOSED trade with
+    # entry_time/entry_price and exit_time/exit_price, so we synthesize
+    # both an open row and a close row for each.
+    rows = []
 
-    today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
-    if not today_trades:
+    def _push_live(src):
+        for t in src:
+            if t.get("date", "") != target_str:
+                continue
+            rows.append({
+                "tm": t.get("time", "--:--"),
+                "ticker": t.get("ticker", "?"),
+                "action": t.get("action", "?"),
+                "price": t.get("price", 0) or 0,
+                "pnl": t.get("pnl", 0) or 0,
+            })
+
+    def _push_history(src, open_action, close_action):
+        for t in src:
+            if t.get("date", "") != target_str:
+                continue
+            ticker = t.get("ticker", "?")
+            rows.append({
+                "tm": t.get("entry_time", "--:--") or "--:--",
+                "ticker": ticker,
+                "action": open_action,
+                "price": t.get("entry_price", 0) or 0,
+                "pnl": 0,
+            })
+            rows.append({
+                "tm": t.get("exit_time", "--:--") or "--:--",
+                "ticker": ticker,
+                "action": close_action,
+                "price": t.get("exit_price", 0) or 0,
+                "pnl": t.get("pnl", 0) or 0,
+            })
+
+    if is_tp:
+        prefix = "[TP] "
+        if target_str == today_str:
+            _push_live(tp_paper_trades)
+        else:
+            _push_history(tp_trade_history, "BUY", "SELL")
+            _push_history(tp_short_trade_history, "SHORT", "COVER")
+    else:
+        prefix = ""
+        if target_str == today_str:
+            _push_live(paper_trades)
+        else:
+            _push_history(trade_history, "BUY", "SELL")
+            _push_history(short_trade_history, "SHORT", "COVER")
+
+    # Sort by time; unknown "--:--" sinks to the end but keeps relative order.
+    rows.sort(key=lambda r: (r["tm"] == "--:--", r["tm"]))
+    if not rows:
         return None
 
     lines = [
@@ -4211,20 +4254,21 @@ def _replay_sync(target_str, day_label, is_tp):
     open_count = 0
     wins = 0
     losses = 0
-    for t in today_trades:
-        tm = t.get("time", "--:--")
-        ticker = t.get("ticker", "?")
-        action = t.get("action", "?")
-        price = t.get("price", 0)
-        if action == "BUY":
+    OPENS = ("BUY", "SHORT")
+    for r in rows:
+        tm = r["tm"]
+        ticker = r["ticker"]
+        action = r["action"]
+        price = r["price"]
+        if action in OPENS:
             open_count += 1
             lines.append(
-                "%s \u2192 BUY  %s  $%.2f  [positions: %d]"
-                % (tm, ticker, price, open_count)
+                "%s \u2192 %-5s %s  $%.2f  [positions: %d]"
+                % (tm, action, ticker, price, open_count)
             )
         else:
             open_count = max(0, open_count - 1)
-            pnl_val = t.get("pnl", 0)
+            pnl_val = r["pnl"]
             cum_pnl += pnl_val
             if pnl_val > 0:
                 wins += 1
@@ -4232,8 +4276,8 @@ def _replay_sync(target_str, day_label, is_tp):
                 losses += 1
             cum_fmt = "%+.2f" % cum_pnl
             lines.append(
-                "%s \u2192 EXIT %s  $%.2f  $%+.2f   cumP&L: $%s"
-                % (tm, ticker, price, pnl_val, cum_fmt)
+                "%s \u2192 %-5s %s  $%.2f  $%+.2f   cumP&L: $%s"
+                % (tm, action, ticker, price, pnl_val, cum_fmt)
             )
     lines.append(SEP)
     n_sells = wins + losses
@@ -5089,16 +5133,26 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("\u23f3 Loading...")
 
     if query.data == "menu_dashboard":
-        # Build a lightweight dashboard summary
-        time_cdt = _now_cdt().strftime("%I:%M %p CDT")
-        n_paper = len(positions)
-        n_tp = len(tp_positions)
-        msg = (
-            "\U0001f4ca DASHBOARD  %s\n" % time_cdt
-            + "Paper: %d positions | TP: %d positions\n" % (n_paper, n_tp)
-            + "Use /dashboard for full snapshot"
-        )
-        await query.message.reply_text(msg)
+        # Show the same full dashboard that /dashboard produces.
+        # The menu message itself has already been edited to "\u23f3 Loading..."
+        # above, so we just swap it out with the real dashboard text.
+        loop = asyncio.get_event_loop()
+        try:
+            text = await loop.run_in_executor(None, _dashboard_sync, is_tp)
+        except Exception:
+            logger.exception("menu_dashboard: _dashboard_sync failed")
+            await query.message.reply_text(
+                "\u26a0\ufe0f Dashboard failed. Try again.",
+                reply_markup=_menu_button(),
+            )
+            return
+        try:
+            if len(text) > 3800:
+                await _reply_in_chunks(query.message, text, reply_markup=_menu_button())
+            else:
+                await query.message.reply_text(text, reply_markup=_menu_button())
+        except Exception:
+            logger.exception("menu_dashboard: send failed")
     elif query.data == "menu_positions":
         loop = asyncio.get_event_loop()
         msg = await loop.run_in_executor(None, _build_positions_text, is_tp)
