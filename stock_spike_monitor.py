@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.41"
+BOT_VERSION = "2.9.42"
 RELEASE_NOTE = "v2.9.41 \u2014 fix /log blocking; add command timing, scan cycle, API, trade, startup instrumentation."
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -4056,7 +4056,7 @@ def _log_sync(target_str, day_label, is_tp):
         n_closed = sum(1 for t in today_trades if t.get("action") == "SELL")
         n_open = len(tp_positions)
         day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
-        day_pnl_fmt = "%+,.2f" % day_pnl
+        day_pnl_fmt = "{:+,.2f}".format(day_pnl)
         lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
         lines.append("Day P&L: $%s" % day_pnl_fmt)
         return "\n".join(lines)
@@ -4103,7 +4103,7 @@ def _log_sync(target_str, day_label, is_tp):
     n_open = len(positions)
     day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
     lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
-    lines.append("Day P&L: $%+,.2f" % day_pnl)
+    lines.append("Day P&L: ${:+,.2f}".format(day_pnl))
 
     return "\n".join(lines)
 
@@ -5364,6 +5364,18 @@ def run_telegram_bot():
     app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
 
+    async def _error_handler(update, context):
+        logger.error("Unhandled exception: %s", context.error, exc_info=context.error)
+        if update and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "\u26a0\ufe0f Command failed: " + str(context.error)[:100]
+                )
+            except Exception:
+                pass
+
+    app.add_error_handler(_error_handler)
+
     # If no separate TP token, run single bot
     if not TELEGRAM_TP_TOKEN:
         app.run_polling()
@@ -5399,6 +5411,8 @@ def run_telegram_bot():
     tp_app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
     tp_app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
     tp_app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+
+    tp_app.add_error_handler(_error_handler)
 
     async def _run_both():
         loop = asyncio.get_running_loop()
