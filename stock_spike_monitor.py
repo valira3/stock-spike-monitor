@@ -37,8 +37,16 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "2.9.47"
-RELEASE_NOTE = "v2.9.47 \u2014 MarketMode scaffolding: classifier logs OPEN/CHOP/POWER/DEFENSIVE/CLOSED every scan + /mode command. Observation only; no parameter is adaptive yet."
+BOT_VERSION = "3.0.0"
+RELEASE_NOTE = (
+    "v3.0.0 \u2014 Major release.\n"
+    "\u2022 MarketMode scaffolding: OPEN/CHOP/POWER/DEFENSIVE/CLOSED classifier + /mode (observation only; no behavior change).\n"
+    "\u2022 /replay historical field mapping fixed; Menu \u2192 Dashboard now renders the full snapshot.\n"
+    "\u2022 /dayreport threaded chart generation + empty-data guard; /log & /replay executor offload with 15s timeout.\n"
+    "\u2022 /positions full equity snapshot (cash, unrealized, total, vs-start) on paper + TP; refresh + trail details.\n"
+    "\u2022 Opt-in Menu button after commands (removed auto-menu); global error handler surfaces failures in Telegram.\n"
+    "\u2022 TP Portfolio independence hardened; multi-instance env-var config for second valstradebot."
+)
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -4537,7 +4545,7 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             CLAMP_MIN_SCORE_DELTA[0], CLAMP_MIN_SCORE_DELTA[1],
         ),
         "",
-        "(v%s scaffolding — logs only)" % BOT_VERSION,
+        "(v%s — observation only, no parameter is adaptive yet)" % BOT_VERSION,
     ]
     await update.message.reply_text("\n".join(lines), reply_markup=_menu_button())
 
