@@ -37,12 +37,11 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.1.1"
+BOT_VERSION = "3.1.2"
 RELEASE_NOTE = (
-    "v3.1.1 \u2014 Help menu cleanup + command consolidation.\n"
-    "\u2022 /help now lists /status, /mode, and OR recovery.\n"
-    "\u2022 /orb recover folds in the old /or_now (both still work).\n"
-    "\u2022 /positions remains as a silent alias for /status.\n"
+    "v3.1.2 \u2014 /help rendering fix.\n"
+    "\u2022 Body wrapped in a monospace code block so columns align on mobile.\n"
+    "\u2022 Descriptions trimmed so no line wraps at phone widths.\n"
     "No behavior changes to scanning, entries, exits, or sizing."
 )
 
@@ -3628,42 +3627,52 @@ def _compute_streak(history):
 # TELEGRAM COMMANDS
 # ============================================================
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show categorized command list."""
-    SEP = "\u2500" * 30
-    text = (
+    """Show categorized command list.
+
+    Body is wrapped in a Markdown code block so Telegram renders it in
+    monospace. This makes space-padded columns actually align and keeps
+    each line short enough to avoid wrapping on phone widths.
+    """
+    # Keep every line <= 34 chars including the leading 2-space indent so
+    # the content fits Telegram's mobile code-block width without wrapping.
+    body = (
         "\U0001f4d6 Commands\n"
-        f"{SEP}\n"
-        "\U0001f4ca Portfolio\n"
-        "  /dashboard    Full market snapshot\n"
-        "  /status       Open positions + live P&L\n"
-        "  /perf [date]  Performance stats (optional date)\n"
+        "```\n"
+        "Portfolio\n"
+        "  /dashboard   Full snapshot\n"
+        "  /status      Positions + P&L\n"
+        "  /perf [date] Performance stats\n"
         "\n"
-        "\U0001f4c8 Market Data\n"
-        "  /price TICK   Live quote for a ticker\n"
-        "  /orb          Today's OR levels\n"
-        "  /orb recover  Re-collect any missing ORs\n"
-        "  /mode         Current market mode + observers\n"
+        "Market Data\n"
+        "  /price TICK  Live quote\n"
+        "  /orb         Today's OR levels\n"
+        "  /orb recover Recollect missing\n"
+        "  /mode        Market regime\n"
         "\n"
-        "\U0001f4c5 Reports\n"
-        "  /dayreport [date]  Trades + P&L (optional date)\n"
-        "  /log [date]        Trade log (optional date)\n"
-        "  /replay [date]     Trade timeline (optional date)\n"
+        "Reports\n"
+        "  /dayreport [date]  Trades + P&L\n"
+        "  /log [date]        Trade log\n"
+        "  /replay [date]     Timeline\n"
         "\n"
-        "\u2699\ufe0f System\n"
-        "  /monitoring   Pause/resume scanner\n"
-        "  /test         System health check\n"
-        "  /menu         Quick tap menu\n"
+        "System\n"
+        "  /monitoring  Pause/resume scan\n"
+        "  /test        Health check\n"
+        "  /menu        Quick tap menu\n"
         "\n"
-        "\U0001f4d8 Reference\n"
-        "  /strategy     Strategy summary\n"
-        "  /algo         Algorithm reference PDF\n"
-        "  /version      Release notes\n"
+        "Reference\n"
+        "  /strategy    Strategy summary\n"
+        "  /algo        Algorithm PDF\n"
+        "  /version     Release notes\n"
         "\n"
-        "\U0001f527 Admin\n"
-        "  /reset        Reset portfolio\n"
-        f"{SEP}"
+        "Admin\n"
+        "  /reset       Reset portfolio\n"
+        "```"
     )
-    await update.message.reply_text(text, reply_markup=_menu_button())
+    await update.message.reply_text(
+        body,
+        parse_mode="Markdown",
+        reply_markup=_menu_button(),
+    )
 
 
 def _dashboard_sync(is_tp):
