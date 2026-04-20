@@ -37,14 +37,13 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.3"
+BOT_VERSION = "3.4.4"
 RELEASE_NOTE = (
-    "v3.4.3 \u2014 dashboard mobile + cleanup.\n"
-    "\u2022 Removed dead Overview nav from sidebar;\n"
-    "  sidebar trimmed 220 \u2192 180 px.\n"
-    "\u2022 Mobile layout: sidebar collapses to a\n"
-    "  top strip, KPIs go 2-up, cards stack.\n"
-    "\u2022 Tested at iPhone 14 Pro and SE widths.\n"
+    "v3.4.4 \u2014 dashboard sidebar removed.\n"
+    "\u2022 Sidebar deleted entirely; brand, stream\n"
+    "  status, and sign-out moved into the top\n"
+    "  header.\n"
+    "\u2022 Content now uses the full page width.\n"
     "No trade-logic changes."
 )
 
