@@ -37,19 +37,32 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.7"
+BOT_VERSION = "3.4.8"
 RELEASE_NOTE = (
-    "v3.4.7 \u2014 /log + /replay fix.\n"
-    "\u2022 /log now shows today's shorts\n"
-    "  (open and closed). Prior versions\n"
-    "  only read paper_trades for today,\n"
-    "  which never holds shorts.\n"
-    "\u2022 /replay same fix \u2014 today's open\n"
-    "  and closed shorts now appear.\n"
-    "\u2022 Day P&L line now sums longs +\n"
-    "  shorts.\n"
-    "\u2022 Open-position count includes\n"
-    "  open shorts.\n"
+    "v3.4.8 \u2014 short-symmetry fixes.\n"
+    "Code review surfaced six places\n"
+    "where short P&L was silently\n"
+    "dropped because they only read\n"
+    "paper_trades (no COVERs there).\n"
+    "\u2022 DEFENSIVE mode now counts\n"
+    "  short losses toward daily limit\n"
+    "\u2022 EOD CLOSE summary includes\n"
+    "  shorts in trade count + P&L\n"
+    "\u2022 /dashboard TP Day P&L includes\n"
+    "  TP shorts; web equity is\n"
+    "  date-filtered (no overnight\n"
+    "  carryover).\n"
+    "\u2022 /mode per-ticker P&L now\n"
+    "  includes short losses.\n"
+    "\u2022 Sunday weekly digest now\n"
+    "  includes short trades.\n"
+    "\u2022 New helper _today_pnl_break\n"
+    "  down() \u2014 single source of truth.\n"
+    "\u2022 Open longs now carry date\n"
+    "  field \u2014 /dayreport today shows\n"
+    "  them correctly.\n"
+    "\u2022 daily_short_entry_count now\n"
+    "  resets on new-day restart.\n"
     "No trade-logic changes."
 )
 
@@ -639,13 +652,19 @@ def _classify_rsi_regime():
 def _per_ticker_today_pnl():
     """Observer 3a: realized P&L today, bucketed by ticker.
     Returns dict ticker -> float. Never raises.
+    Reads paper_trades (long SELLs) AND short_trade_history (short COVERs).
+    Short COVERs never appear in paper_trades — they live in short_trade_history.
     """
     try:
         today_str = _now_et().strftime("%Y-%m-%d")
         out = {}
         for t in paper_trades:
             if t.get("date") != today_str: continue
-            if t.get("action") not in ("SELL", "COVER"): continue
+            if t.get("action") != "SELL": continue
+            tk = t.get("ticker", "?")
+            out[tk] = out.get(tk, 0.0) + (t.get("pnl", 0) or 0)
+        for t in short_trade_history:
+            if t.get("date") != today_str: continue
             tk = t.get("ticker", "?")
             out[tk] = out.get(tk, 0.0) + (t.get("pnl", 0) or 0)
         return out
@@ -680,18 +699,52 @@ def _compute_today_realized_pnl(is_tp: bool = False) -> float:
     """Realized P&L today across longs + shorts for the given portfolio.
     Unrealized P&L is excluded on purpose — we want the number that
     drives the DAILY_LOSS_LIMIT halt, which is realized-only.
+
+    Storage asymmetry (critical): long SELLs go to paper_trades with
+    action="SELL"; short COVERs are written ONLY to short_trade_history
+    (never to paper_trades). We must read both lists or short P&L is
+    silently dropped from the DEFENSIVE-mode gate.
     """
     today_str = _now_et().strftime("%Y-%m-%d")
     pnl = 0.0
     if is_tp:
         for t in tp_paper_trades:
-            if t.get("date") == today_str and t.get("action") in ("SELL", "COVER"):
+            if t.get("date") == today_str and t.get("action") == "SELL":
+                pnl += t.get("pnl", 0) or 0
+        for t in tp_short_trade_history:
+            if t.get("date") == today_str:
                 pnl += t.get("pnl", 0) or 0
     else:
         for t in paper_trades:
-            if t.get("date") == today_str and t.get("action") in ("SELL", "COVER"):
+            if t.get("date") == today_str and t.get("action") == "SELL":
+                pnl += t.get("pnl", 0) or 0
+        for t in short_trade_history:
+            if t.get("date") == today_str:
                 pnl += t.get("pnl", 0) or 0
     return pnl
+
+
+def _today_pnl_breakdown(is_tp: bool = False) -> tuple:
+    """Returns (sells_list, covers_list, total_pnl, wins, losses, n_trades)
+    for today, for the given portfolio. Single source of truth used by
+    EOD summaries, /dashboard, and weekly digest helpers.
+    """
+    today_str = _now_et().strftime("%Y-%m-%d")
+    if is_tp:
+        sells = [t for t in tp_paper_trades
+                 if t.get("action") == "SELL" and t.get("date", "") == today_str]
+        covers = [t for t in tp_short_trade_history
+                  if t.get("date", "") == today_str]
+    else:
+        sells = [t for t in paper_trades
+                 if t.get("action") == "SELL" and t.get("date", "") == today_str]
+        covers = [t for t in short_trade_history
+                  if t.get("date", "") == today_str]
+    combined = list(sells) + list(covers)
+    total = sum((t.get("pnl", 0) or 0) for t in combined)
+    wins = sum(1 for t in combined if (t.get("pnl", 0) or 0) >= 0)
+    losses = len(combined) - wins
+    return (sells, covers, total, wins, losses, len(combined))
 
 
 def get_current_mode(now_et=None) -> tuple:
@@ -964,6 +1017,7 @@ def load_paper_state():
         today = _now_et().strftime("%Y-%m-%d")
         if daily_entry_date != today:
             daily_entry_count.clear()
+            daily_short_entry_count.clear()
             paper_trades.clear()
             _trading_halted = False
             _trading_halted_reason = ""
@@ -1801,6 +1855,7 @@ def execute_entry(ticker, current_price):
         "trail_high": current_price,
         "entry_count": entry_num,
         "entry_time": now_str,
+        "date": now_date,
         "pdc": pdc.get(ticker, 0),
     }
     daily_entry_count[ticker] = entry_num
@@ -1863,6 +1918,7 @@ def execute_entry(ticker, current_price):
         "trail_high": current_price,
         "entry_count": entry_num,
         "entry_time": now_str,
+        "date": now_date,
         "pdc": pdc.get(ticker, 0),
     }
     tp_paper_cash -= cost
@@ -2839,34 +2895,22 @@ def eod_close():
         for ticker, price in tp_shorts_to_close:
             close_short_position(ticker, price, "EOD", portfolio="tp")
 
-    # Fix B: Paper EOD summary → send_telegram(), TP EOD summary → send_tp_telegram()
-    now_et = _now_et()
-    today = now_et.strftime("%Y-%m-%d")
-    today_sells = [t for t in paper_trades
-                   if t.get("action") == "SELL" and t.get("date", "") == today]
-    total_pnl = sum(t.get("pnl", 0) for t in today_sells)
-    wins = sum(1 for t in today_sells if t.get("pnl", 0) >= 0)
-    losses = sum(1 for t in today_sells if t.get("pnl", 0) < 0)
-
+    # Paper EOD summary — includes longs (paper_trades SELLs) AND shorts
+    # (short_trade_history COVERs). Same for TP. See _today_pnl_breakdown().
+    _, _, total_pnl, wins, losses, n_trades = _today_pnl_breakdown(is_tp=False)
     msg = (
         f"EOD CLOSE Complete\n"
-        f"  Trades: {len(today_sells)}  W/L: {wins}/{losses}\n"
+        f"  Trades: {n_trades}  W/L: {wins}/{losses}\n"
         f"  Day P&L: ${total_pnl:+.2f}\n"
         f"  Cash: ${paper_cash:,.2f}"
     )
     send_telegram(msg)
 
     # TP EOD summary
-    tp_today_sells = [
-        t for t in tp_paper_trades
-        if t.get("action") == "SELL" and t.get("date", "") == today
-    ]
-    tp_total_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
-    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) >= 0)
-    tp_losses = sum(1 for t in tp_today_sells if t.get("pnl", 0) < 0)
+    _, _, tp_total_pnl, tp_wins, tp_losses, tp_n_trades = _today_pnl_breakdown(is_tp=True)
     tp_msg = (
         f"[TP] EOD CLOSE Complete\n"
-        f"  Trades: {len(tp_today_sells)}  W/L: {tp_wins}/{tp_losses}\n"
+        f"  Trades: {tp_n_trades}  W/L: {tp_wins}/{tp_losses}\n"
         f"  Day P&L: ${tp_total_pnl:+.2f}\n"
         f"  Cash: ${tp_paper_cash:,.2f}"
     )
@@ -3131,10 +3175,14 @@ def send_weekly_digest():
             msg = msg[:3990] + "\n... (truncated)"
         return msg
 
-    paper_digest = _build_digest(trade_history, "PAPER PORTFOLIO")
+    # Merge long + short history so weekly digest covers all closed trades.
+    # Long closes live in trade_history; short COVERs live in short_trade_history.
+    paper_combined = list(trade_history) + list(short_trade_history)
+    tp_combined = list(tp_trade_history) + list(tp_short_trade_history)
+    paper_digest = _build_digest(paper_combined, "PAPER PORTFOLIO")
     send_telegram(paper_digest)
 
-    tp_digest = _build_digest(tp_trade_history, "TP PORTFOLIO")
+    tp_digest = _build_digest(tp_combined, "TP PORTFOLIO")
     send_tp_telegram(tp_digest)
 
 
@@ -3789,12 +3837,9 @@ def _dashboard_sync(is_tp):
     ]
 
     if is_tp:
-        # TP portfolio only
-        n_tp_pos = len(tp_positions)
-        tp_today_sells = [t for t in tp_paper_trades
-                          if t.get("action") == "SELL" and t.get("pnl") is not None
-                          and t.get("date", "") == today]
-        tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
+        # TP portfolio only — Day P&L includes long SELLs + short COVERs
+        n_tp_pos = len(tp_positions) + len(tp_short_positions)
+        _, _, tp_day_pnl, _, _, _ = _today_pnl_breakdown(is_tp=True)
         tp_cash_fmt = "%s" % format(tp_paper_cash, ",.2f")
         tp_day_pnl_fmt = "%s" % format(tp_day_pnl, "+,.2f")
         lines += [
@@ -3804,11 +3849,9 @@ def _dashboard_sync(is_tp):
             "  Today P&L:  $%s" % tp_day_pnl_fmt,
         ]
     else:
-        # Paper portfolio only
-        n_pos = len(positions)
-        today_sells = [t for t in paper_trades
-                       if t.get("action") == "SELL" and t.get("pnl") is not None]
-        day_pnl = sum(t.get("pnl", 0) for t in today_sells)
+        # Paper portfolio only — Day P&L includes long SELLs + short COVERs
+        n_pos = len(positions) + len(short_positions)
+        _, _, day_pnl, _, _, _ = _today_pnl_breakdown(is_tp=False)
 
         total_value = paper_cash
         for ticker, pos in positions.items():

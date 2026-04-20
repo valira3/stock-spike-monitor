@@ -4,6 +4,55 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.8 — Short-symmetry fixes from code review (2026-04-20)
+
+A full code review surfaced **six places** in the codebase where short P&L
+was silently dropped because the code only iterated `paper_trades` looking
+for `action == "SELL"` (or `"COVER"`, which is dead code — COVERs only
+live in `short_trade_history`). Same root-cause class as v3.4.6 / v3.4.7.
+
+**Critical financial-calc fixes**
+
+- **DEFENSIVE mode gate** (`_compute_today_realized_pnl`) now sums long
+  SELLs + short COVERs. Previously, a short-only losing day would never
+  trigger DEFENSIVE mode — a risk-management hole.
+- **EOD CLOSE summary** Telegram message now reports correct trade count,
+  W/L, and Day P&L on days with shorts (paper + TP).
+- **`/dashboard` TP branch** Day P&L now includes TP shorts.
+- **`/dashboard` paper branch** open-position count now includes open
+  shorts (was longs-only).
+- **`/mode` per-ticker P&L** observer now includes short losses, so red-
+  list tickers reflect short concentration.
+- **Web dashboard** (`dashboard_server.py`) `realized` field is now
+  date-filtered for both paper_trades and short_trade_history. Prevents
+  yesterday's P&L bleeding into today's equity figure on a post-midnight
+  restart before 09:30 ET.
+- **Sunday weekly digest** (`send_weekly_digest`) now merges
+  `trade_history + short_trade_history` before building the digest, so
+  shorts appear in win-rate, total P&L, best day, and top-performers.
+
+**Architectural cleanup**
+
+- New canonical helper `_today_pnl_breakdown(is_tp)` returns
+  `(sells, covers, total_pnl, wins, losses, n_trades)` for the given
+  portfolio. Single source of truth — replaces five hand-rolled
+  summations across EOD, /dashboard, and weekly code paths.
+
+**Edge-case fixes**
+
+- Open long positions now carry a `"date"` field (set in `execute_entry`
+  for both paper and TP). `_open_positions_as_pseudo_trades` already
+  filtered on this field; without it, `/dayreport today` was silently
+  dropping all open longs.
+- `load_paper_state` now clears `daily_short_entry_count` on a new-day
+  restart (previously only `daily_entry_count` was cleared). Without
+  this, yesterday's per-ticker short caps could silently block today's
+  shorts after an overnight restart.
+
+No trade-logic changes — entries, exits, sizing, and stops are unchanged.
+
+---
+
 ## v3.4.7 — /log + /replay fix: include today's shorts (2026-04-20)
 
 Sister bug to v3.4.6. The `/log` and `/replay` commands' **today branch**
