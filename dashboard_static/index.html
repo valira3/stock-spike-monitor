@@ -46,20 +46,12 @@
 
   .app {
     display: grid;
-    grid-template-columns: 180px 1fr;
+    grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
     height: 100dvh;
   }
-  .sidebar {
-    grid-row: 1 / -1;
-    border-right: 1px solid var(--border);
-    background: var(--surface);
-    overflow-y: auto; overscroll-behavior: contain;
-    padding: 18px 14px;
-    display: flex; flex-direction: column; gap: 18px;
-  }
   .header {
-    grid-column: 2; position: sticky; top: 0; z-index: 10;
+    position: sticky; top: 0; z-index: 10;
     background: rgba(16, 21, 28, 0.85);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--border);
@@ -67,11 +59,23 @@
     display: flex; align-items: center; gap: 16px;
   }
   .main {
-    grid-column: 2;
     overflow-y: auto; overscroll-behavior: contain;
     padding: 18px 20px 32px;
     display: flex; flex-direction: column; gap: 18px;
   }
+
+  /* Header brand block (left side) */
+  .h-brand { display: flex; align-items: center; gap: 10px; padding-right: 14px; border-right: 1px solid var(--border); }
+  .h-brand-mark { width: 22px; height: 22px; color: var(--accent); flex-shrink: 0; }
+  .h-brand-name { font-weight: 600; font-size: 13.5px; letter-spacing: -0.005em; color: var(--text); }
+  .h-brand-ver { font-size: 10.5px; color: var(--text-dim); margin-left: 6px; font-family: var(--mono); }
+
+  /* Header account block (right side, before LIVE pill) */
+  .h-account { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-dim); }
+  .h-account .h-conn { color: var(--text-dim); }
+  .h-account a { color: var(--text-dim); text-decoration: none; border-bottom: 1px solid var(--border); padding-bottom: 1px; transition: color .15s; }
+  .h-account a:hover { color: var(--text); border-color: var(--text-muted); }
+  .h-account .h-acct-sep { color: var(--border-strong); }
 
   .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; border-bottom: 1px solid var(--border); }
   .brand-mark { width: 28px; height: 28px; color: var(--accent); flex-shrink: 0; }
@@ -230,33 +234,22 @@
      RESPONSIVE OVERRIDES — must come AFTER all base styles
      ════════════════════════════════════════════════════════ */
 
-  /* Tablet (≤900px): sidebar becomes a top strip; page scrolls naturally */
+  /* Tablet (≤900px): page scrolls naturally; header wraps */
   @media (max-width: 900px) {
     html, body { overflow: auto; }
     .app {
-      grid-template-columns: 1fr;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto 1fr;
       height: auto; min-height: 100dvh;
     }
-    .sidebar {
-      grid-row: 1; grid-column: 1;
-      border-right: none; border-bottom: 1px solid var(--border);
-      flex-direction: row; align-items: center; justify-content: space-between;
-      padding: 10px 14px; gap: 12px; overflow: visible;
-    }
-    .brand { padding: 0; border-bottom: none; }
-    .sidebar-footer {
-      margin: 0; padding: 0; border: none;
-      display: flex; align-items: center; gap: 14px;
-      font-size: 11px; line-height: 1.2;
-    }
-    .sidebar-footer br { display: none; }
-    .header { grid-column: 1; padding: 9px 14px; gap: 10px; flex-wrap: wrap; }
+    .header { padding: 9px 14px; gap: 10px; flex-wrap: wrap; }
+    .h-brand { padding-right: 10px; }
+    .h-brand-name { font-size: 12.5px; }
     .h-title { font-size: 12.5px; }
     .h-title .sep { margin: 0 6px; }
     .h-right { gap: 8px; }
     .h-clock { font-size: 11px; }
-    .main { grid-column: 1; padding: 12px 12px 28px; gap: 12px; overflow: visible; }
+    .h-account { font-size: 10.5px; gap: 8px; }
+    .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; }
   }
 
   /* Phone (≤640px): stack KPIs 2-up, single-column grids, dense */
@@ -293,26 +286,15 @@
 <body>
 <div class="app">
 
-  <aside class="sidebar">
-    <div class="brand">
-      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="Spike Monitor">
+  <header class="header">
+    <div class="h-brand">
+      <svg class="h-brand-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="Spike Monitor">
         <path d="M3 22 L11 22 L15 10 L19 22 L29 22" stroke-linecap="round" stroke-linejoin="round"/>
         <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
       </svg>
-      <div class="brand-text">
-        <span class="brand-name">Spike Monitor</span>
-        <span class="brand-ver" id="sb-ver">v…</span>
-      </div>
+      <span class="h-brand-name">Spike Monitor</span>
+      <span class="h-brand-ver" id="sb-ver">v…</span>
     </div>
-
-    <div class="sidebar-footer">
-      Paper account<br>
-      Stream: <span id="sb-conn" style="color: var(--text-dim)">connecting…</span><br>
-      <a href="/logout">Sign out</a>
-    </div>
-  </aside>
-
-  <header class="header">
     <div class="h-title">
       <span id="h-date">—</span><span class="sep">·</span><span class="sub" id="h-mode-sub">—</span>
     </div>
@@ -320,6 +302,11 @@
       <span class="chip chip-neut" id="h-mode">—</span>
       <span class="live-badge"><span class="pulse" id="h-pulse"></span>LIVE <span id="h-tick" style="color:var(--text-dim)">—</span></span>
       <span class="h-clock" id="clock">—</span>
+      <span class="h-account">
+        <span class="h-conn" id="sb-conn">connecting…</span>
+        <span class="h-acct-sep">·</span>
+        <a href="/logout">Sign out</a>
+      </span>
     </div>
   </header>
 

@@ -4,6 +4,26 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.4 — Dashboard sidebar removed (2026-04-20)
+
+The sidebar held only the brand mark, a one-line stream status, and a
+sign-out link — all of which fit naturally in the top header. Killed
+the whole left column.
+
+**Changes**
+
+- Sidebar `<aside>` deleted; the app grid is now a single column.
+- Brand (logo + name + version) moved to the left of the header.
+- Stream status (“connected / disconnected”) and “Sign out” link moved
+  to the right of the header, after the LIVE pill / clock.
+- Mobile media queries updated — sidebar-specific rules removed; the
+  header simply wraps to two rows on narrow widths.
+- Content area gains ~180 px of horizontal room on desktop.
+
+No backend changes.
+
+---
+
 ## v3.4.3 — Dashboard mobile + cleanup (2026-04-20)
 
 First pass at making the dashboard usable on iPhone, plus removing dead
