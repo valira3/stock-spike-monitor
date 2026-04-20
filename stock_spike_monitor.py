@@ -37,16 +37,15 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.3.3"
+BOT_VERSION = "3.4.0"
 RELEASE_NOTE = (
-    "v3.3.3 \u2014 hotfix: short accounting in portfolio snapshot.\n"
-    "\u2022 Equity math no longer double-counts short-sale\n"
-    "  proceeds (which live in Cash). Shorts now reduce\n"
-    "  equity by current buy-back liability, matching the\n"
-    "  Unrealized P&L line.\n"
-    "\u2022 Snapshot now shows separate Long MV + Short Liab\n"
-    "  lines so the math is auditable.\n"
-    "\u2022 /status Est. Value also corrected.\n"
+    "v3.4.0 \u2014 live web dashboard (read-only, env-gated).\n"
+    "\u2022 Private URL with password-protected session.\n"
+    "\u2022 SSE push of equity, positions, proximity,\n"
+    "  trades, regime, gates, and a log tail.\n"
+    "\u2022 Runs in its own thread \u2014 no coupling with\n"
+    "  the Telegram bot loop. Off unless DASHBOARD_\n"
+    "  PASSWORD is set.\n"
     "No trade-logic changes."
 )
 
@@ -6899,6 +6898,14 @@ def startup_catchup():
 # ============================================================
 load_paper_state()
 load_tp_state()
+
+# Live dashboard (read-only web UI). Env-gated: off unless DASHBOARD_PASSWORD is set.
+# Runs in its own thread with its own asyncio loop — never touches PTB's loop.
+try:
+    import dashboard_server
+    dashboard_server.start_in_thread()
+except Exception as _dash_err:
+    logger.warning("Dashboard failed to start (bot continues): %s", _dash_err)
 
 # Startup summary
 logger.info(
