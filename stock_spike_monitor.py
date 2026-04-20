@@ -37,13 +37,15 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.1.4"
+BOT_VERSION = "3.2.0"
 RELEASE_NOTE = (
-    "v3.1.4 \u2014 /menu main + Advanced submenu.\n"
-    "\u2022 Main menu trimmed to 10 daily-use tiles + Advanced.\n"
-    "\u2022 Log, Replay, OR Recover, Test, Strategy, Algo, Version, Reset moved to Advanced.\n"
-    "\u2022 Back button returns to the main menu.\n"
-    "No behavior changes to scanning, entries, exits, or sizing."
+    "v3.2.0 \u2014 Dual-Index Confluence Shield.\n"
+    "\u2022 Global eject now requires BOTH SPY AND QQQ below/above AVWAP.\n"
+    "\u2022 Confirmation moved from 1m tick to FINALIZED 5m bar close.\n"
+    "\u2022 Intra-5m reclaim on either index suppresses the eject (wick-filter).\n"
+    "\u2022 Fail-safe: any missing data \u2192 stay in trade.\n"
+    "No changes to stops, trailing stops, RED_CANDLE, POLARITY_SHIFT,\n"
+    "DAILY_LOSS_LIMIT, entries, or sizing."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -54,11 +56,15 @@ REASON_LABELS = {
     "STOP": "\U0001f6d1 Hard Stop",
     "TRAIL": "\U0001f3af Trail Stop",
     "RED_CANDLE": "\U0001f56f Red Candle (lost daily polarity)",
-    "LORDS_LEFT": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
-    "LORDS_LEFT[1m]": "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
+    # Long global eject (Confluence Shield, v3.2.0+: SPY AND QQQ, 5m close)
+    "LORDS_LEFT":      "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
+    "LORDS_LEFT[1m]":  "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",   # legacy v2.9.8
+    "LORDS_LEFT[5m]":  "\U0001f451 Lords Left (SPY+QQQ 5m < AVWAP)",
     "POLARITY_SHIFT": "\U0001f504 Polarity Shift (price > PDC)",
-    "BULL_VACUUM": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
-    "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
+    # Short global eject (Confluence Shield, v3.2.0+: SPY AND QQQ, 5m close)
+    "BULL_VACUUM":     "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
+    "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",  # legacy v2.9.8
+    "BULL_VACUUM[5m]": "\U0001f300 Bull Vacuum (SPY+QQQ 5m > AVWAP)",
     "EOD": "\U0001f514 End of Day",
 }
 
@@ -1428,6 +1434,80 @@ def update_avwap(ticker):
 
 
 # ============================================================
+# DUAL-INDEX CONFLUENCE SHIELD (v3.2.0)
+# ============================================================
+# Replaces the v2.9.8 "Lords Left / Bull Vacuum" 1-minute, OR-based eject
+# with a market-systemic eject that requires:
+#   1. AND confluence \u2014 BOTH SPY and QQQ must agree.
+#   2. A FINALIZED 5-minute bar close as confirmation.
+#
+# Goal: filter out sub-5-min liquidity probes ("Hormuz" wicks) and sector
+# divergence (e.g. semis strong while energy/defense drag the S&P).
+#
+# Fail-safe: any missing data \u2192 returns False (do NOT eject). The whole
+# point of the change is to do nothing in ambiguous conditions.
+# ============================================================
+def _last_finalized_5min_close(ticker):
+    """Return the close of the most recently FINALIZED 5-min bar for a ticker.
+
+    Reuses _resample_to_5min, which already drops the in-progress (newest)
+    bucket. Returns None when bars are unavailable or fewer than one full
+    5-min bar has elapsed.
+    """
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return None
+    timestamps = bars.get("timestamps") or []
+    closes = bars.get("closes") or []
+    if not timestamps or not closes:
+        return None
+    five_min_closes = _resample_to_5min(timestamps, closes)
+    if not five_min_closes:
+        return None
+    return five_min_closes[-1]
+
+
+def _dual_index_eject(side):
+    """Confluence + 5-min finalized close gate for global eject signals.
+
+    Args:
+        side: 'long'  \u2192 True iff BOTH SPY_5m_close < SPY_AVWAP
+                              AND QQQ_5m_close < QQQ_AVWAP
+              'short' \u2192 True iff BOTH SPY_5m_close > SPY_AVWAP
+                              AND QQQ_5m_close > QQQ_AVWAP
+
+    Returns False (no eject) on ANY missing/ambiguous input.
+    """
+    if side not in ("long", "short"):
+        return False
+
+    # Refresh AVWAPs (idempotent; no-op if already current).
+    try:
+        update_avwap("SPY")
+        update_avwap("QQQ")
+    except Exception as e:
+        logger.debug("_dual_index_eject: avwap refresh failed: %s", e)
+        return False
+
+    spy_avwap = avwap_data.get("SPY", {}).get("avwap", 0) or 0
+    qqq_avwap = avwap_data.get("QQQ", {}).get("avwap", 0) or 0
+    if spy_avwap <= 0 or qqq_avwap <= 0:
+        return False  # AVWAPs not seeded yet
+
+    spy_5m = _last_finalized_5min_close("SPY")
+    qqq_5m = _last_finalized_5min_close("QQQ")
+    if spy_5m is None or qqq_5m is None:
+        return False  # < 5 mins of data, or fetch failed
+
+    if side == "long":
+        # Both indices must close 5m below their AVWAPs.
+        return (spy_5m < spy_avwap) and (qqq_5m < qqq_avwap)
+    else:
+        # 'short' \u2014 both must close 5m above their AVWAPs.
+        return (spy_5m > spy_avwap) and (qqq_5m > qqq_avwap)
+
+
+# ============================================================
 # ENTRY CHECK
 # ============================================================
 def check_entry(ticker):
@@ -1967,21 +2047,11 @@ def manage_positions():
     """Check stops and update trailing stops for all open positions."""
     tickers_to_close = []
 
-    # ── Eye of the Tiger: "The Lords have left" ──────────────────────────────
-    # Exit all longs if the last COMPLETED 1-min bar close of SPY or QQQ
-    # crossed below its AVWAP.  Uses bar close (not live tick) to avoid
-    # wick-out ejections.  (Index Regime Shield v2.9.8)
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-    lords_left = False
-    if spy_avwap > 0 and qqq_avwap > 0:
-        spy_1min = get_last_1min_close("SPY")
-        qqq_1min = get_last_1min_close("QQQ")
-        if spy_1min is not None and qqq_1min is not None:
-            if spy_1min < spy_avwap or qqq_1min < qqq_avwap:
-                lords_left = True
-        else:
-            logger.warning("SPY/QQQ 1min close unavailable — skipping Tiger check")
+    # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
+    # Exit all longs ONLY when BOTH SPY and QQQ have a finalized 5-min close
+    # below their respective AVWAPs. Filters sub-5-min liquidity probes and
+    # sector divergence ("Hormuz" wicks). Replaces v2.9.8's 1-min OR test.
+    lords_left = _dual_index_eject("long")
 
     for ticker in list(positions.keys()):
         bars = fetch_1min_bars(ticker)
@@ -1996,9 +2066,9 @@ def manage_positions():
             tickers_to_close.append((ticker, current_price, "STOP"))
             continue
 
-        # ── Eye of the Tiger: "The Lords have left" — SPY or QQQ < AVWAP ────
+        # ── Confluence Shield: BOTH SPY+QQQ 5m_close < AVWAP ─────────────────
         if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[1m]"))
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[5m]"))
             continue
 
         # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
@@ -2135,19 +2205,9 @@ def manage_tp_positions():
     """Check stops and update trailing stops for all open TP positions."""
     tickers_to_close = []
 
-    # ── Eye of the Tiger: "The Lords have left" ──────────────────────────────
-    # Uses last completed 1-min bar close (Index Regime Shield v2.9.8)
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-    lords_left = False
-    if spy_avwap > 0 and qqq_avwap > 0:
-        spy_1min = get_last_1min_close("SPY")
-        qqq_1min = get_last_1min_close("QQQ")
-        if spy_1min is not None and qqq_1min is not None:
-            if spy_1min < spy_avwap or qqq_1min < qqq_avwap:
-                lords_left = True
-        else:
-            logger.warning("[TP] SPY/QQQ 1min close unavailable — skipping Tiger check")
+    # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
+    # Same shield as the main bot: BOTH SPY+QQQ 5m close < AVWAP required.
+    lords_left = _dual_index_eject("long")
 
     for ticker in list(tp_positions.keys()):
         bars = fetch_1min_bars(ticker)
@@ -2162,9 +2222,9 @@ def manage_tp_positions():
             tickers_to_close.append((ticker, current_price, "STOP"))
             continue
 
-        # ── Eye of the Tiger: "The Lords have left" — SPY or QQQ < AVWAP ────
+        # ── Confluence Shield: BOTH SPY+QQQ 5m_close < AVWAP ─────────────────
         if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[1m]"))
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[5m]"))
             continue
 
         # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
@@ -2434,21 +2494,11 @@ def manage_short_positions():
     """Check stops and trailing stops for all open short positions."""
     global short_positions, tp_short_positions
 
-    # ── Eye of the Tiger: "The Bullish Vacuum" ───────────────────────────────
-    # Exit all shorts if the last COMPLETED 1-min bar close of SPY or QQQ
-    # crossed above its AVWAP.  Uses bar close (not live tick) to avoid
-    # wick-out ejections.  (Index Regime Shield v2.9.8)
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-    bull_vacuum = False
-    if spy_avwap > 0 and qqq_avwap > 0:
-        spy_1min = get_last_1min_close("SPY")
-        qqq_1min = get_last_1min_close("QQQ")
-        if spy_1min is not None and qqq_1min is not None:
-            if spy_1min > spy_avwap or qqq_1min > qqq_avwap:
-                bull_vacuum = True
-        else:
-            logger.warning("SPY/QQQ 1min close unavailable — skipping Tiger check")
+    # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
+    # Exit all shorts ONLY when BOTH SPY and QQQ have a finalized 5-min close
+    # above their respective AVWAPs. Filters sub-5-min liquidity probes and
+    # sector divergence ("Hormuz" wicks). Replaces v2.9.8's 1-min OR test.
+    bull_vacuum = _dual_index_eject("short")
 
     for ticker in list(short_positions.keys()):
         pos = short_positions[ticker]
@@ -2492,12 +2542,12 @@ def manage_short_positions():
             if current_price >= stop:
                 exit_reason = "STOP"
 
-        # ── Eye of the Tiger: "The Bullish Vacuum" — SPY or QQQ > AVWAP ─────
+        # ── Confluence Shield: BOTH SPY+QQQ 5m_close > AVWAP ─────────────────
         if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM[1m]"
+            exit_reason = "BULL_VACUUM[5m]"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
-        # Uses completed 1m bar close (same pattern as Lords Left / Bull Vacuum)
+        # Uses completed 1m bar close (per-ticker; not part of the index shield)
         if not exit_reason:
             ticker_pdc = pdc.get(ticker, 0)
             if ticker_pdc > 0:
@@ -2551,12 +2601,12 @@ def manage_short_positions():
             if current_price >= stop:
                 exit_reason = "STOP"
 
-        # ── Eye of the Tiger: "The Bullish Vacuum" — SPY or QQQ > AVWAP ─────
+        # ── Confluence Shield: BOTH SPY+QQQ 5m_close > AVWAP ─────────────────
         if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM[1m]"
+            exit_reason = "BULL_VACUUM[5m]"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
-        # Uses completed 1m bar close (same pattern as Lords Left / Bull Vacuum)
+        # Uses completed 1m bar close (per-ticker; not part of the index shield)
         if not exit_reason:
             ticker_pdc = pdc.get(ticker, 0)
             if ticker_pdc > 0:
@@ -4945,10 +4995,12 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Scan : every 60s \u2192 8:35\u20142:55 CT\n"
         "EOD  : force-close all at 2:55 CT\n"
         f"{SEP}\n"
-        "\U0001f6e1 INDEX REGIME SHIELD (v2.9.8)\n"
-        "  Lords Left & Bull Vacuum exits now\n"
-        "  use last completed 1-min bar close\n"
-        "  instead of live tick \u2192 no wick-outs\n"
+        "\U0001f6e1 DUAL-INDEX CONFLUENCE SHIELD (v3.2.0)\n"
+        "  Lords Left & Bull Vacuum require\n"
+        "  BOTH SPY AND QQQ to confirm on a\n"
+        "  finalized 5-min bar close \u2192 no\n"
+        "  wick-outs, no sector divergence\n"
+        "  ejects (\"Hormuz\" wick filter)\n"
         f"{SEP}\n"
         "Full reference guide attached \u2193"
     )
@@ -5022,8 +5074,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \U0001f56f Red Candle\n"
         "     price < Open OR < PDC\n"
         "  \U0001f451 Lords Left\n"
-        "     SPY or QQQ < AVWAP\n"
-        "  (both confirmed on 1m close)\n"
+        "     SPY AND QQQ < AVWAP\n"
+        "     on finalized 5m close\n"
         f"{SEP}\n"
         "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
         "Entry after 8:45 CT (15-min buffer)\n"
@@ -5040,15 +5092,16 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n"
         "Eye of the Tiger exits:\n"
         "  \U0001f300 Bull Vacuum\n"
-        "     SPY or QQQ > AVWAP\n"
+        "     SPY AND QQQ > AVWAP\n"
+        "     on finalized 5m close\n"
         "  \U0001f504 Polarity Shift\n"
-        "     price > PDC\n"
-        "  (both confirmed on 1m close)\n"
+        "     price > PDC (1m close)\n"
         f"{SEP}\n"
-        "\U0001f6e1 Index Regime Shield\n"
-        "  Tiger exits only fire on\n"
-        "  completed 1m bar close\n"
-        "  \u2014 no wick-outs\n"
+        "\U0001f6e1 Confluence Shield (v3.2.0)\n"
+        "  Global eject requires BOTH\n"
+        "  indices on a finalized 5m\n"
+        "  close \u2014 filters wicks &\n"
+        "  sector divergence\n"
         f"{SEP}"
     )
     await _reply_in_chunks(update.message, text, reply_markup=_menu_button())

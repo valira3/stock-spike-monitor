@@ -4,6 +4,51 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.2.0 — Dual-Index Confluence Shield (2026-04-20)
+
+Tightens the global eject signal (`LORDS_LEFT` / `BULL_VACUUM`) to fire only
+on a **market-systemic** move, not a sector-specific wick. Historically a
+1-minute close on either SPY *or* QQQ below AVWAP was enough to flip the
+trigger — that produced Flim-Flam noise during sector divergence and
+sub-5-min liquidity probes ("Hormuz wicks"). This release requires
+Confluence (AND) across both indices and confirmation on a finalized 5-min
+bar close before abandonment.
+
+**Rule change**
+- Old (v2.9.8 → v3.1.4): `SPY_1m < AVWAP` **OR** `QQQ_1m < AVWAP` → eject longs.
+- New (v3.2.0): `SPY_5m_close < SPY_AVWAP` **AND** `QQQ_5m_close < QQQ_AVWAP`
+  on the most recently **finalized** 5-min bar → eject longs.
+- Mirror for shorts (both indices' 5m close *above* AVWAP).
+- If either index reclaims its AVWAP before the 5m bar finalizes, the
+  eject is suppressed for that bar.
+
+**Fail-safe**
+- Any missing data (fetch failure, < 5 min elapsed, AVWAP not seeded) →
+  helper returns `False` → **stay in the trade**. Ambiguity never forces an
+  exit.
+
+**Implementation**
+- New `_last_finalized_5min_close(ticker)` — reuses `_resample_to_5min`,
+  which already drops the in-progress (newest) bucket.
+- New `_dual_index_eject(side)` — 'long' / 'short' gate returning bool.
+- Four call sites switched: `manage_positions`, `manage_tp_positions`
+  (long side + TP loop), `manage_short_positions` (main + TP loop).
+- Exit reason keys now emit `LORDS_LEFT[5m]` and `BULL_VACUUM[5m]`.
+  Legacy `[1m]` keys preserved in `REASON_LABELS` so historical `/replay`
+  and `/log` renders still format correctly.
+- `/algo` and `/strategy` text updated to describe AND + 5m confluence.
+- 6 new deterministic unit tests in `/tmp/test_observers.py` covering:
+  (1) long both below → True, (2) long only SPY below → False,
+  (3) short both above → True, (4) short only QQQ above → False,
+  (5) missing AVWAP / bar data → False, (6) invalid `side` → False.
+
+**Unchanged**
+- Hard stops, trailing stops (min $1.00), RED_CANDLE, POLARITY_SHIFT,
+  DAILY_LOSS_LIMIT, min-1-share floor, entry logic, position sizing.
+- MarketMode observers still observation-only (no adaptive param yet).
+
+---
+
 ## v3.1.4 — /menu Main + Advanced Submenu (2026-04-18)
 
 v3.1.3's 17-button grid felt cluttered and some labels truncated on mobile.
