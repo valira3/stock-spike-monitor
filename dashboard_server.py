@@ -88,8 +88,25 @@ def _logs_since(seq: int, limit: int = 80) -> list[dict]:
 # State snapshot — read live globals from stock_spike_monitor
 # ─────────────────────────────────────────────────────────────
 def _ssm():
-    """Lazy import so this module can be imported standalone for tests."""
-    import stock_spike_monitor as m
+    """Get the live bot module without re-executing it.
+
+    The bot is launched via ``python stock_spike_monitor.py``, so it lives
+    in ``sys.modules['__main__']``. A naive ``import stock_spike_monitor``
+    here would *re-execute* the entire file (top-level entry point and
+    all), which calls ``loop.add_signal_handler(...)`` from a non-main
+    thread and crashes. So: prefer the already-loaded instance.
+    """
+    import sys
+    # Prefer the already-loaded bot module (running as __main__)
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and getattr(main_mod, "BOT_VERSION", None):
+        return main_mod
+    # Fallback: already-imported by name
+    m = sys.modules.get("stock_spike_monitor")
+    if m is not None:
+        return m
+    # Last resort (tests / standalone): import fresh
+    import stock_spike_monitor as m  # noqa: F811
     return m
 
 
