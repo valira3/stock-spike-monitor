@@ -4,6 +4,47 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.0 — Live web dashboard (2026-04-20)
+
+Added a private, read-only web UI that mirrors everything the Telegram
+commands show and pushes updates in real time over SSE.
+
+**What's included**
+
+- **Auth**: single shared password via `DASHBOARD_PASSWORD` env var.
+  Server does **not start** unless this is set. On success, a signed
+  `HttpOnly` cookie is issued (7-day expiry).
+- **Endpoints** (all require a valid cookie except `/` and `/login`):
+  `/` (dashboard or login page), `/login`, `/logout`,
+  `/api/state` (JSON snapshot), `/stream` (Server-Sent Events push).
+- **Isolation**: runs in a dedicated daemon thread with its own
+  asyncio loop. Zero coupling with the python-telegram-bot event
+  loop. If the dashboard module raises at any point, the bot keeps
+  running.
+- **Read-only by design**: no endpoint mutates bot state. No order
+  placement, no toggles, no parameter changes. This respects the
+  locked principle that adaptive logic only makes things more
+  conservative — the dashboard adds zero new attack surface.
+- **What it shows**: equity (with v3.3.3 cash / long MV / short
+  liab breakdown), day P&L, open positions, proximity scanner
+  with live prices and open markers, today's trades, regime
+  observer (breadth, RSI, mode reason), gate status, and a
+  live-scrolling log tail.
+- **Resilience**: client auto-falls back to `/api/state` polling
+  every 5s if SSE drops, with stale-data watchdog.
+
+**Config**
+
+- `DASHBOARD_PASSWORD` — required. Unset = server disabled.
+- `DASHBOARD_PORT` — optional, defaults to `8080`.
+
+On Railway, expose the service on a second public port to route
+traffic to the dashboard.
+
+No trade-logic changes.
+
+---
+
 ## v3.3.3 — Hotfix: short accounting in portfolio snapshot (2026-04-20)
 
 NVDA short fired this morning at $198.00 on 10 shares. `/positions`

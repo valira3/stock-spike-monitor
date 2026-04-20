@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Spike Monitor — Live</title>
+<link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&f[]=jetbrains-mono@400,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0d12;
+    --surface: #10151c;
+    --surface-2: #161d27;
+    --surface-3: #1e2633;
+    --border: #1f2937;
+    --border-strong: #2a3646;
+    --text: #e7ecf3;
+    --text-muted: #8a96a7;
+    --text-dim: #5b6572;
+    --accent: #7dd3fc;
+    --accent-dim: #1e3a4a;
+    --up: #34d399;
+    --up-dim: #0f2e23;
+    --down: #f87171;
+    --down-dim: #3a1414;
+    --warn: #fbbf24;
+    --warn-dim: #2e2410;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "Satoshi", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.005em;
+  }
+  .num, .mono, code, kbd, pre, table td, table th { font-variant-numeric: tabular-nums lining-nums; }
+  .mono, code, kbd { font-family: var(--mono); }
+
+  .app {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: auto 1fr;
+    height: 100dvh;
+  }
+  .sidebar {
+    grid-row: 1 / -1;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    overflow-y: auto; overscroll-behavior: contain;
+    padding: 18px 14px;
+    display: flex; flex-direction: column; gap: 18px;
+  }
+  .header {
+    grid-column: 2; position: sticky; top: 0; z-index: 10;
+    background: rgba(16, 21, 28, 0.85);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .main {
+    grid-column: 2;
+    overflow-y: auto; overscroll-behavior: contain;
+    padding: 18px 20px 32px;
+    display: flex; flex-direction: column; gap: 18px;
+  }
+
+  .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; border-bottom: 1px solid var(--border); }
+  .brand-mark { width: 28px; height: 28px; color: var(--accent); flex-shrink: 0; }
+  .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+  .brand-name { font-weight: 700; font-size: 14px; letter-spacing: -0.01em; }
+  .brand-ver { font-size: 11px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
+
+  .nav-section { display: flex; flex-direction: column; gap: 2px; }
+  .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); padding: 0 8px 6px; font-weight: 500; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 8px; border-radius: var(--radius-sm);
+    color: var(--text-muted); text-decoration: none; font-size: 13px; cursor: pointer;
+  }
+  .nav-item:hover { background: var(--surface-2); color: var(--text); }
+  .nav-item.active { background: var(--surface-3); color: var(--text); }
+  .nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+
+  .sidebar-footer {
+    margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim); line-height: 1.6;
+  }
+  .sidebar-footer a { color: var(--text-muted); text-decoration: none; }
+  .sidebar-footer a:hover { color: var(--text); }
+
+  .h-title { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .h-title .sep { color: var(--text-dim); margin: 0 8px; font-weight: 400; }
+  .h-title .sub { color: var(--text-muted); font-weight: 400; }
+  .h-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .live-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 10px 4px 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 11px; color: var(--text-muted); font-family: var(--mono);
+  }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--up); animation: pulse 1.8s infinite; }
+  .pulse.off { background: var(--down); animation: none; }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(52, 211, 153, 0.55); }
+    70%  { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); }
+    100% { box-shadow: 0 0 0 0   rgba(52, 211, 153, 0); }
+  }
+  .h-clock { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+  .kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 500; }
+  .kpi-value { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; font-family: var(--mono); line-height: 1.1; }
+  .kpi-sub { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
+  .delta-up   { color: var(--up); }
+  .delta-down { color: var(--down); }
+  .delta-flat { color: var(--text-muted); }
+
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--sans); }
+  .chip-ok    { background: var(--up-dim);   color: var(--up); }
+  .chip-warn  { background: var(--warn-dim); color: var(--warn); }
+  .chip-down  { background: var(--down-dim); color: var(--down); }
+  .chip-neut  { background: var(--surface-3); color: var(--text-muted); }
+
+  .grid { display: grid; gap: 14px; }
+  .grid-2 { grid-template-columns: 2fr 1fr; }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex; flex-direction: column; min-width: 0;
+  }
+  .card-head {
+    display: flex; align-items: center;
+    padding: 11px 14px 10px;
+    border-bottom: 1px solid var(--border); gap: 10px;
+  }
+  .card-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; }
+  .card-title .count { color: var(--text-dim); font-weight: 400; margin-left: 6px; }
+  .card-body { padding: 12px 14px; }
+  .card-body.flush { padding: 0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 500; text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); font-family: var(--mono); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  td.right, th.right { text-align: right; }
+  td.center, th.center { text-align: center; }
+  .ticker { font-family: var(--sans); font-weight: 600; letter-spacing: 0; }
+  .ticker .mark { font-size: 9px; vertical-align: super; margin-left: 2px; font-weight: 700; }
+  .mark-long  { color: var(--up); }
+  .mark-short { color: var(--down); }
+  .side-long  { color: var(--up); font-weight: 600; }
+  .side-short { color: var(--down); font-weight: 600; }
+
+  .prox-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .prox-row:last-child { border-bottom: none; }
+  .prox-row:hover { background: var(--surface-2); }
+  .prox-ticker { font-weight: 600; width: 58px; display: flex; align-items: center; gap: 4px; }
+  .prox-price { font-family: var(--mono); color: var(--text-muted); width: 72px; text-align: right; }
+  .prox-bar { flex: 1; height: 6px; background: var(--surface-3); border-radius: 3px; position: relative; overflow: hidden; }
+  .prox-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 3px; }
+  .prox-fill.warn { background: linear-gradient(90deg, var(--warn), var(--down)); }
+  .prox-fill.ok   { background: linear-gradient(90deg, var(--accent), var(--up)); }
+  .prox-pct { width: 80px; text-align: right; font-family: var(--mono); font-size: 11.5px; }
+
+  .gate { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .gate:last-child { border-bottom: none; }
+  .gate-name .hint { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
+
+  .log {
+    font-family: var(--mono); font-size: 11px; line-height: 1.65;
+    color: var(--text-muted); padding: 10px 14px 12px;
+    white-space: pre; overflow-x: auto; overscroll-behavior: contain;
+    max-height: 280px; overflow-y: auto;
+  }
+  .log .t { color: var(--text-dim); }
+  .log .ok { color: var(--up); }
+  .log .warn { color: var(--warn); }
+  .log .err { color: var(--down); }
+  .log .info { color: var(--accent); }
+
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 12.5px; }
+  .row .k { color: var(--text-muted); }
+  .row .v { font-family: var(--mono); }
+
+  .key-val-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; }
+  .key-val-grid dt { color: var(--text-muted); font-weight: 400; }
+  .key-val-grid dd { margin: 0; font-family: var(--mono); text-align: right; }
+
+  .empty { padding: 22px 14px; text-align: center; color: var(--text-dim); font-size: 12px; }
+
+  .banner {
+    background: var(--down-dim); color: var(--down);
+    border: 1px solid #7a2b2b; border-radius: var(--radius);
+    padding: 10px 14px; font-size: 12.5px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .banner.hide { display: none; }
+  .banner-ok { background: var(--warn-dim); color: var(--warn); border-color: #7a5a1a; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4759; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="Spike Monitor">
+        <path d="M3 22 L11 22 L15 10 L19 22 L29 22" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">Spike Monitor</span>
+        <span class="brand-ver" id="sb-ver">v…</span>
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <span class="nav-label">Overview</span>
+      <a class="nav-item active"><span class="dot"></span>Dashboard</a>
+    </div>
+
+    <div class="sidebar-footer">
+      Paper account<br>
+      Stream: <span id="sb-conn" style="color: var(--text-dim)">connecting…</span><br>
+      <a href="/logout">Sign out</a>
+    </div>
+  </aside>
+
+  <header class="header">
+    <div class="h-title">
+      <span id="h-date">—</span><span class="sep">·</span><span class="sub" id="h-mode-sub">—</span>
+    </div>
+    <div class="h-right">
+      <span class="chip chip-neut" id="h-mode">—</span>
+      <span class="live-badge"><span class="pulse" id="h-pulse"></span>LIVE <span id="h-tick" style="color:var(--text-dim)">—</span></span>
+      <span class="h-clock" id="clock">—</span>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <div class="banner hide" id="banner"></div>
+
+    <section class="kpi-row">
+      <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" id="k-equity">—</span><span class="kpi-sub" id="k-equity-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" id="k-pnl">—</span><span class="kpi-sub" id="k-pnl-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" id="k-open">—</span><span class="kpi-sub" id="k-open-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Gate</span><span class="kpi-value" id="k-gate" style="font-size:20px">—</span><span class="kpi-sub" id="k-gate-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Regime</span><span class="kpi-value" id="k-regime" style="font-size:20px">—</span><span class="kpi-sub" id="k-regime-sub">—</span></div>
+    </section>
+
+    <section class="grid grid-2">
+      <div class="card">
+        <div class="card-head"><span class="card-title">Open positions<span class="count" id="pos-count">· 0</span></span></div>
+        <div class="card-body flush" id="pos-body">
+          <div class="empty">No open positions.</div>
+        </div>
+        <div id="port-strip" style="display:none">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
+            <div style="padding:10px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Cash</div>
+              <div class="mono" style="font-size:14px" id="port-cash">—</div>
+            </div>
+            <div style="padding:10px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Long MV</div>
+              <div class="mono" style="font-size:14px;color:var(--text-muted)" id="port-longmv">—</div>
+            </div>
+            <div style="padding:10px 14px">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Short liab</div>
+              <div class="mono" style="font-size:14px;color:var(--down)" id="port-shortliab">—</div>
+            </div>
+          </div>
+          <div style="padding:10px 14px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-muted)">
+            <span>Equation: cash + long MV − short liab</span>
+            <span class="mono">= <span style="color:var(--text)" id="port-equity">—</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Proximity<span class="count" id="prox-count">· —</span></span></div>
+        <div class="card-body flush" id="prox-list">
+          <div class="empty">Waiting for data…</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-3">
+      <div class="card">
+        <div class="card-head"><span class="card-title">Today's trades<span class="count" id="trades-count">· 0</span></span></div>
+        <div class="card-body flush" id="trades-body">
+          <div class="empty">No trades yet today.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Observer</span></div>
+        <div class="card-body">
+          <div class="key-val-grid" id="obs-body">
+            <dt>Breadth</dt><dd id="obs-breadth">—</dd>
+            <dt>RSI regime</dt><dd id="obs-rsi">—</dd>
+            <dt>Mode reason</dt><dd id="obs-reason" style="text-align:right">—</dd>
+            <dt>Top red today</dt><dd id="obs-topred">—</dd>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">System</span></div>
+        <div class="card-body">
+          <div class="row"><span class="k">Version</span><span class="v" id="sys-ver">—</span></div>
+          <div class="row"><span class="k">OR collected</span><span class="v" id="sys-or">—</span></div>
+          <div class="row"><span class="k">Trading halted</span><span class="v" id="sys-halt">—</span></div>
+          <div class="row"><span class="k">Scan paused</span><span class="v" id="sys-pause">—</span></div>
+          <div class="row"><span class="k">Server time</span><span class="v" id="sys-time">—</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-2">
+      <div class="card">
+        <div class="card-head"><span class="card-title">Gates</span></div>
+        <div id="gates-body">
+          <div class="empty">Loading gate status…</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Log tail<span class="count" id="log-count">· 0 lines</span></span></div>
+        <div class="log" id="log"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+
+  function fmtUsd(v, digits = 2) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    const neg = v < 0;
+    const s = Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    return (neg ? "−$" : "$") + s;
+  }
+  function fmtPx(v) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    return "$" + Number(v).toFixed(2);
+  }
+  function fmtPct(v, digits) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    const abs = Math.abs(v);
+    const d = digits ?? (abs < 0.1 ? 3 : 2);
+    return (v >= 0 ? "+" : "−") + abs.toFixed(d) + "%";
+  }
+  function cls(el, add, rm = []) {
+    rm.forEach((c) => el.classList.remove(c));
+    if (Array.isArray(add)) add.forEach((c) => el.classList.add(c));
+    else if (add) el.classList.add(add);
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  }
+
+  let tickN = 0;
+  function clockTick() {
+    tickN++;
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    $("clock").textContent = `${hh}:${mm}:${ss}`;
+  }
+  setInterval(clockTick, 1000);
+  clockTick();
+
+  // ─────── rendering ───────
+
+  function renderKPIs(s) {
+    const p = s.portfolio || {};
+    $("k-equity").textContent = fmtUsd(p.equity);
+    const vs = p.vs_start;
+    const eqSub = $("k-equity-sub");
+    eqSub.innerHTML = `Start ${fmtUsd(p.start, 0)} · <span class="${vs >= 0 ? 'delta-up' : 'delta-down'}">${fmtUsd(vs)}</span>`;
+
+    const pnl = p.day_pnl;
+    const pnlEl = $("k-pnl");
+    pnlEl.textContent = fmtUsd(pnl);
+    pnlEl.className = "kpi-value " + ((pnl ?? 0) >= 0 ? "delta-up" : "delta-down");
+    const pct = p.start ? (pnl / p.start) * 100 : null;
+    $("k-pnl-sub").innerHTML = `${(s.trades_today || []).length} trade${(s.trades_today||[]).length===1?"":"s"} · <span class="${(pnl ?? 0) >= 0 ? 'delta-up' : 'delta-down'}">${fmtPct(pct)}</span>`;
+
+    const positions = s.positions || [];
+    $("k-open").textContent = String(positions.length);
+    if (positions.length === 0) {
+      $("k-open-sub").textContent = "No positions";
+    } else if (positions.length === 1) {
+      const pos = positions[0];
+      $("k-open-sub").innerHTML = `${escapeHtml(pos.ticker)} <span class="${pos.side === 'SHORT' ? 'side-short' : 'side-long'}">${pos.side}</span> · ${pos.shares} sh`;
+    } else {
+      const longs = positions.filter(x => x.side === "LONG").length;
+      const shorts = positions.length - longs;
+      $("k-open-sub").textContent = `${longs} long · ${shorts} short`;
+    }
+
+    const gates = s.gates || {};
+    const gateEl = $("k-gate");
+    if (gates.trading_halted) {
+      gateEl.textContent = "HALTED";
+      gateEl.style.color = "var(--down)";
+      $("k-gate-sub").textContent = gates.halt_reason || "halted";
+    } else if (gates.scan_paused) {
+      gateEl.textContent = "PAUSED";
+      gateEl.style.color = "var(--warn)";
+      $("k-gate-sub").textContent = "scan paused";
+    } else {
+      gateEl.textContent = "LIVE";
+      gateEl.style.color = "var(--up)";
+      $("k-gate-sub").textContent = gates.or_collected_date ? `OR ${gates.or_collected_date}` : "OR not collected";
+    }
+
+    const reg = s.regime || {};
+    const rEl = $("k-regime");
+    rEl.textContent = reg.mode || "—";
+    rEl.style.color = (reg.mode === "DEFENSIVE") ? "var(--down)"
+                    : (reg.mode === "CHOP") ? "var(--warn)"
+                    : (reg.mode === "CLOSED") ? "var(--text-muted)"
+                    : "var(--up)";
+    $("k-regime-sub").textContent = (reg.breadth && reg.breadth !== "UNKNOWN")
+      ? `Breadth ${reg.breadth} · RSI ${reg.rsi_regime || "—"}`
+      : (reg.mode_reason || "—");
+  }
+
+  function renderPositions(s) {
+    const positions = s.positions || [];
+    $("pos-count").textContent = `· ${positions.length}`;
+    const body = $("pos-body");
+    const strip = $("port-strip");
+
+    if (positions.length === 0) {
+      body.innerHTML = `<div class="empty">No open positions.</div>`;
+    } else {
+      const rows = positions.map((p) => {
+        const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
+        const markCls = p.side === "SHORT" ? "mark-short" : "mark-long";
+        const pnlCls = (p.unrealized ?? 0) >= 0 ? "delta-up" : "delta-down";
+        return `<tr>
+          <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}">●</span></span></td>
+          <td><span class="${sideCls}">${p.side}</span></td>
+          <td class="right">${p.shares}</td>
+          <td class="right">${fmtPx(p.entry)}</td>
+          <td class="right">${fmtPx(p.mark)}</td>
+          <td class="right">${fmtPx(p.stop)}</td>
+          <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
+        </tr>`;
+      }).join("");
+      body.innerHTML = `<table>
+        <thead><tr>
+          <th>Ticker</th><th>Side</th>
+          <th class="right">Sh</th><th class="right">Entry</th>
+          <th class="right">Mark</th><th class="right">Stop</th>
+          <th class="right">Unreal.</th>
+        </tr></thead>
+        <tbody>${rows}</tbody></table>`;
+    }
+
+    // portfolio strip always shows if portfolio data present
+    const p = s.portfolio;
+    if (p && typeof p.equity === "number") {
+      strip.style.display = "block";
+      $("port-cash").textContent = fmtUsd(p.cash);
+      $("port-longmv").textContent = fmtUsd(p.long_mv);
+      $("port-shortliab").textContent = fmtUsd(p.short_liab);
+      $("port-equity").textContent = fmtUsd(p.equity);
+    } else {
+      strip.style.display = "none";
+    }
+  }
+
+  function renderProximity(s) {
+    const rows = s.proximity || [];
+    $("prox-count").textContent = `· ${rows.length} tracked`;
+    const list = $("prox-list");
+    if (!rows.length) {
+      list.innerHTML = `<div class="empty">No tickers configured.</div>`;
+      return;
+    }
+    const html = rows.map((r) => {
+      const pct = (r.nearest_pct !== null && r.nearest_pct !== undefined) ? r.nearest_pct : null;
+      // Convert "distance" (0 = touching) to a bar width where closer = longer bar.
+      // Clamp: 0% distance → 100% bar; 2% distance → 0% bar.
+      let fill = 0;
+      if (pct !== null) fill = Math.max(0, Math.min(100, Math.round((1 - Math.min(pct, 0.02) / 0.02) * 100)));
+      const warn = pct !== null && pct < 0.005;
+      const mark = r.open_side === "SHORT"
+        ? '<span class="mark mark-short" title="Open short">●</span>'
+        : r.open_side === "LONG"
+          ? '<span class="mark mark-long" title="Open long">●</span>'
+          : "";
+      const lbl = r.nearest_label || "—";
+      const pctText = pct !== null ? `${(pct * 100).toFixed(2)}% · ${lbl}` : "—";
+      return `<div class="prox-row">
+        <span class="prox-ticker">${escapeHtml(r.ticker)} ${mark}</span>
+        <span class="prox-price">${fmtPx(r.price)}</span>
+        <div class="prox-bar"><div class="prox-fill ${warn ? "warn" : "ok"}" style="width:${fill}%"></div></div>
+        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${pctText}</span>
+      </div>`;
+    }).join("");
+    list.innerHTML = html;
+  }
+
+  function renderTrades(s) {
+    const trades = s.trades_today || [];
+    $("trades-count").textContent = `· ${trades.length}`;
+    const body = $("trades-body");
+    if (!trades.length) {
+      body.innerHTML = `<div class="empty">No trades yet today.</div>`;
+      return;
+    }
+    const rows = trades.map((t) => {
+      const tm = (t.time || t.entry_time || "").toString().slice(11, 16) || "—";
+      const side = t.side || "LONG";
+      const sideCls = side === "SHORT" ? "side-short" : "side-long";
+      const px = t.price ?? t.entry_price ?? t.exit_price;
+      return `<tr>
+        <td>${escapeHtml(tm)}</td>
+        <td><span class="ticker">${escapeHtml(t.ticker || "—")}</span></td>
+        <td><span class="${sideCls}">${side}</span></td>
+        <td class="right">${t.shares ?? "—"}</td>
+        <td class="right">${fmtPx(px)}</td>
+      </tr>`;
+    }).join("");
+    body.innerHTML = `<table>
+      <thead><tr>
+        <th>Time</th><th>Sym</th><th>Side</th>
+        <th class="right">Qty</th><th class="right">Price</th>
+      </tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  function renderObserver(s) {
+    const reg = s.regime || {};
+    const obs = s.observer || {};
+    $("obs-breadth").textContent = reg.breadth_detail || reg.breadth || "—";
+    $("obs-rsi").innerHTML = reg.rsi_regime ? `<span class="chip chip-neut">${escapeHtml(reg.rsi_regime)}</span>` : "—";
+    $("obs-reason").textContent = reg.mode_reason || "—";
+    const red = obs.ticker_red || [];
+    if (red.length) {
+      const [tkr, pnl] = red[0];
+      $("obs-topred").textContent = `${tkr} ${fmtUsd(pnl)}`;
+    } else {
+      $("obs-topred").textContent = "—";
+    }
+  }
+
+  function renderSystem(s) {
+    const g = s.gates || {};
+    $("sys-ver").textContent = s.version || "—";
+    $("sys-or").textContent = g.or_collected_date || "not collected";
+    $("sys-halt").innerHTML = g.trading_halted
+      ? `<span class="delta-down">Yes</span>` : `<span class="delta-up">No</span>`;
+    $("sys-pause").innerHTML = g.scan_paused
+      ? `<span class="delta-down">Yes</span>` : `<span class="delta-up">No</span>`;
+    $("sys-time").textContent = s.server_time_label || "—";
+
+    // Gates panel
+    const gates = $("gates-body");
+    const rows = [];
+    rows.push(gateRow("Trading halted", g.trading_halted ? "HALTED" : "Armed", !g.trading_halted, g.halt_reason || ""));
+    rows.push(gateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
+    rows.push(gateRow("OR collected", g.or_collected_date || "—", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
+    gates.innerHTML = rows.join("");
+  }
+
+  function gateRow(name, value, ok, hint) {
+    const chipCls = ok ? "chip-ok" : "chip-down";
+    const chipTxt = ok ? "Pass" : "Check";
+    return `<div class="gate">
+      <span class="gate-name">${escapeHtml(name)}${hint ? ` <span class="hint">${escapeHtml(hint)}</span>` : ""}</span>
+      <span class="mono">${escapeHtml(value)}</span>
+      <span class="chip ${chipCls}">${chipTxt}</span>
+    </div>`;
+  }
+
+  function renderHeader(s) {
+    const d = s.server_time_label || "";
+    $("h-date").textContent = d || "—";
+    $("h-mode-sub").textContent = s.regime?.mode_reason || "—";
+    const modeEl = $("h-mode");
+    const mode = s.regime?.mode || "—";
+    modeEl.textContent = mode;
+    modeEl.className = "chip " + (
+      mode === "DEFENSIVE" ? "chip-down" :
+      mode === "CHOP" ? "chip-warn" :
+      mode === "CLOSED" ? "chip-neut" : "chip-ok"
+    );
+    $("sb-ver").textContent = `v${s.version || "?"} · live`;
+  }
+
+  function renderAll(s) {
+    if (!s || !s.ok) return;
+    renderHeader(s);
+    renderKPIs(s);
+    renderPositions(s);
+    renderProximity(s);
+    renderTrades(s);
+    renderObserver(s);
+    renderSystem(s);
+  }
+
+  // ─────── log handling ───────
+
+  const LOG_MAX = 200;
+  let logCount = 0;
+  function appendLogs(entries) {
+    if (!entries || !entries.length) return;
+    const box = $("log");
+    const stickBottom = (box.scrollTop + box.clientHeight + 8 >= box.scrollHeight);
+    const html = entries.map((e) => {
+      const cls = e.level === "ERROR" ? "err"
+                : e.level === "WARNING" ? "warn"
+                : e.level === "INFO" ? "info" : "t";
+      return `<div><span class="t">${escapeHtml(e.msg.slice(0, 8))}</span> <span class="${cls}">${escapeHtml(e.level.slice(0,4))}</span> ${escapeHtml(e.msg.slice(9))}</div>`;
+    }).join("");
+    box.insertAdjacentHTML("beforeend", html);
+    // trim old lines
+    while (box.childElementCount > LOG_MAX) box.removeChild(box.firstChild);
+    logCount = Math.min(LOG_MAX, logCount + entries.length);
+    $("log-count").textContent = `· ${logCount} lines`;
+    if (stickBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  // ─────── connection management ───────
+
+  let streamConn = null;
+  let pollTimer = null;
+  let streamTickTimer = null;
+  let lastDataAt = 0;
+
+  function setConn(state) {
+    const sb = $("sb-conn");
+    const pulse = $("h-pulse");
+    if (state === "live") {
+      sb.textContent = "connected"; sb.style.color = "var(--up)";
+      pulse.classList.remove("off");
+      $("banner").classList.add("hide");
+    } else if (state === "polling") {
+      sb.textContent = "polling (SSE down)"; sb.style.color = "var(--warn)";
+      pulse.classList.add("off");
+      showBanner("Live stream dropped. Reconnecting… data is polled every 5s.", "warn");
+    } else {
+      sb.textContent = "disconnected"; sb.style.color = "var(--down)";
+      pulse.classList.add("off");
+      showBanner("Disconnected from bot. Attempting to reconnect…", "err");
+    }
+  }
+  function showBanner(text, kind) {
+    const b = $("banner");
+    b.textContent = text;
+    b.classList.remove("hide", "banner-ok");
+    if (kind === "warn") b.classList.add("banner-ok");
+  }
+
+  function startStream() {
+    stopStream();
+    try {
+      streamConn = new EventSource("/stream");
+    } catch (e) {
+      setConn("down");
+      scheduleReconnect();
+      return;
+    }
+    let tick = 0;
+    streamTickTimer = setInterval(() => { tick++; $("h-tick").textContent = `tick ${tick}s`; }, 1000);
+
+    streamConn.addEventListener("state", (ev) => {
+      lastDataAt = Date.now();
+      setConn("live");
+      try { renderAll(JSON.parse(ev.data).data); } catch (e) {}
+    });
+    streamConn.addEventListener("logs", (ev) => {
+      try { appendLogs(JSON.parse(ev.data).data); } catch (e) {}
+    });
+    streamConn.onerror = () => {
+      setConn("polling");
+      stopStream();
+      startPolling();
+      // try to re-open SSE after a delay
+      setTimeout(startStream, 15000);
+    };
+  }
+  function stopStream() {
+    if (streamConn) { try { streamConn.close(); } catch (e) {} streamConn = null; }
+    if (streamTickTimer) { clearInterval(streamTickTimer); streamTickTimer = null; }
+  }
+
+  async function pollOnce() {
+    try {
+      const r = await fetch("/api/state", { credentials: "same-origin" });
+      if (r.status === 401) { location.reload(); return; }
+      const s = await r.json();
+      lastDataAt = Date.now();
+      renderAll(s);
+    } catch (e) {
+      setConn("down");
+    }
+  }
+  function startPolling() {
+    if (pollTimer) return;
+    pollOnce();
+    pollTimer = setInterval(pollOnce, 5000);
+  }
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+  function scheduleReconnect() {
+    setTimeout(startStream, 4000);
+  }
+
+  // stale-data watchdog: if no data in 10s, drop to polling
+  setInterval(() => {
+    if (lastDataAt && (Date.now() - lastDataAt) > 10000 && streamConn) {
+      setConn("polling");
+      stopStream();
+      startPolling();
+      setTimeout(startStream, 15000);
+    }
+  }, 3000);
+
+  // kick off
+  startStream();
+  // also fire one immediate poll so the UI populates fast even before first SSE tick
+  pollOnce();
+})();
+</script>
+</body>
+</html>
