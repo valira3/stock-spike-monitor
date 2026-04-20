@@ -4,6 +4,50 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.3.0 — Proximity Scanner (2026-04-20)
+
+Adds a `/proximity` command that answers the question "how close are we to
+a trade right now?" without having to eyeball `/dashboard` + `/orb` side by
+side. Read-only diagnostic view — no trade logic, adaptive parameters, or
+safety floors are touched.
+
+**What it shows**
+- **Global gate row** — SPY and QQQ current price vs session AVWAP with
+  ✅ / ❌ markers, plus a one-line verdict: `LONGS enabled`,
+  `SHORTS enabled`, or `NO NEW TRADES`. This is the same dual-index
+  confluence gate that v3.2.0 uses for ejects, shown forward-looking for
+  entries.
+- **LONGS table** — every tradable ticker sorted by distance to OR High.
+  Names already above trigger (✅) come first, then the closest-below,
+  then the rest ascending by gap. Format: `AAPL ✅ +$0.10 (+0.04%)`.
+- **SHORTS table** — same ticker set, sorted ascending by gap to OR Low.
+  Names already below trigger (✅) come first. Format mirrors the long
+  side: `TSLA ✅ -$2.10 (-0.80%)`.
+- **Polarity row** — compact `TICKER ↑ / ↓ / =` grid showing price vs PDC.
+
+All rows fit inside Telegram's mobile code-block width (≤ 34 chars with
+the leading 2-space indent) so nothing wraps on phone.
+
+**Menu layout**
+- Main menu: the OR tile now pairs with a new **🎯 Proximity** tile
+  (replacing Day Report in that row).
+- Advanced menu: **📅 Day Report** moved here, paired with Log. Day Report
+  is a historical / post-session view, so it's a better fit for Advanced
+  alongside Log and Replay.
+
+**Registration**
+- `/proximity` registered on both main and TP bots.
+- Added to `MAIN_BOT_COMMANDS` so it shows in Telegram's native `/` picker.
+- Added to `/help` under the Market Data section.
+
+**Not changed**
+- Entry gates, exit logic, adaptive bounds, hard floors, sizing, trail —
+  all untouched.
+- No new state, no new persistence, no new env vars.
+- v3.2.0 Confluence Shield and v3.2.1 tz-naive fix behavior unchanged.
+
+---
+
 ## v3.2.1 — Hotfix: tz-naive datetimes in persisted state (2026-04-20)
 
 Latent bug surfaced right after the v3.2.0 deploy-restart this morning.

@@ -37,13 +37,15 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.2.1"
+BOT_VERSION = "3.3.0"
 RELEASE_NOTE = (
-    "v3.2.1 \u2014 hotfix: tz-naive datetimes in persisted state.\n"
-    "\u2022 Normalize _last_exit_time to UTC-aware on load.\n"
-    "\u2022 Fixes 'can't subtract offset-naive and offset-aware' errors\n"
-    "  that were silently killing entry checks for some tickers.\n"
-    "Confluence Shield (v3.2.0) behavior unchanged."
+    "v3.3.0 \u2014 /proximity breakout proximity scanner.\n"
+    "\u2022 New /proximity command: SPY/QQQ vs AVWAP gate +\n"
+    "  per-ticker gap to OR High (longs) and OR Low (shorts).\n"
+    "\u2022 Polarity vs PDC row. Read-only diagnostic.\n"
+    "\u2022 Main menu: swap Day Report \u2192 Proximity.\n"
+    "  Day Report moved to Advanced menu.\n"
+    "No trade-logic changes."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -3706,6 +3708,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /price TICK  Live quote\n"
         "  /orb         Today's OR levels\n"
         "  /orb recover Recollect missing\n"
+        "  /proximity   Gap to breakout\n"
         "  /mode        Market regime\n"
         "\n"
         "Reports\n"
@@ -5548,6 +5551,203 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /proximity COMMAND (v3.3.0)
+# ============================================================
+def _proximity_sync():
+    """Build proximity text (blocking I/O \u2014 run in executor).
+
+    Shows how far each ticker is from its OR-breakout trigger, plus the
+    SPY/QQQ vs AVWAP global gate. Read-only diagnostic view \u2014 does
+    NOT change any trade logic or adaptive parameters.
+
+    Every visible line is <= 34 chars incl. leading 2-space indent so it
+    renders without wrap inside a Telegram mobile monospace block.
+
+    Returns (text, None) on success or (None, err_msg) on no-data.
+    """
+    SEP = "\u2500" * 34
+    now_et = _now_et()
+    today = now_et.strftime("%Y-%m-%d")
+
+    if or_collected_date != today:
+        return None, "OR not collected yet \u2014 runs at 8:35 CT."
+
+    # --- Global: SPY/QQQ vs AVWAP (the long gate) ---
+    spy_bars = fetch_1min_bars("SPY")
+    qqq_bars = fetch_1min_bars("QQQ")
+    spy_price = spy_bars["current_price"] if spy_bars else 0.0
+    qqq_price = qqq_bars["current_price"] if qqq_bars else 0.0
+    spy_avwap = avwap_data["SPY"]["avwap"]
+    qqq_avwap = avwap_data["QQQ"]["avwap"]
+
+    spy_have = spy_price > 0 and spy_avwap > 0
+    qqq_have = qqq_price > 0 and qqq_avwap > 0
+    spy_ok = spy_have and spy_price > spy_avwap
+    qqq_ok = qqq_have and qqq_price > qqq_avwap
+    spy_icon = "\u2705" if spy_ok else "\u274c"
+    qqq_icon = "\u2705" if qqq_ok else "\u274c"
+
+    long_ok = spy_ok and qqq_ok
+    # Short anchor is the mirror: SPY AND QQQ both BELOW AVWAP enables shorts.
+    short_ok = (spy_have and qqq_have
+                and spy_price < spy_avwap
+                and qqq_price < qqq_avwap)
+
+    if long_ok:
+        verdict = "LONGS enabled"
+    elif short_ok:
+        verdict = "SHORTS enabled"
+    else:
+        verdict = "NO NEW TRADES"
+
+    now_ct = now_et.astimezone(CDT)
+    hdr_time = now_ct.strftime("%H:%M CT")
+
+    lines = [
+        "\U0001f3af PROXIMITY \u2014 %s" % hdr_time,
+        SEP,
+    ]
+
+    # Index rows: "SPY $707.67 \u2705 vs $708.78"
+    def _idx_row(tag, px, av, icon):
+        if not (px > 0 and av > 0):
+            return "%s  --" % tag
+        return "%s $%.2f %s vs $%.2f" % (tag, px, icon, av)
+
+    lines.append(_idx_row("SPY", spy_price, spy_avwap, spy_icon))
+    lines.append(_idx_row("QQQ", qqq_price, qqq_avwap, qqq_icon))
+    lines.append("Gate: %s" % verdict)
+    lines.append(SEP)
+
+    # --- Per-ticker rows ---
+    # Build one snapshot per ticker: price, gap_long (px - OR_High),
+    # gap_short (px - OR_Low), polarity vs PDC.
+    rows = []  # list of dicts
+    for t in TRADE_TICKERS:
+        orh = or_high.get(t)
+        orl = or_low.get(t)
+        pdc_val = pdc.get(t)
+        bars = fetch_1min_bars(t)
+        px = bars["current_price"] if bars else 0.0
+        if not (px > 0):
+            rows.append({"t": t, "px": 0.0, "orh": orh, "orl": orl,
+                         "pdc": pdc_val, "gl": None, "gs": None,
+                         "pol": None})
+            continue
+        gl = (px - orh) if (orh is not None) else None
+        gs = (px - orl) if (orl is not None) else None
+        pol = None
+        if pdc_val is not None:
+            pol = 1 if px > pdc_val else (-1 if px < pdc_val else 0)
+        rows.append({"t": t, "px": px, "orh": orh, "orl": orl,
+                     "pdc": pdc_val, "gl": gl, "gs": gs, "pol": pol})
+
+    # ---- LONGS table: sorted by distance to OR High ----
+    # Already above OR High (gl >= 0) first (closest to / past trigger),
+    # then the rest ascending by |gl|. Unknowns go last.
+    def _long_key(r):
+        gl = r["gl"]
+        if gl is None:
+            return (2, 0.0)
+        if gl >= 0:
+            # Above trigger: rank by how far above (closer to trigger first)
+            return (0, gl)
+        return (1, -gl)  # below trigger: ascending gap
+
+    longs_sorted = sorted(rows, key=_long_key)
+    lines.append("LONGS \u2014 gap to OR High")
+    for r in longs_sorted:
+        t = r["t"]
+        gl = r["gl"]
+        orh = r["orh"]
+        px = r["px"]
+        if gl is None or orh is None or px <= 0:
+            lines.append("  %-4s  --" % t)
+            continue
+        pct = (gl / orh) * 100.0 if orh else 0.0
+        mark = "\u2705 " if gl >= 0 else "  "
+        sign = "+" if gl >= 0 else "-"
+        lines.append("  %-4s %s%s$%.2f (%s%.2f%%)"
+                     % (t, mark, sign, abs(gl), sign, abs(pct)))
+    lines.append(SEP)
+
+    # ---- SHORTS table: sorted ascending by gap to OR Low ----
+    # Most-negative first = already below OR Low (short trigger hit or past).
+    def _short_key(r):
+        gs = r["gs"]
+        if gs is None:
+            return (1, 0.0)
+        return (0, gs)  # ascending: most negative first
+
+    shorts_sorted = sorted(rows, key=_short_key)
+    lines.append("SHORTS \u2014 gap to OR Low")
+    for r in shorts_sorted:
+        t = r["t"]
+        gs = r["gs"]
+        orl = r["orl"]
+        px = r["px"]
+        if gs is None or orl is None or px <= 0:
+            lines.append("  %-4s  --" % t)
+            continue
+        pct = (gs / orl) * 100.0 if orl else 0.0
+        mark = "\u2705 " if gs <= 0 else "  "
+        sign = "+" if gs >= 0 else "-"
+        lines.append("  %-4s %s%s$%.2f (%s%.2f%%)"
+                     % (t, mark, sign, abs(gs), sign, abs(pct)))
+    lines.append(SEP)
+
+    # ---- Polarity vs PDC (compact) ----
+    lines.append("Polarity vs PDC")
+    # 3 tickers per row, 4 chars tag + 2 char arrow + 2 space = ~8ch each
+    chunk = []
+    for r in rows:
+        pol = r["pol"]
+        if pol is None:
+            arrow = "?"
+        elif pol > 0:
+            arrow = "\u2191"  # up
+        elif pol < 0:
+            arrow = "\u2193"  # down
+        else:
+            arrow = "="
+        chunk.append("%-4s %s" % (r["t"], arrow))
+        if len(chunk) == 3:
+            lines.append("  " + "  ".join(chunk))
+            chunk = []
+    if chunk:
+        lines.append("  " + "  ".join(chunk))
+
+    return "\n".join(lines), None
+
+
+async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show breakout proximity: SPY/QQQ gate + per-ticker gap to OR.
+
+    Read-only diagnostic view. Does not change any trade logic.
+    """
+    t0 = asyncio.get_event_loop().time()
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    loop = asyncio.get_event_loop()
+    text, err = await loop.run_in_executor(None, _proximity_sync)
+    if text is None:
+        await update.message.reply_text(
+            err or "Proximity unavailable.",
+            reply_markup=_menu_button(),
+        )
+        logger.info("CMD proximity completed in %.2fs (no data)",
+                    asyncio.get_event_loop().time() - t0)
+        return
+    body = "```\n" + text + "\n```"
+    await update.message.reply_text(
+        body,
+        parse_mode="Markdown",
+        reply_markup=_menu_button(),
+    )
+    logger.info("CMD proximity completed in %.2fs",
+                asyncio.get_event_loop().time() - t0)
+
+
+# ============================================================
 # /orb COMMAND (Feature 7)
 # ============================================================
 def _orb_sync():
@@ -5721,7 +5921,7 @@ def _build_menu_keyboard():
         ],
         [
             InlineKeyboardButton("\U0001f4d0 OR", callback_data="menu_orb"),
-            InlineKeyboardButton("\U0001f4c5 Day Report", callback_data="menu_dayreport"),
+            InlineKeyboardButton("\U0001f3af Proximity", callback_data="menu_proximity"),
         ],
         [
             InlineKeyboardButton("\U0001f39b\ufe0f Mode", callback_data="menu_mode"),
@@ -5745,7 +5945,10 @@ def _build_advanced_menu_keyboard():
     return [
         # Reports
         [
+            InlineKeyboardButton("\U0001f4c5 Day Report", callback_data="menu_dayreport"),
             InlineKeyboardButton("\U0001f4dc Log", callback_data="menu_log"),
+        ],
+        [
             InlineKeyboardButton("\U0001f3ac Replay", callback_data="menu_replay"),
         ],
         # Market data recovery / system
@@ -5977,6 +6180,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("\n".join(orb_lines))
     elif query.data == "menu_dayreport":
         await _invoke_from_callback(query, context, cmd_dayreport)
+    elif query.data == "menu_proximity":
+        await _invoke_from_callback(query, context, cmd_proximity)
     elif query.data == "menu_perf":
         await _invoke_from_callback(query, context, cmd_perf)
     elif query.data == "menu_monitoring":
@@ -6143,6 +6348,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("perf", "Performance stats (optional date)"),
     BotCommand("price", "Live quote for a ticker"),
     BotCommand("orb", "OR levels (add 'recover' to recollect)"),
+    BotCommand("proximity", "Gap to breakout (long/short)"),
     BotCommand("mode", "Current market mode (observation)"),
     BotCommand("dayreport", "Trades + P&L (optional date)"),
     BotCommand("log", "Trade log (optional date)"),
@@ -6267,6 +6473,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("perf", cmd_perf))
     app.add_handler(CommandHandler("price", cmd_price))
     app.add_handler(CommandHandler("orb", cmd_orb))
+    app.add_handler(CommandHandler("proximity", cmd_proximity))
     app.add_handler(CommandHandler("monitoring", cmd_monitoring))
     app.add_handler(CommandHandler("algo", cmd_algo))
     app.add_handler(CommandHandler("strategy", cmd_strategy))
@@ -6317,6 +6524,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("perf", cmd_perf))
     tp_app.add_handler(CommandHandler("price", cmd_price))
     tp_app.add_handler(CommandHandler("orb", cmd_orb))
+    tp_app.add_handler(CommandHandler("proximity", cmd_proximity))
     tp_app.add_handler(CommandHandler("monitoring", cmd_monitoring))
     tp_app.add_handler(CommandHandler("algo", cmd_algo))
     tp_app.add_handler(CommandHandler("strategy", cmd_strategy))
