@@ -4,6 +4,49 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.3.2 — /proximity UX polish (2026-04-20)
+
+Small UX pass on the v3.3.0 proximity scanner based on live use of the
+NVDA short this morning. Three additive tweaks — zero changes to trade
+logic, adaptive parameters, safety floors, or persistence.
+
+**Refresh button**
+- `/proximity` now returns with an inline 🔄 Refresh button, same
+  pattern as `/positions` and `/status`. Tapping it re-runs the
+  executor-backed build and edits the existing message in place.
+- Also keeps a 🏠 Menu button alongside for quick return.
+
+**Current prices**
+- The old "Polarity vs PDC" compact block is replaced by a richer
+  **Prices & Polarity vs PDC** block that shows each ticker's live
+  price alongside its polarity arrow. Format per cell:
+  `AAPL $234.56 ↑`.
+- Two cells per row in the common case (fits ≤34 mobile chars). If a
+  pair would exceed 34 cells (4-digit price + emoji lead), falls back
+  to single-cell rows for that pair. No wrapping.
+
+**Open-position markers**
+- Tickers with an open paper position now carry a colored circle
+  instead of the leading 2-space indent:
+  - 🟢 long open
+  - 🔴 short open
+- Marker appears in all three per-ticker sections: LONGS table,
+  SHORTS table, and Prices & Polarity block. In a chat where the TP
+  bot issued the command, it reads from `tp_positions` /
+  `tp_short_positions` instead.
+- Legend line renders at the bottom only when at least one marker
+  is present, so the scanner stays clean on days with no opens.
+
+**Not changed**
+- Global SPY/QQQ AVWAP gate, long/short sort order, OR-High / OR-Low
+  gap math — all unchanged.
+- No new state, persistence, env vars, or handlers beyond a single
+  `proximity_refresh` callback (registered on both paper + TP apps).
+- v3.3.1 behavior (open positions in /perf + /dayreport) unchanged.
+- All 14 existing unit tests still pass.
+
+---
+
 ## v3.3.1 — Hotfix: Open Positions in /perf + /dayreport (2026-04-20)
 
 Live bug surfaced right after v3.3.0 deployed. NVDA short fired at
