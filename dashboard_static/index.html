@@ -122,7 +122,7 @@
   }
   .h-clock { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
 
-  .kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
   .kpi {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 14px 16px;
@@ -250,6 +250,7 @@
     .h-clock { font-size: 11px; }
     .h-account { font-size: 10.5px; gap: 8px; }
     .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; }
+    .kpi-row { grid-template-columns: repeat(3, 1fr); gap: 10px; }
   }
 
   /* Phone (≤640px): stack KPIs 2-up, single-column grids, dense */
@@ -296,10 +297,9 @@
       <span class="h-brand-ver" id="sb-ver">v…</span>
     </div>
     <div class="h-title">
-      <span id="h-date">—</span><span class="sep">·</span><span class="sub" id="h-mode-sub">—</span>
+      <span id="h-date">—</span>
     </div>
     <div class="h-right">
-      <span class="chip chip-neut" id="h-mode">—</span>
       <span class="live-badge"><span class="pulse" id="h-pulse"></span>LIVE <span id="h-tick" style="color:var(--text-dim)">—</span></span>
       <span class="h-clock" id="clock">—</span>
       <span class="h-account">
@@ -320,6 +320,7 @@
       <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" id="k-open">—</span><span class="kpi-sub" id="k-open-sub">—</span></div>
       <div class="kpi"><span class="kpi-label">Gate</span><span class="kpi-value" id="k-gate" style="font-size:20px">—</span><span class="kpi-sub" id="k-gate-sub">—</span></div>
       <div class="kpi"><span class="kpi-label">Regime</span><span class="kpi-value" id="k-regime" style="font-size:20px">—</span><span class="kpi-sub" id="k-regime-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" id="k-session" style="font-size:20px">—</span><span class="kpi-sub" id="k-session-sub">—</span></div>
     </section>
 
     <section class="grid grid-2">
@@ -358,7 +359,7 @@
       </div>
     </section>
 
-    <section class="grid grid-3">
+    <section class="grid grid-2">
       <div class="card">
         <div class="card-head"><span class="card-title">Today's trades<span class="count" id="trades-count">· 0</span></span></div>
         <div class="card-body flush" id="trades-body">
@@ -369,28 +370,17 @@
         <div class="card-head"><span class="card-title">Observer</span></div>
         <div class="card-body">
           <div class="key-val-grid" id="obs-body">
-            <dt>Breadth</dt><dd id="obs-breadth">—</dd>
-            <dt>RSI regime</dt><dd id="obs-rsi">—</dd>
-            <dt>Mode reason</dt><dd id="obs-reason" style="text-align:right">—</dd>
+            <dt>Breadth detail</dt><dd id="obs-breadth" style="text-align:right">—</dd>
+            <dt>RSI detail</dt><dd id="obs-rsi" style="text-align:right">—</dd>
             <dt>Top red today</dt><dd id="obs-topred">—</dd>
           </div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><span class="card-title">System</span></div>
-        <div class="card-body">
-          <div class="row"><span class="k">Version</span><span class="v" id="sys-ver">—</span></div>
-          <div class="row"><span class="k">OR collected</span><span class="v" id="sys-or">—</span></div>
-          <div class="row"><span class="k">Trading halted</span><span class="v" id="sys-halt">—</span></div>
-          <div class="row"><span class="k">Scan paused</span><span class="v" id="sys-pause">—</span></div>
-          <div class="row"><span class="k">Server time</span><span class="v" id="sys-time">—</span></div>
         </div>
       </div>
     </section>
 
     <section class="grid grid-2">
       <div class="card">
-        <div class="card-head"><span class="card-title">Gates</span></div>
+        <div class="card-head"><span class="card-title">Gates · entry checks</span></div>
         <div id="gates-body">
           <div class="empty">Loading gate status…</div>
         </div>
@@ -481,27 +471,44 @@
     if (gates.trading_halted) {
       gateEl.textContent = "HALTED";
       gateEl.style.color = "var(--down)";
-      $("k-gate-sub").textContent = gates.halt_reason || "halted";
+      $("k-gate-sub").textContent = gates.halt_reason || "manual halt";
     } else if (gates.scan_paused) {
       gateEl.textContent = "PAUSED";
       gateEl.style.color = "var(--warn)";
       $("k-gate-sub").textContent = "scan paused";
+    } else if (!gates.or_collected_date) {
+      gateEl.textContent = "WAIT";
+      gateEl.style.color = "var(--warn)";
+      $("k-gate-sub").textContent = "opening range not collected";
     } else {
-      gateEl.textContent = "LIVE";
+      gateEl.textContent = "READY";
       gateEl.style.color = "var(--up)";
-      $("k-gate-sub").textContent = gates.or_collected_date ? `OR ${gates.or_collected_date}` : "OR not collected";
+      $("k-gate-sub").textContent = `OR ${gates.or_collected_date}`;
     }
 
     const reg = s.regime || {};
+    // ── Regime KPI: directional market regime (BULLISH / NEUTRAL / BEARISH)
+    //    sourced from breadth (SPY/QQQ vs AVWAP), to match how the bot talks about regime
     const rEl = $("k-regime");
-    rEl.textContent = reg.mode || "—";
-    rEl.style.color = (reg.mode === "DEFENSIVE") ? "var(--down)"
-                    : (reg.mode === "CHOP") ? "var(--warn)"
-                    : (reg.mode === "CLOSED") ? "var(--text-muted)"
+    const breadth = reg.breadth || "UNKNOWN";
+    rEl.textContent = breadth === "UNKNOWN" ? "—" : breadth;
+    rEl.style.color = breadth === "BULLISH" ? "var(--up)"
+                    : breadth === "BEARISH" ? "var(--down)"
+                    : breadth === "NEUTRAL" ? "var(--text)"
+                    : "var(--text-muted)";
+    $("k-regime-sub").textContent = `RSI ${reg.rsi_regime || "—"}`;
+
+    // ── Session KPI: time-of-day / risk state (OPEN / CHOP / POWER / DEFENSIVE / CLOSED)
+    //    this is MarketMode in the bot — a session window, not a directional view
+    const sEl = $("k-session");
+    const mode = reg.mode || "—";
+    sEl.textContent = mode;
+    sEl.style.color = mode === "DEFENSIVE" ? "var(--down)"
+                    : mode === "CHOP" ? "var(--warn)"
+                    : mode === "CLOSED" ? "var(--text-muted)"
+                    : mode === "—" ? "var(--text-muted)"
                     : "var(--up)";
-    $("k-regime-sub").textContent = (reg.breadth && reg.breadth !== "UNKNOWN")
-      ? `Breadth ${reg.breadth} · RSI ${reg.rsi_regime || "—"}`
-      : (reg.mode_reason || "—");
+    $("k-session-sub").textContent = reg.mode_reason || "—";
   }
 
   function renderPositions(s) {
@@ -612,11 +619,13 @@
   }
 
   function renderObserver(s) {
+    // Observer card holds the *details* behind the Regime KPI — the
+    // KPI itself shows BULLISH/NEUTRAL/BEARISH and RSI label; this card
+    // adds the underlying numbers (SPY/QQQ vs AVWAP, RSI values).
     const reg = s.regime || {};
     const obs = s.observer || {};
     $("obs-breadth").textContent = reg.breadth_detail || reg.breadth || "—";
-    $("obs-rsi").innerHTML = reg.rsi_regime ? `<span class="chip chip-neut">${escapeHtml(reg.rsi_regime)}</span>` : "—";
-    $("obs-reason").textContent = reg.mode_reason || "—";
+    $("obs-rsi").textContent = reg.rsi_detail || reg.rsi_regime || "—";
     const red = obs.ticker_red || [];
     if (red.length) {
       const [tkr, pnl] = red[0];
@@ -626,17 +635,8 @@
     }
   }
 
-  function renderSystem(s) {
+  function renderGates(s) {
     const g = s.gates || {};
-    $("sys-ver").textContent = s.version || "—";
-    $("sys-or").textContent = g.or_collected_date || "not collected";
-    $("sys-halt").innerHTML = g.trading_halted
-      ? `<span class="delta-down">Yes</span>` : `<span class="delta-up">No</span>`;
-    $("sys-pause").innerHTML = g.scan_paused
-      ? `<span class="delta-down">Yes</span>` : `<span class="delta-up">No</span>`;
-    $("sys-time").textContent = s.server_time_label || "—";
-
-    // Gates panel
     const gates = $("gates-body");
     const rows = [];
     rows.push(gateRow("Trading halted", g.trading_halted ? "HALTED" : "Armed", !g.trading_halted, g.halt_reason || ""));
@@ -658,15 +658,6 @@
   function renderHeader(s) {
     const d = s.server_time_label || "";
     $("h-date").textContent = d || "—";
-    $("h-mode-sub").textContent = s.regime?.mode_reason || "—";
-    const modeEl = $("h-mode");
-    const mode = s.regime?.mode || "—";
-    modeEl.textContent = mode;
-    modeEl.className = "chip " + (
-      mode === "DEFENSIVE" ? "chip-down" :
-      mode === "CHOP" ? "chip-warn" :
-      mode === "CLOSED" ? "chip-neut" : "chip-ok"
-    );
     $("sb-ver").textContent = `v${s.version || "?"} · live`;
   }
 
@@ -678,7 +669,7 @@
     renderProximity(s);
     renderTrades(s);
     renderObserver(s);
-    renderSystem(s);
+    renderGates(s);
   }
 
   // ─────── log handling ───────

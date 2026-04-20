@@ -37,13 +37,19 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.4"
+BOT_VERSION = "3.4.5"
 RELEASE_NOTE = (
-    "v3.4.4 \u2014 dashboard sidebar removed.\n"
-    "\u2022 Sidebar deleted entirely; brand, stream\n"
-    "  status, and sign-out moved into the top\n"
-    "  header.\n"
-    "\u2022 Content now uses the full page width.\n"
+    "v3.4.5 \u2014 dashboard cleanup + regime\n"
+    "  terminology now matches the bot.\n"
+    "\u2022 Regime KPI shows breadth\n"
+    "  (BULLISH / NEUTRAL / BEARISH).\n"
+    "\u2022 New Session KPI shows market mode\n"
+    "  (POWER / CHOP / OPEN / DEFENSIVE /\n"
+    "  CLOSED) with reason underneath.\n"
+    "\u2022 Gate KPI now reads READY / WAIT /\n"
+    "  PAUSED / HALTED instead of LIVE.\n"
+    "\u2022 System card removed; Observer\n"
+    "  shows breadth + RSI numeric detail.\n"
     "No trade-logic changes."
 )
 

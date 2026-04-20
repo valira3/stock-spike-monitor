@@ -4,6 +4,48 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.5 — Dashboard cleanup + regime terminology (2026-04-20)
+
+The dashboard had nine pieces of duplicated information and used
+`POWER` (a market-session label) where the bot actually reports a
+directional **breadth regime** (`BULLISH / NEUTRAL / BEARISH`). This
+release cleans up the redundancies and aligns the dashboard's
+vocabulary with the bot itself.
+
+**Terminology — now matches the bot**
+
+- **Regime KPI** shows the breadth regime: **BULLISH / NEUTRAL /
+  BEARISH** (was previously showing the market mode `POWER`, which
+  is a session-window label, not a directional regime). Sub-line
+  shows the RSI regime (`OVERBOUGHT / NEUTRAL / OVERSOLD`).
+- **New Session KPI** added at the end of the KPI row, showing the
+  market mode: **POWER / CHOP / OPEN / DEFENSIVE / CLOSED**, with
+  the mode reason as the sub-line.
+- **Gate KPI** now reads **READY / WAIT / PAUSED / HALTED** instead
+  of `LIVE` (which duplicated the header LIVE pill).
+
+**Redundancies removed**
+
+- Header `mode` chip and its sub-text — duplicated by the new
+  Session KPI; removed entirely.
+- Whole **System card** removed. Its rows were all duplicates:
+  - Trading halted / Scan paused → already in Gate KPI.
+  - Server time → already in the header clock.
+  - Version → already in the header brand.
+  - OR collected → already in Gate KPI sub-text.
+- Observer card no longer shows mode reason (now in Session KPI).
+  Breadth and RSI rows show the numeric detail only — labels are
+  in the KPI cards.
+- Three-column grid (Today's trades / Observer / System) is now a
+  two-column grid (Today's trades / Observer).
+- Gates card heading clarified to “Gates · entry checks”.
+
+No backend changes; `/api/state` payload is unchanged. The bot
+module is bumped to v3.4.5 only so the version pill and Telegram
+deploy ping reflect the new dashboard.
+
+---
+
 ## v3.4.4 — Dashboard sidebar removed (2026-04-20)
 
 The sidebar held only the brand mark, a one-line stream status, and a
