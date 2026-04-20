@@ -16,9 +16,17 @@ Endpoints:
   GET  /stream        → Server-Sent Events: pushes state every 2s + log lines
   GET  /static/*      → dashboard_static/ (HTML/CSS/JS assets)
 
-Cookie auth:
-  Token = HMAC_SHA256(DASHBOARD_PASSWORD, "spike-dashboard-session").hexdigest()
-  Stored in cookie "spike_session"; HttpOnly; SameSite=Lax; 7-day expiry.
+Cookie auth (v3.4.9+):
+  Token = HMAC_SHA256(_SESSION_SECRET, b"<8-byte BE timestamp>").hex() + ":<ts>"
+  _SESSION_SECRET is a random 32-byte secret generated at process start —
+  it lives in memory only, so a process restart invalidates all sessions.
+  Tokens carry the issue-timestamp and are checked for expiry (SESSION_DAYS).
+  Stored in cookie "spike_session"; HttpOnly; SameSite=Lax; Secure=True;
+  7-day max age.
+
+Login rate-limiting:
+  Per-IP in-memory rate limiter on POST /login — 5 attempts per 60s window.
+  Failed attempts beyond the limit return HTTP 429.
 """
 
 from __future__ import annotations
@@ -29,9 +37,11 @@ import hmac
 import json
 import logging
 import os
+import secrets
+import struct
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -365,20 +375,79 @@ SESSION_COOKIE = "spike_session"
 SESSION_DAYS = 7
 
 _PW: str = ""
-_TOKEN: str = ""
+_SESSION_SECRET: bytes = b""   # set at startup; in-memory only
 _STATIC_DIR = Path(__file__).parent / "dashboard_static"
 
+# Login rate-limiter: per-IP attempt timestamps (sliding window)
+_LOGIN_WINDOW_SEC = 60
+_LOGIN_MAX_ATTEMPTS = 5
+_login_attempts: dict = defaultdict(list)
+_login_attempts_lock = threading.Lock()
 
-def _make_token(pw: str) -> str:
-    return hmac.new(pw.encode("utf-8"), b"spike-dashboard-session",
-                    hashlib.sha256).hexdigest()
+
+def _client_ip(request) -> str:
+    """Best-effort client IP — prefer X-Forwarded-For (Railway proxy) and
+    fall back to peer address. Used only as a rate-limit bucket key."""
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.remote or "unknown"
+
+
+def _rate_limit_check(ip: str) -> bool:
+    """Returns True if request is allowed; False if rate-limited.
+    Prunes old timestamps and records a new attempt on success."""
+    now = time.time()
+    with _login_attempts_lock:
+        attempts = _login_attempts[ip]
+        # prune outside window
+        attempts[:] = [t for t in attempts if now - t < _LOGIN_WINDOW_SEC]
+        if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+            return False
+        attempts.append(now)
+        return True
+
+
+def _make_token(now: float | None = None) -> str:
+    """Issue a session token: HMAC(_SESSION_SECRET, ts) + ":" + ts.
+    The timestamp lets us enforce expiry without DB state. Secret is
+    process-local random bytes, so restarts invalidate all sessions.
+    """
+    if now is None:
+        now = time.time()
+    ts = int(now)
+    msg = struct.pack(">Q", ts)
+    sig = hmac.new(_SESSION_SECRET, msg, hashlib.sha256).hexdigest()
+    return f"{sig}:{ts}"
 
 
 def _check_auth(request) -> bool:
-    if not _TOKEN:
+    """Validate the session cookie. Rejects:
+      • missing/malformed cookie
+      • wrong signature (constant-time compare)
+      • expired token (issue ts older than SESSION_DAYS)
+      • future-dated token (clock-skew > 60s)
+    """
+    if not _SESSION_SECRET:
         return False
     c = request.cookies.get(SESSION_COOKIE, "")
-    return hmac.compare_digest(c, _TOKEN)
+    if not c or ":" not in c:
+        return False
+    try:
+        sig, ts_str = c.rsplit(":", 1)
+        ts = int(ts_str)
+    except (ValueError, AttributeError):
+        return False
+    expected = hmac.new(_SESSION_SECRET, struct.pack(">Q", ts),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return False
+    age = time.time() - ts
+    if age < -60:    # future-dated beyond clock-skew tolerance
+        return False
+    if age > SESSION_DAYS * 86400:
+        return False
+    return True
 
 
 def _login_page(error: str = "") -> str:
@@ -433,16 +502,27 @@ async def h_root(request):
 
 async def h_login(request):
     from aiohttp import web
+    ip = _client_ip(request)
+    if not _rate_limit_check(ip):
+        logger.warning("dashboard /login rate-limited ip=%s", ip)
+        return web.Response(
+            text="Too many attempts. Try again in 60 seconds.",
+            status=429, content_type="text/plain",
+            headers={"Retry-After": str(_LOGIN_WINDOW_SEC)},
+        )
     data = await request.post()
     pw = (data.get("password") or "").strip()
     if not pw or not hmac.compare_digest(pw, _PW):
         return web.Response(text=_login_page("Invalid password"),
                             content_type="text/html", status=401)
+    # On success, issue a fresh timestamped token so each login starts a
+    # new 7-day window. Cookie is Secure (Railway terminates TLS).
+    token = _make_token()
     resp = web.HTTPFound("/")
     resp.set_cookie(
-        SESSION_COOKIE, _TOKEN,
+        SESSION_COOKIE, token,
         max_age=SESSION_DAYS * 24 * 3600,
-        httponly=True, samesite="Lax", secure=False,
+        httponly=True, samesite="Lax", secure=True,
     )
     return resp
 
@@ -537,16 +617,30 @@ def _run_forever(port: int):
 
 def start_in_thread() -> bool:
     """Start the dashboard server in a daemon thread. Returns True if started."""
-    global _PW, _TOKEN
+    global _PW, _SESSION_SECRET
     _PW = os.getenv("DASHBOARD_PASSWORD", "").strip()
     if not _PW:
         logger.info("Dashboard disabled: DASHBOARD_PASSWORD not set")
+        return False
+    if len(_PW) < 8:
+        logger.warning(
+            "Dashboard disabled: DASHBOARD_PASSWORD must be at least 8 characters"
+        )
         return False
     try:
         port = int(os.getenv("DASHBOARD_PORT", "8080"))
     except ValueError:
         port = 8080
-    _TOKEN = _make_token(_PW)
+    # In-memory random secret — restart invalidates all sessions, which is
+    # the cheapest "global logout" mechanism. Override via env for testing.
+    secret_hex = os.getenv("DASHBOARD_SESSION_SECRET", "").strip()
+    if secret_hex:
+        try:
+            _SESSION_SECRET = bytes.fromhex(secret_hex)
+        except ValueError:
+            _SESSION_SECRET = secrets.token_bytes(32)
+    else:
+        _SESSION_SECRET = secrets.token_bytes(32)
 
     _install_log_handler()
 
