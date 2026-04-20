@@ -37,15 +37,14 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.2"
+BOT_VERSION = "3.4.3"
 RELEASE_NOTE = (
-    "v3.4.2 \u2014 dashboard hotfix #2.\n"
-    "\u2022 Dashboard now finds the live bot module\n"
-    "  via sys.modules['__main__'] instead of\n"
-    "  re-importing it (which re-ran top-level\n"
-    "  code and crashed in a non-main thread).\n"
-    "\u2022 /api/state and /stream now serve real\n"
-    "  bot state instead of 500.\n"
+    "v3.4.3 \u2014 dashboard mobile + cleanup.\n"
+    "\u2022 Removed dead Overview nav from sidebar;\n"
+    "  sidebar trimmed 220 \u2192 180 px.\n"
+    "\u2022 Mobile layout: sidebar collapses to a\n"
+    "  top strip, KPIs go 2-up, cards stack.\n"
+    "\u2022 Tested at iPhone 14 Pro and SE widths.\n"
     "No trade-logic changes."
 )
 

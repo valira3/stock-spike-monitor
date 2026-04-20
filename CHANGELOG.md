@@ -4,6 +4,32 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.3 — Dashboard mobile + cleanup (2026-04-20)
+
+First pass at making the dashboard usable on iPhone, plus removing dead
+UI weight on desktop.
+
+**Changes**
+
+- **Removed dead “Overview” nav** from the sidebar (it had a single
+  non-functional “Dashboard” link).
+- **Sidebar trimmed** 220 → 180 px on desktop — more horizontal room
+  for the actual data.
+- **Tablet layout (≤ 900 px)**: sidebar collapses to a top strip with
+  brand, stream status, and sign-out inline. Page becomes naturally
+  scrollable instead of full-viewport-locked.
+- **Phone layout (≤ 640 px)**: KPIs stack 2-up, all multi-column grids
+  collapse to single column, tables get horizontal-scroll containers,
+  log tail caps at 200 px height.
+- **Small phone (≤ 380 px)**: KPI value font shrinks one step so
+  multi-digit equity numbers don’t truncate.
+- Tested at iPhone 14 Pro (393 px), iPhone SE (375 px), and 1280 px
+  desktop.
+
+No backend changes; static HTML/CSS only.
+
+---
+
 ## v3.4.2 — Dashboard hotfix #2 (2026-04-20)
 
 v3.4.1 made the dashboard reachable, but every request to `/api/state`
