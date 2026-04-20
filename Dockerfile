@@ -19,6 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY stock_spike_monitor.py .
 
+# Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
+COPY dashboard_server.py .
+COPY dashboard_static/ ./dashboard_static/
+
 # Persistence directory (mount a volume here)
 RUN mkdir -p /data
 

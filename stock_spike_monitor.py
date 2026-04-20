@@ -37,15 +37,14 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.0"
+BOT_VERSION = "3.4.1"
 RELEASE_NOTE = (
-    "v3.4.0 \u2014 live web dashboard (read-only, env-gated).\n"
-    "\u2022 Private URL with password-protected session.\n"
-    "\u2022 SSE push of equity, positions, proximity,\n"
-    "  trades, regime, gates, and a log tail.\n"
-    "\u2022 Runs in its own thread \u2014 no coupling with\n"
-    "  the Telegram bot loop. Off unless DASHBOARD_\n"
-    "  PASSWORD is set.\n"
+    "v3.4.1 \u2014 dashboard hotfix.\n"
+    "\u2022 Dockerfile now copies dashboard_server.py\n"
+    "  and dashboard_static/ so the live web UI\n"
+    "  actually starts on Railway.\n"
+    "\u2022 v3.4.0 logic unchanged: read-only, env-\n"
+    "  gated, isolated thread.\n"
     "No trade-logic changes."
 )
 
