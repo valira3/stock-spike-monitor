@@ -37,15 +37,15 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.3.1"
+BOT_VERSION = "3.3.2"
 RELEASE_NOTE = (
-    "v3.3.1 \u2014 hotfix: open positions in /perf + /dayreport.\n"
-    "\u2022 Pre-exit positions now show in /perf (Open Positions\n"
-    "  section) and /dayreport (rendered as '\u2192open').\n"
-    "\u2022 Unrealized P&L surfaced; realized math unchanged.\n"
-    "\u2022 DATA LOSS GUARD no longer false-positives when a\n"
-    "  short entry is open but uncovered.\n"
-    "Proximity scanner (v3.3.0) unchanged. No trade-logic changes."
+    "v3.3.2 \u2014 /proximity UX polish.\n"
+    "\u2022 \U0001f504 Refresh button (same pattern as /status).\n"
+    "\u2022 Current price shown next to each ticker in the\n"
+    "  new Prices & Polarity row.\n"
+    "\u2022 Open-position marker: \U0001f7e2 long / \U0001f534 short\n"
+    "  on ticker tags in all three sections.\n"
+    "Read-only diagnostic. No trade-logic changes."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -5731,7 +5731,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # /proximity COMMAND (v3.3.0)
 # ============================================================
-def _proximity_sync():
+def _proximity_sync(is_tp: bool = False):
     """Build proximity text (blocking I/O \u2014 run in executor).
 
     Shows how far each ticker is from its OR-breakout trigger, plus the
@@ -5741,6 +5741,10 @@ def _proximity_sync():
     Every visible line is <= 34 chars incl. leading 2-space indent so it
     renders without wrap inside a Telegram mobile monospace block.
 
+    is_tp selects which positions dicts are consulted for open-trade
+    markers (\U0001f7e2 long / \U0001f534 short) \u2014 global market
+    state is the same either way.
+
     Returns (text, None) on success or (None, err_msg) on no-data.
     """
     SEP = "\u2500" * 34
@@ -5749,6 +5753,10 @@ def _proximity_sync():
 
     if or_collected_date != today:
         return None, "OR not collected yet \u2014 runs at 8:35 CT."
+
+    # Pick the right positions dicts for open-trade markers
+    longs_dict = tp_positions if is_tp else positions
+    shorts_dict = tp_short_positions if is_tp else short_positions
 
     # --- Global: SPY/QQQ vs AVWAP (the long gate) ---
     spy_bars = fetch_1min_bars("SPY")
@@ -5799,7 +5807,7 @@ def _proximity_sync():
 
     # --- Per-ticker rows ---
     # Build one snapshot per ticker: price, gap_long (px - OR_High),
-    # gap_short (px - OR_Low), polarity vs PDC.
+    # gap_short (px - OR_Low), polarity vs PDC, open-position marker.
     rows = []  # list of dicts
     for t in TRADE_TICKERS:
         orh = or_high.get(t)
@@ -5807,10 +5815,20 @@ def _proximity_sync():
         pdc_val = pdc.get(t)
         bars = fetch_1min_bars(t)
         px = bars["current_price"] if bars else 0.0
+        # Open-position marker: long takes precedence if somehow both
+        # (shouldn't happen, but defensive).
+        has_long = t in longs_dict
+        has_short = t in shorts_dict
+        if has_long:
+            open_mark = "\U0001f7e2"  # green circle
+        elif has_short:
+            open_mark = "\U0001f534"  # red circle
+        else:
+            open_mark = ""
         if not (px > 0):
             rows.append({"t": t, "px": 0.0, "orh": orh, "orl": orl,
                          "pdc": pdc_val, "gl": None, "gs": None,
-                         "pol": None})
+                         "pol": None, "mark": open_mark})
             continue
         gl = (px - orh) if (orh is not None) else None
         gs = (px - orl) if (orl is not None) else None
@@ -5818,7 +5836,8 @@ def _proximity_sync():
         if pdc_val is not None:
             pol = 1 if px > pdc_val else (-1 if px < pdc_val else 0)
         rows.append({"t": t, "px": px, "orh": orh, "orl": orl,
-                     "pdc": pdc_val, "gl": gl, "gs": gs, "pol": pol})
+                     "pdc": pdc_val, "gl": gl, "gs": gs, "pol": pol,
+                     "mark": open_mark})
 
     # ---- LONGS table: sorted by distance to OR High ----
     # Already above OR High (gl >= 0) first (closest to / past trigger),
@@ -5839,14 +5858,19 @@ def _proximity_sync():
         gl = r["gl"]
         orh = r["orh"]
         px = r["px"]
+        om = r["mark"]
+        # Open-marker replaces the 2-space indent when present (emoji
+        # occupies ~2 monospace cells). Falls back to "  " otherwise so
+        # tickers align cleanly.
+        lead = om if om else "  "
         if gl is None or orh is None or px <= 0:
-            lines.append("  %-4s  --" % t)
+            lines.append("%s%-4s  --" % (lead, t))
             continue
         pct = (gl / orh) * 100.0 if orh else 0.0
-        mark = "\u2705 " if gl >= 0 else "  "
+        trig = "\u2705 " if gl >= 0 else "  "
         sign = "+" if gl >= 0 else "-"
-        lines.append("  %-4s %s%s$%.2f (%s%.2f%%)"
-                     % (t, mark, sign, abs(gl), sign, abs(pct)))
+        lines.append("%s%-4s %s%s$%.2f (%s%.2f%%)"
+                     % (lead, t, trig, sign, abs(gl), sign, abs(pct)))
     lines.append(SEP)
 
     # ---- SHORTS table: sorted ascending by gap to OR Low ----
@@ -5864,38 +5888,88 @@ def _proximity_sync():
         gs = r["gs"]
         orl = r["orl"]
         px = r["px"]
+        om = r["mark"]
+        lead = om if om else "  "
         if gs is None or orl is None or px <= 0:
-            lines.append("  %-4s  --" % t)
+            lines.append("%s%-4s  --" % (lead, t))
             continue
         pct = (gs / orl) * 100.0 if orl else 0.0
-        mark = "\u2705 " if gs <= 0 else "  "
+        trig = "\u2705 " if gs <= 0 else "  "
         sign = "+" if gs >= 0 else "-"
-        lines.append("  %-4s %s%s$%.2f (%s%.2f%%)"
-                     % (t, mark, sign, abs(gs), sign, abs(pct)))
+        lines.append("%s%-4s %s%s$%.2f (%s%.2f%%)"
+                     % (lead, t, trig, sign, abs(gs), sign, abs(pct)))
     lines.append(SEP)
 
-    # ---- Polarity vs PDC (compact) ----
-    lines.append("Polarity vs PDC")
-    # 3 tickers per row, 4 chars tag + 2 char arrow + 2 space = ~8ch each
-    chunk = []
-    for r in rows:
+    # ---- Prices & Polarity vs PDC (compact) ----
+    # One cell = "<mark or 2sp><TICKER> $PRICE <arrow>" e.g.
+    # "  AAPL $234.56 \u2191" or "\U0001f7e2NVDA $198.00 \u2193". Two
+    # cells per row fit within 34ch mobile limit in the common case.
+    # If a pair would exceed the budget (e.g. a 4-digit price on one
+    # side and an emoji lead on the other), render that pair as two
+    # separate rows instead of wrapping.
+    lines.append("Prices & Polarity vs PDC")
+
+    def _price_cell(r):
         pol = r["pol"]
+        px = r["px"]
+        om = r["mark"]
+        lead = om if om else "  "
         if pol is None:
             arrow = "?"
         elif pol > 0:
-            arrow = "\u2191"  # up
+            arrow = "\u2191"
         elif pol < 0:
-            arrow = "\u2193"  # down
+            arrow = "\u2193"
         else:
             arrow = "="
-        chunk.append("%-4s %s" % (r["t"], arrow))
-        if len(chunk) == 3:
-            lines.append("  " + "  ".join(chunk))
+        if px > 0:
+            return "%s%-4s $%.2f %s" % (lead, r["t"], px, arrow)
+        return "%s%-4s  --    %s" % (lead, r["t"], arrow)
+
+    def _cell_width(cell):
+        # Emoji in lead counts as 2 cells on mobile but 1 codepoint.
+        w = len(cell)
+        if cell.startswith(("\U0001f7e2", "\U0001f534")):
+            w += 1
+        return w
+
+    chunk = []
+    for r in rows:
+        chunk.append(_price_cell(r))
+        if len(chunk) == 2:
+            combined = "  ".join(chunk)
+            # 34 ch mobile budget; fall back to 1-per-row if over.
+            if _cell_width(chunk[0]) + 2 + _cell_width(chunk[1]) <= 34:
+                lines.append(combined)
+            else:
+                lines.append(chunk[0])
+                lines.append(chunk[1])
             chunk = []
     if chunk:
-        lines.append("  " + "  ".join(chunk))
+        lines.append(chunk[0])
+
+    # Legend if any open markers present
+    any_long = any(r["mark"] == "\U0001f7e2" for r in rows)
+    any_short = any(r["mark"] == "\U0001f534" for r in rows)
+    if any_long or any_short:
+        legend_bits = []
+        if any_long:
+            legend_bits.append("\U0001f7e2 long open")
+        if any_short:
+            legend_bits.append("\U0001f534 short open")
+        lines.append(SEP)
+        lines.append("  " + "  ".join(legend_bits))
 
     return "\n".join(lines), None
+
+
+def _proximity_keyboard():
+    """Inline keyboard for /proximity: Refresh + Menu."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("\U0001f504 Refresh",
+                              callback_data="proximity_refresh")],
+        [InlineKeyboardButton("\U0001f3e0 Menu", callback_data="open_menu")],
+    ])
 
 
 async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5905,8 +5979,9 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
+    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
-    text, err = await loop.run_in_executor(None, _proximity_sync)
+    text, err = await loop.run_in_executor(None, _proximity_sync, is_tp)
     if text is None:
         await update.message.reply_text(
             err or "Proximity unavailable.",
@@ -5919,10 +5994,40 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         body,
         parse_mode="Markdown",
-        reply_markup=_menu_button(),
+        reply_markup=_proximity_keyboard(),
     )
     logger.info("CMD proximity completed in %.2fs",
                 asyncio.get_event_loop().time() - t0)
+
+
+async def proximity_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle refresh button tap on /proximity."""
+    query = update.callback_query
+    await query.answer("Refreshing...")
+    is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+    loop = asyncio.get_event_loop()
+    text, err = await loop.run_in_executor(None, _proximity_sync, is_tp)
+    if text is None:
+        # Edit to show the error and drop refresh button (no data to refresh)
+        try:
+            await query.edit_message_text(
+                err or "Proximity unavailable.",
+                reply_markup=_menu_button(),
+            )
+        except Exception as e:
+            logger.debug("proximity_callback edit (no-data) failed: %s", e)
+        return
+    body = "```\n" + text + "\n```"
+    try:
+        await query.edit_message_text(
+            body,
+            parse_mode="Markdown",
+            reply_markup=_proximity_keyboard(),
+        )
+    except Exception as e:
+        # Common case: "Message is not modified" when nothing changed
+        # between ticks. Swallow silently \u2014 the user got their ack.
+        logger.debug("proximity_callback edit failed: %s", e)
 
 
 # ============================================================
@@ -6663,6 +6768,7 @@ def run_telegram_bot():
     app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
     app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
+    app.add_handler(CallbackQueryHandler(proximity_callback, pattern="^proximity_refresh$"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     app.add_handler(CallbackQueryHandler(_cb_open_menu, pattern="^open_menu$"))
 
@@ -6714,6 +6820,7 @@ def run_telegram_bot():
     tp_app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
     tp_app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
     tp_app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
+    tp_app.add_handler(CallbackQueryHandler(proximity_callback, pattern="^proximity_refresh$"))
     tp_app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     tp_app.add_handler(CallbackQueryHandler(_cb_open_menu, pattern="^open_menu$"))
 
