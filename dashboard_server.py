@@ -266,14 +266,18 @@ def snapshot() -> dict[str, Any]:
         long_mv, short_liab, equity = _equity(paper_cash, longs, shorts, prices)
         start_cap = float(getattr(m, "PAPER_STARTING_CAPITAL", 100_000.0))
 
-        # Today realized P&L from paper_trades (+ short closes today)
-        realized = 0.0
-        for t in (getattr(m, "paper_trades", []) or []):
-            realized += float(t.get("pnl", 0.0) or 0.0)
+        # Today realized P&L from paper_trades (long SELLs, today only) +
+        # short_trade_history (short COVERs, today only). Date-filter both
+        # lists — paper_trades may carry yesterday's rows after a
+        # post-midnight restart before reset_daily_state() runs at 09:30 ET.
         try:
             today = m._now_et().strftime("%Y-%m-%d")
         except Exception:
             today = ""
+        realized = 0.0
+        for t in (getattr(m, "paper_trades", []) or []):
+            if t.get("date") == today and t.get("action") == "SELL":
+                realized += float(t.get("pnl", 0.0) or 0.0)
         for t in (getattr(m, "short_trade_history", []) or []):
             if t.get("date") == today:
                 realized += float(t.get("pnl", 0.0) or 0.0)
