@@ -4,6 +4,49 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.9 — Dashboard security hardening (2026-04-20)
+
+Web dashboard hardening only — no bot trade-logic changes. Addresses three
+findings from the v3.4.7 code review.
+
+**Login rate-limiting (M6)**
+
+Per-IP in-memory sliding-window rate limiter on `POST /login`: 5 attempts
+per 60-second window. Excess attempts return HTTP 429 with a `Retry-After`
+header. The bucket key uses `X-Forwarded-For` (Railway proxy) and falls
+back to the peer address.
+
+**Secure cookie flag (M7)**
+
+Session cookie now sets `Secure=True`, ensuring browsers only send it over
+HTTPS. Railway terminates TLS at the proxy, so this is the correct value.
+
+**Session token redesign (M8)**
+
+The old token was a deterministic `HMAC(password, fixed-string)` — same
+value forever, no expiry, no replay protection. Replaced with:
+
+- A random 32-byte `_SESSION_SECRET` generated at process start (kept in
+  memory only). Optional `DASHBOARD_SESSION_SECRET` env var for testing.
+- Token format: `HMAC_SHA256(_SESSION_SECRET, big-endian-uint64-ts).hex():ts`
+- `_check_auth` validates the signature in constant time, then enforces
+  the issue-timestamp is within `SESSION_DAYS` (7) and not future-dated
+  beyond a 60-second clock-skew tolerance.
+- A bot restart invalidates every session (the secret is regenerated).
+  Cheapest possible global logout.
+
+**Hardening**
+
+- `DASHBOARD_PASSWORD` must now be ≥ 8 characters or the dashboard
+  refuses to start (logs a warning).
+- Per-process secret means no DB or filesystem state needed.
+
+**Operational note** — you will be logged out and need to sign in again
+with the existing 24-character password (`...bD8Z`). Cookie format change
+is not backward-compatible with v3.4.8 sessions.
+
+---
+
 ## v3.4.8 — Short-symmetry fixes from code review (2026-04-20)
 
 A full code review surfaced **six places** in the codebase where short P&L
