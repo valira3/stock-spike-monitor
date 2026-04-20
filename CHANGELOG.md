@@ -4,6 +4,23 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.1 — Dashboard hotfix (2026-04-20)
+
+The v3.4.0 build succeeded but the dashboard never started on Railway.
+The Railway service uses the `Dockerfile` (not Nixpacks), and the
+Dockerfile only copied `stock_spike_monitor.py` into the image. As a
+result, `import dashboard_server` failed at startup with `No module
+named 'dashboard_server'`. The bot caught the exception and kept
+running (fail-safe wrapper), but the web UI was never available.
+
+**Fix**
+
+- Dockerfile now also copies `dashboard_server.py` and the
+  `dashboard_static/` directory.
+- No code changes; v3.4.0 dashboard logic unchanged.
+
+---
+
 ## v3.4.0 — Live web dashboard (2026-04-20)
 
 Added a private, read-only web UI that mirrors everything the Telegram
