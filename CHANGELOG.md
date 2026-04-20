@@ -4,6 +4,36 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.2.1 — Hotfix: tz-naive datetimes in persisted state (2026-04-20)
+
+Latent bug surfaced right after the v3.2.0 deploy-restart this morning.
+`_last_exit_time` was persisted per-ticker via `datetime.now(timezone.utc).isoformat()`,
+but older entries had been written at some point without tz info. On load,
+`datetime.fromisoformat(v)` returns a tz-naive datetime for those strings.
+Mixing that with `datetime.now(timezone.utc)` in the cooldown check raises
+`TypeError: can't subtract offset-naive and offset-aware datetimes`, which
+the entry loop caught and logged as `Entry check error <TICKER>: ...` —
+silently skipping every long **and** short entry for the affected tickers.
+
+Observable symptom: no trades fired on 2026-04-20 despite OR data, AVWAPs,
+and volume all looking fine for most names. Railway logs showed the error
+firing every 60s for AAPL, META, GOOG, AVGO (tickers whose persisted exit
+time was naive) while other tickers skipped for valid reasons (LOW VOL,
+OR sanity).
+
+**Fix**
+- `load_paper_state()` now normalizes every `_last_exit_time` entry on
+  load: if the parsed datetime is naive, assume UTC and attach
+  `tzinfo=timezone.utc`. This matches the original write-site semantics
+  (all writes go through `datetime.now(timezone.utc)`).
+
+**Not changed**
+- v3.2.0 Confluence Shield behavior unchanged.
+- No entry/exit/sizing/stop/trail logic changed.
+- All existing unit tests still pass.
+
+---
+
 ## v3.2.0 — Dual-Index Confluence Shield (2026-04-20)
 
 Tightens the global eject signal (`LORDS_LEFT` / `BULL_VACUUM`) to fire only
