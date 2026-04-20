@@ -37,15 +37,15 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.3.0"
+BOT_VERSION = "3.3.1"
 RELEASE_NOTE = (
-    "v3.3.0 \u2014 /proximity breakout proximity scanner.\n"
-    "\u2022 New /proximity command: SPY/QQQ vs AVWAP gate +\n"
-    "  per-ticker gap to OR High (longs) and OR Low (shorts).\n"
-    "\u2022 Polarity vs PDC row. Read-only diagnostic.\n"
-    "\u2022 Main menu: swap Day Report \u2192 Proximity.\n"
-    "  Day Report moved to Advanced menu.\n"
-    "No trade-logic changes."
+    "v3.3.1 \u2014 hotfix: open positions in /perf + /dayreport.\n"
+    "\u2022 Pre-exit positions now show in /perf (Open Positions\n"
+    "  section) and /dayreport (rendered as '\u2192open').\n"
+    "\u2022 Unrealized P&L surfaced; realized math unchanged.\n"
+    "\u2022 DATA LOSS GUARD no longer false-positives when a\n"
+    "  short entry is open but uncovered.\n"
+    "Proximity scanner (v3.3.0) unchanged. No trade-logic changes."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -838,11 +838,23 @@ def save_paper_state():
     if not _state_loaded:
         logger.warning("save_paper_state skipped — state not yet loaded")
         return
-    # Data-loss guard: warn if history empty but cash changed (trades happened then vanished)
-    if not trade_history and paper_cash != PAPER_STARTING_CAPITAL:
+    # Data-loss guard: warn if history empty but cash changed (trades
+    # happened then vanished). v3.3.1: also check for currently-open
+    # positions — a short entry credits cash immediately but only
+    # appends to short_trade_history on COVER, so an open-short session
+    # is a legitimate state with empty history and moved cash. Only
+    # warn when there's no record of ANY activity (no history AND no
+    # open positions) yet cash has moved.
+    has_any_activity = (
+        bool(trade_history)
+        or bool(short_trade_history)
+        or bool(positions)
+        or bool(short_positions)
+    )
+    if (not has_any_activity) and paper_cash != PAPER_STARTING_CAPITAL:
         logger.warning(
-            "DATA LOSS GUARD: trade_history is empty but cash=$%.2f (start=$%.0f) — "
-            "possible trade history wipe!",
+            "DATA LOSS GUARD: no trade history or open positions but "
+            "cash=$%.2f (start=$%.0f) — possible trade history wipe!",
             paper_cash, PAPER_STARTING_CAPITAL,
         )
     state = {
@@ -4459,11 +4471,105 @@ def _chart_portfolio_pie(pos_dict, short_dict, cash):
         return None
 
 
+def _open_positions_as_pseudo_trades(is_tp=False, target_date=None):
+    """Build synthetic trade records for currently-open positions.
+
+    v3.3.1: /perf and /dayreport historically only read
+    `trade_history` / `short_trade_history`, which are populated on
+    exit (sell / cover) \u2014 never on entry. An open-but-uncovered
+    position was invisible to both commands even though /status showed
+    it fine. This helper produces pseudo-trade records that slot into
+    the same rendering pipeline (they have no exit_* fields, so
+    _format_dayreport_section treats them as 'time \u2192 open').
+
+    Unrealized P&L is computed from live 1-min bars; if bars are
+    unavailable we fall back to 0 (fail-safe \u2014 we do NOT invent a
+    price).
+
+    Returns (long_opens, short_opens). Each list is date-filtered to
+    `target_date` (YYYY-MM-DD) when provided; otherwise all opens.
+    """
+    long_pos = tp_positions if is_tp else positions
+    short_pos = tp_short_positions if is_tp else short_positions
+
+    long_opens = []
+    for ticker, pos in long_pos.items():
+        date_str = pos.get("date", "")
+        if target_date and date_str != target_date:
+            continue
+        entry_p = pos.get("entry_price", 0)
+        shares = pos.get("shares", 0)
+        bars = fetch_1min_bars(ticker)
+        cur = bars["current_price"] if bars else None
+        if cur is not None and entry_p:
+            unreal = round((cur - entry_p) * shares, 2)
+            unreal_pct = round((cur - entry_p) / entry_p * 100, 2)
+        else:
+            unreal = 0.0
+            unreal_pct = 0.0
+        long_opens.append({
+            "ticker": ticker,
+            "side": "long",
+            "action": "OPEN",
+            "shares": shares,
+            "entry_price": entry_p,
+            "exit_price": cur if cur is not None else entry_p,
+            "pnl": unreal,
+            "pnl_pct": unreal_pct,
+            "unrealized": True,
+            "reason": "OPEN",
+            "entry_time": pos.get("entry_time", ""),
+            "entry_time_iso": pos.get("entry_time", ""),
+            "date": date_str,
+            "entry_num": pos.get("entry_count", 1),
+        })
+
+    short_opens = []
+    for ticker, pos in short_pos.items():
+        date_str = pos.get("date", "")
+        if target_date and date_str != target_date:
+            continue
+        entry_p = pos.get("entry_price", 0)
+        shares = pos.get("shares", 0)
+        bars = fetch_1min_bars(ticker)
+        cur = bars["current_price"] if bars else None
+        if cur is not None and entry_p:
+            unreal = round((entry_p - cur) * shares, 2)
+            unreal_pct = round((entry_p - cur) / entry_p * 100, 2)
+        else:
+            unreal = 0.0
+            unreal_pct = 0.0
+        short_opens.append({
+            "ticker": ticker,
+            "side": "short",
+            "action": "OPEN",
+            "shares": shares,
+            "entry_price": entry_p,
+            "exit_price": cur if cur is not None else entry_p,
+            "pnl": unreal,
+            "pnl_pct": unreal_pct,
+            "unrealized": True,
+            "reason": "OPEN",
+            "entry_time": pos.get("entry_time", ""),
+            "entry_time_iso": pos.get("entry_time", ""),
+            "date": date_str,
+        })
+
+    return long_opens, short_opens
+
+
 def _format_dayreport_section(trades, header, count_label):
     """Format one portfolio section for /dayreport (compact 2-line).
 
-    header: e.g. '📊 Day Report — Thu Apr 16' or '' for subsequent sections.
+    header: e.g. '\U0001f4ca Day Report \u2014 Thu Apr 16' or '' for
+        subsequent sections.
     count_label: e.g. 'Paper' or 'TP'.
+
+    v3.3.1: Trades flagged `unrealized=True` (from
+    _open_positions_as_pseudo_trades) are shown separately in the
+    summary header so the 'closed P&L' number doesn't include live
+    marks, and the trade list renders them as '\u2192open' via the
+    existing has_exit branch below.
     """
     SEP = "\u2500" * 26
     lines = []
@@ -4471,10 +4577,17 @@ def _format_dayreport_section(trades, header, count_label):
         lines.append(header)
 
     trades_sorted = sorted(trades, key=_dayreport_sort_key) if trades else []
-    total_pnl = sum(t.get("pnl", 0) for t in trades_sorted)
+    realized = [t for t in trades_sorted if not t.get("unrealized")]
+    unrealized = [t for t in trades_sorted if t.get("unrealized")]
+    realized_pnl = sum(t.get("pnl", 0) for t in realized)
+    unreal_pnl = sum(t.get("pnl", 0) for t in unrealized)
 
     lines.append(SEP)
-    lines.append("%s: %d trades  P&L: %s" % (count_label, len(trades_sorted), _fmt_pnl(total_pnl)))
+    lines.append("%s: %d closed  P&L: %s"
+                 % (count_label, len(realized), _fmt_pnl(realized_pnl)))
+    if unrealized:
+        lines.append("  Open: %d  Unreal: %s"
+                     % (len(unrealized), _fmt_pnl(unreal_pnl)))
     lines.append(SEP)
 
     for idx, t in enumerate(trades_sorted, 1):
@@ -4532,6 +4645,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     header = "\U0001f4ca Day Report \u2014 %s" % day_label
 
     # Fix B: Route based on which bot
+    today_str = _now_et().strftime("%Y-%m-%d")
     if is_tp_update(update):
         tp_long = [
             t for t in tp_trade_history
@@ -4541,7 +4655,16 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t for t in tp_short_trade_history
             if t.get("date", "") == target_str
         ]
-        all_tp = tp_long + tp_short
+        # v3.3.1: include currently-open positions as pseudo-trades
+        # when the target date matches today. Past-date reports only
+        # show completed history.
+        if target_str == today_str:
+            tp_long_open, tp_short_open = _open_positions_as_pseudo_trades(
+                is_tp=True, target_date=target_str,
+            )
+        else:
+            tp_long_open, tp_short_open = [], []
+        all_tp = tp_long + tp_short + tp_long_open + tp_short_open
         if not all_tp:
             await update.effective_message.reply_text(
                 "No trades on {date}.".format(date=target_str),
@@ -4581,7 +4704,15 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t for t in short_trade_history
         if t.get("date", "") == target_str
     ]
-    all_paper = paper_long + paper_short
+    # v3.3.1: include currently-open positions as pseudo-trades when
+    # target date matches today. Past-date reports stay history-only.
+    if target_str == today_str:
+        paper_long_open, paper_short_open = _open_positions_as_pseudo_trades(
+            is_tp=False, target_date=target_str,
+        )
+    else:
+        paper_long_open, paper_short_open = [], []
+    all_paper = paper_long + paper_short + paper_long_open + paper_short_open
 
     if not all_paper:
         await update.effective_message.reply_text(
@@ -5242,8 +5373,19 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # /perf COMMAND (Feature 5)
 # ============================================================
-def _perf_compute(long_history, short_hist, date_filter, single_day, today, label, perf_label):
-    """Synchronous helper: crunch all perf stats + chart. Runs in executor."""
+def _perf_compute(long_history, short_hist, date_filter, single_day, today,
+                  label, perf_label, long_opens=None, short_opens=None):
+    """Synchronous helper: crunch all perf stats + chart. Runs in executor.
+
+    v3.3.1: `long_opens` / `short_opens` are lists of pseudo-trades for
+    currently-open positions (see `_open_positions_as_pseudo_trades`).
+    They are NOT folded into the realized-performance math (would
+    pollute win-rate / totals with live marks). They render as a
+    dedicated 'Open Positions' section so the user can see unrealized
+    P&L alongside historical stats.
+    """
+    long_opens = long_opens or []
+    short_opens = short_opens or []
     SEP = "\u2500" * 34
 
     if single_day:
@@ -5260,6 +5402,35 @@ def _perf_compute(long_history, short_hist, date_filter, single_day, today, labe
         "\U0001f4c8 Performance \u2014 %s \u2014 %s" % (label, perf_label),
         SEP,
     ]
+
+    # Open Positions section (v3.3.1)
+    if long_opens or short_opens:
+        lines.append("\U0001f4cc Open Positions")
+        total_unreal = 0.0
+        for p in long_opens:
+            tk = p.get("ticker", "?")
+            ep = p.get("entry_price", 0)
+            sh = p.get("shares", 0)
+            cp = p.get("exit_price", ep)
+            pl = p.get("pnl", 0)
+            pct = p.get("pnl_pct", 0)
+            total_unreal += pl
+            lines.append("  \u2191 %s  %d sh  $%.2f \u2192 $%.2f"
+                         % (tk, sh, ep, cp))
+            lines.append("      Unreal: $%+.2f (%+.2f%%)" % (pl, pct))
+        for p in short_opens:
+            tk = p.get("ticker", "?")
+            ep = p.get("entry_price", 0)
+            sh = p.get("shares", 0)
+            cp = p.get("exit_price", ep)
+            pl = p.get("pnl", 0)
+            pct = p.get("pnl_pct", 0)
+            total_unreal += pl
+            lines.append("  \u2193 %s  %d sh  $%.2f \u2192 $%.2f"
+                         % (tk, sh, ep, cp))
+            lines.append("      Unreal: $%+.2f (%+.2f%%)" % (pl, pct))
+        lines.append("  Total Unrealized: $%+.2f" % total_unreal)
+        lines.append(SEP)
 
     # LONG Performance
     lines.append("\U0001f4c8 LONG Performance")
@@ -5349,7 +5520,14 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         short_hist = short_trade_history
         label = "Paper Portfolio"
 
-    if not long_history and not short_hist:
+    # v3.3.1: also consider currently-open positions so an open-but-
+    # uncovered entry (which is invisible in trade_history until exit)
+    # doesn't make /perf claim there's nothing to show.
+    long_opens, short_opens = _open_positions_as_pseudo_trades(
+        is_tp=is_tp_update(update),
+    )
+
+    if not long_history and not short_hist and not long_opens and not short_opens:
         await update.message.reply_text("No completed trades yet.", reply_markup=_menu_button())
         return
 
@@ -5377,7 +5555,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             loop.run_in_executor(
                 None, _perf_compute,
                 long_history, short_hist, date_filter, single_day,
-                today, label, perf_label,
+                today, label, perf_label, long_opens, short_opens,
             ),
             timeout=10.0,
         )

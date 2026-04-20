@@ -4,6 +4,66 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.3.1 — Hotfix: Open Positions in /perf + /dayreport (2026-04-20)
+
+Live bug surfaced right after v3.3.0 deployed. NVDA short fired at
+10:07 CDT (10 shares @ $198.00, stop $202.58) and `/status` correctly
+showed the open position, but `/perf` and `/dayreport` both reported
+"No completed trades yet." Paper cash also reflected the $1,980 short
+sale proceeds ($101,980 vs $100,000 start), proving state was intact.
+
+**Root cause**
+- `short_trade_history` (and `trade_history` on the long side) is only
+  appended on EXIT — i.e., when a position is covered / sold. On entry,
+  the bot writes to `short_positions[ticker]` (or `positions[ticker]`)
+  and credits cash, but does not append to the history list.
+- `/status` reads the live positions dicts directly, so it sees open
+  trades fine.
+- `/perf` and `/dayreport` only read the history lists, so an open
+  position with no prior closes looks like "no trades" to both views.
+- Day-of trading with all positions still open was therefore invisible
+  from the two commands most likely to be checked.
+
+As a secondary effect, the DATA LOSS GUARD in `save_paper_state()` was
+warning on every tick because it only checked `not trade_history` —
+ignoring open positions and the short history entirely. It interpreted
+"NVDA short open, cash != start" as a corrupted state.
+
+**Fix**
+- New helper `_open_positions_as_pseudo_trades(is_tp, target_date)`
+  builds synthetic trade records from the live `positions` /
+  `short_positions` dicts with current unrealized P&L. Records are
+  marked `unrealized=True` and omit `exit_time*` fields so the existing
+  formatter renders them as `→open`.
+- `cmd_dayreport` now merges opens into both paper and TP paths when
+  the target date is today. Past-date reports are unchanged
+  (history-only), since past days have no live opens to fold in.
+- `_format_dayreport_section` summary line now splits realized vs
+  unrealized: `Paper: N closed  P&L: $X` followed by a conditional
+  `Open: M  Unreal: $Y` when opens exist.
+- `_perf_compute` / `cmd_perf` render a new **📌 Open Positions**
+  section at the top of `/perf` with per-ticker entry → current price,
+  unrealized $ / %, and a total unrealized line. Opens are NOT folded
+  into realized win-rate math — win-rate still reflects only closed
+  trades.
+- `cmd_perf` "No completed trades yet" gate relaxed to also check for
+  any open positions before short-circuiting.
+- `save_paper_state()` DATA LOSS GUARD tightened: now checks
+  `has_any_activity = trade_history or short_trade_history or
+  positions or short_positions`. Only warns when literally no activity
+  exists and cash drifted from start. Eliminates the false-positive
+  spam from this morning.
+
+**Not changed**
+- Zero trade-logic changes. Entry gates, exits, adaptive bounds, hard
+  floors, sizing, trail — all untouched.
+- No new state, no new persistence, no new env vars.
+- v3.3.0 Proximity Scanner, v3.2.1 tz-naive fix, and v3.2.0 Confluence
+  Shield behavior all unchanged.
+- All existing unit tests still pass.
+
+---
+
 ## v3.3.0 — Proximity Scanner (2026-04-20)
 
 Adds a `/proximity` command that answers the question "how close are we to
