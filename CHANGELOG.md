@@ -4,6 +4,32 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.2 — Dashboard hotfix #2 (2026-04-20)
+
+v3.4.1 made the dashboard reachable, but every request to `/api/state`
+(and `/stream`) returned 500. Root cause: `_ssm()` in
+`dashboard_server.py` did `import stock_spike_monitor as m` from inside
+an executor thread. Because the bot is launched via
+`python stock_spike_monitor.py`, the running module lives in
+`sys.modules['__main__']`, not under its file name. So that import
+*re-executed* the entire bot file under a second module name —
+including the top-level entry point and `_run_both()`, which calls
+`loop.add_signal_handler(...)`. That fails outside the main thread:
+
+```
+RuntimeError: set_wakeup_fd only works in main thread of the main interpreter
+```
+
+**Fix**
+
+- `_ssm()` now grabs the live bot module via
+  `sys.modules['__main__']` (or `sys.modules['stock_spike_monitor']`
+  if it was imported by name). Falls back to a fresh import only as a
+  last resort (tests / standalone use).
+- No re-execution of top-level bot code from worker threads.
+
+---
+
 ## v3.4.1 — Dashboard hotfix (2026-04-20)
 
 The v3.4.0 build succeeded but the dashboard never started on Railway.

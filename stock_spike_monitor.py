@@ -37,14 +37,15 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.1"
+BOT_VERSION = "3.4.2"
 RELEASE_NOTE = (
-    "v3.4.1 \u2014 dashboard hotfix.\n"
-    "\u2022 Dockerfile now copies dashboard_server.py\n"
-    "  and dashboard_static/ so the live web UI\n"
-    "  actually starts on Railway.\n"
-    "\u2022 v3.4.0 logic unchanged: read-only, env-\n"
-    "  gated, isolated thread.\n"
+    "v3.4.2 \u2014 dashboard hotfix #2.\n"
+    "\u2022 Dashboard now finds the live bot module\n"
+    "  via sys.modules['__main__'] instead of\n"
+    "  re-importing it (which re-ran top-level\n"
+    "  code and crashed in a non-main thread).\n"
+    "\u2022 /api/state and /stream now serve real\n"
+    "  bot state instead of 500.\n"
     "No trade-logic changes."
 )
 
