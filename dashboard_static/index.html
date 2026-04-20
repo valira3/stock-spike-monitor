@@ -46,7 +46,7 @@
 
   .app {
     display: grid;
-    grid-template-columns: 220px 1fr;
+    grid-template-columns: 180px 1fr;
     grid-template-rows: auto 1fr;
     height: 100dvh;
   }
@@ -225,6 +225,69 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; border: 2px solid var(--bg); }
   ::-webkit-scrollbar-thumb:hover { background: #3a4759; }
+
+  /* ═════════════════════════════════════════════════════════
+     RESPONSIVE OVERRIDES — must come AFTER all base styles
+     ════════════════════════════════════════════════════════ */
+
+  /* Tablet (≤900px): sidebar becomes a top strip; page scrolls naturally */
+  @media (max-width: 900px) {
+    html, body { overflow: auto; }
+    .app {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto 1fr;
+      height: auto; min-height: 100dvh;
+    }
+    .sidebar {
+      grid-row: 1; grid-column: 1;
+      border-right: none; border-bottom: 1px solid var(--border);
+      flex-direction: row; align-items: center; justify-content: space-between;
+      padding: 10px 14px; gap: 12px; overflow: visible;
+    }
+    .brand { padding: 0; border-bottom: none; }
+    .sidebar-footer {
+      margin: 0; padding: 0; border: none;
+      display: flex; align-items: center; gap: 14px;
+      font-size: 11px; line-height: 1.2;
+    }
+    .sidebar-footer br { display: none; }
+    .header { grid-column: 1; padding: 9px 14px; gap: 10px; flex-wrap: wrap; }
+    .h-title { font-size: 12.5px; }
+    .h-title .sep { margin: 0 6px; }
+    .h-right { gap: 8px; }
+    .h-clock { font-size: 11px; }
+    .main { grid-column: 1; padding: 12px 12px 28px; gap: 12px; overflow: visible; }
+  }
+
+  /* Phone (≤640px): stack KPIs 2-up, single-column grids, dense */
+  @media (max-width: 640px) {
+    .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .kpi { padding: 10px 12px; gap: 5px; }
+    .kpi-label { font-size: 10px; }
+    .kpi-value { font-size: 18px; }
+    .kpi-value[style*="font-size:20px"] { font-size: 14px !important; }
+    .kpi-sub { font-size: 10.5px; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; gap: 12px; }
+    .card-head { padding: 10px 12px; }
+    .card-title { font-size: 11px; }
+    .card-body { padding: 10px 12px; }
+    table { font-size: 11.5px; }
+    thead th, tbody td { padding: 7px 8px; }
+    .card-body.flush { overflow-x: auto; overscroll-behavior: contain; }
+    .prox-row { padding: 7px 12px; gap: 8px; font-size: 11.5px; }
+    .prox-ticker { width: 50px; }
+    .prox-price { width: 62px; }
+    .prox-pct { width: 64px; font-size: 10.5px; }
+    .gate { padding: 8px 12px; font-size: 11.5px; gap: 8px; }
+    .log { font-size: 10.5px; padding: 8px 12px; max-height: 200px; }
+    .h-clock { display: none; }
+    .key-val-grid { font-size: 11.5px; gap: 5px 12px; }
+  }
+
+  /* Small phone (≤380px): tighter KPI text */
+  @media (max-width: 380px) {
+    .kpi-value { font-size: 16px; }
+  }
 </style>
 </head>
 <body>
@@ -240,11 +303,6 @@
         <span class="brand-name">Spike Monitor</span>
         <span class="brand-ver" id="sb-ver">v…</span>
       </div>
-    </div>
-
-    <div class="nav-section">
-      <span class="nav-label">Overview</span>
-      <a class="nav-item active"><span class="dot"></span>Dashboard</a>
     </div>
 
     <div class="sidebar-footer">
