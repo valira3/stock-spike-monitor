@@ -37,15 +37,13 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.2.0"
+BOT_VERSION = "3.2.1"
 RELEASE_NOTE = (
-    "v3.2.0 \u2014 Dual-Index Confluence Shield.\n"
-    "\u2022 Global eject now requires BOTH SPY AND QQQ below/above AVWAP.\n"
-    "\u2022 Confirmation moved from 1m tick to FINALIZED 5m bar close.\n"
-    "\u2022 Intra-5m reclaim on either index suppresses the eject (wick-filter).\n"
-    "\u2022 Fail-safe: any missing data \u2192 stay in trade.\n"
-    "No changes to stops, trailing stops, RED_CANDLE, POLARITY_SHIFT,\n"
-    "DAILY_LOSS_LIMIT, entries, or sizing."
+    "v3.2.1 \u2014 hotfix: tz-naive datetimes in persisted state.\n"
+    "\u2022 Normalize _last_exit_time to UTC-aware on load.\n"
+    "\u2022 Fixes 'can't subtract offset-naive and offset-aware' errors\n"
+    "  that were silently killing entry checks for some tickers.\n"
+    "Confluence Shield (v3.2.0) behavior unchanged."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -926,7 +924,17 @@ def load_paper_state():
         avwap_last_ts.update(state.get("avwap_last_ts", {}))
         daily_short_entry_count.update(state.get("daily_short_entry_count", {}))
         raw_exit = state.get("last_exit_time", {})
-        _last_exit_time = {k: datetime.fromisoformat(v) for k, v in raw_exit.items()}
+        # Normalize to UTC-aware. Older persisted state may contain
+        # tz-naive ISO strings; mixing those with tz-aware datetime.now
+        # raises "can't subtract offset-naive and offset-aware" and kills
+        # entry checks silently. Assume naive == UTC (the original write
+        # site has always used datetime.now(timezone.utc)).
+        def _parse_exit_ts(v):
+            dt = datetime.fromisoformat(v)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        _last_exit_time = {k: _parse_exit_ts(v) for k, v in raw_exit.items()}
 
         # Load persisted flags
         _scan_paused = state.get("_scan_paused", False)
