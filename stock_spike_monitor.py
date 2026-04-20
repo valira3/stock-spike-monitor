@@ -37,19 +37,19 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.6"
+BOT_VERSION = "3.4.7"
 RELEASE_NOTE = (
-    "v3.4.6 \u2014 EOD report fix.\n"
-    "\u2022 Auto EOD report now includes\n"
-    "  shorts (paper + TP). Prior versions\n"
-    "  silently dropped them because the\n"
-    "  filter looked for SELL only, not COVER.\n"
-    "\u2022 All-time totals now sum long +\n"
-    "  short P&L.\n"
-    "\u2022 Per-trade list tags each row\n"
-    "  with [L] long or [S] short.\n"
-    "\u2022 New /eod command re-sends today's\n"
-    "  report on demand.\n"
+    "v3.4.7 \u2014 /log + /replay fix.\n"
+    "\u2022 /log now shows today's shorts\n"
+    "  (open and closed). Prior versions\n"
+    "  only read paper_trades for today,\n"
+    "  which never holds shorts.\n"
+    "\u2022 /replay same fix \u2014 today's open\n"
+    "  and closed shorts now appear.\n"
+    "\u2022 Day P&L line now sums longs +\n"
+    "  shorts.\n"
+    "\u2022 Open-position count includes\n"
+    "  open shorts.\n"
     "No trade-logic changes."
 )
 
@@ -4780,96 +4780,173 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
+def _collect_day_rows(target_str, today_str, is_tp):
+    """Collect all trade-log rows for one day, normalized.
+
+    Returns a list of dicts:
+      {"tm": "HH:MM", "ticker": str,
+       "action": "BUY"|"SELL"|"SHORT"|"COVER",
+       "shares": int, "price": float,
+       "stop": float (BUY/SHORT only),
+       "pnl": float (SELL/COVER only),
+       "pnl_pct": float (SELL/COVER only)}
+
+    v3.4.7: previously the same-day branch only pulled from paper_trades /
+    tp_paper_trades, which never contain shorts. Today's shorts (open or
+    closed) were silently invisible. Now we pull from four sources for the
+    today branch and synthesize rows from history for past dates.
+    """
+    rows = []
+    is_today = (target_str == today_str)
+
+    if is_tp:
+        live_long = tp_paper_trades
+        long_hist = tp_trade_history
+        short_hist = tp_short_trade_history
+        open_shorts = tp_short_positions
+    else:
+        live_long = paper_trades
+        long_hist = trade_history
+        short_hist = short_trade_history
+        open_shorts = short_positions
+
+    if is_today:
+        # Long opens + closes are already in paper_trades / tp_paper_trades
+        for t in live_long:
+            if t.get("date", "") != target_str:
+                continue
+            rows.append({
+                "tm": t.get("time", "--:--") or "--:--",
+                "ticker": t.get("ticker", "?"),
+                "action": t.get("action", "?"),
+                "shares": t.get("shares", 0) or 0,
+                "price": t.get("price", 0) or 0,
+                "stop": t.get("stop", 0) or 0,
+                "pnl": t.get("pnl", 0) or 0,
+                "pnl_pct": t.get("pnl_pct", 0) or 0,
+            })
+        # Closed shorts today — synthesize an OPEN row + a COVER row
+        for t in short_hist:
+            if t.get("date", "") != target_str:
+                continue
+            ticker = t.get("ticker", "?")
+            shares = t.get("shares", 0) or 0
+            rows.append({
+                "tm": (t.get("entry_time") or "--:--")[:5],
+                "ticker": ticker, "action": "SHORT", "shares": shares,
+                "price": t.get("entry_price", 0) or 0,
+                "stop": 0, "pnl": 0, "pnl_pct": 0,
+            })
+            rows.append({
+                "tm": (t.get("exit_time") or "--:--")[:5],
+                "ticker": ticker, "action": "COVER", "shares": shares,
+                "price": t.get("exit_price", 0) or 0,
+                "stop": 0,
+                "pnl": t.get("pnl", 0) or 0,
+                "pnl_pct": t.get("pnl_pct", 0) or 0,
+            })
+        # Currently-open shorts from today — add a SHORT open row only
+        for ticker, pos in open_shorts.items():
+            if pos.get("date", "") != target_str:
+                continue
+            rows.append({
+                "tm": (pos.get("entry_time") or "--:--")[:5],
+                "ticker": ticker, "action": "SHORT",
+                "shares": pos.get("shares", 0) or 0,
+                "price": pos.get("entry_price", 0) or 0,
+                "stop": pos.get("stop", 0) or 0,
+                "pnl": 0, "pnl_pct": 0,
+            })
+    else:
+        # Past dates: synthesize from history
+        for t in long_hist:
+            if t.get("date", "") != target_str:
+                continue
+            ticker = t.get("ticker", "?")
+            shares = t.get("shares", 0) or 0
+            rows.append({
+                "tm": (t.get("entry_time") or "--:--")[:5],
+                "ticker": ticker, "action": "BUY", "shares": shares,
+                "price": t.get("entry_price", 0) or 0,
+                "stop": 0, "pnl": 0, "pnl_pct": 0,
+            })
+            rows.append({
+                "tm": (t.get("exit_time") or "--:--")[:5],
+                "ticker": ticker, "action": "SELL", "shares": shares,
+                "price": t.get("exit_price", 0) or 0,
+                "stop": 0,
+                "pnl": t.get("pnl", 0) or 0,
+                "pnl_pct": t.get("pnl_pct", 0) or 0,
+            })
+        for t in short_hist:
+            if t.get("date", "") != target_str:
+                continue
+            ticker = t.get("ticker", "?")
+            shares = t.get("shares", 0) or 0
+            rows.append({
+                "tm": (t.get("entry_time") or "--:--")[:5],
+                "ticker": ticker, "action": "SHORT", "shares": shares,
+                "price": t.get("entry_price", 0) or 0,
+                "stop": 0, "pnl": 0, "pnl_pct": 0,
+            })
+            rows.append({
+                "tm": (t.get("exit_time") or "--:--")[:5],
+                "ticker": ticker, "action": "COVER", "shares": shares,
+                "price": t.get("exit_price", 0) or 0,
+                "stop": 0,
+                "pnl": t.get("pnl", 0) or 0,
+                "pnl_pct": t.get("pnl_pct", 0) or 0,
+            })
+
+    # Sort by time; "--:--" sinks to the end but keeps relative order.
+    rows.sort(key=lambda r: (r["tm"] == "--:--", r["tm"]))
+    return rows
+
+
 def _log_sync(target_str, day_label, is_tp):
     """Build trade log text (pure CPU — run in executor). Returns text or None."""
     SEP = "\u2500" * 34
     today_str = _now_et().strftime("%Y-%m-%d")
-
-    if is_tp:
-        if target_str == today_str:
-            today_trades = [t for t in tp_paper_trades if t.get("date", "") == target_str]
-        else:
-            today_trades = [t for t in tp_trade_history if t.get("date", "") == target_str]
-            today_trades += [t for t in tp_short_trade_history if t.get("date", "") == target_str]
-        today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
-        if not today_trades:
-            return None
-        lines = [
-            "\U0001f4cb [TP] Trade Log \u2014 %s" % day_label,
-            SEP,
-        ]
-        for t in today_trades:
-            tm = t.get("time", "--:--")
-            ticker = t.get("ticker", "?")
-            action = t.get("action", "?")
-            shares = t.get("shares", 0)
-            price = t.get("price", 0)
-            if action == "BUY":
-                stop = t.get("stop", 0)
-                lines.append(
-                    "%s  BUY   %s  %d @ $%.2f  stop $%.2f"
-                    % (tm, ticker, shares, price, stop)
-                )
-            else:
-                pnl_v = t.get("pnl", 0)
-                pnl_p = t.get("pnl_pct", 0)
-                lines.append(
-                    "%s  EXIT  %s  %d @ $%.2f  P&L: $%+.2f (%+.2f%%)"
-                    % (tm, ticker, shares, price, pnl_v, pnl_p)
-                )
-        lines.append(SEP)
-        n_closed = sum(1 for t in today_trades if t.get("action") == "SELL")
-        n_open = len(tp_positions)
-        day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
-        day_pnl_fmt = "{:+,.2f}".format(day_pnl)
-        lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
-        lines.append("Day P&L: $%s" % day_pnl_fmt)
-        return "\n".join(lines)
-
-    # Paper portfolio — use paper_trades for today, trade_history for past dates
-    if target_str == today_str:
-        today_trades = [t for t in paper_trades if t.get("date", "") == target_str]
-    else:
-        today_trades = [t for t in trade_history if t.get("date", "") == target_str]
-        today_trades += [t for t in short_trade_history if t.get("date", "") == target_str]
-    today_trades.sort(key=lambda t: t.get("time", t.get("exit_time", "")))
-
-    if not today_trades:
+    rows = _collect_day_rows(target_str, today_str, is_tp)
+    if not rows:
         return None
 
+    prefix = "[TP] " if is_tp else ""
     lines = [
-        "\U0001f4cb Trade Log \u2014 %s" % day_label,
+        "\U0001f4cb %sTrade Log \u2014 %s" % (prefix, day_label),
         SEP,
     ]
-
-    for t in today_trades:
-        tm = t.get("time", t.get("exit_time", "--:--"))
-        ticker = t.get("ticker", "?")
-        action = t.get("action", "?")
-        shares = t.get("shares", 0)
-        price = t.get("price", t.get("exit_price", 0))
-        if action == "BUY":
-            stop = t.get("stop", 0)
+    OPENS = ("BUY", "SHORT")
+    CLOSES = ("SELL", "COVER")
+    n_closed = 0
+    day_pnl = 0.0
+    for r in rows:
+        tm = r["tm"]
+        ticker = r["ticker"]
+        action = r["action"]
+        shares = r["shares"]
+        price = r["price"]
+        if action in OPENS:
+            stop = r["stop"]
             lines.append(
-                "%s  BUY   %s  %d @ $%.2f  stop $%.2f"
-                % (tm, ticker, shares, price, stop)
+                "%s  %-5s %s  %d @ $%.2f  stop $%.2f"
+                % (tm, action, ticker, shares, price, stop)
             )
         else:
-            pnl_val = t.get("pnl", 0)
-            pnl_pct = t.get("pnl_pct", 0)
+            n_closed += 1
+            pnl_v = r["pnl"]
+            pnl_p = r["pnl_pct"]
+            day_pnl += pnl_v
             lines.append(
-                "%s  EXIT  %s  %d @ $%.2f  P&L: $%+.2f (%+.2f%%)"
-                % (tm, ticker, shares, price, pnl_val, pnl_pct)
+                "%s  %-5s %s  %d @ $%.2f  P&L: $%+.2f (%+.2f%%)"
+                % (tm, action, ticker, shares, price, pnl_v, pnl_p)
             )
 
+    n_open = (len(tp_positions) + len(tp_short_positions)) if is_tp \
+             else (len(positions) + len(short_positions))
     lines.append(SEP)
-
-    n_closed = sum(1 for t in today_trades if t.get("action") == "SELL")
-    n_open = len(positions)
-    day_pnl = sum(t.get("pnl", 0) for t in today_trades if t.get("action") == "SELL")
     lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
     lines.append("Day P&L: ${:+,.2f}".format(day_pnl))
-
     return "\n".join(lines)
 
 
@@ -4961,10 +5038,28 @@ def _replay_sync(target_str, day_label, is_tp):
                 "pnl": t.get("pnl", 0) or 0,
             })
 
+    def _push_open_shorts(src):
+        # Currently-open short positions on the target date — add a SHORT
+        # row only (no close row yet). v3.4.7: replay missed today's open
+        # shorts because paper_trades never holds shorts.
+        for ticker, pos in src.items():
+            if pos.get("date", "") != target_str:
+                continue
+            rows.append({
+                "tm": (pos.get("entry_time") or "--:--")[:5],
+                "ticker": ticker,
+                "action": "SHORT",
+                "price": pos.get("entry_price", 0) or 0,
+                "pnl": 0,
+            })
+
     if is_tp:
         prefix = "[TP] "
         if target_str == today_str:
             _push_live(tp_paper_trades)
+            # v3.4.7: today's shorts (closed + open) live elsewhere
+            _push_history(tp_short_trade_history, "SHORT", "COVER")
+            _push_open_shorts(tp_short_positions)
         else:
             _push_history(tp_trade_history, "BUY", "SELL")
             _push_history(tp_short_trade_history, "SHORT", "COVER")
@@ -4972,6 +5067,9 @@ def _replay_sync(target_str, day_label, is_tp):
         prefix = ""
         if target_str == today_str:
             _push_live(paper_trades)
+            # v3.4.7: today's shorts (closed + open) live elsewhere
+            _push_history(short_trade_history, "SHORT", "COVER")
+            _push_open_shorts(short_positions)
         else:
             _push_history(trade_history, "BUY", "SELL")
             _push_history(short_trade_history, "SHORT", "COVER")

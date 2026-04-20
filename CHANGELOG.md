@@ -4,6 +4,31 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.7 — /log + /replay fix: include today's shorts (2026-04-20)
+
+Sister bug to v3.4.6. The `/log` and `/replay` commands' **today branch**
+only read from `paper_trades` (or `tp_paper_trades`), which never holds
+shorts. Result: on a short-only day, both commands reported “No trades
+on …”. Past-date queries already worked because that branch reads from
+`trade_history` + `short_trade_history`.
+
+**Fixes**
+
+- New `_collect_day_rows(target_str, today_str, is_tp)` helper rebuilds
+  `/log` rows from up to four sources for the today branch:
+  long opens/closes (`paper_trades`), closed shorts
+  (`short_trade_history`, synthesized OPEN + COVER rows), and
+  currently-open shorts (`short_positions`, OPEN row only).
+- `/replay` now also reads `short_trade_history` and `short_positions`
+  on its today branch (was history-only before).
+- The `/log` Day P&L line now sums **longs + shorts** (was longs only).
+- Open-position count now includes open shorts.
+- Past-date branches were already correct — unchanged.
+
+No trade-logic changes — only the report builders.
+
+---
+
 ## v3.4.6 — EOD report fix: include shorts (2026-04-20)
 
 The auto EOD report sent at 15:58 ET was reporting 0 trades / $0 P&L on
