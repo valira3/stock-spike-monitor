@@ -37,15 +37,17 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.3.2"
+BOT_VERSION = "3.3.3"
 RELEASE_NOTE = (
-    "v3.3.2 \u2014 /proximity UX polish.\n"
-    "\u2022 \U0001f504 Refresh button (same pattern as /status).\n"
-    "\u2022 Current price shown next to each ticker in the\n"
-    "  new Prices & Polarity row.\n"
-    "\u2022 Open-position marker: \U0001f7e2 long / \U0001f534 short\n"
-    "  on ticker tags in all three sections.\n"
-    "Read-only diagnostic. No trade-logic changes."
+    "v3.3.3 \u2014 hotfix: short accounting in portfolio snapshot.\n"
+    "\u2022 Equity math no longer double-counts short-sale\n"
+    "  proceeds (which live in Cash). Shorts now reduce\n"
+    "  equity by current buy-back liability, matching the\n"
+    "  Unrealized P&L line.\n"
+    "\u2022 Snapshot now shows separate Long MV + Short Liab\n"
+    "  lines so the math is auditable.\n"
+    "\u2022 /status Est. Value also corrected.\n"
+    "No trade-logic changes."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -3812,6 +3814,12 @@ def _dashboard_sync(is_tp):
                 total_value += bars["current_price"] * pos["shares"]
             else:
                 total_value += pos["entry_price"] * pos["shares"]
+        # Shorts: subtract current buy-back liability (the proceeds are
+        # already in paper_cash). See short-accounting note on /positions.
+        for s_ticker, s_pos in short_positions.items():
+            s_bars = fetch_1min_bars(s_ticker)
+            s_cur = s_bars["current_price"] if s_bars else s_pos["entry_price"]
+            total_value -= s_cur * s_pos["shares"]
 
         paper_cash_fmt = format(paper_cash, ",.2f")
         total_value_fmt = format(total_value, ",.2f")
@@ -3963,22 +3971,31 @@ def _status_text_sync(is_tp):
         tp_cash_fmt = format(tp_paper_cash, ",.2f")
         lines.append("TP Cash: $%s" % tp_cash_fmt)
 
-        # Portfolio equity summary
+        # Portfolio equity summary.
+        # Short accounting: on entry, proceeds (entry_px * shares) are
+        # credited to cash AND we owe a liability equal to the current
+        # buy-back cost (current_px * shares). The equity contribution
+        # of a short is therefore short_unreal = (entry_px - current_px)
+        # * shares, NOT entry_px * shares. Previously we added
+        # entry_px * shares to market value, which double-counted the
+        # short-sale proceeds and inflated equity by roughly the short
+        # principal.
         tp_short_unreal = 0.0
-        tp_short_mkt_val = 0.0
+        tp_short_liability = 0.0  # current buy-back cost
         for s_ticker, s_pos in tp_short_positions.items():
             s_bars = fetch_1min_bars(s_ticker)
-            if s_bars:
-                tp_short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
-            tp_short_mkt_val += s_pos["entry_price"] * s_pos["shares"]
+            cur_px = s_bars["current_price"] if s_bars else s_pos["entry_price"]
+            tp_short_unreal += (s_pos["entry_price"] - cur_px) * s_pos["shares"]
+            tp_short_liability += cur_px * s_pos["shares"]
         tp_all_unreal = total_unreal_pnl + tp_short_unreal
-        tp_all_mkt_val = total_market_value + tp_short_mkt_val
-        tp_equity = tp_paper_cash + tp_all_mkt_val
+        tp_equity = tp_paper_cash + total_market_value - tp_short_liability
         tp_vs_start = tp_equity - PAPER_STARTING_CAPITAL
         lines.append(sep)
         lines.append("\U0001f4bc Portfolio Snapshot")
         lines.append("  Cash:          $%s" % format(tp_paper_cash, ",.2f"))
-        lines.append("  Market Value:  $%s" % format(tp_all_mkt_val, ",.2f"))
+        lines.append("  Long MV:       $%s" % format(total_market_value, ",.2f"))
+        if tp_short_liability > 0:
+            lines.append("  Short Liab:    $%s" % format(tp_short_liability, ",.2f"))
         lines.append("  Total Equity:  $%s" % format(tp_equity, ",.2f"))
         lines.append("  Unrealized P&L:    $%+.2f" % tp_all_unreal)
         lines.append("  vs Start:        $%+.2f  (started at $%s)"
@@ -4076,22 +4093,24 @@ def _status_text_sync(is_tp):
 
     lines.append("Paper Cash:           $%s" % format(paper_cash, ",.2f"))
 
-    # Portfolio equity summary
+    # Portfolio equity summary. See note in the TP branch above for the
+    # short accounting fix (v3.3.3 hotfix).
     short_unreal = 0.0
-    short_mkt_val = 0.0
+    short_liability = 0.0
     for s_ticker, s_pos in short_positions.items():
         s_bars = fetch_1min_bars(s_ticker)
-        if s_bars:
-            short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
-        short_mkt_val += s_pos["entry_price"] * s_pos["shares"]
+        cur_px = s_bars["current_price"] if s_bars else s_pos["entry_price"]
+        short_unreal += (s_pos["entry_price"] - cur_px) * s_pos["shares"]
+        short_liability += cur_px * s_pos["shares"]
     all_unreal = total_unreal_pnl + short_unreal
-    all_mkt_val = total_market_value + short_mkt_val
-    equity = paper_cash + all_mkt_val
+    equity = paper_cash + total_market_value - short_liability
     vs_start = equity - PAPER_STARTING_CAPITAL
     lines.append(sep)
     lines.append("\U0001f4bc Portfolio Snapshot")
     lines.append("  Cash:          $%s" % format(paper_cash, ",.2f"))
-    lines.append("  Market Value:  $%s" % format(all_mkt_val, ",.2f"))
+    lines.append("  Long MV:       $%s" % format(total_market_value, ",.2f"))
+    if short_liability > 0:
+        lines.append("  Short Liab:    $%s" % format(short_liability, ",.2f"))
     lines.append("  Total Equity:  $%s" % format(equity, ",.2f"))
     lines.append("  Unrealized P&L:    $%+.2f" % all_unreal)
     lines.append("  vs Start:        $%+.2f  (started at $%s)"
@@ -4242,22 +4261,27 @@ def _build_positions_text(is_tp=False):
                              % (s_ticker, s_entry, s_pos["stop"]))
     lines.append("%s:           $%s" % (cash_label, format(cash, ",.2f")))
 
-    # Portfolio equity summary
+    # Portfolio equity summary. Short accounting fix (v3.3.3): the
+    # short-sale proceeds are already in cash; the short contributes
+    # only its unrealized P&L to equity. Previously we added
+    # entry_price * shares as "market value", which double-counted
+    # the proceeds and inflated equity by roughly the short principal.
     short_unreal = 0.0
-    short_mkt_val = 0.0
+    short_liability = 0.0
     for s_ticker, s_pos in short_dict.items():
         s_bars = fetch_1min_bars(s_ticker)
-        if s_bars:
-            short_unreal += (s_pos["entry_price"] - s_bars["current_price"]) * s_pos["shares"]
-        short_mkt_val += s_pos["entry_price"] * s_pos["shares"]
+        cur_px = s_bars["current_price"] if s_bars else s_pos["entry_price"]
+        short_unreal += (s_pos["entry_price"] - cur_px) * s_pos["shares"]
+        short_liability += cur_px * s_pos["shares"]
     all_unreal = total_unreal + short_unreal
-    all_mkt_val = total_market_value + short_mkt_val
-    equity = cash + all_mkt_val
+    equity = cash + total_market_value - short_liability
     vs_start = equity - PAPER_STARTING_CAPITAL
     lines.append(sep)
     lines.append("\U0001f4bc Portfolio Snapshot")
     lines.append("  Cash:          $%s" % format(cash, ",.2f"))
-    lines.append("  Market Value:  $%s" % format(all_mkt_val, ",.2f"))
+    lines.append("  Long MV:       $%s" % format(total_market_value, ",.2f"))
+    if short_liability > 0:
+        lines.append("  Short Liab:    $%s" % format(short_liability, ",.2f"))
     lines.append("  Total Equity:  $%s" % format(equity, ",.2f"))
     lines.append("  Unrealized P&L:    $%+.2f" % all_unreal)
     lines.append("  vs Start:        $%+.2f  (started at $%s)"

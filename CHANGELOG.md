@@ -4,6 +4,83 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.3.3 — Hotfix: short accounting in portfolio snapshot (2026-04-20)
+
+NVDA short fired this morning at $198.00 on 10 shares. `/positions`
+showed the correct $-5.00 unrealized P&L line, but the Portfolio
+Snapshot below it read:
+
+```
+Cash:           $101,980.00
+Market Value:   $1,980.00
+Total Equity:   $103,960.00
+Unrealized P&L:      -$5.00
+vs Start:         +$3,960.00   (started at $100,000)
+```
+
+That $3,960 gain is bogus. The snapshot was ~$3,965 too high relative
+to reality.
+
+**Root cause**
+
+Short accounting. On entry, we credit `entry_price * shares` to
+`paper_cash` — correctly, that's the proceeds of the short sale. But
+the snapshot math also **added** `entry_price * shares` to the
+"Market Value" field and then summed `cash + market_value` for
+equity. That double-counts the proceeds and silently treats a short
+as a long with the same dollar exposure.
+
+The correct mental model:
+- Short proceeds live in Cash (already credited on entry).
+- The short itself is a **liability** equal to the current buy-back
+  cost: `current_price * shares`.
+- Equity contribution of an open short = `entry_price * shares -
+  current_price * shares` = `short_unreal`.
+
+So the correct equation is:
+```
+equity = cash + long_market_value - short_liability
+```
+not
+```
+equity = cash + long_market_value + short_entry_cost_as_if_long  ❌
+```
+
+**Fix**
+- All three portfolio-snapshot sites (`/positions` paper, `/positions`
+  TP, and the generic `_build_positions_text` used by the refresh
+  callback) rewritten to compute `short_liability = sum(current_px *
+  shares)` per open short and subtract it from equity.
+- Snapshot output replaces the single `Market Value` line with two
+  clearer lines so the math is auditable:
+  - `Long MV: $X` — long-side market value.
+  - `Short Liab: $Y` — current buy-back cost (only shown when >0).
+- `/status` Est. Value for the paper portfolio also corrected to
+  subtract short liability (previously ignored shorts entirely).
+- `Unrealized P&L` line already used the right formula; unchanged.
+- `vs Start` now derived from the corrected equity, so it matches
+  `Unrealized P&L` to the cent when there are no closed trades.
+
+**What the NVDA screen now shows**
+```
+Cash:        $101,980.00
+Long MV:         $0.00
+Short Liab:  $1,985.00
+Total Equity: $99,995.00
+Unrealized P&L:     -$5.00
+vs Start:           -$5.00   (started at $100,000)
+```
+
+**Not changed**
+- Zero trade-logic changes. No entry gates, exits, stops, trails,
+  sizing, adaptive bounds, or safety floors touched.
+- No state / persistence / env var changes.
+- v3.3.2 /proximity UX, v3.3.1 open-positions-in-perf, v3.3.0
+  proximity scanner all unchanged.
+- All 14 existing unit tests still pass.
+
+---
+
 ## v3.3.2 — /proximity UX polish (2026-04-20)
 
 Small UX pass on the v3.3.0 proximity scanner based on live use of the
