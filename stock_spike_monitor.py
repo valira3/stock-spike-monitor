@@ -37,19 +37,19 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.5"
+BOT_VERSION = "3.4.6"
 RELEASE_NOTE = (
-    "v3.4.5 \u2014 dashboard cleanup + regime\n"
-    "  terminology now matches the bot.\n"
-    "\u2022 Regime KPI shows breadth\n"
-    "  (BULLISH / NEUTRAL / BEARISH).\n"
-    "\u2022 New Session KPI shows market mode\n"
-    "  (POWER / CHOP / OPEN / DEFENSIVE /\n"
-    "  CLOSED) with reason underneath.\n"
-    "\u2022 Gate KPI now reads READY / WAIT /\n"
-    "  PAUSED / HALTED instead of LIVE.\n"
-    "\u2022 System card removed; Observer\n"
-    "  shows breadth + RSI numeric detail.\n"
+    "v3.4.6 \u2014 EOD report fix.\n"
+    "\u2022 Auto EOD report now includes\n"
+    "  shorts (paper + TP). Prior versions\n"
+    "  silently dropped them because the\n"
+    "  filter looked for SELL only, not COVER.\n"
+    "\u2022 All-time totals now sum long +\n"
+    "  short P&L.\n"
+    "\u2022 Per-trade list tags each row\n"
+    "  with [L] long or [S] short.\n"
+    "\u2022 New /eod command re-sends today's\n"
+    "  report on demand.\n"
     "No trade-logic changes."
 )
 
@@ -2960,96 +2960,96 @@ def send_or_notification():
 # ============================================================
 # AUTO EOD REPORT (Feature 4)
 # ============================================================
-def send_eod_report():
-    """Auto EOD report at 15:58 ET. Paper → send_telegram(), TP → send_tp_telegram()."""
-    SEP = "\u2500" * 34
-    now_et = _now_et()
-    today = now_et.strftime("%Y-%m-%d")
+def _build_eod_report(today: str, portfolio: str) -> str:
+    """Build EOD report text for one portfolio. portfolio in {'paper','tp'}.
 
-    # --- Paper report ---
-    today_sells = [
-        t for t in paper_trades
-        if t.get("action") == "SELL"
-    ]
-    n_trades = len(today_sells)
-    wins = sum(1 for t in today_sells if t.get("pnl", 0) >= 0)
+    v3.4.6: includes shorts. Previously only counted long SELLs (action='SELL'
+    in paper_trades), so paper short COVERs (logged to short_trade_history
+    with action='COVER') were silently dropped. All-time totals also excluded
+    short P&L. This rebuilds the report from trade_history + short_trade_history
+    so longs and shorts are both counted, with a per-trade label.
+    """
+    SEP = "\u2500" * 34
+    if portfolio == "paper":
+        long_hist = trade_history
+        short_hist = short_trade_history
+        title = "PAPER PORTFOLIO"
+    else:
+        long_hist = tp_trade_history
+        short_hist = tp_short_trade_history
+        title = "TP PORTFOLIO"
+
+    # Today's closed trades (longs + shorts), filtered by date
+    today_longs = [t for t in long_hist if t.get("date", "") == today]
+    today_shorts = [t for t in short_hist if t.get("date", "") == today]
+    today_all = today_longs + today_shorts
+
+    n_trades = len(today_all)
+    n_long = len(today_longs)
+    n_short = len(today_shorts)
+    wins = sum(1 for t in today_all if (t.get("pnl") or 0) >= 0)
     losses = n_trades - wins
     win_rate = (wins / n_trades * 100) if n_trades > 0 else 0
-    day_pnl = sum(t.get("pnl", 0) for t in today_sells)
+    day_pnl = sum((t.get("pnl") or 0) for t in today_all)
 
-    # All-time from trade_history
-    all_time_pnl = sum(t.get("pnl", 0) for t in trade_history)
-    all_wins = sum(1 for t in trade_history if t.get("pnl", 0) >= 0)
-    all_losses = len(trade_history) - all_wins
-    all_wr = (all_wins / len(trade_history) * 100) if trade_history else 0
+    # All-time across longs + shorts
+    all_long_pnl = sum((t.get("pnl") or 0) for t in long_hist)
+    all_short_pnl = sum((t.get("pnl") or 0) for t in short_hist)
+    all_time_pnl = all_long_pnl + all_short_pnl
+    all_wins = (
+        sum(1 for t in long_hist if (t.get("pnl") or 0) >= 0)
+        + sum(1 for t in short_hist if (t.get("pnl") or 0) >= 0)
+    )
+    all_n = len(long_hist) + len(short_hist)
+    all_losses = all_n - all_wins
+    all_wr = (all_wins / all_n * 100) if all_n else 0
 
     lines = [
         "\U0001f4ca EOD Report \u2014 %s" % today,
         SEP,
-        "PAPER PORTFOLIO",
-        "  Trades today:  %d" % n_trades,
+        title,
+        "  Trades today:  %d  (L:%d S:%d)" % (n_trades, n_long, n_short),
         "  Wins / Losses: %d / %d" % (wins, losses),
         "  Win Rate:      %.1f%%" % win_rate,
         "  Day P&L:      $%+.2f" % day_pnl,
         SEP,
     ]
-    for t in today_sells:
+    # Sort by exit time so the per-trade list reads chronologically
+    today_all_sorted = sorted(
+        today_all,
+        key=lambda t: t.get("exit_time_iso") or t.get("exit_time") or "",
+    )
+    for t in today_all_sorted:
         tk = t.get("ticker", "?")
         sh = t.get("shares", 0)
-        t_pnl = t.get("pnl", 0)
-        t_pct = t.get("pnl_pct", 0)
+        t_pnl = t.get("pnl") or 0
+        t_pct = t.get("pnl_pct") or 0
         t_reason = t.get("reason", "?")
-        lines.append("  %s  %dsh  $%+.2f (%+.1f%%)  %s" % (tk, sh, t_pnl, t_pct, t_reason))
+        side = (t.get("side") or "long").upper()
+        side_tag = "S" if side == "SHORT" else "L"
+        lines.append("  [%s] %s  %dsh  $%+.2f (%+.1f%%)  %s"
+                     % (side_tag, tk, sh, t_pnl, t_pct, t_reason))
     lines.append(SEP)
     lines.append("  All-time P&L:  $%+.2f" % all_time_pnl)
-    lines.append("  All-time W/L:  %d / %d  (%.1f%%)" % (all_wins, all_losses, all_wr))
+    lines.append("  All-time W/L:  %d / %d  (%.1f%%)"
+                 % (all_wins, all_losses, all_wr))
 
-    paper_msg = "\n".join(lines)
-    if len(paper_msg) > 4000:
-        paper_msg = paper_msg[:3990] + "\n... (truncated)"
-    send_telegram(paper_msg)
+    msg = "\n".join(lines)
+    if len(msg) > 4000:
+        msg = msg[:3990] + "\n... (truncated)"
+    return msg
 
-    # --- TP report ---
-    tp_today_sells = [
-        t for t in tp_paper_trades
-        if t.get("action") == "SELL" and t.get("date", "") == today
-    ]
-    tp_n = len(tp_today_sells)
-    tp_wins = sum(1 for t in tp_today_sells if t.get("pnl", 0) >= 0)
-    tp_losses_n = tp_n - tp_wins
-    tp_wr = (tp_wins / tp_n * 100) if tp_n > 0 else 0
-    tp_day_pnl = sum(t.get("pnl", 0) for t in tp_today_sells)
 
-    tp_all_pnl = sum(t.get("pnl", 0) for t in tp_trade_history)
-    tp_all_wins = sum(1 for t in tp_trade_history if t.get("pnl", 0) >= 0)
-    tp_all_losses = len(tp_trade_history) - tp_all_wins
-    tp_all_wr = (tp_all_wins / len(tp_trade_history) * 100) if tp_trade_history else 0
+def send_eod_report():
+    """Auto EOD report at 15:58 ET. Paper → send_telegram(), TP → send_tp_telegram().
 
-    tp_lines = [
-        "\U0001f4ca EOD Report \u2014 %s" % today,
-        SEP,
-        "TP PORTFOLIO",
-        "  Trades today:  %d" % tp_n,
-        "  Wins / Losses: %d / %d" % (tp_wins, tp_losses_n),
-        "  Win Rate:      %.1f%%" % tp_wr,
-        "  Day P&L:      $%+.2f" % tp_day_pnl,
-        SEP,
-    ]
-    for t in tp_today_sells:
-        tk = t.get("ticker", "?")
-        sh = t.get("shares", 0)
-        t_pnl = t.get("pnl", 0)
-        t_pct = t.get("pnl_pct", 0)
-        t_reason = t.get("reason", "?")
-        tp_lines.append("  %s  %dsh  $%+.2f (%+.1f%%)  %s" % (tk, sh, t_pnl, t_pct, t_reason))
-    tp_lines.append(SEP)
-    tp_lines.append("  All-time P&L:  $%+.2f" % tp_all_pnl)
-    tp_lines.append("  All-time W/L:  %d / %d  (%.1f%%)" % (tp_all_wins, tp_all_losses, tp_all_wr))
-
-    tp_report_msg = "\n".join(tp_lines)
-    if len(tp_report_msg) > 4000:
-        tp_report_msg = tp_report_msg[:3990] + "\n... (truncated)"
-    send_tp_telegram(tp_report_msg)
+    v3.4.6: includes paper + TP shorts (previously dropped because the report
+    filtered paper_trades for action='SELL', which excludes COVER records).
+    """
+    now_et = _now_et()
+    today = now_et.strftime("%Y-%m-%d")
+    send_telegram(_build_eod_report(today, "paper"))
+    send_tp_telegram(_build_eod_report(today, "tp"))
 
 
 # ============================================================
@@ -4660,6 +4660,13 @@ async def _reply_in_chunks(message, text, max_len=3800, reply_markup=None):
         length += line_len
     if chunk:
         await message.reply_text('\n'.join(chunk), reply_markup=reply_markup)
+
+
+async def cmd_eod(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Re-send the EOD report for today on demand (paper or TP, based on chat)."""
+    today = _now_et().strftime("%Y-%m-%d")
+    portfolio = "tp" if is_tp_update(update) else "paper"
+    await update.message.reply_text(_build_eod_report(today, portfolio))
 
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6777,6 +6784,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(CommandHandler("replay", cmd_replay))
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
+    app.add_handler(CommandHandler("eod", cmd_eod))
     app.add_handler(CommandHandler("version", cmd_version))
     app.add_handler(CommandHandler("mode", cmd_mode))
     app.add_handler(CommandHandler("reset", cmd_reset))

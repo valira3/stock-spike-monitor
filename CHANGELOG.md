@@ -4,6 +4,32 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.6 — EOD report fix: include shorts (2026-04-20)
+
+The auto EOD report sent at 15:58 ET was reporting 0 trades / $0 P&L on
+days when only shorts had closed. Root cause: the report filter only
+looked at `paper_trades` for `action='SELL'`. Paper short closes are
+logged with `action='COVER'` and live in `short_trade_history`, not
+`paper_trades`. They were silently dropped. The same bug affected the TP
+report. All-time totals also excluded short P&L.
+
+**Fixes**
+
+- EOD report now rebuilds from `trade_history` (longs) +
+  `short_trade_history` (shorts) for paper, and the TP equivalents for
+  TP. Both portfolios filter today's trades by `date == today` from the
+  full history lists.
+- All-time P&L and W/L now sum **longs + shorts** (was longs only).
+- Trade-count line now breaks out by side: `Trades today: 1 (L:0 S:1)`.
+- Per-trade rows are tagged `[L]` or `[S]` and sorted by exit time.
+- New **`/eod`** command re-sends today's report on demand (paper or TP
+  depending on which chat you use).
+
+No trade-logic changes — only the report-building function and a new
+command handler.
+
+---
+
 ## v3.4.5 — Dashboard cleanup + regime terminology (2026-04-20)
 
 The dashboard had nine pieces of duplicated information and used
