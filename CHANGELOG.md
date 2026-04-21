@@ -4,6 +4,49 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.14 — TradersPost wiring fix (2026-04-20)
+
+Webhook bot is wired to TradersPost for real this time. Previously
+`PAPER_MODE = True` was hardcoded at module load, so every call to
+`send_traderspost_order()` returned `None` before touching the
+network — no webhooks ever fired regardless of env vars. Separately,
+even if the flag had been flipped, the close-side wiring was
+asymmetric: paper-only close paths called the webhook while the
+TP-specific close paths (`close_tp_position`, TP branch of
+`close_short_position`) did not, which would have left positions
+open on TradersPost after exits.
+
+**Changes**
+
+- Replaced `PAPER_MODE = True` with env-gated `TRADERSPOST_ENABLED`
+  (default **off**). Set `TRADERSPOST_ENABLED=true` in Railway when
+  ready to go live.
+- Re-routed every webhook callsite to the **TP portfolio only**.
+  Paper is now simulation-only and never hits TradersPost.
+  - `execute_entry`: webhook moved from paper section to TP mirror
+    block (fires after `tp_positions[ticker]` is set).
+  - `execute_short_entry`: webhook stays after the TP short block
+    (was already effectively TP-timed).
+  - `close_position` (paper LONG close): webhook removed from paper
+    section, added inside the `if ticker in tp_positions:` mirror
+    block so TP exits fire reliably.
+  - `close_tp_position` (TP-only LONG close): webhook **added**
+    (was missing — primary bug).
+  - `close_short_position` paper branch: webhook removed.
+  - `close_short_position` TP branch: webhook **added** (was
+    missing — primary bug).
+- `send_traderspost_order` now posts a `✓ sent` / `✗ rejected` /
+  `✗ failed` line to the TP Telegram chat after every webhook send,
+  so Val sees broker-side confirmations without opening TradersPost.
+- `TELEGRAM_TP_CHAT_ID` at line 36 now reads from env (fallback to
+  the existing hardcoded value), matching `TELEGRAM_TP_TOKEN`'s
+  pattern. This resolves the Railway env-var-vs-code discrepancy.
+
+No trade-logic changes. Stop levels, entry signals, sizing, and
+PnL accounting are all untouched — this is a plumbing fix.
+
+---
+
 ## v3.4.13 — proximity pct left-align (2026-04-20)
 
 Follow-up to v3.4.12. Right-aligning the pct column pushed the

@@ -33,21 +33,22 @@ from telegram.ext import (
 TELEGRAM_TOKEN          = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID                 = os.getenv("CHAT_ID")
 TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
-TELEGRAM_TP_CHAT_ID     = "5165570192"
+TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.13"
+BOT_VERSION = "3.4.14"
 RELEASE_NOTE = (
-    "v3.4.13 \u2014 proximity align.\n"
-    "Left-align the pct column on\n"
-    "the proximity card so values\n"
-    "sit in a clean column right\n"
-    "after the progress bar,\n"
-    "instead of hugging the card\n"
-    "edge.\n"
-    "CSS only. No trade-logic\n"
-    "or backend changes."
+    "v3.4.14 \u2014 TradersPost wire.\n"
+    "TP portfolio now routes to\n"
+    "TradersPost on entry + exit.\n"
+    "Paper stays simulated only.\n"
+    "Kill-switch: TRADERSPOST_ENABLED\n"
+    "(env var, default off). On\n"
+    "each send, TP chat gets a\n"
+    "\u2713 sent / \u2717 rejected line.\n"
+    "TELEGRAM_TP_CHAT_ID now reads\n"
+    "from env with same default."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -245,7 +246,10 @@ TP_STATE_FILE          = os.getenv(
     os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "tp_state.json")
 )
 PAPER_STARTING_CAPITAL = 100_000.0
-PAPER_MODE             = True  # True = paper only, False = send webhook
+# Webhook kill-switch (env-gated, default OFF).
+# When True, TP portfolio events are forwarded to TradersPost.
+# Paper portfolio is ALWAYS simulation-only and never hits the webhook.
+TRADERSPOST_ENABLED    = os.getenv("TRADERSPOST_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
 # Investment logger (separate file)
 inv_logger = logging.getLogger("investment")
@@ -1704,14 +1708,28 @@ def check_entry(ticker):
 # TRADERSPOST WEBHOOK
 # ============================================================
 def send_traderspost_order(ticker, action, price, shares=SHARES):
-    """Send a limit order to TradersPost via webhook.
+    """Send a limit order to TradersPost via webhook (TP portfolio only).
 
     action: 'buy', 'sell', 'sell_short', or 'buy_to_cover'
     Returns response dict or None.
+
+    Gated on TRADERSPOST_ENABLED env var (default off) and
+    TRADERSPOST_WEBHOOK_URL being set. Posts a short confirmation to the
+    TP Telegram chat on success and on failure so Val always knows what
+    the broker side actually received.
     """
-    if PAPER_MODE or not TRADERSPOST_WEBHOOK_URL:
-        if not TRADERSPOST_WEBHOOK_URL:
-            logger.debug("[TP] No webhook URL configured")
+    if not TRADERSPOST_ENABLED:
+        logger.debug("[TP] TRADERSPOST_ENABLED=false \u2014 skipping %s %s",
+                     action, ticker)
+        return None
+    if not TRADERSPOST_WEBHOOK_URL:
+        logger.warning("[TP] Enabled but TRADERSPOST_WEBHOOK_URL unset \u2014 skip %s %s",
+                       action, ticker)
+        send_tp_telegram(
+            "\u26a0 TP webhook skip\n"
+            "%s %s %d @ $%.2f\n"
+            "URL not configured" % (action.upper(), ticker, shares, price)
+        )
         return None
 
     # Limit price: buy/buy_to_cover slightly above, sell/sell_short slightly below
@@ -1743,7 +1761,8 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
                     action.upper(), ticker, shares, price, limit_price, resp_data)
 
         tp_state["total_orders_sent"] = tp_state.get("total_orders_sent", 0) + 1
-        if resp_data.get("success"):
+        success = bool(resp_data.get("success"))
+        if success:
             tp_state["total_orders_success"] = tp_state.get("total_orders_success", 0) + 1
         else:
             tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
@@ -1754,18 +1773,35 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
         recent.append({
             "ticker": ticker, "action": action.upper(),
             "price": price, "limit_price": limit_price,
-            "shares": shares, "success": resp_data.get("success", False),
+            "shares": shares, "success": success,
             "time": now_str,
         })
         if len(recent) > 20:
             recent[:] = recent[-20:]
         tp_state["recent_orders"] = recent
         save_paper_state()
+
+        # Notify TP chat (✓ sent / ✗ rejected)
+        mark = "\u2713" if success else "\u2717"
+        status_word = "sent" if success else "rejected"
+        send_tp_telegram(
+            "%s TP webhook %s\n"
+            "%s %s %d @ $%.2f\n"
+            "Limit: $%.2f" % (mark, status_word,
+                              action.upper(), ticker, shares,
+                              price, limit_price)
+        )
         return resp_data
 
     except Exception as e:
         logger.error("[TP] Webhook failed for %s %s: %s", action, ticker, e)
         tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
+        err_str = str(e)[:60]
+        send_tp_telegram(
+            "\u2717 TP webhook failed\n"
+            "%s %s %d @ $%.2f\n"
+            "Err: %s" % (action.upper(), ticker, shares, price, err_str)
+        )
         return None
 
 
@@ -1865,9 +1901,6 @@ def execute_entry(ticker, current_price):
     paper_log("BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d"
               % (ticker, SHARES, current_price, limit_price, stop_price, entry_num))
 
-    # TradersPost webhook
-    send_traderspost_order(ticker, "buy", current_price)
-
     # Fix B: Paper BUY notification → send_telegram() ONLY
     or_h = or_high.get(ticker, 0)
     pdc_e = pdc.get(ticker, 0)
@@ -1909,6 +1942,9 @@ def execute_entry(ticker, current_price):
     tp_paper_trades.append(trade.copy())
     logger.info("[TP] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
                 ticker, SHARES, current_price, limit_price, stop_price, entry_num)
+
+    # TradersPost webhook — TP portfolio only (paper stays simulated)
+    send_traderspost_order(ticker, "buy", current_price)
 
     # Fix B: TP BUY notification → send_tp_telegram() ONLY
     tp_msg = (
@@ -2000,9 +2036,6 @@ def close_position(ticker, price, reason="STOP"):
     paper_log("SELL %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
               % (ticker, shares, price, reason, pnl_val, pnl_pct))
 
-    # TradersPost webhook
-    send_traderspost_order(ticker, "sell", price, shares)
-
     # Fix B: Paper EXIT → send_telegram() ONLY
     exit_emoji = "\u2705" if pnl_val >= 0 else "\u274c"
     entry_cost_val = round(entry_price * shares, 2)
@@ -2038,6 +2071,9 @@ def close_position(ticker, price, reason="STOP"):
         tp_paper_cash += price * tp_shares
         logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
                     ticker, tp_shares, price, reason, tp_pnl)
+
+        # TradersPost webhook — TP portfolio only
+        send_traderspost_order(ticker, "sell", price, tp_shares)
 
         tp_entry_time_str = tp_pos.get("entry_time", "")
         tp_entry_hhmm = _to_cdt_hhmm(tp_entry_time_str) if tp_entry_time_str else ""
@@ -2208,6 +2244,9 @@ def close_tp_position(ticker, price, reason="STOP"):
 
     logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
                 ticker, tp_shares, price, reason, tp_pnl)
+
+    # TradersPost webhook — TP-only close path
+    send_traderspost_order(ticker, "sell", price, tp_shares)
 
     tp_paper_trades.append({
         "action": "SELL",
@@ -2519,7 +2558,7 @@ def execute_short_entry(ticker, price):
     tp_paper_cash += entry_price * shares
     save_tp_state()
 
-    # TradersPost webhook (short entry)
+    # TradersPost webhook — TP portfolio only (paper stays simulated)
     send_traderspost_order(ticker, "sell_short", entry_price, shares)
 
     # Notification
@@ -2740,10 +2779,7 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
             short_trade_history.pop(0)
         save_paper_state()
 
-        # TradersPost webhook
-        send_traderspost_order(ticker, "buy_to_cover", cover_price, shares)
-
-        # Notification
+        # Notification (paper cover)
         pnl_sign = "+" if pnl >= 0 else ""
         emoji = "\u2705" if pnl >= 0 else "\u274c"
         SEP = "\u2500" * 34
@@ -2779,6 +2815,9 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         if len(tp_short_trade_history) > 500:
             tp_short_trade_history.pop(0)
         save_tp_state()
+
+        # TradersPost webhook — TP-only short cover
+        send_traderspost_order(ticker, "buy_to_cover", cover_price, shares)
 
         pnl_sign = "+" if pnl >= 0 else ""
         emoji = "\u2705" if pnl >= 0 else "\u274c"
