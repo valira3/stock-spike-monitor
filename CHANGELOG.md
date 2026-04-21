@@ -4,6 +4,92 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.25 — Breakeven ratchet at +0.50% profit (2026-04-21)
+
+### The gap this closes
+
+v3.4.21 introduced a 0.75% entry-cap on stops. v3.4.23 retro-applied
+it to any existing position. But once a position moved *in our
+favor*, the stop stayed anchored at `entry ± 0.75%` until the 1%
+trail-arm threshold — and in that window the stop is frequently
+wider than the current profit. Live example this afternoon:
+
+```
+AAPL SHORT: entry $268.77, current $266.59 (+0.82% profit),
+            stop $270.79 — still 1.58% above market
+```
+
+If AAPL popped back to $270.79, we'd not only give back all $22 of
+current profit, we'd take another $20 loss — a ~193% give-back of
+the running gain. The same pattern showed on NVDA and GOOG to
+varying degrees.
+
+### The fix
+
+**Two-stage stop management (Stage 1):**
+
+- Stage 0 (v3.4.21/v3.4.23, unchanged): fixed stop at `entry ± 0.75%`.
+- **Stage 1 (NEW): breakeven ratchet.** When current price moves
+  ≥0.50% in our favor, pull the stop to entry price (breakeven).
+- Stage 2 (existing trail logic, unchanged): at +1.00% profit, the
+  trailing stop arms and takes over.
+
+### Implementation
+
+- New constant: `BREAKEVEN_RATCHET_PCT = 0.0050`.
+- New pure helpers `_breakeven_long_stop` and `_breakeven_short_stop`
+  that return `(new_stop, armed)`. `armed` is True once the
+  threshold is met; `new_stop` is `max(current_stop, entry)` for
+  longs and `min(current_stop, entry)` for shorts — guaranteed to
+  only ever tighten.
+- Integrated into the existing `_retighten_long_stop` and
+  `_retighten_short_stop` helpers as Layer 2 (Layer 1 is the 0.75%
+  cap). These are the single choke-point that startup, manage
+  cycles, and `/retighten` all call — so the ratchet applies in
+  every place the cap does, automatically.
+- New status tuple `("ratcheted", old_stop, new_stop)` returned when
+  the breakeven layer is what caused the tightening (distinct from
+  `("tightened", ...)` which is pure cap). Summary dict gains a
+  `ratcheted` counter. `/retighten` output distinguishes cap vs
+  ratchet per position.
+
+### Retroactive behavior (same philosophy as v3.4.23)
+
+Fires on startup and every manage cycle. On the first deploy, the
+live positions that are already past the threshold get ratcheted
+immediately. Expected for AAPL on this deploy: stop moves from
+$270.79 → $268.77.
+
+### Locked design principles preserved
+
+- **Only tightens, never loosens.** If the stop is already past
+  breakeven (closer to market than entry), the ratchet is a no-op.
+- **Fail-closed.** Missing data → `summary["errors"] += 1` and the
+  existing stop is preserved — position is never ejected on a
+  missing-data edge case.
+- **Trail interaction.** When `pos["trail_active"]` is True, the
+  entire retighten pass short-circuits to `no_op`. Trail logic is
+  already at least as tight as breakeven by construction.
+
+### Tests
+
+11 new v3.4.25 regression tests (87/87 local pass, up from 76):
+
+- Constant sanity: `BREAKEVEN_RATCHET_PCT == 0.005`
+- Below-threshold no-op for both sides
+- Exactly-at-threshold arming (boundary behavior)
+- Past-threshold ratchet (AAPL live scenario reproduced)
+- Never-loosen guarantee: existing tighter stop is preserved
+- `"ratcheted"` status returned from `_retighten_*_stop`
+- `trail_active` no-op precedence over ratchet
+- `retighten_all_stops` summary dict gains `ratcheted` key
+
+Two existing v3.4.23 tests had their `current_price` adjusted to stay
+below the new +0.50% threshold so they continue to isolate pure-cap
+behavior.
+
+---
+
 ## v3.4.24 — Dashboard portfolio strip polish (2026-04-21)
 
 Two fixes on the mobile dashboard's portfolio strip, prompted by a
