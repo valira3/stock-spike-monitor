@@ -4,6 +4,86 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.27 — Persistent trade log (append-only JSONL) (2026-04-21)
+
+### Why
+
+Today's 9-trade paper session showed a sharp expectancy split by
+exit reason: **TRAIL +$6.10 (1W/0L)** was the only positive bucket,
+while **BULL_VACUUM −$21.70 (1W/2L)** and **EOD −$9.00 (1W/3L)**
+bled the book. The observation is obvious in one session's tape
+— but to trust it as a policy input (tightening BULL_VACUUM, or
+gating POWER-hour re-entries) we need dozens of sessions of
+matched data. Until now the bot's in-memory trade history died
+with every deploy, so that sample never accumulated.
+
+v3.4.27 fixes that by writing every closed trade to a persistent
+log on the Railway volume — the same volume that already survives
+redeploys for `paper_state.json` and `tp_state.json`.
+
+### What
+
+**Append-only JSONL writer** (`trade_log_append`). Every close
+path — paper long, TP long mirror, TP-only long, and the shared
+short path — appends one JSON line to `trade_log.jsonl`
+(overridable via `TRADE_LOG_PATH`). Thread-locked, best-effort
+(any IO error is logged and swallowed — a broken disk never
+breaks trade execution).
+
+**Schema v1.** Each row captures everything needed for expectancy
+analysis:
+
+- `schema_version`, `bot_version`, `date`, `portfolio` (paper/tp)
+- `ticker`, `side`, `shares`, `entry_price`, `exit_price`
+- `entry_time`, `exit_time`, `hold_seconds`
+- `pnl`, `pnl_pct`, `reason`, `entry_num`
+- `trail_active_at_exit`, `trail_stop_at_exit`,
+  `trail_anchor_at_exit` (trail_high for longs, trail_low for
+  shorts), `hard_stop_at_exit`, `effective_stop_at_exit`
+
+The trail/stop snapshot matters because `reason` alone doesn't
+tell you whether the exit was the hard stop or the trail stop
+taking the trade. `effective_stop_at_exit` resolves the hierarchy
+at close time so downstream analysis sees what the exit decision
+actually saw.
+
+**Reader + endpoints.**
+
+- `trade_log_read_tail(limit, since_date, portfolio)` — newest-
+  last, safe on missing file, skips corrupted lines rather than
+  raising.
+- `GET /api/trade_log?limit=500&since=YYYY-MM-DD&portfolio=paper|tp`
+  on the authenticated dashboard server. Returns
+  `{ok, count, schema_version, rows, last_error}`.
+- `/trade_log` Telegram command — last 10 trades with W/L summary
+  and by-reason P&L buckets. Width-safe for mobile (≤34 cpl).
+  Registered on both main and TP bots.
+
+### Schema stability
+
+`TRADE_LOG_SCHEMA_VERSION = 1` is written to every row. Future
+breaking changes will bump this number so old-and-new rows can
+coexist in the same file without a migration.
+
+### Tests
+
+**108/108 local smoke** (up from 97). Ten new v3.4.27 tests
+cover: path sits beside `PAPER_STATE_FILE` (= same Railway
+volume), writer roundtrip with `schema_version=1`, required-
+field guard, `since_date` + `portfolio` + `limit` filter matrix,
+missing-file returns `[]`, trail+stop snapshot for long/short/
+empty positions, every close path calls both
+`trade_log_append` and `_trade_log_snapshot_pos`, `/api/trade_log`
++ `/trade_log` registration on both app routers.
+
+### Next (deliberately not in this release)
+
+This release is infrastructure only. The analysis piece —
+reason-bucket expectancy report, POWER-hour entry cutoff — lands
+in a follow-up once we have ≥5 sessions of live data.
+
+---
+
 ## v3.4.26 — Ratchet-through-trail + dashboard trail diagnostics (2026-04-21)
 
 ### The silent bypass v3.4.25 left behind

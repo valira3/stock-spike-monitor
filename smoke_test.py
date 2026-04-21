@@ -1560,6 +1560,220 @@ def run_local() -> int:
         assert '"near_misses"' in src, \
             "snapshot() must expose top-level near_misses"
 
+    # ----------------------------------------------------------
+    # v3.4.27 — persistent trade log (append-only JSONL)
+    # ----------------------------------------------------------
+
+    @t("v3.4.27: TRADE_LOG_FILE path sits beside PAPER_STATE_FILE")
+    def _():
+        # The log must inherit the Railway volume by living in the same
+        # directory as the already-persisted state files. Env var
+        # override is honored but the default must match.
+        assert hasattr(m, "TRADE_LOG_FILE"), "TRADE_LOG_FILE missing"
+        assert hasattr(m, "PAPER_STATE_FILE"), "PAPER_STATE_FILE missing"
+        # When TRADE_LOG_PATH env is unset the default resolves to a
+        # sibling of PAPER_STATE_FILE (i.e. same directory).
+        if not os.environ.get("TRADE_LOG_PATH"):
+            state_dir = os.path.dirname(m.PAPER_STATE_FILE) or "."
+            log_dir = os.path.dirname(m.TRADE_LOG_FILE) or "."
+            assert os.path.abspath(state_dir) == os.path.abspath(log_dir), \
+                f"TRADE_LOG_FILE must share dir with PAPER_STATE_FILE: " \
+                f"{m.TRADE_LOG_FILE} vs {m.PAPER_STATE_FILE}"
+
+    @t("v3.4.27: trade_log_append roundtrips a row with schema_version=1")
+    def _():
+        import tempfile, json
+        orig = m.TRADE_LOG_FILE
+        with tempfile.TemporaryDirectory() as td:
+            m.TRADE_LOG_FILE = os.path.join(td, "trade_log.jsonl")
+            try:
+                ok = m.trade_log_append({
+                    "date": "2026-04-21",
+                    "portfolio": "paper",
+                    "ticker": "AAPL",
+                    "side": "SHORT",
+                    "shares": 100,
+                    "entry_price": 270.0,
+                    "exit_price": 268.13,
+                    "pnl": 187.0,
+                    "pnl_pct": 0.69,
+                    "reason": "TRAIL",
+                })
+                assert ok is True, "append must return True on success"
+                rows = m.trade_log_read_tail(limit=10)
+                assert len(rows) == 1, f"expected 1 row, got {len(rows)}"
+                r = rows[0]
+                assert r["schema_version"] == 1
+                assert r["bot_version"] == m.BOT_VERSION
+                assert r["ticker"] == "AAPL"
+                assert r["reason"] == "TRAIL"
+                assert r["pnl"] == 187.0
+            finally:
+                m.TRADE_LOG_FILE = orig
+
+    @t("v3.4.27: trade_log_append rejects rows missing required fields")
+    def _():
+        import tempfile
+        orig = m.TRADE_LOG_FILE
+        with tempfile.TemporaryDirectory() as td:
+            m.TRADE_LOG_FILE = os.path.join(td, "trade_log.jsonl")
+            try:
+                # Missing reason — must be refused, not appended.
+                ok = m.trade_log_append({
+                    "ticker": "TSLA", "side": "LONG", "pnl": 1.0,
+                })
+                assert ok is False, "missing 'reason' must return False"
+                rows = m.trade_log_read_tail(limit=10)
+                assert rows == [], "no row should have been written"
+                assert m._trade_log_last_error and "reason" in \
+                    m._trade_log_last_error, \
+                    f"error must mention 'reason': {m._trade_log_last_error}"
+            finally:
+                m.TRADE_LOG_FILE = orig
+                m._trade_log_last_error = None
+
+    @t("v3.4.27: trade_log_read_tail filters since_date + portfolio + limit")
+    def _():
+        import tempfile
+        orig = m.TRADE_LOG_FILE
+        with tempfile.TemporaryDirectory() as td:
+            m.TRADE_LOG_FILE = os.path.join(td, "trade_log.jsonl")
+            try:
+                base = {
+                    "ticker": "X", "side": "LONG",
+                    "pnl": 1.0, "reason": "EOD",
+                }
+                for date, port in [
+                    ("2026-04-19", "paper"),
+                    ("2026-04-20", "paper"),
+                    ("2026-04-20", "tp"),
+                    ("2026-04-21", "paper"),
+                    ("2026-04-21", "tp"),
+                ]:
+                    r = dict(base)
+                    r["date"] = date
+                    r["portfolio"] = port
+                    assert m.trade_log_append(r)
+                # since_date filter
+                rows = m.trade_log_read_tail(since_date="2026-04-20")
+                assert len(rows) == 4, f"since: got {len(rows)}"
+                # portfolio filter
+                rows = m.trade_log_read_tail(portfolio="tp")
+                assert len(rows) == 2 and all(
+                    r["portfolio"] == "tp" for r in rows
+                )
+                # combined filters + limit
+                rows = m.trade_log_read_tail(
+                    since_date="2026-04-21",
+                    portfolio="paper",
+                    limit=5,
+                )
+                assert len(rows) == 1 and rows[0]["date"] == "2026-04-21"
+                # limit trims to tail (newest last)
+                rows = m.trade_log_read_tail(limit=2)
+                assert len(rows) == 2
+                assert rows[-1]["date"] == "2026-04-21"
+            finally:
+                m.TRADE_LOG_FILE = orig
+
+    @t("v3.4.27: trade_log_read_tail returns [] when file missing")
+    def _():
+        import tempfile
+        orig = m.TRADE_LOG_FILE
+        with tempfile.TemporaryDirectory() as td:
+            m.TRADE_LOG_FILE = os.path.join(td, "does_not_exist.jsonl")
+            try:
+                assert m.trade_log_read_tail() == []
+            finally:
+                m.TRADE_LOG_FILE = orig
+
+    @t("v3.4.27: _trade_log_snapshot_pos captures trail+stop for long")
+    def _():
+        snap = m._trade_log_snapshot_pos({
+            "trail_active": True,
+            "trail_stop": 268.13,
+            "trail_high": 270.78,
+            "stop": 265.0,
+        })
+        assert snap["trail_active_at_exit"] is True
+        assert snap["trail_stop_at_exit"] == 268.13
+        assert snap["trail_anchor_at_exit"] == 270.78
+        assert snap["hard_stop_at_exit"] == 265.0
+        # trail armed ⇒ effective is trail_stop
+        assert snap["effective_stop_at_exit"] == 268.13
+
+    @t("v3.4.27: _trade_log_snapshot_pos captures trail+stop for short")
+    def _():
+        # Trail not armed ⇒ effective falls back to hard stop.
+        snap = m._trade_log_snapshot_pos({
+            "trail_active": False,
+            "trail_stop": None,
+            "trail_low": 265.48,
+            "stop": 272.0,
+        })
+        assert snap["trail_active_at_exit"] is False
+        assert snap["trail_stop_at_exit"] is None
+        assert snap["trail_anchor_at_exit"] == 265.48
+        assert snap["hard_stop_at_exit"] == 272.0
+        assert snap["effective_stop_at_exit"] == 272.0
+
+    @t("v3.4.27: _trade_log_snapshot_pos handles non-dict gracefully")
+    def _():
+        snap = m._trade_log_snapshot_pos(None)
+        assert all(v is None for v in snap.values()), \
+            "every field must be None for a missing pos"
+        assert set(snap.keys()) == {
+            "trail_active_at_exit", "trail_stop_at_exit",
+            "trail_anchor_at_exit", "hard_stop_at_exit",
+            "effective_stop_at_exit",
+        }
+
+    @t("v3.4.27: every close path calls trade_log_append")
+    def _():
+        import inspect
+        # close_position (paper long + TP long mirror)
+        src_close = inspect.getsource(m.close_position)
+        assert src_close.count("trade_log_append(") >= 2, \
+            "close_position must log BOTH paper and TP-mirror branches"
+        # close_tp_position (TP-only long)
+        src_tp = inspect.getsource(m.close_tp_position)
+        assert "trade_log_append(" in src_tp, \
+            "close_tp_position must call trade_log_append"
+        # close_short_position (paper + TP shared)
+        src_sh = inspect.getsource(m.close_short_position)
+        assert "trade_log_append(" in src_sh, \
+            "close_short_position must call trade_log_append"
+        # Every hook must also capture the trail/stop snapshot.
+        for name, src in (("close_position", src_close),
+                          ("close_tp_position", src_tp),
+                          ("close_short_position", src_sh)):
+            assert "_trade_log_snapshot_pos(" in src, \
+                f"{name} must enrich the row via _trade_log_snapshot_pos"
+
+    @t("v3.4.27: /api/trade_log endpoint + /trade_log command registered")
+    def _():
+        import importlib, inspect
+        ds = importlib.import_module("dashboard_server")
+        assert hasattr(ds, "h_trade_log"), \
+            "dashboard_server must define h_trade_log"
+        src = inspect.getsource(ds._build_app)
+        assert '"/api/trade_log"' in src, \
+            "/api/trade_log must be registered on the app router"
+        # Telegram /trade_log handler + registration on both main and TP apps
+        assert hasattr(m, "cmd_trade_log"), \
+            "cmd_trade_log must exist"
+        # Read the source file directly — inspect.getsource(module) can
+        # be flaky when the module was loaded via an alternate path.
+        src_path = Path(__file__).resolve().parent / "stock_spike_monitor.py"
+        src_main = src_path.read_text(encoding="utf-8")
+        assert src_main.count('CommandHandler("trade_log"') >= 2, \
+            "/trade_log must register on both main app and tp_app"
+
+    @t("v3.4.27: TRADE_LOG_SCHEMA_VERSION is 1 and surfaces in rows")
+    def _():
+        assert m.TRADE_LOG_SCHEMA_VERSION == 1, \
+            "schema version must stay at 1 until a breaking change ships"
+
     return run_suite("LOCAL SMOKE TESTS")
 
 

@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.26"
+BOT_VERSION = "3.4.27"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,29 +55,29 @@ BOT_VERSION = "3.4.26"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.26 \u2014 Ratchet through\n"
-    "trail + dashboard diagnostic.\n"
+    "v3.4.27 \u2014 Persistent trade\n"
+    "log (append-only JSONL).\n"
     "\n"
-    "Breakeven ratchet now runs\n"
-    "even when the 1% trail is\n"
-    "armed. If the trail armed on\n"
-    "an unfavorable dip, ratchet\n"
-    "still pulls the effective\n"
-    "stop to entry. Pure tighten\n"
-    "\u2014 never loosens.\n"
+    "Every closed trade is now\n"
+    "written to trade_log.jsonl\n"
+    "on the Railway volume. We\n"
+    "capture entry/exit prices,\n"
+    "pnl, exit reason, hold time,\n"
+    "and trail state at exit so\n"
+    "we can finally measure exit-\n"
+    "reason expectancy over time.\n"
     "\n"
-    "Dashboard now shows the\n"
-    "effective stop (trail if\n"
-    "armed, else hard stop) with\n"
-    "a small TRAIL badge so we\n"
-    "can see what is actually\n"
-    "managing the position."
+    "New /trade_log Telegram\n"
+    "command + /api/trade_log\n"
+    "endpoint for dashboard\n"
+    "analytics. Survives every\n"
+    "redeploy from now on."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.26 \u2014 Ratchet runs\n"
-    "even with trail armed.\n"
-    "Dashboard shows effective\n"
-    "stop + TRAIL badge."
+    "v3.4.27 \u2014 Persistent trade\n"
+    "log on the volume.\n"
+    "/trade_log command +\n"
+    "/api/trade_log endpoint."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -88,31 +88,31 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.26 \u2014 Ratchet runs\n"
+    "through trail + dashboard\n"
+    "effective-stop diagnostic.\n"
+    "\n"
     "v3.4.25 \u2014 Breakeven ratchet\n"
-    "at +0.50% profit. Stop pulls\n"
-    "to entry price.\n"
+    "at +0.50% profit.\n"
     "\n"
     "v3.4.24 \u2014 Dashboard leads\n"
     "with equity + buying power.\n"
     "\n"
     "v3.4.23 \u2014 0.75% retro stop\n"
-    "cap on every open position.\n"
-    "\n"
-    "v3.4.20 \u2014 LOW VOL gate walks\n"
-    "back past null/zero bars."
+    "cap on every open position."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.26 \u2014 Ratchet through\n"
+    "trail + TRAIL badge.\n"
     "v3.4.25 \u2014 Breakeven ratchet\n"
     "at +0.50% profit.\n"
     "v3.4.24 \u2014 Dashboard leads\n"
     "with equity.\n"
     "v3.4.23 \u2014 0.75% retro stop\n"
     "cap on all positions.\n"
-    "v3.4.20 \u2014 LOW VOL gate walks\n"
-    "back past null/zero bars.\n"
     "/tp_sync for broker status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
@@ -312,6 +312,14 @@ PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
 TP_STATE_FILE          = os.getenv(
     "TP_STATE_FILE",
     os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "tp_state.json")
+)
+# v3.4.27 — persistent trade log. Default path is a sibling of the
+# paper state file so it lands on the same volume automatically. The
+# file is append-only JSONL — one closed trade per line. Survives
+# redeploys when written to the mounted volume.
+TRADE_LOG_FILE         = os.getenv(
+    "TRADE_LOG_PATH",
+    os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "trade_log.jsonl"),
 )
 PAPER_STARTING_CAPITAL = 100_000.0
 # Webhook kill-switch (env-gated, default OFF).
@@ -1191,6 +1199,163 @@ def load_tp_state():
     except Exception as e:
         _tp_state_loaded = True
         logger.error("load_tp_state failed: %s — starting fresh", e)
+
+
+# ============================================================
+# v3.4.27 — PERSISTENT TRADE LOG (append-only JSONL)
+# ============================================================
+# Every closed trade (longs via close_position, shorts via
+# close_short_position, and their TP counterparts) writes one JSON
+# line to TRADE_LOG_FILE. The file lives on the Railway volume so it
+# survives redeploys. Append-only — never rewritten, never rotated
+# (a year of typical volume is ~3 MB).
+#
+# Schema (v1):
+#   schema_version: int       — 1
+#   bot_version:    str       — BOT_VERSION at write time
+#   date:           str       — YYYY-MM-DD (trade close date, ET)
+#   portfolio:      str       — "paper" | "tp"
+#   ticker:         str
+#   side:           str       — "LONG" | "SHORT"
+#   shares:         int
+#   entry_price:    float
+#   exit_price:     float
+#   entry_time:     str       — HH:MM:SS or ISO (as stored)
+#   exit_time:      str       — ISO-8601 UTC
+#   hold_seconds:   float|null
+#   pnl:            float     — signed dollars
+#   pnl_pct:        float     — signed percent (0.23 = +0.23%)
+#   reason:         str       — EOD | TRAIL | STOP | RETRO_CAP |
+#                               BULL_VACUUM[5m] | LORDS_LEFT[5m] | ...
+#   entry_num:      int       — add-on index (longs only; 1 for shorts)
+#   trail_active_at_exit:   bool|null
+#   trail_stop_at_exit:     float|null
+#   trail_anchor_at_exit:   float|null  (trail_high for long, trail_low for short)
+#   hard_stop_at_exit:      float|null
+#   effective_stop_at_exit: float|null  (trail_stop if armed, else hard stop)
+#
+# All writes are best-effort: any IO error is logged and swallowed so
+# a broken disk never breaks trade execution.
+# ============================================================
+
+TRADE_LOG_SCHEMA_VERSION = 1
+_trade_log_lock = threading.Lock()
+_trade_log_last_error = None  # surfaced via /api/state for visibility
+
+
+def _trade_log_snapshot_pos(pos):
+    """Extract trail + stop diagnostic fields from a position dict.
+
+    Accepts both long (trail_high) and short (trail_low) shapes.
+    Returns a dict of None-safe values. Used at close time so the
+    row captures exactly what the exit decision saw.
+    """
+    if not isinstance(pos, dict):
+        return {
+            "trail_active_at_exit": None,
+            "trail_stop_at_exit": None,
+            "trail_anchor_at_exit": None,
+            "hard_stop_at_exit": None,
+            "effective_stop_at_exit": None,
+        }
+    trail_active = bool(pos.get("trail_active", False))
+    trail_stop = pos.get("trail_stop")
+    # Either long (trail_high) or short (trail_low) populates anchor.
+    trail_anchor = pos.get("trail_high", pos.get("trail_low"))
+    hard_stop = pos.get("stop")
+    effective_stop = (
+        trail_stop if (trail_active and trail_stop is not None) else hard_stop
+    )
+    def _as_float(v):
+        return float(v) if v is not None else None
+    return {
+        "trail_active_at_exit": trail_active,
+        "trail_stop_at_exit": _as_float(trail_stop),
+        "trail_anchor_at_exit": _as_float(trail_anchor),
+        "hard_stop_at_exit": _as_float(hard_stop),
+        "effective_stop_at_exit": _as_float(effective_stop),
+    }
+
+
+def trade_log_append(row):
+    """Append a single closed-trade row to the persistent trade log.
+
+    Best-effort: failures are logged and swallowed, never raised. The
+    lock guards against the (rare) case of two close paths firing at
+    once — writes are atomic at the OS level for small lines on
+    POSIX, but the lock keeps log order deterministic and protects
+    the _trade_log_last_error surface from races.
+    """
+    global _trade_log_last_error
+    # Defensive: never let a caller ship missing required fields.
+    required = ("ticker", "side", "pnl", "reason")
+    for f in required:
+        if f not in row:
+            _trade_log_last_error = f"missing field: {f}"
+            logger.warning("[TRADE_LOG] skipping row missing %s: %s",
+                           f, row)
+            return False
+    full = {
+        "schema_version": TRADE_LOG_SCHEMA_VERSION,
+        "bot_version": BOT_VERSION,
+    }
+    full.update(row)
+    line = json.dumps(full, default=str, separators=(",", ":"))
+    try:
+        with _trade_log_lock:
+            # Open append+ with explicit newline to keep JSONL clean.
+            with open(TRADE_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        _trade_log_last_error = None
+        return True
+    except OSError as e:
+        _trade_log_last_error = f"{type(e).__name__}: {e}"
+        logger.error(
+            "[TRADE_LOG] append failed (%s). Path=%s. Trade still "
+            "executed — only persistence failed.",
+            e, TRADE_LOG_FILE,
+        )
+        return False
+
+
+def trade_log_read_tail(limit=500, since_date=None, portfolio=None):
+    """Read the tail of the trade log, optionally filtered.
+
+    Returns a list of dicts, newest-last (same order as on disk).
+    Filtering is applied AFTER reading — trade log is small enough
+    that this is fine. Failures return an empty list; never raises.
+
+    Args:
+      limit:       max rows to return (newest)
+      since_date:  optional "YYYY-MM-DD"; only rows with date >= this
+      portfolio:   optional "paper" or "tp" filter
+    """
+    if not os.path.exists(TRADE_LOG_FILE):
+        return []
+    try:
+        with open(TRADE_LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        logger.error("[TRADE_LOG] read failed: %s", e)
+        return []
+    rows = []
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            rows.append(json.loads(ln))
+        except json.JSONDecodeError:
+            # Defensively skip corrupted lines rather than blowing up
+            # the whole read.
+            continue
+    if since_date:
+        rows = [r for r in rows if r.get("date", "") >= since_date]
+    if portfolio:
+        rows = [r for r in rows if r.get("portfolio") == portfolio]
+    if limit and len(rows) > limit:
+        rows = rows[-limit:]
+    return rows
 
 
 # ============================================================
@@ -2734,6 +2899,36 @@ def close_position(ticker, price, reason="STOP"):
     if len(trade_history) > TRADE_HISTORY_MAX:
         trade_history[:] = trade_history[-TRADE_HISTORY_MAX:]
 
+    # v3.4.27 — persistent trade log (paper long close).
+    _entry_iso = entry_time_str or ""
+    _hold_s = None
+    try:
+        if _entry_iso:
+            _ent_dt = datetime.fromisoformat(_entry_iso)
+            if _ent_dt.tzinfo is None:
+                _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
+            _hold_s = (datetime.now(timezone.utc) - _ent_dt).total_seconds()
+    except (TypeError, ValueError):
+        _hold_s = None
+    _log_row = {
+        "date": now_date,
+        "portfolio": "paper",
+        "ticker": ticker,
+        "side": "LONG",
+        "shares": int(shares),
+        "entry_price": float(entry_price),
+        "exit_price": float(price),
+        "entry_time": entry_time_str,
+        "exit_time": _utc_now_iso(),
+        "hold_seconds": _hold_s,
+        "pnl": round(pnl_val, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "reason": reason,
+        "entry_num": int(pos.get("entry_count", 1)),
+    }
+    _log_row.update(_trade_log_snapshot_pos(pos))
+    trade_log_append(_log_row)
+
     paper_log("SELL %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
               % (ticker, shares, price, reason, pnl_val, pnl_pct))
 
@@ -2823,6 +3018,35 @@ def close_position(ticker, price, reason="STOP"):
         tp_trade_history.append(tp_hist_record)
         if len(tp_trade_history) > TRADE_HISTORY_MAX:
             tp_trade_history[:] = tp_trade_history[-TRADE_HISTORY_MAX:]
+
+        # v3.4.27 — persistent trade log (TP long close).
+        _tp_hold_s = None
+        try:
+            if tp_entry_time_str:
+                _ent_dt = datetime.fromisoformat(tp_entry_time_str)
+                if _ent_dt.tzinfo is None:
+                    _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
+                _tp_hold_s = (datetime.now(timezone.utc) - _ent_dt).total_seconds()
+        except (TypeError, ValueError):
+            _tp_hold_s = None
+        _tp_log_row = {
+            "date": now_date,
+            "portfolio": "tp",
+            "ticker": ticker,
+            "side": "LONG",
+            "shares": int(tp_shares),
+            "entry_price": float(tp_entry),
+            "exit_price": float(price),
+            "entry_time": tp_entry_time_str,
+            "exit_time": _utc_now_iso(),
+            "hold_seconds": _tp_hold_s,
+            "pnl": round(tp_pnl, 2),
+            "pnl_pct": round(tp_pnl_pct, 2),
+            "reason": reason,
+            "entry_num": int(tp_pos.get("entry_count", 1)),
+        }
+        _tp_log_row.update(_trade_log_snapshot_pos(tp_pos))
+        trade_log_append(_tp_log_row)
 
         # Fix B: TP EXIT → send_tp_telegram() ONLY
         tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
@@ -3007,6 +3231,35 @@ def close_tp_position(ticker, price, reason="STOP"):
     })
     if len(tp_trade_history) > TRADE_HISTORY_MAX:
         tp_trade_history[:] = tp_trade_history[-TRADE_HISTORY_MAX:]
+
+    # v3.4.27 — persistent trade log (TP-only long close).
+    _tp_hold_s = None
+    try:
+        if tp_entry_time_str:
+            _ent_dt = datetime.fromisoformat(tp_entry_time_str)
+            if _ent_dt.tzinfo is None:
+                _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
+            _tp_hold_s = (datetime.now(timezone.utc) - _ent_dt).total_seconds()
+    except (TypeError, ValueError):
+        _tp_hold_s = None
+    _tp_log_row = {
+        "date": now_date,
+        "portfolio": "tp",
+        "ticker": ticker,
+        "side": "LONG",
+        "shares": int(tp_shares),
+        "entry_price": float(tp_entry),
+        "exit_price": float(price),
+        "entry_time": tp_entry_time_str,
+        "exit_time": _utc_now_iso(),
+        "hold_seconds": _tp_hold_s,
+        "pnl": round(tp_pnl, 2),
+        "pnl_pct": round(tp_pnl_pct, 2),
+        "reason": reason,
+        "entry_num": int(tp_pos.get("entry_count", 1)),
+    }
+    _tp_log_row.update(_trade_log_snapshot_pos(tp_pos))
+    trade_log_append(_tp_log_row)
 
     SEP_X = "\u2500" * 34
     tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
@@ -3585,6 +3838,37 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         "entry_num": pos.get("entry_count", 1),
         "date": date_str,
     }
+
+    # v3.4.27 — persistent trade log (shorts, both paper and TP).
+    # Written BEFORE portfolio branch so either path gets a row.
+    _sh_entry_iso = pos.get("entry_time", "") or ""
+    _sh_hold_s = None
+    try:
+        if _sh_entry_iso:
+            _ent_dt = datetime.fromisoformat(_sh_entry_iso)
+            if _ent_dt.tzinfo is None:
+                _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
+            _sh_hold_s = (datetime.now(timezone.utc) - _ent_dt).total_seconds()
+    except (TypeError, ValueError):
+        _sh_hold_s = None
+    _sh_log_row = {
+        "date": date_str,
+        "portfolio": portfolio,  # "paper" or "tp"
+        "ticker": ticker,
+        "side": "SHORT",
+        "shares": int(shares),
+        "entry_price": float(entry_price),
+        "exit_price": float(cover_price),
+        "entry_time": _sh_entry_iso,
+        "exit_time": _utc_now_iso(),
+        "hold_seconds": _sh_hold_s,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct,
+        "reason": reason,
+        "entry_num": int(pos.get("entry_count", 1)),
+    }
+    _sh_log_row.update(_trade_log_snapshot_pos(pos))
+    trade_log_append(_sh_log_row)
 
     if portfolio == "paper":
         paper_cash -= cover_price * shares
@@ -6214,6 +6498,93 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /trade_log COMMAND — last 10 persistent-log entries (v3.4.27)
+# ============================================================
+async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the last 10 rows from the persistent trade log.
+
+    Reads the same append-only JSONL file that the dashboard
+    /api/trade_log endpoint serves. Output is width-safe for
+    Telegram mobile (≤34 chars per line). Errors are surfaced
+    so Val can catch disk issues early.
+    """
+    SEP = "\u2500" * 34
+    try:
+        rows = trade_log_read_tail(limit=10)
+    except Exception as e:
+        logger.error("cmd_trade_log failed: %s", e, exc_info=True)
+        await update.message.reply_text(
+            "\u26a0\ufe0f trade_log failed: %s" % str(e)[:200],
+            reply_markup=_menu_button(),
+        )
+        return
+
+    lines = ["\U0001f4d2 Trade log (last 10)", SEP]
+    if not rows:
+        lines.append("No trades logged yet.")
+        if _trade_log_last_error:
+            lines.append("err: %s" % str(
+                _trade_log_last_error)[:28])
+        lines.append(SEP)
+        await update.message.reply_text(
+            "\n".join(lines),
+            reply_markup=_menu_button(),
+        )
+        return
+
+    # Summary first — wins/losses, total P&L, by-reason bucket.
+    wins = sum(1 for r in rows if (r.get("pnl") or 0) > 0)
+    losses = sum(1 for r in rows if (r.get("pnl") or 0) < 0)
+    total = sum(float(r.get("pnl") or 0) for r in rows)
+    by_reason = {}
+    for r in rows:
+        # Strip [5m]/[1h] suffixes so reasons bucket.
+        reason = str(r.get("reason", "?")).split("[")[0]
+        b = by_reason.setdefault(reason, [0, 0.0])
+        b[0] += 1
+        b[1] += float(r.get("pnl") or 0)
+
+    lines.append("W%d L%d  P&L $%+.2f" % (wins, losses, total))
+    lines.append(SEP)
+
+    for r in rows:
+        tkr = str(r.get("ticker", "?"))[:5]
+        side = "L" if r.get("side") == "LONG" else "S"
+        port = str(r.get("portfolio", "?"))[0].upper()
+        pnl = float(r.get("pnl") or 0)
+        reason = str(r.get("reason", "?")).split("[")[0][:10]
+        date = str(r.get("date", ""))[-5:]  # MM-DD
+        # Line 1: date ticker side[port]  +/-P&L
+        lines.append("%s %-5s %s[%s] $%+.2f" % (
+            date, tkr, side, port, pnl,
+        ))
+        # Line 2: reason + entry→exit
+        entry = r.get("entry_price")
+        exit_ = r.get("exit_price")
+        if entry is not None and exit_ is not None:
+            lines.append("  %s  $%.2f\u2192$%.2f" % (
+                reason, float(entry), float(exit_),
+            ))
+        else:
+            lines.append("  %s" % reason)
+
+    lines.append(SEP)
+    lines.append("By reason:")
+    for reason, (n, p) in sorted(
+        by_reason.items(), key=lambda kv: -kv[1][1]
+    ):
+        lines.append("  %-10s %d  $%+.2f" % (reason[:10], n, p))
+    if _trade_log_last_error:
+        lines.append(SEP)
+        lines.append("err: %s" % str(_trade_log_last_error)[:28])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=_menu_button(),
+    )
+
+
+# ============================================================
 # /tp_sync COMMAND — TradersPost broker sync status (v3.4.15)
 # ============================================================
 async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7989,6 +8360,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("version", "Release notes"),
     BotCommand("near_misses", "Recent declined breakouts"),
     BotCommand("retighten", "Retighten stops to 0.75% cap"),
+    BotCommand("trade_log", "Last 10 closed trades (persistent)"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
@@ -8121,6 +8493,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("version", cmd_version))
     app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     app.add_handler(CommandHandler("retighten", cmd_retighten))
+    app.add_handler(CommandHandler("trade_log", cmd_trade_log))
     # Main bot: /tp_sync is TP-only. Register a redirect on main so a
     # misdirected /tp_sync gets a friendly "try the TP bot" reply instead
     # of silence.
@@ -8179,6 +8552,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("version", cmd_version))
     tp_app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     tp_app.add_handler(CommandHandler("retighten", cmd_retighten))
+    tp_app.add_handler(CommandHandler("trade_log", cmd_trade_log))
     tp_app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))
     tp_app.add_handler(CommandHandler("mode", cmd_mode))
     tp_app.add_handler(CommandHandler("reset", cmd_reset))
