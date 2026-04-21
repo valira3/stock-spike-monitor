@@ -194,6 +194,17 @@
   .gate:last-child { border-bottom: none; }
   .gate-name .hint { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
 
+  /* v3.4.21 — per-ticker entry-gate row */
+  .tgate { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .tgate:last-child { border-bottom: none; }
+  .tgate-tkr { font-weight: 600; letter-spacing: 0.01em; }
+  .tgate-chips { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+  .tgate-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 500; font-family: var(--mono); }
+  .tgate-chip.on  { background: var(--up-dim);      color: var(--up); }
+  .tgate-chip.off { background: var(--down-dim);    color: var(--down); }
+  .tgate-chip.na  { background: var(--surface-3);   color: var(--text-dim); }
+  .tgate-section-label { padding: 10px 14px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); border-top: 1px solid var(--border); }
+
   .log {
     font-family: var(--mono); font-size: 11px; line-height: 1.65;
     color: var(--text-muted); padding: 10px 14px 12px;
@@ -643,7 +654,53 @@
     rows.push(gateRow("Trading halted", g.trading_halted ? "HALTED" : "Armed", !g.trading_halted, g.halt_reason || ""));
     rows.push(gateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
     rows.push(gateRow("OR collected", g.or_collected_date || "—", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
+
+    // v3.4.21 — per-ticker entry-gate chips.
+    const per = Array.isArray(g.per_ticker) ? g.per_ticker : [];
+    if (per.length) {
+      rows.push(`<div class="tgate-section-label">Per-ticker · Brk · Vol · PDC · Idx</div>`);
+      for (const r of per) {
+        rows.push(tGateRow(r));
+      }
+    }
     gates.innerHTML = rows.join("");
+
+    // v3.4.21 — next-scan countdown visible in header tick.
+    const nss = (typeof g.next_scan_sec === "number") ? g.next_scan_sec : null;
+    window.__nextScanSec = nss;
+    updateNextScanLabel();
+  }
+
+  function tGateRow(r) {
+    if (!r || !r.ticker) return "";
+    const chips = [];
+    if (r.side === "LONG") chips.push(`<span class="tgate-chip na">L</span>`);
+    else if (r.side === "SHORT") chips.push(`<span class="tgate-chip na">S</span>`);
+    else chips.push(`<span class="tgate-chip na">—</span>`);
+    chips.push(chipFlag("Brk", r.break));
+    const volLbl = (typeof r.vol_pct === "number") ? `Vol ${Math.round(r.vol_pct)}%` : "Vol n/a";
+    chips.push(chipFlag(volLbl, r.vol_ok, r.vol_pct == null));
+    chips.push(chipFlag("PDC", r.polarity));
+    chips.push(chipFlag("Idx", r.index));
+    return `<div class="tgate">
+      <span class="tgate-tkr">${escapeHtml(r.ticker)}</span>
+      <span class="tgate-chips">${chips.join("")}</span>
+    </div>`;
+  }
+
+  function chipFlag(label, val, naOverride) {
+    if (naOverride || val === null || typeof val === "undefined") {
+      return `<span class="tgate-chip na">${escapeHtml(label)}</span>`;
+    }
+    return `<span class="tgate-chip ${val ? "on" : "off"}">${escapeHtml(label)}</span>`;
+  }
+
+  function updateNextScanLabel() {
+    const el = $("h-tick");
+    if (!el) return;
+    const s = window.__nextScanSec;
+    if (typeof s !== "number") return;
+    el.textContent = `next scan ${s}s`;
   }
 
   function gateRow(name, value, ok, hint) {
@@ -756,8 +813,18 @@
       scheduleReconnect();
       return;
     }
+    // v3.4.21 — header tick shows countdown to next scan when we know it;
+    // falls back to the prior tick counter when the API didn't report one.
     let tick = 0;
-    streamTickTimer = setInterval(() => { tick++; $("h-tick").textContent = `tick ${tick}s`; }, 1000);
+    streamTickTimer = setInterval(() => {
+      tick++;
+      if (typeof window.__nextScanSec === "number") {
+        window.__nextScanSec = Math.max(0, window.__nextScanSec - 1);
+        updateNextScanLabel();
+      } else {
+        $("h-tick").textContent = `tick ${tick}s`;
+      }
+    }, 1000);
 
     streamConn.addEventListener("state", (ev) => {
       lastDataAt = Date.now();
