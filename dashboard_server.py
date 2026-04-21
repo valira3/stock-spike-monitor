@@ -639,6 +639,50 @@ async def h_state(request):
     return web.json_response(snap)
 
 
+async def h_trade_log(request):
+    """v3.4.27 — persistent trade-log reader.
+
+    Query params:
+      limit      int, default 500 (max 5000)
+      since      YYYY-MM-DD, optional
+      portfolio  "paper" | "tp", optional
+    """
+    from aiohttp import web
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        limit = int(request.query.get("limit", "500"))
+    except (TypeError, ValueError):
+        limit = 500
+    if limit < 1:
+        limit = 1
+    if limit > 5000:
+        limit = 5000
+    since = request.query.get("since") or None
+    portfolio = request.query.get("portfolio") or None
+    if portfolio and portfolio not in ("paper", "tp"):
+        return web.json_response(
+            {"ok": False, "error": "portfolio must be 'paper' or 'tp'"},
+            status=400,
+        )
+    # Resolve live bot module without re-executing the entry point.
+    m = _ssm()
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(
+        None,
+        lambda: m.trade_log_read_tail(
+            limit=limit, since_date=since, portfolio=portfolio,
+        ),
+    )
+    return web.json_response({
+        "ok": True,
+        "count": len(rows),
+        "schema_version": getattr(m, "TRADE_LOG_SCHEMA_VERSION", 1),
+        "rows": rows,
+        "last_error": getattr(m, "_trade_log_last_error", None),
+    })
+
+
 async def h_stream(request):
     from aiohttp import web
     if not _check_auth(request):
@@ -687,6 +731,7 @@ def _build_app():
     app.router.add_post("/login", h_login)
     app.router.add_post("/logout", h_logout)
     app.router.add_get("/api/state", h_state)
+    app.router.add_get("/api/trade_log", h_trade_log)
     app.router.add_get("/stream", h_stream)
     if _STATIC_DIR.exists():
         app.router.add_static("/static/", path=_STATIC_DIR, show_index=False)
