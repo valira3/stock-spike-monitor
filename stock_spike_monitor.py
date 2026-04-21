@@ -37,22 +37,20 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.10"
+BOT_VERSION = "3.4.11"
 RELEASE_NOTE = (
-    "v3.4.10 \u2014 /reset guards.\n"
-    "Harden /reset against accidental\n"
-    "taps and cross-bot confusion.\n"
-    "\u2022 Confirm button now carries\n"
-    "  a 60s timestamp. Tapping an\n"
-    "  old Confirm is rejected.\n"
-    "\u2022 Owner check: chat_id must\n"
-    "  match paper or TP chat.\n"
-    "\u2022 Action/bot match: paper\n"
-    "  reset must confirm from\n"
-    "  paper bot; TP from TP bot.\n"
-    "\u2022 Blocked resets surface an\n"
-    "  explicit error message.\n"
-    "No bot trade-logic changes."
+    "v3.4.11 \u2014 smoke test harness.\n"
+    "Adds standalone smoke_test.py\n"
+    "covering 31 local + 9 prod\n"
+    "checks across helpers, state,\n"
+    "reports, /reset guards, auth,\n"
+    "rate limiter, and SSE.\n"
+    "\u2022 SSM_SMOKE_TEST=1 env\n"
+    "  flag lets tests import the\n"
+    "  bot module without booting\n"
+    "  the Telegram client or\n"
+    "  scheduler thread.\n"
+    "No trade-logic changes."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -7116,13 +7114,20 @@ logger.info(
     tp_paper_cash, len(tp_positions),
 )
 
-# Startup catch-up
-startup_catchup()
+# Smoke-test guard — lets smoke_test.py import this module without booting
+# the Telegram client, scheduler, OR-collector, or dashboard. The test
+# script sets SSM_SMOKE_TEST=1 before import. This is the ONLY place
+# where that env var is read.
+if os.getenv("SSM_SMOKE_TEST", "").strip() == "1":
+    logger.info("SSM_SMOKE_TEST=1 \u2014 skipping catch-up, scheduler, and Telegram loop")
+else:
+    # Startup catch-up
+    startup_catchup()
 
-# Background threads
-threading.Thread(target=scheduler_thread, daemon=True).start()
-threading.Thread(target=health_ping, daemon=True).start()
+    # Background threads
+    threading.Thread(target=scheduler_thread, daemon=True).start()
+    threading.Thread(target=health_ping, daemon=True).start()
 
-logger.info("Stock Spike Monitor v%s started", BOT_VERSION)
-send_startup_message()
-run_telegram_bot()
+    logger.info("Stock Spike Monitor v%s started", BOT_VERSION)
+    send_startup_message()
+    run_telegram_bot()
