@@ -57,43 +57,41 @@ jobs:
         env:
           EXPECTED: ${{ steps.version.outputs.bot_version }}
         run: |
-          set -u
           # Log in once, then poll /api/state for the expected version.
-          # Give Railway up to ~5 minutes (30 polls × 10s).
+          # Give Railway up to ~5 minutes (30 polls * 10s).
+          # Uses `requests` (already installed via requirements.txt).
           python - <<'PY'
-          import os, sys, time, json, urllib.request, urllib.parse, http.cookiejar
+          import os, sys, time
+          import requests
 
           url = os.environ["DASHBOARD_URL"].rstrip("/")
           pw  = os.environ["DASHBOARD_PASSWORD"]
           expected = os.environ["EXPECTED"]
 
-          jar = http.cookiejar.CookieJar()
-          opener = urllib.request.build_opener(
-              urllib.request.HTTPCookieProcessor(jar),
-              urllib.request.HTTPRedirectHandler(),
-          )
+          sess = requests.Session()
 
           def login():
-              data = urllib.parse.urlencode({"password": pw}).encode()
-              req = urllib.request.Request(f"{url}/login", data=data, method="POST")
               try:
-                  opener.open(req, timeout=10).read()
-              except urllib.error.HTTPError as e:
-                  # 302 is what we want; urllib usually follows it.
-                  if e.code not in (302, 200):
-                      print(f"login HTTPError: {e.code}", flush=True)
+                  r = sess.post(f"{url}/login",
+                                data={"password": pw},
+                                allow_redirects=False, timeout=10)
+                  return r.status_code
+              except Exception as e:
+                  return f"err:{type(e).__name__}"
 
           def fetch_version():
               try:
-                  req = urllib.request.Request(f"{url}/api/state")
-                  with opener.open(req, timeout=10) as r:
-                      d = json.loads(r.read())
-                      return d.get("version"), d.get("ok")
+                  r = sess.get(f"{url}/api/state", timeout=10)
+                  if r.status_code != 200:
+                      return None, f"status={r.status_code}"
+                  d = r.json()
+                  return d.get("version"), d.get("ok")
               except Exception as e:
-                  return None, f"err:{e}"
+                  return None, f"err:{type(e).__name__}"
 
-          login()
-          deadline = time.time() + 300  # 5 minutes
+          print(f"initial login: {login()}", flush=True)
+
+          deadline = time.time() + 300
           last = None
           i = 0
           while time.time() < deadline:
@@ -106,8 +104,8 @@ jobs:
                   sys.exit(0)
               # Cookie may have expired across a restart (v3.4.9 secret
               # rotates on boot). Re-login opportunistically.
-              if ok is False or ok is None:
-                  login()
+              if ok is False or v is None:
+                  print(f"  re-login: {login()}", flush=True)
               time.sleep(10)
 
           print(f"::error::Railway never reported version={expected}. Last seen: {last}")
