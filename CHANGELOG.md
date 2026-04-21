@@ -4,6 +4,60 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.20 — LOW VOL gate: walk back to last valid bar (2026-04-21)
+
+Today's session opened with zero trades despite multiple clean breakouts
+(META, GOOG, MSFT all traded above OR_High for extended periods). Railway
+logs showed exactly one gate firing, over and over, across every ticker
+and every scan cycle:
+
+```
+SKIP META [LOW VOL] entry bar 0 vs avg 56677
+SKIP GOOG [LOW VOL] entry bar 0 vs avg 62631
+SKIP NVDA [LOW VOL] entry bar 0 vs avg 843762
+```
+
+224 LOW VOL skips between 09:45 and 09:59 ET. Zero other gate firings.
+The "entry bar" volume was literally `0` on every ticker on every cycle.
+
+**Root cause.** The LOW VOL gate read `volumes[-2]` directly from the
+Yahoo 1-min bar response — the most-recently-closed bar. When Yahoo
+returns a series where that bar's volume has not yet been populated
+(None or 0), the existing code collapsed it to 0 and compared to the
+`avg_vol * 1.5` threshold. Average ~56K vs entry 0 → always below →
+always skip. Current prices on the same response were fresh, so the
+proximity board looked healthy — but no entry could ever be confirmed.
+
+**Fix.** New helper `_entry_bar_volume(volumes, lookback=5)` walks back
+from `volumes[-2]` through up to 5 prior bars, returning the first
+non-null, positive value. If every candidate bar is null or zero, it
+returns `(0, False)` and the caller emits a distinct `[DATA NOT READY]`
+log and skips. The original LOW VOL log is now only emitted when a real
+bar is found whose volume genuinely fails the 1.5x threshold.
+
+Both LOW VOL gate sites — long-entry (around line 1756) and short-entry
+(around line 2670) — were updated.
+
+**Fail-closed.** If the data source returns nothing usable, we still
+skip the entry. This matches the locked principle *"adaptive logic only
+makes things MORE conservative than baseline, never looser."* The fix
+never enters a trade on missing data — it just stops mislabeling missing
+data as low volume.
+
+**Tests.** Two new local smoke tests:
+
+- `v3.4.20: _entry_bar_volume walks back past null/zero bars` exercises
+  the helper with happy-path, stale-bar, all-stale, empty, and
+  lookback-window cases.
+- `v3.4.20: entry gates call _entry_bar_volume + emit DATA NOT READY`
+  scans module source to enforce that both gate sites use the helper,
+  emit `[DATA NOT READY]`, and no longer contain the raw
+  `volumes[-2] if volumes[-2] is not None else 0` pattern.
+
+45 local tests pass (was 43).
+
+---
+
 ## v3.4.19 — Menu/refresh callbacks: token-based bot routing (2026-04-20)
 
 Second half of the cross-bot data leak fix. After v3.4.18 shipped,

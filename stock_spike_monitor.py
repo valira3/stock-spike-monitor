@@ -37,26 +37,40 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.19"
+BOT_VERSION = "3.4.20"
 # Main-bot release note: detailed prose describing what shipped.
 # Scanner/strategy/portfolio content — never TradersPost internals.
 # v3.4.17 is a bugfix + polish release on top of the v3.4.16 bot split:
 # /status refresh button now behaves, and the deploy card on each bot
 # shows the right tone (detailed here, tight on the TP side).
 MAIN_RELEASE_NOTE = (
-    "v3.4.19 \u2014 Menu & refresh\n"
-    "button bot routing fix (part 2).\n"
+    "v3.4.20 \u2014 LOW VOL gate:\n"
+    "walk back to last valid bar.\n"
     "\n"
-    "Three callbacks were routing by\n"
-    "chat_id instead of bot token:\n"
-    "menu_callback, positions_callback,\n"
-    "proximity_callback. When the TP\n"
-    "bot is used in a chat whose id\n"
-    "doesn't match TELEGRAM_TP_CHAT_ID,\n"
-    "they treated the tap as paper.\n"
-    "All three now use is_tp_update()\n"
-    "(token-based) like every other\n"
-    "command.\n"
+    "Every breakout was getting\n"
+    "skipped as [LOW VOL] today.\n"
+    "Root cause: Yahoo sometimes\n"
+    "returns the most-recent closed\n"
+    "bar with volume not yet\n"
+    "populated. The gate read\n"
+    "volumes[-2] directly and\n"
+    "treated null/0 as low volume,\n"
+    "blocking every entry on every\n"
+    "ticker.\n"
+    "\n"
+    "Fix: walk back up to 5 bars\n"
+    "to find the first non-null,\n"
+    "positive volume bar. If none\n"
+    "found, log DATA NOT READY\n"
+    "(distinct from LOW VOL) and\n"
+    "skip \u2014 fail-closed, never\n"
+    "enter on missing data.\n"
+    "\n"
+    "Applied to both long-entry\n"
+    "and short-entry gates.\n"
+    "\n"
+    "v3.4.19 \u2014 Menu & refresh\n"
+    "callbacks: token-based routing.\n"
     "\n"
     "v3.4.18 \u2014 Menu-button bot\n"
     "routing fix (shim get_bot).\n"
@@ -86,11 +100,14 @@ MAIN_RELEASE_NOTE = (
 )
 # TP-bot release note: tight headline + one line per recent TP change.
 TP_RELEASE_NOTE = (
-    "v3.4.19 \u2014 Menu + refresh now\n"
-    "route by token, not chat_id.\n"
+    "v3.4.20 \u2014 LOW VOL gate walks\n"
+    "back past null bars; new log\n"
+    "[DATA NOT READY] for missing\n"
+    "volume (still fail-closed).\n"
+    "v3.4.19 \u2014 Menu + refresh route\n"
+    "by token, not chat_id.\n"
     "v3.4.18 \u2014 Shim get_bot fix.\n"
     "v3.4.17 \u2014 /status refresh fix.\n"
-    "v3.4.16 \u2014 TP bot isolation.\n"
     "/tp_sync for broker status."
 )
 # Backwards-compat alias — any remaining references default to main.
@@ -1341,6 +1358,38 @@ def _or_price_sane(or_price, live_price, threshold=0.015):
     return diff <= threshold
 
 
+def _entry_bar_volume(volumes, lookback=5):
+    """Pick the most recent closed bar's volume, walking back through
+    null/zero entries that indicate the data source hasn't populated
+    the bar yet (seen when Yahoo returns a fresh series where the last
+    closed bar is still settling).
+
+    Convention: volumes[-1] is the in-progress bar, volumes[-2] is the
+    most recently closed bar. Start there and walk back up to
+    `lookback` bars, returning the first non-null, positive value.
+
+    Returns (vol, ready):
+      - (vol, True)  when a valid bar was found
+      - (0,   False) when every candidate bar was null/zero — caller
+                     must treat this as DATA NOT READY, NOT as low-vol.
+
+    Failure-closed: a DATA NOT READY result must cause the caller to
+    skip the entry attempt. This keeps behavior no looser than baseline
+    (a missing-data bar never entered a trade before this fix either).
+    """
+    if not volumes or len(volumes) < 2:
+        return 0, False
+    # Walk back from volumes[-2] (last closed bar) through `lookback`
+    # prior bars. Index range: [-2, -3, ..., -2-(lookback-1)].
+    for offset in range(2, 2 + lookback):
+        if offset > len(volumes):
+            break
+        v = volumes[-offset]
+        if v is not None and v > 0:
+            return v, True
+    return 0, False
+
+
 # ============================================================
 # OR COLLECTION (Opening Range)
 # ============================================================
@@ -1714,12 +1763,21 @@ def check_entry(ticker):
         )
         return False, None
 
-    # Volume confirmation: entry bar volume >= 1.5x session average
+    # Volume confirmation: entry bar volume >= 1.5x session average.
+    # v3.4.20: walk back through null/zero bars before failing. Yahoo
+    # sometimes returns the most-recent closed bar with volume not yet
+    # populated; treating that as low-vol blocks every breakout. If no
+    # valid bar is found in the lookback window, log DATA NOT READY
+    # (distinct from LOW VOL) and skip — fail-closed, never enter on
+    # missing data.
     volumes = bars.get("volumes", [])
     if len(volumes) >= 5:
         valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
         avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
-        entry_bar_vol = volumes[-2] if volumes[-2] is not None else 0
+        entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
+        if not vol_ready:
+            logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
+            return False, None
         if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
             logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
             return False, None
@@ -2626,12 +2684,18 @@ def check_short_entry(ticker):
         )
         return
 
-    # Volume confirmation: entry bar volume >= 1.5x session average
+    # Volume confirmation: entry bar volume >= 1.5x session average.
+    # v3.4.20: walk back through null/zero bars before failing (see
+    # _entry_bar_volume docstring). DATA NOT READY is distinct from
+    # LOW VOL and still fail-closed.
     volumes = bars.get("volumes", [])
     if len(volumes) >= 5:
         valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
         avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
-        entry_bar_vol = volumes[-2] if volumes[-2] is not None else 0
+        entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
+        if not vol_ready:
+            logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
+            return
         if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
             logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
             return
