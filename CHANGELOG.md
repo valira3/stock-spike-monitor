@@ -4,6 +4,36 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.10 — /reset guards (2026-04-20)
+
+Addresses C7 from the code review. The `/reset` callback handler
+previously had **zero validation** before wiping portfolios — any tap
+on any surviving Confirm button would execute the reset. Three guards
+now sit in front of `_do_reset_*()`:
+
+**1. Owner check.** The callback's chat_id must match either `CHAT_ID`
+(paper bot) or `TELEGRAM_TP_CHAT_ID` (TP bot). A stray user added to
+either chat can no longer wipe state.
+
+**2. Action/bot match.** A paper reset must be confirmed from the paper
+bot; a TP reset from the TP bot. `both` may come from either. This
+prevents a callback routed to the wrong bot from taking destructive
+action.
+
+**3. Freshness window.** Confirm buttons now embed a Unix timestamp in
+`callback_data` (format: `reset_paper_confirm:1776720173`). The handler
+rejects any confirm older than `RESET_CONFIRM_WINDOW_SEC` (60s). This
+eliminates the scroll-back failure mode where tapping an old /reset
+message would silently wipe the current portfolio.
+
+When a reset is blocked, the handler logs a warning and replaces the
+message with an explicit error (e.g. `❌ Reset blocked: expired
+confirm (347s old).`).
+
+No trade-logic changes. Entries, exits, sizing, stops unchanged.
+
+---
+
 ## v3.4.9 — Dashboard security hardening (2026-04-20)
 
 Web dashboard hardening only — no bot trade-logic changes. Addresses three
