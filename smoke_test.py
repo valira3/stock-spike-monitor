@@ -1124,9 +1124,10 @@ def run_local() -> int:
         assert callable(getattr(m, "_retighten_short_stop", None)), \
             "_retighten_short_stop must exist"
         # Already-tight short: entry 100, stop 100.50 (0.50%) — cap is
-        # 100.75, so existing stop is tighter.
+        # 100.75, so existing stop is tighter. Current at 99.80 is only
+        # −0.20% so the v3.4.25 breakeven ratchet is NOT armed.
         pos = {"entry_price": 100.0, "stop": 100.50}
-        out = m._retighten_short_stop("XYZ", pos, 99.5, "paper",
+        out = m._retighten_short_stop("XYZ", pos, 99.80, "paper",
                                       force_exit=False)
         assert out[0] == "already_tight", out
         assert pos["stop"] == 100.50, "must not mutate tight stop"
@@ -1146,9 +1147,11 @@ def run_local() -> int:
     @t("v3.4.23: wide long stop gets tightened to floor")
     def _():
         import stock_spike_monitor as m
-        # Long entry 200, stop 195 (2.5%); floor = 198.50
+        # Long entry 200, stop 195 (2.5%); floor = 198.50. Current at
+        # 200.50 is only +0.25% so the v3.4.25 ratchet is NOT armed,
+        # isolating pure cap behavior.
         pos = {"entry_price": 200.0, "stop": 195.0}
-        out = m._retighten_long_stop("XYZ", pos, 201.0, "paper",
+        out = m._retighten_long_stop("XYZ", pos, 200.50, "paper",
                                      force_exit=False)
         assert out[0] == "tightened", out
         assert abs(out[2] - 198.50) < 1e-6, out
@@ -1234,6 +1237,142 @@ def run_local() -> int:
         # Both app and tp_app must register the handler.
         assert src.count("CommandHandler(\"retighten\", cmd_retighten)") >= 2, \
             "/retighten must be wired on both main and TP apps"
+
+    # ------------------------------------------------------------
+    # v3.4.25 regressions — Breakeven ratchet (Stage 1)
+    # ------------------------------------------------------------
+    # Once a position is +0.50% in profit, the stop pulls to entry
+    # price (breakeven). Retroactive (applies on startup + every
+    # manage cycle via retighten_all_stops). Pure tightening — never
+    # loosens, never moves stop past entry in the unfavorable
+    # direction. No-op when trail is already armed.
+
+    @t("v3.4.25: BREAKEVEN_RATCHET_PCT constant is 0.005")
+    def _():
+        import stock_spike_monitor as m
+        assert abs(m.BREAKEVEN_RATCHET_PCT - 0.005) < 1e-9, \
+            m.BREAKEVEN_RATCHET_PCT
+
+    @t("v3.4.25: _breakeven_short_stop below threshold is a no-op")
+    def _():
+        import stock_spike_monitor as m
+        # AAPL-like: entry 268.77, current 268.00 is only −0.29%
+        # profit — below +0.50% arm threshold.
+        new_stop, armed = m._breakeven_short_stop(
+            entry_price=268.77, current_price=268.00,
+            current_stop=270.79,
+        )
+        assert not armed, "ratchet must not arm below threshold"
+        assert new_stop == 270.79, new_stop
+
+    @t("v3.4.25: _breakeven_short_stop at +0.50% arms and pulls to entry")
+    def _():
+        import stock_spike_monitor as m
+        # Exactly at threshold: current = entry * 0.995 = 267.42615
+        new_stop, armed = m._breakeven_short_stop(
+            entry_price=268.77, current_price=268.77 * 0.995,
+            current_stop=270.79,
+        )
+        assert armed, "ratchet must arm at exactly the threshold"
+        assert new_stop == 268.77, new_stop
+
+    @t("v3.4.25: _breakeven_short_stop past +0.50% pulls to entry")
+    def _():
+        import stock_spike_monitor as m
+        # AAPL-like scenario that motivated the ratchet:
+        # entry 268.77, current 266.59 = +0.81% profit, stop 270.79.
+        new_stop, armed = m._breakeven_short_stop(
+            entry_price=268.77, current_price=266.59,
+            current_stop=270.79,
+        )
+        assert armed
+        assert new_stop == 268.77, new_stop  # pulled from 270.79 → 268.77
+
+    @t("v3.4.25: _breakeven_long_stop below threshold is a no-op")
+    def _():
+        import stock_spike_monitor as m
+        # Entry 100, current 100.40 is only +0.40% — below threshold.
+        new_stop, armed = m._breakeven_long_stop(
+            entry_price=100.0, current_price=100.40,
+            current_stop=99.25,
+        )
+        assert not armed
+        assert new_stop == 99.25
+
+    @t("v3.4.25: _breakeven_long_stop past +0.50% pulls to entry")
+    def _():
+        import stock_spike_monitor as m
+        new_stop, armed = m._breakeven_long_stop(
+            entry_price=100.0, current_price=100.75,
+            current_stop=99.25,
+        )
+        assert armed
+        assert new_stop == 100.0
+
+    @t("v3.4.25: ratchet NEVER loosens an already-tighter stop")
+    def _():
+        import stock_spike_monitor as m
+        # If the trail-management loop somehow already has the stop
+        # at a better-than-breakeven price, the ratchet must leave
+        # it alone. Short: existing stop 268.00 is already below
+        # entry 268.77 — ratchet must NOT widen it back to entry.
+        new_stop, armed = m._breakeven_short_stop(
+            entry_price=268.77, current_price=266.50,
+            current_stop=268.00,
+        )
+        assert armed
+        assert new_stop == 268.00, \
+            "ratchet must not loosen a stop already past breakeven"
+        # Long: existing 100.50 above entry 100; must stay at 100.50.
+        new_stop_l, armed_l = m._breakeven_long_stop(
+            entry_price=100.0, current_price=101.0,
+            current_stop=100.50,
+        )
+        assert armed_l
+        assert new_stop_l == 100.50, new_stop_l
+
+    @t("v3.4.25: _retighten_short_stop reports 'ratcheted' when breakeven fires")
+    def _():
+        import stock_spike_monitor as m
+        # Exactly the AAPL live scenario: retro-capped stop at 270.79
+        # (the v3.4.23 cap), current 266.59 (+0.81%). Ratchet pulls
+        # the stop from 270.79 to 268.77.
+        pos = {"entry_price": 268.77, "stop": 270.79}
+        out = m._retighten_short_stop("AAPL", pos, 266.59, "paper",
+                                      force_exit=False)
+        assert out[0] == "ratcheted", out
+        assert abs(out[1] - 270.79) < 1e-6, out
+        assert abs(out[2] - 268.77) < 1e-6, out
+        assert abs(pos["stop"] - 268.77) < 1e-6, pos
+
+    @t("v3.4.25: _retighten_long_stop reports 'ratcheted' when breakeven fires")
+    def _():
+        import stock_spike_monitor as m
+        # Long entry 100, wide stop 98, current 100.75 (+0.75%).
+        # Cap floor would be 99.25, but ratchet pulls to 100.0.
+        pos = {"entry_price": 100.0, "stop": 98.0}
+        out = m._retighten_long_stop("XYZ", pos, 100.75, "paper",
+                                     force_exit=False)
+        assert out[0] == "ratcheted", out
+        assert abs(out[2] - 100.0) < 1e-6, out
+        assert abs(pos["stop"] - 100.0) < 1e-6, pos
+
+    @t("v3.4.25: ratchet is a no_op when trail_active is True")
+    def _():
+        import stock_spike_monitor as m
+        # Even at huge profit, trail_active must short-circuit.
+        pos = {"entry_price": 100.0, "stop": 105.0, "trail_active": True}
+        out = m._retighten_short_stop("XYZ", pos, 98.0, "paper",
+                                      force_exit=False)
+        assert out == ("no_op", None, None), out
+        assert pos["stop"] == 105.0
+
+    @t("v3.4.25: retighten_all_stops summary has 'ratcheted' key")
+    def _():
+        import stock_spike_monitor as m
+        result = m.retighten_all_stops(force_exit=False, fetch_prices=False)
+        assert "ratcheted" in result, result.keys()
+        assert isinstance(result["ratcheted"], int)
 
     @t("v3.4.21: dashboard_server exposes per_ticker gates + next_scan_sec + near_misses")
     def _():
