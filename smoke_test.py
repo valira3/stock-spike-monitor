@@ -709,6 +709,33 @@ def run_local() -> int:
                 assert len(line) <= 34, \
                     f"{name} line too long ({len(line)}): {line!r}"
 
+    @t("v3.4.18: _CallbackUpdateShim forwards get_bot() for is_tp routing")
+    def _():
+        # Without this, commands invoked from /menu buttons fall through
+        # the try/except in is_tp_update() and always return False,
+        # rendering paper data on the TP bot (the "mix" symptom).
+        shim_cls = m._CallbackUpdateShim
+        assert hasattr(shim_cls, "get_bot"), \
+            "_CallbackUpdateShim must expose get_bot() so is_tp_update works"
+
+        class _FakeBot:
+            def __init__(self, token): self.token = token
+
+        class _FakeQuery:
+            def __init__(self, token):
+                self._bot = _FakeBot(token)
+            def get_bot(self): return self._bot
+
+        # TP token -> is_tp_update True
+        tp_shim = shim_cls(_FakeQuery(m.TP_TOKEN))
+        assert m.is_tp_update(tp_shim) is True, \
+            "shim with TP token must resolve is_tp_update -> True"
+
+        # Non-TP token -> is_tp_update False
+        paper_shim = shim_cls(_FakeQuery("some-other-token"))
+        assert m.is_tp_update(paper_shim) is False, \
+            "shim with non-TP token must resolve is_tp_update -> False"
+
     return run_suite("LOCAL SMOKE TESTS")
 
 
