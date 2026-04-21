@@ -4,6 +4,152 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.21 — Stop cap, near-miss log, dashboard gates, deploy card split (2026-04-21)
+
+This release bundles four themed changes that came out of the same
+morning session. Each is small on its own; together they tighten risk
+control on late entries, make declined breakouts visible after the
+fact, give the dashboard a per-ticker view of why a ticker is or isn't
+arming, and trim the deploy card down to just what shipped this time.
+
+### 1. Stop cap: max 0.75% from entry (Option A)
+
+MSFT long entered this morning at $425.93 with a stop of $419.26 — the
+baseline `OR_High − $0.90` formula. Problem: the price had already
+climbed 1.37% above OR_High by the time the entry confirmed, so the
+"OR-buffer" stop was sitting $6.67 below entry — a 1.57% risk on a
+strategy whose thesis decays well before then. The formula ignored
+entry price entirely.
+
+**Fix.** New constant `MAX_STOP_PCT = 0.0075` and two helpers:
+
+```python
+def _capped_long_stop(or_high_val, entry_price, max_pct=MAX_STOP_PCT):
+    baseline = or_high_val - 0.90
+    floor = entry_price * (1.0 - max_pct)
+    final = max(baseline, floor)       # tighter of the two
+    return round(final, 2), final > baseline, round(baseline, 2)
+
+def _capped_short_stop(pdc_val, entry_price, max_pct=MAX_STOP_PCT):
+    baseline = pdc_val + 0.90
+    ceiling = entry_price * (1.0 + max_pct)
+    final = min(baseline, ceiling)     # tighter of the two
+    return round(final, 2), final < baseline, round(baseline, 2)
+```
+
+**Invariant (locked design principle):** the cap can only *tighten* the
+stop, never loosen it. For both sides, the entry-relative cap replaces
+the baseline only when it sits closer to entry than baseline does. A
+near-OR / near-PDC entry keeps its original baseline stop unchanged.
+
+Applied in both `execute_entry` and `execute_short_entry`. The entry
+Telegram card now shows `stop: entry −0.75%` when the cap kicks in and
+the original `stop: OR_High−$0.90` / `stop: PDC+$0.90` otherwise.
+
+Worked example (MSFT, 4/21):
+
+| field           | before  | after   |
+|-----------------|---------|---------|
+| entry           | 425.93  | 425.93  |
+| stop            | 419.26  | 422.74  |
+| risk ($)        | 6.67    | 3.19    |
+| risk (%)        | −1.57   | −0.75   |
+
+### 2. Near-miss diagnostic log
+
+When a breakout clears price but fails the volume gate (`LOW_VOL` or
+`DATA_NOT_READY`), we now record it in an in-memory ring buffer
+(`_near_miss_log`, capped at `_NEAR_MISS_MAX = 20`). Each entry captures
+ticker, side, reason, volume%, close vs level, and timestamp.
+
+A new Telegram command, `/near_misses`, prints the last 10 entries
+formatted as `HH:MM TICKER SIDE REASON` with vol% and close-vs-level
+margins — enough to answer "did we see this breakout and decline it,
+or did we never see it?" without digging through Railway logs. The
+command is registered on both the main bot and TP bot, and advertised
+in `MAIN_BOT_COMMANDS`.
+
+**This does NOT change trade behavior.** The gates still decline the
+trade; we just record the decision. Consistent with the fail-closed
+principle: no catch-up trades are attempted even if the conditions
+would have passed a cycle later.
+
+### 3. Dashboard: per-ticker gate chips + next-scan countdown
+
+The dashboard's gates panel used to show only global status. Now
+each active ticker gets its own chip row:
+
+```
+MSFT · L ·  Brk  ·  Vol 142%  ·  PDC  ·  Idx
+AAPL · S ·  Brk  ·  Vol  na   ·  PDC  ·  Idx
+```
+
+Chips render `on` (green) when a gate passes, `off` (red) when it
+fails, and `na` (muted) when the gate hasn't been evaluated this cycle.
+The four chips are exactly what Val asked for — no more, no less:
+Break, Volume, PDC, Index.
+
+The header's `tick Xs` counter now falls back to `next scan Xs` while a
+scan cycle is mid-flight, decrementing each second from the value
+`/api/state` reports in `gates.next_scan_sec` (derived from
+`SCAN_INTERVAL − age(_last_scan_time)`).
+
+API shape additions in `/api/state`:
+
+- `gates.per_ticker` — list of `{ticker, side, break, vol_pct, vol_ok,
+  pdc_ok, index_ok}` rows from the module-level `_gate_snapshot` dict.
+- `gates.next_scan_sec` — integer seconds until the next scheduled
+  scan, or `null` off-hours.
+- `near_misses` — top-level list mirroring `_near_miss_log`, capped
+  at `_NEAR_MISS_MAX`.
+
+### 4. Deploy card split
+
+The startup "deployed" card in both bots used to embed
+`MAIN_RELEASE_NOTE` / `TP_RELEASE_NOTE`, which carried a rolling
+history of the last several versions. Over time that pushed the card
+past a useful screen height on mobile.
+
+Now the card embeds `CURRENT_MAIN_NOTE` / `CURRENT_TP_NOTE` —
+current-release-only prose that must start with the current
+`BOT_VERSION` and contains no references to older versions. `/version`
+and its menu button still show the full rolling history unchanged.
+
+Enforced by smoke tests:
+
+- `CURRENT_MAIN_NOTE` / `CURRENT_TP_NOTE` must start with
+  `v{BOT_VERSION}` and must not mention any prior version.
+- Every line in both notes must fit the 34-char Telegram mobile
+  code-block width.
+- `send_startup_message` must embed the `CURRENT_*` placeholders and
+  must not embed `MAIN_RELEASE_NOTE` / `TP_RELEASE_NOTE`.
+- The rolling `MAIN_RELEASE_NOTE` / `TP_RELEASE_NOTE` must still lead
+  with the current version so `/version` stays current-first.
+
+### Tests
+
+15 new v3.4.21 regression tests added to `smoke_test.py`:
+
+1. `CURRENT_MAIN_NOTE/CURRENT_TP_NOTE scope + width`
+2. `rolling RELEASE_NOTE still leads with current version`
+3. `deploy card uses CURRENT_* notes, not rolling RELEASE_NOTE`
+4. `MAX_STOP_PCT == 0.0075 (0.75% cap)`
+5. `_capped_long_stop tightens when entry is far above OR`
+6. `_capped_long_stop leaves baseline alone for near-OR entries`
+7. `_capped_short_stop tightens when entry is far below PDC`
+8. `_capped_short_stop leaves baseline alone for near-PDC entries`
+9. `execute_entry / execute_short_entry use capped stop helpers`
+10. `near-miss ring buffer exists and _record_near_miss works`
+11. `_near_miss_log respects _NEAR_MISS_MAX cap`
+12. `_gate_snapshot dict exists for per-ticker dashboard chips`
+13. `check_entry / check_short_entry populate gate snapshot + near-miss`
+14. `/near_misses command is a registered handler`
+15. `dashboard_server exposes per_ticker gates + next_scan_sec + near_misses`
+
+60 local tests pass (was 45).
+
+---
+
 ## v3.4.20 — LOW VOL gate: walk back to last valid bar (2026-04-21)
 
 Today's session opened with zero trades despite multiple clean breakouts

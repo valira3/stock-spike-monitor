@@ -833,6 +833,216 @@ def run_local() -> int:
             assert "TELEGRAM_TP_CHAT_ID" not in code_only, \
                 f"{name} must not route data by chat_id anymore"
 
+    # ============================================================
+    # v3.4.21 regressions
+    # ------------------------------------------------------------
+    #  - Deploy card shows ONLY the current release note.
+    #  - Stop cap: long/short stops clamp to ±0.75% from entry.
+    #  - Near-miss ring buffer exists and _record_near_miss works.
+    #  - Per-ticker gate snapshot dict exists.
+    #  - /near_misses Telegram command is wired up.
+    # ============================================================
+
+    @t("v3.4.21: CURRENT_MAIN_NOTE/CURRENT_TP_NOTE scope + width")
+    def _():
+        # Current-only notes: must start with the current version,
+        # must not mention any older version, and every line must
+        # fit Telegram mobile code-block width (≤34 chars).
+        for attr in ("CURRENT_MAIN_NOTE", "CURRENT_TP_NOTE"):
+            txt = getattr(m, attr, None)
+            assert isinstance(txt, str) and txt, f"{attr} must be a non-empty string"
+            assert txt.lstrip().startswith(f"v{m.BOT_VERSION}"), \
+                f"{attr} must start with v{m.BOT_VERSION}"
+            # No stale version references inside the current-only note.
+            for old in ("v3.4.20", "v3.4.19", "v3.4.18", "v3.4.17",
+                        "v3.4.16", "v3.4.15"):
+                assert old not in txt, \
+                    f"{attr} must not mention {old}"
+            for ln in txt.splitlines():
+                assert len(ln) <= 34, \
+                    f"{attr} line too wide ({len(ln)}>34): {ln!r}"
+
+    @t("v3.4.21: rolling RELEASE_NOTE still leads with current version")
+    def _():
+        for attr in ("MAIN_RELEASE_NOTE", "TP_RELEASE_NOTE"):
+            txt = getattr(m, attr, None)
+            assert isinstance(txt, str) and txt, f"{attr} must exist"
+            assert txt.lstrip().startswith(f"v{m.BOT_VERSION}"), \
+                f"{attr} must lead with v{m.BOT_VERSION}"
+
+    @t("v3.4.21: deploy card uses CURRENT_* notes, not rolling RELEASE_NOTE")
+    def _():
+        import inspect
+        fn = getattr(m, "send_startup_message", None)
+        assert fn is not None, "send_startup_message must exist"
+        src = inspect.getsource(fn)
+        # Must use current-only notes on the deploy card.
+        assert "{CURRENT_MAIN_NOTE}" in src, \
+            "deploy card must embed {CURRENT_MAIN_NOTE}"
+        assert "{CURRENT_TP_NOTE}" in src, \
+            "deploy card must embed {CURRENT_TP_NOTE}"
+        # Must NOT embed the rolling history notes on the deploy card.
+        assert "{MAIN_RELEASE_NOTE}" not in src, \
+            "deploy card must not embed {MAIN_RELEASE_NOTE} (rolling history)"
+        assert "{TP_RELEASE_NOTE}" not in src, \
+            "deploy card must not embed {TP_RELEASE_NOTE} (rolling history)"
+
+    @t("v3.4.21: MAX_STOP_PCT == 0.0075 (0.75% cap)")
+    def _():
+        assert hasattr(m, "MAX_STOP_PCT"), "MAX_STOP_PCT must be defined"
+        assert abs(m.MAX_STOP_PCT - 0.0075) < 1e-9, \
+            f"MAX_STOP_PCT must be 0.0075, got {m.MAX_STOP_PCT}"
+
+    @t("v3.4.21: _capped_long_stop tightens when entry is far above OR")
+    def _():
+        # Real-world case (MSFT 4/21): OR 420.16, entry 425.93.
+        # Baseline = 419.26; 0.75% floor = 422.74; cap must win.
+        stop, capped, baseline = m._capped_long_stop(420.16, 425.93)
+        assert capped is True, "entry 1.37% above OR must trigger cap"
+        assert stop == 422.74, f"expected stop 422.74, got {stop}"
+        assert baseline == 419.26, f"expected baseline 419.26, got {baseline}"
+        # Risk reduction sanity: capped risk is tighter than baseline.
+        assert (425.93 - stop) < (425.93 - baseline), \
+            "capped stop must be tighter (smaller risk) than baseline"
+
+    @t("v3.4.21: _capped_long_stop leaves baseline alone for near-OR entries")
+    def _():
+        # Entry barely above OR — baseline stop is already within
+        # 0.75% of entry; cap must NOT loosen it.
+        stop, capped, baseline = m._capped_long_stop(420.16, 420.50)
+        assert capped is False, "near-OR entry must not trip cap"
+        assert stop == baseline == 419.26, \
+            f"expected stop=baseline=419.26, got stop={stop} baseline={baseline}"
+
+    @t("v3.4.21: _capped_short_stop tightens when entry is far below PDC")
+    def _():
+        # PDC 420.00, entry 414.00 (1.43% below PDC).
+        # Baseline = 420.90; 0.75% ceiling = 417.11; cap must win.
+        stop, capped, baseline = m._capped_short_stop(420.00, 414.00)
+        assert capped is True, "entry far below PDC must trigger cap"
+        assert stop == 417.11, f"expected stop 417.11, got {stop}"
+        assert baseline == 420.90, f"expected baseline 420.90, got {baseline}"
+        assert (stop - 414.00) < (baseline - 414.00), \
+            "capped short stop must be tighter than baseline"
+
+    @t("v3.4.21: _capped_short_stop leaves baseline alone for near-PDC entries")
+    def _():
+        # Entry just below PDC — baseline already tighter than ceiling.
+        stop, capped, baseline = m._capped_short_stop(420.00, 419.80)
+        assert capped is False, "near-PDC short must not trip cap"
+        assert stop == baseline == 420.90, \
+            f"expected stop=baseline=420.90, got stop={stop} baseline={baseline}"
+
+    @t("v3.4.21: execute_entry / execute_short_entry use capped stop helpers")
+    def _():
+        import inspect
+        long_src = inspect.getsource(m.execute_entry)
+        short_src = inspect.getsource(m.execute_short_entry)
+        assert "_capped_long_stop(" in long_src, \
+            "execute_entry must call _capped_long_stop"
+        assert "_capped_short_stop(" in short_src, \
+            "execute_short_entry must call _capped_short_stop"
+        # Legacy raw formulas must be gone from these entry paths.
+        assert "or_high_val - 0.90" not in long_src, \
+            "execute_entry must not compute baseline directly anymore"
+        assert "pdc_val + 0.90" not in short_src, \
+            "execute_short_entry must not compute baseline directly anymore"
+
+    @t("v3.4.21: near-miss ring buffer exists and _record_near_miss works")
+    def _():
+        assert hasattr(m, "_near_miss_log"), "_near_miss_log must be defined"
+        assert isinstance(m._near_miss_log, list), "_near_miss_log must be a list"
+        assert hasattr(m, "_NEAR_MISS_MAX"), "_NEAR_MISS_MAX must be defined"
+        assert m._NEAR_MISS_MAX == 20, \
+            f"_NEAR_MISS_MAX must be 20, got {m._NEAR_MISS_MAX}"
+        assert hasattr(m, "_record_near_miss"), "_record_near_miss must exist"
+
+        # Snapshot length, append, then restore so we don't leak state.
+        before = list(m._near_miss_log)
+        try:
+            m._record_near_miss(ticker="ZZZZ", side="LONG", reason="LOW_VOL",
+                                vol_pct=42.0, price=100.0, level=99.0)
+            assert len(m._near_miss_log) == len(before) + 1, \
+                "_record_near_miss must append an entry"
+            row = m._near_miss_log[0]
+            assert isinstance(row, dict), "near-miss row must be a dict"
+            assert row.get("ticker") == "ZZZZ"
+            assert row.get("reason") == "LOW_VOL"
+        finally:
+            m._near_miss_log.clear()
+            m._near_miss_log.extend(before)
+
+    @t("v3.4.21: _near_miss_log respects _NEAR_MISS_MAX cap")
+    def _():
+        before = list(m._near_miss_log)
+        try:
+            m._near_miss_log.clear()
+            for i in range(m._NEAR_MISS_MAX + 5):
+                m._record_near_miss(ticker=f"T{i}", side="LONG",
+                                    reason="LOW_VOL")
+            assert len(m._near_miss_log) == m._NEAR_MISS_MAX, \
+                f"log length must not exceed {m._NEAR_MISS_MAX}, " \
+                f"got {len(m._near_miss_log)}"
+        finally:
+            m._near_miss_log.clear()
+            m._near_miss_log.extend(before)
+
+    @t("v3.4.21: _gate_snapshot dict exists for per-ticker dashboard chips")
+    def _():
+        assert hasattr(m, "_gate_snapshot"), "_gate_snapshot must be defined"
+        assert isinstance(m._gate_snapshot, dict), \
+            "_gate_snapshot must be a dict"
+
+    @t("v3.4.21: check_entry / check_short_entry populate gate snapshot + near-miss")
+    def _():
+        import inspect
+        long_src = inspect.getsource(m.check_entry)
+        short_src = inspect.getsource(m.check_short_entry)
+        # Both long and short gates must write into _gate_snapshot.
+        assert "_gate_snapshot[ticker]" in long_src, \
+            "check_entry must populate _gate_snapshot[ticker]"
+        assert "_gate_snapshot[ticker]" in short_src, \
+            "check_short_entry must populate _gate_snapshot[ticker]"
+        # Both must call _record_near_miss on the LOW_VOL / DATA_NOT_READY path.
+        assert "_record_near_miss(" in long_src, \
+            "check_entry must call _record_near_miss on declined breakouts"
+        assert "_record_near_miss(" in short_src, \
+            "check_short_entry must call _record_near_miss on declined breakouts"
+
+    @t("v3.4.21: /near_misses command is a registered handler")
+    def _():
+        import inspect
+        fn = getattr(m, "cmd_near_misses", None)
+        assert fn is not None, "cmd_near_misses must exist"
+        assert inspect.iscoroutinefunction(fn), \
+            "cmd_near_misses must be a coroutine (async def)"
+        # BotCommand list must advertise /near_misses to users.
+        cmds = getattr(m, "MAIN_BOT_COMMANDS", None)
+        assert cmds is not None, "MAIN_BOT_COMMANDS must exist"
+        names = [getattr(c, "command", None) for c in cmds]
+        assert "near_misses" in names, \
+            "near_misses must be in MAIN_BOT_COMMANDS"
+
+    @t("v3.4.21: dashboard_server exposes per_ticker gates + next_scan_sec + near_misses")
+    def _():
+        # Import the sibling dashboard_server module and inspect its snapshot
+        # source to make sure the new surfaces are wired up. We don't call
+        # snapshot() here because it expects a running scanner — source-level
+        # checks are enough and keep the smoke test hermetic.
+        import importlib, inspect
+        ds = importlib.import_module("dashboard_server")
+        assert hasattr(ds, "_ticker_gates"), \
+            "dashboard_server must define _ticker_gates"
+        assert hasattr(ds, "_next_scan_seconds"), \
+            "dashboard_server must define _next_scan_seconds"
+        src = inspect.getsource(ds)
+        assert '"per_ticker"' in src, \
+            "snapshot() must expose gates.per_ticker"
+        assert '"next_scan_sec"' in src, \
+            "snapshot() must expose gates.next_scan_sec"
+        assert '"near_misses"' in src, \
+            "snapshot() must expose top-level near_misses"
+
     return run_suite("LOCAL SMOKE TESTS")
 
 

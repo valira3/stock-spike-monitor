@@ -257,6 +257,52 @@ def _proximity_rows() -> list[dict]:
     return rows
 
 
+def _ticker_gates(m, tickers: list[str]) -> list[dict]:
+    """v3.4.21 — serialize _gate_snapshot for the dashboard.
+
+    Returns one row per known ticker in the same order as TRADE_TICKERS.
+    Tickers with no snapshot yet get a placeholder with side=None.
+    """
+    snap = dict(getattr(m, "_gate_snapshot", {}) or {})
+    rows = []
+    for t in tickers:
+        g = snap.get(t) or {}
+        rows.append({
+            "ticker": t,
+            "side": g.get("side"),
+            "break": g.get("break"),
+            "vol_pct": g.get("vol_pct"),
+            "vol_ok": g.get("vol_ok"),
+            "polarity": g.get("polarity"),
+            "index": g.get("index"),
+            "ts": g.get("ts"),
+        })
+    return rows
+
+
+def _next_scan_seconds(m) -> int | None:
+    """v3.4.21 — seconds until the next scan cycle, or None if unknown.
+
+    Computes max(0, SCAN_INTERVAL - age_of_last_scan). Clamps to
+    [0, SCAN_INTERVAL]. Returns None if the scanner hasn't started.
+    """
+    last = getattr(m, "_last_scan_time", None)
+    if last is None:
+        return None
+    interval = int(getattr(m, "SCAN_INTERVAL", 60) or 60)
+    try:
+        from datetime import datetime, timezone
+        age = (datetime.now(timezone.utc) - last).total_seconds()
+    except Exception:
+        return None
+    remaining = interval - age
+    if remaining < 0:
+        return 0
+    if remaining > interval:
+        return interval
+    return int(remaining)
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -373,7 +419,12 @@ def snapshot() -> dict[str, Any]:
                 "halt_reason": halt_reason,
                 "scan_paused": scan_paused,
                 "or_collected_date": or_date,
+                # v3.4.21 — per-ticker entry-gate chips: Break / Vol / PDC / Idx.
+                "per_ticker": _ticker_gates(m, tickers),
+                # v3.4.21 — next scan countdown (seconds until next tick).
+                "next_scan_sec": _next_scan_seconds(m),
             },
+            "near_misses": list(getattr(m, "_near_miss_log", []) or []),
             "observer": {
                 "ticker_pnl": ticker_pnl,
                 "ticker_red": ticker_red[:5],

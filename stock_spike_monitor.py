@@ -37,79 +37,85 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.20"
+BOT_VERSION = "3.4.21"
+
+# v3.4.21: release notes are split into two surfaces.
+#
+#  CURRENT_MAIN_NOTE / CURRENT_TP_NOTE
+#    - Just the release that is actively being deployed.
+#    - Used by the startup "deployed" card so each deploy shows only
+#      what shipped this time (no accumulating carry-over list).
+#    - MUST begin with the current BOT_VERSION string and MUST NOT
+#      mention any prior version (enforced by smoke test).
+#
+#  MAIN_RELEASE_NOTE / TP_RELEASE_NOTE
+#    - Rolling history: CURRENT note + previous few versions.
+#    - Used by /version (typed and menu) so the history is still
+#      available on demand.
+#    - The Telegram 34-char mobile-width rule still applies to every
+#      line of both surfaces.
+CURRENT_MAIN_NOTE = (
+    "v3.4.21 \u2014 Stops, diagnostics,\n"
+    "and a cleaner deploy card.\n"
+    "\n"
+    "Stop cap: entries far above OR\n"
+    "now clamp stop to max 0.75%\n"
+    "from entry (tighter of the two,\n"
+    "never looser than baseline).\n"
+    "\n"
+    "Near-miss log: breakouts that\n"
+    "cleared price but missed volume\n"
+    "are recorded. See /near_misses.\n"
+    "\n"
+    "Dashboard: per-ticker entry\n"
+    "gate chips + next-scan countdown.\n"
+    "\n"
+    "Deploy card now shows just this\n"
+    "release. /version keeps history."
+)
+CURRENT_TP_NOTE = (
+    "v3.4.21 \u2014 Stop cap on late\n"
+    "entries (\u22640.75% from entry).\n"
+    "Deploy card trimmed to current.\n"
+    "/version keeps full history."
+)
+
 # Main-bot release note: detailed prose describing what shipped.
 # Scanner/strategy/portfolio content — never TradersPost internals.
 # v3.4.17 is a bugfix + polish release on top of the v3.4.16 bot split:
 # /status refresh button now behaves, and the deploy card on each bot
 # shows the right tone (detailed here, tight on the TP side).
-MAIN_RELEASE_NOTE = (
-    "v3.4.20 \u2014 LOW VOL gate:\n"
-    "walk back to last valid bar.\n"
-    "\n"
-    "Every breakout was getting\n"
-    "skipped as [LOW VOL] today.\n"
-    "Root cause: Yahoo sometimes\n"
-    "returns the most-recent closed\n"
-    "bar with volume not yet\n"
-    "populated. The gate read\n"
-    "volumes[-2] directly and\n"
-    "treated null/0 as low volume,\n"
-    "blocking every entry on every\n"
-    "ticker.\n"
-    "\n"
-    "Fix: walk back up to 5 bars\n"
-    "to find the first non-null,\n"
-    "positive volume bar. If none\n"
-    "found, log DATA NOT READY\n"
-    "(distinct from LOW VOL) and\n"
-    "skip \u2014 fail-closed, never\n"
-    "enter on missing data.\n"
-    "\n"
-    "Applied to both long-entry\n"
-    "and short-entry gates.\n"
+# Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
+# leads with the active version, followed by the last few releases.
+_MAIN_HISTORY_TAIL = (
+    "v3.4.20 \u2014 LOW VOL gate walks\n"
+    "back past null/zero bars; new\n"
+    "[DATA NOT READY] log for missing\n"
+    "volume (still fail-closed).\n"
     "\n"
     "v3.4.19 \u2014 Menu & refresh\n"
-    "callbacks: token-based routing.\n"
+    "callbacks route by token,\n"
+    "not chat_id.\n"
     "\n"
-    "v3.4.18 \u2014 Menu-button bot\n"
-    "routing fix (shim get_bot).\n"
+    "v3.4.18 \u2014 Shim get_bot fix\n"
+    "for menu-invoked commands.\n"
     "\n"
     "v3.4.17 \u2014 Status refresh fix +\n"
-    "deploy-card tone cleanup.\n"
-    "\n"
-    "Tapping Refresh on /status no\n"
-    "longer errors when the data\n"
-    "has not moved: the callback\n"
-    "now appends a refresh stamp\n"
-    "so the message always differs,\n"
-    "and the harmless 'not modified'\n"
-    "race is swallowed instead of\n"
-    "surfaced as a command failure.\n"
-    "\n"
-    "Deploy card on the main bot\n"
-    "again shows a proper detailed\n"
-    "release note. The TP bot card\n"
-    "stays abbreviated to keep it\n"
-    "tight.\n"
-    "\n"
-    "v3.4.16 carry-over: main bot\n"
-    "is paper-only; /tp_sync and\n"
-    "TradersPost diagnostics live\n"
-    "on the TP bot."
+    "deploy-card tone cleanup."
 )
+MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
-TP_RELEASE_NOTE = (
+# CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
+_TP_HISTORY_TAIL = (
     "v3.4.20 \u2014 LOW VOL gate walks\n"
-    "back past null bars; new log\n"
-    "[DATA NOT READY] for missing\n"
-    "volume (still fail-closed).\n"
+    "back past null/zero bars.\n"
     "v3.4.19 \u2014 Menu + refresh route\n"
     "by token, not chat_id.\n"
     "v3.4.18 \u2014 Shim get_bot fix.\n"
     "v3.4.17 \u2014 /status refresh fix.\n"
     "/tp_sync for broker status."
 )
+TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
 RELEASE_NOTE = MAIN_RELEASE_NOTE
 
@@ -543,6 +549,40 @@ _current_rsi_per_ticker: dict = {}      # ticker -> float RSI
 _current_ticker_pnl: dict = {}          # ticker -> realized P&L today
 _current_ticker_red: list = []          # list of (ticker, pnl) sorted worst-first
 _current_ticker_extremes: list = []     # list of (ticker, rsi, "OB"/"OS")
+
+# v3.4.21 — per-ticker entry-gate snapshot for dashboard rendering.
+# Populated by the long/short entry-check functions on every scan.
+# Shape: {ticker: {
+#     "side": "LONG"|"SHORT",
+#     "break": bool,              # 1m close crossed OR (above/below)
+#     "vol_pct": float|None,      # entry-bar vol as % of session avg
+#     "vol_ok": bool,             # vol_pct >= 150 (gate threshold)
+#     "polarity": bool,           # price vs PDC on the right side
+#     "index": bool,              # SPY/QQQ on the right side of AVWAP
+#     "ts": iso timestamp,
+# }}
+# Read-only from outside the scan loop; never cleared mid-scan.
+_gate_snapshot: dict = {}
+
+# v3.4.21 — near-miss ring buffer. Breakouts that cleared the price
+# gate (1m close past OR) but were declined by volume confirmation.
+# Bounded to last 20 entries. Exposed via /api/state and /near_misses.
+# Records only — no effect on entry decisions (fail-closed stays).
+_NEAR_MISS_MAX = 20
+_near_miss_log: list = []
+
+
+def _record_near_miss(**row):
+    """Prepend a near-miss record. Trim to _NEAR_MISS_MAX.
+
+    Expected keys: ticker, side, reason, close, level, vol_bar, vol_avg,
+    vol_pct, ts. Missing keys are allowed — stored as-is.
+    """
+    global _near_miss_log
+    row.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    _near_miss_log.insert(0, row)
+    if len(_near_miss_log) > _NEAR_MISS_MAX:
+        _near_miss_log = _near_miss_log[:_NEAR_MISS_MAX]
 
 
 def _classify_breadth():
@@ -1390,6 +1430,48 @@ def _entry_bar_volume(volumes, lookback=5):
     return 0, False
 
 
+# v3.4.21 — Stop cap for late/extended entries.
+#
+# Baseline stop = OR_High − $0.90 (long) or PDC + $0.90 (short). That
+# anchor is appropriate when price breaks at the OR trigger, but on a
+# bar that closes well past the level the baseline stop sits far below
+# (or above) the entry, inflating risk. Example from v3.4.20: MSFT long
+# entered at $425.93 vs OR_High $420.16, baseline stop $419.26 = $6.67
+# risk = −1.56% on entry.
+#
+# Cap: stop distance must not exceed MAX_STOP_PCT of the entry price.
+# Final stop = tighter of {baseline, entry ± MAX_STOP_PCT}.
+# Invariant (locked design principle): cap can only TIGHTEN the stop,
+# never loosen it — a stop closer to entry than baseline is always
+# more conservative for both long and short.
+MAX_STOP_PCT = 0.0075  # 0.75% max from entry
+
+
+def _capped_long_stop(or_high_val, entry_price, max_pct=MAX_STOP_PCT):
+    """Compute long stop with 0.75%-from-entry cap.
+
+    Returns (stop_price, capped, baseline_stop) — `capped` is True when
+    the entry-relative floor was tighter than the OR baseline.
+    """
+    baseline = or_high_val - 0.90
+    floor = entry_price * (1.0 - max_pct)
+    # For longs, "tighter" = higher stop (closer to entry from below).
+    final = max(baseline, floor)
+    return round(final, 2), final > baseline, round(baseline, 2)
+
+
+def _capped_short_stop(pdc_val, entry_price, max_pct=MAX_STOP_PCT):
+    """Compute short stop with 0.75%-from-entry cap.
+
+    Returns (stop_price, capped, baseline_stop). For shorts, "tighter"
+    = lower stop (closer to entry from above).
+    """
+    baseline = pdc_val + 0.90
+    ceiling = entry_price * (1.0 + max_pct)
+    final = min(baseline, ceiling)
+    return round(final, 2), final < baseline, round(baseline, 2)
+
+
 # ============================================================
 # OR COLLECTION (Opening Range)
 # ============================================================
@@ -1763,6 +1845,40 @@ def check_entry(ticker):
         )
         return False, None
 
+    # v3.4.21 — compute gate values first, then record a dashboard
+    # snapshot and check each gate. This preserves fail-closed semantics
+    # (all returns remain as-is) while giving the UI a read-only view
+    # of where each ticker currently stands.
+    or_h_val = or_high[ticker]
+    pdc_val_e = pdc[ticker]
+    price_break = last_close > or_h_val
+    polarity_ok = current_price > pdc_val_e
+
+    volumes = bars.get("volumes", [])
+    vol_pct = None
+    vol_ok = False
+    vol_ready_flag = True
+    entry_bar_vol = 0.0
+    avg_vol = 0.0
+    if len(volumes) >= 5:
+        valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
+        avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
+        entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
+        vol_ready_flag = vol_ready
+        if vol_ready and avg_vol > 0:
+            vol_pct = (entry_bar_vol / avg_vol) * 100.0
+            vol_ok = vol_pct >= 150.0
+
+    _gate_snapshot[ticker] = {
+        "side": "LONG",
+        "break": bool(price_break),
+        "vol_pct": vol_pct,
+        "vol_ok": bool(vol_ok),
+        "polarity": bool(polarity_ok),
+        "index": None,  # filled below once SPY/QQQ are checked
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
     # Volume confirmation: entry bar volume >= 1.5x session average.
     # v3.4.20: walk back through null/zero bars before failing. Yahoo
     # sometimes returns the most-recent closed bar with volume not yet
@@ -1770,24 +1886,35 @@ def check_entry(ticker):
     # valid bar is found in the lookback window, log DATA NOT READY
     # (distinct from LOW VOL) and skip — fail-closed, never enter on
     # missing data.
-    volumes = bars.get("volumes", [])
     if len(volumes) >= 5:
-        valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
-        avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
-        entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
-        if not vol_ready:
+        if not vol_ready_flag:
             logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
+            # v3.4.21 — if price had already cleared OR High, note it.
+            if price_break:
+                _record_near_miss(
+                    ticker=ticker, side="LONG", reason="DATA_NOT_READY",
+                    close=round(last_close, 2), level=round(or_h_val, 2),
+                    vol_bar=None, vol_avg=None, vol_pct=None,
+                )
             return False, None
         if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
             logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
+            # v3.4.21 — near-miss only if the price gate actually cleared.
+            if price_break:
+                _record_near_miss(
+                    ticker=ticker, side="LONG", reason="LOW_VOL",
+                    close=round(last_close, 2), level=round(or_h_val, 2),
+                    vol_bar=int(entry_bar_vol), vol_avg=int(avg_vol),
+                    vol_pct=round(vol_pct, 1) if vol_pct is not None else None,
+                )
             return False, None
 
     # Breakout: last 1-min bar close > OR_High
-    if last_close <= or_high[ticker]:
+    if not price_break:
         return False, None
 
     # Polarity: current price > PDC
-    if current_price <= pdc[ticker]:
+    if not polarity_ok:
         return False, None
 
     # Index anchor: SPY > SPY_AVWAP and QQQ > QQQ_AVWAP
@@ -1804,6 +1931,13 @@ def check_entry(ticker):
 
     if spy_avwap == 0 or qqq_avwap == 0:
         return False, None
+
+    index_ok = (spy_bars["current_price"] > spy_avwap
+                and qqq_bars["current_price"] > qqq_avwap)
+    # v3.4.21 — update long index flag on the snapshot.
+    snap = _gate_snapshot.get(ticker)
+    if snap is not None and snap.get("side") == "LONG":
+        snap["index"] = bool(index_ok)
 
     if spy_bars["current_price"] <= spy_avwap:
         return False, None
@@ -2045,7 +2179,16 @@ def execute_entry(ticker, current_price):
 
     limit_price = round(current_price + 0.02, 2)
     or_high_val = or_high.get(ticker, current_price)
-    stop_price = round(or_high_val - 0.90, 2)
+    # v3.4.21 — cap stop at 0.75% below entry when OR baseline would
+    # imply a looser stop (late/extended breakout bar).
+    stop_price, _stop_capped, _stop_baseline = _capped_long_stop(
+        or_high_val, current_price
+    )
+    if _stop_capped:
+        logger.info(
+            "%s stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
+            ticker, _stop_baseline, stop_price, current_price, MAX_STOP_PCT * 100,
+        )
     entry_num = daily_entry_count.get(ticker, 0) + 1
     now_str = _now_cdt().strftime("%H:%M:%S")
     now_hhmm = _now_cdt().strftime("%H:%M CDT")
@@ -2094,12 +2237,16 @@ def execute_entry(ticker, current_price):
     sig_lines += "  Price > PDC \u2713\n"
     sig_lines += "  SPY > AVWAP \u2713\n"
     sig_lines += "  QQQ > AVWAP \u2713\n"
+    # v3.4.21 — when stop is capped at entry-0.75%, label it so.
+    stop_label = (
+        "entry \u22120.75%" if _stop_capped else "OR_High-$0.90"
+    )
     msg = (
         "\U0001f4c8 LONG ENTRY %s  #%d\n"
         "%s\n"
         "Price  : $%.2f  (limit $%.2f)\n"
         "Shares : %d   Cost: $%s\n"
-        "Stop   : $%.2f  (OR_High-$0.90)\n"
+        "Stop   : $%.2f  (%s)\n"
         "OR High: $%.2f   PDC: $%.2f\n"
         "%s"
         "Time   : %s\n"
@@ -2107,7 +2254,7 @@ def execute_entry(ticker, current_price):
     ) % (ticker, entry_num, SEP_E,
          current_price, limit_price,
          SHARES, format(cost, ",.2f"),
-         stop_price, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
+         stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
     # TP Portfolio — fire webhook FIRST, mirror entry only if broker accepts
@@ -2147,7 +2294,7 @@ def execute_entry(ticker, current_price):
         "%s\n"
         "Price  : $%.2f  (limit $%.2f)\n"
         "Shares : %d   Cost: $%s\n"
-        "Stop   : $%.2f  (OR_High-$0.90)\n"
+        "Stop   : $%.2f  (%s)\n"
         "OR High: $%.2f   PDC: $%.2f\n"
         "%s"
         "Time   : %s\n"
@@ -2155,7 +2302,7 @@ def execute_entry(ticker, current_price):
     ) % (ticker, entry_num, SEP_E,
          current_price, limit_price,
          SHARES, format(cost, ",.2f"),
-         stop_price, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
+         stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_tp_telegram(tp_msg)
     save_tp_state()
 
@@ -2684,45 +2831,93 @@ def check_short_entry(ticker):
         )
         return
 
-    # Volume confirmation: entry bar volume >= 1.5x session average.
-    # v3.4.20: walk back through null/zero bars before failing (see
-    # _entry_bar_volume docstring). DATA NOT READY is distinct from
-    # LOW VOL and still fail-closed.
+    # v3.4.21 — pre-compute gate values for snapshot + near-miss logging.
+    price_break = current_close < or_low_val
+    polarity_ok = current_price < pdc_val
+
     volumes = bars.get("volumes", [])
+    vol_pct = None
+    vol_ok = False
+    vol_ready_flag = True
+    entry_bar_vol = 0.0
+    avg_vol = 0.0
     if len(volumes) >= 5:
         valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
         avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
         entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
-        if not vol_ready:
+        vol_ready_flag = vol_ready
+        if vol_ready and avg_vol > 0:
+            vol_pct = (entry_bar_vol / avg_vol) * 100.0
+            vol_ok = vol_pct >= 150.0
+
+    _gate_snapshot[ticker] = {
+        "side": "SHORT",
+        "break": bool(price_break),
+        "vol_pct": vol_pct,
+        "vol_ok": bool(vol_ok),
+        "polarity": bool(polarity_ok),
+        "index": None,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Volume confirmation: entry bar volume >= 1.5x session average.
+    # v3.4.20: walk back through null/zero bars before failing (see
+    # _entry_bar_volume docstring). DATA NOT READY is distinct from
+    # LOW VOL and still fail-closed.
+    if len(volumes) >= 5:
+        if not vol_ready_flag:
             logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
+            if price_break:
+                _record_near_miss(
+                    ticker=ticker, side="SHORT", reason="DATA_NOT_READY",
+                    close=round(current_close, 2), level=round(or_low_val, 2),
+                    vol_bar=None, vol_avg=None, vol_pct=None,
+                )
             return
         if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
             logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
+            if price_break:
+                _record_near_miss(
+                    ticker=ticker, side="SHORT", reason="LOW_VOL",
+                    close=round(current_close, 2), level=round(or_low_val, 2),
+                    vol_bar=int(entry_bar_vol), vol_avg=int(avg_vol),
+                    vol_pct=round(vol_pct, 1) if vol_pct is not None else None,
+                )
             return
 
     # Entry conditions — ALL must be true:
     # 1. Last 1-min close < OR_Low (breakdown)
-    if current_close >= or_low_val:
+    if not price_break:
         return
     # 2. Current price < PDC (polarity — "Red" stock only)
-    if current_price >= pdc_val:
+    if not polarity_ok:
         return
     # 3. SPY < SPY_AVWAP
+    spy_below = True
     spy_avwap = avwap_data["SPY"]["avwap"]
     if spy_avwap and spy_avwap > 0:
         spy_bars = fetch_1min_bars("SPY")
         if spy_bars:
             spy_price = spy_bars["current_price"]
             if spy_price >= spy_avwap:
-                return
+                spy_below = False
     # 4. QQQ < QQQ_AVWAP
+    qqq_below = True
     qqq_avwap = avwap_data["QQQ"]["avwap"]
     if qqq_avwap and qqq_avwap > 0:
         qqq_bars = fetch_1min_bars("QQQ")
         if qqq_bars:
             qqq_price = qqq_bars["current_price"]
             if qqq_price >= qqq_avwap:
-                return
+                qqq_below = False
+
+    # v3.4.21 — update short index flag on snapshot before the early return.
+    snap = _gate_snapshot.get(ticker)
+    if snap is not None and snap.get("side") == "SHORT":
+        snap["index"] = bool(spy_below and qqq_below)
+
+    if not spy_below or not qqq_below:
+        return
 
     # All checks passed — enter short
     execute_short_entry(ticker, current_price)
@@ -2740,7 +2935,14 @@ def execute_short_entry(ticker, price):
     shares = 10
     entry_price = round(price, 2)
     pdc_val = pdc.get(ticker, entry_price)
-    stop = round(pdc_val + 0.90, 2)   # hard stop: $0.90 ABOVE PDC
+    # v3.4.21 — cap stop at 0.75% above entry when PDC baseline would
+    # imply a looser stop (late/extended breakdown bar).
+    stop, _stop_capped, _stop_baseline = _capped_short_stop(pdc_val, entry_price)
+    if _stop_capped:
+        logger.info(
+            "%s short stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
+            ticker, _stop_baseline, stop, entry_price, MAX_STOP_PCT * 100,
+        )
     now_et = _now_et()
     entry_time_cdt = _now_cdt().strftime("%H:%M:%S")
     entry_time_display = _now_cdt().strftime("%H:%M CDT")
@@ -2779,13 +2981,17 @@ def execute_short_entry(ticker, price):
     short_sig += "  Price < PDC \u2713\n"
     short_sig += "  SPY < AVWAP \u2713\n"
     short_sig += "  QQQ < AVWAP \u2713\n"
+    # v3.4.21 — label stop source: baseline PDC+$0.90 or entry-relative cap.
+    short_stop_label = (
+        "entry +0.75%" if _stop_capped else "PDC+$0.90"
+    )
     msg = (
         "\U0001fa78 SHORT ENTRY #%d\n"
         "%s\n"
         "Ticker   : %s\n"
         "Entry    : $%.2f (limit)\n"
         "Shares   : %d   Proceeds: $%s\n"
-        "Stop     : $%.2f (PDC+$0.90)\n"
+        "Stop     : $%.2f (%s)\n"
         "OR Low   : $%.2f\n"
         "PDC      : $%.2f\n"
         "%s"
@@ -2793,7 +2999,7 @@ def execute_short_entry(ticker, price):
         "%s"
     ) % (entry_count, SEP, ticker, entry_price,
          shares, format(short_proceeds, ",.2f"),
-         stop, or_low_val, pdc_val, short_sig, entry_time_display, SEP)
+         stop, short_stop_label, or_low_val, pdc_val, short_sig, entry_time_display, SEP)
     send_telegram(msg)
 
     if not tp_short_ok:
@@ -5492,6 +5698,55 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /near_misses COMMAND (v3.4.21)
+# ============================================================
+async def cmd_near_misses(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show recent near-miss entries — breakouts that cleared price
+    but were declined by the volume gate. Read-only diagnostic;
+    fail-closed behavior is unchanged.
+    """
+    log = list(_near_miss_log)
+    SEP = "\u2500" * 34
+    if not log:
+        await update.message.reply_text(
+            "\U0001f50d Near-misses\n%s\nNone recorded yet today.\n"
+            "A near-miss is a 1m close past OR\n"
+            "that was declined by the volume gate."
+            % SEP,
+            reply_markup=_menu_button(),
+        )
+        return
+    lines = ["\U0001f50d Near-misses (last %d)" % len(log), SEP]
+    for row in log[:10]:
+        # Each row: "09:47 META LONG LOW_VOL 48%"
+        ts = row.get("ts", "")
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            hhmm = dt.astimezone(CDT).strftime("%H:%M")
+        except Exception:
+            hhmm = "--:--"
+        tkr = row.get("ticker", "?")
+        side = row.get("side", "?")
+        reason = row.get("reason", "?")
+        vp = row.get("vol_pct")
+        vp_str = ("%d%%" % int(vp)) if isinstance(vp, (int, float)) else "n/a"
+        close_v = row.get("close")
+        level_v = row.get("level")
+        head = "%s %s %s %s" % (hhmm, tkr, side, reason)
+        if close_v is not None and level_v is not None:
+            lines.append(head)
+            lines.append("  close $%.2f vs $%.2f  vol %s" % (close_v, level_v, vp_str))
+        else:
+            lines.append("%s  vol %s" % (head, vp_str))
+    lines.append(SEP)
+    lines.append("Diagnostic only \u2014 no entries made.")
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=_menu_button(),
+    )
+
+
+# ============================================================
 # /tp_sync COMMAND — TradersPost broker sync status (v3.4.15)
 # ============================================================
 async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7265,6 +7520,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("strategy", "Strategy summary"),
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
+    BotCommand("near_misses", "Recent declined breakouts"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
@@ -7345,7 +7601,7 @@ def send_startup_message():
 
     main_msg = (
         f"\U0001f680 v{BOT_VERSION} deployed\n"
-        f"{MAIN_RELEASE_NOTE}\n"
+        f"{CURRENT_MAIN_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
         f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
@@ -7359,7 +7615,7 @@ def send_startup_message():
     )
     tp_msg = (
         f"\U0001f680 v{BOT_VERSION} deployed\n"
-        f"{TP_RELEASE_NOTE}\n"
+        f"{CURRENT_TP_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
         f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
@@ -7395,6 +7651,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     app.add_handler(CommandHandler("eod", cmd_eod))
     app.add_handler(CommandHandler("version", cmd_version))
+    app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     # Main bot: /tp_sync is TP-only. Register a redirect on main so a
     # misdirected /tp_sync gets a friendly "try the TP bot" reply instead
     # of silence.
@@ -7451,6 +7708,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("replay", cmd_replay))
     tp_app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     tp_app.add_handler(CommandHandler("version", cmd_version))
+    tp_app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     tp_app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))
     tp_app.add_handler(CommandHandler("mode", cmd_mode))
     tp_app.add_handler(CommandHandler("reset", cmd_reset))
