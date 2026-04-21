@@ -736,6 +736,40 @@ def run_local() -> int:
         assert m.is_tp_update(paper_shim) is False, \
             "shim with non-TP token must resolve is_tp_update -> False"
 
+    @t("v3.4.19: menu/refresh callbacks route by token, not chat_id")
+    def _():
+        # Three callbacks previously routed data by comparing
+        # query.message.chat_id to TELEGRAM_TP_CHAT_ID. That breaks
+        # whenever the TP bot is used in a chat whose id doesn't
+        # match the env var (DMs, topic threads, un-enrolled group).
+        # They must use is_tp_update(update) like every cmd_* handler.
+        # (We strip comments before checking so explanatory prose that
+        #  names the old env var is allowed.)
+        import inspect, re
+        def _strip_comments(src):
+            out = []
+            for ln in src.splitlines():
+                stripped = ln.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                # drop trailing comment (naive but fine for our code)
+                i = ln.find("#")
+                if i >= 0:
+                    ln = ln[:i]
+                out.append(ln)
+            return "\n".join(out)
+        for name in ("positions_callback",
+                     "proximity_callback",
+                     "menu_callback"):
+            fn = getattr(m, name, None)
+            assert fn is not None, f"{name} must exist"
+            src = inspect.getsource(fn)
+            assert "is_tp_update(update)" in src, \
+                f"{name} must use is_tp_update(update) for bot routing"
+            code_only = _strip_comments(src)
+            assert "TELEGRAM_TP_CHAT_ID" not in code_only, \
+                f"{name} must not route data by chat_id anymore"
+
     return run_suite("LOCAL SMOKE TESTS")
 
 

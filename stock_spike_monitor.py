@@ -37,26 +37,29 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.18"
+BOT_VERSION = "3.4.19"
 # Main-bot release note: detailed prose describing what shipped.
 # Scanner/strategy/portfolio content — never TradersPost internals.
 # v3.4.17 is a bugfix + polish release on top of the v3.4.16 bot split:
 # /status refresh button now behaves, and the deploy card on each bot
 # shows the right tone (detailed here, tight on the TP side).
 MAIN_RELEASE_NOTE = (
-    "v3.4.18 \u2014 Menu-button bot\n"
-    "routing fix.\n"
+    "v3.4.19 \u2014 Menu & refresh\n"
+    "button bot routing fix (part 2).\n"
     "\n"
-    "Commands invoked from /menu\n"
-    "buttons now see the correct\n"
-    "bot identity. Previously the\n"
-    "callback shim did not forward\n"
-    "get_bot(), so every TP-bot\n"
-    "menu tap silently fell back to\n"
-    "paper data. The shim now\n"
-    "forwards get_bot() from the\n"
-    "callback query so is_tp_update\n"
-    "resolves correctly.\n"
+    "Three callbacks were routing by\n"
+    "chat_id instead of bot token:\n"
+    "menu_callback, positions_callback,\n"
+    "proximity_callback. When the TP\n"
+    "bot is used in a chat whose id\n"
+    "doesn't match TELEGRAM_TP_CHAT_ID,\n"
+    "they treated the tap as paper.\n"
+    "All three now use is_tp_update()\n"
+    "(token-based) like every other\n"
+    "command.\n"
+    "\n"
+    "v3.4.18 \u2014 Menu-button bot\n"
+    "routing fix (shim get_bot).\n"
     "\n"
     "v3.4.17 \u2014 Status refresh fix +\n"
     "deploy-card tone cleanup.\n"
@@ -83,9 +86,9 @@ MAIN_RELEASE_NOTE = (
 )
 # TP-bot release note: tight headline + one line per recent TP change.
 TP_RELEASE_NOTE = (
-    "v3.4.18 \u2014 Menu buttons now\n"
-    "honor TP routing (no paper\n"
-    "leak).\n"
+    "v3.4.19 \u2014 Menu + refresh now\n"
+    "route by token, not chat_id.\n"
+    "v3.4.18 \u2014 Shim get_bot fix.\n"
     "v3.4.17 \u2014 /status refresh fix.\n"
     "v3.4.16 \u2014 TP bot isolation.\n"
     "/tp_sync for broker status."
@@ -4552,7 +4555,9 @@ async def positions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """
     query = update.callback_query
     await query.answer("Refreshing...")
-    is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+    # v3.4.19: route by bot token, not chat id \u2014 TP bot usage in any
+    # chat (DM, group, topic thread) must still render TP data.
+    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
     msg = await loop.run_in_executor(None, _build_positions_text, is_tp)
     # Ensure content changes between taps even if prices and positions
@@ -6545,7 +6550,8 @@ async def proximity_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Handle refresh button tap on /proximity."""
     query = update.callback_query
     await query.answer("Refreshing...")
-    is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+    # v3.4.19: route by bot token (see positions_callback for rationale).
+    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
     text, err = await loop.run_in_executor(None, _proximity_sync, is_tp)
     if text is None:
@@ -6884,7 +6890,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle taps on /menu inline buttons."""
     query = update.callback_query
     await query.answer()
-    is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+    # v3.4.19: route by bot token, not chat id. Chat-id matching broke
+    # whenever the TP bot was used in a chat whose id did not match
+    # TELEGRAM_TP_CHAT_ID env (DMs, topic threads, un-enrolled group).
+    is_tp = is_tp_update(update)
 
     # --- Navigation between main and advanced submenus ---
     if query.data == "menu_advanced":

@@ -4,6 +4,38 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.19 — Menu/refresh callbacks: token-based bot routing (2026-04-20)
+
+Second half of the cross-bot data leak fix. After v3.4.18 shipped,
+`/status` via the TP visual menu still rendered paper data while the
+typed `/status` command on the same bot rendered TP data correctly.
+
+**Root cause.** Three callback handlers —
+`positions_callback`, `proximity_callback`, and `menu_callback` —
+routed data by comparing `query.message.chat_id` to the
+`TELEGRAM_TP_CHAT_ID` env var. In production the TP bot is used in a
+chat whose id does **not** match that env var (the startup-menu
+sendMessage to that id returns "Chat not found"). So the comparison
+returned `False` and the TP bot's menu taps rendered paper data.
+
+Typed `cmd_*` handlers are already correct because they use
+`is_tp_update(update)`, which reads the bot **token** on the update —
+the authoritative source, since each Application polls with its own
+token and only receives updates addressed to its bot.
+
+**Fix.** All three callbacks now use `is_tp_update(update)` (same
+path as every `cmd_*`). Chat-id comparisons remain only in the
+`_reset_authorized` helper, where they function as an explicit
+authorization guard (not as data routing) and are deliberately kept.
+
+**Tests.** Added a local smoke test
+(`v3.4.19: menu/refresh callbacks route by token, not chat_id`)
+that inspects the source of each callback and enforces
+`is_tp_update(update)` in code and no `TELEGRAM_TP_CHAT_ID`
+comparisons outside of comments. 43 local + 9 prod tests, all green.
+
+---
+
 ## v3.4.18 — Menu-button bot routing fix (2026-04-20)
 
 Fix for a cross-bot data leak: on the TP bot, any command invoked via
