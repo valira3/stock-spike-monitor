@@ -1099,6 +1099,138 @@ def run_local() -> int:
         assert 'action in ("buy", "buy_to_cover")' not in src, \
             "legacy buy_to_cover branch must be removed"
 
+    # ------------------------------------------------------------
+    # v3.4.23 regressions — retro-cap retighten
+    # ------------------------------------------------------------
+    # The v3.4.21 entry-cap only fires at entry. v3.4.23 retro-applies
+    # the same 0.75% cap to any still-open position whose stop sits
+    # wider than the cap, and force-exits with reason=RETRO_CAP if the
+    # newly-capped stop has already been breached.
+
+    @t("v3.4.23: BOT_VERSION is 3.4.23")
+    def _():
+        import stock_spike_monitor as m
+        assert m.BOT_VERSION == "3.4.23", m.BOT_VERSION
+
+    @t("v3.4.23: retighten helpers exist and return 3-tuples")
+    def _():
+        import stock_spike_monitor as m
+        assert callable(getattr(m, "_retighten_long_stop", None)), \
+            "_retighten_long_stop must exist"
+        assert callable(getattr(m, "_retighten_short_stop", None)), \
+            "_retighten_short_stop must exist"
+        # Already-tight short: entry 100, stop 100.50 (0.50%) — cap is
+        # 100.75, so existing stop is tighter.
+        pos = {"entry_price": 100.0, "stop": 100.50}
+        out = m._retighten_short_stop("XYZ", pos, 99.5, "paper",
+                                      force_exit=False)
+        assert out[0] == "already_tight", out
+        assert pos["stop"] == 100.50, "must not mutate tight stop"
+
+    @t("v3.4.23: wide short stop gets tightened to ceiling")
+    def _():
+        import stock_spike_monitor as m
+        # AAPL: entry 268.77, stop 273.95 (1.93%); ceiling = 270.79
+        pos = {"entry_price": 268.77, "stop": 273.95}
+        out = m._retighten_short_stop("AAPL", pos, 267.95, "paper",
+                                      force_exit=False)
+        assert out[0] == "tightened", out
+        assert abs(out[1] - 273.95) < 1e-6, out
+        assert abs(out[2] - 270.79) < 1e-6, out
+        assert abs(pos["stop"] - 270.79) < 1e-6, pos
+
+    @t("v3.4.23: wide long stop gets tightened to floor")
+    def _():
+        import stock_spike_monitor as m
+        # Long entry 200, stop 195 (2.5%); floor = 198.50
+        pos = {"entry_price": 200.0, "stop": 195.0}
+        out = m._retighten_long_stop("XYZ", pos, 201.0, "paper",
+                                     force_exit=False)
+        assert out[0] == "tightened", out
+        assert abs(out[2] - 198.50) < 1e-6, out
+        assert abs(pos["stop"] - 198.50) < 1e-6, pos
+
+    @t("v3.4.23: trail_active short is a no_op")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "stop": 105.0, "trail_active": True}
+        out = m._retighten_short_stop("XYZ", pos, 99.0, "paper",
+                                      force_exit=False)
+        assert out == ("no_op", None, None), out
+        assert pos["stop"] == 105.0, "trail-armed stop must be untouched"
+
+    @t("v3.4.23: breached short reports 'exit' without mutating if force_exit=False")
+    def _():
+        import stock_spike_monitor as m
+        # TSLA: entry 388, stop 393.40; ceiling 390.91; current 390.92
+        # already at/past ceiling. With force_exit=False we still move
+        # the stop but DO NOT invoke close_short_position — we report
+        # "tightened" instead (exit path is guarded by force_exit).
+        pos = {"entry_price": 388.0, "stop": 393.40}
+        out = m._retighten_short_stop("TSLA", pos, 390.92, "paper",
+                                      force_exit=False)
+        assert out[0] == "tightened", out
+        assert abs(out[2] - 390.91) < 1e-6, out
+
+    @t("v3.4.23: retighten_all_stops exists and returns expected shape")
+    def _():
+        import stock_spike_monitor as m
+        assert callable(getattr(m, "retighten_all_stops", None)), \
+            "retighten_all_stops must exist"
+        # fetch_prices=False so no network. With empty books it's a
+        # no-op and returns the summary dict.
+        result = m.retighten_all_stops(force_exit=False, fetch_prices=False)
+        assert isinstance(result, dict), type(result)
+        for key in ("tightened", "exited", "no_op", "already_tight",
+                    "errors", "details"):
+            assert key in result, (key, result)
+        assert isinstance(result["details"], list)
+
+    @t("v3.4.23: manage_positions / manage_short_positions call retighten_all_stops")
+    def _():
+        import stock_spike_monitor as m, inspect
+        long_src = inspect.getsource(m.manage_positions)
+        short_src = inspect.getsource(m.manage_short_positions)
+        assert "retighten_all_stops(" in long_src, \
+            "manage_positions must invoke retighten_all_stops"
+        assert "retighten_all_stops(" in short_src, \
+            "manage_short_positions must invoke retighten_all_stops"
+
+    @t("v3.4.23: startup path invokes retighten_all_stops after load_*_state")
+    def _():
+        # Source-level check: the startup entry-point around
+        # load_paper_state / load_tp_state must call retighten_all_stops
+        # at least once (the startup pass, fetch_prices=False).
+        import stock_spike_monitor as m, inspect
+        with open(inspect.getsourcefile(m)) as f:
+            src = f.read()
+        # Find the startup call to load_tp_state() (not the def).
+        # The entry-point block lives at module-bottom; use rfind.
+        idx = src.rfind("load_tp_state()")
+        assert idx != -1, "load_tp_state() call must exist"
+        window = src[idx:idx + 3000]
+        assert "retighten_all_stops(" in window, \
+            "startup path must invoke retighten_all_stops after load_tp_state()"
+        assert "fetch_prices=False" in window, \
+            "startup retighten must use fetch_prices=False"
+
+    @t("v3.4.23: cmd_retighten is a coroutine + /retighten registered as BotCommand")
+    def _():
+        import stock_spike_monitor as m, inspect
+        assert inspect.iscoroutinefunction(m.cmd_retighten), \
+            "cmd_retighten must be async"
+        names = [c.command for c in m.MAIN_BOT_COMMANDS]
+        assert "retighten" in names, names
+
+    @t("v3.4.23: /retighten CommandHandler wired on both apps")
+    def _():
+        import stock_spike_monitor as m, inspect
+        with open(inspect.getsourcefile(m)) as f:
+            src = f.read()
+        # Both app and tp_app must register the handler.
+        assert src.count("CommandHandler(\"retighten\", cmd_retighten)") >= 2, \
+            "/retighten must be wired on both main and TP apps"
+
     @t("v3.4.21: dashboard_server exposes per_ticker gates + next_scan_sec + near_misses")
     def _():
         # Import the sibling dashboard_server module and inspect its snapshot

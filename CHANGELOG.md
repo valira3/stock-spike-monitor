@@ -4,6 +4,106 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.23 — Retro-tighten existing stops (2026-04-21)
+
+v3.4.21 introduced the 0.75% entry-cap (`MAX_STOP_PCT = 0.0075`) but
+it only fired **at entry**. Positions opened before v3.4.21 shipped
+still carried wider baseline stops — and we had two such positions
+live when the live symptoms appeared this morning:
+
+| Ticker | Side  | Entry    | Stop     | Risk  |
+|--------|-------|----------|----------|-------|
+| AAPL   | SHORT | $268.77  | $273.95  | 1.93% |
+| TSLA   | SHORT | $388.00  | $393.40  | 1.39% |
+
+Both were entered at ~09:59–10:06 CDT, before the v3.4.21 merge at
+10:14 CDT. v3.4.21's cap never got a chance to touch them.
+
+### Design
+
+The cap is a hard risk ceiling, not a hint. v3.4.23 walks every open
+position — paper and TP, longs and shorts — and applies the same
+0.75% cap retroactively. Three new helpers:
+
+- `_retighten_long_stop(ticker, pos, current_price, portfolio, force_exit=True)`
+- `_retighten_short_stop(ticker, pos, current_price, portfolio, force_exit=True)`
+- `retighten_all_stops(force_exit=True, fetch_prices=True)` — returns
+  a summary dict `{tightened, exited, no_op, already_tight, errors,
+  details}`.
+
+Each per-position helper returns one of:
+
+- `("no_op", None, None)` — trail already armed (by construction,
+  trail is tighter than the 0.75% fixed cap, so we leave it alone).
+- `("already_tight", stop, None)` — baseline stop is not wider than
+  the cap; nothing to do.
+- `("tightened", old_stop, new_stop)` — baseline was wider, stop
+  moved to the cap floor/ceiling.
+- `("exit", new_stop, None)` — new capped stop already breached by
+  market; exit fired immediately with `reason="RETRO_CAP"`.
+
+### Hooks
+
+Three call sites — safe because the helpers are cycle-idempotent:
+
+1. **Startup** (entry-point, after `load_paper_state()` / `load_tp_state()`).
+   `fetch_prices=False` to avoid a cold Yahoo fetch at process start;
+   uses `entry_price` as the current-price proxy. By construction,
+   entry ± 0.75% never equals entry, so force_exit is silent on
+   startup. The immediate-exit path fires from the first manage cycle
+   instead, where real quotes are available.
+2. **`manage_positions()`** — top of each long-management cycle.
+3. **`manage_short_positions()`** — top of each short-management
+   cycle.
+
+### New `/retighten` command
+
+Manual trigger. Mostly a transparency / "show me what the cap would
+do right now" tool, since the automatic passes cover it. Output:
+
+```
+🔧 Retro-cap (0.75%)
+──────────────────────────────────
+AAPL SHORT [paper]
+  stop $273.95 → $270.79
+TSLA SHORT [paper] EXITED
+  breached at cap $390.91
+──────────────────────────────────
+Summary: 1 tightened, 1 exited,
+0 no-op, 0 already-tight
+```
+
+Registered on both the main bot and the TP bot (handler + BotCommand).
+
+### Design principles preserved
+
+- **More conservative than baseline, never looser.** The cap only
+  tightens; a stop that's already tighter is left alone.
+- **Fail-closed.** Missing position data → `summary["errors"] += 1`
+  and the position keeps its existing stop; we do not eject.
+- **Trail interaction.** When `pos["trail_active"]` is True, the
+  retighten pass is a no-op. Trail logic is already tighter than
+  0.75% by construction.
+
+### Tests
+
+11 new v3.4.23 regression tests (76/76 local pass, up from 65):
+
+- BOT_VERSION bump
+- Helpers exist and return 3-tuples
+- Already-tight short (entry 100, stop 100.50) → `already_tight`
+- Wide short (AAPL 268.77 / 273.95) → `tightened` to 270.79
+- Wide long (200 / 195) → `tightened` to 198.50
+- `trail_active=True` → `no_op`, stop untouched
+- `retighten_all_stops` shape check (all 6 summary keys)
+- `manage_positions` / `manage_short_positions` source contains the
+  retighten call
+- Startup entry-point invokes retighten with `fetch_prices=False`
+- `cmd_retighten` is async + `retighten` in MAIN_BOT_COMMANDS
+- `/retighten` CommandHandler wired on both main and TP apps
+
+---
+
 ## v3.4.22 — Hotfix: TradersPost short webhook actions (2026-04-21)
 
 Short entries and short covers sent to TradersPost were being rejected

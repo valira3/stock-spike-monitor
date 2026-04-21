@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.22"
+BOT_VERSION = "3.4.23"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,25 +55,27 @@ BOT_VERSION = "3.4.22"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.22 \u2014 Hotfix: short orders\n"
-    "use TradersPost actions.\n"
+    "v3.4.23 \u2014 Retro-tighten stops.\n"
     "\n"
-    "Short entries now send\n"
-    "action=sell (was sell_short).\n"
-    "Short covers now send\n"
-    "action=buy (was buy_to_cover).\n"
+    "The 0.75% entry cap now also\n"
+    "applies to positions that were\n"
+    "open before the cap shipped.\n"
     "\n"
-    "Matches the long-side flow:\n"
-    "TradersPost infers direction\n"
-    "from the strategy + open state.\n"
+    "On every manage cycle: if a\n"
+    "stop sits wider than 0.75%\n"
+    "from entry and the trail hasn't\n"
+    "armed yet, it gets tightened.\n"
+    "If already breached: exit now\n"
+    "with reason RETRO_CAP.\n"
     "\n"
-    "No strategy / gate changes."
+    "New /retighten command runs it\n"
+    "on demand."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.22 \u2014 Hotfix: short webhook\n"
-    "uses action=sell / action=buy\n"
-    "(was sell_short / buy_to_cover).\n"
-    "Fixes 400 INVALID ACTION short."
+    "v3.4.23 \u2014 0.75% entry cap\n"
+    "now also retightens existing\n"
+    "pre-cap positions. Breached\n"
+    "stops exit with RETRO_CAP."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -1469,6 +1471,180 @@ def _capped_short_stop(pdc_val, entry_price, max_pct=MAX_STOP_PCT):
 
 
 # ============================================================
+# v3.4.23 — Retro-cap: retighten existing positions
+# ------------------------------------------------------------
+# The cap (v3.4.21) only fired at entry. Positions that were open
+# before the cap shipped, or positions whose stop somehow got past
+# the cap, still carried a potentially-wide baseline stop. This helper
+# walks every open long/short position and enforces the 0.75% cap
+# relative to entry. When the trail is already armed it is left alone
+# (trail is always tighter than a fixed 0.75% cap by construction).
+# When the newly-capped stop has already been breached by market
+# price, we force the exit now with reason=RETRO_CAP rather than wait
+# for the next scan — the cap is a hard risk ceiling, not a hint.
+# Designed to be safe to call repeatedly: cycle-idempotent.
+# ============================================================
+
+def _retighten_long_stop(ticker, pos, current_price, portfolio,
+                         force_exit=True):
+    """Retro-apply the 0.75% cap to a single long position.
+
+    Returns one of:
+      ("no_op", None, None)        — trail active, nothing to do.
+      ("already_tight", stop, None) — cap is not tighter than current.
+      ("tightened", old_stop, new_stop) — stop moved closer to entry.
+      ("exit", new_stop, None)     — new stop already breached; exit fired.
+    """
+    if pos.get("trail_active"):
+        return ("no_op", None, None)
+    entry_price = pos["entry_price"]
+    current_stop = pos["stop"]
+    floor = round(entry_price * (1.0 - MAX_STOP_PCT), 2)
+    if floor <= current_stop:
+        # Existing stop is already tighter (higher) than cap — leave alone.
+        return ("already_tight", current_stop, None)
+    old_stop = current_stop
+    pos["stop"] = floor
+    logger.info(
+        "[RETRO_CAP] %s LONG stop tightened: $%.2f → $%.2f "
+        "(entry=$%.2f, current=$%.2f, portfolio=%s)",
+        ticker, old_stop, floor, entry_price, current_price, portfolio,
+    )
+    # If the market has already broken the new stop, exit now.
+    if force_exit and current_price <= floor:
+        logger.warning(
+            "[RETRO_CAP] %s LONG already breached at tighten time "
+            "(current=$%.2f ≤ new_stop=$%.2f) — exiting immediately.",
+            ticker, current_price, floor,
+        )
+        # close_position handles paper + tp via the positions dict it
+        # finds the ticker in. TP uses close_tp_position; paper uses
+        # close_position.
+        if portfolio == "paper":
+            close_position(ticker, current_price, reason="RETRO_CAP")
+        else:
+            close_tp_position(ticker, current_price, reason="RETRO_CAP")
+        return ("exit", floor, None)
+    return ("tightened", old_stop, floor)
+
+
+def _retighten_short_stop(ticker, pos, current_price, portfolio,
+                          force_exit=True):
+    """Retro-apply the 0.75% cap to a single short position.
+
+    Same return shape as _retighten_long_stop. For shorts, "tighter" =
+    lower stop (closer to entry from above); the new_stop replaces the
+    existing stop only when ceiling is tighter than current stop.
+    """
+    if pos.get("trail_active"):
+        return ("no_op", None, None)
+    entry_price = pos["entry_price"]
+    current_stop = pos["stop"]
+    ceiling = round(entry_price * (1.0 + MAX_STOP_PCT), 2)
+    if ceiling >= current_stop:
+        return ("already_tight", current_stop, None)
+    old_stop = current_stop
+    pos["stop"] = ceiling
+    logger.info(
+        "[RETRO_CAP] %s SHORT stop tightened: $%.2f → $%.2f "
+        "(entry=$%.2f, current=$%.2f, portfolio=%s)",
+        ticker, old_stop, ceiling, entry_price, current_price, portfolio,
+    )
+    if force_exit and current_price >= ceiling:
+        logger.warning(
+            "[RETRO_CAP] %s SHORT already breached at tighten time "
+            "(current=$%.2f ≥ new_stop=$%.2f) — exiting immediately.",
+            ticker, current_price, ceiling,
+        )
+        close_short_position(ticker, current_price, "RETRO_CAP",
+                             portfolio=portfolio)
+        return ("exit", ceiling, None)
+    return ("tightened", old_stop, ceiling)
+
+
+def retighten_all_stops(force_exit=True, fetch_prices=True):
+    """Retighten every open position's stop to the 0.75% cap.
+
+    Returns a summary dict: {tightened: int, exited: int, no_op: int,
+    already_tight: int, errors: int, details: list[dict]}
+
+    Safe to call repeatedly — if all stops are already tight, it's a
+    no-op. When fetch_prices is False, uses entry_price as a
+    best-effort proxy for "current" (startup mode, before any scanner
+    cycles have run).
+    """
+    summary = {"tightened": 0, "exited": 0, "no_op": 0,
+               "already_tight": 0, "errors": 0, "details": []}
+
+    def _current(ticker, fallback):
+        if not fetch_prices:
+            return fallback
+        try:
+            bars = fetch_1min_bars(ticker)
+            if bars and bars.get("current_price"):
+                return bars["current_price"]
+        except Exception as e:
+            logger.warning("[RETRO_CAP] %s fetch_1min_bars failed: %s",
+                           ticker, e)
+        return fallback
+
+    # Longs: paper + TP
+    for book, label in ((positions, "paper"), (tp_positions, "tp")):
+        for ticker in list(book.keys()):
+            pos = book.get(ticker)
+            if not pos:
+                continue
+            try:
+                cur = _current(ticker, pos["entry_price"])
+                status, old, new = _retighten_long_stop(
+                    ticker, pos, cur, label, force_exit=force_exit,
+                )
+                # Normalize "exit" status tuple → "exited" counter key
+                key = "exited" if status == "exit" else status
+                summary[key] = summary.get(key, 0) + 1
+                summary["details"].append({
+                    "ticker": ticker, "side": "LONG",
+                    "portfolio": label, "status": status,
+                    "old_stop": old, "new_stop": new,
+                })
+            except Exception as e:
+                summary["errors"] += 1
+                logger.error("[RETRO_CAP] %s LONG %s failed: %s",
+                             ticker, label, e, exc_info=True)
+
+    # Shorts: paper + TP
+    for book, label in ((short_positions, "paper"),
+                        (tp_short_positions, "tp")):
+        for ticker in list(book.keys()):
+            pos = book.get(ticker)
+            if not pos:
+                continue
+            try:
+                cur = _current(ticker, pos["entry_price"])
+                status, old, new = _retighten_short_stop(
+                    ticker, pos, cur, label, force_exit=force_exit,
+                )
+                key = "exited" if status == "exit" else status
+                summary[key] = summary.get(key, 0) + 1
+                summary["details"].append({
+                    "ticker": ticker, "side": "SHORT",
+                    "portfolio": label, "status": status,
+                    "old_stop": old, "new_stop": new,
+                })
+            except Exception as e:
+                summary["errors"] += 1
+                logger.error("[RETRO_CAP] %s SHORT %s failed: %s",
+                             ticker, label, e, exc_info=True)
+
+    if summary["tightened"] or summary["exited"]:
+        logger.info("[RETRO_CAP] cycle summary: %d tightened, %d exited, "
+                    "%d already-tight, %d no-op (trail active)",
+                    summary["tightened"], summary["exited"],
+                    summary["already_tight"], summary["no_op"])
+    return summary
+
+
+# ============================================================
 # OR COLLECTION (Opening Range)
 # ============================================================
 def collect_or():
@@ -2507,6 +2683,14 @@ def manage_positions():
     """Check stops and update trailing stops for all open positions."""
     tickers_to_close = []
 
+    # v3.4.23 — enforce 0.75% entry cap on every open long position
+    # before the regular stop/trail pass. This catches pre-cap positions
+    # and any position whose stored stop has drifted wider than the cap.
+    # Also fires immediate exit on positions that have already breached
+    # the retro-tightened stop. Idempotent — fast when everything is
+    # already tight.
+    retighten_all_stops(force_exit=True, fetch_prices=True)
+
     # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
     # Exit all longs ONLY when BOTH SPY and QQQ have a finalized 5-min close
     # below their respective AVWAPs. Filters sub-5-min liquidity probes and
@@ -3043,6 +3227,15 @@ def execute_short_entry(ticker, price):
 def manage_short_positions():
     """Check stops and trailing stops for all open short positions."""
     global short_positions, tp_short_positions
+
+    # v3.4.23 — enforce 0.75% entry cap retroactively on every open
+    # short (see manage_positions for rationale). Note: manage_positions
+    # and manage_short_positions are called back-to-back by the scan
+    # loop, so calling retighten_all_stops from both is redundant-but-
+    # cheap. Kept in both for defensive symmetry: if a future refactor
+    # reorders or skips one manager, the cap still holds for the other
+    # book.
+    retighten_all_stops(force_exit=True, fetch_prices=True)
 
     # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
     # Exit all shorts ONLY when BOTH SPY and QQQ have a finalized 5-min close
@@ -5759,6 +5952,74 @@ async def cmd_near_misses(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /retighten COMMAND (v3.4.23)
+# ============================================================
+async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually run the 0.75% retro-cap across every open position.
+
+    The cap already runs automatically on startup and every manage
+    cycle, so this is mostly a transparency tool — it shows what the
+    cap would do right now. force_exit=True is ON: a position whose
+    retightened stop is already breached will be exited immediately,
+    same as the automatic pass.
+    """
+    SEP = "\u2500" * 34
+    try:
+        result = retighten_all_stops(force_exit=True, fetch_prices=True)
+    except Exception as e:
+        logger.error("cmd_retighten failed: %s", e, exc_info=True)
+        await update.message.reply_text(
+            "\u26a0\ufe0f retighten failed: %s" % str(e)[:200],
+            reply_markup=_menu_button(),
+        )
+        return
+
+    lines = ["\U0001f527 Retro-cap (0.75%)", SEP]
+    details = result.get("details", [])
+    if not details:
+        lines.append("No open positions.")
+    else:
+        any_change = False
+        for d in details:
+            tkr = d.get("ticker", "?")
+            side = d.get("side", "?")
+            port = d.get("portfolio", "?")
+            status = d.get("status", "?")
+            old = d.get("old_stop")
+            new = d.get("new_stop")
+            if status == "tightened":
+                lines.append("%s %s [%s]" % (tkr, side, port))
+                lines.append("  stop $%.2f \u2192 $%.2f" % (old, new))
+                any_change = True
+            elif status == "exit":
+                lines.append("%s %s [%s] EXITED" % (tkr, side, port))
+                lines.append("  breached at cap $%.2f" % (new if new is not None else 0.0))
+                any_change = True
+            elif status == "no_op":
+                lines.append("%s %s [%s] trail armed" % (tkr, side, port))
+            elif status == "already_tight":
+                lines.append("%s %s [%s] already tight" % (tkr, side, port))
+                if old is not None:
+                    lines.append("  stop $%.2f" % old)
+        if not any_change:
+            lines.append("")
+            lines.append("No changes \u2014 caps already in force.")
+    lines.append(SEP)
+    lines.append(
+        "Summary: %d tightened, %d exited, "
+        "%d no-op, %d already-tight"
+        % (result.get("tightened", 0),
+           result.get("exited", 0),
+           result.get("no_op", 0),
+           result.get("already_tight", 0))
+    )
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=_menu_button(),
+    )
+
+
+# ============================================================
 # /tp_sync COMMAND — TradersPost broker sync status (v3.4.15)
 # ============================================================
 async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7533,6 +7794,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
     BotCommand("near_misses", "Recent declined breakouts"),
+    BotCommand("retighten", "Retighten stops to 0.75% cap"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
@@ -7664,6 +7926,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("eod", cmd_eod))
     app.add_handler(CommandHandler("version", cmd_version))
     app.add_handler(CommandHandler("near_misses", cmd_near_misses))
+    app.add_handler(CommandHandler("retighten", cmd_retighten))
     # Main bot: /tp_sync is TP-only. Register a redirect on main so a
     # misdirected /tp_sync gets a friendly "try the TP bot" reply instead
     # of silence.
@@ -7721,6 +7984,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     tp_app.add_handler(CommandHandler("version", cmd_version))
     tp_app.add_handler(CommandHandler("near_misses", cmd_near_misses))
+    tp_app.add_handler(CommandHandler("retighten", cmd_retighten))
     tp_app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))
     tp_app.add_handler(CommandHandler("mode", cmd_mode))
     tp_app.add_handler(CommandHandler("reset", cmd_reset))
@@ -7794,6 +8058,26 @@ def startup_catchup():
 # ============================================================
 load_paper_state()
 load_tp_state()
+
+# v3.4.23 — on startup, retighten every open position's stop to the
+# 0.75% cap. Positions that were opened before the cap shipped (or
+# that somehow have a drifted stop) get tightened here. force_exit is
+# ON but fetch_prices is OFF: at process start the scanner loop
+# hasn't run yet, so we'd hit Yahoo cold and probably get stale quotes
+# anyway. Use entry_price as the "current" proxy — by construction
+# the new capped stop can't be breached at entry_price (entry ±0.75%
+# never equals entry), so force_exit is effectively silent on startup.
+# The immediate-exit path fires from the first manage cycle instead,
+# where real quotes are available.
+try:
+    _retro = retighten_all_stops(force_exit=True, fetch_prices=False)
+    if _retro.get("tightened") or _retro.get("exited"):
+        logger.info("[RETRO_CAP] startup: tightened %d, exited %d",
+                    _retro.get("tightened", 0),
+                    _retro.get("exited", 0))
+except Exception as _e:
+    logger.error("[RETRO_CAP] startup retighten failed: %s",
+                 _e, exc_info=True)
 
 # Live dashboard (read-only web UI). Env-gated: off unless DASHBOARD_PASSWORD is set.
 # Runs in its own thread with its own asyncio loop — never touches PTB's loop.
