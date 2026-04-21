@@ -678,13 +678,16 @@ def run_local() -> int:
         assert "tp_sync" in tp_names, \
             f"tp_sync must be in TP_BOT_COMMANDS: {tp_names}"
 
-    @t("v3.4.16: release notes split — main is TP-free, TP has tp_sync")
+    @t("v3.4.16: release notes split — main has no broker internals")
     def _():
         assert hasattr(m, "MAIN_RELEASE_NOTE")
         assert hasattr(m, "TP_RELEASE_NOTE")
         main_lc = m.MAIN_RELEASE_NOTE.lower()
-        # Main release note must not leak TP internals.
-        for bad in ("tp_sync", "webhook", "broker", "unsynced"):
+        # Main release note must not leak TP broker-internal terminology.
+        # Brief context-setting mentions of /tp_sync (pointing readers to
+        # the TP bot) are fine \u2014 we only forbid the broker-loop terms
+        # that the main bot's audience should not have to reason about.
+        for bad in ("webhook", "broker", "unsynced"):
             assert bad not in main_lc, \
                 f"MAIN_RELEASE_NOTE leaks {bad!r}: {m.MAIN_RELEASE_NOTE!r}"
         # TP release note should mention tp_sync.
