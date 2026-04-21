@@ -663,14 +663,48 @@ def run_local() -> int:
         assert "recent_orders" in tp
         assert "TSLA" in tp["unsynced_exits"]
 
-    @t("v3.4.15: /tp_sync command handler is registered")
+    @t("v3.4.15: /tp_sync command handler is defined")
     def _():
         # The command function must exist and be callable.
         assert hasattr(m, "cmd_tp_sync"), "cmd_tp_sync not defined"
         assert callable(m.cmd_tp_sync)
-        # MAIN_BOT_COMMANDS should include tp_sync entry.
-        names = [c.command for c in m.MAIN_BOT_COMMANDS]
-        assert "tp_sync" in names, f"tp_sync missing from MAIN_BOT_COMMANDS: {names}"
+
+    @t("v3.4.16: /tp_sync lives on TP bot only (not MAIN_BOT_COMMANDS)")
+    def _():
+        main_names = [c.command for c in m.MAIN_BOT_COMMANDS]
+        tp_names = [c.command for c in m.TP_BOT_COMMANDS]
+        assert "tp_sync" not in main_names, \
+            f"tp_sync must NOT be in MAIN_BOT_COMMANDS: {main_names}"
+        assert "tp_sync" in tp_names, \
+            f"tp_sync must be in TP_BOT_COMMANDS: {tp_names}"
+
+    @t("v3.4.16: release notes split — main is TP-free, TP has tp_sync")
+    def _():
+        assert hasattr(m, "MAIN_RELEASE_NOTE")
+        assert hasattr(m, "TP_RELEASE_NOTE")
+        main_lc = m.MAIN_RELEASE_NOTE.lower()
+        # Main release note must not leak TP internals.
+        for bad in ("tp_sync", "webhook", "broker", "unsynced"):
+            assert bad not in main_lc, \
+                f"MAIN_RELEASE_NOTE leaks {bad!r}: {m.MAIN_RELEASE_NOTE!r}"
+        # TP release note should mention tp_sync.
+        assert "/tp_sync" in m.TP_RELEASE_NOTE, \
+            f"TP_RELEASE_NOTE missing /tp_sync: {m.TP_RELEASE_NOTE!r}"
+
+    @t("v3.4.16: main-bot /tp_sync redirect handler exists")
+    def _():
+        assert hasattr(m, "cmd_tp_sync_on_main"), "redirect handler missing"
+        assert callable(m.cmd_tp_sync_on_main)
+        # Must be distinct from cmd_tp_sync so main doesn't leak data.
+        assert m.cmd_tp_sync_on_main is not m.cmd_tp_sync
+
+    @t("v3.4.16: release notes all within 34-char Telegram width")
+    def _():
+        for name in ("MAIN_RELEASE_NOTE", "TP_RELEASE_NOTE"):
+            text = getattr(m, name)
+            for line in text.split("\n"):
+                assert len(line) <= 34, \
+                    f"{name} line too long ({len(line)}): {line!r}"
 
     return run_suite("LOCAL SMOKE TESTS")
 
