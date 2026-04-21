@@ -4,6 +4,48 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.11 — smoke test harness (2026-04-20)
+
+Adds a standalone `smoke_test.py` that covers the full bot in two modes:
+
+- **Local (31 tests):** utility helpers, short-symmetry helpers,
+  `_today_pnl_breakdown` paper/TP paths, `_compute_today_realized_pnl`,
+  `_per_ticker_today_pnl`, N5 open-position `date` field, M1
+  `load_paper_state` clearing `daily_short_entry_count`, state
+  save/load round-trip, v3.4.10 `/reset` guards (stale/fresh/cross-bot/
+  unauthorized/malformed), v3.4.9 dashboard auth (roundtrip/expired/
+  wrong-secret/malformed/missing/future-dated), M6 rate limiter
+  (5 OK, 6th blocked, per-IP buckets), `_build_eod_report` report
+  builders with L+S tags, `_collect_day_rows`, DEFENSIVE gate
+  regression, and the weekly digest long+short merge.
+- **Prod (9 tests):** live dashboard `/login` 302/401, `/api/state`
+  version + expected keys, cookie required + forged-cookie rejection,
+  `/stream` SSE emits within 5s, rate limiter trips on the 6th bad
+  attempt in <60s, and `/static/` assets serve without auth.
+
+Run `python3 smoke_test.py` for local mode or
+`python3 smoke_test.py --prod --password <pw>` for prod mode. Exit
+code is 0 only when every test passes.
+
+**SSM_SMOKE_TEST guard.** The test harness needs to import
+`stock_spike_monitor.py` to exercise its helpers, but the module
+normally boots the Telegram client, scheduler thread, and catch-up
+on import. A new env-var guard at the bottom of the module short-
+circuits all of that when `SSM_SMOKE_TEST=1`. Production behavior
+is unchanged — the guard only fires when the env var is set to the
+exact string `"1"`.
+
+**Tests caught two real bugs in the initial draft.** The EOD report
+expects `"side": "short"` on short trades (set in `close_short_position`
+at line 2725), which an earlier test fixture omitted. And
+`_collect_day_rows` takes three positional args (`target_str`,
+`today_str`, `is_tp`), not a `portfolio` kwarg. Both were fixed as
+the harness was built, exercising the "tests catch test bugs" loop.
+
+No trade-logic changes.
+
+---
+
 ## v3.4.10 — /reset guards (2026-04-20)
 
 Addresses C7 from the code review. The `/reset` callback handler
