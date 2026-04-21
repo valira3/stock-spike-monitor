@@ -1157,14 +1157,27 @@ def run_local() -> int:
         assert abs(out[2] - 198.50) < 1e-6, out
         assert abs(pos["stop"] - 198.50) < 1e-6, pos
 
-    @t("v3.4.23: trail_active short is a no_op")
+    @t("v3.4.23/26: trail_active short leaves hard stop alone")
     def _():
         import stock_spike_monitor as m
-        pos = {"entry_price": 100.0, "stop": 105.0, "trail_active": True}
+        # Under v3.4.23 this returned ("no_op", None, None). Under
+        # v3.4.26, the cap layer is still skipped when trail is
+        # armed (invariant preserved: hard stop untouched), and the
+        # ratchet runs against trail_stop — see the v3.4.26 block
+        # for ratchet-through-trail coverage. This test keeps the
+        # v3.4.23 invariant: pos["stop"] must NOT move when trail
+        # is active.
+        pos = {"entry_price": 100.0, "stop": 105.0,
+               "trail_active": True, "trail_stop": 100.50,
+               "trail_low": 99.50}
         out = m._retighten_short_stop("XYZ", pos, 99.0, "paper",
                                       force_exit=False)
-        assert out == ("no_op", None, None), out
-        assert pos["stop"] == 105.0, "trail-armed stop must be untouched"
+        # Status is either already_tight (if ratchet no-op) or
+        # ratcheted_trail (if ratchet moved trail_stop). Either way,
+        # hard stop never moves.
+        assert out[0] in ("already_tight", "ratcheted_trail"), out
+        assert pos["stop"] == 105.0, \
+            "trail-armed hard stop must be untouched"
 
     @t("v3.4.23: breached short reports 'exit' without mutating if force_exit=False")
     def _():
@@ -1357,22 +1370,175 @@ def run_local() -> int:
         assert abs(out[2] - 100.0) < 1e-6, out
         assert abs(pos["stop"] - 100.0) < 1e-6, pos
 
-    @t("v3.4.25: ratchet is a no_op when trail_active is True")
-    def _():
-        import stock_spike_monitor as m
-        # Even at huge profit, trail_active must short-circuit.
-        pos = {"entry_price": 100.0, "stop": 105.0, "trail_active": True}
-        out = m._retighten_short_stop("XYZ", pos, 98.0, "paper",
-                                      force_exit=False)
-        assert out == ("no_op", None, None), out
-        assert pos["stop"] == 105.0
-
-    @t("v3.4.25: retighten_all_stops summary has 'ratcheted' key")
+    @t("v3.4.25/26: retighten_all_stops summary has 'ratcheted' key")
     def _():
         import stock_spike_monitor as m
         result = m.retighten_all_stops(force_exit=False, fetch_prices=False)
         assert "ratcheted" in result, result.keys()
         assert isinstance(result["ratcheted"], int)
+
+    # ------------------------------------------------------------
+    # v3.4.26 regressions — Ratchet-through-trail + diagnostics
+    # ------------------------------------------------------------
+    # v3.4.25's "trail_active short-circuits retighten" contract
+    # silently let a wide trail_stop survive in-profit positions.
+    # v3.4.26 keeps the cap skipped when trail is armed but runs the
+    # breakeven ratchet against pos["trail_stop"] — pure tighten.
+    # The dashboard now surfaces trail_active/trail_stop/
+    # effective_stop so we can see what is actually managing each
+    # position.
+    # ------------------------------------------------------------
+
+    @t("v3.4.26: BOT_VERSION is >= 3.4.26")
+    def _():
+        import stock_spike_monitor as m
+        parts = [int(x) for x in m.BOT_VERSION.split(".")]
+        assert parts >= [3, 4, 26], \
+            f"BOT_VERSION {m.BOT_VERSION} is older than 3.4.26"
+
+    @t("v3.4.26: short with trail_active + above-arm price is a no-op")
+    def _():
+        import stock_spike_monitor as m
+        # Current price ABOVE the arm threshold (short: price must
+        # be <= entry * 0.995 to arm breakeven). Trail armed but
+        # not yet in ratchet territory.
+        pos = {"entry_price": 100.0, "stop": 105.0,
+               "trail_active": True, "trail_stop": 99.80,
+               "trail_low": 98.80}
+        out = m._retighten_short_stop("XYZ", pos, 99.60, "paper",
+                                      force_exit=False)
+        # 99.60 is only -0.40% — below the +0.50% arm.
+        assert out[0] == "already_tight", out
+        assert pos["trail_stop"] == 99.80
+        assert pos["stop"] == 105.0
+
+    @t("v3.4.26: short trail_stop ratchets to entry when armed")
+    def _():
+        import stock_spike_monitor as m
+        # Trail armed on an unfavorable dip — trail_low 99.00, so
+        # trail_stop = 99.00 + max(99*0.01, 1.00) = 99.00 + 1.00 =
+        # 100.00 (wider than entry 100!). Now price at 99.40 =
+        # +0.60% profit, past the +0.50% arm. Ratchet should pull
+        # trail_stop down to entry 100.00 — i.e. a no-op equality
+        # case — so use a cleaner example: trail_stop = 100.20.
+        pos = {"entry_price": 100.0, "stop": 105.0,
+               "trail_active": True, "trail_stop": 100.20,
+               "trail_low": 99.20}
+        out = m._retighten_short_stop("AAPL", pos, 99.40, "paper",
+                                      force_exit=False)
+        status, old, new = out
+        assert status == "ratcheted_trail", out
+        assert old == 100.20, old
+        assert new == 100.0, new
+        assert pos["trail_stop"] == 100.0
+        # Hard stop is untouched — only trail_stop moves while armed.
+        assert pos["stop"] == 105.0
+
+    @t("v3.4.26: short ratchet-through-trail is pure tighten (never loosens)")
+    def _():
+        import stock_spike_monitor as m
+        # trail_stop already tighter than entry — leave it alone.
+        pos = {"entry_price": 100.0, "stop": 105.0,
+               "trail_active": True, "trail_stop": 99.50,
+               "trail_low": 98.50}
+        out = m._retighten_short_stop("XYZ", pos, 99.40, "paper",
+                                      force_exit=False)
+        assert out[0] == "already_tight", out
+        assert pos["trail_stop"] == 99.50
+
+    @t("v3.4.26: long trail_stop ratchets to entry when armed")
+    def _():
+        import stock_spike_monitor as m
+        # Trail armed on favorable move but gave back; trail_stop
+        # sits at 99.80 (below entry 100). Current 100.60 = +0.60%
+        # profit, past arm. Ratchet pulls trail_stop up to 100.00.
+        pos = {"entry_price": 100.0, "stop": 95.0,
+               "trail_active": True, "trail_stop": 99.80,
+               "trail_high": 100.80}
+        out = m._retighten_long_stop("XYZ", pos, 100.60, "paper",
+                                     force_exit=False)
+        status, old, new = out
+        assert status == "ratcheted_trail", out
+        assert old == 99.80, old
+        assert new == 100.0, new
+        assert pos["trail_stop"] == 100.0
+        assert pos["stop"] == 95.0
+
+    @t("v3.4.26: long ratchet-through-trail never loosens a tighter trail_stop")
+    def _():
+        import stock_spike_monitor as m
+        # trail_stop 100.50 already above entry — leave alone.
+        pos = {"entry_price": 100.0, "stop": 95.0,
+               "trail_active": True, "trail_stop": 100.50,
+               "trail_high": 101.50}
+        out = m._retighten_long_stop("XYZ", pos, 100.60, "paper",
+                                     force_exit=False)
+        assert out[0] == "already_tight", out
+        assert pos["trail_stop"] == 100.50
+
+    @t("v3.4.26: trail_active with no trail_stop is a safe fall-through")
+    def _():
+        import stock_spike_monitor as m
+        # Pathological but defensive: trail_active flipped True but
+        # trail_stop not yet populated. Must NOT crash or loosen.
+        pos_s = {"entry_price": 100.0, "stop": 105.0,
+                 "trail_active": True}
+        out_s = m._retighten_short_stop("XYZ", pos_s, 99.40, "paper",
+                                        force_exit=False)
+        assert out_s[0] == "already_tight", out_s
+        assert pos_s["stop"] == 105.0
+
+        pos_l = {"entry_price": 100.0, "stop": 95.0,
+                 "trail_active": True}
+        out_l = m._retighten_long_stop("XYZ", pos_l, 100.60, "paper",
+                                       force_exit=False)
+        assert out_l[0] == "already_tight", out_l
+        assert pos_l["stop"] == 95.0
+
+    @t("v3.4.26: retighten_all_stops summary has 'ratcheted_trail' key")
+    def _():
+        import stock_spike_monitor as m
+        result = m.retighten_all_stops(force_exit=False, fetch_prices=False)
+        assert "ratcheted_trail" in result, result.keys()
+        assert isinstance(result["ratcheted_trail"], int)
+
+    @t("v3.4.26: dashboard_server exposes trail_active / trail_stop / effective_stop")
+    def _():
+        import inspect, importlib
+        ds = importlib.import_module("dashboard_server")
+        src = inspect.getsource(ds._serialize_positions)
+        for field in ('"trail_active"', '"trail_stop"',
+                      '"effective_stop"'):
+            assert field in src, \
+                f"_serialize_positions missing {field}"
+        # Effective stop must fall back to hard stop when trail is
+        # not armed — the JS layer still handles older payloads.
+        assert "trail_active and trail_stop is not None" in src, \
+            "effective_stop fallback logic looks wrong"
+
+    @t("v3.4.26: cmd_retighten output handles 'ratcheted_trail' status")
+    def _():
+        import stock_spike_monitor as m, inspect
+        src = inspect.getsource(m.cmd_retighten)
+        assert "ratcheted_trail" in src, \
+            "cmd_retighten must branch on 'ratcheted_trail'"
+
+    @t("v3.4.26: index.html renders effective_stop + TRAIL badge")
+    def _():
+        import os
+        import stock_spike_monitor as m
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(m.__file__)),
+            "dashboard_static", "index.html",
+        )
+        with open(path, "r", encoding="utf-8") as f:
+            html = f.read()
+        assert "effective_stop" in html, \
+            "index.html must reference effective_stop"
+        assert "trail-badge" in html, \
+            "index.html must render .trail-badge"
+        assert "trail_active" in html, \
+            "index.html must gate the badge on trail_active"
 
     @t("v3.4.21: dashboard_server exposes per_ticker gates + next_scan_sec + near_misses")
     def _():

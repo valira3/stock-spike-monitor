@@ -4,6 +4,90 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.26 — Ratchet-through-trail + dashboard trail diagnostics (2026-04-21)
+
+### The silent bypass v3.4.25 left behind
+
+v3.4.25 deployed clean — GOOG ratcheted to entry immediately on
+deploy. AAPL, at the same time and past the +0.50% arm, did not.
+Reason: AAPL's short trail had armed earlier in the session on a
+dip near `entry × 0.990 = $266.08`. Once `trail_active=True`,
+v3.4.25's `_retighten_short_stop` short-circuited the entire
+retighten pass (cap AND breakeven ratchet) with a single guard:
+
+```python
+if pos.get("trail_active"):
+    return ("no_op", None, None)
+```
+
+The rationale was "trail is always tighter than the 0.75% cap by
+construction." True for the cap — but not for the breakeven ratchet.
+A short trail that arms on an unfavorable dip can leave `trail_stop`
+wider than entry (e.g. `trail_low $266.08 + $2.66 = $268.74` vs
+entry $268.77). The +0.50% breakeven ratchet could tighten that
+further, but v3.4.25 refused to try.
+
+Compounding the problem: the dashboard showed `pos["stop"]` ($270.79)
+even when trail was actually managing the position. No surface
+indication of which logic was in effect.
+
+### The fix
+
+**Ratchet runs through trail.** When `trail_active=True`, the cap
+layer stays skipped (trail was designed to replace it), but the
+breakeven ratchet now runs against `pos["trail_stop"]` instead of
+`pos["stop"]` — because once trail is armed, `manage_positions` uses
+`trail_stop` for exit decisions, not `pos["stop"]`.
+
+- Longs: `new_trail_stop = max(current_trail_stop, entry)`
+- Shorts: `new_trail_stop = min(current_trail_stop, entry)`
+
+Pure tighten, never loosens. Same locked design principle as every
+prior stop-management change.
+
+New status tuple `("ratcheted_trail", old_trail, new_trail)` is
+returned when this path fires. `retighten_all_stops` gains a
+`ratcheted_trail` counter. `/retighten` output shows `trail→entry`
+for these rows.
+
+**Dashboard trail diagnostic.** `/api/state` positions now expose:
+
+- `trail_active: bool`
+- `trail_stop: float | null`
+- `trail_anchor: float | null` (trail_high for longs, trail_low for
+  shorts)
+- `effective_stop: float` — `trail_stop if trail_active else stop`,
+  matching `manage_positions`' exit-decision rule
+
+The UI now renders `effective_stop` in the Stop column with a small
+`TRAIL` badge when trail is armed. At a glance, you can see what's
+actually managing the position. The raw `stop` field is kept for
+backward compatibility — older payload consumers still work.
+
+### Expected post-deploy behavior
+
+On startup, the retroactive retighten pass fires before any new
+scan. For AAPL (entry $268.77, current mark $266.38, trail_active
+assumed True from an earlier dip):
+
+- If trail_stop > $268.77: ratchet pulls it down to $268.77.
+- Effective dashboard stop should read $268.77 with a TRAIL badge.
+- Hard `pos["stop"]` ($270.79) is untouched — it's a stale number
+  that matters only if `trail_active` is ever cleared (which it
+  isn't, per current design).
+
+### Test coverage
+
++10 smoke tests covering: above-arm no-op, ratchet-through-trail
+for both sides, pure-tighten invariant, defensive fall-through on
+missing trail_stop, summary counter, dashboard state exposure, and
+index.html rendering. Totals: **97 local, unchanged prod surface**.
+The one v3.4.23 test that asserted `("no_op", None, None)` was
+retired in favor of asserting the underlying invariant ("hard stop
+untouched when trail is active"), which still holds.
+
+---
+
 ## v3.4.25 — Breakeven ratchet at +0.50% profit (2026-04-21)
 
 ### The gap this closes

@@ -164,13 +164,28 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         entry = float(p.get("entry_price", 0.0))
         shares = int(p.get("shares", 0))
         unreal = (float(px) - entry) * shares if px else 0.0
+        # v3.4.26: expose trail state + effective stop so the UI can
+        # show what's actually managing the position (hard stop vs
+        # armed trail). effective_stop mirrors the exit-decision rule
+        # in manage_positions.
+        hard_stop = float(p.get("stop", 0.0))
+        trail_active = bool(p.get("trail_active", False))
+        trail_stop_raw = p.get("trail_stop")
+        trail_stop = float(trail_stop_raw) if trail_stop_raw is not None else None
+        trail_high_raw = p.get("trail_high")
+        trail_anchor = float(trail_high_raw) if trail_high_raw is not None else None
+        effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
         rows.append({
             "ticker": tkr,
             "side": "LONG",
             "shares": shares,
             "entry": entry,
             "mark": float(px) if px else entry,
-            "stop": float(p.get("stop", 0.0)),
+            "stop": hard_stop,
+            "trail_active": trail_active,
+            "trail_stop": trail_stop,
+            "trail_anchor": trail_anchor,
+            "effective_stop": effective_stop,
             "unrealized": unreal,
             "entry_time": p.get("entry_time", ""),
             "entry_count": int(p.get("entry_count", 1)),
@@ -180,13 +195,24 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         entry = float(p.get("entry_price", 0.0))
         shares = int(p.get("shares", 0))
         unreal = (entry - float(px)) * shares if px else 0.0
+        hard_stop = float(p.get("stop", 0.0))
+        trail_active = bool(p.get("trail_active", False))
+        trail_stop_raw = p.get("trail_stop")
+        trail_stop = float(trail_stop_raw) if trail_stop_raw is not None else None
+        trail_low_raw = p.get("trail_low")
+        trail_anchor = float(trail_low_raw) if trail_low_raw is not None else None
+        effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
         rows.append({
             "ticker": tkr,
             "side": "SHORT",
             "shares": shares,
             "entry": entry,
             "mark": float(px) if px else entry,
-            "stop": float(p.get("stop", 0.0)),
+            "stop": hard_stop,
+            "trail_active": trail_active,
+            "trail_stop": trail_stop,
+            "trail_anchor": trail_anchor,
+            "effective_stop": effective_stop,
             "unrealized": unreal,
             "entry_time": p.get("entry_time", ""),
             "entry_count": 1,
