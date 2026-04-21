@@ -4,6 +4,23 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.12 — proximity row fix (2026-04-20)
+
+Purely cosmetic. The dashboard proximity card's right-most column
+(`0.02% · OR-low`) wrapped onto a second line at mobile widths
+because `.prox-pct` was pinned to 64-80px and the full string needs
+~100px in the monospace font.
+
+**Fix:** widen `.prox-pct` from 80 → 110 (desktop) and 64 → 100
+(mobile). Since `.prox-bar` uses `flex: 1`, it shrinks to fill the
+remainder — the bar gets slightly narrower, the pct + label fit on
+one line. Added `white-space: nowrap` on `.prox-pct` as a belt-and-
+suspenders guard against a future longer label.
+
+CSS-only change. No trade-logic, no backend, no API changes.
+
+---
+
 ## Tooling — post-deploy smoke workflow (2026-04-20)
 
 Not a bot release — CI-only change, no version bump.

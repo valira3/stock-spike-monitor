@@ -37,20 +37,24 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.11"
+BOT_VERSION = "3.4.12"
 RELEASE_NOTE = (
-    "v3.4.11 \u2014 smoke test harness.\n"
-    "Adds standalone smoke_test.py\n"
-    "covering 31 local + 9 prod\n"
-    "checks across helpers, state,\n"
-    "reports, /reset guards, auth,\n"
-    "rate limiter, and SSE.\n"
-    "\u2022 SSM_SMOKE_TEST=1 env\n"
-    "  flag lets tests import the\n"
-    "  bot module without booting\n"
-    "  the Telegram client or\n"
-    "  scheduler thread.\n"
-    "No trade-logic changes."
+    "v3.4.12 \u2014 proximity row fix.\n"
+    "Dashboard proximity card no\n"
+    "longer wraps the pct column\n"
+    "onto a second line.\n"
+    "\u2022 Widen .prox-pct so\n"
+    "  '0.02% \u00b7 OR-low' fits\n"
+    "  on one line at mobile and\n"
+    "  desktop widths.\n"
+    "\u2022 Progress bar shrinks\n"
+    "  slightly (flex: 1) to\n"
+    "  make room.\n"
+    "\u2022 Belt-and-suspenders:\n"
+    "  white-space: nowrap on\n"
+    "  the pct column.\n"
+    "CSS only. No trade-logic\n"
+    "or backend changes."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
