@@ -736,6 +736,69 @@ def run_local() -> int:
         assert m.is_tp_update(paper_shim) is False, \
             "shim with non-TP token must resolve is_tp_update -> False"
 
+    @t("v3.4.20: _entry_bar_volume walks back past null/zero bars")
+    def _():
+        # Yahoo returns the most-recent closed bar (volumes[-2]) with
+        # null/zero volume when the bar has not been populated yet.
+        # The helper must walk back until it finds a valid bar, and
+        # return (0, False) if it cannot — so callers fail-closed.
+        fn = getattr(m, "_entry_bar_volume", None)
+        assert fn is not None, "_entry_bar_volume helper must exist"
+
+        # Happy path: volumes[-2] is valid -> use it directly.
+        vol, ready = fn([100, 200, 300, 400, 500])  # [-2] = 400
+        assert ready is True and vol == 400, (vol, ready)
+
+        # Stale trailing bar: volumes[-2] is None, volumes[-3] is valid.
+        vol, ready = fn([100, 200, 300, None, 500])  # [-2] = None, [-3] = 300
+        assert ready is True and vol == 300, (vol, ready)
+
+        # Stale trailing bar: volumes[-2] is 0 (what today's bug saw).
+        vol, ready = fn([100, 200, 300, 0, 500])  # [-2] = 0, [-3] = 300
+        assert ready is True and vol == 300, (vol, ready)
+
+        # All candidate bars null/zero -> DATA NOT READY (fail-closed).
+        # Default lookback=5 scans offsets -2..-6, so pad with 6 bad bars.
+        vol, ready = fn([0, None, 0, None, 0, None, 0])
+        assert ready is False and vol == 0, (vol, ready)
+
+        # Very short series -> not ready.
+        vol, ready = fn([100])
+        assert ready is False and vol == 0, (vol, ready)
+        vol, ready = fn([])
+        assert ready is False and vol == 0, (vol, ready)
+
+        # Lookback window bounds: only peek back `lookback` bars.
+        # Series: v[-2]=None, v[-3]=0, v[-4]=777 (valid but out of reach).
+        # With lookback=2 the helper scans only offsets 2, 3 -> not ready.
+        vol, ready = fn([100, 777, 0, None, 0], lookback=2)
+        assert ready is False, (vol, ready)
+        # Same series with lookback=3 reaches the valid bar at offset 4.
+        vol, ready = fn([100, 777, 0, None, 0], lookback=3)
+        assert ready is True and vol == 777, (vol, ready)
+
+    @t("v3.4.20: entry gates call _entry_bar_volume + emit DATA NOT READY")
+    def _():
+        # Both long-entry and short-entry gates must:
+        #  1. call _entry_bar_volume(volumes) (not read volumes[-2] raw)
+        #  2. emit the new [DATA NOT READY] log label
+        import inspect
+        # Find the two functions that own the LOW VOL gates by grepping
+        # module source for the log string, then resolve containing fns.
+        src_all = inspect.getsource(m)
+        # There must be two occurrences of the LOW VOL log line (long + short).
+        assert src_all.count("[LOW VOL] entry bar") == 2, \
+            "expected exactly 2 LOW VOL gate sites"
+        # DATA NOT READY must show up at least twice (one per gate site).
+        assert src_all.count("[DATA NOT READY]") >= 2, \
+            "expected DATA NOT READY log at both gate sites"
+        # _entry_bar_volume must be called at least twice in the source.
+        assert src_all.count("_entry_bar_volume(volumes)") >= 2, \
+            "expected both gate sites to call _entry_bar_volume"
+        # The raw, unsafe pattern that caused today's bug must be gone.
+        assert "volumes[-2] if volumes[-2] is not None else 0" not in src_all, \
+            "raw volumes[-2] read must be replaced everywhere"
+
     @t("v3.4.19: menu/refresh callbacks route by token, not chat_id")
     def _():
         # Three callbacks previously routed data by comparing
