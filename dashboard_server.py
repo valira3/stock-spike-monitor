@@ -316,6 +316,23 @@ def snapshot() -> dict[str, Any]:
 
         version = str(getattr(m, "BOT_VERSION", "?"))
 
+        # v3.4.15 — TP broker sync status
+        tp_state_obj = dict(getattr(m, "tp_state", {}) or {})
+        tp_unsynced = dict(getattr(m, "tp_unsynced_exits", {}) or {})
+        tp_recent_raw = list(tp_state_obj.get("recent_orders", []) or [])
+        # Keep last 5 for the dashboard; full 20 live in tp_state.
+        tp_recent = tp_recent_raw[-5:]
+        tp_enabled = bool(getattr(m, "TRADERSPOST_ENABLED", False))
+        tp_sync = {
+            "enabled": tp_enabled,
+            "unsynced_exits": tp_unsynced,
+            "recent_orders": tp_recent,
+            "total_orders_sent": int(tp_state_obj.get("total_orders_sent", 0) or 0),
+            "total_orders_success": int(tp_state_obj.get("total_orders_success", 0) or 0),
+            "total_orders_failed": int(tp_state_obj.get("total_orders_failed", 0) or 0),
+            "last_order_time": str(tp_state_obj.get("last_order_time", "") or ""),
+        }
+
         try:
             now_et = m._now_et()
             now_iso = now_et.isoformat()
@@ -361,6 +378,7 @@ def snapshot() -> dict[str, Any]:
                 "ticker_pnl": ticker_pnl,
                 "ticker_red": ticker_red[:5],
             },
+            "tp_sync": tp_sync,
             "tickers": tickers,
         }
     except Exception as e:

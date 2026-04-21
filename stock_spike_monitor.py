@@ -37,18 +37,24 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.14"
+BOT_VERSION = "3.4.15"
 RELEASE_NOTE = (
-    "v3.4.14 \u2014 TradersPost wire.\n"
-    "TP portfolio now routes to\n"
-    "TradersPost on entry + exit.\n"
-    "Paper stays simulated only.\n"
-    "Kill-switch: TRADERSPOST_ENABLED\n"
-    "(env var, default off). On\n"
-    "each send, TP chat gets a\n"
-    "\u2713 sent / \u2717 rejected line.\n"
-    "TELEGRAM_TP_CHAT_ID now reads\n"
-    "from env with same default."
+    "v3.4.15 \u2014 Webhook return trip.\n"
+    "Broker responses now parsed;\n"
+    "rejection reason shown in TP\n"
+    "alert + HTTP status code.\n"
+    "Entries: webhook fires first.\n"
+    "If broker rejects, TP mirror\n"
+    "is skipped (paper unaffected).\n"
+    "Exits: local close preserved,\n"
+    "rejections tracked in\n"
+    "tp_unsynced_exits for manual\n"
+    "reconciliation.\n"
+    "Dashboard shows amber banner\n"
+    "when any exit is unsynced.\n"
+    "New /tp_sync command lists\n"
+    "open TP positions + last 5\n"
+    "webhook outcomes + mismatches."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -344,6 +350,12 @@ tp_short_positions: dict = {}        # TP short positions
 daily_short_entry_count: dict = {}   # {ticker: int} — resets daily, separate from long count
 short_trade_history: list = []       # max 500 closed paper shorts
 tp_short_trade_history: list = []    # max 500 closed TP shorts
+
+# v3.4.15 — Webhook rejection tracking for exits (state-first ordering preserved).
+# Populated when close_position/close_tp_position/close_short_position TP branches
+# fire a webhook that fails. Dashboard banner + /tp_sync surface these for manual
+# reconciliation. Keyed by ticker, most-recent rejection wins.
+tp_unsynced_exits: dict = {}         # {ticker: {action, price, shares, message, http_status, time}}
 
 # Daily loss limit (Feature 2)
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
@@ -1707,21 +1719,51 @@ def check_entry(ticker):
 # ============================================================
 # TRADERSPOST WEBHOOK
 # ============================================================
+def _extract_broker_message(resp_data):
+    """Pull a human-readable error message out of a TradersPost response.
+
+    TradersPost may return any of:
+      {"success": false, "message": "..."}
+      {"success": false, "errors": ["...", "..."]}
+      {"success": false, "error": "..."}
+    Return a short string (<=80 chars) suitable for Telegram, or "".
+    """
+    if not isinstance(resp_data, dict):
+        return ""
+    # Try common fields in order of specificity
+    msg = resp_data.get("message") or resp_data.get("error") or ""
+    if not msg:
+        errs = resp_data.get("errors")
+        if isinstance(errs, list) and errs:
+            msg = "; ".join(str(e) for e in errs[:2])
+        elif isinstance(errs, str):
+            msg = errs
+    msg = str(msg).strip().replace("\n", " ")
+    return msg[:80]
+
+
 def send_traderspost_order(ticker, action, price, shares=SHARES):
     """Send a limit order to TradersPost via webhook (TP portfolio only).
 
     action: 'buy', 'sell', 'sell_short', or 'buy_to_cover'
-    Returns response dict or None.
+    Returns a dict with keys:
+      success (bool), skipped (bool), message (str), raw (dict|None)
+    so callers can branch on outcome. `skipped=True` means the webhook was
+    intentionally not called (env not enabled, or URL missing) — callers
+    should treat this as "no broker action attempted" rather than a failure.
 
     Gated on TRADERSPOST_ENABLED env var (default off) and
     TRADERSPOST_WEBHOOK_URL being set. Posts a short confirmation to the
     TP Telegram chat on success and on failure so Val always knows what
     the broker side actually received.
     """
+    skip_result = {"success": False, "skipped": True, "message": "",
+                   "http_status": 0, "raw": None}
+
     if not TRADERSPOST_ENABLED:
         logger.debug("[TP] TRADERSPOST_ENABLED=false \u2014 skipping %s %s",
                      action, ticker)
-        return None
+        return {**skip_result, "message": "TRADERSPOST_ENABLED=false"}
     if not TRADERSPOST_WEBHOOK_URL:
         logger.warning("[TP] Enabled but TRADERSPOST_WEBHOOK_URL unset \u2014 skip %s %s",
                        action, ticker)
@@ -1730,7 +1772,7 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
             "%s %s %d @ $%.2f\n"
             "URL not configured" % (action.upper(), ticker, shares, price)
         )
-        return None
+        return {**skip_result, "message": "webhook URL not configured"}
 
     # Limit price: buy/buy_to_cover slightly above, sell/sell_short slightly below
     if action in ("buy", "buy_to_cover"):
@@ -1755,13 +1797,29 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            resp_data = json.loads(resp.read())
+            raw_body = resp.read()
+            status = resp.status
+
+        try:
+            resp_data = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            # Non-JSON 200 (unexpected) — treat as failure so we don't trust it
+            logger.warning("[TP] Non-JSON response for %s %s: %s",
+                           action, ticker, raw_body[:200])
+            resp_data = {"success": False, "message": "non-JSON response",
+                         "status": status}
+
+        if not isinstance(resp_data, dict):
+            resp_data = {"success": False, "message": "unexpected response type",
+                         "status": status}
 
         logger.info("[TP] %s %s %d @ $%.2f limit $%.2f -> %s",
                     action.upper(), ticker, shares, price, limit_price, resp_data)
 
+        success = bool(resp_data.get("success")) and 200 <= status < 300
+        broker_msg = _extract_broker_message(resp_data)
+
         tp_state["total_orders_sent"] = tp_state.get("total_orders_sent", 0) + 1
-        success = bool(resp_data.get("success"))
         if success:
             tp_state["total_orders_success"] = tp_state.get("total_orders_success", 0) + 1
         else:
@@ -1774,6 +1832,7 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
             "ticker": ticker, "action": action.upper(),
             "price": price, "limit_price": limit_price,
             "shares": shares, "success": success,
+            "message": broker_msg, "http_status": status,
             "time": now_str,
         })
         if len(recent) > 20:
@@ -1781,28 +1840,56 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
         tp_state["recent_orders"] = recent
         save_paper_state()
 
-        # Notify TP chat (✓ sent / ✗ rejected)
-        mark = "\u2713" if success else "\u2717"
-        status_word = "sent" if success else "rejected"
-        send_tp_telegram(
-            "%s TP webhook %s\n"
-            "%s %s %d @ $%.2f\n"
-            "Limit: $%.2f" % (mark, status_word,
-                              action.upper(), ticker, shares,
-                              price, limit_price)
-        )
-        return resp_data
+        # Notify TP chat (✓ sent / ✗ rejected + broker reason if any)
+        if success:
+            send_tp_telegram(
+                "\u2713 TP webhook sent\n"
+                "%s %s %d @ $%.2f\n"
+                "Limit: $%.2f" % (action.upper(), ticker, shares,
+                                  price, limit_price)
+            )
+        else:
+            reason_line = ("\nReason: %s" % broker_msg) if broker_msg else ""
+            send_tp_telegram(
+                "\u2717 TP webhook rejected\n"
+                "%s %s %d @ $%.2f\n"
+                "Limit: $%.2f%s\n"
+                "HTTP: %d" % (action.upper(), ticker, shares,
+                              price, limit_price, reason_line, status)
+            )
+        return {"success": success, "skipped": False,
+                "message": broker_msg, "http_status": status,
+                "raw": resp_data}
 
     except Exception as e:
         logger.error("[TP] Webhook failed for %s %s: %s", action, ticker, e)
         tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
-        err_str = str(e)[:60]
+        err_str = str(e)[:80]
+        now_str = _utc_now_iso()
+        tp_state["last_order_time"] = now_str
+        recent = tp_state.get("recent_orders", [])
+        recent.append({
+            "ticker": ticker, "action": action.upper(),
+            "price": price, "limit_price": limit_price,
+            "shares": shares, "success": False,
+            "message": err_str, "http_status": 0,
+            "time": now_str,
+        })
+        if len(recent) > 20:
+            recent[:] = recent[-20:]
+        tp_state["recent_orders"] = recent
+        try:
+            save_paper_state()
+        except Exception:
+            pass
         send_tp_telegram(
             "\u2717 TP webhook failed\n"
             "%s %s %d @ $%.2f\n"
             "Err: %s" % (action.upper(), ticker, shares, price, err_str)
         )
-        return None
+        return {"success": False, "skipped": False,
+                "message": err_str, "http_status": 0,
+                "raw": None}
 
 
 # ============================================================
@@ -1926,7 +2013,20 @@ def execute_entry(ticker, current_price):
          stop_price, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
-    # TP Portfolio — mirror entry
+    # TP Portfolio — fire webhook FIRST, mirror entry only if broker accepts
+    tp_result = send_traderspost_order(ticker, "buy", current_price)
+    tp_ok = bool(tp_result and (tp_result.get("success") or tp_result.get("skipped")))
+
+    if not tp_ok:
+        # Broker rejected — paper keeps its simulated position, TP stays empty.
+        # send_traderspost_order already alerted the TP chat with the reason.
+        logger.warning(
+            "[TP] Broker rejected BUY for %s — skipping TP mirror (paper unaffected)",
+            ticker,
+        )
+        save_paper_state()
+        return
+
     tp_positions[ticker] = {
         "entry_price": current_price,
         "shares": SHARES,
@@ -1937,14 +2037,12 @@ def execute_entry(ticker, current_price):
         "entry_time": now_str,
         "date": now_date,
         "pdc": pdc.get(ticker, 0),
+        "broker_synced": True,  # confirmed open on TradersPost side
     }
     tp_paper_cash -= cost
     tp_paper_trades.append(trade.copy())
     logger.info("[TP] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
                 ticker, SHARES, current_price, limit_price, stop_price, entry_num)
-
-    # TradersPost webhook — TP portfolio only (paper stays simulated)
-    send_traderspost_order(ticker, "buy", current_price)
 
     # Fix B: TP BUY notification → send_tp_telegram() ONLY
     tp_msg = (
@@ -2072,8 +2170,17 @@ def close_position(ticker, price, reason="STOP"):
         logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
                     ticker, tp_shares, price, reason, tp_pnl)
 
-        # TradersPost webhook — TP portfolio only
-        send_traderspost_order(ticker, "sell", price, tp_shares)
+        # TradersPost webhook — TP portfolio only (state already mutated; track rejection)
+        _tp_result = send_traderspost_order(ticker, "sell", price, tp_shares)
+        if not (_tp_result.get("success") or _tp_result.get("skipped")):
+            tp_unsynced_exits[ticker] = {
+                "action": "sell",
+                "price": price,
+                "shares": tp_shares,
+                "message": _tp_result.get("message", ""),
+                "http_status": _tp_result.get("http_status"),
+                "time": now_hhmm,
+            }
 
         tp_entry_time_str = tp_pos.get("entry_time", "")
         tp_entry_hhmm = _to_cdt_hhmm(tp_entry_time_str) if tp_entry_time_str else ""
@@ -2245,8 +2352,17 @@ def close_tp_position(ticker, price, reason="STOP"):
     logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
                 ticker, tp_shares, price, reason, tp_pnl)
 
-    # TradersPost webhook — TP-only close path
-    send_traderspost_order(ticker, "sell", price, tp_shares)
+    # TradersPost webhook — TP-only close path (state already mutated; track rejection)
+    _tp_result = send_traderspost_order(ticker, "sell", price, tp_shares)
+    if not (_tp_result.get("success") or _tp_result.get("skipped")):
+        tp_unsynced_exits[ticker] = {
+            "action": "sell",
+            "price": price,
+            "shares": tp_shares,
+            "message": _tp_result.get("message", ""),
+            "http_status": _tp_result.get("http_status"),
+            "time": now_hhmm,
+        }
 
     tp_paper_trades.append({
         "action": "SELL",
@@ -2543,25 +2659,13 @@ def execute_short_entry(ticker, price):
     daily_short_entry_count[ticker] = daily_short_entry_count.get(ticker, 0) + 1
     save_paper_state()
 
-    # TP short (independent)
-    tp_short_positions[ticker] = {
-        "entry_price": entry_price,
-        "shares": shares,
-        "stop": stop,
-        "trail_stop": None,
-        "trail_active": False,
-        "trail_low": entry_price,
-        "entry_time": entry_time_cdt,
-        "date": date_str,
-        "side": "SHORT",
-    }
-    tp_paper_cash += entry_price * shares
-    save_tp_state()
+    # TP short — fire webhook FIRST, mirror only if broker accepts
+    tp_short_result = send_traderspost_order(ticker, "sell_short", entry_price, shares)
+    tp_short_ok = bool(
+        tp_short_result and (tp_short_result.get("success") or tp_short_result.get("skipped"))
+    )
 
-    # TradersPost webhook — TP portfolio only (paper stays simulated)
-    send_traderspost_order(ticker, "sell_short", entry_price, shares)
-
-    # Notification
+    # Paper notification always fires (paper side already mutated)
     pdc_val = pdc.get(ticker, 0)
     or_low_val = or_low.get(ticker, 0)
     SEP = "\u2500" * 34
@@ -2588,6 +2692,28 @@ def execute_short_entry(ticker, price):
          shares, format(short_proceeds, ",.2f"),
          stop, or_low_val, pdc_val, short_sig, entry_time_display, SEP)
     send_telegram(msg)
+
+    if not tp_short_ok:
+        logger.warning(
+            "[TP] Broker rejected SHORT for %s — skipping TP mirror (paper unaffected)",
+            ticker,
+        )
+        return
+
+    tp_short_positions[ticker] = {
+        "entry_price": entry_price,
+        "shares": shares,
+        "stop": stop,
+        "trail_stop": None,
+        "trail_active": False,
+        "trail_low": entry_price,
+        "entry_time": entry_time_cdt,
+        "date": date_str,
+        "side": "SHORT",
+        "broker_synced": True,
+    }
+    tp_paper_cash += entry_price * shares
+    save_tp_state()
 
     tp_msg = msg.replace("SHORT ENTRY", "TP SHORT ENTRY")
     send_tp_telegram(tp_msg)
@@ -2816,8 +2942,17 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
             tp_short_trade_history.pop(0)
         save_tp_state()
 
-        # TradersPost webhook — TP-only short cover
-        send_traderspost_order(ticker, "buy_to_cover", cover_price, shares)
+        # TradersPost webhook — TP-only short cover (state already mutated; track rejection)
+        _tp_result = send_traderspost_order(ticker, "buy_to_cover", cover_price, shares)
+        if not (_tp_result.get("success") or _tp_result.get("skipped")):
+            tp_unsynced_exits[ticker] = {
+                "action": "buy_to_cover",
+                "price": cover_price,
+                "shares": shares,
+                "message": _tp_result.get("message", ""),
+                "http_status": _tp_result.get("http_status"),
+                "time": exit_time,
+            }
 
         pnl_sign = "+" if pnl >= 0 else ""
         emoji = "\u2705" if pnl >= 0 else "\u274c"
@@ -5226,6 +5361,77 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /tp_sync COMMAND — TradersPost broker sync status (v3.4.15)
+# ============================================================
+async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show TP broker sync status: open TP positions, last webhook sends,
+    and any unsynced exits awaiting manual reconciliation."""
+    SEP = "\u2500" * 34
+
+    lines = ["TP Broker Sync", SEP]
+    lines.append("Enabled : %s" % ("on" if TRADERSPOST_ENABLED else "off"))
+    lines.append("Sent    : %d" % tp_state.get("total_orders_sent", 0))
+    lines.append("OK      : %d" % tp_state.get("total_orders_success", 0))
+    lines.append("Fail    : %d" % tp_state.get("total_orders_failed", 0))
+    last_t = tp_state.get("last_order_time", "")
+    if last_t:
+        lines.append("Last    : %s" % _to_cdt_hhmm(last_t))
+    lines.append(SEP)
+
+    # Open TP positions (longs)
+    lines.append("Open TP longs: %d" % len(tp_positions))
+    for tkr, pos in list(tp_positions.items())[:8]:
+        synced = "\u2713" if pos.get("broker_synced") else "?"
+        lines.append("  %s %s %d @ $%.2f" % (
+            synced, tkr, pos.get("shares", 0), pos.get("entry_price", 0.0)))
+
+    lines.append("Open TP shorts: %d" % len(tp_short_positions))
+    for tkr, pos in list(tp_short_positions.items())[:8]:
+        synced = "\u2713" if pos.get("broker_synced") else "?"
+        lines.append("  %s %s %d @ $%.2f" % (
+            synced, tkr, pos.get("shares", 0), pos.get("entry_price", 0.0)))
+    lines.append(SEP)
+
+    # Last 5 webhook outcomes
+    recent = list(tp_state.get("recent_orders", []) or [])[-5:]
+    lines.append("Recent webhooks: %d" % len(recent))
+    for r in recent:
+        mark = "\u2713" if r.get("success") else "\u2717"
+        t = _to_cdt_hhmm(r.get("time", "")) or "?"
+        lines.append("  %s %s %s %s %d" % (
+            mark, t, (r.get("action") or "?")[:4],
+            (r.get("ticker") or "?"), int(r.get("shares", 0) or 0)))
+        msg = (r.get("message") or "")[:28]
+        if msg and not r.get("success"):
+            lines.append("    %s" % msg)
+    lines.append(SEP)
+
+    # Unsynced exits (rejections that need manual recon)
+    if tp_unsynced_exits:
+        lines.append("\u26a0 Unsynced exits: %d" % len(tp_unsynced_exits))
+        for tkr, ex in list(tp_unsynced_exits.items())[:8]:
+            lines.append("  %s %s %d @ $%.2f" % (
+                tkr, (ex.get("action") or "?")[:4],
+                int(ex.get("shares", 0) or 0),
+                float(ex.get("price", 0.0) or 0.0)))
+            reason = (ex.get("message") or "")[:28]
+            if reason:
+                lines.append("    %s" % reason)
+        lines.append("Manual recon required")
+    else:
+        lines.append("Unsynced exits: 0")
+    lines.append(SEP)
+
+    msg = "\n".join(lines)
+    # Telegram has a 4096 char limit; truncate generously.
+    if len(msg) > 3800:
+        msg = msg[:3800] + "\n\u2026(truncated)"
+    await update.message.reply_text("```\n%s\n```" % msg,
+                                    parse_mode="Markdown",
+                                    reply_markup=_menu_button())
+
+
+# ============================================================
 # /mode COMMAND — market mode classifier (observation only)
 # ============================================================
 async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6900,6 +7106,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("strategy", "Strategy summary"),
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
+    BotCommand("tp_sync", "TP broker sync status"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
@@ -7010,6 +7217,7 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     app.add_handler(CommandHandler("eod", cmd_eod))
     app.add_handler(CommandHandler("version", cmd_version))
+    app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))
     app.add_handler(CommandHandler("mode", cmd_mode))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("perf", cmd_perf))
@@ -7062,6 +7270,7 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("replay", cmd_replay))
     tp_app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     tp_app.add_handler(CommandHandler("version", cmd_version))
+    tp_app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))
     tp_app.add_handler(CommandHandler("mode", cmd_mode))
     tp_app.add_handler(CommandHandler("reset", cmd_reset))
     tp_app.add_handler(CommandHandler("perf", cmd_perf))

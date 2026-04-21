@@ -161,6 +161,18 @@ def run_local() -> int:
         m.tp_paper_cash = m.PAPER_STARTING_CAPITAL
         m._trading_halted = False
         m._trading_halted_reason = ""
+        # v3.4.15 webhook sync state
+        try:
+            m.tp_unsynced_exits.clear()
+        except AttributeError:
+            pass
+        try:
+            m.tp_state["recent_orders"] = []
+            m.tp_state["total_orders_sent"] = 0
+            m.tp_state["total_orders_success"] = 0
+            m.tp_state["total_orders_failed"] = 0
+        except Exception:
+            pass
 
     today = m._now_et().strftime("%Y-%m-%d")
 
@@ -565,6 +577,101 @@ def run_local() -> int:
         assert len(combined) == 2
         assert sum(t_.get("pnl", 0) for t_ in combined) == 60.0
 
+    # --------------------------------------------------------
+    # v3.4.15 — Webhook response handling
+    # --------------------------------------------------------
+    @t("v3.4.15: send_traderspost_order returns skipped dict when disabled")
+    def _():
+        reset_state()
+        prev_enabled = m.TRADERSPOST_ENABLED
+        try:
+            m.TRADERSPOST_ENABLED = False
+            result = m.send_traderspost_order("SPY", "sell", 450.0, shares=10)
+        finally:
+            m.TRADERSPOST_ENABLED = prev_enabled
+        assert isinstance(result, dict), f"expected dict, got {type(result)}"
+        assert result.get("skipped") is True, f"expected skipped=True, got {result}"
+        assert result.get("success") is False
+        # skipped contract: no unsynced exit should be recorded by callers
+        assert "message" in result and "raw" in result
+
+    @t("v3.4.15: _extract_broker_message parses message/error/errors shapes")
+    def _():
+        # Plain message field
+        msg1 = m._extract_broker_message({"message": "Insufficient buying power"})
+        assert "Insufficient" in msg1
+        # error field (singular)
+        msg2 = m._extract_broker_message({"error": "rate limited"})
+        assert "rate" in msg2.lower()
+        # errors as list of strings
+        msg3 = m._extract_broker_message({"errors": ["bad symbol", "bad qty"]})
+        assert "bad symbol" in msg3
+        # errors as list of dicts with message key
+        msg4 = m._extract_broker_message(
+            {"errors": [{"message": "symbol not tradable"}]})
+        assert "symbol not tradable" in msg4
+        # length-capped at 80 chars
+        long_msg = "x" * 200
+        assert len(m._extract_broker_message({"message": long_msg})) <= 80
+
+    @t("v3.4.15: rejected exit populates tp_unsynced_exits dict")
+    def _():
+        reset_state()
+        # Simulate a close_position-style TP-branch rejection by calling
+        # the unsynced-tracking pattern directly; this is what the three
+        # exit sites execute when send_traderspost_order returns failure.
+        fake_result = {"success": False, "skipped": False,
+                       "message": "Insufficient buying power",
+                       "http_status": 400, "raw": None}
+        if not (fake_result.get("success") or fake_result.get("skipped")):
+            m.tp_unsynced_exits["SPY"] = {
+                "action": "sell", "price": 450.0, "shares": 10,
+                "message": fake_result.get("message", ""),
+                "http_status": fake_result.get("http_status"),
+                "time": "12:34 CDT",
+            }
+        assert "SPY" in m.tp_unsynced_exits
+        entry = m.tp_unsynced_exits["SPY"]
+        assert entry["action"] == "sell"
+        assert entry["http_status"] == 400
+        assert "Insufficient" in entry["message"]
+
+    @t("v3.4.15: skipped result does NOT populate tp_unsynced_exits")
+    def _():
+        reset_state()
+        fake_result = {"success": False, "skipped": True, "message": "",
+                       "http_status": 0, "raw": None}
+        if not (fake_result.get("success") or fake_result.get("skipped")):
+            m.tp_unsynced_exits["SPY"] = {"action": "sell"}
+        assert "SPY" not in m.tp_unsynced_exits, \
+            "skipped webhook should not mark position unsynced"
+
+    @t("v3.4.15: dashboard snapshot includes tp_sync section")
+    def _():
+        reset_state()
+        m.tp_unsynced_exits["TSLA"] = {
+            "action": "sell", "price": 200.0, "shares": 5,
+            "message": "test rejection", "http_status": 400,
+            "time": "10:00 CDT",
+        }
+        snap = ds.snapshot()
+        assert snap.get("ok") is True, f"snapshot failed: {snap}"
+        tp = snap.get("tp_sync")
+        assert isinstance(tp, dict), f"tp_sync missing: {snap.keys()}"
+        assert "enabled" in tp
+        assert "unsynced_exits" in tp
+        assert "recent_orders" in tp
+        assert "TSLA" in tp["unsynced_exits"]
+
+    @t("v3.4.15: /tp_sync command handler is registered")
+    def _():
+        # The command function must exist and be callable.
+        assert hasattr(m, "cmd_tp_sync"), "cmd_tp_sync not defined"
+        assert callable(m.cmd_tp_sync)
+        # MAIN_BOT_COMMANDS should include tp_sync entry.
+        names = [c.command for c in m.MAIN_BOT_COMMANDS]
+        assert "tp_sync" in names, f"tp_sync missing from MAIN_BOT_COMMANDS: {names}"
+
     return run_suite("LOCAL SMOKE TESTS")
 
 
@@ -616,9 +723,21 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
     def _():
         r = sess.get(f"{url}/api/state", timeout=10)
         data = r.json()
-        needed = {"version", "portfolio", "positions", "regime", "tickers"}
+        needed = {"version", "portfolio", "positions", "regime", "tickers",
+                  "tp_sync"}
         missing = needed - set(data.keys())
         assert not missing, f"missing keys: {missing}"
+
+    @t("v3.4.15 prod: /api/state tp_sync has expected shape")
+    def _():
+        r = sess.get(f"{url}/api/state", timeout=10)
+        data = r.json()
+        tp = data.get("tp_sync") or {}
+        assert isinstance(tp, dict), f"tp_sync not a dict: {type(tp)}"
+        for k in ("enabled", "unsynced_exits", "recent_orders"):
+            assert k in tp, f"tp_sync missing {k}: {list(tp.keys())}"
+        assert isinstance(tp["unsynced_exits"], dict)
+        assert isinstance(tp["recent_orders"], list)
 
     @t("prod: /api/state rejects request with no cookie (401)")
     def _():

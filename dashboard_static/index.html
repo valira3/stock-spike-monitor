@@ -313,6 +313,7 @@
   <main class="main">
 
     <div class="banner hide" id="banner"></div>
+    <div class="banner banner-ok hide" id="tp-banner" style="margin-top:8px"></div>
 
     <section class="kpi-row">
       <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" id="k-equity">—</span><span class="kpi-sub" id="k-equity-sub">—</span></div>
@@ -661,6 +662,26 @@
     $("sb-ver").textContent = `v${s.version || "?"} · live`;
   }
 
+  function renderTpSync(s) {
+    const b = $("tp-banner");
+    if (!b) return;
+    const tp = s.tp_sync || {};
+    const unsynced = tp.unsynced_exits || {};
+    const keys = Object.keys(unsynced);
+    if (!keys.length) {
+      b.classList.add("hide");
+      b.textContent = "";
+      return;
+    }
+    // Build a compact summary — tickers + first reason
+    const first = unsynced[keys[0]] || {};
+    const reason = (first.message || "broker rejected").slice(0, 60);
+    const count = keys.length;
+    const tickers = keys.slice(0, 4).join(", ") + (count > 4 ? `\u2026 (+${count - 4})` : "");
+    b.textContent = `\u26a0 TP broker unsynced: ${count} exit${count === 1 ? "" : "s"} (${tickers}) \u2014 ${reason}. Use /tp_sync to review.`;
+    b.classList.remove("hide");
+  }
+
   function renderAll(s) {
     if (!s || !s.ok) return;
     renderHeader(s);
@@ -670,6 +691,7 @@
     renderTrades(s);
     renderObserver(s);
     renderGates(s);
+    renderTpSync(s);
   }
 
   // ─────── log handling ───────

@@ -4,6 +4,79 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.15 — Webhook response handling (2026-04-20)
+
+v3.4.14 flipped the switch but left the return trip unverified: when
+TradersPost rejected an order we logged the response and carried on.
+This release closes that loop — broker responses are parsed, failures
+are surfaced, entries are broker-first, and any exit rejection is
+tracked in a dedicated dict so nothing silently drifts out of sync.
+
+**Changes**
+
+- `send_traderspost_order()` now returns a structured dict:
+  `{success, skipped, message, http_status, raw}`. Callers branch on
+  `success or skipped` (where `skipped=True` means the webhook was
+  intentionally not called and should not block paper trading).
+- New helper `_extract_broker_message()` parses TradersPost's possible
+  response shapes: top-level `message`, `error`, or `errors[]` (list
+  of strings or list of dicts). Result is length-capped at 80 chars.
+- TP Telegram alerts now include the broker reason and HTTP status
+  on failure: `✗ TP webhook rejected\nBUY SPY 10 @ $450.00\n`
+  `Limit: $450.02\nReason: Insufficient buying power\nHTTP: 400`.
+- `tp_state["recent_orders"]` entries now carry `message` +
+  `http_status` fields alongside `success`.
+
+**Ordering changes**
+
+- **Entries are webhook-first.** `execute_entry` and
+  `execute_short_entry` fire the webhook BEFORE mutating
+  `tp_positions` / `tp_short_positions`. If TradersPost rejects, the
+  TP mirror block is skipped entirely — paper stays simulated, TP
+  stays empty, nothing to unwind. `skipped=True` (broker off) counts
+  as OK so entries still work when `TRADERSPOST_ENABLED=false`.
+- `tp_positions[ticker]["broker_synced"] = True` is set on successful
+  entries so the dashboard and `/tp_sync` can distinguish "definitely
+  open on broker" from "orphaned local entry".
+- **Exits keep state-first ordering** (we never want to lose a local
+  close). Rejections are captured in a new module-level
+  `tp_unsynced_exits` dict keyed by ticker, carrying `{action, price,
+  shares, message, http_status, time}`. Applies to all three exit
+  TP-branches: `close_position`, `close_tp_position`, and
+  `close_short_position`'s TP cover.
+
+**Observability**
+
+- `/api/state` now exposes a `tp_sync` section with `enabled`,
+  `unsynced_exits`, `recent_orders` (last 5), and lifetime
+  sent/success/fail counts.
+- Dashboard shows an amber banner under the connection banner when
+  any exit is unsynced, listing the first few tickers and the broker
+  reason.
+- New `/tp_sync` Telegram command (registered on both main + TP bot)
+  lists open TP positions with a broker-synced checkmark, the last 5
+  webhook outcomes with reason on failures, and any unsynced exits
+  flagged for manual reconciliation.
+
+**Smoke tests**
+
+- 6 new local tests cover: skipped-dict contract, broker-message
+  parsing across all response shapes, unsynced dict population on
+  rejection, the skipped-doesn't-track invariant, `tp_sync` snapshot
+  shape, and `/tp_sync` handler registration.
+- 1 new prod test: `/api/state` exposes `tp_sync` with the expected
+  nested shape.
+
+**Design discipline**
+
+- "Adaptive logic only makes things MORE conservative" — the
+  webhook-first entry path aborts entries rather than creating
+  phantom state; the exit path refuses to discard a local close.
+- Fail-safe: if any webhook response field is missing or malformed,
+  we treat it as failure (never trust a non-JSON 200).
+
+---
+
 ## v3.4.14 — TradersPost wiring fix (2026-04-20)
 
 Webhook bot is wired to TradersPost for real this time. Previously
