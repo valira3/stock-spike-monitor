@@ -4,6 +4,33 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## Tooling — post-deploy smoke workflow (2026-04-20)
+
+Not a bot release — CI-only change, no version bump.
+
+Adds `.github/workflows/post-deploy-smoke.yml`. On every push to
+`main` (and on manual dispatch), the workflow:
+
+1. Reads the committed `BOT_VERSION` from `stock_spike_monitor.py`.
+2. Polls `https://.../api/state` every 10s for up to 5 minutes until
+   `version` matches the committed value — i.e. Railway is live on
+   the new build.
+3. Runs `python smoke_test.py` (31 local tests).
+4. Runs `python smoke_test.py --prod --expected-version <v>` (9 prod
+   tests against the live dashboard), with a 65s cushion after the
+   wait step so the rate-limit bucket has cleared.
+5. If anything fails, posts a Telegram alert to the TP chat with the
+   failing test names and a link to the Action run, and uploads logs
+   as an artifact.
+
+Required GitHub secrets: `DASHBOARD_PASSWORD`, `TELEGRAM_TP_TOKEN`,
+`TELEGRAM_TP_CHAT_ID`.
+
+The workflow uses `concurrency: cancel-in-progress` so rapid-fire
+merges don't stack — only the newest commit's rollout is verified.
+
+---
+
 ## v3.4.11 — smoke test harness (2026-04-20)
 
 Adds a standalone `smoke_test.py` that covers the full bot in two modes:
