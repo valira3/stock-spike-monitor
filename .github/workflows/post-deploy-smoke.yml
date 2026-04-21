@@ -1,0 +1,181 @@
+name: Post-deploy smoke test
+
+# Runs after every push to main. Waits for Railway to roll out the new
+# BOT_VERSION, then runs the full smoke_test.py suite (31 local + 9 prod)
+# against the live dashboard. On failure, posts an alert to the TP
+# Telegram chat so Val sees it on mobile.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  # Don't stack runs if two PRs merge close together. Only the newest
+  # commit's version matters; cancel older runs.
+  group: post-deploy-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Smoke test (31 local + 9 prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DASHBOARD_URL: https://stock-spike-monitor-production.up.railway.app
+      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+      TELEGRAM_TP_TOKEN: ${{ secrets.TELEGRAM_TP_TOKEN }}
+      TELEGRAM_TP_CHAT_ID: ${{ secrets.TELEGRAM_TP_CHAT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        # Full requirements.txt is needed because local smoke tests import
+        # the bot module, which imports pandas/numpy/matplotlib/yfinance.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Read committed BOT_VERSION
+        id: version
+        run: |
+          V=$(python -c "import re,sys; t=open('stock_spike_monitor.py').read(); m=re.search(r'^BOT_VERSION\s*=\s*\"([^\"]+)\"', t, re.M); print(m.group(1))")
+          echo "Committed BOT_VERSION: $V"
+          echo "bot_version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Railway rollout (poll /api/state until version matches)
+        id: wait
+        env:
+          EXPECTED: ${{ steps.version.outputs.bot_version }}
+        run: |
+          set -u
+          # Log in once, then poll /api/state for the expected version.
+          # Give Railway up to ~5 minutes (30 polls × 10s).
+          python - <<'PY'
+          import os, sys, time, json, urllib.request, urllib.parse, http.cookiejar
+
+          url = os.environ["DASHBOARD_URL"].rstrip("/")
+          pw  = os.environ["DASHBOARD_PASSWORD"]
+          expected = os.environ["EXPECTED"]
+
+          jar = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(
+              urllib.request.HTTPCookieProcessor(jar),
+              urllib.request.HTTPRedirectHandler(),
+          )
+
+          def login():
+              data = urllib.parse.urlencode({"password": pw}).encode()
+              req = urllib.request.Request(f"{url}/login", data=data, method="POST")
+              try:
+                  opener.open(req, timeout=10).read()
+              except urllib.error.HTTPError as e:
+                  # 302 is what we want; urllib usually follows it.
+                  if e.code not in (302, 200):
+                      print(f"login HTTPError: {e.code}", flush=True)
+
+          def fetch_version():
+              try:
+                  req = urllib.request.Request(f"{url}/api/state")
+                  with opener.open(req, timeout=10) as r:
+                      d = json.loads(r.read())
+                      return d.get("version"), d.get("ok")
+              except Exception as e:
+                  return None, f"err:{e}"
+
+          login()
+          deadline = time.time() + 300  # 5 minutes
+          last = None
+          i = 0
+          while time.time() < deadline:
+              i += 1
+              v, ok = fetch_version()
+              last = (v, ok)
+              print(f"poll {i}: version={v} ok={ok} (want {expected})", flush=True)
+              if v == expected:
+                  print(f"::notice::Railway is live on {v}")
+                  sys.exit(0)
+              # Cookie may have expired across a restart (v3.4.9 secret
+              # rotates on boot). Re-login opportunistically.
+              if ok is False or ok is None:
+                  login()
+              time.sleep(10)
+
+          print(f"::error::Railway never reported version={expected}. Last seen: {last}")
+          sys.exit(1)
+          PY
+
+      - name: Run LOCAL smoke tests (31)
+        id: local
+        run: |
+          python smoke_test.py | tee local_smoke.log
+          # smoke_test.py exits non-zero on any failure, which fails this step.
+
+      - name: Run PROD smoke tests (9)
+        id: prod
+        env:
+          EXPECTED: ${{ steps.version.outputs.bot_version }}
+        run: |
+          # Small cushion so the rate-limit bucket from the wait-step's
+          # login attempt has cleared (5/60s window).
+          sleep 65
+          python smoke_test.py --prod \
+            --password "$DASHBOARD_PASSWORD" \
+            --expected-version "$EXPECTED" \
+            | tee prod_smoke.log
+
+      - name: Telegram alert on failure
+        if: failure()
+        env:
+          VERSION: ${{ steps.version.outputs.bot_version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          # Extract failing test names from the tee'd logs (if present).
+          FAILS=""
+          for f in local_smoke.log prod_smoke.log; do
+            if [ -f "$f" ]; then
+              # Lines that start with "  ✗" are failures in smoke_test.py.
+              grep -E "^\s+✗\s+" "$f" | sed -E 's/^\s+✗\s+/• /; s/\s+$//' >> fails.txt || true
+            fi
+          done
+          if [ -s fails.txt ]; then
+            FAILS=$(head -c 1500 fails.txt)
+          else
+            FAILS="(step failed before tests ran — check the Action log)"
+          fi
+
+          MSG="🚨 Post-deploy smoke test FAILED
+          Version: ${VERSION}
+          Commit: ${SHA:0:7}
+          ${FAILS}
+
+          ${RUN_URL}"
+
+          # Send via TP bot to TP chat. plain text, no parse_mode so
+          # special chars don't blow up the send.
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_TP_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_TP_CHAT_ID}" \
+            --data-urlencode "text=${MSG}" \
+            -o /dev/null -w "telegram: HTTP %{http_code}\n"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: |
+            local_smoke.log
+            prod_smoke.log
+            fails.txt
+          if-no-files-found: ignore
