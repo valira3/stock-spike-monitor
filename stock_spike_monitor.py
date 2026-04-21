@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.21"
+BOT_VERSION = "3.4.22"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,29 +55,25 @@ BOT_VERSION = "3.4.21"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.21 \u2014 Stops, diagnostics,\n"
-    "and a cleaner deploy card.\n"
+    "v3.4.22 \u2014 Hotfix: short orders\n"
+    "use TradersPost actions.\n"
     "\n"
-    "Stop cap: entries far above OR\n"
-    "now clamp stop to max 0.75%\n"
-    "from entry (tighter of the two,\n"
-    "never looser than baseline).\n"
+    "Short entries now send\n"
+    "action=sell (was sell_short).\n"
+    "Short covers now send\n"
+    "action=buy (was buy_to_cover).\n"
     "\n"
-    "Near-miss log: breakouts that\n"
-    "cleared price but missed volume\n"
-    "are recorded. See /near_misses.\n"
+    "Matches the long-side flow:\n"
+    "TradersPost infers direction\n"
+    "from the strategy + open state.\n"
     "\n"
-    "Dashboard: per-ticker entry\n"
-    "gate chips + next-scan countdown.\n"
-    "\n"
-    "Deploy card now shows just this\n"
-    "release. /version keeps history."
+    "No strategy / gate changes."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.21 \u2014 Stop cap on late\n"
-    "entries (\u22640.75% from entry).\n"
-    "Deploy card trimmed to current.\n"
-    "/version keeps full history."
+    "v3.4.22 \u2014 Hotfix: short webhook\n"
+    "uses action=sell / action=buy\n"
+    "(was sell_short / buy_to_cover).\n"
+    "Fixes 400 INVALID ACTION short."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -1976,7 +1972,14 @@ def _extract_broker_message(resp_data):
 def send_traderspost_order(ticker, action, price, shares=SHARES):
     """Send a limit order to TradersPost via webhook (TP portfolio only).
 
-    action: 'buy', 'sell', 'sell_short', or 'buy_to_cover'
+    action: 'buy' or 'sell'.
+      - Long entry  → 'buy'   (opens long)
+      - Long exit   → 'sell'  (closes long)
+      - Short entry → 'sell'  (opens short; TP infers from strategy+state)
+      - Short cover → 'buy'   (closes short)
+    TradersPost only accepts: buy, sell, exit, reverse, breakeven,
+    cancel, add. 'sell_short' and 'buy_to_cover' are INVALID and will
+    return HTTP 400 INVALID ACTION. (v3.4.22 hotfix.)
     Returns a dict with keys:
       success (bool), skipped (bool), message (str), raw (dict|None)
     so callers can branch on outcome. `skipped=True` means the webhook was
@@ -2005,8 +2008,11 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
         )
         return {**skip_result, "message": "webhook URL not configured"}
 
-    # Limit price: buy/buy_to_cover slightly above, sell/sell_short slightly below
-    if action in ("buy", "buy_to_cover"):
+    # Limit price: buys slightly above, sells slightly below. Caller is
+    # responsible for passing the TradersPost-legal action; internal
+    # short labels (sell_short / buy_to_cover) must be translated at
+    # the call site (v3.4.22).
+    if action == "buy":
         limit_price = round(price + 0.02, 2)
     else:
         limit_price = round(price - 0.01, 2)
@@ -2964,8 +2970,11 @@ def execute_short_entry(ticker, price):
     daily_short_entry_count[ticker] = daily_short_entry_count.get(ticker, 0) + 1
     save_paper_state()
 
-    # TP short — fire webhook FIRST, mirror only if broker accepts
-    tp_short_result = send_traderspost_order(ticker, "sell_short", entry_price, shares)
+    # TP short — fire webhook FIRST, mirror only if broker accepts.
+    # v3.4.22: TradersPost expects action=sell here; it infers the
+    # short direction from the strategy config + open position state.
+    # (The legacy non-standard action string would return HTTP 400.)
+    tp_short_result = send_traderspost_order(ticker, "sell", entry_price, shares)
     tp_short_ok = bool(
         tp_short_result and (tp_short_result.get("success") or tp_short_result.get("skipped"))
     )
@@ -3251,8 +3260,11 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
             tp_short_trade_history.pop(0)
         save_tp_state()
 
-        # TradersPost webhook — TP-only short cover (state already mutated; track rejection)
-        _tp_result = send_traderspost_order(ticker, "buy_to_cover", cover_price, shares)
+        # TradersPost webhook — TP-only short cover (state already mutated; track rejection).
+        # v3.4.22: send action=buy (TradersPost's close-short action); the
+        # internal tp_unsynced_exits label stays "buy_to_cover" so /tp_sync
+        # reads naturally for humans.
+        _tp_result = send_traderspost_order(ticker, "buy", cover_price, shares)
         if not (_tp_result.get("success") or _tp_result.get("skipped")):
             tp_unsynced_exits[ticker] = {
                 "action": "buy_to_cover",

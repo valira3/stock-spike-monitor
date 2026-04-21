@@ -4,6 +4,75 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.22 — Hotfix: TradersPost short webhook actions (2026-04-21)
+
+Short entries and short covers sent to TradersPost were being rejected
+with HTTP 400 INVALID ACTION. First caught live this morning (4/21)
+when the AAPL short attempt at 09:59 CDT came back rejected; paper
+side took the trade, TP side never touched the account.
+
+### Root cause
+
+TradersPost's webhook API only accepts these `action` values:
+
+- `buy`, `sell`, `exit`, `reverse`, `breakeven`, `cancel`, `add`
+
+We were sending:
+
+- `sell_short` on short entry (`execute_short_entry`)
+- `buy_to_cover` on short cover (`execute_short_exit` path)
+
+Both are flagged invalid by TradersPost. The long side already used
+the legal `buy` / `sell` values, which is why long trades (MSFT this
+morning) completed normally while shorts failed silently.
+
+### Fix
+
+TradersPost is single-URL bidirectional for Val's setup — the strategy
+config + open-position state is what determines direction. So the
+correct wire values are:
+
+| intent       | wire action |
+|--------------|-------------|
+| Long entry   | `buy`       |
+| Long exit    | `sell`      |
+| Short entry  | `sell`      |
+| Short cover  | `buy`       |
+
+Changes:
+
+- `execute_short_entry` — `sell_short` → `sell`.
+- Short cover path in `execute_cover` — `buy_to_cover` → `buy`.
+- `send_traderspost_order` — docstring rewritten to describe the
+  TradersPost allowlist; the `if action in ("buy", "buy_to_cover")`
+  limit-price branch tightened to `if action == "buy"` since
+  `buy_to_cover` no longer exists as a wire value.
+- The internal `tp_unsynced_exits` tracking dict still uses the
+  human-readable `"buy_to_cover"` label so `/tp_sync` reads naturally
+  — that label is never sent over the wire.
+
+### No strategy or gate changes
+
+Same adaptive logic, same gates, same stops, same near-miss log.
+Purely a wire-protocol fix.
+
+### Tests
+
+Five new v3.4.22 regressions:
+
+1. `short entry sends TradersPost-legal action=sell`
+2. `short cover sends TradersPost-legal action=buy`
+3. `no webhook sends action='sell_short'`
+4. `every send_traderspost_order action is TP-legal` (regex-scans every
+   call site and asserts the literal action is in the allowlist)
+5. `send_traderspost_order limit-price branch is 'buy'-only` (tightens
+   the limit-direction guard so a future `exit` or `reverse` can't
+   silently end up on the wrong side)
+
+65 local tests pass (was 60).
+
+---
+
 ## v3.4.21 — Stop cap, near-miss log, dashboard gates, deploy card split (2026-04-21)
 
 This release bundles four themed changes that came out of the same
