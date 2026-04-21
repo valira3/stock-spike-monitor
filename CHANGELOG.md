@@ -4,6 +4,18 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.13 — proximity pct left-align (2026-04-20)
+
+Follow-up to v3.4.12. Right-aligning the pct column pushed the
+values up against the card edge and left an inconsistent gap
+between the progress bar and the text. Switched `.prox-pct` to
+`text-align: left` so each `0.02% · OR-low` starts in the same
+spot immediately after the bar.
+
+CSS-only. No trade-logic or backend changes.
+
+---
+
 ## v3.4.12 — proximity row fix (2026-04-20)
 
 Purely cosmetic. The dashboard proximity card's right-most column
