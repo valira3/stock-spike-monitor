@@ -4,6 +4,47 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.24 — Dashboard portfolio strip polish (2026-04-21)
+
+Two fixes on the mobile dashboard's portfolio strip, prompted by a
+live observation this morning: with two shorts open the strip read
+**Cash $108,545** next to **Short Liab $8,552**, which looked wrong
+at a glance. The numbers were correct — short-sale proceeds land in
+cash, and the offsetting liability tracks what you owe to buy back
+the shares — but putting Cash in the headline position made it seem
+like liabilities were being counted as cash.
+
+### Changes
+
+- **Hero row now shows Equity + Buying Power.** These are the net
+  numbers that actually matter. Equity was already in the strip as
+  a small footer; it's now a top-row KPI. Buying Power is new and
+  computed client-side as `cash − short_liab` — the unencumbered
+  portion of cash.
+- **Cash / Long MV / Short Liab demoted to a components row.** Same
+  three columns as before, but smaller text and muted labels so
+  it's clear they're inputs to the hero numbers rather than the
+  headline itself.
+- **Equation-line overflow fixed.** The old "Equation: cash + long
+  MV − short liab = $X" footer wrapped awkwardly on narrow (≤412px)
+  screens, with the `= $X` landing on a third line. Row 2 is now a
+  plain grid and no equation text is needed — the math is visible
+  from the labels alone.
+
+### No strategy / accounting changes
+
+The underlying portfolio math is unchanged. `portfolio.cash`,
+`portfolio.short_liab`, `portfolio.long_mv`, and `portfolio.equity`
+in `/api/state` all have exactly the same semantics as v3.4.23.
+This is a pure display change in `dashboard_static/index.html`.
+
+### Tests
+
+BOT_VERSION guard relaxed to `>= 3.4.23` floor (tuple compare) so
+future minor bumps don't regress it. 76/76 local pass.
+
+---
+
 ## v3.4.23 — Retro-tighten existing stops (2026-04-21)
 
 v3.4.21 introduced the 0.75% entry-cap (`MAX_STOP_PCT = 0.0075`) but

@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.23"
+BOT_VERSION = "3.4.24"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,27 +55,28 @@ BOT_VERSION = "3.4.23"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.23 \u2014 Retro-tighten stops.\n"
+    "v3.4.24 \u2014 Dashboard polish.\n"
     "\n"
-    "The 0.75% entry cap now also\n"
-    "applies to positions that were\n"
-    "open before the cap shipped.\n"
+    "Portfolio strip now leads with\n"
+    "Equity and Buying Power \u2014 the\n"
+    "net numbers that actually\n"
+    "matter. Cash, Long MV, and\n"
+    "Short Liab demoted to a\n"
+    "components row below.\n"
     "\n"
-    "On every manage cycle: if a\n"
-    "stop sits wider than 0.75%\n"
-    "from entry and the trail hasn't\n"
-    "armed yet, it gets tightened.\n"
-    "If already breached: exit now\n"
-    "with reason RETRO_CAP.\n"
+    "Buying Power = cash \u2212 short\n"
+    "liab (the spendable slice of\n"
+    "cash, since short-sale\n"
+    "proceeds are owed back).\n"
     "\n"
-    "New /retighten command runs it\n"
-    "on demand."
+    "Fixes the equation-line\n"
+    "overflow on narrow screens."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.23 \u2014 0.75% entry cap\n"
-    "now also retightens existing\n"
-    "pre-cap positions. Breached\n"
-    "stops exit with RETRO_CAP."
+    "v3.4.24 \u2014 Dashboard portfolio\n"
+    "strip: Equity + Buying Power\n"
+    "lead; Cash demoted. No\n"
+    "strategy changes."
 )
 
 # Main-bot release note: detailed prose describing what shipped.

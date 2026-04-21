@@ -1107,10 +1107,14 @@ def run_local() -> int:
     # wider than the cap, and force-exits with reason=RETRO_CAP if the
     # newly-capped stop has already been breached.
 
-    @t("v3.4.23: BOT_VERSION is 3.4.23")
+    @t("v3.4.23: BOT_VERSION is >= 3.4.23")
     def _():
         import stock_spike_monitor as m
-        assert m.BOT_VERSION == "3.4.23", m.BOT_VERSION
+        # Tuple comparison on split int parts so minor bumps
+        # don't regress this test. Guards against ever going
+        # below the v3.4.23 floor where retro-cap shipped.
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 23), m.BOT_VERSION
 
     @t("v3.4.23: retighten helpers exist and return 3-tuples")
     def _():
