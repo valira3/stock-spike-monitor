@@ -4,6 +4,56 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.16 — TP bot isolation cleanup (2026-04-20)
+
+The dual-bot setup (main + TP) shared every command, every release note,
+and every startup card. That worked while TradersPost was a small feature
+but now leaks broker details into the paper-trading bot. v3.4.16 isolates
+all TradersPost surface area onto the TP bot so the main bot stays a
+clean paper portfolio + scanner view.
+
+**Changes**
+
+- **`/tp_sync` is TP-bot-only.** Removed from `MAIN_BOT_COMMANDS` (so it
+  no longer appears in the main bot's `/` menu). `TP_BOT_COMMANDS` is now
+  constructed as `MAIN_BOT_COMMANDS + [tp_sync]` instead of a copy.
+- **Graceful redirect on main.** A misdirected `/tp_sync` to the main bot
+  gets a friendly "This command lives on the TP bot" reply via the new
+  `cmd_tp_sync_on_main` handler, instead of silence.
+- **Split release notes.** `RELEASE_NOTE` is now two constants:
+  `MAIN_RELEASE_NOTE` (scanner/portfolio only, never mentions TP) and
+  `TP_RELEASE_NOTE` (full TP context incl. v3.4.15 webhook history).
+  `/version` and the Version menu callback both branch on
+  `is_tp_update(update)` to pick the right one.
+- **`/help` is bot-aware.** TP bot's `/help` gets a "Broker" section
+  listing `/tp_sync`. Main bot's `/help` is unchanged (no TP mention).
+- **Startup card split.** `send_startup_message()` now builds two cards:
+  main gets paper cash/positions only + `MAIN_RELEASE_NOTE`; TP gets TP
+  cash/positions + `TP_RELEASE_NOTE`. Previously both bots received the
+  same combined card.
+
+**Tests added**
+
+- `tp_sync lives on TP bot only` — asserts absence from main commands,
+  presence in TP commands.
+- `release notes split` — forbids `tp_sync`/`webhook`/`broker`/`unsynced`
+  in `MAIN_RELEASE_NOTE`; requires `/tp_sync` in `TP_RELEASE_NOTE`.
+- `main-bot /tp_sync redirect handler exists` — asserts
+  `cmd_tp_sync_on_main` is defined and distinct from `cmd_tp_sync`.
+- `release notes within 34-char Telegram width` — regression guard on
+  both notes together.
+
+**What did NOT change**
+
+- Data-layer routing via `is_tp_update(update)` was already correct
+  across `cmd_dashboard`, `cmd_status`, `cmd_dayreport`, `cmd_eod`,
+  `cmd_log`, `cmd_replay`, and all `send_telegram` / `send_tp_telegram`
+  callsites. Those required no edits.
+- `RELEASE_NOTE` is kept as a backwards-compat alias of
+  `MAIN_RELEASE_NOTE` in case any external tooling imports it.
+
+---
+
 ## v3.4.15 — Webhook response handling (2026-04-20)
 
 v3.4.14 flipped the switch but left the return trip unverified: when

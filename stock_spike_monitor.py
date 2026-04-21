@@ -37,10 +37,25 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.15"
-RELEASE_NOTE = (
+BOT_VERSION = "3.4.16"
+# Main-bot release note: scanner/strategy/portfolio only.
+# Must never mention TradersPost or webhook internals.
+MAIN_RELEASE_NOTE = (
+    "v3.4.16 \u2014 Bot split cleanup.\n"
+    "Main bot now focuses on the\n"
+    "paper portfolio + scanner.\n"
+    "TradersPost commands and\n"
+    "status live on the TP bot."
+)
+# TP-bot release note: full TP context (v3.4.15 webhook return trip + v3.4.16 split).
+TP_RELEASE_NOTE = (
+    "v3.4.16 \u2014 TP bot isolation.\n"
+    "/tp_sync and TP release notes\n"
+    "now live on the TP bot only.\n"
+    "Main bot stays paper-only.\n"
+    "\n"
     "v3.4.15 \u2014 Webhook return trip.\n"
-    "Broker responses now parsed;\n"
+    "Broker responses parsed;\n"
     "rejection reason shown in TP\n"
     "alert + HTTP status code.\n"
     "Entries: webhook fires first.\n"
@@ -52,10 +67,12 @@ RELEASE_NOTE = (
     "reconciliation.\n"
     "Dashboard shows amber banner\n"
     "when any exit is unsynced.\n"
-    "New /tp_sync command lists\n"
-    "open TP positions + last 5\n"
-    "webhook outcomes + mismatches."
+    "/tp_sync lists open TP\n"
+    "positions + last 5 webhook\n"
+    "outcomes + mismatches."
 )
+# Backwards-compat alias — any remaining references default to main.
+RELEASE_NOTE = MAIN_RELEASE_NOTE
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
@@ -3916,9 +3933,17 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Body is wrapped in a Markdown code block so Telegram renders it in
     monospace. This makes space-padded columns actually align and keeps
     each line short enough to avoid wrapping on phone widths.
+
+    TP bot gets an extra 'Broker' section with /tp_sync; main bot does not.
     """
+    is_tp = is_tp_update(update)
     # Keep every line <= 34 chars including the leading 2-space indent so
     # the content fits Telegram's mobile code-block width without wrapping.
+    tp_section = (
+        "Broker\n"
+        "  /tp_sync     TP sync status\n"
+        "\n"
+    ) if is_tp else ""
     body = (
         "\U0001f4d6 Commands\n"
         "```\n"
@@ -3944,6 +3969,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /test        Health check\n"
         "  /menu        Quick tap menu\n"
         "\n"
+        + tp_section +
         "Reference\n"
         "  /strategy    Strategy summary\n"
         "  /algo        Algorithm PDF\n"
@@ -5354,9 +5380,10 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show version info."""
+    """Show version info. Release note varies by bot (main vs TP)."""
+    note = TP_RELEASE_NOTE if is_tp_update(update) else MAIN_RELEASE_NOTE
     await update.message.reply_text(
-        "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, RELEASE_NOTE),
+        "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, note),
         reply_markup=_menu_button())
 
 
@@ -5429,6 +5456,21 @@ async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("```\n%s\n```" % msg,
                                     parse_mode="Markdown",
                                     reply_markup=_menu_button())
+
+
+async def cmd_tp_sync_on_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Graceful redirect if user sends /tp_sync to the main bot.
+
+    Main bot stays paper-portfolio-only (v3.4.16). Any TradersPost
+    diagnostics live on the TP bot. This handler is ONLY registered on
+    the main app; the TP app keeps cmd_tp_sync as normal.
+    """
+    await update.message.reply_text(
+        "This command lives on the TP bot.\n"
+        "Main bot covers the paper\n"
+        "portfolio only.",
+        reply_markup=_menu_button(),
+    )
 
 
 # ============================================================
@@ -6833,8 +6875,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "menu_version":
+        note = TP_RELEASE_NOTE if is_tp_update(update) else MAIN_RELEASE_NOTE
         await query.edit_message_text(
-            "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, RELEASE_NOTE))
+            "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, note))
         return
 
     if query.data == "menu_strategy":
@@ -7106,12 +7149,14 @@ MAIN_BOT_COMMANDS = [
     BotCommand("strategy", "Strategy summary"),
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
-    BotCommand("tp_sync", "TP broker sync status"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
 
-TP_BOT_COMMANDS = list(MAIN_BOT_COMMANDS)
+# TP bot: main bot's commands plus /tp_sync (TradersPost-only).
+TP_BOT_COMMANDS = list(MAIN_BOT_COMMANDS) + [
+    BotCommand("tp_sync", "TP broker sync status"),
+]
 
 
 async def _set_bot_commands(app: Application) -> None:
@@ -7161,7 +7206,11 @@ async def _send_startup_menu(bot, chat_id):
 
 
 def send_startup_message():
-    """Send rich deployment card to BOTH main and TP bots."""
+    """Send tailored deployment card to main and TP bots.
+
+    v3.4.16: main card stays paper-only (no TP cash/positions, no TP
+    release notes). TP card shows TP portfolio + TP release notes.
+    """
     SEP = "\u2500" * 34
     now_et = _now_et()
     weekday = now_et.weekday() < 5
@@ -7178,9 +7227,9 @@ def send_startup_message():
     paper_cash_fmt = f"{paper_cash:,.2f}"
     tp_cash_fmt = f"{tp_paper_cash:,.2f}"
 
-    msg = (
+    main_msg = (
         f"\U0001f680 v{BOT_VERSION} deployed\n"
-        f"{RELEASE_NOTE}\n"
+        f"{MAIN_RELEASE_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
         f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
@@ -7188,15 +7237,28 @@ def send_startup_message():
         f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
         f"{SEP}\n"
         f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
+        f"Market:   {market_status}\n"
+        f"{SEP}\n"
+        f"/help for all commands"
+    )
+    tp_msg = (
+        f"\U0001f680 v{BOT_VERSION} deployed\n"
+        f"{TP_RELEASE_NOTE}\n"
+        f"{SEP}\n"
+        f"Universe: {universe}\n"
+        f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
+        f"Scan:     every {SCAN_INTERVAL}s  |  Trail: Bison +1.0% / min $1.00\n"
+        f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
+        f"{SEP}\n"
         f"\U0001f4cb TP:     ${tp_cash_fmt} cash | {n_tp_pos} positions\n"
         f"Market:   {market_status}\n"
         f"{SEP}\n"
         f"/help for all commands"
     )
-    send_telegram(msg)
+    send_telegram(main_msg)
     # Fix A: TP send failure → logger.debug (never raise/stop)
     try:
-        send_tp_telegram(msg)
+        send_tp_telegram(tp_msg)
     except Exception as e:
         logger.debug("TP startup message failed: %s", e)
 
@@ -7217,7 +7279,10 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
     app.add_handler(CommandHandler("eod", cmd_eod))
     app.add_handler(CommandHandler("version", cmd_version))
-    app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))
+    # Main bot: /tp_sync is TP-only. Register a redirect on main so a
+    # misdirected /tp_sync gets a friendly "try the TP bot" reply instead
+    # of silence.
+    app.add_handler(CommandHandler("tp_sync", cmd_tp_sync_on_main))
     app.add_handler(CommandHandler("mode", cmd_mode))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("perf", cmd_perf))
