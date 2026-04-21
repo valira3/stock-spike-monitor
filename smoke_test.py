@@ -1023,6 +1023,82 @@ def run_local() -> int:
         assert "near_misses" in names, \
             "near_misses must be in MAIN_BOT_COMMANDS"
 
+    # ============================================================
+    # v3.4.22 regressions
+    # ------------------------------------------------------------
+    # TradersPost webhook only accepts actions from a fixed allowlist:
+    # buy, sell, exit, reverse, breakeven, cancel, add.
+    # Before v3.4.22 we sent action=sell_short on short entry and
+    # action=buy_to_cover on short cover, which TP rejects with HTTP
+    # 400 INVALID ACTION. Now we send action=sell / action=buy and TP
+    # infers direction from the strategy config + open position state.
+    # ============================================================
+
+    @t("v3.4.22: short entry sends TradersPost-legal action=sell")
+    def _():
+        import inspect
+        src = inspect.getsource(m.execute_short_entry)
+        assert 'send_traderspost_order(ticker, "sell"' in src, \
+            "execute_short_entry must send action='sell' to TradersPost"
+        # The legacy, rejected action string must be gone.
+        assert "sell_short" not in src, \
+            "execute_short_entry must not reference sell_short anymore"
+
+    @t("v3.4.22: short cover sends TradersPost-legal action=buy")
+    def _():
+        import inspect
+        # execute_cover lives alongside execute_exit — grep module src.
+        src_all = inspect.getsource(m)
+        # The actual webhook call must use action='buy'.
+        assert 'send_traderspost_order(ticker, "buy", cover_price' in src_all, \
+            "short cover path must send action='buy' to TradersPost"
+        # No remaining webhook call should use 'buy_to_cover' as the
+        # TradersPost action argument (internal tp_unsynced_exits label
+        # may still read 'buy_to_cover' — that's fine, it's a human label).
+        assert 'send_traderspost_order(ticker, "buy_to_cover"' not in src_all, \
+            "no webhook may send action='buy_to_cover' anymore"
+
+    @t("v3.4.22: no webhook sends action='sell_short'")
+    def _():
+        import inspect
+        src_all = inspect.getsource(m)
+        assert 'send_traderspost_order(ticker, "sell_short"' not in src_all, \
+            "no webhook may send action='sell_short' anymore"
+
+    @t("v3.4.22: every send_traderspost_order action is TP-legal")
+    def _():
+        # Find every call site of send_traderspost_order in the module
+        # source and extract the string literal in its second arg. That
+        # literal must be one of TradersPost's accepted actions.
+        import inspect, re
+        src_all = inspect.getsource(m)
+        # Match: send_traderspost_order(<something>, "<action>"...
+        # where <something> is the ticker expression (no literal string).
+        pattern = re.compile(
+            r'send_traderspost_order\([^,]+,\s*"([a-z_]+)"'
+        )
+        allowed = {"buy", "sell", "exit", "reverse",
+                   "breakeven", "cancel", "add"}
+        matches = pattern.findall(src_all)
+        assert matches, "expected to find send_traderspost_order call sites"
+        bad = [a for a in matches if a not in allowed]
+        assert not bad, \
+            f"TradersPost-illegal action(s) found at call sites: {sorted(set(bad))}"
+
+    @t("v3.4.22: send_traderspost_order limit-price branch is 'buy'-only")
+    def _():
+        # After v3.4.22 the bump-up branch is only for action=="buy".
+        # The old `if action in ("buy", "buy_to_cover"):` pattern was a
+        # bug magnet — if someone passes a legal action like "exit" in
+        # the future, the old check would silently put the limit on the
+        # wrong side. Keep the guard tight.
+        import inspect
+        src = inspect.getsource(m.send_traderspost_order)
+        assert 'action == "buy"' in src, \
+            "send_traderspost_order must key limit bump on action=='buy'"
+        assert 'action in ("buy", "buy_to_cover")' not in src, \
+            "legacy buy_to_cover branch must be removed"
+
     @t("v3.4.21: dashboard_server exposes per_ticker gates + next_scan_sec + near_misses")
     def _():
         # Import the sibling dashboard_server module and inspect its snapshot
