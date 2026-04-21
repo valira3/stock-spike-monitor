@@ -4,6 +4,41 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.17 — /status refresh fix + deploy card cleanup (2026-04-20)
+
+Two small follow-ups to v3.4.16.
+
+**Fix: `/status` Refresh button error.** Tapping Refresh when nothing
+had changed since the last render raised `Message is not modified:
+specified new message content and reply markup are exactly the same
+as a current content`, and the global error handler surfaced it to
+the user as a command failure. Two changes:
+
+- `positions_callback` now appends a `↻ Refreshed HH:MM:SS CDT`
+  footer to the rebuilt message so each tap produces visibly different
+  content — Telegram no longer rejects the edit.
+- The `edit_message_text` call is wrapped in `try/except` that swallows
+  any remaining race (e.g. rapid double-tap within the same second) and
+  logs at debug level instead of propagating. The user already got the
+  button-tap acknowledgment via `query.answer()`.
+
+**Fix: main-bot deploy card felt empty.** v3.4.16's `MAIN_RELEASE_NOTE`
+was a three-line meta note about the bot split itself — informative but
+not the detailed release prose the main bot had shown before. Rewrote
+both notes to hit the right tone per bot:
+
+- `MAIN_RELEASE_NOTE`: detailed prose describing what shipped this
+  release (matches the pre-v3.4.16 style).
+- `TP_RELEASE_NOTE`: abbreviated — one line per recent TP-relevant
+  version, plus a `/tp_sync` pointer.
+
+Smoke test for `main is TP-free` was relaxed: it now forbids broker
+internals (`webhook`, `broker`, `unsynced`) in the main note but
+permits a brief `/tp_sync` context mention pointing readers at the TP
+bot. The width check (≤34 chars/line) still covers both notes.
+
+---
+
 ## v3.4.16 — TP bot isolation cleanup (2026-04-20)
 
 The dual-bot setup (main + TP) shared every command, every release note,

@@ -37,39 +37,43 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.16"
-# Main-bot release note: scanner/strategy/portfolio only.
-# Must never mention TradersPost or webhook internals.
+BOT_VERSION = "3.4.17"
+# Main-bot release note: detailed prose describing what shipped.
+# Scanner/strategy/portfolio content — never TradersPost internals.
+# v3.4.17 is a bugfix + polish release on top of the v3.4.16 bot split:
+# /status refresh button now behaves, and the deploy card on each bot
+# shows the right tone (detailed here, tight on the TP side).
 MAIN_RELEASE_NOTE = (
-    "v3.4.16 \u2014 Bot split cleanup.\n"
-    "Main bot now focuses on the\n"
-    "paper portfolio + scanner.\n"
-    "TradersPost commands and\n"
-    "status live on the TP bot."
-)
-# TP-bot release note: full TP context (v3.4.15 webhook return trip + v3.4.16 split).
-TP_RELEASE_NOTE = (
-    "v3.4.16 \u2014 TP bot isolation.\n"
-    "/tp_sync and TP release notes\n"
-    "now live on the TP bot only.\n"
-    "Main bot stays paper-only.\n"
+    "v3.4.17 \u2014 Status refresh fix +\n"
+    "deploy-card tone cleanup.\n"
     "\n"
-    "v3.4.15 \u2014 Webhook return trip.\n"
-    "Broker responses parsed;\n"
-    "rejection reason shown in TP\n"
-    "alert + HTTP status code.\n"
-    "Entries: webhook fires first.\n"
-    "If broker rejects, TP mirror\n"
-    "is skipped (paper unaffected).\n"
-    "Exits: local close preserved,\n"
-    "rejections tracked in\n"
-    "tp_unsynced_exits for manual\n"
-    "reconciliation.\n"
-    "Dashboard shows amber banner\n"
-    "when any exit is unsynced.\n"
-    "/tp_sync lists open TP\n"
-    "positions + last 5 webhook\n"
-    "outcomes + mismatches."
+    "Tapping Refresh on /status no\n"
+    "longer errors when the data\n"
+    "has not moved: the callback\n"
+    "now appends a refresh stamp\n"
+    "so the message always differs,\n"
+    "and the harmless 'not modified'\n"
+    "race is swallowed instead of\n"
+    "surfaced as a command failure.\n"
+    "\n"
+    "Deploy card on the main bot\n"
+    "again shows a proper detailed\n"
+    "release note. The TP bot card\n"
+    "stays abbreviated to keep it\n"
+    "tight.\n"
+    "\n"
+    "v3.4.16 carry-over: main bot\n"
+    "is paper-only; /tp_sync and\n"
+    "TradersPost diagnostics live\n"
+    "on the TP bot."
+)
+# TP-bot release note: tight headline + one line per recent TP change.
+TP_RELEASE_NOTE = (
+    "v3.4.17 \u2014 /status refresh fix.\n"
+    "v3.4.16 \u2014 TP bot isolation.\n"
+    "v3.4.15 \u2014 Webhook responses\n"
+    "parsed; rejections surfaced.\n"
+    "/tp_sync for broker status."
 )
 # Backwards-compat alias — any remaining references default to main.
 RELEASE_NOTE = MAIN_RELEASE_NOTE
@@ -4522,16 +4526,32 @@ def _build_positions_text(is_tp=False):
 
 
 async def positions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle refresh button tap on /positions."""
+    """Handle refresh button tap on /status and /positions.
+
+    Appends a 'Refreshed HH:MM:SS CDT' footer so each tap produces a
+    visibly different message \u2014 Telegram rejects edits whose body
+    and markup are identical to the current message with
+    'Message is not modified'. If that race still wins (rapid double
+    tap in the same second), we swallow the error silently; the user
+    already got the button-tap acknowledgment via query.answer().
+    """
     query = update.callback_query
     await query.answer("Refreshing...")
     is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
     loop = asyncio.get_event_loop()
     msg = await loop.run_in_executor(None, _build_positions_text, is_tp)
+    # Ensure content changes between taps even if prices and positions
+    # are momentarily identical (common outside market hours).
+    stamp = _now_cdt().strftime("%H:%M:%S CDT")
+    msg = "%s\n\u21bb Refreshed %s" % (msg, stamp)
     refresh_kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
     ]])
-    await query.edit_message_text(msg, reply_markup=refresh_kb)
+    try:
+        await query.edit_message_text(msg, reply_markup=refresh_kb)
+    except Exception as e:
+        # Harmless race ("Message is not modified") \u2014 don't surface.
+        logger.debug("positions_callback edit failed: %s", e)
 
 
 def _dayreport_time(t, key):
