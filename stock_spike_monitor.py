@@ -37,25 +37,22 @@ TELEGRAM_TP_CHAT_ID     = "5165570192"
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.9"
+BOT_VERSION = "3.4.10"
 RELEASE_NOTE = (
-    "v3.4.9 \u2014 dashboard security.\n"
-    "Web dashboard hardening only \u2014\n"
-    "no bot-logic changes.\n"
-    "\u2022 Login rate-limited per IP\n"
-    "  (5 attempts / 60s, then 429).\n"
-    "\u2022 Session cookie now Secure\n"
-    "  (HTTPS-only on Railway).\n"
-    "\u2022 Session token rebuilt: HMAC\n"
-    "  over a random in-memory secret\n"
-    "  + issue timestamp. Tokens now\n"
-    "  expire after 7 days and a bot\n"
-    "  restart invalidates all\n"
-    "  sessions (cheap global logout).\n"
-    "\u2022 DASHBOARD_PASSWORD must be\n"
-    "  >= 8 chars or dashboard\n"
-    "  refuses to start.\n"
-    "You will need to log in again."
+    "v3.4.10 \u2014 /reset guards.\n"
+    "Harden /reset against accidental\n"
+    "taps and cross-bot confusion.\n"
+    "\u2022 Confirm button now carries\n"
+    "  a 60s timestamp. Tapping an\n"
+    "  old Confirm is rejected.\n"
+    "\u2022 Owner check: chat_id must\n"
+    "  match paper or TP chat.\n"
+    "\u2022 Action/bot match: paper\n"
+    "  reset must confirm from\n"
+    "  paper bot; TP from TP bot.\n"
+    "\u2022 Blocked resets surface an\n"
+    "  explicit error message.\n"
+    "No bot trade-logic changes."
 )
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
@@ -5419,6 +5416,65 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # /reset COMMAND (Fix C)
 # ============================================================
+
+# Window in seconds during which a "Confirm" tap is accepted after the
+# /reset command was issued. Beyond this, the callback is rejected — this
+# prevents scrolling up to an old /reset message tomorrow and tapping
+# Confirm by accident.
+RESET_CONFIRM_WINDOW_SEC = 60
+
+
+def _reset_authorized(query) -> tuple:
+    """Gatekeeper for /reset callbacks.
+
+    Returns (allowed: bool, reason: str). Checks:
+      1. The tap came from the bot owner (chat_id matches the paper or TP
+         chat). Prevents anyone else added to the chat from wiping state.
+      2. The tap was routed to a bot whose portfolio the action matches
+         (paper reset must come from paper bot, TP reset from TP bot;
+         'both' may come from either).
+      3. The confirm button has a timestamp within
+         RESET_CONFIRM_WINDOW_SEC. Prevents stale-message replay.
+    """
+    data = query.data or ""
+    chat_id_str = str(query.message.chat_id)
+    from_bot_is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+
+    # (1) Owner check — chat_id must be one of the two known chats.
+    if chat_id_str != TELEGRAM_TP_CHAT_ID and chat_id_str != str(CHAT_ID or ""):
+        return (False, "unauthorized chat")
+
+    # (2) Bot/action match — only the confirm variants carry an action.
+    if data.startswith("reset_paper_confirm") and from_bot_is_tp:
+        return (False, "paper reset must be confirmed from paper bot")
+    if data.startswith("reset_tp_confirm") and not from_bot_is_tp:
+        return (False, "TP reset must be confirmed from TP bot")
+
+    # (3) Freshness check — confirm callbacks carry ':<unix_ts>' suffix.
+    if "_confirm" in data and ":" in data:
+        try:
+            ts = int(data.rsplit(":", 1)[1])
+        except (ValueError, IndexError):
+            return (False, "malformed timestamp")
+        age = time.time() - ts
+        if age < -5:   # future-dated beyond clock-skew tolerance
+            return (False, "future-dated confirm")
+        if age > RESET_CONFIRM_WINDOW_SEC:
+            return (False, "expired confirm (%.0fs old)" % age)
+
+    return (True, "")
+
+
+def _reset_buttons(action: str) -> InlineKeyboardMarkup:
+    """Build a Confirm/Cancel keyboard where Confirm carries a fresh ts."""
+    ts = int(time.time())
+    confirm_data = "reset_%s_confirm:%d" % (action, ts)
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("\u2705 Confirm", callback_data=confirm_data),
+        InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel"),
+    ]])
+
+
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/reset paper | /reset tp | /reset both — show confirmation before reset."""
     args = context.args
@@ -5426,27 +5482,18 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if target == "paper":
         await update.message.reply_text(
-            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_paper_confirm"),
-                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
-            ]])
+            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            reply_markup=_reset_buttons("paper"),
         )
     elif target == "tp":
         await update.message.reply_text(
-            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_tp_confirm"),
-                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
-            ]])
+            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            reply_markup=_reset_buttons("tp"),
         )
     elif target == "both":
         await update.message.reply_text(
-            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_both_confirm"),
-                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
-            ]])
+            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            reply_markup=_reset_buttons("both"),
         )
     else:
         await update.message.reply_text(
@@ -5495,45 +5542,55 @@ def _do_reset_tp():
 
 
 async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline keyboard taps for /reset confirmation."""
+    """Handle inline keyboard taps for /reset confirmation.
+
+    Confirm callbacks carry a ':<ts>' suffix. _reset_authorized() enforces
+    chat-ownership, bot/action match, and freshness. The 'reset_*'
+    (non-confirm) and 'reset_cancel' variants carry no state change and
+    only need the owner check.
+    """
     query = update.callback_query
     await query.answer()
     capital_fmt = format(PAPER_STARTING_CAPITAL, ",.0f")
-    if query.data == "reset_paper_confirm":
+
+    allowed, reason = _reset_authorized(query)
+    if not allowed:
+        logger.warning(
+            "reset_callback blocked: data=%s chat_id=%s reason=%s",
+            query.data, query.message.chat_id, reason,
+        )
+        await query.edit_message_text("\u274c Reset blocked: %s." % reason)
+        return
+
+    # Confirm variants carry ':<ts>' — strip before dispatching.
+    action = query.data.split(":", 1)[0]
+
+    if action == "reset_paper_confirm":
         _do_reset_paper()
         await query.edit_message_text("\u2705 Paper portfolio reset to $%s." % capital_fmt)
-    elif query.data == "reset_tp_confirm":
+    elif action == "reset_tp_confirm":
         _do_reset_tp()
         await query.edit_message_text("\u2705 TP portfolio reset to $%s." % capital_fmt)
-    elif query.data == "reset_both_confirm":
+    elif action == "reset_both_confirm":
         _do_reset_paper()
         _do_reset_tp()
         await query.edit_message_text("\u2705 Both portfolios reset to $%s." % capital_fmt)
-    elif query.data == "reset_cancel":
+    elif action == "reset_cancel":
         await query.edit_message_text("\u274c Reset cancelled.")
-    elif query.data == "reset_paper":
+    elif action == "reset_paper":
         await query.edit_message_text(
-            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_paper_confirm"),
-                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
-            ]])
+            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            reply_markup=_reset_buttons("paper"),
         )
-    elif query.data == "reset_tp":
+    elif action == "reset_tp":
         await query.edit_message_text(
-            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_tp_confirm"),
-                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
-            ]])
+            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            reply_markup=_reset_buttons("tp"),
         )
-    elif query.data == "reset_both":
+    elif action == "reset_both":
         await query.edit_message_text(
-            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u2705 Confirm", callback_data="reset_both_confirm"),
-                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel")
-            ]])
+            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            reply_markup=_reset_buttons("both"),
         )
 
 
