@@ -4,6 +4,45 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.18 — Menu-button bot routing fix (2026-04-20)
+
+Fix for a cross-bot data leak: on the TP bot, any command invoked via
+a `/menu` inline button rendered **paper** data instead of TP data.
+The user-visible symptom was a "mix of paper and TP" on the TP bot
+(e.g. `/perf`, `/dayreport`, `/log`, `/replay`, `/proximity`, `/help`,
+`/algo`, `/mode`, `/reset` when reached through menu taps).
+
+**Root cause.** Menu taps route through `menu_callback`, which calls
+`_invoke_from_callback` with a minimal `_CallbackUpdateShim` wrapper
+that stands in for `update`. The shim forwarded `message`,
+`effective_message`, `effective_user`, `effective_chat`, and
+`callback_query` — but **not** `get_bot()`. Every downstream
+`is_tp_update(update)` call therefore raised `AttributeError`, hit the
+`try/except` fallback, and returned `False`. Commands that branch on
+`is_tp_update` (most of them) then read the paper dicts even on the
+TP bot.
+
+**Fix.** `_CallbackUpdateShim` now forwards `get_bot()` to the
+underlying `CallbackQuery`, so `is_tp_update()` resolves the real bot
+token whether the handler was reached via a typed command or a menu
+button.
+
+**Surface affected (before the fix).** Every `cmd_*` dispatched via
+`_invoke_from_callback`: `cmd_help`, `cmd_algo`, `cmd_mode`, `cmd_log`,
+`cmd_replay`, `cmd_or_now`, `cmd_reset`, `cmd_dayreport`,
+`cmd_proximity`, `cmd_perf`. Typed commands were already correct.
+
+**Tests.** Added regression test
+`v3.4.18: _CallbackUpdateShim forwards get_bot() for is_tp routing`
+in `smoke_test.py` that constructs a shim over a fake query with the
+TP token and asserts `is_tp_update(shim) is True` (and False for a
+non-TP token). 42/42 local tests pass.
+
+**Release notes.** Bumped both `MAIN_RELEASE_NOTE` (detailed prose)
+and `TP_RELEASE_NOTE` (headline-only, still ≤34 char/line).
+
+---
+
 ## v3.4.17 — /status refresh fix + deploy card cleanup (2026-04-20)
 
 Two small follow-ups to v3.4.16.

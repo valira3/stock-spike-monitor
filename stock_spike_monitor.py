@@ -37,13 +37,27 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.17"
+BOT_VERSION = "3.4.18"
 # Main-bot release note: detailed prose describing what shipped.
 # Scanner/strategy/portfolio content — never TradersPost internals.
 # v3.4.17 is a bugfix + polish release on top of the v3.4.16 bot split:
 # /status refresh button now behaves, and the deploy card on each bot
 # shows the right tone (detailed here, tight on the TP side).
 MAIN_RELEASE_NOTE = (
+    "v3.4.18 \u2014 Menu-button bot\n"
+    "routing fix.\n"
+    "\n"
+    "Commands invoked from /menu\n"
+    "buttons now see the correct\n"
+    "bot identity. Previously the\n"
+    "callback shim did not forward\n"
+    "get_bot(), so every TP-bot\n"
+    "menu tap silently fell back to\n"
+    "paper data. The shim now\n"
+    "forwards get_bot() from the\n"
+    "callback query so is_tp_update\n"
+    "resolves correctly.\n"
+    "\n"
     "v3.4.17 \u2014 Status refresh fix +\n"
     "deploy-card tone cleanup.\n"
     "\n"
@@ -69,10 +83,11 @@ MAIN_RELEASE_NOTE = (
 )
 # TP-bot release note: tight headline + one line per recent TP change.
 TP_RELEASE_NOTE = (
+    "v3.4.18 \u2014 Menu buttons now\n"
+    "honor TP routing (no paper\n"
+    "leak).\n"
     "v3.4.17 \u2014 /status refresh fix.\n"
     "v3.4.16 \u2014 TP bot isolation.\n"
-    "v3.4.15 \u2014 Webhook responses\n"
-    "parsed; rejections surfaced.\n"
     "/tp_sync for broker status."
 )
 # Backwards-compat alias — any remaining references default to main.
@@ -6819,6 +6834,14 @@ class _CallbackUpdateShim:
 
     def __init__(self, query):
         self._query = query
+
+    # v3.4.18: forward get_bot() so is_tp_update(update) resolves the
+    # correct bot token when a cmd_* is invoked from a /menu callback.
+    # Without this, every menu-driven command fell through the try/
+    # except in is_tp_update() and returned False \u2014 rendering
+    # paper data on the TP bot (the "mix of paper and tp" symptom).
+    def get_bot(self):
+        return self._query.get_bot()
 
     @property
     def message(self):
