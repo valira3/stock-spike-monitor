@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.25"
+BOT_VERSION = "3.4.26"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,27 +55,29 @@ BOT_VERSION = "3.4.25"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.25 \u2014 Breakeven ratchet.\n"
+    "v3.4.26 \u2014 Ratchet through\n"
+    "trail + dashboard diagnostic.\n"
     "\n"
-    "Once a position is +0.50% in\n"
-    "our favor, the stop pulls to\n"
-    "breakeven (entry price). This\n"
-    "closes the gap between entry\n"
-    "and the 1% trail-arm, so we\n"
-    "stop giving back profit to a\n"
-    "stop still anchored at entry.\n"
+    "Breakeven ratchet now runs\n"
+    "even when the 1% trail is\n"
+    "armed. If the trail armed on\n"
+    "an unfavorable dip, ratchet\n"
+    "still pulls the effective\n"
+    "stop to entry. Pure tighten\n"
+    "\u2014 never loosens.\n"
     "\n"
-    "Applies retroactively on\n"
-    "startup and every manage\n"
-    "cycle. Only tightens \u2014 never\n"
-    "loosens. If trail is already\n"
-    "armed, ratchet is a no-op."
+    "Dashboard now shows the\n"
+    "effective stop (trail if\n"
+    "armed, else hard stop) with\n"
+    "a small TRAIL badge so we\n"
+    "can see what is actually\n"
+    "managing the position."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.25 \u2014 Breakeven ratchet\n"
-    "at +0.50% profit. Stop pulls\n"
-    "to entry price. Trail takes\n"
-    "over at +1.00% as before."
+    "v3.4.26 \u2014 Ratchet runs\n"
+    "even with trail armed.\n"
+    "Dashboard shows effective\n"
+    "stop + TRAIL badge."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -86,31 +88,31 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.25 \u2014 Breakeven ratchet\n"
+    "at +0.50% profit. Stop pulls\n"
+    "to entry price.\n"
+    "\n"
+    "v3.4.24 \u2014 Dashboard leads\n"
+    "with equity + buying power.\n"
+    "\n"
+    "v3.4.23 \u2014 0.75% retro stop\n"
+    "cap on every open position.\n"
+    "\n"
     "v3.4.20 \u2014 LOW VOL gate walks\n"
-    "back past null/zero bars; new\n"
-    "[DATA NOT READY] log for missing\n"
-    "volume (still fail-closed).\n"
-    "\n"
-    "v3.4.19 \u2014 Menu & refresh\n"
-    "callbacks route by token,\n"
-    "not chat_id.\n"
-    "\n"
-    "v3.4.18 \u2014 Shim get_bot fix\n"
-    "for menu-invoked commands.\n"
-    "\n"
-    "v3.4.17 \u2014 Status refresh fix +\n"
-    "deploy-card tone cleanup."
+    "back past null/zero bars."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.25 \u2014 Breakeven ratchet\n"
+    "at +0.50% profit.\n"
+    "v3.4.24 \u2014 Dashboard leads\n"
+    "with equity.\n"
+    "v3.4.23 \u2014 0.75% retro stop\n"
+    "cap on all positions.\n"
     "v3.4.20 \u2014 LOW VOL gate walks\n"
     "back past null/zero bars.\n"
-    "v3.4.19 \u2014 Menu + refresh route\n"
-    "by token, not chat_id.\n"
-    "v3.4.18 \u2014 Shim get_bot fix.\n"
-    "v3.4.17 \u2014 /status refresh fix.\n"
     "/tp_sync for broker status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
@@ -1542,23 +1544,60 @@ def _retighten_long_stop(ticker, pos, current_price, portfolio,
                          force_exit=True):
     """Retighten a single long position's stop.
 
-    Two layers, applied in order:
-      1. v3.4.23 cap: floor = entry * (1 − MAX_STOP_PCT). Stop never
-         wider than 0.75% from entry.
-      2. v3.4.25 breakeven ratchet: once current ≥ entry * (1+0.50%),
-         pull stop up to entry (breakeven).
+    Two layers (cap + breakeven ratchet), applied based on trail state.
+
+    When trail is NOT armed (v3.4.23 + v3.4.25 behavior):
+      1. 0.75% cap: floor = entry * (1 − MAX_STOP_PCT).
+      2. Breakeven ratchet: once current ≥ entry * (1+0.50%), pull
+         pos["stop"] up to entry.
+
+    When trail IS armed (v3.4.26 new behavior):
+      Cap layer is skipped — trail was designed to replace it.
+      Ratchet still runs but acts on pos["trail_stop"] instead of
+      pos["stop"], because once trail is armed, manage_positions uses
+      trail_stop for exit decisions. If the trail armed on an
+      unfavorable dip (trail_low close to entry, trail_stop below
+      entry), the ratchet pulls the effective exit stop up to entry.
+      Pure tighten — never loosens.
 
     Returns one of:
-      ("no_op", None, None)         — trail active, nothing to do.
-      ("already_tight", stop, None) — neither layer tightens further.
-      ("tightened", old_stop, new)  — cap tightened the stop.
-      ("ratcheted", old_stop, new)  — breakeven ratchet tightened it.
-      ("exit", new_stop, None)      — new stop already breached; exit
-                                      fired with reason=RETRO_CAP.
+      ("already_tight", stop, None) — nothing tightens further.
+      ("tightened", old_stop, new)  — cap tightened pos["stop"].
+      ("ratcheted", old_stop, new)  — ratchet tightened pos["stop"].
+      ("ratcheted_trail", old_ts, new_ts)
+                                    — ratchet tightened trail_stop
+                                      while trail is armed.
+      ("exit", new_stop, None)      — new stop breached; exited with
+                                      reason=RETRO_CAP.
     """
-    if pos.get("trail_active"):
-        return ("no_op", None, None)
     entry_price = pos["entry_price"]
+
+    # v3.4.26 — trail-armed branch. Ratchet acts on trail_stop.
+    if pos.get("trail_active"):
+        current_trail = pos.get("trail_stop")
+        if current_trail is None:
+            # No trail_stop yet (shouldn't happen once armed, but
+            # fail-safe) — leave it to manage_positions on next tick.
+            return ("already_tight", pos["stop"], None)
+        # Only fire ratchet if we're at or above the +0.50% arm.
+        arm_price = entry_price * (1.0 + BREAKEVEN_RATCHET_PCT)
+        if current_price < arm_price:
+            return ("already_tight", current_trail, None)
+        # Pure tighten: trail floor never falls below entry once armed.
+        new_trail = round(max(current_trail, entry_price), 2)
+        if new_trail <= current_trail:
+            return ("already_tight", current_trail, None)
+        old_trail = current_trail
+        pos["trail_stop"] = new_trail
+        logger.info(
+            "[BREAKEVEN] %s LONG trail_stop ratcheted to entry: "
+            "$%.2f → $%.2f (entry=$%.2f, current=$%.2f, "
+            "portfolio=%s, trail_active=True)",
+            ticker, old_trail, new_trail, entry_price, current_price,
+            portfolio,
+        )
+        return ("ratcheted_trail", old_trail, new_trail)
+
     current_stop = pos["stop"]
 
     # Layer 1: 0.75% cap (v3.4.23).
@@ -1615,10 +1654,36 @@ def _retighten_short_stop(ticker, pos, current_price, portfolio,
 
     Same return shape as _retighten_long_stop. For shorts, "tighter" =
     lower stop (closer to entry from above).
+
+    v3.4.26: when trail_active=True, cap is skipped but the breakeven
+    ratchet runs against pos["trail_stop"] — manage_short_positions
+    uses trail_stop for exit decisions once armed.
     """
-    if pos.get("trail_active"):
-        return ("no_op", None, None)
     entry_price = pos["entry_price"]
+
+    # v3.4.26 — trail-armed branch. Ratchet acts on trail_stop.
+    if pos.get("trail_active"):
+        current_trail = pos.get("trail_stop")
+        if current_trail is None:
+            return ("already_tight", pos["stop"], None)
+        arm_price = entry_price * (1.0 - BREAKEVEN_RATCHET_PCT)
+        if current_price > arm_price:
+            return ("already_tight", current_trail, None)
+        # For shorts, tighter = lower. Cap at entry from above.
+        new_trail = round(min(current_trail, entry_price), 2)
+        if new_trail >= current_trail:
+            return ("already_tight", current_trail, None)
+        old_trail = current_trail
+        pos["trail_stop"] = new_trail
+        logger.info(
+            "[BREAKEVEN] %s SHORT trail_stop ratcheted to entry: "
+            "$%.2f → $%.2f (entry=$%.2f, current=$%.2f, "
+            "portfolio=%s, trail_active=True)",
+            ticker, old_trail, new_trail, entry_price, current_price,
+            portfolio,
+        )
+        return ("ratcheted_trail", old_trail, new_trail)
+
     current_stop = pos["stop"]
 
     # Layer 1: 0.75% cap (v3.4.23).
@@ -1677,9 +1742,11 @@ def retighten_all_stops(force_exit=True, fetch_prices=True):
     """
     # v3.4.25: separate counter for breakeven-ratchet tightenings, so
     # logging and /retighten output can distinguish cap vs ratchet.
-    summary = {"tightened": 0, "ratcheted": 0, "exited": 0,
-               "no_op": 0, "already_tight": 0, "errors": 0,
-               "details": []}
+    # v3.4.26: ratcheted_trail counts breakeven-ratchet tightenings
+    # applied to trail_stop (when trail is armed).
+    summary = {"tightened": 0, "ratcheted": 0, "ratcheted_trail": 0,
+               "exited": 0, "no_op": 0, "already_tight": 0,
+               "errors": 0, "details": []}
 
     def _current(ticker, fallback):
         if not fetch_prices:
@@ -1741,13 +1808,15 @@ def retighten_all_stops(force_exit=True, fetch_prices=True):
                 logger.error("[RETRO_CAP] %s SHORT %s failed: %s",
                              ticker, label, e, exc_info=True)
 
-    if summary["tightened"] or summary["ratcheted"] or summary["exited"]:
+    if (summary["tightened"] or summary["ratcheted"]
+            or summary["ratcheted_trail"] or summary["exited"]):
         logger.info(
             "[RETRO_CAP] cycle summary: %d tightened, %d ratcheted, "
-            "%d exited, %d already-tight, %d no-op (trail active)",
+            "%d trail-ratcheted, %d exited, %d already-tight, "
+            "%d no-op",
             summary["tightened"], summary["ratcheted"],
-            summary["exited"], summary["already_tight"],
-            summary["no_op"],
+            summary["ratcheted_trail"], summary["exited"],
+            summary["already_tight"], summary["no_op"],
         )
     return summary
 
@@ -6103,6 +6172,12 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append("%s %s [%s] breakeven" % (tkr, side, port))
                 lines.append("  stop $%.2f \u2192 $%.2f" % (old, new))
                 any_change = True
+            elif status == "ratcheted_trail":
+                lines.append(
+                    "%s %s [%s] trail\u2192entry" % (tkr, side, port)
+                )
+                lines.append("  trail $%.2f \u2192 $%.2f" % (old, new))
+                any_change = True
             elif status == "exit":
                 lines.append("%s %s [%s] EXITED" % (tkr, side, port))
                 lines.append("  breached at cap $%.2f" % (new if new is not None else 0.0))
@@ -6118,13 +6193,17 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append("No changes \u2014 stops already optimal.")
     lines.append(SEP)
     lines.append(
-        "Summary: %d cap, %d ratchet, %d"
+        "Summary: %d cap, %d ratchet,"
         % (result.get("tightened", 0),
-           result.get("ratcheted", 0),
+           result.get("ratcheted", 0))
+    )
+    lines.append(
+        "%d trail\u2192entry, %d exited,"
+        % (result.get("ratcheted_trail", 0),
            result.get("exited", 0))
     )
     lines.append(
-        "exited, %d no-op, %d tight"
+        "%d no-op, %d tight"
         % (result.get("no_op", 0),
            result.get("already_tight", 0))
     )
