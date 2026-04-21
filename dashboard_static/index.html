@@ -342,23 +342,31 @@
           <div class="empty">No open positions.</div>
         </div>
         <div id="port-strip" style="display:none">
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
+          <!-- Row 1: hero — Equity + Buying Power. Net numbers first. -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
             <div style="padding:10px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Cash</div>
-              <div class="mono" style="font-size:14px" id="port-cash">—</div>
-            </div>
-            <div style="padding:10px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Long MV</div>
-              <div class="mono" style="font-size:14px;color:var(--text-muted)" id="port-longmv">—</div>
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Equity</div>
+              <div class="mono" style="font-size:15px;color:var(--text)" id="port-equity">—</div>
             </div>
             <div style="padding:10px 14px">
-              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Short liab</div>
-              <div class="mono" style="font-size:14px;color:var(--down)" id="port-shortliab">—</div>
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Buying power</div>
+              <div class="mono" style="font-size:15px;color:var(--text)" id="port-bp">—</div>
             </div>
           </div>
-          <div style="padding:10px 14px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-muted)">
-            <span>Equation: cash + long MV − short liab</span>
-            <span class="mono">= <span style="color:var(--text)" id="port-equity">—</span></span>
+          <!-- Row 2: components — Cash / Long MV / Short liab. Small + muted. -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
+            <div style="padding:8px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Cash</div>
+              <div class="mono" style="font-size:12px;color:var(--text-muted)" id="port-cash">—</div>
+            </div>
+            <div style="padding:8px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Long MV</div>
+              <div class="mono" style="font-size:12px;color:var(--text-muted)" id="port-longmv">—</div>
+            </div>
+            <div style="padding:8px 14px">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Short liab</div>
+              <div class="mono" style="font-size:12px;color:var(--down)" id="port-shortliab">—</div>
+            </div>
           </div>
         </div>
       </div>
@@ -564,6 +572,16 @@
       $("port-longmv").textContent = fmtUsd(p.long_mv);
       $("port-shortliab").textContent = fmtUsd(p.short_liab);
       $("port-equity").textContent = fmtUsd(p.equity);
+      // Buying power = cash unencumbered by short-sale liability.
+      // Short-sale proceeds sit in cash but are owed back, so
+      // (cash − short_liab) is the amount that's actually spendable
+      // without widening short exposure.
+      const bp = (typeof p.cash === "number" && typeof p.shortLiab === "number")
+        ? (p.cash - p.shortLiab)
+        : (typeof p.cash === "number" && typeof p.short_liab === "number"
+            ? (p.cash - p.short_liab)
+            : null);
+      $("port-bp").textContent = (bp === null) ? "—" : fmtUsd(bp);
     } else {
       strip.style.display = "none";
     }
