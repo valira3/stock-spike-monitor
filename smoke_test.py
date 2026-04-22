@@ -373,7 +373,9 @@ def run_local() -> int:
             data = f"reset_tp_confirm:{int(time.time())}"
 
         allowed, reason = m._reset_authorized(FakeQuery())
-        assert not allowed and "TP" in reason, \
+        # v3.4.39: reject string now says "Robinhood reset..." (user-facing
+        # rename from TP \u2014 Python identifiers still use tp_* prefix).
+        assert not allowed and ("TP" in reason or "Robinhood" in reason), \
             f"expected cross-bot reject, got ({allowed},{reason})"
 
     @t("v3.4.10: _reset_authorized blocks unauthorized chat_id")
@@ -3373,31 +3375,35 @@ def run_local() -> int:
             m.tp_positions.clear()
             m.tp_positions.update(orig_tp)
 
-    @t("v3.4.38: /algo caption reads v3.4.38")
+    # v3.4.39: these were originally v3.4.38 pins \u2014 rewritten as dynamic
+    # anchors against m.BOT_VERSION so we don't have to touch them each bump.
+    @t("release: /algo caption matches BOT_VERSION")
     def _():
         import stock_spike_monitor as m
         import inspect
         src = inspect.getsource(m.cmd_algo)
-        assert "v3.4.38" in src, "/algo source must contain v3.4.38"
-        assert "v3.4.37" not in src, "/algo source must not contain old v3.4.37"
+        tag = "v" + m.BOT_VERSION
+        assert tag in src, f"/algo source must contain {tag}"
 
-    @t("v3.4.38: BOT_VERSION is 3.4.38")
+    @t("release: BOT_VERSION matches current 3.4.x series")
     def _():
         import stock_spike_monitor as m
-        assert m.BOT_VERSION == "3.4.38", \
-            f"BOT_VERSION should be 3.4.38, got {m.BOT_VERSION!r}"
+        assert m.BOT_VERSION.startswith("3.4."), \
+            f"BOT_VERSION should be a 3.4.x release, got {m.BOT_VERSION!r}"
 
-    @t("v3.4.38: CURRENT_MAIN_NOTE leads with v3.4.38")
+    @t("release: CURRENT_MAIN_NOTE leads with BOT_VERSION")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.38"), \
-            f"CURRENT_MAIN_NOTE must start with v3.4.38: {m.CURRENT_MAIN_NOTE[:40]!r}"
+        tag = "v" + m.BOT_VERSION
+        assert m.CURRENT_MAIN_NOTE.startswith(tag), \
+            f"CURRENT_MAIN_NOTE must start with {tag}: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
-    @t("v3.4.38: CURRENT_TP_NOTE leads with v3.4.38")
+    @t("release: CURRENT_TP_NOTE leads with BOT_VERSION")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_TP_NOTE.startswith("v3.4.38"), \
-            f"CURRENT_TP_NOTE must start with v3.4.38: {m.CURRENT_TP_NOTE[:40]!r}"
+        tag = "v" + m.BOT_VERSION
+        assert m.CURRENT_TP_NOTE.startswith(tag), \
+            f"CURRENT_TP_NOTE must start with {tag}: {m.CURRENT_TP_NOTE[:40]!r}"
 
     @t("v3.4.38: v3.4.37 persists in release note history")
     def _():
@@ -3567,6 +3573,100 @@ def run_local() -> int:
         finally:
             m._traderspost_runtime_override = prev_override
             m._TRADERSPOST_ENABLED_ENV = prev_env
+
+    # ======================================================
+    # v3.4.39 \u2014 Robinhood bot consolidation
+    # Scoped commands (no paper leakage) + dashboard RH payload
+    # ======================================================
+
+    @t("v3.4.39: cmd_trade_log routes by is_tp_update(update)")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.cmd_trade_log)
+        assert "is_tp_update(update)" in src, \
+            "cmd_trade_log must branch on is_tp_update(update)"
+        assert 'portfolio=' in src, \
+            "cmd_trade_log must pass portfolio= to trade_log_read_tail"
+
+    @t("v3.4.39: cmd_retighten routes by is_tp_update(update)")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.cmd_retighten)
+        assert "is_tp_update(update)" in src, \
+            "cmd_retighten must branch on is_tp_update(update)"
+        assert 'portfolio=' in src, \
+            "cmd_retighten must pass portfolio= to retighten_all_stops"
+
+    @t("v3.4.39: retighten_all_stops accepts portfolio= kwarg")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        sig = inspect.signature(m.retighten_all_stops)
+        assert "portfolio" in sig.parameters, \
+            f"retighten_all_stops must accept portfolio= kwarg: {sig}"
+
+    @t("v3.4.39: trade_log_read_tail accepts portfolio= kwarg")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        sig = inspect.signature(m.trade_log_read_tail)
+        assert "portfolio" in sig.parameters, \
+            f"trade_log_read_tail must accept portfolio= kwarg: {sig}"
+
+    @t("v3.4.39: cmd_reset on TP bot offers only Robinhood reset")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.cmd_reset)
+        assert "is_tp_update(update)" in src, \
+            "cmd_reset must branch on is_tp_update(update)"
+        assert "RH_STARTING_CAPITAL" in src, \
+            "cmd_reset must format amount from RH_STARTING_CAPITAL on TP bot"
+        # When on TP bot, any paper/both arg must be redirected, not executed.
+        assert "Robinhood" in src and "main bot" in src, \
+            "cmd_reset must redirect paper/both args on TP bot back to main"
+
+    @t("v3.4.39: dashboard snapshot exposes rh_portfolio/rh_positions/rh_trades_today")
+    def _():
+        snap = ds.snapshot()
+        for key in ("rh_portfolio", "rh_positions", "rh_trades_today"):
+            assert key in snap, \
+                f"snapshot() missing {key!r} \u2014 got keys: {sorted(snap.keys())}"
+        # rh_portfolio must carry the RH-specific starting capital, not $100k.
+        rh = snap["rh_portfolio"]
+        assert isinstance(rh, dict), f"rh_portfolio must be a dict, got {type(rh)}"
+        # Must include the headline fields the JS slice() helper reads.
+        # v3.4.39: rh_portfolio mirrors the paper 'portfolio' dict shape so
+        # the dashboard slice() helper can substitute it transparently.
+        for field in ("cash", "start", "equity", "day_pnl",
+                      "day_pnl_realized", "day_pnl_unrealized",
+                      "long_mv", "vs_start"):
+            assert field in rh, \
+                f"rh_portfolio missing {field!r}: {sorted(rh.keys())}"
+
+    @t("v3.4.39: dashboard snapshot rh_portfolio.start == RH_STARTING_CAPITAL")
+    def _():
+        snap = ds.snapshot()
+        assert float(snap["rh_portfolio"]["start"]) == float(m.RH_STARTING_CAPITAL), \
+            f"rh_portfolio.start ({snap['rh_portfolio']['start']}) must equal RH_STARTING_CAPITAL ({m.RH_STARTING_CAPITAL})"
+
+    @t("v3.4.39: dashboard index.html has Paper/Robinhood view toggle")
+    def _():
+        # The test chdirs to /tmp/ssm_smoke_state \u2014 resolve relative to repo root.
+        import pathlib
+        repo_root = pathlib.Path(__file__).resolve().parent
+        html = (repo_root / "dashboard_static/index.html").read_text()
+        # Two toggle buttons with the scoped ids.
+        assert 'id="view-btn-paper"' in html, \
+            "index.html missing view-btn-paper toggle"
+        assert 'id="view-btn-rh"' in html, \
+            "index.html missing view-btn-rh toggle"
+        # localStorage persistence \u2014 either loadView/saveView helpers,
+        # or a direct localStorage.*Item call on 'portfolio_view'.
+        assert "portfolio_view" in html, \
+            "index.html must persist toggle under 'portfolio_view' key"
 
     return run_suite("LOCAL SMOKE TESTS")
 

@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.38"
+BOT_VERSION = "3.4.39"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,26 +56,28 @@ BOT_VERSION = "3.4.38"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.38 \u2014 Kill switch.\n"
-    "/rh_enable and /rh_disable\n"
-    "flip Robinhood live orders\n"
-    "on/off at runtime. No\n"
-    "Railway restart needed.\n"
+    "v3.4.39 \u2014 Consolidation.\n"
+    "Robinhood bot now shows\n"
+    "only Robinhood data \u2014\n"
+    "/trade_log, /reset, and\n"
+    "/retighten scope to the\n"
+    "bot they run on.\n"
     "\n"
-    "/rh_status shows state,\n"
-    "source (env vs runtime),\n"
-    "IMAP wiring, and sizing.\n"
+    "Dashboard gains a Paper\n"
+    "/ Robinhood toggle in\n"
+    "the header. Choice is\n"
+    "saved per-browser.\n"
     "\n"
-    "Override persists in\n"
-    "tp_state.json so it\n"
-    "survives redeploys."
+    "No strategy changes."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.38 \u2014 Kill switch\n"
-    "lives on main bot:\n"
-    "/rh_enable /rh_disable\n"
-    "/rh_status. TP bot menu\n"
-    "unchanged otherwise."
+    "v3.4.39 \u2014 This bot\n"
+    "only shows Robinhood\n"
+    "data now. /trade_log,\n"
+    "/reset, /retighten are\n"
+    "scoped to Robinhood.\n"
+    "Dashboard has a\n"
+    "Paper/Robinhood toggle."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -86,6 +88,12 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.38 \u2014 Kill switch.\n"
+    "/rh_enable /rh_disable\n"
+    "flip Robinhood live orders\n"
+    "at runtime; override\n"
+    "persists across restarts.\n"
+    "\n"
     "v3.4.37 \u2014 Robinhood mode:\n"
     "TP mirror became live bot.\n"
     "Long-only $25k, $1500/entry,\n"
@@ -94,22 +102,20 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.36 \u2014 Profit-lock\n"
     "ladder is now peak-based.\n"
-    "Stop = peak \u2212 X%, tighter\n"
-    "each tier as peak grows.\n"
     "\n"
     "v3.4.35 \u2014 First profit-lock\n"
     "ladder (gain-anchored); now\n"
     "superseded by peak-anchored.\n"
     "\n"
     "v3.4.34 \u2014 AVWAP fully\n"
-    "removed; one anchor (PDC)\n"
-    "across entries, regime\n"
-    "alerts, and displays."
+    "removed; PDC anchor only."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.38 \u2014 Kill switch via\n"
+    "/rh_enable, /rh_disable.\n"
     "v3.4.37 \u2014 Robinhood mode:\n"
     "long-only $25k, $1500/entry,\n"
     "max 6 concurrent, IMAP fill\n"
@@ -117,8 +123,7 @@ _TP_HISTORY_TAIL = (
     "v3.4.36 \u2014 Profit-lock\n"
     "ladder: peak-anchored.\n"
     "v3.4.35 \u2014 First ladder\n"
-    "(gain-anchored) \u2014 now\n"
-    "peak-anchored instead.\n"
+    "(gain-anchored).\n"
     "v3.4.34 \u2014 AVWAP gone;\n"
     "PDC anchor everywhere."
 )
@@ -2324,7 +2329,7 @@ def _retighten_short_stop(ticker, pos, current_price, portfolio,
     return (status, old_stop, new_stop)
 
 
-def retighten_all_stops(force_exit=True, fetch_prices=True):
+def retighten_all_stops(force_exit=True, fetch_prices=True, portfolio=None):
     """Retighten every open position's stop to the 0.75% cap.
 
     Returns a summary dict: {tightened: int, exited: int, no_op: int,
@@ -2334,7 +2339,13 @@ def retighten_all_stops(force_exit=True, fetch_prices=True):
     no-op. When fetch_prices is False, uses entry_price as a
     best-effort proxy for "current" (startup mode, before any scanner
     cycles have run).
+
+    v3.4.39: pass portfolio="paper" or "tp" to limit the sweep to one
+    book. None (default) keeps the historical behavior of covering
+    both. Used so /retighten on the Robinhood bot only touches the
+    Robinhood book.
     """
+    want = portfolio  # None, "paper", or "tp"
     # v3.4.25: separate counter for breakeven-ratchet tightenings, so
     # logging and /retighten output can distinguish cap vs ratchet.
     # v3.4.26: ratcheted_trail counts breakeven-ratchet tightenings
@@ -2356,7 +2367,10 @@ def retighten_all_stops(force_exit=True, fetch_prices=True):
         return fallback
 
     # Longs: paper + TP
-    for book, label in ((positions, "paper"), (tp_positions, "tp")):
+    long_books = ((positions, "paper"), (tp_positions, "tp"))
+    if want is not None:
+        long_books = tuple(b for b in long_books if b[1] == want)
+    for book, label in long_books:
         for ticker in list(book.keys()):
             pos = book.get(ticker)
             if not pos:
@@ -2380,8 +2394,10 @@ def retighten_all_stops(force_exit=True, fetch_prices=True):
                              ticker, label, e, exc_info=True)
 
     # Shorts: paper + TP
-    for book, label in ((short_positions, "paper"),
-                        (tp_short_positions, "tp")):
+    short_books = ((short_positions, "paper"), (tp_short_positions, "tp"))
+    if want is not None:
+        short_books = tuple(b for b in short_books if b[1] == want)
+    for book, label in short_books:
         for ticker in list(book.keys()):
             pos = book.get(ticker)
             if not pos:
@@ -7073,8 +7089,13 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
     same as the automatic pass.
     """
     SEP = "\u2500" * 34
+    # v3.4.39: scope the sweep by originating bot so /retighten on the
+    # Robinhood bot never touches paper positions (and vice versa).
+    portfolio = "tp" if is_tp_update(update) else "paper"
     try:
-        result = retighten_all_stops(force_exit=True, fetch_prices=True)
+        result = retighten_all_stops(
+            force_exit=True, fetch_prices=True, portfolio=portfolio,
+        )
     except Exception as e:
         logger.error("cmd_retighten failed: %s", e, exc_info=True)
         await update.message.reply_text(
@@ -7083,7 +7104,8 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    lines = ["\U0001f527 Stop retighten", SEP]
+    scope = "Robinhood" if portfolio == "tp" else "Paper"
+    lines = ["\U0001f527 Stop retighten \u2014 %s" % scope, SEP]
     details = result.get("details", [])
     if not details:
         lines.append("No open positions.")
@@ -7157,8 +7179,10 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     so Val can catch disk issues early.
     """
     SEP = "\u2500" * 34
+    # v3.4.39: scope by originating bot so the Robinhood bot never shows paper rows.
+    portfolio = "tp" if is_tp_update(update) else "paper"
     try:
-        rows = trade_log_read_tail(limit=10)
+        rows = trade_log_read_tail(limit=10, portfolio=portfolio)
     except Exception as e:
         logger.error("cmd_trade_log failed: %s", e, exc_info=True)
         await update.message.reply_text(
@@ -7167,7 +7191,8 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    lines = ["\U0001f4d2 Trade log (last 10)", SEP]
+    scope = "Robinhood" if portfolio == "tp" else "Paper"
+    lines = ["\U0001f4d2 Trade log \u2014 %s (last 10)" % scope, SEP]
     if not rows:
         lines.append("No trades logged yet.")
         if _trade_log_last_error:
@@ -7505,7 +7530,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send algorithm summary + downloadable PDF reference."""
     SEP = "\u2500" * 34
     summary = (
-        "\U0001f4d8 ALGORITHM REFERENCE v3.4.38\n"
+        "\U0001f4d8 ALGORITHM REFERENCE v3.4.39\n"
         f"{SEP}\n"
         "Two independent strategies:\n\n"
         "\U0001f4c8 ORB LONG BREAKOUT\n"
@@ -7574,8 +7599,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.38.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.38",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.39.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.39",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -7696,7 +7721,7 @@ def _reset_authorized(query) -> tuple:
     if data.startswith("reset_paper_confirm") and from_bot_is_tp:
         return (False, "paper reset must be confirmed from paper bot")
     if data.startswith("reset_tp_confirm") and not from_bot_is_tp:
-        return (False, "TP reset must be confirmed from TP bot")
+        return (False, "Robinhood reset must be confirmed from Robinhood bot")
 
     # (3) Freshness check — confirm callbacks carry ':<unix_ts>' suffix.
     if "_confirm" in data and ":" in data:
@@ -7724,9 +7749,31 @@ def _reset_buttons(action: str) -> InlineKeyboardMarkup:
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reset paper | /reset tp | /reset both — show confirmation before reset."""
+    """/reset paper | /reset tp | /reset both — show confirmation before reset.
+
+    v3.4.39: on the Robinhood bot, only Robinhood reset is offered,
+    and the confirmation amount reflects RH_STARTING_CAPITAL ($25k)
+    rather than the $100k paper default.
+    """
     args = context.args
     target = args[0].lower() if args else ""
+    on_tp = is_tp_update(update)
+
+    if on_tp:
+        # Robinhood bot — only Robinhood target is valid; ignore any
+        # paper/both arg and always route to the RH confirmation.
+        rh_fmt = format(RH_STARTING_CAPITAL, ",.0f")
+        if target in ("tp", "rh", "robinhood", ""):
+            await update.message.reply_text(
+                "\u26a0\ufe0f Reset Robinhood portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % rh_fmt,
+                reply_markup=_reset_buttons("tp"),
+            )
+        else:
+            await update.message.reply_text(
+                "This bot only manages the\nRobinhood portfolio. Send\n/reset with no args, or use\nthe main bot for paper.",
+                reply_markup=_menu_button(),
+            )
+        return
 
     if target == "paper":
         await update.message.reply_text(
@@ -7734,13 +7781,14 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_reset_buttons("paper"),
         )
     elif target == "tp":
+        rh_fmt = format(RH_STARTING_CAPITAL, ",.0f")
         await update.message.reply_text(
-            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            "\u26a0\ufe0f Reset Robinhood portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % rh_fmt,
             reply_markup=_reset_buttons("tp"),
         )
     elif target == "both":
         await update.message.reply_text(
-            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            "\u26a0\ufe0f Reset BOTH portfolios?\nAll trade history will be cleared.\n(Confirm within 60s.)",
             reply_markup=_reset_buttons("both"),
         )
     else:
@@ -7749,7 +7797,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("\U0001f4c4 Reset Paper", callback_data="reset_paper"),
-                    InlineKeyboardButton("\U0001f4cb Reset TP", callback_data="reset_tp"),
+                    InlineKeyboardButton("\U0001f4cb Reset RH", callback_data="reset_tp"),
                 ],
                 [
                     InlineKeyboardButton("\U0001f504 Reset Both", callback_data="reset_both"),
@@ -7799,7 +7847,8 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     query = update.callback_query
     await query.answer()
-    capital_fmt = format(PAPER_STARTING_CAPITAL, ",.0f")
+    paper_fmt = format(PAPER_STARTING_CAPITAL, ",.0f")
+    rh_fmt = format(RH_STARTING_CAPITAL, ",.0f")
 
     allowed, reason = _reset_authorized(query)
     if not allowed:
@@ -7815,29 +7864,31 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "reset_paper_confirm":
         _do_reset_paper()
-        await query.edit_message_text("\u2705 Paper portfolio reset to $%s." % capital_fmt)
+        await query.edit_message_text("\u2705 Paper portfolio reset to $%s." % paper_fmt)
     elif action == "reset_tp_confirm":
         _do_reset_tp()
-        await query.edit_message_text("\u2705 TP portfolio reset to $%s." % capital_fmt)
+        await query.edit_message_text("\u2705 Robinhood portfolio reset to $%s." % rh_fmt)
     elif action == "reset_both_confirm":
         _do_reset_paper()
         _do_reset_tp()
-        await query.edit_message_text("\u2705 Both portfolios reset to $%s." % capital_fmt)
+        await query.edit_message_text(
+            "\u2705 Paper reset to $%s, Robinhood reset to $%s." % (paper_fmt, rh_fmt),
+        )
     elif action == "reset_cancel":
         await query.edit_message_text("\u274c Reset cancelled.")
     elif action == "reset_paper":
         await query.edit_message_text(
-            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            "\u26a0\ufe0f Reset paper portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % paper_fmt,
             reply_markup=_reset_buttons("paper"),
         )
     elif action == "reset_tp":
         await query.edit_message_text(
-            "\u26a0\ufe0f Reset TP portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            "\u26a0\ufe0f Reset Robinhood portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % rh_fmt,
             reply_markup=_reset_buttons("tp"),
         )
     elif action == "reset_both":
         await query.edit_message_text(
-            "\u26a0\ufe0f Reset BOTH portfolios to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+            "\u26a0\ufe0f Reset BOTH portfolios?\nAll trade history will be cleared.\n(Confirm within 60s.)",
             reply_markup=_reset_buttons("both"),
         )
 
