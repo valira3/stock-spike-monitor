@@ -2739,10 +2739,215 @@ def run_local() -> int:
 
     @t("v3.4.33: release notes mention the unified /ticker command")
     def _():
+        # v3.4.34: /ticker shipped in v3.4.33 and rolled into the history
+        # tail. Check the full MAIN_RELEASE_NOTE (current + history), not
+        # the rotating CURRENT_MAIN_NOTE, so this test survives version
+        # rollovers.
+        import stock_spike_monitor as m
+        note = m.MAIN_RELEASE_NOTE
+        # At minimum the v3.4.33 release line should persist in history.
+        assert "v3.4.33" in note and "/ticker" in note, note
+
+    # =================================================================
+    # v3.4.34 — AVWAP → PDC full migration
+    # =================================================================
+    # Entry gates, regime alert, breadth observer, and display text
+    # all migrated off AVWAP. _dual_index_eject / update_avwap /
+    # avwap_data / _last_finalized_5min_close all removed. Every
+    # surface now anchors on PDC, matching the v3.4.28 ejector.
+
+    @t("v3.4.34: BOT_VERSION is >= 3.4.34")
+    def _():
+        import stock_spike_monitor as m
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 34), m.BOT_VERSION
+
+    @t("v3.4.34: update_avwap / _dual_index_eject / _last_finalized_5min_close REMOVED")
+    def _():
+        import stock_spike_monitor as m
+        assert not hasattr(m, "update_avwap"), \
+            "update_avwap should have been deleted"
+        assert not hasattr(m, "_dual_index_eject"), \
+            "_dual_index_eject should have been deleted"
+        assert not hasattr(m, "_last_finalized_5min_close"), \
+            "_last_finalized_5min_close should have been deleted"
+
+    @t("v3.4.34: avwap_data / avwap_last_ts module state REMOVED")
+    def _():
+        import stock_spike_monitor as m
+        assert not hasattr(m, "avwap_data"), \
+            "avwap_data dict should have been deleted"
+        assert not hasattr(m, "avwap_last_ts"), \
+            "avwap_last_ts dict should have been deleted"
+
+    @t("v3.4.34: load_paper_state tolerates legacy avwap_data/avwap_last_ts keys")
+    def _():
+        # Old state files (pre-v3.4.34) have these keys. Loading must
+        # succeed without raising — keys are silently ignored.
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.load_paper_state)
+        # The loader should NOT reference avwap_data.update(...) anymore.
+        assert "avwap_data.update" not in src, \
+            "load_paper_state must not reference removed avwap_data dict"
+        assert "avwap_last_ts.update" not in src, \
+            "load_paper_state must not reference removed avwap_last_ts dict"
+
+    @t("v3.4.34: save_paper_state no longer writes avwap_data / avwap_last_ts")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.save_paper_state)
+        # Dict literal keys for avwap state should be absent from the
+        # persisted payload.
+        assert '"avwap_data":' not in src, \
+            "save_paper_state must not write avwap_data"
+        assert '"avwap_last_ts":' not in src, \
+            "save_paper_state must not write avwap_last_ts"
+
+    @t("v3.4.34: check_entry gates on SPY_PDC and QQQ_PDC (not AVWAP)")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.check_entry)
+        # Must read PDC from the pdc dict.
+        assert 'pdc.get("SPY")' in src, \
+            "check_entry must read SPY from pdc dict"
+        assert 'pdc.get("QQQ")' in src, \
+            "check_entry must read QQQ from pdc dict"
+        # Must NOT reference AVWAP state anymore.
+        assert "avwap_data" not in src, \
+            "check_entry must not reference removed avwap_data"
+        assert "update_avwap" not in src, \
+            "check_entry must not call removed update_avwap"
+
+    @t("v3.4.34: check_short_entry gates on SPY_PDC and QQQ_PDC (not AVWAP)")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.check_short_entry)
+        assert 'pdc.get("SPY")' in src, \
+            "check_short_entry must read SPY from pdc dict"
+        assert 'pdc.get("QQQ")' in src, \
+            "check_short_entry must read QQQ from pdc dict"
+        assert "avwap_data" not in src, \
+            "check_short_entry must not reference removed avwap_data"
+
+    @t("v3.4.34: check_short_entry fails closed when SPY_PDC/QQQ_PDC missing")
+    def _():
+        # Locked design principle: missing data → do NOT enter.
+        # Old AVWAP gate defaulted to True when state was unseeded
+        # (fail-OPEN). New PDC gate must be fail-CLOSED.
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.check_short_entry)
+        # Look for the initialization line that proves the fix.
+        # spy_below / qqq_below must default to False, then get set
+        # to True only when price < PDC.
+        assert "spy_below = False" in src, \
+            "spy_below must default False (fail-closed) not True"
+        assert "qqq_below = False" in src, \
+            "qqq_below must default False (fail-closed) not True"
+
+    @t("v3.4.34: regime-change alert uses PDC and emits 'Lords' messaging")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        # The scan loop is where the regime alert lives.
+        src = inspect.getsource(m.scan_loop)
+        # Must probe pdc dict for both indices.
+        assert 'pdc.get("SPY")' in src and 'pdc.get("QQQ")' in src, \
+            "regime alert must read PDC from the pdc dict"
+        # Format strings must say PDC, not AVWAP.
+        assert "> PDC $%.2f" in src, \
+            "regime alert must format bullish line as '> PDC'"
+        assert "< PDC $%.2f" in src, \
+            "regime alert must format bearish line as '< PDC'"
+        assert "> AVWAP $%.2f" not in src and "< AVWAP $%.2f" not in src, \
+            "regime alert must not format using AVWAP"
+        # Lords messaging preserved.
+        assert "The Lords are back" in src, \
+            "bullish flip must keep 'Lords are back' message"
+        assert "The Lords have left" in src, \
+            "bearish flip must keep 'Lords have left' message"
+
+    @t("v3.4.34: _classify_breadth observer anchors on PDC")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m._classify_breadth)
+        assert 'pdc.get("SPY")' in src and 'pdc.get("QQQ")' in src, \
+            "_classify_breadth must read PDC from the pdc dict"
+        assert "avwap_data" not in src, \
+            "_classify_breadth must not reference removed avwap_data"
+        assert "%s PDC" in src, \
+            "detail string must mention PDC, not AVWAP"
+
+    @t("v3.4.34: /help /algo body says 'SPY & QQQ > PDC', not AVWAP")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.cmd_algo)
+        assert "SPY & QQQ > PDC" in src, \
+            "algo reference must say SPY & QQQ > PDC"
+        assert "SPY & QQQ < PDC" in src, \
+            "algo reference must say SPY & QQQ < PDC"
+        assert "SPY & QQQ > AVWAP" not in src, \
+            "algo reference must not say SPY & QQQ > AVWAP"
+        assert "SPY & QQQ < AVWAP" not in src, \
+            "algo reference must not say SPY & QQQ < AVWAP"
+
+    @t("v3.4.34: /strategy body anchors on PDC in all four index-check lines")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.cmd_strategy)
+        # Long entry.
+        assert "SPY > PDC" in src and "QQQ > PDC" in src
+        # Short entry.
+        assert "SPY < PDC" in src and "QQQ < PDC" in src
+        # Lords Left / Bull Vacuum exits now reference PDC on finalized 1m.
+        assert "SPY AND QQQ < PDC" in src, "Lords Left exit must say PDC"
+        assert "SPY AND QQQ > PDC" in src, "Bull Vacuum exit must say PDC"
+        # AVWAP should be gone from the strategy surface.
+        assert "SPY > AVWAP" not in src and "SPY < AVWAP" not in src
+
+    @t("v3.4.34: reset_daily_state no longer resets removed AVWAP dicts")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.reset_daily_state)
+        assert "avwap_data" not in src, \
+            "reset_daily_state must not reference removed avwap_data"
+        assert "avwap_last_ts" not in src, \
+            "reset_daily_state must not reference removed avwap_last_ts"
+
+    @t("v3.4.34: CURRENT_MAIN_NOTE leads with v3.4.34 and mentions PDC")
+    def _():
         import stock_spike_monitor as m
         note = m.CURRENT_MAIN_NOTE
-        for want in ("/ticker list", "/ticker add", "/ticker remove"):
-            assert want in note, (want, note)
+        assert note.startswith("v3.4.34"), note[:40]
+        assert "PDC" in note, "CURRENT note must mention PDC"
+        # Every line must stay within the Telegram mobile width budget.
+        for i, line in enumerate(note.split("\n")):
+            assert len(line) <= 34, (i, len(line), repr(line))
+
+    @t("v3.4.34: v3.4.33 /ticker release line persists in MAIN_RELEASE_NOTE history")
+    def _():
+        import stock_spike_monitor as m
+        note = m.MAIN_RELEASE_NOTE
+        assert "v3.4.33" in note and "/ticker" in note, \
+            "v3.4.33 /ticker line must persist in the history tail"
+
+    @t("v3.4.34: legacy LORDS_LEFT[1m] / BULL_VACUUM[1m] back-compat labels retained")
+    def _():
+        import stock_spike_monitor as m
+        # Old persisted trade-log rows carry these keys; the label map
+        # must still render them for any rows written before v3.4.28.
+        assert "LORDS_LEFT[1m]" in m.REASON_LABELS
+        assert "LORDS_LEFT[5m]" in m.REASON_LABELS
+        assert "BULL_VACUUM[1m]" in m.REASON_LABELS
+        assert "BULL_VACUUM[5m]" in m.REASON_LABELS
 
     return run_suite("LOCAL SMOKE TESTS")
 
