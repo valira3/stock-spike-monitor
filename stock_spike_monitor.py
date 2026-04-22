@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.27"
+BOT_VERSION = "3.4.28"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,29 +55,28 @@ BOT_VERSION = "3.4.27"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.27 \u2014 Persistent trade\n"
-    "log (append-only JSONL).\n"
+    "v3.4.28 \u2014 Sovereign Regime\n"
+    "Shield (PDC-based eject).\n"
     "\n"
-    "Every closed trade is now\n"
-    "written to trade_log.jsonl\n"
-    "on the Railway volume. We\n"
-    "capture entry/exit prices,\n"
-    "pnl, exit reason, hold time,\n"
-    "and trail state at exit so\n"
-    "we can finally measure exit-\n"
-    "reason expectancy over time.\n"
+    "LORDS_LEFT and BULL_VACUUM\n"
+    "now fire on SPY AND QQQ\n"
+    "1m close vs their PDC, not\n"
+    "AVWAP. PDC is the single\n"
+    "most significant static\n"
+    "level \u2014 eliminates regime\n"
+    "flim-flams from AVWAP drift.\n"
     "\n"
-    "New /trade_log Telegram\n"
-    "command + /api/trade_log\n"
-    "endpoint for dashboard\n"
-    "analytics. Survives every\n"
-    "redeploy from now on."
+    "Hysteresis built in: if\n"
+    "SPY and QQQ diverge (one\n"
+    "above PDC, one below),\n"
+    "regime holds \u2014 no eject."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.27 \u2014 Persistent trade\n"
-    "log on the volume.\n"
-    "/trade_log command +\n"
-    "/api/trade_log endpoint."
+    "v3.4.28 \u2014 Sovereign Regime\n"
+    "Shield.\n"
+    "Eject uses SPY+QQQ 1m\n"
+    "close vs PDC (not AVWAP).\n"
+    "Divergence \u2014 no eject."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -88,6 +87,9 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.27 \u2014 Persistent trade\n"
+    "log (JSONL) + /trade_log.\n"
+    "\n"
     "v3.4.26 \u2014 Ratchet runs\n"
     "through trail + dashboard\n"
     "effective-stop diagnostic.\n"
@@ -96,23 +98,20 @@ _MAIN_HISTORY_TAIL = (
     "at +0.50% profit.\n"
     "\n"
     "v3.4.24 \u2014 Dashboard leads\n"
-    "with equity + buying power.\n"
-    "\n"
-    "v3.4.23 \u2014 0.75% retro stop\n"
-    "cap on every open position."
+    "with equity + buying power."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.27 \u2014 Persistent trade\n"
+    "log + /trade_log.\n"
     "v3.4.26 \u2014 Ratchet through\n"
     "trail + TRAIL badge.\n"
     "v3.4.25 \u2014 Breakeven ratchet\n"
     "at +0.50% profit.\n"
     "v3.4.24 \u2014 Dashboard leads\n"
     "with equity.\n"
-    "v3.4.23 \u2014 0.75% retro stop\n"
-    "cap on all positions.\n"
     "/tp_sync for broker status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
@@ -127,15 +126,17 @@ REASON_LABELS = {
     "STOP": "\U0001f6d1 Hard Stop",
     "TRAIL": "\U0001f3af Trail Stop",
     "RED_CANDLE": "\U0001f56f Red Candle (lost daily polarity)",
-    # Long global eject (Confluence Shield, v3.2.0+: SPY AND QQQ, 5m close)
-    "LORDS_LEFT":      "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",
+    # Long global eject — v3.4.28 Sovereign Regime Shield: SPY AND QQQ
+    # 1m finalized close BELOW their PDC. Older labels retained so rows
+    # in the persistent trade log from prior versions still render.
+    "LORDS_LEFT":      "\U0001f451 Lords Left (SPY+QQQ 1m < PDC)",
     "LORDS_LEFT[1m]":  "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",   # legacy v2.9.8
-    "LORDS_LEFT[5m]":  "\U0001f451 Lords Left (SPY+QQQ 5m < AVWAP)",
+    "LORDS_LEFT[5m]":  "\U0001f451 Lords Left (SPY+QQQ 5m < AVWAP)",  # legacy v3.2.0–v3.4.27
     "POLARITY_SHIFT": "\U0001f504 Polarity Shift (price > PDC)",
-    # Short global eject (Confluence Shield, v3.2.0+: SPY AND QQQ, 5m close)
-    "BULL_VACUUM":     "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",
+    # Short global eject — v3.4.28 Sovereign Regime Shield mirror.
+    "BULL_VACUUM":     "\U0001f300 Bull Vacuum (SPY+QQQ 1m > PDC)",
     "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",  # legacy v2.9.8
-    "BULL_VACUUM[5m]": "\U0001f300 Bull Vacuum (SPY+QQQ 5m > AVWAP)",
+    "BULL_VACUUM[5m]": "\U0001f300 Bull Vacuum (SPY+QQQ 5m > AVWAP)",  # legacy v3.2.0–v3.4.27
     "EOD": "\U0001f514 End of Day",
 }
 
@@ -1226,7 +1227,9 @@ def load_tp_state():
 #   pnl:            float     — signed dollars
 #   pnl_pct:        float     — signed percent (0.23 = +0.23%)
 #   reason:         str       — EOD | TRAIL | STOP | RETRO_CAP |
-#                               BULL_VACUUM[5m] | LORDS_LEFT[5m] | ...
+#                               BULL_VACUUM | LORDS_LEFT |
+#                               BULL_VACUUM[5m] | LORDS_LEFT[5m] |
+#                               ...
 #   entry_num:      int       — add-on index (longs only; 1 for shorts)
 #   trail_active_at_exit:   bool|null
 #   trail_stop_at_exit:     float|null
@@ -2273,6 +2276,89 @@ def _dual_index_eject(side):
 
 
 # ============================================================
+# v3.4.28 — SOVEREIGN REGIME SHIELD (PDC-based eject)
+# ============================================================
+# Why: AVWAP is a rolling mean — it drifts intraday, so an AVWAP-
+# cross eject can fire on slow sideways tape ("regime flim-flam")
+# even though the true structural level (yesterday's close) is
+# unchanged. PDC is a single static number per index per day, so
+# a PDC cross is a hard structural break rather than a drift.
+#
+# Rule (same for both sides, mirrored):
+#
+#   Long  eject iff  SPY_1m_close  < SPY_PDC  AND QQQ_1m_close  < QQQ_PDC
+#   Short eject iff  SPY_1m_close  > SPY_PDC  AND QQQ_1m_close  > QQQ_PDC
+#
+# Hysteresis (spec): divergence — one index above PDC, one below —
+# means regime is UNCHANGED and no eject fires. We achieve this
+# trivially by requiring the AND to hold on both closes.
+#
+# Bar cadence: previous FULLY-CLOSED 1-minute bar (the one ending
+# at the most recent minute boundary), NOT the in-progress bar.
+# Matches the spec: "wait for the 1-minute bar to finalize."
+#
+# Fail-closed: any missing input (no bars, no PDC, too few closes)
+# → return False (do NOT eject). Locked design principle: fail-
+# closed means stay in the trade; adaptive logic never loosens
+# baseline, only tightens.
+def _last_finalized_1min_close(ticker):
+    """Close of the most recent FINALIZED 1-minute bar.
+
+    fetch_1min_bars() returns the entire intraday series including
+    the in-progress minute as the last element. We return the
+    second-to-last close so the caller always sees a bar that is
+    truly sealed (no more ticks can modify it).
+
+    Returns None on insufficient data.
+    """
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return None
+    closes = [c for c in (bars.get("closes") or []) if c is not None]
+    if len(closes) < 2:
+        return None
+    return closes[-2]
+
+
+def _sovereign_regime_eject(side):
+    """Dual-index 1m-close vs PDC eject gate with hysteresis.
+
+    Args:
+        side: 'long'  \u2192 True iff BOTH SPY_1m_close < SPY_PDC
+                              AND QQQ_1m_close < QQQ_PDC
+              'short' \u2192 True iff BOTH SPY_1m_close > SPY_PDC
+                              AND QQQ_1m_close > QQQ_PDC
+
+    Returns False (no eject) on ANY missing/ambiguous input,
+    including the divergence case (SPY and QQQ on opposite sides
+    of their respective PDCs). Both behaviors are intentional and
+    enforce the hysteresis buffer from the spec.
+    """
+    if side not in ("long", "short"):
+        return False
+
+    spy_pdc = pdc.get("SPY")
+    qqq_pdc = pdc.get("QQQ")
+    if not spy_pdc or not qqq_pdc or spy_pdc <= 0 or qqq_pdc <= 0:
+        # PDC not yet collected (pre-open cycle, or data fetch
+        # failed). Stay-in-trade is the only safe default.
+        return False
+
+    spy_close = _last_finalized_1min_close("SPY")
+    qqq_close = _last_finalized_1min_close("QQQ")
+    if spy_close is None or qqq_close is None:
+        return False  # <2 finalized 1-min bars yet
+
+    if side == "long":
+        # Eject longs only when BOTH indices close below PDC.
+        # The AND naturally enforces the divergence hysteresis.
+        return (spy_close < spy_pdc) and (qqq_close < qqq_pdc)
+    else:
+        # Mirror for shorts: BOTH above PDC.
+        return (spy_close > spy_pdc) and (qqq_close > qqq_pdc)
+
+
+# ============================================================
 # ENTRY CHECK
 # ============================================================
 def check_entry(ticker):
@@ -3092,11 +3178,13 @@ def manage_positions():
     # already tight.
     retighten_all_stops(force_exit=True, fetch_prices=True)
 
-    # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
-    # Exit all longs ONLY when BOTH SPY and QQQ have a finalized 5-min close
-    # below their respective AVWAPs. Filters sub-5-min liquidity probes and
-    # sector divergence ("Hormuz" wicks). Replaces v2.9.8's 1-min OR test.
-    lords_left = _dual_index_eject("long")
+    # ── Sovereign Regime Shield (v3.4.28) ────────────────────────────────────
+    # Exit all longs ONLY when BOTH SPY and QQQ have a finalized 1-min close
+    # BELOW their respective Prior Day Close (PDC). PDC is one static price
+    # per day — a cross of it is a structural break, not intraday drift.
+    # AND-logic enforces divergence hysteresis: if only one index is below
+    # PDC (or data is missing), regime is UNCHANGED. See v3.4.28 CHANGELOG.
+    lords_left = _sovereign_regime_eject("long")
 
     for ticker in list(positions.keys()):
         bars = fetch_1min_bars(ticker)
@@ -3111,9 +3199,9 @@ def manage_positions():
             tickers_to_close.append((ticker, current_price, "STOP"))
             continue
 
-        # ── Confluence Shield: BOTH SPY+QQQ 5m_close < AVWAP ─────────────────
+        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close < PDC ─────────────
         if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[5m]"))
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
             continue
 
         # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
@@ -3291,9 +3379,9 @@ def manage_tp_positions():
     """Check stops and update trailing stops for all open TP positions."""
     tickers_to_close = []
 
-    # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
-    # Same shield as the main bot: BOTH SPY+QQQ 5m close < AVWAP required.
-    lords_left = _dual_index_eject("long")
+    # ── Sovereign Regime Shield (v3.4.28) ────────────────────────────────────
+    # Same shield as the main bot: BOTH SPY+QQQ 1m close < PDC required.
+    lords_left = _sovereign_regime_eject("long")
 
     for ticker in list(tp_positions.keys()):
         bars = fetch_1min_bars(ticker)
@@ -3308,9 +3396,9 @@ def manage_tp_positions():
             tickers_to_close.append((ticker, current_price, "STOP"))
             continue
 
-        # ── Confluence Shield: BOTH SPY+QQQ 5m_close < AVWAP ─────────────────
+        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close < PDC ─────────────
         if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT[5m]"))
+            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
             continue
 
         # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
@@ -3667,11 +3755,12 @@ def manage_short_positions():
     # book.
     retighten_all_stops(force_exit=True, fetch_prices=True)
 
-    # ── Dual-Index Confluence Shield (v3.2.0) ────────────────────────────────
-    # Exit all shorts ONLY when BOTH SPY and QQQ have a finalized 5-min close
-    # above their respective AVWAPs. Filters sub-5-min liquidity probes and
-    # sector divergence ("Hormuz" wicks). Replaces v2.9.8's 1-min OR test.
-    bull_vacuum = _dual_index_eject("short")
+    # ── Sovereign Regime Shield (v3.4.28) ────────────────────────────────────
+    # Exit all shorts ONLY when BOTH SPY and QQQ have a finalized 1-min close
+    # ABOVE their respective Prior Day Close (PDC). Mirror of the long-side
+    # Sovereign Regime Shield — a PDC cross is structural, not drift. AND-
+    # logic suppresses ejects on SPY/QQQ divergence. See v3.4.28 CHANGELOG.
+    bull_vacuum = _sovereign_regime_eject("short")
 
     for ticker in list(short_positions.keys()):
         pos = short_positions[ticker]
@@ -3715,9 +3804,9 @@ def manage_short_positions():
             if current_price >= stop:
                 exit_reason = "STOP"
 
-        # ── Confluence Shield: BOTH SPY+QQQ 5m_close > AVWAP ─────────────────
+        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close > PDC ─────────────
         if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM[5m]"
+            exit_reason = "BULL_VACUUM"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
         # Uses completed 1m bar close (per-ticker; not part of the index shield)
@@ -3774,9 +3863,9 @@ def manage_short_positions():
             if current_price >= stop:
                 exit_reason = "STOP"
 
-        # ── Confluence Shield: BOTH SPY+QQQ 5m_close > AVWAP ─────────────────
+        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close > PDC ─────────────
         if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM[5m]"
+            exit_reason = "BULL_VACUUM"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
         # Uses completed 1m bar close (per-ticker; not part of the index shield)
