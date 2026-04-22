@@ -2953,208 +2953,248 @@ def run_local() -> int:
         assert "BULL_VACUUM[5m]" in m.REASON_LABELS
 
     # ============================================================
-    # v3.4.35 — Profit-lock ladder
+    # v3.4.36 — Peak-anchored profit-lock ladder
     # ============================================================
-    # Six-tier peak-based ratchet replacing the old 1%/$1 armed trail.
-    # Tests cover: version bump, helper presence, tier math for long
-    # and short, one-way ratchet, legacy fallback, harvest scaling, and
-    # display-text wiring.
+    # v3.4.35 anchored tiers to entry + X% — which widened the gap
+    # between peak and stop as peak grew. v3.4.36 inverts: stop is
+    # peak − X% (long) or peak + X% (short), with X shrinking at
+    # higher tiers so the trade is locked in tighter the further it
+    # works.
 
-    @t("v3.4.35: BOT_VERSION is >= 3.4.35")
+    @t("v3.4.36: BOT_VERSION is >= 3.4.36")
     def _():
         import stock_spike_monitor as m
         parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
-        assert parts >= (3, 4, 35), m.BOT_VERSION
+        assert parts >= (3, 4, 36), m.BOT_VERSION
 
-    @t("v3.4.35: LADDER_TIERS_LONG and helpers exist")
+    @t("v3.4.36: LADDER_TIERS_LONG and helpers exist")
     def _():
         import stock_spike_monitor as m
         assert hasattr(m, "LADDER_TIERS_LONG")
-        assert hasattr(m, "LADDER_HARVEST_FRACTION")
-        assert m.LADDER_HARVEST_FRACTION == 0.90
         assert callable(m._ladder_stop_long)
         assert callable(m._ladder_stop_short)
         # Six tiers total (five explicit + implicit sub-1%).
         assert len(m.LADDER_TIERS_LONG) == 5, m.LADDER_TIERS_LONG
+        # Schedule: (0.05, 0.0010) ... (0.01, 0.0050)
+        triggers = [t for t, _ in m.LADDER_TIERS_LONG]
+        assert triggers == [0.05, 0.04, 0.03, 0.02, 0.01], triggers
+        give_backs = [g for _, g in m.LADDER_TIERS_LONG]
+        # Aggressive taper: higher peak → tighter give-back.
+        assert give_backs == [0.001, 0.002, 0.003, 0.004, 0.005], give_backs
 
-    @t("v3.4.35: long ladder sub-1% tier returns initial_stop (Bullet)")
+    @t("v3.4.36: long ladder sub-1% tier returns initial_stop (Bullet)")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_high": 100.50,
                "initial_stop": 99.25, "stop": 99.25}
         assert m._ladder_stop_long(pos) == 99.25
 
-    @t("v3.4.35: long ladder +1% → entry (breakeven)")
+    @t("v3.4.36: long ladder +1% → peak − 0.50%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_high": 101.00,
                "initial_stop": 99.25, "stop": 99.25}
-        assert m._ladder_stop_long(pos) == 100.00
+        # 101.00 * 0.995 = 100.495 → rounds to 100.49 or 100.50 depending
+        # on float precision. Accept either — both are within 1 cent.
+        stop = m._ladder_stop_long(pos)
+        assert round(abs(stop - 100.50), 2) <= 0.01, stop
 
-    @t("v3.4.35: long ladder +2% → entry + 1.0%")
+    @t("v3.4.36: long ladder +2% → peak − 0.40%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_high": 102.00,
                "initial_stop": 99.25, "stop": 99.25}
-        assert m._ladder_stop_long(pos) == 101.00
+        # 102.00 * 0.996 = 101.592 → rounds to 101.59
+        assert m._ladder_stop_long(pos) == 101.59
 
-    @t("v3.4.35: long ladder +3% → entry + 2.0%")
+    @t("v3.4.36: long ladder +3% → peak − 0.30%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_high": 103.00,
                "initial_stop": 99.25, "stop": 99.25}
-        assert m._ladder_stop_long(pos) == 102.00
+        # 103.00 * 0.997 = 102.691 → rounds to 102.69
+        assert m._ladder_stop_long(pos) == 102.69
 
-    @t("v3.4.35: long ladder +4% → entry + 3.5%")
+    @t("v3.4.36: long ladder +4% → peak − 0.20%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_high": 104.00,
                "initial_stop": 99.25, "stop": 99.25}
-        assert m._ladder_stop_long(pos) == 103.50
+        # 104.00 * 0.998 = 103.792 → rounds to 103.79
+        assert m._ladder_stop_long(pos) == 103.79
 
-    @t("v3.4.35: long ladder +5% → harvest 90% of peak gain")
+    @t("v3.4.36: long ladder +5% → peak − 0.10% (Harvest)")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_high": 105.00,
                "initial_stop": 99.25, "stop": 99.25}
-        # 0.9 * (105 - 100) = 4.50 → stop = 104.50
-        assert m._ladder_stop_long(pos) == 104.50
+        # 105.00 * 0.999 = 104.895 → rounds to 104.90
+        # (Python banker's rounding: round-half-to-even; here
+        #  104.895 is technically inexact in float, so verify by math)
+        stop = m._ladder_stop_long(pos)
+        assert abs(stop - 104.90) < 0.01 or abs(stop - 104.89) < 0.01, stop
 
-    @t("v3.4.35: long ladder +10% harvest scales with peak")
+    @t("v3.4.36: long ladder +10% Harvest stays peak − 0.10%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_high": 110.00,
                "initial_stop": 99.25, "stop": 99.25}
-        # 0.9 * 10 = 9.00 → stop = 109.00
-        assert m._ladder_stop_long(pos) == 109.00
+        # 110.00 * 0.999 = 109.89
+        assert m._ladder_stop_long(pos) == 109.89
 
-    @t("v3.4.35: long ladder harvest keeps lock on pullback (peak-based)")
+    @t("v3.4.36: long ladder peak-anchored (gap shrinks as peak grows)")
     def _():
         import stock_spike_monitor as m
-        # Peak hit 110 then pulled back — ladder still reads trail_high.
-        pos = {"entry_price": 100.0, "trail_high": 110.00,
-               "initial_stop": 99.25, "stop": 99.25}
-        # Ladder stop stays at harvest level regardless of current price.
-        assert m._ladder_stop_long(pos) == 109.00
+        # Verify the core design: gap(peak, stop) must NARROW at higher
+        # peak tiers, not widen (which was the v3.4.35 bug).
+        def gap(peak):
+            pos = {"entry_price": 100.0, "trail_high": peak,
+                   "initial_stop": 99.25, "stop": 99.25}
+            return round(peak - m._ladder_stop_long(pos), 4)
+        g2 = gap(102.00)   # +2% tier: peak * 0.004 = 0.408
+        g3 = gap(103.00)   # +3% tier: peak * 0.003 = 0.309
+        g4 = gap(104.00)   # +4% tier: peak * 0.002 = 0.208
+        g5 = gap(105.00)   # +5% tier: peak * 0.001 = 0.105
+        assert g2 > g3 > g4 > g5, (g2, g3, g4, g5)
 
-    @t("v3.4.35: long ladder never looser than initial_stop")
+    @t("v3.4.36: long ladder never looser than initial_stop")
     def _():
         import stock_spike_monitor as m
-        # Peak only +0.5% (sub-1%) — must return initial_stop, not
-        # something tighter that doesn't exist.
+        # Peak only +0.5% (sub-1%) — structural stop holds.
         pos = {"entry_price": 100.0, "trail_high": 100.50,
                "initial_stop": 99.25, "stop": 99.25}
-        result = m._ladder_stop_long(pos)
-        assert result >= 99.25 and result <= 100.00, result
+        assert m._ladder_stop_long(pos) == 99.25
+        # Tighter tier that computes below initial — clamped up.
+        pos = {"entry_price": 100.0, "trail_high": 101.00,
+               "initial_stop": 101.50, "stop": 101.50}
+        # Tier would return 100.50, but initial is 101.50 — keep initial.
+        assert m._ladder_stop_long(pos) == 101.50
 
-    @t("v3.4.35: long ladder legacy fallback (no initial_stop)")
+    @t("v3.4.36: long ladder legacy fallback (no initial_stop)")
     def _():
         import stock_spike_monitor as m
-        # Pre-v3.4.35 position — no initial_stop key. Must fall back to
-        # pos['stop'] for the sub-1% tier and never crash.
+        # Pre-v3.4.35 position — no initial_stop. Must fall back to
+        # pos['stop'] and never crash.
         pos = {"entry_price": 100.0, "trail_high": 100.50, "stop": 99.00}
         assert m._ladder_stop_long(pos) == 99.00
-        # Above +1% the ladder still returns the breakeven tier.
+        # Above +1% the tier computes against peak, clamped by stop.
         pos["trail_high"] = 101.00
-        assert m._ladder_stop_long(pos) == 100.00
+        # tier = 101.00 * 0.995 = 100.495 → 100.50; fallback stop = 99.00
+        # max(100.50, 99.00) = 100.50
+        assert m._ladder_stop_long(pos) == 100.50
 
-    @t("v3.4.35: long ladder one-way — no pullback when peak stays")
+    @t("v3.4.36: long ladder one-way — peak higher → stop higher")
     def _():
         import stock_spike_monitor as m
-        pos = {"entry_price": 100.0, "trail_high": 105.00,
-               "initial_stop": 99.25, "stop": 99.25}
-        # First call returns harvest stop.
-        first = m._ladder_stop_long(pos)
-        # Peak stays — call again, result must not decrease.
-        second = m._ladder_stop_long(pos)
-        assert second >= first, (first, second)
-        assert second == 104.50
+        pos_lo = {"entry_price": 100.0, "trail_high": 102.00,
+                  "initial_stop": 99.25, "stop": 99.25}
+        pos_hi = {"entry_price": 100.0, "trail_high": 105.00,
+                  "initial_stop": 99.25, "stop": 99.25}
+        lo = m._ladder_stop_long(pos_lo)
+        hi = m._ladder_stop_long(pos_hi)
+        assert hi > lo, (hi, lo)
 
-    @t("v3.4.35: short ladder mirror — +1% → entry (breakeven)")
+    @t("v3.4.36: short ladder mirror — +1% → peak + 0.50%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_low": 99.00,
                "initial_stop": 100.75, "stop": 100.75}
-        assert m._ladder_stop_short(pos) == 100.00
+        # 99.00 * 1.005 = 99.49499... in float → rounds to 99.49
+        # (or 99.50 on other platforms). Accept either — both are
+        # within 1 cent of the target and still tighter than initial.
+        stop = m._ladder_stop_short(pos)
+        assert round(abs(stop - 99.50), 2) <= 0.01, stop
 
-    @t("v3.4.35: short ladder mirror — +2% → entry − 1.0%")
+    @t("v3.4.36: short ladder mirror — +2% → peak + 0.40%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_low": 98.00,
                "initial_stop": 100.75, "stop": 100.75}
-        assert m._ladder_stop_short(pos) == 99.00
+        # 98.00 * 1.004 = 98.392 → 98.39
+        assert m._ladder_stop_short(pos) == 98.39
 
-    @t("v3.4.35: short ladder mirror — +4% → entry − 3.5%")
+    @t("v3.4.36: short ladder mirror — +4% → peak + 0.20%")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_low": 96.00,
                "initial_stop": 100.75, "stop": 100.75}
-        assert m._ladder_stop_short(pos) == 96.50
+        # 96.00 * 1.002 = 96.192 → 96.19
+        assert m._ladder_stop_short(pos) == 96.19
 
-    @t("v3.4.35: short ladder mirror — +5% harvest 90%")
+    @t("v3.4.36: short ladder mirror — +5% → peak + 0.10% (Harvest)")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_low": 95.00,
                "initial_stop": 100.75, "stop": 100.75}
-        # 0.9 * (100 - 95) = 4.50 → stop = 95.50
-        assert m._ladder_stop_short(pos) == 95.50
+        # 95.00 * 1.001 = 95.095 → 95.10 or 95.09 (float-edge)
+        stop = m._ladder_stop_short(pos)
+        assert abs(stop - 95.10) < 0.01 or abs(stop - 95.09) < 0.01, stop
 
-    @t("v3.4.35: short ladder sub-1% returns initial_stop")
+    @t("v3.4.36: short ladder sub-1% returns initial_stop")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_low": 99.50,
                "initial_stop": 100.75, "stop": 100.75}
         assert m._ladder_stop_short(pos) == 100.75
 
-    @t("v3.4.35: short ladder legacy fallback (no initial_stop)")
+    @t("v3.4.36: short ladder legacy fallback (no initial_stop)")
     def _():
         import stock_spike_monitor as m
         pos = {"entry_price": 100.0, "trail_low": 99.50, "stop": 101.00}
         assert m._ladder_stop_short(pos) == 101.00
 
-    @t("v3.4.35: initial_stop persisted in long paper entry path")
+    @t("v3.4.36: AVGO Eugene scenario — tighter than old rule")
+    def _():
+        import stock_spike_monitor as m
+        # Eugene's exact complaint: AVGO entry $411.30, peak $420.69,
+        # old prod stop was $416.48 (gap $4.21). v3.4.35 made this
+        # WORSE ($415.41, gap $5.28). v3.4.36 fixes: +2% tier = peak *
+        # 0.996 = 420.69 * 0.996 = 419.007 → $419.01 (gap $1.68).
+        pos = {"entry_price": 411.30, "trail_high": 420.69,
+               "initial_stop": 408.22, "stop": 408.22}
+        stop = m._ladder_stop_long(pos)
+        gap = 420.69 - stop
+        assert gap < 2.00, f"gap {gap:.2f} not tight enough"
+        assert stop > 416.48, f"stop {stop:.2f} not tighter than old rule"
+
+    @t("v3.4.36: initial_stop persisted across entry paths")
     def _():
         import stock_spike_monitor as m
         src = open(m.__file__).read()
-        # positions[ticker] = {...} dict must set initial_stop.
-        # Confirm by checking that the substring appears at least once
-        # inside the long paper entry context (no fragile line lookup).
-        assert "\"initial_stop\"" in src or "'initial_stop'" in src, \
-            "initial_stop key missing from source"
-        # Sanity: appears at least 4 times (4 position dicts + helpers).
+        assert "\"initial_stop\"" in src or "'initial_stop'" in src
+        # 4 position dicts + helpers → >= 6 references.
         count = src.count("initial_stop")
         assert count >= 6, f"initial_stop only appears {count} times"
 
-    @t("v3.4.35: /strategy body shows ladder table (not old 1.0% trail)")
+    @t("v3.4.36: /strategy body shows peak-anchored ladder")
     def _():
         import inspect
         import stock_spike_monitor as m
         src = inspect.getsource(m.cmd_strategy)
-        assert "Ladder" in src, "Ladder table missing from /strategy"
-        assert "+1%" in src
-        assert "+5%+" in src
-        # Old armed-trail copy must be gone.
-        assert "+1.0% trigger" not in src, "old trail copy still present"
-        assert "max(1.0%, $1.00)" not in src
+        assert "Ladder" in src
+        # v3.4.36 uses "peak − X%" / "peak + X%" copy.
+        assert "peak" in src.lower()
+        # Old gain-anchored copy must be gone.
+        assert "entry +1%" not in src
+        assert "entry+0.9" not in src
+        assert "+1.0% trigger" not in src
 
-    @t("v3.4.35: /algo body shows ladder table (not old 1.0% trail)")
+    @t("v3.4.36: /algo body shows peak-anchored ladder")
     def _():
         import inspect
         import stock_spike_monitor as m
         src = inspect.getsource(m.cmd_algo)
         assert "Ladder" in src
-        assert "+1.0% trigger" not in src
-        assert "max(1.0%, $1.00)" not in src
+        assert "peak" in src.lower()
+        assert "entry +1%" not in src
+        assert "entry+0.9" not in src
 
-    @t("v3.4.35: /strategy ladder lines stay within 34-char mobile budget")
+    @t("v3.4.36: /strategy ladder lines stay within 34-char budget")
     def _():
         import inspect
         import stock_spike_monitor as m
-        # Execute a synthetic call path by extracting the text literal.
         src = inspect.getsource(m.cmd_strategy)
-        # Find ladder block lines — any line containing "→" in the body.
         over = []
-        # The string concat form makes it easy: grab each quoted chunk.
         import re
         for match in re.finditer(r'"([^"]*\\u2192[^"]*)\\n"', src):
             raw = match.group(1).encode().decode("unicode_escape")
@@ -3162,19 +3202,19 @@ def run_local() -> int:
                 over.append((len(raw), raw))
         assert not over, f"lines over 34 chars: {over}"
 
-    @t("v3.4.35: CURRENT_MAIN_NOTE leads with v3.4.35")
+    @t("v3.4.36: CURRENT_MAIN_NOTE leads with v3.4.36")
     def _():
         import stock_spike_monitor as m
         note = m.CURRENT_MAIN_NOTE
-        assert note.startswith("v3.4.35"), note[:40]
+        assert note.startswith("v3.4.36"), note[:40]
 
-    @t("v3.4.35: CURRENT_TP_NOTE leads with v3.4.35")
+    @t("v3.4.36: CURRENT_TP_NOTE leads with v3.4.36")
     def _():
         import stock_spike_monitor as m
         note = m.CURRENT_TP_NOTE
-        assert note.startswith("v3.4.35"), note[:40]
+        assert note.startswith("v3.4.36"), note[:40]
 
-    @t("v3.4.35: CURRENT notes stay within 34-char mobile budget")
+    @t("v3.4.36: CURRENT notes stay within 34-char mobile budget")
     def _():
         import stock_spike_monitor as m
         for name in ("CURRENT_MAIN_NOTE", "CURRENT_TP_NOTE",
@@ -3184,7 +3224,13 @@ def run_local() -> int:
                 assert len(line) <= 34, \
                     f"{name} line {i} over 34 chars ({len(line)}): {line!r}"
 
-    @t("v3.4.35: v3.4.34 PDC migration line persists in history tail")
+    @t("v3.4.36: v3.4.35 ladder line persists in history tail")
+    def _():
+        import stock_spike_monitor as m
+        note = m.MAIN_RELEASE_NOTE
+        assert "v3.4.35" in note, "v3.4.35 must persist in history"
+
+    @t("v3.4.36: v3.4.34 PDC migration line persists in history tail")
     def _():
         import stock_spike_monitor as m
         note = m.MAIN_RELEASE_NOTE

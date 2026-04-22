@@ -4,6 +4,98 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.36 — Peak-anchored profit-lock ladder (2026-04-22)
+
+### Why
+
+v3.4.35 shipped earlier today and got the direction wrong. The
+ladder was *entry-anchored* — each tier said "at +N% peak gain,
+set stop to entry + X%" with X growing from 0 (breakeven) up to
+4.5% at the Harvest tier. The math looked clean on a spreadsheet
+but broke the core trailing-stop instinct: as price rose *past*
+entry + X, the gap between peak and stop *widened* instead of
+tightening.
+
+On Eugene's AVGO example (entry $411.30, peak $420.69, +2.28%
+gain) v3.4.35 placed the stop at entry + 1.0% = $415.41 — a
+$5.28 give-back, *worse* than the old flat 1% rule's $4.21.
+Every additional cent of peak widened the give-back by exactly
+one cent because entry + X is frozen and peak keeps climbing.
+That is the opposite of what a profit-lock ladder should do.
+
+v3.4.36 inverts the anchor. Every tier is now expressed as
+*peak − X%* (long) or *peak + X%* (short), with X *shrinking*
+as the peak climbs. The gap between peak and stop now narrows
+monotonically with every higher tier — the trailing-stop
+instinct restored and made explicit.
+
+### What changed
+
+**The ladder (peak gain → stop, give-back shrinks)**
+
+| Peak gain | Long stop        | Short stop       | Phase   |
+| :-------- | :--------------- | :--------------- | :------ |
+| < 1.0%    | initial hard stop| initial hard stop| Bullet  |
+| ≥ 1.0%    | peak − 0.50%     | peak + 0.50%     | Arm     |
+| ≥ 2.0%    | peak − 0.40%     | peak + 0.40%     | Lock    |
+| ≥ 3.0%    | peak − 0.30%     | peak + 0.30%     | Tight   |
+| ≥ 4.0%    | peak − 0.20%     | peak + 0.20%     | Tighter |
+| ≥ 5.0%    | peak − 0.10%     | peak + 0.10%     | Harvest |
+
+Bullet tier (<1% peak) keeps the initial hard stop untouched
+so micro-noise right after entry cannot knock the trade out.
+From +1% onward the ladder owns the stop, strictly tighter
+than the old rules. One-way ratchet preserved: long stops
+take `max(tier_stop, initial_stop)` and short stops take
+`min(tier_stop, initial_stop)` — stop can only tighten.
+
+**Eugene's AVGO scenario (entry $411.30, peak $420.69)**
+
+| Rule             | Stop    | Gap   | Lock-in  |
+| :--------------- | :------ | :---- | :------- |
+| Old 1%/$1 flat   | $416.48 | $4.21 | +1.26%   |
+| v3.4.35 (broken) | $415.41 | $5.28 | +1.00%   |
+| v3.4.36 (fixed)  | $419.01 | $1.68 | +1.87%   |
+
+At Harvest tier (+5% peak) the give-back collapses to 0.10%
+— effectively a snap-close on any give-back, which matches
+the "lock the gain, don't ride it back down" intent.
+
+**Code changes**
+
+- `LADDER_TIERS_LONG` rewritten from `(gain_threshold, stop_pct_offset)` tuples to `(gain_threshold, give_back_pct)` tuples — semantics inverted
+- `LADDER_HARVEST_FRACTION = 0.0010` kept as an alias to the ≥5% give-back (back-compat)
+- `_ladder_stop_long` now computes `peak * (1.0 - give_back_pct)` instead of `entry * (1.0 + offset_pct)`
+- `_ladder_stop_short` mirrors with `peak * (1.0 + give_back_pct)`
+- /strategy and /algo bodies updated to display the new table ("peak − 0.50%" etc., all lines within 34-char Telegram width)
+- CURRENT_MAIN_NOTE / CURRENT_TP_NOTE lead with the peak-anchored framing
+- v3.4.35 rolled into history tails with a "now superseded by peak-anchored" note so /version makes the correction visible
+
+### Tests
+
+25 new tier-math tests covering every band (Bullet, Arm, Lock,
+Tight, Tighter, Harvest) on both sides, plus a dedicated
+AVGO-Eugene-scenario assertion and a monotonic gap-shrinking
+design assertion (gap(peak=+5%) < gap(peak=+4%) < … < gap(peak=+1%)).
+One-way ratchet, legacy fallback (no `initial_stop`), and the
+34-char Telegram width budget all still covered.
+
+Float-precision edge in two tier tests surfaced during rollout:
+`99.00 × 1.005 = 99.49499…` rounds to 99.49 on most platforms
+(and `101.00 × 0.995 = 100.495` rides the same knife-edge).
+Both tests now accept either rounding with a 1-cent tolerance.
+
+### Migration notes
+
+Nothing to migrate — ladder is stateless, reads only `peak`,
+`entry_price`, and `initial_stop` on each evaluation. Positions
+open under v3.4.35 pick up v3.4.36 behavior on the next stop
+check. The v3.4.23 0.75%-cap and v3.4.25 breakeven layers are
+kept as idempotent safeguards and continue to run; the ladder
+dominates once peak ≥ 1%.
+
+---
+
 ## v3.4.35 — Profit-lock ladder (2026-04-22)
 
 ### Why
