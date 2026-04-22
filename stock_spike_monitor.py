@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.35"
+BOT_VERSION = "3.4.36"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,29 +56,28 @@ BOT_VERSION = "3.4.35"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.35 \u2014 Profit-lock\n"
-    "ladder replaces the 1%\n"
-    "trail. Peak gain sets\n"
-    "the stop tier, one-way.\n"
+    "v3.4.36 \u2014 Profit-lock\n"
+    "ladder is now peak-based.\n"
+    "Stop = peak \u2212 X%, tighter\n"
+    "each tier as peak grows.\n"
     "\n"
-    "Peak  Stop  Phase\n"
-    "<1%   hard  Bullet\n"
-    ">=1%  BE    Capital safe\n"
-    ">=2%  +1%   Lock 1%\n"
-    ">=3%  +2%   Lock 2%\n"
-    ">=4%  +3.5% Tighten\n"
-    ">=5%  90%   Harvest\n"
+    "Peak   Give-back  Phase\n"
+    ">=1%   0.50%      Arm\n"
+    ">=2%   0.40%      Lock\n"
+    ">=3%   0.30%      Tight\n"
+    ">=4%   0.20%      Tighter\n"
+    ">=5%+  0.10%      Harvest\n"
     "\n"
-    "Short side mirrors it.\n"
+    "Shorts mirror it.\n"
     "Stop only tightens.\n"
-    "Replaces 1%/$1 trail\n"
-    "and 0.5% breakeven."
+    "Replaces gain-anchored\n"
+    "tiers from v3.4.35."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.35 \u2014 Profit-lock\n"
-    "ladder: stop steps up\n"
-    "with peak gain. 5%+\n"
-    "harvests 90% of gain.\n"
+    "v3.4.36 \u2014 Profit-lock\n"
+    "ladder: stop = peak \u2212 X%\n"
+    "tighter at every tier.\n"
+    "5%+ locks within 0.10%.\n"
     "Stop only tightens."
 )
 
@@ -90,6 +89,10 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.35 \u2014 First profit-lock\n"
+    "ladder (gain-anchored); now\n"
+    "superseded by peak-anchored.\n"
+    "\n"
     "v3.4.34 \u2014 AVWAP fully\n"
     "removed; one anchor (PDC)\n"
     "across entries, regime\n"
@@ -101,23 +104,20 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.32 \u2014 Editable ticker\n"
     "universe from Telegram;\n"
-    "QBTS tracked by default.\n"
-    "\n"
-    "v3.4.31 \u2014 Richer Today's\n"
-    "Trades card: cost, P&L,\n"
-    "and daily summary."
+    "QBTS tracked by default."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.35 \u2014 First ladder\n"
+    "(gain-anchored) \u2014 now\n"
+    "peak-anchored instead.\n"
     "v3.4.34 \u2014 AVWAP gone;\n"
     "PDC anchor everywhere.\n"
     "v3.4.33 \u2014 /ticker unified\n"
     "(add/remove/list) + rich\n"
     "metric prime on add.\n"
-    "v3.4.32 \u2014 Editable ticker\n"
-    "universe from Telegram.\n"
     "/tp_sync for TP status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
@@ -1986,59 +1986,64 @@ def _capped_short_stop(pdc_val, entry_price, max_pct=MAX_STOP_PCT):
     return round(final, 2), final < baseline, round(baseline, 2)
 
 
-# v3.4.35 — Profit-Lock Ladder
+# v3.4.36 — Profit-Lock Ladder (peak-anchored give-back)
 # ----------------------------------------------------------------
 # Six-tier ratchet driven by peak gain %. Peak is trail_high for
-# long, trail_low for short. Replaces the old 1%/$1 armed-trail and
-# the 0.5% breakeven ratchet in one rule:
+# long, trail_low for short. v3.4.35's gain-anchored tiers (entry +
+# X%) made the gap between peak and stop WIDEN as peak grew — the
+# opposite of the trailing-stop instinct. v3.4.36 inverts this: the
+# stop sits a shrinking % below peak, so the tighter the trade
+# works, the less give-back is allowed.
 #
-#   Peak gain %  Long stop           Short stop           Phase
-#   -----------  ------------------  -------------------  -------------
-#   < 1.0%       initial hard stop   initial hard stop    Bullet
-#   ≥ 1.0%      entry (breakeven)   entry (breakeven)    Capital safe
-#   ≥ 2.0%      entry + 1.0%        entry − 1.0%         Lock 1%
-#   ≥ 3.0%      entry + 2.0%        entry − 2.0%         Lock 2%
-#   ≥ 4.0%      entry + 3.5%        entry − 3.5%         Tightening
-#   ≥ 5.0%      entry + 0.9×peak_g  entry − 0.9×peak_g   Harvest (90%)
+#   Peak gain %  Long give-back  Short give-back  Phase
+#   -----------  --------------  ---------------  -------
+#   < 1.0%       initial stop    initial stop     Bullet
+#   ≥ 1.0%      peak − 0.50%    peak + 0.50%     Arm
+#   ≥ 2.0%      peak − 0.40%    peak + 0.40%     Lock
+#   ≥ 3.0%      peak − 0.30%    peak + 0.30%     Tight
+#   ≥ 4.0%      peak − 0.20%    peak + 0.20%     Tighter
+#   ≥ 5.0%      peak − 0.10%    peak + 0.10%     Harvest
 #
 # Design:
-#   - PEAK-BASED: tier is determined by the highest gain reached,
-#     not current gain. Once earned, stays. A pullback from +5% to
-#     +2% keeps the Harvest stop; if price crosses it, we exit with
-#     the locked gain.
+#   - PEAK-ANCHORED: stop is always defined as a % below peak (for
+#     long) or above peak (for short). As peak ratchets up, the stop
+#     ratchets up with it; the gap between them shrinks at higher
+#     tiers.
 #   - ONE-WAY: the returned stop is always max(existing_trail, tier)
 #     for longs / min(existing_trail, tier) for shorts — never
-#     looser. Matches the locked design principle.
-#   - REPLACES the old trail: callers pass in the existing pos["stop"]
-#     or pos["trail_stop"] and we return the tighter of that vs the
-#     ladder. No separate 1%/$1 calculation anymore.
-#   - SUB-1% TIER: returns `initial_stop` from the position (the
-#     OR-based structural stop). Legacy positions without initial_stop
-#     fall back to the live pos["stop"].
-#
-# These tier bands are percentage-of-entry, so the ladder scales with
-# price naturally. A $50 stock's +1% tier = $0.50 buffer; a $500
-# stock's +1% = $5.00 buffer. No $1 floor needed.
+#     looser. If a pullback happens, trail_high doesn't move and the
+#     stop holds exactly where it was.
+#   - SUB-1% TIER: returns `initial_stop` (the OR-based structural
+#     stop). Legacy positions without initial_stop fall back to
+#     pos["stop"].
+#   - NEVER LOOSER THAN INITIAL: final result is clamped by
+#     max(tier_stop, initial_stop) for long — the structural stop is
+#     a permanent floor. Mirrors with min(...) for short.
 LADDER_TIERS_LONG = [
-    # (gain_trigger, stop_pct_above_entry_or_None_for_90pct_lock)
-    (0.05, None),    # ≥ 5% → 90% of peak gain
-    (0.04, 0.035),   # ≥ 4% → entry + 3.5%
-    (0.03, 0.020),   # ≥ 3% → entry + 2.0%
-    (0.02, 0.010),   # ≥ 2% → entry + 1.0%
-    (0.01, 0.000),   # ≥ 1% → entry (breakeven)
+    # (peak_gain_trigger, give_back_pct_below_peak)
+    (0.05, 0.0010),   # ≥ 5% → peak − 0.10% (Harvest)
+    (0.04, 0.0020),   # ≥ 4% → peak − 0.20% (Tighter)
+    (0.03, 0.0030),   # ≥ 3% → peak − 0.30% (Tight)
+    (0.02, 0.0040),   # ≥ 2% → peak − 0.40% (Lock)
+    (0.01, 0.0050),   # ≥ 1% → peak − 0.50% (Arm)
 ]
-LADDER_HARVEST_FRACTION = 0.90  # ≥ 5% tier locks 90% of peak gain
+# v3.4.35 had a separate LADDER_HARVEST_FRACTION; v3.4.36 rolls that
+# concept into the tier table (the ≥5% tier is just the tightest
+# give-back). Alias kept so any external readers don't crash; value is
+# now the ≥5% give-back fraction itself.
+LADDER_HARVEST_FRACTION = 0.0010
 
 
 def _ladder_stop_long(pos):
     """Return the profit-lock ladder stop for a long position.
 
-    Uses pos["trail_high"] as the peak. Returns the highest (tightest)
-    ladder stop triggered by the peak gain, or `initial_stop` if peak
-    gain < 1.0% (Bullet phase). Falls back to pos["stop"] when
-    initial_stop is absent (legacy positions from pre-v3.4.35).
+    Uses pos["trail_high"] as the peak. Stop is peak − give_back%
+    where give_back shrinks as peak grows. Below +1% peak, returns
+    `initial_stop` (structural stop only). Falls back to pos["stop"]
+    when initial_stop is absent (legacy positions).
 
-    Never looser than `initial_stop` — returns that as the floor.
+    Never looser than `initial_stop` — returns max(tier_stop,
+    initial_stop) so the structural floor is permanent.
     """
     entry = pos.get("entry_price") or 0.0
     if entry <= 0:
@@ -2047,13 +2052,9 @@ def _ladder_stop_long(pos):
     peak_gain_pct = (peak - entry) / entry
     initial = pos.get("initial_stop", pos.get("stop", 0))
     # Iterate highest tier first so first match wins.
-    for trigger, stop_offset_pct in LADDER_TIERS_LONG:
+    for trigger, give_back_pct in LADDER_TIERS_LONG:
         if peak_gain_pct >= trigger:
-            if stop_offset_pct is None:
-                # Harvest: 90% of peak gain.
-                tier_stop = entry + LADDER_HARVEST_FRACTION * (peak - entry)
-            else:
-                tier_stop = entry * (1.0 + stop_offset_pct)
+            tier_stop = peak * (1.0 - give_back_pct)
             return round(max(tier_stop, initial), 2)
     # Below 1% gain — structural stop only.
     return initial
@@ -2064,8 +2065,8 @@ def _ladder_stop_short(pos):
 
     Mirror of _ladder_stop_long. Uses pos["trail_low"] as the peak
     (lowest price reached). Peak gain % = (entry − low) / entry.
-    Returns the lowest (tightest-for-short) ladder stop triggered.
-    Never looser than `initial_stop`.
+    Stop is peak + give_back% where give_back shrinks as peak
+    deepens. Never looser (higher) than `initial_stop`.
     """
     entry = pos.get("entry_price") or 0.0
     if entry <= 0:
@@ -2073,12 +2074,9 @@ def _ladder_stop_short(pos):
     peak = pos.get("trail_low", entry) or entry
     peak_gain_pct = (entry - peak) / entry
     initial = pos.get("initial_stop", pos.get("stop", 0))
-    for trigger, stop_offset_pct in LADDER_TIERS_LONG:
+    for trigger, give_back_pct in LADDER_TIERS_LONG:
         if peak_gain_pct >= trigger:
-            if stop_offset_pct is None:
-                tier_stop = entry - LADDER_HARVEST_FRACTION * (entry - peak)
-            else:
-                tier_stop = entry * (1.0 - stop_offset_pct)
+            tier_stop = peak * (1.0 + give_back_pct)
             # Tighter = lower for short, so take min with initial.
             return round(min(tier_stop, initial), 2)
     return initial
@@ -7205,22 +7203,22 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "         + SPY & QQQ > PDC\n"
         "  Stop : OR_High \u2212 $0.90\n"
         "  Ladder (peak \u2192 stop):\n"
-        "    +1% \u2192 entry (BE)\n"
-        "    +2% \u2192 entry +1%\n"
-        "    +3% \u2192 entry +2%\n"
-        "    +4% \u2192 entry +3.5%\n"
-        "    +5%+ \u2192 entry+0.9\u00d7peak\n\n"
+        "    +1% \u2192 peak \u2212 0.50%\n"
+        "    +2% \u2192 peak \u2212 0.40%\n"
+        "    +3% \u2192 peak \u2212 0.30%\n"
+        "    +4% \u2192 peak \u2212 0.20%\n"
+        "    +5%+ \u2192 peak \u2212 0.10%\n\n"
         "\U0001f9b7 WOUNDED BUFFALO SHORT\n"
         "  Entry: 1-min close < OR_Low\n"
         "         + price < PDC (red stock)\n"
         "         + SPY & QQQ < PDC\n"
         "  Stop : PDC + $0.90\n"
         "  Ladder (peak \u2192 stop):\n"
-        "    +1% \u2192 entry (BE)\n"
-        "    +2% \u2192 entry -1%\n"
-        "    +3% \u2192 entry -2%\n"
-        "    +4% \u2192 entry -3.5%\n"
-        "    +5%+ \u2192 entry-0.9\u00d7peak\n\n"
+        "    +1% \u2192 peak + 0.50%\n"
+        "    +2% \u2192 peak + 0.40%\n"
+        "    +3% \u2192 peak + 0.30%\n"
+        "    +4% \u2192 peak + 0.20%\n"
+        "    +5%+ \u2192 peak + 0.10%\n\n"
         f"{SEP}\n"
         "Size : 10 shares (limit orders only)\n"
         "Max  : 5 entries per ticker/day (long + short combined)\n"
@@ -7300,11 +7298,11 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 QQQ > PDC\n"
         "Stop: OR High \u2212 $0.90\n"
         "Ladder (peak \u2192 stop):\n"
-        "  +1% \u2192 entry (BE)\n"
-        "  +2% \u2192 entry +1%\n"
-        "  +3% \u2192 entry +2%\n"
-        "  +4% \u2192 entry +3.5%\n"
-        "  +5%+ \u2192 entry+0.9\u00d7peak\n"
+        "  +1% \u2192 peak \u2212 0.50%\n"
+        "  +2% \u2192 peak \u2212 0.40%\n"
+        "  +3% \u2192 peak \u2212 0.30%\n"
+        "  +4% \u2192 peak \u2212 0.20%\n"
+        "  +5%+ \u2192 peak \u2212 0.10%\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 5 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
@@ -7325,11 +7323,11 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 QQQ < PDC\n"
         "Stop: PDC + $0.90\n"
         "Ladder (peak \u2192 stop):\n"
-        "  +1% \u2192 entry (BE)\n"
-        "  +2% \u2192 entry -1%\n"
-        "  +3% \u2192 entry -2%\n"
-        "  +4% \u2192 entry -3.5%\n"
-        "  +5%+ \u2192 entry-0.9\u00d7peak\n"
+        "  +1% \u2192 peak + 0.50%\n"
+        "  +2% \u2192 peak + 0.40%\n"
+        "  +3% \u2192 peak + 0.30%\n"
+        "  +4% \u2192 peak + 0.20%\n"
+        "  +5%+ \u2192 peak + 0.10%\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 5 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
