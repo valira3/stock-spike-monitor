@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.32"
+BOT_VERSION = "3.4.33"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,33 +56,37 @@ BOT_VERSION = "3.4.32"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.32 \u2014 Editable ticker\n"
-    "universe from Telegram.\n"
+    "v3.4.33 \u2014 /ticker is now\n"
+    "one command with sub-\n"
+    "switches:\n"
     "\n"
-    "/tickers lists the bot's\n"
-    "current watchlist.\n"
+    "/ticker list        \u2014 show\n"
+    "/ticker add SYM     \u2014 add\n"
+    "/ticker remove SYM  \u2014 drop\n"
     "\n"
-    "/add_ticker SYM adds a\n"
-    "symbol, fetches PDC and\n"
-    "OR on the spot, and the\n"
-    "next scan trades it.\n"
+    "On add, the bot now\n"
+    "primes every tracked\n"
+    "metric: PDC (FMP +\n"
+    "bars fallback), OR hi\n"
+    "and lo (if past 09:35\n"
+    "ET), RSI warm-up, and\n"
+    "a bars liveness probe.\n"
+    "Missing pieces are\n"
+    "listed in the reply\n"
+    "so you know what the\n"
+    "scan still has to fill.\n"
     "\n"
-    "/remove_ticker SYM takes\n"
-    "it out; open positions on\n"
-    "that ticker keep managing\n"
-    "until they close.\n"
-    "\n"
-    "QBTS is now tracked by\n"
-    "default. The list lives\n"
-    "in tickers.json so edits\n"
-    "survive restarts."
+    "/add_ticker and\n"
+    "/remove_ticker remain\n"
+    "as hidden aliases so\n"
+    "saved shortcuts work."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.32 \u2014 Ticker universe\n"
-    "now editable from\n"
-    "Telegram via /add_ticker,\n"
-    "/remove_ticker, /tickers.\n"
-    "QBTS tracked by default."
+    "v3.4.33 \u2014 /ticker now\n"
+    "handles add/remove/list\n"
+    "in one command. Adds\n"
+    "prime PDC + OR + RSI\n"
+    "and probe bar liveness."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -93,6 +97,10 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.32 \u2014 Editable ticker\n"
+    "universe from Telegram;\n"
+    "QBTS tracked by default.\n"
+    "\n"
     "v3.4.31 \u2014 Richer Today's\n"
     "Trades card: cost, P&L,\n"
     "and daily summary.\n"
@@ -102,23 +110,20 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.29 \u2014 Persistent\n"
     "dashboard login + live\n"
-    "Sovereign Regime panel.\n"
-    "\n"
-    "v3.4.28 \u2014 Sovereign Regime\n"
-    "Shield: SPY+QQQ 1m vs PDC."
+    "Sovereign Regime panel."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.32 \u2014 Editable ticker\n"
+    "universe from Telegram.\n"
     "v3.4.31 \u2014 Richer Today's\n"
     "Trades card on dashboard.\n"
     "v3.4.30 \u2014 Mobile dashboard\n"
     "fix; trade time display.\n"
     "v3.4.29 \u2014 Dashboard login\n"
     "persists across deploys.\n"
-    "v3.4.28 \u2014 Sovereign Regime\n"
-    "Shield (PDC eject).\n"
     "/tp_sync for broker status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
@@ -478,34 +483,68 @@ def _init_tickers() -> None:
 
 
 def _fill_metrics_for_ticker(ticker: str) -> dict:
-    """Populate the minimum set of metrics a newly-added ticker needs
-    to be scanned and displayed. Returns a dict describing what was
-    filled — used by /add_ticker for the confirmation reply.
+    """Populate every metric a newly-added ticker needs so the very
+    next scan cycle can evaluate it without cold-starting any data.
 
-    Metrics filled:
-      - pdc[ticker]          (previous day close, from FMP quote)
-      - or_high[ticker]      (opening range high, if 09:35 ET has passed)
-      - or_low[ticker]       (opening range low,  if 09:35 ET has passed)
+    v3.4.33: thorough fill — primes PDC (dual source), OR high/low
+    (post-09:35 ET), a warm-up RSI snapshot, and a liveness probe on
+    1-minute bars. Returns a dict describing what was filled; the
+    caller uses this to tell the user exactly what is ready and what
+    is still pending.
 
-    RSI is computed on demand from live bars; no cache to pre-seed.
+    Keys in the returned dict:
+      bars    : bool  — 1-minute bars are reachable for this symbol
+      pdc     : bool  — previous-day close cached in pdc[ticker]
+      pdc_src : str   — 'fmp' | 'bars' | 'none'
+      or      : bool  — opening range populated (high and low)
+      or_pending : bool — we're pre-09:35 ET; collect_or() will fill
+      rsi     : bool  — RSI warm-up value computed (not cached, just
+                        proves the bar history is long enough)
+      rsi_val : float | None — the warm-up value, for display only
+      errors  : list[str]    — human-readable problems, truncated
+                               to short phrases by the caller
     """
-    filled = {"pdc": False, "or": False, "errors": []}
+    filled = {
+        "bars": False,
+        "pdc": False, "pdc_src": "none",
+        "or": False, "or_pending": False,
+        "rsi": False, "rsi_val": None,
+        "errors": [],
+    }
+    now_et = _now_et()
+    or_window_end = now_et.replace(hour=9, minute=35,
+                                   second=0, microsecond=0)
+    past_or_window = now_et >= or_window_end
+
+    # 1) PDC via FMP quote — works any time of day, including pre-open.
     try:
-        # 1) PDC via FMP quote — works any time of day.
         q = get_fmp_quote(ticker)
         if q and q.get("previousClose"):
             pdc[ticker] = float(q["previousClose"])
             filled["pdc"] = True
+            filled["pdc_src"] = "fmp"
         else:
             filled["errors"].append("no PDC from FMP")
+    except Exception as e:
+        filled["errors"].append("FMP error: %s" % str(e)[:40])
+        logger.warning("fill_metrics FMP %s failed: %s", ticker, e)
 
-        # 2) OR — only if we're past 09:35 ET on a session day.
-        now_et = _now_et()
-        or_window_end = now_et.replace(hour=9, minute=35,
-                                       second=0, microsecond=0)
-        if now_et >= or_window_end:
-            bars = fetch_1min_bars(ticker)
-            if bars and bars.get("timestamps"):
+    # 2) Bars liveness probe + OR fill (if past 09:35) + RSI warm-up
+    #    + PDC fallback (if FMP missed it). All three piggy-back on
+    #    the same fetch so we only hit the data provider once.
+    try:
+        bars = fetch_1min_bars(ticker)
+        if bars and bars.get("timestamps"):
+            filled["bars"] = True
+
+            # PDC fallback from bars snapshot.
+            if not filled["pdc"] and bars.get("pdc"):
+                pdc[ticker] = float(bars["pdc"])
+                filled["pdc"] = True
+                filled["pdc_src"] = "bars"
+
+            # OR fill — only if we're past 09:35 ET.
+            if past_or_window:
                 open_ts = int(or_window_end.replace(hour=9, minute=30)
                               .timestamp())
                 end_ts = int(or_window_end.timestamp())
@@ -518,24 +557,43 @@ def _fill_metrics_for_ticker(ticker: str) -> dict:
                             max_hi = h if max_hi is None else max(max_hi, h)
                         if lo is not None:
                             min_lo = lo if min_lo is None else min(min_lo, lo)
-                if max_hi is not None:
+                if max_hi is not None and min_lo is not None:
                     or_high[ticker] = max_hi
-                    filled["or"] = True
-                if min_lo is not None:
                     or_low[ticker] = min_lo
-                # Refine PDC from the bars snapshot if FMP missed it.
-                if not filled["pdc"] and bars.get("pdc"):
-                    pdc[ticker] = bars["pdc"]
-                    filled["pdc"] = True
-                if not filled["or"]:
-                    filled["errors"].append("no bars in 09:30\u201309:35")
+                    filled["or"] = True
+                elif max_hi is not None:
+                    or_high[ticker] = max_hi
+                    filled["errors"].append("OR low missing")
+                else:
+                    filled["errors"].append(
+                        "no bars in 09:30\u201309:35")
             else:
-                filled["errors"].append("no 1m bars")
-        # Pre-09:35 is not an error — collect_or() will fill it at the
-        # scheduled time.
+                # Pre-09:35 is not an error — explicitly flag pending.
+                filled["or_pending"] = True
+
+            # RSI warm-up — compute from available closes. This doesn't
+            # cache anything (the scanner recomputes each cycle from
+            # live bars), but it proves the bar history is deep enough
+            # for _compute_rsi to return a real number on the next scan.
+            closes = [c for c in (bars.get("closes") or []) if c is not None]
+            if len(closes) >= RSI_PERIOD + 1:
+                try:
+                    rsi_val = _compute_rsi(closes)
+                    if rsi_val is not None:
+                        filled["rsi"] = True
+                        filled["rsi_val"] = float(rsi_val)
+                except Exception as e:
+                    filled["errors"].append(
+                        "RSI warm-up: %s" % str(e)[:30])
+            else:
+                filled["errors"].append(
+                    "RSI needs %d closes" % (RSI_PERIOD + 1))
+        else:
+            filled["errors"].append("no 1m bars")
     except Exception as e:
-        filled["errors"].append(str(e))
-        logger.warning("fill_metrics %s failed: %s", ticker, e)
+        filled["errors"].append("bars error: %s" % str(e)[:40])
+        logger.warning("fill_metrics bars %s failed: %s", ticker, e)
+
     return filled
 
 
@@ -5264,9 +5322,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n"
         "Admin\n"
         "  /reset       Reset portfolio\n"
-        "  /tickers     Show watchlist\n"
-        "  /add_ticker SYM  Track SYM\n"
-        "  /remove_ticker SYM  Drop SYM\n"
+        "  /ticker list       Show list\n"
+        "  /ticker add SYM    Track\n"
+        "  /ticker remove SYM Drop\n"
+        "\n"
+        "(aliases: /tickers,\n"
+        " /add_ticker, /remove_ticker\n"
+        " still work.)\n"
         "\n"
         "Tip: /menu for tap buttons\n"
         "```"
@@ -8668,13 +8730,33 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# /tickers, /add_ticker, /remove_ticker COMMANDS  (v3.4.32)
+# /ticker COMMAND  (v3.4.33 — unified add/remove/list)
 # ============================================================
-# These three commands let the user edit the tracked universe
-# from Telegram without redeploying. All three format replies
-# under the 34-char mobile-width rule. The actual mutation and
-# persistence lives in add_ticker() / remove_ticker() above;
-# these handlers just format the response.
+# One command with sub-switches:
+#   /ticker list         — show the tracked universe
+#   /ticker add SYM      — add + prime PDC/OR/RSI/bars
+#   /ticker remove SYM   — drop (SPY/QQQ are pinned, refused)
+#
+# Back-compat aliases registered as hidden handlers so any saved
+# shortcuts still work:
+#   /tickers          → /ticker list
+#   /add_ticker SYM   → /ticker add SYM
+#   /remove_ticker    → /ticker remove SYM
+#
+# All replies stay within the 34-char Telegram mobile-width budget.
+# Mutation and persistence live in add_ticker() / remove_ticker()
+# above; these handlers format the response.
+
+_TICKER_USAGE = (
+    "Usage: /ticker <sub> [SYM]\n"
+    "\n"
+    "  /ticker list\n"
+    "  /ticker add SYM\n"
+    "  /ticker remove SYM\n"
+    "\n"
+    "Example: /ticker add QBTS"
+)
+
 
 def _fmt_tickers_list() -> str:
     """Render the current ticker universe in a 34-char-safe table.
@@ -8705,14 +8787,8 @@ def _fmt_tickers_list() -> str:
     ) % ("\u2500" * 26, body, "\u2500" * 26, n_total, n_trade)
 
 
-async def cmd_tickers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the current tracked ticker universe."""
-    await update.message.reply_text(
-        _fmt_tickers_list(), reply_markup=_menu_button())
-
-
 def _fmt_add_reply(res: dict) -> str:
-    """Format the reply for /add_ticker. 34-char-safe."""
+    """Format the reply for /ticker add. 34-char-safe."""
     t = res.get("ticker", "?")
     if not res.get("ok"):
         return "\u274c Can't add %s\n%s" % (t, res.get("reason", "unknown"))
@@ -8720,24 +8796,45 @@ def _fmt_add_reply(res: dict) -> str:
         return "\u2139\ufe0f %s already tracked" % t
     metrics = res.get("metrics") or {}
     pdc_ok = metrics.get("pdc")
+    pdc_src = metrics.get("pdc_src", "none")
     or_ok = metrics.get("or")
+    or_pending = metrics.get("or_pending")
+    rsi_ok = metrics.get("rsi")
+    rsi_val = metrics.get("rsi_val")
+    bars_ok = metrics.get("bars")
     pdc_val = pdc.get(t)
     orh_val = or_high.get(t)
     orl_val = or_low.get(t)
-    # Metric lines — each well under 34 chars.
+
+    # Each metric gets one 34-char-safe status line.
     m_lines = []
-    m_lines.append("PDC:  " + ("$%.2f" % pdc_val if pdc_ok and pdc_val else "\u2014 (pending)"))
-    if or_ok and orh_val is not None:
-        if orl_val is not None:
-            m_lines.append("OR:   $%.2f \u2013 $%.2f" % (orl_val, orh_val))
-        else:
-            m_lines.append("OR hi: $%.2f" % orh_val)
+
+    # Bars liveness probe — the foundation everything else depends on.
+    m_lines.append(
+        "Bars:  " + ("\u2705 reachable" if bars_ok
+                     else "\u26a0 unreachable"))
+
+    # PDC with source tag so the user knows which provider answered.
+    if pdc_ok and pdc_val is not None:
+        src_tag = " (%s)" % pdc_src if pdc_src in ("fmp", "bars") else ""
+        m_lines.append("PDC:   $%.2f%s" % (pdc_val, src_tag))
     else:
-        now_et = _now_et()
-        if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35):
-            m_lines.append("OR:   pending 09:35 ET")
-        else:
-            m_lines.append("OR:   \u2014 (retry /or_now)")
+        m_lines.append("PDC:   \u2014 (pending)")
+
+    # OR high – low, or an explicit pending / missing reason.
+    if or_ok and orh_val is not None and orl_val is not None:
+        m_lines.append("OR:    $%.2f \u2013 $%.2f" % (orl_val, orh_val))
+    elif or_pending:
+        m_lines.append("OR:    pending 09:35 ET")
+    else:
+        m_lines.append("OR:    \u2014 (retry /or_now)")
+
+    # RSI warm-up — proves bar history is deep enough.
+    if rsi_ok and rsi_val is not None:
+        m_lines.append("RSI:   %.1f (warm)" % rsi_val)
+    else:
+        m_lines.append("RSI:   \u2014 (warms on scan)")
+
     errs = [e for e in (metrics.get("errors") or []) if e]
     tail = ""
     if errs:
@@ -8752,27 +8849,8 @@ def _fmt_add_reply(res: dict) -> str:
     ) % (t, "\u2500" * 26, "\n".join(m_lines), "\u2500" * 26, tail)
 
 
-async def cmd_add_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/add_ticker SYM — start tracking a symbol immediately.
-    Fetches PDC and (if past 09:35 ET) the Opening Range on the
-    spot so the next scan cycle is ready to trade it.
-    """
-    await update.message.reply_chat_action(ChatAction.TYPING)
-    args = context.args or []
-    if not args:
-        await update.message.reply_text(
-            "Usage: /add_ticker SYM\nExample: /add_ticker QBTS",
-            reply_markup=_menu_button())
-        return
-    # Run in executor — add_ticker does a blocking HTTP call to FMP.
-    loop = asyncio.get_event_loop()
-    res = await loop.run_in_executor(None, add_ticker, args[0])
-    await update.message.reply_text(
-        _fmt_add_reply(res), reply_markup=_menu_button())
-
-
 def _fmt_remove_reply(res: dict) -> str:
-    """Format the reply for /remove_ticker. 34-char-safe."""
+    """Format the reply for /ticker remove. 34-char-safe."""
     t = res.get("ticker", "?")
     if not res.get("ok"):
         return "\u274c Can't remove %s\n%s" % (t, res.get("reason", "unknown"))
@@ -8791,16 +8869,88 @@ def _fmt_remove_reply(res: dict) -> str:
     ) % (t, "\u2500" * 26, t, tail)
 
 
-async def cmd_remove_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/remove_ticker SYM — stop opening new entries on a symbol.
-    Any currently open position on that ticker keeps managing
-    until it closes normally; this only blocks new entries.
-    SPY and QQQ are pinned and cannot be removed.
+async def cmd_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/ticker — unified add/remove/list for the tracked universe.
+
+    Sub-commands (case-insensitive, several aliases each):
+      list   | ls | show       — show the current watchlist
+      add    | +              — add SYM; primes PDC/OR/RSI/bars
+      remove | rm | del | -   — drop SYM (SPY/QQQ are pinned)
     """
     args = context.args or []
     if not args:
+        # Bare /ticker defaults to list — most common case.
         await update.message.reply_text(
-            "Usage: /remove_ticker SYM\nExample: /remove_ticker QBTS",
+            _fmt_tickers_list(), reply_markup=_menu_button())
+        return
+    sub = (args[0] or "").strip().lower()
+
+    if sub in ("list", "ls", "show"):
+        await update.message.reply_text(
+            _fmt_tickers_list(), reply_markup=_menu_button())
+        return
+
+    if sub in ("add", "+"):
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Usage: /ticker add SYM\nExample: /ticker add QBTS",
+                reply_markup=_menu_button())
+            return
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        # Run in executor — add_ticker does blocking HTTP (FMP + bars).
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, add_ticker, args[1])
+        await update.message.reply_text(
+            _fmt_add_reply(res), reply_markup=_menu_button())
+        return
+
+    if sub in ("remove", "rm", "del", "delete", "-"):
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Usage: /ticker remove SYM\n"
+                "Example: /ticker remove QBTS",
+                reply_markup=_menu_button())
+            return
+        res = remove_ticker(args[1])
+        await update.message.reply_text(
+            _fmt_remove_reply(res), reply_markup=_menu_button())
+        return
+
+    # Unknown sub-command — show usage.
+    await update.message.reply_text(
+        _TICKER_USAGE, reply_markup=_menu_button())
+
+
+# ------- Back-compat aliases (not in the BotCommand menu) ----------
+async def cmd_tickers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias: /tickers → /ticker list (kept so saved shortcuts work)."""
+    await update.message.reply_text(
+        _fmt_tickers_list(), reply_markup=_menu_button())
+
+
+async def cmd_add_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias: /add_ticker SYM → /ticker add SYM."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: /add_ticker SYM\n"
+            "(or use: /ticker add SYM)",
+            reply_markup=_menu_button())
+        return
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, add_ticker, args[0])
+    await update.message.reply_text(
+        _fmt_add_reply(res), reply_markup=_menu_button())
+
+
+async def cmd_remove_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias: /remove_ticker SYM → /ticker remove SYM."""
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: /remove_ticker SYM\n"
+            "(or use: /ticker remove SYM)",
             reply_markup=_menu_button())
         return
     res = remove_ticker(args[0])
@@ -8834,9 +8984,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("near_misses", "Recent declined breakouts"),
     BotCommand("retighten", "Retighten stops to 0.75% cap"),
     BotCommand("trade_log", "Last 10 closed trades (persistent)"),
-    BotCommand("tickers", "Show tracked tickers"),
-    BotCommand("add_ticker", "Add a symbol (fills PDC + OR now)"),
-    BotCommand("remove_ticker", "Stop new entries on a symbol"),
+    BotCommand("ticker", "Ticker: list | add SYM | remove SYM"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
@@ -8987,6 +9135,9 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("or_now", cmd_or_now))
     app.add_handler(CommandHandler("menu", cmd_menu))
     # v3.4.32 — runtime ticker universe management
+    app.add_handler(CommandHandler("ticker", cmd_ticker))
+    # Back-compat aliases — hidden from BotCommand menu but still wired
+    # so any saved shortcuts keep working.
     app.add_handler(CommandHandler("tickers", cmd_tickers))
     app.add_handler(CommandHandler("add_ticker", cmd_add_ticker))
     app.add_handler(CommandHandler("remove_ticker", cmd_remove_ticker))
@@ -9047,6 +9198,8 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("or_now", cmd_or_now))
     tp_app.add_handler(CommandHandler("menu", cmd_menu))
     # v3.4.32 — runtime ticker universe management
+    tp_app.add_handler(CommandHandler("ticker", cmd_ticker))
+    # Back-compat aliases on TP bot too.
     tp_app.add_handler(CommandHandler("tickers", cmd_tickers))
     tp_app.add_handler(CommandHandler("add_ticker", cmd_add_ticker))
     tp_app.add_handler(CommandHandler("remove_ticker", cmd_remove_ticker))
