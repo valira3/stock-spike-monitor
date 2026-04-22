@@ -28,6 +28,6 @@ RUN mkdir -p /data
 
 ENV PAPER_STATE_PATH=/data/paper_state.json
 ENV PAPER_LOG_PATH=/data/investment.log
-ENV BOT_STATE_PATH=/data/bot_state.json
+ENV TICKERS_FILE=/data/tickers.json
 
 CMD ["python", "stock_spike_monitor.py"]
