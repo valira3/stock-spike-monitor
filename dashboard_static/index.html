@@ -132,6 +132,34 @@
   }
   .h-clock { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
 
+  /* v3.4.39 — Paper / Robinhood view toggle. A small pill with two
+     segment buttons; the active view uses surface-3 + primary text,
+     the inactive one sits dim so the active choice reads at a glance. */
+  .view-toggle {
+    display: inline-flex;
+    padding: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    gap: 0;
+  }
+  .view-toggle-btn {
+    background: transparent; border: 0; cursor: pointer;
+    padding: 3px 10px;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    border-radius: 999px;
+    font-family: var(--sans);
+    transition: background .12s ease, color .12s ease;
+  }
+  .view-toggle-btn:hover { color: var(--text); }
+  .view-toggle-btn.view-toggle-on {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 0 0 1px var(--border) inset;
+  }
+
   .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
   .kpi {
     background: var(--surface); border: 1px solid var(--border);
@@ -443,6 +471,13 @@
       <span id="h-date">—</span>
     </div>
     <div class="h-right">
+      <!-- v3.4.39 — Paper / Robinhood view toggle. Both buttons are
+           always visible; the active one carries the .view-toggle-on
+           class. Choice persists in localStorage ("portfolio_view"). -->
+      <span class="view-toggle" role="group" aria-label="Portfolio view">
+        <button type="button" class="view-toggle-btn" id="view-btn-paper" data-view="paper">Paper</button>
+        <button type="button" class="view-toggle-btn" id="view-btn-rh" data-view="rh">Robinhood</button>
+      </span>
       <span class="live-badge"><span class="pulse" id="h-pulse"></span>LIVE <span id="h-tick" style="color:var(--text-dim)">—</span></span>
       <span class="h-clock" id="clock">—</span>
       <span class="h-account">
@@ -572,6 +607,40 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // v3.4.39 — portfolio view: "paper" or "rh". Persisted in
+  // localStorage so the choice survives reloads and new tabs.
+  // Only "paper" and "rh" are accepted; anything else resets to paper.
+  const VIEW_KEY = "portfolio_view";
+  function loadView() {
+    try {
+      const v = localStorage.getItem(VIEW_KEY);
+      return (v === "rh" || v === "paper") ? v : "paper";
+    } catch (e) { return "paper"; }
+  }
+  function saveView(v) {
+    try { localStorage.setItem(VIEW_KEY, v); } catch (e) {}
+  }
+  let currentView = loadView();
+  // Cache the most recent snapshot so the toggle can re-render
+  // instantly without waiting for the next SSE/poll tick.
+  let lastSnapshot = null;
+
+  // Pick the active portfolio/positions/trades slice for the current
+  // view. Falls back to the paper keys if the RH payload is missing
+  // (older server, or snapshot failed half-way) so the UI never
+  // renders blank after a failed backend deploy.
+  function slice(s, view) {
+    const wantRh = (view === "rh");
+    const p = wantRh ? (s.rh_portfolio || s.portfolio || {}) : (s.portfolio || {});
+    const positions = wantRh
+      ? (Array.isArray(s.rh_positions) ? s.rh_positions : (s.positions || []))
+      : (s.positions || []);
+    const trades = wantRh
+      ? (Array.isArray(s.rh_trades_today) ? s.rh_trades_today : (s.trades_today || []))
+      : (s.trades_today || []);
+    return { portfolio: p, positions, trades, view };
+  }
+
   function fmtUsd(v, digits = 2) {
     if (v === null || v === undefined || isNaN(v)) return "—";
     const neg = v < 0;
@@ -611,8 +680,8 @@
 
   // ─────── rendering ───────
 
-  function renderKPIs(s) {
-    const p = s.portfolio || {};
+  function renderKPIs(s, sl) {
+    const p = sl.portfolio || {};
     $("k-equity").textContent = fmtUsd(p.equity);
     const vs = p.vs_start;
     const eqSub = $("k-equity-sub");
@@ -623,9 +692,10 @@
     pnlEl.textContent = fmtUsd(pnl);
     pnlEl.className = "kpi-value " + ((pnl ?? 0) >= 0 ? "delta-up" : "delta-down");
     const pct = p.start ? (pnl / p.start) * 100 : null;
-    $("k-pnl-sub").innerHTML = `${(s.trades_today || []).length} trade${(s.trades_today||[]).length===1?"":"s"} · <span class="${(pnl ?? 0) >= 0 ? 'delta-up' : 'delta-down'}">${fmtPct(pct)}</span>`;
+    const tradesLen = (sl.trades || []).length;
+    $("k-pnl-sub").innerHTML = `${tradesLen} trade${tradesLen===1?"":"s"} · <span class="${(pnl ?? 0) >= 0 ? 'delta-up' : 'delta-down'}">${fmtPct(pct)}</span>`;
 
-    const positions = s.positions || [];
+    const positions = sl.positions || [];
     $("k-open").textContent = String(positions.length);
     if (positions.length === 0) {
       $("k-open-sub").textContent = "No positions";
@@ -683,8 +753,8 @@
     $("k-session-sub").textContent = reg.mode_reason || "—";
   }
 
-  function renderPositions(s) {
-    const positions = s.positions || [];
+  function renderPositions(s, sl) {
+    const positions = sl.positions || [];
     $("pos-count").textContent = `· ${positions.length}`;
     const body = $("pos-body");
     const strip = $("port-strip");
@@ -726,7 +796,7 @@
     }
 
     // portfolio strip always shows if portfolio data present
-    const p = s.portfolio;
+    const p = sl.portfolio;
     if (p && typeof p.equity === "number") {
       strip.style.display = "block";
       $("port-cash").textContent = fmtUsd(p.cash);
@@ -822,8 +892,8 @@
   // On phones the row collapses to two stacked lines (see 640px
   // media block). Summary header sits above the rows; a chip in the
   // card head shows the running realized P&L for the day.
-  function renderTrades(s) {
-    const trades = s.trades_today || [];
+  function renderTrades(s, sl) {
+    const trades = sl.trades || [];
     $("trades-count").textContent = `· ${trades.length}`;
     const summary = computeTradesSummary(trades);
 
@@ -1094,16 +1164,55 @@
 
   function renderAll(s) {
     if (!s || !s.ok) return;
+    lastSnapshot = s;
+    // If the server didn't ship rh_* keys (older deploy), force the
+    // toggle to Paper and hide the RH button — but keep trying each
+    // tick in case a rolling deploy brings the keys back.
+    const rhAvail = (s.rh_portfolio && typeof s.rh_portfolio.equity === "number");
+    const rhBtn = $("view-btn-rh");
+    if (rhBtn) {
+      rhBtn.style.display = rhAvail ? "" : "none";
+      if (!rhAvail && currentView === "rh") {
+        currentView = "paper";
+        saveView("paper");
+        syncToggleButtons();
+      }
+    }
+    const sl = slice(s, currentView);
     renderHeader(s);
-    renderKPIs(s);
-    renderPositions(s);
+    renderKPIs(s, sl);
+    renderPositions(s, sl);
     renderProximity(s);
-    renderTrades(s);
+    renderTrades(s, sl);
     renderObserver(s);
     renderSovereign(s);
     renderGates(s);
     renderTpSync(s);
   }
+
+  // v3.4.39 — toggle wiring. Keep the active button visually selected
+  // and, on click, update state + persist + re-render instantly from
+  // the cached snapshot (no network round-trip required).
+  function syncToggleButtons() {
+    const pap = $("view-btn-paper");
+    const rh = $("view-btn-rh");
+    if (pap) pap.classList.toggle("view-toggle-on", currentView === "paper");
+    if (rh)  rh.classList.toggle("view-toggle-on",  currentView === "rh");
+  }
+  function setView(v) {
+    if (v !== "paper" && v !== "rh") return;
+    if (v === currentView) return;
+    currentView = v;
+    saveView(v);
+    syncToggleButtons();
+    if (lastSnapshot) renderAll(lastSnapshot);
+  }
+  document.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".view-toggle-btn");
+    if (!btn) return;
+    setView(btn.dataset.view);
+  });
+  syncToggleButtons();
 
   // ─────── log handling ───────
 

@@ -241,6 +241,29 @@ def _today_trades() -> list[dict]:
     return out
 
 
+def _rh_today_trades() -> list[dict]:
+    """Today's Robinhood (tp) trades for the dashboard.
+
+    Mirrors _today_trades() but reads from tp_paper_trades (long BUY
+    rows + long SELL rows) and tp_short_trade_history (shorts on
+    COVER). v3.4.39: exposed so the dashboard can show a Robinhood
+    view without leaking paper trades.
+    """
+    m = _ssm()
+    out: list[dict] = []
+    for t in list(getattr(m, "tp_paper_trades", []) or []):
+        out.append({**t, "side": t.get("side", "LONG"), "portfolio": "tp"})
+    try:
+        today = m._now_et().strftime("%Y-%m-%d")
+    except Exception:
+        today = ""
+    for t in list(getattr(m, "tp_short_trade_history", []) or []):
+        if t.get("date") == today:
+            out.append({**t, "side": "SHORT", "portfolio": "tp"})
+    out.sort(key=lambda x: x.get("time", x.get("entry_time", "")))
+    return out
+
+
 def _proximity_rows() -> list[dict]:
     """Compute simple proximity metric for TRADE_TICKERS: distance to nearest level."""
     m = _ssm()
@@ -463,6 +486,21 @@ def snapshot() -> dict[str, Any]:
         long_mv, short_liab, equity = _equity(paper_cash, longs, shorts, prices)
         start_cap = float(getattr(m, "PAPER_STARTING_CAPITAL", 100_000.0))
 
+        # v3.4.39 — Robinhood (tp) book. Fetch prices once for both
+        # books so both views share the same tick of data.
+        rh_longs = dict(getattr(m, "tp_positions", {}) or {})
+        rh_shorts = dict(getattr(m, "tp_short_positions", {}) or {})
+        for t in set(list(rh_longs) + list(rh_shorts)):
+            if t not in prices:
+                px = _price_for(t)
+                if px is not None:
+                    prices[t] = px
+        rh_cash = float(getattr(m, "tp_paper_cash", 0.0))
+        rh_long_mv, rh_short_liab, rh_equity = _equity(
+            rh_cash, rh_longs, rh_shorts, prices,
+        )
+        rh_start = float(getattr(m, "RH_STARTING_CAPITAL", 25_000.0))
+
         # Today realized P&L from paper_trades (long SELLs, today only) +
         # short_trade_history (short COVERs, today only). Date-filter both
         # lists — paper_trades may carry yesterday's rows after a
@@ -483,6 +521,22 @@ def snapshot() -> dict[str, Any]:
         for row in _serialize_positions(longs, shorts, prices):
             unreal_sum += row["unrealized"]
         day_pnl = realized + unreal_sum
+
+        # v3.4.39 — Robinhood realized/unrealized P&L, same math as paper
+        # but from the tp_* books.
+        rh_realized = 0.0
+        for t in (getattr(m, "tp_paper_trades", []) or []):
+            if t.get("date") == today and t.get("action") == "SELL":
+                rh_realized += float(t.get("pnl", 0.0) or 0.0)
+        for t in (getattr(m, "tp_short_trade_history", []) or []):
+            if t.get("date") == today:
+                rh_realized += float(t.get("pnl", 0.0) or 0.0)
+
+        rh_positions_rows = _serialize_positions(rh_longs, rh_shorts, prices)
+        rh_unreal_sum = 0.0
+        for row in rh_positions_rows:
+            rh_unreal_sum += row["unrealized"]
+        rh_day_pnl = rh_realized + rh_unreal_sum
 
         # v3.4.29 — Sovereign Regime Shield live state for the dashboard.
         sovereign = _sovereign_regime_snapshot(m)
@@ -512,7 +566,12 @@ def snapshot() -> dict[str, Any]:
         tp_recent_raw = list(tp_state_obj.get("recent_orders", []) or [])
         # Keep last 5 for the dashboard; full 20 live in tp_state.
         tp_recent = tp_recent_raw[-5:]
-        tp_enabled = bool(getattr(m, "TRADERSPOST_ENABLED", False))
+        # v3.4.38 — kill-switch state via runtime-override-aware getter
+        # (env alone no longer reflects the live state after /rh_enable).
+        try:
+            tp_enabled = bool(m.is_traderspost_enabled())
+        except Exception:
+            tp_enabled = bool(getattr(m, "TRADERSPOST_ENABLED", False))
         tp_sync = {
             "enabled": tp_enabled,
             "unsynced_exits": tp_unsynced,
@@ -549,6 +608,22 @@ def snapshot() -> dict[str, Any]:
             },
             "positions": _serialize_positions(longs, shorts, prices),
             "trades_today": _today_trades(),
+            # v3.4.39 — Robinhood view payload. Shape mirrors the paper
+            # keys above (portfolio/positions/trades_today) so the
+            # dashboard's view toggle can swap them 1:1 client-side.
+            "rh_portfolio": {
+                "cash": rh_cash,
+                "long_mv": rh_long_mv,
+                "short_liab": rh_short_liab,
+                "equity": rh_equity,
+                "start": rh_start,
+                "vs_start": rh_equity - rh_start,
+                "day_pnl": rh_day_pnl,
+                "day_pnl_realized": rh_realized,
+                "day_pnl_unrealized": rh_unreal_sum,
+            },
+            "rh_positions": rh_positions_rows,
+            "rh_trades_today": _rh_today_trades(),
             "proximity": _proximity_rows(),
             "regime": {
                 "mode": mode,

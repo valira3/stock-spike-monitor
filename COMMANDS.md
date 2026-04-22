@@ -1,6 +1,8 @@
 # Command Reference
 
-All commands are registered on both the main bot and the TP bot unless noted. The main bot routes to the paper portfolio; the TP bot routes to the Robinhood mirror portfolio. `/dashboard` shows both portfolios on either bot.
+All commands are registered on both the main bot and the Robinhood bot unless noted. The main bot routes to the paper portfolio; the Robinhood bot routes to the live-traded Robinhood portfolio.
+
+As of v3.4.39, portfolio-scoped commands return only the data for the bot they run on — the Robinhood bot never shows paper rows, and the main bot never shows Robinhood rows. The web dashboard has a Paper/Robinhood toggle (persisted in your browser) so either bot's `/dashboard` link lands you on the right view.
 
 Aliases `/positions` and `/or_now` remain registered but are not shown in the Telegram `/` menu.
 
@@ -28,7 +30,7 @@ Aliases `/positions` and `/or_now` remain registered but are not shown in the Te
 | `/replay` | `[date]` | Trade timeline with running cumulative P&L. Same date parsing as `/log`. |
 | `/dayreport` | `[date]` | Completed trades with P&L summary and a per-trade bar chart. Default = today. |
 | `/eod` | — | Re-send the EOD report for today on demand. |
-| `/trade_log` | — | Last 10 rows from the persistent append-only `trade_log.jsonl` file. |
+| `/trade_log` | — | Last 10 rows from the persistent trade log, **scoped to the bot** — Robinhood bot shows only Robinhood fills; main bot shows only paper fills (v3.4.39). Header reads "Trade log — Robinhood" or "Trade log — Paper" so it's always unambiguous. |
 | `/near_misses` | — | Recent breakouts that cleared the price condition but were declined by the volume gate. Diagnostic only — no entries were made. |
 
 ---
@@ -37,8 +39,8 @@ Aliases `/positions` and `/or_now` remain registered but are not shown in the Te
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `/reset` | — | Interactive reset with an inline confirm button (60-second expiry). Resets portfolio to $100,000. |
-| `/retighten` | — | Force-run the 0.75% stop cap and breakeven ratchet across every open position right now. Positions with stops already breached by the retightened level are exited immediately (`RETRO_CAP`). |
+| `/reset` | — | Interactive reset with an inline confirm button (60-second expiry). **Scoped to the bot** (v3.4.39): on the main bot, resets paper to $100,000; on the Robinhood bot, resets Robinhood to $25,000 (from `RH_STARTING_CAPITAL`). Any cross-bot arg (e.g. `/reset paper` on the Robinhood bot) is redirected back to the main bot. |
+| `/retighten` | — | Force-run the 0.75% stop cap and breakeven ratchet across every open position right now. Positions with stops already breached by the retightened level are exited immediately (`RETRO_CAP`). **Scoped to the bot** (v3.4.39): Robinhood bot only retightens Robinhood positions, main bot only retightens paper. |
 | `/rh_sync` | — | **TP bot only.** Robinhood broker sync status: webhook enabled/disabled, orders sent/OK/failed, open Robinhood long and short positions, recent webhook outcomes, unsynced exits needing manual reconciliation. On the main bot, `/rh_sync` redirects to the TP bot. Also available as `/tp_sync` (alias). |
 | `/rh_status` | — | **Main bot only.** Robinhood live-trading kill-switch state: `ENABLED` / `DISABLED`, source of truth (env default vs runtime override), webhook/IMAP wiring flags, and sizing config ($25k capital, $1500/entry, max 1/ticker, max 6 concurrent, long-only). |
 | `/rh_enable` | — | **Main bot only.** Enable Robinhood live trading at runtime — flips the TradersPost webhook gate on without needing a Railway restart. Persisted in `tp_state.json` so it survives redeploys. |
@@ -77,8 +79,8 @@ The primary interface is `/ticker`. The standalone commands are back-compat alia
 | Command | Description |
 |---------|-------------|
 | `/strategy` | Compact inline strategy summary: long and short entry conditions, stop and ladder for both sides, Eye-of-the-Tiger exits, Regime Shield. |
-| `/algo` | Algorithm summary (same content as `/strategy`) plus the full `StockSpikeMonitor_Algorithm_v3.4.38.pdf` sent as a document. PDF is fetched from the repo if not present locally. |
-| `/version` | Current bot version (`v3.4.38`) and release notes. |
+| `/algo` | Algorithm summary (same content as `/strategy`) plus the full `StockSpikeMonitor_Algorithm_v3.4.39.pdf` sent as a document. PDF is fetched from the repo if not present locally. |
+| `/version` | Current bot version (`v3.4.39`) and release notes. |
 
 ---
 
@@ -124,10 +126,10 @@ Reference
   /version          Release notes
 
 Admin
-  /reset            Reset portfolio
-  /retighten        Force-cap all stops
+  /reset            Reset portfolio (bot-scoped)
+  /retighten        Force-cap stops (bot-scoped)
   /near_misses      Recent declined breakouts
-  /trade_log        Last 10 persistent log rows
+  /trade_log        Last 10 log rows (bot-scoped)
   /rh_sync          Robinhood sync (TP bot)
   /tp_sync          (alias: /rh_sync)
   /rh_status        Kill-switch state (main bot)
