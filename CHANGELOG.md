@@ -4,6 +4,125 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.28 — Sovereign Regime Shield (2026-04-22)
+
+### Why
+
+For eleven minor versions the global eject gate has been the
+"Dual-Index Confluence Shield": exit every long when both SPY
+and QQQ close a **5-minute** bar below their **AVWAP**, mirror
+for shorts. The logic shipped in v3.2.0 and earned its keep on
+macro-driven flush days.
+
+But AVWAP is a volume-weighted *drift* line. On slow, choppy
+tape — the kind of day where SPY closes flat ±0.20% — the AVWAP
+shuffles within a narrow band, and the 5-minute close can bob
+above and below it a dozen times before lunch. Each bob that
+happens to catch both indices triggers a LORDS_LEFT or
+BULL_VACUUM eject, stomping the trade book regardless of whether
+the tape has actually regime-shifted. Val calls the resulting
+churn "regime flim-flam."
+
+**PDC — Prior Day Close — is a better anchor.** It is one static
+number per symbol per day. A cross of PDC is a structural event:
+the overnight-holder cost basis has been reclaimed (or
+surrendered). It does not drift, it does not repaint, and it
+cannot shuffle back and forth intraday on volume-weighting noise.
+
+v3.4.28 replaces the AVWAP-based dual-index eject with a
+PDC-based one. The global shield now fires only on a true
+structural break of both major indices — exactly the regime it
+was meant to guard against.
+
+### What
+
+**New helpers** (`stock_spike_monitor.py`):
+
+- `_last_finalized_1min_close(ticker)` — returns `closes[-2]` so
+  the eject reads a *sealed* bar, never the still-ticking
+  in-progress minute. Returns `None` on `<2` finalized bars.
+- `_sovereign_regime_eject(side)` — the new gate. Returns `True`
+  iff **both** SPY and QQQ 1-minute finalized closes are on the
+  losing side of their respective PDC:
+  - `side="long"`  → both closes **below** PDC
+  - `side="short"` → both closes **above** PDC
+
+**Hysteresis by construction.** The AND logic *is* the
+divergence buffer: if SPY breaks below PDC but QQQ stays above,
+the gate returns `False`. The regime is UNCHANGED. No eject.
+End users running longs on a mixed tape will no longer be
+flushed by one index's isolated flush.
+
+**Fail-closed, always.** Any missing input — PDC not yet
+collected (pre-open cycle), 1-minute bars unavailable, fewer
+than two finalized bars, invalid `side` argument — returns
+`False`. Matches the locked design principle: adaptive logic
+only makes things more conservative than baseline, and missing
+data means stay in the trade.
+
+**1-minute finalized close, not 5-minute.** Per Val's spec:
+sub-5-minute resolution catches the structural break the moment
+the bar seals, without subjecting the decision to intrabar wick
+noise (which `closes[-2]` eliminates).
+
+**Three call sites swapped** from `_dual_index_eject` to
+`_sovereign_regime_eject`:
+
+- `manage_positions()` (paper long loop)
+- `manage_tp_positions()` (TP long mirror loop)
+- `manage_short_positions()` (both short sub-loops share one
+  `bull_vacuum` local, so one call covers both)
+
+Exit-reason strings are now plain `LORDS_LEFT` / `BULL_VACUUM`.
+The legacy `LORDS_LEFT[5m]` / `BULL_VACUUM[5m]` entries remain
+in `REASON_LABELS` so old rows in `trade_log.jsonl` render
+cleanly in the dashboard.
+
+**`_dual_index_eject` kept intact** in the source as a
+reference/fallback. It is no longer called in live code.
+
+### Coverage
+
+15 new smoke tests (`smoke_test.py`), all green:
+
+- `_last_finalized_1min_close` returns `closes[-2]` (not
+  intrabar) and `None` when `<2` finalized bars exist
+- `_sovereign_regime_eject("long")` fires when both below PDC,
+  does not fire when both above PDC (inverse)
+- `_sovereign_regime_eject("short")` fires when both above PDC
+- Divergence (SPY below, QQQ above) does NOT eject either side
+- Missing `SPY_PDC` or `QQQ_PDC` returns `False` (fail-closed)
+- Insufficient 1-minute bars returns `False` (fail-closed)
+- Invalid `side` (`"bogus"`, `""`, `None`) returns `False`
+- `manage_positions` / `manage_short_positions` /
+  `manage_tp_positions` all invoke the new gate and no longer
+  reference `_dual_index_eject` in live paths
+- Plain `LORDS_LEFT` / `BULL_VACUUM` are registered in
+  `REASON_LABELS` and their labels mention PDC; legacy
+  `[5m]`-suffixed labels preserved for old trade rows
+
+Total local suite: **122 passed / 0 failed.**
+
+### Files touched
+
+- `stock_spike_monitor.py` — `BOT_VERSION=3.4.28`,
+  `CURRENT_MAIN_NOTE` + `CURRENT_TP_NOTE` (34-char-safe),
+  `_MAIN_HISTORY_TAIL` + `_TP_HISTORY_TAIL` rolled,
+  `REASON_LABELS` extended (plain + legacy coexist),
+  `_last_finalized_1min_close` + `_sovereign_regime_eject`
+  added, 3 call sites + 4 exit-reason strings updated
+- `smoke_test.py` — 15 new tests under the v3.4.28 section
+
+### Design principles reaffirmed
+
+- **Adaptive logic only makes things MORE conservative than
+  baseline, never looser.** The new shield is stricter: it
+  requires a structural PDC break, not just AVWAP drift.
+- **Fail-closed:** any missing data → no eject → stay in trade.
+- **Divergence → no action:** hysteresis baked into the AND.
+
+---
+
 ## v3.4.27 — Persistent trade log (append-only JSONL) (2026-04-21)
 
 ### Why

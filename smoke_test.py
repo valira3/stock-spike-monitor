@@ -1774,6 +1774,220 @@ def run_local() -> int:
         assert m.TRADE_LOG_SCHEMA_VERSION == 1, \
             "schema version must stay at 1 until a breaking change ships"
 
+    # =================================================================
+    # v3.4.28 — Sovereign Regime Shield (PDC-based dual-index eject)
+    # =================================================================
+    # Shared helpers: install synthetic pdc + fetch_1min_bars so the
+    # eject gate is evaluated against controlled inputs. Each test
+    # restores the originals in a finally block so later suites are
+    # unaffected.
+    _orig_fetch_1min_bars = m.fetch_1min_bars
+    _orig_pdc = dict(m.pdc)
+
+    def _install_index_fixture(spy_closes, qqq_closes, spy_pdc, qqq_pdc):
+        """Patch m.pdc and m.fetch_1min_bars for the SPY/QQQ shield."""
+        m.pdc.clear()
+        m.pdc.update(_orig_pdc)
+        if spy_pdc is not None:
+            m.pdc["SPY"] = spy_pdc
+        else:
+            m.pdc.pop("SPY", None)
+        if qqq_pdc is not None:
+            m.pdc["QQQ"] = qqq_pdc
+        else:
+            m.pdc.pop("QQQ", None)
+
+        def fake(ticker):
+            series = {"SPY": spy_closes, "QQQ": qqq_closes}.get(ticker)
+            if series is None:
+                return None
+            return {
+                "current_price": series[-1] if series else 0.0,
+                "closes": list(series),
+                "opens": [c for c in series],
+                "highs": [c for c in series],
+                "lows":  [c for c in series],
+            }
+        m.fetch_1min_bars = fake
+
+    def _restore_index_fixture():
+        m.fetch_1min_bars = _orig_fetch_1min_bars
+        m.pdc.clear()
+        m.pdc.update(_orig_pdc)
+
+    @t("v3.4.28: _last_finalized_1min_close returns closes[-2], not intrabar")
+    def _():
+        try:
+            _install_index_fixture(
+                spy_closes=[100.0, 99.5, 99.0],   # in-progress bar = 99.0
+                qqq_closes=[200.0, 199.0, 198.0],
+                spy_pdc=101.0, qqq_pdc=201.0,
+            )
+            assert m._last_finalized_1min_close("SPY") == 99.5, \
+                "must return closes[-2], not the in-progress closes[-1]"
+            assert m._last_finalized_1min_close("QQQ") == 199.0
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _last_finalized_1min_close returns None with <2 finalized bars")
+    def _():
+        try:
+            _install_index_fixture(
+                spy_closes=[100.0],  # only the in-progress bar
+                qqq_closes=[],
+                spy_pdc=101.0, qqq_pdc=201.0,
+            )
+            assert m._last_finalized_1min_close("SPY") is None, \
+                "single bar (in-progress only) must return None"
+            assert m._last_finalized_1min_close("QQQ") is None
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _sovereign_regime_eject('long') = True when BOTH SPY+QQQ 1m_close < PDC")
+    def _():
+        try:
+            # closes[-2] is what the eject reads; set closes[-2] < PDC for both
+            _install_index_fixture(
+                spy_closes=[100.0, 99.5, 99.9],   # closes[-2] = 99.5 < 100.0
+                qqq_closes=[200.0, 198.5, 199.1], # closes[-2] = 198.5 < 199.0
+                spy_pdc=100.0, qqq_pdc=199.0,
+            )
+            assert m._sovereign_regime_eject("long") is True, \
+                "dual-below must eject longs"
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _sovereign_regime_eject('long') = False when BOTH SPY+QQQ above PDC (inverse)")
+    def _():
+        try:
+            _install_index_fixture(
+                spy_closes=[100.0, 100.5, 100.3],
+                qqq_closes=[200.0, 199.5, 199.7],  # closes[-2] = 199.5 > 199.0
+                spy_pdc=100.0, qqq_pdc=199.0,
+            )
+            assert m._sovereign_regime_eject("long") is False, \
+                "both above PDC must NOT eject longs"
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _sovereign_regime_eject('short') = True when BOTH SPY+QQQ 1m_close > PDC")
+    def _():
+        try:
+            _install_index_fixture(
+                spy_closes=[100.0, 100.5, 100.3],  # closes[-2] = 100.5 > 100.0
+                qqq_closes=[199.0, 199.5, 199.2],  # closes[-2] = 199.5 > 199.0
+                spy_pdc=100.0, qqq_pdc=199.0,
+            )
+            assert m._sovereign_regime_eject("short") is True, \
+                "dual-above must eject shorts"
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _sovereign_regime_eject divergence (SPY below, QQQ above) must NOT eject either side")
+    def _():
+        try:
+            # SPY closes[-2] < SPY_PDC, QQQ closes[-2] > QQQ_PDC
+            _install_index_fixture(
+                spy_closes=[100.0, 99.0, 99.1],
+                qqq_closes=[199.0, 199.5, 199.3],
+                spy_pdc=100.0, qqq_pdc=199.0,
+            )
+            assert m._sovereign_regime_eject("long") is False, \
+                "divergence must NOT eject longs (hysteresis)"
+            assert m._sovereign_regime_eject("short") is False, \
+                "divergence must NOT eject shorts (hysteresis)"
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _sovereign_regime_eject fails closed when SPY_PDC or QQQ_PDC missing")
+    def _():
+        try:
+            _install_index_fixture(
+                spy_closes=[100.0, 99.0, 99.1],
+                qqq_closes=[200.0, 198.0, 198.5],
+                spy_pdc=None, qqq_pdc=199.0,
+            )
+            assert m._sovereign_regime_eject("long") is False, \
+                "missing SPY_PDC must fail closed"
+            _install_index_fixture(
+                spy_closes=[100.0, 99.0, 99.1],
+                qqq_closes=[200.0, 198.0, 198.5],
+                spy_pdc=100.0, qqq_pdc=None,
+            )
+            assert m._sovereign_regime_eject("long") is False, \
+                "missing QQQ_PDC must fail closed"
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _sovereign_regime_eject fails closed when 1m bars unavailable (<2 closes)")
+    def _():
+        try:
+            _install_index_fixture(
+                spy_closes=[100.0],   # not enough finalized bars
+                qqq_closes=[],
+                spy_pdc=100.0, qqq_pdc=199.0,
+            )
+            assert m._sovereign_regime_eject("long") is False, \
+                "insufficient 1m bars must fail closed"
+            assert m._sovereign_regime_eject("short") is False
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: _sovereign_regime_eject rejects invalid side argument")
+    def _():
+        try:
+            _install_index_fixture(
+                spy_closes=[100.0, 99.0, 99.1],
+                qqq_closes=[200.0, 198.0, 198.5],
+                spy_pdc=100.0, qqq_pdc=199.0,
+            )
+            assert m._sovereign_regime_eject("bogus") is False
+            assert m._sovereign_regime_eject("") is False
+            assert m._sovereign_regime_eject(None) is False
+        finally:
+            _restore_index_fixture()
+
+    @t("v3.4.28: manage_positions calls _sovereign_regime_eject (not _dual_index_eject)")
+    def _():
+        import inspect
+        src = inspect.getsource(m.manage_positions)
+        assert "_sovereign_regime_eject(\"long\")" in src, \
+            "manage_positions must invoke Sovereign Regime Shield for longs"
+        assert "_dual_index_eject(\"long\")" not in src, \
+            "legacy AVWAP eject must not be used live in manage_positions"
+
+    @t("v3.4.28: manage_short_positions calls _sovereign_regime_eject (not _dual_index_eject)")
+    def _():
+        import inspect
+        src = inspect.getsource(m.manage_short_positions)
+        assert "_sovereign_regime_eject(\"short\")" in src, \
+            "manage_short_positions must invoke Sovereign Regime Shield for shorts"
+        assert "_dual_index_eject(\"short\")" not in src, \
+            "legacy AVWAP eject must not be used live in manage_short_positions"
+
+    @t("v3.4.28: manage_tp_positions calls _sovereign_regime_eject (TP mirror)")
+    def _():
+        import inspect
+        src = inspect.getsource(m.manage_tp_positions)
+        assert "_sovereign_regime_eject(\"long\")" in src, \
+            "TP manager must also use PDC shield"
+
+    @t("v3.4.28: plain LORDS_LEFT / BULL_VACUUM exit reasons registered in REASON_LABELS")
+    def _():
+        assert "LORDS_LEFT" in m.REASON_LABELS
+        assert "BULL_VACUUM" in m.REASON_LABELS
+        assert "PDC" in m.REASON_LABELS["LORDS_LEFT"], \
+            "plain LORDS_LEFT label must mention PDC"
+        assert "PDC" in m.REASON_LABELS["BULL_VACUUM"]
+        # Legacy suffixed labels must remain for backwards-compat with old rows.
+        assert "LORDS_LEFT[5m]" in m.REASON_LABELS
+        assert "BULL_VACUUM[5m]" in m.REASON_LABELS
+
+    @t("v3.4.28: BOT_VERSION bumped to 3.4.28")
+    def _():
+        assert m.BOT_VERSION == "3.4.28", \
+            f"expected BOT_VERSION=3.4.28, got {m.BOT_VERSION!r}"
+
     return run_suite("LOCAL SMOKE TESTS")
 
 
