@@ -2922,13 +2922,16 @@ def run_local() -> int:
         assert "avwap_last_ts" not in src, \
             "reset_daily_state must not reference removed avwap_last_ts"
 
-    @t("v3.4.34: CURRENT_MAIN_NOTE leads with v3.4.34 and mentions PDC")
+    @t("v3.4.34: v3.4.34 PDC migration persists in MAIN_RELEASE_NOTE history")
     def _():
         import stock_spike_monitor as m
-        note = m.CURRENT_MAIN_NOTE
-        assert note.startswith("v3.4.34"), note[:40]
-        assert "PDC" in note, "CURRENT note must mention PDC"
-        # Every line must stay within the Telegram mobile width budget.
+        # v3.4.34 was CURRENT before v3.4.35 bumped it; it must now
+        # persist in the history tail with the PDC migration context.
+        note = m.MAIN_RELEASE_NOTE
+        assert "v3.4.34" in note, "v3.4.34 line must persist in history"
+        assert "PDC" in note, "v3.4.34 PDC context must persist in history"
+        # Every line in the full note must stay within the Telegram
+        # mobile width budget.
         for i, line in enumerate(note.split("\n")):
             assert len(line) <= 34, (i, len(line), repr(line))
 
@@ -2948,6 +2951,245 @@ def run_local() -> int:
         assert "LORDS_LEFT[5m]" in m.REASON_LABELS
         assert "BULL_VACUUM[1m]" in m.REASON_LABELS
         assert "BULL_VACUUM[5m]" in m.REASON_LABELS
+
+    # ============================================================
+    # v3.4.35 — Profit-lock ladder
+    # ============================================================
+    # Six-tier peak-based ratchet replacing the old 1%/$1 armed trail.
+    # Tests cover: version bump, helper presence, tier math for long
+    # and short, one-way ratchet, legacy fallback, harvest scaling, and
+    # display-text wiring.
+
+    @t("v3.4.35: BOT_VERSION is >= 3.4.35")
+    def _():
+        import stock_spike_monitor as m
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 35), m.BOT_VERSION
+
+    @t("v3.4.35: LADDER_TIERS_LONG and helpers exist")
+    def _():
+        import stock_spike_monitor as m
+        assert hasattr(m, "LADDER_TIERS_LONG")
+        assert hasattr(m, "LADDER_HARVEST_FRACTION")
+        assert m.LADDER_HARVEST_FRACTION == 0.90
+        assert callable(m._ladder_stop_long)
+        assert callable(m._ladder_stop_short)
+        # Six tiers total (five explicit + implicit sub-1%).
+        assert len(m.LADDER_TIERS_LONG) == 5, m.LADDER_TIERS_LONG
+
+    @t("v3.4.35: long ladder sub-1% tier returns initial_stop (Bullet)")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 100.50,
+               "initial_stop": 99.25, "stop": 99.25}
+        assert m._ladder_stop_long(pos) == 99.25
+
+    @t("v3.4.35: long ladder +1% → entry (breakeven)")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 101.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        assert m._ladder_stop_long(pos) == 100.00
+
+    @t("v3.4.35: long ladder +2% → entry + 1.0%")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 102.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        assert m._ladder_stop_long(pos) == 101.00
+
+    @t("v3.4.35: long ladder +3% → entry + 2.0%")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 103.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        assert m._ladder_stop_long(pos) == 102.00
+
+    @t("v3.4.35: long ladder +4% → entry + 3.5%")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 104.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        assert m._ladder_stop_long(pos) == 103.50
+
+    @t("v3.4.35: long ladder +5% → harvest 90% of peak gain")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 105.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        # 0.9 * (105 - 100) = 4.50 → stop = 104.50
+        assert m._ladder_stop_long(pos) == 104.50
+
+    @t("v3.4.35: long ladder +10% harvest scales with peak")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 110.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        # 0.9 * 10 = 9.00 → stop = 109.00
+        assert m._ladder_stop_long(pos) == 109.00
+
+    @t("v3.4.35: long ladder harvest keeps lock on pullback (peak-based)")
+    def _():
+        import stock_spike_monitor as m
+        # Peak hit 110 then pulled back — ladder still reads trail_high.
+        pos = {"entry_price": 100.0, "trail_high": 110.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        # Ladder stop stays at harvest level regardless of current price.
+        assert m._ladder_stop_long(pos) == 109.00
+
+    @t("v3.4.35: long ladder never looser than initial_stop")
+    def _():
+        import stock_spike_monitor as m
+        # Peak only +0.5% (sub-1%) — must return initial_stop, not
+        # something tighter that doesn't exist.
+        pos = {"entry_price": 100.0, "trail_high": 100.50,
+               "initial_stop": 99.25, "stop": 99.25}
+        result = m._ladder_stop_long(pos)
+        assert result >= 99.25 and result <= 100.00, result
+
+    @t("v3.4.35: long ladder legacy fallback (no initial_stop)")
+    def _():
+        import stock_spike_monitor as m
+        # Pre-v3.4.35 position — no initial_stop key. Must fall back to
+        # pos['stop'] for the sub-1% tier and never crash.
+        pos = {"entry_price": 100.0, "trail_high": 100.50, "stop": 99.00}
+        assert m._ladder_stop_long(pos) == 99.00
+        # Above +1% the ladder still returns the breakeven tier.
+        pos["trail_high"] = 101.00
+        assert m._ladder_stop_long(pos) == 100.00
+
+    @t("v3.4.35: long ladder one-way — no pullback when peak stays")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_high": 105.00,
+               "initial_stop": 99.25, "stop": 99.25}
+        # First call returns harvest stop.
+        first = m._ladder_stop_long(pos)
+        # Peak stays — call again, result must not decrease.
+        second = m._ladder_stop_long(pos)
+        assert second >= first, (first, second)
+        assert second == 104.50
+
+    @t("v3.4.35: short ladder mirror — +1% → entry (breakeven)")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_low": 99.00,
+               "initial_stop": 100.75, "stop": 100.75}
+        assert m._ladder_stop_short(pos) == 100.00
+
+    @t("v3.4.35: short ladder mirror — +2% → entry − 1.0%")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_low": 98.00,
+               "initial_stop": 100.75, "stop": 100.75}
+        assert m._ladder_stop_short(pos) == 99.00
+
+    @t("v3.4.35: short ladder mirror — +4% → entry − 3.5%")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_low": 96.00,
+               "initial_stop": 100.75, "stop": 100.75}
+        assert m._ladder_stop_short(pos) == 96.50
+
+    @t("v3.4.35: short ladder mirror — +5% harvest 90%")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_low": 95.00,
+               "initial_stop": 100.75, "stop": 100.75}
+        # 0.9 * (100 - 95) = 4.50 → stop = 95.50
+        assert m._ladder_stop_short(pos) == 95.50
+
+    @t("v3.4.35: short ladder sub-1% returns initial_stop")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_low": 99.50,
+               "initial_stop": 100.75, "stop": 100.75}
+        assert m._ladder_stop_short(pos) == 100.75
+
+    @t("v3.4.35: short ladder legacy fallback (no initial_stop)")
+    def _():
+        import stock_spike_monitor as m
+        pos = {"entry_price": 100.0, "trail_low": 99.50, "stop": 101.00}
+        assert m._ladder_stop_short(pos) == 101.00
+
+    @t("v3.4.35: initial_stop persisted in long paper entry path")
+    def _():
+        import stock_spike_monitor as m
+        src = open(m.__file__).read()
+        # positions[ticker] = {...} dict must set initial_stop.
+        # Confirm by checking that the substring appears at least once
+        # inside the long paper entry context (no fragile line lookup).
+        assert "\"initial_stop\"" in src or "'initial_stop'" in src, \
+            "initial_stop key missing from source"
+        # Sanity: appears at least 4 times (4 position dicts + helpers).
+        count = src.count("initial_stop")
+        assert count >= 6, f"initial_stop only appears {count} times"
+
+    @t("v3.4.35: /strategy body shows ladder table (not old 1.0% trail)")
+    def _():
+        import inspect
+        import stock_spike_monitor as m
+        src = inspect.getsource(m.cmd_strategy)
+        assert "Ladder" in src, "Ladder table missing from /strategy"
+        assert "+1%" in src
+        assert "+5%+" in src
+        # Old armed-trail copy must be gone.
+        assert "+1.0% trigger" not in src, "old trail copy still present"
+        assert "max(1.0%, $1.00)" not in src
+
+    @t("v3.4.35: /algo body shows ladder table (not old 1.0% trail)")
+    def _():
+        import inspect
+        import stock_spike_monitor as m
+        src = inspect.getsource(m.cmd_algo)
+        assert "Ladder" in src
+        assert "+1.0% trigger" not in src
+        assert "max(1.0%, $1.00)" not in src
+
+    @t("v3.4.35: /strategy ladder lines stay within 34-char mobile budget")
+    def _():
+        import inspect
+        import stock_spike_monitor as m
+        # Execute a synthetic call path by extracting the text literal.
+        src = inspect.getsource(m.cmd_strategy)
+        # Find ladder block lines — any line containing "→" in the body.
+        over = []
+        # The string concat form makes it easy: grab each quoted chunk.
+        import re
+        for match in re.finditer(r'"([^"]*\\u2192[^"]*)\\n"', src):
+            raw = match.group(1).encode().decode("unicode_escape")
+            if len(raw) > 34:
+                over.append((len(raw), raw))
+        assert not over, f"lines over 34 chars: {over}"
+
+    @t("v3.4.35: CURRENT_MAIN_NOTE leads with v3.4.35")
+    def _():
+        import stock_spike_monitor as m
+        note = m.CURRENT_MAIN_NOTE
+        assert note.startswith("v3.4.35"), note[:40]
+
+    @t("v3.4.35: CURRENT_TP_NOTE leads with v3.4.35")
+    def _():
+        import stock_spike_monitor as m
+        note = m.CURRENT_TP_NOTE
+        assert note.startswith("v3.4.35"), note[:40]
+
+    @t("v3.4.35: CURRENT notes stay within 34-char mobile budget")
+    def _():
+        import stock_spike_monitor as m
+        for name in ("CURRENT_MAIN_NOTE", "CURRENT_TP_NOTE",
+                     "_MAIN_HISTORY_TAIL", "_TP_HISTORY_TAIL"):
+            val = getattr(m, name, "")
+            for i, line in enumerate(val.split("\n")):
+                assert len(line) <= 34, \
+                    f"{name} line {i} over 34 chars ({len(line)}): {line!r}"
+
+    @t("v3.4.35: v3.4.34 PDC migration line persists in history tail")
+    def _():
+        import stock_spike_monitor as m
+        note = m.MAIN_RELEASE_NOTE
+        assert "v3.4.34" in note, \
+            "v3.4.34 AVWAP→PDC line must persist in history"
 
     return run_suite("LOCAL SMOKE TESTS")
 

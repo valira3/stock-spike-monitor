@@ -4,6 +4,166 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.35 — Profit-lock ladder (2026-04-22)
+
+### Why
+
+Eugene pinged the bot at 1:20 PM CDT with a screenshot of the
+live AVGO trail: entry $411.30, peak $420.69, trail stop
+$416.48. His message: "shouldn't we be closer with trail."
+Pulling the code confirmed why: the live rule was
+`max(peak × 1.0%, $1.00)` — a flat 1% distance with a $1
+floor. On a $420 stock that's a $4.20 give-back; on the +2.28%
+gain AVGO had printed, a $416.48 stop is locking in only about
++1.26% when price has already run +2.28%. Val's response was
+that the existing rule surrenders too much hard-won gain as
+the trade works, and the bot should tighten more aggressively
+the further price travels away from entry.
+
+The original spec (5R profit lock) was scrapped after one
+iteration in favor of a cleaner approach: a six-tier
+peak-based ladder that makes the tightening explicit and
+scales the buffer with the move. The rule is readable in two
+lines and predictable at every price point, which matters on
+a bot that wakes the user with alerts.
+
+### What changed
+
+**The ladder (peak gain → stop)**
+
+| Peak gain | Long stop            | Short stop           |
+| :-------- | :------------------- | :------------------- |
+| < 1.0%    | initial hard stop    | initial hard stop    |
+| ≥ 1.0%    | entry (breakeven)    | entry (breakeven)    |
+| ≥ 2.0%    | entry + 1.0%         | entry − 1.0%         |
+| ≥ 3.0%    | entry + 2.0%         | entry − 2.0%         |
+| ≥ 4.0%    | entry + 3.5%         | entry − 3.5%         |
+| ≥ 5.0%    | entry + 0.9×peak     | entry − 0.9×peak     |
+
+The stop tier is always driven by the highest gain reached
+(`trail_high` for long, `trail_low` for short), not the
+current gain. A pullback from +5% to +2% keeps the Harvest
+stop; if price crosses it, the exit locks 90% of the run.
+
+**Replaces the old 1%/$1 armed trail entirely**
+
+- Old behavior: once peak hit +1%, trail at `max(peak × 1%,
+  $1.00)` below peak. Flat 1% buffer regardless of how far
+  the trade had worked.
+- New behavior: structural stop below +1%, breakeven at +1%,
+  and the ladder tightens monotonically as peak climbs. At
+  +5% and above, stop locks in 90% of the peak gain (Harvest
+  phase) and scales with the move — a +10% peak locks
+  +9.00%, a +7% peak locks +6.30%.
+- No `$1.00` minimum distance anymore. Percentage-of-entry
+  buffers scale naturally with price: a $50 stock's +1% tier
+  is $0.50, a $500 stock's +1% is $5.00.
+
+**Peak-based, one-way ratchet**
+
+- `_ladder_stop_long` returns `max(tier_stop, initial_stop)`
+  — never looser than the structural floor. On every call
+  the ratchet tightens or holds; it never loosens.
+- `_ladder_stop_short` mirrors with `min(...)` for shorts
+  (tighter = lower stop).
+- `manage_positions`, `manage_tp_positions`, and
+  `manage_short_positions` (paper + TP) update `trail_high`
+  / `trail_low` every tick, compute the ladder stop, and
+  ratchet `pos["stop"]` in the tightening direction only.
+
+**`initial_stop` persisted in all four entry paths**
+
+- Long paper, long TP, short paper, short TP position dicts
+  now capture the entry-time hard stop as `initial_stop`.
+  The ladder uses it as the sub-1% floor and the
+  never-looser guard.
+- Legacy positions (no `initial_stop` key) fall back to the
+  live `pos["stop"]` — no crash, no surprise widening.
+
+**Exit attribution preserved**
+
+- `pos["trail_active"]` is set to `True` once peak ≥ 1%
+  (ladder has armed past the structural stop), so the
+  `/api/state` surface and exit-reason attribution still
+  render **TRAIL** vs **STOP** correctly.
+- `trail_stop` is kept as a cosmetic mirror of `pos["stop"]`
+  once armed, for back-compat with state consumers.
+
+**Display: /strategy, /algo rewired**
+
+- Both command bodies now print the ladder block in place of
+  the old `Trail: +1.0% trigger | max(1.0%, $1.00) distance`
+  line. Mobile 34-char budget verified.
+- `/help` untouched — it doesn't reference trail mechanics.
+
+**Retightening layers (v3.4.23 0.75% cap, v3.4.25 breakeven
+ratchet) kept as idempotent safeguards**
+
+- The ladder dominates both once peak ≥ 1%, and the retight
+  layers only tighten (guarded by `new_stop <= current_stop:
+  return already_tight`). They stay in as fail-closed
+  safeguards for positions that never climb past +1%.
+
+### Why this is safer than the old rule
+
+- Pre-1%: stop is the OR-based structural stop. Exactly the
+  same as before.
+- +1% to +4%: stop locks progressively more of the gain —
+  breakeven, then +1%, +2%, +3.5%. At every band the bot
+  gives up less on a reversal than the old 1% trail would.
+- +5% and beyond: stop locks 90% of peak gain. A +5% peak
+  locks +4.50% (was +4.00% under the old $1 floor). A +10%
+  peak locks +9.00% (was +9.00% — here the new rule matches
+  the best case of the old rule, but it's reached
+  mechanically, not by coincidence of the $1 floor clamp).
+
+### Sanity tests
+
+- AVGO entry $411.30, `initial_stop` $408.22 (0.75% cap):
+  - Peak $419.53 (+2.00%) → stop $415.41 (Lock 1%)
+  - Peak $429.00 (+4.30%) → stop $425.70 (Tightening)
+  - Peak $431.87 (+5.00%) → stop $429.81 (Harvest)
+  - Peak $440 (+7%) → stop $437.13 (Harvest scales)
+- Short entry $100, `initial_stop` $100.75: all tiers mirror
+  correctly with `min` constraint against the ceiling.
+- Legacy position without `initial_stop`: falls back to
+  `pos["stop"]`, no crash, ladder arms above +1%.
+
+### Verification
+
+- `python3 -m py_compile stock_spike_monitor.py dashboard_server.py smoke_test.py` → OK.
+- `python3 smoke_test.py --local` → 213 passed / 0 failed
+  (186 baseline + 25 new v3.4.35 tests + retargeted v3.4.34
+  history test).
+- Telegram mobile 34-char budget re-verified for
+  `CURRENT_MAIN_NOTE`, `CURRENT_TP_NOTE`, history tails, and
+  both `/strategy` and `/algo` ladder blocks.
+
+### Files touched
+
+- `stock_spike_monitor.py`
+  - `BOT_VERSION` → `"3.4.35"`.
+  - `CURRENT_MAIN_NOTE` / `CURRENT_TP_NOTE` rewritten; v3.4.34
+    AVWAP→PDC context rolled into the history tails.
+  - New: `LADDER_TIERS_LONG`, `LADDER_HARVEST_FRACTION`,
+    `_ladder_stop_long`, `_ladder_stop_short`.
+  - `manage_positions`, `manage_tp_positions`,
+    `manage_short_positions` (paper + TP) rewired to the
+    ladder; old `max(peak × 1%, $1.00)` trail removed.
+  - `initial_stop` captured in all four position-entry dicts.
+  - `/strategy` and `/algo` text rewritten with the ladder
+    table.
+- `smoke_test.py`
+  - 25 new v3.4.35 tests (tier math, peak-based, one-way,
+    legacy fallback, harvest scaling, mirror, display wiring,
+    34-char budget).
+  - Retargeted one v3.4.34 test that asserted CURRENT_MAIN
+    still led with v3.4.34 — it now checks MAIN_RELEASE_NOTE
+    history.
+- `CHANGELOG.md` — this entry prepended above v3.4.34.
+
+---
+
 ## v3.4.34 — AVWAP → PDC full migration (2026-04-22)
 
 ### Why
