@@ -4,6 +4,189 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.34 — AVWAP → PDC full migration (2026-04-22)
+
+### Why
+
+Eugene pinged the bot at 11:40 CDT with a screenshot: the
+regime-change alert was firing "🔴 REGIME: BEARISH / SPY
+$709.58 < AVWAP $709.59 / QQQ $652.71 < AVWAP $651.37 / The
+Lords have left." on spreads of one penny — noise from a
+drifting intraday VWAP anchor, not signal. His verdict:
+"This is a distraction. Regardless of the AVWAP for indexes,
+this new regime change replaces the old one."
+
+v3.4.28 had already retired AVWAP as the *entry* anchor on
+both long and short sides (PDC is the stable daily reference
+— yesterday's close doesn't drift with the morning's volume),
+but the regime-change alert, the long/short gate blocks, and
+every display string still read off the old `avwap_data` dict.
+The module carried two state dicts, an updater function
+(`update_avwap`), and a dead helper (`_dual_index_eject`) that
+no code path called. That's the condition that produced
+Eugene's alert: live-updating AVWAP compared against live SPY
+tick, published as a regime shift when the two cross by a
+single cent.
+
+The choice was narrow-scope (rewrite the alert alone) or full
+migration (rip AVWAP out of everything). Val picked full
+migration: one anchor, one vocabulary, one source of truth.
+This release is that cleanup.
+
+### What changed
+
+**Regime-change alert now reads PDC**
+
+- `scan_loop` regime block (lines ~5015–5051) rewritten to
+  compare `last_spy`/`last_qqq` against `pdc.get("SPY")` /
+  `pdc.get("QQQ")`. The "Lords have left" / "Lords are back"
+  messaging is preserved verbatim — only the anchor changed.
+- Alert format is now `"SPY $X.XX < PDC $Y.YY"` (was
+  `"< AVWAP"`). Same two-line shape, same emoji, same CDT
+  timestamp.
+- The alert no longer cares about 5-minute bar finalization
+  (`_last_finalized_5min_close`), because PDC is a
+  once-per-day constant and the previous-close comparison is
+  valid on every tick. That removes an entire class of
+  timing races where the alert could fire on a partial bar.
+
+**Long + short entry gates on PDC**
+
+- `check_entry` long gate (lines ~2820–2845) now requires
+  `last_spy > spy_pdc and last_qqq > qqq_pdc`. Missing SPY or
+  QQQ PDC → return `False` (fail-closed, no entry).
+- `check_short_entry` short gate (lines ~3900–3920) now
+  requires `last_spy < spy_pdc and last_qqq < qqq_pdc`.
+  Missing PDC → return `False`. **This is a behavior
+  tightening**: the old AVWAP short gate fail-opened
+  (`spy_below` / `qqq_below` defaulted to `True` on missing
+  data and let the entry through). PDC is available every
+  trading day from the FMP snapshot, so a missing value is
+  now treated as a real data problem, not a green light.
+
+Both gates share the canonical pattern:
+
+    spy_pdc = pdc.get("SPY")
+    qqq_pdc = pdc.get("QQQ")
+    if not spy_pdc or not qqq_pdc or spy_pdc <= 0 or qqq_pdc <= 0:
+        return False  # fail-closed
+
+This is consistent with the locked principle: adaptive logic
+only makes things more conservative than baseline, never
+looser.
+
+**Every user-facing string migrated**
+
+Audited and rewritten in one pass so the vocabulary is
+uniform across surfaces:
+
+- Entry reply: `"SPY > PDC ✓"` / `"QQQ > PDC ✓"` (was
+  `"> AVWAP"`).
+- `/proximity` and `/proximity_sync` — index filter lines.
+- `/dashboard` INDEX FILTERS card.
+- `/status` helper block.
+- `/strategy` body — all four index-check lines and the
+  "Lords Left" / "Bull Vacuum" exit-rule descriptions.
+- `/strategy_ticker` per-symbol view.
+- `/summary` end-of-session recap.
+- `/help` and `/algo` bodies — now say "SPY & QQQ > PDC".
+- Deploy banner — "PDC anchor" replaces "AVWAP anchor".
+
+**Observer breadth detail moves to PDC**
+
+`_classify_breadth` now emits
+`"SPY %+.2f%% above PDC | QQQ %+.2f%% below PDC"` (or the
+corresponding combinations) in `sovereign.breadth_detail`.
+This changes what `/api/state` surfaces — users reading the
+JSON directly will see the new anchor label.
+
+**Dead code removed**
+
+- `update_avwap` function — gone.
+- `_dual_index_eject` helper — gone. Nothing called it; the
+  ejection path has been PDC-based since v3.4.28.
+- `_last_finalized_5min_close` tracker — gone (regime alert
+  no longer cares about bar finalization).
+- `avwap_data` dict — gone.
+- `avwap_last_ts` dict — gone.
+- `reset_daily_state` AVWAP reset block — gone.
+
+The removed block is replaced with a one-paragraph comment
+citing v3.4.34 (this release) and v3.4.28 (the original
+entry-side migration) so the next person reading the file
+knows why AVWAP is absent.
+
+**Persistence back-compat (no migration needed)**
+
+- `save_paper_state` no longer writes `avwap_data` or
+  `avwap_last_ts` into the state file.
+- `load_paper_state` reads with `dict.get(...)` and silently
+  ignores those two keys if they exist in a legacy state
+  file from a pre-v3.4.34 deploy. No migration script, no
+  upgrade path, no user action.
+
+**Legacy back-compat (intentionally kept)**
+
+- `REASON_LABELS["LORDS_LEFT[1m]"]`, `LORDS_LEFT[5m]`,
+  `BULL_VACUUM[1m]`, `BULL_VACUUM[5m]` — retained. Old
+  trade-log rows written before v3.4.28 still reference
+  these codes, and the label dictionary is what renders
+  them in `/summary` and `/trade_log`. The v3.4.28
+  rationale comment (AVWAP drift caused false ejects) is
+  kept alongside.
+- Regime-change messaging — "The Lords have left" / "The
+  Lords are back" still reads the same. Only the anchor
+  changed.
+
+**Smoke test coverage**
+
+16 new `v3.4.34:` tests cover:
+
+- `BOT_VERSION >= 3.4.34`.
+- `update_avwap`, `_dual_index_eject`,
+  `_last_finalized_5min_close` are absent.
+- `avwap_data` and `avwap_last_ts` module state is absent.
+- `save_paper_state` doesn't write the legacy keys.
+- `load_paper_state` tolerates legacy keys in input.
+- `check_entry` gates on `SPY_PDC` and `QQQ_PDC`.
+- `check_short_entry` gates on `SPY_PDC` and `QQQ_PDC`.
+- `check_short_entry` fails closed on missing PDC.
+- Regime alert body uses PDC and emits the Lords messaging.
+- `_classify_breadth` observer anchors on PDC.
+- `/help` / `/algo` says "SPY & QQQ > PDC".
+- `/strategy` body uses PDC in all four index-check lines.
+- `reset_daily_state` no longer touches removed AVWAP dicts.
+- `CURRENT_MAIN_NOTE` leads with v3.4.34 and mentions PDC.
+- v3.4.33 `/ticker` release line persists in history.
+- Legacy `LORDS_LEFT[1m]` / `BULL_VACUUM[1m]` labels retained.
+
+Plus two fixes to previously-breaking tests:
+
+- v3.4.33 `/ticker` test now checks `MAIN_RELEASE_NOTE`
+  history (not `CURRENT`, since v3.4.33 has rolled off).
+- v3.4.16 `_TP_HISTORY_TAIL` test re-asserts `/tp_sync`
+  mention after the v3.4.34 note rewrite.
+
+**Result: 186 / 186 passing** (170 baseline + 16 new).
+
+### Files touched
+
+- `stock_spike_monitor.py` — 9324 lines, AVWAP call sites
+  rewritten, dead code removed, comment block replaces it.
+- `smoke_test.py` — 16 new tests, 2 fixes.
+- `CHANGELOG.md` — this entry.
+
+### Upgrade notes
+
+- No state file migration. Drop-in deploy.
+- `/api/state` → `sovereign.breadth_detail` now contains
+  "PDC" where it used to contain "AVWAP". Any downstream
+  consumers of that string need to update their regex.
+- Trade-log entries written before v3.4.28 still render
+  with the same `LORDS_LEFT` / `BULL_VACUUM` labels.
+
+---
+
 ## v3.4.33 — Unified `/ticker` + thorough metric fill (2026-04-22)
 
 ### Why

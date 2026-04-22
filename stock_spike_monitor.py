@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.33"
+BOT_VERSION = "3.4.34"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,37 +56,39 @@ BOT_VERSION = "3.4.33"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.33 \u2014 /ticker is now\n"
-    "one command with sub-\n"
-    "switches:\n"
+    "v3.4.34 \u2014 AVWAP is gone.\n"
+    "Entry gates, regime\n"
+    "alerts, /status, and\n"
+    "/help all use PDC now,\n"
+    "matching the v3.4.28\n"
+    "Sovereign Regime Shield\n"
+    "that ejects positions.\n"
     "\n"
-    "/ticker list        \u2014 show\n"
-    "/ticker add SYM     \u2014 add\n"
-    "/ticker remove SYM  \u2014 drop\n"
+    "Why: AVWAP drifts all\n"
+    "day and was firing\n"
+    "stale \"Lords have left\"\n"
+    "alerts at levels the\n"
+    "ejector had already\n"
+    "left behind. One\n"
+    "anchor \u2014 PDC \u2014 across\n"
+    "the whole system.\n"
     "\n"
-    "On add, the bot now\n"
-    "primes every tracked\n"
-    "metric: PDC (FMP +\n"
-    "bars fallback), OR hi\n"
-    "and lo (if past 09:35\n"
-    "ET), RSI warm-up, and\n"
-    "a bars liveness probe.\n"
-    "Missing pieces are\n"
-    "listed in the reply\n"
-    "so you know what the\n"
-    "scan still has to fill.\n"
-    "\n"
-    "/add_ticker and\n"
-    "/remove_ticker remain\n"
-    "as hidden aliases so\n"
-    "saved shortcuts work."
+    "Long gate:  SPY & QQQ\n"
+    "            > PDC\n"
+    "Short gate: SPY & QQQ\n"
+    "            < PDC\n"
+    "Regime alert swaps to\n"
+    "PDC; Lords messaging\n"
+    "preserved."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.33 \u2014 /ticker now\n"
-    "handles add/remove/list\n"
-    "in one command. Adds\n"
-    "prime PDC + OR + RSI\n"
-    "and probe bar liveness."
+    "v3.4.34 \u2014 AVWAP removed.\n"
+    "Entry gates, regime\n"
+    "alerts, and dashboards\n"
+    "now anchor on PDC,\n"
+    "matching the v3.4.28\n"
+    "ejector. One source\n"
+    "of regime truth."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -97,6 +99,10 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.33 \u2014 /ticker unified\n"
+    "with add/remove/list; adds\n"
+    "prime PDC + OR + RSI.\n"
+    "\n"
     "v3.4.32 \u2014 Editable ticker\n"
     "universe from Telegram;\n"
     "QBTS tracked by default.\n"
@@ -106,25 +112,20 @@ _MAIN_HISTORY_TAIL = (
     "and daily summary.\n"
     "\n"
     "v3.4.30 \u2014 Mobile layout\n"
-    "fix; Trades time display.\n"
-    "\n"
-    "v3.4.29 \u2014 Persistent\n"
-    "dashboard login + live\n"
-    "Sovereign Regime panel."
+    "fix; Trades time display."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.33 \u2014 /ticker unified\n"
+    "(add/remove/list) + rich\n"
+    "metric prime on add.\n"
     "v3.4.32 \u2014 Editable ticker\n"
     "universe from Telegram.\n"
-    "v3.4.31 \u2014 Richer Today's\n"
-    "Trades card on dashboard.\n"
-    "v3.4.30 \u2014 Mobile dashboard\n"
-    "fix; trade time display.\n"
-    "v3.4.29 \u2014 Dashboard login\n"
-    "persists across deploys.\n"
-    "/tp_sync for broker status."
+    "v3.4.31 \u2014 Today's Trades\n"
+    "richer on dashboard.\n"
+    "/tp_sync for TP status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -670,12 +671,12 @@ or_low: dict = {}                   # ticker -> OR low price (Wounded Buffalo)
 pdc: dict = {}                      # ticker -> previous day close
 or_collected_date: str = ""         # date string, prevents re-collection
 
-# AVWAP state — SPY and QQQ only
-avwap_data: dict = {
-    "SPY": {"cum_pv": 0.0, "cum_vol": 0.0, "avwap": 0.0},
-    "QQQ": {"cum_pv": 0.0, "cum_vol": 0.0, "avwap": 0.0},
-}
-avwap_last_ts: dict = {"SPY": 0, "QQQ": 0}
+# AVWAP state — REMOVED in v3.4.34. All AVWAP code paths (entry
+# gates, regime alert, breadth observer) were migrated to PDC to
+# match the v3.4.28 Sovereign Regime Shield ejector. Persisted
+# state keys ("avwap_data", "avwap_last_ts") are silently ignored
+# by load_paper_state for backwards compatibility with pre-v3.4.34
+# state files — no migration required.
 
 # Positions
 positions: dict = {}
@@ -828,7 +829,8 @@ _current_mode_ts = None
 # surface in /mode. After a week of observation we'll decide which
 # (if any) deserve to actually influence trading behavior.
 #
-# 1) BREADTH   — SPY/QQQ vs their AVWAP → BULLISH/NEUTRAL/BEARISH
+# 1) BREADTH   — SPY/QQQ vs their PDC → BULLISH/NEUTRAL/BEARISH
+#    (v3.4.34: anchor swapped from AVWAP to PDC)
 # 2) RSI       — 14-period on resampled 5-min bars, SPY+QQQ aggregate
 #                  → OVERBOUGHT/NEUTRAL/OVERSOLD; plus a per-ticker dict
 # 3) TICKER    — per-ticker today realized P&L + current per-ticker RSI
@@ -839,7 +841,7 @@ _current_mode_ts = None
 # If a knob is eventually wired, it'll use these same thresholds or
 # tighter ones, never looser.
 
-BREADTH_TOLERANCE_PCT    = 0.001   # ±0.1% around AVWAP counts as NEUTRAL
+BREADTH_TOLERANCE_PCT    = 0.001   # ±0.1% around PDC counts as NEUTRAL
 RSI_OVERBOUGHT           = 70.0
 RSI_OVERSOLD             = 30.0
 RSI_PERIOD               = 14
@@ -865,7 +867,7 @@ _current_ticker_extremes: list = []     # list of (ticker, rsi, "OB"/"OS")
 #     "vol_pct": float|None,      # entry-bar vol as % of session avg
 #     "vol_ok": bool,             # vol_pct >= 150 (gate threshold)
 #     "polarity": bool,           # price vs PDC on the right side
-#     "index": bool,              # SPY/QQQ on the right side of AVWAP
+#     "index": bool,              # SPY/QQQ on the right side of PDC
 #     "ts": iso timestamp,
 # }}
 # Read-only from outside the scan loop; never cleared mid-scan.
@@ -893,8 +895,9 @@ def _record_near_miss(**row):
 
 
 def _classify_breadth():
-    """Observer 1: breadth from SPY/QQQ vs their AVWAP.
+    """Observer 1: breadth from SPY/QQQ vs their PDC.
     Returns (label, detail). Never raises.
+    v3.4.34: anchor swapped from AVWAP → PDC.
     """
     try:
         # fetch_1min_bars is cycle-cached — if the scan loop already
@@ -903,13 +906,13 @@ def _classify_breadth():
         qqq_bars = fetch_1min_bars("QQQ")
         spy_px = spy_bars.get("current_price") if spy_bars else None
         qqq_px = qqq_bars.get("current_price") if qqq_bars else None
-        spy_av = avwap_data.get("SPY", {}).get("avwap", 0) or 0
-        qqq_av = avwap_data.get("QQQ", {}).get("avwap", 0) or 0
-        if not (spy_px and qqq_px and spy_av and qqq_av):
-            return ("UNKNOWN", "SPY/QQQ price or AVWAP not ready")
+        spy_anchor = pdc.get("SPY") or 0
+        qqq_anchor = pdc.get("QQQ") or 0
+        if not (spy_px and qqq_px and spy_anchor and qqq_anchor):
+            return ("UNKNOWN", "SPY/QQQ price or PDC not ready")
 
-        spy_diff = (spy_px - spy_av) / spy_av
-        qqq_diff = (qqq_px - qqq_av) / qqq_av
+        spy_diff = (spy_px - spy_anchor) / spy_anchor
+        qqq_diff = (qqq_px - qqq_anchor) / qqq_anchor
         tol = BREADTH_TOLERANCE_PCT
 
         def _side(d):
@@ -919,7 +922,7 @@ def _classify_breadth():
 
         spy_side = _side(spy_diff)
         qqq_side = _side(qqq_diff)
-        detail = "SPY %+.2f%% %s AVWAP | QQQ %+.2f%% %s AVWAP" % (
+        detail = "SPY %+.2f%% %s PDC | QQQ %+.2f%% %s PDC" % (
             spy_diff * 100, spy_side, qqq_diff * 100, qqq_side)
 
         if spy_side == "above" and qqq_side == "above":
@@ -1334,8 +1337,7 @@ def save_paper_state():
         "trade_history": trade_history,
         "short_positions": short_positions,
         "short_trade_history": short_trade_history[-500:],
-        "avwap_data": avwap_data,
-        "avwap_last_ts": avwap_last_ts,
+        # v3.4.34: avwap_data / avwap_last_ts no longer persisted.
         "daily_short_entry_count": daily_short_entry_count,
         "last_exit_time": {k: v.isoformat() for k, v in _last_exit_time.items()},
         "_scan_paused": _scan_paused,
@@ -1362,7 +1364,7 @@ def load_paper_state():
     global user_config, tp_state, tp_dm_chat_id
     global trade_history
     global short_positions, short_trade_history
-    global avwap_data, avwap_last_ts, daily_short_entry_count
+    global daily_short_entry_count
     global _last_exit_time, _state_loaded
     global _scan_paused, _trading_halted, _trading_halted_reason
 
@@ -1395,8 +1397,8 @@ def load_paper_state():
         short_positions.update(state.get("short_positions", {}))
         short_trade_history.clear()
         short_trade_history.extend(state.get("short_trade_history", []))
-        avwap_data.update(state.get("avwap_data", {}))
-        avwap_last_ts.update(state.get("avwap_last_ts", {}))
+        # v3.4.34: legacy "avwap_data"/"avwap_last_ts" keys in old
+        # state files are silently ignored (no longer loaded).
         daily_short_entry_count.update(state.get("daily_short_entry_count", {}))
         raw_exit = state.get("last_exit_time", {})
         # Normalize to UTC-aware. Older persisted state may contain
@@ -2463,114 +2465,19 @@ def collect_or():
 
 
 # ============================================================
-# AVWAP (Anchored VWAP for SPY / QQQ)
+# v3.4.34 — AVWAP fully removed
 # ============================================================
-def update_avwap(ticker):
-    """Update AVWAP for SPY or QQQ using new 1-min bars since last update."""
-    if ticker not in avwap_data:
-        return 0.0
-
-    bars = fetch_1min_bars(ticker)
-    if not bars:
-        return avwap_data[ticker]["avwap"]
-
-    last_ts = avwap_last_ts.get(ticker, 0)
-
-    for i, ts in enumerate(bars["timestamps"]):
-        if ts <= last_ts:
-            continue
-        h = bars["highs"][i]
-        lo = bars["lows"][i]
-        c = bars["closes"][i]
-        v = bars["volumes"][i]
-        if h is None or lo is None or c is None or v is None:
-            continue
-        if v == 0:
-            continue
-        typical_price = (h + lo + c) / 3.0
-        avwap_data[ticker]["cum_pv"] += typical_price * v
-        avwap_data[ticker]["cum_vol"] += v
-        avwap_last_ts[ticker] = ts
-
-    cum_vol = avwap_data[ticker]["cum_vol"]
-    if cum_vol > 0:
-        avwap_data[ticker]["avwap"] = avwap_data[ticker]["cum_pv"] / cum_vol
-
-    return avwap_data[ticker]["avwap"]
-
-
-# ============================================================
-# DUAL-INDEX CONFLUENCE SHIELD (v3.2.0)
-# ============================================================
-# Replaces the v2.9.8 "Lords Left / Bull Vacuum" 1-minute, OR-based eject
-# with a market-systemic eject that requires:
-#   1. AND confluence \u2014 BOTH SPY and QQQ must agree.
-#   2. A FINALIZED 5-minute bar close as confirmation.
+# The AVWAP entry gates (check_entry, check_short_entry), the
+# regime-change alert, the breadth observer (_classify_breadth),
+# and the v3.2.0 dual-index 5-min AVWAP ejector (_dual_index_eject)
+# were all superseded by the v3.4.28 Sovereign Regime Shield, which
+# anchors on PDC via _sovereign_regime_eject. One anchor across
+# entries, alerts, breadth, and ejects.
 #
-# Goal: filter out sub-5-min liquidity probes ("Hormuz" wicks) and sector
-# divergence (e.g. semis strong while energy/defense drag the S&P).
-#
-# Fail-safe: any missing data \u2192 returns False (do NOT eject). The whole
-# point of the change is to do nothing in ambiguous conditions.
+# Previously at this site: update_avwap(), _last_finalized_5min_close(),
+# _dual_index_eject(). All callers migrated to pdc.get() + the 1-minute
+# finalized-close helper below. Removed in v3.4.34.
 # ============================================================
-def _last_finalized_5min_close(ticker):
-    """Return the close of the most recently FINALIZED 5-min bar for a ticker.
-
-    Reuses _resample_to_5min, which already drops the in-progress (newest)
-    bucket. Returns None when bars are unavailable or fewer than one full
-    5-min bar has elapsed.
-    """
-    bars = fetch_1min_bars(ticker)
-    if not bars:
-        return None
-    timestamps = bars.get("timestamps") or []
-    closes = bars.get("closes") or []
-    if not timestamps or not closes:
-        return None
-    five_min_closes = _resample_to_5min(timestamps, closes)
-    if not five_min_closes:
-        return None
-    return five_min_closes[-1]
-
-
-def _dual_index_eject(side):
-    """Confluence + 5-min finalized close gate for global eject signals.
-
-    Args:
-        side: 'long'  \u2192 True iff BOTH SPY_5m_close < SPY_AVWAP
-                              AND QQQ_5m_close < QQQ_AVWAP
-              'short' \u2192 True iff BOTH SPY_5m_close > SPY_AVWAP
-                              AND QQQ_5m_close > QQQ_AVWAP
-
-    Returns False (no eject) on ANY missing/ambiguous input.
-    """
-    if side not in ("long", "short"):
-        return False
-
-    # Refresh AVWAPs (idempotent; no-op if already current).
-    try:
-        update_avwap("SPY")
-        update_avwap("QQQ")
-    except Exception as e:
-        logger.debug("_dual_index_eject: avwap refresh failed: %s", e)
-        return False
-
-    spy_avwap = avwap_data.get("SPY", {}).get("avwap", 0) or 0
-    qqq_avwap = avwap_data.get("QQQ", {}).get("avwap", 0) or 0
-    if spy_avwap <= 0 or qqq_avwap <= 0:
-        return False  # AVWAPs not seeded yet
-
-    spy_5m = _last_finalized_5min_close("SPY")
-    qqq_5m = _last_finalized_5min_close("QQQ")
-    if spy_5m is None or qqq_5m is None:
-        return False  # < 5 mins of data, or fetch failed
-
-    if side == "long":
-        # Both indices must close 5m below their AVWAPs.
-        return (spy_5m < spy_avwap) and (qqq_5m < qqq_avwap)
-    else:
-        # 'short' \u2014 both must close 5m above their AVWAPs.
-        return (spy_5m > spy_avwap) and (qqq_5m > qqq_avwap)
 
 
 # ============================================================
@@ -2815,31 +2722,30 @@ def check_entry(ticker):
     if not polarity_ok:
         return False, None
 
-    # Index anchor: SPY > SPY_AVWAP and QQQ > QQQ_AVWAP
+    # Index anchor: SPY > SPY_PDC and QQQ > QQQ_PDC
+    # v3.4.34 — migrated from AVWAP to PDC so the entry gate matches
+    # the v3.4.28 Sovereign Regime Shield ejector (same anchor on
+    # both sides of the trade). Fail-closed on missing PDC.
     spy_bars = fetch_1min_bars("SPY")
     qqq_bars = fetch_1min_bars("QQQ")
     if not spy_bars or not qqq_bars:
         return False, None
 
-    update_avwap("SPY")
-    update_avwap("QQQ")
-
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-
-    if spy_avwap == 0 or qqq_avwap == 0:
+    spy_pdc_val = pdc.get("SPY")
+    qqq_pdc_val = pdc.get("QQQ")
+    if not spy_pdc_val or not qqq_pdc_val or spy_pdc_val <= 0 or qqq_pdc_val <= 0:
         return False, None
 
-    index_ok = (spy_bars["current_price"] > spy_avwap
-                and qqq_bars["current_price"] > qqq_avwap)
+    index_ok = (spy_bars["current_price"] > spy_pdc_val
+                and qqq_bars["current_price"] > qqq_pdc_val)
     # v3.4.21 — update long index flag on the snapshot.
     snap = _gate_snapshot.get(ticker)
     if snap is not None and snap.get("side") == "LONG":
         snap["index"] = bool(index_ok)
 
-    if spy_bars["current_price"] <= spy_avwap:
+    if spy_bars["current_price"] <= spy_pdc_val:
         return False, None
-    if qqq_bars["current_price"] <= qqq_avwap:
+    if qqq_bars["current_price"] <= qqq_pdc_val:
         return False, None
 
     return True, bars
@@ -3143,8 +3049,8 @@ def execute_entry(ticker, current_price):
     sig_lines = "Signal : ORB Breakout \u2191\n"
     sig_lines += "  1m close > OR High \u2713\n"
     sig_lines += "  Price > PDC \u2713\n"
-    sig_lines += "  SPY > AVWAP \u2713\n"
-    sig_lines += "  QQQ > AVWAP \u2713\n"
+    sig_lines += "  SPY > PDC \u2713\n"
+    sig_lines += "  QQQ > PDC \u2713\n"
     # v3.4.21 — when stop is capped at entry-0.75%, label it so.
     stop_label = (
         "entry \u22120.75%" if _stop_capped else "OR_High-$0.90"
@@ -3898,24 +3804,27 @@ def check_short_entry(ticker):
     # 2. Current price < PDC (polarity — "Red" stock only)
     if not polarity_ok:
         return
-    # 3. SPY < SPY_AVWAP
-    spy_below = True
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    if spy_avwap and spy_avwap > 0:
+    # 3. SPY < SPY_PDC   (v3.4.34: migrated from AVWAP to PDC)
+    # 4. QQQ < QQQ_PDC
+    # Short gate now mirrors the Sovereign Regime Shield ejector
+    # (v3.4.28) — one anchor across entries and ejects. Fail-closed
+    # on missing PDC: if either index PDC is unseeded, do NOT enter.
+    spy_below = False
+    qqq_below = False
+    spy_pdc_val = pdc.get("SPY")
+    qqq_pdc_val = pdc.get("QQQ")
+    if spy_pdc_val and spy_pdc_val > 0:
         spy_bars = fetch_1min_bars("SPY")
         if spy_bars:
             spy_price = spy_bars["current_price"]
-            if spy_price >= spy_avwap:
-                spy_below = False
-    # 4. QQQ < QQQ_AVWAP
-    qqq_below = True
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-    if qqq_avwap and qqq_avwap > 0:
+            if spy_price < spy_pdc_val:
+                spy_below = True
+    if qqq_pdc_val and qqq_pdc_val > 0:
         qqq_bars = fetch_1min_bars("QQQ")
         if qqq_bars:
             qqq_price = qqq_bars["current_price"]
-            if qqq_price >= qqq_avwap:
-                qqq_below = False
+            if qqq_price < qqq_pdc_val:
+                qqq_below = True
 
     # v3.4.21 — update short index flag on snapshot before the early return.
     snap = _gate_snapshot.get(ticker)
@@ -3988,8 +3897,8 @@ def execute_short_entry(ticker, price):
     short_sig = "Signal   : Wounded Buffalo \u2193\n"
     short_sig += "  1m close < OR Low \u2713\n"
     short_sig += "  Price < PDC \u2713\n"
-    short_sig += "  SPY < AVWAP \u2713\n"
-    short_sig += "  QQQ < AVWAP \u2713\n"
+    short_sig += "  SPY < PDC \u2713\n"
+    short_sig += "  QQQ < PDC \u2713\n"
     # v3.4.21 — label stop source: baseline PDC+$0.90 or entry-relative cap.
     short_stop_label = (
         "entry +0.75%" if _stop_capped else "PDC+$0.90"
@@ -4488,24 +4397,24 @@ def send_or_notification():
 
         lines.append(SEP)
 
-        # SPY/QQQ AVWAP
+        # SPY/QQQ vs PDC (v3.4.34: swapped from AVWAP)
         spy_bars = fetch_1min_bars("SPY")
         qqq_bars = fetch_1min_bars("QQQ")
         spy_price = spy_bars["current_price"] if spy_bars else 0
         qqq_price = qqq_bars["current_price"] if qqq_bars else 0
-        spy_avwap = avwap_data["SPY"]["avwap"]
-        qqq_avwap = avwap_data["QQQ"]["avwap"]
+        spy_pdc_d = pdc.get("SPY") or 0
+        qqq_pdc_d = pdc.get("QQQ") or 0
 
-        spy_above = spy_price > spy_avwap if spy_avwap > 0 else False
-        qqq_above = qqq_price > qqq_avwap if qqq_avwap > 0 else False
+        spy_above = spy_price > spy_pdc_d if spy_pdc_d > 0 else False
+        qqq_above = qqq_price > qqq_pdc_d if qqq_pdc_d > 0 else False
         spy_icon = "\u2705 above" if spy_above else "\u274c below"
         qqq_icon = "\u2705 above" if qqq_above else "\u274c below"
 
-        spy_avwap_fmt = "%.2f" % spy_avwap if spy_avwap > 0 else "n/a"
-        qqq_avwap_fmt = "%.2f" % qqq_avwap if qqq_avwap > 0 else "n/a"
+        spy_pdc_fmt = "%.2f" % spy_pdc_d if spy_pdc_d > 0 else "n/a"
+        qqq_pdc_fmt = "%.2f" % qqq_pdc_d if qqq_pdc_d > 0 else "n/a"
 
-        lines.append("SPY AVWAP: $%s  %s" % (spy_avwap_fmt, spy_icon))
-        lines.append("QQQ AVWAP: $%s  %s" % (qqq_avwap_fmt, qqq_icon))
+        lines.append("SPY PDC: $%s  %s" % (spy_pdc_fmt, spy_icon))
+        lines.append("QQQ PDC: $%s  %s" % (qqq_pdc_fmt, qqq_icon))
 
         both_active = spy_above and qqq_above
         both_bearish = (not spy_above) and (not qqq_above)
@@ -5010,21 +4919,22 @@ def scan_loop():
     logger.info("Scanning %d stocks | pos=%d tp=%d short=%d tp_short=%d | mode=%s",
                 len(TRADE_TICKERS), n_pos, n_tp, n_short, n_tp_short, _current_mode)
 
-    # Update AVWAP for index anchors
-    update_avwap("SPY")
-    update_avwap("QQQ")
-
     # ── Regime change alert ───────────────────────────────────────────────
+    # v3.4.34: anchor swapped from AVWAP → PDC to match the
+    # v3.4.28 Sovereign Regime Shield ejector. One anchor across
+    # the whole system; no more divergent alerts vs. real ejects.
+    # Fail-closed on missing PDC: no alert fires if either index
+    # PDC is unseeded (same semantics as _sovereign_regime_eject).
     global _regime_bullish
-    spy_avwap_r = avwap_data["SPY"]["avwap"]
-    qqq_avwap_r = avwap_data["QQQ"]["avwap"]
-    if spy_avwap_r > 0 and qqq_avwap_r > 0:
+    spy_pdc_r = pdc.get("SPY")
+    qqq_pdc_r = pdc.get("QQQ")
+    if spy_pdc_r and qqq_pdc_r and spy_pdc_r > 0 and qqq_pdc_r > 0:
         spy_bars_r = fetch_1min_bars("SPY")
         qqq_bars_r = fetch_1min_bars("QQQ")
         if spy_bars_r and qqq_bars_r:
             spy_cur_r = spy_bars_r["current_price"]
             qqq_cur_r = qqq_bars_r["current_price"]
-            now_bullish = (spy_cur_r > spy_avwap_r) and (qqq_cur_r > qqq_avwap_r)
+            now_bullish = (spy_cur_r > spy_pdc_r) and (qqq_cur_r > qqq_pdc_r)
             if _regime_bullish is None:
                 _regime_bullish = now_bullish
             elif now_bullish != _regime_bullish:
@@ -5033,17 +4943,17 @@ def scan_loop():
                 if now_bullish:
                     regime_msg = (
                         "\U0001f7e2 REGIME: BULLISH\n"
-                        "SPY $%.2f > AVWAP $%.2f\n"
-                        "QQQ $%.2f > AVWAP $%.2f\n"
+                        "SPY $%.2f > PDC $%.2f\n"
+                        "QQQ $%.2f > PDC $%.2f\n"
                         "The Lords are back.  %s"
-                    ) % (spy_cur_r, spy_avwap_r, qqq_cur_r, qqq_avwap_r, now_hhmm_r)
+                    ) % (spy_cur_r, spy_pdc_r, qqq_cur_r, qqq_pdc_r, now_hhmm_r)
                 else:
                     regime_msg = (
                         "\U0001f534 REGIME: BEARISH\n"
-                        "SPY $%.2f < AVWAP $%.2f\n"
-                        "QQQ $%.2f < AVWAP $%.2f\n"
+                        "SPY $%.2f < PDC $%.2f\n"
+                        "QQQ $%.2f < PDC $%.2f\n"
                         "The Lords have left.  %s"
-                    ) % (spy_cur_r, spy_avwap_r, qqq_cur_r, qqq_avwap_r, now_hhmm_r)
+                    ) % (spy_cur_r, spy_pdc_r, qqq_cur_r, qqq_pdc_r, now_hhmm_r)
                 send_telegram(regime_msg)
                 send_tp_telegram(regime_msg)
 
@@ -5098,7 +5008,9 @@ def scan_loop():
 # RESET DAILY STATE
 # ============================================================
 def reset_daily_state():
-    """Reset AVWAP, OR data, and daily counts for new trading day."""
+    """Reset OR data and daily counts for new trading day.
+    (v3.4.34: AVWAP reset removed — AVWAP state no longer tracked.)
+    """
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason, tp_paper_trades
     global daily_short_entry_count
 
@@ -5119,10 +5031,8 @@ def reset_daily_state():
         save_tp_state()
         daily_entry_date = today
 
-    # Reset AVWAP
-    for t in ("SPY", "QQQ"):
-        avwap_data[t] = {"cum_pv": 0.0, "cum_vol": 0.0, "avwap": 0.0}
-        avwap_last_ts[t] = 0
+    # v3.4.34: removed per-day AVWAP reset — AVWAP state no longer
+    # exists. PDC is refreshed by the OR collector at market open.
 
     # Feature 2: Reset trading halt for new day
     _trading_halted = False
@@ -5360,10 +5270,10 @@ def _dashboard_sync(is_tp):
     qqq_bars = fetch_1min_bars("QQQ")
     spy_price = spy_bars["current_price"] if spy_bars else 0.0
     qqq_price = qqq_bars["current_price"] if qqq_bars else 0.0
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-    spy_ok = spy_price > spy_avwap if spy_avwap > 0 else False
-    qqq_ok = qqq_price > qqq_avwap if qqq_avwap > 0 else False
+    spy_pdc_d = pdc.get("SPY") or 0
+    qqq_pdc_d = pdc.get("QQQ") or 0
+    spy_ok = spy_price > spy_pdc_d if spy_pdc_d > 0 else False
+    qqq_ok = qqq_price > qqq_pdc_d if qqq_pdc_d > 0 else False
     spy_icon = "\u2705" if spy_ok else "\u274c"
     qqq_icon = "\u2705" if qqq_ok else "\u274c"
 
@@ -5417,8 +5327,8 @@ def _dashboard_sync(is_tp):
     lines += [
         SEP,
         "\U0001f4c8 INDEX FILTERS",
-        "  SPY  $%.2f  AVWAP $%.2f  %s" % (spy_price, spy_avwap, spy_icon),
-        "  QQQ  $%.2f  AVWAP $%.2f  %s" % (qqq_price, qqq_avwap, qqq_icon),
+        "  SPY  $%.2f  PDC $%.2f  %s" % (spy_price, spy_pdc_d, spy_icon),
+        "  QQQ  $%.2f  PDC $%.2f  %s" % (qqq_price, qqq_pdc_d, qqq_icon),
         "  Market: %s" % market_status,
         SEP,
         "\U0001f4d0 TODAY'S OR LEVELS",
@@ -5705,13 +5615,13 @@ def _status_text_sync(is_tp):
     else:
         lines.append("OR: not yet collected")
 
-    # AVWAP status
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-    if spy_avwap > 0:
-        lines.append("SPY AVWAP: $%.2f" % spy_avwap)
-    if qqq_avwap > 0:
-        lines.append("QQQ AVWAP: $%.2f" % qqq_avwap)
+    # PDC status (v3.4.34: swapped from AVWAP)
+    spy_pdc_s = pdc.get("SPY") or 0
+    qqq_pdc_s = pdc.get("QQQ") or 0
+    if spy_pdc_s > 0:
+        lines.append("SPY PDC: $%.2f" % spy_pdc_s)
+    if qqq_pdc_s > 0:
+        lines.append("QQQ PDC: $%.2f" % qqq_pdc_s)
 
     return "\n".join(lines)
 
@@ -7158,13 +7068,13 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\U0001f4c8 ORB LONG BREAKOUT\n"
         "  Entry: 1-min close > OR_High\n"
         "         + price > PDC (green stock)\n"
-        "         + SPY & QQQ > AVWAP\n"
+        "         + SPY & QQQ > PDC\n"
         "  Stop : OR_High \u2212 $0.90\n"
         "  Trail: +1.0% trigger | max(1.0%, $1.00) distance\n\n"
         "\U0001f9b7 WOUNDED BUFFALO SHORT\n"
         "  Entry: 1-min close < OR_Low\n"
         "         + price < PDC (red stock)\n"
-        "         + SPY & QQQ < AVWAP\n"
+        "         + SPY & QQQ < PDC\n"
         "  Stop : PDC + $0.90\n"
         "  Trail: +1.0% trigger | max(1.0%, $1.00) distance\n\n"
         f"{SEP}\n"
@@ -7174,12 +7084,13 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Scan : every 60s \u2192 8:35\u20142:55 CT\n"
         "EOD  : force-close all at 2:55 CT\n"
         f"{SEP}\n"
-        "\U0001f6e1 DUAL-INDEX CONFLUENCE SHIELD (v3.2.0)\n"
+        "\U0001f6e1 SOVEREIGN REGIME SHIELD (v3.4.28)\n"
         "  Lords Left & Bull Vacuum require\n"
-        "  BOTH SPY AND QQQ to confirm on a\n"
-        "  finalized 5-min bar close \u2192 no\n"
-        "  wick-outs, no sector divergence\n"
-        "  ejects (\"Hormuz\" wick filter)\n"
+        "  BOTH SPY AND QQQ to cross PDC on a\n"
+        "  finalized 1-min bar close \u2192 one\n"
+        "  anchor across entries and ejects;\n"
+        "  no sector divergence ejects.\n"
+        "  (v3.4.34: AVWAP fully removed)\n"
         f"{SEP}\n"
         "Full reference guide attached \u2193"
     )
@@ -7241,8 +7152,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Entry (all must be true):\n"
         "  \u2022 1m close > OR High\n"
         "  \u2022 Price > PDC\n"
-        "  \u2022 SPY > AVWAP\n"
-        "  \u2022 QQQ > AVWAP\n"
+        "  \u2022 SPY > PDC\n"
+        "  \u2022 QQQ > PDC\n"
         "Stop: OR High \u2212 $0.90\n"
         "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
@@ -7253,16 +7164,16 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \U0001f56f Red Candle\n"
         "     price < Open OR < PDC\n"
         "  \U0001f451 Lords Left\n"
-        "     SPY AND QQQ < AVWAP\n"
-        "     on finalized 5m close\n"
+        "     SPY AND QQQ < PDC\n"
+        "     on finalized 1m close\n"
         f"{SEP}\n"
         "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
         "Entry after 8:45 CT (15-min buffer)\n"
         "Entry (all must be true):\n"
         "  \u2022 1m close < OR Low\n"
         "  \u2022 Price < PDC\n"
-        "  \u2022 SPY < AVWAP\n"
-        "  \u2022 QQQ < AVWAP\n"
+        "  \u2022 SPY < PDC\n"
+        "  \u2022 QQQ < PDC\n"
         "Stop: PDC + $0.90\n"
         "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
         "Size: 10 shares \u00b7 limit order\n"
@@ -7271,16 +7182,17 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n"
         "Eye of the Tiger exits:\n"
         "  \U0001f300 Bull Vacuum\n"
-        "     SPY AND QQQ > AVWAP\n"
-        "     on finalized 5m close\n"
+        "     SPY AND QQQ > PDC\n"
+        "     on finalized 1m close\n"
         "  \U0001f504 Polarity Shift\n"
         "     price > PDC (1m close)\n"
         f"{SEP}\n"
-        "\U0001f6e1 Confluence Shield (v3.2.0)\n"
+        "\U0001f6e1 Regime Shield (v3.4.28)\n"
         "  Global eject requires BOTH\n"
-        "  indices on a finalized 5m\n"
-        "  close \u2014 filters wicks &\n"
-        "  sector divergence\n"
+        "  SPY and QQQ to cross PDC on\n"
+        "  a finalized 1m close. One\n"
+        "  anchor across entries and\n"
+        "  ejects (v3.4.34: AVWAP gone)\n"
         f"{SEP}"
     )
     await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
@@ -7730,17 +7642,17 @@ def _price_sync(ticker):
     else:
         lines.append("PDC:      $%.2f" % pdc_val)
 
-    # SPY/QQQ
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    # SPY/QQQ vs PDC (v3.4.34: swapped from AVWAP)
+    spy_pdc_t = pdc.get("SPY") or 0
+    qqq_pdc_t = pdc.get("QQQ") or 0
     spy_bars = fetch_1min_bars("SPY")
     qqq_bars = fetch_1min_bars("QQQ")
     spy_price_val = spy_bars["current_price"] if spy_bars else 0
     qqq_price_val = qqq_bars["current_price"] if qqq_bars else 0
-    spy_ok = (spy_price_val > spy_avwap) if (spy_bars and spy_avwap > 0) else False
-    qqq_ok = (qqq_price_val > qqq_avwap) if (qqq_bars and qqq_avwap > 0) else False
-    spy_below = (spy_price_val < spy_avwap) if (spy_bars and spy_avwap > 0) else False
-    qqq_below = (qqq_price_val < qqq_avwap) if (qqq_bars and qqq_avwap > 0) else False
+    spy_ok = (spy_price_val > spy_pdc_t) if (spy_bars and spy_pdc_t > 0) else False
+    qqq_ok = (qqq_price_val > qqq_pdc_t) if (qqq_bars and qqq_pdc_t > 0) else False
+    spy_below = (spy_price_val < spy_pdc_t) if (spy_bars and spy_pdc_t > 0) else False
+    qqq_below = (qqq_price_val < qqq_pdc_t) if (qqq_bars and qqq_pdc_t > 0) else False
     spy_icon = "\u2705" if spy_ok else "\u274c"
     qqq_icon = "\u2705" if qqq_ok else "\u274c"
     filter_status = "active" if (spy_ok and qqq_ok) else "inactive"
@@ -7832,8 +7744,9 @@ def _proximity_sync(is_tp: bool = False):
     """Build proximity text (blocking I/O \u2014 run in executor).
 
     Shows how far each ticker is from its OR-breakout trigger, plus the
-    SPY/QQQ vs AVWAP global gate. Read-only diagnostic view \u2014 does
+    SPY/QQQ vs PDC global gate. Read-only diagnostic view \u2014 does
     NOT change any trade logic or adaptive parameters.
+    v3.4.34: anchor swapped from AVWAP to PDC.
 
     Every visible line is <= 34 chars incl. leading 2-space indent so it
     renders without wrap inside a Telegram mobile monospace block.
@@ -7855,26 +7768,26 @@ def _proximity_sync(is_tp: bool = False):
     longs_dict = tp_positions if is_tp else positions
     shorts_dict = tp_short_positions if is_tp else short_positions
 
-    # --- Global: SPY/QQQ vs AVWAP (the long gate) ---
+    # --- Global: SPY/QQQ vs PDC (the long gate, v3.4.34) ---
     spy_bars = fetch_1min_bars("SPY")
     qqq_bars = fetch_1min_bars("QQQ")
     spy_price = spy_bars["current_price"] if spy_bars else 0.0
     qqq_price = qqq_bars["current_price"] if qqq_bars else 0.0
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
+    spy_pdc_p = pdc.get("SPY") or 0
+    qqq_pdc_p = pdc.get("QQQ") or 0
 
-    spy_have = spy_price > 0 and spy_avwap > 0
-    qqq_have = qqq_price > 0 and qqq_avwap > 0
-    spy_ok = spy_have and spy_price > spy_avwap
-    qqq_ok = qqq_have and qqq_price > qqq_avwap
+    spy_have = spy_price > 0 and spy_pdc_p > 0
+    qqq_have = qqq_price > 0 and qqq_pdc_p > 0
+    spy_ok = spy_have and spy_price > spy_pdc_p
+    qqq_ok = qqq_have and qqq_price > qqq_pdc_p
     spy_icon = "\u2705" if spy_ok else "\u274c"
     qqq_icon = "\u2705" if qqq_ok else "\u274c"
 
     long_ok = spy_ok and qqq_ok
-    # Short anchor is the mirror: SPY AND QQQ both BELOW AVWAP enables shorts.
+    # Short anchor is the mirror: SPY AND QQQ both BELOW PDC enables shorts.
     short_ok = (spy_have and qqq_have
-                and spy_price < spy_avwap
-                and qqq_price < qqq_avwap)
+                and spy_price < spy_pdc_p
+                and qqq_price < qqq_pdc_p)
 
     if long_ok:
         verdict = "LONGS enabled"
@@ -7897,8 +7810,8 @@ def _proximity_sync(is_tp: bool = False):
             return "%s  --" % tag
         return "%s $%.2f %s vs $%.2f" % (tag, px, icon, av)
 
-    lines.append(_idx_row("SPY", spy_price, spy_avwap, spy_icon))
-    lines.append(_idx_row("QQQ", qqq_price, qqq_avwap, qqq_icon))
+    lines.append(_idx_row("SPY", spy_price, spy_pdc_p, spy_icon))
+    lines.append(_idx_row("QQQ", qqq_price, qqq_pdc_p, qqq_icon))
     lines.append("Gate: %s" % verdict)
     lines.append(SEP)
 
@@ -8161,22 +8074,22 @@ def _orb_sync():
 
     lines.append(SEP)
 
-    # SPY/QQQ AVWAP
+    # SPY/QQQ vs PDC (v3.4.34: swapped from AVWAP)
     spy_bars = fetch_1min_bars("SPY")
     qqq_bars = fetch_1min_bars("QQQ")
     spy_price = spy_bars["current_price"] if spy_bars else 0
     qqq_price = qqq_bars["current_price"] if qqq_bars else 0
-    spy_avwap = avwap_data["SPY"]["avwap"]
-    qqq_avwap = avwap_data["QQQ"]["avwap"]
-    spy_ok = spy_price > spy_avwap if spy_avwap > 0 else False
-    qqq_ok = qqq_price > qqq_avwap if qqq_avwap > 0 else False
+    spy_pdc_u = pdc.get("SPY") or 0
+    qqq_pdc_u = pdc.get("QQQ") or 0
+    spy_ok = spy_price > spy_pdc_u if spy_pdc_u > 0 else False
+    qqq_ok = qqq_price > qqq_pdc_u if qqq_pdc_u > 0 else False
     spy_icon = "\u2705" if spy_ok else "\u274c"
     qqq_icon = "\u2705" if qqq_ok else "\u274c"
 
-    spy_avwap_fmt = "%.2f" % spy_avwap if spy_avwap > 0 else "n/a"
-    qqq_avwap_fmt = "%.2f" % qqq_avwap if qqq_avwap > 0 else "n/a"
-    lines.append("SPY AVWAP: $%s  %s" % (spy_avwap_fmt, spy_icon))
-    lines.append("QQQ AVWAP: $%s  %s" % (qqq_avwap_fmt, qqq_icon))
+    spy_pdc_fmt = "%.2f" % spy_pdc_u if spy_pdc_u > 0 else "n/a"
+    qqq_pdc_fmt = "%.2f" % qqq_pdc_u if qqq_pdc_u > 0 else "n/a"
+    lines.append("SPY PDC: $%s  %s" % (spy_pdc_fmt, spy_icon))
+    lines.append("QQQ PDC: $%s  %s" % (qqq_pdc_fmt, qqq_icon))
 
     # Entries today
     entry_parts = []
@@ -9068,7 +8981,7 @@ def send_startup_message():
         f"{CURRENT_MAIN_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
-        f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
+        f"Strategy: ORB Long + Wounded Buffalo Short | PDC anchor\n"
         f"Scan:     every {SCAN_INTERVAL}s  |  Trail: Bison +1.0% / min $1.00\n"
         f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
         f"{SEP}\n"
@@ -9082,7 +8995,7 @@ def send_startup_message():
         f"{CURRENT_TP_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
-        f"Strategy: ORB Long + Wounded Buffalo Short | PDC | AVWAP\n"
+        f"Strategy: ORB Long + Wounded Buffalo Short | PDC anchor\n"
         f"Scan:     every {SCAN_INTERVAL}s  |  Trail: Bison +1.0% / min $1.00\n"
         f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
         f"{SEP}\n"
