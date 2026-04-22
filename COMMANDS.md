@@ -14,7 +14,7 @@ Aliases `/positions` and `/or_now` remain registered but are not shown in the Te
 | `/status` | — | Open long and short positions with live prices, unrealized P&L per position, stop levels, day P&L, portfolio allocation pie chart. |
 | `/positions` | — | Alias for `/status`. |
 | `/perf` | `[date \| N]` | Performance stats: win rate, avg win/loss, streak, long vs short breakdown. No arg = all-time. `7` = last 7 days. `Apr 17` = single day. |
-| `/mode` | — | Current MarketMode classification (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.), breadth/RSI observer readings, and mode profile. Observation-only in v3.4.37 — no parameters are read from it yet. |
+| `/mode` | — | Current MarketMode classification (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.), breadth/RSI observer readings, and mode profile. Observation-only in v3.4.38 — no parameters are read from it yet. |
 | `/monitoring` | `[pause \| resume]` | Show scanner status, or pause/resume new-entry scanning. Position management (stops, trailing) continues while paused. No arg = show status. |
 | `/proximity` | — | Read-only diagnostic showing each ticker's current price gap to OR_High (long), OR_Low (short), and PDC. Includes SPY/QQQ polarity check. Refreshable via inline button. |
 
@@ -40,6 +40,9 @@ Aliases `/positions` and `/or_now` remain registered but are not shown in the Te
 | `/reset` | — | Interactive reset with an inline confirm button (60-second expiry). Resets portfolio to $100,000. |
 | `/retighten` | — | Force-run the 0.75% stop cap and breakeven ratchet across every open position right now. Positions with stops already breached by the retightened level are exited immediately (`RETRO_CAP`). |
 | `/rh_sync` | — | **TP bot only.** Robinhood broker sync status: webhook enabled/disabled, orders sent/OK/failed, open Robinhood long and short positions, recent webhook outcomes, unsynced exits needing manual reconciliation. On the main bot, `/rh_sync` redirects to the TP bot. Also available as `/tp_sync` (alias). |
+| `/rh_status` | — | **Main bot only.** Robinhood live-trading kill-switch state: `ENABLED` / `DISABLED`, source of truth (env default vs runtime override), webhook/IMAP wiring flags, and sizing config ($25k capital, $1500/entry, max 1/ticker, max 6 concurrent, long-only). |
+| `/rh_enable` | — | **Main bot only.** Enable Robinhood live trading at runtime — flips the TradersPost webhook gate on without needing a Railway restart. Persisted in `tp_state.json` so it survives redeploys. |
+| `/rh_disable` | — | **Main bot only.** Disable Robinhood live trading at runtime — webhook POSTs are skipped immediately. Paper portfolio keeps running normally. Use for an emergency stop or to pause live trading. Persisted across redeploys. |
 
 ---
 
@@ -74,8 +77,8 @@ The primary interface is `/ticker`. The standalone commands are back-compat alia
 | Command | Description |
 |---------|-------------|
 | `/strategy` | Compact inline strategy summary: long and short entry conditions, stop and ladder for both sides, Eye-of-the-Tiger exits, Regime Shield. |
-| `/algo` | Algorithm summary (same content as `/strategy`) plus the full `StockSpikeMonitor_Algorithm_v3.4.37.pdf` sent as a document. PDF is fetched from the repo if not present locally. |
-| `/version` | Current bot version (`v3.4.37`) and release notes. |
+| `/algo` | Algorithm summary (same content as `/strategy`) plus the full `StockSpikeMonitor_Algorithm_v3.4.38.pdf` sent as a document. PDF is fetched from the repo if not present locally. |
+| `/version` | Current bot version (`v3.4.38`) and release notes. |
 
 ---
 
@@ -127,6 +130,9 @@ Admin
   /trade_log        Last 10 persistent log rows
   /rh_sync          Robinhood sync (TP bot)
   /tp_sync          (alias: /rh_sync)
+  /rh_status        Kill-switch state (main bot)
+  /rh_enable        Enable live trading (main bot)
+  /rh_disable       Disable live trading (main bot)
   /ticker list/add/remove   Ticker universe
 ```
 

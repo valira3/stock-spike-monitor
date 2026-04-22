@@ -582,13 +582,16 @@ def run_local() -> int:
     # --------------------------------------------------------
     @t("v3.4.15: send_traderspost_order returns skipped dict when disabled")
     def _():
+        # v3.4.38 — TRADERSPOST_ENABLED is now gated by is_traderspost_enabled()
+        # with a runtime override (_traderspost_runtime_override) layered on
+        # top of the env default. Force it off for this test.
         reset_state()
-        prev_enabled = m.TRADERSPOST_ENABLED
+        prev_override = m._traderspost_runtime_override
         try:
-            m.TRADERSPOST_ENABLED = False
+            m._traderspost_runtime_override = False
             result = m.send_traderspost_order("SPY", "sell", 450.0, shares=10)
         finally:
-            m.TRADERSPOST_ENABLED = prev_enabled
+            m._traderspost_runtime_override = prev_override
         assert isinstance(result, dict), f"expected dict, got {type(result)}"
         assert result.get("skipped") is True, f"expected skipped=True, got {result}"
         assert result.get("success") is False
@@ -690,9 +693,10 @@ def run_local() -> int:
         for bad in ("webhook", "broker", "unsynced"):
             assert bad not in main_lc, \
                 f"MAIN_RELEASE_NOTE leaks {bad!r}: {m.MAIN_RELEASE_NOTE!r}"
-        # TP release note should mention rh_sync (v3.4.37: renamed from tp_sync).
-        assert ("/rh_sync" in m.TP_RELEASE_NOTE or "/tp_sync" in m.TP_RELEASE_NOTE), \
-            f"TP_RELEASE_NOTE missing /rh_sync or /tp_sync: {m.TP_RELEASE_NOTE!r}"
+        # TP release note should reference a Robinhood command (v3.4.37
+        # renamed tp_sync to rh_sync; v3.4.38 added rh_enable/disable/status).
+        assert "/rh_" in m.TP_RELEASE_NOTE, \
+            f"TP_RELEASE_NOTE missing /rh_* command reference: {m.TP_RELEASE_NOTE!r}"
 
     @t("v3.4.16: main-bot /tp_sync redirect handler exists")
     def _():
@@ -2737,16 +2741,18 @@ def run_local() -> int:
             if orig_orl is None: m.or_low.pop("QBTS", None)
             else: m.or_low["QBTS"] = orig_orl
 
-    @t("v3.4.33: release notes mention the unified /ticker command")
+    @t("release notes history tail lists the most-recent prior release")
     def _():
-        # v3.4.34: /ticker shipped in v3.4.33 and rolled into the history
-        # tail. Check the full MAIN_RELEASE_NOTE (current + history), not
-        # the rotating CURRENT_MAIN_NOTE, so this test survives version
-        # rollovers.
+        # v3.4.38: the rolling history window only holds the last few
+        # releases. Check that whichever version is the "most recent
+        # prior" appears \u2014 anchored to the current BOT_VERSION so
+        # this test survives future rollovers.
         import stock_spike_monitor as m
         note = m.MAIN_RELEASE_NOTE
-        # At minimum the v3.4.33 release line should persist in history.
-        assert "v3.4.33" in note and "/ticker" in note, note
+        # Parse the immediate predecessor from BOT_VERSION (e.g. 3.4.38 -> 3.4.37).
+        major, minor, patch = (int(x) for x in m.BOT_VERSION.split("."))
+        prev = f"v{major}.{minor}.{patch - 1}"
+        assert prev in note, f"previous release {prev} must persist in history: {note!r}"
 
     # =================================================================
     # v3.4.34 — AVWAP → PDC full migration
@@ -2935,12 +2941,19 @@ def run_local() -> int:
         for i, line in enumerate(note.split("\n")):
             assert len(line) <= 34, (i, len(line), repr(line))
 
-    @t("v3.4.34: v3.4.33 /ticker release line persists in MAIN_RELEASE_NOTE history")
+    @t("release notes history tail keeps two prior releases")
     def _():
-        import stock_spike_monitor as m
+        # v3.4.38: rather than pin to a specific old release that will
+        # eventually age out, assert that the history tail contains at
+        # least TWO version strings older than BOT_VERSION. This keeps
+        # the "rolling history" invariant enforced without churn every
+        # release.
+        import re, stock_spike_monitor as m
         note = m.MAIN_RELEASE_NOTE
-        assert "v3.4.33" in note and "/ticker" in note, \
-            "v3.4.33 /ticker line must persist in the history tail"
+        versions = set(re.findall(r"v3\.4\.\d+", note))
+        versions.discard(f"v{m.BOT_VERSION}")
+        assert len(versions) >= 2, \
+            f"expected \u22652 prior releases in history, got {versions}"
 
     @t("v3.4.34: legacy LORDS_LEFT[1m] / BULL_VACUUM[1m] back-compat labels retained")
     def _():
@@ -3202,21 +3215,14 @@ def run_local() -> int:
                 over.append((len(raw), raw))
         assert not over, f"lines over 34 chars: {over}"
 
-    @t("v3.4.36: CURRENT_MAIN_NOTE (updated) leads with v3.4.37")
+    @t("CURRENT notes lead with active BOT_VERSION")
     def _():
-        # v3.4.37 bumped CURRENT_MAIN_NOTE; v3.4.36 content moved to history
+        # v3.4.38: replaces two version-pinned tests. Dynamic so this
+        # survives rollovers without editing every release.
         import stock_spike_monitor as m
-        note = m.CURRENT_MAIN_NOTE
-        assert note.startswith("v3.4.37"), note[:40]
-        assert "v3.4.36" in m.MAIN_RELEASE_NOTE, "v3.4.36 must remain in history"
-
-    @t("v3.4.36: CURRENT_TP_NOTE (updated) leads with v3.4.37")
-    def _():
-        # v3.4.37 bumped CURRENT_TP_NOTE; v3.4.36 content moved to TP history
-        import stock_spike_monitor as m
-        note = m.CURRENT_TP_NOTE
-        assert note.startswith("v3.4.37"), note[:40]
-        assert "v3.4.36" in m.TP_RELEASE_NOTE, "v3.4.36 must remain in TP history"
+        tag = f"v{m.BOT_VERSION}"
+        assert m.CURRENT_MAIN_NOTE.startswith(tag), m.CURRENT_MAIN_NOTE[:40]
+        assert m.CURRENT_TP_NOTE.startswith(tag), m.CURRENT_TP_NOTE[:40]
 
     @t("v3.4.36: CURRENT notes stay within 34-char mobile budget")
     def _():
@@ -3367,37 +3373,39 @@ def run_local() -> int:
             m.tp_positions.clear()
             m.tp_positions.update(orig_tp)
 
-    @t("v3.4.37: /algo caption reads v3.4.37")
+    @t("v3.4.38: /algo caption reads v3.4.38")
     def _():
         import stock_spike_monitor as m
         import inspect
         src = inspect.getsource(m.cmd_algo)
-        assert "v3.4.37" in src, "/algo source must contain v3.4.37"
-        assert "v3.4.36" not in src, "/algo source must not contain old v3.4.36"
+        assert "v3.4.38" in src, "/algo source must contain v3.4.38"
+        assert "v3.4.37" not in src, "/algo source must not contain old v3.4.37"
 
-    @t("v3.4.37: BOT_VERSION is 3.4.37")
+    @t("v3.4.38: BOT_VERSION is 3.4.38")
     def _():
         import stock_spike_monitor as m
-        assert m.BOT_VERSION == "3.4.37", \
-            f"BOT_VERSION should be 3.4.37, got {m.BOT_VERSION!r}"
+        assert m.BOT_VERSION == "3.4.38", \
+            f"BOT_VERSION should be 3.4.38, got {m.BOT_VERSION!r}"
 
-    @t("v3.4.37: CURRENT_MAIN_NOTE leads with v3.4.37")
+    @t("v3.4.38: CURRENT_MAIN_NOTE leads with v3.4.38")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.37"), \
-            f"CURRENT_MAIN_NOTE must start with v3.4.37: {m.CURRENT_MAIN_NOTE[:40]!r}"
+        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.38"), \
+            f"CURRENT_MAIN_NOTE must start with v3.4.38: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
-    @t("v3.4.37: CURRENT_TP_NOTE leads with v3.4.37")
+    @t("v3.4.38: CURRENT_TP_NOTE leads with v3.4.38")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_TP_NOTE.startswith("v3.4.37"), \
-            f"CURRENT_TP_NOTE must start with v3.4.37: {m.CURRENT_TP_NOTE[:40]!r}"
+        assert m.CURRENT_TP_NOTE.startswith("v3.4.38"), \
+            f"CURRENT_TP_NOTE must start with v3.4.38: {m.CURRENT_TP_NOTE[:40]!r}"
 
-    @t("v3.4.37: v3.4.36 persists in release note history")
+    @t("v3.4.38: v3.4.37 persists in release note history")
     def _():
         import stock_spike_monitor as m
-        assert "v3.4.36" in m.MAIN_RELEASE_NOTE, \
-            "v3.4.36 must persist in MAIN_RELEASE_NOTE history"
+        assert "v3.4.37" in m.MAIN_RELEASE_NOTE, \
+            "v3.4.37 must persist in MAIN_RELEASE_NOTE history"
+        assert "v3.4.37" in m.TP_RELEASE_NOTE, \
+            "v3.4.37 must persist in TP_RELEASE_NOTE history"
 
     @t("v3.4.37: rh_shares_for uses RH_DOLLARS_PER_ENTRY dynamically")
     def _():
@@ -3454,6 +3462,111 @@ def run_local() -> int:
             for i, line in enumerate(val.split("\n")):
                 assert len(line) <= 34, \
                     f"{name} line {i} over 34 chars ({len(line)}): {line!r}"
+
+    # --------------------------------------------------------
+    # v3.4.38 — Robinhood live-trading kill switch
+    # --------------------------------------------------------
+    @t("v3.4.38: is_traderspost_enabled() falls back to env when override is None")
+    def _():
+        import stock_spike_monitor as m
+        prev = m._traderspost_runtime_override
+        try:
+            m._traderspost_runtime_override = None
+            assert m.is_traderspost_enabled() is m._TRADERSPOST_ENABLED_ENV, \
+                "getter should return env value when override is None"
+        finally:
+            m._traderspost_runtime_override = prev
+
+    @t("v3.4.38: runtime override wins over env default")
+    def _():
+        import stock_spike_monitor as m
+        prev = m._traderspost_runtime_override
+        try:
+            m._traderspost_runtime_override = True
+            assert m.is_traderspost_enabled() is True
+            m._traderspost_runtime_override = False
+            assert m.is_traderspost_enabled() is False
+        finally:
+            m._traderspost_runtime_override = prev
+
+    @t("v3.4.38: _rh_set_enabled flips override and calls save_tp_state")
+    def _():
+        import stock_spike_monitor as m
+        prev_override = m._traderspost_runtime_override
+        saved = {"count": 0}
+        orig_save = m.save_tp_state
+        m.save_tp_state = lambda: saved.update(count=saved["count"] + 1)
+        try:
+            m._rh_set_enabled(True)
+            assert m._traderspost_runtime_override is True
+            m._rh_set_enabled(False)
+            assert m._traderspost_runtime_override is False
+            assert saved["count"] == 2, \
+                f"save_tp_state should be called on every toggle, got {saved['count']}"
+        finally:
+            m._traderspost_runtime_override = prev_override
+            m.save_tp_state = orig_save
+
+    @t("v3.4.38: kill-switch override persists across save/load cycle")
+    def _():
+        import stock_spike_monitor as m
+        import tempfile, os as _os
+        prev_override = m._traderspost_runtime_override
+        prev_state_file = m.TP_STATE_FILE
+        prev_loaded = m._tp_state_loaded
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False)
+        tmp.close()
+        try:
+            m.TP_STATE_FILE = tmp.name
+            m._tp_state_loaded = True  # allow save_tp_state to write
+            m._traderspost_runtime_override = True
+            m.save_tp_state()
+            # wipe and reload
+            m._traderspost_runtime_override = None
+            m.load_tp_state()
+            assert m._traderspost_runtime_override is True, \
+                f"override should be True after reload, got {m._traderspost_runtime_override!r}"
+            # now flip to False and re-verify
+            m._traderspost_runtime_override = False
+            m.save_tp_state()
+            m._traderspost_runtime_override = None
+            m.load_tp_state()
+            assert m._traderspost_runtime_override is False, \
+                f"override should be False after reload, got {m._traderspost_runtime_override!r}"
+        finally:
+            try:
+                _os.unlink(tmp.name)
+            except Exception:
+                pass
+            m.TP_STATE_FILE = prev_state_file
+            m._traderspost_runtime_override = prev_override
+            m._tp_state_loaded = prev_loaded
+
+    @t("v3.4.38: cmd_rh_enable / cmd_rh_disable / cmd_rh_status handlers exist")
+    def _():
+        import stock_spike_monitor as m
+        for name in ("cmd_rh_enable", "cmd_rh_disable", "cmd_rh_status"):
+            fn = getattr(m, name, None)
+            assert fn is not None, f"{name} must be defined"
+            assert callable(fn), f"{name} must be callable"
+
+    @t("v3.4.38: send_traderspost_order respects runtime-disable override")
+    def _():
+        import stock_spike_monitor as m
+        reset_state()
+        prev_override = m._traderspost_runtime_override
+        prev_env = m._TRADERSPOST_ENABLED_ENV
+        try:
+            # Force env=on to prove the runtime override wins.
+            m._TRADERSPOST_ENABLED_ENV = True
+            m._traderspost_runtime_override = False
+            result = m.send_traderspost_order("AAPL", "buy", 200.0, shares=5)
+            assert result.get("skipped") is True, \
+                f"runtime-disable should skip webhook: {result}"
+        finally:
+            m._traderspost_runtime_override = prev_override
+            m._TRADERSPOST_ENABLED_ENV = prev_env
 
     return run_suite("LOCAL SMOKE TESTS")
 
