@@ -9,6 +9,7 @@ TradersPost webhook, scheduler.
 import os
 from pathlib import Path
 import json
+import re
 import time
 import logging
 import threading
@@ -37,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.31"
+BOT_VERSION = "3.4.32"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,29 +56,33 @@ BOT_VERSION = "3.4.31"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.31 \u2014 Richer Today's\n"
-    "Trades card on the\n"
-    "dashboard.\n"
+    "v3.4.32 \u2014 Editable ticker\n"
+    "universe from Telegram.\n"
     "\n"
-    "Each row now shows cost\n"
-    "on BUY fills and realized\n"
-    "P&L dollars + percent on\n"
-    "SELL fills, with colour.\n"
+    "/tickers lists the bot's\n"
+    "current watchlist.\n"
     "\n"
-    "Summary line at the top\n"
-    "of the card: opens,\n"
-    "closes, realized, and\n"
-    "win rate for the day.\n"
+    "/add_ticker SYM adds a\n"
+    "symbol, fetches PDC and\n"
+    "OR on the spot, and the\n"
+    "next scan trades it.\n"
     "\n"
-    "On phones each row\n"
-    "stacks onto two lines\n"
-    "instead of scrolling."
+    "/remove_ticker SYM takes\n"
+    "it out; open positions on\n"
+    "that ticker keep managing\n"
+    "until they close.\n"
+    "\n"
+    "QBTS is now tracked by\n"
+    "default. The list lives\n"
+    "in tickers.json so edits\n"
+    "survive restarts."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.31 \u2014 Dashboard Today's\n"
-    "Trades card now shows\n"
-    "cost, realized P&L, and\n"
-    "a daily summary header."
+    "v3.4.32 \u2014 Ticker universe\n"
+    "now editable from\n"
+    "Telegram via /add_ticker,\n"
+    "/remove_ticker, /tickers.\n"
+    "QBTS tracked by default."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -88,6 +93,10 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.31 \u2014 Richer Today's\n"
+    "Trades card: cost, P&L,\n"
+    "and daily summary.\n"
+    "\n"
     "v3.4.30 \u2014 Mobile layout\n"
     "fix; Trades time display.\n"
     "\n"
@@ -96,23 +105,20 @@ _MAIN_HISTORY_TAIL = (
     "Sovereign Regime panel.\n"
     "\n"
     "v3.4.28 \u2014 Sovereign Regime\n"
-    "Shield: SPY+QQQ 1m vs PDC.\n"
-    "\n"
-    "v3.4.27 \u2014 Persistent trade\n"
-    "log (JSONL) + /trade_log."
+    "Shield: SPY+QQQ 1m vs PDC."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.31 \u2014 Richer Today's\n"
+    "Trades card on dashboard.\n"
     "v3.4.30 \u2014 Mobile dashboard\n"
     "fix; trade time display.\n"
     "v3.4.29 \u2014 Dashboard login\n"
     "persists across deploys.\n"
     "v3.4.28 \u2014 Sovereign Regime\n"
     "Shield (PDC eject).\n"
-    "v3.4.27 \u2014 Persistent trade\n"
-    "log + /trade_log.\n"
     "/tp_sync for broker status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
@@ -347,11 +353,244 @@ def paper_log(msg: str):
 # ============================================================
 # STRATEGY CONSTANTS
 # ============================================================
-TICKERS = [
+# ------------------------------------------------------------
+# v3.4.32: the ticker universe is now editable at runtime from
+# Telegram via /add_ticker, /remove_ticker, /tickers. The list
+# is persisted to TICKERS_FILE so edits survive restarts.
+#
+# DESIGN NOTES
+#   - TICKERS and TRADE_TICKERS stay as module-level mutable
+#     lists so every `for t in TICKERS` loop picks up changes
+#     without plumbing a getter through ~25 call sites.
+#   - SPY and QQQ are PINNED — they drive the Sovereign Regime
+#     shield and the RSI regime classifier. They can be added
+#     by the defaults but can never be removed via /remove.
+#   - TRADE_TICKERS is kept in sync via _rebuild_trade_tickers()
+#     which clears the list in place and re-extends from the
+#     current TICKERS minus the pinned set.
+#   - Persistence is fail-soft: if the JSON is missing, unreadable,
+#     or empty, we fall back to TICKERS_DEFAULT. Callers never see
+#     an exception.
+#   - QBTS is included in the defaults so a fresh deploy (no
+#     tickers.json yet) already tracks it.
+# ------------------------------------------------------------
+TICKERS_FILE = os.getenv("TICKERS_FILE", "tickers.json")
+TICKERS_PINNED = ("SPY", "QQQ")   # always present, never removable
+TICKERS_DEFAULT = [
     "AAPL", "MSFT", "NVDA", "TSLA", "META",
-    "GOOG", "AMZN", "AVGO", "SPY", "QQQ",
+    "GOOG", "AMZN", "AVGO", "QBTS", "SPY", "QQQ",
 ]
-TRADE_TICKERS = [t for t in TICKERS if t not in ("SPY", "QQQ")]
+TICKERS_MAX = 40            # sanity upper bound to protect cycle budget
+TICKER_SYM_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,7}$")
+
+TICKERS = list(TICKERS_DEFAULT)
+TRADE_TICKERS = [t for t in TICKERS if t not in TICKERS_PINNED]
+
+
+def _normalise_ticker(sym) -> str:
+    """Uppercase + strip the common '$' / whitespace noise.
+    Returns '' for anything that doesn't pass the symbol regex."""
+    if not sym:
+        return ""
+    s = str(sym).strip().lstrip("$").upper()
+    return s if TICKER_SYM_RE.match(s) else ""
+
+
+def _rebuild_trade_tickers() -> None:
+    """Sync TRADE_TICKERS with TICKERS — in place.
+    Must run after every mutation of TICKERS so the scan loop,
+    RSI regime classifier, and dashboard snapshot see the same
+    tradable set.
+    """
+    TRADE_TICKERS.clear()
+    for t in TICKERS:
+        if t not in TICKERS_PINNED:
+            TRADE_TICKERS.append(t)
+
+
+def _load_tickers_file() -> list:
+    """Read TICKERS_FILE and return a normalised, de-duplicated,
+    order-preserving list. Fail-soft — any error returns [].
+    """
+    try:
+        if not os.path.exists(TICKERS_FILE):
+            return []
+        with open(TICKERS_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        items = raw.get("tickers") if isinstance(raw, dict) else raw
+        if not isinstance(items, list):
+            return []
+        seen, out = set(), []
+        for sym in items:
+            s = _normalise_ticker(sym)
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+    except Exception as e:
+        logger.warning("tickers.json load failed, using defaults: %s", e)
+        return []
+
+
+def _save_tickers_file() -> bool:
+    """Atomically persist the current TICKERS list. Returns True on
+    success. Uses a tmp+rename so a crash mid-write can never leave
+    a half-written file.
+    """
+    try:
+        payload = {
+            "tickers": list(TICKERS),
+            "updated_utc": _utc_now_iso(),
+            "bot_version": BOT_VERSION,
+        }
+        tmp = TICKERS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=False)
+        os.replace(tmp, TICKERS_FILE)
+        return True
+    except Exception as e:
+        logger.error("tickers.json save failed: %s", e)
+        return False
+
+
+def _init_tickers() -> None:
+    """Populate TICKERS from disk on startup; fall back to defaults
+    (which include QBTS and the pinned SPY/QQQ). Always ensures the
+    pinned symbols are present no matter what was on disk.
+    """
+    from_disk = _load_tickers_file()
+    base = from_disk if from_disk else list(TICKERS_DEFAULT)
+    # Ensure pinned symbols are always in the set.
+    for p in TICKERS_PINNED:
+        if p not in base:
+            base.append(p)
+    # Cap at TICKERS_MAX just in case a hand-edited file went wild.
+    base = base[:TICKERS_MAX]
+    TICKERS.clear()
+    TICKERS.extend(base)
+    _rebuild_trade_tickers()
+    # If the file didn't exist or was empty, persist the seeded
+    # defaults so the on-disk list matches memory immediately.
+    if not from_disk:
+        _save_tickers_file()
+    logger.info("Ticker universe loaded: %d tickers (%s)",
+                len(TICKERS), ", ".join(TICKERS))
+
+
+def _fill_metrics_for_ticker(ticker: str) -> dict:
+    """Populate the minimum set of metrics a newly-added ticker needs
+    to be scanned and displayed. Returns a dict describing what was
+    filled — used by /add_ticker for the confirmation reply.
+
+    Metrics filled:
+      - pdc[ticker]          (previous day close, from FMP quote)
+      - or_high[ticker]      (opening range high, if 09:35 ET has passed)
+      - or_low[ticker]       (opening range low,  if 09:35 ET has passed)
+
+    RSI is computed on demand from live bars; no cache to pre-seed.
+    """
+    filled = {"pdc": False, "or": False, "errors": []}
+    try:
+        # 1) PDC via FMP quote — works any time of day.
+        q = get_fmp_quote(ticker)
+        if q and q.get("previousClose"):
+            pdc[ticker] = float(q["previousClose"])
+            filled["pdc"] = True
+        else:
+            filled["errors"].append("no PDC from FMP")
+
+        # 2) OR — only if we're past 09:35 ET on a session day.
+        now_et = _now_et()
+        or_window_end = now_et.replace(hour=9, minute=35,
+                                       second=0, microsecond=0)
+        if now_et >= or_window_end:
+            bars = fetch_1min_bars(ticker)
+            if bars and bars.get("timestamps"):
+                open_ts = int(or_window_end.replace(hour=9, minute=30)
+                              .timestamp())
+                end_ts = int(or_window_end.timestamp())
+                max_hi, min_lo = None, None
+                for i, ts in enumerate(bars["timestamps"]):
+                    if open_ts <= ts < end_ts:
+                        h = bars["highs"][i] or bars["closes"][i]
+                        lo = bars["lows"][i] or bars["closes"][i]
+                        if h is not None:
+                            max_hi = h if max_hi is None else max(max_hi, h)
+                        if lo is not None:
+                            min_lo = lo if min_lo is None else min(min_lo, lo)
+                if max_hi is not None:
+                    or_high[ticker] = max_hi
+                    filled["or"] = True
+                if min_lo is not None:
+                    or_low[ticker] = min_lo
+                # Refine PDC from the bars snapshot if FMP missed it.
+                if not filled["pdc"] and bars.get("pdc"):
+                    pdc[ticker] = bars["pdc"]
+                    filled["pdc"] = True
+                if not filled["or"]:
+                    filled["errors"].append("no bars in 09:30\u201309:35")
+            else:
+                filled["errors"].append("no 1m bars")
+        # Pre-09:35 is not an error — collect_or() will fill it at the
+        # scheduled time.
+    except Exception as e:
+        filled["errors"].append(str(e))
+        logger.warning("fill_metrics %s failed: %s", ticker, e)
+    return filled
+
+
+def add_ticker(sym: str) -> dict:
+    """Add a ticker to the live universe. Idempotent.
+
+    Returns {ok, ticker, added, reason, metrics} where:
+      - ok=False + reason=...   on validation failure
+      - ok=True + added=False   if already present (no-op)
+      - ok=True + added=True    on a fresh add (file saved, metrics filled)
+    """
+    t = _normalise_ticker(sym)
+    if not t:
+        return {"ok": False, "reason": "invalid symbol", "ticker": sym}
+    if t in TICKERS:
+        return {"ok": True, "added": False, "ticker": t,
+                "reason": "already tracked"}
+    if len(TICKERS) >= TICKERS_MAX:
+        return {"ok": False, "ticker": t,
+                "reason": "at max (%d) \u2014 remove one first" % TICKERS_MAX}
+    TICKERS.append(t)
+    _rebuild_trade_tickers()
+    _save_tickers_file()
+    metrics = _fill_metrics_for_ticker(t)
+    logger.info("ticker added: %s (pdc=%s or=%s)",
+                t, metrics["pdc"], metrics["or"])
+    return {"ok": True, "added": True, "ticker": t, "metrics": metrics}
+
+
+def remove_ticker(sym: str) -> dict:
+    """Remove a ticker from the live universe. Idempotent.
+
+    Pinned tickers (SPY, QQQ) are always refused.
+    Open positions on the removed ticker keep managing until they
+    close — this only stops new entries from being opened.
+    """
+    t = _normalise_ticker(sym)
+    if not t:
+        return {"ok": False, "reason": "invalid symbol", "ticker": sym}
+    if t in TICKERS_PINNED:
+        return {"ok": False, "ticker": t,
+                "reason": "%s is pinned (regime anchor)" % t}
+    if t not in TICKERS:
+        return {"ok": True, "removed": False, "ticker": t,
+                "reason": "not tracked"}
+    TICKERS.remove(t)
+    _rebuild_trade_tickers()
+    _save_tickers_file()
+    # Leave or_high/or_low/pdc entries behind — any still-open
+    # position on this ticker relies on them to manage exits.
+    logger.info("ticker removed: %s", t)
+    open_long = t in positions or t in tp_positions
+    open_short = t in short_positions or t in tp_short_positions
+    return {"ok": True, "removed": True, "ticker": t,
+            "had_open": bool(open_long or open_short)}
 
 SHARES         = 10
 STOP_OFFSET    = 0.50    # Initial stop: entry - $0.50
@@ -5025,6 +5264,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n"
         "Admin\n"
         "  /reset       Reset portfolio\n"
+        "  /tickers     Show watchlist\n"
+        "  /add_ticker SYM  Track SYM\n"
+        "  /remove_ticker SYM  Drop SYM\n"
         "\n"
         "Tip: /menu for tap buttons\n"
         "```"
@@ -8426,6 +8668,147 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# /tickers, /add_ticker, /remove_ticker COMMANDS  (v3.4.32)
+# ============================================================
+# These three commands let the user edit the tracked universe
+# from Telegram without redeploying. All three format replies
+# under the 34-char mobile-width rule. The actual mutation and
+# persistence lives in add_ticker() / remove_ticker() above;
+# these handlers just format the response.
+
+def _fmt_tickers_list() -> str:
+    """Render the current ticker universe in a 34-char-safe table.
+    Pinned tickers are flagged with an asterisk. Split into rows of
+    5 symbols (≈ 30 chars at worst) so every line stays within the
+    Telegram mobile code-block width.
+    """
+    n_total = len(TICKERS)
+    n_trade = len(TRADE_TICKERS)
+    # Build rows of up to 5 symbols each — SPY and QQQ get a trailing
+    # '*' to show they're pinned, so worst case per row is 5*(5+1)+4=34.
+    def _tag(t):
+        return t + "*" if t in TICKERS_PINNED else t
+    rows, row = [], []
+    for t in TICKERS:
+        row.append(_tag(t))
+        if len(row) == 5:
+            rows.append(" ".join(row))
+            row = []
+    if row:
+        rows.append(" ".join(row))
+    body = "\n".join(rows) if rows else "(empty)"
+    return (
+        "\U0001f4cb Tracked Tickers\n"
+        "%s\n%s\n%s\n"
+        "%d total  \u00b7  %d tradable\n"
+        "* = pinned (regime anchor)"
+    ) % ("\u2500" * 26, body, "\u2500" * 26, n_total, n_trade)
+
+
+async def cmd_tickers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the current tracked ticker universe."""
+    await update.message.reply_text(
+        _fmt_tickers_list(), reply_markup=_menu_button())
+
+
+def _fmt_add_reply(res: dict) -> str:
+    """Format the reply for /add_ticker. 34-char-safe."""
+    t = res.get("ticker", "?")
+    if not res.get("ok"):
+        return "\u274c Can't add %s\n%s" % (t, res.get("reason", "unknown"))
+    if not res.get("added"):
+        return "\u2139\ufe0f %s already tracked" % t
+    metrics = res.get("metrics") or {}
+    pdc_ok = metrics.get("pdc")
+    or_ok = metrics.get("or")
+    pdc_val = pdc.get(t)
+    orh_val = or_high.get(t)
+    orl_val = or_low.get(t)
+    # Metric lines — each well under 34 chars.
+    m_lines = []
+    m_lines.append("PDC:  " + ("$%.2f" % pdc_val if pdc_ok and pdc_val else "\u2014 (pending)"))
+    if or_ok and orh_val is not None:
+        if orl_val is not None:
+            m_lines.append("OR:   $%.2f \u2013 $%.2f" % (orl_val, orh_val))
+        else:
+            m_lines.append("OR hi: $%.2f" % orh_val)
+    else:
+        now_et = _now_et()
+        if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35):
+            m_lines.append("OR:   pending 09:35 ET")
+        else:
+            m_lines.append("OR:   \u2014 (retry /or_now)")
+    errs = [e for e in (metrics.get("errors") or []) if e]
+    tail = ""
+    if errs:
+        # Truncate per-line to stay within the 34-char budget.
+        tail = "\nnote: " + errs[0][:26]
+    return (
+        "\u2705 Added %s\n"
+        "%s\n"
+        "%s\n"
+        "%s\n"
+        "Next scan will trade it.%s"
+    ) % (t, "\u2500" * 26, "\n".join(m_lines), "\u2500" * 26, tail)
+
+
+async def cmd_add_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/add_ticker SYM — start tracking a symbol immediately.
+    Fetches PDC and (if past 09:35 ET) the Opening Range on the
+    spot so the next scan cycle is ready to trade it.
+    """
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: /add_ticker SYM\nExample: /add_ticker QBTS",
+            reply_markup=_menu_button())
+        return
+    # Run in executor — add_ticker does a blocking HTTP call to FMP.
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, add_ticker, args[0])
+    await update.message.reply_text(
+        _fmt_add_reply(res), reply_markup=_menu_button())
+
+
+def _fmt_remove_reply(res: dict) -> str:
+    """Format the reply for /remove_ticker. 34-char-safe."""
+    t = res.get("ticker", "?")
+    if not res.get("ok"):
+        return "\u274c Can't remove %s\n%s" % (t, res.get("reason", "unknown"))
+    if not res.get("removed"):
+        return "\u2139\ufe0f %s wasn't tracked" % t
+    tail = ""
+    if res.get("had_open"):
+        tail = (
+            "\nOpen position stays open\n"
+            "and manages until close."
+        )
+    return (
+        "\u2705 Removed %s\n"
+        "%s\n"
+        "No new entries on %s.%s"
+    ) % (t, "\u2500" * 26, t, tail)
+
+
+async def cmd_remove_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/remove_ticker SYM — stop opening new entries on a symbol.
+    Any currently open position on that ticker keeps managing
+    until it closes normally; this only blocks new entries.
+    SPY and QQQ are pinned and cannot be removed.
+    """
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: /remove_ticker SYM\nExample: /remove_ticker QBTS",
+            reply_markup=_menu_button())
+        return
+    res = remove_ticker(args[0])
+    await update.message.reply_text(
+        _fmt_remove_reply(res), reply_markup=_menu_button())
+
+
+# ============================================================
 # TELEGRAM BOT SETUP
 # ============================================================
 # Commands shown in the Telegram / menu (user-facing). /positions and /or_now
@@ -8451,6 +8834,9 @@ MAIN_BOT_COMMANDS = [
     BotCommand("near_misses", "Recent declined breakouts"),
     BotCommand("retighten", "Retighten stops to 0.75% cap"),
     BotCommand("trade_log", "Last 10 closed trades (persistent)"),
+    BotCommand("tickers", "Show tracked tickers"),
+    BotCommand("add_ticker", "Add a symbol (fills PDC + OR now)"),
+    BotCommand("remove_ticker", "Stop new entries on a symbol"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
@@ -8600,6 +8986,10 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("or_now", cmd_or_now))
     app.add_handler(CommandHandler("menu", cmd_menu))
+    # v3.4.32 — runtime ticker universe management
+    app.add_handler(CommandHandler("tickers", cmd_tickers))
+    app.add_handler(CommandHandler("add_ticker", cmd_add_ticker))
+    app.add_handler(CommandHandler("remove_ticker", cmd_remove_ticker))
 
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
@@ -8656,6 +9046,10 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("test", cmd_test))
     tp_app.add_handler(CommandHandler("or_now", cmd_or_now))
     tp_app.add_handler(CommandHandler("menu", cmd_menu))
+    # v3.4.32 — runtime ticker universe management
+    tp_app.add_handler(CommandHandler("tickers", cmd_tickers))
+    tp_app.add_handler(CommandHandler("add_ticker", cmd_add_ticker))
+    tp_app.add_handler(CommandHandler("remove_ticker", cmd_remove_ticker))
 
     # Callback query handlers (TP bot)
     tp_app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
@@ -8714,6 +9108,12 @@ def startup_catchup():
 # ============================================================
 # ENTRY POINT
 # ============================================================
+# v3.4.32 — load the editable ticker universe from tickers.json
+# before anything else so load_paper_state() and retighten see the
+# right TICKERS list (e.g. if a newly-added QBTS already has an
+# open paper position persisted from a previous session).
+_init_tickers()
+
 load_paper_state()
 load_tp_state()
 

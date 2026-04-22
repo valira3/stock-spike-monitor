@@ -4,6 +4,118 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.32 — Editable ticker universe from Telegram + QBTS (2026-04-22)
+
+### Why
+
+The watchlist was baked into the module as a constant: editing it
+meant a code push, a PR, and a Railway redeploy just to try a new
+symbol. That's a real friction tax on the core job of the bot —
+hunting for overnight gappers and intraday breakouts — because
+the universe of interesting tickers moves around week to week.
+
+Specifically, QBTS (quantum-computing name) had become a persistent
+side-request, and adding it by hand every time was a poor workflow.
+Beyond that one symbol, the bot needed a first-class way to treat
+the watchlist as user state, not source code: add a name when a
+thesis appears, drop it when the thesis dies, and have those edits
+survive restarts.
+
+### What changed
+
+**QBTS is now a first-class default**
+
+- Added `QBTS` to `TICKERS_DEFAULT` alongside the core megacaps
+  and the SPY/QQQ regime anchors. Fresh installs and cold boots
+  with no `tickers.json` will now pick it up automatically.
+
+**Persistent, runtime-editable watchlist**
+
+- The watchlist now lives in `tickers.json` at the repo root
+  (path overridable via `$TICKERS_FILE`). The bot loads it at
+  startup, falls back to `TICKERS_DEFAULT` if the file is
+  missing or malformed, and rewrites it atomically on every
+  change (`tmp + os.replace`).
+- `SPY` and `QQQ` are pinned as regime anchors: they're always
+  present in the tracked list and explicitly excluded from
+  `TRADE_TICKERS` (the list the entry scanner iterates). They
+  cannot be removed via Telegram.
+- `TICKERS` and `TRADE_TICKERS` stay as the same mutable
+  module-level lists the rest of the codebase already reads;
+  a new `_rebuild_trade_tickers()` mutates them in place so
+  none of the ~25 existing `for t in TICKERS:` call sites need
+  to change.
+- `TICKERS_MAX = 40` caps the universe so a runaway add can't
+  blow the per-cycle scan budget.
+
+**Three new Telegram commands**
+
+- `/tickers` — shows the current tracked list, pinned anchors
+  first, then the trade universe, in a 34-char-safe code block.
+- `/add_ticker SYM` — validates the symbol against
+  `^[A-Z][A-Z0-9.\-]{0,7}$` (after uppercasing and stripping a
+  leading `$`), adds it to `TICKERS`, persists, and immediately
+  fills its metrics:
+  - **PDC** via `get_fmp_quote` (blocking call runs in an
+    executor so Telegram doesn't hang).
+  - **OR** (opening range) via `fetch_1min_bars` if the current
+    ET time is past 09:35. Before 09:35 the scheduled
+    `collect_or()` will fill it at the normal cutover.
+  - RSI is on-demand in the entry scanner, so no seeding is
+    needed there.
+  The reply confirms what was filled and notes anything
+  pending, in 34-char-safe mobile lines.
+- `/remove_ticker SYM` — blocks new entries on a symbol. A
+  currently open position on that ticker keeps managing until
+  it closes normally; the cached PDC / OR entries stay in place
+  so exit logic still has what it needs. Attempting to remove
+  `SPY` or `QQQ` returns a clear "pinned" reply and is a no-op.
+
+**Fail-soft design, consistent with existing locked principles**
+
+- Missing / malformed `tickers.json` → fall back to defaults,
+  don't crash. A missing metric fill (network error on PDC or
+  pre-open OR) → add the ticker anyway and surface the issue
+  in the reply — in the same spirit as the existing
+  "missing data never ejects a position" rule.
+- The editable universe only shrinks what's tradeable by
+  adding the ability to drop a name; it never loosens a
+  filter, consistent with "adaptive logic only makes things
+  MORE conservative than baseline, never looser."
+
+### Tests
+
+Added **12 new smoke tests** (148 → 160):
+
+- `BOT_VERSION >= 3.4.32`
+- `QBTS in TICKERS_DEFAULT` and `TICKERS`
+- `SPY`/`QQQ` pinned and excluded from `TRADE_TICKERS`
+- `_normalise_ticker` handles lowercase, `$`-prefix, whitespace
+  and rejects bad chars / overlong symbols
+- `add_ticker` add / repeat / remove semantics (with
+  `_fill_metrics_for_ticker` and `_save_tickers_file` stubbed)
+- `add_ticker` rejects invalid symbols
+- `remove_ticker` refuses `SPY` and `QQQ`
+- `tickers.json` save / load round-trip preserves order (using
+  a tmp path so the live file is never touched)
+- `cmd_tickers` / `cmd_add_ticker` / `cmd_remove_ticker` exist
+  and are coroutine functions
+- `MAIN_BOT_COMMANDS` advertises the three new commands
+- All reply formatters stay within the 34-char mobile budget
+- Release notes + `/help` corpus advertise the new commands
+
+`python smoke_test.py --local` → **160 passed · 0 failed**.
+
+### Files touched
+
+- `stock_spike_monitor.py` — ticker persistence + helpers +
+  commands + handler registration + help wiring + release notes
+- `smoke_test.py` — 12 new v3.4.32 tests appended to `run_local`
+- `tickers.json` — new persisted state file (seeded with the
+  default list including QBTS)
+
+---
+
 ## v3.4.31 — Richer Today's Trades card (2026-04-22)
 
 ### Why

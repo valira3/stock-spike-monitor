@@ -2397,6 +2397,188 @@ def run_local() -> int:
         assert "trades-realized" in body, \
             "renderTrades must update the realized-$ header chip"
 
+    # -------------------------------------------------------------
+    # v3.4.32 — editable ticker universe + QBTS default + commands
+    # -------------------------------------------------------------
+
+    @t("v3.4.32: BOT_VERSION is >= 3.4.32")
+    def _():
+        import stock_spike_monitor as m
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 32), m.BOT_VERSION
+
+    @t("v3.4.32: QBTS is in TICKERS_DEFAULT and TICKERS")
+    def _():
+        import stock_spike_monitor as m
+        assert "QBTS" in m.TICKERS_DEFAULT, m.TICKERS_DEFAULT
+        assert "QBTS" in m.TICKERS, m.TICKERS
+
+    @t("v3.4.32: SPY and QQQ are pinned and excluded from TRADE_TICKERS")
+    def _():
+        import stock_spike_monitor as m
+        assert "SPY" in m.TICKERS_PINNED and "QQQ" in m.TICKERS_PINNED
+        m._rebuild_trade_tickers()
+        assert "SPY" not in m.TRADE_TICKERS
+        assert "QQQ" not in m.TRADE_TICKERS
+        # Non-pinned symbols should pass through.
+        assert "AAPL" in m.TRADE_TICKERS
+
+    @t("v3.4.32: _normalise_ticker upcases, strips $, rejects junk")
+    def _():
+        import stock_spike_monitor as m
+        assert m._normalise_ticker("qbts") == "QBTS"
+        assert m._normalise_ticker("  $qbts  ") == "QBTS"
+        assert m._normalise_ticker("AAPL\n") == "AAPL"
+        # Invalid inputs normalise to empty string.
+        assert m._normalise_ticker("not-a-ticker!") == ""
+        assert m._normalise_ticker("") == ""
+        assert m._normalise_ticker(None) == ""
+        # Regex rejects lowercase-start / overlong symbols too.
+        assert not m.TICKER_SYM_RE.match("123ABC")
+        assert not m.TICKER_SYM_RE.match("TOOLONGSYM")
+
+    @t("v3.4.32: add_ticker then repeat, then remove semantics")
+    def _():
+        import stock_spike_monitor as m
+        sym = "ZZZZ"
+        # Clean slate.
+        if sym in m.TICKERS:
+            m.TICKERS.remove(sym)
+            m._rebuild_trade_tickers()
+        # Stub out metric fill — we test persistence/semantics here,
+        # not the FMP/OR network path.
+        orig_fill = m._fill_metrics_for_ticker
+        m._fill_metrics_for_ticker = lambda t: {
+            "pdc": False, "or": False, "rsi": False, "errors": [],
+        }
+        # Also stub the save so we don't clobber tickers.json.
+        orig_save = m._save_tickers_file
+        m._save_tickers_file = lambda: True
+        try:
+            res1 = m.add_ticker(sym)
+            assert res1.get("ok") is True, res1
+            assert res1.get("added") is True, res1
+            assert sym in m.TICKERS
+            # Repeat add is a no-op but still ok=True.
+            res2 = m.add_ticker(sym)
+            assert res2.get("ok") is True, res2
+            assert res2.get("added") is False, res2
+            # Remove works, second remove is a no-op.
+            res3 = m.remove_ticker(sym)
+            assert res3.get("ok") is True, res3
+            assert res3.get("removed") is True, res3
+            assert sym not in m.TICKERS
+            res4 = m.remove_ticker(sym)
+            assert res4.get("ok") is True, res4
+            assert res4.get("removed") is False, res4
+        finally:
+            m._fill_metrics_for_ticker = orig_fill
+            m._save_tickers_file = orig_save
+            if sym in m.TICKERS:
+                m.TICKERS.remove(sym)
+                m._rebuild_trade_tickers()
+
+    @t("v3.4.32: add_ticker rejects invalid symbols")
+    def _():
+        import stock_spike_monitor as m
+        res = m.add_ticker("not-a-ticker!")
+        assert res.get("ok") is False, res
+        assert "invalid" in (res.get("reason") or "").lower(), res
+
+    @t("v3.4.32: remove_ticker refuses to remove pinned SPY/QQQ")
+    def _():
+        import stock_spike_monitor as m
+        for pinned in ("SPY", "QQQ"):
+            res = m.remove_ticker(pinned)
+            assert res.get("ok") is False, (pinned, res)
+            assert "pinned" in (res.get("reason") or "").lower(), (pinned, res)
+            assert pinned in m.TICKERS, pinned
+
+    @t("v3.4.32: tickers.json save/load round-trip preserves order")
+    def _():
+        import stock_spike_monitor as m
+        import tempfile, json as _json, os as _os
+        original_tickers = list(m.TICKERS)
+        original_file = m.TICKERS_FILE
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = _os.path.join(td, "tickers.json")
+            m.TICKERS_FILE = tmp_path
+            try:
+                sample = ["AAPL", "QBTS", "NVDA", "SPY", "QQQ"]
+                m.TICKERS[:] = list(sample)
+                m._rebuild_trade_tickers()
+                assert m._save_tickers_file() is True
+                # File should exist and be valid JSON with our list.
+                with open(tmp_path, "r", encoding="utf-8") as fh:
+                    data = _json.load(fh)
+                assert data.get("tickers") == sample, data
+                # Mutate memory, then reload from disk.
+                m.TICKERS[:] = ["X"]
+                loaded = m._load_tickers_file()
+                assert loaded == sample, loaded
+            finally:
+                m.TICKERS_FILE = original_file
+                m.TICKERS[:] = original_tickers
+                m._rebuild_trade_tickers()
+
+    @t("v3.4.32: cmd_tickers/add_ticker/remove_ticker exist and are async")
+    def _():
+        import stock_spike_monitor as m, inspect
+        for name in ("cmd_tickers", "cmd_add_ticker", "cmd_remove_ticker"):
+            fn = getattr(m, name, None)
+            assert fn is not None, name
+            assert inspect.iscoroutinefunction(fn), name
+
+    @t("v3.4.32: BotCommands advertise tickers/add_ticker/remove_ticker")
+    def _():
+        import stock_spike_monitor as m
+        names = {c.command for c in m.MAIN_BOT_COMMANDS}
+        for want in ("tickers", "add_ticker", "remove_ticker"):
+            assert want in names, (want, sorted(names))
+
+    @t("v3.4.32: ticker reply formatters stay within 34-char mobile budget")
+    def _():
+        import stock_spike_monitor as m
+        samples = [
+            m._fmt_tickers_list(),
+            m._fmt_add_reply({
+                "ok": True, "added": True, "ticker": "QBTS",
+                "metrics": {"pdc": True, "or": True, "errors": []},
+            }),
+            m._fmt_add_reply({
+                "ok": True, "added": False, "ticker": "QBTS",
+            }),
+            m._fmt_add_reply({
+                "ok": False, "ticker": "BAD", "reason": "invalid",
+            }),
+            m._fmt_remove_reply({
+                "ok": True, "removed": True, "ticker": "QBTS",
+                "had_open": False,
+            }),
+            m._fmt_remove_reply({
+                "ok": True, "removed": True, "ticker": "QBTS",
+                "had_open": True,
+            }),
+            m._fmt_remove_reply({
+                "ok": False, "ticker": "SPY", "reason": "pinned",
+            }),
+        ]
+        for text in samples:
+            for line in text.split("\n"):
+                assert len(line) <= 34, (len(line), line)
+
+    @t("v3.4.32: help text advertises the new ticker commands")
+    def _():
+        import stock_spike_monitor as m
+        note = m.CURRENT_MAIN_NOTE + "\n" + m._MAIN_HISTORY_TAIL
+        # Commands themselves should be visible somewhere user-facing:
+        # either release notes or the /help body via cmd_help source.
+        import inspect
+        help_src = inspect.getsource(m.cmd_help)
+        corpus = note + "\n" + help_src
+        for want in ("/tickers", "/add_ticker", "/remove_ticker"):
+            assert want in corpus, want
+
     return run_suite("LOCAL SMOKE TESTS")
 
 
