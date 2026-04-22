@@ -62,7 +62,17 @@
     overflow-y: auto; overscroll-behavior: contain;
     padding: 18px 20px 32px;
     display: flex; flex-direction: column; gap: 18px;
+    /* v3.4.30 — critical for mobile: let grid/flex descendants shrink
+       below their intrinsic content width so a single long string in a
+       card (e.g. the Sovereign Regime reason or a gate label) does not
+       inflate the parent .app grid track and blow past the viewport. */
+    min-width: 0;
   }
+  /* Same min-width:0 escape hatch on sections + cards so nested
+     nowrap / min-content children stay within their track. */
+  .main > section { min-width: 0; }
+  .grid { min-width: 0; }
+  .grid > * { min-width: 0; }
 
   /* Header brand block (left side) */
   .h-brand { display: flex; align-items: center; gap: 10px; padding-right: 14px; border-right: 1px solid var(--border); }
@@ -212,8 +222,8 @@
   .gate-name .hint { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
 
   /* v3.4.29 — Sovereign Regime Shield panel */
-  .srs { display: flex; flex-direction: column; gap: 10px; }
-  .srs-idx { display: grid; grid-template-columns: 40px 1fr auto auto; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .srs { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .srs-idx { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; min-width: 0; }
   .srs-idx:last-child { border-bottom: none; }
   .srs-sym { font-weight: 600; font-family: var(--mono); letter-spacing: 0.02em; }
   .srs-price { font-family: var(--mono); color: var(--text); }
@@ -229,7 +239,7 @@
   .srs-eject-value.armed { color: var(--down); }
   .srs-eject-value.dis   { color: var(--up); }
   .srs-eject-value.na    { color: var(--text-dim); }
-  .srs-reason { color: var(--text-dim); font-size: 11.5px; padding-top: 4px; }
+  .srs-reason { color: var(--text-dim); font-size: 11.5px; padding-top: 4px; word-break: break-word; overflow-wrap: anywhere; }
   .chip-srs-armed { background: var(--down-dim); color: var(--down); }
   .chip-srs-wait  { background: var(--warn-dim, rgba(255,170,0,0.15)); color: var(--warn, #ffaa00); }
   .chip-srs-dis   { background: var(--up-dim); color: var(--up); }
@@ -692,7 +702,23 @@
       return;
     }
     const rows = trades.map((t) => {
-      const tm = (t.time || t.entry_time || "").toString().slice(11, 16) || "—";
+      // v3.4.30 — time may already arrive pre-formatted as "09:11 CDT"
+      // (current server) or as an ISO-8601 string; accept both.
+      // NOTE: can't branch on .includes("T") because "CDT"/"EST" etc.
+      // contain T; branch on the ISO shape "YYYY-MM-DDTHH:MM" instead.
+      const rawT = (t.time || t.entry_time || "").toString();
+      let tm = "—";
+      if (rawT) {
+        const iso = rawT.match(/^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/);
+        if (iso) {
+          tm = iso[1];
+        } else {
+          // Pre-formatted "09:11 CDT" — extract HH:MM prefix; keep raw if
+          // it is already a short display like "9:11".
+          const hm = rawT.match(/^\d{1,2}:\d{2}/);
+          tm = hm ? hm[0] : rawT;
+        }
+      }
       const side = t.side || "LONG";
       const sideCls = side === "SHORT" ? "side-short" : "side-long";
       const px = t.price ?? t.entry_price ?? t.exit_price;

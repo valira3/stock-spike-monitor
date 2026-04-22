@@ -4,6 +4,71 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.30 — Mobile layout fix + Today's Trades time display (2026-04-22)
+
+### Why
+
+Two regressions surfaced after v3.4.29 shipped:
+
+1. **Dashboard overflowed the iPhone viewport.** The v3.4.29
+   Sovereign Regime card introduced long content lines (e.g.
+   `SPY and QQQ both 1m close > PDC — shorts would eject`) as
+   well as multi-track grids for the SPY/QQQ rows. Combined
+   with the existing Gates card's nowrap labels, this pushed
+   the *intrinsic min-content width* of `.main` beyond the
+   viewport. Because `.app` is a CSS grid with a single `1fr`
+   column and its `.main` child lacked `min-width: 0`, the
+   grid track inflated to fit the widest descendant instead
+   of being constrained to the viewport. Every card rendered
+   ~1980px wide on a 390px phone; bars and tables spilled off
+   the right edge.
+
+2. **Today's Trades showed blank time cells.** The renderer
+   expected an ISO-8601 string like `2026-04-22T09:11:00...`
+   and sliced characters 11–15 (`HH:MM`). The server actually
+   produces a pre-formatted `"09:11 CDT"` string. Slicing a
+   9-char string at offset 11 returns `""`, which is why
+   every row showed a dash.
+
+### What changed
+
+**Mobile layout fix**
+
+- Added `min-width: 0` to `.main` — the universal CSS
+  escape-hatch that lets a flex/grid child shrink below its
+  intrinsic content width.
+- Added `min-width: 0` to `.main > section`, `.grid`, and
+  `.grid > *` so every nested track gets the same treatment.
+- Changed `.srs-idx` (SPY/QQQ rows) from `1fr` to
+  `minmax(0, 1fr)` so the flexible track can actually shrink.
+- Added `word-break: break-word` and `overflow-wrap: anywhere`
+  to `.srs-reason` so the long human-readable verdict line
+  wraps instead of pushing the card width.
+
+**Today's Trades time parsing**
+
+- `renderTrades()` now branches on the *shape* of the time
+  string rather than the presence of the letter `T`. Previous
+  attempt used `.includes("T")`, which mis-routed `"09:11 CDT"`
+  (tz label contains T) into the ISO-slice branch. The new
+  code matches the full ISO prefix `YYYY-MM-DDT` for ISO
+  strings and extracts the leading `HH:MM` via regex for
+  pre-formatted strings.
+
+### Safety
+
+- No trading-logic changes. Dashboard-only release.
+- 140/140 smoke tests pass (133 prior + 7 new covering the
+  CSS min-width invariants, the `minmax(0, 1fr)` track, the
+  `.srs-reason` wrap rule, the ISO-prefix time regex, and the
+  regression guard against the broken `.includes("T")` branch).
+- Visual regression check: at 390×844 viewport the body
+  width equals the viewport width (390px) and
+  `document.querySelectorAll('*')` returns zero elements
+  extending past the right edge.
+
+---
+
 ## v3.4.29 — Persistent dashboard session + Sovereign Regime card (2026-04-22)
 
 ### Why
