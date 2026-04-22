@@ -16,10 +16,13 @@ Endpoints:
   GET  /stream        → Server-Sent Events: pushes state every 2s + log lines
   GET  /static/*      → dashboard_static/ (HTML/CSS/JS assets)
 
-Cookie auth (v3.4.9+):
+Cookie auth (v3.4.9+; persistent in v3.4.29):
   Token = HMAC_SHA256(_SESSION_SECRET, b"<8-byte BE timestamp>").hex() + ":<ts>"
-  _SESSION_SECRET is a random 32-byte secret generated at process start —
-  it lives in memory only, so a process restart invalidates all sessions.
+  _SESSION_SECRET is a random 32-byte secret generated ONCE on first boot
+  and written to ``dashboard_secret.key`` (sibling of ``paper_state.json``,
+  on the Railway volume). Every subsequent boot reads the same file, so
+  redeploys no longer invalidate sessions. Override with
+  ``DASHBOARD_SESSION_SECRET`` env (tests).
   Tokens carry the issue-timestamp and are checked for expiry (SESSION_DAYS).
   Stored in cookie "spike_session"; HttpOnly; SameSite=Lax; Secure=True;
   7-day max age.
@@ -329,6 +332,118 @@ def _next_scan_seconds(m) -> int | None:
     return int(remaining)
 
 
+def _sovereign_regime_snapshot(m) -> dict[str, Any]:
+    """v3.4.29 — Live Sovereign Regime Shield state for the dashboard.
+
+    Mirrors the data the Shield itself reads (SPY/QQQ PDC + the most
+    recent FINALIZED 1-minute close). The front-end uses this to tell
+    Val at a glance whether the long-eject or short-eject gate would
+    fire on the next tick, and why.
+
+    Shape (every field is optional — fail-closed in the UI):
+
+        {
+          "spy_price":      float|None,    # last finalized 1m close
+          "spy_pdc":        float|None,
+          "spy_delta_pct":  float|None,    # (price - pdc) / pdc * 100
+          "spy_above_pdc":  bool|None,
+          "qqq_price":      float|None,
+          "qqq_pdc":        float|None,
+          "qqq_delta_pct":  float|None,
+          "qqq_above_pdc":  bool|None,
+          "long_eject":     bool,          # _sovereign_regime_eject("long")
+          "short_eject":    bool,          # _sovereign_regime_eject("short")
+          "status":         str,           # ARMED_LONG | ARMED_SHORT |
+                                           # DISARMED | AWAITING | NO_PDC
+          "reason":         str,           # short human explanation
+        }
+
+    Never raises. Returns a fully-populated dict with None/False
+    fields if any data is missing, so the UI always has a stable
+    shape.
+    """
+    out: dict[str, Any] = {
+        "spy_price": None, "spy_pdc": None, "spy_delta_pct": None,
+        "spy_above_pdc": None,
+        "qqq_price": None, "qqq_pdc": None, "qqq_delta_pct": None,
+        "qqq_above_pdc": None,
+        "long_eject": False, "short_eject": False,
+        "status": "NO_PDC", "reason": "",
+    }
+    try:
+        pdc_map = getattr(m, "pdc", {}) or {}
+        spy_pdc = pdc_map.get("SPY")
+        qqq_pdc = pdc_map.get("QQQ")
+        if isinstance(spy_pdc, (int, float)) and spy_pdc > 0:
+            out["spy_pdc"] = float(spy_pdc)
+        if isinstance(qqq_pdc, (int, float)) and qqq_pdc > 0:
+            out["qqq_pdc"] = float(qqq_pdc)
+
+        # Finalized 1m close the Shield actually reads.
+        helper = getattr(m, "_last_finalized_1min_close", None)
+        if callable(helper):
+            try:
+                sc = helper("SPY")
+                if isinstance(sc, (int, float)):
+                    out["spy_price"] = float(sc)
+            except Exception:
+                pass
+            try:
+                qc = helper("QQQ")
+                if isinstance(qc, (int, float)):
+                    out["qqq_price"] = float(qc)
+            except Exception:
+                pass
+
+        # Deltas (only if both price and PDC present).
+        if out["spy_price"] is not None and out["spy_pdc"]:
+            out["spy_delta_pct"] = (out["spy_price"] - out["spy_pdc"]) / out["spy_pdc"] * 100.0
+            out["spy_above_pdc"] = out["spy_price"] > out["spy_pdc"]
+        if out["qqq_price"] is not None and out["qqq_pdc"]:
+            out["qqq_delta_pct"] = (out["qqq_price"] - out["qqq_pdc"]) / out["qqq_pdc"] * 100.0
+            out["qqq_above_pdc"] = out["qqq_price"] > out["qqq_pdc"]
+
+        # Ask the Shield itself for the ground-truth eject booleans.
+        eject = getattr(m, "_sovereign_regime_eject", None)
+        if callable(eject):
+            try:
+                out["long_eject"] = bool(eject("long"))
+            except Exception:
+                out["long_eject"] = False
+            try:
+                out["short_eject"] = bool(eject("short"))
+            except Exception:
+                out["short_eject"] = False
+
+        # Human-readable status.
+        if out["spy_pdc"] is None or out["qqq_pdc"] is None:
+            out["status"] = "NO_PDC"
+            out["reason"] = "PDC not yet collected (pre-open)"
+        elif out["spy_price"] is None or out["qqq_price"] is None:
+            out["status"] = "AWAITING"
+            out["reason"] = "waiting for first finalized 1m close"
+        elif out["long_eject"]:
+            out["status"] = "ARMED_LONG"
+            out["reason"] = "SPY and QQQ both 1m close < PDC — longs would eject"
+        elif out["short_eject"]:
+            out["status"] = "ARMED_SHORT"
+            out["reason"] = "SPY and QQQ both 1m close > PDC — shorts would eject"
+        else:
+            # Both below PDC only triggers long eject; both above only short
+            # eject. Divergence is the last remaining case: one each side.
+            if (out["spy_above_pdc"] is not None
+                    and out["qqq_above_pdc"] is not None
+                    and out["spy_above_pdc"] != out["qqq_above_pdc"]):
+                out["status"] = "DISARMED"
+                out["reason"] = "SPY/QQQ diverge vs PDC — hysteresis holds"
+            else:
+                out["status"] = "DISARMED"
+                out["reason"] = "SPY and QQQ both on expected side of PDC"
+    except Exception as e:
+        logger.debug("_sovereign_regime_snapshot failed: %s", e)
+    return out
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -368,6 +483,9 @@ def snapshot() -> dict[str, Any]:
         for row in _serialize_positions(longs, shorts, prices):
             unreal_sum += row["unrealized"]
         day_pnl = realized + unreal_sum
+
+        # v3.4.29 — Sovereign Regime Shield live state for the dashboard.
+        sovereign = _sovereign_regime_snapshot(m)
 
         # Regime / observer
         mode = str(getattr(m, "_current_mode", "UNKNOWN"))
@@ -439,6 +557,8 @@ def snapshot() -> dict[str, Any]:
                 "breadth_detail": breadth_detail,
                 "rsi_regime": rsi_regime,
                 "rsi_detail": rsi_detail,
+                # v3.4.29 — Sovereign Regime Shield (live PDC-based eject).
+                "sovereign": sovereign,
             },
             "gates": {
                 "trading_halted": halted,
@@ -470,7 +590,82 @@ SESSION_COOKIE = "spike_session"
 SESSION_DAYS = 7
 
 _PW: str = ""
-_SESSION_SECRET: bytes = b""   # set at startup; in-memory only
+_SESSION_SECRET: bytes = b""   # set at startup; see _load_or_create_session_secret
+
+
+def _session_secret_path() -> str:
+    """Path for the persistent session signing key.
+
+    Lives beside PAPER_STATE_FILE so it inherits the Railway volume
+    mount automatically. Never hard-codes the volume path — it derives
+    from whatever the bot uses for state, so local dev, tests, and
+    prod all get consistent behavior.
+    """
+    m = _ssm()
+    paper_state = getattr(m, "PAPER_STATE_FILE", "paper_state.json")
+    d = os.path.dirname(paper_state) or "."
+    return os.path.join(d, "dashboard_secret.key")
+
+
+def _load_or_create_session_secret() -> bytes:
+    """Resolve the dashboard session signing key.
+
+    Resolution order:
+      1. DASHBOARD_SESSION_SECRET env (hex) — forces an explicit secret,
+         used by tests and manual rotation.
+      2. dashboard_secret.key on disk — the persistent case. Read 32
+         bytes; reject anything shorter (treat as missing).
+      3. Generate fresh 32 random bytes, best-effort write to disk so
+         the next boot can reuse. Disk write failure is logged and
+         swallowed — the server still starts with the in-memory secret.
+
+    Always returns 32 bytes suitable for HMAC-SHA256.
+    """
+    env = os.getenv("DASHBOARD_SESSION_SECRET", "").strip()
+    if env:
+        try:
+            b = bytes.fromhex(env)
+            if len(b) >= 16:
+                return b
+        except ValueError:
+            pass  # fall through to file/gen
+
+    path = _session_secret_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                data = f.read()
+            if len(data) >= 32:
+                logger.info("Dashboard session secret loaded from %s (persistent)", path)
+                return data[:32]
+            logger.warning(
+                "Dashboard session secret at %s too short (%d bytes) — regenerating",
+                path, len(data),
+            )
+    except OSError as e:
+        logger.warning("Dashboard session secret read failed (%s): %s", path, e)
+
+    new_secret = secrets.token_bytes(32)
+    try:
+        d = os.path.dirname(path) or "."
+        os.makedirs(d, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(new_secret)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass  # non-POSIX filesystems
+        os.replace(tmp, path)
+        logger.info("Dashboard session secret generated and persisted to %s", path)
+    except OSError as e:
+        logger.warning(
+            "Dashboard session secret write failed (%s): %s — using in-memory for this boot",
+            path, e,
+        )
+    return new_secret
+
+
 _STATIC_DIR = Path(__file__).parent / "dashboard_static"
 
 # Login rate-limiter: per-IP attempt timestamps (sliding window)
@@ -771,16 +966,16 @@ def start_in_thread() -> bool:
         port = int(os.getenv("DASHBOARD_PORT", "8080"))
     except ValueError:
         port = 8080
-    # In-memory random secret — restart invalidates all sessions, which is
-    # the cheapest "global logout" mechanism. Override via env for testing.
-    secret_hex = os.getenv("DASHBOARD_SESSION_SECRET", "").strip()
-    if secret_hex:
-        try:
-            _SESSION_SECRET = bytes.fromhex(secret_hex)
-        except ValueError:
-            _SESSION_SECRET = secrets.token_bytes(32)
-    else:
-        _SESSION_SECRET = secrets.token_bytes(32)
+    # Session secret resolution order (v3.4.29 — persistent across deploys):
+    #   1. DASHBOARD_SESSION_SECRET env override (tests / forced rotation).
+    #   2. dashboard_secret.key on the Railway volume — same directory as
+    #      paper_state.json, so it inherits the volume's persistence
+    #      automatically. Read if present.
+    #   3. Generate 32 random bytes and persist them for next boot.
+    # Fail-closed: if step 3 cannot write (disk full, RO mount), the server
+    # still starts with the in-memory secret. Sessions then behave exactly
+    # as they did pre-3.4.29 for this boot only.
+    _SESSION_SECRET = _load_or_create_session_secret()
 
     _install_log_handler()
 

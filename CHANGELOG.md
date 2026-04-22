@@ -4,6 +4,84 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.29 — Persistent dashboard session + Sovereign Regime card (2026-04-22)
+
+### Why
+
+Two small-but-annoying frictions on the dashboard:
+
+1. **Every Railway redeploy logged Val out.** The cookie-auth
+   secret was a random 32 bytes generated in memory at
+   `start_in_thread()`, so each container restart invalidated
+   every session. A 7-day cookie only lasts as long as the
+   container. Val ships patches multiple times a day; this meant
+   re-entering the dashboard password several times a day.
+
+2. **The Sovereign Regime Shield (v3.4.28) was invisible.** The
+   bot's most-important global gate — the dual-index PDC eject —
+   had no surface on the dashboard. You could only infer its
+   state by reading the log tail. Val asked for a first-class
+   panel.
+
+### What changed
+
+**Persistent session secret**
+
+- New helper `_load_or_create_session_secret()` in
+  `dashboard_server.py` resolves the HMAC key in three tiers:
+  1. Env `DASHBOARD_SESSION_SECRET` (hex) — operator override.
+  2. On-disk file `dashboard_secret.key` in the same directory
+     as `PAPER_STATE_FILE` (inherits Railway volume mount).
+     Must be ≥ 32 bytes or it is rejected and regenerated.
+  3. Generate 32 random bytes and persist via atomic
+     tmp+`os.replace`, chmod 0600 (best-effort).
+- Fail-safe: if the disk write fails, the key lives in memory
+  for this process — no crash, no downtime. The next deploy
+  simply regenerates (same behaviour as pre-v3.4.29).
+- 7-day cookies now survive container restarts. Val logs in
+  once per device per week.
+
+**Sovereign Regime Shield card**
+
+- New helper `_sovereign_regime_snapshot(m)` in
+  `dashboard_server.py` reads the Shield's ground-truth
+  primitives (`m._sovereign_regime_eject` and
+  `m._last_finalized_1min_close`) and returns a stable
+  12-field dict: per-index price, PDC, delta%, above-PDC flag,
+  plus long_eject / short_eject booleans, a compact status tag
+  (`ARMED_LONG` | `ARMED_SHORT` | `DISARMED` | `AWAITING` |
+  `NO_PDC`), and a human reason string.
+- Wired into `snapshot()` as `regime.sovereign` so the front
+  end can render it without recomputing anything.
+- New dashboard card "Sovereign Regime Shield" renders SPY and
+  QQQ rows (price, PDC, signed delta%) plus two verdict tiles
+  (LONGS · SHORTS) that turn red when the Shield is armed
+  against that side. The status chip at the top matches the
+  bot's internal state. Fails closed: when either PDC is
+  missing the card shows `NO PDC` and both eject tiles go
+  neutral — matching the core gate's fail-closed semantics.
+
+### Safety
+
+- No trading-logic changes in this release. The Shield itself
+  is untouched; the card is a pure read-out of existing
+  state.
+- The session-secret change is additive: it cannot reduce
+  security (still HMAC-signed, still HttpOnly + Secure cookies)
+  and cannot loosen the existing 7-day expiry.
+- 133/133 smoke tests pass (122 prior + 11 new covering secret
+  persistence, env override, corrupt-file rejection, regime
+  snapshot shape, NO_PDC fail-closed, ARMED_LONG path, and
+  HTML card presence).
+
+### Locked design principles (unchanged)
+
+- Adaptive logic only makes things MORE conservative than
+  baseline, never looser.
+- Fail-closed: missing data → do NOT eject.
+
+---
+
 ## v3.4.28 — Sovereign Regime Shield (2026-04-22)
 
 ### Why
