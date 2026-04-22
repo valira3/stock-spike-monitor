@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.34"
+BOT_VERSION = "3.4.35"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,39 +56,30 @@ BOT_VERSION = "3.4.34"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.34 \u2014 AVWAP is gone.\n"
-    "Entry gates, regime\n"
-    "alerts, /status, and\n"
-    "/help all use PDC now,\n"
-    "matching the v3.4.28\n"
-    "Sovereign Regime Shield\n"
-    "that ejects positions.\n"
+    "v3.4.35 \u2014 Profit-lock\n"
+    "ladder replaces the 1%\n"
+    "trail. Peak gain sets\n"
+    "the stop tier, one-way.\n"
     "\n"
-    "Why: AVWAP drifts all\n"
-    "day and was firing\n"
-    "stale \"Lords have left\"\n"
-    "alerts at levels the\n"
-    "ejector had already\n"
-    "left behind. One\n"
-    "anchor \u2014 PDC \u2014 across\n"
-    "the whole system.\n"
+    "Peak  Stop  Phase\n"
+    "<1%   hard  Bullet\n"
+    ">=1%  BE    Capital safe\n"
+    ">=2%  +1%   Lock 1%\n"
+    ">=3%  +2%   Lock 2%\n"
+    ">=4%  +3.5% Tighten\n"
+    ">=5%  90%   Harvest\n"
     "\n"
-    "Long gate:  SPY & QQQ\n"
-    "            > PDC\n"
-    "Short gate: SPY & QQQ\n"
-    "            < PDC\n"
-    "Regime alert swaps to\n"
-    "PDC; Lords messaging\n"
-    "preserved."
+    "Short side mirrors it.\n"
+    "Stop only tightens.\n"
+    "Replaces 1%/$1 trail\n"
+    "and 0.5% breakeven."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.34 \u2014 AVWAP removed.\n"
-    "Entry gates, regime\n"
-    "alerts, and dashboards\n"
-    "now anchor on PDC,\n"
-    "matching the v3.4.28\n"
-    "ejector. One source\n"
-    "of regime truth."
+    "v3.4.35 \u2014 Profit-lock\n"
+    "ladder: stop steps up\n"
+    "with peak gain. 5%+\n"
+    "harvests 90% of gain.\n"
+    "Stop only tightens."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -99,6 +90,11 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.34 \u2014 AVWAP fully\n"
+    "removed; one anchor (PDC)\n"
+    "across entries, regime\n"
+    "alerts, and displays.\n"
+    "\n"
     "v3.4.33 \u2014 /ticker unified\n"
     "with add/remove/list; adds\n"
     "prime PDC + OR + RSI.\n"
@@ -109,22 +105,19 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.31 \u2014 Richer Today's\n"
     "Trades card: cost, P&L,\n"
-    "and daily summary.\n"
-    "\n"
-    "v3.4.30 \u2014 Mobile layout\n"
-    "fix; Trades time display."
+    "and daily summary."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.34 \u2014 AVWAP gone;\n"
+    "PDC anchor everywhere.\n"
     "v3.4.33 \u2014 /ticker unified\n"
     "(add/remove/list) + rich\n"
     "metric prime on add.\n"
     "v3.4.32 \u2014 Editable ticker\n"
     "universe from Telegram.\n"
-    "v3.4.31 \u2014 Today's Trades\n"
-    "richer on dashboard.\n"
     "/tp_sync for TP status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
@@ -1993,6 +1986,104 @@ def _capped_short_stop(pdc_val, entry_price, max_pct=MAX_STOP_PCT):
     return round(final, 2), final < baseline, round(baseline, 2)
 
 
+# v3.4.35 — Profit-Lock Ladder
+# ----------------------------------------------------------------
+# Six-tier ratchet driven by peak gain %. Peak is trail_high for
+# long, trail_low for short. Replaces the old 1%/$1 armed-trail and
+# the 0.5% breakeven ratchet in one rule:
+#
+#   Peak gain %  Long stop           Short stop           Phase
+#   -----------  ------------------  -------------------  -------------
+#   < 1.0%       initial hard stop   initial hard stop    Bullet
+#   ≥ 1.0%      entry (breakeven)   entry (breakeven)    Capital safe
+#   ≥ 2.0%      entry + 1.0%        entry − 1.0%         Lock 1%
+#   ≥ 3.0%      entry + 2.0%        entry − 2.0%         Lock 2%
+#   ≥ 4.0%      entry + 3.5%        entry − 3.5%         Tightening
+#   ≥ 5.0%      entry + 0.9×peak_g  entry − 0.9×peak_g   Harvest (90%)
+#
+# Design:
+#   - PEAK-BASED: tier is determined by the highest gain reached,
+#     not current gain. Once earned, stays. A pullback from +5% to
+#     +2% keeps the Harvest stop; if price crosses it, we exit with
+#     the locked gain.
+#   - ONE-WAY: the returned stop is always max(existing_trail, tier)
+#     for longs / min(existing_trail, tier) for shorts — never
+#     looser. Matches the locked design principle.
+#   - REPLACES the old trail: callers pass in the existing pos["stop"]
+#     or pos["trail_stop"] and we return the tighter of that vs the
+#     ladder. No separate 1%/$1 calculation anymore.
+#   - SUB-1% TIER: returns `initial_stop` from the position (the
+#     OR-based structural stop). Legacy positions without initial_stop
+#     fall back to the live pos["stop"].
+#
+# These tier bands are percentage-of-entry, so the ladder scales with
+# price naturally. A $50 stock's +1% tier = $0.50 buffer; a $500
+# stock's +1% = $5.00 buffer. No $1 floor needed.
+LADDER_TIERS_LONG = [
+    # (gain_trigger, stop_pct_above_entry_or_None_for_90pct_lock)
+    (0.05, None),    # ≥ 5% → 90% of peak gain
+    (0.04, 0.035),   # ≥ 4% → entry + 3.5%
+    (0.03, 0.020),   # ≥ 3% → entry + 2.0%
+    (0.02, 0.010),   # ≥ 2% → entry + 1.0%
+    (0.01, 0.000),   # ≥ 1% → entry (breakeven)
+]
+LADDER_HARVEST_FRACTION = 0.90  # ≥ 5% tier locks 90% of peak gain
+
+
+def _ladder_stop_long(pos):
+    """Return the profit-lock ladder stop for a long position.
+
+    Uses pos["trail_high"] as the peak. Returns the highest (tightest)
+    ladder stop triggered by the peak gain, or `initial_stop` if peak
+    gain < 1.0% (Bullet phase). Falls back to pos["stop"] when
+    initial_stop is absent (legacy positions from pre-v3.4.35).
+
+    Never looser than `initial_stop` — returns that as the floor.
+    """
+    entry = pos.get("entry_price") or 0.0
+    if entry <= 0:
+        return pos.get("stop", 0)
+    peak = pos.get("trail_high", entry) or entry
+    peak_gain_pct = (peak - entry) / entry
+    initial = pos.get("initial_stop", pos.get("stop", 0))
+    # Iterate highest tier first so first match wins.
+    for trigger, stop_offset_pct in LADDER_TIERS_LONG:
+        if peak_gain_pct >= trigger:
+            if stop_offset_pct is None:
+                # Harvest: 90% of peak gain.
+                tier_stop = entry + LADDER_HARVEST_FRACTION * (peak - entry)
+            else:
+                tier_stop = entry * (1.0 + stop_offset_pct)
+            return round(max(tier_stop, initial), 2)
+    # Below 1% gain — structural stop only.
+    return initial
+
+
+def _ladder_stop_short(pos):
+    """Return the profit-lock ladder stop for a short position.
+
+    Mirror of _ladder_stop_long. Uses pos["trail_low"] as the peak
+    (lowest price reached). Peak gain % = (entry − low) / entry.
+    Returns the lowest (tightest-for-short) ladder stop triggered.
+    Never looser than `initial_stop`.
+    """
+    entry = pos.get("entry_price") or 0.0
+    if entry <= 0:
+        return pos.get("stop", 0)
+    peak = pos.get("trail_low", entry) or entry
+    peak_gain_pct = (entry - peak) / entry
+    initial = pos.get("initial_stop", pos.get("stop", 0))
+    for trigger, stop_offset_pct in LADDER_TIERS_LONG:
+        if peak_gain_pct >= trigger:
+            if stop_offset_pct is None:
+                tier_stop = entry - LADDER_HARVEST_FRACTION * (entry - peak)
+            else:
+                tier_stop = entry * (1.0 - stop_offset_pct)
+            # Tighter = lower for short, so take min with initial.
+            return round(min(tier_stop, initial), 2)
+    return initial
+
+
 # ============================================================
 # v3.4.23 — Retro-cap: retighten existing positions
 # ------------------------------------------------------------
@@ -3012,6 +3103,7 @@ def execute_entry(ticker, current_price):
         "entry_price": current_price,
         "shares": SHARES,
         "stop": stop_price,
+        "initial_stop": stop_price,  # v3.4.35 — frozen; used for R fallback only
         "trail_active": False,
         "trail_high": current_price,
         "entry_count": entry_num,
@@ -3089,6 +3181,7 @@ def execute_entry(ticker, current_price):
         "entry_price": current_price,
         "shares": SHARES,
         "stop": stop_price,
+        "initial_stop": stop_price,  # v3.4.35 — frozen
         "trail_active": False,
         "trail_high": current_price,
         "entry_count": entry_num,
@@ -3398,9 +3491,12 @@ def manage_positions():
         current_price = bars["current_price"]
         pos = positions[ticker]
 
-        # Check hard stop hit
+        # v3.4.35 — Stop hit. "TRAIL" when the ladder has ratcheted past
+        # the initial structural stop (capital already safe), else "STOP"
+        # (initial structural stop hit with no profit locked).
         if current_price <= pos["stop"]:
-            tickers_to_close.append((ticker, current_price, "STOP"))
+            reason = "TRAIL" if pos.get("trail_active") else "STOP"
+            tickers_to_close.append((ticker, current_price, reason))
             continue
 
         # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close < PDC ─────────────
@@ -3426,25 +3522,41 @@ def manage_positions():
 
         entry_price = pos["entry_price"]
 
-        # Percentage trail: trigger +1.0%, trail max(price*1.0%, $1.00)
-        trail_trigger_price = entry_price * 1.010
-
-        if not pos["trail_active"] and current_price >= trail_trigger_price:
-            pos["trail_active"] = True
+        # v3.4.35 — Profit-Lock Ladder replaces the 1%/$1 armed-trail.
+        # Update peak (trail_high) every tick — ladder reads this.
+        if current_price > pos.get("trail_high", entry_price):
             pos["trail_high"] = current_price
-            logger.info("Trail activated for %s at $%.2f", ticker, current_price)
+        peak = pos["trail_high"]
+        peak_gain_pct = (peak - entry_price) / entry_price if entry_price > 0 else 0.0
 
-        if pos["trail_active"]:
-            if current_price > pos.get("trail_high", current_price):
-                pos["trail_high"] = current_price
-            best = pos["trail_high"]
-            trail_dist = max(round(best * 0.010, 2), 1.00)
-            new_trail_stop = round(best - trail_dist, 2)
-            if new_trail_stop > pos.get("trail_stop", 0):
-                pos["trail_stop"] = new_trail_stop
-            if current_price <= pos["trail_stop"]:
-                tickers_to_close.append((ticker, current_price, "TRAIL"))
-                continue
+        # Compute ladder stop; ratchet pos["stop"] upward only.
+        ladder_stop = _ladder_stop_long(pos)
+        if ladder_stop > pos.get("stop", 0):
+            old_stop = pos.get("stop", 0)
+            pos["stop"] = ladder_stop
+            logger.info(
+                "[LADDER] %s LONG stop ratcheted $%.2f \u2192 $%.2f "
+                "(peak=$%.2f, +%.2f%%)",
+                ticker, old_stop, ladder_stop, peak, peak_gain_pct * 100,
+            )
+
+        # Arm cosmetic trail_active / trail_stop once past the 1% gate
+        # (Bullet phase ends). Keeps /api/state + exit-reason attribution
+        # (TRAIL vs STOP in _finalize_pos) working.
+        if peak_gain_pct >= 0.01:
+            if not pos.get("trail_active"):
+                pos["trail_active"] = True
+                logger.info(
+                    "Trail armed for %s at $%.2f (+%.2f%% peak) — ladder active",
+                    ticker, current_price, peak_gain_pct * 100,
+                )
+            pos["trail_stop"] = pos["stop"]
+
+        # Exit when current price crosses the ladder stop.
+        if current_price <= pos["stop"]:
+            reason = "TRAIL" if pos.get("trail_active") else "STOP"
+            tickers_to_close.append((ticker, current_price, reason))
+            continue
 
     # Close positions outside the loop to avoid mutation during iteration
     for ticker, price, reason in tickers_to_close:
@@ -3595,9 +3707,10 @@ def manage_tp_positions():
         current_price = bars["current_price"]
         pos = tp_positions[ticker]
 
-        # Check hard stop hit
+        # v3.4.35 — Ladder stop hit. TRAIL vs STOP per ladder-armed state.
         if current_price <= pos["stop"]:
-            tickers_to_close.append((ticker, current_price, "STOP"))
+            reason = "TRAIL" if pos.get("trail_active") else "STOP"
+            tickers_to_close.append((ticker, current_price, reason))
             continue
 
         # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close < PDC ─────────────
@@ -3623,25 +3736,35 @@ def manage_tp_positions():
 
         entry_price = pos["entry_price"]
 
-        # Percentage trail: trigger +1.0%, trail max(price*1.0%, $1.00)
-        trail_trigger_price = entry_price * 1.010
-
-        if not pos["trail_active"] and current_price >= trail_trigger_price:
-            pos["trail_active"] = True
+        # v3.4.35 — Profit-Lock Ladder (TP mirror).
+        if current_price > pos.get("trail_high", entry_price):
             pos["trail_high"] = current_price
-            logger.info("[TP] Trail activated for %s at $%.2f", ticker, current_price)
+        peak = pos["trail_high"]
+        peak_gain_pct = (peak - entry_price) / entry_price if entry_price > 0 else 0.0
 
-        if pos["trail_active"]:
-            if current_price > pos.get("trail_high", current_price):
-                pos["trail_high"] = current_price
-            best = pos["trail_high"]
-            trail_dist = max(round(best * 0.010, 2), 1.00)
-            new_trail_stop = round(best - trail_dist, 2)
-            if new_trail_stop > pos.get("trail_stop", 0):
-                pos["trail_stop"] = new_trail_stop
-            if current_price <= pos["trail_stop"]:
-                tickers_to_close.append((ticker, current_price, "TRAIL"))
-                continue
+        ladder_stop = _ladder_stop_long(pos)
+        if ladder_stop > pos.get("stop", 0):
+            old_stop = pos.get("stop", 0)
+            pos["stop"] = ladder_stop
+            logger.info(
+                "[TP LADDER] %s LONG stop ratcheted $%.2f \u2192 $%.2f "
+                "(peak=$%.2f, +%.2f%%)",
+                ticker, old_stop, ladder_stop, peak, peak_gain_pct * 100,
+            )
+
+        if peak_gain_pct >= 0.01:
+            if not pos.get("trail_active"):
+                pos["trail_active"] = True
+                logger.info(
+                    "[TP] Trail armed for %s at $%.2f (+%.2f%% peak)",
+                    ticker, current_price, peak_gain_pct * 100,
+                )
+            pos["trail_stop"] = pos["stop"]
+
+        if current_price <= pos["stop"]:
+            reason = "TRAIL" if pos.get("trail_active") else "STOP"
+            tickers_to_close.append((ticker, current_price, reason))
+            continue
 
     # Close TP positions outside the loop
     for ticker, price, reason in tickers_to_close:
@@ -3868,6 +3991,7 @@ def execute_short_entry(ticker, price):
         "entry_price": entry_price,
         "shares": shares,
         "stop": stop,
+        "initial_stop": stop,  # v3.4.35 — frozen
         "trail_stop": None,
         "trail_active": False,
         "trail_low": entry_price,
@@ -3931,6 +4055,7 @@ def execute_short_entry(ticker, price):
         "entry_price": entry_price,
         "shares": shares,
         "stop": stop,
+        "initial_stop": stop,  # v3.4.35 — frozen
         "trail_stop": None,
         "trail_active": False,
         "trail_low": entry_price,
@@ -3973,43 +4098,49 @@ def manage_short_positions():
         pos = short_positions[ticker]
         entry_price = pos["entry_price"]
         shares = pos["shares"]
-        stop = pos["stop"]
-        trail_stop = pos.get("trail_stop")
-        trail_active = pos.get("trail_active", False)
 
         bars = fetch_1min_bars(ticker)
         if not bars:
             continue
         current_price = bars["current_price"]
 
-        # Percentage trail: trigger -1.0%, trail max(price*1.0%, $1.00)
-        trail_trigger_price = entry_price * 0.990
+        # v3.4.35 — Profit-Lock Ladder replaces the 1%/$1 armed-trail.
+        # Track trail_low every tick (peak = deepest price reached).
+        trail_low = pos.get("trail_low", entry_price)
+        if current_price < trail_low:
+            trail_low = current_price
+            pos["trail_low"] = trail_low
+        peak_gain_pct = (entry_price - trail_low) / entry_price if entry_price > 0 else 0.0
 
-        if not trail_active and current_price <= trail_trigger_price:
-            trail_active = True
-            short_positions[ticker]["trail_active"] = True
-            short_positions[ticker]["trail_low"] = current_price
+        # Compute ladder stop; ratchet pos["stop"] downward only (tighter).
+        ladder_stop = _ladder_stop_short(pos)
+        if ladder_stop < pos.get("stop", float("inf")):
+            old_stop = pos.get("stop", 0)
+            pos["stop"] = ladder_stop
+            logger.info(
+                "[LADDER] %s SHORT stop ratcheted $%.2f \u2192 $%.2f "
+                "(trail_low=$%.2f, +%.2f%%)",
+                ticker, old_stop, ladder_stop, trail_low, peak_gain_pct * 100,
+            )
 
-        if trail_active:
-            trail_low = short_positions[ticker].get("trail_low", current_price)
-            if current_price < trail_low:
-                trail_low = current_price
-                short_positions[ticker]["trail_low"] = trail_low
-            trail_dist = max(round(trail_low * 0.010, 2), 1.00)
-            new_trail_stop = round(trail_low + trail_dist, 2)
-            old_trail_stop = short_positions[ticker].get("trail_stop")
-            if old_trail_stop is None or new_trail_stop < old_trail_stop:
-                short_positions[ticker]["trail_stop"] = new_trail_stop
-            trail_stop = short_positions[ticker]["trail_stop"]
+        # Arm cosmetic trail_active / trail_stop past the 1% gate.
+        if peak_gain_pct >= 0.01:
+            if not pos.get("trail_active"):
+                pos["trail_active"] = True
+                logger.info(
+                    "Trail armed for %s SHORT at $%.2f (+%.2f%% peak) — ladder active",
+                    ticker, current_price, peak_gain_pct * 100,
+                )
+            pos["trail_stop"] = pos["stop"]
 
-        # Check stop conditions
+        stop = pos["stop"]
+        trail_active = pos.get("trail_active", False)
+
+        # Exit on stop hit. TRAIL vs STOP per ladder-armed state.
         exit_reason = None
-        if trail_active and trail_stop is not None:
-            if current_price >= trail_stop:
-                exit_reason = "TRAIL"
-        else:
-            if current_price >= stop:
-                exit_reason = "STOP"
+        if current_price >= stop:
+            exit_reason = "TRAIL" if trail_active else "STOP"
+
 
         # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close > PDC ─────────────
         if not exit_reason and bull_vacuum:
@@ -4033,42 +4164,45 @@ def manage_short_positions():
         pos = tp_short_positions[ticker]
         entry_price = pos["entry_price"]
         shares = pos["shares"]
-        stop = pos["stop"]
-        trail_stop = pos.get("trail_stop")
-        trail_active = pos.get("trail_active", False)
 
         bars = fetch_1min_bars(ticker)
         if not bars:
             continue
         current_price = bars["current_price"]
 
-        # Percentage trail: trigger -1.0%, trail max(price*1.0%, $1.00)
-        trail_trigger_price = entry_price * 0.990
+        # v3.4.35 — Profit-Lock Ladder (TP short mirror).
+        trail_low = pos.get("trail_low", entry_price)
+        if current_price < trail_low:
+            trail_low = current_price
+            pos["trail_low"] = trail_low
+        peak_gain_pct = (entry_price - trail_low) / entry_price if entry_price > 0 else 0.0
 
-        if not trail_active and current_price <= trail_trigger_price:
-            trail_active = True
-            tp_short_positions[ticker]["trail_active"] = True
-            tp_short_positions[ticker]["trail_low"] = current_price
+        ladder_stop = _ladder_stop_short(pos)
+        if ladder_stop < pos.get("stop", float("inf")):
+            old_stop = pos.get("stop", 0)
+            pos["stop"] = ladder_stop
+            logger.info(
+                "[TP LADDER] %s SHORT stop ratcheted $%.2f \u2192 $%.2f "
+                "(trail_low=$%.2f, +%.2f%%)",
+                ticker, old_stop, ladder_stop, trail_low, peak_gain_pct * 100,
+            )
 
-        if trail_active:
-            trail_low = tp_short_positions[ticker].get("trail_low", current_price)
-            if current_price < trail_low:
-                trail_low = current_price
-                tp_short_positions[ticker]["trail_low"] = trail_low
-            trail_dist = max(round(trail_low * 0.010, 2), 1.00)
-            new_trail_stop = round(trail_low + trail_dist, 2)
-            old_trail_stop = tp_short_positions[ticker].get("trail_stop")
-            if old_trail_stop is None or new_trail_stop < old_trail_stop:
-                tp_short_positions[ticker]["trail_stop"] = new_trail_stop
-            trail_stop = tp_short_positions[ticker]["trail_stop"]
+        if peak_gain_pct >= 0.01:
+            if not pos.get("trail_active"):
+                pos["trail_active"] = True
+                logger.info(
+                    "[TP] Trail armed for %s SHORT at $%.2f (+%.2f%% peak)",
+                    ticker, current_price, peak_gain_pct * 100,
+                )
+            pos["trail_stop"] = pos["stop"]
+
+        stop = pos["stop"]
+        trail_active = pos.get("trail_active", False)
 
         exit_reason = None
-        if trail_active and trail_stop is not None:
-            if current_price >= trail_stop:
-                exit_reason = "TRAIL"
-        else:
-            if current_price >= stop:
-                exit_reason = "STOP"
+        if current_price >= stop:
+            exit_reason = "TRAIL" if trail_active else "STOP"
+
 
         # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close > PDC ─────────────
         if not exit_reason and bull_vacuum:
@@ -7070,13 +7204,23 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "         + price > PDC (green stock)\n"
         "         + SPY & QQQ > PDC\n"
         "  Stop : OR_High \u2212 $0.90\n"
-        "  Trail: +1.0% trigger | max(1.0%, $1.00) distance\n\n"
+        "  Ladder (peak \u2192 stop):\n"
+        "    +1% \u2192 entry (BE)\n"
+        "    +2% \u2192 entry +1%\n"
+        "    +3% \u2192 entry +2%\n"
+        "    +4% \u2192 entry +3.5%\n"
+        "    +5%+ \u2192 entry+0.9\u00d7peak\n\n"
         "\U0001f9b7 WOUNDED BUFFALO SHORT\n"
         "  Entry: 1-min close < OR_Low\n"
         "         + price < PDC (red stock)\n"
         "         + SPY & QQQ < PDC\n"
         "  Stop : PDC + $0.90\n"
-        "  Trail: +1.0% trigger | max(1.0%, $1.00) distance\n\n"
+        "  Ladder (peak \u2192 stop):\n"
+        "    +1% \u2192 entry (BE)\n"
+        "    +2% \u2192 entry -1%\n"
+        "    +3% \u2192 entry -2%\n"
+        "    +4% \u2192 entry -3.5%\n"
+        "    +5%+ \u2192 entry-0.9\u00d7peak\n\n"
         f"{SEP}\n"
         "Size : 10 shares (limit orders only)\n"
         "Max  : 5 entries per ticker/day (long + short combined)\n"
@@ -7155,7 +7299,12 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 SPY > PDC\n"
         "  \u2022 QQQ > PDC\n"
         "Stop: OR High \u2212 $0.90\n"
-        "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
+        "Ladder (peak \u2192 stop):\n"
+        "  +1% \u2192 entry (BE)\n"
+        "  +2% \u2192 entry +1%\n"
+        "  +3% \u2192 entry +2%\n"
+        "  +4% \u2192 entry +3.5%\n"
+        "  +5%+ \u2192 entry+0.9\u00d7peak\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 5 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
@@ -7175,7 +7324,12 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  \u2022 SPY < PDC\n"
         "  \u2022 QQQ < PDC\n"
         "Stop: PDC + $0.90\n"
-        "Trail: +1.0% trigger | max(1.0%, $1.00) distance\n"
+        "Ladder (peak \u2192 stop):\n"
+        "  +1% \u2192 entry (BE)\n"
+        "  +2% \u2192 entry -1%\n"
+        "  +3% \u2192 entry -2%\n"
+        "  +4% \u2192 entry -3.5%\n"
+        "  +5%+ \u2192 entry-0.9\u00d7peak\n"
         "Size: 10 shares \u00b7 limit order\n"
         "Max: 5 entries/ticker/day\n"
         "EOD: closes at 2:55 CT\n"
