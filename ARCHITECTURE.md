@@ -1,6 +1,6 @@
 # Architecture
 
-Stock Spike Monitor is a single-file Python application (`stock_spike_monitor.py`, ~8,600 lines) that combines real-time market scanning, paper trading, AI analysis, and Telegram bot interaction into one process.
+Stock Spike Monitor is a single-file Python application (`stock_spike_monitor.py`, ~9,400 lines) that runs an ORB (Opening Range Breakout) long strategy and a Wounded Buffalo short strategy in parallel, manages a paper portfolio and a TradersPost mirror portfolio, and delivers everything through a Telegram bot. The process is hosted on Railway and auto-deploys on every push to `main`.
 
 ---
 
@@ -8,290 +8,353 @@ Stock Spike Monitor is a single-file Python application (`stock_spike_monitor.py
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    Main Process                          │
+│                     Main Process                         │
 │                                                          │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
-│  │  Scheduler   │  │  Main Bot    │  │   TP Bot       │  │
-│  │  (Thread)    │  │  (Async)     │  │   (Async)      │  │
-│  │             │  │              │  │                │  │
-│  │ • 1-min scan │  │ • 40+ cmds   │  │ • Shadow cmds  │  │
-│  │ • Scheduled  │  │ • Charts     │  │ • Settlement   │  │
-│  │   reports    │  │ • AI queries │  │ • Sync tools   │  │
-│  │ • Adaptive   │  │              │  │                │  │
-│  │   rebalance  │  │              │  │                │  │
-│  └──────┬──────┘  └──────┬───────┘  └───────┬────────┘  │
-│         │                │                   │           │
-│         ▼                ▼                   ▼           │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │              Shared State (in-memory)             │    │
-│  │  paper_positions, paper_cash, tp_state,           │    │
-│  │  price_history, squeeze_scores, ai_watchlist      │    │
-│  └────────────────────┬─────────────────────────────┘    │
-│                       │                                  │
-│                       ▼                                  │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │         paper_state.json (Railway Volume)         │    │
-│  └──────────────────────────────────────────────────┘    │
+│  ┌───────────────────────────┐  ┌──────────────────────┐ │
+│  │  Scheduler Thread         │  │  Telegram Bots       │ │
+│  │                           │  │  (Async, Polling)    │ │
+│  │  • scan_loop() every 60s  │  │                      │ │
+│  │  • manage_positions()     │  │  Main Bot            │ │
+│  │  • manage_short_          │  │  TP Bot (mirror)     │ │
+│  │    positions()            │  │                      │ │
+│  │  • check_entry()          │  │  Both share in-      │ │
+│  │  • check_short_entry()    │  │  memory state        │ │
+│  │  • Scheduled jobs         │  │                      │ │
+│  │  • State save / 5 min     │  │                      │ │
+│  └──────────────┬────────────┘  └──────────┬───────────┘ │
+│                 │                           │             │
+│                 ▼                           ▼             │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │                 Shared State (in-memory)             │  │
+│  │  positions, short_positions, tp_positions,           │  │
+│  │  tp_short_positions, paper_cash, tp_paper_cash,      │  │
+│  │  or_high, or_low, pdc, _near_miss_log               │  │
+│  └───────────────────────┬─────────────────────────────┘  │
+│                           │                               │
+│                           ▼                               │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │     paper_state.json / tp_state.json                 │  │
+│  │     trade_log.jsonl  (Railway Volume)                │  │
+│  └─────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
-         │              │              │
-         ▼              ▼              ▼
-   ┌──────────┐  ┌───────────┐  ┌──────────────┐
-   │ Finnhub  │  │ Claude AI │  │ TradersPost  │
-   │ (quotes) │  │ (Sonnet/  │  │ (webhook)    │
-   │          │  │  Haiku)   │  │              │
-   │ FMP      │  │           │  │ Robinhood    │
-   │ (movers) │  │ Grok      │  │ (via TP)     │
-   │          │  │ (fallback)│  │              │
-   │ yfinance │  │           │  │              │
-   │ (charts) │  │           │  │              │
-   └──────────┘  └───────────┘  └──────────────┘
+         │                │                 │
+         ▼                ▼                 ▼
+  ┌──────────┐  ┌─────────────────┐  ┌──────────────┐
+  │  Yahoo   │  │  FMP            │  │ TradersPost  │
+  │  Finance │  │  (PDC + quotes) │  │ (webhook)    │
+  │ (1m bars)│  │                 │  │              │
+  └──────────┘  └─────────────────┘  └──────────────┘
+```
+
+Two Telegram bots run in the same process. The **main bot** reports the paper portfolio to the main group. The **TP bot** reports the TradersPost mirror portfolio privately. Both expose the same command surface; the bot that receives the message routes to its own portfolio view.
+
+---
+
+## Ticker Universe
+
+Nine tradeable tickers (editable via `/ticker`):
+
+```
+AAPL  MSFT  NVDA  TSLA  META  GOOG  AMZN  AVGO  QBTS
+```
+
+`SPY` and `QQQ` are pinned index-filter tickers — they are never entered as positions and cannot be removed.
+
+---
+
+## Scheduler Thread
+
+`scheduler_thread()` runs in a background thread and loops every 30 seconds (ET clock).
+
+**Timed jobs (ET):**
+
+| Time  | Day     | Job |
+|-------|---------|-----|
+| 09:20 | Weekdays | System test (8:20 CT pre-open) |
+| 09:30 | Weekdays | `reset_daily_state()` — clears OR data, entry counts |
+| 09:31 | Weekdays | System test (8:31 CT) |
+| 09:35 | Weekdays | `collect_or()` — collect Opening Range data |
+| 09:36 | Weekdays | Send OR notification card to both bots |
+| 15:55 | Weekdays | `eod_close()` — force-close all open positions |
+| 15:58 | Weekdays | Send EOD report |
+| 18:00 | Sunday  | Send weekly digest |
+
+**Continuous scan loop:** fires every 60 seconds while `elapsed >= SCAN_INTERVAL`.
+
+**Periodic state save:** every 5 minutes, `save_paper_state()` runs in a daemon thread.
+
+---
+
+## Scan Loop Execution Order
+
+`scan_loop()` runs only during market hours (09:35–15:55 ET, Mon–Fri):
+
+```
+1. Gate check          — weekday, 09:35–15:55 ET
+2. PDC / polarity      — refresh SPY/QQQ vs PDC for regime alert
+3. manage_positions()  — long stop chain + ladder + Red Candle + Lords Left
+4. manage_tp_positions()  — TP mirror long positions (same logic)
+5. manage_short_positions()  — short stop chain + ladder + Bull Vacuum + Polarity Shift
+6. Pause check         — if /monitoring paused → skip steps 7–8 (protection still runs)
+7. check_entry(ticker) — for each ticker: evaluate all long entry conditions
+8. check_short_entry(ticker) — for each ticker: evaluate all short entry conditions
+```
+
+Position management (steps 3–5) runs unconditionally — open positions are never left unprotected during a scanner pause.
+
+---
+
+## Opening Range Collection
+
+`collect_or()` fires at 09:35 ET:
+
+- **OR window:** 09:30:00–09:34:59 ET (five 1-minute bars from Yahoo Finance).
+- **OR_High:** maximum high across all bars in the window.
+- **OR_Low:** minimum low across all bars in the window.
+- **PDC (Previous Day Close):** official 4:00 PM ET close, fetched from FMP. Single static price per index/ticker per day.
+- Retries up to 3× at 30-second intervals if Yahoo data is delayed.
+- No entries fire until OR + PDC are confirmed for all tickers.
+
+---
+
+## Entry Logic
+
+**Long (ORB Breakout)** — all conditions must be simultaneously true:
+
+1. Time >= 09:45 ET (15-minute buffer after OR window closes)
+2. Most recent completed 1-minute bar closes above `OR_High`
+3. Current price > PDC (bullish polarity)
+4. SPY current price > SPY PDC
+5. QQQ current price > QQQ PDC
+6. Daily entry count < 5 for this ticker (long + short combined)
+7. No existing long open for this ticker
+8. Daily loss limit not triggered
+
+**Short (Wounded Buffalo)** — mirror conditions:
+
+1. Time >= 09:45 ET
+2. Most recent completed 1-minute bar closes below `OR_Low`
+3. Current price < PDC (bearish polarity — the "Wounded Buffalo")
+4. SPY current price < SPY PDC
+5. QQQ current price < QQQ PDC
+6. Daily entry count < 5 for this ticker
+7. No existing short open for this ticker
+8. Daily loss limit not triggered
+
+**Timing:** scan runs every 60 seconds, 09:35–15:55 ET. EOD force-close at 15:55 ET.
+
+---
+
+## Position Sizing
+
+| Parameter | Value |
+|-----------|-------|
+| Shares per entry | 10 (fixed, limit orders only) |
+| Max entries per ticker per day | 5 (long + short combined) |
+| Starting paper capital | $100,000 |
+| Order type | Limit at current market price |
+
+---
+
+## 4-Layer Stop Chain (Long Side)
+
+Every long position is protected by four stacking layers. Each layer can only tighten the stop — never loosen it.
+
+> **Adaptive logic only makes things MORE conservative than baseline, never looser.**
+
+```
+final_stop = max(
+  initial_stop,             # (1) structural baseline — permanent floor
+  cap_floor,                # (2) entry × (1 − 0.75%)
+  breakeven_ratchet_stop,   # (3) entry, armed at +0.50% peak
+  ladder_stop(pos),         # (4) peak × (1 − give_back%)
+)
+```
+
+### Layer 1 — Structural Baseline
+
+Set at entry time: `OR_High − $0.90`. Frozen as `initial_stop` and never modified. This is the permanent floor for all subsequent layers.
+
+### Layer 2 — 0.75% Cap (v3.4.21 + v3.4.23 retro)
+
+When the OR_High baseline would place the stop more than 0.75% below entry (e.g., entry far above OR_High on a wide-range bar), the stop is capped:
+
+```
+cap_floor = entry × (1 − 0.0075)
+stop = max(baseline, cap_floor)
+```
+
+`retighten_all_stops()` runs on every scan cycle to enforce this cap on all open positions, including positions opened before the cap shipped.
+
+### Layer 3 — Breakeven Ratchet (v3.4.25)
+
+Once peak gain >= +0.50%, the stop is pulled up to entry price (breakeven):
+
+```
+if current_price >= entry × 1.0050:
+    stop = max(stop, entry)
+```
+
+This closes the gap between the 0.75% cap and the 1% ladder arm threshold.
+
+### Layer 4 — Peak-Anchored Profit-Lock Ladder (v3.4.36)
+
+Once peak gain >= +1%, the stop is defined as a shrinking percentage below peak. As peak climbs, give-back shrinks:
+
+| Peak gain | Long stop | Phase |
+|-----------|-----------|-------|
+| < 1.0% | `initial_stop` | Bullet |
+| >= 1.0% | `peak − 0.50%` | Arm |
+| >= 2.0% | `peak − 0.40%` | Lock |
+| >= 3.0% | `peak − 0.30%` | Tight |
+| >= 4.0% | `peak − 0.20%` | Tighter |
+| >= 5.0% | `peak − 0.10%` | Harvest |
+
+Result is always clamped: `max(tier_stop, initial_stop)` so the structural floor is permanent.
+
+---
+
+## 4-Layer Stop Chain (Short Side)
+
+Mirror of the long chain with inverted arithmetic:
+
+- **Layer 1 baseline:** `PDC + $0.90` (stop is above entry for shorts).
+- **Layer 2 cap:** `entry × (1 + 0.0075)` — stop can be no more than 0.75% above entry.
+- **Layer 3 breakeven:** once peak gain (price decline) >= +0.50%, pull stop down to entry.
+- **Layer 4 ladder:** `peak + give_back%` with the same shrinking tier table.
+
+Result clamped: `min(tier_stop, initial_stop)`.
+
+---
+
+## Sovereign Regime Shield
+
+The regime shield (v3.4.28) guards against macro tape reversals that flip every open position into an immediate exit candidate.
+
+Four exit triggers ("Eye of the Tiger"):
+
+| Exit | Applies to | Trigger |
+|------|-----------|---------|
+| Red Candle | Longs only | 1-min finalized close < session open OR < PDC |
+| Lords Left | Longs only | BOTH SPY AND QQQ 1-min finalized close < their PDC |
+| Bull Vacuum | Shorts only | BOTH SPY AND QQQ 1-min finalized close > their PDC |
+| Polarity Shift | Shorts only | 1-min finalized close > PDC |
+
+**Key design rules:**
+
+- Lords Left and Bull Vacuum require **both** SPY **and** QQQ to cross PDC simultaneously. If only one index crosses (divergence), no eject fires — this is the hysteresis buffer.
+- Uses the most recent **finalized** 1-minute bar (second-to-last close), not the in-progress bar.
+- Fail-closed: missing bars or missing PDC → no eject. Stay in the trade.
+- v3.4.34: AVWAP fully removed; PDC is the single anchor across entries, filters, and ejects.
+
+```python
+# Eject longs iff BOTH SPY and QQQ finalized 1m close < PDC
+def _sovereign_regime_eject(side):
+    ...
+    if side == "long":
+        return (spy_close < spy_pdc) and (qqq_close < qqq_pdc)
+    else:  # short
+        return (spy_close > spy_pdc) and (qqq_close > qqq_pdc)
 ```
 
 ---
 
-## Core Components
+## State Persistence
 
-### 1. Scheduler Thread
+All mutable state is stored in `paper_state.json` (and `tp_state.json` for the TP portfolio), written to Railway Volume storage.
 
-A background thread that wakes every 30 seconds and manages two types of work:
+Saves occur:
+- Every 5 minutes during the scan loop.
+- Atomically: write to `.tmp` then `os.replace()` — no partial writes.
 
-**Continuous scanning (every ~60 seconds during market hours):**
-- `check_stocks()` — Fetches quotes for all monitored tickers via Finnhub, checks for spike alerts, runs paper trading evaluations, and checks VIX put-selling conditions.
-
-**Scheduled jobs (timezone-aware, CT):**
-- Defined as `(day, "HH:MM", function)` tuples
-- `"daily"` = weekdays only (Mon–Fri)
-- `"everyday"` = all 7 days
-- `"saturday"`, `"sunday"` = specific days
-- See [COMMANDS.md](COMMANDS.md#scheduled-automated-messages) for the full schedule
-
-### 2. Finnhub Rate Limiter
-
-All Finnhub API calls go through a thread-safe token-bucket rate limiter:
-
-- **Capacity:** 55 calls/minute (API limit is 60; 5-call safety margin)
-- **Behavior:** Blocks until a token is available, with a 30-second timeout
-- **429 handling:** Routine Finnhub 429 errors (a few per cycle) are normal and logged at debug level
-
-A TTL cache sits in front of the rate limiter:
-- **Quote cache:** 55-second TTL, 500 entries
-- **Metrics cache:** 300-second TTL, 300 entries
-
-### 3. AI Integration
-
-Two-tier AI setup for cost optimization:
-
-| Model | Use Case | Token Limit |
-|-------|----------|-------------|
-| Claude Sonnet | Deep analysis (`/analyze`, `/compare`, `/ask`, briefings, macro) | 300–2000 |
-| Claude Haiku | High-frequency scoring (signal direction, spike alerts, dashboard one-liners, news sentiment) | 60–300 |
-| Grok (fallback) | Only used if `ANTHROPIC_API_KEY` is not set | Varies |
-
-The `get_ai_response()` function handles model selection, retries, and fallback:
-```
-get_ai_response(prompt, system=None, max_tokens=300, fast=False)
-  fast=False → Claude Sonnet (deep)
-  fast=True  → Claude Haiku (quick)
-  Both fail  → Grok fallback
-```
-
-### 4. Paper Trading Engine
-
-**Capital:** $100,000 simulated starting balance
-
-**Buy Logic:**
-1. `compute_paper_signal(ticker)` generates an 11-factor composite score (0–150)
-2. If score ≥ adaptive threshold (default 65) and RSI < 72 and cash available → BUY
-3. Position size scales with signal strength: stronger signals get larger allocations
-4. Max 20% of portfolio per position, max 8 simultaneous positions
-
-**AVWAP Entry Gate:**
-During regular trading hours, the bot only opens new positions when price is above the Anchored VWAP (session-anchored to 9:30 AM ET open). This filters out entries into overhead supply zones. Gate is skipped in extended hours or when AVWAP data is unavailable.
-
-**Sell Logic (checked every scan cycle):**
-- **Take Profit:** +10% from entry (adaptive: widens in low-fear markets)
-- **Trailing Stop:** -3% from high-water mark (adaptive)
-- **Hard Stop:** -6% from entry (adaptive: tightens in high-fear markets)
-- **AVWAP Stop:** Exit if price drops below AVWAP after having reclaimed it ("price lost AVWAP — overhead supply")
-
-**Adaptive Rebalancing:**
-Every 30 minutes, the bot adjusts trading parameters based on:
-- Fear & Greed Index (0–100)
-- VIX level
-- Thresholds widen in calm markets (let winners run), tighten in volatile markets (protect capital)
-
-### 5. 11-Factor Signal Scoring
-
-Maximum score: 150 points. Components:
-
-| # | Component | Max Pts | Source |
-|---|-----------|---------|--------|
-| 1 | RSI Momentum | 20 | Intraday price history (14-period RSI) |
-| 2 | Bollinger Band Position | 15 | %B position within bands |
-| 3 | MACD Crossover | 15 | MACD line vs. signal line |
-| 4 | Volume Confirmation | 15 | Current volume vs. 10-day average |
-| 5 | Squeeze Score | 10 | Bollinger bandwidth + price trend + short interest |
-| 6 | Price Slope | 10 | Linear regression slope of last 10 ticks |
-| 7 | AI Direction | 15 | Claude Haiku BUY/HOLD/AVOID + confidence |
-| 8 | AI Watchlist Conviction | 10 | Bonus if ticker is on AI watchlist with conviction ≥ 7 |
-| 9 | Multi-Day Trend | 15 | SMA alignment (6) + 5-day momentum (5) + daily volume trend (4) |
-| 10 | News Sentiment | 15 | AI-scored headline sentiment |
-| 11 | AVWAP | 10 (-5) | Anchored VWAP: +10 if price comfortably above, +6 if just above, -5 if below (overhead supply penalty) |
-
-### 6. Persistent Signal Logger
-
-Every time `compute_paper_signal()` runs (each scan cycle per ticker), a complete snapshot is appended to `signal_log.jsonl`:
-
-```json
-{"type": "signal", "ts": "2026-03-14T10:31:22", "ticker": "NVDA",
- "score": 87.5, "rsi": 58.2, "pct_b": 0.72, "macd": 0.0034,
- "vol_ratio": 1.8, "squeeze": 45, "slope_pct": 0.21,
- "avwap": 142.50, "pct_from_avwap": 1.2, "reclaimed": true,
- "ai_signal": "BUY", "ai_confidence": 75,
- "news_sentiment": "bullish", "fg_index": 35, "vix": 22.1,
- "threshold": 65, "session": "regular", ...}
-```
-
-BUY and SELL actions are also logged with full trade details (shares, cost, P&L, exit reason).
-
-- **Storage:** JSONL (append-only), ~3 MB/day
-- **Retention:** Auto-trimmed to 30 days on morning reset
-- **Location:** Same Railway Volume mount as `paper_state.json`
-
-### 7. Backtesting Engine
-
-**In-bot (`/backtest` command):**
-Replays logged signal data from `signal_log.jsonl` with custom trading parameters. No API calls needed — uses the exact scores and prices that were recorded live. Generates a 2-page dark-themed PDF report with equity curve, KPIs, trade statistics, exit reason breakdown, drawdown chart, per-ticker P&L, and best/worst trades.
-
-**Standalone (`backtest.py` script):**
-Fetches historical data from yfinance/Finnhub and simulates the full signal engine from scratch. Useful for backtesting periods before signal logging was enabled. Outputs `backtest_report.pdf`.
-
-Both engines support custom parameters: take-profit, stop-loss, trailing stop, signal threshold, and max positions.
-
-### 8. Shadow Trading (TradersPost)
-
-When shadow mode is ON, every paper trade triggers a webhook POST to TradersPost:
-
-```
-Paper BUY  → POST webhook { ticker, action: "buy", ... }
-Paper SELL → POST webhook { ticker, action: "exit", ... }
-```
-
-The shadow portfolio tracks what TradersPost/Robinhood should hold, independent of paper positions. The `/tpsync` command can reconcile the two.
-
-**T+1 Settlement Tracking:**
-Since the linked Robinhood account is a cash account (no margin), sells don't settle until the next business day. The bot tracks:
-- Pending settlements with expected settle dates
-- Settled vs. unsettled cash
-- Available buying power (settled cash only)
-
-### 9. Telegram Bot Architecture
-
-Two bot instances run in the same process:
-
-| Bot | Purpose | Commands |
-|-----|---------|----------|
-| Main Bot | All market/paper/analysis commands | 40+ commands |
-| TP Bot | TradersPost-specific commands via DM | `/shadow`, `/tp`, `/tppos`, `/settlement`, `/tpsync`, `/tpedit`, `/paper`, `/set`, `/start`, `/help` |
-
-Both bots use `python-telegram-bot`'s async polling. They share the same in-memory state and paper_state.json file.
-
-**Message handling:**
-- `send_telegram()` splits messages >3,800 chars into multiple parts
-- Exponential backoff on Telegram API rate limits
-- Charts sent as documents (not photos) for crisp rendering on mobile
-
----
-
-## Data Flow
-
-### Scan Cycle (every ~60 seconds)
-
-```
-check_stocks()
-  │
-  ├── For each ticker:
-  │     ├── fetch_finnhub_quote(ticker) → (price, volume, change%)
-  │     ├── Update price_history deque
-  │     ├── Check spike threshold (3%+ change)
-  │     │     └── If spike → AI analysis → send_telegram() alert
-  │     ├── Check custom price alerts
-  │     └── paper_evaluate_ticker(ticker)
-  │           ├── compute_paper_signal() → 11-factor score
-  │           ├── log_signal_data() → append to signal_log.jsonl
-  │           ├── Check sell conditions (TP/SL/trailing/AVWAP-stop)
-  │           │     └── If sell → update positions, log, notify, webhook
-  │           └── Check buy conditions (signal ≥ threshold + AVWAP gate)
-  │                 └── If buy → size position → execute
-  │
-  ├── check_vix_put_alert()
-  │     └── If VIX > 33 → estimate put premiums → alert
-  │
-  └── Update squeeze_scores for all tickers
-```
-
-### State Persistence
-
-All mutable state is stored in `paper_state.json`:
+Key fields in `paper_state.json`:
 
 ```json
 {
   "paper_cash": 97543.21,
-  "paper_positions": { "NVDA": { "shares": 5, "cost": 142.50, ... } },
+  "positions": { "NVDA": { "entry_price": 142.50, "shares": 10,
+                            "stop": 141.44, "initial_stop": 141.23,
+                            "trail_high": 143.80, "trail_active": true } },
+  "short_positions": { ... },
+  "paper_trades": [ ... ],
   "paper_all_trades": [ ... ],
-  "paper_trades_today": [ ... ],
-  "paper_daily_counts": { "2026-03-14_NVDA_buy": 1 },
-  "user_config": {
-    "stop_loss": 0.06,
-    "take_profit": 0.10,
-    "trailing": 0.03,
-    "max_positions": 8,
-    "threshold": 65,
-    "trading_mode": "shadow"
-  },
-  "tp_state": {
-    "pending_settlements": [ ... ],
-    "total_orders_sent": 42,
-    "shadow_portfolio": { ... },
-    "recent_orders": [ ... ]
-  },
-  "custom_alerts": { "NVDA": [150.0, 160.0] },
-  "watchlists": { "12345": ["AAPL", "TSLA"] }
+  "daily_entry_count": { "NVDA": 1 },
+  "_trading_halted": false,
+  "bot_version": "3.4.36"
 }
 ```
 
-**signal_log.jsonl** (append-only, auto-trimmed to 30 days):
-```json
-{"type": "signal", "ts": "...", "ticker": "NVDA", "score": 87.5, ...}
-{"type": "buy", "ts": "...", "ticker": "NVDA", "shares": 5, "cost": 142.50, ...}
-{"type": "sell", "ts": "...", "ticker": "NVDA", "pnl": 215.00, "reason": "trailing_stop", ...}
+`trade_log.jsonl` is an append-only file logging every entry and exit with full context.
+
+---
+
+## TradersPost Mirror
+
+When `TRADERSPOST_ENABLED=true`, every paper trade fires a webhook POST to the configured TradersPost URL:
+
+```
+Paper long BUY  → POST { ticker, action: "buy",        shares: 10, price }
+Paper long SELL → POST { ticker, action: "exit",        shares: 10, price }
+Paper short     → POST { ticker, action: "sell_short",  shares: 10, price }
+Paper cover     → POST { ticker, action: "buy_to_cover",shares: 10, price }
 ```
 
-State is saved atomically (write to `.tmp` then `os.replace()`) after every trade, config change, or significant state mutation.
+The TP portfolio (`tp_positions`, `tp_short_positions`) tracks what TradersPost should hold, independent of paper positions.
 
 ---
 
-## External APIs
+## Data Sources
 
-| API | Purpose | Rate Limit | Auth |
-|-----|---------|------------|------|
-| Finnhub | Real-time quotes, metrics, short interest | 60/min (55 used) | API key |
-| FMP | Movers, gainers, losers, earnings calendar | Varies by plan | API key |
-| yfinance | Historical candles, chart data | No hard limit | None |
-| Anthropic | Claude Sonnet + Haiku for AI analysis | Token-based billing | API key |
-| xAI | Grok (fallback) | Token-based billing | API key |
-| TradersPost | Trade mirroring via webhook | N/A | Webhook URL |
-| Telegram | Bot commands + notifications | ~30 msg/sec | Bot token |
+| Source | Purpose | Auth |
+|--------|---------|------|
+| Yahoo Finance (yfinance) | 1-minute OHLCV bars — entries, stop management, OR collection | None |
+| FMP | Real-time quotes, PDC data | `FMP_API_KEY` |
+| TradersPost | Live trade mirroring via webhook | `TRADERSPOST_WEBHOOK_URL` |
+| Telegram | Bot commands + notifications | `TELEGRAM_TOKEN`, `TELEGRAM_TP_TOKEN` |
 
 ---
 
-## Monitoring & Observability
+## Environment Variables
 
-- **Logging:** Dual handler — file (`stock_spike_monitor.log`) + stdout
-- **Investment log:** Separate file (`investment.log`) for all paper trades
-- **Railway logs:** All stdout/stderr visible in Railway dashboard
-- **Health indicators in logs:**
-  - `"Scanning X stocks"` every ~60 seconds = healthy
-  - Finnhub 429 errors (a few per cycle) = normal
-  - Missing scan messages for 5+ minutes = problem
-  - Python tracebacks or ERROR-level messages = investigate
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_TOKEN` | Yes | Main Telegram bot token |
+| `CHAT_ID` | Yes | Main Telegram chat/group ID |
+| `TELEGRAM_TP_TOKEN` | No | Separate bot token for TP bot |
+| `TELEGRAM_TP_CHAT_ID` | No | TP bot chat ID |
+| `TRADERSPOST_WEBHOOK_URL` | No | TradersPost webhook URL |
+| `TRADERSPOST_ENABLED` | No | `true` to activate webhook sends (default: `false`) |
+| `FMP_API_KEY` | No | FMP API key for PDC/quote data |
+| `PAPER_STATE_PATH` | No | Path for paper state file (default: `paper_state.json`) |
+| `DAILY_LOSS_LIMIT` | No | Realized P&L circuit breaker (default: `-500`) |
+
+---
+
+## MarketMode Classifier
+
+`_refresh_market_mode()` runs each scan cycle and classifies the session into a mode (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.) based on day P&L, breadth, and RSI observations. **This is observation-only in v3.4.36 — no trading parameters are read from it yet.** See `/mode` for the live output.
+
+---
+
+## Dashboard
+
+`dashboard_server.py` is imported at startup and runs an HTTP server in a background thread, serving a live status dashboard at the Railway URL. The main Telegram `/dashboard` command sends a text snapshot directly to the chat.
+
+---
+
+## Deployment
+
+The bot runs on [Railway](https://railway.app):
+
+1. Connect the GitHub repo to Railway.
+2. Set all required environment variables.
+3. Attach a Volume mount and set `PAPER_STATE_PATH` to a path on the volume (e.g., `/data/paper_state.json`) so state persists across deploys.
+4. Railway auto-builds and deploys on every push to `main`.
+
+**Logging:** dual handler — file (`stock_spike_monitor.log`) + stdout. All stdout/stderr visible in the Railway dashboard.
+
+---
+
+## Command Surface
+
+See [COMMANDS.md](COMMANDS.md) for the full reference.

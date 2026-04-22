@@ -1,205 +1,146 @@
 # Command Reference
 
-All commands are available via the main Telegram bot. TradersPost-specific commands are also available on the separate TP bot (`@valstradebot_bot`).
+All commands are registered on both the main bot and the TP bot unless noted. The main bot routes to the paper portfolio; the TP bot routes to the TradersPost mirror portfolio. `/dashboard` shows both portfolios on either bot.
+
+Aliases `/positions` and `/or_now` remain registered but are not shown in the Telegram `/` menu.
 
 ---
 
-## Market Overview
+## Status and Monitoring
 
-| Command | Description |
-|---------|-------------|
-| `/overview` | Major indices (SPY, QQQ, DIA, IWM), sector ETFs, Fear & Greed Index, VIX, and an AI market read |
-| `/movers` | Top gainers, losers, and most active stocks from FMP |
-| `/crypto` | Live prices for BTC, ETH, SOL, DOGE, XRP |
-| `/macro` | Upcoming US macroeconomic events (CPI, Fed, NFP, FOMC) via AI |
-| `/earnings` | Earnings calendar for the next 7 days |
-| `/dashboard` | High-DPI (220 DPI) visual market snapshot — indices, paper portfolio, positions, AI commentary. Sent as a document for crisp mobile viewing |
-
----
-
-## Stock Analysis
-
-| Command | Description |
-|---------|-------------|
-| `/price TICK` | Live quote with day range, 52-week range, volume, market cap |
-| `/chart TICK` | Intraday price + volume chart (yfinance data) |
-| `/chart TICK 5d` | Multi-day chart (supports `1d`, `5d`, `1mo`, `3mo`, `6mo`, `1y`) |
-| `/analyze TICK` | AI-powered deep analysis: catalysts, risks, entry/exit levels, setup quality |
-| `/compare TICK1 TICK2` | Side-by-side AI comparison of two stocks |
-| `/rsi TICK` | RSI, Bollinger Bands, bandwidth, squeeze score |
-| `/news TICK` | Latest headlines with sentiment scoring and source timestamps |
+| Command | Args | Description |
+|---------|------|-------------|
+| `/dashboard` | — | Full snapshot: portfolio (cash, positions, day P&L), index filters (SPY/QQQ vs PDC), today's OR levels for every ticker. |
+| `/status` | — | Open long and short positions with live prices, unrealized P&L per position, stop levels, day P&L, portfolio allocation pie chart. |
+| `/positions` | — | Alias for `/status`. |
+| `/perf` | `[date \| N]` | Performance stats: win rate, avg win/loss, streak, long vs short breakdown. No arg = all-time. `7` = last 7 days. `Apr 17` = single day. |
+| `/mode` | — | Current MarketMode classification (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.), breadth/RSI observer readings, and mode profile. Observation-only in v3.4.36 — no parameters are read from it yet. |
+| `/monitoring` | `[pause \| resume]` | Show scanner status, or pause/resume new-entry scanning. Position management (stops, trailing) continues while paused. No arg = show status. |
+| `/proximity` | — | Read-only diagnostic showing each ticker's current price gap to OR_High (long), OR_Low (short), and PDC. Includes SPY/QQQ polarity check. Refreshable via inline button. |
 
 ---
 
-## Alerts & Watchlist
+## Positions and Trades
 
-| Command | Description |
-|---------|-------------|
-| `/spikes` | Recent spike alerts (3%+ moves) |
-| `/alerts` | All alerts fired today |
-| `/squeeze` | Top squeeze candidates across monitored tickers |
-| `/setalert TICK $PRICE` | Set a custom price alert (e.g., `/setalert NVDA 150`) |
-| `/myalerts` | View all active custom price alerts |
-| `/delalert TICK` | Remove all price alerts for a ticker |
-| `/watchlist show` | Show your personal watchlist |
-| `/watchlist add TICK` | Add a ticker to your watchlist |
-| `/watchlist remove TICK` | Remove a ticker from your watchlist |
-| `/watchlist scan` | Scan all watchlist tickers for signals |
+| Command | Args | Description |
+|---------|------|-------------|
+| `/log` | `[date]` | Completed trades (entries and exits) in chronological order for the given date. Default = today. Accepts `YYYY-MM-DD` or natural formats like `Apr 17`. |
+| `/replay` | `[date]` | Trade timeline with running cumulative P&L. Same date parsing as `/log`. |
+| `/dayreport` | `[date]` | Completed trades with P&L summary and a per-trade bar chart. Default = today. |
+| `/eod` | — | Re-send the EOD report for today on demand. |
+| `/trade_log` | — | Last 10 rows from the persistent append-only `trade_log.jsonl` file. |
+| `/near_misses` | — | Recent breakouts that cleared the price condition but were declined by the volume gate. Diagnostic only — no entries were made. |
 
 ---
 
-## Paper Trading ($100k Simulated Portfolio)
+## Configuration and Control
 
-The paper trading engine runs automatically every scan cycle (~1 minute). It uses an 11-factor composite signal (max 150 pts) to decide buys, and trailing stops / take-profit / hard stops / AVWAP stops for exits.
-
-AVWAP (Anchored VWAP) acts as both an entry gate (only buys when price is above AVWAP) and a stop-loss trigger (exits if price drops below AVWAP after reclaiming it).
-
-| Command | Description |
-|---------|-------------|
-| `/paper` | Portfolio overview: cash, positions, total value, P&L |
-| `/paper positions` | All open positions with live P&L per ticker |
-| `/paper trades` | Trades executed today |
-| `/paper history` | Historical win rate, average P&L, total trades |
-| `/paper signal TICK` | Show the full 11-factor signal breakdown for a ticker |
-| `/paper chart` | Intraday portfolio value chart |
-| `/paper log` | Download the full trade log file |
-| `/paper reset` | Reset portfolio to $100k (requires confirmation) |
-| `/perf` | Performance dashboard: win rate, avg gain/loss, Sharpe-like stats |
-| `/overnight` | Gap risk analysis on current holdings |
-
-### Configurable Parameters
-
-Use `/set` to view and adjust trading parameters:
-
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| `threshold` | 65 | 40–100 | Minimum signal score to open a position |
-| `stop_loss` | 6% | 3–12% | Hard stop loss from entry price |
-| `take_profit` | 10% | 5–20% | Take profit target |
-| `trailing` | 3% | 2–8% | Trailing stop from high-water mark |
-| `max_positions` | 8 | 3–15 | Maximum simultaneous open positions |
-
-Example: `/set threshold 70` or `/set trailing 4`
-
-Parameters auto-adjust based on market conditions (Fear & Greed Index + VIX) via adaptive rebalancing. Manual overrides via `/set` persist across deploys.
+| Command | Args | Description |
+|---------|------|-------------|
+| `/reset` | — | Interactive reset with an inline confirm button (60-second expiry). Resets portfolio to $100,000. |
+| `/retighten` | — | Force-run the 0.75% stop cap and breakeven ratchet across every open position right now. Positions with stops already breached by the retightened level are exited immediately (`RETRO_CAP`). |
+| `/tp_sync` | — | **TP bot only.** TradersPost broker sync status: webhook enabled/disabled, orders sent/OK/failed, open TP long and short positions, recent webhook outcomes, unsynced exits needing manual reconciliation. On the main bot, `/tp_sync` redirects to the TP bot. |
 
 ---
 
-## Options
+## Ticker Management
 
-| Command | Description |
-|---------|-------------|
-| `/vixalert` | Show VIX put-selling alert status and configuration |
-| `/vixalert check` | Manually scan for put premiums now (regardless of VIX level) |
+The primary interface is `/ticker`. The standalone commands are back-compat aliases — they still work but are not in the Telegram menu.
 
-When VIX crosses the threshold (default: 33), the bot automatically sends put-selling setups for GOOG, NVDA, AMZN, and META — including strike, expiry, and estimated premium.
+| Command | Args | Description |
+|---------|------|-------------|
+| `/ticker` | — | Show the current tracked universe (same as `list`). |
+| `/ticker list` | — | Show tracked tickers and pinned index tickers (SPY, QQQ). |
+| `/ticker add SYM` | `SYM` | Add a ticker to the tradeable universe. Primes PDC, OR, RSI, and 1-minute bars. |
+| `/ticker remove SYM` | `SYM` | Remove a ticker. SPY and QQQ are pinned and cannot be removed. |
+| `/tickers` | — | Alias: show current ticker list. |
+| `/add_ticker SYM` | `SYM` | Alias for `/ticker add SYM`. |
+| `/remove_ticker SYM` | `SYM` | Alias for `/ticker remove SYM`. |
 
 ---
 
-## Backtesting
+## Market Data
 
-The bot continuously logs all signal evaluations to `signal_log.jsonl` during market hours. This data powers the backtest engine.
+| Command | Args | Description |
+|---------|------|-------------|
+| `/price TICK` | `TICK` | Live quote from Yahoo Finance for any ticker. Shows current price, long/short entry eligibility (vs PDC and OR levels). |
+| `/orb` | `[recover]` | Today's OR_High, OR_Low, and PDC for every tracked ticker. `/orb recover` re-collects any missing ORs (equivalent to `/or_now`). |
+| `/or_now` | — | Manually re-collect OR data for tickers missing `or_high`. Alias: `/orb recover`. |
 
-### In-Bot Command
+---
+
+## Strategy Reference
 
 | Command | Description |
 |---------|-------------|
-| `/backtest` | Run a 10-day backtest with current bot parameters |
-| `/backtest 30` | Specify look-back period (1–60 days) |
-| `/backtest 10 tp=8 sl=5` | Custom take-profit (8%) and stop-loss (5%) |
-| `/backtest 10 trail=2.5 threshold=80` | Custom trailing stop and signal threshold |
-| `/backtest 10 max_pos=5` | Limit maximum simultaneous positions |
+| `/strategy` | Compact inline strategy summary: long and short entry conditions, stop and ladder for both sides, Eye-of-the-Tiger exits, Regime Shield. |
+| `/algo` | Algorithm summary (same content as `/strategy`) plus the full `StockSpikeMonitor_Algorithm_v3.4.36.pdf` sent as a document. PDF is fetched from the repo if not present locally. |
+| `/version` | Current bot version (`v3.4.36`) and release notes. |
 
-Overridable parameters: `tp`, `sl`, `trail`, `threshold`, `max_pos`. Values > 1 are treated as percentages (e.g., `tp=10` = 10%).
+---
 
-The replay engine uses logged signal scores (no API calls needed) and applies your custom trading rules. Generates a dark-themed PDF report with equity curve, KPIs, trade stats, exit reasons, drawdown, per-ticker P&L, and best/worst trades.
+## System and Debug
 
-### Standalone Script
+| Command | Description |
+|---------|-------------|
+| `/help` | Full command menu grouped by category, rendered in monospace code block. |
+| `/menu` | Quick tap-grid of daily-use commands as inline buttons. Includes an "Advanced" button for less-common commands. |
+| `/test` | Health check: runs `_fire_system_test()`, checks OR data, PDC data, 1-minute bars for all tickers, and reports any gaps. |
 
-```bash
-python backtest.py                    # default 30 trading days
-python backtest.py --days 60          # custom look-back period
-python backtest.py --capital 50000    # custom starting capital
+---
+
+## Command Groups Summary
+
 ```
+Portfolio
+  /dashboard        Full snapshot
+  /status           Positions + P&L
+  /perf [date]      Performance stats
 
-The standalone script fetches historical data from APIs (yfinance, Finnhub) and simulates the full signal engine. Outputs `backtest_report.pdf`.
+Market Data
+  /price TICK       Live quote
+  /orb              Today's OR levels
+  /orb recover      Recollect missing ORs
+  /proximity        Gap to breakout
 
-### Signal Logger
+Reports
+  /dayreport [date] Trades + P&L
+  /log [date]       Trade log
+  /replay [date]    Timeline
+  /eod              EOD report
 
-Every scan cycle, the bot logs a complete snapshot per ticker to `signal_log.jsonl`:
-- All indicator values (RSI, Bollinger, MACD, volume, squeeze, slope, SMA5/20, AVWAP, news sentiment, AI signals)
-- Composite score and signal detail
-- Market context (Fear & Greed, VIX, active threshold, trading session)
-- BUY and SELL actions with full trade details
+System
+  /monitoring       Pause/resume scan
+  /test             Health check
+  /mode             Market regime
+  /menu             Quick tap menu
 
-Auto-trimmed to 30 days on morning reset. At ~3 MB/day, 30 days of data provides ~60,000 signal snapshots.
+Reference
+  /strategy         Strategy summary
+  /algo             Algorithm PDF
+  /version          Release notes
 
----
-
-## AI & Research Tools
-
-| Command | Description |
-|---------|-------------|
-| `/aistocks` | AI-curated stock picks with conviction scores (1–10) and category tags. Refreshes 4x daily |
-| `/ask <question>` | Free-form chat with Claude. Supports multi-turn conversation |
-| `/prep` | AI-generated prep for the next trading session: key levels, events, strategy |
-| `/wlprep` | Deep scan of your watchlist with AI analysis per ticker |
-
----
-
-## TradersPost / Shadow Trading
-
-These commands are available on the separate TP bot. If no separate TP bot token is set, they fall back to the main bot.
-
-| Command | Description |
-|---------|-------------|
-| `/shadow` | Toggle shadow mode on/off. When ON, paper trades are mirrored to TradersPost |
-| `/tp` | TradersPost status: mode, webhook, orders sent/success/failed, shadow portfolio summary |
-| `/tppos` | Shadow portfolio positions with P&L |
-| `/settlement` | T+1 settlement status: settled cash, unsettled funds, pending items |
-| `/tpsync reset` | Reset shadow portfolio to match paper portfolio |
-| `/tpsync status` | Side-by-side comparison of paper vs. shadow positions |
-| `/tpedit add TICK QTY PRICE` | Manually add a position to the shadow portfolio |
-| `/tpedit remove TICK` | Remove a position from the shadow portfolio |
-| `/tpedit shares TICK QTY` | Adjust share count for a shadow position |
-| `/tpedit cash AMOUNT` | Set shadow portfolio cash balance |
-| `/tpedit clear` | Clear the entire shadow portfolio |
-
----
-
-## Bot Management
-
-| Command | Description |
-|---------|-------------|
-| `/list` | Show all monitored tickers (core + dynamically added) |
-| `/set` | View or adjust trading configuration |
-| `/monitoring pause` | Pause spike scanning (scheduled reports continue) |
-| `/monitoring resume` | Resume spike scanning |
-| `/monitoring status` | Show scanner status |
-| `/version` | Show current version and release notes |
-| `/help` | Full command menu |
+Admin
+  /reset            Reset portfolio
+  /retighten        Force-cap all stops
+  /near_misses      Recent declined breakouts
+  /trade_log        Last 10 persistent log rows
+  /tp_sync          TP broker sync (TP bot)
+  /ticker list/add/remove   Ticker universe
+```
 
 ---
 
 ## Scheduled Automated Messages
 
-All times are Central Time (CT).
+All times ET. Display in CDT where noted.
 
-| Time | Day | Message |
-|------|-----|---------|
-| 7:00 AM | Weekdays | AI watchlist refresh (pre-market mode) |
-| 7:05 AM | Weekdays | Daily candle data refresh |
-| 8:00 AM | Weekdays | Pre-market dashboard |
-| 8:30 AM | Weekdays | Morning briefing + dynamic ticker merge |
-| 8:31 AM | Weekdays | Paper trading morning report |
-| 10:30 AM | Weekdays | AI watchlist refresh (intraday) |
-| 12:00 PM | Weekdays | Midday dashboard |
-| 12:30 PM | Weekdays | AI watchlist refresh (intraday) |
-| 2:30 PM | Weekdays | AI watchlist refresh (intraday) |
-| 3:00 PM | Weekdays | Daily close summary |
-| 3:01 PM | Weekdays | Paper trading end-of-day report |
-| 3:05 PM | Weekdays | Signal effectiveness analysis |
-| 4:05 PM | Weekdays | Daily P&L summary |
-| 6:00 PM | Weekdays | Evening recap |
-| 9:00 AM | Saturday | Weekend prep session |
-| 6:00 PM | Sunday | Weekly digest |
+| Time ET | Day | Message |
+|---------|-----|---------|
+| 09:20 | Weekdays | System test (8:20 CT) |
+| 09:31 | Weekdays | System test (8:31 CT) |
+| 09:35 | Weekdays | OR collection (`collect_or()`) |
+| 09:36 | Weekdays | OR morning card — OR_High, OR_Low, PDC for all tickers |
+| 15:55 | Weekdays | EOD force-close all positions |
+| 15:58 | Weekdays | EOD report |
+| 18:00 | Sunday | Weekly digest |
