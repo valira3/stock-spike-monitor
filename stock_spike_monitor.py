@@ -7194,7 +7194,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send algorithm summary + downloadable PDF reference."""
     SEP = "\u2500" * 34
     summary = (
-        "\U0001f4d8 ALGORITHM REFERENCE v2.9\n"
+        "\U0001f4d8 ALGORITHM REFERENCE v3.4.36\n"
         f"{SEP}\n"
         "Two independent strategies:\n\n"
         "\U0001f4c8 ORB LONG BREAKOUT\n"
@@ -7263,8 +7263,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v2.9.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v2.9",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.36.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.36",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)

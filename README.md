@@ -1,119 +1,154 @@
 # Stock Spike Monitor
 
-A real-time stock scanner and paper trading bot for Telegram, powered by Claude AI. Monitors 60+ stocks every minute, fires spike alerts, runs a $100k paper portfolio with 10-factor signal scoring, and mirrors trades to a live brokerage via TradersPost.
+ORB + Wounded Buffalo Telegram trading bot. Runs two independent intraday strategies — a long Opening Range Breakout and a short Wounded Buffalo breakdown — across a 9-ticker universe, with a $100k paper portfolio and an optional TradersPost live mirror.
 
-## Features
+Current version: **v3.4.36**
 
-- **Real-Time Scanner** — Polls Finnhub every 60 seconds for price/volume changes across 30 core tickers + dynamically added movers
-- **Spike Alerts** — Notifies on 3%+ moves with 15-min cooldown and 1% escalation threshold
-- **Paper Trading** — Fully automated $100k simulated portfolio with trailing stops, take-profit, and adaptive thresholds
-- **11-Factor Signal Scoring** — RSI, Bollinger Bands, MACD, volume, squeeze, slope, AI direction, AI watchlist conviction, multi-day trend, news sentiment, and AVWAP (max 150 pts)
-- **Shadow Trading** — Mirrors paper trades to a real brokerage account via TradersPost webhooks
-- **T+1 Settlement Tracking** — Cash account aware; tracks settled vs. unsettled funds
-- **AI Integration** — Claude Sonnet for deep analysis, Claude Haiku for high-frequency scoring; Grok as fallback
-- **VIX Put-Selling Alerts** — Auto-alerts when VIX crosses 33 with estimated put premiums on GOOG/NVDA/AMZN/META
-- **Backtesting** — `/backtest` command replays logged signal data with custom parameters and generates a PDF report. Standalone `backtest.py` script for historical backtests against API data
-- **Persistent Signal Logger** — Every signal evaluation is logged to `signal_log.jsonl` (all indicators, scores, market context, trades) for future backtesting
-- **AVWAP Integration** — Anchored VWAP as entry gate (only buy above AVWAP) and stop-loss trigger (exit if price loses AVWAP)
-- **Scheduled Reports** — Morning briefing, pre-market dashboard, midday update, close summary, evening recap, weekly digest, Saturday prep
-- **Market Data** — Macro calendar, earnings, crypto, movers, sector overview, news sentiment
-- **Charts** — Intraday price/volume charts, RSI/Bollinger charts, portfolio value charts, performance dashboards
+---
+
+## Strategies
+
+**Long — ORB Breakout:** enters when the first 1-minute bar to close above the 5-minute Opening Range high occurs, the stock is above its Previous Day Close, and both SPY and QQQ are above their PDC.
+
+**Short — Wounded Buffalo:** enters when the first 1-minute bar to close below the OR low occurs, the stock is below its PDC (the "wounded" condition), and both SPY and QQQ are below their PDC.
+
+Both strategies use limit orders, 10 shares per entry, and share a 5-entry-per-ticker daily cap.
+
+---
+
+## Ticker Universe
+
+```
+AAPL  MSFT  NVDA  TSLA  META  GOOG  AMZN  AVGO  QBTS
+```
+
+SPY and QQQ are index filters only (never traded). The universe is editable at runtime via `/ticker add` and `/ticker remove`.
+
+---
+
+## Data Source
+
+All 1-minute OHLCV bars come from **Yahoo Finance**. PDC (Previous Day Close) is fetched from FMP. No Finnhub, no AVWAP, no VIX put-selling.
+
+---
+
+## PDC Polarity Anchor
+
+PDC is the single price anchor across every decision in the bot: stock entry gates (price vs PDC), index filters (SPY/QQQ vs PDC), and the Sovereign Regime Shield ejects. As of v3.4.34, Anchored VWAP has been fully removed.
+
+---
+
+## 4-Layer Stop Chain
+
+Every open position is protected by four stacking layers, long or short. Each layer can only tighten the stop — never loosen it.
+
+> **Adaptive logic only makes things MORE conservative than baseline, never looser.**
+
+| Layer | When | Long action |
+|-------|------|-------------|
+| 1 — Structural baseline | Entry time | `OR_High − $0.90` — permanent floor |
+| 2 — 0.75% cap (v3.4.21) | Every scan | `max(baseline, entry × 0.9925)` |
+| 3 — Breakeven ratchet (v3.4.25) | Every scan | At +0.50% peak, pull stop to entry |
+| 4 — Profit-lock ladder (v3.4.36) | Every scan | `peak × (1 − give_back%)`, shrinking: |
+
+```
+Peak gain    Long stop          Phase
+< 1.0%       initial hard stop  Bullet
+>= 1.0%      peak − 0.50%       Arm
+>= 2.0%      peak − 0.40%       Lock
+>= 3.0%      peak − 0.30%       Tight
+>= 4.0%      peak − 0.20%       Tighter
+>= 5.0%      peak − 0.10%       Harvest
+```
+
+Shorts mirror with `PDC + $0.90` baseline and `min(tier_stop, initial_stop)` clamping.
+
+---
+
+## Sovereign Regime Shield
+
+Four "Eye of the Tiger" exits fire on macro reversals:
+
+| Exit | Side | Trigger |
+|------|------|---------|
+| Red Candle | Longs | 1-min finalized close < session open or < PDC |
+| Lords Left | Longs | BOTH SPY AND QQQ 1-min finalized close < PDC |
+| Bull Vacuum | Shorts | BOTH SPY AND QQQ 1-min finalized close > PDC |
+| Polarity Shift | Shorts | 1-min finalized close > PDC |
+
+Lords Left and Bull Vacuum require **both** indices to cross simultaneously. Single-index divergence does not trigger an eject.
+
+---
+
+## Paper Portfolio + TradersPost Mirror
+
+The bot maintains a **paper portfolio** ($100k starting capital) and a parallel **TradersPost (TP) mirror portfolio**. Both are tracked side by side:
+
+- Paper trades report to the main Telegram group.
+- TP trades report privately via a separate TP bot.
+- Every paper trade fires a TradersPost webhook when `TRADERSPOST_ENABLED=true`.
+
+---
+
+## Timing
+
+| Parameter | Value |
+|-----------|-------|
+| OR window | 09:30–09:35 ET (first 5 min) |
+| Entry window | 09:45 ET+ (15-min buffer) |
+| Scan interval | Every 60s, 09:35–15:55 ET |
+| EOD force-close | 15:55 ET |
+| State save | Every 5 min |
+
+---
+
+## Deployment
+
+Hosted on [Railway](https://railway.app). Auto-deploys on every push to `main`.
+
+```bash
+# Local development
+pip install yfinance requests pandas pytz python-telegram-bot matplotlib reportlab
+
+export TELEGRAM_TOKEN="..."
+export CHAT_ID="..."
+export FMP_API_KEY="..."           # PDC + quote data
+export TRADERSPOST_WEBHOOK_URL="..." # optional — live mirror
+export TRADERSPOST_ENABLED="true"    # optional — activates webhook sends
+export PAPER_STATE_PATH="/data/paper_state.json"  # Railway Volume path
+
+python stock_spike_monitor.py
+```
+
+**Railway setup:**
+1. Connect GitHub repo to Railway.
+2. Set all environment variables.
+3. Attach a Volume and set `PAPER_STATE_PATH` to a path on the volume so state persists across deploys.
+4. Railway auto-builds and deploys on push to `main`.
+
+---
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
 | Language | Python 3.11+ |
-| Bot Framework | python-telegram-bot |
-| AI (primary) | Anthropic Claude (Sonnet + Haiku) |
-| AI (fallback) | xAI Grok |
-| Market Data | Finnhub (real-time quotes), FMP (movers/gainers), yfinance (charts/candles) |
-| Brokerage Bridge | TradersPost (webhook-based) |
+| Bot framework | python-telegram-bot |
+| Market data | Yahoo Finance (1-min bars), FMP (PDC/quotes) |
+| Brokerage bridge | TradersPost (webhook) |
 | Charts | matplotlib |
-| Hosting | Railway (auto-deploys from `main`) |
-| State | JSON file on Railway Volume mount |
+| Hosting | Railway |
+| State | JSON files on Railway Volume |
 
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `FINNHUB_TOKEN` | Yes | Finnhub API key for real-time quotes |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
-| `TELEGRAM_TOKEN` | Yes | Main Telegram bot token |
-| `CHAT_ID` | Yes | Main Telegram chat/group ID |
-| `FMP_API_KEY` | Yes | Financial Modeling Prep API key |
-| `TRADERSPOST_WEBHOOK_URL` | No | TradersPost webhook for live trade mirroring |
-| `TELEGRAM_TP_TOKEN` | No | Separate Telegram bot token for TradersPost commands |
-| `TELEGRAM_TP_CHAT_ID` | No | TradersPost Telegram chat ID |
-| `GROK_API_KEY` | No | xAI Grok API key (fallback only) |
-| `PAPER_STATE_PATH` | No | Path for paper trading state file (default: `paper_state.json`) |
-| `PAPER_LOG_PATH` | No | Path for investment log (default: `investment.log`) |
-
-## Deployment
-
-The bot is deployed on [Railway](https://railway.app) and auto-deploys on every push to `main`.
-
-### Railway Setup
-
-1. Connect GitHub repo to Railway
-2. Set all environment variables above
-3. Attach a **Volume** and set `PAPER_STATE_PATH` to a path on the volume (e.g., `/data/paper_state.json`) so state persists across deploys
-4. Railway auto-builds and deploys on push
-
-### Local Development
-
-```bash
-# Install dependencies
-pip install yfinance requests pandas pytz anthropic openai python-telegram-bot matplotlib
-
-# Set environment variables
-export FINNHUB_TOKEN="..."
-export ANTHROPIC_API_KEY="..."
-export TELEGRAM_TOKEN="..."
-export CHAT_ID="..."
-export FMP_API_KEY="..."
-
-# Run
-python stock_spike_monitor.py
-```
-
-## Architecture
-
-The bot is a single-file Python application (~7,700 lines). See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed internals.
-
-**High-level flow:**
-
-```
-Scheduler (1-min loop)
-  ├── check_stocks() → scan all tickers → spike alerts + paper trading + signal logging
-  ├── paper_scan() → evaluate buy/sell for each position (AVWAP gate + AVWAP stop)
-  ├── check_vix_put_alert() → VIX threshold monitoring
-  └── Scheduled reports (morning, midday, close, evening, weekly)
-
-Telegram Bot (async, polling)
-  ├── Main bot: all market/paper/analysis commands
-  └── TP bot: shadow trading commands via DM
-```
-
-## Commands
-
-See [COMMANDS.md](COMMANDS.md) for the full command reference.
-
-**Quick overview:**
-
-- `/overview` — Market indices, sectors, AI read
-- `/paper` — Paper portfolio overview
-- `/analyze TICK` — AI catalyst/risk/setup analysis
-- `/chart TICK` — Intraday price + volume chart
-- `/backtest 10 tp=8 sl=5` — Replay logged signals with custom parameters, generates PDF
-- `/dashboard` — Visual market snapshot (220 DPI)
-- `/help` — Full command menu
+---
 
 ## Documentation
 
-- [COMMANDS.md](COMMANDS.md) — Full command reference with usage examples
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Internal architecture, signal scoring, scheduler, data flow
-- [CHANGELOG.md](CHANGELOG.md) — Version history from v1.0 to v1.19
+- [COMMANDS.md](COMMANDS.md) — Full command reference
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Internal architecture: scan loop, stop chain, regime shield, state persistence
+- [stock_spike_monitor_algo.pdf](stock_spike_monitor_algo.pdf) — Algorithm Reference Manual v3.4.36 (also available via `/algo` in the bot)
+
+---
 
 ## License
 
