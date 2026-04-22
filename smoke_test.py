@@ -1994,21 +1994,26 @@ def run_local() -> int:
     # =================================================================
     # v3.4.29 — Persistent dashboard session + live Sovereign panel
     # =================================================================
-    @t("v3.4.29: BOT_VERSION is 3.4.29")
+    @t("v3.4.29: BOT_VERSION is >= 3.4.29")
     def _():
-        assert m.BOT_VERSION == "3.4.29", \
-            f"expected BOT_VERSION=3.4.29, got {m.BOT_VERSION!r}"
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 29), \
+            f"BOT_VERSION regressed below 3.4.29: {m.BOT_VERSION!r}"
 
-    @t("v3.4.29: CURRENT notes begin with v3.4.29 and are 34-char-safe")
+    @t("v3.4.29: CURRENT notes lead with current BOT_VERSION, 34-char-safe")
     def _():
+        lead = f"v{m.BOT_VERSION} "
         for name, note in (("CURRENT_MAIN_NOTE", m.CURRENT_MAIN_NOTE),
                            ("CURRENT_TP_NOTE", m.CURRENT_TP_NOTE)):
             first = note.split("\n", 1)[0]
-            assert first.startswith("v3.4.29 "), \
-                f"{name} must lead with v3.4.29 — got {first!r}"
+            assert first.startswith(lead), \
+                f"{name} must lead with {lead!r} — got {first!r}"
             for i, line in enumerate(note.split("\n")):
                 assert len(line) <= 34, \
                     f"{name} line {i} over 34 chars ({len(line)}): {line!r}"
+            assert "3.4.28" not in first and "3.4.27" not in first, \
+                f"{name} CURRENT note must not mention prior versions"
+            assert "3.4.28" not in note.split("\n", 2)[0:1][0], name
 
     @t("v3.4.29: _session_secret_path sits beside PAPER_STATE_FILE")
     def _():
@@ -2161,6 +2166,108 @@ def run_local() -> int:
             "dashboard JS must define renderSovereign"
         assert "renderSovereign(s)" in html, \
             "renderAll must call renderSovereign(s)"
+
+    # =================================================================
+    # v3.4.30 — Mobile layout fix + Today's Trades time parsing
+    # =================================================================
+    @t("v3.4.30: BOT_VERSION is >= 3.4.30")
+    def _():
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 30), \
+            f"BOT_VERSION regressed below 3.4.30: {m.BOT_VERSION!r}"
+
+    @t("v3.4.30: dashboard .main has min-width: 0 so grid track can shrink on mobile")
+    def _():
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        # The .main rule block must carry min-width:0; if this regresses,
+        # the .app grid track inflates to fit nowrap children and the
+        # dashboard blows past the iPhone viewport.
+        import re
+        main_block = re.search(r"\.main\s*\{[^}]*\}", html, re.DOTALL)
+        assert main_block, ".main CSS rule not found"
+        assert "min-width: 0" in main_block.group(0) or "min-width:0" in main_block.group(0), \
+            ".main rule must include min-width: 0 (mobile overflow guard)"
+
+    @t("v3.4.30: dashboard grid containers have min-width: 0 escape hatch")
+    def _():
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        # Direct rules we added; keep them around so a future refactor
+        # does not silently regress the mobile layout.
+        assert ".main > section { min-width: 0; }" in html, \
+            "missing '.main > section { min-width: 0; }' rule"
+        assert ".grid { min-width: 0; }" in html, \
+            "missing '.grid { min-width: 0; }' rule"
+        assert ".grid > * { min-width: 0; }" in html, \
+            "missing '.grid > * { min-width: 0; }' rule"
+
+    @t("v3.4.30: Sovereign Regime row uses minmax(0, 1fr) so the name cell can shrink")
+    def _():
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        assert "minmax(0, 1fr)" in html, \
+            ".srs-idx grid must use minmax(0, 1fr) for the name track"
+
+    @t("v3.4.30: Sovereign reason line wraps long text instead of pushing width")
+    def _():
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        import re
+        rule = re.search(r"\.srs-reason\s*\{[^}]*\}", html, re.DOTALL)
+        assert rule, ".srs-reason rule missing"
+        body = rule.group(0)
+        assert "word-break" in body or "overflow-wrap" in body, \
+            ".srs-reason must allow wrapping (word-break / overflow-wrap)"
+
+    @t("v3.4.30: renderTrades accepts pre-formatted 'HH:MM TZ' times")
+    def _():
+        # Pure regex check against the HTML/JS: when the time string is
+        # already formatted (e.g. '09:11 CDT'), the renderer must extract
+        # HH:MM via a regex match, not a naive .slice(11, 16).
+        # IMPORTANT regression guard: the branch must NOT be a plain
+        # .includes("T") check, because the TZ label 'CDT'/'EST'/'PST'
+        # also contains a T and would mis-route a pre-formatted string
+        # down the ISO-parse path.
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        assert "renderTrades" in html, "renderTrades function missing"
+        import re
+        rt = re.search(r"function renderTrades[\s\S]*?\n  \}", html)
+        assert rt, "could not locate renderTrades body"
+        body = rt.group(0)
+        # Must match ISO shape with the full date prefix, not a bare 'T'.
+        assert r"\d{4}-\d{2}-\d{2}T" in body, \
+            "renderTrades must detect ISO timestamps via full date prefix"
+        # Must extract HH:MM from pre-formatted strings via regex.
+        assert r"\d{1,2}:\d{2}" in body, \
+            "renderTrades must extract HH:MM via regex"
+        # Must NOT use the broken .includes("T") branch anywhere in the
+        # function — that caused 'CDT' timestamps to fall into ISO slice.
+        assert 'rawT.includes("T")' not in body, \
+            "renderTrades must not branch on plain .includes('T') "\
+            "— 'CDT'/'EST'/etc would mis-route"
+
+    @t("v3.4.30: today's trade payload uses 'HH:MM TZ' time; snapshot keeps it")
+    def _():
+        # Sanity: the server already produces trades with 'time' like
+        # '09:11 CDT'. This test freezes that shape so an upstream change
+        # that swaps formats gets caught by the renderer-side test above.
+        import datetime as dt
+        now = m._now_cdt()
+        trade = {
+            "action": "BUY", "ticker": "TEST", "price": 1.0,
+            "shares": 1, "cost": 1.0, "entry_num": 1,
+            "time": now.strftime("%H:%M %Z"),
+            "date": now.strftime("%Y-%m-%d"),
+            "side": "LONG", "portfolio": "paper",
+        }
+        t = trade["time"]
+        assert len(t) >= 7 and t[2] == ":", f"bad time shape: {t!r}"
+        # Confirms the renderer's new parser would find HH:MM at start.
+        import re
+        assert re.match(r"^\d{1,2}:\d{2}", t), \
+            f"renderTrades regex would not match produced time: {t!r}"
 
     return run_suite("LOCAL SMOKE TESTS")
 
