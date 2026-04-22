@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.30"
+BOT_VERSION = "3.4.31"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,24 +55,29 @@ BOT_VERSION = "3.4.30"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.30 \u2014 Mobile dashboard\n"
-    "layout fix + Today's\n"
-    "Trades time display.\n"
+    "v3.4.31 \u2014 Richer Today's\n"
+    "Trades card on the\n"
+    "dashboard.\n"
     "\n"
-    "Cards no longer overflow\n"
-    "the iPhone viewport: the\n"
-    "app grid track now lets\n"
-    "nowrap content shrink.\n"
+    "Each row now shows cost\n"
+    "on BUY fills and realized\n"
+    "P&L dollars + percent on\n"
+    "SELL fills, with colour.\n"
     "\n"
-    "Today's Trades table\n"
-    "shows the entry time\n"
-    "for pre-formatted and\n"
-    "ISO timestamps alike."
+    "Summary line at the top\n"
+    "of the card: opens,\n"
+    "closes, realized, and\n"
+    "win rate for the day.\n"
+    "\n"
+    "On phones each row\n"
+    "stacks onto two lines\n"
+    "instead of scrolling."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.30 \u2014 Dashboard mobile\n"
-    "layout fix; Today's Trades\n"
-    "now renders entry times."
+    "v3.4.31 \u2014 Dashboard Today's\n"
+    "Trades card now shows\n"
+    "cost, realized P&L, and\n"
+    "a daily summary header."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -83,6 +88,9 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.30 \u2014 Mobile layout\n"
+    "fix; Trades time display.\n"
+    "\n"
     "v3.4.29 \u2014 Persistent\n"
     "dashboard login + live\n"
     "Sovereign Regime panel.\n"
@@ -91,24 +99,20 @@ _MAIN_HISTORY_TAIL = (
     "Shield: SPY+QQQ 1m vs PDC.\n"
     "\n"
     "v3.4.27 \u2014 Persistent trade\n"
-    "log (JSONL) + /trade_log.\n"
-    "\n"
-    "v3.4.26 \u2014 Ratchet runs\n"
-    "through trail + dashboard\n"
-    "effective-stop diagnostic."
+    "log (JSONL) + /trade_log."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.30 \u2014 Mobile dashboard\n"
+    "fix; trade time display.\n"
     "v3.4.29 \u2014 Dashboard login\n"
     "persists across deploys.\n"
     "v3.4.28 \u2014 Sovereign Regime\n"
     "Shield (PDC eject).\n"
     "v3.4.27 \u2014 Persistent trade\n"
     "log + /trade_log.\n"
-    "v3.4.26 \u2014 Ratchet through\n"
-    "trail + TRAIL badge.\n"
     "/tp_sync for broker status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
