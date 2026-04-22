@@ -2220,7 +2220,7 @@ def run_local() -> int:
         assert "word-break" in body or "overflow-wrap" in body, \
             ".srs-reason must allow wrapping (word-break / overflow-wrap)"
 
-    @t("v3.4.30: renderTrades accepts pre-formatted 'HH:MM TZ' times")
+    @t("v3.4.30: trade time formatter accepts pre-formatted 'HH:MM TZ' times")
     def _():
         # Pure regex check against the HTML/JS: when the time string is
         # already formatted (e.g. '09:11 CDT'), the renderer must extract
@@ -2229,23 +2229,24 @@ def run_local() -> int:
         # .includes("T") check, because the TZ label 'CDT'/'EST'/'PST'
         # also contains a T and would mis-route a pre-formatted string
         # down the ISO-parse path.
+        # v3.4.31: the time parsing was extracted from renderTrades into
+        # a helper fmtTradeTime(rawT); the same invariants must hold.
         html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
         html = html_path.read_text(encoding="utf-8")
-        assert "renderTrades" in html, "renderTrades function missing"
+        assert "fmtTradeTime" in html, "fmtTradeTime helper missing"
         import re
-        rt = re.search(r"function renderTrades[\s\S]*?\n  \}", html)
-        assert rt, "could not locate renderTrades body"
-        body = rt.group(0)
+        fn = re.search(r"function fmtTradeTime\([\s\S]*?\n  \}", html)
+        assert fn, "could not locate fmtTradeTime body"
+        body = fn.group(0)
         # Must match ISO shape with the full date prefix, not a bare 'T'.
         assert r"\d{4}-\d{2}-\d{2}T" in body, \
-            "renderTrades must detect ISO timestamps via full date prefix"
+            "fmtTradeTime must detect ISO timestamps via full date prefix"
         # Must extract HH:MM from pre-formatted strings via regex.
         assert r"\d{1,2}:\d{2}" in body, \
-            "renderTrades must extract HH:MM via regex"
-        # Must NOT use the broken .includes("T") branch anywhere in the
-        # function — that caused 'CDT' timestamps to fall into ISO slice.
-        assert 'rawT.includes("T")' not in body, \
-            "renderTrades must not branch on plain .includes('T') "\
+            "fmtTradeTime must extract HH:MM via regex"
+        # Must NOT use the broken .includes("T") branch — 'CDT' has a T.
+        assert '.includes("T")' not in body, \
+            "fmtTradeTime must not branch on plain .includes('T') "\
             "— 'CDT'/'EST'/etc would mis-route"
 
     @t("v3.4.30: today's trade payload uses 'HH:MM TZ' time; snapshot keeps it")
@@ -2268,6 +2269,133 @@ def run_local() -> int:
         import re
         assert re.match(r"^\d{1,2}:\d{2}", t), \
             f"renderTrades regex would not match produced time: {t!r}"
+
+    # =================================================================
+    # v3.4.31 — Richer Today's Trades card
+    # =================================================================
+    @t("v3.4.31: BOT_VERSION is >= 3.4.31")
+    def _():
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 31), \
+            f"BOT_VERSION regressed below 3.4.31: {m.BOT_VERSION!r}"
+
+    @t("v3.4.31: dashboard carries trades summary header + realized chip")
+    def _():
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        # Summary line container above the rows.
+        assert 'id="trades-summary"' in html, \
+            "missing inline summary container (#trades-summary)"
+        # Chip in the card head that shows running realized $.
+        assert 'id="trades-realized"' in html, \
+            "missing realized-$ chip (#trades-realized)"
+        # Helper that computes {opens, closes, realized, win_rate, ...}.
+        assert "function computeTradesSummary" in html, \
+            "missing computeTradesSummary helper"
+
+    @t("v3.4.31: dashboard uses .trade-row grid rows instead of a <table>")
+    def _():
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        # New per-row DOM shape.
+        assert ".trade-row" in html, "missing .trade-row CSS"
+        assert ".trades-list" in html, "missing .trades-list CSS"
+        # Badge + tail cell classes emitted by renderTrades.
+        for cls in (".act-badge", ".act-buy", ".act-sell",
+                    ".trade-pnl", ".trade-cost"):
+            assert cls in html, f"missing CSS class {cls!r}"
+
+    @t("v3.4.31: desktop .trade-row grid-template-areas = 'time sym act qty price tail'")
+    def _():
+        import re
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        # Grab every .trade-row rule block and confirm at least one
+        # carries the desktop area string. Mobile overrides it inside
+        # a @media block which is tested separately below.
+        blocks = re.findall(r"\.trade-row\s*\{[^}]*\}", html)
+        assert blocks, "no .trade-row CSS blocks found"
+        assert any('"time sym act qty price tail"' in b for b in blocks), \
+            "desktop .trade-row must use grid-template-areas " \
+            "'time sym act qty price tail'"
+
+    @t("v3.4.31: mobile (≤640px) collapses .trade-row into stacked rows")
+    def _():
+        import re
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        # Pull the @media (max-width: 640px) block and confirm the
+        # .trade-row rule inside it switches to the 3-row area stack.
+        mq = re.search(
+            r"@media\s*\(\s*max-width:\s*640px\s*\)\s*\{[\s\S]*?\n  \}",
+            html,
+        )
+        assert mq, "could not locate @media (max-width: 640px) block"
+        body = mq.group(0)
+        assert ".trade-row" in body, \
+            ".trade-row override missing from 640px media query"
+        # Must redefine the grid areas so the single desktop row
+        # collapses onto multiple lines on phones.
+        assert '"time sym  act"' in body or '"time sym act"' in body, \
+            "mobile .trade-row should put time/sym/act on line 1"
+        assert "qty" in body and "tail" in body and "price" in body, \
+            "mobile .trade-row must still place qty / price / tail"
+        # Multi-line template-areas is the signal that the row stacked.
+        assert body.count('"') >= 4, \
+            "mobile .trade-row should use multi-line grid-template-areas"
+
+    @t("v3.4.31: renderTrades emits .trade-row markup — not a <table>")
+    def _():
+        import re
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        rt = re.search(r"function renderTrades[\s\S]*?\n  \}", html)
+        assert rt, "could not locate renderTrades body"
+        body = rt.group(0)
+        # New row class is emitted.
+        assert 'trade-row' in body, "renderTrades must emit .trade-row rows"
+        # BUY trailing cell is the cost; SELL is P&L with colour class.
+        assert "trade-cost" in body, \
+            "renderTrades must render .trade-cost on BUY rows"
+        assert "trade-pnl" in body, \
+            "renderTrades must render .trade-pnl on SELL rows"
+        # Colour-coded P&L via up/down helper classes.
+        assert '"up"' in body and '"down"' in body, \
+            "SELL P&L cell must carry up/down colour classes"
+        # Reads pnl and pnl_pct off the SELL trade payload.
+        assert "pnl_pct" in body, "renderTrades must use pnl_pct for SELLs"
+
+    @t("v3.4.31: computeTradesSummary counts opens/closes + sums realized")
+    def _():
+        import re
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        fn = re.search(r"function computeTradesSummary[\s\S]*?\n  \}", html)
+        assert fn, "could not locate computeTradesSummary body"
+        body = fn.group(0)
+        # Counts opens from BUY and closes from SELL.
+        assert '"BUY"' in body, "summary must branch on BUY"
+        assert '"SELL"' in body, "summary must branch on SELL"
+        # Sums realized P&L from the 'pnl' field (server-provided).
+        assert "t.pnl" in body, "summary must read t.pnl"
+        # Win-rate is wins / closes with P&L — must guard div-by-zero.
+        assert "wins" in body and ("have_pnl" in body or "win_rate" in body), \
+            "summary must compute win_rate"
+
+    @t("v3.4.31: renderTrades populates summary line + realized chip")
+    def _():
+        import re
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        rt = re.search(r"function renderTrades[\s\S]*?\n  \}", html)
+        assert rt, "could not locate renderTrades body"
+        body = rt.group(0)
+        assert "computeTradesSummary" in body, \
+            "renderTrades must call computeTradesSummary"
+        assert "trades-summary" in body, \
+            "renderTrades must write into #trades-summary"
+        assert "trades-realized" in body, \
+            "renderTrades must update the realized-$ header chip"
 
     return run_suite("LOCAL SMOKE TESTS")
 

@@ -184,6 +184,69 @@
   .side-long  { color: var(--up); font-weight: 600; }
   .side-short { color: var(--down); font-weight: 600; }
 
+  /* v3.4.31 — Today's Trades card: summary line + richer per-row
+     layout. Keep all visual changes confined to this block so the
+     row template stays a simple grid on desktop + mobile. */
+  #trades-realized { margin-left: auto; }
+  .trades-summary {
+    padding: 8px 14px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; gap: 4px 14px;
+    min-width: 0;
+  }
+  .trades-summary .ts-seg { white-space: nowrap; }
+  .trades-summary .ts-val { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums lining-nums; }
+  .trades-summary .ts-val.up   { color: var(--up); }
+  .trades-summary .ts-val.down { color: var(--down); }
+  .trades-summary .ts-val.na   { color: var(--text-dim); }
+
+  /* BUY/SELL chip in the action cell. Mirrors the TRAIL badge
+     language (small, pill-shaped) but uses long/short hues. */
+  .act-badge {
+    display: inline-flex; align-items: center;
+    padding: 1px 6px; border-radius: 999px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+    font-family: var(--sans);
+  }
+  .act-buy  { background: var(--up-dim);   color: var(--up); }
+  .act-sell { background: var(--down-dim); color: var(--down); }
+
+  /* Realized P&L cell — shows both $ and % on SELL rows, stacked
+     on phones via the row-collapse media block below. */
+  .trade-pnl   { font-family: var(--mono); text-align: right; white-space: nowrap; }
+  .trade-pnl .pnl-pct { color: var(--text-dim); font-size: 11px; margin-left: 4px; }
+  .trade-pnl.up   { color: var(--up); }
+  .trade-pnl.up   .pnl-pct { color: var(--up); opacity: 0.75; }
+  .trade-pnl.down { color: var(--down); }
+  .trade-pnl.down .pnl-pct { color: var(--down); opacity: 0.75; }
+  .trade-cost { font-family: var(--mono); text-align: right; color: var(--text-dim); white-space: nowrap; }
+
+  /* v3.4.31 — Today's Trades custom row grid (replaces <table> so we
+     can collapse cleanly on phones). Each row is a single grid with
+     named areas; mobile overrides the area template to stack. */
+  .trades-list { display: flex; flex-direction: column; min-width: 0; }
+  .trade-row {
+    display: grid;
+    grid-template-columns: 52px 1fr auto 40px auto auto;
+    grid-template-areas: "time sym act qty price tail";
+    align-items: center;
+    gap: 4px 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+    min-width: 0;
+  }
+  .trade-row:last-child { border-bottom: none; }
+  .trade-row:hover { background: var(--surface-2); }
+  .trade-row .tr-time  { grid-area: time;  font-family: var(--mono); color: var(--text-dim); font-size: 11.5px; }
+  .trade-row .tr-sym   { grid-area: sym;   font-weight: 600; min-width: 0; }
+  .trade-row .tr-act   { grid-area: act; }
+  .trade-row .tr-qty   { grid-area: qty;   font-family: var(--mono); color: var(--text-muted); text-align: right; }
+  .trade-row .tr-price { grid-area: price; font-family: var(--mono); color: var(--text); text-align: right; white-space: nowrap; }
+  .trade-row .tr-tail  { grid-area: tail;  font-family: var(--mono); text-align: right; white-space: nowrap; min-width: 90px; }
+
   /* v3.4.26 — TRAIL badge next to effective stop when trail is armed.
      Small, subdued, readable. The warn tone signals "active overlay",
      not danger. */
@@ -337,6 +400,25 @@
     .log { font-size: 10.5px; padding: 8px 12px; max-height: 200px; }
     .h-clock { display: none; }
     .key-val-grid { font-size: 11.5px; gap: 5px 12px; }
+
+    /* v3.4.31 — Today's Trades on phones: stack each row into two
+       lines so all fields remain visible without horizontal scroll.
+       Line 1: time · sym · action.  Line 2: qty · price · tail. */
+    .trade-row {
+      grid-template-columns: auto 1fr auto;
+      grid-template-areas:
+        "time sym  act"
+        ".    qty  tail"
+        ".    .    price";
+      gap: 2px 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+    .trade-row .tr-time { font-size: 11px; }
+    .trade-row .tr-qty  { text-align: left;  color: var(--text-dim); font-size: 11px; }
+    .trade-row .tr-price { text-align: right; }
+    .trade-row .tr-tail { min-width: 0; }
+    .trades-summary { font-size: 11px; gap: 2px 10px; padding: 7px 12px; }
   }
 
   /* Small phone (≤380px): tighter KPI text */
@@ -431,7 +513,12 @@
 
     <section class="grid grid-2">
       <div class="card">
-        <div class="card-head"><span class="card-title">Today's trades<span class="count" id="trades-count">· 0</span></span></div>
+        <div class="card-head">
+          <span class="card-title">Today's trades<span class="count" id="trades-count">· 0</span></span>
+          <span class="chip" id="trades-realized">—</span>
+        </div>
+        <!-- v3.4.31 — one-line daily summary sits above the rows. -->
+        <div class="trades-summary" id="trades-summary">—</div>
         <div class="card-body flush" id="trades-body">
           <div class="empty">No trades yet today.</div>
         </div>
@@ -693,49 +780,139 @@
     list.innerHTML = html;
   }
 
+  // v3.4.30 — time may already arrive pre-formatted as "09:11 CDT"
+  // (current server) or as an ISO-8601 string; accept both.
+  // NOTE: can't branch on .includes("T") because "CDT"/"EST" etc.
+  // contain T; branch on the ISO shape "YYYY-MM-DDTHH:MM" instead.
+  function fmtTradeTime(rawT) {
+    const s = (rawT || "").toString();
+    if (!s) return "—";
+    const iso = s.match(/^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/);
+    if (iso) return iso[1];
+    const hm = s.match(/^\d{1,2}:\d{2}/);
+    return hm ? hm[0] : s;
+  }
+
+  // v3.4.31 — compute the daily summary for the Today's Trades card:
+  // number of opens (BUY), closes (SELL), total realized P&L across
+  // closes, and win rate (wins / total closes). SELL rows carry a
+  // 'pnl' field from the server; missing values are skipped silently.
+  function computeTradesSummary(trades) {
+    let opens = 0, closes = 0, wins = 0, realized = 0, have_pnl = 0;
+    for (const t of (trades || [])) {
+      const act = (t.action || "").toUpperCase();
+      if (act === "BUY") opens += 1;
+      else if (act === "SELL") {
+        closes += 1;
+        if (typeof t.pnl === "number" && isFinite(t.pnl)) {
+          realized += t.pnl;
+          have_pnl += 1;
+          if (t.pnl > 0) wins += 1;
+        }
+      }
+    }
+    const win_rate = have_pnl > 0 ? (wins / have_pnl) : null;
+    return { opens, closes, wins, realized, have_pnl, win_rate };
+  }
+
+  // v3.4.31 — Today's Trades card.
+  // Desktop: one row per trade on a 6-col grid (time, sym, action
+  // chip, qty, price, trailing cell). Trailing cell shows cost on
+  // BUY rows (shares * price) and realized P&L ($ + %) on SELL rows.
+  // On phones the row collapses to two stacked lines (see 640px
+  // media block). Summary header sits above the rows; a chip in the
+  // card head shows the running realized P&L for the day.
   function renderTrades(s) {
     const trades = s.trades_today || [];
     $("trades-count").textContent = `· ${trades.length}`;
+    const summary = computeTradesSummary(trades);
+
+    // Header chip — running realized $.
+    const chip = $("trades-realized");
+    if (chip) {
+      if (summary.have_pnl > 0) {
+        chip.textContent = fmtUsd(summary.realized);
+        chip.className = "chip " + (summary.realized > 0 ? "chip-ok" : (summary.realized < 0 ? "chip-down" : "chip-neut"));
+      } else {
+        chip.textContent = "—";
+        chip.className = "chip chip-neut";
+      }
+    }
+
+    // Inline summary line above the table.
+    const sumEl = $("trades-summary");
+    if (sumEl) {
+      if (!trades.length) {
+        sumEl.innerHTML = '<span class="ts-seg">No fills yet today.</span>';
+      } else {
+        const realCls = summary.have_pnl === 0 ? "na"
+                      : (summary.realized > 0 ? "up" : (summary.realized < 0 ? "down" : ""));
+        const realTxt = summary.have_pnl === 0 ? "—" : fmtUsd(summary.realized);
+        const wrTxt   = summary.win_rate === null ? "—"
+                      : (Math.round(summary.win_rate * 100) + "%");
+        sumEl.innerHTML =
+          `<span class="ts-seg"><span class="ts-val">${summary.opens}</span> open${summary.opens===1?"":"s"}</span>` +
+          `<span class="ts-seg"><span class="ts-val">${summary.closes}</span> close${summary.closes===1?"":"s"}</span>` +
+          `<span class="ts-seg">realized <span class="ts-val ${realCls}">${realTxt}</span></span>` +
+          `<span class="ts-seg">win <span class="ts-val">${wrTxt}</span></span>`;
+      }
+    }
+
     const body = $("trades-body");
     if (!trades.length) {
       body.innerHTML = `<div class="empty">No trades yet today.</div>`;
       return;
     }
+
     const rows = trades.map((t) => {
-      // v3.4.30 — time may already arrive pre-formatted as "09:11 CDT"
-      // (current server) or as an ISO-8601 string; accept both.
-      // NOTE: can't branch on .includes("T") because "CDT"/"EST" etc.
-      // contain T; branch on the ISO shape "YYYY-MM-DDTHH:MM" instead.
-      const rawT = (t.time || t.entry_time || "").toString();
-      let tm = "—";
-      if (rawT) {
-        const iso = rawT.match(/^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/);
-        if (iso) {
-          tm = iso[1];
+      const tm   = fmtTradeTime(t.time || t.entry_time);
+      const act  = (t.action || "").toUpperCase();
+      const isBuy  = act === "BUY";
+      const isSell = act === "SELL";
+      const side  = t.side || "LONG";
+      const sym   = t.ticker || "—";
+      const shares = t.shares;
+      const px    = t.price ?? t.entry_price ?? t.exit_price;
+
+      // Action chip — BUY (green) / SELL (red). We keep LONG/SHORT
+      // colour coding on the symbol to avoid double-cueing.
+      const actCls = isSell ? "act-sell" : "act-buy";
+      const actLbl = act || (side === "SHORT" ? "SHORT" : "LONG");
+
+      // Trailing cell:
+      //   BUY  → cost (shares * price), subdued monospace
+      //   SELL → realized P&L with colour; $ amount + dim %
+      let tailHtml = "—";
+      if (isBuy) {
+        const cost = (typeof t.cost === "number" && isFinite(t.cost))
+          ? t.cost
+          : ((typeof shares === "number" && typeof px === "number") ? shares * px : null);
+        tailHtml = cost !== null
+          ? `<span class="trade-cost">${fmtUsd(cost)}</span>`
+          : `<span class="trade-cost">—</span>`;
+      } else if (isSell) {
+        const pnl   = (typeof t.pnl === "number" && isFinite(t.pnl)) ? t.pnl : null;
+        const pnlPct = (typeof t.pnl_pct === "number" && isFinite(t.pnl_pct)) ? t.pnl_pct : null;
+        if (pnl !== null) {
+          const pnlCls = pnl > 0 ? "up" : (pnl < 0 ? "down" : "");
+          const pctStr = pnlPct !== null ? ` <span class="pnl-pct">${fmtPct(pnlPct)}</span>` : "";
+          tailHtml = `<span class="trade-pnl ${pnlCls}">${fmtUsd(pnl)}${pctStr}</span>`;
         } else {
-          // Pre-formatted "09:11 CDT" — extract HH:MM prefix; keep raw if
-          // it is already a short display like "9:11".
-          const hm = rawT.match(/^\d{1,2}:\d{2}/);
-          tm = hm ? hm[0] : rawT;
+          tailHtml = `<span class="trade-pnl">—</span>`;
         }
       }
-      const side = t.side || "LONG";
-      const sideCls = side === "SHORT" ? "side-short" : "side-long";
-      const px = t.price ?? t.entry_price ?? t.exit_price;
-      return `<tr>
-        <td>${escapeHtml(tm)}</td>
-        <td><span class="ticker">${escapeHtml(t.ticker || "—")}</span></td>
-        <td><span class="${sideCls}">${side}</span></td>
-        <td class="right">${t.shares ?? "—"}</td>
-        <td class="right">${fmtPx(px)}</td>
-      </tr>`;
+
+      return `<div class="trade-row" data-act="${escapeHtml(act)}" data-sym="${escapeHtml(sym)}">
+        <span class="tr-time">${escapeHtml(tm)}</span>
+        <span class="tr-sym ticker">${escapeHtml(sym)}</span>
+        <span class="tr-act"><span class="act-badge ${actCls}">${escapeHtml(actLbl)}</span></span>
+        <span class="tr-qty">${shares ?? "—"}</span>
+        <span class="tr-price">${fmtPx(px)}</span>
+        <span class="tr-tail">${tailHtml}</span>
+      </div>`;
     }).join("");
-    body.innerHTML = `<table>
-      <thead><tr>
-        <th>Time</th><th>Sym</th><th>Side</th>
-        <th class="right">Qty</th><th class="right">Price</th>
-      </tr></thead>
-      <tbody>${rows}</tbody></table>`;
+
+    body.innerHTML = `<div class="trades-list">${rows}</div>`;
   }
 
   function renderObserver(s) {

@@ -4,6 +4,105 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.31 — Richer Today's Trades card (2026-04-22)
+
+### Why
+
+After v3.4.30 fixed the mobile layout regression, the Today's
+Trades card was finally visible on phones — but it still carried
+its original "thin log" design: one line per fill with just
+`time / sym / action / qty / price`. For a trader using the
+dashboard as the primary at-a-glance P&L view, that shape
+breaks down on two fronts:
+
+1. **No running scorecard.** The card showed fills but not the
+   resulting day. You couldn't tell at a glance how many trades
+   had opened, how many had closed, whether the day was net
+   green or red, or what the win rate was. Those numbers lived
+   only in the KPI strip (Day P&L) and required counting rows
+   to sanity-check.
+2. **Per-row data was too thin on closes.** SELL rows carried
+   the exit price but nothing about the trade outcome — no P&L
+   $, no P&L %, no colour cue. BUY rows didn't show cost, so
+   there was no fast way to see "how much did this position
+   tie up?" without multiplying in your head.
+
+### What changed
+
+**Summary header**
+
+- Added a chip in the card header showing running realized $
+  for the day (green / red / neutral), visible at a glance next
+  to the trade count.
+- Added a summary line above the rows:
+  `N opens · M closes · realized $X · win Y%`. Win rate is
+  wins / closes with a reported P&L — missing values skip the
+  denominator rather than inflating it.
+- Both are driven by a single `computeTradesSummary(trades)`
+  helper so the chip and the line can't drift.
+
+**Per-row fields**
+
+- BUY rows now show the **cost** (shares × price, or the
+  server-provided `cost` field) in the trailing cell,
+  monospace and subdued.
+- SELL rows now show the **realized P&L** in the trailing
+  cell: dollar amount in green / red, with the P&L % dimmed
+  alongside. The LONG / SHORT colour on the symbol is kept as
+  a side cue; the action badge (BUY green / SELL red) carries
+  the direction.
+
+**Layout — grid rows instead of a `<table>`**
+
+- Rewrote the render to emit a `<div class="trades-list">` of
+  `<div class="trade-row">` elements driven by CSS Grid with
+  named areas. Desktop uses a single row:
+  `"time sym act qty price tail"` on a 6-track layout.
+- Mobile (`@media (max-width: 640px)`) overrides just the
+  `grid-template-areas` and column tracks so the same DOM
+  collapses into three stacked lines per trade:
+  `"time sym act" / ". qty tail" / ". . price"`. No DOM
+  duplication, no horizontal scroll, no JS breakpoint.
+- Extracted the HH:MM formatter from `renderTrades` into a
+  `fmtTradeTime(rawT)` helper. Same v3.4.30 regex —
+  `/^\d{4}-\d{2}-\d{2}T/` for ISO, `/^\d{1,2}:\d{2}/` for
+  pre-formatted `"09:11 CDT"` strings.
+
+### Tests
+
+Added 8 new smoke tests (148/148 pass):
+
+- `v3.4.31: BOT_VERSION is >= 3.4.31` (relaxes the v3.4.30
+  exact-version check to a lower bound).
+- `v3.4.31: dashboard carries trades summary header + realized chip`
+- `v3.4.31: dashboard uses .trade-row grid rows instead of a <table>`
+- `v3.4.31: desktop .trade-row grid-template-areas = 'time sym act qty price tail'`
+- `v3.4.31: mobile (≤640px) collapses .trade-row into stacked rows`
+- `v3.4.31: renderTrades emits .trade-row markup — not a <table>`
+- `v3.4.31: computeTradesSummary counts opens/closes + sums realized`
+- `v3.4.31: renderTrades populates summary line + realized chip`
+
+The v3.4.30 `renderTrades accepts pre-formatted 'HH:MM TZ'`
+test was rewritten to target the new `fmtTradeTime` helper —
+same invariants (no `.includes("T")`, full ISO prefix regex,
+HH:MM extraction), new function name.
+
+### Files
+
+- `stock_spike_monitor.py` — `BOT_VERSION = "3.4.31"`,
+  `CURRENT_MAIN_NOTE` / `CURRENT_TP_NOTE` rewritten at ≤34
+  chars/line, v3.4.30 entry rolled into history tails.
+- `dashboard_static/index.html` — new summary chip + line
+  markup, new CSS for `.trades-summary`, `.act-badge`,
+  `.trade-pnl`, `.trade-cost`, `.trades-list`, `.trade-row`,
+  plus the 640px media-query overrides. `renderTrades`
+  rewritten to emit grid rows and populate the summary;
+  `computeTradesSummary` + `fmtTradeTime` helpers extracted.
+- `smoke_test.py` — +8 tests, 1 rewritten.
+- `CHANGELOG.md` — this entry.
+
+---
+
 ## v3.4.30 — Mobile layout fix + Today's Trades time display (2026-04-22)
 
 ### Why
