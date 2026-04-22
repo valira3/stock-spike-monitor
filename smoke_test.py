@@ -1985,8 +1985,182 @@ def run_local() -> int:
 
     @t("v3.4.28: BOT_VERSION bumped to 3.4.28")
     def _():
-        assert m.BOT_VERSION == "3.4.28", \
-            f"expected BOT_VERSION=3.4.28, got {m.BOT_VERSION!r}"
+        # Any version >= 3.4.28 is fine; we just want to make sure the bump
+        # didn't accidentally revert below Sovereign Regime Shield.
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 28), \
+            f"BOT_VERSION regressed below 3.4.28: {m.BOT_VERSION!r}"
+
+    # =================================================================
+    # v3.4.29 — Persistent dashboard session + live Sovereign panel
+    # =================================================================
+    @t("v3.4.29: BOT_VERSION is 3.4.29")
+    def _():
+        assert m.BOT_VERSION == "3.4.29", \
+            f"expected BOT_VERSION=3.4.29, got {m.BOT_VERSION!r}"
+
+    @t("v3.4.29: CURRENT notes begin with v3.4.29 and are 34-char-safe")
+    def _():
+        for name, note in (("CURRENT_MAIN_NOTE", m.CURRENT_MAIN_NOTE),
+                           ("CURRENT_TP_NOTE", m.CURRENT_TP_NOTE)):
+            first = note.split("\n", 1)[0]
+            assert first.startswith("v3.4.29 "), \
+                f"{name} must lead with v3.4.29 — got {first!r}"
+            for i, line in enumerate(note.split("\n")):
+                assert len(line) <= 34, \
+                    f"{name} line {i} over 34 chars ({len(line)}): {line!r}"
+
+    @t("v3.4.29: _session_secret_path sits beside PAPER_STATE_FILE")
+    def _():
+        import dashboard_server as ds2, os
+        path = ds2._session_secret_path()
+        assert path.endswith("dashboard_secret.key"), \
+            f"secret must be named dashboard_secret.key, got {path}"
+        expected_dir = os.path.dirname(m.PAPER_STATE_FILE) or "."
+        assert os.path.dirname(path) == expected_dir, \
+            f"secret dir {os.path.dirname(path)} != paper-state dir {expected_dir}"
+
+    @t("v3.4.29: _load_or_create_session_secret generates and persists on first call")
+    def _():
+        import dashboard_server as ds2, os
+        path = ds2._session_secret_path()
+        # Clean slate.
+        if os.path.exists(path):
+            os.remove(path)
+        os.environ.pop("DASHBOARD_SESSION_SECRET", None)
+
+        secret1 = ds2._load_or_create_session_secret()
+        assert isinstance(secret1, bytes) and len(secret1) == 32, \
+            "first call must return 32 random bytes"
+        assert os.path.exists(path), \
+            "first call must persist the secret to disk"
+        with open(path, "rb") as f:
+            on_disk = f.read()
+        assert on_disk == secret1, \
+            "bytes on disk must match the bytes returned"
+
+    @t("v3.4.29: _load_or_create_session_secret returns SAME bytes across calls (simulates redeploy)")
+    def _():
+        import dashboard_server as ds2, os
+        os.environ.pop("DASHBOARD_SESSION_SECRET", None)
+        path = ds2._session_secret_path()
+        if os.path.exists(path):
+            os.remove(path)
+        first = ds2._load_or_create_session_secret()
+        # Simulate a redeploy — new process, same file on the volume.
+        second = ds2._load_or_create_session_secret()
+        third  = ds2._load_or_create_session_secret()
+        assert first == second == third, \
+            "persistent secret must survive re-invocations (redeploy simulation)"
+
+    @t("v3.4.29: DASHBOARD_SESSION_SECRET env override beats the file")
+    def _():
+        import dashboard_server as ds2, os
+        path = ds2._session_secret_path()
+        file_secret = b"\x00" * 32
+        with open(path, "wb") as f:
+            f.write(file_secret)
+        env_hex = "aa" * 32
+        os.environ["DASHBOARD_SESSION_SECRET"] = env_hex
+        try:
+            got = ds2._load_or_create_session_secret()
+        finally:
+            os.environ.pop("DASHBOARD_SESSION_SECRET", None)
+        assert got == bytes.fromhex(env_hex), \
+            "env override must take precedence over the on-disk file"
+
+    @t("v3.4.29: corrupted on-disk secret (too short) is rejected and regenerated")
+    def _():
+        import dashboard_server as ds2, os
+        os.environ.pop("DASHBOARD_SESSION_SECRET", None)
+        path = ds2._session_secret_path()
+        with open(path, "wb") as f:
+            f.write(b"short")  # only 5 bytes
+        fresh = ds2._load_or_create_session_secret()
+        assert isinstance(fresh, bytes) and len(fresh) == 32, \
+            "must regenerate when on-disk secret is too short"
+        with open(path, "rb") as f:
+            on_disk = f.read()
+        assert on_disk == fresh and len(on_disk) == 32, \
+            "must overwrite the corrupted file with a fresh 32-byte secret"
+
+    @t("v3.4.29: snapshot exposes regime.sovereign with stable shape")
+    def _():
+        import dashboard_server as ds2
+        snap = ds2.snapshot()
+        assert snap.get("ok") is True, "snapshot must succeed"
+        sov = (snap.get("regime") or {}).get("sovereign")
+        assert isinstance(sov, dict), f"regime.sovereign must be a dict, got {type(sov)}"
+        for k in ("spy_price", "spy_pdc", "spy_delta_pct", "spy_above_pdc",
+                  "qqq_price", "qqq_pdc", "qqq_delta_pct", "qqq_above_pdc",
+                  "long_eject", "short_eject", "status", "reason"):
+            assert k in sov, f"regime.sovereign missing field: {k}"
+        assert isinstance(sov["long_eject"], bool)
+        assert isinstance(sov["short_eject"], bool)
+        assert sov["status"] in ("ARMED_LONG", "ARMED_SHORT", "DISARMED",
+                                 "AWAITING", "NO_PDC"), \
+            f"unexpected status {sov['status']!r}"
+
+    @t("v3.4.29: regime.sovereign == NO_PDC when SPY/QQQ PDC missing")
+    def _():
+        import dashboard_server as ds2
+        orig_pdc = dict(m.pdc)
+        try:
+            m.pdc.clear()
+            snap = ds2.snapshot()
+            sov = (snap.get("regime") or {}).get("sovereign") or {}
+            assert sov.get("status") == "NO_PDC", \
+                f"missing PDC must surface as NO_PDC, got {sov.get('status')!r}"
+            assert sov.get("long_eject") is False
+            assert sov.get("short_eject") is False
+        finally:
+            m.pdc.clear()
+            m.pdc.update(orig_pdc)
+
+    @t("v3.4.29: regime.sovereign reflects ARMED_LONG with synthetic dual-below data")
+    def _():
+        import dashboard_server as ds2
+        orig_pdc = dict(m.pdc)
+        orig_fetch = m.fetch_1min_bars
+        try:
+            m.pdc.clear()
+            m.pdc["SPY"] = 100.0
+            m.pdc["QQQ"] = 199.0
+            def fake(ticker):
+                series = {"SPY": [100.0, 99.5, 99.9],
+                          "QQQ": [200.0, 198.5, 199.1]}.get(ticker)
+                if series is None: return None
+                return {"current_price": series[-1], "closes": list(series),
+                        "opens": list(series), "highs": list(series),
+                        "lows": list(series)}
+            m.fetch_1min_bars = fake
+            snap = ds2.snapshot()
+            sov = (snap.get("regime") or {}).get("sovereign") or {}
+            assert sov.get("status") == "ARMED_LONG", \
+                f"dual-below must surface ARMED_LONG, got {sov.get('status')!r}"
+            assert sov.get("long_eject") is True
+            assert sov.get("short_eject") is False
+            assert sov.get("spy_price") == 99.5   # closes[-2]
+            assert sov.get("qqq_price") == 198.5
+            assert sov.get("spy_delta_pct") < 0
+            assert sov.get("qqq_delta_pct") < 0
+        finally:
+            m.fetch_1min_bars = orig_fetch
+            m.pdc.clear()
+            m.pdc.update(orig_pdc)
+
+    @t("v3.4.29: dashboard HTML contains Sovereign Regime Shield card + srs-body")
+    def _():
+        html_path = Path(__file__).resolve().parent / "dashboard_static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        assert "Sovereign Regime Shield" in html, \
+            "dashboard must contain the Sovereign Regime Shield card title"
+        assert 'id="srs-body"' in html and 'id="srs-status"' in html, \
+            "dashboard must expose srs-body + srs-status target elements"
+        assert "renderSovereign" in html, \
+            "dashboard JS must define renderSovereign"
+        assert "renderSovereign(s)" in html, \
+            "renderAll must call renderSovereign(s)"
 
     return run_suite("LOCAL SMOKE TESTS")
 

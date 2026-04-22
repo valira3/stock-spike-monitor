@@ -37,7 +37,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.28"
+BOT_VERSION = "3.4.29"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -55,28 +55,26 @@ BOT_VERSION = "3.4.28"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.28 \u2014 Sovereign Regime\n"
-    "Shield (PDC-based eject).\n"
+    "v3.4.29 \u2014 Persistent\n"
+    "dashboard login + live\n"
+    "Sovereign Regime panel.\n"
     "\n"
-    "LORDS_LEFT and BULL_VACUUM\n"
-    "now fire on SPY AND QQQ\n"
-    "1m close vs their PDC, not\n"
-    "AVWAP. PDC is the single\n"
-    "most significant static\n"
-    "level \u2014 eliminates regime\n"
-    "flim-flams from AVWAP drift.\n"
+    "Session secret now lives\n"
+    "beside paper_state.json,\n"
+    "so dashboard logins\n"
+    "survive every redeploy.\n"
     "\n"
-    "Hysteresis built in: if\n"
-    "SPY and QQQ diverge (one\n"
-    "above PDC, one below),\n"
-    "regime holds \u2014 no eject."
+    "New dashboard card: SPY\n"
+    "and QQQ vs PDC with the\n"
+    "long and short shield\n"
+    "state rendered live."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.28 \u2014 Sovereign Regime\n"
-    "Shield.\n"
-    "Eject uses SPY+QQQ 1m\n"
-    "close vs PDC (not AVWAP).\n"
-    "Divergence \u2014 no eject."
+    "v3.4.29 \u2014 Dashboard login\n"
+    "now persists across\n"
+    "deploys. Sovereign Regime\n"
+    "Shield shown live on the\n"
+    "dashboard \u2014 SPY/QQQ vs PDC."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -87,6 +85,9 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.28 \u2014 Sovereign Regime\n"
+    "Shield: SPY+QQQ 1m vs PDC.\n"
+    "\n"
     "v3.4.27 \u2014 Persistent trade\n"
     "log (JSONL) + /trade_log.\n"
     "\n"
@@ -95,23 +96,20 @@ _MAIN_HISTORY_TAIL = (
     "effective-stop diagnostic.\n"
     "\n"
     "v3.4.25 \u2014 Breakeven ratchet\n"
-    "at +0.50% profit.\n"
-    "\n"
-    "v3.4.24 \u2014 Dashboard leads\n"
-    "with equity + buying power."
+    "at +0.50% profit."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.28 \u2014 Sovereign Regime\n"
+    "Shield (PDC eject).\n"
     "v3.4.27 \u2014 Persistent trade\n"
     "log + /trade_log.\n"
     "v3.4.26 \u2014 Ratchet through\n"
     "trail + TRAIL badge.\n"
     "v3.4.25 \u2014 Breakeven ratchet\n"
     "at +0.50% profit.\n"
-    "v3.4.24 \u2014 Dashboard leads\n"
-    "with equity.\n"
     "/tp_sync for broker status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
