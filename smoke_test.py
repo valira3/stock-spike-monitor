@@ -2529,12 +2529,15 @@ def run_local() -> int:
             assert fn is not None, name
             assert inspect.iscoroutinefunction(fn), name
 
-    @t("v3.4.32: BotCommands advertise tickers/add_ticker/remove_ticker")
+    @t("v3.4.32: Telegram handlers wired for tickers/add_ticker/remove_ticker (alias compat)")
     def _():
-        import stock_spike_monitor as m
-        names = {c.command for c in m.MAIN_BOT_COMMANDS}
-        for want in ("tickers", "add_ticker", "remove_ticker"):
-            assert want in names, (want, sorted(names))
+        # v3.4.33 moved these out of the BotCommand menu, but they stay
+        # registered as hidden aliases so saved shortcuts keep working.
+        import stock_spike_monitor as m, inspect
+        for fn_name in ("cmd_tickers", "cmd_add_ticker", "cmd_remove_ticker"):
+            fn = getattr(m, fn_name, None)
+            assert fn is not None, fn_name
+            assert inspect.iscoroutinefunction(fn), fn_name
 
     @t("v3.4.32: ticker reply formatters stay within 34-char mobile budget")
     def _():
@@ -2576,8 +2579,170 @@ def run_local() -> int:
         import inspect
         help_src = inspect.getsource(m.cmd_help)
         corpus = note + "\n" + help_src
-        for want in ("/tickers", "/add_ticker", "/remove_ticker"):
+        # After v3.4.33 the canonical command is /ticker; the old names
+        # live on as hidden aliases. The /help body still mentions them.
+        for want in ("/ticker", "/tickers", "/add_ticker", "/remove_ticker"):
             assert want in corpus, want
+
+    # -------------------------------------------------------------
+    # v3.4.33 — unified /ticker command + thorough metric fill
+    # -------------------------------------------------------------
+
+    @t("v3.4.33: BOT_VERSION is >= 3.4.33")
+    def _():
+        import stock_spike_monitor as m
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 33), m.BOT_VERSION
+
+    @t("v3.4.33: cmd_ticker exists and is an async coroutine")
+    def _():
+        import stock_spike_monitor as m, inspect
+        fn = getattr(m, "cmd_ticker", None)
+        assert fn is not None, "cmd_ticker missing"
+        assert inspect.iscoroutinefunction(fn), "cmd_ticker not async"
+
+    @t("v3.4.33: BotCommand menu advertises /ticker (not per-verb entries)")
+    def _():
+        import stock_spike_monitor as m
+        names = {c.command for c in m.MAIN_BOT_COMMANDS}
+        assert "ticker" in names, sorted(names)
+        # The v3.4.32 per-verb entries are gone from the menu (but the
+        # handlers remain as hidden aliases — tested separately).
+        assert "tickers" not in names, \
+            "v3.4.33 should not advertise /tickers in menu"
+        assert "add_ticker" not in names, \
+            "v3.4.33 should not advertise /add_ticker in menu"
+        assert "remove_ticker" not in names, \
+            "v3.4.33 should not advertise /remove_ticker in menu"
+
+    @t("v3.4.33: /ticker help text references all three sub-commands")
+    def _():
+        import stock_spike_monitor as m
+        for want in ("list", "add", "remove"):
+            assert want in m._TICKER_USAGE, (want, m._TICKER_USAGE)
+
+    @t("v3.4.33: /ticker usage string stays within 34-char mobile budget")
+    def _():
+        import stock_spike_monitor as m
+        for line in m._TICKER_USAGE.split("\n"):
+            assert len(line) <= 34, (len(line), line)
+
+    @t("v3.4.33: _fill_metrics_for_ticker returns the full metric dict shape")
+    def _():
+        import stock_spike_monitor as m
+        # Stub FMP and bars so the test is hermetic.
+        orig_fmp = m.get_fmp_quote
+        orig_bars = m.fetch_1min_bars
+        m.get_fmp_quote = lambda t: {"previousClose": 123.45}
+        # Provide enough closes for RSI warm-up (RSI_PERIOD+1 minimum).
+        fake_closes = [100.0 + i * 0.1 for i in range(m.RSI_PERIOD + 5)]
+        m.fetch_1min_bars = lambda t: {
+            "timestamps": [1700000000 + i * 60 for i in range(len(fake_closes))],
+            "highs":  fake_closes,
+            "lows":   fake_closes,
+            "closes": fake_closes,
+            "volumes": [10000] * len(fake_closes),
+            "pdc": 99.0,
+        }
+        try:
+            got = m._fill_metrics_for_ticker("TESTSYM")
+            for key in ("bars", "pdc", "pdc_src", "or",
+                        "or_pending", "rsi", "rsi_val", "errors"):
+                assert key in got, (key, got)
+            assert got["bars"] is True, got
+            assert got["pdc"] is True, got
+            assert got["pdc_src"] == "fmp", got
+            assert got["rsi"] is True, got
+            assert got["rsi_val"] is not None, got
+            # pdc[] should have been cached.
+            assert m.pdc.get("TESTSYM") == 123.45, m.pdc.get("TESTSYM")
+        finally:
+            m.get_fmp_quote = orig_fmp
+            m.fetch_1min_bars = orig_bars
+            m.pdc.pop("TESTSYM", None)
+            m.or_high.pop("TESTSYM", None)
+            m.or_low.pop("TESTSYM", None)
+
+    @t("v3.4.33: PDC falls back to bars when FMP returns nothing")
+    def _():
+        import stock_spike_monitor as m
+        orig_fmp = m.get_fmp_quote
+        orig_bars = m.fetch_1min_bars
+        m.get_fmp_quote = lambda t: None
+        m.fetch_1min_bars = lambda t: {
+            "timestamps": [1700000000],
+            "highs": [100.0], "lows": [99.0],
+            "closes": [99.5], "volumes": [1000],
+            "pdc": 98.76,
+        }
+        try:
+            got = m._fill_metrics_for_ticker("TESTSYM2")
+            assert got["pdc"] is True, got
+            assert got["pdc_src"] == "bars", got
+            assert m.pdc.get("TESTSYM2") == 98.76, m.pdc.get("TESTSYM2")
+        finally:
+            m.get_fmp_quote = orig_fmp
+            m.fetch_1min_bars = orig_bars
+            m.pdc.pop("TESTSYM2", None)
+
+    @t("v3.4.33: unreachable bars → bars=False, pdc=False when FMP also fails")
+    def _():
+        import stock_spike_monitor as m
+        orig_fmp = m.get_fmp_quote
+        orig_bars = m.fetch_1min_bars
+        m.get_fmp_quote = lambda t: None
+        m.fetch_1min_bars = lambda t: None
+        try:
+            got = m._fill_metrics_for_ticker("NOBARS")
+            assert got["bars"] is False, got
+            assert got["pdc"] is False, got
+            assert got["rsi"] is False, got
+            # Error list should carry at least one human-readable hint.
+            assert got["errors"], got
+        finally:
+            m.get_fmp_quote = orig_fmp
+            m.fetch_1min_bars = orig_bars
+
+    @t("v3.4.33: add reply formatter shows Bars/PDC/OR/RSI rows")
+    def _():
+        import stock_spike_monitor as m
+        orig_pdc = m.pdc.get("QBTS")
+        orig_orh = m.or_high.get("QBTS")
+        orig_orl = m.or_low.get("QBTS")
+        m.pdc["QBTS"] = 10.50
+        m.or_high["QBTS"] = 10.80
+        m.or_low["QBTS"] = 10.40
+        try:
+            out = m._fmt_add_reply({
+                "ok": True, "added": True, "ticker": "QBTS",
+                "metrics": {
+                    "bars": True, "pdc": True, "pdc_src": "fmp",
+                    "or": True, "or_pending": False,
+                    "rsi": True, "rsi_val": 61.4,
+                    "errors": [],
+                },
+            })
+            assert "Bars:" in out, out
+            assert "PDC:" in out, out
+            assert "OR:" in out, out
+            assert "RSI:" in out, out
+            # Every line stays within the 34-char mobile budget.
+            for line in out.split("\n"):
+                assert len(line) <= 34, (len(line), line)
+        finally:
+            if orig_pdc is None: m.pdc.pop("QBTS", None)
+            else: m.pdc["QBTS"] = orig_pdc
+            if orig_orh is None: m.or_high.pop("QBTS", None)
+            else: m.or_high["QBTS"] = orig_orh
+            if orig_orl is None: m.or_low.pop("QBTS", None)
+            else: m.or_low["QBTS"] = orig_orl
+
+    @t("v3.4.33: release notes mention the unified /ticker command")
+    def _():
+        import stock_spike_monitor as m
+        note = m.CURRENT_MAIN_NOTE
+        for want in ("/ticker list", "/ticker add", "/ticker remove"):
+            assert want in note, (want, note)
 
     return run_suite("LOCAL SMOKE TESTS")
 

@@ -4,6 +4,131 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.4.33 — Unified `/ticker` + thorough metric fill (2026-04-22)
+
+### Why
+
+v3.4.32 shipped three separate Telegram commands for managing the
+watchlist: `/tickers`, `/add_ticker`, `/remove_ticker`. On a mobile
+keyboard that's three autocomplete paths to remember and three
+places the menu has to surface — for what is conceptually one
+command with three verbs. The right shape is `git`-style
+sub-commands: `/ticker list`, `/ticker add SYM`, `/ticker remove SYM`.
+
+Second motivation: "make sure all metrics are populated when a
+ticker is added." The v3.4.32 fill only primed PDC and OR; it said
+nothing about whether the data provider could actually reach the
+symbol, and it skipped RSI entirely (leaving the first scan cycle
+to cold-start it from live bars). When adding a freshly-discovered
+symbol mid-session, the user deserves to know, in one reply, every
+metric the bot is going to rely on — what's ready, what's pending,
+and what failed.
+
+### What changed
+
+**Unified `/ticker` command**
+
+- New `cmd_ticker` dispatcher accepts sub-commands (case-
+  insensitive, each with short aliases):
+  - `list` / `ls` / `show` — render the current watchlist.
+  - `add` / `+` — add a symbol and prime every metric.
+  - `remove` / `rm` / `del` / `-` — stop new entries on a symbol.
+- Bare `/ticker` (no args) defaults to `list` — the most common case.
+- Unknown sub-commands show the usage block instead of failing silently.
+- `BotCommand` menu advertises a single line:
+  `/ticker  Ticker: list | add SYM | remove SYM`.
+
+**Back-compat aliases (hidden but wired)**
+
+- `/tickers`, `/add_ticker`, `/remove_ticker` remain registered as
+  `CommandHandler`s on both the main bot and the TP bot. They are
+  intentionally omitted from `MAIN_BOT_COMMANDS` so the menu stays
+  tight, but any saved Telegram shortcuts or muscle-memory typed
+  commands keep working with identical replies.
+
+**Thorough metric fill on add**
+
+`_fill_metrics_for_ticker` now primes every tracked metric, with
+explicit source tracking and per-field status:
+
+- **Bars liveness probe** — a single `fetch_1min_bars` call now
+  doubles as a "can the data provider reach this symbol?" check.
+  Reply shows `✅ reachable` or `⚠ unreachable`.
+- **PDC dual-source** — tries FMP first (works any time of day,
+  including pre-open), then falls back to the bars snapshot if
+  FMP returned nothing. Reply tags the source: `PDC: $X.XX (fmp)`
+  or `PDC: $X.XX (bars)`.
+- **OR high + low** — populated from the 09:30–09:35 ET window if
+  the current time is past 09:35. Pre-09:35 is now an explicit
+  `or_pending` status (not an error), and the reply says
+  `OR: pending 09:35 ET` so the user knows `collect_or()` will
+  handle it at the scheduled cutover.
+- **RSI warm-up** — when bars return at least `RSI_PERIOD + 1`
+  closes, the fill computes a warm-up RSI value. This doesn't
+  cache (the scanner recomputes each cycle from live bars), but
+  it proves the history is deep enough and surfaces the current
+  reading for the user: `RSI: 54.7 (warm)`.
+
+All sourcing is still fail-soft — any provider error adds to an
+`errors` list but still returns a valid dict; the ticker is added
+regardless so the scanner can retry. This is consistent with the
+locked principle that missing data never ejects a position and
+should never block a legitimate add either.
+
+**Reply layout**
+
+`/ticker add` now returns a 5-line status block under the 34-char
+mobile budget:
+
+```
+Bars:  ✅ reachable
+PDC:   $10.50 (fmp)
+OR:    $10.40 – $10.80
+RSI:   61.4 (warm)
+```
+
+Each row has an explicit pending / missing state (e.g. `OR: pending
+09:35 ET`, `RSI: — (warms on scan)`) so the user knows whether to
+wait or retry.
+
+### Tests
+
+Added **10 new smoke tests** (160 → **170 passed · 0 failed**):
+
+- `BOT_VERSION >= 3.4.33`.
+- `cmd_ticker` exists and is a coroutine.
+- `BotCommand` menu advertises `/ticker` (and specifically does
+  **not** advertise the old per-verb entries).
+- `/ticker` usage text mentions list / add / remove and stays
+  within 34 chars.
+- `_fill_metrics_for_ticker` returns the full metric dict shape
+  (`bars`, `pdc`, `pdc_src`, `or`, `or_pending`, `rsi`, `rsi_val`,
+  `errors`) with FMP + bars stubs.
+- PDC falls back to the bars snapshot when FMP returns nothing,
+  and the source tag reports `bars`.
+- Unreachable bars + FMP failure → `bars=False`, `pdc=False`,
+  `rsi=False`, with errors populated — confirming the fail-soft
+  path is wired.
+- Add-reply formatter emits Bars / PDC / OR / RSI rows and every
+  line stays within the mobile budget.
+- Release notes + `/help` corpus still reference every entry point
+  (`/ticker`, `/tickers`, `/add_ticker`, `/remove_ticker`).
+
+The one v3.4.32 test that asserted `BotCommand` menu entries for
+`/tickers`, `/add_ticker`, `/remove_ticker` was rewritten to verify
+the alias handlers exist instead — these commands live on as hidden
+aliases, just not in the menu.
+
+### Files touched
+
+- `stock_spike_monitor.py` — `cmd_ticker` dispatcher, expanded
+  `_fill_metrics_for_ticker`, richer `_fmt_add_reply`, alias
+  handler registrations, updated `/help` body, updated release notes.
+- `smoke_test.py` — one v3.4.32 test rewritten, 10 new v3.4.33 tests.
+- `CHANGELOG.md` — v3.4.33 entry.
+
+---
+
 ## v3.4.32 — Editable ticker universe from Telegram + QBTS (2026-04-22)
 
 ### Why
