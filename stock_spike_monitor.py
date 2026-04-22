@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.37"
+BOT_VERSION = "3.4.38"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,27 +56,26 @@ BOT_VERSION = "3.4.37"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.37 \u2014 Robinhood\n"
-    "mode: TP mirror bot is\n"
-    "now the Robinhood bot.\n"
-    "Long-only, $25k scale,\n"
-    "$1500/entry, max 1\n"
-    "entry/ticker, max 6\n"
-    "concurrent positions.\n"
+    "v3.4.38 \u2014 Kill switch.\n"
+    "/rh_enable and /rh_disable\n"
+    "flip Robinhood live orders\n"
+    "on/off at runtime. No\n"
+    "Railway restart needed.\n"
     "\n"
-    "IMAP reconciliation\n"
-    "reads TP fill/reject\n"
-    "emails from Gmail.\n"
+    "/rh_status shows state,\n"
+    "source (env vs runtime),\n"
+    "IMAP wiring, and sizing.\n"
     "\n"
-    "Paper bot unchanged.\n"
-    "($100k, 10 shares)"
+    "Override persists in\n"
+    "tp_state.json so it\n"
+    "survives redeploys."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.37 \u2014 Robinhood\n"
-    "mode: long-only $25k,\n"
-    "$1500/entry, max 6\n"
-    "concurrent positions.\n"
-    "IMAP reconciliation."
+    "v3.4.38 \u2014 Kill switch\n"
+    "lives on main bot:\n"
+    "/rh_enable /rh_disable\n"
+    "/rh_status. TP bot menu\n"
+    "unchanged otherwise."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -87,6 +86,12 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.37 \u2014 Robinhood mode:\n"
+    "TP mirror became live bot.\n"
+    "Long-only $25k, $1500/entry,\n"
+    "max 6 concurrent, IMAP fill\n"
+    "reconciliation from Gmail.\n"
+    "\n"
     "v3.4.36 \u2014 Profit-lock\n"
     "ladder is now peak-based.\n"
     "Stop = peak \u2212 X%, tighter\n"
@@ -99,27 +104,23 @@ _MAIN_HISTORY_TAIL = (
     "v3.4.34 \u2014 AVWAP fully\n"
     "removed; one anchor (PDC)\n"
     "across entries, regime\n"
-    "alerts, and displays.\n"
-    "\n"
-    "v3.4.33 \u2014 /ticker unified\n"
-    "with add/remove/list; adds\n"
-    "prime PDC + OR + RSI."
+    "alerts, and displays."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.37 \u2014 Robinhood mode:\n"
+    "long-only $25k, $1500/entry,\n"
+    "max 6 concurrent, IMAP fill\n"
+    "reconciliation from Gmail.\n"
     "v3.4.36 \u2014 Profit-lock\n"
     "ladder: peak-anchored.\n"
     "v3.4.35 \u2014 First ladder\n"
     "(gain-anchored) \u2014 now\n"
     "peak-anchored instead.\n"
     "v3.4.34 \u2014 AVWAP gone;\n"
-    "PDC anchor everywhere.\n"
-    "v3.4.33 \u2014 /ticker unified\n"
-    "(add/remove/list) + rich\n"
-    "metric prime on add.\n"
-    "/rh_sync for RH status."
+    "PDC anchor everywhere."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -333,7 +334,18 @@ PAPER_STARTING_CAPITAL = 100_000.0
 # Webhook kill-switch (env-gated, default OFF).
 # When True, TP portfolio events are forwarded to TradersPost.
 # Paper portfolio is ALWAYS simulation-only and never hits the webhook.
-TRADERSPOST_ENABLED    = os.getenv("TRADERSPOST_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+# TRADERSPOST_ENABLED: env var sets the BOOT default; /rh_enable and
+# /rh_disable flip the runtime flag without restart. Runtime override is
+# persisted in tp_state.json so it survives a Railway redeploy.
+_TRADERSPOST_ENABLED_ENV = os.getenv("TRADERSPOST_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+_traderspost_runtime_override: "bool | None" = None  # None = fall back to env default
+
+def is_traderspost_enabled() -> bool:
+    """Authoritative read for the Robinhood kill switch. Runtime override
+    (set via /rh_enable or /rh_disable) wins over the boot env var."""
+    if _traderspost_runtime_override is not None:
+        return _traderspost_runtime_override
+    return _TRADERSPOST_ENABLED_ENV
 
 # ── Robinhood (TradersPost-routed) configuration — live trading scale ──────────
 RH_STARTING_CAPITAL       = float(os.getenv("RH_STARTING_CAPITAL", "25000"))
@@ -1461,6 +1473,9 @@ def save_tp_state():
         "tp_trade_history": tp_trade_history,
         "tp_short_positions": tp_short_positions,
         "tp_short_trade_history": tp_short_trade_history[-500:],
+        # v3.4.38 — persist runtime kill-switch override across restarts.
+        # None means "fall back to TRADERSPOST_ENABLED env var"; bool wins.
+        "traderspost_enabled_override": _traderspost_runtime_override,
         "saved_at": _utc_now_iso(),
     }
     with _tp_save_lock:
@@ -1479,6 +1494,7 @@ def load_tp_state():
     global tp_paper_cash, tp_trade_history
     global tp_short_positions, tp_short_trade_history
     global _tp_state_loaded
+    global _traderspost_runtime_override
 
     if not os.path.exists(TP_STATE_FILE):
         logger.info("No TP state at %s. Starting fresh $%.0f.",
@@ -1499,6 +1515,15 @@ def load_tp_state():
         tp_short_positions.update(state.get("tp_short_positions", {}))
         tp_short_trade_history.clear()
         tp_short_trade_history.extend(state.get("tp_short_trade_history", []))
+
+        # v3.4.38 — restore kill-switch override if one was persisted.
+        override = state.get("traderspost_enabled_override", None)
+        if isinstance(override, bool):
+            _traderspost_runtime_override = override
+            logger.info("[RH] Restored runtime kill-switch override: %s",
+                        "ENABLED" if override else "DISABLED")
+        else:
+            _traderspost_runtime_override = None
 
         _tp_state_loaded = True
         logger.info("Loaded TP state: cash=$%.2f, %d positions",
@@ -2913,10 +2938,9 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
     skip_result = {"success": False, "skipped": True, "message": "",
                    "http_status": 0, "raw": None}
 
-    if not TRADERSPOST_ENABLED:
-        logger.debug("[TP] TRADERSPOST_ENABLED=false \u2014 skipping %s %s",
-                     action, ticker)
-        return {**skip_result, "message": "TRADERSPOST_ENABLED=false"}
+    if not is_traderspost_enabled():
+        logger.debug("[TP] Robinhood disabled \u2014 skipping %s %s", action, ticker)
+        return {**skip_result, "message": "Robinhood disabled"}
     if not TRADERSPOST_WEBHOOK_URL:
         logger.warning("[TP] Enabled but TRADERSPOST_WEBHOOK_URL unset \u2014 skip %s %s",
                        action, ticker)
@@ -7218,7 +7242,7 @@ async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEP = "\u2500" * 34
 
     lines = ["Robinhood Broker Sync", SEP]
-    lines.append("Enabled : %s" % ("on" if TRADERSPOST_ENABLED else "off"))
+    lines.append("Enabled : %s" % ("on" if is_traderspost_enabled() else "off"))
     lines.append("Sent    : %d" % tp_state.get("total_orders_sent", 0))
     lines.append("OK      : %d" % tp_state.get("total_orders_success", 0))
     lines.append("Fail    : %d" % tp_state.get("total_orders_failed", 0))
@@ -7291,6 +7315,104 @@ async def cmd_tp_sync_on_main(update: Update, context: ContextTypes.DEFAULT_TYPE
         "This command lives on the TP bot.\n"
         "Main bot covers the paper\n"
         "portfolio only.",
+        reply_markup=_menu_button(),
+    )
+
+
+# ============================================================
+# /rh_enable /rh_disable /rh_status \u2014 live-trading kill switch
+# ============================================================
+def _rh_set_enabled(enabled: bool) -> None:
+    """Flip the Robinhood runtime override and persist to disk."""
+    global _traderspost_runtime_override
+    _traderspost_runtime_override = bool(enabled)
+    # Persist so a Railway redeploy doesn't silently flip the state.
+    try:
+        save_tp_state()
+    except Exception as e:
+        logger.warning("[RH] save_tp_state after toggle failed: %s", e)
+
+
+async def cmd_rh_enable(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Enable Robinhood live trading (flip TRADERSPOST_ENABLED to on).
+
+    Runtime override \u2014 no Railway restart needed. Persisted in
+    tp_state.json so it survives redeploys.
+    """
+    was_on = is_traderspost_enabled()
+    _rh_set_enabled(True)
+    if was_on:
+        msg = "Robinhood already ENABLED.\nNo change."
+    else:
+        msg = (
+            "\U0001f7e2 Robinhood ENABLED\n"
+            "Live orders will now route\n"
+            "through TradersPost.\n"
+            "\n"
+            "Use /rh_disable to stop."
+        )
+    await update.message.reply_text(
+        "```\n%s\n```" % msg, parse_mode="Markdown",
+        reply_markup=_menu_button(),
+    )
+    # Cross-post to the Robinhood Telegram so both chats see the change.
+    send_tp_telegram(msg)
+
+
+async def cmd_rh_disable(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Disable Robinhood live trading (flip TRADERSPOST_ENABLED to off).
+
+    Webhook POSTs are skipped immediately. Paper portfolio keeps running
+    normally. Use for an emergency stop or to pause live trading.
+    """
+    was_on = is_traderspost_enabled()
+    _rh_set_enabled(False)
+    if not was_on:
+        msg = "Robinhood already DISABLED.\nNo change."
+    else:
+        msg = (
+            "\U0001f534 Robinhood DISABLED\n"
+            "Webhook POSTs skipped.\n"
+            "Paper bot continues as\n"
+            "usual.\n"
+            "\n"
+            "Use /rh_enable to resume."
+        )
+    await update.message.reply_text(
+        "```\n%s\n```" % msg, parse_mode="Markdown",
+        reply_markup=_menu_button(),
+    )
+    send_tp_telegram(msg)
+
+
+async def cmd_rh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show Robinhood kill-switch state and sizing configuration."""
+    SEP = "\u2500" * 34
+    enabled = is_traderspost_enabled()
+    override = _traderspost_runtime_override
+    src = ("runtime (/rh_enable)" if override is True
+           else "runtime (/rh_disable)" if override is False
+           else "env TRADERSPOST_ENABLED")
+    webhook_set = bool(TRADERSPOST_WEBHOOK_URL)
+    imap_set = bool(RH_IMAP_ENABLED)
+
+    lines = [
+        "Robinhood Kill Switch",
+        SEP,
+        "State   : %s" % ("\U0001f7e2 ENABLED" if enabled else "\U0001f534 DISABLED"),
+        "Source  : %s" % src,
+        "Webhook : %s" % ("set" if webhook_set else "MISSING"),
+        "IMAP    : %s" % ("on" if imap_set else "off"),
+        SEP,
+        "Capital : $%s" % format(RH_STARTING_CAPITAL, ",.0f"),
+        "$/entry : $%s" % format(RH_DOLLARS_PER_ENTRY, ",.0f"),
+        "Max/tkr : %d" % RH_MAX_ENTRIES_PER_TICKER,
+        "Max open: %d" % RH_MAX_CONCURRENT_POSITIONS,
+        "LongOnly: %s" % ("yes" if RH_LONG_ONLY else "no"),
+    ]
+    msg = "\n".join(lines)
+    await update.message.reply_text(
+        "```\n%s\n```" % msg, parse_mode="Markdown",
         reply_markup=_menu_button(),
     )
 
@@ -7383,7 +7505,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send algorithm summary + downloadable PDF reference."""
     SEP = "\u2500" * 34
     summary = (
-        "\U0001f4d8 ALGORITHM REFERENCE v3.4.37\n"
+        "\U0001f4d8 ALGORITHM REFERENCE v3.4.38\n"
         f"{SEP}\n"
         "Two independent strategies:\n\n"
         "\U0001f4c8 ORB LONG BREAKOUT\n"
@@ -7452,8 +7574,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.37.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.37",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.38.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.38",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -9239,12 +9361,21 @@ MAIN_BOT_COMMANDS = [
     BotCommand("retighten", "Retighten stops to 0.75% cap"),
     BotCommand("trade_log", "Last 10 closed trades (persistent)"),
     BotCommand("ticker", "Ticker: list | add SYM | remove SYM"),
+    # v3.4.38 — Robinhood live-trading kill switch.
+    BotCommand("rh_status", "Robinhood kill-switch state"),
+    BotCommand("rh_enable", "Enable Robinhood live trading"),
+    BotCommand("rh_disable", "Disable Robinhood live trading"),
     BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
 
 # TP bot: main bot's commands plus /rh_sync and /tp_sync (Robinhood-only).
-TP_BOT_COMMANDS = list(MAIN_BOT_COMMANDS) + [
+# v3.4.38 — kill-switch commands (rh_enable/disable/status) are main-bot
+# only, so strip them from the TP menu.
+_RH_KILL_SWITCH_CMDS = {"rh_enable", "rh_disable", "rh_status"}
+TP_BOT_COMMANDS = [
+    bc for bc in MAIN_BOT_COMMANDS if bc.command not in _RH_KILL_SWITCH_CMDS
+] + [
     BotCommand("rh_sync", "Robinhood broker sync status"),
     BotCommand("tp_sync", "Robinhood sync (alias: /rh_sync)"),
 ]
@@ -9377,6 +9508,10 @@ def run_telegram_bot():
     # redirects so misdirected commands get a friendly "try the TP bot" reply.
     app.add_handler(CommandHandler("tp_sync", cmd_tp_sync_on_main))
     app.add_handler(CommandHandler("rh_sync", cmd_tp_sync_on_main))
+    # v3.4.38 — Robinhood live-trading kill switch (main bot only).
+    app.add_handler(CommandHandler("rh_enable", cmd_rh_enable))
+    app.add_handler(CommandHandler("rh_disable", cmd_rh_disable))
+    app.add_handler(CommandHandler("rh_status", cmd_rh_status))
     app.add_handler(CommandHandler("mode", cmd_mode))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("perf", cmd_perf))
