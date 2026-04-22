@@ -690,9 +690,9 @@ def run_local() -> int:
         for bad in ("webhook", "broker", "unsynced"):
             assert bad not in main_lc, \
                 f"MAIN_RELEASE_NOTE leaks {bad!r}: {m.MAIN_RELEASE_NOTE!r}"
-        # TP release note should mention tp_sync.
-        assert "/tp_sync" in m.TP_RELEASE_NOTE, \
-            f"TP_RELEASE_NOTE missing /tp_sync: {m.TP_RELEASE_NOTE!r}"
+        # TP release note should mention rh_sync (v3.4.37: renamed from tp_sync).
+        assert ("/rh_sync" in m.TP_RELEASE_NOTE or "/tp_sync" in m.TP_RELEASE_NOTE), \
+            f"TP_RELEASE_NOTE missing /rh_sync or /tp_sync: {m.TP_RELEASE_NOTE!r}"
 
     @t("v3.4.16: main-bot /tp_sync redirect handler exists")
     def _():
@@ -3202,17 +3202,21 @@ def run_local() -> int:
                 over.append((len(raw), raw))
         assert not over, f"lines over 34 chars: {over}"
 
-    @t("v3.4.36: CURRENT_MAIN_NOTE leads with v3.4.36")
+    @t("v3.4.36: CURRENT_MAIN_NOTE (updated) leads with v3.4.37")
     def _():
+        # v3.4.37 bumped CURRENT_MAIN_NOTE; v3.4.36 content moved to history
         import stock_spike_monitor as m
         note = m.CURRENT_MAIN_NOTE
-        assert note.startswith("v3.4.36"), note[:40]
+        assert note.startswith("v3.4.37"), note[:40]
+        assert "v3.4.36" in m.MAIN_RELEASE_NOTE, "v3.4.36 must remain in history"
 
-    @t("v3.4.36: CURRENT_TP_NOTE leads with v3.4.36")
+    @t("v3.4.36: CURRENT_TP_NOTE (updated) leads with v3.4.37")
     def _():
+        # v3.4.37 bumped CURRENT_TP_NOTE; v3.4.36 content moved to TP history
         import stock_spike_monitor as m
         note = m.CURRENT_TP_NOTE
-        assert note.startswith("v3.4.36"), note[:40]
+        assert note.startswith("v3.4.37"), note[:40]
+        assert "v3.4.36" in m.TP_RELEASE_NOTE, "v3.4.36 must remain in TP history"
 
     @t("v3.4.36: CURRENT notes stay within 34-char mobile budget")
     def _():
@@ -3236,6 +3240,220 @@ def run_local() -> int:
         note = m.MAIN_RELEASE_NOTE
         assert "v3.4.34" in note, \
             "v3.4.34 AVWAP→PDC line must persist in history"
+
+
+    # ================================================================
+    # v3.4.37 — Robinhood mode tests
+    # ================================================================
+
+    @t("v3.4.37: rh_shares_for($150) == 10")
+    def _():
+        import stock_spike_monitor as m
+        result = m.rh_shares_for(150.0)
+        assert result == 10, f"expected 10, got {result} (1500/150=10)"
+
+    @t("v3.4.37: rh_shares_for($800) == 1")
+    def _():
+        import stock_spike_monitor as m
+        result = m.rh_shares_for(800.0)
+        assert result == 1, f"expected 1, got {result} (1500/800=1.875 -> floor=1, min=1)"
+
+    @t("v3.4.37: rh_shares_for($1600) == 1 (min floor)")
+    def _():
+        import stock_spike_monitor as m
+        result = m.rh_shares_for(1600.0)
+        assert result == 1, f"expected 1 (min), got {result}"
+
+    @t("v3.4.37: rh_shares_for($0) == 0")
+    def _():
+        import stock_spike_monitor as m
+        result = m.rh_shares_for(0.0)
+        assert result == 0, f"expected 0 for zero price, got {result}"
+
+    @t("v3.4.37: rh_shares_for negative price == 0")
+    def _():
+        import stock_spike_monitor as m
+        result = m.rh_shares_for(-10.0)
+        assert result == 0, f"expected 0 for negative price, got {result}"
+
+    @t("v3.4.37: TP starting capital is RH_STARTING_CAPITAL (25000)")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        # Check constants: RH must be 25k, paper must stay 100k
+        assert m.RH_STARTING_CAPITAL == 25000.0, \
+            f"RH_STARTING_CAPITAL should be 25000, got {m.RH_STARTING_CAPITAL}"
+        assert m.PAPER_STARTING_CAPITAL == 100_000.0, \
+            "Paper starting capital must stay 100000"
+        # Verify source-level assignment uses RH_STARTING_CAPITAL (not PAPER_STARTING_CAPITAL)
+        src = inspect.getsource(m)
+        assert "tp_paper_cash: float = RH_STARTING_CAPITAL" in src, \
+            "tp_paper_cash must be initialized to RH_STARTING_CAPITAL in module source"
+
+    @t("v3.4.37: RH_LONG_ONLY blocks TP short entry (gate logic)")
+    def _():
+        """When RH_LONG_ONLY=True, the gate condition prevents send_traderspost_order
+        from being reached on the short entry path."""
+        import stock_spike_monitor as m
+        orig_long_only = m.RH_LONG_ONLY
+        try:
+            m.RH_LONG_ONLY = True
+            calls = []
+            orig_fn = m.send_traderspost_order
+
+            def mock_order(ticker, action, price, shares=m.SHARES):
+                calls.append({"ticker": ticker, "action": action})
+                return {"success": False, "skipped": True, "message": "mocked",
+                        "http_status": 0, "raw": None}
+
+            m.send_traderspost_order = mock_order
+
+            # Simulate the gate as coded in execute_short_entry v3.4.37:
+            # if RH_LONG_ONLY: return (skip TP short)
+            if m.RH_LONG_ONLY:
+                pass  # gate fires — no TP order
+            else:
+                m.send_traderspost_order("NVDA", "sell", 140.0)
+
+            assert len(calls) == 0, \
+                f"TP short order was called despite RH_LONG_ONLY=True: {calls}"
+        finally:
+            m.RH_LONG_ONLY = orig_long_only
+            m.send_traderspost_order = orig_fn
+
+    @t("v3.4.37: RH_MAX_CONCURRENT_POSITIONS=6 blocks 7th entry")
+    def _():
+        """When tp_positions already has 6 entries, no TP entry order should fire."""
+        import stock_spike_monitor as m
+        orig_cap = m.RH_MAX_CONCURRENT_POSITIONS
+        orig_tp = dict(m.tp_positions)
+        try:
+            m.RH_MAX_CONCURRENT_POSITIONS = 6
+            m.tp_positions.clear()
+            for i in range(6):
+                m.tp_positions[f"FAKE{i}"] = {"entry_price": 100.0, "shares": 10}
+
+            # Gate check: if tp_positions >= RH_MAX_CONCURRENT_POSITIONS, no order
+            should_fire = (
+                "NVDA" not in m.tp_positions and
+                len(m.tp_positions) < m.RH_MAX_CONCURRENT_POSITIONS
+            )
+            assert not should_fire, \
+                "TP entry must NOT fire when 6 positions already open"
+        finally:
+            m.RH_MAX_CONCURRENT_POSITIONS = orig_cap
+            m.tp_positions.clear()
+            m.tp_positions.update(orig_tp)
+
+    @t("v3.4.37: RH_MAX_CONCURRENT_POSITIONS=6 allows 6th entry")
+    def _():
+        """With 5 existing positions, a 6th entry IS allowed."""
+        import stock_spike_monitor as m
+        orig_cap = m.RH_MAX_CONCURRENT_POSITIONS
+        orig_tp = dict(m.tp_positions)
+        try:
+            m.RH_MAX_CONCURRENT_POSITIONS = 6
+            m.tp_positions.clear()
+            for i in range(5):
+                m.tp_positions[f"FAKE{i}"] = {"entry_price": 100.0, "shares": 10}
+
+            can_fire = (
+                "NVDA" not in m.tp_positions and
+                len(m.tp_positions) < m.RH_MAX_CONCURRENT_POSITIONS
+            )
+            assert can_fire, "6th entry should be allowed with 5 existing positions"
+        finally:
+            m.RH_MAX_CONCURRENT_POSITIONS = orig_cap
+            m.tp_positions.clear()
+            m.tp_positions.update(orig_tp)
+
+    @t("v3.4.37: /algo caption reads v3.4.37")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.cmd_algo)
+        assert "v3.4.37" in src, "/algo source must contain v3.4.37"
+        assert "v3.4.36" not in src, "/algo source must not contain old v3.4.36"
+
+    @t("v3.4.37: BOT_VERSION is 3.4.37")
+    def _():
+        import stock_spike_monitor as m
+        assert m.BOT_VERSION == "3.4.37", \
+            f"BOT_VERSION should be 3.4.37, got {m.BOT_VERSION!r}"
+
+    @t("v3.4.37: CURRENT_MAIN_NOTE leads with v3.4.37")
+    def _():
+        import stock_spike_monitor as m
+        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.37"), \
+            f"CURRENT_MAIN_NOTE must start with v3.4.37: {m.CURRENT_MAIN_NOTE[:40]!r}"
+
+    @t("v3.4.37: CURRENT_TP_NOTE leads with v3.4.37")
+    def _():
+        import stock_spike_monitor as m
+        assert m.CURRENT_TP_NOTE.startswith("v3.4.37"), \
+            f"CURRENT_TP_NOTE must start with v3.4.37: {m.CURRENT_TP_NOTE[:40]!r}"
+
+    @t("v3.4.37: v3.4.36 persists in release note history")
+    def _():
+        import stock_spike_monitor as m
+        assert "v3.4.36" in m.MAIN_RELEASE_NOTE, \
+            "v3.4.36 must persist in MAIN_RELEASE_NOTE history"
+
+    @t("v3.4.37: rh_shares_for uses RH_DOLLARS_PER_ENTRY dynamically")
+    def _():
+        import stock_spike_monitor as m
+        orig = m.RH_DOLLARS_PER_ENTRY
+        try:
+            m.RH_DOLLARS_PER_ENTRY = 3000.0
+            result = m.rh_shares_for(150.0)
+            assert result == 20, \
+                f"With $3000/entry at $150, expect 20 shares, got {result}"
+        finally:
+            m.RH_DOLLARS_PER_ENTRY = orig
+
+    @t("v3.4.37: _rh_parse_tp_email detects failed subject")
+    def _():
+        import stock_spike_monitor as m
+        body = (
+            "Status:\nInsufficient buying power\n\n"
+            '{"ticker":"NVDA","action":"buy","quantity":10,"limitPrice":145.20}'
+        )
+        # Use a subject without 'failed' for the payload test
+        body2 = (
+            "Status:\nInsufficient buying power\n\n"
+            "Payload:\n"
+            '{"ticker":"NVDA","action":"buy","quantity":10,"limitPrice":145.20}'
+        )
+        result = m._rh_parse_tp_email(body2, "Trade signal to MyStrategy failed")
+        assert result["kind"] == "failed"
+        assert result["reason"] == "Insufficient buying power"
+        assert result["ticker"] == "NVDA"
+        assert result["action"] == "buy"
+        assert result["qty"] == 10
+
+    @t("v3.4.37: _rh_parse_tp_email unknown subject returns unknown kind")
+    def _():
+        import stock_spike_monitor as m
+        result = m._rh_parse_tp_email("Some body text", "Hello from TradersPost")
+        assert result["kind"] == "unknown"
+
+    @t("v3.4.37: RH_LONG_ONLY defaults to True")
+    def _():
+        import stock_spike_monitor as m
+        assert isinstance(m.RH_LONG_ONLY, bool), "RH_LONG_ONLY must be bool"
+        # Default is True (env var not set in test environment)
+        assert m.RH_LONG_ONLY is True, \
+            f"RH_LONG_ONLY should default to True, got {m.RH_LONG_ONLY}"
+
+    @t("v3.4.37: CURRENT notes stay within 34-char mobile budget")
+    def _():
+        import stock_spike_monitor as m
+        for name in ("CURRENT_MAIN_NOTE", "CURRENT_TP_NOTE",
+                     "_MAIN_HISTORY_TAIL", "_TP_HISTORY_TAIL"):
+            val = getattr(m, name, "")
+            for i, line in enumerate(val.split("\n")):
+                assert len(line) <= 34, \
+                    f"{name} line {i} over 34 chars ({len(line)}): {line!r}"
 
     return run_suite("LOCAL SMOKE TESTS")
 

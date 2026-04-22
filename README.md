@@ -1,8 +1,8 @@
 # Stock Spike Monitor
 
-ORB + Wounded Buffalo Telegram trading bot. Runs two independent intraday strategies — a long Opening Range Breakout and a short Wounded Buffalo breakdown — across a 9-ticker universe, with a $100k paper portfolio and an optional TradersPost live mirror.
+ORB + Wounded Buffalo Telegram trading bot. Runs two independent intraday strategies — a long Opening Range Breakout and a short Wounded Buffalo breakdown — across a 9-ticker universe. Trades a $100k paper portfolio, with an optional Robinhood live-trading mirror ($25k, long-only, routed through TradersPost) and IMAP reconciliation against TradersPost fill/reject emails.
 
-Current version: **v3.4.36**
+Current version: **v3.4.37**
 
 ---
 
@@ -13,6 +13,8 @@ Current version: **v3.4.36**
 **Short — Wounded Buffalo:** enters when the first 1-minute bar to close below the OR low occurs, the stock is below its PDC (the "wounded" condition), and both SPY and QQQ are below their PDC.
 
 Both strategies use limit orders, 10 shares per entry, and share a 5-entry-per-ticker daily cap.
+
+**Robinhood mode (v3.4.37):** The TradersPost mirror bot runs in long-only mode against a $25k starting capital, sizing $1,500 per entry, capping at 1 entry per ticker and 6 concurrent positions, with IMAP email reconciliation against TradersPost fill/reject emails.
 
 ---
 
@@ -80,13 +82,14 @@ Lords Left and Bull Vacuum require **both** indices to cross simultaneously. Sin
 
 ---
 
-## Paper Portfolio + TradersPost Mirror
+## Paper Portfolio + Robinhood Mirror
 
-The bot maintains a **paper portfolio** ($100k starting capital) and a parallel **TradersPost (TP) mirror portfolio**. Both are tracked side by side:
+The bot maintains a **paper portfolio** ($100k starting capital) and a parallel **Robinhood mirror portfolio** (via TradersPost webhook, $25k starting capital). Both are tracked side by side:
 
 - Paper trades report to the main Telegram group.
-- TP trades report privately via a separate TP bot.
+- Robinhood trades report privately via a separate TP bot.
 - Every paper trade fires a TradersPost webhook when `TRADERSPOST_ENABLED=true`.
+- Robinhood mode is long-only; short entries are gated by `RH_LONG_ONLY=true` (default).
 
 ---
 
@@ -146,7 +149,7 @@ python stock_spike_monitor.py
 
 - [COMMANDS.md](COMMANDS.md) — Full command reference
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Internal architecture: scan loop, stop chain, regime shield, state persistence
-- [stock_spike_monitor_algo.pdf](stock_spike_monitor_algo.pdf) — Algorithm Reference Manual v3.4.36 (also available via `/algo` in the bot)
+- [stock_spike_monitor_algo.pdf](stock_spike_monitor_algo.pdf) — Algorithm Reference Manual v3.4.37 (also available via `/algo` in the bot)
 
 ---
 

@@ -332,7 +332,7 @@ The TP portfolio (`tp_positions`, `tp_short_positions`) tracks what TradersPost 
 
 ## MarketMode Classifier
 
-`_refresh_market_mode()` runs each scan cycle and classifies the session into a mode (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.) based on day P&L, breadth, and RSI observations. **This is observation-only in v3.4.36 — no trading parameters are read from it yet.** See `/mode` for the live output.
+`_refresh_market_mode()` runs each scan cycle and classifies the session into a mode (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.) based on day P&L, breadth, and RSI observations. **This is observation-only in v3.4.37 — no trading parameters are read from it yet.** See `/mode` for the live output.
 
 ---
 
@@ -358,3 +358,73 @@ The bot runs on [Railway](https://railway.app):
 ## Command Surface
 
 See [COMMANDS.md](COMMANDS.md) for the full reference.
+
+---
+
+## Robinhood Bot (Live Trading) — v3.4.37
+
+The TP (TradersPost mirror) bot doubles as the **Robinhood bot** for live trading. It uses TradersPost as a routing layer to send orders to Robinhood.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RH_STARTING_CAPITAL` | `25000` | Robinhood account starting balance used for equity tracking |
+| `RH_DOLLARS_PER_ENTRY` | `1500` | Dollar allocation per entry (replaces fixed 10-share paper sizing) |
+| `RH_MAX_ENTRIES_PER_TICKER` | `1` | Maximum concurrent Robinhood positions in a single ticker |
+| `RH_MAX_CONCURRENT_POSITIONS` | `6` | Maximum total concurrent Robinhood positions across all tickers |
+| `RH_LONG_ONLY` | `true` | When true, all TP/Robinhood short entries are suppressed (paper short continues) |
+| `GMAIL_ADDRESS` | `""` | Gmail address for IMAP reconciliation (optional) |
+| `GMAIL_APP_PASSWORD` | `""` | Gmail app password (not account password) for IMAP |
+| `RH_IMAP_POLL_SEC` | `120` | How often to poll Gmail for TradersPost fill/reject emails |
+
+### Share Sizing
+
+Robinhood orders use dynamic dollar-based sizing instead of the paper bot's fixed 10 shares:
+
+```python
+rh_shares = max(1, int(RH_DOLLARS_PER_ENTRY // price))
+# Example: $1500 / $145.20 = 10 shares
+```
+
+This size is computed at entry and stored in `tp_positions[ticker]["shares"]`. Exits use the stored share count.
+
+### Long-Only Gate
+
+When `RH_LONG_ONLY=true` (default), the TP bot skips all short-entry webhook calls:
+
+- Paper short positions continue to open and manage normally.
+- `tp_short_positions` remains empty.
+- No buy-to-cover order is ever sent for a short that was never opened.
+
+### Concurrency Caps
+
+Before any TP long entry fires, two gates are checked:
+
+1. **Per-ticker cap:** if `ticker in tp_positions`, skip (max 1 position per ticker).
+2. **Concurrent cap:** if `len(tp_positions) >= RH_MAX_CONCURRENT_POSITIONS`, skip.
+
+The paper bot is entirely unaffected by these caps.
+
+### IMAP Reconciliation
+
+When `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` are set, `rh_imap_poll_once()` runs every `RH_IMAP_POLL_SEC` seconds in a daemon thread. It:
+
+1. Connects to `imap.gmail.com` via SSL.
+2. Searches for emails from `support@traderspost.io`.
+3. Parses each unprocessed email with `_rh_parse_tp_email()` to classify it as `failed`, `filled`, or `unknown`.
+4. Sends a Telegram message to the Robinhood chat for each email:
+   - Failed: rejection reason extracted from `Status:` and `Payload:` fields.
+   - Filled: confirmation with ticker, quantity, and fill price (best-effort parsing).
+   - Unknown: raw subject forwarded for manual review.
+
+UIDs of processed emails are tracked in `_rh_reconcile_seen` (in-memory; resets on restart).
+
+### Paper Bot Unchanged
+
+The paper portfolio remains completely unchanged:
+- Starting capital: `$100,000`
+- Shares per entry: `10` (fixed)
+- Max 5 entries per ticker per day (long + short combined)
+- No concurrency cap
+- Short selling enabled

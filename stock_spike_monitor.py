@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.36"
+BOT_VERSION = "3.4.37"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,29 +56,27 @@ BOT_VERSION = "3.4.36"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.36 \u2014 Profit-lock\n"
-    "ladder is now peak-based.\n"
-    "Stop = peak \u2212 X%, tighter\n"
-    "each tier as peak grows.\n"
+    "v3.4.37 \u2014 Robinhood\n"
+    "mode: TP mirror bot is\n"
+    "now the Robinhood bot.\n"
+    "Long-only, $25k scale,\n"
+    "$1500/entry, max 1\n"
+    "entry/ticker, max 6\n"
+    "concurrent positions.\n"
     "\n"
-    "Peak   Give-back  Phase\n"
-    ">=1%   0.50%      Arm\n"
-    ">=2%   0.40%      Lock\n"
-    ">=3%   0.30%      Tight\n"
-    ">=4%   0.20%      Tighter\n"
-    ">=5%+  0.10%      Harvest\n"
+    "IMAP reconciliation\n"
+    "reads TP fill/reject\n"
+    "emails from Gmail.\n"
     "\n"
-    "Shorts mirror it.\n"
-    "Stop only tightens.\n"
-    "Replaces gain-anchored\n"
-    "tiers from v3.4.35."
+    "Paper bot unchanged.\n"
+    "($100k, 10 shares)"
 )
 CURRENT_TP_NOTE = (
-    "v3.4.36 \u2014 Profit-lock\n"
-    "ladder: stop = peak \u2212 X%\n"
-    "tighter at every tier.\n"
-    "5%+ locks within 0.10%.\n"
-    "Stop only tightens."
+    "v3.4.37 \u2014 Robinhood\n"
+    "mode: long-only $25k,\n"
+    "$1500/entry, max 6\n"
+    "concurrent positions.\n"
+    "IMAP reconciliation."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -89,6 +87,11 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.36 \u2014 Profit-lock\n"
+    "ladder is now peak-based.\n"
+    "Stop = peak \u2212 X%, tighter\n"
+    "each tier as peak grows.\n"
+    "\n"
     "v3.4.35 \u2014 First profit-lock\n"
     "ladder (gain-anchored); now\n"
     "superseded by peak-anchored.\n"
@@ -100,16 +103,14 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.33 \u2014 /ticker unified\n"
     "with add/remove/list; adds\n"
-    "prime PDC + OR + RSI.\n"
-    "\n"
-    "v3.4.32 \u2014 Editable ticker\n"
-    "universe from Telegram;\n"
-    "QBTS tracked by default."
+    "prime PDC + OR + RSI."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.36 \u2014 Profit-lock\n"
+    "ladder: peak-anchored.\n"
     "v3.4.35 \u2014 First ladder\n"
     "(gain-anchored) \u2014 now\n"
     "peak-anchored instead.\n"
@@ -118,7 +119,7 @@ _TP_HISTORY_TAIL = (
     "v3.4.33 \u2014 /ticker unified\n"
     "(add/remove/list) + rich\n"
     "metric prime on add.\n"
-    "/tp_sync for TP status."
+    "/rh_sync for RH status."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -333,6 +334,18 @@ PAPER_STARTING_CAPITAL = 100_000.0
 # When True, TP portfolio events are forwarded to TradersPost.
 # Paper portfolio is ALWAYS simulation-only and never hits the webhook.
 TRADERSPOST_ENABLED    = os.getenv("TRADERSPOST_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+
+# ── Robinhood (TradersPost-routed) configuration — live trading scale ──────────
+RH_STARTING_CAPITAL       = float(os.getenv("RH_STARTING_CAPITAL", "25000"))
+RH_DOLLARS_PER_ENTRY      = float(os.getenv("RH_DOLLARS_PER_ENTRY", "1500"))
+RH_MAX_ENTRIES_PER_TICKER = int(os.getenv("RH_MAX_ENTRIES_PER_TICKER", "1"))
+RH_MAX_CONCURRENT_POSITIONS = int(os.getenv("RH_MAX_CONCURRENT_POSITIONS", "6"))
+RH_LONG_ONLY              = os.getenv("RH_LONG_ONLY", "true").lower() in ("1", "true", "yes", "on")
+# IMAP reconciliation (Gmail app password)
+GMAIL_ADDRESS             = os.getenv("GMAIL_ADDRESS", "")
+GMAIL_APP_PASSWORD        = os.getenv("GMAIL_APP_PASSWORD", "")
+RH_IMAP_ENABLED           = bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
+RH_IMAP_POLL_SEC          = int(os.getenv("RH_IMAP_POLL_SEC", "120"))
 
 # Investment logger (separate file)
 inv_logger = logging.getLogger("investment")
@@ -694,10 +707,10 @@ paper_trades: list = []
 paper_cash: float = PAPER_STARTING_CAPITAL
 paper_all_trades: list = []
 
-# TP Portfolio (independent, parallel tracking)
+# TP Portfolio (independent, parallel tracking) — Robinhood live scale
 tp_positions: dict = {}
 tp_paper_trades: list = []
-tp_paper_cash: float = PAPER_STARTING_CAPITAL
+tp_paper_cash: float = RH_STARTING_CAPITAL  # $25k live-trading scale (not paper $100k)
 
 # Trade history persistence (Feature 1)
 trade_history: list = []        # ALL closed paper trades, max 500
@@ -1469,7 +1482,7 @@ def load_tp_state():
 
     if not os.path.exists(TP_STATE_FILE):
         logger.info("No TP state at %s. Starting fresh $%.0f.",
-                     TP_STATE_FILE, PAPER_STARTING_CAPITAL)
+                     TP_STATE_FILE, RH_STARTING_CAPITAL)
         _tp_state_loaded = True
         return
 
@@ -1477,7 +1490,7 @@ def load_tp_state():
         with open(TP_STATE_FILE, "r", encoding="utf-8") as f:
             state = json.load(f)
 
-        tp_paper_cash = float(state.get("tp_paper_cash", PAPER_STARTING_CAPITAL))
+        tp_paper_cash = float(state.get("tp_paper_cash", RH_STARTING_CAPITAL))
         tp_positions.update(state.get("tp_positions", {}))
         tp_paper_trades.clear()
         tp_paper_trades.extend(state.get("tp_paper_trades", []))
@@ -2866,6 +2879,15 @@ def _extract_broker_message(resp_data):
     return msg[:80]
 
 
+def rh_shares_for(price: float) -> int:
+    """Dollar-sized Robinhood order: floor(RH_DOLLARS_PER_ENTRY / price), min 1.
+    Returns 0 only when price <= 0 (invalid).
+    """
+    if price <= 0:
+        return 0
+    return max(1, int(RH_DOLLARS_PER_ENTRY // price))
+
+
 def send_traderspost_order(ticker, action, price, shares=SHARES):
     """Send a limit order to TradersPost via webhook (TP portfolio only).
 
@@ -2899,7 +2921,7 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
         logger.warning("[TP] Enabled but TRADERSPOST_WEBHOOK_URL unset \u2014 skip %s %s",
                        action, ticker)
         send_tp_telegram(
-            "\u26a0 TP webhook skip\n"
+            "\u26a0 Robinhood webhook skip\n"
             "%s %s %d @ $%.2f\n"
             "URL not configured" % (action.upper(), ticker, shares, price)
         )
@@ -2974,18 +2996,17 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
         tp_state["recent_orders"] = recent
         save_paper_state()
 
-        # Notify TP chat (✓ sent / ✗ rejected + broker reason if any)
+        # Notify TP chat (order fired / rejected + broker reason if any)
         if success:
             send_tp_telegram(
-                "\u2713 TP webhook sent\n"
-                "%s %s %d @ $%.2f\n"
-                "Limit: $%.2f" % (action.upper(), ticker, shares,
-                                  price, limit_price)
+                "\U0001f916 Robinhood order fired\n"
+                "%s %s \u00d7 %d @ $%.2f limit\n"
+                "Awaiting fill confirmation\u2026" % (action.upper(), ticker, shares, limit_price)
             )
         else:
             reason_line = ("\nReason: %s" % broker_msg) if broker_msg else ""
             send_tp_telegram(
-                "\u2717 TP webhook rejected\n"
+                "\u2717 Robinhood order rejected\n"
                 "%s %s %d @ $%.2f\n"
                 "Limit: $%.2f%s\n"
                 "HTTP: %d" % (action.upper(), ticker, shares,
@@ -3017,7 +3038,7 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
         except Exception:
             pass
         send_tp_telegram(
-            "\u2717 TP webhook failed\n"
+            "\u2717 Robinhood webhook failed\n"
             "%s %s %d @ $%.2f\n"
             "Err: %s" % (action.upper(), ticker, shares, price, err_str)
         )
@@ -3161,55 +3182,66 @@ def execute_entry(ticker, current_price):
          stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
-    # TP Portfolio — fire webhook FIRST, mirror entry only if broker accepts
-    tp_result = send_traderspost_order(ticker, "buy", current_price)
-    tp_ok = bool(tp_result and (tp_result.get("success") or tp_result.get("skipped")))
+    # ─ Robinhood / TP Portfolio — fire webhook FIRST, mirror entry only if broker accepts
+    # v3.4.37: concurrency cap (RH_MAX_CONCURRENT_POSITIONS) and per-ticker cap
+    # (RH_MAX_ENTRIES_PER_TICKER) gate new TP entries. Paper side is unaffected.
+    if ticker in tp_positions:
+        logger.info("[RH] skip TP entry %s — already have a position", ticker)
+    elif len(tp_positions) >= RH_MAX_CONCURRENT_POSITIONS:
+        logger.info("[RH] skip %s — %d concurrent cap reached",
+                    ticker, RH_MAX_CONCURRENT_POSITIONS)
+    else:
+        rh_sz = rh_shares_for(current_price)  # $1500-sized lot
+        tp_result = send_traderspost_order(ticker, "buy", current_price, shares=rh_sz)
+        tp_ok = bool(tp_result and (tp_result.get("success") or tp_result.get("skipped")))
 
-    if not tp_ok:
-        # Broker rejected — paper keeps its simulated position, TP stays empty.
-        # send_traderspost_order already alerted the TP chat with the reason.
-        logger.warning(
-            "[TP] Broker rejected BUY for %s — skipping TP mirror (paper unaffected)",
-            ticker,
-        )
-        save_paper_state()
-        return
+        if not tp_ok:
+            # Broker rejected — paper keeps its simulated position, TP stays empty.
+            # send_traderspost_order already alerted the Robinhood chat with the reason.
+            logger.warning(
+                "[RH] Broker rejected BUY for %s — skipping TP mirror (paper unaffected)",
+                ticker,
+            )
+            save_paper_state()
+            return
 
-    tp_positions[ticker] = {
-        "entry_price": current_price,
-        "shares": SHARES,
-        "stop": stop_price,
-        "initial_stop": stop_price,  # v3.4.35 — frozen
-        "trail_active": False,
-        "trail_high": current_price,
-        "entry_count": entry_num,
-        "entry_time": now_str,
-        "date": now_date,
-        "pdc": pdc.get(ticker, 0),
-        "broker_synced": True,  # confirmed open on TradersPost side
-    }
-    tp_paper_cash -= cost
-    tp_paper_trades.append(trade.copy())
-    logger.info("[TP] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
-                ticker, SHARES, current_price, limit_price, stop_price, entry_num)
+        rh_cost = current_price * rh_sz
+        tp_positions[ticker] = {
+            "entry_price": current_price,
+            "shares": rh_sz,  # v3.4.37: dollar-sized lot
+            "stop": stop_price,
+            "initial_stop": stop_price,  # v3.4.35 — frozen
+            "trail_active": False,
+            "trail_high": current_price,
+            "entry_count": entry_num,
+            "entry_time": now_str,
+            "date": now_date,
+            "pdc": pdc.get(ticker, 0),
+            "broker_synced": True,  # confirmed open on TradersPost side
+        }
+        tp_paper_cash -= rh_cost
+        tp_paper_trades.append(trade.copy())
+        logger.info("[RH] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
+                    ticker, rh_sz, current_price, limit_price, stop_price, entry_num)
 
-    # Fix B: TP BUY notification → send_tp_telegram() ONLY
-    tp_msg = (
-        "[TP] \U0001f4c8 LONG ENTRY %s  #%d\n"
-        "%s\n"
-        "Price  : $%.2f  (limit $%.2f)\n"
-        "Shares : %d   Cost: $%s\n"
-        "Stop   : $%.2f  (%s)\n"
-        "OR High: $%.2f   PDC: $%.2f\n"
-        "%s"
-        "Time   : %s\n"
-        "%s"
-    ) % (ticker, entry_num, SEP_E,
-         current_price, limit_price,
-         SHARES, format(cost, ",.2f"),
-         stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
-    send_tp_telegram(tp_msg)
-    save_tp_state()
+        # Robinhood BUY notification → send_tp_telegram() ONLY
+        rh_limit_p = round(current_price + 0.02, 2)
+        tp_msg = (
+            "[Robinhood] \U0001f4c8 LONG ENTRY %s  #%d\n"
+            "%s\n"
+            "Price  : $%.2f  (limit $%.2f)\n"
+            "Shares : %d   Cost: $%s\n"
+            "Stop   : $%.2f  (%s)\n"
+            "OR High: $%.2f   PDC: $%.2f\n"
+            "%s"
+            "Time   : %s\n"
+            "%s"
+        ) % (ticker, entry_num, SEP_E,
+             current_price, rh_limit_p,
+             rh_sz, format(rh_cost, ",.2f"),
+             stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
+        send_tp_telegram(tp_msg)
+        save_tp_state()
 
     save_paper_state()
 
@@ -3439,7 +3471,7 @@ def close_position(ticker, price, reason="STOP"):
             tp_t_dist = max(round(tp_t_high * 0.010, 2), 1.00)
             tp_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % tp_t_dist
         tp_msg = (
-            "[TP] %s EXIT %s\n"
+            "[Robinhood] %s EXIT %s\n"
             "%s\n"
             "Shares : %d\n"
             "Entry  : $%.2f  \u2192  $%.2f\n"
@@ -3669,7 +3701,7 @@ def close_tp_position(ticker, price, reason="STOP"):
     tp_proceeds = round(price * tp_shares, 2)
     tp_reason_label = REASON_LABELS.get(reason, reason)
     tp_msg = (
-        "[TP] %s EXIT %s\n"
+        "[Robinhood] %s EXIT %s\n"
         "%s\n"
         "Shares : %d\n"
         "Entry  : $%.2f  \u2192  $%.2f\n"
@@ -4001,15 +4033,6 @@ def execute_short_entry(ticker, price):
     daily_short_entry_count[ticker] = daily_short_entry_count.get(ticker, 0) + 1
     save_paper_state()
 
-    # TP short — fire webhook FIRST, mirror only if broker accepts.
-    # v3.4.22: TradersPost expects action=sell here; it infers the
-    # short direction from the strategy config + open position state.
-    # (The legacy non-standard action string would return HTTP 400.)
-    tp_short_result = send_traderspost_order(ticker, "sell", entry_price, shares)
-    tp_short_ok = bool(
-        tp_short_result and (tp_short_result.get("success") or tp_short_result.get("skipped"))
-    )
-
     # Paper notification always fires (paper side already mutated)
     pdc_val = pdc.get(ticker, 0)
     or_low_val = or_low.get(ticker, 0)
@@ -4042,16 +4065,32 @@ def execute_short_entry(ticker, price):
          stop, short_stop_label, or_low_val, pdc_val, short_sig, entry_time_display, SEP)
     send_telegram(msg)
 
+    # v3.4.37 — RH_LONG_ONLY gate: skip TP/Robinhood short path entirely.
+    # Paper short continues normally; TP book stays empty for shorts.
+    if RH_LONG_ONLY:
+        logger.info("[RH] long-only — skipping TP short entry for %s", ticker)
+        return
+
+    # TP short — fire webhook FIRST, mirror only if broker accepts.
+    # v3.4.22: TradersPost expects action=sell here; it infers the
+    # short direction from the strategy config + open position state.
+    # (The legacy non-standard action string would return HTTP 400.)
+    rh_short_sz = rh_shares_for(entry_price)  # dollar-sized lot
+    tp_short_result = send_traderspost_order(ticker, "sell", entry_price, rh_short_sz)
+    tp_short_ok = bool(
+        tp_short_result and (tp_short_result.get("success") or tp_short_result.get("skipped"))
+    )
+
     if not tp_short_ok:
         logger.warning(
-            "[TP] Broker rejected SHORT for %s — skipping TP mirror (paper unaffected)",
+            "[RH] Broker rejected SHORT for %s — skipping TP mirror (paper unaffected)",
             ticker,
         )
         return
 
     tp_short_positions[ticker] = {
         "entry_price": entry_price,
-        "shares": shares,
+        "shares": rh_short_sz,
         "stop": stop,
         "initial_stop": stop,  # v3.4.35 — frozen
         "trail_stop": None,
@@ -4062,10 +4101,10 @@ def execute_short_entry(ticker, price):
         "side": "SHORT",
         "broker_synced": True,
     }
-    tp_paper_cash += entry_price * shares
+    tp_paper_cash += entry_price * rh_short_sz
     save_tp_state()
 
-    tp_msg = msg.replace("SHORT ENTRY", "TP SHORT ENTRY")
+    tp_msg = msg.replace("SHORT ENTRY", "Robinhood SHORT ENTRY")
     send_tp_telegram(tp_msg)
 
 
@@ -4369,7 +4408,7 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
             tp_sc_t_dist = max(round(tp_sc_t_low * 0.010, 2), 1.00)
             tp_sc_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % tp_sc_t_dist
         tp_msg = (
-            "%s TP SHORT CLOSED\n"
+            "%s Robinhood SHORT CLOSED\n"
             "%s\n"
             "Ticker : %s\n"
             "Shares : %d\n"
@@ -5009,6 +5048,145 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("CMD test completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
+# ═══ Robinhood / TradersPost IMAP reconciliation ════════════════════════════
+import imaplib
+import email as email_module
+from email.header import decode_header as _decode_email_header
+
+_rh_reconcile_seen: set = set()  # message UIDs already processed (in-memory)
+
+
+def _rh_parse_tp_email(msg_body: str, subject: str) -> dict:
+    """Parse a TradersPost email body and return a dict describing what happened.
+
+    Returns {"kind": "failed"|"filled"|"rejected"|"unknown",
+             "ticker": str|None, "action": str|None, "qty": int|None,
+             "price": float|None, "reason": str|None, "raw_subject": subject}.
+
+    Known formats:
+    - Subject "Trade signal to [strategy] failed" + body contains
+      "Status:\\n<reason>" and "Payload:\\n{json}" -> kind=failed
+    - Success format unknown yet; heuristics: subject containing "filled" or
+      body containing "filled @" -> kind=filled (best-effort)
+    """
+    import re as _re
+    import json as _json
+    result = {"kind": "unknown", "ticker": None, "action": None,
+              "qty": None, "price": None, "reason": None,
+              "raw_subject": subject}
+    # Failure path (known format)
+    if "failed" in subject.lower():
+        result["kind"] = "failed"
+        m = _re.search(r"Status:\s*\n?(.+?)(?:\n\n|\nPayload)", msg_body, _re.S)
+        if m:
+            result["reason"] = m.group(1).strip()
+        m = _re.search(r"Payload:\s*\n?(\{.+?\})", msg_body, _re.S)
+        if m:
+            try:
+                payload = _json.loads(m.group(1).replace("&quot;", '"'))
+                result["ticker"] = payload.get("ticker")
+                result["action"] = payload.get("action")
+                result["qty"]    = payload.get("quantity")
+                result["price"]  = payload.get("limitPrice")
+            except Exception:
+                pass
+        return result
+    # Success path (best-effort)
+    if any(k in subject.lower() for k in ("filled", "executed", "order")):
+        result["kind"] = "filled"
+        m = _re.search(
+            r"\b([A-Z]{2,5})\b\s+(?:BUY|SELL|buy|sell)\s+(\d+)"
+            r"\s+(?:shares?\s+)?(?:at|@)\s+\$?([\d.]+)",
+            msg_body,
+        )
+        if m:
+            result["ticker"] = m.group(1)
+            result["qty"] = int(m.group(2))
+            result["price"] = float(m.group(3))
+        return result
+    return result
+
+
+def _rh_handle_reconcile(parsed: dict, subject: str, body: str):
+    """React to a parsed TradersPost email: Telegram alert + optional state adjust."""
+    kind = parsed["kind"]
+    if kind == "failed":
+        send_tp_telegram(
+            "\u26a0\ufe0f Robinhood order REJECTED\n"
+            "%s %s \u00d7 %s @ $%s\n"
+            "Reason: %s" % (
+                str(parsed.get("action") or "?").upper(),
+                str(parsed.get("ticker") or "?"),
+                str(parsed.get("qty") or "?"),
+                str(parsed.get("price") or "?"),
+                str(parsed.get("reason") or "(unknown)")[:200],
+            )
+        )
+        # Don't mutate state — the order was never placed.
+    elif kind == "filled":
+        send_tp_telegram(
+            "\u2705 Robinhood FILL confirmed\n"
+            "%s \u00d7 %s @ $%s\n"
+            "(reconciled from TP email)" % (
+                str(parsed.get("ticker") or "?"),
+                str(parsed.get("qty") or "?"),
+                str(parsed.get("price") or "?"),
+            )
+        )
+    else:
+        # Unknown format — forward subject to Telegram so Val can investigate
+        send_tp_telegram("\U0001f4ec Robinhood email (unparsed): %s" % subject[:120])
+
+
+def rh_imap_poll_once():
+    """One IMAP poll cycle: connect to Gmail, fetch TradersPost emails,
+    parse each, and act. Logs heavily — first real fill will teach us
+    the success format.
+    """
+    if not RH_IMAP_ENABLED:
+        return
+    try:
+        imap = imaplib.IMAP4_SSL("imap.gmail.com")
+        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        imap.select("INBOX")
+        # Search all emails from TradersPost support
+        typ, data = imap.search(None, '(FROM "support@traderspost.io")')
+        if typ != "OK" or not data or not data[0]:
+            imap.logout()
+            return
+        ids = data[0].split()[-20:]  # last 20 at most
+        for uid in ids:
+            uid_s = uid.decode()
+            if uid_s in _rh_reconcile_seen:
+                continue
+            typ, msg_data = imap.fetch(uid, "(RFC822)")
+            if typ != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw = msg_data[0][1]
+            msg = email_module.message_from_bytes(raw)
+            subj = str(msg.get("Subject", ""))
+            # Decode body (walk multipart)
+            body_parts = []
+            for part in msg.walk():
+                ctype = part.get_content_type()
+                if ctype == "text/plain":
+                    try:
+                        body_parts.append(
+                            part.get_payload(decode=True).decode("utf-8", errors="replace")
+                        )
+                    except Exception:
+                        pass
+            body = "\n".join(body_parts)
+            parsed = _rh_parse_tp_email(body, subj)
+            logger.info("[RH-IMAP] uid=%s kind=%s ticker=%s reason=%s",
+                        uid_s, parsed["kind"], parsed["ticker"], parsed["reason"])
+            _rh_reconcile_seen.add(uid_s)
+            _rh_handle_reconcile(parsed, subj, body)
+        imap.logout()
+    except Exception as e:
+        logger.warning("[RH-IMAP] poll failed: %s", e)
+
+
 # ============================================================
 # SCAN LOOP
 # ============================================================
@@ -5184,6 +5362,7 @@ def scheduler_thread():
     fired = set()
     last_scan = _now_et() - timedelta(seconds=SCAN_INTERVAL + 1)
     last_state_save = _now_et() - timedelta(minutes=6)
+    last_imap_poll = _now_et() - timedelta(seconds=RH_IMAP_POLL_SEC + 1)
 
     # Job table: (day, "HH:MM", function)
     # Note: times are ET.  8:20 CT = 9:20 ET, 8:31 CT = 9:31 ET
@@ -5248,6 +5427,12 @@ def scheduler_thread():
         if state_elapsed >= 5:
             last_state_save = now_et
             threading.Thread(target=save_paper_state, daemon=True).start()
+
+        # IMAP reconciliation — poll TradersPost emails every RH_IMAP_POLL_SEC
+        imap_elapsed = (now_et - last_imap_poll).total_seconds()
+        if imap_elapsed >= RH_IMAP_POLL_SEC:
+            last_imap_poll = now_et
+            threading.Thread(target=rh_imap_poll_once, daemon=True).start()
 
         time.sleep(30)
 
@@ -5328,7 +5513,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # the content fits Telegram's mobile code-block width without wrapping.
     tp_section = (
         "Broker\n"
-        "  /tp_sync     TP sync status\n"
+        "  /rh_sync     Robinhood sync\n"
+        "  /tp_sync     (alias: /rh_sync)\n"
         "\n"
     ) if is_tp else ""
     body = (
@@ -5510,7 +5696,7 @@ def _status_text_sync(is_tp):
     if is_tp:
         # Show TP portfolio
         n_pos = len(tp_positions)
-        header = "[TP] Open Positions (%d)" % n_pos
+        header = "[Robinhood] Open Positions (%d)" % n_pos
         lines = [header, sep]
 
         total_unreal_pnl = 0.0
@@ -5593,7 +5779,7 @@ def _status_text_sync(is_tp):
                                  % (s_ticker, s_entry, s_pos["stop"]))
 
         tp_cash_fmt = format(tp_paper_cash, ",.2f")
-        lines.append("TP Cash: $%s" % tp_cash_fmt)
+        lines.append("Robinhood Cash: $%s" % tp_cash_fmt)
 
         # Portfolio equity summary.
         # Short accounting: on entry, proceeds (entry_px * shares) are
@@ -5613,9 +5799,9 @@ def _status_text_sync(is_tp):
             tp_short_liability += cur_px * s_pos["shares"]
         tp_all_unreal = total_unreal_pnl + tp_short_unreal
         tp_equity = tp_paper_cash + total_market_value - tp_short_liability
-        tp_vs_start = tp_equity - PAPER_STARTING_CAPITAL
+        tp_vs_start = tp_equity - RH_STARTING_CAPITAL
         lines.append(sep)
-        lines.append("\U0001f4bc Portfolio Snapshot")
+        lines.append("\U0001f4bc Robinhood Portfolio Snapshot")
         lines.append("  Cash:          $%s" % format(tp_paper_cash, ",.2f"))
         lines.append("  Long MV:       $%s" % format(total_market_value, ",.2f"))
         if tp_short_liability > 0:
@@ -5623,7 +5809,7 @@ def _status_text_sync(is_tp):
         lines.append("  Total Equity:  $%s" % format(tp_equity, ",.2f"))
         lines.append("  Unrealized P&L:    $%+.2f" % tp_all_unreal)
         lines.append("  vs Start:        $%+.2f  (started at $%s)"
-                     % (tp_vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
+                     % (tp_vs_start, format(RH_STARTING_CAPITAL, ",.0f")))
         lines.append(sep)
         return "\n".join(lines)
 
@@ -5777,7 +5963,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
             buf = await loop.run_in_executor(None, _chart_portfolio_pie, tp_positions, tp_short_positions, tp_paper_cash)
             if buf:
-                await update.message.reply_photo(photo=buf, caption="TP Portfolio Allocation", reply_markup=_menu_button())
+                await update.message.reply_photo(photo=buf, caption="Robinhood Portfolio Allocation", reply_markup=_menu_button())
                 sent_photo = True
     else:
         if MATPLOTLIB_AVAILABLE and (positions or short_positions):
@@ -5806,8 +5992,8 @@ def _build_positions_text(is_tp=False):
         trades_list = tp_paper_trades
         short_hist = tp_short_trade_history
         cash = tp_paper_cash
-        label = "[TP] Open Positions"
-        cash_label = "TP Cash"
+        label = "[Robinhood] Open Positions"
+        cash_label = "Robinhood Cash"
     else:
         pos_dict = positions
         short_dict = short_positions
@@ -5899,9 +6085,11 @@ def _build_positions_text(is_tp=False):
         short_liability += cur_px * s_pos["shares"]
     all_unreal = total_unreal + short_unreal
     equity = cash + total_market_value - short_liability
-    vs_start = equity - PAPER_STARTING_CAPITAL
+    _start_cap = RH_STARTING_CAPITAL if is_tp else PAPER_STARTING_CAPITAL
+    vs_start = equity - _start_cap
+    snap_label = "\U0001f4bc Robinhood Portfolio Snapshot" if is_tp else "\U0001f4bc Portfolio Snapshot"
     lines.append(sep)
-    lines.append("\U0001f4bc Portfolio Snapshot")
+    lines.append(snap_label)
     lines.append("  Cash:          $%s" % format(cash, ",.2f"))
     lines.append("  Long MV:       $%s" % format(total_market_value, ",.2f"))
     if short_liability > 0:
@@ -5909,7 +6097,7 @@ def _build_positions_text(is_tp=False):
     lines.append("  Total Equity:  $%s" % format(equity, ",.2f"))
     lines.append("  Unrealized P&L:    $%+.2f" % all_unreal)
     lines.append("  vs Start:        $%+.2f  (started at $%s)"
-                 % (vs_start, format(PAPER_STARTING_CAPITAL, ",.0f")))
+                 % (vs_start, format(_start_cap, ",.0f")))
     lines.append(sep)
 
     return "\n".join(lines)
@@ -6345,7 +6533,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             logger.info("CMD dayreport completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
             return
-        body = _format_dayreport_section(all_tp, header, "TP")
+        body = _format_dayreport_section(all_tp, header, "Robinhood")
         await _reply_in_chunks(update.message, body)
         # Chart: Trade P&L bar chart
         if MATPLOTLIB_AVAILABLE:
@@ -7024,11 +7212,12 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /tp_sync COMMAND — TradersPost broker sync status (v3.4.15)
 # ============================================================
 async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show TP broker sync status: open TP positions, last webhook sends,
-    and any unsynced exits awaiting manual reconciliation."""
+    """Show Robinhood broker sync status: open Robinhood positions, last webhook sends,
+    and any unsynced exits awaiting manual reconciliation.
+    Also accessible as /rh_sync."""
     SEP = "\u2500" * 34
 
-    lines = ["TP Broker Sync", SEP]
+    lines = ["Robinhood Broker Sync", SEP]
     lines.append("Enabled : %s" % ("on" if TRADERSPOST_ENABLED else "off"))
     lines.append("Sent    : %d" % tp_state.get("total_orders_sent", 0))
     lines.append("OK      : %d" % tp_state.get("total_orders_success", 0))
@@ -7038,14 +7227,14 @@ async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("Last    : %s" % _to_cdt_hhmm(last_t))
     lines.append(SEP)
 
-    # Open TP positions (longs)
-    lines.append("Open TP longs: %d" % len(tp_positions))
+    # Open Robinhood positions (longs)
+    lines.append("Open RH longs: %d" % len(tp_positions))
     for tkr, pos in list(tp_positions.items())[:8]:
         synced = "\u2713" if pos.get("broker_synced") else "?"
         lines.append("  %s %s %d @ $%.2f" % (
             synced, tkr, pos.get("shares", 0), pos.get("entry_price", 0.0)))
 
-    lines.append("Open TP shorts: %d" % len(tp_short_positions))
+    lines.append("Open RH shorts: %d" % len(tp_short_positions))
     for tkr, pos in list(tp_short_positions.items())[:8]:
         synced = "\u2713" if pos.get("broker_synced") else "?"
         lines.append("  %s %s %d @ $%.2f" % (
@@ -7194,7 +7383,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send algorithm summary + downloadable PDF reference."""
     SEP = "\u2500" * 34
     summary = (
-        "\U0001f4d8 ALGORITHM REFERENCE v3.4.36\n"
+        "\U0001f4d8 ALGORITHM REFERENCE v3.4.37\n"
         f"{SEP}\n"
         "Two independent strategies:\n\n"
         "\U0001f4c8 ORB LONG BREAKOUT\n"
@@ -7263,8 +7452,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.36.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.36",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.37.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.37",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -7474,7 +7663,7 @@ def _do_reset_tp():
     tp_paper_trades.clear()
     tp_trade_history.clear()
     tp_short_trade_history.clear()
-    tp_paper_cash = PAPER_STARTING_CAPITAL
+    tp_paper_cash = RH_STARTING_CAPITAL  # Robinhood live-trading scale
     save_tp_state()
 
 
@@ -7675,7 +7864,7 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_tp_update(update):
         long_history = tp_trade_history
         short_hist = tp_short_trade_history
-        label = "TP Portfolio"
+        label = "Robinhood Portfolio"
     else:
         long_history = trade_history
         short_hist = short_trade_history
@@ -9054,9 +9243,10 @@ MAIN_BOT_COMMANDS = [
     BotCommand("reset", "Reset portfolio"),
 ]
 
-# TP bot: main bot's commands plus /tp_sync (TradersPost-only).
+# TP bot: main bot's commands plus /rh_sync and /tp_sync (Robinhood-only).
 TP_BOT_COMMANDS = list(MAIN_BOT_COMMANDS) + [
-    BotCommand("tp_sync", "TP broker sync status"),
+    BotCommand("rh_sync", "Robinhood broker sync status"),
+    BotCommand("tp_sync", "Robinhood sync (alias: /rh_sync)"),
 ]
 
 
@@ -9183,10 +9373,10 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     app.add_handler(CommandHandler("retighten", cmd_retighten))
     app.add_handler(CommandHandler("trade_log", cmd_trade_log))
-    # Main bot: /tp_sync is TP-only. Register a redirect on main so a
-    # misdirected /tp_sync gets a friendly "try the TP bot" reply instead
-    # of silence.
+    # Main bot: /tp_sync and /rh_sync are TP/Robinhood-only. Register
+    # redirects so misdirected commands get a friendly "try the TP bot" reply.
     app.add_handler(CommandHandler("tp_sync", cmd_tp_sync_on_main))
+    app.add_handler(CommandHandler("rh_sync", cmd_tp_sync_on_main))
     app.add_handler(CommandHandler("mode", cmd_mode))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("perf", cmd_perf))
@@ -9249,7 +9439,8 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     tp_app.add_handler(CommandHandler("retighten", cmd_retighten))
     tp_app.add_handler(CommandHandler("trade_log", cmd_trade_log))
-    tp_app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))
+    tp_app.add_handler(CommandHandler("rh_sync", cmd_tp_sync))  # primary name
+    tp_app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))   # legacy alias
     tp_app.add_handler(CommandHandler("mode", cmd_mode))
     tp_app.add_handler(CommandHandler("reset", cmd_reset))
     tp_app.add_handler(CommandHandler("perf", cmd_perf))

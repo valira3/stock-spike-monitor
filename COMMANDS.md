@@ -1,6 +1,6 @@
 # Command Reference
 
-All commands are registered on both the main bot and the TP bot unless noted. The main bot routes to the paper portfolio; the TP bot routes to the TradersPost mirror portfolio. `/dashboard` shows both portfolios on either bot.
+All commands are registered on both the main bot and the TP bot unless noted. The main bot routes to the paper portfolio; the TP bot routes to the Robinhood mirror portfolio. `/dashboard` shows both portfolios on either bot.
 
 Aliases `/positions` and `/or_now` remain registered but are not shown in the Telegram `/` menu.
 
@@ -14,7 +14,7 @@ Aliases `/positions` and `/or_now` remain registered but are not shown in the Te
 | `/status` | — | Open long and short positions with live prices, unrealized P&L per position, stop levels, day P&L, portfolio allocation pie chart. |
 | `/positions` | — | Alias for `/status`. |
 | `/perf` | `[date \| N]` | Performance stats: win rate, avg win/loss, streak, long vs short breakdown. No arg = all-time. `7` = last 7 days. `Apr 17` = single day. |
-| `/mode` | — | Current MarketMode classification (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.), breadth/RSI observer readings, and mode profile. Observation-only in v3.4.36 — no parameters are read from it yet. |
+| `/mode` | — | Current MarketMode classification (OPEN, MOMENTUM, CHOP, DEFENSIVE, etc.), breadth/RSI observer readings, and mode profile. Observation-only in v3.4.37 — no parameters are read from it yet. |
 | `/monitoring` | `[pause \| resume]` | Show scanner status, or pause/resume new-entry scanning. Position management (stops, trailing) continues while paused. No arg = show status. |
 | `/proximity` | — | Read-only diagnostic showing each ticker's current price gap to OR_High (long), OR_Low (short), and PDC. Includes SPY/QQQ polarity check. Refreshable via inline button. |
 
@@ -39,7 +39,7 @@ Aliases `/positions` and `/or_now` remain registered but are not shown in the Te
 |---------|------|-------------|
 | `/reset` | — | Interactive reset with an inline confirm button (60-second expiry). Resets portfolio to $100,000. |
 | `/retighten` | — | Force-run the 0.75% stop cap and breakeven ratchet across every open position right now. Positions with stops already breached by the retightened level are exited immediately (`RETRO_CAP`). |
-| `/tp_sync` | — | **TP bot only.** TradersPost broker sync status: webhook enabled/disabled, orders sent/OK/failed, open TP long and short positions, recent webhook outcomes, unsynced exits needing manual reconciliation. On the main bot, `/tp_sync` redirects to the TP bot. |
+| `/rh_sync` | — | **TP bot only.** Robinhood broker sync status: webhook enabled/disabled, orders sent/OK/failed, open Robinhood long and short positions, recent webhook outcomes, unsynced exits needing manual reconciliation. On the main bot, `/rh_sync` redirects to the TP bot. Also available as `/tp_sync` (alias). |
 
 ---
 
@@ -74,8 +74,8 @@ The primary interface is `/ticker`. The standalone commands are back-compat alia
 | Command | Description |
 |---------|-------------|
 | `/strategy` | Compact inline strategy summary: long and short entry conditions, stop and ladder for both sides, Eye-of-the-Tiger exits, Regime Shield. |
-| `/algo` | Algorithm summary (same content as `/strategy`) plus the full `StockSpikeMonitor_Algorithm_v3.4.36.pdf` sent as a document. PDF is fetched from the repo if not present locally. |
-| `/version` | Current bot version (`v3.4.36`) and release notes. |
+| `/algo` | Algorithm summary (same content as `/strategy`) plus the full `StockSpikeMonitor_Algorithm_v3.4.37.pdf` sent as a document. PDF is fetched from the repo if not present locally. |
+| `/version` | Current bot version (`v3.4.37`) and release notes. |
 
 ---
 
@@ -125,7 +125,8 @@ Admin
   /retighten        Force-cap all stops
   /near_misses      Recent declined breakouts
   /trade_log        Last 10 persistent log rows
-  /tp_sync          TP broker sync (TP bot)
+  /rh_sync          Robinhood sync (TP bot)
+  /tp_sync          (alias: /rh_sync)
   /ticker list/add/remove   Ticker universe
 ```
 
