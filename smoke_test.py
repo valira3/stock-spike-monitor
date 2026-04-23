@@ -3238,11 +3238,18 @@ def run_local() -> int:
                 assert len(line) <= 34, \
                     f"{name} line {i} over 34 chars ({len(line)}): {line!r}"
 
-    @t("v3.4.36: v3.4.35 ladder line persists in history tail")
+    @t("v3.4.36: profit-lock ladder persists in history tail")
     def _():
+        # v3.4.41: v3.4.35 has aged out of the rolling history; the
+        # v3.4.36 peak-anchored ladder line is now the oldest ladder
+        # mention. Structural check: the tail must still describe the
+        # profit-lock ladder so /version retains the lineage.
         import stock_spike_monitor as m
-        note = m.MAIN_RELEASE_NOTE
-        assert "v3.4.35" in note, "v3.4.35 must persist in history"
+        note = m.MAIN_RELEASE_NOTE.lower()
+        assert "ladder" in note, \
+            "MAIN_RELEASE_NOTE must keep a profit-lock ladder line"
+        assert "peak" in note or "gain-anchored" in note, \
+            "ladder line must describe its anchor (peak or gain-anchored)"
 
     @t("v3.4.36: history tail carries multiple older releases")
     def _():
@@ -3677,11 +3684,12 @@ def run_local() -> int:
     # v3.4.40 — Robinhood independence tests
     # ================================================================
 
-    @t("v3.4.40: BOT_VERSION is 3.4.40")
+    @t("v3.4.40: BOT_VERSION is >= 3.4.40 (RH independence line)")
     def _():
         import stock_spike_monitor as m
-        assert m.BOT_VERSION == "3.4.40", \
-            f"BOT_VERSION must be 3.4.40, got {m.BOT_VERSION!r}"
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 40), \
+            f"BOT_VERSION must be >= 3.4.40, got {m.BOT_VERSION!r}"
 
     @t("v3.4.40: execute_rh_entry exists and is parallel to execute_entry")
     def _():
@@ -3794,14 +3802,74 @@ def run_local() -> int:
         assert "_tp_trading_halted = False" in src, \
             "reset_daily_state must reset _tp_trading_halted on day rollover"
 
-    @t("v3.4.40: CURRENT_TP_NOTE mentions independence")
+    @t("v3.4.40: TP_RELEASE_NOTE retains v3.4.40 independence line")
     def _():
         import stock_spike_monitor as m
-        n = m.CURRENT_TP_NOTE
-        assert "v3.4.40" in n, "CURRENT_TP_NOTE must lead with v3.4.40"
-        # A keyword that signals the independence change.
-        assert any(k in n.lower() for k in ("independent", "on its own", "decides")), \
-            "CURRENT_TP_NOTE must describe the independence change"
+        # Once the current release moves past v3.4.40 the CURRENT note
+        # changes, but the rolling history must still carry the
+        # v3.4.40 independence line so /version shows it.
+        hist = m.TP_RELEASE_NOTE
+        assert "v3.4.40" in hist, \
+            "TP_RELEASE_NOTE must retain a v3.4.40 line in the rolling history"
+        assert any(k in hist.lower() for k in ("independence", "independent", "rh-only")), \
+            "TP_RELEASE_NOTE must describe the v3.4.40 independence change"
+
+    # ================================================================
+    # v3.4.41 — /reset auth hardening
+    # ================================================================
+
+    @t("v3.4.41: TELEGRAM_TP_CHAT_ID falls back to default on empty env")
+    def _():
+        import importlib, os, sys
+        # Force-reimport with an empty env var to prove the empty-string
+        # fallback path resolves to the hardcoded owner default, not ''.
+        prev = os.environ.get("TELEGRAM_TP_CHAT_ID")
+        os.environ["TELEGRAM_TP_CHAT_ID"] = ""
+        try:
+            sys.modules.pop("stock_spike_monitor", None)
+            m = importlib.import_module("stock_spike_monitor")
+            assert m.TELEGRAM_TP_CHAT_ID == m._RH_OWNER_DEFAULT, \
+                f"empty env must fall back to default, got {m.TELEGRAM_TP_CHAT_ID!r}"
+        finally:
+            if prev is None:
+                os.environ.pop("TELEGRAM_TP_CHAT_ID", None)
+            else:
+                os.environ["TELEGRAM_TP_CHAT_ID"] = prev
+            sys.modules.pop("stock_spike_monitor", None)
+            importlib.import_module("stock_spike_monitor")
+
+    @t("v3.4.41: _reset_authorized accepts tapping user id, not just chat id")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m._reset_authorized)
+        # Must read from_user.id and check it against the owner set.
+        assert "from_user" in src, \
+            "_reset_authorized must read query.from_user for group-chat resets"
+        assert "user_id_str" in src, \
+            "_reset_authorized must derive a user_id_str from query.from_user"
+
+    @t("v3.4.41: _reset_authorized rejects blank owner id from the match set")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m._reset_authorized)
+        # The owner set must not accept '' as a legitimate match even if
+        # CHAT_ID is unset. We look for the explicit discard.
+        assert "owner_ids.discard(\"\")" in src, \
+            "_reset_authorized must never accept empty-string as an owner id"
+
+    @t("v3.4.41: CURRENT_MAIN_NOTE leads with v3.4.41")
+    def _():
+        import stock_spike_monitor as m
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v3.4.41"), \
+            "CURRENT_MAIN_NOTE must lead with v3.4.41"
+
+    @t("v3.4.41: CURRENT_TP_NOTE leads with v3.4.41")
+    def _():
+        import stock_spike_monitor as m
+        assert m.CURRENT_TP_NOTE.lstrip().startswith("v3.4.41"), \
+            "CURRENT_TP_NOTE must lead with v3.4.41"
 
     return run_suite("LOCAL SMOKE TESTS")
 

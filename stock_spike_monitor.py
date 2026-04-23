@@ -34,11 +34,16 @@ from telegram.ext import (
 TELEGRAM_TOKEN          = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID                 = os.getenv("CHAT_ID")
 TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
-TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
+# v3.4.41 — treat empty string as unset so Railway vars left blank still
+# fall back to the hardcoded owner ID. os.getenv's default only fires when
+# the key is missing entirely; a blank value would otherwise disable the
+# reset-authorization gate (see _reset_authorized).
+_RH_OWNER_DEFAULT       = "5165570192"
+TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "").strip() or _RH_OWNER_DEFAULT
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.40"
+BOT_VERSION = "3.4.41"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,34 +61,21 @@ BOT_VERSION = "3.4.40"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.40 \u2014 Robinhood is\n"
-    "independent from paper.\n"
-    "Halt, cash, concurrency\n"
-    "and per-ticker caps are\n"
-    "now per-portfolio. A\n"
-    "skipped paper entry no\n"
-    "longer vetoes RH, and\n"
-    "paper losses no longer\n"
-    "halt RH.\n"
-    "\n"
-    "Signals and indicators\n"
-    "are still shared; sizing\n"
-    "and book-level decisions\n"
-    "are not.\n"
-    "\n"
-    "Run /reset on the RH bot\n"
-    "after deploy to clear\n"
-    "any ghost state."
+    "v3.4.41 \u2014 /reset auth\n"
+    "hardening. An empty\n"
+    "TELEGRAM_TP_CHAT_ID env\n"
+    "on Railway no longer\n"
+    "disables the owner gate,\n"
+    "and the tapping user id\n"
+    "is also accepted (fixes\n"
+    "group-chat resets)."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.40 \u2014 This bot\n"
-    "now decides entries on\n"
-    "its own: RH halt, RH\n"
-    "cash, RH concurrency,\n"
-    "RH per-ticker cap. Paper\n"
-    "cannot block RH.\n"
-    "Run /reset to clear any\n"
-    "ghost state."
+    "v3.4.41 \u2014 /reset is no\n"
+    "longer blocked when the\n"
+    "owner chat env is left\n"
+    "blank; the tapping user\n"
+    "id is also a valid owner."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -94,6 +86,12 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.40 \u2014 Robinhood is\n"
+    "independent from paper.\n"
+    "Halt, cash, concurrency,\n"
+    "per-ticker caps are\n"
+    "now per-portfolio.\n"
+    "\n"
     "v3.4.39 \u2014 Consolidation.\n"
     "Robinhood bot shows only\n"
     "Robinhood data; dashboard\n"
@@ -112,16 +110,16 @@ _MAIN_HISTORY_TAIL = (
     "reconciliation from Gmail.\n"
     "\n"
     "v3.4.36 \u2014 Profit-lock\n"
-    "ladder is now peak-based.\n"
-    "\n"
-    "v3.4.35 \u2014 First profit-lock\n"
-    "ladder (gain-anchored); now\n"
-    "superseded by peak-anchored."
+    "ladder is now peak-based."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.40 \u2014 Independence\n"
+    "from paper: halt, cash,\n"
+    "concurrency, per-ticker\n"
+    "caps are now RH-only.\n"
     "v3.4.39 \u2014 Consolidation:\n"
     "this bot scopes /trade_log,\n"
     "/reset, /retighten to RH.\n"
@@ -132,9 +130,7 @@ _TP_HISTORY_TAIL = (
     "max 6 concurrent, IMAP fill\n"
     "reconciliation from Gmail.\n"
     "v3.4.36 \u2014 Profit-lock\n"
-    "ladder: peak-anchored.\n"
-    "v3.4.35 \u2014 First ladder\n"
-    "(gain-anchored)."
+    "ladder: peak-anchored."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -7792,8 +7788,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.40.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.40",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.41.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.41",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -7904,10 +7900,21 @@ def _reset_authorized(query) -> tuple:
     """
     data = query.data or ""
     chat_id_str = str(query.message.chat_id)
-    from_bot_is_tp = (str(query.message.chat_id) == TELEGRAM_TP_CHAT_ID)
+    # v3.4.41 — also capture the tapping user's ID. In group chats the
+    # message.chat_id is the group (negative number), not the owner's
+    # user ID, so the old owner check could falsely reject a legitimate
+    # owner tap. We now accept either identity.
+    try:
+        user_id_str = str(query.from_user.id) if query.from_user else ""
+    except Exception:
+        user_id_str = ""
+    from_bot_is_tp = (chat_id_str == TELEGRAM_TP_CHAT_ID
+                      or user_id_str == TELEGRAM_TP_CHAT_ID)
 
-    # (1) Owner check — chat_id must be one of the two known chats.
-    if chat_id_str != TELEGRAM_TP_CHAT_ID and chat_id_str != str(CHAT_ID or ""):
+    # (1) Owner check — chat OR user must match one of the two known IDs.
+    owner_ids = {TELEGRAM_TP_CHAT_ID, str(CHAT_ID or "")}
+    owner_ids.discard("")  # never accept the empty-string fallback
+    if chat_id_str not in owner_ids and user_id_str not in owner_ids:
         return (False, "unauthorized chat")
 
     # (2) Bot/action match — only the confirm variants carry an action.
