@@ -53,7 +53,7 @@ RH_OWNER_USER_IDS       = {
     u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
 }
 
-BOT_VERSION = "3.4.43"
+BOT_VERSION = "3.4.44"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -71,18 +71,24 @@ BOT_VERSION = "3.4.43"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.43 \u2014 Owner user-id\n"
-    "whitelist: /reset now\n"
-    "works from DM even when\n"
-    "CHAT_ID env points to a\n"
-    "group chat. Bot detection\n"
-    "uses context.bot.token."
+    "v3.4.44 \u2014 Menu cleanup:\n"
+    "removed duplicate and\n"
+    "alias commands from the\n"
+    "Telegram popup. /help,\n"
+    "/test, /near_misses are\n"
+    "now typed-only. /positions,\n"
+    "/eod, /or_now, /tickers,\n"
+    "/add_ticker, /remove_ticker\n"
+    "aliases are gone; use the\n"
+    "primary /status, /orb\n"
+    "recover, /ticker commands."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.43 \u2014 Owner user-id\n"
-    "whitelist lets /reset run\n"
-    "from DM; bot detection\n"
-    "uses context.bot.token."
+    "v3.4.44 \u2014 Menu cleanup:\n"
+    "/tp_sync dropped from the\n"
+    "popup (use /rh_sync).\n"
+    "/help, /test, /near_misses\n"
+    "are now typed-only."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -93,6 +99,12 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.43 \u2014 Owner user-id\n"
+    "whitelist: /reset now\n"
+    "works from DM even when\n"
+    "CHAT_ID env points to a\n"
+    "group chat.\n"
+    "\n"
     "v3.4.42 \u2014 /reset blocked\n"
     "message now shows chat_id,\n"
     "user_id and owner env so\n"
@@ -134,6 +146,9 @@ MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.43 \u2014 Owner user-id\n"
+    "whitelist: /reset works\n"
+    "from DM.\n"
     "v3.4.42 \u2014 Diagnostic:\n"
     "reset-blocked error prints\n"
     "the ids it saw vs expected.\n"
@@ -5759,15 +5774,16 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     monospace. This makes space-padded columns actually align and keeps
     each line short enough to avoid wrapping on phone widths.
 
-    TP bot gets an extra 'Broker' section with /tp_sync; main bot does not.
+    TP bot gets an extra 'Broker' section with /rh_sync; main bot does not.
     """
     is_tp = is_tp_update(update)
     # Keep every line <= 34 chars including the leading 2-space indent so
     # the content fits Telegram's mobile code-block width without wrapping.
+    # v3.4.44: /tp_sync remains a silent alias for /rh_sync but is no longer
+    # advertised here \u2014 one canonical name keeps this tight.
     tp_section = (
         "Broker\n"
         "  /rh_sync     Robinhood sync\n"
-        "  /tp_sync     (alias: /rh_sync)\n"
         "\n"
     ) if is_tp else ""
     body = (
@@ -5806,10 +5822,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /ticker list       Show list\n"
         "  /ticker add SYM    Track\n"
         "  /ticker remove SYM Drop\n"
-        "\n"
-        "(aliases: /tickers,\n"
-        " /add_ticker, /remove_ticker\n"
-        " still work.)\n"
         "\n"
         "Tip: /menu for tap buttons\n"
         "```"
@@ -6228,11 +6240,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sent_photo:
         await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
     logger.info("CMD status completed in %.2fs", asyncio.get_event_loop().time() - t0)
-
-
-async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Alias for /status."""
-    await cmd_status(update, context)
 
 
 def _build_positions_text(is_tp=False):
@@ -6740,13 +6747,6 @@ async def _reply_in_chunks(message, text, max_len=3800, reply_markup=None):
         length += line_len
     if chunk:
         await message.reply_text('\n'.join(chunk), reply_markup=reply_markup)
-
-
-async def cmd_eod(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Re-send the EOD report for today on demand (paper or TP, based on chat)."""
-    today = _now_et().strftime("%Y-%m-%d")
-    portfolio = "tp" if is_tp_update(update) else "paper"
-    await update.message.reply_text(_build_eod_report(today, portfolio))
 
 
 async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7812,8 +7812,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.43.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.43",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.44.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.44",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -9622,49 +9622,22 @@ async def cmd_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _TICKER_USAGE, reply_markup=_menu_button())
 
 
-# ------- Back-compat aliases (not in the BotCommand menu) ----------
-async def cmd_tickers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Alias: /tickers → /ticker list (kept so saved shortcuts work)."""
-    await update.message.reply_text(
-        _fmt_tickers_list(), reply_markup=_menu_button())
-
-
-async def cmd_add_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Alias: /add_ticker SYM → /ticker add SYM."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
-    args = context.args or []
-    if not args:
-        await update.message.reply_text(
-            "Usage: /add_ticker SYM\n"
-            "(or use: /ticker add SYM)",
-            reply_markup=_menu_button())
-        return
-    loop = asyncio.get_event_loop()
-    res = await loop.run_in_executor(None, add_ticker, args[0])
-    await update.message.reply_text(
-        _fmt_add_reply(res), reply_markup=_menu_button())
-
-
-async def cmd_remove_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Alias: /remove_ticker SYM → /ticker remove SYM."""
-    args = context.args or []
-    if not args:
-        await update.message.reply_text(
-            "Usage: /remove_ticker SYM\n"
-            "(or use: /ticker remove SYM)",
-            reply_markup=_menu_button())
-        return
-    res = remove_ticker(args[0])
-    await update.message.reply_text(
-        _fmt_remove_reply(res), reply_markup=_menu_button())
+# v3.4.44: former /tickers, /add_ticker, /remove_ticker back-compat
+# aliases were removed. Use /ticker list | add SYM | remove SYM instead.
 
 
 # ============================================================
 # TELEGRAM BOT SETUP
 # ============================================================
-# Commands shown in the Telegram / menu (user-facing). /positions and /or_now
-# remain registered as silent aliases in add_handler() but are intentionally
-# omitted here to keep the menu tight.
+# Commands shown in the Telegram / menu (user-facing).
+#
+# v3.4.44 menu cleanup: the popup is scoped to everyday-use commands.
+# These typed commands still work but are intentionally hidden from
+# the popup to keep it tight:
+#   - /help, /test, /near_misses (advanced / rarely used)
+#   - /tp_sync on the TP bot (duplicate of /rh_sync)
+# These aliases were removed entirely (no handler, no popup):
+#   /positions, /eod, /or_now, /tickers, /add_ticker, /remove_ticker.
 MAIN_BOT_COMMANDS = [
     BotCommand("dashboard", "Full market snapshot"),
     BotCommand("status", "Open positions + P&L"),
@@ -9677,12 +9650,10 @@ MAIN_BOT_COMMANDS = [
     BotCommand("log", "Trade log (optional date)"),
     BotCommand("replay", "Trade timeline (optional date)"),
     BotCommand("monitoring", "Pause/resume scanner"),
-    BotCommand("test", "Run system health test"),
     BotCommand("menu", "Quick command menu"),
     BotCommand("strategy", "Strategy summary"),
     BotCommand("algo", "Algorithm reference PDF"),
     BotCommand("version", "Release notes"),
-    BotCommand("near_misses", "Recent declined breakouts"),
     BotCommand("retighten", "Retighten stops to 0.75% cap"),
     BotCommand("trade_log", "Last 10 closed trades (persistent)"),
     BotCommand("ticker", "Ticker: list | add SYM | remove SYM"),
@@ -9690,19 +9661,19 @@ MAIN_BOT_COMMANDS = [
     BotCommand("rh_status", "Robinhood kill-switch state"),
     BotCommand("rh_enable", "Enable Robinhood live trading"),
     BotCommand("rh_disable", "Disable Robinhood live trading"),
-    BotCommand("help", "Command menu"),
     BotCommand("reset", "Reset portfolio"),
 ]
 
-# TP bot: main bot's commands plus /rh_sync and /tp_sync (Robinhood-only).
+# TP bot: main bot's commands plus /rh_sync (Robinhood-only).
 # v3.4.38 — kill-switch commands (rh_enable/disable/status) are main-bot
 # only, so strip them from the TP menu.
+# v3.4.44 — /tp_sync popup entry removed (duplicate of /rh_sync); the
+# typed /tp_sync handler stays as a silent alias so saved shortcuts work.
 _RH_KILL_SWITCH_CMDS = {"rh_enable", "rh_disable", "rh_status"}
 TP_BOT_COMMANDS = [
     bc for bc in MAIN_BOT_COMMANDS if bc.command not in _RH_KILL_SWITCH_CMDS
 ] + [
     BotCommand("rh_sync", "Robinhood broker sync status"),
-    BotCommand("tp_sync", "Robinhood sync (alias: /rh_sync)"),
 ]
 
 
@@ -9820,11 +9791,9 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("positions", cmd_positions))
     app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(CommandHandler("replay", cmd_replay))
     app.add_handler(CommandHandler("dayreport", cmd_dayreport))
-    app.add_handler(CommandHandler("eod", cmd_eod))
     app.add_handler(CommandHandler("version", cmd_version))
     app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     app.add_handler(CommandHandler("retighten", cmd_retighten))
@@ -9847,15 +9816,9 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("algo", cmd_algo))
     app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("test", cmd_test))
-    app.add_handler(CommandHandler("or_now", cmd_or_now))
     app.add_handler(CommandHandler("menu", cmd_menu))
     # v3.4.32 — runtime ticker universe management
     app.add_handler(CommandHandler("ticker", cmd_ticker))
-    # Back-compat aliases — hidden from BotCommand menu but still wired
-    # so any saved shortcuts keep working.
-    app.add_handler(CommandHandler("tickers", cmd_tickers))
-    app.add_handler(CommandHandler("add_ticker", cmd_add_ticker))
-    app.add_handler(CommandHandler("remove_ticker", cmd_remove_ticker))
 
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
@@ -9891,7 +9854,6 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("help", cmd_help))
     tp_app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     tp_app.add_handler(CommandHandler("status", cmd_status))
-    tp_app.add_handler(CommandHandler("positions", cmd_positions))
     tp_app.add_handler(CommandHandler("log", cmd_log))
     tp_app.add_handler(CommandHandler("replay", cmd_replay))
     tp_app.add_handler(CommandHandler("dayreport", cmd_dayreport))
@@ -9911,14 +9873,9 @@ def run_telegram_bot():
     tp_app.add_handler(CommandHandler("algo", cmd_algo))
     tp_app.add_handler(CommandHandler("strategy", cmd_strategy))
     tp_app.add_handler(CommandHandler("test", cmd_test))
-    tp_app.add_handler(CommandHandler("or_now", cmd_or_now))
     tp_app.add_handler(CommandHandler("menu", cmd_menu))
     # v3.4.32 — runtime ticker universe management
     tp_app.add_handler(CommandHandler("ticker", cmd_ticker))
-    # Back-compat aliases on TP bot too.
-    tp_app.add_handler(CommandHandler("tickers", cmd_tickers))
-    tp_app.add_handler(CommandHandler("add_ticker", cmd_add_ticker))
-    tp_app.add_handler(CommandHandler("remove_ticker", cmd_remove_ticker))
 
     # Callback query handlers (TP bot)
     tp_app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
