@@ -38,7 +38,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "5165570192")
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.39"
+BOT_VERSION = "3.4.40"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -56,28 +56,34 @@ BOT_VERSION = "3.4.39"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.39 \u2014 Consolidation.\n"
-    "Robinhood bot now shows\n"
-    "only Robinhood data \u2014\n"
-    "/trade_log, /reset, and\n"
-    "/retighten scope to the\n"
-    "bot they run on.\n"
+    "v3.4.40 \u2014 Robinhood is\n"
+    "independent from paper.\n"
+    "Halt, cash, concurrency\n"
+    "and per-ticker caps are\n"
+    "now per-portfolio. A\n"
+    "skipped paper entry no\n"
+    "longer vetoes RH, and\n"
+    "paper losses no longer\n"
+    "halt RH.\n"
     "\n"
-    "Dashboard gains a Paper\n"
-    "/ Robinhood toggle in\n"
-    "the header. Choice is\n"
-    "saved per-browser.\n"
+    "Signals and indicators\n"
+    "are still shared; sizing\n"
+    "and book-level decisions\n"
+    "are not.\n"
     "\n"
-    "No strategy changes."
+    "Run /reset on the RH bot\n"
+    "after deploy to clear\n"
+    "any ghost state."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.39 \u2014 This bot\n"
-    "only shows Robinhood\n"
-    "data now. /trade_log,\n"
-    "/reset, /retighten are\n"
-    "scoped to Robinhood.\n"
-    "Dashboard has a\n"
-    "Paper/Robinhood toggle."
+    "v3.4.40 \u2014 This bot\n"
+    "now decides entries on\n"
+    "its own: RH halt, RH\n"
+    "cash, RH concurrency,\n"
+    "RH per-ticker cap. Paper\n"
+    "cannot block RH.\n"
+    "Run /reset to clear any\n"
+    "ghost state."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -88,6 +94,11 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.39 \u2014 Consolidation.\n"
+    "Robinhood bot shows only\n"
+    "Robinhood data; dashboard\n"
+    "gains a per-bot toggle.\n"
+    "\n"
     "v3.4.38 \u2014 Kill switch.\n"
     "/rh_enable /rh_disable\n"
     "flip Robinhood live orders\n"
@@ -105,15 +116,15 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.35 \u2014 First profit-lock\n"
     "ladder (gain-anchored); now\n"
-    "superseded by peak-anchored.\n"
-    "\n"
-    "v3.4.34 \u2014 AVWAP fully\n"
-    "removed; PDC anchor only."
+    "superseded by peak-anchored."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.39 \u2014 Consolidation:\n"
+    "this bot scopes /trade_log,\n"
+    "/reset, /retighten to RH.\n"
     "v3.4.38 \u2014 Kill switch via\n"
     "/rh_enable, /rh_disable.\n"
     "v3.4.37 \u2014 Robinhood mode:\n"
@@ -123,9 +134,7 @@ _TP_HISTORY_TAIL = (
     "v3.4.36 \u2014 Profit-lock\n"
     "ladder: peak-anchored.\n"
     "v3.4.35 \u2014 First ladder\n"
-    "(gain-anchored).\n"
-    "v3.4.34 \u2014 AVWAP gone;\n"
-    "PDC anchor everywhere."
+    "(gain-anchored)."
 )
 TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -717,6 +726,12 @@ positions: dict = {}
 daily_entry_count: dict = {}   # ticker -> count (max 5)
 daily_entry_date: str = ""
 
+# v3.4.40 — Robinhood portfolio has its own per-day entry counter so
+# the RH_MAX_ENTRIES_PER_TICKER cap (default 1) can be enforced without
+# piggy-backing on the paper counter (which allows up to 5). Reset by
+# reset_daily_state() alongside daily_entry_count.
+tp_daily_entry_count: dict = {}   # ticker -> count for TP / Robinhood book
+
 # Paper trading log (today's trades)
 paper_trades: list = []
 
@@ -754,6 +769,13 @@ tp_unsynced_exits: dict = {}         # {ticker: {action, price, shares, message,
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
 _trading_halted: bool = False
 _trading_halted_reason: str = ""
+
+# v3.4.40 — Robinhood portfolio gets its own halt flag. Paper's halt is
+# computed from paper P&L + paper unrealized; RH's halt is computed from
+# tp_trade_history / tp_short_trade_history + RH unrealized. They move
+# independently so a bad paper day never halts RH, and vice versa.
+_tp_trading_halted: bool = False
+_tp_trading_halted_reason: str = ""
 
 # ============================================================
 # MARKET MODE (scaffolding — NO behavior change in this version)
@@ -1351,6 +1373,9 @@ def save_paper_state():
         "paper_all_trades": paper_all_trades[-500:],
         "daily_entry_count": daily_entry_count,
         "daily_entry_date": daily_entry_date,
+        # v3.4.40 — TP per-ticker daily counter persisted in paper_state
+        # (same file) so it can be reset alongside daily_entry_count.
+        "tp_daily_entry_count": tp_daily_entry_count,
         "or_high": or_high,
         "or_low": or_low,
         "pdc": pdc,
@@ -1382,7 +1407,7 @@ def save_paper_state():
 def load_paper_state():
     """Load paper trading state from disk on startup."""
     global paper_cash, positions, paper_trades, paper_all_trades
-    global daily_entry_count, daily_entry_date
+    global daily_entry_count, daily_entry_date, tp_daily_entry_count
     global or_high, or_low, pdc, or_collected_date
     global user_config, tp_state, tp_dm_chat_id
     global trade_history
@@ -1390,6 +1415,7 @@ def load_paper_state():
     global daily_short_entry_count
     global _last_exit_time, _state_loaded
     global _scan_paused, _trading_halted, _trading_halted_reason
+    global _tp_trading_halted, _tp_trading_halted_reason
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
@@ -1408,6 +1434,7 @@ def load_paper_state():
         paper_all_trades.clear()
         paper_all_trades.extend(state.get("paper_all_trades", []))
         daily_entry_count.update(state.get("daily_entry_count", {}))
+        tp_daily_entry_count.update(state.get("tp_daily_entry_count", {}))
         daily_entry_date = state.get("daily_entry_date", "")
         or_high.update(state.get("or_high", {}))
         or_low.update(state.get("or_low", {}))
@@ -1445,10 +1472,14 @@ def load_paper_state():
         today = _now_et().strftime("%Y-%m-%d")
         if daily_entry_date != today:
             daily_entry_count.clear()
+            tp_daily_entry_count.clear()
             daily_short_entry_count.clear()
             paper_trades.clear()
             _trading_halted = False
             _trading_halted_reason = ""
+            # v3.4.40 — RH halt resets independently on day rollover.
+            _tp_trading_halted = False
+            _tp_trading_halted_reason = ""
 
         _state_loaded = True
         logger.info("Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
@@ -1481,6 +1512,11 @@ def save_tp_state():
         # v3.4.38 — persist runtime kill-switch override across restarts.
         # None means "fall back to TRADERSPOST_ENABLED env var"; bool wins.
         "traderspost_enabled_override": _traderspost_runtime_override,
+        # v3.4.40 — RH halt is computed from RH P&L and persisted
+        # alongside the RH book so restart within the same trading day
+        # preserves it. Paper halt stays in paper_state.
+        "_tp_trading_halted": _tp_trading_halted,
+        "_tp_trading_halted_reason": _tp_trading_halted_reason,
         "saved_at": _utc_now_iso(),
     }
     with _tp_save_lock:
@@ -1500,6 +1536,7 @@ def load_tp_state():
     global tp_short_positions, tp_short_trade_history
     global _tp_state_loaded
     global _traderspost_runtime_override
+    global _tp_trading_halted, _tp_trading_halted_reason
 
     if not os.path.exists(TP_STATE_FILE):
         logger.info("No TP state at %s. Starting fresh $%.0f.",
@@ -1520,6 +1557,10 @@ def load_tp_state():
         tp_short_positions.update(state.get("tp_short_positions", {}))
         tp_short_trade_history.clear()
         tp_short_trade_history.extend(state.get("tp_short_trade_history", []))
+
+        # v3.4.40 — restore RH halt state.
+        _tp_trading_halted = bool(state.get("_tp_trading_halted", False))
+        _tp_trading_halted_reason = state.get("_tp_trading_halted_reason", "")
 
         # v3.4.38 — restore kill-switch override if one was persisted.
         override = state.get("traderspost_enabled_override", None)
@@ -2760,9 +2801,14 @@ def check_entry(ticker):
         logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
         return False, None
 
-    # Not already in position
-    if ticker in positions:
-        return False, None
+    # v3.4.40 — removed the "ticker in positions" gate so this shared
+    # signal-level function no longer blocks RH when ONLY paper is
+    # holding (and vice versa). Per-book "already holding" gates now
+    # live in the entry loop (paper_holds/rh_holds) and in
+    # check_entry_rh(). Leaving paper's per-ticker loss cap (-$50) as a
+    # shared signal filter: if a ticker is structurally toxic today,
+    # both books should skip it — that is a strategy-level judgment, not
+    # a portfolio-level one.
 
     # Fetch current bar (Finnhub/Yahoo as fallback)
     bars = fetch_1min_bars(ticker)
@@ -2929,8 +2975,14 @@ def rh_shares_for(price: float) -> int:
     return max(1, int(RH_DOLLARS_PER_ENTRY // price))
 
 
-def send_traderspost_order(ticker, action, price, shares=SHARES):
+def send_traderspost_order(ticker, action, price, shares=None):
     """Send a limit order to TradersPost via webhook (TP portfolio only).
+
+    v3.4.40 — shares is REQUIRED (no paper-sized SHARES default). The
+    Robinhood book uses dollar-sized lots via rh_shares_for(price), not
+    paper's fixed 10. A missing shares= kwarg is a programming error,
+    not a reason to silently fall back to paper sizing — that is how
+    ghost trades were created in v3.4.39 and earlier.
 
     action: 'buy' or 'sell'.
       - Long entry  → 'buy'   (opens long)
@@ -2951,6 +3003,15 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
     TP Telegram chat on success and on failure so Val always knows what
     the broker side actually received.
     """
+    # v3.4.40: fail-fast on missing shares rather than defaulting to
+    # SHARES (paper sizing). Callers in the RH mirror paths always know
+    # the RH-sized lot; anything else is a bug we want surfaced.
+    if shares is None:
+        raise TypeError(
+            "send_traderspost_order requires shares= (v3.4.40 locked down "
+            "the paper SHARES default to prevent ghost trades)"
+        )
+
     skip_result = {"success": False, "skipped": True, "message": "",
                    "http_status": 0, "raw": None}
 
@@ -3088,11 +3149,235 @@ def send_traderspost_order(ticker, action, price, shares=SHARES):
 
 
 # ============================================================
-# EXECUTE ENTRY
+# v3.4.40 — RH (TradersPost) independent halt + entry path
+# ============================================================
+# In v3.4.39 and earlier the Robinhood book piggy-backed on paper's
+# halt flag and paper's entry decision: a paper loss could halt RH
+# even though the RH book was flat, and a skipped paper entry meant
+# RH never got a chance to enter at all. v3.4.40 separates the two.
+# Paper remains on _trading_halted / execute_entry; Robinhood uses
+# _tp_trading_halted + execute_rh_entry. Signals and indicators are
+# shared upstream (check_entry is the same); only the portfolio-side
+# decision and sizing are now independent.
+def _compute_tp_halt(today_str):
+    """Compute today's RH P&L (realized + unrealized) and flip the RH
+    halt flag if it breaches DAILY_LOSS_LIMIT. Returns True if halted."""
+    global _tp_trading_halted, _tp_trading_halted_reason
+
+    if _tp_trading_halted:
+        return True
+
+    tp_today_pnl = sum(
+        t.get("pnl", 0) for t in tp_trade_history
+        if t.get("date") == today_str
+    )
+    tp_today_pnl += sum(
+        t.get("pnl", 0) for t in tp_short_trade_history
+        if t.get("date") == today_str
+    )
+
+    # Unrealized from RH open longs.
+    for pos_ticker, pos in list(tp_positions.items()):
+        fmp = get_fmp_quote(pos_ticker)
+        live_px = fmp.get("price", 0) if fmp else 0
+        if live_px > 0:
+            tp_today_pnl += (live_px - pos["entry_price"]) * pos.get("shares", 0)
+
+    # Unrealized from RH open shorts.
+    for pos_ticker, pos in list(tp_short_positions.items()):
+        fmp = get_fmp_quote(pos_ticker)
+        live_px = fmp.get("price", 0) if fmp else 0
+        if live_px > 0:
+            tp_today_pnl += (pos["entry_price"] - live_px) * pos.get("shares", 0)
+
+    logger.info("[RH] Daily P&L check: $%.2f (limit $%.2f)",
+                tp_today_pnl, DAILY_LOSS_LIMIT)
+    if tp_today_pnl <= DAILY_LOSS_LIMIT:
+        _tp_trading_halted = True
+        pnl_fmt = "%+.2f" % tp_today_pnl
+        limit_fmt = "%.2f" % DAILY_LOSS_LIMIT
+        _tp_trading_halted_reason = "RH daily loss limit hit: $%s" % pnl_fmt
+        halt_msg = (
+            "[Robinhood] STOP Trading halted \u2014 daily loss limit hit\n"
+            "Today P&L: $%s\n"
+            "Limit: $%s\n"
+            "No new RH entries until tomorrow."
+        ) % (pnl_fmt, limit_fmt)
+        send_tp_telegram(halt_msg)
+        return True
+    return False
+
+
+def check_entry_rh(ticker):
+    """Return True if the RH book is eligible to open a new LONG on
+    ticker RIGHT NOW. Mirrors the gates in execute_entry's old RH block
+    but reads only RH state. Does NOT check the signal itself — the
+    caller has already done that via check_entry. This function only
+    enforces portfolio-level limits on the RH side.
+    """
+    # Already holding — no add-ons today (RH_MAX_ENTRIES_PER_TICKER
+    # defaults to 1, and our broker mapping is 1 lot per ticker per day).
+    if ticker in tp_positions:
+        return False
+    # Concurrency cap on the RH book.
+    if len(tp_positions) >= RH_MAX_CONCURRENT_POSITIONS:
+        logger.info("[RH] skip %s \u2014 %d concurrent cap reached",
+                    ticker, RH_MAX_CONCURRENT_POSITIONS)
+        return False
+    # Per-ticker entry count cap (independent of paper's cap of 5).
+    if tp_daily_entry_count.get(ticker, 0) >= RH_MAX_ENTRIES_PER_TICKER:
+        logger.info(
+            "[RH] skip %s \u2014 per-ticker entry cap hit (%d/%d)",
+            ticker, tp_daily_entry_count.get(ticker, 0),
+            RH_MAX_ENTRIES_PER_TICKER,
+        )
+        return False
+    return True
+
+
+def execute_rh_entry(ticker, current_price):
+    """Open a Robinhood (TP) long at current_price, independent of paper.
+
+    Signals/indicators are shared with the paper path; portfolio
+    decisions are not. Gates enforced here:
+      1. _tp_trading_halted (independent of paper halt)
+      2. check_entry_rh() — concurrency + per-ticker caps
+      3. Independent RH cash check (tp_paper_cash, not paper_cash)
+      4. Broker must truly accept (success=True, not just skipped)
+    """
+    global tp_paper_cash
+
+    now_et = _now_et()
+    today_str = now_et.strftime("%Y-%m-%d")
+
+    # 1. RH halt — independent of paper.
+    if _compute_tp_halt(today_str):
+        logger.info("[RH] halted \u2014 skipping entry for %s", ticker)
+        return
+
+    # 2. Portfolio-level caps (concurrency + per-ticker).
+    if not check_entry_rh(ticker):
+        return
+
+    # 3. Stop price uses the same cap logic as paper so RH and paper
+    # stop at the same price when they happen to agree on entry price.
+    or_high_val = or_high.get(ticker, current_price)
+    stop_price, _stop_capped, _stop_baseline = _capped_long_stop(
+        or_high_val, current_price
+    )
+
+    rh_sz = rh_shares_for(current_price)
+    rh_cost = current_price * rh_sz
+
+    # 4. Independent RH cash check.
+    if tp_paper_cash < rh_cost:
+        logger.info(
+            "[RH] skip %s \u2014 insufficient RH cash ($%.2f < $%.2f)",
+            ticker, tp_paper_cash, rh_cost,
+        )
+        return
+
+    # 5. Fire the webhook. Only mirror state on real success.
+    tp_result = send_traderspost_order(
+        ticker, "buy", current_price, shares=rh_sz
+    )
+    tp_ok = bool(tp_result and tp_result.get("success"))
+    tp_skipped = bool(tp_result and tp_result.get("skipped"))
+    if not tp_ok:
+        if tp_skipped:
+            logger.info(
+                "[RH] Webhook skipped for %s (disabled) \u2014 not mirroring",
+                ticker,
+            )
+        else:
+            logger.warning(
+                "[RH] Broker rejected BUY for %s \u2014 not mirroring",
+                ticker,
+            )
+        return
+
+    # 6. Mirror into RH book. entry_count comes from the RH counter,
+    # not paper's daily_entry_count.
+    rh_entry_num = tp_daily_entry_count.get(ticker, 0) + 1
+    tp_daily_entry_count[ticker] = rh_entry_num
+    now_str = _now_cdt().strftime("%H:%M:%S")
+    now_hhmm = _now_cdt().strftime("%H:%M CDT")
+    now_date = now_et.strftime("%Y-%m-%d")
+    limit_price = round(current_price + 0.02, 2)
+
+    tp_positions[ticker] = {
+        "entry_price": current_price,
+        "shares": rh_sz,
+        "stop": stop_price,
+        "initial_stop": stop_price,
+        "trail_active": False,
+        "trail_high": current_price,
+        "entry_count": rh_entry_num,
+        "entry_time": now_str,
+        "date": now_date,
+        "pdc": pdc.get(ticker, 0),
+        "broker_synced": True,
+    }
+    tp_paper_cash -= rh_cost
+    tp_paper_trades.append({
+        "action": "BUY",
+        "ticker": ticker,
+        "price": current_price,
+        "limit_price": limit_price,
+        "shares": rh_sz,
+        "cost": rh_cost,
+        "stop": stop_price,
+        "entry_num": rh_entry_num,
+        "time": now_hhmm,
+        "date": now_date,
+    })
+    logger.info("[RH] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
+                ticker, rh_sz, current_price, limit_price,
+                stop_price, rh_entry_num)
+
+    # Telegram notification — RH side only.
+    SEP_E = "\u2500" * 34
+    or_h = or_high.get(ticker, 0)
+    pdc_e = pdc.get(ticker, 0)
+    sig_lines = "Signal : ORB Breakout \u2191\n"
+    sig_lines += "  1m close > OR High \u2713\n"
+    sig_lines += "  Price > PDC \u2713\n"
+    sig_lines += "  SPY > PDC \u2713\n"
+    sig_lines += "  QQQ > PDC \u2713\n"
+    stop_label = (
+        "entry \u22120.75%" if _stop_capped else "OR_High-$0.90"
+    )
+    tp_msg = (
+        "[Robinhood] \U0001f4c8 LONG ENTRY %s  #%d\n"
+        "%s\n"
+        "Price  : $%.2f  (limit $%.2f)\n"
+        "Shares : %d   Cost: $%s\n"
+        "Stop   : $%.2f  (%s)\n"
+        "OR High: $%.2f   PDC: $%.2f\n"
+        "%s"
+        "Time   : %s\n"
+        "%s"
+    ) % (ticker, rh_entry_num, SEP_E,
+         current_price, limit_price,
+         rh_sz, format(rh_cost, ",.2f"),
+         stop_price, stop_label, or_h, pdc_e,
+         sig_lines, now_hhmm, SEP_E)
+    send_tp_telegram(tp_msg)
+    save_tp_state()
+
+
+# ============================================================
+# EXECUTE ENTRY (paper)
 # ============================================================
 def execute_entry(ticker, current_price):
-    """Place a limit buy for 10 shares. Record position + paper trade."""
-    global paper_cash, tp_paper_cash, _trading_halted, _trading_halted_reason
+    """Place a limit buy for 10 shares on the PAPER book only.
+
+    v3.4.40: the embedded Robinhood mirror that used to live at the end
+    of this function has been extracted to execute_rh_entry(). The two
+    are now called independently from the scan loop so neither portfolio
+    can veto the other's entry decision.
+    """
+    global paper_cash, _trading_halted, _trading_halted_reason
 
     # Feature 2: Check daily loss limit
     now_et = _now_et()
@@ -3222,66 +3507,12 @@ def execute_entry(ticker, current_price):
          stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
-    # ─ Robinhood / TP Portfolio — fire webhook FIRST, mirror entry only if broker accepts
-    # v3.4.37: concurrency cap (RH_MAX_CONCURRENT_POSITIONS) and per-ticker cap
-    # (RH_MAX_ENTRIES_PER_TICKER) gate new TP entries. Paper side is unaffected.
-    if ticker in tp_positions:
-        logger.info("[RH] skip TP entry %s — already have a position", ticker)
-    elif len(tp_positions) >= RH_MAX_CONCURRENT_POSITIONS:
-        logger.info("[RH] skip %s — %d concurrent cap reached",
-                    ticker, RH_MAX_CONCURRENT_POSITIONS)
-    else:
-        rh_sz = rh_shares_for(current_price)  # $1500-sized lot
-        tp_result = send_traderspost_order(ticker, "buy", current_price, shares=rh_sz)
-        tp_ok = bool(tp_result and (tp_result.get("success") or tp_result.get("skipped")))
-
-        if not tp_ok:
-            # Broker rejected — paper keeps its simulated position, TP stays empty.
-            # send_traderspost_order already alerted the Robinhood chat with the reason.
-            logger.warning(
-                "[RH] Broker rejected BUY for %s — skipping TP mirror (paper unaffected)",
-                ticker,
-            )
-            save_paper_state()
-            return
-
-        rh_cost = current_price * rh_sz
-        tp_positions[ticker] = {
-            "entry_price": current_price,
-            "shares": rh_sz,  # v3.4.37: dollar-sized lot
-            "stop": stop_price,
-            "initial_stop": stop_price,  # v3.4.35 — frozen
-            "trail_active": False,
-            "trail_high": current_price,
-            "entry_count": entry_num,
-            "entry_time": now_str,
-            "date": now_date,
-            "pdc": pdc.get(ticker, 0),
-            "broker_synced": True,  # confirmed open on TradersPost side
-        }
-        tp_paper_cash -= rh_cost
-        tp_paper_trades.append(trade.copy())
-        logger.info("[RH] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
-                    ticker, rh_sz, current_price, limit_price, stop_price, entry_num)
-
-        # Robinhood BUY notification → send_tp_telegram() ONLY
-        rh_limit_p = round(current_price + 0.02, 2)
-        tp_msg = (
-            "[Robinhood] \U0001f4c8 LONG ENTRY %s  #%d\n"
-            "%s\n"
-            "Price  : $%.2f  (limit $%.2f)\n"
-            "Shares : %d   Cost: $%s\n"
-            "Stop   : $%.2f  (%s)\n"
-            "OR High: $%.2f   PDC: $%.2f\n"
-            "%s"
-            "Time   : %s\n"
-            "%s"
-        ) % (ticker, entry_num, SEP_E,
-             current_price, rh_limit_p,
-             rh_sz, format(rh_cost, ",.2f"),
-             stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
-        send_tp_telegram(tp_msg)
-        save_tp_state()
+    # v3.4.40: the Robinhood mirror that used to live here has moved to
+    # execute_rh_entry(). The scan loop now calls that function in
+    # parallel with execute_entry, so RH's entry decision is independent
+    # of paper's (paper halt, paper cash, paper per-ticker cap no longer
+    # veto RH; RH halt / RH cash / RH per-ticker cap no longer veto
+    # paper). Signals + indicators are still shared via check_entry.
 
     save_paper_state()
 
@@ -3410,123 +3641,13 @@ def close_position(ticker, price, reason="STOP"):
          pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
     send_telegram(msg)
 
-    # TP Portfolio — mirror close
-    if ticker in tp_positions:
-        tp_pos = tp_positions.pop(ticker)
-        tp_entry = tp_pos["entry_price"]
-        tp_shares = tp_pos["shares"]
-        tp_pnl = (price - tp_entry) * tp_shares
-        tp_pnl_pct = ((price - tp_entry) / tp_entry * 100) if tp_entry else 0
-        tp_paper_cash += price * tp_shares
-        logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
-                    ticker, tp_shares, price, reason, tp_pnl)
-
-        # TradersPost webhook — TP portfolio only (state already mutated; track rejection)
-        _tp_result = send_traderspost_order(ticker, "sell", price, tp_shares)
-        if not (_tp_result.get("success") or _tp_result.get("skipped")):
-            tp_unsynced_exits[ticker] = {
-                "action": "sell",
-                "price": price,
-                "shares": tp_shares,
-                "message": _tp_result.get("message", ""),
-                "http_status": _tp_result.get("http_status"),
-                "time": now_hhmm,
-            }
-
-        tp_entry_time_str = tp_pos.get("entry_time", "")
-        tp_entry_hhmm = _to_cdt_hhmm(tp_entry_time_str) if tp_entry_time_str else ""
-
-        tp_paper_trades.append({
-            "action": "SELL",
-            "ticker": ticker,
-            "price": price,
-            "shares": tp_shares,
-            "pnl": round(tp_pnl, 2),
-            "pnl_pct": round(tp_pnl_pct, 2),
-            "reason": reason,
-            "entry_price": tp_entry,
-            "time": now_hhmm,
-            "date": now_date,
-        })
-
-        # Feature 1: Append to tp_trade_history
-        tp_entry_time_str = tp_pos.get("entry_time", "")
-        tp_hist_record = {
-            "ticker": ticker,
-            "side": "long",
-            "action": "SELL",
-            "shares": tp_shares,
-            "entry_price": tp_entry,
-            "exit_price": price,
-            "pnl": round(tp_pnl, 2),
-            "pnl_pct": round(tp_pnl_pct, 2),
-            "reason": reason,
-            "entry_time": tp_entry_hhmm,
-            "exit_time": now_hhmm,
-            "entry_time_iso": tp_entry_time_str,
-            "exit_time_iso": _utc_now_iso(),
-            "entry_num": tp_pos.get("entry_count", 1),
-            "date": now_date,
-        }
-        tp_trade_history.append(tp_hist_record)
-        if len(tp_trade_history) > TRADE_HISTORY_MAX:
-            tp_trade_history[:] = tp_trade_history[-TRADE_HISTORY_MAX:]
-
-        # v3.4.27 — persistent trade log (TP long close).
-        _tp_hold_s = None
-        try:
-            if tp_entry_time_str:
-                _ent_dt = datetime.fromisoformat(tp_entry_time_str)
-                if _ent_dt.tzinfo is None:
-                    _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
-                _tp_hold_s = (datetime.now(timezone.utc) - _ent_dt).total_seconds()
-        except (TypeError, ValueError):
-            _tp_hold_s = None
-        _tp_log_row = {
-            "date": now_date,
-            "portfolio": "tp",
-            "ticker": ticker,
-            "side": "LONG",
-            "shares": int(tp_shares),
-            "entry_price": float(tp_entry),
-            "exit_price": float(price),
-            "entry_time": tp_entry_time_str,
-            "exit_time": _utc_now_iso(),
-            "hold_seconds": _tp_hold_s,
-            "pnl": round(tp_pnl, 2),
-            "pnl_pct": round(tp_pnl_pct, 2),
-            "reason": reason,
-            "entry_num": int(tp_pos.get("entry_count", 1)),
-        }
-        _tp_log_row.update(_trade_log_snapshot_pos(tp_pos))
-        trade_log_append(_tp_log_row)
-
-        # Fix B: TP EXIT → send_tp_telegram() ONLY
-        tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
-        tp_entry_cost = round(tp_entry * tp_shares, 2)
-        tp_proceeds = round(price * tp_shares, 2)
-        tp_reason_label = REASON_LABELS.get(reason, reason)
-        if reason == "TRAIL":
-            tp_t_high = tp_pos.get("trail_high", price)
-            tp_t_dist = max(round(tp_t_high * 0.010, 2), 1.00)
-            tp_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % tp_t_dist
-        tp_msg = (
-            "[Robinhood] %s EXIT %s\n"
-            "%s\n"
-            "Shares : %d\n"
-            "Entry  : $%.2f  \u2192  $%.2f\n"
-            "Cost   : $%s  \u2192  $%s\n"
-            "P&L    : $%+.2f  (%+.1f%%)\n"
-            "Reason : %s\n"
-            "In: %s   Out: %s\n"
-            "%s"
-        ) % (tp_exit_emoji, ticker, SEP_X,
-             tp_shares, tp_entry, price,
-             format(tp_entry_cost, ",.2f"), format(tp_proceeds, ",.2f"),
-             tp_pnl, tp_pnl_pct, tp_reason_label, tp_entry_hhmm, now_hhmm, SEP_X)
-        send_tp_telegram(tp_msg)
-        save_tp_state()
-
+    # v3.4.40: RH long close is NO LONGER mirrored from paper's close_position.
+    # Rationale: the paper close fires at paper's trigger price and paper's
+    # stop/trail state; forcing the RH book out at the same instant couples
+    # the two portfolios. manage_tp_positions() owns the RH stop/trail and
+    # calls close_tp_position() independently. If the RH book happens to
+    # still be open here, that's correct \u2014 it will exit on its own merits
+    # (its own stop hit, its own regime-eject, or EOD).
     save_paper_state()
 
 
@@ -3845,7 +3966,15 @@ def manage_tp_positions():
 # SHORT ENTRY CHECK (Wounded Buffalo)
 # ============================================================
 def check_short_entry(ticker):
-    """Wounded Buffalo: enter short if 1-min close breaks OR_Low with all filters valid."""
+    """Wounded Buffalo: enter short if 1-min close breaks OR_Low with all filters valid.
+
+    v3.4.40 note: halt check is paper's _trading_halted because execute_
+    short_entry mutates paper state first and then mirrors to RH behind
+    RH_LONG_ONLY. When RH_LONG_ONLY is flipped off, the proper fix is to
+    split this into check_short_entry (paper) + check_short_entry_rh
+    (gated by _tp_trading_halted). Today shorts go paper-only, so the
+    independence gap is latent, not actual.
+    """
     global short_positions, tp_short_positions, daily_short_entry_count
     global paper_cash, tp_paper_cash
 
@@ -4111,21 +4240,57 @@ def execute_short_entry(ticker, price):
         logger.info("[RH] long-only — skipping TP short entry for %s", ticker)
         return
 
+    # v3.4.40 — latent-but-correct RH short gating for when RH_LONG_ONLY
+    # flips. These checks are INDEPENDENT of paper: RH halt, RH open
+    # positions (long + short) vs concurrency cap, RH per-ticker cap,
+    # and RH cash. If RH rejects for any of these reasons, paper-side
+    # state (already mutated above) is unaffected.
+    rh_today_str = date_str
+    if _compute_tp_halt(rh_today_str):
+        logger.info("[RH] halted \u2014 skipping short entry for %s", ticker)
+        return
+    if ticker in tp_short_positions or ticker in tp_positions:
+        logger.info("[RH] skip short %s \u2014 already in RH book", ticker)
+        return
+    rh_open_total = len(tp_positions) + len(tp_short_positions)
+    if rh_open_total >= RH_MAX_CONCURRENT_POSITIONS:
+        logger.info("[RH] skip short %s \u2014 %d concurrent cap reached",
+                    ticker, RH_MAX_CONCURRENT_POSITIONS)
+        return
+    if tp_daily_entry_count.get(ticker, 0) >= RH_MAX_ENTRIES_PER_TICKER:
+        logger.info("[RH] skip short %s \u2014 per-ticker cap hit", ticker)
+        return
+
+    rh_short_sz = rh_shares_for(entry_price)  # dollar-sized lot
+    rh_short_cost_est = entry_price * rh_short_sz
+    # Short proceeds are CREDITED to cash, so a "cash check" here is a
+    # buying-power / concentration guard: require at least the notional
+    # in RH cash so we don't hit >100% concentration via shorts alone.
+    if tp_paper_cash < rh_short_cost_est:
+        logger.info(
+            "[RH] skip short %s \u2014 insufficient RH buying power ($%.2f < $%.2f)",
+            ticker, tp_paper_cash, rh_short_cost_est,
+        )
+        return
+
     # TP short — fire webhook FIRST, mirror only if broker accepts.
     # v3.4.22: TradersPost expects action=sell here; it infers the
     # short direction from the strategy config + open position state.
-    # (The legacy non-standard action string would return HTTP 400.)
-    rh_short_sz = rh_shares_for(entry_price)  # dollar-sized lot
-    tp_short_result = send_traderspost_order(ticker, "sell", entry_price, rh_short_sz)
-    tp_short_ok = bool(
-        tp_short_result and (tp_short_result.get("success") or tp_short_result.get("skipped"))
-    )
+    tp_short_result = send_traderspost_order(ticker, "sell", entry_price, shares=rh_short_sz)
+    tp_short_ok = bool(tp_short_result and tp_short_result.get("success"))
+    tp_short_skipped = bool(tp_short_result and tp_short_result.get("skipped"))
 
     if not tp_short_ok:
-        logger.warning(
-            "[RH] Broker rejected SHORT for %s — skipping TP mirror (paper unaffected)",
-            ticker,
-        )
+        if tp_short_skipped:
+            logger.info(
+                "[RH] SHORT webhook skipped for %s (disabled) \u2014 not mirroring",
+                ticker,
+            )
+        else:
+            logger.warning(
+                "[RH] Broker rejected SHORT for %s \u2014 skipping TP mirror (paper unaffected)",
+                ticker,
+            )
         return
 
     tp_short_positions[ticker] = {
@@ -4142,6 +4307,7 @@ def execute_short_entry(ticker, price):
         "broker_synced": True,
     }
     tp_paper_cash += entry_price * rh_short_sz
+    tp_daily_entry_count[ticker] = tp_daily_entry_count.get(ticker, 0) + 1
     save_tp_state()
 
     tp_msg = msg.replace("SHORT ENTRY", "Robinhood SHORT ENTRY")
@@ -5335,17 +5501,39 @@ def scan_loop():
         logger.info("SCAN CYCLE done in %.2fs — paused (manage only)", time.time() - cycle_start)
         return
 
-    # Check for new entries on tradable tickers (long + short)
+    # Check for new entries on tradable tickers (long + short).
+    # v3.4.40 — paper and Robinhood are now evaluated INDEPENDENTLY.
+    # check_entry() is the shared signal/indicator gate; the portfolio-
+    # side decision (halt, cash, concurrency, per-ticker cap) is per-
+    # book. A paper-held ticker no longer blocks RH from entering, and
+    # vice versa.
     for ticker in TRADE_TICKERS:
-        # Long entry check
-        if ticker not in positions:
-            try:
+        # Long entry check — run once per ticker and fan out to both books.
+        try:
+            # Fast path: if both books already hold this ticker, skip the
+            # signal compute. Otherwise run check_entry so the signal
+            # decision is made once for the scan cycle.
+            paper_holds = ticker in positions
+            rh_holds = ticker in tp_positions
+            if paper_holds and rh_holds:
+                pass  # no book needs an entry
+            else:
                 ok, bars = check_entry(ticker)
                 if ok and bars:
-                    execute_entry(ticker, bars["current_price"])
-            except Exception as e:
-                logger.error("Entry check error %s: %s", ticker, e)
-        # Short entry check (Wounded Buffalo)
+                    px = bars["current_price"]
+                    if not paper_holds:
+                        try:
+                            execute_entry(ticker, px)
+                        except Exception as e:
+                            logger.error("Paper entry error %s: %s", ticker, e)
+                    if not rh_holds:
+                        try:
+                            execute_rh_entry(ticker, px)
+                        except Exception as e:
+                            logger.error("RH entry error %s: %s", ticker, e)
+        except Exception as e:
+            logger.error("Entry check error %s: %s", ticker, e)
+        # Short entry check (Wounded Buffalo) — paper + RH handled inside.
         try:
             check_short_entry(ticker)
         except Exception as e:
@@ -5362,6 +5550,7 @@ def reset_daily_state():
     (v3.4.34: AVWAP reset removed — AVWAP state no longer tracked.)
     """
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason, tp_paper_trades
+    global _tp_trading_halted, _tp_trading_halted_reason
     global daily_short_entry_count
 
     now_et = _now_et()
@@ -5375,6 +5564,8 @@ def reset_daily_state():
 
     if daily_entry_date != today:
         daily_entry_count.clear()
+        # v3.4.40 — RH per-ticker counter resets on day rollover.
+        tp_daily_entry_count.clear()
         daily_short_entry_count.clear()
         paper_trades.clear()
         tp_paper_trades.clear()
@@ -5384,9 +5575,11 @@ def reset_daily_state():
     # v3.4.34: removed per-day AVWAP reset — AVWAP state no longer
     # exists. PDC is refreshed by the OR collector at market open.
 
-    # Feature 2: Reset trading halt for new day
+    # Feature 2: Reset trading halt for new day (both books).
     _trading_halted = False
     _trading_halted_reason = ""
+    _tp_trading_halted = False
+    _tp_trading_halted_reason = ""
 
 
 # ============================================================
@@ -7530,7 +7723,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send algorithm summary + downloadable PDF reference."""
     SEP = "\u2500" * 34
     summary = (
-        "\U0001f4d8 ALGORITHM REFERENCE v3.4.39\n"
+        "\U0001f4d8 ALGORITHM REFERENCE v3.4.40\n"
         f"{SEP}\n"
         "Two independent strategies:\n\n"
         "\U0001f4c8 ORB LONG BREAKOUT\n"
@@ -7599,8 +7792,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.39.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.39",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.40.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.40",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -7828,13 +8021,20 @@ def _do_reset_paper():
 def _do_reset_tp():
     """Execute TP portfolio reset."""
     global tp_paper_cash
+    global _tp_trading_halted, _tp_trading_halted_reason
     tp_positions.clear()
     tp_short_positions.clear()
     tp_paper_trades.clear()
     tp_trade_history.clear()
     tp_short_trade_history.clear()
+    # v3.4.40 — RH per-ticker counter + halt are part of the RH book.
+    tp_daily_entry_count.clear()
+    _tp_trading_halted = False
+    _tp_trading_halted_reason = ""
     tp_paper_cash = RH_STARTING_CAPITAL  # Robinhood live-trading scale
     save_tp_state()
+    # v3.4.40 — tp_daily_entry_count is persisted inside paper_state.
+    save_paper_state()
 
 
 async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

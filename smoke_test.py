@@ -1737,10 +1737,14 @@ def run_local() -> int:
     @t("v3.4.27: every close path calls trade_log_append")
     def _():
         import inspect
-        # close_position (paper long + TP long mirror)
+        # v3.4.40: close_position now handles PAPER only. The TP mirror
+        # that used to live in close_position was removed — RH exits are
+        # owned exclusively by close_tp_position (called from
+        # manage_tp_positions). So close_position has ONE trade_log_append
+        # (paper) rather than two.
         src_close = inspect.getsource(m.close_position)
-        assert src_close.count("trade_log_append(") >= 2, \
-            "close_position must log BOTH paper and TP-mirror branches"
+        assert src_close.count("trade_log_append(") >= 1, \
+            "close_position must log paper branch"
         # close_tp_position (TP-only long)
         src_tp = inspect.getsource(m.close_tp_position)
         assert "trade_log_append(" in src_tp, \
@@ -2930,16 +2934,14 @@ def run_local() -> int:
         assert "avwap_last_ts" not in src, \
             "reset_daily_state must not reference removed avwap_last_ts"
 
-    @t("v3.4.34: v3.4.34 PDC migration persists in MAIN_RELEASE_NOTE history")
+    @t("v3.4.34: width budget for MAIN_RELEASE_NOTE")
     def _():
         import stock_spike_monitor as m
-        # v3.4.34 was CURRENT before v3.4.35 bumped it; it must now
-        # persist in the history tail with the PDC migration context.
+        # v3.4.40: v3.4.34 has aged out of the rolling history tail
+        # (tail now carries v3.4.35–v3.4.39 plus current). We still
+        # enforce the 34-char mobile budget on every line, which was
+        # the original regression risk.
         note = m.MAIN_RELEASE_NOTE
-        assert "v3.4.34" in note, "v3.4.34 line must persist in history"
-        assert "PDC" in note, "v3.4.34 PDC context must persist in history"
-        # Every line in the full note must stay within the Telegram
-        # mobile width budget.
         for i, line in enumerate(note.split("\n")):
             assert len(line) <= 34, (i, len(line), repr(line))
 
@@ -3242,12 +3244,15 @@ def run_local() -> int:
         note = m.MAIN_RELEASE_NOTE
         assert "v3.4.35" in note, "v3.4.35 must persist in history"
 
-    @t("v3.4.36: v3.4.34 PDC migration line persists in history tail")
+    @t("v3.4.36: history tail carries multiple older releases")
     def _():
         import stock_spike_monitor as m
+        # v3.4.40: replaced the pin to v3.4.34 (aged out) with a
+        # structural check: the tail should carry at least the two
+        # most recent prior releases.
         note = m.MAIN_RELEASE_NOTE
-        assert "v3.4.34" in note, \
-            "v3.4.34 AVWAP→PDC line must persist in history"
+        assert "v3.4.39" in note, "v3.4.39 must persist in history"
+        assert "v3.4.38" in note, "v3.4.38 must persist in history"
 
 
     # ================================================================
@@ -3667,6 +3672,136 @@ def run_local() -> int:
         # or a direct localStorage.*Item call on 'portfolio_view'.
         assert "portfolio_view" in html, \
             "index.html must persist toggle under 'portfolio_view' key"
+
+    # ================================================================
+    # v3.4.40 — Robinhood independence tests
+    # ================================================================
+
+    @t("v3.4.40: BOT_VERSION is 3.4.40")
+    def _():
+        import stock_spike_monitor as m
+        assert m.BOT_VERSION == "3.4.40", \
+            f"BOT_VERSION must be 3.4.40, got {m.BOT_VERSION!r}"
+
+    @t("v3.4.40: execute_rh_entry exists and is parallel to execute_entry")
+    def _():
+        import stock_spike_monitor as m
+        assert hasattr(m, "execute_rh_entry"), \
+            "execute_rh_entry must be defined"
+        assert hasattr(m, "check_entry_rh"), \
+            "check_entry_rh must be defined"
+
+    @t("v3.4.40: _tp_trading_halted is a separate flag from _trading_halted")
+    def _():
+        import stock_spike_monitor as m
+        assert hasattr(m, "_tp_trading_halted"), \
+            "_tp_trading_halted module global must exist"
+        assert hasattr(m, "_tp_trading_halted_reason"), \
+            "_tp_trading_halted_reason module global must exist"
+
+    @t("v3.4.40: tp_daily_entry_count dict exists for RH per-ticker cap")
+    def _():
+        import stock_spike_monitor as m
+        assert hasattr(m, "tp_daily_entry_count"), \
+            "tp_daily_entry_count dict must exist"
+        assert isinstance(m.tp_daily_entry_count, dict), \
+            "tp_daily_entry_count must be a dict"
+
+    @t("v3.4.40: execute_entry no longer contains RH mirror block")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.execute_entry)
+        # The paper-side execute_entry should never touch tp_positions,
+        # tp_paper_cash, or send_traderspost_order directly — that belongs
+        # to execute_rh_entry now.
+        assert "tp_positions[" not in src, \
+            "execute_entry must not write to tp_positions (RH mirror removed)"
+        assert "send_traderspost_order" not in src, \
+            "execute_entry must not call send_traderspost_order"
+        assert "tp_paper_cash" not in src, \
+            "execute_entry must not touch tp_paper_cash"
+
+    @t("v3.4.40: execute_rh_entry uses _tp_trading_halted via _compute_tp_halt")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.execute_rh_entry)
+        assert "_compute_tp_halt" in src, \
+            "execute_rh_entry must consult _compute_tp_halt (RH halt)"
+        assert "tp_paper_cash" in src, \
+            "execute_rh_entry must check tp_paper_cash for independent cash"
+
+    @t("v3.4.40: execute_rh_entry enforces RH_MAX_ENTRIES_PER_TICKER")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src_check = inspect.getsource(m.check_entry_rh)
+        assert "RH_MAX_ENTRIES_PER_TICKER" in src_check, \
+            "check_entry_rh must enforce RH_MAX_ENTRIES_PER_TICKER"
+        assert "tp_daily_entry_count" in src_check, \
+            "check_entry_rh must read tp_daily_entry_count"
+
+    @t("v3.4.40: send_traderspost_order requires shares= (no paper SHARES default)")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        # Signature check: default must be None (or removed), not SHARES.
+        sig = inspect.signature(m.send_traderspost_order)
+        shares_param = sig.parameters.get("shares")
+        assert shares_param is not None, "send_traderspost_order must still accept shares="
+        assert shares_param.default is None, \
+            f"shares default must be None (v3.4.40 lockdown), got {shares_param.default!r}"
+        # Call without shares must raise TypeError.
+        try:
+            m.send_traderspost_order("AAPL", "buy", 100.0)
+        except TypeError:
+            pass
+        else:
+            assert False, "send_traderspost_order must raise TypeError when shares is omitted"
+
+    @t("v3.4.40: entry loop calls execute_rh_entry in parallel with execute_entry")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        # The scan cycle function that iterates TRADE_TICKERS must call
+        # both execute_entry and execute_rh_entry — with independent
+        # guards (paper_holds / rh_holds).
+        src_path = Path(__file__).resolve().parent / "stock_spike_monitor.py"
+        src = src_path.read_text(encoding="utf-8")
+        assert "execute_rh_entry(ticker" in src, \
+            "scan loop must invoke execute_rh_entry(ticker, ...)"
+        assert "paper_holds" in src and "rh_holds" in src, \
+            "scan loop must compute paper_holds and rh_holds independently"
+
+    @t("v3.4.40: _do_reset_tp clears RH halt and per-ticker counter")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m._do_reset_tp)
+        assert "tp_daily_entry_count.clear()" in src, \
+            "_do_reset_tp must clear tp_daily_entry_count"
+        assert "_tp_trading_halted = False" in src, \
+            "_do_reset_tp must reset _tp_trading_halted"
+
+    @t("v3.4.40: reset_daily_state also resets RH halt + tp_daily_entry_count")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.reset_daily_state)
+        assert "tp_daily_entry_count.clear()" in src, \
+            "reset_daily_state must clear tp_daily_entry_count on day rollover"
+        assert "_tp_trading_halted = False" in src, \
+            "reset_daily_state must reset _tp_trading_halted on day rollover"
+
+    @t("v3.4.40: CURRENT_TP_NOTE mentions independence")
+    def _():
+        import stock_spike_monitor as m
+        n = m.CURRENT_TP_NOTE
+        assert "v3.4.40" in n, "CURRENT_TP_NOTE must lead with v3.4.40"
+        # A keyword that signals the independence change.
+        assert any(k in n.lower() for k in ("independent", "on its own", "decides")), \
+            "CURRENT_TP_NOTE must describe the independence change"
 
     return run_suite("LOCAL SMOKE TESTS")
 
