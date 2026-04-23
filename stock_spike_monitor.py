@@ -43,7 +43,17 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "").strip() or _RH_OW
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.42"
+# v3.4.43 — Owner user-id whitelist (comma-separated). Lets the owner
+# /reset from a direct message with the bot even when CHAT_ID /
+# TELEGRAM_TP_CHAT_ID are configured as group chats. Default includes
+# Val's Telegram user id so DM resets always work. Each entry is a
+# Telegram user id (positive integer), not a chat id.
+_RH_OWNER_USERS_RAW     = os.getenv("RH_OWNER_USER_IDS", "").strip() or _RH_OWNER_DEFAULT
+RH_OWNER_USER_IDS       = {
+    u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
+}
+
+BOT_VERSION = "3.4.43"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -61,19 +71,18 @@ BOT_VERSION = "3.4.42"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.42 \u2014 /reset blocked\n"
-    "message now shows the\n"
-    "chat_id, user_id, and\n"
-    "configured owner env\n"
-    "vars so auth mismatches\n"
-    "can be diagnosed from\n"
-    "Telegram alone."
+    "v3.4.43 \u2014 Owner user-id\n"
+    "whitelist: /reset now\n"
+    "works from DM even when\n"
+    "CHAT_ID env points to a\n"
+    "group chat. Bot detection\n"
+    "uses context.bot.token."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.42 \u2014 Diagnostic:\n"
-    "reset-blocked error now\n"
-    "prints the ids it saw\n"
-    "vs the ids it expected."
+    "v3.4.43 \u2014 Owner user-id\n"
+    "whitelist lets /reset run\n"
+    "from DM; bot detection\n"
+    "uses context.bot.token."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -84,6 +93,12 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.42 \u2014 /reset blocked\n"
+    "message now shows chat_id,\n"
+    "user_id and owner env so\n"
+    "auth mismatches can be\n"
+    "diagnosed from Telegram.\n"
+    "\n"
     "v3.4.41 \u2014 /reset auth\n"
     "hardening: empty env no\n"
     "longer disables the gate;\n"
@@ -119,6 +134,9 @@ MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.42 \u2014 Diagnostic:\n"
+    "reset-blocked error prints\n"
+    "the ids it saw vs expected.\n"
     "v3.4.41 \u2014 /reset auth:\n"
     "empty env no longer kills\n"
     "the gate; user id accepted.\n"
@@ -7794,8 +7812,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.42.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.42",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.43.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.43",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -7892,35 +7910,53 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 RESET_CONFIRM_WINDOW_SEC = 60
 
 
-def _reset_authorized(query) -> tuple:
+def _reset_authorized(query, context=None) -> tuple:
     """Gatekeeper for /reset callbacks.
 
     Returns (allowed: bool, reason: str). Checks:
-      1. The tap came from the bot owner (chat_id matches the paper or TP
-         chat). Prevents anyone else added to the chat from wiping state.
-      2. The tap was routed to a bot whose portfolio the action matches
-         (paper reset must come from paper bot, TP reset from TP bot;
-         'both' may come from either).
+      1. The tap came from the bot owner — either the chat is one of
+         the configured owner chats, OR the tapping user id is in
+         RH_OWNER_USER_IDS. The user-id path lets the owner /reset from
+         a direct message even when CHAT_ID / TELEGRAM_TP_CHAT_ID are
+         configured as group chats. Prevents random group members from
+         wiping state.
+      2. The tap was routed to a bot whose portfolio the action matches.
+         Detection: compare the tap's bot token to TELEGRAM_TP_TOKEN
+         (reliable across DMs and groups) instead of inferring from the
+         chat id, which breaks for DMs when the env var is a group id.
+         Falls back to the chat-id heuristic if context is None.
       3. The confirm button has a timestamp within
          RESET_CONFIRM_WINDOW_SEC. Prevents stale-message replay.
     """
     data = query.data or ""
     chat_id_str = str(query.message.chat_id)
-    # v3.4.41 — also capture the tapping user's ID. In group chats the
-    # message.chat_id is the group (negative number), not the owner's
-    # user ID, so the old owner check could falsely reject a legitimate
-    # owner tap. We now accept either identity.
     try:
         user_id_str = str(query.from_user.id) if query.from_user else ""
     except Exception:
         user_id_str = ""
-    from_bot_is_tp = (chat_id_str == TELEGRAM_TP_CHAT_ID
-                      or user_id_str == TELEGRAM_TP_CHAT_ID)
 
-    # (1) Owner check — chat OR user must match one of the two known IDs.
+    # v3.4.43 — detect the tap's originating bot by comparing its token
+    # to TELEGRAM_TP_TOKEN. This is reliable for DMs AND groups, unlike
+    # the old chat-id heuristic which required TELEGRAM_TP_CHAT_ID to
+    # match the tap's chat. Fall back to the chat-id heuristic only when
+    # context is unavailable (test harnesses).
+    from_bot_is_tp = False
+    if context is not None:
+        try:
+            from_bot_is_tp = (context.bot.token == TELEGRAM_TP_TOKEN)
+        except Exception:
+            from_bot_is_tp = False
+    else:
+        from_bot_is_tp = (chat_id_str == TELEGRAM_TP_CHAT_ID
+                          or user_id_str == TELEGRAM_TP_CHAT_ID)
+
+    # (1) Owner check — chat or user matches an owner id, OR the
+    # tapping user id is in the RH_OWNER_USER_IDS allow-list.
     owner_ids = {TELEGRAM_TP_CHAT_ID, str(CHAT_ID or "")}
-    owner_ids.discard("")  # never accept the empty-string fallback
-    if chat_id_str not in owner_ids and user_id_str not in owner_ids:
+    owner_ids.discard("")
+    is_owner_chat = chat_id_str in owner_ids or user_id_str in owner_ids
+    is_owner_user = user_id_str in RH_OWNER_USER_IDS
+    if not (is_owner_chat or is_owner_user):
         return (False, "unauthorized chat")
 
     # (2) Bot/action match — only the confirm variants carry an action.
@@ -7936,7 +7972,7 @@ def _reset_authorized(query) -> tuple:
         except (ValueError, IndexError):
             return (False, "malformed timestamp")
         age = time.time() - ts
-        if age < -5:   # future-dated beyond clock-skew tolerance
+        if age < -5:
             return (False, "future-dated confirm")
         if age > RESET_CONFIRM_WINDOW_SEC:
             return (False, "expired confirm (%.0fs old)" % age)
@@ -8063,7 +8099,7 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     paper_fmt = format(PAPER_STARTING_CAPITAL, ",.0f")
     rh_fmt = format(RH_STARTING_CAPITAL, ",.0f")
 
-    allowed, reason = _reset_authorized(query)
+    allowed, reason = _reset_authorized(query, context)
     if not allowed:
         # v3.4.42 \u2014 surface chat/user ids and configured owner env vars
         # directly in the Telegram message so the owner can diagnose
@@ -8078,18 +8114,21 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.data, query.message.chat_id, _user, reason,
             TELEGRAM_TP_CHAT_ID, CHAT_ID,
         )
+        owner_users_fmt = ",".join(sorted(RH_OWNER_USER_IDS)) or "(unset)"
         diag = (
             "\u274c Reset blocked: %s.\n"
             "chat_id: %s\n"
             "user_id: %s\n"
             "allowed TP: %s\n"
-            "allowed paper: %s"
+            "allowed paper: %s\n"
+            "owner users: %s"
         ) % (
             reason,
             query.message.chat_id,
             _user,
             TELEGRAM_TP_CHAT_ID or "(unset)",
             CHAT_ID or "(unset)",
+            owner_users_fmt,
         )
         await query.edit_message_text(diag)
         return
