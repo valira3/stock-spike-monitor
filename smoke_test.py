@@ -3893,6 +3893,117 @@ def run_local() -> int:
         assert "TELEGRAM_TP_CHAT_ID" in src and "CHAT_ID" in src, \
             "reset_callback warning must log the configured owner ids"
 
+    # ================================================================
+    # v3.4.43 \u2014 owner user-id whitelist for /reset
+    # ================================================================
+
+    @t("v3.4.43: RH_OWNER_USER_IDS exists and is a set")
+    def _():
+        import stock_spike_monitor as m
+        assert hasattr(m, "RH_OWNER_USER_IDS"), \
+            "module must expose RH_OWNER_USER_IDS"
+        assert isinstance(m.RH_OWNER_USER_IDS, set), \
+            f"RH_OWNER_USER_IDS must be a set, got {type(m.RH_OWNER_USER_IDS).__name__}"
+
+    @t("v3.4.43: RH_OWNER_USER_IDS default includes Val's id when env unset")
+    def _():
+        import importlib, os, sys
+        prev = os.environ.get("RH_OWNER_USER_IDS")
+        os.environ.pop("RH_OWNER_USER_IDS", None)
+        try:
+            sys.modules.pop("stock_spike_monitor", None)
+            m = importlib.import_module("stock_spike_monitor")
+            assert "5165570192" in m.RH_OWNER_USER_IDS, \
+                f"default whitelist must include 5165570192, got {m.RH_OWNER_USER_IDS}"
+        finally:
+            if prev is not None:
+                os.environ["RH_OWNER_USER_IDS"] = prev
+            sys.modules.pop("stock_spike_monitor", None)
+            importlib.import_module("stock_spike_monitor")
+
+    @t("v3.4.43: RH_OWNER_USER_IDS honors comma-separated env")
+    def _():
+        import importlib, os, sys
+        prev = os.environ.get("RH_OWNER_USER_IDS")
+        os.environ["RH_OWNER_USER_IDS"] = "111, 222 ,333"
+        try:
+            sys.modules.pop("stock_spike_monitor", None)
+            m = importlib.import_module("stock_spike_monitor")
+            assert m.RH_OWNER_USER_IDS == {"111", "222", "333"}, \
+                f"expected parsed set, got {m.RH_OWNER_USER_IDS}"
+        finally:
+            if prev is None:
+                os.environ.pop("RH_OWNER_USER_IDS", None)
+            else:
+                os.environ["RH_OWNER_USER_IDS"] = prev
+            sys.modules.pop("stock_spike_monitor", None)
+            importlib.import_module("stock_spike_monitor")
+
+    @t("v3.4.43: _reset_authorized accepts context=None for back-compat")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        sig = inspect.signature(m._reset_authorized)
+        params = sig.parameters
+        assert "context" in params, \
+            "_reset_authorized must accept a context parameter"
+        assert params["context"].default is None, \
+            "context must default to None for test-harness compatibility"
+
+    @t("v3.4.43: _reset_authorized reads RH_OWNER_USER_IDS")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m._reset_authorized)
+        assert "RH_OWNER_USER_IDS" in src, \
+            "_reset_authorized must consult the owner user-id whitelist"
+
+    @t("v3.4.43: _reset_authorized uses context.bot.token for bot detection")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m._reset_authorized)
+        assert "context.bot.token" in src and "TELEGRAM_TP_TOKEN" in src, \
+            "_reset_authorized must compare context.bot.token to TELEGRAM_TP_TOKEN"
+
+    @t("v3.4.43: _reset_authorized allows owner DM when CHAT_ID is a group")
+    def _():
+        import stock_spike_monitor as m
+        import time as _time
+        class FakeUser:
+            id = 5165570192
+        class FakeMsg:
+            chat_id = 5165570192  # DM — equals user id, not any group id
+        class FakeQuery:
+            message = FakeMsg()
+            from_user = FakeUser()
+            data = f"reset_tp_confirm:{int(_time.time())}"
+        class FakeBot:
+            token = m.TELEGRAM_TP_TOKEN
+        class FakeCtx:
+            bot = FakeBot()
+        # Owner id must be in the whitelist for this test to be meaningful.
+        if "5165570192" not in m.RH_OWNER_USER_IDS:
+            return  # skip if env overrode the default
+        allowed, reason = m._reset_authorized(FakeQuery(), FakeCtx())
+        assert allowed, f"owner DM must be allowed, got reason={reason!r}"
+
+    @t("v3.4.43: reset_callback passes context to _reset_authorized")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.reset_callback)
+        assert "_reset_authorized(query, context)" in src, \
+            "reset_callback must pass context so bot token can be used"
+
+    @t("v3.4.43: CURRENT notes mention owner user-id whitelist")
+    def _():
+        import stock_spike_monitor as m
+        for name in ("CURRENT_MAIN_NOTE", "CURRENT_TP_NOTE"):
+            note = getattr(m, name)
+            assert "whitelist" in note.lower() or "owner" in note.lower(), \
+                f"{name} must describe the v3.4.43 owner whitelist"
+
     return run_suite("LOCAL SMOKE TESTS")
 
 
