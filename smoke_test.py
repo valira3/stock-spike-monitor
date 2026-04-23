@@ -4210,13 +4210,73 @@ def run_local() -> int:
         assert "shares = 10" not in body_src, \
             "execute_short_entry must not hardcode 10 shares"
 
-    @t("v3.4.45: CURRENT notes reference v3.4.45")
+    @t("v3.4.45: v3.4.45 lives on in rolling history (main + TP)")
+    def _():
+        # v3.4.45 rolls out of CURRENT notes when v3.4.46 ships but
+        # must remain in the rolling history tail so /version still
+        # shows it.
+        import stock_spike_monitor as m
+        assert "v3.4.45" in m.MAIN_RELEASE_NOTE, \
+            "v3.4.45 must persist in MAIN_RELEASE_NOTE history"
+        assert "v3.4.45" in m.TP_RELEASE_NOTE, \
+            "v3.4.45 must persist in TP_RELEASE_NOTE history"
+
+    # ================================================================
+    # v3.4.46 — dashboard: rename Long MV / Short liab to
+    #            Invested / Shorted (HTML-only; backend payload
+    #            fields are unchanged).
+    # ================================================================
+
+    @t("v3.4.46: BOT_VERSION is >= 3.4.46")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.45 "), \
-            "CURRENT_MAIN_NOTE must lead with v3.4.45"
-        assert m.CURRENT_TP_NOTE.startswith("v3.4.45 "), \
-            "CURRENT_TP_NOTE must lead with v3.4.45"
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 46), m.BOT_VERSION
+
+    # Resolve dashboard HTML path relative to the smoke_test.py file
+    # itself so tests pass regardless of CWD.
+    def _dashboard_html():
+        import pathlib
+        here = pathlib.Path(__file__).resolve().parent
+        return (here / "dashboard_static" / "index.html").read_text()
+
+    @t("v3.4.46: dashboard HTML shows 'Invested' label")
+    def _():
+        html = _dashboard_html()
+        # The new label must appear exactly once near the port-longmv
+        # element, and the old label must be gone from the strip.
+        assert ">Invested<" in html, \
+            "dashboard strip must include the 'Invested' label"
+        assert ">Long MV<" not in html, \
+            "dashboard strip must no longer show 'Long MV'"
+
+    @t("v3.4.46: dashboard HTML shows 'Shorted' label")
+    def _():
+        html = _dashboard_html()
+        assert ">Shorted<" in html, \
+            "dashboard strip must include the 'Shorted' label"
+        assert ">Short liab<" not in html, \
+            "dashboard strip must no longer show 'Short liab'"
+
+    @t("v3.4.46: dashboard still binds port-longmv / port-shortliab IDs")
+    def _():
+        # Labels changed but the DOM IDs and the JS bindings must
+        # remain intact so renderPortfolio() keeps working.
+        html = _dashboard_html()
+        assert 'id="port-longmv"' in html, "port-longmv id missing"
+        assert 'id="port-shortliab"' in html, "port-shortliab id missing"
+        assert 'port-longmv' in html and 'p.long_mv' in html, \
+            "JS still binds portfolio.long_mv into port-longmv"
+        assert 'port-shortliab' in html and 'p.short_liab' in html, \
+            "JS still binds portfolio.short_liab into port-shortliab"
+
+    @t("v3.4.46: CURRENT notes reference v3.4.46")
+    def _():
+        import stock_spike_monitor as m
+        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.46 "), \
+            "CURRENT_MAIN_NOTE must lead with v3.4.46"
+        assert m.CURRENT_TP_NOTE.startswith("v3.4.46 "), \
+            "CURRENT_TP_NOTE must lead with v3.4.46"
 
     return run_suite("LOCAL SMOKE TESTS")
 

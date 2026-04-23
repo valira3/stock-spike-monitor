@@ -53,7 +53,7 @@ RH_OWNER_USER_IDS       = {
     u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
 }
 
-BOT_VERSION = "3.4.45"
+BOT_VERSION = "3.4.46"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -71,22 +71,22 @@ BOT_VERSION = "3.4.45"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.45 \u2014 Paper sizing:\n"
-    "dollar-based lots like RH.\n"
-    "Shares = floor($/entry /\n"
-    "price), min 1. Default is\n"
-    "$10k per entry on the\n"
-    "$100k paper book. Entry\n"
-    "also gated on paper_cash\n"
-    "so the book can't go\n"
-    "negative. Longs and shorts\n"
-    "both scaled."
+    "v3.4.46 \u2014 Dashboard\n"
+    "label refresh: the strip\n"
+    "now reads Invested /\n"
+    "Shorted instead of the\n"
+    "more opaque Long MV /\n"
+    "Short liab. Same\n"
+    "mark-to-market numbers,\n"
+    "clearer wording. Applies\n"
+    "to both paper and RH\n"
+    "views."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.45 \u2014 Paper sizing\n"
-    "is now dollar-based. RH\n"
-    "path unchanged (still\n"
-    "$1,500 per entry on $25k)."
+    "v3.4.46 \u2014 Dashboard\n"
+    "strip relabels Long MV /\n"
+    "Short liab to Invested /\n"
+    "Shorted on both views."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -97,6 +97,10 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.45 \u2014 Paper sizing:\n"
+    "dollar-based lots like RH,\n"
+    "paper_cash entry gate.\n"
+    "\n"
     "v3.4.44 \u2014 Menu cleanup:\n"
     "removed duplicate and\n"
     "alias commands from the\n"
@@ -149,6 +153,9 @@ MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.45 \u2014 Paper sizing\n"
+    "dollar-based (RH path\n"
+    "unchanged).\n"
     "v3.4.44 \u2014 Menu cleanup:\n"
     "/tp_sync dropped from the\n"
     "popup (use /rh_sync).\n"
@@ -7867,8 +7874,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.45.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.45",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.46.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.46",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
