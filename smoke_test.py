@@ -4270,13 +4270,147 @@ def run_local() -> int:
         assert 'port-shortliab' in html and 'p.short_liab' in html, \
             "JS still binds portfolio.short_liab into port-shortliab"
 
-    @t("v3.4.46: CURRENT notes reference v3.4.46")
+    @t("v3.4.46: v3.4.46 pin persists in MAIN/TP history")
+    def _():
+        # v3.4.46 rolls out of CURRENT notes when v3.4.47 ships but
+        # must remain in rolling history so /version still shows it.
+        import stock_spike_monitor as m
+        assert "v3.4.46" in m.MAIN_RELEASE_NOTE, \
+            "v3.4.46 must persist in MAIN_RELEASE_NOTE history"
+        assert "v3.4.46" in m.TP_RELEASE_NOTE, \
+            "v3.4.46 must persist in TP_RELEASE_NOTE history"
+
+    # ================================================================
+    # v3.4.47 — Eye of the Tiger 2.0
+    # ================================================================
+
+    @t("v3.4.47: BOT_VERSION >= 3.4.47")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.46 "), \
-            "CURRENT_MAIN_NOTE must lead with v3.4.46"
-        assert m.CURRENT_TP_NOTE.startswith("v3.4.46 "), \
-            "CURRENT_TP_NOTE must lead with v3.4.46"
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 47), m.BOT_VERSION
+
+    @t("v3.4.47: TIGER_V2_DI_THRESHOLD env exists and defaults to 25")
+    def _():
+        import stock_spike_monitor as m
+        assert hasattr(m, "TIGER_V2_DI_THRESHOLD"), \
+            "TIGER_V2_DI_THRESHOLD must exist"
+        assert isinstance(m.TIGER_V2_DI_THRESHOLD, float), \
+            "TIGER_V2_DI_THRESHOLD must be float"
+        assert m.TIGER_V2_DI_THRESHOLD == 25.0, \
+            f"default must be 25.0, got {m.TIGER_V2_DI_THRESHOLD}"
+
+    @t("v3.4.47: _compute_di returns None below warmup")
+    def _():
+        import stock_spike_monitor as m
+        # Fewer than period+1 bars -> (None, None)
+        h = [100.0] * 10
+        lo = [99.0] * 10
+        c = [99.5] * 10
+        di_p, di_m = m._compute_di(h, lo, c, period=15)
+        assert di_p is None, \
+            f"expected None for insufficient data, got {di_p}"
+        assert di_m is None, \
+            f"expected None for insufficient data, got {di_m}"
+
+    @t("v3.4.47: _compute_di produces expected DI+ on rising series")
+    def _():
+        import stock_spike_monitor as m
+        # Pure uptrend: each bar has higher high and higher low.
+        # DI+ should dominate DI-.
+        n = 22
+        h  = [100.0 + i for i in range(n)]
+        lo = [99.0  + i for i in range(n)]
+        c  = [99.5  + i for i in range(n)]
+        di_p, di_m = m._compute_di(h, lo, c, period=15)
+        assert di_p is not None, "DI+ must not be None for 22-bar uptrend"
+        assert di_m is not None, "DI- must not be None for 22-bar uptrend"
+        assert di_p > di_m, \
+            f"DI+ ({di_p:.2f}) must exceed DI- ({di_m:.2f}) in pure uptrend"
+
+    @t("v3.4.47: _compute_di produces expected DI- on falling series")
+    def _():
+        import stock_spike_monitor as m
+        # Pure downtrend: each bar has lower high and lower low.
+        # DI- should dominate DI+.
+        n = 22
+        h  = [100.0 - i for i in range(n)]
+        lo = [99.0  - i for i in range(n)]
+        c  = [99.5  - i for i in range(n)]
+        di_p, di_m = m._compute_di(h, lo, c, period=15)
+        assert di_p is not None, "DI+ must not be None for 22-bar downtrend"
+        assert di_m is not None, "DI- must not be None for 22-bar downtrend"
+        assert di_m > di_p, \
+            f"DI- ({di_m:.2f}) must exceed DI+ ({di_p:.2f}) in pure downtrend"
+
+    @t("v3.4.47: _resample_to_5min_ohlc drops newest bucket")
+    def _():
+        import stock_spike_monitor as m
+        # Use a 300-aligned base so 15 x 1m bars land in exactly
+        # 3 complete 5m buckets (5 bars each). Newest is dropped.
+        raw_base = 1_700_000_000
+        base = raw_base - (raw_base % 300)  # align to 5m boundary
+        ts = [base + i * 60 for i in range(15)]  # 15 1m bars
+        vals = [float(i + 1) for i in range(15)]
+        out = m._resample_to_5min_ohlc(ts, vals, vals, vals, vals)
+        assert out is not None, "should return a dict"
+        # Only 2 closed buckets after dropping newest
+        assert len(out["closes"]) == 2, \
+            f"expected 2 closed 5m bars, got {len(out['closes'])}"
+
+    @t("v3.4.47: _resample_to_5min_ohlc bucket picks max/min correctly")
+    def _():
+        import stock_spike_monitor as m
+        # 15 1m bars filling 3 complete 5m buckets (5 bars each).
+        # Newest bucket dropped, leaving 2 in result.
+        raw_base = 1_700_000_000
+        base = raw_base - (raw_base % 300)  # 300-aligned
+        ts = [base + i * 60 for i in range(15)]
+        # Highs: bars 0-4 [1,2,3,4,5], bars 5-9 [6,7,8,9,10], bars 10-14 [11..15]
+        highs  = [float(i + 1)  for i in range(15)]
+        lows   = [float(15 - i) for i in range(15)]
+        closes = [float(i + 1)  for i in range(15)]
+        out = m._resample_to_5min_ohlc(ts, highs, highs, lows, closes)
+        assert out is not None
+        # First bucket (bars 0-4): max high = 5.0
+        assert out["highs"][0] == 5.0, \
+            f"bucket 0 max high should be 5.0, got {out['highs'][0]}"
+        # First bucket (bars 0-4): min low = min(15,14,13,12,11) = 11.0
+        assert out["lows"][0] == 11.0, \
+            f"bucket 0 min low should be 11.0, got {out['lows'][0]}"
+
+    @t("v3.4.47: check_entry uses 09:35 ET threshold not 09:45")
+    def _():
+        import ast, inspect, stock_spike_monitor as m
+        src = inspect.getsource(m.check_entry)
+        tree = ast.parse(src)
+        body = ast.unparse(tree)
+        assert "minute=35" in body, \
+            "check_entry must use minute=35 (09:35 gate), not minute=45"
+        assert "minute=45" not in body, \
+            "check_entry must NOT use minute=45"
+
+    @t("v3.4.47: _tiger_hard_eject_check exists")
+    def _():
+        import stock_spike_monitor as m
+        assert callable(getattr(m, "_tiger_hard_eject_check", None)), \
+            "_tiger_hard_eject_check must be a callable in the module"
+
+    @t("v3.4.47: v3.4.46 pin persists in MAIN/TP history")
+    def _():
+        import stock_spike_monitor as m
+        assert "v3.4.46" in m.MAIN_RELEASE_NOTE, \
+            "v3.4.46 must persist in MAIN_RELEASE_NOTE history"
+        assert "v3.4.46" in m.TP_RELEASE_NOTE, \
+            "v3.4.46 must persist in TP_RELEASE_NOTE history"
+
+    @t("v3.4.47: CURRENT notes lead with v3.4.47")
+    def _():
+        import stock_spike_monitor as m
+        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.47 "), \
+            "CURRENT_MAIN_NOTE must lead with v3.4.47"
+        assert m.CURRENT_TP_NOTE.startswith("v3.4.47 "), \
+            "CURRENT_TP_NOTE must lead with v3.4.47"
 
     return run_suite("LOCAL SMOKE TESTS")
 
