@@ -674,14 +674,19 @@ def run_local() -> int:
         assert hasattr(m, "cmd_tp_sync"), "cmd_tp_sync not defined"
         assert callable(m.cmd_tp_sync)
 
-    @t("v3.4.16: /tp_sync lives on TP bot only (not MAIN_BOT_COMMANDS)")
+    @t("v3.4.44: /tp_sync popup entry removed from both bots (silent alias only)")
     def _():
+        # v3.4.16 — v3.4.43: /tp_sync lived on TP_BOT_COMMANDS.
+        # v3.4.44: removed from the popup; the handler stays registered
+        # on the TP bot so saved shortcuts still work.
         main_names = [c.command for c in m.MAIN_BOT_COMMANDS]
         tp_names = [c.command for c in m.TP_BOT_COMMANDS]
         assert "tp_sync" not in main_names, \
             f"tp_sync must NOT be in MAIN_BOT_COMMANDS: {main_names}"
-        assert "tp_sync" in tp_names, \
-            f"tp_sync must be in TP_BOT_COMMANDS: {tp_names}"
+        assert "tp_sync" not in tp_names, \
+            f"v3.4.44: tp_sync must NOT be in TP_BOT_COMMANDS popup: {tp_names}"
+        assert "rh_sync" in tp_names, \
+            f"rh_sync must still be in TP_BOT_COMMANDS: {tp_names}"
 
     @t("v3.4.16: release notes split — main has no broker internals")
     def _():
@@ -1015,19 +1020,23 @@ def run_local() -> int:
         assert "_record_near_miss(" in short_src, \
             "check_short_entry must call _record_near_miss on declined breakouts"
 
-    @t("v3.4.21: /near_misses command is a registered handler")
+    @t("v3.4.21: /near_misses command is a registered handler (typed-only in v3.4.44)")
     def _():
         import inspect
         fn = getattr(m, "cmd_near_misses", None)
         assert fn is not None, "cmd_near_misses must exist"
         assert inspect.iscoroutinefunction(fn), \
             "cmd_near_misses must be a coroutine (async def)"
-        # BotCommand list must advertise /near_misses to users.
-        cmds = getattr(m, "MAIN_BOT_COMMANDS", None)
-        assert cmds is not None, "MAIN_BOT_COMMANDS must exist"
-        names = [getattr(c, "command", None) for c in cmds]
-        assert "near_misses" in names, \
-            "near_misses must be in MAIN_BOT_COMMANDS"
+        # v3.4.44: hidden from the popup menu to keep it tight. The
+        # typed /near_misses command still works (registered via
+        # add_handler). Verify handler is wired for the main app.
+        import stock_spike_monitor as mm
+        src = inspect.getsource(mm.run_telegram_bot)
+        assert 'CommandHandler("near_misses"' in src, \
+            "/near_misses must stay wired as a typed handler"
+        names = [getattr(c, "command", None) for c in m.MAIN_BOT_COMMANDS]
+        assert "near_misses" not in names, \
+            "v3.4.44: /near_misses must NOT be in MAIN_BOT_COMMANDS popup"
 
     # ============================================================
     # v3.4.22 regressions
@@ -2531,23 +2540,22 @@ def run_local() -> int:
                 m.TICKERS[:] = original_tickers
                 m._rebuild_trade_tickers()
 
-    @t("v3.4.32: cmd_tickers/add_ticker/remove_ticker exist and are async")
+    @t("v3.4.44: /tickers, /add_ticker, /remove_ticker aliases are removed")
     def _():
+        # v3.4.32 introduced these as per-verb shortcuts; v3.4.33 hid them
+        # from the popup while keeping them as silent aliases; v3.4.44
+        # removes them entirely. Use /ticker list | add | remove instead.
         import stock_spike_monitor as m, inspect
         for name in ("cmd_tickers", "cmd_add_ticker", "cmd_remove_ticker"):
-            fn = getattr(m, name, None)
-            assert fn is not None, name
-            assert inspect.iscoroutinefunction(fn), name
-
-    @t("v3.4.32: Telegram handlers wired for tickers/add_ticker/remove_ticker (alias compat)")
-    def _():
-        # v3.4.33 moved these out of the BotCommand menu, but they stay
-        # registered as hidden aliases so saved shortcuts keep working.
-        import stock_spike_monitor as m, inspect
-        for fn_name in ("cmd_tickers", "cmd_add_ticker", "cmd_remove_ticker"):
-            fn = getattr(m, fn_name, None)
-            assert fn is not None, fn_name
-            assert inspect.iscoroutinefunction(fn), fn_name
+            assert not hasattr(m, name), \
+                f"v3.4.44: {name} alias function must be deleted"
+        src = inspect.getsource(m.run_telegram_bot)
+        for handler in ('"tickers"', '"add_ticker"', '"remove_ticker"'):
+            assert f"CommandHandler({handler}" not in src, \
+                f"v3.4.44: CommandHandler({handler}, ...) registration must be gone"
+        # The canonical /ticker subcommand dispatcher must still exist.
+        assert hasattr(m, "cmd_ticker") and inspect.iscoroutinefunction(m.cmd_ticker), \
+            "cmd_ticker (the /ticker <verb> dispatcher) must still exist"
 
     @t("v3.4.32: ticker reply formatters stay within 34-char mobile budget")
     def _():
@@ -2580,19 +2588,19 @@ def run_local() -> int:
             for line in text.split("\n"):
                 assert len(line) <= 34, (len(line), line)
 
-    @t("v3.4.32: help text advertises the new ticker commands")
+    @t("v3.4.44: /help advertises /ticker subcommands (aliases dropped)")
     def _():
         import stock_spike_monitor as m
-        note = m.CURRENT_MAIN_NOTE + "\n" + m._MAIN_HISTORY_TAIL
-        # Commands themselves should be visible somewhere user-facing:
-        # either release notes or the /help body via cmd_help source.
         import inspect
         help_src = inspect.getsource(m.cmd_help)
-        corpus = note + "\n" + help_src
-        # After v3.4.33 the canonical command is /ticker; the old names
-        # live on as hidden aliases. The /help body still mentions them.
-        for want in ("/ticker", "/tickers", "/add_ticker", "/remove_ticker"):
-            assert want in corpus, want
+        # The /ticker dispatcher and its three verbs must be in /help.
+        for want in ("/ticker", "/ticker list", "/ticker add", "/ticker remove"):
+            assert want in help_src, f"/help body missing {want!r}"
+        # v3.4.44: the removed per-verb aliases must NOT be advertised
+        # anymore — users should learn the canonical form.
+        for gone in ("/tickers", "/add_ticker", "/remove_ticker"):
+            assert gone not in help_src, \
+                f"/help body still advertises removed alias {gone!r}"
 
     # -------------------------------------------------------------
     # v3.4.33 — unified /ticker command + thorough metric fill
@@ -3996,13 +4004,101 @@ def run_local() -> int:
         assert "_reset_authorized(query, context)" in src, \
             "reset_callback must pass context so bot token can be used"
 
-    @t("v3.4.43: CURRENT notes mention owner user-id whitelist")
+    @t("v3.4.43: v3.4.43 line persists in MAIN history after rollover")
+    def _():
+        import stock_spike_monitor as m
+        assert "v3.4.43" in m.MAIN_RELEASE_NOTE, \
+            "MAIN_RELEASE_NOTE must retain v3.4.43 entry in rolling history"
+
+    @t("v3.4.43: v3.4.43 line persists in TP history after rollover")
+    def _():
+        import stock_spike_monitor as m
+        assert "v3.4.43" in m.TP_RELEASE_NOTE, \
+            "TP_RELEASE_NOTE must retain v3.4.43 entry in rolling history"
+
+    # ================================================================
+    # v3.4.44 — menu cleanup: popup trimmed, alias handlers removed
+    # ================================================================
+
+    @t("v3.4.44: BOT_VERSION is >= 3.4.44")
+    def _():
+        import stock_spike_monitor as m
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 44), m.BOT_VERSION
+
+    @t("v3.4.44: /help is absent from both popup menus")
+    def _():
+        import stock_spike_monitor as m
+        for listname in ("MAIN_BOT_COMMANDS", "TP_BOT_COMMANDS"):
+            names = [c.command for c in getattr(m, listname)]
+            assert "help" not in names, \
+                f"v3.4.44: /help must NOT be in {listname}: {names}"
+
+    @t("v3.4.44: /test is absent from both popup menus")
+    def _():
+        import stock_spike_monitor as m
+        for listname in ("MAIN_BOT_COMMANDS", "TP_BOT_COMMANDS"):
+            names = [c.command for c in getattr(m, listname)]
+            assert "test" not in names, \
+                f"v3.4.44: /test must NOT be in {listname}: {names}"
+
+    @t("v3.4.44: /help /test /near_misses typed handlers still wired")
+    def _():
+        import stock_spike_monitor as m, inspect
+        src = inspect.getsource(m.run_telegram_bot)
+        for typed in ("help", "test", "near_misses"):
+            assert f'CommandHandler("{typed}"' in src, \
+                f"typed /{typed} must stay registered even though hidden from popup"
+
+    @t("v3.4.44: /positions alias removed (handler + function)")
+    def _():
+        import stock_spike_monitor as m, inspect
+        assert not hasattr(m, "cmd_positions"), \
+            "cmd_positions function must be deleted in v3.4.44"
+        src = inspect.getsource(m.run_telegram_bot)
+        assert 'CommandHandler("positions"' not in src, \
+            "/positions handler registration must be gone"
+
+    @t("v3.4.44: /eod alias removed (handler + function)")
+    def _():
+        import stock_spike_monitor as m, inspect
+        assert not hasattr(m, "cmd_eod"), \
+            "cmd_eod function must be deleted in v3.4.44"
+        src = inspect.getsource(m.run_telegram_bot)
+        assert 'CommandHandler("eod"' not in src, \
+            "/eod handler registration must be gone"
+
+    @t("v3.4.44: /or_now typed handler removed (cmd_or_now stays for /menu + /orb)")
+    def _():
+        import stock_spike_monitor as m, inspect
+        # cmd_or_now is still used by /orb recover and the Advanced menu
+        # tile, so the function must stay. Only the typed /or_now popup
+        # entry point is gone.
+        assert hasattr(m, "cmd_or_now"), \
+            "cmd_or_now must remain (used by /orb recover and menu)"
+        src = inspect.getsource(m.run_telegram_bot)
+        assert 'CommandHandler("or_now"' not in src, \
+            "/or_now typed handler registration must be gone"
+        # Confirm /orb recover still routes through cmd_or_now.
+        orb_src = inspect.getsource(m.cmd_orb)
+        assert "cmd_or_now" in orb_src, \
+            "/orb recover must still delegate to cmd_or_now"
+
+    @t("v3.4.44: main menu popup size is tight (<= 25 entries)")
+    def _():
+        import stock_spike_monitor as m
+        # Quick sanity: the popup should be noticeably tighter after
+        # cleanup. v3.4.43 had 27 main entries; v3.4.44 cuts 3.
+        assert len(m.MAIN_BOT_COMMANDS) <= 25, \
+            f"MAIN_BOT_COMMANDS grew unexpectedly: {len(m.MAIN_BOT_COMMANDS)}"
+
+    @t("v3.4.44: CURRENT notes mention menu cleanup")
     def _():
         import stock_spike_monitor as m
         for name in ("CURRENT_MAIN_NOTE", "CURRENT_TP_NOTE"):
-            note = getattr(m, name)
-            assert "whitelist" in note.lower() or "owner" in note.lower(), \
-                f"{name} must describe the v3.4.43 owner whitelist"
+            note = getattr(m, name).lower()
+            assert "menu" in note or "cleanup" in note or "popup" in note, \
+                f"{name} must describe the v3.4.44 menu cleanup"
 
     return run_suite("LOCAL SMOKE TESTS")
 
