@@ -43,7 +43,7 @@ TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "").strip() or _RH_OW
 TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
 TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
-BOT_VERSION = "3.4.41"
+BOT_VERSION = "3.4.42"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -61,21 +61,19 @@ BOT_VERSION = "3.4.41"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.41 \u2014 /reset auth\n"
-    "hardening. An empty\n"
-    "TELEGRAM_TP_CHAT_ID env\n"
-    "on Railway no longer\n"
-    "disables the owner gate,\n"
-    "and the tapping user id\n"
-    "is also accepted (fixes\n"
-    "group-chat resets)."
+    "v3.4.42 \u2014 /reset blocked\n"
+    "message now shows the\n"
+    "chat_id, user_id, and\n"
+    "configured owner env\n"
+    "vars so auth mismatches\n"
+    "can be diagnosed from\n"
+    "Telegram alone."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.41 \u2014 /reset is no\n"
-    "longer blocked when the\n"
-    "owner chat env is left\n"
-    "blank; the tapping user\n"
-    "id is also a valid owner."
+    "v3.4.42 \u2014 Diagnostic:\n"
+    "reset-blocked error now\n"
+    "prints the ids it saw\n"
+    "vs the ids it expected."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -86,6 +84,11 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.41 \u2014 /reset auth\n"
+    "hardening: empty env no\n"
+    "longer disables the gate;\n"
+    "user id also accepted.\n"
+    "\n"
     "v3.4.40 \u2014 Robinhood is\n"
     "independent from paper.\n"
     "Halt, cash, concurrency,\n"
@@ -116,6 +119,9 @@ MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.41 \u2014 /reset auth:\n"
+    "empty env no longer kills\n"
+    "the gate; user id accepted.\n"
     "v3.4.40 \u2014 Independence\n"
     "from paper: halt, cash,\n"
     "concurrency, per-ticker\n"
@@ -7788,8 +7794,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.41.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.41",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.42.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.42",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -8059,11 +8065,33 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     allowed, reason = _reset_authorized(query)
     if not allowed:
+        # v3.4.42 \u2014 surface chat/user ids and configured owner env vars
+        # directly in the Telegram message so the owner can diagnose
+        # auth mismatches without Railway logs.
+        try:
+            _user = query.from_user.id if query.from_user else "?"
+        except Exception:
+            _user = "?"
         logger.warning(
-            "reset_callback blocked: data=%s chat_id=%s reason=%s",
-            query.data, query.message.chat_id, reason,
+            "reset_callback blocked: data=%s chat_id=%s user_id=%s reason=%s "
+            "TELEGRAM_TP_CHAT_ID=%r CHAT_ID=%r",
+            query.data, query.message.chat_id, _user, reason,
+            TELEGRAM_TP_CHAT_ID, CHAT_ID,
         )
-        await query.edit_message_text("\u274c Reset blocked: %s." % reason)
+        diag = (
+            "\u274c Reset blocked: %s.\n"
+            "chat_id: %s\n"
+            "user_id: %s\n"
+            "allowed TP: %s\n"
+            "allowed paper: %s"
+        ) % (
+            reason,
+            query.message.chat_id,
+            _user,
+            TELEGRAM_TP_CHAT_ID or "(unset)",
+            CHAT_ID or "(unset)",
+        )
+        await query.edit_message_text(diag)
         return
 
     # Confirm variants carry ':<ts>' — strip before dispatching.

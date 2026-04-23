@@ -3859,17 +3859,39 @@ def run_local() -> int:
         assert "owner_ids.discard(\"\")" in src, \
             "_reset_authorized must never accept empty-string as an owner id"
 
-    @t("v3.4.41: CURRENT_MAIN_NOTE leads with v3.4.41")
+    @t("v3.4.41: v3.4.41 auth-hardening line persists in MAIN history")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v3.4.41"), \
-            "CURRENT_MAIN_NOTE must lead with v3.4.41"
+        assert "v3.4.41" in m.MAIN_RELEASE_NOTE, \
+            "MAIN_RELEASE_NOTE must retain v3.4.41 in the rolling history"
 
-    @t("v3.4.41: CURRENT_TP_NOTE leads with v3.4.41")
+    @t("v3.4.41: v3.4.41 auth-hardening line persists in TP history")
     def _():
         import stock_spike_monitor as m
-        assert m.CURRENT_TP_NOTE.lstrip().startswith("v3.4.41"), \
-            "CURRENT_TP_NOTE must lead with v3.4.41"
+        assert "v3.4.41" in m.TP_RELEASE_NOTE, \
+            "TP_RELEASE_NOTE must retain v3.4.41 in the rolling history"
+
+    # ================================================================
+    # v3.4.42 — reset-blocked diagnostic message
+    # ================================================================
+
+    @t("v3.4.42: reset_callback blocked message includes chat_id/user_id")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.reset_callback)
+        # The blocked branch must surface enough info to diagnose.
+        for token in ("chat_id:", "user_id:", "allowed TP:", "allowed paper:"):
+            assert token in src, \
+                f"reset_callback diagnostic message missing {token!r}"
+
+    @t("v3.4.42: reset_callback logs TELEGRAM_TP_CHAT_ID and CHAT_ID")
+    def _():
+        import stock_spike_monitor as m
+        import inspect
+        src = inspect.getsource(m.reset_callback)
+        assert "TELEGRAM_TP_CHAT_ID" in src and "CHAT_ID" in src, \
+            "reset_callback warning must log the configured owner ids"
 
     return run_suite("LOCAL SMOKE TESTS")
 
