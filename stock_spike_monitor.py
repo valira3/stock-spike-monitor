@@ -53,7 +53,7 @@ RH_OWNER_USER_IDS       = {
     u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
 }
 
-BOT_VERSION = "3.4.46"
+BOT_VERSION = "3.4.47"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -71,22 +71,23 @@ BOT_VERSION = "3.4.46"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.46 \u2014 Dashboard\n"
-    "label refresh: the strip\n"
-    "now reads Invested /\n"
-    "Shorted instead of the\n"
-    "more opaque Long MV /\n"
-    "Short liab. Same\n"
-    "mark-to-market numbers,\n"
-    "clearer wording. Applies\n"
-    "to both paper and RH\n"
-    "views."
+    "v3.4.47 \u2014 Eye of the Tiger 2.0:\n"
+    "entry rewrite. Long entries\n"
+    "require (a) SPY>PDC AND QQQ>PDC,\n"
+    "(b) 2 consecutive 1m closes\n"
+    "above the 5m OR high, and\n"
+    "(c) DI+(5m,15) > 25. Shorts\n"
+    "mirror inversely. Hard Eject\n"
+    "closes any open position when\n"
+    "DI or index regime flips against\n"
+    "it. Volume filter retired in\n"
+    "favor of DI+."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.46 \u2014 Dashboard\n"
-    "strip relabels Long MV /\n"
-    "Short liab to Invested /\n"
-    "Shorted on both views."
+    "v3.4.47 \u2014 Eye of the Tiger 2.0:\n"
+    "2-bar OR confirm + DI+(5m,15)\n"
+    "> 25 gate + Hard Eject exit.\n"
+    "Volume filter off by default."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -97,6 +98,13 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.46 \u2014 Dashboard\n"
+    "label refresh: the strip\n"
+    "now reads Invested /\n"
+    "Shorted instead of the\n"
+    "more opaque Long MV /\n"
+    "Short liab.\n"
+    "\n"
     "v3.4.45 \u2014 Paper sizing:\n"
     "dollar-based lots like RH,\n"
     "paper_cash entry gate.\n"
@@ -153,6 +161,10 @@ MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.46 \u2014 Dashboard\n"
+    "strip relabels Long MV /\n"
+    "Short liab to Invested /\n"
+    "Shorted on both views.\n"
     "v3.4.45 \u2014 Paper sizing\n"
     "dollar-based (RH path\n"
     "unchanged).\n"
@@ -745,6 +757,10 @@ SCAN_INTERVAL  = 60      # seconds between scans
 YAHOO_TIMEOUT  = 8       # seconds
 YAHOO_HEADERS  = {"User-Agent": "Mozilla/5.0"}
 
+# v3.4.47 — Eye of the Tiger 2.0 protocol configuration
+TIGER_V2_DI_THRESHOLD = float(os.getenv("TIGER_V2_DI_THRESHOLD", "25"))
+TIGER_V2_REQUIRE_VOL  = os.getenv("TIGER_V2_REQUIRE_VOL", "false").lower() in ("1", "true", "yes")
+
 # ============================================================
 # GLOBAL STATE
 # ============================================================
@@ -1099,6 +1115,155 @@ def _compute_rsi(closes, period=RSI_PERIOD):
         return 100.0 - (100.0 / (1.0 + rs))
     except Exception:
         return None
+
+
+# ============================================================
+# v3.4.47 — Eye of the Tiger 2.0 helpers
+# ============================================================
+
+def _resample_to_5min_ohlc(timestamps, opens, highs, lows, closes):
+    """Resample 1m OHLC into 5m OHLC.
+
+    Returns dict with lists 'highs', 'lows', 'closes'
+    (oldest-first), only fully-closed bars.
+    Uses floor(ts/300) bucketing like _resample_to_5min.
+    Drops the newest bucket (may be forming).
+    """
+    if not timestamps or not closes:
+        return None
+    # Build per-bucket dicts: store max high, min low, last close.
+    buckets_high = {}
+    buckets_low = {}
+    buckets_close = {}
+    for i, ts in enumerate(timestamps):
+        if ts is None:
+            continue
+        h = highs[i] if i < len(highs) else None
+        lo = lows[i] if i < len(lows) else None
+        c = closes[i] if i < len(closes) else None
+        if h is None or lo is None or c is None:
+            continue
+        bucket = int(ts) // 300
+        if bucket not in buckets_high:
+            buckets_high[bucket] = h
+            buckets_low[bucket] = lo
+            buckets_close[bucket] = c
+        else:
+            buckets_high[bucket] = max(buckets_high[bucket], h)
+            buckets_low[bucket] = min(buckets_low[bucket], lo)
+            buckets_close[bucket] = c  # last close wins
+    ordered = sorted(buckets_high.keys())
+    if len(ordered) <= 1:
+        return None
+    # Drop newest bucket (may be forming)
+    ordered = ordered[:-1]
+    return {
+        "highs":  [buckets_high[b]  for b in ordered],
+        "lows":   [buckets_low[b]   for b in ordered],
+        "closes": [buckets_close[b] for b in ordered],
+    }
+
+
+DI_PERIOD = 15  # Gene's spec: "DI+ (15 period, 5m)"
+
+
+def _compute_di(highs, lows, closes, period=DI_PERIOD):
+    """Wilder DI+ and DI-.
+
+    Returns (di_plus, di_minus) as floats, or
+    (None, None) if insufficient data.
+
+    Wilder formula:
+      +DM[i] = high[i]-high[i-1] if that > low[i-1]-low[i] AND >0 else 0
+      -DM[i] = low[i-1]-low[i] if that > high[i]-high[i-1] AND >0 else 0
+      TR[i]  = max(high[i]-low[i],
+                   |high[i]-close[i-1]|, |low[i]-close[i-1]|)
+    Smoothing (Wilder):
+      first_val = sum of first `period` values
+      new = prev - prev/period + current
+    Needs at least period+1 bars.
+    """
+    n = len(closes)
+    if n < period + 1 or len(highs) < period + 1 or len(lows) < period + 1:
+        return None, None
+    try:
+        # Compute raw DM and TR for each bar i >= 1
+        raw_pdm = []
+        raw_ndm = []
+        raw_tr  = []
+        for i in range(1, n):
+            up_move   = highs[i]  - highs[i - 1]
+            down_move = lows[i - 1] - lows[i]
+            pdm = up_move   if (up_move   > down_move and up_move   > 0) else 0.0
+            ndm = down_move if (down_move > up_move   and down_move > 0) else 0.0
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i]  - closes[i - 1]),
+            )
+            raw_pdm.append(pdm)
+            raw_ndm.append(ndm)
+            raw_tr.append(tr)
+
+        # Seed: sum of first `period` values
+        smooth_pdm = sum(raw_pdm[:period])
+        smooth_ndm = sum(raw_ndm[:period])
+        smooth_tr  = sum(raw_tr[:period])
+
+        # Wilder smoothing for remaining values
+        for i in range(period, len(raw_tr)):
+            smooth_pdm = smooth_pdm - smooth_pdm / period + raw_pdm[i]
+            smooth_ndm = smooth_ndm - smooth_ndm / period + raw_ndm[i]
+            smooth_tr  = smooth_tr  - smooth_tr  / period + raw_tr[i]
+
+        if smooth_tr == 0:
+            return None, None
+        di_plus  = 100.0 * smooth_pdm / smooth_tr
+        di_minus = 100.0 * smooth_ndm / smooth_tr
+        return di_plus, di_minus
+    except Exception:
+        return None, None
+
+
+def tiger_di(ticker):
+    """Return (di_plus, di_minus) for a ticker using 5m OHLC
+    resampled from fetch_1min_bars, or (None, None) if not ready.
+    """
+    bars = fetch_1min_bars(ticker)
+    if not bars or not bars.get("timestamps"):
+        return None, None
+    ohlc5 = _resample_to_5min_ohlc(
+        bars["timestamps"],
+        bars.get("opens", []),
+        bars.get("highs", []),
+        bars.get("lows", []),
+        bars.get("closes", []),
+    )
+    if not ohlc5 or len(ohlc5["closes"]) < DI_PERIOD + 1:
+        return None, None
+    return _compute_di(
+        ohlc5["highs"], ohlc5["lows"], ohlc5["closes"]
+    )
+
+
+def _tiger_two_bar_long(closes, or_h):
+    """True if the last 2 closed 1m closes are both > OR high.
+
+    Requires len(closes) >= 2. Fail-closed: missing data -> False.
+    """
+    if not closes or len(closes) < 2:
+        return False
+    return closes[-1] > or_h and closes[-2] > or_h
+
+
+def _tiger_two_bar_short(closes, or_l):
+    """True if the last 2 closed 1m closes are both < OR low.
+
+    Requires len(closes) >= 2. Fail-closed: missing data -> False.
+    """
+    if not closes or len(closes) < 2:
+        return False
+    return closes[-1] < or_l and closes[-2] < or_l
 
 
 def _rsi_for_ticker(ticker):
@@ -2813,8 +2978,8 @@ def check_entry(ticker):
         daily_entry_count.clear()
         daily_entry_date = today
 
-    # Timing gate: after 09:45 ET (15-min buffer)
-    market_open = now_et.replace(hour=9, minute=45, second=0, microsecond=0)
+    # Timing gate: after 09:35 ET (OR window close + 2-bar confirm)
+    market_open = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
     if now_et < market_open:
         return False, None
 
@@ -2897,7 +3062,9 @@ def check_entry(ticker):
     # of where each ticker currently stands.
     or_h_val = or_high[ticker]
     pdc_val_e = pdc[ticker]
-    price_break = last_close > or_h_val
+    # v3.4.47 — 2-bar OR breakout confirmation (Tiger 2.0).
+    # Both of the last two closed 1m closes must be above OR high.
+    price_break = _tiger_two_bar_long(closes, or_h_val)
     polarity_ok = current_price > pdc_val_e
 
     volumes = bars.get("volumes", [])
@@ -2932,7 +3099,9 @@ def check_entry(ticker):
     # valid bar is found in the lookback window, log DATA NOT READY
     # (distinct from LOW VOL) and skip — fail-closed, never enter on
     # missing data.
-    if len(volumes) >= 5:
+    # v3.4.47 — gated by TIGER_V2_REQUIRE_VOL (default False).
+    # Gene's 2.0 protocol replaces the vol filter with DI+.
+    if TIGER_V2_REQUIRE_VOL and len(volumes) >= 5:
         if not vol_ready_flag:
             logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
             # v3.4.21 — if price had already cleared OR High, note it.
@@ -2955,7 +3124,7 @@ def check_entry(ticker):
                 )
             return False, None
 
-    # Breakout: last 1-min bar close > OR_High
+    # Breakout: 2 consecutive 1m closes above OR_High (Tiger 2.0)
     if not price_break:
         return False, None
 
@@ -2987,6 +3156,22 @@ def check_entry(ticker):
     if spy_bars["current_price"] <= spy_pdc_val:
         return False, None
     if qqq_bars["current_price"] <= qqq_pdc_val:
+        return False, None
+
+    # v3.4.47 — DI+ gate (Tiger 2.0): DI+(5m,15) must exceed threshold.
+    # Fail-closed: if DI data is not ready, skip (warmup in progress).
+    di_plus, di_minus = tiger_di(ticker)
+    if di_plus is None:
+        logger.info(
+            "SKIP %s [DI WARMUP] need %d+1 5m bars",
+            ticker, DI_PERIOD,
+        )
+        return False, None
+    if di_plus < TIGER_V2_DI_THRESHOLD:
+        logger.info(
+            "SKIP %s [DI+] %.1f < %d",
+            ticker, di_plus, TIGER_V2_DI_THRESHOLD,
+        )
         return False, None
 
     return True, bars
@@ -4074,10 +4259,10 @@ def check_short_entry(ticker):
 
     now_et = _now_et()
 
-    # Time gate: must be after 09:45 ET (15-min buffer)
+    # Time gate: must be after 09:35 ET (OR window close + 2-bar confirm)
     if now_et.hour < 9:
         return
-    if now_et.hour == 9 and now_et.minute < 45:
+    if now_et.hour == 9 and now_et.minute < 35:
         return
 
     # EOD gate: no new shorts after 15:55 ET
@@ -4154,7 +4339,8 @@ def check_short_entry(ticker):
         return
 
     # v3.4.21 — pre-compute gate values for snapshot + near-miss logging.
-    price_break = current_close < or_low_val
+    # v3.4.47 — 2-bar OR breakdown confirmation (Tiger 2.0).
+    price_break = _tiger_two_bar_short(closes, or_low_val)
     polarity_ok = current_price < pdc_val
 
     volumes = bars.get("volumes", [])
@@ -4186,7 +4372,8 @@ def check_short_entry(ticker):
     # v3.4.20: walk back through null/zero bars before failing (see
     # _entry_bar_volume docstring). DATA NOT READY is distinct from
     # LOW VOL and still fail-closed.
-    if len(volumes) >= 5:
+    # v3.4.47 — gated by TIGER_V2_REQUIRE_VOL (default False).
+    if TIGER_V2_REQUIRE_VOL and len(volumes) >= 5:
         if not vol_ready_flag:
             logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
             if price_break:
@@ -4242,6 +4429,22 @@ def check_short_entry(ticker):
         snap["index"] = bool(spy_below and qqq_below)
 
     if not spy_below or not qqq_below:
+        return
+
+    # v3.4.47 — DI- gate (Tiger 2.0 short mirror).
+    # DI-(5m,15) must exceed threshold. Fail-closed on warmup.
+    _di_plus_s, di_minus_s = tiger_di(ticker)
+    if di_minus_s is None:
+        logger.info(
+            "SKIP %s [DI WARMUP] need %d+1 5m bars",
+            ticker, DI_PERIOD,
+        )
+        return
+    if di_minus_s < TIGER_V2_DI_THRESHOLD:
+        logger.info(
+            "SKIP %s [DI-] %.1f < %d",
+            ticker, di_minus_s, TIGER_V2_DI_THRESHOLD,
+        )
         return
 
     # All checks passed — enter short
@@ -5491,6 +5694,112 @@ def rh_imap_poll_once():
 
 
 # ============================================================
+# v3.4.47 — HARD EJECT (Eye of the Tiger 2.0)
+# ============================================================
+def _tiger_hard_eject_check():
+    """Hard Eject: close any open position whose DI or index
+    regime has flipped against it.
+
+    Called once per scan cycle BEFORE the new-entry scan.
+    Longs: eject if DI+ < threshold OR both indices < PDC.
+    Shorts: eject if DI- < threshold OR both indices > PDC.
+    Applies to paper (positions, short_positions) and RH
+    (tp_positions, tp_short_positions).
+    """
+    # Index regime flags (reuse cached bars from this cycle)
+    spy_bars = fetch_1min_bars("SPY")
+    qqq_bars = fetch_1min_bars("QQQ")
+    spy_pdc_v = pdc.get("SPY")
+    qqq_pdc_v = pdc.get("QQQ")
+
+    index_flip_down = False  # both indices below PDC -> eject longs
+    index_flip_up   = False  # both indices above PDC -> eject shorts
+    if (spy_bars and qqq_bars
+            and spy_pdc_v and qqq_pdc_v
+            and spy_pdc_v > 0 and qqq_pdc_v > 0):
+        spy_cur = spy_bars["current_price"]
+        qqq_cur = qqq_bars["current_price"]
+        index_flip_down = (spy_cur < spy_pdc_v
+                           and qqq_cur < qqq_pdc_v)
+        index_flip_up   = (spy_cur > spy_pdc_v
+                           and qqq_cur > qqq_pdc_v)
+
+    # -- Long positions (paper) --
+    for ticker in list(positions):
+        di_plus, _di_m = tiger_di(ticker)
+        di_weak = (di_plus is not None
+                   and di_plus < TIGER_V2_DI_THRESHOLD)
+        if di_weak or index_flip_down:
+            price = positions[ticker].get("entry_price", 0)
+            bars_t = fetch_1min_bars(ticker)
+            if bars_t:
+                price = bars_t["current_price"] or price
+            logger.info(
+                "HARD_EJECT_TIGER long %s di+=%s idx_flip=%s",
+                ticker, di_plus, index_flip_down,
+            )
+            close_position(ticker, price,
+                           reason="HARD_EJECT_TIGER")
+
+    # -- Long positions (RH / tp_positions) --
+    for ticker in list(tp_positions):
+        di_plus, _di_m = tiger_di(ticker)
+        di_weak = (di_plus is not None
+                   and di_plus < TIGER_V2_DI_THRESHOLD)
+        if di_weak or index_flip_down:
+            price = tp_positions[ticker].get("entry_price", 0)
+            bars_t = fetch_1min_bars(ticker)
+            if bars_t:
+                price = bars_t["current_price"] or price
+            logger.info(
+                "HARD_EJECT_TIGER tp-long %s di+=%s idx_flip=%s",
+                ticker, di_plus, index_flip_down,
+            )
+            close_tp_position(ticker, price,
+                              reason="HARD_EJECT_TIGER")
+
+    # -- Short positions (paper) --
+    for ticker in list(short_positions):
+        _di_p, di_minus = tiger_di(ticker)
+        di_weak = (di_minus is not None
+                   and di_minus < TIGER_V2_DI_THRESHOLD)
+        if di_weak or index_flip_up:
+            price = short_positions[ticker].get("entry_price", 0)
+            bars_t = fetch_1min_bars(ticker)
+            if bars_t:
+                price = bars_t["current_price"] or price
+            logger.info(
+                "HARD_EJECT_TIGER short %s di-=%s idx_flip=%s",
+                ticker, di_minus, index_flip_up,
+            )
+            close_short_position(
+                ticker, price,
+                reason="HARD_EJECT_TIGER",
+                portfolio="paper",
+            )
+
+    # -- Short positions (RH / tp_short_positions) --
+    for ticker in list(tp_short_positions):
+        _di_p, di_minus = tiger_di(ticker)
+        di_weak = (di_minus is not None
+                   and di_minus < TIGER_V2_DI_THRESHOLD)
+        if di_weak or index_flip_up:
+            price = tp_short_positions[ticker].get("entry_price", 0)
+            bars_t = fetch_1min_bars(ticker)
+            if bars_t:
+                price = bars_t["current_price"] or price
+            logger.info(
+                "HARD_EJECT_TIGER tp-short %s di-=%s idx_flip=%s",
+                ticker, di_minus, index_flip_up,
+            )
+            close_short_position(
+                ticker, price,
+                reason="HARD_EJECT_TIGER",
+                portfolio="tp",
+            )
+
+
+# ============================================================
 # SCAN LOOP
 # ============================================================
 def scan_loop():
@@ -5592,6 +5901,14 @@ def scan_loop():
         err_msg = "⚠️ Bot error in manage_short_positions: %s" % str(e)[:200]
         send_telegram(err_msg)
         send_tp_telegram(err_msg)
+
+    # v3.4.47 — Hard Eject: close positions whose DI or regime
+    # has flipped against them (runs before new-entry scan).
+    try:
+        _tiger_hard_eject_check()
+    except Exception as e:
+        logger.error("_tiger_hard_eject_check crashed: %s", e,
+                     exc_info=True)
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
@@ -7874,8 +8191,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.46.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.46",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.47.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.47",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
