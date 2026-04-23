@@ -4092,13 +4092,131 @@ def run_local() -> int:
         assert len(m.MAIN_BOT_COMMANDS) <= 25, \
             f"MAIN_BOT_COMMANDS grew unexpectedly: {len(m.MAIN_BOT_COMMANDS)}"
 
-    @t("v3.4.44: CURRENT notes mention menu cleanup")
+    @t("v3.4.44: v3.4.44 lives on in rolling history (main + TP)")
+    def _():
+        # v3.4.44 rolls out of the CURRENT notes when v3.4.45 ships but
+        # must remain in the rolling history tail so /version still
+        # shows it. Prevents accidental deletion during note rewrites.
+        import stock_spike_monitor as m
+        assert "v3.4.44" in m.MAIN_RELEASE_NOTE, \
+            "v3.4.44 must persist in MAIN_RELEASE_NOTE history"
+        assert "v3.4.44" in m.TP_RELEASE_NOTE, \
+            "v3.4.44 must persist in TP_RELEASE_NOTE history"
+
+    # ================================================================
+    # v3.4.45 — paper sizing: dollar-based lots + paper_cash gate
+    # ================================================================
+
+    @t("v3.4.45: BOT_VERSION is >= 3.4.45")
     def _():
         import stock_spike_monitor as m
-        for name in ("CURRENT_MAIN_NOTE", "CURRENT_TP_NOTE"):
-            note = getattr(m, name).lower()
-            assert "menu" in note or "cleanup" in note or "popup" in note, \
-                f"{name} must describe the v3.4.44 menu cleanup"
+        parts = tuple(int(x) for x in m.BOT_VERSION.split("."))
+        assert parts >= (3, 4, 45), m.BOT_VERSION
+
+    @t("v3.4.45: PAPER_DOLLARS_PER_ENTRY env is wired")
+    def _():
+        import stock_spike_monitor as m
+        assert hasattr(m, "PAPER_DOLLARS_PER_ENTRY"), \
+            "PAPER_DOLLARS_PER_ENTRY must exist"
+        assert isinstance(m.PAPER_DOLLARS_PER_ENTRY, float), \
+            "PAPER_DOLLARS_PER_ENTRY must be float"
+        assert m.PAPER_DOLLARS_PER_ENTRY > 0, \
+            "PAPER_DOLLARS_PER_ENTRY must be positive"
+
+    @t("v3.4.45: paper_shares_for($400) ≈ $10k/$400 == 25 at default")
+    def _():
+        import stock_spike_monitor as m
+        # Assumes default $10k/entry. If env overrides in CI, derive.
+        expected = max(1, int(m.PAPER_DOLLARS_PER_ENTRY // 400))
+        got = m.paper_shares_for(400.0)
+        assert got == expected, f"expected {expected}, got {got}"
+
+    @t("v3.4.45: paper_shares_for($5) gives many shares (low-price ticker)")
+    def _():
+        import stock_spike_monitor as m
+        expected = max(1, int(m.PAPER_DOLLARS_PER_ENTRY // 5))
+        got = m.paper_shares_for(5.0)
+        assert got == expected, f"expected {expected}, got {got}"
+        # Low-priced names should get significantly more shares than
+        # the old flat 10 — that is the entire point of the rewrite.
+        assert got > 10, f"low-priced ticker should get > 10 shares, got {got}"
+
+    @t("v3.4.45: paper_shares_for($20000) == 1 (min floor)")
+    def _():
+        import stock_spike_monitor as m
+        # Even above PAPER_DOLLARS_PER_ENTRY, the helper returns >= 1
+        # so an ultra-high-priced ticker still places a 1-share order.
+        result = m.paper_shares_for(20000.0)
+        assert result == 1, f"expected 1, got {result}"
+
+    @t("v3.4.45: paper_shares_for($0) == 0 (invalid)")
+    def _():
+        import stock_spike_monitor as m
+        assert m.paper_shares_for(0.0) == 0
+        assert m.paper_shares_for(-5.0) == 0
+
+    @t("v3.4.45: paper_shares_for uses PAPER_DOLLARS_PER_ENTRY dynamically")
+    def _():
+        import stock_spike_monitor as m
+        orig = m.PAPER_DOLLARS_PER_ENTRY
+        try:
+            m.PAPER_DOLLARS_PER_ENTRY = 5000.0
+            got = m.paper_shares_for(100.0)
+            assert got == 50, f"with $5000/entry at $100 expected 50, got {got}"
+            m.PAPER_DOLLARS_PER_ENTRY = 20000.0
+            got = m.paper_shares_for(100.0)
+            assert got == 200, f"with $20000/entry at $100 expected 200, got {got}"
+        finally:
+            m.PAPER_DOLLARS_PER_ENTRY = orig
+
+    @t("v3.4.45: execute_entry uses dynamic shares (not flat SHARES)")
+    def _():
+        # AST check: inside execute_entry, `shares = paper_shares_for(`
+        # must appear, and the positions dict must store `shares`
+        # (the variable) rather than `SHARES` (the module constant).
+        import ast, inspect, stock_spike_monitor as m
+        src = inspect.getsource(m)
+        tree = ast.parse(src)
+        func = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "execute_entry")
+        body_src = ast.unparse(func)
+        assert "paper_shares_for(" in body_src, \
+            "execute_entry must call paper_shares_for()"
+        assert "'shares': SHARES" not in body_src, \
+            "execute_entry must not store flat SHARES constant in positions"
+
+    @t("v3.4.45: execute_entry has a paper_cash gate")
+    def _():
+        import ast, inspect, stock_spike_monitor as m
+        src = inspect.getsource(m)
+        tree = ast.parse(src)
+        func = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "execute_entry")
+        body_src = ast.unparse(func)
+        assert "cost > paper_cash" in body_src, \
+            "execute_entry must skip when cost exceeds paper_cash"
+
+    @t("v3.4.45: execute_short_entry uses dynamic shares too")
+    def _():
+        import ast, inspect, stock_spike_monitor as m
+        src = inspect.getsource(m)
+        tree = ast.parse(src)
+        func = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "execute_short_entry")
+        body_src = ast.unparse(func)
+        assert "paper_shares_for(" in body_src, \
+            "execute_short_entry must call paper_shares_for()"
+        assert "shares = 10" not in body_src, \
+            "execute_short_entry must not hardcode 10 shares"
+
+    @t("v3.4.45: CURRENT notes reference v3.4.45")
+    def _():
+        import stock_spike_monitor as m
+        assert m.CURRENT_MAIN_NOTE.startswith("v3.4.45 "), \
+            "CURRENT_MAIN_NOTE must lead with v3.4.45"
+        assert m.CURRENT_TP_NOTE.startswith("v3.4.45 "), \
+            "CURRENT_TP_NOTE must lead with v3.4.45"
 
     return run_suite("LOCAL SMOKE TESTS")
 

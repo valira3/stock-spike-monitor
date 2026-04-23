@@ -53,7 +53,7 @@ RH_OWNER_USER_IDS       = {
     u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
 }
 
-BOT_VERSION = "3.4.44"
+BOT_VERSION = "3.4.45"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -71,24 +71,22 @@ BOT_VERSION = "3.4.44"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.44 \u2014 Menu cleanup:\n"
-    "removed duplicate and\n"
-    "alias commands from the\n"
-    "Telegram popup. /help,\n"
-    "/test, /near_misses are\n"
-    "now typed-only. /positions,\n"
-    "/eod, /or_now, /tickers,\n"
-    "/add_ticker, /remove_ticker\n"
-    "aliases are gone; use the\n"
-    "primary /status, /orb\n"
-    "recover, /ticker commands."
+    "v3.4.45 \u2014 Paper sizing:\n"
+    "dollar-based lots like RH.\n"
+    "Shares = floor($/entry /\n"
+    "price), min 1. Default is\n"
+    "$10k per entry on the\n"
+    "$100k paper book. Entry\n"
+    "also gated on paper_cash\n"
+    "so the book can't go\n"
+    "negative. Longs and shorts\n"
+    "both scaled."
 )
 CURRENT_TP_NOTE = (
-    "v3.4.44 \u2014 Menu cleanup:\n"
-    "/tp_sync dropped from the\n"
-    "popup (use /rh_sync).\n"
-    "/help, /test, /near_misses\n"
-    "are now typed-only."
+    "v3.4.45 \u2014 Paper sizing\n"
+    "is now dollar-based. RH\n"
+    "path unchanged (still\n"
+    "$1,500 per entry on $25k)."
 )
 
 # Main-bot release note: detailed prose describing what shipped.
@@ -99,6 +97,11 @@ CURRENT_TP_NOTE = (
 # Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
 # leads with the active version, followed by the last few releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.44 \u2014 Menu cleanup:\n"
+    "removed duplicate and\n"
+    "alias commands from the\n"
+    "Telegram popup.\n"
+    "\n"
     "v3.4.43 \u2014 Owner user-id\n"
     "whitelist: /reset now\n"
     "works from DM even when\n"
@@ -146,6 +149,9 @@ MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # TP-bot release note: tight headline + one line per recent TP change.
 # CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
 _TP_HISTORY_TAIL = (
+    "v3.4.44 \u2014 Menu cleanup:\n"
+    "/tp_sync dropped from the\n"
+    "popup (use /rh_sync).\n"
     "v3.4.43 \u2014 Owner user-id\n"
     "whitelist: /reset works\n"
     "from DM.\n"
@@ -718,7 +724,11 @@ def remove_ticker(sym: str) -> dict:
     return {"ok": True, "removed": True, "ticker": t,
             "had_open": bool(open_long or open_short)}
 
+# v3.4.45 — paper sizing is now dollar-based like RH. SHARES is kept
+# as a legacy fallback only (used when price is unavailable in test
+# paths). Production entries call paper_shares_for(price) instead.
 SHARES         = 10
+PAPER_DOLLARS_PER_ENTRY = float(os.getenv("PAPER_DOLLARS_PER_ENTRY", "10000"))
 STOP_OFFSET    = 0.50    # Initial stop: entry - $0.50
 # Trail: +1.0% trigger, max(price*1.0%, $1.00) distance — see manage_positions()
 TRAIL_TRIGGER  = 1.00    # Legacy constant (unused — trail is now percentage-based)
@@ -3010,6 +3020,20 @@ def rh_shares_for(price: float) -> int:
     return max(1, int(RH_DOLLARS_PER_ENTRY // price))
 
 
+def paper_shares_for(price: float) -> int:
+    """Dollar-sized paper order: floor(PAPER_DOLLARS_PER_ENTRY / price),
+    min 1. Returns 0 only when price <= 0 (invalid).
+
+    v3.4.45 — paper now sizes by notional like RH does, scaled to the
+    $100k paper book (default $10k/entry vs RH's $1.5k/$25k). This
+    fixes the old flat 10-share behavior that made $400 NVDA cost 80x
+    more risk per entry than $5 QBTS.
+    """
+    if price <= 0:
+        return 0
+    return max(1, int(PAPER_DOLLARS_PER_ENTRY // price))
+
+
 def send_traderspost_order(ticker, action, price, shares=None):
     """Send a limit order to TradersPost via webhook (TP portfolio only).
 
@@ -3405,12 +3429,17 @@ def execute_rh_entry(ticker, current_price):
 # EXECUTE ENTRY (paper)
 # ============================================================
 def execute_entry(ticker, current_price):
-    """Place a limit buy for 10 shares on the PAPER book only.
+    """Place a limit buy on the PAPER book only.
 
     v3.4.40: the embedded Robinhood mirror that used to live at the end
     of this function has been extracted to execute_rh_entry(). The two
     are now called independently from the scan loop so neither portfolio
     can veto the other's entry decision.
+
+    v3.4.45: share size is now dollar-based via paper_shares_for(price)
+    — floor(PAPER_DOLLARS_PER_ENTRY / price), min 1 — instead of a flat
+    10 shares. Entry is also gated on paper_cash so the book can't go
+    negative.
     """
     global paper_cash, _trading_halted, _trading_halted_reason
 
@@ -3473,6 +3502,24 @@ def execute_entry(ticker, current_price):
             "%s stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
             ticker, _stop_baseline, stop_price, current_price, MAX_STOP_PCT * 100,
         )
+    # v3.4.45 — dollar-sized paper entry. Shares scale with price so a
+    # $400 NVDA and a $5 QBTS both put ~$10k at risk per fill (vs the
+    # old flat 10 shares). Paper cash gate skips the entry if we can't
+    # afford it; on a $100k book at $10k/entry this only trips after
+    # ~10 concurrent fills, but it makes paper_cash a real ceiling.
+    shares = paper_shares_for(current_price)
+    cost = current_price * shares
+    if shares <= 0:
+        logger.warning("[paper] skip %s — invalid price $%.2f",
+                       ticker, current_price)
+        return
+    if cost > paper_cash:
+        logger.info(
+            "[paper] skip %s — insufficient cash (need $%.2f, have $%.2f)",
+            ticker, cost, paper_cash,
+        )
+        return
+
     entry_num = daily_entry_count.get(ticker, 0) + 1
     now_str = _now_cdt().strftime("%H:%M:%S")
     now_hhmm = _now_cdt().strftime("%H:%M CDT")
@@ -3480,7 +3527,7 @@ def execute_entry(ticker, current_price):
 
     positions[ticker] = {
         "entry_price": current_price,
-        "shares": SHARES,
+        "shares": shares,
         "stop": stop_price,
         "initial_stop": stop_price,  # v3.4.35 — frozen; used for R fallback only
         "trail_active": False,
@@ -3493,14 +3540,13 @@ def execute_entry(ticker, current_price):
     daily_entry_count[ticker] = entry_num
 
     # Paper accounting
-    cost = current_price * SHARES
     paper_cash -= cost
     trade = {
         "action": "BUY",
         "ticker": ticker,
         "price": current_price,
         "limit_price": limit_price,
-        "shares": SHARES,
+        "shares": shares,
         "cost": cost,
         "stop": stop_price,
         "entry_num": entry_num,
@@ -3511,7 +3557,7 @@ def execute_entry(ticker, current_price):
     paper_all_trades.append(trade)
 
     paper_log("BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d"
-              % (ticker, SHARES, current_price, limit_price, stop_price, entry_num))
+              % (ticker, shares, current_price, limit_price, stop_price, entry_num))
 
     # Fix B: Paper BUY notification → send_telegram() ONLY
     or_h = or_high.get(ticker, 0)
@@ -3538,7 +3584,7 @@ def execute_entry(ticker, current_price):
         "%s"
     ) % (ticker, entry_num, SEP_E,
          current_price, limit_price,
-         SHARES, format(cost, ",.2f"),
+         shares, format(cost, ",.2f"),
          stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
@@ -4199,13 +4245,22 @@ def check_short_entry(ticker):
 # EXECUTE SHORT ENTRY (Wounded Buffalo)
 # ============================================================
 def execute_short_entry(ticker, price):
-    """Open a paper short position (Wounded Buffalo)."""
+    """Open a paper short position (Wounded Buffalo).
+
+    v3.4.45 — size is dollar-based via paper_shares_for(price) for
+    consistency with long entries. Short proceeds still credit
+    paper_cash, so no cash gate is needed on the open.
+    """
     global short_positions, tp_short_positions
     global paper_cash, tp_paper_cash
     global daily_short_entry_count
 
-    shares = 10
     entry_price = round(price, 2)
+    shares = paper_shares_for(entry_price)
+    if shares <= 0:
+        logger.warning("[paper] skip short %s — invalid price $%.2f",
+                       ticker, entry_price)
+        return
     pdc_val = pdc.get(ticker, entry_price)
     # v3.4.21 — cap stop at 0.75% above entry when PDC baseline would
     # imply a looser stop (late/extended breakdown bar).
@@ -7812,8 +7867,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.44.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.44",
+                    filename="StockSpikeMonitor_Algorithm_v3.4.45.pdf",
+                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.45",
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
