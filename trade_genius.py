@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.3.1"
+BOT_VERSION = "4.3.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,20 +70,24 @@ BOT_VERSION = "4.3.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.3.1 \u2014 dashboard UI:\n"
-    "row-2 now fits inline at\n"
-    "375px iPhone \u2014 nowrap +\n"
-    "tighter gaps, 12-13px clock,\n"
-    "LIVE pill padding trimmed,\n"
-    "version text smaller. Clock\n"
-    "drops seconds at \u2264360px\n"
-    "(HH:MM TZ) so everything on\n"
-    "one line across 414/390/375/\n"
-    "360 widths."
+    "v4.3.2 \u2014 dashboard UI:\n"
+    "row-2 \"scan in Ns\" label\n"
+    "replaced with \u267B recycle\n"
+    "glyph \u2014 countdown reads\n"
+    "\u267B Ns now. aria-label +\n"
+    "title still say \"next scan\n"
+    "in Ns\" for screen readers."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.3.1 \u2014 dashboard UI:\n"
+    "row-2 fits inline at 375px\n"
+    "iPhone \u2014 nowrap + tighter\n"
+    "gaps, 12-13px clock, LIVE\n"
+    "pill padding trimmed. Clock\n"
+    "drops seconds at \u2264360px.\n"
+    "\n"
     "v4.3.0 \u2014 entry guards:\n"
     "reject entries extended past\n"
     "OR by more than 1.5%\n"
