@@ -233,13 +233,13 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.0.0-beta")
+    @t("version: BOT_VERSION is 4.0.1-beta")
     def _():
-        assert m.BOT_VERSION == "4.0.0-beta", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.0.1-beta", f"got {m.BOT_VERSION}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.0.0-beta")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.0.1-beta")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.0-beta"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.1-beta"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")

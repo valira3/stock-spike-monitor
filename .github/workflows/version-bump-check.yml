@@ -1,0 +1,116 @@
+name: Version bump required
+
+# Pre-merge check that prevents silent version ships.
+#
+# Fails a PR to `main` unless BOTH of the following change in the diff
+# against origin/main:
+#
+#   1. `BOT_VERSION = "..."` in trade_genius.py
+#   2. The first heading line under `# Changelog` in CHANGELOG.md
+#      (i.e. the top `## ...` entry is new relative to main)
+#
+# Rationale: v4.0.0-beta almost shipped to prod without a CHANGELOG entry
+# because nothing forced both surfaces to move together. The Telegram
+# "deployed" card reads CURRENT_MAIN_NOTE / BOT_VERSION, and operators
+# read CHANGELOG.md — they must stay in lockstep.
+#
+# Escape hatch: if the PR title OR body contains the token
+#   [skip-version]
+# the check passes. Use this for doc-only or CI-only PRs that do not
+# change shippable bot behavior.
+#
+# This workflow only runs on pull_request events targeting `main`.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: version-bump-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  version-bump-required:
+    name: version-bump-required
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out PR with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Ensure origin/main is available
+        run: |
+          git fetch origin main --depth=0 || git fetch origin main
+          git rev-parse origin/main
+
+      - name: Check for [skip-version] escape hatch
+        id: skip
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY:  ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | grep -qF '[skip-version]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::[skip-version] token found in PR title/body — version bump check skipped."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify BOT_VERSION and CHANGELOG.md both changed
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+
+          BASE="origin/main"
+          HEAD="HEAD"
+          DIFF_RANGE="${BASE}...${HEAD}"
+
+          echo "::group::Files changed in ${DIFF_RANGE}"
+          git diff --name-only "${DIFF_RANGE}"
+          echo "::endgroup::"
+
+          # --- check 1: BOT_VERSION line changed in trade_genius.py ---
+          if ! git diff "${DIFF_RANGE}" -- trade_genius.py | grep -E '^[-+][[:space:]]*BOT_VERSION[[:space:]]*=' >/dev/null; then
+            echo "::error file=trade_genius.py::BOT_VERSION line in trade_genius.py was not modified in this PR."
+            echo "PRs to main must bump BOT_VERSION. Add [skip-version] to the PR title or body to bypass for doc-only/CI-only changes."
+            exit 1
+          fi
+          echo "OK: BOT_VERSION in trade_genius.py was modified."
+
+          # --- check 2: top CHANGELOG heading changed ---
+          if ! git diff --name-only "${DIFF_RANGE}" | grep -qx 'CHANGELOG.md'; then
+            echo "::error file=CHANGELOG.md::CHANGELOG.md was not modified in this PR."
+            echo "PRs to main must add a new CHANGELOG entry. Add [skip-version] to the PR title or body to bypass for doc-only/CI-only changes."
+            exit 1
+          fi
+
+          # First heading line under `# Changelog` must differ between main and HEAD.
+          top_heading_on_ref() {
+            git show "$1:CHANGELOG.md" 2>/dev/null \
+              | awk '/^## /{print; exit}'
+          }
+
+          MAIN_TOP="$(top_heading_on_ref "${BASE}" || true)"
+          HEAD_TOP="$(top_heading_on_ref "${HEAD}" || true)"
+
+          echo "main top heading: ${MAIN_TOP:-<none>}"
+          echo "HEAD top heading: ${HEAD_TOP:-<none>}"
+
+          if [ -z "${HEAD_TOP}" ]; then
+            echo "::error file=CHANGELOG.md::No top-level ## entry found in CHANGELOG.md on this PR."
+            exit 1
+          fi
+
+          if [ "${MAIN_TOP}" = "${HEAD_TOP}" ]; then
+            echo "::error file=CHANGELOG.md::Top CHANGELOG.md heading is unchanged from main. Prepend a new '## v…' entry for this release."
+            echo "Add [skip-version] to the PR title or body to bypass for doc-only/CI-only changes."
+            exit 1
+          fi
+          echo "OK: top CHANGELOG.md heading advanced from main."
+
+          echo "version-bump-required: PASS"
