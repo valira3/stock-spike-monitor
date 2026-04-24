@@ -1543,16 +1543,19 @@ _current_ticker_red: list = []          # list of (ticker, pnl) sorted worst-fir
 _current_ticker_extremes: list = []     # list of (ticker, rsi, "OB"/"OS")
 
 # v3.4.21 — per-ticker entry-gate snapshot for dashboard rendering.
-# Populated by the long/short entry-check functions on every scan.
+# Populated by _update_gate_snapshot() on every scan cycle.
 # Shape: {ticker: {
 #     "side": "LONG"|"SHORT",
 #     "break": bool,              # 1m close crossed OR (above/below)
-#     "vol_pct": float|None,      # entry-bar vol as % of session avg
-#     "vol_ok": bool,             # vol_pct >= 150 (gate threshold)
 #     "polarity": bool,           # price vs PDC on the right side
 #     "index": bool,              # SPY/QQQ on the right side of PDC
+#     "di": bool|None,            # DI+/DI- >= TIGER_V2_DI_THRESHOLD;
+#                                 # None = warmup (DI not yet computable)
 #     "ts": iso timestamp,
 # }}
+# v3.5.x: vol_pct / vol_ok removed — Tiger 2.0 replaced the volume gate
+# with DI+/DI-, and TIGER_V2_REQUIRE_VOL defaults to False. Keeping the
+# fields on the snapshot was decorative and misled diagnosis.
 # Read-only from outside the scan loop; never cleared mid-scan.
 _gate_snapshot: dict = {}
 
@@ -1624,17 +1627,6 @@ def _update_gate_snapshot(ticker):
     else:
         polarity_ok = False
 
-    volumes = bars.get("volumes", [])
-    vol_pct = None
-    vol_ok = False
-    if len(volumes) >= 5:
-        valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
-        avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
-        entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
-        if vol_ready and avg_vol > 0:
-            vol_pct = (entry_bar_vol / avg_vol) * 100.0
-            vol_ok = vol_pct >= 150.0
-
     spy_pdc_val = pdc.get("SPY")
     qqq_pdc_val = pdc.get("QQQ")
     index_ok = None
@@ -1650,23 +1642,30 @@ def _update_gate_snapshot(ticker):
                 else:
                     index_ok = (spy_p < spy_pdc_val) and (qqq_p < qqq_pdc_val)
 
+    di_plus, di_minus = tiger_di(ticker)
+    if di_plus is None or di_minus is None:
+        di_ok = None  # warmup
+    elif side == "LONG":
+        di_ok = di_plus >= TIGER_V2_DI_THRESHOLD
+    else:
+        di_ok = di_minus >= TIGER_V2_DI_THRESHOLD
+
     _gate_snapshot[ticker] = {
         "side": side,
         "break": bool(break_ok),
-        "vol_pct": vol_pct,
-        "vol_ok": bool(vol_ok),
         "polarity": bool(polarity_ok),
         "index": index_ok,
+        "di": di_ok,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
 
-    vp_str = ("%.1f" % vol_pct) if vol_pct is not None else "None"
     idx_str = "None" if index_ok is None else str(bool(index_ok))
+    di_str = "None" if di_ok is None else str(bool(di_ok))
     logger.info(
         "GATE_EVAL ticker=%s price=%.2f or_hi=%.2f or_lo=%.2f "
-        "side=%s break=%s vol_pct=%s vol_ok=%s polarity=%s index=%s",
-        ticker, price, or_h, or_l, side, bool(break_ok), vp_str,
-        bool(vol_ok), bool(polarity_ok), idx_str,
+        "side=%s break=%s polarity=%s index=%s di=%s",
+        ticker, price, or_h, or_l, side, bool(break_ok),
+        bool(polarity_ok), idx_str, di_str,
     )
 
 

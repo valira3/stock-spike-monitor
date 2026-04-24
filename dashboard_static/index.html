@@ -1102,10 +1102,18 @@
     rows.push(gateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
     rows.push(gateRow("OR collected", g.or_collected_date || "—", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
 
-    // v3.4.21 — per-ticker entry-gate chips.
+    // v3.5.x — per-ticker entry-gate chips. Volume removed (not an
+    // active gate: TIGER_V2_REQUIRE_VOL defaults false). DI chip added —
+    // the actual Tiger 2.0 gate after price/polarity/index.
     const per = Array.isArray(g.per_ticker) ? g.per_ticker : [];
     if (per.length) {
-      rows.push(`<div class="tgate-section-label">Per-ticker · Brk · Vol · PDC · Idx</div>`);
+      const warming = per.some(r => r && r.di === null);
+      const rsiUnknown = (s && s.regime && s.regime.rsi_regime === "UNKNOWN");
+      const notes = [];
+      if (warming) notes.push("DI warming up (needs 16 closed 5m bars)");
+      if (rsiUnknown) notes.push("RSI regime: UNKNOWN (informational \u2014 not a gate)");
+      const sub = notes.length ? ` <span class="hint">\u2014 ${escapeHtml(notes.join(" \u00b7 "))}</span>` : "";
+      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Brk \u00b7 PDC \u00b7 Idx \u00b7 DI${sub}</div>`);
       for (const r of per) {
         rows.push(tGateRow(r));
       }
@@ -1123,12 +1131,12 @@
     const chips = [];
     if (r.side === "LONG") chips.push(`<span class="tgate-chip na">L</span>`);
     else if (r.side === "SHORT") chips.push(`<span class="tgate-chip na">S</span>`);
-    else chips.push(`<span class="tgate-chip na">—</span>`);
+    else chips.push(`<span class="tgate-chip na">\u2014</span>`);
     chips.push(chipFlag("Brk", r.break));
-    const volLbl = (typeof r.vol_pct === "number") ? `Vol ${Math.round(r.vol_pct)}%` : "Vol n/a";
-    chips.push(chipFlag(volLbl, r.vol_ok, r.vol_pct == null));
     chips.push(chipFlag("PDC", r.polarity));
     chips.push(chipFlag("Idx", r.index));
+    const diLbl = (r.di === null || typeof r.di === "undefined") ? "DI \u2026" : "DI";
+    chips.push(chipFlag(diLbl, r.di, r.di === null || typeof r.di === "undefined"));
     return `<div class="tgate">
       <span class="tgate-tkr">${escapeHtml(r.ticker)}</span>
       <span class="tgate-chips">${chips.join("")}</span>
@@ -1811,10 +1819,10 @@
     else if (r.side === "SHORT") chips.push(`<span class="tgate-chip na">S</span>`);
     else chips.push(`<span class="tgate-chip na">\u2014</span>`);
     chips.push(execChipFlag("Brk", r.break));
-    const volLbl = (typeof r.vol_pct === "number") ? `Vol ${Math.round(r.vol_pct)}%` : "Vol n/a";
-    chips.push(execChipFlag(volLbl, r.vol_ok, r.vol_pct == null));
     chips.push(execChipFlag("PDC", r.polarity));
     chips.push(execChipFlag("Idx", r.index));
+    const diLbl = (r.di === null || typeof r.di === "undefined") ? "DI \u2026" : "DI";
+    chips.push(execChipFlag(diLbl, r.di, r.di === null || typeof r.di === "undefined"));
     return `<div class="tgate">
       <span class="tgate-tkr">${esc(r.ticker)}</span>
       <span class="tgate-chips">${chips.join("")}</span>
@@ -1839,7 +1847,13 @@
     rows.push(execGateRow("OR collected", g.or_collected_date || "\u2014", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
     const per = Array.isArray(g.per_ticker) ? g.per_ticker : [];
     if (per.length) {
-      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Brk \u00b7 Vol \u00b7 PDC \u00b7 Idx</div>`);
+      const warming = per.some(r => r && r.di === null);
+      const rsiUnknown = (s && s.regime && s.regime.rsi_regime === "UNKNOWN");
+      const notes = [];
+      if (warming) notes.push("DI warming up (needs 16 closed 5m bars)");
+      if (rsiUnknown) notes.push("RSI regime: UNKNOWN (informational \u2014 not a gate)");
+      const sub = notes.length ? ` <span class="hint">\u2014 ${esc(notes.join(" \u00b7 "))}</span>` : "";
+      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Brk \u00b7 PDC \u00b7 Idx \u00b7 DI${sub}</div>`);
       for (const r of per) rows.push(execTGateRow(r));
     }
     gates.innerHTML = rows.join("");
