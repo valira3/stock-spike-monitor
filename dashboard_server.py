@@ -927,28 +927,42 @@ def _executor_snapshot(name: str) -> dict:
         payload["positions"] = rows
         payload["healthy"] = True
     except Exception as e:
-        # v4.0.0-beta hotfix: surface the full Alpaca exception so
-        # credential / endpoint / account-type problems are diagnosable
-        # from /api/executor/<name> instead of being hidden behind a
-        # bare "Not Found" string.
+        # Surface the full Alpaca exception so credential / endpoint /
+        # account-type problems are diagnosable from /api/executor/<name>
+        # instead of hidden behind "Not Found".
+        #
+        # NOTE: alpaca-py APIError exposes `.code` as a @property that calls
+        # json.loads(self._error) and raises JSONDecodeError when the HTTP
+        # body is empty / non-JSON (e.g. Alpaca's 404 empty-body for an
+        # unknown key). getattr(e, "code", None) INVOKES that property, so
+        # we only read attrs we know are safe (__dict__ / class attrs) and
+        # never trigger descriptors from inside the error handler.
         err_type = type(e).__name__
-        err_msg = str(e) or "(no message)"
-        # alpaca-py APIError exposes .status_code and .response.text on
-        # some versions; harvest what we can without raising inside the
-        # exception handler.
+        try:
+            err_msg = str(e) or "(no message)"
+        except Exception:
+            err_msg = "(str(e) raised)"
         extras = []
-        for attr in ("status_code", "code"):
-            val = getattr(e, attr, None)
-            if val is not None:
-                extras.append(f"{attr}={val}")
-        resp = getattr(e, "response", None)
-        if resp is not None:
+        # Only pull from instance __dict__ so property-backed attrs
+        # (like alpaca-py APIError.code) can never raise here.
+        inst = getattr(e, "__dict__", {}) or {}
+        status_code = inst.get("_status_code") or inst.get("status_code")
+        if status_code is not None:
+            extras.append(f"status_code={status_code}")
+        raw_body = inst.get("_error") or inst.get("_body")
+        if raw_body:
+            try:
+                extras.append(f"body={str(raw_body)[:200]!r}")
+            except Exception:
+                pass
+        resp = inst.get("response") or inst.get("_response")
+        if resp is not None and "body=" not in " ".join(extras):
             body = getattr(resp, "text", None)
             if body:
-                extras.append(f"body={body[:200]!r}")
-            status = getattr(resp, "status_code", None)
-            if status is not None and "status_code=" not in ",".join(extras):
-                extras.append(f"http_status={status}")
+                try:
+                    extras.append(f"body={str(body)[:200]!r}")
+                except Exception:
+                    pass
         extra_str = (" " + " ".join(extras)) if extras else ""
         payload["error"] = f"alpaca fetch failed: {err_type}: {err_msg}{extra_str}"
         logger.warning(
