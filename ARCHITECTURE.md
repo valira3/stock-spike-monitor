@@ -26,27 +26,26 @@ Stock Spike Monitor is a single-file Python application (`stock_spike_monitor.py
 │                 ▼                           ▼             │
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │                 Shared State (in-memory)             │  │
-│  │  positions, short_positions, tp_positions,           │  │
-│  │  tp_short_positions, paper_cash, tp_paper_cash,      │  │
+│  │  positions, short_positions, paper_cash,             │  │
 │  │  or_high, or_low, pdc, _near_miss_log               │  │
 │  └───────────────────────┬─────────────────────────────┘  │
 │                           │                               │
 │                           ▼                               │
 │  ┌─────────────────────────────────────────────────────┐  │
-│  │     paper_state.json / tp_state.json                 │  │
+│  │     paper_state.json                                 │  │
 │  │     trade_log.jsonl  (Railway Volume)                │  │
 │  └─────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
-         │                │                 │
-         ▼                ▼                 ▼
-  ┌──────────┐  ┌─────────────────┐  ┌──────────────┐
-  │  Yahoo   │  │  FMP            │  │ TradersPost  │
-  │  Finance │  │  (PDC + quotes) │  │ (webhook)    │
-  │ (1m bars)│  │                 │  │              │
-  └──────────┘  └─────────────────┘  └──────────────┘
+         │                │
+         ▼                ▼
+  ┌──────────┐  ┌─────────────────┐
+  │  Yahoo   │  │  FMP            │
+  │  Finance │  │  (PDC + quotes) │
+  │ (1m bars)│  │                 │
+  └──────────┘  └─────────────────┘
 ```
 
-Two Telegram bots run in the same process. The **main bot** reports the paper portfolio to the main group. The **TP bot** reports the TradersPost mirror portfolio privately. Both expose the same command surface; the bot that receives the message routes to its own portfolio view.
+v3.5.0: a single main Telegram bot reports the paper portfolio. TradersPost / Robinhood / Gmail/IMAP / dual-bot surfaces were removed.
 
 ---
 
@@ -93,14 +92,13 @@ AAPL  MSFT  NVDA  TSLA  META  GOOG  AMZN  AVGO  QBTS
 1. Gate check          — weekday, 09:35–15:55 ET
 2. PDC / polarity      — refresh SPY/QQQ vs PDC for regime alert
 3. manage_positions()  — long stop chain + ladder + Red Candle + Lords Left
-4. manage_tp_positions()  — TP mirror long positions (same logic)
-5. manage_short_positions()  — short stop chain + ladder + Bull Vacuum + Polarity Shift
-6. Pause check         — if /monitoring paused → skip steps 7–8 (protection still runs)
-7. check_entry(ticker) — for each ticker: evaluate all long entry conditions
-8. check_short_entry(ticker) — for each ticker: evaluate all short entry conditions
+4. manage_short_positions()  — short stop chain + ladder + Bull Vacuum + Polarity Shift
+5. Pause check         — if /monitoring paused → skip steps 6–7 (protection still runs)
+6. check_entry(ticker) — for each ticker: evaluate all long entry conditions
+7. check_short_entry(ticker) — for each ticker: evaluate all short entry conditions
 ```
 
-Position management (steps 3–5) runs unconditionally — open positions are never left unprotected during a scanner pause.
+Position management (steps 3–4) runs unconditionally — open positions are never left unprotected during a scanner pause.
 
 ---
 
@@ -261,7 +259,7 @@ def _sovereign_regime_eject(side):
 
 ## State Persistence
 
-All mutable state is stored in `paper_state.json` (and `tp_state.json` for the TP portfolio), written to Railway Volume storage.
+All mutable state is stored in `paper_state.json`, written to Railway Volume storage.
 
 Saves occur:
 - Every 5 minutes during the scan loop.
@@ -288,29 +286,13 @@ Key fields in `paper_state.json`:
 
 ---
 
-## TradersPost Mirror
-
-When `TRADERSPOST_ENABLED=true`, every paper trade fires a webhook POST to the configured TradersPost URL:
-
-```
-Paper long BUY  → POST { ticker, action: "buy",        shares: 10, price }
-Paper long SELL → POST { ticker, action: "exit",        shares: 10, price }
-Paper short     → POST { ticker, action: "sell_short",  shares: 10, price }
-Paper cover     → POST { ticker, action: "buy_to_cover",shares: 10, price }
-```
-
-The TP portfolio (`tp_positions`, `tp_short_positions`) tracks what TradersPost should hold, independent of paper positions.
-
----
-
 ## Data Sources
 
 | Source | Purpose | Auth |
 |--------|---------|------|
 | Yahoo Finance (yfinance) | 1-minute OHLCV bars — entries, stop management, OR collection | None |
 | FMP | Real-time quotes, PDC data | `FMP_API_KEY` |
-| TradersPost | Live trade mirroring via webhook | `TRADERSPOST_WEBHOOK_URL` |
-| Telegram | Bot commands + notifications | `TELEGRAM_TOKEN`, `TELEGRAM_TP_TOKEN` |
+| Telegram | Bot commands + notifications | `TELEGRAM_TOKEN` |
 
 ---
 
@@ -318,12 +300,8 @@ The TP portfolio (`tp_positions`, `tp_short_positions`) tracks what TradersPost 
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `TELEGRAM_TOKEN` | Yes | Main Telegram bot token |
-| `CHAT_ID` | Yes | Main Telegram chat/group ID |
-| `TELEGRAM_TP_TOKEN` | No | Separate bot token for TP bot |
-| `TELEGRAM_TP_CHAT_ID` | No | TP bot chat ID |
-| `TRADERSPOST_WEBHOOK_URL` | No | TradersPost webhook URL |
-| `TRADERSPOST_ENABLED` | No | `true` to activate webhook sends (default: `false`) |
+| `TELEGRAM_TOKEN` | Yes | Telegram bot token |
+| `CHAT_ID` | Yes | Telegram chat/group ID |
 | `FMP_API_KEY` | No | FMP API key for PDC/quote data |
 | `PAPER_STATE_PATH` | No | Path for paper state file (default: `paper_state.json`) |
 | `DAILY_LOSS_LIMIT` | No | Realized P&L circuit breaker (default: `-500`) |
@@ -361,70 +339,6 @@ See [COMMANDS.md](COMMANDS.md) for the full reference.
 
 ---
 
-## Robinhood Bot (Live Trading) — v3.4.37
+## v3.5.0 Deletion Pass
 
-The TP (TradersPost mirror) bot doubles as the **Robinhood bot** for live trading. It uses TradersPost as a routing layer to send orders to Robinhood.
-
-### Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RH_STARTING_CAPITAL` | `25000` | Robinhood account starting balance used for equity tracking |
-| `RH_DOLLARS_PER_ENTRY` | `1500` | Dollar allocation per entry (replaces fixed 10-share paper sizing) |
-| `RH_MAX_ENTRIES_PER_TICKER` | `1` | Maximum concurrent Robinhood positions in a single ticker |
-| `RH_MAX_CONCURRENT_POSITIONS` | `6` | Maximum total concurrent Robinhood positions across all tickers |
-| `RH_LONG_ONLY` | `true` | When true, all TP/Robinhood short entries are suppressed (paper short continues) |
-| `GMAIL_ADDRESS` | `""` | Gmail address for IMAP reconciliation (optional) |
-| `GMAIL_APP_PASSWORD` | `""` | Gmail app password (not account password) for IMAP |
-| `RH_IMAP_POLL_SEC` | `120` | How often to poll Gmail for TradersPost fill/reject emails |
-
-### Share Sizing
-
-Robinhood orders use dynamic dollar-based sizing instead of the paper bot's fixed 10 shares:
-
-```python
-rh_shares = max(1, int(RH_DOLLARS_PER_ENTRY // price))
-# Example: $1500 / $145.20 = 10 shares
-```
-
-This size is computed at entry and stored in `tp_positions[ticker]["shares"]`. Exits use the stored share count.
-
-### Long-Only Gate
-
-When `RH_LONG_ONLY=true` (default), the TP bot skips all short-entry webhook calls:
-
-- Paper short positions continue to open and manage normally.
-- `tp_short_positions` remains empty.
-- No buy-to-cover order is ever sent for a short that was never opened.
-
-### Concurrency Caps
-
-Before any TP long entry fires, two gates are checked:
-
-1. **Per-ticker cap:** if `ticker in tp_positions`, skip (max 1 position per ticker).
-2. **Concurrent cap:** if `len(tp_positions) >= RH_MAX_CONCURRENT_POSITIONS`, skip.
-
-The paper bot is entirely unaffected by these caps.
-
-### IMAP Reconciliation
-
-When `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` are set, `rh_imap_poll_once()` runs every `RH_IMAP_POLL_SEC` seconds in a daemon thread. It:
-
-1. Connects to `imap.gmail.com` via SSL.
-2. Searches for emails from `support@traderspost.io`.
-3. Parses each unprocessed email with `_rh_parse_tp_email()` to classify it as `failed`, `filled`, or `unknown`.
-4. Sends a Telegram message to the Robinhood chat for each email:
-   - Failed: rejection reason extracted from `Status:` and `Payload:` fields.
-   - Filled: confirmation with ticker, quantity, and fill price (best-effort parsing).
-   - Unknown: raw subject forwarded for manual review.
-
-UIDs of processed emails are tracked in `_rh_reconcile_seen` (in-memory; resets on restart).
-
-### Paper Bot Unchanged
-
-The paper portfolio remains completely unchanged:
-- Starting capital: `$100,000`
-- Shares per entry: `10` (fixed)
-- Max 5 entries per ticker per day (long + short combined)
-- No concurrency cap
-- Short selling enabled
+v3.5.0 removes TradersPost, Robinhood, and Gmail/IMAP surfaces. Paper book is the only trading surface. v4.0.0 will add Alpaca-backed TradeGenius executors (Val + Gene) mirroring paper signals.

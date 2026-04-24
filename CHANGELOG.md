@@ -4,6 +4,30 @@ All notable changes to Stock Spike Monitor.
 
 ---
 
+## v3.5.0 — Deletion Pass (2026-04-24)
+
+Strip TradersPost, Robinhood, and Gmail/IMAP surfaces to clear the codebase before adding Alpaca connectivity in v4.0.0.
+
+**Removed:**
+- TradersPost webhook (`send_traderspost_order`, `TRADERSPOST_WEBHOOK_URL`)
+- TradersPost paper book (`tp_positions`, `tp_paper_trades`, `tp_paper_cash`, `tp_*` state, `tp_state.json`)
+- TradersPost Telegram bot (`TELEGRAM_TP_TOKEN`, `TELEGRAM_TP_CHAT_ID`, dual-bot wiring, `_run_both`)
+- Robinhood IMAP poll (`rh_imap_poll_once`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `RH_IMAP_*`)
+- Robinhood execution (`execute_rh_entry`, `rh_shares_for`, `RH_STARTING_CAPITAL`, `RH_MAX_*`, `RH_LONG_ONLY`, `RH_DOLLARS_PER_ENTRY`)
+- Commands: `/rh_enable`, `/rh_disable`, `/rh_status`, `/tp_sync`, `/tp_sync_on_main`
+- Dashboard TP snapshot from `/api/state`
+- Smoke tests: all `tp_*`, `rh_*`, `traderspost`, `robinhood`, `imap`, `gmail` tests
+- Module globals: `tp_positions`, `tp_paper_cash`, `tp_trade_history`, `tp_short_positions`, `tp_short_trade_history`, `tp_unsynced_exits`, `tp_state`, `tp_daily_entry_count`, `_tp_save_lock`, `_tp_state_loaded`, `_rh_reconcile_seen`
+
+**Unchanged:**
+- Eye of the Tiger 2.0 entry/exit logic (paper book)
+- Hard Eject, EOD Close, morning OR breakout
+- All paper-book state, dashboard paper tab, Telegram main bot
+
+**Next:** v4.0.0 will add Alpaca-backed TradeGenius bots (Val + Gene) mirroring main paper signals.
+
+---
+
 ## v3.4.36 — Peak-anchored profit-lock ladder (2026-04-22)
 
 ### Why
