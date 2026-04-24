@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.2.0"
+BOT_VERSION = "4.2.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,20 +70,28 @@ BOT_VERSION = "4.2.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.2.0 \u2014 dashboard UI:\n"
-    "redundant fourth header row\n"
-    "deleted across Main/Val/Gene\n"
-    "(date/executor/Paper/LIVE\n"
-    "duplicated info already on\n"
-    "rows 2-3). \"\u00b7 live\" suffix\n"
-    "next to version dropped;\n"
-    "Sign Out button removed from\n"
-    "header (/logout route kept).\n"
-    "Dead CSS/JS pruned."
+    "v4.2.1 \u2014 dashboard UI:\n"
+    "row-2 time clock restored\n"
+    "(HH:MM ET, time-only, parsed\n"
+    "from server_time_label) and\n"
+    "Today's Trades collapsed to\n"
+    "a single line per fill with\n"
+    "aligned columns: time, sym,\n"
+    "qty, BUY|SELL, cost-or-pnl,\n"
+    "unit price. SELL rows show\n"
+    "signed pnl + matching-colour\n"
+    "pct. Narrow-phone rules hide\n"
+    "qty column + row-2 clock."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.2.0 \u2014 dashboard UI:\n"
+    "redundant fourth header row\n"
+    "deleted across Main/Val/Gene;\n"
+    "\"\u00b7 live\" suffix + Sign Out\n"
+    "button also dropped.\n"
+    "\n"
     "v4.1.9 \u2014 dashboard M11:\n"
     "h_stream snapshot() now\n"
     "served from a 10s TTL\n"

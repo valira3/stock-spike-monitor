@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.2.1 — Dashboard UI: row-2 clock restored + Today's Trades collapsed to one line (2026-04-24)
+
+Two small dashboard-only UX changes bundled together.
+
+**Added:**
+
+- **Row-2 time clock** — a `#tg-brand-clock` span in the TradeGenius brand row, positioned between the version text and the LIVE pill. Shows `HH:MM ET` parsed out of the existing `server_time_label` field from `/api/state` (format `"Fri Apr 24 · 13:09:13 ET"` → `"13:09 ET"`). No date and no seconds — rows 1 and the index strip already carry that context. Refresh piggybacks on the state poll; label regex is time-only so any tz label (`ET` / `CDT` / `UTC`) passes through. Falls back silently to the `&mdash;` placeholder if the server label is empty or shaped unexpectedly.
+
+**Changed:**
+
+- **Today's Trades rows are now one line, not two.** Previous layout used a 3-row grid-template-area on mobile and a loose 2-line layout on desktop; replaced with a single-line grid `time | sym | qty | act | tail | price` with fixed min-widths so the numbers align cleanly down the list. `white-space: nowrap` on the row prevents wrap regardless of viewport. SELL rows now put signed P&L (`+$51.84`) with the matching-colour P&L % (`+0.52%`) in the tail column; BUY rows keep the total cost. The unit fill price moves to the end of the row.
+- **`renderHeader()`** in `dashboard_static/index.html` sets `#tg-brand-clock.textContent` from a regex pulling `HH:MM:SS TZ` out of `server_time_label`.
+- **Same treatment on the Val/Gene executor-tab trade render** so all three panels look identical.
+- **CSS**: `.trade-row` grid + responsive rules rewritten. New `@media (max-width: 360px)` rule hides the QTY column so ticker/action/pnl/price stay on one line on the narrowest phones. `#tg-brand-clock` hides below 380px for the same reason.
+- `BOT_VERSION = "4.2.1"`; `CURRENT_MAIN_NOTE` rewritten; v4.2.0 note rolled into `_MAIN_HISTORY_TAIL`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (40/40). Row 2 header now reads: `[logo] TradeGenius v4.2.1 ... 13:09 ET [LIVE · scan in Ns]`. Trades example: `10:09  TQQQ  162  SELL  +$51.84 +0.52%  $61.68` on a single row.
+
+**Breaking:** None. No server API changes; trade dict shape is unchanged.
+
+---
+
 ## v4.2.0 — Dashboard UI cleanup: redundant header row + Sign Out + "· live" removed (2026-04-24)
 
 User-visible dashboard chrome cleanup. The mobile header previously carried four rows: SPY/QQQ strip, TradeGenius logo + version + LIVE pill, Main/Val/Gene tab switcher, and a fourth row duplicating information already on rows 2-3 (today's date, the active executor name, a "Paper" chip, and a second LIVE pill). The fourth row was a hold-over from the pre-tabs single-panel layout and now just adds vertical noise on phones. This release deletes it across all three portfolio panels and removes two smaller redundancies on the same header.
