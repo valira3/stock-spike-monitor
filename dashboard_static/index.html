@@ -1462,6 +1462,30 @@
   const TABS = ["main", "val", "gene"];
   let activeTab = "main";
 
+  // v4.1.4-dash \u2014 H2: one-shot /api/state warmup when user lands on
+  // Val/Gene before Main has populated window.__tgLastState. Without
+  // this, shared KPIs (Gate/Regime/Session) render as "\u2014" for up to
+  // 15s until the executor poll + Main SSE tick both land. Guarded so
+  // we only fire once per tab-switch event, and never blocks the
+  // executor poll \u2014 both run in parallel.
+  let __tgWarmupInFlight = false;
+  async function warmupSharedState() {
+    if (__tgWarmupInFlight) return;
+    if (window.__tgLastState) return;
+    __tgWarmupInFlight = true;
+    try {
+      const r = await fetch("/api/state", { credentials: "same-origin" });
+      if (!r.ok) return;
+      const s = await r.json();
+      window.__tgLastState = s;
+      if (typeof window.__tgOnState === "function") window.__tgOnState(s);
+    } catch (e) {
+      // swallow \u2014 next Main SSE/poll tick will populate
+    } finally {
+      __tgWarmupInFlight = false;
+    }
+  }
+
   function selectTab(name) {
     if (!TABS.includes(name)) return;
     activeTab = name;
@@ -1475,7 +1499,10 @@
       btn.style.color = on ? "#e7ecf3" : "#8a96a7";
       btn.style.borderBottomColor = on ? "#7dd3fc" : "transparent";
     }
-    if (name === "val" || name === "gene") pollExecutor(name);
+    if (name === "val" || name === "gene") {
+      if (!window.__tgLastState) warmupSharedState();
+      pollExecutor(name);
+    }
   }
 
   for (const btn of document.querySelectorAll(".tg-tab")) {

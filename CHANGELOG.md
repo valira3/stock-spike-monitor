@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.4 — Dashboard audit deferred: H2 Val/Gene tab warmup (2026-04-24)
+
+Dashboard-only fix for a deferred HIGH finding from the prior audit (`/tmp/audit_dash.md` H2). If a user lands directly on the Val or Gene tab before Main has completed its first `/api/state` poll, the shared KPI row (Gate / Regime / Session) and scanner-level widgets render as blank "—" placeholders for up to 15 s until either Main's SSE tick or the executor poll lands. `window.__tgLastState` is the handoff channel and it starts unset on a cold page.
+
+**Fixed:**
+
+- **`selectTab` now warms `window.__tgLastState` on Val/Gene landing (`dashboard_static/index.html`)** — a new `warmupSharedState()` helper fires a one-shot `fetch("/api/state")` the first time a Val/Gene tab is selected while the shared cache is still empty. On success it writes `window.__tgLastState` and invokes the existing `__tgOnState` callback so `renderExecMarketState` + `refreshExecSharedKpis` paint immediately. Re-entrancy guarded by `__tgWarmupInFlight`, and the warmup runs in parallel with `pollExecutor(name)` so the executor-specific panel does not have to wait on the shared state round-trip. The existing 15 s Main SSE / poll cadence is untouched.
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.4; v4.1.3 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.4"`.
+- Smoke test pins BOT_VERSION to `4.1.4`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS.
+
+**Breaking:** None.
+
+---
+
 ## v4.1.3 — Audit H3 (trade_genius): cross-day cooldown prune TZ consistency (2026-04-24)
 
 Finishes one of the deferred HIGH-severity items from `/tmp/audit_tg.md`. No live bug was observed, but the cross-day cooldown prune in `reset_daily_state` mixed ET and UTC date arithmetic — fragile around DST transitions and midnight ET.

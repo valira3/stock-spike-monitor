@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.3"
+BOT_VERSION = "4.1.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,18 +69,28 @@ BOT_VERSION = "4.1.3"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.3 \u2014 audit H3:\n"
-    "cross-day cooldown prune now\n"
-    "compares everything in ET;\n"
-    "stored UTC exit times are\n"
-    "converted to ET before the\n"
-    "09:30 cutoff test so DST\n"
-    "boundaries + midnight ET no\n"
-    "longer drift the cutoff."
+    "v4.1.4 \u2014 dashboard H2:\n"
+    "Val/Gene tab landing no\n"
+    "longer shows blank shared\n"
+    "KPIs for up to 15s if Main\n"
+    "hasn't polled yet. Tab\n"
+    "switch now warms\n"
+    "window.__tgLastState via\n"
+    "a one-shot /api/state\n"
+    "fetch in parallel with\n"
+    "the executor poll."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.3 \u2014 trade_genius H3:\n"
+    "cross-day cooldown prune now\n"
+    "compares everything in ET;\n"
+    "UTC exit times converted to\n"
+    "ET before the 09:30 cutoff\n"
+    "test; DST + midnight ET no\n"
+    "longer drift the cutoff.\n"
+    "\n"
     "v4.1.2 \u2014 trade_genius MED:\n"
     "load_paper_state clears dicts\n"
     "before merging state; mpl\n"
