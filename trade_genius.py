@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.0-beta"
+BOT_VERSION = "4.0.1-beta"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,6 +69,21 @@ BOT_VERSION = "4.0.0-beta"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.0.1-beta \u2014 UI + gate fixes:\n"
+    "\u2022 Dashboard: ticker/brand/\n"
+    "  tabs row reorder (#80)\n"
+    "\u2022 Val/Gene tabs mirror Main\n"
+    "  full widget layout (#81)\n"
+    "\u2022 Shared market-state +\n"
+    "  per-exec trades (#82)\n"
+    "\u2022 Scanner: fix OR side\n"
+    "  latch collision (#83)\n"
+    "\u2022 Remove volume fiction;\n"
+    "  expose DI gate (#84)"
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.0.0-beta \u2014 Gene + dashboard:\n"
     "second Alpaca executor Gene\n"
     "mirrors main signals, matches\n"
@@ -76,11 +91,8 @@ CURRENT_MAIN_NOTE = (
     "has 3 tabs (Main/Val/Gene)\n"
     "with paper/live badges, an\n"
     "index ticker strip, and the\n"
-    "shorts P&L sign fix."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "shorts P&L sign fix.\n"
+    "\n"
     "v4.0.0-alpha \u2014 Val executor:\n"
     "main emits signals, Val\n"
     "mirrors to Alpaca paper.\n"

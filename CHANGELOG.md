@@ -4,6 +4,29 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.1-beta — UI polish + scanner/gate fixes (2026-04-24)
+
+A small follow-on to v4.0.0-beta that cleans up the 3-tab dashboard, fixes two scanner/gate bugs found once Gene was live, and ships a CI guard so future merges cannot silently land without a version bump.
+
+**Changed / Fixed:**
+- **#80 — refactor(dashboard): reorder top rows to ticker → brand → tabs.** The index ticker strip now renders above the TradeGenius brand, which in turn sits above the Main/Val/Gene tab row. Why: on mobile the previous order pushed the always-on ticker strip below the fold, defeating the point of an "always-on" market-state readout.
+- **#81 — feat(dashboard): expand Val/Gene tabs to mirror Main layout.** Val and Gene panels now render the full widget set the Main tab has (regime banner, positions table, invested/shorted totals, recent-trades timeline) instead of the minimal account-only card. Why: executor tabs were visually disjoint from Main, making it harder to compare paper-book state against each executor at a glance.
+- **#82 — feat(dashboard): share market-state widgets + per-executor trades on Val/Gene.** Market-state widgets (regime banner, index ticker strip) are rendered once and shared across tabs; each executor tab now also shows its own per-executor recent-trades list sourced from the Alpaca account activity. Why: duplicating widgets per tab caused three independent polls against the same endpoints, and executor tabs were missing the "what did Val/Gene actually do today" view that Main has always had.
+- **#83 — fix(scanner): break side-selection latch; recompute from OR envelope each scan.** The scanner no longer latches to the side (long/short) chosen on the first bar that cleared the Opening Range envelope. Each scan now re-evaluates which side of the OR the current bar is on. Why: once a ticker was latched long, a subsequent bar that broke the OR-low would not produce a short entry until the next day — a silent miss on valid short setups.
+- **#84 — fix(gates): remove volume fiction; surface DI as real gate.** The `volume` gate label was removed from the dashboard/status surfaces because no live scan actually consulted a volume threshold; instead, the ADX/DI+ strength check that *is* enforced is now exposed as its own `DI` gate. Why: operators were reading `volume: PASS` as a real confirmation when the check was a no-op, and the real strength gate (DI+ ≥ 25) was hidden inside a composite label.
+
+**Added:**
+- **`.github/workflows/version-bump-check.yml`** — a `pull_request` check (`version-bump-required`) that fails on PRs targeting `main` unless both `trade_genius.py` (BOT_VERSION) and `CHANGELOG.md` (top entry) are modified. Includes a `[skip-version]` token escape hatch for doc-only or CI-only PRs. Why: v4.0.0-beta almost shipped to prod without a CHANGELOG entry; a cheap pre-merge gate is the right backstop.
+
+**Validation:**
+- `ast.parse` clean on `trade_genius.py`.
+- `python smoke_test.py --local` → **34 / 34 PASS**.
+- `CURRENT_MAIN_NOTE` begins with `v4.0.1-beta` and every line ≤ 34 chars (verified in smoke).
+
+**Breaking:** None.
+
+---
+
 ## v4.0.0-beta — TradeGeniusGene + 3-tab dashboard (2026-04-24)
 
 Second step of the v4 architecture: a second Genius executor (**Gene**) joins Val, and the dashboard grows a tabbed view so main's paper book, Val's Alpaca account, and Gene's Alpaca account are each visible at a glance. An always-on index ticker strip (SPY / QQQ / DIA / IWM / VIX) runs across the top of every tab.
