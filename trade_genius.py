@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.5.3"
+BOT_VERSION = "4.5.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,20 +70,29 @@ BOT_VERSION = "4.5.3"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.5.2 \u2014 refactor:\n"
-    "extracted main-bot Telegram\n"
-    "command handlers into\n"
-    "telegram_commands.py\n"
-    "(~1164 LOC moved). Pure\n"
-    "code motion, zero behavior\n"
-    "change \u2014 all 25 cmd_*\n"
-    "handlers, reset_callback,\n"
-    "and _reset_authorized live\n"
-    "in the new module."
+    "v4.5.4 \u2014 deploy fix:\n"
+    "telegram_commands.py now\n"
+    "aliases __main__ in\n"
+    "sys.modules so prod's\n"
+    "`python trade_genius.py`\n"
+    "entrypoint doesn't trigger\n"
+    "a circular re-execution.\n"
+    "Restores v4.5.2's cmd_*\n"
+    "extraction without crash."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.5.3 \u2014 deploy fix:\n"
+    "Dockerfile now copies\n"
+    "telegram_commands.py into\n"
+    "the container image.\n"
+    "\n"
+    "v4.5.2 \u2014 refactor:\n"
+    "extracted main-bot Telegram\n"
+    "command handlers into\n"
+    "telegram_commands.py.\n"
+    "\n"
     "v4.5.1 \u2014 refactor:\n"
     "dashboard index.html split\n"
     "into index.html + app.css +\n"

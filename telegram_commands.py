@@ -5,7 +5,27 @@ Pure code motion — no behavior change.
 """
 from __future__ import annotations
 
-import trade_genius  # module-level writes use attribute assignment
+# v4.5.4 — prod runs `python trade_genius.py`, so trade_genius is registered
+# in sys.modules as `__main__`, NOT as `trade_genius`. Without the alias
+# below, `from trade_genius import (...)` would re-execute trade_genius.py
+# from disk under a second module name, which re-enters run_telegram_bot()
+# while this module is still partially initialized — AttributeError on
+# cmd_help. Aliasing __main__ as `trade_genius` makes both names point at
+# the same already-loaded module object.
+import sys as _sys
+
+if "trade_genius" not in _sys.modules and "__main__" in _sys.modules:
+    _main = _sys.modules["__main__"]
+    if getattr(_main, "BOT_NAME", None) == "TradeGenius":
+        _sys.modules["trade_genius"] = _main
+
+
+def _tg_module():
+    """Return the live trade_genius module, whether it's running as __main__
+    (production) or imported as 'trade_genius' (smoke tests, REPL)."""
+    return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+
+
 from trade_genius import (
     BOT_NAME,
     BOT_VERSION,
@@ -1165,7 +1185,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = args[0].lower() if args else ""
 
     if action == "pause":
-        trade_genius._scan_paused = True
+        _tg_module()._scan_paused = True
         await update.message.reply_text(
             "\U0001f50d Scanner: PAUSED\n"
             "  Tap below to resume.\n"
@@ -1175,7 +1195,7 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
     elif action == "resume":
-        trade_genius._scan_paused = False
+        _tg_module()._scan_paused = False
         await update.message.reply_text(
             "\U0001f50d Scanner: ACTIVE\n"
             "  Watching for breakouts.",
@@ -1184,8 +1204,9 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
     else:
-        status = "PAUSED" if trade_genius._scan_paused else "ACTIVE"
-        if trade_genius._scan_paused:
+        _tg = _tg_module()
+        status = "PAUSED" if _tg._scan_paused else "ACTIVE"
+        if _tg._scan_paused:
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume")
             ]])
