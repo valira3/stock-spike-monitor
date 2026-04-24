@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-smoke_test.py  —  Smoke test for stock-spike-monitor (v3.5.0 paper-only).
+smoke_test.py  —  Smoke test for TradeGenius (v3.5.1 paper-only).
 
 Two modes:
 
@@ -106,7 +106,7 @@ def run_local() -> int:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
-        import stock_spike_monitor as m  # noqa: E402
+        import trade_genius as m  # noqa: E402
         import dashboard_server as ds    # noqa: E402
     except Exception as e:
         print(f"Module import failed: {e}")
@@ -228,13 +228,18 @@ def run_local() -> int:
             assert bad not in snap, f"v3.5.0: {bad} should be removed"
 
     # ---------- version ----------
-    @t("version: BOT_VERSION is 3.5.0")
+    @t("version: BOT_NAME is TradeGenius")
     def _():
-        assert m.BOT_VERSION == "3.5.0", f"got {m.BOT_VERSION}"
+        assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
+            f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v3.5.0")
+    @t("version: BOT_VERSION is 3.5.1")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v3.5.0"), \
+        assert m.BOT_VERSION == "3.5.1", f"got {m.BOT_VERSION}"
+
+    @t("version: CURRENT_MAIN_NOTE begins with v3.5.1")
+    def _():
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v3.5.1"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: no TP/RH surfaces in module")
@@ -252,7 +257,7 @@ def run_local() -> int:
                     "GMAIL_ADDRESS", "TELEGRAM_TP_TOKEN"):
             assert not hasattr(m, bad), f"v3.5.0: {bad} should be removed"
 
-    return run_suite("LOCAL SMOKE TESTS (v3.5.0 paper-only)")
+    return run_suite("LOCAL SMOKE TESTS (v3.5.1 paper-only)")
 
 
 # ============================================================
@@ -348,7 +353,7 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
 # ============================================================
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Stock Spike Monitor smoke test")
+    parser = argparse.ArgumentParser(description="TradeGenius smoke test")
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--prod", action="store_true")
     parser.add_argument("--url",

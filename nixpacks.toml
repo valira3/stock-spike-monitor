@@ -5,4 +5,4 @@ nixPkgs = ["python311"]
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "python stock_spike_monitor.py"
+cmd = "python trade_genius.py"

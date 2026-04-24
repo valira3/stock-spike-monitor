@@ -48,7 +48,7 @@ jobs:
       - name: Read committed BOT_VERSION
         id: version
         run: |
-          V=$(python -c "import re,sys; t=open('stock_spike_monitor.py').read(); m=re.search(r'^BOT_VERSION\s*=\s*\"([^\"]+)\"', t, re.M); print(m.group(1))")
+          V=$(python -c "import re,sys; t=open('trade_genius.py').read(); m=re.search(r'^BOT_VERSION\s*=\s*\"([^\"]+)\"', t, re.M); print(m.group(1))")
           echo "Committed BOT_VERSION: $V"
           echo "bot_version=$V" >> "$GITHUB_OUTPUT"
 

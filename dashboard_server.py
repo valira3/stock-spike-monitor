@@ -1,5 +1,5 @@
 """
-dashboard_server.py — private live web dashboard for Stock Spike Monitor
+dashboard_server.py — private live web dashboard for TradeGenius
 
 Design principles (locked):
   • READ-ONLY. No endpoint mutates bot state. No order placement, no toggles.
@@ -98,13 +98,13 @@ def _logs_since(seq: int, limit: int = 80) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────
-# State snapshot — read live globals from stock_spike_monitor
+# State snapshot — read live globals from trade_genius
 # ─────────────────────────────────────────────────────────────
 def _ssm():
     """Get the live bot module without re-executing it.
 
-    The bot is launched via ``python stock_spike_monitor.py``, so it lives
-    in ``sys.modules['__main__']``. A naive ``import stock_spike_monitor``
+    The bot is launched via ``python trade_genius.py``, so it lives
+    in ``sys.modules['__main__']``. A naive ``import trade_genius``
     here would *re-execute* the entire file (top-level entry point and
     all), which calls ``loop.add_signal_handler(...)`` from a non-main
     thread and crashes. So: prefer the already-loaded instance.
@@ -115,11 +115,11 @@ def _ssm():
     if main_mod is not None and getattr(main_mod, "BOT_VERSION", None):
         return main_mod
     # Fallback: already-imported by name
-    m = sys.modules.get("stock_spike_monitor")
+    m = sys.modules.get("trade_genius")
     if m is not None:
         return m
     # Last resort (tests / standalone): import fresh
-    import stock_spike_monitor as m  # noqa: F811
+    import trade_genius as m  # noqa: F811
     return m
 
 
@@ -899,7 +899,7 @@ async def h_stream(request):
 
 
 # ─────────────────────────────────────────────────────────────
-# Thread entrypoint — started from stock_spike_monitor.py
+# Thread entrypoint — started from trade_genius.py
 # ─────────────────────────────────────────────────────────────
 def _build_app():
     from aiohttp import web

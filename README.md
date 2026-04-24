@@ -1,10 +1,12 @@
-# Stock Spike Monitor
+# TradeGenius
 
 ORB + Wounded Buffalo Telegram trading bot. Runs two independent intraday strategies — a long Opening Range Breakout and a short Wounded Buffalo breakdown — across an editable ticker universe, against a $100k paper portfolio.
 
-Current version: **v3.5.0**
+Current version: **v3.5.1**
 
-> v3.5.0 is a deletion pass: TradersPost webhook mirror, Robinhood live-trading, Gmail/IMAP reconciliation, and the dual-bot Telegram wiring were all removed. See CHANGELOG.md. v4.0.0 will introduce Alpaca-backed TradeGenius executors.
+> v3.5.1 renames the project from Stock Spike Monitor to TradeGenius (file rename `stock_spike_monitor.py` → `trade_genius.py`, dashboard title, Telegram startup card, Docker/Railway/nixpacks entry points). Paper book and Tiger 2.0 logic are unchanged.
+>
+> Next: v3.6.0 adds a Telegram owner auth guard; v4.0.0 introduces Alpaca-backed TradeGenius executors (Val + Gene).
 
 ---
 
@@ -101,7 +103,7 @@ export CHAT_ID="..."
 export FMP_API_KEY="..."           # PDC + quote data
 export PAPER_STATE_PATH="/data/paper_state.json"  # Railway Volume path
 
-python stock_spike_monitor.py
+python trade_genius.py
 ```
 
 **Railway setup:**

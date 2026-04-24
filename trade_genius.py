@@ -1,9 +1,10 @@
 """
-Stock Spike Monitor v2.9.0 — ORB Momentum Breakout + Wounded Buffalo Short
+TradeGenius v3.5.1 — Eye of the Tiger 2.0 (paper book)
 ===========================================================================
-10-ticker universe, Opening Range breakout (long) + breakdown (short),
-$1.00 stepped trail. Infrastructure: Telegram bot, paper trading,
-TradersPost webhook, scheduler.
+ORB Momentum Breakout + Wounded Buffalo Short on a user-defined ticker
+universe. Paper book only; live execution arrives in v4.0.0 via the
+Alpaca-backed TradeGenius executors (Val + Gene).
+Infrastructure: Telegram bot, paper trading, dashboard, scheduler.
 """
 
 import os
@@ -47,7 +48,8 @@ RH_OWNER_USER_IDS       = {
     u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
 }
 
-BOT_VERSION = "3.5.0"
+BOT_NAME    = "TradeGenius"
+BOT_VERSION = "3.5.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -65,18 +67,27 @@ BOT_VERSION = "3.5.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.5.0 \u2014 Deletion Pass:\n"
-    "removed TradersPost webhook,\n"
-    "TP book, dual-bot wiring,\n"
-    "Robinhood IMAP + Gmail poll,\n"
-    "/tp_sync + /rh_* commands.\n"
-    "Paper book + Tiger 2.0\n"
-    "unchanged. Next: v4.0.0\n"
-    "adds Alpaca executors."
+    "v3.5.1 \u2014 TradeGenius rename:\n"
+    "stock_spike_monitor.py \u2192\n"
+    "trade_genius.py. Dashboard\n"
+    "title, Telegram startup\n"
+    "card, Docker/Railway/\n"
+    "nixpacks entry point all\n"
+    "updated. Paper + Tiger 2.0\n"
+    "unchanged. Next: v3.6.0\n"
+    "Telegram auth guard, then\n"
+    "v4.0.0 Alpaca executors."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.5.0 \u2014 Deletion Pass:\n"
+    "removed TP webhook, TP book,\n"
+    "dual-bot wiring, RH IMAP +\n"
+    "Gmail poll, /tp_sync +\n"
+    "/rh_* commands. \u22122,110\n"
+    "lines in the main file.\n"
+    "\n"
     "v3.4.47 \u2014 Eye of the\n"
     "Tiger 2.0: 2-bar OR confirm\n"
     "+ DI+(5m,15) > 25 gate +\n"
@@ -93,14 +104,7 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.44 \u2014 Menu cleanup:\n"
     "duplicate and alias\n"
-    "commands removed.\n"
-    "\n"
-    "v3.4.43 \u2014 Owner user-id\n"
-    "whitelist: /reset now\n"
-    "works from DM.\n"
-    "\n"
-    "v3.4.36 \u2014 Profit-lock\n"
-    "ladder is peak-based."
+    "commands removed."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -131,7 +135,7 @@ REASON_LABELS = {
 # ============================================================
 # LOGGING
 # ============================================================
-LOG_FILE = "stock_spike_monitor.log"
+LOG_FILE = "trade_genius.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -5930,7 +5934,7 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show version info."""
     await update.message.reply_text(
-        "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, MAIN_RELEASE_NOTE),
+        "%s v%s\n%s" % (BOT_NAME, BOT_VERSION, MAIN_RELEASE_NOTE),
         reply_markup=_menu_button())
 
 
@@ -6313,9 +6317,9 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send PDF — try local file first, fall back to GitHub raw download
     _ALGO_PDF_URL = (
         "https://raw.githubusercontent.com/valira3/"
-        "stock-spike-monitor/main/stock_spike_monitor_algo.pdf"
+        "stock-spike-monitor/main/trade_genius_algo.pdf"
     )
-    pdf_path = Path("stock_spike_monitor_algo.pdf")
+    pdf_path = Path("trade_genius_algo.pdf")
     tmp_path = None
     if not pdf_path.exists():
         logger.info("/algo: PDF not found locally — downloading from GitHub")
@@ -6335,8 +6339,8 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=pdf_file,
-                    filename="StockSpikeMonitor_Algorithm_v3.4.47.pdf",
-                    caption="Stock Spike Monitor \u2014 Algorithm Reference Manual v3.4.47",
+                    filename="TradeGenius_Algorithm_v%s.pdf" % BOT_VERSION,
+                    caption="%s \u2014 Algorithm Reference Manual v%s" % (BOT_NAME, BOT_VERSION),
                 )
         except Exception as e:
             logger.warning("Failed to send algo PDF: %s", e)
@@ -7563,7 +7567,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "menu_version":
         note = MAIN_RELEASE_NOTE
         await query.edit_message_text(
-            "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, note))
+            "%s v%s\n%s" % (BOT_NAME, BOT_VERSION, note))
         return
 
     if query.data == "menu_strategy":
@@ -8079,10 +8083,10 @@ async def _send_startup_menu(bot, chat_id):
     """Send the interactive menu to a chat on startup/deploy."""
     reply_markup = InlineKeyboardMarkup(_build_menu_keyboard())
     startup_text = (
-        "\U0001f7e2 Stock Spike Monitor v%s online\n"
+        "\U0001f7e2 %s v%s online\n"
         "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         "\U0001f5c2 Menu"
-    ) % BOT_VERSION
+    ) % (BOT_NAME, BOT_VERSION)
     try:
         await bot.send_message(
             chat_id=chat_id,
@@ -8261,6 +8265,6 @@ else:
     threading.Thread(target=scheduler_thread, daemon=True).start()
     threading.Thread(target=health_ping, daemon=True).start()
 
-    logger.info("Stock Spike Monitor v%s started", BOT_VERSION)
+    logger.info("%s v%s started", BOT_NAME, BOT_VERSION)
     send_startup_message()
     run_telegram_bot()

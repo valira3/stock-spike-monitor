@@ -1,6 +1,6 @@
 # Architecture
 
-Stock Spike Monitor is a single-file Python application (`stock_spike_monitor.py`, ~9,400 lines) that runs an ORB (Opening Range Breakout) long strategy and a Wounded Buffalo short strategy in parallel, manages a paper portfolio and a TradersPost mirror portfolio, and delivers everything through a Telegram bot. The process is hosted on Railway and auto-deploys on every push to `main`.
+TradeGenius is a single-file Python application (`trade_genius.py`, ~8,300 lines) that runs an ORB (Opening Range Breakout) long strategy and a Wounded Buffalo short strategy on a paper book in parallel, and delivers everything through a Telegram bot. The process is hosted on Railway and auto-deploys on every push to `main`. Live execution (Alpaca-backed TradeGenius bots for Val + Gene) arrives in v4.0.0.
 
 ---
 
@@ -329,7 +329,7 @@ The bot runs on [Railway](https://railway.app):
 3. Attach a Volume mount and set `PAPER_STATE_PATH` to a path on the volume (e.g., `/data/paper_state.json`) so state persists across deploys.
 4. Railway auto-builds and deploys on every push to `main`.
 
-**Logging:** dual handler — file (`stock_spike_monitor.log`) + stdout. All stdout/stderr visible in the Railway dashboard.
+**Logging:** dual handler — file (`trade_genius.log`) + stdout. All stdout/stderr visible in the Railway dashboard.
 
 ---
 
