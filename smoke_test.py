@@ -233,19 +233,37 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.0.1-beta")
+    @t("version: BOT_VERSION is 4.0.2-beta")
     def _():
-        assert m.BOT_VERSION == "4.0.1-beta", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.0.2-beta", f"got {m.BOT_VERSION}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.0.1-beta")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.0.2-beta")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.1-beta"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.2-beta"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
     def _():
         for ln in m.CURRENT_MAIN_NOTE.split("\n"):
             assert len(ln) <= 34, f"line too wide ({len(ln)}): {ln!r}"
+
+    # ---------- v4.0.2-beta DI seed ----------
+    @t("di_seed: _seed_di_buffer function exists")
+    def _():
+        assert hasattr(m, "_seed_di_buffer"), \
+            "_seed_di_buffer missing from trade_genius module"
+        assert callable(m._seed_di_buffer), \
+            "_seed_di_buffer is not callable"
+        assert hasattr(m, "_DI_SEED_CACHE"), \
+            "_DI_SEED_CACHE module global missing"
+
+    @t("di_seed: DI_PREMARKET_SEED env var documented in .env.example")
+    def _():
+        env_path = Path(__file__).parent / ".env.example"
+        assert env_path.exists(), f".env.example missing at {env_path}"
+        text = env_path.read_text(encoding="utf-8")
+        assert "DI_PREMARKET_SEED" in text, \
+            "DI_PREMARKET_SEED not documented in .env.example"
 
     # ---------- v3.6.0 auth guard ----------
     @t("auth: TRADEGENIUS_OWNER_IDS exists, RH_OWNER_USER_IDS removed")

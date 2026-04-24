@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.1-beta"
+BOT_VERSION = "4.0.2-beta"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,21 +69,25 @@ BOT_VERSION = "4.0.1-beta"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.1-beta \u2014 UI + gate fixes:\n"
-    "\u2022 Dashboard: ticker/brand/\n"
-    "  tabs row reorder (#80)\n"
-    "\u2022 Val/Gene tabs mirror Main\n"
-    "  full widget layout (#81)\n"
-    "\u2022 Shared market-state +\n"
-    "  per-exec trades (#82)\n"
-    "\u2022 Scanner: fix OR side\n"
-    "  latch collision (#83)\n"
-    "\u2022 Remove volume fiction;\n"
-    "  expose DI gate (#84)"
+    "v4.0.2-beta \u2014 DI seed at boot:\n"
+    "\u2022 Pull 5m bars from Alpaca\n"
+    "  at scanner startup (#86)\n"
+    "\u2022 DI gate armed on first\n"
+    "  scan, not 70 min in\n"
+    "\u2022 DI_PREMARKET_SEED flag\n"
+    "  toggles premarket bars"
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.0.1-beta \u2014 UI + gate fixes:\n"
+    "dashboard row reorder, Val/\n"
+    "Gene tabs mirror Main, shared\n"
+    "market-state + per-exec\n"
+    "trades, scanner OR latch\n"
+    "fix, volume fiction removed,\n"
+    "DI exposed as real gate.\n"
+    "\n"
     "v4.0.0-beta \u2014 Gene + dashboard:\n"
     "second Alpaca executor Gene\n"
     "mirrors main signals, matches\n"
@@ -1899,25 +1903,303 @@ def _compute_di(highs, lows, closes, period=DI_PERIOD):
         return None, None
 
 
+# ------------------------------------------------------------
+# DI seed buffer (v4.0.2-beta)
+# ------------------------------------------------------------
+# Without seeding, DI starts null on every boot and takes
+# ~DI_PERIOD*2 = ~30 closed 5m bars (75 min of live data) before
+# tiger_di() can return a non-null value. _seed_di_buffer() pulls
+# historical 5m bars from Alpaca at scanner startup so DI is armed
+# on the very first scan cycle.
+#
+# Storage: per-ticker list of closed 5m OHLC dicts, oldest-first.
+#   { ticker: [ {"bucket": int, "high": f, "low": f, "close": f}, ... ] }
+# tiger_di() merges these with live-resampled 5m bars, deduped by
+# bucket (= ts // 300), so as the live session accumulates the
+# seed is transparently superseded.
+_DI_SEED_CACHE: dict = {}
+
+
+def _alpaca_data_client():
+    """Build a read-only StockHistoricalDataClient using whatever
+    Alpaca paper credentials are in the environment. Tries Val first,
+    then Gene. Returns None if no keys are set or alpaca-py import
+    fails \u2014 caller must tolerate a None return.
+    """
+    key = os.getenv("VAL_ALPACA_PAPER_KEY", "").strip() \
+          or os.getenv("GENE_ALPACA_PAPER_KEY", "").strip()
+    secret = os.getenv("VAL_ALPACA_PAPER_SECRET", "").strip() \
+             or os.getenv("GENE_ALPACA_PAPER_SECRET", "").strip()
+    if not key or not secret:
+        return None
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        return StockHistoricalDataClient(key, secret)
+    except Exception as e:
+        logger.debug("alpaca data client build failed: %s", e)
+        return None
+
+
+def _seed_di_buffer(ticker):
+    """Seed the DI 5m buffer for `ticker` from Alpaca historical bars.
+
+    Priority stream (oldest \u2192 newest for DI math):
+      today-RTH \u2192 today-premarket \u2192 prior-day-RTH
+    but we feed oldest-first so the order inside the buffer is
+    chronological: prior-day-RTH, then today-premarket, then today-RTH.
+    The "priority" really means \u2014 if we already have enough
+    today-RTH bars, we don't need to reach back further.
+
+    If the DI_PREMARKET_SEED env flag is "0", premarket bars are
+    skipped (kill switch for premarket-noise concerns).
+
+    Safe to call on restart mid-session. Idempotent \u2014 overwrites
+    any prior seed for the ticker. On any Alpaca failure logs a
+    warning and continues; DI will warm up from live ticks.
+
+    Returns dict {"bars_today_rth": N, "bars_premarket": N,
+                  "bars_prior_day": N, "di_after_seed": float|None}.
+    """
+    result = {
+        "bars_today_rth": 0, "bars_premarket": 0,
+        "bars_prior_day": 0, "di_after_seed": None,
+    }
+    client = _alpaca_data_client()
+    if client is None:
+        logger.debug("DI_SEED %s skipped \u2014 no alpaca data client", ticker)
+        return result
+
+    premarket_on = os.getenv("DI_PREMARKET_SEED", "1").strip() not in (
+        "0", "false", "False", "",
+    )
+
+    try:
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+    except Exception as e:
+        logger.debug("DI_SEED %s import failed: %s", ticker, e)
+        return result
+
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    today_0400 = now_et.replace(hour=4,  minute=0,  second=0, microsecond=0)
+    today_0930 = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+    yday = now_et - timedelta(days=1)
+    # Step back over weekend to last weekday
+    while yday.weekday() >= 5:
+        yday = yday - timedelta(days=1)
+    yday_rth_end   = yday.replace(hour=16, minute=0, second=0, microsecond=0)
+    yday_rth_start = yday.replace(hour=14, minute=50, second=0, microsecond=0)
+
+    def _fetch(start, end):
+        try:
+            req = StockBarsRequest(
+                symbol_or_symbols=ticker,
+                timeframe=TimeFrame.Minute,
+                start=start.astimezone(timezone.utc),
+                end=end.astimezone(timezone.utc),
+                feed="iex",
+            )
+            resp = client.get_stock_bars(req)
+            data = getattr(resp, "data", {}) or {}
+            rows = data.get(ticker, []) or []
+            return rows
+        except Exception as e:
+            logger.warning("DI_SEED %s alpaca fetch %s\u2192%s failed: %s",
+                           ticker, start, end, e)
+            return []
+
+    # Fetch today 04:00 ET \u2192 now (premarket + whatever RTH has happened)
+    today_rows = _fetch(today_0400, now_et)
+
+    # Bucket 1m rows into 5m OHLC, tagged by classification.
+    # today_0930_ts = unix seconds of today's 09:30 ET
+    today_0930_ts = int(today_0930.timestamp())
+
+    today_rth_buckets   = {}
+    today_pre_buckets   = {}
+
+    for row in today_rows:
+        ts = getattr(row, "timestamp", None)
+        if ts is None:
+            continue
+        try:
+            # alpaca timestamps are tz-aware datetimes
+            epoch = int(ts.timestamp())
+        except Exception:
+            continue
+        h  = float(getattr(row, "high",  0) or 0)
+        lo = float(getattr(row, "low",   0) or 0)
+        c  = float(getattr(row, "close", 0) or 0)
+        if h <= 0 or lo <= 0 or c <= 0:
+            continue
+        bucket = epoch // 300
+        target = today_rth_buckets if epoch >= today_0930_ts else today_pre_buckets
+        if bucket not in target:
+            target[bucket] = {"bucket": bucket, "high": h, "low": lo, "close": c}
+        else:
+            target[bucket]["high"]  = max(target[bucket]["high"],  h)
+            target[bucket]["low"]   = min(target[bucket]["low"],   lo)
+            target[bucket]["close"] = c
+
+    # Drop newest bucket if it could still be forming (now < bucket_end)
+    def _finalize(buckets):
+        ordered = sorted(buckets.keys())
+        if not ordered:
+            return []
+        last = ordered[-1]
+        last_end_ts = (last + 1) * 300
+        if int(now_et.timestamp()) < last_end_ts:
+            ordered = ordered[:-1]
+        return [buckets[b] for b in ordered]
+
+    today_rth_list = _finalize(today_rth_buckets)
+    today_pre_list = _finalize(today_pre_buckets) if premarket_on else []
+    result["bars_today_rth"]  = len(today_rth_list)
+    result["bars_premarket"]  = len(today_pre_list)
+
+    seeded_enough = len(today_rth_list) + len(today_pre_list) >= DI_PERIOD * 2
+    prior_day_list = []
+    if not seeded_enough:
+        prior_rows = _fetch(yday_rth_start, yday_rth_end)
+        prior_buckets = {}
+        for row in prior_rows:
+            ts = getattr(row, "timestamp", None)
+            if ts is None:
+                continue
+            try:
+                epoch = int(ts.timestamp())
+            except Exception:
+                continue
+            h  = float(getattr(row, "high",  0) or 0)
+            lo = float(getattr(row, "low",   0) or 0)
+            c  = float(getattr(row, "close", 0) or 0)
+            if h <= 0 or lo <= 0 or c <= 0:
+                continue
+            bucket = epoch // 300
+            if bucket not in prior_buckets:
+                prior_buckets[bucket] = {"bucket": bucket, "high": h,
+                                          "low": lo, "close": c}
+            else:
+                prior_buckets[bucket]["high"]  = max(prior_buckets[bucket]["high"],  h)
+                prior_buckets[bucket]["low"]   = min(prior_buckets[bucket]["low"],   lo)
+                prior_buckets[bucket]["close"] = c
+        prior_day_list = [prior_buckets[b] for b in sorted(prior_buckets.keys())]
+        result["bars_prior_day"] = len(prior_day_list)
+
+    # Combine chronologically: prior-day \u2192 today-premarket \u2192 today-RTH
+    combined = prior_day_list + today_pre_list + today_rth_list
+    # Dedup by bucket, keep last
+    dedup = {}
+    for b in combined:
+        dedup[b["bucket"]] = b
+    final_list = [dedup[k] for k in sorted(dedup.keys())]
+    _DI_SEED_CACHE[ticker] = final_list
+
+    # Compute DI on the seeded state for logging
+    if len(final_list) >= DI_PERIOD + 1:
+        highs  = [b["high"]  for b in final_list]
+        lows   = [b["low"]   for b in final_list]
+        closes = [b["close"] for b in final_list]
+        dp, _dm = _compute_di(highs, lows, closes)
+        result["di_after_seed"] = dp
+
+    logger.info(
+        "DI_SEED ticker=%s bars_today_rth=%d bars_premarket=%d "
+        "bars_prior_day=%d di_after_seed=%s",
+        ticker, result["bars_today_rth"], result["bars_premarket"],
+        result["bars_prior_day"],
+        ("%.2f" % result["di_after_seed"])
+        if result["di_after_seed"] is not None else "None",
+    )
+    return result
+
+
+def _seed_di_all(tickers):
+    """Run _seed_di_buffer for every ticker and emit a summary line."""
+    seeded = 0
+    skipped = 0
+    for t in tickers:
+        try:
+            r = _seed_di_buffer(t)
+            if r.get("di_after_seed") is not None:
+                seeded += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            logger.warning("DI_SEED %s crashed: %s", t, e)
+            skipped += 1
+    logger.info(
+        "DI_SEED_DONE tickers=%d seeded_with_nonnull_di=%d skipped=%d",
+        len(tickers), seeded, skipped,
+    )
+
+
+def _resample_to_5min_ohlc_buckets(timestamps, highs, lows, closes):
+    """Like _resample_to_5min_ohlc but returns list of bucket dicts.
+    Oldest-first, newest (possibly forming) bucket dropped.
+    Returns [] on empty input.
+    """
+    if not timestamps or not closes:
+        return []
+    buckets = {}
+    for i, ts in enumerate(timestamps):
+        if ts is None:
+            continue
+        h  = highs[i]  if i < len(highs)  else None
+        lo = lows[i]   if i < len(lows)   else None
+        c  = closes[i] if i < len(closes) else None
+        if h is None or lo is None or c is None:
+            continue
+        bucket = int(ts) // 300
+        if bucket not in buckets:
+            buckets[bucket] = {"bucket": bucket, "high": h, "low": lo, "close": c}
+        else:
+            buckets[bucket]["high"]  = max(buckets[bucket]["high"],  h)
+            buckets[bucket]["low"]   = min(buckets[bucket]["low"],   lo)
+            buckets[bucket]["close"] = c
+    ordered = sorted(buckets.keys())
+    if len(ordered) <= 1:
+        return []
+    ordered = ordered[:-1]
+    return [buckets[b] for b in ordered]
+
+
 def tiger_di(ticker):
     """Return (di_plus, di_minus) for a ticker using 5m OHLC
     resampled from fetch_1min_bars, or (None, None) if not ready.
+
+    Merges any pre-seeded 5m bars (_DI_SEED_CACHE) with live-resampled
+    bars so DI is available from the first scan after boot. Both
+    streams are keyed by real epoch buckets (ts // 300); overlapping
+    buckets prefer the live value (last-write-wins).
     """
     bars = fetch_1min_bars(ticker)
-    if not bars or not bars.get("timestamps"):
+    live_list = []
+    if bars and bars.get("timestamps"):
+        live_list = _resample_to_5min_ohlc_buckets(
+            bars["timestamps"],
+            bars.get("highs",  []),
+            bars.get("lows",   []),
+            bars.get("closes", []),
+        )
+
+    seed = _DI_SEED_CACHE.get(ticker) or []
+    merged = {}
+    for b in seed:
+        merged[b["bucket"]] = (b["high"], b["low"], b["close"])
+    for b in live_list:
+        merged[b["bucket"]] = (b["high"], b["low"], b["close"])
+
+    if not merged:
         return None, None
-    ohlc5 = _resample_to_5min_ohlc(
-        bars["timestamps"],
-        bars.get("opens", []),
-        bars.get("highs", []),
-        bars.get("lows", []),
-        bars.get("closes", []),
-    )
-    if not ohlc5 or len(ohlc5["closes"]) < DI_PERIOD + 1:
+    keys = sorted(merged.keys())
+    highs  = [merged[k][0] for k in keys]
+    lows   = [merged[k][1] for k in keys]
+    closes = [merged[k][2] for k in keys]
+    if len(closes) < DI_PERIOD + 1:
         return None, None
-    return _compute_di(
-        ohlc5["highs"], ohlc5["lows"], ohlc5["closes"]
-    )
+    return _compute_di(highs, lows, closes)
 
 
 def _tiger_two_bar_long(closes, or_h):
@@ -9208,6 +9490,15 @@ if os.getenv("SSM_SMOKE_TEST", "").strip() == "1":
 else:
     # Startup catch-up
     startup_catchup()
+
+    # v4.0.2-beta \u2014 DI seed from Alpaca historical bars so the DI gate
+    # is armed on the first scan cycle rather than waiting ~70 min
+    # of live RTH. Failures here are non-fatal: DI simply warms up
+    # naturally from live ticks as before.
+    try:
+        _seed_di_all(list(TRADE_TICKERS))
+    except Exception:
+        logger.exception("DI_SEED startup failed \u2014 continuing without seed")
 
     # Background threads
     threading.Thread(target=scheduler_thread, daemon=True).start()

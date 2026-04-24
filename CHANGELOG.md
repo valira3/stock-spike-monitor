@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.2-beta — DI pre-market seed at boot (2026-04-24)
+
+A focused follow-on to v4.0.1-beta (#84) where DI was promoted to a real gate. Prior to this release DI started `null` on every ticker at boot and took ~`DI_PERIOD * 2` = ~30 closed 5m bars (~70 min of live RTH) to warm up. That meant every Railway redeploy during the trading day silently disarmed the DI gate for the first hour-plus of the session. This release pre-fills the DI 5m buffer from Alpaca historical bars at scanner startup so the gate is armed on the very first scan cycle.
+
+**Added:**
+- **`_seed_di_buffer(ticker)`** in `trade_genius.py` — pulls 1m bars from Alpaca's `StockHistoricalDataClient.get_stock_bars` for the window `[today 04:00 ET, now]`, resamples into closed 5m OHLC buckets, and classifies each bucket as today-RTH (≥ 09:30 ET) or today-premarket (< 09:30 ET). If the combined count is less than `DI_PERIOD * 2` the seeder additionally pulls the last ~70 min of yesterday's RTH session (14:50 → 16:00 ET) and prepends those bars as a fallback. The final oldest→newest stream is stored in `_DI_SEED_CACHE[ticker]`.
+- **`_seed_di_all(tickers)`** — runs the seeder for every watchlist ticker and emits a `DI_SEED_DONE tickers=N seeded_with_nonnull_di=M skipped=K` summary line. Called from the startup block (after `startup_catchup()`, before `scheduler_thread`) so DI is seeded before the first scan cycle. Wrapped in a try/except: any failure is logged and startup continues — DI will warm up naturally from live ticks as the fallback.
+- **`tiger_di(ticker)`** now merges `_DI_SEED_CACHE[ticker]` with live 5m bars resampled from Yahoo, keyed by real epoch bucket (`ts // 300`) so overlapping buckets dedupe cleanly. Live bars win on overlap (last-write-wins) so as the session progresses the seed is transparently superseded.
+- **`_resample_to_5min_ohlc_buckets(...)`** — variant of `_resample_to_5min_ohlc` that returns a list of `{bucket, high, low, close}` dicts rather than parallel arrays, used by the merge path in `tiger_di`.
+- **`_alpaca_data_client()`** — builds a read-only `StockHistoricalDataClient` from whichever of `VAL_ALPACA_PAPER_KEY` / `GENE_ALPACA_PAPER_KEY` is present. Returns `None` if neither is configured or the `alpaca.data.historical` import fails; callers tolerate `None` and log.
+- **`DI_PREMARKET_SEED` env flag** (default `"1"`) — when `"0"` the seeder skips today's premarket bars (04:00–09:30 ET) and relies only on today-RTH + prior-day-RTH. Kill switch in case premarket noise degrades DI signal quality. Documented in `.env.example`.
+
+**Logging:**
+- Per ticker: `DI_SEED ticker=META bars_today_rth=12 bars_premarket=22 bars_prior_day=14 di_after_seed=28.5` (INFO level).
+- Summary: `DI_SEED_DONE tickers=16 seeded_with_nonnull_di=14 skipped=2` (INFO level).
+
+**Validation:**
+- `ast.parse` clean on `trade_genius.py`.
+- `python smoke_test.py --local` → **36 / 36 PASS** (added two smoke tests: `di_seed: _seed_di_buffer function exists`, `di_seed: DI_PREMARKET_SEED env var documented in .env.example`).
+- `CURRENT_MAIN_NOTE` begins with `v4.0.2-beta` and every line ≤ 34 chars.
+
+**Breaking:** None. Seeder is best-effort; missing Alpaca credentials or network failures simply leave the bot in the pre-v4.0.2 behaviour (DI warms up from live ticks). Gate semantics are unchanged — DI must still be ≥ 25 to clear the gate; the seed only front-loads the buffer so that threshold can be evaluated sooner.
+
+---
+
 ## v4.0.1-beta — UI polish + scanner/gate fixes (2026-04-24)
 
 A small follow-on to v4.0.0-beta that cleans up the 3-tab dashboard, fixes two scanner/gate bugs found once Gene was live, and ships a CI guard so future merges cannot silently land without a version bump.
