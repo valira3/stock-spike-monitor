@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.3.0"
+BOT_VERSION = "4.3.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,6 +70,20 @@ BOT_VERSION = "4.3.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.3.1 \u2014 dashboard UI:\n"
+    "row-2 now fits inline at\n"
+    "375px iPhone \u2014 nowrap +\n"
+    "tighter gaps, 12-13px clock,\n"
+    "LIVE pill padding trimmed,\n"
+    "version text smaller. Clock\n"
+    "drops seconds at \u2264360px\n"
+    "(HH:MM TZ) so everything on\n"
+    "one line across 414/390/375/\n"
+    "360 widths."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.3.0 \u2014 entry guards:\n"
     "reject entries extended past\n"
     "OR by more than 1.5%\n"
@@ -77,15 +91,8 @@ CURRENT_MAIN_NOTE = (
     "reject entries that would\n"
     "need stop capping when\n"
     "ENTRY_STOP_CAP_REJECT=1.\n"
-    "Fixes 2026-04-24 META +2.61%\n"
-    "chase \u2192 HARD_EJECT_TIGER.\n"
-    "Symmetric for shorts below\n"
-    "OR_Low. Gate snapshot now\n"
-    "exposes extension_pct."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "Fixes 2026-04-24 META chase.\n"
+    "\n"
     "v4.2.2 \u2014 dashboard UI:\n"
     "row-2 clock right-aligned,\n"
     "white+bold HH:MM:SS+tz; rows\n"

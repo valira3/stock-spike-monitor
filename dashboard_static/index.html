@@ -403,6 +403,38 @@
     #tg-brand-clock { font-size: 13px; }
   }
 
+  /* v4.3.1 \u2014 row-2 fits inline on iPhone (375px) without wrap.
+     Strategy: nowrap forces a single line; gap + font shrinks +
+     LIVE pill padding + version size are tuned so that logo +
+     TradeGenius + version + LIVE pill + clock all fit on one row.
+     Bands: 420/380/360 — progressively tighter. */
+  @media (max-width: 420px) {
+    #tg-brand-row {
+      gap: 8px !important;
+      flex-wrap: nowrap !important;
+      padding: 8px 12px !important;
+    }
+    #tg-brand-ver { margin-left: 2px !important; }
+    #tg-live-pill {
+      gap: 6px !important;
+      padding: 3px 8px 3px 7px !important;
+    }
+    #tg-brand-clock { font-size: 13px; }
+  }
+  @media (max-width: 380px) {
+    #tg-brand-row {
+      gap: 6px !important;
+      padding: 8px 10px !important;
+    }
+    #tg-brand-ver { font-size: 9.5px !important; margin-left: 0 !important; }
+    #tg-brand-clock { font-size: 12px; }
+  }
+  @media (max-width: 360px) {
+    #tg-brand-row { gap: 5px !important; padding: 8px 8px !important; }
+    /* drop seconds; __tgTickClock reads this flag and renders HH:MM TZ */
+    #tg-brand-clock { font-size: 12px; }
+  }
+
   /* v4.2.2 \u2014 Today's Trades at <=360px: drop qty column too.
      Row keeps one line with time/sym/action/pnl-or-cost. Unit price
      was already hidden at <=400px. */
@@ -1280,7 +1312,11 @@
     const mm = String(d.getMinutes()).padStart(2, "0");
     const ss = String(d.getSeconds()).padStart(2, "0");
     const tz = window.__tgClockTz || "";
-    el.textContent = tz ? `${hh}:${mm}:${ss} ${tz}` : `${hh}:${mm}:${ss}`;
+    // v4.3.1 \u2014 drop seconds on very narrow phones (<=360px) so
+    // the HH:MM TZ label fits inline with logo/version/LIVE pill.
+    const narrow = window.matchMedia && window.matchMedia("(max-width: 360px)").matches;
+    const t = narrow ? `${hh}:${mm}` : `${hh}:${mm}:${ss}`;
+    el.textContent = tz ? `${t} ${tz}` : t;
   };
   setInterval(window.__tgTickClock, 1000);
   window.__tgTickClock();

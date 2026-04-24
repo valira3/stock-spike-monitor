@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.3.1 — Dashboard UI: fit row-2 clock inline on iPhone (2026-04-24)
+
+Row 2 (logo / TradeGenius / version / LIVE pill / clock) wrapped at 375px after v4.2.2 because the 14px bold `HH:MM:SS TZ` clock pushed the line over budget. v4.3.1 squeezes everything onto a single row across common phone widths (414 / 390 / 375 / 360).
+
+**Changed:**
+
+- **Row-2 now uses `flex-wrap: nowrap` at ≤420px** so items can't drop to a second line. Row padding trimmed (`16px → 12/10/8px` horizontal) and gap tightened (`10px → 8/6/5px`) as width decreases.
+- **Clock font scales down with viewport.** ≤420px: 13px. ≤380px: 12px. Still white, still semi-bold JetBrains Mono with `tabular-nums`.
+- **LIVE pill padding tightened on mobile** (`3px 10px 3px 8px → 3px 8px 3px 7px`, gap `8px → 6px`) so the pill costs a few fewer pixels without changing its visual identity.
+- **Version text (`v4.3.1`) shrinks to 9.5px at ≤380px** with zero left margin so it stays adjacent to the wordmark rather than floating.
+- **Seconds drop at ≤360px.** `__tgTickClock` checks `window.matchMedia("(max-width: 360px)")` and renders `HH:MM TZ` instead of `HH:MM:SS TZ` on the tightest phones. Above 360px the seconds still advance at 1Hz.
+
+**Why:** User reported row 2 still wrapping on iPhone SE (375px) after v4.2.2 — the clock was the largest element on the line and even with the "scan in Ns" chip hidden, logo + wordmark + version + LIVE pill + 14px clock still overflowed the 343px inner width budget.
+
+**Changed:** `BOT_VERSION = "4.3.1"`; `CURRENT_MAIN_NOTE` rewritten; v4.3.0 note rolled into `_MAIN_HISTORY_TAIL`.
+
+**Validation:** `smoke_test.py --local` PASS (40/40).
+
+**Breaking:** None. Desktop/tablet layout unchanged (all new rules are `@media (max-width: 420px)` or narrower).
+
+---
+
 ## v4.3.0 — Entry-extension + stop-cap rejection guards (2026-04-24)
 
 Two new signal-layer entry guards that prevent late/extended chase entries on otherwise-green breakouts.
