@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-smoke_test.py  —  Smoke test for TradeGenius (v3.5.1 paper-only).
+smoke_test.py  —  Smoke test for TradeGenius (v3.6.0 paper-only).
 
 Two modes:
 
@@ -233,14 +233,85 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 3.5.1")
+    @t("version: BOT_VERSION is 3.6.0")
     def _():
-        assert m.BOT_VERSION == "3.5.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "3.6.0", f"got {m.BOT_VERSION}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v3.5.1")
+    @t("version: CURRENT_MAIN_NOTE begins with v3.6.0")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v3.5.1"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v3.6.0"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
+
+    # ---------- v3.6.0 auth guard ----------
+    @t("auth: TRADEGENIUS_OWNER_IDS exists, RH_OWNER_USER_IDS removed")
+    def _():
+        assert hasattr(m, "TRADEGENIUS_OWNER_IDS"), "TRADEGENIUS_OWNER_IDS missing"
+        assert isinstance(m.TRADEGENIUS_OWNER_IDS, set), \
+            f"expected set, got {type(m.TRADEGENIUS_OWNER_IDS).__name__}"
+        assert not hasattr(m, "RH_OWNER_USER_IDS"), \
+            "v3.6.0: RH_OWNER_USER_IDS should be hard-renamed away"
+        assert not hasattr(m, "_RH_OWNER_USERS_RAW"), \
+            "v3.6.0: _RH_OWNER_USERS_RAW should be hard-renamed away"
+
+    @t("auth: _auth_guard exists and blocks non-owners")
+    def _():
+        import asyncio
+        from types import SimpleNamespace
+        assert hasattr(m, "_auth_guard"), "_auth_guard function missing"
+        # Pick a non-owner id guaranteed not in the whitelist.
+        owner_ids = set(m.TRADEGENIUS_OWNER_IDS)
+        bad_id = 999999999
+        while str(bad_id) in owner_ids:
+            bad_id += 1
+        fake_user = SimpleNamespace(id=bad_id)
+        fake_chat = SimpleNamespace(id=-100123)
+        fake_update = SimpleNamespace(
+            effective_user=fake_user,
+            effective_chat=fake_chat,
+            update_id=1,
+        )
+        from telegram.ext import ApplicationHandlerStop
+        raised = False
+        try:
+            asyncio.run(m._auth_guard(fake_update, None))
+        except ApplicationHandlerStop:
+            raised = True
+        assert raised, "_auth_guard must raise ApplicationHandlerStop for non-owners"
+
+    @t("auth: _auth_guard passes owner through (no raise)")
+    def _():
+        import asyncio
+        from types import SimpleNamespace
+        owner_ids = list(m.TRADEGENIUS_OWNER_IDS)
+        assert owner_ids, "TRADEGENIUS_OWNER_IDS is empty \u2014 no owner to test"
+        good_id = int(owner_ids[0])
+        fake_user = SimpleNamespace(id=good_id)
+        fake_chat = SimpleNamespace(id=-100123)
+        fake_update = SimpleNamespace(
+            effective_user=fake_user,
+            effective_chat=fake_chat,
+            update_id=2,
+        )
+        # Should NOT raise; should return None.
+        result = asyncio.run(m._auth_guard(fake_update, None))
+        assert result is None, f"owner path returned {result!r}"
+
+    @t("auth: _auth_guard drops update with no effective_user")
+    def _():
+        import asyncio
+        from types import SimpleNamespace
+        fake_update = SimpleNamespace(
+            effective_user=None,
+            effective_chat=SimpleNamespace(id=-100123),
+            update_id=3,
+        )
+        from telegram.ext import ApplicationHandlerStop
+        raised = False
+        try:
+            asyncio.run(m._auth_guard(fake_update, None))
+        except ApplicationHandlerStop:
+            raised = True
+        assert raised, "updates with no effective_user must also be dropped"
 
     @t("version: no TP/RH surfaces in module")
     def _():
@@ -257,7 +328,7 @@ def run_local() -> int:
                     "GMAIL_ADDRESS", "TELEGRAM_TP_TOKEN"):
             assert not hasattr(m, bad), f"v3.5.0: {bad} should be removed"
 
-    return run_suite("LOCAL SMOKE TESTS (v3.5.1 paper-only)")
+    return run_suite("LOCAL SMOKE TESTS (v3.6.0 paper-only)")
 
 
 # ============================================================

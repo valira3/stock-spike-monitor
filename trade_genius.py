@@ -26,7 +26,8 @@ from telegram import (
 )
 from telegram.constants import ChatAction
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes, CallbackQueryHandler,
+    Application, ApplicationHandlerStop, CallbackQueryHandler,
+    CommandHandler, ContextTypes, TypeHandler,
 )
 
 # ============================================================
@@ -38,18 +39,19 @@ CHAT_ID                 = os.getenv("CHAT_ID")
 # fall back to the hardcoded owner ID.
 _RH_OWNER_DEFAULT       = "5165570192"
 
-# v3.4.43 — Owner user-id whitelist (comma-separated). Lets the owner
-# /reset from a direct message with the bot even when CHAT_ID is
-# configured as a group chat. Default includes Val's Telegram user id
-# so DM resets always work. Each entry is a Telegram user id (positive
-# integer), not a chat id.
-_RH_OWNER_USERS_RAW     = os.getenv("RH_OWNER_USER_IDS", "").strip() or _RH_OWNER_DEFAULT
-RH_OWNER_USER_IDS       = {
-    u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
+# v3.6.0 — Telegram owner whitelist. Every Telegram update is checked
+# against this set by a group=-1 TypeHandler before any other handler
+# fires; non-owners are silently dropped (no reply, server-side log only).
+# Comma-separated Telegram user ids (positive integers), NOT chat ids.
+# Default includes Val so DM resets always work from the default deploy.
+# v3.6.0 renamed from RH_OWNER_USER_IDS; the old env var is no longer read.
+_TRADEGENIUS_OWNERS_RAW = os.getenv("TRADEGENIUS_OWNER_IDS", "").strip() or _RH_OWNER_DEFAULT
+TRADEGENIUS_OWNER_IDS   = {
+    u.strip() for u in _TRADEGENIUS_OWNERS_RAW.split(",") if u.strip()
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "3.5.1"
+BOT_VERSION = "3.6.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -67,20 +69,28 @@ BOT_VERSION = "3.5.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.5.1 \u2014 TradeGenius rename:\n"
-    "stock_spike_monitor.py \u2192\n"
-    "trade_genius.py. Dashboard\n"
-    "title, Telegram startup\n"
-    "card, Docker/Railway/\n"
-    "nixpacks entry point all\n"
-    "updated. Paper + Tiger 2.0\n"
-    "unchanged. Next: v3.6.0\n"
-    "Telegram auth guard, then\n"
-    "v4.0.0 Alpaca executors."
+    "v3.6.0 \u2014 Telegram auth guard:\n"
+    "every update is checked\n"
+    "against TRADEGENIUS_OWNER_IDS\n"
+    "before any handler fires.\n"
+    "Non-owners are silently\n"
+    "dropped (no reply, log only).\n"
+    "Hard rename: RH_OWNER_USER_IDS\n"
+    "env var no longer read. Next:\n"
+    "v4.0.0 alpha adds\n"
+    "TradeGeniusVal on Alpaca\n"
+    "paper."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.5.1 \u2014 TradeGenius rename:\n"
+    "stock_spike_monitor.py \u2192\n"
+    "trade_genius.py. Dashboard,\n"
+    "Telegram startup card, and\n"
+    "Docker/Railway/nixpacks\n"
+    "entry points all updated.\n"
+    "\n"
     "v3.5.0 \u2014 Deletion Pass:\n"
     "removed TP webhook, TP book,\n"
     "dual-bot wiring, RH IMAP +\n"
@@ -100,11 +110,7 @@ _MAIN_HISTORY_TAIL = (
     "\n"
     "v3.4.45 \u2014 Paper sizing:\n"
     "dollar-based lots,\n"
-    "paper_cash entry gate.\n"
-    "\n"
-    "v3.4.44 \u2014 Menu cleanup:\n"
-    "duplicate and alias\n"
-    "commands removed."
+    "paper_cash entry gate."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -6443,7 +6449,7 @@ def _reset_authorized(query, context=None) -> tuple:
     v3.5.0: paper-only single-bot. Returns (allowed: bool, reason: str).
     Checks:
       1. Owner check — the chat is one of the configured owner chats,
-         OR the tapping user id is in RH_OWNER_USER_IDS. The user-id
+         OR the tapping user id is in TRADEGENIUS_OWNER_IDS. The user-id
          path lets the owner /reset from a direct message when CHAT_ID
          is a group.
       2. Freshness check — confirm callbacks carry ':<unix_ts>' suffix
@@ -6461,7 +6467,7 @@ def _reset_authorized(query, context=None) -> tuple:
     owner_ids = {str(CHAT_ID or "")}
     owner_ids.discard("")
     is_owner_chat = chat_id_str in owner_ids or user_id_str in owner_ids
-    is_owner_user = user_id_str in RH_OWNER_USER_IDS
+    is_owner_user = user_id_str in TRADEGENIUS_OWNER_IDS
     if not (is_owner_chat or is_owner_user):
         return (False, "unauthorized chat")
 
@@ -6545,7 +6551,7 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "reset_callback blocked: data=%s chat_id=%s user_id=%s reason=%s CHAT_ID=%r",
             query.data, query.message.chat_id, _user, reason, CHAT_ID,
         )
-        owner_users_fmt = ",".join(sorted(RH_OWNER_USER_IDS)) or "(unset)"
+        owner_users_fmt = ",".join(sorted(TRADEGENIUS_OWNER_IDS)) or "(unset)"
         diag = (
             "\u274c Reset blocked: %s.\n"
             "chat_id: %s\n"
@@ -8135,12 +8141,45 @@ def send_startup_message():
     send_telegram(main_msg)
 
 
+# v3.6.0 — Telegram owner auth guard.
+# Installed as a group=-1 TypeHandler so it fires BEFORE any default
+# group=0 handler. Non-owners are silently dropped: no reply is sent,
+# the update is logged server-side, and ApplicationHandlerStop prevents
+# any downstream handler (command, callback, etc.) from running.
+#
+# Edge cases (also silently dropped):
+#   * update.effective_user is None — e.g. channel posts, edited
+#     messages with no sender.
+#   * user id not a string member of TRADEGENIUS_OWNER_IDS.
+async def _auth_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Drop every Telegram update that isn't from a whitelisted owner."""
+    eff_user = getattr(update, "effective_user", None)
+    user_id_str = str(eff_user.id) if eff_user and getattr(eff_user, "id", None) is not None else ""
+    if user_id_str and user_id_str in TRADEGENIUS_OWNER_IDS:
+        return  # authorized — let downstream handlers run
+
+    eff_chat = getattr(update, "effective_chat", None)
+    chat_id_str = str(eff_chat.id) if eff_chat and getattr(eff_chat, "id", None) is not None else ""
+    update_id = getattr(update, "update_id", None)
+    logger.warning(
+        "auth_guard: dropped non-owner update (update_id=%s user_id=%r chat_id=%r)",
+        update_id, user_id_str or "(none)", chat_id_str or "(none)",
+    )
+    raise ApplicationHandlerStop
+
+
 def run_telegram_bot():
     """Start Telegram bot (paper-only, single bot)."""
     app = (Application.builder()
            .token(TELEGRAM_TOKEN)
            .post_init(_set_bot_commands)
            .build())
+
+    # v3.6.0 — Owner auth guard: every update is screened against
+    # TRADEGENIUS_OWNER_IDS before any downstream handler sees it.
+    # Must be installed FIRST (group=-1) so it runs before the default
+    # group=0 command/callback handlers.
+    app.add_handler(TypeHandler(Update, _auth_guard), group=-1)
 
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("dashboard", cmd_dashboard))
