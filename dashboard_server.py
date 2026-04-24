@@ -1230,8 +1230,10 @@ def _fetch_indices() -> dict:
         return out
 
     # Snapshot gives previous-close + latest-trade in one shot. VIX is an
-    # index (not an equity), so Alpaca's equity feed likely refuses it —
-    # we isolate that failure so SPY/QQQ/DIA/IWM still render.
+    # index (not an equity), so Alpaca's equity feed likely refuses it.
+    # VIX is requested separately only so we can tag its placeholder row
+    # with an explicit reason distinct from a genuine zero/missing quote
+    # on a real equity \u2014 see the VIX-specific branch below.
     equity_symbols = [s for s in symbols if s != "VIX"]
     snapshots: dict = {}
     try:
@@ -1242,6 +1244,21 @@ def _fetch_indices() -> dict:
         snapshots = {}
 
     for sym in symbols:
+        # VIX is an index, not in equity_symbols \u2014 it never appears in
+        # the snapshot response. Emit a sentinel row tagged with
+        # reason="vix_no_equity_feed" so the frontend can distinguish
+        # "intentional placeholder" from "real equity with weird quote".
+        if sym == "VIX":
+            out["indices"].append({
+                "symbol": "VIX",
+                "last": None,
+                "change": None,
+                "change_pct": None,
+                "available": False,
+                "reason": "vix_no_equity_feed",
+            })
+            continue
+
         snap = snapshots.get(sym)
         last = None
         prev_close = None
@@ -1249,32 +1266,37 @@ def _fetch_indices() -> dict:
             if snap is not None:
                 latest_trade = getattr(snap, "latest_trade", None)
                 if latest_trade is not None:
-                    last = float(getattr(latest_trade, "price", 0) or 0)
+                    raw_price = getattr(latest_trade, "price", None)
+                    if raw_price is not None:
+                        last = float(raw_price)
                 daily_bar = getattr(snap, "daily_bar", None)
                 prev_daily_bar = getattr(snap, "previous_daily_bar", None)
                 if prev_daily_bar is not None:
-                    prev_close = float(getattr(prev_daily_bar, "close", 0) or 0)
+                    raw_prev = getattr(prev_daily_bar, "close", None)
+                    if raw_prev is not None:
+                        prev_close = float(raw_prev)
                 if last is None and daily_bar is not None:
-                    last = float(getattr(daily_bar, "close", 0) or 0)
+                    raw_close = getattr(daily_bar, "close", None)
+                    if raw_close is not None:
+                        last = float(raw_close)
         except Exception:
             pass
 
-        if sym == "VIX" and (last is None or last <= 0):
-            out["indices"].append({
-                "symbol": "VIX",
-                "last": None,
-                "change": None,
-                "change_pct": None,
-                "available": False,
-            })
-            continue
-
         change = None
         change_pct = None
-        if last and prev_close:
+        # Only compute deltas when we have real positive prices on both
+        # sides \u2014 prev_close == 0 would produce a ZeroDivisionError, and
+        # last == 0 is almost certainly a stale/pre-market artifact but
+        # we still surface it below rather than dropping the row.
+        if last and last > 0 and prev_close and prev_close > 0:
             change = round(last - prev_close, 4)
             change_pct = round((last - prev_close) / prev_close * 100.0, 4)
 
+        # Real equity: show the row whenever we got a numeric last trade,
+        # even if it is exactly 0 (pre-market quirk on a thin name). The
+        # frontend renders a 0 price with null-styling rather than
+        # dropping the ticker entirely \u2014 the prior logic silently hid
+        # these rows alongside the VIX placeholder.
         out["indices"].append({
             "symbol": sym,
             "last": last,
