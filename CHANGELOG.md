@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.2.2 — Dashboard UI: clock right-aligned + iPhone-fit trade rows (2026-04-24)
+
+Two UX refinements on top of v4.2.1.
+
+**Changed:**
+
+- **Row-2 clock moved to the far right** of the TradeGenius brand row. New order: `[logo] TradeGenius [ver] ............. [LIVE · scan in Ns] [CLOCK]`. The clock is now the rightmost element on the row, which gives it a fixed anchor instead of floating between version and LIVE pill.
+- **Clock format is now `HH:MM:SS TZ`** (e.g. `18:49:13 CDT`), rendered in white (`#ffffff`), 14px semi-bold, JetBrains Mono with `tabular-nums` so digits don't wiggle as seconds advance. Makes the clock the most prominent numeric element on the row alongside the TradeGenius wordmark.
+- **Client-side 1Hz tick** — `setInterval(window.__tgTickClock, 1000)` renders HH:MM:SS from `new Date()` locally so seconds advance smoothly between SSE frames. The tz token (`ET`/`CDT`/`CT`/`PT`/…) is extracted once from `server_time_label` via the existing regex and cached in `window.__tgClockTz`; we re-render whenever a new state frame lands.
+- **Narrow-phone rule flipped.** `#tg-brand-clock` no longer hides at `≤380px`; instead the `scan in Ns` chip (`#h-tick`) hides first so the clock always stays visible. Clock also shrinks to 13px on narrow phones.
+- **Today's Trades rows retuned to fit a 375px iPhone viewport** without wrap or horizontal scroll. Tightened base gaps (`10px → 6px`), tightened row padding (`6px 14px → 6px 10px`), added `font-variant-numeric: tabular-nums` on the row so cost/pnl/price columns line up perfectly. On `≤640px` the grid shrinks to `38px / 40px min / 30px / 42px / 74px min / auto`, row font drops to 12px, and the BUY/SELL chip shrinks (`padding: 1px 4px; font-size: 9.5px`). Unit-price column now uses `text-dim` + no `$` prefix for the dollar glyph (it's already in the column alignment).
+- **New `@media (max-width: 400px)` rule** hides the unit-price column before the qty column, keeping the more load-bearing tail (total cost for BUY, signed pnl + pct for SELL) intact.
+- Existing `@media (max-width: 360px)` rule updated to cascade from the `≤400px` layout and also hide the qty column, leaving `time | sym | action | tail` on the tightest phones.
+- `BOT_VERSION = "4.2.2"`; `CURRENT_MAIN_NOTE` rewritten; v4.2.1 note rolled into `_MAIN_HISTORY_TAIL`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (40/40). Expected iPhone 375px render: `18:49:13 CDT` white/bold at the right edge; trade row `10:09 TQQQ 162 SELL +$51.84 +0.52% 61.68` fits one line.
+
+**Breaking:** None. No server API changes.
+
+---
+
 ## v4.2.1 — Dashboard UI: row-2 clock restored + Today's Trades collapsed to one line (2026-04-24)
 
 Two small dashboard-only UX changes bundled together.

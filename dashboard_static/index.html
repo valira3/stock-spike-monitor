@@ -194,20 +194,21 @@
   .trade-pnl.down .pnl-pct { color: var(--down); opacity: 0.75; }
   .trade-cost { font-family: var(--mono); text-align: right; color: var(--text-dim); white-space: nowrap; }
 
-  /* v4.2.1 \u2014 Today's Trades single-line row. Column order:
+  /* v4.2.2 \u2014 Today's Trades single-line row. Column order:
        time | sym | qty | act | tail (cost for BUY / pnl+pct for SELL) | unit price
-     Fixed min-widths so numbers visually align down the list. Never
-     wraps; on narrow phones, qty hides first and sym ellipsizes. */
+     Sized to fit a 375px iPhone viewport without wrap/scroll. tabular
+     numerals keep columns visually aligned down the list. */
   .trades-list { display: flex; flex-direction: column; min-width: 0; }
   .trade-row {
     display: grid;
-    grid-template-columns: 46px minmax(56px, 1fr) 44px 56px minmax(110px, auto) auto;
+    grid-template-columns: 42px minmax(44px, 1fr) 36px 46px minmax(88px, auto) auto;
     grid-template-areas: "time sym qty act tail price";
     align-items: center;
-    gap: 0 10px;
-    padding: 6px 14px;
+    gap: 0 6px;
+    padding: 6px 10px;
     border-bottom: 1px solid var(--border);
     font-size: 12px;
+    font-variant-numeric: tabular-nums;
     min-width: 0;
     white-space: nowrap;
   }
@@ -218,7 +219,7 @@
   .trade-row .tr-qty   { grid-area: qty;   font-family: var(--mono); color: var(--text-muted); font-size: 11px; text-align: right; }
   .trade-row .tr-act   { grid-area: act; }
   .trade-row .tr-tail  { grid-area: tail;  font-family: var(--mono); text-align: right; white-space: nowrap; }
-  .trade-row .tr-price { grid-area: price; font-family: var(--mono); color: var(--text-muted); text-align: right; white-space: nowrap; font-size: 11.5px; min-width: 62px; }
+  .trade-row .tr-price { grid-area: price; font-family: var(--mono); color: var(--text-dim); text-align: right; white-space: nowrap; font-size: 11px; min-width: 48px; }
 
   /* v3.4.26 — TRAIL badge next to effective stop when trail is armed.
      Small, subdued, readable. The warn tone signals "active overlay",
@@ -367,34 +368,48 @@
     .log { font-size: 10.5px; padding: 8px 12px; max-height: 200px; }
     .key-val-grid { font-size: 11.5px; gap: 5px 12px; }
 
-    /* v4.2.1 \u2014 Today's Trades on phones: still a single line.
-       Tighter gaps + smaller font; qty column hides below 360px
-       (handled in the small-phone media query). */
+    /* v4.2.2 \u2014 Today's Trades on phones: single line, fits 375px.
+       Aggressive: tighter gaps, smaller font, narrower time/qty cols,
+       shrunk action pill. Unit price drops below 400px; qty below 360px. */
     .trade-row {
-      padding: 6px 12px;
-      font-size: 11.5px;
-      gap: 0 8px;
+      padding: 5px 8px;
+      font-size: 12px;
+      gap: 0 5px;
+      grid-template-columns: 38px minmax(40px, 1fr) 30px 42px minmax(74px, auto) auto;
     }
     .trade-row .tr-time { font-size: 10.5px; }
     .trade-row .tr-qty  { font-size: 10.5px; }
-    .trade-row .tr-price { font-size: 11px; }
+    .trade-row .tr-price { font-size: 10.5px; min-width: 38px; }
+    .trade-row .tr-act .act-badge { padding: 1px 4px; font-size: 9.5px; letter-spacing: 0.02em; }
+    .trade-pnl .pnl-pct { font-size: 10px; margin-left: 3px; }
     .trades-summary { font-size: 11px; gap: 2px 10px; padding: 7px 12px; }
+  }
+
+  /* v4.2.2 \u2014 <400px: drop the unit-price column so pnl/cost stays intact. */
+  @media (max-width: 400px) {
+    .trade-row {
+      grid-template-columns: 38px minmax(40px, 1fr) 30px 42px minmax(74px, auto);
+      grid-template-areas: "time sym qty act tail";
+    }
+    .trade-row .tr-price { display: none; }
   }
 
   /* Small phone (≤380px): tighter KPI text */
   @media (max-width: 380px) {
     .kpi-value { font-size: 16px; }
-    /* v4.2.1 \u2014 hide row-2 clock on very narrow phones so the LIVE
-       pill + "scan in Ns" stay on one line with the logo/version. */
-    #tg-brand-clock { display: none; }
+    /* v4.2.2 \u2014 clock stays; hide "scan in Ns" first so the
+       HH:MM:SS + tz label keeps its place on narrow phones. */
+    #h-tick { display: none; }
+    #tg-brand-clock { font-size: 13px; }
   }
 
-  /* v4.2.1 \u2014 Today's Trades at <360px: drop the qty column so
-     the row keeps one line with ticker/action/pnl/price intact. */
+  /* v4.2.2 \u2014 Today's Trades at <=360px: drop qty column too.
+     Row keeps one line with time/sym/action/pnl-or-cost. Unit price
+     was already hidden at <=400px. */
   @media (max-width: 360px) {
     .trade-row {
-      grid-template-columns: 42px minmax(48px, 1fr) 52px minmax(96px, auto) auto;
-      grid-template-areas: "time sym act tail price";
+      grid-template-columns: 36px minmax(40px, 1fr) 40px minmax(70px, auto);
+      grid-template-areas: "time sym act tail";
     }
     .trade-row .tr-qty { display: none; }
   }
@@ -419,12 +434,12 @@
   </svg>
   <span style="font-weight:600;font-size:13.5px;letter-spacing:-0.005em;color:#e7ecf3">TradeGenius</span>
   <span id="tg-brand-ver" style="font-size:10.5px;color:#5b6572;margin-left:4px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">v…</span>
-  <span id="tg-brand-clock" style="margin-left:auto;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.02em">&mdash;</span>
-  <span id="tg-live-pill" style="display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
+  <span id="tg-live-pill" style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
     <span id="h-pulse" style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block" class="pulse"></span>
     <span style="color:#e7ecf3">LIVE</span>
-    <span id="h-tick" style="color:#5b6572">—</span>
+    <span id="h-tick" style="color:#5b6572">&mdash;</span>
   </span>
+  <span id="tg-brand-clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
 </div>
 
 <!-- v4.0.0-beta — 3-tab switcher (Main / Val / Gene). Only one panel is
@@ -1074,18 +1089,14 @@
     const ver = `v${s.version || "?"}`;
     const verEl = document.getElementById("tg-brand-ver");
     if (verEl) verEl.textContent = ver;
-    // v4.2.1 \u2014 time-only clock in row 2. server_time_label is like
-    // "Fri Apr 24 \u00b7 13:09:13 ET"; strip the date + seconds, keep
-    // "HH:MM TZ". Falls back silently if the label is empty or shaped
-    // unexpectedly so the row never shows raw backend text.
-    const clockEl = document.getElementById("tg-brand-clock");
-    if (clockEl) {
-      const lbl = s.server_time_label || "";
-      const m = lbl.match(/(\d{1,2}):(\d{2}):\d{2}\s+([A-Z]{2,4})\s*$/);
-      if (m) {
-        clockEl.textContent = `${m[1].padStart(2,"0")}:${m[2]} ${m[3]}`;
-      }
-    }
+    // v4.2.2 \u2014 extract tz token (ET/CDT/CT/PT/PST/\u2026) from
+    // server_time_label tail, e.g. "Fri Apr 24 \u00b7 13:09:13 ET".
+    // The client-side tick loop renders the actual HH:MM:SS every
+    // second; we only cache the tz label here so the clock shows it.
+    const lbl = s.server_time_label || "";
+    const m = lbl.match(/\d{1,2}:\d{2}:\d{2}\s+([A-Z]{2,4})\s*$/);
+    if (m) window.__tgClockTz = m[1];
+    if (typeof window.__tgTickClock === "function") window.__tgTickClock();
   }
 
   function renderAll(s) {
@@ -1255,6 +1266,24 @@
   function scheduleReconnect() {
     scheduleStreamReconnect(4000);
   }
+
+  // v4.2.2 \u2014 client-side 1Hz clock tick. Renders HH:MM:SS + tz
+  // label (e.g. "13:09:13 ET") in the row-2 clock. Uses browser local
+  // time so seconds advance smoothly; the tz token comes from the
+  // server's server_time_label tail, cached in window.__tgClockTz.
+  // If we haven't seen a server label yet, we render just HH:MM:SS.
+  window.__tgTickClock = function () {
+    const el = document.getElementById("tg-brand-clock");
+    if (!el) return;
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    const tz = window.__tgClockTz || "";
+    el.textContent = tz ? `${hh}:${mm}:${ss} ${tz}` : `${hh}:${mm}:${ss}`;
+  };
+  setInterval(window.__tgTickClock, 1000);
+  window.__tgTickClock();
 
   // stale-data watchdog: if no data in 10s, drop to polling.
   // Uses scheduleStreamReconnect so back-to-back watchdog ticks
