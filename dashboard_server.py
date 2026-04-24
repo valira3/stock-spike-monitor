@@ -892,6 +892,21 @@ def _executor_snapshot(name: str) -> dict:
             _executor_cache[cache_key] = (now, payload)
         return payload
 
+    # Diagnostic: expose the Alpaca base URL the client is actually using,
+    # so we can tell whether a stale ALPACA_ENDPOINT_PAPER env var on Railway
+    # is pointing at a wrong host / missing /v2 prefix and causing 404s.
+    try:
+        _base_url = None
+        for _attr in ("_base_url", "base_url", "_url", "_trading_url"):
+            _val = getattr(client, _attr, None)
+            if _val:
+                _base_url = str(_val)
+                break
+        if _base_url:
+            payload["alpaca_base_url"] = _base_url
+    except Exception:
+        pass
+
     try:
         acct = client.get_account()
         payload["account"] = {
