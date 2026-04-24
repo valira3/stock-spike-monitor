@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.2 — Audit batch M (trade_genius): MEDIUM hygiene fixes (2026-04-24)
+
+Batch M of the `trade_genius.py` audit. Cleans up three MEDIUM-severity items from `/tmp/audit_tg.md`. No behaviour change in the happy path; narrows failure modes and removes dead/tautological code.
+
+**Fixed:**
+
+- **`load_paper_state` dicts not cleared before `.update()` (`trade_genius.py:2789-2813`)** — `paper_trades` / `paper_all_trades` / `trade_history` / `short_trade_history` were already cleared-before-extend, but `positions`, `short_positions`, `daily_entry_count`, `or_high`, `or_low`, `pdc`, `user_config`, `daily_short_entry_count` merged via `.update()` only. If `load_paper_state` is ever called twice (module re-init, hot patch, a future test harness), stale in-memory keys survive across reloads. All dict loads now `.clear()` first to match the list semantics.
+- **`_warm_matplotlib` silently swallowed exceptions (`trade_genius.py:1040-1049`)** — a broken matplotlib install would abort the warmup thread with no trace, and only surface an hour later when `/dayreport` tried to plot. A `logger.debug("matplotlib warmup failed: %s", e)` now gives operators a breadcrumb.
+- **Dead `try/except` around `self.last_signal = {...}` in `TradeGeniusBase._on_signal` (`trade_genius.py:541-550`)** — the only operations inside the try were a dict-literal assignment and `float(price)` on an already-numeric value from line 534. The wrapper was tautological. Dropped.
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.2; v4.1.1 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.2"`.
+- Smoke test pins BOT_VERSION to `4.1.2`.
+
+**Not fixed (docs-only items):** M3 (Telegram edit_text silent pass — acceptable), M4 (rolled into v4.1.0's `entry_ts_utc` fix), M6 (false positive — retries already sleep).
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS.
+
+**Breaking:** None.
+
+---
+
 ## v4.1.1 — Audit batch H (trade_genius): HIGH fixes, race + fail-open gates (2026-04-24)
 
 Batch H of the `trade_genius.py` audit. Concurrency around the signal bus + state saver, upstream sanity guards so downstream fail-open gates can't be tripped by bad quotes, and a correctness fix on the daily-loss halt's short-side filter.
