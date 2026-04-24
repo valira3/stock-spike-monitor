@@ -770,10 +770,14 @@ class TradeGeniusBase:
         works in main thread of the main interpreter). Executor bots
         run on their own background threads, so we must drive the
         Application lifecycle manually."""
+        # NOTE: we intentionally do NOT use .post_init() here — that hook
+        # is only fired by Application.run_polling() / run_webhook(), and
+        # we drive the lifecycle manually (initialize/start/updater) to
+        # avoid the set_wakeup_fd main-thread restriction. Instead we
+        # call _post_init_register_menu directly after initialize() below.
         app = (
             Application.builder()
             .token(self.telegram_token)
-            .post_init(self._post_init_register_menu)
             .build()
         )
         self._tg_app = app
@@ -790,6 +794,10 @@ class TradeGeniusBase:
         app.add_handler(CommandHandler("help", self.cmd_help))
         app.add_handler(CommandHandler("start", self.cmd_help))
         await app.initialize()
+        # Register the slash-command menu with Telegram now that the
+        # Bot instance is usable (post app.initialize()). Failures are
+        # logged inside the helper and never block startup.
+        await self._post_init_register_menu(app)
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
         logger.info("[%s] telegram loop running (token=...%s)",
