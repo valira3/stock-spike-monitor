@@ -227,24 +227,47 @@ def run_local() -> int:
         for bad in ("tp_sync", "rh_portfolio", "rh_positions", "rh_trades_today"):
             assert bad not in snap, f"v3.5.0: {bad} should be removed"
 
+    # v4.1.7 H7 — _today_trades must de-duplicate a row that appears in
+    # both paper_trades and short_trade_history (a cross-list dupe
+    # would cause the UI to show the same short cover twice).
+    @t("dashboard: _today_trades de-duplicates cross-list short")
+    def _():
+        reset_state()
+        row = {
+            "ticker": "FAKE",
+            "action": "COVER",
+            "date": today,
+            "time": "10:30",
+            "side": "SHORT",
+            "shares": 10,
+            "price": 5.0,
+            "pnl": 12.5,
+        }
+        m.paper_trades.append(dict(row))
+        m.short_trade_history.append(dict(row))
+        rows = ds._today_trades()
+        fake_rows = [r for r in rows if r.get("ticker") == "FAKE"]
+        assert len(fake_rows) == 1, \
+            f"expected 1 de-duped FAKE row, got {len(fake_rows)}: {fake_rows}"
+
     # ---------- version ----------
     @t("version: BOT_NAME is TradeGenius")
     def _():
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.1.6")
+    @t("version: BOT_VERSION is 4.1.7")
     def _():
-        assert m.BOT_VERSION == "4.1.6", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.1.7", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.1.6")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.1.7")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.1.6"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.1.7"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
