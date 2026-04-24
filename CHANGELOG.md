@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.8 — Dashboard audit deferred: M7 Robinhood toggle cleanup (2026-04-24)
+
+Dashboard-only cleanup for the deferred MEDIUM finding from the prior audit (`/tmp/audit_dash.md` M7). Robinhood was removed in v3.5.0 along with all server-side `rh_*` payload keys, but the frontend kept ~70 lines of toggle machinery — two segmented buttons in the header, a localStorage-persisted `currentView`, a `slice(s, view)` indirection that proxy-read `rh_portfolio || portfolio`, and a click handler that re-rendered from `lastSnapshot`. All of it always resolved to paper because the server no longer ships `rh_*`.
+
+**Removed:**
+
+- **`.view-toggle` + `.view-toggle-btn` CSS block** (~28 lines)
+- **`<span class="view-toggle">` in the header** with `view-btn-paper` / `view-btn-rh` buttons
+- **`VIEW_KEY`, `loadView`, `saveView`, `currentView`** localStorage-backed state
+- **`slice(s, view)`** — replaced with an inline `paperSlice(s)` that only reads paper keys. `renderAll` now passes this directly to `renderKPIs` / `renderPositions` / `renderTrades`.
+- **`syncToggleButtons`, `setView`, and the document click handler** that delegated on `.view-toggle-btn`
+- **`rh_portfolio` / `rh_positions` availability probe in `renderAll`** — the fallback that hid the RH button and force-reset the view if the server stopped shipping RH keys (always true for ~7 months now)
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.8; v4.1.7 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.8"`.
+- Smoke test pins BOT_VERSION to `4.1.8`. The existing `rh_*` negative-assertions (the test that enforces these keys are NOT in the snapshot) stay — they are the contract we are now also honouring client-side.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (40/40).
+
+**Breaking:** None. Users will notice the Paper/Robinhood pill is gone from the header (it already only had a Paper button visible because RH was hidden by server-key probe); all other UX is identical.
+
+---
+
 ## v4.1.7 — Dashboard audit deferred: H7 _today_trades dedup (2026-04-24)
 
 Dashboard-only fix for the last deferred HIGH finding from the prior dashboard audit (`/tmp/audit_dash.md` H7). Documented invariant (`trade_genius.py` ~L2530): long BUY/SELL rows live in `paper_trades`, short COVER rows live in `short_trade_history`. `_today_trades` iterates both lists but trusted the contract; if the contract is ever violated (future bug, state migration, a replay path that dual-writes) a short cover would appear in both lists and the UI would render it twice.

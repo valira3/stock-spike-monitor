@@ -132,34 +132,6 @@
   }
   .h-clock { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
 
-  /* v3.4.39 — Paper / Robinhood view toggle. A small pill with two
-     segment buttons; the active view uses surface-3 + primary text,
-     the inactive one sits dim so the active choice reads at a glance. */
-  .view-toggle {
-    display: inline-flex;
-    padding: 2px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    border-radius: 999px;
-    gap: 0;
-  }
-  .view-toggle-btn {
-    background: transparent; border: 0; cursor: pointer;
-    padding: 3px 10px;
-    font-size: 11px; font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
-    border-radius: 999px;
-    font-family: var(--sans);
-    transition: background .12s ease, color .12s ease;
-  }
-  .view-toggle-btn:hover { color: var(--text); }
-  .view-toggle-btn.view-toggle-on {
-    background: var(--surface);
-    color: var(--text);
-    box-shadow: 0 0 0 1px var(--border) inset;
-  }
-
   .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
   .kpi {
     background: var(--surface); border: 1px solid var(--border);
@@ -498,13 +470,6 @@
       <span id="h-date">—</span>
     </div>
     <div class="h-right">
-      <!-- v3.4.39 — Paper / Robinhood view toggle. Both buttons are
-           always visible; the active one carries the .view-toggle-on
-           class. Choice persists in localStorage ("portfolio_view"). -->
-      <span class="view-toggle" role="group" aria-label="Portfolio view">
-        <button type="button" class="view-toggle-btn" id="view-btn-paper" data-view="paper">Paper</button>
-        <button type="button" class="view-toggle-btn" id="view-btn-rh" data-view="rh">Robinhood</button>
-      </span>
       <span class="h-clock" id="clock">—</span>
       <span class="h-account">
         <!-- v4.0.4 — connection status kept as a hidden DOM node so
@@ -637,38 +602,20 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // v3.4.39 — portfolio view: "paper" or "rh". Persisted in
-  // localStorage so the choice survives reloads and new tabs.
-  // Only "paper" and "rh" are accepted; anything else resets to paper.
-  const VIEW_KEY = "portfolio_view";
-  function loadView() {
-    try {
-      const v = localStorage.getItem(VIEW_KEY);
-      return (v === "rh" || v === "paper") ? v : "paper";
-    } catch (e) { return "paper"; }
-  }
-  function saveView(v) {
-    try { localStorage.setItem(VIEW_KEY, v); } catch (e) {}
-  }
-  let currentView = loadView();
-  // Cache the most recent snapshot so the toggle can re-render
-  // instantly without waiting for the next SSE/poll tick.
+  // v4.1.8-dash \u2014 Robinhood view was removed in v3.5.0 along with the
+  // RH portfolio payload. The toggle + storage machinery + slice()
+  // indirection lingered as dead code. Now simplified: only the paper
+  // portfolio is ever rendered, so the slice is computed inline where
+  // needed and lastSnapshot stays for any future re-render on demand.
   let lastSnapshot = null;
 
-  // Pick the active portfolio/positions/trades slice for the current
-  // view. Falls back to the paper keys if the RH payload is missing
-  // (older server, or snapshot failed half-way) so the UI never
-  // renders blank after a failed backend deploy.
-  function slice(s, view) {
-    const wantRh = (view === "rh");
-    const p = wantRh ? (s.rh_portfolio || s.portfolio || {}) : (s.portfolio || {});
-    const positions = wantRh
-      ? (Array.isArray(s.rh_positions) ? s.rh_positions : (s.positions || []))
-      : (s.positions || []);
-    const trades = wantRh
-      ? (Array.isArray(s.rh_trades_today) ? s.rh_trades_today : (s.trades_today || []))
-      : (s.trades_today || []);
-    return { portfolio: p, positions, trades, view };
+  function paperSlice(s) {
+    return {
+      portfolio: s.portfolio || {},
+      positions: s.positions || [],
+      trades: s.trades_today || [],
+      view: "paper",
+    };
   }
 
   function fmtUsd(v, digits = 2) {
@@ -1193,20 +1140,7 @@
       window.__tgLastState = s;
       if (typeof window.__tgOnState === "function") window.__tgOnState(s);
     } catch (e) {}
-    // If the server didn't ship rh_* keys (older deploy), force the
-    // toggle to Paper and hide the RH button — but keep trying each
-    // tick in case a rolling deploy brings the keys back.
-    const rhAvail = (s.rh_portfolio && typeof s.rh_portfolio.equity === "number");
-    const rhBtn = $("view-btn-rh");
-    if (rhBtn) {
-      rhBtn.style.display = rhAvail ? "" : "none";
-      if (!rhAvail && currentView === "rh") {
-        currentView = "paper";
-        saveView("paper");
-        syncToggleButtons();
-      }
-    }
-    const sl = slice(s, currentView);
+    const sl = paperSlice(s);
     renderHeader(s);
     renderKPIs(s, sl);
     renderPositions(s, sl);
@@ -1217,29 +1151,9 @@
     renderGates(s);
   }
 
-  // v3.4.39 — toggle wiring. Keep the active button visually selected
-  // and, on click, update state + persist + re-render instantly from
-  // the cached snapshot (no network round-trip required).
-  function syncToggleButtons() {
-    const pap = $("view-btn-paper");
-    const rh = $("view-btn-rh");
-    if (pap) pap.classList.toggle("view-toggle-on", currentView === "paper");
-    if (rh)  rh.classList.toggle("view-toggle-on",  currentView === "rh");
-  }
-  function setView(v) {
-    if (v !== "paper" && v !== "rh") return;
-    if (v === currentView) return;
-    currentView = v;
-    saveView(v);
-    syncToggleButtons();
-    if (lastSnapshot) renderAll(lastSnapshot);
-  }
-  document.addEventListener("click", (ev) => {
-    const btn = ev.target.closest(".view-toggle-btn");
-    if (!btn) return;
-    setView(btn.dataset.view);
-  });
-  syncToggleButtons();
+  // v4.1.8-dash \u2014 portfolio view toggle removed (Robinhood was
+  // deleted in v3.5.0). Only the paper portfolio exists; nothing to
+  // wire.
 
   // ─────── log handling ───────
 
