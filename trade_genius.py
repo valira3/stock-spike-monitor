@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.0-alpha"
+BOT_VERSION = "4.0.0-beta"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,6 +69,18 @@ BOT_VERSION = "4.0.0-alpha"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.0.0-beta \u2014 Gene + dashboard:\n"
+    "second Alpaca executor Gene\n"
+    "mirrors main signals, matches\n"
+    "Val semantics. Dashboard now\n"
+    "has 3 tabs (Main/Val/Gene)\n"
+    "with paper/live badges, an\n"
+    "index ticker strip, and the\n"
+    "shorts P&L sign fix."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.0.0-alpha \u2014 Val executor:\n"
     "main emits signals, Val\n"
     "mirrors to Alpaca paper.\n"
@@ -77,12 +89,7 @@ CURRENT_MAIN_NOTE = (
     "segregation. Separate\n"
     "Val Telegram bot. Async\n"
     "fire-and-forget dispatch.\n"
-    "Next: v4.0.0-beta adds\n"
-    "Gene + 3-tab dashboard."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "\n"
     "v3.6.0 \u2014 Telegram auth guard:\n"
     "every update checked against\n"
     "TRADEGENIUS_OWNER_IDS before\n"
@@ -106,12 +113,7 @@ _MAIN_HISTORY_TAIL = (
     "v3.4.47 \u2014 Eye of the\n"
     "Tiger 2.0: 2-bar OR confirm\n"
     "+ DI+(5m,15) > 25 gate +\n"
-    "Hard Eject exit.\n"
-    "\n"
-    "v3.4.46 \u2014 Dashboard\n"
-    "label refresh: Invested /\n"
-    "Shorted replaced Long MV /\n"
-    "Short liab."
+    "Hard Eject exit."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -259,6 +261,9 @@ class TradeGeniusBase:
         self._load_state()
         # Own Telegram Application instance, created in start().
         self._tg_app = None
+        # v4.0.0-beta — last signal seen from the bus (for dashboard).
+        # Populated by _on_signal; None until first event arrives.
+        self.last_signal: "dict | None" = None
 
     # ---------- state files ----------
     def _state_file(self, mode: str = None) -> str:
@@ -427,6 +432,20 @@ class TradeGeniusBase:
         price = event.get("price", 0.0) or 0.0
         reason = event.get("reason", "")
         label = f"{self.NAME} {self.mode}"
+
+        # v4.0.0-beta — remember the most recent event for the dashboard
+        # (last_signal line on the per-executor tab). Captured before any
+        # dispatch so we still record what was seen even if Alpaca errors.
+        try:
+            self.last_signal = {
+                "kind": kind,
+                "ticker": ticker,
+                "price": float(price) if price else 0.0,
+                "reason": reason,
+                "timestamp_utc": event.get("timestamp_utc", _utc_now_iso()),
+            }
+        except Exception:
+            pass
 
         client = self._ensure_client()
         if client is None:
@@ -606,9 +625,18 @@ class TradeGeniusVal(TradeGeniusBase):
     ENV_PREFIX = "VAL_"
 
 
-# Global Val instance (populated at startup if enabled). Referenced by
-# main-bot's /mode val router; left None when VAL_ENABLED=0 or keys missing.
+class TradeGeniusGene(TradeGeniusBase):
+    """Gene \u2014 second Genius executor, identical in behavior to Val but
+    with its own GENE_ env prefix, state files, and Telegram bot. Shipped
+    in v4.0.0-beta alongside the 3-tab dashboard."""
+    NAME = "Gene"
+    ENV_PREFIX = "GENE_"
+
+
+# Global executor instances (populated at startup if enabled). Referenced
+# by main-bot's /mode {val,gene} router; left None when disabled / no keys.
 val_executor: "TradeGeniusBase | None" = None
+gene_executor: "TradeGeniusBase | None" = None
 
 
 ET = ZoneInfo("America/New_York")
@@ -6710,17 +6738,25 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
       /mode val                     → show Val's current mode + account
       /mode val paper               → flip Val to paper
       /mode val live confirm        → flip Val to live (sanity-checked)
+
+    v4.0.0-beta — same routing for /mode gene (second executor).
     """
     args = context.args if context and hasattr(context, "args") else []
-    if args and args[0].lower() == "val":
-        if val_executor is None:
-            await update.message.reply_text("Val executor not enabled")
+    if args and args[0].lower() in ("val", "gene"):
+        which = args[0].lower()
+        if which == "val":
+            executor = val_executor
+            label = "Val"
+        else:
+            executor = gene_executor
+            label = "Gene"
+        if executor is None:
+            await update.message.reply_text(f"{label} executor not enabled")
             return
         sub = args[1].lower() if len(args) > 1 else ""
         if not sub:
-            # Show Val status inline (same as Val bot's /status).
-            client = val_executor._ensure_client()
-            lines = [f"Val mode: {val_executor.mode}"]
+            client = executor._ensure_client()
+            lines = [f"{label} mode: {executor.mode}"]
             if client is None:
                 lines.append("  alpaca: (no client \u2014 keys missing?)")
             else:
@@ -6736,9 +6772,9 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("\n".join(lines))
             return
         confirm_token = args[2] if len(args) > 2 else None
-        ok, msg = val_executor.set_mode(sub, confirm_token=confirm_token)
+        ok, msg = executor.set_mode(sub, confirm_token=confirm_token)
         marker = "\u2705" if ok else "\u274c"
-        await update.message.reply_text(f"{marker} Val: {msg}")
+        await update.message.reply_text(f"{marker} {label}: {msg}")
         return
 
     SEP = "\u2500" * 34
@@ -8868,6 +8904,23 @@ else:
         logger.info(
             "[Val] skipped (VAL_ENABLED=%s, VAL_ALPACA_PAPER_KEY set=%s)",
             os.getenv("VAL_ENABLED", "1"), _val_has_keys,
+        )
+
+    # v4.0.0-beta — TradeGeniusGene executor (opt-in via env, same pattern).
+    _gene_enabled = os.getenv("GENE_ENABLED", "1").strip() not in ("0", "false", "False", "")
+    _gene_has_keys = bool(os.getenv("GENE_ALPACA_PAPER_KEY", "").strip())
+    if _gene_enabled and _gene_has_keys:
+        try:
+            gene_executor = TradeGeniusGene()
+            gene_executor.start()
+            logger.info("[Gene] started in %s mode", gene_executor.mode)
+        except Exception:
+            logger.exception("[Gene] startup failed \u2014 main continues")
+            gene_executor = None
+    else:
+        logger.info(
+            "[Gene] skipped (GENE_ENABLED=%s, GENE_ALPACA_PAPER_KEY set=%s)",
+            os.getenv("GENE_ENABLED", "1"), _gene_has_keys,
         )
 
     logger.info("%s v%s started", BOT_NAME, BOT_VERSION)

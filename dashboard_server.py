@@ -816,6 +816,261 @@ async def h_state(request):
     return web.json_response(snap)
 
 
+# ─────────────────────────────────────────────────────────────
+# v4.0.0-beta — per-executor tab + index ticker strip
+# ─────────────────────────────────────────────────────────────
+# Each per-tab endpoint hits live Alpaca on demand so Val and Gene tabs
+# reflect reality (not main's paper book). Results are cached server-side
+# for 15 s keyed by (name, mode) so multiple browsers + auto-refresh
+# don't fan out into Alpaca rate limits.
+#
+# The index ticker strip reuses whichever executor's paper keys exist to
+# open a StockHistoricalDataClient. VIX is an index, not an equity; if
+# Alpaca's equity feed refuses the symbol we surface "n/a" for just VIX
+# and keep the rest of the strip alive.
+
+_EXECUTOR_CACHE_TTL = 15.0
+_INDICES_CACHE_TTL = 30.0
+
+_executor_cache: dict = {}        # {(name, mode): (ts, payload)}
+_executor_cache_lock = threading.Lock()
+_indices_cache: dict = {"ts": 0.0, "payload": None}
+_indices_cache_lock = threading.Lock()
+
+
+def _get_executor(name: str):
+    """Resolve the executor instance from the live bot module."""
+    m = _ssm()
+    attr = "val_executor" if name == "val" else "gene_executor"
+    return getattr(m, attr, None)
+
+
+def _executor_snapshot(name: str) -> dict:
+    """Build the JSON payload for one per-executor tab.
+
+    Returns {enabled, mode, healthy, account, positions, last_signal,
+    error}. Never raises — any Alpaca failure surfaces via error field
+    with enabled=True so the front-end can render a graceful panel.
+    """
+    executor = _get_executor(name)
+    if executor is None:
+        return {"enabled": False, "error": f"{name} executor not enabled"}
+
+    mode = executor.mode
+    cache_key = (name, mode)
+    now = time.time()
+    with _executor_cache_lock:
+        ent = _executor_cache.get(cache_key)
+        if ent and (now - ent[0]) < _EXECUTOR_CACHE_TTL:
+            return ent[1]
+
+    payload: dict = {
+        "enabled": True,
+        "mode": mode,
+        "healthy": False,
+        "account": None,
+        "positions": [],
+        "last_signal": None,
+        "error": None,
+    }
+    try:
+        payload["last_signal"] = getattr(executor, "last_signal", None)
+    except Exception:
+        payload["last_signal"] = None
+
+    try:
+        client = executor._ensure_client()
+    except Exception as e:
+        payload["error"] = f"client build failed: {e}"
+        with _executor_cache_lock:
+            _executor_cache[cache_key] = (now, payload)
+        return payload
+
+    if client is None:
+        payload["error"] = "alpaca client unavailable (missing keys?)"
+        with _executor_cache_lock:
+            _executor_cache[cache_key] = (now, payload)
+        return payload
+
+    try:
+        acct = client.get_account()
+        payload["account"] = {
+            "cash": float(getattr(acct, "cash", 0) or 0),
+            "buying_power": float(getattr(acct, "buying_power", 0) or 0),
+            "equity": float(getattr(acct, "equity", 0) or 0),
+            "account_number": str(getattr(acct, "account_number", "") or ""),
+            "status": str(getattr(acct, "status", "") or ""),
+        }
+        positions = client.get_all_positions()
+        rows = []
+        for p in positions:
+            qty = float(getattr(p, "qty", 0) or 0)
+            avg_entry = float(getattr(p, "avg_entry_price", 0) or 0)
+            cur = float(getattr(p, "current_price", 0) or 0)
+            side_raw = str(getattr(p, "side", "") or "").lower()
+            side = "SHORT" if "short" in side_raw or qty < 0 else "LONG"
+            unreal = float(getattr(p, "unrealized_pl", 0) or 0)
+            unreal_pct_raw = getattr(p, "unrealized_plpc", None)
+            try:
+                unreal_pct = float(unreal_pct_raw) * 100.0 if unreal_pct_raw is not None else 0.0
+            except (TypeError, ValueError):
+                unreal_pct = 0.0
+            rows.append({
+                "symbol": str(getattr(p, "symbol", "") or ""),
+                "side": side,
+                "qty": abs(qty),
+                "avg_entry": avg_entry,
+                "current_price": cur,
+                "unrealized_pnl": unreal,
+                "unrealized_pnl_pct": unreal_pct,
+            })
+        payload["positions"] = rows
+        payload["healthy"] = True
+    except Exception as e:
+        payload["error"] = f"alpaca fetch failed: {e}"
+
+    with _executor_cache_lock:
+        _executor_cache[cache_key] = (now, payload)
+    return payload
+
+
+def _resolve_data_client():
+    """Pick the first available executor's paper keys and build a
+    StockHistoricalDataClient. Returns None if nothing is usable."""
+    for name in ("val", "gene"):
+        ex = _get_executor(name)
+        if ex is None:
+            continue
+        key = getattr(ex, "paper_key", "") or ""
+        secret = getattr(ex, "paper_secret", "") or ""
+        if key and secret:
+            try:
+                from alpaca.data.historical import StockHistoricalDataClient
+                return StockHistoricalDataClient(key, secret)
+            except Exception as e:
+                logger.warning("data client build failed for %s: %s", name, e)
+                continue
+    return None
+
+
+def _fetch_indices() -> dict:
+    """Build the index ticker strip payload. Never raises."""
+    symbols = ["SPY", "QQQ", "DIA", "IWM", "VIX"]
+    out = {
+        "ok": True,
+        "as_of": "",
+        "indices": [],
+        "error": None,
+    }
+    client = _resolve_data_client()
+    if client is None:
+        out["ok"] = False
+        out["error"] = "no executor paper keys available"
+        return out
+
+    try:
+        from alpaca.data.requests import StockLatestQuoteRequest, StockSnapshotRequest
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = f"alpaca-py imports failed: {e}"
+        return out
+
+    # Snapshot gives previous-close + latest-trade in one shot. VIX is an
+    # index (not an equity), so Alpaca's equity feed likely refuses it —
+    # we isolate that failure so SPY/QQQ/DIA/IWM still render.
+    equity_symbols = [s for s in symbols if s != "VIX"]
+    snapshots: dict = {}
+    try:
+        resp = client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=equity_symbols))
+        snapshots = resp if isinstance(resp, dict) else {}
+    except Exception as e:
+        out["error"] = f"snapshot failed: {e}"
+        snapshots = {}
+
+    for sym in symbols:
+        snap = snapshots.get(sym)
+        last = None
+        prev_close = None
+        try:
+            if snap is not None:
+                latest_trade = getattr(snap, "latest_trade", None)
+                if latest_trade is not None:
+                    last = float(getattr(latest_trade, "price", 0) or 0)
+                daily_bar = getattr(snap, "daily_bar", None)
+                prev_daily_bar = getattr(snap, "previous_daily_bar", None)
+                if prev_daily_bar is not None:
+                    prev_close = float(getattr(prev_daily_bar, "close", 0) or 0)
+                if last is None and daily_bar is not None:
+                    last = float(getattr(daily_bar, "close", 0) or 0)
+        except Exception:
+            pass
+
+        if sym == "VIX" and (last is None or last <= 0):
+            out["indices"].append({
+                "symbol": "VIX",
+                "last": None,
+                "change": None,
+                "change_pct": None,
+                "available": False,
+            })
+            continue
+
+        change = None
+        change_pct = None
+        if last and prev_close:
+            change = round(last - prev_close, 4)
+            change_pct = round((last - prev_close) / prev_close * 100.0, 4)
+
+        out["indices"].append({
+            "symbol": sym,
+            "last": last,
+            "change": change,
+            "change_pct": change_pct,
+            "available": last is not None,
+        })
+
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        out["as_of"] = _dt.now(_tz.utc).isoformat()
+    except Exception:
+        out["as_of"] = ""
+    return out
+
+
+async def h_executor(request):
+    """GET /api/executor/{name} — per-executor tab data, cached 15s."""
+    from aiohttp import web
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    name = (request.match_info.get("name") or "").strip().lower()
+    if name not in ("val", "gene"):
+        return web.json_response(
+            {"enabled": False, "error": f"unknown executor {name!r}"}, status=200,
+        )
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(None, _executor_snapshot, name)
+    return web.json_response(payload)
+
+
+async def h_indices(request):
+    """GET /api/indices — SPY/QQQ/DIA/IWM/VIX ticker strip, cached 30s."""
+    from aiohttp import web
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    now = time.time()
+    with _indices_cache_lock:
+        ts = _indices_cache.get("ts", 0.0)
+        payload = _indices_cache.get("payload")
+        if payload is not None and (now - ts) < _INDICES_CACHE_TTL:
+            return web.json_response(payload)
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(None, _fetch_indices)
+    with _indices_cache_lock:
+        _indices_cache["ts"] = now
+        _indices_cache["payload"] = payload
+    return web.json_response(payload)
+
+
 async def h_trade_log(request):
     """v3.4.27 — persistent trade-log reader.
 
@@ -909,6 +1164,9 @@ def _build_app():
     app.router.add_post("/logout", h_logout)
     app.router.add_get("/api/state", h_state)
     app.router.add_get("/api/trade_log", h_trade_log)
+    # v4.0.0-beta — per-executor tabs + index ticker strip.
+    app.router.add_get("/api/executor/{name}", h_executor)
+    app.router.add_get("/api/indices", h_indices)
     app.router.add_get("/stream", h_stream)
     if _STATIC_DIR.exists():
         app.router.add_static("/static/", path=_STATIC_DIR, show_index=False)

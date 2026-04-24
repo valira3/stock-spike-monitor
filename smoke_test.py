@@ -233,14 +233,19 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.0.0-alpha")
+    @t("version: BOT_VERSION is 4.0.0-beta")
     def _():
-        assert m.BOT_VERSION == "4.0.0-alpha", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.0.0-beta", f"got {m.BOT_VERSION}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.0.0-alpha")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.0.0-beta")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.0-alpha"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.0-beta"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
+
+    @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
+    def _():
+        for ln in m.CURRENT_MAIN_NOTE.split("\n"):
+            assert len(ln) <= 34, f"line too wide ({len(ln)}): {ln!r}"
 
     # ---------- v3.6.0 auth guard ----------
     @t("auth: TRADEGENIUS_OWNER_IDS exists, RH_OWNER_USER_IDS removed")
@@ -436,7 +441,152 @@ def run_local() -> int:
         finally:
             m._signal_listeners.remove(_l)
 
-    return run_suite("LOCAL SMOKE TESTS (v4.0.0-alpha Val executor)")
+    # ---------- v4.0.0-beta Gene executor ----------
+    @t("gene: TradeGeniusGene class exists")
+    def _():
+        assert hasattr(m, "TradeGeniusGene"), "TradeGeniusGene missing"
+        assert issubclass(m.TradeGeniusGene, m.TradeGeniusBase), \
+            "TradeGeniusGene must subclass TradeGeniusBase"
+        assert m.TradeGeniusGene.NAME == "Gene", f"got {m.TradeGeniusGene.NAME!r}"
+        assert m.TradeGeniusGene.ENV_PREFIX == "GENE_", \
+            f"got {m.TradeGeniusGene.ENV_PREFIX!r}"
+
+    @t("gene: state file path segregates paper vs live")
+    def _():
+        os.environ.setdefault("GENE_ALPACA_PAPER_KEY", "dummy")
+        os.environ.setdefault("GENE_ALPACA_PAPER_SECRET", "dummy")
+        g = m.TradeGeniusGene()
+        paper_path = g._state_file("paper")
+        live_path = g._state_file("live")
+        assert paper_path != live_path, "paper and live paths must differ"
+        assert "gene" in paper_path.lower() and "gene" in live_path.lower()
+        assert "paper" in paper_path and "live" in live_path
+
+    @t("gene: gene_executor module global exists")
+    def _():
+        assert hasattr(m, "gene_executor"), "gene_executor global missing"
+
+    # ---------- v4.0.0-beta shorts P&L sign ----------
+    @t("shorts_pnl: dashboard snapshot shows profitable short with positive pnl")
+    def _():
+        reset_state()
+        # Seed a profitable open short: entry=100, current=95, shares=10
+        # → correct unrealized P&L is +50 (short profits when price falls).
+        m.short_positions["FAKE"] = {
+            "entry_price": 100.0, "shares": 10, "stop": 105.0,
+            "entry_time": "10:00", "date": today,
+        }
+        # Force the dashboard snapshot to use our fabricated mark. The
+        # snapshot calls _price_for, which reads fetch_1min_bars — patch
+        # the helper in dashboard_server to return 95 for FAKE.
+        saved = ds._price_for
+        try:
+            ds._price_for = lambda t: 95.0 if t == "FAKE" else saved(t)
+            snap = ds.snapshot()
+        finally:
+            ds._price_for = saved
+        assert snap.get("ok") is True, f"snapshot failed: {snap}"
+        fakes = [p for p in snap.get("positions", []) if p.get("ticker") == "FAKE"]
+        assert len(fakes) == 1, f"FAKE row missing: {snap.get('positions')}"
+        row = fakes[0]
+        assert row.get("side") == "SHORT", f"side={row.get('side')}"
+        unreal = row.get("unrealized", 0)
+        assert unreal > 0, f"profitable short pnl must be POSITIVE, got {unreal}"
+        assert abs(unreal - 50.0) < 0.01, \
+            f"expected +50.0 unrealized, got {unreal}"
+        m.short_positions.pop("FAKE", None)
+
+    @t("shorts_pnl: positions text shows profitable short with +sign")
+    def _():
+        reset_state()
+        m.short_positions["FAKE"] = {
+            "entry_price": 100.0, "shares": 10, "stop": 105.0,
+            "entry_time": "10:00", "date": today,
+        }
+        saved = m.fetch_1min_bars
+        try:
+            m.fetch_1min_bars = lambda t: (
+                {"current_price": 95.0} if t == "FAKE" else saved(t)
+            )
+            txt = m._build_positions_text()
+        finally:
+            m.fetch_1min_bars = saved
+            m.short_positions.pop("FAKE", None)
+        # Expect the positions text to render FAKE's short pnl positively.
+        assert "FAKE" in txt, "FAKE missing from positions text"
+        assert "P&L $+50.00" in txt or "P&L $+50" in txt, \
+            f"expected positive short pnl in output:\n{txt}"
+
+    @t("shorts_pnl: realized short pnl storage is positive for profitable cover")
+    def _():
+        reset_state()
+        m.short_positions["FAKE"] = {
+            "entry_price": 100.0, "shares": 10, "stop": 105.0,
+            "entry_time": "10:00", "date": today,
+            "entry_count": 1,
+        }
+        # Swallow Telegram + state save side effects.
+        saved_send = m.send_telegram
+        saved_save = m.save_paper_state
+        m.send_telegram = lambda *a, **k: None
+        m.save_paper_state = lambda *a, **k: None
+        try:
+            m.close_short_position("FAKE", 95.0, "TEST")
+            hist = [t for t in m.short_trade_history if t.get("ticker") == "FAKE"]
+            assert hist, "short_trade_history missing FAKE row"
+            pnl = hist[-1]["pnl"]
+            assert pnl > 0, f"profitable short cover stored pnl must be POSITIVE, got {pnl}"
+            assert abs(pnl - 50.0) < 0.01, f"expected +50.0, got {pnl}"
+        finally:
+            m.send_telegram = saved_send
+            m.save_paper_state = saved_save
+
+    # ---------- v4.0.0-beta dashboard endpoints ----------
+    @t("dashboard: /api/executor/val endpoint exists and returns disabled gracefully when Val is off")
+    def _():
+        # Simulate Val disabled by making sure the module global is None.
+        saved = getattr(m, "val_executor", None)
+        try:
+            m.val_executor = None
+            payload = ds._executor_snapshot("val")
+            assert payload.get("enabled") is False, \
+                f"expected enabled=False, got {payload}"
+            assert "error" in payload, f"error field missing: {payload}"
+        finally:
+            m.val_executor = saved
+
+    @t("dashboard: /api/indices endpoint exists")
+    def _():
+        # The route is registered in _build_app; inspecting the app's
+        # router is enough to prove the endpoint is live without actually
+        # running an HTTP server.
+        app = ds._build_app()
+        paths = []
+        for r in app.router.routes():
+            info = r.resource.get_info()
+            paths.append(info.get("path") or info.get("formatter") or "")
+        assert "/api/indices" in paths, f"/api/indices not registered: {paths}"
+        assert "/api/executor/{name}" in paths, \
+            f"/api/executor/{{name}} not registered: {paths}"
+
+    @t("dashboard: /api/indices handles missing Alpaca client gracefully")
+    def _():
+        # When no executor is enabled, _resolve_data_client returns None
+        # and _fetch_indices returns ok=False instead of raising.
+        saved_val = getattr(m, "val_executor", None)
+        saved_gene = getattr(m, "gene_executor", None)
+        try:
+            m.val_executor = None
+            m.gene_executor = None
+            payload = ds._fetch_indices()
+            assert isinstance(payload, dict), f"want dict, got {type(payload)}"
+            assert payload.get("ok") is False, \
+                f"expected ok=False, got {payload}"
+        finally:
+            m.val_executor = saved_val
+            m.gene_executor = saved_gene
+
+    return run_suite("LOCAL SMOKE TESTS (v4.0.0-beta Gene + dashboard)")
 
 
 # ============================================================
