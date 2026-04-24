@@ -25,3 +25,6 @@ html5lib>=1.1
 
 # ── Dashboard web UI (env-gated, v3.4.0+) ────────────────────
 aiohttp>=3.9,<4.0
+
+# ── Alpaca executor SDK (v4.0.0-alpha — TradeGeniusVal) ──────
+alpaca-py==0.43.2

@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.0-alpha — TradeGeniusVal executor on Alpaca paper (2026-04-24)
+
+First step of the v4 architecture: main's paper book is the **brain**, executor bots are **executors**. Main continues to run Tiger 2.0 against the paper book exactly as before; newly, every paper entry/exit fires an in-process signal that one or more executor bots mirror onto Alpaca. Val is the first executor; Gene arrives in v4.0.0-beta.
+
+**Added:**
+- **In-process signal bus** in `trade_genius.py`: `register_signal_listener(fn)`, `_emit_signal(event)`. Dispatch is async fire-and-forget — each listener runs in its own daemon thread so main never blocks on Alpaca and a single bad listener can't break the bus. Per-listener exceptions are logged and swallowed.
+- **Signal event schema:** `{kind, ticker, price, reason, timestamp_utc, main_shares}`. Kinds: `ENTRY_LONG`, `ENTRY_SHORT`, `EXIT_LONG`, `EXIT_SHORT`, `EOD_CLOSE_ALL`.
+- **`TradeGeniusBase`** — shared executor base. Per-bot Alpaca client (paper or live), per-bot state file (`tradegenius_<name>_<mode>.json` — **strict paper/live segregation**, two files never mixed), own Telegram bot with own `_auth_guard`, own owner whitelist env var.
+- **`TradeGeniusVal`** (`NAME="Val"`, `ENV_PREFIX="VAL_"`) — the first executor instance. Nothing to override; all behavior is in the base. Gene (v4.0.0-beta) will be identical with `GENE_`.
+- **Signal emission** wired into existing paper-book functions (no logic change, just an `_emit_signal(...)` call after the trade is recorded): `execute_entry` → `ENTRY_LONG`, `close_position` → `EXIT_LONG`, `execute_short_entry` → `ENTRY_SHORT`, `close_short_position` → `EXIT_SHORT`, `eod_close` → `EOD_CLOSE_ALL` (once at top, before per-position closes still fire).
+- **`/mode val …`** router on main bot: `/mode val` shows Val's mode + account, `/mode val paper` flips immediately, `/mode val live confirm` requires the literal `confirm` token AND passes a **live sanity check** (`get_account()` on live creds, asserts `status=="ACTIVE"`, logs `account_number/cash/buying_power`) before the flip.
+- **Val's own Telegram bot** (separate process loop, own `VAL_TELEGRAM_TOKEN` + `VAL_TELEGRAM_CHAT_ID`, own `_auth_guard` against `VAL_TELEGRAM_OWNER_IDS`). Commands: `/mode`, `/status`, `/halt` (emergency `close_all_positions(cancel_orders=True)`), `/version`.
+- **Dependency:** `alpaca-py==0.43.2` added to `requirements.txt`. Imported lazily inside the executor (module import still works without it; Val just logs and skips orders if the SDK is missing).
+- **Env vars:** `VAL_ENABLED` (default `1`), `VAL_ALPACA_PAPER_KEY/SECRET`, `VAL_ALPACA_LIVE_KEY/SECRET`, `VAL_TELEGRAM_TOKEN`, `VAL_TELEGRAM_CHAT_ID`, `VAL_TELEGRAM_OWNER_IDS`, `VAL_DOLLARS_PER_ENTRY` (default 10000), plus optional `ALPACA_ENDPOINT_PAPER/TRADE` URL overrides.
+- **Smoke tests (6 new):** `val: TradeGeniusVal class exists`, `val: signal bus registration works`, `val: _emit_signal dispatches to all listeners`, `val: mode defaults to paper, flip to live without confirm fails`, `val: state file path segregates paper vs live`, plus the updated version-string assertions.
+
+**Design choices (Val's call):**
+- Async fire-and-forget dispatch (not synchronous, not a queue): Alpaca ack/reject can never block main's trade loop. Notifications go to Val's own Telegram when the order result returns.
+- Sanity check before live flip: building a live client and calling `get_account()` is cheap and catches wrong-account / unfunded / restricted states before the first live order.
+- Separate Val Telegram bot (not a channel inside main's bot): mirrors how Gene will work and keeps per-executor auth scopes clean.
+- Strict paper/live state segregation: flipping modes reloads the right JSON; the two histories never cross-contaminate.
+
+**Scope guardrails respected:**
+- Dashboard (`dashboard_server.py`) untouched — the 3-tab dashboard is v4.0.0-beta (PR #69).
+- Gene not built yet — PR #69.
+- Main paper-book logic (Tiger 2.0, stops, EOD) unchanged — executor is additive, only `_emit_signal(...)` calls are new at trade-recording points.
+- v3.6.0 main-bot auth guard unchanged.
+
+**Breaking:**
+- None for main's paper book. Val startup is **opt-in** via env: if `VAL_ENABLED=0` or `VAL_ALPACA_PAPER_KEY` is unset, Val is silently skipped at startup and the bot behaves exactly like v3.6.0.
+
+**Deploy note:**
+To enable Val on Railway, set at minimum `VAL_ALPACA_PAPER_KEY`, `VAL_ALPACA_PAPER_SECRET`, and `VAL_TELEGRAM_TOKEN`. Without those, Val is a no-op. Live requires `VAL_ALPACA_LIVE_KEY/SECRET` and the explicit `/mode val live confirm` command.
+
+**Updated:**
+- `BOT_VERSION` bumped from `3.6.0` to `4.0.0-alpha`.
+- `CURRENT_MAIN_NOTE` rewritten for v4.0.0-alpha (every line ≤34 chars, em-dash as `\u2014`).
+- `_MAIN_HISTORY_TAIL` rotated: v3.6.0 pushed in, v3.4.45 dropped.
+- `.env.example` documents the new `VAL_*` section.
+- `cmd_mode` (main bot) extended with the `/mode val …` sub-router; existing MarketMode behavior is unchanged for all other invocations.
+
+**Validation:**
+- `python3 -c "import ast; ast.parse(open('trade_genius.py').read())"` → OK
+- `SSM_SMOKE_TEST=1 python3 -c "import trade_genius; print(trade_genius.BOT_VERSION)"` → `4.0.0-alpha`
+- Smoke tests: 24/24 PASS (18 prior + 6 new).
+
+---
+
 ## v3.6.0 — Telegram owner auth guard (2026-04-24)
 
 Add a hard perimeter around the Telegram bot. Every incoming update is checked against `TRADEGENIUS_OWNER_IDS` before any command, callback, or message handler runs. Non-owners get **zero response** and the update is dropped server-side.

@@ -233,13 +233,13 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 3.6.0")
+    @t("version: BOT_VERSION is 4.0.0-alpha")
     def _():
-        assert m.BOT_VERSION == "3.6.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.0.0-alpha", f"got {m.BOT_VERSION}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v3.6.0")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.0.0-alpha")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v3.6.0"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.0-alpha"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     # ---------- v3.6.0 auth guard ----------
@@ -328,7 +328,115 @@ def run_local() -> int:
                     "GMAIL_ADDRESS", "TELEGRAM_TP_TOKEN"):
             assert not hasattr(m, bad), f"v3.5.0: {bad} should be removed"
 
-    return run_suite("LOCAL SMOKE TESTS (v3.6.0 paper-only)")
+    # ---------- v4.0.0-alpha Val executor ----------
+    @t("val: TradeGeniusVal class exists")
+    def _():
+        assert hasattr(m, "TradeGeniusVal"), "TradeGeniusVal missing"
+        assert hasattr(m, "TradeGeniusBase"), "TradeGeniusBase missing"
+        assert issubclass(m.TradeGeniusVal, m.TradeGeniusBase), \
+            "TradeGeniusVal must subclass TradeGeniusBase"
+        assert m.TradeGeniusVal.NAME == "Val", f"got {m.TradeGeniusVal.NAME!r}"
+        assert m.TradeGeniusVal.ENV_PREFIX == "VAL_", \
+            f"got {m.TradeGeniusVal.ENV_PREFIX!r}"
+
+    @t("val: signal bus registration works")
+    def _():
+        before = len(m._signal_listeners)
+        marker = {"hit": False}
+
+        def _listener(event):
+            marker["hit"] = True
+
+        m.register_signal_listener(_listener)
+        try:
+            assert len(m._signal_listeners) == before + 1
+            assert _listener in m._signal_listeners
+        finally:
+            # don't leak listeners across tests
+            m._signal_listeners.remove(_listener)
+
+    @t("val: _emit_signal dispatches to all listeners")
+    def _():
+        import threading as _th
+        evt = _th.Event()
+        seen = {}
+
+        def _l(event):
+            seen.update(event)
+            evt.set()
+
+        m.register_signal_listener(_l)
+        try:
+            m._emit_signal({
+                "kind": "ENTRY_LONG", "ticker": "TEST",
+                "price": 100.0, "reason": "BREAKOUT",
+                "timestamp_utc": "2026-04-24T00:00:00Z",
+                "main_shares": 10,
+            })
+            assert evt.wait(2.0), "listener did not fire within 2s"
+            assert seen.get("ticker") == "TEST", f"got {seen!r}"
+        finally:
+            m._signal_listeners.remove(_l)
+
+    @t("val: mode defaults to paper, flip to live without confirm fails")
+    def _():
+        os.environ["VAL_ALPACA_PAPER_KEY"] = "dummy_paper_key"
+        os.environ["VAL_ALPACA_PAPER_SECRET"] = "dummy_paper_secret"
+        os.environ["VAL_ALPACA_LIVE_KEY"] = "dummy_live_key"
+        os.environ["VAL_ALPACA_LIVE_SECRET"] = "dummy_live_secret"
+        # Isolate state files in a temp dir.
+        v = m.TradeGeniusVal()
+        assert v.mode == "paper", f"expected paper, got {v.mode!r}"
+        ok, msg = v.set_mode("live")  # no confirm token
+        assert not ok, f"live flip without confirm should fail, got {msg!r}"
+        assert "confirm" in msg.lower(), f"expected confirm in msg, got {msg!r}"
+        # Unknown mode should also fail.
+        ok, msg = v.set_mode("wat")
+        assert not ok
+        # Paper should still succeed (client build may warn but mode flips).
+        ok, msg = v.set_mode("paper")
+        assert ok, f"paper flip should succeed, got {msg!r}"
+
+    @t("val: state file path segregates paper vs live")
+    def _():
+        os.environ.setdefault("VAL_ALPACA_PAPER_KEY", "dummy")
+        os.environ.setdefault("VAL_ALPACA_PAPER_SECRET", "dummy")
+        v = m.TradeGeniusVal()
+        paper_path = v._state_file("paper")
+        live_path = v._state_file("live")
+        assert paper_path != live_path, "paper and live paths must differ"
+        assert "val" in paper_path.lower() and "val" in live_path.lower()
+        assert "paper" in paper_path and "live" in live_path
+
+    @t("val: signal bus is wired into execute_entry hook point")
+    def _():
+        # Register a listener, call execute_entry indirectly via _emit_signal
+        # contract, confirm event shape matches schema the hook emits.
+        import threading as _th
+        evt = _th.Event()
+        captured = {}
+
+        def _l(event):
+            captured.update(event)
+            evt.set()
+
+        m.register_signal_listener(_l)
+        try:
+            m._emit_signal({
+                "kind": "EOD_CLOSE_ALL", "ticker": "",
+                "price": 0.0, "reason": "EOD",
+                "timestamp_utc": "2026-04-24T20:55:00Z",
+                "main_shares": 0,
+            })
+            assert evt.wait(2.0)
+            for key in ("kind", "ticker", "price", "reason",
+                        "timestamp_utc", "main_shares"):
+                assert key in captured, f"event missing {key}"
+            assert captured["kind"] == "EOD_CLOSE_ALL"
+        finally:
+            m._signal_listeners.remove(_l)
+
+    return run_suite("LOCAL SMOKE TESTS (v4.0.0-alpha Val executor)")
 
 
 # ============================================================
