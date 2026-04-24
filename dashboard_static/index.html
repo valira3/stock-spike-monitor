@@ -1191,6 +1191,12 @@
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
+    // Publish latest state so the executor-tab IIFE can read market-wide
+    // widgets (proximity, regime, gates) from the same source as Main.
+    try {
+      window.__tgLastState = s;
+      if (typeof window.__tgOnState === "function") window.__tgOnState(s);
+    } catch (e) {}
     // If the server didn't ship rh_* keys (older deploy), force the
     // toggle to Paper and hide the RH button — but keep trying each
     // tick in case a rolling deploy brings the keys back.
@@ -1557,7 +1563,7 @@
       <div class="card">
         <div class="card-head"><span class="card-title">Proximity<span class="count" data-f="prox-count">\u00b7 \u2014</span></span></div>
         <div class="card-body flush" data-f="prox-list">
-          <div class="empty">Not tracked for ${label}.</div>
+          <div class="empty">Loading\u2026</div>
         </div>
       </div>
     </section>
@@ -1575,7 +1581,7 @@
       <div class="card">
         <div class="card-head"><span class="card-title">Today's trades<span class="count" data-f="trades-count">\u00b7 \u2014</span></span><span class="chip" data-f="trades-realized">\u2014</span></div>
         <div class="card-body flush" data-f="trades-body">
-          <div class="empty">Trades list not tracked for ${label}.</div>
+          <div class="empty">No trades today.</div>
         </div>
       </div>
     </section>
@@ -1587,13 +1593,13 @@
           <span class="chip" data-f="srs-status">\u2014</span>
         </div>
         <div class="card-body" data-f="srs-body">
-          <div class="empty">Not tracked for ${label}.</div>
+          <div class="empty">Loading\u2026</div>
         </div>
       </div>
       <div class="card">
         <div class="card-head"><span class="card-title">Gates \u00b7 entry checks</span></div>
         <div data-f="gates-body">
-          <div class="empty">Not tracked for ${label}.</div>
+          <div class="empty">Loading\u2026</div>
         </div>
       </div>
     </section>
@@ -1686,6 +1692,245 @@
     const abs = Math.abs(v);
     const digits = d ?? (abs < 0.1 ? 3 : 2);
     return (v >= 0 ? "+" : "\u2212") + abs.toFixed(digits) + "%";
+  }
+
+  // --- Market-state widgets (proximity, SRS, gates) ------------------
+  // These are scanner-level signals that are the same for every
+  // executor by design, so we render them from the Main /api/state
+  // payload (republished on window.__tgLastState) rather than from the
+  // per-executor snapshot. Logic mirrors Main's renderProximity /
+  // renderSovereign / renderGates.
+
+  function fmtPxExec(v) {
+    if (v === null || v === undefined || isNaN(v)) return "\u2014";
+    return "$" + Number(v).toFixed(2);
+  }
+
+  function renderExecProximity(panel, s) {
+    const list = execField(panel, "prox-list");
+    const count = execField(panel, "prox-count");
+    if (!list) return;
+    const rows = (s && Array.isArray(s.proximity)) ? s.proximity : [];
+    if (count) count.textContent = "\u00b7 " + rows.length + " tracked";
+    if (!rows.length) {
+      list.innerHTML = `<div class="empty">No tickers configured.</div>`;
+      return;
+    }
+    const html = rows.map((r) => {
+      const pct = (r.nearest_pct !== null && r.nearest_pct !== undefined) ? r.nearest_pct : null;
+      let fill = 0;
+      if (pct !== null) fill = Math.max(0, Math.min(100, Math.round((1 - Math.min(pct, 0.02) / 0.02) * 100)));
+      const warn = pct !== null && pct < 0.005;
+      const mark = r.open_side === "SHORT"
+        ? '<span class="mark mark-short" title="Open short">\u25CF</span>'
+        : r.open_side === "LONG"
+          ? '<span class="mark mark-long" title="Open long">\u25CF</span>'
+          : "";
+      const lbl = r.nearest_label || "\u2014";
+      const pctText = pct !== null ? `${(pct * 100).toFixed(2)}% \u00b7 ${lbl}` : "\u2014";
+      return `<div class="prox-row">
+        <span class="prox-ticker">${esc(r.ticker)} ${mark}</span>
+        <span class="prox-price">${fmtPxExec(r.price)}</span>
+        <div class="prox-bar"><div class="prox-fill ${warn ? "warn" : "ok"}" style="width:${fill}%"></div></div>
+        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${esc(pctText)}</span>
+      </div>`;
+    }).join("");
+    list.innerHTML = html;
+  }
+
+  function renderExecSovereign(panel, s) {
+    const body = execField(panel, "srs-body");
+    const chip = execField(panel, "srs-status");
+    if (!body || !chip) return;
+    const srs = (s && s.regime && s.regime.sovereign) || null;
+    if (!srs) {
+      body.innerHTML = '<div class="empty">Regime data unavailable.</div>';
+      chip.textContent = "\u2014";
+      chip.className = "chip";
+      return;
+    }
+    const status = srs.status || "NO_PDC";
+    let chipCls = "chip chip-srs-dis";
+    let chipTxt = "Disarmed";
+    if (status === "ARMED_LONG")       { chipCls = "chip chip-srs-armed"; chipTxt = "Long-eject armed"; }
+    else if (status === "ARMED_SHORT") { chipCls = "chip chip-srs-armed"; chipTxt = "Short-eject armed"; }
+    else if (status === "AWAITING")    { chipCls = "chip chip-srs-wait";  chipTxt = "Awaiting 1m close"; }
+    else if (status === "NO_PDC")      { chipCls = "chip chip-srs-wait";  chipTxt = "No PDC yet"; }
+    chip.textContent = chipTxt;
+    chip.className = chipCls;
+
+    const idxRow = (sym, price, pdc, delta) => {
+      const priceTxt = (typeof price === "number") ? price.toFixed(2) : "\u2014";
+      const pdcTxt = (typeof pdc === "number") ? `PDC ${pdc.toFixed(2)}` : "PDC \u2014";
+      let deltaCls = "srs-delta na";
+      let deltaTxt = "\u2014";
+      if (typeof delta === "number") {
+        deltaCls = "srs-delta " + (delta >= 0 ? "up" : "down");
+        const sign = delta >= 0 ? "+" : "";
+        deltaTxt = `${sign}${delta.toFixed(2)}%`;
+      }
+      return `<div class="srs-idx">
+        <span class="srs-sym">${esc(sym)}</span>
+        <span class="srs-price">${esc(priceTxt)}</span>
+        <span class="srs-pdc">${esc(pdcTxt)}</span>
+        <span class="${deltaCls}">${esc(deltaTxt)}</span>
+      </div>`;
+    };
+    const ejectTile = (label, fired, disabled) => {
+      let cls = "srs-eject-value dis";
+      let txt = "\u25CB disarmed";
+      if (disabled) { cls = "srs-eject-value na"; txt = "\u25CB n/a"; }
+      else if (fired) { cls = "srs-eject-value armed"; txt = "\u25CF ARMED"; }
+      return `<div class="srs-eject">
+        <span class="srs-eject-label">${esc(label)}</span>
+        <span class="${cls}">${esc(txt)}</span>
+      </div>`;
+    };
+    const dataMissing = (status === "NO_PDC" || status === "AWAITING");
+    body.innerHTML = `<div class="srs">
+      ${idxRow("SPY", srs.spy_price, srs.spy_pdc, srs.spy_delta_pct)}
+      ${idxRow("QQQ", srs.qqq_price, srs.qqq_pdc, srs.qqq_delta_pct)}
+      <div class="srs-verdict">
+        ${ejectTile("Long eject",  !!srs.long_eject,  dataMissing)}
+        ${ejectTile("Short eject", !!srs.short_eject, dataMissing)}
+      </div>
+      <div class="srs-reason">${esc(srs.reason || "")}</div>
+    </div>`;
+  }
+
+  function execChipFlag(label, val, naOverride) {
+    if (naOverride || val === null || typeof val === "undefined") {
+      return `<span class="tgate-chip na">${esc(label)}</span>`;
+    }
+    return `<span class="tgate-chip ${val ? "on" : "off"}">${esc(label)}</span>`;
+  }
+  function execTGateRow(r) {
+    if (!r || !r.ticker) return "";
+    const chips = [];
+    if (r.side === "LONG") chips.push(`<span class="tgate-chip na">L</span>`);
+    else if (r.side === "SHORT") chips.push(`<span class="tgate-chip na">S</span>`);
+    else chips.push(`<span class="tgate-chip na">\u2014</span>`);
+    chips.push(execChipFlag("Brk", r.break));
+    const volLbl = (typeof r.vol_pct === "number") ? `Vol ${Math.round(r.vol_pct)}%` : "Vol n/a";
+    chips.push(execChipFlag(volLbl, r.vol_ok, r.vol_pct == null));
+    chips.push(execChipFlag("PDC", r.polarity));
+    chips.push(execChipFlag("Idx", r.index));
+    return `<div class="tgate">
+      <span class="tgate-tkr">${esc(r.ticker)}</span>
+      <span class="tgate-chips">${chips.join("")}</span>
+    </div>`;
+  }
+  function execGateRow(name, value, ok, hint) {
+    const chipCls = ok ? "chip-ok" : "chip-down";
+    const chipTxt = ok ? "Pass" : "Check";
+    return `<div class="gate">
+      <span class="gate-name">${esc(name)}${hint ? ` <span class="hint">${esc(hint)}</span>` : ""}</span>
+      <span class="mono">${esc(value)}</span>
+      <span class="chip ${chipCls}">${chipTxt}</span>
+    </div>`;
+  }
+  function renderExecGates(panel, s) {
+    const gates = execField(panel, "gates-body");
+    if (!gates) return;
+    const g = (s && s.gates) || {};
+    const rows = [];
+    rows.push(execGateRow("Trading halted", g.trading_halted ? "HALTED" : "Armed", !g.trading_halted, g.halt_reason || ""));
+    rows.push(execGateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
+    rows.push(execGateRow("OR collected", g.or_collected_date || "\u2014", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
+    const per = Array.isArray(g.per_ticker) ? g.per_ticker : [];
+    if (per.length) {
+      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Brk \u00b7 Vol \u00b7 PDC \u00b7 Idx</div>`);
+      for (const r of per) rows.push(execTGateRow(r));
+    }
+    gates.innerHTML = rows.join("");
+  }
+
+  // --- Today's trades (per-executor) ---------------------------------
+  // Uses executor snapshot's `todays_trades` list (Alpaca filled orders,
+  // today ET). Row template mirrors Main's Today's Trades card.
+  function fmtTradeTimeExec(rawT) {
+    const s = (rawT || "").toString();
+    if (!s) return "\u2014";
+    const iso = s.match(/^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/);
+    if (iso) return iso[1];
+    const hm = s.match(/^\d{1,2}:\d{2}/);
+    return hm ? hm[0] : s;
+  }
+  function renderExecTrades(panel, data, disabled) {
+    const body = execField(panel, "trades-body");
+    const count = execField(panel, "trades-count");
+    const chip = execField(panel, "trades-realized");
+    const trades = (data && Array.isArray(data.todays_trades)) ? data.todays_trades : [];
+    if (count) count.textContent = "\u00b7 " + (disabled ? "\u2014" : trades.length);
+
+    // Chip: running realized P&L (only SELL rows may carry pnl).
+    let realized = 0, havePnl = 0;
+    for (const t of trades) {
+      if (typeof t.pnl === "number" && isFinite(t.pnl)) { realized += t.pnl; havePnl += 1; }
+    }
+    if (chip) {
+      if (disabled || !havePnl) {
+        chip.textContent = "\u2014";
+        chip.className = "chip chip-neut";
+      } else {
+        chip.textContent = fmtUsd(realized);
+        chip.className = "chip " + (realized > 0 ? "chip-ok" : (realized < 0 ? "chip-down" : "chip-neut"));
+      }
+    }
+    if (!body) return;
+    if (disabled) {
+      body.innerHTML = `<div class="empty">\u2014</div>`;
+      return;
+    }
+    if (!trades.length) {
+      body.innerHTML = `<div class="empty">No trades today.</div>`;
+      return;
+    }
+    const rows = trades.map((t) => {
+      const tm = fmtTradeTimeExec(t.filled_at || t.time || t.entry_time);
+      const act = (t.action || "").toUpperCase();
+      const isBuy = act === "BUY";
+      const isSell = act === "SELL";
+      const sym = t.ticker || t.symbol || "\u2014";
+      const shares = t.shares ?? t.qty;
+      const px = t.price ?? t.avg_fill_price ?? t.entry_price ?? t.exit_price;
+      const actCls = isSell ? "act-sell" : "act-buy";
+      const actLbl = act || "\u2014";
+      let tailHtml = "\u2014";
+      if (isBuy) {
+        const cost = (typeof t.cost === "number" && isFinite(t.cost))
+          ? t.cost
+          : ((typeof shares === "number" && typeof px === "number") ? shares * px : null);
+        tailHtml = cost !== null
+          ? `<span class="trade-cost">${fmtUsd(cost)}</span>`
+          : `<span class="trade-cost">\u2014</span>`;
+      } else if (isSell) {
+        const pnl = (typeof t.pnl === "number" && isFinite(t.pnl)) ? t.pnl : null;
+        if (pnl !== null) {
+          const pnlCls = pnl > 0 ? "up" : (pnl < 0 ? "down" : "");
+          tailHtml = `<span class="trade-pnl ${pnlCls}">${fmtUsd(pnl)}</span>`;
+        } else {
+          tailHtml = `<span class="trade-pnl">\u2014</span>`;
+        }
+      }
+      return `<div class="trade-row" data-act="${esc(act)}" data-sym="${esc(sym)}">
+        <span class="tr-time">${esc(tm)}</span>
+        <span class="tr-sym ticker">${esc(sym)}</span>
+        <span class="tr-act"><span class="act-badge ${actCls}">${esc(actLbl)}</span></span>
+        <span class="tr-qty">${shares ?? "\u2014"}</span>
+        <span class="tr-price">${fmtPxExec(px)}</span>
+        <span class="tr-tail">${tailHtml}</span>
+      </div>`;
+    }).join("");
+    body.innerHTML = `<div class="trades-list">${rows}</div>`;
+  }
+
+  function renderExecMarketState(panel) {
+    const s = window.__tgLastState;
+    if (!s) return;
+    renderExecProximity(panel, s);
+    renderExecSovereign(panel, s);
+    renderExecGates(panel, s);
   }
 
   function renderExecutor(name, data) {
@@ -1857,7 +2102,20 @@
     setField(panel, "d-status", account.status || "\u2014");
     setField(panel, "d-baseurl", (data && data.alpaca_base_url) || "\u2014");
     setField(panel, "d-error", (data && data.error) || "\u2014");
+
+    // Market-state widgets (shared) + per-executor Today's Trades -----
+    renderExecMarketState(panel);
+    renderExecTrades(panel, data, disabled);
   }
+
+  // Whenever Main's /api/state poll lands, refresh the shared
+  // market-state widgets on Val/Gene panels if their skeletons are up.
+  window.__tgOnState = function () {
+    for (const exec of ["val", "gene"]) {
+      const panel = $$("tg-panel-" + exec);
+      if (panel && panel.dataset.tgReady) renderExecMarketState(panel);
+    }
+  };
 
   // Kick off the index strip (runs on all tabs) and poll every 30s.
   pollIndices();
