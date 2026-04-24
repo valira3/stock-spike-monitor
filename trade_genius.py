@@ -313,6 +313,14 @@ class TradeGeniusBase:
         `paper=False` to api.alpaca.markets. Optional env var overrides
         ALPACA_ENDPOINT_PAPER / ALPACA_ENDPOINT_TRADE are passed via
         url_override when set.
+
+        IMPORTANT: alpaca-py's RESTClient builds the final URL as
+            base_url + "/" + api_version + path
+        i.e. it ALWAYS appends "/v2". So url_override must be the HOST
+        (e.g. https://paper-api.alpaca.markets) and must NOT already
+        include a trailing /v2. We defensively strip any trailing "/v2"
+        or "/v2/" so a misconfigured Railway env var can't cause
+        double-prefixed URLs (https://.../v2/v2/account -> 404).
         """
         from alpaca.trading.client import TradingClient  # lazy import
         m = (mode or self.mode).strip().lower()
@@ -324,6 +332,12 @@ class TradeGeniusBase:
             key, secret = self.paper_key, self.paper_secret
             url_override = os.getenv("ALPACA_ENDPOINT_PAPER", "").strip() or None
             paper = True
+        if url_override:
+            # Strip any trailing /v2 or /v2/ the user may have included
+            cleaned = url_override.rstrip("/")
+            if cleaned.endswith("/v2"):
+                cleaned = cleaned[:-3]
+            url_override = cleaned or None
         kwargs = {"paper": paper}
         if url_override:
             kwargs["url_override"] = url_override
