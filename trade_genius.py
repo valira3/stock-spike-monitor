@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.7"
+BOT_VERSION = "4.1.8"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,19 +70,27 @@ BOT_VERSION = "4.1.7"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.7 \u2014 dashboard H7:\n"
-    "_today_trades de-duplicates\n"
-    "by (ticker,time,side,action)\n"
-    "so a short cover that ever\n"
-    "lands in both paper_trades\n"
-    "and short_trade_history is\n"
-    "no longer double-counted\n"
-    "in the UI. Smoke test\n"
-    "guards the contract."
+    "v4.1.8 \u2014 dashboard M7:\n"
+    "Robinhood toggle machinery\n"
+    "removed. RH view was gone\n"
+    "since v3.5.0 but ~70 lines\n"
+    "of HTML/CSS/JS toggle +\n"
+    "localStorage + slice()\n"
+    "indirection remained as\n"
+    "dead code. Now slice is\n"
+    "inline; only paper ever\n"
+    "rendered."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.7 \u2014 dashboard H7:\n"
+    "_today_trades de-duplicates\n"
+    "by (ticker,time,side,action)\n"
+    "so a cross-list cover no\n"
+    "longer double-counts. Smoke\n"
+    "test guards the contract.\n"
+    "\n"
     "v4.1.6 \u2014 dashboard H6:\n"
     "_fetch_indices tags VIX row\n"
     "with reason sentinel; real\n"
