@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.0"
+BOT_VERSION = "4.1.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,21 +69,33 @@ BOT_VERSION = "4.1.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.0 \u2014 state + trade log fix:\n"
-    "\u2022 partial state-load no\n"
-    "  longer overwrites disk\n"
-    "  with a truncated book\n"
-    "\u2022 entry_ts_utc on every\n"
-    "  position; hold_seconds\n"
-    "  now populated (was null)\n"
-    "\u2022 entry_time_iso stored\n"
-    "  as UTC ISO, not CDT\n"
-    "  HH:MM:SS (fixes\n"
-    "  _is_today filters)"
+    "v4.1.1 \u2014 audit HIGH batch:\n"
+    "\u2022 signal bus register +\n"
+    "  emit under a lock so two\n"
+    "  start() calls can't double\n"
+    "  register the same listener\n"
+    "\u2022 save_paper_state builds\n"
+    "  snapshot inside the save\n"
+    "  lock (no more half-mutated\n"
+    "  dicts seen by json.dump)\n"
+    "\u2022 check_entry + short:\n"
+    "  reject current_price <= 0\n"
+    "  before sanity gates\n"
+    "\u2022 daily halt short-pnl\n"
+    "  uses _is_today, not a\n"
+    "  date== filter on a rolling\n"
+    "  history window"
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.0 \u2014 trade_genius audit\n"
+    "CRITICAL: partial state-load\n"
+    "no longer overwrites disk;\n"
+    "every position carries a real\n"
+    "UTC entry_ts_utc so trade log\n"
+    "hold_seconds is populated.\n"
+    "\n"
     "v4.0.9 \u2014 audit MEDIUM batch:\n"
     "dashboard hygiene: Alpaca key\n"
     "regex allows mixed-case\n"
@@ -229,6 +241,7 @@ logger = logging.getLogger(__name__)
 #     "main_shares": 57,              # audit-only: shares main paper book traded
 #   }
 _signal_listeners: list = []
+_signal_listeners_lock = threading.Lock()
 
 
 def register_signal_listener(fn):
@@ -238,17 +251,22 @@ def register_signal_listener(fn):
     double-execution of ENTRY/EXIT against Alpaca when an executor's
     ``start()`` is called more than once (e.g. supervisor re-spawn, a
     module reload during hot-patching, or a paranoid init-retry path).
+    The read-test-append is held under ``_signal_listeners_lock`` so
+    two concurrent ``start()`` calls cannot both observe "not present"
+    and both append the same callable.
     """
-    if fn in _signal_listeners:
-        logger.info(
-            "signal_bus: listener already registered, skipping (%s) total=%d",
-            getattr(fn, "__qualname__", repr(fn)), len(_signal_listeners),
-        )
-        return
-    _signal_listeners.append(fn)
+    with _signal_listeners_lock:
+        if fn in _signal_listeners:
+            logger.info(
+                "signal_bus: listener already registered, skipping (%s) total=%d",
+                getattr(fn, "__qualname__", repr(fn)), len(_signal_listeners),
+            )
+            return
+        _signal_listeners.append(fn)
+        total = len(_signal_listeners)
     logger.info(
         "signal_bus: listener registered (%s) total=%d",
-        getattr(fn, "__qualname__", repr(fn)), len(_signal_listeners),
+        getattr(fn, "__qualname__", repr(fn)), total,
     )
 
 
@@ -259,8 +277,9 @@ def _emit_signal(event: dict) -> None:
     Per-listener exceptions are logged but never break the bus.
     """
     # Snapshot the listener list so a concurrent register/unregister can't
-    # mutate what we iterate.
-    listeners = list(_signal_listeners)
+    # mutate what we iterate. Held under the same lock as registration.
+    with _signal_listeners_lock:
+        listeners = list(_signal_listeners)
     if not listeners:
         return
 
@@ -2705,30 +2724,35 @@ def save_paper_state():
             "cash=$%.2f (start=$%.0f) — possible trade history wipe!",
             paper_cash, PAPER_STARTING_CAPITAL,
         )
-    state = {
-        "paper_cash": paper_cash,
-        "positions": positions,
-        "paper_trades": paper_trades,
-        "paper_all_trades": paper_all_trades[-500:],
-        "daily_entry_count": daily_entry_count,
-        "daily_entry_date": daily_entry_date,
-        "or_high": or_high,
-        "or_low": or_low,
-        "pdc": pdc,
-        "or_collected_date": or_collected_date,
-        "user_config": user_config,
-        "trade_history": trade_history,
-        "short_positions": short_positions,
-        "short_trade_history": short_trade_history[-500:],
-        # v3.4.34: avwap_data / avwap_last_ts no longer persisted.
-        "daily_short_entry_count": daily_short_entry_count,
-        "last_exit_time": {k: v.isoformat() for k, v in _last_exit_time.items()},
-        "_scan_paused": _scan_paused,
-        "_trading_halted": _trading_halted,
-        "_trading_halted_reason": _trading_halted_reason,
-        "saved_at": _utc_now_iso(),
-    }
+    # v4.1.1: snapshot construction moved INSIDE the lock so a concurrent
+    # save (5-min periodic + scan-loop close_position) cannot build a
+    # half-mutated state dict while another save is iterating the same
+    # globals for json.dump. Two saves racing on the same globals used to
+    # risk "dictionary changed size during iteration".
     with _paper_save_lock:
+        state = {
+            "paper_cash": paper_cash,
+            "positions": dict(positions),
+            "paper_trades": list(paper_trades),
+            "paper_all_trades": list(paper_all_trades[-500:]),
+            "daily_entry_count": dict(daily_entry_count),
+            "daily_entry_date": daily_entry_date,
+            "or_high": dict(or_high),
+            "or_low": dict(or_low),
+            "pdc": dict(pdc),
+            "or_collected_date": or_collected_date,
+            "user_config": dict(user_config),
+            "trade_history": list(trade_history),
+            "short_positions": dict(short_positions),
+            "short_trade_history": list(short_trade_history[-500:]),
+            # v3.4.34: avwap_data / avwap_last_ts no longer persisted.
+            "daily_short_entry_count": dict(daily_short_entry_count),
+            "last_exit_time": {k: v.isoformat() for k, v in _last_exit_time.items()},
+            "_scan_paused": _scan_paused,
+            "_trading_halted": _trading_halted,
+            "_trading_halted_reason": _trading_halted_reason,
+            "saved_at": _utc_now_iso(),
+        }
         tmp = PAPER_STATE_FILE + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
@@ -4057,6 +4081,12 @@ def check_entry(ticker):
         return False, None
 
     current_price = bars["current_price"]
+    # v4.1.1: a 0 or negative current_price (Yahoo has shipped 0.0 quotes
+    # on thinly traded names during pre-market extensions) would bypass
+    # every downstream sanity gate because those gates fail-open when
+    # fed 0/None. Reject here.
+    if not current_price or current_price <= 0:
+        return False, None
     closes = [c for c in bars["closes"] if c is not None]
     last_close = closes[-1] if closes else current_price
 
@@ -4251,9 +4281,14 @@ def execute_entry(ticker, current_price):
         if t.get("date") == today_str and t.get("action") == "SELL"
     )
     # Include closed short P&L in daily loss check (COVER closes the short).
+    # v4.1.1: `short_trade_history` is a rolling window (last 500, NOT
+    # cleared daily), so filtering on `date == today_str` silently drops
+    # any COVER row missing `date` or storing it in a divergent format.
+    # Switch to `_is_today(exit_time_iso)` — the canonical today-predicate
+    # used by the per-ticker loss cap — so all surfaces agree.
     today_pnl += sum(
         (t.get("pnl") or 0) for t in short_trade_history
-        if t.get("date") == today_str and t.get("action") == "COVER"
+        if _is_today(t.get("exit_time_iso") or "") and t.get("action") == "COVER"
     )
 
     # Add unrealized P&L from open long positions
@@ -4745,6 +4780,10 @@ def check_short_entry(ticker):
     if not closes:
         return
     current_close = closes[-2] if len(closes) >= 2 else closes[-1]
+    # v4.1.1: mirror check_entry — reject 0/negative closes so fail-open
+    # sanity gates downstream can't let a bad quote through.
+    if not current_close or current_close <= 0:
+        return
     current_price = current_close  # use close as limit price proxy
 
     # FMP primary quote — override price and PDC if available

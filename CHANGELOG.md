@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.1 — Audit batch H (trade_genius): HIGH fixes, race + fail-open gates (2026-04-24)
+
+Batch H of the `trade_genius.py` audit. Concurrency around the signal bus + state saver, upstream sanity guards so downstream fail-open gates can't be tripped by bad quotes, and a correctness fix on the daily-loss halt's short-side filter.
+
+**Fixed:**
+
+- **`_signal_listeners` register/emit race (`trade_genius.py:231-280`)** — `register_signal_listener` did a compound `fn in list` → `list.append`, and `_emit_signal` snapshotted via `list(...)`. Two concurrent `start()` calls (supervisor respawn + init retry, hot-reload during patch) could both observe "not present" and both append the same callable, which would then double-execute every ENTRY/EXIT against Alpaca for the life of the process. A `threading.Lock` now scopes the read-test-append and the snapshot so registration is atomic and the iterate-snapshot is consistent.
+- **`save_paper_state` built snapshot outside `_paper_save_lock` (`trade_genius.py:2715-2746`)** — the state dict was assembled from module globals (`positions`, `short_positions`, `trade_history`, …) before the lock was taken. `close_position` calls `save_paper_state`, and the 5-minute periodic saver also calls `save_paper_state`, so two savers could overlap — one building the dict while the other mutated the same globals, producing an inconsistent serialisation or a `RuntimeError: dictionary changed size during iteration`. Snapshot construction moved inside the lock; each mutable global is now shallow-copied into the snapshot under the lock so `json.dump` never re-reads live state.
+- **`check_entry` / `check_short_entry` accepted `current_price <= 0` (`trade_genius.py:4071`, `4765`)** — Yahoo has been observed to return a 0 quote on thin names during pre-market. Every downstream sanity helper (`_or_price_sane`, staleness checks) returns True when fed 0 because it treats the zero as "no data" and fails open, so a bad quote would have slipped past every gate. Both entry paths now reject 0/negative prices right after `fetch_1min_bars`.
+- **Daily-halt today-pnl filter on shorts (`trade_genius.py:4271-4279`)** — `today_pnl += sum(pnl for t in short_trade_history if t.get("date") == today_str and t.get("action") == "COVER")`. `paper_trades` is reset daily; `short_trade_history` is a rolling last-500 window. Any COVER row missing `date` or storing a divergent format would be silently dropped from today's loss sum, understating the day's realised loss by the full short P&L. Replaced with `_is_today(exit_time_iso)` — the canonical today-predicate already used by the per-ticker loss cap. Consistent after the v4.1.0 `exit_time_iso`-is-real-ISO fix.
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.1; v4.1.0 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.1"`.
+- Smoke test now pins BOT_VERSION to `4.1.1`.
+
+**Deferred:** H3 cooldown-prune window (no live bug, documented in audit doc), H6 dead `index_ok` local (cosmetic).
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS.
+
+**Breaking:** None.
+
+---
+
 ## v4.1.0 — Audit batch C (trade_genius): CRITICAL state + trade-log correctness (2026-04-24)
 
 Focused audit of `trade_genius.py` only. Two critical correctness bugs that corrupted persisted state and mis-populated the persistent trade log. Runs in parallel with the v4.0.8/v4.0.9 dashboard audits on `dashboard_server.py`.
