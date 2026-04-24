@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.9"
+BOT_VERSION = "4.1.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,23 +69,44 @@ BOT_VERSION = "4.0.9"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.9 \u2014 audit MEDIUM batch:\n"
-    "\u2022 Alpaca key regex allows\n"
-    "  mixed-case suffixes so\n"
-    "  logs scrub real keys\n"
-    "\u2022 _serialize_positions\n"
-    "  _safe_float-guards every\n"
-    "  numeric read\n"
-    "\u2022 day_pnl KPI hides\n"
-    "  colour when value null\n"
-    "\u2022 login page rebranded\n"
-    "  to TradeGenius\n"
-    "\u2022 dead renderTpSync +\n"
-    "  tp-banner removed"
+    "v4.1.0 \u2014 state + trade log fix:\n"
+    "\u2022 partial state-load no\n"
+    "  longer overwrites disk\n"
+    "  with a truncated book\n"
+    "\u2022 entry_ts_utc on every\n"
+    "  position; hold_seconds\n"
+    "  now populated (was null)\n"
+    "\u2022 entry_time_iso stored\n"
+    "  as UTC ISO, not CDT\n"
+    "  HH:MM:SS (fixes\n"
+    "  _is_today filters)"
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.0.9 \u2014 audit MEDIUM batch:\n"
+    "dashboard hygiene: Alpaca key\n"
+    "regex allows mixed-case\n"
+    "suffixes, _serialize_positions\n"
+    "_safe_float-guards numeric\n"
+    "reads, day_pnl KPI hides color\n"
+    "when null, login rebranded,\n"
+    "dead renderTpSync removed.\n"
+    "\n"
+    "v4.0.8 \u2014 audit HIGH batch:\n"
+    "dashboard correctness: login\n"
+    "accepts multipart, trade log\n"
+    "rejects stale tp portfolio,\n"
+    "log tail renders structured\n"
+    "ts/level, SSE watchdog de-\n"
+    "duplicates reconnects.\n"
+    "\n"
+    "v4.0.7 \u2014 dashboard hardening:\n"
+    "login XFF guard, 32-byte\n"
+    "session secret floor, Alpaca\n"
+    "key redaction in /stream,\n"
+    "HTML-escaped login errors.\n"
+    "\n"
     "v4.0.3-beta \u2014 OR seed fix:\n"
     "Pull 9:30 ET OR from Alpaca\n"
     "at boot (#87); staleness\n"
@@ -2804,8 +2825,39 @@ def load_paper_state():
         logger.info("Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
                     paper_cash, len(positions), len(trade_history))
     except Exception as e:
-        _state_loaded = True  # allow saves after failed load (fresh start)
-        logger.error("load_paper_state failed: %s — starting fresh", e)
+        # v4.0.8 — previously we set _state_loaded = True and returned,
+        # which let the next periodic save stamp a partially-loaded
+        # snapshot (e.g. paper_cash loaded, positions never populated
+        # before the exception) over the on-disk file. That silently
+        # wiped positions/history and was unrecoverable. Now we hard-
+        # reset in-memory state to a clean fresh-start book BEFORE
+        # unblocking saves, so at worst we persist a legitimate
+        # $100k / no-positions snapshot instead of a truncated one.
+        logger.error(
+            "load_paper_state failed: %s \u2014 resetting to fresh book to "
+            "avoid persisting partial state on top of the on-disk file",
+            e, exc_info=True,
+        )
+        paper_cash = PAPER_STARTING_CAPITAL
+        positions.clear()
+        paper_trades.clear()
+        paper_all_trades.clear()
+        daily_entry_count.clear()
+        daily_entry_date = ""
+        or_high.clear()
+        or_low.clear()
+        pdc.clear()
+        or_collected_date = ""
+        user_config.clear()
+        trade_history.clear()
+        short_positions.clear()
+        short_trade_history.clear()
+        daily_short_entry_count.clear()
+        _last_exit_time = {}
+        _scan_paused = False
+        _trading_halted = False
+        _trading_halted_reason = ""
+        _state_loaded = True
 
 
 
@@ -4277,6 +4329,11 @@ def execute_entry(ticker, current_price):
         "trail_high": current_price,
         "entry_count": entry_num,
         "entry_time": now_str,
+        # v4.0.8 — UTC ISO companion so close paths can compute
+        # hold_seconds via fromisoformat; entry_time stays HH:MM:SS
+        # for display. Without this, fromisoformat raised on the bare
+        # time string and every trade-log row had hold_seconds=null.
+        "entry_ts_utc": _utc_now_iso(),
         "date": now_date,
         "pdc": pdc.get(ticker, 0),
     }
@@ -4401,7 +4458,9 @@ def close_position(ticker, price, reason="STOP"):
         "reason": reason,
         "entry_time": entry_hhmm,
         "exit_time": now_hhmm,
-        "entry_time_iso": entry_time_str,
+        # v4.0.8 — use UTC ISO from pos (was HH:MM:SS, which broke
+        # _is_today and every fromisoformat consumer downstream).
+        "entry_time_iso": pos.get("entry_ts_utc") or entry_time_str,
         "exit_time_iso": _utc_now_iso(),
         "entry_num": pos.get("entry_count", 1),
         "date": now_date,
@@ -4411,7 +4470,10 @@ def close_position(ticker, price, reason="STOP"):
         trade_history[:] = trade_history[-TRADE_HISTORY_MAX:]
 
     # v3.4.27 — persistent trade log (paper long close).
-    _entry_iso = entry_time_str or ""
+    # v4.0.8 — hold_seconds derived from entry_ts_utc (UTC ISO), not the
+    # CDT HH:MM:SS display string. fromisoformat rejects bare times so
+    # every row used to ship with hold_seconds=null.
+    _entry_iso = pos.get("entry_ts_utc") or entry_time_str or ""
     _hold_s = None
     try:
         if _entry_iso:
@@ -4860,6 +4922,8 @@ def execute_short_entry(ticker, price):
         "trail_active": False,
         "trail_low": entry_price,
         "entry_time": entry_time_cdt,
+        # v4.0.8 — UTC ISO companion (see execute_entry for rationale).
+        "entry_ts_utc": _utc_now_iso(),
         "date": date_str,
         "side": "SHORT",
     }
@@ -5037,7 +5101,8 @@ def close_short_position(ticker, price, reason):
         "reason": reason,
         "entry_time": pos.get("entry_time", "?"),
         "exit_time": exit_time,
-        "entry_time_iso": pos.get("entry_time", ""),
+        # v4.0.8 — symmetric with longs: UTC ISO, not the bare HH:MM:SS.
+        "entry_time_iso": pos.get("entry_ts_utc") or pos.get("entry_time", ""),
         "exit_time_iso": _utc_now_iso(),
         "entry_num": pos.get("entry_count", 1),
         "date": date_str,
@@ -5045,7 +5110,9 @@ def close_short_position(ticker, price, reason):
 
     # v3.4.27 — persistent trade log (shorts, both paper and TP).
     # Written BEFORE portfolio branch so either path gets a row.
-    _sh_entry_iso = pos.get("entry_time", "") or ""
+    # v4.0.8 — prefer entry_ts_utc over the HH:MM:SS display string;
+    # fromisoformat can't parse a bare time (see execute_entry).
+    _sh_entry_iso = pos.get("entry_ts_utc") or pos.get("entry_time", "") or ""
     _sh_hold_s = None
     try:
         if _sh_entry_iso:

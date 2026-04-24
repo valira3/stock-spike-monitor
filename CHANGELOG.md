@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.0 — Audit batch C (trade_genius): CRITICAL state + trade-log correctness (2026-04-24)
+
+Focused audit of `trade_genius.py` only. Two critical correctness bugs that corrupted persisted state and mis-populated the persistent trade log. Runs in parallel with the v4.0.8/v4.0.9 dashboard audits on `dashboard_server.py`.
+
+**Fixed:**
+
+- **`load_paper_state` partial-load → next save wipes disk (`trade_genius.py:2805`)** — the prior handler caught every exception, set `_state_loaded = True`, and returned. If the load raised after assigning some globals (e.g. `paper_cash` loaded, then a format error before `positions.update(...)` ran), the periodic saver 5 minutes later would stamp that partial snapshot over the good on-disk file, permanently losing positions and trade history. The failure path now resets every in-memory global to a clean fresh-book state before unblocking saves, so at worst we persist a legitimate `$100k / no-positions` snapshot on top of the corrupted file — never a truncated one — and logs a loud ERROR with traceback instead of a terse one-liner.
+- **`hold_seconds` always `null` + `entry_time_iso` not actually ISO (`trade_genius.py:4278, 4861, 4408, 5039, 5050`)** — `execute_entry` / `execute_short_entry` stored `entry_time` as the local CDT `HH:MM:SS` display string and also wrote that same string into `entry_time_iso` on close. `datetime.fromisoformat("15:30:45")` raises `ValueError`, which was silently swallowed by the persistent-trade-log hold-time try/except — so every trade-log row has shipped with `hold_seconds: null`. The mis-typed `entry_time_iso` in `trade_history` also poisoned every downstream `_is_today(...)` consumer (per-ticker loss cap, etc.), which could silently skip today's rows. Fix: every position dict now carries an `entry_ts_utc` field (UTC ISO from `_utc_now_iso()` at entry). Close paths (longs and shorts) prefer `entry_ts_utc` over `entry_time`, so `hold_seconds` is now populated and `entry_time_iso` is a real ISO string. `entry_time` stays as `HH:MM:SS` CDT for display.
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.0; the v4.0.9 (dashboard MEDIUM) note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.0"`.
+- Smoke test now pins BOT_VERSION to `4.1.0`.
+
+**Not fixed (deferred):**
+
+- HIGH: `_signal_listeners` lock, `save_paper_state` snapshot-under-lock, `today_pnl` short filter, `current_price <= 0` upstream guard — shipping in the next trade_genius audit PR.
+- MEDIUM: state-load symmetrize with `.clear()` before `.update()`, matplotlib warmup DEBUG log, remove tautological `_on_signal` try/except — shipping in the MEDIUM batch PR.
+
+---
+
 ## v4.0.9 — Audit batch 5: MEDIUM fixes, dashboard polish (2026-04-24)
 
 Batch 5 of the audit pass. MEDIUM severity, scope restricted to `dashboard_server.py` + `dashboard_static/index.html`. Each edit fixes a latent correctness bug or removes dead code that would confuse future readers. No trading-logic changes.
