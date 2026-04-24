@@ -913,10 +913,30 @@ def _executor_snapshot(name: str) -> dict:
 
     try:
         acct = client.get_account()
+        # v4.0.4 \u2014 include last_equity (equity at prior trading close
+        # per Alpaca) so the front-end can compute Day P&L the same way
+        # Main does (equity - last_equity). Alpaca exposes this as a
+        # top-level field on the Account object.
+        def _as_float(obj, attr):
+            v = getattr(obj, attr, None)
+            if v is None or v == "":
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        equity = _as_float(acct, "equity")
+        last_equity = _as_float(acct, "last_equity")
+        day_pnl = None
+        if equity is not None and last_equity is not None:
+            day_pnl = equity - last_equity
         payload["account"] = {
-            "cash": float(getattr(acct, "cash", 0) or 0),
-            "buying_power": float(getattr(acct, "buying_power", 0) or 0),
-            "equity": float(getattr(acct, "equity", 0) or 0),
+            "cash": _as_float(acct, "cash"),
+            "buying_power": _as_float(acct, "buying_power"),
+            "equity": equity,
+            "last_equity": last_equity,
+            "day_pnl": day_pnl,
             "account_number": str(getattr(acct, "account_number", "") or ""),
             "status": str(getattr(acct, "status", "") or ""),
         }

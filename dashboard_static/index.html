@@ -464,15 +464,21 @@
 </div>
 
 <!-- Top-level TradeGenius brand/logo row. Sits between the index ticker
-     strip and the tab switcher so it is visible on every tab. The per-tab
-     header still carries page-specific controls (clock, LIVE, sign-out). -->
-<div id="tg-brand-row" style="display:flex;align-items:center;gap:10px;background:#0a0d12;border-bottom:1px solid #1f2937;padding:8px 16px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+     strip and the tab switcher so it is visible on every tab. Carries the
+     shared LIVE pill + "scan in Ns" countdown so the status indicator is
+     identical regardless of which tab (Main / Val / Gene) is active. -->
+<div id="tg-brand-row" style="display:flex;align-items:center;gap:10px;background:#0a0d12;border-bottom:1px solid #1f2937;padding:8px 16px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;flex-wrap:wrap">
   <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="TradeGenius" style="width:22px;height:22px;color:#7dd3fc;flex-shrink:0">
     <path d="M3 22 L11 22 L15 10 L19 22 L29 22" stroke-linecap="round" stroke-linejoin="round"/>
     <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
   </svg>
   <span style="font-weight:600;font-size:13.5px;letter-spacing:-0.005em;color:#e7ecf3">TradeGenius</span>
   <span id="tg-brand-ver" style="font-size:10.5px;color:#5b6572;margin-left:4px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">v…</span>
+  <span id="tg-live-pill" style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
+    <span id="h-pulse" style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block" class="pulse"></span>
+    <span style="color:#e7ecf3">LIVE</span>
+    <span id="h-tick" style="color:#5b6572">—</span>
+  </span>
 </div>
 
 <!-- v4.0.0-beta — 3-tab switcher (Main / Val / Gene). Only one panel is
@@ -499,11 +505,12 @@
         <button type="button" class="view-toggle-btn" id="view-btn-paper" data-view="paper">Paper</button>
         <button type="button" class="view-toggle-btn" id="view-btn-rh" data-view="rh">Robinhood</button>
       </span>
-      <span class="live-badge"><span class="pulse" id="h-pulse"></span>LIVE <span id="h-tick" style="color:var(--text-dim)">—</span></span>
       <span class="h-clock" id="clock">—</span>
       <span class="h-account">
-        <span class="h-conn" id="sb-conn">connecting…</span>
-        <span class="h-acct-sep">·</span>
+        <!-- v4.0.4 — connection status kept as a hidden DOM node so
+             setConn() can still drive the shared pulse dot on the brand
+             row. No longer rendered as visible text. -->
+        <span class="h-conn" id="sb-conn" style="display:none">connecting…</span>
         <a href="/logout">Sign out</a>
       </span>
     </div>
@@ -1155,7 +1162,7 @@
     if (!el) return;
     const s = window.__nextScanSec;
     if (typeof s !== "number") return;
-    el.textContent = `next scan ${s}s`;
+    el.textContent = `scan in ${s}s`;
   }
 
   function gateRow(name, value, ok, hint) {
@@ -1419,14 +1426,22 @@
       ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])
     );
   }
-  function fmtUsd(n) {
-    if (n === null || n === undefined || isNaN(n)) return "—";
+  // v4.0.4 — unify executor KPI formatter with Main's. Previously this
+  // returned "+$0.00" (or worse: a locale-dependent bare "+" when the
+  // Intl currency option was unsupported) which rendered as a literal
+  // "+" placeholder on Val/Gene KPIs. Now mirrors Main's fmtUsd: "$" or
+  // "−$" prefix, no surprise "+".
+  function fmtUsd(n, digits) {
+    if (n === null || n === undefined || isNaN(n)) return "\u2014";
     const v = Number(n);
-    const s = v >= 0 ? "+" : "";
-    return s + v.toLocaleString(undefined, { style:"currency", currency:"USD" });
+    const d = (digits === undefined || digits === null) ? 2 : digits;
+    const abs = Math.abs(v).toLocaleString("en-US", {
+      minimumFractionDigits: d, maximumFractionDigits: d,
+    });
+    return (v < 0 ? "\u2212$" : "$") + abs;
   }
   function fmtNum(n, d) {
-    if (n === null || n === undefined || isNaN(n)) return "—";
+    if (n === null || n === undefined || isNaN(n)) return "\u2014";
     return Number(n).toLocaleString(undefined, {
       minimumFractionDigits: d, maximumFractionDigits: d,
     });
@@ -1991,34 +2006,51 @@
     setField(panel, "h-acct", acctNum);
 
     // KPI row ----------------------------------------------------------
+    // v4.0.4 \u2014 mirror Main's KPI row exactly. Equity / Cash / BP come
+    // from the executor snapshot; Day P&L is computed server-side as
+    // (equity \u2212 last_equity) from Alpaca's account object. Gate /
+    // Regime / Session are market-wide and read from Main's /api/state
+    // (republished on window.__tgLastState) so they match across tabs.
     const account = (data && data.account) || {};
     const positions = Array.isArray(data && data.positions) ? data.positions : [];
     const equity = disabled ? null : (account.equity ?? null);
+    const lastEquity = disabled ? null : (account.last_equity ?? null);
+    const dayPnl = disabled ? null : (account.day_pnl ?? null);
     const cash = disabled ? null : (account.cash ?? null);
     const bp = disabled ? null : (account.buying_power ?? null);
-    let invested = 0.0, shorted = 0.0, unrealTotal = 0.0;
+    let invested = 0.0, shorted = 0.0;
     for (const p of positions) {
       const gross = (Number(p.qty) || 0) * (Number(p.avg_entry) || 0);
       if (p.side === "SHORT") shorted += gross; else invested += gross;
-      unrealTotal += (Number(p.unrealized_pnl) || 0);
     }
 
-    setField(panel, "k-equity", equity === null ? "\u2014" : fmtUsd(equity));
+    setField(panel, "k-equity", fmtUsd(equity));
     setFieldHtml(panel, "k-equity-sub",
       disabled
         ? "\u2014"
-        : `Cash ${esc(cash === null ? "\u2014" : fmtUsd(cash))} \u00b7 BP ${esc(bp === null ? "\u2014" : fmtUsd(bp))}`
+        : `Cash ${esc(fmtUsd(cash))} \u00b7 BP ${esc(fmtUsd(bp))}`
     );
 
-    // Day P&L: per-executor snapshot has no realized-today breakdown yet,
-    // so show unrealized from open positions as a proxy and label it.
+    // Day P&L: prefer Alpaca's (equity \u2212 last_equity) so the value
+    // matches the same portfolio math Main uses. Falls back to em-dash
+    // when either leg is missing (never a literal "+").
     const pnlEl = execField(panel, "k-pnl");
     if (pnlEl) {
-      pnlEl.textContent = disabled ? "\u2014" : fmtUsd(unrealTotal);
+      pnlEl.textContent = fmtUsd(dayPnl);
       pnlEl.classList.remove("delta-up", "delta-down");
-      if (!disabled) pnlEl.classList.add(unrealTotal >= 0 ? "delta-up" : "delta-down");
+      if (!disabled && dayPnl !== null && !isNaN(dayPnl)) {
+        pnlEl.classList.add(dayPnl >= 0 ? "delta-up" : "delta-down");
+      }
     }
-    setField(panel, "k-pnl-sub", disabled ? "\u2014" : "unrealized \u00b7 open positions");
+    if (disabled || dayPnl === null || lastEquity === null || !lastEquity) {
+      setField(panel, "k-pnl-sub", "\u2014");
+    } else {
+      const pct = (dayPnl / lastEquity) * 100;
+      const sign = pct >= 0 ? "+" : "\u2212";
+      setFieldHtml(panel, "k-pnl-sub",
+        `vs close \u00b7 <span class="${pct >= 0 ? 'delta-up' : 'delta-down'}">${sign}${Math.abs(pct).toFixed(2)}%</span>`
+      );
+    }
 
     setField(panel, "k-open", disabled ? "\u2014" : String(positions.length));
     if (disabled) {
@@ -2031,14 +2063,49 @@
       setField(panel, "k-open-sub", `${longs} long \u00b7 ${shorts} short`);
     }
 
-    // Gate / Regime / Session are main-bot-only \u2014 keep as em-dash.
+    // Gate / Regime / Session \u2014 shared market state. Pull from Main's
+    // last /api/state so every tab shows the same market-wide values.
+    const ms = window.__tgLastState || {};
+    const gates = ms.gates || {};
+    const reg = ms.regime || {};
     const gateEl = execField(panel, "k-gate");
-    if (gateEl) { gateEl.textContent = disabled ? "\u2014" : (data.healthy ? "READY" : "ERR"); gateEl.style.color = disabled ? "" : (data.healthy ? "var(--up)" : "var(--down)"); }
-    setField(panel, "k-gate-sub", disabled ? "\u2014" : (data.healthy ? "client healthy" : (data.error ? "client error" : "\u2014")));
-    setField(panel, "k-regime", "\u2014");
-    setField(panel, "k-regime-sub", "\u2014");
-    setField(panel, "k-session", disabled ? "OFF" : (data.mode === "live" ? "LIVE" : "PAPER"));
-    setField(panel, "k-session-sub", "\u2014");
+    const gateSubEl = execField(panel, "k-gate-sub");
+    if (gateEl && gateSubEl) {
+      if (gates.trading_halted) {
+        gateEl.textContent = "HALTED"; gateEl.style.color = "var(--down)";
+        gateSubEl.textContent = gates.halt_reason || "manual halt";
+      } else if (gates.scan_paused) {
+        gateEl.textContent = "PAUSED"; gateEl.style.color = "var(--warn)";
+        gateSubEl.textContent = "scan paused";
+      } else if (!gates.or_collected_date) {
+        gateEl.textContent = "WAIT"; gateEl.style.color = "var(--warn)";
+        gateSubEl.textContent = "opening range not collected";
+      } else {
+        gateEl.textContent = "READY"; gateEl.style.color = "var(--up)";
+        gateSubEl.textContent = `OR ${gates.or_collected_date}`;
+      }
+    }
+    const rEl = execField(panel, "k-regime");
+    if (rEl) {
+      const breadth = reg.breadth || "UNKNOWN";
+      rEl.textContent = breadth === "UNKNOWN" ? "\u2014" : breadth;
+      rEl.style.color = breadth === "BULLISH" ? "var(--up)"
+                      : breadth === "BEARISH" ? "var(--down)"
+                      : breadth === "NEUTRAL" ? "var(--text)"
+                      : "var(--text-muted)";
+    }
+    setField(panel, "k-regime-sub", `RSI ${reg.rsi_regime || "\u2014"}`);
+    const sEl = execField(panel, "k-session");
+    if (sEl) {
+      const mode = reg.mode || "\u2014";
+      sEl.textContent = mode;
+      sEl.style.color = mode === "DEFENSIVE" ? "var(--down)"
+                      : mode === "CHOP" ? "var(--warn)"
+                      : mode === "CLOSED" ? "var(--text-muted)"
+                      : mode === "\u2014" ? "var(--text-muted)"
+                      : "var(--up)";
+    }
+    setField(panel, "k-session-sub", reg.mode_reason || "\u2014");
 
     // Open positions card ----------------------------------------------
     const posBody = execField(panel, "pos-body");
@@ -2122,12 +2189,64 @@
     renderExecTrades(panel, data, disabled);
   }
 
+  // Refresh the shared KPI cells (Gate / Regime / Session) on a given
+  // executor panel from Main's last /api/state so these values match
+  // across every tab. v4.0.4 \u2014 extracted from renderExecutor so the
+  // __tgOnState callback can refresh them without a full executor poll.
+  function refreshExecSharedKpis(panel) {
+    const ms = window.__tgLastState || {};
+    const gates = ms.gates || {};
+    const reg = ms.regime || {};
+    const gateEl = execField(panel, "k-gate");
+    const gateSubEl = execField(panel, "k-gate-sub");
+    if (gateEl && gateSubEl) {
+      if (gates.trading_halted) {
+        gateEl.textContent = "HALTED"; gateEl.style.color = "var(--down)";
+        gateSubEl.textContent = gates.halt_reason || "manual halt";
+      } else if (gates.scan_paused) {
+        gateEl.textContent = "PAUSED"; gateEl.style.color = "var(--warn)";
+        gateSubEl.textContent = "scan paused";
+      } else if (!gates.or_collected_date) {
+        gateEl.textContent = "WAIT"; gateEl.style.color = "var(--warn)";
+        gateSubEl.textContent = "opening range not collected";
+      } else {
+        gateEl.textContent = "READY"; gateEl.style.color = "var(--up)";
+        gateSubEl.textContent = `OR ${gates.or_collected_date}`;
+      }
+    }
+    const rEl = execField(panel, "k-regime");
+    if (rEl) {
+      const breadth = reg.breadth || "UNKNOWN";
+      rEl.textContent = breadth === "UNKNOWN" ? "\u2014" : breadth;
+      rEl.style.color = breadth === "BULLISH" ? "var(--up)"
+                      : breadth === "BEARISH" ? "var(--down)"
+                      : breadth === "NEUTRAL" ? "var(--text)"
+                      : "var(--text-muted)";
+    }
+    setField(panel, "k-regime-sub", `RSI ${reg.rsi_regime || "\u2014"}`);
+    const sEl = execField(panel, "k-session");
+    if (sEl) {
+      const mode = reg.mode || "\u2014";
+      sEl.textContent = mode;
+      sEl.style.color = mode === "DEFENSIVE" ? "var(--down)"
+                      : mode === "CHOP" ? "var(--warn)"
+                      : mode === "CLOSED" ? "var(--text-muted)"
+                      : mode === "\u2014" ? "var(--text-muted)"
+                      : "var(--up)";
+    }
+    setField(panel, "k-session-sub", reg.mode_reason || "\u2014");
+  }
+
   // Whenever Main's /api/state poll lands, refresh the shared
-  // market-state widgets on Val/Gene panels if their skeletons are up.
+  // market-state widgets + KPI cells on Val/Gene panels if their
+  // skeletons are up.
   window.__tgOnState = function () {
     for (const exec of ["val", "gene"]) {
       const panel = $$("tg-panel-" + exec);
-      if (panel && panel.dataset.tgReady) renderExecMarketState(panel);
+      if (panel && panel.dataset.tgReady) {
+        renderExecMarketState(panel);
+        refreshExecSharedKpis(panel);
+      }
     }
   };
 

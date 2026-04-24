@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.3-beta"
+BOT_VERSION = "4.0.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,18 +69,25 @@ BOT_VERSION = "4.0.3-beta"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.3-beta \u2014 OR seed fix:\n"
-    "\u2022 Pull 9:30 ET OR from\n"
-    "  Alpaca at boot (no more\n"
-    "  stale/round-number OR)\n"
-    "\u2022 Staleness guard 1.5%\n"
-    "  \u2192 5% (OR_STALE_THRESHOLD)\n"
-    "\u2022 or_stale_skip_count in\n"
-    "  /api/state per ticker"
+    "v4.0.4 \u2014 leaving beta + UI:\n"
+    "\u2022 Drop -beta moniker\n"
+    "  (4.0.3-beta \u2192 4.0.4)\n"
+    "\u2022 Header consolidated:\n"
+    "  LIVE pill + scan timer\n"
+    "  on brand row; Paper pill\n"
+    "  and \"connected\" removed\n"
+    "\u2022 \"next scan\" \u2192 \"scan in\"\n"
+    "\u2022 Val KPIs mirror Main;\n"
+    "  Regime shared across tabs"
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.0.3-beta \u2014 OR seed fix:\n"
+    "Pull 9:30 ET OR from Alpaca\n"
+    "at boot (#87); staleness\n"
+    "guard widened 1.5% \u2192 5%.\n"
+    "\n"
     "v4.0.2-beta \u2014 DI seed at boot:\n"
     "Pull 5m bars from Alpaca at\n"
     "scanner startup (#86); DI\n"
