@@ -1,6 +1,47 @@
 # Changelog
 
-All notable changes to Stock Spike Monitor.
+All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.5.1).
+
+---
+
+## v3.5.1 — TradeGenius rename (2026-04-24)
+
+Rename the project from Stock Spike Monitor to TradeGenius. No behavioural changes.
+
+**Renamed:**
+- File: `stock_spike_monitor.py` → `trade_genius.py`
+- Asset: `stock_spike_monitor_algo.pdf` → `trade_genius_algo.pdf`
+- Log file: `stock_spike_monitor.log` → `trade_genius.log`
+- Dashboard HTML `<title>` and brand mark: "Spike Monitor" → "TradeGenius"
+- Telegram startup card and `/version` command: "Stock Spike Monitor vX.Y.Z" → `BOT_NAME v BOT_VERSION`
+- Algo PDF caption and filename: `TradeGenius_Algorithm_vX.Y.Z.pdf`
+
+**Added:**
+- `BOT_NAME = "TradeGenius"` constant in `trade_genius.py` (line 51)
+
+**Updated entry points:**
+- `railway.json` `startCommand` → `python trade_genius.py`
+- `nixpacks.toml` `[start]` cmd → `python trade_genius.py`
+- `Dockerfile` `COPY` and `CMD` → `trade_genius.py`
+- `.github/workflows/post-deploy-smoke.yml` BOT_VERSION read → `trade_genius.py`
+
+**Updated imports:**
+- `dashboard_server.py` `sys.modules.get("stock_spike_monitor")` → `"trade_genius"` (and `import stock_spike_monitor` → `import trade_genius`)
+- `smoke_test.py` `import stock_spike_monitor as m` → `import trade_genius as m`
+
+**Unchanged:**
+- Repo name stays `valira3/stock-spike-monitor` (and Railway project URL `stock-spike-monitor-production.up.railway.app`)
+- Eye of the Tiger 2.0, Hard Eject, EOD Close, paper book, scheduler, dashboard layout
+- `BOT_VERSION` bumped from `3.5.0` to `3.5.1`
+
+**Validation:**
+- `python3 -m ast` OK on all 3 .py files
+- `SSM_SMOKE_TEST=1 python3 -c "import trade_genius"` OK
+- `smoke_test.py`: 13/13 PASS
+
+**Next:**
+- v3.6.0 adds a Telegram owner auth guard (`TRADEGENIUS_OWNER_IDS` whitelist via `TypeHandler`)
+- v4.0.0 introduces Alpaca-backed TradeGenius executors (Val + Gene) mirroring main paper signals
 
 ---
 

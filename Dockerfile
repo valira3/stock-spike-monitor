@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Stock Spike Monitor — Docker deployment
+# TradeGenius — Docker deployment
 # Use this if you're deploying to Docker, Fly.io, Render, or any container host
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY stock_spike_monitor.py .
+COPY trade_genius.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .
@@ -30,4 +30,4 @@ ENV PAPER_STATE_PATH=/data/paper_state.json
 ENV PAPER_LOG_PATH=/data/investment.log
 ENV TICKERS_FILE=/data/tickers.json
 
-CMD ["python", "stock_spike_monitor.py"]
+CMD ["python", "trade_genius.py"]
