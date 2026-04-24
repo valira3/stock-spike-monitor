@@ -870,6 +870,7 @@ def _executor_snapshot(name: str) -> dict:
         "healthy": False,
         "account": None,
         "positions": [],
+        "todays_trades": [],
         "last_signal": None,
         "error": None,
     }
@@ -940,6 +941,83 @@ def _executor_snapshot(name: str) -> dict:
                 "unrealized_pnl_pct": unreal_pct,
             })
         payload["positions"] = rows
+
+        # Today's trades \u2014 filled Alpaca orders dated today in ET,
+        # shaped to match Main's Today's Trades row template (action,
+        # ticker, price, shares, cost, time, date; + pnl/pnl_pct for SELL)
+        # so the same frontend template renders on Val/Gene tabs.
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+            m = _ssm()
+            try:
+                today_et = m._now_et().strftime("%Y-%m-%d")
+            except Exception:
+                from datetime import datetime as _dt, timezone as _tz
+                today_et = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+            after_dt = None
+            try:
+                from datetime import datetime as _dt2, timezone as _tz2
+                after_dt = _dt2.strptime(today_et, "%Y-%m-%d").replace(tzinfo=_tz2.utc)
+            except Exception:
+                after_dt = None
+            try:
+                req = GetOrdersRequest(
+                    status=QueryOrderStatus.CLOSED, limit=500,
+                    **({"after": after_dt} if after_dt else {}),
+                )
+                orders = client.get_orders(filter=req) or []
+            except Exception:
+                orders = []
+            trades_out = []
+            for o in orders:
+                try:
+                    filled_at = getattr(o, "filled_at", None)
+                    if filled_at is None:
+                        continue
+                    try:
+                        fdate = filled_at.strftime("%Y-%m-%d")
+                        ftime = filled_at.strftime("%H:%M")
+                        fiso = filled_at.isoformat()
+                    except Exception:
+                        fdate = str(filled_at)[:10]
+                        ftime = str(filled_at)[11:16]
+                        fiso = str(filled_at)
+                    if fdate != today_et:
+                        continue
+                    side_raw = getattr(getattr(o, "side", None), "value", "") or ""
+                    side_str = str(side_raw).lower()
+                    action = "BUY" if side_str == "buy" else ("SELL" if side_str == "sell" else side_str.upper())
+                    sym = str(getattr(o, "symbol", "") or "")
+                    qty = float(getattr(o, "filled_qty", 0) or getattr(o, "qty", 0) or 0)
+                    fap = getattr(o, "filled_avg_price", None)
+                    try:
+                        price = float(fap) if fap is not None else None
+                    except Exception:
+                        price = None
+                    cost = (qty * price) if (price is not None) else None
+                    trades_out.append({
+                        "action": action,
+                        "ticker": sym,
+                        "symbol": sym,
+                        "side": "LONG",
+                        "shares": qty,
+                        "qty": qty,
+                        "price": price,
+                        "avg_fill_price": price,
+                        "cost": cost,
+                        "time": ftime,
+                        "filled_at": fiso,
+                        "date": fdate,
+                    })
+                except Exception:
+                    continue
+            trades_out.sort(key=lambda t: t.get("filled_at", ""))
+            payload["todays_trades"] = trades_out
+        except Exception as te:
+            logger.warning("executor %s todays_trades fetch failed: %s", name, te)
+            payload["todays_trades"] = []
+
         payload["healthy"] = True
     except Exception as e:
         # Surface the full Alpaca exception so credential / endpoint /
