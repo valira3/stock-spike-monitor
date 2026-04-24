@@ -4,6 +4,29 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.9 — Dashboard audit deferred: M11 h_stream snapshot TTL cache (2026-04-24)
+
+Dashboard-only performance fix for the deferred MEDIUM finding from the prior audit (`/tmp/audit_dash.md` M11). The SSE `h_stream` endpoint was calling `snapshot()` on every 2s tick per connected client, and `snapshot()` issues a live Alpaca snapshot request for ~30 symbols. With 3 browsers open across Val/Gene/home tabs, this fanned out to ~21.6k Alpaca round-trips per hour even though the underlying data only meaningfully changes on our 2-5s polling cadence.
+
+**Added:**
+
+- **`_cached_snapshot()`** in `dashboard_server.py` — module-level 10s TTL cache around `snapshot()`. Uses `threading.Lock` + double-checked locking so the thread-pool executor callers don't trigger duplicate Alpaca calls on simultaneous cache-miss.
+- **Module globals**: `_SNAPSHOT_CACHE_TTL = 10.0`, `_snapshot_cache_lock`, `_snapshot_cache_value`, `_snapshot_cache_ts`.
+
+**Changed:**
+
+- **`h_stream`** now calls `_cached_snapshot` via `run_in_executor` instead of `snapshot`. Effective Alpaca fan-out drops from ~21.6k/h → ~4.3k/h regardless of how many SSE clients are connected (cache is process-wide).
+- `/api/state` still calls `snapshot()` directly — explicit polls and Val-tab warmup see fresh data.
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.9; v4.1.8 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.9"`.
+- Smoke test pins BOT_VERSION to `4.1.9`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (40/40). SSE cadence unchanged (still 2s); payload content is identical — clients can't tell the difference other than faster response.
+
+**Breaking:** None.
+
+---
+
 ## v4.1.8 — Dashboard audit deferred: M7 Robinhood toggle cleanup (2026-04-24)
 
 Dashboard-only cleanup for the deferred MEDIUM finding from the prior audit (`/tmp/audit_dash.md` M7). Robinhood was removed in v3.5.0 along with all server-side `rh_*` payload keys, but the frontend kept ~70 lines of toggle machinery — two segmented buttons in the header, a localStorage-persisted `currentView`, a `slice(s, view)` indirection that proxy-read `rh_portfolio || portfolio`, and a click handler that re-rendered from `lastSnapshot`. All of it always resolved to paper because the server no longer ships `rh_*`.
