@@ -927,7 +927,34 @@ def _executor_snapshot(name: str) -> dict:
         payload["positions"] = rows
         payload["healthy"] = True
     except Exception as e:
-        payload["error"] = f"alpaca fetch failed: {e}"
+        # v4.0.0-beta hotfix: surface the full Alpaca exception so
+        # credential / endpoint / account-type problems are diagnosable
+        # from /api/executor/<name> instead of being hidden behind a
+        # bare "Not Found" string.
+        err_type = type(e).__name__
+        err_msg = str(e) or "(no message)"
+        # alpaca-py APIError exposes .status_code and .response.text on
+        # some versions; harvest what we can without raising inside the
+        # exception handler.
+        extras = []
+        for attr in ("status_code", "code"):
+            val = getattr(e, attr, None)
+            if val is not None:
+                extras.append(f"{attr}={val}")
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            body = getattr(resp, "text", None)
+            if body:
+                extras.append(f"body={body[:200]!r}")
+            status = getattr(resp, "status_code", None)
+            if status is not None and "status_code=" not in ",".join(extras):
+                extras.append(f"http_status={status}")
+        extra_str = (" " + " ".join(extras)) if extras else ""
+        payload["error"] = f"alpaca fetch failed: {err_type}: {err_msg}{extra_str}"
+        logger.warning(
+            "executor %s alpaca fetch failed: %s: %s%s",
+            name, err_type, err_msg, extra_str,
+        )
 
     with _executor_cache_lock:
         _executor_cache[cache_key] = (now, payload)
