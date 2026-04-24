@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.3.2"
+BOT_VERSION = "4.3.3"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,17 +70,28 @@ BOT_VERSION = "4.3.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.3.3 \u2014 dashboard API:\n"
+    "/api/state gates.per_ticker\n"
+    "now serializes extension_pct\n"
+    "per ticker so the dashboard\n"
+    "can surface how far past OR\n"
+    "each break has traveled.\n"
+    "None when OR not seeded;\n"
+    "float rounded to 2 decimals\n"
+    "otherwise. Existing key\n"
+    "order preserved."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.3.2 \u2014 dashboard UI:\n"
     "row-2 \"scan in Ns\" label\n"
     "replaced with \u267B recycle\n"
     "glyph \u2014 countdown reads\n"
     "\u267B Ns now. aria-label +\n"
     "title still say \"next scan\n"
-    "in Ns\" for screen readers."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "in Ns\" for screen readers.\n"
+    "\n"
     "v4.3.1 \u2014 dashboard UI:\n"
     "row-2 fits inline at 375px\n"
     "iPhone \u2014 nowrap + tighter\n"
