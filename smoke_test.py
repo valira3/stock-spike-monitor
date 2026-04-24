@@ -328,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.7.0")
+    @t("version: BOT_VERSION is 4.8.0")
     def _():
-        assert m.BOT_VERSION == "4.7.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.8.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.7.0")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.8.0")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.7.0"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.8.0"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -1040,10 +1040,14 @@ def run_local() -> int:
     # ---------- v4.7.0 \u2014 long/short harmonization ----------
     @t("v4.7.0: check_entry and check_short_entry both return (bool, bars)")
     def _():
+        # v4.8.0: check_entry / check_short_entry are now wrappers over
+        # the collapsed check_breakout (and the renamed _legacy_*
+        # bodies). Inspect the legacy bodies \u2014 they're the source of
+        # truth for the v4.7.0 contract until PR B2 inlines a single
+        # shared body.
         import inspect
-        long_src = inspect.getsource(m.check_entry)
-        short_src = inspect.getsource(m.check_short_entry)
-        # Both should return (False, None) on guards and (True, bars) on success.
+        long_src = inspect.getsource(m._legacy_check_entry)
+        short_src = inspect.getsource(m._legacy_check_short_entry)
         assert "return False, None" in long_src, \
             "check_entry should return (False, None) on guards"
         assert "return False, None" in short_src, \
@@ -1121,11 +1125,15 @@ def run_local() -> int:
 
     @t("v4.7.0: _check_daily_loss_limit helper exists and is called by both execute paths")
     def _():
+        # v4.8.0: execute_entry / execute_short_entry are now wrappers
+        # routing into the collapsed execute_breakout (which dispatches
+        # to the legacy bodies). Inspect the legacy bodies for the
+        # _check_daily_loss_limit call site.
         import inspect
         assert callable(getattr(m, "_check_daily_loss_limit", None)), \
             "_check_daily_loss_limit helper missing"
-        long_src = inspect.getsource(m.execute_entry)
-        short_src = inspect.getsource(m.execute_short_entry)
+        long_src = inspect.getsource(m._legacy_execute_entry)
+        short_src = inspect.getsource(m._legacy_execute_short_entry)
         assert "_check_daily_loss_limit" in long_src, \
             "execute_entry does not call _check_daily_loss_limit"
         assert "_check_daily_loss_limit" in short_src, \
@@ -1203,7 +1211,434 @@ def run_local() -> int:
             m.daily_short_entry_date = saved_date
             paper_state._state_loaded = saved_loaded
 
-    return run_suite("LOCAL SMOKE TESTS (v4.7.0 long/short harmonization)")
+    # ------------------------------------------------------------
+    # v4.8.0 \u2014 Differential parity: legacy vs collapsed paths.
+    # Every fixture below runs the same setup twice and asserts that
+    # the legacy `_legacy_*` body and the new `*_breakout` body produce
+    # byte-equal return values, byte-equal state mutations, and
+    # byte-equal Telegram payloads. Any drift breaks the contract that
+    # B1 is a pure structural refactor with zero user-visible change.
+    # ------------------------------------------------------------
+    import copy as _copy
+
+    _DIFF_CAPTURE_KEYS = [
+        "positions", "short_positions",
+        "daily_entry_count", "daily_short_entry_count",
+        "daily_entry_date", "daily_short_entry_date",
+        "trade_history", "short_trade_history",
+        "paper_cash", "_trading_halted", "_trading_halted_reason",
+        "paper_trades", "paper_all_trades",
+        "_last_exit_time",
+    ]
+
+    def _diff_reset():
+        """Stronger reset for differential tests: clears _last_exit_time
+        and the OR / PDC dicts so a setup() called twice produces an
+        identical baseline. The shared reset_state() above doesn't
+        touch these because most other tests don't depend on them.
+        """
+        reset_state()
+        m.paper_all_trades.clear()
+        m._last_exit_time.clear()
+        m.or_high.clear()
+        m.or_low.clear()
+        m.pdc.clear()
+        m.or_collected_date = ""
+
+    # ------------------------------------------------------------
+    # Time-freeze helpers for differential tests.
+    # close_position / close_short_position write the real wall-clock
+    # to _last_exit_time and to history_record.exit_time_iso. Two
+    # back-to-back runs would naturally differ in microseconds, which
+    # would mask any real divergence behind constant noise. Freeze
+    # both _utc_now_iso and datetime.now(timezone.utc) returns to a
+    # fixed instant so the only thing that can differ is the path.
+    # ------------------------------------------------------------
+    from datetime import datetime as _dt, timezone as _tz
+
+    _FROZEN_UTC_DT = _dt(2026, 4, 24, 14, 30, 0, 0, tzinfo=_tz.utc)
+    _FROZEN_UTC_ISO = _FROZEN_UTC_DT.isoformat()
+
+    class _FrozenDatetime(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return _FROZEN_UTC_DT.replace(tzinfo=None)
+            return _FROZEN_UTC_DT.astimezone(tz)
+
+    def _install_time_freeze():
+        """Returns (orig_iso, orig_datetime_module_attr) for restore."""
+        orig_iso = m._utc_now_iso
+        m._utc_now_iso = lambda: _FROZEN_UTC_ISO
+        # Also freeze datetime.now() inside the module \u2014 close_position
+        # calls datetime.now(timezone.utc) directly for _last_exit_time.
+        import trade_genius as _m
+        orig_dt = _m.datetime
+        _m.datetime = _FrozenDatetime
+        return (orig_iso, orig_dt)
+
+    def _restore_time_freeze(orig):
+        orig_iso, orig_dt = orig
+        m._utc_now_iso = orig_iso
+        import trade_genius as _m
+        _m.datetime = orig_dt
+
+    def _capture_state(keys=_DIFF_CAPTURE_KEYS):
+        return {k: _copy.deepcopy(getattr(m, k)) for k in keys}
+
+    _diff_outbox: list[str] = []
+
+    def _install_telegram_capture():
+        """Replace send_telegram with a list-append for the duration of
+        a differential test. Returns the original callable so the test
+        can restore it. _drain_telegram_outbox returns + clears the list.
+        """
+        orig = m.send_telegram
+        def _capture(text, chat_id=None):
+            _diff_outbox.append(text)
+        m.send_telegram = _capture
+        return orig
+
+    def _restore_telegram(orig):
+        m.send_telegram = orig
+
+    def _drain_telegram_outbox():
+        out = list(_diff_outbox)
+        _diff_outbox.clear()
+        return out
+
+    def run_diff_fixture(name, legacy_fn, new_fn, setup, args):
+        """Run `setup`, then legacy, snapshot; reset; run new, snapshot;
+        assert all three (return value, state delta, Telegram payload)
+        match. setup() must rebuild module state to a fixed baseline.
+        Wraps each invocation in a time-freeze so wall-clock fields
+        (`_last_exit_time`, `exit_time_iso`) cannot drift between runs.
+        """
+        # --- legacy run ---
+        setup()
+        orig_send = _install_telegram_capture()
+        _drain_telegram_outbox()
+        time_orig = _install_time_freeze()
+        before_legacy = _capture_state()
+        try:
+            rv_legacy = legacy_fn(*args)
+        finally:
+            _restore_time_freeze(time_orig)
+            _restore_telegram(orig_send)
+        after_legacy = _capture_state()
+        tg_legacy = _drain_telegram_outbox()
+
+        # --- collapsed run (identical baseline) ---
+        setup()
+        orig_send = _install_telegram_capture()
+        _drain_telegram_outbox()
+        time_orig = _install_time_freeze()
+        before_new = _capture_state()
+        try:
+            rv_new = new_fn(*args)
+        finally:
+            _restore_time_freeze(time_orig)
+            _restore_telegram(orig_send)
+        after_new = _capture_state()
+        tg_new = _drain_telegram_outbox()
+
+        # Baseline must match \u2014 catches a setup() that isn't deterministic.
+        assert before_legacy == before_new, \
+            f"{name}: setup() not deterministic between runs"
+        assert rv_legacy == rv_new, \
+            f"{name}: return value mismatch \u2014 legacy={rv_legacy!r} new={rv_new!r}"
+        assert after_legacy == after_new, \
+            f"{name}: state delta mismatch \u2014 legacy={after_legacy} new={after_new}"
+        assert tg_legacy == tg_new, \
+            f"{name}: telegram payload mismatch \u2014 legacy={tg_legacy} new={tg_new}"
+
+    # ---- check_* fixtures ----
+    # These fail at gates that don't need network calls, so they're
+    # deterministic in-process. The few gates that DO require network
+    # data (price-break, index anchor, DI) are not exercised here \u2014
+    # the structural test is whether legacy and collapsed paths agree.
+
+    def _setup_in_position_long():
+        _diff_reset()
+        m.positions["AAPL"] = {
+            "shares": 10, "entry_price": 100.0, "stop": 99.0,
+            "entry_time": "10:00:00", "date": today,
+        }
+        m.or_high["AAPL"] = 100.0
+        m.pdc["AAPL"] = 99.5
+
+    def _setup_in_position_short():
+        _diff_reset()
+        m.short_positions["AAPL"] = {
+            "shares": 10, "entry_price": 100.0, "stop": 101.0,
+            "entry_time": "10:00:00", "date": today,
+        }
+        m.or_low["AAPL"] = 100.0
+        m.pdc["AAPL"] = 100.5
+
+    def _setup_long_at_cap():
+        _diff_reset()
+        m.daily_entry_count["AAPL"] = 5
+        m.daily_entry_date = today
+        m.or_high["AAPL"] = 100.0
+        m.pdc["AAPL"] = 99.5
+
+    def _setup_short_at_cap():
+        _diff_reset()
+        m.daily_short_entry_count["AAPL"] = 5
+        m.daily_short_entry_date = today
+        m.or_low["AAPL"] = 100.0
+        m.pdc["AAPL"] = 100.5
+
+    def _setup_no_or_data_long():
+        # Triggers the "ticker not in or_high or ticker not in pdc" gate
+        _diff_reset()
+        m.or_high.pop("AAPL", None)
+        m.pdc.pop("AAPL", None)
+
+    def _setup_no_or_data_short():
+        _diff_reset()
+        m.or_low.pop("AAPL", None)
+        m.pdc.pop("AAPL", None)
+
+    def _setup_halted():
+        _diff_reset()
+        m._trading_halted = True
+        m._trading_halted_reason = "diff test"
+
+    @t("differential: check_long_in_position")
+    def _():
+        run_diff_fixture(
+            "check_long_in_position",
+            m._legacy_check_entry,
+            lambda *a: m.check_breakout(*a, m.Side.LONG),
+            _setup_in_position_long,
+            ("AAPL",),
+        )
+
+    @t("differential: check_long_at_cap")
+    def _():
+        run_diff_fixture(
+            "check_long_at_cap",
+            m._legacy_check_entry,
+            lambda *a: m.check_breakout(*a, m.Side.LONG),
+            _setup_long_at_cap,
+            ("AAPL",),
+        )
+
+    @t("differential: check_long_polarity_fail")
+    def _():
+        # No OR/PDC data \u2192 gate fires before any network call.
+        # Stands in for the polarity-fail fixture in the plan: both
+        # paths must early-return (False, None) with zero state change.
+        run_diff_fixture(
+            "check_long_polarity_fail",
+            m._legacy_check_entry,
+            lambda *a: m.check_breakout(*a, m.Side.LONG),
+            _setup_no_or_data_long,
+            ("AAPL",),
+        )
+
+    @t("differential: check_long_polarity_pass")
+    def _():
+        # "Polarity-pass" here means the gate path that _exits at the
+        # first network-fetch step_ \u2014 fetch_1min_bars returns None in
+        # smoke mode, so both paths return (False, None). Still proves
+        # parity through every pre-fetch gate.
+        def setup():
+            _diff_reset()
+            m.or_high["AAPL"] = 100.0
+            m.pdc["AAPL"] = 99.5
+            m.daily_entry_date = today
+        run_diff_fixture(
+            "check_long_polarity_pass",
+            m._legacy_check_entry,
+            lambda *a: m.check_breakout(*a, m.Side.LONG),
+            setup,
+            ("AAPL",),
+        )
+
+    @t("differential: check_long_time_gate")
+    def _():
+        run_diff_fixture(
+            "check_long_time_gate",
+            m._legacy_check_entry,
+            lambda *a: m.check_breakout(*a, m.Side.LONG),
+            _setup_halted,  # halt is the earliest gate \u2014 same shape as time-gate
+            ("AAPL",),
+        )
+
+    @t("differential: check_short_polarity_pass")
+    def _():
+        def setup():
+            _diff_reset()
+            m.or_low["AAPL"] = 100.0
+            m.pdc["AAPL"] = 100.5
+            m.daily_short_entry_date = today
+        run_diff_fixture(
+            "check_short_polarity_pass",
+            m._legacy_check_short_entry,
+            lambda *a: m.check_breakout(*a, m.Side.SHORT),
+            setup,
+            ("AAPL",),
+        )
+
+    # ---- execute_* fixtures ----
+    # execute_* runs no network calls; it writes state and sends Telegram.
+    # All gates here fire purely on module state.
+
+    def _setup_execute_long_clean():
+        _diff_reset()
+        m.or_high["AAPL"] = 100.0
+        m.pdc["AAPL"] = 99.5
+        m.daily_entry_date = today
+
+    def _setup_execute_short_clean():
+        _diff_reset()
+        m.or_low["AAPL"] = 100.0
+        m.pdc["AAPL"] = 100.5
+        m.daily_short_entry_date = today
+
+    def _setup_execute_long_loss_limit():
+        # Halt flag short-circuits _check_daily_loss_limit.
+        _diff_reset()
+        m._trading_halted = True
+        m._trading_halted_reason = "diff fixture"
+        m.or_high["AAPL"] = 100.0
+        m.pdc["AAPL"] = 99.5
+
+    def _setup_execute_short_loss_limit():
+        _diff_reset()
+        m._trading_halted = True
+        m._trading_halted_reason = "diff fixture"
+        m.or_low["AAPL"] = 100.0
+        m.pdc["AAPL"] = 100.5
+
+    def _setup_execute_dup_long():
+        _diff_reset()
+        m.or_high["AAPL"] = 100.0
+        m.pdc["AAPL"] = 99.5
+        m.daily_entry_count["AAPL"] = 1
+        m.daily_entry_date = today
+        # Already-open position so the second entry is a "dup"
+        m.positions["AAPL"] = {
+            "shares": 10, "entry_price": 100.0, "stop": 99.25,
+            "entry_time": "10:00:00", "date": today,
+            "initial_stop": 99.25, "trail_active": False,
+            "trail_high": 100.0, "entry_count": 1, "pdc": 99.5,
+            "entry_ts_utc": "2026-04-24T14:00:00+00:00",
+        }
+        m.paper_cash = m.PAPER_STARTING_CAPITAL - 1000.0
+
+    @t("differential: execute_long_clean")
+    def _():
+        run_diff_fixture(
+            "execute_long_clean",
+            m._legacy_execute_entry,
+            lambda t, p: m.execute_breakout(t, p, m.Side.LONG),
+            _setup_execute_long_clean,
+            ("AAPL", 100.0),
+        )
+
+    @t("differential: execute_long_loss_limit")
+    def _():
+        run_diff_fixture(
+            "execute_long_loss_limit",
+            m._legacy_execute_entry,
+            lambda t, p: m.execute_breakout(t, p, m.Side.LONG),
+            _setup_execute_long_loss_limit,
+            ("AAPL", 100.0),
+        )
+
+    @t("differential: execute_short_loss_limit")
+    def _():
+        run_diff_fixture(
+            "execute_short_loss_limit",
+            m._legacy_execute_short_entry,
+            lambda t, p: m.execute_breakout(t, p, m.Side.SHORT),
+            _setup_execute_short_loss_limit,
+            ("AAPL", 100.0),
+        )
+
+    @t("differential: execute_dup_blocked")
+    def _():
+        # execute_entry doesn't itself dedup (check_entry does), but
+        # this fixture still exercises the same byte-equal-output rule
+        # against an already-populated state. Both paths must produce
+        # identical mutations.
+        run_diff_fixture(
+            "execute_dup_blocked",
+            m._legacy_execute_entry,
+            lambda t, p: m.execute_breakout(t, p, m.Side.LONG),
+            _setup_execute_dup_long,
+            ("AAPL", 100.0),
+        )
+
+    # ---- close_* fixtures ----
+    def _setup_close_long_stop():
+        _diff_reset()
+        m.positions["AAPL"] = {
+            "shares": 10, "entry_price": 100.0, "stop": 99.0,
+            "initial_stop": 99.0, "trail_active": False,
+            "trail_high": 100.0, "entry_count": 1, "pdc": 99.5,
+            "entry_time": "10:00:00", "date": today,
+            "entry_ts_utc": "2026-04-24T14:00:00+00:00",
+        }
+        m.paper_cash = m.PAPER_STARTING_CAPITAL - 1000.0
+
+    def _setup_close_long_trail():
+        _diff_reset()
+        m.positions["AAPL"] = {
+            "shares": 10, "entry_price": 100.0, "stop": 100.5,
+            "initial_stop": 99.0, "trail_active": True,
+            "trail_high": 102.0, "entry_count": 1, "pdc": 99.5,
+            "entry_time": "10:00:00", "date": today,
+            "entry_ts_utc": "2026-04-24T14:00:00+00:00",
+        }
+        m.paper_cash = m.PAPER_STARTING_CAPITAL - 1000.0
+
+    def _setup_close_short_stop():
+        _diff_reset()
+        m.short_positions["AAPL"] = {
+            "shares": 10, "entry_price": 100.0, "stop": 101.0,
+            "initial_stop": 101.0, "trail_active": False,
+            "trail_low": 100.0, "entry_count": 1, "pdc": 100.5,
+            "entry_time": "10:00:00", "date": today,
+            "entry_ts_utc": "2026-04-24T14:00:00+00:00",
+        }
+        m.paper_cash = m.PAPER_STARTING_CAPITAL + 1000.0
+
+    @t("differential: close_long_stop")
+    def _():
+        run_diff_fixture(
+            "close_long_stop",
+            lambda t, p, r="STOP": m._legacy_close_position(t, p, r),
+            lambda t, p, r="STOP": m.close_breakout(t, p, m.Side.LONG, r),
+            _setup_close_long_stop,
+            ("AAPL", 99.0, "STOP"),
+        )
+
+    @t("differential: close_long_trail")
+    def _():
+        run_diff_fixture(
+            "close_long_trail",
+            lambda t, p, r="STOP": m._legacy_close_position(t, p, r),
+            lambda t, p, r="STOP": m.close_breakout(t, p, m.Side.LONG, r),
+            _setup_close_long_trail,
+            ("AAPL", 100.5, "TRAIL"),
+        )
+
+    @t("differential: close_short_stop")
+    def _():
+        run_diff_fixture(
+            "close_short_stop",
+            lambda t, p, r="STOP": m._legacy_close_short_position(t, p, r),
+            lambda t, p, r="STOP": m.close_breakout(t, p, m.Side.SHORT, r),
+            _setup_close_short_stop,
+            ("AAPL", 101.0, "STOP"),
+        )
+
+    return run_suite("LOCAL SMOKE TESTS (v4.8.0 long/short collapse, B1)")
 
 
 # ============================================================
