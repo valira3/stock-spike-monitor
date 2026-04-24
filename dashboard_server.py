@@ -843,7 +843,12 @@ async def h_login(request):
                 status=403, content_type="text/plain",
             )
     data = await request.post()
-    pw = (data.get("password") or "").strip()
+    # v4.0.8 \u2014 coerce to str before strip(). A multipart POST smuggling
+    # `password` as a file part returns a FileField here, and .strip()
+    # on that raises AttributeError \u2014 which would have surfaced as a
+    # 500 instead of a clean 401.
+    raw_pw = data.get("password")
+    pw = "" if raw_pw is None else str(raw_pw).strip()
     if not pw or not hmac.compare_digest(pw, _PW):
         return web.Response(text=_login_page("Invalid password"),
                             content_type="text/html", status=401)
@@ -1326,9 +1331,12 @@ async def h_trade_log(request):
         limit = 5000
     since = request.query.get("since") or None
     portfolio = request.query.get("portfolio") or None
-    if portfolio and portfolio not in ("paper", "tp"):
+    # v4.0.8 \u2014 TP surfaces were deleted in v3.5.0. Reject the stale
+    # filter value with 400 instead of passing it through to the reader
+    # (where behavior is undefined / format-dependent).
+    if portfolio and portfolio not in ("paper",):
         return web.json_response(
-            {"ok": False, "error": "portfolio must be 'paper' or 'tp'"},
+            {"ok": False, "error": "portfolio must be 'paper' (tp removed in v3.5.0)"},
             status=400,
         )
     # Resolve live bot module without re-executing the entry point.

@@ -1269,11 +1269,30 @@
     if (!entries || !entries.length) return;
     const box = $("log");
     const stickBottom = (box.scrollTop + box.clientHeight + 8 >= box.scrollHeight);
+    // v4.0.8 \u2014 render from structured fields instead of slicing
+    // `msg` at fixed offsets. The old slice assumed every message began
+    // with an 8-char time prefix + space, which fell apart for short
+    // messages or if the log formatter ever changed.
     const html = entries.map((e) => {
       const cls = e.level === "ERROR" ? "err"
                 : e.level === "WARNING" ? "warn"
                 : e.level === "INFO" ? "info" : "t";
-      return `<div><span class="t">${escapeHtml(e.msg.slice(0, 8))}</span> <span class="${cls}">${escapeHtml(e.level.slice(0,4))}</span> ${escapeHtml(e.msg.slice(9))}</div>`;
+      const lvl = (e.level || "").slice(0, 4);
+      let ts = "";
+      if (typeof e.ts === "number" && isFinite(e.ts)) {
+        const d = new Date(e.ts * 1000);
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        const ss = String(d.getSeconds()).padStart(2, "0");
+        ts = `${hh}:${mm}:${ss}`;
+      }
+      // The server-side formatter still prepends `HH:MM:SS LEVEL name: `
+      // to the stored msg. Strip the duplicated "HH:MM:SS LEVELNAME logger: "
+      // prefix if present so the rendered row doesn't show the time twice.
+      let body = e.msg || "";
+      const prefMatch = body.match(/^\d{2}:\d{2}:\d{2}\s+\S+\s+\S+?:\s*/);
+      if (prefMatch) body = body.slice(prefMatch[0].length);
+      return `<div><span class="t">${escapeHtml(ts)}</span> <span class="${cls}">${escapeHtml(lvl)}</span> ${escapeHtml(body)}</div>`;
     }).join("");
     box.insertAdjacentHTML("beforeend", html);
     // trim old lines
@@ -1288,6 +1307,7 @@
   let streamConn = null;
   let pollTimer = null;
   let streamTickTimer = null;
+  let streamReconnectTimer = null;
   let lastDataAt = 0;
 
   function setConn(state) {
@@ -1348,13 +1368,22 @@
       setConn("polling");
       stopStream();
       startPolling();
-      // try to re-open SSE after a delay
-      setTimeout(startStream, 15000);
+      // try to re-open SSE after a delay (guard against multiple scheduled
+      // reconnects \u2014 the 3s stale-data watchdog can fire back-to-back
+      // and queue up duplicates otherwise).
+      scheduleStreamReconnect(15000);
     };
   }
   function stopStream() {
     if (streamConn) { try { streamConn.close(); } catch (e) {} streamConn = null; }
     if (streamTickTimer) { clearInterval(streamTickTimer); streamTickTimer = null; }
+  }
+  function scheduleStreamReconnect(delay) {
+    if (streamReconnectTimer) return;
+    streamReconnectTimer = setTimeout(() => {
+      streamReconnectTimer = null;
+      startStream();
+    }, delay);
   }
 
   async function pollOnce() {
@@ -1377,16 +1406,18 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
   function scheduleReconnect() {
-    setTimeout(startStream, 4000);
+    scheduleStreamReconnect(4000);
   }
 
-  // stale-data watchdog: if no data in 10s, drop to polling
+  // stale-data watchdog: if no data in 10s, drop to polling.
+  // Uses scheduleStreamReconnect so back-to-back watchdog ticks
+  // can't queue multiple reconnect setTimeouts.
   setInterval(() => {
     if (lastDataAt && (Date.now() - lastDataAt) > 10000 && streamConn) {
       setConn("polling");
       stopStream();
       startPolling();
-      setTimeout(startStream, 15000);
+      scheduleStreamReconnect(15000);
     }
   }, 3000);
 
