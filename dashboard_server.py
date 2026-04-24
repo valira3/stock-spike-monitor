@@ -785,6 +785,33 @@ async def h_login(request):
             status=429, content_type="text/plain",
             headers={"Retry-After": str(_LOGIN_WINDOW_SEC)},
         )
+    # Login-CSRF / session-fixation hardening: require Origin (or Referer)
+    # to match the Host the request came in on. samesite="Lax" on its own
+    # still permits top-level form POSTs from foreign origins. Without
+    # this check, an off-site form could pin a victim's browser to a
+    # password the attacker knows.
+    host = (request.headers.get("Host") or "").strip().lower()
+    origin = (request.headers.get("Origin") or "").strip()
+    referer = (request.headers.get("Referer") or "").strip()
+    if host:
+        def _host_of(url):
+            if not url:
+                return ""
+            try:
+                from urllib.parse import urlparse
+                return (urlparse(url).netloc or "").lower()
+            except Exception:
+                return ""
+        src_host = _host_of(origin) or _host_of(referer)
+        if src_host and src_host != host:
+            logger.warning(
+                "dashboard /login cross-origin POST rejected host=%s src=%s ip=%s",
+                host, src_host, ip,
+            )
+            return web.Response(
+                text="Cross-origin login request rejected.",
+                status=403, content_type="text/plain",
+            )
     data = await request.post()
     pw = (data.get("password") or "").strip()
     if not pw or not hmac.compare_digest(pw, _PW):
@@ -797,7 +824,7 @@ async def h_login(request):
     resp.set_cookie(
         SESSION_COOKIE, token,
         max_age=SESSION_DAYS * 24 * 3600,
-        httponly=True, samesite="Lax", secure=True,
+        httponly=True, samesite="Strict", secure=True,
     )
     return resp
 
@@ -973,17 +1000,26 @@ def _executor_snapshot(name: str) -> dict:
             from alpaca.trading.requests import GetOrdersRequest
             from alpaca.trading.enums import QueryOrderStatus
             m = _ssm()
-            try:
-                today_et = m._now_et().strftime("%Y-%m-%d")
-            except Exception:
-                from datetime import datetime as _dt, timezone as _tz
-                today_et = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+            # Build the `after` filter from real ET midnight, not UTC
+            # midnight of the ET date string. Between 00:00-05:00 ET the
+            # ET date and UTC date differ, so the prior naive build
+            # dropped today's trades for the first few hours of the day.
             after_dt = None
+            et_tz = None
             try:
-                from datetime import datetime as _dt2, timezone as _tz2
-                after_dt = _dt2.strptime(today_et, "%Y-%m-%d").replace(tzinfo=_tz2.utc)
+                from datetime import datetime as _dt, timezone as _tz, time as _tm
+                now_et = m._now_et()
+                et_tz = now_et.tzinfo
+                et_midnight = _dt.combine(now_et.date(), _tm(0, 0), tzinfo=et_tz)
+                after_dt = et_midnight.astimezone(_tz.utc)
+                today_et = now_et.strftime("%Y-%m-%d")
             except Exception:
-                after_dt = None
+                from datetime import datetime as _dt2, timezone as _tz2
+                today_et = _dt2.now(_tz2.utc).strftime("%Y-%m-%d")
+                try:
+                    after_dt = _dt2.strptime(today_et, "%Y-%m-%d").replace(tzinfo=_tz2.utc)
+                except Exception:
+                    after_dt = None
             try:
                 req = GetOrdersRequest(
                     status=QueryOrderStatus.CLOSED, limit=500,
@@ -998,14 +1034,25 @@ def _executor_snapshot(name: str) -> dict:
                     filled_at = getattr(o, "filled_at", None)
                     if filled_at is None:
                         continue
+                    # Alpaca returns tz-aware UTC timestamps. Convert to
+                    # the ET day for comparison with `today_et` so orders
+                    # filled after 20:00 ET aren't shunted to "tomorrow"
+                    # and orders filled 00:00-05:00 ET aren't dropped as
+                    # "yesterday".
                     try:
-                        fdate = filled_at.strftime("%Y-%m-%d")
-                        ftime = filled_at.strftime("%H:%M")
-                        fiso = filled_at.isoformat()
+                        fa_et = filled_at.astimezone(et_tz) if (et_tz is not None and hasattr(filled_at, "astimezone")) else filled_at
+                        fdate = fa_et.strftime("%Y-%m-%d")
+                        ftime = fa_et.strftime("%H:%M")
+                        fiso = fa_et.isoformat()
                     except Exception:
-                        fdate = str(filled_at)[:10]
-                        ftime = str(filled_at)[11:16]
-                        fiso = str(filled_at)
+                        try:
+                            fdate = filled_at.strftime("%Y-%m-%d")
+                            ftime = filled_at.strftime("%H:%M")
+                            fiso = filled_at.isoformat()
+                        except Exception:
+                            fdate = str(filled_at)[:10]
+                            ftime = str(filled_at)[11:16]
+                            fiso = str(filled_at)
                     if fdate != today_et:
                         continue
                     side_raw = getattr(getattr(o, "side", None), "value", "") or ""

@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.4"
+BOT_VERSION = "4.0.5"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,16 +69,18 @@ BOT_VERSION = "4.0.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.4 \u2014 leaving beta + UI:\n"
-    "\u2022 Drop -beta moniker\n"
-    "  (4.0.3-beta \u2192 4.0.4)\n"
-    "\u2022 Header consolidated:\n"
-    "  LIVE pill + scan timer\n"
-    "  on brand row; Paper pill\n"
-    "  and \"connected\" removed\n"
-    "\u2022 \"next scan\" \u2192 \"scan in\"\n"
-    "\u2022 Val KPIs mirror Main;\n"
-    "  Regime shared across tabs"
+    "v4.0.5 \u2014 audit crit fix:\n"
+    "\u2022 halt gate: KeyError +\n"
+    "  10-share fallback (was\n"
+    "  under-counting loss)\n"
+    "\u2022 signal bus: idempotent\n"
+    "  register (no double orders\n"
+    "  on executor re-start)\n"
+    "\u2022 /api/executor trades:\n"
+    "  ET-day filter (was UTC,\n"
+    "  dropped 00:00-05:00 ET)\n"
+    "\u2022 /login: Origin check +\n"
+    "  samesite=Strict"
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -208,7 +210,19 @@ _signal_listeners: list = []
 
 
 def register_signal_listener(fn):
-    """Subscribe a callable fn(event: dict) -> None to the signal bus."""
+    """Subscribe a callable fn(event: dict) -> None to the signal bus.
+
+    Idempotent: re-registering the same callable is a no-op. Prevents
+    double-execution of ENTRY/EXIT against Alpaca when an executor's
+    ``start()`` is called more than once (e.g. supervisor re-spawn, a
+    module reload during hot-patching, or a paranoid init-retry path).
+    """
+    if fn in _signal_listeners:
+        logger.info(
+            "signal_bus: listener already registered, skipping (%s) total=%d",
+            getattr(fn, "__qualname__", repr(fn)), len(_signal_listeners),
+        )
+        return
     _signal_listeners.append(fn)
     logger.info(
         "signal_bus: listener registered (%s) total=%d",
@@ -4165,13 +4179,13 @@ def execute_entry(ticker, current_price):
         return
 
     today_pnl = sum(
-        t["pnl"] for t in paper_trades
+        (t.get("pnl") or 0) for t in paper_trades
         if t.get("date") == today_str and t.get("action") == "SELL"
     )
-    # Include closed short P&L in daily loss check
+    # Include closed short P&L in daily loss check (COVER closes the short).
     today_pnl += sum(
-        t["pnl"] for t in short_trade_history
-        if t.get("date") == today_str
+        (t.get("pnl") or 0) for t in short_trade_history
+        if t.get("date") == today_str and t.get("action") == "COVER"
     )
 
     # Add unrealized P&L from open long positions
@@ -4179,14 +4193,14 @@ def execute_entry(ticker, current_price):
         fmp = get_fmp_quote(pos_ticker)
         live_px = fmp.get("price", 0) if fmp else 0
         if live_px > 0:
-            today_pnl += (live_px - pos["entry_price"]) * pos.get("shares", 10)
+            today_pnl += (live_px - pos["entry_price"]) * (pos.get("shares") or 0)
 
     # Add unrealized P&L from open short positions
     for pos_ticker, pos in list(short_positions.items()):
         fmp = get_fmp_quote(pos_ticker)
         live_px = fmp.get("price", 0) if fmp else 0
         if live_px > 0:
-            today_pnl += (pos["entry_price"] - live_px) * pos.get("shares", 10)
+            today_pnl += (pos["entry_price"] - live_px) * (pos.get("shares") or 0)
 
     logger.info("Daily P&L check: $%.2f (limit $%.2f)", today_pnl, DAILY_LOSS_LIMIT)
     if today_pnl <= DAILY_LOSS_LIMIT:

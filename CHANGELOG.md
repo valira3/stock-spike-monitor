@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.5 — Audit batch 1: CRITICAL fixes (halt gate, signal bus, dashboard TZ, login CSRF) (2026-04-24)
+
+First batch of a full-codebase audit pass. All items here are CRITICAL — money / safety / auth — and each edit is the smallest change that removes the bug. Trading/signal logic is **unchanged**.
+
+**Fixed:**
+- **Daily-loss halt gate (`trade_genius.py:check_entry` P&L aggregation)** — `today_pnl = sum(t["pnl"] ...)` raised `KeyError` on any closed trade missing the `pnl` key, aborting the halt gate for that scan tick (the daily-loss ceiling was effectively bypassed on malformed rows). Now uses `t.get("pnl") or 0`. The `short_trade_history` aggregation was also missing the symmetric `action == "COVER"` filter that the long branch had — closed shorts from prior sessions could be double-counted when they leaked into the day's list. Unrealized-P&L branches used `pos.get("shares", 10)` which silently substituted a 10-share fallback for dollar-sized positions, under-counting realized losses by ~10× on the slice of the book that's sized by dollar exposure. Now `pos.get("shares") or 0`. Net effect: halt gate triggers when it's supposed to, not several scans late.
+- **Signal-bus listener idempotency (`register_signal_listener`)** — the listener list had no dedup, no lock, and no unregister path. Any secondary `executor.start()` (future supervisor re-spawn, retry path, hot-patch) registered the same callable N times, firing N Alpaca orders per ENTRY / EXIT event. Now a re-registration of an already-subscribed callable is a no-op that logs `signal_bus: listener already registered, skipping`.
+- **`/api/executor/<name>` today's trades (`dashboard_server._executor_snapshot` trades block)** — the Alpaca `after` filter was `datetime.strptime(today_et, "%Y-%m-%d").replace(tzinfo=utc)`, i.e. the ET date string reparsed as UTC. Between 00:00–05:00 ET the ET date and UTC date differ, so today's fills were invisible on the dashboard for the first few hours of the day. The downstream `fdate != today_et` comparison used `filled_at`'s raw UTC date too, so fills after 20:00 ET were attributed to "tomorrow" and dropped. Both sides now use a real ET midnight (`datetime.combine(now_et.date(), time(0,0), tzinfo=et_tz).astimezone(utc)` for the API filter, and `filled_at.astimezone(et_tz).strftime("%Y-%m-%d")` for the day comparison).
+- **`/login` CSRF hardening (`dashboard_server.h_login`)** — session cookie was `samesite="Lax"`, which still permits top-level form POSTs from foreign origins, and there was no `Origin` / `Referer` check. A login-CSRF or session-fixation attacker could pin a victim's browser to a password the attacker controls by getting them to submit a cross-site form. `/login` now rejects POSTs whose `Origin` or `Referer` host does not match the request `Host`; empty both (e.g. `requests.Session().post` from the CI smoke runner, which sends neither header) is still accepted, so CI is unaffected. Session cookie raised from `samesite="Lax"` to `samesite="Strict"`.
+
+**Changed:**
+- `BOT_VERSION` bumped `4.0.4` → `4.0.5`. `CURRENT_MAIN_NOTE` rewritten; lines ≤ 34 chars.
+
+**Validation:**
+- `ast.parse` clean on `trade_genius.py` and `dashboard_server.py`.
+- `smoke_test.py --local` passes (version assertions re-targeted to `4.0.5`).
+- Smoke-test prod `/login` flow unchanged (no Origin / Referer headers → allowed).
+
+**Breaking:** None. No trading-logic changes. Dashboard and Telegram surfaces unchanged except for the corrected numbers they now show.
+
+---
+
 ## v4.0.4 — Leaving beta + header consolidation + Val KPI sync (2026-04-24)
 
 Drops the `-beta` moniker after four betas' worth of stability fixes (OR seed, DI seed, gate/scanner repairs, dashboard tab parity) and ships a round of UI cleanup that had been accumulating.
