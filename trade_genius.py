@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.3.4"
+BOT_VERSION = "4.4.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,18 +70,23 @@ BOT_VERSION = "4.3.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.3.4 \u2014 dashboard UI:\n"
-    "row-2 refresh countdown\n"
-    "zero-pads the seconds so\n"
-    "\u267B 05s / \u267B 13s / \u267B 59s\n"
-    "all keep the same width.\n"
-    "#h-tick also pins tabular-\n"
-    "nums so proportional digits\n"
-    "can't shift the row either."
+    "v4.4.0 \u2014 security:\n"
+    "all bot commands + /reset\n"
+    "callbacks require user_id in\n"
+    "TRADEGENIUS_OWNER_IDS. The\n"
+    "chat-based authorization\n"
+    "fallback is removed. CHAT_ID\n"
+    "kept for routing only."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.3.4 \u2014 dashboard UI:\n"
+    "row-2 refresh countdown\n"
+    "zero-pads seconds; #h-tick\n"
+    "pins tabular-nums so digit\n"
+    "widths stay stable.\n"
+    "\n"
     "v4.3.3 \u2014 dashboard API:\n"
     "/api/state gates.per_ticker\n"
     "now serializes extension_pct\n"
@@ -8219,30 +8224,28 @@ RESET_CONFIRM_WINDOW_SEC = 60
 def _reset_authorized(query, context=None) -> tuple:
     """Gatekeeper for /reset callbacks.
 
-    v3.5.0: paper-only single-bot. Returns (allowed: bool, reason: str).
+    v4.4.0: chat-based fallback removed \u2014 owner user_id required
+    regardless of chat context. Returns (allowed: bool, reason: str).
     Checks:
-      1. Owner check — the chat is one of the configured owner chats,
-         OR the tapping user id is in TRADEGENIUS_OWNER_IDS. The user-id
-         path lets the owner /reset from a direct message when CHAT_ID
-         is a group.
-      2. Freshness check — confirm callbacks carry ':<unix_ts>' suffix
+      1. Owner check \u2014 tapping user's id MUST be in TRADEGENIUS_OWNER_IDS.
+         If user_id cannot be determined (channel post, edited message
+         with no sender) the callback is denied.
+      2. Freshness check \u2014 confirm callbacks carry ':<unix_ts>' suffix
          and must be within RESET_CONFIRM_WINDOW_SEC. Prevents stale
          replays.
     """
     data = query.data or ""
-    chat_id_str = str(query.message.chat_id)
     try:
         user_id_str = str(query.from_user.id) if query.from_user else ""
     except Exception:
         user_id_str = ""
 
-    # (1) Owner check
-    owner_ids = {str(CHAT_ID or "")}
-    owner_ids.discard("")
-    is_owner_chat = chat_id_str in owner_ids or user_id_str in owner_ids
+    # (1) Owner check \u2014 user_id in TRADEGENIUS_OWNER_IDS is the ONLY gate.
+    if not user_id_str:
+        return (False, "no user_id")
     is_owner_user = user_id_str in TRADEGENIUS_OWNER_IDS
-    if not (is_owner_chat or is_owner_user):
-        return (False, "unauthorized chat")
+    if not is_owner_user:
+        return (False, "unauthorized user")
 
     # (2) Freshness check — confirm callbacks carry ':<unix_ts>' suffix.
     if "_confirm" in data and ":" in data:
@@ -8303,9 +8306,8 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline keyboard taps for /reset confirmation.
 
     Confirm callbacks carry a ':<ts>' suffix. _reset_authorized() enforces
-    chat-ownership, bot/action match, and freshness. The 'reset_*'
-    (non-confirm) and 'reset_cancel' variants carry no state change and
-    only need the owner check.
+    owner user_id match and freshness (v4.4.0: chat-based fallback
+    removed \u2014 owner user_id required regardless of chat context).
     """
     query = update.callback_query
     await query.answer()
@@ -8313,29 +8315,27 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     allowed, reason = _reset_authorized(query, context)
     if not allowed:
-        # v3.4.42 surface chat/user ids and configured owner env vars
-        # directly in the Telegram message so the owner can diagnose
-        # auth mismatches without Railway logs.
+        # v4.4.0 surface user id + owner env var in the Telegram message
+        # so the owner can diagnose auth mismatches without Railway logs.
+        # CHAT_ID is no longer printed as an auth input \u2014 it's routing only.
         try:
             _user = query.from_user.id if query.from_user else "?"
         except Exception:
             _user = "?"
         logger.warning(
-            "reset_callback blocked: data=%s chat_id=%s user_id=%s reason=%s CHAT_ID=%r",
-            query.data, query.message.chat_id, _user, reason, CHAT_ID,
+            "reset_callback blocked: data=%s chat_id=%s user_id=%s reason=%s",
+            query.data, query.message.chat_id, _user, reason,
         )
         owner_users_fmt = ",".join(sorted(TRADEGENIUS_OWNER_IDS)) or "(unset)"
         diag = (
             "\u274c Reset blocked: %s.\n"
             "chat_id: %s\n"
             "user_id: %s\n"
-            "allowed paper: %s\n"
             "owner users: %s"
         ) % (
             reason,
             query.message.chat_id,
             _user,
-            CHAT_ID or "(unset)",
             owner_users_fmt,
         )
         await query.edit_message_text(diag)

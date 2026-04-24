@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.4.0 (2026-04-24) — security: all bot commands and reset callbacks now require user_id in TRADEGENIUS_OWNER_IDS; chat-based authorization fallback removed. CHAT_ID retained for outbound routing only.
+
+The `/reset` callback gate (`_reset_authorized` in `trade_genius.py`) previously authorized any tap whose `chat_id` matched the configured `CHAT_ID` — meaning any member of the configured Telegram group chat could click Confirm on a reset button, even if their user_id was not in `TRADEGENIUS_OWNER_IDS`. The main-bot command gate (`_auth_guard`) and the Val/Gene sub-bot command gate (`TradeGeniusBase._auth_guard`) were already user-id-only; this release brings the reset-callback surface into line.
+
+**Changed:**
+
+- **`_reset_authorized`** in `trade_genius.py` no longer consults `chat_id` at all. The single gate is `user_id_str in TRADEGENIUS_OWNER_IDS`. If `query.from_user` is absent (channel posts, edited messages with no sender), the callback is denied with reason `no user_id`.
+- **`reset_callback`** docstring and blocked-diagnostics message updated: the "allowed paper: <CHAT_ID>" line is removed (CHAT_ID is no longer an auth input and printing it as one was misleading). The log line no longer includes `CHAT_ID=%r` for the same reason.
+- **Audit:** `CHAT_ID` and per-bot `TELEGRAM_CHAT_ID` in `trade_genius.py` are confirmed to be used only for outbound routing (`send_telegram`, `TradeGeniusBase._send_own_telegram`). `dashboard_server.py` does not reference `CHAT_ID` at all. No other auth path reads a chat id as an authorization signal.
+- **Sub-bot verification:** `TradeGeniusVal` and `TradeGeniusGene` inherit `self.owner_ids = set(TRADEGENIUS_OWNER_IDS)` from `TradeGeniusBase.__init__`. No subclass override, no auth-relaxation path — confirmed by grep for `owner_ids`, `is_authorized`, `authorized_users`.
+
+**Added — smoke tests (`smoke_test.py`):**
+
+- `reset: v4.4.0 rejects non-owner user even when chat_id == CHAT_ID` — locks in that the pre-v4.4.0 bypass is gone.
+- `reset: accepts fresh confirm from owner user_id (any chat)` — arbitrary chat, owner user_id → allowed.
+- `reset: blocks unauthorized user from arbitrary chat`, `reset: v4.4.0 denies when user_id cannot be determined`, `reset: blocks stale confirm (>60s old) even for owner` — cover the freshness/missing-user-id edges under the new gate.
+- `auth: sub-bot _auth_guard drops non-owner user` / `auth: sub-bot _auth_guard passes owner through` — confirms Val/Gene inherited guard behavior.
+
+**Operational notes:**
+
+- `TRADEGENIUS_OWNER_IDS=5165570192,167005578` (Val, Gene) on Railway is unchanged. The code hardening is the whole of this change.
+- `CHAT_ID` env var is still required for outbound notifications; removing it would stop messages from going anywhere. It just no longer grants authority.
+
+---
+
 ## v4.3.4 — Dashboard UI: zero-pad refresh countdown + pin `tabular-nums` on `#h-tick` (2026-04-24)
 
 Row 2's refresh countdown (the `♻ Ns` chip next to the LIVE pill, introduced in v4.3.2) was rendering the seconds without zero-padding, so the chip width visibly shifted when the counter crossed the 10s boundary (`♻ 5s` → `♻ 13s`). v4.3.4 zero-pads the seconds to two digits and pins `font-variant-numeric: tabular-nums` on `#h-tick` so digit widths can't drift either way.
