@@ -171,39 +171,110 @@ def run_local() -> int:
         assert abs(m.paper_cash - 12345.67) < 0.01
         assert "XYZ" in m.positions
 
-    # ---------- _reset_authorized ----------
-    @t("reset: accepts fresh confirm from owner")
+    # ---------- _reset_authorized (v4.4.0: owner user_id only) ----------
+    # Pick any owner id from the module's authoritative set so these
+    # tests track whatever TRADEGENIUS_OWNER_IDS is configured to.
+    owner_uid = next(iter(m.TRADEGENIUS_OWNER_IDS))
+    non_owner_uid = "12345"  # not in owner set
+    assert non_owner_uid not in m.TRADEGENIUS_OWNER_IDS
+
+    @t("reset: accepts fresh confirm from owner user_id (any chat)")
     def _():
+        class Q:
+            data = f"reset_paper_confirm:{int(time.time())}"
+            class message:
+                # arbitrary chat \u2014 auth must not depend on chat_id
+                chat_id = 424242
+            class from_user:
+                id = int(owner_uid)
+        ok, reason = m._reset_authorized(Q())
+        assert ok, f"expected allowed, reason={reason}"
+
+    @t("reset: v4.4.0 rejects non-owner user even when chat_id == CHAT_ID")
+    def _():
+        # Pre-v4.4.0 bypass: non-owner user in the configured CHAT_ID
+        # group could tap Confirm. Must now be REJECTED.
         class Q:
             data = f"reset_paper_confirm:{int(time.time())}"
             class message:
                 chat_id = int(os.environ["CHAT_ID"])
             class from_user:
-                id = int(os.environ["CHAT_ID"])
+                id = int(non_owner_uid)
         ok, reason = m._reset_authorized(Q())
-        assert ok, f"expected allowed, reason={reason}"
+        assert not ok, "non-owner in CHAT_ID group must be rejected post-v4.4.0"
+        assert "unauthorized" in reason, f"unexpected reason={reason}"
 
-    @t("reset: blocks unauthorized chat")
+    @t("reset: blocks unauthorized user from arbitrary chat")
     def _():
         class Q:
             data = f"reset_paper_confirm:{int(time.time())}"
             class message:
                 chat_id = 12345
             class from_user:
-                id = 12345
+                id = int(non_owner_uid)
         ok, reason = m._reset_authorized(Q())
         assert not ok and "unauthorized" in reason
 
-    @t("reset: blocks stale confirm (>60s old)")
+    @t("reset: v4.4.0 denies when user_id cannot be determined")
+    def _():
+        class Q:
+            data = f"reset_paper_confirm:{int(time.time())}"
+            class message:
+                chat_id = int(os.environ["CHAT_ID"])
+            from_user = None
+        ok, reason = m._reset_authorized(Q())
+        assert not ok and "no user_id" in reason
+
+    @t("reset: blocks stale confirm (>60s old) even for owner")
     def _():
         class Q:
             data = f"reset_paper_confirm:{int(time.time()) - 1000}"
             class message:
                 chat_id = int(os.environ["CHAT_ID"])
             class from_user:
-                id = int(os.environ["CHAT_ID"])
+                id = int(owner_uid)
         ok, reason = m._reset_authorized(Q())
         assert not ok and "expired" in reason
+
+    # ---------- v4.4.0 sub-bot (Val/Gene) auth ----------
+    @t("auth: sub-bot _auth_guard drops non-owner user")
+    def _():
+        import asyncio
+        from telegram.ext import ApplicationHandlerStop
+
+        class _Base(m.TradeGeniusBase):
+            NAME = "SmokeSub"
+            mode = "paper"
+            def __init__(self_inner):
+                self_inner.owner_ids = set(m.TRADEGENIUS_OWNER_IDS)
+
+        bot = _Base()
+        class FakeUser: id = int(non_owner_uid)
+        class FakeUpdate:
+            effective_user = FakeUser()
+        raised = False
+        try:
+            asyncio.run(bot._auth_guard(FakeUpdate(), None))
+        except ApplicationHandlerStop:
+            raised = True
+        assert raised, "sub-bot _auth_guard must raise ApplicationHandlerStop for non-owner"
+
+    @t("auth: sub-bot _auth_guard passes owner through")
+    def _():
+        import asyncio
+
+        class _Base(m.TradeGeniusBase):
+            NAME = "SmokeSub"
+            mode = "paper"
+            def __init__(self_inner):
+                self_inner.owner_ids = set(m.TRADEGENIUS_OWNER_IDS)
+
+        bot = _Base()
+        class FakeUser: id = int(owner_uid)
+        class FakeUpdate:
+            effective_user = FakeUser()
+        result = asyncio.run(bot._auth_guard(FakeUpdate(), None))
+        assert result is None
 
     # ---------- EOD report ----------
     @t("eod: _build_eod_report returns a string")
@@ -256,18 +327,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.3.4")
+    @t("version: BOT_VERSION is 4.4.0")
     def _():
-        assert m.BOT_VERSION == "4.3.4", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.4.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.3.4")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.4.0")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.3.4"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.4.0"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
