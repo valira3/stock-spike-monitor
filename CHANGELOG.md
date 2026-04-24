@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.3-beta — Opening Range seed + staleness guard tuning (2026-04-24)
+
+Hot fix. v4.0.2-beta shipped mid-session and the scanner booted with stale Opening Range values: `or_high`/`or_low` were reloaded from persisted state (or filled via `collect_or()`'s FMP `dayHigh`/`dayLow` fallback, which is the whole-day range, not the 9:30–9:35 window). The `_or_price_sane` guard then tripped at its 1.5 % threshold on every ticker both sides and logged `SKIP <TICKER> (stale?)` before the break/gate evaluation ever ran. Result: zero signals, zero trades, for the entire 2026-04-24 session until this fix shipped. This release pulls today's real 9:30 ET opening range from Alpaca historical bars at boot (mirroring the v4.0.2-beta DI seeder) and widens the staleness guard to a real "something's broken" threshold.
+
+**Added:**
+- **`_seed_opening_range(ticker)`** in `trade_genius.py` — pulls 1m bars from Alpaca's `StockHistoricalDataClient.get_stock_bars` for the window `[today 09:30 ET, 09:30 ET + OR_WINDOW_MINUTES]`, picks the max high and min low, and writes them directly into `or_high[ticker]` / `or_low[ticker]`. No-op when `now_et < window_end` (pre-9:35 restarts; the scheduled `collect_or()` still runs). Safe on any Alpaca failure — logs warning and returns, existing Yahoo+FMP path in `collect_or()` unaffected.
+- **`_seed_opening_range_all(tickers)`** — runs the seeder for every watchlist ticker, emits a `OR_SEED_DONE tickers=N seeded=M skipped=K` summary, and once at least one ticker is seeded marks `or_collected_date=today` so the 09:35 ET `collect_or()` doesn't overwrite the fresher Alpaca-sourced values. Called from the startup block **before** `startup_catchup()` and the DI seeder. Wrapped in try/except — failures are non-fatal.
+- **`OR_WINDOW_MINUTES` env var** (default `5`) — matches the existing 09:30–09:35 ET convention in `collect_or`; configurable so a future release can widen the OR without touching code.
+- **`OR_STALE_THRESHOLD` env var** (default `0.05` = 5 %) — replaces the previous hard-coded 1.5 % floor in `_or_price_sane`. The old value fired for routine intraday moves on volatile names (OKLO, QBTS, LEU regularly drift > 5 % within a single session) which killed every signal. 5 % is a real "OR vs live drift looks wrong" guard, not a "normal volatility" guard. `_or_price_sane(or_price, live_price, threshold=None)` still accepts an explicit threshold override for callers that want the old tight behaviour.
+- **`or_stale_skip_count` module global** — per-ticker counter, incremented every time the staleness guard fires in `evaluate_long` or `evaluate_short`. Cleared on `reset_daily_state` when the trading day rolls over.
+- **`/api/state` → `gates.per_ticker[].or_stale_skip_count`** (via `dashboard_server._ticker_gates`) — surfaces the counter alongside the existing `break`/`polarity`/`index`/`di` fields so silent OR-drift failures are visible without tailing Railway logs.
+
+**Logging:**
+- Per ticker: `OR_SEED ticker=META or_high=665.50 or_low=662.20 bars_used=5 window_et=09:30-09:35 source=alpaca_historical` (INFO).
+- Summary: `OR_SEED_DONE tickers=16 seeded=16 skipped=0` (INFO). Pre-open restarts log `tickers=0 seeded=0 skipped=N — pre-OR-window`.
+
+**Validation:**
+- `ast.parse` clean on `trade_genius.py`.
+- `python smoke_test.py --local` → **38 / 38 PASS** (added two: `or_seed: _seed_opening_range function exists`, `or_seed: staleness guard uses configurable threshold`).
+- `CURRENT_MAIN_NOTE` begins with `v4.0.3-beta` and every line ≤ 34 chars.
+
+**Breaking:** None. Seeder is best-effort; missing Alpaca credentials or network failures leave the bot in the pre-v4.0.3 behaviour (OR comes from `collect_or()`'s Yahoo+FMP chain at 09:35 ET). Staleness threshold widening is purely additive — the guard still fires on true staleness, just not on normal intraday volatility.
+
+---
+
 ## v4.0.2-beta — DI pre-market seed at boot (2026-04-24)
 
 A focused follow-on to v4.0.1-beta (#84) where DI was promoted to a real gate. Prior to this release DI started `null` on every ticker at boot and took ~`DI_PERIOD * 2` = ~30 closed 5m bars (~70 min of live RTH) to warm up. That meant every Railway redeploy during the trading day silently disarmed the DI gate for the first hour-plus of the session. This release pre-fills the DI 5m buffer from Alpaca historical bars at scanner startup so the gate is armed on the very first scan cycle.

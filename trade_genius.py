@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.2-beta"
+BOT_VERSION = "4.0.3-beta"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,17 +69,24 @@ BOT_VERSION = "4.0.2-beta"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.2-beta \u2014 DI seed at boot:\n"
-    "\u2022 Pull 5m bars from Alpaca\n"
-    "  at scanner startup (#86)\n"
-    "\u2022 DI gate armed on first\n"
-    "  scan, not 70 min in\n"
-    "\u2022 DI_PREMARKET_SEED flag\n"
-    "  toggles premarket bars"
+    "v4.0.3-beta \u2014 OR seed fix:\n"
+    "\u2022 Pull 9:30 ET OR from\n"
+    "  Alpaca at boot (no more\n"
+    "  stale/round-number OR)\n"
+    "\u2022 Staleness guard 1.5%\n"
+    "  \u2192 5% (OR_STALE_THRESHOLD)\n"
+    "\u2022 or_stale_skip_count in\n"
+    "  /api/state per ticker"
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.0.2-beta \u2014 DI seed at boot:\n"
+    "Pull 5m bars from Alpaca at\n"
+    "scanner startup (#86); DI\n"
+    "gate armed on first scan,\n"
+    "not 70 min in.\n"
+    "\n"
     "v4.0.1-beta \u2014 UI + gate fixes:\n"
     "dashboard row reorder, Val/\n"
     "Gene tabs mirror Main, shared\n"
@@ -1383,6 +1390,10 @@ or_high: dict = {}                  # ticker -> OR high price
 or_low: dict = {}                   # ticker -> OR low price (Wounded Buffalo)
 pdc: dict = {}                      # ticker -> previous day close
 or_collected_date: str = ""         # date string, prevents re-collection
+# v4.0.3-beta — per-ticker counter of OR staleness SKIPs this session.
+# Exposed in /api/state so silent "OR vs live drift" failures are
+# visible without tailing Railway logs.
+or_stale_skip_count: dict = {}      # ticker -> int
 
 # AVWAP state — REMOVED in v3.4.34. All AVWAP code paths (entry
 # gates, regime alert, breadth observer) were migrated to PDC to
@@ -2131,6 +2142,148 @@ def _seed_di_all(tickers):
             skipped += 1
     logger.info(
         "DI_SEED_DONE tickers=%d seeded_with_nonnull_di=%d skipped=%d",
+        len(tickers), seeded, skipped,
+    )
+
+
+# ------------------------------------------------------------
+# Opening Range seed (v4.0.3-beta)
+# ------------------------------------------------------------
+# Mirrors the DI seeder: on startup (or mid-session restart), pull
+# today's 9:30 ET +/- OR_WINDOW_MINUTES from Alpaca historical 1m
+# bars and write or_high / or_low / pdc directly. Idempotent \u2014
+# the scheduled 9:35 ET collect_or() still runs on fresh boots that
+# happen before the open. On any Alpaca failure the seeder logs a
+# warning and returns; the existing Yahoo+FMP path in collect_or()
+# continues to work.
+OR_WINDOW_MINUTES = int(os.getenv("OR_WINDOW_MINUTES", "5") or "5")
+
+
+def _seed_opening_range(ticker):
+    """Seed or_high[ticker]/or_low[ticker]/pdc[ticker] from Alpaca
+    historical 1m bars covering today's 09:30 ET \u2192 09:30+OR_WINDOW_MINUTES
+    ET window. Returns dict with keys: or_high, or_low, bars_used.
+
+    Only seeds when the OR window is complete (now_et >= window end).
+    Pre-open or pre-9:35-ET restarts return bars_used=0 so the
+    scheduled 09:35 ET collect_or() can run cleanly.
+    """
+    result = {"or_high": None, "or_low": None, "bars_used": 0}
+    client = _alpaca_data_client()
+    if client is None:
+        logger.debug("OR_SEED %s skipped \u2014 no alpaca data client", ticker)
+        return result
+    try:
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+    except Exception as e:
+        logger.debug("OR_SEED %s import failed: %s", ticker, e)
+        return result
+
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    window_start = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    window_end = window_start + timedelta(minutes=OR_WINDOW_MINUTES)
+    if now_et < window_end:
+        logger.debug("OR_SEED %s skipped \u2014 window not complete (now_et=%s < end=%s)",
+                     ticker, now_et.strftime("%H:%M"),
+                     window_end.strftime("%H:%M"))
+        return result
+
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Minute,
+            start=window_start.astimezone(timezone.utc),
+            end=window_end.astimezone(timezone.utc),
+            feed="iex",
+        )
+        resp = client.get_stock_bars(req)
+        data = getattr(resp, "data", {}) or {}
+        rows = data.get(ticker, []) or []
+    except Exception as e:
+        logger.warning("OR_SEED %s alpaca fetch failed: %s", ticker, e)
+        return result
+
+    max_hi = None
+    min_lo = None
+    bars_used = 0
+    window_start_ts = int(window_start.timestamp())
+    window_end_ts = int(window_end.timestamp())
+    for row in rows:
+        ts = getattr(row, "timestamp", None)
+        if ts is None:
+            continue
+        try:
+            epoch = int(ts.timestamp())
+        except Exception:
+            continue
+        if epoch < window_start_ts or epoch >= window_end_ts:
+            continue
+        h = float(getattr(row, "high", 0) or 0)
+        lo = float(getattr(row, "low", 0) or 0)
+        if h <= 0 or lo <= 0:
+            continue
+        if max_hi is None or h > max_hi:
+            max_hi = h
+        if min_lo is None or lo < min_lo:
+            min_lo = lo
+        bars_used += 1
+
+    if max_hi is None or min_lo is None:
+        logger.warning("OR_SEED %s \u2014 no usable bars in window", ticker)
+        return result
+
+    or_high[ticker] = max_hi
+    or_low[ticker] = min_lo
+    result["or_high"] = max_hi
+    result["or_low"] = min_lo
+    result["bars_used"] = bars_used
+    logger.info(
+        "OR_SEED ticker=%s or_high=%.2f or_low=%.2f bars_used=%d "
+        "window_et=%s-%s source=alpaca_historical",
+        ticker, max_hi, min_lo, bars_used,
+        window_start.strftime("%H:%M"), window_end.strftime("%H:%M"),
+    )
+    return result
+
+
+def _seed_opening_range_all(tickers):
+    """Run _seed_opening_range for every ticker and emit a summary.
+
+    Marks or_collected_date=today once at least one ticker is seeded,
+    so the scheduled 09:35 ET collect_or() does not overwrite the
+    fresher Alpaca-sourced OR. Safe on a before-open restart \u2014
+    returns immediately when the OR window is not yet complete.
+    """
+    global or_collected_date
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    today = now_et.strftime("%Y-%m-%d")
+    window_end = now_et.replace(hour=9, minute=30, second=0, microsecond=0) \
+                    + timedelta(minutes=OR_WINDOW_MINUTES)
+    if now_et < window_end:
+        logger.info(
+            "OR_SEED_DONE tickers=0 seeded=0 skipped=%d \u2014 pre-OR-window",
+            len(tickers),
+        )
+        return
+    seeded = 0
+    skipped = 0
+    for t in tickers:
+        try:
+            r = _seed_opening_range(t)
+            if r.get("bars_used", 0) > 0:
+                seeded += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            logger.warning("OR_SEED %s crashed: %s", t, e)
+            skipped += 1
+    if seeded > 0:
+        or_collected_date = today
+    logger.info(
+        "OR_SEED_DONE tickers=%d seeded=%d skipped=%d",
         len(tickers), seeded, skipped,
     )
 
@@ -2954,8 +3107,22 @@ def get_fmp_quote(ticker):
     return None
 
 
-def _or_price_sane(or_price, live_price, threshold=0.015):
-    """Return True if OR price is within threshold of live price."""
+# v4.0.3-beta — env-tunable staleness guard threshold. The old 1.5%
+# fired for routine intraday moves on volatile names (OKLO, QBTS,
+# LEU regularly drift >5% within a session) which killed every
+# signal. 5% is a real "something's broken" guard, not a "normal
+# volatility" guard.
+OR_STALE_THRESHOLD = float(os.getenv("OR_STALE_THRESHOLD", "0.05") or "0.05")
+
+
+def _or_price_sane(or_price, live_price, threshold=None):
+    """Return True if OR price is within threshold of live price.
+
+    threshold defaults to OR_STALE_THRESHOLD (env-configurable,
+    5% by default). Pass an explicit value to override.
+    """
+    if threshold is None:
+        threshold = OR_STALE_THRESHOLD
     if not or_price or not live_price:
         return True  # can't validate, allow
     diff = abs(or_price - live_price) / live_price
@@ -3818,11 +3985,12 @@ def check_entry(ticker):
         if fmp_pdc and fmp_pdc > 0:
             pdc[ticker] = fmp_pdc
 
-    # OR sanity check: OR High must be within 1.5% of live price
+    # OR sanity check: OR High must be within OR_STALE_THRESHOLD of live price.
     if not _or_price_sane(or_high[ticker], current_price):
         pct = abs(or_high[ticker] - current_price) / current_price * 100
+        or_stale_skip_count[ticker] = or_stale_skip_count.get(ticker, 0) + 1
         logger.warning(
-            "SKIP %s long — OR High $%.2f is %.1f%% from live $%.2f (stale?)",
+            "SKIP %s long \u2014 OR High $%.2f is %.1f%% from live $%.2f (stale?)",
             ticker, or_high[ticker], pct, current_price
         )
         return False, None
@@ -4478,11 +4646,12 @@ def check_short_entry(ticker):
             pdc_val = fmp_pdc
             pdc[ticker] = fmp_pdc
 
-    # OR sanity check: OR Low must be within 1.5% of live price
+    # OR sanity check: OR Low must be within OR_STALE_THRESHOLD of live price.
     if not _or_price_sane(or_low_val, current_price):
         pct = abs(or_low_val - current_price) / current_price * 100
+        or_stale_skip_count[ticker] = or_stale_skip_count.get(ticker, 0) + 1
         logger.warning(
-            "SKIP %s short — OR Low $%.2f is %.1f%% from live $%.2f (stale?)",
+            "SKIP %s short \u2014 OR Low $%.2f is %.1f%% from live $%.2f (stale?)",
             ticker, or_low_val, pct, current_price
         )
         return
@@ -5701,6 +5870,7 @@ def reset_daily_state():
         or_high.clear()
         or_low.clear()
         pdc.clear()
+        or_stale_skip_count.clear()
         or_collected_date = ""
 
     if daily_entry_date != today:
@@ -9488,6 +9658,17 @@ logger.info(
 if os.getenv("SSM_SMOKE_TEST", "").strip() == "1":
     logger.info("SSM_SMOKE_TEST=1 \u2014 skipping catch-up, scheduler, and Telegram loop")
 else:
+    # v4.0.3-beta \u2014 OR seed from Alpaca historical bars BEFORE the
+    # catch-up hook, so a mid-session restart lands with correct OR
+    # values rather than yesterday's persisted or_high/or_low or a
+    # wrong-window fallback from collect_or()'s Yahoo/FMP path.
+    # Failures are non-fatal: startup_catchup() still runs and will
+    # invoke collect_or() via the existing Yahoo+FMP chain.
+    try:
+        _seed_opening_range_all(list(TICKERS))
+    except Exception:
+        logger.exception("OR_SEED startup failed \u2014 continuing without seed")
+
     # Startup catch-up
     startup_catchup()
 

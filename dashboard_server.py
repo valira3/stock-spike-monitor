@@ -291,8 +291,11 @@ def _ticker_gates(m, tickers: list[str]) -> list[dict]:
 
     Returns one row per known ticker in the same order as TRADE_TICKERS.
     Tickers with no snapshot yet get a placeholder with side=None.
+    v4.0.3-beta \u2014 includes or_stale_skip_count so silent OR drift
+    failures are visible without tailing Railway logs.
     """
     snap = dict(getattr(m, "_gate_snapshot", {}) or {})
+    skip_counts = dict(getattr(m, "or_stale_skip_count", {}) or {})
     rows = []
     for t in tickers:
         g = snap.get(t) or {}
@@ -304,6 +307,7 @@ def _ticker_gates(m, tickers: list[str]) -> list[dict]:
             "index": g.get("index"),
             "di": g.get("di"),
             "ts": g.get("ts"),
+            "or_stale_skip_count": int(skip_counts.get(t, 0)),
         })
     return rows
 
