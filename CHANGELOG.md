@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.7 — Dashboard audit deferred: H7 _today_trades dedup (2026-04-24)
+
+Dashboard-only fix for the last deferred HIGH finding from the prior dashboard audit (`/tmp/audit_dash.md` H7). Documented invariant (`trade_genius.py` ~L2530): long BUY/SELL rows live in `paper_trades`, short COVER rows live in `short_trade_history`. `_today_trades` iterates both lists but trusted the contract; if the contract is ever violated (future bug, state migration, a replay path that dual-writes) a short cover would appear in both lists and the UI would render it twice.
+
+**Fixed:**
+
+- **`_today_trades` defensively de-duplicates across lists (`dashboard_server.py:_today_trades`)** — a per-row key `(ticker.upper(), time|entry_time|exit_time, side, action)` is tracked in a set; a cross-list duplicate is collapsed to the first occurrence (paper_trades wins over short_trade_history). No behavioural change when the invariant holds, which is the steady state today.
+
+**Added:**
+
+- **Smoke test `dashboard: _today_trades de-duplicates cross-list short`** — seeds the same COVER row into both `paper_trades` and `short_trade_history`, asserts the dashboard returns exactly one FAKE-ticker row. Prevents regression if someone ever wires `close_short_position` to dual-write.
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.7; v4.1.6 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.7"`.
+- Smoke test pins BOT_VERSION to `4.1.7`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (40/40 — new dedup test added).
+
+**Breaking:** None.
+
+---
+
 ## v4.1.6 — Dashboard audit deferred: H6 _fetch_indices VIX sentinel (2026-04-24)
 
 Dashboard-only fix for a deferred HIGH finding from the prior audit (`/tmp/audit_dash.md` H6). `_fetch_indices` conflated two failure modes behind a single `last is None or last <= 0` predicate: VIX (legitimately has no equity feed) and real equities that transiently report a 0 quote pre-market. The new shape emits VIX's placeholder row through an explicit branch tagged with `reason="vix_no_equity_feed"`, and keeps the real-equity loop strictly about real-equity semantics.

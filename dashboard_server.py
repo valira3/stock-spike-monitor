@@ -241,18 +241,60 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
 
 
 def _today_trades() -> list[dict]:
+    """Build today's trade list for the dashboard.
+
+    Storage asymmetry (mirrors the invariant documented in
+    ``trade_genius.py`` ~L2530): long BUYs / SELLs live in
+    ``paper_trades``; short COVERs live in ``short_trade_history``.
+    If that invariant is ever violated (future bug, replayed state, a
+    migration that dual-writes) a short cover would appear in BOTH
+    lists and the UI would show it twice. v4.1.7-dash \u2014 defensively
+    de-duplicate by (ticker, time/entry_time, side, action) before
+    returning, so a cross-list dupe is collapsed to a single row.
+    """
     m = _ssm()
     out: list[dict] = []
+    seen: set = set()
+
+    def _key(t: dict, side: str) -> tuple:
+        # Prefer the field each list actually carries; fall back
+        # through both so the key is stable no matter which list the
+        # row originated from.
+        time_key = (
+            t.get("time")
+            or t.get("entry_time")
+            or t.get("exit_time")
+            or ""
+        )
+        return (
+            (t.get("ticker") or "").upper(),
+            str(time_key),
+            side,
+            t.get("action") or "",
+        )
+
     for t in list(getattr(m, "paper_trades", []) or []):
-        out.append({**t, "side": t.get("side", "LONG"), "portfolio": "paper"})
+        side = t.get("side", "LONG")
+        k = _key(t, side)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({**t, "side": side, "portfolio": "paper"})
+
     # also include today's shorts from short_trade_history filtered by date
     try:
         today = m._now_et().strftime("%Y-%m-%d")
     except Exception:
         today = ""
     for t in list(getattr(m, "short_trade_history", []) or []):
-        if t.get("date") == today:
-            out.append({**t, "side": "SHORT", "portfolio": "paper"})
+        if t.get("date") != today:
+            continue
+        k = _key(t, "SHORT")
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({**t, "side": "SHORT", "portfolio": "paper"})
+
     # sort by time if present
     out.sort(key=lambda x: x.get("time", x.get("entry_time", "")))
     return out

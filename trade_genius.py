@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.6"
+BOT_VERSION = "4.1.7"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,19 +70,26 @@ BOT_VERSION = "4.1.6"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.6 \u2014 dashboard H6:\n"
-    "_fetch_indices tags its VIX\n"
-    "placeholder with explicit\n"
-    "reason sentinel; real\n"
-    "equities with transient\n"
-    "price=0 no longer conflated\n"
-    "with the VIX no-feed case.\n"
-    "Numeric None-vs-0 parsing\n"
-    "tightened."
+    "v4.1.7 \u2014 dashboard H7:\n"
+    "_today_trades de-duplicates\n"
+    "by (ticker,time,side,action)\n"
+    "so a short cover that ever\n"
+    "lands in both paper_trades\n"
+    "and short_trade_history is\n"
+    "no longer double-counted\n"
+    "in the UI. Smoke test\n"
+    "guards the contract."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.6 \u2014 dashboard H6:\n"
+    "_fetch_indices tags VIX row\n"
+    "with reason sentinel; real\n"
+    "equities with transient 0\n"
+    "quote no longer conflated\n"
+    "with VIX no-feed case.\n"
+    "\n"
     "v4.1.5 \u2014 audit cleanup:\n"
     "check_entry dead index_ok\n"
     "removed; /test edit_text\n"
