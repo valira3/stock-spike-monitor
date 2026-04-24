@@ -300,10 +300,9 @@ def _ticker_gates(m, tickers: list[str]) -> list[dict]:
             "ticker": t,
             "side": g.get("side"),
             "break": g.get("break"),
-            "vol_pct": g.get("vol_pct"),
-            "vol_ok": g.get("vol_ok"),
             "polarity": g.get("polarity"),
             "index": g.get("index"),
+            "di": g.get("di"),
             "ts": g.get("ts"),
         })
     return rows
