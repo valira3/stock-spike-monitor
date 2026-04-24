@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v3.6.0 — Telegram owner auth guard (2026-04-24)
+
+Add a hard perimeter around the Telegram bot. Every incoming update is checked against `TRADEGENIUS_OWNER_IDS` before any command, callback, or message handler runs. Non-owners get **zero response** and the update is dropped server-side.
+
+**Added:**
+- `_auth_guard(update, context)` async function in `trade_genius.py` (above `run_telegram_bot`). Reads `update.effective_user.id`, compares it as a string against `TRADEGENIUS_OWNER_IDS`. On miss (including when `effective_user` is `None` — channel posts, etc.) it logs a warning with `update_id`/`user_id`/`chat_id` and raises `telegram.ext.ApplicationHandlerStop`. On match it returns silently so downstream handlers can run.
+- `TypeHandler(Update, _auth_guard)` installed at `group=-1` in `run_telegram_bot()` so it fires **before** any default `group=0` handler (commands, callbacks, menus).
+- Smoke tests: `auth: TRADEGENIUS_OWNER_IDS exists, RH_OWNER_USER_IDS removed`, `auth: _auth_guard exists and blocks non-owners`, `auth: _auth_guard passes owner through (no raise)`, `auth: _auth_guard drops update with no effective_user`.
+
+**Renamed (HARD — no fallback):**
+- Env var `RH_OWNER_USER_IDS` → `TRADEGENIUS_OWNER_IDS`. The old name is no longer read. Deployers **must** rename this var in their environment at deploy time.
+- Module globals `_RH_OWNER_USERS_RAW` → `_TRADEGENIUS_OWNERS_RAW`, `RH_OWNER_USER_IDS` → `TRADEGENIUS_OWNER_IDS`. Internal references in `_reset_authorized` and `reset_callback` diagnostics updated accordingly.
+- `.env.example` now documents `TRADEGENIUS_OWNER_IDS` with the v3.6.0 semantics (auth-guard whitelist, not just a /reset allow-list).
+
+**Updated:**
+- Telegram imports: added `TypeHandler` and `ApplicationHandlerStop` from `telegram.ext`.
+- `BOT_VERSION` bumped from `3.5.1` to `3.6.0`.
+- `CURRENT_MAIN_NOTE` rewritten for v3.6.0; `_MAIN_HISTORY_TAIL` rotated (v3.5.1 pushed in, v3.4.44 dropped).
+
+**Unchanged:**
+- Paper book, Eye of the Tiger 2.0, Hard Eject, EOD Close, scheduler, dashboard (owner check is at the Telegram layer only, not the HTTP layer; the dashboard still uses its `DASHBOARD_PASSWORD` gate).
+- `_reset_authorized` logic — the second-layer /reset check still fires for defence in depth.
+
+**Validation:**
+- `python3 -m ast` OK on all 3 .py files
+- `SSM_SMOKE_TEST=1 python3 -c "import trade_genius"` OK
+- `smoke_test.py`: 17/17 PASS (14 prior + 3 new auth-guard tests; TRADEGENIUS_OWNER_IDS test replaces the old RH_OWNER_USER_IDS check)
+
+**Deploy note:**
+- Railway env var must be renamed `RH_OWNER_USER_IDS` → `TRADEGENIUS_OWNER_IDS` **at merge time**. If the rename is missed the whitelist falls back to the built-in default (Val only).
+
+**Next:**
+- v4.0.0-alpha adds `TradeGeniusBase` + `TradeGeniusVal` executors mirroring main paper signals onto Alpaca paper, `/mode paper|live` command, in-process signal bus.
+- v4.0.0-beta adds `TradeGeniusGene` + 3-tab dashboard (Main/Val/Gene) with paper/live badges and index ticker strip.
+
+---
+
 ## v3.5.1 — TradeGenius rename (2026-04-24)
 
 Rename the project from Stock Spike Monitor to TradeGenius. No behavioural changes.
