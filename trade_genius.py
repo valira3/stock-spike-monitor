@@ -630,6 +630,46 @@ class TradeGeniusBase:
         except Exception:
             logger.exception("[%s] set_my_commands failed", self.NAME)
 
+    async def _tg_main(self):
+        """Async entry point for the executor's Telegram bot. Uses the
+        low-level Application lifecycle (initialize/start/updater.start_polling)
+        instead of app.run_polling() — because run_polling() tries to
+        install OS signal handlers via loop.add_signal_handler(), which
+        Python disallows outside the main thread (set_wakeup_fd only
+        works in main thread of the main interpreter). Executor bots
+        run on their own background threads, so we must drive the
+        Application lifecycle manually."""
+        app = (
+            Application.builder()
+            .token(self.telegram_token)
+            .post_init(self._post_init_register_menu)
+            .build()
+        )
+        self._tg_app = app
+        app.add_handler(TypeHandler(Update, self._auth_guard), group=-1)
+        app.add_handler(CommandHandler("mode", self.cmd_mode))
+        app.add_handler(CommandHandler("status", self.cmd_status))
+        app.add_handler(CommandHandler("halt", self.cmd_halt))
+        app.add_handler(CommandHandler("version", self.cmd_version))
+        app.add_handler(CommandHandler("help", self.cmd_help))
+        app.add_handler(CommandHandler("start", self.cmd_help))
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        logger.info("[%s] telegram loop running (token=...%s)",
+                    self.NAME, self.telegram_token[-6:])
+        # Park forever — updater polls in its own task. Exits only when
+        # the thread/process is torn down.
+        try:
+            await asyncio.Event().wait()
+        finally:
+            try:
+                await app.updater.stop()
+                await app.stop()
+                await app.shutdown()
+            except Exception:
+                pass
+
     def _run_tg_loop(self):
         """Run this executor's own Telegram polling loop in its own
         thread. Creates its own asyncio event loop (PTB requires one)."""
@@ -639,22 +679,8 @@ class TradeGeniusBase:
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            app = (
-                Application.builder()
-                .token(self.telegram_token)
-                .post_init(self._post_init_register_menu)
-                .build()
-            )
-            self._tg_app = app
-            app.add_handler(TypeHandler(Update, self._auth_guard), group=-1)
-            app.add_handler(CommandHandler("mode", self.cmd_mode))
-            app.add_handler(CommandHandler("status", self.cmd_status))
-            app.add_handler(CommandHandler("halt", self.cmd_halt))
-            app.add_handler(CommandHandler("version", self.cmd_version))
-            app.add_handler(CommandHandler("help", self.cmd_help))
-            app.add_handler(CommandHandler("start", self.cmd_help))
             logger.info("[%s] telegram loop starting", self.NAME)
-            app.run_polling()
+            loop.run_until_complete(self._tg_main())
         except Exception:
             logger.exception("[%s] telegram loop crashed", self.NAME)
 
