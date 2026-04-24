@@ -1577,6 +1577,99 @@ def _record_near_miss(**row):
         _near_miss_log = _near_miss_log[:_NEAR_MISS_MAX]
 
 
+def _update_gate_snapshot(ticker):
+    """Recompute the dashboard gate snapshot for ``ticker`` from the
+    current OR envelope and live price.
+
+    Side + break are derived purely from OR envelope each cycle (no
+    latch). When inside the envelope, side falls back to the nearest
+    edge for the polarity preview but break is False.
+
+    Emits a structured ``GATE_EVAL`` log line for audit.
+    """
+    if ticker not in or_high or ticker not in or_low:
+        return
+    or_h = or_high[ticker]
+    or_l = or_low[ticker]
+    pdc_val = pdc.get(ticker)
+
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return
+    price = bars.get("current_price")
+    if price is None or price <= 0:
+        return
+
+    fmp_q = get_fmp_quote(ticker)
+    if fmp_q:
+        fmp_price = fmp_q.get("price")
+        if fmp_price and fmp_price > 0:
+            price = fmp_price
+        fmp_pdc = fmp_q.get("previousClose")
+        if fmp_pdc and fmp_pdc > 0:
+            pdc_val = fmp_pdc
+
+    if price > or_h:
+        side = "LONG"
+        break_ok = True
+    elif price < or_l:
+        side = "SHORT"
+        break_ok = True
+    else:
+        side = "LONG" if abs(price - or_h) < abs(price - or_l) else "SHORT"
+        break_ok = False
+
+    if pdc_val and pdc_val > 0:
+        polarity_ok = (price > pdc_val) if side == "LONG" else (price < pdc_val)
+    else:
+        polarity_ok = False
+
+    volumes = bars.get("volumes", [])
+    vol_pct = None
+    vol_ok = False
+    if len(volumes) >= 5:
+        valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
+        avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
+        entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
+        if vol_ready and avg_vol > 0:
+            vol_pct = (entry_bar_vol / avg_vol) * 100.0
+            vol_ok = vol_pct >= 150.0
+
+    spy_pdc_val = pdc.get("SPY")
+    qqq_pdc_val = pdc.get("QQQ")
+    index_ok = None
+    if spy_pdc_val and qqq_pdc_val and spy_pdc_val > 0 and qqq_pdc_val > 0:
+        spy_bars = fetch_1min_bars("SPY")
+        qqq_bars = fetch_1min_bars("QQQ")
+        if spy_bars and qqq_bars:
+            spy_p = spy_bars.get("current_price")
+            qqq_p = qqq_bars.get("current_price")
+            if spy_p and qqq_p:
+                if side == "LONG":
+                    index_ok = (spy_p > spy_pdc_val) and (qqq_p > qqq_pdc_val)
+                else:
+                    index_ok = (spy_p < spy_pdc_val) and (qqq_p < qqq_pdc_val)
+
+    _gate_snapshot[ticker] = {
+        "side": side,
+        "break": bool(break_ok),
+        "vol_pct": vol_pct,
+        "vol_ok": bool(vol_ok),
+        "polarity": bool(polarity_ok),
+        "index": index_ok,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+    vp_str = ("%.1f" % vol_pct) if vol_pct is not None else "None"
+    idx_str = "None" if index_ok is None else str(bool(index_ok))
+    logger.info(
+        "GATE_EVAL ticker=%s price=%.2f or_hi=%.2f or_lo=%.2f "
+        "side=%s break=%s vol_pct=%s vol_ok=%s polarity=%s index=%s",
+        ticker, price, or_h, or_l, side, bool(break_ok), vp_str,
+        bool(vol_ok), bool(polarity_ok), idx_str,
+    )
+
+
 def _classify_breadth():
     """Observer 1: breadth from SPY/QQQ vs their PDC.
     Returns (label, detail). Never raises.
@@ -3467,15 +3560,11 @@ def check_entry(ticker):
             vol_pct = (entry_bar_vol / avg_vol) * 100.0
             vol_ok = vol_pct >= 150.0
 
-    _gate_snapshot[ticker] = {
-        "side": "LONG",
-        "break": bool(price_break),
-        "vol_pct": vol_pct,
-        "vol_ok": bool(vol_ok),
-        "polarity": bool(polarity_ok),
-        "index": None,  # filled below once SPY/QQQ are checked
-        "ts": datetime.now(timezone.utc).isoformat(),
-    }
+    # v3.5.x: dashboard gate snapshot is now written by
+    # _update_gate_snapshot() at the top of each scan cycle, using the
+    # canonical OR-envelope -> side mapping. The per-entry writes that
+    # used to live here caused a last-writer-wins latch between the
+    # LONG and SHORT paths.
 
     # Volume confirmation: entry bar volume >= 1.5x session average.
     # v3.4.20: walk back through null/zero bars before failing. Yahoo
@@ -4125,15 +4214,10 @@ def check_short_entry(ticker):
             vol_pct = (entry_bar_vol / avg_vol) * 100.0
             vol_ok = vol_pct >= 150.0
 
-    _gate_snapshot[ticker] = {
-        "side": "SHORT",
-        "break": bool(price_break),
-        "vol_pct": vol_pct,
-        "vol_ok": bool(vol_ok),
-        "polarity": bool(polarity_ok),
-        "index": None,
-        "ts": datetime.now(timezone.utc).isoformat(),
-    }
+    # v3.5.x: dashboard gate snapshot is now written by
+    # _update_gate_snapshot() at the top of each scan cycle. The
+    # per-entry writes that used to live here were the latch:
+    # SHORT ran after LONG and always clobbered the side field.
 
     # Volume confirmation: entry bar volume >= 1.5x session average.
     # v3.4.20: walk back through null/zero bars before failing (see
@@ -5275,6 +5359,13 @@ def scan_loop():
     # book. A paper-held ticker no longer blocks RH from entering, and
     # vice versa.
     for ticker in TRADE_TICKERS:
+        # Refresh the dashboard gate snapshot from the current OR
+        # envelope before any entry gates run. Side + break are derived
+        # purely from OR vs price each cycle (no latch).
+        try:
+            _update_gate_snapshot(ticker)
+        except Exception as e:
+            logger.error("_update_gate_snapshot error %s: %s", ticker, e)
         # Long entry check — run once per ticker and fan out to both books.
         try:
             # Fast path: if both books already hold this ticker, skip the
