@@ -90,6 +90,7 @@ def save_paper_state():
             "short_trade_history": list(tg.short_trade_history[-500:]),
             # v3.4.34: avwap_data / avwap_last_ts no longer persisted.
             "daily_short_entry_count": dict(tg.daily_short_entry_count),
+            "daily_short_entry_date": tg.daily_short_entry_date,
             "last_exit_time": {k: v.isoformat() for k, v in tg._last_exit_time.items()},
             "_scan_paused": tg._scan_paused,
             "_trading_halted": tg._trading_halted,
@@ -154,6 +155,10 @@ def load_paper_state():
         # state files are silently ignored (no longer loaded).
         tg.daily_short_entry_count.clear()
         tg.daily_short_entry_count.update(state.get("daily_short_entry_count", {}))
+        # v4.7.0: persist daily_short_entry_date so the daily-counter reset
+        # in check_short_entry survives process restarts. Default "" for
+        # backward-compat with state files written by v4.6.0 and earlier.
+        tg.daily_short_entry_date = state.get("daily_short_entry_date", "")
         raw_exit = state.get("last_exit_time", {})
         # Normalize to UTC-aware. Older persisted state may contain
         # tz-naive ISO strings; mixing those with tz-aware datetime.now
@@ -225,6 +230,7 @@ def load_paper_state():
         tg.short_positions.clear()
         tg.short_trade_history.clear()
         tg.daily_short_entry_count.clear()
+        tg.daily_short_entry_date = ""
         tg._last_exit_time = {}
         tg._scan_paused = False
         tg._trading_halted = False
@@ -244,6 +250,7 @@ def _do_reset_paper():
     tg.daily_entry_count.clear()
     tg.daily_short_entry_count.clear()
     tg.daily_entry_date = ""
+    tg.daily_short_entry_date = ""
     tg.paper_cash = tg.PAPER_STARTING_CAPITAL
     tg._trading_halted = False
     tg._trading_halted_reason = ""
