@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.4 — Leaving beta + header consolidation + Val KPI sync (2026-04-24)
+
+Drops the `-beta` moniker after four betas' worth of stability fixes (OR seed, DI seed, gate/scanner repairs, dashboard tab parity) and ships a round of UI cleanup that had been accumulating.
+
+**Changed:**
+- **`BOT_VERSION`** bumped `4.0.3-beta` → `4.0.4`. No more `-beta` suffix anywhere in release surfaces (startup card, `/version`, dashboard footer). `CURRENT_MAIN_NOTE` rewritten for the new version; `v4.0.3-beta` note rotated into `_MAIN_HISTORY_TAIL`.
+- **Dashboard header consolidated.** The header used to render on three rows: brand row (TradeGenius + version), a per-tab meta row (`Fri Apr 24 · 11:18 ET  [Paper]  [● LIVE next scan 15s]  connected · Sign out`), and the tab switcher. The per-tab meta row duplicated status that lives better once: the `Paper` pill was redundant with the tab switcher's per-tab Paper/Live badge, the `connected` text was redundant with the pulsing `LIVE` pill itself, and `·` separator before `Sign out` was visual noise. The `LIVE` pill + scan countdown now sit on the brand row — shared across Main / Val / Gene tabs — so the status indicator is identical regardless of which tab is active. Per-tab row now reads `date · time ET  …  Sign out` with no duplicate status chrome.
+- **"next scan Ns" → "scan in Ns"** in the live pill label. Reads as a sentence instead of a label.
+- **Val / Gene KPI row mirrors Main.** Previously Val's KPI cells rendered literal `+` placeholders (the per-executor `fmtUsd` prefixed every non-negative value with `+` and under some Intl currency fallbacks produced a bare `+` when the currency formatter returned empty). Now the per-executor `fmtUsd` matches Main's (`$...` / `−$...`, no `+` surprise), Day P&L is computed server-side as `equity − last_equity` from Alpaca's Account object (same math Main uses), and Gate / Regime / Session are sourced from Main's shared `/api/state` — market-wide values identical on every tab.
+
+**Added:**
+- **`account.last_equity`, `account.day_pnl`** on `/api/executor/{name}`. Exposes prior-close equity (Alpaca's `last_equity`) alongside current equity so the front-end can render Day P&L + percent without a second round-trip.
+- **`refreshExecSharedKpis(panel)`** JS helper. Called from `window.__tgOnState` whenever Main's `/api/state` arrives, so Val/Gene panels update Gate / Regime / Session in lockstep with Main without waiting for the next 15s executor poll.
+- **Smoke test `version: no -beta suffix`** asserting `BOT_VERSION` does not contain the substring `beta`. Protects against accidental rollback to a beta moniker.
+
+**Validation:**
+- `ast.parse` clean on `trade_genius.py`, `dashboard_server.py`, `smoke_test.py`.
+- `python smoke_test.py --local` → **39 / 39 PASS** (added one; the two `BOT_VERSION is 4.0.3-beta` / `CURRENT_MAIN_NOTE begins with v4.0.3-beta` assertions were rewritten to target `4.0.4`).
+- `CURRENT_MAIN_NOTE` begins with `v4.0.4` and every line ≤ 34 chars.
+- Mobile (375px viewport): `#tg-brand-row` wraps — LIVE pill drops below the brand/version line rather than overflowing, courtesy of `flex-wrap: wrap` on the container. KPI row still stacks 2-up at ≤640px.
+
+**Breaking:** None. Existing `/api/executor/{name}` consumers see two new account fields (`last_equity`, `day_pnl`); missing-data case returns `null` (front-end renders em-dash).
+
+---
+
 ## v4.0.3-beta — Opening Range seed + staleness guard tuning (2026-04-24)
 
 Hot fix. v4.0.2-beta shipped mid-session and the scanner booted with stale Opening Range values: `or_high`/`or_low` were reloaded from persisted state (or filled via `collect_or()`'s FMP `dayHigh`/`dayLow` fallback, which is the whole-day range, not the 9:30–9:35 window). The `_or_price_sane` guard then tripped at its 1.5 % threshold on every ticker both sides and logged `SKIP <TICKER> (stale?)` before the break/gate evaluation ever ran. Result: zero signals, zero trades, for the entire 2026-04-24 session until this fix shipped. This release pulls today's real 9:30 ET opening range from Alpaca historical bars at boot (mirroring the v4.0.2-beta DI seeder) and widens the staleness guard to a real "something's broken" threshold.
