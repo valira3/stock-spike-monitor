@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.4.1 (2026-04-24) — fix: regime banner no longer sticks on the last pre-close bucket after 15:55 ET; `_refresh_market_mode()` now runs at every scheduler tick, independent of market hours, and `gates.scan_paused` reflects auto-idle outside trading hours.
+
+Before v4.4.1, `scan_loop()` short-circuited with a bare `return` when the clock was outside 09:35–15:55 ET, BEFORE it got to `_refresh_market_mode()`. So the cached `_current_mode` / `_current_mode_reason` globals stayed frozen at their last intra-session values (e.g. `POWER "14:00-15:55 ET"`) and `/api/state` kept serving them until the next open. At 16:58 ET the dashboard was still reporting `POWER`.
+
+**Changed (`trade_genius.py`):**
+
+- **`scan_loop()`** — `_refresh_market_mode()` is now called at the top of every cycle, ahead of the weekend / pre-open / after-close early returns. The classifier `get_current_mode()` already returns `(CLOSED, "outside market hours", 0.0)` for those windows and `(CLOSED, "weekend", 0.0)` for Sat/Sun; moving the refresh above the returns is what lets those classifications actually reach the cached globals. The refresh is observation-only and stays wrapped in the existing try/except.
+- **`_scan_idle_hours`** — new module-level bool. `scan_loop()` sets it True when the cycle short-circuits because of market hours, False during live cycles. Orthogonal to `_scan_paused` (which is the user-set /pause flag).
+- **Scheduler** — `scheduler_thread()` already calls `scan_loop()` every `SCAN_INTERVAL` seconds unconditionally (no clock gate of its own), so moving the refresh inside `scan_loop` is sufficient — the refresh fires even outside trading hours.
+
+**Changed (`dashboard_server.py`):**
+
+- **`/api/state` → `gates.scan_paused`** — now serialized as `_scan_paused OR _scan_idle_hours`. Previously this was just `_scan_paused`, so the UI showed "ACTIVE" all night even though no scanning was happening. After close / on weekends the flag is now True, matching reality.
+
+**Added — smoke tests (`smoke_test.py`):**
+
+- `regime: scan_loop refreshes mode to CLOSED after market close (16:30 ET simulated)` — monkeypatches `_now_et` to 16:30 ET, runs one `scan_loop()` cycle, asserts cached globals are `CLOSED` / `"outside market hours"`.
+- `regime: scan_loop refreshes mode to CLOSED on weekend (Saturday simulated)` — monkeypatches `_now_et` to Saturday, asserts cached globals are `CLOSED` / `"weekend"`.
+- `regime: _scan_idle_hours reflects after-hours idle state` — locks in that the auto-idle bool goes True after close and False during trading hours.
+- `regime: /api/state scan_paused reflects auto-idle after close` — exercises `dashboard_server` serializer and confirms the union surfaces to the JSON payload.
+
+**Operational notes:**
+
+- No behavior change inside trading hours. During 09:35–15:55 ET `_scan_idle_hours` is False and `scan_paused` serializes identically to before.
+- `_scan_paused` semantics are unchanged: the `/pause` and `/resume` Telegram commands still flip the user-pause flag, and `_scan_paused` continues to drive the "block NEW entries" gate inside `scan_loop()` (L6175). The dashboard just now OR's the idle state on top of it for display.
+
+---
+
 ## v4.4.0 (2026-04-24) — security: all bot commands and reset callbacks now require user_id in TRADEGENIUS_OWNER_IDS; chat-based authorization fallback removed. CHAT_ID retained for outbound routing only.
 
 The `/reset` callback gate (`_reset_authorized` in `trade_genius.py`) previously authorized any tap whose `chat_id` matched the configured `CHAT_ID` — meaning any member of the configured Telegram group chat could click Confirm on a reset button, even if their user_id was not in `TRADEGENIUS_OWNER_IDS`. The main-bot command gate (`_auth_guard`) and the Val/Gene sub-bot command gate (`TradeGeniusBase._auth_guard`) were already user-id-only; this release brings the reset-callback surface into line.
