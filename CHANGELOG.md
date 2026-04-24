@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.7 — Audit batch 3a: MEDIUM fixes, dashboard hygiene/security (2026-04-24)
+
+Batch 3a of the audit pass. MEDIUM severity, scope restricted to `dashboard_server.py` — logging hygiene, login-page XSS, session-secret floor, X-Forwarded-For trust, and Alpaca-key redaction in error bodies. No trading-logic changes.
+
+**Fixed:**
+- **`_RingBufferHandler.emit` fallback** — if the formatter raised, the record was silently dropped. Now falls back to a minimal record (`level name: message`) so handler failures still surface in `/stream`.
+- **`_next_scan_seconds` silent exception** — now logs at DEBUG before returning `None`.
+- **Sovereign-Regime snapshot warnings** — the three `except Exception: pass` blocks in `_sovereign_regime_snapshot` swallowed broken calls as benign `False`. They now `logger.warning` with tracebacks.
+- **Login rate-limit XFF spoofing (`_client_ip`)** — X-Forwarded-For was trusted unconditionally, so an attacker hitting the app directly could rotate the header to bypass the 5-attempt-per-minute lock. XFF is now only trusted when `DASHBOARD_TRUST_PROXY=1`; otherwise the lock keys on `request.remote`.
+- **`_login_page` error interpolation XSS** — the `error` argument was substituted into HTML unescaped. Now `html.escape(error)`.
+- **Env session-secret floor raised to 32 bytes** — the env branch accepted ≥ 16 bytes while the file branch required ≥ 32. Unified: both branches now require ≥ 32.
+- **Alpaca key redaction in `/stream`** — `_executor_snapshot` echoed the raw Alpaca error body into the ring buffer, so a 401 response referencing a bad key could surface `PK...` / `AK...` / `CK...` / `SK...` fragments to anyone reading the log viewer. A regex pass now replaces those prefixes (plus 10+ alnum chars) with `[REDACTED]` before the string is logged.
+
+**Changed:**
+- `BOT_VERSION` bumped `4.0.6` → `4.0.7`. `CURRENT_MAIN_NOTE` rewritten; lines ≤ 34 chars.
+
+**Validation:**
+- `ast.parse` clean on both modules.
+- `smoke_test.py --local` passes (version assertions retargeted to `4.0.7`).
+
+**Breaking:** None. Operators who currently rely on `X-Forwarded-For` behind a proxy must now set `DASHBOARD_TRUST_PROXY=1` explicitly.
+
+---
+
 ## v4.0.6 — Audit batch 2: HIGH fixes (state resets, gate-snapshot latch, trail attribution, Telegram edge cases) (2026-04-24)
 
 Batch 2 of the audit pass. All items are HIGH severity — likely-wrong behaviour in common paths, but not money/safety/auth (those were v4.0.5). No trading-logic changes; every edit either makes an existing path behave the way its comments already claim, or hardens a command against an edge-case crash.

@@ -37,9 +37,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
+import re
 import secrets
 import struct
 import threading
@@ -65,7 +67,10 @@ class _RingBufferHandler(logging.Handler):
         try:
             msg = self.format(record)
         except Exception:
-            return
+            try:
+                msg = f"{record.levelname} {record.name}: {record.getMessage()}"
+            except Exception:
+                msg = f"{record.levelname} <unformattable log record>"
         with _log_lock:
             _log_seq += 1
             _log_buffer.append({
@@ -326,6 +331,7 @@ def _next_scan_seconds(m) -> int | None:
         from datetime import datetime, timezone
         age = (datetime.now(timezone.utc) - last).total_seconds()
     except Exception:
+        logger.debug("_next_scan_seconds failed", exc_info=True)
         return None
     remaining = interval - age
     if remaining < 0:
@@ -390,13 +396,13 @@ def _sovereign_regime_snapshot(m) -> dict[str, Any]:
                 if isinstance(sc, (int, float)):
                     out["spy_price"] = float(sc)
             except Exception:
-                pass
+                logger.warning("sovereign_regime_snapshot: SPY close helper failed", exc_info=True)
             try:
                 qc = helper("QQQ")
                 if isinstance(qc, (int, float)):
                     out["qqq_price"] = float(qc)
             except Exception:
-                pass
+                logger.warning("sovereign_regime_snapshot: QQQ close helper failed", exc_info=True)
 
         # Deltas (only if both price and PDC present).
         if out["spy_price"] is not None and out["spy_pdc"]:
@@ -412,10 +418,12 @@ def _sovereign_regime_snapshot(m) -> dict[str, Any]:
             try:
                 out["long_eject"] = bool(eject("long"))
             except Exception:
+                logger.warning("sovereign_regime_snapshot: long eject failed", exc_info=True)
                 out["long_eject"] = False
             try:
                 out["short_eject"] = bool(eject("short"))
             except Exception:
+                logger.warning("sovereign_regime_snapshot: short eject failed", exc_info=True)
                 out["short_eject"] = False
 
         # Human-readable status.
@@ -610,8 +618,12 @@ def _load_or_create_session_secret() -> bytes:
     if env:
         try:
             b = bytes.fromhex(env)
-            if len(b) >= 16:
-                return b
+            if len(b) >= 32:
+                return b[:32]
+            logger.warning(
+                "DASHBOARD_SESSION_SECRET too short (%d bytes, need \u2265 32) \u2014 ignoring env",
+                len(b),
+            )
         except ValueError:
             pass  # fall through to file/gen
 
@@ -653,6 +665,19 @@ def _load_or_create_session_secret() -> bytes:
 
 _STATIC_DIR = Path(__file__).parent / "dashboard_static"
 
+# Redact Alpaca key/secret fragments from error bodies before they
+# land in the ring-buffer log viewer. Alpaca keys are prefixed PK...
+# (live) or AK... / CK... (test). Secrets don't share a fixed prefix,
+# but any 16+ char run of [A-Za-z0-9] inside an Alpaca error body
+# next to "key" / "secret" / "Bearer" is suspect.
+_ALPACA_KEY_RE = re.compile(r"\b(?:PK|AK|CK|SK)[A-Z0-9]{10,}\b")
+
+
+def _redact_alpaca_secrets(s: str) -> str:
+    if not s:
+        return s
+    return _ALPACA_KEY_RE.sub("[REDACTED]", s)
+
 # Login rate-limiter: per-IP attempt timestamps (sliding window)
 _LOGIN_WINDOW_SEC = 60
 _LOGIN_MAX_ATTEMPTS = 5
@@ -661,11 +686,16 @@ _login_attempts_lock = threading.Lock()
 
 
 def _client_ip(request) -> str:
-    """Best-effort client IP — prefer X-Forwarded-For (Railway proxy) and
-    fall back to peer address. Used only as a rate-limit bucket key."""
-    xff = request.headers.get("X-Forwarded-For", "")
-    if xff:
-        return xff.split(",")[0].strip()
+    """Best-effort client IP for the login rate-limiter.
+
+    X-Forwarded-For is only trusted when DASHBOARD_TRUST_PROXY=1 (set this
+    when you are actually behind a trusted reverse proxy like Railway). By
+    default we use the peer address so a direct-to-app attacker can't
+    rotate XFF to bypass the 5-attempt lock."""
+    if os.getenv("DASHBOARD_TRUST_PROXY", "").strip() == "1":
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            return xff.split(",")[0].strip()
     return request.remote or "unknown"
 
 
@@ -726,7 +756,7 @@ def _check_auth(request) -> bool:
 
 
 def _login_page(error: str = "") -> str:
-    err_html = f'<div class="err">{error}</div>' if error else ""
+    err_html = f'<div class="err">{html.escape(error)}</div>' if error else ""
     return """<!doctype html><html><head><meta charset="utf-8"><title>Spike Monitor — sign in</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -1102,7 +1132,7 @@ def _executor_snapshot(name: str) -> dict:
         # never trigger descriptors from inside the error handler.
         err_type = type(e).__name__
         try:
-            err_msg = str(e) or "(no message)"
+            err_msg = _redact_alpaca_secrets(str(e) or "(no message)")
         except Exception:
             err_msg = "(str(e) raised)"
         extras = []
@@ -1115,7 +1145,7 @@ def _executor_snapshot(name: str) -> dict:
         raw_body = inst.get("_error") or inst.get("_body")
         if raw_body:
             try:
-                extras.append(f"body={str(raw_body)[:200]!r}")
+                extras.append(f"body={_redact_alpaca_secrets(str(raw_body)[:200])!r}")
             except Exception:
                 pass
         resp = inst.get("response") or inst.get("_response")
@@ -1123,7 +1153,7 @@ def _executor_snapshot(name: str) -> dict:
             body = getattr(resp, "text", None)
             if body:
                 try:
-                    extras.append(f"body={str(body)[:200]!r}")
+                    extras.append(f"body={_redact_alpaca_secrets(str(body)[:200])!r}")
                 except Exception:
                     pass
         extra_str = (" " + " ".join(extras)) if extras else ""

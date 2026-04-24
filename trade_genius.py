@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.6"
+BOT_VERSION = "4.0.7"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,20 +69,18 @@ BOT_VERSION = "4.0.6"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.6 \u2014 audit HIGH fixes:\n"
-    "\u2022 cross-day cooldown\n"
-    "  pruned at 09:30\n"
-    "\u2022 regime globals reset\n"
-    "  on day roll (no stale\n"
-    "  transition alert)\n"
-    "\u2022 gate snapshot: drop\n"
-    "  per-side index writes\n"
-    "  (PR #83 symmetric fix)\n"
-    "\u2022 TRAIL vs STOP derived\n"
-    "  from actual stop, not\n"
-    "  sticky trail_active flag\n"
-    "\u2022 /mode, /price, /retighten\n"
-    "  no longer crash on edges"
+    "v4.0.7 \u2014 dashboard hardening:\n"
+    "\u2022 login rate-limit no\n"
+    "  longer fooled by XFF\n"
+    "  (opt-in DASHBOARD_\n"
+    "  TRUST_PROXY=1)\n"
+    "\u2022 env session secret now\n"
+    "  requires \u2265 32 bytes\n"
+    "\u2022 Alpaca errors redact\n"
+    "  PK/AK/CK/SK fragments\n"
+    "  before hitting /stream\n"
+    "\u2022 login error text is\n"
+    "  HTML-escaped"
 )
 
 # Main-bot release note: short tail of recent releases.
