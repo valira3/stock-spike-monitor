@@ -4,6 +4,32 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.6 — Audit batch 2: HIGH fixes (state resets, gate-snapshot latch, trail attribution, Telegram edge cases) (2026-04-24)
+
+Batch 2 of the audit pass. All items are HIGH severity — likely-wrong behaviour in common paths, but not money/safety/auth (those were v4.0.5). No trading-logic changes; every edit either makes an existing path behave the way its comments already claim, or hardens a command against an edge-case crash.
+
+**Fixed:**
+
+- **Cross-day cooldown leak (`reset_daily_state`)** — `_last_exit_time` is persisted across restarts but was never pruned at session open. A previous-day exit at 15:54 ET would hold today's first-5-min re-entry under the 15-minute post-exit cooldown on a cold restart. Now `reset_daily_state` drops every entry older than today's 09:30 ET and logs the count.
+- **Regime-transition spurious alerts (`reset_daily_state`)** — `_regime_bullish` and `_current_rsi_regime` are module globals used for "first transition of the session" attribution. They were never reset, so a mid-session restart on a bullish tape compared today's fresh regime to yesterday's stale cached value and fired a bogus `REGIME` alert on the next scan. Now both are reset to `None` / `"UNKNOWN"` at session open, so the first-of-day classification is a clean first transition.
+- **`_last_exit_time` dict-comp wipe on load (`load_paper_state`)** — a single malformed ISO timestamp in `paper_state.json` raised inside the load dict-comp and wiped the *entire* cooldown map, disabling the 15-min guard for every ticker. Per-key try/except now skips (and logs) the bad row, keeping good rows intact.
+- **`_gate_snapshot["index"]` per-side stamping (`check_entry`, `check_short_entry`)** — same failure class as PR #83's side-selection latch. Both the LONG and SHORT entry paths wrote `snap["index"]` keyed on the current side, which on a mid-cycle LONG→SHORT flip could stamp the wrong side's index flag over the canonical value. Canonical `_update_gate_snapshot()` already runs once per scan cycle with the authoritative side — the per-entry writes have been removed.
+- **TRAIL vs STOP attribution (`manage_positions`)** — `pos.get("trail_active")` was set True the first time the position touched +1% gain and never unset. A position that went +1%, pulled back, and hit the original structural stop was still reported as "TRAIL" even though no profit was ever locked. Now the attribution is derived from whether the stop has actually ratcheted above entry (`pos["stop"] > pos["entry_price"]`), which is what the comment already claimed.
+- **`cmd_retighten` TypeError (`trade_genius.py`)** — `"%.2f" % old` raised on any row where `old_stop` / `new_stop` came back `None`, killing the handler. Now coerced via `float(v) if v is not None else 0.0`.
+- **`cmd_mode` NameError + unhandled set_mode errors** — bare references to `val_executor` / `gene_executor` raised `NameError` on a boot where those module globals were never bound (e.g. missing Alpaca keys). Now uses `globals().get(...)`. Unknown sub-modes (anything outside `paper`/`live`) are rejected with a friendly message instead of forwarded to `executor.set_mode`, and `set_mode` exceptions are caught and surfaced to the user.
+- **`cmd_price` silent exception swallow** — the edit / delete / reply block was wrapped in bare `try / except Exception: pass`, which hid every BadRequest and left the user staring at "⏳ Fetching…" forever. Now logs the failure at DEBUG and attempts a plain `reply_text` as a fallback.
+
+**Changed:**
+- `BOT_VERSION` bumped `4.0.5` → `4.0.6`. `CURRENT_MAIN_NOTE` rewritten; lines ≤ 34 chars.
+
+**Validation:**
+- `ast.parse` clean on `trade_genius.py`.
+- `smoke_test.py --local` passes (version assertions retargeted to `4.0.6`).
+
+**Breaking:** None. No trading-logic changes. Dashboard unaffected.
+
+---
+
 ## v4.0.5 — Audit batch 1: CRITICAL fixes (halt gate, signal bus, dashboard TZ, login CSRF) (2026-04-24)
 
 First batch of a full-codebase audit pass. All items here are CRITICAL — money / safety / auth — and each edit is the smallest change that removes the bug. Trading/signal logic is **unchanged**.

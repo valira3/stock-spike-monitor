@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.5"
+BOT_VERSION = "4.0.6"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,18 +69,20 @@ BOT_VERSION = "4.0.5"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.5 \u2014 audit crit fix:\n"
-    "\u2022 halt gate: KeyError +\n"
-    "  10-share fallback (was\n"
-    "  under-counting loss)\n"
-    "\u2022 signal bus: idempotent\n"
-    "  register (no double orders\n"
-    "  on executor re-start)\n"
-    "\u2022 /api/executor trades:\n"
-    "  ET-day filter (was UTC,\n"
-    "  dropped 00:00-05:00 ET)\n"
-    "\u2022 /login: Origin check +\n"
-    "  samesite=Strict"
+    "v4.0.6 \u2014 audit HIGH fixes:\n"
+    "\u2022 cross-day cooldown\n"
+    "  pruned at 09:30\n"
+    "\u2022 regime globals reset\n"
+    "  on day roll (no stale\n"
+    "  transition alert)\n"
+    "\u2022 gate snapshot: drop\n"
+    "  per-side index writes\n"
+    "  (PR #83 symmetric fix)\n"
+    "\u2022 TRAIL vs STOP derived\n"
+    "  from actual stop, not\n"
+    "  sticky trail_active flag\n"
+    "\u2022 /mode, /price, /retighten\n"
+    "  no longer crash on edges"
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -2771,7 +2773,19 @@ def load_paper_state():
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
-        _last_exit_time = {k: _parse_exit_ts(v) for k, v in raw_exit.items()}
+        # Per-key try/except: one malformed stored value MUST NOT wipe
+        # every ticker's cooldown map. Previously a single bad row in
+        # paper_state.json disabled the 15-min re-entry guard for the
+        # entire watchlist.
+        _last_exit_time = {}
+        for _k, _v in raw_exit.items():
+            try:
+                _last_exit_time[_k] = _parse_exit_ts(_v)
+            except Exception:
+                logger.warning(
+                    "load_paper_state: dropping malformed last_exit_time[%r]=%r",
+                    _k, _v,
+                )
 
         # Load persisted flags
         _scan_paused = state.get("_scan_paused", False)
@@ -4104,10 +4118,13 @@ def check_entry(ticker):
 
     index_ok = (spy_bars["current_price"] > spy_pdc_val
                 and qqq_bars["current_price"] > qqq_pdc_val)
-    # v3.4.21 — update long index flag on the snapshot.
-    snap = _gate_snapshot.get(ticker)
-    if snap is not None and snap.get("side") == "LONG":
-        snap["index"] = bool(index_ok)
+    # v3.4.21 used to write snap["index"] here; removed in the audit
+    # pass because _update_gate_snapshot() (called once per scan cycle
+    # before check_entry / check_short_entry) already writes this key
+    # with the authoritative side + SPY/QQQ evaluation. Writing it
+    # again here keyed on the current side lets a mid-cycle LONG→SHORT
+    # flip silently stamp the wrong side's index flag (same failure
+    # class as PR #83's side-selection latch).
 
     if spy_bars["current_price"] <= spy_pdc_val:
         return False, None
@@ -4500,7 +4517,14 @@ def manage_positions():
         # the initial structural stop (capital already safe), else "STOP"
         # (initial structural stop hit with no profit locked).
         if current_price <= pos["stop"]:
-            reason = "TRAIL" if pos.get("trail_active") else "STOP"
+            # Derive TRAIL vs STOP from whether the stop has actually
+            # ratcheted above entry (i.e. capital was locked in). The
+            # previous `pos.get("trail_active")` flag was set true the
+            # first time peak_gain hit +1 % and was never unset — so a
+            # position that went +1 %, came back, and hit the *initial*
+            # structural stop was still attributed as "TRAIL" even
+            # though no profit was locked. Derive from stop level.
+            reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
             tickers_to_close.append((ticker, current_price, reason))
             continue
 
@@ -4559,7 +4583,14 @@ def manage_positions():
 
         # Exit when current price crosses the ladder stop.
         if current_price <= pos["stop"]:
-            reason = "TRAIL" if pos.get("trail_active") else "STOP"
+            # Derive TRAIL vs STOP from whether the stop has actually
+            # ratcheted above entry (i.e. capital was locked in). The
+            # previous `pos.get("trail_active")` flag was set true the
+            # first time peak_gain hit +1 % and was never unset — so a
+            # position that went +1 %, came back, and hit the *initial*
+            # structural stop was still attributed as "TRAIL" even
+            # though no profit was locked. Derive from stop level.
+            reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
             tickers_to_close.append((ticker, current_price, reason))
             continue
 
@@ -4757,10 +4788,11 @@ def check_short_entry(ticker):
             if qqq_price < qqq_pdc_val:
                 qqq_below = True
 
-    # v3.4.21 — update short index flag on snapshot before the early return.
-    snap = _gate_snapshot.get(ticker)
-    if snap is not None and snap.get("side") == "SHORT":
-        snap["index"] = bool(spy_below and qqq_below)
+    # v3.4.21 used to write snap["index"] here; removed in the audit
+    # pass because _update_gate_snapshot() already writes this key
+    # once per scan cycle with the canonical side. Writing it again
+    # from the per-side entry path lets a mid-cycle side flip stamp
+    # the wrong side's index flag.
 
     if not spy_below or not qqq_below:
         return
@@ -5882,7 +5914,7 @@ def reset_daily_state():
     (v3.4.34: AVWAP reset removed — AVWAP state no longer tracked.)
     """
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason
-    global daily_short_entry_count
+    global daily_short_entry_count, _regime_bullish, _current_rsi_regime
 
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -5902,6 +5934,35 @@ def reset_daily_state():
 
     _trading_halted = False
     _trading_halted_reason = ""
+
+    # Cross-day cooldown pruning: _last_exit_time persists across restarts,
+    # so yesterday's 15:54 exit would keep today's 09:35 first-5-min entry
+    # under the 15-min post-exit cooldown. Drop any entry older than today's
+    # 09:30 ET.
+    try:
+        session_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        session_open_utc = session_open.astimezone(timezone.utc)
+        stale_keys = [
+            k for k, v in list(_last_exit_time.items())
+            if v is not None and v < session_open_utc
+        ]
+        for k in stale_keys:
+            _last_exit_time.pop(k, None)
+        if stale_keys:
+            logger.info(
+                "reset_daily_state: pruned %d stale _last_exit_time entries",
+                len(stale_keys),
+            )
+    except Exception:
+        logger.exception("reset_daily_state: _last_exit_time prune failed")
+
+    # Regime-transition alert is driven by a module-global first-seen
+    # comparison. Without a daily reset, a mid-session restart comparing
+    # the freshly-computed regime to a stale value would fire a spurious
+    # "REGIME SHIFT" alert on the first scan. Clear at session open so
+    # first-of-day classification is a clean first transition.
+    _regime_bullish = None
+    _current_rsi_regime = "UNKNOWN"
 
 
 # ============================================================
@@ -7362,6 +7423,14 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not details:
         lines.append("No open positions.")
     else:
+        # Audit: the tightened / ratcheted / ratcheted_trail branches
+        # previously fed `old`/`new` straight into "%.2f" which raises
+        # TypeError when retighten_all_stops returns None for either
+        # (happens when the caller skipped the price-fetch step or a
+        # mid-cycle state change blanked the value). Coerce with
+        # `or 0.0` so the command returns a readable message instead
+        # of dying with an unhandled handler exception.
+        def _fn(v): return float(v) if v is not None else 0.0
         any_change = False
         for d in details:
             tkr = d.get("ticker", "?")
@@ -7372,28 +7441,28 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new = d.get("new_stop")
             if status == "tightened":
                 lines.append("%s %s [%s] cap" % (tkr, side, port))
-                lines.append("  stop $%.2f \u2192 $%.2f" % (old, new))
+                lines.append("  stop $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
                 any_change = True
             elif status == "ratcheted":
                 lines.append("%s %s [%s] breakeven" % (tkr, side, port))
-                lines.append("  stop $%.2f \u2192 $%.2f" % (old, new))
+                lines.append("  stop $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
                 any_change = True
             elif status == "ratcheted_trail":
                 lines.append(
                     "%s %s [%s] trail\u2192entry" % (tkr, side, port)
                 )
-                lines.append("  trail $%.2f \u2192 $%.2f" % (old, new))
+                lines.append("  trail $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
                 any_change = True
             elif status == "exit":
                 lines.append("%s %s [%s] EXITED" % (tkr, side, port))
-                lines.append("  breached at cap $%.2f" % (new if new is not None else 0.0))
+                lines.append("  breached at cap $%.2f" % _fn(new))
                 any_change = True
             elif status == "no_op":
                 lines.append("%s %s [%s] trail armed" % (tkr, side, port))
             elif status == "already_tight":
                 lines.append("%s %s [%s] already tight" % (tkr, side, port))
                 if old is not None:
-                    lines.append("  stop $%.2f" % old)
+                    lines.append("  stop $%.2f" % _fn(old))
         if not any_change:
             lines.append("")
             lines.append("No changes \u2014 stops already optimal.")
@@ -7544,12 +7613,11 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args if context and hasattr(context, "args") else []
     if args and args[0].lower() in ("val", "gene"):
         which = args[0].lower()
-        if which == "val":
-            executor = val_executor
-            label = "Val"
-        else:
-            executor = gene_executor
-            label = "Gene"
+        # Use globals().get so a missing-keys boot (where val_executor /
+        # gene_executor were never assigned at module scope) returns a
+        # friendly reply instead of raising NameError.
+        executor = globals().get(f"{which}_executor")
+        label = "Val" if which == "val" else "Gene"
         if executor is None:
             await update.message.reply_text(f"{label} executor not enabled")
             return
@@ -7571,8 +7639,22 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lines.append(f"  alpaca error: {e}")
             await update.message.reply_text("\n".join(lines))
             return
+        # Reject anything outside {"paper","live"} up front so the
+        # handler doesn't die inside set_mode on unknown strings.
+        if sub not in ("paper", "live"):
+            await update.message.reply_text(
+                f"\u274c {label}: unknown mode '{sub}' (expected paper|live)"
+            )
+            return
         confirm_token = args[2] if len(args) > 2 else None
-        ok, msg = executor.set_mode(sub, confirm_token=confirm_token)
+        try:
+            ok, msg = executor.set_mode(sub, confirm_token=confirm_token)
+        except Exception as e:
+            logger.exception("cmd_mode: executor.set_mode raised")
+            await update.message.reply_text(
+                f"\u274c {label}: set_mode error: {str(e)[:200]}"
+            )
+            return
         marker = "\u2705" if ok else "\u274c"
         await update.message.reply_text(f"{marker} {label}: {msg}")
         return
@@ -8311,7 +8393,19 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await prog.edit_text(text, reply_markup=_menu_button())
     except Exception:
-        pass
+        # Log and try a plain reply as a fallback so the user sees
+        # *something* instead of being stuck on "Fetching…". The
+        # previous bare `except Exception: pass` swallowed every
+        # telegram.error.BadRequest (stale prog msg, network) and left
+        # the user staring at the loading placeholder forever.
+        logger.debug("cmd_price: edit/chunk reply failed", exc_info=True)
+        try:
+            if text is not None:
+                await update.message.reply_text(
+                    text[:3800], reply_markup=_menu_button(),
+                )
+        except Exception:
+            logger.debug("cmd_price: fallback reply failed", exc_info=True)
     logger.info("CMD price completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
