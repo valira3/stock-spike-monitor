@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.3.4 — Dashboard UI: zero-pad refresh countdown + pin `tabular-nums` on `#h-tick` (2026-04-24)
+
+Row 2's refresh countdown (the `♻ Ns` chip next to the LIVE pill, introduced in v4.3.2) was rendering the seconds without zero-padding, so the chip width visibly shifted when the counter crossed the 10s boundary (`♻ 5s` → `♻ 13s`). v4.3.4 zero-pads the seconds to two digits and pins `font-variant-numeric: tabular-nums` on `#h-tick` so digit widths can't drift either way.
+
+**Changed:**
+
+- **`updateNextScanLabel`** in `dashboard_static/index.html` now formats the countdown as `♻ ${String(s).padStart(2,"0")}s` — emits `♻ 05s`, `♻ 13s`, `♻ 59s`. 3-digit values (if a scan interval ever exceeds 99s) still flow naturally. The matching `aria-label` / `title` use the padded string too.
+- **Fallback tick branch** (the `tick ${n}s` path that fires before the first `__nextScanSec` value arrives) now zero-pads identically so the early-render state is also stable-width.
+- **`#h-tick` inline style** gains `font-variant-numeric: tabular-nums` so proportional digits can't shift the chip independently of padding. Combined with zero-padding, the countdown is width-stable across every 00-99 tick.
+
+**Why:** Zero-padding alone doesn't guarantee no-shift because JetBrains Mono-via-system-font-stack can still fall back to a proportional digit face on some platforms; `tabular-nums` is the real layout fix. Both together = rock-solid width.
+
+**Changed:** `BOT_VERSION = "4.3.4"`; `CURRENT_MAIN_NOTE` rewritten; v4.3.3 note rolled into `_MAIN_HISTORY_TAIL`.
+
+**Validation:** `smoke_test.py --local` PASS (49/49).
+
+**Breaking:** None. Pure rendering tweak; no state, API, or layout change beyond width-stability of a single chip.
+
+---
+
 ## v4.3.3 — Dashboard API: serialize `extension_pct` on `/api/state` per-ticker gates (2026-04-24)
 
 PR #107 (v4.3.0) added an `extension_pct` field to the per-ticker gate snapshot in `trade_genius.py` (signed distance of live price past the OR edge, rounded to 2 decimals; `None` when the OR envelope has not been seeded). `dashboard_server.py`'s `_ticker_gates` hardcodes the list of keys it copies onto `/api/state` and dropped the new field. v4.3.3 extends the serializer so the dashboard (and any other `/api/state` consumer) can see how extended each break is at entry-eval time without tailing Railway logs.
