@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.4.1"
+BOT_VERSION = "4.5.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,6 +70,16 @@ BOT_VERSION = "4.4.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.5.1 \u2014 refactor:\n"
+    "dashboard index.html split\n"
+    "into index.html + app.css +\n"
+    "app.js for cleaner separation\n"
+    "of concerns. Pure code\n"
+    "motion \u2014 zero visual change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.4.1 \u2014 regime fix:\n"
     "scan_loop now refreshes the\n"
     "MarketMode banner every\n"
@@ -77,11 +87,8 @@ CURRENT_MAIN_NOTE = (
     "banner no longer sticks on\n"
     "POWER after 15:55 ET.\n"
     "gates.scan_paused reflects\n"
-    "after-hours idle too."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "after-hours idle too.\n"
+    "\n"
     "v4.4.0 \u2014 security:\n"
     "all bot commands + /reset\n"
     "callbacks require user_id in\n"
