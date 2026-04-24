@@ -233,13 +233,13 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.0.2-beta")
+    @t("version: BOT_VERSION is 4.0.3-beta")
     def _():
-        assert m.BOT_VERSION == "4.0.2-beta", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.0.3-beta", f"got {m.BOT_VERSION}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.0.2-beta")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.0.3-beta")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.2-beta"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.0.3-beta"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -264,6 +264,39 @@ def run_local() -> int:
         text = env_path.read_text(encoding="utf-8")
         assert "DI_PREMARKET_SEED" in text, \
             "DI_PREMARKET_SEED not documented in .env.example"
+
+    # ---------- v4.0.3-beta OR seed ----------
+    @t("or_seed: _seed_opening_range function exists")
+    def _():
+        assert hasattr(m, "_seed_opening_range"), \
+            "_seed_opening_range missing from trade_genius module"
+        assert callable(m._seed_opening_range), \
+            "_seed_opening_range is not callable"
+        assert hasattr(m, "_seed_opening_range_all"), \
+            "_seed_opening_range_all missing"
+        assert callable(m._seed_opening_range_all), \
+            "_seed_opening_range_all is not callable"
+        assert hasattr(m, "or_stale_skip_count"), \
+            "or_stale_skip_count module global missing"
+        assert isinstance(m.or_stale_skip_count, dict), \
+            f"expected dict, got {type(m.or_stale_skip_count).__name__}"
+
+    @t("or_seed: staleness guard uses configurable threshold")
+    def _():
+        assert hasattr(m, "OR_STALE_THRESHOLD"), \
+            "OR_STALE_THRESHOLD module global missing"
+        assert m.OR_STALE_THRESHOLD >= 0.03, \
+            f"OR_STALE_THRESHOLD {m.OR_STALE_THRESHOLD} too tight \u2014 " \
+            "v4.0.3-beta widened this to >=3% to stop killing signals " \
+            "on normal intraday volatility"
+        # Functional: at 4% drift, the guard should PASS (not stale)
+        # under the default 5% threshold but fail under the old 1.5%.
+        assert m._or_price_sane(100.0, 104.0) is True, \
+            "4% drift should be sane under 5% threshold"
+        assert m._or_price_sane(100.0, 104.0, threshold=0.015) is False, \
+            "4% drift should fail under legacy 1.5% threshold"
+        assert m._or_price_sane(100.0, 110.0) is False, \
+            "10% drift must still trip the guard"
 
     # ---------- v3.6.0 auth guard ----------
     @t("auth: TRADEGENIUS_OWNER_IDS exists, RH_OWNER_USER_IDS removed")
