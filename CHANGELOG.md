@@ -4,6 +4,10 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.5.0 (2026-04-24) — refactor: extracted main-bot Telegram command handlers into `telegram_commands.py` (~1164 LOC) for maintainability. Pure code motion, zero behavior change.
+
+All 25 top-level `cmd_*` handlers plus `reset_callback` and `_reset_authorized` moved out of `trade_genius.py` into a new `telegram_commands.py` module. Handler registrations in `run_telegram_bot()` updated to reference the new module (e.g. `CommandHandler("status", telegram_commands.cmd_status)`). Menu-callback invocations via `_invoke_from_callback` likewise updated. Sub-bot class methods (`TradeGeniusBase/Val/Gene.cmd_*`) are bound methods and were NOT touched. The `_auth_guard` TypeHandler stays in `trade_genius.py` since it owns owner-ID enforcement for the whole bot. Smoke suite grows from 57 → 59 tests (two new `refactor:` tests verify the move).
+
 ## v4.4.1 (2026-04-24) — fix: regime banner no longer sticks on the last pre-close bucket after 15:55 ET; `_refresh_market_mode()` now runs at every scheduler tick, independent of market hours, and `gates.scan_paused` reflects auto-idle outside trading hours.
 
 Before v4.4.1, `scan_loop()` short-circuited with a bare `return` when the clock was outside 09:35–15:55 ET, BEFORE it got to `_refresh_market_mode()`. So the cached `_current_mode` / `_current_mode_reason` globals stayed frozen at their last intra-session values (e.g. `POWER "14:00-15:55 ET"`) and `/api/state` kept serving them until the next open. At 16:58 ET the dashboard was still reporting `POWER`.
