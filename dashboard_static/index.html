@@ -463,6 +463,18 @@
   <span id="idx-placeholder" style="color:#5b6572">indices loading…</span>
 </div>
 
+<!-- Top-level TradeGenius brand/logo row. Sits between the index ticker
+     strip and the tab switcher so it is visible on every tab. The per-tab
+     header still carries page-specific controls (clock, LIVE, sign-out). -->
+<div id="tg-brand-row" style="display:flex;align-items:center;gap:10px;background:#0a0d12;border-bottom:1px solid #1f2937;padding:8px 16px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+  <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="TradeGenius" style="width:22px;height:22px;color:#7dd3fc;flex-shrink:0">
+    <path d="M3 22 L11 22 L15 10 L19 22 L29 22" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
+  </svg>
+  <span style="font-weight:600;font-size:13.5px;letter-spacing:-0.005em;color:#e7ecf3">TradeGenius</span>
+  <span id="tg-brand-ver" style="font-size:10.5px;color:#5b6572;margin-left:4px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">v…</span>
+</div>
+
 <!-- v4.0.0-beta — 3-tab switcher (Main / Val / Gene). Only one panel is
      visible at a time. Main is the existing full dashboard; Val and Gene
      poll /api/executor/{name} every 15s. -->
@@ -476,14 +488,6 @@
 <div class="app">
 
   <header class="header">
-    <div class="h-brand">
-      <svg class="h-brand-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="TradeGenius">
-        <path d="M3 22 L11 22 L15 10 L19 22 L29 22" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
-      </svg>
-      <span class="h-brand-name">TradeGenius</span>
-      <span class="h-brand-ver" id="sb-ver">v…</span>
-    </div>
     <div class="h-title">
       <span id="h-date">—</span>
     </div>
@@ -1159,7 +1163,9 @@
   function renderHeader(s) {
     const d = s.server_time_label || "";
     $("h-date").textContent = d || "—";
-    $("sb-ver").textContent = `v${s.version || "?"} · live`;
+    const ver = `v${s.version || "?"} · live`;
+    const verEl = document.getElementById("tg-brand-ver");
+    if (verEl) verEl.textContent = ver;
   }
 
   function renderTpSync(s) {
