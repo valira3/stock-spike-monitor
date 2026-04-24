@@ -1377,15 +1377,21 @@
 </script>
 </div><!-- /tg-panel-main -->
 
-<!-- v4.0.0-beta — Val tab panel. Populated by JS below from /api/executor/val -->
-<div id="tg-panel-val" class="tg-panel" style="display:none;padding:18px 20px;color:#e7ecf3;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-  <div id="tg-val-body"><div style="color:#5b6572">Loading Val…</div></div>
-</div>
+<!-- v4.0.0-beta — Val tab panel. Mirrors Main's widget layout (KPIs, open
+     positions, proximity, trades, observer, regime shield, gates, logs)
+     so Val's executor state is visible with the same visual vocabulary.
+     Populated from /api/executor/val every 15s.  Widgets that do not
+     apply to per-executor snapshots (proximity, regime shield, gates,
+     observer, logs, trades table) are rendered as dim placeholders so
+     the grid stays stable.  A `data-tg-exec` attribute on the root lets
+     the shared render fn address the right field ids. -->
+<div id="tg-panel-val" class="tg-panel tg-exec-panel" data-tg-exec="val" style="display:none"></div>
 
-<!-- v4.0.0-beta — Gene tab panel. Same shape as Val. -->
-<div id="tg-panel-gene" class="tg-panel" style="display:none;padding:18px 20px;color:#e7ecf3;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-  <div id="tg-gene-body"><div style="color:#5b6572">Loading Gene…</div></div>
-</div>
+<!-- v4.0.0-beta — Gene tab panel. Same skeleton as Val.  When Gene is
+     not configured (`enabled:false`), the render fn keeps the layout and
+     fills every field with em-dashes plus a "Gene executor not
+     configured" placeholder banner. -->
+<div id="tg-panel-gene" class="tg-panel tg-exec-panel" data-tg-exec="gene" style="display:none"></div>
 
 <script>
 (() => {
@@ -1471,17 +1477,186 @@
   }
 
   // --- Per-executor tab ------------------------------------------------
+  // Render a full Main-style dashboard layout for Val and Gene by cloning
+  // the Main tab's widget skeleton (KPIs, grid-2 cards, etc.) and filling
+  // only the fields the per-executor API actually exposes. Widgets whose
+  // data is main-bot-only (proximity, regime shield, gates, observer,
+  // trades table, log tail) stay in the layout as dim placeholders so
+  // the visual grid is identical across tabs.
+
+  function escapeExec(s) { return esc(s); }
+
+  // Build the skeleton HTML once per panel. `exec` is "val" or "gene" and
+  // is used to scope DOM lookups below (we query within the panel root).
+  function execSkeleton(exec) {
+    const label = exec === "val" ? "Val" : "Gene";
+    return `
+<div class="app">
+
+  <header class="header">
+    <div class="h-title">
+      <span data-f="h-date">\u2014</span>
+      <span class="sep">\u00b7</span>
+      <span class="sub" data-f="h-exec-name">${label}</span>
+      <span class="sep">\u00b7</span>
+      <span class="sub" data-f="h-mode">\u2014</span>
+    </div>
+    <div class="h-right">
+      <span class="live-badge"><span class="pulse" data-f="h-pulse"></span><span data-f="h-health">\u2014</span></span>
+      <span class="h-clock" data-f="h-acct">\u2014</span>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <div class="banner hide" data-f="banner"></div>
+
+    <section class="kpi-row">
+      <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" data-f="k-equity">\u2014</span><span class="kpi-sub" data-f="k-equity-sub">\u2014</span></div>
+      <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" data-f="k-pnl">\u2014</span><span class="kpi-sub" data-f="k-pnl-sub">\u2014</span></div>
+      <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" data-f="k-open">\u2014</span><span class="kpi-sub" data-f="k-open-sub">\u2014</span></div>
+      <div class="kpi"><span class="kpi-label">Gate</span><span class="kpi-value" data-f="k-gate" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-gate-sub">\u2014</span></div>
+      <div class="kpi"><span class="kpi-label">Regime</span><span class="kpi-value" data-f="k-regime" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-regime-sub">\u2014</span></div>
+      <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-session-sub">\u2014</span></div>
+    </section>
+
+    <section class="grid grid-2">
+      <div class="card">
+        <div class="card-head"><span class="card-title">Open positions<span class="count" data-f="pos-count">\u00b7 0</span></span></div>
+        <div class="card-body flush" data-f="pos-body">
+          <div class="empty">No open positions.</div>
+        </div>
+        <div data-f="port-strip" style="display:none">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
+            <div style="padding:10px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Equity</div>
+              <div class="mono" style="font-size:15px;color:var(--text)" data-f="port-equity">\u2014</div>
+            </div>
+            <div style="padding:10px 14px">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Buying power</div>
+              <div class="mono" style="font-size:15px;color:var(--text)" data-f="port-bp">\u2014</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
+            <div style="padding:8px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Cash</div>
+              <div class="mono" style="font-size:12px;color:var(--text-muted)" data-f="port-cash">\u2014</div>
+            </div>
+            <div style="padding:8px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Invested</div>
+              <div class="mono" style="font-size:12px;color:var(--text-muted)" data-f="port-longmv">\u2014</div>
+            </div>
+            <div style="padding:8px 14px">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Shorted</div>
+              <div class="mono" style="font-size:12px;color:var(--down)" data-f="port-shortliab">\u2014</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Proximity<span class="count" data-f="prox-count">\u00b7 \u2014</span></span></div>
+        <div class="card-body flush" data-f="prox-list">
+          <div class="empty">Not tracked for ${label}.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-2">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Last signal</span>
+          <span class="chip" data-f="last-sig-chip">\u2014</span>
+        </div>
+        <div class="card-body" data-f="last-sig-body">
+          <div class="empty">No signals received yet.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Today's trades<span class="count" data-f="trades-count">\u00b7 \u2014</span></span><span class="chip" data-f="trades-realized">\u2014</span></div>
+        <div class="card-body flush" data-f="trades-body">
+          <div class="empty">Trades list not tracked for ${label}.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-2">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Sovereign Regime Shield</span>
+          <span class="chip" data-f="srs-status">\u2014</span>
+        </div>
+        <div class="card-body" data-f="srs-body">
+          <div class="empty">Not tracked for ${label}.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Gates \u00b7 entry checks</span></div>
+        <div data-f="gates-body">
+          <div class="empty">Not tracked for ${label}.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Account diagnostics</span></div>
+        <div class="card-body">
+          <div class="key-val-grid">
+            <dt>Account number</dt><dd data-f="d-account" style="text-align:right">\u2014</dd>
+            <dt>Status</dt><dd data-f="d-status" style="text-align:right">\u2014</dd>
+            <dt>Alpaca base URL</dt><dd data-f="d-baseurl" style="text-align:right">\u2014</dd>
+            <dt>Last error</dt><dd data-f="d-error" style="text-align:right">\u2014</dd>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>`;
+  }
+
+  // Inject the skeleton once; store a `data-tg-ready` flag on the panel
+  // so subsequent polls just update fields instead of re-parsing HTML.
+  function ensureExecSkeleton(exec) {
+    const panel = $$("tg-panel-" + exec);
+    if (!panel) return null;
+    if (!panel.dataset.tgReady) {
+      panel.innerHTML = execSkeleton(exec);
+      panel.dataset.tgReady = "1";
+    }
+    return panel;
+  }
+
+  function execField(panel, name) {
+    return panel.querySelector(`[data-f="${name}"]`);
+  }
+  function setField(panel, name, value) {
+    const el = execField(panel, name);
+    if (el) el.textContent = value;
+    return el;
+  }
+  function setFieldHtml(panel, name, html) {
+    const el = execField(panel, name);
+    if (el) el.innerHTML = html;
+    return el;
+  }
+
   async function pollExecutor(name) {
-    const bodyId = "tg-" + name + "-body";
-    const body = $$(bodyId);
-    if (!body) return;
+    const panel = ensureExecSkeleton(name);
+    if (!panel) return;
     try {
       const r = await fetch("/api/executor/" + name, { credentials: "same-origin" });
       if (!r.ok) throw new Error("http " + r.status);
       const data = await r.json();
       renderExecutor(name, data);
     } catch (e) {
-      body.innerHTML = `<div style="color:#f87171">Fetch failed: ${esc(e.message || e)}</div>`;
+      setField(panel, "h-health", "fetch failed");
+      const banner = execField(panel, "banner");
+      if (banner) {
+        banner.classList.remove("hide");
+        banner.textContent = "Fetch failed: " + (e.message || e);
+      }
     }
   }
 
@@ -1494,124 +1669,194 @@
       return;
     }
     if (data.mode === "live") {
-      el.textContent = "🟢 Live";
+      el.textContent = "\ud83d\udfe2 Live";
       el.style.color = "#34d399";
     } else {
-      el.textContent = "📄 Paper";
+      el.textContent = "\ud83d\udcc4 Paper";
       el.style.color = "#8a96a7";
     }
   }
 
+  // Render helpers shared across Val/Gene. These mirror the formatters
+  // used by the Main IIFE above (fmtUsd/fmtPct there use "\u2212" minus
+  // signs; we stick with the Intl currency formatter to keep footprint
+  // small — visual parity close enough since KPIs are the same cards).
+  function fmtPctExec(v, d) {
+    if (v === null || v === undefined || isNaN(v)) return "\u2014";
+    const abs = Math.abs(v);
+    const digits = d ?? (abs < 0.1 ? 3 : 2);
+    return (v >= 0 ? "+" : "\u2212") + abs.toFixed(digits) + "%";
+  }
+
   function renderExecutor(name, data) {
     renderBadge(name, data);
-    const body = $$("tg-" + name + "-body");
-    if (!body) return;
+    const panel = ensureExecSkeleton(name);
+    if (!panel) return;
     const label = name === "val" ? "Val" : "Gene";
-    if (!data || data.enabled === false) {
-      body.innerHTML = `
-        <div style="max-width:560px;padding:22px;border:1px solid #1f2937;border-radius:10px;background:#10151c">
-          <div style="font-size:15px;font-weight:600;margin-bottom:8px">${label} executor not enabled</div>
-          <div style="color:#8a96a7;font-size:12.5px">Set <code style="font-family:'JetBrains Mono',monospace">${name.toUpperCase()}_ALPACA_PAPER_KEY</code>, <code style="font-family:'JetBrains Mono',monospace">${name.toUpperCase()}_ALPACA_PAPER_SECRET</code>, and optionally other <code style="font-family:'JetBrains Mono',monospace">${name.toUpperCase()}_*</code> vars to activate this tab. See <code style="font-family:'JetBrains Mono',monospace">.env.example</code> for the full list.</div>
-        </div>`;
-      return;
-    }
-    const modeBadge = data.mode === "live"
-      ? `<span style="background:#0f2e23;color:#34d399;padding:3px 8px;border-radius:4px;font-size:11px">🟢 Live</span>`
-      : `<span style="background:#1e2633;color:#8a96a7;padding:3px 8px;border-radius:4px;font-size:11px">📄 Paper</span>`;
-    const healthBadge = data.healthy
-      ? `<span style="color:#34d399;font-size:11px">● healthy</span>`
-      : `<span style="color:#f87171;font-size:11px">● ${esc(data.error || "unhealthy")}</span>`;
+    const disabled = !data || data.enabled === false;
 
-    let acctHtml = `<div style="color:#5b6572">account not available</div>`;
-    if (data.account) {
-      const a = data.account;
-      acctHtml = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
-        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Cash</div><div style="font-family:'JetBrains Mono',monospace;font-size:15px">${fmtUsd(a.cash)}</div></div>
-        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Buying Power</div><div style="font-family:'JetBrains Mono',monospace;font-size:15px">${fmtUsd(a.buying_power)}</div></div>
-        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Equity</div><div style="font-family:'JetBrains Mono',monospace;font-size:15px">${fmtUsd(a.equity)}</div></div>
-        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Account</div><div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#8a96a7">${esc(a.account_number || "—")}</div></div>
-      </div>`;
+    // Dim the whole panel when the executor is not configured so the
+    // layout reads as "present but inert" rather than broken.
+    panel.style.opacity = disabled ? "0.55" : "";
+
+    // Banner: show the disabled / unhealthy state up top, hide otherwise.
+    const banner = execField(panel, "banner");
+    if (banner) {
+      if (disabled) {
+        banner.classList.remove("hide");
+        banner.textContent = `${label} executor not configured \u2014 set ${name.toUpperCase()}_ALPACA_PAPER_KEY/SECRET (see .env.example).`;
+      } else if (data.error) {
+        banner.classList.remove("hide");
+        banner.textContent = data.error;
+      } else {
+        banner.classList.add("hide");
+        banner.textContent = "";
+      }
     }
 
-    // Split invested vs shorted (longs under Invested, shorts under Shorted —
-    // columns labeled the same way the Main tab already does per v3.4.46).
-    const positions = Array.isArray(data.positions) ? data.positions : [];
-    let invested = 0.0, shorted = 0.0;
+    // Header row
+    const now = new Date();
+    setField(panel, "h-date", now.toISOString().slice(0, 10));
+    setField(panel, "h-mode", disabled ? "disabled" : (data.mode === "live" ? "\ud83d\udfe2 Live" : "\ud83d\udcc4 Paper"));
+    const health = execField(panel, "h-health");
+    const pulse = execField(panel, "h-pulse");
+    if (health) {
+      if (disabled) { health.textContent = "OFF"; }
+      else if (data.healthy) { health.textContent = "LIVE"; }
+      else { health.textContent = "ERR"; }
+    }
+    if (pulse) {
+      pulse.classList.toggle("off", disabled || !data.healthy);
+    }
+    const acctNum = (data && data.account && data.account.account_number) || "\u2014";
+    setField(panel, "h-acct", acctNum);
+
+    // KPI row ----------------------------------------------------------
+    const account = (data && data.account) || {};
+    const positions = Array.isArray(data && data.positions) ? data.positions : [];
+    const equity = disabled ? null : (account.equity ?? null);
+    const cash = disabled ? null : (account.cash ?? null);
+    const bp = disabled ? null : (account.buying_power ?? null);
+    let invested = 0.0, shorted = 0.0, unrealTotal = 0.0;
     for (const p of positions) {
       const gross = (Number(p.qty) || 0) * (Number(p.avg_entry) || 0);
       if (p.side === "SHORT") shorted += gross; else invested += gross;
+      unrealTotal += (Number(p.unrealized_pnl) || 0);
     }
 
-    let posHtml;
-    if (!positions.length) {
-      posHtml = `<div style="color:#5b6572;padding:12px 0">No open positions.</div>`;
+    setField(panel, "k-equity", equity === null ? "\u2014" : fmtUsd(equity));
+    setFieldHtml(panel, "k-equity-sub",
+      disabled
+        ? "\u2014"
+        : `Cash ${esc(cash === null ? "\u2014" : fmtUsd(cash))} \u00b7 BP ${esc(bp === null ? "\u2014" : fmtUsd(bp))}`
+    );
+
+    // Day P&L: per-executor snapshot has no realized-today breakdown yet,
+    // so show unrealized from open positions as a proxy and label it.
+    const pnlEl = execField(panel, "k-pnl");
+    if (pnlEl) {
+      pnlEl.textContent = disabled ? "\u2014" : fmtUsd(unrealTotal);
+      pnlEl.classList.remove("delta-up", "delta-down");
+      if (!disabled) pnlEl.classList.add(unrealTotal >= 0 ? "delta-up" : "delta-down");
+    }
+    setField(panel, "k-pnl-sub", disabled ? "\u2014" : "unrealized \u00b7 open positions");
+
+    setField(panel, "k-open", disabled ? "\u2014" : String(positions.length));
+    if (disabled) {
+      setField(panel, "k-open-sub", "\u2014");
+    } else if (!positions.length) {
+      setField(panel, "k-open-sub", "No positions");
     } else {
-      const rows = positions.map(p => {
-        const up = (Number(p.unrealized_pnl) || 0) >= 0;
-        const color = up ? "#34d399" : "#f87171";
-        const sideColor = p.side === "SHORT" ? "#f87171" : "#34d399";
-        return `<tr>
-          <td style="padding:6px 8px">${esc(p.symbol)}</td>
-          <td style="padding:6px 8px;color:${sideColor};font-weight:600">${esc(p.side)}</td>
-          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace">${fmtNum(p.qty, 0)}</td>
-          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace">${fmtNum(p.avg_entry, 2)}</td>
-          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace">${fmtNum(p.current_price, 2)}</td>
-          <td style="padding:6px 8px;text-align:right;color:${color};font-family:'JetBrains Mono',monospace">${fmtUsd(p.unrealized_pnl)}</td>
-          <td style="padding:6px 8px;text-align:right;color:${color};font-family:'JetBrains Mono',monospace">${fmtNum(p.unrealized_pnl_pct, 2)}%</td>
-        </tr>`;
-      }).join("");
-      posHtml = `<table style="width:100%;border-collapse:collapse;font-size:12.5px">
-        <thead><tr style="color:#5b6572;text-transform:uppercase;font-size:10px;letter-spacing:.08em;border-bottom:1px solid #1f2937">
-          <th style="text-align:left;padding:8px">Ticker</th>
-          <th style="text-align:left;padding:8px">Side</th>
-          <th style="text-align:right;padding:8px">Qty</th>
-          <th style="text-align:right;padding:8px">Avg Entry</th>
-          <th style="text-align:right;padding:8px">Mark</th>
-          <th style="text-align:right;padding:8px">Unrealized</th>
-          <th style="text-align:right;padding:8px">%</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
+      const longs = positions.filter(p => p.side !== "SHORT").length;
+      const shorts = positions.length - longs;
+      setField(panel, "k-open-sub", `${longs} long \u00b7 ${shorts} short`);
     }
 
-    let lastSigHtml = `<div style="color:#5b6572">No signals received yet.</div>`;
-    const ls = data.last_signal;
-    if (ls && ls.kind) {
-      lastSigHtml = `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#8a96a7">
-        <span style="color:#7dd3fc">${esc(ls.kind)}</span>
-        ${esc(ls.ticker || "")}
-        ${ls.price ? "@ $" + fmtNum(ls.price, 2) : ""}
-        ${ls.reason ? "· " + esc(ls.reason) : ""}
-        <span style="color:#5b6572">· ${esc(ls.timestamp_utc || "")}</span>
-      </div>`;
+    // Gate / Regime / Session are main-bot-only \u2014 keep as em-dash.
+    const gateEl = execField(panel, "k-gate");
+    if (gateEl) { gateEl.textContent = disabled ? "\u2014" : (data.healthy ? "READY" : "ERR"); gateEl.style.color = disabled ? "" : (data.healthy ? "var(--up)" : "var(--down)"); }
+    setField(panel, "k-gate-sub", disabled ? "\u2014" : (data.healthy ? "client healthy" : (data.error ? "client error" : "\u2014")));
+    setField(panel, "k-regime", "\u2014");
+    setField(panel, "k-regime-sub", "\u2014");
+    setField(panel, "k-session", disabled ? "OFF" : (data.mode === "live" ? "LIVE" : "PAPER"));
+    setField(panel, "k-session-sub", "\u2014");
+
+    // Open positions card ----------------------------------------------
+    const posBody = execField(panel, "pos-body");
+    const portStrip = execField(panel, "port-strip");
+    const posCount = execField(panel, "pos-count");
+    if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "\u2014" : positions.length);
+
+    if (posBody) {
+      if (disabled) {
+        posBody.innerHTML = `<div class="empty">\u2014</div>`;
+      } else if (!positions.length) {
+        posBody.innerHTML = `<div class="empty">No open positions.</div>`;
+      } else {
+        const rows = positions.map(p => {
+          const upok = (Number(p.unrealized_pnl) || 0) >= 0;
+          const color = upok ? "var(--up)" : "var(--down)";
+          const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
+          return `<tr>
+            <td style="padding:6px 10px">${esc(p.symbol)}</td>
+            <td style="padding:6px 10px" class="${sideCls}">${esc(p.side)}</td>
+            <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.qty, 0)}</td>
+            <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.avg_entry, 2)}</td>
+            <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.current_price, 2)}</td>
+            <td class="mono" style="padding:6px 10px;text-align:right;color:${color}">${fmtUsd(p.unrealized_pnl)}</td>
+            <td class="mono" style="padding:6px 10px;text-align:right;color:${color}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
+          </tr>`;
+        }).join("");
+        posBody.innerHTML = `
+          <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+            <thead><tr style="color:var(--text-dim);text-transform:uppercase;font-size:10px;letter-spacing:.08em;border-bottom:1px solid var(--border)">
+              <th style="text-align:left;padding:8px 10px">Ticker</th>
+              <th style="text-align:left;padding:8px 10px">Side</th>
+              <th style="text-align:right;padding:8px 10px">Qty</th>
+              <th style="text-align:right;padding:8px 10px">Avg Entry</th>
+              <th style="text-align:right;padding:8px 10px">Mark</th>
+              <th style="text-align:right;padding:8px 10px">Unrealized</th>
+              <th style="text-align:right;padding:8px 10px">%</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+      }
     }
 
-    body.innerHTML = `
-      <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px">
-        <h2 style="margin:0;font-size:18px;font-weight:700">${label}</h2>
-        ${modeBadge}
-        ${healthBadge}
-      </div>
-      <section style="background:#10151c;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:18px">
-        ${acctHtml}
-      </section>
-      <section style="background:#10151c;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:18px">
-        <div style="display:flex;justify-content:space-between;margin-bottom:10px">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Invested</div>
-          <div style="font-family:'JetBrains Mono',monospace">${fmtUsd(invested)}</div>
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:10px">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Shorted</div>
-          <div style="font-family:'JetBrains Mono',monospace">${fmtUsd(shorted)}</div>
-        </div>
-        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572;margin:14px 0 6px">Open positions</div>
-        ${posHtml}
-      </section>
-      <section style="background:#10151c;border:1px solid #1f2937;border-radius:10px;padding:16px">
-        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572;margin-bottom:8px">Last signal</div>
-        ${lastSigHtml}
-        <div style="color:#5b6572;font-size:11px;margin-top:10px">Today's realized P&amp;L: <code>TODO</code> (reads Alpaca activity feed — wired after Val review)</div>
-      </section>`;
+    // Cash / BP / Invested / Shorted footer under positions card ------
+    if (portStrip) {
+      portStrip.style.display = disabled ? "none" : "";
+      setField(panel, "port-equity", equity === null ? "\u2014" : fmtUsd(equity));
+      setField(panel, "port-bp", bp === null ? "\u2014" : fmtUsd(bp));
+      setField(panel, "port-cash", cash === null ? "\u2014" : fmtUsd(cash));
+      setField(panel, "port-longmv", fmtUsd(invested));
+      setField(panel, "port-shortliab", fmtUsd(shorted));
+    }
+
+    // Last signal card -------------------------------------------------
+    const ls = data && data.last_signal;
+    const sigBody = execField(panel, "last-sig-body");
+    const sigChip = execField(panel, "last-sig-chip");
+    if (sigChip) sigChip.textContent = disabled ? "\u2014" : (ls && ls.kind ? ls.kind : "none");
+    if (sigBody) {
+      if (disabled || !ls || !ls.kind) {
+        sigBody.innerHTML = `<div class="empty">No signals received yet.</div>`;
+      } else {
+        const px = ls.price ? " @ $" + fmtNum(ls.price, 2) : "";
+        const reason = ls.reason ? ` \u00b7 ${esc(ls.reason)}` : "";
+        sigBody.innerHTML = `<div class="mono" style="font-size:12px;color:var(--text-muted)">
+          <span style="color:var(--accent)">${esc(ls.kind)}</span>
+          ${esc(ls.ticker || "")}${px}${reason}
+          <span style="color:var(--text-dim)"> \u00b7 ${esc(ls.timestamp_utc || "")}</span>
+        </div>`;
+      }
+    }
+
+    // Diagnostics ------------------------------------------------------
+    setField(panel, "d-account", account.account_number || "\u2014");
+    setField(panel, "d-status", account.status || "\u2014");
+    setField(panel, "d-baseurl", (data && data.alpaca_base_url) || "\u2014");
+    setField(panel, "d-error", (data && data.error) || "\u2014");
   }
 
   // Kick off the index strip (runs on all tabs) and poll every 30s.
