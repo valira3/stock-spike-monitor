@@ -4,6 +4,10 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.5.3 (2026-04-24) — fix(deploy): add `COPY telegram_commands.py .` to Dockerfile so the new module ships in the container image. v4.5.2 crashed at startup with `ModuleNotFoundError: No module named 'telegram_commands'` because Railway uses the Dockerfile (not nixpacks) when one exists, and the Dockerfile only enumerated `trade_genius.py`, `dashboard_server.py`, and `dashboard_static/`. The new `telegram_commands.py` introduced in v4.5.2 was therefore absent from the build context. One-line additive change to the Dockerfile, no Python edits beyond the version bump. Hot-restores production.
+
+---
+
 ## v4.5.2 (2026-04-24) — refactor: extracted main-bot Telegram command handlers into `telegram_commands.py` (~1164 LOC) for maintainability. Pure code motion, zero behavior change.
 
 All 25 top-level `cmd_*` handlers plus `reset_callback` and `_reset_authorized` moved out of `trade_genius.py` into a new `telegram_commands.py` module. Handler registrations in `run_telegram_bot()` updated to reference the new module (e.g. `CommandHandler("status", telegram_commands.cmd_status)`). Menu-callback invocations via `_invoke_from_callback` likewise updated. Sub-bot class methods (`TradeGeniusBase/Val/Gene.cmd_*`) are bound methods and were NOT touched. The `_auth_guard` TypeHandler stays in `trade_genius.py` since it owns owner-ID enforcement for the whole bot. Smoke suite grows from 57 → 59 tests (two new `refactor:` tests verify the move).
