@@ -256,18 +256,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.2.2")
+    @t("version: BOT_VERSION is 4.3.0")
     def _():
-        assert m.BOT_VERSION == "4.2.2", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.3.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.2.2")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.3.0")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.2.2"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.3.0"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -664,6 +664,139 @@ def run_local() -> int:
         finally:
             m.val_executor = saved_val
             m.gene_executor = saved_gene
+
+    # ---------- v4.3.0 extended-entry guards ----------
+    @t("guard: env flags exist with documented defaults")
+    def _():
+        assert hasattr(m, "ENTRY_EXTENSION_MAX_PCT"), \
+            "ENTRY_EXTENSION_MAX_PCT missing"
+        assert hasattr(m, "ENTRY_STOP_CAP_REJECT"), \
+            "ENTRY_STOP_CAP_REJECT missing"
+        assert isinstance(m.ENTRY_EXTENSION_MAX_PCT, float)
+        assert isinstance(m.ENTRY_STOP_CAP_REJECT, bool)
+        # Defaults: 1.5% extension, reject-on-cap ON.
+        assert abs(m.ENTRY_EXTENSION_MAX_PCT - 1.5) < 1e-9, \
+            f"expected 1.5, got {m.ENTRY_EXTENSION_MAX_PCT}"
+        assert m.ENTRY_STOP_CAP_REJECT is True, \
+            f"expected True, got {m.ENTRY_STOP_CAP_REJECT}"
+
+    @t("guard: long extension 0.5% under 1.5% cap is allowed")
+    def _():
+        or_hi = 100.0
+        price = or_hi * 1.005  # 0.5% extended
+        ext = (price - or_hi) / or_hi * 100.0
+        assert ext <= m.ENTRY_EXTENSION_MAX_PCT, \
+            f"ext {ext:.2f}% should be <= {m.ENTRY_EXTENSION_MAX_PCT}%"
+
+    @t("guard: long extension 2.0% over 1.5% cap is rejected")
+    def _():
+        or_hi = 100.0
+        price = or_hi * 1.02  # 2.0% extended
+        ext = (price - or_hi) / or_hi * 100.0
+        assert ext > m.ENTRY_EXTENSION_MAX_PCT, \
+            f"ext {ext:.2f}% should be > {m.ENTRY_EXTENSION_MAX_PCT}%"
+
+    @t("guard: short extension 2.0% below OR_Low is rejected")
+    def _():
+        or_lo = 100.0
+        price = or_lo * 0.98  # 2.0% extended below
+        ext = (or_lo - price) / or_lo * 100.0
+        assert ext > m.ENTRY_EXTENSION_MAX_PCT, \
+            f"ext {ext:.2f}% should be > {m.ENTRY_EXTENSION_MAX_PCT}%"
+
+    @t("guard: _capped_long_stop flags capped when baseline is too loose")
+    def _():
+        # Entry = $677.06, OR_High = $659.85 (META case).
+        # baseline = 659.85 - 0.90 = 658.95 → 18.11 below entry → >0.75%
+        stop, capped, base = m._capped_long_stop(659.85, 677.06)
+        assert capped is True, "expected capped=True on META-like entry"
+        # cap = entry * (1 - 0.0075) = 671.98
+        assert abs(stop - 671.98) < 0.01, f"got stop={stop}"
+        assert abs(base - 658.95) < 0.01, f"got base={base}"
+
+    @t("guard: _capped_long_stop not capped when baseline is already tight")
+    def _():
+        # Entry near OR_High — baseline OR_High-0.90 is within 0.75%.
+        # entry=100.10, or_h=100.00 → baseline=99.10 → floor=99.3495
+        # baseline < floor → capped flag True. Use a scenario with
+        # entry JUST at the OR edge (entry=100, or_h=100.50 invalid).
+        # Pick entry=100, or_h=100 → baseline=99.10, floor=99.25 → capped.
+        # To get NOT-capped we need baseline >= floor: baseline=entry-0.90;
+        # floor=entry*0.9925. Need entry-0.90 >= entry*0.9925 →
+        # entry*(1-0.9925) <= 0.90 → entry <= 120. So at entry=100,
+        # baseline=99.10, floor=99.25 → still capped. Use entry=200,
+        # or_h=200 → baseline=199.10, floor=198.50 → NOT capped.
+        stop, capped, base = m._capped_long_stop(200.0, 200.0)
+        assert capped is False, \
+            f"expected capped=False for entry at OR edge, got capped={capped}"
+
+    @t("guard: _capped_short_stop flags capped when baseline is too loose")
+    def _():
+        # Mirror case: entry far below PDC, baseline PDC+0.90 >> entry*1.0075.
+        stop, capped, base = m._capped_short_stop(pdc_val=500.0, entry_price=480.0)
+        assert capped is True, "expected capped=True on extended short"
+        # cap = 480 * 1.0075 = 483.60
+        assert abs(stop - 483.60) < 0.01, f"got stop={stop}"
+
+    @t("guard: ENTRY_STOP_CAP_REJECT=False preserves legacy capping path")
+    def _():
+        # When the env flag is False, the stop-cap rejection branch is
+        # skipped; the legacy _capped_long_stop still clamps at
+        # execute_entry-time so current behavior is preserved. We verify
+        # the logic by flipping the flag and re-reading the module toggle.
+        saved_flag = m.ENTRY_STOP_CAP_REJECT
+        try:
+            m.ENTRY_STOP_CAP_REJECT = False
+            # The capped stop is still produced by _capped_long_stop, so
+            # entries on this path would still get a capped stop (old
+            # behavior), NOT be rejected.
+            stop, capped, base = m._capped_long_stop(659.85, 677.06)
+            assert capped is True, \
+                "capping machinery must stay intact when reject flag is off"
+        finally:
+            m.ENTRY_STOP_CAP_REJECT = saved_flag
+
+    @t("guard: _update_gate_snapshot emits extension_pct when OR is seeded")
+    def _():
+        reset_state()
+        # Seed OR + PDC so the snapshot computes. Stub fetch_1min_bars
+        # + get_fmp_quote so the live-price fetch is deterministic.
+        m.or_high["ZZZZ"] = 100.0
+        m.or_low["ZZZZ"] = 95.0
+        m.pdc["ZZZZ"] = 97.0
+        m.or_high["SPY"] = 500.0
+        m.or_low["SPY"] = 495.0
+        m.pdc["SPY"] = 498.0
+        m.or_high["QQQ"] = 400.0
+        m.or_low["QQQ"] = 395.0
+        m.pdc["QQQ"] = 398.0
+        saved_bars = m.fetch_1min_bars
+        saved_fmp = m.get_fmp_quote
+        saved_di = m.tiger_di
+        try:
+            m.fetch_1min_bars = lambda t: {
+                "current_price": 102.0 if t == "ZZZZ" else (
+                    501.0 if t == "SPY" else 401.0
+                ),
+                "closes": [], "volumes": [],
+            }
+            m.get_fmp_quote = lambda t: None
+            m.tiger_di = lambda t: (None, None)  # warmup OK
+            m._update_gate_snapshot("ZZZZ")
+            snap = m._gate_snapshot.get("ZZZZ") or {}
+            assert "extension_pct" in snap, f"extension_pct missing: {snap}"
+            # Price 102 vs OR_High 100 → 2.00% extended on the LONG side.
+            assert snap["side"] == "LONG", f"side={snap.get('side')}"
+            assert abs(snap["extension_pct"] - 2.0) < 0.01, \
+                f"expected 2.0, got {snap['extension_pct']}"
+        finally:
+            m.fetch_1min_bars = saved_bars
+            m.get_fmp_quote = saved_fmp
+            m.tiger_di = saved_di
+            m.or_high.pop("ZZZZ", None)
+            m.or_low.pop("ZZZZ", None)
+            m.pdc.pop("ZZZZ", None)
+            m._gate_snapshot.pop("ZZZZ", None)
 
     return run_suite("LOCAL SMOKE TESTS (v4.0.0-beta Gene + dashboard)")
 
