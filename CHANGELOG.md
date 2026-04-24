@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.3.3 — Dashboard API: serialize `extension_pct` on `/api/state` per-ticker gates (2026-04-24)
+
+PR #107 (v4.3.0) added an `extension_pct` field to the per-ticker gate snapshot in `trade_genius.py` (signed distance of live price past the OR edge, rounded to 2 decimals; `None` when the OR envelope has not been seeded). `dashboard_server.py`'s `_ticker_gates` hardcodes the list of keys it copies onto `/api/state` and dropped the new field. v4.3.3 extends the serializer so the dashboard (and any other `/api/state` consumer) can see how extended each break is at entry-eval time without tailing Railway logs.
+
+**Changed:**
+
+- **`dashboard_server.py::_ticker_gates`** now copies `extension_pct` from the gate snapshot onto the serialized per-ticker row. Float values are rounded to 2 decimals (defense-in-depth — the source already rounds); `None` / missing values pass through unchanged (OR not yet seeded for that ticker). Existing key order preserved; the new key is appended after `or_stale_skip_count`.
+
+**Why:** After v4.3.0 shipped the `ENTRY_EXTENSION_MAX_PCT` guard, the gate snapshot carried the computed extension but the dashboard API stripped it. Surfacing the value lets the UI distinguish a fresh break (`ext ≈ 0%`) from a late chase (`ext > 1.5%`) at a glance, and matches the v4.3.0 note that promised dashboard pickup in a follow-up.
+
+**Changed:** `BOT_VERSION = "4.3.3"`; `CURRENT_MAIN_NOTE` rewritten; v4.3.2 note rolled into `_MAIN_HISTORY_TAIL`.
+
+**Validation:** `python3 -c "import ast; ast.parse(...)"` clean; `smoke_test.py --local` PASS (49/49).
+
+**Breaking:** None. Additive field; consumers that ignore unknown keys are unaffected. Tickers with no OR yet emit `extension_pct: null`, matching the pre-seed contract.
+
+---
+
 ## v4.3.2 — Dashboard UI: replace "scan in" label with ♻ recycle glyph (2026-04-24)
 
 Row 2's next-scan countdown used to render as the text `scan in 13s` next to the LIVE pill. v4.3.2 swaps the literal word `scan in` for the `♻` (U+267B) recycle glyph so the countdown reads `♻ 13s` — a few pixels narrower, and unambiguous at a glance.

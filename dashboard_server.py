@@ -358,6 +358,9 @@ def _ticker_gates(m, tickers: list[str]) -> list[dict]:
     rows = []
     for t in tickers:
         g = snap.get(t) or {}
+        ext = g.get("extension_pct")
+        if isinstance(ext, float):
+            ext = round(ext, 2)
         rows.append({
             "ticker": t,
             "side": g.get("side"),
@@ -367,6 +370,7 @@ def _ticker_gates(m, tickers: list[str]) -> list[dict]:
             "di": g.get("di"),
             "ts": g.get("ts"),
             "or_stale_skip_count": int(skip_counts.get(t, 0)),
+            "extension_pct": ext,
         })
     return rows
 
