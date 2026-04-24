@@ -4,6 +4,51 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.6.0 (2026-04-24) — refactor: extract paper-state I/O (load/save/reset + dedicated lock + `_state_loaded` guard) out of `trade_genius.py` into a new `paper_state.py` module. Pure code motion, zero behavior change.
+
+`trade_genius.py` previously hosted all paper-book persistence inline alongside trading logic. This release pulls the persistence cluster — `save_paper_state()`, `load_paper_state()`, `_do_reset_paper()`, the `_paper_save_lock` threading lock, and the `_state_loaded` startup guard — into a dedicated module that owns just the I/O concern. The actual mutable state globals (`paper_cash`, `positions`, `short_positions`, `trade_history`, `or_high`, etc.) STAY in `trade_genius.py` because they have ~200 read sites across `trade_genius.py`, `dashboard_server.py`, `telegram_commands.py`, and `smoke_test.py`; migrating them to attribute access on a singleton is out of scope for this PR.
+
+**Added (`paper_state.py`, ~240 LOC):**
+
+- `save_paper_state()` — atomic JSON write to `PAPER_STATE_FILE`, gated by `_state_loaded`, with the v4.1.1 inside-the-lock snapshot construction and the v3.3.1 data-loss guard preserved verbatim.
+- `load_paper_state()` — disk → in-memory hydration, including the v4.1.2 `.clear()` symmetry, the v4.0.8 fresh-book hard reset on parse failure, the per-key `last_exit_time` try/except, and the cross-day daily-counts reset.
+- `_do_reset_paper()` — `/reset` confirm callback target.
+- `_paper_save_lock` (module-owned) and `_state_loaded` (module-owned).
+- `_tg()` helper that returns the live `trade_genius` module whether it's running as `__main__` (production) or imported as `trade_genius` (smoke tests). Same pattern that `telegram_commands.py` uses since v4.5.4.
+- The `__main__` aliasing prelude — same trick from v4.5.4 — to make `from trade_genius import (...)` resolve to the already-loaded `__main__` module instead of re-executing `trade_genius.py` from disk under a second module name.
+
+**Changed (`trade_genius.py`):**
+
+- Three function definitions removed (~220 LOC): `save_paper_state`, `load_paper_state`, `_do_reset_paper`.
+- `_paper_save_lock = threading.Lock()` and `_state_loaded = False` lines removed; both globals are now owned by `paper_state.py`.
+- Re-export shim added BEFORE `import telegram_commands` (telegram_commands imports `save_paper_state` and `_do_reset_paper` from `trade_genius` at its own import time, so the re-export must be visible by then):
+  ```python
+  import paper_state
+  from paper_state import save_paper_state, load_paper_state, _do_reset_paper
+  ```
+- Every existing internal call site (`save_paper_state()` at L4099/L4637/L4779/L5205/L5421/L5521/L6340/L8487, `load_paper_state()` at startup, `_do_reset_paper()` from the reset callback) resolves to the re-exported name and continues to work without edits.
+- `BOT_VERSION` 4.5.4 → 4.6.0 (minor bump because a new module shipped).
+- `CURRENT_MAIN_NOTE` rewritten for v4.6.0; `_MAIN_HISTORY_TAIL` prepended with the v4.5.4 entry.
+
+**Changed (`Dockerfile`):**
+
+- Added `COPY paper_state.py .` after `COPY telegram_commands.py .`. This is critical: Railway uses the Dockerfile (not nixpacks) when one exists, and the Dockerfile enumerates Python files explicitly. v4.5.2 crashed at startup because it forgot this step (fixed in v4.5.3); v4.6.0 doesn't repeat the mistake.
+
+**Operational notes:**
+
+- Deployment pattern follows v4.5.4's lessons: `paper_state.py` aliases `__main__` in `sys.modules` exactly the way `telegram_commands.py` does, so prod's `python trade_genius.py` entrypoint (which registers trade_genius as `__main__`, NOT as `trade_genius`) doesn't trigger a circular re-execution when `paper_state.py` resolves trade_genius globals via `_tg()`.
+- The re-export shim means callsites in `telegram_commands.py` (`from trade_genius import ..., _do_reset_paper, ..., save_paper_state, ...`) keep working without edits.
+- State file format on disk is byte-identical. No migration. `git revert` the merge commit is a clean rollback.
+- Smoke suite grows 59 → 62 tests; three new `v4.6.0:` checks lock in module presence, the re-export identity, and ownership of `_state_loaded` / `_paper_save_lock`.
+
+**Validation:**
+
+- `python3 -c "import ast; ast.parse(open(f).read()) for f in ['trade_genius.py','telegram_commands.py','paper_state.py']"` — all parse.
+- `SSM_SMOKE_TEST=1 python3 smoke_test.py --local` — 62 passed · 0 failed.
+- Simulated prod startup via `runpy.run_path('trade_genius.py', run_name='__main__')` — `cmd_help` resolves on `telegram_commands`, `save_paper_state` is identical to `paper_state.save_paper_state`, `BOT_VERSION == "4.6.0"`.
+
+---
+
 ## v4.5.4 (2026-04-24) — fix(deploy): resolve circular-import crash introduced by v4.5.2's Telegram-command extraction. Prod runs `python trade_genius.py`, so the file is registered in `sys.modules` as `__main__` — NOT as `trade_genius`. When `run_telegram_bot()` did `import telegram_commands`, the new module's top-level `from trade_genius import (...)` re-executed trade_genius.py from disk under a second module name, which re-entered `run_telegram_bot()` while `telegram_commands` was still partially initialized — `AttributeError: ... has no attribute 'cmd_help'`.
 
 Fix: at the very top of `telegram_commands.py`, alias the already-loaded `__main__` module to `trade_genius` in `sys.modules` (guarded by a `BOT_NAME == "TradeGenius"` sentinel check so we don't accidentally overwrite a real trade_genius import in tests). Also replaced the three direct `trade_genius._scan_paused` references in `cmd_monitoring` with `_tg_module()._scan_paused` for symmetry. No behavior change — same module object, just both names resolve to it.

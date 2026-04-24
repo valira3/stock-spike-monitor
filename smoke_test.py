@@ -328,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.5.4")
+    @t("version: BOT_VERSION is 4.6.0")
     def _():
-        assert m.BOT_VERSION == "4.5.4", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.6.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.5.4")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.6.0")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.5.4"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.6.0"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -1002,7 +1002,42 @@ def run_local() -> int:
             m._now_et = saved
             m._scan_idle_hours = False
 
-    return run_suite("LOCAL SMOKE TESTS (v4.0.0-beta Gene + dashboard)")
+    # ---------- v4.6.0 \u2014 paper_state extraction ----------
+    @t("v4.6.0: paper_state module imports cleanly")
+    def _():
+        import paper_state  # noqa: F401
+        assert hasattr(paper_state, "save_paper_state"), \
+            "paper_state.save_paper_state missing"
+        assert hasattr(paper_state, "load_paper_state"), \
+            "paper_state.load_paper_state missing"
+        assert hasattr(paper_state, "_do_reset_paper"), \
+            "paper_state._do_reset_paper missing"
+
+    @t("v4.6.0: paper_state.save_paper_state is re-exported by trade_genius")
+    def _():
+        import paper_state
+        assert m.save_paper_state is paper_state.save_paper_state, \
+            "trade_genius.save_paper_state is not the same callable as " \
+            "paper_state.save_paper_state \u2014 re-export broken"
+        assert m.load_paper_state is paper_state.load_paper_state, \
+            "trade_genius.load_paper_state re-export broken"
+        assert m._do_reset_paper is paper_state._do_reset_paper, \
+            "trade_genius._do_reset_paper re-export broken"
+
+    @t("v4.6.0: paper_state owns _state_loaded and _paper_save_lock")
+    def _():
+        import paper_state
+        assert hasattr(paper_state, "_state_loaded"), \
+            "paper_state._state_loaded missing \u2014 should be owned by paper_state"
+        assert hasattr(paper_state, "_paper_save_lock"), \
+            "paper_state._paper_save_lock missing \u2014 should be owned by paper_state"
+        # And the originals must NOT live on trade_genius any more.
+        assert not hasattr(m, "_state_loaded"), \
+            "v4.6.0: trade_genius._state_loaded should have moved to paper_state"
+        assert not hasattr(m, "_paper_save_lock"), \
+            "v4.6.0: trade_genius._paper_save_lock should have moved to paper_state"
+
+    return run_suite("LOCAL SMOKE TESTS (v4.6.0 paper_state extraction)")
 
 
 # ============================================================

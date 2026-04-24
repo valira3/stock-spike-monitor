@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.5.4"
+BOT_VERSION = "4.6.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,6 +70,21 @@ BOT_VERSION = "4.5.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.6.0 \u2014 refactor:\n"
+    "extracted paper-state I/O\n"
+    "(save/load/reset + lock +\n"
+    "_state_loaded) into a new\n"
+    "paper_state.py module.\n"
+    "trade_genius.py re-exports\n"
+    "the names so callsites in\n"
+    "telegram_commands stay\n"
+    "unchanged. Pure code\n"
+    "motion \u2014 zero behavior\n"
+    "change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.5.4 \u2014 deploy fix:\n"
     "telegram_commands.py now\n"
     "aliases __main__ in\n"
@@ -77,12 +92,7 @@ CURRENT_MAIN_NOTE = (
     "`python trade_genius.py`\n"
     "entrypoint doesn't trigger\n"
     "a circular re-execution.\n"
-    "Restores v4.5.2's cmd_*\n"
-    "extraction without crash."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "\n"
     "v4.5.3 \u2014 deploy fix:\n"
     "Dockerfile now copies\n"
     "telegram_commands.py into\n"
@@ -1640,8 +1650,7 @@ paper_all_trades: list = []
 trade_history: list = []        # ALL closed paper trades, max 500
 TRADE_HISTORY_MAX = 500
 
-# Guard: prevent scheduler from saving empty state before load completes
-_state_loaded = False
+# v4.6.0: _state_loaded moved to paper_state.py (single owner of the flag).
 
 # Short positions (Wounded Buffalo strategy)
 short_positions: dict = {}           # paper short: {ticker: {entry_price, shares, stop, trail_stop, trail_active, entry_time, date, side}}
@@ -2853,8 +2862,7 @@ _last_scan_time = None           # datetime (UTC), updated each scan cycle
 # User config
 user_config: dict = {"trading_mode": "paper"}
 
-# Thread safety
-_paper_save_lock = threading.Lock()
+# v4.6.0: _paper_save_lock moved to paper_state.py.
 
 
 # ============================================================
@@ -2863,204 +2871,9 @@ _paper_save_lock = threading.Lock()
 
 
 # ============================================================
-# STATE PERSISTENCE
+# STATE PERSISTENCE \u2014 moved to paper_state.py in v4.6.0.
+# Re-exported below so existing callsites keep working.
 # ============================================================
-def save_paper_state():
-    """Persist paper trading + strategy state to disk. Thread-safe, atomic."""
-    t0 = time.time()
-    if not _state_loaded:
-        logger.warning("save_paper_state skipped — state not yet loaded")
-        return
-    # Data-loss guard: warn if history empty but cash changed (trades
-    # happened then vanished). v3.3.1: also check for currently-open
-    # positions — a short entry credits cash immediately but only
-    # appends to short_trade_history on COVER, so an open-short session
-    # is a legitimate state with empty history and moved cash. Only
-    # warn when there's no record of ANY activity (no history AND no
-    # open positions) yet cash has moved.
-    has_any_activity = (
-        bool(trade_history)
-        or bool(short_trade_history)
-        or bool(positions)
-        or bool(short_positions)
-    )
-    if (not has_any_activity) and paper_cash != PAPER_STARTING_CAPITAL:
-        logger.warning(
-            "DATA LOSS GUARD: no trade history or open positions but "
-            "cash=$%.2f (start=$%.0f) — possible trade history wipe!",
-            paper_cash, PAPER_STARTING_CAPITAL,
-        )
-    # v4.1.1: snapshot construction moved INSIDE the lock so a concurrent
-    # save (5-min periodic + scan-loop close_position) cannot build a
-    # half-mutated state dict while another save is iterating the same
-    # globals for json.dump. Two saves racing on the same globals used to
-    # risk "dictionary changed size during iteration".
-    with _paper_save_lock:
-        state = {
-            "paper_cash": paper_cash,
-            "positions": dict(positions),
-            "paper_trades": list(paper_trades),
-            "paper_all_trades": list(paper_all_trades[-500:]),
-            "daily_entry_count": dict(daily_entry_count),
-            "daily_entry_date": daily_entry_date,
-            "or_high": dict(or_high),
-            "or_low": dict(or_low),
-            "pdc": dict(pdc),
-            "or_collected_date": or_collected_date,
-            "user_config": dict(user_config),
-            "trade_history": list(trade_history),
-            "short_positions": dict(short_positions),
-            "short_trade_history": list(short_trade_history[-500:]),
-            # v3.4.34: avwap_data / avwap_last_ts no longer persisted.
-            "daily_short_entry_count": dict(daily_short_entry_count),
-            "last_exit_time": {k: v.isoformat() for k, v in _last_exit_time.items()},
-            "_scan_paused": _scan_paused,
-            "_trading_halted": _trading_halted,
-            "_trading_halted_reason": _trading_halted_reason,
-            "saved_at": _utc_now_iso(),
-        }
-        tmp = PAPER_STATE_FILE + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, default=str)
-            os.replace(tmp, PAPER_STATE_FILE)
-            logger.debug("Paper state saved -> %s (%.3fs)", PAPER_STATE_FILE, time.time() - t0)
-        except Exception as e:
-            logger.error("save_paper_state failed: %s", e)
-
-
-def load_paper_state():
-    """Load paper trading state from disk on startup."""
-    global paper_cash, positions, paper_trades, paper_all_trades
-    global daily_entry_count, daily_entry_date
-    global or_high, or_low, pdc, or_collected_date
-    global user_config
-    global trade_history
-    global short_positions, short_trade_history
-    global daily_short_entry_count
-    global _last_exit_time, _state_loaded
-    global _scan_paused, _trading_halted, _trading_halted_reason
-
-    if not os.path.exists(PAPER_STATE_FILE):
-        paper_log("No saved state at %s. Starting fresh $%.0f."
-                  % (PAPER_STATE_FILE, PAPER_STARTING_CAPITAL))
-        _state_loaded = True
-        return
-
-    try:
-        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
-            state = json.load(f)
-
-        paper_cash = float(state.get("paper_cash", PAPER_STARTING_CAPITAL))
-        # v4.1.2: .clear() before .update() to symmetrize load semantics
-        # with paper_trades/paper_all_trades/trade_history/short_trade_history
-        # below. A second load_paper_state call (module re-init, hot patch)
-        # would otherwise merge stale in-memory state on top of disk state.
-        positions.clear()
-        positions.update(state.get("positions", {}))
-        paper_trades.clear()
-        paper_trades.extend(state.get("paper_trades", []))
-        paper_all_trades.clear()
-        paper_all_trades.extend(state.get("paper_all_trades", []))
-        daily_entry_count.clear()
-        daily_entry_count.update(state.get("daily_entry_count", {}))
-        daily_entry_date = state.get("daily_entry_date", "")
-        or_high.clear()
-        or_high.update(state.get("or_high", {}))
-        or_low.clear()
-        or_low.update(state.get("or_low", {}))
-        pdc.clear()
-        pdc.update(state.get("pdc", {}))
-        or_collected_date = state.get("or_collected_date", "")
-        user_config.clear()
-        user_config.update(state.get("user_config", {}))
-        trade_history.clear()
-        trade_history.extend(state.get("trade_history", []))
-        short_positions.clear()
-        short_positions.update(state.get("short_positions", {}))
-        short_trade_history.clear()
-        short_trade_history.extend(state.get("short_trade_history", []))
-        # v3.4.34: legacy "avwap_data"/"avwap_last_ts" keys in old
-        # state files are silently ignored (no longer loaded).
-        daily_short_entry_count.clear()
-        daily_short_entry_count.update(state.get("daily_short_entry_count", {}))
-        raw_exit = state.get("last_exit_time", {})
-        # Normalize to UTC-aware. Older persisted state may contain
-        # tz-naive ISO strings; mixing those with tz-aware datetime.now
-        # raises "can't subtract offset-naive and offset-aware" and kills
-        # entry checks silently. Assume naive == UTC (the original write
-        # site has always used datetime.now(timezone.utc)).
-        def _parse_exit_ts(v):
-            dt = datetime.fromisoformat(v)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        # Per-key try/except: one malformed stored value MUST NOT wipe
-        # every ticker's cooldown map. Previously a single bad row in
-        # paper_state.json disabled the 15-min re-entry guard for the
-        # entire watchlist.
-        _last_exit_time = {}
-        for _k, _v in raw_exit.items():
-            try:
-                _last_exit_time[_k] = _parse_exit_ts(_v)
-            except Exception:
-                logger.warning(
-                    "load_paper_state: dropping malformed last_exit_time[%r]=%r",
-                    _k, _v,
-                )
-
-        # Load persisted flags
-        _scan_paused = state.get("_scan_paused", False)
-        _trading_halted = state.get("_trading_halted", False)
-        _trading_halted_reason = state.get("_trading_halted_reason", "")
-
-        # Reset daily counts if saved on a different day
-        today = _now_et().strftime("%Y-%m-%d")
-        if daily_entry_date != today:
-            daily_entry_count.clear()
-            daily_short_entry_count.clear()
-            paper_trades.clear()
-            _trading_halted = False
-            _trading_halted_reason = ""
-
-        _state_loaded = True
-        logger.info("Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
-                    paper_cash, len(positions), len(trade_history))
-    except Exception as e:
-        # v4.0.8 — previously we set _state_loaded = True and returned,
-        # which let the next periodic save stamp a partially-loaded
-        # snapshot (e.g. paper_cash loaded, positions never populated
-        # before the exception) over the on-disk file. That silently
-        # wiped positions/history and was unrecoverable. Now we hard-
-        # reset in-memory state to a clean fresh-start book BEFORE
-        # unblocking saves, so at worst we persist a legitimate
-        # $100k / no-positions snapshot instead of a truncated one.
-        logger.error(
-            "load_paper_state failed: %s \u2014 resetting to fresh book to "
-            "avoid persisting partial state on top of the on-disk file",
-            e, exc_info=True,
-        )
-        paper_cash = PAPER_STARTING_CAPITAL
-        positions.clear()
-        paper_trades.clear()
-        paper_all_trades.clear()
-        daily_entry_count.clear()
-        daily_entry_date = ""
-        or_high.clear()
-        or_low.clear()
-        pdc.clear()
-        or_collected_date = ""
-        user_config.clear()
-        trade_history.clear()
-        short_positions.clear()
-        short_trade_history.clear()
-        daily_short_entry_count.clear()
-        _last_exit_time = {}
-        _scan_paused = False
-        _trading_halted = False
-        _trading_halted_reason = ""
-        _state_loaded = True
-
 
 # ============================================================
 # v3.4.27 — PERSISTENT TRADE LOG (append-only JSONL)
@@ -7468,24 +7281,6 @@ def _reset_buttons(action: str) -> InlineKeyboardMarkup:
     ]])
 
 
-def _do_reset_paper():
-    """Execute paper portfolio reset."""
-    global paper_cash, daily_entry_date
-    global _trading_halted, _trading_halted_reason
-    positions.clear()
-    short_positions.clear()
-    paper_trades.clear()
-    paper_all_trades.clear()
-    trade_history.clear()
-    short_trade_history.clear()
-    daily_entry_count.clear()
-    daily_short_entry_count.clear()
-    daily_entry_date = ""
-    paper_cash = PAPER_STARTING_CAPITAL
-    _trading_halted = False
-    _trading_halted_reason = ""
-    save_paper_state()
-
 
 # ============================================================
 # /perf COMMAND (Feature 5)
@@ -8785,6 +8580,14 @@ async def _auth_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     raise ApplicationHandlerStop
 
+
+# v4.6.0 \u2014 paper-state I/O lives in paper_state.py. Re-exported here so
+# existing callsites (telegram_commands.py, smoke_test.py, internal
+# uses) keep resolving the names from `trade_genius`. Must come BEFORE
+# `import telegram_commands` because telegram_commands does
+# `from trade_genius import save_paper_state, _do_reset_paper`.
+import paper_state  # noqa: E402
+from paper_state import save_paper_state, load_paper_state, _do_reset_paper  # noqa: E402,F401
 
 # v4.5.0 — defer import to avoid circular (telegram_commands imports from trade_genius).
 import telegram_commands  # noqa: E402
