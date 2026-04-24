@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.2.0 — Dashboard UI cleanup: redundant header row + Sign Out + "· live" removed (2026-04-24)
+
+User-visible dashboard chrome cleanup. The mobile header previously carried four rows: SPY/QQQ strip, TradeGenius logo + version + LIVE pill, Main/Val/Gene tab switcher, and a fourth row duplicating information already on rows 2-3 (today's date, the active executor name, a "Paper" chip, and a second LIVE pill). The fourth row was a hold-over from the pre-tabs single-panel layout and now just adds vertical noise on phones. This release deletes it across all three portfolio panels and removes two smaller redundancies on the same header.
+
+**Removed:**
+
+- **Main panel's `<header class="header">`** — the `#h-date` span, `#clock`, `#sb-conn`, and the `Sign out` link. The `/logout` route in `dashboard_server.py` is preserved (`app.router.add_post("/logout", h_logout)` still routes) so bookmarked URLs and direct hits keep working; only the visible button is gone.
+- **Executor skeleton `<header>`** in `execSkeleton()` (Val + Gene panels) — the date, executor-name, mode (`📄 Paper` / `🟢 Live`), and the per-panel `.live-badge` LIVE pill. All duplicated the brand-row pill above.
+- **`"· live"` suffix** on the version subtitle in `renderHeader()` — `v4.1.9 · live` → `v4.2.0`. The green LIVE pill on the right side of the brand row is kept; the text "live" next to the version was redundant with it.
+- **Dead CSS**: `.header`, `.h-title`, `.h-right`, `.h-clock`, `.h-account`, `.h-account .h-conn`, `.h-account a`, `.h-account .h-acct-sep`, `.live-badge`, plus their `@media (max-width: 900px)` and `@media (max-width: 640px)` overrides.
+- **Dead JS**: `tickN` / `clockTick()` / `setInterval(clockTick, 1000)`, the `$("h-date").textContent` line in `renderHeader`, the `const sb = $("sb-conn")` variable + all its `sb.textContent` / `sb.style.color` writes in `setConn`, the `setField(panel, "h-date"/"h-mode"/"h-acct", ...)` calls in `renderExecutor`, the `h-health` + `h-pulse` per-panel drivers (main `#h-pulse` on the brand row is unchanged), and the `setField(panel, "h-health", "fetch failed")` in the executor error path.
+
+**Changed:**
+
+- `setConn()` now only toggles the shared brand-row `#h-pulse` class (with a `null` guard) and drives the banner — no more dead writes to a hidden `#sb-conn` node.
+- `CURRENT_MAIN_NOTE` rewritten for v4.2.0; v4.1.9 note rolls into `_MAIN_HISTORY_TAIL` (shortened to a 5-line summary).
+- `BOT_VERSION = "4.2.0"`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (40/40). Header still renders: SPY/QQQ strip → TradeGenius logo + `v4.2.0` + LIVE pill + "scan in Ns" → Main/Val/Gene tab nav. Fourth row is gone.
+
+**Breaking:** None on the server API. `/logout` still accepts POST and clears the cookie; users who want to log out can POST to it directly (or we'll surface a menu later if needed).
+
+---
+
 ## v4.1.9 — Dashboard audit deferred: M11 h_stream snapshot TTL cache (2026-04-24)
 
 Dashboard-only performance fix for the deferred MEDIUM finding from the prior audit (`/tmp/audit_dash.md` M11). The SSE `h_stream` endpoint was calling `snapshot()` on every 2s tick per connected client, and `snapshot()` issues a live Alpaca snapshot request for ~30 symbols. With 3 browsers open across Val/Gene/home tabs, this fanned out to ~21.6k Alpaca round-trips per hour even though the underlying data only meaningfully changes on our 2-5s polling cadence.

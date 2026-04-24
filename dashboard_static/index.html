@@ -50,14 +50,6 @@
     grid-template-rows: auto 1fr;
     height: 100dvh;
   }
-  .header {
-    position: sticky; top: 0; z-index: 10;
-    background: rgba(16, 21, 28, 0.85);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--border);
-    padding: 10px 20px;
-    display: flex; align-items: center; gap: 16px;
-  }
   .main {
     overflow-y: auto; overscroll-behavior: contain;
     padding: 18px 20px 32px;
@@ -79,13 +71,6 @@
   .h-brand-mark { width: 22px; height: 22px; color: var(--accent); flex-shrink: 0; }
   .h-brand-name { font-weight: 600; font-size: 13.5px; letter-spacing: -0.005em; color: var(--text); }
   .h-brand-ver { font-size: 10.5px; color: var(--text-dim); margin-left: 6px; font-family: var(--mono); }
-
-  /* Header account block (right side, before LIVE pill) */
-  .h-account { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-dim); }
-  .h-account .h-conn { color: var(--text-dim); }
-  .h-account a { color: var(--text-dim); text-decoration: none; border-bottom: 1px solid var(--border); padding-bottom: 1px; transition: color .15s; }
-  .h-account a:hover { color: var(--text); border-color: var(--text-muted); }
-  .h-account .h-acct-sep { color: var(--border-strong); }
 
   .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; border-bottom: 1px solid var(--border); }
   .brand-mark { width: 28px; height: 28px; color: var(--accent); flex-shrink: 0; }
@@ -111,18 +96,6 @@
   .sidebar-footer a { color: var(--text-muted); text-decoration: none; }
   .sidebar-footer a:hover { color: var(--text); }
 
-  .h-title { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
-  .h-title .sep { color: var(--text-dim); margin: 0 8px; font-weight: 400; }
-  .h-title .sub { color: var(--text-muted); font-weight: 400; }
-  .h-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-  .live-badge {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 4px 10px 4px 8px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    border-radius: 999px;
-    font-size: 11px; color: var(--text-muted); font-family: var(--mono);
-  }
   .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--up); animation: pulse 1.8s infinite; }
   .pulse.off { background: var(--down); animation: none; }
   @keyframes pulse {
@@ -130,8 +103,6 @@
     70%  { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); }
     100% { box-shadow: 0 0 0 0   rgba(52, 211, 153, 0); }
   }
-  .h-clock { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
-
   .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
   .kpi {
     background: var(--surface); border: 1px solid var(--border);
@@ -365,14 +336,8 @@
       grid-template-rows: auto 1fr;
       height: auto; min-height: 100dvh;
     }
-    .header { padding: 9px 14px; gap: 10px; flex-wrap: wrap; }
     .h-brand { padding-right: 10px; }
     .h-brand-name { font-size: 12.5px; }
-    .h-title { font-size: 12.5px; }
-    .h-title .sep { margin: 0 6px; }
-    .h-right { gap: 8px; }
-    .h-clock { font-size: 11px; }
-    .h-account { font-size: 10.5px; gap: 8px; }
     .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; }
     .kpi-row { grid-template-columns: repeat(3, 1fr); gap: 10px; }
   }
@@ -398,7 +363,6 @@
     .prox-pct { width: 100px; font-size: 10.5px; }
     .gate { padding: 8px 12px; font-size: 11.5px; gap: 8px; }
     .log { font-size: 10.5px; padding: 8px 12px; max-height: 200px; }
-    .h-clock { display: none; }
     .key-val-grid { font-size: 11.5px; gap: 5px 12px; }
 
     /* v3.4.31 — Today's Trades on phones: stack each row into two
@@ -464,22 +428,6 @@
 
 <div id="tg-panel-main" class="tg-panel">
 <div class="app">
-
-  <header class="header">
-    <div class="h-title">
-      <span id="h-date">—</span>
-    </div>
-    <div class="h-right">
-      <span class="h-clock" id="clock">—</span>
-      <span class="h-account">
-        <!-- v4.0.4 — connection status kept as a hidden DOM node so
-             setConn() can still drive the shared pulse dot on the brand
-             row. No longer rendered as visible text. -->
-        <span class="h-conn" id="sb-conn" style="display:none">connecting…</span>
-        <a href="/logout">Sign out</a>
-      </span>
-    </div>
-  </header>
 
   <main class="main">
 
@@ -642,18 +590,6 @@
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
   }
-
-  let tickN = 0;
-  function clockTick() {
-    tickN++;
-    const d = new Date();
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    const ss = String(d.getSeconds()).padStart(2, "0");
-    $("clock").textContent = `${hh}:${mm}:${ss}`;
-  }
-  setInterval(clockTick, 1000);
-  clockTick();
 
   // ─────── rendering ───────
 
@@ -1124,9 +1060,7 @@
   }
 
   function renderHeader(s) {
-    const d = s.server_time_label || "";
-    $("h-date").textContent = d || "—";
-    const ver = `v${s.version || "?"} · live`;
+    const ver = `v${s.version || "?"}`;
     const verEl = document.getElementById("tg-brand-ver");
     if (verEl) verEl.textContent = ver;
   }
@@ -1205,19 +1139,15 @@
   let lastDataAt = 0;
 
   function setConn(state) {
-    const sb = $("sb-conn");
     const pulse = $("h-pulse");
     if (state === "live") {
-      sb.textContent = "connected"; sb.style.color = "var(--up)";
-      pulse.classList.remove("off");
+      if (pulse) pulse.classList.remove("off");
       $("banner").classList.add("hide");
     } else if (state === "polling") {
-      sb.textContent = "polling (SSE down)"; sb.style.color = "var(--warn)";
-      pulse.classList.add("off");
+      if (pulse) pulse.classList.add("off");
       showBanner("Live stream dropped. Reconnecting… data is polled every 5s.", "warn");
     } else {
-      sb.textContent = "disconnected"; sb.style.color = "var(--down)";
-      pulse.classList.add("off");
+      if (pulse) pulse.classList.add("off");
       showBanner("Disconnected from bot. Attempting to reconnect…", "err");
     }
   }
@@ -1474,20 +1404,6 @@
     return `
 <div class="app">
 
-  <header class="header">
-    <div class="h-title">
-      <span data-f="h-date">\u2014</span>
-      <span class="sep">\u00b7</span>
-      <span class="sub" data-f="h-exec-name">${label}</span>
-      <span class="sep">\u00b7</span>
-      <span class="sub" data-f="h-mode">\u2014</span>
-    </div>
-    <div class="h-right">
-      <span class="live-badge"><span class="pulse" data-f="h-pulse"></span><span data-f="h-health">\u2014</span></span>
-      <span class="h-clock" data-f="h-acct">\u2014</span>
-    </div>
-  </header>
-
   <main class="main">
 
     <div class="banner hide" data-f="banner"></div>
@@ -1632,7 +1548,6 @@
       const data = await r.json();
       renderExecutor(name, data);
     } catch (e) {
-      setField(panel, "h-health", "fetch failed");
       const banner = execField(panel, "banner");
       if (banner) {
         banner.classList.remove("hide");
@@ -1939,23 +1854,6 @@
         banner.textContent = "";
       }
     }
-
-    // Header row
-    const now = new Date();
-    setField(panel, "h-date", now.toISOString().slice(0, 10));
-    setField(panel, "h-mode", disabled ? "disabled" : (data.mode === "live" ? "\ud83d\udfe2 Live" : "\ud83d\udcc4 Paper"));
-    const health = execField(panel, "h-health");
-    const pulse = execField(panel, "h-pulse");
-    if (health) {
-      if (disabled) { health.textContent = "OFF"; }
-      else if (data.healthy) { health.textContent = "LIVE"; }
-      else { health.textContent = "ERR"; }
-    }
-    if (pulse) {
-      pulse.classList.toggle("off", disabled || !data.healthy);
-    }
-    const acctNum = (data && data.account && data.account.account_number) || "\u2014";
-    setField(panel, "h-acct", acctNum);
 
     // KPI row ----------------------------------------------------------
     // v4.0.4 \u2014 mirror Main's KPI row exactly. Equity / Cash / BP come
