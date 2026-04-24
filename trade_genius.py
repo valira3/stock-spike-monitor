@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.1"
+BOT_VERSION = "4.1.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,26 +69,30 @@ BOT_VERSION = "4.1.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.1 \u2014 audit HIGH batch:\n"
-    "\u2022 signal bus register +\n"
-    "  emit under a lock so two\n"
-    "  start() calls can't double\n"
-    "  register the same listener\n"
-    "\u2022 save_paper_state builds\n"
-    "  snapshot inside the save\n"
-    "  lock (no more half-mutated\n"
-    "  dicts seen by json.dump)\n"
-    "\u2022 check_entry + short:\n"
-    "  reject current_price <= 0\n"
-    "  before sanity gates\n"
-    "\u2022 daily halt short-pnl\n"
-    "  uses _is_today, not a\n"
-    "  date== filter on a rolling\n"
-    "  history window"
+    "v4.1.2 \u2014 audit MEDIUM batch:\n"
+    "\u2022 load_paper_state clears\n"
+    "  dicts before merging state\n"
+    "  from disk (symmetrize w/\n"
+    "  lists already cleared)\n"
+    "\u2022 matplotlib warmup logs\n"
+    "  at DEBUG instead of silent\n"
+    "  pass on failure\n"
+    "\u2022 executor _on_signal\n"
+    "  drops tautological try/\n"
+    "  except around last_signal\n"
+    "  assignment"
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.1 \u2014 trade_genius HIGH:\n"
+    "signal bus register/emit under\n"
+    "a lock; save_paper_state builds\n"
+    "snapshot inside lock; entry\n"
+    "paths reject current_price<=0;\n"
+    "daily halt short-pnl uses\n"
+    "_is_today, not date==.\n"
+    "\n"
     "v4.1.0 \u2014 trade_genius audit\n"
     "CRITICAL: partial state-load\n"
     "no longer overwrites disk;\n"
@@ -538,16 +542,16 @@ class TradeGeniusBase:
         # v4.0.0-beta — remember the most recent event for the dashboard
         # (last_signal line on the per-executor tab). Captured before any
         # dispatch so we still record what was seen even if Alpaca errors.
-        try:
-            self.last_signal = {
-                "kind": kind,
-                "ticker": ticker,
-                "price": float(price) if price else 0.0,
-                "reason": reason,
-                "timestamp_utc": event.get("timestamp_utc", _utc_now_iso()),
-            }
-        except Exception:
-            pass
+        # v4.1.2: the old try/except here was unreachable: `price` is
+        # normalised to 0.0-or-numeric at line 534 so `float(price)` can't
+        # raise, and dict-literal assignment has no failure mode. Dropped.
+        self.last_signal = {
+            "kind": kind,
+            "ticker": ticker,
+            "price": float(price) if price else 0.0,
+            "reason": reason,
+            "timestamp_utc": event.get("timestamp_utc", _utc_now_iso()),
+        }
 
         client = self._ensure_client()
         if client is None:
@@ -1040,8 +1044,11 @@ if MATPLOTLIB_AVAILABLE:
         try:
             fig, ax = plt.subplots()
             plt.close(fig)
-        except Exception:
-            pass
+        except Exception as e:
+            # v4.1.2: don't swallow silently — a broken matplotlib install
+            # will make `/dayreport` fail later, and a DEBUG line here gives
+            # the operator a breadcrumb when chart generation explodes.
+            logger.debug("matplotlib warmup failed: %s", e)
     threading.Thread(target=_warm_matplotlib, daemon=True).start()
 
 
@@ -2786,25 +2793,37 @@ def load_paper_state():
             state = json.load(f)
 
         paper_cash = float(state.get("paper_cash", PAPER_STARTING_CAPITAL))
+        # v4.1.2: .clear() before .update() to symmetrize load semantics
+        # with paper_trades/paper_all_trades/trade_history/short_trade_history
+        # below. A second load_paper_state call (module re-init, hot patch)
+        # would otherwise merge stale in-memory state on top of disk state.
+        positions.clear()
         positions.update(state.get("positions", {}))
         paper_trades.clear()
         paper_trades.extend(state.get("paper_trades", []))
         paper_all_trades.clear()
         paper_all_trades.extend(state.get("paper_all_trades", []))
+        daily_entry_count.clear()
         daily_entry_count.update(state.get("daily_entry_count", {}))
         daily_entry_date = state.get("daily_entry_date", "")
+        or_high.clear()
         or_high.update(state.get("or_high", {}))
+        or_low.clear()
         or_low.update(state.get("or_low", {}))
+        pdc.clear()
         pdc.update(state.get("pdc", {}))
         or_collected_date = state.get("or_collected_date", "")
+        user_config.clear()
         user_config.update(state.get("user_config", {}))
         trade_history.clear()
         trade_history.extend(state.get("trade_history", []))
+        short_positions.clear()
         short_positions.update(state.get("short_positions", {}))
         short_trade_history.clear()
         short_trade_history.extend(state.get("short_trade_history", []))
         # v3.4.34: legacy "avwap_data"/"avwap_last_ts" keys in old
         # state files are silently ignored (no longer loaded).
+        daily_short_entry_count.clear()
         daily_short_entry_count.update(state.get("daily_short_entry_count", {}))
         raw_exit = state.get("last_exit_time", {})
         # Normalize to UTC-aware. Older persisted state may contain
