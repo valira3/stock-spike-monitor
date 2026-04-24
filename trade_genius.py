@@ -241,7 +241,10 @@ class TradeGeniusBase:
         self.paper_secret = os.getenv(p + "ALPACA_PAPER_SECRET", "").strip()
         self.live_key = os.getenv(p + "ALPACA_LIVE_KEY", "").strip()
         self.live_secret = os.getenv(p + "ALPACA_LIVE_SECRET", "").strip()
-        self.telegram_token = os.getenv(p + "TELEGRAM_TOKEN", "").strip()
+        # Per-bot Telegram token env var: VAL_TELEGRAM_TG / GENE_TELEGRAM_TG
+        # (matches what's provisioned on Railway). Note: this is distinct from
+        # the main TradeGenius bot's TELEGRAM_TOKEN at module scope.
+        self.telegram_token = os.getenv(p + "TELEGRAM_TG", "").strip()
         self.telegram_chat_id = os.getenv(p + "TELEGRAM_CHAT_ID", "").strip()
         owners_raw = os.getenv(p + "TELEGRAM_OWNER_IDS", "").strip() or _RH_OWNER_DEFAULT
         self.owner_ids = {
