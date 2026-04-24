@@ -18,6 +18,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY trade_genius.py .
+COPY telegram_commands.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .
