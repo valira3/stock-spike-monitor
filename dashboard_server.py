@@ -165,30 +165,43 @@ def _equity(cash: float, longs: dict, shorts: dict, prices: dict) -> tuple[float
     return long_mv, short_liab, cash + long_mv - short_liab
 
 
+def _safe_float(v):
+    """Coerce a position-dict field to float, returning None if
+    conversion fails. A single bad entry on disk (e.g. ``trail_high:
+    "N/A"``) must not explode the whole snapshot."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
     rows: list[dict] = []
     for tkr, p in longs.items():
         px = prices.get(tkr) or p.get("entry_price")
-        entry = float(p.get("entry_price", 0.0))
-        shares = int(p.get("shares", 0))
-        unreal = (float(px) - entry) * shares if px else 0.0
+        entry = _safe_float(p.get("entry_price")) or 0.0
+        shares = int(p.get("shares", 0) or 0)
+        px_f = _safe_float(px)
+        unreal = (px_f - entry) * shares if px_f is not None else 0.0
         # v3.4.26: expose trail state + effective stop so the UI can
         # show what's actually managing the position (hard stop vs
         # armed trail). effective_stop mirrors the exit-decision rule
-        # in manage_positions.
-        hard_stop = float(p.get("stop", 0.0))
+        # in manage_positions. v4.0.9 \u2014 _safe_float guards every
+        # numeric read so a malformed on-disk value only drops that
+        # one position's trail info instead of the whole snapshot.
+        hard_stop = _safe_float(p.get("stop")) or 0.0
         trail_active = bool(p.get("trail_active", False))
-        trail_stop_raw = p.get("trail_stop")
-        trail_stop = float(trail_stop_raw) if trail_stop_raw is not None else None
-        trail_high_raw = p.get("trail_high")
-        trail_anchor = float(trail_high_raw) if trail_high_raw is not None else None
+        trail_stop = _safe_float(p.get("trail_stop"))
+        trail_anchor = _safe_float(p.get("trail_high"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
         rows.append({
             "ticker": tkr,
             "side": "LONG",
             "shares": shares,
             "entry": entry,
-            "mark": float(px) if px else entry,
+            "mark": px_f if px_f is not None else entry,
             "stop": hard_stop,
             "trail_active": trail_active,
             "trail_stop": trail_stop,
@@ -196,26 +209,25 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
             "effective_stop": effective_stop,
             "unrealized": unreal,
             "entry_time": p.get("entry_time", ""),
-            "entry_count": int(p.get("entry_count", 1)),
+            "entry_count": int(p.get("entry_count", 1) or 1),
         })
     for tkr, p in shorts.items():
         px = prices.get(tkr) or p.get("entry_price")
-        entry = float(p.get("entry_price", 0.0))
-        shares = int(p.get("shares", 0))
-        unreal = (entry - float(px)) * shares if px else 0.0
-        hard_stop = float(p.get("stop", 0.0))
+        entry = _safe_float(p.get("entry_price")) or 0.0
+        shares = int(p.get("shares", 0) or 0)
+        px_f = _safe_float(px)
+        unreal = (entry - px_f) * shares if px_f is not None else 0.0
+        hard_stop = _safe_float(p.get("stop")) or 0.0
         trail_active = bool(p.get("trail_active", False))
-        trail_stop_raw = p.get("trail_stop")
-        trail_stop = float(trail_stop_raw) if trail_stop_raw is not None else None
-        trail_low_raw = p.get("trail_low")
-        trail_anchor = float(trail_low_raw) if trail_low_raw is not None else None
+        trail_stop = _safe_float(p.get("trail_stop"))
+        trail_anchor = _safe_float(p.get("trail_low"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
         rows.append({
             "ticker": tkr,
             "side": "SHORT",
             "shares": shares,
             "entry": entry,
-            "mark": float(px) if px else entry,
+            "mark": px_f if px_f is not None else entry,
             "stop": hard_stop,
             "trail_active": trail_active,
             "trail_stop": trail_stop,
@@ -670,7 +682,10 @@ _STATIC_DIR = Path(__file__).parent / "dashboard_static"
 # (live) or AK... / CK... (test). Secrets don't share a fixed prefix,
 # but any 16+ char run of [A-Za-z0-9] inside an Alpaca error body
 # next to "key" / "secret" / "Bearer" is suspect.
-_ALPACA_KEY_RE = re.compile(r"\b(?:PK|AK|CK|SK)[A-Z0-9]{10,}\b")
+# v4.0.9 \u2014 allow mixed-case suffixes. The original regex only
+# matched uppercase alnum, so a key like `PKabcd1234...` leaked
+# through. Alpaca keys are mixed-case in practice.
+_ALPACA_KEY_RE = re.compile(r"\b(?:PK|AK|CK|SK)[A-Za-z0-9]{10,}\b")
 
 
 def _redact_alpaca_secrets(s: str) -> str:
@@ -757,7 +772,7 @@ def _check_auth(request) -> bool:
 
 def _login_page(error: str = "") -> str:
     err_html = f'<div class="err">{html.escape(error)}</div>' if error else ""
-    return """<!doctype html><html><head><meta charset="utf-8"><title>Spike Monitor — sign in</title>
+    return """<!doctype html><html><head><meta charset="utf-8"><title>TradeGenius \u2014 sign in</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 html,body{margin:0;height:100%;background:#0a0d12;color:#e7ecf3;
@@ -784,7 +799,7 @@ button:hover{background:#a8e0fc}
       <path d="M3 22 L11 22 L15 10 L19 22 L29 22" stroke-linecap="round" stroke-linejoin="round"/>
       <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
     </svg>
-    <span>Spike Monitor</span>
+    <span>TradeGenius</span>
   </div>
   <h1>Sign in</h1>
   __ERR__
