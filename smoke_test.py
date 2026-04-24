@@ -328,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.6.0")
+    @t("version: BOT_VERSION is 4.7.0")
     def _():
-        assert m.BOT_VERSION == "4.6.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.7.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.6.0")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.7.0")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.6.0"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.7.0"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -1037,7 +1037,173 @@ def run_local() -> int:
         assert not hasattr(m, "_paper_save_lock"), \
             "v4.6.0: trade_genius._paper_save_lock should have moved to paper_state"
 
-    return run_suite("LOCAL SMOKE TESTS (v4.6.0 paper_state extraction)")
+    # ---------- v4.7.0 \u2014 long/short harmonization ----------
+    @t("v4.7.0: check_entry and check_short_entry both return (bool, bars)")
+    def _():
+        import inspect
+        long_src = inspect.getsource(m.check_entry)
+        short_src = inspect.getsource(m.check_short_entry)
+        # Both should return (False, None) on guards and (True, bars) on success.
+        assert "return False, None" in long_src, \
+            "check_entry should return (False, None) on guards"
+        assert "return False, None" in short_src, \
+            "check_short_entry should return (False, None) on guards"
+        assert "return True, bars" in long_src, \
+            "check_entry should return (True, bars) on success"
+        assert "return True, bars" in short_src, \
+            "check_short_entry should return (True, bars) on success"
+
+    @t("v4.7.0: daily_short_entry_date resets daily_short_entry_count on new day")
+    def _():
+        # Fixture: set yesterday's date and a non-empty short count, then
+        # invoke check_short_entry. Even though the rest of the gate fails
+        # (no OR data, market closed, etc.), the date-reset block runs
+        # before the gates that can early-return on missing OR data.
+        saved_date = m.daily_short_entry_date
+        saved_count = dict(m.daily_short_entry_count)
+        try:
+            m.daily_short_entry_date = "1999-01-01"
+            m.daily_short_entry_count.clear()
+            m.daily_short_entry_count["AAPL"] = 3
+            # Pin _now_et to a known mid-session time so the time gate
+            # doesn't short-circuit before the reset block runs.
+            from datetime import datetime, timezone, timedelta
+            saved_now = m._now_et
+            m._now_et = lambda: datetime.now(timezone(timedelta(hours=-4))).replace(
+                hour=10, minute=30, second=0, microsecond=0
+            )
+            try:
+                m.check_short_entry("AAPL")
+            finally:
+                m._now_et = saved_now
+            today = m._now_et().strftime("%Y-%m-%d")
+            assert m.daily_short_entry_date == today, \
+                f"date not reset: {m.daily_short_entry_date!r}"
+            assert m.daily_short_entry_count.get("AAPL", 0) == 0, \
+                f"count not cleared: {dict(m.daily_short_entry_count)}"
+        finally:
+            m.daily_short_entry_date = saved_date
+            m.daily_short_entry_count.clear()
+            m.daily_short_entry_count.update(saved_count)
+
+    @t("v4.7.0: execute_short_entry honors daily loss limit")
+    def _():
+        # Fixture: rig today's realized P&L below DAILY_LOSS_LIMIT, then
+        # call execute_short_entry. Assert no short opened and
+        # _trading_halted becomes True.
+        saved_halted = m._trading_halted
+        saved_reason = m._trading_halted_reason
+        saved_paper_trades = list(m.paper_trades)
+        saved_short_positions = dict(m.short_positions)
+        try:
+            m._trading_halted = False
+            m._trading_halted_reason = ""
+            today = m._now_et().strftime("%Y-%m-%d")
+            # Synthesize a closed-long loss row that exceeds DAILY_LOSS_LIMIT.
+            m.paper_trades.clear()
+            m.paper_trades.append({
+                "ticker": "ZZZZ", "action": "SELL", "date": today,
+                "pnl": m.DAILY_LOSS_LIMIT - 100.0,  # already past the limit
+            })
+            m.short_positions.clear()
+            m.execute_short_entry("AAPL", 150.0)
+            assert m._trading_halted, \
+                "execute_short_entry did not halt trading on loss limit"
+            assert "AAPL" not in m.short_positions, \
+                "execute_short_entry opened a short despite halt"
+        finally:
+            m._trading_halted = saved_halted
+            m._trading_halted_reason = saved_reason
+            m.paper_trades.clear()
+            m.paper_trades.extend(saved_paper_trades)
+            m.short_positions.clear()
+            m.short_positions.update(saved_short_positions)
+
+    @t("v4.7.0: _check_daily_loss_limit helper exists and is called by both execute paths")
+    def _():
+        import inspect
+        assert callable(getattr(m, "_check_daily_loss_limit", None)), \
+            "_check_daily_loss_limit helper missing"
+        long_src = inspect.getsource(m.execute_entry)
+        short_src = inspect.getsource(m.execute_short_entry)
+        assert "_check_daily_loss_limit" in long_src, \
+            "execute_entry does not call _check_daily_loss_limit"
+        assert "_check_daily_loss_limit" in short_src, \
+            "execute_short_entry does not call _check_daily_loss_limit"
+
+    @t("v4.7.0: _ticker_today_realized_pnl helper exists and aggregates long+short closed trades")
+    def _():
+        assert callable(getattr(m, "_ticker_today_realized_pnl", None)), \
+            "_ticker_today_realized_pnl helper missing"
+        from datetime import datetime, timezone
+        saved_th = list(m.trade_history)
+        saved_sth = list(m.short_trade_history)
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            m.trade_history.clear()
+            m.trade_history.append({
+                "ticker": "XYZ", "pnl": 30.0, "exit_time_iso": now_iso,
+            })
+            m.short_trade_history.clear()
+            m.short_trade_history.append({
+                "ticker": "XYZ", "pnl": -20.0, "exit_time_iso": now_iso,
+            })
+            total = m._ticker_today_realized_pnl("XYZ")
+            assert abs(total - 10.0) < 0.01, \
+                f"expected $10 net, got ${total:.2f}"
+        finally:
+            m.trade_history.clear()
+            m.trade_history.extend(saved_th)
+            m.short_trade_history.clear()
+            m.short_trade_history.extend(saved_sth)
+
+    @t("v4.7.0: scan_loop calls execute_short_entry after check_short_entry returns True")
+    def _():
+        import inspect
+        scan_src = inspect.getsource(m.scan_loop)
+        # The new control flow: capture (ok, bars) tuple then call execute.
+        assert "check_short_entry(ticker)" in scan_src, \
+            "scan_loop should call check_short_entry(ticker)"
+        assert "execute_short_entry(ticker" in scan_src, \
+            "scan_loop should call execute_short_entry(ticker, ...) on True"
+        # And the new pattern uses ok/bars symmetrically with long.
+        assert scan_src.count("execute_short_entry") >= 1, \
+            "scan_loop missing execute_short_entry call"
+
+    @t("v4.7.0: daily_short_entry_date persists across save/load round-trip")
+    def _():
+        import paper_state
+        import tempfile, os, json
+        saved_file = m.PAPER_STATE_FILE
+        saved_date = m.daily_short_entry_date
+        saved_loaded = paper_state._state_loaded
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            ) as f:
+                tmp_path = f.name
+            m.PAPER_STATE_FILE = tmp_path
+            paper_state._state_loaded = True
+            m.daily_short_entry_date = "2026-04-24"
+            m.save_paper_state()
+            with open(tmp_path) as f:
+                disk = json.load(f)
+            assert disk.get("daily_short_entry_date") == "2026-04-24", \
+                f"date not in disk state: {disk.get('daily_short_entry_date')!r}"
+            m.daily_short_entry_date = "WRONG"
+            m.load_paper_state()
+            assert m.daily_short_entry_date == "2026-04-24", \
+                f"date not restored: {m.daily_short_entry_date!r}"
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            m.PAPER_STATE_FILE = saved_file
+            m.daily_short_entry_date = saved_date
+            paper_state._state_loaded = saved_loaded
+
+    return run_suite("LOCAL SMOKE TESTS (v4.7.0 long/short harmonization)")
 
 
 # ============================================================

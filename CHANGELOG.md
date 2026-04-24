@@ -4,6 +4,40 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.7.0 (2026-04-24) — refactor + risk fixes: long/short entry/execute/close functions are now structural mirror images of each other, with three real bugs fixed in the process.
+
+This is Stage A of long/short harmonization (Stage B — collapse to single `check_breakout(side)` / `execute_breakout(side)` / `close_position(side)` plus a Side enum — is deferred to a future PR).
+
+**Bugs fixed:**
+
+- **Daily loss limit now enforced for shorts.** Previously `execute_entry` had a ~50-LOC block at the top that summed today's realized + unrealized P&L across longs and shorts, set `_trading_halted=True` and aborted on breach. `execute_short_entry` had **none of this**, so shorts continued to open after the halt fired. Logic is now extracted into `_check_daily_loss_limit(ticker)` and called by both execute paths.
+- **`daily_short_entry_count` now resets on a new day.** Previously `check_entry` reset the long counter when `daily_entry_date != today`, but `check_short_entry` had no equivalent block — the dict relied on key not-existing on day 1, which silently broke on process restart (yesterday's counts persisted in the state file). Added a `daily_short_entry_date` global, registered it in `paper_state.py` save/load round-trip, and added the parallel reset block to `check_short_entry`.
+- **`scan_loop` control flow is now symmetric.** Previously `check_entry` returned `(bool, bars)` and `scan_loop` called `execute_entry` separately, while `check_short_entry` returned `None` and called `execute_short_entry` itself. Any future code that wants to gate the entry between check and execute (kill switch, second-bar confirmation) had to handle two control flows. `check_short_entry` now returns `(bool, bars)` and `scan_loop` calls `execute_short_entry(ticker, current_price)` after a `True` return — same pattern as long.
+
+**Structure (zero behavior change):**
+
+- New helper `_check_daily_loss_limit(ticker) -> bool` — single source of truth for the daily P&L sum + halt gate.
+- New helper `_ticker_today_realized_pnl(ticker) -> float` — sums today's realized P&L for a given ticker from both `trade_history` (long closes) and `short_trade_history` (short COVERs). Used by both `check_entry` and `check_short_entry` for the per-ticker $-50 loss cap.
+- Gate ordering harmonized: both `check_entry` and `check_short_entry` now run gates in the same canonical order (halt → pause → time → daily-counter reset → OR data → daily cap → in-position → cooldown → ticker loss cap → fetch → sanity → polarity → PDC → sovereign → DI → stop-cap → return).
+- Return contract harmonized: both check functions return `(False, None)` on every guard and `(True, bars)` on success.
+- `execute_entry` / `execute_short_entry` / `close_position` / `close_short_position` rewritten as structural mirrors of each other. Differences are now ONLY direction symbols (`>` vs `<`, `+` vs `-`, `or_high` vs `or_low`, `+DI` vs `-DI`), state name flips (`positions` vs `short_positions`), helper flips (`_capped_long_stop` vs `_capped_short_stop`), and intentional asymmetry (`paper_trades` is long-only — short rows are synthesized from `short_positions` + `short_trade_history` for the dashboard/trades surfaces).
+- Stripped unnecessary `global` declarations (Python only needs `global` for assignment, not for mutating dict/list contents).
+
+**Behavior:**
+
+- Shorts will now (correctly) be halted by the daily loss limit going forward. This is a behavior change but is the intended risk-control behavior — previously shorts could keep firing after longs were halted.
+- All other behavior unchanged: entry prices, stop pcts, daily caps, trail rules, telegram message text are all identical.
+
+**State format:**
+
+- Added one new field `daily_short_entry_date` (string) to the load/save schema. Loaders default to `""` when missing, so the field is forward+backward compatible.
+
+**Tests:**
+
+- 7 new smoke tests under `# v4.7.0 — long/short harmonization`. Total 62 → 69.
+
+---
+
 ## v4.6.0 (2026-04-24) — refactor: extract paper-state I/O (load/save/reset + dedicated lock + `_state_loaded` guard) out of `trade_genius.py` into a new `paper_state.py` module. Pure code motion, zero behavior change.
 
 `trade_genius.py` previously hosted all paper-book persistence inline alongside trading logic. This release pulls the persistence cluster — `save_paper_state()`, `load_paper_state()`, `_do_reset_paper()`, the `_paper_save_lock` threading lock, and the `_state_loaded` startup guard — into a dedicated module that owns just the I/O concern. The actual mutable state globals (`paper_cash`, `positions`, `short_positions`, `trade_history`, `or_high`, etc.) STAY in `trade_genius.py` because they have ~200 read sites across `trade_genius.py`, `dashboard_server.py`, `telegram_commands.py`, and `smoke_test.py`; migrating them to attribute access on a singleton is out of scope for this PR.
