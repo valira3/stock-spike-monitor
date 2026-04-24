@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.4.0"
+BOT_VERSION = "4.4.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,17 +70,26 @@ BOT_VERSION = "4.4.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.4.1 \u2014 regime fix:\n"
+    "scan_loop now refreshes the\n"
+    "MarketMode banner every\n"
+    "cycle, not just intraday \u2014\n"
+    "banner no longer sticks on\n"
+    "POWER after 15:55 ET.\n"
+    "gates.scan_paused reflects\n"
+    "after-hours idle too."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.4.0 \u2014 security:\n"
     "all bot commands + /reset\n"
     "callbacks require user_id in\n"
     "TRADEGENIUS_OWNER_IDS. The\n"
     "chat-based authorization\n"
     "fallback is removed. CHAT_ID\n"
-    "kept for routing only."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "kept for routing only.\n"
+    "\n"
     "v4.3.4 \u2014 dashboard UI:\n"
     "row-2 refresh countdown\n"
     "zero-pads seconds; #h-tick\n"
@@ -2803,8 +2812,13 @@ def _refresh_market_mode():
         _current_ticker_extremes = []
 
 
-# Scan pause (Feature 8)
+# Scan pause (Feature 8) — user-set via Telegram /pause /resume.
 _scan_paused: bool = False
+# Auto-idle flag — True when scan_loop is short-circuiting because it's
+# outside market hours (weekends, pre-09:35, post-15:55). Updated at the
+# top of every scan cycle, independent of market hours, so the dashboard
+# banner reflects reality after the close instead of sticking on POWER.
+_scan_idle_hours: bool = False
 _regime_bullish = None          # None=unknown, True/False tracks last known regime
 _last_exit_time: dict = {}     # ticker -> datetime (UTC) of last exit
 _last_scan_time = None           # datetime (UTC), updated each scan cycle
@@ -6077,18 +6091,35 @@ def _tiger_hard_eject_check():
 # ============================================================
 def scan_loop():
     """Main scan: manage positions, check new entries. Runs every 60s."""
+    global _scan_idle_hours
     now_et = _now_et()
 
+    # v4.4.1 — Refresh the MarketMode banner BEFORE the after-hours
+    # early returns. Without this, once the clock crosses 15:55 ET the
+    # cached _current_mode / _current_mode_reason stayed frozen on the
+    # last pre-close values (e.g. POWER "14:00-15:55 ET") and /api/state
+    # kept serving them until the next open. Pure observation — safe to
+    # fail silently; it cannot affect trading. Runs at idle cycles too,
+    # not just during trading cycles.
+    try:
+        _refresh_market_mode()
+    except Exception:
+        logger.exception("_refresh_market_mode failed (ignored — observation only, runs at idle cycles too)")
+
+    # Idle-state flag drives gates.scan_paused on the dashboard so the
+    # UI can tell "scanner is not scanning right now" after hours without
+    # reading internal mode globals.
+    is_weekend = now_et.weekday() >= 5
+    before_open = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35)
+    after_close = now_et.hour >= 16 or (now_et.hour == 15 and now_et.minute >= 55)
+    _scan_idle_hours = bool(is_weekend or before_open or after_close)
+
     # Skip weekends
-    if now_et.weekday() >= 5:
+    if is_weekend:
         return
 
     # Skip outside market hours (09:35 - 15:55 ET)
-    if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35):
-        return
-    if now_et.hour >= 16:
-        return
-    if now_et.hour == 15 and now_et.minute >= 55:
+    if before_open or after_close:
         return
 
     cycle_start = time.time()
@@ -6099,13 +6130,6 @@ def scan_loop():
     # to fetch_1min_bars inside this cycle will populate it on first hit
     # and reuse on subsequent hits. Observers read through the same cache.
     _clear_cycle_bar_cache()
-
-    # MarketMode + observers: observation only — no parameter is read from
-    # this yet. Safe to fail silently; it cannot affect trading.
-    try:
-        _refresh_market_mode()
-    except Exception:
-        logger.exception("_refresh_market_mode failed (ignored — observation only)")
 
     n_pos = len(positions)
     n_short = len(short_positions)

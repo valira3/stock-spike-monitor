@@ -615,7 +615,14 @@ def snapshot() -> dict[str, Any]:
 
         halted = bool(getattr(m, "_trading_halted", False))
         halt_reason = str(getattr(m, "_trading_halted_reason", ""))
-        scan_paused = bool(getattr(m, "_scan_paused", False))
+        # v4.4.1 — union of user-pause (/pause) and the auto-idle state
+        # set by scan_loop when it short-circuits outside market hours.
+        # Before v4.4.1 this only reflected _scan_paused, so the UI said
+        # "ACTIVE" all night even though no scanning was happening.
+        scan_paused = bool(
+            getattr(m, "_scan_paused", False)
+            or getattr(m, "_scan_idle_hours", False)
+        )
         or_date = str(getattr(m, "or_collected_date", ""))
 
         # ticker_pnl / red list

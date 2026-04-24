@@ -327,18 +327,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.4.0")
+    @t("version: BOT_VERSION is 4.4.1")
     def _():
-        assert m.BOT_VERSION == "4.4.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.4.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.4.0")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.4.1")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.4.0"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.4.1"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -868,6 +868,121 @@ def run_local() -> int:
             m.or_low.pop("ZZZZ", None)
             m.pdc.pop("ZZZZ", None)
             m._gate_snapshot.pop("ZZZZ", None)
+
+    # ---------- regime: banner unsticking after market close (v4.4.1) ----------
+    import datetime as _dt_mod  # local alias so tests can build fixed ET datetimes.
+    from zoneinfo import ZoneInfo as _ZI
+    _ET = _ZI("America/New_York")
+
+    def _freeze_et(fake_et):
+        """Return a (save, restore) pair that monkeypatches _now_et to fake_et.
+        Keeps scan_loop side effects (position management etc.) trivial by
+        also clearing positions; scan_loop early-returns on CLOSED so those
+        paths aren't exercised anyway.
+        """
+        saved = m._now_et
+        m._now_et = lambda: fake_et
+        return saved
+
+    @t("regime: scan_loop refreshes mode to CLOSED after market close (16:30 ET simulated)")
+    def _():
+        reset_state()
+        # Wednesday 16:30 ET (weekday, after close)
+        fake_et = _dt_mod.datetime(2026, 4, 22, 16, 30, 0, tzinfo=_ET)
+        saved = _freeze_et(fake_et)
+        # Force globals to a stale pre-close value so we're sure the refresh
+        # is what moves them, not just an initial-state coincidence.
+        m._current_mode = m.MarketMode.POWER
+        m._current_mode_reason = "14:00-15:55 ET"
+        m._scan_idle_hours = False
+        try:
+            m.scan_loop()
+            assert m._current_mode == m.MarketMode.CLOSED, \
+                f"expected CLOSED, got {m._current_mode}"
+            assert m._current_mode_reason == "outside market hours", \
+                f"expected 'outside market hours', got {m._current_mode_reason!r}"
+            assert m._scan_idle_hours is True, \
+                f"expected _scan_idle_hours True after close, got {m._scan_idle_hours}"
+        finally:
+            m._now_et = saved
+
+    @t("regime: scan_loop refreshes mode to CLOSED on weekend (Saturday simulated)")
+    def _():
+        reset_state()
+        # Saturday 12:00 ET
+        fake_et = _dt_mod.datetime(2026, 4, 25, 12, 0, 0, tzinfo=_ET)
+        saved = _freeze_et(fake_et)
+        m._current_mode = m.MarketMode.POWER
+        m._current_mode_reason = "14:00-15:55 ET"
+        m._scan_idle_hours = False
+        try:
+            m.scan_loop()
+            assert m._current_mode == m.MarketMode.CLOSED, \
+                f"expected CLOSED, got {m._current_mode}"
+            assert m._current_mode_reason == "weekend", \
+                f"expected 'weekend', got {m._current_mode_reason!r}"
+            assert m._scan_idle_hours is True, \
+                f"expected _scan_idle_hours True on weekend, got {m._scan_idle_hours}"
+        finally:
+            m._now_et = saved
+
+    @t("regime: _scan_idle_hours flips False during trading hours")
+    def _():
+        reset_state()
+        # Wednesday 10:00 ET — trading hours, not defensive (no P&L set).
+        fake_et = _dt_mod.datetime(2026, 4, 22, 10, 0, 0, tzinfo=_ET)
+        saved = _freeze_et(fake_et)
+        m._scan_idle_hours = True  # pre-seed True so we verify the flip.
+        try:
+            # scan_loop runs the full intraday path; stub the heavy bits that
+            # aren't under test. We only care about _scan_idle_hours here.
+            saved_manage     = m.manage_positions
+            saved_manage_s   = m.manage_short_positions
+            saved_hard_eject = m._tiger_hard_eject_check
+            saved_check      = m.check_entry
+            saved_check_s    = m.check_short_entry
+            saved_bars       = m.fetch_1min_bars
+            m.manage_positions         = lambda: None
+            m.manage_short_positions   = lambda: None
+            m._tiger_hard_eject_check  = lambda: None
+            m.check_entry              = lambda *a, **kw: None
+            m.check_short_entry        = lambda *a, **kw: None
+            m.fetch_1min_bars          = lambda t: None
+            try:
+                m.scan_loop()
+            finally:
+                m.manage_positions        = saved_manage
+                m.manage_short_positions  = saved_manage_s
+                m._tiger_hard_eject_check = saved_hard_eject
+                m.check_entry             = saved_check
+                m.check_short_entry       = saved_check_s
+                m.fetch_1min_bars         = saved_bars
+            assert m._scan_idle_hours is False, \
+                f"expected _scan_idle_hours False during trading hours, got {m._scan_idle_hours}"
+        finally:
+            m._now_et = saved
+
+    @t("regime: /api/state gates.scan_paused reflects after-hours idle")
+    def _():
+        reset_state()
+        fake_et = _dt_mod.datetime(2026, 4, 22, 17, 0, 0, tzinfo=_ET)
+        saved = _freeze_et(fake_et)
+        m._scan_paused = False         # user-pause is off
+        m._scan_idle_hours = False     # will be set True by scan_loop
+        try:
+            m.scan_loop()
+            # Now ask the dashboard serializer for a state snapshot. It
+            # reads module globals directly, so we just call the builder.
+            payload = ds.snapshot()
+            assert payload["gates"]["scan_paused"] is True, \
+                f"expected scan_paused True after close, got {payload['gates']['scan_paused']}"
+            assert payload["regime"]["mode"] == "CLOSED", \
+                f"expected regime.mode CLOSED, got {payload['regime']['mode']}"
+            assert payload["regime"]["mode_reason"] == "outside market hours", \
+                f"expected 'outside market hours', got {payload['regime']['mode_reason']!r}"
+        finally:
+            m._now_et = saved
+            m._scan_idle_hours = False
 
     return run_suite("LOCAL SMOKE TESTS (v4.0.0-beta Gene + dashboard)")
 
