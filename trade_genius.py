@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.2"
+BOT_VERSION = "4.1.3"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,22 +69,25 @@ BOT_VERSION = "4.1.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.2 \u2014 audit MEDIUM batch:\n"
-    "\u2022 load_paper_state clears\n"
-    "  dicts before merging state\n"
-    "  from disk (symmetrize w/\n"
-    "  lists already cleared)\n"
-    "\u2022 matplotlib warmup logs\n"
-    "  at DEBUG instead of silent\n"
-    "  pass on failure\n"
-    "\u2022 executor _on_signal\n"
-    "  drops tautological try/\n"
-    "  except around last_signal\n"
-    "  assignment"
+    "v4.1.3 \u2014 audit H3:\n"
+    "cross-day cooldown prune now\n"
+    "compares everything in ET;\n"
+    "stored UTC exit times are\n"
+    "converted to ET before the\n"
+    "09:30 cutoff test so DST\n"
+    "boundaries + midnight ET no\n"
+    "longer drift the cutoff."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.2 \u2014 trade_genius MED:\n"
+    "load_paper_state clears dicts\n"
+    "before merging state; mpl\n"
+    "warmup logs at debug; dead\n"
+    "try/except around last_signal\n"
+    "assignment removed.\n"
+    "\n"
     "v4.1.1 \u2014 trade_genius HIGH:\n"
     "signal bus register/emit under\n"
     "a lock; save_paper_state builds\n"
@@ -6061,14 +6064,19 @@ def reset_daily_state():
 
     # Cross-day cooldown pruning: _last_exit_time persists across restarts,
     # so yesterday's 15:54 exit would keep today's 09:35 first-5-min entry
-    # under the 15-min post-exit cooldown. Drop any entry older than today's
-    # 09:30 ET.
+    # under the 15-min post-exit cooldown. Drop any entry whose exit
+    # occurred before today's 09:30 ET session open.
+    #
+    # Invariant: all date/session comparisons here are done in ET (trading
+    # timezone). _last_exit_time values are stored as UTC-aware datetimes,
+    # so each stored value is converted to ET before comparing against
+    # today's 09:30 ET session open. Using a single timezone (ET) for both
+    # sides avoids subtle DST-boundary and midnight-ET off-by-one issues.
     try:
-        session_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-        session_open_utc = session_open.astimezone(timezone.utc)
+        session_open_et = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
         stale_keys = [
             k for k, v in list(_last_exit_time.items())
-            if v is not None and v < session_open_utc
+            if v is not None and v.astimezone(ET) < session_open_et
         ]
         for k in stale_keys:
             _last_exit_time.pop(k, None)
