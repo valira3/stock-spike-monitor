@@ -599,6 +599,37 @@ class TradeGeniusBase:
             f"mode: {self.mode}"
         )
 
+    # Commands shown in Telegram's BotFather / slash menu. Keep short
+    # descriptions — Telegram truncates aggressively on mobile.
+    TG_MENU_COMMANDS = [
+        ("status",  "Show account, positions, and P&L"),
+        ("mode",    "Show or change mode (paper / live)"),
+        ("halt",    "Emergency halt \u2014 flatten & stop"),
+        ("version", "Show running version"),
+        ("help",    "List available commands"),
+    ]
+
+    async def cmd_help(self, update, context):
+        """/help — list all available commands for this bot."""
+        lines = [f"{self.NAME} commands:"]
+        for cmd, desc in self.TG_MENU_COMMANDS:
+            lines.append(f"/{cmd} \u2014 {desc}")
+        await update.message.reply_text("\n".join(lines))
+
+    async def _post_init_register_menu(self, app):
+        """PTB post_init hook: register slash-command menu with Telegram
+        so commands show up in the in-chat `/` picker automatically —
+        no manual BotFather /setcommands needed."""
+        try:
+            cmds = [BotCommand(c, d) for c, d in self.TG_MENU_COMMANDS]
+            await app.bot.set_my_commands(
+                cmds, scope=BotCommandScopeAllPrivateChats()
+            )
+            logger.info("[%s] registered %d telegram menu commands",
+                        self.NAME, len(cmds))
+        except Exception:
+            logger.exception("[%s] set_my_commands failed", self.NAME)
+
     def _run_tg_loop(self):
         """Run this executor's own Telegram polling loop in its own
         thread. Creates its own asyncio event loop (PTB requires one)."""
@@ -608,13 +639,20 @@ class TradeGeniusBase:
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            app = Application.builder().token(self.telegram_token).build()
+            app = (
+                Application.builder()
+                .token(self.telegram_token)
+                .post_init(self._post_init_register_menu)
+                .build()
+            )
             self._tg_app = app
             app.add_handler(TypeHandler(Update, self._auth_guard), group=-1)
             app.add_handler(CommandHandler("mode", self.cmd_mode))
             app.add_handler(CommandHandler("status", self.cmd_status))
             app.add_handler(CommandHandler("halt", self.cmd_halt))
             app.add_handler(CommandHandler("version", self.cmd_version))
+            app.add_handler(CommandHandler("help", self.cmd_help))
+            app.add_handler(CommandHandler("start", self.cmd_help))
             logger.info("[%s] telegram loop starting", self.NAME)
             app.run_polling()
         except Exception:
