@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.2.1"
+BOT_VERSION = "4.2.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,22 +70,30 @@ BOT_VERSION = "4.2.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.2.2 \u2014 dashboard UI:\n"
+    "row-2 clock moved to far\n"
+    "right, now white + bold and\n"
+    "shows HH:MM:SS + tz, ticking\n"
+    "every second via client\n"
+    "setInterval. Today's Trades\n"
+    "rows retightened to fit a\n"
+    "375px iPhone: tabular nums,\n"
+    "smaller font, tighter gaps;\n"
+    "unit price hides <=400px,\n"
+    "qty hides <=360px. Clock\n"
+    "survives narrow phones;\n"
+    "\"scan in Ns\" hides first."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.2.1 \u2014 dashboard UI:\n"
     "row-2 time clock restored\n"
     "(HH:MM ET, time-only, parsed\n"
     "from server_time_label) and\n"
     "Today's Trades collapsed to\n"
-    "a single line per fill with\n"
-    "aligned columns: time, sym,\n"
-    "qty, BUY|SELL, cost-or-pnl,\n"
-    "unit price. SELL rows show\n"
-    "signed pnl + matching-colour\n"
-    "pct. Narrow-phone rules hide\n"
-    "qty column + row-2 clock."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "a single line per fill.\n"
+    "\n"
     "v4.2.0 \u2014 dashboard UI:\n"
     "redundant fourth header row\n"
     "deleted across Main/Val/Gene;\n"
