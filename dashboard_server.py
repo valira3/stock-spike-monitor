@@ -509,6 +509,55 @@ def _sovereign_regime_snapshot(m) -> dict[str, Any]:
     return out
 
 
+# v4.1.9-dash \u2014 M11: snapshot() is O(N_positions) Alpaca round-trips
+# through fetch_1min_bars, and h_stream calls it every 2s per SSE
+# client. For a tab open 12 hours that is ~21,600 blocking calls per
+# client, scaling linearly with concurrent viewers. The data does not
+# actually change meaningfully every 2s \u2014 the 2s cadence exists for
+# log streaming, not state freshness. Cache the snapshot result for a
+# short TTL and share it across every h_stream client. /api/state
+# still hits snapshot() uncached so explicit polls / the Val-tab
+# warmup see fresh data.
+_SNAPSHOT_CACHE_TTL = 10.0  # seconds; conservative given 2s poll floor
+_snapshot_cache_lock = threading.Lock()
+_snapshot_cache_value: dict[str, Any] | None = None
+_snapshot_cache_ts: float = 0.0
+
+
+def _cached_snapshot() -> dict[str, Any]:
+    """Return a recent snapshot, recomputing at most once per TTL.
+
+    Thread-safe: snapshot() is invoked from aiohttp's default thread
+    pool (``run_in_executor(None, ...)``), so multiple SSE clients can
+    call this concurrently. The lock ensures exactly one rebuild per
+    expiry window; the other callers wait briefly and then observe the
+    freshly-stored value. When the cache is warm the lock is released
+    almost immediately \u2014 no blocking Alpaca work happens under it.
+    """
+    global _snapshot_cache_value, _snapshot_cache_ts
+    now = time.monotonic()
+    # Fast-path: return the cached value without taking the lock if
+    # it is still fresh. Reads of the two globals are atomic in
+    # CPython for dict/float refs; a stale read here just means we
+    # serialize through the lock on the next call.
+    cached = _snapshot_cache_value
+    if cached is not None and (now - _snapshot_cache_ts) < _SNAPSHOT_CACHE_TTL:
+        return cached
+    with _snapshot_cache_lock:
+        # Double-check after acquiring the lock \u2014 another thread may
+        # have refreshed the cache while we were waiting.
+        now = time.monotonic()
+        if (
+            _snapshot_cache_value is not None
+            and (now - _snapshot_cache_ts) < _SNAPSHOT_CACHE_TTL
+        ):
+            return _snapshot_cache_value
+        fresh = snapshot()
+        _snapshot_cache_value = fresh
+        _snapshot_cache_ts = time.monotonic()
+        return fresh
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -1454,7 +1503,11 @@ async def h_stream(request):
     loop = asyncio.get_running_loop()
     try:
         while True:
-            snap = await loop.run_in_executor(None, snapshot)
+            # v4.1.9-dash \u2014 use the TTL cache so concurrent SSE clients
+            # share one snapshot rebuild per 10s instead of each paying
+            # ~O(N_positions) Alpaca round-trips every 2s. Client-visible
+            # SSE cadence is unchanged (still 2s).
+            snap = await loop.run_in_executor(None, _cached_snapshot)
             payload = json.dumps({"t": "state", "data": snap})
             await resp.write(f"event: state\ndata: {payload}\n\n".encode("utf-8"))
 
