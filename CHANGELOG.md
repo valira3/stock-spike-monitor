@@ -4,6 +4,29 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.5 — Audit cleanup bundle (trade_genius): H6 + L1 + L2 + M3 (2026-04-24)
+
+Picks up the three cosmetic / hygiene items deferred from `/tmp/audit_tg.md`. No functional behaviour change in the happy path; M3 adds a DEBUG-level log on Telegram edit-failure (previously silent), which is why this ships as a real patch bump rather than `[skip-version]`.
+
+**Fixed:**
+
+- **H6 / L1: dead `index_ok` local in `check_entry` (`trade_genius.py`)** — the intermediate boolean was computed and never consulted; the explicit per-index guards on the following lines do the actual gate work. Variable removed; comment adjusted to explain the history (why `snap["index"]` is no longer written from this spot).
+- **L2 / M3: `/test` `prog.edit_text` silent swallow (`trade_genius.py`, 6 sites)** — each step's edit was wrapped in `try: ... except Exception: pass`, masking real Telegram / network failures behind the legitimate "message is not modified" case. Narrowed to `except telegram.error.BadRequest as e:` with `logger.debug("cmd_test: edit_text step <label>: %s", e)`. Behaviour is unchanged in the happy path (BadRequest still swallowed), but a real network failure now leaves a traceable breadcrumb. A top-level import `from telegram.error import BadRequest as TelegramBadRequest` was added for the narrower except.
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.5; v4.1.4 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.5"`.
+- Smoke test pins BOT_VERSION to `4.1.5`.
+
+**Not fixed:** None remaining from `/tmp/audit_tg.md`'s LOW / MEDIUM cleanup bucket.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (39/39), `grep index_ok` shows only live uses remain.
+
+**Breaking:** None.
+
+---
+
 ## v4.1.4 — Dashboard audit deferred: H2 Val/Gene tab warmup (2026-04-24)
 
 Dashboard-only fix for a deferred HIGH finding from the prior audit (`/tmp/audit_dash.md` H2). If a user lands directly on the Val or Gene tab before Main has completed its first `/api/state` poll, the shared KPI row (Gate / Regime / Session) and scanner-level widgets render as blank "—" placeholders for up to 15 s until either Main's SSE tick or the executor poll lands. `window.__tgLastState` is the handoff channel and it starts unset on a cold page.

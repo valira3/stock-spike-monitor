@@ -25,6 +25,7 @@ from telegram import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from telegram.constants import ChatAction
+from telegram.error import BadRequest as TelegramBadRequest
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
     CommandHandler, ContextTypes, TypeHandler,
@@ -51,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.4"
+BOT_VERSION = "4.1.5"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,20 +70,26 @@ BOT_VERSION = "4.1.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.1.5 \u2014 audit cleanup:\n"
+    "\u2022 dead `index_ok` local in\n"
+    "  check_entry removed\n"
+    "\u2022 /test progress edit_text\n"
+    "  narrows except to Telegram\n"
+    "  BadRequest and logs at\n"
+    "  DEBUG instead of silent\n"
+    "  pass (6 sites)"
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.1.4 \u2014 dashboard H2:\n"
     "Val/Gene tab landing no\n"
     "longer shows blank shared\n"
     "KPIs for up to 15s if Main\n"
     "hasn't polled yet. Tab\n"
-    "switch now warms\n"
-    "window.__tgLastState via\n"
-    "a one-shot /api/state\n"
-    "fetch in parallel with\n"
-    "the executor poll."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "switch warms __tgLastState\n"
+    "via one-shot /api/state.\n"
+    "\n"
     "v4.1.3 \u2014 trade_genius H3:\n"
     "cross-day cooldown prune now\n"
     "compares everything in ET;\n"
@@ -4229,16 +4236,13 @@ def check_entry(ticker):
     if not spy_pdc_val or not qqq_pdc_val or spy_pdc_val <= 0 or qqq_pdc_val <= 0:
         return False, None
 
-    index_ok = (spy_bars["current_price"] > spy_pdc_val
-                and qqq_bars["current_price"] > qqq_pdc_val)
-    # v3.4.21 used to write snap["index"] here; removed in the audit
+    # v3.4.21 used to compute an `index_ok` boolean here and write it
+    # to snap["index"]. The snap-write was removed in an earlier audit
     # pass because _update_gate_snapshot() (called once per scan cycle
     # before check_entry / check_short_entry) already writes this key
-    # with the authoritative side + SPY/QQQ evaluation. Writing it
-    # again here keyed on the current side lets a mid-cycle LONG→SHORT
-    # flip silently stamp the wrong side's index flag (same failure
-    # class as PR #83's side-selection latch).
-
+    # with the authoritative side + SPY/QQQ evaluation. The local
+    # variable was left dead; the explicit per-index guards below are
+    # the actual gate.
     if spy_bars["current_price"] <= spy_pdc_val:
         return False, None
     if qqq_bars["current_price"] <= qqq_pdc_val:
@@ -5788,45 +5792,50 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     loop = asyncio.get_event_loop()
 
     # Step 1 — FMP
+    # Each edit_text is wrapped in a narrow except for
+    # telegram.error.BadRequest (most commonly "message is not
+    # modified" when an identical progress string is re-sent). We
+    # log at DEBUG so real network / API failures are traceable
+    # without spamming INFO on benign no-op edits.
     results["fmp"] = await loop.run_in_executor(None, _test_fmp)
     try:
         await prog.edit_text(_build_test_progress(results))
-    except Exception:
-        pass
+    except TelegramBadRequest as e:
+        logger.debug("cmd_test: edit_text step fmp: %s", e)
 
     # Step 2 — Finnhub
     results["fhb"] = await loop.run_in_executor(None, _test_finnhub)
     try:
         await prog.edit_text(_build_test_progress(results))
-    except Exception:
-        pass
+    except TelegramBadRequest as e:
+        logger.debug("cmd_test: edit_text step fhb: %s", e)
 
     # Step 3 — State files
     results["state"] = await loop.run_in_executor(None, _test_state)
     try:
         await prog.edit_text(_build_test_progress(results))
-    except Exception:
-        pass
+    except TelegramBadRequest as e:
+        logger.debug("cmd_test: edit_text step state: %s", e)
 
     # Step 4 — Positions
     results["pos"] = _test_positions()
     try:
         await prog.edit_text(_build_test_progress(results))
-    except Exception:
-        pass
+    except TelegramBadRequest as e:
+        logger.debug("cmd_test: edit_text step pos: %s", e)
 
     # Step 5 — Scanner
     results["scanner"] = _test_scanner()
     try:
         await prog.edit_text(_build_test_progress(results))
-    except Exception:
-        pass
+    except TelegramBadRequest as e:
+        logger.debug("cmd_test: edit_text step scanner: %s", e)
 
     # Final edit with menu button
     try:
         await prog.edit_text(_build_test_progress(results), reply_markup=_menu_button())
-    except Exception:
-        pass
+    except TelegramBadRequest as e:
+        logger.debug("cmd_test: edit_text final: %s", e)
     logger.info("CMD test completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
