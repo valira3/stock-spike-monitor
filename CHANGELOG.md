@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.3 — Audit H3 (trade_genius): cross-day cooldown prune TZ consistency (2026-04-24)
+
+Finishes one of the deferred HIGH-severity items from `/tmp/audit_tg.md`. No live bug was observed, but the cross-day cooldown prune in `reset_daily_state` mixed ET and UTC date arithmetic — fragile around DST transitions and midnight ET.
+
+**Fixed:**
+
+- **Cross-day cooldown prune now ET-only (`trade_genius.py:6062-6085`)** — `reset_daily_state` used `now_et.replace(09:30).astimezone(timezone.utc)` and compared the stored UTC `_last_exit_time` values against that UTC cutoff. Comparison was still UTC-to-UTC, but deriving the cutoff from an ET wall-clock time and then converting left the invariant opaque. Reworked: the cutoff is computed directly as ET (`session_open_et = now_et.replace(09:30)`) and each stored UTC exit is converted to ET via `.astimezone(ET)` before comparison. A comment spells out the invariant ("all date/session comparisons done in ET").
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.3; v4.1.2 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.3"`.
+- Smoke test pins BOT_VERSION to `4.1.3`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (39/39).
+
+**Breaking:** None.
+
+---
+
 ## v4.1.2 — Audit batch M (trade_genius): MEDIUM hygiene fixes (2026-04-24)
 
 Batch M of the `trade_genius.py` audit. Cleans up three MEDIUM-severity items from `/tmp/audit_tg.md`. No behaviour change in the happy path; narrows failure modes and removes dead/tautological code.
