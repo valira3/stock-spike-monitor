@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.9"
+BOT_VERSION = "4.2.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,20 +70,26 @@ BOT_VERSION = "4.1.9"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.9 \u2014 dashboard M11:\n"
-    "h_stream snapshot() now\n"
-    "served from a 10s TTL\n"
-    "cache shared across every\n"
-    "SSE client. A 12h tab is\n"
-    "~21.6k Alpaca round-trips\n"
-    "collapsed to ~4.3k, and N\n"
-    "concurrent clients share\n"
-    "one rebuild per window.\n"
-    "Client SSE cadence still 2s."
+    "v4.2.0 \u2014 dashboard UI:\n"
+    "redundant fourth header row\n"
+    "deleted across Main/Val/Gene\n"
+    "(date/executor/Paper/LIVE\n"
+    "duplicated info already on\n"
+    "rows 2-3). \"\u00b7 live\" suffix\n"
+    "next to version dropped;\n"
+    "Sign Out button removed from\n"
+    "header (/logout route kept).\n"
+    "Dead CSS/JS pruned."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.9 \u2014 dashboard M11:\n"
+    "h_stream snapshot() now\n"
+    "served from a 10s TTL\n"
+    "cache shared across every\n"
+    "SSE client.\n"
+    "\n"
     "v4.1.8 \u2014 dashboard M7:\n"
     "Robinhood toggle removed;\n"
     "~70 lines of dead HTML/CSS/\n"
