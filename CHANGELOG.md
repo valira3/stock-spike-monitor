@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.1.6 — Dashboard audit deferred: H6 _fetch_indices VIX sentinel (2026-04-24)
+
+Dashboard-only fix for a deferred HIGH finding from the prior audit (`/tmp/audit_dash.md` H6). `_fetch_indices` conflated two failure modes behind a single `last is None or last <= 0` predicate: VIX (legitimately has no equity feed) and real equities that transiently report a 0 quote pre-market. The new shape emits VIX's placeholder row through an explicit branch tagged with `reason="vix_no_equity_feed"`, and keeps the real-equity loop strictly about real-equity semantics.
+
+**Fixed:**
+
+- **`_fetch_indices` distinguishes VIX sentinel from real-equity price=0 (`dashboard_server.py:_fetch_indices`)** — VIX is now emitted from an explicit branch at the top of the per-symbol loop (never participates in the snapshot response; it's not in `equity_symbols`). The row carries `available: false, reason: "vix_no_equity_feed"` so the frontend (and future log scrapers) can tell "intentional placeholder" from "real equity with a weird quote".
+- **Numeric parsing tightened** — `latest_trade.price`, `daily_bar.close`, `previous_daily_bar.close` are each read through an explicit `if raw is not None: last = float(raw)` gate instead of `float(getattr(..., 0) or 0)`. A missing field now surfaces as `None` (drives `available=false`) instead of the ambiguous `0.0`. Change / change-pct math requires `last > 0 and prev_close > 0` so a 0 prev-close can never trigger a ZeroDivisionError, and a real ticker with `last=0.0` now renders with null-styling rather than being silently dropped.
+
+**Changed:**
+
+- `CURRENT_MAIN_NOTE` rewritten for v4.1.6; v4.1.5 note rolls into `_MAIN_HISTORY_TAIL`.
+- `BOT_VERSION = "4.1.6"`.
+- Smoke test pins BOT_VERSION to `4.1.6`.
+
+**Validation:** `ast.parse` clean, `smoke_test.py --local` PASS (39/39).
+
+**Breaking:** None. Frontend already treats `!r.available || r.last == null` as "n/a" — the new `reason` field is additive and ignored by older clients.
+
+---
+
 ## v4.1.5 — Audit cleanup bundle (trade_genius): H6 + L1 + L2 + M3 (2026-04-24)
 
 Picks up the three cosmetic / hygiene items deferred from `/tmp/audit_tg.md`. No functional behaviour change in the happy path; M3 adds a DEBUG-level log on Telegram edit-failure (previously silent), which is why this ships as a real patch bump rather than `[skip-version]`.

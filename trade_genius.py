@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.1.5"
+BOT_VERSION = "4.1.6"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,18 +70,26 @@ BOT_VERSION = "4.1.5"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.1.5 \u2014 audit cleanup:\n"
-    "\u2022 dead `index_ok` local in\n"
-    "  check_entry removed\n"
-    "\u2022 /test progress edit_text\n"
-    "  narrows except to Telegram\n"
-    "  BadRequest and logs at\n"
-    "  DEBUG instead of silent\n"
-    "  pass (6 sites)"
+    "v4.1.6 \u2014 dashboard H6:\n"
+    "_fetch_indices tags its VIX\n"
+    "placeholder with explicit\n"
+    "reason sentinel; real\n"
+    "equities with transient\n"
+    "price=0 no longer conflated\n"
+    "with the VIX no-feed case.\n"
+    "Numeric None-vs-0 parsing\n"
+    "tightened."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.1.5 \u2014 audit cleanup:\n"
+    "check_entry dead index_ok\n"
+    "removed; /test edit_text\n"
+    "narrows except to Telegram\n"
+    "BadRequest and logs at\n"
+    "DEBUG (6 sites).\n"
+    "\n"
     "v4.1.4 \u2014 dashboard H2:\n"
     "Val/Gene tab landing no\n"
     "longer shows blank shared\n"
