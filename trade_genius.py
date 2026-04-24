@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "3.6.0"
+BOT_VERSION = "4.0.0-alpha"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,21 +69,26 @@ BOT_VERSION = "3.6.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.6.0 \u2014 Telegram auth guard:\n"
-    "every update is checked\n"
-    "against TRADEGENIUS_OWNER_IDS\n"
-    "before any handler fires.\n"
-    "Non-owners are silently\n"
-    "dropped (no reply, log only).\n"
-    "Hard rename: RH_OWNER_USER_IDS\n"
-    "env var no longer read. Next:\n"
-    "v4.0.0 alpha adds\n"
-    "TradeGeniusVal on Alpaca\n"
-    "paper."
+    "v4.0.0-alpha \u2014 Val executor:\n"
+    "main emits signals, Val\n"
+    "mirrors to Alpaca paper.\n"
+    "/mode val paper | live\n"
+    "confirm. Strict paper/live\n"
+    "segregation. Separate\n"
+    "Val Telegram bot. Async\n"
+    "fire-and-forget dispatch.\n"
+    "Next: v4.0.0-beta adds\n"
+    "Gene + 3-tab dashboard."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.6.0 \u2014 Telegram auth guard:\n"
+    "every update checked against\n"
+    "TRADEGENIUS_OWNER_IDS before\n"
+    "any handler fires. Non-owners\n"
+    "silently dropped.\n"
+    "\n"
     "v3.5.1 \u2014 TradeGenius rename:\n"
     "stock_spike_monitor.py \u2192\n"
     "trade_genius.py. Dashboard,\n"
@@ -106,11 +111,7 @@ _MAIN_HISTORY_TAIL = (
     "v3.4.46 \u2014 Dashboard\n"
     "label refresh: Invested /\n"
     "Shorted replaced Long MV /\n"
-    "Short liab.\n"
-    "\n"
-    "v3.4.45 \u2014 Paper sizing:\n"
-    "dollar-based lots,\n"
-    "paper_cash entry gate."
+    "Short liab."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
@@ -151,6 +152,464 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# SIGNAL BUS (v4.0.0-alpha)
+# ============================================================
+# Main's paper book is the brain; executor bots (TradeGeniusVal, and
+# in v4.0.0-beta TradeGeniusGene) subscribe to this bus and mirror
+# signals onto Alpaca. Dispatch is async fire-and-forget: each listener
+# runs in its own daemon thread so the main loop never blocks on an
+# Alpaca round-trip and a single bad listener can't take the bus down.
+#
+# Event schema (dict):
+#   {
+#     "kind": "ENTRY_LONG" | "ENTRY_SHORT" | "EXIT_LONG" | "EXIT_SHORT" | "EOD_CLOSE_ALL",
+#     "ticker": "AAPL",               # omitted on EOD_CLOSE_ALL
+#     "price": 175.42,                # main's reference price
+#     "reason": "BREAKOUT" | "STOP" | "TRAIL" | "RED_CANDLE" | ... ,
+#     "timestamp_utc": "2026-04-24T13:45:12Z",
+#     "main_shares": 57,              # audit-only: shares main paper book traded
+#   }
+_signal_listeners: list = []
+
+
+def register_signal_listener(fn):
+    """Subscribe a callable fn(event: dict) -> None to the signal bus."""
+    _signal_listeners.append(fn)
+    logger.info(
+        "signal_bus: listener registered (%s) total=%d",
+        getattr(fn, "__qualname__", repr(fn)), len(_signal_listeners),
+    )
+
+
+def _emit_signal(event: dict) -> None:
+    """Fire an event to every listener in its own daemon thread.
+
+    Async fire-and-forget: main's paper book never blocks on Alpaca.
+    Per-listener exceptions are logged but never break the bus.
+    """
+    # Snapshot the listener list so a concurrent register/unregister can't
+    # mutate what we iterate.
+    listeners = list(_signal_listeners)
+    if not listeners:
+        return
+
+    def _wrap(fn, ev):
+        try:
+            fn(ev)
+        except Exception:
+            logger.exception(
+                "signal_bus: listener %s raised on event %r",
+                getattr(fn, "__qualname__", repr(fn)),
+                ev.get("kind"),
+            )
+
+    for fn in listeners:
+        threading.Thread(
+            target=_wrap, args=(fn, event), daemon=True,
+        ).start()
+
+
+# ============================================================
+# TRADEGENIUS EXECUTOR BASE (v4.0.0-alpha)
+# ============================================================
+class TradeGeniusBase:
+    """Shared base for Alpaca-backed executor bots.
+
+    Subscribes to main's signal bus on startup, manages paper/live mode
+    with its own Alpaca client, maintains its own state file, and runs
+    its own Telegram bot with its own _auth_guard. Subclasses set NAME
+    and ENV_PREFIX \u2014 all behavior lives here.
+
+    Strict paper/live segregation: two state files are kept per bot,
+    `tradegenius_{name_lower}_paper.json` and `..._live.json`; a mode
+    flip reloads the correct file. A live flip additionally requires an
+    explicit `confirm` token AND a sanity check (get_account on the live
+    creds must succeed and report ACTIVE).
+    """
+
+    NAME = "BASE"        # override: "Val", "Gene"
+    ENV_PREFIX = ""      # override: "VAL_", "GENE_"
+
+    def __init__(self):
+        p = self.ENV_PREFIX
+        self.paper_key = os.getenv(p + "ALPACA_PAPER_KEY", "").strip()
+        self.paper_secret = os.getenv(p + "ALPACA_PAPER_SECRET", "").strip()
+        self.live_key = os.getenv(p + "ALPACA_LIVE_KEY", "").strip()
+        self.live_secret = os.getenv(p + "ALPACA_LIVE_SECRET", "").strip()
+        self.telegram_token = os.getenv(p + "TELEGRAM_TOKEN", "").strip()
+        self.telegram_chat_id = os.getenv(p + "TELEGRAM_CHAT_ID", "").strip()
+        owners_raw = os.getenv(p + "TELEGRAM_OWNER_IDS", "").strip() or _RH_OWNER_DEFAULT
+        self.owner_ids = {
+            u.strip() for u in owners_raw.split(",") if u.strip()
+        }
+        try:
+            self.dollars_per_entry = float(
+                os.getenv(p + "DOLLARS_PER_ENTRY", "10000")
+            )
+        except ValueError:
+            self.dollars_per_entry = 10000.0
+        self.mode = "paper"
+        # Client is built lazily on first use so __init__ never touches
+        # the network (smoke tests, missing keys, etc.).
+        self.client = None
+        self._state = {"mode": "paper", "last_updated": None}
+        self._load_state()
+        # Own Telegram Application instance, created in start().
+        self._tg_app = None
+
+    # ---------- state files ----------
+    def _state_file(self, mode: str = None) -> str:
+        m = (mode or self.mode).strip().lower()
+        return f"tradegenius_{self.NAME.lower()}_{m}.json"
+
+    def _save_state(self) -> None:
+        self._state["mode"] = self.mode
+        self._state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        path = self._state_file()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._state, f, indent=2)
+        except Exception:
+            logger.exception("[%s] save state failed (%s)", self.NAME, path)
+
+    def _load_state(self) -> None:
+        # First load: if a persisted mode file exists for EITHER mode,
+        # prefer the most recently written one so a live-mode restart
+        # stays in live. If neither exists, default to paper.
+        paper_path = self._state_file("paper")
+        live_path = self._state_file("live")
+        candidates = []
+        for m, p in (("paper", paper_path), ("live", live_path)):
+            if os.path.exists(p):
+                try:
+                    mtime = os.path.getmtime(p)
+                except OSError:
+                    mtime = 0.0
+                candidates.append((mtime, m, p))
+        if not candidates:
+            return
+        candidates.sort(reverse=True)
+        _, chosen_mode, chosen_path = candidates[0]
+        try:
+            with open(chosen_path, "r", encoding="utf-8") as f:
+                self._state = json.load(f)
+            self.mode = self._state.get("mode", chosen_mode)
+        except Exception:
+            logger.exception("[%s] load state failed (%s)", self.NAME, chosen_path)
+
+    # ---------- Alpaca client ----------
+    def _build_alpaca_client(self, mode: str = None):
+        """Return a TradingClient for the requested (or current) mode.
+
+        Uses alpaca-py 0.43.2: `paper=True` routes to paper-api.alpaca.markets,
+        `paper=False` to api.alpaca.markets. Optional env var overrides
+        ALPACA_ENDPOINT_PAPER / ALPACA_ENDPOINT_TRADE are passed via
+        url_override when set.
+        """
+        from alpaca.trading.client import TradingClient  # lazy import
+        m = (mode or self.mode).strip().lower()
+        if m == "live":
+            key, secret = self.live_key, self.live_secret
+            url_override = os.getenv("ALPACA_ENDPOINT_TRADE", "").strip() or None
+            paper = False
+        else:
+            key, secret = self.paper_key, self.paper_secret
+            url_override = os.getenv("ALPACA_ENDPOINT_PAPER", "").strip() or None
+            paper = True
+        kwargs = {"paper": paper}
+        if url_override:
+            kwargs["url_override"] = url_override
+        return TradingClient(key, secret, **kwargs)
+
+    def _ensure_client(self):
+        if self.client is None:
+            try:
+                self.client = self._build_alpaca_client()
+            except Exception:
+                logger.exception("[%s] alpaca client build failed", self.NAME)
+                self.client = None
+        return self.client
+
+    # ---------- sanity check before live flip ----------
+    def _live_sanity_check(self):
+        """Build a TEMP live client, verify it resolves to a non-paper,
+        ACTIVE account, log account_number/cash/buying_power.
+
+        Returns (ok: bool, message: str).
+        """
+        if not (self.live_key and self.live_secret):
+            return (False, "live keys not set in env")
+        try:
+            tmp = self._build_alpaca_client(mode="live")
+            acct = tmp.get_account()
+        except Exception as e:
+            logger.exception("[%s] live sanity check failed", self.NAME)
+            return (False, f"get_account raised: {e}")
+        status = str(getattr(acct, "status", "")).upper()
+        account_number = getattr(acct, "account_number", "?")
+        cash = getattr(acct, "cash", "?")
+        buying_power = getattr(acct, "buying_power", "?")
+        logger.info(
+            "[%s] live sanity: account=%s status=%s cash=%s bp=%s",
+            self.NAME, account_number, status, cash, buying_power,
+        )
+        if "ACTIVE" not in status:
+            return (False, f"account not ACTIVE (status={status})")
+        return (
+            True,
+            f"live OK \u2014 acct={account_number} status={status} "
+            f"cash={cash} bp={buying_power}",
+        )
+
+    # ---------- mode control ----------
+    def set_mode(self, new_mode: str, confirm_token: str = None):
+        """Flip paper/live. Live requires confirm_token=='confirm' AND
+        _live_sanity_check. Returns (ok, message)."""
+        nm = (new_mode or "").strip().lower()
+        if nm == "paper":
+            self.mode = "paper"
+            try:
+                self.client = self._build_alpaca_client()
+            except Exception:
+                logger.exception("[%s] rebuild paper client failed", self.NAME)
+                self.client = None
+            self._save_state()
+            return (True, "mode set to paper")
+        if nm == "live":
+            if confirm_token != "confirm":
+                return (
+                    False,
+                    "live flip requires the literal 'confirm' token: "
+                    "/mode val live confirm",
+                )
+            ok, msg = self._live_sanity_check()
+            if not ok:
+                return (False, f"live sanity failed: {msg}")
+            self.mode = "live"
+            try:
+                self.client = self._build_alpaca_client()
+            except Exception as e:
+                logger.exception("[%s] rebuild live client failed", self.NAME)
+                return (False, f"client rebuild after sanity failed: {e}")
+            self._save_state()
+            return (True, f"mode set to live \u2014 {msg}")
+        return (False, f"unknown mode: {new_mode!r} (expected 'paper' or 'live')")
+
+    # ---------- signal listener ----------
+    def _shares_for(self, price: float) -> int:
+        if price is None or price <= 0:
+            return 0
+        return max(1, int(self.dollars_per_entry // price))
+
+    def _send_own_telegram(self, text: str) -> None:
+        """Post to this executor's OWN Telegram chat (not main's)."""
+        if not (self.telegram_token and self.telegram_chat_id):
+            return
+        try:
+            import urllib.parse
+            url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id": self.telegram_chat_id,
+                "text": text,
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=data, method="POST")
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception:
+            logger.exception("[%s] telegram send failed", self.NAME)
+
+    def _on_signal(self, event: dict) -> None:
+        """Listener callback: dispatch on event['kind']."""
+        kind = event.get("kind", "")
+        ticker = event.get("ticker", "")
+        price = event.get("price", 0.0) or 0.0
+        reason = event.get("reason", "")
+        label = f"{self.NAME} {self.mode}"
+
+        client = self._ensure_client()
+        if client is None:
+            logger.warning(
+                "[%s] skip %s %s \u2014 no alpaca client", self.NAME, kind, ticker,
+            )
+            return
+
+        try:
+            from alpaca.trading.requests import MarketOrderRequest, ClosePositionRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce
+        except Exception:
+            logger.exception("[%s] alpaca imports failed", self.NAME)
+            return
+
+        try:
+            if kind == "ENTRY_LONG":
+                qty = self._shares_for(price)
+                if qty <= 0:
+                    return
+                order = client.submit_order(MarketOrderRequest(
+                    symbol=ticker, qty=qty,
+                    side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                ))
+                oid = getattr(order, "id", "?")
+                msg = f"\u2705 {label}: {ticker} BUY {qty} shares @ market (order_id={oid})"
+                logger.info(msg)
+                self._send_own_telegram(msg)
+            elif kind == "ENTRY_SHORT":
+                qty = self._shares_for(price)
+                if qty <= 0:
+                    return
+                order = client.submit_order(MarketOrderRequest(
+                    symbol=ticker, qty=qty,
+                    side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                ))
+                oid = getattr(order, "id", "?")
+                msg = f"\u2705 {label}: {ticker} SELL {qty} shares short @ market (order_id={oid})"
+                logger.info(msg)
+                self._send_own_telegram(msg)
+            elif kind in ("EXIT_LONG", "EXIT_SHORT"):
+                client.close_position(ticker)
+                msg = f"\u2705 {label}: {ticker} CLOSE ({reason})"
+                logger.info(msg)
+                self._send_own_telegram(msg)
+            elif kind == "EOD_CLOSE_ALL":
+                client.close_all_positions(cancel_orders=True)
+                msg = f"\u2705 {label}: EOD close_all_positions"
+                logger.info(msg)
+                self._send_own_telegram(msg)
+            else:
+                logger.warning("[%s] unknown signal kind %r", self.NAME, kind)
+        except Exception as e:
+            err = f"\u274c {label}: {ticker or kind} failed: {e}"
+            logger.exception("[%s] dispatch failed on %s", self.NAME, kind)
+            self._send_own_telegram(err)
+
+    # ---------- own Telegram bot ----------
+    async def _auth_guard(self, update, context):
+        """Owner-whitelist guard identical in pattern to main's guard."""
+        eff_user = getattr(update, "effective_user", None)
+        uid = str(eff_user.id) if eff_user and getattr(eff_user, "id", None) is not None else ""
+        if uid and uid in self.owner_ids:
+            return
+        logger.warning(
+            "[%s] auth_guard dropped non-owner (user_id=%r)", self.NAME, uid or "(none)",
+        )
+        raise ApplicationHandlerStop
+
+    async def cmd_mode(self, update, context):
+        """/mode paper  |  /mode live confirm"""
+        args = context.args if context and hasattr(context, "args") else []
+        if not args:
+            await update.message.reply_text(
+                f"{self.NAME} mode: {self.mode}\n"
+                f"Usage: /mode paper  |  /mode live confirm"
+            )
+            return
+        new_mode = args[0]
+        token = args[1] if len(args) > 1 else None
+        ok, msg = self.set_mode(new_mode, confirm_token=token)
+        marker = "\u2705" if ok else "\u274c"
+        await update.message.reply_text(f"{marker} {self.NAME}: {msg}")
+
+    async def cmd_status(self, update, context):
+        client = self._ensure_client()
+        lines = [f"{self.NAME} status", f"  mode: {self.mode}"]
+        if client is None:
+            lines.append("  alpaca: (no client \u2014 keys missing?)")
+        else:
+            try:
+                acct = client.get_account()
+                lines.append(
+                    f"  acct: {getattr(acct, 'account_number', '?')} "
+                    f"status={getattr(acct, 'status', '?')}"
+                )
+                lines.append(f"  cash: {getattr(acct, 'cash', '?')}")
+                lines.append(f"  bp:   {getattr(acct, 'buying_power', '?')}")
+                try:
+                    positions = client.get_all_positions()
+                    lines.append(f"  positions: {len(positions)}")
+                    for p in positions[:10]:
+                        lines.append(
+                            f"    {getattr(p, 'symbol', '?')}: "
+                            f"{getattr(p, 'qty', '?')} @ {getattr(p, 'avg_entry_price', '?')}"
+                        )
+                except Exception as e:
+                    lines.append(f"  positions: (fetch failed: {e})")
+            except Exception as e:
+                lines.append(f"  alpaca error: {e}")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_halt(self, update, context):
+        """Emergency close_all_positions."""
+        client = self._ensure_client()
+        if client is None:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: no alpaca client"
+            )
+            return
+        try:
+            client.close_all_positions(cancel_orders=True)
+            await update.message.reply_text(
+                f"\u2705 {self.NAME}: HALT \u2014 close_all_positions fired"
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: halt failed: {e}"
+            )
+
+    async def cmd_version(self, update, context):
+        await update.message.reply_text(
+            f"{self.NAME} executor v{BOT_VERSION}\n"
+            f"mode: {self.mode}"
+        )
+
+    def _run_tg_loop(self):
+        """Run this executor's own Telegram polling loop in its own
+        thread. Creates its own asyncio event loop (PTB requires one)."""
+        if not self.telegram_token:
+            logger.info("[%s] telegram token unset \u2014 skipping tg loop", self.NAME)
+            return
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            app = Application.builder().token(self.telegram_token).build()
+            self._tg_app = app
+            app.add_handler(TypeHandler(Update, self._auth_guard), group=-1)
+            app.add_handler(CommandHandler("mode", self.cmd_mode))
+            app.add_handler(CommandHandler("status", self.cmd_status))
+            app.add_handler(CommandHandler("halt", self.cmd_halt))
+            app.add_handler(CommandHandler("version", self.cmd_version))
+            logger.info("[%s] telegram loop starting", self.NAME)
+            app.run_polling()
+        except Exception:
+            logger.exception("[%s] telegram loop crashed", self.NAME)
+
+    # ---------- startup ----------
+    def start(self):
+        """Subscribe to main's signal bus and start own Telegram loop."""
+        register_signal_listener(self._on_signal)
+        # Try to build the alpaca client eagerly so startup logs surface
+        # missing/bad creds; failures are already caught + logged.
+        self._ensure_client()
+        logger.info("[%s] started in %s mode", self.NAME, self.mode)
+        # Own Telegram bot in a background thread so main.run_telegram_bot()
+        # can still own the main-process asyncio loop.
+        t = threading.Thread(target=self._run_tg_loop, daemon=True, name=f"{self.NAME}_tg")
+        t.start()
+
+
+class TradeGeniusVal(TradeGeniusBase):
+    """Val \u2014 first Genius executor. Alpaca paper by default; Val flips
+    to live via `/mode live confirm` on Val's own Telegram bot, or via
+    `/mode val live confirm` on main's bot."""
+    NAME = "Val"
+    ENV_PREFIX = "VAL_"
+
+
+# Global Val instance (populated at startup if enabled). Referenced by
+# main-bot's /mode val router; left None when VAL_ENABLED=0 or keys missing.
+val_executor: "TradeGeniusBase | None" = None
+
 
 ET = ZoneInfo("America/New_York")
 CDT = ZoneInfo("America/Chicago")   # user display timezone
@@ -3034,6 +3493,16 @@ def execute_entry(ticker, current_price):
 
     save_paper_state()
 
+    # v4.0.0-alpha — notify executor bots (Val, Gene) of the paper entry.
+    _emit_signal({
+        "kind": "ENTRY_LONG",
+        "ticker": ticker,
+        "price": float(current_price),
+        "reason": "BREAKOUT",
+        "timestamp_utc": _utc_now_iso(),
+        "main_shares": int(shares),
+    })
+
 
 # ============================================================
 # CLOSE POSITION
@@ -3160,6 +3629,16 @@ def close_position(ticker, price, reason="STOP"):
     send_telegram(msg)
 
     save_paper_state()
+
+    # v4.0.0-alpha — notify executor bots (Val, Gene) of the paper exit.
+    _emit_signal({
+        "kind": "EXIT_LONG",
+        "ticker": ticker,
+        "price": float(price),
+        "reason": reason,
+        "timestamp_utc": _utc_now_iso(),
+        "main_shares": int(shares),
+    })
 
 
 # ============================================================
@@ -3569,6 +4048,16 @@ def execute_short_entry(ticker, price):
          stop, short_stop_label, or_low_val, pdc_val, short_sig, entry_time_display, SEP)
     send_telegram(msg)
 
+    # v4.0.0-alpha — notify executor bots of the paper short entry.
+    _emit_signal({
+        "kind": "ENTRY_SHORT",
+        "ticker": ticker,
+        "price": float(entry_price),
+        "reason": "WOUNDED_BUFFALO",
+        "timestamp_utc": _utc_now_iso(),
+        "main_shares": int(shares),
+    })
+
 
 # ============================================================
 # MANAGE SHORT POSITIONS (stop + trail logic)
@@ -3770,6 +4259,16 @@ def close_short_position(ticker, price, reason):
          sc_reason_label, sc_in_time, exit_time, SEP)
     send_telegram(msg)
 
+    # v4.0.0-alpha — notify executor bots of the paper short cover.
+    _emit_signal({
+        "kind": "EXIT_SHORT",
+        "ticker": ticker,
+        "price": float(cover_price),
+        "reason": reason,
+        "timestamp_utc": _utc_now_iso(),
+        "main_shares": int(shares),
+    })
+
 
 
 # ============================================================
@@ -3777,6 +4276,18 @@ def close_short_position(ticker, price, reason):
 # ============================================================
 def eod_close():
     """Force-close all open long AND short positions at 15:55 ET."""
+    # v4.0.0-alpha — notify executors to flatten everything on Alpaca.
+    # Per-position close events still fire from close_position /
+    # close_short_position below; this event lets executors shortcut with
+    # a single close_all_positions call if they prefer.
+    _emit_signal({
+        "kind": "EOD_CLOSE_ALL",
+        "ticker": "",
+        "price": 0.0,
+        "reason": "EOD",
+        "timestamp_utc": _utc_now_iso(),
+        "main_shares": 0,
+    })
     n_long = len(positions)
     n_short = len(short_positions)
 
@@ -6194,7 +6705,42 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the current MarketMode classification and its profile.
     OBSERVATION ONLY in this version — no trading parameter reads from it yet.
+
+    v4.0.0-alpha — also routes to executor bots:
+      /mode val                     → show Val's current mode + account
+      /mode val paper               → flip Val to paper
+      /mode val live confirm        → flip Val to live (sanity-checked)
     """
+    args = context.args if context and hasattr(context, "args") else []
+    if args and args[0].lower() == "val":
+        if val_executor is None:
+            await update.message.reply_text("Val executor not enabled")
+            return
+        sub = args[1].lower() if len(args) > 1 else ""
+        if not sub:
+            # Show Val status inline (same as Val bot's /status).
+            client = val_executor._ensure_client()
+            lines = [f"Val mode: {val_executor.mode}"]
+            if client is None:
+                lines.append("  alpaca: (no client \u2014 keys missing?)")
+            else:
+                try:
+                    acct = client.get_account()
+                    lines.append(
+                        f"  acct: {getattr(acct, 'account_number', '?')} "
+                        f"status={getattr(acct, 'status', '?')}"
+                    )
+                    lines.append(f"  cash: {getattr(acct, 'cash', '?')}")
+                except Exception as e:
+                    lines.append(f"  alpaca error: {e}")
+            await update.message.reply_text("\n".join(lines))
+            return
+        confirm_token = args[2] if len(args) > 2 else None
+        ok, msg = val_executor.set_mode(sub, confirm_token=confirm_token)
+        marker = "\u2705" if ok else "\u274c"
+        await update.message.reply_text(f"{marker} Val: {msg}")
+        return
+
     SEP = "\u2500" * 34
     # Refresh once on demand so manual checks outside scan cadence are fresh.
     try:
@@ -8303,6 +8849,26 @@ else:
     # Background threads
     threading.Thread(target=scheduler_thread, daemon=True).start()
     threading.Thread(target=health_ping, daemon=True).start()
+
+    # v4.0.0-alpha — TradeGeniusVal executor (opt-in via env).
+    # Enabled by default if paper keys are present; VAL_ENABLED=0 force-disables.
+    # Silently skipped if disabled or creds missing so deploys without Alpaca
+    # keys still boot cleanly.
+    _val_enabled = os.getenv("VAL_ENABLED", "1").strip() not in ("0", "false", "False", "")
+    _val_has_keys = bool(os.getenv("VAL_ALPACA_PAPER_KEY", "").strip())
+    if _val_enabled and _val_has_keys:
+        try:
+            val_executor = TradeGeniusVal()
+            val_executor.start()
+            logger.info("[Val] started in %s mode", val_executor.mode)
+        except Exception:
+            logger.exception("[Val] startup failed \u2014 main continues")
+            val_executor = None
+    else:
+        logger.info(
+            "[Val] skipped (VAL_ENABLED=%s, VAL_ALPACA_PAPER_KEY set=%s)",
+            os.getenv("VAL_ENABLED", "1"), _val_has_keys,
+        )
 
     logger.info("%s v%s started", BOT_NAME, BOT_VERSION)
     send_startup_message()
