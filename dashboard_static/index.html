@@ -519,7 +519,6 @@
   <main class="main">
 
     <div class="banner hide" id="banner"></div>
-    <div class="banner banner-ok hide" id="tp-banner" style="margin-top:8px"></div>
 
     <section class="kpi-row">
       <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" id="k-equity">—</span><span class="kpi-sub" id="k-equity-sub">—</span></div>
@@ -721,10 +720,12 @@
     const pnl = p.day_pnl;
     const pnlEl = $("k-pnl");
     pnlEl.textContent = fmtUsd(pnl);
-    pnlEl.className = "kpi-value " + ((pnl ?? 0) >= 0 ? "delta-up" : "delta-down");
-    const pct = p.start ? (pnl / p.start) * 100 : null;
+    const pnlHasVal = Number.isFinite(pnl);
+    pnlEl.className = "kpi-value " + (!pnlHasVal ? "" : (pnl >= 0 ? "delta-up" : "delta-down"));
+    const pct = (p.start && pnlHasVal) ? (pnl / p.start) * 100 : null;
     const tradesLen = (sl.trades || []).length;
-    $("k-pnl-sub").innerHTML = `${tradesLen} trade${tradesLen===1?"":"s"} · <span class="${(pnl ?? 0) >= 0 ? 'delta-up' : 'delta-down'}">${fmtPct(pct)}</span>`;
+    const pctCls = Number.isFinite(pct) ? (pct >= 0 ? 'delta-up' : 'delta-down') : '';
+    $("k-pnl-sub").innerHTML = `${tradesLen} trade${tradesLen===1?"":"s"} · <span class="${pctCls}">${fmtPct(pct)}</span>`;
 
     const positions = sl.positions || [];
     $("k-open").textContent = String(positions.length);
@@ -1183,26 +1184,6 @@
     if (verEl) verEl.textContent = ver;
   }
 
-  function renderTpSync(s) {
-    const b = $("tp-banner");
-    if (!b) return;
-    const tp = s.tp_sync || {};
-    const unsynced = tp.unsynced_exits || {};
-    const keys = Object.keys(unsynced);
-    if (!keys.length) {
-      b.classList.add("hide");
-      b.textContent = "";
-      return;
-    }
-    // Build a compact summary — tickers + first reason
-    const first = unsynced[keys[0]] || {};
-    const reason = (first.message || "broker rejected").slice(0, 60);
-    const count = keys.length;
-    const tickers = keys.slice(0, 4).join(", ") + (count > 4 ? `\u2026 (+${count - 4})` : "");
-    b.textContent = `\u26a0 TP broker unsynced: ${count} exit${count === 1 ? "" : "s"} (${tickers}) \u2014 ${reason}. Use /tp_sync to review.`;
-    b.classList.remove("hide");
-  }
-
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
@@ -1234,7 +1215,6 @@
     renderObserver(s);
     renderSovereign(s);
     renderGates(s);
-    renderTpSync(s);
   }
 
   // v3.4.39 — toggle wiring. Keep the active button visually selected

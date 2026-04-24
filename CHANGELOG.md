@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.9 — Audit batch 5: MEDIUM fixes, dashboard polish (2026-04-24)
+
+Batch 5 of the audit pass. MEDIUM severity, scope restricted to `dashboard_server.py` + `dashboard_static/index.html`. Each edit fixes a latent correctness bug or removes dead code that would confuse future readers. No trading-logic changes.
+
+**Fixed:**
+- **Alpaca key regex missed mixed-case suffixes (`dashboard_server.py:_ALPACA_KEY_RE`)** — the scrubber used `[A-Z0-9]{10,}` after the `PK/AK/CK/SK` prefix, but Alpaca emits mixed-case key material. A real leaked key in an upstream error body would have slipped past the redactor. Pattern relaxed to `[A-Za-z0-9]{10,}`.
+- **`_serialize_positions` crashed on bad on-disk numeric field (`dashboard_server.py`)** — a single malformed value on `trail_stop` / `trail_high` / `stop` / `entry_price` / `shares` (e.g. `"N/A"`) raised `ValueError` inside the snapshot serializer, which surfaced as HTTP 500 from `/api/state` and blanked the whole dashboard. Every numeric read now goes through a new `_safe_float` helper: one bad field drops only that position's trail info instead of exploding the snapshot.
+- **`day_pnl` KPI colour class when value missing (`dashboard_static/index.html:renderKPIs`)** — `(pnl ?? 0) >= 0 ? 'delta-up' : 'delta-down'` painted the value green when `day_pnl` was actually `null` (boot, halted, no trades yet). Both the main number and the percentage sub-label now drop the colour class entirely when the value isn't finite.
+
+**Removed:**
+- **Dead `renderTpSync` + `tp-banner` DOM element** — the TP surfaces were deleted in v3.5.0, the server no longer ships `tp_sync` in state (smoke_test asserts this in the "bad keys" list), and the banner hasn't been reachable since. Dead JS + orphan DOM node deleted.
+
+**Changed:**
+- Login page title + brand wordmark `Spike Monitor` → `TradeGenius` (`dashboard_server.py:_login_page`). The project was renamed in v3.5.1 and the login page was the last stale surface.
+- `BOT_VERSION` bumped `4.0.8` → `4.0.9`. `CURRENT_MAIN_NOTE` rewritten; lines ≤ 34 chars.
+
+**Validation:**
+- `ast.parse` clean on `dashboard_server.py`.
+- `smoke_test.py --local` passes (version assertions retargeted to `4.0.9`).
+
+**Breaking:** None.
+
+---
+
 ## v4.0.8 — Audit batch 4: HIGH fixes, dashboard correctness (2026-04-24)
 
 Batch 4 of the audit pass. Scope restricted to `dashboard_server.py` + `dashboard_static/index.html`. Every edit fixes a likely-wrong behaviour in a common path.

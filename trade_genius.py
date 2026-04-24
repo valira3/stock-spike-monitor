@@ -51,7 +51,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.0.8"
+BOT_VERSION = "4.0.9"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -69,16 +69,19 @@ BOT_VERSION = "4.0.8"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.0.8 \u2014 audit HIGH batch:\n"
-    "\u2022 /login coerces non-str\n"
-    "  POST field cleanly (no\n"
-    "  more 500 on multipart)\n"
-    "\u2022 /api/trade_log rejects\n"
-    "  stale portfolio=tp\n"
-    "\u2022 log tail renders from\n"
-    "  structured ts/level\n"
-    "\u2022 SSE watchdog no longer\n"
-    "  queues duplicate reconn"
+    "v4.0.9 \u2014 audit MEDIUM batch:\n"
+    "\u2022 Alpaca key regex allows\n"
+    "  mixed-case suffixes so\n"
+    "  logs scrub real keys\n"
+    "\u2022 _serialize_positions\n"
+    "  _safe_float-guards every\n"
+    "  numeric read\n"
+    "\u2022 day_pnl KPI hides\n"
+    "  colour when value null\n"
+    "\u2022 login page rebranded\n"
+    "  to TradeGenius\n"
+    "\u2022 dead renderTpSync +\n"
+    "  tp-banner removed"
 )
 
 # Main-bot release note: short tail of recent releases.
