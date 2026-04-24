@@ -456,6 +456,23 @@
 </style>
 </head>
 <body>
+<!-- v4.0.0-beta — index ticker strip (SPY/QQQ/DIA/IWM/VIX) polls /api/indices
+     every 30s. Visible on all tabs. VIX may show "n/a" — Alpaca's equity
+     feed does not cover the volatility index. -->
+<div id="idx-strip" style="display:flex;gap:0;background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px;color:#e7ecf3;padding:6px 14px;overflow-x:auto;white-space:nowrap">
+  <span id="idx-placeholder" style="color:#5b6572">indices loading…</span>
+</div>
+
+<!-- v4.0.0-beta — 3-tab switcher (Main / Val / Gene). Only one panel is
+     visible at a time. Main is the existing full dashboard; Val and Gene
+     poll /api/executor/{name} every 15s. -->
+<nav id="tg-tabs" style="display:flex;gap:0;background:#10151c;border-bottom:1px solid #1f2937;padding:0 14px">
+  <button type="button" class="tg-tab tg-tab-on" data-tg-tab="main" style="background:transparent;border:none;color:#e7ecf3;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid #7dd3fc">Main <span style="color:#5b6572;font-size:10.5px">📄 Paper</span></button>
+  <button type="button" class="tg-tab" data-tg-tab="val" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Val <span id="tg-badge-val" style="color:#5b6572;font-size:10.5px">—</span></button>
+  <button type="button" class="tg-tab" data-tg-tab="gene" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Gene <span id="tg-badge-gene" style="color:#5b6572;font-size:10.5px">—</span></button>
+</nav>
+
+<div id="tg-panel-main" class="tg-panel">
 <div class="app">
 
   <header class="header">
@@ -1350,6 +1367,258 @@
   startStream();
   // also fire one immediate poll so the UI populates fast even before first SSE tick
   pollOnce();
+})();
+</script>
+</div><!-- /tg-panel-main -->
+
+<!-- v4.0.0-beta — Val tab panel. Populated by JS below from /api/executor/val -->
+<div id="tg-panel-val" class="tg-panel" style="display:none;padding:18px 20px;color:#e7ecf3;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+  <div id="tg-val-body"><div style="color:#5b6572">Loading Val…</div></div>
+</div>
+
+<!-- v4.0.0-beta — Gene tab panel. Same shape as Val. -->
+<div id="tg-panel-gene" class="tg-panel" style="display:none;padding:18px 20px;color:#e7ecf3;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+  <div id="tg-gene-body"><div style="color:#5b6572">Loading Gene…</div></div>
+</div>
+
+<script>
+(() => {
+  // v4.0.0-beta — tab switcher, index strip, and per-executor polling.
+  // All vanilla JS. Independent from the main-tab IIFE above so nothing
+  // the main tab does can interfere.
+
+  function $$(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"]/g, c =>
+      ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])
+    );
+  }
+  function fmtUsd(n) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    const v = Number(n);
+    const s = v >= 0 ? "+" : "";
+    return s + v.toLocaleString(undefined, { style:"currency", currency:"USD" });
+  }
+  function fmtNum(n, d) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    return Number(n).toLocaleString(undefined, {
+      minimumFractionDigits: d, maximumFractionDigits: d,
+    });
+  }
+
+  // --- Tab switching ---------------------------------------------------
+  const TABS = ["main", "val", "gene"];
+  let activeTab = "main";
+
+  function selectTab(name) {
+    if (!TABS.includes(name)) return;
+    activeTab = name;
+    for (const t of TABS) {
+      const panel = $$("tg-panel-" + t);
+      if (panel) panel.style.display = (t === name) ? "" : "none";
+    }
+    for (const btn of document.querySelectorAll(".tg-tab")) {
+      const on = btn.getAttribute("data-tg-tab") === name;
+      btn.classList.toggle("tg-tab-on", on);
+      btn.style.color = on ? "#e7ecf3" : "#8a96a7";
+      btn.style.borderBottomColor = on ? "#7dd3fc" : "transparent";
+    }
+    if (name === "val" || name === "gene") pollExecutor(name);
+  }
+
+  for (const btn of document.querySelectorAll(".tg-tab")) {
+    btn.addEventListener("click", () => selectTab(btn.getAttribute("data-tg-tab")));
+  }
+
+  // --- Index strip -----------------------------------------------------
+  async function pollIndices() {
+    try {
+      const r = await fetch("/api/indices", { credentials: "same-origin" });
+      if (!r.ok) throw new Error("http " + r.status);
+      const data = await r.json();
+      renderIndices(data);
+    } catch (e) {
+      const strip = $$("idx-strip");
+      if (strip) strip.innerHTML = '<span style="color:#5b6572">indices unavailable</span>';
+    }
+  }
+  function renderIndices(data) {
+    const strip = $$("idx-strip");
+    if (!strip) return;
+    const rows = (data && data.indices) || [];
+    if (!rows.length) {
+      strip.innerHTML = '<span style="color:#5b6572">indices unavailable</span>';
+      return;
+    }
+    const parts = rows.map(r => {
+      if (!r.available || r.last === null || r.last === undefined) {
+        return `<span style="padding:0 14px;border-right:1px solid #1f2937;color:#5b6572">${esc(r.symbol)}: n/a</span>`;
+      }
+      const up = (r.change ?? 0) >= 0;
+      const color = up ? "#34d399" : "#f87171";
+      const sign = up ? "+" : "";
+      const chg = (r.change === null || r.change === undefined) ? "—" : sign + fmtNum(r.change, 2);
+      const pct = (r.change_pct === null || r.change_pct === undefined) ? "—" : sign + fmtNum(r.change_pct, 2) + "%";
+      return `<span style="padding:0 14px;border-right:1px solid #1f2937"><strong style="color:#e7ecf3">${esc(r.symbol)}</strong> <span style="color:#8a96a7">${fmtNum(r.last, 2)}</span> <span style="color:${color}">${chg}</span> <span style="color:${color};font-size:10.5px">${pct}</span></span>`;
+    });
+    strip.innerHTML = parts.join("");
+  }
+
+  // --- Per-executor tab ------------------------------------------------
+  async function pollExecutor(name) {
+    const bodyId = "tg-" + name + "-body";
+    const body = $$(bodyId);
+    if (!body) return;
+    try {
+      const r = await fetch("/api/executor/" + name, { credentials: "same-origin" });
+      if (!r.ok) throw new Error("http " + r.status);
+      const data = await r.json();
+      renderExecutor(name, data);
+    } catch (e) {
+      body.innerHTML = `<div style="color:#f87171">Fetch failed: ${esc(e.message || e)}</div>`;
+    }
+  }
+
+  function renderBadge(name, data) {
+    const el = $$("tg-badge-" + name);
+    if (!el) return;
+    if (!data || data.enabled === false) {
+      el.textContent = "off";
+      el.style.color = "#5b6572";
+      return;
+    }
+    if (data.mode === "live") {
+      el.textContent = "🟢 Live";
+      el.style.color = "#34d399";
+    } else {
+      el.textContent = "📄 Paper";
+      el.style.color = "#8a96a7";
+    }
+  }
+
+  function renderExecutor(name, data) {
+    renderBadge(name, data);
+    const body = $$("tg-" + name + "-body");
+    if (!body) return;
+    const label = name === "val" ? "Val" : "Gene";
+    if (!data || data.enabled === false) {
+      body.innerHTML = `
+        <div style="max-width:560px;padding:22px;border:1px solid #1f2937;border-radius:10px;background:#10151c">
+          <div style="font-size:15px;font-weight:600;margin-bottom:8px">${label} executor not enabled</div>
+          <div style="color:#8a96a7;font-size:12.5px">Set <code style="font-family:'JetBrains Mono',monospace">${name.toUpperCase()}_ALPACA_PAPER_KEY</code>, <code style="font-family:'JetBrains Mono',monospace">${name.toUpperCase()}_ALPACA_PAPER_SECRET</code>, and optionally other <code style="font-family:'JetBrains Mono',monospace">${name.toUpperCase()}_*</code> vars to activate this tab. See <code style="font-family:'JetBrains Mono',monospace">.env.example</code> for the full list.</div>
+        </div>`;
+      return;
+    }
+    const modeBadge = data.mode === "live"
+      ? `<span style="background:#0f2e23;color:#34d399;padding:3px 8px;border-radius:4px;font-size:11px">🟢 Live</span>`
+      : `<span style="background:#1e2633;color:#8a96a7;padding:3px 8px;border-radius:4px;font-size:11px">📄 Paper</span>`;
+    const healthBadge = data.healthy
+      ? `<span style="color:#34d399;font-size:11px">● healthy</span>`
+      : `<span style="color:#f87171;font-size:11px">● ${esc(data.error || "unhealthy")}</span>`;
+
+    let acctHtml = `<div style="color:#5b6572">account not available</div>`;
+    if (data.account) {
+      const a = data.account;
+      acctHtml = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Cash</div><div style="font-family:'JetBrains Mono',monospace;font-size:15px">${fmtUsd(a.cash)}</div></div>
+        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Buying Power</div><div style="font-family:'JetBrains Mono',monospace;font-size:15px">${fmtUsd(a.buying_power)}</div></div>
+        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Equity</div><div style="font-family:'JetBrains Mono',monospace;font-size:15px">${fmtUsd(a.equity)}</div></div>
+        <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Account</div><div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#8a96a7">${esc(a.account_number || "—")}</div></div>
+      </div>`;
+    }
+
+    // Split invested vs shorted (longs under Invested, shorts under Shorted —
+    // columns labeled the same way the Main tab already does per v3.4.46).
+    const positions = Array.isArray(data.positions) ? data.positions : [];
+    let invested = 0.0, shorted = 0.0;
+    for (const p of positions) {
+      const gross = (Number(p.qty) || 0) * (Number(p.avg_entry) || 0);
+      if (p.side === "SHORT") shorted += gross; else invested += gross;
+    }
+
+    let posHtml;
+    if (!positions.length) {
+      posHtml = `<div style="color:#5b6572;padding:12px 0">No open positions.</div>`;
+    } else {
+      const rows = positions.map(p => {
+        const up = (Number(p.unrealized_pnl) || 0) >= 0;
+        const color = up ? "#34d399" : "#f87171";
+        const sideColor = p.side === "SHORT" ? "#f87171" : "#34d399";
+        return `<tr>
+          <td style="padding:6px 8px">${esc(p.symbol)}</td>
+          <td style="padding:6px 8px;color:${sideColor};font-weight:600">${esc(p.side)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace">${fmtNum(p.qty, 0)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace">${fmtNum(p.avg_entry, 2)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace">${fmtNum(p.current_price, 2)}</td>
+          <td style="padding:6px 8px;text-align:right;color:${color};font-family:'JetBrains Mono',monospace">${fmtUsd(p.unrealized_pnl)}</td>
+          <td style="padding:6px 8px;text-align:right;color:${color};font-family:'JetBrains Mono',monospace">${fmtNum(p.unrealized_pnl_pct, 2)}%</td>
+        </tr>`;
+      }).join("");
+      posHtml = `<table style="width:100%;border-collapse:collapse;font-size:12.5px">
+        <thead><tr style="color:#5b6572;text-transform:uppercase;font-size:10px;letter-spacing:.08em;border-bottom:1px solid #1f2937">
+          <th style="text-align:left;padding:8px">Ticker</th>
+          <th style="text-align:left;padding:8px">Side</th>
+          <th style="text-align:right;padding:8px">Qty</th>
+          <th style="text-align:right;padding:8px">Avg Entry</th>
+          <th style="text-align:right;padding:8px">Mark</th>
+          <th style="text-align:right;padding:8px">Unrealized</th>
+          <th style="text-align:right;padding:8px">%</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    let lastSigHtml = `<div style="color:#5b6572">No signals received yet.</div>`;
+    const ls = data.last_signal;
+    if (ls && ls.kind) {
+      lastSigHtml = `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#8a96a7">
+        <span style="color:#7dd3fc">${esc(ls.kind)}</span>
+        ${esc(ls.ticker || "")}
+        ${ls.price ? "@ $" + fmtNum(ls.price, 2) : ""}
+        ${ls.reason ? "· " + esc(ls.reason) : ""}
+        <span style="color:#5b6572">· ${esc(ls.timestamp_utc || "")}</span>
+      </div>`;
+    }
+
+    body.innerHTML = `
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px">
+        <h2 style="margin:0;font-size:18px;font-weight:700">${label}</h2>
+        ${modeBadge}
+        ${healthBadge}
+      </div>
+      <section style="background:#10151c;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:18px">
+        ${acctHtml}
+      </section>
+      <section style="background:#10151c;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:18px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Invested</div>
+          <div style="font-family:'JetBrains Mono',monospace">${fmtUsd(invested)}</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572">Shorted</div>
+          <div style="font-family:'JetBrains Mono',monospace">${fmtUsd(shorted)}</div>
+        </div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572;margin:14px 0 6px">Open positions</div>
+        ${posHtml}
+      </section>
+      <section style="background:#10151c;border:1px solid #1f2937;border-radius:10px;padding:16px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5b6572;margin-bottom:8px">Last signal</div>
+        ${lastSigHtml}
+        <div style="color:#5b6572;font-size:11px;margin-top:10px">Today's realized P&amp;L: <code>TODO</code> (reads Alpaca activity feed — wired after Val review)</div>
+      </section>`;
+  }
+
+  // Kick off the index strip (runs on all tabs) and poll every 30s.
+  pollIndices();
+  setInterval(pollIndices, 30000);
+
+  // Pre-poll Val and Gene so their badges populate even before user
+  // clicks the tab. Then poll the active tab every 15s.
+  pollExecutor("val");
+  pollExecutor("gene");
+  setInterval(() => {
+    if (activeTab === "val" || activeTab === "gene") pollExecutor(activeTab);
+  }, 15000);
 })();
 </script>
 </body>

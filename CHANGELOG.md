@@ -4,6 +4,47 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.0-beta — TradeGeniusGene + 3-tab dashboard (2026-04-24)
+
+Second step of the v4 architecture: a second Genius executor (**Gene**) joins Val, and the dashboard grows a tabbed view so main's paper book, Val's Alpaca account, and Gene's Alpaca account are each visible at a glance. An always-on index ticker strip (SPY / QQQ / DIA / IWM / VIX) runs across the top of every tab.
+
+**Added:**
+- **`TradeGeniusGene`** (`NAME="Gene"`, `ENV_PREFIX="GENE_"`) — identical semantics to Val, just a different env namespace, state file, Telegram bot, and Alpaca account. Strict paper/live segregation is preserved (`tradegenius_gene_paper.json` vs `tradegenius_gene_live.json` never mix).
+- **`gene_executor` module global** + Gene startup block guarded by `GENE_ENABLED` (default `1`) and the presence of `GENE_ALPACA_PAPER_KEY`. Gene registers itself on the signal bus at boot; if keys are missing it is silently skipped, same as Val.
+- **`/mode gene …`** router on main bot — same semantics as `/mode val`, including the live sanity-check (`get_account()` must return `status=="ACTIVE"`) before the `confirm` flip is accepted.
+- **`last_signal` capture** on `TradeGeniusBase._on_signal` so every executor remembers its most recent event for the dashboard card.
+- **`/api/executor/{name}`** endpoint on `dashboard_server.py` (15s server-side cache, per-executor): returns `{enabled, mode, healthy, account:{cash,buying_power,equity,account_number,status}, positions:[...], last_signal, error}`. Cache is keyed by name so Val and Gene don't stomp each other.
+- **`/api/indices`** endpoint on `dashboard_server.py` (30s server-side cache): one call to Alpaca's `StockSnapshotRequest` for SPY / QQQ / DIA / IWM plus a separate best-effort pull for VIX. Missing symbols (notably VIX on some feeds) are returned as `{available:false}` so the front-end renders "VIX: n/a" without breaking the strip.
+- **3-tab dashboard** (`dashboard_static/index.html`): vanilla HTML/CSS/JS tab switcher with three panels — **Main** (the existing paper-book view, untouched), **Val**, **Gene**. Val/Gene panels poll `/api/executor/<name>` every 15s and render: mode badge (📄 Paper / 🟢 Live), account card (cash, buying power, equity, account number, status), positions table (ticker/side/qty/avg_entry/mark/unrealized $/unrealized %), invested + shorted totals, and the most recent signal line.
+- **Index ticker strip** renders at the very top of the page regardless of tab, polls `/api/indices` every 30s, and shows last price + absolute + percent change color-coded green/red.
+- **Env vars added:** `GENE_ENABLED`, `GENE_ALPACA_PAPER_KEY/SECRET`, `GENE_ALPACA_LIVE_KEY/SECRET`, `GENE_TELEGRAM_TOKEN`, `GENE_TELEGRAM_CHAT_ID`, `GENE_TELEGRAM_OWNER_IDS`, `GENE_DOLLARS_PER_ENTRY` (default 10000). `.env.example` now documents the full set.
+- **Smoke tests (10 new):** `version: BOT_VERSION is 4.0.0-beta`, `version: CURRENT_MAIN_NOTE begins with v4.0.0-beta`, `version: CURRENT_MAIN_NOTE every line <= 34 chars`, `gene: TradeGeniusGene class exists`, `gene: state file path segregates paper vs live`, `gene: gene_executor module global exists`, `shorts_pnl: dashboard snapshot shows profitable short with positive pnl`, `shorts_pnl: positions text shows profitable short with +sign`, `shorts_pnl: realized short pnl storage is positive for profitable cover`, `dashboard: /api/executor/val endpoint exists and returns disabled gracefully when Val is off`, `dashboard: /api/indices endpoint exists`, `dashboard: /api/indices handles missing Alpaca client gracefully`. Total smoke = **34 / 34 PASS** (was 24).
+
+**Shorts P&L investigation — no display bug found:**
+Per the PR #69 spec, the parent agent had verified that storage math for short P&L is correct and pointed at the display layer as the likely sign-flip site. An exhaustive audit of every short-P&L surface — `dashboard_server._serialize_positions`, `trade_genius._build_positions_text`, `trade_genius._status_text_sync`, `trade_genius._open_positions_as_pseudo_trades`, `trade_genius._chart_dayreport`, `trade_genius._format_dayreport_section`, and `trade_genius.close_short_position` (storage) — showed every location already computing `(entry - current) × shares` (unrealized) or `(entry - cover) × shares` (realized) with the correct sign. **No code change was needed.** To guard against future regressions, three smoke tests were added that seed a profitable short at `entry=100, current=95, shares=10` and assert the dashboard snapshot, `/status` positions text, and `close_short_position` storage all report a **+$50** P&L.
+
+**Design choices (Gene's call):**
+- Per-executor 15s cache on `/api/executor/<name>` and 30s on `/api/indices`: the dashboard polls 4× per minute per tab, but each Alpaca account is only hit at most once per cache window. Live accounts with real rate limits are safe.
+- Alpaca's own `StockHistoricalDataClient.get_stock_snapshot` for the index strip (re-uses the executor's paper keys, no new provider added). VIX is fetched in a separate call so its potential absence from the equity snapshot doesn't blank the strip.
+- Display-layer-first investigation of the shorts sign as the spec directed; when nothing was found, regression tests were added rather than touching working code.
+- Main tab is the unchanged v3.x dashboard wrapped in a panel div — no changes to the existing paper-book rendering path.
+
+**Validation:**
+- `ast.parse` clean on `trade_genius.py`, `dashboard_server.py`, `smoke_test.py`.
+- `python smoke_test.py` → **34 / 34 PASS** (local mode).
+
+**Scope guardrails respected:**
+- Main paper-book logic (Tiger 2.0, stops, EOD), v3.6.0 auth guard, v4.0.0-alpha signal bus / `TradeGeniusBase` / Val — all unchanged.
+- No new third-party deps (Alpaca SDK already pinned for v4.0.0-alpha).
+
+**Breaking:**
+- None. Gene startup is opt-in via env: without `GENE_ALPACA_PAPER_KEY` (or with `GENE_ENABLED=0`), Gene is silently skipped and behavior matches v4.0.0-alpha.
+
+**Deploy note:**
+To activate Gene on Railway, set at minimum `GENE_ALPACA_PAPER_KEY`, `GENE_ALPACA_PAPER_SECRET`, and `GENE_TELEGRAM_TOKEN`. The dashboard's Val/Gene tabs will show "disabled" for any executor that's not booted.
+
+---
+
 ## v4.0.0-alpha — TradeGeniusVal executor on Alpaca paper (2026-04-24)
 
 First step of the v4 architecture: main's paper book is the **brain**, executor bots are **executors**. Main continues to run Tiger 2.0 against the paper book exactly as before; newly, every paper entry/exit fires an in-process signal that one or more executor bots mirror onto Alpaca. Val is the first executor; Gene arrives in v4.0.0-beta.
