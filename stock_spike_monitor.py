@@ -33,170 +33,76 @@ from telegram.ext import (
 # ============================================================
 TELEGRAM_TOKEN          = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID                 = os.getenv("CHAT_ID")
-TRADERSPOST_WEBHOOK_URL = os.getenv("TRADERSPOST_WEBHOOK_URL")
 # v3.4.41 — treat empty string as unset so Railway vars left blank still
-# fall back to the hardcoded owner ID. os.getenv's default only fires when
-# the key is missing entirely; a blank value would otherwise disable the
-# reset-authorization gate (see _reset_authorized).
+# fall back to the hardcoded owner ID.
 _RH_OWNER_DEFAULT       = "5165570192"
-TELEGRAM_TP_CHAT_ID     = os.getenv("TELEGRAM_TP_CHAT_ID", "").strip() or _RH_OWNER_DEFAULT
-TELEGRAM_TP_TOKEN       = os.getenv("TELEGRAM_TP_TOKEN", "8612076951:AAGZXzVA4btFOMjYw-9VN1P4Iu9uggHWzQk")
-TP_TOKEN                = TELEGRAM_TP_TOKEN  # alias for is_tp_update()
 
 # v3.4.43 — Owner user-id whitelist (comma-separated). Lets the owner
-# /reset from a direct message with the bot even when CHAT_ID /
-# TELEGRAM_TP_CHAT_ID are configured as group chats. Default includes
-# Val's Telegram user id so DM resets always work. Each entry is a
-# Telegram user id (positive integer), not a chat id.
+# /reset from a direct message with the bot even when CHAT_ID is
+# configured as a group chat. Default includes Val's Telegram user id
+# so DM resets always work. Each entry is a Telegram user id (positive
+# integer), not a chat id.
 _RH_OWNER_USERS_RAW     = os.getenv("RH_OWNER_USER_IDS", "").strip() or _RH_OWNER_DEFAULT
 RH_OWNER_USER_IDS       = {
     u.strip() for u in _RH_OWNER_USERS_RAW.split(",") if u.strip()
 }
 
-BOT_VERSION = "3.4.47"
+BOT_VERSION = "3.5.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
-#  CURRENT_MAIN_NOTE / CURRENT_TP_NOTE
+#  CURRENT_MAIN_NOTE
 #    - Just the release that is actively being deployed.
 #    - Used by the startup "deployed" card so each deploy shows only
 #      what shipped this time (no accumulating carry-over list).
 #    - MUST begin with the current BOT_VERSION string and MUST NOT
 #      mention any prior version (enforced by smoke test).
 #
-#  MAIN_RELEASE_NOTE / TP_RELEASE_NOTE
+#  MAIN_RELEASE_NOTE
 #    - Rolling history: CURRENT note + previous few versions.
 #    - Used by /version (typed and menu) so the history is still
 #      available on demand.
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v3.4.47 \u2014 Eye of the Tiger 2.0:\n"
-    "entry rewrite. Long entries\n"
-    "require (a) SPY>PDC AND QQQ>PDC,\n"
-    "(b) 2 consecutive 1m closes\n"
-    "above the 5m OR high, and\n"
-    "(c) DI+(5m,15) > 25. Shorts\n"
-    "mirror inversely. Hard Eject\n"
-    "closes any open position when\n"
-    "DI or index regime flips against\n"
-    "it. Volume filter retired in\n"
-    "favor of DI+."
-)
-CURRENT_TP_NOTE = (
-    "v3.4.47 \u2014 Eye of the Tiger 2.0:\n"
-    "2-bar OR confirm + DI+(5m,15)\n"
-    "> 25 gate + Hard Eject exit.\n"
-    "Volume filter off by default."
+    "v3.5.0 \u2014 Deletion Pass:\n"
+    "removed TradersPost webhook,\n"
+    "TP book, dual-bot wiring,\n"
+    "Robinhood IMAP + Gmail poll,\n"
+    "/tp_sync + /rh_* commands.\n"
+    "Paper book + Tiger 2.0\n"
+    "unchanged. Next: v4.0.0\n"
+    "adds Alpaca executors."
 )
 
-# Main-bot release note: detailed prose describing what shipped.
-# Scanner/strategy/portfolio content — never TradersPost internals.
-# v3.4.17 is a bugfix + polish release on top of the v3.4.16 bot split:
-# /status refresh button now behaves, and the deploy card on each bot
-# shows the right tone (detailed here, tight on the TP side).
-# Rolling history — CURRENT_MAIN_NOTE is prepended so /version always
-# leads with the active version, followed by the last few releases.
+# Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v3.4.47 \u2014 Eye of the\n"
+    "Tiger 2.0: 2-bar OR confirm\n"
+    "+ DI+(5m,15) > 25 gate +\n"
+    "Hard Eject exit.\n"
+    "\n"
     "v3.4.46 \u2014 Dashboard\n"
-    "label refresh: the strip\n"
-    "now reads Invested /\n"
-    "Shorted instead of the\n"
-    "more opaque Long MV /\n"
+    "label refresh: Invested /\n"
+    "Shorted replaced Long MV /\n"
     "Short liab.\n"
     "\n"
     "v3.4.45 \u2014 Paper sizing:\n"
-    "dollar-based lots like RH,\n"
+    "dollar-based lots,\n"
     "paper_cash entry gate.\n"
     "\n"
     "v3.4.44 \u2014 Menu cleanup:\n"
-    "removed duplicate and\n"
-    "alias commands from the\n"
-    "Telegram popup.\n"
+    "duplicate and alias\n"
+    "commands removed.\n"
     "\n"
     "v3.4.43 \u2014 Owner user-id\n"
     "whitelist: /reset now\n"
-    "works from DM even when\n"
-    "CHAT_ID env points to a\n"
-    "group chat.\n"
-    "\n"
-    "v3.4.42 \u2014 /reset blocked\n"
-    "message now shows chat_id,\n"
-    "user_id and owner env so\n"
-    "auth mismatches can be\n"
-    "diagnosed from Telegram.\n"
-    "\n"
-    "v3.4.41 \u2014 /reset auth\n"
-    "hardening: empty env no\n"
-    "longer disables the gate;\n"
-    "user id also accepted.\n"
-    "\n"
-    "v3.4.40 \u2014 Robinhood is\n"
-    "independent from paper.\n"
-    "Halt, cash, concurrency,\n"
-    "per-ticker caps are\n"
-    "now per-portfolio.\n"
-    "\n"
-    "v3.4.39 \u2014 Consolidation.\n"
-    "Robinhood bot shows only\n"
-    "Robinhood data; dashboard\n"
-    "gains a per-bot toggle.\n"
-    "\n"
-    "v3.4.38 \u2014 Kill switch.\n"
-    "/rh_enable /rh_disable\n"
-    "flip Robinhood live orders\n"
-    "at runtime; override\n"
-    "persists across restarts.\n"
-    "\n"
-    "v3.4.37 \u2014 Robinhood mode:\n"
-    "TP mirror became live bot.\n"
-    "Long-only $25k, $1500/entry,\n"
-    "max 6 concurrent, IMAP fill\n"
-    "reconciliation from Gmail.\n"
+    "works from DM.\n"
     "\n"
     "v3.4.36 \u2014 Profit-lock\n"
-    "ladder is now peak-based."
+    "ladder is peak-based."
 )
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
-# TP-bot release note: tight headline + one line per recent TP change.
-# CURRENT_TP_NOTE leads the rolling history, same split as MAIN.
-_TP_HISTORY_TAIL = (
-    "v3.4.46 \u2014 Dashboard\n"
-    "strip relabels Long MV /\n"
-    "Short liab to Invested /\n"
-    "Shorted on both views.\n"
-    "v3.4.45 \u2014 Paper sizing\n"
-    "dollar-based (RH path\n"
-    "unchanged).\n"
-    "v3.4.44 \u2014 Menu cleanup:\n"
-    "/tp_sync dropped from the\n"
-    "popup (use /rh_sync).\n"
-    "v3.4.43 \u2014 Owner user-id\n"
-    "whitelist: /reset works\n"
-    "from DM.\n"
-    "v3.4.42 \u2014 Diagnostic:\n"
-    "reset-blocked error prints\n"
-    "the ids it saw vs expected.\n"
-    "v3.4.41 \u2014 /reset auth:\n"
-    "empty env no longer kills\n"
-    "the gate; user id accepted.\n"
-    "v3.4.40 \u2014 Independence\n"
-    "from paper: halt, cash,\n"
-    "concurrency, per-ticker\n"
-    "caps are now RH-only.\n"
-    "v3.4.39 \u2014 Consolidation:\n"
-    "this bot scopes /trade_log,\n"
-    "/reset, /retighten to RH.\n"
-    "v3.4.38 \u2014 Kill switch via\n"
-    "/rh_enable, /rh_disable.\n"
-    "v3.4.37 \u2014 Robinhood mode:\n"
-    "long-only $25k, $1500/entry,\n"
-    "max 6 concurrent, IMAP fill\n"
-    "reconciliation from Gmail.\n"
-    "v3.4.36 \u2014 Profit-lock\n"
-    "ladder: peak-anchored."
-)
-TP_RELEASE_NOTE = CURRENT_TP_NOTE + "\n\n" + _TP_HISTORY_TAIL
 # Backwards-compat alias — any remaining references default to main.
 RELEASE_NOTE = MAIN_RELEASE_NOTE
 
@@ -392,10 +298,6 @@ _SHORT_REASON = {
 # ============================================================
 PAPER_LOG              = os.getenv("PAPER_LOG_PATH", "investment.log")
 PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
-TP_STATE_FILE          = os.getenv(
-    "TP_STATE_FILE",
-    os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "tp_state.json")
-)
 # v3.4.27 — persistent trade log. Default path is a sibling of the
 # paper state file so it lands on the same volume automatically. The
 # file is append-only JSONL — one closed trade per line. Survives
@@ -405,33 +307,6 @@ TRADE_LOG_FILE         = os.getenv(
     os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "trade_log.jsonl"),
 )
 PAPER_STARTING_CAPITAL = 100_000.0
-# Webhook kill-switch (env-gated, default OFF).
-# When True, TP portfolio events are forwarded to TradersPost.
-# Paper portfolio is ALWAYS simulation-only and never hits the webhook.
-# TRADERSPOST_ENABLED: env var sets the BOOT default; /rh_enable and
-# /rh_disable flip the runtime flag without restart. Runtime override is
-# persisted in tp_state.json so it survives a Railway redeploy.
-_TRADERSPOST_ENABLED_ENV = os.getenv("TRADERSPOST_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-_traderspost_runtime_override: "bool | None" = None  # None = fall back to env default
-
-def is_traderspost_enabled() -> bool:
-    """Authoritative read for the Robinhood kill switch. Runtime override
-    (set via /rh_enable or /rh_disable) wins over the boot env var."""
-    if _traderspost_runtime_override is not None:
-        return _traderspost_runtime_override
-    return _TRADERSPOST_ENABLED_ENV
-
-# ── Robinhood (TradersPost-routed) configuration — live trading scale ──────────
-RH_STARTING_CAPITAL       = float(os.getenv("RH_STARTING_CAPITAL", "25000"))
-RH_DOLLARS_PER_ENTRY      = float(os.getenv("RH_DOLLARS_PER_ENTRY", "1500"))
-RH_MAX_ENTRIES_PER_TICKER = int(os.getenv("RH_MAX_ENTRIES_PER_TICKER", "1"))
-RH_MAX_CONCURRENT_POSITIONS = int(os.getenv("RH_MAX_CONCURRENT_POSITIONS", "6"))
-RH_LONG_ONLY              = os.getenv("RH_LONG_ONLY", "true").lower() in ("1", "true", "yes", "on")
-# IMAP reconciliation (Gmail app password)
-GMAIL_ADDRESS             = os.getenv("GMAIL_ADDRESS", "")
-GMAIL_APP_PASSWORD        = os.getenv("GMAIL_APP_PASSWORD", "")
-RH_IMAP_ENABLED           = bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
-RH_IMAP_POLL_SEC          = int(os.getenv("RH_IMAP_POLL_SEC", "120"))
 
 # Investment logger (separate file)
 inv_logger = logging.getLogger("investment")
@@ -738,8 +613,8 @@ def remove_ticker(sym: str) -> dict:
     # Leave or_high/or_low/pdc entries behind — any still-open
     # position on this ticker relies on them to manage exits.
     logger.info("ticker removed: %s", t)
-    open_long = t in positions or t in tp_positions
-    open_short = t in short_positions or t in tp_short_positions
+    open_long = t in positions
+    open_short = t in short_positions
     return {"ok": True, "removed": True, "ticker": t,
             "had_open": bool(open_long or open_short)}
 
@@ -794,12 +669,6 @@ positions: dict = {}
 daily_entry_count: dict = {}   # ticker -> count (max 5)
 daily_entry_date: str = ""
 
-# v3.4.40 — Robinhood portfolio has its own per-day entry counter so
-# the RH_MAX_ENTRIES_PER_TICKER cap (default 1) can be enforced without
-# piggy-backing on the paper counter (which allows up to 5). Reset by
-# reset_daily_state() alongside daily_entry_count.
-tp_daily_entry_count: dict = {}   # ticker -> count for TP / Robinhood book
-
 # Paper trading log (today's trades)
 paper_trades: list = []
 
@@ -807,14 +676,8 @@ paper_trades: list = []
 paper_cash: float = PAPER_STARTING_CAPITAL
 paper_all_trades: list = []
 
-# TP Portfolio (independent, parallel tracking) — Robinhood live scale
-tp_positions: dict = {}
-tp_paper_trades: list = []
-tp_paper_cash: float = RH_STARTING_CAPITAL  # $25k live-trading scale (not paper $100k)
-
 # Trade history persistence (Feature 1)
 trade_history: list = []        # ALL closed paper trades, max 500
-tp_trade_history: list = []     # ALL closed TP trades, max 500
 TRADE_HISTORY_MAX = 500
 
 # Guard: prevent scheduler from saving empty state before load completes
@@ -822,28 +685,13 @@ _state_loaded = False
 
 # Short positions (Wounded Buffalo strategy)
 short_positions: dict = {}           # paper short: {ticker: {entry_price, shares, stop, trail_stop, trail_active, entry_time, date, side}}
-tp_short_positions: dict = {}        # TP short positions
 daily_short_entry_count: dict = {}   # {ticker: int} — resets daily, separate from long count
 short_trade_history: list = []       # max 500 closed paper shorts
-tp_short_trade_history: list = []    # max 500 closed TP shorts
-
-# v3.4.15 — Webhook rejection tracking for exits (state-first ordering preserved).
-# Populated when close_position/close_tp_position/close_short_position TP branches
-# fire a webhook that fails. Dashboard banner + /tp_sync surface these for manual
-# reconciliation. Keyed by ticker, most-recent rejection wins.
-tp_unsynced_exits: dict = {}         # {ticker: {action, price, shares, message, http_status, time}}
 
 # Daily loss limit (Feature 2)
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
 _trading_halted: bool = False
 _trading_halted_reason: str = ""
-
-# v3.4.40 — Robinhood portfolio gets its own halt flag. Paper's halt is
-# computed from paper P&L + paper unrealized; RH's halt is computed from
-# tp_trade_history / tp_short_trade_history + RH unrealized. They move
-# independently so a bad paper day never halts RH, and vice versa.
-_tp_trading_halted: bool = False
-_tp_trading_halted_reason: str = ""
 
 # ============================================================
 # MARKET MODE (scaffolding — NO behavior change in this version)
@@ -1363,8 +1211,8 @@ def _classify_ticker_heat(per_ticker_pnl, per_ticker_rsi):
         return ([], [])
 
 
-def _compute_today_realized_pnl(is_tp: bool = False) -> float:
-    """Realized P&L today across longs + shorts for the given portfolio.
+def _compute_today_realized_pnl() -> float:
+    """Realized P&L today across longs + shorts for the paper portfolio.
     Unrealized P&L is excluded on purpose — we want the number that
     drives the DAILY_LOSS_LIMIT halt, which is realized-only.
 
@@ -1375,39 +1223,25 @@ def _compute_today_realized_pnl(is_tp: bool = False) -> float:
     """
     today_str = _now_et().strftime("%Y-%m-%d")
     pnl = 0.0
-    if is_tp:
-        for t in tp_paper_trades:
-            if t.get("date") == today_str and t.get("action") == "SELL":
-                pnl += t.get("pnl", 0) or 0
-        for t in tp_short_trade_history:
-            if t.get("date") == today_str:
-                pnl += t.get("pnl", 0) or 0
-    else:
-        for t in paper_trades:
-            if t.get("date") == today_str and t.get("action") == "SELL":
-                pnl += t.get("pnl", 0) or 0
-        for t in short_trade_history:
-            if t.get("date") == today_str:
-                pnl += t.get("pnl", 0) or 0
+    for t in paper_trades:
+        if t.get("date") == today_str and t.get("action") == "SELL":
+            pnl += t.get("pnl", 0) or 0
+    for t in short_trade_history:
+        if t.get("date") == today_str:
+            pnl += t.get("pnl", 0) or 0
     return pnl
 
 
-def _today_pnl_breakdown(is_tp: bool = False) -> tuple:
+def _today_pnl_breakdown() -> tuple:
     """Returns (sells_list, covers_list, total_pnl, wins, losses, n_trades)
-    for today, for the given portfolio. Single source of truth used by
-    EOD summaries, /dashboard, and weekly digest helpers.
+    for today. Single source of truth used by EOD summaries, /dashboard,
+    and weekly digest helpers.
     """
     today_str = _now_et().strftime("%Y-%m-%d")
-    if is_tp:
-        sells = [t for t in tp_paper_trades
-                 if t.get("action") == "SELL" and t.get("date", "") == today_str]
-        covers = [t for t in tp_short_trade_history
-                  if t.get("date", "") == today_str]
-    else:
-        sells = [t for t in paper_trades
-                 if t.get("action") == "SELL" and t.get("date", "") == today_str]
-        covers = [t for t in short_trade_history
-                  if t.get("date", "") == today_str]
+    sells = [t for t in paper_trades
+             if t.get("action") == "SELL" and t.get("date", "") == today_str]
+    covers = [t for t in short_trade_history
+              if t.get("date", "") == today_str]
     combined = list(sells) + list(covers)
     total = sum((t.get("pnl", 0) or 0) for t in combined)
     wins = sum(1 for t in combined if (t.get("pnl", 0) or 0) >= 0)
@@ -1432,7 +1266,7 @@ def get_current_mode(now_et=None) -> tuple:
 
     # DEFENSIVE: realized P&L today is at or below half the daily loss limit.
     # Uses paper portfolio's P&L as the canonical risk signal (TP mirrors it).
-    today_pnl = _compute_today_realized_pnl(is_tp=False)
+    today_pnl = _compute_today_realized_pnl()
     half_limit = DAILY_LOSS_LIMIT / 2.0   # e.g. -500 / 2 = -250
     if today_pnl <= half_limit:
         reason = "realized P&L $%+.2f <= half limit $%+.2f" % (today_pnl, half_limit)
@@ -1527,16 +1361,6 @@ _regime_bullish = None          # None=unknown, True/False tracks last known reg
 _last_exit_time: dict = {}     # ticker -> datetime (UTC) of last exit
 _last_scan_time = None           # datetime (UTC), updated each scan cycle
 
-# TradersPost state
-tp_state: dict = {
-    "total_orders_sent": 0,
-    "total_orders_success": 0,
-    "total_orders_failed": 0,
-    "last_order_time": None,
-    "recent_orders": [],
-}
-tp_dm_chat_id = None
-
 # User config
 user_config: dict = {"trading_mode": "paper"}
 
@@ -1547,12 +1371,6 @@ _paper_save_lock = threading.Lock()
 # ============================================================
 # NOTIFICATION ROUTING HELPER (Fix B)
 # ============================================================
-def is_tp_update(update) -> bool:
-    """Check if the Telegram update came from the TP bot."""
-    try:
-        return update.get_bot().token == TP_TOKEN
-    except Exception:
-        return False
 
 
 # ============================================================
@@ -1590,15 +1408,11 @@ def save_paper_state():
         "paper_all_trades": paper_all_trades[-500:],
         "daily_entry_count": daily_entry_count,
         "daily_entry_date": daily_entry_date,
-        # v3.4.40 — TP per-ticker daily counter persisted in paper_state
-        # (same file) so it can be reset alongside daily_entry_count.
-        "tp_daily_entry_count": tp_daily_entry_count,
         "or_high": or_high,
         "or_low": or_low,
         "pdc": pdc,
         "or_collected_date": or_collected_date,
         "user_config": user_config,
-        "tp_state": tp_state,
         "trade_history": trade_history,
         "short_positions": short_positions,
         "short_trade_history": short_trade_history[-500:],
@@ -1624,15 +1438,14 @@ def save_paper_state():
 def load_paper_state():
     """Load paper trading state from disk on startup."""
     global paper_cash, positions, paper_trades, paper_all_trades
-    global daily_entry_count, daily_entry_date, tp_daily_entry_count
+    global daily_entry_count, daily_entry_date
     global or_high, or_low, pdc, or_collected_date
-    global user_config, tp_state, tp_dm_chat_id
+    global user_config
     global trade_history
     global short_positions, short_trade_history
     global daily_short_entry_count
     global _last_exit_time, _state_loaded
     global _scan_paused, _trading_halted, _trading_halted_reason
-    global _tp_trading_halted, _tp_trading_halted_reason
 
     if not os.path.exists(PAPER_STATE_FILE):
         paper_log("No saved state at %s. Starting fresh $%.0f."
@@ -1651,14 +1464,12 @@ def load_paper_state():
         paper_all_trades.clear()
         paper_all_trades.extend(state.get("paper_all_trades", []))
         daily_entry_count.update(state.get("daily_entry_count", {}))
-        tp_daily_entry_count.update(state.get("tp_daily_entry_count", {}))
         daily_entry_date = state.get("daily_entry_date", "")
         or_high.update(state.get("or_high", {}))
         or_low.update(state.get("or_low", {}))
         pdc.update(state.get("pdc", {}))
         or_collected_date = state.get("or_collected_date", "")
         user_config.update(state.get("user_config", {}))
-        tp_state.update(state.get("tp_state", {}))
         trade_history.clear()
         trade_history.extend(state.get("trade_history", []))
         short_positions.update(state.get("short_positions", {}))
@@ -1689,14 +1500,10 @@ def load_paper_state():
         today = _now_et().strftime("%Y-%m-%d")
         if daily_entry_date != today:
             daily_entry_count.clear()
-            tp_daily_entry_count.clear()
             daily_short_entry_count.clear()
             paper_trades.clear()
             _trading_halted = False
             _trading_halted_reason = ""
-            # v3.4.40 — RH halt resets independently on day rollover.
-            _tp_trading_halted = False
-            _tp_trading_halted_reason = ""
 
         _state_loaded = True
         logger.info("Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
@@ -1706,94 +1513,6 @@ def load_paper_state():
         logger.error("load_paper_state failed: %s — starting fresh", e)
 
 
-# ============================================================
-# TP STATE PERSISTENCE
-# ============================================================
-_tp_save_lock = threading.Lock()
-_tp_state_loaded = False
-
-
-def save_tp_state():
-    """Persist TP portfolio state to disk. Thread-safe, atomic."""
-    t0 = time.time()
-    if not _tp_state_loaded:
-        logger.warning("save_tp_state skipped — state not yet loaded")
-        return
-    state = {
-        "tp_paper_cash": tp_paper_cash,
-        "tp_positions": tp_positions,
-        "tp_paper_trades": tp_paper_trades,
-        "tp_trade_history": tp_trade_history,
-        "tp_short_positions": tp_short_positions,
-        "tp_short_trade_history": tp_short_trade_history[-500:],
-        # v3.4.38 — persist runtime kill-switch override across restarts.
-        # None means "fall back to TRADERSPOST_ENABLED env var"; bool wins.
-        "traderspost_enabled_override": _traderspost_runtime_override,
-        # v3.4.40 — RH halt is computed from RH P&L and persisted
-        # alongside the RH book so restart within the same trading day
-        # preserves it. Paper halt stays in paper_state.
-        "_tp_trading_halted": _tp_trading_halted,
-        "_tp_trading_halted_reason": _tp_trading_halted_reason,
-        "saved_at": _utc_now_iso(),
-    }
-    with _tp_save_lock:
-        tmp = TP_STATE_FILE + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, default=str)
-            os.replace(tmp, TP_STATE_FILE)
-            logger.debug("TP state saved -> %s (%.3fs)", TP_STATE_FILE, time.time() - t0)
-        except Exception as e:
-            logger.error("save_tp_state failed: %s", e)
-
-
-def load_tp_state():
-    """Load TP portfolio state from disk on startup."""
-    global tp_paper_cash, tp_trade_history
-    global tp_short_positions, tp_short_trade_history
-    global _tp_state_loaded
-    global _traderspost_runtime_override
-    global _tp_trading_halted, _tp_trading_halted_reason
-
-    if not os.path.exists(TP_STATE_FILE):
-        logger.info("No TP state at %s. Starting fresh $%.0f.",
-                     TP_STATE_FILE, RH_STARTING_CAPITAL)
-        _tp_state_loaded = True
-        return
-
-    try:
-        with open(TP_STATE_FILE, "r", encoding="utf-8") as f:
-            state = json.load(f)
-
-        tp_paper_cash = float(state.get("tp_paper_cash", RH_STARTING_CAPITAL))
-        tp_positions.update(state.get("tp_positions", {}))
-        tp_paper_trades.clear()
-        tp_paper_trades.extend(state.get("tp_paper_trades", []))
-        tp_trade_history.clear()
-        tp_trade_history.extend(state.get("tp_trade_history", []))
-        tp_short_positions.update(state.get("tp_short_positions", {}))
-        tp_short_trade_history.clear()
-        tp_short_trade_history.extend(state.get("tp_short_trade_history", []))
-
-        # v3.4.40 — restore RH halt state.
-        _tp_trading_halted = bool(state.get("_tp_trading_halted", False))
-        _tp_trading_halted_reason = state.get("_tp_trading_halted_reason", "")
-
-        # v3.4.38 — restore kill-switch override if one was persisted.
-        override = state.get("traderspost_enabled_override", None)
-        if isinstance(override, bool):
-            _traderspost_runtime_override = override
-            logger.info("[RH] Restored runtime kill-switch override: %s",
-                        "ENABLED" if override else "DISABLED")
-        else:
-            _traderspost_runtime_override = None
-
-        _tp_state_loaded = True
-        logger.info("Loaded TP state: cash=$%.2f, %d positions",
-                    tp_paper_cash, len(tp_positions))
-    except Exception as e:
-        _tp_state_loaded = True
-        logger.error("load_tp_state failed: %s — starting fresh", e)
 
 
 # ============================================================
@@ -2009,31 +1728,6 @@ def send_telegram(text, chat_id=None):
                 time.sleep(2 ** attempt)
 
 
-def send_tp_telegram(message):
-    """Send to TP user's DM chat. Falls back to main channel. 3-attempt retry."""
-    chat_id = tp_dm_chat_id or TELEGRAM_TP_CHAT_ID
-    if not chat_id:
-        send_telegram("[TP] %s" % message)
-        return
-    token = TELEGRAM_TP_TOKEN or TELEGRAM_TOKEN
-    if not token:
-        return
-    for attempt in range(3):
-        try:
-            payload = json.dumps({"chat_id": chat_id, "text": message}).encode()
-            url = "https://api.telegram.org/bot%s/sendMessage" % token
-            req = urllib.request.Request(
-                url, data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=10)
-            return  # success
-        except Exception as e:
-            if attempt == 2:
-                logger.warning("send_tp_telegram failed after 3 attempts: %s", e)
-            else:
-                time.sleep(1)
 
 
 # ============================================================
@@ -2398,7 +2092,7 @@ def _ladder_stop_short(pos):
 # Designed to be safe to call repeatedly: cycle-idempotent.
 # ============================================================
 
-def _retighten_long_stop(ticker, pos, current_price, portfolio,
+def _retighten_long_stop(ticker, pos, current_price,
                          force_exit=True):
     """Retighten a single long position's stop.
 
@@ -2450,9 +2144,8 @@ def _retighten_long_stop(ticker, pos, current_price, portfolio,
         logger.info(
             "[BREAKEVEN] %s LONG trail_stop ratcheted to entry: "
             "$%.2f → $%.2f (entry=$%.2f, current=$%.2f, "
-            "portfolio=%s, trail_active=True)",
+            "trail_active=True)",
             ticker, old_trail, new_trail, entry_price, current_price,
-            portfolio,
         )
         return ("ratcheted_trail", old_trail, new_trail)
 
@@ -2479,17 +2172,15 @@ def _retighten_long_stop(ticker, pos, current_price, portfolio,
         status = "ratcheted"
         logger.info(
             "[BREAKEVEN] %s LONG stop ratcheted to entry: $%.2f → $%.2f "
-            "(entry=$%.2f, current=$%.2f, portfolio=%s)",
+            "(entry=$%.2f, current=$%.2f)",
             ticker, old_stop, new_stop, entry_price, current_price,
-            portfolio,
         )
     else:
         status = "tightened"
         logger.info(
             "[RETRO_CAP] %s LONG stop tightened: $%.2f → $%.2f "
-            "(entry=$%.2f, current=$%.2f, portfolio=%s)",
+            "(entry=$%.2f, current=$%.2f)",
             ticker, old_stop, new_stop, entry_price, current_price,
-            portfolio,
         )
     # If the market has already broken the new stop, exit now.
     if force_exit and current_price <= new_stop:
@@ -2498,15 +2189,12 @@ def _retighten_long_stop(ticker, pos, current_price, portfolio,
             "(current=$%.2f ≤ new_stop=$%.2f) — exiting immediately.",
             ticker, current_price, new_stop,
         )
-        if portfolio == "paper":
-            close_position(ticker, current_price, reason="RETRO_CAP")
-        else:
-            close_tp_position(ticker, current_price, reason="RETRO_CAP")
+        close_position(ticker, current_price, reason="RETRO_CAP")
         return ("exit", new_stop, None)
     return (status, old_stop, new_stop)
 
 
-def _retighten_short_stop(ticker, pos, current_price, portfolio,
+def _retighten_short_stop(ticker, pos, current_price,
                           force_exit=True):
     """Retighten a single short position's stop (cap + breakeven).
 
@@ -2536,9 +2224,8 @@ def _retighten_short_stop(ticker, pos, current_price, portfolio,
         logger.info(
             "[BREAKEVEN] %s SHORT trail_stop ratcheted to entry: "
             "$%.2f → $%.2f (entry=$%.2f, current=$%.2f, "
-            "portfolio=%s, trail_active=True)",
+            "trail_active=True)",
             ticker, old_trail, new_trail, entry_price, current_price,
-            portfolio,
         )
         return ("ratcheted_trail", old_trail, new_trail)
 
@@ -2563,17 +2250,15 @@ def _retighten_short_stop(ticker, pos, current_price, portfolio,
         status = "ratcheted"
         logger.info(
             "[BREAKEVEN] %s SHORT stop ratcheted to entry: $%.2f → $%.2f "
-            "(entry=$%.2f, current=$%.2f, portfolio=%s)",
+            "(entry=$%.2f, current=$%.2f)",
             ticker, old_stop, new_stop, entry_price, current_price,
-            portfolio,
         )
     else:
         status = "tightened"
         logger.info(
             "[RETRO_CAP] %s SHORT stop tightened: $%.2f → $%.2f "
-            "(entry=$%.2f, current=$%.2f, portfolio=%s)",
+            "(entry=$%.2f, current=$%.2f)",
             ticker, old_stop, new_stop, entry_price, current_price,
-            portfolio,
         )
     if force_exit and current_price >= new_stop:
         logger.warning(
@@ -2581,13 +2266,12 @@ def _retighten_short_stop(ticker, pos, current_price, portfolio,
             "(current=$%.2f ≥ new_stop=$%.2f) — exiting immediately.",
             ticker, current_price, new_stop,
         )
-        close_short_position(ticker, current_price, "RETRO_CAP",
-                             portfolio=portfolio)
+        close_short_position(ticker, current_price, "RETRO_CAP")
         return ("exit", new_stop, None)
     return (status, old_stop, new_stop)
 
 
-def retighten_all_stops(force_exit=True, fetch_prices=True, portfolio=None):
+def retighten_all_stops(force_exit=True, fetch_prices=True):
     """Retighten every open position's stop to the 0.75% cap.
 
     Returns a summary dict: {tightened: int, exited: int, no_op: int,
@@ -2597,13 +2281,7 @@ def retighten_all_stops(force_exit=True, fetch_prices=True, portfolio=None):
     no-op. When fetch_prices is False, uses entry_price as a
     best-effort proxy for "current" (startup mode, before any scanner
     cycles have run).
-
-    v3.4.39: pass portfolio="paper" or "tp" to limit the sweep to one
-    book. None (default) keeps the historical behavior of covering
-    both. Used so /retighten on the Robinhood bot only touches the
-    Robinhood book.
     """
-    want = portfolio  # None, "paper", or "tp"
     # v3.4.25: separate counter for breakeven-ratchet tightenings, so
     # logging and /retighten output can distinguish cap vs ratchet.
     # v3.4.26: ratcheted_trail counts breakeven-ratchet tightenings
@@ -2624,58 +2302,49 @@ def retighten_all_stops(force_exit=True, fetch_prices=True, portfolio=None):
                            ticker, e)
         return fallback
 
-    # Longs: paper + TP
-    long_books = ((positions, "paper"), (tp_positions, "tp"))
-    if want is not None:
-        long_books = tuple(b for b in long_books if b[1] == want)
-    for book, label in long_books:
-        for ticker in list(book.keys()):
-            pos = book.get(ticker)
-            if not pos:
-                continue
-            try:
-                cur = _current(ticker, pos["entry_price"])
-                status, old, new = _retighten_long_stop(
-                    ticker, pos, cur, label, force_exit=force_exit,
-                )
-                # Normalize "exit" status tuple → "exited" counter key
-                key = "exited" if status == "exit" else status
-                summary[key] = summary.get(key, 0) + 1
-                summary["details"].append({
-                    "ticker": ticker, "side": "LONG",
-                    "portfolio": label, "status": status,
-                    "old_stop": old, "new_stop": new,
-                })
-            except Exception as e:
-                summary["errors"] += 1
-                logger.error("[RETRO_CAP] %s LONG %s failed: %s",
-                             ticker, label, e, exc_info=True)
+    # Longs (paper only)
+    for ticker in list(positions.keys()):
+        pos = positions.get(ticker)
+        if not pos:
+            continue
+        try:
+            cur = _current(ticker, pos["entry_price"])
+            status, old, new = _retighten_long_stop(
+                ticker, pos, cur, force_exit=force_exit,
+            )
+            key = "exited" if status == "exit" else status
+            summary[key] = summary.get(key, 0) + 1
+            summary["details"].append({
+                "ticker": ticker, "side": "LONG",
+                "status": status,
+                "old_stop": old, "new_stop": new,
+            })
+        except Exception as e:
+            summary["errors"] += 1
+            logger.error("[RETRO_CAP] %s LONG failed: %s",
+                         ticker, e, exc_info=True)
 
-    # Shorts: paper + TP
-    short_books = ((short_positions, "paper"), (tp_short_positions, "tp"))
-    if want is not None:
-        short_books = tuple(b for b in short_books if b[1] == want)
-    for book, label in short_books:
-        for ticker in list(book.keys()):
-            pos = book.get(ticker)
-            if not pos:
-                continue
-            try:
-                cur = _current(ticker, pos["entry_price"])
-                status, old, new = _retighten_short_stop(
-                    ticker, pos, cur, label, force_exit=force_exit,
-                )
-                key = "exited" if status == "exit" else status
-                summary[key] = summary.get(key, 0) + 1
-                summary["details"].append({
-                    "ticker": ticker, "side": "SHORT",
-                    "portfolio": label, "status": status,
-                    "old_stop": old, "new_stop": new,
-                })
-            except Exception as e:
-                summary["errors"] += 1
-                logger.error("[RETRO_CAP] %s SHORT %s failed: %s",
-                             ticker, label, e, exc_info=True)
+    # Shorts (paper only)
+    for ticker in list(short_positions.keys()):
+        pos = short_positions.get(ticker)
+        if not pos:
+            continue
+        try:
+            cur = _current(ticker, pos["entry_price"])
+            status, old, new = _retighten_short_stop(
+                ticker, pos, cur, force_exit=force_exit,
+            )
+            key = "exited" if status == "exit" else status
+            summary[key] = summary.get(key, 0) + 1
+            summary["details"].append({
+                "ticker": ticker, "side": "SHORT",
+                "status": status,
+                "old_stop": old, "new_stop": new,
+            })
+        except Exception as e:
+            summary["errors"] += 1
+            logger.error("[RETRO_CAP] %s SHORT failed: %s",
+                         ticker, e, exc_info=True)
 
     if (summary["tightened"] or summary["ratcheted"]
             or summary["ratcheted_trail"] or summary["exited"]):
@@ -2862,7 +2531,6 @@ def collect_or():
         else:
             lines.append("  %s  MISSING" % t)
     send_telegram("\n".join(lines))
-    send_tp_telegram("\n".join(lines))
 
 
 # ============================================================
@@ -3018,14 +2686,9 @@ def check_entry(ticker):
         logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
         return False, None
 
-    # v3.4.40 — removed the "ticker in positions" gate so this shared
-    # signal-level function no longer blocks RH when ONLY paper is
-    # holding (and vice versa). Per-book "already holding" gates now
-    # live in the entry loop (paper_holds/rh_holds) and in
-    # check_entry_rh(). Leaving paper's per-ticker loss cap (-$50) as a
-    # shared signal filter: if a ticker is structurally toxic today,
-    # both books should skip it — that is a strategy-level judgment, not
-    # a portfolio-level one.
+    # v3.5.0 — paper-only. Per-ticker loss cap (-$50) stays as a signal
+    # filter: if a ticker is structurally toxic today, the paper book
+    # skips it.
 
     # Fetch current bar (Finnhub/Yahoo as fallback)
     bars = fetch_1min_bars(ticker)
@@ -3177,41 +2840,6 @@ def check_entry(ticker):
     return True, bars
 
 
-# ============================================================
-# TRADERSPOST WEBHOOK
-# ============================================================
-def _extract_broker_message(resp_data):
-    """Pull a human-readable error message out of a TradersPost response.
-
-    TradersPost may return any of:
-      {"success": false, "message": "..."}
-      {"success": false, "errors": ["...", "..."]}
-      {"success": false, "error": "..."}
-    Return a short string (<=80 chars) suitable for Telegram, or "".
-    """
-    if not isinstance(resp_data, dict):
-        return ""
-    # Try common fields in order of specificity
-    msg = resp_data.get("message") or resp_data.get("error") or ""
-    if not msg:
-        errs = resp_data.get("errors")
-        if isinstance(errs, list) and errs:
-            msg = "; ".join(str(e) for e in errs[:2])
-        elif isinstance(errs, str):
-            msg = errs
-    msg = str(msg).strip().replace("\n", " ")
-    return msg[:80]
-
-
-def rh_shares_for(price: float) -> int:
-    """Dollar-sized Robinhood order: floor(RH_DOLLARS_PER_ENTRY / price), min 1.
-    Returns 0 only when price <= 0 (invalid).
-    """
-    if price <= 0:
-        return 0
-    return max(1, int(RH_DOLLARS_PER_ENTRY // price))
-
-
 def paper_shares_for(price: float) -> int:
     """Dollar-sized paper order: floor(PAPER_DOLLARS_PER_ENTRY / price),
     min 1. Returns 0 only when price <= 0 (invalid).
@@ -3226,395 +2854,12 @@ def paper_shares_for(price: float) -> int:
     return max(1, int(PAPER_DOLLARS_PER_ENTRY // price))
 
 
-def send_traderspost_order(ticker, action, price, shares=None):
-    """Send a limit order to TradersPost via webhook (TP portfolio only).
-
-    v3.4.40 — shares is REQUIRED (no paper-sized SHARES default). The
-    Robinhood book uses dollar-sized lots via rh_shares_for(price), not
-    paper's fixed 10. A missing shares= kwarg is a programming error,
-    not a reason to silently fall back to paper sizing — that is how
-    ghost trades were created in v3.4.39 and earlier.
-
-    action: 'buy' or 'sell'.
-      - Long entry  → 'buy'   (opens long)
-      - Long exit   → 'sell'  (closes long)
-      - Short entry → 'sell'  (opens short; TP infers from strategy+state)
-      - Short cover → 'buy'   (closes short)
-    TradersPost only accepts: buy, sell, exit, reverse, breakeven,
-    cancel, add. 'sell_short' and 'buy_to_cover' are INVALID and will
-    return HTTP 400 INVALID ACTION. (v3.4.22 hotfix.)
-    Returns a dict with keys:
-      success (bool), skipped (bool), message (str), raw (dict|None)
-    so callers can branch on outcome. `skipped=True` means the webhook was
-    intentionally not called (env not enabled, or URL missing) — callers
-    should treat this as "no broker action attempted" rather than a failure.
-
-    Gated on TRADERSPOST_ENABLED env var (default off) and
-    TRADERSPOST_WEBHOOK_URL being set. Posts a short confirmation to the
-    TP Telegram chat on success and on failure so Val always knows what
-    the broker side actually received.
-    """
-    # v3.4.40: fail-fast on missing shares rather than defaulting to
-    # SHARES (paper sizing). Callers in the RH mirror paths always know
-    # the RH-sized lot; anything else is a bug we want surfaced.
-    if shares is None:
-        raise TypeError(
-            "send_traderspost_order requires shares= (v3.4.40 locked down "
-            "the paper SHARES default to prevent ghost trades)"
-        )
-
-    skip_result = {"success": False, "skipped": True, "message": "",
-                   "http_status": 0, "raw": None}
-
-    if not is_traderspost_enabled():
-        logger.debug("[TP] Robinhood disabled \u2014 skipping %s %s", action, ticker)
-        return {**skip_result, "message": "Robinhood disabled"}
-    if not TRADERSPOST_WEBHOOK_URL:
-        logger.warning("[TP] Enabled but TRADERSPOST_WEBHOOK_URL unset \u2014 skip %s %s",
-                       action, ticker)
-        send_tp_telegram(
-            "\u26a0 Robinhood webhook skip\n"
-            "%s %s %d @ $%.2f\n"
-            "URL not configured" % (action.upper(), ticker, shares, price)
-        )
-        return {**skip_result, "message": "webhook URL not configured"}
-
-    # Limit price: buys slightly above, sells slightly below. Caller is
-    # responsible for passing the TradersPost-legal action; internal
-    # short labels (sell_short / buy_to_cover) must be translated at
-    # the call site (v3.4.22).
-    if action == "buy":
-        limit_price = round(price + 0.02, 2)
-    else:
-        limit_price = round(price - 0.01, 2)
-
-    payload = {
-        "ticker": ticker,
-        "action": action,
-        "orderType": "limit",
-        "limitPrice": limit_price,
-        "quantity": shares,
-    }
-
-    try:
-        data = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            TRADERSPOST_WEBHOOK_URL,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw_body = resp.read()
-            status = resp.status
-
-        try:
-            resp_data = json.loads(raw_body) if raw_body else {}
-        except json.JSONDecodeError:
-            # Non-JSON 200 (unexpected) — treat as failure so we don't trust it
-            logger.warning("[TP] Non-JSON response for %s %s: %s",
-                           action, ticker, raw_body[:200])
-            resp_data = {"success": False, "message": "non-JSON response",
-                         "status": status}
-
-        if not isinstance(resp_data, dict):
-            resp_data = {"success": False, "message": "unexpected response type",
-                         "status": status}
-
-        logger.info("[TP] %s %s %d @ $%.2f limit $%.2f -> %s",
-                    action.upper(), ticker, shares, price, limit_price, resp_data)
-
-        success = bool(resp_data.get("success")) and 200 <= status < 300
-        broker_msg = _extract_broker_message(resp_data)
-
-        tp_state["total_orders_sent"] = tp_state.get("total_orders_sent", 0) + 1
-        if success:
-            tp_state["total_orders_success"] = tp_state.get("total_orders_success", 0) + 1
-        else:
-            tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
-
-        now_str = _utc_now_iso()
-        tp_state["last_order_time"] = now_str
-        recent = tp_state.get("recent_orders", [])
-        recent.append({
-            "ticker": ticker, "action": action.upper(),
-            "price": price, "limit_price": limit_price,
-            "shares": shares, "success": success,
-            "message": broker_msg, "http_status": status,
-            "time": now_str,
-        })
-        if len(recent) > 20:
-            recent[:] = recent[-20:]
-        tp_state["recent_orders"] = recent
-        save_paper_state()
-
-        # Notify TP chat (order fired / rejected + broker reason if any)
-        if success:
-            send_tp_telegram(
-                "\U0001f916 Robinhood order fired\n"
-                "%s %s \u00d7 %d @ $%.2f limit\n"
-                "Awaiting fill confirmation\u2026" % (action.upper(), ticker, shares, limit_price)
-            )
-        else:
-            reason_line = ("\nReason: %s" % broker_msg) if broker_msg else ""
-            send_tp_telegram(
-                "\u2717 Robinhood order rejected\n"
-                "%s %s %d @ $%.2f\n"
-                "Limit: $%.2f%s\n"
-                "HTTP: %d" % (action.upper(), ticker, shares,
-                              price, limit_price, reason_line, status)
-            )
-        return {"success": success, "skipped": False,
-                "message": broker_msg, "http_status": status,
-                "raw": resp_data}
-
-    except Exception as e:
-        logger.error("[TP] Webhook failed for %s %s: %s", action, ticker, e)
-        tp_state["total_orders_failed"] = tp_state.get("total_orders_failed", 0) + 1
-        err_str = str(e)[:80]
-        now_str = _utc_now_iso()
-        tp_state["last_order_time"] = now_str
-        recent = tp_state.get("recent_orders", [])
-        recent.append({
-            "ticker": ticker, "action": action.upper(),
-            "price": price, "limit_price": limit_price,
-            "shares": shares, "success": False,
-            "message": err_str, "http_status": 0,
-            "time": now_str,
-        })
-        if len(recent) > 20:
-            recent[:] = recent[-20:]
-        tp_state["recent_orders"] = recent
-        try:
-            save_paper_state()
-        except Exception:
-            pass
-        send_tp_telegram(
-            "\u2717 Robinhood webhook failed\n"
-            "%s %s %d @ $%.2f\n"
-            "Err: %s" % (action.upper(), ticker, shares, price, err_str)
-        )
-        return {"success": False, "skipped": False,
-                "message": err_str, "http_status": 0,
-                "raw": None}
 
 
 # ============================================================
-# v3.4.40 — RH (TradersPost) independent halt + entry path
+# v3.5.0 — Paper-only entry path (RH path removed).
 # ============================================================
-# In v3.4.39 and earlier the Robinhood book piggy-backed on paper's
-# halt flag and paper's entry decision: a paper loss could halt RH
-# even though the RH book was flat, and a skipped paper entry meant
-# RH never got a chance to enter at all. v3.4.40 separates the two.
-# Paper remains on _trading_halted / execute_entry; Robinhood uses
-# _tp_trading_halted + execute_rh_entry. Signals and indicators are
-# shared upstream (check_entry is the same); only the portfolio-side
-# decision and sizing are now independent.
-def _compute_tp_halt(today_str):
-    """Compute today's RH P&L (realized + unrealized) and flip the RH
-    halt flag if it breaches DAILY_LOSS_LIMIT. Returns True if halted."""
-    global _tp_trading_halted, _tp_trading_halted_reason
-
-    if _tp_trading_halted:
-        return True
-
-    tp_today_pnl = sum(
-        t.get("pnl", 0) for t in tp_trade_history
-        if t.get("date") == today_str
-    )
-    tp_today_pnl += sum(
-        t.get("pnl", 0) for t in tp_short_trade_history
-        if t.get("date") == today_str
-    )
-
-    # Unrealized from RH open longs.
-    for pos_ticker, pos in list(tp_positions.items()):
-        fmp = get_fmp_quote(pos_ticker)
-        live_px = fmp.get("price", 0) if fmp else 0
-        if live_px > 0:
-            tp_today_pnl += (live_px - pos["entry_price"]) * pos.get("shares", 0)
-
-    # Unrealized from RH open shorts.
-    for pos_ticker, pos in list(tp_short_positions.items()):
-        fmp = get_fmp_quote(pos_ticker)
-        live_px = fmp.get("price", 0) if fmp else 0
-        if live_px > 0:
-            tp_today_pnl += (pos["entry_price"] - live_px) * pos.get("shares", 0)
-
-    logger.info("[RH] Daily P&L check: $%.2f (limit $%.2f)",
-                tp_today_pnl, DAILY_LOSS_LIMIT)
-    if tp_today_pnl <= DAILY_LOSS_LIMIT:
-        _tp_trading_halted = True
-        pnl_fmt = "%+.2f" % tp_today_pnl
-        limit_fmt = "%.2f" % DAILY_LOSS_LIMIT
-        _tp_trading_halted_reason = "RH daily loss limit hit: $%s" % pnl_fmt
-        halt_msg = (
-            "[Robinhood] STOP Trading halted \u2014 daily loss limit hit\n"
-            "Today P&L: $%s\n"
-            "Limit: $%s\n"
-            "No new RH entries until tomorrow."
-        ) % (pnl_fmt, limit_fmt)
-        send_tp_telegram(halt_msg)
-        return True
-    return False
-
-
-def check_entry_rh(ticker):
-    """Return True if the RH book is eligible to open a new LONG on
-    ticker RIGHT NOW. Mirrors the gates in execute_entry's old RH block
-    but reads only RH state. Does NOT check the signal itself — the
-    caller has already done that via check_entry. This function only
-    enforces portfolio-level limits on the RH side.
-    """
-    # Already holding — no add-ons today (RH_MAX_ENTRIES_PER_TICKER
-    # defaults to 1, and our broker mapping is 1 lot per ticker per day).
-    if ticker in tp_positions:
-        return False
-    # Concurrency cap on the RH book.
-    if len(tp_positions) >= RH_MAX_CONCURRENT_POSITIONS:
-        logger.info("[RH] skip %s \u2014 %d concurrent cap reached",
-                    ticker, RH_MAX_CONCURRENT_POSITIONS)
-        return False
-    # Per-ticker entry count cap (independent of paper's cap of 5).
-    if tp_daily_entry_count.get(ticker, 0) >= RH_MAX_ENTRIES_PER_TICKER:
-        logger.info(
-            "[RH] skip %s \u2014 per-ticker entry cap hit (%d/%d)",
-            ticker, tp_daily_entry_count.get(ticker, 0),
-            RH_MAX_ENTRIES_PER_TICKER,
-        )
-        return False
-    return True
-
-
-def execute_rh_entry(ticker, current_price):
-    """Open a Robinhood (TP) long at current_price, independent of paper.
-
-    Signals/indicators are shared with the paper path; portfolio
-    decisions are not. Gates enforced here:
-      1. _tp_trading_halted (independent of paper halt)
-      2. check_entry_rh() — concurrency + per-ticker caps
-      3. Independent RH cash check (tp_paper_cash, not paper_cash)
-      4. Broker must truly accept (success=True, not just skipped)
-    """
-    global tp_paper_cash
-
-    now_et = _now_et()
-    today_str = now_et.strftime("%Y-%m-%d")
-
-    # 1. RH halt — independent of paper.
-    if _compute_tp_halt(today_str):
-        logger.info("[RH] halted \u2014 skipping entry for %s", ticker)
-        return
-
-    # 2. Portfolio-level caps (concurrency + per-ticker).
-    if not check_entry_rh(ticker):
-        return
-
-    # 3. Stop price uses the same cap logic as paper so RH and paper
-    # stop at the same price when they happen to agree on entry price.
-    or_high_val = or_high.get(ticker, current_price)
-    stop_price, _stop_capped, _stop_baseline = _capped_long_stop(
-        or_high_val, current_price
-    )
-
-    rh_sz = rh_shares_for(current_price)
-    rh_cost = current_price * rh_sz
-
-    # 4. Independent RH cash check.
-    if tp_paper_cash < rh_cost:
-        logger.info(
-            "[RH] skip %s \u2014 insufficient RH cash ($%.2f < $%.2f)",
-            ticker, tp_paper_cash, rh_cost,
-        )
-        return
-
-    # 5. Fire the webhook. Only mirror state on real success.
-    tp_result = send_traderspost_order(
-        ticker, "buy", current_price, shares=rh_sz
-    )
-    tp_ok = bool(tp_result and tp_result.get("success"))
-    tp_skipped = bool(tp_result and tp_result.get("skipped"))
-    if not tp_ok:
-        if tp_skipped:
-            logger.info(
-                "[RH] Webhook skipped for %s (disabled) \u2014 not mirroring",
-                ticker,
-            )
-        else:
-            logger.warning(
-                "[RH] Broker rejected BUY for %s \u2014 not mirroring",
-                ticker,
-            )
-        return
-
-    # 6. Mirror into RH book. entry_count comes from the RH counter,
-    # not paper's daily_entry_count.
-    rh_entry_num = tp_daily_entry_count.get(ticker, 0) + 1
-    tp_daily_entry_count[ticker] = rh_entry_num
-    now_str = _now_cdt().strftime("%H:%M:%S")
-    now_hhmm = _now_cdt().strftime("%H:%M CDT")
-    now_date = now_et.strftime("%Y-%m-%d")
-    limit_price = round(current_price + 0.02, 2)
-
-    tp_positions[ticker] = {
-        "entry_price": current_price,
-        "shares": rh_sz,
-        "stop": stop_price,
-        "initial_stop": stop_price,
-        "trail_active": False,
-        "trail_high": current_price,
-        "entry_count": rh_entry_num,
-        "entry_time": now_str,
-        "date": now_date,
-        "pdc": pdc.get(ticker, 0),
-        "broker_synced": True,
-    }
-    tp_paper_cash -= rh_cost
-    tp_paper_trades.append({
-        "action": "BUY",
-        "ticker": ticker,
-        "price": current_price,
-        "limit_price": limit_price,
-        "shares": rh_sz,
-        "cost": rh_cost,
-        "stop": stop_price,
-        "entry_num": rh_entry_num,
-        "time": now_hhmm,
-        "date": now_date,
-    })
-    logger.info("[RH] BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d",
-                ticker, rh_sz, current_price, limit_price,
-                stop_price, rh_entry_num)
-
-    # Telegram notification — RH side only.
-    SEP_E = "\u2500" * 34
-    or_h = or_high.get(ticker, 0)
-    pdc_e = pdc.get(ticker, 0)
-    sig_lines = "Signal : ORB Breakout \u2191\n"
-    sig_lines += "  1m close > OR High \u2713\n"
-    sig_lines += "  Price > PDC \u2713\n"
-    sig_lines += "  SPY > PDC \u2713\n"
-    sig_lines += "  QQQ > PDC \u2713\n"
-    stop_label = (
-        "entry \u22120.75%" if _stop_capped else "OR_High-$0.90"
-    )
-    tp_msg = (
-        "[Robinhood] \U0001f4c8 LONG ENTRY %s  #%d\n"
-        "%s\n"
-        "Price  : $%.2f  (limit $%.2f)\n"
-        "Shares : %d   Cost: $%s\n"
-        "Stop   : $%.2f  (%s)\n"
-        "OR High: $%.2f   PDC: $%.2f\n"
-        "%s"
-        "Time   : %s\n"
-        "%s"
-    ) % (ticker, rh_entry_num, SEP_E,
-         current_price, limit_price,
-         rh_sz, format(rh_cost, ",.2f"),
-         stop_price, stop_label, or_h, pdc_e,
-         sig_lines, now_hhmm, SEP_E)
-    send_tp_telegram(tp_msg)
-    save_tp_state()
+# Paper remains on _trading_halted / execute_entry.
 
 
 # ============================================================
@@ -3623,10 +2868,7 @@ def execute_rh_entry(ticker, current_price):
 def execute_entry(ticker, current_price):
     """Place a limit buy on the PAPER book only.
 
-    v3.4.40: the embedded Robinhood mirror that used to live at the end
-    of this function has been extracted to execute_rh_entry(). The two
-    are now called independently from the scan loop so neither portfolio
-    can veto the other's entry decision.
+    v3.5.0: paper-only. Robinhood/TradersPost mirror has been removed.
 
     v3.4.45: share size is now dollar-based via paper_shares_for(price)
     — floor(PAPER_DOLLARS_PER_ENTRY / price), min 1 — instead of a flat
@@ -3780,13 +3022,6 @@ def execute_entry(ticker, current_price):
          stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
-    # v3.4.40: the Robinhood mirror that used to live here has moved to
-    # execute_rh_entry(). The scan loop now calls that function in
-    # parallel with execute_entry, so RH's entry decision is independent
-    # of paper's (paper halt, paper cash, paper per-ticker cap no longer
-    # veto RH; RH halt / RH cash / RH per-ticker cap no longer veto
-    # paper). Signals + indicators are still shared via check_entry.
-
     save_paper_state()
 
 
@@ -3794,8 +3029,8 @@ def execute_entry(ticker, current_price):
 # CLOSE POSITION
 # ============================================================
 def close_position(ticker, price, reason="STOP"):
-    """Close position: remove, log P&L, send webhook + Telegram."""
-    global paper_cash, tp_paper_cash
+    """Close position: remove, log P&L, send Telegram."""
+    global paper_cash
 
     if ticker not in positions:
         return
@@ -3914,13 +3149,6 @@ def close_position(ticker, price, reason="STOP"):
          pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
     send_telegram(msg)
 
-    # v3.4.40: RH long close is NO LONGER mirrored from paper's close_position.
-    # Rationale: the paper close fires at paper's trigger price and paper's
-    # stop/trail state; forcing the RH book out at the same instant couples
-    # the two portfolios. manage_tp_positions() owns the RH stop/trail and
-    # calls close_tp_position() independently. If the RH book happens to
-    # still be open here, that's correct \u2014 it will exit on its own merits
-    # (its own stop hit, its own regime-eject, or EOD).
     save_paper_state()
 
 
@@ -4030,209 +3258,11 @@ def manage_positions():
 # ============================================================
 # CLOSE TP POSITION (independent TP long close)
 # ============================================================
-def close_tp_position(ticker, price, reason="STOP"):
-    """Close a TP long position independently (when paper already closed or diverged)."""
-    global tp_paper_cash
-
-    if ticker not in tp_positions:
-        return
-
-    _last_exit_time[ticker] = datetime.now(timezone.utc)
-
-    tp_pos = tp_positions.pop(ticker)
-    tp_entry = tp_pos["entry_price"]
-    tp_shares = tp_pos["shares"]
-    tp_pnl = (price - tp_entry) * tp_shares
-    tp_pnl_pct = ((price - tp_entry) / tp_entry * 100) if tp_entry else 0
-    tp_paper_cash += price * tp_shares
-
-    now_et = _now_et()
-    now_hhmm = _now_cdt().strftime("%H:%M CDT")
-    now_date = now_et.strftime("%Y-%m-%d")
-    tp_entry_time_str = tp_pos.get("entry_time", "")
-    tp_entry_hhmm = _to_cdt_hhmm(tp_entry_time_str) if tp_entry_time_str else ""
-
-    logger.info("[TP] SELL %s %d @ $%.2f reason=%s pnl=$%.2f",
-                ticker, tp_shares, price, reason, tp_pnl)
-
-    # TradersPost webhook — TP-only close path (state already mutated; track rejection)
-    _tp_result = send_traderspost_order(ticker, "sell", price, tp_shares)
-    if not (_tp_result.get("success") or _tp_result.get("skipped")):
-        tp_unsynced_exits[ticker] = {
-            "action": "sell",
-            "price": price,
-            "shares": tp_shares,
-            "message": _tp_result.get("message", ""),
-            "http_status": _tp_result.get("http_status"),
-            "time": now_hhmm,
-        }
-
-    tp_paper_trades.append({
-        "action": "SELL",
-        "ticker": ticker,
-        "price": price,
-        "shares": tp_shares,
-        "pnl": round(tp_pnl, 2),
-        "pnl_pct": round(tp_pnl_pct, 2),
-        "reason": reason,
-        "entry_price": tp_entry,
-        "time": now_hhmm,
-        "date": now_date,
-    })
-
-    tp_trade_history.append({
-        "ticker": ticker,
-        "side": "long",
-        "action": "SELL",
-        "shares": tp_shares,
-        "entry_price": tp_entry,
-        "exit_price": price,
-        "pnl": round(tp_pnl, 2),
-        "pnl_pct": round(tp_pnl_pct, 2),
-        "reason": reason,
-        "entry_time": tp_entry_hhmm,
-        "exit_time": now_hhmm,
-        "entry_time_iso": tp_entry_time_str,
-        "exit_time_iso": _utc_now_iso(),
-        "entry_num": tp_pos.get("entry_count", 1),
-        "date": now_date,
-    })
-    if len(tp_trade_history) > TRADE_HISTORY_MAX:
-        tp_trade_history[:] = tp_trade_history[-TRADE_HISTORY_MAX:]
-
-    # v3.4.27 — persistent trade log (TP-only long close).
-    _tp_hold_s = None
-    try:
-        if tp_entry_time_str:
-            _ent_dt = datetime.fromisoformat(tp_entry_time_str)
-            if _ent_dt.tzinfo is None:
-                _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
-            _tp_hold_s = (datetime.now(timezone.utc) - _ent_dt).total_seconds()
-    except (TypeError, ValueError):
-        _tp_hold_s = None
-    _tp_log_row = {
-        "date": now_date,
-        "portfolio": "tp",
-        "ticker": ticker,
-        "side": "LONG",
-        "shares": int(tp_shares),
-        "entry_price": float(tp_entry),
-        "exit_price": float(price),
-        "entry_time": tp_entry_time_str,
-        "exit_time": _utc_now_iso(),
-        "hold_seconds": _tp_hold_s,
-        "pnl": round(tp_pnl, 2),
-        "pnl_pct": round(tp_pnl_pct, 2),
-        "reason": reason,
-        "entry_num": int(tp_pos.get("entry_count", 1)),
-    }
-    _tp_log_row.update(_trade_log_snapshot_pos(tp_pos))
-    trade_log_append(_tp_log_row)
-
-    SEP_X = "\u2500" * 34
-    tp_exit_emoji = "\u2705" if tp_pnl >= 0 else "\u274c"
-    tp_entry_cost = round(tp_entry * tp_shares, 2)
-    tp_proceeds = round(price * tp_shares, 2)
-    tp_reason_label = REASON_LABELS.get(reason, reason)
-    tp_msg = (
-        "[Robinhood] %s EXIT %s\n"
-        "%s\n"
-        "Shares : %d\n"
-        "Entry  : $%.2f  \u2192  $%.2f\n"
-        "Cost   : $%s  \u2192  $%s\n"
-        "P&L    : $%+.2f  (%+.1f%%)\n"
-        "Reason : %s\n"
-        "In: %s   Out: %s\n"
-        "%s"
-    ) % (tp_exit_emoji, ticker, SEP_X,
-         tp_shares, tp_entry, price,
-         format(tp_entry_cost, ",.2f"), format(tp_proceeds, ",.2f"),
-         tp_pnl, tp_pnl_pct, tp_reason_label, tp_entry_hhmm, now_hhmm, SEP_X)
-    send_tp_telegram(tp_msg)
-    save_tp_state()
 
 
 # ============================================================
 # MANAGE TP POSITIONS (independent stop + trail logic)
 # ============================================================
-def manage_tp_positions():
-    """Check stops and update trailing stops for all open TP positions."""
-    tickers_to_close = []
-
-    # ── Sovereign Regime Shield (v3.4.28) ────────────────────────────────────
-    # Same shield as the main bot: BOTH SPY+QQQ 1m close < PDC required.
-    lords_left = _sovereign_regime_eject("long")
-
-    for ticker in list(tp_positions.keys()):
-        bars = fetch_1min_bars(ticker)
-        if not bars:
-            continue
-
-        current_price = bars["current_price"]
-        pos = tp_positions[ticker]
-
-        # v3.4.35 — Ladder stop hit. TRAIL vs STOP per ladder-armed state.
-        if current_price <= pos["stop"]:
-            reason = "TRAIL" if pos.get("trail_active") else "STOP"
-            tickers_to_close.append((ticker, current_price, reason))
-            continue
-
-        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close < PDC ─────────────
-        if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
-            continue
-
-        # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
-        # Fires when 1-min confirmed close < day open OR < PDC
-        closes = [c for c in bars.get("closes", []) if c is not None]
-        ticker_1min_close = closes[-2] if len(closes) >= 2 else (closes[-1] if closes else current_price)
-        opens = [o for o in bars.get("opens", []) if o is not None]
-        day_open = opens[0] if opens else None
-        pos_pdc = pos.get("pdc") or pos.get("prev_close")
-        lost_polarity = False
-        if day_open is not None and ticker_1min_close < day_open:
-            lost_polarity = True
-        if pos_pdc and ticker_1min_close < pos_pdc:
-            lost_polarity = True
-        if lost_polarity:
-            tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
-            continue
-
-        entry_price = pos["entry_price"]
-
-        # v3.4.35 — Profit-Lock Ladder (TP mirror).
-        if current_price > pos.get("trail_high", entry_price):
-            pos["trail_high"] = current_price
-        peak = pos["trail_high"]
-        peak_gain_pct = (peak - entry_price) / entry_price if entry_price > 0 else 0.0
-
-        ladder_stop = _ladder_stop_long(pos)
-        if ladder_stop > pos.get("stop", 0):
-            old_stop = pos.get("stop", 0)
-            pos["stop"] = ladder_stop
-            logger.info(
-                "[TP LADDER] %s LONG stop ratcheted $%.2f \u2192 $%.2f "
-                "(peak=$%.2f, +%.2f%%)",
-                ticker, old_stop, ladder_stop, peak, peak_gain_pct * 100,
-            )
-
-        if peak_gain_pct >= 0.01:
-            if not pos.get("trail_active"):
-                pos["trail_active"] = True
-                logger.info(
-                    "[TP] Trail armed for %s at $%.2f (+%.2f%% peak)",
-                    ticker, current_price, peak_gain_pct * 100,
-                )
-            pos["trail_stop"] = pos["stop"]
-
-        if current_price <= pos["stop"]:
-            reason = "TRAIL" if pos.get("trail_active") else "STOP"
-            tickers_to_close.append((ticker, current_price, reason))
-            continue
-
-    # Close TP positions outside the loop
-    for ticker, price, reason in tickers_to_close:
-        close_tp_position(ticker, price, reason)
 
 
 # ============================================================
@@ -4241,15 +3271,10 @@ def manage_tp_positions():
 def check_short_entry(ticker):
     """Wounded Buffalo: enter short if 1-min close breaks OR_Low with all filters valid.
 
-    v3.4.40 note: halt check is paper's _trading_halted because execute_
-    short_entry mutates paper state first and then mirrors to RH behind
-    RH_LONG_ONLY. When RH_LONG_ONLY is flipped off, the proper fix is to
-    split this into check_short_entry (paper) + check_short_entry_rh
-    (gated by _tp_trading_halted). Today shorts go paper-only, so the
-    independence gap is latent, not actual.
+    v3.5.0: paper-only. RH mirror removed.
     """
-    global short_positions, tp_short_positions, daily_short_entry_count
-    global paper_cash, tp_paper_cash
+    global short_positions, daily_short_entry_count
+    global paper_cash
 
     if _trading_halted:
         return
@@ -4461,8 +3486,8 @@ def execute_short_entry(ticker, price):
     consistency with long entries. Short proceeds still credit
     paper_cash, so no cash gate is needed on the open.
     """
-    global short_positions, tp_short_positions
-    global paper_cash, tp_paper_cash
+    global short_positions
+    global paper_cash
     global daily_short_entry_count
 
     entry_price = round(price, 2)
@@ -4534,92 +3559,13 @@ def execute_short_entry(ticker, price):
          stop, short_stop_label, or_low_val, pdc_val, short_sig, entry_time_display, SEP)
     send_telegram(msg)
 
-    # v3.4.37 — RH_LONG_ONLY gate: skip TP/Robinhood short path entirely.
-    # Paper short continues normally; TP book stays empty for shorts.
-    if RH_LONG_ONLY:
-        logger.info("[RH] long-only — skipping TP short entry for %s", ticker)
-        return
-
-    # v3.4.40 — latent-but-correct RH short gating for when RH_LONG_ONLY
-    # flips. These checks are INDEPENDENT of paper: RH halt, RH open
-    # positions (long + short) vs concurrency cap, RH per-ticker cap,
-    # and RH cash. If RH rejects for any of these reasons, paper-side
-    # state (already mutated above) is unaffected.
-    rh_today_str = date_str
-    if _compute_tp_halt(rh_today_str):
-        logger.info("[RH] halted \u2014 skipping short entry for %s", ticker)
-        return
-    if ticker in tp_short_positions or ticker in tp_positions:
-        logger.info("[RH] skip short %s \u2014 already in RH book", ticker)
-        return
-    rh_open_total = len(tp_positions) + len(tp_short_positions)
-    if rh_open_total >= RH_MAX_CONCURRENT_POSITIONS:
-        logger.info("[RH] skip short %s \u2014 %d concurrent cap reached",
-                    ticker, RH_MAX_CONCURRENT_POSITIONS)
-        return
-    if tp_daily_entry_count.get(ticker, 0) >= RH_MAX_ENTRIES_PER_TICKER:
-        logger.info("[RH] skip short %s \u2014 per-ticker cap hit", ticker)
-        return
-
-    rh_short_sz = rh_shares_for(entry_price)  # dollar-sized lot
-    rh_short_cost_est = entry_price * rh_short_sz
-    # Short proceeds are CREDITED to cash, so a "cash check" here is a
-    # buying-power / concentration guard: require at least the notional
-    # in RH cash so we don't hit >100% concentration via shorts alone.
-    if tp_paper_cash < rh_short_cost_est:
-        logger.info(
-            "[RH] skip short %s \u2014 insufficient RH buying power ($%.2f < $%.2f)",
-            ticker, tp_paper_cash, rh_short_cost_est,
-        )
-        return
-
-    # TP short — fire webhook FIRST, mirror only if broker accepts.
-    # v3.4.22: TradersPost expects action=sell here; it infers the
-    # short direction from the strategy config + open position state.
-    tp_short_result = send_traderspost_order(ticker, "sell", entry_price, shares=rh_short_sz)
-    tp_short_ok = bool(tp_short_result and tp_short_result.get("success"))
-    tp_short_skipped = bool(tp_short_result and tp_short_result.get("skipped"))
-
-    if not tp_short_ok:
-        if tp_short_skipped:
-            logger.info(
-                "[RH] SHORT webhook skipped for %s (disabled) \u2014 not mirroring",
-                ticker,
-            )
-        else:
-            logger.warning(
-                "[RH] Broker rejected SHORT for %s \u2014 skipping TP mirror (paper unaffected)",
-                ticker,
-            )
-        return
-
-    tp_short_positions[ticker] = {
-        "entry_price": entry_price,
-        "shares": rh_short_sz,
-        "stop": stop,
-        "initial_stop": stop,  # v3.4.35 — frozen
-        "trail_stop": None,
-        "trail_active": False,
-        "trail_low": entry_price,
-        "entry_time": entry_time_cdt,
-        "date": date_str,
-        "side": "SHORT",
-        "broker_synced": True,
-    }
-    tp_paper_cash += entry_price * rh_short_sz
-    tp_daily_entry_count[ticker] = tp_daily_entry_count.get(ticker, 0) + 1
-    save_tp_state()
-
-    tp_msg = msg.replace("SHORT ENTRY", "Robinhood SHORT ENTRY")
-    send_tp_telegram(tp_msg)
-
 
 # ============================================================
 # MANAGE SHORT POSITIONS (stop + trail logic)
 # ============================================================
 def manage_short_positions():
     """Check stops and trailing stops for all open short positions."""
-    global short_positions, tp_short_positions
+    global short_positions
 
     # v3.4.23 — enforce 0.75% entry cap retroactively on every open
     # short (see manage_positions for rationale). Note: manage_positions
@@ -4700,84 +3646,19 @@ def manage_short_positions():
                     exit_reason = "POLARITY_SHIFT"
 
         if exit_reason:
-            close_short_position(ticker, current_price, exit_reason, portfolio="paper")
-
-    # Same logic for TP short positions
-    for ticker in list(tp_short_positions.keys()):
-        pos = tp_short_positions[ticker]
-        entry_price = pos["entry_price"]
-        shares = pos["shares"]
-
-        bars = fetch_1min_bars(ticker)
-        if not bars:
-            continue
-        current_price = bars["current_price"]
-
-        # v3.4.35 — Profit-Lock Ladder (TP short mirror).
-        trail_low = pos.get("trail_low", entry_price)
-        if current_price < trail_low:
-            trail_low = current_price
-            pos["trail_low"] = trail_low
-        peak_gain_pct = (entry_price - trail_low) / entry_price if entry_price > 0 else 0.0
-
-        ladder_stop = _ladder_stop_short(pos)
-        if ladder_stop < pos.get("stop", float("inf")):
-            old_stop = pos.get("stop", 0)
-            pos["stop"] = ladder_stop
-            logger.info(
-                "[TP LADDER] %s SHORT stop ratcheted $%.2f \u2192 $%.2f "
-                "(trail_low=$%.2f, +%.2f%%)",
-                ticker, old_stop, ladder_stop, trail_low, peak_gain_pct * 100,
-            )
-
-        if peak_gain_pct >= 0.01:
-            if not pos.get("trail_active"):
-                pos["trail_active"] = True
-                logger.info(
-                    "[TP] Trail armed for %s SHORT at $%.2f (+%.2f%% peak)",
-                    ticker, current_price, peak_gain_pct * 100,
-                )
-            pos["trail_stop"] = pos["stop"]
-
-        stop = pos["stop"]
-        trail_active = pos.get("trail_active", False)
-
-        exit_reason = None
-        if current_price >= stop:
-            exit_reason = "TRAIL" if trail_active else "STOP"
-
-
-        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close > PDC ─────────────
-        if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM"
-
-        # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
-        # Uses completed 1m bar close (per-ticker; not part of the index shield)
-        if not exit_reason:
-            ticker_pdc = pdc.get(ticker, 0)
-            if ticker_pdc > 0:
-                ps_closes = [c for c in bars.get("closes", []) if c is not None]
-                ps_1min_close = ps_closes[-2] if len(ps_closes) >= 2 else (ps_closes[-1] if ps_closes else current_price)
-                if ps_1min_close > ticker_pdc:
-                    exit_reason = "POLARITY_SHIFT"
-
-        if exit_reason:
-            close_short_position(ticker, current_price, exit_reason, portfolio="tp")
+            close_short_position(ticker, current_price, exit_reason)
 
 
 # ============================================================
 # CLOSE SHORT POSITION
 # ============================================================
-def close_short_position(ticker, price, reason, portfolio="paper"):
+def close_short_position(ticker, price, reason):
     """Cover a short position and record the trade."""
-    global short_positions, tp_short_positions
-    global paper_cash, tp_paper_cash
-    global short_trade_history, tp_short_trade_history
+    global short_positions
+    global paper_cash
+    global short_trade_history
 
-    if portfolio == "paper":
-        pos = short_positions.pop(ticker, None)
-    else:
-        pos = tp_short_positions.pop(ticker, None)
+    pos = short_positions.pop(ticker, None)
 
     if not pos:
         return
@@ -4826,7 +3707,7 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
         _sh_hold_s = None
     _sh_log_row = {
         "date": date_str,
-        "portfolio": portfolio,  # "paper" or "tp"
+        "portfolio": "paper",
         "ticker": ticker,
         "side": "SHORT",
         "shares": int(shares),
@@ -4843,93 +3724,42 @@ def close_short_position(ticker, price, reason, portfolio="paper"):
     _sh_log_row.update(_trade_log_snapshot_pos(pos))
     trade_log_append(_sh_log_row)
 
-    if portfolio == "paper":
-        paper_cash -= cover_price * shares
-        short_trade_history.append(trade_record)
-        if len(short_trade_history) > 500:
-            short_trade_history.pop(0)
-        save_paper_state()
+    paper_cash -= cover_price * shares
+    short_trade_history.append(trade_record)
+    if len(short_trade_history) > 500:
+        short_trade_history.pop(0)
+    save_paper_state()
 
-        # Notification (paper cover)
-        pnl_sign = "+" if pnl >= 0 else ""
-        emoji = "\u2705" if pnl >= 0 else "\u274c"
-        SEP = "\u2500" * 34
-        sc_entry_total = round(entry_price * shares, 2)
-        sc_cover_total = round(cover_price * shares, 2)
-        sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
-        sc_reason_label = REASON_LABELS.get(reason, reason)
-        if reason == "TRAIL":
-            sc_t_low = pos.get("trail_low", cover_price)
-            sc_t_dist = max(round(sc_t_low * 0.010, 2), 1.00)
-            sc_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % sc_t_dist
-        msg = (
-            "%s SHORT CLOSED\n"
-            "%s\n"
-            "Ticker : %s\n"
-            "Shares : %d\n"
-            "Entry  : $%.2f  (total $%s)\n"
-            "Cover  : $%.2f  (total $%s)\n"
-            "P&L    : %s$%.2f  (%s%.1f%%)\n"
-            "Reason : %s\n"
-            "In: %s   Out: %s\n"
-            "%s"
-        ) % (emoji, SEP, ticker, shares,
-             entry_price, format(sc_entry_total, ",.2f"),
-             cover_price, format(sc_cover_total, ",.2f"),
-             pnl_sign, pnl, pnl_sign, pnl_pct,
-             sc_reason_label, sc_in_time, exit_time, SEP)
-        send_telegram(msg)
+    # Notification (paper cover)
+    pnl_sign = "+" if pnl >= 0 else ""
+    emoji = "\u2705" if pnl >= 0 else "\u274c"
+    SEP = "\u2500" * 34
+    sc_entry_total = round(entry_price * shares, 2)
+    sc_cover_total = round(cover_price * shares, 2)
+    sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
+    sc_reason_label = REASON_LABELS.get(reason, reason)
+    if reason == "TRAIL":
+        sc_t_low = pos.get("trail_low", cover_price)
+        sc_t_dist = max(round(sc_t_low * 0.010, 2), 1.00)
+        sc_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % sc_t_dist
+    msg = (
+        "%s SHORT CLOSED\n"
+        "%s\n"
+        "Ticker : %s\n"
+        "Shares : %d\n"
+        "Entry  : $%.2f  (total $%s)\n"
+        "Cover  : $%.2f  (total $%s)\n"
+        "P&L    : %s$%.2f  (%s%.1f%%)\n"
+        "Reason : %s\n"
+        "In: %s   Out: %s\n"
+        "%s"
+    ) % (emoji, SEP, ticker, shares,
+         entry_price, format(sc_entry_total, ",.2f"),
+         cover_price, format(sc_cover_total, ",.2f"),
+         pnl_sign, pnl, pnl_sign, pnl_pct,
+         sc_reason_label, sc_in_time, exit_time, SEP)
+    send_telegram(msg)
 
-    else:  # TP
-        tp_paper_cash -= cover_price * shares
-        tp_short_trade_history.append(trade_record)
-        if len(tp_short_trade_history) > 500:
-            tp_short_trade_history.pop(0)
-        save_tp_state()
-
-        # TradersPost webhook — TP-only short cover (state already mutated; track rejection).
-        # v3.4.22: send action=buy (TradersPost's close-short action); the
-        # internal tp_unsynced_exits label stays "buy_to_cover" so /tp_sync
-        # reads naturally for humans.
-        _tp_result = send_traderspost_order(ticker, "buy", cover_price, shares)
-        if not (_tp_result.get("success") or _tp_result.get("skipped")):
-            tp_unsynced_exits[ticker] = {
-                "action": "buy_to_cover",
-                "price": cover_price,
-                "shares": shares,
-                "message": _tp_result.get("message", ""),
-                "http_status": _tp_result.get("http_status"),
-                "time": exit_time,
-            }
-
-        pnl_sign = "+" if pnl >= 0 else ""
-        emoji = "\u2705" if pnl >= 0 else "\u274c"
-        SEP = "\u2500" * 34
-        tp_sc_entry_total = round(entry_price * shares, 2)
-        tp_sc_cover_total = round(cover_price * shares, 2)
-        tp_sc_in_time = _to_cdt_hhmm(pos.get("entry_time", ""))
-        tp_sc_reason_label = REASON_LABELS.get(reason, reason)
-        if reason == "TRAIL":
-            tp_sc_t_low = pos.get("trail_low", cover_price)
-            tp_sc_t_dist = max(round(tp_sc_t_low * 0.010, 2), 1.00)
-            tp_sc_reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % tp_sc_t_dist
-        tp_msg = (
-            "%s Robinhood SHORT CLOSED\n"
-            "%s\n"
-            "Ticker : %s\n"
-            "Shares : %d\n"
-            "Entry  : $%.2f  (total $%s)\n"
-            "Cover  : $%.2f  (total $%s)\n"
-            "P&L    : %s$%.2f  (%s%.1f%%)\n"
-            "Reason : %s\n"
-            "In: %s   Out: %s\n"
-            "%s"
-        ) % (emoji, SEP, ticker, shares,
-             entry_price, format(tp_sc_entry_total, ",.2f"),
-             cover_price, format(tp_sc_cover_total, ",.2f"),
-             pnl_sign, pnl, pnl_sign, pnl_pct,
-             tp_sc_reason_label, tp_sc_in_time, exit_time, SEP)
-        send_tp_telegram(tp_msg)
 
 
 # ============================================================
@@ -4939,13 +3769,10 @@ def eod_close():
     """Force-close all open long AND short positions at 15:55 ET."""
     n_long = len(positions)
     n_short = len(short_positions)
-    n_tp_short = len(tp_short_positions)
 
-    if not positions and not tp_positions and not short_positions and not tp_short_positions:
+    if not positions and not short_positions:
         logger.info("EOD close: no open positions (long or short)")
-        # Still fall through to show summary
 
-    # Close long positions
     if positions:
         logger.info("EOD close: closing %d long positions", n_long)
         longs_to_close = []
@@ -4959,23 +3786,8 @@ def eod_close():
         for ticker, price in longs_to_close:
             close_position(ticker, price, reason="EOD")
 
-    # Close any remaining TP long positions (orphaned if paper already closed)
-    if tp_positions:
-        logger.info("EOD close: closing %d TP long positions", len(tp_positions))
-        tp_longs_to_close = []
-        for ticker in list(tp_positions.keys()):
-            bars = fetch_1min_bars(ticker)
-            if bars:
-                price = bars["current_price"]
-            else:
-                price = tp_positions[ticker]["entry_price"]
-            tp_longs_to_close.append((ticker, price))
-        for ticker, price in tp_longs_to_close:
-            close_tp_position(ticker, price, reason="EOD")
-
-    # Close paper short positions
     if short_positions:
-        logger.info("EOD close: closing %d paper short positions", n_short)
+        logger.info("EOD close: closing %d short positions", n_short)
         shorts_to_close = []
         for ticker in list(short_positions.keys()):
             bars = fetch_1min_bars(ticker)
@@ -4985,25 +3797,9 @@ def eod_close():
                 price = short_positions[ticker]["entry_price"]
             shorts_to_close.append((ticker, price))
         for ticker, price in shorts_to_close:
-            close_short_position(ticker, price, "EOD", portfolio="paper")
+            close_short_position(ticker, price, "EOD")
 
-    # Close TP short positions
-    if tp_short_positions:
-        logger.info("EOD close: closing %d TP short positions", n_tp_short)
-        tp_shorts_to_close = []
-        for ticker in list(tp_short_positions.keys()):
-            bars = fetch_1min_bars(ticker)
-            if bars:
-                price = bars["current_price"]
-            else:
-                price = tp_short_positions[ticker]["entry_price"]
-            tp_shorts_to_close.append((ticker, price))
-        for ticker, price in tp_shorts_to_close:
-            close_short_position(ticker, price, "EOD", portfolio="tp")
-
-    # Paper EOD summary — includes longs (paper_trades SELLs) AND shorts
-    # (short_trade_history COVERs). Same for TP. See _today_pnl_breakdown().
-    _, _, total_pnl, wins, losses, n_trades = _today_pnl_breakdown(is_tp=False)
+    _, _, total_pnl, wins, losses, n_trades = _today_pnl_breakdown()
     msg = (
         f"EOD CLOSE Complete\n"
         f"  Trades: {n_trades}  W/L: {wins}/{losses}\n"
@@ -5011,16 +3807,6 @@ def eod_close():
         f"  Cash: ${paper_cash:,.2f}"
     )
     send_telegram(msg)
-
-    # TP EOD summary
-    _, _, tp_total_pnl, tp_wins, tp_losses, tp_n_trades = _today_pnl_breakdown(is_tp=True)
-    tp_msg = (
-        f"[TP] EOD CLOSE Complete\n"
-        f"  Trades: {tp_n_trades}  W/L: {tp_wins}/{tp_losses}\n"
-        f"  Day P&L: ${tp_total_pnl:+.2f}\n"
-        f"  Cash: ${tp_paper_cash:,.2f}"
-    )
-    send_tp_telegram(tp_msg)
     save_paper_state()
 
 
@@ -5102,7 +3888,6 @@ def send_or_notification():
 
         msg = "\n".join(lines)
         send_telegram(msg)
-        send_tp_telegram(msg)
 
     threading.Thread(target=_do_send, daemon=True).start()
 
@@ -5110,8 +3895,8 @@ def send_or_notification():
 # ============================================================
 # AUTO EOD REPORT (Feature 4)
 # ============================================================
-def _build_eod_report(today: str, portfolio: str) -> str:
-    """Build EOD report text for one portfolio. portfolio in {'paper','tp'}.
+def _build_eod_report(today: str) -> str:
+    """Build EOD report text for the paper portfolio.
 
     v3.4.6: includes shorts. Previously only counted long SELLs (action='SELL'
     in paper_trades), so paper short COVERs (logged to short_trade_history
@@ -5120,14 +3905,9 @@ def _build_eod_report(today: str, portfolio: str) -> str:
     so longs and shorts are both counted, with a per-trade label.
     """
     SEP = "\u2500" * 34
-    if portfolio == "paper":
-        long_hist = trade_history
-        short_hist = short_trade_history
-        title = "PAPER PORTFOLIO"
-    else:
-        long_hist = tp_trade_history
-        short_hist = tp_short_trade_history
-        title = "TP PORTFOLIO"
+    long_hist = trade_history
+    short_hist = short_trade_history
+    title = "PAPER PORTFOLIO"
 
     # Today's closed trades (longs + shorts), filtered by date
     today_longs = [t for t in long_hist if t.get("date", "") == today]
@@ -5191,22 +3971,21 @@ def _build_eod_report(today: str, portfolio: str) -> str:
 
 
 def send_eod_report():
-    """Auto EOD report at 15:58 ET. Paper → send_telegram(), TP → send_tp_telegram().
+    """Auto EOD report at 15:58 ET. Paper only.
 
-    v3.4.6: includes paper + TP shorts (previously dropped because the report
+    v3.4.6: includes paper shorts (previously dropped because the report
     filtered paper_trades for action='SELL', which excludes COVER records).
     """
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
-    send_telegram(_build_eod_report(today, "paper"))
-    send_tp_telegram(_build_eod_report(today, "tp"))
+    send_telegram(_build_eod_report(today))
 
 
 # ============================================================
 # WEEKLY DIGEST (Feature 9)
 # ============================================================
 def send_weekly_digest():
-    """Weekly digest — Sunday 18:00 ET. Paper → send_telegram(), TP → send_tp_telegram()."""
+    """Weekly digest — Sunday 18:00 ET. Paper only."""
     SEP = "\u2500" * 34
     now_et = _now_et()
     cutoff = now_et - timedelta(days=7)
@@ -5284,12 +4063,8 @@ def send_weekly_digest():
     # Merge long + short history so weekly digest covers all closed trades.
     # Long closes live in trade_history; short COVERs live in short_trade_history.
     paper_combined = list(trade_history) + list(short_trade_history)
-    tp_combined = list(tp_trade_history) + list(tp_short_trade_history)
     paper_digest = _build_digest(paper_combined, "PAPER PORTFOLIO")
     send_telegram(paper_digest)
-
-    tp_digest = _build_digest(tp_combined, "TP PORTFOLIO")
-    send_tp_telegram(tp_digest)
 
 
 # ============================================================
@@ -5341,13 +4116,10 @@ def _run_system_test_sync(label: str) -> None:
     try:
         with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
             ps = json.load(f)
-        with open(TP_STATE_FILE, "r", encoding="utf-8") as f:
-            ts = json.load(f)
         p_cash = ps.get("paper_cash", 0)
-        t_cash = ts.get("tp_paper_cash", 0)
         lines.append(
-            "State: \u2705 paper $%s | TP $%s"
-            % (format(int(p_cash), ","), format(int(t_cash), ","))
+            "State: \u2705 paper $%s"
+            % format(int(p_cash), ",")
         )
     except Exception as exc:
         issues += 1
@@ -5355,8 +4127,7 @@ def _run_system_test_sync(label: str) -> None:
 
     # D. Positions count
     n_paper = len(positions) + len(short_positions)
-    n_tp = len(tp_positions) + len(tp_short_positions)
-    lines.append("Pos: %d paper | %d TP" % (n_paper, n_tp))
+    lines.append("Pos: %d paper" % n_paper)
 
     # E. Scanner health
     if _last_scan_time is None:
@@ -5394,7 +4165,6 @@ def _run_system_test_sync(label: str) -> None:
     ) % (label, SEP, body, SEP, footer)
 
     send_telegram(msg)
-    send_tp_telegram(msg)
 
 
 def _fire_system_test(label: str) -> None:
@@ -5442,11 +4212,8 @@ def _test_state():
     try:
         with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
             ps = json.load(f)
-        with open(TP_STATE_FILE, "r", encoding="utf-8") as f:
-            ts = json.load(f)
         p_cash = ps.get("paper_cash", 0)
-        t_cash = ts.get("tp_paper_cash", 0)
-        return "\u2705 paper $%s | TP $%s" % (format(int(p_cash), ","), format(int(t_cash), ","))
+        return "\u2705 paper $%s" % format(int(p_cash), ",")
     except Exception as exc:
         return "\u274c %s" % exc
 
@@ -5454,8 +4221,7 @@ def _test_state():
 def _test_positions():
     """Test positions — returns status string."""
     n_paper = len(positions) + len(short_positions)
-    n_tp = len(tp_positions) + len(tp_short_positions)
-    return "%d paper | %d TP" % (n_paper, n_tp)
+    return "%d paper" % n_paper
 
 
 def _test_scanner():
@@ -5554,143 +4320,8 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("CMD test completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
-# ═══ Robinhood / TradersPost IMAP reconciliation ════════════════════════════
-import imaplib
-import email as email_module
-from email.header import decode_header as _decode_email_header
-
-_rh_reconcile_seen: set = set()  # message UIDs already processed (in-memory)
 
 
-def _rh_parse_tp_email(msg_body: str, subject: str) -> dict:
-    """Parse a TradersPost email body and return a dict describing what happened.
-
-    Returns {"kind": "failed"|"filled"|"rejected"|"unknown",
-             "ticker": str|None, "action": str|None, "qty": int|None,
-             "price": float|None, "reason": str|None, "raw_subject": subject}.
-
-    Known formats:
-    - Subject "Trade signal to [strategy] failed" + body contains
-      "Status:\\n<reason>" and "Payload:\\n{json}" -> kind=failed
-    - Success format unknown yet; heuristics: subject containing "filled" or
-      body containing "filled @" -> kind=filled (best-effort)
-    """
-    import re as _re
-    import json as _json
-    result = {"kind": "unknown", "ticker": None, "action": None,
-              "qty": None, "price": None, "reason": None,
-              "raw_subject": subject}
-    # Failure path (known format)
-    if "failed" in subject.lower():
-        result["kind"] = "failed"
-        m = _re.search(r"Status:\s*\n?(.+?)(?:\n\n|\nPayload)", msg_body, _re.S)
-        if m:
-            result["reason"] = m.group(1).strip()
-        m = _re.search(r"Payload:\s*\n?(\{.+?\})", msg_body, _re.S)
-        if m:
-            try:
-                payload = _json.loads(m.group(1).replace("&quot;", '"'))
-                result["ticker"] = payload.get("ticker")
-                result["action"] = payload.get("action")
-                result["qty"]    = payload.get("quantity")
-                result["price"]  = payload.get("limitPrice")
-            except Exception:
-                pass
-        return result
-    # Success path (best-effort)
-    if any(k in subject.lower() for k in ("filled", "executed", "order")):
-        result["kind"] = "filled"
-        m = _re.search(
-            r"\b([A-Z]{2,5})\b\s+(?:BUY|SELL|buy|sell)\s+(\d+)"
-            r"\s+(?:shares?\s+)?(?:at|@)\s+\$?([\d.]+)",
-            msg_body,
-        )
-        if m:
-            result["ticker"] = m.group(1)
-            result["qty"] = int(m.group(2))
-            result["price"] = float(m.group(3))
-        return result
-    return result
-
-
-def _rh_handle_reconcile(parsed: dict, subject: str, body: str):
-    """React to a parsed TradersPost email: Telegram alert + optional state adjust."""
-    kind = parsed["kind"]
-    if kind == "failed":
-        send_tp_telegram(
-            "\u26a0\ufe0f Robinhood order REJECTED\n"
-            "%s %s \u00d7 %s @ $%s\n"
-            "Reason: %s" % (
-                str(parsed.get("action") or "?").upper(),
-                str(parsed.get("ticker") or "?"),
-                str(parsed.get("qty") or "?"),
-                str(parsed.get("price") or "?"),
-                str(parsed.get("reason") or "(unknown)")[:200],
-            )
-        )
-        # Don't mutate state — the order was never placed.
-    elif kind == "filled":
-        send_tp_telegram(
-            "\u2705 Robinhood FILL confirmed\n"
-            "%s \u00d7 %s @ $%s\n"
-            "(reconciled from TP email)" % (
-                str(parsed.get("ticker") or "?"),
-                str(parsed.get("qty") or "?"),
-                str(parsed.get("price") or "?"),
-            )
-        )
-    else:
-        # Unknown format — forward subject to Telegram so Val can investigate
-        send_tp_telegram("\U0001f4ec Robinhood email (unparsed): %s" % subject[:120])
-
-
-def rh_imap_poll_once():
-    """One IMAP poll cycle: connect to Gmail, fetch TradersPost emails,
-    parse each, and act. Logs heavily — first real fill will teach us
-    the success format.
-    """
-    if not RH_IMAP_ENABLED:
-        return
-    try:
-        imap = imaplib.IMAP4_SSL("imap.gmail.com")
-        imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        imap.select("INBOX")
-        # Search all emails from TradersPost support
-        typ, data = imap.search(None, '(FROM "support@traderspost.io")')
-        if typ != "OK" or not data or not data[0]:
-            imap.logout()
-            return
-        ids = data[0].split()[-20:]  # last 20 at most
-        for uid in ids:
-            uid_s = uid.decode()
-            if uid_s in _rh_reconcile_seen:
-                continue
-            typ, msg_data = imap.fetch(uid, "(RFC822)")
-            if typ != "OK" or not msg_data or not msg_data[0]:
-                continue
-            raw = msg_data[0][1]
-            msg = email_module.message_from_bytes(raw)
-            subj = str(msg.get("Subject", ""))
-            # Decode body (walk multipart)
-            body_parts = []
-            for part in msg.walk():
-                ctype = part.get_content_type()
-                if ctype == "text/plain":
-                    try:
-                        body_parts.append(
-                            part.get_payload(decode=True).decode("utf-8", errors="replace")
-                        )
-                    except Exception:
-                        pass
-            body = "\n".join(body_parts)
-            parsed = _rh_parse_tp_email(body, subj)
-            logger.info("[RH-IMAP] uid=%s kind=%s ticker=%s reason=%s",
-                        uid_s, parsed["kind"], parsed["ticker"], parsed["reason"])
-            _rh_reconcile_seen.add(uid_s)
-            _rh_handle_reconcile(parsed, subj, body)
-        imap.logout()
-    except Exception as e:
-        logger.warning("[RH-IMAP] poll failed: %s", e)
 
 
 # ============================================================
@@ -5703,8 +4334,7 @@ def _tiger_hard_eject_check():
     Called once per scan cycle BEFORE the new-entry scan.
     Longs: eject if DI+ < threshold OR both indices < PDC.
     Shorts: eject if DI- < threshold OR both indices > PDC.
-    Applies to paper (positions, short_positions) and RH
-    (tp_positions, tp_short_positions).
+    Applies to paper (positions, short_positions).
     """
     # Index regime flags (reuse cached bars from this cycle)
     spy_bars = fetch_1min_bars("SPY")
@@ -5741,22 +4371,6 @@ def _tiger_hard_eject_check():
             close_position(ticker, price,
                            reason="HARD_EJECT_TIGER")
 
-    # -- Long positions (RH / tp_positions) --
-    for ticker in list(tp_positions):
-        di_plus, _di_m = tiger_di(ticker)
-        di_weak = (di_plus is not None
-                   and di_plus < TIGER_V2_DI_THRESHOLD)
-        if di_weak or index_flip_down:
-            price = tp_positions[ticker].get("entry_price", 0)
-            bars_t = fetch_1min_bars(ticker)
-            if bars_t:
-                price = bars_t["current_price"] or price
-            logger.info(
-                "HARD_EJECT_TIGER tp-long %s di+=%s idx_flip=%s",
-                ticker, di_plus, index_flip_down,
-            )
-            close_tp_position(ticker, price,
-                              reason="HARD_EJECT_TIGER")
 
     # -- Short positions (paper) --
     for ticker in list(short_positions):
@@ -5772,31 +4386,8 @@ def _tiger_hard_eject_check():
                 "HARD_EJECT_TIGER short %s di-=%s idx_flip=%s",
                 ticker, di_minus, index_flip_up,
             )
-            close_short_position(
-                ticker, price,
-                reason="HARD_EJECT_TIGER",
-                portfolio="paper",
-            )
+            close_short_position(ticker, price, reason="HARD_EJECT_TIGER")
 
-    # -- Short positions (RH / tp_short_positions) --
-    for ticker in list(tp_short_positions):
-        _di_p, di_minus = tiger_di(ticker)
-        di_weak = (di_minus is not None
-                   and di_minus < TIGER_V2_DI_THRESHOLD)
-        if di_weak or index_flip_up:
-            price = tp_short_positions[ticker].get("entry_price", 0)
-            bars_t = fetch_1min_bars(ticker)
-            if bars_t:
-                price = bars_t["current_price"] or price
-            logger.info(
-                "HARD_EJECT_TIGER tp-short %s di-=%s idx_flip=%s",
-                ticker, di_minus, index_flip_up,
-            )
-            close_short_position(
-                ticker, price,
-                reason="HARD_EJECT_TIGER",
-                portfolio="tp",
-            )
 
 
 # ============================================================
@@ -5835,11 +4426,9 @@ def scan_loop():
         logger.exception("_refresh_market_mode failed (ignored — observation only)")
 
     n_pos = len(positions)
-    n_tp = len(tp_positions)
     n_short = len(short_positions)
-    n_tp_short = len(tp_short_positions)
-    logger.info("Scanning %d stocks | pos=%d tp=%d short=%d tp_short=%d | mode=%s",
-                len(TRADE_TICKERS), n_pos, n_tp, n_short, n_tp_short, _current_mode)
+    logger.info("Scanning %d stocks | pos=%d short=%d | mode=%s",
+                len(TRADE_TICKERS), n_pos, n_short, _current_mode)
 
     # ── Regime change alert ───────────────────────────────────────────────
     # v3.4.34: anchor swapped from AVWAP → PDC to match the
@@ -5877,7 +4466,6 @@ def scan_loop():
                         "The Lords have left.  %s"
                     ) % (spy_cur_r, spy_pdc_r, qqq_cur_r, qqq_pdc_r, now_hhmm_r)
                 send_telegram(regime_msg)
-                send_tp_telegram(regime_msg)
 
     # Always manage existing positions (stops/trails) even when paused
     try:
@@ -5886,21 +4474,12 @@ def scan_loop():
         logger.error("manage_positions crashed: %s", e, exc_info=True)
         err_msg = "⚠️ Bot error in manage_positions: %s" % str(e)[:200]
         send_telegram(err_msg)
-        send_tp_telegram(err_msg)
-    try:
-        manage_tp_positions()
-    except Exception as e:
-        logger.error("manage_tp_positions crashed: %s", e, exc_info=True)
-        err_msg = "⚠️ Bot error in manage_tp_positions: %s" % str(e)[:200]
-        send_telegram(err_msg)
-        send_tp_telegram(err_msg)
     try:
         manage_short_positions()
     except Exception as e:
         logger.error("manage_short_positions crashed: %s", e, exc_info=True)
         err_msg = "⚠️ Bot error in manage_short_positions: %s" % str(e)[:200]
         send_telegram(err_msg)
-        send_tp_telegram(err_msg)
 
     # v3.4.47 — Hard Eject: close positions whose DI or regime
     # has flipped against them (runs before new-entry scan).
@@ -5928,23 +4507,14 @@ def scan_loop():
             # signal compute. Otherwise run check_entry so the signal
             # decision is made once for the scan cycle.
             paper_holds = ticker in positions
-            rh_holds = ticker in tp_positions
-            if paper_holds and rh_holds:
-                pass  # no book needs an entry
-            else:
+            if not paper_holds:
                 ok, bars = check_entry(ticker)
                 if ok and bars:
                     px = bars["current_price"]
-                    if not paper_holds:
-                        try:
-                            execute_entry(ticker, px)
-                        except Exception as e:
-                            logger.error("Paper entry error %s: %s", ticker, e)
-                    if not rh_holds:
-                        try:
-                            execute_rh_entry(ticker, px)
-                        except Exception as e:
-                            logger.error("RH entry error %s: %s", ticker, e)
+                    try:
+                        execute_entry(ticker, px)
+                    except Exception as e:
+                        logger.error("Paper entry error %s: %s", ticker, e)
         except Exception as e:
             logger.error("Entry check error %s: %s", ticker, e)
         # Short entry check (Wounded Buffalo) — paper + RH handled inside.
@@ -5963,8 +4533,7 @@ def reset_daily_state():
     """Reset OR data and daily counts for new trading day.
     (v3.4.34: AVWAP reset removed — AVWAP state no longer tracked.)
     """
-    global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason, tp_paper_trades
-    global _tp_trading_halted, _tp_trading_halted_reason
+    global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason
     global daily_short_entry_count
 
     now_et = _now_et()
@@ -5978,22 +4547,12 @@ def reset_daily_state():
 
     if daily_entry_date != today:
         daily_entry_count.clear()
-        # v3.4.40 — RH per-ticker counter resets on day rollover.
-        tp_daily_entry_count.clear()
         daily_short_entry_count.clear()
         paper_trades.clear()
-        tp_paper_trades.clear()
-        save_tp_state()
         daily_entry_date = today
 
-    # v3.4.34: removed per-day AVWAP reset — AVWAP state no longer
-    # exists. PDC is refreshed by the OR collector at market open.
-
-    # Feature 2: Reset trading halt for new day (both books).
     _trading_halted = False
     _trading_halted_reason = ""
-    _tp_trading_halted = False
-    _tp_trading_halted_reason = ""
 
 
 # ============================================================
@@ -6009,7 +4568,6 @@ def scheduler_thread():
     fired = set()
     last_scan = _now_et() - timedelta(seconds=SCAN_INTERVAL + 1)
     last_state_save = _now_et() - timedelta(minutes=6)
-    last_imap_poll = _now_et() - timedelta(seconds=RH_IMAP_POLL_SEC + 1)
 
     # Job table: (day, "HH:MM", function)
     # Note: times are ET.  8:20 CT = 9:20 ET, 8:31 CT = 9:31 ET
@@ -6074,12 +4632,6 @@ def scheduler_thread():
         if state_elapsed >= 5:
             last_state_save = now_et
             threading.Thread(target=save_paper_state, daemon=True).start()
-
-        # IMAP reconciliation — poll TradersPost emails every RH_IMAP_POLL_SEC
-        imap_elapsed = (now_et - last_imap_poll).total_seconds()
-        if imap_elapsed >= RH_IMAP_POLL_SEC:
-            last_imap_poll = now_et
-            threading.Thread(target=rh_imap_poll_once, daemon=True).start()
 
         time.sleep(30)
 
@@ -6152,19 +4704,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Body is wrapped in a Markdown code block so Telegram renders it in
     monospace. This makes space-padded columns actually align and keeps
     each line short enough to avoid wrapping on phone widths.
-
-    TP bot gets an extra 'Broker' section with /rh_sync; main bot does not.
     """
-    is_tp = is_tp_update(update)
     # Keep every line <= 34 chars including the leading 2-space indent so
     # the content fits Telegram's mobile code-block width without wrapping.
-    # v3.4.44: /tp_sync remains a silent alias for /rh_sync but is no longer
-    # advertised here \u2014 one canonical name keeps this tight.
-    tp_section = (
-        "Broker\n"
-        "  /rh_sync     Robinhood sync\n"
-        "\n"
-    ) if is_tp else ""
     body = (
         "\U0001f4d6 Commands\n"
         "```\n"
@@ -6190,7 +4732,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /test        Health check\n"
         "  /menu        Quick tap menu\n"
         "\n"
-        + tp_section +
         "Reference\n"
         "  /strategy    Strategy summary\n"
         "  /algo        Algorithm PDF\n"
@@ -6212,7 +4753,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _dashboard_sync(is_tp):
+def _dashboard_sync():
     """Build dashboard text (blocking I/O — run in executor)."""
     SEP = "\u2500" * 34
     now_et = _now_et()
@@ -6244,47 +4785,34 @@ def _dashboard_sync(is_tp):
         SEP,
     ]
 
-    if is_tp:
-        # TP portfolio only — Day P&L includes long SELLs + short COVERs
-        n_tp_pos = len(tp_positions) + len(tp_short_positions)
-        _, _, tp_day_pnl, _, _, _ = _today_pnl_breakdown(is_tp=True)
-        tp_cash_fmt = "%s" % format(tp_paper_cash, ",.2f")
-        tp_day_pnl_fmt = "%s" % format(tp_day_pnl, "+,.2f")
-        lines += [
-            "\U0001f4cb TP PORTFOLIO",
-            "  Cash:       $%s" % tp_cash_fmt,
-            "  Positions:  %d open" % n_tp_pos,
-            "  Today P&L:  $%s" % tp_day_pnl_fmt,
-        ]
-    else:
-        # Paper portfolio only — Day P&L includes long SELLs + short COVERs
-        n_pos = len(positions) + len(short_positions)
-        _, _, day_pnl, _, _, _ = _today_pnl_breakdown(is_tp=False)
+    # Paper portfolio only — Day P&L includes long SELLs + short COVERs
+    n_pos = len(positions) + len(short_positions)
+    _, _, day_pnl, _, _, _ = _today_pnl_breakdown()
 
-        total_value = paper_cash
-        for ticker, pos in positions.items():
-            bars = fetch_1min_bars(ticker)
-            if bars:
-                total_value += bars["current_price"] * pos["shares"]
-            else:
-                total_value += pos["entry_price"] * pos["shares"]
-        # Shorts: subtract current buy-back liability (the proceeds are
-        # already in paper_cash). See short-accounting note on /positions.
-        for s_ticker, s_pos in short_positions.items():
-            s_bars = fetch_1min_bars(s_ticker)
-            s_cur = s_bars["current_price"] if s_bars else s_pos["entry_price"]
-            total_value -= s_cur * s_pos["shares"]
+    total_value = paper_cash
+    for ticker, pos in positions.items():
+        bars = fetch_1min_bars(ticker)
+        if bars:
+            total_value += bars["current_price"] * pos["shares"]
+        else:
+            total_value += pos["entry_price"] * pos["shares"]
+    # Shorts: subtract current buy-back liability (the proceeds are
+    # already in paper_cash). See short-accounting note on /positions.
+    for s_ticker, s_pos in short_positions.items():
+        s_bars = fetch_1min_bars(s_ticker)
+        s_cur = s_bars["current_price"] if s_bars else s_pos["entry_price"]
+        total_value -= s_cur * s_pos["shares"]
 
-        paper_cash_fmt = format(paper_cash, ",.2f")
-        total_value_fmt = format(total_value, ",.2f")
-        day_pnl_fmt = format(day_pnl, "+,.2f")
-        lines += [
-            "\U0001f4c4 PAPER PORTFOLIO",
-            "  Cash:       $%s" % paper_cash_fmt,
-            "  Positions:  %d open" % n_pos,
-            "  Today P&L:  $%s" % day_pnl_fmt,
-            "  Est. Value: $%s" % total_value_fmt,
-        ]
+    paper_cash_fmt = format(paper_cash, ",.2f")
+    total_value_fmt = format(total_value, ",.2f")
+    day_pnl_fmt = format(day_pnl, "+,.2f")
+    lines += [
+        "\U0001f4c4 PAPER PORTFOLIO",
+        "  Cash:       $%s" % paper_cash_fmt,
+        "  Positions:  %d open" % n_pos,
+        "  Today P&L:  $%s" % day_pnl_fmt,
+        "  Est. Value: $%s" % total_value_fmt,
+    ]
 
     lines += [
         SEP,
@@ -6318,9 +4846,8 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     prog = await update.message.reply_text("\u23f3 Loading dashboard (~3s)...")
-    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(None, _dashboard_sync, is_tp)
+    text = await loop.run_in_executor(None, _dashboard_sync)
     try:
         if len(text) > 3800:
             await prog.delete()
@@ -6332,132 +4859,12 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("CMD dashboard completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
-def _status_text_sync(is_tp):
+def _status_text_sync():
     """Build full status text (blocking I/O — run in executor)."""
     now_et = _now_et()
     sep = "\u2500" * 34
 
-    if is_tp:
-        # Show TP portfolio
-        n_pos = len(tp_positions)
-        header = "[Robinhood] Open Positions (%d)" % n_pos
-        lines = [header, sep]
-
-        total_unreal_pnl = 0.0
-        total_market_value = 0.0
-
-        if not tp_positions:
-            lines.append("No open positions")
-        else:
-            for ticker, pos in tp_positions.items():
-                bars = fetch_1min_bars(ticker)
-                entry_p = pos["entry_price"]
-                shares = pos["shares"]
-                if bars:
-                    cur = bars["current_price"]
-                    pos_pnl = (cur - entry_p) * shares
-                    pos_pnl_pct = ((cur - entry_p) / entry_p * 100) if entry_p else 0
-                    mkt_val = cur * shares
-                    total_unreal_pnl += pos_pnl
-                    total_market_value += mkt_val
-                    if pos.get("trail_active") and pos.get("trail_stop") and pos["trail_stop"] > 0:
-                        peak = pos.get("trail_high", 0)
-                        stop_line = "  Stop:   $%.2f [\U0001f3af trail | peak $%.2f]" % (pos["trail_stop"], peak)
-                    else:
-                        stop_line = "  Stop:   $%.2f [stop]" % pos["stop"]
-                    lines.append("%s  %d shares" % (ticker, shares))
-                    lines.append("  Entry:  $%.2f  ->  Now: $%.2f" % (entry_p, cur))
-                    lines.append("  P&L:   $%+.2f (%+.1f%%)" % (pos_pnl, pos_pnl_pct))
-                    mkt_val_fmt = format(mkt_val, ",.2f")
-                    lines.append("  Value:  $%s" % mkt_val_fmt)
-                    lines.append(stop_line)
-                else:
-                    mkt_val = entry_p * shares
-                    total_market_value += mkt_val
-                    lines.append("%s  %d shares" % (ticker, shares))
-                    lines.append("  Entry:  $%.2f  ->  price unavailable" % entry_p)
-                    lines.append("  Stop:   $%.2f" % pos["stop"])
-                lines.append(sep)
-
-        if tp_positions:
-            lines.append("Total Unrealized P&L: $%+.2f" % total_unreal_pnl)
-            tmv_fmt = format(total_market_value, ",.2f")
-            lines.append("Total Market Value:   $%s" % tmv_fmt)
-
-        today = now_et.strftime("%Y-%m-%d")
-        tp_today_sells = [
-            t for t in tp_paper_trades
-            if t.get("action") == "SELL" and t.get("date") == today
-        ]
-        tp_short_today = [t for t in tp_short_trade_history if t.get("date") == today]
-        tp_day_pnl = (sum(t.get("pnl", 0) for t in tp_today_sells)
-                      + sum(t.get("pnl", 0) for t in tp_short_today))
-        tp_day_trades = len(tp_today_sells) + len(tp_short_today)
-        lines.append("Day P&L: $%+.2f  (%d trades)" % (tp_day_pnl, tp_day_trades))
-
-        # TP Short positions
-        lines.append(sep)
-        lines.append("\U0001fa78 SHORT POSITIONS (Wounded Buffalo)")
-        lines.append(sep)
-        if not tp_short_positions:
-            lines.append("No short positions open.")
-        else:
-            for s_ticker, s_pos in tp_short_positions.items():
-                s_entry = s_pos["entry_price"]
-                s_shares = s_pos["shares"]
-                s_bars = fetch_1min_bars(s_ticker)
-                if s_bars:
-                    s_cur = s_bars["current_price"]
-                    s_pnl = (s_entry - s_cur) * s_shares
-                    if s_pos.get("trail_active") and s_pos.get("trail_stop") and s_pos["trail_stop"] > 0:
-                        s_low = s_pos.get("trail_low", 0)
-                        s_stop_txt = "$%.2f [\U0001f3af trail | low  $%.2f]" % (s_pos["trail_stop"], s_low)
-                    else:
-                        s_stop_txt = "$%.2f [stop]" % s_pos["stop"]
-                    lines.append("%s  Entry $%.2f  Stop %s"
-                                 % (s_ticker, s_entry, s_stop_txt))
-                    lines.append("      Current $%.2f  P&L $%+.2f"
-                                 % (s_cur, s_pnl))
-                else:
-                    lines.append("%s  Entry $%.2f  Stop $%.2f  (price unavailable)"
-                                 % (s_ticker, s_entry, s_pos["stop"]))
-
-        tp_cash_fmt = format(tp_paper_cash, ",.2f")
-        lines.append("Robinhood Cash: $%s" % tp_cash_fmt)
-
-        # Portfolio equity summary.
-        # Short accounting: on entry, proceeds (entry_px * shares) are
-        # credited to cash AND we owe a liability equal to the current
-        # buy-back cost (current_px * shares). The equity contribution
-        # of a short is therefore short_unreal = (entry_px - current_px)
-        # * shares, NOT entry_px * shares. Previously we added
-        # entry_px * shares to market value, which double-counted the
-        # short-sale proceeds and inflated equity by roughly the short
-        # principal.
-        tp_short_unreal = 0.0
-        tp_short_liability = 0.0  # current buy-back cost
-        for s_ticker, s_pos in tp_short_positions.items():
-            s_bars = fetch_1min_bars(s_ticker)
-            cur_px = s_bars["current_price"] if s_bars else s_pos["entry_price"]
-            tp_short_unreal += (s_pos["entry_price"] - cur_px) * s_pos["shares"]
-            tp_short_liability += cur_px * s_pos["shares"]
-        tp_all_unreal = total_unreal_pnl + tp_short_unreal
-        tp_equity = tp_paper_cash + total_market_value - tp_short_liability
-        tp_vs_start = tp_equity - RH_STARTING_CAPITAL
-        lines.append(sep)
-        lines.append("\U0001f4bc Robinhood Portfolio Snapshot")
-        lines.append("  Cash:          $%s" % format(tp_paper_cash, ",.2f"))
-        lines.append("  Long MV:       $%s" % format(total_market_value, ",.2f"))
-        if tp_short_liability > 0:
-            lines.append("  Short Liab:    $%s" % format(tp_short_liability, ",.2f"))
-        lines.append("  Total Equity:  $%s" % format(tp_equity, ",.2f"))
-        lines.append("  Unrealized P&L:    $%+.2f" % tp_all_unreal)
-        lines.append("  vs Start:        $%+.2f  (started at $%s)"
-                     % (tp_vs_start, format(RH_STARTING_CAPITAL, ",.0f")))
-        lines.append(sep)
-        return "\n".join(lines)
-
-    # Paper portfolio (default)
+    # Paper portfolio
     n_pos = len(positions)
     header = "Open Positions (%d)" % n_pos
     lines = [header, sep]
@@ -6592,9 +4999,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show open positions with live prices, unrealized P&L, and TP summary."""
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
-    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(None, _status_text_sync, is_tp)
+    text = await loop.run_in_executor(None, _status_text_sync)
 
     refresh_kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
@@ -6603,44 +5009,28 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Portfolio pie chart (run in thread to avoid blocking event loop)
     sent_photo = False
-    if is_tp:
-        if MATPLOTLIB_AVAILABLE and (tp_positions or tp_short_positions):
-            buf = await loop.run_in_executor(None, _chart_portfolio_pie, tp_positions, tp_short_positions, tp_paper_cash)
-            if buf:
-                await update.message.reply_photo(photo=buf, caption="Robinhood Portfolio Allocation", reply_markup=_menu_button())
-                sent_photo = True
-    else:
-        if MATPLOTLIB_AVAILABLE and (positions or short_positions):
-            buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
-            if buf:
-                await update.message.reply_photo(photo=buf, caption="Portfolio Allocation", reply_markup=_menu_button())
-                sent_photo = True
+    if MATPLOTLIB_AVAILABLE and (positions or short_positions):
+        buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
+        if buf:
+            await update.message.reply_photo(photo=buf, caption="Portfolio Allocation", reply_markup=_menu_button())
+            sent_photo = True
 
     if not sent_photo:
         await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
     logger.info("CMD status completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
-def _build_positions_text(is_tp=False):
+def _build_positions_text():
     """Build positions text for refresh callback."""
     now_et = _now_et()
     sep = "\u2500" * 34
-    if is_tp:
-        pos_dict = tp_positions
-        short_dict = tp_short_positions
-        trades_list = tp_paper_trades
-        short_hist = tp_short_trade_history
-        cash = tp_paper_cash
-        label = "[Robinhood] Open Positions"
-        cash_label = "Robinhood Cash"
-    else:
-        pos_dict = positions
-        short_dict = short_positions
-        trades_list = paper_trades
-        short_hist = short_trade_history
-        cash = paper_cash
-        label = "Open Positions"
-        cash_label = "Paper Cash"
+    pos_dict = positions
+    short_dict = short_positions
+    trades_list = paper_trades
+    short_hist = short_trade_history
+    cash = paper_cash
+    label = "Open Positions"
+    cash_label = "Paper Cash"
 
     n_pos = len(pos_dict)
     lines = ["%s (%d)" % (label, n_pos), sep]
@@ -6724,9 +5114,9 @@ def _build_positions_text(is_tp=False):
         short_liability += cur_px * s_pos["shares"]
     all_unreal = total_unreal + short_unreal
     equity = cash + total_market_value - short_liability
-    _start_cap = RH_STARTING_CAPITAL if is_tp else PAPER_STARTING_CAPITAL
+    _start_cap = PAPER_STARTING_CAPITAL
     vs_start = equity - _start_cap
-    snap_label = "\U0001f4bc Robinhood Portfolio Snapshot" if is_tp else "\U0001f4bc Portfolio Snapshot"
+    snap_label = "\U0001f4bc Portfolio Snapshot"
     lines.append(sep)
     lines.append(snap_label)
     lines.append("  Cash:          $%s" % format(cash, ",.2f"))
@@ -6754,11 +5144,8 @@ async def positions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """
     query = update.callback_query
     await query.answer("Refreshing...")
-    # v3.4.19: route by bot token, not chat id \u2014 TP bot usage in any
-    # chat (DM, group, topic thread) must still render TP data.
-    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
-    msg = await loop.run_in_executor(None, _build_positions_text, is_tp)
+    msg = await loop.run_in_executor(None, _build_positions_text)
     # Ensure content changes between taps even if prices and positions
     # are momentarily identical (common outside market hours).
     stamp = _now_cdt().strftime("%H:%M:%S CDT")
@@ -6964,7 +5351,7 @@ def _chart_portfolio_pie(pos_dict, short_dict, cash):
         return None
 
 
-def _open_positions_as_pseudo_trades(is_tp=False, target_date=None):
+def _open_positions_as_pseudo_trades(target_date=None):
     """Build synthetic trade records for currently-open positions.
 
     v3.3.1: /perf and /dayreport historically only read
@@ -6982,8 +5369,8 @@ def _open_positions_as_pseudo_trades(is_tp=False, target_date=None):
     Returns (long_opens, short_opens). Each list is date-filtered to
     `target_date` (YYYY-MM-DD) when provided; otherwise all opens.
     """
-    long_pos = tp_positions if is_tp else positions
-    short_pos = tp_short_positions if is_tp else short_positions
+    long_pos = positions
+    short_pos = short_positions
 
     long_opens = []
     for ticker, pos in long_pos.items():
@@ -7139,54 +5526,6 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Fix B: Route based on which bot
     today_str = _now_et().strftime("%Y-%m-%d")
-    if is_tp_update(update):
-        tp_long = [
-            t for t in tp_trade_history
-            if t.get("date", "") == target_str
-        ]
-        tp_short = [
-            t for t in tp_short_trade_history
-            if t.get("date", "") == target_str
-        ]
-        # v3.3.1: include currently-open positions as pseudo-trades
-        # when the target date matches today. Past-date reports only
-        # show completed history.
-        if target_str == today_str:
-            tp_long_open, tp_short_open = _open_positions_as_pseudo_trades(
-                is_tp=True, target_date=target_str,
-            )
-        else:
-            tp_long_open, tp_short_open = [], []
-        all_tp = tp_long + tp_short + tp_long_open + tp_short_open
-        if not all_tp:
-            await update.effective_message.reply_text(
-                "No trades on {date}.".format(date=target_str),
-                reply_markup=_menu_button()
-            )
-            logger.info("CMD dayreport completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
-            return
-        body = _format_dayreport_section(all_tp, header, "Robinhood")
-        await _reply_in_chunks(update.message, body)
-        # Chart: Trade P&L bar chart
-        if MATPLOTLIB_AVAILABLE:
-            chart_msg = await update.message.reply_text("\U0001f4ca Generating chart...")
-            loop = asyncio.get_event_loop()
-            buf = await loop.run_in_executor(None, _chart_dayreport, all_tp, day_label)
-            if buf:
-                try:
-                    await chart_msg.delete()
-                except Exception:
-                    pass
-                await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label, reply_markup=_menu_button())
-            else:
-                try:
-                    await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)", reply_markup=_menu_button())
-                except Exception:
-                    pass
-        else:
-            await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
-        logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
-        return
 
     # Paper portfolio
     paper_long = [
@@ -7201,7 +5540,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # target date matches today. Past-date reports stay history-only.
     if target_str == today_str:
         paper_long_open, paper_short_open = _open_positions_as_pseudo_trades(
-            is_tp=False, target_date=target_str,
+            target_date=target_str,
         )
     else:
         paper_long_open, paper_short_open = [], []
@@ -7239,7 +5578,7 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("CMD dayreport completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
-def _collect_day_rows(target_str, today_str, is_tp):
+def _collect_day_rows(target_str, today_str):
     """Collect all trade-log rows for one day, normalized.
 
     Returns a list of dicts:
@@ -7250,27 +5589,21 @@ def _collect_day_rows(target_str, today_str, is_tp):
        "pnl": float (SELL/COVER only),
        "pnl_pct": float (SELL/COVER only)}
 
-    v3.4.7: previously the same-day branch only pulled from paper_trades /
-    tp_paper_trades, which never contain shorts. Today's shorts (open or
-    closed) were silently invisible. Now we pull from four sources for the
-    today branch and synthesize rows from history for past dates.
+    v3.4.7: previously the same-day branch only pulled from paper_trades,
+    which never contain shorts. Today's shorts (open or closed) were
+    silently invisible. Now we pull from four sources for the today
+    branch and synthesize rows from history for past dates.
     """
     rows = []
     is_today = (target_str == today_str)
 
-    if is_tp:
-        live_long = tp_paper_trades
-        long_hist = tp_trade_history
-        short_hist = tp_short_trade_history
-        open_shorts = tp_short_positions
-    else:
-        live_long = paper_trades
-        long_hist = trade_history
-        short_hist = short_trade_history
-        open_shorts = short_positions
+    live_long = paper_trades
+    long_hist = trade_history
+    short_hist = short_trade_history
+    open_shorts = short_positions
 
     if is_today:
-        # Long opens + closes are already in paper_trades / tp_paper_trades
+        # Long opens + closes are already in paper_trades
         for t in live_long:
             if t.get("date", "") != target_str:
                 continue
@@ -7362,17 +5695,16 @@ def _collect_day_rows(target_str, today_str, is_tp):
     return rows
 
 
-def _log_sync(target_str, day_label, is_tp):
+def _log_sync(target_str, day_label):
     """Build trade log text (pure CPU — run in executor). Returns text or None."""
     SEP = "\u2500" * 34
     today_str = _now_et().strftime("%Y-%m-%d")
-    rows = _collect_day_rows(target_str, today_str, is_tp)
+    rows = _collect_day_rows(target_str, today_str)
     if not rows:
         return None
 
-    prefix = "[TP] " if is_tp else ""
     lines = [
-        "\U0001f4cb %sTrade Log \u2014 %s" % (prefix, day_label),
+        "\U0001f4cb Trade Log \u2014 %s" % day_label,
         SEP,
     ]
     OPENS = ("BUY", "SHORT")
@@ -7401,8 +5733,7 @@ def _log_sync(target_str, day_label, is_tp):
                 % (tm, action, ticker, shares, price, pnl_v, pnl_p)
             )
 
-    n_open = (len(tp_positions) + len(tp_short_positions)) if is_tp \
-             else (len(positions) + len(short_positions))
+    n_open = len(positions) + len(short_positions)
     lines.append(SEP)
     lines.append("Completed: %d trades  Open: %d positions" % (n_closed, n_open))
     lines.append("Day P&L: ${:+,.2f}".format(day_pnl))
@@ -7417,12 +5748,11 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_date = _parse_date_arg(context.args)
     target_str = target_date.strftime("%Y-%m-%d")
     day_label = target_date.strftime("%a %b %d, %Y")
-    is_tp = is_tp_update(update)
 
     loop = asyncio.get_event_loop()
     try:
         text = await asyncio.wait_for(
-            loop.run_in_executor(None, _log_sync, target_str, day_label, is_tp),
+            loop.run_in_executor(None, _log_sync, target_str, day_label),
             timeout=15.0,
         )
     except asyncio.TimeoutError:
@@ -7434,9 +5764,8 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text is None:
-        prefix = "[TP] " if is_tp else ""
         try:
-            await prog.edit_text("%sNo trades on %s." % (prefix, day_label), reply_markup=_menu_button())
+            await prog.edit_text("No trades on %s." % day_label, reply_markup=_menu_button())
         except Exception:
             pass
         logger.info("CMD log completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
@@ -7450,7 +5779,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("CMD log completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
-def _replay_sync(target_str, day_label, is_tp):
+def _replay_sync(target_str, day_label):
     """Build replay text (pure CPU — run in executor). Returns text or None."""
     SEP = "\u2500" * 34
     today_str = _now_et().strftime("%Y-%m-%d")
@@ -7458,11 +5787,11 @@ def _replay_sync(target_str, day_label, is_tp):
     # Normalize every source into a common row shape:
     #   {"tm": "HH:MM", "ticker": str, "action": "BUY"|"SELL"|"SHORT"|"COVER",
     #    "price": float, "pnl": float (0 for opens)}
-    # Same-day sources (paper_trades / tp_paper_trades) already use
-    # time/price/action. Historical sources (trade_history /
-    # short_trade_history) store one record per CLOSED trade with
-    # entry_time/entry_price and exit_time/exit_price, so we synthesize
-    # both an open row and a close row for each.
+    # Same-day source (paper_trades) already uses time/price/action.
+    # Historical sources (trade_history / short_trade_history) store one
+    # record per CLOSED trade with entry_time/entry_price and
+    # exit_time/exit_price, so we synthesize both an open row and a
+    # close row for each.
     rows = []
 
     def _push_live(src):
@@ -7512,26 +5841,15 @@ def _replay_sync(target_str, day_label, is_tp):
                 "pnl": 0,
             })
 
-    if is_tp:
-        prefix = "[TP] "
-        if target_str == today_str:
-            _push_live(tp_paper_trades)
-            # v3.4.7: today's shorts (closed + open) live elsewhere
-            _push_history(tp_short_trade_history, "SHORT", "COVER")
-            _push_open_shorts(tp_short_positions)
-        else:
-            _push_history(tp_trade_history, "BUY", "SELL")
-            _push_history(tp_short_trade_history, "SHORT", "COVER")
+    prefix = ""
+    if target_str == today_str:
+        _push_live(paper_trades)
+        # v3.4.7: today's shorts (closed + open) live elsewhere
+        _push_history(short_trade_history, "SHORT", "COVER")
+        _push_open_shorts(short_positions)
     else:
-        prefix = ""
-        if target_str == today_str:
-            _push_live(paper_trades)
-            # v3.4.7: today's shorts (closed + open) live elsewhere
-            _push_history(short_trade_history, "SHORT", "COVER")
-            _push_open_shorts(short_positions)
-        else:
-            _push_history(trade_history, "BUY", "SELL")
-            _push_history(short_trade_history, "SHORT", "COVER")
+        _push_history(trade_history, "BUY", "SELL")
+        _push_history(short_trade_history, "SHORT", "COVER")
 
     # Sort by time; unknown "--:--" sinks to the end but keeps relative order.
     rows.sort(key=lambda r: (r["tm"] == "--:--", r["tm"]))
@@ -7588,12 +5906,11 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_date = _parse_date_arg(context.args)
     target_str = target_date.strftime("%Y-%m-%d")
     day_label = target_date.strftime("%a %b %d, %Y")
-    is_tp = is_tp_update(update)
 
     loop = asyncio.get_event_loop()
     try:
         text = await asyncio.wait_for(
-            loop.run_in_executor(None, _replay_sync, target_str, day_label, is_tp),
+            loop.run_in_executor(None, _replay_sync, target_str, day_label),
             timeout=15.0,
         )
     except asyncio.TimeoutError:
@@ -7602,8 +5919,7 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text is None:
-        prefix = "[TP] " if is_tp else ""
-        await update.message.reply_text("%sNo trades on %s." % (prefix, day_label), reply_markup=_menu_button())
+        await update.message.reply_text("No trades on %s." % day_label, reply_markup=_menu_button())
         logger.info("CMD replay completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
         return
 
@@ -7612,10 +5928,9 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show version info. Release note varies by bot (main vs TP)."""
-    note = TP_RELEASE_NOTE if is_tp_update(update) else MAIN_RELEASE_NOTE
+    """Show version info."""
     await update.message.reply_text(
-        "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, note),
+        "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, MAIN_RELEASE_NOTE),
         reply_markup=_menu_button())
 
 
@@ -7681,12 +5996,9 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
     same as the automatic pass.
     """
     SEP = "\u2500" * 34
-    # v3.4.39: scope the sweep by originating bot so /retighten on the
-    # Robinhood bot never touches paper positions (and vice versa).
-    portfolio = "tp" if is_tp_update(update) else "paper"
     try:
         result = retighten_all_stops(
-            force_exit=True, fetch_prices=True, portfolio=portfolio,
+            force_exit=True, fetch_prices=True,
         )
     except Exception as e:
         logger.error("cmd_retighten failed: %s", e, exc_info=True)
@@ -7696,8 +6008,7 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    scope = "Robinhood" if portfolio == "tp" else "Paper"
-    lines = ["\U0001f527 Stop retighten \u2014 %s" % scope, SEP]
+    lines = ["\U0001f527 Stop retighten", SEP]
     details = result.get("details", [])
     if not details:
         lines.append("No open positions.")
@@ -7772,7 +6083,7 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     SEP = "\u2500" * 34
     # v3.4.39: scope by originating bot so the Robinhood bot never shows paper rows.
-    portfolio = "tp" if is_tp_update(update) else "paper"
+    portfolio = "tp" if False else "paper"
     try:
         rows = trade_log_read_tail(limit=10, portfolio=portfolio)
     except Exception as e:
@@ -7852,186 +6163,19 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # /tp_sync COMMAND — TradersPost broker sync status (v3.4.15)
 # ============================================================
-async def cmd_tp_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show Robinhood broker sync status: open Robinhood positions, last webhook sends,
-    and any unsynced exits awaiting manual reconciliation.
-    Also accessible as /rh_sync."""
-    SEP = "\u2500" * 34
-
-    lines = ["Robinhood Broker Sync", SEP]
-    lines.append("Enabled : %s" % ("on" if is_traderspost_enabled() else "off"))
-    lines.append("Sent    : %d" % tp_state.get("total_orders_sent", 0))
-    lines.append("OK      : %d" % tp_state.get("total_orders_success", 0))
-    lines.append("Fail    : %d" % tp_state.get("total_orders_failed", 0))
-    last_t = tp_state.get("last_order_time", "")
-    if last_t:
-        lines.append("Last    : %s" % _to_cdt_hhmm(last_t))
-    lines.append(SEP)
-
-    # Open Robinhood positions (longs)
-    lines.append("Open RH longs: %d" % len(tp_positions))
-    for tkr, pos in list(tp_positions.items())[:8]:
-        synced = "\u2713" if pos.get("broker_synced") else "?"
-        lines.append("  %s %s %d @ $%.2f" % (
-            synced, tkr, pos.get("shares", 0), pos.get("entry_price", 0.0)))
-
-    lines.append("Open RH shorts: %d" % len(tp_short_positions))
-    for tkr, pos in list(tp_short_positions.items())[:8]:
-        synced = "\u2713" if pos.get("broker_synced") else "?"
-        lines.append("  %s %s %d @ $%.2f" % (
-            synced, tkr, pos.get("shares", 0), pos.get("entry_price", 0.0)))
-    lines.append(SEP)
-
-    # Last 5 webhook outcomes
-    recent = list(tp_state.get("recent_orders", []) or [])[-5:]
-    lines.append("Recent webhooks: %d" % len(recent))
-    for r in recent:
-        mark = "\u2713" if r.get("success") else "\u2717"
-        t = _to_cdt_hhmm(r.get("time", "")) or "?"
-        lines.append("  %s %s %s %s %d" % (
-            mark, t, (r.get("action") or "?")[:4],
-            (r.get("ticker") or "?"), int(r.get("shares", 0) or 0)))
-        msg = (r.get("message") or "")[:28]
-        if msg and not r.get("success"):
-            lines.append("    %s" % msg)
-    lines.append(SEP)
-
-    # Unsynced exits (rejections that need manual recon)
-    if tp_unsynced_exits:
-        lines.append("\u26a0 Unsynced exits: %d" % len(tp_unsynced_exits))
-        for tkr, ex in list(tp_unsynced_exits.items())[:8]:
-            lines.append("  %s %s %d @ $%.2f" % (
-                tkr, (ex.get("action") or "?")[:4],
-                int(ex.get("shares", 0) or 0),
-                float(ex.get("price", 0.0) or 0.0)))
-            reason = (ex.get("message") or "")[:28]
-            if reason:
-                lines.append("    %s" % reason)
-        lines.append("Manual recon required")
-    else:
-        lines.append("Unsynced exits: 0")
-    lines.append(SEP)
-
-    msg = "\n".join(lines)
-    # Telegram has a 4096 char limit; truncate generously.
-    if len(msg) > 3800:
-        msg = msg[:3800] + "\n\u2026(truncated)"
-    await update.message.reply_text("```\n%s\n```" % msg,
-                                    parse_mode="Markdown",
-                                    reply_markup=_menu_button())
 
 
-async def cmd_tp_sync_on_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Graceful redirect if user sends /tp_sync to the main bot.
-
-    Main bot stays paper-portfolio-only (v3.4.16). Any TradersPost
-    diagnostics live on the TP bot. This handler is ONLY registered on
-    the main app; the TP app keeps cmd_tp_sync as normal.
-    """
-    await update.message.reply_text(
-        "This command lives on the TP bot.\n"
-        "Main bot covers the paper\n"
-        "portfolio only.",
-        reply_markup=_menu_button(),
-    )
 
 
 # ============================================================
 # /rh_enable /rh_disable /rh_status \u2014 live-trading kill switch
 # ============================================================
-def _rh_set_enabled(enabled: bool) -> None:
-    """Flip the Robinhood runtime override and persist to disk."""
-    global _traderspost_runtime_override
-    _traderspost_runtime_override = bool(enabled)
-    # Persist so a Railway redeploy doesn't silently flip the state.
-    try:
-        save_tp_state()
-    except Exception as e:
-        logger.warning("[RH] save_tp_state after toggle failed: %s", e)
 
 
-async def cmd_rh_enable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Enable Robinhood live trading (flip TRADERSPOST_ENABLED to on).
-
-    Runtime override \u2014 no Railway restart needed. Persisted in
-    tp_state.json so it survives redeploys.
-    """
-    was_on = is_traderspost_enabled()
-    _rh_set_enabled(True)
-    if was_on:
-        msg = "Robinhood already ENABLED.\nNo change."
-    else:
-        msg = (
-            "\U0001f7e2 Robinhood ENABLED\n"
-            "Live orders will now route\n"
-            "through TradersPost.\n"
-            "\n"
-            "Use /rh_disable to stop."
-        )
-    await update.message.reply_text(
-        "```\n%s\n```" % msg, parse_mode="Markdown",
-        reply_markup=_menu_button(),
-    )
-    # Cross-post to the Robinhood Telegram so both chats see the change.
-    send_tp_telegram(msg)
 
 
-async def cmd_rh_disable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Disable Robinhood live trading (flip TRADERSPOST_ENABLED to off).
-
-    Webhook POSTs are skipped immediately. Paper portfolio keeps running
-    normally. Use for an emergency stop or to pause live trading.
-    """
-    was_on = is_traderspost_enabled()
-    _rh_set_enabled(False)
-    if not was_on:
-        msg = "Robinhood already DISABLED.\nNo change."
-    else:
-        msg = (
-            "\U0001f534 Robinhood DISABLED\n"
-            "Webhook POSTs skipped.\n"
-            "Paper bot continues as\n"
-            "usual.\n"
-            "\n"
-            "Use /rh_enable to resume."
-        )
-    await update.message.reply_text(
-        "```\n%s\n```" % msg, parse_mode="Markdown",
-        reply_markup=_menu_button(),
-    )
-    send_tp_telegram(msg)
 
 
-async def cmd_rh_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show Robinhood kill-switch state and sizing configuration."""
-    SEP = "\u2500" * 34
-    enabled = is_traderspost_enabled()
-    override = _traderspost_runtime_override
-    src = ("runtime (/rh_enable)" if override is True
-           else "runtime (/rh_disable)" if override is False
-           else "env TRADERSPOST_ENABLED")
-    webhook_set = bool(TRADERSPOST_WEBHOOK_URL)
-    imap_set = bool(RH_IMAP_ENABLED)
-
-    lines = [
-        "Robinhood Kill Switch",
-        SEP,
-        "State   : %s" % ("\U0001f7e2 ENABLED" if enabled else "\U0001f534 DISABLED"),
-        "Source  : %s" % src,
-        "Webhook : %s" % ("set" if webhook_set else "MISSING"),
-        "IMAP    : %s" % ("on" if imap_set else "off"),
-        SEP,
-        "Capital : $%s" % format(RH_STARTING_CAPITAL, ",.0f"),
-        "$/entry : $%s" % format(RH_DOLLARS_PER_ENTRY, ",.0f"),
-        "Max/tkr : %d" % RH_MAX_ENTRIES_PER_TICKER,
-        "Max open: %d" % RH_MAX_CONCURRENT_POSITIONS,
-        "LongOnly: %s" % ("yes" if RH_LONG_ONLY else "no"),
-    ]
-    msg = "\n".join(lines)
-    await update.message.reply_text(
-        "```\n%s\n```" % msg, parse_mode="Markdown",
-        reply_markup=_menu_button(),
-    )
 
 
 # ============================================================
@@ -8292,20 +6436,15 @@ RESET_CONFIRM_WINDOW_SEC = 60
 def _reset_authorized(query, context=None) -> tuple:
     """Gatekeeper for /reset callbacks.
 
-    Returns (allowed: bool, reason: str). Checks:
-      1. The tap came from the bot owner — either the chat is one of
-         the configured owner chats, OR the tapping user id is in
-         RH_OWNER_USER_IDS. The user-id path lets the owner /reset from
-         a direct message even when CHAT_ID / TELEGRAM_TP_CHAT_ID are
-         configured as group chats. Prevents random group members from
-         wiping state.
-      2. The tap was routed to a bot whose portfolio the action matches.
-         Detection: compare the tap's bot token to TELEGRAM_TP_TOKEN
-         (reliable across DMs and groups) instead of inferring from the
-         chat id, which breaks for DMs when the env var is a group id.
-         Falls back to the chat-id heuristic if context is None.
-      3. The confirm button has a timestamp within
-         RESET_CONFIRM_WINDOW_SEC. Prevents stale-message replay.
+    v3.5.0: paper-only single-bot. Returns (allowed: bool, reason: str).
+    Checks:
+      1. Owner check — the chat is one of the configured owner chats,
+         OR the tapping user id is in RH_OWNER_USER_IDS. The user-id
+         path lets the owner /reset from a direct message when CHAT_ID
+         is a group.
+      2. Freshness check — confirm callbacks carry ':<unix_ts>' suffix
+         and must be within RESET_CONFIRM_WINDOW_SEC. Prevents stale
+         replays.
     """
     data = query.data or ""
     chat_id_str = str(query.message.chat_id)
@@ -8314,37 +6453,15 @@ def _reset_authorized(query, context=None) -> tuple:
     except Exception:
         user_id_str = ""
 
-    # v3.4.43 — detect the tap's originating bot by comparing its token
-    # to TELEGRAM_TP_TOKEN. This is reliable for DMs AND groups, unlike
-    # the old chat-id heuristic which required TELEGRAM_TP_CHAT_ID to
-    # match the tap's chat. Fall back to the chat-id heuristic only when
-    # context is unavailable (test harnesses).
-    from_bot_is_tp = False
-    if context is not None:
-        try:
-            from_bot_is_tp = (context.bot.token == TELEGRAM_TP_TOKEN)
-        except Exception:
-            from_bot_is_tp = False
-    else:
-        from_bot_is_tp = (chat_id_str == TELEGRAM_TP_CHAT_ID
-                          or user_id_str == TELEGRAM_TP_CHAT_ID)
-
-    # (1) Owner check — chat or user matches an owner id, OR the
-    # tapping user id is in the RH_OWNER_USER_IDS allow-list.
-    owner_ids = {TELEGRAM_TP_CHAT_ID, str(CHAT_ID or "")}
+    # (1) Owner check
+    owner_ids = {str(CHAT_ID or "")}
     owner_ids.discard("")
     is_owner_chat = chat_id_str in owner_ids or user_id_str in owner_ids
     is_owner_user = user_id_str in RH_OWNER_USER_IDS
     if not (is_owner_chat or is_owner_user):
         return (False, "unauthorized chat")
 
-    # (2) Bot/action match — only the confirm variants carry an action.
-    if data.startswith("reset_paper_confirm") and from_bot_is_tp:
-        return (False, "paper reset must be confirmed from paper bot")
-    if data.startswith("reset_tp_confirm") and not from_bot_is_tp:
-        return (False, "Robinhood reset must be confirmed from Robinhood bot")
-
-    # (3) Freshness check — confirm callbacks carry ':<unix_ts>' suffix.
+    # (2) Freshness check — confirm callbacks carry ':<unix_ts>' suffix.
     if "_confirm" in data and ":" in data:
         try:
             ts = int(data.rsplit(":", 1)[1])
@@ -8370,61 +6487,14 @@ def _reset_buttons(action: str) -> InlineKeyboardMarkup:
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reset paper | /reset tp | /reset both — show confirmation before reset.
+    """/reset — show confirmation before resetting the paper portfolio.
 
-    v3.4.39: on the Robinhood bot, only Robinhood reset is offered,
-    and the confirmation amount reflects RH_STARTING_CAPITAL ($25k)
-    rather than the $100k paper default.
+    v3.5.0: paper-only. TP/Robinhood reset path removed.
     """
-    args = context.args
-    target = args[0].lower() if args else ""
-    on_tp = is_tp_update(update)
-
-    if on_tp:
-        # Robinhood bot — only Robinhood target is valid; ignore any
-        # paper/both arg and always route to the RH confirmation.
-        rh_fmt = format(RH_STARTING_CAPITAL, ",.0f")
-        if target in ("tp", "rh", "robinhood", ""):
-            await update.message.reply_text(
-                "\u26a0\ufe0f Reset Robinhood portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % rh_fmt,
-                reply_markup=_reset_buttons("tp"),
-            )
-        else:
-            await update.message.reply_text(
-                "This bot only manages the\nRobinhood portfolio. Send\n/reset with no args, or use\nthe main bot for paper.",
-                reply_markup=_menu_button(),
-            )
-        return
-
-    if target == "paper":
-        await update.message.reply_text(
-            "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
-            reply_markup=_reset_buttons("paper"),
-        )
-    elif target == "tp":
-        rh_fmt = format(RH_STARTING_CAPITAL, ",.0f")
-        await update.message.reply_text(
-            "\u26a0\ufe0f Reset Robinhood portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % rh_fmt,
-            reply_markup=_reset_buttons("tp"),
-        )
-    elif target == "both":
-        await update.message.reply_text(
-            "\u26a0\ufe0f Reset BOTH portfolios?\nAll trade history will be cleared.\n(Confirm within 60s.)",
-            reply_markup=_reset_buttons("both"),
-        )
-    else:
-        await update.message.reply_text(
-            "Choose what to reset:",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("\U0001f4c4 Reset Paper", callback_data="reset_paper"),
-                    InlineKeyboardButton("\U0001f4cb Reset RH", callback_data="reset_tp"),
-                ],
-                [
-                    InlineKeyboardButton("\U0001f504 Reset Both", callback_data="reset_both"),
-                ],
-            ])
-        )
+    await update.message.reply_text(
+        "\u26a0\ufe0f Reset paper portfolio to $100,000?\nAll trade history will be cleared.\n(Confirm within 60s.)",
+        reply_markup=_reset_buttons("paper"),
+    )
 
 
 def _do_reset_paper():
@@ -8446,25 +6516,6 @@ def _do_reset_paper():
     save_paper_state()
 
 
-def _do_reset_tp():
-    """Execute TP portfolio reset."""
-    global tp_paper_cash
-    global _tp_trading_halted, _tp_trading_halted_reason
-    tp_positions.clear()
-    tp_short_positions.clear()
-    tp_paper_trades.clear()
-    tp_trade_history.clear()
-    tp_short_trade_history.clear()
-    # v3.4.40 — RH per-ticker counter + halt are part of the RH book.
-    tp_daily_entry_count.clear()
-    _tp_trading_halted = False
-    _tp_trading_halted_reason = ""
-    tp_paper_cash = RH_STARTING_CAPITAL  # Robinhood live-trading scale
-    save_tp_state()
-    # v3.4.40 — tp_daily_entry_count is persisted inside paper_state.
-    save_paper_state()
-
-
 async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline keyboard taps for /reset confirmation.
 
@@ -8476,11 +6527,10 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     paper_fmt = format(PAPER_STARTING_CAPITAL, ",.0f")
-    rh_fmt = format(RH_STARTING_CAPITAL, ",.0f")
 
     allowed, reason = _reset_authorized(query, context)
     if not allowed:
-        # v3.4.42 \u2014 surface chat/user ids and configured owner env vars
+        # v3.4.42 surface chat/user ids and configured owner env vars
         # directly in the Telegram message so the owner can diagnose
         # auth mismatches without Railway logs.
         try:
@@ -8488,24 +6538,20 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             _user = "?"
         logger.warning(
-            "reset_callback blocked: data=%s chat_id=%s user_id=%s reason=%s "
-            "TELEGRAM_TP_CHAT_ID=%r CHAT_ID=%r",
-            query.data, query.message.chat_id, _user, reason,
-            TELEGRAM_TP_CHAT_ID, CHAT_ID,
+            "reset_callback blocked: data=%s chat_id=%s user_id=%s reason=%s CHAT_ID=%r",
+            query.data, query.message.chat_id, _user, reason, CHAT_ID,
         )
         owner_users_fmt = ",".join(sorted(RH_OWNER_USER_IDS)) or "(unset)"
         diag = (
             "\u274c Reset blocked: %s.\n"
             "chat_id: %s\n"
             "user_id: %s\n"
-            "allowed TP: %s\n"
             "allowed paper: %s\n"
             "owner users: %s"
         ) % (
             reason,
             query.message.chat_id,
             _user,
-            TELEGRAM_TP_CHAT_ID or "(unset)",
             CHAT_ID or "(unset)",
             owner_users_fmt,
         )
@@ -8518,31 +6564,12 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "reset_paper_confirm":
         _do_reset_paper()
         await query.edit_message_text("\u2705 Paper portfolio reset to $%s." % paper_fmt)
-    elif action == "reset_tp_confirm":
-        _do_reset_tp()
-        await query.edit_message_text("\u2705 Robinhood portfolio reset to $%s." % rh_fmt)
-    elif action == "reset_both_confirm":
-        _do_reset_paper()
-        _do_reset_tp()
-        await query.edit_message_text(
-            "\u2705 Paper reset to $%s, Robinhood reset to $%s." % (paper_fmt, rh_fmt),
-        )
     elif action == "reset_cancel":
         await query.edit_message_text("\u274c Reset cancelled.")
     elif action == "reset_paper":
         await query.edit_message_text(
             "\u26a0\ufe0f Reset paper portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % paper_fmt,
             reply_markup=_reset_buttons("paper"),
-        )
-    elif action == "reset_tp":
-        await query.edit_message_text(
-            "\u26a0\ufe0f Reset Robinhood portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % rh_fmt,
-            reply_markup=_reset_buttons("tp"),
-        )
-    elif action == "reset_both":
-        await query.edit_message_text(
-            "\u26a0\ufe0f Reset BOTH portfolios?\nAll trade history will be cleared.\n(Confirm within 60s.)",
-            reply_markup=_reset_buttons("both"),
         )
 
 
@@ -8686,22 +6713,14 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
 
-    # Select history based on which bot
-    if is_tp_update(update):
-        long_history = tp_trade_history
-        short_hist = tp_short_trade_history
-        label = "Robinhood Portfolio"
-    else:
-        long_history = trade_history
-        short_hist = short_trade_history
-        label = "Paper Portfolio"
+    long_history = trade_history
+    short_hist = short_trade_history
+    label = "Paper Portfolio"
 
     # v3.3.1: also consider currently-open positions so an open-but-
     # uncovered entry (which is invisible in trade_history until exit)
     # doesn't make /perf claim there's nothing to show.
-    long_opens, short_opens = _open_positions_as_pseudo_trades(
-        is_tp=is_tp_update(update),
-    )
+    long_opens, short_opens = _open_positions_as_pseudo_trades()
 
     if not long_history and not short_hist and not long_opens and not short_opens:
         await update.message.reply_text("No completed trades yet.", reply_markup=_menu_button())
@@ -8907,7 +6926,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # /proximity COMMAND (v3.3.0)
 # ============================================================
-def _proximity_sync(is_tp: bool = False):
+def _proximity_sync():
     """Build proximity text (blocking I/O \u2014 run in executor).
 
     Shows how far each ticker is from its OR-breakout trigger, plus the
@@ -8918,10 +6937,6 @@ def _proximity_sync(is_tp: bool = False):
     Every visible line is <= 34 chars incl. leading 2-space indent so it
     renders without wrap inside a Telegram mobile monospace block.
 
-    is_tp selects which positions dicts are consulted for open-trade
-    markers (\U0001f7e2 long / \U0001f534 short) \u2014 global market
-    state is the same either way.
-
     Returns (text, None) on success or (None, err_msg) on no-data.
     """
     SEP = "\u2500" * 34
@@ -8931,9 +6946,9 @@ def _proximity_sync(is_tp: bool = False):
     if or_collected_date != today:
         return None, "OR not collected yet \u2014 runs at 8:35 CT."
 
-    # Pick the right positions dicts for open-trade markers
-    longs_dict = tp_positions if is_tp else positions
-    shorts_dict = tp_short_positions if is_tp else short_positions
+    # Pick the positions dicts for open-trade markers
+    longs_dict = positions
+    shorts_dict = short_positions
 
     # --- Global: SPY/QQQ vs PDC (the long gate, v3.4.34) ---
     spy_bars = fetch_1min_bars("SPY")
@@ -9156,9 +7171,8 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
-    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
-    text, err = await loop.run_in_executor(None, _proximity_sync, is_tp)
+    text, err = await loop.run_in_executor(None, _proximity_sync)
     if text is None:
         await update.message.reply_text(
             err or "Proximity unavailable.",
@@ -9181,10 +7195,8 @@ async def proximity_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Handle refresh button tap on /proximity."""
     query = update.callback_query
     await query.answer("Refreshing...")
-    # v3.4.19: route by bot token (see positions_callback for rationale).
-    is_tp = is_tp_update(update)
     loop = asyncio.get_event_loop()
-    text, err = await loop.run_in_executor(None, _proximity_sync, is_tp)
+    text, err = await loop.run_in_executor(None, _proximity_sync)
     if text is None:
         # Edit to show the error and drop refresh button (no data to refresh)
         try:
@@ -9472,11 +7484,6 @@ class _CallbackUpdateShim:
     def __init__(self, query):
         self._query = query
 
-    # v3.4.18: forward get_bot() so is_tp_update(update) resolves the
-    # correct bot token when a cmd_* is invoked from a /menu callback.
-    # Without this, every menu-driven command fell through the try/
-    # except in is_tp_update() and returned False \u2014 rendering
-    # paper data on the TP bot (the "mix of paper and tp" symptom).
     def get_bot(self):
         return self._query.get_bot()
 
@@ -9521,10 +7528,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle taps on /menu inline buttons."""
     query = update.callback_query
     await query.answer()
-    # v3.4.19: route by bot token, not chat id. Chat-id matching broke
-    # whenever the TP bot was used in a chat whose id did not match
-    # TELEGRAM_TP_CHAT_ID env (DMs, topic threads, un-enrolled group).
-    is_tp = is_tp_update(update)
 
     # --- Navigation between main and advanced submenus ---
     if query.data == "menu_advanced":
@@ -9558,7 +7561,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "menu_version":
-        note = TP_RELEASE_NOTE if is_tp_update(update) else MAIN_RELEASE_NOTE
+        note = MAIN_RELEASE_NOTE
         await query.edit_message_text(
             "Stock Spike Monitor v%s\n%s" % (BOT_VERSION, note))
         return
@@ -9611,7 +7614,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # above, so we just swap it out with the real dashboard text.
         loop = asyncio.get_event_loop()
         try:
-            text = await loop.run_in_executor(None, _dashboard_sync, is_tp)
+            text = await loop.run_in_executor(None, _dashboard_sync)
         except Exception:
             logger.exception("menu_dashboard: _dashboard_sync failed")
             await query.message.reply_text(
@@ -9628,7 +7631,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception("menu_dashboard: send failed")
     elif query.data == "menu_positions":
         loop = asyncio.get_event_loop()
-        msg = await loop.run_in_executor(None, _build_positions_text, is_tp)
+        msg = await loop.run_in_executor(None, _build_positions_text)
         refresh_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
         ]])
@@ -10066,21 +8069,10 @@ async def _set_bot_commands(app: Application) -> None:
         logger.info("Registered %d bot commands (all scopes)", len(MAIN_BOT_COMMANDS))
     except Exception as e:
         logger.warning("Failed to set bot commands: %s", e)
-    # Send startup menu (only for single-bot mode; dual-bot sends from _run_both)
-    if not TELEGRAM_TP_TOKEN:
-        await _send_startup_menu(app.bot, CHAT_ID)
+    # Send startup menu
+    await _send_startup_menu(app.bot, CHAT_ID)
 
 
-async def _set_tp_bot_commands(app: Application) -> None:
-    """Register TP bot commands (all scopes)."""
-    try:
-        # Clear default scope first (removes any stale commands from old versions)
-        await app.bot.set_my_commands(TP_BOT_COMMANDS, scope=BotCommandScopeDefault())
-        await app.bot.set_my_commands(TP_BOT_COMMANDS, scope=BotCommandScopeAllPrivateChats())
-        await app.bot.set_my_commands(TP_BOT_COMMANDS, scope=BotCommandScopeAllGroupChats())
-        logger.info("Registered %d TP bot commands (all scopes)", len(TP_BOT_COMMANDS))
-    except Exception as e:
-        logger.warning("Failed to set TP bot commands: %s", e)
 
 
 async def _send_startup_menu(bot, chat_id):
@@ -10120,9 +8112,7 @@ def send_startup_message():
 
     universe = " ".join(TRADE_TICKERS)
     n_paper_pos = len(positions)
-    n_tp_pos = len(tp_positions)
     paper_cash_fmt = f"{paper_cash:,.2f}"
-    tp_cash_fmt = f"{tp_paper_cash:,.2f}"
 
     main_msg = (
         f"\U0001f680 v{BOT_VERSION} deployed\n"
@@ -10138,30 +8128,11 @@ def send_startup_message():
         f"{SEP}\n"
         f"/help for all commands"
     )
-    tp_msg = (
-        f"\U0001f680 v{BOT_VERSION} deployed\n"
-        f"{CURRENT_TP_NOTE}\n"
-        f"{SEP}\n"
-        f"Universe: {universe}\n"
-        f"Strategy: ORB Long + Wounded Buffalo Short | PDC anchor\n"
-        f"Scan:     every {SCAN_INTERVAL}s  |  Trail: Bison +1.0% / min $1.00\n"
-        f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
-        f"{SEP}\n"
-        f"\U0001f4cb TP:     ${tp_cash_fmt} cash | {n_tp_pos} positions\n"
-        f"Market:   {market_status}\n"
-        f"{SEP}\n"
-        f"/help for all commands"
-    )
     send_telegram(main_msg)
-    # Fix A: TP send failure → logger.debug (never raise/stop)
-    try:
-        send_tp_telegram(tp_msg)
-    except Exception as e:
-        logger.debug("TP startup message failed: %s", e)
 
 
 def run_telegram_bot():
-    """Start main Telegram bot (and optional TP bot)."""
+    """Start Telegram bot (paper-only, single bot)."""
     app = (Application.builder()
            .token(TELEGRAM_TOKEN)
            .post_init(_set_bot_commands)
@@ -10177,14 +8148,6 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("near_misses", cmd_near_misses))
     app.add_handler(CommandHandler("retighten", cmd_retighten))
     app.add_handler(CommandHandler("trade_log", cmd_trade_log))
-    # Main bot: /tp_sync and /rh_sync are TP/Robinhood-only. Register
-    # redirects so misdirected commands get a friendly "try the TP bot" reply.
-    app.add_handler(CommandHandler("tp_sync", cmd_tp_sync_on_main))
-    app.add_handler(CommandHandler("rh_sync", cmd_tp_sync_on_main))
-    # v3.4.38 — Robinhood live-trading kill switch (main bot only).
-    app.add_handler(CommandHandler("rh_enable", cmd_rh_enable))
-    app.add_handler(CommandHandler("rh_disable", cmd_rh_disable))
-    app.add_handler(CommandHandler("rh_status", cmd_rh_status))
     app.add_handler(CommandHandler("mode", cmd_mode))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("perf", cmd_perf))
@@ -10219,78 +8182,7 @@ def run_telegram_bot():
 
     app.add_error_handler(_error_handler)
 
-    # If no separate TP token, run single bot
-    if not TELEGRAM_TP_TOKEN:
-        app.run_polling()
-        return
-
-    # Dual bot mode
-    tp_app = (Application.builder()
-              .token(TELEGRAM_TP_TOKEN)
-              .post_init(_set_tp_bot_commands)
-              .build())
-
-    tp_app.add_handler(CommandHandler("help", cmd_help))
-    tp_app.add_handler(CommandHandler("dashboard", cmd_dashboard))
-    tp_app.add_handler(CommandHandler("status", cmd_status))
-    tp_app.add_handler(CommandHandler("log", cmd_log))
-    tp_app.add_handler(CommandHandler("replay", cmd_replay))
-    tp_app.add_handler(CommandHandler("dayreport", cmd_dayreport))
-    tp_app.add_handler(CommandHandler("version", cmd_version))
-    tp_app.add_handler(CommandHandler("near_misses", cmd_near_misses))
-    tp_app.add_handler(CommandHandler("retighten", cmd_retighten))
-    tp_app.add_handler(CommandHandler("trade_log", cmd_trade_log))
-    tp_app.add_handler(CommandHandler("rh_sync", cmd_tp_sync))  # primary name
-    tp_app.add_handler(CommandHandler("tp_sync", cmd_tp_sync))   # legacy alias
-    tp_app.add_handler(CommandHandler("mode", cmd_mode))
-    tp_app.add_handler(CommandHandler("reset", cmd_reset))
-    tp_app.add_handler(CommandHandler("perf", cmd_perf))
-    tp_app.add_handler(CommandHandler("price", cmd_price))
-    tp_app.add_handler(CommandHandler("orb", cmd_orb))
-    tp_app.add_handler(CommandHandler("proximity", cmd_proximity))
-    tp_app.add_handler(CommandHandler("monitoring", cmd_monitoring))
-    tp_app.add_handler(CommandHandler("algo", cmd_algo))
-    tp_app.add_handler(CommandHandler("strategy", cmd_strategy))
-    tp_app.add_handler(CommandHandler("test", cmd_test))
-    tp_app.add_handler(CommandHandler("menu", cmd_menu))
-    # v3.4.32 — runtime ticker universe management
-    tp_app.add_handler(CommandHandler("ticker", cmd_ticker))
-
-    # Callback query handlers (TP bot)
-    tp_app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))
-    tp_app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
-    tp_app.add_handler(CallbackQueryHandler(positions_callback, pattern="^positions_"))
-    tp_app.add_handler(CallbackQueryHandler(proximity_callback, pattern="^proximity_refresh$"))
-    tp_app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
-    tp_app.add_handler(CallbackQueryHandler(_cb_open_menu, pattern="^open_menu$"))
-
-    tp_app.add_error_handler(_error_handler)
-
-    async def _run_both():
-        loop = asyncio.get_running_loop()
-        stop = asyncio.Event()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
-        async with app:
-            async with tp_app:
-                # Explicitly register commands on all scopes (post_init does not
-                # fire when using manual start/stop instead of run_polling)
-                await _set_bot_commands(app)
-                await _set_tp_bot_commands(tp_app)
-                await app.updater.start_polling()
-                await tp_app.updater.start_polling()
-                await app.start()
-                await tp_app.start()
-                # Send startup menu to both chats
-                await _send_startup_menu(app.bot, CHAT_ID)
-                await _send_startup_menu(tp_app.bot, TELEGRAM_TP_CHAT_ID)
-                await stop.wait()
-                await tp_app.updater.stop()
-                await app.updater.stop()
-                await tp_app.stop()
-                await app.stop()
-
-    asyncio.run(_run_both())
+    app.run_polling()
 
 
 # ============================================================
@@ -10320,7 +8212,6 @@ def startup_catchup():
 _init_tickers()
 
 load_paper_state()
-load_tp_state()
 
 # v3.4.23 — on startup, retighten every open position's stop to the
 # 0.75% cap. Positions that were opened before the cap shipped (or
@@ -10352,9 +8243,8 @@ except Exception as _dash_err:
 
 # Startup summary
 logger.info(
-    "=== STARTUP SUMMARY === v%s | paper: $%.2f cash, %d pos, %d trades | TP: $%.2f cash, %d pos",
+    "=== STARTUP SUMMARY === v%s | paper: $%.2f cash, %d pos, %d trades",
     BOT_VERSION, paper_cash, len(positions), len(trade_history),
-    tp_paper_cash, len(tp_positions),
 )
 
 # Smoke-test guard — lets smoke_test.py import this module without booting
