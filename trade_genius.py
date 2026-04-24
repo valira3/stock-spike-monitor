@@ -599,14 +599,145 @@ class TradeGeniusBase:
             f"mode: {self.mode}"
         )
 
+    # --- v4.0.1: expanded executor-bot command surface --------------
+
+    async def cmd_ping(self, update, context):
+        """/ping — liveness check (bot up + client reachable)."""
+        client = self._ensure_client()
+        alpaca_ok = client is not None
+        await update.message.reply_text(
+            f"\U0001f3d3 {self.NAME}: pong\n"
+            f"  version: v{BOT_VERSION}\n"
+            f"  mode: {self.mode}\n"
+            f"  alpaca client: {'ok' if alpaca_ok else 'missing'}"
+        )
+
+    async def cmd_cash(self, update, context):
+        """/cash — quick account balance glance."""
+        client = self._ensure_client()
+        if client is None:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: no alpaca client"
+            )
+            return
+        try:
+            acct = client.get_account()
+            cash = float(getattr(acct, "cash", 0) or 0)
+            bp   = float(getattr(acct, "buying_power", 0) or 0)
+            eq   = float(getattr(acct, "equity", 0) or 0)
+            await update.message.reply_text(
+                f"\U0001f4b0 {self.NAME} ({self.mode})\n"
+                f"  cash:   ${cash:,.2f}\n"
+                f"  equity: ${eq:,.2f}\n"
+                f"  bp:     ${bp:,.2f}"
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: cash fetch failed: {e}"
+            )
+
+    async def cmd_positions(self, update, context):
+        """/positions — compact positions list only."""
+        client = self._ensure_client()
+        if client is None:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: no alpaca client"
+            )
+            return
+        try:
+            positions = client.get_all_positions()
+            if not positions:
+                await update.message.reply_text(
+                    f"{self.NAME}: no open positions"
+                )
+                return
+            lines = [f"{self.NAME} positions ({len(positions)})"]
+            for p in positions[:25]:
+                sym = getattr(p, "symbol", "?")
+                qty = getattr(p, "qty", "?")
+                avg = getattr(p, "avg_entry_price", "?")
+                try:
+                    upl = float(getattr(p, "unrealized_pl", 0) or 0)
+                    pct = float(getattr(p, "unrealized_plpc", 0) or 0) * 100
+                    lines.append(
+                        f"  {sym}: {qty} @ {avg} "
+                        f"pnl=${upl:+,.2f} ({pct:+.2f}%)"
+                    )
+                except Exception:
+                    lines.append(f"  {sym}: {qty} @ {avg}")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: positions fetch failed: {e}"
+            )
+
+    async def cmd_orders(self, update, context):
+        """/orders — recent orders (last 10)."""
+        client = self._ensure_client()
+        if client is None:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: no alpaca client"
+            )
+            return
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+            req = GetOrdersRequest(
+                status=QueryOrderStatus.ALL, limit=10,
+            )
+            orders = client.get_orders(filter=req)
+            if not orders:
+                await update.message.reply_text(
+                    f"{self.NAME}: no recent orders"
+                )
+                return
+            lines = [f"{self.NAME} recent orders ({len(orders)})"]
+            for o in orders:
+                sym   = getattr(o, "symbol", "?")
+                side  = getattr(getattr(o, "side", None), "value", "?")
+                qty   = getattr(o, "qty", "?") or getattr(o, "notional", "?")
+                stat  = getattr(getattr(o, "status", None), "value", "?")
+                filled = getattr(o, "filled_avg_price", None)
+                tail = f" @ {filled}" if filled else ""
+                lines.append(f"  {sym} {side} {qty} [{stat}]{tail}")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: orders fetch failed: {e}"
+            )
+
+    async def cmd_signal(self, update, context):
+        """/signal — show last signal received from main's bus."""
+        sig = self.last_signal
+        if not sig:
+            await update.message.reply_text(
+                f"{self.NAME}: no signals received yet"
+            )
+            return
+        try:
+            import json as _json
+            pretty = _json.dumps(sig, indent=2, default=str)[:1500]
+        except Exception:
+            pretty = str(sig)[:1500]
+        await update.message.reply_text(
+            f"{self.NAME} last signal:\n{pretty}"
+        )
+
+    # -----------------------------------------------------------------
+
     # Commands shown in Telegram's BotFather / slash menu. Keep short
     # descriptions — Telegram truncates aggressively on mobile.
     TG_MENU_COMMANDS = [
-        ("status",  "Show account, positions, and P&L"),
-        ("mode",    "Show or change mode (paper / live)"),
-        ("halt",    "Emergency halt \u2014 flatten & stop"),
-        ("version", "Show running version"),
-        ("help",    "List available commands"),
+        ("status",    "Account, positions, and P&L"),
+        ("positions", "Open positions only"),
+        ("orders",    "Recent orders (last 10)"),
+        ("cash",      "Account balance snapshot"),
+        ("signal",    "Last signal from main"),
+        ("mode",      "Show or change mode (paper / live)"),
+        ("halt",      "Emergency halt \u2014 flatten all"),
+        ("ping",      "Liveness check"),
+        ("version",   "Show running version"),
+        ("help",      "List available commands"),
     ]
 
     async def cmd_help(self, update, context):
@@ -649,7 +780,12 @@ class TradeGeniusBase:
         app.add_handler(TypeHandler(Update, self._auth_guard), group=-1)
         app.add_handler(CommandHandler("mode", self.cmd_mode))
         app.add_handler(CommandHandler("status", self.cmd_status))
+        app.add_handler(CommandHandler("positions", self.cmd_positions))
+        app.add_handler(CommandHandler("orders", self.cmd_orders))
+        app.add_handler(CommandHandler("cash", self.cmd_cash))
+        app.add_handler(CommandHandler("signal", self.cmd_signal))
         app.add_handler(CommandHandler("halt", self.cmd_halt))
+        app.add_handler(CommandHandler("ping", self.cmd_ping))
         app.add_handler(CommandHandler("version", self.cmd_version))
         app.add_handler(CommandHandler("help", self.cmd_help))
         app.add_handler(CommandHandler("start", self.cmd_help))
