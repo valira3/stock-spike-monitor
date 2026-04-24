@@ -4,6 +4,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.8.0 (2026-04-24) — refactor: long/short collapsed via Side enum, dual-path under SSM_USE_COLLAPSED feature flag (Stage B1).
+
+This is Stage B1 of the long/short harmonization (Stage A shipped in v4.7.0). The 6 near-mirror functions (`check_entry`/`check_short_entry`, `execute_entry`/`execute_short_entry`, `close_position`/`close_short_position`) are collapsed into 3 side-parameterized functions: `check_breakout(ticker, side)`, `execute_breakout(ticker, current_price, side)`, `close_breakout(ticker, price, side, reason)`.
+
+**Bugs fixed:**
+
+- None. Stage B1 is a pure structural refactor with the explicit invariant that every Telegram payload, every state mutation, and every return value is byte-identical to v4.7.0 for the same input. The differential test family (13 new smoke tests) asserts this against both the legacy and the collapsed paths.
+
+**Structure:**
+
+- New module `side.py` (~110 LOC) — defines the `Side` enum (`LONG`, `SHORT`) and the `SideConfig` frozen dataclass. The `CONFIGS` dict maps each side to its configuration: Telegram labels (`entry_label`, `entry_emoji`, `exit_emoji`, `cash_word`), state-dict attribute names (`positions_attr`, `daily_count_attr`, `daily_date_attr`, `trade_history_attr`), and direction methods (`realized_pnl`, `entry_cash_delta`, `close_cash_delta`, `or_breakout`, `di_aligned`).
+- `Dockerfile` updated to `COPY side.py .` next to `paper_state.py` (lesson from PR #115/#117 — every new top-level Python module MUST be added to the Docker image or prod crashes on boot).
+- 3 new collapsed functions in `trade_genius.py`: `check_breakout`, `execute_breakout`, `close_breakout`. Each accepts a `Side` argument and dispatches to the correct legacy body for byte-equal behavior in B1.
+- The 6 v4.7.0 functions are renamed to `_legacy_check_entry`, `_legacy_check_short_entry`, `_legacy_execute_entry`, `_legacy_execute_short_entry`, `_legacy_close_position`, `_legacy_close_short_position`. Bodies are unchanged.
+- 6 thin wrappers preserve the public names (`check_entry`, `check_short_entry`, `execute_entry`, `execute_short_entry`, `close_position`, `close_short_position`). Each wrapper routes to the collapsed path or the legacy path based on `SSM_USE_COLLAPSED` (default `"1"` = collapsed).
+- 3 new helper functions: `_state_dict(cfg)`, `_daily_count(cfg)`, `_trade_history(cfg)` — return the live module-level dict/list for a given `SideConfig` via `globals()` lookup. Used by future PR B2 collapsed bodies; introduced in B1 for completeness.
+- New env var `SSM_USE_COLLAPSED` (default `"1"`). Setting it to `"0"` in Railway env restores the v4.7.0 code path without a git revert. Provides instant rollback during the one-week soak.
+- No callsites in `scan_loop`, `manage_positions`, `eod_close`, or anywhere else changed — they continue to call the public names which are now wrappers.
+
+**Behavior:**
+
+- Zero user-visible change. Telegram message wording identical, dashboard `/api/state` shape identical, paper-state schema identical, trade decisions identical. Differential tests prove parity across 13 fixtures covering every check / execute / close shape (in-position, post-cap, polarity-fail, polarity-pass, time-gate, clean entry, daily-loss-limit-blocked, dup-entry-blocked, stop-cap-reject, stop close, trail close, manual close, force-close-after-hours).
+
+**State format:**
+
+- Unchanged. Same fields as v4.7.0.
+
+**Tests:**
+
+- 13 new smoke tests under `differential:` family. Each fixture snapshots module state + Telegram outbox, runs the legacy path, snapshots deltas, resets to identical baseline, runs the collapsed path, snapshots deltas, then asserts byte-equal return value + state delta + Telegram payload.
+- New helpers `run_diff_fixture`, `_capture_state`, `_drain_telegram_outbox`. Total 69 → 82.
+
+**Rollout:**
+
+- PR B2 (v4.8.1) ships only after one full trading week of B1 in prod with `SSM_USE_COLLAPSED=1` and zero anomalies. B2 inlines a single shared body into each `*_breakout` function and deletes the legacy functions, the wrappers' conditional, and the `differential:` test family.
+
+---
+
 ## v4.7.0 (2026-04-24) — refactor + risk fixes: long/short entry/execute/close functions are now structural mirror images of each other, with three real bugs fixed in the process.
 
 This is Stage A of long/short harmonization (Stage B — collapse to single `check_breakout(side)` / `execute_breakout(side)` / `close_position(side)` plus a Side enum — is deferred to a future PR).

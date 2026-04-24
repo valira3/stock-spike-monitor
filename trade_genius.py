@@ -26,6 +26,12 @@ from telegram import (
 )
 from telegram.constants import ChatAction
 from telegram.error import BadRequest as TelegramBadRequest
+# v4.8.0 \u2014 Side enum + SideConfig table for the long/short collapse.
+# side.py is a pure module (no imports from trade_genius), so a plain
+# top-level import is safe and avoids the __main__ aliasing dance that
+# paper_state.py / telegram_commands.py need.
+from side import Side, CONFIGS  # noqa: E402
+
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
     CommandHandler, ContextTypes, TypeHandler,
@@ -52,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.7.0"
+BOT_VERSION = "4.8.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,6 +76,25 @@ BOT_VERSION = "4.7.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.8.0 \u2014 refactor:\n"
+    "long/short collapsed via\n"
+    "Side enum. check_breakout,\n"
+    "execute_breakout, and\n"
+    "close_breakout replace 6\n"
+    "near-mirror functions.\n"
+    "Old paths kept as\n"
+    "_legacy_* and reachable via\n"
+    "SSM_USE_COLLAPSED=0 for\n"
+    "instant rollback. Zero\n"
+    "user-visible change \u2014\n"
+    "differential tests assert\n"
+    "byte-equal Telegram +\n"
+    "state output across both\n"
+    "paths."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.7.0 \u2014 refactor +\n"
     "risk fixes: long/short\n"
     "entry/execute/close are now\n"
@@ -84,11 +109,8 @@ CURRENT_MAIN_NOTE = (
     "True (symmetric control\n"
     "flow). New helpers:\n"
     "_check_daily_loss_limit and\n"
-    "_ticker_today_realized_pnl."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "_ticker_today_realized_pnl.\n"
+    "\n"
     "v4.6.0 \u2014 refactor:\n"
     "extracted paper-state I/O\n"
     "(save/load/reset + lock +\n"
@@ -3305,6 +3327,14 @@ MAX_STOP_PCT = 0.0075  # 0.75% max from entry
 ENTRY_EXTENSION_MAX_PCT = float(os.getenv("ENTRY_EXTENSION_MAX_PCT", "1.5"))
 ENTRY_STOP_CAP_REJECT = os.getenv("ENTRY_STOP_CAP_REJECT", "1") == "1"
 
+# v4.8.0 \u2014 Long/short collapse feature flag.
+# When "1" (default), public check_entry/execute_entry/close_position and
+# their short-side mirrors route through the collapsed check_breakout /
+# execute_breakout / close_breakout functions. When "0", they route to
+# the _legacy_* preserved bodies. Provides instant rollback without a
+# git revert. Removed in PR B2 (v4.8.1) after one trading week clean.
+USE_COLLAPSED_PATH = os.environ.get("SSM_USE_COLLAPSED", "1") == "1"
+
 # v3.4.25 — Breakeven ratchet (Stage 1)
 # ----------------------------------------------------------------
 # Once a position is in profit by BREAKEVEN_RATCHET_PCT, pull the
@@ -4110,10 +4140,15 @@ def _check_daily_loss_limit(ticker: str) -> bool:
 # ============================================================
 # ENTRY CHECK
 # ============================================================
-def check_entry(ticker):
+def _legacy_check_entry(ticker):
     """Long entry gate (Tiger 2.0).
 
     Returns: (True, bars_dict) if all entry conditions met, else (False, None).
+
+    v4.8.0 \u2014 renamed from check_entry. Reachable via the public
+    check_entry wrapper when SSM_USE_COLLAPSED=0 (instant rollback).
+    Scheduled for deletion in PR B2 (v4.8.1) after one trading week of
+    clean prod under the collapsed path.
     """
     global daily_entry_date
 
@@ -4365,8 +4400,10 @@ def paper_shares_for(price: float) -> int:
 # ============================================================
 # EXECUTE ENTRY (paper)
 # ============================================================
-def execute_entry(ticker, current_price):
+def _legacy_execute_entry(ticker, current_price):
     """Place a limit buy on the PAPER book only.
+
+    v4.8.0 \u2014 renamed from execute_entry. See _legacy_check_entry.
 
     v3.5.0: paper-only. Robinhood/TradersPost mirror has been removed.
 
@@ -4501,8 +4538,11 @@ def execute_entry(ticker, current_price):
 # ============================================================
 # CLOSE POSITION
 # ============================================================
-def close_position(ticker, price, reason="STOP"):
-    """Close position: remove, log P&L, send Telegram."""
+def _legacy_close_position(ticker, price, reason="STOP"):
+    """Close position: remove, log P&L, send Telegram.
+
+    v4.8.0 \u2014 renamed from close_position. See _legacy_check_entry.
+    """
     global paper_cash
 
     if ticker not in positions:
@@ -4770,7 +4810,7 @@ def manage_positions():
 # ============================================================
 # SHORT ENTRY CHECK (Wounded Buffalo)
 # ============================================================
-def check_short_entry(ticker):
+def _legacy_check_short_entry(ticker):
     """Short entry gate (Wounded Buffalo / Tiger 2.0).
 
     Returns: (True, bars_dict) if all entry conditions met, else (False, None).
@@ -5005,7 +5045,7 @@ def check_short_entry(ticker):
 # ============================================================
 # EXECUTE SHORT ENTRY (Wounded Buffalo)
 # ============================================================
-def execute_short_entry(ticker, current_price):
+def _legacy_execute_short_entry(ticker, current_price):
     """Open a paper short position (Wounded Buffalo).
 
     v3.4.45 — size is dollar-based via paper_shares_for(price) for
@@ -5210,8 +5250,11 @@ def manage_short_positions():
 # ============================================================
 # CLOSE SHORT POSITION
 # ============================================================
-def close_short_position(ticker, price, reason="STOP"):
-    """Cover short position: remove, log P&L, send Telegram."""
+def _legacy_close_short_position(ticker, price, reason="STOP"):
+    """Cover short position: remove, log P&L, send Telegram.
+
+    v4.8.0 \u2014 renamed from close_short_position. See _legacy_check_entry.
+    """
     global paper_cash
 
     if ticker not in short_positions:
@@ -5334,6 +5377,108 @@ def close_short_position(ticker, price, reason="STOP"):
         "timestamp_utc": _utc_now_iso(),
         "main_shares": int(shares),
     })
+
+
+# ============================================================
+# v4.8.0 \u2014 Long/short collapse: helpers, collapsed functions, wrappers
+# ============================================================
+# Stage B1 of the long/short harmonization. The 6 legacy functions above
+# (_legacy_check_entry / _legacy_check_short_entry / _legacy_execute_*
+# / _legacy_close_*) are kept verbatim for one trading week. The public
+# names (check_entry, execute_entry, close_position, and their short
+# mirrors) are now thin wrappers that route to either the collapsed
+# path (default, SSM_USE_COLLAPSED=1) or the legacy path (rollback,
+# SSM_USE_COLLAPSED=0). The collapsed path itself currently dispatches
+# to the legacy bodies through the Side enum so behavior is byte-equal
+# to v4.7.0; the differential test family in smoke_test.py asserts this
+# parity. PR B2 (v4.8.1) will inline a single shared body and delete
+# both the legacy functions and the feature flag.
+
+
+def _state_dict(cfg):
+    """Return the live side-specific positions dict (positions / short_positions)."""
+    return globals()[cfg.positions_attr]
+
+
+def _daily_count(cfg):
+    """Return the live side-specific daily-entry-count dict."""
+    return globals()[cfg.daily_count_attr]
+
+
+def _trade_history(cfg):
+    """Return the live side-specific trade-history list."""
+    return globals()[cfg.trade_history_attr]
+
+
+def check_breakout(ticker, side):
+    """Side-parameterized entry gate (collapses check_entry / check_short_entry).
+
+    Returns (True, bars_dict) when all entry conditions for `side` are
+    satisfied, else (False, None). Behavior is byte-equal to the legacy
+    per-side gates \u2014 the differential test family asserts this.
+    """
+    if side is Side.LONG:
+        return _legacy_check_entry(ticker)
+    if side is Side.SHORT:
+        return _legacy_check_short_entry(ticker)
+    raise ValueError("unknown side: %r" % (side,))
+
+
+def execute_breakout(ticker, current_price, side):
+    """Side-parameterized entry executor (collapses execute_entry / execute_short_entry)."""
+    if side is Side.LONG:
+        return _legacy_execute_entry(ticker, current_price)
+    if side is Side.SHORT:
+        return _legacy_execute_short_entry(ticker, current_price)
+    raise ValueError("unknown side: %r" % (side,))
+
+
+def close_breakout(ticker, price, side, reason="STOP"):
+    """Side-parameterized close (collapses close_position / close_short_position)."""
+    if side is Side.LONG:
+        return _legacy_close_position(ticker, price, reason)
+    if side is Side.SHORT:
+        return _legacy_close_short_position(ticker, price, reason)
+    raise ValueError("unknown side: %r" % (side,))
+
+
+# Public names \u2014 thin wrappers. Routing controlled by SSM_USE_COLLAPSED
+# (default "1"). Setting it to "0" in Railway env restores the v4.7.0
+# code path without a git revert.
+def check_entry(ticker):
+    if USE_COLLAPSED_PATH:
+        return check_breakout(ticker, Side.LONG)
+    return _legacy_check_entry(ticker)
+
+
+def check_short_entry(ticker):
+    if USE_COLLAPSED_PATH:
+        return check_breakout(ticker, Side.SHORT)
+    return _legacy_check_short_entry(ticker)
+
+
+def execute_entry(ticker, current_price):
+    if USE_COLLAPSED_PATH:
+        return execute_breakout(ticker, current_price, Side.LONG)
+    return _legacy_execute_entry(ticker, current_price)
+
+
+def execute_short_entry(ticker, current_price):
+    if USE_COLLAPSED_PATH:
+        return execute_breakout(ticker, current_price, Side.SHORT)
+    return _legacy_execute_short_entry(ticker, current_price)
+
+
+def close_position(ticker, price, reason="STOP"):
+    if USE_COLLAPSED_PATH:
+        return close_breakout(ticker, price, Side.LONG, reason)
+    return _legacy_close_position(ticker, price, reason)
+
+
+def close_short_position(ticker, price, reason="STOP"):
+    if USE_COLLAPSED_PATH:
+        return close_breakout(ticker, price, Side.SHORT, reason)
+    return _legacy_close_short_position(ticker, price, reason)
 
 
 # ============================================================
