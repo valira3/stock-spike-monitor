@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.0.8 — Audit batch 4: HIGH fixes, dashboard correctness (2026-04-24)
+
+Batch 4 of the audit pass. Scope restricted to `dashboard_server.py` + `dashboard_static/index.html`. Every edit fixes a likely-wrong behaviour in a common path.
+
+**Fixed:**
+- **`/login` `FileField` crash (`dashboard_server.py:h_login`)** — `data.get("password")` can return a `FileField` for multipart POSTs, and `.strip()` on that raised `AttributeError`, surfacing as HTTP 500 instead of a clean 401. Now coerced via `str()`.
+- **`/api/trade_log` stale `portfolio=tp` filter** — TP surfaces were deleted in v3.5.0, but the endpoint still accepted `portfolio=tp` and passed it through to the reader. Now rejected with 400 and a clear message.
+- **Log tail row template (`dashboard_static/index.html:appendLogs`)** — rendered from `msg.slice(0,8)` / `msg.slice(9)` assuming every message began with an 8-char time prefix + space. Short messages or a future formatter change would have rendered garbled rows. Now renders from the structured `ts` / `level` / `msg` fields; a prefix-strip regex removes the duplicated time token from the body so the row doesn't show the time twice.
+- **SSE reconnect race (`dashboard_static/index.html:scheduleStreamReconnect`)** — the 3-second stale-data watchdog and the SSE `onerror` handler both called `setTimeout(startStream, 15000)` directly. Back-to-back watchdog ticks could queue multiple reconnects, causing the browser to briefly hold two `EventSource` connections. A `streamReconnectTimer` guard now collapses duplicate schedules into one.
+
+**Changed:**
+- `BOT_VERSION` bumped `4.0.7` → `4.0.8`. `CURRENT_MAIN_NOTE` rewritten; lines ≤ 34 chars.
+
+**Validation:**
+- `ast.parse` clean on `dashboard_server.py`.
+- `smoke_test.py --local` passes (version assertions retargeted to `4.0.8`).
+
+**Breaking:** None.
+
+---
+
 ## v4.0.7 — Audit batch 3a: MEDIUM fixes, dashboard hygiene/security (2026-04-24)
 
 Batch 3a of the audit pass. MEDIUM severity, scope restricted to `dashboard_server.py` — logging hygiene, login-page XSS, session-secret floor, X-Forwarded-For trust, and Alpaca-key redaction in error bodies. No trading-logic changes.
