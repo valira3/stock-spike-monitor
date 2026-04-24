@@ -4,6 +4,29 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.5.1 (2026-04-24) — refactor: split dashboard `index.html` into `index.html` + `app.css` + `app.js` for cleaner separation of concerns. Zero visual change.
+
+Pure code motion. The previous `dashboard_static/index.html` carried a ~440-line `<style>` block and two `<script>` blocks totalling ~1,580 lines of inline JS, all in one 2,211-line file. Every CSS tweak invalidated the whole file for diffs; every JS tweak did the same; reviewers had to scroll past tokens they didn't care about. The file is now three files, each addressing one concern.
+
+**Changed (`dashboard_static/`):**
+
+- **`index.html`** — now 185 lines, pure HTML markup. The `<style>` block was replaced with `<link rel="stylesheet" href="/static/app.css">` in `<head>`. The two inline `<script>` blocks were removed; a single `<script src="/static/app.js" defer></script>` is injected before `</body>`. All element IDs, classes, DOM ordering, inline `style="..."` attributes, and inline `onclick`/event handlers were preserved byte-for-byte. The external font `<link>` to fontshare.com is unchanged.
+- **`app.css`** (new, 438 lines) — every rule extracted verbatim from the original `<style>` block. `:root` variables, responsive overrides, media queries (mobile/tablet/desktop), `.kpi-value`/`.trade-row`/etc all live here.
+- **`app.js`** (new, 1,585 lines) — the two original `<script>` IIFEs concatenated in their original order (main-tab IIFE first, then the tab-switcher / index-strip / per-executor-poll IIFE). Both IIFEs were already independent (separate `(function(){...})()` wrappers), so concatenation is equivalent. `defer` preserves execution-after-parsing semantics; every `document.getElementById()` call still resolves because the DOM is fully parsed before the deferred script runs.
+
+**Server wiring (`dashboard_server.py`):**
+
+- **No change required.** The existing `app.router.add_static("/static/", path=_STATIC_DIR, show_index=False)` mount at line 1557 already serves every file under `dashboard_static/` at `/static/<name>`. `/static/app.css` and `/static/app.js` are picked up automatically alongside the existing `/static/index.html`.
+
+**Operational notes:**
+
+- Visual rendering is byte-identical before vs after. Same CSS rules, same DOM, same JS execution order.
+- Static assets are served without the login gate (matching the existing behavior for `/static/*`), so the browser can fetch `app.css` and `app.js` before the session cookie is set. This was the pre-existing behavior for any file dropped into `dashboard_static/`.
+- Smoke tests (`smoke_test.py --local`) pass 57/57. `python3 -c "import ast; ast.parse(open('dashboard_server.py').read())"` parses clean.
+- `grep -c "<style" dashboard_static/index.html` → `0`. `grep -c "<script>" dashboard_static/index.html` → `0`. Only the deferred `<script src=...>` tag remains.
+
+---
+
 ## v4.4.1 (2026-04-24) — fix: regime banner no longer sticks on the last pre-close bucket after 15:55 ET; `_refresh_market_mode()` now runs at every scheduler tick, independent of market hours, and `gates.scan_paused` reflects auto-idle outside trading hours.
 
 Before v4.4.1, `scan_loop()` short-circuited with a bare `return` when the clock was outside 09:35–15:55 ET, BEFORE it got to `_refresh_market_mode()`. So the cached `_current_mode` / `_current_mode_reason` globals stayed frozen at their last intra-session values (e.g. `POWER "14:00-15:55 ET"`) and `/api/state` kept serving them until the next open. At 16:58 ET the dashboard was still reporting `POWER`.
