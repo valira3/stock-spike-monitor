@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.5.2 (2026-04-24) — refactor: extracted main-bot Telegram command handlers into `telegram_commands.py` (~1164 LOC) for maintainability. Pure code motion, zero behavior change.
+
+All 25 top-level `cmd_*` handlers plus `reset_callback` and `_reset_authorized` moved out of `trade_genius.py` into a new `telegram_commands.py` module. Handler registrations in `run_telegram_bot()` updated to reference the new module (e.g. `CommandHandler("status", telegram_commands.cmd_status)`). Menu-callback invocations via `_invoke_from_callback` likewise updated. Sub-bot class methods (`TradeGeniusBase/Val/Gene.cmd_*`) are bound methods and were NOT touched. The `_auth_guard` TypeHandler stays in `trade_genius.py` since it owns owner-ID enforcement for the whole bot. Smoke suite grows from 57 → 59 tests (two new `refactor:` tests verify the move).
+
+---
+
 ## v4.5.1 (2026-04-24) — refactor: split dashboard `index.html` into `index.html` + `app.css` + `app.js` for cleaner separation of concerns. Zero visual change.
 
 Pure code motion. The previous `dashboard_static/index.html` carried a ~440-line `<style>` block and two `<script>` blocks totalling ~1,580 lines of inline JS, all in one 2,211-line file. Every CSS tweak invalidated the whole file for diffs; every JS tweak did the same; reviewers had to scroll past tokens they didn't care about. The file is now three files, each addressing one concern.

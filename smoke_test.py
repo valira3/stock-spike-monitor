@@ -107,6 +107,7 @@ def run_local() -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
         import trade_genius as m  # noqa: E402
+        import telegram_commands as m_tc  # noqa: E402  # v4.5.0 extraction
         import dashboard_server as ds    # noqa: E402
     except Exception as e:
         print(f"Module import failed: {e}")
@@ -187,7 +188,7 @@ def run_local() -> int:
                 chat_id = 424242
             class from_user:
                 id = int(owner_uid)
-        ok, reason = m._reset_authorized(Q())
+        ok, reason = m_tc._reset_authorized(Q())
         assert ok, f"expected allowed, reason={reason}"
 
     @t("reset: v4.4.0 rejects non-owner user even when chat_id == CHAT_ID")
@@ -200,7 +201,7 @@ def run_local() -> int:
                 chat_id = int(os.environ["CHAT_ID"])
             class from_user:
                 id = int(non_owner_uid)
-        ok, reason = m._reset_authorized(Q())
+        ok, reason = m_tc._reset_authorized(Q())
         assert not ok, "non-owner in CHAT_ID group must be rejected post-v4.4.0"
         assert "unauthorized" in reason, f"unexpected reason={reason}"
 
@@ -212,7 +213,7 @@ def run_local() -> int:
                 chat_id = 12345
             class from_user:
                 id = int(non_owner_uid)
-        ok, reason = m._reset_authorized(Q())
+        ok, reason = m_tc._reset_authorized(Q())
         assert not ok and "unauthorized" in reason
 
     @t("reset: v4.4.0 denies when user_id cannot be determined")
@@ -222,7 +223,7 @@ def run_local() -> int:
             class message:
                 chat_id = int(os.environ["CHAT_ID"])
             from_user = None
-        ok, reason = m._reset_authorized(Q())
+        ok, reason = m_tc._reset_authorized(Q())
         assert not ok and "no user_id" in reason
 
     @t("reset: blocks stale confirm (>60s old) even for owner")
@@ -233,7 +234,7 @@ def run_local() -> int:
                 chat_id = int(os.environ["CHAT_ID"])
             class from_user:
                 id = int(owner_uid)
-        ok, reason = m._reset_authorized(Q())
+        ok, reason = m_tc._reset_authorized(Q())
         assert not ok and "expired" in reason
 
     # ---------- v4.4.0 sub-bot (Val/Gene) auth ----------
@@ -327,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.5.1")
+    @t("version: BOT_VERSION is 4.5.2")
     def _():
-        assert m.BOT_VERSION == "4.5.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.5.2", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.5.1")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.5.2")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.5.1"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.5.2"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -396,6 +397,23 @@ def run_local() -> int:
             "4% drift should fail under legacy 1.5% threshold"
         assert m._or_price_sane(100.0, 110.0) is False, \
             "10% drift must still trip the guard"
+
+    # ---------- v4.5.0 refactor: telegram_commands extraction ----------
+    @t("refactor: telegram command handlers importable from telegram_commands")
+    def _():
+        assert hasattr(m_tc, "cmd_status"), "cmd_status missing from telegram_commands"
+        assert hasattr(m_tc, "cmd_help"), "cmd_help missing from telegram_commands"
+        assert hasattr(m_tc, "cmd_reset"), "cmd_reset missing from telegram_commands"
+        assert hasattr(m_tc, "cmd_mode"), "cmd_mode missing from telegram_commands"
+        assert hasattr(m_tc, "reset_callback"), "reset_callback missing from telegram_commands"
+        assert hasattr(m_tc, "_reset_authorized"), "_reset_authorized missing from telegram_commands"
+
+    @t("refactor: cmd_* handlers not present on trade_genius (moved to telegram_commands)")
+    def _():
+        for name in ("cmd_status", "cmd_help", "cmd_reset", "cmd_mode",
+                     "cmd_ticker", "cmd_perf", "reset_callback", "_reset_authorized"):
+            assert not hasattr(m, name), \
+                f"v4.5.0: {name} should have moved out of trade_genius"
 
     # ---------- v3.6.0 auth guard ----------
     @t("auth: TRADEGENIUS_OWNER_IDS exists, RH_OWNER_USER_IDS removed")
