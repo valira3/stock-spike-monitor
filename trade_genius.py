@@ -246,10 +246,10 @@ class TradeGeniusBase:
         # the main TradeGenius bot's TELEGRAM_TOKEN at module scope.
         self.telegram_token = os.getenv(p + "TELEGRAM_TG", "").strip()
         self.telegram_chat_id = os.getenv(p + "TELEGRAM_CHAT_ID", "").strip()
-        owners_raw = os.getenv(p + "TELEGRAM_OWNER_IDS", "").strip() or _RH_OWNER_DEFAULT
-        self.owner_ids = {
-            u.strip() for u in owners_raw.split(",") if u.strip()
-        }
+        # Unified owner list: all executor bots share the SAME owner set
+        # as main (TRADEGENIUS_OWNER_IDS). One list to maintain on Railway.
+        # No per-bot VAL_/GENE_TELEGRAM_OWNER_IDS — intentionally removed.
+        self.owner_ids = set(TRADEGENIUS_OWNER_IDS)
         try:
             self.dollars_per_entry = float(
                 os.getenv(p + "DOLLARS_PER_ENTRY", "10000")
