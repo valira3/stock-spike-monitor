@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.3.0 — Entry-extension + stop-cap rejection guards (2026-04-24)
+
+Two new signal-layer entry guards that prevent late/extended chase entries on otherwise-green breakouts.
+
+**Added:**
+
+- **`ENTRY_EXTENSION_MAX_PCT`** (default `1.5`) — maximum distance, in percent, that live price may sit past the OR edge when an entry is evaluated. LONG: `(price − or_high) / or_high * 100`. SHORT: `(or_low − price) / or_low * 100`. When exceeded, `check_entry` / `check_short_entry` log `SKIP {SYM} [EXTENDED] price=$X or_hi/or_lo=$Y ext=Z.ZZ%` and return without submitting the paper order.
+- **`ENTRY_STOP_CAP_REJECT`** (default `1` / enabled) — when true, `check_entry` / `check_short_entry` reject any entry whose baseline stop (`OR_High − $0.90` for longs, `PDC + $0.90` for shorts) would need to be capped to `entry ± MAX_STOP_PCT` (0.75%). These are the same entries the code already logged as `stop capped`; the new flag treats the cap itself as a signal that the entry bar is too far past the OR trigger for the historical stop baseline to be meaningful. Logs: `SKIP {SYM} [STOP_CAPPED] baseline=$X requested_cap=$Y`. Disabling the flag restores the prior behavior where the capped stop is still placed.
+- **Gate-snapshot exposure** — `_update_gate_snapshot` now writes `extension_pct` (rounded to 2 decimals; `None` if the OR envelope has not yet been seeded) per ticker. LONG snapshots measure distance above OR_High; SHORT snapshots measure distance below OR_Low. Dashboard serialization will pick this up in a follow-up.
+- **Smoke coverage** — 8 new tests under the `guard:` prefix cover: env flag defaults, long-side 0.5% / 2.0% thresholds, short-side 2.0% threshold, `_capped_long_stop` / `_capped_short_stop` capped-flag semantics, and the `_update_gate_snapshot` extension_pct field. All 49 local tests pass.
+
+**Why:** On 2026-04-24 12:42 CDT, META entered long at $677.06 while OR_High was $659.85 — entry was +2.61% above OR. All four gates (break / polarity / index / DI) were green, and the existing stop-cap logic clamped the stop to entry − 0.75% ($671.98). 32 min later HARD_EJECT_TIGER fired at −0.3% when DI+ wobbled to 24.59. A 0.75%-capped stop on an already-extended entry has near-zero room for noise, producing a predictable stop-out. The four entry gates never measured *how far past OR* the break had already traveled.
+
+**Changed:** `BOT_VERSION = "4.3.0"`; `CURRENT_MAIN_NOTE` rewritten; v4.2.2 note rolled into `_MAIN_HISTORY_TAIL`.
+
+**Validation:** `python3 -c "import ast; ast.parse(...)"` clean; `smoke_test.py --local` PASS (49/49).
+
+**Breaking:** None. Disabling both flags (`ENTRY_EXTENSION_MAX_PCT=99 ENTRY_STOP_CAP_REJECT=0`) reproduces pre-v4.3.0 behavior exactly.
+
+---
+
 ## v4.2.2 — Dashboard UI: clock right-aligned + iPhone-fit trade rows (2026-04-24)
 
 Two UX refinements on top of v4.2.1.

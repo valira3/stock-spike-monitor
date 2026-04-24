@@ -52,7 +52,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.2.2"
+BOT_VERSION = "4.3.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -70,29 +70,32 @@ BOT_VERSION = "4.2.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.2.2 \u2014 dashboard UI:\n"
-    "row-2 clock moved to far\n"
-    "right, now white + bold and\n"
-    "shows HH:MM:SS + tz, ticking\n"
-    "every second via client\n"
-    "setInterval. Today's Trades\n"
-    "rows retightened to fit a\n"
-    "375px iPhone: tabular nums,\n"
-    "smaller font, tighter gaps;\n"
-    "unit price hides <=400px,\n"
-    "qty hides <=360px. Clock\n"
-    "survives narrow phones;\n"
-    "\"scan in Ns\" hides first."
+    "v4.3.0 \u2014 entry guards:\n"
+    "reject entries extended past\n"
+    "OR by more than 1.5%\n"
+    "(ENTRY_EXTENSION_MAX_PCT) and\n"
+    "reject entries that would\n"
+    "need stop capping when\n"
+    "ENTRY_STOP_CAP_REJECT=1.\n"
+    "Fixes 2026-04-24 META +2.61%\n"
+    "chase \u2192 HARD_EJECT_TIGER.\n"
+    "Symmetric for shorts below\n"
+    "OR_Low. Gate snapshot now\n"
+    "exposes extension_pct."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.2.2 \u2014 dashboard UI:\n"
+    "row-2 clock right-aligned,\n"
+    "white+bold HH:MM:SS+tz; rows\n"
+    "retuned for 375px iPhone.\n"
+    "\n"
     "v4.2.1 \u2014 dashboard UI:\n"
     "row-2 time clock restored\n"
-    "(HH:MM ET, time-only, parsed\n"
-    "from server_time_label) and\n"
-    "Today's Trades collapsed to\n"
-    "a single line per fill.\n"
+    "(HH:MM ET) + Today's Trades\n"
+    "collapsed to one line per\n"
+    "fill with aligned cols.\n"
     "\n"
     "v4.2.0 \u2014 dashboard UI:\n"
     "redundant fourth header row\n"
@@ -1817,12 +1820,24 @@ def _update_gate_snapshot(ticker):
     else:
         di_ok = di_minus >= TIGER_V2_DI_THRESHOLD
 
+    # v4.3.0 \u2014 extension_pct: signed distance of price past the
+    # relevant OR edge. LONG = (price \u2212 OR_High)/OR_High*100;
+    # SHORT = (OR_Low \u2212 price)/OR_Low*100. None if OR not seeded.
+    extension_pct: float | None
+    if side == "LONG" and or_h and or_h > 0:
+        extension_pct = round((price - or_h) / or_h * 100.0, 2)
+    elif side == "SHORT" and or_l and or_l > 0:
+        extension_pct = round((or_l - price) / or_l * 100.0, 2)
+    else:
+        extension_pct = None
+
     _gate_snapshot[ticker] = {
         "side": side,
         "break": bool(break_ok),
         "polarity": bool(polarity_ok),
         "index": index_ok,
         "di": di_ok,
+        "extension_pct": extension_pct,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -3377,6 +3392,24 @@ def _entry_bar_volume(volumes, lookback=5):
 # more conservative for both long and short.
 MAX_STOP_PCT = 0.0075  # 0.75% max from entry
 
+# v4.3.0 \u2014 Extended-entry guard.
+#
+# On 2026-04-24 12:42 CDT, META entered long at $677.06 while OR_High
+# was $659.85 \u2014 entry was +2.61% above OR. All four gates
+# (break/polarity/index/DI) were green, so the stop-cap kicked in and
+# clamped the stop to entry \u2212 0.75% = $671.98. 32 min later
+# HARD_EJECT_TIGER fired at -0.3% when DI+ wobbled. A capped stop on an
+# entry already extended past the OR trigger has near-zero room for
+# noise \u2192 predictable stop-out.
+#
+# ENTRY_EXTENSION_MAX_PCT rejects any long whose price is more than
+# this % above OR_High (symmetric for shorts below OR_Low).
+# ENTRY_STOP_CAP_REJECT rejects entries that would need stop capping
+# \u2014 this is a second, narrower guard: the cap is itself a signal
+# that the entry bar closed too far past the OR edge.
+ENTRY_EXTENSION_MAX_PCT = float(os.getenv("ENTRY_EXTENSION_MAX_PCT", "1.5"))
+ENTRY_STOP_CAP_REJECT = os.getenv("ENTRY_STOP_CAP_REJECT", "1") == "1"
+
 # v3.4.25 — Breakeven ratchet (Stage 1)
 # ----------------------------------------------------------------
 # Once a position is in profit by BREAKEVEN_RATCHET_PCT, pull the
@@ -4315,6 +4348,30 @@ def check_entry(ticker):
         )
         return False, None
 
+    # v4.3.0 \u2014 Extended-entry guard (long). Reject when price is
+    # more than ENTRY_EXTENSION_MAX_PCT above OR_High.
+    if or_h_val and or_h_val > 0:
+        extension_pct = (current_price - or_h_val) / or_h_val * 100.0
+        if extension_pct > ENTRY_EXTENSION_MAX_PCT:
+            logger.info(
+                "SKIP %s [EXTENDED] price=$%.2f or_hi=$%.2f ext=%.2f%%",
+                ticker, current_price, or_h_val, extension_pct,
+            )
+            return False, None
+
+    # v4.3.0 \u2014 Stop-cap rejection (long). If the final stop would
+    # need to be capped to entry \u2212 MAX_STOP_PCT (baseline too
+    # loose), treat that as a late/extended bar and skip. Keeps the
+    # existing capping code path intact for when the flag is off.
+    if ENTRY_STOP_CAP_REJECT:
+        _sp, _capped_flag, _base_stop = _capped_long_stop(or_h_val, current_price)
+        if _capped_flag:
+            logger.info(
+                "SKIP %s [STOP_CAPPED] baseline=$%.2f requested_cap=$%.2f",
+                ticker, _base_stop, _sp,
+            )
+            return False, None
+
     return True, bars
 
 
@@ -4999,6 +5056,29 @@ def check_short_entry(ticker):
             ticker, di_minus_s, TIGER_V2_DI_THRESHOLD,
         )
         return
+
+    # v4.3.0 \u2014 Extended-entry guard (short). Reject when price is
+    # more than ENTRY_EXTENSION_MAX_PCT below OR_Low.
+    if or_low_val and or_low_val > 0:
+        extension_pct_s = (or_low_val - current_price) / or_low_val * 100.0
+        if extension_pct_s > ENTRY_EXTENSION_MAX_PCT:
+            logger.info(
+                "SKIP %s [EXTENDED] price=$%.2f or_lo=$%.2f ext=%.2f%%",
+                ticker, current_price, or_low_val, extension_pct_s,
+            )
+            return
+
+    # v4.3.0 \u2014 Stop-cap rejection (short).
+    if ENTRY_STOP_CAP_REJECT:
+        _sp_s, _capped_flag_s, _base_stop_s = _capped_short_stop(
+            pdc_val, current_price
+        )
+        if _capped_flag_s:
+            logger.info(
+                "SKIP %s [STOP_CAPPED] baseline=$%.2f requested_cap=$%.2f",
+                ticker, _base_stop_s, _sp_s,
+            )
+            return
 
     # All checks passed — enter short
     execute_short_entry(ticker, current_price)
