@@ -4,6 +4,25 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.3.2 — Dashboard UI: replace "scan in" label with ♻ recycle glyph (2026-04-24)
+
+Row 2's next-scan countdown used to render as the text `scan in 13s` next to the LIVE pill. v4.3.2 swaps the literal word `scan in` for the `♻` (U+267B) recycle glyph so the countdown reads `♻ 13s` — a few pixels narrower, and unambiguous at a glance.
+
+**Changed:**
+
+- **`updateNextScanLabel`** in `dashboard_static/index.html` now writes `\u267B ${s}s` into `#h-tick` instead of `scan in ${s}s`. Font size, color, and font-family are unchanged (still inherits from the LIVE pill container).
+- **Accessibility preserved.** `#h-tick` gets `title` + `aria-label` set to the full phrase `next scan in Ns` on every tick, so screen readers still describe the countdown semantically. Static fallback `title`/`aria-label="next scan countdown"` is set in the HTML for the initial render before the first tick.
+
+**Why:** Visual tightening — the glyph is immediately recognizable as a refresh/next-scan indicator, and it trims ~6 characters from row 2. Row-2 on mobile (v4.3.1) already hides this chip at ≤420px, but on desktop and tablet the chip is visible and the shorter form reads cleaner.
+
+**Changed:** `BOT_VERSION = "4.3.2"`; `CURRENT_MAIN_NOTE` rewritten; v4.3.1 note rolled into `_MAIN_HISTORY_TAIL`.
+
+**Validation:** `smoke_test.py --local` PASS (49/49).
+
+**Breaking:** None. Pure text swap; no layout, state, or API change.
+
+---
+
 ## v4.3.1 — Dashboard UI: fit row-2 clock inline on iPhone (2026-04-24)
 
 Row 2 (logo / TradeGenius / version / LIVE pill / clock) wrapped at 375px after v4.2.2 because the 14px bold `HH:MM:SS TZ` clock pushed the line over budget. v4.3.1 squeezes everything onto a single row across common phone widths (414 / 390 / 375 / 360).

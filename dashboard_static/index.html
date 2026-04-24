@@ -469,7 +469,7 @@
   <span id="tg-live-pill" style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
     <span id="h-pulse" style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block" class="pulse"></span>
     <span style="color:#e7ecf3">LIVE</span>
-    <span id="h-tick" style="color:#5b6572">&mdash;</span>
+    <span id="h-tick" style="color:#5b6572" title="next scan countdown" aria-label="next scan countdown">&mdash;</span>
   </span>
   <span id="tg-brand-clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
 </div>
@@ -1104,7 +1104,9 @@
     if (!el) return;
     const s = window.__nextScanSec;
     if (typeof s !== "number") return;
-    el.textContent = `scan in ${s}s`;
+    el.textContent = `\u267B ${s}s`;
+    el.setAttribute("aria-label", `next scan in ${s}s`);
+    el.setAttribute("title", `next scan in ${s}s`);
   }
 
   function gateRow(name, value, ok, hint) {
