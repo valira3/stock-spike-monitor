@@ -43,7 +43,10 @@ DIR_LONG = "long"
 DIR_SHORT = "short"
 
 # C-R2: ADX/DMI period.
-DMI_PERIOD = 14
+# Gene's spec: 'DI+ (15 period, 5m)'. v4 trade_genius.DI_PERIOD = 15
+# has been canonical since pre-v5; we match it here so v5 signals
+# agree with what the v4 helpers / dashboard / executor compute.
+DMI_PERIOD = 15
 
 # Stage-1 / Stage-2 DI thresholds (L-P2-R1, L-P3-R1, S-P2-R1, S-P3-R1).
 STAGE1_DI_THRESHOLD = 25.0

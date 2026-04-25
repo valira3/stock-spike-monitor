@@ -70,7 +70,7 @@ The dashboard MUST surface these as four green/red lights per ticker. If any lig
 
 | ID         | Rule |
 |------------|------|
-| **L-P2-R1** | `DI+(1m) > 25` AND `DI+(5m) > 25` simultaneously. ADX/DMI period = 14, computed from the live 1m and 5m candle streams. |
+| **L-P2-R1** | `DI+(1m) > 25` AND `DI+(5m) > 25` simultaneously. ADX/DMI period = 15 (per Gene's spec; matches the canonical `DI_PERIOD = 15` in v4 `trade_genius.py`). Computed from the live 1m and 5m candle streams. |
 | **L-P2-R2** | Confirmation: rule L-P2-R1 must hold on **two consecutive closed 1-minute candles** (the "double-tap"). Entry fires on the close of the second confirming candle. |
 | **L-P2-R3** | On entry, place **50% of unit size** as a market or marketable-limit order. |
 | **L-P2-R4** | Initial stop ("Emergency Exit") = **low of the previous closed 5-minute candle**. This is a hard stop, not a trailing one — it does not move during STAGE_1. |
@@ -165,7 +165,7 @@ If any gate fails, no short is taken. Critically: if the indices are green (S-P1
 | ID        | Rule |
 |-----------|------|
 | **C-R1**  | Long and short on the same ticker are mutually exclusive within a session. Entering one direction means the other direction's gates are ignored until EOD. |
-| **C-R2**  | All DMI/ADX values use period **14** on the relevant timeframe. |
+| **C-R2**  | All DMI/ADX values use period **15** on the relevant timeframe. This matches Gene's original spec ("DI+ (15 period, 5m)") and the canonical `DI_PERIOD = 15` constant that has been in `trade_genius.py` since v4. Wilder's classical default of 14 is **not** used here. |
 | **C-R3**  | "Closed candle" means the candle's wall-clock period has fully elapsed. Real-time intra-candle prints do NOT trigger entries — only confirmed closes do. The hard-stop *exits* (L-P4-R3, S-P4-R3, S-P4-R4) are the exception: they evaluate on every live tick because exits prioritize speed over confirmation. |
 | **C-R4**  | The v4 daily-loss-limit (incl. v4.7.0 short-side cap) remains the portfolio-level brake on top of v5's per-trade risk. If the daily-loss-limit fires, all v5 state machines transition to `LOCKED_FOR_DAY` regardless of current state. |
 | **C-R5**  | EOD force-close (15:55 ET) flattens any open v5 position regardless of state. |
@@ -198,6 +198,7 @@ If any gate fails, no short is taken. Critically: if the indices are green (S-P1
 | Version | Date       | Author    | Notes |
 |---------|------------|-----------|-------|
 | v5.0    | 2026-04-25 | Gene → Val → TradeGenius dev | Initial canonical spec. Replaces v4.x ORB Breakout + Wounded Buffalo + 4-layer stop chain. |
+| v5.0.1  | 2026-04-25 | Gene flagged | DMI/ADX period corrected from 14 → 15 in C-R2 and L-P2-R1 to match Gene's spec and the canonical `DI_PERIOD` already in `trade_genius.py`. No state-machine logic changed. |
 
 ---
 

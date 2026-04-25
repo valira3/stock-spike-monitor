@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.0.1 — 2026-04-25 — DMI/ADX period corrected from 14 to 15 (Gene's flag).
+
+Spec-fidelity fix on the same-day v5.0.0 release. STRATEGY.md C-R2 and L-P2-R1 originally specified DMI/ADX period **14** (Wilder's classical default), but Gene flagged that the canonical period in this codebase — and in his original spec — has always been **15** (`DI_PERIOD = 15` in `trade_genius.py`, in place since v4). v5 is now aligned: `tiger_buffalo_v5.DMI_PERIOD = 15`, the v5 1m DI helper passes `period=15` through `_compute_di`, and the 5m DI reuses the existing v4 `tiger_di` helper (which already normalized on `DI_PERIOD = 15`). Result: v5 decision-engine signals agree byte-for-byte with the v4 dashboard / executor on the same period. State-machine logic is unchanged. Updated smoke tests `v5 module: DMI period is 15 (C-R2)` and `v5 C-R2: DMI period is 15`. STRATEGY.md change history updated with a v5.0.1 row documenting the fix.
+
+---
+
 ## v5.0.0 — 2026-04-25 — Tiger/Buffalo two-stage state machine replaces v4 ORB Breakout (long) and Wounded Buffalo (short).
 
 **Major version bump.** This release replaces the v4.x trade-trigger logic — ORB-edge break + 2-bar confirmation on the long side, mirror-image breakdown on the short side, and the 4-layer stop chain (initial / breakeven / +$1 trail / hard-eject) — with a single per-ticker per-direction state machine specified in `STRATEGY.md` (new file at the repo root, the canonical authority for trading logic going forward). Every code-level decision in the new state machine cites a rule ID (e.g. `L-P2-R3` = "Long, Phase 2 — Stage 1 entry, Rule 3: 50% of unit on") and every smoke test docstring references the rule it covers, so a spec change traces straight through to a test failure.

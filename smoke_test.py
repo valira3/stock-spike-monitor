@@ -1525,10 +1525,11 @@ def run_local() -> int:
             assert getattr(v5, "STATE_" + (name if name != "LOCKED_FOR_DAY" else "LOCKED")) is not None, name
         assert "STAGE_1" in v5.ALL_STATES
 
-    @t("v5 module: DMI period is 14 (C-R2)")
+    @t("v5 module: DMI period is 15 (C-R2)")
     def _():
-        # C-R2: ADX/DMI period MUST be 14 on the relevant timeframe.
-        assert v5.DMI_PERIOD == 14, f"got {v5.DMI_PERIOD}"
+        # C-R2: ADX/DMI period MUST be 15 on the relevant timeframe
+        # (per Gene's spec; matches v4 trade_genius.DI_PERIOD = 15).
+        assert v5.DMI_PERIOD == 15, f"got {v5.DMI_PERIOD}"
 
     @t("v5 module: stage thresholds match spec (L-P2-R1, L-P3-R1)")
     def _():
@@ -1882,9 +1883,9 @@ def run_local() -> int:
         assert not v5.can_arm_direction(v5.DIR_SHORT, v5.DIR_LONG)
         assert v5.can_arm_direction(v5.DIR_LONG, v5.DIR_LONG)
 
-    @t("v5 C-R2: DMI period is 14")
+    @t("v5 C-R2: DMI period is 15")
     def _():
-        assert v5.DMI_PERIOD == 14
+        assert v5.DMI_PERIOD == 15
 
     @t("v5 C-R3: confirmation counter is closed-candle driven (no None tick)")
     def _():

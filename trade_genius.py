@@ -67,7 +67,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.0.0"
+BOT_VERSION = "5.0.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -2866,9 +2866,10 @@ def v5_di_1m_5m(ticker):
     Returns dict with keys 'di_plus_1m', 'di_minus_1m', 'di_plus_5m',
     'di_minus_5m'. Any value can be None when warmup is incomplete.
 
-    DMI period = 14 per C-R2 (the v4 helper accepts a period kwarg; we
-    pass 14 explicitly so the v5 path is decoupled from any future
-    change to DI_PERIOD).
+    DMI period = 15 per C-R2 (matches Gene's spec and the canonical
+    v4 DI_PERIOD = 15 constant). v5 and v4 now compute DMI on the
+    same period so signals between the v5 decision engine and the v4
+    dashboard / executor agree byte-for-byte.
     """
     bars = fetch_1min_bars(ticker)
     out = {
@@ -2886,8 +2887,9 @@ def v5_di_1m_5m(ticker):
                              period=v5.DMI_PERIOD)
         out["di_plus_1m"], out["di_minus_1m"] = dp, dm
     # 5m \u2014 reuse tiger_di which already merges seed + live 5m buckets
-    # but normalizes on DI_PERIOD (15 in v4). For v5 we recompute with
-    # period 14 directly off the resampled 5m series.
+    # and normalizes on DI_PERIOD = 15. v5 now matches v4's period
+    # exactly (C-R2 corrected v5.0.0 \u2192 v5.0.1 per Gene's flag), so the
+    # v5 5m DI is the same value tiger_di emits.
     live_5m = _resample_to_5min_ohlc_buckets(
         bars.get("timestamps", []),
         bars.get("highs",  []),
