@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.11.3"
+BOT_VERSION = "4.11.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,25 +76,34 @@ BOT_VERSION = "4.11.3"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.11.3 \u2014 hotfix:\n"
-    "v4.11.2 fixed the 430 px\n"
-    "(iPhone Pro Max) brand row\n"
-    "but 390 px (iPhone 13/14/\n"
-    "15 standard) still clipped\n"
-    "the clock at 12:38:1.\n"
-    "CSS-only fix: new media\n"
-    "query at <=400 px shrinks\n"
-    "the clock to 10px, the\n"
-    "version slug to 9.5px,\n"
-    "and tightens the brand-\n"
-    "row gap from 6px to 4px.\n"
-    "Tick text stays visible\n"
-    "and the health-pill count\n"
-    "stays visible per Val."
+    "v4.11.4 \u2014 hotfix x2:\n"
+    "(1) Repoint the post-\n"
+    "deploy smoke workflow\n"
+    "DASHBOARD_URL from the\n"
+    "old SSM domain (404 since\n"
+    "the TradeGenius rename) to\n"
+    "tradegenius.up.railway.\n"
+    "app. CI smoke green for\n"
+    "the first time since\n"
+    "v4.9.3.\n"
+    "(2) Trim brand-row pad\n"
+    "10px to 6px in the 400px\n"
+    "band so the clock T no\n"
+    "longer hairline-clips at\n"
+    "390 viewports."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.11.3 \u2014 hotfix:\n"
+    "v4.11.2 fixed 430px (Pro\n"
+    "Max) but 390px (iPhone\n"
+    "13/14/15) still clipped\n"
+    "the clock. Add a new\n"
+    "<=400px media band:\n"
+    "clock 10px, gap 4px,\n"
+    "version slug 9.5px.\n"
+    "\n"
     "v4.11.2 \u2014 hotfix:\n"
     "v4.11.0 added the health\n"
     "pill to the brand row, but\n"

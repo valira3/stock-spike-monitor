@@ -520,7 +520,9 @@
      Hard rule from Val: do NOT hide #h-tick (the 380 band still does, but
      this 400 band keeps it visible) and do NOT drop the health-pill count. */
   @media (max-width: 400px) {
-    #tg-brand-row { gap: 4px !important; padding: 8px 10px !important; }
+    /* v4.11.4 — trim horizontal padding from 10px to 6px to recover the
+       last 8 px and stop clipping the clock's `T` at 390 viewports. */
+    #tg-brand-row { gap: 4px !important; padding: 8px 6px !important; }
     #tg-brand-ver { font-size: 9.5px !important; margin-left: 0 !important; }
     #tg-live-pill { padding: 3px 7px 3px 6px !important; }
     .tg-health-pill { gap: 4px; padding: 3px 6px; font-size: 10.5px; }
