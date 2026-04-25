@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.0.0")
+    @t("version: BOT_VERSION is 5.0.2")
     def _():
-        assert m.BOT_VERSION == "5.0.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.0.2", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -2035,11 +2035,51 @@ def run_local() -> int:
         assert track["state"] == v5.STATE_IDLE
         assert "ZZZ" in m.v5_long_tracks
 
-    @t("v5 plumbing: STRATEGY.md mentioned in trade_genius release note")
+    @t("v5 plumbing: STRATEGY.md mentioned in trade_genius rolling release note")
     def _():
-        assert "STRATEGY.md" in m.CURRENT_MAIN_NOTE
+        # STRATEGY.md is the canonical v5 spec; it must remain referenced in
+        # the rolling MAIN_RELEASE_NOTE surface (CURRENT + history tail) so
+        # /version always points users at the source of truth, even when the
+        # current note is a hotfix that doesn't itself need to repeat the ref.
+        assert "STRATEGY.md" in m.MAIN_RELEASE_NOTE
 
-    return run_suite("LOCAL SMOKE TESTS (v5.0.0 Tiger/Buffalo)")
+    @t("infra: Dockerfile COPY whitelist includes every top-level imported module")
+    def _():
+        # v5.0.2 hotfix guard: prevent the v4.11.0 / v5.0.0 footgun where a new
+        # top-level module is added to the source tree but the Dockerfile per-file
+        # COPY whitelist is forgotten, causing prod to crash on import.
+        import os, re
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        # Local top-level modules = .py files at repo root (excluding tests/scripts).
+        local_modules = set()
+        for fn in os.listdir(repo_root):
+            if not fn.endswith(".py"):
+                continue
+            if fn in ("smoke_test.py", "trade_genius.py"):
+                continue
+            local_modules.add(fn[:-3])
+        tg = open(os.path.join(repo_root, "trade_genius.py"), "r", encoding="utf-8").read()
+        # Imports of the form `import foo` / `import foo as bar` / `from foo import ...`.
+        imported = set()
+        for line in tg.splitlines():
+            s = line.lstrip()
+            mm = re.match(r"(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)", s)
+            if not mm:
+                continue
+            name = mm.group(1)
+            if name in local_modules:
+                imported.add(name)
+        # Read Dockerfile and find COPY <module>.py lines.
+        df_path = os.path.join(repo_root, "Dockerfile")
+        df = open(df_path, "r", encoding="utf-8").read()
+        copied = set(re.findall(r"^\s*COPY\s+([a-zA-Z_][a-zA-Z0-9_]*)\.py\s", df, re.M))
+        missing = sorted(imported - copied)
+        assert not missing, (
+            f"trade_genius.py imports local modules that are NOT in Dockerfile "
+            f"COPY whitelist (would crash prod on import): {missing}"
+        )
+
+    return run_suite("LOCAL SMOKE TESTS (v5.0.2 Tiger/Buffalo)")
 
 
 # ============================================================
