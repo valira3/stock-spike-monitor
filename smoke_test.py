@@ -1245,6 +1245,21 @@ def run_local() -> int:
         paths = [r.resource.canonical for r in app.router.routes()]
         assert "/api/version" in paths, f"/api/version not registered; got {paths}"
 
+    @t("v4.9.1: /api/version handler actually returns BOT_VERSION")
+    def _():
+        # Regression guard: the v4.9.1 handler originally called an
+        # undefined _bot_module() helper; the route was registered so the
+        # route-registration test passed, but the handler blew up at
+        # request time and returned {"version": "?"}. Exercise the
+        # handler directly so a stale helper name fails loudly.
+        import dashboard_server as ds
+        import asyncio, json
+        class _Req: pass
+        resp = asyncio.new_event_loop().run_until_complete(ds.h_version(_Req()))
+        body = json.loads(resp.body.decode())
+        assert body.get("version") == m.BOT_VERSION, \
+            f"/api/version returned {body!r}, want version={m.BOT_VERSION!r}"
+
 
     return run_suite("LOCAL SMOKE TESTS (v4.9.1 synthetic harness)")
 
