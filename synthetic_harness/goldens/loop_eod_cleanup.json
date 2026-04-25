@@ -225,5 +225,5 @@
   ],
   "harness_version": 1,
   "scenario": "loop_eod_cleanup",
-  "trade_genius_version": "4.10.1"
+  "trade_genius_version": "4.10.2"
 }

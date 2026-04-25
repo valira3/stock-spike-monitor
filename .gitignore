@@ -2,3 +2,4 @@ __pycache__/
 CODE_REVIEW.md
 
 *.log
+dashboard_secret.key

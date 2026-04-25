@@ -420,8 +420,12 @@
      Strategy: nowrap forces a single line; gap + font shrinks +
      LIVE pill padding + version size are tuned so that logo +
      TradeGenius + version + LIVE pill + clock all fit on one row.
-     Bands: 420/380/360 — progressively tighter. */
-  @media (max-width: 420px) {
+     Bands: 420/380/360 — progressively tighter.
+     v4.10.2 — lift the top breakpoint 420 → 500 so iPhone Pro Max
+     class viewports (414–430 px) also get nowrap. v4.10.1 still
+     wrapped on those because they fall above 420. The shrinks below
+     are gentle enough that we don't need a separate 500 band. */
+  @media (max-width: 500px) {
     #tg-brand-row {
       gap: 8px !important;
       flex-wrap: nowrap !important;

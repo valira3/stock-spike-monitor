@@ -4,6 +4,35 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.10.2 — 2026-04-25 — Hotfix: two more v4.10.0-introduced dashboard bugs (Val/Gene tabs threw "Fetch failed: applyGateTriState is not defined"; mobile clock wrapped to row 2 on iPhone Pro Max class viewports).
+
+Dashboard-only patch. No `trade_genius.py` business logic change. The 50-scenario synthetic harness still replays byte-equal (only the embedded `trade_genius_version` field changes). All 119 smoke tests pass.
+
+**Motivation.** User caught two bugs on iPhone after v4.10.1 deployed:
+
+1. **`Fetch failed: Can't find variable: applyGateTriState`** red banner on the Val tab (and Gene). Every executor poll surfaced this. The error wording is iOS Safari's `ReferenceError`; Chromium says `applyGateTriState is not defined`. Same bug.
+   - Root cause: `dashboard_static/app.js` is two independent IIFEs. Lines 1–807 are the main-tab IIFE (KPIs, positions, proximity, trades, log tail, SSE stream). Lines 809–1643 are the tab-switcher / per-executor poll IIFE. v4.10.0 added `applyGateTriState` to the *first* IIFE only. `renderExecutor()` and `refreshExecSharedKpis()` live in the *second* IIFE and called the helper directly — `ReferenceError` the moment a Val/Gene `/api/executor/{name}` poll completed. `pollExecutor()`'s catch block then displayed the message as `"Fetch failed: " + e.message`, which is why it looked like a network failure.
+   - Fix: at the bottom of the first IIFE, expose `window.__tgApplyGateTriState = applyGateTriState`. At the top of the second IIFE, alias `const applyGateTriState = window.__tgApplyGateTriState || (() => {})` so every existing call site works as-is and a no-op fallback prevents the same class of regression. The two IIFEs stay otherwise independent (per the design comment that explicitly says "Independent from the main-tab IIFE above").
+   - Why the two-IIFE design existed in the first place: v4.0.0-beta added the tab switcher as an additive overlay so the existing main-tab logic couldn't accidentally break it. Keeping them separate is fine — but any helper that needs to be shared must be bridged on `window`. v4.10.0 was the first cross-cutting helper, so this exposure pattern is new.
+
+2. **Mobile clock wraps to row 2 on iPhone Pro Max class viewports (414–430 px CSS px).** The brand row (`#tg-brand-row`) is a `flex-wrap: wrap` flexbox containing logo + title + version + `LIVE` pill (with `margin-left:auto`) + clock. The existing `flex-wrap: nowrap !important` override was capped at `@media (max-width: 420px)`. Anything wider — iPhone 14/15/16 Plus and Pro Max — landed in the wrap regime and the clock got bumped to a second row.
+   - Root cause: `dashboard_static/app.css` line 424 — `@media (max-width: 420px)`. The 420 cap was set in v4.3.1 when iPhone 13 (390) was the target. Larger iPhones never had the nowrap rule applied.
+   - Fix: lift the breakpoint 420 → 500. The shrinks already in this band (gap 8 px, padding 8 12, version mar-left 2, pill gap/padding tightened, clock 13 px) easily fit on 414–430 px without further work; verified at 430 width that everything fits on one line.
+
+**Files touched.**
+
+- `dashboard_static/app.js` — add `window.__tgApplyGateTriState = applyGateTriState` at end of first IIFE; add aliasing `const applyGateTriState = window.__tgApplyGateTriState || (() => {})` at top of second IIFE.
+- `dashboard_static/app.css` — change `@media (max-width: 420px)` (the brand-row nowrap rule) to `@media (max-width: 500px)`.
+- `trade_genius.py` — `BOT_VERSION` 4.10.1 → 4.10.2; `CURRENT_MAIN_NOTE` rewritten for this hotfix (≤34 chars/line); `_MAIN_HISTORY_TAIL` carries v4.10.1 entry forward.
+- `smoke_test.py` — version assertions bumped to 4.10.2.
+- `CHANGELOG.md` — this entry.
+
+**Explicitly NOT touched.** `dashboard_server.py` business logic, `side.py`, `paper_state.py`, `telegram_commands.py`, `synthetic_harness/`, any executor/portfolio code path, the main-tab GATE tri-state (which was working — only the cross-IIFE bridge for Val/Gene was broken).
+
+**Lesson logged.** `dashboard_static/app.js` is two IIFEs, not one. Any helper added in IIFE-1 that IIFE-2 needs must be bridged on `window`. Going forward, helpers shared across both should always be exposed on `window.__tg*` at definition time.
+
+---
+
 ## v4.10.1 — 2026-04-25 — Hotfix: finish the two v4.10.0 fixes that shipped half-complete (empty Open Positions card collapse + mobile void below proximity).
 
 Dashboard-only patch. No `trade_genius.py` business logic change. The 50-scenario synthetic harness still replays byte-equal (only the embedded `trade_genius_version` field changes). All 119 smoke tests pass.
