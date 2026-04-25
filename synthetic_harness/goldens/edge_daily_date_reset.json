@@ -6,7 +6,7 @@
           "AAPL"
         ],
         "kind": "check_entry",
-        "label": "check passes"
+        "label": "check passes (counter reset)"
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
@@ -62,7 +62,17 @@
       ],
       "save_paper_state_calls": 0,
       "signals": [],
-      "state_delta": {},
+      "state_delta": {
+        "daily_entry_count": {
+          "AAPL": {
+            "removed": 5
+          }
+        },
+        "daily_entry_date": {
+          "after": "2026-04-24",
+          "before": "2026-04-23"
+        }
+      },
       "telegram_outbox": [],
       "trade_log_writes": []
     },
@@ -73,7 +83,7 @@
           270.0
         ],
         "kind": "execute_entry",
-        "label": "executes paper buy"
+        "label": "entry recorded"
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
@@ -161,6 +171,6 @@
     }
   ],
   "harness_version": 1,
-  "scenario": "long_clean_entry",
+  "scenario": "edge_daily_date_reset",
   "trade_genius_version": "4.8.2"
 }

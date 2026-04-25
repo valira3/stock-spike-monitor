@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.8.1"
+BOT_VERSION = "4.8.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,26 +76,39 @@ BOT_VERSION = "4.8.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.8.1 \u2014 testing:\n"
-    "synthetic harness added\n"
-    "(synthetic_harness/) with\n"
-    "25 named scenarios (5 long\n"
-    "entries, 5 short entries,\n"
-    "5 long closes, 5 short\n"
-    "closes, 5 scan loops).\n"
-    "Golden JSON outputs\n"
-    "recorded against v4.8.0\n"
-    "code; replay asserts\n"
-    "byte-equal output.\n"
-    "smoke_test.py --synthetic\n"
-    "lifts coverage from 82\n"
-    "to 107 tests. Pure\n"
-    "addition \u2014 zero behavior\n"
-    "change to trade_genius."
+    "v4.8.2 \u2014 testing:\n"
+    "25 edge-case scenarios\n"
+    "added to synthetic harness\n"
+    "(synthetic_harness/\n"
+    "scenarios/edge_cases.py).\n"
+    "Cooldown, per-ticker pnl\n"
+    "cap, OR-staleness, volume\n"
+    "gates, extension + stop\n"
+    "cap, sovereign regime, DI\n"
+    "threshold, pre-market,\n"
+    "daily reset, ring buffer,\n"
+    "trail promotion, midnight\n"
+    "rollover. Corpus now 50\n"
+    "scenarios; smoke lifts\n"
+    "from 107 to 132 tests.\n"
+    "Pure addition \u2014 zero\n"
+    "behavior change."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.8.1 \u2014 testing:\n"
+    "synthetic harness added\n"
+    "with 25 named scenarios\n"
+    "and 25 goldens. CLI\n"
+    "python -m synthetic_harness\n"
+    "{list,record,replay,diff}.\n"
+    "smoke_test.py --synthetic\n"
+    "lifts coverage from 82\n"
+    "to 107 tests. Pure\n"
+    "addition \u2014 zero behavior\n"
+    "change to trade_genius.\n"
+    "\n"
     "v4.8.0 \u2014 refactor:\n"
     "long/short collapsed via\n"
     "Side enum. check_breakout,\n"

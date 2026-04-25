@@ -1,0 +1,374 @@
+{
+  "actions": [
+    {
+      "action": {
+        "args": [
+          "AAPL",
+          270.0
+        ],
+        "kind": "execute_entry",
+        "label": "open long"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [
+        "BUY AAPL 37 @ $270.00 (limit $270.02) stop=$268.10 entry#1"
+      ],
+      "return_value": null,
+      "save_paper_state_calls": 1,
+      "signals": [
+        {
+          "kind": "ENTRY_LONG",
+          "main_shares": 37,
+          "price": 270.0,
+          "reason": "BREAKOUT",
+          "ticker": "AAPL",
+          "timestamp_utc": "2026-04-24T14:30:00+00:00"
+        }
+      ],
+      "state_delta": {
+        "daily_entry_count": {
+          "AAPL": {
+            "added": 1
+          }
+        },
+        "paper_all_trades": {
+          "after": [
+            {
+              "action": "BUY",
+              "cost": 9990.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 270.02,
+              "price": 270.0,
+              "shares": 37,
+              "stop": 268.1,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ],
+          "before": []
+        },
+        "paper_cash": {
+          "after": 90010.0,
+          "before": 100000.0
+        },
+        "paper_trades": {
+          "after": [
+            {
+              "action": "BUY",
+              "cost": 9990.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 270.02,
+              "price": 270.0,
+              "shares": 37,
+              "stop": 268.1,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ],
+          "before": []
+        },
+        "positions": {
+          "AAPL": {
+            "added": {
+              "date": "2026-04-24",
+              "entry_count": 1,
+              "entry_price": 270.0,
+              "entry_time": "09:30:00",
+              "entry_ts_utc": "2026-04-24T14:30:00+00:00",
+              "initial_stop": 268.1,
+              "pdc": 267.5,
+              "shares": 37,
+              "stop": 268.1,
+              "trail_active": false,
+              "trail_high": 270.0
+            }
+          }
+        }
+      },
+      "telegram_outbox": [
+        "\ud83d\udcc8 LONG ENTRY AAPL  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $270.00  (limit $270.02)\nShares : 37   Cost: $9,990.00\nStop   : $268.10  (OR_High-$0.90)\nOR High: $269.00   PDC: $267.50\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  Price > PDC \u2713\n  SPY > PDC \u2713\n  QQQ > PDC \u2713\nTime   : 09:30 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+      ],
+      "trade_log_writes": []
+    },
+    {
+      "action": {
+        "args": [
+          "AAPL",
+          270.0,
+          "MANUAL"
+        ],
+        "kind": "close_position",
+        "label": "close (stamps cooldown)"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [
+        "SELL AAPL 37 @ $270.00 reason=MANUAL pnl=$0.00 (0.0%)"
+      ],
+      "return_value": null,
+      "save_paper_state_calls": 1,
+      "signals": [
+        {
+          "kind": "EXIT_LONG",
+          "main_shares": 37,
+          "price": 270.0,
+          "reason": "MANUAL",
+          "ticker": "AAPL",
+          "timestamp_utc": "2026-04-24T14:30:00+00:00"
+        }
+      ],
+      "state_delta": {
+        "_last_exit_time": {
+          "AAPL": {
+            "added": {
+              "__dt__": "2026-04-24T14:30:00+00:00"
+            }
+          }
+        },
+        "paper_all_trades": {
+          "after": [
+            {
+              "action": "BUY",
+              "cost": 9990.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 270.02,
+              "price": 270.0,
+              "shares": 37,
+              "stop": 268.1,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-04-24",
+              "entry_price": 270.0,
+              "pnl": 0.0,
+              "pnl_pct": 0.0,
+              "price": 270.0,
+              "reason": "MANUAL",
+              "shares": 37,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ],
+          "before": [
+            {
+              "action": "BUY",
+              "cost": 9990.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 270.02,
+              "price": 270.0,
+              "shares": 37,
+              "stop": 268.1,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ]
+        },
+        "paper_cash": {
+          "after": 100000.0,
+          "before": 90010.0
+        },
+        "paper_trades": {
+          "after": [
+            {
+              "action": "BUY",
+              "cost": 9990.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 270.02,
+              "price": 270.0,
+              "shares": 37,
+              "stop": 268.1,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-04-24",
+              "entry_price": 270.0,
+              "pnl": 0.0,
+              "pnl_pct": 0.0,
+              "price": 270.0,
+              "reason": "MANUAL",
+              "shares": 37,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ],
+          "before": [
+            {
+              "action": "BUY",
+              "cost": 9990.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 270.02,
+              "price": 270.0,
+              "shares": 37,
+              "stop": 268.1,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ]
+        },
+        "positions": {
+          "AAPL": {
+            "removed": {
+              "date": "2026-04-24",
+              "entry_count": 1,
+              "entry_price": 270.0,
+              "entry_time": "09:30:00",
+              "entry_ts_utc": "2026-04-24T14:30:00+00:00",
+              "initial_stop": 268.1,
+              "pdc": 267.5,
+              "shares": 37,
+              "stop": 268.1,
+              "trail_active": false,
+              "trail_high": 270.0
+            }
+          }
+        },
+        "trade_history": {
+          "after": [
+            {
+              "action": "SELL",
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "entry_price": 270.0,
+              "entry_time": "09:30:00",
+              "entry_time_iso": "2026-04-24T14:30:00+00:00",
+              "exit_price": 270.0,
+              "exit_time": "09:30 CDT",
+              "exit_time_iso": "2026-04-24T14:30:00+00:00",
+              "pnl": 0.0,
+              "pnl_pct": 0.0,
+              "reason": "MANUAL",
+              "shares": 37,
+              "side": "long",
+              "ticker": "AAPL"
+            }
+          ],
+          "before": []
+        }
+      },
+      "telegram_outbox": [
+        "\u2705 EXIT AAPL\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 37\nEntry  : $270.00  \u2192  $270.00\nCost   : $9,990.00  \u2192  $9,990.00\nP&L    : $+0.00  (+0.0%)\nReason : MANUAL\nIn: 09:30:00   Out: 09:30 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+      ],
+      "trade_log_writes": [
+        {
+          "date": "2026-04-24",
+          "effective_stop_at_exit": 268.1,
+          "entry_num": 1,
+          "entry_price": 270.0,
+          "entry_time": "09:30:00",
+          "exit_price": 270.0,
+          "exit_time": "2026-04-24T14:30:00+00:00",
+          "hard_stop_at_exit": 268.1,
+          "hold_seconds": 0.0,
+          "pnl": 0.0,
+          "pnl_pct": 0.0,
+          "portfolio": "paper",
+          "reason": "MANUAL",
+          "shares": 37,
+          "side": "LONG",
+          "ticker": "AAPL",
+          "trail_active_at_exit": false,
+          "trail_anchor_at_exit": 270.0,
+          "trail_stop_at_exit": null
+        }
+      ]
+    },
+    {
+      "action": {
+        "args": [
+          901
+        ],
+        "kind": "tick_seconds",
+        "label": "advance 901s"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [],
+      "return_value": null,
+      "save_paper_state_calls": 0,
+      "signals": [],
+      "state_delta": {},
+      "telegram_outbox": [],
+      "trade_log_writes": []
+    },
+    {
+      "action": {
+        "args": [
+          "AAPL"
+        ],
+        "kind": "check_entry",
+        "label": "cooldown released; later gates rule"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [],
+      "return_value": [
+        true,
+        {
+          "closes": [
+            268.9,
+            268.95,
+            268.98,
+            269.1,
+            270.0
+          ],
+          "current_price": 270.0,
+          "highs": [
+            269.0,
+            269.05,
+            269.08000000000004,
+            269.20000000000005,
+            270.1
+          ],
+          "lows": [
+            268.79999999999995,
+            268.84999999999997,
+            268.88,
+            269.0,
+            269.9
+          ],
+          "opens": [
+            268.84999999999997,
+            268.9,
+            268.93,
+            269.05,
+            269.95
+          ],
+          "pdc": 267.5,
+          "timestamps": [
+            1700000000,
+            1700000060,
+            1700000120,
+            1700000180,
+            1700000240
+          ],
+          "volumes": [
+            100000,
+            100000,
+            100000,
+            100000,
+            250000
+          ]
+        }
+      ],
+      "save_paper_state_calls": 0,
+      "signals": [],
+      "state_delta": {},
+      "telegram_outbox": [],
+      "trade_log_writes": []
+    }
+  ],
+  "harness_version": 1,
+  "scenario": "edge_cooldown_releases_at_901s",
+  "trade_genius_version": "4.8.2"
+}

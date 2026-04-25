@@ -3,10 +3,10 @@
     {
       "action": {
         "args": [
-          "AMD"
+          "AAPL"
         ],
-        "kind": "check_short_entry",
-        "label": "blocked: polarity"
+        "kind": "check_entry",
+        "label": "bail: price <= 0"
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
@@ -23,6 +23,6 @@
     }
   ],
   "harness_version": 1,
-  "scenario": "short_blocked_polarity",
+  "scenario": "edge_current_price_zero",
   "trade_genius_version": "4.8.2"
 }

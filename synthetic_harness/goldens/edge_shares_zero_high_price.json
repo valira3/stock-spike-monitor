@@ -3,18 +3,16 @@
     {
       "action": {
         "args": [
-          "AMD"
+          "AAPL",
+          0.0
         ],
-        "kind": "check_short_entry",
-        "label": "blocked: polarity"
+        "kind": "execute_entry",
+        "label": "invalid price \u2192 no entry"
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
       "paper_log_outbox": [],
-      "return_value": [
-        false,
-        null
-      ],
+      "return_value": null,
       "save_paper_state_calls": 0,
       "signals": [],
       "state_delta": {},
@@ -23,6 +21,6 @@
     }
   ],
   "harness_version": 1,
-  "scenario": "short_blocked_polarity",
+  "scenario": "edge_shares_zero_high_price",
   "trade_genius_version": "4.8.2"
 }

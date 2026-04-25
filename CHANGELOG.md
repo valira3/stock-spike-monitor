@@ -4,6 +4,39 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.8.2 — 2026-04-25 — testing: edge-case scenarios for synthetic harness.
+
+Pure addition. Zero behavior change to `trade_genius.py`. Extends the v4.8.1 corpus from 25 to 50 scenarios by covering gate paths the original suite left unexercised: cooldown windows, per-ticker pnl cap, OR-staleness, volume gating, extension cap, sovereign regime, DI threshold, stop cap, market-open clock, midnight rollover, ring-buffer eviction, and trail-promotion threshold crossing.
+
+**Added:**
+
+- `synthetic_harness/scenarios/edge_cases.py` — 25 new deterministic scenarios:
+  - **Cooldown:** `edge_cooldown_blocks_reentry`, `edge_cooldown_releases_at_901s`.
+  - **Per-ticker pnl cap:** `edge_per_ticker_pnl_cap`.
+  - **OR / data sanity:** `edge_or_price_sane_reject`, `edge_bars_none_data_failure`, `edge_current_price_zero`.
+  - **Volume gating (TIGER_V2_REQUIRE_VOL=true):** `edge_volume_not_ready`, `edge_volume_below_threshold`.
+  - **Extension / stop-cap rejects:** `edge_extension_max_pct`, `edge_stop_cap_reject`.
+  - **Sovereign regime (index polarity):** `edge_sovereign_long_eject`, `edge_sovereign_short_eject`.
+  - **DI gate:** `edge_di_below_threshold`, `edge_di_none`.
+  - **Pre-market / time gate:** `edge_before_market_open`.
+  - **Daily date reset:** `edge_daily_date_reset`.
+  - **execute_entry edges:** `edge_shares_zero_high_price`, `edge_insufficient_cash`, `edge_stop_capped_path`.
+  - **close_position edges:** `edge_idempotent_close_no_position`, `edge_trade_history_ring_buffer`, `edge_retro_cap_close`.
+  - **Multi-action:** `edge_midnight_rollover`, `edge_short_count_isolated_reset`, `edge_trail_promotion_threshold`.
+- 25 golden JSON outputs under `synthetic_harness/goldens/` recorded against v4.8.1 production code; replay is byte-equal.
+- `synthetic_harness/scenarios/__init__.py` registers the new module so `python -m synthetic_harness list` shows 50 scenarios.
+
+**Harness:**
+
+- `synthetic_harness/runner.py::_reset_module_state` now also resets `TIGER_V2_REQUIRE_VOL` to its default (`False`) at scenario start. Volume scenarios flip the flag via `setup_callbacks`; without an explicit reset, that flag would leak into subsequent scenarios.
+
+**Counts:**
+
+- Scenarios: 25 → 50 (`python -m synthetic_harness list`).
+- Smoke tests with `--synthetic`: 107 → 132 (`smoke_test.py --local --synthetic`).
+
+---
+
 ## v4.8.1 (2026-04-24) — testing: synthetic trading harness + 25 scenario goldens.
 
 This is a pure addition. Zero behavior change to `trade_genius.py`. The release introduces a hermetic, deterministic test harness that replays full bot decision paths against frozen "golden" outputs.

@@ -328,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.8.1")
+    @t("version: BOT_VERSION is 4.8.2")
     def _():
-        assert m.BOT_VERSION == "4.8.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.8.2", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.8.1")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.8.2")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.8.1"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.8.2"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -1638,7 +1638,7 @@ def run_local() -> int:
             ("AAPL", 101.0, "STOP"),
         )
 
-    return run_suite("LOCAL SMOKE TESTS (v4.8.1 synthetic harness)")
+    return run_suite("LOCAL SMOKE TESTS (v4.8.2 synthetic harness)")
 
 
 # ============================================================
@@ -1730,7 +1730,7 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
 
 
 # ============================================================
-# SYNTHETIC HARNESS MODE (v4.8.1)
+# SYNTHETIC HARNESS MODE (v4.8.2)
 # ============================================================
 
 def run_synthetic() -> int:
@@ -1765,7 +1765,7 @@ def run_synthetic() -> int:
             return _
         _make(name)
 
-    return run_suite("SYNTHETIC HARNESS (v4.8.1, 25 scenarios)")
+    return run_suite("SYNTHETIC HARNESS (v4.8.2, 50 scenarios)")
 
 
 # ============================================================

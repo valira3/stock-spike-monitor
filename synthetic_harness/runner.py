@@ -64,6 +64,10 @@ def _reset_module_state(m, sc: Scenario) -> None:
     m._scan_paused = False
     m.daily_entry_date = ""
     m.daily_short_entry_date = ""
+    # v4.8.2 \u2014 reset module flags that scenario setup_callbacks may
+    # toggle, so a flag flipped on by one scenario doesn't leak into the
+    # next. Defaults mirror trade_genius env-var defaults at import time.
+    m.TIGER_V2_REQUIRE_VOL = False
 
     init = sc.initial_state or {}
     for k, v in init.items():

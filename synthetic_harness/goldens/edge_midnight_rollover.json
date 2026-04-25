@@ -3,10 +3,28 @@
     {
       "action": {
         "args": [
+          1086
+        ],
+        "kind": "tick_minutes",
+        "label": "advance to 2026-04-25 09:36 ET"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [],
+      "return_value": null,
+      "save_paper_state_calls": 0,
+      "signals": [],
+      "state_delta": {},
+      "telegram_outbox": [],
+      "trade_log_writes": []
+    },
+    {
+      "action": {
+        "args": [
           "AAPL"
         ],
         "kind": "check_entry",
-        "label": "check passes"
+        "label": "check passes (counter reset)"
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
@@ -62,7 +80,17 @@
       ],
       "save_paper_state_calls": 0,
       "signals": [],
-      "state_delta": {},
+      "state_delta": {
+        "daily_entry_count": {
+          "AAPL": {
+            "removed": 5
+          }
+        },
+        "daily_entry_date": {
+          "after": "2026-04-25",
+          "before": "2026-04-24"
+        }
+      },
       "telegram_outbox": [],
       "trade_log_writes": []
     },
@@ -73,7 +101,7 @@
           270.0
         ],
         "kind": "execute_entry",
-        "label": "executes paper buy"
+        "label": "fresh entry: 1/day"
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
@@ -89,7 +117,7 @@
           "price": 270.0,
           "reason": "BREAKOUT",
           "ticker": "AAPL",
-          "timestamp_utc": "2026-04-24T14:30:00+00:00"
+          "timestamp_utc": "2026-04-25T13:36:00+00:00"
         }
       ],
       "state_delta": {
@@ -103,14 +131,14 @@
             {
               "action": "BUY",
               "cost": 9990.0,
-              "date": "2026-04-24",
+              "date": "2026-04-25",
               "entry_num": 1,
               "limit_price": 270.02,
               "price": 270.0,
               "shares": 37,
               "stop": 268.1,
               "ticker": "AAPL",
-              "time": "09:30 CDT"
+              "time": "08:36 CDT"
             }
           ],
           "before": []
@@ -124,14 +152,14 @@
             {
               "action": "BUY",
               "cost": 9990.0,
-              "date": "2026-04-24",
+              "date": "2026-04-25",
               "entry_num": 1,
               "limit_price": 270.02,
               "price": 270.0,
               "shares": 37,
               "stop": 268.1,
               "ticker": "AAPL",
-              "time": "09:30 CDT"
+              "time": "08:36 CDT"
             }
           ],
           "before": []
@@ -139,11 +167,11 @@
         "positions": {
           "AAPL": {
             "added": {
-              "date": "2026-04-24",
+              "date": "2026-04-25",
               "entry_count": 1,
               "entry_price": 270.0,
-              "entry_time": "09:30:00",
-              "entry_ts_utc": "2026-04-24T14:30:00+00:00",
+              "entry_time": "08:36:00",
+              "entry_ts_utc": "2026-04-25T13:36:00+00:00",
               "initial_stop": 268.1,
               "pdc": 267.5,
               "shares": 37,
@@ -155,12 +183,12 @@
         }
       },
       "telegram_outbox": [
-        "\ud83d\udcc8 LONG ENTRY AAPL  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $270.00  (limit $270.02)\nShares : 37   Cost: $9,990.00\nStop   : $268.10  (OR_High-$0.90)\nOR High: $269.00   PDC: $267.50\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  Price > PDC \u2713\n  SPY > PDC \u2713\n  QQQ > PDC \u2713\nTime   : 09:30 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        "\ud83d\udcc8 LONG ENTRY AAPL  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $270.00  (limit $270.02)\nShares : 37   Cost: $9,990.00\nStop   : $268.10  (OR_High-$0.90)\nOR High: $269.00   PDC: $267.50\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  Price > PDC \u2713\n  SPY > PDC \u2713\n  QQQ > PDC \u2713\nTime   : 08:36 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
       ],
       "trade_log_writes": []
     }
   ],
   "harness_version": 1,
-  "scenario": "long_clean_entry",
+  "scenario": "edge_midnight_rollover",
   "trade_genius_version": "4.8.2"
 }
