@@ -67,7 +67,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.0.2"
+BOT_VERSION = "5.0.3"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -85,6 +85,33 @@ BOT_VERSION = "5.0.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.0.3 \u2014 hotfix for prod:\n"
+    "Val saw zero trade DMs on\n"
+    "Fri despite 15 BUYs / 10\n"
+    "SELLs firing. Executor\n"
+    "notifier was silently a\n"
+    "no-op because TELEGRAM_\n"
+    "CHAT_ID env var was never\n"
+    "set on Railway. Now each\n"
+    "owner just DMs their\n"
+    "executor bot once (any\n"
+    "message); chat_id is\n"
+    "auto-learned and persisted\n"
+    "to /data/executor_chats_*\n"
+    ".json. Trade confirms fan\n"
+    "out to every learned\n"
+    "owner.\n"
+    "\n"
+    "Also: GENE_ALPACA_KEY now\n"
+    "works as a fallback for\n"
+    "GENE_ALPACA_PAPER_KEY (and\n"
+    "same for VAL prefix +\n"
+    "_SECRET) so Genes paper\n"
+    "executor finally starts."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.0.2 \u2014 hotfix for prod:\n"
     "Dockerfile was missing\n"
     "COPY tiger_buffalo_v5.py,\n"
@@ -98,11 +125,8 @@ CURRENT_MAIN_NOTE = (
     "\n"
     "Bundles v5.0.1: DMI period\n"
     "fixed 14 \u2192 15 to match\n"
-    "Genes spec and v4 code."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "Genes spec and v4 code.\n"
+    "\n"
     "v5.0.0 \u2014 Tiger/Buffalo:\n"
     "two-stage state machine\n"
     "replaces v4 ORB Breakout\n"
@@ -733,14 +757,29 @@ class TradeGeniusBase:
 
     def __init__(self):
         p = self.ENV_PREFIX
-        self.paper_key = os.getenv(p + "ALPACA_PAPER_KEY", "").strip()
-        self.paper_secret = os.getenv(p + "ALPACA_PAPER_SECRET", "").strip()
+        # v5.0.3 \u2014 accept either <PREFIX>ALPACA_PAPER_KEY or the legacy
+        # / shorter <PREFIX>ALPACA_KEY. Railway has GENE_ALPACA_KEY set;
+        # the code formerly only read GENE_ALPACA_PAPER_KEY so Gene's
+        # executor never started. Live keys are intentionally NOT given
+        # this fallback (lower urgency, higher blast radius).
+        self.paper_key = (
+            os.getenv(p + "ALPACA_PAPER_KEY", "").strip()
+            or os.getenv(p + "ALPACA_KEY", "").strip()
+        )
+        self.paper_secret = (
+            os.getenv(p + "ALPACA_PAPER_SECRET", "").strip()
+            or os.getenv(p + "ALPACA_SECRET", "").strip()
+        )
         self.live_key = os.getenv(p + "ALPACA_LIVE_KEY", "").strip()
         self.live_secret = os.getenv(p + "ALPACA_LIVE_SECRET", "").strip()
         # Per-bot Telegram token env var: VAL_TELEGRAM_TG / GENE_TELEGRAM_TG
         # (matches what's provisioned on Railway). Note: this is distinct from
         # the main TradeGenius bot's TELEGRAM_TOKEN at module scope.
         self.telegram_token = os.getenv(p + "TELEGRAM_TG", "").strip()
+        # v5.0.3 \u2014 TELEGRAM_CHAT_ID is no longer required. Kept as an
+        # optional seed for the auto-learned chat-map (back-compat: if an
+        # operator had hand-set this previously, it still works on first
+        # boot before any owner DMs the bot). See `_owner_chats` below.
         self.telegram_chat_id = os.getenv(p + "TELEGRAM_CHAT_ID", "").strip()
         # Unified owner list: all executor bots share the SAME owner set
         # as main (TRADEGENIUS_OWNER_IDS). One list to maintain on Railway.
@@ -763,6 +802,36 @@ class TradeGeniusBase:
         # v4.0.0-beta — last signal seen from the bus (for dashboard).
         # Populated by _on_signal; None until first event arrives.
         self.last_signal: "dict | None" = None
+        # v5.0.3 \u2014 auto-learned owner chat-map. Each entry is
+        # owner_id_str -> chat_id_int. Persisted on disk under
+        # `<PREFIX>EXECUTOR_CHATS_PATH` (default
+        # /data/executor_chats_<name>.json on Railway). Updated whenever
+        # an owner DMs this executor bot (see _record_owner_chat hooked
+        # into _auth_guard). Trade confirmations fan out to every entry.
+        default_chats_path = f"/data/executor_chats_{self.NAME.lower()}.json"
+        self._owner_chats_path = (
+            os.getenv(p + "EXECUTOR_CHATS_PATH", "").strip()
+            or default_chats_path
+        )
+        self._owner_chats: dict[str, int] = {}
+        self._load_owner_chats()
+        # Back-compat seed: if <PREFIX>TELEGRAM_CHAT_ID is set and we
+        # don't yet have any learned chats, treat it as the seed value
+        # for every owner. Once an owner DMs the bot, _record_owner_chat
+        # will overwrite that owner's slot with their real chat_id.
+        if self.telegram_chat_id and not self._owner_chats:
+            try:
+                seed = int(self.telegram_chat_id)
+                for oid in self.owner_ids:
+                    self._owner_chats[oid] = seed
+            except ValueError:
+                logger.warning(
+                    "[%s] %sTELEGRAM_CHAT_ID is not an int (%r); ignoring as seed",
+                    self.NAME, p, self.telegram_chat_id,
+                )
+        # Track whether we've already logged the "empty chat-map" warning
+        # so the warning fires once per process, not on every signal.
+        self._empty_chats_warned = False
 
     # ---------- state files ----------
     def _state_file(self, mode: str = None) -> str:
@@ -922,21 +991,113 @@ class TradeGeniusBase:
             return 0
         return max(1, int(self.dollars_per_entry // price))
 
-    def _send_own_telegram(self, text: str) -> None:
-        """Post to this executor's OWN Telegram chat (not main's)."""
-        if not (self.telegram_token and self.telegram_chat_id):
+    # ---------- chat-map persistence (v5.0.3) ----------
+    def _load_owner_chats(self) -> None:
+        """Load the persisted owner_id -> chat_id map from disk.
+
+        Missing file is fine (first boot or volume reset) — leaves the
+        map empty and we wait for an owner to DM the bot. Corrupted
+        file logs and leaves the map empty (the next /start will
+        rewrite it).
+        """
+        path = self._owner_chats_path
+        if not os.path.exists(path):
             return
         try:
-            import urllib.parse
-            url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
-            data = urllib.parse.urlencode({
-                "chat_id": self.telegram_chat_id,
-                "text": text,
-            }).encode("utf-8")
-            req = urllib.request.Request(url, data=data, method="POST")
-            urllib.request.urlopen(req, timeout=10).read()
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
         except Exception:
-            logger.exception("[%s] telegram send failed", self.NAME)
+            logger.exception(
+                "[%s] failed to load owner-chats file (%s); starting empty",
+                self.NAME, path,
+            )
+            return
+        if not isinstance(raw, dict):
+            logger.warning(
+                "[%s] owner-chats file %s has unexpected shape %s; ignoring",
+                self.NAME, path, type(raw).__name__,
+            )
+            return
+        for k, v in raw.items():
+            try:
+                self._owner_chats[str(k)] = int(v)
+            except (TypeError, ValueError):
+                continue
+
+    def _save_owner_chats(self) -> None:
+        """Atomic write of the chat-map to disk."""
+        path = self._owner_chats_path
+        try:
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._owner_chats, f, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            logger.exception("[%s] save owner-chats failed (%s)", self.NAME, path)
+
+    def _record_owner_chat(self, owner_id: str, chat_id: int) -> None:
+        """Update self._owner_chats and persist if the value changed.
+
+        Called from _auth_guard on every inbound message from a verified
+        owner so any DM (including /start) auto-registers the chat_id
+        without the user needing to run a special command.
+        """
+        if not owner_id or chat_id is None:
+            return
+        owner_id = str(owner_id)
+        try:
+            chat_id = int(chat_id)
+        except (TypeError, ValueError):
+            return
+        if self._owner_chats.get(owner_id) == chat_id:
+            return
+        self._owner_chats[owner_id] = chat_id
+        self._save_owner_chats()
+        logger.info(
+            "[%s] learned owner chat: owner_id=%s chat_id=%s (now %d entries)",
+            self.NAME, owner_id, chat_id, len(self._owner_chats),
+        )
+
+    def _send_own_telegram(self, text: str) -> None:
+        """Post to this executor's OWN Telegram chats.
+
+        v5.0.3: fan out to every learned owner chat in self._owner_chats
+        (auto-learned from inbound /start). If the map is empty, log
+        once and bail — this surfaces the misconfiguration in startup
+        logs instead of silently dropping every trade confirmation
+        (which is what shipped pre-5.0.3).
+        """
+        if not self.telegram_token:
+            return
+        if not self._owner_chats:
+            if not self._empty_chats_warned:
+                logger.warning(
+                    "[%s] notifications EMPTY \u2014 DM this executor's bot "
+                    "/start to enable trade confirmations (chat-map at %s)",
+                    self.NAME, self._owner_chats_path,
+                )
+                self._empty_chats_warned = True
+            return
+        import urllib.parse
+        url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+        # Iterate a snapshot so a concurrent _record_owner_chat can't
+        # mutate the dict mid-loop.
+        for owner_id, chat_id in list(self._owner_chats.items()):
+            try:
+                data = urllib.parse.urlencode({
+                    "chat_id": chat_id,
+                    "text": text,
+                }).encode("utf-8")
+                req = urllib.request.Request(url, data=data, method="POST")
+                urllib.request.urlopen(req, timeout=10).read()
+            except Exception:
+                logger.exception(
+                    "[%s] telegram send failed (owner_id=%s chat_id=%s)",
+                    self.NAME, owner_id, chat_id,
+                )
 
     def _on_signal(self, event: dict) -> None:
         """Listener callback: dispatch on event['kind']."""
@@ -1018,10 +1179,31 @@ class TradeGeniusBase:
 
     # ---------- own Telegram bot ----------
     async def _auth_guard(self, update, context):
-        """Owner-whitelist guard identical in pattern to main's guard."""
+        """Owner-whitelist guard identical in pattern to main's guard.
+
+        v5.0.3 \u2014 also auto-learns the owner's chat_id from any
+        inbound message and persists it to disk via _record_owner_chat,
+        so trade confirmations get fanned out to the right DM without
+        the operator hand-setting <PREFIX>TELEGRAM_CHAT_ID on Railway.
+        """
         eff_user = getattr(update, "effective_user", None)
         uid = str(eff_user.id) if eff_user and getattr(eff_user, "id", None) is not None else ""
         if uid and uid in self.owner_ids:
+            # v5.0.3: capture the chat_id this owner is DMing us from.
+            # effective_chat is the canonical PTB hook; fall back to
+            # message.chat where present for older-style updates.
+            chat = getattr(update, "effective_chat", None)
+            chat_id = getattr(chat, "id", None) if chat is not None else None
+            if chat_id is None:
+                msg = getattr(update, "message", None)
+                if msg is not None:
+                    sub = getattr(msg, "chat", None)
+                    chat_id = getattr(sub, "id", None) if sub is not None else None
+            if chat_id is not None:
+                try:
+                    self._record_owner_chat(uid, int(chat_id))
+                except Exception:
+                    logger.exception("[%s] _record_owner_chat raised", self.NAME)
             return
         logger.warning(
             "[%s] auth_guard dropped non-owner (user_id=%r)", self.NAME, uid or "(none)",
