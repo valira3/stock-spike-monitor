@@ -46,60 +46,11 @@ import secrets
 import struct
 import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────
-# Log ring buffer — attached to root logger once at import time
-# ─────────────────────────────────────────────────────────────
-_LOG_BUFFER_SIZE = 500
-_log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
-_log_seq = 0
-_log_lock = threading.Lock()
-
-
-class _RingBufferHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
-        global _log_seq
-        try:
-            msg = self.format(record)
-        except Exception:
-            try:
-                msg = f"{record.levelname} {record.name}: {record.getMessage()}"
-            except Exception:
-                msg = f"{record.levelname} <unformattable log record>"
-        with _log_lock:
-            _log_seq += 1
-            _log_buffer.append({
-                "seq": _log_seq,
-                "ts": record.created,
-                "level": record.levelname,
-                "msg": msg,
-            })
-
-
-def _install_log_handler() -> None:
-    """Attach the ring buffer to the root logger exactly once."""
-    root = logging.getLogger()
-    for h in root.handlers:
-        if isinstance(h, _RingBufferHandler):
-            return
-    h = _RingBufferHandler()
-    h.setLevel(logging.INFO)
-    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s",
-                                     datefmt="%H:%M:%S"))
-    root.addHandler(h)
-
-
-def _logs_since(seq: int, limit: int = 80) -> list[dict]:
-    with _log_lock:
-        items = [e for e in _log_buffer if e["seq"] > seq]
-    if len(items) > limit:
-        items = items[-limit:]
-    return items
 
 
 # ─────────────────────────────────────────────────────────────
@@ -134,6 +85,16 @@ def _safe(fn, default):
         return v if v is not None else default
     except Exception:
         return default
+
+
+# v4.11.0 \u2014 wrap error_state.snapshot so a (theoretical) failure here
+# can never tank the whole /api/state or /api/executor response.
+def _errors_snapshot_safe(executor: str) -> dict:
+    try:
+        import error_state as _es
+        return _es.snapshot(executor)
+    except Exception:
+        return {"executor": executor, "count": 0, "severity": "green", "entries": []}
 
 
 def _price_for(ticker: str) -> float | None:
@@ -684,6 +645,10 @@ def snapshot() -> dict[str, Any]:
                 "ticker_red": ticker_red[:5],
             },
             "tickers": tickers,
+            # v4.11.0 \u2014 health-pill snapshot for the Main tab. Embedded
+            # directly so the pill updates on every SSE / state poll
+            # tick without a separate /api/errors round-trip.
+            "errors": _errors_snapshot_safe("main"),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)
@@ -998,6 +963,32 @@ async def h_state(request):
     return web.json_response(snap)
 
 
+# v4.11.0 \u2014 health-pill error endpoint. Returns the per-executor
+# today-only error state used by the dashboard pill. Same session-cookie
+# auth as the rest of the dashboard. Read-only and cheap, so no rate
+# limit. The pill itself reads errors from /api/state and
+# /api/executor/{name}; this endpoint exists for the tap-to-expand
+# dropdown so opening the dropdown does not need a full state rebuild.
+async def h_errors(request):
+    from aiohttp import web
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    name = (request.match_info.get("executor") or "").strip().lower()
+    if name not in ("main", "val", "gene"):
+        return web.json_response(
+            {"ok": False, "error": f"unknown executor {name!r}"}, status=400,
+        )
+    try:
+        import error_state as _es
+        snap = _es.snapshot(name)
+    except Exception as e:
+        logger.exception("h_errors: snapshot(%s) failed", name)
+        return web.json_response(
+            {"ok": False, "error": f"snapshot failed: {e}"}, status=500,
+        )
+    return web.json_response(snap)
+
+
 # v4.9.1: unauthenticated endpoint so the post-deploy GHA poller can
 # confirm Railway has rolled out the new BOT_VERSION without holding a
 # session cookie. Version is not sensitive; everything else still
@@ -1050,7 +1041,13 @@ def _executor_snapshot(name: str) -> dict:
     """
     executor = _get_executor(name)
     if executor is None:
-        return {"enabled": False, "error": f"{name} executor not enabled"}
+        return {
+            "enabled": False,
+            "error": f"{name} executor not enabled",
+            # v4.11.0 \u2014 still report the empty health-pill snapshot so
+            # the UI does not need a separate handler for the disabled case.
+            "errors": _errors_snapshot_safe(name),
+        }
 
     mode = executor.mode
     cache_key = (name, mode)
@@ -1058,7 +1055,11 @@ def _executor_snapshot(name: str) -> dict:
     with _executor_cache_lock:
         ent = _executor_cache.get(cache_key)
         if ent and (now - ent[0]) < _EXECUTOR_CACHE_TTL:
-            return ent[1]
+            cached = dict(ent[1])
+            # v4.11.0 \u2014 always overlay a fresh errors snapshot so the
+            # pill count tracks live state instead of the 15s cache.
+            cached["errors"] = _errors_snapshot_safe(name)
+            return cached
 
     payload: dict = {
         "enabled": True,
@@ -1079,12 +1080,14 @@ def _executor_snapshot(name: str) -> dict:
         client = executor._ensure_client()
     except Exception as e:
         payload["error"] = f"client build failed: {e}"
+        payload["errors"] = _errors_snapshot_safe(name)
         with _executor_cache_lock:
             _executor_cache[cache_key] = (now, payload)
         return payload
 
     if client is None:
         payload["error"] = "alpaca client unavailable (missing keys?)"
+        payload["errors"] = _errors_snapshot_safe(name)
         with _executor_cache_lock:
             _executor_cache[cache_key] = (now, payload)
         return payload
@@ -1298,6 +1301,11 @@ def _executor_snapshot(name: str) -> dict:
             "executor %s alpaca fetch failed: %s: %s%s",
             name, err_type, err_msg, extra_str,
         )
+
+    # v4.11.0 \u2014 attach health-pill snapshot to the per-executor
+    # response. Lives outside the cache check so the count refreshes
+    # within the 15s cache TTL.
+    payload["errors"] = _errors_snapshot_safe(name)
 
     with _executor_cache_lock:
         _executor_cache[cache_key] = (now, payload)
@@ -1524,7 +1532,6 @@ async def h_stream(request):
         },
     )
     await resp.prepare(request)
-    last_log_seq = 0
     loop = asyncio.get_running_loop()
     try:
         while True:
@@ -1532,15 +1539,13 @@ async def h_stream(request):
             # share one snapshot rebuild per 10s instead of each paying
             # ~O(N_positions) Alpaca round-trips every 2s. Client-visible
             # SSE cadence is unchanged (still 2s).
+            #
+            # v4.11.0 \u2014 the "logs" SSE event is gone along with the
+            # dashboard log tail card. Errors fan out to the executor's
+            # Telegram channel via report_error() instead.
             snap = await loop.run_in_executor(None, _cached_snapshot)
             payload = json.dumps({"t": "state", "data": snap})
             await resp.write(f"event: state\ndata: {payload}\n\n".encode("utf-8"))
-
-            new_logs = _logs_since(last_log_seq)
-            if new_logs:
-                last_log_seq = new_logs[-1]["seq"]
-                payload = json.dumps({"t": "logs", "data": new_logs})
-                await resp.write(f"event: logs\ndata: {payload}\n\n".encode("utf-8"))
 
             # heartbeat comment to keep proxies from closing
             await resp.write(b": ping\n\n")
@@ -1567,6 +1572,8 @@ def _build_app():
     # v4.0.0-beta — per-executor tabs + index ticker strip.
     app.router.add_get("/api/executor/{name}", h_executor)
     app.router.add_get("/api/indices", h_indices)
+    # v4.11.0 \u2014 health-pill tap-to-expand endpoint.
+    app.router.add_get("/api/errors/{executor}", h_errors)
     app.router.add_get("/stream", h_stream)
     if _STATIC_DIR.exists():
         app.router.add_static("/static/", path=_STATIC_DIR, show_index=False)
@@ -1616,8 +1623,6 @@ def start_in_thread() -> bool:
     # still starts with the in-memory secret. Sessions then behave exactly
     # as they did pre-3.4.29 for this boot only.
     _SESSION_SECRET = _load_or_create_session_secret()
-
-    _install_log_handler()
 
     t = threading.Thread(target=_run_forever, args=(port,),
                          name="dashboard-http", daemon=True)

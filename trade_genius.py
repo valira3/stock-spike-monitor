@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.10.2"
+BOT_VERSION = "4.11.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,31 +76,38 @@ BOT_VERSION = "4.10.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.10.2 \u2014 hotfix:\n"
-    "two more dashboard bugs\n"
-    "that the v4.10.0 polish\n"
-    "introduced. (1) Val/Gene\n"
-    "tabs threw a red 'Fetch\n"
-    "failed: applyGateTriState\n"
-    "is not defined' banner\n"
-    "because the helper was\n"
-    "defined in the main-tab\n"
-    "IIFE only; the executor\n"
-    "IIFE never saw it. Bridge\n"
-    "via window so both\n"
-    "scopes share one copy.\n"
-    "(2) Mobile clock wrapped\n"
-    "to row 2 on iPhone Pro\n"
-    "Max class viewports\n"
-    "(414\u2013430 px) because the\n"
-    "nowrap breakpoint was\n"
-    "capped at 420. Lifted to\n"
-    "500. Dashboard-only;\n"
-    "50/50 harness byte-equal."
+    "v4.11.0 \u2014 feature:\n"
+    "health pill replaces the\n"
+    "noisy log tail card. Brand\n"
+    "row gains a small dot+count\n"
+    "pill next to LIVE: green at\n"
+    "0 errors today, amber on\n"
+    "warnings only, red on any\n"
+    "ERROR/CRITICAL. Tap to\n"
+    "expand the last 10 events.\n"
+    "Errors also fan out to the\n"
+    "executor's own Telegram\n"
+    "channel (Val/Gene routed\n"
+    "via their own bot). Per\n"
+    "(executor, code) dedup at\n"
+    "5 min so a flapping code\n"
+    "cannot spam. Counter\n"
+    "resets at the same daily\n"
+    "boundary as the existing\n"
+    "session reset. /api/logs +\n"
+    "log-tail card removed."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.10.2 \u2014 hotfix:\n"
+    "Val/Gene tab Fetch-failed\n"
+    "banner (cross-IIFE bridge\n"
+    "for applyGateTriState) +\n"
+    "mobile clock nowrap lifted\n"
+    "to 500 px so iPhone Pro\n"
+    "Max class fits one row.\n"
+    "\n"
     "v4.10.1 \u2014 hotfix:\n"
     "finish the two v4.10.0\n"
     "fixes that shipped half-\n"
@@ -3221,6 +3228,169 @@ def send_telegram(text, chat_id=None):
 
 
 # ============================================================
+# v4.11.0 \u2014 health-pill error reporting
+# ============================================================
+# report_error() is the single entry point for "operator should be
+# paged about this" events. It does three things, in order:
+#   1. Logs via the existing logger so existing log surfaces still see
+#      the event (file logs, stderr, the dashboard ring buffer prior
+#      to v4.11.0 \u2014 the dashboard log tail card itself was deleted in
+#      this release, but the underlying logger handlers stay).
+#   2. Appends to error_state so the dashboard health pill counter +
+#      tap-to-expand list reflect the event.
+#   3. If error_state's dedup gate says "send", routes a Telegram
+#      message to the right channel: main bot for "main" events,
+#      executor's own bot for "val" / "gene".
+#
+# The 5-min dedup is per (executor, code) so a flapping ORDER_REJECT
+# does not spam the channel; the dashboard count still increments on
+# every event.
+import error_state as _error_state
+
+
+def _executor_inst(name: str):
+    """Return the live executor instance for "val"/"gene", or None."""
+    n = (name or "").strip().lower()
+    if n == "val":
+        return val_executor
+    if n == "gene":
+        return gene_executor
+    return None
+
+
+def _format_error_telegram(executor: str, code: str, summary: str, detail: str = "") -> str:
+    """Format a Telegram error message respecting the \u226434 chars/line rule.
+
+    Layout:
+      \U0001f6a8 X \u00b7 CODE
+      <summary>
+      <detail line(s)>
+
+      ts: HH:MM:SS ET
+    """
+    ex_label = (executor or "").upper()
+    head = f"\U0001f6a8 {ex_label} \u00b7 {code}"
+
+    def _wrap(text: str, width: int = 34) -> list[str]:
+        out: list[str] = []
+        for raw_line in (text or "").splitlines() or [""]:
+            line = raw_line.rstrip()
+            if len(line) <= width:
+                out.append(line)
+                continue
+            # Greedy word-wrap. If a single word is >width, hard-split it.
+            words = line.split(" ")
+            buf = ""
+            for w in words:
+                if not buf:
+                    if len(w) <= width:
+                        buf = w
+                    else:
+                        # Hard-split overlong word.
+                        while len(w) > width:
+                            out.append(w[:width])
+                            w = w[width:]
+                        buf = w
+                elif len(buf) + 1 + len(w) <= width:
+                    buf = buf + " " + w
+                else:
+                    out.append(buf)
+                    if len(w) <= width:
+                        buf = w
+                    else:
+                        while len(w) > width:
+                            out.append(w[:width])
+                            w = w[width:]
+                        buf = w
+            if buf:
+                out.append(buf)
+        return out
+
+    parts: list[str] = []
+    parts.append(head if len(head) <= 34 else head[:34])
+    parts.extend(_wrap(summary))
+    if detail:
+        parts.extend(_wrap(detail))
+
+    try:
+        ts = _now_et().strftime("%H:%M:%S ET")
+    except Exception:
+        ts = ""
+    if ts:
+        parts.append("")
+        parts.append(f"ts: {ts}")
+    return "\n".join(parts)
+
+
+def report_error(executor: str, code: str, severity: str, summary: str,
+                 detail: str = "") -> bool:
+    """Page-the-operator entry point. See module-level docstring above.
+
+    Returns True iff a Telegram message was actually dispatched (i.e.
+    the dedup gate elapsed). Dashboard count always increments.
+    """
+    # 1. Log via existing logger. Preserve the same level mapping the
+    #    rest of the codebase uses: "warning" -> WARNING, otherwise
+    #    ERROR. CRITICAL events still log at ERROR; the distinction is
+    #    only relevant for the dashboard pill color.
+    sev = (severity or "").strip().lower()
+    log_msg = f"[{(executor or '').upper()}/{code}] {summary}"
+    try:
+        if sev == "warning":
+            logger.warning(log_msg)
+        else:
+            logger.error(log_msg)
+    except Exception:
+        pass
+
+    # 2. Append to error_state ring + check dedup gate.
+    try:
+        ts_iso = _utc_now_iso()
+    except Exception:
+        ts_iso = ""
+    try:
+        should_send = _error_state.record_error(
+            executor=executor,
+            code=code,
+            severity=severity,
+            summary=summary,
+            detail=detail,
+            ts=ts_iso,
+        )
+    except Exception:
+        # Never let error reporting itself raise.
+        logger.exception("report_error: error_state.record_error failed")
+        return False
+
+    if not should_send:
+        return False
+
+    # 3. Dispatch to the right Telegram channel.
+    try:
+        text = _format_error_telegram(executor, code, summary, detail)
+    except Exception:
+        logger.exception("report_error: format failed")
+        return False
+
+    ex = (executor or "").strip().lower()
+    try:
+        if ex in ("val", "gene"):
+            inst = _executor_inst(ex)
+            if inst is not None:
+                inst._send_own_telegram(text)
+            else:
+                # Executor not enabled \u2014 fall back to main bot so the
+                # operator still gets paged.
+                send_telegram(text)
+        else:
+            send_telegram(text)
+    except Exception:
+        logger.exception("report_error: telegram dispatch failed")
+        return False
+    return True
+
+
+# ============================================================
 # YAHOO FINANCE DATA
 # ============================================================
 # Per-scan-cycle cache for 1-min bars. scan_loop() calls
@@ -3869,8 +4039,14 @@ def retighten_all_stops(force_exit=True, fetch_prices=True):
             })
         except Exception as e:
             summary["errors"] += 1
-            logger.error("[RETRO_CAP] %s LONG failed: %s",
-                         ticker, e, exc_info=True)
+            # v4.11.0 \u2014 report_error: trading-path retighten failure.
+            report_error(
+                executor="main",
+                code="RETRO_CAP_LONG_FAILED",
+                severity="error",
+                summary=f"Retro cap LONG failed: {ticker}",
+                detail=f"{type(e).__name__}: {e}",
+            )
 
     # Shorts (paper only)
     for ticker in list(short_positions.keys()):
@@ -3891,8 +4067,14 @@ def retighten_all_stops(force_exit=True, fetch_prices=True):
             })
         except Exception as e:
             summary["errors"] += 1
-            logger.error("[RETRO_CAP] %s SHORT failed: %s",
-                         ticker, e, exc_info=True)
+            # v4.11.0 \u2014 report_error: trading-path retighten failure.
+            report_error(
+                executor="main",
+                code="RETRO_CAP_SHORT_FAILED",
+                severity="error",
+                summary=f"Retro cap SHORT failed: {ticker}",
+                detail=f"{type(e).__name__}: {e}",
+            )
 
     if (summary["tightened"] or summary["ratcheted"]
             or summary["ratcheted_trail"] or summary["exited"]):
@@ -5523,7 +5705,14 @@ def _fire_system_test(label: str) -> None:
     try:
         _run_system_test_sync(label)
     except Exception as exc:
-        logger.error("System test (%s) failed: %s", label, exc, exc_info=True)
+        # v4.11.0 \u2014 report_error: scheduled health check failure.
+        report_error(
+            executor="main",
+            code="SYSTEM_TEST_FAILED",
+            severity="error",
+            summary=f"System test failed: {label}",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def _test_fmp():
@@ -5775,23 +5964,43 @@ def scan_loop():
     try:
         manage_positions()
     except Exception as e:
-        logger.error("manage_positions crashed: %s", e, exc_info=True)
-        err_msg = "⚠️ Bot error in manage_positions: %s" % str(e)[:200]
-        send_telegram(err_msg)
+        # v4.11.0 \u2014 report_error replaces the previous logger.error +
+        # ad-hoc send_telegram pair. The Telegram message now follows
+        # the unified \u226434-char-line health-pill format and is gated
+        # by the per-(executor,code) 5-min dedup.
+        report_error(
+            executor="main",
+            code="MANAGE_POSITIONS_EXCEPTION",
+            severity="error",
+            summary="manage_positions crashed",
+            detail=f"{type(e).__name__}: {str(e)[:200]}",
+        )
     try:
         manage_short_positions()
     except Exception as e:
-        logger.error("manage_short_positions crashed: %s", e, exc_info=True)
-        err_msg = "⚠️ Bot error in manage_short_positions: %s" % str(e)[:200]
-        send_telegram(err_msg)
+        report_error(
+            executor="main",
+            code="MANAGE_SHORT_POSITIONS_EXCEPTION",
+            severity="error",
+            summary="manage_short_positions crashed",
+            detail=f"{type(e).__name__}: {str(e)[:200]}",
+        )
 
     # v3.4.47 — Hard Eject: close positions whose DI or regime
     # has flipped against them (runs before new-entry scan).
     try:
         _tiger_hard_eject_check()
     except Exception as e:
-        logger.error("_tiger_hard_eject_check crashed: %s", e,
-                     exc_info=True)
+        # v4.11.0 \u2014 report_error: hard-eject path failure surfaces
+        # as a paged event so the operator can investigate why an
+        # eject did not run.
+        report_error(
+            executor="main",
+            code="HARD_EJECT_EXCEPTION",
+            severity="error",
+            summary="_tiger_hard_eject_check crashed",
+            detail=f"{type(e).__name__}: {str(e)[:200]}",
+        )
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
@@ -5825,7 +6034,16 @@ def scan_loop():
                     try:
                         execute_entry(ticker, px)
                     except Exception as e:
-                        logger.error("Paper entry error %s: %s", ticker, e)
+                        # v4.11.0 \u2014 report_error: paper-book entry
+                        # exception. Operator should know why a long
+                        # signal failed to execute.
+                        report_error(
+                            executor="main",
+                            code="PAPER_ENTRY_EXCEPTION",
+                            severity="error",
+                            summary=f"Paper entry exception: {ticker}",
+                            detail=f"{type(e).__name__}: {str(e)[:200]}",
+                        )
         except Exception as e:
             logger.error("Entry check error %s: %s", ticker, e)
         # Short entry check (Wounded Buffalo) — same call/execute pattern as long.
@@ -5838,7 +6056,15 @@ def scan_loop():
                     try:
                         execute_short_entry(ticker, px)
                     except Exception as e:
-                        logger.error("Paper short entry error %s: %s", ticker, e)
+                        # v4.11.0 \u2014 report_error: paper-book short
+                        # entry exception.
+                        report_error(
+                            executor="main",
+                            code="PAPER_SHORT_ENTRY_EXCEPTION",
+                            severity="error",
+                            summary=f"Paper short entry exception: {ticker}",
+                            detail=f"{type(e).__name__}: {str(e)[:200]}",
+                        )
         except Exception as e:
             logger.error("Short entry check error %s: %s", ticker, e)
 
@@ -5871,6 +6097,13 @@ def reset_daily_state():
         paper_trades.clear()
         daily_entry_date = today
         daily_short_entry_date = today
+        # v4.11.0 \u2014 health-pill: clear today's error counts at the
+        # same boundary as the existing daily counters so the pill
+        # rolls back to green at session reset.
+        try:
+            _error_state.reset_daily()
+        except Exception:
+            logger.exception("reset_daily_state: error_state.reset_daily failed")
 
     _trading_halted = False
     _trading_halted_reason = ""
@@ -5980,7 +6213,15 @@ def scheduler_thread():
             try:
                 scan_loop()
             except Exception as e:
-                logger.error("scan_loop error: %s", e, exc_info=True)
+                # v4.11.0 \u2014 report_error: top-level scan-loop catch.
+                # If the whole cycle threw, the operator must know.
+                report_error(
+                    executor="main",
+                    code="SCAN_LOOP_EXCEPTION",
+                    severity="error",
+                    summary="scan_loop crashed",
+                    detail=f"{type(e).__name__}: {str(e)[:200]}",
+                )
 
         # Periodic state save — every 5 minutes
         state_elapsed = (now_et - last_state_save).total_seconds() / 60

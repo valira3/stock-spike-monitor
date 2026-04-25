@@ -343,5 +343,5 @@
   ],
   "harness_version": 1,
   "scenario": "loop_full_cycle",
-  "trade_genius_version": "4.10.2"
+  "trade_genius_version": "4.11.0"
 }

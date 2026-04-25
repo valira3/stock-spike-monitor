@@ -328,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.10.2")
+    @t("version: BOT_VERSION is 4.11.0")
     def _():
-        assert m.BOT_VERSION == "4.10.2", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.11.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.10.2")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.11.0")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.10.2"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.11.0"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -753,6 +753,155 @@ def run_local() -> int:
         finally:
             m.val_executor = saved_val
             m.gene_executor = saved_gene
+
+    # ---------- v4.11.0 \u2014 error_state + health pill ----------
+    @t("v4.11.0: error_state module imports and exposes API")
+    def _():
+        import error_state
+        assert callable(getattr(error_state, "record_error", None)), \
+            "error_state.record_error missing"
+        assert callable(getattr(error_state, "snapshot", None)), \
+            "error_state.snapshot missing"
+        assert callable(getattr(error_state, "reset_daily", None)), \
+            "error_state.reset_daily missing"
+        assert callable(getattr(error_state, "_reset_for_tests", None)), \
+            "error_state._reset_for_tests missing"
+
+    @t("v4.11.0: record_error appends and snapshot reports green/warn/red")
+    def _():
+        import error_state
+        error_state._reset_for_tests()
+        snap = error_state.snapshot("main")
+        assert snap["count"] == 0, f"expected 0, got {snap['count']}"
+        assert snap["severity"] == "green", f"expected green, got {snap['severity']}"
+        assert snap["entries"] == [], f"expected [], got {snap['entries']}"
+        # Warning-only \u2192 amber.
+        error_state.record_error("main", "FOO", "warning", "warn line", ts="t1")
+        snap = error_state.snapshot("main")
+        assert snap["count"] == 1
+        assert snap["severity"] == "warning", f"got {snap['severity']}"
+        # Add error \u2192 red.
+        error_state.record_error("main", "BAR", "error", "err line", ts="t2")
+        snap = error_state.snapshot("main")
+        assert snap["count"] == 2
+        assert snap["severity"] == "red", f"got {snap['severity']}"
+        # Newest-first dropdown.
+        codes = [e["code"] for e in snap["entries"]]
+        assert codes[0] == "BAR" and codes[1] == "FOO", f"order={codes}"
+        error_state._reset_for_tests()
+
+    @t("v4.11.0: record_error rings cap at 50 entries per executor")
+    def _():
+        import error_state
+        error_state._reset_for_tests()
+        for i in range(60):
+            error_state.record_error("main", f"CODE{i}", "error", f"line {i}", ts=f"t{i}")
+        snap = error_state.snapshot("main")
+        # ring is bounded; count reflects ring length
+        assert snap["count"] == 50, f"expected 50, got {snap['count']}"
+        # last 10 newest-first
+        assert len(snap["entries"]) == 10
+        assert snap["entries"][0]["code"] == "CODE59"
+        error_state._reset_for_tests()
+
+    @t("v4.11.0: dedup gate suppresses second send within cooldown")
+    def _():
+        import error_state
+        error_state._reset_for_tests()
+        # Inject a fake clock so cooldown is deterministic.
+        clock = {"t": 1000.0}
+        def now_fn():
+            return clock["t"]
+        first = error_state.record_error("main", "DEDUP_CODE", "error", "x",
+                                         ts="t1", now_fn=now_fn)
+        assert first is True, "first event must dispatch"
+        second = error_state.record_error("main", "DEDUP_CODE", "error", "x",
+                                          ts="t2", now_fn=now_fn)
+        assert second is False, "second within cooldown must NOT dispatch"
+        # Advance past 5-min cooldown; next must dispatch.
+        clock["t"] += 301.0
+        third = error_state.record_error("main", "DEDUP_CODE", "error", "x",
+                                         ts="t3", now_fn=now_fn)
+        assert third is True, "after cooldown event must dispatch again"
+        error_state._reset_for_tests()
+
+    @t("v4.11.0: reset_daily clears all three executors and dedup")
+    def _():
+        import error_state
+        error_state._reset_for_tests()
+        for ex in ("main", "val", "gene"):
+            error_state.record_error(ex, "X", "error", "y", ts="t")
+        for ex in ("main", "val", "gene"):
+            assert error_state.snapshot(ex)["count"] == 1, \
+                f"{ex} did not record"
+        error_state.reset_daily()
+        for ex in ("main", "val", "gene"):
+            assert error_state.snapshot(ex)["count"] == 0, \
+                f"{ex} did not reset"
+        # Per-executor reset only clears that executor.
+        error_state.record_error("val", "Y", "error", "z", ts="t")
+        error_state.record_error("gene", "Y", "error", "z", ts="t")
+        error_state.reset_daily("val")
+        assert error_state.snapshot("val")["count"] == 0
+        assert error_state.snapshot("gene")["count"] == 1
+        error_state._reset_for_tests()
+
+    @t("v4.11.0: record_error normalizes unknown executor and severity")
+    def _():
+        import error_state
+        error_state._reset_for_tests()
+        # Unknown executor falls back to main; unknown severity falls back to error.
+        error_state.record_error("ROGUE", "Q", "weird", "y", ts="t")
+        assert error_state.snapshot("main")["count"] == 1
+        assert error_state.snapshot("main")["entries"][0]["severity"] == "error"
+        error_state._reset_for_tests()
+
+    @t("v4.11.0: report_error wrapper exists and routes")
+    def _():
+        assert callable(getattr(m, "report_error", None)), \
+            "trade_genius.report_error missing"
+
+    @t("v4.11.0: /api/errors/{executor} route registered")
+    def _():
+        app = ds._build_app()
+        paths = []
+        for r in app.router.routes():
+            info = r.resource.get_info()
+            paths.append(info.get("path") or info.get("formatter") or "")
+        assert "/api/errors/{executor}" in paths, \
+            f"/api/errors/{{executor}} not registered: {paths}"
+
+    @t("v4.11.0: /api/state embeds errors snapshot")
+    def _():
+        snap = ds.snapshot()
+        assert "errors" in snap, f"errors missing in /api/state: {list(snap.keys())[:20]}"
+        assert isinstance(snap["errors"], dict), f"errors should be dict, got {type(snap['errors'])}"
+        for k in ("count", "severity", "entries", "executor"):
+            assert k in snap["errors"], f"errors.{k} missing"
+
+    @t("v4.11.0: /api/executor/{name} embeds errors snapshot")
+    def _():
+        # Even when Val is disabled, the snapshot should still carry
+        # an errors stanza so the pill never goes blank.
+        saved = getattr(m, "val_executor", None)
+        try:
+            m.val_executor = None
+            payload = ds._executor_snapshot("val")
+            assert "errors" in payload, f"errors missing: {payload}"
+            assert payload["errors"]["executor"] == "val"
+        finally:
+            m.val_executor = saved
+
+    @t("v4.11.0: log buffer infrastructure removed from dashboard_server")
+    def _():
+        # The ring-buffer log handler and /stream logs SSE event were
+        # deprecated in favor of the per-executor health pill. Asserting
+        # absence guards against a partial revert.
+        for name in ("_LOG_BUFFER_SIZE", "_log_buffer", "_log_seq",
+                     "_RingBufferHandler", "_install_log_handler",
+                     "_logs_since"):
+            assert not hasattr(ds, name), \
+                f"v4.11.0: dashboard_server.{name} should be removed"
 
     # ---------- v4.3.0 extended-entry guards ----------
     @t("guard: env flags exist with documented defaults")

@@ -32,6 +32,16 @@
     <span style="color:#e7ecf3">LIVE</span>
     <span id="h-tick" style="color:#5b6572;font-variant-numeric:tabular-nums" title="next scan countdown" aria-label="next scan countdown">&mdash;</span>
   </span>
+  <!-- v4.11.0 — per-executor health pill. Tap to expand last 10 errors.
+       Bound to whichever tab is active (main/val/gene). -->
+  <button type="button" id="tg-health-pill" class="tg-health-pill h-green" aria-haspopup="true" aria-expanded="false" aria-label="Errors today" title="Errors today">
+    <span id="tg-health-dot" class="tg-health-dot"></span>
+    <span id="tg-health-count" class="tg-health-count">0</span>
+  </button>
+  <div id="tg-health-pop" class="tg-health-pop" role="dialog" aria-label="Recent errors" style="display:none">
+    <div class="tg-health-pop-head"><span id="tg-health-pop-title">Errors today</span><button type="button" id="tg-health-close" aria-label="Close">&times;</button></div>
+    <div id="tg-health-list" class="tg-health-list"><div class="tg-health-empty">No errors today.</div></div>
+  </div>
   <span id="tg-brand-clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
 </div>
 
@@ -168,25 +178,18 @@
       </div>
     </section>
 
-    <section>
-      <div class="card">
-        <div class="card-head"><span class="card-title">Log tail<span class="count" id="log-count">· 0 lines</span></span></div>
-        <div class="log" id="log"></div>
-      </div>
-    </section>
-
   </main>
 </div>
 
 </div><!-- /tg-panel-main -->
 
 <!-- v4.0.0-beta — Val tab panel. Mirrors Main's widget layout (KPIs, open
-     positions, proximity, trades, observer, regime shield, gates, logs)
-     so Val's executor state is visible with the same visual vocabulary.
+     positions, proximity, trades, observer, regime shield, gates) so
+     Val's executor state is visible with the same visual vocabulary.
      Populated from /api/executor/val every 15s.  Widgets that do not
      apply to per-executor snapshots (proximity, regime shield, gates,
-     observer, logs, trades table) are rendered as dim placeholders so
-     the grid stays stable.  A `data-tg-exec` attribute on the root lets
+     observer, trades table) are rendered as dim placeholders so the
+     grid stays stable.  A `data-tg-exec` attribute on the root lets
      the shared render fn address the right field ids. -->
 <div id="tg-panel-val" class="tg-panel tg-exec-panel" data-tg-exec="val" style="display:none"></div>
 
