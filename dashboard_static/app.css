@@ -605,3 +605,62 @@
   .gate-paused      { color: var(--warn); }
   .gate-after-hours { color: var(--text-muted); }
   .gate-halted      { color: var(--down); }
+
+  /* ─── v4.12.0 — ticker auto-marquee + after-hours badge ────────────
+     When the rendered items don't fit, JS adds .idx-marquee on the strip
+     and duplicates the .idx-track inner HTML so a single CSS animation
+     produces a seamless infinite scroll (translateX 0 → -50%, since two
+     identical copies are concatenated). When everything fits, JS leaves
+     .idx-marquee off and the track sits centered with no animation.
+     Pause on hover/focus/touch so a user can read a value mid-scroll.
+     prefers-reduced-motion: reduce — disable the animation and let the
+     user manually scroll the strip horizontally instead. */
+  .idx-strip { display: block; }
+  .idx-strip .idx-track {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    will-change: transform;
+  }
+  .idx-strip.idx-marquee .idx-track {
+    animation: idx-marquee-scroll 30s linear infinite;
+  }
+  .idx-strip.idx-marquee:hover  .idx-track,
+  .idx-strip.idx-marquee:focus-within .idx-track,
+  .idx-strip.idx-marquee.is-paused .idx-track {
+    animation-play-state: paused;
+  }
+  @keyframes idx-marquee-scroll {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+  /* No-marquee state: strip stays scrollable horizontally so values are
+     still reachable. With marquee on, hide overflow so the duplicated
+     copy can slide off-screen cleanly. */
+  .idx-strip:not(.idx-marquee) { overflow-x: auto; }
+  .idx-strip.idx-marquee       { overflow: hidden; }
+  /* AH badge: tiny pill that follows the percent. Amber so it reads
+     clearly against either green or red change colors. */
+  .idx-strip .idx-ah {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 4px;
+    border: 1px solid #5b4920;
+    border-radius: 3px;
+    background: #1f1707;
+    color: #f59e0b;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    vertical-align: 1px;
+  }
+  /* Compact phone width: narrower AH badge + tighter padding. */
+  .idx-strip.idx-compact .idx-ah {
+    margin-left: 4px;
+    padding: 0 3px;
+    font-size: 9px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .idx-strip.idx-marquee .idx-track { animation: none; }
+    .idx-strip.idx-marquee             { overflow-x: auto; }
+  }

@@ -1003,12 +1003,14 @@
     const strip = $$("idx-strip");
     if (!strip) return;
     const rows = (data && data.indices) || [];
+    const session = (data && data.session) || "rth";
     // v4.10.0 — compact mode toggle: ≤640px hides the absolute Δ$ value
     // so 5 items fit horizontally on a 390px phone.
     const compact = (typeof window !== "undefined") && (window.innerWidth <= 640);
     strip.classList.toggle("idx-compact", compact);
     if (!rows.length) {
       strip.innerHTML = '<span style="color:#5b6572">indices unavailable</span>';
+      strip.classList.remove("idx-marquee", "is-paused");
       return;
     }
     const parts = rows.map(r => {
@@ -1020,10 +1022,55 @@
       const sign = up ? "+" : "";
       const chg = (r.change === null || r.change === undefined) ? "—" : sign + fmtNum(r.change, 2);
       const pct = (r.change_pct === null || r.change_pct === undefined) ? "—" : sign + fmtNum(r.change_pct, 2) + "%";
-      return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937"><strong class="idx-sym" style="color:#e7ecf3">${esc(r.symbol)}</strong> <span class="idx-px" style="color:#8a96a7">${fmtNum(r.last, 2)}</span> <span class="idx-chg" style="color:${color}">${chg}</span> <span class="idx-pct" style="color:${color};font-size:10.5px">${pct}</span></span>`;
+      // v4.12.0 — after-hours layer. Backend tags r.ah=true outside RTH
+      // when the latest trade differs from the relevant base close. We
+      // append a small `AH` badge plus the AH delta so the user can
+      // tell at a glance how much the index has moved since the close.
+      let ahHtml = "";
+      if (r.ah && r.ah_change !== null && r.ah_change !== undefined) {
+        const ahUp = r.ah_change >= 0;
+        const ahColor = ahUp ? "#34d399" : "#f87171";
+        const ahSign = ahUp ? "+" : "";
+        const ahChg = ahSign + fmtNum(r.ah_change, 2);
+        const ahPct = (r.ah_change_pct === null || r.ah_change_pct === undefined)
+          ? "" : ` ${ahSign}${fmtNum(r.ah_change_pct, 2)}%`;
+        const sessLabel = session === "pre" ? "PRE" : "AH";
+        ahHtml = ` <span class="idx-ah" title="After-hours move vs close">${sessLabel} <span style="color:${ahColor};font-weight:500">${ahChg}${ahPct}</span></span>`;
+      }
+      return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937"><strong class="idx-sym" style="color:#e7ecf3">${esc(r.symbol)}</strong> <span class="idx-px" style="color:#8a96a7">${fmtNum(r.last, 2)}</span> <span class="idx-chg" style="color:${color}">${chg}</span> <span class="idx-pct" style="color:${color};font-size:10.5px">${pct}</span>${ahHtml}</span>`;
     });
-    strip.innerHTML = parts.join("");
+    // v4.12.0 — wrap the items in a single .idx-track. After insertion we
+    // measure scrollWidth-vs-clientWidth: if the items overflow we set
+    // .idx-marquee on the strip AND duplicate the track innerHTML so the
+    // CSS animation (translateX 0 → -50%) loops seamlessly. If everything
+    // fits, we leave .idx-marquee off and the strip behaves like before.
+    strip.innerHTML = `<div class="idx-track">${parts.join("")}</div>`;
+    requestAnimationFrame(() => {
+      const track = strip.querySelector(".idx-track");
+      if (!track) return;
+      strip.classList.remove("idx-marquee", "is-paused");
+      // Reset any stale duplicate from a prior render so the measurement
+      // below reflects the SINGLE-copy width.
+      const overflow = track.scrollWidth > strip.clientWidth + 2;
+      if (overflow) {
+        track.innerHTML = parts.join("") + parts.join("");
+        strip.classList.add("idx-marquee");
+      }
+    });
   }
+  // v4.12.0 — tap-to-pause for touch devices (where :hover doesn't
+  // fire). Toggling .is-paused on the strip parks the animation; a
+  // second tap resumes. Wired once at init; we use 'click' (works for
+  // both mouse and touch) and ignore the event when there's no
+  // marquee class in the first place.
+  (function wireIdxStripPause() {
+    const strip = $$("idx-strip");
+    if (!strip) return;
+    strip.addEventListener("click", () => {
+      if (!strip.classList.contains("idx-marquee")) return;
+      strip.classList.toggle("is-paused");
+    });
+  })();
   // v4.10.0 — debounced re-render on resize so portrait↔landscape recovers
   // the right layout (compact ↔ full) without waiting for the 30s poll.
   let __idxResizeT = null;

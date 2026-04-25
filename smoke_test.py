@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.11.5")
+    @t("version: BOT_VERSION is 4.12.0")
     def _():
-        assert m.BOT_VERSION == "4.11.5", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.12.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -894,6 +894,23 @@ def run_local() -> int:
             assert payload["errors"]["executor"] == "val"
         finally:
             m.val_executor = saved
+
+    # ---------- v4.12.0 — ticker AH session + marquee schema ----------
+    @t("v4.12.0: _classify_session_et returns one of rth/pre/post/closed")
+    def _():
+        s = ds._classify_session_et()
+        assert s in ("rth", "pre", "post", "closed"), f"unexpected: {s!r}"
+
+    @t("v4.12.0: _fetch_indices payload exposes session + per-row ah keys")
+    def _():
+        payload = ds._fetch_indices()
+        assert "session" in payload, \
+            f"top-level session key missing: {list(payload.keys())}"
+        assert payload["session"] in ("rth", "pre", "post", "closed")
+        for row in payload.get("indices", []):
+            for k in ("ah", "ah_change", "ah_change_pct"):
+                assert k in row, \
+                    f"row missing {k!r}: symbol={row.get('symbol')!r} keys={list(row.keys())}"
 
     @t("v4.11.0: log buffer infrastructure removed from dashboard_server")
     def _():
