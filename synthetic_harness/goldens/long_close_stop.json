@@ -143,5 +143,5 @@
   ],
   "harness_version": 1,
   "scenario": "long_close_stop",
-  "trade_genius_version": "4.10.0"
+  "trade_genius_version": "4.10.1"
 }

@@ -17127,5 +17127,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_trade_history_ring_buffer",
-  "trade_genius_version": "4.10.0"
+  "trade_genius_version": "4.10.1"
 }

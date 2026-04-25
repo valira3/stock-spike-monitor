@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.10.0"
+BOT_VERSION = "4.10.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,26 +76,36 @@ BOT_VERSION = "4.10.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.10.0 \u2014 ui polish:\n"
-    "5 dashboard fixes. Mobile\n"
-    "ticker now hides Delta$ on\n"
-    "phones so SPY/QQQ/DIA/IWM\n"
-    "/VIX fit; scroll-snap added.\n"
-    "Killed the dead void below\n"
-    "proximity on phones. Empty\n"
-    "Open Positions card now\n"
-    "collapses to a one-row\n"
-    "Equity/BP/Cash strip. Log\n"
-    "tail wraps cleanly. GATE\n"
-    "shows tri-state: ARMED\n"
-    "(green) / AFTER HOURS\n"
-    "(muted) / PAUSED (amber).\n"
-    "Dashboard-only; harness\n"
-    "byte-equal."
+    "v4.10.1 \u2014 hotfix:\n"
+    "two ui papercuts that\n"
+    "shipped half-fixed. Open\n"
+    "Positions card now actually\n"
+    "collapses on zero positions\n"
+    "(was stretching to match\n"
+    "Proximity height via grid).\n"
+    "Mobile sections below the\n"
+    "proximity panel are visible\n"
+    "again at 390x844: dropped\n"
+    "overflow:hidden from\n"
+    "html/body and switched .app\n"
+    "to block layout on phones\n"
+    "so the page scrolls\n"
+    "naturally. Dashboard-only;\n"
+    "50/50 harness byte-equal."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.10.0 \u2014 ui polish:\n"
+    "5 dashboard fixes (mobile\n"
+    "compact ticker, mobile\n"
+    "void v1, collapsed empty\n"
+    "Positions card v1, log\n"
+    "wrap, GATE tri-state).\n"
+    "v4.10.1 finishes the two\n"
+    "fixes that shipped half-\n"
+    "complete.\n"
+    "\n"
     "v4.9.3 \u2014 cleanup:\n"
     "delete 6 dead SideConfig\n"
     "fields + 2 dead methods\n"

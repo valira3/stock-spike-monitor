@@ -155,6 +155,11 @@
     const body = $("pos-body");
     const strip = $("port-strip");
     const emptyStrip = $("port-strip-empty");
+    // v4.10.1 — also toggle the .is-empty modifier on the card itself so
+    // the grid-2 stretch + flex-column min-heights collapse cleanly. The
+    // CSS rule defeats grid stretch (align-self:start) so the card sizes
+    // to header + one-row strip instead of matching the Proximity card.
+    const card = body && body.parentElement;
 
     if (positions.length === 0) {
       // v4.10.0 — collapsed empty state. Hide the "No open positions."
@@ -164,6 +169,7 @@
       body.innerHTML = "";
       body.style.display = "none";
       strip.style.display = "none";
+      if (card) card.classList.add("is-empty");
       const p = sl.portfolio || {};
       if (emptyStrip) {
         if (typeof p.equity === "number") {
@@ -180,6 +186,7 @@
       return;
     } else {
       body.style.display = "";
+      if (card) card.classList.remove("is-empty");
       if (emptyStrip) emptyStrip.style.display = "none";
       const rows = positions.map((p) => {
         const sideCls = p.side === "SHORT" ? "side-short" : "side-long";

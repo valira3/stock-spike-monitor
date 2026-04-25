@@ -22,7 +22,15 @@
     --sans: "Satoshi", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   *, *::before, *::after { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; overflow: hidden; }
+  /* v4.10.1 — drop overflow:hidden on the page root. v4.10.0 retained
+     it on desktop and only flipped it to auto on ≤900px, but on phones
+     the .app's `height:auto` + grid-template-rows:auto 1fr produced a
+     1fr ghost row that swallowed the lower sections (Today's Trades,
+     Observer, Log Tail) below the fold with no scroll context to reach
+     them. Letting html/body scroll naturally on every viewport fixes
+     mobile and remains a no-op on desktop because .app { height:100dvh }
+     already fills the viewport so the body has no overflow to scroll. */
+  html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg);
     color: var(--text);
@@ -331,21 +339,22 @@
 
   /* Tablet (≤900px): page scrolls naturally; header wraps */
   @media (max-width: 900px) {
-    html, body { overflow: auto; }
     .app {
-      grid-template-rows: auto 1fr;
-      /* v4.10.0 — was `min-height: 100dvh`, which produced a large dead
-         void below the proximity card on phones: the index strip +
-         brand row + tab nav already consume ~140px of viewport, then
-         .app forced the panel to stretch a full 100dvh on top of that
-         when content was short. Letting .app size to its content fixes
-         the empty area without affecting tall pages (browser scroll
-         handles overflow naturally). */
+      /* v4.10.1 — drop the desktop grid layout on phones. Desktop wants
+         display:grid + height:100dvh so .main owns the scroll container.
+         On mobile we want the page itself to scroll, so collapse .app to
+         block layout: that kills the `1fr` ghost row and the 100dvh
+         clamp that together swallowed Today's Trades / Observer / Log
+         Tail below the proximity panel on 390×844. */
+      display: block;
       height: auto;
     }
     .h-brand { padding-right: 10px; }
     .h-brand-name { font-size: 12.5px; }
-    .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; }
+    /* v4.10.1 — release .main from the desktop scroll container; the
+       page body owns scroll on mobile now (html/body overflow defaults
+       to visible). Keeps flex-column gap so sections still space cleanly. */
+    .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; height: auto; }
     .kpi-row { grid-template-columns: repeat(3, 1fr); gap: 10px; }
   }
 
@@ -462,6 +471,15 @@
     scroll-snap-align: start;
   }
   .idx-strip.idx-compact { scroll-snap-type: x mandatory; }
+
+  /* v4.10.1 — defeat .grid-2's `align-items: stretch` so the empty
+     Open Positions card sizes to its (header + one-row strip) content
+     instead of stretching to match the Proximity card next to it.
+     Also pin min-heights to zero on the card and its body so any
+     intrinsic min-content height in the empty state can't keep the
+     card tall when JS sets #pos-body to display:none. */
+  .card.is-empty { align-self: start; min-height: 0; }
+  .card.is-empty .card-body { min-height: 0; }
 
   /* ─── v4.10.0 — empty Open Positions card collapses to a single row ─
      When positions.length === 0, JS hides the "No open positions." body

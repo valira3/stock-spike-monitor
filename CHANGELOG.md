@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.10.1 — 2026-04-25 — Hotfix: finish the two v4.10.0 fixes that shipped half-complete (empty Open Positions card collapse + mobile void below proximity).
+
+Dashboard-only patch. No `trade_genius.py` business logic change. The 50-scenario synthetic harness still replays byte-equal (only the embedded `trade_genius_version` field changes). All 119 smoke tests pass.
+
+**Motivation.** Visual verification of v4.10.0 caught two of the five fixes shipped incomplete:
+
+1. **Empty Open Positions card still tall (~500 px) when 0 positions.** v4.10.0 added `#port-strip-empty` and JS that hid `#pos-body`, but the card itself still stretched to match the Proximity card next to it because `.grid.grid-2` defaults to `align-items: stretch`. Hiding the body did nothing about the card's outer height.
+   - Root cause: `.card { display: flex; flex-direction: column }` inside `.grid-2` with no override — every empty-state card stretched to the tallest sibling regardless of its own content height. `dashboard_static/app.css` ~line 120 (.card rule) + ~line 117 (.grid-2 grid template).
+   - Fix: JS now toggles a `.is-empty` modifier on the `.card` element when `positions.length === 0`. CSS adds `.card.is-empty { align-self: start; min-height: 0 }` so the card sizes to its (header + one-row strip) content. Card collapses to ~80 px on desktop and on mobile.
+
+2. **Mobile void below proximity STILL there at 390×844.** v4.10.0 dropped `.app { min-height: 100dvh }` from the `(max-width: 900px)` block, but that was the wrong target — the underlying problem was `html, body { overflow: hidden }` on the page root combined with `.app { display: grid; grid-template-rows: auto 1fr }`. On mobile the `1fr` ghost row plus body's `overflow: hidden` clipped Today's Trades / Observer / Log Tail entirely off the bottom of the viewport with no scroll context to reach them.
+   - Root cause: `dashboard_static/app.css` line 25 `html, body { overflow: hidden }` (kept for desktop, briefly flipped to `auto` only at ≤900 px) interacting with `.app { grid-template-rows: auto 1fr; height: 100dvh }` at line 38–43.
+   - Fix: drop `overflow: hidden` from `html, body` entirely (it was a safety belt for desktop where `.app { height: 100dvh }` already prevents body overflow — removing it costs nothing on desktop and frees the mobile page to scroll). On `≤900 px`, switch `.app` to `display: block; height: auto` so the `1fr` ghost row goes away and `.main` flows naturally inside it.
+
+The other three v4.10.0 fixes (mobile compact index ticker, log wrap, GATE tri-state coloring) are confirmed working and are untouched.
+
+**Files touched.**
+
+- `dashboard_static/app.css` — drop `overflow: hidden` from `html, body`; switch `.app` to `display: block; height: auto` on `≤900 px`; add `.card.is-empty { align-self: start; min-height: 0 }` rule.
+- `dashboard_static/app.js` — `renderPositions` now toggles `.is-empty` on the Open Positions card alongside the existing `#pos-body` / `#port-strip` / `#port-strip-empty` show/hide logic.
+- `trade_genius.py` — `BOT_VERSION` 4.10.0 → 4.10.1; `CURRENT_MAIN_NOTE` rewritten for this hotfix (≤34 chars/line, no literal em-dashes); `_MAIN_HISTORY_TAIL` carries the v4.10.0 entry forward.
+- `smoke_test.py` — version assertions bumped to 4.10.1.
+- `CHANGELOG.md` — this entry.
+
+**Explicitly NOT touched.** `dashboard_server.py` business logic, `side.py`, `paper_state.py`, `telegram_commands.py`, `synthetic_harness/`, any executor/portfolio code path. The other three v4.10.0 dashboard fixes (compact ticker, log wrap, GATE tri-state) — those are working and were left alone.
+
+---
+
 ## v4.10.0 — 2026-04-25 — UI polish: 5 dashboard fixes (mobile compact ticker, mobile void, collapsed empty positions, log wrap, GATE tri-state).
 
 Dashboard-only release. No `trade_genius.py` business logic change. The 50-scenario synthetic harness still replays byte-equal (only the embedded `trade_genius_version` field changes). All 119 smoke tests pass.
