@@ -701,8 +701,8 @@ Each executor uses the prefix below; replace `{P}` with `VAL_` or `GENE_`.
 | Variable                   | Default | Notes                                                  |
 |----------------------------|---------|--------------------------------------------------------|
 | `{P}ENABLED`               | `1`     | Set to `0` (or `false`) to skip startup                |
-| `{P}ALPACA_PAPER_KEY`      | empty   | Required for paper mode (v5.0.3: falls back to `{P}ALPACA_KEY`) |
-| `{P}ALPACA_PAPER_SECRET`   | empty   | v5.0.3: falls back to `{P}ALPACA_SECRET`               |
+| `{P}ALPACA_PAPER_KEY`      | empty   | Required for paper mode                                |
+| `{P}ALPACA_PAPER_SECRET`   | empty   |                                                        |
 | `{P}ALPACA_LIVE_KEY`       | empty   | Required only to flip live                             |
 | `{P}ALPACA_LIVE_SECRET`    | empty   |                                                        |
 | `{P}TELEGRAM_TG`           | empty   | Per-executor Telegram bot token                        |
@@ -801,6 +801,26 @@ silently skips that signal — the trade still hits Alpaca, but the
 operator must DM the bot once to enable confirmations. This is the bug
 v5.0.3 fixed; pre-5.0.3 the executor silently dropped every
 confirmation when `TELEGRAM_CHAT_ID` was unset on Railway.
+
+### 11.7 Paper and live Alpaca keys are independent (v5.0.4 revert)
+
+Alpaca paper keys and live (real-money) keys are independent
+credentials issued against different endpoints. They are **not**
+interchangeable and must **never** be silently substituted for one
+another. v5.0.3 briefly added a fallback in `TradeGeniusBase.__init__`
+that read `<PREFIX>ALPACA_PAPER_KEY` and fell back to
+`<PREFIX>ALPACA_KEY` if the paper key was unset; v5.0.4 reverted
+that fallback after Val confirmed `GENE_ALPACA_KEY` on Railway is a
+LIVE key. Had Gene's executor instantiated under v5.0.3, paper-mode
+orders would have been routed through live credentials. The correct
+contract — enforced both by `__init__` (v5.0.4 strict reads) and the
+executor startup gate at module scope — is that paper mode reads
+**only** `<PREFIX>ALPACA_PAPER_KEY` / `<PREFIX>ALPACA_PAPER_SECRET`,
+and live mode reads **only** `<PREFIX>ALPACA_LIVE_KEY` /
+`<PREFIX>ALPACA_LIVE_SECRET`. Operators provisioning a new executor
+must set the paper-prefixed env vars from a paper Alpaca account; do
+not repurpose un-prefixed keys, which by repo convention are the
+live-account credentials.
 
 ---
 

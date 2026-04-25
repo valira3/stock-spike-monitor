@@ -67,7 +67,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.0.3"
+BOT_VERSION = "5.0.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -85,6 +85,28 @@ BOT_VERSION = "5.0.3"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.0.4 \u2014 revert: alpaca-key\n"
+    "fallback from v5.0.3 was wrong.\n"
+    "Paper keys and live keys are\n"
+    "INDEPENDENT credentials and must\n"
+    "not be silently substituted.\n"
+    "GENE_ALPACA_KEY on Railway is\n"
+    "actually a live key; the v5.0.3\n"
+    "fallback would have routed paper\n"
+    "trades through live. Reverted.\n"
+    "Chat-map auto-learn from v5.0.3\n"
+    "is unaffected and stays.\n"
+    "\n"
+    "To start Gene's paper executor,\n"
+    "set GENE_ALPACA_PAPER_KEY and\n"
+    "GENE_ALPACA_PAPER_SECRET on\n"
+    "Railway from Gene's paper\n"
+    "account (operator action; no\n"
+    "code change required)."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.0.3 \u2014 hotfix for prod:\n"
     "Val saw zero trade DMs on\n"
     "Fri despite 15 BUYs / 10\n"
@@ -100,18 +122,11 @@ CURRENT_MAIN_NOTE = (
     "to /data/executor_chats_*\n"
     ".json. Trade confirms fan\n"
     "out to every learned\n"
-    "owner.\n"
+    "owner. (v5.0.3 also shipped\n"
+    "an alpaca-key fallback that\n"
+    "was reverted in v5.0.4 \u2014\n"
+    "see current note.)\n"
     "\n"
-    "Also: GENE_ALPACA_KEY now\n"
-    "works as a fallback for\n"
-    "GENE_ALPACA_PAPER_KEY (and\n"
-    "same for VAL prefix +\n"
-    "_SECRET) so Genes paper\n"
-    "executor finally starts."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
     "v5.0.2 \u2014 hotfix for prod:\n"
     "Dockerfile was missing\n"
     "COPY tiger_buffalo_v5.py,\n"
@@ -757,19 +772,8 @@ class TradeGeniusBase:
 
     def __init__(self):
         p = self.ENV_PREFIX
-        # v5.0.3 \u2014 accept either <PREFIX>ALPACA_PAPER_KEY or the legacy
-        # / shorter <PREFIX>ALPACA_KEY. Railway has GENE_ALPACA_KEY set;
-        # the code formerly only read GENE_ALPACA_PAPER_KEY so Gene's
-        # executor never started. Live keys are intentionally NOT given
-        # this fallback (lower urgency, higher blast radius).
-        self.paper_key = (
-            os.getenv(p + "ALPACA_PAPER_KEY", "").strip()
-            or os.getenv(p + "ALPACA_KEY", "").strip()
-        )
-        self.paper_secret = (
-            os.getenv(p + "ALPACA_PAPER_SECRET", "").strip()
-            or os.getenv(p + "ALPACA_SECRET", "").strip()
-        )
+        self.paper_key = os.getenv(p + "ALPACA_PAPER_KEY", "").strip()
+        self.paper_secret = os.getenv(p + "ALPACA_PAPER_SECRET", "").strip()
         self.live_key = os.getenv(p + "ALPACA_LIVE_KEY", "").strip()
         self.live_secret = os.getenv(p + "ALPACA_LIVE_SECRET", "").strip()
         # Per-bot Telegram token env var: VAL_TELEGRAM_TG / GENE_TELEGRAM_TG
