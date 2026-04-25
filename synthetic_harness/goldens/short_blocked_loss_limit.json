@@ -1,0 +1,37 @@
+{
+  "actions": [
+    {
+      "action": {
+        "args": [
+          "META",
+          524.5
+        ],
+        "kind": "execute_short_entry",
+        "label": "halts: daily loss limit"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [],
+      "return_value": null,
+      "save_paper_state_calls": 0,
+      "signals": [],
+      "state_delta": {
+        "_trading_halted": {
+          "after": true,
+          "before": false
+        },
+        "_trading_halted_reason": {
+          "after": "Daily loss limit hit: $-600.00",
+          "before": ""
+        }
+      },
+      "telegram_outbox": [
+        "STOP Trading halted \u2014 daily loss limit hit\nToday P&L: $-600.00\nLimit: $-500.00\nNo new entries until tomorrow."
+      ],
+      "trade_log_writes": []
+    }
+  ],
+  "harness_version": 1,
+  "scenario": "short_blocked_loss_limit",
+  "trade_genius_version": "4.8.1"
+}

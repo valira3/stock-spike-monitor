@@ -1,0 +1,134 @@
+{
+  "actions": [
+    {
+      "action": {
+        "args": [
+          "AAPL"
+        ],
+        "kind": "check_short_entry",
+        "label": "check passes"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [],
+      "return_value": [
+        true,
+        {
+          "closes": [
+            270.1,
+            270.05,
+            270.02,
+            269.9,
+            269.5
+          ],
+          "current_price": 269.5,
+          "highs": [
+            270.20000000000005,
+            270.15000000000003,
+            270.12,
+            270.0,
+            269.6
+          ],
+          "lows": [
+            270.0,
+            269.95,
+            269.91999999999996,
+            269.79999999999995,
+            269.4
+          ],
+          "opens": [
+            270.15000000000003,
+            270.1,
+            270.07,
+            269.95,
+            269.55
+          ],
+          "pdc": 270.5,
+          "timestamps": [
+            1700000000,
+            1700000060,
+            1700000120,
+            1700000180,
+            1700000240
+          ],
+          "volumes": [
+            100000,
+            100000,
+            100000,
+            100000,
+            250000
+          ]
+        }
+      ],
+      "save_paper_state_calls": 0,
+      "signals": [],
+      "state_delta": {},
+      "telegram_outbox": [],
+      "trade_log_writes": []
+    },
+    {
+      "action": {
+        "args": [
+          "AAPL",
+          269.5
+        ],
+        "kind": "execute_short_entry",
+        "label": "executes paper short"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [
+        "SHORT AAPL 37 @ $269.50 (limit $269.48) stop=$271.40 entry#1"
+      ],
+      "return_value": null,
+      "save_paper_state_calls": 1,
+      "signals": [
+        {
+          "kind": "ENTRY_SHORT",
+          "main_shares": 37,
+          "price": 269.5,
+          "reason": "WOUNDED_BUFFALO",
+          "ticker": "AAPL",
+          "timestamp_utc": "2026-04-24T14:30:00+00:00"
+        }
+      ],
+      "state_delta": {
+        "daily_short_entry_count": {
+          "AAPL": {
+            "added": 1
+          }
+        },
+        "paper_cash": {
+          "after": 109971.5,
+          "before": 100000.0
+        },
+        "short_positions": {
+          "AAPL": {
+            "added": {
+              "date": "2026-04-24",
+              "entry_count": 1,
+              "entry_price": 269.5,
+              "entry_time": "09:30:00",
+              "entry_ts_utc": "2026-04-24T14:30:00+00:00",
+              "initial_stop": 271.4,
+              "pdc": 270.5,
+              "shares": 37,
+              "side": "SHORT",
+              "stop": 271.4,
+              "trail_active": false,
+              "trail_low": 269.5,
+              "trail_stop": null
+            }
+          }
+        }
+      },
+      "telegram_outbox": [
+        "\ud83e\ude78 SHORT ENTRY #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker   : AAPL\nEntry    : $269.50 (limit)\nShares   : 37   Proceeds: $9,971.50\nStop     : $271.40 (PDC+$0.90)\nOR Low   : $270.00\nPDC      : $270.50\nSignal   : Wounded Buffalo \u2193\n  1m close < OR Low \u2713\n  Price < PDC \u2713\n  SPY < PDC \u2713\n  QQQ < PDC \u2713\nTime     : 09:30 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+      ],
+      "trade_log_writes": []
+    }
+  ],
+  "harness_version": 1,
+  "scenario": "short_clean_entry",
+  "trade_genius_version": "4.8.1"
+}

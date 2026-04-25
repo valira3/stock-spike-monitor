@@ -1,0 +1,28 @@
+{
+  "actions": [
+    {
+      "action": {
+        "args": [
+          "AAPL"
+        ],
+        "kind": "check_entry",
+        "label": "blocked: at cap"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [],
+      "return_value": [
+        false,
+        null
+      ],
+      "save_paper_state_calls": 0,
+      "signals": [],
+      "state_delta": {},
+      "telegram_outbox": [],
+      "trade_log_writes": []
+    }
+  ],
+  "harness_version": 1,
+  "scenario": "long_blocked_at_cap",
+  "trade_genius_version": "4.8.1"
+}

@@ -1,0 +1,115 @@
+{
+  "actions": [
+    {
+      "action": {
+        "args": [
+          "TSLA",
+          252.5,
+          "HARD_EJECT_TIGER"
+        ],
+        "kind": "close_short_position",
+        "label": "cover HARD_EJECT_TIGER"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [
+        "COVER TSLA 30 @ $252.50 reason=HARD_EJECT_TIGER pnl=$-75.00 (-1.0%)"
+      ],
+      "return_value": null,
+      "save_paper_state_calls": 1,
+      "signals": [
+        {
+          "kind": "EXIT_SHORT",
+          "main_shares": 30,
+          "price": 252.5,
+          "reason": "HARD_EJECT_TIGER",
+          "ticker": "TSLA",
+          "timestamp_utc": "2026-04-24T15:00:00+00:00"
+        }
+      ],
+      "state_delta": {
+        "_last_exit_time": {
+          "TSLA": {
+            "added": {
+              "__dt__": "2026-04-24T15:00:00+00:00"
+            }
+          }
+        },
+        "paper_cash": {
+          "after": 92425.0,
+          "before": 100000.0
+        },
+        "short_positions": {
+          "TSLA": {
+            "removed": {
+              "date": "2026-04-24",
+              "entry_count": 1,
+              "entry_price": 250.0,
+              "entry_time": "09:00:00",
+              "entry_ts_utc": "2026-04-24T13:00:00+00:00",
+              "initial_stop": 252.0,
+              "pdc": 251.0,
+              "shares": 30,
+              "side": "SHORT",
+              "stop": 252.0,
+              "trail_active": false,
+              "trail_low": 250.0,
+              "trail_stop": null
+            }
+          }
+        },
+        "short_trade_history": {
+          "after": [
+            {
+              "action": "COVER",
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "entry_price": 250.0,
+              "entry_time": "09:00:00",
+              "entry_time_iso": "2026-04-24T13:00:00+00:00",
+              "exit_price": 252.5,
+              "exit_time": "10:00 CDT",
+              "exit_time_iso": "2026-04-24T15:00:00+00:00",
+              "pnl": -75.0,
+              "pnl_pct": -1.0,
+              "reason": "HARD_EJECT_TIGER",
+              "shares": 30,
+              "side": "short",
+              "ticker": "TSLA"
+            }
+          ],
+          "before": []
+        }
+      },
+      "telegram_outbox": [
+        "\u274c SHORT CLOSED\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker : TSLA\nShares : 30\nEntry  : $250.00  (total $7,500.00)\nCover  : $252.50  (total $7,575.00)\nP&L    : $-75.00  (-1.0%)\nReason : HARD_EJECT_TIGER\nIn: 09:00:00   Out: 10:00 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+      ],
+      "trade_log_writes": [
+        {
+          "date": "2026-04-24",
+          "effective_stop_at_exit": 252.0,
+          "entry_num": 1,
+          "entry_price": 250.0,
+          "entry_time": "09:00:00",
+          "exit_price": 252.5,
+          "exit_time": "2026-04-24T15:00:00+00:00",
+          "hard_stop_at_exit": 252.0,
+          "hold_seconds": 7200.0,
+          "pnl": -75.0,
+          "pnl_pct": -1.0,
+          "portfolio": "paper",
+          "reason": "HARD_EJECT_TIGER",
+          "shares": 30,
+          "side": "SHORT",
+          "ticker": "TSLA",
+          "trail_active_at_exit": false,
+          "trail_anchor_at_exit": 250.0,
+          "trail_stop_at_exit": null
+        }
+      ]
+    }
+  ],
+  "harness_version": 1,
+  "scenario": "short_close_hard_eject_tiger",
+  "trade_genius_version": "4.8.1"
+}
