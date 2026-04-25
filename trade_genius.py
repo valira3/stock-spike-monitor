@@ -32,6 +32,15 @@ from telegram.error import BadRequest as TelegramBadRequest
 # paper_state.py / telegram_commands.py need.
 from side import Side, CONFIGS  # noqa: E402
 
+# v5.0.0 \u2014 Tiger/Buffalo two-stage state machine. Pure module, safe to
+# import top-level. Canonical spec lives in STRATEGY.md at the repo
+# root; this module's helpers cite rule IDs (e.g. L-P2-R3) that map
+# 1:1 to that spec. The runtime integration is gating-only: v5 sits in
+# front of the v4 entry/close paths and decides when to fire each
+# stage. Unit-sizing math is preserved unchanged from v4 (50/50 staging
+# means "50% of the v4 unit, then add the other 50%").
+import tiger_buffalo_v5 as v5  # noqa: E402
+
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
     CommandHandler, ContextTypes, TypeHandler,
@@ -58,7 +67,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.13.0"
+BOT_VERSION = "5.0.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +85,27 @@ BOT_VERSION = "4.13.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.0.0 \u2014 Tiger/Buffalo:\n"
+    "two-stage state machine\n"
+    "replaces v4 ORB Breakout\n"
+    "(long) and Wounded Buffalo\n"
+    "(short). Per-ticker FSM:\n"
+    "IDLE \u2192 ARMED (4 gates) \u2192\n"
+    "STAGE_1 (50% on, DI 25\n"
+    "double-tap) \u2192 STAGE_2\n"
+    "(full size, DI 30 +\n"
+    "profit, stop \u2192 entry) \u2192\n"
+    "TRAILING (5m HL/LH\n"
+    "ratchet) \u2192 EXITED \u2192\n"
+    "RE_HUNT once \u2192\n"
+    "LOCKED_FOR_DAY. Short\n"
+    "side: DI<25 hard eject is\n"
+    "priority-1 over stop.\n"
+    "Spec: STRATEGY.md."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.13.0 \u2014 major indices:\n"
     "ticker now also shows real\n"
     "S&P 500/Nasdaq/Dow/Russell\n"
@@ -88,11 +118,8 @@ CURRENT_MAIN_NOTE = (
     "rows (SPY/QQQ/DIA/IWM/VIX)\n"
     "stay on top; if Yahoo fails\n"
     "we paint a 'data delayed'\n"
-    "note and keep the ETF feed."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "note and keep the ETF feed.\n"
+    "\n"
     "v4.12.0 \u2014 ticker upgrade:\n"
     "SPY/QQQ/DIA/IWM/VIX strip\n"
     "now auto-marquees when its\n"
@@ -1871,6 +1898,16 @@ daily_short_entry_count: dict = {}   # {ticker: int} — resets daily, separate 
 daily_short_entry_date: str = ""     # v4.7.0 — mirror of daily_entry_date for shorts
 short_trade_history: list = []       # max 500 closed paper shorts
 
+# v5.0.0 \u2014 Tiger/Buffalo two-stage state-machine tracks. Per-ticker per-
+# direction. Schema and transitions defined in STRATEGY.md (canonical
+# spec) and tiger_buffalo_v5.py. Persisted in paper_state.json under
+# the "v5_tracks" key. v4 paper_state files load with empty tracks
+# (defaults to IDLE) \u2014 see paper_state.py load_paper_state.
+v5_long_tracks: dict = {}    # {ticker: track_dict}
+v5_short_tracks: dict = {}   # {ticker: track_dict}
+# C-R1: at most one direction is active per ticker per session.
+v5_active_direction: dict = {}  # {ticker: "long"|"short"|None}
+
 # Daily loss limit (Feature 2)
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
 _trading_halted: bool = False
@@ -2799,6 +2836,144 @@ def tiger_di(ticker):
     if len(closes) < DI_PERIOD + 1:
         return None, None
     return _compute_di(highs, lows, closes)
+
+
+# ============================================================
+# v5.0.0 \u2014 Tiger/Buffalo state-machine integration helpers
+# ============================================================
+# Spec: STRATEGY.md (canonical). Pure-function rule logic lives in
+# tiger_buffalo_v5.py; this block is the runtime glue that pulls live
+# market data into the spec helpers and persists track state.
+def v5_get_track(ticker: str, direction: str) -> dict:
+    """Return the live track for (ticker, direction), creating an IDLE
+    record if absent. C-R1 mutex is enforced separately by callers.
+    """
+    if direction == v5.DIR_LONG:
+        bucket = v5_long_tracks
+    elif direction == v5.DIR_SHORT:
+        bucket = v5_short_tracks
+    else:
+        raise ValueError(f"unknown direction {direction!r}")
+    if ticker not in bucket:
+        bucket[ticker] = v5.new_track(direction)
+    return bucket[ticker]
+
+
+def v5_di_1m_5m(ticker):
+    """Compute DI+ and DI- on both 1m and 5m timeframes for a ticker.
+    Used by L-P2-R1 / S-P2-R1 (gates need both timeframes).
+
+    Returns dict with keys 'di_plus_1m', 'di_minus_1m', 'di_plus_5m',
+    'di_minus_5m'. Any value can be None when warmup is incomplete.
+
+    DMI period = 15 per C-R2 (matches Gene's spec and the canonical
+    v4 DI_PERIOD = 15 constant). v5 and v4 now compute DMI on the
+    same period so signals between the v5 decision engine and the v4
+    dashboard / executor agree byte-for-byte.
+    """
+    bars = fetch_1min_bars(ticker)
+    out = {
+        "di_plus_1m": None, "di_minus_1m": None,
+        "di_plus_5m": None, "di_minus_5m": None,
+    }
+    if not bars:
+        return out
+    closes_1m = [c for c in bars.get("closes", []) if c is not None]
+    highs_1m  = [h for h in bars.get("highs",  []) if h is not None]
+    lows_1m   = [lo for lo in bars.get("lows", []) if lo is not None]
+    n = min(len(closes_1m), len(highs_1m), len(lows_1m))
+    if n >= v5.DMI_PERIOD + 1:
+        dp, dm = _compute_di(highs_1m[:n], lows_1m[:n], closes_1m[:n],
+                             period=v5.DMI_PERIOD)
+        out["di_plus_1m"], out["di_minus_1m"] = dp, dm
+    # 5m \u2014 reuse tiger_di which already merges seed + live 5m buckets
+    # and normalizes on DI_PERIOD = 15. v5 now matches v4's period
+    # exactly (C-R2 corrected v5.0.0 \u2192 v5.0.1 per Gene's flag), so the
+    # v5 5m DI is the same value tiger_di emits.
+    live_5m = _resample_to_5min_ohlc_buckets(
+        bars.get("timestamps", []),
+        bars.get("highs",  []),
+        bars.get("lows",   []),
+        bars.get("closes", []),
+    )
+    seed = _DI_SEED_CACHE.get(ticker) or []
+    merged = {}
+    for b in seed:
+        merged[b["bucket"]] = (b["high"], b["low"], b["close"])
+    for b in live_5m:
+        merged[b["bucket"]] = (b["high"], b["low"], b["close"])
+    if merged:
+        keys = sorted(merged.keys())
+        h5 = [merged[k][0] for k in keys]
+        l5 = [merged[k][1] for k in keys]
+        c5 = [merged[k][2] for k in keys]
+        if len(c5) >= v5.DMI_PERIOD + 1:
+            dp5, dm5 = _compute_di(h5, l5, c5, period=v5.DMI_PERIOD)
+            out["di_plus_5m"], out["di_minus_5m"] = dp5, dm5
+    return out
+
+
+def v5_first_hour_high(ticker):
+    """L-P1-G4: high of the 09:30-10:30 ET window on the current session.
+
+    Returns float or None if the window has not yet completed enough
+    bars to compute. Reads from fetch_1min_bars (same per-cycle cache).
+    """
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return None
+    timestamps = bars.get("timestamps") or []
+    highs = bars.get("highs") or []
+    if not timestamps or not highs:
+        return None
+    # 09:30..10:30 ET. Convert each ts to ET via _now_et's tz, but we
+    # only need date math: build window in ET then compare epochs.
+    now_et = _now_et()
+    window_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    window_close = now_et.replace(hour=10, minute=30, second=0, microsecond=0)
+    open_epoch = window_open.timestamp()
+    close_epoch = window_close.timestamp()
+    fh_high = None
+    for i, ts in enumerate(timestamps):
+        if ts is None:
+            continue
+        if ts < open_epoch or ts >= close_epoch:
+            continue
+        h = highs[i] if i < len(highs) else None
+        if h is None:
+            continue
+        fh_high = h if fh_high is None else max(fh_high, h)
+    return fh_high
+
+
+def v5_opening_range_low_5m(ticker):
+    """S-P1-G4: low of the 09:30-09:35 ET 5m candle.
+
+    The v4 'or_low' dict is computed off the same window, so we read
+    that directly when present; falls back to a fresh scan otherwise.
+    """
+    if ticker in or_low:
+        return or_low[ticker]
+    return None
+
+
+def v5_lock_all_tracks(reason: str) -> int:
+    """Force every v5 track to LOCKED_FOR_DAY. Used by:
+      - C-R4 daily-loss-limit
+      - C-R5 EOD force-close
+      - C-R6 Sovereign Regime Shield
+
+    Returns the count of tracks locked (excluding those already locked).
+    """
+    locked = 0
+    for bucket in (v5_long_tracks, v5_short_tracks):
+        for tk, track in bucket.items():
+            if track.get("state") != v5.STATE_LOCKED:
+                v5.transition_to_locked(track)
+                locked += 1
+    if locked:
+        logger.info("v5: locked %d tracks (%s)", locked, reason)
+    return locked
 
 
 def _tiger_two_bar_long(closes, or_h):
@@ -4504,6 +4679,11 @@ def _check_daily_loss_limit(ticker: str) -> bool:
             "No new entries until tomorrow."
         ) % (pnl_fmt, limit_fmt)
         send_telegram(halt_msg)
+        # C-R4: daily-loss-limit forces every v5 track to LOCKED_FOR_DAY.
+        try:
+            v5_lock_all_tracks("daily_loss_limit")
+        except Exception:
+            logger.exception("v5_lock_all_tracks failed (daily loss limit)")
         return False
 
     return True
@@ -5415,6 +5595,13 @@ def eod_close():
         f"  Cash: ${paper_cash:,.2f}"
     )
     send_telegram(msg)
+    # C-R5: EOD force-close flattens any open v5 position regardless of
+    # state \u2014 we lock every track so the next session starts fresh
+    # rather than resuming a half-mid-state machine.
+    try:
+        v5_lock_all_tracks("eod")
+    except Exception:
+        logger.exception("v5_lock_all_tracks failed (eod)")
     save_paper_state()
 
 
@@ -6172,6 +6359,12 @@ def reset_daily_state():
         paper_trades.clear()
         daily_entry_date = today
         daily_short_entry_date = today
+        # v5.0.0 \u2014 fresh session: clear all v5 state-machine tracks so
+        # tomorrow's first ARMED transition gets a clean tab. C-R5 / C-R6
+        # only LOCK; only the daily reset clears.
+        v5_long_tracks.clear()
+        v5_short_tracks.clear()
+        v5_active_direction.clear()
         # v4.11.0 \u2014 health-pill: clear today's error counts at the
         # same boundary as the existing daily counters so the pill
         # rolls back to green at session reset.

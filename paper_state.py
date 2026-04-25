@@ -95,6 +95,12 @@ def save_paper_state():
             "_scan_paused": tg._scan_paused,
             "_trading_halted": tg._trading_halted,
             "_trading_halted_reason": tg._trading_halted_reason,
+            # v5.0.0 \u2014 Tiger/Buffalo state-machine tracks. v4 paper_state
+            # files lack these keys; load_paper_state defaults missing
+            # tracks to IDLE via v5.load_track().
+            "v5_long_tracks": dict(getattr(tg, "v5_long_tracks", {})),
+            "v5_short_tracks": dict(getattr(tg, "v5_short_tracks", {})),
+            "v5_active_direction": dict(getattr(tg, "v5_active_direction", {})),
             "saved_at": tg._utc_now_iso(),
         }
         tmp = tg.PAPER_STATE_FILE + ".tmp"
@@ -189,6 +195,35 @@ def load_paper_state():
         tg._trading_halted = state.get("_trading_halted", False)
         tg._trading_halted_reason = state.get("_trading_halted_reason", "")
 
+        # v5.0.0 \u2014 Tiger/Buffalo tracks. Backward-compat: v4 state
+        # files lack the v5_* keys; v5.load_track() returns a fresh IDLE
+        # track in that case. We rebuild the dict via load_track so
+        # malformed/partial track records are sanitized rather than
+        # propagating into the live state machine.
+        try:
+            from tiger_buffalo_v5 import load_track, DIR_LONG, DIR_SHORT
+            raw_long = state.get("v5_long_tracks", {}) or {}
+            raw_short = state.get("v5_short_tracks", {}) or {}
+            tg.v5_long_tracks = {
+                t: load_track(raw_long.get(t), DIR_LONG)
+                for t in raw_long
+            }
+            tg.v5_short_tracks = {
+                t: load_track(raw_short.get(t), DIR_SHORT)
+                for t in raw_short
+            }
+            tg.v5_active_direction = dict(
+                state.get("v5_active_direction", {}) or {}
+            )
+        except Exception as v5e:
+            logger.warning(
+                "v5 tracks restore failed: %s \u2014 starting clean",
+                v5e,
+            )
+            tg.v5_long_tracks = {}
+            tg.v5_short_tracks = {}
+            tg.v5_active_direction = {}
+
         # Reset daily counts if saved on a different day
         today = tg._now_et().strftime("%Y-%m-%d")
         if tg.daily_entry_date != today:
@@ -235,6 +270,10 @@ def load_paper_state():
         tg._scan_paused = False
         tg._trading_halted = False
         tg._trading_halted_reason = ""
+        # v5: clear tracks on a recovery reset.
+        tg.v5_long_tracks = {}
+        tg.v5_short_tracks = {}
+        tg.v5_active_direction = {}
         _state_loaded = True
 
 
@@ -254,4 +293,8 @@ def _do_reset_paper():
     tg.paper_cash = tg.PAPER_STARTING_CAPITAL
     tg._trading_halted = False
     tg._trading_halted_reason = ""
+    # v5.0.0 \u2014 reset Tiger/Buffalo tracks on a paper-book reset.
+    tg.v5_long_tracks = {}
+    tg.v5_short_tracks = {}
+    tg.v5_active_direction = {}
     save_paper_state()
