@@ -58,10 +58,11 @@ def _build_registry() -> dict[str, Scenario]:
     from synthetic_harness.scenarios import long_closes
     from synthetic_harness.scenarios import short_closes
     from synthetic_harness.scenarios import scan_loops
+    from synthetic_harness.scenarios import edge_cases
 
     builders = []
     for mod in (long_entries, short_entries, long_closes,
-                short_closes, scan_loops):
+                short_closes, scan_loops, edge_cases):
         builders.extend(mod.SCENARIOS)
     out = {}
     for build in builders:

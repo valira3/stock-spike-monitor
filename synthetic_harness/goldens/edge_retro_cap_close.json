@@ -4,16 +4,16 @@
       "action": {
         "args": [
           "AAPL",
-          268.0,
-          "STOP"
+          268.1,
+          "RETRO_CAP"
         ],
         "kind": "close_position",
-        "label": "close STOP"
+        "label": "close RETRO_CAP"
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
       "paper_log_outbox": [
-        "SELL AAPL 30 @ $268.00 reason=STOP pnl=$-60.00 (-0.7%)"
+        "SELL AAPL 30 @ $268.10 reason=RETRO_CAP pnl=$-57.00 (-0.7%)"
       ],
       "return_value": null,
       "save_paper_state_calls": 1,
@@ -21,17 +21,17 @@
         {
           "kind": "EXIT_LONG",
           "main_shares": 30,
-          "price": 268.0,
-          "reason": "STOP",
+          "price": 268.1,
+          "reason": "RETRO_CAP",
           "ticker": "AAPL",
-          "timestamp_utc": "2026-04-24T15:00:00+00:00"
+          "timestamp_utc": "2026-04-24T14:30:00+00:00"
         }
       ],
       "state_delta": {
         "_last_exit_time": {
           "AAPL": {
             "added": {
-              "__dt__": "2026-04-24T15:00:00+00:00"
+              "__dt__": "2026-04-24T14:30:00+00:00"
             }
           }
         },
@@ -41,19 +41,19 @@
               "action": "SELL",
               "date": "2026-04-24",
               "entry_price": 270.0,
-              "pnl": -60.0,
-              "pnl_pct": -0.74,
-              "price": 268.0,
-              "reason": "STOP",
+              "pnl": -57.0,
+              "pnl_pct": -0.7,
+              "price": 268.1,
+              "reason": "RETRO_CAP",
               "shares": 30,
               "ticker": "AAPL",
-              "time": "10:00 CDT"
+              "time": "09:30 CDT"
             }
           ],
           "before": []
         },
         "paper_cash": {
-          "after": 108040.0,
+          "after": 108043.0,
           "before": 100000.0
         },
         "paper_trades": {
@@ -62,13 +62,13 @@
               "action": "SELL",
               "date": "2026-04-24",
               "entry_price": 270.0,
-              "pnl": -60.0,
-              "pnl_pct": -0.74,
-              "price": 268.0,
-              "reason": "STOP",
+              "pnl": -57.0,
+              "pnl_pct": -0.7,
+              "price": 268.1,
+              "reason": "RETRO_CAP",
               "shares": 30,
               "ticker": "AAPL",
-              "time": "10:00 CDT"
+              "time": "09:30 CDT"
             }
           ],
           "before": []
@@ -86,7 +86,7 @@
               "shares": 30,
               "stop": 268.0,
               "trail_active": false,
-              "trail_high": 270.0
+              "trail_high": 270.5
             }
           }
         },
@@ -99,12 +99,12 @@
               "entry_price": 270.0,
               "entry_time": "09:00:00",
               "entry_time_iso": "2026-04-24T13:00:00+00:00",
-              "exit_price": 268.0,
-              "exit_time": "10:00 CDT",
-              "exit_time_iso": "2026-04-24T15:00:00+00:00",
-              "pnl": -60.0,
-              "pnl_pct": -0.74,
-              "reason": "STOP",
+              "exit_price": 268.1,
+              "exit_time": "09:30 CDT",
+              "exit_time_iso": "2026-04-24T14:30:00+00:00",
+              "pnl": -57.0,
+              "pnl_pct": -0.7,
+              "reason": "RETRO_CAP",
               "shares": 30,
               "side": "long",
               "ticker": "AAPL"
@@ -114,7 +114,7 @@
         }
       },
       "telegram_outbox": [
-        "\u274c EXIT AAPL\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 30\nEntry  : $270.00  \u2192  $268.00\nCost   : $8,100.00  \u2192  $8,040.00\nP&L    : $-60.00  (-0.7%)\nReason : \ud83d\uded1 Hard Stop\nIn: 09:00:00   Out: 10:00 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        "\u274c EXIT AAPL\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 30\nEntry  : $270.00  \u2192  $268.10\nCost   : $8,100.00  \u2192  $8,043.00\nP&L    : $-57.00  (-0.7%)\nReason : RETRO_CAP\nIn: 09:00:00   Out: 09:30 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
       ],
       "trade_log_writes": [
         {
@@ -123,25 +123,25 @@
           "entry_num": 1,
           "entry_price": 270.0,
           "entry_time": "09:00:00",
-          "exit_price": 268.0,
-          "exit_time": "2026-04-24T15:00:00+00:00",
+          "exit_price": 268.1,
+          "exit_time": "2026-04-24T14:30:00+00:00",
           "hard_stop_at_exit": 268.0,
-          "hold_seconds": 7200.0,
-          "pnl": -60.0,
-          "pnl_pct": -0.74,
+          "hold_seconds": 5400.0,
+          "pnl": -57.0,
+          "pnl_pct": -0.7,
           "portfolio": "paper",
-          "reason": "STOP",
+          "reason": "RETRO_CAP",
           "shares": 30,
           "side": "LONG",
           "ticker": "AAPL",
           "trail_active_at_exit": false,
-          "trail_anchor_at_exit": 270.0,
+          "trail_anchor_at_exit": 270.5,
           "trail_stop_at_exit": null
         }
       ]
     }
   ],
   "harness_version": 1,
-  "scenario": "long_close_stop",
+  "scenario": "edge_retro_cap_close",
   "trade_genius_version": "4.8.2"
 }

@@ -3,13 +3,24 @@
     {
       "action": {
         "args": [
-          "AMD"
+          "AAPL"
         ],
-        "kind": "check_short_entry",
-        "label": "blocked: polarity"
+        "kind": "check_entry",
+        "label": "blocked: low vol"
       },
       "gate_snapshot_calls": [],
-      "near_miss_writes": [],
+      "near_miss_writes": [
+        {
+          "close": 270.0,
+          "level": 269.0,
+          "reason": "LOW_VOL",
+          "side": "LONG",
+          "ticker": "AAPL",
+          "vol_avg": 100000,
+          "vol_bar": 100000,
+          "vol_pct": 100.0
+        }
+      ],
       "paper_log_outbox": [],
       "return_value": [
         false,
@@ -23,6 +34,6 @@
     }
   ],
   "harness_version": 1,
-  "scenario": "short_blocked_polarity",
+  "scenario": "edge_volume_below_threshold",
   "trade_genius_version": "4.8.2"
 }

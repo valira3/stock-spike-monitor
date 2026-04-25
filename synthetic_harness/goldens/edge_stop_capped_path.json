@@ -1,0 +1,100 @@
+{
+  "actions": [
+    {
+      "action": {
+        "args": [
+          "AAPL",
+          201.0
+        ],
+        "kind": "execute_entry",
+        "label": "entry: stop capped to floor"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [
+        "BUY AAPL 49 @ $201.00 (limit $201.02) stop=$199.49 entry#1"
+      ],
+      "return_value": null,
+      "save_paper_state_calls": 1,
+      "signals": [
+        {
+          "kind": "ENTRY_LONG",
+          "main_shares": 49,
+          "price": 201.0,
+          "reason": "BREAKOUT",
+          "ticker": "AAPL",
+          "timestamp_utc": "2026-04-24T14:30:00+00:00"
+        }
+      ],
+      "state_delta": {
+        "daily_entry_count": {
+          "AAPL": {
+            "added": 1
+          }
+        },
+        "paper_all_trades": {
+          "after": [
+            {
+              "action": "BUY",
+              "cost": 9849.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 201.02,
+              "price": 201.0,
+              "shares": 49,
+              "stop": 199.49,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ],
+          "before": []
+        },
+        "paper_cash": {
+          "after": 90151.0,
+          "before": 100000.0
+        },
+        "paper_trades": {
+          "after": [
+            {
+              "action": "BUY",
+              "cost": 9849.0,
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "limit_price": 201.02,
+              "price": 201.0,
+              "shares": 49,
+              "stop": 199.49,
+              "ticker": "AAPL",
+              "time": "09:30 CDT"
+            }
+          ],
+          "before": []
+        },
+        "positions": {
+          "AAPL": {
+            "added": {
+              "date": "2026-04-24",
+              "entry_count": 1,
+              "entry_price": 201.0,
+              "entry_time": "09:30:00",
+              "entry_ts_utc": "2026-04-24T14:30:00+00:00",
+              "initial_stop": 199.49,
+              "pdc": 199.0,
+              "shares": 49,
+              "stop": 199.49,
+              "trail_active": false,
+              "trail_high": 201.0
+            }
+          }
+        }
+      },
+      "telegram_outbox": [
+        "\ud83d\udcc8 LONG ENTRY AAPL  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $201.00  (limit $201.02)\nShares : 49   Cost: $9,849.00\nStop   : $199.49  (entry \u22120.75%)\nOR High: $200.00   PDC: $199.00\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  Price > PDC \u2713\n  SPY > PDC \u2713\n  QQQ > PDC \u2713\nTime   : 09:30 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+      ],
+      "trade_log_writes": []
+    }
+  ],
+  "harness_version": 1,
+  "scenario": "edge_stop_capped_path",
+  "trade_genius_version": "4.8.2"
+}
