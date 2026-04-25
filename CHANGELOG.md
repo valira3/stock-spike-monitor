@@ -4,6 +4,42 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.10.0 — 2026-04-25 — UI polish: 5 dashboard fixes (mobile compact ticker, mobile void, collapsed empty positions, log wrap, GATE tri-state).
+
+Dashboard-only release. No `trade_genius.py` business logic change. The 50-scenario synthetic harness still replays byte-equal (only the embedded `trade_genius_version` field changes). All 119 smoke tests pass.
+
+**Motivation.** Five small but accumulating UI papercuts that have been sitting in the polish backlog:
+
+1. **Mobile index ticker overflow.** The `#idx-strip` (SPY/QQQ/DIA/IWM/VIX) renders symbol + price + Δ$ + Δ% per item. On a 390px iPhone, five items at ~280 chars wide simply do not fit and the strip became a thin horizontal-scroll trough that nobody used. Phones now hide the absolute Δ$ value (price + Δ% remain), trim per-item padding, and add `scroll-snap-type: x mandatory` so a swipe settles cleanly on a symbol boundary instead of mid-cell. A 150 ms-debounced `resize` listener re-renders the strip on portrait↔landscape rotation so the layout recovers without waiting for the 30 s poll.
+
+2. **Mobile dead void below proximity.** On phones, the page rendered ~5 proximity rows then a large empty band before the rest of the layout resumed. Root cause: the `(max-width: 900px)` block set `.app { min-height: 100dvh }`, which forced the panel container to fill a full viewport _on top of_ the `idx-strip`/brand/tabs already consuming ~140 px above it. Dropped the `min-height` so `.app` sizes to its content; tall pages still scroll naturally via the body. Verified portrait 390×844 (no void) and desktop 1280×900 (no broken layout, no double-scroll).
+
+3. **Empty Open Positions card collapses to a one-row strip.** When `positions.length === 0` (most of the time outside RTH and on Val/Gene paper), the card was rendering its title, a "No open positions." empty state, _plus_ the full 2-row Equity/BP + Cash/Invested/Shorted strip — eating ~25 % of desktop vertical real estate. Now the empty branch hides the body and the 2-row strip and shows a single-row condensed strip with `Equity · Buying power · Cash`. The card title and `· 0` count remain visible. Returning to ≥1 position restores the full layout untouched.
+
+4. **Log tail wraps cleanly.** `.log` was `white-space: pre; overflow-x: auto`, which produced a horizontal scrollbar on the LOG TAIL section whenever a single line (URL, JSON dump, traceback frame) overflowed 1280 px. Switched to `white-space: pre-wrap; word-break: break-all; overflow-x: hidden`. Newlines between entries are still preserved.
+
+5. **GATE KPI tri-state coloring.** The GATE cell showed amber `PAUSED` 24/7 outside market hours because `gates.scan_paused` is the union of `_scan_paused` (operator `/pause`) and `_scan_idle_hours` (auto-idle outside RTH). That conflated "manually paused" with "market closed". Three semantic states are now distinguished by inferring after-hours from `regime.mode === "CLOSED"`:
+   - **ARMED** (green) — market open, scanner ready (was "READY").
+   - **AFTER HOURS** (muted grey) — market closed; the bot is correctly idle (NEW state).
+   - **PAUSED** (amber) — operator-initiated halt during RTH (preserved semantics, narrower trigger).
+   - **HALTED** (red) — emergency halt (unchanged).
+   - **WAIT** (amber) — opening range still being collected (unchanged).
+
+  The same renderer is now shared by the Main, Val, and Gene panels (extracted into `applyGateTriState(gateEl, gateSubEl, gates, regime)` so the three call sites stay in sync).
+
+**Files touched.**
+
+- `dashboard_static/index.html` — added `class="idx-strip"` hook and the new `port-strip-empty` element.
+- `dashboard_static/app.css` — mobile `min-height` fix; log wrap rules; new `.idx-compact`, `.port-strip-empty.*`, and `.gate-armed/-paused/-after-hours/-halted` classes.
+- `dashboard_static/app.js` — compact-mode toggle on `#idx-strip` + debounced resize re-render; collapsed empty Open Positions branch; shared `applyGateTriState` helper used by Main + both exec panels.
+- `trade_genius.py` — `BOT_VERSION` 4.9.3 → 4.10.0; `CURRENT_MAIN_NOTE` rewritten for this release (still ≤34 chars/line, no literal em-dashes); `_MAIN_HISTORY_TAIL` carries the v4.9.3 entry forward.
+- `smoke_test.py` — version assertions bumped to 4.10.0.
+- `CHANGELOG.md` — this entry.
+
+**Explicitly NOT touched.** `dashboard_server.py` business logic, `side.py`, `paper_state.py`, `telegram_commands.py`, `synthetic_harness/`, any executor/portfolio code path. The harness goldens record Telegram messages and bot state, not dashboard rendering, so the UI is free of byte-equal constraints.
+
+---
+
 ## v4.9.3 — 2026-04-25 — cleanup: delete unused SideConfig fields and methods (M2/M3).
 
 Small, targeted cleanup PR. No bot behavior change.

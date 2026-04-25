@@ -12,7 +12,7 @@
 <!-- v4.0.0-beta — index ticker strip (SPY/QQQ/DIA/IWM/VIX) polls /api/indices
      every 30s. Visible on all tabs. VIX may show "n/a" — Alpaca's equity
      feed does not cover the volatility index. -->
-<div id="idx-strip" style="display:flex;gap:0;background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px;color:#e7ecf3;padding:6px 14px;overflow-x:auto;white-space:nowrap">
+<div id="idx-strip" class="idx-strip" style="display:flex;gap:0;background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px;color:#e7ecf3;padding:6px 14px;overflow-x:auto;white-space:nowrap">
   <span id="idx-placeholder" style="color:#5b6572">indices loading…</span>
 </div>
 
@@ -65,6 +65,22 @@
         <div class="card-head"><span class="card-title">Open positions<span class="count" id="pos-count">· 0</span></span></div>
         <div class="card-body flush" id="pos-body">
           <div class="empty">No open positions.</div>
+        </div>
+        <!-- v4.10.0 — collapsed empty-state strip. JS shows this when
+             positions.length === 0 in place of the body + 2-row strip. -->
+        <div id="port-strip-empty" class="port-strip-empty" style="display:none">
+          <div class="pse-cell">
+            <div class="pse-label">Equity</div>
+            <div class="pse-value" id="pse-equity">—</div>
+          </div>
+          <div class="pse-cell">
+            <div class="pse-label">Buying power</div>
+            <div class="pse-value" id="pse-bp">—</div>
+          </div>
+          <div class="pse-cell">
+            <div class="pse-label">Cash</div>
+            <div class="pse-value" id="pse-cash">—</div>
+          </div>
         </div>
         <div id="port-strip" style="display:none">
           <!-- Row 1: hero — Equity + Buying Power. Net numbers first. -->

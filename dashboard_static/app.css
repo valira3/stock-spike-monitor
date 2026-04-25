@@ -286,7 +286,13 @@
   .log {
     font-family: var(--mono); font-size: 11px; line-height: 1.65;
     color: var(--text-muted); padding: 10px 14px 12px;
-    white-space: pre; overflow-x: auto; overscroll-behavior: contain;
+    /* v4.10.0 — wrap long log lines instead of horizontal-scroll. Some
+       log entries (full URLs, JSON dumps, stack traces) overflow the
+       1280px viewport; pre-wrap + break-all keeps the container clean
+       and removes the bottom scrollbar while still preserving newlines
+       between entries. */
+    white-space: pre-wrap; word-break: break-all;
+    overflow-x: hidden; overscroll-behavior: contain;
     max-height: 280px; overflow-y: auto;
   }
   .log .t { color: var(--text-dim); }
@@ -328,7 +334,14 @@
     html, body { overflow: auto; }
     .app {
       grid-template-rows: auto 1fr;
-      height: auto; min-height: 100dvh;
+      /* v4.10.0 — was `min-height: 100dvh`, which produced a large dead
+         void below the proximity card on phones: the index strip +
+         brand row + tab nav already consume ~140px of viewport, then
+         .app forced the panel to stretch a full 100dvh on top of that
+         when content was short. Letting .app size to its content fixes
+         the empty area without affecting tall pages (browser scroll
+         handles overflow naturally). */
+      height: auto;
     }
     .h-brand { padding-right: 10px; }
     .h-brand-name { font-size: 12.5px; }
@@ -436,3 +449,45 @@
     }
     .trade-row .tr-qty { display: none; }
   }
+
+  /* ─── v4.10.0 — index strip compact mode ────────────────────────────
+     On phones (≤640px) the SPY/QQQ/DIA/IWM/VIX strip can't fit price +
+     Δ$ + Δ% for all 5 symbols in 390px. We hide the absolute Δ$ column,
+     trim padding, and add scroll-snap so swipes settle on a clean item
+     boundary. Tabular nums keep widths stable while values change. */
+  .idx-strip { font-variant-numeric: tabular-nums lining-nums; }
+  .idx-strip.idx-compact .idx-chg { display: none; }
+  .idx-strip.idx-compact .idx-item {
+    padding: 0 8px !important;
+    scroll-snap-align: start;
+  }
+  .idx-strip.idx-compact { scroll-snap-type: x mandatory; }
+
+  /* ─── v4.10.0 — empty Open Positions card collapses to a single row ─
+     When positions.length === 0, JS hides the "No open positions." body
+     and shows a one-row condensed strip (Equity · Buying power · Cash).
+     Saves ~25% of desktop vertical real-estate during the off-hours +
+     paper-account-empty case. */
+  .port-strip-empty {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+    border-top: 1px solid var(--border); background: var(--surface-2);
+  }
+  .port-strip-empty .pse-cell {
+    padding: 8px 14px; border-right: 1px solid var(--border);
+  }
+  .port-strip-empty .pse-cell:last-child { border-right: none; }
+  .port-strip-empty .pse-label {
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); margin-bottom: 2px;
+  }
+  .port-strip-empty .pse-value {
+    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+  }
+
+  /* ─── v4.10.0 — GATE tri-state coloring ────────────────────────────
+     Distinguish "market closed" (muted) from "manually paused" (amber)
+     from "armed/ready" (green). HALTED keeps its existing red. */
+  .gate-armed       { color: var(--up); }
+  .gate-paused      { color: var(--warn); }
+  .gate-after-hours { color: var(--text-muted); }
+  .gate-halted      { color: var(--down); }

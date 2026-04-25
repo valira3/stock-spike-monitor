@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.9.3"
+BOT_VERSION = "4.10.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,26 @@ BOT_VERSION = "4.9.3"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.10.0 \u2014 ui polish:\n"
+    "5 dashboard fixes. Mobile\n"
+    "ticker now hides Delta$ on\n"
+    "phones so SPY/QQQ/DIA/IWM\n"
+    "/VIX fit; scroll-snap added.\n"
+    "Killed the dead void below\n"
+    "proximity on phones. Empty\n"
+    "Open Positions card now\n"
+    "collapses to a one-row\n"
+    "Equity/BP/Cash strip. Log\n"
+    "tail wraps cleanly. GATE\n"
+    "shows tri-state: ARMED\n"
+    "(green) / AFTER HOURS\n"
+    "(muted) / PAUSED (amber).\n"
+    "Dashboard-only; harness\n"
+    "byte-equal."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.9.3 \u2014 cleanup:\n"
     "delete 6 dead SideConfig\n"
     "fields + 2 dead methods\n"
@@ -83,11 +103,8 @@ CURRENT_MAIN_NOTE = (
     "change; 50/50 harness\n"
     "replays byte-equal and\n"
     "the v4.9.2 validator\n"
-    "still passes at import."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "still passes at import.\n"
+    "\n"
     "v4.9.2 \u2014 hardening:\n"
     "fail-fast import guard for\n"
     "SideConfig *_attr fields.\n"

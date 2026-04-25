@@ -45,5 +45,5 @@
   ],
   "harness_version": 1,
   "scenario": "loop_halted_trading",
-  "trade_genius_version": "4.9.0"
+  "trade_genius_version": "4.10.0"
 }

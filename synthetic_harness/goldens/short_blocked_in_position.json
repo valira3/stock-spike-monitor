@@ -24,5 +24,5 @@
   ],
   "harness_version": 1,
   "scenario": "short_blocked_in_position",
-  "trade_genius_version": "4.9.0"
+  "trade_genius_version": "4.10.0"
 }
