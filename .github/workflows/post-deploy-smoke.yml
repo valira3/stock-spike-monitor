@@ -23,7 +23,11 @@ jobs:
     timeout-minutes: 15
 
     env:
-      DASHBOARD_URL: https://stock-spike-monitor-production.up.railway.app
+      # v4.11.4 — the Railway service was renamed to TradeGenius; the old
+      # `stock-spike-monitor-production.up.railway.app` domain has 404'd
+      # since the rename, breaking post-deploy smoke on every PR since
+      # v4.9.3. Real prod is `tradegenius.up.railway.app`.
+      DASHBOARD_URL: https://tradegenius.up.railway.app
       DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
       TELEGRAM_TP_TOKEN: ${{ secrets.TELEGRAM_TP_TOKEN }}
       TELEGRAM_TP_CHAT_ID: ${{ secrets.TELEGRAM_TP_CHAT_ID }}

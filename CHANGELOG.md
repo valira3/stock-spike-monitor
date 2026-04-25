@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.11.4 — 2026-04-25 — HOTFIX: repoint CI smoke `DASHBOARD_URL` + close last 2 px clock clip at 390.
+
+Two unrelated tiny fixes shipped together because both are one-line edits.
+
+**(1) Post-deploy CI smoke has been red on every PR since v4.9.3.** Root cause: `.github/workflows/post-deploy-smoke.yml` hardcoded `DASHBOARD_URL: https://stock-spike-monitor-production.up.railway.app`, the pre-rename Railway domain. The service was renamed to TradeGenius in v3.5.1 and the old domain has been returning 404 since (visible in the workflow logs as `poll N: version=None ok=status=404`). The workflow's 5-minute Railway poll then times out and the whole job fails. Fix: change the env line to `https://tradegenius.up.railway.app`. We've shipped 7 PRs (v4.10.0 → v4.11.3) with red post-deploy smoke despite Railway being healthy on every one of them; this lifts the noise floor so a real post-deploy regression will actually surface in CI.
+
+**(2) Trim brand-row horizontal padding 10px → 6px at ≤400px.** v4.11.3 dropped the clock font to 10px and brought 390 px from `12:38:1…` clipping to `12:47:24 E` clipping (the trailing `T` was hairline-clipped by ~2 px). 8 px recovered from the row's left+right padding lets the clock fit fully inside the 390 viewport. The 380 and 360 sub-bands below this block already use their own paddings and are unaffected.
+
+No HTML/JS/Python change beyond `BOT_VERSION` + `CURRENT_MAIN_NOTE`/`_MAIN_HISTORY_TAIL` rotation. Desktop ≥501 px untouched. 84/84 local smoke green.
+
+---
+
 ## v4.11.3 — 2026-04-25 — HOTFIX: close 390 px brand-row clipping (CSS-only).
 
 v4.11.2 dropped the brand-row clock font from 13 px to 11 px under the existing `@media (max-width: 500px)` band. That fixed 430 px (iPhone Pro Max) cleanly — the clock rendered fully as `HH:MM:SS ET` with the LIVE pill's `tick NNs` on a single line. But at 390 px (iPhone 13 / 14 / 15 standard) the clock still clipped at `12:38:1…`; the line was ~30–40 px short of fitting.
