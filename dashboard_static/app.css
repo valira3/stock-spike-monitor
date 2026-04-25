@@ -493,7 +493,7 @@
      are gentle enough that we don't need a separate 500 band. */
   @media (max-width: 500px) {
     #tg-brand-row {
-      gap: 8px !important;
+      gap: 6px !important;
       flex-wrap: nowrap !important;
       padding: 8px 12px !important;
     }
@@ -501,12 +501,18 @@
     #tg-live-pill {
       gap: 6px !important;
       padding: 3px 8px 3px 7px !important;
+      white-space: nowrap !important;
     }
+    /* v4.11.2 — keep the inline countdown ("tick NNs") on one line
+       inside the LIVE pill on iPhone Pro Max class viewports. */
+    #h-tick { white-space: nowrap !important; }
     .tg-health-pill {
       gap: 5px;
       padding: 3px 7px 3px 6px;
     }
-    #tg-brand-clock { font-size: 13px; }
+    /* v4.11.2 — shrink clock so brand row fits at 390/430 with the
+       new health pill. v4.11.1 left it at 13px and ET was clipped. */
+    #tg-brand-clock { font-size: 11px !important; letter-spacing: 0; white-space: nowrap; }
   }
   @media (max-width: 380px) {
     #tg-brand-row {

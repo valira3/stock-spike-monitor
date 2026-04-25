@@ -45,5 +45,5 @@
   ],
   "harness_version": 1,
   "scenario": "loop_scan_paused",
-  "trade_genius_version": "4.11.1"
+  "trade_genius_version": "4.11.2"
 }

@@ -209,5 +209,5 @@
   ],
   "harness_version": 1,
   "scenario": "loop_trail_promotion",
-  "trade_genius_version": "4.11.1"
+  "trade_genius_version": "4.11.2"
 }

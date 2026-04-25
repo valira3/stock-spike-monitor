@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.11.2 — 2026-04-25 — HOTFIX: shrink mobile clock font so brand row fits at 390/430 widths (CSS-only).
+
+v4.11.0 added a per-executor health pill into the brand row between `#tg-live-pill` and `#tg-brand-clock`. With that extra item, the brand row overflowed at iPhone Pro Max class viewports (390 px and 430 px): the clock was clipped on the right edge (`12:16:54 ET` rendered as `12:16:54` or `12:16:4…` with the `ET` suffix lost), and the LIVE pill's inline `tick NNs` countdown wrapped to two lines inside the pill, distorting the row height.
+
+Fix is CSS-only, scoped to the existing `@media (max-width: 500px)` mobile breakpoint introduced in v4.10.2. Three changes inside that block: (1) `#tg-brand-clock` font drops from 13px → 11px with `letter-spacing: 0` and explicit `white-space: nowrap`; (2) `#tg-live-pill` and `#h-tick` get `white-space: nowrap !important` so the inline countdown stays on one line inside the pill regardless of horizontal-room budget; (3) `#tg-brand-row` `gap` tightens 8px → 6px to give the row a few more pixels of breathing room.
+
+No HTML change. No JS change. No Python change beyond `BOT_VERSION` + the `CURRENT_MAIN_NOTE`/`_MAIN_HISTORY_TAIL` rotation. Desktop ≥501px is untouched. The 380px and 360px tighter sub-bands below already had their own clock font sizes (12px) and are unaffected.
+
+50/50 synthetic harness replays byte-equal except for the `trade_genius_version` field. 84/84 local smoke green.
+
+---
+
 ## v4.11.1 — 2026-04-25 — HOTFIX: add `error_state.py` to Dockerfile COPY whitelist (prod-down).
 
 v4.11.0 introduced a new top-level module `error_state.py` but the Dockerfile uses an explicit `COPY` whitelist that was not updated in the same PR. The container crashed on every start with `ModuleNotFoundError: No module named 'error_state'`, taking https://tradegenius.up.railway.app down with a 502 on every endpoint for ~3 hours. One-line fix: add `COPY error_state.py .` next to the other top-level Python COPYs. No behavior change otherwise; 50/50 synthetic replay byte-equal except the `trade_genius_version` field. Lesson: any new top-level Python module must also be added to the Dockerfile in the same PR.

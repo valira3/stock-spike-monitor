@@ -23,5 +23,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_idempotent_close_no_position",
-  "trade_genius_version": "4.11.1"
+  "trade_genius_version": "4.11.2"
 }
