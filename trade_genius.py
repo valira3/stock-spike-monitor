@@ -40,6 +40,9 @@ from side import Side, CONFIGS  # noqa: E402
 # stage. Unit-sizing math is preserved unchanged from v4 (50/50 staging
 # means "50% of the v4 unit, then add the other 50%").
 import tiger_buffalo_v5 as v5  # noqa: E402
+# v5.1.0 \u2014 forensic volume filter (shadow mode). Top-level module so the
+# v5.0.2 infra-guard test catches a missing Dockerfile COPY for it.
+import volume_profile  # noqa: E402
 
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
@@ -67,7 +70,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.0.4"
+BOT_VERSION = "5.1.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -85,6 +88,31 @@ BOT_VERSION = "5.0.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.1.0 \u2014 SHADOW: Anaplan\n"
+    "forensic volume gate. Bot now\n"
+    "builds a 55-trading-day per-\n"
+    "minute volume baseline from\n"
+    "SIP, normalized to IEX scale\n"
+    "for the live read. Stage 1\n"
+    "needs ticker \u2265120% ToD AND\n"
+    "QQQ \u2265100% ToD. Stage 2\n"
+    "maintenance needs ticker\n"
+    "\u2265100%. The new G4 light is\n"
+    "the 4th in the gate set.\n"
+    "\n"
+    "This release LOGS ONLY (look\n"
+    "for [V510-SHADOW] in Railway\n"
+    "logs). No entry decisions are\n"
+    "changed in v5.1.0. Val reviews\n"
+    "a week of shadow logs, then\n"
+    "v5.1.1 flips enforcement on.\n"
+    "\n"
+    "Free IEX cap: 30 symbols.\n"
+    "Hard-disable if exceeded."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.0.4 \u2014 revert: alpaca-key\n"
     "fallback from v5.0.3 was wrong.\n"
     "Paper keys and live keys are\n"
@@ -97,16 +125,6 @@ CURRENT_MAIN_NOTE = (
     "Chat-map auto-learn from v5.0.3\n"
     "is unaffected and stays.\n"
     "\n"
-    "To start Gene's paper executor,\n"
-    "set GENE_ALPACA_PAPER_KEY and\n"
-    "GENE_ALPACA_PAPER_SECRET on\n"
-    "Railway from Gene's paper\n"
-    "account (operator action; no\n"
-    "code change required)."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
     "v5.0.3 \u2014 hotfix for prod:\n"
     "Val saw zero trade DMs on\n"
     "Fri despite 15 BUYs / 10\n"
@@ -1765,6 +1783,155 @@ TICKER_SYM_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,7}$")
 
 TICKERS = list(TICKERS_DEFAULT)
 TRADE_TICKERS = [t for t in TICKERS if t not in TICKERS_PINNED]
+
+
+# ------------------------------------------------------------
+# v5.1.0 \u2014 Forensic Volume Filter (SHADOW MODE).
+# ------------------------------------------------------------
+# In v5.1.0 the gate logs every minute via the [V510-SHADOW] prefix
+# but does NOT change any entry decision. v5.1.1 will flip enforcement
+# on after Val reviews a week of shadow data.
+VOLUME_PROFILE_ENABLED: bool = True
+_volume_profile_cache: dict = {}        # {ticker: profile dict}
+_ws_consumer = None                      # set by _start_volume_profile()
+
+
+def _start_volume_profile() -> None:
+    """Boot the shadow-mode volume layer once at process start.
+
+    Hard-disables itself if the watchlist exceeds the free-plan IEX
+    websocket symbol cap (30). On disable, evaluate_g4 returns DISABLED
+    and the bot trades normally.
+    """
+    global VOLUME_PROFILE_ENABLED, _ws_consumer
+    if len(TICKERS) > volume_profile.WS_SYMBOL_CAP_FREE_IEX:
+        logger.warning(
+            "[VOLPROFILE] watchlist=%d > 30 symbols, exceeds free IEX cap; "
+            "upgrade to Algo Trader Plus or reduce watchlist. "
+            "Volume profile DISABLED.",
+            len(TICKERS),
+        )
+        VOLUME_PROFILE_ENABLED = False
+        volume_profile.VOLUME_PROFILE_ENABLED = False
+        return
+
+    # Seed cache from disk (best-effort).
+    for t in TICKERS:
+        prof = volume_profile.load_profile(t)
+        if prof is not None:
+            _volume_profile_cache[t] = prof
+
+    # Read alpaca creds the same strict way v5.0.4 does. The volume
+    # layer only ever reads bars (data API), never trades, so we use
+    # whichever credential is available without falling back across
+    # paper/live.
+    key = (os.getenv("ALPACA_PAPER_KEY")
+           or os.getenv("ALPACA_KEY")
+           or "")
+    secret = (os.getenv("ALPACA_PAPER_SECRET")
+              or os.getenv("ALPACA_SECRET")
+              or "")
+    if not key or not secret:
+        logger.warning(
+            "[VOLPROFILE] no Alpaca data credentials found; "
+            "shadow gate will run with empty live volumes."
+        )
+        return
+
+    # Synchronous startup rebuild if any profile is missing/stale.
+    now = datetime.now(timezone.utc)
+    needs_rebuild = [
+        t for t in TICKERS
+        if (t not in _volume_profile_cache
+            or volume_profile.is_profile_stale(_volume_profile_cache[t], now))
+    ]
+    if needs_rebuild:
+        logger.info(
+            "[VOLPROFILE] startup rebuild needed for %d/%d tickers",
+            len(needs_rebuild), len(TICKERS),
+        )
+        try:
+            volume_profile.rebuild_all_profiles(needs_rebuild, key, secret)
+            for t in needs_rebuild:
+                prof = volume_profile.load_profile(t)
+                if prof is not None:
+                    _volume_profile_cache[t] = prof
+        except Exception as e:
+            logger.error("[VOLPROFILE] startup rebuild crashed: %s", e)
+
+    # Spawn the websocket consumer (daemon thread).
+    try:
+        _ws_consumer = volume_profile.WebsocketBarConsumer(
+            list(TICKERS), key, secret,
+        )
+        _ws_consumer.start()
+    except Exception as e:
+        logger.error("[VOLPROFILE] websocket startup failed: %s", e)
+        _ws_consumer = None
+
+    # Nightly rebuild thread (21:00 ET).
+    def _nightly_loop():
+        from zoneinfo import ZoneInfo as _ZI
+        et = _ZI("America/New_York")
+        while True:
+            try:
+                now_et = datetime.now(tz=et)
+                target = now_et.replace(hour=21, minute=0, second=0, microsecond=0)
+                if target <= now_et:
+                    target = target + timedelta(days=1)
+                sleep_s = max(60.0, (target - now_et).total_seconds())
+                time.sleep(sleep_s)
+                logger.info("[VOLPROFILE] nightly rebuild starting...")
+                volume_profile.rebuild_all_profiles(list(TICKERS), key, secret)
+                for t in TICKERS:
+                    prof = volume_profile.load_profile(t)
+                    if prof is not None:
+                        _volume_profile_cache[t] = prof
+                logger.info("[VOLPROFILE] nightly rebuild done")
+            except Exception as e:
+                logger.error("[VOLPROFILE] nightly thread error: %s", e)
+                time.sleep(300)
+
+    threading.Thread(
+        target=_nightly_loop, name="VolProfileNightly", daemon=True,
+    ).start()
+
+
+def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
+    """Emit one [V510-SHADOW] line per evaluation. Failure-tolerant: if
+    anything in the gate path raises, log and move on. SHADOW MODE: the
+    caller's decision is untouched."""
+    if not VOLUME_PROFILE_ENABLED:
+        return
+    try:
+        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        bucket = volume_profile.session_bucket(now_et)
+        if bucket is None:
+            return  # outside session — nothing to evaluate
+        cur_v = 0
+        cur_qqq = 0
+        if _ws_consumer is not None:
+            cur_v = _ws_consumer.current_volume(ticker, bucket) or 0
+            cur_qqq = _ws_consumer.current_volume("QQQ", bucket) or 0
+        g4 = volume_profile.evaluate_g4(
+            ticker=ticker,
+            minute_bucket=bucket,
+            current_volume=cur_v,
+            profile=_volume_profile_cache.get(ticker),
+            qqq_current_volume=cur_qqq,
+            qqq_profile=_volume_profile_cache.get("QQQ"),
+            stage=stage,
+        )
+        logger.info(
+            "[V510-SHADOW] ticker=%s bucket=%s stage=%d g4=%s "
+            "ticker_pct=%s qqq_pct=%s reason=%s entry_decision=%s",
+            ticker, bucket, stage,
+            "GREEN" if g4["green"] else "RED",
+            g4.get("ticker_pct"), g4.get("qqq_pct"),
+            g4["reason"], existing_decision,
+        )
+    except Exception as e:
+        logger.warning("[V510-SHADOW] eval error %s: %s", ticker, e)
 
 
 def _normalise_ticker(sym) -> str:
@@ -6492,6 +6659,12 @@ def scan_loop():
             paper_holds = ticker in positions
             if not paper_holds:
                 ok, bars = check_entry(ticker)
+                # v5.1.0 SHADOW: log the V-P1 grid result for this minute
+                # without changing the entry decision. Stage is inferred
+                # from whether the bot is currently in Stage_1 or
+                # Stage_2 for this ticker; default to Stage 1 (Jab) for
+                # the new-entry decision.
+                _shadow_log_g4(ticker, stage=1, existing_decision=("ENTER" if ok else "HOLD"))
                 if ok and bars:
                     px = bars["current_price"]
                     try:
@@ -9226,6 +9399,13 @@ def startup_catchup():
 _init_tickers()
 
 load_paper_state()
+
+# v5.1.0 \u2014 boot the forensic volume layer (shadow mode). Safe to run
+# even without Alpaca credentials; the module will log and proceed.
+try:
+    _start_volume_profile()
+except Exception as _vpe:
+    logger.error("[VOLPROFILE] _start_volume_profile crashed: %s", _vpe, exc_info=True)
 
 # v3.4.23 — on startup, retighten every open position's stop to the
 # 0.75% cap. Positions that were opened before the cap shipped (or

@@ -1061,4 +1061,76 @@ and the daily entry counters all roll forward unchanged.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.0.0"`.*
+## 17. Forensic Volume Filter (Anaplan logic) — v5.1.0
+
+The §17 layer asks a sharper volume question than the legacy "is volume
+high" tests: *is this minute's volume higher than the 55-trading-day
+seasonal average for THIS exact ET timestamp?* It is shipped in v5.1.0
+in **shadow mode** — every minute is logged with `[V510-SHADOW]` but
+the existing entry decision is unchanged. v5.1.1 will flip enforcement.
+
+### 17.1 Volume Library — parameters
+
+| Parameter        | Value                                                         |
+|------------------|---------------------------------------------------------------|
+| Window           | 55 NYSE trading days, weekends/holidays excluded.             |
+| Bucket           | Per-minute, ET, `"0931".."1559"`. 09:30 auction excluded.     |
+| Baseline feed    | Alpaca historical 1m bars, `feed=sip`, `end < now-16min`.     |
+| Live feed        | Alpaca websocket `/iex` (free-plan, 30-symbol cap).           |
+| Cross-feed scale | Per-ticker IEX/SIP volume ratio over the window. Median is published on the IEX scale. |
+| Per-bucket store | `{"median": int, "p75": int, "p90": int, "n": int}`.          |
+| Holiday calendar | Hard-coded NYSE list for 2026-2027 in `volume_profile.py`. No new dep. |
+| Stale threshold  | 36 hours since `build_ts_utc`.                                |
+| Disk format      | `/data/volume_profiles/<TICKER>.json` (atomic tmp+rename).    |
+| Rebuild cadence  | Nightly at 21:00 ET (daemon thread); synchronous on startup if any profile is missing or stale. |
+
+### 17.2 V-P1 grid — the three rules
+
+| Rule        | Condition                                                     |
+|-------------|---------------------------------------------------------------|
+| **V-P1-R1** | Ticker volume ≥ **120%** of ToD avg → authorizes Stage 1.     |
+| **V-P1-R2** | QQQ volume ≥ **100%** of QQQ ToD avg → "Market Tide" confirms Stage 1. |
+| **V-P1-R3** | Ticker volume ≥ **100%** of ToD avg → maintains Stage 2.      |
+
+`evaluate_g4(...)` returns `{green, reason, ticker_pct, qqq_pct, rule}`.
+Stage 1 requires R1 AND R2; Stage 2 requires R3 only.
+
+### 17.3 Shadow Mode rollout plan
+
+1. **v5.1.0 (this release)** — G4 is computed and logged with the
+   `[V510-SHADOW]` prefix. Existing entry decisions are unchanged.
+   Synthetic harness 50/50 byte-equal preserved.
+2. **Observation window** — Val greps `[V510-SHADOW]` in Railway logs
+   over a week of trading. Diff `g4=GREEN` against actual entries to
+   quantify how restrictive the gate would be.
+3. **v5.1.1 (separate PR)** — Flip enforcement. G4 joins G1/G2/G3 as
+   a hard ARM precondition (see §18.1).
+
+### 17.4 Failure modes
+
+| Condition                                            | `evaluate_g4` reason          |
+|------------------------------------------------------|-------------------------------|
+| Profile file missing for ticker                      | `NO_PROFILE_<T>`              |
+| Profile older than `STALE_HOURS` (36h)               | `STALE_PROFILE_<T>`           |
+| Bucket not in profile (e.g. 09:30 or 16:00)          | `NO_BUCKET_<T>_<bucket>`      |
+| `len(TICKERS) > 30` (free IEX cap exceeded)          | `DISABLED` (whole module off) |
+| Websocket dropped                                    | Reconnect with jittered backoff; 5-min REST replay on resume. |
+
+## 18. Long permission gates (G1..G4)
+
+### 18.1 Four-light gate set (v5.1.0+)
+
+| Gate | Light name      | Source                          | Status in v5.1.0 |
+|------|-----------------|---------------------------------|------------------|
+| G1   | Index Alpha     | Tiger/Buffalo §6.2              | enforced         |
+| G2   | Ticker Alpha    | Tiger/Buffalo §6.2              | enforced         |
+| G3   | 5m OR Structure | Tiger/Buffalo §6.2              | enforced         |
+| G4   | Volume          | `volume_profile.evaluate_g4`    | **shadow only — ENFORCED in v5.1.1+; v5.1.0 logs only** |
+
+In v5.1.0 the bot logs G4 every minute via `_shadow_log_g4` but does
+not block any entry on it. The §19 short-side gates read the same
+baseline; no short-specific code change in v5.1.0.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.1.0"`.*
