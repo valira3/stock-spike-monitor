@@ -701,12 +701,13 @@ Each executor uses the prefix below; replace `{P}` with `VAL_` or `GENE_`.
 | Variable                   | Default | Notes                                                  |
 |----------------------------|---------|--------------------------------------------------------|
 | `{P}ENABLED`               | `1`     | Set to `0` (or `false`) to skip startup                |
-| `{P}ALPACA_PAPER_KEY`      | empty   | Required for paper mode                                |
-| `{P}ALPACA_PAPER_SECRET`   | empty   |                                                        |
+| `{P}ALPACA_PAPER_KEY`      | empty   | Required for paper mode (v5.0.3: falls back to `{P}ALPACA_KEY`) |
+| `{P}ALPACA_PAPER_SECRET`   | empty   | v5.0.3: falls back to `{P}ALPACA_SECRET`               |
 | `{P}ALPACA_LIVE_KEY`       | empty   | Required only to flip live                             |
 | `{P}ALPACA_LIVE_SECRET`    | empty   |                                                        |
 | `{P}TELEGRAM_TG`           | empty   | Per-executor Telegram bot token                        |
-| `{P}TELEGRAM_CHAT_ID`      | empty   | Per-executor chat id                                   |
+| `{P}TELEGRAM_CHAT_ID`      | empty   | v5.0.3: optional seed only (auto-learn fills the map)  |
+| `{P}EXECUTOR_CHATS_PATH`   | `/data/executor_chats_{name}.json` | v5.0.3 auto-learned chat-map     |
 | `{P}DOLLARS_PER_ENTRY`     | `10000` | Dollar size per executor entry                         |
 | `ALPACA_ENDPOINT_PAPER`    | unset   | URL host override (no `/v2`); shared by both executors |
 | `ALPACA_ENDPOINT_TRADE`    | unset   | URL host override (no `/v2`); shared by both executors |
@@ -783,6 +784,23 @@ level (which calls `loop.add_signal_handler(...)` from a non-main
 thread and crashes). `dashboard_server._ssm()` resolves the live module
 via `sys.modules['__main__']` first; helper modules
 (`paper_state.py`, `telegram_commands.py`) follow the same pattern.
+
+### 11.6 Executor trade-confirmation DM (v5.0.3 auto-learn)
+
+Each executor's Telegram bot ships its trade confirmations via
+`_send_own_telegram`, which fans out to a learned `owner_id -> chat_id`
+map persisted at `/data/executor_chats_{name}.json` (path overridable
+via `<PREFIX>EXECUTOR_CHATS_PATH`). The map is populated transparently
+on the existing `_auth_guard` choke point — any inbound DM from an
+owner registers that owner's chat_id, atomically writes to disk, and
+survives Railway redeploys. **No `<PREFIX>TELEGRAM_CHAT_ID` env var is
+required** (it's accepted as a back-compat seed only). If the map is
+empty at signal time, the bot logs once at startup
+(`[Val] notifications EMPTY — DM this executor's bot /start ...`) and
+silently skips that signal — the trade still hits Alpaca, but the
+operator must DM the bot once to enable confirmations. This is the bug
+v5.0.3 fixed; pre-5.0.3 the executor silently dropped every
+confirmation when `TELEGRAM_CHAT_ID` was unset on Railway.
 
 ---
 

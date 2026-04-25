@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.0.2")
+    @t("version: BOT_VERSION is 5.0.3")
     def _():
-        assert m.BOT_VERSION == "5.0.2", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.0.3", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -2079,7 +2079,140 @@ def run_local() -> int:
             f"COPY whitelist (would crash prod on import): {missing}"
         )
 
-    return run_suite("LOCAL SMOKE TESTS (v5.0.2 Tiger/Buffalo)")
+    # ---------- v5.0.3 executor notifier + alpaca-key fallback ----------
+    # Shared helper: minimal subclass that loads from env / chat-map without
+    # running the network-touching `start()` path or spawning tg threads.
+    def _make_exec(env_prefix: str = "SMOKE_", chats_path: str = ""):
+        # Patch ENV_PREFIX on a fresh subclass each call so env-var loads
+        # pick up whatever the test set up. NAME -> "SmokeExec" for log
+        # readability and a deterministic default chats path.
+        class _SmokeExec(m.TradeGeniusBase):
+            NAME = "SmokeExec"
+            ENV_PREFIX = env_prefix
+        if chats_path:
+            os.environ[env_prefix + "EXECUTOR_CHATS_PATH"] = chats_path
+        return _SmokeExec()
+
+    def _clear_smoke_env(prefix: str = "SMOKE_"):
+        for k in list(os.environ.keys()):
+            if k.startswith(prefix):
+                del os.environ[k]
+
+    @t("executor v5.0.3: chat-map persistence round-trip")
+    def _():
+        _clear_smoke_env()
+        path = str(tmp_dir / "smoke_chats_roundtrip.json")
+        if os.path.exists(path):
+            os.remove(path)
+        bot = _make_exec(chats_path=path)
+        bot._record_owner_chat("111", 222)
+        bot._record_owner_chat("333", 444)
+        assert os.path.exists(path), "chat-map file not written"
+        # Reload via fresh instance and verify identity.
+        bot2 = _make_exec(chats_path=path)
+        assert bot2._owner_chats == {"111": 222, "333": 444}, \
+            f"reload mismatch: {bot2._owner_chats}"
+
+    @t("executor v5.0.3: _send_own_telegram with empty chat-map is no-op")
+    def _():
+        _clear_smoke_env()
+        os.environ["SMOKE_TELEGRAM_TG"] = "fake-token"
+        path = str(tmp_dir / "smoke_chats_empty.json")
+        if os.path.exists(path):
+            os.remove(path)
+        bot = _make_exec(chats_path=path)
+        assert bot._owner_chats == {}, f"expected empty map, got {bot._owner_chats}"
+        # Patch urllib.request.urlopen to detect any unexpected call.
+        import urllib.request as urlreq
+        calls = []
+        orig = urlreq.urlopen
+        urlreq.urlopen = lambda *a, **kw: calls.append((a, kw)) or (_ for _ in ()).throw(
+            AssertionError("urlopen must not be called when chat-map is empty"))
+        try:
+            bot._send_own_telegram("hello")
+        finally:
+            urlreq.urlopen = orig
+        assert calls == [], f"urlopen was called: {calls}"
+
+    @t("executor v5.0.3: _send_own_telegram fans out to every owner in chat-map")
+    def _():
+        _clear_smoke_env()
+        os.environ["SMOKE_TELEGRAM_TG"] = "fake-token"
+        path = str(tmp_dir / "smoke_chats_fanout.json")
+        if os.path.exists(path):
+            os.remove(path)
+        bot = _make_exec(chats_path=path)
+        bot._record_owner_chat("111", 222)
+        bot._record_owner_chat("333", 444)
+        import urllib.request as urlreq
+        calls = []
+        class _FakeResp:
+            def read(self_inner): return b""
+        def _fake_urlopen(req, timeout=10):
+            calls.append((req.full_url, req.data))
+            return _FakeResp()
+        orig = urlreq.urlopen
+        urlreq.urlopen = _fake_urlopen
+        try:
+            bot._send_own_telegram("trade msg")
+        finally:
+            urlreq.urlopen = orig
+        assert len(calls) == 2, f"expected 2 fan-out calls, got {len(calls)}: {calls}"
+        # Both calls go to sendMessage with our fake token.
+        for url, _ in calls:
+            assert "api.telegram.org/botfake-token/sendMessage" in url, url
+        chat_ids = [d for _, d in calls]
+        joined = b"\n".join(chat_ids)
+        assert b"chat_id=222" in joined and b"chat_id=444" in joined, \
+            f"missing chat_ids in payloads: {joined!r}"
+
+    @t("executor v5.0.3: alpaca paper key reads ALPACA_PAPER_KEY when set")
+    def _():
+        _clear_smoke_env()
+        os.environ["SMOKE_ALPACA_PAPER_KEY"] = "primary-key"
+        os.environ["SMOKE_ALPACA_PAPER_SECRET"] = "primary-secret"
+        bot = _make_exec()
+        assert bot.paper_key == "primary-key", f"got {bot.paper_key!r}"
+        assert bot.paper_secret == "primary-secret", f"got {bot.paper_secret!r}"
+
+    @t("executor v5.0.3: alpaca paper key falls back to ALPACA_KEY when primary unset")
+    def _():
+        _clear_smoke_env()
+        # Primary unset on purpose; fallback should win.
+        os.environ["SMOKE_ALPACA_KEY"] = "fallback-key"
+        os.environ["SMOKE_ALPACA_SECRET"] = "fallback-secret"
+        bot = _make_exec()
+        assert bot.paper_key == "fallback-key", f"got {bot.paper_key!r}"
+        assert bot.paper_secret == "fallback-secret", f"got {bot.paper_secret!r}"
+
+    @t("executor v5.0.3: chat_id auto-learn updates the persisted map")
+    def _():
+        _clear_smoke_env()
+        path = str(tmp_dir / "smoke_chats_autolearn.json")
+        if os.path.exists(path):
+            os.remove(path)
+        bot = _make_exec(chats_path=path)
+        owner = next(iter(m.TRADEGENIUS_OWNER_IDS))
+        # Simulate a PTB Update from an owner DM.
+        class FakeUser:
+            id = int(owner)
+        class FakeChat:
+            id = 7777777
+        class FakeUpdate:
+            effective_user = FakeUser()
+            effective_chat = FakeChat()
+        import asyncio
+        asyncio.run(bot._auth_guard(FakeUpdate(), None))
+        assert bot._owner_chats.get(owner) == 7777777, \
+            f"auto-learn missed: {bot._owner_chats}"
+        assert os.path.exists(path), "auto-learn did not persist to disk"
+        import json as _json
+        with open(path) as f:
+            on_disk = _json.load(f)
+        assert on_disk.get(owner) == 7777777, f"on-disk mismatch: {on_disk}"
+        _clear_smoke_env()
+
+    return run_suite("LOCAL SMOKE TESTS (v5.0.3 Tiger/Buffalo)")
 
 
 # ============================================================
