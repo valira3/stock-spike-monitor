@@ -34,16 +34,8 @@ class SideConfig:
     enforcement mechanism.
     """
     side: Side
-    # Telegram labels
-    entry_label: str
-    entry_emoji: str
-    exit_emoji: str
-    cash_word: str
-    # OR polarity (descriptive only; logic uses the methods below)
+    # OR attribute name on the ticker row ("or_high" vs "or_low").
     or_attr: str
-    polarity_op: str
-    # DI direction
-    di_attr: str
     # State-dict names \u2014 looked up via globals() in trade_genius
     positions_attr: str
     daily_count_attr: str
@@ -98,26 +90,10 @@ class SideConfig:
             return +shares * price
         return -shares * price
 
-    def or_breakout(self, current_price: float, or_h: float, or_l: float) -> bool:
-        if self.side.is_long:
-            return current_price > or_h
-        return current_price < or_l
-
-    def di_aligned(self, plus_di: float, minus_di: float) -> bool:
-        if self.side.is_long:
-            return plus_di > minus_di
-        return minus_di > plus_di
-
 
 LONG = SideConfig(
     side=Side.LONG,
-    entry_label="LONG ENTRY",
-    entry_emoji="\U0001F4C8",   # chart up
-    exit_emoji="\U0001F4B0",    # money bag
-    cash_word="Cost",
     or_attr="or_high",
-    polarity_op=">",
-    di_attr="plus_di",
     positions_attr="positions",
     daily_count_attr="daily_entry_count",
     daily_date_attr="daily_entry_date",
@@ -142,13 +118,7 @@ LONG = SideConfig(
 
 SHORT = SideConfig(
     side=Side.SHORT,
-    entry_label="SHORT ENTRY",
-    entry_emoji="\U0001FA78",   # drop of blood
-    exit_emoji="\U0001F4B8",    # flying money
-    cash_word="Proceeds",
     or_attr="or_low",
-    polarity_op="<",
-    di_attr="minus_di",
     positions_attr="short_positions",
     daily_count_attr="daily_short_entry_count",
     daily_date_attr="daily_short_entry_date",
