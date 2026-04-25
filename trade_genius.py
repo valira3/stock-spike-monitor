@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.11.5"
+BOT_VERSION = "4.12.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,24 @@ BOT_VERSION = "4.11.5"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.12.0 \u2014 ticker upgrade:\n"
+    "SPY/QQQ/DIA/IWM/VIX strip\n"
+    "now auto-marquees when its\n"
+    "items overflow the screen\n"
+    "(slow ~30s loop, pauses on\n"
+    "hover or tap). Outside RTH\n"
+    "each row gets an AH/PRE\n"
+    "badge with the move vs the\n"
+    "relevant close, so on a\n"
+    "weekend or after 16:00 ET\n"
+    "you see how the index has\n"
+    "moved since the bell. RTH\n"
+    "view unchanged. Respects\n"
+    "prefers-reduced-motion."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.11.5 \u2014 two cleanups:\n"
     "(1) LIVE pill always shows\n"
     "the recycle countdown\n"
@@ -84,24 +102,13 @@ CURRENT_MAIN_NOTE = (
     "or scanner idle) we paint\n"
     "\u267B -- instead of falling\n"
     "back to the old counting-\n"
-    "up tick NNs label. Two\n"
-    "chars always so the brand\n"
-    "row width budget stays\n"
-    "constant.\n"
+    "up tick NNs label.\n"
     "(2) Synthetic harness\n"
     "replay now strips\n"
     "trade_genius_version from\n"
     "both observed and golden\n"
-    "before compare, so a bot\n"
-    "version bump alone never\n"
-    "churns 50 goldens. Fresh\n"
-    "record_scenario still\n"
-    "stamps the current\n"
-    "version into the file."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "before compare.\n"
+    "\n"
     "v4.11.4 \u2014 hotfix x2:\n"
     "(1) Repoint the post-\n"
     "deploy smoke workflow\n"

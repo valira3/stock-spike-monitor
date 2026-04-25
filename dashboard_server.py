@@ -1331,12 +1331,48 @@ def _resolve_data_client():
     return None
 
 
+def _classify_session_et() -> str:
+    """Return one of 'rth' | 'pre' | 'post' | 'closed' based on now-in-ET.
+
+    v4.12.0 - used by the index ticker strip so the UI can label after-hours
+    quotes and compute AH change against the right base close. Pure clock
+    classification: weekday 04:00-09:30 ET = pre, 09:30-16:00 = rth,
+    16:00-20:00 = post, otherwise closed. We deliberately do NOT consult a
+    holiday calendar here; on a holiday the snapshot's daily_bar will simply
+    not have updated and the frontend reads 'closed' which is correct.
+    """
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = _dt.now(_tz.utc).astimezone(ZoneInfo("America/New_York"))
+        except Exception:
+            # Fallback: rough EST offset; AH labelling is cosmetic so this
+            # never blocks the ticker.
+            now_et = _dt.now(_tz.utc)
+        weekday = now_et.weekday()  # 0=Mon ... 6=Sun
+        if weekday >= 5:
+            return "closed"
+        minutes = now_et.hour * 60 + now_et.minute
+        if 4 * 60 <= minutes < 9 * 60 + 30:
+            return "pre"
+        if 9 * 60 + 30 <= minutes < 16 * 60:
+            return "rth"
+        if 16 * 60 <= minutes < 20 * 60:
+            return "post"
+        return "closed"
+    except Exception:
+        return "rth"  # safe default - no AH labelling
+
+
 def _fetch_indices() -> dict:
     """Build the index ticker strip payload. Never raises."""
     symbols = ["SPY", "QQQ", "DIA", "IWM", "VIX"]
+    session = _classify_session_et()
     out = {
         "ok": True,
         "as_of": "",
+        "session": session,  # v4.12.0
         "indices": [],
         "error": None,
     }
@@ -1380,12 +1416,14 @@ def _fetch_indices() -> dict:
                 "change_pct": None,
                 "available": False,
                 "reason": "vix_no_equity_feed",
+                "ah": False,
             })
             continue
 
         snap = snapshots.get(sym)
         last = None
         prev_close = None
+        today_close = None  # v4.12.0 - today's RTH close (post-16:00 ET)
         try:
             if snap is not None:
                 latest_trade = getattr(snap, "latest_trade", None)
@@ -1399,34 +1437,53 @@ def _fetch_indices() -> dict:
                     raw_prev = getattr(prev_daily_bar, "close", None)
                     if raw_prev is not None:
                         prev_close = float(raw_prev)
-                if last is None and daily_bar is not None:
+                if daily_bar is not None:
                     raw_close = getattr(daily_bar, "close", None)
                     if raw_close is not None:
-                        last = float(raw_close)
+                        today_close = float(raw_close)
+                if last is None and today_close is not None:
+                    last = today_close
         except Exception:
             pass
 
+        # v4.12.0 - regular-session change vs prior-day close. Same as
+        # before: this is what the trader watches during RTH.
         change = None
         change_pct = None
-        # Only compute deltas when we have real positive prices on both
-        # sides \u2014 prev_close == 0 would produce a ZeroDivisionError, and
-        # last == 0 is almost certainly a stale/pre-market artifact but
-        # we still surface it below rather than dropping the row.
         if last and last > 0 and prev_close and prev_close > 0:
             change = round(last - prev_close, 4)
             change_pct = round((last - prev_close) / prev_close * 100.0, 4)
 
+        # v4.12.0 - after-hours layer. We tag a row as ah=True only when
+        # we are NOT in the regular session AND we have a base close to
+        # measure against. Base close picks today's RTH close if we have
+        # one (typical post-16:00); otherwise prior-day close (typical
+        # pre-market or weekend, when daily_bar may already be the
+        # most-recent-trading-day close - we treat that as base too).
+        ah_flag = False
+        ah_change = None
+        ah_change_pct = None
+        if session in ("pre", "post", "closed") and last and last > 0:
+            base = today_close if (today_close and today_close > 0) else prev_close
+            # Only mark AH when last actually differs from the base; an
+            # exact match means no extended-hours trade has printed yet
+            # and the user would just see "+0.00 AH" which is noise.
+            if base and base > 0 and abs(last - base) > 1e-6:
+                ah_flag = True
+                ah_change = round(last - base, 4)
+                ah_change_pct = round((last - base) / base * 100.0, 4)
+
         # Real equity: show the row whenever we got a numeric last trade,
-        # even if it is exactly 0 (pre-market quirk on a thin name). The
-        # frontend renders a 0 price with null-styling rather than
-        # dropping the ticker entirely \u2014 the prior logic silently hid
-        # these rows alongside the VIX placeholder.
+        # even if it is exactly 0 (pre-market quirk on a thin name).
         out["indices"].append({
             "symbol": sym,
             "last": last,
             "change": change,
             "change_pct": change_pct,
             "available": last is not None,
+            "ah": ah_flag,
+            "ah_change": ah_change,
+            "ah_change_pct": ah_change_pct,
         })
 
     try:
