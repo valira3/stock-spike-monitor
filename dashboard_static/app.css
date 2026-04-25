@@ -291,24 +291,6 @@
   .tgate-chip.na  { background: var(--surface-3);   color: var(--text-dim); }
   .tgate-section-label { padding: 10px 14px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); border-top: 1px solid var(--border); }
 
-  .log {
-    font-family: var(--mono); font-size: 11px; line-height: 1.65;
-    color: var(--text-muted); padding: 10px 14px 12px;
-    /* v4.10.0 — wrap long log lines instead of horizontal-scroll. Some
-       log entries (full URLs, JSON dumps, stack traces) overflow the
-       1280px viewport; pre-wrap + break-all keeps the container clean
-       and removes the bottom scrollbar while still preserving newlines
-       between entries. */
-    white-space: pre-wrap; word-break: break-all;
-    overflow-x: hidden; overscroll-behavior: contain;
-    max-height: 280px; overflow-y: auto;
-  }
-  .log .t { color: var(--text-dim); }
-  .log .ok { color: var(--up); }
-  .log .warn { color: var(--warn); }
-  .log .err { color: var(--down); }
-  .log .info { color: var(--accent); }
-
   .row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 12.5px; }
   .row .k { color: var(--text-muted); }
   .row .v { font-family: var(--mono); }
@@ -378,7 +360,6 @@
     .prox-price { width: 62px; }
     .prox-pct { width: 100px; font-size: 10.5px; }
     .gate { padding: 8px 12px; font-size: 11.5px; gap: 8px; }
-    .log { font-size: 10.5px; padding: 8px 12px; max-height: 200px; }
     .key-val-grid { font-size: 11.5px; gap: 5px 12px; }
 
     /* v4.2.2 \u2014 Today's Trades on phones: single line, fits 375px.
@@ -416,6 +397,91 @@
     #tg-brand-clock { font-size: 13px; }
   }
 
+  /* v4.11.0 — per-executor health pill in brand row.
+     Sits between #tg-live-pill and #tg-brand-clock. Tap toggles the
+     #tg-health-pop dropdown. Severity classes (h-green/h-warn/h-red) are
+     applied by JS via window.__tgApplyHealthPill so both IIFEs can call
+     in. The dot color is the only visible severity signal at the pill;
+     count is mono-tabular so widths stay stable as 0→9→10→… changes. */
+  .tg-health-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px 3px 8px;
+    background: #10151c; border: 1px solid #1f2937; border-radius: 999px;
+    font-size: 11px; color: #8a96a7;
+    font-family: var(--mono);
+    cursor: pointer; user-select: none;
+    transition: background 100ms ease, border-color 100ms ease;
+  }
+  .tg-health-pill:hover { background: #141a22; border-color: #2a3441; }
+  .tg-health-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .tg-health-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    display: inline-block; background: #34d399;
+    flex-shrink: 0;
+  }
+  .tg-health-count {
+    color: #e7ecf3; font-variant-numeric: tabular-nums;
+    min-width: 0.7em; text-align: right;
+  }
+  .tg-health-pill.h-green .tg-health-dot { background: #34d399; }
+  .tg-health-pill.h-warn  .tg-health-dot { background: #fbbf24; }
+  .tg-health-pill.h-red   .tg-health-dot { background: #ef4444; }
+  .tg-health-pill.h-warn  { border-color: #57451a; }
+  .tg-health-pill.h-red   { border-color: #5a1b1b; }
+  .tg-health-pop {
+    position: fixed;
+    top: auto; right: 16px;
+    width: min(420px, calc(100vw - 24px));
+    max-height: 60vh;
+    background: var(--surface, #10151c);
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+    z-index: 50;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .tg-health-pop-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border, #1f2937);
+    font-size: 12px; color: var(--text, #e7ecf3); font-weight: 600;
+  }
+  .tg-health-pop-head button {
+    background: transparent; border: none; color: var(--text-dim, #5b6572);
+    font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;
+  }
+  .tg-health-pop-head button:hover { color: var(--text, #e7ecf3); }
+  .tg-health-list {
+    overflow-y: auto; flex: 1 1 auto; padding: 4px 0;
+    font-family: var(--mono); font-size: 11px;
+  }
+  .tg-health-empty { padding: 14px; color: var(--text-dim, #5b6572); text-align: center; }
+  .tg-health-row {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border, #1f2937);
+    display: grid; gap: 4px;
+  }
+  .tg-health-row:last-child { border-bottom: none; }
+  .tg-health-row-top {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10.5px;
+  }
+  .tg-health-sev {
+    text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 1px 6px; border-radius: 999px; font-weight: 600;
+    font-size: 9.5px;
+  }
+  .tg-health-sev.warning { background: #57451a40; color: #fbbf24; }
+  .tg-health-sev.error,
+  .tg-health-sev.critical { background: #5a1b1b40; color: #ef4444; }
+  .tg-health-code { color: var(--text, #e7ecf3); font-weight: 600; }
+  .tg-health-ts { color: var(--text-dim, #5b6572); margin-left: auto; }
+  .tg-health-summary {
+    color: var(--text-muted, #8a96a7);
+    word-break: break-word; line-height: 1.4;
+  }
+
   /* v4.3.1 \u2014 row-2 fits inline on iPhone (375px) without wrap.
      Strategy: nowrap forces a single line; gap + font shrinks +
      LIVE pill padding + version size are tuned so that logo +
@@ -436,6 +502,10 @@
       gap: 6px !important;
       padding: 3px 8px 3px 7px !important;
     }
+    .tg-health-pill {
+      gap: 5px;
+      padding: 3px 7px 3px 6px;
+    }
     #tg-brand-clock { font-size: 13px; }
   }
   @media (max-width: 380px) {
@@ -444,11 +514,13 @@
       padding: 8px 10px !important;
     }
     #tg-brand-ver { font-size: 9.5px !important; margin-left: 0 !important; }
+    .tg-health-pill { gap: 4px; padding: 3px 6px; font-size: 10.5px; }
     #tg-brand-clock { font-size: 12px; }
   }
   @media (max-width: 360px) {
     #tg-brand-row { gap: 5px !important; padding: 8px 8px !important; }
     /* drop seconds; __tgTickClock reads this flag and renders HH:MM TZ */
+    .tg-health-pill { padding: 2px 5px; }
     #tg-brand-clock { font-size: 12px; }
   }
 

@@ -88,6 +88,111 @@
   // line 800).
   window.__tgApplyGateTriState = applyGateTriState;
 
+  // v4.11.0 — per-executor health pill renderer + dropdown.
+  // Two separate IIFEs touch this: Main /api/state via __tgOnState, and
+  // the Val/Gene poll loop in the second IIFE via window.__tgApplyHealthPill
+  // (mirrors the v4.10.2 applyGateTriState bridge pattern).
+  const __HEALTH_CLASSES = ["h-green", "h-warn", "h-red"];
+  function __tgFormatErrTs(ts) {
+    if (!ts) return "";
+    try {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts);
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      return `${hh}:${mm}:${ss}`;
+    } catch (e) { return String(ts); }
+  }
+  function applyHealthPill(executor, snap) {
+    const pill = document.getElementById("tg-health-pill");
+    const cnt  = document.getElementById("tg-health-count");
+    const list = document.getElementById("tg-health-list");
+    const title = document.getElementById("tg-health-pop-title");
+    if (!pill || !cnt || !list) return;
+    // Only paint if this snapshot belongs to the active tab. We read the
+    // active tab off body data attribute set by selectTab().
+    const active = document.body.getAttribute("data-tg-active-tab") || "main";
+    if (executor !== active) return;
+    const count = (snap && typeof snap.count === "number") ? snap.count : 0;
+    const sev = (snap && snap.severity) || "green";
+    const cls = sev === "red" ? "h-red" : sev === "warning" ? "h-warn" : "h-green";
+    __HEALTH_CLASSES.forEach(c => pill.classList.remove(c));
+    pill.classList.add(cls);
+    cnt.textContent = String(count);
+    pill.setAttribute("aria-label", `Errors today: ${count}`);
+    pill.setAttribute("title", `Errors today: ${count}`);
+    if (title) title.textContent = `Errors today (${executor}) · ${count}`;
+    const entries = (snap && Array.isArray(snap.entries)) ? snap.entries : [];
+    if (!entries.length) {
+      list.innerHTML = `<div class="tg-health-empty">No errors today.</div>`;
+    } else {
+      list.innerHTML = entries.map(e => {
+        const sevTxt = String(e.severity || "error");
+        const code = String(e.code || "");
+        const ts = __tgFormatErrTs(e.ts);
+        const summ = String(e.summary || "");
+        return `<div class="tg-health-row">
+          <div class="tg-health-row-top">
+            <span class="tg-health-sev ${escapeHtml(sevTxt)}">${escapeHtml(sevTxt)}</span>
+            <span class="tg-health-code">${escapeHtml(code)}</span>
+            <span class="tg-health-ts">${escapeHtml(ts)}</span>
+          </div>
+          <div class="tg-health-summary">${escapeHtml(summ)}</div>
+        </div>`;
+      }).join("");
+    }
+  }
+  window.__tgApplyHealthPill = applyHealthPill;
+
+  // Pop dropdown wiring — runs once per page load.
+  function __tgWireHealthPop() {
+    const pill = document.getElementById("tg-health-pill");
+    const pop  = document.getElementById("tg-health-pop");
+    const closeBtn = document.getElementById("tg-health-close");
+    if (!pill || !pop) return;
+    function position() {
+      // Anchor below the pill, right-aligned to viewport.
+      const r = pill.getBoundingClientRect();
+      pop.style.top = `${Math.round(r.bottom + 6)}px`;
+      pop.style.right = `16px`;
+    }
+    function open() {
+      position();
+      pop.style.display = "flex";
+      pill.setAttribute("aria-expanded", "true");
+    }
+    function close() {
+      pop.style.display = "none";
+      pill.setAttribute("aria-expanded", "false");
+    }
+    pill.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (pop.style.display === "none" || !pop.style.display) open(); else close();
+    });
+    if (closeBtn) closeBtn.addEventListener("click", (e) => { e.stopPropagation(); close(); });
+    document.addEventListener("click", (e) => {
+      if (pop.style.display === "none") return;
+      if (pop.contains(e.target) || pill.contains(e.target)) return;
+      close();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && pop.style.display !== "none") close();
+    });
+    window.addEventListener("resize", () => {
+      if (pop.style.display !== "none") position();
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", __tgWireHealthPop);
+  } else {
+    __tgWireHealthPop();
+  }
+  // Mark Main as the initial active tab so Main's /api/state errors paint.
+  if (!document.body.getAttribute("data-tg-active-tab")) {
+    document.body.setAttribute("data-tg-active-tab", "main");
+  }
+
   // ─────── rendering ───────
 
   function renderKPIs(s, sl) {
@@ -616,52 +721,13 @@
     renderObserver(s);
     renderSovereign(s);
     renderGates(s);
+    // v4.11.0 — health pill bound to Main when active.
+    try { applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] }); } catch (e) {}
   }
 
   // v4.1.8-dash \u2014 portfolio view toggle removed (Robinhood was
   // deleted in v3.5.0). Only the paper portfolio exists; nothing to
   // wire.
-
-  // ─────── log handling ───────
-
-  const LOG_MAX = 200;
-  let logCount = 0;
-  function appendLogs(entries) {
-    if (!entries || !entries.length) return;
-    const box = $("log");
-    const stickBottom = (box.scrollTop + box.clientHeight + 8 >= box.scrollHeight);
-    // v4.0.8 \u2014 render from structured fields instead of slicing
-    // `msg` at fixed offsets. The old slice assumed every message began
-    // with an 8-char time prefix + space, which fell apart for short
-    // messages or if the log formatter ever changed.
-    const html = entries.map((e) => {
-      const cls = e.level === "ERROR" ? "err"
-                : e.level === "WARNING" ? "warn"
-                : e.level === "INFO" ? "info" : "t";
-      const lvl = (e.level || "").slice(0, 4);
-      let ts = "";
-      if (typeof e.ts === "number" && isFinite(e.ts)) {
-        const d = new Date(e.ts * 1000);
-        const hh = String(d.getHours()).padStart(2, "0");
-        const mm = String(d.getMinutes()).padStart(2, "0");
-        const ss = String(d.getSeconds()).padStart(2, "0");
-        ts = `${hh}:${mm}:${ss}`;
-      }
-      // The server-side formatter still prepends `HH:MM:SS LEVEL name: `
-      // to the stored msg. Strip the duplicated "HH:MM:SS LEVELNAME logger: "
-      // prefix if present so the rendered row doesn't show the time twice.
-      let body = e.msg || "";
-      const prefMatch = body.match(/^\d{2}:\d{2}:\d{2}\s+\S+\s+\S+?:\s*/);
-      if (prefMatch) body = body.slice(prefMatch[0].length);
-      return `<div><span class="t">${escapeHtml(ts)}</span> <span class="${cls}">${escapeHtml(lvl)}</span> ${escapeHtml(body)}</div>`;
-    }).join("");
-    box.insertAdjacentHTML("beforeend", html);
-    // trim old lines
-    while (box.childElementCount > LOG_MAX) box.removeChild(box.firstChild);
-    logCount = Math.min(LOG_MAX, logCount + entries.length);
-    $("log-count").textContent = `· ${logCount} lines`;
-    if (stickBottom) box.scrollTop = box.scrollHeight;
-  }
 
   // ─────── connection management ───────
 
@@ -717,9 +783,6 @@
       lastDataAt = Date.now();
       setConn("live");
       try { renderAll(JSON.parse(ev.data).data); } catch (e) {}
-    });
-    streamConn.addEventListener("logs", (ev) => {
-      try { appendLogs(JSON.parse(ev.data).data); } catch (e) {}
     });
     streamConn.onerror = () => {
       setConn("polling");
@@ -819,6 +882,10 @@
   const applyGateTriState = (typeof window !== "undefined" && typeof window.__tgApplyGateTriState === "function")
     ? window.__tgApplyGateTriState
     : function () { /* no-op fallback */ };
+  // v4.11.0 — health-pill helper bridge, same pattern as the gate one.
+  const applyHealthPill = (typeof window !== "undefined" && typeof window.__tgApplyHealthPill === "function")
+    ? window.__tgApplyHealthPill
+    : function () { /* no-op fallback */ };
 
   function $$(id) { return document.getElementById(id); }
   function esc(s) {
@@ -878,6 +945,7 @@
   function selectTab(name) {
     if (!TABS.includes(name)) return;
     activeTab = name;
+    document.body.setAttribute("data-tg-active-tab", name);
     for (const t of TABS) {
       const panel = $$("tg-panel-" + t);
       if (panel) panel.style.display = (t === name) ? "" : "none";
@@ -887,6 +955,13 @@
       btn.classList.toggle("tg-tab-on", on);
       btn.style.color = on ? "#e7ecf3" : "#8a96a7";
       btn.style.borderBottomColor = on ? "#7dd3fc" : "transparent";
+    }
+    if (name === "main") {
+      // Re-paint pill from cached Main state when switching back.
+      const s = window.__tgLastState;
+      if (s && typeof applyHealthPill === "function") {
+        applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] });
+      }
     }
     if (name === "val" || name === "gene") {
       if (!window.__tgLastState) warmupSharedState();
@@ -1109,6 +1184,8 @@
       if (!r.ok) throw new Error("http " + r.status);
       const data = await r.json();
       renderExecutor(name, data);
+      // v4.11.0 — paint health pill from per-executor errors snapshot.
+      try { applyHealthPill(name, (data && data.errors) || { count: 0, severity: "green", entries: [] }); } catch (e) {}
     } catch (e) {
       const banner = execField(panel, "banner");
       if (banner) {

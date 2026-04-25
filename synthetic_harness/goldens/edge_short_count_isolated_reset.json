@@ -97,5 +97,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_short_count_isolated_reset",
-  "trade_genius_version": "4.10.2"
+  "trade_genius_version": "4.11.0"
 }

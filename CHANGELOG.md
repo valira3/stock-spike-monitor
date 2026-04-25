@@ -4,6 +4,93 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.11.0 — 2026-04-25 — Per-portfolio health pill replaces the dashboard log tail; errors fan out to the matching executor's Telegram channel.
+
+Substantial UI + observability change. Smoke tests grow from 84 → 94 (10 new for `error_state` + the wiring). All 50 synthetic goldens still replay byte-equal except for the `trade_genius_version` field (no error-path scenario fired `report_error` because the converted sites are exception handlers that the harness's golden paths don't reach — confirmed by inspection).
+
+**Motivation.** The dashboard's "Log tail" card surfaced `INFO`/`WARNING`/`ERROR` lines indiscriminately, without summarizing whether the bot was actually unhealthy. Most lines were noise (heartbeats, scan completions, OR seed reports). Errors that mattered scrolled off-screen in seconds and no one was paged in real time. Two failure modes resulted:
+
+1. A user staring at the dashboard had no fast read on "is anything broken right now?" — they'd have to scan a 200-line tail and parse logger names.
+2. Errors on Val or Gene executors only ever fanned out via the *main* Telegram bot (because that was the only `send_telegram` path), so the right side-bot channels stayed silent during the very incidents they should have been paging on.
+
+This release replaces the log tail with a single health pill (colored dot + count) in the brand row, expandable on tap to show the last ~10 error entries. Errors are recorded into per-executor ring buffers and dispatched to the *matching* executor's Telegram channel (Main / Val / Gene each have their own bot), with a per-`(executor, code)` 5-minute dedup so a flapping error code can't spam.
+
+**Backend — new module `error_state.py`.** Owns three bounded `deque`s (one per executor; `maxlen=50`) plus a dedup table keyed by `(executor, code)`. Public API:
+
+- `record_error(executor, code, severity, summary, detail, *, ts=None, now_fn=time.time) -> bool` — appends an entry and returns `True` iff the dedup cooldown has elapsed for this `(executor, code)` pair. The caller decides what to do with the boolean (in `trade_genius.py`'s `report_error()` wrapper: dispatch to Telegram).
+- `snapshot(executor) -> dict` — returns `{"executor", "count", "severity", "entries"}`, where `severity` is `green` (no entries), `warning` (only warning-tier entries), or `red` (any error/critical). `entries` is the last 10 newest-first.
+- `reset_daily(executor=None)` — clears either one or all three rings + the dedup table. Wired into `reset_daily_state()` next to `daily_short_entry_date`.
+- `_reset_for_tests()` — wipe all state, used by the smoke suite.
+
+**Backend — `report_error()` wrapper in `trade_genius.py`.** Logs via the existing logger (the only thing the codebase did before), then calls `error_state.record_error()`, and if the dedup gate elapsed, dispatches a Telegram message. The dispatch path:
+
+- For `executor in ("val", "gene")` → calls `inst._send_own_telegram(text)` on the executor instance, which uses that executor's *own* bot token (Val / Gene each have their own).
+- For `executor == "main"` → falls back to the global `send_telegram(text)` path.
+
+The Telegram body is hard-wrapped at ≤34 chars/line by a small word-wrap helper so the message renders correctly on the narrowest mobile clients.
+
+**Backend — converted sites (9 `logger.error` call sites).** Every trading- or ops-relevant `logger.error` was either upgraded to `report_error()` or left alone if it was non-actionable (e.g. a one-off init-time warning that doesn't need to page). The 9 converted sites:
+
+1. `RETRO_CAP_LONG_FAILED` — retroactive long-stop cap tightening raised.
+2. `RETRO_CAP_SHORT_FAILED` — retroactive short-stop cap tightening raised.
+3. `SYSTEM_TEST_FAILED` — `/test` self-check raised.
+4. `MANAGE_POSITIONS_EXCEPTION` — long-side position manager loop raised. (Also removed the ad-hoc `send_telegram` pair adjacent to this site, which was duplicating what `report_error()` now does centrally.)
+5. `MANAGE_SHORT_POSITIONS_EXCEPTION` — short-side position manager loop raised.
+6. `HARD_EJECT_EXCEPTION` — Tiger-mode hard-eject raised.
+7. `PAPER_ENTRY_EXCEPTION` — long paper-entry execution raised.
+8. `PAPER_SHORT_ENTRY_EXCEPTION` — short paper-entry execution raised.
+9. `SCAN_LOOP_EXCEPTION` — the main scan loop raised at top level.
+
+**Backend — `dashboard_server.py`.**
+
+- New endpoint `GET /api/errors/{executor}` (auth-cookie required; 401 otherwise; 400 on unknown executor name; 500 wrapped on exception). Returns the live `error_state.snapshot(name)` payload.
+- `/api/state` (Main snapshot) now embeds `errors: error_state.snapshot("main")` so the SSE pulse paints the pill without an extra round-trip.
+- `/api/executor/{name}` (Val/Gene snapshot) embeds the matching executor's `errors` snapshot, including on every early-return path (executor disabled, client build failed, alpaca client `None`, cached-payload return). The cached return overlays a *fresh* errors snapshot so the pill stays live even when the rest of the payload is 15-second-cached.
+- The `/stream` SSE handler no longer emits a `logs` event — only `state` + heartbeat ping. The corresponding `last_log_seq` parameter and the `_logs_since(...)` call were removed.
+- The whole log-buffer infrastructure (`_LOG_BUFFER_SIZE`, `_log_buffer`, `_log_seq`, `_log_lock`, `_RingBufferHandler`, `_install_log_handler`, `_logs_since`, the `_install_log_handler()` boot-time call) was deleted as dead code. A smoke test asserts none of these symbols still exist on the module to guard against partial reverts.
+
+**Frontend — `dashboard_static/index.html`.**
+
+- Removed the entire `Log tail` `<section>` (lines 171–176 in the old file).
+- Added a `<button id="tg-health-pill">` to `#tg-brand-row`, between `#tg-live-pill` and `#tg-brand-clock`. It carries a colored dot (`#tg-health-dot`) + a tabular count (`#tg-health-count`). A sibling `<div id="tg-health-pop" role="dialog">` is the dropdown that the pill toggles open.
+
+**Frontend — `dashboard_static/app.css`.**
+
+- Removed the `.log {…}` block (and its `.log .t/.ok/.warn/.err/.info` color rules) and the `≤900px` mobile override that targeted `.log`.
+- Added the `.tg-health-pill` / `.tg-health-dot` / `.tg-health-count` rules with `h-green` (#34d399) / `h-warn` (#fbbf24) / `h-red` (#ef4444) severity classes that JS toggles. Plus the `.tg-health-pop` dropdown (fixed-position, anchored under the pill, scrollable) and `.tg-health-row` entry styling.
+- Mobile breakpoints (≤500 / ≤380 / ≤360 px) get progressively-tighter pill paddings so the brand row still fits one line on iPhone 13 / 14 Pro Max / iPhone SE.
+
+**Frontend — `dashboard_static/app.js`.**
+
+- Removed `appendLogs(entries)` (the rendering helper) and the SSE `logs` event listener that called it. `LOG_MAX` and `logCount` removed too.
+- Added `applyHealthPill(executor, snapshot)` to IIFE-1 and exposed it as `window.__tgApplyHealthPill`. Mirrors the v4.10.2 cross-IIFE bridge pattern. IIFE-2 aliases via `const applyHealthPill = window.__tgApplyHealthPill || (() => {})` so a missing bridge silently no-ops instead of throwing.
+- `renderAll(s)` (Main /api/state arrival) calls `applyHealthPill("main", s.errors)`.
+- `pollExecutor(name)` (Val/Gene /api/executor poll) calls `applyHealthPill(name, data.errors)`.
+- `selectTab(name)` writes the active executor name to `document.body[data-tg-active-tab]`. `applyHealthPill()` reads that attribute and only paints when the snapshot's executor matches the active tab — so a stale Val poll arriving after the user switched back to Main can't overpaint the Main pill.
+- The pill is wired with `click → toggle dropdown`, click-outside-to-close, Escape-to-close, and a resize listener that re-positions the dropdown.
+
+**Files touched.**
+
+- `error_state.py` — **NEW** module. Per-executor error rings, dedup table, snapshot/reset API.
+- `trade_genius.py` — `BOT_VERSION` 4.10.2 → 4.11.0; `CURRENT_MAIN_NOTE` rewritten for v4.11.0 (≤34 chars/line); `_MAIN_HISTORY_TAIL` carries v4.10.2 entry forward; `import error_state`; new `report_error()` wrapper + `_format_error_telegram()` word-wrap helper + `_executor_inst()` helper; `reset_daily_state()` calls `error_state.reset_daily()`; 9 `logger.error` sites converted to `report_error()`.
+- `dashboard_server.py` — new `/api/errors/{executor}` route + `h_errors` handler + `_errors_snapshot_safe()` helper; `errors` embedded in `/api/state` and every return path of `_executor_snapshot`; `/stream` no longer emits the `logs` SSE event; entire log-buffer ring + handler + install hook + `_logs_since` deleted.
+- `dashboard_static/index.html` — health pill button + dropdown markup; log-tail card removed.
+- `dashboard_static/app.css` — health-pill + dropdown CSS; mobile-breakpoint pill paddings; `.log` rules removed.
+- `dashboard_static/app.js` — health-pill renderer + cross-IIFE bridge + dropdown wiring + IIFE-2 aliasing; Main `renderAll` and Val/Gene `pollExecutor` paint the pill; `selectTab` tags the active tab on `<body>`; `appendLogs` and SSE `logs` listener deleted.
+- `smoke_test.py` — version assertions bumped to 4.11.0; 10 new tests covering `error_state` (ring-cap, dedup cooldown, daily reset, severity tiers, executor/severity normalization), `report_error` existence, `/api/errors/{executor}` route registration, `errors` embedded in `/api/state` and `/api/executor`, and absence of the deleted log-buffer symbols.
+- `synthetic_harness/goldens/*.json` — 50 files re-recorded; only the `trade_genius_version` field changed across all of them.
+- `CHANGELOG.md` — this entry.
+
+**Explicitly NOT touched.** `paper_state.py`, `telegram_commands.py`, `side.py`, the synthetic harness scenarios themselves, signal bus, executor classes (`TradeGeniusBase` / `TradeGeniusVal` / `TradeGeniusGene`), order-placement code paths, Alpaca client wiring. The conversion to `report_error()` is strictly additive — every converted site still calls `logger.error(...)` first (via the wrapper), so existing log-aggregation pipelines see no change.
+
+**Lessons logged.**
+
+- Per-executor side-bots existed since v4.0.0-alpha but `send_telegram()` was the only path the rest of the code knew about. Anything that needs to page Val/Gene users specifically must dispatch via `inst._send_own_telegram(text)`, not the global send. `report_error()` is now the canonical wrapper that handles the routing — new code should use it instead of inlining a fresh `logger.error(…); send_telegram(…)` pair.
+- Cross-IIFE helpers in `dashboard_static/app.js` should be exposed on `window.__tg*` at definition time, the moment they are first used in IIFE-2. v4.10.2 set the precedent for the gate helper; this release follows the exact same pattern for `applyHealthPill`.
+- Don't paint stale data: cached snapshots are fine for KPIs but the health pill must always reflect the latest error count, so the cached path overlays a fresh `error_state.snapshot()` — the rest of the payload stays cached.
+
+---
+
 ## v4.10.2 — 2026-04-25 — Hotfix: two more v4.10.0-introduced dashboard bugs (Val/Gene tabs threw "Fetch failed: applyGateTriState is not defined"; mobile clock wrapped to row 2 on iPhone Pro Max class viewports).
 
 Dashboard-only patch. No `trade_genius.py` business logic change. The 50-scenario synthetic harness still replays byte-equal (only the embedded `trade_genius_version` field changes). All 119 smoke tests pass.
