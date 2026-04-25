@@ -325,5 +325,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_cooldown_blocks_reentry",
-  "trade_genius_version": "4.11.1"
+  "trade_genius_version": "4.11.2"
 }

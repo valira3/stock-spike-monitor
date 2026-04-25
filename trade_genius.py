@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.11.1"
+BOT_VERSION = "4.11.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,25 +76,36 @@ BOT_VERSION = "4.11.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.11.1 \u2014 hotfix:\n"
-    "v4.11.0 added a new module\n"
-    "error_state.py but the\n"
-    "Dockerfile uses an explicit\n"
-    "COPY whitelist that was not\n"
-    "updated, so the container\n"
-    "crashed on startup with\n"
-    "ModuleNotFoundError: No\n"
-    "module named 'error_state'.\n"
-    "Prod was 502 for ~3 hours.\n"
-    "One-line fix: add\n"
-    "COPY error_state.py . to\n"
-    "the Dockerfile next to the\n"
-    "other top-level Python\n"
-    "COPYs. No code change."
+    "v4.11.2 \u2014 hotfix:\n"
+    "v4.11.0 added the health\n"
+    "pill to the brand row, but\n"
+    "on iPhone Pro Max class\n"
+    "viewports (390/430 px) the\n"
+    "row overflowed: clock got\n"
+    "clipped on the right and\n"
+    "the LIVE pill's inline\n"
+    "tick NNs wrapped to two\n"
+    "lines. CSS-only fix:\n"
+    "shrink the clock font to\n"
+    "11px and add nowrap to\n"
+    "the LIVE pill + #h-tick\n"
+    "under the existing 500px\n"
+    "media query. Desktop\n"
+    "1280 unchanged."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.11.1 \u2014 hotfix:\n"
+    "v4.11.0 added a new module\n"
+    "error_state.py but the\n"
+    "Dockerfile COPY whitelist\n"
+    "wasn't updated, so the\n"
+    "container crashed on boot\n"
+    "with ModuleNotFoundError.\n"
+    "Prod 502 for ~3 hours.\n"
+    "One-line Dockerfile fix.\n"
+    "\n"
     "v4.11.0 \u2014 feature:\n"
     "health pill replaces the\n"
     "noisy log tail card. Brand\n"
