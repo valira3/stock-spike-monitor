@@ -44,6 +44,40 @@
     return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
   }
 
+  // v4.10.0 — shared GATE renderer. Used by Main + Val/Gene exec panels.
+  // Sets text + class. Caller passes the value cell, the sub cell, the
+  // gates obj from /api/state, and the regime obj (for market_open
+  // inference via mode === "CLOSED").
+  const __GATE_CLASSES = ["gate-armed", "gate-paused", "gate-after-hours", "gate-halted"];
+  function applyGateTriState(gateEl, gateSubEl, gates, regime) {
+    if (!gateEl) return;
+    gateEl.style.color = "";
+    __GATE_CLASSES.forEach(c => gateEl.classList.remove(c));
+    const mode = (regime && regime.mode) || "";
+    const marketClosed = mode === "CLOSED";
+    if (gates.trading_halted) {
+      gateEl.textContent = "HALTED";
+      gateEl.classList.add("gate-halted");
+      if (gateSubEl) gateSubEl.textContent = gates.halt_reason || "manual halt";
+    } else if (marketClosed) {
+      gateEl.textContent = "AFTER HOURS";
+      gateEl.classList.add("gate-after-hours");
+      if (gateSubEl) gateSubEl.textContent = "market closed";
+    } else if (gates.scan_paused) {
+      gateEl.textContent = "PAUSED";
+      gateEl.classList.add("gate-paused");
+      if (gateSubEl) gateSubEl.textContent = "scan paused";
+    } else if (!gates.or_collected_date) {
+      gateEl.textContent = "WAIT";
+      gateEl.classList.add("gate-paused");
+      if (gateSubEl) gateSubEl.textContent = "opening range not collected";
+    } else {
+      gateEl.textContent = "ARMED";
+      gateEl.classList.add("gate-armed");
+      if (gateSubEl) gateSubEl.textContent = `OR ${gates.or_collected_date}`;
+    }
+  }
+
   // ─────── rendering ───────
 
   function renderKPIs(s, sl) {
@@ -78,23 +112,17 @@
 
     const gates = s.gates || {};
     const gateEl = $("k-gate");
-    if (gates.trading_halted) {
-      gateEl.textContent = "HALTED";
-      gateEl.style.color = "var(--down)";
-      $("k-gate-sub").textContent = gates.halt_reason || "manual halt";
-    } else if (gates.scan_paused) {
-      gateEl.textContent = "PAUSED";
-      gateEl.style.color = "var(--warn)";
-      $("k-gate-sub").textContent = "scan paused";
-    } else if (!gates.or_collected_date) {
-      gateEl.textContent = "WAIT";
-      gateEl.style.color = "var(--warn)";
-      $("k-gate-sub").textContent = "opening range not collected";
-    } else {
-      gateEl.textContent = "READY";
-      gateEl.style.color = "var(--up)";
-      $("k-gate-sub").textContent = `OR ${gates.or_collected_date}`;
-    }
+    // v4.10.0 — GATE tri-state. Before this, "PAUSED" amber was shown
+    // 24/7 outside RTH because scan_paused is the union of /pause and
+    // the auto-idle "no scan outside market hours" flag. We now infer
+    // after-hours from regime.mode === "CLOSED" (option (b) in the
+    // v4.10.0 spec) so the operator sees:
+    //   ARMED       — green   — market open + scanner ready
+    //   AFTER HOURS — muted   — market closed (no scanning expected)
+    //   PAUSED      — amber   — operator paused via /pause during RTH
+    //   HALTED      — red     — emergency halt (existing behavior)
+    //   WAIT        — amber   — opening range still being collected
+    applyGateTriState(gateEl, $("k-gate-sub"), gates, s.regime);
 
     const reg = s.regime || {};
     // ── Regime KPI: directional market regime (BULLISH / NEUTRAL / BEARISH)
@@ -126,10 +154,33 @@
     $("pos-count").textContent = `· ${positions.length}`;
     const body = $("pos-body");
     const strip = $("port-strip");
+    const emptyStrip = $("port-strip-empty");
 
     if (positions.length === 0) {
-      body.innerHTML = `<div class="empty">No open positions.</div>`;
+      // v4.10.0 — collapsed empty state. Hide the "No open positions."
+      // body + the 2-row Equity/BP/Cash/Invested/Shorted strip, and
+      // show a single-row condensed strip with just the three values
+      // an operator actually wants at a glance during off-hours.
+      body.innerHTML = "";
+      body.style.display = "none";
+      strip.style.display = "none";
+      const p = sl.portfolio || {};
+      if (emptyStrip) {
+        if (typeof p.equity === "number") {
+          const bp = (typeof p.cash === "number" && typeof p.short_liab === "number")
+            ? (p.cash - p.short_liab) : null;
+          $("pse-equity").textContent = fmtUsd(p.equity);
+          $("pse-bp").textContent = bp === null ? "—" : fmtUsd(bp);
+          $("pse-cash").textContent = fmtUsd(p.cash);
+          emptyStrip.style.display = "grid";
+        } else {
+          emptyStrip.style.display = "none";
+        }
+      }
+      return;
     } else {
+      body.style.display = "";
+      if (emptyStrip) emptyStrip.style.display = "none";
       const rows = positions.map((p) => {
         const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
         const markCls = p.side === "SHORT" ? "mark-short" : "mark-long";
@@ -833,26 +884,43 @@
       if (strip) strip.innerHTML = '<span style="color:#5b6572">indices unavailable</span>';
     }
   }
+  // v4.10.0 — cache last indices payload so a viewport resize can
+  // re-render the strip in compact-or-full mode without a refetch.
+  let __idxLastData = null;
   function renderIndices(data) {
+    if (data) __idxLastData = data;
     const strip = $$("idx-strip");
     if (!strip) return;
     const rows = (data && data.indices) || [];
+    // v4.10.0 — compact mode toggle: ≤640px hides the absolute Δ$ value
+    // so 5 items fit horizontally on a 390px phone.
+    const compact = (typeof window !== "undefined") && (window.innerWidth <= 640);
+    strip.classList.toggle("idx-compact", compact);
     if (!rows.length) {
       strip.innerHTML = '<span style="color:#5b6572">indices unavailable</span>';
       return;
     }
     const parts = rows.map(r => {
       if (!r.available || r.last === null || r.last === undefined) {
-        return `<span style="padding:0 14px;border-right:1px solid #1f2937;color:#5b6572">${esc(r.symbol)}: n/a</span>`;
+        return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937;color:#5b6572">${esc(r.symbol)}: n/a</span>`;
       }
       const up = (r.change ?? 0) >= 0;
       const color = up ? "#34d399" : "#f87171";
       const sign = up ? "+" : "";
       const chg = (r.change === null || r.change === undefined) ? "—" : sign + fmtNum(r.change, 2);
       const pct = (r.change_pct === null || r.change_pct === undefined) ? "—" : sign + fmtNum(r.change_pct, 2) + "%";
-      return `<span style="padding:0 14px;border-right:1px solid #1f2937"><strong style="color:#e7ecf3">${esc(r.symbol)}</strong> <span style="color:#8a96a7">${fmtNum(r.last, 2)}</span> <span style="color:${color}">${chg}</span> <span style="color:${color};font-size:10.5px">${pct}</span></span>`;
+      return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937"><strong class="idx-sym" style="color:#e7ecf3">${esc(r.symbol)}</strong> <span class="idx-px" style="color:#8a96a7">${fmtNum(r.last, 2)}</span> <span class="idx-chg" style="color:${color}">${chg}</span> <span class="idx-pct" style="color:${color};font-size:10.5px">${pct}</span></span>`;
     });
     strip.innerHTML = parts.join("");
+  }
+  // v4.10.0 — debounced re-render on resize so portrait↔landscape recovers
+  // the right layout (compact ↔ full) without waiting for the 30s poll.
+  let __idxResizeT = null;
+  if (typeof window !== "undefined") {
+    window.addEventListener("resize", () => {
+      if (__idxResizeT) clearTimeout(__idxResizeT);
+      __idxResizeT = setTimeout(() => { renderIndices(__idxLastData); }, 150);
+    });
   }
 
   // --- Per-executor tab ------------------------------------------------
@@ -1391,21 +1459,7 @@
     const reg = ms.regime || {};
     const gateEl = execField(panel, "k-gate");
     const gateSubEl = execField(panel, "k-gate-sub");
-    if (gateEl && gateSubEl) {
-      if (gates.trading_halted) {
-        gateEl.textContent = "HALTED"; gateEl.style.color = "var(--down)";
-        gateSubEl.textContent = gates.halt_reason || "manual halt";
-      } else if (gates.scan_paused) {
-        gateEl.textContent = "PAUSED"; gateEl.style.color = "var(--warn)";
-        gateSubEl.textContent = "scan paused";
-      } else if (!gates.or_collected_date) {
-        gateEl.textContent = "WAIT"; gateEl.style.color = "var(--warn)";
-        gateSubEl.textContent = "opening range not collected";
-      } else {
-        gateEl.textContent = "READY"; gateEl.style.color = "var(--up)";
-        gateSubEl.textContent = `OR ${gates.or_collected_date}`;
-      }
-    }
+    applyGateTriState(gateEl, gateSubEl, gates, reg);
     const rEl = execField(panel, "k-regime");
     if (rEl) {
       const breadth = reg.breadth || "UNKNOWN";
@@ -1520,21 +1574,7 @@
     const reg = ms.regime || {};
     const gateEl = execField(panel, "k-gate");
     const gateSubEl = execField(panel, "k-gate-sub");
-    if (gateEl && gateSubEl) {
-      if (gates.trading_halted) {
-        gateEl.textContent = "HALTED"; gateEl.style.color = "var(--down)";
-        gateSubEl.textContent = gates.halt_reason || "manual halt";
-      } else if (gates.scan_paused) {
-        gateEl.textContent = "PAUSED"; gateEl.style.color = "var(--warn)";
-        gateSubEl.textContent = "scan paused";
-      } else if (!gates.or_collected_date) {
-        gateEl.textContent = "WAIT"; gateEl.style.color = "var(--warn)";
-        gateSubEl.textContent = "opening range not collected";
-      } else {
-        gateEl.textContent = "READY"; gateEl.style.color = "var(--up)";
-        gateSubEl.textContent = `OR ${gates.or_collected_date}`;
-      }
-    }
+    applyGateTriState(gateEl, gateSubEl, gates, reg);
     const rEl = execField(panel, "k-regime");
     if (rEl) {
       const breadth = reg.breadth || "UNKNOWN";

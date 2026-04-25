@@ -24,5 +24,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_before_market_open",
-  "trade_genius_version": "4.9.0"
+  "trade_genius_version": "4.10.0"
 }
