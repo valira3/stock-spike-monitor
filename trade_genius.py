@@ -67,7 +67,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.0.1"
+BOT_VERSION = "5.0.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -85,6 +85,24 @@ BOT_VERSION = "5.0.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.0.2 \u2014 hotfix for prod:\n"
+    "Dockerfile was missing\n"
+    "COPY tiger_buffalo_v5.py,\n"
+    "so v5.0.0/v5.0.1 prod\n"
+    "crashed on import. Fixed +\n"
+    "added a smoke test that\n"
+    "asserts every imported\n"
+    "top-level module appears\n"
+    "in the Dockerfile (the\n"
+    "v4.11.0 footgun, again).\n"
+    "\n"
+    "Bundles v5.0.1: DMI period\n"
+    "fixed 14 \u2192 15 to match\n"
+    "Genes spec and v4 code."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.0.0 \u2014 Tiger/Buffalo:\n"
     "two-stage state machine\n"
     "replaces v4 ORB Breakout\n"
@@ -101,11 +119,8 @@ CURRENT_MAIN_NOTE = (
     "LOCKED_FOR_DAY. Short\n"
     "side: DI<25 hard eject is\n"
     "priority-1 over stop.\n"
-    "Spec: STRATEGY.md."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "Spec: STRATEGY.md.\n"
+    "\n"
     "v4.13.0 \u2014 major indices:\n"
     "ticker now also shows real\n"
     "S&P 500/Nasdaq/Dow/Russell\n"

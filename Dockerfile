@@ -22,6 +22,8 @@ COPY telegram_commands.py .
 COPY paper_state.py .
 COPY side.py .
 COPY error_state.py .
+# v5.0.0 — Tiger/Buffalo state-machine module (imported by trade_genius.py).
+COPY tiger_buffalo_v5.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .
