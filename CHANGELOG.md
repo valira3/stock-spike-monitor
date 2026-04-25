@@ -4,6 +4,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.8.1 (2026-04-24) — testing: synthetic trading harness + 25 scenario goldens.
+
+This is a pure addition. Zero behavior change to `trade_genius.py`. The release introduces a hermetic, deterministic test harness that replays full bot decision paths against frozen "golden" outputs.
+
+**Added:**
+
+- New package `synthetic_harness/` — hermetic, deterministic test harness. Replaces external dependencies (clock, market data, FMP quote, Tiger DI, Telegram send, paper-state save, signals, trade log, near-miss writes) with in-memory stand-ins via monkeypatching. A `FrozenClock` makes `_now_et`, `_now_cdt`, `_utc_now_iso`, and `datetime.now()` deterministic so wall-clock drift never leaks into output.
+- 25 named scenarios (`synthetic_harness/scenarios/`) covering the full decision surface: 5 long entries (`long_clean_entry`, `long_blocked_in_position`, `long_blocked_at_cap`, `long_blocked_polarity`, `long_blocked_loss_limit`), 5 short entries (mirrors), 5 long closes (STOP, TRAIL, EOD, HARD_EJECT_TIGER, MANUAL), 5 short closes (mirrors), 5 scan-loop scenarios (`loop_full_cycle`, `loop_trail_promotion`, `loop_eod_cleanup`, `loop_halted_trading`, `loop_scan_paused`).
+- 25 golden JSON outputs under `synthetic_harness/goldens/` recorded against v4.8.0 production code. Each golden captures Telegram outbox, paper log, signals, trade-log writes, save_paper_state calls, gate snapshots, near-miss writes, and a recursive state-delta. Replay asserts byte-equal output (`json.dumps(..., sort_keys=True, indent=2)`).
+- CLI: `python -m synthetic_harness {list,record,replay,diff}`. Subcommands: `list` enumerates scenarios; `record` writes/refreshes goldens; `replay` runs all scenarios and compares to goldens; `diff <name>` shows per-scenario diff.
+- `smoke_test.py --synthetic` flag — registers the 25 scenarios as `t()` smoke tests. With `--synthetic`, the local suite expands from 82 → 107 tests.
+
+**Structure:**
+
+- `synthetic_harness/clock.py` — `FrozenClock` + `make_frozen_datetime_class(clock)` factory used to replace `trade_genius.datetime`.
+- `synthetic_harness/market.py` — `SyntheticMarket` with `TickerFrame` dataclass; helpers `make_long_breakout_frame`, `make_short_breakdown_frame`, `make_index_bull_frame`, `make_index_bear_frame` produce 5-bar timelines tuned for clean-entry vs. blocked-entry shapes (controlled `breakout_vol_ratio`, `avg_vol`, gap, OR placement).
+- `synthetic_harness/recorder.py` — `OutputRecorder` with `capture_*` callbacks for every external surface, plus `to_dict()` serializer.
+- `synthetic_harness/state.py` — `state_snapshot(module, keys=CAPTURE_KEYS)` and recursive `state_diff(before, after)` for stable JSON diffs.
+- `synthetic_harness/install.py` — `install(harness)` / `uninstall()` patches `PATCH_TARGETS` on the live `trade_genius` module; idempotent.
+- `synthetic_harness/scenarios/__init__.py` — `Action` and `Scenario` dataclasses; registry built from all 5 scenario submodules.
+- `synthetic_harness/runner.py` — `record_scenario(name)`, `replay_scenario(name)`, and `_dispatch(action)` for action kinds (`check_entry`, `execute_entry`, `close_position`, the short mirrors, `scan_loop`, `manage_positions`, `manage_short_positions`, `eod_close`, `tick_minutes`, `tick_seconds`, `set_price`, `set_frame`, `set_global`).
+- `synthetic_harness/cli.py` + `synthetic_harness/__main__.py` — argparse CLI entry point.
+
+**Behavior:**
+
+- Zero change. `trade_genius.py` logic is untouched aside from the version-string + release-note bump. `synthetic_harness/` is test infrastructure only and is **not** referenced from any runtime code path. It is intentionally **not** copied into the Docker image (test infra only, not used at runtime).
+
+**Tests:**
+
+- Local smoke suite: 82 unchanged. With `--synthetic`: 82 + 25 = 107 (each scenario registers as one `t()` entry that calls `replay_scenario(name)` and asserts `ok`).
+- All 25 goldens are byte-equal idempotent: re-recording produces identical files (`md5sum` stable across runs).
+
+**Rollout:**
+
+- No env var, no feature flag. The harness is opt-in via `--synthetic` for the smoke suite and via `python -m synthetic_harness` for ad-hoc use. Production path is unaffected.
+
+---
+
 ## v4.8.0 (2026-04-24) — refactor: long/short collapsed via Side enum, dual-path under SSM_USE_COLLAPSED feature flag (Stage B1).
 
 This is Stage B1 of the long/short harmonization (Stage A shipped in v4.7.0). The 6 near-mirror functions (`check_entry`/`check_short_entry`, `execute_entry`/`execute_short_entry`, `close_position`/`close_short_position`) are collapsed into 3 side-parameterized functions: `check_breakout(ticker, side)`, `execute_breakout(ticker, current_price, side)`, `close_breakout(ticker, price, side, reason)`.

@@ -1,0 +1,115 @@
+{
+  "actions": [
+    {
+      "action": {
+        "args": [
+          "MSFT",
+          379.0,
+          "EOD"
+        ],
+        "kind": "close_short_position",
+        "label": "cover EOD"
+      },
+      "gate_snapshot_calls": [],
+      "near_miss_writes": [],
+      "paper_log_outbox": [
+        "COVER MSFT 30 @ $379.00 reason=EOD pnl=$30.00 (0.3%)"
+      ],
+      "return_value": null,
+      "save_paper_state_calls": 1,
+      "signals": [
+        {
+          "kind": "EXIT_SHORT",
+          "main_shares": 30,
+          "price": 379.0,
+          "reason": "EOD",
+          "ticker": "MSFT",
+          "timestamp_utc": "2026-04-24T19:55:00+00:00"
+        }
+      ],
+      "state_delta": {
+        "_last_exit_time": {
+          "MSFT": {
+            "added": {
+              "__dt__": "2026-04-24T19:55:00+00:00"
+            }
+          }
+        },
+        "paper_cash": {
+          "after": 88630.0,
+          "before": 100000.0
+        },
+        "short_positions": {
+          "MSFT": {
+            "removed": {
+              "date": "2026-04-24",
+              "entry_count": 1,
+              "entry_price": 380.0,
+              "entry_time": "09:00:00",
+              "entry_ts_utc": "2026-04-24T13:00:00+00:00",
+              "initial_stop": 382.0,
+              "pdc": 381.0,
+              "shares": 30,
+              "side": "SHORT",
+              "stop": 382.0,
+              "trail_active": false,
+              "trail_low": 380.0,
+              "trail_stop": null
+            }
+          }
+        },
+        "short_trade_history": {
+          "after": [
+            {
+              "action": "COVER",
+              "date": "2026-04-24",
+              "entry_num": 1,
+              "entry_price": 380.0,
+              "entry_time": "09:00:00",
+              "entry_time_iso": "2026-04-24T13:00:00+00:00",
+              "exit_price": 379.0,
+              "exit_time": "14:55 CDT",
+              "exit_time_iso": "2026-04-24T19:55:00+00:00",
+              "pnl": 30.0,
+              "pnl_pct": 0.26,
+              "reason": "EOD",
+              "shares": 30,
+              "side": "short",
+              "ticker": "MSFT"
+            }
+          ],
+          "before": []
+        }
+      },
+      "telegram_outbox": [
+        "\u2705 SHORT CLOSED\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker : MSFT\nShares : 30\nEntry  : $380.00  (total $11,400.00)\nCover  : $379.00  (total $11,370.00)\nP&L    : $+30.00  (+0.3%)\nReason : \ud83d\udd14 End of Day\nIn: 09:00:00   Out: 14:55 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+      ],
+      "trade_log_writes": [
+        {
+          "date": "2026-04-24",
+          "effective_stop_at_exit": 382.0,
+          "entry_num": 1,
+          "entry_price": 380.0,
+          "entry_time": "09:00:00",
+          "exit_price": 379.0,
+          "exit_time": "2026-04-24T19:55:00+00:00",
+          "hard_stop_at_exit": 382.0,
+          "hold_seconds": 24900.0,
+          "pnl": 30.0,
+          "pnl_pct": 0.26,
+          "portfolio": "paper",
+          "reason": "EOD",
+          "shares": 30,
+          "side": "SHORT",
+          "ticker": "MSFT",
+          "trail_active_at_exit": false,
+          "trail_anchor_at_exit": 380.0,
+          "trail_stop_at_exit": null
+        }
+      ]
+    }
+  ],
+  "harness_version": 1,
+  "scenario": "short_close_eod",
+  "trade_genius_version": "4.8.1"
+}

@@ -328,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.8.0")
+    @t("version: BOT_VERSION is 4.8.1")
     def _():
-        assert m.BOT_VERSION == "4.8.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.8.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.8.0")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.8.1")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.8.0"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.8.1"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -1638,7 +1638,7 @@ def run_local() -> int:
             ("AAPL", 101.0, "STOP"),
         )
 
-    return run_suite("LOCAL SMOKE TESTS (v4.8.0 long/short collapse, B1)")
+    return run_suite("LOCAL SMOKE TESTS (v4.8.1 synthetic harness)")
 
 
 # ============================================================
@@ -1730,6 +1730,45 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
 
 
 # ============================================================
+# SYNTHETIC HARNESS MODE (v4.8.1)
+# ============================================================
+
+def run_synthetic() -> int:
+    """Replay all 25 synthetic-harness goldens. One t() entry per scenario.
+
+    Goldens live at synthetic_harness/goldens/<name>.json and are
+    committed to git. A failure prints a unified diff between the
+    recorded golden and the observed run.
+    """
+    os.environ.setdefault("SSM_SMOKE_TEST", "1")
+    os.environ.setdefault("CHAT_ID", "999999999")
+    os.environ.setdefault("DASHBOARD_PASSWORD", "smoketest1234")
+    os.environ.setdefault(
+        "TELEGRAM_TOKEN",
+        "0000000000:AAAA_smoke_placeholder_token_0000000",
+    )
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from synthetic_harness import list_scenarios, replay_scenario
+    except Exception as e:  # pragma: no cover
+        print(f"synthetic harness import failed: {e}")
+        traceback.print_exc()
+        return 2
+
+    for name in list_scenarios():
+        # Capture in a closure so each lambda gets its own name.
+        def _make(scn):
+            @t(f"synthetic: {scn}")
+            def _():
+                ok, diff = replay_scenario(scn)
+                assert ok, f"golden mismatch for {scn}:\n{diff}"
+            return _
+        _make(name)
+
+    return run_suite("SYNTHETIC HARNESS (v4.8.1, 25 scenarios)")
+
+
+# ============================================================
 # CLI
 # ============================================================
 
@@ -1737,6 +1776,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="TradeGenius smoke test")
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--prod", action="store_true")
+    parser.add_argument("--synthetic", action="store_true",
+                        help="replay synthetic_harness goldens after local")
     parser.add_argument("--url",
                         default="https://stock-spike-monitor-production.up.railway.app")
     parser.add_argument("--password",
@@ -1750,6 +1791,8 @@ def main() -> int:
     total_fails = 0
     if do_local:
         total_fails += run_local()
+    if args.synthetic:
+        total_fails += run_synthetic()
     if do_prod:
         if not args.password:
             print("(prod mode skipped — no --password)")

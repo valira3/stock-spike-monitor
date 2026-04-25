@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.8.0"
+BOT_VERSION = "4.8.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,25 +76,34 @@ BOT_VERSION = "4.8.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.8.1 \u2014 testing:\n"
+    "synthetic harness added\n"
+    "(synthetic_harness/) with\n"
+    "25 named scenarios (5 long\n"
+    "entries, 5 short entries,\n"
+    "5 long closes, 5 short\n"
+    "closes, 5 scan loops).\n"
+    "Golden JSON outputs\n"
+    "recorded against v4.8.0\n"
+    "code; replay asserts\n"
+    "byte-equal output.\n"
+    "smoke_test.py --synthetic\n"
+    "lifts coverage from 82\n"
+    "to 107 tests. Pure\n"
+    "addition \u2014 zero behavior\n"
+    "change to trade_genius."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.8.0 \u2014 refactor:\n"
     "long/short collapsed via\n"
     "Side enum. check_breakout,\n"
     "execute_breakout, and\n"
     "close_breakout replace 6\n"
     "near-mirror functions.\n"
-    "Old paths kept as\n"
-    "_legacy_* and reachable via\n"
-    "SSM_USE_COLLAPSED=0 for\n"
-    "instant rollback. Zero\n"
-    "user-visible change \u2014\n"
-    "differential tests assert\n"
-    "byte-equal Telegram +\n"
-    "state output across both\n"
-    "paths."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "Zero user-visible change.\n"
+    "\n"
     "v4.7.0 \u2014 refactor +\n"
     "risk fixes: long/short\n"
     "entry/execute/close are now\n"
