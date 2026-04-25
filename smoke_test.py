@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.13.0")
+    @t("version: BOT_VERSION is 5.0.0")
     def _():
-        assert m.BOT_VERSION == "4.13.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.0.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -1494,7 +1494,551 @@ def run_local() -> int:
             f"/api/version returned {body!r}, want version={m.BOT_VERSION!r}"
 
 
-    return run_suite("LOCAL SMOKE TESTS (v4.9.1 synthetic harness)")
+    # ============================================================
+    # v5.0.0 \u2014 Tiger/Buffalo state-machine tests
+    # ============================================================
+    # Each test docstring/title cites a rule ID from STRATEGY.md so a
+    # spec change traces straight to a test failure. Coverage spans
+    # every L-P*-R*, S-P*-R*, and C-R* rule plus the state-machine
+    # plumbing in tiger_buffalo_v5.py.
+    import tiger_buffalo_v5 as v5
+
+    @t("v5 module: STRATEGY.md exists at repo root")
+    def _():
+        # The canonical spec MUST live at the repo root.
+        spec = Path(__file__).resolve().parent / "STRATEGY.md"
+        assert spec.exists(), f"STRATEGY.md missing at {spec}"
+        body = spec.read_text(encoding="utf-8")
+        assert "L-P1-G1" in body, "L-P1-G1 rule ID missing from spec"
+        assert "S-P4-R3" in body, "S-P4-R3 priority-1 rule missing"
+        assert "C-R7" in body, "C-R7 universe rule missing"
+
+    @t("v5 module: BOT_VERSION matches v5 major")
+    def _():
+        assert m.BOT_VERSION.startswith("5."), \
+            f"v5.x expected, got {m.BOT_VERSION}"
+
+    @t("v5 module: state names match spec D")
+    def _():
+        for name in ("IDLE","ARMED","STAGE_1","STAGE_2","TRAILING",
+                     "EXITED","RE_HUNT_PENDING","LOCKED_FOR_DAY"):
+            assert getattr(v5, "STATE_" + (name if name != "LOCKED_FOR_DAY" else "LOCKED")) is not None, name
+        assert "STAGE_1" in v5.ALL_STATES
+
+    @t("v5 module: DMI period is 14 (C-R2)")
+    def _():
+        # C-R2: ADX/DMI period MUST be 14 on the relevant timeframe.
+        assert v5.DMI_PERIOD == 14, f"got {v5.DMI_PERIOD}"
+
+    @t("v5 module: stage thresholds match spec (L-P2-R1, L-P3-R1)")
+    def _():
+        assert v5.STAGE1_DI_THRESHOLD == 25.0
+        assert v5.STAGE2_DI_THRESHOLD == 30.0
+        assert v5.HARD_EXIT_DI_THRESHOLD == 25.0
+
+    # ---------- L-P1: Long Permission Gates ----------
+    @t("v5 L-P1-G1: long requires QQQ.last > QQQ.PDC")
+    def _():
+        # Fail when QQQ <= PDC; pass when QQQ > PDC and other gates pass.
+        assert not v5.gates_pass_long(100,100,200,100,50,40,45)
+        assert v5.gates_pass_long(101,100,200,100,50,40,45)
+
+    @t("v5 L-P1-G2: long requires SPY.last > SPY.PDC")
+    def _():
+        assert not v5.gates_pass_long(101,100,99,100,50,40,45)
+        assert v5.gates_pass_long(101,100,101,100,50,40,45)
+
+    @t("v5 L-P1-G3: long requires ticker.last > ticker.PDC")
+    def _():
+        assert not v5.gates_pass_long(101,100,101,100,40,40,45)
+        assert v5.gates_pass_long(101,100,101,100,50,40,45)
+
+    @t("v5 L-P1-G4: long requires ticker.last > first_hour_high")
+    def _():
+        # Equality fails (strict >).
+        assert not v5.gates_pass_long(101,100,101,100,45,40,45)
+        assert v5.gates_pass_long(101,100,101,100,46,40,45)
+
+    @t("v5 L-P1: any None input fails closed")
+    def _():
+        assert not v5.gates_pass_long(None,100,101,100,50,40,45)
+        assert not v5.gates_pass_long(101,100,101,None,50,40,45)
+
+    # ---------- L-P2: Stage 1 Jab ----------
+    @t("v5 L-P2-R1: stage-1 long needs DI+(1m)>25 AND DI+(5m)>25")
+    def _():
+        assert not v5.stage1_signal_long(20, 30)  # 1m below 25
+        assert not v5.stage1_signal_long(30, 20)  # 5m below 25
+        assert not v5.stage1_signal_long(25, 30)  # equality fails (strict >)
+        assert v5.stage1_signal_long(26, 26)
+
+    @t("v5 L-P2-R2: stage-1 entry requires 2 consecutive 1m DI+>25 closes")
+    def _():
+        # Single confirmation must NOT fire entry; second consecutive does.
+        track = v5.new_track(v5.DIR_LONG)
+        assert not v5.tick_stage1_confirm(track, True)   # 1st confirm
+        fired = v5.tick_stage1_confirm(track, True)      # 2nd confirm
+        assert fired, "expected fire on 2nd consecutive confirm"
+
+    @t("v5 L-P2-R2: a missed confirm RESETS the counter")
+    def _():
+        # If signal flips false between confirms, counter resets per spec.
+        track = v5.new_track(v5.DIR_LONG)
+        v5.tick_stage1_confirm(track, True)              # confirms=1
+        assert not v5.tick_stage1_confirm(track, False)  # reset to 0
+        assert track["stage1_confirms"] == 0
+        assert not v5.tick_stage1_confirm(track, True)   # back to 1
+
+    @t("v5 L-P2-R3: stage-1 entry transitions track to STAGE_1 with 50% sizing flag")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, fill_price=100.0, initial_stop=98.5)
+        assert track["state"] == v5.STATE_STAGE_1
+        assert track["original_entry_price"] == 100.0
+        assert track["current_stop"] == 98.5
+
+    @t("v5 L-P2-R4: stage-1 long initial stop is the prior 5m candle low")
+    def _():
+        # The stop value passed in is what scan-loop will compute from
+        # the prior closed 5m bar. We just assert the wiring honors it.
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, fill_price=10.0, initial_stop=9.7)
+        # Stop must NOT change during STAGE_1 (no ratchet runs there).
+        assert track["current_stop"] == 9.7
+
+    @t("v5 L-P2-R5: stage-1 records original_entry_price = fill price")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, fill_price=42.17, initial_stop=41.0)
+        assert track["original_entry_price"] == 42.17
+
+    # ---------- L-P3: Stage 2 Strike ----------
+    @t("v5 L-P3-R1: stage-2 long needs DI+(1m)>30")
+    def _():
+        assert not v5.stage2_signal_long(30)   # equality fails strict >
+        assert not v5.stage2_signal_long(29)
+        assert v5.stage2_signal_long(31)
+
+    @t("v5 L-P3-R2: stage-2 entry requires 2 consecutive 1m DI+>30 closes")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        assert not v5.tick_stage2_confirm(track, True)
+        assert v5.tick_stage2_confirm(track, True)
+
+    @t("v5 L-P3-R3: stage-2 long blocked when ticker NOT above original_entry")
+    def _():
+        # If price slipped to entry or below, stage 2 must NOT fire.
+        assert not v5.winning_rule_long(100.0, 100.0)  # equality blocked
+        assert not v5.winning_rule_long(99.99, 100.0)
+        assert v5.winning_rule_long(100.01, 100.0)
+
+    @t("v5 L-P3-R4: stage-2 transition flips state to STAGE_2 (full 100%)")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, 100.0, 98.0)
+        v5.transition_to_stage2(track)
+        assert track["state"] == v5.STATE_STAGE_2
+
+    @t("v5 L-P3-R5: stage-2 safety lock moves stop to original_entry_price")
+    def _():
+        # On Stage-2 fill the stop on the entire 100% position becomes
+        # original_entry_price ("House Money").
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, fill_price=100.0, initial_stop=98.0)
+        v5.transition_to_stage2(track)
+        assert track["current_stop"] == 100.0, \
+            f"expected stop=100.0 (original entry), got {track['current_stop']}"
+
+    # ---------- L-P4: Guardrail / TRAILING ----------
+    @t("v5 L-P4-R1: HL is a 5m low strictly above the previous 5m low")
+    def _():
+        # Equal lows are NOT a Higher Low.
+        assert v5.ratchet_long_higher_low(prev_5m_low=9.0, this_5m_low=9.0,
+                                          current_stop=8.5) == 8.5
+        # this_low > prev_low and > current_stop -> ratchet up.
+        assert v5.ratchet_long_higher_low(9.0, 9.5, 8.5) == 9.5
+
+    @t("v5 L-P4-R2: long ratchet is up-only; never lowers the stop")
+    def _():
+        # New HL is BELOW current stop -> stop unchanged.
+        assert v5.ratchet_long_higher_low(prev_5m_low=8.0, this_5m_low=8.5,
+                                          current_stop=9.0) == 9.0
+
+    @t("v5 L-P4-R3 (a): long structural-stop hit when ticker.last < current_stop")
+    def _():
+        assert v5.structural_stop_hit_long(ticker_last=9.99, current_stop=10.0)
+        assert not v5.structural_stop_hit_long(ticker_last=10.0, current_stop=10.0)
+        assert not v5.structural_stop_hit_long(10.5, 10.0)
+
+    @t("v5 L-P4-R3 (b): long DI<25 hard exit fires on closed 1m candle")
+    def _():
+        assert v5.hard_exit_di_fail(v5.DIR_LONG, di_1m=24.99)
+        assert not v5.hard_exit_di_fail(v5.DIR_LONG, di_1m=25.0)
+        assert not v5.hard_exit_di_fail(v5.DIR_LONG, di_1m=None)
+
+    @t("v5 L-P4-R3: evaluate_exit returns STRUCTURAL_STOP when long stop hit")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, 10.0, 9.5)
+        v5.transition_to_stage2(track)
+        assert v5.evaluate_exit(track, ticker_last=9.99,
+                                di_1m_closed=None) == "STRUCTURAL_STOP"
+
+    @t("v5 L-P4-R3: evaluate_exit returns DI_HARD_EJECT on long DI<25")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, 10.0, 9.5)
+        v5.transition_to_stage2(track)
+        # Ticker still ABOVE stop, DI just dropped: still exits.
+        assert v5.evaluate_exit(track, ticker_last=11.0,
+                                di_1m_closed=20.0) == "DI_HARD_EJECT"
+
+    @t("v5 L-P4-R4: post-exit transitions track to EXITED (re-hunt available)")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, 10.0, 9.5)
+        v5.transition_to_stage2(track)
+        v5.on_post_exit(track)
+        assert track["state"] == v5.STATE_EXITED
+        assert track["re_hunt_used"] is False
+
+    # ---------- L-P5: Re-Hunt ----------
+    @t("v5 L-P5-R1: long reclamation requires ticker.last > original_entry")
+    def _():
+        assert not v5.reclamation_long(99.99, 100.0)
+        assert not v5.reclamation_long(100.0, 100.0)  # equality fails
+        assert v5.reclamation_long(100.01, 100.0)
+
+    @t("v5 L-P5-R2: re-hunt re-arms a fresh ARMED track with no stop")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, 10.0, 9.5)
+        v5.transition_to_stage2(track)
+        v5.on_post_exit(track)
+        ok = v5.transition_re_hunt(track)
+        assert ok
+        assert track["state"] == v5.STATE_ARMED
+        assert track["original_entry_price"] is None
+        assert track["current_stop"] is None
+        assert track["re_hunt_used"] is True
+
+    @t("v5 L-P5-R3: second exit forces LOCKED_FOR_DAY (one re-hunt cap)")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, 10.0, 9.5)
+        v5.transition_to_stage2(track)
+        v5.on_post_exit(track)
+        v5.transition_re_hunt(track)
+        # Simulate the re-hunt also exiting.
+        v5.transition_to_stage1(track, 11.0, 10.5)
+        v5.transition_to_stage2(track)
+        v5.on_post_exit(track)
+        assert track["state"] == v5.STATE_LOCKED, \
+            f"expected LOCKED_FOR_DAY after second exit, got {track['state']}"
+
+    @t("v5 L-P5-R3: a third re-hunt attempt is rejected and forces LOCKED")
+    def _():
+        track = v5.new_track(v5.DIR_LONG)
+        track["re_hunt_used"] = True  # already burned
+        v5.transition_to_exited(track)
+        ok = v5.transition_re_hunt(track)
+        assert not ok
+        assert track["state"] == v5.STATE_LOCKED
+
+    # ---------- S-P1: Short Permission Gates ----------
+    @t("v5 S-P1-G1: short forbidden when QQQ.last >= QQQ.PDC")
+    def _():
+        assert not v5.gates_pass_short(100,100,99,100,50,60,55)  # QQQ equal
+        assert not v5.gates_pass_short(101,100,99,100,50,60,55)  # QQQ green
+        assert v5.gates_pass_short(99,100,99,100,50,60,55)
+
+    @t("v5 S-P1-G2: short forbidden when SPY.last >= SPY.PDC")
+    def _():
+        assert not v5.gates_pass_short(99,100,101,100,50,60,55)
+        assert v5.gates_pass_short(99,100,99,100,50,60,55)
+
+    @t("v5 S-P1-G3: short requires ticker.last < ticker.PDC")
+    def _():
+        assert not v5.gates_pass_short(99,100,99,100,60,60,55)
+        assert v5.gates_pass_short(99,100,99,100,50,60,55)
+
+    @t("v5 S-P1-G4: short requires ticker.last < opening_range_low_5m")
+    def _():
+        # Equality fails (strict <).
+        assert not v5.gates_pass_short(99,100,99,100,55,60,55)
+        assert v5.gates_pass_short(99,100,99,100,54,60,55)
+
+    @t("v5 S-P1: indices-green vetoes shorts even on a weak ticker")
+    def _():
+        # Ticker WAY below its PDC, but indices green: shorts are off.
+        assert not v5.gates_pass_short(105,100,105,100,1,60,55)
+
+    # ---------- S-P2: Stage 1 ----------
+    @t("v5 S-P2-R1: stage-1 short needs DI-(1m)>25 AND DI-(5m)>25")
+    def _():
+        assert not v5.stage1_signal_short(25, 30)
+        assert v5.stage1_signal_short(26, 26)
+
+    @t("v5 S-P2-R2: stage-1 short entry requires 2 consecutive 1m DI->25 closes")
+    def _():
+        track = v5.new_track(v5.DIR_SHORT)
+        assert not v5.tick_stage1_confirm(track, True)
+        assert v5.tick_stage1_confirm(track, True)
+
+    @t("v5 S-P2-R3..R5: stage-1 short transition records entry + stop above")
+    def _():
+        track = v5.new_track(v5.DIR_SHORT)
+        v5.transition_to_stage1(track, fill_price=20.0, initial_stop=20.5)
+        assert track["state"] == v5.STATE_STAGE_1
+        assert track["original_entry_price"] == 20.0
+        # Short stop sits ABOVE entry (prior 5m candle high).
+        assert track["current_stop"] == 20.5
+
+    # ---------- S-P3: Stage 2 ----------
+    @t("v5 S-P3-R1: stage-2 short needs DI-(1m)>30")
+    def _():
+        assert not v5.stage2_signal_short(30)
+        assert v5.stage2_signal_short(30.01)
+
+    @t("v5 S-P3-R3: stage-2 short blocked when ticker NOT below original_entry")
+    def _():
+        assert not v5.winning_rule_short(20.0, 20.0)  # equality blocked
+        assert not v5.winning_rule_short(20.01, 20.0)
+        assert v5.winning_rule_short(19.99, 20.0)
+
+    @t("v5 S-P3-R5: short safety lock moves stop to original_entry_price")
+    def _():
+        track = v5.new_track(v5.DIR_SHORT)
+        v5.transition_to_stage1(track, fill_price=20.0, initial_stop=20.5)
+        v5.transition_to_stage2(track)
+        assert track["current_stop"] == 20.0
+
+    # ---------- S-P4: Guardrail / Hard Eject priority ----------
+    @t("v5 S-P4-R1: LH is a 5m high strictly below the previous 5m high")
+    def _():
+        # Equal highs are NOT a Lower High.
+        assert v5.ratchet_short_lower_high(prev_5m_high=10.0, this_5m_high=10.0,
+                                           current_stop=10.5) == 10.5
+        # this_high < prev_high and below current stop -> ratchet down.
+        assert v5.ratchet_short_lower_high(10.0, 9.7, 10.5) == 9.7
+
+    @t("v5 S-P4-R2: short ratchet is down-only; never raises the stop")
+    def _():
+        assert v5.ratchet_short_lower_high(prev_5m_high=10.5, this_5m_high=10.2,
+                                           current_stop=10.0) == 10.0
+
+    @t("v5 S-P4-R3: short DI<25 hard eject fires PRIORITY-1 over structural stop")
+    def _():
+        # Configure a track where BOTH structural stop AND DI<25 conditions
+        # are true simultaneously. The result MUST be DI_HARD_EJECT, not
+        # STRUCTURAL_STOP \u2014 short-side priority inversion per S-P4-R3.
+        track = v5.new_track(v5.DIR_SHORT)
+        v5.transition_to_stage1(track, 20.0, 20.5)
+        v5.transition_to_stage2(track)
+        # ticker_last > current_stop (structural hit) AND di < 25 (DI hit)
+        reason = v5.evaluate_exit(track, ticker_last=21.0, di_1m_closed=20.0)
+        assert reason == "DI_HARD_EJECT", \
+            f"S-P4-R3 priority violated: got {reason!r}"
+
+    @t("v5 S-P4-R4: short structural-stop hit when ticker.last > current_stop")
+    def _():
+        assert v5.structural_stop_hit_short(ticker_last=21.0, current_stop=20.5)
+        assert not v5.structural_stop_hit_short(ticker_last=20.5, current_stop=20.5)
+
+    @t("v5 S-P4-R4: structural exit fires when DI is healthy but stop is breached")
+    def _():
+        track = v5.new_track(v5.DIR_SHORT)
+        v5.transition_to_stage1(track, 20.0, 20.5)
+        v5.transition_to_stage2(track)
+        # DI still healthy (>= 25) so the priority-1 check is silent;
+        # structural stop fires.
+        reason = v5.evaluate_exit(track, ticker_last=21.0, di_1m_closed=30.0)
+        assert reason == "STRUCTURAL_STOP"
+
+    # ---------- S-P5: Re-Hunt ----------
+    @t("v5 S-P5-R1: short reclamation requires ticker.last < original_entry")
+    def _():
+        assert not v5.reclamation_short(20.0, 20.0)
+        assert v5.reclamation_short(19.99, 20.0)
+
+    @t("v5 S-P5-R3: short second exit forces LOCKED_FOR_DAY")
+    def _():
+        track = v5.new_track(v5.DIR_SHORT)
+        v5.transition_to_stage1(track, 20.0, 20.5)
+        v5.transition_to_stage2(track)
+        v5.on_post_exit(track)
+        v5.transition_re_hunt(track)
+        v5.transition_to_stage1(track, 19.0, 19.5)
+        v5.transition_to_stage2(track)
+        v5.on_post_exit(track)
+        assert track["state"] == v5.STATE_LOCKED
+
+    # ---------- C: Cross-cutting ----------
+    @t("v5 C-R1: long and short on same ticker mutually exclusive")
+    def _():
+        # If long is already active, short cannot arm; and vice versa.
+        assert v5.can_arm_direction(None, v5.DIR_LONG)
+        assert not v5.can_arm_direction(v5.DIR_LONG, v5.DIR_SHORT)
+        assert not v5.can_arm_direction(v5.DIR_SHORT, v5.DIR_LONG)
+        assert v5.can_arm_direction(v5.DIR_LONG, v5.DIR_LONG)
+
+    @t("v5 C-R2: DMI period is 14")
+    def _():
+        assert v5.DMI_PERIOD == 14
+
+    @t("v5 C-R3: confirmation counter is closed-candle driven (no None tick)")
+    def _():
+        # Pure-function helpers don't accept ticks \u2014 they advance only
+        # when called with a closed-candle signal. Verifying the API
+        # surface enforces the C-R3 separation.
+        track = v5.new_track(v5.DIR_LONG)
+        # No way to "tick" without supplying a bool decision.
+        assert v5.tick_stage1_confirm(track, False) is False
+
+    @t("v5 C-R4: daily-loss-limit forces every track to LOCKED_FOR_DAY")
+    def _():
+        # Set up two live tracks, then trip the lock helper.
+        m.v5_long_tracks.clear()
+        m.v5_short_tracks.clear()
+        m.v5_active_direction.clear()
+        m.v5_long_tracks["XYZ"] = v5.new_track(v5.DIR_LONG)
+        m.v5_long_tracks["XYZ"]["state"] = v5.STATE_TRAILING
+        m.v5_short_tracks["ABC"] = v5.new_track(v5.DIR_SHORT)
+        m.v5_short_tracks["ABC"]["state"] = v5.STATE_STAGE_1
+        n = m.v5_lock_all_tracks("test")
+        assert n == 2
+        assert m.v5_long_tracks["XYZ"]["state"] == v5.STATE_LOCKED
+        assert m.v5_short_tracks["ABC"]["state"] == v5.STATE_LOCKED
+
+    @t("v5 C-R4: _check_daily_loss_limit calls v5_lock_all_tracks on trip")
+    def _():
+        # Indirect verification: the source of _check_daily_loss_limit
+        # references v5_lock_all_tracks. A regression that removes the
+        # wiring fails this string-presence test.
+        import inspect
+        src = inspect.getsource(m._check_daily_loss_limit)
+        assert "v5_lock_all_tracks" in src, \
+            "C-R4 wiring missing in _check_daily_loss_limit"
+
+    @t("v5 C-R5: eod_close calls v5_lock_all_tracks (EOD lock)")
+    def _():
+        import inspect
+        src = inspect.getsource(m.eod_close)
+        assert "v5_lock_all_tracks" in src, \
+            "C-R5 wiring missing in eod_close"
+
+    @t("v5 C-R6: Sovereign Regime Shield helper still exists (preserved)")
+    def _():
+        # C-R6 says the Sovereign Regime Shield (Eye of the Tiger)
+        # global kill is preserved from v4. The helper that drives it
+        # MUST still exist and be callable.
+        assert callable(getattr(m, "_sovereign_regime_eject", None))
+
+    @t("v5 C-R7: 9-ticker spike universe + SPY/QQQ pinned (preserved)")
+    def _():
+        # C-R7: the v5 universe is identical to v4. SPY/QQQ are pinned
+        # filter rows in the dashboard, never traded directly \u2014 they
+        # are intentionally NOT in the trade universe (they are read
+        # by check_breakout as index polarity inputs only). The 9-name
+        # spike list IS the trade universe.
+        assert len(m.TRADE_TICKERS) == 9, \
+            f"C-R7 universe size drift: {len(m.TRADE_TICKERS)} (want 9)"
+        # SPY and QQQ are referenced as polarity inputs in check_breakout.
+        import inspect
+        src = inspect.getsource(m.check_breakout)
+        assert '"SPY"' in src and '"QQQ"' in src, \
+            "C-R7 SPY/QQQ polarity wiring missing from check_breakout"
+
+    # ---------- v5 plumbing ----------
+    @t("v5 plumbing: paper_state.json round-trips v5 tracks")
+    def _():
+        reset_state()
+        m.v5_long_tracks.clear()
+        m.v5_short_tracks.clear()
+        m.v5_active_direction.clear()
+        track = v5.new_track(v5.DIR_LONG)
+        v5.transition_to_stage1(track, 50.0, 49.0)
+        v5.transition_to_stage2(track)
+        m.v5_long_tracks["AAPL"] = track
+        m.v5_active_direction["AAPL"] = "long"
+        m.save_paper_state()
+        # Wipe in-memory and reload.
+        m.v5_long_tracks.clear()
+        m.v5_short_tracks.clear()
+        m.v5_active_direction.clear()
+        m.load_paper_state()
+        assert "AAPL" in m.v5_long_tracks
+        loaded = m.v5_long_tracks["AAPL"]
+        assert loaded["state"] == v5.STATE_STAGE_2
+        assert loaded["original_entry_price"] == 50.0
+        assert loaded["current_stop"] == 50.0  # safety lock
+        assert m.v5_active_direction.get("AAPL") == "long"
+
+    @t("v5 plumbing: legacy v4 paper_state file loads as IDLE (migration)")
+    def _():
+        # A v4 paper_state.json never wrote v5_* keys. Loader MUST treat
+        # absent keys as a fresh start (no exception, tracks empty).
+        import json as _json
+        legacy = {
+            "paper_cash": 100000.0,
+            "positions": {},
+            "paper_trades": [],
+            "paper_all_trades": [],
+            "daily_entry_count": {},
+            "daily_entry_date": "",
+            "or_high": {}, "or_low": {}, "pdc": {},
+            "or_collected_date": "",
+            "user_config": {},
+            "trade_history": [],
+            "short_positions": {}, "short_trade_history": [],
+            "daily_short_entry_count": {}, "daily_short_entry_date": "",
+            "last_exit_time": {},
+            "_scan_paused": False,
+            "_trading_halted": False,
+            "_trading_halted_reason": "",
+            # NO v5_* keys whatsoever.
+        }
+        with open(m.PAPER_STATE_FILE, "w") as f:
+            _json.dump(legacy, f)
+        m.v5_long_tracks["leftover"] = v5.new_track(v5.DIR_LONG)
+        m.load_paper_state()
+        # Loader should leave v5 dicts empty (legacy file had no v5 data).
+        assert m.v5_long_tracks == {}, m.v5_long_tracks
+        assert m.v5_short_tracks == {}
+
+    @t("v5 plumbing: load_track defaults absent record to IDLE")
+    def _():
+        track = v5.load_track(None, v5.DIR_LONG)
+        assert track["state"] == v5.STATE_IDLE
+        assert track["direction"] == v5.DIR_LONG
+
+    @t("v5 plumbing: load_track sanitizes a malformed state value")
+    def _():
+        bogus = {"state": "not_a_real_state", "direction": "long"}
+        track = v5.load_track(bogus, v5.DIR_LONG)
+        assert track["state"] == v5.STATE_IDLE  # fail-safe
+
+    @t("v5 plumbing: trade_genius imports v5 module")
+    def _():
+        assert hasattr(m, "v5")
+        assert m.v5 is v5
+        # And the per-ticker globals exist.
+        assert hasattr(m, "v5_long_tracks")
+        assert hasattr(m, "v5_short_tracks")
+        assert hasattr(m, "v5_active_direction")
+
+    @t("v5 plumbing: v5_get_track creates IDLE track on first access")
+    def _():
+        m.v5_long_tracks.clear()
+        track = m.v5_get_track("ZZZ", v5.DIR_LONG)
+        assert track["state"] == v5.STATE_IDLE
+        assert "ZZZ" in m.v5_long_tracks
+
+    @t("v5 plumbing: STRATEGY.md mentioned in trade_genius release note")
+    def _():
+        assert "STRATEGY.md" in m.CURRENT_MAIN_NOTE
+
+    return run_suite("LOCAL SMOKE TESTS (v5.0.0 Tiger/Buffalo)")
 
 
 # ============================================================

@@ -1,15 +1,22 @@
 # TradeGenius — System Architecture
 
-> **Version:** v4.13.0 · April 2026
+> **Version:** v5.0.0 · April 2026
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth:** `trade_genius.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`
+> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`
 
-TradeGenius is a Python Telegram-driven Opening Range Breakout (ORB) trading
-bot with a paper book, two Alpaca-backed executor mirrors, and a live web
-dashboard. It runs a long ORB strategy and a Wounded Buffalo short strategy
-on a small, hand-curated ticker universe; emits ENTRY/EXIT signals on an
-in-process bus; and (when configured) replicates those signals against
-Alpaca paper or live via two independent executor bots.
+TradeGenius is a Python Telegram-driven trading bot with a paper book,
+two Alpaca-backed executor mirrors, and a live web dashboard. As of
+**v5.0.0** it runs the **Tiger/Buffalo two-stage state machine** for both
+long ("The Tiger Hunts the Bison") and short ("The Wounded Buffalo /
+Gravity Trade") trades on a small, hand-curated ticker universe; emits
+ENTRY/EXIT signals on an in-process bus; and (when configured)
+replicates those signals against Alpaca paper or live via two
+independent executor bots.
+
+The canonical specification of the trading logic lives in
+[`STRATEGY.md`](STRATEGY.md) at the repo root. Sections 6 and 7 below
+summarize the v5 algorithm and risk model; for any disagreement
+between this file and `STRATEGY.md`, **`STRATEGY.md` is authoritative**.
 
 App was branded **Stock Spike Monitor** through v3.5.0; renamed to
 **TradeGenius** in v3.5.1. The pre-v3.5.0 TradersPost mirror portfolio,
@@ -215,171 +222,164 @@ loop's structure:
 
 ---
 
-## 6. Trading algorithm
+## 6. Trading algorithm — Tiger/Buffalo (v5.0.0)
 
-### 6.1 Opening Range collection
+> **Canonical spec:** [`STRATEGY.md`](STRATEGY.md). For any rule
+> disagreement, the spec wins. Every code-level decision in
+> `tiger_buffalo_v5.py` cites a rule ID (e.g. `L-P2-R3`) that maps 1:1
+> to the spec; smoke-test docstrings reference the same IDs.
 
-`collect_or()` fires at 09:35 ET. For every ticker (including the
-pinned `SPY`/`QQQ`):
+v5 reframes both long and short trades as a **two-stage entry,
+structural-ratchet exit** state machine. Per-ticker per-direction
+state lives in `trade_genius.v5_long_tracks` /
+`trade_genius.v5_short_tracks` (persisted in `paper_state.json`).
 
-- Window: `09:30:00 – 09:34:59` ET (five 1-minute bars).
-- `OR_High` = max high across the window; `OR_Low` = min low.
-- PDC (Previous Day Close) is the official 16:00 ET close, fetched from
-  FMP and cached for the day.
-- Up to 3 retries at 30 s intervals if Yahoo data has not yet arrived.
-- `or_collected_date` is set on success; the scan loop treats missing
-  OR data as "not yet armed" and emits no entries.
+### 6.1 States
 
-Live-data sanity guard (`_or_price_sane`): if the OR price is more than
-`OR_STALE_THRESHOLD` (default **5%**) away from the live price, skip
-the entry and bump `or_stale_skip_count[ticker]` so the dashboard shows
-the silent skip rate.
+```
+                ┌──────────┐   gates pass    ┌──────────┐   2× DI confirm   ┌──────────┐
+                │   IDLE   │ ──────────────► │  ARMED   │ ───────────────►  │  STAGE_1 │
+                └──────────┘                 └──────────┘   (50% on)        └────┬─────┘
+                                                                                  │
+                                       in profit + DI accel + 2× confirm          ▼
+                                       ┌────────────────────────────────────────────────┐
+                                       │                       STAGE_2                  │
+                                       │            (full size, stop = entry)           │
+                                       └─────────────────────┬──────────────────────────┘
+                                                              │
+                                                              ▼
+                                                       ┌────────────┐
+                                          stop hit OR  │  TRAILING  │
+                                          DI < 25  ──► └─────┬──────┘
+                                                              │
+                                                              ▼
+                                                       ┌────────────┐
+                                          one chance   │   EXITED   │
+                                          to RE_HUNT ─►└────────────┘
+```
 
-### 6.2 Long entry (ORB Breakout)
+State enum: `IDLE`, `ARMED`, `STAGE_1`, `STAGE_2`, `TRAILING`,
+`EXITED`, `RE_HUNT_PENDING`, `LOCKED_FOR_DAY` (helpers in
+`tiger_buffalo_v5.py`).
 
-All conditions must be simultaneously true (`check_entry`):
+### 6.2 Long protocol — "The Tiger Hunts the Bison"
 
-1. Time ≥ 09:45 ET (15-minute buffer after the OR window closes).
-2. Most-recent finalized 1-minute bar **closes above `OR_High`**.
-3. Current price > PDC (bullish polarity).
-4. SPY current > SPY PDC.
-5. QQQ current > QQQ PDC.
-6. `daily_entry_count[t] + daily_short_entry_count[t] < 5`.
-7. No existing long open for `t`.
-8. `_check_daily_loss_limit()` — today's realized P&L not at floor.
-9. `tiger_di(t)` returns DI+ ≥ `TIGER_V2_DI_THRESHOLD` (default 25)
-   on resampled 5-minute bars.
-10. **Entry-extension guard (v4.3.0):** entry price not more than
-    `ENTRY_EXTENSION_MAX_PCT` (default **1.5%**) above `OR_High`. If
-    `ENTRY_STOP_CAP_REJECT=1` (default), an entry that would *need*
-    the 0.75% stop cap to clamp baseline risk is also rejected — the
-    cap firing is itself a signal that the bar closed too far past
-    the OR edge.
+| Phase | Rule IDs | Summary |
+|-------|----------|---------|
+| **L-P1** | G1..G4 | Permission gates: QQQ > QQQ-PDC, SPY > SPY-PDC, ticker > ticker-PDC, ticker > first-hour high (09:30–10:30 ET). All four must be true to leave IDLE. |
+| **L-P2** | R1..R5 | Stage-1 (50% on): `DI+(1m) > 25 AND DI+(5m) > 25` confirmed across **two consecutive closed 1m candles**. Initial stop = low of prior closed 5m candle (hard, does not move during STAGE_1). Record `original_entry_price`. |
+| **L-P3** | R1..R5 | Stage-2 (full size): `DI+(1m) > 30` confirmed across two more consecutive closed 1m candles AND ticker last > original entry ("Winning Rule"). Add remaining 50%. **Safety Lock:** stop on entire 100% position moves to `original_entry_price` ("House Money"). |
+| **L-P4** | R1..R4 | TRAILING: every 5m close, ratchet stop UP-ONLY to most recent Higher Low. Hard exits: `ticker.last < current_stop` OR `DI+(1m) < 25` on a closed 1m candle — either flattens 100%. |
+| **L-P5** | R1..R3 | Re-Hunt (one shot): after exit, dormant until ticker > original entry ("reclamation"). On reclamation re-arm with FRESH values. After a second exit → `LOCKED_FOR_DAY`. |
 
-### 6.3 Short entry (Wounded Buffalo)
+### 6.3 Short protocol — "The Wounded Buffalo / Gravity Trade"
 
-Mirror of the long path with inverted arithmetic
-(`check_short_entry`):
+Structural mirror of the long side. The **priority-1 rule (S-P4-R3)
+inverts** vs. the long side: `DI−(1m) < 25` is checked BEFORE the
+structural-stop hit. Rationale (per spec): "fear moves faster than
+greed" — short-side momentum decay typically precedes a squeeze, so
+the bot covers on DI failure ahead of a stop trigger.
 
-1. Time ≥ 09:45 ET.
-2. Most-recent finalized 1-minute bar **closes below `OR_Low`**.
-3. Current price < PDC (bearish polarity — the "Wounded Buffalo").
-4. SPY current < SPY PDC.
-5. QQQ current < QQQ PDC.
-6. Combined daily count < 5.
-7. No existing short for `t`.
-8. Daily-loss-limit guard not triggered (added for shorts in **v4.7.0**).
-9. DI− ≥ threshold.
-10. Entry-extension guard mirrored: entry not > 1.5% below `OR_Low`.
+| Phase | Rule IDs | Summary |
+|-------|----------|---------|
+| **S-P1** | G1..G4 | Gates: QQQ < PDC, SPY < PDC, ticker < PDC, ticker < opening-range-low (09:30–09:35 ET). If indices are GREEN, shorts are forbidden regardless of ticker weakness. |
+| **S-P2** | R1..R5 | Stage-1 short (50% on): `DI−(1m) > 25 AND DI−(5m) > 25` confirmed × 2. Initial stop = high of prior closed 5m candle. |
+| **S-P3** | R1..R5 | Stage-2: `DI−(1m) > 30` × 2 closed candles AND ticker last < original entry. Add remaining 50%. Safety Lock moves stop to `original_entry_price`. |
+| **S-P4** | R1..R5 | TRAILING: ratchet stop DOWN-ONLY to most recent Lower High on each 5m close. **Priority-1 hard eject:** `DI−(1m) < 25` ⇒ immediate flatten BEFORE structural-stop check. **Priority-2:** `ticker.last > current_stop` ⇒ flatten. |
+| **S-P5** | R1..R3 | Re-Hunt (one shot) on price reclaiming below original entry. Second exit ⇒ `LOCKED_FOR_DAY`. |
 
-### 6.4 Sizing
+### 6.4 Sizing — preserved from v4
+
+v5 changes how the position is **staged in** (50% then 50%), not how
+the unit is computed.
 
 | Parameter                           | Value                                      |
 |-------------------------------------|--------------------------------------------|
 | Starting paper capital              | $100,000.00 (`PAPER_STARTING_CAPITAL`)     |
-| Dollars per entry (paper, v3.4.45+) | `$10,000` (`PAPER_DOLLARS_PER_ENTRY` env)  |
-| Shares per entry                    | `int($10,000 // entry_price)`              |
-| Legacy fixed share count            | `SHARES = 10` (fallback when price n/a)    |
-| Max entries / ticker / day          | 5 (long + short combined)                  |
+| Dollars per entry (paper)           | `$10,000` (`PAPER_DOLLARS_PER_ENTRY` env) — this is "100% of unit" |
+| Stage-1 fill size                   | 50% of unit                                |
+| Stage-2 fill size                   | remaining 50%                              |
+| Shares per entry                    | `paper_shares_for(price)` (unchanged)      |
 | Order type                          | Limit at current market price              |
 
 Executor sizing is independent and per-executor: `VAL_DOLLARS_PER_ENTRY`
 and `GENE_DOLLARS_PER_ENTRY` (default $10,000 each). Each executor
 computes `max(1, int(dollars_per_entry // price))` from its own price
-reference at signal time.
+reference at signal time. Per spec C-R7, SPY/QQQ are pinned filter
+rows on the dashboard and serve as L-P1-G1/G2 / S-P1-G1/G2 inputs;
+they are NEVER traded directly.
 
 ---
 
-## 7. Risk: 4-layer stop chain
+## 7. Risk: v5 stop model + portfolio brakes
 
-Every paper position is protected by four stacking layers. Each layer
-can only **tighten** the stop; the structural floor is permanent.
+> The v4 4-layer stop chain (structural baseline / 0.75% cap /
+> breakeven ratchet / peak-anchored profit-lock ladder) has been
+> **replaced** in v5 with the spec's two-stage stop model below.
+> The v4 ladder math is preserved in source for the synthetic
+> harness baselines but is no longer authoritative.
 
-```
-final_stop_long  = max(initial_stop, cap_floor, breakeven, ladder)
-final_stop_short = min(initial_stop, cap_ceil,  breakeven, ladder)
-```
+### 7.1 v5 per-trade stop model
 
-### Layer 1 — structural baseline
+The stop is a single value per track, evolved through three regimes:
 
-Set at entry, frozen as `initial_stop`. `manage_positions` and
-`manage_short_positions` never lower (long) / raise (short) it.
+1. **Stage-1 stop (L-P2-R4 / S-P2-R4) — "Emergency Exit."**
+   Set to the low of the prior closed 5m candle (long) or the high
+   of the prior closed 5m candle (short). Hard stop. Does NOT move
+   while the track is in `STAGE_1`.
 
-- Long:  `OR_High − $0.90`
-- Short: `PDC + $0.90`
+2. **Stage-2 safety lock (L-P3-R5 / S-P3-R5) — "House Money."**
+   On the Stage-2 fill, the stop on the entire 100% position is
+   moved to `original_entry_price`. The trade is now risk-free vs.
+   its own cost basis.
 
-### Layer 2 — 0.75% entry-relative cap
+3. **TRAILING ratchet (L-P4-R1..R2 / S-P4-R1..R2).**
+   On each 5m close after Stage 2, compute the most recent Higher
+   Low (long) or Lower High (short). Ratchet in the favorable
+   direction only — the stop NEVER moves down on a long or up on
+   a short. Implementation: `tiger_buffalo_v5.ratchet_long_higher_low`
+   / `ratchet_short_lower_high`.
 
-`MAX_STOP_PCT = 0.0075`. A wide-range opening bar can place the OR-based
-baseline far below entry — the cap clamps it (`_capped_long_stop`,
-`_capped_short_stop`).
+### 7.2 Hard exits (L-P4-R3 / S-P4-R3..R4)
 
-- Long:  `cap_floor = entry × (1 − 0.0075)`; `stop = max(baseline, cap_floor)`.
-- Short: `cap_ceil  = entry × (1 + 0.0075)`; `stop = min(baseline, cap_ceil)`.
+| Side  | Priority-1 (closed 1m candle) | Priority-2 (every tick) |
+|-------|-------------------------------|--------------------------|
+| Long  | `DI+(1m) < 25` ⇒ flatten      | `ticker.last < current_stop` |
+| Short | `DI−(1m) < 25` ⇒ flatten      | `ticker.last > current_stop` |
 
-`retighten_all_stops()` runs each scan to enforce the cap on positions
-that pre-date the v3.4.21 cap or any rule revision.
+**Short side inverts ordering** per S-P4-R3: the DI<25 hard eject is
+priority-1 over the structural-stop check. This is the single most
+important behavioral asymmetry between the two protocols and is
+covered by a dedicated smoke test (`v5 S-P4-R3: short DI<25 hard
+eject fires PRIORITY-1 over structural stop`). Long side: either
+trigger flattens, order is observability-only.
 
-### Layer 3 — breakeven ratchet
+### 7.3 Re-Hunt budget (L-P5-R3 / S-P5-R3)
 
-`BREAKEVEN_RATCHET_PCT = 0.005` (+0.50%). Once peak gain hits +0.50%,
-the stop ratchets to entry (`_breakeven_long_stop`, `_breakeven_short_stop`).
-Closes the gap between the 0.75% cap and the 1% ladder arm threshold so
-a winner that brushes +0.8% can no longer give back the full 1.5% cap
-distance.
+After an exit the track lands in `EXITED` with the re-hunt budget
+unspent. On reclamation (price climbs back above original entry for
+longs, below for shorts), the state machine returns to `ARMED` with
+all stage counters reset and `original_entry_price = None`. After a
+second exit the track is forced to `LOCKED_FOR_DAY` regardless of
+subsequent reclamations.
 
-### Layer 4 — peak-anchored profit-lock ladder
+### 7.4 Portfolio-level brakes — preserved from v4
 
-`_ladder_stop_long`, `_ladder_stop_short`. As peak gain grows, the
-allowed give-back **shrinks**:
+Spec section C documents the cross-cutting rules; v5 wires each into
+the existing v4 helpers so the brakes still fire even when the v5
+state machine is mid-trade.
 
-| Peak gain | Phase   | Long stop      | Short stop     |
-|-----------|---------|----------------|----------------|
-| < 1.0%    | Bullet  | `initial_stop` | `initial_stop` |
-| ≥ 1.0%    | Arm     | `peak − 0.50%` | `peak + 0.50%` |
-| ≥ 2.0%    | Lock    | `peak − 0.40%` | `peak + 0.40%` |
-| ≥ 3.0%    | Tight   | `peak − 0.30%` | `peak + 0.30%` |
-| ≥ 4.0%    | Tighter | `peak − 0.20%` | `peak + 0.20%` |
-| ≥ 5.0%    | Harvest | `peak − 0.10%` | `peak + 0.10%` |
-
-`peak` is `pos["trail_high"]` (long) or `pos["trail_low"]` (short).
-The result is always clamped against the structural floor:
-`max(tier_stop, initial_stop)` for longs, `min(...)` for shorts.
-
-### Sovereign Regime Shield (Eye of the Tiger)
-
-Four regime-driven exits run inside `manage_positions` /
-`manage_short_positions`:
-
-| Exit            | Side    | Trigger                                                       |
-|-----------------|---------|---------------------------------------------------------------|
-| Red Candle      | Longs   | finalized 1-min close < session open OR < PDC                 |
-| Lords Left      | Longs   | **both** SPY AND QQQ finalized 1-min close < their PDC        |
-| Bull Vacuum     | Shorts  | **both** SPY AND QQQ finalized 1-min close > their PDC        |
-| Polarity Shift  | Shorts  | finalized 1-min close > PDC                                   |
-
-Hysteresis: Lords Left and Bull Vacuum require **both** indices to
-agree. A lone-index divergence does not eject. Failure-closed: a
-missing finalized bar or a missing PDC silently leaves the position
-in-place rather than ejecting on uncertainty.
-
-PDC is the single anchor across entries, filters, and ejects (AVWAP
-was removed in v3.4.34).
-
-### Daily loss limit
+| Spec | Brake | Implementation |
+|------|-------|----------------|
+| C-R4 | Daily-loss-limit (incl. v4.7.0 short-side cap) | `_check_daily_loss_limit()` flips `_trading_halted=True` AND calls `v5_lock_all_tracks("daily_loss_limit")` so every track moves to `LOCKED_FOR_DAY`. |
+| C-R5 | EOD force-close at 15:55 ET             | `eod_close()` walks `positions` + `short_positions` flattening every open paper position, then calls `v5_lock_all_tracks("eod")` so the next session starts fresh rather than resuming. |
+| C-R6 | Sovereign Regime Shield (Eye of the Tiger) | `_sovereign_regime_eject()` — preserved unchanged. When active, all gates are forced false and any open position is flattened. |
+| C-R7 | 9-ticker spike universe + SPY/QQQ pinned    | `TRADE_TICKERS` is the 9-name spike list (excludes SPY/QQQ). `check_breakout` reads SPY/QQQ as polarity inputs only. |
 
 `DAILY_LOSS_LIMIT` (default −$500, env-tunable). Once today's realized
-P&L crosses the floor, `_check_daily_loss_limit()` flips
-`_trading_halted = True` and `_trading_halted_reason` is exposed in
-`/api/state` so the dashboard's GATE pill paints `HALTED`. **Both long
-and short** entries are gated on this — shorts honoring the limit
-shipped in v4.7.0 (a bug fix; until then shorts ignored the halt).
-
-### EOD force-close
-
-`eod_close()` fires at 15:55 ET, walks `positions` and
-`short_positions`, calls `close_breakout(ticker, last, side, "EOD")`
-on each, and emits the corresponding `EOD_CLOSE_ALL` signal-bus event.
+P&L crosses the floor, `/api/state` exposes `_trading_halted_reason`
+so the dashboard's GATE pill paints `HALTED`. Both long and short
+honor the limit (the v4.7.0 fix is preserved).
 
 ---
 
@@ -959,4 +959,68 @@ hammering the dashboard does not stall the scanner.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "4.13.0"`.*
+## 16. v5 strategy quick reference
+
+> Mirror summary of `STRATEGY.md` for at-a-glance reading. The spec is
+> still authoritative — this section just collects the rule-ID grid in
+> one place so a reader paging through the architecture doc can find
+> the entry/exit thresholds without flipping files.
+
+### 16.1 State machine
+
+```
+IDLE ─[L-P1/S-P1 gates]─► ARMED ─[L-P2-R2 / S-P2-R2 2× DI≥25]─► STAGE_1
+   STAGE_1 ─[L-P3-R2 / S-P3-R2 2× DI≥30 + winning rule]──► STAGE_2
+   STAGE_2 ─[next 5m close]──► TRAILING
+   TRAILING ─[stop / DI<25]──► EXITED ─[reclaim once]─► ARMED
+   EXITED ─[2nd exit]─► LOCKED_FOR_DAY
+```
+
+### 16.2 Rule grid
+
+| ID         | Where it fires                                                  |
+|------------|-----------------------------------------------------------------|
+| L-P1-G1..G4 | Long permission gates (4 lights on dashboard).                 |
+| L-P2-R1..R5 | Stage-1 long entry (50%, prior-5m-low stop, record entry).     |
+| L-P3-R1..R5 | Stage-2 long add (full size, safety lock to entry price).      |
+| L-P4-R1..R4 | TRAILING long: 5m HL ratchet up; stop OR DI<25 ⇒ flatten.      |
+| L-P5-R1..R3 | Long re-hunt: dormant until reclaim; one shot; 2nd exit ⇒ LOCK.|
+| S-P1-G1..G4 | Short permission gates; indices-green vetoes shorts entirely.  |
+| S-P2-R1..R5 | Stage-1 short entry (50%, prior-5m-high stop).                 |
+| S-P3-R1..R5 | Stage-2 short add; safety lock to entry.                       |
+| S-P4-R1..R5 | TRAILING short: 5m LH ratchet down; **DI<25 priority-1.**      |
+| S-P5-R1..R3 | Short re-hunt; 2nd exit ⇒ LOCK.                                |
+| C-R1       | Long ⊥ short on same ticker per session.                        |
+| C-R2       | DMI period = 14 (down from v4's 15).                            |
+| C-R3       | Closed-candle entries; tick-rate exits.                         |
+| C-R4       | Daily-loss-limit ⇒ LOCKED_FOR_DAY for all tracks.               |
+| C-R5       | EOD 15:55 ET force-close.                                       |
+| C-R6       | Sovereign Regime Shield global kill.                            |
+| C-R7       | 9-name spike universe; SPY/QQQ pinned, never traded.            |
+
+### 16.3 Where the v5 logic lives
+
+| Concern                    | File / function                                |
+|----------------------------|------------------------------------------------|
+| Rule logic (pure helpers)  | `tiger_buffalo_v5.py` (no imports from `trade_genius`) |
+| Per-track state            | `trade_genius.v5_long_tracks` / `v5_short_tracks` |
+| Mutex + active direction   | `trade_genius.v5_active_direction`             |
+| DMI on 1m + 5m timeframes  | `trade_genius.v5_di_1m_5m()`                   |
+| First-hour high (L-P1-G4)  | `trade_genius.v5_first_hour_high()`            |
+| Opening-range-low (S-P1-G4)| `trade_genius.v5_opening_range_low_5m()`       |
+| Lock all tracks            | `trade_genius.v5_lock_all_tracks(reason)`      |
+| Persistence                | `paper_state.py` — extends save/load with v5 keys |
+| Tests                      | `smoke_test.py` (search for `L-P` or `S-P`)    |
+
+### 16.4 Migration from v4
+
+A v4 paper-state file (no `v5_*` keys) loads cleanly: the loader
+treats each missing track as IDLE via `tiger_buffalo_v5.load_track()`.
+The first session under v5.0.0 starts with empty track dicts; the
+state machine builds up state lazily as gates pass and stages fire.
+v4 `paper_trades`, `trade_history`, `positions`, `short_positions`,
+and the daily entry counters all roll forward unchanged.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.0.0"`.*
