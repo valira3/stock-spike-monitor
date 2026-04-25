@@ -1005,7 +1005,7 @@ async def h_state(request):
 async def h_version(request):
     from aiohttp import web
     try:
-        m = _bot_module()
+        m = _ssm()
         version = str(getattr(m, "BOT_VERSION", "?"))
     except Exception:
         version = "?"
