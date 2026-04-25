@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.11.4"
+BOT_VERSION = "4.11.5"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,32 @@ BOT_VERSION = "4.11.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.11.5 \u2014 two cleanups:\n"
+    "(1) LIVE pill always shows\n"
+    "the recycle countdown\n"
+    "(\u267B NNs). When the backend\n"
+    "has no schedule (weekend\n"
+    "or scanner idle) we paint\n"
+    "\u267B -- instead of falling\n"
+    "back to the old counting-\n"
+    "up tick NNs label. Two\n"
+    "chars always so the brand\n"
+    "row width budget stays\n"
+    "constant.\n"
+    "(2) Synthetic harness\n"
+    "replay now strips\n"
+    "trade_genius_version from\n"
+    "both observed and golden\n"
+    "before compare, so a bot\n"
+    "version bump alone never\n"
+    "churns 50 goldens. Fresh\n"
+    "record_scenario still\n"
+    "stamps the current\n"
+    "version into the file."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.11.4 \u2014 hotfix x2:\n"
     "(1) Repoint the post-\n"
     "deploy smoke workflow\n"
@@ -90,11 +116,8 @@ CURRENT_MAIN_NOTE = (
     "10px to 6px in the 400px\n"
     "band so the clock T no\n"
     "longer hairline-clips at\n"
-    "390 viewports."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "390 viewports.\n"
+    "\n"
     "v4.11.3 \u2014 hotfix:\n"
     "v4.11.2 fixed 430px (Pro\n"
     "Max) but 390px (iPhone\n"

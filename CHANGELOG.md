@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.11.5 — 2026-04-25 — Two cleanups: LIVE pill always shows `♻ NN` countdown (with `♻ --` placeholder when scanner has no schedule) + synthetic harness replay ignores `trade_genius_version` so a bot version bump alone never churns 50 goldens.
+
+**(1) LIVE pill — always render the recycle countdown.** Before this PR, `updateNextScanLabel()` in `dashboard_static/app.js` painted `♻ NNs` only when `window.__nextScanSec` was a number; otherwise the 1 s tick interval fell back to a counting-up `tick NNs` label. On weekends and during scanner-idle windows the backend's `/state` reports `gates.next_scan_sec: null` (verified in prod: `_next_scan_seconds()` in `dashboard_server.py:339` returns `None` when `_last_scan_time` is `None`), so users on a weekend would see `tick 47s`, `tick 48s`, `tick 49s` … forever, which Val described as confusing — the brand-row pill is supposed to communicate "next scan", not "seconds since the page loaded". This rewrites `updateNextScanLabel()` to always emit `♻` plus a 2-character value: `NNs` when we have a number, `--` when we don't. The 1 s `streamTickTimer` interval is simplified accordingly: it decrements `__nextScanSec` if it's a number and unconditionally calls `updateNextScanLabel()`. The brand-row width budget stays constant (always two characters) so the v4.11.2/.3/.4 mobile fits are preserved at 390 / 430 / 500 px. `#h-tick` is still NEVER hidden — Val's hard rule preserved.
+
+**(2) Synthetic harness replay strips `trade_genius_version` before compare.** The harness goldens stored under `synthetic_harness/goldens/*.json` include a top-level `trade_genius_version` key that's stamped by `run_scenario()` from the live `BOT_VERSION` constant. That meant every release that bumped `BOT_VERSION` invalidated all 50 goldens for cosmetic reasons — `replay_scenario()` would diff the version string and fail with 50 single-line diffs that look identical. Operators (and CI) had to either re-record all goldens on every release or accept the noise. Fix: `replay_scenario()` now `pop("trade_genius_version", None)` from BOTH the observed dict and the loaded golden dict before `json.dumps` compare. `record_scenario()` is **NOT** touched — fresh recordings still stamp the current version into the file, so an operator inspecting a golden can still see what version produced it. This only affects the byte-equal compare path.
+
+No HTML change. Python change scoped to `synthetic_harness/runner.py::replay_scenario`. JS change scoped to `dashboard_static/app.js`'s `updateNextScanLabel()` and the `streamTickTimer` interval inside `connectStream()`. Desktop ≥501 px untouched. 84/84 local smoke green; 50/50 synthetic replays now byte-equal.
+
+---
+
 ## v4.11.4 — 2026-04-25 — HOTFIX: repoint CI smoke `DASHBOARD_URL` + close last 2 px clock clip at 390.
 
 Two unrelated tiny fixes shipped together because both are one-line edits.

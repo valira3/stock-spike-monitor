@@ -238,6 +238,14 @@ def replay_scenario(name: str) -> tuple[bool, str]:
         return False, f"no golden file at {path}"
     expected = json.loads(path.read_text(encoding="utf-8"))
     observed = run_scenario(name)
+    # v4.11.5 - strip trade_genius_version from BOTH sides before
+    # comparing so a bot version bump alone never invalidates 50 goldens.
+    # record_scenario() still stamps the current version into freshly
+    # recorded goldens; this only affects the replay/compare path.
+    if isinstance(observed, dict):
+        observed.pop("trade_genius_version", None)
+    if isinstance(expected, dict):
+        expected.pop("trade_genius_version", None)
     obs_text = json.dumps(observed, indent=2, sort_keys=True, default=str)
     exp_text = json.dumps(expected, indent=2, sort_keys=True, default=str)
     if obs_text == exp_text:
