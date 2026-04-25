@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.9.2"
+BOT_VERSION = "4.9.3"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,18 @@ BOT_VERSION = "4.9.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.9.3 \u2014 cleanup:\n"
+    "delete 6 dead SideConfig\n"
+    "fields + 2 dead methods\n"
+    "from side.py. No behavior\n"
+    "change; 50/50 harness\n"
+    "replays byte-equal and\n"
+    "the v4.9.2 validator\n"
+    "still passes at import."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.9.2 \u2014 hardening:\n"
     "fail-fast import guard for\n"
     "SideConfig *_attr fields.\n"
@@ -87,11 +99,8 @@ CURRENT_MAIN_NOTE = (
     "dict raises AssertionError\n"
     "at load instead of a\n"
     "KeyError mid-session. No\n"
-    "bot behavior change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "bot behavior change.\n"
+    "\n"
     "v4.9.1 \u2014 ci/dashboard fix:\n"
     "new unauthenticated\n"
     "/api/version endpoint so\n"

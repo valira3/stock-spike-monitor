@@ -4,6 +4,42 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.9.3 — 2026-04-25 — cleanup: delete unused SideConfig fields and methods (M2/M3).
+
+Small, targeted cleanup PR. No bot behavior change.
+
+**Motivation.** The side.py review at v4.9.0 flagged six `SideConfig` fields and two methods with zero references in `trade_genius.py` — pre-staged in anticipation of a future Stage B3 Telegram-string collapse that may not happen. Val decided: delete now, re-add with confidence later if actually needed. The synthetic harness (50 byte-equal goldens) guarantees any regression is caught immediately.
+
+**Removed from `side.py::SideConfig`:**
+
+- Fields: `entry_label`, `entry_emoji`, `exit_emoji`, `cash_word`, `polarity_op`, `di_attr`.
+- Methods: `or_breakout(current_price, or_h, or_l)` (superseded by the inline `_tiger_two_bar_long/short` checks in the unified body), `di_aligned(plus_di, minus_di)` (superseded by the inline comparison in the unified body).
+- The `CONFIGS` dict at the bottom of `side.py` drops the now-deleted assignments for both `Side.LONG` and `Side.SHORT`.
+
+**Verification before delete.** Repo-wide grep for `cfg\.entry_label`, `cfg\.entry_emoji`, `cfg\.exit_emoji`, `cfg\.cash_word`, `cfg\.polarity_op`, `cfg\.di_attr`, `cfg\.or_breakout`, `cfg\.di_aligned`, `\.or_breakout(`, `\.di_aligned(` across all .py files returned zero hits. The `exit_emoji_glyph` local variable in `trade_genius.py::close_breakout` is a different symbol (not `cfg.exit_emoji`) and is untouched.
+
+**What was NOT touched.**
+
+- The `*_attr` fields (`or_attr`, `positions_attr`, `daily_count_attr`, `daily_date_attr`, `trade_history_attr`) and `capped_stop_fn_name` — all live, all still validated by the v4.9.2 `_validate_side_config_attrs()` guard at import.
+- Every other `SideConfig` field (`history_side_label`, `paper_log_entry_verb`, `entry_cash_delta`, etc.) — all in use by the unified bodies.
+- The unified `check_breakout` / `execute_breakout` / `close_breakout` bodies in `trade_genius.py`.
+- `synthetic_harness/`, `paper_state.py`, `telegram_commands.py`, `dashboard_server.py`.
+
+**Changed:**
+
+- `BOT_VERSION = "4.9.3"`. `CURRENT_MAIN_NOTE` updated; v4.9.2 entry pushed to `_MAIN_HISTORY_TAIL`.
+- `smoke_test.py` expected-version assertions bumped to `4.9.3`.
+
+**`side.py` LOC delta:** 176 → 145 lines (-31). The file is now a pure lookup table + three direction helpers (`realized_pnl`, `entry_cash_delta`, `close_cash_delta`).
+
+**Verification after delete.**
+
+- `SSM_SMOKE_TEST=1 python3 -c "import trade_genius"` → clean import; v4.9.2 validator still passes (no `*_attr` field was removed).
+- `SSM_SMOKE_TEST=1 python3 smoke_test.py --local --synthetic` → 119/119 pass.
+- `SSM_SMOKE_TEST=1 python3 -m synthetic_harness replay` → 50/50 byte-equal (only `trade_genius_version` field bumps 4.9.2 → 4.9.3).
+
+---
+
 ## v4.9.2 — 2026-04-25 — hardening: fail-fast SideConfig attr validator (M1).
 
 Small, targeted hardening PR. No bot behavior change.
