@@ -190,5 +190,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_midnight_rollover",
-  "trade_genius_version": "4.11.0"
+  "trade_genius_version": "4.11.1"
 }

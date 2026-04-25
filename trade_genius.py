@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.11.0"
+BOT_VERSION = "4.11.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,25 @@ BOT_VERSION = "4.11.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.11.1 \u2014 hotfix:\n"
+    "v4.11.0 added a new module\n"
+    "error_state.py but the\n"
+    "Dockerfile uses an explicit\n"
+    "COPY whitelist that was not\n"
+    "updated, so the container\n"
+    "crashed on startup with\n"
+    "ModuleNotFoundError: No\n"
+    "module named 'error_state'.\n"
+    "Prod was 502 for ~3 hours.\n"
+    "One-line fix: add\n"
+    "COPY error_state.py . to\n"
+    "the Dockerfile next to the\n"
+    "other top-level Python\n"
+    "COPYs. No code change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.11.0 \u2014 feature:\n"
     "health pill replaces the\n"
     "noisy log tail card. Brand\n"
@@ -84,22 +103,8 @@ CURRENT_MAIN_NOTE = (
     "0 errors today, amber on\n"
     "warnings only, red on any\n"
     "ERROR/CRITICAL. Tap to\n"
-    "expand the last 10 events.\n"
-    "Errors also fan out to the\n"
-    "executor's own Telegram\n"
-    "channel (Val/Gene routed\n"
-    "via their own bot). Per\n"
-    "(executor, code) dedup at\n"
-    "5 min so a flapping code\n"
-    "cannot spam. Counter\n"
-    "resets at the same daily\n"
-    "boundary as the existing\n"
-    "session reset. /api/logs +\n"
-    "log-tail card removed."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "expand last 10 events.\n"
+    "\n"
     "v4.10.2 \u2014 hotfix:\n"
     "Val/Gene tab Fetch-failed\n"
     "banner (cross-IIFE bridge\n"

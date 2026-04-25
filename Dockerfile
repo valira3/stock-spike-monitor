@@ -21,6 +21,7 @@ COPY trade_genius.py .
 COPY telegram_commands.py .
 COPY paper_state.py .
 COPY side.py .
+COPY error_state.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

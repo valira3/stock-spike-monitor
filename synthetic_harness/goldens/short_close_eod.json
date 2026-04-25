@@ -111,5 +111,5 @@
   ],
   "harness_version": 1,
   "scenario": "short_close_eod",
-  "trade_genius_version": "4.11.0"
+  "trade_genius_version": "4.11.1"
 }

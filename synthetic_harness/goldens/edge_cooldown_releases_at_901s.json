@@ -370,5 +370,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_cooldown_releases_at_901s",
-  "trade_genius_version": "4.11.0"
+  "trade_genius_version": "4.11.1"
 }
