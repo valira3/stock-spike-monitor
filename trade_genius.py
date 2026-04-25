@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.8.2"
+BOT_VERSION = "4.9.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,27 +76,31 @@ BOT_VERSION = "4.8.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v4.8.2 \u2014 testing:\n"
-    "25 edge-case scenarios\n"
-    "added to synthetic harness\n"
-    "(synthetic_harness/\n"
-    "scenarios/edge_cases.py).\n"
-    "Cooldown, per-ticker pnl\n"
-    "cap, OR-staleness, volume\n"
-    "gates, extension + stop\n"
-    "cap, sovereign regime, DI\n"
-    "threshold, pre-market,\n"
-    "daily reset, ring buffer,\n"
-    "trail promotion, midnight\n"
-    "rollover. Corpus now 50\n"
-    "scenarios; smoke lifts\n"
-    "from 107 to 132 tests.\n"
-    "Pure addition \u2014 zero\n"
-    "behavior change."
+    "v4.9.0 \u2014 refactor:\n"
+    "Stage B2 real collapse.\n"
+    "check_breakout,\n"
+    "execute_breakout, and\n"
+    "close_breakout now have\n"
+    "ONE unified body each,\n"
+    "parameterized by\n"
+    "SideConfig. The 6 legacy\n"
+    "long/short twin bodies\n"
+    "and SSM_USE_COLLAPSED\n"
+    "feature flag are deleted.\n"
+    "trade_genius.py shrinks\n"
+    "by ~700 LOC. 50/50\n"
+    "synthetic goldens replay\n"
+    "byte-equal."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v4.8.2 \u2014 testing:\n"
+    "25 edge-case scenarios\n"
+    "added to synthetic harness.\n"
+    "Corpus now 50 scenarios;\n"
+    "smoke lifts to 132 tests.\n"
+    "\n"
     "v4.8.1 \u2014 testing:\n"
     "synthetic harness added\n"
     "with 25 named scenarios\n"
@@ -3349,13 +3353,6 @@ MAX_STOP_PCT = 0.0075  # 0.75% max from entry
 ENTRY_EXTENSION_MAX_PCT = float(os.getenv("ENTRY_EXTENSION_MAX_PCT", "1.5"))
 ENTRY_STOP_CAP_REJECT = os.getenv("ENTRY_STOP_CAP_REJECT", "1") == "1"
 
-# v4.8.0 \u2014 Long/short collapse feature flag.
-# When "1" (default), public check_entry/execute_entry/close_position and
-# their short-side mirrors route through the collapsed check_breakout /
-# execute_breakout / close_breakout functions. When "0", they route to
-# the _legacy_* preserved bodies. Provides instant rollback without a
-# git revert. Removed in PR B2 (v4.8.1) after one trading week clean.
-USE_COLLAPSED_PATH = os.environ.get("SSM_USE_COLLAPSED", "1") == "1"
 
 # v3.4.25 — Breakeven ratchet (Stage 1)
 # ----------------------------------------------------------------
@@ -4162,17 +4159,21 @@ def _check_daily_loss_limit(ticker: str) -> bool:
 # ============================================================
 # ENTRY CHECK
 # ============================================================
-def _legacy_check_entry(ticker):
-    """Long entry gate (Tiger 2.0).
+# v4.9.0 \u2014 unified entry gate. The legacy long/short twins
+# (_legacy_check_entry / _legacy_check_short_entry) were deleted; this
+# single body is parameterized by SideConfig. Synthetic harness goldens
+# enforce byte-equal behavior against the v4.8.2 baseline.
+def check_breakout(ticker, side):
+    """Side-parameterized entry gate.
 
-    Returns: (True, bars_dict) if all entry conditions met, else (False, None).
-
-    v4.8.0 \u2014 renamed from check_entry. Reachable via the public
-    check_entry wrapper when SSM_USE_COLLAPSED=0 (instant rollback).
-    Scheduled for deletion in PR B2 (v4.8.1) after one trading week of
-    clean prod under the collapsed path.
+    Returns (True, bars_dict) if all entry conditions for `side` are
+    met, else (False, None).
     """
-    global daily_entry_date
+    cfg = CONFIGS[side]
+    or_dict = globals()[cfg.or_attr]
+    positions_dict = globals()[cfg.positions_attr]
+    daily_count = globals()[cfg.daily_count_attr]
+    capped_stop_fn = globals()[cfg.capped_stop_fn_name]
 
     if _trading_halted:
         return False, None
@@ -4191,20 +4192,20 @@ def _legacy_check_entry(ticker):
         return False, None
 
     # Reset daily entry counts if new day
-    if daily_entry_date != today:
-        daily_entry_count.clear()
-        daily_entry_date = today
+    if globals()[cfg.daily_date_attr] != today:
+        daily_count.clear()
+        globals()[cfg.daily_date_attr] = today
 
     # OR data available
-    if ticker not in or_high or ticker not in pdc:
+    if ticker not in or_dict or ticker not in pdc:
         return False, None
 
     # Daily entry cap (max 5)
-    if daily_entry_count.get(ticker, 0) >= 5:
+    if daily_count.get(ticker, 0) >= 5:
         return False, None
 
-    # Already in a long position for this ticker (paper)
-    if ticker in positions:
+    # Already in a position on this side for this ticker (paper)
+    if ticker in positions_dict:
         return False, None
 
     # Re-entry cooldown: 15 min after any exit on this ticker
@@ -4248,26 +4249,28 @@ def _legacy_check_entry(ticker):
         if fmp_pdc and fmp_pdc > 0:
             pdc[ticker] = fmp_pdc
 
-    # OR sanity check: OR High must be within OR_STALE_THRESHOLD of live price.
-    if not _or_price_sane(or_high[ticker], current_price):
-        pct = abs(or_high[ticker] - current_price) / current_price * 100
+    # OR sanity check: OR-edge must be within OR_STALE_THRESHOLD of live price.
+    if not _or_price_sane(or_dict[ticker], current_price):
+        pct = abs(or_dict[ticker] - current_price) / current_price * 100
         or_stale_skip_count[ticker] = or_stale_skip_count.get(ticker, 0) + 1
         logger.warning(
-            "SKIP %s long \u2014 OR High $%.2f is %.1f%% from live $%.2f (stale?)",
-            ticker, or_high[ticker], pct, current_price
+            "SKIP %s %s \u2014 %s $%.2f is %.1f%% from live $%.2f (stale?)",
+            ticker, cfg.skip_label, cfg.or_side_label,
+            or_dict[ticker], pct, current_price,
         )
         return False, None
 
-    # v3.4.21 — compute gate values first, then record a dashboard
-    # snapshot and check each gate. This preserves fail-closed semantics
-    # (all returns remain as-is) while giving the UI a read-only view
-    # of where each ticker currently stands.
-    or_h_val = or_high[ticker]
+    or_edge_val = or_dict[ticker]
     pdc_val_e = pdc[ticker]
-    # v3.4.47 — 2-bar OR breakout confirmation (Tiger 2.0).
-    # Both of the last two closed 1m closes must be above OR high.
-    price_break = _tiger_two_bar_long(closes, or_h_val)
-    polarity_ok = current_price > pdc_val_e
+    # 2-bar OR breakout/breakdown confirmation (Tiger 2.0).
+    if cfg.side.is_long:
+        price_break = _tiger_two_bar_long(closes, or_edge_val)
+    else:
+        price_break = _tiger_two_bar_short(closes, or_edge_val)
+    polarity_ok = (
+        current_price > pdc_val_e if cfg.side.is_long
+        else current_price < pdc_val_e
+    )
 
     volumes = bars.get("volumes", [])
     vol_pct = None
@@ -4284,56 +4287,39 @@ def _legacy_check_entry(ticker):
             vol_pct = (entry_bar_vol / avg_vol) * 100.0
             vol_ok = vol_pct >= 150.0
 
-    # v3.5.x: dashboard gate snapshot is now written by
-    # _update_gate_snapshot() at the top of each scan cycle, using the
-    # canonical OR-envelope -> side mapping. The per-entry writes that
-    # used to live here caused a last-writer-wins latch between the
-    # LONG and SHORT paths.
-
     # Volume confirmation: entry bar volume >= 1.5x session average.
-    # v3.4.20: walk back through null/zero bars before failing. Yahoo
-    # sometimes returns the most-recent closed bar with volume not yet
-    # populated; treating that as low-vol blocks every breakout. If no
-    # valid bar is found in the lookback window, log DATA NOT READY
-    # (distinct from LOW VOL) and skip — fail-closed, never enter on
-    # missing data.
-    # v3.4.47 — gated by TIGER_V2_REQUIRE_VOL (default False).
-    # Gene's 2.0 protocol replaces the vol filter with DI+.
+    # Gated by TIGER_V2_REQUIRE_VOL (default False); Tiger 2.0 replaces
+    # the vol filter with DI.
     if TIGER_V2_REQUIRE_VOL and len(volumes) >= 5:
         if not vol_ready_flag:
             logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
-            # v3.4.21 — if price had already cleared OR High, note it.
             if price_break:
                 _record_near_miss(
-                    ticker=ticker, side="LONG", reason="DATA_NOT_READY",
-                    close=round(last_close, 2), level=round(or_h_val, 2),
+                    ticker=ticker, side=cfg.log_side_label, reason="DATA_NOT_READY",
+                    close=round(last_close, 2), level=round(or_edge_val, 2),
                     vol_bar=None, vol_avg=None, vol_pct=None,
                 )
             return False, None
         if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
             logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
-            # v3.4.21 — near-miss only if the price gate actually cleared.
             if price_break:
                 _record_near_miss(
-                    ticker=ticker, side="LONG", reason="LOW_VOL",
-                    close=round(last_close, 2), level=round(or_h_val, 2),
+                    ticker=ticker, side=cfg.log_side_label, reason="LOW_VOL",
+                    close=round(last_close, 2), level=round(or_edge_val, 2),
                     vol_bar=int(entry_bar_vol), vol_avg=int(avg_vol),
                     vol_pct=round(vol_pct, 1) if vol_pct is not None else None,
                 )
             return False, None
 
-    # Breakout: 2 consecutive 1m closes above OR_High (Tiger 2.0)
+    # 2-bar break confirmation
     if not price_break:
         return False, None
 
-    # Polarity: current price > PDC
+    # Polarity: current price vs PDC (side-aware)
     if not polarity_ok:
         return False, None
 
-    # Index anchor: SPY > SPY_PDC and QQQ > QQQ_PDC
-    # v3.4.34 — migrated from AVWAP to PDC so the entry gate matches
-    # the v3.4.28 Sovereign Regime Shield ejector (same anchor on
-    # both sides of the trade). Fail-closed on missing PDC.
+    # Index anchor: SPY/QQQ vs PDC (side-aware)
     spy_bars = fetch_1min_bars("SPY")
     qqq_bars = fetch_1min_bars("QQQ")
     if not spy_bars or not qqq_bars:
@@ -4344,51 +4330,55 @@ def _legacy_check_entry(ticker):
     if not spy_pdc_val or not qqq_pdc_val or spy_pdc_val <= 0 or qqq_pdc_val <= 0:
         return False, None
 
-    # v3.4.21 used to compute an `index_ok` boolean here and write it
-    # to snap["index"]. The snap-write was removed in an earlier audit
-    # pass because _update_gate_snapshot() (called once per scan cycle
-    # before check_entry / check_short_entry) already writes this key
-    # with the authoritative side + SPY/QQQ evaluation. The local
-    # variable was left dead; the explicit per-index guards below are
-    # the actual gate.
-    if spy_bars["current_price"] <= spy_pdc_val:
-        return False, None
-    if qqq_bars["current_price"] <= qqq_pdc_val:
-        return False, None
+    if cfg.side.is_long:
+        if spy_bars["current_price"] <= spy_pdc_val:
+            return False, None
+        if qqq_bars["current_price"] <= qqq_pdc_val:
+            return False, None
+    else:
+        if spy_bars["current_price"] >= spy_pdc_val:
+            return False, None
+        if qqq_bars["current_price"] >= qqq_pdc_val:
+            return False, None
 
-    # v3.4.47 — DI+ gate (Tiger 2.0): DI+(5m,15) must exceed threshold.
-    # Fail-closed: if DI data is not ready, skip (warmup in progress).
+    # Tiger 2.0 DI gate: DI+(long) / DI-(short) must exceed threshold.
     di_plus, di_minus = tiger_di(ticker)
-    if di_plus is None:
+    di_value = di_plus if cfg.side.is_long else di_minus
+    if di_value is None:
         logger.info(
             "SKIP %s [DI WARMUP] need %d+1 5m bars",
             ticker, DI_PERIOD,
         )
         return False, None
-    if di_plus < TIGER_V2_DI_THRESHOLD:
+    if di_value < TIGER_V2_DI_THRESHOLD:
         logger.info(
-            "SKIP %s [DI+] %.1f < %d",
-            ticker, di_plus, TIGER_V2_DI_THRESHOLD,
+            "SKIP %s [%s] %.1f < %d",
+            ticker, cfg.di_sign_label, di_value, TIGER_V2_DI_THRESHOLD,
         )
         return False, None
 
-    # v4.3.0 \u2014 Extended-entry guard (long). Reject when price is
-    # more than ENTRY_EXTENSION_MAX_PCT above OR_High.
-    if or_h_val and or_h_val > 0:
-        extension_pct = (current_price - or_h_val) / or_h_val * 100.0
+    # v4.3.0 \u2014 Extended-entry guard. Reject when price is more than
+    # ENTRY_EXTENSION_MAX_PCT past the OR edge (above for longs, below
+    # for shorts).
+    if or_edge_val and or_edge_val > 0:
+        if cfg.side.is_long:
+            extension_pct = (current_price - or_edge_val) / or_edge_val * 100.0
+        else:
+            extension_pct = (or_edge_val - current_price) / or_edge_val * 100.0
         if extension_pct > ENTRY_EXTENSION_MAX_PCT:
             logger.info(
-                "SKIP %s [EXTENDED] price=$%.2f or_hi=$%.2f ext=%.2f%%",
-                ticker, current_price, or_h_val, extension_pct,
+                "SKIP %s [EXTENDED] price=$%.2f %s=$%.2f ext=%.2f%%",
+                ticker, current_price, cfg.or_side_short_label,
+                or_edge_val, extension_pct,
             )
             return False, None
 
-    # v4.3.0 \u2014 Stop-cap rejection (long). If the final stop would
-    # need to be capped to entry \u2212 MAX_STOP_PCT (baseline too
-    # loose), treat that as a late/extended bar and skip. Keeps the
-    # existing capping code path intact for when the flag is off.
+    # v4.3.0 \u2014 Stop-cap rejection. If the final stop would need to
+    # be capped to entry \u00b1 MAX_STOP_PCT (baseline too loose), treat
+    # as a late/extended bar and skip.
     if ENTRY_STOP_CAP_REJECT:
-        _sp, _capped_flag, _base_stop = _capped_long_stop(or_h_val, current_price)
+        cap_arg = or_edge_val if cfg.side.is_long else pdc_val_e
+        _sp, _capped_flag, _base_stop = capped_stop_fn(cap_arg, current_price)
         if _capped_flag:
             logger.info(
                 "SKIP %s [STOP_CAPPED] baseline=$%.2f requested_cap=$%.2f",
@@ -4422,136 +4412,174 @@ def paper_shares_for(price: float) -> int:
 # ============================================================
 # EXECUTE ENTRY (paper)
 # ============================================================
-def _legacy_execute_entry(ticker, current_price):
-    """Place a limit buy on the PAPER book only.
+def execute_breakout(ticker, current_price, side):
+    """Side-parameterized entry executor.
 
-    v4.8.0 \u2014 renamed from execute_entry. See _legacy_check_entry.
-
-    v3.5.0: paper-only. Robinhood/TradersPost mirror has been removed.
-
-    v3.4.45: share size is now dollar-based via paper_shares_for(price)
-    — floor(PAPER_DOLLARS_PER_ENTRY / price), min 1 — instead of a flat
-    10 shares. Entry is also gated on paper_cash so the book can't go
-    negative.
+    v4.9.0 \u2014 unified body. The legacy long/short twins were deleted;
+    this single body is parameterized by SideConfig. The synthetic
+    harness goldens enforce byte-equal Telegram + paper_log output
+    against the v4.8.2 baseline.
     """
     global paper_cash
+    cfg = CONFIGS[side]
+    positions_dict = globals()[cfg.positions_attr]
+    daily_count = globals()[cfg.daily_count_attr]
+    capped_stop_fn = globals()[cfg.capped_stop_fn_name]
 
-    # v4.7.0 — daily loss limit (extracted helper, shared with shorts).
+    # Daily loss limit (shared between long/short).
     if not _check_daily_loss_limit(ticker):
         return
 
     now_et = _now_et()
-    limit_price = round(current_price + 0.02, 2)
-    or_high_val = or_high.get(ticker, current_price)
-    # v3.4.21 — cap stop at 0.75% below entry when OR baseline would
-    # imply a looser stop (late/extended breakout bar).
-    stop_price, _stop_capped, _stop_baseline = _capped_long_stop(
-        or_high_val, current_price
+    limit_price = round(current_price + cfg.limit_offset, 2)
+    or_dict = globals()[cfg.or_attr]
+    if cfg.side.is_long:
+        cap_arg = or_dict.get(ticker, current_price)
+    else:
+        cap_arg = pdc.get(ticker, current_price)
+    stop_price, _stop_capped, _stop_baseline = capped_stop_fn(
+        cap_arg, current_price
     )
     if _stop_capped:
-        logger.info(
-            "%s stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
-            ticker, _stop_baseline, stop_price, current_price, MAX_STOP_PCT * 100,
-        )
-    # v3.4.45 — dollar-sized paper entry. Shares scale with price so a
-    # $400 NVDA and a $5 QBTS both put ~$10k at risk per fill (vs the
-    # old flat 10 shares). Paper cash gate skips the entry if we can't
-    # afford it; on a $100k book at $10k/entry this only trips after
-    # ~10 concurrent fills, but it makes paper_cash a real ceiling.
+        if cfg.side.is_long:
+            logger.info(
+                "%s stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
+                ticker, _stop_baseline, stop_price, current_price, MAX_STOP_PCT * 100,
+            )
+        else:
+            logger.info(
+                "%s short stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
+                ticker, _stop_baseline, stop_price, current_price, MAX_STOP_PCT * 100,
+            )
+
+    # Dollar-sized paper entry; shares scale with price.
     shares = paper_shares_for(current_price)
-    cost = current_price * shares
+    notional = current_price * shares
     if shares <= 0:
-        logger.warning("[paper] skip %s — invalid price $%.2f",
-                       ticker, current_price)
+        if cfg.side.is_long:
+            logger.warning("[paper] skip %s \u2014 invalid price $%.2f",
+                           ticker, current_price)
+        else:
+            logger.warning("[paper] skip short %s \u2014 invalid price $%.2f",
+                           ticker, current_price)
         return
-    if cost > paper_cash:
+
+    # Long entry needs cash to buy; short entry credits cash on open.
+    if cfg.side.is_long and notional > paper_cash:
         logger.info(
-            "[paper] skip %s — insufficient cash (need $%.2f, have $%.2f)",
-            ticker, cost, paper_cash,
+            "[paper] skip %s \u2014 insufficient cash (need $%.2f, have $%.2f)",
+            ticker, notional, paper_cash,
         )
         return
 
-    entry_num = daily_entry_count.get(ticker, 0) + 1
+    entry_num = daily_count.get(ticker, 0) + 1
     now_str = _now_cdt().strftime("%H:%M:%S")
     now_hhmm = _now_cdt().strftime("%H:%M CDT")
     now_date = now_et.strftime("%Y-%m-%d")
 
-    positions[ticker] = {
+    pos = {
         "entry_price": current_price,
         "shares": shares,
         "stop": stop_price,
-        "initial_stop": stop_price,  # v3.4.35 — frozen; used for R fallback only
+        "initial_stop": stop_price,
         "trail_active": False,
-        "trail_high": current_price,
+        cfg.trail_peak_attr: current_price,
         "entry_count": entry_num,
         "entry_time": now_str,
-        # v4.0.8 — UTC ISO companion so close paths can compute
-        # hold_seconds via fromisoformat; entry_time stays HH:MM:SS
-        # for display. Without this, fromisoformat raised on the bare
-        # time string and every trade-log row had hold_seconds=null.
         "entry_ts_utc": _utc_now_iso(),
         "date": now_date,
         "pdc": pdc.get(ticker, 0),
     }
-    daily_entry_count[ticker] = entry_num
+    if cfg.side.is_short:
+        pos["side"] = "SHORT"
+        pos["trail_stop"] = None
+    positions_dict[ticker] = pos
+    daily_count[ticker] = entry_num
 
-    # Paper accounting
-    paper_cash -= cost
-    trade = {
-        "action": "BUY",
-        "ticker": ticker,
-        "price": current_price,
-        "limit_price": limit_price,
-        "shares": shares,
-        "cost": cost,
-        "stop": stop_price,
-        "entry_num": entry_num,
-        "time": now_hhmm,
-        "date": now_date,
-    }
-    paper_trades.append(trade)
-    paper_all_trades.append(trade)
+    # Paper accounting: long debits, short credits.
+    paper_cash += cfg.entry_cash_delta(shares, current_price)
 
-    paper_log("BUY %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d"
-              % (ticker, shares, current_price, limit_price, stop_price, entry_num))
+    # Long BUYs are appended to paper_trades / paper_all_trades; short
+    # opens are intentionally NOT appended (short_trade_history is the
+    # source of truth for shorts and avoids double-counting on /trades).
+    if cfg.side.is_long:
+        trade = {
+            "action": "BUY",
+            "ticker": ticker,
+            "price": current_price,
+            "limit_price": limit_price,
+            "shares": shares,
+            "cost": notional,
+            "stop": stop_price,
+            "entry_num": entry_num,
+            "time": now_hhmm,
+            "date": now_date,
+        }
+        paper_trades.append(trade)
+        paper_all_trades.append(trade)
 
-    # Fix B: Paper BUY notification → send_telegram() ONLY
-    or_h = or_high.get(ticker, 0)
+    paper_log(
+        "%s %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d"
+        % (cfg.paper_log_entry_verb, ticker, shares, current_price,
+           limit_price, stop_price, entry_num)
+    )
+
+    or_edge_e = or_dict.get(ticker, 0)
     pdc_e = pdc.get(ticker, 0)
     SEP_E = "\u2500" * 34
-    sig_lines = "Signal : ORB Breakout \u2191\n"
-    sig_lines += "  1m close > OR High \u2713\n"
-    sig_lines += "  Price > PDC \u2713\n"
-    sig_lines += "  SPY > PDC \u2713\n"
-    sig_lines += "  QQQ > PDC \u2713\n"
-    # v3.4.21 — when stop is capped at entry-0.75%, label it so.
     stop_label = (
-        "entry \u22120.75%" if _stop_capped else "OR_High-$0.90"
+        cfg.stop_capped_label if _stop_capped else cfg.stop_baseline_label
     )
-    msg = (
-        "\U0001f4c8 LONG ENTRY %s  #%d\n"
-        "%s\n"
-        "Price  : $%.2f  (limit $%.2f)\n"
-        "Shares : %d   Cost: $%s\n"
-        "Stop   : $%.2f  (%s)\n"
-        "OR High: $%.2f   PDC: $%.2f\n"
-        "%s"
-        "Time   : %s\n"
-        "%s"
-    ) % (ticker, entry_num, SEP_E,
-         current_price, limit_price,
-         shares, format(cost, ",.2f"),
-         stop_price, stop_label, or_h, pdc_e, sig_lines, now_hhmm, SEP_E)
+    if cfg.side.is_long:
+        sig_lines = "Signal : ORB Breakout \u2191\n"
+        sig_lines += "  1m close > OR High \u2713\n"
+        sig_lines += "  Price > PDC \u2713\n"
+        sig_lines += "  SPY > PDC \u2713\n"
+        sig_lines += "  QQQ > PDC \u2713\n"
+        msg = (
+            "\U0001f4c8 LONG ENTRY %s  #%d\n"
+            "%s\n"
+            "Price  : $%.2f  (limit $%.2f)\n"
+            "Shares : %d   Cost: $%s\n"
+            "Stop   : $%.2f  (%s)\n"
+            "OR High: $%.2f   PDC: $%.2f\n"
+            "%s"
+            "Time   : %s\n"
+            "%s"
+        ) % (ticker, entry_num, SEP_E,
+             current_price, limit_price,
+             shares, format(notional, ",.2f"),
+             stop_price, stop_label, or_edge_e, pdc_e, sig_lines, now_hhmm, SEP_E)
+    else:
+        sig_lines = "Signal   : Wounded Buffalo \u2193\n"
+        sig_lines += "  1m close < OR Low \u2713\n"
+        sig_lines += "  Price < PDC \u2713\n"
+        sig_lines += "  SPY < PDC \u2713\n"
+        sig_lines += "  QQQ < PDC \u2713\n"
+        msg = (
+            "\U0001fa78 SHORT ENTRY #%d\n"
+            "%s\n"
+            "Ticker   : %s\n"
+            "Entry    : $%.2f (limit)\n"
+            "Shares   : %d   Proceeds: $%s\n"
+            "Stop     : $%.2f (%s)\n"
+            "OR Low   : $%.2f\n"
+            "PDC      : $%.2f\n"
+            "%s"
+            "Time     : %s\n"
+            "%s"
+        ) % (entry_num, SEP_E, ticker, current_price,
+             shares, format(notional, ",.2f"),
+             stop_price, stop_label, or_edge_e, pdc_e, sig_lines, now_hhmm, SEP_E)
     send_telegram(msg)
 
     save_paper_state()
 
-    # v4.0.0-alpha — notify executor bots (Val, Gene) of the paper entry.
     _emit_signal({
-        "kind": "ENTRY_LONG",
+        "kind": cfg.entry_signal_kind,
         "ticker": ticker,
         "price": float(current_price),
-        "reason": "BREAKOUT",
+        "reason": cfg.entry_signal_reason,
         "timestamp_utc": _utc_now_iso(),
         "main_shares": int(shares),
     })
@@ -4560,55 +4588,69 @@ def _legacy_execute_entry(ticker, current_price):
 # ============================================================
 # CLOSE POSITION
 # ============================================================
-def _legacy_close_position(ticker, price, reason="STOP"):
-    """Close position: remove, log P&L, send Telegram.
+def close_breakout(ticker, price, side, reason="STOP"):
+    """Side-parameterized close.
 
-    v4.8.0 \u2014 renamed from close_position. See _legacy_check_entry.
+    v4.9.0 \u2014 unified body. The legacy long/short twins were deleted;
+    this single body is parameterized by SideConfig. Synthetic-harness
+    goldens enforce byte-equal Telegram + paper_log + trade_log output
+    against the v4.8.2 baseline.
     """
     global paper_cash
+    cfg = CONFIGS[side]
+    positions_dict = globals()[cfg.positions_attr]
+    history_list = globals()[cfg.trade_history_attr]
 
-    if ticker not in positions:
+    if ticker not in positions_dict:
         return
 
     _last_exit_time[ticker] = datetime.now(timezone.utc)
 
-    pos = positions.pop(ticker)
+    pos = positions_dict.pop(ticker)
     entry_price = pos["entry_price"]
     shares = pos["shares"]
-    pnl_val = (price - entry_price) * shares
-    pnl_pct = ((price - entry_price) / entry_price * 100) if entry_price else 0
+    pnl_val = cfg.realized_pnl(entry_price, price, shares)
+    if entry_price:
+        if cfg.side.is_long:
+            pnl_pct = (price - entry_price) / entry_price * 100
+        else:
+            pnl_pct = (entry_price - price) / entry_price * 100
+    else:
+        pnl_pct = 0
     now_et = _now_et()
     now_hhmm = _now_cdt().strftime("%H:%M CDT")
     now_date = now_et.strftime("%Y-%m-%d")
 
-    # Compute entry time from position
     entry_time_str = pos.get("entry_time", "")
     entry_hhmm = _to_cdt_hhmm(entry_time_str) if entry_time_str else ""
 
-    # Paper accounting
-    proceeds = price * shares
-    paper_cash += proceeds
+    # Paper accounting: long credits sale proceeds, short debits cover cost.
+    notional = price * shares  # "proceeds" for long, "cover_total" for short
+    paper_cash += cfg.close_cash_delta(shares, price)
 
-    trade = {
-        "action": "SELL",
-        "ticker": ticker,
-        "price": price,
-        "shares": shares,
-        "pnl": round(pnl_val, 2),
-        "pnl_pct": round(pnl_pct, 2),
-        "reason": reason,
-        "entry_price": entry_price,
-        "time": now_hhmm,
-        "date": now_date,
-    }
-    paper_trades.append(trade)
-    paper_all_trades.append(trade)
+    # Long SELLs are appended to paper_trades / paper_all_trades; short
+    # COVERs are intentionally NOT appended (short_trade_history is the
+    # source of truth so /trades doesn't double-count).
+    if cfg.side.is_long:
+        trade = {
+            "action": "SELL",
+            "ticker": ticker,
+            "price": price,
+            "shares": shares,
+            "pnl": round(pnl_val, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "reason": reason,
+            "entry_price": entry_price,
+            "time": now_hhmm,
+            "date": now_date,
+        }
+        paper_trades.append(trade)
+        paper_all_trades.append(trade)
 
-    # Feature 1: Append to trade_history
     history_record = {
         "ticker": ticker,
-        "side": "long",
-        "action": "SELL",
+        "side": cfg.history_side_label,
+        "action": cfg.paper_log_close_verb,
         "shares": shares,
         "entry_price": entry_price,
         "exit_price": price,
@@ -4617,21 +4659,16 @@ def _legacy_close_position(ticker, price, reason="STOP"):
         "reason": reason,
         "entry_time": entry_hhmm,
         "exit_time": now_hhmm,
-        # v4.0.8 — use UTC ISO from pos (was HH:MM:SS, which broke
-        # _is_today and every fromisoformat consumer downstream).
         "entry_time_iso": pos.get("entry_ts_utc") or entry_time_str,
         "exit_time_iso": _utc_now_iso(),
         "entry_num": pos.get("entry_count", 1),
         "date": now_date,
     }
-    trade_history.append(history_record)
-    if len(trade_history) > TRADE_HISTORY_MAX:
-        trade_history[:] = trade_history[-TRADE_HISTORY_MAX:]
+    history_list.append(history_record)
+    if len(history_list) > TRADE_HISTORY_MAX:
+        history_list[:] = history_list[-TRADE_HISTORY_MAX:]
 
-    # v3.4.27 — persistent trade log (paper long close).
-    # v4.0.8 — hold_seconds derived from entry_ts_utc (UTC ISO), not the
-    # CDT HH:MM:SS display string. fromisoformat rejects bare times so
-    # every row used to ship with hold_seconds=null.
+    # Persistent trade log (paper close).
     _entry_iso = pos.get("entry_ts_utc") or entry_time_str or ""
     _hold_s = None
     try:
@@ -4646,7 +4683,7 @@ def _legacy_close_position(ticker, price, reason="STOP"):
         "date": now_date,
         "portfolio": "paper",
         "ticker": ticker,
-        "side": "LONG",
+        "side": cfg.log_side_label,
         "shares": int(shares),
         "entry_price": float(entry_price),
         "exit_price": float(price),
@@ -4661,39 +4698,55 @@ def _legacy_close_position(ticker, price, reason="STOP"):
     _log_row.update(_trade_log_snapshot_pos(pos))
     trade_log_append(_log_row)
 
-    paper_log("SELL %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
-              % (ticker, shares, price, reason, pnl_val, pnl_pct))
+    paper_log("%s %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
+              % (cfg.paper_log_close_verb, ticker, shares, price,
+                 reason, pnl_val, pnl_pct))
 
-    # Fix B: Paper EXIT → send_telegram() ONLY
-    exit_emoji = "\u2705" if pnl_val >= 0 else "\u274c"
-    entry_cost_val = round(entry_price * shares, 2)
+    exit_emoji_glyph = "\u2705" if pnl_val >= 0 else "\u274c"
+    entry_total_val = round(entry_price * shares, 2)
     SEP_X = "\u2500" * 34
     reason_label = REASON_LABELS.get(reason, reason)
     if reason == "TRAIL":
-        t_high = pos.get("trail_high", price)
-        t_dist = max(round(t_high * 0.010, 2), 1.00)
+        peak = pos.get(cfg.trail_peak_attr, price)
+        t_dist = max(round(peak * 0.010, 2), 1.00)
         reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % t_dist
-    msg = (
-        "%s EXIT %s\n"
-        "%s\n"
-        "Shares : %d\n"
-        "Entry  : $%.2f  \u2192  $%.2f\n"
-        "Cost   : $%s  \u2192  $%s\n"
-        "P&L    : $%+.2f  (%+.1f%%)\n"
-        "Reason : %s\n"
-        "In: %s   Out: %s\n"
-        "%s"
-    ) % (exit_emoji, ticker, SEP_X,
-         shares, entry_price, price,
-         format(entry_cost_val, ",.2f"), format(proceeds, ",.2f"),
-         pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
+    if cfg.side.is_long:
+        msg = (
+            "%s EXIT %s\n"
+            "%s\n"
+            "Shares : %d\n"
+            "Entry  : $%.2f  \u2192  $%.2f\n"
+            "Cost   : $%s  \u2192  $%s\n"
+            "P&L    : $%+.2f  (%+.1f%%)\n"
+            "Reason : %s\n"
+            "In: %s   Out: %s\n"
+            "%s"
+        ) % (exit_emoji_glyph, ticker, SEP_X,
+             shares, entry_price, price,
+             format(entry_total_val, ",.2f"), format(notional, ",.2f"),
+             pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
+    else:
+        msg = (
+            "%s SHORT CLOSED\n"
+            "%s\n"
+            "Ticker : %s\n"
+            "Shares : %d\n"
+            "Entry  : $%.2f  (total $%s)\n"
+            "Cover  : $%.2f  (total $%s)\n"
+            "P&L    : $%+.2f  (%+.1f%%)\n"
+            "Reason : %s\n"
+            "In: %s   Out: %s\n"
+            "%s"
+        ) % (exit_emoji_glyph, SEP_X, ticker, shares,
+             entry_price, format(entry_total_val, ",.2f"),
+             price, format(notional, ",.2f"),
+             pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
     send_telegram(msg)
 
     save_paper_state()
 
-    # v4.0.0-alpha — notify executor bots (Val, Gene) of the paper exit.
     _emit_signal({
-        "kind": "EXIT_LONG",
+        "kind": cfg.exit_signal_kind,
         "ticker": ticker,
         "price": float(price),
         "reason": reason,
@@ -4829,356 +4882,6 @@ def manage_positions():
 # ============================================================
 
 
-# ============================================================
-# SHORT ENTRY CHECK (Wounded Buffalo)
-# ============================================================
-def _legacy_check_short_entry(ticker):
-    """Short entry gate (Wounded Buffalo / Tiger 2.0).
-
-    Returns: (True, bars_dict) if all entry conditions met, else (False, None).
-    """
-    global daily_short_entry_date
-
-    if _trading_halted:
-        return False, None
-    if _scan_paused:
-        return False, None
-
-    now_et = _now_et()
-    today = now_et.strftime("%Y-%m-%d")
-
-    # Timing gate: after 09:35 ET (OR window close + 2-bar confirm)
-    market_open = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
-    if now_et < market_open:
-        return False, None
-    eod_time = now_et.replace(hour=15, minute=55, second=0, microsecond=0)
-    if now_et >= eod_time:
-        return False, None
-
-    # Reset daily entry counts if new day
-    if daily_short_entry_date != today:
-        daily_short_entry_count.clear()
-        daily_short_entry_date = today
-
-    # OR data available
-    if ticker not in or_low or ticker not in pdc:
-        return False, None
-
-    # Daily entry cap (max 5)
-    if daily_short_entry_count.get(ticker, 0) >= 5:
-        return False, None
-
-    # Already in a short position for this ticker (paper)
-    if ticker in short_positions:
-        return False, None
-
-    # Re-entry cooldown: 15 min after any exit on this ticker
-    last_exit = _last_exit_time.get(ticker)
-    if last_exit:
-        elapsed = (datetime.now(timezone.utc) - last_exit).total_seconds()
-        if elapsed < 900:
-            mins_left = int((900 - elapsed) / 60) + 1
-            logger.info("SKIP %s [COOLDOWN] %dm left", ticker, mins_left)
-            return False, None
-
-    # Per-ticker daily loss cap: skip if down > $50 on this ticker today (both sides)
-    ticker_pnl_today = _ticker_today_realized_pnl(ticker)
-    if ticker_pnl_today < -50.0:
-        logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
-        return False, None
-
-    # Fetch current bar (Finnhub/Yahoo as fallback)
-    bars = fetch_1min_bars(ticker)
-    if not bars:
-        return False, None
-
-    current_price = bars["current_price"]
-    # v4.1.1: a 0 or negative current_price (Yahoo has shipped 0.0 quotes
-    # on thinly traded names during pre-market extensions) would bypass
-    # every downstream sanity gate because those gates fail-open when
-    # fed 0/None. Reject here.
-    if not current_price or current_price <= 0:
-        return False, None
-    closes = [c for c in bars["closes"] if c is not None]
-    last_close = closes[-1] if closes else current_price
-
-    # FMP primary quote — override price and PDC if available
-    fmp_q = get_fmp_quote(ticker)
-    if fmp_q:
-        fmp_price = fmp_q.get("price")
-        if fmp_price and fmp_price > 0:
-            current_price = fmp_price
-            last_close = fmp_price
-        fmp_pdc = fmp_q.get("previousClose")
-        if fmp_pdc and fmp_pdc > 0:
-            pdc[ticker] = fmp_pdc
-
-    # OR sanity check: OR Low must be within OR_STALE_THRESHOLD of live price.
-    if not _or_price_sane(or_low[ticker], current_price):
-        pct = abs(or_low[ticker] - current_price) / current_price * 100
-        or_stale_skip_count[ticker] = or_stale_skip_count.get(ticker, 0) + 1
-        logger.warning(
-            "SKIP %s short \u2014 OR Low $%.2f is %.1f%% from live $%.2f (stale?)",
-            ticker, or_low[ticker], pct, current_price
-        )
-        return False, None
-
-    # v3.4.21 — compute gate values first, then record a dashboard
-    # snapshot and check each gate. This preserves fail-closed semantics
-    # (all returns remain as-is) while giving the UI a read-only view
-    # of where each ticker currently stands.
-    or_l_val = or_low[ticker]
-    pdc_val_e = pdc[ticker]
-    # v3.4.47 — 2-bar OR breakdown confirmation (Tiger 2.0).
-    # Both of the last two closed 1m closes must be below OR low.
-    price_break = _tiger_two_bar_short(closes, or_l_val)
-    polarity_ok = current_price < pdc_val_e
-
-    volumes = bars.get("volumes", [])
-    vol_pct = None
-    vol_ok = False
-    vol_ready_flag = True
-    entry_bar_vol = 0.0
-    avg_vol = 0.0
-    if len(volumes) >= 5:
-        valid_vols = [v for v in volumes[:-1] if v is not None and v > 0]
-        avg_vol = sum(valid_vols) / len(valid_vols) if valid_vols else 0
-        entry_bar_vol, vol_ready = _entry_bar_volume(volumes)
-        vol_ready_flag = vol_ready
-        if vol_ready and avg_vol > 0:
-            vol_pct = (entry_bar_vol / avg_vol) * 100.0
-            vol_ok = vol_pct >= 150.0
-
-    # v3.5.x: dashboard gate snapshot is now written by
-    # _update_gate_snapshot() at the top of each scan cycle, using the
-    # canonical OR-envelope -> side mapping. The per-entry writes that
-    # used to live here caused a last-writer-wins latch between the
-    # LONG and SHORT paths.
-
-    # Volume confirmation: entry bar volume >= 1.5x session average.
-    # v3.4.20: walk back through null/zero bars before failing. Yahoo
-    # sometimes returns the most-recent closed bar with volume not yet
-    # populated; treating that as low-vol blocks every breakdown. If no
-    # valid bar is found in the lookback window, log DATA NOT READY
-    # (distinct from LOW VOL) and skip — fail-closed, never enter on
-    # missing data.
-    # v3.4.47 — gated by TIGER_V2_REQUIRE_VOL (default False).
-    # Gene's 2.0 protocol replaces the vol filter with DI-.
-    if TIGER_V2_REQUIRE_VOL and len(volumes) >= 5:
-        if not vol_ready_flag:
-            logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
-            # v3.4.21 — if price had already breached OR Low, note it.
-            if price_break:
-                _record_near_miss(
-                    ticker=ticker, side="SHORT", reason="DATA_NOT_READY",
-                    close=round(last_close, 2), level=round(or_l_val, 2),
-                    vol_bar=None, vol_avg=None, vol_pct=None,
-                )
-            return False, None
-        if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
-            logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
-            # v3.4.21 — near-miss only if the price gate actually breached.
-            if price_break:
-                _record_near_miss(
-                    ticker=ticker, side="SHORT", reason="LOW_VOL",
-                    close=round(last_close, 2), level=round(or_l_val, 2),
-                    vol_bar=int(entry_bar_vol), vol_avg=int(avg_vol),
-                    vol_pct=round(vol_pct, 1) if vol_pct is not None else None,
-                )
-            return False, None
-
-    # Breakdown: 2 consecutive 1m closes below OR_Low (Tiger 2.0)
-    if not price_break:
-        return False, None
-
-    # Polarity: current price < PDC
-    if not polarity_ok:
-        return False, None
-
-    # Index anchor: SPY < SPY_PDC and QQQ < QQQ_PDC
-    # v3.4.34 — migrated from AVWAP to PDC so the entry gate matches
-    # the v3.4.28 Sovereign Regime Shield ejector (same anchor on
-    # both sides of the trade). Fail-closed on missing PDC.
-    spy_bars = fetch_1min_bars("SPY")
-    qqq_bars = fetch_1min_bars("QQQ")
-    if not spy_bars or not qqq_bars:
-        return False, None
-
-    spy_pdc_val = pdc.get("SPY")
-    qqq_pdc_val = pdc.get("QQQ")
-    if not spy_pdc_val or not qqq_pdc_val or spy_pdc_val <= 0 or qqq_pdc_val <= 0:
-        return False, None
-
-    # v3.4.21 used to compute an `index_ok` boolean here and write it
-    # to snap["index"]. The snap-write was removed in an earlier audit
-    # pass because _update_gate_snapshot() (called once per scan cycle
-    # before check_entry / check_short_entry) already writes this key
-    # with the authoritative side + SPY/QQQ evaluation. The local
-    # variable was left dead; the explicit per-index guards below are
-    # the actual gate.
-    if spy_bars["current_price"] >= spy_pdc_val:
-        return False, None
-    if qqq_bars["current_price"] >= qqq_pdc_val:
-        return False, None
-
-    # v3.4.47 — DI- gate (Tiger 2.0): DI-(5m,15) must exceed threshold.
-    # Fail-closed: if DI data is not ready, skip (warmup in progress).
-    di_plus, di_minus = tiger_di(ticker)
-    if di_minus is None:
-        logger.info(
-            "SKIP %s [DI WARMUP] need %d+1 5m bars",
-            ticker, DI_PERIOD,
-        )
-        return False, None
-    if di_minus < TIGER_V2_DI_THRESHOLD:
-        logger.info(
-            "SKIP %s [DI-] %.1f < %d",
-            ticker, di_minus, TIGER_V2_DI_THRESHOLD,
-        )
-        return False, None
-
-    # v4.3.0 \u2014 Extended-entry guard (short). Reject when price is
-    # more than ENTRY_EXTENSION_MAX_PCT below OR_Low.
-    if or_l_val and or_l_val > 0:
-        extension_pct = (or_l_val - current_price) / or_l_val * 100.0
-        if extension_pct > ENTRY_EXTENSION_MAX_PCT:
-            logger.info(
-                "SKIP %s [EXTENDED] price=$%.2f or_lo=$%.2f ext=%.2f%%",
-                ticker, current_price, or_l_val, extension_pct,
-            )
-            return False, None
-
-    # v4.3.0 \u2014 Stop-cap rejection (short). If the final stop would
-    # need to be capped to entry + MAX_STOP_PCT (baseline too
-    # loose), treat that as a late/extended bar and skip. Keeps the
-    # existing capping code path intact for when the flag is off.
-    if ENTRY_STOP_CAP_REJECT:
-        _sp, _capped_flag, _base_stop = _capped_short_stop(pdc_val_e, current_price)
-        if _capped_flag:
-            logger.info(
-                "SKIP %s [STOP_CAPPED] baseline=$%.2f requested_cap=$%.2f",
-                ticker, _base_stop, _sp,
-            )
-            return False, None
-
-    return True, bars
-
-
-# ============================================================
-# EXECUTE SHORT ENTRY (Wounded Buffalo)
-# ============================================================
-def _legacy_execute_short_entry(ticker, current_price):
-    """Open a paper short position (Wounded Buffalo).
-
-    v3.4.45 — size is dollar-based via paper_shares_for(price) for
-    consistency with long entries. Short proceeds still credit
-    paper_cash, so no cash gate is needed on the open.
-    """
-    global paper_cash
-
-    # v4.7.0 — daily loss limit (extracted helper, shared with longs).
-    if not _check_daily_loss_limit(ticker):
-        return
-
-    now_et = _now_et()
-    limit_price = round(current_price - 0.02, 2)
-    pdc_val = pdc.get(ticker, current_price)
-    # v3.4.21 — cap stop at 0.75% above entry when PDC baseline would
-    # imply a looser stop (late/extended breakdown bar).
-    stop_price, _stop_capped, _stop_baseline = _capped_short_stop(
-        pdc_val, current_price
-    )
-    if _stop_capped:
-        logger.info(
-            "%s short stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
-            ticker, _stop_baseline, stop_price, current_price, MAX_STOP_PCT * 100,
-        )
-    # v3.4.45 — dollar-sized paper entry; shares scale with price.
-    # Short proceeds credit paper_cash on the open (no cash gate needed).
-    shares = paper_shares_for(current_price)
-    proceeds = current_price * shares
-    if shares <= 0:
-        logger.warning("[paper] skip short %s — invalid price $%.2f",
-                       ticker, current_price)
-        return
-
-    entry_num = daily_short_entry_count.get(ticker, 0) + 1
-    now_str = _now_cdt().strftime("%H:%M:%S")
-    now_hhmm = _now_cdt().strftime("%H:%M CDT")
-    now_date = now_et.strftime("%Y-%m-%d")
-
-    short_positions[ticker] = {
-        "entry_price": current_price,
-        "shares": shares,
-        "stop": stop_price,
-        "initial_stop": stop_price,  # v3.4.35 — frozen; used for R fallback only
-        "trail_active": False,
-        "trail_low": current_price,
-        "entry_count": entry_num,
-        "entry_time": now_str,
-        # v4.0.8 — UTC ISO companion so close paths can compute
-        # hold_seconds via fromisoformat; entry_time stays HH:MM:SS
-        # for display. Without this, fromisoformat raised on the bare
-        # time string and every trade-log row had hold_seconds=null.
-        "entry_ts_utc": _utc_now_iso(),
-        "date": now_date,
-        "pdc": pdc.get(ticker, 0),
-        "side": "SHORT",
-        "trail_stop": None,
-    }
-    daily_short_entry_count[ticker] = entry_num
-
-    # Paper accounting (short opens credit cash; closed trades land in
-    # short_trade_history on COVER — paper_trades intentionally only
-    # holds long BUY/SELL rows so /trades and dashboard surfaces don't
-    # double-count short opens).
-    paper_cash += proceeds  # short sale proceeds credited
-
-    paper_log("SHORT %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d"
-              % (ticker, shares, current_price, limit_price, stop_price, entry_num))
-
-    # Fix B: Paper SHORT notification → send_telegram() ONLY
-    or_l = or_low.get(ticker, 0)
-    pdc_e = pdc.get(ticker, 0)
-    SEP_E = "\u2500" * 34
-    sig_lines = "Signal   : Wounded Buffalo \u2193\n"
-    sig_lines += "  1m close < OR Low \u2713\n"
-    sig_lines += "  Price < PDC \u2713\n"
-    sig_lines += "  SPY < PDC \u2713\n"
-    sig_lines += "  QQQ < PDC \u2713\n"
-    # v3.4.21 — when stop is capped at entry+0.75%, label it so.
-    stop_label = (
-        "entry +0.75%" if _stop_capped else "PDC+$0.90"
-    )
-    msg = (
-        "\U0001fa78 SHORT ENTRY #%d\n"
-        "%s\n"
-        "Ticker   : %s\n"
-        "Entry    : $%.2f (limit)\n"
-        "Shares   : %d   Proceeds: $%s\n"
-        "Stop     : $%.2f (%s)\n"
-        "OR Low   : $%.2f\n"
-        "PDC      : $%.2f\n"
-        "%s"
-        "Time     : %s\n"
-        "%s"
-    ) % (entry_num, SEP_E, ticker, current_price,
-         shares, format(proceeds, ",.2f"),
-         stop_price, stop_label, or_l, pdc_e, sig_lines, now_hhmm, SEP_E)
-    send_telegram(msg)
-
-    save_paper_state()
-
-    # v4.0.0-alpha — notify executor bots (Val, Gene) of the paper short entry.
-    _emit_signal({
-        "kind": "ENTRY_SHORT",
-        "ticker": ticker,
-        "price": float(current_price),
-        "reason": "WOUNDED_BUFFALO",
-        "timestamp_utc": _utc_now_iso(),
-        "main_shares": int(shares),
-    })
-
 
 # ============================================================
 # MANAGE SHORT POSITIONS (stop + trail logic)
@@ -5269,238 +4972,37 @@ def manage_short_positions():
             close_short_position(ticker, current_price, exit_reason)
 
 
-# ============================================================
-# CLOSE SHORT POSITION
-# ============================================================
-def _legacy_close_short_position(ticker, price, reason="STOP"):
-    """Cover short position: remove, log P&L, send Telegram.
-
-    v4.8.0 \u2014 renamed from close_short_position. See _legacy_check_entry.
-    """
-    global paper_cash
-
-    if ticker not in short_positions:
-        return
-
-    _last_exit_time[ticker] = datetime.now(timezone.utc)
-
-    pos = short_positions.pop(ticker)
-    entry_price = pos["entry_price"]
-    shares = pos["shares"]
-    pnl_val = (entry_price - price) * shares
-    pnl_pct = ((entry_price - price) / entry_price * 100) if entry_price else 0
-    now_et = _now_et()
-    now_hhmm = _now_cdt().strftime("%H:%M CDT")
-    now_date = now_et.strftime("%Y-%m-%d")
-
-    # Compute entry time from position
-    entry_time_str = pos.get("entry_time", "")
-    entry_hhmm = _to_cdt_hhmm(entry_time_str) if entry_time_str else ""
-
-    # Paper accounting (cover debits cash; short_trade_history is the
-    # source of truth for COVER P&L — paper_trades intentionally only
-    # holds long BUY/SELL rows so /trades surfaces don't double-count).
-    cover_total = price * shares
-    paper_cash -= cover_total
-
-    # Append to short_trade_history (max 500)
-    history_record = {
-        "ticker": ticker,
-        "side": "short",
-        "action": "COVER",
-        "shares": shares,
-        "entry_price": entry_price,
-        "exit_price": price,
-        "pnl": round(pnl_val, 2),
-        "pnl_pct": round(pnl_pct, 2),
-        "reason": reason,
-        "entry_time": entry_hhmm,
-        "exit_time": now_hhmm,
-        # v4.0.8 — symmetric with longs: UTC ISO, not the bare HH:MM:SS.
-        "entry_time_iso": pos.get("entry_ts_utc") or entry_time_str,
-        "exit_time_iso": _utc_now_iso(),
-        "entry_num": pos.get("entry_count", 1),
-        "date": now_date,
-    }
-    short_trade_history.append(history_record)
-    if len(short_trade_history) > TRADE_HISTORY_MAX:
-        short_trade_history[:] = short_trade_history[-TRADE_HISTORY_MAX:]
-
-    # v3.4.27 — persistent trade log (paper short close).
-    # v4.0.8 — hold_seconds derived from entry_ts_utc (UTC ISO), not the
-    # CDT HH:MM:SS display string. fromisoformat rejects bare times so
-    # every row used to ship with hold_seconds=null.
-    _entry_iso = pos.get("entry_ts_utc") or entry_time_str or ""
-    _hold_s = None
-    try:
-        if _entry_iso:
-            _ent_dt = datetime.fromisoformat(_entry_iso)
-            if _ent_dt.tzinfo is None:
-                _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
-            _hold_s = (datetime.now(timezone.utc) - _ent_dt).total_seconds()
-    except (TypeError, ValueError):
-        _hold_s = None
-    _log_row = {
-        "date": now_date,
-        "portfolio": "paper",
-        "ticker": ticker,
-        "side": "SHORT",
-        "shares": int(shares),
-        "entry_price": float(entry_price),
-        "exit_price": float(price),
-        "entry_time": entry_time_str,
-        "exit_time": _utc_now_iso(),
-        "hold_seconds": _hold_s,
-        "pnl": round(pnl_val, 2),
-        "pnl_pct": round(pnl_pct, 2),
-        "reason": reason,
-        "entry_num": int(pos.get("entry_count", 1)),
-    }
-    _log_row.update(_trade_log_snapshot_pos(pos))
-    trade_log_append(_log_row)
-
-    paper_log("COVER %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
-              % (ticker, shares, price, reason, pnl_val, pnl_pct))
-
-    # Fix B: Paper SHORT CLOSED → send_telegram() ONLY
-    exit_emoji = "\u2705" if pnl_val >= 0 else "\u274c"
-    entry_total_val = round(entry_price * shares, 2)
-    SEP_X = "\u2500" * 34
-    reason_label = REASON_LABELS.get(reason, reason)
-    if reason == "TRAIL":
-        t_low = pos.get("trail_low", price)
-        t_dist = max(round(t_low * 0.010, 2), 1.00)
-        reason_label = "\U0001f3af Trail Stop (1.0%% / $%.2f)" % t_dist
-    msg = (
-        "%s SHORT CLOSED\n"
-        "%s\n"
-        "Ticker : %s\n"
-        "Shares : %d\n"
-        "Entry  : $%.2f  (total $%s)\n"
-        "Cover  : $%.2f  (total $%s)\n"
-        "P&L    : $%+.2f  (%+.1f%%)\n"
-        "Reason : %s\n"
-        "In: %s   Out: %s\n"
-        "%s"
-    ) % (exit_emoji, SEP_X, ticker, shares,
-         entry_price, format(entry_total_val, ",.2f"),
-         price, format(cover_total, ",.2f"),
-         pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
-    send_telegram(msg)
-
-    save_paper_state()
-
-    # v4.0.0-alpha — notify executor bots (Val, Gene) of the paper short cover.
-    _emit_signal({
-        "kind": "EXIT_SHORT",
-        "ticker": ticker,
-        "price": float(price),
-        "reason": reason,
-        "timestamp_utc": _utc_now_iso(),
-        "main_shares": int(shares),
-    })
-
 
 # ============================================================
-# v4.8.0 \u2014 Long/short collapse: helpers, collapsed functions, wrappers
+# v4.9.0 \u2014 Public entry/close API \u2014 thin wrappers
 # ============================================================
-# Stage B1 of the long/short harmonization. The 6 legacy functions above
-# (_legacy_check_entry / _legacy_check_short_entry / _legacy_execute_*
-# / _legacy_close_*) are kept verbatim for one trading week. The public
-# names (check_entry, execute_entry, close_position, and their short
-# mirrors) are now thin wrappers that route to either the collapsed
-# path (default, SSM_USE_COLLAPSED=1) or the legacy path (rollback,
-# SSM_USE_COLLAPSED=0). The collapsed path itself currently dispatches
-# to the legacy bodies through the Side enum so behavior is byte-equal
-# to v4.7.0; the differential test family in smoke_test.py asserts this
-# parity. PR B2 (v4.8.1) will inline a single shared body and delete
-# both the legacy functions and the feature flag.
-
-
-def _state_dict(cfg):
-    """Return the live side-specific positions dict (positions / short_positions)."""
-    return globals()[cfg.positions_attr]
-
-
-def _daily_count(cfg):
-    """Return the live side-specific daily-entry-count dict."""
-    return globals()[cfg.daily_count_attr]
-
-
-def _trade_history(cfg):
-    """Return the live side-specific trade-history list."""
-    return globals()[cfg.trade_history_attr]
-
-
-def check_breakout(ticker, side):
-    """Side-parameterized entry gate (collapses check_entry / check_short_entry).
-
-    Returns (True, bars_dict) when all entry conditions for `side` are
-    satisfied, else (False, None). Behavior is byte-equal to the legacy
-    per-side gates \u2014 the differential test family asserts this.
-    """
-    if side is Side.LONG:
-        return _legacy_check_entry(ticker)
-    if side is Side.SHORT:
-        return _legacy_check_short_entry(ticker)
-    raise ValueError("unknown side: %r" % (side,))
-
-
-def execute_breakout(ticker, current_price, side):
-    """Side-parameterized entry executor (collapses execute_entry / execute_short_entry)."""
-    if side is Side.LONG:
-        return _legacy_execute_entry(ticker, current_price)
-    if side is Side.SHORT:
-        return _legacy_execute_short_entry(ticker, current_price)
-    raise ValueError("unknown side: %r" % (side,))
-
-
-def close_breakout(ticker, price, side, reason="STOP"):
-    """Side-parameterized close (collapses close_position / close_short_position)."""
-    if side is Side.LONG:
-        return _legacy_close_position(ticker, price, reason)
-    if side is Side.SHORT:
-        return _legacy_close_short_position(ticker, price, reason)
-    raise ValueError("unknown side: %r" % (side,))
-
-
-# Public names \u2014 thin wrappers. Routing controlled by SSM_USE_COLLAPSED
-# (default "1"). Setting it to "0" in Railway env restores the v4.7.0
-# code path without a git revert.
+# check_breakout / execute_breakout / close_breakout above are the
+# canonical unified bodies. The public names below preserve the call
+# sites that scan_loop, manage_positions, manage_short_positions,
+# eod_close, and the dashboard server use. They forward to the unified
+# bodies via Side.LONG / Side.SHORT.
 def check_entry(ticker):
-    if USE_COLLAPSED_PATH:
-        return check_breakout(ticker, Side.LONG)
-    return _legacy_check_entry(ticker)
+    return check_breakout(ticker, Side.LONG)
 
 
 def check_short_entry(ticker):
-    if USE_COLLAPSED_PATH:
-        return check_breakout(ticker, Side.SHORT)
-    return _legacy_check_short_entry(ticker)
+    return check_breakout(ticker, Side.SHORT)
 
 
 def execute_entry(ticker, current_price):
-    if USE_COLLAPSED_PATH:
-        return execute_breakout(ticker, current_price, Side.LONG)
-    return _legacy_execute_entry(ticker, current_price)
+    return execute_breakout(ticker, current_price, Side.LONG)
 
 
 def execute_short_entry(ticker, current_price):
-    if USE_COLLAPSED_PATH:
-        return execute_breakout(ticker, current_price, Side.SHORT)
-    return _legacy_execute_short_entry(ticker, current_price)
+    return execute_breakout(ticker, current_price, Side.SHORT)
 
 
 def close_position(ticker, price, reason="STOP"):
-    if USE_COLLAPSED_PATH:
-        return close_breakout(ticker, price, Side.LONG, reason)
-    return _legacy_close_position(ticker, price, reason)
+    return close_breakout(ticker, price, Side.LONG, reason)
 
 
 def close_short_position(ticker, price, reason="STOP"):
-    if USE_COLLAPSED_PATH:
-        return close_breakout(ticker, price, Side.SHORT, reason)
-    return _legacy_close_short_position(ticker, price, reason)
+    return close_breakout(ticker, price, Side.SHORT, reason)
 
 
 # ============================================================

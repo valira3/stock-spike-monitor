@@ -130,5 +130,5 @@
   ],
   "harness_version": 1,
   "scenario": "short_clean_entry",
-  "trade_genius_version": "4.8.2"
+  "trade_genius_version": "4.9.0"
 }
