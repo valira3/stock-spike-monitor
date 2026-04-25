@@ -52,44 +52,31 @@ jobs:
           echo "Committed BOT_VERSION: $V"
           echo "bot_version=$V" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for Railway rollout (poll /api/state until version matches)
+      - name: Wait for Railway rollout (poll /api/version until version matches)
         id: wait
         env:
           EXPECTED: ${{ steps.version.outputs.bot_version }}
         run: |
-          # Log in once, then poll /api/state for the expected version.
+          # v4.9.1: poll the unauthenticated /api/version endpoint instead
+          # of /api/state. /api/state requires a session cookie and was
+          # returning 404/401 to the unauthenticated poller, which broke
+          # this step on every release since v4.7.0.
           # Give Railway up to ~5 minutes (30 polls * 10s).
-          # Uses `requests` (already installed via requirements.txt).
           python - <<'PY'
           import os, sys, time
           import requests
 
           url = os.environ["DASHBOARD_URL"].rstrip("/")
-          pw  = os.environ["DASHBOARD_PASSWORD"]
           expected = os.environ["EXPECTED"]
-
-          sess = requests.Session()
-
-          def login():
-              try:
-                  r = sess.post(f"{url}/login",
-                                data={"password": pw},
-                                allow_redirects=False, timeout=10)
-                  return r.status_code
-              except Exception as e:
-                  return f"err:{type(e).__name__}"
 
           def fetch_version():
               try:
-                  r = sess.get(f"{url}/api/state", timeout=10)
+                  r = requests.get(f"{url}/api/version", timeout=10)
                   if r.status_code != 200:
                       return None, f"status={r.status_code}"
-                  d = r.json()
-                  return d.get("version"), d.get("ok")
+                  return r.json().get("version"), "ok"
               except Exception as e:
                   return None, f"err:{type(e).__name__}"
-
-          print(f"initial login: {login()}", flush=True)
 
           deadline = time.time() + 300
           last = None
@@ -102,10 +89,6 @@ jobs:
               if v == expected:
                   print(f"::notice::Railway is live on {v}")
                   sys.exit(0)
-              # Cookie may have expired across a restart (v3.4.9 secret
-              # rotates on boot). Re-login opportunistically.
-              if ok is False or v is None:
-                  print(f"  re-login: {login()}", flush=True)
               time.sleep(10)
 
           print(f"::error::Railway never reported version={expected}. Last seen: {last}")
@@ -123,9 +106,11 @@ jobs:
         env:
           EXPECTED: ${{ steps.version.outputs.bot_version }}
         run: |
-          # Small cushion so the rate-limit bucket from the wait-step's
-          # login attempt has cleared (5/60s window).
-          sleep 65
+          # v4.9.1: the wait step no longer logs in (it polls
+          # unauthenticated /api/version), so we no longer need to wait
+          # for the rate-limit bucket to clear. A short pause lets
+          # Railway settle after rollout.
+          sleep 5
           python smoke_test.py --prod \
             --password "$DASHBOARD_PASSWORD" \
             --expected-version "$EXPECTED" \

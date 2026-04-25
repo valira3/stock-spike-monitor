@@ -328,18 +328,18 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.9.0")
+    @t("version: BOT_VERSION is 4.9.1")
     def _():
-        assert m.BOT_VERSION == "4.9.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.9.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.9.0")
+    @t("version: CURRENT_MAIN_NOTE begins with v4.9.1")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.9.0"), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.9.1"), \
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
@@ -1200,8 +1200,53 @@ def run_local() -> int:
             m.daily_short_entry_date = saved_date
             paper_state._state_loaded = saved_loaded
 
+    # v4.9.1: prod smoke caught a missing rate-limit trip on the 6th
+    # bad login. The unit test below exercises _rate_limit_check directly
+    # so we catch any regression to the limiter logic itself; the prod
+    # failure was a config issue (DASHBOARD_TRUST_PROXY not set on Railway,
+    # so request.remote varied across the proxy fleet and scattered the
+    # bucket) not a code bug.
+    @t("v4.9.1: rate-limiter blocks 6th attempt within window")
+    def _():
+        import dashboard_server as ds
+        # Save and reset state so this test is hermetic.
+        saved = dict(ds._login_attempts)
+        ds._login_attempts.clear()
+        try:
+            ip = "203.0.113.7"
+            results = [ds._rate_limit_check(ip) for _ in range(7)]
+            # First 5 allowed, 6th and 7th blocked.
+            assert results == [True, True, True, True, True, False, False], \
+                f"unexpected sequence: {results}"
+        finally:
+            ds._login_attempts.clear()
+            ds._login_attempts.update(saved)
 
-    return run_suite("LOCAL SMOKE TESTS (v4.9.0 synthetic harness)")
+    @t("v4.9.1: rate-limiter buckets per-IP independently")
+    def _():
+        import dashboard_server as ds
+        saved = dict(ds._login_attempts)
+        ds._login_attempts.clear()
+        try:
+            for _ in range(5):
+                assert ds._rate_limit_check("198.51.100.1") is True
+            # A different IP still has a fresh bucket.
+            assert ds._rate_limit_check("198.51.100.2") is True
+            # The first IP's 6th attempt is blocked.
+            assert ds._rate_limit_check("198.51.100.1") is False
+        finally:
+            ds._login_attempts.clear()
+            ds._login_attempts.update(saved)
+
+    @t("v4.9.1: /api/version endpoint registered")
+    def _():
+        import dashboard_server as ds
+        app = ds._build_app()
+        paths = [r.resource.canonical for r in app.router.routes()]
+        assert "/api/version" in paths, f"/api/version not registered; got {paths}"
+
+
+    return run_suite("LOCAL SMOKE TESTS (v4.9.1 synthetic harness)")
 
 
 # ============================================================
