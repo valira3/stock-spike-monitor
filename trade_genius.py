@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.9.1"
+BOT_VERSION = "4.9.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,22 @@ BOT_VERSION = "4.9.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.9.2 \u2014 hardening:\n"
+    "fail-fast import guard for\n"
+    "SideConfig *_attr fields.\n"
+    "trade_genius.py now asserts\n"
+    "every globals() name used\n"
+    "by the unified breakout\n"
+    "bodies exists at import,\n"
+    "so a renamed module-level\n"
+    "dict raises AssertionError\n"
+    "at load instead of a\n"
+    "KeyError mid-session. No\n"
+    "bot behavior change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.9.1 \u2014 ci/dashboard fix:\n"
     "new unauthenticated\n"
     "/api/version endpoint so\n"
@@ -87,12 +103,8 @@ CURRENT_MAIN_NOTE = (
     "Workflow now polls\n"
     "/api/version. Adds unit\n"
     "tests for the login\n"
-    "rate-limiter. No bot\n"
-    "behavior change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "rate-limiter.\n"
+    "\n"
     "v4.9.0 \u2014 refactor:\n"
     "Stage B2 real collapse.\n"
     "check_breakout,\n"
@@ -3445,6 +3457,31 @@ def _capped_short_stop(pdc_val, entry_price, max_pct=MAX_STOP_PCT):
     ceiling = entry_price * (1.0 + max_pct)
     final = min(baseline, ceiling)
     return round(final, 2), final < baseline, round(baseline, 2)
+
+
+def _validate_side_config_attrs() -> None:
+    """Fail fast at module load if any SideConfig *_attr field references
+    a name that doesn't exist in this module. Without this, a renamed
+    module-level dict (e.g. positions -> open_positions) silently rots
+    until the first entry of the day raises KeyError mid-session.
+    """
+    g = globals()
+    for cfg in CONFIGS.values():
+        for attr in (
+            cfg.or_attr,
+            cfg.positions_attr,
+            cfg.daily_count_attr,
+            cfg.daily_date_attr,
+            cfg.trade_history_attr,
+            cfg.capped_stop_fn_name,
+        ):
+            assert attr in g, (
+                f"SideConfig({cfg.side.value}) references missing "
+                f"global {attr!r} in trade_genius.py"
+            )
+
+
+_validate_side_config_attrs()
 
 
 # v3.4.36 — Profit-Lock Ladder (peak-anchored give-back)
