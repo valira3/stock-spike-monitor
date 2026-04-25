@@ -328,19 +328,22 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.11.4")
+    @t("version: BOT_VERSION is 4.11.5")
     def _():
-        assert m.BOT_VERSION == "4.11.4", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.11.5", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
         assert "beta" not in m.BOT_VERSION.lower(), \
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
 
-    @t("version: CURRENT_MAIN_NOTE begins with v4.11.2")
+    @t("version: CURRENT_MAIN_NOTE begins with current BOT_VERSION")
     def _():
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith("v4.11.2"), \
-            f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}"
+        # v4.11.5 — was hardcoded "v4.11.2" and got missed on .3/.4. Derive
+        # from BOT_VERSION so it self-tracks every release.
+        expected = f"v{m.BOT_VERSION}"
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith(expected), \
+            f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}, expected prefix {expected!r}"
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
     def _():

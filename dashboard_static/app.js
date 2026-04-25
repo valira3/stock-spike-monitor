@@ -669,14 +669,24 @@
   }
 
   function updateNextScanLabel() {
+    // v4.11.5 — always render the recycle (♻) symbol + a 2-char
+    // countdown. When the backend has no schedule (e.g. weekend, or the
+    // scanner hasn't started yet) we paint `♻ --` instead of falling
+    // back to a counting-up `tick NNs` label. Two chars always so the
+    // brand-row width budget is constant.
     const el = $("h-tick");
     if (!el) return;
     const s = window.__nextScanSec;
-    if (typeof s !== "number") return;
-    const ss = String(s).padStart(2, "0");
-    el.textContent = `\u267B ${ss}s`;
-    el.setAttribute("aria-label", `next scan in ${ss}s`);
-    el.setAttribute("title", `next scan in ${ss}s`);
+    if (typeof s === "number") {
+      const ss = String(s).padStart(2, "0");
+      el.textContent = `\u267B ${ss}s`;
+      el.setAttribute("aria-label", `next scan in ${ss}s`);
+      el.setAttribute("title", `next scan in ${ss}s`);
+    } else {
+      el.textContent = "\u267B --";
+      el.setAttribute("aria-label", "next scan: not scheduled");
+      el.setAttribute("title", "next scan: not scheduled (market closed or scanner idle)");
+    }
   }
 
   function gateRow(name, value, ok, hint) {
@@ -766,17 +776,17 @@
       scheduleReconnect();
       return;
     }
-    // v3.4.21 — header tick shows countdown to next scan when we know it;
-    // falls back to the prior tick counter when the API didn't report one.
-    let tick = 0;
+    // v4.11.5 — header tick is always a countdown to next scan. When
+    // the backend reports a number we decrement it once per second; when
+    // it doesn't, updateNextScanLabel() paints `♻ --` (still 2 chars)
+    // instead of the old counting-up `tick NNs` fallback. The 1s tick
+    // also keeps the label fresh after a /state refresh resets the
+    // value.
     streamTickTimer = setInterval(() => {
-      tick++;
       if (typeof window.__nextScanSec === "number") {
         window.__nextScanSec = Math.max(0, window.__nextScanSec - 1);
-        updateNextScanLabel();
-      } else {
-        $("h-tick").textContent = `tick ${String(tick).padStart(2, "0")}s`;
       }
+      updateNextScanLabel();
     }, 1000);
 
     streamConn.addEventListener("state", (ev) => {
