@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.9.2 — 2026-04-25 — hardening: fail-fast SideConfig attr validator (M1).
+
+Small, targeted hardening PR. No bot behavior change.
+
+**Motivation.** The Stage B2 collapse (v4.9.0) introduced six string-keyed `globals()[cfg.attr_name]` lookups in `trade_genius.py`'s unified `check_breakout` / `execute_breakout` / `close_breakout` bodies. If anyone renames one of the referenced module-level names (e.g. `positions` → `open_positions`) and forgets to update `side.py`, the failure manifests as a `KeyError` on the first entry attempt of the day — potentially hours into a trading session. We want this class of rot to fail at import instead.
+
+**Added:**
+
+- `trade_genius.py::_validate_side_config_attrs()` — asserts that every `SideConfig` `*_attr` / `*_fn_name` field (`or_attr`, `positions_attr`, `daily_count_attr`, `daily_date_attr`, `trade_history_attr`, `capped_stop_fn_name`) resolves to a real entry in `globals()`. Called once at module top level, immediately after `_capped_short_stop` — the latest top-level definition of any referenced name — so all six dicts and both stop-helper functions are in scope.
+- If a name is missing, raises `AssertionError: SideConfig(<side>) references missing global '<name>' in trade_genius.py` at import time.
+
+**Changed:**
+
+- `BOT_VERSION = "4.9.2"`. `CURRENT_MAIN_NOTE` updated; v4.9.1 entry pushed to `_MAIN_HISTORY_TAIL`.
+- `smoke_test.py` expected-version assertions bumped to `4.9.2`.
+
+**Verification.** Before shipping, the validator was proven non-trivial by temporarily setting `LONG.positions_attr = "positions_TYPO"` in `side.py` and running `SSM_SMOKE_TEST=1 python3 -c "import trade_genius"` — import raised `AssertionError: SideConfig(long) references missing global 'positions_TYPO' in trade_genius.py`. The typo was reverted and import cleaned; the diff below does not include it.
+
+**What was NOT touched.**
+
+- No change to `side.py` (other than the reverted typo test).
+- No change to any unified body (`check_breakout`, `execute_breakout`, `close_breakout`).
+- No new validators for the M2/M3 dead fields flagged in the side.py review — those remain deliberately untouched until Stage B3.
+- No change to `synthetic_harness/`, `paper_state.py`, `telegram_commands.py`, or `dashboard_server.py`.
+
+**Tests:**
+
+- `SSM_SMOKE_TEST=1 python3 smoke_test.py --local --synthetic` → 119/119 pass.
+- `SSM_SMOKE_TEST=1 python3 -m synthetic_harness replay` → 50/50 byte-equal.
+
+---
+
 ## v4.9.1 — 2026-04-25 — fix: CI post-deploy poller + rate-limit investigation.
 
 Two related dashboard/CI fixes. No bot business-logic change.
