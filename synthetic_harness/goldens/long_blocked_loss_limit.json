@@ -33,5 +33,5 @@
   ],
   "harness_version": 1,
   "scenario": "long_blocked_loss_limit",
-  "trade_genius_version": "4.10.1"
+  "trade_genius_version": "4.10.2"
 }

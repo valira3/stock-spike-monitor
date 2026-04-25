@@ -77,6 +77,16 @@
       if (gateSubEl) gateSubEl.textContent = `OR ${gates.or_collected_date}`;
     }
   }
+  // v4.10.2 — expose to the second IIFE (Val/Gene tabs). The whole
+  // file is two independent IIFEs (main tab is 1–797; tab switcher
+  // + per-executor poll is 799–1632). v4.10.0 added the helper to
+  // the first IIFE only, so renderExecutor()/refreshExecSharedKpis()
+  // in the second IIFE threw "applyGateTriState is not defined" the
+  // moment a Val/Gene poll landed (caught by pollExecutor and surfaced
+  // as the "Fetch failed: ..." red banner). Bridge via window so the
+  // two IIFEs stay otherwise independent (per the design comment at
+  // line 800).
+  window.__tgApplyGateTriState = applyGateTriState;
 
   // ─────── rendering ───────
 
@@ -800,6 +810,15 @@
   // v4.0.0-beta — tab switcher, index strip, and per-executor polling.
   // All vanilla JS. Independent from the main-tab IIFE above so nothing
   // the main tab does can interfere.
+  //
+  // v4.10.2 — the GATE tri-state helper lives in the *first* IIFE.
+  // Alias the window-bridged copy to a local name so the rest of this
+  // IIFE can call it without changing every call site. If the bridge
+  // is missing for any reason, fall back to a no-op so a missing
+  // helper can never throw and surface as "Fetch failed: …" again.
+  const applyGateTriState = (typeof window !== "undefined" && typeof window.__tgApplyGateTriState === "function")
+    ? window.__tgApplyGateTriState
+    : function () { /* no-op fallback */ };
 
   function $$(id) { return document.getElementById(id); }
   function esc(s) {
