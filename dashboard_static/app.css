@@ -514,6 +514,18 @@
        new health pill. v4.11.1 left it at 13px and ET was clipped. */
     #tg-brand-clock { font-size: 11px !important; letter-spacing: 0; white-space: nowrap; }
   }
+  /* v4.11.3 — close the 390 px gap. v4.11.2 fixed 430 (Pro Max) cleanly
+     but iPhone 13/14/15 standard (390 px) still clipped the clock at
+     `12:38:1…`. Tighten gap and shrink clock + version slug another notch.
+     Hard rule from Val: do NOT hide #h-tick (the 380 band still does, but
+     this 400 band keeps it visible) and do NOT drop the health-pill count. */
+  @media (max-width: 400px) {
+    #tg-brand-row { gap: 4px !important; padding: 8px 10px !important; }
+    #tg-brand-ver { font-size: 9.5px !important; margin-left: 0 !important; }
+    #tg-live-pill { padding: 3px 7px 3px 6px !important; }
+    .tg-health-pill { gap: 4px; padding: 3px 6px; font-size: 10.5px; }
+    #tg-brand-clock { font-size: 10px !important; }
+  }
   @media (max-width: 380px) {
     #tg-brand-row {
       gap: 6px !important;
