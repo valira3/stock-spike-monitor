@@ -4,6 +4,36 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.9.0 — 2026-04-25 — refactor: Stage B2 real collapse — unified bodies, legacy deleted.
+
+The actual collapse the v4.8.0 PR described but never finished. `check_breakout`, `execute_breakout`, and `close_breakout` are now ONE unified body each, parameterized by `Side` enum + `SideConfig` from `side.py`. The 6 legacy long/short twin bodies and the `SSM_USE_COLLAPSED` rollback flag are deleted. `trade_genius.py` shrinks by ~700 LOC.
+
+The 50-scenario synthetic harness (v4.8.1 + v4.8.2) is the safety net: every golden replays byte-equal against the unified bodies. Only the `trade_genius_version` field bumped (4.8.2 → 4.9.0); no behavior changed.
+
+**Removed:**
+
+- `_legacy_check_entry`, `_legacy_check_short_entry` — long+short entry-gate twins (~540 LOC combined).
+- `_legacy_execute_entry`, `_legacy_execute_short_entry` — long+short execute twins (~230 LOC combined).
+- `_legacy_close_position`, `_legacy_close_short_position` — long+short close twins (~260 LOC combined).
+- `USE_COLLAPSED_PATH = os.environ.get("SSM_USE_COLLAPSED", ...)` — the v4.8.0 rollback flag and its env-var plumbing.
+- 13 `differential:` smoke tests in `smoke_test.py` — tautological once legacy bodies no longer exist.
+
+**Changed:**
+
+- `side.py::SideConfig` extended with the side-specific labels needed by the unified bodies: `history_side_label`, `log_side_label`, `paper_log_entry_verb`, `paper_log_close_verb`, `skip_label`, `or_side_label`, `or_side_short_label`, `di_sign_label`, `stop_baseline_label`, `stop_capped_label`, `entry_signal_kind`, `exit_signal_kind`, `entry_signal_reason`, `trail_peak_attr`, `limit_offset`. Plus methods `entry_cash_delta` and `close_cash_delta` for symmetric cash bookkeeping.
+- `trade_genius.py::check_breakout(ticker, side)` — single body that resolves all side-specific values via `cfg = CONFIGS[side]` and `globals()[cfg.attr_name]` for module-level dicts.
+- `trade_genius.py::execute_breakout(ticker, current_price, side)` — single body. Preserves the long-only `paper_trades` / `paper_all_trades` append (shorts continue to write only to `short_trade_history`).
+- `trade_genius.py::close_breakout(ticker, price, side, reason)` — single body. Telegram message format branches on `cfg.side.is_long` for the "EXIT" vs "SHORT CLOSED" headers.
+- Public wrappers `check_entry`, `check_short_entry`, `execute_entry`, `execute_short_entry`, `close_position`, `close_short_position` are now thin one-line forwarders to the unified `*_breakout` functions. No callers changed.
+- `BOT_VERSION = "4.9.0"`. `CURRENT_MAIN_NOTE` updated; v4.8.2 entry pushed to `_MAIN_HISTORY_TAIL`.
+
+**Tests:**
+
+- `python -m synthetic_harness replay` — 50/50 byte-equal (re-recorded only for the `trade_genius_version` field bump).
+- `smoke_test.py --local --synthetic` — 119/119 (was 132; -13 from differential-test deletion).
+
+---
+
 ## v4.8.2 — 2026-04-25 — testing: edge-case scenarios for synthetic harness.
 
 Pure addition. Zero behavior change to `trade_genius.py`. Extends the v4.8.1 corpus from 25 to 50 scenarios by covering gate paths the original suite left unexercised: cooldown windows, per-ticker pnl cap, OR-staleness, volume gating, extension cap, sovereign regime, DI threshold, stop cap, market-open clock, midnight rollover, ring-buffer eviction, and trail-promotion threshold crossing.
