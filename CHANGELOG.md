@@ -4,7 +4,25 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.0.4 — 2026-04-25 — Hotfix: revert v5.0.3 alpaca paper-key fallback (chat-map auto-learn from v5.0.3 stays).
+
+**Why this exists.** PR #142 (v5.0.3, squash commit `d262e80b`) added a fallback in `TradeGeniusBase.__init__` that read `<PREFIX>ALPACA_PAPER_KEY` and silently fell back to `<PREFIX>ALPACA_KEY` if the paper key was unset. The intent was to fix Gene's executor at startup because Railway had `GENE_ALPACA_KEY` set but the code only read `GENE_ALPACA_PAPER_KEY`. This was wrong on two counts: (a) **architecturally** — Alpaca paper keys and live (real-money) keys are independent credentials with different endpoints; falling back from one to the other can route paper-mode traffic through a live account, and the two are not interchangeable; (b) **confirmed dangerous in this repo** — Val confirmed that `GENE_ALPACA_KEY` / `GENE_ALPACA_SECRET` on Railway are LIVE keys, not paper. Had `GENE_ENABLED=1` caused the executor to instantiate, the v5.0.3 fallback would have submitted "paper" orders against the live brokerage account.
+
+**(1) What was reverted.** `TradeGeniusBase.__init__` is restored to the v5.0.2 strict reads: `self.paper_key = os.getenv(p + "ALPACA_PAPER_KEY", "").strip()` and `self.paper_secret = os.getenv(p + "ALPACA_PAPER_SECRET", "").strip()`. No fallback to the un-prefixed `<PREFIX>ALPACA_KEY` / `<PREFIX>ALPACA_SECRET`. The executor startup gate near the bottom of the file (~line 9299/9316) was already correct (it only checks `<PREFIX>ALPACA_PAPER_KEY`) and is unchanged.
+
+**(2) What stays from v5.0.3.** The chat-map auto-learn / fan-out / persistence work is unaffected and stays: per-executor `/data/executor_chats_{name}.json` map, `_load_owner_chats` / `_save_owner_chats` / `_record_owner_chat` helpers, `_send_own_telegram` fan-out rewrite, and the `_auth_guard` auto-learn hook. Operator action for Val/Gene to start receiving DMs (each owner sends any message to their executor bot once) is unchanged.
+
+**(3) Operator action to start Gene's paper executor.** Val will set fresh `GENE_ALPACA_PAPER_KEY` and `GENE_ALPACA_PAPER_SECRET` env vars on Railway from Gene's paper Alpaca account. **Do NOT rename or repurpose the existing `GENE_ALPACA_KEY` / `GENE_ALPACA_SECRET`** — those are live keys and stay off-limits to the paper code path. No code change is required for Gene to start once the new env vars are present.
+
+**(4) Smoke tests.** The v5.0.3 fallback-path test (`executor v5.0.3: alpaca paper key falls back to ALPACA_KEY when primary unset`) was removed. The primary-read test (`executor v5.0.3: alpaca paper key reads ALPACA_PAPER_KEY when set`) was kept and re-tagged as v5.0.4 — it now serves as the explicit assertion that paper reads only the prefixed paper env var. Test count: **162 → 161**. Synthetic harness 50/50 byte-equal preserved (no algo change).
+
+**(5) Files touched.** `trade_genius.py`: `BOT_VERSION` 5.0.3 → 5.0.4; `__init__` fallback reverted; `CURRENT_MAIN_NOTE` rotated (v5.0.3 note moved into `_MAIN_HISTORY_TAIL` with a brief edit clarifying the v5.0.4 partial revert); v5.0.3 history-tail entry edited so its claim about the alpaca-key fallback no longer asserts the fallback exists. `smoke_test.py`: version assert + suite header bumped 5.0.3 → 5.0.4; one fallback-path test removed; primary-read test re-tagged v5.0.4. `CHANGELOG.md`: this entry plus a one-line partial-revert note prepended to the v5.0.3 entry below. `ARCHITECTURE.md`: §10.7 table restored to the v5.0.2 wording (no fallback note); a brief v5.0.4 note appended explaining why paper/live keys must not share a fallback.
+
+---
+
 ## v5.0.3 — 2026-04-25 — Hotfix: per-executor trade-confirmation DM (auto-learn chat_id) + Gene alpaca-key fallback.
+
+**Note (v5.0.4).** The alpaca-key fallback described in (4) below was reverted in v5.0.4 — see the v5.0.4 entry above. The chat-map auto-learn / fan-out / persistence work in (1)–(3), (5), (6) is unaffected by the revert and remains in production.
 
 **Why this exists.** Friday Apr 24 2026 was the first prod session after the v5.0.2 deploy. The bot fired multiple paper trades on Val's account (15 BUYs, 10 SELLs in `trade_genius.py` logs) but Val's Telegram bot pushed **zero** trade confirmations. Root cause confirmed from prod logs and inspection of `TradeGeniusBase._send_own_telegram` at `trade_genius.py:925`: the method early-returns if **either** `self.telegram_token` or `self.telegram_chat_id` is empty, and `<PREFIX>TELEGRAM_CHAT_ID` was never set on Railway (only `<PREFIX>TELEGRAM_TG`). So every call from `_on_signal` (ENTRY_LONG, ENTRY_SHORT, EXIT_LONG, EXIT_SHORT, EOD_CLOSE_ALL) silently no-op'd — the trades hit Alpaca, but the operator never saw a confirmation. Separately, Gene's executor was `[Gene] skipped (GENE_ENABLED=1, GENE_ALPACA_PAPER_KEY set=False)` at startup because Railway had `GENE_ALPACA_KEY` set but the code at `trade_genius.py:736` only read `GENE_ALPACA_PAPER_KEY` — env-var name mismatch. Both bugs are pure plumbing, no algo change; the v5 state-machine fired correctly.
 

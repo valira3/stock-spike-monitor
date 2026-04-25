@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.0.3")
+    @t("version: BOT_VERSION is 5.0.4")
     def _():
-        assert m.BOT_VERSION == "5.0.3", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.0.4", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -2166,7 +2166,7 @@ def run_local() -> int:
         assert b"chat_id=222" in joined and b"chat_id=444" in joined, \
             f"missing chat_ids in payloads: {joined!r}"
 
-    @t("executor v5.0.3: alpaca paper key reads ALPACA_PAPER_KEY when set")
+    @t("executor v5.0.4: alpaca paper key reads ALPACA_PAPER_KEY when set")
     def _():
         _clear_smoke_env()
         os.environ["SMOKE_ALPACA_PAPER_KEY"] = "primary-key"
@@ -2174,16 +2174,7 @@ def run_local() -> int:
         bot = _make_exec()
         assert bot.paper_key == "primary-key", f"got {bot.paper_key!r}"
         assert bot.paper_secret == "primary-secret", f"got {bot.paper_secret!r}"
-
-    @t("executor v5.0.3: alpaca paper key falls back to ALPACA_KEY when primary unset")
-    def _():
         _clear_smoke_env()
-        # Primary unset on purpose; fallback should win.
-        os.environ["SMOKE_ALPACA_KEY"] = "fallback-key"
-        os.environ["SMOKE_ALPACA_SECRET"] = "fallback-secret"
-        bot = _make_exec()
-        assert bot.paper_key == "fallback-key", f"got {bot.paper_key!r}"
-        assert bot.paper_secret == "fallback-secret", f"got {bot.paper_secret!r}"
 
     @t("executor v5.0.3: chat_id auto-learn updates the persisted map")
     def _():
@@ -2212,7 +2203,7 @@ def run_local() -> int:
         assert on_disk.get(owner) == 7777777, f"on-disk mismatch: {on_disk}"
         _clear_smoke_env()
 
-    return run_suite("LOCAL SMOKE TESTS (v5.0.3 Tiger/Buffalo)")
+    return run_suite("LOCAL SMOKE TESTS (v5.0.4 Tiger/Buffalo)")
 
 
 # ============================================================
