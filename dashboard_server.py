@@ -998,6 +998,20 @@ async def h_state(request):
     return web.json_response(snap)
 
 
+# v4.9.1: unauthenticated endpoint so the post-deploy GHA poller can
+# confirm Railway has rolled out the new BOT_VERSION without holding a
+# session cookie. Version is not sensitive; everything else still
+# requires login.
+async def h_version(request):
+    from aiohttp import web
+    try:
+        m = _bot_module()
+        version = str(getattr(m, "BOT_VERSION", "?"))
+    except Exception:
+        version = "?"
+    return web.json_response({"version": version})
+
+
 # ─────────────────────────────────────────────────────────────
 # v4.0.0-beta — per-executor tab + index ticker strip
 # ─────────────────────────────────────────────────────────────
@@ -1548,6 +1562,7 @@ def _build_app():
     app.router.add_post("/login", h_login)
     app.router.add_post("/logout", h_logout)
     app.router.add_get("/api/state", h_state)
+    app.router.add_get("/api/version", h_version)
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.
     app.router.add_get("/api/executor/{name}", h_executor)

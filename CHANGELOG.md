@@ -4,6 +4,40 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.9.1 — 2026-04-25 — fix: CI post-deploy poller + rate-limit investigation.
+
+Two related dashboard/CI fixes. No bot business-logic change.
+
+**Issue 1 — Post-deploy poller has been failing on every release since v4.7.0.**
+The GitHub Actions "Wait for Railway rollout" step polled `/api/state`, which requires a session cookie. The poller was unauthenticated, so every poll returned `status=404` and the step always timed out. Deploys were healthy; only the CI step was broken.
+
+**Issue 2 — Prod rate-limit smoke test failure.**
+`smoke_test.py --prod` consistently returned `[401, 401, 401, 401, 401, 401, 401]` for the 7 consecutive bad-password POSTs, when it expects the 6th+ to be `429`. Root cause: `DASHBOARD_TRUST_PROXY` env var is not set on Railway. With it unset, `_client_ip` falls back to `request.remote`, which behind Railway's proxy fleet varies per request — different proxy node = different IP bucket = no rate-limiting trip. The limiter code itself is correct (verified by new unit test). Fix is operational: Val needs to set `DASHBOARD_TRUST_PROXY=1` on Railway so we key off `X-Forwarded-For` instead.
+
+**Added:**
+
+- `dashboard_server.py::h_version` — `GET /api/version` returns `{"version": BOT_VERSION}` without requiring auth. Version is not sensitive; this lets CI confirm rollout without holding a session cookie.
+- `smoke_test.py` — three new local tests:
+  - `v4.9.1: rate-limiter blocks 6th attempt within window` — exercises `_rate_limit_check` directly with the same IP 7 times, asserts `[True]*5 + [False]*2`.
+  - `v4.9.1: rate-limiter buckets per-IP independently` — verifies separate IPs don't share a bucket.
+  - `v4.9.1: /api/version endpoint registered` — guards against the route being dropped from `_build_app`.
+
+**Changed:**
+
+- `.github/workflows/post-deploy-smoke.yml` — the wait step now polls `/api/version` (no login) instead of `/api/state` (auth required). Drops the `initial login` and `re-login` plumbing entirely. The PROD-smoke step's `sleep 65` cushion is dropped to `sleep 5` since the wait step no longer consumes the per-IP rate-limit bucket.
+- `BOT_VERSION = "4.9.1"`. `CURRENT_MAIN_NOTE` updated; v4.9.0 entry pushed to `_MAIN_HISTORY_TAIL`.
+
+**Operational follow-up (Val):**
+
+- Set `DASHBOARD_TRUST_PROXY=1` on the Railway service so the login rate-limiter keys off the real client IP (`X-Forwarded-For`) instead of the proxy hop. Without this, the 6th-bad-attempt prod smoke will keep failing even though the limiter logic is sound.
+
+**Tests:**
+
+- Local smoke: 3 new tests. All existing tests still pass.
+- After merge + Railway rollout: `curl /api/version` should return `{"version":"4.9.1"}`. Once `DASHBOARD_TRUST_PROXY=1` is set, prod smoke is expected to be 7/7.
+
+---
+
 ## v4.9.0 — 2026-04-25 — refactor: Stage B2 real collapse — unified bodies, legacy deleted.
 
 The actual collapse the v4.8.0 PR described but never finished. `check_breakout`, `execute_breakout`, and `close_breakout` are now ONE unified body each, parameterized by `Side` enum + `SideConfig` from `side.py`. The 6 legacy long/short twin bodies and the `SSM_USE_COLLAPSED` rollback flag are deleted. `trade_genius.py` shrinks by ~700 LOC.

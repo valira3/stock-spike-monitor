@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.9.0"
+BOT_VERSION = "4.9.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,23 @@ BOT_VERSION = "4.9.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.9.1 \u2014 ci/dashboard fix:\n"
+    "new unauthenticated\n"
+    "/api/version endpoint so\n"
+    "the post-deploy GHA poller\n"
+    "can confirm Railway has\n"
+    "rolled out the new\n"
+    "BOT_VERSION without\n"
+    "carrying a session cookie.\n"
+    "Workflow now polls\n"
+    "/api/version. Adds unit\n"
+    "tests for the login\n"
+    "rate-limiter. No bot\n"
+    "behavior change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.9.0 \u2014 refactor:\n"
     "Stage B2 real collapse.\n"
     "check_breakout,\n"
@@ -90,11 +107,8 @@ CURRENT_MAIN_NOTE = (
     "trade_genius.py shrinks\n"
     "by ~700 LOC. 50/50\n"
     "synthetic goldens replay\n"
-    "byte-equal."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "byte-equal.\n"
+    "\n"
     "v4.8.2 \u2014 testing:\n"
     "25 edge-case scenarios\n"
     "added to synthetic harness.\n"
