@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.11.1 — 2026-04-25 — HOTFIX: add `error_state.py` to Dockerfile COPY whitelist (prod-down).
+
+v4.11.0 introduced a new top-level module `error_state.py` but the Dockerfile uses an explicit `COPY` whitelist that was not updated in the same PR. The container crashed on every start with `ModuleNotFoundError: No module named 'error_state'`, taking https://tradegenius.up.railway.app down with a 502 on every endpoint for ~3 hours. One-line fix: add `COPY error_state.py .` next to the other top-level Python COPYs. No behavior change otherwise; 50/50 synthetic replay byte-equal except the `trade_genius_version` field. Lesson: any new top-level Python module must also be added to the Dockerfile in the same PR.
+
+---
+
 ## v4.11.0 — 2026-04-25 — Per-portfolio health pill replaces the dashboard log tail; errors fan out to the matching executor's Telegram channel.
 
 Substantial UI + observability change. Smoke tests grow from 84 → 94 (10 new for `error_state` + the wiring). All 50 synthetic goldens still replay byte-equal except for the `trade_genius_version` field (no error-path scenario fired `report_error` because the converted sites are exception handlers that the harness's golden paths don't reach — confirmed by inspection).
