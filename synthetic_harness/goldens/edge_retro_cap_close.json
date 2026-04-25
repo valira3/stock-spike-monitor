@@ -143,5 +143,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_retro_cap_close",
-  "trade_genius_version": "4.10.0"
+  "trade_genius_version": "4.10.1"
 }
