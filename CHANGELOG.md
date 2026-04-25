@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v4.11.3 — 2026-04-25 — HOTFIX: close 390 px brand-row clipping (CSS-only).
+
+v4.11.2 dropped the brand-row clock font from 13 px to 11 px under the existing `@media (max-width: 500px)` band. That fixed 430 px (iPhone Pro Max) cleanly — the clock rendered fully as `HH:MM:SS ET` with the LIVE pill's `tick NNs` on a single line. But at 390 px (iPhone 13 / 14 / 15 standard) the clock still clipped at `12:38:1…`; the line was ~30–40 px short of fitting.
+
+This ships a new `@media (max-width: 400px)` sub-band between the existing 500 and 380 bands. Inside it: clock font 11 px → 10 px, brand-row gap 6 px → 4 px, version slug 10.5 px → 9.5 px, LIVE pill horizontal padding nudged in by 1 px. Hard rules from Val (preserved): `#h-tick` is NOT hidden in this band (the older 380 band still hides it; that band is unchanged for now), and the health-pill count stays visible.
+
+No HTML, JS, or Python change beyond `BOT_VERSION` + the `CURRENT_MAIN_NOTE`/`_MAIN_HISTORY_TAIL` rotation. Desktop ≥501 px untouched. The 380 px and 360 px sub-bands below override at their widths and are unaffected.
+
+---
+
 ## v4.11.2 — 2026-04-25 — HOTFIX: shrink mobile clock font so brand row fits at 390/430 widths (CSS-only).
 
 v4.11.0 added a per-executor health pill into the brand row between `#tg-live-pill` and `#tg-brand-clock`. With that extra item, the brand row overflowed at iPhone Pro Max class viewports (390 px and 430 px): the clock was clipped on the right edge (`12:16:54 ET` rendered as `12:16:54` or `12:16:4…` with the `ET` suffix lost), and the LIVE pill's inline `tick NNs` countdown wrapped to two lines inside the pill, distorting the row height.

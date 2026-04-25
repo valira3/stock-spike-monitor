@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.11.2")
+    @t("version: BOT_VERSION is 4.11.3")
     def _():
-        assert m.BOT_VERSION == "4.11.2", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.11.3", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
