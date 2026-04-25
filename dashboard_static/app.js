@@ -1014,8 +1014,13 @@
       return;
     }
     const parts = rows.map(r => {
+      // v4.13.0 — cash-index rows from Yahoo carry display_label
+      // ("S&P 500" instead of "^GSPC") and may include an inline future
+      // badge. ETF rows from Alpaca don't have those keys, so we just
+      // fall back to the bare symbol like before.
+      const labelText = r.display_label || r.symbol;
       if (!r.available || r.last === null || r.last === undefined) {
-        return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937;color:#5b6572">${esc(r.symbol)}: n/a</span>`;
+        return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937;color:#5b6572">${esc(labelText)}: n/a</span>`;
       }
       const up = (r.change ?? 0) >= 0;
       const color = up ? "#34d399" : "#f87171";
@@ -1037,8 +1042,28 @@
         const sessLabel = session === "pre" ? "PRE" : "AH";
         ahHtml = ` <span class="idx-ah" title="After-hours move vs close">${sessLabel} <span style="color:${ahColor};font-weight:500">${ahChg}${ahPct}</span></span>`;
       }
-      return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937"><strong class="idx-sym" style="color:#e7ecf3">${esc(r.symbol)}</strong> <span class="idx-px" style="color:#8a96a7">${fmtNum(r.last, 2)}</span> <span class="idx-chg" style="color:${color}">${chg}</span> <span class="idx-pct" style="color:${color};font-size:10.5px">${pct}</span>${ahHtml}</span>`;
+      // v4.13.0 — inline futures badge for cash indices. Reuses the
+      // .idx-ah class for consistent styling, painted in the future's own
+      // direction color so green/red read independently of the cash row.
+      let futHtml = "";
+      if (r.future && r.future.change_pct !== null && r.future.change_pct !== undefined) {
+        const fUp = r.future.change_pct >= 0;
+        const fColor = fUp ? "#34d399" : "#f87171";
+        const fSign = fUp ? "+" : "";
+        const fLabel = esc(r.future.label || r.future.symbol || "FUT");
+        const fPct = fSign + fmtNum(r.future.change_pct, 2) + "%";
+        futHtml = ` <span class="idx-ah" title="Front-month future vs prior close">[${fLabel} <span style="color:${fColor};font-weight:500">${fPct}</span>]</span>`;
+      }
+      return `<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937"><strong class="idx-sym" style="color:#e7ecf3">${esc(labelText)}</strong> <span class="idx-px" style="color:#8a96a7">${fmtNum(r.last, 2)}</span> <span class="idx-chg" style="color:${color}">${chg}</span> <span class="idx-pct" style="color:${color};font-size:10.5px">${pct}</span>${ahHtml}${futHtml}</span>`;
     });
+    // v4.13.0 — if Yahoo failed entirely we keep the ETF rows above
+    // (degrade-don't-disappear) and prepend a dim 'data delayed' marker
+    // so Val knows the cash/futures view is stale. yahoo_ok is undefined
+    // for older payloads or early-Alpaca-failure paths — only paint
+    // the marker on an explicit false.
+    if (data && data.yahoo_ok === false) {
+      parts.unshift('<span class="idx-item" style="padding:0 14px;border-right:1px solid #1f2937;color:#5b6572" title="Yahoo data unavailable; ETFs only">data delayed</span>');
+    }
     // v4.12.0 — wrap the items in a single .idx-track. After insertion we
     // measure scrollWidth-vs-clientWidth: if the items overflow we set
     // .idx-marquee on the strip AND duplicate the track innerHTML so the

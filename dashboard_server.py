@@ -46,6 +46,8 @@ import secrets
 import struct
 import threading
 import time
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -1331,6 +1333,105 @@ def _resolve_data_client():
     return None
 
 
+# v4.13.0 \u2014 Yahoo Finance v8/chart helper for cash indices and index
+# futures. Alpaca's equity feed does not carry index symbols (^GSPC, ^IXIC,
+# ^DJI, ^RUT, ^VIX) or futures (ES=F, NQ=F, YM=F, RTY=F), which is why VIX
+# always rendered n/a in v4.12.0. The chart endpoint is keyless, returns
+# JSON, and tolerates a single-symbol-per-request shape \u2014 we batch by
+# issuing N parallel requests inside a thread pool so the whole helper
+# completes inside the same 30s indices cache window without serializing.
+_YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0"}
+_YAHOO_TIMEOUT = 6  # seconds per symbol; whole batch budget ~6s parallel
+
+# Cash index labels are cosmetic on the wire \u2014 the frontend prefers
+# display_label over the raw caret symbol for a friendlier ticker. Symbols
+# without an entry here fall back to the bare symbol minus the leading caret.
+_YAHOO_INDEX_LABELS = {
+    "^GSPC": "S&P 500",
+    "^IXIC": "Nasdaq",
+    "^DJI":  "Dow",
+    "^RUT":  "Russell 2K",
+    "^VIX":  "VIX",
+}
+
+# Cash-index \u2192 front-month-future mapping. The futures number rides as
+# an inline badge on the matching cash row (per Val's spec) instead of
+# getting its own line, so we never show ES=F as a standalone item.
+_YAHOO_INDEX_FUTURE = {
+    "^GSPC": ("ES=F", "ES"),
+    "^IXIC": ("NQ=F", "NQ"),
+    "^DJI":  ("YM=F", "YM"),
+    "^RUT":  ("RTY=F", "RTY"),
+    # ^VIX has no liquid front-month future on this surface (VX=F is on
+    # CFE, not the same nearest-month convention) \u2014 deliberately omitted.
+}
+
+_YAHOO_CASH_SYMBOLS    = ["^GSPC", "^IXIC", "^DJI", "^RUT", "^VIX"]
+_YAHOO_FUTURES_SYMBOLS = ["ES=F", "NQ=F", "YM=F", "RTY=F"]
+
+
+def _fetch_yahoo_quote_one(symbol: str) -> dict | None:
+    """Fetch one symbol from Yahoo's v8 chart endpoint. Never raises.
+
+    Returns ``{"last": float, "prev_close": float}`` on success, or None on
+    any failure (network error, HTTP non-200, malformed JSON, missing
+    fields). The caller decides what to do with None \u2014 v4.13.0 treats a
+    None result as "hide that row" rather than a hard error so a single
+    flaky symbol never blacks out the whole strip.
+    """
+    try:
+        enc = urllib.parse.quote(symbol, safe="")
+        url = (
+            "https://query1.finance.yahoo.com/v8/finance/chart/%s"
+            "?interval=1m&range=1d&includePrePost=true" % enc
+        )
+        req = urllib.request.Request(url, headers=_YAHOO_HEADERS)
+        with urllib.request.urlopen(req, timeout=_YAHOO_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+        results = (data or {}).get("chart", {}).get("result") or []
+        if not results:
+            return None
+        meta = results[0].get("meta") or {}
+        last = meta.get("regularMarketPrice")
+        prev = meta.get("previousClose")
+        if prev is None:
+            prev = meta.get("chartPreviousClose")
+        if last is None or prev is None:
+            return None
+        return {"last": float(last), "prev_close": float(prev)}
+    except Exception:
+        return None
+
+
+def _fetch_yahoo_quotes(symbols: list[str]) -> dict:
+    """Fetch many symbols from Yahoo in parallel. Never raises.
+
+    Returns a dict ``{symbol: {"last", "prev_close"}}`` keyed by the input
+    symbol string (caret/equals preserved). Symbols whose individual fetch
+    failed are simply absent from the dict \u2014 the caller checks ``in``
+    before reading. We use a small thread pool sized to the request count
+    so a slow tail symbol does not block the rest, but cap at 8 to play
+    nicely with shared HTTP infrastructure.
+    """
+    if not symbols:
+        return {}
+    out: dict = {}
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(8, len(symbols))) as ex:
+            for sym, res in zip(symbols, ex.map(_fetch_yahoo_quote_one, symbols)):
+                if res is not None:
+                    out[sym] = res
+    except Exception:
+        # Pool blew up before any worker ran (very rare) \u2014 fall back to
+        # serial so we still return whatever we can collect.
+        for sym in symbols:
+            res = _fetch_yahoo_quote_one(sym)
+            if res is not None:
+                out[sym] = res
+    return out
+
+
 def _classify_session_et() -> str:
     """Return one of 'rth' | 'pre' | 'post' | 'closed' based on now-in-ET.
 
@@ -1485,6 +1586,92 @@ def _fetch_indices() -> dict:
             "ah_change": ah_change,
             "ah_change_pct": ah_change_pct,
         })
+
+    # v4.13.0 \u2014 append real cash indices + index futures via Yahoo. The
+    # ETF rows above stay as-is so SPY/QQQ/DIA/IWM/VIX still scroll first;
+    # then we add ^GSPC/^IXIC/^DJI/^RUT/^VIX with the matching front-month
+    # future as an inline badge ([ES +0.40%]) on each cash row. We fetch
+    # cash + futures in a single parallel batch so the 30s indices cache
+    # absorbs the cost (one Yahoo call per cache miss, not per request).
+    yahoo_ok = True
+    yahoo_error = None
+    try:
+        all_yahoo = _YAHOO_CASH_SYMBOLS + _YAHOO_FUTURES_SYMBOLS
+        quotes = _fetch_yahoo_quotes(all_yahoo)
+        # Whole-batch failure (every single symbol came back None) is the
+        # "data delayed" signal Val asked for: we keep the existing ETF
+        # rows and tell the frontend to paint the dim notice. A partial
+        # miss is normal (Yahoo sometimes returns 0 rows for ^RUT for a
+        # second), so we only flip yahoo_ok when literally nothing came
+        # back.
+        if not quotes:
+            yahoo_ok = False
+            yahoo_error = "yahoo: no quotes returned"
+        else:
+            for cash_sym in _YAHOO_CASH_SYMBOLS:
+                q = quotes.get(cash_sym)
+                if not q:
+                    # Per-symbol miss \u2014 skip the row. The strip already
+                    # has ETF coverage (e.g. SPY for ^GSPC) so the user is
+                    # not blind to the index, just missing one duplicate row.
+                    continue
+                last = q["last"]
+                prev = q["prev_close"]
+                change = None
+                change_pct = None
+                if last and last > 0 and prev and prev > 0:
+                    change = round(last - prev, 4)
+                    change_pct = round((last - prev) / prev * 100.0, 4)
+
+                # Inline future badge: ES/NQ/YM/RTY pct vs the future's own
+                # prev close. We deliberately use the future's own change
+                # (not last-cash vs future-prev) so the badge tells the user
+                # "futures are pricing the open at +X%" \u2014 which is the
+                # whole reason to show futures in the first place. ^VIX has
+                # no entry in _YAHOO_INDEX_FUTURE so its row simply has no
+                # badge.
+                future_payload = None
+                fut_entry = _YAHOO_INDEX_FUTURE.get(cash_sym)
+                if fut_entry:
+                    fut_sym, fut_label = fut_entry
+                    fq = quotes.get(fut_sym)
+                    if fq and fq["prev_close"] and fq["prev_close"] > 0:
+                        f_change_pct = round(
+                            (fq["last"] - fq["prev_close"]) / fq["prev_close"] * 100.0,
+                            4,
+                        )
+                        future_payload = {
+                            "symbol": fut_sym,
+                            "label": fut_label,
+                            "change_pct": f_change_pct,
+                        }
+
+                out["indices"].append({
+                    "symbol": cash_sym,
+                    "display_label": _YAHOO_INDEX_LABELS.get(
+                        cash_sym, cash_sym.lstrip("^")
+                    ),
+                    "last": last,
+                    "change": change,
+                    "change_pct": change_pct,
+                    "available": True,
+                    "source": "yahoo",
+                    # AH layer N/A here \u2014 the chart endpoint's
+                    # regularMarketPrice already reflects the most recent
+                    # session close on a weekend, so the futures badge IS
+                    # the after-hours signal for these rows.
+                    "ah": False,
+                    "ah_change": None,
+                    "ah_change_pct": None,
+                    "future": future_payload,
+                })
+    except Exception as e:
+        yahoo_ok = False
+        yahoo_error = f"yahoo helper raised: {e}"
+
+    out["yahoo_ok"] = yahoo_ok
+    if yahoo_error:
+        out["yahoo_error"] = yahoo_error
 
     try:
         from datetime import datetime as _dt, timezone as _tz

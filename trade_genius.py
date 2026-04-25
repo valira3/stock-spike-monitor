@@ -58,7 +58,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "4.12.0"
+BOT_VERSION = "4.13.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -76,6 +76,23 @@ BOT_VERSION = "4.12.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v4.13.0 \u2014 major indices:\n"
+    "ticker now also shows real\n"
+    "S&P 500/Nasdaq/Dow/Russell\n"
+    "2K/VIX cash indices via\n"
+    "Yahoo, plus an inline futures\n"
+    "badge ([ES +0.40%]) on each\n"
+    "so on weekends and overnight\n"
+    "you see what futures are\n"
+    "pricing for the open. ETF\n"
+    "rows (SPY/QQQ/DIA/IWM/VIX)\n"
+    "stay on top; if Yahoo fails\n"
+    "we paint a 'data delayed'\n"
+    "note and keep the ETF feed."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v4.12.0 \u2014 ticker upgrade:\n"
     "SPY/QQQ/DIA/IWM/VIX strip\n"
     "now auto-marquees when its\n"
@@ -84,16 +101,9 @@ CURRENT_MAIN_NOTE = (
     "hover or tap). Outside RTH\n"
     "each row gets an AH/PRE\n"
     "badge with the move vs the\n"
-    "relevant close, so on a\n"
-    "weekend or after 16:00 ET\n"
-    "you see how the index has\n"
-    "moved since the bell. RTH\n"
-    "view unchanged. Respects\n"
-    "prefers-reduced-motion."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "relevant close. Respects\n"
+    "prefers-reduced-motion.\n"
+    "\n"
     "v4.11.5 \u2014 two cleanups:\n"
     "(1) LIVE pill always shows\n"
     "the recycle countdown\n"

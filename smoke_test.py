@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 4.12.0")
+    @t("version: BOT_VERSION is 4.13.0")
     def _():
-        assert m.BOT_VERSION == "4.12.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "4.13.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -911,6 +911,70 @@ def run_local() -> int:
             for k in ("ah", "ah_change", "ah_change_pct"):
                 assert k in row, \
                     f"row missing {k!r}: symbol={row.get('symbol')!r} keys={list(row.keys())}"
+
+    # ---------- v4.13.0 \u2014 Yahoo cash indices + futures badge ----------
+    @t("v4.13.0: _fetch_yahoo_quote_one returns None for a junk symbol")
+    def _():
+        # Guaranteed-bad symbol \u2014 Yahoo will respond with a 404 / empty
+        # result and the helper must swallow that into None rather than
+        # raise. We're not asserting against the network here, just that
+        # the contract holds for the failure case.
+        res = ds._fetch_yahoo_quote_one("__SMOKE_BAD_SYMBOL__")
+        assert res is None, f"expected None for junk symbol, got {res!r}"
+
+    @t("v4.13.0: _fetch_yahoo_quotes returns dict for empty input")
+    def _():
+        # Empty list short-circuits without touching the network.
+        out = ds._fetch_yahoo_quotes([])
+        assert isinstance(out, dict) and out == {}, \
+            f"empty input should yield empty dict, got {out!r}"
+
+    @t("v4.13.0: _fetch_indices payload exposes yahoo_ok and futures schema")
+    def _():
+        payload = ds._fetch_indices()
+        # Yahoo block runs after the Alpaca block. If Alpaca early-returned
+        # (no paper keys / alpaca-py missing) the Yahoo keys are absent and
+        # that's a known degraded mode \u2014 we only assert schema when the
+        # function got past the Alpaca block, signalled by ok=True.
+        if not payload.get("ok"):
+            return  # Alpaca early-return path; nothing to check here.
+        assert "yahoo_ok" in payload, \
+            f"yahoo_ok missing from payload keys: {list(payload.keys())}"
+        assert isinstance(payload["yahoo_ok"], bool), \
+            f"yahoo_ok must be bool, got {type(payload['yahoo_ok']).__name__}"
+        # Cash-index rows (when present) must carry display_label, and any
+        # future sub-object must include change_pct (the only field the
+        # frontend renders). ETF rows have no display_label/future keys
+        # \u2014 they are skipped here on purpose.
+        cash_seen = False
+        for row in payload.get("indices", []):
+            sym = row.get("symbol", "")
+            if sym in ds._YAHOO_CASH_SYMBOLS:
+                cash_seen = True
+                assert row.get("display_label"), \
+                    f"cash row {sym} missing display_label: {row}"
+                fut = row.get("future")
+                if fut is not None:
+                    assert "change_pct" in fut, \
+                        f"future sub-object missing change_pct on {sym}: {fut}"
+                    assert "label" in fut, \
+                        f"future sub-object missing label on {sym}: {fut}"
+        # If yahoo_ok is True we must have produced at least one cash row;
+        # if False, the failure mode is degraded and we accept zero.
+        if payload["yahoo_ok"]:
+            assert cash_seen, \
+                "yahoo_ok=True but no cash-index rows in payload"
+
+    @t("v4.13.0: cash/futures symbol lists are mutually exclusive")
+    def _():
+        # Sanity guard: if someone accidentally puts ES=F in the cash list
+        # the inline-badge logic in _fetch_indices would render ES on its
+        # own row instead of riding inside ^GSPC. The two lists must stay
+        # disjoint.
+        cash = set(ds._YAHOO_CASH_SYMBOLS)
+        fut  = set(ds._YAHOO_FUTURES_SYMBOLS)
+        overlap = cash & fut
+        assert not overlap, f"cash and futures lists overlap: {overlap}"
 
     @t("v4.11.0: log buffer infrastructure removed from dashboard_server")
     def _():
