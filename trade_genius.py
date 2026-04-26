@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.2.0"
+BOT_VERSION = "5.2.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -7860,7 +7860,18 @@ def scan_loop():
             logger.error("_update_gate_snapshot error %s: %s", ticker, e)
         # Long entry check — run once per ticker and fan out to both books.
         try:
-            # Fast path: if both books already hold this ticker, skip the
+            # v5.2.1 H3 \u2014 mark-to-market shadow positions UNCONDITIONALLY,
+            # regardless of whether paper currently holds the ticker. Prior
+            # behavior gated MTM behind `not paper_holds` which silently
+            # froze shadow marks the moment paper opened a position on
+            # the same ticker.
+            try:
+                _bars_for_mtm = fetch_1min_bars(ticker)
+                if _bars_for_mtm and _bars_for_mtm.get("current_price"):
+                    _v520_mtm_ticker(ticker, _bars_for_mtm["current_price"])
+            except Exception as e:
+                logger.warning("[V520-SHADOW-PNL] mtm hook %s: %s", ticker, e)
+            # Fast path: if paper already holds this ticker, skip the
             # signal compute. Otherwise run check_entry so the signal
             # decision is made once for the scan cycle.
             paper_holds = ticker in positions
@@ -7872,13 +7883,6 @@ def scan_loop():
                 # Stage_2 for this ticker; default to Stage 1 (Jab) for
                 # the new-entry decision.
                 _shadow_log_g4(ticker, stage=1, existing_decision=("ENTER" if ok else "HOLD"))
-                # v5.2.0 \u2014 mark-to-market every open shadow position
-                # on this ticker against the current 1m close.
-                try:
-                    if bars and bars.get("current_price"):
-                        _v520_mtm_ticker(ticker, bars["current_price"])
-                except Exception as e:
-                    logger.warning("[V520-SHADOW-PNL] mtm hook %s: %s", ticker, e)
                 # v5.1.2 \u2014 [V510-CAND] for every entry consideration
                 # (closes the asymmetric blind-spot from v5.1.1).
                 try:
