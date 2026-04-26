@@ -182,6 +182,29 @@
       </div>
     </section>
 
+    <!-- v5.2.0 — Shadow strategy P&L panel. Bottom of main dashboard,
+         polled via /api/state (same cadence as live trades). One row
+         per config + a bolded LIVE BOT row at the bottom for direct
+         comparison. Best / worst today highlighted green / red. -->
+    <section class="grid">
+      <div class="card" id="shadow-pnl-card">
+        <div class="card-head">
+          <span class="card-title">Shadow strategies<span class="count" id="shadow-count">· —</span></span>
+          <span class="chip" id="shadow-best">—</span>
+        </div>
+        <div class="card-body flush">
+          <div class="shadow-pnl-head">
+            <span class="sp-h-name">Config</span>
+            <span class="sp-h-section">Today</span>
+            <span class="sp-h-section">Cumulative</span>
+          </div>
+          <div id="shadow-pnl-body" class="shadow-pnl-body">
+            <div class="empty">Waiting for shadow data…</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
 </div>
 

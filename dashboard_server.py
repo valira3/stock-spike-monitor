@@ -525,6 +525,130 @@ def _cached_snapshot() -> dict[str, Any]:
         return fresh
 
 
+# v5.2.0 \u2014 ordered list of shadow configs as they appear on the
+# dashboard panel. The first 5 mirror volume_profile.SHADOW_CONFIGS;
+# REHUNT_VOL_CONFIRM and OOMPH_ALERT are the v5.1.9 additions.
+_SHADOW_PANEL_ORDER = (
+    ("TICKER+QQQ", "TICKER+QQQ (70/100)"),
+    ("TICKER_ONLY", "TICKER_ONLY (70)"),
+    ("QQQ_ONLY", "QQQ_ONLY (100)"),
+    ("GEMINI_A", "GEMINI_A (110/85)"),
+    ("BUCKET_FILL_100", "BUCKET_FILL_100"),
+    ("REHUNT_VOL_CONFIRM", "REHUNT_VOL_CONFIRM"),
+    ("OOMPH_ALERT", "OOMPH_ALERT"),
+)
+
+
+def _shadow_pnl_snapshot(
+    m, today: str, today_realized: float, today_unrealized: float,
+) -> dict[str, Any]:
+    """Build the dashboard payload for the bottom shadow-strategy panel.
+
+    Returns:
+      { "configs": [ {name, label, today: {...}, cumulative: {...}}, ... ],
+        "live_bot": {label, today, cumulative},
+        "best_today": "TICKER+QQQ" | None,
+        "worst_today": "BUCKET_FILL_100" | None }
+    """
+    configs: list[dict[str, Any]] = []
+    try:
+        import shadow_pnl as _sp
+        summary = _sp.tracker().summary(today_str=today or None)
+    except Exception as e:
+        logger.warning("shadow_pnl summary failed: %s", e)
+        summary = {}
+    for name, label in _SHADOW_PANEL_ORDER:
+        s = summary.get(name) or {}
+        n_today = int(s.get("today_n_trades", 0) or 0)
+        wins_today = int(s.get("today_wins", 0) or 0)
+        wr_today = (wins_today / n_today * 100.0) if n_today else None
+        n_cum = int(s.get("cumulative_n_trades", 0) or 0)
+        wins_cum = int(s.get("cumulative_wins", 0) or 0)
+        wr_cum = (wins_cum / n_cum * 100.0) if n_cum else None
+        configs.append({
+            "name": name,
+            "label": label,
+            "today": {
+                "n": n_today,
+                "wr": round(wr_today, 1) if wr_today is not None else None,
+                "realized": float(s.get("today_realized", 0.0) or 0.0),
+                "unrealized": float(s.get("today_unrealized", 0.0) or 0.0),
+                "total": float(s.get("today_total", 0.0) or 0.0),
+            },
+            "cumulative": {
+                "n": n_cum,
+                "wr": round(wr_cum, 1) if wr_cum is not None else None,
+                "realized": float(
+                    s.get("cumulative_realized", 0.0) or 0.0),
+                "unrealized": float(
+                    s.get("cumulative_unrealized", 0.0) or 0.0),
+                "total": float(s.get("cumulative_total", 0.0) or 0.0),
+            },
+        })
+
+    # Best / worst by today_total (only counts configs with at least
+    # one trade today \u2014 zero-trade configs render as "--").
+    active = [c for c in configs if c["today"]["n"] > 0]
+    best_today = max(
+        active, key=lambda c: c["today"]["total"], default=None,
+    )
+    worst_today = min(
+        active, key=lambda c: c["today"]["total"], default=None,
+    )
+
+    # Live bot row \u2014 Val's executor is the canonical comparison
+    # because shadow sizing uses Val's equity. Fall back to the main
+    # paper book numbers (also computed by snapshot()) if Val is not
+    # configured.
+    live_today_n = 0
+    live_today_wins = 0
+    today_paper_pnl = 0.0
+    for t in (getattr(m, "paper_trades", []) or []):
+        if t.get("date") == today and t.get("action") == "SELL":
+            live_today_n += 1
+            pnl = float(t.get("pnl", 0.0) or 0.0)
+            today_paper_pnl += pnl
+            if pnl > 0:
+                live_today_wins += 1
+    for t in (getattr(m, "short_trade_history", []) or []):
+        if t.get("date") == today:
+            live_today_n += 1
+            pnl = float(t.get("pnl", 0.0) or 0.0)
+            today_paper_pnl += pnl
+            if pnl > 0:
+                live_today_wins += 1
+    live_wr = (live_today_wins / live_today_n * 100.0) if live_today_n else None
+    live_total_today = today_paper_pnl + float(today_unrealized or 0.0)
+    live_bot = {
+        "label": "LIVE BOT (Val)",
+        "today": {
+            "n": live_today_n,
+            "wr": round(live_wr, 1) if live_wr is not None else None,
+            "realized": round(today_paper_pnl, 2),
+            "unrealized": round(float(today_unrealized or 0.0), 2),
+            "total": round(live_total_today, 2),
+        },
+        "cumulative": {
+            # The live cumulative tracker lives in paper_state and is
+            # not summed here \u2014 we surface today's live for a
+            # direct shadow vs live comparison and let the rest of the
+            # dashboard cover all-time live equity.
+            "n": live_today_n,
+            "wr": round(live_wr, 1) if live_wr is not None else None,
+            "realized": round(today_paper_pnl, 2),
+            "unrealized": round(float(today_unrealized or 0.0), 2),
+            "total": round(live_total_today, 2),
+        },
+    }
+
+    return {
+        "configs": configs,
+        "live_bot": live_bot,
+        "best_today": best_today["name"] if best_today else None,
+        "worst_today": worst_today["name"] if worst_today else None,
+    }
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -651,6 +775,12 @@ def snapshot() -> dict[str, Any]:
             # directly so the pill updates on every SSE / state poll
             # tick without a separate /api/errors round-trip.
             "errors": _errors_snapshot_safe("main"),
+            # v5.2.0 \u2014 shadow strategy P&L block for the bottom panel.
+            # Every config row + a LIVE_BOT comparison row built from
+            # the same paper trades / unrealized totals shown above.
+            "shadow_pnl": _shadow_pnl_snapshot(
+                m, today, realized, unreal_sum,
+            ),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)

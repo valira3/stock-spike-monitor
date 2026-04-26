@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.1.9")
+    @t("version: BOT_VERSION is 5.2.0")
     def _():
-        assert m.BOT_VERSION == "5.1.9", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.2.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3508,6 +3508,245 @@ def run_local() -> int:
             m._ws_consumer = prev_ws
             m._v519_oomph_prev.clear()
             m._v519_oomph_prev.update(prev_oomph)
+
+    # v5.2.0 \u2014 shadow strategy P&L tracker + dashboard panel.
+    # Each test resets the singleton + uses a per-test STATE_DB so
+    # rows do not leak between assertions.
+    import shadow_pnl as _sp_mod
+    import persistence as _persist_mod
+
+    def _reset_sp_db(name: str):
+        # Build a fresh per-test SQLite path and force re-init.
+        p = tmp_dir / f"shadow_{name}.db"
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+        _persist_mod._close_for_tests()
+        _persist_mod.init_db(str(p))
+        _sp_mod.reset_for_tests()
+
+    @t("v5.2.0: compute_shadow_qty applies v5.1.4 caps")
+    def _():
+        # equity cap binds at 10% of $100k = $10,000; price $100 -> 100
+        n = _sp_mod.compute_shadow_qty(
+            price=100.0, dollars_per_entry=20000.0,
+            equity=100000.0, cash=50000.0,
+            max_pct_per_entry=10.0, min_reserve_cash=500.0,
+        )
+        assert n == 100, f"expected 100 shares, got {n}"
+        # cash-reserve binds: cash $1000, reserve $500 -> $500 / $100 = 5
+        n2 = _sp_mod.compute_shadow_qty(
+            price=100.0, dollars_per_entry=20000.0,
+            equity=100000.0, cash=1000.0,
+            max_pct_per_entry=10.0, min_reserve_cash=500.0,
+        )
+        assert n2 == 5, f"expected 5 shares (cash-bound), got {n2}"
+
+    @t("v5.2.0: open \u2192 mark_to_market \u2192 close lifecycle")
+    def _():
+        _reset_sp_db("life")
+        tr = _sp_mod.tracker()
+        snap = {
+            "equity": 100000.0, "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0,
+        }
+        rid = tr.open_position(
+            config_name="TICKER+QQQ", ticker="AAPL", side="long",
+            entry_ts_utc="2026-04-26T14:30:00+00:00",
+            entry_price=100.0, equity_snapshot=snap,
+        )
+        assert rid is not None
+        tr.mark_to_market("AAPL", 105.0)
+        s = tr.summary(today_str="2026-04-26")
+        assert s["TICKER+QQQ"]["today_n_trades"] == 1
+        assert s["TICKER+QQQ"]["today_unrealized"] > 0
+        # qty = floor(min(1000, 10000, 49500) / 100) = 10 \u2014 unrealized = $50
+        assert s["TICKER+QQQ"]["today_unrealized"] == 50.0
+        pnl = tr.close_position(
+            config_name="TICKER+QQQ", ticker="AAPL",
+            exit_ts_utc="2026-04-26T15:00:00+00:00",
+            exit_price=110.0, exit_reason="HARD_EJECT_TIGER",
+        )
+        assert pnl == 100.0, f"expected $100 realized, got {pnl}"
+        s2 = tr.summary(today_str="2026-04-26")
+        assert s2["TICKER+QQQ"]["today_realized"] == 100.0
+        assert s2["TICKER+QQQ"]["today_wins"] == 1
+        assert s2["TICKER+QQQ"]["today_unrealized"] == 0.0
+
+    @t("v5.2.0: short side P&L direction inverts")
+    def _():
+        _reset_sp_db("short")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        tr.open_position(
+            config_name="OOMPH_ALERT", ticker="TSLA", side="short",
+            entry_ts_utc="2026-04-26T14:30:00+00:00",
+            entry_price=200.0, equity_snapshot=snap,
+        )
+        # shorts profit when price falls
+        tr.mark_to_market("TSLA", 180.0)
+        s = tr.summary(today_str="2026-04-26")
+        assert s["OOMPH_ALERT"]["today_unrealized"] > 0
+        pnl = tr.close_position(
+            config_name="OOMPH_ALERT", ticker="TSLA",
+            exit_ts_utc="2026-04-26T15:00:00+00:00",
+            exit_price=210.0, exit_reason="HARD_EJECT_TIGER",
+        )
+        # qty=5; (200-210)*5 = -50
+        assert pnl == -50.0, f"expected -$50, got {pnl}"
+
+    @t("v5.2.0: persistence round-trip survives reload")
+    def _():
+        _reset_sp_db("persist")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        tr.open_position(
+            config_name="GEMINI_A", ticker="NVDA", side="long",
+            entry_ts_utc="2026-04-26T14:30:00+00:00",
+            entry_price=400.0, equity_snapshot=snap,
+        )
+        tr.close_position(
+            config_name="GEMINI_A", ticker="NVDA",
+            exit_ts_utc="2026-04-26T15:00:00+00:00",
+            exit_price=410.0, exit_reason="TRAIL",
+        )
+        # Drop singleton; rebuild from SQLite. The closed row should
+        # rehydrate into _closed.
+        _sp_mod.reset_for_tests()
+        tr2 = _sp_mod.tracker()
+        s = tr2.summary(today_str="2026-04-26")
+        assert s.get("GEMINI_A", {}).get("cumulative_n_trades") == 1
+        assert s["GEMINI_A"]["cumulative_realized"] > 0
+
+    @t("v5.2.0: today vs cumulative rollup splits by entry date")
+    def _():
+        _reset_sp_db("rollup")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        # one trade dated yesterday (cumulative only)
+        tr.open_position(
+            "BUCKET_FILL_100", "MSFT", "long",
+            "2026-04-25T14:30:00+00:00", 300.0, snap)
+        tr.close_position(
+            "BUCKET_FILL_100", "MSFT",
+            "2026-04-25T15:00:00+00:00", 309.0, "EOD")
+        # one trade today (counts in both)
+        tr.open_position(
+            "BUCKET_FILL_100", "MSFT", "long",
+            "2026-04-26T14:30:00+00:00", 300.0, snap)
+        tr.close_position(
+            "BUCKET_FILL_100", "MSFT",
+            "2026-04-26T15:00:00+00:00", 297.0, "STOP")
+        s = tr.summary(today_str="2026-04-26")
+        assert s["BUCKET_FILL_100"]["today_n_trades"] == 1
+        assert s["BUCKET_FILL_100"]["cumulative_n_trades"] == 2
+        # today realized = -3 * 3sh = -$9 ; cumulative realized = -9 + 27 = $18
+        assert abs(s["BUCKET_FILL_100"]["today_realized"] - (-9.0)) < 0.01
+        assert abs(s["BUCKET_FILL_100"]["cumulative_realized"] - 18.0) < 0.01
+
+    @t("v5.2.0: open_position dedups on (cfg, ticker, ts)")
+    def _():
+        _reset_sp_db("dedup")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        a = tr.open_position(
+            "TICKER_ONLY", "AAPL", "long",
+            "2026-04-26T14:30:00+00:00", 100.0, snap)
+        b = tr.open_position(
+            "TICKER_ONLY", "AAPL", "long",
+            "2026-04-26T14:30:00+00:00", 100.0, snap)
+        assert a is not None
+        assert b is None, "duplicate open should be a no-op"
+        assert tr.open_count("TICKER_ONLY") == 1
+
+    @t("v5.2.0: dashboard snapshot exposes shadow_pnl block")
+    def _():
+        _reset_sp_db("snap")
+        # Seed one open + one closed across two configs, then check
+        # ds.snapshot() surfaces the panel payload with the live row.
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        tr.open_position(
+            "TICKER+QQQ", "AAPL", "long",
+            "2026-04-26T14:30:00+00:00", 100.0, snap)
+        tr.mark_to_market("AAPL", 110.0)
+        tr.open_position(
+            "QQQ_ONLY", "MSFT", "long",
+            "2026-04-26T14:30:00+00:00", 200.0, snap)
+        tr.close_position(
+            "QQQ_ONLY", "MSFT",
+            "2026-04-26T15:00:00+00:00", 210.0, "TRAIL")
+        out = ds.snapshot()
+        assert out.get("ok"), out
+        sp = out.get("shadow_pnl") or {}
+        assert "configs" in sp and "live_bot" in sp
+        names = {c["name"] for c in sp["configs"]}
+        assert "TICKER+QQQ" in names
+        assert "REHUNT_VOL_CONFIRM" in names
+        assert "OOMPH_ALERT" in names
+        # 7 configs total: 5 base + 2 v5.1.9
+        assert len(sp["configs"]) == 7
+
+    @t("v5.2.0: dashboard panel marks best/worst by today_total")
+    def _():
+        _reset_sp_db("bw")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        # Winner: TICKER+QQQ closes +$30. Loser: TICKER_ONLY closes -$10.
+        tr.open_position("TICKER+QQQ", "AAPL", "long",
+                         "2026-04-26T14:30:00+00:00", 100.0, snap)
+        tr.close_position("TICKER+QQQ", "AAPL",
+                          "2026-04-26T15:00:00+00:00", 103.0, "TRAIL")
+        tr.open_position("TICKER_ONLY", "MSFT", "long",
+                         "2026-04-26T14:30:00+00:00", 200.0, snap)
+        tr.close_position("TICKER_ONLY", "MSFT",
+                          "2026-04-26T15:00:00+00:00", 198.0, "STOP")
+        out = ds.snapshot()
+        sp = out["shadow_pnl"]
+        assert sp["best_today"] == "TICKER+QQQ"
+        assert sp["worst_today"] == "TICKER_ONLY"
+
+    @t("v5.2.0: BOT_VERSION bumped to 5.2.0")
+    def _():
+        assert m.BOT_VERSION == "5.2.0", m.BOT_VERSION
+
+    @t("v5.2.0: persistence creates shadow_positions table")
+    def _():
+        # Use a per-test DB path. _close_for_tests() drops the
+        # per-thread connection AND clears _initialized so init_db
+        # actually runs against the new path.
+        schema_path = str(tmp_dir / "schema_check.db")
+        try:
+            os.remove(schema_path)
+        except OSError:
+            pass
+        _persist_mod._close_for_tests()
+        _persist_mod.init_db(schema_path)
+        rid = _persist_mod.save_shadow_position(
+            "SCHEMA_TEST", "ZZZZ", "long", 7,
+            "2026-04-26T20:30:00+00:00", 50.0)
+        assert rid is not None, "save_shadow_position returned None"
+        opens = _persist_mod.load_open_shadow_positions()
+        assert any(r["ticker"] == "ZZZZ" for r in opens), opens
+        # Re-init pointer back to the original tmp DB so subsequent
+        # tests are unaffected.
+        _persist_mod._close_for_tests()
+        _persist_mod.init_db(str(tmp_dir / "state.db"))
 
     return run_suite("LOCAL SMOKE TESTS (v5.1.2 Tiger/Buffalo + Forensic Capture)")
 

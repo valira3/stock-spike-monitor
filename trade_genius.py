@@ -47,6 +47,7 @@ import volume_profile  # noqa: E402
 import indicators  # noqa: E402
 import bar_archive  # noqa: E402
 import persistence  # noqa: E402
+import shadow_pnl  # noqa: E402
 
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
@@ -74,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.9"
+BOT_VERSION = "5.2.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -92,28 +93,35 @@ BOT_VERSION = "5.1.9"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.1.9 \u2014 feat: two new\n"
-    "shadow configs on top of\n"
-    "v5.1.6's 5. REHUNT_VOL_\n"
-    "CONFIRM watches each\n"
-    "HARD_EJECT_TIGER exit for\n"
-    "10 min and shadow-logs a\n"
-    "re-entry if vol vs bucket\n"
-    "median is >=100% AND DI\n"
-    "still >25 on the exit side.\n"
-    "OOMPH_ALERT inverts the\n"
-    "minute-1/minute-2 burden:\n"
-    "minute 1 needs DI>25 AND\n"
-    "BUCKET_FILL>=100%, minute\n"
-    "2 needs DI>25 only. Both\n"
-    "log via [V510-SHADOW]\n"
-    "[CFG=...] for the Saturday\n"
-    "report. Pure observation.\n"
-    "VOL_GATE_ENFORCE=0 stays."
+    "v5.2.0 \u2014 feat: real-time\n"
+    "shadow strategy P&L tracker\n"
+    "on the main dashboard. Each\n"
+    "of the 7 SHADOW_CONFIGS now\n"
+    "owns a virtual portfolio,\n"
+    "sized via the v5.1.4 equity\n"
+    "formula on Val's live equity.\n"
+    "Open positions are marked\n"
+    "to market every scan cycle\n"
+    "from the IEX 1m close;\n"
+    "exits mirror the live bot's\n"
+    "HARD_EJECT_TIGER + trail +\n"
+    "structural stop + EOD path.\n"
+    "Persisted to SQLite via the\n"
+    "shadow_positions table. New\n"
+    "panel sits at the bottom of\n"
+    "the main dashboard with a\n"
+    "Today + Cumulative column\n"
+    "per config. LIVE BOT row\n"
+    "below for direct compare."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v5.1.9 \u2014 REHUNT_VOL_CONFIRM\n"
+    "+ OOMPH_ALERT shadow configs.\n"
+    "Both pure observation. No\n"
+    "trading-decision change.\n"
+    "\n"
     "v5.1.8 \u2014 SQLite persistence\n"
     "for fired_set (timed-job\n"
     "idempotency) and v5_long_\n"
@@ -2172,12 +2180,147 @@ def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
                     cfg["name"], pct_label, ticker, bucket, stage,
                     pct_fields, res["verdict"], res["reason"], existing_decision,
                 )
+                # v5.2.0 \u2014 if the live bot would have entered AND this
+                # config's verdict is PASS, open a virtual shadow long
+                # position. Stage 1 only \u2014 stage 2 calls are existing
+                # position maintenance (no new entries).
+                if (stage == 1
+                        and str(existing_decision) == "ENTER"
+                        and res.get("verdict") == "PASS"):
+                    try:
+                        bars_v520 = fetch_1min_bars(ticker)
+                        px_v520 = (bars_v520 or {}).get("current_price")
+                    except Exception:
+                        px_v520 = None
+                    if px_v520:
+                        _v520_open_shadow(
+                            cfg["name"], ticker, "long", float(px_v520))
             except Exception as e:
                 logger.warning(
                     "[V510-SHADOW] cfg=%s eval error %s: %s",
                     cfg.get("name"), ticker, e)
     except Exception as e:
         logger.warning("[V510-SHADOW] eval error %s: %s", ticker, e)
+
+
+# ---------------------------------------------------------------------------
+# v5.2.0 \u2014 Shadow strategy P&L tracker integration.
+#
+# Each SHADOW_CONFIGS entry that emits a would-have-entered verdict opens
+# a virtual position via shadow_pnl.tracker(). Sizing reuses the v5.1.4
+# equity-aware formula on Val's LIVE executor's account (so shadow P&L
+# is directly comparable to live bot P&L). Failure-tolerant: any error
+# in the shadow path logs a warning and lets the live bot continue.
+# ---------------------------------------------------------------------------
+
+
+def _v520_equity_snapshot() -> dict | None:
+    """Snapshot Val's LIVE executor equity/cash for shadow sizing.
+
+    Returns None when Val is not configured, the live alpaca client is
+    unavailable, or the account fetch raises. Callers must treat None
+    as "skip shadow open this cycle" \u2014 never as a hard error.
+    """
+    try:
+        ve = globals().get("val_executor", None)
+        if ve is None:
+            return None
+        client = ve._ensure_client() if hasattr(ve, "_ensure_client") else None
+        if client is None:
+            return None
+        acct = client.get_account()
+        equity = float(getattr(acct, "equity", 0) or 0)
+        cash = float(getattr(acct, "cash", 0) or 0)
+        return {
+            "equity": equity,
+            "cash": cash,
+            "dollars_per_entry": float(
+                getattr(ve, "dollars_per_entry", 10000.0) or 10000.0),
+            "max_pct_per_entry": float(
+                getattr(ve, "max_pct_per_entry", 10.0) or 10.0),
+            "min_reserve_cash": float(
+                getattr(ve, "min_reserve_cash", 500.0) or 500.0),
+        }
+    except Exception as e:
+        logger.warning("[V520-SHADOW-PNL] equity snapshot failed: %s", e)
+        return None
+
+
+def _v520_open_shadow(
+    config_name: str, ticker: str, side: str, entry_price: float,
+) -> None:
+    """Open a virtual shadow position for `config_name` on `ticker`.
+
+    Sizing pulls Val's live equity; if that fails (no client, no Val)
+    we skip silently \u2014 the live trading path is unaffected.
+    """
+    if entry_price is None or entry_price <= 0:
+        return
+    snap = _v520_equity_snapshot()
+    if snap is None:
+        return
+    try:
+        rid = shadow_pnl.tracker().open_position(
+            config_name=config_name, ticker=ticker, side=side,
+            entry_ts_utc=datetime.now(tz=timezone.utc),
+            entry_price=float(entry_price),
+            equity_snapshot=snap,
+        )
+        if rid is not None:
+            logger.info(
+                "[V520-SHADOW-PNL] OPEN cfg=%s ticker=%s side=%s "
+                "entry=$%.2f eq=$%.0f cash=$%.0f",
+                config_name, ticker, side, float(entry_price),
+                snap["equity"], snap["cash"],
+            )
+    except Exception as e:
+        logger.warning(
+            "[V520-SHADOW-PNL] open failed cfg=%s t=%s: %s",
+            config_name, ticker, e)
+
+
+def _v520_mtm_ticker(ticker: str, current_price: float) -> None:
+    """Mark-to-market every open shadow position on `ticker`. Called
+    once per scan cycle per ticker. Failure-tolerant.
+    """
+    try:
+        if current_price is None or current_price <= 0:
+            return
+        shadow_pnl.tracker().mark_to_market(
+            ticker=ticker, current_price=float(current_price),
+            current_ts=datetime.now(tz=timezone.utc),
+        )
+    except Exception as e:
+        logger.warning("[V520-SHADOW-PNL] mtm error t=%s: %s", ticker, e)
+
+
+def _v520_close_shadow_all(
+    ticker: str, exit_price: float, reason: str,
+) -> None:
+    """Close every open shadow position on `ticker` across ALL configs
+    using the live exit price + reason. Mirrors the live bot's exit
+    decisions one-for-one so shadow P&L is comparable.
+    """
+    try:
+        if exit_price is None or exit_price <= 0:
+            return
+        tr = shadow_pnl.tracker()
+        for cfg in volume_profile.SHADOW_CONFIGS:
+            tr.close_position(
+                config_name=cfg["name"], ticker=ticker,
+                exit_ts_utc=datetime.now(tz=timezone.utc),
+                exit_price=float(exit_price),
+                exit_reason=str(reason or "STOP"),
+            )
+        for extra in ("REHUNT_VOL_CONFIRM", "OOMPH_ALERT"):
+            tr.close_position(
+                config_name=extra, ticker=ticker,
+                exit_ts_utc=datetime.now(tz=timezone.utc),
+                exit_price=float(exit_price),
+                exit_reason=str(reason or "STOP"),
+            )
+    except Exception as e:
+        logger.warning("[V520-SHADOW-PNL] close error t=%s: %s", ticker, e)
 
 
 # ---------------------------------------------------------------------------
@@ -2316,6 +2459,12 @@ def _v519_check_rehunt(ticker: str) -> None:
             _fmt_num(di_p), _fmt_num(di_m),
             _fmt_num(shadow_entry_price),
         )
+        # v5.2.0 \u2014 open virtual position for REHUNT_VOL_CONFIRM.
+        if shadow_entry_price:
+            _v520_open_shadow(
+                "REHUNT_VOL_CONFIRM", ticker, side,
+                float(shadow_entry_price),
+            )
     except Exception as e:
         logger.warning("[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] eval error %s: %s",
                        ticker, e)
@@ -2402,6 +2551,12 @@ def _v519_check_oomph(ticker: str, bars: dict | None = None) -> None:
                     _fmt_num(di_now_val),
                     _fmt_num(shadow_entry_price),
                 )
+                # v5.2.0 \u2014 open virtual position for OOMPH_ALERT.
+                if shadow_entry_price:
+                    _v520_open_shadow(
+                        "OOMPH_ALERT", ticker, side,
+                        float(shadow_entry_price),
+                    )
 
         # Update prev-minute state: was this minute itself a qualifier?
         long_qual = (di_p is not None
@@ -6569,6 +6724,14 @@ def close_breakout(ticker, price, side, reason="STOP"):
     if len(history_list) > TRADE_HISTORY_MAX:
         history_list[:] = history_list[-TRADE_HISTORY_MAX:]
 
+    # v5.2.0 \u2014 mirror live exit decision to all shadow configs. Same
+    # ticker/price/reason as the live close, so shadow P&L tracks the
+    # exact same exit logic. Failure-tolerant.
+    try:
+        _v520_close_shadow_all(ticker, price, reason)
+    except Exception as e:
+        logger.warning("[V520-SHADOW-PNL] close hook %s: %s", ticker, e)
+
     # Persistent trade log (paper close).
     _entry_iso = pos.get("entry_ts_utc") or entry_time_str or ""
     _hold_s = None
@@ -6954,6 +7117,22 @@ def eod_close():
             shorts_to_close.append((ticker, price))
         for ticker, price in shorts_to_close:
             close_short_position(ticker, price, "EOD")
+
+    # v5.2.0 \u2014 close any orphan shadow positions (configs whose
+    # would-have-entered ticker is not held live) at EOD using their
+    # last mark price.
+    try:
+        last_marks: dict[str, float] = {}
+        tr = shadow_pnl.tracker()
+        with tr._lock:
+            for cfg_positions in tr._open.values():
+                for sp in cfg_positions:
+                    if sp.last_mark_price is not None:
+                        last_marks[sp.ticker] = sp.last_mark_price
+        if last_marks:
+            tr.close_all_for_eod(last_marks)
+    except Exception as e:
+        logger.warning("[V520-SHADOW-PNL] EOD shadow close failed: %s", e)
 
     _, _, total_pnl, wins, losses, n_trades = _today_pnl_breakdown()
     msg = (
@@ -7643,6 +7822,13 @@ def scan_loop():
                 # Stage_2 for this ticker; default to Stage 1 (Jab) for
                 # the new-entry decision.
                 _shadow_log_g4(ticker, stage=1, existing_decision=("ENTER" if ok else "HOLD"))
+                # v5.2.0 \u2014 mark-to-market every open shadow position
+                # on this ticker against the current 1m close.
+                try:
+                    if bars and bars.get("current_price"):
+                        _v520_mtm_ticker(ticker, bars["current_price"])
+                except Exception as e:
+                    logger.warning("[V520-SHADOW-PNL] mtm hook %s: %s", ticker, e)
                 # v5.1.2 \u2014 [V510-CAND] for every entry consideration
                 # (closes the asymmetric blind-spot from v5.1.1).
                 try:
