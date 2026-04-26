@@ -1,8 +1,8 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.0.0 · April 2026
+> **Version:** v5.1.2 · April 2026
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`
+> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`
 
 TradeGenius is a Python Telegram-driven trading bot with a paper book,
 two Alpaca-backed executor mirrors, and a live web dashboard. As of
@@ -11,7 +11,11 @@ long ("The Tiger Hunts the Bison") and short ("The Wounded Buffalo /
 Gravity Trade") trades on a small, hand-curated ticker universe; emits
 ENTRY/EXIT signals on an in-process bus; and (when configured)
 replicates those signals against Alpaca paper or live via two
-independent executor bots.
+independent executor bots. **v5.1.0–v5.1.2** layered an observation-only
+**Forensic Volume Filter** (`volume_profile.py`) plus **Forensic Capture**
+modules (`bar_archive.py`, `indicators.py`) on top of the v5.0.0 algorithm
+— all of v5.1.x is shadow-mode only and does not change a single
+Tiger/Buffalo entry decision.
 
 The canonical specification of the trading logic lives in
 [`STRATEGY.md`](STRATEGY.md) at the repo root. Sections 6 and 7 below
@@ -84,7 +88,7 @@ Concurrency model:
 ## 2. Repo layout
 
 ```
-trade_genius.py            # main bot (~8.9 kLOC); BOT_VERSION lives here
+trade_genius.py            # main bot; BOT_VERSION lives here
 dashboard_server.py        # aiohttp dashboard backend (~1.9 kLOC)
 dashboard_static/
     index.html             # single-page dashboard shell
@@ -93,8 +97,12 @@ dashboard_static/
 side.py                    # Side enum + SideConfig table (long/short collapse)
 paper_state.py             # paper book persistence (extracted in v4.6.0)
 error_state.py             # per-executor error rings + dedup gate (v4.11.0)
+tiger_buffalo_v5.py        # v5.0.0 Tiger/Buffalo state-machine helpers
+volume_profile.py          # v5.1.0 Forensic Volume Filter (shadow only)
+indicators.py              # v5.1.2 pure indicator math (rsi/ema/atr/vwap/spread)
+bar_archive.py             # v5.1.2 1m bar JSONL persistence (/data/bars/)
 telegram_commands.py       # slash-command handlers
-smoke_test.py              # 90+ local + 9 prod smoke tests
+smoke_test.py              # 220 local + 9 prod smoke tests
 synthetic_harness/         # 50-scenario byte-equal replay harness
     runner.py, recorder.py, market.py, clock.py, scenarios/, goldens/
 scripts/
@@ -222,12 +230,19 @@ loop's structure:
 
 ---
 
-## 6. Trading algorithm — Tiger/Buffalo (v5.0.0)
+## 6. Trading algorithm — Tiger/Buffalo (v5.0.0, unchanged through v5.1.2)
 
 > **Canonical spec:** [`STRATEGY.md`](STRATEGY.md). For any rule
 > disagreement, the spec wins. Every code-level decision in
 > `tiger_buffalo_v5.py` cites a rule ID (e.g. `L-P2-R3`) that maps 1:1
 > to the spec; smoke-test docstrings reference the same IDs.
+
+> **v5.1.x is observation only.** v5.1.0 added the Forensic Volume
+> Filter (§17) and v5.1.2 added the Forensic Capture layer (§18), but
+> **neither one changes any Tiger/Buffalo entry, exit, sizing, or stop
+> decision**. `VOL_GATE_ENFORCE` defaults to `0` and stays at `0`
+> through v5.1.2. The synthetic harness 50/50 byte-equal goldens are
+> still byte-equal under v5.1.2.
 
 v5 reframes both long and short trades as a **two-stage entry,
 structural-ratchet exit** state machine. Per-ticker per-direction
@@ -435,6 +450,29 @@ The owner whitelist is **shared with main** via `TRADEGENIUS_OWNER_IDS`
 `GENE_TELEGRAM_OWNER_IDS` (those names appear in `.env.example` for
 historical readers but the code uses the unified set). Default value:
 `5165570192,167005578` (Val + Gene).
+
+**Routing (clarified in v5.0.3).** Each executor's *own* Telegram bot
+fans trade confirmations out to every learned owner-id → chat-id pair.
+In other words: Val's trades land on Val's bot, Gene's trades land on
+Gene's bot, but **every owner sees every executor's confirmations on
+that executor's bot** because the owner whitelist is shared. Each owner
+must DM their executor bot once (any message) so the auto-learn hook
+records the chat_id; the map is persisted at
+`/data/executor_chats_{name}.json` and survives Railway redeploys
+(see §11.6). No per-executor `<PREFIX>TELEGRAM_CHAT_ID` env var is
+required — it is accepted only as a back-compat seed.
+
+**Paper/live Alpaca key independence (v5.0.4).** Each executor reads
+its paper credentials from **only** `<PREFIX>ALPACA_PAPER_KEY` /
+`<PREFIX>ALPACA_PAPER_SECRET` and its live credentials from **only**
+`<PREFIX>ALPACA_LIVE_KEY` / `<PREFIX>ALPACA_LIVE_SECRET`. There is no
+fallback from paper to live (or vice versa). v5.0.3 briefly added a
+fallback from `<PREFIX>ALPACA_PAPER_KEY` to `<PREFIX>ALPACA_KEY` (the
+un-prefixed name); v5.0.4 reverted it after Val confirmed
+`GENE_ALPACA_KEY` on Railway is a LIVE key. Operators provisioning a
+new executor must mint a fresh paper key from a paper Alpaca account
+and set the paper-prefixed env var — never repurpose un-prefixed keys.
+See §11.7 for the full incident write-up.
 
 State files (one per mode, per executor):
 
@@ -697,14 +735,19 @@ Production typically sets this to `"5165570192,167005578"` (Val + Gene).
 ### 10.7 Executors (Val / Gene)
 
 Each executor uses the prefix below; replace `{P}` with `VAL_` or `GENE_`.
+Paper and live keys are **strictly independent** — paper mode reads only
+`<PREFIX>ALPACA_PAPER_KEY` / `<PREFIX>ALPACA_PAPER_SECRET`, live mode
+reads only `<PREFIX>ALPACA_LIVE_KEY` / `<PREFIX>ALPACA_LIVE_SECRET`. No
+fallback. (v5.0.4 reverted the brief v5.0.3 paper→un-prefixed fallback;
+see §11.7.)
 
 | Variable                   | Default | Notes                                                  |
 |----------------------------|---------|--------------------------------------------------------|
 | `{P}ENABLED`               | `1`     | Set to `0` (or `false`) to skip startup                |
-| `{P}ALPACA_PAPER_KEY`      | empty   | Required for paper mode                                |
-| `{P}ALPACA_PAPER_SECRET`   | empty   |                                                        |
-| `{P}ALPACA_LIVE_KEY`       | empty   | Required only to flip live                             |
-| `{P}ALPACA_LIVE_SECRET`    | empty   |                                                        |
+| `{P}ALPACA_PAPER_KEY`      | empty   | Paper-only Alpaca key. Required to start in paper mode. |
+| `{P}ALPACA_PAPER_SECRET`   | empty   | Paper-only secret.                                     |
+| `{P}ALPACA_LIVE_KEY`       | empty   | Live-only key. Required only to flip live.             |
+| `{P}ALPACA_LIVE_SECRET`    | empty   | Live-only secret.                                      |
 | `{P}TELEGRAM_TG`           | empty   | Per-executor Telegram bot token                        |
 | `{P}TELEGRAM_CHAT_ID`      | empty   | v5.0.3: optional seed only (auto-learn fills the map)  |
 | `{P}EXECUTOR_CHATS_PATH`   | `/data/executor_chats_{name}.json` | v5.0.3 auto-learned chat-map     |
@@ -712,13 +755,45 @@ Each executor uses the prefix below; replace `{P}` with `VAL_` or `GENE_`.
 | `ALPACA_ENDPOINT_PAPER`    | unset   | URL host override (no `/v2`); shared by both executors |
 | `ALPACA_ENDPOINT_TRADE`    | unset   | URL host override (no `/v2`); shared by both executors |
 
-### 10.8 Testing
+**Production Railway naming (as of v5.1.2).**
+
+- Val executor — paper. `VAL_ALPACA_PAPER_KEY` (26 chars) and
+  `VAL_ALPACA_PAPER_SECRET` (44 chars) are set on Railway from Val's
+  paper Alpaca account. Val executor starts in paper mode at boot.
+- Gene executor — currently NOT booting paper. `GENE_ALPACA_KEY` /
+  `GENE_ALPACA_SECRET` exist on Railway but are **LIVE** keys, and the
+  paper-prefixed names (`GENE_ALPACA_PAPER_KEY` /
+  `GENE_ALPACA_PAPER_SECRET`) are unset — so the executor startup gate
+  correctly logs `[Gene] skipped (GENE_ALPACA_PAPER_KEY set=False)`
+  and skips. To bring Gene up in paper mode, mint a fresh paper key
+  from Gene's paper Alpaca account and set the paper-prefixed names;
+  do NOT rename the existing live keys.
+
+### 10.8 Forensic Volume Filter (v5.1.0+)
+
+| Variable                   | Default | Notes                                                  |
+|----------------------------|---------|--------------------------------------------------------|
+| `VOL_GATE_ENFORCE`         | `0`     | Master enforcement flag. Stays `0` through v5.1.2 (shadow only). |
+| `VOL_GATE_TICKER_ENABLED`  | `1`     | Active config: anchor on per-ticker volume gate.       |
+| `VOL_GATE_INDEX_ENABLED`   | `1`     | Active config: anchor on QQQ "Market Tide" gate.       |
+| `VOL_GATE_TICKER_PCT`      | `70`    | Active-config ticker threshold (percent of ToD avg).   |
+| `VOL_GATE_QQQ_PCT`         | `100`   | Active-config QQQ threshold (percent of ToD avg).      |
+| `VOL_GATE_INDEX_SYMBOL`    | `QQQ`   | Hard-locked to QQQ per Val.                            |
+| `VOLUME_PROFILE_DIR`       | `/data/volume_profiles` | Per-ticker baseline JSONs.                  |
+
+Defaults preserve the v5.1.1 Apr 20-24 backtest-recommended thresholds.
+The four `SHADOW_CONFIGS` (TICKER+QQQ, TICKER_ONLY, QQQ_ONLY, GEMINI_A)
+are **not** env-driven — they are hard-coded module constants in
+`volume_profile.py`; env vars only control which one would gate trades
+if `VOL_GATE_ENFORCE=1`. See §17 for details.
+
+### 10.9 Testing
 
 | Variable           | Default | Notes                                                  |
 |--------------------|---------|--------------------------------------------------------|
 | `SSM_SMOKE_TEST`   | unset   | When `=1`, skips the network-touching startup at import time |
 
-### 10.9 Do not set
+### 10.10 Do not set
 
 `TZ` — the bot uses `zoneinfo` and `pytz` internally; setting this
 breaks scheduling. Documented in `.env.example`.
@@ -738,16 +813,27 @@ COPY telegram_commands.py .
 COPY paper_state.py .
 COPY side.py .
 COPY error_state.py .
+COPY tiger_buffalo_v5.py .   # v5.0.0
+COPY volume_profile.py .     # v5.1.0
+COPY indicators.py .         # v5.1.2
+COPY bar_archive.py .        # v5.1.2
 COPY dashboard_server.py .
 COPY dashboard_static/ ./dashboard_static/
 ```
 
 **Footgun.** Any new top-level Python module must be added to this
 whitelist in the same PR or the container crashes on boot with
-`ModuleNotFoundError`. v4.11.0 added `error_state.py` without the
-matching `COPY` line and prod stayed 502 for ~3 hours
-(`v4.11.1` was the one-line fix). Treat this as a checklist item on
-every PR that adds a new module.
+`ModuleNotFoundError`. v4.11.0 shipped `error_state.py` without the
+matching `COPY` line and prod stayed 502 for ~3 hours (`v4.11.1` was
+the one-line fix). v5.0.0 shipped `tiger_buffalo_v5.py` with the same
+omission and prod was again 502 until `v5.0.2`. v5.0.2 added a CI
+infra-guard test (`smoke_test.py: infra: Dockerfile COPY whitelist
+includes every top-level imported module`) that parses every
+`import`/`from` line in `trade_genius.py`, intersects against local
+`.py` modules, and grep-extracts the `COPY <module>.py` directives in
+the Dockerfile — any missing entry fails CI before merge. v5.1.0 added
+`COPY volume_profile.py` and v5.1.2 added `COPY indicators.py` and
+`COPY bar_archive.py` per this guard.
 
 `COPY tickers.json` is intentionally absent — the file lives on the
 Railway Volume (`TICKERS_FILE=/data/tickers.json`) and is created at
@@ -868,14 +954,29 @@ are silently ignored on load so old state files survive code purges.
 
 ### 13.1 Local smoke (`smoke_test.py`)
 
-90+ tests grouped via the `@t(name)` decorator. Runs on every PR via
-`.github/workflows/post-deploy-smoke.yml` (after the prod rollout
-poll succeeds). Coverage spans the trade-decision arithmetic
+**220/220 tests** at v5.1.2 (was 161 at v5.0.4, 181 at v5.1.0, 194 at
+v5.1.1). Tests are grouped via the `@t(name)` decorator. Runs on every
+PR via `.github/workflows/post-deploy-smoke.yml` (after the prod
+rollout poll succeeds). Coverage spans the trade-decision arithmetic
 (stop-chain layers, breakeven ratchet, ladder tiers, entry-extension
 guard), data helpers (`_classify_session_et`, `_or_price_sane`),
 state I/O (`paper_state.save/load/reset`), the index payload schema,
-the Yahoo helper API surface, and a handful of dashboard-route
-contract tests against a stub aiohttp app.
+the Yahoo helper API surface, the v5 Tiger/Buffalo rule grid (every
+`L-P*-R*`/`S-P*-R*`/`C-R*` rule has at least one test docstring
+citing the rule ID), the v5.0.2 Dockerfile COPY infra-guard, the
+v5.0.3 chat-map auto-learn / fan-out, the v5.0.4 paper-key strict
+read, the v5.1.0 `[VOLPROFILE]` section (calendar helpers,
+`session_bucket` boundaries, `evaluate_g4` PASS/BLOCK paths,
+disable-on-30-symbol cap, JSON round-trip), the v5.1.1 env-driven
+A/B toggles + 3-config `SHADOW_CONFIGS` parallel emit, and the
+v5.1.2 forensic capture additions (4-tuple `SHADOW_CONFIGS` with
+`GEMINI_A` at 110/85, 4 `[CFG=...]` lines per candidate,
+`bar_archive.write_bar` + `cleanup_old_dirs`, `indicators.rsi14` /
+`ema9` / `ema21` / `atr14` / `vwap_dist_pct` / `spread_bps`
+happy-path + insufficient-bars-returns-None, and emitter-format tests
+for `[V510-MINUTE]` / `[V510-CAND]` / `[V510-FSM]` / `[V510-ENTRY]`),
+plus a handful of dashboard-route contract tests against a stub
+aiohttp app.
 
 ### 13.2 Synthetic harness (`synthetic_harness/`)
 
@@ -900,7 +1001,8 @@ all 50 goldens. `record_scenario()` still stamps the current version
 into freshly-recorded goldens.
 
 `smoke_test.py --synthetic` lifts the local smoke total by replaying
-all 50 goldens.
+all 50 goldens. **v5.1.0 / v5.1.1 / v5.1.2 are observation-only**, so
+the 50/50 byte-equal still passes after each release without re-record.
 
 ### 13.3 CI guards
 
@@ -1059,15 +1161,36 @@ state machine builds up state lazily as gates pass and stages fire.
 v4 `paper_trades`, `trade_history`, `positions`, `short_positions`,
 and the daily entry counters all roll forward unchanged.
 
+### 16.5 v5.0.x → v5.1.x — what changed (and what didn't)
+
+The Tiger/Buffalo state machine in §6 is the same code in v5.1.2 as it
+was in v5.0.0. Every v5.1.x release is observation-only:
+
+| Release | Subject                                                   | Behavior change? |
+|---------|-----------------------------------------------------------|------------------|
+| v5.0.2  | Dockerfile `COPY tiger_buffalo_v5.py` + infra-guard test  | No (hotfix)      |
+| v5.0.3  | Per-executor trade-confirmation DM auto-learn (chat-map)  | No (plumbing)    |
+| v5.0.4  | Revert v5.0.3 paper-key fallback (paper/live key strict)  | No (safety)      |
+| v5.1.0  | Forensic Volume Filter (`volume_profile.py`) — SHADOW     | No (logging)     |
+| v5.1.1  | Env-driven A/B toggles + 3-config parallel shadow logging | No (logging)     |
+| v5.1.2  | Forensic capture: bar archive + indicator snapshots       | No (logging)     |
+
+Result: a v5.0.0 paper-state file still loads cleanly on v5.1.2; the
+synthetic harness 50/50 byte-equal goldens still match; every entry,
+exit, sizing, and stop-placement decision is identical to v5.0.0.
+
 ---
 
-## 17. Forensic Volume Filter (Anaplan logic) — v5.1.0
+## 17. Forensic Volume Filter (Anaplan logic) — v5.1.0 → v5.1.2
 
 The §17 layer asks a sharper volume question than the legacy "is volume
 high" tests: *is this minute's volume higher than the 55-trading-day
-seasonal average for THIS exact ET timestamp?* It is shipped in v5.1.0
-in **shadow mode** — every minute is logged with `[V510-SHADOW]` but
-the existing entry decision is unchanged. v5.1.1 will flip enforcement.
+seasonal average for THIS exact ET timestamp?* Shipped in v5.1.0 in
+**shadow mode** (computed and logged, but no entry decision changes),
+extended in v5.1.1 with env-driven A/B toggles and 3-config parallel
+shadow logging, and again in v5.1.2 with `GEMINI_A` as a 4th shadow
+config. Through v5.1.2 the gate is **still observation only**:
+`VOL_GATE_ENFORCE` defaults to `0` and is unchanged.
 
 ### 17.1 Volume Library — parameters
 
@@ -1083,54 +1206,242 @@ the existing entry decision is unchanged. v5.1.1 will flip enforcement.
 | Stale threshold  | 36 hours since `build_ts_utc`.                                |
 | Disk format      | `/data/volume_profiles/<TICKER>.json` (atomic tmp+rename).    |
 | Rebuild cadence  | Nightly at 21:00 ET (daemon thread); synchronous on startup if any profile is missing or stale. |
+| 30-symbol cap    | If `len(TICKERS) > 30`, the module hard-disables itself (`VOLUME_PROFILE_ENABLED = False`); the bot trades normally with G4 short-circuited to `DISABLED`. |
+| Websocket reconnect | Jittered backoff; 5-min REST replay on resume to repopulate the in-memory volume table. |
 
-### 17.2 V-P1 grid — the three rules
+### 17.2 V-P1 grid (legacy fixed-threshold evaluator)
 
-| Rule        | Condition                                                     |
-|-------------|---------------------------------------------------------------|
-| **V-P1-R1** | Ticker volume ≥ **120%** of ToD avg → authorizes Stage 1.     |
-| **V-P1-R2** | QQQ volume ≥ **100%** of QQQ ToD avg → "Market Tide" confirms Stage 1. |
-| **V-P1-R3** | Ticker volume ≥ **100%** of ToD avg → maintains Stage 2.      |
+`evaluate_g4(ticker, minute_bucket, current_volume, profile,
+qqq_current_volume, qqq_profile, stage)` returns
+`{green, reason, ticker_pct, qqq_pct, rule}` with the original v5.1.0
+fixed thresholds (Stage 1: ticker ≥ 120% AND QQQ ≥ 100%; Stage 2:
+ticker ≥ 100%). Preserved unchanged so v5.1.0 grep tooling and the
+synthetic harness 50/50 byte-equal still pass.
 
-`evaluate_g4(...)` returns `{green, reason, ticker_pct, qqq_pct, rule}`.
-Stage 1 requires R1 AND R2; Stage 2 requires R3 only.
+### 17.3 Env-driven active config + helper (v5.1.1+)
 
-### 17.3 Shadow Mode rollout plan
+`load_active_config()` reads six env vars at module-import time:
 
-1. **v5.1.0 (this release)** — G4 is computed and logged with the
-   `[V510-SHADOW]` prefix. Existing entry decisions are unchanged.
-   Synthetic harness 50/50 byte-equal preserved.
-2. **Observation window** — Val greps `[V510-SHADOW]` in Railway logs
-   over a week of trading. Diff `g4=GREEN` against actual entries to
-   quantify how restrictive the gate would be.
-3. **v5.1.1 (separate PR)** — Flip enforcement. G4 joins G1/G2/G3 as
-   a hard ARM precondition (see §18.1).
+| Env var                   | Default | Role                                              |
+|---------------------------|---------|---------------------------------------------------|
+| `VOL_GATE_ENFORCE`        | `0`     | Master enforcement flag. Stays `0` through v5.1.2. |
+| `VOL_GATE_TICKER_ENABLED` | `1`     | Active config: anchor on per-ticker.              |
+| `VOL_GATE_INDEX_ENABLED`  | `1`     | Active config: anchor on QQQ.                     |
+| `VOL_GATE_TICKER_PCT`     | `70`    | Active-config ticker threshold (% of ToD avg).    |
+| `VOL_GATE_QQQ_PCT`        | `100`   | Active-config QQQ threshold (% of ToD avg).       |
+| `VOL_GATE_INDEX_SYMBOL`   | `QQQ`   | Hard-locked to QQQ.                               |
 
-### 17.4 Failure modes
+Defaults reflect the **Apr 20-24 backtest recommendation**: 70/100 was
+the best risk-adjusted config (11 trades, +$482.90, 82% win rate;
+retains 96% of upside vs unfiltered). Garbage-int env values fall back
+to defaults rather than crash. Env reads are dict-lookup-cheap; the
+design intent is "set once at deploy, don't flip mid-week."
 
-| Condition                                            | `evaluate_g4` reason          |
-|------------------------------------------------------|-------------------------------|
-| Profile file missing for ticker                      | `NO_PROFILE_<T>`              |
-| Profile older than `STALE_HOURS` (36h)               | `STALE_PROFILE_<T>`           |
-| Bucket not in profile (e.g. 09:30 or 16:00)          | `NO_BUCKET_<T>_<bucket>`      |
-| `len(TICKERS) > 30` (free IEX cap exceeded)          | `DISABLED` (whole module off) |
-| Websocket dropped                                    | Reconnect with jittered backoff; 5-min REST replay on resume. |
+`evaluate_g4_config(ticker, minute_bucket, current_volume, profile,
+index_current_volume, index_profile, *, ticker_enabled, index_enabled,
+ticker_pct, index_pct)` is the per-anchor configurable evaluator used
+for the parallel shadow lines. It returns
+`{verdict, reason, ticker_pct, qqq_pct}` with `verdict ∈ {PASS, BLOCK}`
+and `reason ∈ {OK, LOW_TICKER, LOW_QQQ, STALE_PROFILE, NO_BARS,
+NO_PROFILE, DISABLED}`.
 
-## 18. Long permission gates (G1..G4)
+### 17.4 `SHADOW_CONFIGS` — fixed analysis configs (v5.1.1 → v5.1.2)
 
-### 18.1 Four-light gate set (v5.1.0+)
+`volume_profile.SHADOW_CONFIGS` is a hard-coded **4-tuple** (was
+3-tuple in v5.1.1; `GEMINI_A` was added in v5.1.2 after the Apr 20-24
+replay flagged it as the only Gemini-suggested config with positive
+net P&L swing):
 
-| Gate | Light name      | Source                          | Status in v5.1.0 |
-|------|-----------------|---------------------------------|------------------|
-| G1   | Index Alpha     | Tiger/Buffalo §6.2              | enforced         |
-| G2   | Ticker Alpha    | Tiger/Buffalo §6.2              | enforced         |
-| G3   | 5m OR Structure | Tiger/Buffalo §6.2              | enforced         |
-| G4   | Volume          | `volume_profile.evaluate_g4`    | **shadow only — ENFORCED in v5.1.1+; v5.1.0 logs only** |
+| Name         | `ticker_enabled` | `index_enabled` | `ticker_pct` | `index_pct` |
+|--------------|------------------|-----------------|--------------|-------------|
+| `TICKER+QQQ` | True             | True            | 70           | 100         |
+| `TICKER_ONLY`| True             | False           | 70           | (unused)    |
+| `QQQ_ONLY`   | False            | True            | (unused)     | 100         |
+| `GEMINI_A`   | True             | True            | **110**      | **85**      |
 
-In v5.1.0 the bot logs G4 every minute via `_shadow_log_g4` but does
-not block any entry on it. The §19 short-side gates read the same
-baseline; no short-specific code change in v5.1.0.
+These are NOT env-driven — env vars only choose which one would gate
+trades if `VOL_GATE_ENFORCE=1`. The point is that every line of
+shadow data is comparable across all four configs post-hoc.
+
+### 17.5 Shadow log lines
+
+Per candidate, `_shadow_log_g4` now emits **5** log lines:
+
+```
+[V510-SHADOW] ticker=AMD bucket=1448 stage=1 g4=GREEN ticker_pct=84 qqq_pct=112 reason=OK entry_decision=ENTER
+[V510-SHADOW][CFG=TICKER+QQQ][PCT=70/100] ticker=AMD bucket=1448 stage=1 t_pct=84 qqq_pct=112 verdict=PASS reason=OK entry_decision=ENTER
+[V510-SHADOW][CFG=TICKER_ONLY][PCT=70]    ticker=AMD bucket=1448 stage=1 t_pct=84              verdict=PASS reason=OK entry_decision=ENTER
+[V510-SHADOW][CFG=QQQ_ONLY][PCT=100]      ticker=AMD bucket=1448 stage=1            qqq_pct=112 verdict=PASS reason=OK entry_decision=ENTER
+[V510-SHADOW][CFG=GEMINI_A][PCT=110/85]   ticker=AMD bucket=1448 stage=1 t_pct=84 qqq_pct=112 verdict=BLOCK reason=LOW_TICKER entry_decision=ENTER
+```
+
+The first line is the v5.1.0 back-compat line (no `[CFG=...]` prefix);
+the four `[CFG=...]` lines are the v5.1.1 (3 of them) plus v5.1.2
+(adds GEMINI_A = 4 total). `entry_decision` always reflects what the
+bot actually did — these lines never gate the decision.
+
+### 17.6 Failure modes
+
+| Condition                                            | Reason                  |
+|------------------------------------------------------|-------------------------|
+| Profile file missing for ticker                      | `NO_PROFILE`            |
+| Profile older than `STALE_HOURS` (36h)               | `STALE_PROFILE`         |
+| Bucket not in profile (e.g. 09:30 or 16:00)          | `NO_BUCKET_<T>_<bucket>` |
+| `len(TICKERS) > 30` (free IEX cap exceeded)          | `DISABLED`              |
+| Ticker pct < threshold and ticker_enabled            | `LOW_TICKER`            |
+| QQQ pct < threshold and index_enabled                | `LOW_QQQ`               |
+
+### 17.7 Rollout plan (current)
+
+1. **v5.1.0** — G4 computed and logged. Existing entry decisions
+   unchanged.
+2. **v5.1.1** — Env-driven active config + 3 parallel shadow configs
+   per candidate. Defaults preserve v5.1.0 behavior.
+3. **v5.1.2** — `GEMINI_A` added as 4th shadow config; forensic
+   capture (§18) closes the asymmetric blind spot where we only
+   logged what fired. Still SHADOW.
+4. **Observation window** — Val collects a clean week of 4-config
+   shadow data alongside `[V510-CAND]` skipped-candidate lines and
+   `[V510-MINUTE]` per-minute volume percentiles.
+5. **Future PR** — Flip `VOL_GATE_ENFORCE=1` once Val has chosen the
+   best config off live data; G4 joins G1/G2/G3 as a hard ARM
+   precondition (see §19.1).
+
+## 18. Forensic Capture (v5.1.2)
+
+v5.1.2 closes four data gaps so any future backtest is fully
+replayable from disk:
+
+1. We only logged trades that **fired** — never candidates that
+   didn't.
+2. We only logged at the **active threshold** — not the baseline.
+3. We did **not persist 1m bars** to disk.
+4. We did **not record indicator state** at decision time.
+
+All four streams are observation-only. None of them touch entry,
+exit, sizing, or stop placement.
+
+### 18.1 Bar archive (`bar_archive.py` — Tier-1.1)
+
+For every minute close per ticker (+ QQQ + SPY) in the active
+TICKERS list, append one JSONL line to
+`/data/bars/YYYY-MM-DD/{TICKER}.jsonl`. Schema:
+
+```json
+{
+  "ts": "...", "et_bucket": "1448",
+  "open": ..., "high": ..., "low": ..., "close": ...,
+  "iex_volume": ..., "iex_sip_ratio_used": ...,
+  "bid": ..., "ask": ..., "last_trade_price": ...
+}
+```
+
+Append in `a` mode; on Linux ext4 a write of < `PIPE_BUF` (4096) is
+atomic, and the lines are ~150 bytes — no tmp+rename needed. Lazy
+directory creation. **Failure-tolerant — never raises into the
+trading loop.** Disk projection: ~18 tickers × 390 minutes × ~150
+bytes ≈ 1 MB/day. The 30-symbol IEX cap from v5.1.0 still bounds the
+universe. Stale or empty minutes write nothing. A daemon thread
+calls `cleanup_old_dirs(retain_days=90)` nightly to delete dated
+directories older than 90 days.
+
+### 18.2 Per-minute volume log (`[V510-MINUTE]` — Tier-1.2)
+
+One line per ticker per minute close, regardless of candidate state:
+
+```
+[V510-MINUTE] ticker=AMD bucket=1448 t_pct=84 qqq_pct=112 close=346.19 vol=12345
+```
+
+This lets us replay "what if the candidate threshold itself were
+different" without re-pulling 1m bars from Alpaca.
+
+### 18.3 Skipped-candidate log (`[V510-CAND]` — Tier-1.3)
+
+Pre-v5.1.2 we only logged candidates that fired. v5.1.2 emits one
+line on **every entry consideration** — fired AND not-fired:
+
+```
+[V510-CAND] ticker=AMD bucket=1448 stage=1 fsm_state=ARMED entered=NO reason=NO_BREAKOUT
+            t_pct=84 qqq_pct=112 close=346.19 stop=null
+            rsi14=null ema9=null ema21=null atr14=null vwap_dist_pct=null spread_bps=null
+```
+
+`reason ∈ {NO_BREAKOUT, STAGE_NOT_READY, ALREADY_OPEN, COOL_DOWN,
+MAX_POSITIONS, BREAKOUT_CONFIRMED}`. Wired into the
+entry-consideration loop next to the existing `_shadow_log_g4` call.
+All `indicators.*` values render as `null` (not `0.0`) on
+insufficient bars.
+
+### 18.4 Entry log enrichment (`[V510-ENTRY]` — Tier-1.4)
+
+When a trade fires, a new line is emitted alongside the existing
+entry surface (Telegram + paper_log) carrying bid/ask + account
+state:
+
+```
+[V510-ENTRY] ticker=AMD bid=346.18 ask=346.20
+             cash=85432.10 equity=99214.55
+             open_positions=2 total_exposure_pct=18.4 current_drawdown_pct=0.0
+```
+
+**Strictly additive** — the existing entry log line, paper_log entry,
+and Telegram card are unchanged byte-for-byte (the synthetic harness
+50/50 byte-equal goldens still pass).
+
+### 18.5 FSM transition log (`[V510-FSM]` — Tier-2.1)
+
+Pure observation hook. Refuses to emit on `from == to` no-ops
+(asserted by smoke test). Format:
+
+```
+[V510-FSM] ticker=AMD from=IDLE to=WATCHING reason=VOL_SPIKE_DETECTED bucket=1445
+```
+
+v5.1.2 ships the emitter only; the wider FSM-call-site sweep is
+intentionally minimal so we do not accidentally change v5.0.0
+Tiger/Buffalo behavior. A future PR will fan the emitter out to
+every transition site.
+
+### 18.6 Pre-trade indicator snapshots (`indicators.py` — Tier-2.2)
+
+Pure functions, no `trade_genius` imports, no exceptions raised on
+bad input:
+
+| Function          | Inputs                     | Output | None when |
+|-------------------|----------------------------|--------|-----------|
+| `rsi14(closes)`   | closes (newest last)       | float  | < 15 closes |
+| `ema9(closes)`    | closes                     | float  | < 9 closes |
+| `ema21(closes)`   | closes                     | float  | < 21 closes |
+| `atr14(bars)`     | bars with high/low/close   | float  | < 15 bars |
+| `vwap_dist_pct(bars)` | bars with H/L/C/volume | float  | no bars or zero volume |
+| `spread_bps(bid, ask)` | bid, ask              | float  | missing or non-positive |
+
+All values are wired into `[V510-CAND]` so every candidate moment
+carries the indicator state at decision time. Callers MUST emit
+`null` (not `0.0`) into log lines on `None` returns.
+
+### 18.7 Out of scope (deferred)
+
+News / halt flags (needs Polygon or Benzinga subscription); L2 /
+order-book snapshots; tick-level trades; `VOL_GATE_ENFORCE=1`; new
+env-driven configs beyond v5.1.1; adaptive runtime config switching.
+
+## 19. Long permission gates (G1..G4)
+
+### 19.1 Four-light gate set (v5.1.0+)
+
+| Gate | Light name      | Source                          | Status through v5.1.2 |
+|------|-----------------|---------------------------------|-----------------------|
+| G1   | Index Alpha     | Tiger/Buffalo §6.2              | enforced              |
+| G2   | Ticker Alpha    | Tiger/Buffalo §6.2              | enforced              |
+| G3   | 5m OR Structure | Tiger/Buffalo §6.2              | enforced              |
+| G4   | Volume          | `volume_profile.evaluate_g4(_config)` | **shadow only — `VOL_GATE_ENFORCE=0` through v5.1.2; flips in a future PR** |
+
+Through v5.1.2 the bot logs G4 every minute via `_shadow_log_g4` but
+does not block any entry on it. The short-side gates read the same
+baseline; no short-specific code change.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.1.0"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.1.2"`.*
