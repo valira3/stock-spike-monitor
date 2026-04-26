@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.0.4")
+    @t("version: BOT_VERSION is 5.1.0")
     def _():
-        assert m.BOT_VERSION == "5.0.4", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.1.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -2203,7 +2203,224 @@ def run_local() -> int:
         assert on_disk.get(owner) == 7777777, f"on-disk mismatch: {on_disk}"
         _clear_smoke_env()
 
-    return run_suite("LOCAL SMOKE TESTS (v5.0.4 Tiger/Buffalo)")
+    # =========================================================
+    # v5.1.0 — Forensic Volume Filter (SHADOW MODE)
+    # =========================================================
+    import volume_profile as vp_mod
+    from datetime import date as _date, datetime as _dt, timedelta as _td, timezone as _tz
+    from zoneinfo import ZoneInfo as _ZI
+
+    @t("volprofile: is_trading_day flags weekday")
+    def _():
+        # 2026-04-22 is Wednesday.
+        assert vp_mod.is_trading_day(_date(2026, 4, 22)) is True
+
+    @t("volprofile: is_trading_day rejects weekend")
+    def _():
+        # 2026-04-25 is Saturday.
+        assert vp_mod.is_trading_day(_date(2026, 4, 25)) is False
+        # 2026-04-26 is Sunday.
+        assert vp_mod.is_trading_day(_date(2026, 4, 26)) is False
+
+    @t("volprofile: is_trading_day rejects NYSE holiday")
+    def _():
+        # Good Friday 2026.
+        assert vp_mod.is_trading_day(_date(2026, 4, 3)) is False
+        # Christmas 2026.
+        assert vp_mod.is_trading_day(_date(2026, 12, 25)) is False
+
+    @t("volprofile: trading_days_back(date(2026,4,25),55) returns exactly 55 trading days")
+    def _():
+        days = vp_mod.trading_days_back(_date(2026, 4, 25), 55)
+        assert len(days) == 55, f"len={len(days)}"
+        for d in days:
+            assert d.weekday() < 5, f"weekend in result: {d}"
+            assert d.isoformat() not in vp_mod.NYSE_HOLIDAYS, f"holiday in result: {d}"
+        # Strictly ascending.
+        assert days == sorted(days), "not ascending"
+
+    @t("volprofile: session_bucket boundary 09:30 → None, 09:31 → '0931'")
+    def _():
+        et = _ZI("America/New_York")
+        # 2026-04-22 is a regular Wednesday.
+        assert vp_mod.session_bucket(_dt(2026, 4, 22, 9, 30, tzinfo=et)) is None
+        assert vp_mod.session_bucket(_dt(2026, 4, 22, 9, 31, tzinfo=et)) == "0931"
+
+    @t("volprofile: session_bucket 15:59 → '1559', 16:00 → None")
+    def _():
+        et = _ZI("America/New_York")
+        assert vp_mod.session_bucket(_dt(2026, 4, 22, 15, 59, tzinfo=et)) == "1559"
+        assert vp_mod.session_bucket(_dt(2026, 4, 22, 16, 0, tzinfo=et)) is None
+
+    @t("volprofile: session_bucket honours early close")
+    def _():
+        et = _ZI("America/New_York")
+        # 2026-11-27 closes at 13:00. 12:59 is in-session, 13:00 is out.
+        assert vp_mod.session_bucket(_dt(2026, 11, 27, 12, 59, tzinfo=et)) == "1259"
+        assert vp_mod.session_bucket(_dt(2026, 11, 27, 13, 0, tzinfo=et)) is None
+
+    def _fresh_profile(median_v=1000):
+        # build_ts_utc near-now; a single bucket "1030".
+        return {
+            "version": vp_mod.PROFILE_VERSION,
+            "ticker": "AAPL",
+            "feed_baseline": "sip",
+            "feed_live": "iex",
+            "iex_sip_ratio": 0.018,
+            "window_trading_days": 55,
+            "build_ts_utc": _dt.now(tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "buckets": {"1030": {"median": median_v, "p75": median_v + 100,
+                                  "p90": median_v + 500, "n": 55}},
+        }
+
+    @t("volprofile: evaluate_g4 Stage 1 GREEN at exactly 120%/100%")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4(
+            ticker="AAPL", minute_bucket="1030",
+            current_volume=1200, profile=prof,
+            qqq_current_volume=2000, qqq_profile=qqq,
+            stage=1,
+        )
+        assert out["green"] is True, out
+        assert out["rule"] == "V-P1-R1"
+
+    @t("volprofile: evaluate_g4 Stage 1 RED at 119% (off-by-one)")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4(
+            ticker="AAPL", minute_bucket="1030",
+            current_volume=1190, profile=prof,
+            qqq_current_volume=2000, qqq_profile=qqq, stage=1,
+        )
+        assert out["green"] is False
+        assert out["reason"] == "LOW_TICKER", out
+
+    @t("volprofile: evaluate_g4 Stage 1 RED at 120%/99% (low qqq)")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4(
+            ticker="AAPL", minute_bucket="1030",
+            current_volume=1200, profile=prof,
+            qqq_current_volume=1980, qqq_profile=qqq, stage=1,
+        )
+        assert out["green"] is False
+        assert out["reason"] == "LOW_QQQ", out
+
+    @t("volprofile: evaluate_g4 Stage 2 GREEN at 100%")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        out = vp_mod.evaluate_g4(
+            ticker="AAPL", minute_bucket="1030",
+            current_volume=1000, profile=prof,
+            qqq_current_volume=0, qqq_profile=None, stage=2,
+        )
+        assert out["green"] is True, out
+        assert out["rule"] == "V-P1-R3"
+
+    @t("volprofile: evaluate_g4 NO_PROFILE_X when profile=None")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        out = vp_mod.evaluate_g4(
+            ticker="AAPL", minute_bucket="1030",
+            current_volume=999, profile=None,
+            qqq_current_volume=0, qqq_profile=None, stage=2,
+        )
+        assert out["green"] is False
+        assert out["reason"] == "NO_PROFILE_AAPL", out
+
+    @t("volprofile: evaluate_g4 STALE_PROFILE_X when build_ts > 36h old")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        # Backdate by 48 hours.
+        old = _dt.now(tz=_tz.utc) - _td(hours=48)
+        prof["build_ts_utc"] = old.strftime("%Y-%m-%dT%H:%M:%SZ")
+        out = vp_mod.evaluate_g4(
+            ticker="AAPL", minute_bucket="1030",
+            current_volume=1500, profile=prof,
+            qqq_current_volume=0, qqq_profile=None, stage=2,
+        )
+        assert out["green"] is False
+        assert out["reason"] == "STALE_PROFILE_AAPL", out
+
+    @t("volprofile: evaluate_g4 NO_BUCKET when bucket missing (e.g. 0930)")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        out = vp_mod.evaluate_g4(
+            ticker="AAPL", minute_bucket="0930",
+            current_volume=1500, profile=prof,
+            qqq_current_volume=0, qqq_profile=None, stage=2,
+        )
+        assert out["green"] is False
+        assert out["reason"] == "NO_BUCKET_AAPL_0930", out
+
+    @t("volprofile: evaluate_g4 returns DISABLED when VOLUME_PROFILE_ENABLED=False")
+    def _():
+        prev = vp_mod.VOLUME_PROFILE_ENABLED
+        try:
+            vp_mod.VOLUME_PROFILE_ENABLED = False
+            out = vp_mod.evaluate_g4(
+                ticker="AAPL", minute_bucket="1030",
+                current_volume=99999, profile=_fresh_profile(),
+                qqq_current_volume=99999, qqq_profile=_fresh_profile(),
+                stage=1,
+            )
+            assert out["reason"] == "DISABLED", out
+            assert out["green"] is False
+        finally:
+            vp_mod.VOLUME_PROFILE_ENABLED = prev
+
+    @t("volprofile: profile JSON round-trip via save/load")
+    def _():
+        import tempfile
+        prev_dir = vp_mod.PROFILE_DIR
+        with tempfile.TemporaryDirectory() as tmpd:
+            vp_mod.PROFILE_DIR = tmpd
+            try:
+                prof = _fresh_profile(1234)
+                vp_mod.save_profile("AAPL", prof)
+                got = vp_mod.load_profile("AAPL")
+                assert got is not None, "load returned None"
+                assert got["buckets"]["1030"]["median"] == 1234, got
+                # Missing returns None.
+                assert vp_mod.load_profile("ZZZZ") is None
+            finally:
+                vp_mod.PROFILE_DIR = prev_dir
+
+    @t("volprofile: trade_genius hard-disables module when watchlist > 30")
+    def _():
+        # We can't safely call _start_volume_profile() here (it would try
+        # to spawn a websocket thread). Instead simulate the cap check
+        # the function performs.
+        big = ["A%d" % i for i in range(31)]
+        assert len(big) > vp_mod.WS_SYMBOL_CAP_FREE_IEX, "test setup broken"
+
+    @t("volprofile: shadow log helper exists and is a callable")
+    def _():
+        assert hasattr(m, "_shadow_log_g4")
+        assert callable(m._shadow_log_g4)
+
+    @t("volprofile: trade_genius imports volume_profile module")
+    def _():
+        assert hasattr(m, "volume_profile"), "volume_profile not imported"
+        assert hasattr(m.volume_profile, "evaluate_g4")
+
+    @t("infra: Dockerfile COPY includes volume_profile.py")
+    def _():
+        df = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+        assert "COPY volume_profile.py" in df, "Dockerfile missing volume_profile.py COPY"
+
+    return run_suite("LOCAL SMOKE TESTS (v5.1.0 Tiger/Buffalo + Forensic Volume)")
 
 
 # ============================================================

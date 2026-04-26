@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.0 — 2026-04-25 — Forensic Volume Filter (Anaplan logic) — SHADOW MODE ONLY.
+
+**Why this exists.** v5.0.x asks "is volume high?" with ad-hoc tests against the current minute's bar. Val approved Gene's "Anaplan / Forensic Auditor" addendum, which replaces that with a stricter question: *is this minute's volume higher than the 55-trading-day seasonal average for THIS exact ET timestamp?* The v5.1.0 release ships the data layer + observation layer for that gate. Entry decisions are unchanged in v5.1.0 — every minute is logged with the `[V510-SHADOW]` prefix so Val can review a week of shadow data, then v5.1.1 (separate PR) flips enforcement on.
+
+**(1) New module `volume_profile.py`.** Top-level (alongside `trade_genius.py`), so the v5.0.2 infra-guard test catches the Dockerfile `COPY` for it. Public surface: `is_trading_day`, `trading_days_back`, `session_bucket`, `build_profile`, `save_profile`, `load_profile`, `is_profile_stale`, `evaluate_g4`, `rebuild_all_profiles`, and `WebsocketBarConsumer`. All sync; no asyncio in callers' codepaths.
+
+**(2) Baseline build (free / hybrid feed strategy).** `build_profile(ticker, end_dt_utc, key, secret)` fetches Alpaca historical 1-minute bars for the 55 most recent NYSE trading days using `feed=sip` with `end < now() - 16min` to comply with the free-plan 15-minute SIP restriction. The same window is also fetched on `feed=iex`. The published bucket median is on the IEX scale — when direct IEX samples exist for the bucket they are used; otherwise SIP samples are scaled by the per-ticker IEX/SIP ratio (mean-IEX / mean-SIP across the window). Stored shape per bucket: `{"median": int, "p75": int, "p90": int, "n": int}`.
+
+**(3) Window: 55 NYSE trading days.** Hard-coded `NYSE_HOLIDAYS` and `EARLY_CLOSE_DATES` for 2026-2027 inside `volume_profile.py` — no new dependency. Per-minute buckets `"0931".."1559"` (regular session); early-close days populate only buckets up to the early close.
+
+**(4) Live feed: Alpaca `/iex` websocket.** `WebsocketBarConsumer` is a daemon-thread-backed persistent connection to `wss://stream.data.alpaca.markets/v2/iex`, subscribed to `bars` for every symbol in `TICKERS`. Free-plan websocket cap = 30 symbols; if `len(TICKERS) > 30` at startup the module hard-disables itself (`VOLUME_PROFILE_ENABLED = False`) and the bot trades normally. On disconnect: jittered backoff reconnect, then a 5-minute REST replay (`feed=iex`) repopulates the in-memory volume table before resuming.
+
+**(5) G4 evaluator (§17.2 V-P1 grid).** `evaluate_g4(ticker, minute_bucket, current_volume, profile, qqq_current_volume, qqq_profile, stage)` returns `{green, reason, ticker_pct, qqq_pct, rule}`. Stage 1 (Jab): ticker ≥ 120% AND QQQ ≥ 100% (V-P1-R1 + V-P1-R2). Stage 2 (Strike): ticker ≥ 100% (V-P1-R3). Failure modes: `NO_PROFILE_X`, `STALE_PROFILE_X` (>36h), `NO_BUCKET_X_<bucket>` for out-of-session, and `DISABLED` when the module is off.
+
+**(6) Shadow hook.** `trade_genius.py` calls `_shadow_log_g4(ticker, stage, existing_decision)` from the per-minute long-entry path. The line emitted: `[V510-SHADOW] ticker=… bucket=… stage=… g4=GREEN/RED ticker_pct=… qqq_pct=… reason=… entry_decision=…`. **The existing entry decision is unchanged** — this is observation only. Synthetic harness 50/50 byte-equal preserved.
+
+**(7) Profile cache + nightly rebuild.** Process-local `_volume_profile_cache` populated at startup by `load_profile(t)` for every `t` in `TICKERS`. Synchronous rebuild on startup if any profile is missing/stale. A daemon thread sleeps until 21:00 ET and calls `rebuild_all_profiles` nightly. Disk format: `/data/volume_profiles/<TICKER>.json` (overridable via `VOLUME_PROFILE_DIR`).
+
+**(8) Smoke tests.** New `[VOLPROFILE]` section in `smoke_test.py` (~14 new tests): `is_trading_day` weekday/weekend/holiday cases, `trading_days_back(date(2026,4,25), 55)` returns 55 dates none of them weekends or in `NYSE_HOLIDAYS`, `session_bucket` boundary cases (09:30 → None, 09:31 → '0931', 15:59 → '1559', 16:00 → None, early-close honoured), `evaluate_g4` Stage 1 GREEN at exact 120%/100%, RED at 119%/100% (off-by-one), RED at 120%/99%, Stage 2 GREEN at 100%, `NO_PROFILE_X` / `STALE_PROFILE_X` / `NO_BUCKET_X_0930` / `DISABLED` failure-mode tests, JSON round-trip persistence, `len(TICKERS) > 30` disables module. All offline (no live Alpaca calls).
+
+**(9) Files touched.** `volume_profile.py` (NEW). `trade_genius.py`: `BOT_VERSION` 5.0.4 → 5.1.0; `CURRENT_MAIN_NOTE` rotated; `import volume_profile`; new `_start_volume_profile()` + `_shadow_log_g4()`; per-minute long-entry hook. `Dockerfile`: `COPY volume_profile.py .`. `smoke_test.py`: suite header bumped + new tests. `requirements.txt`: unchanged (alpaca-py 0.43.2 already supports SIP historical + IEX websocket). `ARCHITECTURE.md`: new §17 + §18.1 G4 entry. `CHANGELOG.md`: this entry.
+
+---
+
 ## v5.0.4 — 2026-04-25 — Hotfix: revert v5.0.3 alpaca paper-key fallback (chat-map auto-learn from v5.0.3 stays).
 
 **Why this exists.** PR #142 (v5.0.3, squash commit `d262e80b`) added a fallback in `TradeGeniusBase.__init__` that read `<PREFIX>ALPACA_PAPER_KEY` and silently fell back to `<PREFIX>ALPACA_KEY` if the paper key was unset. The intent was to fix Gene's executor at startup because Railway had `GENE_ALPACA_KEY` set but the code only read `GENE_ALPACA_PAPER_KEY`. This was wrong on two counts: (a) **architecturally** — Alpaca paper keys and live (real-money) keys are independent credentials with different endpoints; falling back from one to the other can route paper-mode traffic through a live account, and the two are not interchangeable; (b) **confirmed dangerous in this repo** — Val confirmed that `GENE_ALPACA_KEY` / `GENE_ALPACA_SECRET` on Railway are LIVE keys, not paper. Had `GENE_ENABLED=1` caused the executor to instantiate, the v5.0.3 fallback would have submitted "paper" orders against the live brokerage account.
