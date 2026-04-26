@@ -525,6 +525,131 @@ def _cached_snapshot() -> dict[str, Any]:
         return fresh
 
 
+# v5.2.0 \u2014 ordered list of shadow configs as they appear on the
+# dashboard panel. The first 5 mirror volume_profile.SHADOW_CONFIGS;
+# REHUNT_VOL_CONFIRM and OOMPH_ALERT are the v5.1.9 additions.
+_SHADOW_PANEL_ORDER = (
+    ("TICKER+QQQ", "TICKER+QQQ (70/100)"),
+    ("TICKER_ONLY", "TICKER_ONLY (70)"),
+    ("QQQ_ONLY", "QQQ_ONLY (100)"),
+    ("GEMINI_A", "GEMINI_A (110/85)"),
+    ("BUCKET_FILL_100", "BUCKET_FILL_100"),
+    ("REHUNT_VOL_CONFIRM", "REHUNT_VOL_CONFIRM"),
+    ("OOMPH_ALERT", "OOMPH_ALERT"),
+)
+
+
+def _shadow_pnl_snapshot(
+    m, today: str, today_realized: float, today_unrealized: float,
+) -> dict[str, Any]:
+    """Build the dashboard payload for the bottom shadow-strategy panel.
+
+    Returns:
+      { "configs": [ {name, label, today: {...}, cumulative: {...}}, ... ],
+        "paper_bot": {label, today, cumulative},
+        "best_today": "TICKER+QQQ" | None,
+        "worst_today": "BUCKET_FILL_100" | None }
+    """
+    configs: list[dict[str, Any]] = []
+    try:
+        import shadow_pnl as _sp
+        summary = _sp.tracker().summary(today_str=today or None)
+    except Exception as e:
+        logger.warning("shadow_pnl summary failed: %s", e)
+        summary = {}
+    for name, label in _SHADOW_PANEL_ORDER:
+        s = summary.get(name) or {}
+        n_today = int(s.get("today_n_trades", 0) or 0)
+        wins_today = int(s.get("today_wins", 0) or 0)
+        wr_today = (wins_today / n_today * 100.0) if n_today else None
+        n_cum = int(s.get("cumulative_n_trades", 0) or 0)
+        wins_cum = int(s.get("cumulative_wins", 0) or 0)
+        wr_cum = (wins_cum / n_cum * 100.0) if n_cum else None
+        configs.append({
+            "name": name,
+            "label": label,
+            "today": {
+                "n": n_today,
+                "wr": round(wr_today, 1) if wr_today is not None else None,
+                "realized": float(s.get("today_realized", 0.0) or 0.0),
+                "unrealized": float(s.get("today_unrealized", 0.0) or 0.0),
+                "total": float(s.get("today_total", 0.0) or 0.0),
+            },
+            "cumulative": {
+                "n": n_cum,
+                "wr": round(wr_cum, 1) if wr_cum is not None else None,
+                "realized": float(
+                    s.get("cumulative_realized", 0.0) or 0.0),
+                "unrealized": float(
+                    s.get("cumulative_unrealized", 0.0) or 0.0),
+                "total": float(s.get("cumulative_total", 0.0) or 0.0),
+            },
+        })
+
+    # Best / worst by today_total (only counts configs with at least
+    # one trade today \u2014 zero-trade configs render as "--").
+    active = [c for c in configs if c["today"]["n"] > 0]
+    best_today = max(
+        active, key=lambda c: c["today"]["total"], default=None,
+    )
+    worst_today = min(
+        active, key=lambda c: c["today"]["total"], default=None,
+    )
+
+    # Paper bot comparison row \u2014 mirrors the same paper portfolio
+    # whose equity now drives shadow sizing, so the row is a true
+    # apples-to-apples comparison vs the per-config rollups above.
+    # Source: paper_trades (long SELLs) + short_trade_history (short
+    # COVERs), date-filtered to today.
+    paper_today_n = 0
+    paper_today_wins = 0
+    today_paper_pnl = 0.0
+    for t in (getattr(m, "paper_trades", []) or []):
+        if t.get("date") == today and t.get("action") == "SELL":
+            paper_today_n += 1
+            pnl = float(t.get("pnl", 0.0) or 0.0)
+            today_paper_pnl += pnl
+            if pnl > 0:
+                paper_today_wins += 1
+    for t in (getattr(m, "short_trade_history", []) or []):
+        if t.get("date") == today:
+            paper_today_n += 1
+            pnl = float(t.get("pnl", 0.0) or 0.0)
+            today_paper_pnl += pnl
+            if pnl > 0:
+                paper_today_wins += 1
+    paper_wr = (paper_today_wins / paper_today_n * 100.0) if paper_today_n else None
+    paper_total_today = today_paper_pnl + float(today_unrealized or 0.0)
+    paper_bot = {
+        "label": "PAPER BOT",
+        "today": {
+            "n": paper_today_n,
+            "wr": round(paper_wr, 1) if paper_wr is not None else None,
+            "realized": round(today_paper_pnl, 2),
+            "unrealized": round(float(today_unrealized or 0.0), 2),
+            "total": round(paper_total_today, 2),
+        },
+        "cumulative": {
+            # The paper cumulative tracker lives in paper_state and is
+            # not summed here \u2014 we surface today's paper for a
+            # direct shadow vs paper comparison and let the rest of the
+            # dashboard cover all-time paper equity.
+            "n": paper_today_n,
+            "wr": round(paper_wr, 1) if paper_wr is not None else None,
+            "realized": round(today_paper_pnl, 2),
+            "unrealized": round(float(today_unrealized or 0.0), 2),
+            "total": round(paper_total_today, 2),
+        },
+    }
+
+    return {
+        "configs": configs,
+        "paper_bot": paper_bot,
+        "best_today": best_today["name"] if best_today else None,
+        "worst_today": worst_today["name"] if worst_today else None,
+    }
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -651,6 +776,13 @@ def snapshot() -> dict[str, Any]:
             # directly so the pill updates on every SSE / state poll
             # tick without a separate /api/errors round-trip.
             "errors": _errors_snapshot_safe("main"),
+            # v5.2.0 \u2014 shadow strategy P&L block for the bottom panel.
+            # Every config row + a PAPER_BOT comparison row built from
+            # the same paper trades / unrealized totals shown above
+            # (the paper book is also what drives shadow sizing).
+            "shadow_pnl": _shadow_pnl_snapshot(
+                m, today, realized, unreal_sum,
+            ),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)

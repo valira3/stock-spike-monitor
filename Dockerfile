@@ -32,6 +32,8 @@ COPY indicators.py .
 COPY bar_archive.py .
 # v5.1.8 — SQLite-backed persistence for fired_set + v5_long_tracks.
 COPY persistence.py .
+# v5.2.0 — shadow strategy P&L tracker (imported by trade_genius.py).
+COPY shadow_pnl.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

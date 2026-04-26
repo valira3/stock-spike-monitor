@@ -664,3 +664,83 @@
     .idx-strip.idx-marquee .idx-track { animation: none; }
     .idx-strip.idx-marquee             { overflow-x: auto; }
   }
+  /* v5.2.0 \u2014 Shadow strategy P&L panel. Lives at the bottom of
+     the main dashboard. Header row + one row per config + a bolded
+     PAPER BOT row at the bottom for direct comparison. Mobile wraps
+     to a card layout on narrow viewports. */
+  .shadow-pnl-head,
+  .shadow-pnl-row {
+    display: grid;
+    grid-template-columns: 1.4fr 1.5fr 1.5fr;
+    gap: 6px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    align-items: center;
+  }
+  .shadow-pnl-head {
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+    background: var(--surface-2);
+  }
+  .shadow-pnl-head .sp-h-section { text-align: right; }
+  .shadow-pnl-row:last-child { border-bottom: none; }
+  .shadow-pnl-row .sp-name {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .shadow-pnl-row .sp-section {
+    text-align: right;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .shadow-pnl-row .sp-pnl-pos { color: var(--up); }
+  .shadow-pnl-row .sp-pnl-neg { color: var(--down); }
+  .shadow-pnl-row.sp-best { background: var(--up-dim); }
+  .shadow-pnl-row.sp-best .sp-name { color: var(--up); }
+  .shadow-pnl-row.sp-worst { background: var(--down-dim); }
+  .shadow-pnl-row.sp-worst .sp-name { color: var(--down); }
+  .shadow-pnl-row.sp-live {
+    border-top: 2px solid var(--border-strong);
+    background: var(--surface-3);
+    font-weight: 700;
+  }
+  .shadow-pnl-row.sp-live .sp-name { color: var(--accent); }
+  .shadow-pnl-row .sp-meta {
+    color: var(--text-dim);
+    font-size: 10.5px;
+    margin-right: 6px;
+  }
+  /* Phone: stack each config as a card (name on its own line, then
+     today + cumulative numbers on a 2-column row). */
+  @media (max-width: 560px) {
+    .shadow-pnl-head { display: none; }
+    .shadow-pnl-row {
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas:
+        "name name"
+        "today cum";
+      row-gap: 4px;
+      padding: 10px 12px;
+    }
+    .shadow-pnl-row .sp-name { grid-area: name; font-size: 12px; }
+    .shadow-pnl-row .sp-section.sp-today { grid-area: today; text-align: left; }
+    .shadow-pnl-row .sp-section.sp-cum   { grid-area: cum; }
+  }
+
+  /* v5.2.0 amendment \u2014 the shadow panel is Main-tab only. The tab
+     switcher already hides the whole #tg-panel-main when Val/Gene is
+     active, but this body-scoped rule makes the panel-only gate
+     explicit (and survives any future layout move that puts the
+     panel outside #tg-panel-main). The selector matches whenever
+     body's data-tg-active-tab is set to anything other than "main";
+     selectTab() in app.js maintains the attribute. */
+  body[data-tg-active-tab="val"]  #shadow-pnl-card,
+  body[data-tg-active-tab="val"]  #shadow-pnl-section,
+  body[data-tg-active-tab="gene"] #shadow-pnl-card,
+  body[data-tg-active-tab="gene"] #shadow-pnl-section {
+    display: none !important;
+  }

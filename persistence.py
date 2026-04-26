@@ -109,6 +109,36 @@ def init_db(path: Optional[str] = None) -> None:
                 )
                 """
             )
+            # v5.2.0 \u2014 shadow_positions for the per-config virtual
+            # portfolios. Open rows have exit_ts_utc IS NULL; closed
+            # rows carry exit_price + realized_pnl.
+            bootstrap.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shadow_positions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    config_name TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    qty INTEGER NOT NULL,
+                    entry_ts_utc TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    exit_ts_utc TEXT,
+                    exit_price REAL,
+                    exit_reason TEXT,
+                    realized_pnl REAL,
+                    UNIQUE(config_name, ticker, entry_ts_utc)
+                )
+                """
+            )
+            bootstrap.execute(
+                "CREATE INDEX IF NOT EXISTS idx_shadow_open "
+                "ON shadow_positions(config_name, exit_ts_utc) "
+                "WHERE exit_ts_utc IS NULL"
+            )
+            bootstrap.execute(
+                "CREATE INDEX IF NOT EXISTS idx_shadow_today "
+                "ON shadow_positions(config_name, entry_ts_utc)"
+            )
         finally:
             bootstrap.close()
         _initialized = True
@@ -376,6 +406,113 @@ def migrate_from_json(json_path: str) -> int:
             imported, json_path, e,
         )
     return imported
+
+
+# ----------------------------------------------------------------------
+# v5.2.0 \u2014 shadow_positions helpers
+# ----------------------------------------------------------------------
+def save_shadow_position(
+    config_name: str,
+    ticker: str,
+    side: str,
+    qty: int,
+    entry_ts_utc: str,
+    entry_price: float,
+) -> Optional[int]:
+    """Insert a new open shadow position. Idempotent on
+    (config_name, ticker, entry_ts_utc) \u2014 a duplicate insert is a
+    no-op and returns None. On success returns the new rowid.
+    """
+    c = _conn()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        cur = c.execute(
+            "INSERT OR IGNORE INTO shadow_positions "
+            "(config_name, ticker, side, qty, entry_ts_utc, entry_price) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (config_name, ticker, side, int(qty), entry_ts_utc,
+             float(entry_price)),
+        )
+        rid = cur.lastrowid if (cur.rowcount or 0) > 0 else None
+        c.execute("COMMIT")
+        return rid
+    except Exception:
+        try:
+            c.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
+def update_shadow_position_close(
+    row_id: int,
+    exit_ts_utc: str,
+    exit_price: float,
+    exit_reason: str,
+    realized_pnl: float,
+) -> None:
+    """Mark an open shadow_positions row as closed."""
+    c = _conn()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            "UPDATE shadow_positions "
+            "SET exit_ts_utc = ?, exit_price = ?, "
+            "    exit_reason = ?, realized_pnl = ? "
+            "WHERE id = ? AND exit_ts_utc IS NULL",
+            (exit_ts_utc, float(exit_price), exit_reason,
+             float(realized_pnl), int(row_id)),
+        )
+        c.execute("COMMIT")
+    except Exception:
+        try:
+            c.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
+def load_open_shadow_positions() -> list[dict]:
+    """Return all rows where exit_ts_utc IS NULL."""
+    c = _conn()
+    cur = c.execute(
+        "SELECT id, config_name, ticker, side, qty, "
+        "       entry_ts_utc, entry_price "
+        "FROM shadow_positions WHERE exit_ts_utc IS NULL"
+    )
+    out = []
+    for row in cur.fetchall():
+        out.append({
+            "id": row[0], "config_name": row[1], "ticker": row[2],
+            "side": row[3], "qty": row[4],
+            "entry_ts_utc": row[5], "entry_price": row[6],
+        })
+    return out
+
+
+def load_shadow_positions_since(ts_utc_iso: str) -> list[dict]:
+    """Return every row whose entry_ts_utc >= ts_utc_iso (lexical compare
+    on ISO-8601 strings is correct for UTC). Includes both open and
+    closed rows.
+    """
+    c = _conn()
+    cur = c.execute(
+        "SELECT id, config_name, ticker, side, qty, "
+        "       entry_ts_utc, entry_price, "
+        "       exit_ts_utc, exit_price, exit_reason, realized_pnl "
+        "FROM shadow_positions WHERE entry_ts_utc >= ?",
+        (ts_utc_iso,),
+    )
+    out = []
+    for row in cur.fetchall():
+        out.append({
+            "id": row[0], "config_name": row[1], "ticker": row[2],
+            "side": row[3], "qty": row[4],
+            "entry_ts_utc": row[5], "entry_price": row[6],
+            "exit_ts_utc": row[7], "exit_price": row[8],
+            "exit_reason": row[9], "realized_pnl": row[10],
+        })
+    return out
 
 
 def _close_for_tests() -> None:

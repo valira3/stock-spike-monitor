@@ -731,8 +731,91 @@
     renderObserver(s);
     renderSovereign(s);
     renderGates(s);
+    // v5.2.0 — Shadow strategy P&L panel (bottom of main dashboard).
+    try { renderShadowPnL(s); } catch (e) {}
     // v4.11.0 — health pill bound to Main when active.
     try { applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] }); } catch (e) {}
+  }
+
+  // ─────── shadow strategy P&L panel (v5.2.0) ───────
+  function _fmtShadowMoney(v) {
+    if (v === null || v === undefined) return "--";
+    const n = Number(v);
+    if (!isFinite(n)) return "--";
+    const sign = n >= 0 ? "+" : "-";
+    const abs = Math.abs(n);
+    return sign + "$" + abs.toFixed(2);
+  }
+  function _fmtShadowWR(wr, n) {
+    if (n === 0 || wr === null || wr === undefined) return "--";
+    return "WR=" + Number(wr).toFixed(1) + "%";
+  }
+  function _shadowSectionHTML(stats) {
+    const n = Number(stats.n || 0);
+    const total = Number(stats.total || 0);
+    const realized = Number(stats.realized || 0);
+    const unreal = Number(stats.unrealized || 0);
+    const wrTxt = _fmtShadowWR(stats.wr, n);
+    const totalCls = total > 0 ? "sp-pnl-pos" : (total < 0 ? "sp-pnl-neg" : "");
+    let unrealTxt = "";
+    if (Math.abs(unreal) >= 0.005 && n > 0) {
+      unrealTxt = ' <span class="sp-meta">(' + _fmtShadowMoney(unreal) + ' unr)</span>';
+    }
+    return (
+      '<span class="sp-meta">n=' + n + '</span>' +
+      '<span class="sp-meta">' + wrTxt + '</span>' +
+      '<span class="' + totalCls + '">' + (n > 0 ? _fmtShadowMoney(total) : "--") + '</span>' +
+      unrealTxt
+    );
+  }
+  function renderShadowPnL(s) {
+    const sp = s && s.shadow_pnl;
+    const body = $("shadow-pnl-body");
+    if (!body) return;
+    const cnt = $("shadow-count");
+    const bestChip = $("shadow-best");
+    if (!sp || !sp.configs) {
+      body.innerHTML = '<div class="empty">Waiting for shadow data\u2026</div>';
+      if (cnt) cnt.textContent = "\u00b7 \u2014";
+      if (bestChip) bestChip.textContent = "\u2014";
+      return;
+    }
+    const rows = [];
+    let activeCount = 0;
+    for (const cfg of sp.configs) {
+      const cls = ["shadow-pnl-row"];
+      if (sp.best_today && cfg.name === sp.best_today) cls.push("sp-best");
+      if (sp.worst_today && cfg.name === sp.worst_today) cls.push("sp-worst");
+      const todayN = Number((cfg.today || {}).n || 0);
+      if (todayN > 0) activeCount += 1;
+      rows.push(
+        '<div class="' + cls.join(" ") + '">' +
+          '<span class="sp-name">' + cfg.label + '</span>' +
+          '<span class="sp-section sp-today">' + _shadowSectionHTML(cfg.today || {}) + '</span>' +
+          '<span class="sp-section sp-cum">' + _shadowSectionHTML(cfg.cumulative || {}) + '</span>' +
+        '</div>'
+      );
+    }
+    // v5.2.0 amendment \u2014 the comparator row is now the PAPER BOT
+    // (same portfolio whose equity drives shadow sizing). Older
+    // backend snapshots that still ship `live_bot` are accepted as a
+    // fallback so a stale browser tab doesn't blank the row during
+    // rollout.
+    const cmp = sp.paper_bot || sp.live_bot;
+    if (cmp) {
+      rows.push(
+        '<div class="shadow-pnl-row sp-live">' +
+          '<span class="sp-name">' + cmp.label + '</span>' +
+          '<span class="sp-section sp-today">' + _shadowSectionHTML(cmp.today || {}) + '</span>' +
+          '<span class="sp-section sp-cum">' + _shadowSectionHTML(cmp.cumulative || {}) + '</span>' +
+        '</div>'
+      );
+    }
+    body.innerHTML = rows.join("");
+    if (cnt) cnt.textContent = "\u00b7 " + sp.configs.length + " configs";
+    if (bestChip) {
+      bestChip.textContent = sp.best_today ? ("best: " + sp.best_today) : "\u2014";
+    }
   }
 
   // v4.1.8-dash \u2014 portfolio view toggle removed (Robinhood was
