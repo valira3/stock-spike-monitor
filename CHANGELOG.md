@@ -4,6 +4,17 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.3.0 — 2026-04-26
+
+- feat (Part 1): new top-level **Shadow** tab in the dashboard tab strip, ordered Main / Val / Gene / Shadow. The button mirrors the existing tab styling and a fresh `#tg-panel-shadow` div hosts the panel. `app.js` now declares `TABS = ["main","val","gene","shadow"]`; `selectTab("shadow")` warms `/api/state` and re-renders the shadow card on first visit so the panel paints immediately.
+- feat (Part 2): the v5.2.0 Shadow strategies card moved out of the bottom of the Main panel and into the new Shadow tab. The v5.2.0 main-only CSS gate (`body[data-tg-active-tab="val|gene"] #shadow-pnl-card`) was replaced with an explicit Shadow-only gate so the card no longer renders on Main, Val, or Gene.
+- feat (Part 3): every config row in the Shadow card is now expandable. Click (or Enter/Space) toggles a per-config detail block that lists open shadow positions (ticker, side, qty, entry, mark, $ + % unrealized, entry HH:MM ET) and the last 10 closed trades (ticker, side, qty, entry, exit, $ + % realized, exit reason, exit HH:MM ET). Multiple rows may be expanded at once; expanded state survives state-poll re-renders via `__shadowExpanded`.
+- feat (backend): `shadow_pnl.ShadowPnL` exposes two new helpers — `open_positions_for(config_name)` and `recent_closed_for(config_name, limit=10)` — that snapshot the in-memory `_open` / `_closed` state as plain dicts. `dashboard_server._shadow_pnl_snapshot` now embeds `open_positions` and `recent_trades` lists on every config row of the `shadow_pnl` block in `/api/state`. No schema migration required — the underlying `shadow_positions` SQLite table is unchanged.
+- tests: 3 new smoke tests in the `# === v5.3.0 Shadow tab ===` section — `test_v530_shadow_tab_html_present`, `test_v530_shadow_card_not_on_main`, `test_v530_shadow_detail_endpoint`.
+- CI guard: `BOT_VERSION` bumped to `5.3.0`.
+
+---
+
 ## v5.2.1 — 2026-04-26
 
 - fix (H1): every `client.submit_order(...)` call in `TradeGeniusBase._on_signal` now carries a deterministic `client_order_id` of the form `f"{NAME}-{ticker}-{utc_iso_minute}-{direction}"` (NAME ∈ `VAL`/`GENE`, ticker sanitized to alphanumeric upper-case, minute precision is sufficient because the scanner is single-writer). Closes the timeout-after-accept double-up failure mode: if Alpaca's HTTP layer raises after the broker has already accepted an order, a retry with the same coid is rejected with HTTP 422 and the bot now treats that rejection as success (looks the original order up via `client.get_order_by_client_id` and proceeds). Re-raises any non-coid APIError so genuine submit failures still surface. New helpers: `_build_client_order_id`, `_submit_order_idempotent`. Both `ENTRY_LONG` and `ENTRY_SHORT` paths route through the wrapper.

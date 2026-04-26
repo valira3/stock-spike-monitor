@@ -768,6 +768,131 @@
       unrealTxt
     );
   }
+  // v5.3.0 \u2014 detail-view formatters / table builders.
+  function _fmtShadowETHHMM(tsUtc) {
+    if (!tsUtc) return "\u2014";
+    try {
+      const d = new Date(tsUtc);
+      if (isNaN(d.getTime())) return "\u2014";
+      // Render in America/New_York. Falls back to UTC HH:MM if Intl
+      // tz support is missing on the host browser.
+      try {
+        return d.toLocaleTimeString("en-US", {
+          hour12: false, hour: "2-digit", minute: "2-digit",
+          timeZone: "America/New_York",
+        });
+      } catch (e) {
+        const hh = String(d.getUTCHours()).padStart(2, "0");
+        const mm = String(d.getUTCMinutes()).padStart(2, "0");
+        return hh + ":" + mm;
+      }
+    } catch (e) { return "\u2014"; }
+  }
+  function _fmtShadowPrice(v) {
+    if (v === null || v === undefined) return "\u2014";
+    const n = Number(v);
+    if (!isFinite(n)) return "\u2014";
+    return "$" + n.toFixed(2);
+  }
+  function _fmtShadowPct(num, denom) {
+    const n = Number(num);
+    const d = Number(denom);
+    if (!isFinite(n) || !isFinite(d) || d === 0) return "\u2014";
+    const p = (n / d) * 100;
+    const sign = p >= 0 ? "+" : "\u2212";
+    return sign + Math.abs(p).toFixed(2) + "%";
+  }
+  function _shadowSideClass(side) {
+    return String(side || "").toLowerCase().indexOf("short") >= 0
+      ? "sd-side-short" : "sd-side-long";
+  }
+  function _shadowSideLabel(side) {
+    const s = String(side || "").toLowerCase();
+    return s === "short" ? "SHORT" : "LONG";
+  }
+  function _shadowOpenTable(rows) {
+    if (!rows || !rows.length) {
+      return '<div class="sp-detail-empty">No open positions.</div>';
+    }
+    const head = '<thead><tr>'
+      + '<th>Ticker</th><th>Side</th><th>Qty</th>'
+      + '<th>Entry</th><th>Mark</th><th>P&amp;L $</th>'
+      + '<th>P&amp;L %</th><th>Open</th>'
+      + '</tr></thead>';
+    const body = rows.map(r => {
+      const entry = Number(r.entry_price || 0);
+      const mark = (r.current_mark === null || r.current_mark === undefined)
+        ? null : Number(r.current_mark);
+      const unr = Number(r.unrealized || 0);
+      const denom = Math.abs(entry * Number(r.qty || 0));
+      const pct = denom > 0 ? (unr / denom) * 100 : null;
+      const pnlCls = unr > 0 ? "sd-pos" : (unr < 0 ? "sd-neg" : "");
+      const pctTxt = pct === null ? "\u2014"
+        : (pct >= 0 ? "+" : "\u2212") + Math.abs(pct).toFixed(2) + "%";
+      return '<tr>'
+        + '<td>' + escapeHtml(r.ticker || "") + '</td>'
+        + '<td class="' + _shadowSideClass(r.side) + '">'
+          + _shadowSideLabel(r.side) + '</td>'
+        + '<td>' + Number(r.qty || 0) + '</td>'
+        + '<td>' + _fmtShadowPrice(entry) + '</td>'
+        + '<td>' + (mark === null ? "\u2014" : _fmtShadowPrice(mark)) + '</td>'
+        + '<td class="' + pnlCls + '">' + _fmtShadowMoney(unr) + '</td>'
+        + '<td class="' + pnlCls + '">' + pctTxt + '</td>'
+        + '<td>' + _fmtShadowETHHMM(r.entry_ts_utc) + '</td>'
+        + '</tr>';
+    }).join("");
+    return '<table class="sp-detail-table">' + head
+      + '<tbody>' + body + '</tbody></table>';
+  }
+  function _shadowClosedTable(rows) {
+    if (!rows || !rows.length) {
+      return '<div class="sp-detail-empty">No recent closed trades.</div>';
+    }
+    const head = '<thead><tr>'
+      + '<th>Ticker</th><th>Side</th><th>Qty</th>'
+      + '<th>Entry</th><th>Exit</th><th>P&amp;L $</th>'
+      + '<th>P&amp;L %</th><th>Reason</th><th>Exit</th>'
+      + '</tr></thead>';
+    const body = rows.map(r => {
+      const entry = Number(r.entry_price || 0);
+      const exit_ = Number(r.exit_price || 0);
+      const pnl = Number(r.realized_pnl || 0);
+      const denom = Math.abs(entry * Number(r.qty || 0));
+      const pct = denom > 0 ? (pnl / denom) * 100 : null;
+      const pnlCls = pnl > 0 ? "sd-pos" : (pnl < 0 ? "sd-neg" : "");
+      const pctTxt = pct === null ? "\u2014"
+        : (pct >= 0 ? "+" : "\u2212") + Math.abs(pct).toFixed(2) + "%";
+      return '<tr>'
+        + '<td>' + escapeHtml(r.ticker || "") + '</td>'
+        + '<td class="' + _shadowSideClass(r.side) + '">'
+          + _shadowSideLabel(r.side) + '</td>'
+        + '<td>' + Number(r.qty || 0) + '</td>'
+        + '<td>' + _fmtShadowPrice(entry) + '</td>'
+        + '<td>' + _fmtShadowPrice(exit_) + '</td>'
+        + '<td class="' + pnlCls + '">' + _fmtShadowMoney(pnl) + '</td>'
+        + '<td class="' + pnlCls + '">' + pctTxt + '</td>'
+        + '<td>' + escapeHtml(r.exit_reason || "") + '</td>'
+        + '<td>' + _fmtShadowETHHMM(r.exit_ts_utc) + '</td>'
+        + '</tr>';
+    }).join("");
+    return '<table class="sp-detail-table">' + head
+      + '<tbody>' + body + '</tbody></table>';
+  }
+  function _shadowDetailHTML(cfg) {
+    return (
+      '<div class="sp-detail">'
+        + '<div class="sp-detail-head">Open positions ('
+          + ((cfg.open_positions || []).length) + ')</div>'
+        + _shadowOpenTable(cfg.open_positions || [])
+        + '<div class="sp-detail-head">Recent closed trades</div>'
+        + _shadowClosedTable(cfg.recent_trades || [])
+      + '</div>'
+    );
+  }
+  // Track which config rows are currently expanded so re-renders on
+  // state polls do not collapse what the user opened.
+  const __shadowExpanded = new Set();
+
   function renderShadowPnL(s) {
     const sp = s && s.shadow_pnl;
     const body = $("shadow-pnl-body");
@@ -783,18 +908,25 @@
     const rows = [];
     let activeCount = 0;
     for (const cfg of sp.configs) {
-      const cls = ["shadow-pnl-row"];
+      const cls = ["shadow-pnl-row", "sp-expandable"];
       if (sp.best_today && cfg.name === sp.best_today) cls.push("sp-best");
       if (sp.worst_today && cfg.name === sp.worst_today) cls.push("sp-worst");
       const todayN = Number((cfg.today || {}).n || 0);
       if (todayN > 0) activeCount += 1;
+      const expanded = __shadowExpanded.has(cfg.name);
+      const safeName = escapeHtml(cfg.name);
       rows.push(
-        '<div class="' + cls.join(" ") + '">' +
-          '<span class="sp-name">' + cfg.label + '</span>' +
+        '<div class="' + cls.join(" ") + '" data-sp-config="' + safeName + '"'
+          + ' role="button" tabindex="0"'
+          + ' aria-expanded="' + (expanded ? "true" : "false") + '">' +
+          '<span class="sp-name"><span class="sp-chev">' + (expanded ? "\u25be" : "\u25b8") + '</span>' + cfg.label + '</span>' +
           '<span class="sp-section sp-today">' + _shadowSectionHTML(cfg.today || {}) + '</span>' +
           '<span class="sp-section sp-cum">' + _shadowSectionHTML(cfg.cumulative || {}) + '</span>' +
         '</div>'
       );
+      if (expanded) {
+        rows.push(_shadowDetailHTML(cfg));
+      }
     }
     // v5.2.0 amendment \u2014 the comparator row is now the PAPER BOT
     // (same portfolio whose equity drives shadow sizing). Older
@@ -817,6 +949,29 @@
       bestChip.textContent = sp.best_today ? ("best: " + sp.best_today) : "\u2014";
     }
   }
+
+  // v5.3.0 \u2014 row click toggles per-config detail. Event delegation
+  // on the body so the handler survives every re-render.
+  (function __wireShadowToggle() {
+    const body = document.getElementById("shadow-pnl-body");
+    if (!body) return;
+    function toggleFromTarget(target) {
+      const row = target.closest && target.closest(".shadow-pnl-row.sp-expandable");
+      if (!row) return;
+      const name = row.getAttribute("data-sp-config");
+      if (!name) return;
+      if (__shadowExpanded.has(name)) __shadowExpanded.delete(name);
+      else __shadowExpanded.add(name);
+      const s = window.__tgLastState;
+      if (s) renderShadowPnL(s);
+    }
+    body.addEventListener("click", (e) => toggleFromTarget(e.target));
+    body.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      toggleFromTarget(e.target);
+    });
+  })();
 
   // v4.1.8-dash \u2014 portfolio view toggle removed (Robinhood was
   // deleted in v3.5.0). Only the paper portfolio exists; nothing to

@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.2.1")
+    @t("version: BOT_VERSION is 5.3.0")
     def _():
-        assert m.BOT_VERSION == "5.2.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.3.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3730,9 +3730,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.2.1: BOT_VERSION bumped to 5.2.1")
+    @t("v5.3.0: BOT_VERSION bumped to 5.3.0")
     def _():
-        assert m.BOT_VERSION == "5.2.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.3.0", m.BOT_VERSION
 
     @t("v5.2.0: persistence creates shadow_positions table")
     def _():
@@ -3803,27 +3803,118 @@ def run_local() -> int:
             m.short_positions.clear()
             m.short_positions.update(prev_short)
 
-    @t("v5.2.0 amend: shadow panel hidden when active tab != main")
+    @t("v5.3.0: shadow panel renders on Shadow tab via #tg-panel-shadow gate")
     def _():
-        # The CSS gate is body[data-tg-active-tab='val|gene'] hiding
-        # #shadow-pnl-card / #shadow-pnl-section. Verifying both the
-        # HTML id and the CSS selector keeps the contract honest:
-        # if either side drifts, the assertion fails.
+        # v5.3.0 replaces the v5.2.0 main-only gate with an explicit
+        # Shadow-tab-only gate. The HTML still ships the same ids so
+        # the JS render fn keeps working; the CSS rule now hides
+        # #tg-panel-shadow on main/val/gene and shows it on shadow.
         repo = Path(__file__).parent
         html = (repo / "dashboard_static" / "index.html").read_text(
             encoding="utf-8")
         assert 'id="shadow-pnl-card"' in html, "card id missing"
         assert 'id="shadow-pnl-section"' in html, "section id missing"
+        assert 'id="tg-panel-shadow"' in html, "shadow tab panel missing"
         css = (repo / "dashboard_static" / "app.css").read_text(
             encoding="utf-8")
-        assert 'data-tg-active-tab="val"' in css, css[-2000:]
-        assert 'data-tg-active-tab="gene"' in css, css[-2000:]
-        # Both #shadow-pnl-card and #shadow-pnl-section must be in
-        # the gating selector so the section's vertical space also
-        # collapses on Val/Gene tabs.
-        assert "#shadow-pnl-card" in css
-        assert "#shadow-pnl-section" in css
+        assert '#tg-panel-shadow' in css, "shadow panel gate missing"
+        assert 'data-tg-active-tab="shadow"' in css, css[-2000:]
         assert "display: none !important" in css
+
+    # ---- v5.3.0 Shadow tab ----
+
+    @t("v5.3.0: shadow_tab_html_present (Main/Val/Gene/Shadow order)")
+    def _():
+        # Tab strip must contain the four tabs in canonical order, and
+        # the new Shadow tab pane must own the shadow-pnl card.
+        repo = Path(__file__).parent
+        html = (repo / "dashboard_static" / "index.html").read_text(
+            encoding="utf-8")
+        i_main   = html.find('data-tg-tab="main"')
+        i_val    = html.find('data-tg-tab="val"')
+        i_gene   = html.find('data-tg-tab="gene"')
+        i_shadow = html.find('data-tg-tab="shadow"')
+        assert i_main >= 0, "main tab button missing"
+        assert i_val > i_main, "val tab not after main"
+        assert i_gene > i_val, "gene tab not after val"
+        assert i_shadow > i_gene, "shadow tab not after gene"
+        # Shadow pane exists and contains the shadow card.
+        i_pane = html.find('id="tg-panel-shadow"')
+        assert i_pane >= 0, "shadow tab pane missing"
+        i_card = html.find('id="shadow-pnl-card"')
+        assert i_card > i_pane, (
+            "shadow card must live inside #tg-panel-shadow "
+            "(found at %d vs pane at %d)" % (i_card, i_pane)
+        )
+
+    @t("v5.3.0: shadow_card_not_on_main (card moved out of Main)")
+    def _():
+        # The shadow card must NOT be a child of #tg-panel-main. We
+        # locate the closing </div> of the Main panel (marked by the
+        # /tg-panel-main HTML comment) and assert the card id appears
+        # only AFTER that boundary.
+        repo = Path(__file__).parent
+        html = (repo / "dashboard_static" / "index.html").read_text(
+            encoding="utf-8")
+        end_main = html.find("/tg-panel-main")
+        assert end_main >= 0, "tg-panel-main close marker missing"
+        i_card = html.find('id="shadow-pnl-card"')
+        assert i_card >= 0, "shadow card id missing"
+        assert i_card > end_main, (
+            "shadow card must live outside #tg-panel-main "
+            "(found at %d vs main close at %d)" % (i_card, end_main)
+        )
+
+    @t("v5.3.0: shadow_detail_endpoint exposes open_positions + recent_trades")
+    def _():
+        _reset_sp_db("v530_detail")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        # Seed one open and one closed under TICKER+QQQ so the
+        # snapshot can prove both lists are wired through.
+        tr.open_position(
+            "TICKER+QQQ", "AAPL", "long",
+            "2026-04-26T14:30:00+00:00", 100.0, snap)
+        tr.mark_to_market("AAPL", 110.0)
+        tr.open_position(
+            "TICKER+QQQ", "MSFT", "long",
+            "2026-04-26T14:31:00+00:00", 200.0, snap)
+        tr.close_position(
+            "TICKER+QQQ", "MSFT",
+            "2026-04-26T15:00:00+00:00", 210.0, "TRAIL")
+        out = ds.snapshot()
+        assert out.get("ok"), out
+        sp = out["shadow_pnl"]
+        assert "configs" in sp
+        # Every config row must carry the two detail lists \u2014
+        # absent rows render as empty lists, not missing keys.
+        for c in sp["configs"]:
+            assert "open_positions" in c, c
+            assert "recent_trades" in c, c
+            assert isinstance(c["open_positions"], list)
+            assert isinstance(c["recent_trades"], list)
+        seeded = next(c for c in sp["configs"] if c["name"] == "TICKER+QQQ")
+        # Open: AAPL still open, MSFT closed.
+        opens = seeded["open_positions"]
+        assert len(opens) == 1, opens
+        op = opens[0]
+        for k in ("ticker", "side", "qty", "entry_price",
+                  "current_mark", "unrealized", "entry_ts_utc"):
+            assert k in op, (k, op)
+        assert op["ticker"] == "AAPL"
+        assert op["side"] == "long"
+        # Recent: MSFT closed.
+        recs = seeded["recent_trades"]
+        assert len(recs) == 1, recs
+        rc = recs[0]
+        for k in ("ticker", "side", "qty", "entry_price",
+                  "exit_price", "realized_pnl", "exit_reason",
+                  "entry_ts_utc", "exit_ts_utc"):
+            assert k in rc, (k, rc)
+        assert rc["ticker"] == "MSFT"
+        assert rc["exit_reason"] == "TRAIL"
 
     # -------- v5.2.1 shadow-accounting fixes (H2/H3/M3/M4) --------
 
