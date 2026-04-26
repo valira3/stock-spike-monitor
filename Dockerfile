@@ -26,6 +26,10 @@ COPY error_state.py .
 COPY tiger_buffalo_v5.py .
 # v5.1.0 — Forensic Volume Filter module (imported by trade_genius.py).
 COPY volume_profile.py .
+# v5.1.2 — Forensic capture: indicator math + 1m bar JSONL archive
+# (imported by trade_genius.py).
+COPY indicators.py .
+COPY bar_archive.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

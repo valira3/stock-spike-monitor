@@ -524,6 +524,8 @@ def evaluate_g4(
 #      week of logs can be analyzed cleanly post-hoc.
 
 # Hard-coded analysis configs for parallel shadow verdicts.
+# v5.1.2 adds GEMINI_A (110/85): Gemini-suggested config that emerged as the
+# only one with positive net P&L swing in Apr 20-24 backtest.
 SHADOW_CONFIGS: tuple[dict, ...] = (
     {"name": "TICKER+QQQ", "ticker_enabled": True, "index_enabled": True,
      "ticker_pct": 70, "index_pct": 100},
@@ -531,6 +533,8 @@ SHADOW_CONFIGS: tuple[dict, ...] = (
      "ticker_pct": 70, "index_pct": 100},
     {"name": "QQQ_ONLY", "ticker_enabled": False, "index_enabled": True,
      "ticker_pct": 70, "index_pct": 100},
+    {"name": "GEMINI_A", "ticker_enabled": True, "index_enabled": True,
+     "ticker_pct": 110, "index_pct": 85},
 )
 
 

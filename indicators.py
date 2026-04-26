@@ -1,0 +1,137 @@
+"""Pure indicator functions used by v5.1.2 candidate snapshots.
+
+Each function takes a list of bars (newest last) and returns a float, or
+None if there are not enough bars to compute the indicator. Callers MUST
+treat None as "insufficient data" and emit `null` (not `0.0`) into log
+lines.
+
+Bars are dicts with at least `close` (float). ATR additionally requires
+`high`, `low`. VWAP additionally requires `high`, `low`, `close`,
+`volume`. None of these functions raise on bad input \u2014 they return
+None instead.
+"""
+from __future__ import annotations
+
+from typing import Sequence
+
+
+def rsi14(closes: Sequence[float]) -> float | None:
+    """14-period Wilder RSI on `closes`. Needs >= 15 closes.
+
+    Returns rounded-to-4-decimals float, or None if insufficient bars.
+    """
+    if closes is None or len(closes) < 15:
+        return None
+    try:
+        gains: list[float] = []
+        losses: list[float] = []
+        for i in range(1, 15):
+            d = float(closes[i]) - float(closes[i - 1])
+            gains.append(d if d > 0 else 0.0)
+            losses.append(-d if d < 0 else 0.0)
+        avg_g = sum(gains) / 14.0
+        avg_l = sum(losses) / 14.0
+        for i in range(15, len(closes)):
+            d = float(closes[i]) - float(closes[i - 1])
+            g = d if d > 0 else 0.0
+            l = -d if d < 0 else 0.0
+            avg_g = (avg_g * 13.0 + g) / 14.0
+            avg_l = (avg_l * 13.0 + l) / 14.0
+        if avg_l == 0.0:
+            return 100.0
+        rs = avg_g / avg_l
+        return round(100.0 - (100.0 / (1.0 + rs)), 4)
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def ema(closes: Sequence[float], period: int) -> float | None:
+    """Exponential moving average. Returns None if fewer than `period` bars."""
+    if closes is None or period <= 0 or len(closes) < period:
+        return None
+    try:
+        k = 2.0 / (period + 1.0)
+        seed = sum(float(c) for c in closes[:period]) / period
+        v = seed
+        for c in closes[period:]:
+            v = float(c) * k + v * (1.0 - k)
+        return round(v, 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def ema9(closes: Sequence[float]) -> float | None:
+    return ema(closes, 9)
+
+
+def ema21(closes: Sequence[float]) -> float | None:
+    return ema(closes, 21)
+
+
+def atr14(bars: Sequence[dict]) -> float | None:
+    """14-period Wilder ATR. Bars need `high`, `low`, `close`. Needs >= 15 bars.
+
+    True range = max(high-low, |high-prev_close|, |low-prev_close|).
+    """
+    if bars is None or len(bars) < 15:
+        return None
+    try:
+        trs: list[float] = []
+        for i in range(1, len(bars)):
+            h = float(bars[i]["high"])
+            l = float(bars[i]["low"])
+            pc = float(bars[i - 1]["close"])
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            trs.append(tr)
+        if len(trs) < 14:
+            return None
+        atr = sum(trs[:14]) / 14.0
+        for tr in trs[14:]:
+            atr = (atr * 13.0 + tr) / 14.0
+        return round(atr, 4)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def vwap_dist_pct(bars: Sequence[dict]) -> float | None:
+    """% distance of last close from session VWAP, computed from the bar
+    list (assumes session-bounded). Bars need `high`, `low`, `close`,
+    `volume`. Returns None if no bars or zero volume.
+    """
+    if bars is None or len(bars) == 0:
+        return None
+    try:
+        num = 0.0
+        den = 0.0
+        for b in bars:
+            tp = (float(b["high"]) + float(b["low"]) + float(b["close"])) / 3.0
+            v = float(b["volume"])
+            num += tp * v
+            den += v
+        if den <= 0.0:
+            return None
+        vwap = num / den
+        last_close = float(bars[-1]["close"])
+        if vwap == 0.0:
+            return None
+        return round(((last_close - vwap) / vwap) * 100.0, 4)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def spread_bps(bid: float | None, ask: float | None) -> float | None:
+    """Bid/ask spread in basis points relative to the mid. Returns None
+    on missing or non-positive inputs."""
+    if bid is None or ask is None:
+        return None
+    try:
+        b = float(bid)
+        a = float(ask)
+        if b <= 0.0 or a <= 0.0 or a < b:
+            return None
+        mid = (a + b) / 2.0
+        if mid <= 0.0:
+            return None
+        return round(((a - b) / mid) * 10000.0, 4)
+    except (TypeError, ValueError):
+        return None
