@@ -2344,6 +2344,32 @@ def _v520_mtm_ticker(ticker: str, current_price: float) -> None:
         logger.warning("[V520-SHADOW-PNL] mtm error t=%s: %s", ticker, e)
 
 
+# v5.2.1 M3: canonical shadow-config registry. SHADOW_CONFIGS is a
+# tuple of dicts (each with a "name" key); REHUNT_VOL_CONFIRM and
+# OOMPH_ALERT are event-driven extras that own their own virtual
+# positions but live outside SHADOW_CONFIGS. This helper returns the
+# union so close-fanout / EOD code paths iterate every config that can
+# possibly hold an open shadow position.
+_V521_EXTRA_SHADOW_CONFIG_NAMES: tuple[str, ...] = (
+    "REHUNT_VOL_CONFIRM", "OOMPH_ALERT",
+)
+
+
+def _v521_all_shadow_config_names() -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for cfg in volume_profile.SHADOW_CONFIGS:
+        n = cfg.get("name") if isinstance(cfg, dict) else None
+        if n and n not in seen:
+            seen.add(n)
+            names.append(n)
+    for n in _V521_EXTRA_SHADOW_CONFIG_NAMES:
+        if n not in seen:
+            seen.add(n)
+            names.append(n)
+    return names
+
+
 def _v520_close_shadow_all(
     ticker: str, exit_price: float, reason: str,
 ) -> None:
@@ -2355,16 +2381,12 @@ def _v520_close_shadow_all(
         if exit_price is None or exit_price <= 0:
             return
         tr = shadow_pnl.tracker()
-        for cfg in volume_profile.SHADOW_CONFIGS:
+        # v5.2.1 M3: iterate the canonical registry instead of a
+        # hardcoded subset. Any new SHADOW_CONFIGS entry, plus the
+        # event-driven extras, is picked up automatically.
+        for cfg_name in _v521_all_shadow_config_names():
             tr.close_position(
-                config_name=cfg["name"], ticker=ticker,
-                exit_ts_utc=datetime.now(tz=timezone.utc),
-                exit_price=float(exit_price),
-                exit_reason=str(reason or "STOP"),
-            )
-        for extra in ("REHUNT_VOL_CONFIRM", "OOMPH_ALERT"):
-            tr.close_position(
-                config_name=extra, ticker=ticker,
+                config_name=cfg_name, ticker=ticker,
                 exit_ts_utc=datetime.now(tz=timezone.utc),
                 exit_price=float(exit_price),
                 exit_reason=str(reason or "STOP"),
@@ -2404,14 +2426,19 @@ _V519_REHUNT_VOL_PCT = 100
 # DI threshold for the re-hunt confirmation \u2014 mirrors TIGER_V2_DI_THRESHOLD.
 _V519_REHUNT_DI_MIN = 25.0
 
-# State: ticker -> dict(side, exit_ts_utc, exit_minute_bucket, fired)
-# `fired` is set True once we've emitted the first qualifying re-hunt line
-# in the window so we don't re-emit on subsequent confirming minutes.
-_v519_rehunt_watch: dict[str, dict] = {}
+# v5.2.1 M4: state keyed on (ticker, side) tuple where side \u2208
+# {"LONG", "SHORT"}. Prior keying on `ticker` alone allowed a long+short
+# whipsaw on the same ticker on the same minute to clobber one of the
+# two arms. Both arms now coexist and are evaluated independently.
+# `fired` is set True once we've emitted the first qualifying re-hunt
+# line in the window so we don't re-emit on subsequent confirming
+# minutes.
+_v519_rehunt_watch: dict[tuple[str, str], dict] = {}
 
 
 def _v519_arm_rehunt_watch(ticker: str, side: str, exit_ts_utc) -> None:
-    """Arm a REHUNT_VOL_CONFIRM watch on `ticker` for the next 10 minutes.
+    """Arm a REHUNT_VOL_CONFIRM watch on (ticker, side) for the next
+    10 minutes.
 
     Called from the hard-eject path right after the close fires. `side`
     is 'long' or 'short' \u2014 the side we just exited; the re-hunt looks
@@ -2419,8 +2446,15 @@ def _v519_arm_rehunt_watch(ticker: str, side: str, exit_ts_utc) -> None:
     flipped, so a vol confirmation is meaningful.
     """
     try:
-        _v519_rehunt_watch[ticker] = {
-            "side": side,
+        side_key = (side or "").lower()
+        if side_key not in ("long", "short"):
+            logger.warning(
+                "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] arm: unknown side=%r "
+                "ticker=%s", side, ticker,
+            )
+            return
+        _v519_rehunt_watch[(ticker, side_key)] = {
+            "side": side_key,
             "exit_ts_utc": exit_ts_utc,
             "fired": False,
         }
@@ -2430,30 +2464,46 @@ def _v519_arm_rehunt_watch(ticker: str, side: str, exit_ts_utc) -> None:
 
 
 def _v519_check_rehunt(ticker: str) -> None:
-    """If `ticker` is currently being watched for a re-hunt, evaluate the
-    current minute. Emit one [V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] line on
-    the FIRST qualifying bar within the 10-minute window. After that the
-    watch is consumed (fired=True) and stops emitting; after the window
-    elapses, the watch is dropped.
+    """If `ticker` has any active re-hunt watches, evaluate each
+    (ticker, side) arm independently for the current minute. Emit one
+    [V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] line on the FIRST qualifying
+    bar within the 10-minute window per side. After that the arm is
+    consumed (fired=True); after the window elapses, the arm is
+    dropped.
+
+    v5.2.1 M4: keyed on (ticker, side) so long+short whipsaws on the
+    same minute don't clobber each other.
 
     Pure observation. Failure-tolerant.
     """
     if not VOLUME_PROFILE_ENABLED:
         return
     try:
-        watch = _v519_rehunt_watch.get(ticker)
+        # Snapshot all keys for this ticker so we can mutate the dict
+        # while iterating (drop expired arms).
+        keys = [k for k in list(_v519_rehunt_watch.keys()) if k[0] == ticker]
+        for key in keys:
+            _v519_check_rehunt_arm(ticker, key)
+    except Exception as e:
+        logger.warning("[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] check error %s: %s",
+                       ticker, e)
+
+
+def _v519_check_rehunt_arm(ticker: str, key: tuple[str, str]) -> None:
+    try:
+        watch = _v519_rehunt_watch.get(key)
         if not watch:
             return
 
         now_utc = datetime.now(tz=timezone.utc)
         exit_ts = watch.get("exit_ts_utc")
         if exit_ts is None:
-            _v519_rehunt_watch.pop(ticker, None)
+            _v519_rehunt_watch.pop(key, None)
             return
         offset_sec = (now_utc - exit_ts).total_seconds()
         offset_min = int(offset_sec // 60) + 1  # bar-1 == "+1m" in spec
         if offset_sec < 0 or offset_min > _V519_REHUNT_WINDOW_MIN:
-            _v519_rehunt_watch.pop(ticker, None)
+            _v519_rehunt_watch.pop(key, None)
             return
         if watch.get("fired"):
             return
