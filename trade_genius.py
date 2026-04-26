@@ -70,7 +70,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.0"
+BOT_VERSION = "5.1.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -88,31 +88,47 @@ BOT_VERSION = "5.1.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.1.0 \u2014 SHADOW: Anaplan\n"
-    "forensic volume gate. Bot now\n"
-    "builds a 55-trading-day per-\n"
-    "minute volume baseline from\n"
-    "SIP, normalized to IEX scale\n"
-    "for the live read. Stage 1\n"
-    "needs ticker \u2265120% ToD AND\n"
-    "QQQ \u2265100% ToD. Stage 2\n"
-    "maintenance needs ticker\n"
-    "\u2265100%. The new G4 light is\n"
-    "the 4th in the gate set.\n"
+    "v5.1.1 \u2014 SHADOW A/B: env-\n"
+    "driven toggles for the v5.1.0\n"
+    "forensic volume gate, plus 3\n"
+    "parallel shadow verdicts per\n"
+    "candidate so next week's data\n"
+    "can be analyzed clean post-\n"
+    "hoc without redeploying.\n"
     "\n"
-    "This release LOGS ONLY (look\n"
-    "for [V510-SHADOW] in Railway\n"
-    "logs). No entry decisions are\n"
-    "changed in v5.1.0. Val reviews\n"
-    "a week of shadow logs, then\n"
-    "v5.1.1 flips enforcement on.\n"
+    "Active config from env\n"
+    "(defaults preserve v5.1.0):\n"
+    "VOL_GATE_ENFORCE=0\n"
+    "VOL_GATE_TICKER_ENABLED=1\n"
+    "VOL_GATE_INDEX_ENABLED=1\n"
+    "VOL_GATE_TICKER_PCT=70\n"
+    "VOL_GATE_QQQ_PCT=100\n"
+    "VOL_GATE_INDEX_SYMBOL=QQQ\n"
     "\n"
-    "Free IEX cap: 30 symbols.\n"
-    "Hard-disable if exceeded."
+    "Three fixed analysis configs\n"
+    "log on every candidate:\n"
+    "TICKER+QQQ 70/100,\n"
+    "TICKER_ONLY 70, QQQ_ONLY 100.\n"
+    "Grep [V510-SHADOW][CFG=...]\n"
+    "\n"
+    "Still SHADOW MODE; enforce\n"
+    "stays 0 all next week."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v5.1.0 \u2014 SHADOW: Anaplan\n"
+    "forensic volume gate. 55-day\n"
+    "per-minute volume baseline\n"
+    "from SIP, normalized to IEX\n"
+    "scale. Stage 1 wanted ticker\n"
+    "\u2265120% AND QQQ \u2265100%; Stage 2\n"
+    "maintenance \u2265100%. Logs only.\n"
+    "Free IEX cap 30 symbols.\n"
+    "v5.1.1 makes those toggles\n"
+    "env-driven without changing\n"
+    "the default behavior.\n"
+    "\n"
     "v5.0.4 \u2014 revert: alpaca-key\n"
     "fallback from v5.0.3 was wrong.\n"
     "Paper keys and live keys are\n"
@@ -1898,28 +1914,42 @@ def _start_volume_profile() -> None:
 
 
 def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
-    """Emit one [V510-SHADOW] line per evaluation. Failure-tolerant: if
+    """Emit shadow log lines per candidate evaluation. Failure-tolerant: if
     anything in the gate path raises, log and move on. SHADOW MODE: the
-    caller's decision is untouched."""
+    caller's decision is untouched (v5.1.1 keeps VOL_GATE_ENFORCE=0).
+
+    v5.1.1 emits four log lines per call:
+      - the original [V510-SHADOW] line (kept for back-compat with the
+        v5.1.0 grep + Apr 20-24 backtest tooling)
+      - three [V510-SHADOW][CFG=...] lines for the fixed analysis configs
+        TICKER+QQQ at 70/100, TICKER_ONLY at 70, QQQ_ONLY at 100. These
+        emit on every candidate regardless of which env-driven config is
+        active.
+    """
     if not VOLUME_PROFILE_ENABLED:
         return
     try:
         now_et = datetime.now(tz=ZoneInfo("America/New_York"))
         bucket = volume_profile.session_bucket(now_et)
         if bucket is None:
-            return  # outside session — nothing to evaluate
+            return  # outside session \u2014 nothing to evaluate
+        idx_symbol = volume_profile.load_active_config().get("index_symbol", "QQQ")
         cur_v = 0
         cur_qqq = 0
         if _ws_consumer is not None:
             cur_v = _ws_consumer.current_volume(ticker, bucket) or 0
-            cur_qqq = _ws_consumer.current_volume("QQQ", bucket) or 0
+            cur_qqq = _ws_consumer.current_volume(idx_symbol, bucket) or 0
+        ticker_profile = _volume_profile_cache.get(ticker)
+        idx_profile = _volume_profile_cache.get(idx_symbol)
+
+        # (1) Original v5.1.0 shadow line \u2014 unchanged for back-compat.
         g4 = volume_profile.evaluate_g4(
             ticker=ticker,
             minute_bucket=bucket,
             current_volume=cur_v,
-            profile=_volume_profile_cache.get(ticker),
+            profile=ticker_profile,
             qqq_current_volume=cur_qqq,
-            qqq_profile=_volume_profile_cache.get("QQQ"),
+            qqq_profile=idx_profile,
             stage=stage,
         )
         logger.info(
@@ -1930,6 +1960,44 @@ def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
             g4.get("ticker_pct"), g4.get("qqq_pct"),
             g4["reason"], existing_decision,
         )
+
+        # (2) Three parallel analysis configs \u2014 emit greppable lines.
+        for cfg in volume_profile.SHADOW_CONFIGS:
+            try:
+                res = volume_profile.evaluate_g4_config(
+                    ticker=ticker,
+                    minute_bucket=bucket,
+                    current_volume=cur_v,
+                    profile=ticker_profile,
+                    index_current_volume=cur_qqq,
+                    index_profile=idx_profile,
+                    ticker_enabled=cfg["ticker_enabled"],
+                    index_enabled=cfg["index_enabled"],
+                    ticker_pct=cfg["ticker_pct"],
+                    index_pct=cfg["index_pct"],
+                )
+                # PCT label per config: TICKER+QQQ shows both, the
+                # single-anchor configs show only the live anchor.
+                if cfg["ticker_enabled"] and cfg["index_enabled"]:
+                    pct_label = "%d/%d" % (cfg["ticker_pct"], cfg["index_pct"])
+                    pct_fields = "t_pct=%s qqq_pct=%s" % (
+                        res.get("ticker_pct"), res.get("qqq_pct"))
+                elif cfg["ticker_enabled"]:
+                    pct_label = "%d" % cfg["ticker_pct"]
+                    pct_fields = "t_pct=%s" % res.get("ticker_pct")
+                else:
+                    pct_label = "%d" % cfg["index_pct"]
+                    pct_fields = "qqq_pct=%s" % res.get("qqq_pct")
+                logger.info(
+                    "[V510-SHADOW][CFG=%s][PCT=%s] ticker=%s bucket=%s stage=%d "
+                    "%s verdict=%s reason=%s entry_decision=%s",
+                    cfg["name"], pct_label, ticker, bucket, stage,
+                    pct_fields, res["verdict"], res["reason"], existing_decision,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[V510-SHADOW] cfg=%s eval error %s: %s",
+                    cfg.get("name"), ticker, e)
     except Exception as e:
         logger.warning("[V510-SHADOW] eval error %s: %s", ticker, e)
 

@@ -1,4 +1,4 @@
-"""volume_profile.py — Forensic Volume Filter (v5.1.0, SHADOW MODE).
+"""volume_profile.py \u2014 Forensic Volume Filter (v5.1.1, SHADOW MODE).
 
 Builds a 55-trading-day per-minute volume baseline for each watched ticker
 using Alpaca SIP historical 1m bars (free-plan compliant: end < now-16min),
@@ -501,6 +501,143 @@ def evaluate_g4(
         "qqq_pct": None,
         "rule": rule,
     }
+
+
+# ---------------------------------------------------------------------------
+# v5.1.1 \u2014 env-driven A/B toggles + 3-config parallel shadow evaluator
+# ---------------------------------------------------------------------------
+#
+# v5.1.0 was shadow-only and hard-coded ticker \u2265120% AND QQQ \u2265100%. The Apr
+# 20-24 backtest showed 70%/100% is the best risk-adjusted config. v5.1.1
+# lets us A/B-test ticker-only vs QQQ-only vs both anchors next week WITHOUT
+# redeploying:
+#
+#   1. The "active config" (read from env at module-import time) is the one
+#      that would gate trades if VOL_GATE_ENFORCE=1. It defaults to the
+#      backtest-recommended TICKER+QQQ at 70/100 with enforcement OFF.
+#   2. Three FIXED analysis configs are emitted as parallel shadow verdicts
+#      on every candidate, regardless of which one is "active":
+#          TICKER+QQQ at 70/100   (recommended)
+#          TICKER_ONLY at 70
+#          QQQ_ONLY  at 100
+#      These three are NOT env-driven \u2014 they are hard-coded so a single
+#      week of logs can be analyzed cleanly post-hoc.
+
+# Hard-coded analysis configs for parallel shadow verdicts.
+SHADOW_CONFIGS: tuple[dict, ...] = (
+    {"name": "TICKER+QQQ", "ticker_enabled": True, "index_enabled": True,
+     "ticker_pct": 70, "index_pct": 100},
+    {"name": "TICKER_ONLY", "ticker_enabled": True, "index_enabled": False,
+     "ticker_pct": 70, "index_pct": 100},
+    {"name": "QQQ_ONLY", "ticker_enabled": False, "index_enabled": True,
+     "ticker_pct": 70, "index_pct": 100},
+)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+def load_active_config() -> dict:
+    """Return the env-driven 'active' config. Read at module load and on
+    each call (cheap; os.getenv is dict-lookup) so tests can monkey-patch
+    env without re-importing the module."""
+    enforce = _env_bool("VOL_GATE_ENFORCE", False)
+    ticker_enabled = _env_bool("VOL_GATE_TICKER_ENABLED", True)
+    index_enabled = _env_bool("VOL_GATE_INDEX_ENABLED", True)
+    ticker_pct = _env_int("VOL_GATE_TICKER_PCT", 70)
+    index_pct = _env_int("VOL_GATE_QQQ_PCT", 100)
+    index_symbol = (os.getenv("VOL_GATE_INDEX_SYMBOL") or "QQQ").strip().upper() or "QQQ"
+    return {
+        "enforce": enforce,
+        "ticker_enabled": ticker_enabled,
+        "index_enabled": index_enabled,
+        "ticker_pct": ticker_pct,
+        "index_pct": index_pct,
+        "index_symbol": index_symbol,
+    }
+
+
+def evaluate_g4_config(
+    ticker: str,
+    minute_bucket: str,
+    current_volume: int,
+    profile: dict | None,
+    index_current_volume: int,
+    index_profile: dict | None,
+    *,
+    ticker_enabled: bool,
+    index_enabled: bool,
+    ticker_pct: int,
+    index_pct: int,
+) -> dict:
+    """Per-anchor configurable evaluator used for v5.1.1 shadow logging.
+
+    Returns dict with keys:
+        verdict   : 'PASS' | 'BLOCK'
+        reason    : 'OK' | 'LOW_TICKER' | 'LOW_QQQ' | 'STALE_PROFILE'
+                    | 'NO_BARS' | 'DISABLED' | 'NO_PROFILE'
+        ticker_pct: int | None  \u2014 live-vs-baseline percentage (rounded)
+        qqq_pct   : int | None  \u2014 live-vs-baseline percentage (rounded)
+
+    If both anchors are disabled, the verdict is PASS with reason OK
+    (degenerate config: no gate, no block).
+    """
+    if not VOLUME_PROFILE_ENABLED:
+        return {"verdict": "BLOCK", "reason": "DISABLED",
+                "ticker_pct": None, "qqq_pct": None}
+
+    t_pct: int | None = None
+    q_pct: int | None = None
+
+    if ticker_enabled:
+        if profile is None:
+            return {"verdict": "BLOCK", "reason": "NO_PROFILE",
+                    "ticker_pct": None, "qqq_pct": None}
+        if is_profile_stale(profile, _utc_now()):
+            return {"verdict": "BLOCK", "reason": "STALE_PROFILE",
+                    "ticker_pct": None, "qqq_pct": None}
+        median_v = _bucket_median(profile, minute_bucket)
+        if not median_v:
+            return {"verdict": "BLOCK", "reason": "NO_BARS",
+                    "ticker_pct": None, "qqq_pct": None}
+        t_pct = int(round((current_volume / median_v) * 100.0))
+
+    if index_enabled:
+        if index_profile is None:
+            return {"verdict": "BLOCK", "reason": "NO_PROFILE",
+                    "ticker_pct": t_pct, "qqq_pct": None}
+        if is_profile_stale(index_profile, _utc_now()):
+            return {"verdict": "BLOCK", "reason": "STALE_PROFILE",
+                    "ticker_pct": t_pct, "qqq_pct": None}
+        idx_median = _bucket_median(index_profile, minute_bucket)
+        if not idx_median:
+            return {"verdict": "BLOCK", "reason": "NO_BARS",
+                    "ticker_pct": t_pct, "qqq_pct": None}
+        q_pct = int(round((index_current_volume / idx_median) * 100.0))
+
+    if ticker_enabled and t_pct is not None and t_pct < ticker_pct:
+        return {"verdict": "BLOCK", "reason": "LOW_TICKER",
+                "ticker_pct": t_pct, "qqq_pct": q_pct}
+    if index_enabled and q_pct is not None and q_pct < index_pct:
+        return {"verdict": "BLOCK", "reason": "LOW_QQQ",
+                "ticker_pct": t_pct, "qqq_pct": q_pct}
+
+    return {"verdict": "PASS", "reason": "OK",
+            "ticker_pct": t_pct, "qqq_pct": q_pct}
 
 
 # ---------------------------------------------------------------------------
