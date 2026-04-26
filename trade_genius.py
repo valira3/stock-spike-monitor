@@ -74,7 +74,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.8"
+BOT_VERSION = "5.1.9"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -92,6 +92,28 @@ BOT_VERSION = "5.1.8"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.1.9 \u2014 feat: two new\n"
+    "shadow configs on top of\n"
+    "v5.1.6's 5. REHUNT_VOL_\n"
+    "CONFIRM watches each\n"
+    "HARD_EJECT_TIGER exit for\n"
+    "10 min and shadow-logs a\n"
+    "re-entry if vol vs bucket\n"
+    "median is >=100% AND DI\n"
+    "still >25 on the exit side.\n"
+    "OOMPH_ALERT inverts the\n"
+    "minute-1/minute-2 burden:\n"
+    "minute 1 needs DI>25 AND\n"
+    "BUCKET_FILL>=100%, minute\n"
+    "2 needs DI>25 only. Both\n"
+    "log via [V510-SHADOW]\n"
+    "[CFG=...] for the Saturday\n"
+    "report. Pure observation.\n"
+    "VOL_GATE_ENFORCE=0 stays."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.1.8 \u2014 SQLite persistence\n"
     "for fired_set (timed-job\n"
     "idempotency) and v5_long_\n"
@@ -107,11 +129,8 @@ CURRENT_MAIN_NOTE = (
     "One-shot migration imports\n"
     "tracks from paper_state.json\n"
     "then renames to .migrated.bak.\n"
-    "No trading-decision change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "No trading-decision change.\n"
+    "\n"
     "v5.1.6 \u2014 BUCKET_FILL_100\n"
     "5th shadow config\n"
     "+ [V510-VEL]/[IDX]/[DI]\n"
@@ -2159,6 +2178,257 @@ def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
                     cfg.get("name"), ticker, e)
     except Exception as e:
         logger.warning("[V510-SHADOW] eval error %s: %s", ticker, e)
+
+
+# ---------------------------------------------------------------------------
+# v5.1.9 \u2014 two new shadow configs on top of v5.1.6's 5.
+#
+#   REHUNT_VOL_CONFIRM \u2014 event-driven. After every HARD_EJECT_TIGER exit,
+#       watch the SAME ticker for the next 10 minutes. On the FIRST
+#       1-min bar where vol vs bucket median is >=100% AND DI on the
+#       exit side is still >25, emit one
+#         [V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] ...
+#       line. Pure observation \u2014 no real trade fires.
+#
+#   OOMPH_ALERT \u2014 per-minute gate, but it inverts the today flow.
+#       Today minute 1 needs DI only and minute 2 needs DI+volume.
+#       OOMPH puts the volume burden on minute 1 (DI>25 AND
+#       BUCKET_FILL>=100% on the same side) and only requires DI>25 on
+#       minute 2 confirmation. Emits one
+#         [V510-SHADOW][CFG=OOMPH_ALERT] ...
+#       line on the minute-2 confirmation. Per-ticker prev-minute state
+#       is held in memory (sufficient for shadow analysis; the weekly
+#       Saturday backtest pairs OOMPH entries with subsequent exits).
+#
+# Both configs are pure observation. VOL_GATE_ENFORCE=0 still gates all
+# real trades; these emitters never call execute_entry / open_short.
+# ---------------------------------------------------------------------------
+
+# REHUNT window in minutes after a HARD_EJECT_TIGER exit.
+_V519_REHUNT_WINDOW_MIN = 10
+# Volume vs bucket median threshold (percent) for the re-hunt confirmation.
+_V519_REHUNT_VOL_PCT = 100
+# DI threshold for the re-hunt confirmation \u2014 mirrors TIGER_V2_DI_THRESHOLD.
+_V519_REHUNT_DI_MIN = 25.0
+
+# State: ticker -> dict(side, exit_ts_utc, exit_minute_bucket, fired)
+# `fired` is set True once we've emitted the first qualifying re-hunt line
+# in the window so we don't re-emit on subsequent confirming minutes.
+_v519_rehunt_watch: dict[str, dict] = {}
+
+
+def _v519_arm_rehunt_watch(ticker: str, side: str, exit_ts_utc) -> None:
+    """Arm a REHUNT_VOL_CONFIRM watch on `ticker` for the next 10 minutes.
+
+    Called from the hard-eject path right after the close fires. `side`
+    is 'long' or 'short' \u2014 the side we just exited; the re-hunt looks
+    for DI on that same side to still be >25, i.e. the regime hasn't
+    flipped, so a vol confirmation is meaningful.
+    """
+    try:
+        _v519_rehunt_watch[ticker] = {
+            "side": side,
+            "exit_ts_utc": exit_ts_utc,
+            "fired": False,
+        }
+    except Exception as e:
+        logger.warning("[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] arm error %s: %s",
+                       ticker, e)
+
+
+def _v519_check_rehunt(ticker: str) -> None:
+    """If `ticker` is currently being watched for a re-hunt, evaluate the
+    current minute. Emit one [V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] line on
+    the FIRST qualifying bar within the 10-minute window. After that the
+    watch is consumed (fired=True) and stops emitting; after the window
+    elapses, the watch is dropped.
+
+    Pure observation. Failure-tolerant.
+    """
+    if not VOLUME_PROFILE_ENABLED:
+        return
+    try:
+        watch = _v519_rehunt_watch.get(ticker)
+        if not watch:
+            return
+
+        now_utc = datetime.now(tz=timezone.utc)
+        exit_ts = watch.get("exit_ts_utc")
+        if exit_ts is None:
+            _v519_rehunt_watch.pop(ticker, None)
+            return
+        offset_sec = (now_utc - exit_ts).total_seconds()
+        offset_min = int(offset_sec // 60) + 1  # bar-1 == "+1m" in spec
+        if offset_sec < 0 or offset_min > _V519_REHUNT_WINDOW_MIN:
+            _v519_rehunt_watch.pop(ticker, None)
+            return
+        if watch.get("fired"):
+            return
+
+        side = watch.get("side") or ""
+        di_p, di_m = tiger_di(ticker)
+        di_val = di_p if side == "long" else di_m
+        if di_val is None or float(di_val) <= _V519_REHUNT_DI_MIN:
+            return  # DI side weakened \u2014 don't shadow-fire this minute
+
+        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        bucket = volume_profile.session_bucket(now_et)
+        if bucket is None:
+            return
+        prof = _volume_profile_cache.get(ticker)
+        if prof is None:
+            return
+        med = volume_profile._bucket_median(prof, bucket)
+        if not med:
+            return
+        cur_v = 0
+        if _ws_consumer is not None:
+            cur_v = _ws_consumer.current_volume(ticker, bucket) or 0
+        vol_pct = int(round((cur_v / med) * 100.0))
+        if vol_pct < _V519_REHUNT_VOL_PCT:
+            return
+
+        # Shadow re-entry price: latest close on the live 1m bar list.
+        shadow_entry_price = None
+        try:
+            bars = fetch_1min_bars(ticker)
+            if bars:
+                closes = bars.get("closes") or []
+                for c in reversed(closes):
+                    if c is not None:
+                        shadow_entry_price = float(c)
+                        break
+                if shadow_entry_price is None:
+                    shadow_entry_price = bars.get("current_price")
+        except Exception:
+            pass
+
+        watch["fired"] = True
+        try:
+            exit_ts_iso = exit_ts.isoformat()
+        except Exception:
+            exit_ts_iso = "null"
+        logger.info(
+            "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] ticker=%s side=%s "
+            "exit_ts=%s rehunt_offset_min=%d vol_pct=%s "
+            "di_plus=%s di_minus=%s shadow_entry_price=%s",
+            ticker, side, exit_ts_iso, offset_min, _fmt_num(vol_pct),
+            _fmt_num(di_p), _fmt_num(di_m),
+            _fmt_num(shadow_entry_price),
+        )
+    except Exception as e:
+        logger.warning("[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] eval error %s: %s",
+                       ticker, e)
+
+
+# OOMPH_ALERT prev-minute qualified state: ticker -> dict
+# {minute_bucket, side, di, vol_pct} when minute 1 passed; else absent.
+_v519_oomph_prev: dict[str, dict] = {}
+
+# DI threshold for OOMPH_ALERT \u2014 same 25 surface as the rest of v5.
+_V519_OOMPH_DI_MIN = 25.0
+# BUCKET_FILL threshold for OOMPH_ALERT minute 1.
+_V519_OOMPH_VOL_PCT = 100
+
+
+def _v519_check_oomph(ticker: str, bars: dict | None = None) -> None:
+    """Per-minute OOMPH_ALERT check.
+
+    Each call represents one minute of evaluation. For each side (long /
+    short) we determine whether the current minute is "qualified":
+
+      - long-qualified  : DI+ > 25 AND vol_pct >= 100
+      - short-qualified : DI- > 25 AND vol_pct >= 100
+
+    If on this call EITHER side was qualified at the PREVIOUS minute and
+    the current-minute DI on that same side is still > 25, we emit one
+      [V510-SHADOW][CFG=OOMPH_ALERT]
+    line. Then we update the prev-minute state with whichever side(s)
+    qualify on the current minute.
+
+    Pure observation. Failure-tolerant.
+    """
+    if not VOLUME_PROFILE_ENABLED:
+        return
+    try:
+        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        bucket = volume_profile.session_bucket(now_et)
+        if bucket is None:
+            return
+        di_p, di_m = tiger_di(ticker)
+
+        # vol_pct against bucket median (ticker-only, mirrors BUCKET_FILL_100).
+        vol_pct = None
+        prof = _volume_profile_cache.get(ticker)
+        if prof is not None:
+            med = volume_profile._bucket_median(prof, bucket)
+            if med:
+                cur_v = 0
+                if _ws_consumer is not None:
+                    cur_v = _ws_consumer.current_volume(ticker, bucket) or 0
+                vol_pct = int(round((cur_v / med) * 100.0))
+
+        # Check minute-2 confirmation against prev-minute state.
+        prev = _v519_oomph_prev.get(ticker)
+        if prev is not None and prev.get("minute_bucket") != bucket:
+            side = prev.get("side") or ""
+            di_now_val = di_p if side == "long" else di_m
+            if (di_now_val is not None
+                    and float(di_now_val) > _V519_OOMPH_DI_MIN):
+                shadow_entry_price = None
+                try:
+                    use_bars = bars
+                    if use_bars is None:
+                        use_bars = fetch_1min_bars(ticker)
+                    if use_bars:
+                        closes = use_bars.get("closes") or []
+                        for c in reversed(closes):
+                            if c is not None:
+                                shadow_entry_price = float(c)
+                                break
+                        if shadow_entry_price is None:
+                            shadow_entry_price = use_bars.get("current_price")
+                except Exception:
+                    pass
+                logger.info(
+                    "[V510-SHADOW][CFG=OOMPH_ALERT] ticker=%s side=%s "
+                    "minute1_ts=%s minute1_di=%s minute1_vol_pct=%s "
+                    "minute2_ts=%s minute2_di=%s shadow_entry_price=%s",
+                    ticker, side,
+                    prev.get("minute_bucket") or "null",
+                    _fmt_num(prev.get("di")),
+                    _fmt_num(prev.get("vol_pct")),
+                    bucket,
+                    _fmt_num(di_now_val),
+                    _fmt_num(shadow_entry_price),
+                )
+
+        # Update prev-minute state: was this minute itself a qualifier?
+        long_qual = (di_p is not None
+                     and float(di_p) > _V519_OOMPH_DI_MIN
+                     and vol_pct is not None
+                     and vol_pct >= _V519_OOMPH_VOL_PCT)
+        short_qual = (di_m is not None
+                      and float(di_m) > _V519_OOMPH_DI_MIN
+                      and vol_pct is not None
+                      and vol_pct >= _V519_OOMPH_VOL_PCT)
+
+        if long_qual:
+            _v519_oomph_prev[ticker] = {
+                "minute_bucket": bucket, "side": "long",
+                "di": di_p, "vol_pct": vol_pct,
+            }
+        elif short_qual:
+            _v519_oomph_prev[ticker] = {
+                "minute_bucket": bucket, "side": "short",
+                "di": di_m, "vol_pct": vol_pct,
+            }
+        else:
+            # Don't carry stale qualification past a non-qualifying minute.
+            _v519_oomph_prev.pop(ticker, None)
+    except Exception as e:
+        logger.warning("[V510-SHADOW][CFG=OOMPH_ALERT] eval error %s: %s",
+                       ticker, e)
 
 
 # ---------------------------------------------------------------------------
@@ -7176,6 +7446,14 @@ def _tiger_hard_eject_check():
             )
             close_position(ticker, price,
                            reason="HARD_EJECT_TIGER")
+            # v5.1.9 \u2014 arm REHUNT_VOL_CONFIRM watch on this ticker.
+            try:
+                _v519_arm_rehunt_watch(
+                    ticker, "long", datetime.now(tz=timezone.utc))
+            except Exception as e:
+                logger.warning(
+                    "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] arm long %s: %s",
+                    ticker, e)
 
 
     # -- Short positions (paper) --
@@ -7193,6 +7471,14 @@ def _tiger_hard_eject_check():
                 ticker, di_minus, index_flip_up,
             )
             close_short_position(ticker, price, reason="HARD_EJECT_TIGER")
+            # v5.1.9 \u2014 arm REHUNT_VOL_CONFIRM watch on this ticker.
+            try:
+                _v519_arm_rehunt_watch(
+                    ticker, "short", datetime.now(tz=timezone.utc))
+            except Exception as e:
+                logger.warning(
+                    "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] arm short %s: %s",
+                    ticker, e)
 
 
 # ============================================================
@@ -7363,6 +7649,19 @@ def scan_loop():
                     _v512_emit_candidate_log(ticker, stage=1, entered=bool(ok and bars), bars=bars)
                 except Exception as e:
                     logger.warning("[V510-CAND] hook error %s: %s", ticker, e)
+                # v5.1.9 \u2014 REHUNT_VOL_CONFIRM and OOMPH_ALERT shadow probes.
+                try:
+                    _v519_check_rehunt(ticker)
+                except Exception as e:
+                    logger.warning(
+                        "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] hook %s: %s",
+                        ticker, e)
+                try:
+                    _v519_check_oomph(ticker, bars=bars)
+                except Exception as e:
+                    logger.warning(
+                        "[V510-SHADOW][CFG=OOMPH_ALERT] hook %s: %s",
+                        ticker, e)
                 if ok and bars:
                     px = bars["current_price"]
                     try:

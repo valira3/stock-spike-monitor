@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.1.8")
+    @t("version: BOT_VERSION is 5.1.9")
     def _():
-        assert m.BOT_VERSION == "5.1.8", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.1.9", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3358,6 +3358,156 @@ def run_local() -> int:
     def _():
         assert hasattr(m, "indicators")
         assert hasattr(m, "bar_archive")
+
+    # ------------------------------------------------------------------
+    # v5.1.9 \u2014 REHUNT_VOL_CONFIRM and OOMPH_ALERT shadow configs
+    # ------------------------------------------------------------------
+
+    @t("v5.1.9: REHUNT_VOL_CONFIRM emits one [CFG=...] line on first qualifying minute")
+    def _():
+        # Stand up state so a single _v519_check_rehunt call qualifies:
+        # - watch armed in the past 1 minute (offset_min == 1)
+        # - DI on exit side is >25
+        # - vol vs bucket median is >=100%
+        from datetime import datetime as _dt, timezone as _tz
+        m.VOLUME_PROFILE_ENABLED = True
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prev_cache = m._volume_profile_cache.copy()
+        prev_ws = m._ws_consumer
+        prev_watch = dict(m._v519_rehunt_watch)
+        try:
+            prof = _fresh_profile(1000)
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache["AMD"] = prof
+
+            class _StubWS:
+                def current_volume(self, t, b):
+                    return 1500  # 150% of bucket median 1000
+            m._ws_consumer = _StubWS()
+
+            real_session_bucket = vp_mod.session_bucket
+            vp_mod.session_bucket = lambda _ts: "1030"
+            real_tiger_di = m.tiger_di
+            m.tiger_di = lambda _t: (40.0, 10.0)  # long DI strong
+            real_fetch = m.fetch_1min_bars
+            m.fetch_1min_bars = lambda _t: {
+                "current_price": 123.45,
+                "closes": [120.0, 122.0, 123.45],
+            }
+            try:
+                m._v519_rehunt_watch.clear()
+                m._v519_arm_rehunt_watch(
+                    "AMD", "long", _dt.now(tz=_tz.utc))
+
+                import logging as _logging
+                seen: list[str] = []
+
+                class _H(_logging.Handler):
+                    def emit(self, rec):
+                        seen.append(rec.getMessage())
+                tg_logger = _logging.getLogger("trade_genius")
+                h = _H(); h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h); old_level = tg_logger.level
+                tg_logger.setLevel(_logging.INFO)
+                try:
+                    m._v519_check_rehunt("AMD")
+                finally:
+                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            finally:
+                vp_mod.session_bucket = real_session_bucket
+                m.tiger_di = real_tiger_di
+                m.fetch_1min_bars = real_fetch
+
+            cfg_lines = [s for s in seen
+                         if "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM]" in s]
+            assert len(cfg_lines) == 1, \
+                f"want 1 REHUNT line, got {len(cfg_lines)}: {seen}"
+            line = cfg_lines[0]
+            for needle in ("ticker=AMD", "side=long", "vol_pct=150",
+                           "rehunt_offset_min=", "shadow_entry_price=123.45",
+                           "di_plus=40", "di_minus=10"):
+                assert needle in line, f"{needle!r} missing in {line!r}"
+            # Watch should be marked fired so a second call doesn't re-emit.
+            assert m._v519_rehunt_watch.get("AMD", {}).get("fired") is True
+        finally:
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache.update(prev_cache)
+            m._ws_consumer = prev_ws
+            m._v519_rehunt_watch.clear()
+            m._v519_rehunt_watch.update(prev_watch)
+
+    @t("v5.1.9: OOMPH_ALERT emits one [CFG=...] line after minute1 + minute2 confirm")
+    def _():
+        # Two consecutive calls: minute 1 qualifies (DI>25 + vol>=100%),
+        # minute 2 confirms (DI>25). Expect one line on the second call.
+        m.VOLUME_PROFILE_ENABLED = True
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prev_cache = m._volume_profile_cache.copy()
+        prev_ws = m._ws_consumer
+        prev_oomph = dict(m._v519_oomph_prev)
+        try:
+            prof = _fresh_profile(1000)
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache["AMD"] = prof
+
+            class _StubWS:
+                def current_volume(self, t, b):
+                    return 1100  # 110% of bucket median
+            m._ws_consumer = _StubWS()
+
+            buckets = ["1030", "1031"]
+            idx = {"i": 0}
+            real_session_bucket = vp_mod.session_bucket
+            vp_mod.session_bucket = lambda _ts: buckets[idx["i"]]
+            real_tiger_di = m.tiger_di
+            m.tiger_di = lambda _t: (35.0, 10.0)  # long DI strong both minutes
+            real_fetch = m.fetch_1min_bars
+            m.fetch_1min_bars = lambda _t: {
+                "current_price": 222.22, "closes": [220.0, 221.5, 222.22],
+            }
+            try:
+                m._v519_oomph_prev.clear()
+
+                import logging as _logging
+                seen: list[str] = []
+
+                class _H(_logging.Handler):
+                    def emit(self, rec):
+                        seen.append(rec.getMessage())
+                tg_logger = _logging.getLogger("trade_genius")
+                h = _H(); h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h); old_level = tg_logger.level
+                tg_logger.setLevel(_logging.INFO)
+                try:
+                    # Minute 1: qualify (DI+ 35 > 25 AND vol_pct 110 >= 100)
+                    m._v519_check_oomph("AMD")
+                    # Minute 2: bucket advances; DI+ still > 25 confirms.
+                    idx["i"] = 1
+                    m._v519_check_oomph("AMD")
+                finally:
+                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            finally:
+                vp_mod.session_bucket = real_session_bucket
+                m.tiger_di = real_tiger_di
+                m.fetch_1min_bars = real_fetch
+
+            cfg_lines = [s for s in seen
+                         if "[V510-SHADOW][CFG=OOMPH_ALERT]" in s]
+            assert len(cfg_lines) == 1, \
+                f"want 1 OOMPH line, got {len(cfg_lines)}: {seen}"
+            line = cfg_lines[0]
+            for needle in ("ticker=AMD", "side=long",
+                           "minute1_ts=1030", "minute1_di=35",
+                           "minute1_vol_pct=110",
+                           "minute2_ts=1031", "minute2_di=35",
+                           "shadow_entry_price=222.22"):
+                assert needle in line, f"{needle!r} missing in {line!r}"
+        finally:
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache.update(prev_cache)
+            m._ws_consumer = prev_ws
+            m._v519_oomph_prev.clear()
+            m._v519_oomph_prev.update(prev_oomph)
 
     return run_suite("LOCAL SMOKE TESTS (v5.1.2 Tiger/Buffalo + Forensic Capture)")
 

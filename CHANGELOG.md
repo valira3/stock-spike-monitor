@@ -4,6 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.9 — 2026-04-26
+
+- feat: `REHUNT_VOL_CONFIRM` added as a 6th shadow config. Pure observation, NOT enforced. Event-driven (not per-minute): when a position closes via `HARD_EJECT_TIGER`, the same ticker is watched for the next 10 minutes. On the FIRST 1-min bar inside that window where `cur_volume / per-minute baseline median >= 100%` AND DI on the exit side is still > 25, one `[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM]` line is emitted with `ticker, side, exit_ts, rehunt_offset_min, vol_pct, di_plus, di_minus, shadow_entry_price`. The Saturday backtest report pairs the shadow re-entry to the next exit signal and computes P&L. Apr 20-24 backtest verdict: +$21.56 / +4.3% net swing across 12 confirmed re-hunts (67% win rate); shipping in shadow because the sample is tiny and two outliers (MSFT 11:48, AMZN 12:16) lost −$86 between them.
+- feat: `OOMPH_ALERT` added as a 7th shadow config. Pure observation, NOT enforced. Per-minute gate that inverts which minute carries the volume burden: minute 1 requires DI+ > 25 (long) OR DI- > 25 (short) AND `BUCKET_FILL >= 100%` SIMULTANEOUSLY; minute 2 requires DI > 25 only on the same side (no volume check). Today's flow does the opposite: minute 1 is DI-only and minute 2 is DI+volume. On a minute-2 confirmation, one `[V510-SHADOW][CFG=OOMPH_ALERT]` line is emitted with `ticker, side, minute1_ts, minute1_di, minute1_vol_pct, minute2_ts, minute2_di, shadow_entry_price`. Per-ticker prev-minute qualification state is held in memory; non-qualifying minutes clear the carry. Untested in backtest — awaiting May 9 weekly report.
+- The five v5.1.6 shadow configs (TICKER+QQQ, TICKER_ONLY, QQQ_ONLY, GEMINI_A, BUCKET_FILL_100) are unchanged.
+- No live trading behavior change. `VOL_GATE_ENFORCE=0` default preserved.
+
+---
+
 ## v5.1.8 — 2026-04-26
 
 - feat: SQLite persistence for `fired_set` (timed-job idempotency) and `v5_long_tracks` (Tiger/Buffalo paper-trade state). New module `persistence.py` wraps a WAL-mode SQLite store at `STATE_DB_PATH` (default `/data/state.db` on Railway). Replaces the in-memory `fired = set()` in `scheduler_thread()` so an EOD job that fires before a Railway container restart at 15:59:30 ET cannot double-fire at 16:00 after the container comes back up. Also replaces the non-atomic `json.dump` of `v5_long_tracks` / `v5_short_tracks` inside `paper_state.json` so a crash mid-write can no longer corrupt the wider portfolio file.
