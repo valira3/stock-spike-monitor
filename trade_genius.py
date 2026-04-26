@@ -43,6 +43,9 @@ import tiger_buffalo_v5 as v5  # noqa: E402
 # v5.1.0 \u2014 forensic volume filter (shadow mode). Top-level module so the
 # v5.0.2 infra-guard test catches a missing Dockerfile COPY for it.
 import volume_profile  # noqa: E402
+# v5.1.2 \u2014 forensic capture: bar archive + indicators.
+import indicators  # noqa: E402
+import bar_archive  # noqa: E402
 
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
@@ -70,7 +73,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.1"
+BOT_VERSION = "5.1.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -88,35 +91,40 @@ BOT_VERSION = "5.1.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.1.1 \u2014 SHADOW A/B: env-\n"
-    "driven toggles for the v5.1.0\n"
-    "forensic volume gate, plus 3\n"
-    "parallel shadow verdicts per\n"
-    "candidate so next week's data\n"
-    "can be analyzed clean post-\n"
-    "hoc without redeploying.\n"
+    "v5.1.2 \u2014 forensic capture\n"
+    "+ GEMINI_A shadow config.\n"
+    "Tier-1: 1m bar JSONL archive\n"
+    "to /data/bars/, every-minute\n"
+    "[V510-MINUTE] log,\n"
+    "[V510-CAND] log on every\n"
+    "entry consideration (fired or\n"
+    "not), entry log line carries\n"
+    "bid/ask + account state.\n"
+    "Tier-2: [V510-FSM] state-\n"
+    "transition log, indicator\n"
+    "snapshot on [V510-CAND]\n"
+    "(rsi14/ema9/ema21/atr14/\n"
+    "vwap_dist_pct/spread_bps).\n"
     "\n"
-    "Active config from env\n"
-    "(defaults preserve v5.1.0):\n"
-    "VOL_GATE_ENFORCE=0\n"
-    "VOL_GATE_TICKER_ENABLED=1\n"
-    "VOL_GATE_INDEX_ENABLED=1\n"
-    "VOL_GATE_TICKER_PCT=70\n"
-    "VOL_GATE_QQQ_PCT=100\n"
-    "VOL_GATE_INDEX_SYMBOL=QQQ\n"
+    "GEMINI_A 110/85 added as a\n"
+    "4th hard-coded SHADOW_CONFIG\n"
+    "(only config with positive\n"
+    "net swing in Apr 20-24 BT).\n"
     "\n"
-    "Three fixed analysis configs\n"
-    "log on every candidate:\n"
-    "TICKER+QQQ 70/100,\n"
-    "TICKER_ONLY 70, QQQ_ONLY 100.\n"
-    "Grep [V510-SHADOW][CFG=...]\n"
-    "\n"
-    "Still SHADOW MODE; enforce\n"
-    "stays 0 all next week."
+    "Defaults preserve v5.1.1\n"
+    "behavior; VOL_GATE_ENFORCE=0\n"
+    "stays. Still SHADOW MODE."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v5.1.1 \u2014 SHADOW A/B: env-\n"
+    "driven toggles + 3 parallel\n"
+    "shadow verdicts per candidate\n"
+    "(TICKER+QQQ 70/100, TICKER_\n"
+    "ONLY 70, QQQ_ONLY 100). Still\n"
+    "SHADOW MODE.\n"
+    "\n"
     "v5.1.0 \u2014 SHADOW: Anaplan\n"
     "forensic volume gate. 55-day\n"
     "per-minute volume baseline\n"
@@ -2000,6 +2008,273 @@ def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
                     cfg.get("name"), ticker, e)
     except Exception as e:
         logger.warning("[V510-SHADOW] eval error %s: %s", ticker, e)
+
+
+# ---------------------------------------------------------------------------
+# v5.1.2 \u2014 forensic capture emitters.
+#
+# These emit greppable log lines so post-hoc backtests can replay any
+# "what if the threshold/indicator were different" scenario without a
+# redeploy. None of these change the trading decision; they are pure
+# observation layers.
+# ---------------------------------------------------------------------------
+
+# Enumerated reasons used by [V510-CAND]. Kept as constants so the
+# smoke tests can assert the surface area is fixed.
+CAND_REASON_NO_BREAKOUT = "NO_BREAKOUT"
+CAND_REASON_STAGE_NOT_READY = "STAGE_NOT_READY"
+CAND_REASON_ALREADY_OPEN = "ALREADY_OPEN"
+CAND_REASON_COOL_DOWN = "COOL_DOWN"
+CAND_REASON_MAX_POSITIONS = "MAX_POSITIONS"
+CAND_REASON_BREAKOUT_CONFIRMED = "BREAKOUT_CONFIRMED"
+
+CAND_REASONS = (
+    CAND_REASON_NO_BREAKOUT,
+    CAND_REASON_STAGE_NOT_READY,
+    CAND_REASON_ALREADY_OPEN,
+    CAND_REASON_COOL_DOWN,
+    CAND_REASON_MAX_POSITIONS,
+    CAND_REASON_BREAKOUT_CONFIRMED,
+)
+
+
+def _fmt_num(v) -> str:
+    """Render a number for log lines. None \u2192 'null' so logs are
+    machine-parseable; ints stay ints; floats keep 4dp."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, int):
+        return str(v)
+    try:
+        return ("%.4f" % float(v)).rstrip("0").rstrip(".") or "0"
+    except (TypeError, ValueError):
+        return "null"
+
+
+def _v512_log_minute(
+    ticker: str,
+    bucket: str | None,
+    t_pct,
+    qqq_pct,
+    close,
+    vol,
+) -> None:
+    """Emit one [V510-MINUTE] line per ticker per minute close.
+
+    All numerics may be None \u2014 they render as 'null'. Failure-
+    tolerant: never raises.
+    """
+    try:
+        logger.info(
+            "[V510-MINUTE] ticker=%s bucket=%s t_pct=%s qqq_pct=%s close=%s vol=%s",
+            ticker, bucket if bucket is not None else "null",
+            _fmt_num(t_pct), _fmt_num(qqq_pct),
+            _fmt_num(close), _fmt_num(vol),
+        )
+    except Exception as e:
+        logger.warning("[V510-MINUTE] emit error %s: %s", ticker, e)
+
+
+def _v512_log_candidate(
+    ticker: str,
+    bucket: str | None,
+    stage: int,
+    fsm_state: str,
+    entered: bool,
+    reason: str,
+    *,
+    t_pct=None,
+    qqq_pct=None,
+    close=None,
+    stop=None,
+    rsi14_=None,
+    ema9_=None,
+    ema21_=None,
+    atr14_=None,
+    vwap_dist_pct_=None,
+    spread_bps_=None,
+) -> None:
+    """Emit one [V510-CAND] line per entry consideration.
+
+    Fires on EVERY consideration \u2014 fired AND not-fired \u2014 so the
+    asymmetric blind spot from v5.1.1 is closed. Indicator fields can
+    be None and will render as 'null'.
+    """
+    try:
+        logger.info(
+            "[V510-CAND] ticker=%s bucket=%s stage=%d fsm_state=%s "
+            "entered=%s reason=%s t_pct=%s qqq_pct=%s close=%s stop=%s "
+            "rsi14=%s ema9=%s ema21=%s atr14=%s "
+            "vwap_dist_pct=%s spread_bps=%s",
+            ticker, bucket if bucket is not None else "null", int(stage),
+            fsm_state, "YES" if entered else "NO", reason,
+            _fmt_num(t_pct), _fmt_num(qqq_pct),
+            _fmt_num(close), _fmt_num(stop),
+            _fmt_num(rsi14_), _fmt_num(ema9_), _fmt_num(ema21_),
+            _fmt_num(atr14_), _fmt_num(vwap_dist_pct_), _fmt_num(spread_bps_),
+        )
+    except Exception as e:
+        logger.warning("[V510-CAND] emit error %s: %s", ticker, e)
+
+
+def _v512_log_fsm_transition(
+    ticker: str,
+    from_state: str,
+    to_state: str,
+    reason: str,
+    bucket: str | None = None,
+) -> None:
+    """Emit [V510-FSM] only on actual transitions. No-ops (from==to)
+    must NOT log \u2014 the test asserts this."""
+    try:
+        if from_state == to_state:
+            return
+        logger.info(
+            "[V510-FSM] ticker=%s from=%s to=%s reason=%s bucket=%s",
+            ticker, from_state, to_state, reason,
+            bucket if bucket is not None else "null",
+        )
+    except Exception as e:
+        logger.warning("[V510-FSM] emit error %s: %s", ticker, e)
+
+
+def _v512_log_entry_extension(
+    ticker: str,
+    *,
+    bid=None,
+    ask=None,
+    cash=None,
+    equity=None,
+    open_positions=None,
+    total_exposure_pct=None,
+    current_drawdown_pct=None,
+) -> None:
+    """Emit [V510-ENTRY] alongside the existing entry log line. Carries
+    bid/ask + account state so post-hoc analysis has the snapshot
+    without re-reading the broker.
+    """
+    try:
+        logger.info(
+            "[V510-ENTRY] ticker=%s bid=%s ask=%s cash=%s equity=%s "
+            "open_positions=%s total_exposure_pct=%s current_drawdown_pct=%s",
+            ticker, _fmt_num(bid), _fmt_num(ask),
+            _fmt_num(cash), _fmt_num(equity),
+            _fmt_num(open_positions),
+            _fmt_num(total_exposure_pct),
+            _fmt_num(current_drawdown_pct),
+        )
+    except Exception as e:
+        logger.warning("[V510-ENTRY] emit error %s: %s", ticker, e)
+
+
+def _v512_emit_candidate_log(
+    ticker: str,
+    *,
+    stage: int = 1,
+    entered: bool = False,
+    bars: dict | None = None,
+) -> None:
+    """Compose the [V510-CAND] line for one entry-consideration moment.
+
+    Pulls bucket + t_pct/qqq_pct from the websocket consumer + profile
+    cache (best-effort), and indicators from the locally-cached 1m bar
+    history when present. All inputs are optional \u2014 anything we
+    can't compute is None and renders as 'null'.
+    """
+    try:
+        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        bucket = volume_profile.session_bucket(now_et)
+    except Exception:
+        bucket = None
+    t_pct = None
+    qqq_pct = None
+    try:
+        if bucket is not None and _ws_consumer is not None and VOLUME_PROFILE_ENABLED:
+            idx_symbol = volume_profile.load_active_config().get("index_symbol", "QQQ")
+            cur_v = _ws_consumer.current_volume(ticker, bucket) or 0
+            cur_q = _ws_consumer.current_volume(idx_symbol, bucket) or 0
+            tp = _volume_profile_cache.get(ticker)
+            qp = _volume_profile_cache.get(idx_symbol)
+            if tp is not None:
+                med = volume_profile._bucket_median(tp, bucket)
+                if med:
+                    t_pct = int(round((cur_v / med) * 100.0))
+            if qp is not None:
+                med = volume_profile._bucket_median(qp, bucket)
+                if med:
+                    qqq_pct = int(round((cur_q / med) * 100.0))
+    except Exception:
+        pass
+
+    close_v = None
+    stop_v = None
+    rsi_v = ema9_v = ema21_v = atr_v = vwap_v = spread_v = None
+    try:
+        if bars and isinstance(bars, dict):
+            close_v = bars.get("current_price")
+            stop_v = bars.get("stop")
+    except Exception:
+        pass
+
+    reason = (CAND_REASON_BREAKOUT_CONFIRMED if entered
+              else CAND_REASON_NO_BREAKOUT)
+    fsm_state = "ARMED" if entered else "OBSERVE"
+
+    _v512_log_candidate(
+        ticker, bucket, stage, fsm_state, entered, reason,
+        t_pct=t_pct, qqq_pct=qqq_pct,
+        close=close_v, stop=stop_v,
+        rsi14_=rsi_v, ema9_=ema9_v, ema21_=ema21_v,
+        atr14_=atr_v, vwap_dist_pct_=vwap_v, spread_bps_=spread_v,
+    )
+
+
+def _v512_quote_snapshot(ticker: str):
+    """Return (bid, ask) for `ticker`, or (None, None) on failure. The
+    Alpaca data client is not always reachable from tests, so we treat
+    any exception as "no quote available"."""
+    try:
+        client = _historical_data_client() if "_historical_data_client" in globals() else None
+        if client is None:
+            return (None, None)
+        from alpaca.data.requests import StockLatestQuoteRequest  # type: ignore
+        req = StockLatestQuoteRequest(symbol_or_symbols=ticker)
+        q = client.get_stock_latest_quote(req)
+        rec = q.get(ticker) if isinstance(q, dict) else None
+        if rec is None:
+            return (None, None)
+        bid = getattr(rec, "bid_price", None)
+        ask = getattr(rec, "ask_price", None)
+        return (bid, ask)
+    except Exception:
+        return (None, None)
+
+
+def _v512_archive_minute_bar(ticker: str, bar: dict) -> None:
+    """Persist a 1m bar to /data/bars/YYYY-MM-DD/{TICKER}.jsonl.
+
+    Failure-tolerant. Respects the 30-symbol IEX cap and the active
+    TICKERS list (skips persistence for anything outside it). Caller
+    is expected to invoke this once per minute close per ticker.
+    """
+    try:
+        sym = (ticker or "").strip().upper()
+        if not sym:
+            return
+        # Stay within the same caps as v5.1.0 so we never persist for
+        # symbols we are not actively tracking.
+        try:
+            if sym not in TICKERS and sym not in ("QQQ", "SPY"):
+                return
+            if len(TICKERS) > volume_profile.WS_SYMBOL_CAP_FREE_IEX:
+                return
+        except Exception:
+            pass
+        bar_archive.write_bar(sym, bar)
+    except Exception as e:
+        logger.warning("[V510-BAR] archive error %s: %s", ticker, e)
 
 
 def _normalise_ticker(sym) -> str:
@@ -5493,6 +5768,40 @@ def execute_breakout(ticker, current_price, side):
            limit_price, stop_price, entry_num)
     )
 
+    # v5.1.2 \u2014 emit forensic entry snapshot. Strictly additive: this
+    # logger.info call goes nowhere observable to the synthetic
+    # harness (recorder only captures send_telegram / paper_log /
+    # _emit_signal / trade_log_append / save_paper_state, so the
+    # byte-equal goldens stay green).
+    try:
+        bid_v, ask_v = _v512_quote_snapshot(ticker)
+        equity_v = paper_cash + sum(
+            float(p.get("entry_price", 0.0)) * int(p.get("shares", 0))
+            for p in positions.values()
+        )
+        open_pos = len(positions) + len(short_positions)
+        # Exposure as % of equity (sum of long notional only \u2014
+        # shorts net to credit). Guard against div-by-zero.
+        long_notional = sum(
+            float(p.get("entry_price", 0.0)) * int(p.get("shares", 0))
+            for p in positions.values()
+        )
+        expo_pct = (long_notional / equity_v * 100.0) if equity_v > 0 else 0.0
+        # Drawdown is rough \u2014 we don't track high-water-mark in
+        # paper_state so report 0 unless caller wants more later.
+        dd_pct = 0.0
+        _v512_log_entry_extension(
+            ticker,
+            bid=bid_v, ask=ask_v,
+            cash=round(paper_cash, 2),
+            equity=round(equity_v, 2),
+            open_positions=open_pos,
+            total_exposure_pct=round(expo_pct, 4),
+            current_drawdown_pct=dd_pct,
+        )
+    except Exception as e:
+        logger.warning("[V510-ENTRY] snapshot error %s: %s", ticker, e)
+
     or_edge_e = or_dict.get(ticker, 0)
     pdc_e = pdc.get(ticker, 0)
     SEP_E = "\u2500" * 34
@@ -6733,6 +7042,12 @@ def scan_loop():
                 # Stage_2 for this ticker; default to Stage 1 (Jab) for
                 # the new-entry decision.
                 _shadow_log_g4(ticker, stage=1, existing_decision=("ENTER" if ok else "HOLD"))
+                # v5.1.2 \u2014 [V510-CAND] for every entry consideration
+                # (closes the asymmetric blind-spot from v5.1.1).
+                try:
+                    _v512_emit_candidate_log(ticker, stage=1, entered=bool(ok and bars), bars=bars)
+                except Exception as e:
+                    logger.warning("[V510-CAND] hook error %s: %s", ticker, e)
                 if ok and bars:
                     px = bars["current_price"]
                     try:

@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.1.1")
+    @t("version: BOT_VERSION is 5.1.2")
     def _():
-        assert m.BOT_VERSION == "5.1.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.1.2", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -2490,18 +2490,21 @@ def run_local() -> int:
         finally:
             _v511_restore_env(saved)
 
-    @t("v5.1.1: SHADOW_CONFIGS is the fixed 3-config tuple")
+    @t("v5.1.1: SHADOW_CONFIGS is the fixed 4-config tuple (v5.1.2 added GEMINI_A)")
     def _():
         cfgs = vp_mod.SHADOW_CONFIGS
-        assert isinstance(cfgs, tuple) and len(cfgs) == 3, cfgs
+        assert isinstance(cfgs, tuple) and len(cfgs) == 4, cfgs
         names = [c["name"] for c in cfgs]
-        assert names == ["TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY"], names
+        assert names == ["TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A"], names
         # Thresholds match backtest recommendation.
         assert cfgs[0]["ticker_pct"] == 70 and cfgs[0]["index_pct"] == 100
         assert cfgs[1]["ticker_enabled"] is True and cfgs[1]["index_enabled"] is False
         assert cfgs[1]["ticker_pct"] == 70
         assert cfgs[2]["ticker_enabled"] is False and cfgs[2]["index_enabled"] is True
         assert cfgs[2]["index_pct"] == 100
+        # v5.1.2 \u2014 GEMINI_A 110/85, both anchors enabled.
+        assert cfgs[3]["ticker_enabled"] is True and cfgs[3]["index_enabled"] is True
+        assert cfgs[3]["ticker_pct"] == 110 and cfgs[3]["index_pct"] == 85
 
     @t("v5.1.1: evaluate_g4_config TICKER+QQQ PASS at 70%/100%")
     def _():
@@ -2599,7 +2602,7 @@ def run_local() -> int:
         finally:
             vp_mod.VOLUME_PROFILE_ENABLED = prev
 
-    @t("v5.1.1: _shadow_log_g4 emits 3 [CFG=...] lines on a candidate")
+    @t("v5.1.1: _shadow_log_g4 emits 4 [CFG=...] lines on a candidate (v5.1.2 added GEMINI_A)")
     def _():
         # Stand up an in-memory profile cache so every config has data.
         vp_mod.VOLUME_PROFILE_ENABLED = True
@@ -2641,14 +2644,16 @@ def run_local() -> int:
                 vp_mod.session_bucket = real_session_bucket
 
             cfg_lines = [s for s in seen if "[V510-SHADOW][CFG=" in s]
-            assert len(cfg_lines) == 3, f"want 3 cfg lines, got {len(cfg_lines)}: {seen}"
+            assert len(cfg_lines) == 4, f"want 4 cfg lines, got {len(cfg_lines)}: {seen}"
             joined = " | ".join(cfg_lines)
             assert "CFG=TICKER+QQQ" in joined, joined
             assert "CFG=TICKER_ONLY" in joined, joined
             assert "CFG=QQQ_ONLY" in joined, joined
+            assert "CFG=GEMINI_A" in joined, joined
             assert "PCT=70/100" in joined, joined
             assert "PCT=70]" in joined, joined
             assert "PCT=100]" in joined, joined
+            assert "PCT=110/85" in joined, joined
         finally:
             m._volume_profile_cache.clear()
             m._volume_profile_cache.update(prev_cache)
@@ -2710,7 +2715,342 @@ def run_local() -> int:
             m._volume_profile_cache.update(prev_cache)
             m._ws_consumer = prev_ws
 
-    return run_suite("LOCAL SMOKE TESTS (v5.1.1 Tiger/Buffalo + Forensic Volume A/B)")
+    # ---------------------------------------------------------------
+    # v5.1.2 \u2014 forensic capture (Tier-1 + Tier-2) + GEMINI_A
+    # ---------------------------------------------------------------
+
+    @t("v5.1.2: GEMINI_A is the 4th SHADOW_CONFIGS entry at 110/85")
+    def _():
+        cfgs = vp_mod.SHADOW_CONFIGS
+        assert len(cfgs) == 4, cfgs
+        gem = cfgs[3]
+        assert gem["name"] == "GEMINI_A", gem
+        assert gem["ticker_enabled"] is True and gem["index_enabled"] is True, gem
+        assert gem["ticker_pct"] == 110, gem
+        assert gem["index_pct"] == 85, gem
+
+    @t("v5.1.2: evaluate_g4_config GEMINI_A PASS at 110%/85%")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4_config(
+            ticker="AMD", minute_bucket="1030",
+            current_volume=1100, profile=prof,
+            index_current_volume=1700, index_profile=qqq,
+            ticker_enabled=True, index_enabled=True,
+            ticker_pct=110, index_pct=85,
+        )
+        assert out["verdict"] == "PASS", out
+        assert out["reason"] == "OK", out
+        assert out["ticker_pct"] == 110, out
+        assert out["qqq_pct"] == 85, out
+
+    @t("v5.1.2: evaluate_g4_config GEMINI_A BLOCK low ticker (just under 110%)")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4_config(
+            ticker="AMD", minute_bucket="1030",
+            current_volume=1090, profile=prof,
+            index_current_volume=1800, index_profile=qqq,
+            ticker_enabled=True, index_enabled=True,
+            ticker_pct=110, index_pct=85,
+        )
+        assert out["verdict"] == "BLOCK", out
+        assert out["reason"] == "LOW_TICKER", out
+
+    @t("v5.1.2: indicators module imports and exposes pure functions")
+    def _():
+        import indicators as ind
+        for fn in ("rsi14", "ema9", "ema21", "atr14",
+                   "vwap_dist_pct", "spread_bps"):
+            assert hasattr(ind, fn) and callable(getattr(ind, fn)), fn
+
+    @t("v5.1.2: indicators.rsi14 returns None on insufficient bars")
+    def _():
+        import indicators as ind
+        assert ind.rsi14([]) is None
+        assert ind.rsi14([1.0] * 14) is None  # need >= 15
+
+    @t("v5.1.2: indicators.rsi14 happy path returns finite float")
+    def _():
+        import indicators as ind
+        closes = [10.0 + i * 0.1 for i in range(30)]
+        v = ind.rsi14(closes)
+        assert v is not None and 0.0 <= v <= 100.0, v
+
+    @t("v5.1.2: indicators.ema9 returns None below period; value above")
+    def _():
+        import indicators as ind
+        assert ind.ema9([1.0] * 8) is None
+        v = ind.ema9([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        assert v is not None and 1.0 <= v <= 10.0, v
+
+    @t("v5.1.2: indicators.ema21 returns None below period; value above")
+    def _():
+        import indicators as ind
+        assert ind.ema21([1.0] * 20) is None
+        closes = [float(i) for i in range(30)]
+        v = ind.ema21(closes)
+        assert v is not None and 0.0 <= v <= 30.0, v
+
+    @t("v5.1.2: indicators.atr14 None on insufficient bars; finite otherwise")
+    def _():
+        import indicators as ind
+        assert ind.atr14([]) is None
+        bars = [{"high": 10 + i * 0.1, "low": 9.5 + i * 0.1,
+                 "close": 9.9 + i * 0.1} for i in range(30)]
+        v = ind.atr14(bars)
+        assert v is not None and v > 0.0, v
+
+    @t("v5.1.2: indicators.vwap_dist_pct None on empty; pct on data")
+    def _():
+        import indicators as ind
+        assert ind.vwap_dist_pct([]) is None
+        bars = [{"high": 100.0, "low": 99.0, "close": 99.5, "volume": 1000}
+                for _ in range(5)]
+        bars.append({"high": 102.0, "low": 101.0, "close": 101.5, "volume": 1000})
+        v = ind.vwap_dist_pct(bars)
+        assert v is not None and v > 0.0, v
+
+    @t("v5.1.2: indicators.spread_bps None on bad input; finite on good")
+    def _():
+        import indicators as ind
+        assert ind.spread_bps(None, None) is None
+        assert ind.spread_bps(0.0, 100.0) is None
+        assert ind.spread_bps(100.0, 99.0) is None  # crossed
+        v = ind.spread_bps(99.99, 100.01)
+        assert v is not None and v > 0.0, v
+
+    @t("v5.1.2: bar_archive.write_bar writes JSONL to dated path")
+    def _():
+        import json as _json
+        import tempfile
+        import bar_archive as ba
+        from datetime import date as _date
+        with tempfile.TemporaryDirectory() as td:
+            bar = {"ts": "2026-04-28T14:31:00", "et_bucket": "1031",
+                   "open": 425.93, "high": 426.10, "low": 425.50,
+                   "close": 425.85, "iex_volume": 1851,
+                   "iex_sip_ratio_used": 0.082,
+                   "bid": 425.84, "ask": 425.86,
+                   "last_trade_price": 425.85}
+            today = _date(2026, 4, 28)
+            path = ba.write_bar("amd", bar, base_dir=td, today=today)
+            assert path is not None, "write_bar returned None"
+            assert "/2026-04-28/AMD.jsonl" in path, path
+            with open(path) as fh:
+                lines = fh.read().splitlines()
+            assert len(lines) == 1, lines
+            obj = _json.loads(lines[0])
+            for k in ba.BAR_SCHEMA_FIELDS:
+                assert k in obj, k
+            assert obj["close"] == 425.85, obj
+
+    @t("v5.1.2: bar_archive.write_bar appends multiple lines atomically")
+    def _():
+        import tempfile
+        import bar_archive as ba
+        from datetime import date as _date
+        with tempfile.TemporaryDirectory() as td:
+            today = _date(2026, 4, 28)
+            for i in range(5):
+                ba.write_bar("AMD", {"close": 100.0 + i}, base_dir=td, today=today)
+            with open(f"{td}/2026-04-28/AMD.jsonl") as fh:
+                assert len(fh.read().splitlines()) == 5
+
+    @t("v5.1.2: bar_archive.cleanup_old_dirs keeps recent, deletes old")
+    def _():
+        import os as _os
+        import tempfile
+        import bar_archive as ba
+        from datetime import date as _date
+        with tempfile.TemporaryDirectory() as td:
+            for d in ("2025-01-01", "2026-04-20", "2026-04-26"):
+                _os.makedirs(f"{td}/{d}")
+                with open(f"{td}/{d}/X.jsonl", "w") as fh:
+                    fh.write("{}\n")
+            today = _date(2026, 4, 26)
+            deleted = ba.cleanup_old_dirs(base_dir=td, retain_days=90, today=today)
+            assert any("2025-01-01" in d for d in deleted), deleted
+            assert _os.path.isdir(f"{td}/2026-04-20"), "recent dir was wrongly deleted"
+            assert _os.path.isdir(f"{td}/2026-04-26"), "today's dir was wrongly deleted"
+
+    @t("v5.1.2: bar_archive.write_bar projects unknown keys away")
+    def _():
+        import json as _json
+        import tempfile
+        import bar_archive as ba
+        from datetime import date as _date
+        with tempfile.TemporaryDirectory() as td:
+            today = _date(2026, 4, 28)
+            ba.write_bar("AMD", {"close": 1.0, "garbage_key": "x"},
+                         base_dir=td, today=today)
+            with open(f"{td}/2026-04-28/AMD.jsonl") as fh:
+                obj = _json.loads(fh.read().splitlines()[0])
+            assert "garbage_key" not in obj
+            assert obj["close"] == 1.0
+
+    def _v512_capture_logger():
+        import logging as _logging
+
+        seen: list[str] = []
+
+        class _H(_logging.Handler):
+            def emit(self, rec):
+                seen.append(rec.getMessage())
+        tg_logger = _logging.getLogger("trade_genius")
+        h = _H(); h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h); old_level = tg_logger.level
+        tg_logger.setLevel(_logging.INFO)
+        return seen, h, tg_logger, old_level
+
+    def _v512_release_logger(h, tg_logger, old_level):
+        tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+
+    @t("v5.1.2: [V510-MINUTE] line emitted with expected fields")
+    def _():
+        seen, h, lg, old = _v512_capture_logger()
+        try:
+            m._v512_log_minute("AMD", "1448", 84, 112, 346.19, 12345)
+        finally:
+            _v512_release_logger(h, lg, old)
+        line = next((s for s in seen if "[V510-MINUTE]" in s), None)
+        assert line is not None, seen
+        for tok in ("ticker=AMD", "bucket=1448", "t_pct=84",
+                    "qqq_pct=112", "vol=12345"):
+            assert tok in line, (tok, line)
+
+    @t("v5.1.2: [V510-MINUTE] renders None as 'null'")
+    def _():
+        seen, h, lg, old = _v512_capture_logger()
+        try:
+            m._v512_log_minute("AMD", None, None, None, None, None)
+        finally:
+            _v512_release_logger(h, lg, old)
+        line = next((s for s in seen if "[V510-MINUTE]" in s), None)
+        assert line is not None
+        assert "bucket=null" in line
+        assert "t_pct=null" in line
+        assert "vol=null" in line
+
+    @t("v5.1.2: [V510-CAND] emitted on entered=YES with all fields")
+    def _():
+        seen, h, lg, old = _v512_capture_logger()
+        try:
+            m._v512_log_candidate(
+                "AMD", "1450", 1, "ARMED", True,
+                m.CAND_REASON_BREAKOUT_CONFIRMED,
+                t_pct=92, qqq_pct=118, close=347.05, stop=343.20,
+                rsi14_=68.4, ema9_=345.80, ema21_=343.92,
+                atr14_=1.85, vwap_dist_pct_=0.42, spread_bps_=2.9,
+            )
+        finally:
+            _v512_release_logger(h, lg, old)
+        line = next((s for s in seen if "[V510-CAND]" in s), None)
+        assert line is not None, seen
+        for tok in ("entered=YES", "reason=BREAKOUT_CONFIRMED",
+                    "rsi14=68.4", "ema9=345.8", "ema21=343.92",
+                    "atr14=1.85", "vwap_dist_pct=0.42",
+                    "spread_bps=2.9", "fsm_state=ARMED"):
+            assert tok in line, (tok, line)
+
+    @t("v5.1.2: [V510-CAND] emitted on entered=NO with null indicators")
+    def _():
+        seen, h, lg, old = _v512_capture_logger()
+        try:
+            m._v512_log_candidate(
+                "AMD", "1448", 1, "OBSERVE", False,
+                m.CAND_REASON_NO_BREAKOUT,
+                t_pct=84, qqq_pct=112, close=346.19,
+            )
+        finally:
+            _v512_release_logger(h, lg, old)
+        line = next((s for s in seen if "[V510-CAND]" in s), None)
+        assert line is not None, seen
+        assert "entered=NO" in line
+        assert "reason=NO_BREAKOUT" in line
+        assert "rsi14=null" in line
+        assert "ema9=null" in line
+        assert "atr14=null" in line
+        assert "vwap_dist_pct=null" in line
+        assert "spread_bps=null" in line
+        assert "stop=null" in line
+
+    @t("v5.1.2: [V510-CAND] reason set is fixed and complete")
+    def _():
+        for r in ("NO_BREAKOUT", "STAGE_NOT_READY", "ALREADY_OPEN",
+                  "COOL_DOWN", "MAX_POSITIONS", "BREAKOUT_CONFIRMED"):
+            assert r in m.CAND_REASONS, r
+
+    @t("v5.1.2: [V510-FSM] emits on transition")
+    def _():
+        seen, h, lg, old = _v512_capture_logger()
+        try:
+            m._v512_log_fsm_transition("AMD", "IDLE", "WATCHING",
+                                       "VOL_SPIKE_DETECTED", "1445")
+        finally:
+            _v512_release_logger(h, lg, old)
+        line = next((s for s in seen if "[V510-FSM]" in s), None)
+        assert line is not None, seen
+        assert "from=IDLE" in line and "to=WATCHING" in line
+        assert "reason=VOL_SPIKE_DETECTED" in line
+        assert "bucket=1445" in line
+
+    @t("v5.1.2: [V510-FSM] does NOT emit on no-op (from==to)")
+    def _():
+        seen, h, lg, old = _v512_capture_logger()
+        try:
+            m._v512_log_fsm_transition("AMD", "ARMED", "ARMED",
+                                       "noop", "1445")
+        finally:
+            _v512_release_logger(h, lg, old)
+        assert not any("[V510-FSM]" in s for s in seen), seen
+
+    @t("v5.1.2: [V510-ENTRY] emitter carries bid/ask + account state")
+    def _():
+        seen, h, lg, old = _v512_capture_logger()
+        try:
+            m._v512_log_entry_extension(
+                "AMD", bid=345.10, ask=345.14,
+                cash=1234.56, equity=2345.67,
+                open_positions=2, total_exposure_pct=42.5,
+                current_drawdown_pct=0.0,
+            )
+        finally:
+            _v512_release_logger(h, lg, old)
+        line = next((s for s in seen if "[V510-ENTRY]" in s), None)
+        assert line is not None, seen
+        for tok in ("ticker=AMD", "bid=345.1", "ask=345.14",
+                    "cash=1234.56", "equity=2345.67",
+                    "open_positions=2", "total_exposure_pct=42.5",
+                    "current_drawdown_pct=0"):
+            assert tok in line, (tok, line)
+
+    @t("v5.1.2: Dockerfile COPY includes indicators.py and bar_archive.py")
+    def _():
+        df = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+        assert "COPY indicators.py" in df, "Dockerfile missing COPY indicators.py"
+        assert "COPY bar_archive.py" in df, "Dockerfile missing COPY bar_archive.py"
+
+    @t("v5.1.2: VOL_GATE_ENFORCE default still 0 (regression guard)")
+    def _():
+        saved = _v511_save_env()
+        try:
+            os.environ.pop("VOL_GATE_ENFORCE", None)
+            cfg = vp_mod.load_active_config()
+            assert cfg["enforce"] is False, cfg
+        finally:
+            _v511_restore_env(saved)
+
+    @t("v5.1.2: trade_genius imports indicators and bar_archive modules")
+    def _():
+        assert hasattr(m, "indicators")
+        assert hasattr(m, "bar_archive")
+
+    return run_suite("LOCAL SMOKE TESTS (v5.1.2 Tiger/Buffalo + Forensic Capture)")
 
 
 # ============================================================
