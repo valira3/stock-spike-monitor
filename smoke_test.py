@@ -3935,6 +3935,209 @@ def run_local() -> int:
         # Cleanup.
         m._v519_rehunt_watch.clear()
 
+    # ==================================================================
+    # === v5.2.1 Idempotency + Reconcile ===
+    # ==================================================================
+
+    def _make_executor():
+        """Build a TradeGeniusVal with creds stubbed; never builds a
+        real Alpaca client. Each test attaches its own fake client to
+        ex.client and calls helpers directly."""
+        ex = m.TradeGeniusVal()
+        ex.client = None  # tests will assign a fake
+        ex.positions = {}  # fresh dict per test
+        return ex
+
+    class _FakeOrder:
+        def __init__(self, oid="srv-123", coid=None):
+            self.id = oid
+            self.client_order_id = coid
+
+    class _FakeBrokerPos:
+        def __init__(self, symbol, qty, avg):
+            self.symbol = symbol
+            self.qty = qty
+            self.avg_entry_price = avg
+
+    @t("v5.2.1: client_order_id present + format on submit")
+    def _():
+        ex = _make_executor()
+        captured = {}
+
+        class FakeClient:
+            def submit_order(self, req):
+                captured["req"] = req
+                return _FakeOrder(coid=getattr(req, "client_order_id", None))
+
+            def get_order_by_client_id(self, coid):
+                raise AssertionError("should not be called on success")
+
+        ex.client = FakeClient()
+        # Stub _ensure_client to skip network
+        ex._ensure_client = lambda: ex.client
+        # Drive the public path (_on_signal) so we exercise the real
+        # construction site, not the helper alone.
+        ex._shares_for = lambda price, ticker=None: 5
+        ex._send_own_telegram = lambda *a, **k: None
+        ex._on_signal({
+            "kind": "ENTRY_LONG",
+            "ticker": "aapl",  # lowercase to exercise sanitizer
+            "price": 150.0,
+            "reason": "test",
+        })
+        req = captured.get("req")
+        assert req is not None, "submit_order was not called"
+        coid = getattr(req, "client_order_id", None)
+        assert coid, f"missing client_order_id: {coid!r}"
+        # f"{NAME}-{ticker}-{utc_iso_minute}-{direction}"
+        # NAME=VAL, ticker sanitized to AAPL upper, direction LONG
+        parts = coid.split("-")
+        assert parts[0] == "VAL", parts
+        assert parts[1] == "AAPL", parts
+        assert parts[3] == "LONG", parts
+        # minute portion: YYYYMMDDTHHMM
+        assert len(parts[2]) == 13 and "T" in parts[2], parts[2]
+        # Length under Alpaca's 128-char ceiling
+        assert len(coid) <= 128
+        # Side-effect: positions stamped with SIGNAL source.
+        # _record_position keys by raw signal ticker (sanitization
+        # only happens inside the coid). Real signal flow always
+        # sends upper-case so the executor view stays case-stable.
+        assert "aapl" in ex.positions
+        assert ex.positions["aapl"]["source"] == "SIGNAL"
+        assert ex.positions["aapl"]["side"] == "LONG"
+
+    @t("v5.2.1: duplicate coid APIError treated as success")
+    def _():
+        ex = _make_executor()
+        calls = {"submits": 0, "lookups": 0}
+
+        class FakeClient:
+            def submit_order(self, req):
+                calls["submits"] += 1
+                raise Exception("client order id must be unique")
+
+            def get_order_by_client_id(self, coid):
+                calls["lookups"] += 1
+                return _FakeOrder(oid="existing-srv-id", coid=coid)
+
+        ex.client = FakeClient()
+        ex._ensure_client = lambda: ex.client
+        ex._shares_for = lambda price, ticker=None: 5
+        ex._send_own_telegram = lambda *a, **k: None
+        ex._on_signal({
+            "kind": "ENTRY_SHORT",
+            "ticker": "TSLA",
+            "price": 200.0,
+            "reason": "test",
+        })
+        # Single submit attempt, single lookup, position recorded.
+        assert calls["submits"] == 1, calls
+        assert calls["lookups"] == 1, calls
+        assert "TSLA" in ex.positions
+        assert ex.positions["TSLA"]["side"] == "SHORT"
+
+    @t("v5.2.1: timeout-after-accept does not double-place on retry")
+    def _():
+        ex = _make_executor()
+        state = {"phase": "first", "submits": 0, "lookups": 0}
+
+        class FakeClient:
+            def submit_order(self, req):
+                state["submits"] += 1
+                if state["phase"] == "first":
+                    # Broker accepted but client side timed out.
+                    raise TimeoutError("HTTP read timeout after 30s")
+                # Second call: same coid, broker rejects as duplicate.
+                raise Exception("client order id must be unique")
+
+            def get_order_by_client_id(self, coid):
+                state["lookups"] += 1
+                return _FakeOrder(oid="recovered-srv-id", coid=coid)
+
+        ex.client = FakeClient()
+        ex._ensure_client = lambda: ex.client
+        ex._shares_for = lambda price, ticker=None: 5
+        ex._send_own_telegram = lambda *a, **k: None
+        # First signal: timeout. _on_signal swallows the dispatch error.
+        ex._on_signal({
+            "kind": "ENTRY_LONG",
+            "ticker": "MSFT",
+            "price": 300.0,
+            "reason": "first",
+        })
+        # First submit attempted, no lookup, no position recorded.
+        assert state["submits"] == 1, state
+        assert state["lookups"] == 0, state
+        assert "MSFT" not in ex.positions, ex.positions
+        # Second signal in the same minute/direction: same coid, dup
+        # path fires. Submit is attempted but rejected; lookup recovers.
+        state["phase"] = "second"
+        ex._on_signal({
+            "kind": "ENTRY_LONG",
+            "ticker": "MSFT",
+            "price": 300.0,
+            "reason": "retry",
+        })
+        assert state["submits"] == 2, state
+        assert state["lookups"] == 1, state
+        # Position now recorded via the dup-as-success path.
+        assert "MSFT" in ex.positions
+        assert ex.positions["MSFT"]["source"] == "SIGNAL"
+
+    @t("v5.2.1: reconcile grafts broker orphans into self.positions")
+    def _():
+        ex = _make_executor()
+
+        class FakeClient:
+            def get_all_positions(self):
+                return [
+                    _FakeBrokerPos("ORPH", 7, "12.50"),
+                    _FakeBrokerPos("SHRT", -3, "45.10"),
+                ]
+
+        ex.client = FakeClient()
+        ex._ensure_client = lambda: ex.client
+        ex._send_own_telegram = lambda *a, **k: None
+        ex._reconcile_broker_positions()
+        assert "ORPH" in ex.positions
+        assert ex.positions["ORPH"]["source"] == "RECONCILE"
+        assert ex.positions["ORPH"]["side"] == "LONG"
+        assert ex.positions["ORPH"]["qty"] == 7
+        assert abs(ex.positions["ORPH"]["entry_price"] - 12.5) < 1e-6
+        assert ex.positions["ORPH"]["stop"] is None
+        assert ex.positions["ORPH"]["trail"] is None
+        assert "SHRT" in ex.positions
+        assert ex.positions["SHRT"]["side"] == "SHORT"
+        assert ex.positions["SHRT"]["qty"] == 3
+
+    @t("v5.2.1: reconcile leaves known positions untouched")
+    def _():
+        ex = _make_executor()
+        # Pre-populate with a SIGNAL-source entry the bot already knows.
+        ex.positions["KNWN"] = {
+            "ticker": "KNWN",
+            "side": "LONG",
+            "qty": 10,
+            "entry_price": 99.99,
+            "entry_ts_utc": "2026-04-26T00:00:00+00:00",
+            "source": "SIGNAL",
+            "stop": 95.0,
+            "trail": 100.5,
+        }
+        snapshot = dict(ex.positions["KNWN"])
+
+        class FakeClient:
+            def get_all_positions(self):
+                # Same ticker on the broker side \u2014 must NOT clobber.
+                return [_FakeBrokerPos("KNWN", 10, "50.00")]
+
+        ex.client = FakeClient()
+        ex._ensure_client = lambda: ex.client
+        ex._send_own_telegram = lambda *a, **k: None
+        ex._reconcile_broker_positions()
+        assert ex.positions["KNWN"] == snapshot, ex.positions["KNWN"]
+
     return run_suite("LOCAL SMOKE TESTS (v5.1.2 Tiger/Buffalo + Forensic Capture)")
 
 

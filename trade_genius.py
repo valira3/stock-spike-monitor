@@ -93,36 +93,48 @@ BOT_VERSION = "5.2.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.2.1 \u2014 shadow accounting\n"
-    "fixes. H3: shadow MTM now\n"
-    "runs unconditionally each\n"
-    "scan cycle (was gated behind\n"
-    "`if not paper_holds:` so any\n"
-    "ticker paper opened froze\n"
-    "shadow marks). H2: EOD now\n"
-    "force-closes orphan shadow\n"
-    "positions at entry_price\n"
-    "with EOD_NO_MARK reason\n"
-    "(was silently leaving them\n"
-    "open in SQLite). M3: close-\n"
-    "fanout iterates the canonical\n"
-    "SHADOW_CONFIGS registry so\n"
-    "new configs are picked up\n"
-    "automatically. M4: rehunt\n"
-    "watch keyed on (ticker,\n"
-    "side) so long+short whip-\n"
-    "saws on one minute coexist."
+    "v5.2.1 \u2014 fix: Alpaca order\n"
+    "idempotency + startup\n"
+    "broker-position reconcile.\n"
+    "Every submit_order now\n"
+    "carries a deterministic\n"
+    "client_order_id of form\n"
+    "{NAME}-{ticker}-{minute}-\n"
+    "{LONG/SHORT}. A retry after\n"
+    "an HTTP timeout that the\n"
+    "broker had already accepted\n"
+    "is rejected by Alpaca with\n"
+    "the same coid; the bot now\n"
+    "looks the original order up\n"
+    "and treats it as success\n"
+    "rather than double-placing.\n"
+    "On boot each executor pulls\n"
+    "client.get_all_positions and\n"
+    "grafts every broker orphan\n"
+    "into self.positions with\n"
+    "source=RECONCILE so MTM,\n"
+    "trail, and EOD-close manage\n"
+    "it like a normal entry.\n"
+    "Also: shadow accounting\n"
+    "fixes (H3 unconditional MTM,\n"
+    "H2 EOD orphan force-close,\n"
+    "M3 registry-driven close\n"
+    "fanout, M4 rehunt keyed on\n"
+    "(ticker, side))."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
-    "v5.2.0 \u2014 real-time shadow\n"
-    "strategy P&L tracker on the\n"
-    "main dashboard. Each of the\n"
-    "7 SHADOW_CONFIGS owns a\n"
-    "virtual portfolio sized via\n"
-    "the v5.1.4 equity formula\n"
-    "on the paper book.\n"
+    "v5.2.0 \u2014 real-time MTM P&L\n"
+    "tracker for all 7 SHADOW_\n"
+    "CONFIGS on the main dashboard.\n"
+    "Each config owns a virtual\n"
+    "portfolio sized off paper-book\n"
+    "equity. Open positions are\n"
+    "marked to market every scan\n"
+    "cycle; exits mirror the paper\n"
+    "bot's HARD_EJECT/trail/EOD\n"
+    "path. New panel on Main tab.\n"
     "\n"
     "v5.1.9 \u2014 REHUNT_VOL_CONFIRM\n"
     "+ OOMPH_ALERT shadow configs.\n"
@@ -988,6 +1000,11 @@ class TradeGeniusBase:
         # Track whether we've already logged the "empty chat-map" warning
         # so the warning fires once per process, not on every signal.
         self._empty_chats_warned = False
+        # v5.2.1 \u2014 executor-side view of broker positions, keyed by
+        # ticker. Populated by _record_position on successful submit and
+        # by _reconcile_broker_positions at boot. Used to detect orphans
+        # the bot does not know about (broker accepted, client timed out).
+        self.positions: dict = {}
 
     # ---------- state files ----------
     def _state_file(self, mode: str = None) -> str:
@@ -1301,6 +1318,132 @@ class TradeGeniusBase:
                     self.NAME, owner_id, chat_id,
                 )
 
+    # ---------- v5.2.1 idempotency + reconcile ----------
+    def _build_client_order_id(self, ticker: str, direction: str) -> str:
+        """Deterministic client_order_id for Alpaca submit_order.
+
+        Format: f"{NAME}-{ticker}-{utc_iso_minute}-{direction}".
+        Two signals for the same (executor, ticker, minute, direction)
+        collapse to the same coid \u2014 Alpaca rejects the dup, the bot
+        treats the rejection as success (broker has the original).
+        """
+        sym = "".join(c for c in (ticker or "").upper() if c.isalnum())
+        utc_iso_minute = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
+        name = (self.NAME or "BASE").upper()
+        return f"{name}-{sym}-{utc_iso_minute}-{direction}"
+
+    def _submit_order_idempotent(self, client, req, coid: str):
+        """Wrap client.submit_order with duplicate-coid \u2192 success handling.
+
+        On APIError whose message says the client_order_id must be unique
+        (HTTP 422 from Alpaca), look up the existing order by coid and
+        return it as if the submit had just succeeded. Re-raise anything
+        else.
+        """
+        try:
+            return client.submit_order(req)
+        except Exception as e:
+            msg = str(e).lower()
+            if "client order id" in msg and ("unique" in msg or "duplicate" in msg):
+                try:
+                    existing = client.get_order_by_client_id(coid)
+                except Exception:
+                    logger.exception(
+                        "[%s] [IDEMPOTENCY] dup rejected but lookup failed coid=%s",
+                        self.NAME, coid,
+                    )
+                    raise
+                logger.warning(
+                    "[%s] [IDEMPOTENCY] submit_order duplicate rejected as expected: "
+                    "coid=%s order_id=%s",
+                    self.NAME, coid, getattr(existing, "id", "?"),
+                )
+                return existing
+            raise
+
+    def _record_position(self, ticker: str, side: str, qty: int, entry_price: float) -> None:
+        """Stamp an executor-side record after a successful submit."""
+        self.positions[ticker] = {
+            "ticker": ticker,
+            "side": side,
+            "qty": int(qty),
+            "entry_price": float(entry_price) if entry_price else 0.0,
+            "entry_ts_utc": datetime.now(timezone.utc).isoformat(),
+            "source": "SIGNAL",
+            "stop": None,
+            "trail": None,
+        }
+
+    def _reconcile_broker_positions(self) -> None:
+        """Run once at boot. Pull broker positions, graft any orphans.
+
+        For every broker-side position not present in self.positions,
+        reconstruct an entry with source='RECONCILE' so MTM/trail/EOD
+        manage it like a normal position. Stop/trail are left None and
+        rebuilt fresh from current price by the next MTM cycle.
+        """
+        client = self._ensure_client()
+        if client is None:
+            logger.warning(
+                "[%s] [RECONCILE] no alpaca client \u2014 skipping",
+                self.NAME,
+            )
+            return
+        try:
+            broker_positions = client.get_all_positions()
+        except Exception as e:
+            logger.error(
+                "[%s] [RECONCILE] get_all_positions failed: %s",
+                self.NAME, e,
+            )
+            return
+
+        grafted = 0
+        for bp in broker_positions or []:
+            ticker = getattr(bp, "symbol", None)
+            if not ticker:
+                continue
+            if ticker in self.positions:
+                continue
+            try:
+                qty_int = int(bp.qty)
+            except Exception:
+                logger.exception(
+                    "[%s] [RECONCILE] bad qty on %s, skipping",
+                    self.NAME, ticker,
+                )
+                continue
+            side = "LONG" if qty_int > 0 else "SHORT"
+            try:
+                entry_px = float(bp.avg_entry_price)
+            except Exception:
+                entry_px = 0.0
+            self.positions[ticker] = {
+                "ticker": ticker,
+                "side": side,
+                "qty": abs(qty_int),
+                "entry_price": entry_px,
+                "entry_ts_utc": datetime.now(timezone.utc).isoformat(),
+                "source": "RECONCILE",
+                "stop": None,
+                "trail": None,
+            }
+            grafted += 1
+            logger.warning(
+                "[%s] [RECONCILE] grafted broker orphan: ticker=%s side=%s qty=%d entry=%.2f",
+                self.NAME, ticker, side, abs(qty_int), entry_px,
+            )
+
+        if grafted > 0:
+            try:
+                self._send_own_telegram(
+                    f"\u26a0\ufe0f Reconcile: grafted {grafted} broker orphan(s) on {self.NAME} boot"
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] [RECONCILE] telegram fan-out raised", self.NAME,
+                )
+
     def _on_signal(self, event: dict) -> None:
         """Listener callback: dispatch on event['kind']."""
         kind = event.get("kind", "")
@@ -1342,11 +1485,14 @@ class TradeGeniusBase:
                 qty = self._shares_for(price, ticker=ticker)
                 if qty <= 0:
                     return
-                order = client.submit_order(MarketOrderRequest(
+                coid = self._build_client_order_id(ticker, "LONG")
+                order = self._submit_order_idempotent(client, MarketOrderRequest(
                     symbol=ticker, qty=qty,
                     side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
-                ))
+                    client_order_id=coid,
+                ), coid)
                 oid = getattr(order, "id", "?")
+                self._record_position(ticker, "LONG", qty, price)
                 msg = f"\u2705 {label}: {ticker} BUY {qty} shares @ market (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
@@ -1354,11 +1500,14 @@ class TradeGeniusBase:
                 qty = self._shares_for(price, ticker=ticker)
                 if qty <= 0:
                     return
-                order = client.submit_order(MarketOrderRequest(
+                coid = self._build_client_order_id(ticker, "SHORT")
+                order = self._submit_order_idempotent(client, MarketOrderRequest(
                     symbol=ticker, qty=qty,
                     side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
-                ))
+                    client_order_id=coid,
+                ), coid)
                 oid = getattr(order, "id", "?")
+                self._record_position(ticker, "SHORT", qty, price)
                 msg = f"\u2705 {label}: {ticker} SELL {qty} shares short @ market (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
@@ -1726,6 +1875,17 @@ class TradeGeniusBase:
         # Try to build the alpaca client eagerly so startup logs surface
         # missing/bad creds; failures are already caught + logged.
         self._ensure_client()
+        # v5.2.1 \u2014 reconcile broker-side positions into self.positions
+        # before the scan loop starts so orphan trades (broker accepted
+        # but client timed out on a prior boot) get managed as normal.
+        # Wrapped: a bad reconcile must not block scanner startup.
+        try:
+            self._reconcile_broker_positions()
+        except Exception:
+            logger.exception(
+                "[%s] [RECONCILE] unexpected failure \u2014 continuing startup",
+                self.NAME,
+            )
         logger.info("[%s] started in %s mode", self.NAME, self.mode)
         # Own Telegram bot in a background thread so main.run_telegram_bot()
         # can still own the main-process asyncio loop.
