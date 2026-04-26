@@ -73,7 +73,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.2"
+BOT_VERSION = "5.1.3"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -91,6 +91,18 @@ BOT_VERSION = "5.1.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.1.3 \u2014 chore: removed\n"
+    "unused Finnhub SPY-quote\n"
+    "fallback from /health\n"
+    "diagnostic. FMP already\n"
+    "returns SPY in the same\n"
+    "diagnostic. No trading-path\n"
+    "impact. FINNHUB_TOKEN env\n"
+    "var is no longer read."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.1.2 \u2014 forensic capture\n"
     "+ GEMINI_A shadow config.\n"
     "Tier-1: 1m bar JSONL archive\n"
@@ -105,19 +117,14 @@ CURRENT_MAIN_NOTE = (
     "snapshot on [V510-CAND]\n"
     "(rsi14/ema9/ema21/atr14/\n"
     "vwap_dist_pct/spread_bps).\n"
-    "\n"
     "GEMINI_A 110/85 added as a\n"
     "4th hard-coded SHADOW_CONFIG\n"
     "(only config with positive\n"
     "net swing in Apr 20-24 BT).\n"
-    "\n"
     "Defaults preserve v5.1.1\n"
     "behavior; VOL_GATE_ENFORCE=0\n"
-    "stays. Still SHADOW MODE."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "stays. Still SHADOW MODE.\n"
+    "\n"
     "v5.1.1 \u2014 SHADOW A/B: env-\n"
     "driven toggles + 3 parallel\n"
     "shadow verdicts per candidate\n"
@@ -678,7 +685,6 @@ MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE + "\n\n" + _MAIN_HISTORY_TAIL
 RELEASE_NOTE = MAIN_RELEASE_NOTE
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
-FINNHUB_TOKEN = os.getenv("FINNHUB_TOKEN", "")
 
 # Human-readable exit reason labels
 REASON_LABELS = {
@@ -5467,7 +5473,7 @@ def check_breakout(ticker, side):
         logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
         return False, None
 
-    # Fetch current bar (Finnhub/Yahoo as fallback)
+    # Fetch current bar (Yahoo)
     bars = fetch_1min_bars(ticker)
     if not bars:
         return False, None
@@ -6633,26 +6639,7 @@ def _run_system_test_sync(label: str) -> None:
         issues += 1
         lines.append("FMP: \u274c %s" % exc)
 
-    # B. Finnhub fallback check
-    try:
-        fhb_url = (
-            "https://finnhub.io/api/v1/quote?symbol=SPY&token=%s"
-            % FINNHUB_TOKEN
-        )
-        req = urllib.request.Request(fhb_url, headers=YAHOO_HEADERS)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            fhb_data = json.loads(resp.read())
-        fhb_price = float(fhb_data.get("c", 0))
-        if fhb_price > 0:
-            lines.append("FHB: \u2705 SPY $%.2f" % fhb_price)
-        else:
-            issues += 1
-            lines.append("FHB: \u274c no price data")
-    except Exception as exc:
-        issues += 1
-        lines.append("FHB: \u274c %s" % exc)
-
-    # C. State health check
+    # B. State health check
     try:
         with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
             ps = json.load(f)
@@ -6665,11 +6652,11 @@ def _run_system_test_sync(label: str) -> None:
         issues += 1
         lines.append("State: \u274c %s" % exc)
 
-    # D. Positions count
+    # C. Positions count
     n_paper = len(positions) + len(short_positions)
     lines.append("Pos: %d paper" % n_paper)
 
-    # E. Scanner health
+    # D. Scanner health
     if _last_scan_time is None:
         lines.append("Scanner: \u23f8 Not started")
     else:
@@ -6684,7 +6671,7 @@ def _run_system_test_sync(label: str) -> None:
                 "Scanner: \u274c STALLED (%dm %ds ago)" % (mins, secs)
             )
 
-    # F. OR status — only for 8:31 CT label
+    # E. OR status — only for 8:31 CT label
     if label == "8:31 CT":
         n_or = sum(1 for t in TRADE_TICKERS if t in or_high)
         lines.append("ORs set: %d / %d tickers" % (n_or, len(TRADE_TICKERS)))
@@ -6736,24 +6723,6 @@ def _test_fmp():
         return "\u274c %s" % exc
 
 
-def _test_finnhub():
-    """Test Finnhub API — returns status string."""
-    try:
-        fhb_url = (
-            "https://finnhub.io/api/v1/quote?symbol=SPY&token=%s"
-            % FINNHUB_TOKEN
-        )
-        req = urllib.request.Request(fhb_url, headers=YAHOO_HEADERS)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            fhb_data = json.loads(resp.read())
-        fhb_price = float(fhb_data.get("c", 0))
-        if fhb_price > 0:
-            return "\u2705 SPY $%.2f" % fhb_price
-        return "\u274c no price data"
-    except Exception as exc:
-        return "\u274c %s" % exc
-
-
 def _test_state():
     """Test state files — returns status string."""
     try:
@@ -6788,7 +6757,6 @@ def _build_test_progress(results):
     SEP = "\u2500" * 30
     steps = [
         ("FMP API", "fmp"),
-        ("Finnhub", "fhb"),
         ("State files", "state"),
         ("Positions", "pos"),
         ("Scanner", "scanner"),

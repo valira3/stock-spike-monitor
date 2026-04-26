@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.3 — 2026-04-25
+
+- chore: removed unused Finnhub SPY-quote fallback from /health diagnostic. FMP already provides SPY in the same diagnostic. No trading-path impact. `FINNHUB_TOKEN` env var no longer read.
+
+---
+
 ## v5.1.2 — 2026-04-26 — Forensic capture (Tier-1 + Tier-2) + GEMINI_A as 4th shadow config — STILL SHADOW MODE.
 
 **Why this exists.** Two motivations rolled into one release. First, after the Apr 20-24 backtest replay of Gene's Gemini-suggested configs, **GEMINI_A (ticker ≥110% AND QQQ ≥85%)** emerged as the only config with positive net P&L swing vs unfiltered (9 trades, +$497.92, 78% win rate, +$1.86 net swing). Val wants live shadow data on it next week alongside the three v5.1.1 configs so the post-hoc analysis includes it cleanly. Second, Val asked: "what additional data should we record so we can replicate, run scenarios, and backtest options at a later date?" The audit identified meaningful gaps: today we only log when a trade fires, only at the candidate moment, only at the active threshold, and we don't persist the underlying 1m bars or the indicator state at decision time. v5.1.2 closes those gaps so any future backtest is fully replayable from disk.

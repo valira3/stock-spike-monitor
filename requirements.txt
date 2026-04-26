@@ -7,7 +7,7 @@ openai==1.78.0        # used for Grok via xAI-compatible endpoint
 
 # ── Market data ───────────────────────────────────────────────
 requests==2.32.5
-yfinance==1.2.0       # fallback only; Finnhub is primary on Railway
+yfinance==1.2.0       # fallback only; Alpaca is primary on Railway
 
 # ── Charting / chart image generation ────────────────────────
 matplotlib==3.10.8
