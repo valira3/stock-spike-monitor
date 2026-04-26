@@ -73,7 +73,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.4"
+BOT_VERSION = "5.1.5"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -91,6 +91,23 @@ BOT_VERSION = "5.1.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.1.5 \u2014 fix: /test no\n"
+    "longer times out with\n"
+    "\"Command failed: Timed\n"
+    "out\". Per-step edit_text\n"
+    "calls inside the cmd_test\n"
+    "loop triggered Telegram\n"
+    "per-chat edit rate-limit;\n"
+    "final edit raced httpx\n"
+    "read-timeout. Now one\n"
+    "edit at end + reply_text\n"
+    "fallback. Underlying\n"
+    "_test_* steps were always\n"
+    "healthy."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.1.4 \u2014 equity-aware\n"
     "sizing for live executors.\n"
     "Each entry now capped at\n"
@@ -101,11 +118,8 @@ CURRENT_MAIN_NOTE = (
     "$500 reserve. Falls back\n"
     "to legacy fixed sizing on\n"
     "get_account() error. Paper\n"
-    "book unchanged."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "book unchanged.\n"
+    "\n"
     "v5.1.3 \u2014 chore: removed\n"
     "unused Finnhub SPY-quote\n"
     "fallback from /health\n"
