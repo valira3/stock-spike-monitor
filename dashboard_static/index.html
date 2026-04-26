@@ -49,13 +49,16 @@
   <span id="tg-brand-clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
 </div>
 
-<!-- v4.0.0-beta — 3-tab switcher (Main / Val / Gene). Only one panel is
-     visible at a time. Main is the existing full dashboard; Val and Gene
-     poll /api/executor/{name} every 15s. -->
+<!-- v4.0.0-beta / v5.3.0 — 4-tab switcher (Main / Val / Gene / Shadow).
+     Only one panel is visible at a time. Main is the existing full
+     dashboard; Val and Gene poll /api/executor/{name} every 15s. The
+     Shadow tab (v5.3.0) hosts the per-config shadow-strategy panel
+     that previously lived at the bottom of Main. -->
 <nav id="tg-tabs" style="display:flex;gap:0;background:#10151c;border-bottom:1px solid #1f2937;padding:0 14px">
   <button type="button" class="tg-tab tg-tab-on" data-tg-tab="main" style="background:transparent;border:none;color:#e7ecf3;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid #7dd3fc">Main <span style="color:#5b6572;font-size:10.5px">📄 Paper</span></button>
   <button type="button" class="tg-tab" data-tg-tab="val" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Val <span id="tg-badge-val" style="color:#5b6572;font-size:10.5px">—</span></button>
   <button type="button" class="tg-tab" data-tg-tab="gene" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Gene <span id="tg-badge-gene" style="color:#5b6572;font-size:10.5px">—</span></button>
+  <button type="button" class="tg-tab" data-tg-tab="shadow" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Shadow <span id="tg-badge-shadow" style="color:#5b6572;font-size:10.5px">—</span></button>
 </nav>
 
 <div id="tg-panel-main" class="tg-panel">
@@ -182,33 +185,6 @@
       </div>
     </section>
 
-    <!-- v5.2.0 — Shadow strategy P&L panel. Bottom of main dashboard,
-         polled via /api/state (same cadence as live trades). One row
-         per config + a bolded PAPER BOT row at the bottom for direct
-         comparison (same paper portfolio whose equity drives shadow
-         sizing). Best / worst today highlighted green / red.
-         v5.2.0 amendment: panel renders ONLY on the Main tab — the
-         CSS rule below hides it on Val/Gene via the body-scoped
-         data-tg-active-tab attribute. -->
-    <section class="grid" id="shadow-pnl-section">
-      <div class="card" id="shadow-pnl-card">
-        <div class="card-head">
-          <span class="card-title">Shadow strategies<span class="count" id="shadow-count">· —</span></span>
-          <span class="chip" id="shadow-best">—</span>
-        </div>
-        <div class="card-body flush">
-          <div class="shadow-pnl-head">
-            <span class="sp-h-name">Config</span>
-            <span class="sp-h-section">Today</span>
-            <span class="sp-h-section">Cumulative</span>
-          </div>
-          <div id="shadow-pnl-body" class="shadow-pnl-body">
-            <div class="empty">Waiting for shadow data…</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
   </main>
 </div>
 
@@ -229,6 +205,35 @@
      fills every field with em-dashes plus a "Gene executor not
      configured" placeholder banner. -->
 <div id="tg-panel-gene" class="tg-panel tg-exec-panel" data-tg-exec="gene" style="display:none"></div>
+
+<!-- v5.3.0 — Shadow tab panel. Hosts the per-config Shadow strategies
+     card (moved out of Main) plus per-row expandable detail (open
+     positions + recent closed trades). Populated from /api/state
+     shadow_pnl block on the same cadence as Main. -->
+<div id="tg-panel-shadow" class="tg-panel" style="display:none">
+<div class="app">
+  <main class="main">
+    <section class="grid" id="shadow-pnl-section">
+      <div class="card" id="shadow-pnl-card">
+        <div class="card-head">
+          <span class="card-title">Shadow strategies<span class="count" id="shadow-count">· —</span></span>
+          <span class="chip" id="shadow-best">—</span>
+        </div>
+        <div class="card-body flush">
+          <div class="shadow-pnl-head">
+            <span class="sp-h-name">Config</span>
+            <span class="sp-h-section">Today</span>
+            <span class="sp-h-section">Cumulative</span>
+          </div>
+          <div id="shadow-pnl-body" class="shadow-pnl-body">
+            <div class="empty">Waiting for shadow data&hellip;</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</div><!-- /tg-panel-shadow -->
 
 <script src="/static/app.js" defer></script>
 </body>

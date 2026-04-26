@@ -1008,7 +1008,7 @@
   }
 
   // --- Tab switching ---------------------------------------------------
-  const TABS = ["main", "val", "gene"];
+  const TABS = ["main", "val", "gene", "shadow"];
   let activeTab = "main";
 
   // v4.1.4-dash \u2014 H2: one-shot /api/state warmup when user lands on
@@ -1059,6 +1059,16 @@
     if (name === "val" || name === "gene") {
       if (!window.__tgLastState) warmupSharedState();
       pollExecutor(name);
+    }
+    if (name === "shadow") {
+      // Shadow tab is fed by /api/state shadow_pnl block (same source
+      // as Main). Warm up once on first visit so the panel paints
+      // without waiting for the Main SSE/poll tick.
+      if (!window.__tgLastState) {
+        warmupSharedState();
+      } else if (typeof renderShadowPnL === "function") {
+        renderShadowPnL(window.__tgLastState);
+      }
     }
   }
 
