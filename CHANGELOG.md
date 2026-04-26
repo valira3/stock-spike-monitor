@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.5 — 2026-04-26
+
+- fix: /test command no longer times out with "Command failed: Timed out". Removed per-step `edit_text` calls inside the loop; progress message is now updated once at completion. Eliminates Telegram per-chat edit rate-limit race that surfaced as cosmetic httpx ReadTimeout. Underlying _test_* steps were always healthy. Adds TimedOut fallback to send a fresh reply if the final edit still fails.
+
+---
+
 ## v5.1.4 — 2026-04-25
 
 - feat: equity-aware sizing for live executors. Each entry now sized as `min(DOLLARS_PER_ENTRY, equity * MAX_PCT_PER_ENTRY/100, cash - MIN_RESERVE_CASH)`. Defaults: `MAX_PCT_PER_ENTRY=10.0`, `MIN_RESERVE_CASH=500`. Falls back to legacy fixed-size sizing if `get_account()` fails. Paper book unchanged. Logs `[SIZE_CAPPED]` when scaled down, `[INSUFFICIENT_EQUITY]` when can't afford even 1 share within caps.

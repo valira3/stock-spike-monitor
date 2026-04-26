@@ -114,52 +114,46 @@ from trade_genius import (
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /test command — run system health test with live progress."""
+    """Handle /test command \u2014 run system health test, render once at end.
+
+    v5.1.5: previously this function called prog.edit_text() after every
+    one of the 4 _test_* steps plus a final 5th edit. With 5 edits within
+    ~1 second, Telegram's per-chat editMessageText rate limit fired the
+    httpx ~5 s read-timeout on the last edit, surfacing to the user as a
+    cosmetic "\u26a0\ufe0f Command failed: Timed out" chip even though every
+    underlying _test_* step had completed cleanly. The fix is a single
+    edit at the end of the loop with a reply_text fallback if that final
+    edit still races the limit.
+    """
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
-    results = {}
+    results: dict = {}
     prog = await update.message.reply_text(_build_test_progress(results))
 
     loop = asyncio.get_event_loop()
 
-    # Step 1 — FMP
-    # Each edit_text is wrapped in a narrow except for
-    # telegram.error.BadRequest (most commonly "message is not
-    # modified" when an identical progress string is re-sent). We
-    # log at DEBUG so real network / API failures are traceable
-    # without spamming INFO on benign no-op edits.
     results["fmp"] = await loop.run_in_executor(None, _test_fmp)
-    try:
-        await prog.edit_text(_build_test_progress(results))
-    except TelegramBadRequest as e:
-        logger.debug("cmd_test: edit_text step fmp: %s", e)
-
-    # Step 2 — State files
     results["state"] = await loop.run_in_executor(None, _test_state)
-    try:
-        await prog.edit_text(_build_test_progress(results))
-    except TelegramBadRequest as e:
-        logger.debug("cmd_test: edit_text step state: %s", e)
-
-    # Step 3 — Positions
     results["pos"] = _test_positions()
-    try:
-        await prog.edit_text(_build_test_progress(results))
-    except TelegramBadRequest as e:
-        logger.debug("cmd_test: edit_text step pos: %s", e)
-
-    # Step 4 — Scanner
     results["scanner"] = _test_scanner()
-    try:
-        await prog.edit_text(_build_test_progress(results))
-    except TelegramBadRequest as e:
-        logger.debug("cmd_test: edit_text step scanner: %s", e)
 
-    # Final edit with menu button
+    # Single final edit. TelegramBadRequest covers "message is not
+    # modified" no-ops; any other failure (httpx ReadTimeout from the
+    # per-chat edit rate limit, transient network) falls back to a
+    # fresh reply_text so the user always sees the result.
     try:
         await prog.edit_text(_build_test_progress(results), reply_markup=_menu_button())
     except TelegramBadRequest as e:
         logger.debug("cmd_test: edit_text final: %s", e)
+    except Exception as e:
+        logger.info("cmd_test: final edit_text fell back to reply_text: %s", e)
+        try:
+            await update.message.reply_text(
+                _build_test_progress(results),
+                reply_markup=_menu_button(),
+            )
+        except Exception as e2:
+            logger.warning("cmd_test: reply_text fallback also failed: %s", e2)
     logger.info("CMD test completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
