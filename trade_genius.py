@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.3.0"
+BOT_VERSION = "5.3.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,26 +93,13 @@ BOT_VERSION = "5.3.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.3.0 \u2014 Shadow strategies\n"
-    "now live on their own tab.\n"
-    "Tab order: Main / Val / Gene\n"
-    "/ Shadow. The card moved out\n"
-    "of Main; only Shadow renders\n"
-    "it now. Each config row is\n"
-    "click-to-expand: open\n"
-    "positions (ticker, side, qty,\n"
-    "entry, mark, $ + % unr,\n"
-    "entry HH:MM ET) plus the\n"
-    "last 10 closed trades\n"
-    "(ticker, side, qty, entry,\n"
-    "exit, $ + % realized, exit\n"
-    "reason, exit HH:MM ET).\n"
-    "Backend: shadow_pnl exposes\n"
-    "open_positions_for and\n"
-    "recent_closed_for; the\n"
-    "/api/state shadow_pnl block\n"
-    "embeds them on every config\n"
-    "row. No schema migration."
+    "v5.3.1 \u2014 docs refresh.\n"
+    "ARCHITECTURE.md updated to\n"
+    "v5.3.0 state: SQLite store,\n"
+    "shadow tracker, idempotent\n"
+    "Alpaca submits, 7 shadow\n"
+    "configs, Shadow tab. PDF\n"
+    "regenerated. No code change."
 )
 
 # Main-bot release note: short tail of recent releases.

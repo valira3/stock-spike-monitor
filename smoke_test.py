@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.3.0")
+    @t("version: BOT_VERSION is 5.3.1")
     def _():
-        assert m.BOT_VERSION == "5.3.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.3.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3730,9 +3730,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.3.0: BOT_VERSION bumped to 5.3.0")
+    @t("v5.3.1: BOT_VERSION bumped to 5.3.1")
     def _():
-        assert m.BOT_VERSION == "5.3.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.3.1", m.BOT_VERSION
 
     @t("v5.2.0: persistence creates shadow_positions table")
     def _():
