@@ -4,6 +4,17 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.6 — 2026-04-26
+
+- feat: `BUCKET_FILL_100` added as 5th shadow config (ticker ≥100% AND qqq ≥100% bucket fill). Pure observation, NOT enforced. Defaults unchanged.
+- feat: new `[V510-VEL]` log captures the second-mark when ticker running volume first crosses 100% of its bucket within a candle. Validates the "fires at second 40" velocity insight in shadow-mode reports.
+- feat: new `[V510-IDX]` log captures SPY+QQQ close vs PDC on every candidate. Required for full L-P1 / S-P1 validation in shadow.
+- feat: new `[V510-DI]` log captures DI+/DI- (current and t-1) on every candidate. Required for L-P2 / S-P2 "double-tap" validation in shadow.
+- feat: `indicators.py` adds `di_plus(bars, period=14)` and `di_minus(bars, period=14)` using Wilder's smoothing.
+- No live trading behavior change. All paths still controlled by existing env vars; `VOL_GATE_ENFORCE=0` default preserved.
+
+---
+
 ## v5.1.5 — 2026-04-26
 
 - fix: /test command no longer times out with "Command failed: Timed out". Removed per-step `edit_text` calls inside the loop; progress message is now updated once at completion. Eliminates Telegram per-chat edit rate-limit race that surfaced as cosmetic httpx ReadTimeout. Underlying _test_* steps were always healthy. Adds TimedOut fallback to send a fresh reply if the final edit still fails.

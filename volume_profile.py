@@ -535,6 +535,10 @@ SHADOW_CONFIGS: tuple[dict, ...] = (
      "ticker_pct": 70, "index_pct": 100},
     {"name": "GEMINI_A", "ticker_enabled": True, "index_enabled": True,
      "ticker_pct": 110, "index_pct": 85},
+    # v5.1.6: Bucket-Fill Protocol \u2014 both legs must fully fill their bucket.
+    # Used for early-fire intraminute observation via [V510-VEL]. Strict gate.
+    {"name": "BUCKET_FILL_100", "ticker_enabled": True, "index_enabled": True,
+     "ticker_pct": 100, "index_pct": 100},
 )
 
 

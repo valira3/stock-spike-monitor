@@ -119,6 +119,65 @@ def vwap_dist_pct(bars: Sequence[dict]) -> float | None:
         return None
 
 
+def _wilder_dx(bars: Sequence[dict], period: int = 14):
+    """Compute (smoothed +DM, smoothed -DM, smoothed TR) using Wilder's
+    RMA. Returns (None, None, None) if fewer than `period`+1 bars or on
+    bad input.
+    """
+    if bars is None or period <= 0 or len(bars) < period + 1:
+        return (None, None, None)
+    try:
+        plus_dms: list[float] = []
+        minus_dms: list[float] = []
+        trs: list[float] = []
+        for i in range(1, len(bars)):
+            h = float(bars[i]["high"])
+            l = float(bars[i]["low"])
+            ph = float(bars[i - 1]["high"])
+            pl = float(bars[i - 1]["low"])
+            pc = float(bars[i - 1]["close"])
+            up = h - ph
+            dn = pl - l
+            plus_dm = up if (up > dn and up > 0) else 0.0
+            minus_dm = dn if (dn > up and dn > 0) else 0.0
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            plus_dms.append(plus_dm)
+            minus_dms.append(minus_dm)
+            trs.append(tr)
+        if len(trs) < period:
+            return (None, None, None)
+        sp = sum(plus_dms[:period])
+        sm = sum(minus_dms[:period])
+        st = sum(trs[:period])
+        for i in range(period, len(trs)):
+            sp = (sp * (period - 1) + plus_dms[i]) / period
+            sm = (sm * (period - 1) + minus_dms[i]) / period
+            st = (st * (period - 1) + trs[i]) / period
+        return (sp, sm, st)
+    except (TypeError, ValueError, KeyError):
+        return (None, None, None)
+
+
+def di_plus(bars: Sequence[dict], period: int = 14) -> float | None:
+    """Wilder's +DI over `period` bars. Bars need `high`, `low`, `close`.
+    Needs >= period+1 bars. Returns float in [0, 100] or None.
+    """
+    sp, _sm, st = _wilder_dx(bars, period=period)
+    if sp is None or st is None or st <= 0.0:
+        return None
+    return round(100.0 * (sp / st), 4)
+
+
+def di_minus(bars: Sequence[dict], period: int = 14) -> float | None:
+    """Wilder's -DI over `period` bars. Bars need `high`, `low`, `close`.
+    Needs >= period+1 bars. Returns float in [0, 100] or None.
+    """
+    _sp, sm, st = _wilder_dx(bars, period=period)
+    if sm is None or st is None or st <= 0.0:
+        return None
+    return round(100.0 * (sm / st), 4)
+
+
 def spread_bps(bid: float | None, ask: float | None) -> float | None:
     """Bid/ask spread in basis points relative to the mid. Returns None
     on missing or non-positive inputs."""
