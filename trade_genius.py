@@ -7169,8 +7169,13 @@ def eod_close():
             close_short_position(ticker, price, "EOD")
 
     # v5.2.0 \u2014 close any orphan shadow positions (configs whose
-    # would-have-entered ticker is not held live) at EOD using their
-    # last mark price.
+    # would-have-entered ticker is not held live) at EOD.
+    # v5.2.1 H2: last_marks now falls back to entry_price when
+    # last_mark_price is missing, mirroring the live long/short EOD
+    # pattern above (price = entry_price when bars unavailable). The
+    # tracker's close_all_for_eod additionally force-closes any
+    # remaining orphan with EOD_NO_MARK + entry_price as the exit so
+    # nothing is silently left open.
     try:
         last_marks: dict[str, float] = {}
         tr = shadow_pnl.tracker()
@@ -7179,8 +7184,9 @@ def eod_close():
                 for sp in cfg_positions:
                     if sp.last_mark_price is not None:
                         last_marks[sp.ticker] = sp.last_mark_price
-        if last_marks:
-            tr.close_all_for_eod(last_marks)
+                    elif sp.ticker not in last_marks:
+                        last_marks[sp.ticker] = float(sp.entry_price)
+        tr.close_all_for_eod(last_marks)
     except Exception as e:
         logger.warning("[V520-SHADOW-PNL] EOD shadow close failed: %s", e)
 

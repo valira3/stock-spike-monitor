@@ -328,20 +328,49 @@ class ShadowPnL:
     def close_all_for_eod(self, prices: dict[str, float]) -> int:
         """Close every open position with an EOD reason at the given
         per-ticker prices. Returns the number of positions closed.
-        Tickers missing from `prices` are left open (caller's choice).
+
+        v5.2.1 H2: tickers missing from `prices` are no longer left
+        open. Each orphan position is force-closed at its own
+        ``entry_price`` (realized P&L = 0 by definition) with
+        ``exit_reason="EOD_NO_MARK"`` and a WARN log naming the
+        config + ticker + entry_price. This prevents stale shadow
+        positions from persisting across sessions and bleeding bogus
+        realized P&L into next day's EOD via stale entry-price marks.
         """
         n = 0
         with self._lock:
             configs = list(self._open.keys())
         for cfg in configs:
             with self._lock:
-                tickers = sorted({p.ticker for p in self._open.get(cfg, [])})
-            for t in tickers:
-                px = prices.get(t)
+                # Snapshot (ticker, entry_price) per still-open position
+                # so we can decide between the live mark and the
+                # entry-price fallback per row outside the lock.
+                snapshot = [
+                    (p.ticker, float(p.entry_price))
+                    for p in self._open.get(cfg, [])
+                ]
+            seen: set[str] = set()
+            for ticker, entry_price in snapshot:
+                if ticker in seen:
+                    continue
+                seen.add(ticker)
+                px = prices.get(ticker)
                 if px is None:
+                    logger.warning(
+                        "ShadowPnL.eod: orphan force-close cfg=%s "
+                        "ticker=%s entry_price=%s reason=EOD_NO_MARK",
+                        cfg, ticker, entry_price,
+                    )
+                    if self.close_position(
+                        config_name=cfg, ticker=ticker,
+                        exit_ts_utc=_utc_now_iso(),
+                        exit_price=entry_price,
+                        exit_reason="EOD_NO_MARK",
+                    ) is not None:
+                        n += 1
                     continue
                 if self.close_position(
-                    config_name=cfg, ticker=t,
+                    config_name=cfg, ticker=ticker,
                     exit_ts_utc=_utc_now_iso(),
                     exit_price=px, exit_reason="EOD",
                 ) is not None:
