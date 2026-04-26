@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.4 — 2026-04-25
+
+- feat: equity-aware sizing for live executors. Each entry now sized as `min(DOLLARS_PER_ENTRY, equity * MAX_PCT_PER_ENTRY/100, cash - MIN_RESERVE_CASH)`. Defaults: `MAX_PCT_PER_ENTRY=10.0`, `MIN_RESERVE_CASH=500`. Falls back to legacy fixed-size sizing if `get_account()` fails. Paper book unchanged. Logs `[SIZE_CAPPED]` when scaled down, `[INSUFFICIENT_EQUITY]` when can't afford even 1 share within caps.
+
+---
+
 ## v5.1.3 — 2026-04-25
 
 - chore: removed unused Finnhub SPY-quote fallback from /health diagnostic. FMP already provides SPY in the same diagnostic. No trading-path impact. `FINNHUB_TOKEN` env var no longer read.
