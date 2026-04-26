@@ -731,16 +731,73 @@
     .shadow-pnl-row .sp-section.sp-cum   { grid-area: cum; }
   }
 
-  /* v5.2.0 amendment \u2014 the shadow panel is Main-tab only. The tab
-     switcher already hides the whole #tg-panel-main when Val/Gene is
-     active, but this body-scoped rule makes the panel-only gate
-     explicit (and survives any future layout move that puts the
-     panel outside #tg-panel-main). The selector matches whenever
-     body's data-tg-active-tab is set to anything other than "main";
-     selectTab() in app.js maintains the attribute. */
-  body[data-tg-active-tab="val"]  #shadow-pnl-card,
-  body[data-tg-active-tab="val"]  #shadow-pnl-section,
-  body[data-tg-active-tab="gene"] #shadow-pnl-card,
-  body[data-tg-active-tab="gene"] #shadow-pnl-section {
+  /* v5.3.0 \u2014 the Shadow strategies panel now lives in its own tab.
+     The tab switcher hides #tg-panel-shadow on Main/Val/Gene, but we
+     keep an explicit body-scoped guard so the panel only renders when
+     data-tg-active-tab="shadow". Replaces the v5.2.0 Main-only gate. */
+  body[data-tg-active-tab="main"] #tg-panel-shadow,
+  body[data-tg-active-tab="val"]  #tg-panel-shadow,
+  body[data-tg-active-tab="gene"] #tg-panel-shadow {
     display: none !important;
   }
+  body[data-tg-active-tab="shadow"] #tg-panel-shadow {
+    display: block !important;
+  }
+  body[data-tg-active-tab="shadow"] #tg-panel-main,
+  body[data-tg-active-tab="shadow"] #tg-panel-val,
+  body[data-tg-active-tab="shadow"] #tg-panel-gene {
+    display: none !important;
+  }
+
+  /* v5.3.0 \u2014 per-config expandable detail. Collapsed by default;
+     toggled via aria-expanded on the row. Dense table, mobile-friendly. */
+  .shadow-pnl-row.sp-expandable { cursor: pointer; }
+  .sp-chev {
+    display: inline-block;
+    width: 10px;
+    margin-right: 6px;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    transition: transform 0.15s ease;
+  }
+  .shadow-pnl-row[aria-expanded="true"] .sp-chev { transform: rotate(90deg); }
+  .sp-detail {
+    grid-column: 1 / -1;
+    padding: 8px 14px 12px;
+    background: var(--surface-2);
+    border-top: 1px solid var(--border);
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .sp-detail-head {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin: 4px 0 4px;
+  }
+  .sp-detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+  }
+  .sp-detail-table th,
+  .sp-detail-table td {
+    padding: 3px 6px;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .sp-detail-table th:first-child,
+  .sp-detail-table td:first-child { text-align: left; }
+  .sp-detail-table thead th {
+    color: var(--text-dim);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+  }
+  .sp-detail-table .sd-pos { color: var(--up); }
+  .sp-detail-table .sd-neg { color: var(--down); }
+  .sp-detail-table .sd-side-long  { color: var(--up); }
+  .sp-detail-table .sd-side-short { color: var(--down); }
+  .sp-detail-empty { color: var(--text-dim); padding: 4px 0 8px; }

@@ -441,6 +441,61 @@ class ShadowPnL:
                 return sum(len(v) for v in self._open.values())
             return len(self._open.get(config_name, []))
 
+    # v5.3.0 \u2014 detail-view helpers for the Shadow tab. These expose
+    # per-config open positions + recent closed trades as plain dicts
+    # so the dashboard snapshot can serialize them without touching
+    # private fields.
+    def open_positions_for(self, config_name: str) -> list[dict]:
+        """Return all open shadow positions for ``config_name`` as
+        snapshot dicts (ticker, side, qty, entry_price, current_mark,
+        unrealized, entry_ts_utc). Safe to call from any thread."""
+        out: list[dict] = []
+        with self._lock:
+            for p in self._open.get(config_name, []):
+                out.append({
+                    "ticker": p.ticker,
+                    "side": p.side,
+                    "qty": int(p.qty),
+                    "entry_price": float(p.entry_price),
+                    "entry_ts_utc": p.entry_ts_utc,
+                    "current_mark": (
+                        float(p.last_mark_price)
+                        if p.last_mark_price is not None else None),
+                    "unrealized": float(p.unrealized()),
+                })
+        return out
+
+    def recent_closed_for(
+        self, config_name: str, limit: int = 10,
+    ) -> list[dict]:
+        """Return the most recent ``limit`` closed trades for
+        ``config_name`` (newest first by exit_ts_utc lexical order).
+        Each row carries ticker, side, qty, entry_price, exit_price,
+        realized_pnl, exit_reason, entry_ts_utc, exit_ts_utc."""
+        try:
+            n = max(0, int(limit))
+        except Exception:
+            n = 10
+        with self._lock:
+            rows = list(self._closed.get(config_name, []))
+        rows.sort(
+            key=lambda r: (r.get("exit_ts_utc") or ""), reverse=True,
+        )
+        out: list[dict] = []
+        for r in rows[:n]:
+            out.append({
+                "ticker": r.get("ticker"),
+                "side": r.get("side"),
+                "qty": int(r.get("qty") or 0),
+                "entry_price": float(r.get("entry_price") or 0.0),
+                "exit_price": float(r.get("exit_price") or 0.0),
+                "realized_pnl": float(r.get("realized_pnl") or 0.0),
+                "exit_reason": r.get("exit_reason"),
+                "entry_ts_utc": r.get("entry_ts_utc"),
+                "exit_ts_utc": r.get("exit_ts_utc"),
+            })
+        return out
+
 
 # ----------------------------------------------------------------------
 # Module-level singleton \u2014 the bot uses one shared instance.

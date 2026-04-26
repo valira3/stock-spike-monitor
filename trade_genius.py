@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.2.1"
+BOT_VERSION = "5.3.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,34 +93,26 @@ BOT_VERSION = "5.2.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.2.1 \u2014 fix: Alpaca order\n"
-    "idempotency + startup\n"
-    "broker-position reconcile.\n"
-    "Every submit_order now\n"
-    "carries a deterministic\n"
-    "client_order_id of form\n"
-    "{NAME}-{ticker}-{minute}-\n"
-    "{LONG/SHORT}. A retry after\n"
-    "an HTTP timeout that the\n"
-    "broker had already accepted\n"
-    "is rejected by Alpaca with\n"
-    "the same coid; the bot now\n"
-    "looks the original order up\n"
-    "and treats it as success\n"
-    "rather than double-placing.\n"
-    "On boot each executor pulls\n"
-    "client.get_all_positions and\n"
-    "grafts every broker orphan\n"
-    "into self.positions with\n"
-    "source=RECONCILE so MTM,\n"
-    "trail, and EOD-close manage\n"
-    "it like a normal entry.\n"
-    "Also: shadow accounting\n"
-    "fixes (H3 unconditional MTM,\n"
-    "H2 EOD orphan force-close,\n"
-    "M3 registry-driven close\n"
-    "fanout, M4 rehunt keyed on\n"
-    "(ticker, side))."
+    "v5.3.0 \u2014 Shadow strategies\n"
+    "now live on their own tab.\n"
+    "Tab order: Main / Val / Gene\n"
+    "/ Shadow. The card moved out\n"
+    "of Main; only Shadow renders\n"
+    "it now. Each config row is\n"
+    "click-to-expand: open\n"
+    "positions (ticker, side, qty,\n"
+    "entry, mark, $ + % unr,\n"
+    "entry HH:MM ET) plus the\n"
+    "last 10 closed trades\n"
+    "(ticker, side, qty, entry,\n"
+    "exit, $ + % realized, exit\n"
+    "reason, exit HH:MM ET).\n"
+    "Backend: shadow_pnl exposes\n"
+    "open_positions_for and\n"
+    "recent_closed_for; the\n"
+    "/api/state shadow_pnl block\n"
+    "embeds them on every config\n"
+    "row. No schema migration."
 )
 
 # Main-bot release note: short tail of recent releases.

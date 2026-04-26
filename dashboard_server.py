@@ -551,9 +551,11 @@ def _shadow_pnl_snapshot(
         "worst_today": "BUCKET_FILL_100" | None }
     """
     configs: list[dict[str, Any]] = []
+    tr = None
     try:
         import shadow_pnl as _sp
-        summary = _sp.tracker().summary(today_str=today or None)
+        tr = _sp.tracker()
+        summary = tr.summary(today_str=today or None)
     except Exception as e:
         logger.warning("shadow_pnl summary failed: %s", e)
         summary = {}
@@ -565,6 +567,22 @@ def _shadow_pnl_snapshot(
         n_cum = int(s.get("cumulative_n_trades", 0) or 0)
         wins_cum = int(s.get("cumulative_wins", 0) or 0)
         wr_cum = (wins_cum / n_cum * 100.0) if n_cum else None
+        # v5.3.0 \u2014 per-config detail for the Shadow tab. Safe
+        # against tracker errors (tr is None / bad call) so the panel
+        # still renders without detail.
+        open_positions: list[dict[str, Any]] = []
+        recent_trades: list[dict[str, Any]] = []
+        if tr is not None:
+            try:
+                open_positions = tr.open_positions_for(name)
+            except Exception as e:
+                logger.warning(
+                    "shadow_pnl open_positions_for(%s) failed: %s", name, e)
+            try:
+                recent_trades = tr.recent_closed_for(name, limit=10)
+            except Exception as e:
+                logger.warning(
+                    "shadow_pnl recent_closed_for(%s) failed: %s", name, e)
         configs.append({
             "name": name,
             "label": label,
@@ -584,6 +602,9 @@ def _shadow_pnl_snapshot(
                     s.get("cumulative_unrealized", 0.0) or 0.0),
                 "total": float(s.get("cumulative_total", 0.0) or 0.0),
             },
+            # v5.3.0 \u2014 expandable detail payload.
+            "open_positions": open_positions,
+            "recent_trades": recent_trades,
         })
 
     # Best / worst by today_total (only counts configs with at least
