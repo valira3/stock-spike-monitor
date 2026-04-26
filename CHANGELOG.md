@@ -4,6 +4,36 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.1 — 2026-04-26 — Env-driven A/B toggles + 3-config parallel shadow logging — STILL SHADOW MODE.
+
+**Why this exists.** v5.1.0 (PR #144, squash `5776007f`) shipped the forensic volume gate in shadow mode hard-coded at ticker ≥120% AND QQQ ≥100%. The Apr 20-24 backtest (38 entries, 18 tickers) showed the as-spec 120/100 thresholds would have killed 79% of trades for only 81% upside retention (−$93.65 P&L swing), while **70%/100% is the best risk-adjusted config**: 11 trades, +$482.90, 82% win rate (9W / 1L), keeps 96% of the upside. QQQ ≥100% is the heavy lifter; ticker threshold barely matters once QQQ is pinned. Val wants a clean A/B next week (Apr 27 – May 1) **with and without the index anchor**, so v5.1.1 makes the shadow gate env-driven and adds three parallel shadow verdicts per candidate so a single week of live data can be analysed cleanly post-hoc — no env-var flipping mid-week.
+
+**(1) Env-driven active config.** New env vars (read at module import via `volume_profile.load_active_config()`): `VOL_GATE_ENFORCE` (default `0`, master enforcement flag — stays 0 all next week), `VOL_GATE_TICKER_ENABLED` (default `1`), `VOL_GATE_INDEX_ENABLED` (default `1`), `VOL_GATE_TICKER_PCT` (default `70`), `VOL_GATE_QQQ_PCT` (default `100`), `VOL_GATE_INDEX_SYMBOL` (default `QQQ`, hard-locked to QQQ per Val's call). The garbage-input parser falls back to defaults rather than crashing on a typo. **Defaults preserve current v5.1.0 behavior** — same anchors enabled, same recommended thresholds, no enforcement.
+
+**(2) 3-config parallel shadow logging.** On every candidate entry the bot now emits three structured shadow log lines, one per fixed analysis config — `TICKER+QQQ` at 70/100, `TICKER_ONLY` at 70, `QQQ_ONLY` at 100. The three configs are hard-coded module constants (`volume_profile.SHADOW_CONFIGS`) and are NOT env-driven; env vars only control which one is the "active" (potentially-enforcing) config. Format example:
+
+```
+[V510-SHADOW][CFG=TICKER+QQQ][PCT=70/100] ticker=AMD bucket=1448 stage=1 t_pct=84 qqq_pct=112 verdict=PASS reason=OK entry_decision=ENTER
+[V510-SHADOW][CFG=TICKER_ONLY][PCT=70] ticker=AMD bucket=1448 stage=1 t_pct=84 verdict=PASS reason=OK entry_decision=ENTER
+[V510-SHADOW][CFG=QQQ_ONLY][PCT=100] ticker=AMD bucket=1448 stage=1 qqq_pct=112 verdict=PASS reason=OK entry_decision=ENTER
+```
+
+Verdict ∈ {`PASS`, `BLOCK`}. Reason ∈ {`OK`, `LOW_TICKER`, `LOW_QQQ`, `STALE_PROFILE`, `NO_BARS`, `NO_PROFILE`, `DISABLED`}. Lines emit on **every** candidate, regardless of which config is currently active in env, so end-of-week grep + post-hoc analysis is a pure observation of all three configs against the same live-volume timeline.
+
+**(3) New helper `evaluate_g4_config`.** `volume_profile.evaluate_g4_config(ticker, minute_bucket, current_volume, profile, index_current_volume, index_profile, *, ticker_enabled, index_enabled, ticker_pct, index_pct)` returns `{verdict, reason, ticker_pct, qqq_pct}`. Per-anchor configurable evaluator used for the parallel shadow lines; the existing `evaluate_g4` (fixed 120/100 thresholds, the `green/reason/ticker_pct/qqq_pct/rule` shape) is unchanged so v5.1.0 grep tooling and the synthetic harness 50/50 byte-equal test still pass.
+
+**(4) Original `[V510-SHADOW]` line preserved.** The `_shadow_log_g4` hook still emits the v5.1.0 line (no `[CFG=...]` prefix) in addition to the three new config lines, so the v5.1.0 backtest grep + Apr 20-24 tooling continues to work unchanged. Back-compat is asserted by a new smoke test.
+
+**(5) Implementation note: env read at startup, not per-request.** Env vars are read by `load_active_config()` on each call (cheap dict lookup; no side-effects), but the design intent is "set once at deploy, don't flip mid-week". If Val needs to flip mid-week he redeploys. The three analysis configs are fixed module constants regardless of env; that's the point — every line of next week's data is comparable across configs.
+
+**(6) Smoke tests.** 13 new tests in the v5.1.1 section: `load_active_config` defaults preserve v5.1.0 behavior; env-var override (toggles + thresholds + symbol normalisation); garbage-int parser fallback; `SHADOW_CONFIGS` is the fixed 3-config tuple; `evaluate_g4_config` PASS/BLOCK paths for TICKER+QQQ / TICKER_ONLY / QQQ_ONLY; DISABLED short-circuit; `_shadow_log_g4` emits exactly 3 `[CFG=...]` lines per candidate; `VOL_GATE_ENFORCE` default is `0`; original `[V510-SHADOW]` line still emitted (back-compat). Test count: **181 → 194**. v5.1.0's 181 existing tests untouched and still pass. Synthetic harness 50/50 byte-equal preserved (no algo change — still observation only).
+
+**(7) Files touched.** `volume_profile.py`: new `SHADOW_CONFIGS` tuple, `_env_bool`/`_env_int` helpers, `load_active_config()`, `evaluate_g4_config()`. `trade_genius.py`: `BOT_VERSION` 5.1.0 → 5.1.1; `CURRENT_MAIN_NOTE` rotated (v5.1.0 entry moved into `_MAIN_HISTORY_TAIL`); `_shadow_log_g4` rewritten to fan out three `[CFG=...]` lines on top of the original line. `smoke_test.py`: version assert + suite header bumped 5.1.0 → 5.1.1; new v5.1.1 section. `CHANGELOG.md`: this entry.
+
+**(8) Out of scope (deferred).** Enforcement still OFF — `VOL_GATE_ENFORCE` defaults to `0` and stays at `0` all next week. No FSM changes. No new index symbols beyond QQQ (Val explicitly anchored on QQQ for this window). No baseline rebuild changes. v5.1.2 will flip enforcement on after Val reviews next week's three-config shadow data.
+
+---
+
 ## v5.1.0 — 2026-04-25 — Forensic Volume Filter (Anaplan logic) — SHADOW MODE ONLY.
 
 **Why this exists.** v5.0.x asks "is volume high?" with ad-hoc tests against the current minute's bar. Val approved Gene's "Anaplan / Forensic Auditor" addendum, which replaces that with a stricter question: *is this minute's volume higher than the 55-trading-day seasonal average for THIS exact ET timestamp?* The v5.1.0 release ships the data layer + observation layer for that gate. Entry decisions are unchanged in v5.1.0 — every minute is logged with the `[V510-SHADOW]` prefix so Val can review a week of shadow data, then v5.1.1 (separate PR) flips enforcement on.

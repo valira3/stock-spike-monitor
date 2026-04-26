@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.1.0")
+    @t("version: BOT_VERSION is 5.1.1")
     def _():
-        assert m.BOT_VERSION == "5.1.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.1.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -2420,7 +2420,297 @@ def run_local() -> int:
         df = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
         assert "COPY volume_profile.py" in df, "Dockerfile missing volume_profile.py COPY"
 
-    return run_suite("LOCAL SMOKE TESTS (v5.1.0 Tiger/Buffalo + Forensic Volume)")
+    # ---------------------------------------------------------------
+    # v5.1.1 \u2014 env-driven A/B toggles + 3-config parallel shadow
+    # ---------------------------------------------------------------
+
+    def _v511_save_env() -> dict:
+        keys = (
+            "VOL_GATE_ENFORCE", "VOL_GATE_TICKER_ENABLED",
+            "VOL_GATE_INDEX_ENABLED", "VOL_GATE_TICKER_PCT",
+            "VOL_GATE_QQQ_PCT", "VOL_GATE_INDEX_SYMBOL",
+        )
+        return {k: os.environ.get(k) for k in keys}
+
+    def _v511_restore_env(saved: dict) -> None:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    @t("v5.1.1: load_active_config defaults preserve v5.1.0 behavior")
+    def _():
+        saved = _v511_save_env()
+        try:
+            for k in ("VOL_GATE_ENFORCE", "VOL_GATE_TICKER_ENABLED",
+                     "VOL_GATE_INDEX_ENABLED", "VOL_GATE_TICKER_PCT",
+                     "VOL_GATE_QQQ_PCT", "VOL_GATE_INDEX_SYMBOL"):
+                os.environ.pop(k, None)
+            cfg = vp_mod.load_active_config()
+            assert cfg["enforce"] is False, cfg
+            assert cfg["ticker_enabled"] is True, cfg
+            assert cfg["index_enabled"] is True, cfg
+            assert cfg["ticker_pct"] == 70, cfg
+            assert cfg["index_pct"] == 100, cfg
+            assert cfg["index_symbol"] == "QQQ", cfg
+        finally:
+            _v511_restore_env(saved)
+
+    @t("v5.1.1: env vars override defaults (toggles + thresholds + symbol)")
+    def _():
+        saved = _v511_save_env()
+        try:
+            os.environ["VOL_GATE_ENFORCE"] = "1"
+            os.environ["VOL_GATE_TICKER_ENABLED"] = "0"
+            os.environ["VOL_GATE_INDEX_ENABLED"] = "1"
+            os.environ["VOL_GATE_TICKER_PCT"] = "85"
+            os.environ["VOL_GATE_QQQ_PCT"] = "120"
+            os.environ["VOL_GATE_INDEX_SYMBOL"] = "spy"
+            cfg = vp_mod.load_active_config()
+            assert cfg["enforce"] is True, cfg
+            assert cfg["ticker_enabled"] is False, cfg
+            assert cfg["index_enabled"] is True, cfg
+            assert cfg["ticker_pct"] == 85, cfg
+            assert cfg["index_pct"] == 120, cfg
+            # Symbol normalises to upper-case.
+            assert cfg["index_symbol"] == "SPY", cfg
+        finally:
+            _v511_restore_env(saved)
+
+    @t("v5.1.1: env-int parser falls back on garbage input, never crashes")
+    def _():
+        saved = _v511_save_env()
+        try:
+            os.environ["VOL_GATE_TICKER_PCT"] = "not-an-int"
+            os.environ["VOL_GATE_QQQ_PCT"] = ""
+            cfg = vp_mod.load_active_config()
+            assert cfg["ticker_pct"] == 70, cfg
+            assert cfg["index_pct"] == 100, cfg
+        finally:
+            _v511_restore_env(saved)
+
+    @t("v5.1.1: SHADOW_CONFIGS is the fixed 3-config tuple")
+    def _():
+        cfgs = vp_mod.SHADOW_CONFIGS
+        assert isinstance(cfgs, tuple) and len(cfgs) == 3, cfgs
+        names = [c["name"] for c in cfgs]
+        assert names == ["TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY"], names
+        # Thresholds match backtest recommendation.
+        assert cfgs[0]["ticker_pct"] == 70 and cfgs[0]["index_pct"] == 100
+        assert cfgs[1]["ticker_enabled"] is True and cfgs[1]["index_enabled"] is False
+        assert cfgs[1]["ticker_pct"] == 70
+        assert cfgs[2]["ticker_enabled"] is False and cfgs[2]["index_enabled"] is True
+        assert cfgs[2]["index_pct"] == 100
+
+    @t("v5.1.1: evaluate_g4_config TICKER+QQQ PASS at 70%/100%")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4_config(
+            ticker="AMD", minute_bucket="1030",
+            current_volume=700, profile=prof,
+            index_current_volume=2000, index_profile=qqq,
+            ticker_enabled=True, index_enabled=True,
+            ticker_pct=70, index_pct=100,
+        )
+        assert out["verdict"] == "PASS", out
+        assert out["reason"] == "OK", out
+        assert out["ticker_pct"] == 70, out
+        assert out["qqq_pct"] == 100, out
+
+    @t("v5.1.1: evaluate_g4_config TICKER+QQQ BLOCK low ticker")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4_config(
+            ticker="AMD", minute_bucket="1030",
+            current_volume=600, profile=prof,
+            index_current_volume=2200, index_profile=qqq,
+            ticker_enabled=True, index_enabled=True,
+            ticker_pct=70, index_pct=100,
+        )
+        assert out["verdict"] == "BLOCK", out
+        assert out["reason"] == "LOW_TICKER", out
+
+    @t("v5.1.1: evaluate_g4_config TICKER_ONLY ignores QQQ entirely")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        prof = _fresh_profile(1000)
+        # QQQ profile None and current vol = 0 \u2014 ticker_only must not care.
+        out = vp_mod.evaluate_g4_config(
+            ticker="AMD", minute_bucket="1030",
+            current_volume=900, profile=prof,
+            index_current_volume=0, index_profile=None,
+            ticker_enabled=True, index_enabled=False,
+            ticker_pct=70, index_pct=100,
+        )
+        assert out["verdict"] == "PASS", out
+        assert out["qqq_pct"] is None, out
+        assert out["ticker_pct"] == 90, out
+
+    @t("v5.1.1: evaluate_g4_config QQQ_ONLY ignores ticker entirely")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        # Ticker profile None and current vol = 0 \u2014 qqq_only must not care.
+        out = vp_mod.evaluate_g4_config(
+            ticker="AMD", minute_bucket="1030",
+            current_volume=0, profile=None,
+            index_current_volume=2400, index_profile=qqq,
+            ticker_enabled=False, index_enabled=True,
+            ticker_pct=70, index_pct=100,
+        )
+        assert out["verdict"] == "PASS", out
+        assert out["ticker_pct"] is None, out
+        assert out["qqq_pct"] == 120, out
+
+    @t("v5.1.1: evaluate_g4_config QQQ_ONLY BLOCK low qqq")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        out = vp_mod.evaluate_g4_config(
+            ticker="AMD", minute_bucket="1030",
+            current_volume=0, profile=None,
+            index_current_volume=1900, index_profile=qqq,
+            ticker_enabled=False, index_enabled=True,
+            ticker_pct=70, index_pct=100,
+        )
+        assert out["verdict"] == "BLOCK", out
+        assert out["reason"] == "LOW_QQQ", out
+        assert out["qqq_pct"] == 95, out
+
+    @t("v5.1.1: evaluate_g4_config DISABLED short-circuits")
+    def _():
+        prev = vp_mod.VOLUME_PROFILE_ENABLED
+        try:
+            vp_mod.VOLUME_PROFILE_ENABLED = False
+            out = vp_mod.evaluate_g4_config(
+                ticker="AMD", minute_bucket="1030",
+                current_volume=999, profile=_fresh_profile(),
+                index_current_volume=999, index_profile=_fresh_profile(),
+                ticker_enabled=True, index_enabled=True,
+                ticker_pct=70, index_pct=100,
+            )
+            assert out["verdict"] == "BLOCK", out
+            assert out["reason"] == "DISABLED", out
+        finally:
+            vp_mod.VOLUME_PROFILE_ENABLED = prev
+
+    @t("v5.1.1: _shadow_log_g4 emits 3 [CFG=...] lines on a candidate")
+    def _():
+        # Stand up an in-memory profile cache so every config has data.
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        m.VOLUME_PROFILE_ENABLED = True
+        prev_cache = m._volume_profile_cache.copy()
+        prev_ws = m._ws_consumer
+        try:
+            prof = _fresh_profile(1000)
+            qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache["AMD"] = prof
+            m._volume_profile_cache["QQQ"] = qqq
+
+            class _StubWS:
+                def current_volume(self, t, b):
+                    return 1500 if t == "AMD" else 2400
+            m._ws_consumer = _StubWS()
+
+            # Force session_bucket() to return something deterministic by
+            # patching datetime.now in the volume_profile module.
+            real_session_bucket = vp_mod.session_bucket
+            vp_mod.session_bucket = lambda _ts: "1030"
+            try:
+                import logging as _logging
+                seen: list[str] = []
+
+                class _H(_logging.Handler):
+                    def emit(self, rec):
+                        seen.append(rec.getMessage())
+                tg_logger = _logging.getLogger("trade_genius")
+                h = _H(); h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h); old_level = tg_logger.level
+                tg_logger.setLevel(_logging.INFO)
+                try:
+                    m._shadow_log_g4("AMD", stage=1, existing_decision="ENTER")
+                finally:
+                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            finally:
+                vp_mod.session_bucket = real_session_bucket
+
+            cfg_lines = [s for s in seen if "[V510-SHADOW][CFG=" in s]
+            assert len(cfg_lines) == 3, f"want 3 cfg lines, got {len(cfg_lines)}: {seen}"
+            joined = " | ".join(cfg_lines)
+            assert "CFG=TICKER+QQQ" in joined, joined
+            assert "CFG=TICKER_ONLY" in joined, joined
+            assert "CFG=QQQ_ONLY" in joined, joined
+            assert "PCT=70/100" in joined, joined
+            assert "PCT=70]" in joined, joined
+            assert "PCT=100]" in joined, joined
+        finally:
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache.update(prev_cache)
+            m._ws_consumer = prev_ws
+
+    @t("v5.1.1: VOL_GATE_ENFORCE default is 0 (no enforcement next week)")
+    def _():
+        saved = _v511_save_env()
+        try:
+            os.environ.pop("VOL_GATE_ENFORCE", None)
+            cfg = vp_mod.load_active_config()
+            assert cfg["enforce"] is False, cfg
+        finally:
+            _v511_restore_env(saved)
+
+    @t("v5.1.1: original [V510-SHADOW] line still emitted (back-compat)")
+    def _():
+        vp_mod.VOLUME_PROFILE_ENABLED = True
+        m.VOLUME_PROFILE_ENABLED = True
+        prev_cache = m._volume_profile_cache.copy()
+        prev_ws = m._ws_consumer
+        try:
+            prof = _fresh_profile(1000)
+            qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache["AMD"] = prof
+            m._volume_profile_cache["QQQ"] = qqq
+
+            class _StubWS:
+                def current_volume(self, t, b):
+                    return 1500 if t == "AMD" else 2400
+            m._ws_consumer = _StubWS()
+            real_session_bucket = vp_mod.session_bucket
+            vp_mod.session_bucket = lambda _ts: "1030"
+            try:
+                import logging as _logging
+                seen: list[str] = []
+
+                class _H(_logging.Handler):
+                    def emit(self, rec):
+                        seen.append(rec.getMessage())
+                tg_logger = _logging.getLogger("trade_genius")
+                h = _H(); h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h); old_level = tg_logger.level
+                tg_logger.setLevel(_logging.INFO)
+                try:
+                    m._shadow_log_g4("AMD", stage=1, existing_decision="ENTER")
+                finally:
+                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            finally:
+                vp_mod.session_bucket = real_session_bucket
+
+            # Exactly one back-compat line (no [CFG=]) plus the 3 cfg lines.
+            backcompat = [s for s in seen
+                          if s.startswith("[V510-SHADOW] ") and "[CFG=" not in s]
+            assert len(backcompat) == 1, f"want 1 back-compat line, got {seen}"
+        finally:
+            m._volume_profile_cache.clear()
+            m._volume_profile_cache.update(prev_cache)
+            m._ws_consumer = prev_ws
+
+    return run_suite("LOCAL SMOKE TESTS (v5.1.1 Tiger/Buffalo + Forensic Volume A/B)")
 
 
 # ============================================================
