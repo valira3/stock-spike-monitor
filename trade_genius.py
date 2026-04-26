@@ -73,7 +73,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.3"
+BOT_VERSION = "5.1.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -91,6 +91,21 @@ BOT_VERSION = "5.1.3"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.1.4 \u2014 equity-aware\n"
+    "sizing for live executors.\n"
+    "Each entry now capped at\n"
+    "min(DOLLARS_PER_ENTRY,\n"
+    "equity * MAX_PCT_PER_ENTRY,\n"
+    "cash - MIN_RESERVE_CASH).\n"
+    "Defaults: 10% of equity,\n"
+    "$500 reserve. Falls back\n"
+    "to legacy fixed sizing on\n"
+    "get_account() error. Paper\n"
+    "book unchanged."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.1.3 \u2014 chore: removed\n"
     "unused Finnhub SPY-quote\n"
     "fallback from /health\n"
@@ -98,11 +113,8 @@ CURRENT_MAIN_NOTE = (
     "returns SPY in the same\n"
     "diagnostic. No trading-path\n"
     "impact. FINNHUB_TOKEN env\n"
-    "var is no longer read."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "var is no longer read.\n"
+    "\n"
     "v5.1.2 \u2014 forensic capture\n"
     "+ GEMINI_A shadow config.\n"
     "Tier-1: 1m bar JSONL archive\n"
@@ -843,6 +855,26 @@ class TradeGeniusBase:
             )
         except ValueError:
             self.dollars_per_entry = 10000.0
+        # v5.1.4 \u2014 equity-aware sizing caps for the LIVE executor
+        # path. Each entry is sized as
+        #   min(dollars_per_entry,
+        #       equity * max_pct_per_entry/100,
+        #       cash - min_reserve_cash)
+        # so a smaller account never blindly fires a fixed $10k entry
+        # that Alpaca then rejects on the 4th signal. Paper book sizing
+        # is unaffected.
+        try:
+            self.max_pct_per_entry = float(
+                os.getenv(p + "MAX_PCT_PER_ENTRY", "10.0")
+            )
+        except ValueError:
+            self.max_pct_per_entry = 10.0
+        try:
+            self.min_reserve_cash = float(
+                os.getenv(p + "MIN_RESERVE_CASH", "500.0")
+            )
+        except ValueError:
+            self.min_reserve_cash = 500.0
         self.mode = "paper"
         # Client is built lazily on first use so __init__ never touches
         # the network (smoke tests, missing keys, etc.).
@@ -1038,10 +1070,56 @@ class TradeGeniusBase:
         return (False, f"unknown mode: {new_mode!r} (expected 'paper' or 'live')")
 
     # ---------- signal listener ----------
-    def _shares_for(self, price: float) -> int:
+    def _shares_for(self, price: float, ticker: "str | None" = None) -> int:
+        """v5.1.4 \u2014 equity-aware live sizing.
+
+        Computes shares as
+          floor(min(dollars_per_entry,
+                    equity * max_pct_per_entry/100,
+                    cash - min_reserve_cash) / price)
+        and falls back to the legacy fixed-size path
+        (`int(dollars_per_entry // price)`) if `get_account()` or the
+        float casts raise. The bot must NEVER hard-fail on a network
+        blip \u2014 always log and fall through.
+        """
         if price is None or price <= 0:
             return 0
-        return max(1, int(self.dollars_per_entry // price))
+        legacy_qty = max(1, int(self.dollars_per_entry // price))
+        client = self._ensure_client()
+        if client is None:
+            return legacy_qty
+        try:
+            acct = client.get_account()
+            equity = float(getattr(acct, "equity", 0) or 0)
+            cash = float(getattr(acct, "cash", 0) or 0)
+            _bp = float(getattr(acct, "buying_power", 0) or 0)
+        except Exception as e:
+            logger.warning(
+                "[%s] [SIZING_FALLBACK] get_account failed (%s) \u2014 "
+                "using legacy fixed-size sizing $%.0f / $%.2f = %d sh",
+                self.NAME, e, self.dollars_per_entry, price, legacy_qty,
+            )
+            return legacy_qty
+        equity_cap = equity * (self.max_pct_per_entry / 100.0)
+        cash_available = max(0.0, cash - self.min_reserve_cash)
+        effective = min(self.dollars_per_entry, equity_cap, cash_available)
+        if effective < price:
+            logger.info(
+                "[%s] [INSUFFICIENT_EQUITY] ticker=%s price=$%.2f "
+                "cash=$%.2f reserve=$%.2f cap=$%.2f",
+                self.NAME, ticker if ticker else "n/a", price,
+                cash, self.min_reserve_cash, equity_cap,
+            )
+            return 0
+        if effective < self.dollars_per_entry:
+            logger.info(
+                "[%s] [SIZE_CAPPED] %s requested=$%.0f effective=$%.0f "
+                "equity=$%.0f cash=$%.0f cap=$%.0f reserve=$%.0f",
+                self.NAME, ticker if ticker else "n/a",
+                self.dollars_per_entry, effective,
+                equity, cash, equity_cap, self.min_reserve_cash,
+            )
+        return max(1, int(effective // price))
 
     # ---------- chat-map persistence (v5.0.3) ----------
     def _load_owner_chats(self) -> None:
@@ -1189,7 +1267,7 @@ class TradeGeniusBase:
 
         try:
             if kind == "ENTRY_LONG":
-                qty = self._shares_for(price)
+                qty = self._shares_for(price, ticker=ticker)
                 if qty <= 0:
                     return
                 order = client.submit_order(MarketOrderRequest(
@@ -1201,7 +1279,7 @@ class TradeGeniusBase:
                 logger.info(msg)
                 self._send_own_telegram(msg)
             elif kind == "ENTRY_SHORT":
-                qty = self._shares_for(price)
+                qty = self._shares_for(price, ticker=ticker)
                 if qty <= 0:
                     return
                 order = client.submit_order(MarketOrderRequest(
@@ -1355,11 +1433,22 @@ class TradeGeniusBase:
             cash = float(getattr(acct, "cash", 0) or 0)
             bp   = float(getattr(acct, "buying_power", 0) or 0)
             eq   = float(getattr(acct, "equity", 0) or 0)
+            # v5.1.4 \u2014 surface the equity-aware sizing caps so
+            # operators can see what the next entry will be sized at.
+            equity_cap = eq * (self.max_pct_per_entry / 100.0)
+            cash_avail = max(0.0, cash - self.min_reserve_cash)
+            next_entry = min(
+                self.dollars_per_entry, equity_cap, cash_avail,
+            )
             await update.message.reply_text(
                 f"\U0001f4b0 {self.NAME} ({self.mode})\n"
                 f"  cash:   ${cash:,.2f}\n"
                 f"  equity: ${eq:,.2f}\n"
-                f"  bp:     ${bp:,.2f}"
+                f"  bp:     ${bp:,.2f}\n"
+                f"  cap:    ${equity_cap:,.2f} "
+                f"({self.max_pct_per_entry:.1f}% of equity)\n"
+                f"  reserve:${self.min_reserve_cash:,.2f}\n"
+                f"  next entry: ${next_entry:,.2f}"
             )
         except Exception as e:
             await update.message.reply_text(

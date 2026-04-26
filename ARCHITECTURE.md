@@ -318,11 +318,33 @@ the unit is computed.
 | Order type                          | Limit at current market price              |
 
 Executor sizing is independent and per-executor: `VAL_DOLLARS_PER_ENTRY`
-and `GENE_DOLLARS_PER_ENTRY` (default $10,000 each). Each executor
-computes `max(1, int(dollars_per_entry // price))` from its own price
-reference at signal time. Per spec C-R7, SPY/QQQ are pinned filter
-rows on the dashboard and serve as L-P1-G1/G2 / S-P1-G1/G2 inputs;
-they are NEVER traded directly.
+and `GENE_DOLLARS_PER_ENTRY` (default $10,000 each). As of **v5.1.4**
+the live executor `_shares_for(price, ticker=...)` is **equity-aware**:
+on every entry it calls `client.get_account()` and computes
+
+```
+effective_dollars = min(
+    dollars_per_entry,
+    equity * MAX_PCT_PER_ENTRY/100,
+    cash - MIN_RESERVE_CASH,
+)
+qty = max(1, int(effective_dollars // price))
+```
+
+Defaults: `MAX_PCT_PER_ENTRY = 10.0` (i.e. ≤10% of current Alpaca
+equity per entry) and `MIN_RESERVE_CASH = 500` USD. Worked example: a
+$30k account with `DOLLARS_PER_ENTRY=10000` will scale each entry down
+to ~$3,000 and emit `[SIZE_CAPPED]` at INFO. If `effective_dollars <
+price` the executor returns `qty=0` and logs `[INSUFFICIENT_EQUITY]`
+instead of submitting an order Alpaca will reject. If
+`get_account()` itself fails (network blip), the executor logs
+`[SIZING_FALLBACK]` and falls back to the legacy
+`int(dollars_per_entry // price)` path so live trading never
+hard-fails on a transient API error. Paper book sizing
+(`paper_shares_for` / `PAPER_DOLLARS_PER_ENTRY`) is **unchanged** and
+remains byte-equal under the synthetic-harness goldens. Per spec
+C-R7, SPY/QQQ are pinned filter rows on the dashboard and serve as
+L-P1-G1/G2 / S-P1-G1/G2 inputs; they are NEVER traded directly.
 
 ---
 
@@ -751,6 +773,8 @@ see §11.7.)
 | `{P}TELEGRAM_CHAT_ID`      | empty   | v5.0.3: optional seed only (auto-learn fills the map)  |
 | `{P}EXECUTOR_CHATS_PATH`   | `/data/executor_chats_{name}.json` | v5.0.3 auto-learned chat-map     |
 | `{P}DOLLARS_PER_ENTRY`     | `10000` | Dollar size per executor entry                         |
+| `{P}MAX_PCT_PER_ENTRY`     | `10.0`  | v5.1.4 equity-aware cap: max % of equity per entry     |
+| `{P}MIN_RESERVE_CASH`      | `500`   | v5.1.4 equity-aware cap: USD cash floor after entry    |
 | `ALPACA_ENDPOINT_PAPER`    | unset   | URL host override (no `/v2`); shared by both executors |
 | `ALPACA_ENDPOINT_TRADE`    | unset   | URL host override (no `/v2`); shared by both executors |
 
