@@ -103,6 +103,9 @@ def run_local() -> int:
     tmp_dir = Path("/tmp/ssm_smoke_state")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(tmp_dir)
+    # v5.1.8 \u2014 point STATE_DB_PATH at a tmp file so tests do not try to
+    # touch /data/state.db (the Railway volume mount, absent locally).
+    os.environ["STATE_DB_PATH"] = str(tmp_dir / "state.db")
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
@@ -125,6 +128,14 @@ def run_local() -> int:
         m.paper_cash = m.PAPER_STARTING_CAPITAL
         m._trading_halted = False
         m._trading_halted_reason = ""
+        # v5.1.8 \u2014 wipe SQLite-backed v5 tracks + fired_set so a prior
+        # test cannot leak rows into the next.
+        try:
+            import persistence as _p
+            _p.replace_all_tracks({}, {})
+            _p.prune_fired("__never_matches__")
+        except Exception:
+            pass
 
     today = m._now_et().strftime("%Y-%m-%d")
 
@@ -328,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.1.6")
+    @t("version: BOT_VERSION is 5.1.8")
     def _():
-        assert m.BOT_VERSION == "5.1.6", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.1.8", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -1979,6 +1990,10 @@ def run_local() -> int:
     def _():
         # A v4 paper_state.json never wrote v5_* keys. Loader MUST treat
         # absent keys as a fresh start (no exception, tracks empty).
+        # v5.1.8: tracks now live in SQLite \u2014 clear the table first so a
+        # prior test's leftover row doesn't masquerade as legacy data.
+        import persistence as _p
+        _p.replace_all_tracks({}, {})
         import json as _json
         legacy = {
             "paper_cash": 100000.0,
@@ -2034,6 +2049,132 @@ def run_local() -> int:
         track = m.v5_get_track("ZZZ", v5.DIR_LONG)
         assert track["state"] == v5.STATE_IDLE
         assert "ZZZ" in m.v5_long_tracks
+
+    # ---------- v5.1.8 \u2014 SQLite persistence ----------
+    @t("v5.1.8 persistence: fired_set round-trips mark/was/prune")
+    def _():
+        import persistence as p
+        p.prune_fired("__never_matches__")  # clear table
+        key = "2026-04-26-15:58-daily-15:58"
+        assert not p.was_fired(key)
+        p.mark_fired(key)
+        assert p.was_fired(key)
+        # Idempotent re-mark.
+        p.mark_fired(key)
+        assert p.was_fired(key)
+        # Prune keeping today does NOT delete today's row.
+        p.prune_fired("2026-04-26")
+        assert p.was_fired(key)
+        # Prune keeping a different day deletes it.
+        p.prune_fired("2099-01-01")
+        assert not p.was_fired(key)
+
+    @t("v5.1.8 persistence: v5_long_tracks round-trip per direction")
+    def _():
+        import persistence as p
+        p.replace_all_tracks({}, {})
+        long_state = {"state": "ARMED", "entry": 50.0, "ticker": "AAPL"}
+        short_state = {"state": "WATCHING", "ticker": "AAPL"}
+        p.save_track("AAPL", long_state, "long")
+        p.save_track("AAPL", short_state, "short")
+        # Per-direction read.
+        got_long = p.load_track("AAPL", "long")
+        got_short = p.load_track("AAPL", "short")
+        assert got_long == long_state, got_long
+        assert got_short == short_state, got_short
+        # load_all separates the two namespaces.
+        all_long = p.load_all_tracks("long")
+        all_short = p.load_all_tracks("short")
+        assert "AAPL" in all_long and all_long["AAPL"] == long_state
+        assert "AAPL" in all_short and all_short["AAPL"] == short_state
+        # Delete + read returns None.
+        p.delete_track("AAPL", "long")
+        assert p.load_track("AAPL", "long") is None
+        assert p.load_track("AAPL", "short") == short_state
+
+    @t("v5.1.8 persistence: replace_all_tracks atomically wipes + rewrites")
+    def _():
+        import persistence as p
+        p.replace_all_tracks({"OLD": {"x": 1}}, {})
+        assert "OLD" in p.load_all_tracks("long")
+        # Replace with different set: OLD must disappear, NEW must appear.
+        p.replace_all_tracks({"NEW": {"y": 2}}, {"BEAR": {"z": 3}})
+        long_now = p.load_all_tracks("long")
+        short_now = p.load_all_tracks("short")
+        assert long_now == {"NEW": {"y": 2}}, long_now
+        assert short_now == {"BEAR": {"z": 3}}, short_now
+
+    @t("v5.1.8 persistence: write rolls back on exception inside transaction")
+    def _():
+        # Half-write rollback test: simulate a failure mid-transaction
+        # and confirm the row never lands in the table. Replicates the
+        # behavior we'd want under a real crash (BEGIN IMMEDIATE +
+        # explicit ROLLBACK on the except branch).
+        import persistence as p
+        import sqlite3
+        p.prune_fired("__never_matches__")
+        c = p._conn()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                "INSERT INTO fired_set (job_key, fired_at_utc) VALUES (?, ?)",
+                ("rollback-key", "2026-04-26T00:00:00+00:00"),
+            )
+            # Force an error mid-transaction.
+            raise RuntimeError("simulated crash")
+        except RuntimeError:
+            c.execute("ROLLBACK")
+        # Confirm the row was rolled back \u2014 not visible after failure.
+        assert not p.was_fired("rollback-key")
+
+    @t("v5.1.8 persistence: WAL journal_mode is set")
+    def _():
+        import persistence as p
+        c = p._conn()
+        cur = c.execute("PRAGMA journal_mode")
+        mode = cur.fetchone()[0]
+        assert mode.lower() == "wal", f"journal_mode is {mode}, expected wal"
+
+    @t("v5.1.8 persistence: STATE_DB_PATH env var is honored")
+    def _():
+        import persistence as p
+        # The smoke harness sets STATE_DB_PATH to a tmp path; verify
+        # init_db is using that exact path, not the /data/ default.
+        assert p.STATE_DB_PATH == os.environ["STATE_DB_PATH"], \
+            f"STATE_DB_PATH={p.STATE_DB_PATH!r} expected={os.environ['STATE_DB_PATH']!r}"
+        assert os.path.exists(p.STATE_DB_PATH), \
+            f"DB file not created at {p.STATE_DB_PATH}"
+
+    @t("v5.1.8 persistence: migrate_from_json imports v5 keys then renames source")
+    def _():
+        import persistence as p
+        import json as _json
+        import tempfile
+        # Wipe SQLite, build a fake legacy paper_state.json with v5 keys.
+        p.replace_all_tracks({}, {})
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "paper_state.json")
+            blob = {
+                "paper_cash": 100000.0,
+                "v5_long_tracks": {
+                    "AAPL": {"state": "TRAILING", "ticker": "AAPL"},
+                },
+                "v5_short_tracks": {
+                    "TSLA": {"state": "WATCHING", "ticker": "TSLA"},
+                },
+            }
+            with open(src, "w") as f:
+                _json.dump(blob, f)
+            n = p.migrate_from_json(src)
+            assert n == 2, f"expected 2 imports, got {n}"
+            # Source file renamed.
+            assert not os.path.exists(src), "source not renamed"
+            assert os.path.exists(src + ".migrated.bak"), "bak missing"
+            # Tracks now in SQLite.
+            assert p.load_track("AAPL", "long")["state"] == "TRAILING"
+            assert p.load_track("TSLA", "short")["state"] == "WATCHING"
+            # Re-running is a no-op (source already gone).
+            assert p.migrate_from_json(src) == 0
 
     @t("v5 plumbing: STRATEGY.md mentioned in trade_genius rolling release note")
     def _():

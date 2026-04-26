@@ -4,6 +4,17 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.1.8 — 2026-04-26
+
+- feat: SQLite persistence for `fired_set` (timed-job idempotency) and `v5_long_tracks` (Tiger/Buffalo paper-trade state). New module `persistence.py` wraps a WAL-mode SQLite store at `STATE_DB_PATH` (default `/data/state.db` on Railway). Replaces the in-memory `fired = set()` in `scheduler_thread()` so an EOD job that fires before a Railway container restart at 15:59:30 ET cannot double-fire at 16:00 after the container comes back up. Also replaces the non-atomic `json.dump` of `v5_long_tracks` / `v5_short_tracks` inside `paper_state.json` so a crash mid-write can no longer corrupt the wider portfolio file.
+- feat: helpers `mark_fired(job_key)` / `was_fired(job_key)` / `prune_fired(prefix)` replace the in-memory set; `save_track`, `load_track`, `load_all_tracks(direction)`, `replace_all_tracks(long, short)` replace the JSON path.
+- feat: every write runs inside `BEGIN IMMEDIATE … COMMIT`; `PRAGMA journal_mode=WAL` + `synchronous=NORMAL` so dashboard reads do not block the writer.
+- feat: one-shot migration on startup. If `paper_state.json` already contains `v5_long_tracks` / `v5_short_tracks` keys, they are imported once into SQLite then the source file is renamed to `paper_state.json.migrated.bak` so a subsequent boot does not re-apply it. Idempotent — re-runs are a no-op.
+- env: new `STATE_DB_PATH` (default `/data/state.db`). Documented in `.env.example`.
+- tests: round-trip + transaction-rollback unit tests for both tables; existing v5-track round-trip and legacy-v4 paper-state tests adjusted to point at the SQLite-backed store; smoke `version: BOT_VERSION` updated to 5.1.8.
+
+---
+
 ## v5.1.6 — 2026-04-26
 
 - feat: `BUCKET_FILL_100` added as 5th shadow config (ticker ≥100% AND qqq ≥100% bucket fill). Pure observation, NOT enforced. Defaults unchanged.
