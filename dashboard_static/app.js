@@ -796,12 +796,18 @@
         '</div>'
       );
     }
-    if (sp.live_bot) {
+    // v5.2.0 amendment \u2014 the comparator row is now the PAPER BOT
+    // (same portfolio whose equity drives shadow sizing). Older
+    // backend snapshots that still ship `live_bot` are accepted as a
+    // fallback so a stale browser tab doesn't blank the row during
+    // rollout.
+    const cmp = sp.paper_bot || sp.live_bot;
+    if (cmp) {
       rows.push(
         '<div class="shadow-pnl-row sp-live">' +
-          '<span class="sp-name">' + sp.live_bot.label + '</span>' +
-          '<span class="sp-section sp-today">' + _shadowSectionHTML(sp.live_bot.today || {}) + '</span>' +
-          '<span class="sp-section sp-cum">' + _shadowSectionHTML(sp.live_bot.cumulative || {}) + '</span>' +
+          '<span class="sp-name">' + cmp.label + '</span>' +
+          '<span class="sp-section sp-today">' + _shadowSectionHTML(cmp.today || {}) + '</span>' +
+          '<span class="sp-section sp-cum">' + _shadowSectionHTML(cmp.cumulative || {}) + '</span>' +
         '</div>'
       );
     }

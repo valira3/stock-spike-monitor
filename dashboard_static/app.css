@@ -666,7 +666,7 @@
   }
   /* v5.2.0 \u2014 Shadow strategy P&L panel. Lives at the bottom of
      the main dashboard. Header row + one row per config + a bolded
-     LIVE BOT row at the bottom for direct comparison. Mobile wraps
+     PAPER BOT row at the bottom for direct comparison. Mobile wraps
      to a card layout on narrow viewports. */
   .shadow-pnl-head,
   .shadow-pnl-row {
@@ -729,4 +729,18 @@
     .shadow-pnl-row .sp-name { grid-area: name; font-size: 12px; }
     .shadow-pnl-row .sp-section.sp-today { grid-area: today; text-align: left; }
     .shadow-pnl-row .sp-section.sp-cum   { grid-area: cum; }
+  }
+
+  /* v5.2.0 amendment \u2014 the shadow panel is Main-tab only. The tab
+     switcher already hides the whole #tg-panel-main when Val/Gene is
+     active, but this body-scoped rule makes the panel-only gate
+     explicit (and survives any future layout move that puts the
+     panel outside #tg-panel-main). The selector matches whenever
+     body's data-tg-active-tab is set to anything other than "main";
+     selectTab() in app.js maintains the attribute. */
+  body[data-tg-active-tab="val"]  #shadow-pnl-card,
+  body[data-tg-active-tab="val"]  #shadow-pnl-section,
+  body[data-tg-active-tab="gene"] #shadow-pnl-card,
+  body[data-tg-active-tab="gene"] #shadow-pnl-section {
+    display: none !important;
   }

@@ -13,6 +13,10 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 - The 7 SHADOW_CONFIGS are unchanged in scope. Open hooks fire from `_shadow_log_g4` (the 5 v5.1.6 configs, on stage-1 candidates where `existing_decision == ENTER` AND that config's verdict is PASS) and from the `_v519_check_rehunt` / `_v519_check_oomph` emit sites (REHUNT and OOMPH).
 - No live trading behavior change. `VOL_GATE_ENFORCE=0` default preserved. Health-pill count and `#h-tick` countdown are untouched.
 - tests: 10 new local smoke tests cover sizing, full open→MTM→close lifecycle, short-side direction, persistence round-trip, today vs cumulative split, dedup, dashboard snapshot wiring, best/worst highlight selection, BOT_VERSION bump, and the new `shadow_positions` schema. All 248 local tests pass (was 238).
+- amend: shadow sizing now reads paper-portfolio equity (`paper_cash + sum(long_mv) - sum(short_liab)`) instead of the live Alpaca account snapshot. Shadow flow is now 100% paper-portfolio-driven \u2014 no Alpaca round-trip in the shadow open path. New helper `_v520_paper_equity_snapshot()` replaces `_v520_equity_snapshot()`; new env vars `PAPER_MAX_PCT_PER_ENTRY` (default `10.0`) and `PAPER_MIN_RESERVE_CASH` (default `500.0`) mirror the v5.1.4 live executor caps for the paper book.
+- amend: bottom comparison row in the shadow panel renamed from "LIVE BOT (Val)" to "PAPER BOT" (the same paper portfolio whose equity now drives shadow sizing). Dashboard snapshot key renamed `live_bot` \u2192 `paper_bot`; `app.js` keeps a `paper_bot || live_bot` fallback so a stale browser tab still renders during rollout.
+- amend: shadow panel renders ONLY on the Main tab. Body-scoped CSS rule on `[data-tg-active-tab]` hides `#shadow-pnl-card` and `#shadow-pnl-section` when Val or Gene is active.
+- tests: 2 new local smoke tests cover the paper-equity snapshot formula and the Main-tab-only panel gate. Local total now 250.
 
 ---
 

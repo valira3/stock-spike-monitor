@@ -546,7 +546,7 @@ def _shadow_pnl_snapshot(
 
     Returns:
       { "configs": [ {name, label, today: {...}, cumulative: {...}}, ... ],
-        "live_bot": {label, today, cumulative},
+        "paper_bot": {label, today, cumulative},
         "best_today": "TICKER+QQQ" | None,
         "worst_today": "BUCKET_FILL_100" | None }
     """
@@ -596,54 +596,55 @@ def _shadow_pnl_snapshot(
         active, key=lambda c: c["today"]["total"], default=None,
     )
 
-    # Live bot row \u2014 Val's executor is the canonical comparison
-    # because shadow sizing uses Val's equity. Fall back to the main
-    # paper book numbers (also computed by snapshot()) if Val is not
-    # configured.
-    live_today_n = 0
-    live_today_wins = 0
+    # Paper bot comparison row \u2014 mirrors the same paper portfolio
+    # whose equity now drives shadow sizing, so the row is a true
+    # apples-to-apples comparison vs the per-config rollups above.
+    # Source: paper_trades (long SELLs) + short_trade_history (short
+    # COVERs), date-filtered to today.
+    paper_today_n = 0
+    paper_today_wins = 0
     today_paper_pnl = 0.0
     for t in (getattr(m, "paper_trades", []) or []):
         if t.get("date") == today and t.get("action") == "SELL":
-            live_today_n += 1
+            paper_today_n += 1
             pnl = float(t.get("pnl", 0.0) or 0.0)
             today_paper_pnl += pnl
             if pnl > 0:
-                live_today_wins += 1
+                paper_today_wins += 1
     for t in (getattr(m, "short_trade_history", []) or []):
         if t.get("date") == today:
-            live_today_n += 1
+            paper_today_n += 1
             pnl = float(t.get("pnl", 0.0) or 0.0)
             today_paper_pnl += pnl
             if pnl > 0:
-                live_today_wins += 1
-    live_wr = (live_today_wins / live_today_n * 100.0) if live_today_n else None
-    live_total_today = today_paper_pnl + float(today_unrealized or 0.0)
-    live_bot = {
-        "label": "LIVE BOT (Val)",
+                paper_today_wins += 1
+    paper_wr = (paper_today_wins / paper_today_n * 100.0) if paper_today_n else None
+    paper_total_today = today_paper_pnl + float(today_unrealized or 0.0)
+    paper_bot = {
+        "label": "PAPER BOT",
         "today": {
-            "n": live_today_n,
-            "wr": round(live_wr, 1) if live_wr is not None else None,
+            "n": paper_today_n,
+            "wr": round(paper_wr, 1) if paper_wr is not None else None,
             "realized": round(today_paper_pnl, 2),
             "unrealized": round(float(today_unrealized or 0.0), 2),
-            "total": round(live_total_today, 2),
+            "total": round(paper_total_today, 2),
         },
         "cumulative": {
-            # The live cumulative tracker lives in paper_state and is
-            # not summed here \u2014 we surface today's live for a
-            # direct shadow vs live comparison and let the rest of the
-            # dashboard cover all-time live equity.
-            "n": live_today_n,
-            "wr": round(live_wr, 1) if live_wr is not None else None,
+            # The paper cumulative tracker lives in paper_state and is
+            # not summed here \u2014 we surface today's paper for a
+            # direct shadow vs paper comparison and let the rest of the
+            # dashboard cover all-time paper equity.
+            "n": paper_today_n,
+            "wr": round(paper_wr, 1) if paper_wr is not None else None,
             "realized": round(today_paper_pnl, 2),
             "unrealized": round(float(today_unrealized or 0.0), 2),
-            "total": round(live_total_today, 2),
+            "total": round(paper_total_today, 2),
         },
     }
 
     return {
         "configs": configs,
-        "live_bot": live_bot,
+        "paper_bot": paper_bot,
         "best_today": best_today["name"] if best_today else None,
         "worst_today": worst_today["name"] if worst_today else None,
     }
@@ -776,8 +777,9 @@ def snapshot() -> dict[str, Any]:
             # tick without a separate /api/errors round-trip.
             "errors": _errors_snapshot_safe("main"),
             # v5.2.0 \u2014 shadow strategy P&L block for the bottom panel.
-            # Every config row + a LIVE_BOT comparison row built from
-            # the same paper trades / unrealized totals shown above.
+            # Every config row + a PAPER_BOT comparison row built from
+            # the same paper trades / unrealized totals shown above
+            # (the paper book is also what drives shadow sizing).
             "shadow_pnl": _shadow_pnl_snapshot(
                 m, today, realized, unreal_sum,
             ),

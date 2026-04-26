@@ -99,19 +99,20 @@ CURRENT_MAIN_NOTE = (
     "of the 7 SHADOW_CONFIGS now\n"
     "owns a virtual portfolio,\n"
     "sized via the v5.1.4 equity\n"
-    "formula on Val's live equity.\n"
+    "formula on the paper book's\n"
+    "equity (no Alpaca round-trip).\n"
     "Open positions are marked\n"
     "to market every scan cycle\n"
     "from the IEX 1m close;\n"
-    "exits mirror the live bot's\n"
+    "exits mirror the paper bot's\n"
     "HARD_EJECT_TIGER + trail +\n"
     "structural stop + EOD path.\n"
     "Persisted to SQLite via the\n"
     "shadow_positions table. New\n"
     "panel sits at the bottom of\n"
-    "the main dashboard with a\n"
+    "the Main tab only with a\n"
     "Today + Cumulative column\n"
-    "per config. LIVE BOT row\n"
+    "per config. PAPER BOT row\n"
     "below for direct compare."
 )
 
@@ -2208,41 +2209,90 @@ def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
 #
 # Each SHADOW_CONFIGS entry that emits a would-have-entered verdict opens
 # a virtual position via shadow_pnl.tracker(). Sizing reuses the v5.1.4
-# equity-aware formula on Val's LIVE executor's account (so shadow P&L
-# is directly comparable to live bot P&L). Failure-tolerant: any error
+# equity-aware formula but pulls equity/cash from the MAIN PAPER PORTFOLIO
+# (Tiger/Buffalo book \u2014 the same one tracked via v5_long_tracks) so
+# shadow P&L is directly comparable to the paper bot's P&L. No Alpaca
+# round-trip is involved in the shadow flow. Failure-tolerant: any error
 # in the shadow path logs a warning and lets the live bot continue.
 # ---------------------------------------------------------------------------
 
+# Sizing caps for shadow positions. Mirror v5.1.4's defaults so shadow
+# P&L stays comparable to the live executors' sizing rules. Overridable
+# via env so a paper-only tuning run does not need a code change.
+_V520_SHADOW_MAX_PCT_PER_ENTRY = float(
+    os.getenv("PAPER_MAX_PCT_PER_ENTRY", "10.0") or 10.0)
+_V520_SHADOW_MIN_RESERVE_CASH = float(
+    os.getenv("PAPER_MIN_RESERVE_CASH", "500.0") or 500.0)
 
-def _v520_equity_snapshot() -> dict | None:
-    """Snapshot Val's LIVE executor equity/cash for shadow sizing.
 
-    Returns None when Val is not configured, the live alpaca client is
-    unavailable, or the account fetch raises. Callers must treat None
-    as "skip shadow open this cycle" \u2014 never as a hard error.
+def _v520_paper_equity_snapshot() -> dict | None:
+    """Snapshot the MAIN PAPER PORTFOLIO equity/cash for shadow sizing.
+
+    The paper book is the canonical comparator for shadow strategies
+    (Tiger/Buffalo, tracked via v5_long_tracks). Equity is derived as
+
+        paper_equity = paper_cash + sum(long mark-to-market value)
+                       \u2212 sum(short buy-back liability)
+
+    using the SAME accounting convention as the dashboard's `_equity()`
+    helper. We use entry price as a fallback when a live mark is not
+    available so a missing 1m bar never blocks a shadow open.
+
+    Returns None when the paper book has no cash field (e.g. fixture
+    boot order). Callers treat None as "skip shadow open this cycle".
     """
     try:
-        ve = globals().get("val_executor", None)
-        if ve is None:
+        cash = globals().get("paper_cash", None)
+        if cash is None:
             return None
-        client = ve._ensure_client() if hasattr(ve, "_ensure_client") else None
-        if client is None:
-            return None
-        acct = client.get_account()
-        equity = float(getattr(acct, "equity", 0) or 0)
-        cash = float(getattr(acct, "cash", 0) or 0)
+        cash_f = float(cash)
+        long_mv = 0.0
+        for tkr, pos in (positions or {}).items():
+            try:
+                shares = float(pos.get("shares", 0) or 0)
+                if shares <= 0:
+                    continue
+                mark = None
+                try:
+                    bars = fetch_1min_bars(tkr)
+                    if bars and bars.get("current_price"):
+                        mark = float(bars["current_price"])
+                except Exception:
+                    mark = None
+                if mark is None or mark <= 0:
+                    mark = float(pos.get("entry_price", 0) or 0)
+                long_mv += mark * shares
+            except Exception:
+                continue
+        short_liab = 0.0
+        for tkr, pos in (short_positions or {}).items():
+            try:
+                shares = float(pos.get("shares", 0) or 0)
+                if shares <= 0:
+                    continue
+                mark = None
+                try:
+                    bars = fetch_1min_bars(tkr)
+                    if bars and bars.get("current_price"):
+                        mark = float(bars["current_price"])
+                except Exception:
+                    mark = None
+                if mark is None or mark <= 0:
+                    mark = float(pos.get("entry_price", 0) or 0)
+                short_liab += mark * shares
+            except Exception:
+                continue
+        equity = cash_f + long_mv - short_liab
         return {
             "equity": equity,
-            "cash": cash,
+            "cash": cash_f,
             "dollars_per_entry": float(
-                getattr(ve, "dollars_per_entry", 10000.0) or 10000.0),
-            "max_pct_per_entry": float(
-                getattr(ve, "max_pct_per_entry", 10.0) or 10.0),
-            "min_reserve_cash": float(
-                getattr(ve, "min_reserve_cash", 500.0) or 500.0),
+                globals().get("PAPER_DOLLARS_PER_ENTRY", 10000.0) or 10000.0),
+            "max_pct_per_entry": _V520_SHADOW_MAX_PCT_PER_ENTRY,
+            "min_reserve_cash": _V520_SHADOW_MIN_RESERVE_CASH,
         }
     except Exception as e:
-        logger.warning("[V520-SHADOW-PNL] equity snapshot failed: %s", e)
+        logger.warning("[V520-SHADOW-PNL] paper equity snapshot failed: %s", e)
         return None
 
 
@@ -2251,12 +2301,12 @@ def _v520_open_shadow(
 ) -> None:
     """Open a virtual shadow position for `config_name` on `ticker`.
 
-    Sizing pulls Val's live equity; if that fails (no client, no Val)
+    Sizing pulls the paper portfolio's equity; if that snapshot fails
     we skip silently \u2014 the live trading path is unaffected.
     """
     if entry_price is None or entry_price <= 0:
         return
-    snap = _v520_equity_snapshot()
+    snap = _v520_paper_equity_snapshot()
     if snap is None:
         return
     try:
@@ -2269,7 +2319,7 @@ def _v520_open_shadow(
         if rid is not None:
             logger.info(
                 "[V520-SHADOW-PNL] OPEN cfg=%s ticker=%s side=%s "
-                "entry=$%.2f eq=$%.0f cash=$%.0f",
+                "entry=$%.2f paper_eq=$%.0f paper_cash=$%.0f",
                 config_name, ticker, side, float(entry_price),
                 snap["equity"], snap["cash"],
             )

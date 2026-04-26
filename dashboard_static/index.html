@@ -184,9 +184,13 @@
 
     <!-- v5.2.0 — Shadow strategy P&L panel. Bottom of main dashboard,
          polled via /api/state (same cadence as live trades). One row
-         per config + a bolded LIVE BOT row at the bottom for direct
-         comparison. Best / worst today highlighted green / red. -->
-    <section class="grid">
+         per config + a bolded PAPER BOT row at the bottom for direct
+         comparison (same paper portfolio whose equity drives shadow
+         sizing). Best / worst today highlighted green / red.
+         v5.2.0 amendment: panel renders ONLY on the Main tab — the
+         CSS rule below hides it on Val/Gene via the body-scoped
+         data-tg-active-tab attribute. -->
+    <section class="grid" id="shadow-pnl-section">
       <div class="card" id="shadow-pnl-card">
         <div class="card-head">
           <span class="card-title">Shadow strategies<span class="count" id="shadow-count">· —</span></span>

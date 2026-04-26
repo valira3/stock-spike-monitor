@@ -3692,7 +3692,14 @@ def run_local() -> int:
         out = ds.snapshot()
         assert out.get("ok"), out
         sp = out.get("shadow_pnl") or {}
-        assert "configs" in sp and "live_bot" in sp
+        # v5.2.0 amendment: comparator row is now PAPER_BOT (not LIVE).
+        assert "configs" in sp and "paper_bot" in sp
+        assert "live_bot" not in sp, (
+            "v5.2.0 amendment removed the live_bot row; the panel "
+            "compares against the paper book whose equity drives "
+            "shadow sizing."
+        )
+        assert sp["paper_bot"]["label"] == "PAPER BOT", sp["paper_bot"]
         names = {c["name"] for c in sp["configs"]}
         assert "TICKER+QQQ" in names
         assert "REHUNT_VOL_CONFIRM" in names
@@ -3747,6 +3754,74 @@ def run_local() -> int:
         # tests are unaffected.
         _persist_mod._close_for_tests()
         _persist_mod.init_db(str(tmp_dir / "state.db"))
+
+    # v5.2.0 amendment \u2014 shadow sizing now reads the PAPER PORTFOLIO
+    # equity (cash + long mv \u2212 short liab) instead of Val's live
+    # Alpaca account. The two tests below cover the snapshot helper
+    # itself plus the dashboard panel rename / Main-tab gate.
+
+    @t("v5.2.0 amend: paper equity snapshot uses paper_cash + positions")
+    def _():
+        snap_fn = getattr(m, "_v520_paper_equity_snapshot", None)
+        assert snap_fn is not None, (
+            "shadow flow must expose _v520_paper_equity_snapshot \u2014 "
+            "the live-Alpaca snapshot is removed in v5.2.0 amendment."
+        )
+        # Sanity-check: the live-Alpaca snapshot helper is gone so no
+        # caller can accidentally reach back to the Alpaca account.
+        assert getattr(m, "_v520_equity_snapshot", None) is None, (
+            "old _v520_equity_snapshot must be removed; shadow flow "
+            "is now 100% paper-portfolio-driven."
+        )
+        # Seed a clean paper book and verify the formula is exact.
+        prev_cash = m.paper_cash
+        prev_pos = dict(m.positions)
+        prev_short = dict(m.short_positions)
+        try:
+            m.paper_cash = 50_000.0
+            m.positions.clear()
+            m.short_positions.clear()
+            # 100 shares @ $50 long, no fetch needed: snapshot falls back
+            # to entry_price when fetch_1min_bars returns None.
+            m.positions["FAKE"] = {
+                "entry_price": 50.0, "shares": 100, "stop": 49.0,
+            }
+            snap = snap_fn()
+            assert snap is not None, "snapshot returned None"
+            assert abs(snap["cash"] - 50_000.0) < 0.01, snap
+            # equity = 50_000 + 100 * 50 - 0 = 55_000
+            assert abs(snap["equity"] - 55_000.0) < 0.01, snap
+            assert snap["dollars_per_entry"] == m.PAPER_DOLLARS_PER_ENTRY
+            assert snap["max_pct_per_entry"] > 0
+            assert snap["min_reserve_cash"] >= 0
+        finally:
+            m.paper_cash = prev_cash
+            m.positions.clear()
+            m.positions.update(prev_pos)
+            m.short_positions.clear()
+            m.short_positions.update(prev_short)
+
+    @t("v5.2.0 amend: shadow panel hidden when active tab != main")
+    def _():
+        # The CSS gate is body[data-tg-active-tab='val|gene'] hiding
+        # #shadow-pnl-card / #shadow-pnl-section. Verifying both the
+        # HTML id and the CSS selector keeps the contract honest:
+        # if either side drifts, the assertion fails.
+        repo = Path(__file__).parent
+        html = (repo / "dashboard_static" / "index.html").read_text(
+            encoding="utf-8")
+        assert 'id="shadow-pnl-card"' in html, "card id missing"
+        assert 'id="shadow-pnl-section"' in html, "section id missing"
+        css = (repo / "dashboard_static" / "app.css").read_text(
+            encoding="utf-8")
+        assert 'data-tg-active-tab="val"' in css, css[-2000:]
+        assert 'data-tg-active-tab="gene"' in css, css[-2000:]
+        # Both #shadow-pnl-card and #shadow-pnl-section must be in
+        # the gating selector so the section's vertical space also
+        # collapses on Val/Gene tabs.
+        assert "#shadow-pnl-card" in css
+        assert "#shadow-pnl-section" in css
+        assert "display: none !important" in css
 
     return run_suite("LOCAL SMOKE TESTS (v5.1.2 Tiger/Buffalo + Forensic Capture)")
 
