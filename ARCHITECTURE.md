@@ -698,7 +698,6 @@ Production typically sets this to `"5165570192,167005578"` (Val + Gene).
 | Variable        | Default                        | Notes                                  |
 |-----------------|--------------------------------|----------------------------------------|
 | `FMP_API_KEY`   | hard-coded fallback (free key) | PDC + quote data                       |
-| `FINNHUB_TOKEN` | empty                          | Optional secondary quote path          |
 
 ### 10.4 Persistence (Railway Volume)
 

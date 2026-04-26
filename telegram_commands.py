@@ -87,7 +87,6 @@ from trade_genius import (
     _reply_in_chunks,
     _reset_buttons,
     _status_text_sync,
-    _test_finnhub,
     _test_fmp,
     _test_positions,
     _test_scanner,
@@ -135,28 +134,21 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except TelegramBadRequest as e:
         logger.debug("cmd_test: edit_text step fmp: %s", e)
 
-    # Step 2 — Finnhub
-    results["fhb"] = await loop.run_in_executor(None, _test_finnhub)
-    try:
-        await prog.edit_text(_build_test_progress(results))
-    except TelegramBadRequest as e:
-        logger.debug("cmd_test: edit_text step fhb: %s", e)
-
-    # Step 3 — State files
+    # Step 2 — State files
     results["state"] = await loop.run_in_executor(None, _test_state)
     try:
         await prog.edit_text(_build_test_progress(results))
     except TelegramBadRequest as e:
         logger.debug("cmd_test: edit_text step state: %s", e)
 
-    # Step 4 — Positions
+    # Step 3 — Positions
     results["pos"] = _test_positions()
     try:
         await prog.edit_text(_build_test_progress(results))
     except TelegramBadRequest as e:
         logger.debug("cmd_test: edit_text step pos: %s", e)
 
-    # Step 5 — Scanner
+    # Step 4 — Scanner
     results["scanner"] = _test_scanner()
     try:
         await prog.edit_text(_build_test_progress(results))
