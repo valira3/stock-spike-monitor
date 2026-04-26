@@ -1268,27 +1268,52 @@ for the parallel shadow lines. It returns
 and `reason ∈ {OK, LOW_TICKER, LOW_QQQ, STALE_PROFILE, NO_BARS,
 NO_PROFILE, DISABLED}`.
 
-### 17.4 `SHADOW_CONFIGS` — fixed analysis configs (v5.1.1 → v5.1.2)
+### 17.4 `SHADOW_CONFIGS` — fixed analysis configs (v5.1.1 → v5.1.6)
 
-`volume_profile.SHADOW_CONFIGS` is a hard-coded **4-tuple** (was
-3-tuple in v5.1.1; `GEMINI_A` was added in v5.1.2 after the Apr 20-24
-replay flagged it as the only Gemini-suggested config with positive
-net P&L swing):
+`volume_profile.SHADOW_CONFIGS` is a hard-coded **5-tuple** (was
+3-tuple in v5.1.1; `GEMINI_A` was added in v5.1.2; `BUCKET_FILL_100`
+was added in v5.1.6 to support the Bucket-Fill Protocol intraminute
+velocity capture — see §17.1):
 
-| Name         | `ticker_enabled` | `index_enabled` | `ticker_pct` | `index_pct` |
-|--------------|------------------|-----------------|--------------|-------------|
-| `TICKER+QQQ` | True             | True            | 70           | 100         |
-| `TICKER_ONLY`| True             | False           | 70           | (unused)    |
-| `QQQ_ONLY`   | False            | True            | (unused)     | 100         |
-| `GEMINI_A`   | True             | True            | **110**      | **85**      |
+| Name              | `ticker_enabled` | `index_enabled` | `ticker_pct` | `index_pct` |
+|-------------------|------------------|-----------------|--------------|-------------|
+| `TICKER+QQQ`      | True             | True            | 70           | 100         |
+| `TICKER_ONLY`     | True             | False           | 70           | (unused)    |
+| `QQQ_ONLY`        | False            | True            | (unused)     | 100         |
+| `GEMINI_A`        | True             | True            | **110**      | **85**      |
+| `BUCKET_FILL_100` | True             | True            | **100**      | **100**     |
 
 These are NOT env-driven — env vars only choose which one would gate
 trades if `VOL_GATE_ENFORCE=1`. The point is that every line of
-shadow data is comparable across all four configs post-hoc.
+shadow data is comparable across all five configs post-hoc.
+
+### 17.4a Bucket-Fill Velocity (v5.1.6)
+
+The `BUCKET_FILL_100` row above is paired with three new log streams
+that capture the data needed to evaluate the Bucket-Fill Protocol
+post-hoc (see Gene's design note). All three are pure observation;
+none of them touch the trading decision.
+
+- `[V510-VEL] ticker=X minute=HH:MM second=N running_vol=V bucket=B pct=P qqq_pct=Q`
+  fires **once per (ticker, minute)** on the FIRST tick where running
+  IEX volume crosses 100% of the bucket median for the active candle.
+  This is the data that lets us evaluate the "fires at second 40"
+  velocity hypothesis — the closed-minute backtest cannot see this.
+
+- `[V510-IDX] spy_close=X spy_pdc=Y spy_above=Y/N qqq_close=A qqq_pdc=B qqq_above=Y/N`
+  fires once per candidate consideration. Required for the L-P1 /
+  S-P1 index-direction leg of the protocol (QQQ > PDC AND SPY > PDC,
+  long; mirror for short).
+
+- `[V510-DI] ticker=X di_plus_t-1=A di_plus_t=B di_minus_t-1=C di_minus_t=D double_tap_long=Y/N double_tap_short=Y/N`
+  fires once per candidate consideration. Required for the L-P2 /
+  S-P2 "double-tap" leg (DI+ > 25 on both the prior and current
+  1-minute bar; mirror DI- for short). DI+ / DI- are computed via
+  Wilder's smoothing in `indicators.py` (`di_plus`, `di_minus`).
 
 ### 17.5 Shadow log lines
 
-Per candidate, `_shadow_log_g4` now emits **5** log lines:
+Per candidate, `_shadow_log_g4` now emits **6** log lines:
 
 ```
 [V510-SHADOW] ticker=AMD bucket=1448 stage=1 g4=GREEN ticker_pct=84 qqq_pct=112 reason=OK entry_decision=ENTER
@@ -1296,12 +1321,14 @@ Per candidate, `_shadow_log_g4` now emits **5** log lines:
 [V510-SHADOW][CFG=TICKER_ONLY][PCT=70]    ticker=AMD bucket=1448 stage=1 t_pct=84              verdict=PASS reason=OK entry_decision=ENTER
 [V510-SHADOW][CFG=QQQ_ONLY][PCT=100]      ticker=AMD bucket=1448 stage=1            qqq_pct=112 verdict=PASS reason=OK entry_decision=ENTER
 [V510-SHADOW][CFG=GEMINI_A][PCT=110/85]   ticker=AMD bucket=1448 stage=1 t_pct=84 qqq_pct=112 verdict=BLOCK reason=LOW_TICKER entry_decision=ENTER
+[V510-SHADOW][CFG=BUCKET_FILL_100][PCT=100/100] ticker=AMD bucket=1448 stage=1 t_pct=84 qqq_pct=112 verdict=BLOCK reason=LOW_TICKER entry_decision=ENTER
 ```
 
 The first line is the v5.1.0 back-compat line (no `[CFG=...]` prefix);
-the four `[CFG=...]` lines are the v5.1.1 (3 of them) plus v5.1.2
-(adds GEMINI_A = 4 total). `entry_decision` always reflects what the
-bot actually did — these lines never gate the decision.
+the five `[CFG=...]` lines are the v5.1.1 (3 of them), v5.1.2
+(`GEMINI_A`), and v5.1.6 (`BUCKET_FILL_100`). `entry_decision` always
+reflects what the bot actually did — these lines never gate the
+decision.
 
 ### 17.6 Failure modes
 

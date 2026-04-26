@@ -73,7 +73,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.5"
+BOT_VERSION = "5.1.6"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -91,6 +91,27 @@ BOT_VERSION = "5.1.5"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.1.6 \u2014 feat: BUCKET_FILL_\n"
+    "100 added as 5th shadow\n"
+    "config (ticker>=100% AND\n"
+    "qqq>=100%). Pure\n"
+    "observation, NOT enforced.\n"
+    "Defaults unchanged.\n"
+    "New [V510-VEL] log\n"
+    "captures the second when\n"
+    "running vol first crosses\n"
+    "100% of bucket (early-fire\n"
+    "signal). [V510-IDX] adds\n"
+    "SPY+QQQ vs PDC per cand.\n"
+    "[V510-DI] adds DI+/DI-\n"
+    "double-tap signal.\n"
+    "indicators.py adds\n"
+    "di_plus/di_minus (Wilder).\n"
+    "No live trading change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.1.5 \u2014 fix: /test no\n"
     "longer times out with\n"
     "\"Command failed: Timed\n"
@@ -103,11 +124,8 @@ CURRENT_MAIN_NOTE = (
     "edit at end + reply_text\n"
     "fallback. Underlying\n"
     "_test_* steps were always\n"
-    "healthy."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "healthy.\n"
+    "\n"
     "v5.1.4 \u2014 equity-aware\n"
     "sizing for live executors.\n"
     "Each entry now capped at\n"
@@ -2059,6 +2077,24 @@ def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
         ticker_profile = _volume_profile_cache.get(ticker)
         idx_profile = _volume_profile_cache.get(idx_symbol)
 
+        # v5.1.6: intraminute velocity capture. Emits [V510-VEL] on the
+        # FIRST tick (within a candle) where running_vol >= bucket size.
+        # Pure observation \u2014 no trading-path effect.
+        try:
+            if ticker_profile is not None:
+                bucket_size = volume_profile._bucket_median(ticker_profile, bucket)
+                qqq_pct_for_vel = None
+                if idx_profile is not None:
+                    qmed = volume_profile._bucket_median(idx_profile, bucket)
+                    if qmed:
+                        qqq_pct_for_vel = int(round((cur_qqq / qmed) * 100.0))
+                _v516_check_velocity(
+                    ticker, bucket, now_et, cur_v, bucket_size,
+                    qqq_pct=qqq_pct_for_vel,
+                )
+        except Exception:
+            pass
+
         # (1) Original v5.1.0 shadow line \u2014 unchanged for back-compat.
         g4 = volume_profile.evaluate_g4(
             ticker=ticker,
@@ -2184,6 +2220,144 @@ def _v512_log_minute(
         )
     except Exception as e:
         logger.warning("[V510-MINUTE] emit error %s: %s", ticker, e)
+
+
+# v5.1.6 \u2014 intraminute velocity capture state.
+#
+# Tracks the FIRST second-mark within each (ticker, minute) where running
+# IEX volume crossed 100% of the bucket median. Emitted once per minute
+# per ticker; reset on minute boundary. Pure observation \u2014 used only by
+# the [V510-VEL] log line. No trading-path effect.
+_v516_vel_state: dict[str, tuple[str, int]] = {}
+
+
+def _v516_log_velocity(
+    ticker: str,
+    minute_bucket: str | None,
+    second: int,
+    running_vol,
+    bucket_size,
+    pct,
+    qqq_pct,
+) -> None:
+    """Emit one [V510-VEL] line on the FIRST tick where running volume
+    crosses 100% of bucket median for the active candle. Failure-tolerant.
+    """
+    try:
+        logger.info(
+            "[V510-VEL] ticker=%s minute=%s second=%d running_vol=%s "
+            "bucket=%s pct=%s qqq_pct=%s",
+            ticker, minute_bucket if minute_bucket is not None else "null",
+            int(second), _fmt_num(running_vol), _fmt_num(bucket_size),
+            _fmt_num(pct), _fmt_num(qqq_pct),
+        )
+    except Exception as e:
+        logger.warning("[V510-VEL] emit error %s: %s", ticker, e)
+
+
+def _v516_check_velocity(
+    ticker: str,
+    minute_bucket: str | None,
+    now_et,
+    running_vol,
+    bucket_size,
+    qqq_pct=None,
+) -> None:
+    """If running_vol >= bucket_size and we have not yet logged a
+    [V510-VEL] for this (ticker, minute), log one. Computes the second-
+    mark from `now_et` minute-boundary. Stateful but failure-tolerant.
+    """
+    try:
+        if minute_bucket is None or bucket_size in (None, 0):
+            return
+        rv = float(running_vol or 0)
+        bs = float(bucket_size)
+        if bs <= 0.0 or rv < bs:
+            return
+        # Already logged for this (ticker, minute)?
+        prev = _v516_vel_state.get(ticker)
+        if prev is not None and prev[0] == minute_bucket:
+            return
+        try:
+            second = int(now_et.second)
+        except Exception:
+            second = 0
+        pct = round((rv / bs) * 100.0, 2)
+        _v516_vel_state[ticker] = (minute_bucket, second)
+        _v516_log_velocity(
+            ticker, minute_bucket, second,
+            running_vol, bucket_size, pct, qqq_pct,
+        )
+    except Exception as e:
+        logger.warning("[V510-VEL] check error %s: %s", ticker, e)
+
+
+def _v516_log_index(
+    spy_close,
+    spy_pdc,
+    qqq_close,
+    qqq_pdc,
+) -> None:
+    """Emit one [V510-IDX] line per candidate consideration. Captures
+    SPY+QQQ close vs prior-day close so post-hoc analysis can validate
+    the L-P1 / S-P1 index-direction leg of the Bucket-Fill Protocol.
+    """
+    try:
+        sa = "null"
+        qa = "null"
+        try:
+            if spy_close is not None and spy_pdc is not None:
+                sa = "Y" if float(spy_close) > float(spy_pdc) else "N"
+        except (TypeError, ValueError):
+            sa = "null"
+        try:
+            if qqq_close is not None and qqq_pdc is not None:
+                qa = "Y" if float(qqq_close) > float(qqq_pdc) else "N"
+        except (TypeError, ValueError):
+            qa = "null"
+        logger.info(
+            "[V510-IDX] spy_close=%s spy_pdc=%s spy_above=%s "
+            "qqq_close=%s qqq_pdc=%s qqq_above=%s",
+            _fmt_num(spy_close), _fmt_num(spy_pdc), sa,
+            _fmt_num(qqq_close), _fmt_num(qqq_pdc), qa,
+        )
+    except Exception as e:
+        logger.warning("[V510-IDX] emit error: %s", e)
+
+
+def _v516_log_di(
+    ticker: str,
+    di_plus_prev,
+    di_plus_now,
+    di_minus_prev,
+    di_minus_now,
+    *,
+    di_threshold: float = 25.0,
+) -> None:
+    """Emit one [V510-DI] line per candidate. `double_tap_long` is Y iff
+    DI+ at t-1 and t are BOTH > threshold; `double_tap_short` mirrors on
+    DI-. Required for L-P2 / S-P2 validation in shadow.
+    """
+    try:
+        def _tap(prev, now):
+            try:
+                if prev is None or now is None:
+                    return "null"
+                return "Y" if (float(prev) > di_threshold and
+                               float(now) > di_threshold) else "N"
+            except (TypeError, ValueError):
+                return "null"
+        logger.info(
+            "[V510-DI] ticker=%s di_plus_t-1=%s di_plus_t=%s "
+            "di_minus_t-1=%s di_minus_t=%s "
+            "double_tap_long=%s double_tap_short=%s",
+            ticker, _fmt_num(di_plus_prev), _fmt_num(di_plus_now),
+            _fmt_num(di_minus_prev), _fmt_num(di_minus_now),
+            _tap(di_plus_prev, di_plus_now),
+            _tap(di_minus_prev, di_minus_now),
+        )
+    except Exception as e:
+        logger.warning("[V510-DI] emit error %s: %s", ticker, e)
 
 
 def _v512_log_candidate(
@@ -2338,6 +2512,70 @@ def _v512_emit_candidate_log(
         rsi14_=rsi_v, ema9_=ema9_v, ema21_=ema21_v,
         atr14_=atr_v, vwap_dist_pct_=vwap_v, spread_bps_=spread_v,
     )
+
+    # v5.1.6: full L-P1/S-P1 index validation per candidate.
+    try:
+        spy_close_v = None
+        qqq_close_v = None
+        try:
+            spy_bars_l = fetch_1min_bars("SPY")
+            if spy_bars_l:
+                closes = spy_bars_l.get("closes") or []
+                # last non-None close
+                for c in reversed(closes):
+                    if c is not None:
+                        spy_close_v = float(c)
+                        break
+                if spy_close_v is None:
+                    spy_close_v = spy_bars_l.get("current_price") or None
+        except Exception:
+            pass
+        try:
+            qqq_bars_l = fetch_1min_bars("QQQ")
+            if qqq_bars_l:
+                closes = qqq_bars_l.get("closes") or []
+                for c in reversed(closes):
+                    if c is not None:
+                        qqq_close_v = float(c)
+                        break
+                if qqq_close_v is None:
+                    qqq_close_v = qqq_bars_l.get("current_price") or None
+        except Exception:
+            pass
+        _v516_log_index(
+            spy_close_v, pdc.get("SPY"),
+            qqq_close_v, pdc.get("QQQ"),
+        )
+    except Exception as e:
+        logger.warning("[V510-IDX] hook error %s: %s", ticker, e)
+
+    # v5.1.6: L-P2/S-P2 "double-tap" DI+/DI- validation per candidate.
+    try:
+        import indicators as _ind
+        bar_list_full: list[dict] = []
+        if bars and isinstance(bars, dict):
+            highs = bars.get("highs") or []
+            lows = bars.get("lows") or []
+            closes_l = bars.get("closes") or []
+            n = min(len(highs), len(lows), len(closes_l))
+            for i in range(n):
+                h = highs[i]; l = lows[i]; c = closes_l[i]
+                if h is None or l is None or c is None:
+                    continue
+                bar_list_full.append({"high": float(h), "low": float(l),
+                                       "close": float(c)})
+        di_plus_now = _ind.di_plus(bar_list_full) if bar_list_full else None
+        di_minus_now = _ind.di_minus(bar_list_full) if bar_list_full else None
+        di_plus_prev = (_ind.di_plus(bar_list_full[:-1])
+                        if len(bar_list_full) >= 2 else None)
+        di_minus_prev = (_ind.di_minus(bar_list_full[:-1])
+                         if len(bar_list_full) >= 2 else None)
+        _v516_log_di(
+            ticker, di_plus_prev, di_plus_now,
+            di_minus_prev, di_minus_now,
+        )
+    except Exception as e:
+        logger.warning("[V510-DI] hook error %s: %s", ticker, e)
 
 
 def _v512_quote_snapshot(ticker: str):

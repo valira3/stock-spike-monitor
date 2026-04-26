@@ -328,9 +328,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.1.5")
+    @t("version: BOT_VERSION is 5.1.6")
     def _():
-        assert m.BOT_VERSION == "5.1.5", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.1.6", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -2490,12 +2490,13 @@ def run_local() -> int:
         finally:
             _v511_restore_env(saved)
 
-    @t("v5.1.1: SHADOW_CONFIGS is the fixed 4-config tuple (v5.1.2 added GEMINI_A)")
+    @t("v5.1.1: SHADOW_CONFIGS is the fixed 5-config tuple (v5.1.6 added BUCKET_FILL_100)")
     def _():
         cfgs = vp_mod.SHADOW_CONFIGS
-        assert isinstance(cfgs, tuple) and len(cfgs) == 4, cfgs
+        assert isinstance(cfgs, tuple) and len(cfgs) == 5, cfgs
         names = [c["name"] for c in cfgs]
-        assert names == ["TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A"], names
+        assert names == ["TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY",
+                         "GEMINI_A", "BUCKET_FILL_100"], names
         # Thresholds match backtest recommendation.
         assert cfgs[0]["ticker_pct"] == 70 and cfgs[0]["index_pct"] == 100
         assert cfgs[1]["ticker_enabled"] is True and cfgs[1]["index_enabled"] is False
@@ -2505,6 +2506,9 @@ def run_local() -> int:
         # v5.1.2 \u2014 GEMINI_A 110/85, both anchors enabled.
         assert cfgs[3]["ticker_enabled"] is True and cfgs[3]["index_enabled"] is True
         assert cfgs[3]["ticker_pct"] == 110 and cfgs[3]["index_pct"] == 85
+        # v5.1.6 \u2014 BUCKET_FILL_100 100/100, both anchors enabled.
+        assert cfgs[4]["ticker_enabled"] is True and cfgs[4]["index_enabled"] is True
+        assert cfgs[4]["ticker_pct"] == 100 and cfgs[4]["index_pct"] == 100
 
     @t("v5.1.1: evaluate_g4_config TICKER+QQQ PASS at 70%/100%")
     def _():
@@ -2602,7 +2606,7 @@ def run_local() -> int:
         finally:
             vp_mod.VOLUME_PROFILE_ENABLED = prev
 
-    @t("v5.1.1: _shadow_log_g4 emits 4 [CFG=...] lines on a candidate (v5.1.2 added GEMINI_A)")
+    @t("v5.1.1: _shadow_log_g4 emits 5 [CFG=...] lines on a candidate (v5.1.6 added BUCKET_FILL_100)")
     def _():
         # Stand up an in-memory profile cache so every config has data.
         vp_mod.VOLUME_PROFILE_ENABLED = True
@@ -2644,16 +2648,18 @@ def run_local() -> int:
                 vp_mod.session_bucket = real_session_bucket
 
             cfg_lines = [s for s in seen if "[V510-SHADOW][CFG=" in s]
-            assert len(cfg_lines) == 4, f"want 4 cfg lines, got {len(cfg_lines)}: {seen}"
+            assert len(cfg_lines) == 5, f"want 5 cfg lines, got {len(cfg_lines)}: {seen}"
             joined = " | ".join(cfg_lines)
             assert "CFG=TICKER+QQQ" in joined, joined
             assert "CFG=TICKER_ONLY" in joined, joined
             assert "CFG=QQQ_ONLY" in joined, joined
             assert "CFG=GEMINI_A" in joined, joined
+            assert "CFG=BUCKET_FILL_100" in joined, joined
             assert "PCT=70/100" in joined, joined
             assert "PCT=70]" in joined, joined
             assert "PCT=100]" in joined, joined
             assert "PCT=110/85" in joined, joined
+            assert "PCT=100/100" in joined, joined
         finally:
             m._volume_profile_cache.clear()
             m._volume_profile_cache.update(prev_cache)
@@ -2722,12 +2728,135 @@ def run_local() -> int:
     @t("v5.1.2: GEMINI_A is the 4th SHADOW_CONFIGS entry at 110/85")
     def _():
         cfgs = vp_mod.SHADOW_CONFIGS
-        assert len(cfgs) == 4, cfgs
+        assert len(cfgs) >= 4, cfgs
         gem = cfgs[3]
         assert gem["name"] == "GEMINI_A", gem
         assert gem["ticker_enabled"] is True and gem["index_enabled"] is True, gem
         assert gem["ticker_pct"] == 110, gem
         assert gem["index_pct"] == 85, gem
+
+    @t("v5.1.6: BUCKET_FILL_100 is the 5th SHADOW_CONFIGS entry at 100/100")
+    def _():
+        cfgs = vp_mod.SHADOW_CONFIGS
+        assert len(cfgs) >= 5, cfgs
+        bf = cfgs[4]
+        assert bf["name"] == "BUCKET_FILL_100", bf
+        assert bf["ticker_enabled"] is True and bf["index_enabled"] is True, bf
+        assert bf["ticker_pct"] == 100, bf
+        assert bf["index_pct"] == 100, bf
+
+    @t("v5.1.6: trade_genius exposes _v516_log_velocity / _v516_log_index / _v516_log_di")
+    def _():
+        for fn in ("_v516_log_velocity", "_v516_log_index",
+                   "_v516_log_di", "_v516_check_velocity"):
+            assert hasattr(m, fn) and callable(getattr(m, fn)), fn
+
+    @t("v5.1.6: _v516_log_velocity emits a [V510-VEL] line")
+    def _():
+        import logging as _logging
+        seen: list[str] = []
+
+        class _H(_logging.Handler):
+            def emit(self, rec):
+                seen.append(rec.getMessage())
+        tg_logger = _logging.getLogger("trade_genius")
+        h = _H(); h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h); old_level = tg_logger.level
+        tg_logger.setLevel(_logging.INFO)
+        try:
+            m._v516_log_velocity("NVDA", "1423", 42, 2871, 2840, 101.1, 78.3)
+        finally:
+            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+        line = next((s for s in seen if s.startswith("[V510-VEL]")), None)
+        assert line is not None, seen
+        assert "ticker=NVDA" in line, line
+        assert "minute=1423" in line, line
+        assert "second=42" in line, line
+        assert "running_vol=2871" in line, line
+        assert "bucket=2840" in line, line
+        assert "pct=101.1" in line, line
+        assert "qqq_pct=78.3" in line, line
+
+    @t("v5.1.6: _v516_check_velocity fires once per (ticker, minute)")
+    def _():
+        import logging as _logging
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        seen: list[str] = []
+
+        class _H(_logging.Handler):
+            def emit(self, rec):
+                if rec.getMessage().startswith("[V510-VEL]"):
+                    seen.append(rec.getMessage())
+        tg_logger = _logging.getLogger("trade_genius")
+        h = _H(); h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h); old_level = tg_logger.level
+        tg_logger.setLevel(_logging.INFO)
+        try:
+            # Reset module state so the test is order-independent.
+            m._v516_vel_state.pop("FAKE", None)
+            t1 = _dt(2026, 4, 28, 14, 23, 42, tzinfo=_ZI("America/New_York"))
+            t2 = _dt(2026, 4, 28, 14, 23, 50, tzinfo=_ZI("America/New_York"))
+            # First call: under bucket \u2014 no emit.
+            m._v516_check_velocity("FAKE", "1423", t1, 100, 200)
+            # Second call: crosses 100% \u2014 emit.
+            m._v516_check_velocity("FAKE", "1423", t1, 250, 200, qqq_pct=88)
+            # Third call: same minute, still over \u2014 must NOT emit again.
+            m._v516_check_velocity("FAKE", "1423", t2, 300, 200, qqq_pct=90)
+        finally:
+            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            m._v516_vel_state.pop("FAKE", None)
+        assert len(seen) == 1, seen
+        assert "second=42" in seen[0], seen
+        assert "ticker=FAKE" in seen[0], seen
+
+    @t("v5.1.6: _v516_log_index emits SPY+QQQ above-PDC verdict")
+    def _():
+        import logging as _logging
+        seen: list[str] = []
+
+        class _H(_logging.Handler):
+            def emit(self, rec):
+                seen.append(rec.getMessage())
+        tg_logger = _logging.getLogger("trade_genius")
+        h = _H(); h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h); old_level = tg_logger.level
+        tg_logger.setLevel(_logging.INFO)
+        try:
+            m._v516_log_index(710.40, 708.72, 649.09, 646.79)
+        finally:
+            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+        line = next((s for s in seen if s.startswith("[V510-IDX]")), None)
+        assert line is not None, seen
+        assert "spy_close=710.4" in line, line
+        assert "spy_pdc=708.72" in line, line
+        assert "spy_above=Y" in line, line
+        assert "qqq_above=Y" in line, line
+
+    @t("v5.1.6: _v516_log_di emits double-tap flags")
+    def _():
+        import logging as _logging
+        seen: list[str] = []
+
+        class _H(_logging.Handler):
+            def emit(self, rec):
+                seen.append(rec.getMessage())
+        tg_logger = _logging.getLogger("trade_genius")
+        h = _H(); h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h); old_level = tg_logger.level
+        tg_logger.setLevel(_logging.INFO)
+        try:
+            # both >25 \u2014 double_tap_long Y
+            m._v516_log_di("NVDA", 27.4, 29.1, 15.2, 12.8)
+        finally:
+            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+        line = next((s for s in seen if s.startswith("[V510-DI]")), None)
+        assert line is not None, seen
+        assert "ticker=NVDA" in line, line
+        assert "di_plus_t-1=27.4" in line, line
+        assert "di_plus_t=29.1" in line, line
+        assert "double_tap_long=Y" in line, line
+        assert "double_tap_short=N" in line, line
 
     @t("v5.1.2: evaluate_g4_config GEMINI_A PASS at 110%/85%")
     def _():
@@ -2823,6 +2952,45 @@ def run_local() -> int:
         assert ind.spread_bps(100.0, 99.0) is None  # crossed
         v = ind.spread_bps(99.99, 100.01)
         assert v is not None and v > 0.0, v
+
+    @t("v5.1.6: indicators.di_plus/di_minus None on insufficient bars")
+    def _():
+        import indicators as ind
+        assert ind.di_plus([]) is None
+        assert ind.di_minus([]) is None
+        # period=14 needs >= 15 bars
+        bars = [{"high": 1.0, "low": 0.5, "close": 0.8} for _ in range(14)]
+        assert ind.di_plus(bars) is None
+        assert ind.di_minus(bars) is None
+
+    @t("v5.1.6: indicators.di_plus > di_minus in a steady uptrend")
+    def _():
+        import indicators as ind
+        bars = []
+        base = 100.0
+        for i in range(40):
+            base += 0.5
+            bars.append({"high": base + 0.4, "low": base - 0.1,
+                         "close": base + 0.2})
+        dp = ind.di_plus(bars)
+        dm = ind.di_minus(bars)
+        assert dp is not None and dm is not None, (dp, dm)
+        assert 0.0 <= dp <= 100.0 and 0.0 <= dm <= 100.0, (dp, dm)
+        assert dp > dm, (dp, dm)
+
+    @t("v5.1.6: indicators.di_minus > di_plus in a steady downtrend")
+    def _():
+        import indicators as ind
+        bars = []
+        base = 100.0
+        for i in range(40):
+            base -= 0.5
+            bars.append({"high": base + 0.1, "low": base - 0.4,
+                         "close": base - 0.2})
+        dp = ind.di_plus(bars)
+        dm = ind.di_minus(bars)
+        assert dp is not None and dm is not None, (dp, dm)
+        assert dm > dp, (dp, dm)
 
     @t("v5.1.2: bar_archive.write_bar writes JSONL to dated path")
     def _():
