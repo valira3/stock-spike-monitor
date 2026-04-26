@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.2.1 — 2026-04-26
+
+- fix (H3): shadow MTM now runs **unconditionally** for every ticker each scan cycle. Previously `_v520_mtm_ticker` was nested inside the `if not paper_holds:` branch in `scan_loop()`, so the moment paper opened a position on a ticker every shadow position on that same ticker stopped getting marked. The MTM call is now a sibling block that fires after `fetch_1min_bars(ticker)` regardless of paper state; only the entry-decision path stays gated.
+- fix (H2): `ShadowPnL.close_all_for_eod` previously `continue`d on any open position whose ticker was missing from the per-ticker `prices` dict, leaving orphaned shadow positions open in SQLite forever and marking them against a stale `entry_price` the next session. EOD now force-closes every still-open shadow position whose ticker has no mark using its own `entry_price` as the exit (realized P&L = 0 by definition), with `exit_reason="EOD_NO_MARK"` and a WARN log per orphan. The live `eod_close` hook in `trade_genius.py` also no longer requires `last_mark_price` to be set when constructing the per-ticker `prices` dict — it falls back to `entry_price` so every config gets some mark, matching the live long/short EOD pattern.
+- fix (M3): `_v520_close_shadow_all` no longer enumerates a hardcoded subset of config names. The fanout now iterates the canonical registry — `SHADOW_CONFIGS` plus the event-driven extras (`REHUNT_VOL_CONFIRM`, `OOMPH_ALERT`) — through a single helper so future configs are picked up automatically.
+- fix (M4): `_v519_rehunt_watch` is now keyed on `(ticker, side)` instead of `ticker` alone. Long+short whipsaws on the same ticker on the same minute previously clobbered one of the two arms; both arms now coexist and are evaluated independently.
+- tests: 4 new local smoke tests (`test_v521_eod_orphan_force_close`, `test_v521_shadow_mtm_runs_when_paper_holds`, `test_v521_close_shadow_all_iterates_registry`, `test_v521_rehunt_watch_long_short_coexist`) cover the four shadow-accounting fixes above.
+
+---
+
 ## v5.2.0 — 2026-04-26
 
 - feat: real-time mark-to-market P&L tracker for all 7 SHADOW_CONFIGS (`TICKER+QQQ`, `TICKER_ONLY`, `QQQ_ONLY`, `GEMINI_A`, `BUCKET_FILL_100`, `REHUNT_VOL_CONFIRM`, `OOMPH_ALERT`). Each config now owns a per-process virtual portfolio: when a config's would-have-entered verdict fires, a virtual position is sized via the v5.1.4 equity-aware formula (`min(dollars_per_entry, equity * max_pct/100, cash - min_reserve)`) using Val's LIVE executor's account so shadow P&L is directly comparable to live bot P&L. Each open position is marked-to-market every scan cycle from the IEX 1m close; exits mirror the live bot's `HARD_EJECT_TIGER` / trail / structural-stop / EOD path one-for-one (close hook lives in `close_breakout`, EOD hook in `eod_close`).

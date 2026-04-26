@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.2.0")
+    @t("version: BOT_VERSION is 5.2.1")
     def _():
-        assert m.BOT_VERSION == "5.2.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.2.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3428,7 +3428,9 @@ def run_local() -> int:
                            "di_plus=40", "di_minus=10"):
                 assert needle in line, f"{needle!r} missing in {line!r}"
             # Watch should be marked fired so a second call doesn't re-emit.
-            assert m._v519_rehunt_watch.get("AMD", {}).get("fired") is True
+            # v5.2.1 M4: keyed on (ticker, side) tuple.
+            arm = m._v519_rehunt_watch.get(("AMD", "long"), {})
+            assert arm.get("fired") is True, m._v519_rehunt_watch
         finally:
             m._volume_profile_cache.clear()
             m._volume_profile_cache.update(prev_cache)
@@ -3728,9 +3730,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.2.0: BOT_VERSION bumped to 5.2.0")
+    @t("v5.2.1: BOT_VERSION bumped to 5.2.1")
     def _():
-        assert m.BOT_VERSION == "5.2.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.2.1", m.BOT_VERSION
 
     @t("v5.2.0: persistence creates shadow_positions table")
     def _():
@@ -3822,6 +3824,116 @@ def run_local() -> int:
         assert "#shadow-pnl-card" in css
         assert "#shadow-pnl-section" in css
         assert "display: none !important" in css
+
+    # -------- v5.2.1 shadow-accounting fixes (H2/H3/M3/M4) --------
+
+    @t("v5.2.1: EOD orphan force-close at entry_price (H2)")
+    def _():
+        _reset_sp_db("eod_orphan")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        # Open a position. DO NOT mark_to_market \u2014 ticker stays absent
+        # from the prices dict at EOD.
+        rid = tr.open_position(
+            config_name="TICKER+QQQ", ticker="ZZZZ", side="long",
+            entry_ts_utc="2026-04-26T14:30:00+00:00",
+            entry_price=42.0, equity_snapshot=snap,
+        )
+        assert rid is not None
+        assert tr.open_count("TICKER+QQQ") == 1
+        # Run EOD with empty prices \u2014 v5.2.0 would silently leave the
+        # position open. v5.2.1 H2 force-closes at entry_price with
+        # exit_reason="EOD_NO_MARK".
+        n = tr.close_all_for_eod({})
+        assert n == 1, f"expected 1 forced close, got {n}"
+        assert tr.open_count("TICKER+QQQ") == 0
+        # Closed row exists with the expected exit_reason and zero P&L.
+        with tr._lock:
+            closed = list(tr._closed.get("TICKER+QQQ", []))
+        assert len(closed) == 1, closed
+        row = closed[0]
+        assert row["exit_reason"] == "EOD_NO_MARK", row
+        assert row["exit_price"] == 42.0, row
+        assert abs(float(row["realized_pnl"])) < 1e-9, row
+
+    @t("v5.2.1: shadow MTM runs when paper_holds (H3)")
+    def _():
+        # Verify _v520_mtm_ticker is called in the SCAN path BEFORE the
+        # `if not paper_holds:` gate, by inspecting the source layout.
+        # An execution-level test would require a full fetch_1min_bars
+        # stub; the structural assertion is fast and unambiguous.
+        src = Path(__file__).parent / "trade_genius.py"
+        text = src.read_text(encoding="utf-8")
+        # Locate the scan-loop long-entry block.
+        marker = "Long entry check \u2014 run once per ticker"
+        idx = text.find(marker)
+        assert idx != -1, "scan-loop long-entry block not found"
+        block = text[idx: idx + 2000]
+        mtm_pos = block.find("_v520_mtm_ticker(")
+        gate_pos = block.find("if not paper_holds:")
+        assert mtm_pos != -1, "_v520_mtm_ticker call missing from scan block"
+        assert gate_pos != -1, "paper_holds gate missing from scan block"
+        assert mtm_pos < gate_pos, (
+            "v5.2.1 H3: _v520_mtm_ticker must be invoked BEFORE the "
+            "`if not paper_holds:` gate so shadow positions on a "
+            "paper-held ticker still get marked. Current order keeps "
+            "MTM gated."
+        )
+
+    @t("v5.2.1: _v520_close_shadow_all iterates SHADOW_CONFIGS registry (M3)")
+    def _():
+        _reset_sp_db("close_all")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        # Open a virtual position on the SAME ticker for EVERY known
+        # shadow config (SHADOW_CONFIGS + extras).
+        all_names = m._v521_all_shadow_config_names()
+        # Sanity: registry must include the v5.1.6 BUCKET_FILL_100 plus
+        # the v5.1.9 extras so the test has real coverage.
+        assert "BUCKET_FILL_100" in all_names, all_names
+        assert "REHUNT_VOL_CONFIRM" in all_names, all_names
+        assert "OOMPH_ALERT" in all_names, all_names
+        for cfg_name in all_names:
+            tr.open_position(
+                config_name=cfg_name, ticker="WXYZ", side="long",
+                entry_ts_utc="2026-04-26T14:30:00+00:00",
+                entry_price=10.0, equity_snapshot=snap,
+            )
+        for cfg_name in all_names:
+            assert tr.open_count(cfg_name) == 1, cfg_name
+        # Fanout close at $11 / HARD_EJECT_TIGER must hit every config.
+        m._v520_close_shadow_all("WXYZ", 11.0, "HARD_EJECT_TIGER")
+        for cfg_name in all_names:
+            assert tr.open_count(cfg_name) == 0, (
+                f"{cfg_name} not closed by _v520_close_shadow_all \u2014 "
+                "M3 fanout drifted from the registry"
+            )
+
+    @t("v5.2.1: rehunt watch long+short coexist (M4)")
+    def _():
+        # Reset state, arm both sides on the same ticker on the same
+        # minute, and assert both arms survive. Pre-fix the dict was
+        # keyed on `ticker` alone so the second arm clobbered the first.
+        m._v519_rehunt_watch.clear()
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+        ts = _dt.now(tz=_tz.utc)
+        m._v519_arm_rehunt_watch("AAPL", "long", ts)
+        m._v519_arm_rehunt_watch("AAPL", "short", ts)
+        assert ("AAPL", "long") in m._v519_rehunt_watch, m._v519_rehunt_watch
+        assert ("AAPL", "short") in m._v519_rehunt_watch, m._v519_rehunt_watch
+        long_arm = m._v519_rehunt_watch[("AAPL", "long")]
+        short_arm = m._v519_rehunt_watch[("AAPL", "short")]
+        assert long_arm["side"] == "long", long_arm
+        assert short_arm["side"] == "short", short_arm
+        assert long_arm["fired"] is False
+        assert short_arm["fired"] is False
+        # Cleanup.
+        m._v519_rehunt_watch.clear()
 
     return run_suite("LOCAL SMOKE TESTS (v5.1.2 Tiger/Buffalo + Forensic Capture)")
 
