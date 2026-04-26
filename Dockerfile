@@ -30,6 +30,8 @@ COPY volume_profile.py .
 # (imported by trade_genius.py).
 COPY indicators.py .
 COPY bar_archive.py .
+# v5.1.8 — SQLite-backed persistence for fired_set + v5_long_tracks.
+COPY persistence.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .
@@ -41,5 +43,6 @@ RUN mkdir -p /data
 ENV PAPER_STATE_PATH=/data/paper_state.json
 ENV PAPER_LOG_PATH=/data/investment.log
 ENV TICKERS_FILE=/data/tickers.json
+ENV STATE_DB_PATH=/data/state.db
 
 CMD ["python", "trade_genius.py"]

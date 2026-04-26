@@ -46,6 +46,7 @@ import volume_profile  # noqa: E402
 # v5.1.2 \u2014 forensic capture: bar archive + indicators.
 import indicators  # noqa: E402
 import bar_archive  # noqa: E402
+import persistence  # noqa: E402
 
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
@@ -73,7 +74,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.1.6"
+BOT_VERSION = "5.1.8"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -91,27 +92,32 @@ BOT_VERSION = "5.1.6"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.1.6 \u2014 feat: BUCKET_FILL_\n"
-    "100 added as 5th shadow\n"
-    "config (ticker>=100% AND\n"
-    "qqq>=100%). Pure\n"
-    "observation, NOT enforced.\n"
-    "Defaults unchanged.\n"
-    "New [V510-VEL] log\n"
-    "captures the second when\n"
-    "running vol first crosses\n"
-    "100% of bucket (early-fire\n"
-    "signal). [V510-IDX] adds\n"
-    "SPY+QQQ vs PDC per cand.\n"
-    "[V510-DI] adds DI+/DI-\n"
-    "double-tap signal.\n"
-    "indicators.py adds\n"
-    "di_plus/di_minus (Wilder).\n"
-    "No live trading change."
+    "v5.1.8 \u2014 SQLite persistence\n"
+    "for fired_set (timed-job\n"
+    "idempotency) and v5_long_\n"
+    "tracks (Tiger/Buffalo state).\n"
+    "New persistence.py wraps a\n"
+    "WAL-mode SQLite store at\n"
+    "STATE_DB_PATH (default\n"
+    "/data/state.db on Railway).\n"
+    "Solves EOD double-fire risk\n"
+    "on container restarts and\n"
+    "the non-atomic json.dump\n"
+    "corruption on the v5 tracks.\n"
+    "One-shot migration imports\n"
+    "tracks from paper_state.json\n"
+    "then renames to .migrated.bak.\n"
+    "No trading-decision change."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v5.1.6 \u2014 BUCKET_FILL_100\n"
+    "5th shadow config\n"
+    "+ [V510-VEL]/[IDX]/[DI]\n"
+    "intraminute capture logs.\n"
+    "No trading-decision change.\n"
+    "\n"
     "v5.1.5 \u2014 fix: /test no\n"
     "longer times out with\n"
     "\"Command failed: Timed\n"
@@ -7487,9 +7493,13 @@ def scheduler_thread():
         "friday", "saturday", "sunday",
     ]
 
-    fired = set()
+    # v5.1.8 \u2014 fired_set is now persisted in SQLite via persistence.py
+    # (table: fired_set). Replaces the in-memory set so an EOD job that
+    # fired before a Railway restart at 15:59:30 ET cannot double-fire
+    # at 16:00 after the container comes back up.
     last_scan = _now_et() - timedelta(seconds=SCAN_INTERVAL + 1)
     last_state_save = _now_et() - timedelta(minutes=6)
+    last_fired_prune = _now_et()
 
     # Job table: (day, "HH:MM", function)
     # Note: times are ET.  8:20 CT = 9:20 ET, 8:31 CT = 9:31 ET
@@ -7524,8 +7534,8 @@ def scheduler_thread():
                 or day == "everyday"
                 or day == now_day
             )
-            if match and job_key not in fired:
-                fired.add(job_key)
+            if match and not persistence.was_fired(job_key):
+                persistence.mark_fired(job_key)
                 fn_name = getattr(fn, "__name__", "lambda")
                 logger.info("Firing scheduled job: %s %s ET -> %s",
                             day, hhmm, fn_name)
@@ -7535,10 +7545,15 @@ def scheduler_thread():
                     logger.error("Scheduled job error (%s %s): %s",
                                  day, hhmm, e, exc_info=True)
 
-        # Prune fired set daily
-        if len(fired) > 200:
+        # Prune fired_set rows from prior days. v5.1.8: SQLite-backed,
+        # so we run this once an hour rather than on every loop.
+        if (now_et - last_fired_prune).total_seconds() >= 3600:
+            last_fired_prune = now_et
             today_prefix = now_et.strftime("%Y-%m-%d")
-            fired = {k for k in fired if k.startswith(today_prefix)}
+            try:
+                persistence.prune_fired(today_prefix)
+            except Exception as e:
+                logger.warning("persistence.prune_fired failed: %s", e)
 
         # Scan loop — every SCAN_INTERVAL seconds
         elapsed = (now_et - last_scan).total_seconds()
