@@ -850,3 +850,23 @@
     .shadow-heatmap-canvas { height: 240px !important; }
     .shadow-chart-group { padding: 10px 10px 8px; }
   }
+
+  /* v5.5.0 — Latest backtest card */
+  #backtest-latest-head { cursor: pointer; user-select: none; }
+  #backtest-latest-body[hidden] { display: none; }
+  .backtest-headline { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; }
+  .backtest-headline .bt-row { display: flex; gap: 10px; font-size: 12.5px; }
+  .backtest-headline .bt-label { color: var(--text-dim); min-width: 80px; }
+  .backtest-headline .bt-val { color: var(--text); }
+  .backtest-table { padding: 4px 12px 10px; overflow-x: auto; }
+  .backtest-table .bt-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .backtest-table .bt-tbl th, .backtest-table .bt-tbl td {
+    padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--border);
+  }
+  .backtest-table .bt-tbl th:first-child,
+  .backtest-table .bt-tbl td:first-child { text-align: left; }
+  .backtest-table .bt-tbl th { color: var(--text-dim); font-weight: 500; }
+  @media (max-width: 720px) {
+    .backtest-table .bt-tbl { font-size: 11px; }
+    .backtest-headline .bt-row { font-size: 11.5px; }
+  }

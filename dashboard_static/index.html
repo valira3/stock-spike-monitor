@@ -218,6 +218,24 @@
 <div id="tg-panel-shadow" class="tg-panel" style="display:none">
 <div class="app">
   <main class="main">
+    <!-- v5.5.0 — Latest backtest card. Polled with the rest of the
+         Shadow tab on a 60s cadence. Collapsed on mobile, expanded on
+         desktop (matches the Charts toggle below). -->
+    <section class="grid" id="backtest-latest-section">
+      <div class="card" id="backtest-latest-card">
+        <div class="card-head" id="backtest-latest-head" role="button" tabindex="0" aria-expanded="true" aria-controls="backtest-latest-body">
+          <span class="card-title">Latest backtest<span class="count" id="backtest-latest-asof">· —</span></span>
+          <span class="chip" id="backtest-latest-summary">—</span>
+          <span class="chip" id="backtest-latest-toggle">hide</span>
+        </div>
+        <div class="card-body flush" id="backtest-latest-body">
+          <div id="backtest-latest-headline" class="backtest-headline">
+            <div class="empty">Waiting for nightly backtest&hellip;</div>
+          </div>
+          <div id="backtest-latest-table" class="backtest-table"></div>
+        </div>
+      </div>
+    </section>
     <!-- v5.4.1 — Charts subsection. Three vertically-stacked groups
          covering all 7 SHADOW_CONFIGS:
            1. Equity curves     (one mini line chart per config)

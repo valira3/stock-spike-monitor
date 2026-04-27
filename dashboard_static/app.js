@@ -1230,6 +1230,10 @@
       if (typeof window.__tgPollShadowCharts === "function") {
         window.__tgPollShadowCharts();
       }
+      // v5.5.0 \u2014 nightly backtest summary card.
+      if (typeof window.__tgPollBacktestLatest === "function") {
+        window.__tgPollBacktestLatest();
+      }
     }
   }
 
@@ -2353,6 +2357,177 @@
     const isMobile = (typeof window !== "undefined") && (window.innerWidth <= 720);
     setOpen(!isMobile);
     head.addEventListener("click", () => setOpen(body.hidden === true));
+    head.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        setOpen(body.hidden === true);
+      }
+    });
+  })();
+
+  // v5.5.0 \u2014 "Latest backtest" card on the Shadow tab. Polls
+  // /api/backtest_latest on tab activation and on the existing 60s
+  // shadow-tab loop. Renders a headline (aggregate match-rate band +
+  // best/worst by total P&L) and an expandable per-config table.
+  function _btlEsc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function _btlFmtPnl(v) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    const n = Number(v);
+    const sign = n >= 0 ? "+" : "";
+    return sign + "$" + n.toFixed(2);
+  }
+  function _btlFmtPct(v) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    return (Number(v) * 100).toFixed(1) + "%";
+  }
+  function _btlMatchBand(rate) {
+    if (rate === null || rate === undefined || isNaN(rate)) {
+      return { color: "#5b6572", label: "—" };
+    }
+    const r = Number(rate);
+    if (r >= 0.95) return { color: "#34d399", label: "green" };
+    if (r >= 0.90) return { color: "#fbbf24", label: "yellow" };
+    return { color: "#f87171", label: "red" };
+  }
+  function _btlAggregateMatch(configs) {
+    let sum = 0, n = 0;
+    for (const k of Object.keys(configs || {})) {
+      const r = configs[k] && configs[k].match_rate;
+      if (r !== null && r !== undefined && !isNaN(r)) {
+        sum += Number(r); n += 1;
+      }
+    }
+    return n ? (sum / n) : null;
+  }
+  function _btlBestWorst(configs) {
+    let best = null, worst = null;
+    for (const k of Object.keys(configs || {})) {
+      const c = configs[k] || {};
+      const pnl = c.total_pnl;
+      if (pnl === null || pnl === undefined || isNaN(pnl)) continue;
+      if (best === null || pnl > best.pnl) best = { name: k, pnl: Number(pnl), wr: c.win_rate };
+      if (worst === null || pnl < worst.pnl) worst = { name: k, pnl: Number(pnl), wr: c.win_rate };
+    }
+    return { best, worst };
+  }
+  function _btlRender(payload) {
+    const headline = document.getElementById("backtest-latest-headline");
+    const tbl = document.getElementById("backtest-latest-table");
+    const asof = document.getElementById("backtest-latest-asof");
+    const summary = document.getElementById("backtest-latest-summary");
+    if (!headline || !tbl) return;
+    const data = payload || {};
+    const status = data.status || "ok";
+    const configs = data.configs || {};
+    const cfgNames = Object.keys(configs);
+    if (status === "no_data" || cfgNames.length === 0) {
+      if (asof) asof.textContent = "· no data";
+      if (summary) {
+        summary.textContent = "no data";
+        summary.style.background = "#1f2937";
+        summary.style.color = "#5b6572";
+      }
+      headline.innerHTML = '<div class="empty">No nightly backtest yet. The scheduler runs at 22:00 ET on weekdays.</div>';
+      tbl.innerHTML = "";
+      return;
+    }
+    const day = data.as_of || "—";
+    if (asof) asof.textContent = "· " + _btlEsc(day);
+    const agg = _btlAggregateMatch(configs);
+    const band = _btlMatchBand(agg);
+    const bw = _btlBestWorst(configs);
+    if (summary) {
+      summary.textContent = "match " + _btlFmtPct(agg);
+      summary.style.background = band.color;
+      summary.style.color = "#0b1220";
+    }
+    const bestHtml = bw.best
+      ? `<strong>${_btlEsc(bw.best.name)}</strong> ${_btlFmtPnl(bw.best.pnl)} ` +
+        `<span style="color:#8a96a7">(wr ${_btlFmtPct((bw.best.wr || 0) / 100)})</span>`
+      : "—";
+    const worstHtml = bw.worst
+      ? `<strong>${_btlEsc(bw.worst.name)}</strong> ${_btlFmtPnl(bw.worst.pnl)} ` +
+        `<span style="color:#8a96a7">(wr ${_btlFmtPct((bw.worst.wr || 0) / 100)})</span>`
+      : "—";
+    headline.innerHTML =
+      `<div class="bt-row"><span class="bt-label">Match rate</span>` +
+      `<span class="bt-val" style="color:${band.color}">${_btlFmtPct(agg)}</span></div>` +
+      `<div class="bt-row"><span class="bt-label">Best</span>` +
+      `<span class="bt-val">${bestHtml}</span></div>` +
+      `<div class="bt-row"><span class="bt-label">Worst</span>` +
+      `<span class="bt-val">${worstHtml}</span></div>`;
+    const order = [
+      "TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A",
+      "BUCKET_FILL_100", "REHUNT_VOL_CONFIRM", "OOMPH_ALERT",
+    ];
+    const seen = new Set();
+    const rows = [];
+    rows.push(
+      '<table class="bt-tbl"><thead><tr>' +
+      "<th>Config</th><th>Match</th><th>Replay-only</th><th>Prod-only</th>" +
+      "<th>Total P&amp;L</th><th>Trades</th><th>Win rate</th></tr></thead><tbody>"
+    );
+    function pushRow(name) {
+      const c = configs[name] || {};
+      const mr = c.match_rate;
+      const mb = _btlMatchBand(mr);
+      rows.push(
+        "<tr>" +
+        `<td>${_btlEsc(name)}</td>` +
+        `<td style="color:${mb.color}">${_btlFmtPct(mr)}</td>` +
+        `<td>${c.replay_only_count == null ? "—" : c.replay_only_count}</td>` +
+        `<td>${c.prod_only_count == null ? "—" : c.prod_only_count}</td>` +
+        `<td>${_btlFmtPnl(c.total_pnl)}</td>` +
+        `<td>${c.trade_count == null ? "—" : c.trade_count}</td>` +
+        `<td>${c.win_rate == null ? "—" : Number(c.win_rate).toFixed(1) + "%"}</td>` +
+        "</tr>"
+      );
+    }
+    for (const n of order) { if (configs[n]) { seen.add(n); pushRow(n); } }
+    for (const n of cfgNames) { if (!seen.has(n)) pushRow(n); }
+    rows.push("</tbody></table>");
+    tbl.innerHTML = rows.join("");
+  }
+  let __btlInflight = false;
+  async function _btlPoll() {
+    if (__btlInflight) return;
+    __btlInflight = true;
+    try {
+      const r = await fetch("/api/backtest_latest", { credentials: "same-origin" });
+      if (!r.ok) throw new Error("http " + r.status);
+      const data = await r.json();
+      _btlRender(data);
+    } catch (e) {
+      // Leave the previous render in place on transient errors.
+    } finally {
+      __btlInflight = false;
+    }
+  }
+  window.__tgPollBacktestLatest = _btlPoll;
+  setInterval(() => {
+    if (activeTab === "shadow") _btlPoll();
+  }, 60000);
+  (function _btlWireToggle() {
+    const head = document.getElementById("backtest-latest-head");
+    const body = document.getElementById("backtest-latest-body");
+    const chip = document.getElementById("backtest-latest-toggle");
+    if (!head || !body) return;
+    function setOpen(open) {
+      body.hidden = !open;
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+      if (chip) chip.textContent = open ? "hide" : "show";
+    }
+    const isMobile = (typeof window !== "undefined") && (window.innerWidth <= 720);
+    setOpen(!isMobile);
+    head.addEventListener("click", (ev) => {
+      // Don't toggle when clicking the inner status chip.
+      if (ev.target && ev.target.id === "backtest-latest-summary") return;
+      setOpen(body.hidden === true);
+    });
     head.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" || ev.key === " ") {
         ev.preventDefault();

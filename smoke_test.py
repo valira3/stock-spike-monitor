@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.4.2")
+    @t("version: BOT_VERSION is 5.5.0")
     def _():
-        assert m.BOT_VERSION == "5.4.2", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3730,9 +3730,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.4.1: BOT_VERSION bumped to 5.4.2")
+    @t("v5.5.0: BOT_VERSION bumped to 5.5.0")
     def _():
-        assert m.BOT_VERSION == "5.4.2", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.0", m.BOT_VERSION
 
     # ---- v5.4.0 offline backtest CLI ----
     @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")
@@ -4234,6 +4234,221 @@ def run_local() -> int:
             def error(self, msg):
                 raise AssertionError("malformed html: " + str(msg))
         _P(convert_charrefs=True).feed(text)
+
+    # -------- v5.5.0 nightly backtest + --export-equity --------
+
+    @t("v5.5.0: --export-equity writes JSON shaped like /api/shadow_charts")
+    def _():
+        import shutil, json as _json
+        from backtest import replay as _br
+        bars_dir = tmp_dir / "v550_bars"
+        if bars_dir.exists():
+            shutil.rmtree(bars_dir)
+        day = "2026-04-21"
+        day_dir = bars_dir / day
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        from datetime import datetime as _dt, timedelta as _td
+        def _ts(i):
+            d = _dt.fromisoformat("2026-04-21T13:30:00+00:00")
+            return (d + _td(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # AAPL: flat then spike then drop \u2014 produces one closed trade.
+        prices = [100.0, 100.0, 100.0, 100.0, 100.0,
+                  105.0, 108.0, 110.0, 108.0, 108.0]
+        bars = [{"ts": _ts(i), "close": p, "iex_volume": 50000}
+                for i, p in enumerate(prices)]
+        with open(day_dir / "AAPL.jsonl", "w") as fh:
+            for b in bars:
+                fh.write(_json.dumps(b) + "\n")
+        qbars = [{"ts": _ts(i), "close": 400.0, "iex_volume": 50000}
+                 for i in range(len(prices))]
+        with open(day_dir / "QQQ.jsonl", "w") as fh:
+            for b in qbars:
+                fh.write(_json.dumps(b) + "\n")
+
+        out_dir = tmp_dir / "v550_out_ee"
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        export_path = out_dir / "charts.json"
+        rc = _br.main([
+            "--start", day, "--end", day,
+            "--config", "TICKER+QQQ",
+            "--out", str(out_dir),
+            "--bars-dir", str(bars_dir),
+            "--state-db", str(tmp_dir / "nope.db"),
+            "--export-equity", str(export_path),
+        ])
+        assert rc == 0, f"replay exit {rc}"
+        assert export_path.exists(), f"missing {export_path}"
+        payload = _json.loads(export_path.read_text())
+        assert "configs" in payload and "as_of" in payload, payload
+        assert payload["as_of"], payload
+        # The selected config must be present with all 3 chart blocks.
+        cfgs = payload["configs"]
+        assert "TICKER+QQQ" in cfgs, cfgs
+        blk = cfgs["TICKER+QQQ"]
+        for k in ("equity_curve", "daily_pnl", "win_rate_rolling"):
+            assert k in blk and isinstance(blk[k], list), (k, blk)
+        # Equity curve has at least one point (one closed trade above).
+        assert len(blk["equity_curve"]) >= 1, blk["equity_curve"]
+        ec0 = blk["equity_curve"][0]
+        assert "ts" in ec0 and "cum_pnl" in ec0, ec0
+
+    @t("v5.5.0: nightly_backtest writes latest.json with all 7 configs")
+    def _():
+        import shutil, json as _json
+        from scripts import nightly_backtest as _nb
+        bars_dir = tmp_dir / "v550_nb_bars"
+        reports_dir = tmp_dir / "v550_nb_reports"
+        for d in (bars_dir, reports_dir):
+            if d.exists():
+                shutil.rmtree(d)
+        day = "2026-04-22"
+        day_dir = bars_dir / day
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        from datetime import datetime as _dt, timedelta as _td
+        def _ts(i):
+            d = _dt.fromisoformat("2026-04-22T13:30:00+00:00")
+            return (d + _td(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        prices = [100.0, 100.0, 100.0, 100.0, 100.0,
+                  105.0, 108.0, 110.0, 108.0, 108.0]
+        with open(day_dir / "AAPL.jsonl", "w") as fh:
+            for i, p in enumerate(prices):
+                fh.write(_json.dumps(
+                    {"ts": _ts(i), "close": p, "iex_volume": 50000}
+                ) + "\n")
+        with open(day_dir / "QQQ.jsonl", "w") as fh:
+            for i in range(len(prices)):
+                fh.write(_json.dumps(
+                    {"ts": _ts(i), "close": 400.0, "iex_volume": 50000}
+                ) + "\n")
+
+        # Use a fresh empty state.db so validate runs cleanly.
+        empty_db = tmp_dir / "v550_nb_empty.db"
+        if empty_db.exists():
+            empty_db.unlink()
+        import sqlite3 as _sql
+        con = _sql.connect(str(empty_db))
+        try:
+            con.execute(
+                "CREATE TABLE shadow_positions("
+                "id INTEGER PRIMARY KEY, config_name TEXT, ticker TEXT, "
+                "side TEXT, entry_ts_utc TEXT, entry_price REAL, "
+                "exit_ts_utc TEXT, exit_price REAL, qty REAL, "
+                "realized_pnl REAL, exit_reason TEXT)"
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        payload = _nb.run_nightly(
+            day=day,
+            bars_dir=str(bars_dir),
+            state_db=str(empty_db),
+            reports_dir=str(reports_dir),
+        )
+        latest = reports_dir / "latest.json"
+        assert latest.exists(), f"missing {latest}"
+        data = _json.loads(latest.read_text())
+        assert data["as_of"] == day, data
+        assert "configs" in data and isinstance(data["configs"], dict)
+        # All 7 SHADOW_CONFIGS names must be present.
+        expected = {"TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A",
+                    "BUCKET_FILL_100", "REHUNT_VOL_CONFIRM", "OOMPH_ALERT"}
+        # Some configs may be missing if SHADOW_CONFIGS is shorter in this
+        # build; but at minimum the 5 in volume_profile.SHADOW_CONFIGS.
+        names = set(data["configs"].keys())
+        assert {"TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY"}.issubset(names), names
+        for n, blk in data["configs"].items():
+            for k in ("match_rate", "replay_only_count", "prod_only_count",
+                      "total_pnl", "trade_count", "win_rate", "exit_code"):
+                assert k in blk, (n, k, blk)
+        # Per-day log + charts.json should also exist.
+        assert (reports_dir / f"{day}_log.txt").exists()
+        assert (reports_dir / f"{day}_charts.json").exists()
+        # The returned payload must match what was written.
+        assert payload["as_of"] == data["as_of"]
+
+    @t("v5.5.0: /api/backtest_latest returns latest.json contents")
+    def _():
+        import shutil, json as _json, asyncio
+        from aiohttp.test_utils import make_mocked_request
+        reports_dir = tmp_dir / "v550_endpoint_reports"
+        if reports_dir.exists():
+            shutil.rmtree(reports_dir)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        sample = {
+            "as_of": "2026-04-21",
+            "generated_at": "2026-04-22T02:00:00Z",
+            "configs": {
+                "TICKER+QQQ": {
+                    "match_rate": 0.97, "replay_only_count": 1,
+                    "prod_only_count": 0, "total_pnl": 12.34,
+                    "trade_count": 5, "win_rate": 60.0, "exit_code": 0,
+                },
+            },
+        }
+        (reports_dir / "latest.json").write_text(_json.dumps(sample))
+        # Point dashboard_server at our temp reports dir.
+        prev = ds._BACKTEST_REPORTS_DIR
+        ds._BACKTEST_REPORTS_DIR = str(reports_dir)
+        try:
+            ds._SESSION_SECRET = b"y" * 32
+            tok = ds._make_token()
+            cookie = f"{ds.SESSION_COOKIE}={tok}"
+            loop = asyncio.new_event_loop()
+            try:
+                req = make_mocked_request(
+                    "GET", "/api/backtest_latest",
+                    headers={"Cookie": cookie},
+                )
+                resp = loop.run_until_complete(ds.h_backtest_latest(req))
+            finally:
+                loop.close()
+            assert resp.status == 200, resp.status
+            body = _json.loads(resp.body.decode("utf-8"))
+            assert body["as_of"] == "2026-04-21", body
+            assert "TICKER+QQQ" in body["configs"], body
+            cfg = body["configs"]["TICKER+QQQ"]
+            assert cfg["match_rate"] == 0.97
+            assert cfg["total_pnl"] == 12.34
+        finally:
+            ds._BACKTEST_REPORTS_DIR = prev
+
+    @t("v5.5.0: /api/backtest_latest returns no_data placeholder when missing")
+    def _():
+        import shutil, json as _json, asyncio
+        from aiohttp.test_utils import make_mocked_request
+        reports_dir = tmp_dir / "v550_endpoint_missing"
+        if reports_dir.exists():
+            shutil.rmtree(reports_dir)
+        # Note: do not create reports_dir / "latest.json".
+        prev = ds._BACKTEST_REPORTS_DIR
+        ds._BACKTEST_REPORTS_DIR = str(reports_dir)
+        try:
+            ds._SESSION_SECRET = b"z" * 32
+            tok = ds._make_token()
+            cookie = f"{ds.SESSION_COOKIE}={tok}"
+            loop = asyncio.new_event_loop()
+            try:
+                req = make_mocked_request(
+                    "GET", "/api/backtest_latest",
+                    headers={"Cookie": cookie},
+                )
+                resp = loop.run_until_complete(ds.h_backtest_latest(req))
+            finally:
+                loop.close()
+            # Must be 200, NOT 5xx.
+            assert resp.status == 200, resp.status
+            body = _json.loads(resp.body.decode("utf-8"))
+            assert body.get("status") == "no_data", body
+            assert body.get("as_of") is None, body
+            assert body.get("configs") == {}, body
+        finally:
+            ds._BACKTEST_REPORTS_DIR = prev
 
     # -------- v5.2.1 shadow-accounting fixes (H2/H3/M3/M4) --------
 
