@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.3"
+BOT_VERSION = "5.5.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,6 +93,20 @@ BOT_VERSION = "5.5.3"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.4 \u2014 WS handler hotfix.\n"
+    "Shadow WS bar handler is now\n"
+    "an async def coroutine. The\n"
+    "alpaca-py StockDataStream\n"
+    "rejected the v5.5.3 sync\n"
+    "handler with \"handler must\n"
+    "be a coroutine function\",\n"
+    "crash-looping every ~6s.\n"
+    "Connection now stays up so\n"
+    "cur_v actually fills."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.3 \u2014 shadow cred fix.\n"
     "_start_volume_profile now\n"
     "reads VAL_ALPACA_PAPER_KEY\n"
@@ -100,13 +114,8 @@ CURRENT_MAIN_NOTE = (
     "On miss, [SHADOW DISABLED]\n"
     "logs and dashboard shows\n"
     "a banner instead of silent\n"
-    "empty volumes. Market-data\n"
-    "only \u2014 no trading endpoint\n"
-    "calls from shadow path."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "empty volumes.\n"
+    "\n"
     "v5.5.2 \u2014 bar archive wired.\n"
     "_v512_archive_minute_bar is\n"
     "now called from the scan\n"

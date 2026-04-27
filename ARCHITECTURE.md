@@ -799,6 +799,8 @@ pill `SHADOW DISABLED — no market-data creds` when the status is
 `disabled_no_creds`, hidden otherwise. A silent "no shadow rows today"
 session is therefore no longer ambiguous — the dashboard will say so.
 
+**v5.5.4 hotfix.** `WebsocketBarConsumer._on_bar` is `async def` — alpaca-py's `StockDataStream.subscribe_bars()` rejects sync handlers with `handler must be a coroutine function` and crash-loops the consumer. Smoke test `v5.5.4: shadow WS bar handler is a coroutine function` pins this via `inspect.iscoroutinefunction`.
+
 ---
 
 ## 10. Environment variables

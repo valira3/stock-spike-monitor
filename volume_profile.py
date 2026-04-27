@@ -728,7 +728,12 @@ class WebsocketBarConsumer:
 
     # ---- internals ----
 
-    def _on_bar(self, bar) -> None:
+    async def _on_bar(self, bar) -> None:
+        # v5.5.4 hotfix: alpaca-py StockDataStream.subscribe_bars() requires a
+        # coroutine function (async def). Registering a plain `def` handler
+        # raises "handler must be a coroutine function" inside run() and
+        # crash-loops the WS consumer. The body itself is purely sync \u2014 we
+        # just need the function to be a coroutine function.
         try:
             sym = getattr(bar, "symbol", None)
             ts = getattr(bar, "timestamp", None)
