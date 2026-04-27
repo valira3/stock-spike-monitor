@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.6")
+    @t("version: BOT_VERSION is 5.5.7")
     def _():
-        assert m.BOT_VERSION == "5.5.6", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.7", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3776,18 +3776,23 @@ def run_local() -> int:
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        # v5.5.6 supersedes; keep the test name pinned to its release
+        # v5.5.7 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.5.6", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
-        # v5.5.6 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.6", m.BOT_VERSION
+        # v5.5.7 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
-        assert m.BOT_VERSION == "5.5.6", m.BOT_VERSION
+        # v5.5.7 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
+
+    @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
+    def _():
+        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
 
     @t("v5.5.6: previous_session_bucket exists and returns just-closed bucket")
     def _():

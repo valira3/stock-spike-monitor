@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.5.7 — 2026-04-27
+
+Smoking-gun summary: with v5.5.6 in place, NVDA executed a clean SHORT entry and a paired COVER exit on the paper book. Val's executor tab rendered the trade correctly — `LAST SIGNAL: EXIT_SHORT NVDA @ $208.53 · POLARITY_SHIFT` plus a paired entry+exit row with realized P&L. The Main tab, however, still showed `0 opens 0 closes realized — win —` and the COVER row's tail column was stuck on the em-dash placeholder, even though the row itself was visible. Root cause: purely client-side. `static/app.js` classified rows by literal `BUY`/`SELL` strings only, silently dropping `SHORT` opens and `COVER` closes from both the summary header and the row-tail P&L column. Separately, the Main panel had no LAST SIGNAL card at all — that surface only existed inside the per-executor (Val/Gene) panels, and the top-level `/api/state` payload didn't expose `last_signal` for the paper book.
+
+- fix (`static/app.js` `computeTradesSummary`): treats `BUY` *or* `SHORT` as opens and `SELL` *or* `COVER` as closes. The realized-P&L branch now applies to any close action carrying a numeric `pnl`, so a SHORT+COVER pair finally contributes to the daily realized total and win-rate denominator. The pre-fix path produced `0 opens / 0 closes / realized —` for short trades.
+- fix (`static/app.js` `renderTrades`): row-tail logic re-keyed off `isOpen` / `isClose` instead of `isBuy` / `isSell`. COVER rows now render `+/-$pnl  pnl%` in the tail column (matching SELL); SHORT rows render the cost (matching BUY). Action-chip class flips to `act-sell` for both SELL and COVER, `act-buy` for both BUY and SHORT.
+- feat (`trade_genius._emit_signal` + `dashboard_server.snapshot`): `_emit_signal` now mirrors the most recent event into a module-level `last_signal` dict (kind / ticker / price / reason / timestamp_utc) before dispatching to listeners, so even a listener-less moment still updates what the Main tab renders. `snapshot()` reads it via `getattr(m, "last_signal", None)` and surfaces it on the top-level `/api/state` payload, mirroring the per-executor payload's `last_signal` field.
+- feat (`dashboard_static/index.html` + `static/app.js`): new LAST SIGNAL card on the Main panel (`#last-sig-chip`, `#last-sig-body`) placed beside Today's Trades. New `renderLastSignal(s)` reads `s.last_signal` and renders kind / ticker / price / reason / timestamp in the same mono format the Val/Gene exec panels use; null/empty → "No signals received yet." Wired into the Main render loop alongside the existing renderers.
+- tests: 1 new test file —
+  - `test_v5_5_7_dashboard_main_fix.py` — Python mirror of the JS `computeTradesSummary` rule with assertions for SHORT+COVER (realized = -$28.32, 0 wins, 0% win rate), the legacy BUY+SELL path, a mixed long+short day, unknown-action ignore, empty-list, and close-without-pnl. Two server-side assertions cover the new surface: `/api/state` snapshot includes `last_signal` when `trade_genius.last_signal` is set, and `_emit_signal` mirrors the event into `trade_genius.last_signal` correctly.
+  - Smoke version pin bumped from `5.5.6` → `5.5.7`. All v5.5.5 / v5.5.6 regression guards still pass unchanged.
+- CI guard: `BOT_VERSION` bumped to `5.5.7` (matches this heading). `CURRENT_MAIN_NOTE` rewritten for v5.5.7 (each line ≤ 34 chars), with the v5.5.6 shadow-race entry pushed onto `_MAIN_HISTORY_TAIL`.
+- docs: `ARCHITECTURE.md` dashboard section gained a one-paragraph note on the Main-tab `last_signal` surface and the open/close classification rule. `trade_genius_algo.pdf` regenerated via `scripts/build_algo_pdf.py`; cover now reads **v5.5.7**.
+
+No trading-decision change. No change to `_today_trades()` data shape, `paper_trades` / `short_trade_history` storage, `evaluate_g4`, or the WS consumer. Pure client-side rendering plus a one-field server payload addition.
+
+---
+
 ## v5.5.6 — 2026-04-27
 
 Smoking-gun summary: with v5.5.5 in place, `/api/ws_state` proved that the WS feed was healthy — `volumes_size_per_symbol = 5` per ticker — yet every shadow log line still reported `cur_v=0` / `t_pct=0` / `qqq_pct=0` / `verdict=BLOCK`. Root cause: the shadow gate computed `session_bucket(datetime.now(ET))`, which returns the still-forming current minute. The Alpaca IEX websocket only delivers a 1-minute bar at the END of that minute, so reading `_ws_consumer.current_volume(ticker, current_bucket)` always raced the WS bar close-out and returned `None` (silently coerced to 0 by the `or 0` guard). The bug pre-existed v5.5.x; v5.5.5's observability is what finally made it visible. See `diagnostics/v55x_ws_silent_smoking_gun.md` for the full forensic timeline.

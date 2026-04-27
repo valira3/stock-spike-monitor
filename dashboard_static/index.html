@@ -145,7 +145,19 @@
       </div>
     </section>
 
+    <!-- v5.5.7 — Last signal card on Main mirrors the Val/Gene exec
+         panels: shows the paper executor's most recent emitted signal
+         (kind, ticker, price, reason, timestamp). -->
     <section class="grid grid-2">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Last signal</span>
+          <span class="chip" id="last-sig-chip">—</span>
+        </div>
+        <div class="card-body" id="last-sig-body">
+          <div class="empty">No signals received yet.</div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-head">
           <span class="card-title">Today's trades<span class="count" id="trades-count">· 0</span></span>
@@ -157,6 +169,9 @@
           <div class="empty">No trades yet today.</div>
         </div>
       </div>
+    </section>
+
+    <section class="grid grid-2">
       <div class="card">
         <div class="card-head"><span class="card-title">Observer</span></div>
         <div class="card-body">

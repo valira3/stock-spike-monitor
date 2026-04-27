@@ -404,16 +404,20 @@
     return hm ? hm[0] : s;
   }
 
-  // v3.4.31 — compute the daily summary for the Today's Trades card:
-  // number of opens (BUY), closes (SELL), total realized P&L across
-  // closes, and win rate (wins / total closes). SELL rows carry a
-  // 'pnl' field from the server; missing values are skipped silently.
+  // v5.5.7 — compute the daily summary for the Today's Trades card.
+  // Opens are BUY (long entry) or SHORT (short entry); closes are
+  // SELL (long exit) or COVER (short exit). Pre-v5.5.7 only BUY/SELL
+  // were counted, so a SHORT+COVER pair rendered "0 opens 0 closes
+  // realized —" even though the COVER row was visible. The realized
+  // P&L branch applies to any close action that carries a numeric pnl.
   function computeTradesSummary(trades) {
     let opens = 0, closes = 0, wins = 0, realized = 0, have_pnl = 0;
     for (const t of (trades || [])) {
       const act = (t.action || "").toUpperCase();
-      if (act === "BUY") opens += 1;
-      else if (act === "SELL") {
+      const isOpen = (act === "BUY" || act === "SHORT");
+      const isClose = (act === "SELL" || act === "COVER");
+      if (isOpen) opens += 1;
+      else if (isClose) {
         closes += 1;
         if (typeof t.pnl === "number" && isFinite(t.pnl)) {
           realized += t.pnl;
@@ -478,30 +482,33 @@
     const rows = trades.map((t) => {
       const tm   = fmtTradeTime(t.time || t.entry_time);
       const act  = (t.action || "").toUpperCase();
-      const isBuy  = act === "BUY";
-      const isSell = act === "SELL";
+      // v5.5.7 \u2014 classify by open vs close, not strictly BUY/SELL.
+      // SHORT entries pair with COVER exits; treating only BUY/SELL as
+      // tradable actions hid realized pnl on COVER rows.
+      const isOpen  = (act === "BUY" || act === "SHORT");
+      const isClose = (act === "SELL" || act === "COVER");
       const side  = t.side || "LONG";
       const sym   = t.ticker || "—";
       const shares = t.shares;
       const px    = t.price ?? t.entry_price ?? t.exit_price;
 
-      // Action chip — BUY (green) / SELL (red). We keep LONG/SHORT
-      // colour coding on the symbol to avoid double-cueing.
-      const actCls = isSell ? "act-sell" : "act-buy";
+      // Action chip \u2014 open (green) / close (red). Symbol still
+      // carries LONG/SHORT colour coding to avoid double-cueing.
+      const actCls = isClose ? "act-sell" : "act-buy";
       const actLbl = act || (side === "SHORT" ? "SHORT" : "LONG");
 
       // v4.2.1 \u2014 tail column (between action and unit price):
-      //   BUY  \u2192 total cost, subdued
-      //   SELL \u2192 signed pnl + matching-colour pnl %
+      //   open  \u2192 total cost, subdued
+      //   close \u2192 signed pnl + matching-colour pnl %
       let tailHtml = "\u2014";
-      if (isBuy) {
+      if (isOpen) {
         const cost = (typeof t.cost === "number" && isFinite(t.cost))
           ? t.cost
           : ((typeof shares === "number" && typeof px === "number") ? shares * px : null);
         tailHtml = cost !== null
           ? `<span class="trade-cost">${fmtUsd(cost)}</span>`
           : `<span class="trade-cost">\u2014</span>`;
-      } else if (isSell) {
+      } else if (isClose) {
         const pnl   = (typeof t.pnl === "number" && isFinite(t.pnl)) ? t.pnl : null;
         const pnlPct = (typeof t.pnl_pct === "number" && isFinite(t.pnl_pct)) ? t.pnl_pct : null;
         if (pnl !== null) {
@@ -713,6 +720,30 @@
     if (typeof window.__tgTickClock === "function") window.__tgTickClock();
   }
 
+  // v5.5.7 \u2014 Main tab LAST SIGNAL card. Mirrors the exec-panel
+  // formatting (kind / ticker / price / reason / timestamp). Reads
+  // s.last_signal which is the paper executor's most recent emitted
+  // signal (entry/exit/eod). Empty/null \u2192 "No signals received yet."
+  function renderLastSignal(s) {
+    const ls = s && s.last_signal;
+    const chip = $("last-sig-chip");
+    const body = $("last-sig-body");
+    if (chip) chip.textContent = (ls && ls.kind) ? ls.kind : "none";
+    if (!body) return;
+    if (!ls || !ls.kind) {
+      body.innerHTML = `<div class="empty">No signals received yet.</div>`;
+      return;
+    }
+    const px = (typeof ls.price === "number" && ls.price)
+      ? " @ " + fmtUsd(ls.price) : "";
+    const reason = ls.reason ? ` \u00b7 ${escapeHtml(ls.reason)}` : "";
+    body.innerHTML = `<div class="mono" style="font-size:12px;color:var(--text-muted)">
+      <span style="color:var(--accent)">${escapeHtml(ls.kind)}</span>
+      ${escapeHtml(ls.ticker || "")}${px}${reason}
+      <span style="color:var(--text-dim)"> \u00b7 ${escapeHtml(ls.timestamp_utc || "")}</span>
+    </div>`;
+  }
+
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
@@ -728,6 +759,7 @@
     renderPositions(s, sl);
     renderProximity(s);
     renderTrades(s, sl);
+    renderLastSignal(s);
     renderObserver(s);
     renderSovereign(s);
     renderGates(s);

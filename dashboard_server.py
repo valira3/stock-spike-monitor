@@ -740,6 +740,14 @@ def snapshot() -> dict[str, Any]:
 
         version = str(getattr(m, "BOT_VERSION", "?"))
 
+        # v5.5.7 \u2014 surface the paper book's most recent emitted
+        # signal so the Main tab can render a LAST SIGNAL card with the
+        # same shape the per-executor panels already use.
+        try:
+            last_signal = getattr(m, "last_signal", None)
+        except Exception:
+            last_signal = None
+
         try:
             now_et = m._now_et()
             now_iso = now_et.isoformat()
@@ -765,6 +773,10 @@ def snapshot() -> dict[str, Any]:
                 "day_pnl_unrealized": unreal_sum,
             },
             "positions": _serialize_positions(longs, shorts, prices),
+            # v5.5.7 \u2014 paper executor's most recent emitted signal
+            # for the Main-tab LAST SIGNAL card. Same shape as the
+            # per-executor payload.
+            "last_signal": last_signal,
             "trades_today": _today_trades(),
             "proximity": _proximity_rows(),
             "regime": {
