@@ -94,45 +94,86 @@ def load_track(raw: Optional[dict], direction: str) -> dict:
     return track
 
 
-def gates_pass_long(qqq_last, qqq_pdc, spy_last, spy_pdc,
-                    ticker_last, ticker_pdc, ticker_first_hour_high) -> bool:
-    """L-P1 — Long Permission Gates (G1..G4).
+# v5.6.0 \u2014 Unified AVWAP permission gates. G2 retired.
+#   L-P1: G1 = Index.Last > Index.Opening_AVWAP
+#         G3 = Ticker.Last > Ticker.Opening_AVWAP
+#         G4 = Ticker.Last > Ticker.OR_High
+#   S-P1: G1 = Index.Last < Index.Opening_AVWAP
+#         G3 = Ticker.Last < Ticker.Opening_AVWAP
+#         G4 = Ticker.Last < Ticker.OR_Low
+# Index = QQQ only. Strict comparators: equality FAILs.
+# Pre-9:35 ET (OR not yet defined) -> G4 returns False. Opening AVWAP None
+# (no bars yet) -> G1/G3 return False. Fail-closed everywhere.
 
-    All four must be strictly true. Any None input fails closed.
+
+def gate_g1_long(qqq_last, qqq_opening_avwap) -> bool:
+    """L-P1-G1: QQQ.Last > QQQ.Opening_AVWAP. Strict; AVWAP None -> False."""
+    if qqq_last is None or qqq_opening_avwap is None:
+        return False
+    return qqq_last > qqq_opening_avwap
+
+
+def gate_g1_short(qqq_last, qqq_opening_avwap) -> bool:
+    """S-P1-G1: QQQ.Last < QQQ.Opening_AVWAP. Strict; AVWAP None -> False."""
+    if qqq_last is None or qqq_opening_avwap is None:
+        return False
+    return qqq_last < qqq_opening_avwap
+
+
+def gate_g3_long(ticker_last, ticker_opening_avwap) -> bool:
+    """L-P1-G3: Ticker.Last > Ticker.Opening_AVWAP. AVWAP None -> False."""
+    if ticker_last is None or ticker_opening_avwap is None:
+        return False
+    return ticker_last > ticker_opening_avwap
+
+
+def gate_g3_short(ticker_last, ticker_opening_avwap) -> bool:
+    """S-P1-G3: Ticker.Last < Ticker.Opening_AVWAP. AVWAP None -> False."""
+    if ticker_last is None or ticker_opening_avwap is None:
+        return False
+    return ticker_last < ticker_opening_avwap
+
+
+def gate_g4_long(ticker_last, ticker_or_high) -> bool:
+    """L-P1-G4: Ticker.Last > Ticker.OR_High. Pre-9:35 (OR_High None) -> False."""
+    if ticker_last is None or ticker_or_high is None:
+        return False
+    return ticker_last > ticker_or_high
+
+
+def gate_g4_short(ticker_last, ticker_or_low) -> bool:
+    """S-P1-G4: Ticker.Last < Ticker.OR_Low. Pre-9:35 (OR_Low None) -> False."""
+    if ticker_last is None or ticker_or_low is None:
+        return False
+    return ticker_last < ticker_or_low
+
+
+def gates_pass_long(qqq_last, qqq_opening_avwap,
+                    ticker_last, ticker_opening_avwap, ticker_or_high) -> bool:
+    """L-P1 \u2014 Long Permission Gates (G1, G3, G4). G2 retired (v5.6.0).
+
+    All three must be strictly true. AVWAP None or OR_High None fails closed.
+    Equality fails (strict >).
     """
-    if None in (qqq_last, qqq_pdc, spy_last, spy_pdc,
-                ticker_last, ticker_pdc, ticker_first_hour_high):
-        return False
-    if not (qqq_last > qqq_pdc):              # L-P1-G1
-        return False
-    if not (spy_last > spy_pdc):              # L-P1-G2
-        return False
-    if not (ticker_last > ticker_pdc):        # L-P1-G3
-        return False
-    if not (ticker_last > ticker_first_hour_high):  # L-P1-G4
-        return False
-    return True
+    return (
+        gate_g1_long(qqq_last, qqq_opening_avwap)
+        and gate_g3_long(ticker_last, ticker_opening_avwap)
+        and gate_g4_long(ticker_last, ticker_or_high)
+    )
 
 
-def gates_pass_short(qqq_last, qqq_pdc, spy_last, spy_pdc,
-                     ticker_last, ticker_pdc, opening_range_low_5m) -> bool:
-    """S-P1 — Short Permission Gates (G1..G4).
+def gates_pass_short(qqq_last, qqq_opening_avwap,
+                     ticker_last, ticker_opening_avwap, ticker_or_low) -> bool:
+    """S-P1 \u2014 Short Permission Gates (G1, G3, G4). G2 retired (v5.6.0).
 
-    Mirror of long gates. If indices are green, shorts are forbidden
-    regardless of ticker weakness.
+    Mirror of long gates. AVWAP None or OR_Low None fails closed.
+    Equality fails (strict <).
     """
-    if None in (qqq_last, qqq_pdc, spy_last, spy_pdc,
-                ticker_last, ticker_pdc, opening_range_low_5m):
-        return False
-    if not (qqq_last < qqq_pdc):              # S-P1-G1
-        return False
-    if not (spy_last < spy_pdc):              # S-P1-G2
-        return False
-    if not (ticker_last < ticker_pdc):        # S-P1-G3
-        return False
-    if not (ticker_last < opening_range_low_5m):  # S-P1-G4
-        return False
-    return True
+    return (
+        gate_g1_short(qqq_last, qqq_opening_avwap)
+        and gate_g3_short(ticker_last, ticker_opening_avwap)
+        and gate_g4_short(ticker_last, ticker_or_low)
+    )
 
 
 def stage1_signal_long(di_plus_1m, di_plus_5m) -> bool:

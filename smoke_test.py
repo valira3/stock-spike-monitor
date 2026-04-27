@@ -349,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.11")
+    @t("version: BOT_VERSION is 5.6.0")
     def _():
-        assert m.BOT_VERSION == "5.5.11", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.6.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -1558,33 +1558,42 @@ def run_local() -> int:
         assert v5.STAGE2_DI_THRESHOLD == 30.0
         assert v5.HARD_EXIT_DI_THRESHOLD == 25.0
 
-    # ---------- L-P1: Long Permission Gates ----------
-    @t("v5 L-P1-G1: long requires QQQ.last > QQQ.PDC")
+    # ---------- L-P1: Long Permission Gates (v5.6.0 unified AVWAP) ----------
+    # Signature: gates_pass_long(qqq_last, qqq_avwap, ticker_last, ticker_avwap, or_high)
+    @t("v5.6.0 L-P1-G1: long requires QQQ.last > QQQ.Opening_AVWAP")
     def _():
-        # Fail when QQQ <= PDC; pass when QQQ > PDC and other gates pass.
-        assert not v5.gates_pass_long(100,100,200,100,50,40,45)
-        assert v5.gates_pass_long(101,100,200,100,50,40,45)
+        assert not v5.gates_pass_long(100, 100, 50, 40, 45)  # QQQ equal
+        assert not v5.gates_pass_long(99, 100, 50, 40, 45)   # QQQ below
+        assert v5.gates_pass_long(101, 100, 50, 40, 45)
 
-    @t("v5 L-P1-G2: long requires SPY.last > SPY.PDC")
+    @t("v5.6.0 L-P1-G3: long requires ticker.last > ticker.Opening_AVWAP")
     def _():
-        assert not v5.gates_pass_long(101,100,99,100,50,40,45)
-        assert v5.gates_pass_long(101,100,101,100,50,40,45)
+        assert not v5.gates_pass_long(101, 100, 40, 40, 45)  # equal
+        assert not v5.gates_pass_long(101, 100, 39, 40, 45)  # below
+        assert v5.gates_pass_long(101, 100, 50, 40, 45)
 
-    @t("v5 L-P1-G3: long requires ticker.last > ticker.PDC")
+    @t("v5.6.0 L-P1-G4: long requires ticker.last > OR_High (strict)")
     def _():
-        assert not v5.gates_pass_long(101,100,101,100,40,40,45)
-        assert v5.gates_pass_long(101,100,101,100,50,40,45)
+        assert not v5.gates_pass_long(101, 100, 45, 40, 45)  # equal -> FAIL
+        assert not v5.gates_pass_long(101, 100, 44, 40, 45)
+        assert v5.gates_pass_long(101, 100, 46, 40, 45)
 
-    @t("v5 L-P1-G4: long requires ticker.last > first_hour_high")
+    @t("v5.6.0 L-P1: AVWAP None FAILs G1/G3 deterministically")
     def _():
-        # Equality fails (strict >).
-        assert not v5.gates_pass_long(101,100,101,100,45,40,45)
-        assert v5.gates_pass_long(101,100,101,100,46,40,45)
+        # qqq_avwap None => G1 fails
+        assert not v5.gates_pass_long(101, None, 50, 40, 45)
+        # ticker_avwap None => G3 fails
+        assert not v5.gates_pass_long(101, 100, 50, None, 45)
 
-    @t("v5 L-P1: any None input fails closed")
+    @t("v5.6.0 L-P1: pre-9:35 OR_High None FAILs G4 deterministically")
     def _():
-        assert not v5.gates_pass_long(None,100,101,100,50,40,45)
-        assert not v5.gates_pass_long(101,100,101,None,50,40,45)
+        # or_high None (pre-9:35) => G4 fails, no raise
+        assert v5.gates_pass_long(101, 100, 50, 40, None) is False
+
+    @t("v5.6.0 L-P1: any None input fails closed (smoke)")
+    def _():
+        assert not v5.gates_pass_long(None, 100, 50, 40, 45)
+        assert not v5.gates_pass_long(101, 100, None, 40, 45)
 
     # ---------- L-P2: Stage 1 Jab ----------
     @t("v5 L-P2-R1: stage-1 long needs DI+(1m)>25 AND DI+(5m)>25")
@@ -1767,33 +1776,39 @@ def run_local() -> int:
         assert not ok
         assert track["state"] == v5.STATE_LOCKED
 
-    # ---------- S-P1: Short Permission Gates ----------
-    @t("v5 S-P1-G1: short forbidden when QQQ.last >= QQQ.PDC")
+    # ---------- S-P1: Short Permission Gates (v5.6.0 unified AVWAP) ----------
+    # Signature: gates_pass_short(qqq_last, qqq_avwap, ticker_last, ticker_avwap, or_low)
+    @t("v5.6.0 S-P1-G1: short requires QQQ.last < QQQ.Opening_AVWAP")
     def _():
-        assert not v5.gates_pass_short(100,100,99,100,50,60,55)  # QQQ equal
-        assert not v5.gates_pass_short(101,100,99,100,50,60,55)  # QQQ green
-        assert v5.gates_pass_short(99,100,99,100,50,60,55)
+        assert not v5.gates_pass_short(100, 100, 50, 60, 55)  # QQQ equal
+        assert not v5.gates_pass_short(101, 100, 50, 60, 55)  # QQQ above
+        assert v5.gates_pass_short(99, 100, 50, 60, 55)
 
-    @t("v5 S-P1-G2: short forbidden when SPY.last >= SPY.PDC")
+    @t("v5.6.0 S-P1-G3: short requires ticker.last < ticker.Opening_AVWAP")
     def _():
-        assert not v5.gates_pass_short(99,100,101,100,50,60,55)
-        assert v5.gates_pass_short(99,100,99,100,50,60,55)
+        assert not v5.gates_pass_short(99, 100, 60, 60, 55)  # equal
+        assert not v5.gates_pass_short(99, 100, 61, 60, 55)
+        assert v5.gates_pass_short(99, 100, 50, 60, 55)
 
-    @t("v5 S-P1-G3: short requires ticker.last < ticker.PDC")
+    @t("v5.6.0 S-P1-G4: short requires ticker.last < OR_Low (strict)")
     def _():
-        assert not v5.gates_pass_short(99,100,99,100,60,60,55)
-        assert v5.gates_pass_short(99,100,99,100,50,60,55)
+        assert not v5.gates_pass_short(99, 100, 55, 60, 55)  # equal -> FAIL
+        assert not v5.gates_pass_short(99, 100, 56, 60, 55)
+        assert v5.gates_pass_short(99, 100, 54, 60, 55)
 
-    @t("v5 S-P1-G4: short requires ticker.last < opening_range_low_5m")
+    @t("v5.6.0 S-P1: AVWAP None FAILs G1/G3 deterministically")
     def _():
-        # Equality fails (strict <).
-        assert not v5.gates_pass_short(99,100,99,100,55,60,55)
-        assert v5.gates_pass_short(99,100,99,100,54,60,55)
+        assert not v5.gates_pass_short(99, None, 50, 60, 55)
+        assert not v5.gates_pass_short(99, 100, 50, None, 55)
 
-    @t("v5 S-P1: indices-green vetoes shorts even on a weak ticker")
+    @t("v5.6.0 S-P1: pre-9:35 OR_Low None FAILs G4 deterministically")
     def _():
-        # Ticker WAY below its PDC, but indices green: shorts are off.
-        assert not v5.gates_pass_short(105,100,105,100,1,60,55)
+        assert v5.gates_pass_short(99, 100, 50, 60, None) is False
+
+    @t("v5.6.0 S-P1: indices-bullish vetoes shorts even on a weak ticker")
+    def _():
+        # Ticker WAY below its AVWAP and OR_Low, but QQQ bullish: shorts off.
+        assert not v5.gates_pass_short(105, 100, 1, 60, 55)
 
     # ---------- S-P2: Stage 1 ----------
     @t("v5 S-P2-R1: stage-1 short needs DI-(1m)>25 AND DI-(5m)>25")
@@ -1956,20 +1971,18 @@ def run_local() -> int:
         # MUST still exist and be callable.
         assert callable(getattr(m, "_sovereign_regime_eject", None))
 
-    @t("v5 C-R7: 9-ticker spike universe + SPY/QQQ pinned (preserved)")
+    @t("v5 C-R7: 9-ticker spike universe + QQQ pinned (v5.6.0: SPY retired with G2)")
     def _():
-        # C-R7: the v5 universe is identical to v4. SPY/QQQ are pinned
-        # filter rows in the dashboard, never traded directly \u2014 they
-        # are intentionally NOT in the trade universe (they are read
-        # by check_breakout as index polarity inputs only). The 9-name
-        # spike list IS the trade universe.
+        # C-R7: the v5 universe is identical to v4. SPY/QQQ remain pinned
+        # filter rows in the dashboard, never traded directly. v5.6.0
+        # retires G2 (SPY-vs-AVWAP would be the second index gate);
+        # check_breakout now reads QQQ only as the single index input.
         assert len(m.TRADE_TICKERS) == 9, \
             f"C-R7 universe size drift: {len(m.TRADE_TICKERS)} (want 9)"
-        # SPY and QQQ are referenced as polarity inputs in check_breakout.
         import inspect
         src = inspect.getsource(m.check_breakout)
-        assert '"SPY"' in src and '"QQQ"' in src, \
-            "C-R7 SPY/QQQ polarity wiring missing from check_breakout"
+        assert '"QQQ"' in src, \
+            "v5.6.0 G1: QQQ index wiring missing from check_breakout"
 
     # ---------- v5 plumbing ----------
     @t("v5 plumbing: paper_state.json round-trips v5 tracks")
@@ -3788,40 +3801,40 @@ def run_local() -> int:
     def _():
         # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
 
     @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
     def _():
@@ -4294,22 +4307,22 @@ def run_local() -> int:
         assert "if ws_vol is not None" in src
         assert '"et_bucket": et_bucket,' in src
 
-    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.5.6")
+    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.6.0")
     def _():
         # Test name pinned to its release; assertion follows BOT_VERSION.
         from pathlib import Path as _P
         arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        assert 'BOT_VERSION = "5.5.6"' in arch, "ARCHITECTURE.md footer not bumped"
+        assert 'BOT_VERSION = "5.6.0"' in arch, "ARCHITECTURE.md footer not bumped"
 
-    @t("v5.5.5: CHANGELOG.md has v5.5.6 heading at top")
+    @t("v5.5.5: CHANGELOG.md has v5.6.0 heading at top")
     def _():
         from pathlib import Path as _P
         cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
         # The first ## heading should be the current version.
-        head_idx = cl.find("\n## v5.5.6")
-        prior = cl.find("\n## v5.5.5")
+        head_idx = cl.find("\n## v5.6.0")
+        prior = cl.find("\n## v5.5.11")
         assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
-            "v5.5.6 heading must precede v5.5.5 in CHANGELOG"
+            "v5.6.0 heading must precede v5.5.11 in CHANGELOG"
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():
@@ -5268,7 +5281,137 @@ def run_local() -> int:
         ex._reconcile_broker_positions()
         assert ex.positions["KNWN"] == snapshot, ex.positions["KNWN"]
 
-    return run_suite("LOCAL SMOKE TESTS (v5.1.2 Tiger/Buffalo + Forensic Capture)")
+    # ============================================================
+    # v5.6.0 \u2014 Unified AVWAP Permission Gates
+    # ============================================================
+    @t("v5.6.0 gate_g1_long: strict > with QQQ AVWAP (equal/below FAIL, None FAIL)")
+    def _():
+        assert v5.gate_g1_long(101.0, 100.0) is True
+        assert v5.gate_g1_long(100.0, 100.0) is False  # equality FAIL
+        assert v5.gate_g1_long(99.0, 100.0) is False
+        assert v5.gate_g1_long(101.0, None) is False    # AVWAP None FAIL
+        assert v5.gate_g1_long(None, 100.0) is False
+
+    @t("v5.6.0 gate_g1_short: strict < with QQQ AVWAP")
+    def _():
+        assert v5.gate_g1_short(99.0, 100.0) is True
+        assert v5.gate_g1_short(100.0, 100.0) is False  # equality FAIL
+        assert v5.gate_g1_short(101.0, 100.0) is False
+        assert v5.gate_g1_short(99.0, None) is False
+        assert v5.gate_g1_short(None, 100.0) is False
+
+    @t("v5.6.0 gate_g3_long: strict > with ticker AVWAP")
+    def _():
+        assert v5.gate_g3_long(50.0, 40.0) is True
+        assert v5.gate_g3_long(40.0, 40.0) is False
+        assert v5.gate_g3_long(50.0, None) is False
+
+    @t("v5.6.0 gate_g3_short: strict < with ticker AVWAP")
+    def _():
+        assert v5.gate_g3_short(30.0, 40.0) is True
+        assert v5.gate_g3_short(40.0, 40.0) is False
+        assert v5.gate_g3_short(30.0, None) is False
+
+    @t("v5.6.0 gate_g4_long: strict > OR_High; pre-9:35 (None) FAIL")
+    def _():
+        assert v5.gate_g4_long(46.0, 45.0) is True
+        assert v5.gate_g4_long(45.0, 45.0) is False  # equality FAIL
+        assert v5.gate_g4_long(44.0, 45.0) is False
+        # Pre-9:35 OR not yet defined: must FAIL deterministically (no raise).
+        assert v5.gate_g4_long(46.0, None) is False
+
+    @t("v5.6.0 gate_g4_short: strict < OR_Low; pre-9:35 (None) FAIL")
+    def _():
+        assert v5.gate_g4_short(54.0, 55.0) is True
+        assert v5.gate_g4_short(55.0, 55.0) is False
+        assert v5.gate_g4_short(56.0, 55.0) is False
+        assert v5.gate_g4_short(54.0, None) is False
+
+    @t("v5.6.0 integration: full L-P1 PASS path (all 3 gates pass)")
+    def _():
+        # qqq=101>100, ticker=50>40, ticker=46>45
+        assert v5.gates_pass_long(101.0, 100.0, 46.0, 40.0, 45.0) is True
+
+    @t("v5.6.0 integration: full L-P1 BLOCK path (G1 fails)")
+    def _():
+        assert v5.gates_pass_long(99.0, 100.0, 46.0, 40.0, 45.0) is False
+
+    @t("v5.6.0 integration: full L-P1 BLOCK path (G3 fails)")
+    def _():
+        assert v5.gates_pass_long(101.0, 100.0, 46.0, 50.0, 45.0) is False
+
+    @t("v5.6.0 integration: full L-P1 BLOCK path (G4 fails)")
+    def _():
+        assert v5.gates_pass_long(101.0, 100.0, 44.0, 40.0, 45.0) is False
+
+    @t("v5.6.0 integration: full S-P1 PASS path (all 3 gates pass)")
+    def _():
+        # qqq=99<100, ticker=50<60, ticker=54<55
+        assert v5.gates_pass_short(99.0, 100.0, 54.0, 60.0, 55.0) is True
+
+    @t("v5.6.0 integration: full S-P1 BLOCK path (G1 fails)")
+    def _():
+        assert v5.gates_pass_short(101.0, 100.0, 54.0, 60.0, 55.0) is False
+
+    @t("v5.6.0 integration: full S-P1 BLOCK path (G3 fails)")
+    def _():
+        assert v5.gates_pass_short(99.0, 100.0, 54.0, 50.0, 55.0) is False
+
+    @t("v5.6.0 integration: full S-P1 BLOCK path (G4 fails)")
+    def _():
+        assert v5.gates_pass_short(99.0, 100.0, 56.0, 60.0, 55.0) is False
+
+    @t("v5.6.0 guard: CHANGELOG.md has v5.6.0 heading")
+    def _():
+        # Must mention the unified AVWAP gates release on a heading line.
+        ch = Path(__file__).resolve().parent / "CHANGELOG.md"
+        assert ch.exists(), "CHANGELOG.md missing"
+        body = ch.read_text(encoding="utf-8")
+        # Heading appears as "## v5.6.0" somewhere in the file.
+        assert "v5.6.0" in body, "CHANGELOG.md missing v5.6.0 heading"
+
+    @t("v5.6.0 guard: gates_pass_long signature has no SPY/PDC params")
+    def _():
+        # G2 retired \u2014 the long gates fn must take 5 positional args
+        # (qqq_last, qqq_avwap, ticker_last, ticker_avwap, or_high), not 7.
+        import inspect
+        sig = inspect.signature(v5.gates_pass_long)
+        assert len(sig.parameters) == 5, \
+            f"gates_pass_long expected 5 params (G2 retired), got {len(sig.parameters)}"
+        names = list(sig.parameters.keys())
+        assert "spy_last" not in names, "spy_last must be removed (G2 retired)"
+        assert "spy_pdc" not in names, "spy_pdc must be removed (G2 retired)"
+        assert "qqq_pdc" not in names, "qqq_pdc must be removed (now AVWAP)"
+
+    @t("v5.6.0 guard: gates_pass_short signature has no SPY/PDC params")
+    def _():
+        import inspect
+        sig = inspect.signature(v5.gates_pass_short)
+        assert len(sig.parameters) == 5
+        names = list(sig.parameters.keys())
+        assert "spy_last" not in names
+        assert "spy_pdc" not in names
+        assert "qqq_pdc" not in names
+
+    @t("v5.6.0 guard: tiger_buffalo_v5.py has no remaining G2 rule references")
+    def _():
+        # G2 retired \u2014 source must not contain L-P1-G2 or S-P1-G2 callouts.
+        src = (Path(__file__).resolve().parent / "tiger_buffalo_v5.py").read_text("utf-8")
+        assert "L-P1-G2" not in src, "L-P1-G2 reference still in tiger_buffalo_v5.py"
+        assert "S-P1-G2" not in src, "S-P1-G2 reference still in tiger_buffalo_v5.py"
+
+    @t("v5.6.0 guard: trade_genius.py has _opening_avwap helper")
+    def _():
+        assert hasattr(m, "_opening_avwap"), \
+            "_opening_avwap helper missing from trade_genius (v5.6.0 G1/G3 source)"
+        assert callable(m._opening_avwap)
+
+    @t("v5.6.0 guard: trade_genius.py exposes _v560_log_gate forensic logger")
+    def _():
+        assert hasattr(m, "_v560_log_gate"), \
+            "_v560_log_gate forensic logger missing from trade_genius"
+
+    return run_suite("LOCAL SMOKE TESTS (v5.6.0 Unified AVWAP Permission Gates)")
 
 
 # ============================================================
