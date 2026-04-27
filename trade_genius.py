@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.3.1"
+BOT_VERSION = "5.4.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,13 +93,13 @@ BOT_VERSION = "5.3.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.3.1 \u2014 docs refresh.\n"
-    "ARCHITECTURE.md updated to\n"
-    "v5.3.0 state: SQLite store,\n"
-    "shadow tracker, idempotent\n"
-    "Alpaca submits, 7 shadow\n"
-    "configs, Shadow tab. PDF\n"
-    "regenerated. No code change."
+    "v5.4.0 \u2014 offline backtest\n"
+    "CLI. backtest/ package +\n"
+    "python -m backtest.replay\n"
+    "with replay-vs-prod\n"
+    "validation. See ARCHITECTURE\n"
+    "\u00a720 for usage. No live\n"
+    "trading-logic change."
 )
 
 # Main-bot release note: short tail of recent releases.

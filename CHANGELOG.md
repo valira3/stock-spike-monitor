@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.4.0 — 2026-04-26
+
+- Added offline backtest CLI: `python -m backtest.replay` with replay-vs-prod validation mode. See ARCHITECTURE.md for usage.
+
+---
+
 ## v5.3.1 — 2026-04-26
 
 - docs: refresh `ARCHITECTURE.md` to reflect every shipped change between v5.1.2 (the previous arch-doc refresh, PR #147) and v5.3.0. New / updated sections: header version + intro; repo layout (adds `persistence.py`, `shadow_pnl.py`); §8.4 Alpaca order idempotency (v5.2.1 H1 — deterministic `client_order_id` + `_reconcile_broker_positions`); §9.4 shadow strategy P&L (v5.2.0); §9.5 Shadow tab (v5.3.0 — Main / Val / Gene / Shadow); §10.3 market data (Yahoo as sole 1m bar source after v5.1.3 Finnhub removal); §10.4 persistence (`STATE_DB_PATH=/data/state.db`, v5.1.8); §10.8 forensic-volume env vars now reflect 7-config state (5 in `SHADOW_CONFIGS` + `REHUNT_VOL_CONFIRM` / `OOMPH_ALERT`); §11.1 Dockerfile whitelist (adds `persistence.py`, `shadow_pnl.py`); §12 persistence (SQLite store + JSON-import migration path); §13.1 testing (262/262 at v5.3.0); §16.5 v5.0.x → v5.3.x change-summary table; §17 forensic volume filter rewritten end-to-end with the v5.1.6 `BUCKET_FILL_100` row, the v5.1.9 event-driven extras, and the v5.2.1 M3 `_v521_all_shadow_config_names()` registry; §17.7 rollout plan extended through v5.3.0; §19 G4 status updated.

@@ -34,6 +34,8 @@ COPY bar_archive.py .
 COPY persistence.py .
 # v5.2.0 — shadow strategy P&L tracker (imported by trade_genius.py).
 COPY shadow_pnl.py .
+# v5.4.0 — offline backtest CLI (`python -m backtest.replay`).
+COPY backtest/ ./backtest/
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

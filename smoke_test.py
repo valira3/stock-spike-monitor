@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.3.1")
+    @t("version: BOT_VERSION is 5.4.0")
     def _():
-        assert m.BOT_VERSION == "5.3.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.4.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3730,9 +3730,205 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.3.1: BOT_VERSION bumped to 5.3.1")
+    @t("v5.4.0: BOT_VERSION bumped to 5.4.0")
     def _():
-        assert m.BOT_VERSION == "5.3.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.4.0", m.BOT_VERSION
+
+    # ---- v5.4.0 offline backtest CLI ----
+    @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")
+    def _():
+        import shutil
+        import csv as _csv
+        from backtest import replay as _br
+        from backtest import ledger as _bl
+        bars_dir = tmp_dir / "v540_bars"
+        if bars_dir.exists():
+            shutil.rmtree(bars_dir)
+        day = "2026-04-21"
+        day_dir = bars_dir / day
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        def _write(tk, bars):
+            with open(day_dir / f"{tk}.jsonl", "w") as fh:
+                for b in bars:
+                    fh.write(__import__("json").dumps(b) + "\n")
+
+        # 3 tickers + QQQ index. Synthetic bars: flat then spike.
+        base_ts = "2026-04-21T13:30:00Z"
+        def _ts(i):
+            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+            d = _dt.fromisoformat(base_ts.replace("Z", "+00:00"))
+            return (d + _td(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        for tk in ("AAPL", "MSFT", "NVDA"):
+            bars = []
+            for i in range(20):
+                price = 100.0 if i < 5 else (105.0 if i == 5 else 100.0)
+                bars.append({"ts": _ts(i), "close": price,
+                             "iex_volume": 50000})
+            _write(tk, bars)
+        qbars = [{"ts": _ts(i), "close": 400.0, "iex_volume": 50000}
+                 for i in range(20)]
+        _write("QQQ", qbars)
+
+        out_dir = tmp_dir / "v540_out_a"
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        rc = _br.main([
+            "--start", day, "--end", day,
+            "--config", "TICKER+QQQ",
+            "--out", str(out_dir),
+            "--bars-dir", str(bars_dir),
+            "--state-db", str(tmp_dir / "nope.db"),
+        ])
+        assert rc == 0, f"replay exit code {rc}"
+        csv_path = out_dir / f"TICKER+QQQ_{day}_{day}.csv"
+        assert csv_path.exists(), f"missing ledger {csv_path}"
+        with open(csv_path) as fh:
+            lines = fh.readlines()
+        assert lines[0].startswith("# summary:"), lines[0]
+        header = lines[1].strip().split(",")
+        for col in _bl.LEDGER_COLUMNS:
+            assert col in header, f"col {col} missing in {header}"
+
+    @t("v5.4.0 replay: pairs entries+exits and computes P&L correctly")
+    def _():
+        import shutil
+        from backtest import replay as _br
+        bars_dir = tmp_dir / "v540_bars_pnl"
+        if bars_dir.exists():
+            shutil.rmtree(bars_dir)
+        day = "2026-04-22"
+        day_dir = bars_dir / day
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        def _ts(i):
+            from datetime import datetime as _dt, timedelta as _td
+            d = _dt.fromisoformat("2026-04-22T13:30:00+00:00")
+            return (d + _td(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Entry at bar 5 (price 100->105 = +5%); peak 110; trail
+        # stop fires at 110*(1-0.015)=108.35 \u2014 set bar 8 to 108.0.
+        prices = [100.0, 100.0, 100.0, 100.0, 100.0,
+                  105.0, 108.0, 110.0, 108.0,
+                  108.0, 108.0]
+        bars = [{"ts": _ts(i), "close": p, "iex_volume": 50000}
+                for i, p in enumerate(prices)]
+        with open(day_dir / "AAPL.jsonl", "w") as fh:
+            for b in bars:
+                fh.write(__import__("json").dumps(b) + "\n")
+        qbars = [{"ts": _ts(i), "close": 400.0, "iex_volume": 50000}
+                 for i in range(len(prices))]
+        with open(day_dir / "QQQ.jsonl", "w") as fh:
+            for b in qbars:
+                fh.write(__import__("json").dumps(b) + "\n")
+
+        cfg = {"name": "TEST", "ticker_enabled": True,
+               "index_enabled": True, "ticker_pct": 70, "index_pct": 70}
+        rows = _br.replay_one_day(str(bars_dir), day, cfg)
+        assert len(rows) == 1, rows
+        r = rows[0]
+        assert r["ticker"] == "AAPL"
+        assert r["side"] == "BUY"
+        assert abs(r["entry_price"] - 105.0) < 1e-6, r
+        # Exit: trail_stop at bar 8 close 108.0; or eod \u2014 either is acceptable
+        # but qty=int(1000/105)=9. P&L = (exit-105)*9.
+        expected_qty = max(1, int(1000.0 / 105.0))
+        assert r["qty"] == expected_qty, r
+        expected_pnl = round((r["exit_price"] - 105.0) * expected_qty, 2)
+        assert abs(r["pnl_dollars"] - expected_pnl) < 0.01, r
+
+    @t("v5.4.0 validate: match rate = 1.0 when all replay entries match prod")
+    def _():
+        import sqlite3 as _sql
+        from backtest import replay as _br
+        # 3 replay rows, 3 prod rows aligned ticker/side/ts.
+        replay_rows = [
+            {"ticker": "AAPL", "side": "BUY",
+             "entry_ts": "2026-04-23T13:31:00Z", "entry_price": 100.0,
+             "exit_ts": "2026-04-23T13:50:00Z", "exit_price": 102.0,
+             "qty": 10, "pnl_dollars": 20.0, "pnl_pct": 2.0,
+             "exit_reason": "trail_stop"},
+            {"ticker": "MSFT", "side": "BUY",
+             "entry_ts": "2026-04-23T14:00:00Z", "entry_price": 200.0,
+             "exit_ts": "2026-04-23T14:20:00Z", "exit_price": 199.0,
+             "qty": 5, "pnl_dollars": -5.0, "pnl_pct": -0.5,
+             "exit_reason": "hard_eject"},
+            {"ticker": "NVDA", "side": "BUY",
+             "entry_ts": "2026-04-23T15:00:00Z", "entry_price": 800.0,
+             "exit_ts": "2026-04-23T15:30:00Z", "exit_price": 805.0,
+             "qty": 1, "pnl_dollars": 5.0, "pnl_pct": 0.625,
+             "exit_reason": "eod"},
+        ]
+        prod = [
+            {"ticker": "AAPL", "side": "BUY",
+             "entry_ts_utc": "2026-04-23T13:31:30Z", "entry_price": 100.05,
+             "exit_ts_utc": "2026-04-23T13:50:00Z", "exit_price": 102.10,
+             "qty": 10, "realized_pnl": 20.5},
+            {"ticker": "MSFT", "side": "BUY",
+             "entry_ts_utc": "2026-04-23T14:00:10Z", "entry_price": 200.0,
+             "exit_ts_utc": "2026-04-23T14:20:00Z", "exit_price": 199.10,
+             "qty": 5, "realized_pnl": -4.5},
+            {"ticker": "NVDA", "side": "BUY",
+             "entry_ts_utc": "2026-04-23T15:00:45Z", "entry_price": 800.0,
+             "exit_ts_utc": "2026-04-23T15:30:00Z", "exit_price": 804.5,
+             "qty": 1, "realized_pnl": 4.5},
+        ]
+        vr = _br.validate(replay_rows, prod)
+        assert vr["match_rate"] == 1.0, vr
+        assert len(vr["matches"]) == 3, vr
+        assert vr["replay_only"] == [], vr
+        assert vr["prod_only"] == [], vr
+
+    @t("v5.4.0 validate: drift detection flags PROD_ONLY and exits 1")
+    def _():
+        import shutil
+        import sqlite3 as _sql
+        from backtest import replay as _br
+        # Build empty bars dir so replay produces zero rows.
+        bars_dir = tmp_dir / "v540_bars_drift"
+        if bars_dir.exists():
+            shutil.rmtree(bars_dir)
+        (bars_dir / "2026-04-24").mkdir(parents=True, exist_ok=True)
+
+        # Stub state.db with 3 prod entries, replay produces 0 -> 3 prod_only.
+        sdb = tmp_dir / "v540_drift.db"
+        if sdb.exists():
+            sdb.unlink()
+        c = _sql.connect(str(sdb))
+        c.execute(
+            "CREATE TABLE shadow_positions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "config_name TEXT, ticker TEXT, side TEXT, qty INTEGER, "
+            "entry_ts_utc TEXT, entry_price REAL, "
+            "exit_ts_utc TEXT, exit_price REAL, exit_reason TEXT, "
+            "realized_pnl REAL)"
+        )
+        for i, tk in enumerate(("AAPL", "MSFT", "NVDA")):
+            c.execute(
+                "INSERT INTO shadow_positions "
+                "(config_name, ticker, side, qty, entry_ts_utc, entry_price) "
+                "VALUES (?, ?, 'BUY', 10, ?, ?)",
+                ("TICKER+QQQ", tk, f"2026-04-24T14:{30+i:02d}:00Z", 100.0 + i),
+            )
+        c.commit(); c.close()
+
+        out_dir = tmp_dir / "v540_out_drift"
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        rc = _br.main([
+            "--start", "2026-04-24", "--end", "2026-04-24",
+            "--config", "TICKER+QQQ",
+            "--validate",
+            "--out", str(out_dir),
+            "--bars-dir", str(bars_dir),
+            "--state-db", str(sdb),
+        ])
+        assert rc == 1, f"expected exit 1 (match rate < 0.95), got {rc}"
+        rep = out_dir / "TICKER+QQQ_2026-04-24_2026-04-24_validation.md"
+        assert rep.exists(), f"validation report missing: {rep}"
+        body = rep.read_text()
+        assert "PROD_ONLY" in body, body[:200]
 
     @t("v5.2.0: persistence creates shadow_positions table")
     def _():
