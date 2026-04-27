@@ -315,6 +315,11 @@ def run_local() -> int:
     # would cause the UI to show the same short cover twice).
     @t("dashboard: _today_trades de-duplicates cross-list short")
     def _():
+        # v5.5.8: every row in short_trade_history now paired-emits a
+        # synthesized SHORT entry row plus the COVER. A stray duplicate
+        # COVER in paper_trades must still dedup down to a single COVER,
+        # so the FAKE ticker should land 2 rows total (synth SHORT entry
+        # + a single COVER), not 3.
         reset_state()
         row = {
             "ticker": "FAKE",
@@ -324,14 +329,19 @@ def run_local() -> int:
             "side": "SHORT",
             "shares": 10,
             "price": 5.0,
+            "entry_price": 4.5,
+            "entry_time": "10:25",
             "pnl": 12.5,
         }
         m.paper_trades.append(dict(row))
         m.short_trade_history.append(dict(row))
         rows = ds._today_trades()
         fake_rows = [r for r in rows if r.get("ticker") == "FAKE"]
-        assert len(fake_rows) == 1, \
-            f"expected 1 de-duped FAKE row, got {len(fake_rows)}: {fake_rows}"
+        actions = sorted(r.get("action") for r in fake_rows)
+        assert len(fake_rows) == 2, \
+            f"expected synth SHORT + de-duped COVER, got {len(fake_rows)}: {fake_rows}"
+        assert actions == ["COVER", "SHORT"], \
+            f"expected one SHORT entry + one COVER row, got {actions}"
 
     # ---------- version ----------
     @t("version: BOT_NAME is TradeGenius")
@@ -339,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.7")
+    @t("version: BOT_VERSION is 5.5.8")
     def _():
-        assert m.BOT_VERSION == "5.5.7", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.8", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3776,23 +3786,47 @@ def run_local() -> int:
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        # v5.5.7 supersedes; keep the test name pinned to its release
+        # v5.5.8 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
-        # v5.5.7 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
+        # v5.5.8 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
-        # v5.5.7 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
+        # v5.5.8 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
-        assert m.BOT_VERSION == "5.5.7", m.BOT_VERSION
+        # v5.5.8 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
+
+    @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
+    def _():
+        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
+
+    @t("v5.5.8: _today_trades synthesizes SHORT entry rows from short_trade_history")
+    def _():
+        # Pins the v5.5.8 read-side synthesis: every COVER in
+        # short_trade_history must paired-emit a SHORT entry row, plus
+        # an open-short sweep of short_positions for entries dated today.
+        # Greps dashboard_server.py for the canonical synthesis comment
+        # plus the action="SHORT" emit, so a future refactor that drops
+        # the entry-row emit fails CI loudly.
+        from pathlib import Path
+        src = Path(__file__).resolve().parent / "dashboard_server.py"
+        text = src.read_text()
+        assert "v5.5.8 \u2014 SHORT entry-row synthesis" in text or \
+               "synthesize the SHORT entry row" in text, \
+               "v5.5.8 synthesis comment missing from _today_trades"
+        assert "\"action\": \"SHORT\"" in text, \
+               "synthesized SHORT entry row missing action=SHORT"
+        assert "short_positions" in text, \
+               "open-short sweep of short_positions missing"
 
     @t("v5.5.6: previous_session_bucket exists and returns just-closed bucket")
     def _():
