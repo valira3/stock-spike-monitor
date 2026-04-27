@@ -209,11 +209,23 @@ def _today_trades() -> list[dict]:
     Storage asymmetry (mirrors the invariant documented in
     ``trade_genius.py`` ~L2530): long BUYs / SELLs live in
     ``paper_trades``; short COVERs live in ``short_trade_history``.
-    If that invariant is ever violated (future bug, replayed state, a
-    migration that dual-writes) a short cover would appear in BOTH
-    lists and the UI would show it twice. v4.1.7-dash \u2014 defensively
-    de-duplicate by (ticker, time/entry_time, side, action) before
-    returning, so a cross-list dupe is collapsed to a single row.
+    Short ENTRIES are intentionally NOT persisted to any trade list \u2014
+    ``short_trade_history`` is the single source of truth and avoids
+    double-counting on /trades. If that invariant is ever violated
+    (future bug, replayed state, a migration that dual-writes) a short
+    cover would appear in BOTH lists and the UI would show it twice.
+    v4.1.7-dash \u2014 defensively de-duplicate by (ticker, time/entry_time,
+    side, action) before returning.
+
+    v5.5.8 \u2014 SHORT entry-row synthesis. The Main tab needs to render
+    *two* rows per closed short (entry + exit) just like longs do, so
+    for each row in ``short_trade_history`` we emit BOTH a synthesized
+    ``action="SHORT"`` entry row built from the cover's ``entry_*``
+    fields AND the existing COVER row. Open shorts (live entries in
+    ``short_positions`` with no cover yet, dated today) also get a
+    synthesized SHORT entry row so the Main tab shows the open leg
+    instead of nothing. No storage change \u2014 the synthesis is purely
+    a read-side transform.
     """
     m = _ssm()
     out: list[dict] = []
@@ -249,17 +261,123 @@ def _today_trades() -> list[dict]:
         today = m._now_et().strftime("%Y-%m-%d")
     except Exception:
         today = ""
+
+    # v5.5.8: track which (ticker, entry_time) pairs we've synthesized a
+    # SHORT entry row for, so the open-short sweep below doesn't duplicate
+    # an entry that already came from a cover.
+    short_entries_emitted: set = set()
+
     for t in list(getattr(m, "short_trade_history", []) or []):
         if t.get("date") != today:
             continue
-        k = _key(t, "SHORT")
-        if k in seen:
+        # v5.5.8 \u2014 synthesize the SHORT entry row from the cover's
+        # entry_* fields. Time field uses cover.entry_time so the
+        # default sort places the entry before the cover.
+        try:
+            entry_price = float(t.get("entry_price") or 0.0)
+            shares_n = int(t.get("shares") or 0)
+        except (TypeError, ValueError):
+            entry_price = 0.0
+            shares_n = 0
+        entry_time_val = t.get("entry_time") or ""
+        synth_entry = {
+            "action": "SHORT",
+            "ticker": t.get("ticker"),
+            "side": "SHORT",
+            "shares": shares_n,
+            "price": entry_price,
+            "entry_price": entry_price,
+            "time": entry_time_val,
+            "entry_time": entry_time_val,
+            "entry_time_iso": t.get("entry_time_iso"),
+            "entry_num": t.get("entry_num", 1),
+            "date": t.get("date"),
+            "cost": round(shares_n * entry_price, 2),
+            "portfolio": "paper",
+        }
+        k_entry = _key(synth_entry, "SHORT")
+        if k_entry not in seen:
+            seen.add(k_entry)
+            out.append(synth_entry)
+            short_entries_emitted.add(
+                ((t.get("ticker") or "").upper(), str(entry_time_val))
+            )
+
+        # The existing COVER row (unchanged shape).
+        k_cover = _key(t, "SHORT")
+        if k_cover in seen:
             continue
-        seen.add(k)
+        seen.add(k_cover)
         out.append({**t, "side": "SHORT", "portfolio": "paper"})
 
-    # sort by time if present
-    out.sort(key=lambda x: x.get("time", x.get("entry_time", "")))
+    # v5.5.8 \u2014 sweep live short_positions for OPEN shorts (entered today,
+    # no cover yet). Long-side analog: open longs surface via positions
+    # snapshot in _live_positions(); for trades_today we mirror the
+    # paired-row shape so the Main tab shows the open leg.
+    for tkr, pos in (getattr(m, "short_positions", {}) or {}).items():
+        if not isinstance(pos, dict):
+            continue
+        if pos.get("date") != today:
+            continue
+        try:
+            entry_price = float(pos.get("entry_price") or 0.0)
+            shares_n = int(pos.get("shares") or 0)
+        except (TypeError, ValueError):
+            entry_price = 0.0
+            shares_n = 0
+        # short_positions stores entry_time as "HH:MM:SS"; the cover
+        # records it as "HH:MM CDT". Normalize live-pos to the cover's
+        # format (using the ISO-precise entry_ts_utc when present) so an
+        # open-then-cover sequence does not double-emit.
+        entry_iso = pos.get("entry_ts_utc") or ""
+        entry_time_raw = pos.get("entry_time") or ""
+        entry_time_val = entry_time_raw
+        try:
+            if entry_iso:
+                entry_time_val = m._to_cdt_hhmm(entry_iso)
+            elif entry_time_raw and ":" in entry_time_raw:
+                # Fallback for legacy "HH:MM:SS" with no ISO companion.
+                entry_time_val = entry_time_raw[:5] + " CDT"
+        except Exception:
+            entry_time_val = entry_time_raw
+        dedup_key = ((tkr or "").upper(), str(entry_time_val))
+        if dedup_key in short_entries_emitted:
+            continue
+        synth_open = {
+            "action": "SHORT",
+            "ticker": tkr,
+            "side": "SHORT",
+            "shares": shares_n,
+            "price": entry_price,
+            "entry_price": entry_price,
+            "time": entry_time_val,
+            "entry_time": entry_time_val,
+            "entry_time_iso": pos.get("entry_ts_utc"),
+            "entry_num": pos.get("entry_count", 1),
+            "date": today,
+            "cost": round(shares_n * entry_price, 2),
+            "portfolio": "paper",
+        }
+        k_open = _key(synth_open, "SHORT")
+        if k_open in seen:
+            continue
+        seen.add(k_open)
+        out.append(synth_open)
+        short_entries_emitted.add(dedup_key)
+
+    # sort by time if present. For close actions (SELL / COVER) the
+    # canonical timestamp is the exit_time; opens (BUY / SHORT) carry it
+    # as entry_time. Falling back through ``time`` first preserves any
+    # row that already set the unified field.
+    def _sort_key(x: dict) -> str:
+        if x.get("time"):
+            return str(x["time"])
+        action = (x.get("action") or "").upper()
+        if action in ("SELL", "COVER"):
+            return str(x.get("exit_time") or x.get("entry_time") or "")
+        return str(x.get("entry_time") or x.get("exit_time") or "")
+
+    out.sort(key=_sort_key)
     return out
 
 
