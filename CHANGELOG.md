@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.5.1 — 2026-04-26
+
+- feat (frontend): rich Chart.js tooltips on all three Shadow-tab chart groups. Equity curves now show `MM/DD HH:MM ET · ±$cum_pnl · config_name`; the day-P&L heatmap shows `config_name · YYYY-MM-DD · ±$pnl · N trades`; rolling win-rate sparklines show `config_name · trade #N · win_rate%`. Implemented via Chart.js's built-in `plugins.tooltip.callbacks` so mobile-tap tooltips work out of the box without a custom overlay layer.
+- feat (frontend): click-to-isolate config. Clicking on any equity row, win-rate sparkline, or heatmap cell highlights that config across **all three** chart groups simultaneously — non-isolated configs fade to ~20% opacity. Click the same config again, click the heatmap empty area, or click the new "Showing only: GEMINI_A · click to clear" hint (with X button) above the charts to restore full opacity. Single `__scIsolated` state variable in the Shadow-tab module keeps all three groups in sync; mobile tap counts as click.
+- docs: §21 (Shadow tab charts) in `ARCHITECTURE.md` extended with a paragraph describing the v5.5.1 interactivity additions (rich tooltips + click-to-isolate). `trade_genius_algo.pdf` regenerated; cover now reads **v5.5.1**.
+- tests: 2 new smoke tests — `test_v551_tooltip_callbacks_present` (parses `app.js` and asserts a `plugins.tooltip.callbacks` block exists for each of the 3 chart constructors) and `test_v551_isolation_handler_present` (asserts a click handler that mutates `__scIsolated` exists). Existing version-pinned smoke assertions retargeted from `5.4.2` → `5.5.1`.
+- CI guard: `BOT_VERSION` bumped to `5.5.1` (matches this heading; the version-bump-check workflow gates on both). `CURRENT_MAIN_NOTE` rewritten for v5.5.1 (each line ≤34 chars), with the v5.4.2 doc-refresh entry pushed onto `_MAIN_HISTORY_TAIL`.
+
+---
+
 ## v5.4.2 — 2026-04-26
 
 - docs: refresh `ARCHITECTURE.md` to reflect every shipped change between v5.3.0 (the previous arch-doc refresh, [PR #158](https://github.com/valira3/stock-spike-monitor/pull/158)) and v5.4.1. Header version v5.3.0 → v5.4.1; intro now covers v5.4.0 offline backtest CLI and v5.4.1 Shadow tab charts; §16.5 release table extended through v5.4.2 (adds v5.3.1 / v5.4.0 / v5.4.1 / v5.4.2 rows); §17 forensic-volume header + §17.7 rollout plan extended through v5.4.1; §19 G4 status updated to "shadow only … through v5.4.1"; §20 retained from v5.4.0 (offline backtest CLI); new §21 *Shadow tab charts* documents the v5.4.1 `GET /api/shadow_charts` endpoint, response shape (`equity_curve` / `daily_pnl` / `win_rate_rolling`), 30 s server-side cache, three Chart.js groups (equity curves, day-P&L heatmap, rolling 20-trade win-rate sparklines), stable per-config color palette, mobile-first collapsible "Charts" header, and tab-aware 60 s polling. `Source of truth` line now lists `backtest/{loader,ledger,replay,__main__}.py`. Last-refresh footer bumped to `BOT_VERSION = "5.4.2"`.

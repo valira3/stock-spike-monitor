@@ -1794,6 +1794,25 @@ activation and then every 60 s **only while the Shadow tab is
 active** — Main / Val / Gene ticks skip the call entirely. Matches the
 existing `pollExecutor` pattern.
 
+### 21.4 Interactivity (v5.5.1)
+
+v5.5.1 adds two interactivity layers on top of the v5.4.1 chart
+constructors without touching the endpoint or polling cadence. (1) Rich
+Chart.js tooltips on hover/tap for all three groups, wired via the
+built-in `plugins.tooltip.callbacks` option so mobile-tap tooltips work
+without a custom overlay: equity curves show `MM/DD HH:MM ET · ±$cum_pnl
+· config_name`, the day-P&L heatmap adds the per-day trade count
+(`config_name · YYYY-MM-DD · ±$pnl · N trades`), and rolling win-rate
+sparklines show `config_name · trade #N · win_rate%`. (2) Click-to-isolate
+config: a single `__scIsolated` state variable in the Shadow-tab module
+holds the active config name; clicking any equity row, sparkline, or
+heatmap cell sets it (or clears it on a second click of the same
+config), and the three chart groups re-render with non-isolated
+configs faded to ~20% opacity. A small "Showing only: *config* · click
+to clear" hint with an X button appears above the charts whenever
+isolation is active, and clicking empty space on the heatmap also
+clears.
+
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.4.2"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.5.1"`.*

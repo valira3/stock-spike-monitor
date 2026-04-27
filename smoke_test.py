@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.4.2")
+    @t("version: BOT_VERSION is 5.5.1")
     def _():
-        assert m.BOT_VERSION == "5.4.2", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3730,9 +3730,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.4.1: BOT_VERSION bumped to 5.4.2")
+    @t("v5.5.1: BOT_VERSION bumped to 5.5.1")
     def _():
-        assert m.BOT_VERSION == "5.4.2", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.1", m.BOT_VERSION
 
     # ---- v5.4.0 offline backtest CLI ----
     @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")
@@ -4234,6 +4234,72 @@ def run_local() -> int:
             def error(self, msg):
                 raise AssertionError("malformed html: " + str(msg))
         _P(convert_charrefs=True).feed(text)
+
+    @t("v5.5.1: tooltip callbacks present on all 3 chart constructors")
+    def _():
+        # Parse app.js and assert that each `new window.Chart(...)` block
+        # has its own `plugins.tooltip.callbacks` block. This guards the
+        # rich-tooltip wiring from accidental removal.
+        js_path = (Path(__file__).parent
+                   / "dashboard_static" / "app.js")
+        text = js_path.read_text(encoding="utf-8")
+        # Slice the file at every "new window.Chart(" occurrence and walk
+        # forward to the matching closing-brace of that constructor call.
+        starts = [i for i in range(len(text))
+                  if text.startswith("new window.Chart(", i)]
+        assert len(starts) >= 3, \
+            f"expected at least 3 chart constructors, found {len(starts)}"
+        # We only care about the 3 shadow-tab constructors. Take the
+        # first 3 — they are equity / winrate / heatmap in source order.
+        callback_hits = 0
+        for start in starts[:3]:
+            # Find the end of this constructor by tracking paren depth.
+            depth = 0
+            end = None
+            for j in range(start, len(text)):
+                c = text[j]
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        end = j
+                        break
+            assert end is not None, "unterminated Chart() constructor"
+            block = text[start:end]
+            # The block must wire a tooltip with a callbacks: { ... } map.
+            assert "tooltip:" in block, \
+                "constructor missing tooltip block: " + block[:80]
+            assert "callbacks:" in block, \
+                "constructor missing tooltip.callbacks: " + block[:80]
+            callback_hits += 1
+        assert callback_hits == 3, \
+            f"expected 3 tooltip.callbacks blocks, got {callback_hits}"
+
+    @t("v5.5.1: click-to-isolate handler present in app.js")
+    def _():
+        # Parse app.js and assert (a) a single isolation state variable
+        # named __scIsolated exists, (b) a click handler that mutates it
+        # exists, and (c) the heatmap onClick clears or sets it.
+        js_path = (Path(__file__).parent
+                   / "dashboard_static" / "app.js")
+        text = js_path.read_text(encoding="utf-8")
+        assert "__scIsolated" in text, "isolation state variable missing"
+        assert "let __scIsolated" in text or "var __scIsolated" in text, \
+            "__scIsolated must be declared (let/var) once at module scope"
+        # The toggle handler must mutate __scIsolated.
+        assert "_scOnConfigClick" in text, "_scOnConfigClick missing"
+        # Find the function body and confirm it assigns __scIsolated.
+        i = text.find("function _scOnConfigClick")
+        assert i != -1
+        body = text[i:i + 600]
+        assert "__scIsolated =" in body, \
+            "_scOnConfigClick must assign __scIsolated"
+        # Each of the 3 chart constructors wires onClick / addEventListener
+        # that calls _scOnConfigClick or _scClearIsolation.
+        click_calls = text.count("_scOnConfigClick")
+        assert click_calls >= 3, \
+            f"expected >=3 click handlers calling _scOnConfigClick, got {click_calls}"
 
     # -------- v5.2.1 shadow-accounting fixes (H2/H3/M3/M4) --------
 

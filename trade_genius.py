@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.4.2"
+BOT_VERSION = "5.5.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,17 +93,25 @@ BOT_VERSION = "5.4.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.1 \u2014 chart interactivity.\n"
+    "Shadow tab charts now show\n"
+    "rich tooltips on hover and\n"
+    "click-to-isolate a config\n"
+    "across all three groups.\n"
+    "Click again or X clears it.\n"
+    "No trading-logic change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.4.2 \u2014 doc refresh.\n"
     "ARCHITECTURE.md and\n"
     "trade_genius_algo.pdf\n"
     "regenerated to v5.4.1 state.\n"
     "Adds \u00a720 backtest CLI and\n"
     "\u00a721 Shadow tab charts.\n"
-    "No code-logic change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "No code-logic change.\n"
+    "\n"
     "v5.4.1 \u2014 shadow charts.\n"
     "Shadow tab now shows equity\n"
     "curves, day P&L heatmap, and\n"
