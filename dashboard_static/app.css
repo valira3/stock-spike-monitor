@@ -867,3 +867,83 @@
     .shadow-heatmap-canvas { height: 240px !important; }
     .shadow-chart-group { padding: 10px 10px 8px; }
   }
+
+  /* v5.5.9 — Shadow tab top summary band. Compact strip above the
+     CHARTS card showing aggregate open / unrealized / most-active
+     config / "as of" timestamp. Same visual vocabulary as the index
+     ticker strip and existing port-strip rows. */
+  .shadow-summary-band {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 18px;
+    padding: 8px 14px; margin-bottom: 10px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--mono); font-size: 11.5px;
+    color: var(--text-muted);
+  }
+  .shadow-summary-band .ssb-cell {
+    display: inline-flex; align-items: baseline; gap: 6px;
+  }
+  .shadow-summary-band .ssb-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim);
+  }
+  .shadow-summary-band .ssb-value {
+    color: var(--text); font-variant-numeric: tabular-nums;
+  }
+  .shadow-summary-band .ssb-value.up   { color: var(--up); }
+  .shadow-summary-band .ssb-value.down { color: var(--down); }
+  .shadow-summary-band .ssb-asof { margin-left: auto; }
+  @media (max-width: 560px) {
+    .shadow-summary-band { gap: 10px 14px; font-size: 11px; }
+    .shadow-summary-band .ssb-asof { margin-left: 0; }
+  }
+
+  /* v5.5.9 — per-config unrealized P&L bar chart fallback. Rendered in
+     place of the equity curve when a config has no closed trades but
+     does have open positions. The title overlay sits above the canvas
+     so the at-a-glance "N open · ±$total unrealized" is visible without
+     hovering. */
+  .shadow-chart-row .scr-bar-title {
+    font-size: 10.5px; font-family: var(--mono);
+    color: var(--text-muted); padding: 4px 8px 2px;
+    border-bottom: 1px dashed var(--border);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .shadow-chart-row .scr-bar-title .scr-bar-up   { color: var(--up); }
+  .shadow-chart-row .scr-bar-title .scr-bar-down { color: var(--down); }
+  .shadow-chart-row .scr-bar-more {
+    font-size: 10px; color: var(--text-dim);
+    padding: 2px 8px 4px; font-family: var(--mono);
+  }
+  .shadow-chart-row .scr-canvas-wrap.scr-bar-wrap {
+    display: flex; flex-direction: column;
+    height: auto; min-height: 100px;
+  }
+  .shadow-chart-row .scr-canvas-wrap.scr-bar-wrap canvas {
+    flex: 1 1 auto; min-height: 80px;
+  }
+
+  /* v5.5.9 — strategies-table row tint by today's P&L sign. Subtle by
+     design — the existing best/worst classes win when present. Uses
+     color-mix on the existing --up / --down tokens so we never hardcode
+     hex values for sentiment colors. */
+  .shadow-pnl-row.sp-tint-pos {
+    background: color-mix(in srgb, var(--up) 8%, transparent);
+  }
+  .shadow-pnl-row.sp-tint-neg {
+    background: color-mix(in srgb, var(--down) 8%, transparent);
+  }
+  /* best/worst already paint a more saturated background — keep them
+     dominant over the tint so today's P&L highlight isn't washed out. */
+  .shadow-pnl-row.sp-best,
+  .shadow-pnl-row.sp-worst { background: var(--up-dim); }
+  .shadow-pnl-row.sp-worst { background: var(--down-dim); }
+
+  /* v5.5.9 — sticky strategies header. Keeps the
+     CONFIG · TODAY · CUMULATIVE row visible while the user scrolls a
+     long expanded open-positions list inside a config. */
+  #shadow-pnl-card .shadow-pnl-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
