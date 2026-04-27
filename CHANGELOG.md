@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.5.2 — 2026-04-27
+
+- fix (data pipeline): wire the bar archive writer into the scan loop. `_v512_archive_minute_bar()` was added in v5.1.2 at `trade_genius.py:3303-3325` but had **zero callers** — the wiring step was missed, so `/data/bars/` never existed on prod and the v5.4.0 backtest CLI had nothing to replay. The call now lives alongside the v5.2.1 H3 MTM hook in the per-ticker scan branch (~`trade_genius.py:8094-8150`), reusing the cached `fetch_1min_bars` result so it adds no network cost. The most-recently-completed bar is projected onto `bar_archive.BAR_SCHEMA_FIELDS` (canonical 11-field schema; downstream `backtest/loader.py` expects this exact shape) and persisted to `/data/bars/YYYY-MM-DD/{TICKER}.jsonl`. The call is wrapped in its own `try/except` so any archive failure logs `[V510-BAR] archive hook` and continues — archival must never disrupt the trading scan. See `diagnostics/shadow_data_pipeline.md` Issue 1 for the full root-cause analysis.
+- feat (retention): invoke `bar_archive.cleanup_old_dirs(retain_days=90)` from `eod_close()` so archived bars don't accumulate forever on the Railway 1 GB volume. Failure-tolerant: a cleanup error logs at warning level and never raises.
+- tests: 2 new smoke guards next to the existing v5.1.2 `bar_archive` block —
+  - `v5.5.2: _v512_archive_minute_bar has a caller outside its own def` parses `trade_genius.py` and asserts the literal `_v512_archive_minute_bar(` appears at least once outside the def line. If a future refactor silently re-orphans the writer (the original v5.1.2 bug), this test fails loudly.
+  - `v5.5.2: bar_archive.cleanup_old_dirs is invoked from eod_close` introspects `eod_close`'s source and asserts the cleanup call is present, so retention can't silently drop out either.
+- CI guard: `BOT_VERSION` bumped to `5.5.2` (matches this heading; the version-bump-check workflow gates on both). `CURRENT_MAIN_NOTE` rewritten for v5.5.2 (each line ≤34 chars), with the v5.5.1 chart-interactivity entry pushed onto `_MAIN_HISTORY_TAIL`.
+- docs: `ARCHITECTURE.md` bar-archive section updated to reflect that the writer is now wired, the call site lives in the scan-loop per-ticker branch, and 90-day retention runs at EOD. `trade_genius_algo.pdf` regen note: see PR description — manual regen may be required if `scripts/build_algo_pdf.py` cannot run in this environment.
+
+---
+
 ## v5.5.1 — 2026-04-26
 
 - feat (frontend): rich Chart.js tooltips on all three Shadow-tab chart groups. Equity curves now show `MM/DD HH:MM ET · ±$cum_pnl · config_name`; the day-P&L heatmap shows `config_name · YYYY-MM-DD · ±$pnl · N trades`; rolling win-rate sparklines show `config_name · trade #N · win_rate%`. Implemented via Chart.js's built-in `plugins.tooltip.callbacks` so mobile-tap tooltips work out of the box without a custom overlay layer.

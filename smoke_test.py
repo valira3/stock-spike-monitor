@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.1")
+    @t("version: BOT_VERSION is 5.5.2")
     def _():
-        assert m.BOT_VERSION == "5.5.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.2", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3202,6 +3202,50 @@ def run_local() -> int:
             assert "garbage_key" not in obj
             assert obj["close"] == 1.0
 
+    @t("v5.5.2: _v512_archive_minute_bar has a caller outside its own def")
+    def _():
+        # Regression guard: in v5.1.2 the writer wrapper was added but
+        # never wired into the scan loop, so /data/bars/ stayed empty
+        # for ~3 months. v5.5.2 wires it in. If a future refactor
+        # silently re-orphans the call, this test fails loudly.
+        import os as _os
+        path = _os.path.join(_os.path.dirname(m.__file__), "trade_genius.py")
+        with open(path, "r", encoding="utf-8") as fh:
+            src = fh.read()
+        needle = "_v512_archive_minute_bar("
+        # Find every occurrence; the definition itself uses
+        # "def _v512_archive_minute_bar(" so the caller list is every
+        # other occurrence.
+        positions = []
+        start = 0
+        while True:
+            idx = src.find(needle, start)
+            if idx < 0:
+                break
+            positions.append(idx)
+            start = idx + 1
+        # Exactly one of these is the def line; we need at least one
+        # call site beyond that.
+        def_count = src.count("def _v512_archive_minute_bar(")
+        call_count = len(positions) - def_count
+        assert call_count >= 1, (
+            f"_v512_archive_minute_bar has no callers (def_count={def_count}, "
+            f"total_occurrences={len(positions)}). Wiring was dropped \u2014 "
+            f"see v5.5.2 / diagnostics/shadow_data_pipeline.md."
+        )
+
+    @t("v5.5.2: bar_archive.cleanup_old_dirs is invoked from eod_close")
+    def _():
+        # Retention enforcement was missing in v5.1.2. v5.5.2 wires
+        # cleanup_old_dirs into the EOD path so archived bars don't
+        # accumulate forever on the Railway volume.
+        import inspect
+        src = inspect.getsource(m.eod_close)
+        assert "cleanup_old_dirs" in src, (
+            "bar_archive.cleanup_old_dirs not invoked from eod_close \u2014 "
+            "90d retention is unenforced. See v5.5.2."
+        )
+
     def _v512_capture_logger():
         import logging as _logging
 
@@ -3730,9 +3774,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.5.1: BOT_VERSION bumped to 5.5.1")
+    @t("v5.5.2: BOT_VERSION bumped to 5.5.2")
     def _():
-        assert m.BOT_VERSION == "5.5.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.2", m.BOT_VERSION
 
     # ---- v5.4.0 offline backtest CLI ----
     @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")
@@ -4346,7 +4390,12 @@ def run_local() -> int:
         marker = "Long entry check \u2014 run once per ticker"
         idx = text.find(marker)
         assert idx != -1, "scan-loop long-entry block not found"
-        block = text[idx: idx + 2000]
+        # v5.5.2: window widened from 2000 \u2192 5000 because the
+        # bar-archive hook lives between the MTM call and the
+        # paper_holds gate, which is a deliberate ordering. The
+        # invariant being asserted is unchanged: MTM must run before
+        # the gate.
+        block = text[idx: idx + 5000]
         mtm_pos = block.find("_v520_mtm_ticker(")
         gate_pos = block.find("if not paper_holds:")
         assert mtm_pos != -1, "_v520_mtm_ticker call missing from scan block"

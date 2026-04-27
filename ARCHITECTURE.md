@@ -1543,9 +1543,31 @@ atomic, and the lines are ~150 bytes — no tmp+rename needed. Lazy
 directory creation. **Failure-tolerant — never raises into the
 trading loop.** Disk projection: ~18 tickers × 390 minutes × ~150
 bytes ≈ 1 MB/day. The 30-symbol IEX cap from v5.1.0 still bounds the
-universe. Stale or empty minutes write nothing. A daemon thread
-calls `cleanup_old_dirs(retain_days=90)` nightly to delete dated
-directories older than 90 days.
+universe. Stale or empty minutes write nothing.
+
+**Wiring (v5.5.2).** `bar_archive.py` was authored in v5.1.2, but the
+wrapper `_v512_archive_minute_bar(ticker, bar)` in `trade_genius.py`
+had **zero callers** until v5.5.2 — `/data/bars/` therefore never
+existed on prod, and the v5.4.0 backtest CLI had nothing to replay.
+v5.5.2 wires the wrapper into the per-ticker scan-loop branch
+alongside the existing v5.2.1 H3 mark-to-market hook. The
+most-recently-completed bar from the cached `fetch_1min_bars`
+result is projected onto the canonical `BAR_SCHEMA_FIELDS`
+(11 fields; `backtest/loader.py` expects this exact shape) and
+passed to `bar_archive.write_bar`. The call is wrapped in its own
+`try/except` and logs `[V510-BAR] archive hook` on failure so
+archival can never disrupt the trading scan. Two smoke tests
+(`v5.5.2: _v512_archive_minute_bar has a caller outside its own def`
+and `v5.5.2: bar_archive.cleanup_old_dirs is invoked from eod_close`)
+guard the call site against future refactor regressions.
+
+**Retention.** `eod_close()` invokes
+`bar_archive.cleanup_old_dirs(retain_days=90)` once per session
+close, deleting any dated directories older than 90 days. This runs
+on the same path that already flattens positions, locks v5 tracks,
+and saves paper state, so it requires no extra scheduler. The call
+is failure-tolerant — a cleanup error logs at warning level and
+never raises.
 
 ### 18.2 Per-minute volume log (`[V510-MINUTE]` — Tier-1.2)
 
