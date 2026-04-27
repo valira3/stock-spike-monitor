@@ -925,7 +925,67 @@
   // state polls do not collapse what the user opened.
   const __shadowExpanded = new Set();
 
+  // v5.5.9 \u2014 top summary band on the Shadow tab. Aggregates
+  // per-config open_positions into a single strip showing total open,
+  // total unrealized $, the most-active config, and the state's
+  // "as_of" timestamp. Mirrors the index ticker strip pattern.
+  function _shadowSummaryBand(s) {
+    const band = document.getElementById("shadow-summary-band");
+    if (!band) return;
+    const sp = s && s.shadow_pnl;
+    const cfgs = (sp && Array.isArray(sp.configs)) ? sp.configs : [];
+    let totalOpen = 0;
+    let totalUnreal = 0;
+    let mostActive = null;
+    let mostActiveN = 0;
+    for (const cfg of cfgs) {
+      const opens = Array.isArray(cfg.open_positions) ? cfg.open_positions : [];
+      totalOpen += opens.length;
+      for (const p of opens) {
+        const u = Number(p && p.unrealized);
+        if (isFinite(u)) totalUnreal += u;
+      }
+      if (opens.length > mostActiveN) {
+        mostActiveN = opens.length;
+        mostActive = cfg.name || null;
+      }
+    }
+    const openEl = document.getElementById("ssb-open");
+    const unrEl = document.getElementById("ssb-unr");
+    const actEl = document.getElementById("ssb-active");
+    const asofEl = document.getElementById("ssb-asof");
+    if (openEl) openEl.textContent = String(totalOpen);
+    if (unrEl) {
+      unrEl.textContent = totalOpen > 0 ? _fmtShadowMoney(totalUnreal) : "\u2014";
+      unrEl.classList.remove("up", "down");
+      if (totalOpen > 0) {
+        if (totalUnreal > 0) unrEl.classList.add("up");
+        else if (totalUnreal < 0) unrEl.classList.add("down");
+      }
+    }
+    if (actEl) {
+      actEl.textContent = mostActive
+        ? mostActive + " \u00b7 " + mostActiveN
+        : "\u2014";
+    }
+    if (asofEl) {
+      asofEl.textContent = (s && s.as_of) ? _scFmtTs(s.as_of) : "\u2014";
+    }
+  }
+
   function renderShadowPnL(s) {
+    // v5.5.9 \u2014 keep the top summary band in sync with the same
+    // payload that drives the strategies table.
+    try { _shadowSummaryBand(s); } catch (e) {}
+    // v5.5.9 \u2014 the per-config unrealized bar-chart fallback reads
+    // open_positions from this exact payload, so re-render charts on
+    // every state tick (matches the 5s state poll rather than the 60s
+    // /api/shadow_charts cadence). Cheap when no fallback bars apply.
+    try {
+      if (typeof window.__tgPollShadowCharts === "function" && __scLastPayload) {
+        _scRender(__scLastPayload);
+      }
+    } catch (e) {}
     const sp = s && s.shadow_pnl;
     const body = $("shadow-pnl-body");
     if (!body) return;
@@ -950,6 +1010,21 @@
       const cls = ["shadow-pnl-row", "sp-expandable"];
       if (sp.best_today && cfg.name === sp.best_today) cls.push("sp-best");
       if (sp.worst_today && cfg.name === sp.worst_today) cls.push("sp-worst");
+      // v5.5.9 B3 \u2014 subtle row tint by today's P&L sign. Skipped
+      // when the row already paints sp-best / sp-worst (those have a
+      // saturated background that would clash with the tint). Uses
+      // today.total (realized + unrealized) so configs with only open
+      // positions still get a visual sentiment cue.
+      const todayPnl = Number((cfg.today || {}).total);
+      const todayNRow = Number((cfg.today || {}).n || 0);
+      const todayHasOpens = Array.isArray(cfg.open_positions)
+        && cfg.open_positions.length > 0;
+      const isHighlighted = cls.includes("sp-best") || cls.includes("sp-worst");
+      if (!isHighlighted && isFinite(todayPnl)
+          && (todayNRow > 0 || todayHasOpens)) {
+        if (todayPnl > 0) cls.push("sp-tint-pos");
+        else if (todayPnl < 0) cls.push("sp-tint-neg");
+      }
       const todayN = Number((cfg.today || {}).n || 0);
       if (todayN > 0) activeCount += 1;
       const expanded = __shadowExpanded.has(cfg.name);
@@ -2215,24 +2290,162 @@
     return typeof window !== "undefined" && typeof window.Chart === "function";
   }
 
+  // v5.5.9 \u2014 read open_positions for each shadow config from the
+  // last /api/state payload. Used by the per-config unrealized bar
+  // chart fallback when equity_curve is empty but the config has open
+  // positions. Returns { <cfgName>: [ {ticker, unrealized, ...}, ... ] }
+  // and a per-config sum of unrealized $.
+  function _scOpenPositionsByConfig() {
+    const out = {};
+    try {
+      const s = window.__tgLastState;
+      const sp = s && s.shadow_pnl;
+      const cfgs = sp && sp.configs;
+      if (!Array.isArray(cfgs)) return out;
+      for (const cfg of cfgs) {
+        if (cfg && cfg.name) {
+          out[cfg.name] = Array.isArray(cfg.open_positions)
+            ? cfg.open_positions.slice() : [];
+        }
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  // v5.5.9 \u2014 read css color tokens for positive/negative P&L. Falls
+  // back to the existing palette swatches if the variable lookup
+  // fails so we never paint a chart with no fill.
+  function _scPnlColors() {
+    const up = _scText("--up") || "#34d399";
+    const down = _scText("--down") || "#f87171";
+    return { up: up, down: down };
+  }
+
+  // v5.5.9 \u2014 build a horizontal-style bar chart of per-ticker
+  // unrealized P&L for one shadow config. Bars sorted desc (gains left,
+  // losses right). Capped at 30 bars (top 15 winners + 15 losers when
+  // count > 30) with an "and N more" footer. Color: green for positive,
+  // red for negative, sourced from the shared --up / --down tokens.
+  function _scBuildBarChart(row, name, openPositions) {
+    const color = SHADOW_CFG_COLORS[name] || "#7dd3fc";
+    // Materialize { ticker, pnl } pairs and drop entries we can't price.
+    const items = (openPositions || []).map(p => ({
+      ticker: String(p.ticker || ""),
+      pnl: Number(p.unrealized || 0),
+    })).filter(p => p.ticker && isFinite(p.pnl));
+    items.sort((a, b) => b.pnl - a.pnl);
+    const total = items.reduce((acc, p) => acc + p.pnl, 0);
+    const nOpen = items.length;
+    let display = items;
+    let hidden = 0;
+    if (items.length > 30) {
+      const winners = items.slice(0, 15);
+      const losers = items.slice(items.length - 15);
+      display = winners.concat(losers);
+      hidden = items.length - display.length;
+    }
+    const tint = total >= 0 ? "scr-bar-up" : "scr-bar-down";
+    const totalTxt = '<span class="' + tint + '">' + _scFmtUsd(total) + '</span>';
+    const titleHtml =
+      '<div class="scr-bar-title">' + name + ' \u00b7 ' + nOpen
+      + ' open \u00b7 ' + totalTxt + ' unrealized</div>';
+    const moreHtml = hidden > 0
+      ? '<div class="scr-bar-more">\u2026 and ' + hidden + ' more</div>'
+      : '';
+    row.innerHTML = '<div class="scr-name">'
+      + '<span class="scr-swatch" style="background:' + color + '"></span>'
+      + name + '</div>'
+      + '<div class="scr-canvas-wrap scr-bar-wrap">'
+      + titleHtml
+      + '<canvas></canvas>'
+      + moreHtml
+      + '</div>';
+    if (!_scChartReady()) return;
+    const canvas = row.querySelector("canvas");
+    const labels = display.map(p => p.ticker);
+    const values = display.map(p => p.pnl);
+    const palette = _scPnlColors();
+    const dim = _scIsDim(name);
+    const dimMul = dim ? 0.30 : 1.0;
+    const colors = values.map(v => {
+      const base = v >= 0 ? palette.up : palette.down;
+      return _scAlpha(base, 0.85 * dimMul);
+    });
+    const prev = __shadowChartInstances.equity[name];
+    if (prev) { try { prev.destroy(); } catch (e) {} }
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => _scOnConfigClick(name));
+    __shadowChartInstances.equity[name] = new window.Chart(canvas, {
+      type: "bar",
+      data: { labels: labels, datasets: [{
+        data: values,
+        backgroundColor: colors,
+        borderColor: colors,
+        borderWidth: 0,
+      }]},
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        onClick: () => _scOnConfigClick(name),
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: true,
+            callbacks: {
+              label: ctx => {
+                const i = ctx.dataIndex;
+                return labels[i] + " \u00b7 " + _scFmtUsd(values[i]);
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: _scText("--text-dim"), font: { size: 9 },
+              autoSkip: true, maxRotation: 0,
+            },
+            grid: { display: false },
+          },
+          y: {
+            ticks: { color: _scText("--text-dim"), font: { size: 9 } },
+            grid: { color: _scText("--border"), drawTicks: false },
+          },
+        },
+      },
+    });
+  }
+
   function _scBuildEquityRows(configs) {
     const wrap = document.getElementById("shadow-equity-body");
     if (!wrap) return;
     wrap.innerHTML = "";
+    // v5.5.9 \u2014 pull per-config open_positions from the last
+    // /api/state snapshot so we can draw a per-ticker unrealized bar
+    // chart fallback when equity_curve is empty.
+    const openByCfg = _scOpenPositionsByConfig();
+    let renderedAny = false;
     for (const name of SHADOW_CFG_NAMES) {
       const data = (configs[name] && configs[name].equity_curve) || [];
+      const opens = openByCfg[name] || [];
+      // v5.5.9 B2 \u2014 hide configs with neither closed nor open trades.
+      if (!data.length && opens.length === 0) continue;
       const row = document.createElement("div");
       row.className = "shadow-chart-row";
+      wrap.appendChild(row);
+      renderedAny = true;
+      // v5.5.9 \u2014 fallback: when there are no closed trades but open
+      // positions exist, draw a per-ticker unrealized bar chart instead
+      // of the "no closed trades" placeholder.
+      if (!data.length) {
+        _scBuildBarChart(row, name, opens);
+        continue;
+      }
       const color = SHADOW_CFG_COLORS[name] || "#7dd3fc";
       row.innerHTML = '<div class="scr-name">'
         + '<span class="scr-swatch" style="background:' + color + '"></span>'
         + name + '</div>'
-        + '<div class="scr-canvas-wrap">'
-        + (data.length ? '<canvas></canvas>'
-                       : '<div class="scr-empty">no closed trades</div>')
-        + '</div>';
-      wrap.appendChild(row);
-      if (!data.length || !_scChartReady()) continue;
+        + '<div class="scr-canvas-wrap"><canvas></canvas></div>';
+      if (!_scChartReady()) continue;
       const canvas = row.querySelector("canvas");
       const labels = data.map(p => p.ts);
       const values = data.map(p => p.cum_pnl);
@@ -2276,6 +2489,12 @@
           },
         },
       });
+    }
+    // v5.5.9 B2 \u2014 if every config was hidden (no closed AND no open
+    // trades anywhere), keep a single "Waiting for shadow data" message
+    // so the section never renders as a totally blank stripe.
+    if (!renderedAny) {
+      wrap.innerHTML = '<div class="empty">Waiting for shadow data\u2026</div>';
     }
   }
 
@@ -2351,9 +2570,17 @@
   function _scBuildHeatmap(configs) {
     const canvas = document.getElementById("shadow-heatmap-canvas");
     if (!canvas) return;
+    // v5.5.9 B2 \u2014 only include configs that have closed-trade
+    // daily_pnl entries. Configs with neither closed nor open trades
+    // are hidden from the y-axis so the heatmap doesn't paint blank
+    // rows for the 6/7 inactive configs while only OOMPH_ALERT has data.
+    const cfgNames = SHADOW_CFG_NAMES.filter(name => {
+      const dp = (configs[name] && configs[name].daily_pnl) || [];
+      return dp.length > 0;
+    });
     // Collect the union of trading days across all configs.
     const dayMap = {};
-    for (const name of SHADOW_CFG_NAMES) {
+    for (const name of cfgNames) {
       const dp = (configs[name] && configs[name].daily_pnl) || [];
       for (const d of dp) {
         if (!dayMap[d.date]) dayMap[d.date] = {};
@@ -2379,7 +2606,7 @@
     // Find max abs P&L across all (config, day) cells for color scaling.
     let absMax = 0;
     for (const d of days) {
-      for (const name of SHADOW_CFG_NAMES) {
+      for (const name of cfgNames) {
         const v = dayMap[d][name];
         if (typeof v === "number" && Math.abs(v) > absMax) absMax = Math.abs(v);
       }
@@ -2390,7 +2617,7 @@
     // and bringing in the matrix plugin would add a second CDN dependency.
     // v5.5.1: also stash per-day trade counts so tooltips can show them.
     const tradeCountByDayCfg = {};
-    for (const name of SHADOW_CFG_NAMES) {
+    for (const name of cfgNames) {
       const dp = (configs[name] && configs[name].daily_pnl) || [];
       for (const d of dp) {
         const k = d.date + "|" + name;
@@ -2398,8 +2625,8 @@
       }
     }
     const points = [];
-    for (let yi = 0; yi < SHADOW_CFG_NAMES.length; yi++) {
-      const name = SHADOW_CFG_NAMES[yi];
+    for (let yi = 0; yi < cfgNames.length; yi++) {
+      const name = cfgNames[yi];
       for (let xi = 0; xi < days.length; xi++) {
         const v = (dayMap[days[xi]] || {})[name];
         if (typeof v !== "number") continue;
@@ -2466,14 +2693,14 @@
             grid: { color: _scText("--border"), drawTicks: false },
           },
           y: {
-            type: "linear", min: -0.5, max: SHADOW_CFG_NAMES.length - 0.5,
+            type: "linear", min: -0.5, max: cfgNames.length - 0.5,
             reverse: true,
             ticks: {
               color: _scText("--text-dim"), font: { size: 9 },
               stepSize: 1, autoSkip: false,
               callback: v => {
                 const i = Math.round(v);
-                return SHADOW_CFG_NAMES[i] || "";
+                return cfgNames[i] || "";
               },
             },
             grid: { color: _scText("--border"), drawTicks: false },
@@ -2486,15 +2713,20 @@
   function _scRender(payload) {
     const configs = (payload && payload.configs) || {};
     __scLastPayload = payload;
-    // Count rendered configs (non-empty equity curves) for the head badge.
-    let withTrades = 0;
+    // v5.5.9 \u2014 a config is "rendered" if it has either closed
+    // trades (equity_curve) OR any current open positions. The
+    // EQUITY CURVES group hides rows with neither, and the head
+    // count reflects what is actually drawn.
+    const openByCfg = _scOpenPositionsByConfig();
+    let withData = 0;
     for (const n of SHADOW_CFG_NAMES) {
-      if (configs[n] && configs[n].equity_curve && configs[n].equity_curve.length) {
-        withTrades += 1;
-      }
+      const closed = configs[n] && configs[n].equity_curve
+        && configs[n].equity_curve.length;
+      const opens = (openByCfg[n] || []).length;
+      if (closed || opens) withData += 1;
     }
     const cnt = document.getElementById("shadow-charts-count");
-    if (cnt) cnt.textContent = "\u00b7 " + withTrades + " / " + SHADOW_CFG_NAMES.length;
+    if (cnt) cnt.textContent = "\u00b7 " + withData + " / " + SHADOW_CFG_NAMES.length;
     _scBuildEquityRows(configs);
     _scBuildHeatmap(configs);
     _scBuildWinrateRows(configs);

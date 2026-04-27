@@ -233,6 +233,16 @@
 <div id="tg-panel-shadow" class="tg-panel" style="display:none">
 <div class="app">
   <main class="main">
+    <!-- v5.5.9 — Top summary band. Compact strip showing total open
+         positions across configs, total unrealized $, most-active
+         config, and "as of" timestamp. Mirrors the index ticker strip
+         pattern. Populated by renderShadowSummary on every state poll. -->
+    <div id="shadow-summary-band" class="shadow-summary-band" aria-live="polite">
+      <span class="ssb-cell"><span class="ssb-label">Open</span><span class="ssb-value" id="ssb-open">—</span></span>
+      <span class="ssb-cell"><span class="ssb-label">Unrealized</span><span class="ssb-value" id="ssb-unr">—</span></span>
+      <span class="ssb-cell"><span class="ssb-label">Most active</span><span class="ssb-value" id="ssb-active">—</span></span>
+      <span class="ssb-cell ssb-asof"><span class="ssb-label">As of</span><span class="ssb-value" id="ssb-asof">—</span></span>
+    </div>
     <!-- v5.4.1 — Charts subsection. Three vertically-stacked groups
          covering all 7 SHADOW_CONFIGS:
            1. Equity curves     (one mini line chart per config)

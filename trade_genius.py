@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.8"
+BOT_VERSION = "5.5.9"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,6 +93,22 @@ BOT_VERSION = "5.5.8"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.9 \u2014 shadow charts polish.\n"
+    "Shadow tab now shows a per-\n"
+    "ticker unrealized bar chart\n"
+    "for configs that have open\n"
+    "positions but no closed\n"
+    "trades yet. Empty configs are\n"
+    "hidden from the chart groups.\n"
+    "Top summary band shows total\n"
+    "open + unrealized. Strategies\n"
+    "rows tint by today's P&L and\n"
+    "the header is sticky.\n"
+    "No trading-decision change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.8 \u2014 SHORT entry row.\n"
     "Main tab Today's Trades now\n"
     "shows the SHORT entry row for\n"
@@ -101,11 +117,8 @@ CURRENT_MAIN_NOTE = (
     "from the cover record; open\n"
     "shorts also surface their\n"
     "entry leg. Storage unchanged.\n"
-    "No trading-decision change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "No trading-decision change.\n"
+    "\n"
     "v5.5.7 \u2014 Main tab fix.\n"
     "Today's trades summary now\n"
     "counts SHORT/COVER as opens\n"

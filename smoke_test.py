@@ -349,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.8")
+    @t("version: BOT_VERSION is 5.5.9")
     def _():
-        assert m.BOT_VERSION == "5.5.8", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.9", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3786,28 +3786,59 @@ def run_local() -> int:
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        # v5.5.8 supersedes; keep the test name pinned to its release
+        # v5.5.9 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
-        # v5.5.8 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
+        # v5.5.9 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
-        # v5.5.8 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
+        # v5.5.9 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
-        # v5.5.8 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
+        # v5.5.9 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
-        assert m.BOT_VERSION == "5.5.8", m.BOT_VERSION
+        # v5.5.9 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+
+    @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
+    def _():
+        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+
+    @t("v5.5.9: shadow tab unrealized bar chart fallback present in app.js")
+    def _():
+        # Pin the client-side fallback chart: when a shadow config has
+        # no closed trades (empty equity_curve) but does have open
+        # positions, dashboard_static/app.js must render a per-ticker
+        # unrealized bar chart instead of the "no closed trades"
+        # placeholder. Greps for the v5.5.9 helper symbols + summary
+        # band so a refactor that drops them fails CI loudly.
+        from pathlib import Path
+        root = Path(__file__).resolve().parent
+        js = (root / "dashboard_static" / "app.js").read_text()
+        assert "_scBuildBarChart" in js, \
+            "v5.5.9 _scBuildBarChart missing from app.js"
+        assert "_scOpenPositionsByConfig" in js, \
+            "v5.5.9 _scOpenPositionsByConfig missing from app.js"
+        assert "_shadowSummaryBand" in js, \
+            "v5.5.9 _shadowSummaryBand missing from app.js"
+        html = (root / "dashboard_static" / "index.html").read_text()
+        assert "shadow-summary-band" in html, \
+            "v5.5.9 #shadow-summary-band element missing from index.html"
+        css = (root / "dashboard_static" / "app.css").read_text()
+        assert "sp-tint-pos" in css and "sp-tint-neg" in css, \
+            "v5.5.9 strategies-row tint classes missing from app.css"
+        assert "position: sticky" in css, \
+            "v5.5.9 sticky strategies header missing from app.css"
 
     @t("v5.5.8: _today_trades synthesizes SHORT entry rows from short_trade_history")
     def _():
