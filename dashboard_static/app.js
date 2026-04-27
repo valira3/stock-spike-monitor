@@ -899,6 +899,13 @@
     if (!body) return;
     const cnt = $("shadow-count");
     const bestChip = $("shadow-best");
+    // v5.5.3 \u2014 SHADOW DISABLED pill on the shadow card head when
+    // the bot couldn't bind Alpaca market-data credentials at boot.
+    const statusPill = $("shadow-status-pill");
+    if (statusPill) {
+      const status = s && s.shadow_data_status;
+      statusPill.style.display = (status === "disabled_no_creds") ? "" : "none";
+    }
     if (!sp || !sp.configs) {
       body.innerHTML = '<div class="empty">Waiting for shadow data\u2026</div>';
       if (cnt) cnt.textContent = "\u00b7 \u2014";

@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.2"
+BOT_VERSION = "5.5.3"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,6 +93,20 @@ BOT_VERSION = "5.5.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.3 \u2014 shadow cred fix.\n"
+    "_start_volume_profile now\n"
+    "reads VAL_ALPACA_PAPER_KEY\n"
+    "first, then legacy keys.\n"
+    "On miss, [SHADOW DISABLED]\n"
+    "logs and dashboard shows\n"
+    "a banner instead of silent\n"
+    "empty volumes. Market-data\n"
+    "only \u2014 no trading endpoint\n"
+    "calls from shadow path."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.2 \u2014 bar archive wired.\n"
     "_v512_archive_minute_bar is\n"
     "now called from the scan\n"
@@ -100,11 +114,8 @@ CURRENT_MAIN_NOTE = (
     "actually fills. 90d retention\n"
     "runs at EOD. Smoke guard pins\n"
     "the call site against future\n"
-    "refactor regressions."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "refactor regressions.\n"
+    "\n"
     "v5.5.1 \u2014 chart interactivity.\n"
     "Shadow tab charts now show\n"
     "rich tooltips on hover and\n"
@@ -2158,6 +2169,10 @@ TRADE_TICKERS = [t for t in TICKERS if t not in TICKERS_PINNED]
 VOLUME_PROFILE_ENABLED: bool = True
 _volume_profile_cache: dict = {}        # {ticker: profile dict}
 _ws_consumer = None                      # set by _start_volume_profile()
+# v5.5.3 \u2014 set True only when _start_volume_profile() resolved
+# market-data credentials and started the WS consumer. Surfaced to the
+# dashboard via /api/state.shadow_data_status.
+SHADOW_DATA_AVAILABLE: bool = False
 
 
 def _start_volume_profile() -> None:
@@ -2167,7 +2182,7 @@ def _start_volume_profile() -> None:
     websocket symbol cap (30). On disable, evaluate_g4 returns DISABLED
     and the bot trades normally.
     """
-    global VOLUME_PROFILE_ENABLED, _ws_consumer
+    global VOLUME_PROFILE_ENABLED, _ws_consumer, SHADOW_DATA_AVAILABLE
     if len(TICKERS) > volume_profile.WS_SYMBOL_CAP_FREE_IEX:
         logger.warning(
             "[VOLPROFILE] watchlist=%d > 30 symbols, exceeds free IEX cap; "
@@ -2185,21 +2200,28 @@ def _start_volume_profile() -> None:
         if prof is not None:
             _volume_profile_cache[t] = prof
 
-    # Read alpaca creds the same strict way v5.0.4 does. The volume
-    # layer only ever reads bars (data API), never trades, so we use
-    # whichever credential is available without falling back across
-    # paper/live.
-    key = (os.getenv("ALPACA_PAPER_KEY")
+    # v5.5.3 \u2014 cred lookup chain:
+    #   VAL_ALPACA_PAPER_KEY/SECRET (prod) \u2192
+    #   ALPACA_PAPER_KEY/SECRET (legacy)   \u2192
+    #   ALPACA_KEY/SECRET (legacy)         \u2192 fail.
+    # Market-data-only use of Val's Alpaca paper key. Shadow strategies
+    # have their own ledger; do NOT call /v2/positions, /v2/account, or
+    # any trading endpoint from this code path.
+    key = (os.getenv("VAL_ALPACA_PAPER_KEY")
+           or os.getenv("ALPACA_PAPER_KEY")
            or os.getenv("ALPACA_KEY")
            or "")
-    secret = (os.getenv("ALPACA_PAPER_SECRET")
+    secret = (os.getenv("VAL_ALPACA_PAPER_SECRET")
+              or os.getenv("ALPACA_PAPER_SECRET")
               or os.getenv("ALPACA_SECRET")
               or "")
     if not key or not secret:
         logger.warning(
-            "[VOLPROFILE] no Alpaca data credentials found; "
-            "shadow gate will run with empty live volumes."
+            "[SHADOW DISABLED] no Alpaca market-data credentials found "
+            "(set VAL_ALPACA_PAPER_KEY/SECRET or ALPACA_PAPER_KEY/SECRET); "
+            "shadow_positions will not record any rows this session."
         )
+        SHADOW_DATA_AVAILABLE = False
         return
 
     # Synchronous startup rebuild if any profile is missing/stale.
@@ -2229,9 +2251,11 @@ def _start_volume_profile() -> None:
             list(TICKERS), key, secret,
         )
         _ws_consumer.start()
+        SHADOW_DATA_AVAILABLE = True
     except Exception as e:
         logger.error("[VOLPROFILE] websocket startup failed: %s", e)
         _ws_consumer = None
+        SHADOW_DATA_AVAILABLE = False
 
     # Nightly rebuild thread (21:00 ET).
     def _nightly_loop():

@@ -758,6 +758,47 @@ No schema migration ships with v5.3.0 — both methods read the existing
 bridges; the new Shadow tab simply registers a fourth `data-tg-tab`
 target alongside Main / Val / Gene.
 
+### 9.6 Shadow market-data credentials (v5.5.3)
+
+The shadow path is fed by `_start_volume_profile()` in `trade_genius.py`,
+which boots `volume_profile.WebsocketBarConsumer` once per process.
+That consumer needs Alpaca market-data credentials. Through v5.5.2 the
+cred lookup only checked the legacy `ALPACA_PAPER_KEY` / `ALPACA_KEY`
+pairs — but prod is provisioned with `VAL_ALPACA_PAPER_KEY` /
+`VAL_ALPACA_PAPER_SECRET`, so the legacy chain silently early-returned,
+left `_ws_consumer = None`, and starved every G4 evaluation of live
+volumes (see `diagnostics/shadow_data_pipeline.md` Issue 2).
+
+**v5.5.3 cred chain.** `_start_volume_profile()` now resolves keys in
+this strict order:
+
+1. `VAL_ALPACA_PAPER_KEY` / `VAL_ALPACA_PAPER_SECRET` (prod default)
+2. `ALPACA_PAPER_KEY` / `ALPACA_PAPER_SECRET` (legacy)
+3. `ALPACA_KEY` / `ALPACA_SECRET` (legacy)
+4. fail → `[SHADOW DISABLED]` log line + `SHADOW_DATA_AVAILABLE = False`
+
+**Market-data-only constraint.** The shadow path may use Val's Alpaca
+paper key **only** for market data: `/v2/stocks/*` (REST bars) and
+`wss://stream.data.alpaca.markets/v2/iex` (live IEX bars via
+`alpaca.data.live.StockDataStream` with `feed=DataFeed.IEX`). Trading
+endpoints — `/v2/positions`, `/v2/account`, `/v2/orders`,
+`/v2/portfolio/history`, any submit-order surface — are forbidden in
+this code path. Shadow positions stay in our own SQLite ledger
+(`shadow_positions`); they never touch Val's Alpaca portfolio. A smoke
+test pins this by asserting that `volume_profile.py` does not import
+`TradingClient` / `TradingStream` and contains none of the forbidden
+URL paths. An inline comment at the cred lookup repeats the constraint
+for any future reader who adds a new fallback.
+
+**Module-level state + dashboard surface.**
+`trade_genius.SHADOW_DATA_AVAILABLE` is a `bool` flipped to `True` only
+after `_ws_consumer.start()` returns successfully. `dashboard_server`
+exposes it as `shadow_data_status: "live" | "disabled_no_creds"` on
+`/api/state`. The Shadow strategies card-head renders a `chip-warn`
+pill `SHADOW DISABLED — no market-data creds` when the status is
+`disabled_no_creds`, hidden otherwise. A silent "no shadow rows today"
+session is therefore no longer ambiguous — the dashboard will say so.
+
 ---
 
 ## 10. Environment variables
@@ -1837,4 +1878,4 @@ clears.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.5.1"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.5.3"`.*
