@@ -801,6 +801,8 @@ session is therefore no longer ambiguous — the dashboard will say so.
 
 **v5.5.4 hotfix.** `WebsocketBarConsumer._on_bar` is `async def` — alpaca-py's `StockDataStream.subscribe_bars()` rejects sync handlers with `handler must be a coroutine function` and crash-loops the consumer. Smoke test `v5.5.4: shadow WS bar handler is a coroutine function` pins this via `inspect.iscoroutinefunction`.
 
+**v5.5.5 observability + watchdog.** v5.5.4 fixed the crash-loop, but in 11.5 hours of prod runtime no `[VOLPROFILE]` line ever fired — the connection was up, `subscribe_bars` had succeeded, and yet no bar was being processed. To make that state diagnosable in seconds rather than half a day, `WebsocketBarConsumer` now (a) counts every successful `_on_bar` call into `self._bars_received`, stamps `self._last_bar_ts`, and records exceptions in `self._last_handler_error` before the warning log; (b) emits `[VOLPROFILE] sample bar #N sym=… vol=… bucket=…` for the first 5 bars at INFO so live data flow shows up immediately on connect, plus a `[VOLPROFILE] heartbeat: total=N` line every 100th bar; (c) runs a `VolProfileWatchdog` daemon thread that polls every 30 s and, while the regular session is open (`session_bucket(now_et)` not None), calls `self._stream.stop()` whenever no bar has arrived for ≥ `VOLPROFILE_WATCHDOG_SEC` seconds (default 120, env-tunable, clamped ≥ 30) — `_run_forever`'s outer loop then reconnects with backoff and the watchdog bumps `_watchdog_reconnects`. The watchdog's own loop body is wrapped in `try/except` so it can never silently die. The same numbers are surfaced over `GET /api/ws_state` (same `spike_session` cookie auth as `/api/state`) as `{available, bars_received, last_bar_ts, last_handler_error, volumes_size_per_symbol, tickers, watchdog_reconnects, silence_threshold_sec}` so an operator can discriminate "WS idle" from "handler error" from "everything fine" without grepping logs. Separately, the bar archive's `iex_volume` field is now sourced from `_ws_consumer.current_volume(ticker, bucket)` whenever the WS path is healthy and `session_bucket(now_et)` resolves — the existing Yahoo `vols[idx]` path stays as fallback. `et_bucket` is now populated from the same `session_bucket()` call (was hardcoded `None` since v5.5.2).
+
 ---
 
 ## 10. Environment variables
@@ -1880,4 +1882,4 @@ clears.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.5.3"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.5.5"`.*

@@ -1127,6 +1127,33 @@ async def h_state(request):
     return web.json_response(snap)
 
 
+# v5.5.5 \u2014 shadow WS observability surface. Mirrors the same
+# session-cookie auth as /api/state. Returns the live WebsocketBarConsumer
+# stats so an operator can discriminate "WS idle" from "handler error"
+# without having to ssh in and grep logs.
+async def h_ws_state(request):
+    from aiohttp import web
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        import trade_genius as _tg
+        consumer = getattr(_tg, "_ws_consumer", None)
+    except Exception as e:
+        return web.json_response(
+            {"available": False, "error": f"{type(e).__name__}: {e}"}
+        )
+    if consumer is None:
+        return web.json_response({"available": False})
+    try:
+        snap = consumer.stats_snapshot()
+    except Exception as e:
+        return web.json_response(
+            {"available": False, "error": f"{type(e).__name__}: {e}"}
+        )
+    snap["available"] = True
+    return web.json_response(snap)
+
+
 # v4.11.0 \u2014 health-pill error endpoint. Returns the per-executor
 # today-only error state used by the dashboard pill. Same session-cookie
 # auth as the rest of the dashboard. Read-only and cheap, so no rate
@@ -2083,6 +2110,7 @@ def _build_app():
     app.router.add_post("/login", h_login)
     app.router.add_post("/logout", h_logout)
     app.router.add_get("/api/state", h_state)
+    app.router.add_get("/api/ws_state", h_ws_state)
     app.router.add_get("/api/shadow_charts", h_shadow_charts)
     app.router.add_get("/api/version", h_version)
     app.router.add_get("/api/trade_log", h_trade_log)
