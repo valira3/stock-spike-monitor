@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.1"
+BOT_VERSION = "5.5.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,17 +93,26 @@ BOT_VERSION = "5.5.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.2 \u2014 bar archive wired.\n"
+    "_v512_archive_minute_bar is\n"
+    "now called from the scan\n"
+    "loop so /data/bars/YYYY-MM-DD\n"
+    "actually fills. 90d retention\n"
+    "runs at EOD. Smoke guard pins\n"
+    "the call site against future\n"
+    "refactor regressions."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.1 \u2014 chart interactivity.\n"
     "Shadow tab charts now show\n"
     "rich tooltips on hover and\n"
     "click-to-isolate a config\n"
     "across all three groups.\n"
     "Click again or X clears it.\n"
-    "No trading-logic change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "No trading-logic change.\n"
+    "\n"
     "v5.4.2 \u2014 doc refresh.\n"
     "ARCHITECTURE.md and\n"
     "trade_genius_algo.pdf\n"
@@ -7425,6 +7434,15 @@ def eod_close():
         v5_lock_all_tracks("eod")
     except Exception:
         logger.exception("v5_lock_all_tracks failed (eod)")
+    # v5.5.2 \u2014 enforce 90-day retention on the bar archive once per
+    # day at EOD. Failure-tolerant; never raises.
+    try:
+        deleted = bar_archive.cleanup_old_dirs(retain_days=90)
+        if deleted:
+            logger.info("[V510-BAR] retention cleanup removed %d dated dirs",
+                        len(deleted))
+    except Exception as e:
+        logger.warning("[V510-BAR] retention cleanup failed: %s", e)
     save_paper_state()
 
 
@@ -8097,6 +8115,53 @@ def scan_loop():
                     _v520_mtm_ticker(ticker, _bars_for_mtm["current_price"])
             except Exception as e:
                 logger.warning("[V520-SHADOW-PNL] mtm hook %s: %s", ticker, e)
+            # v5.5.2 \u2014 persist the most-recently-completed 1m bar to
+            # /data/bars/YYYY-MM-DD/{TICKER}.jsonl so the offline backtest
+            # CLI has something to replay. fetch_1min_bars already cached
+            # by _cycle_bar_cache so this is free; we project the parallel
+            # arrays onto the canonical bar_archive.BAR_SCHEMA_FIELDS dict
+            # before passing. Wrapped in its own try/except: a write
+            # failure must never disrupt the trading scan.
+            try:
+                if _bars_for_mtm:
+                    closes = _bars_for_mtm.get("closes") or []
+                    ts_arr = _bars_for_mtm.get("timestamps") or []
+                    # Prefer the second-to-last entry (last is often the
+                    # currently-forming bar); fall back to the last when
+                    # only one bar is available.
+                    idx = None
+                    if len(closes) >= 2 and closes[-2] is not None:
+                        idx = -2
+                    elif len(closes) >= 1 and closes[-1] is not None:
+                        idx = -1
+                    if idx is not None:
+                        opens = _bars_for_mtm.get("opens") or []
+                        highs = _bars_for_mtm.get("highs") or []
+                        lows = _bars_for_mtm.get("lows") or []
+                        vols = _bars_for_mtm.get("volumes") or []
+                        ts_val = ts_arr[idx] if abs(idx) <= len(ts_arr) else None
+                        try:
+                            ts_iso = (datetime.utcfromtimestamp(int(ts_val))
+                                      .strftime("%Y-%m-%dT%H:%M:%SZ")
+                                      if ts_val is not None else None)
+                        except Exception:
+                            ts_iso = None
+                        canon_bar = {
+                            "ts": ts_iso,
+                            "et_bucket": None,
+                            "open":  opens[idx] if abs(idx) <= len(opens) else None,
+                            "high":  highs[idx] if abs(idx) <= len(highs) else None,
+                            "low":   lows[idx]  if abs(idx) <= len(lows)  else None,
+                            "close": closes[idx],
+                            "iex_volume": vols[idx] if abs(idx) <= len(vols) else None,
+                            "iex_sip_ratio_used": None,
+                            "bid": None,
+                            "ask": None,
+                            "last_trade_price": _bars_for_mtm.get("current_price"),
+                        }
+                        _v512_archive_minute_bar(ticker, canon_bar)
+            except Exception as e:
+                logger.warning("[V510-BAR] archive hook %s: %s", ticker, e)
             # Fast path: if paper already holds this ticker, skip the
             # signal compute. Otherwise run check_entry so the signal
             # decision is made once for the scan cycle.
