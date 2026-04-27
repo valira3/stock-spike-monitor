@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.5")
+    @t("version: BOT_VERSION is 5.5.6")
     def _():
-        assert m.BOT_VERSION == "5.5.5", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.6", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3776,13 +3776,51 @@ def run_local() -> int:
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        # v5.5.5 supersedes; keep the test name pinned to its release
+        # v5.5.6 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.5.5", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.6", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
-        assert m.BOT_VERSION == "5.5.5", m.BOT_VERSION
+        # v5.5.6 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.6", m.BOT_VERSION
+
+    @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
+    def _():
+        assert m.BOT_VERSION == "5.5.6", m.BOT_VERSION
+
+    @t("v5.5.6: previous_session_bucket exists and returns just-closed bucket")
+    def _():
+        import volume_profile as _vp
+        from datetime import datetime as _dt
+        ts = _dt(2026, 4, 27, 10, 27, 30, tzinfo=_vp.ET)
+        assert hasattr(_vp, "previous_session_bucket"), \
+            "previous_session_bucket missing from volume_profile"
+        assert _vp.previous_session_bucket(ts) == "1026", \
+            _vp.previous_session_bucket(ts)
+        # Outside-session edge: the just-closed minute is None.
+        ts_close = _dt(2026, 4, 27, 16, 1, 0, tzinfo=_vp.ET)
+        assert _vp.previous_session_bucket(ts_close) is None
+
+    @t("v5.5.6: shadow paths in trade_genius use previous_session_bucket")
+    def _():
+        # Spot-check the source so a future refactor that reverts to
+        # the racey session_bucket() shows up in CI.
+        from pathlib import Path as _P
+        src = _P(__file__).resolve().parent / "trade_genius.py"
+        text = src.read_text()
+        # _shadow_log_g4 must call previous_session_bucket.
+        idx = text.find("def _shadow_log_g4(")
+        assert idx >= 0
+        body = text[idx:idx + 4000]
+        assert "previous_session_bucket(now_et)" in body, \
+            "_shadow_log_g4 must use previous_session_bucket"
+        # _v512_emit_candidate_log must too.
+        idx2 = text.find("def _v512_emit_candidate_log(")
+        assert idx2 >= 0
+        body2 = text[idx2:idx2 + 4000]
+        assert "previous_session_bucket(now_et)" in body2, \
+            "_v512_emit_candidate_log must use previous_session_bucket"
 
     @t("v5.5.5: WebsocketBarConsumer has _bars_received counter")
     def _():
@@ -3851,21 +3889,22 @@ def run_local() -> int:
         assert "if ws_vol is not None" in src
         assert '"et_bucket": et_bucket,' in src
 
-    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.5.5")
+    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.5.6")
     def _():
+        # Test name pinned to its release; assertion follows BOT_VERSION.
         from pathlib import Path as _P
         arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        assert 'BOT_VERSION = "5.5.5"' in arch, "ARCHITECTURE.md footer not bumped"
+        assert 'BOT_VERSION = "5.5.6"' in arch, "ARCHITECTURE.md footer not bumped"
 
-    @t("v5.5.5: CHANGELOG.md has v5.5.5 heading at top")
+    @t("v5.5.5: CHANGELOG.md has v5.5.6 heading at top")
     def _():
         from pathlib import Path as _P
         cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
-        # The first ## heading should be v5.5.5
-        head_idx = cl.find("\n## v5.5.5")
-        prior = cl.find("\n## v5.5.4")
+        # The first ## heading should be the current version.
+        head_idx = cl.find("\n## v5.5.6")
+        prior = cl.find("\n## v5.5.5")
         assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
-            "v5.5.5 heading must precede v5.5.4 in CHANGELOG"
+            "v5.5.6 heading must precede v5.5.5 in CHANGELOG"
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():
