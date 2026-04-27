@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.6.1"
+BOT_VERSION = "5.7.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,19 +93,20 @@ BOT_VERSION = "5.6.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.6.1 \u2014 data-collection.\n"
-    "Logging-only + writer-only.\n"
-    "Gate logic identical to v5.6.0\n"
-    "(L-P1 / S-P1 / G1-G3-G4).\n"
-    "QQQ now persisted to /data/\n"
-    "bars. OR window backfilled\n"
-    "9:30-9:35 ET via pre-open\n"
-    "writer warm-up + /data/or\n"
-    "snapshot. [V560-GATE] line\n"
-    "richened: 14 fields per eval.\n"
-    "[TRADE_CLOSED], [SKIP] gate\n"
-    "_state, [UNIVERSE] boot line\n"
-    "added. Backtest enablement."
+    "v5.7.0 \u2014 unlimited Titans.\n"
+    "Ten Titans universe: AAPL,\n"
+    "AMZN, AVGO, GOOG, META, MSFT,\n"
+    "NFLX, NVDA, ORCL, TSLA. NFLX\n"
+    "and ORCL are new to default.\n"
+    "Strike 1 unchanged (v5.6.0\n"
+    "L-P1/S-P1). Strike 2+ on the\n"
+    "Titans bypasses R3 if HOD/LOD\n"
+    "break + IndexAVWAP confirm.\n"
+    "Sovereign brake: -$500 daily\n"
+    "loss kill switch. New logs:\n"
+    "[V570-STRIKE], [KILL_SWITCH];\n"
+    "[ENTRY] + [TRADE_CLOSED] gain\n"
+    "strike_num + daily_realized."
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -2411,8 +2412,19 @@ TICKERS_FILE = os.getenv("TICKERS_FILE", "tickers.json")
 TICKERS_PINNED = ("SPY", "QQQ")   # always present, never removable
 TICKERS_DEFAULT = [
     "AAPL", "MSFT", "NVDA", "TSLA", "META",
-    "GOOG", "AMZN", "AVGO", "QBTS", "SPY", "QQQ",
+    "GOOG", "AMZN", "AVGO", "NFLX", "ORCL", "QBTS", "SPY", "QQQ",
 ]
+
+# v5.7.0 \u2014 Ten Titans universe. Used by the Strike 2+ Expansion Gate
+# (HOD/LOD-based unlimited re-entry) below. Alphabetically ordered;
+# exactly 10 tickers. Non-Titan tickers added via [WATCHLIST_ADD]
+# continue to use the v5.6.0 R3 re-hunt cap.
+TITAN_TICKERS: list = [
+    "AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX",
+    "NVDA", "ORCL", "TSLA",
+]
+ENABLE_UNLIMITED_TITAN_STRIKES: bool = True
+DAILY_LOSS_LIMIT_DOLLARS: float = -500.0
 TICKERS_MAX = 40            # sanity upper bound to protect cycle budget
 TICKER_SYM_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,7}$")
 
@@ -4155,17 +4167,20 @@ def _v561_log_entry(
     entry_ts_utc: str,
     entry_price: float,
     qty: int,
+    strike_num: int = 1,
 ) -> None:
     """v5.6.1 \u2014 [ENTRY] line carrying entry_id for pairing.
 
     Strictly additive: this is in addition to the legacy
-    [V510-ENTRY] line. Replay pairs by entry_id.
+    [V510-ENTRY] line. Replay pairs by entry_id. v5.7.0 adds
+    `strike_num` so log readers can count strikes without
+    state-replay.
     """
     logger.info(
         "[ENTRY] ticker=%s side=%s entry_id=%s entry_ts=%s "
-        "entry_price=%.4f qty=%d",
+        "entry_price=%.4f qty=%d strike_num=%d",
         ticker, side, entry_id, entry_ts_utc,
-        float(entry_price), int(qty),
+        float(entry_price), int(qty), int(strike_num),
     )
 
 
@@ -4183,22 +4198,36 @@ def _v561_log_trade_closed(
     pnl_dollars: float,
     pnl_pct: float,
     hold_seconds: int,
+    strike_num: int = 1,
+    daily_realized_pnl: float | None = None,
 ) -> None:
     """v5.6.1 \u2014 [TRADE_CLOSED] lifecycle line.
 
     Emitted on every exit (stop, target, time, eod, manual).
-    Replay pairs to [ENTRY] via entry_id.
+    Replay pairs to [ENTRY] via entry_id. v5.7.0 adds
+    `strike_num` and the running `daily_realized_pnl` so the
+    kill-switch path can be reproduced offline. When
+    `daily_realized_pnl` is omitted the helper folds this trade
+    into the day's running total via `_v570_record_trade_close`
+    so the logged value is always the post-this-close cumulative.
     """
+    if daily_realized_pnl is None:
+        try:
+            daily_realized_pnl = _v570_record_trade_close(pnl_dollars)
+        except Exception:
+            daily_realized_pnl = float(pnl_dollars or 0.0)
     logger.info(
         "[TRADE_CLOSED] ticker=%s side=%s entry_id=%s "
         "entry_ts=%s entry_price=%.4f "
         "exit_ts=%s exit_price=%.4f exit_reason=%s "
-        "qty=%d pnl_dollars=%.4f pnl_pct=%.4f hold_seconds=%d",
+        "qty=%d pnl_dollars=%.4f pnl_pct=%.4f hold_seconds=%d "
+        "strike_num=%d daily_realized_pnl=%.4f",
         ticker, side, entry_id,
         entry_ts_utc, float(entry_price),
         exit_ts_utc, float(exit_price), exit_reason,
         int(qty), float(pnl_dollars), float(pnl_pct),
         int(hold_seconds),
+        int(strike_num), float(daily_realized_pnl),
     )
 
 
@@ -4235,6 +4264,229 @@ def _v561_log_watchlist_remove(ticker: str, reason: str = "manual",
     ts = ts_utc or _utc_now_iso()
     sym = (ticker or "").strip().upper()
     logger.info("[WATCHLIST_REMOVE] ticker=%s ts=%s reason=%s", sym, ts, reason)
+
+
+# ------------------------------------------------------------
+# v5.7.0 \u2014 Unlimited Titan Strikes. HOD/LOD-gated unlimited
+# re-entries on the Ten Titans only. Strike 1 takes the unchanged
+# v5.6.0 L-P1/S-P1 permission gates; Strike 2+ runs the new
+# Expansion Gate (HOD/LOD break + IndexAVWAP). Spec:
+# /home/user/workspace/specs/v5_7_0_unlimited_titan_strikes.md.
+# ------------------------------------------------------------
+
+# Per-ticker per-side per-day strike counter. Reset at session
+# start (9:30 ET). Strike N counts how many entries on this side
+# have already fired today; strike_num for the next attempt is
+# (count + 1).
+_v570_strike_counts: dict = {}   # key=(ticker,side) -> int
+_v570_strike_date: str = ""
+
+# Per-ticker per-day session HOD/LOD tracker. Seeded from the
+# first 9:30 ET print onward. Pre-market values do NOT seed.
+_v570_session_hod: dict = {}     # {ticker: float}
+_v570_session_lod: dict = {}     # {ticker: float}
+_v570_session_date: str = ""
+
+# Daily realized P&L, recomputed cumulatively from [TRADE_CLOSED]
+# emissions. Resets at 9:30 ET next session.
+_v570_daily_realized_pnl: float = 0.0
+_v570_daily_pnl_date: str = ""
+
+# Kill-switch latch. True once realized P&L breaches the floor;
+# resets at the next session boundary alongside the strike
+# counters.
+_v570_kill_switch_latched: bool = False
+_v570_kill_switch_logged: bool = False
+
+
+def _v570_is_titan(ticker: str) -> bool:
+    """Return True iff `ticker` is in the Ten Titans universe."""
+    return (ticker or "").strip().upper() in TITAN_TICKERS
+
+
+def _v570_session_today_str() -> str:
+    """Today as ET date string \u2014 anchors the daily counters."""
+    try:
+        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+    except Exception:
+        now_et = datetime.utcnow()
+    return now_et.strftime("%Y-%m-%d")
+
+
+def _v570_reset_if_new_session() -> None:
+    """Reset strike counters / HOD-LOD / daily P&L / kill switch
+    when a new ET session begins. Idempotent."""
+    global _v570_strike_date, _v570_session_date, _v570_daily_pnl_date
+    global _v570_kill_switch_latched, _v570_kill_switch_logged
+    global _v570_daily_realized_pnl
+    today = _v570_session_today_str()
+    if _v570_strike_date != today:
+        _v570_strike_counts.clear()
+        _v570_strike_date = today
+    if _v570_session_date != today:
+        _v570_session_hod.clear()
+        _v570_session_lod.clear()
+        _v570_session_date = today
+    if _v570_daily_pnl_date != today:
+        _v570_daily_realized_pnl = 0.0
+        _v570_daily_pnl_date = today
+        _v570_kill_switch_latched = False
+        _v570_kill_switch_logged = False
+
+
+def _v570_strike_count(ticker: str, side: str) -> int:
+    """Return the number of entries already filled today on
+    (ticker, side). The next attempt is strike_num = count + 1."""
+    _v570_reset_if_new_session()
+    return int(_v570_strike_counts.get(
+        (ticker.upper(), side.upper()), 0))
+
+
+def _v570_record_entry(ticker: str, side: str) -> int:
+    """Increment the strike counter on a successful ENTRY and
+    return the strike_num that was just consumed."""
+    _v570_reset_if_new_session()
+    key = (ticker.upper(), side.upper())
+    new_n = int(_v570_strike_counts.get(key, 0)) + 1
+    _v570_strike_counts[key] = new_n
+    return new_n
+
+
+def _v570_update_session_hod_lod(
+    ticker: str, current_price: float | None,
+) -> tuple[float | None, float | None, bool, bool]:
+    """Update the per-ticker session HOD/LOD with the current
+    print and return ``(prev_hod, prev_lod, hod_break, lod_break)``.
+
+    `prev_hod`/`prev_lod` are the values BEFORE this tick was
+    folded in (None if this is the first print of the session).
+    `hod_break` is True iff the current price is strictly greater
+    than the prior HOD; mirror for `lod_break`. After the call,
+    the stored HOD/LOD are updated to include this tick.
+
+    Pre-market behavior: this helper does NOT seed before 9:30 ET
+    \u2014 callers gate themselves with `_v570_is_session_open()`.
+    """
+    _v570_reset_if_new_session()
+    sym = (ticker or "").strip().upper()
+    if not sym or current_price is None or current_price <= 0:
+        return None, None, False, False
+    prev_hod = _v570_session_hod.get(sym)
+    prev_lod = _v570_session_lod.get(sym)
+    px = float(current_price)
+    hod_break = (prev_hod is not None and px > prev_hod)
+    lod_break = (prev_lod is not None and px < prev_lod)
+    if prev_hod is None or px > prev_hod:
+        _v570_session_hod[sym] = px
+    if prev_lod is None or px < prev_lod:
+        _v570_session_lod[sym] = px
+    return prev_hod, prev_lod, hod_break, lod_break
+
+
+def _v570_is_session_open() -> bool:
+    """True at/after 9:30 ET on a weekday."""
+    try:
+        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+    except Exception:
+        return True
+    if now_et.weekday() >= 5:
+        return False
+    open_t = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    return now_et >= open_t
+
+
+def _v570_log_strike(
+    *,
+    ticker: str,
+    side: str,
+    ts_utc: str,
+    strike_num: int,
+    is_first: bool,
+    hod: float | None,
+    lod: float | None,
+    hod_break: bool,
+    lod_break: bool,
+    expansion_gate_pass: bool,
+) -> None:
+    """v5.7.0 \u2014 emit a single [V570-STRIKE] line for replay.
+
+    Always emitted on every entry-path evaluation. For Strike 1
+    `expansion_gate_pass` is reported as False (the field is only
+    meaningful on Strike 2+).
+    """
+    logger.info(
+        "[V570-STRIKE] ticker=%s side=%s ts=%s strike_num=%d is_first=%s "
+        "hod=%s lod=%s hod_break=%s lod_break=%s "
+        "expansion_gate_pass=%s",
+        ticker, side, ts_utc, int(strike_num), bool(is_first),
+        _v561_fmt_num(hod), _v561_fmt_num(lod),
+        bool(hod_break), bool(lod_break),
+        bool(expansion_gate_pass),
+    )
+
+
+def _v570_expansion_gate_pass(
+    *,
+    side: str,
+    current_price: float | None,
+    prev_hod: float | None,
+    prev_lod: float | None,
+    index_price: float | None,
+    index_avwap: float | None,
+) -> bool:
+    """v5.7.0 \u2014 Strike 2+ Expansion Gate.
+
+    LONG passes iff price > prior session HOD (strict) AND
+    index_price > index_avwap (strict, same as v5.6.0 G1).
+    SHORT mirrors with strict ``<``. AVWAP None FAILs.
+    """
+    if current_price is None or index_price is None or index_avwap is None:
+        return False
+    if side.upper() == "LONG":
+        if prev_hod is None:
+            return False
+        return (float(current_price) > float(prev_hod)
+                and float(index_price) > float(index_avwap))
+    if prev_lod is None:
+        return False
+    return (float(current_price) < float(prev_lod)
+            and float(index_price) < float(index_avwap))
+
+
+def _v570_log_kill_switch(realized_pnl: float, ts_utc: str) -> None:
+    """v5.7.0 \u2014 single [KILL_SWITCH] line on first breach."""
+    logger.info(
+        "[KILL_SWITCH] reason=daily_loss_limit triggered_at=%s "
+        "realized_pnl=%.4f",
+        ts_utc, float(realized_pnl),
+    )
+
+
+def _v570_record_trade_close(pnl_dollars: float) -> float:
+    """Update cumulative daily realized P&L on a [TRADE_CLOSED]
+    emission and trigger the kill switch the moment the floor is
+    breached. Returns the updated cumulative P&L."""
+    global _v570_daily_realized_pnl
+    global _v570_kill_switch_latched, _v570_kill_switch_logged
+    _v570_reset_if_new_session()
+    _v570_daily_realized_pnl += float(pnl_dollars or 0.0)
+    if (_v570_daily_realized_pnl <= DAILY_LOSS_LIMIT_DOLLARS
+            and not _v570_kill_switch_latched):
+        _v570_kill_switch_latched = True
+        if not _v570_kill_switch_logged:
+            try:
+                _v570_log_kill_switch(
+                    _v570_daily_realized_pnl, _utc_now_iso(),
+                )
+            finally:
+                _v570_kill_switch_logged = True
+    return _v570_daily_realized_pnl
+
+
+def _v570_kill_switch_active() -> bool:
+    """Return True iff the daily-loss kill switch has latched."""
+    _v570_reset_if_new_session()
+    return bool(_v570_kill_switch_latched)
 
 
 def _v561_archive_qqq_bar(bars: dict | None) -> None:
@@ -7249,13 +7501,29 @@ def check_breakout(ticker, side):
         daily_count.clear()
         globals()[cfg.daily_date_attr] = today
 
+    # v5.7.0 \u2014 sovereign daily-loss kill switch. Once latched, every
+    # entry path returns SKIP daily_loss_limit_hit until the next
+    # session boundary. Existing open positions exit on their own
+    # normal exits; this gate only blocks NEW entries.
+    if _v570_kill_switch_active():
+        _v561_log_skip(
+            ticker=ticker, reason="daily_loss_limit_hit",
+            ts_utc=_utc_now_iso(), gate_state=None,
+        )
+        return False, None
+
     # OR data available
     if ticker not in or_dict or ticker not in pdc:
         return False, None
 
-    # Daily entry cap (max 5)
-    if daily_count.get(ticker, 0) >= 5:
-        return False, None
+    # Daily entry cap (max 5). v5.7.0 \u2014 bypassed for Ten Titans
+    # when ENABLE_UNLIMITED_TITAN_STRIKES is True; Titan re-entry
+    # is governed by the Strike 2+ Expansion Gate further down.
+    _v570_titan = _v570_is_titan(ticker)
+    _v570_unlimited = bool(ENABLE_UNLIMITED_TITAN_STRIKES) and _v570_titan
+    if not _v570_unlimited:
+        if daily_count.get(ticker, 0) >= 5:
+            return False, None
 
     # Already in a position on this side for this ticker (paper)
     if ticker in positions_dict:
@@ -7416,31 +7684,82 @@ def check_breakout(ticker, side):
         failed.append("G4")
     reason_str = (",".join(failed) if failed else None)
     _gate_ts = _utc_now_iso()
-    # v5.6.1 D3: single richened [V560-GATE] line carrying every field
-    # replay needs to determine pass/fail without the bar archive.
-    _v561_log_v560_gate_rich(
-        ticker=ticker, side=side_label, ts_utc=_gate_ts,
-        ticker_price=current_price, ticker_avwap=ticker_avwap,
-        index_price=qqq_last, index_avwap=qqq_avwap,
-        or_high=or_high_val, or_low=or_low_val,
-        g1=g1, g3=g3, g4=g4, pass_=pass_flag,
-        reason=reason_str,
+
+    # v5.7.0 \u2014 strike accounting. Update session HOD/LOD with the
+    # current print and figure out which strike this would be.
+    _prev_hod, _prev_lod, _hod_break, _lod_break = (
+        _v570_update_session_hod_lod(ticker, current_price)
     )
-    _gate_state = _v561_gate_state_dict(
-        g1=g1, g3=g3, g4=g4, pass_=pass_flag,
-        ticker_price=current_price, ticker_avwap=ticker_avwap,
-        index_price=qqq_last, index_avwap=qqq_avwap,
-        or_high=or_high_val, or_low=or_low_val,
+    _strike_num = _v570_strike_count(ticker, side_label) + 1
+    _is_first = (_strike_num == 1)
+    _is_titan_unlimited = (
+        bool(ENABLE_UNLIMITED_TITAN_STRIKES) and _v570_is_titan(ticker)
     )
 
-    if not pass_flag:
-        # v5.6.1 D5: [SKIP] line with gate_state JSON for replay false-
-        # negative analysis.
-        _v561_log_skip(
-            ticker=ticker, reason="V560_GATE_BLOCK:%s" % ",".join(failed),
-            ts_utc=_gate_ts, gate_state=_gate_state,
+    if _is_first or not _is_titan_unlimited:
+        # Strike 1 path (or non-Titan / flag off) \u2014 unchanged
+        # v5.6.0 L-P1/S-P1 permission gates apply. [V560-GATE] is
+        # emitted alongside [V570-STRIKE].
+        _v561_log_v560_gate_rich(
+            ticker=ticker, side=side_label, ts_utc=_gate_ts,
+            ticker_price=current_price, ticker_avwap=ticker_avwap,
+            index_price=qqq_last, index_avwap=qqq_avwap,
+            or_high=or_high_val, or_low=or_low_val,
+            g1=g1, g3=g3, g4=g4, pass_=pass_flag,
+            reason=reason_str,
         )
-        return False, None
+        _gate_state = _v561_gate_state_dict(
+            g1=g1, g3=g3, g4=g4, pass_=pass_flag,
+            ticker_price=current_price, ticker_avwap=ticker_avwap,
+            index_price=qqq_last, index_avwap=qqq_avwap,
+            or_high=or_high_val, or_low=or_low_val,
+        )
+        _v570_log_strike(
+            ticker=ticker, side=side_label, ts_utc=_gate_ts,
+            strike_num=_strike_num, is_first=_is_first,
+            hod=_prev_hod, lod=_prev_lod,
+            hod_break=_hod_break, lod_break=_lod_break,
+            expansion_gate_pass=False,
+        )
+        if not pass_flag:
+            _v561_log_skip(
+                ticker=ticker,
+                reason="V560_GATE_BLOCK:%s" % ",".join(failed),
+                ts_utc=_gate_ts, gate_state=_gate_state,
+            )
+            return False, None
+    else:
+        # v5.7.0 Strike 2+ path for Titans. [V560-GATE] is replaced
+        # by the Expansion Gate (HOD/LOD break + IndexAVWAP). Strike
+        # 1 gates do NOT apply on this path \u2014 the original L-P1/S-P1
+        # check fired on the first entry; subsequent strikes ride the
+        # trend continuation signal.
+        _expansion_pass = _v570_expansion_gate_pass(
+            side=side_label,
+            current_price=current_price,
+            prev_hod=_prev_hod, prev_lod=_prev_lod,
+            index_price=qqq_last, index_avwap=qqq_avwap,
+        )
+        _gate_state = _v561_gate_state_dict(
+            g1=None, g3=None, g4=None, pass_=_expansion_pass,
+            ticker_price=current_price, ticker_avwap=ticker_avwap,
+            index_price=qqq_last, index_avwap=qqq_avwap,
+            or_high=or_high_val, or_low=or_low_val,
+        )
+        _v570_log_strike(
+            ticker=ticker, side=side_label, ts_utc=_gate_ts,
+            strike_num=_strike_num, is_first=False,
+            hod=_prev_hod, lod=_prev_lod,
+            hod_break=_hod_break, lod_break=_lod_break,
+            expansion_gate_pass=_expansion_pass,
+        )
+        if not _expansion_pass:
+            _v561_log_skip(
+                ticker=ticker,
+                reason="V570_EXPANSION_BLOCK",
+                ts_utc=_gate_ts, gate_state=_gate_state,
+            )
+            return False, None
 
     # Tiger 2.0 DI gate: DI+(long) / DI-(short) must exceed threshold.
     di_plus, di_minus = tiger_di(ticker)
@@ -7596,6 +7915,14 @@ def execute_breakout(ticker, current_price, side):
 
     _entry_ts_utc = _utc_now_iso()
     _entry_id = _v561_compose_entry_id(ticker, _entry_ts_utc)
+    # v5.7.0 \u2014 record this entry against the per-ticker per-side
+    # strike counter and stash strike_num on the position so the
+    # paired [TRADE_CLOSED] can echo it back.
+    _v570_side_label = "LONG" if cfg.side.is_long else "SHORT"
+    try:
+        _v570_strike_num = _v570_record_entry(ticker, _v570_side_label)
+    except Exception:
+        _v570_strike_num = 1
     pos = {
         "entry_price": current_price,
         "shares": shares,
@@ -7607,6 +7934,7 @@ def execute_breakout(ticker, current_price, side):
         "entry_time": now_str,
         "entry_ts_utc": _entry_ts_utc,
         "entry_id": _entry_id,
+        "strike_num": _v570_strike_num,
         "date": now_date,
         "pdc": pdc.get(ticker, 0),
     }
@@ -7619,11 +7947,12 @@ def execute_breakout(ticker, current_price, side):
     try:
         _v561_log_entry(
             ticker=ticker,
-            side=("LONG" if cfg.side.is_long else "SHORT"),
+            side=_v570_side_label,
             entry_id=_entry_id,
             entry_ts_utc=_entry_ts_utc,
             entry_price=float(current_price),
             qty=int(shares),
+            strike_num=int(_v570_strike_num),
         )
     except Exception as _e:
         logger.warning("[V561-ENTRY] emit error %s: %s", ticker, _e)
@@ -7908,6 +8237,7 @@ def close_breakout(ticker, price, side, reason="STOP"):
             pnl_dollars=float(pnl_val),
             pnl_pct=float(pnl_pct),
             hold_seconds=int(_hold_s) if _hold_s is not None else 0,
+            strike_num=int(pos.get("strike_num") or 1),
         )
     except Exception as _e:
         logger.warning("[V561-TRADE-CLOSED] emit error %s: %s", ticker, _e)
