@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.6.0"
+BOT_VERSION = "5.6.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,19 +93,19 @@ BOT_VERSION = "5.6.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.6.0 \u2014 unified AVWAP gates.\n"
-    "L-P1/S-P1 collapse to G1/G3/G4\n"
-    "all anchored on session-open\n"
-    "AVWAP. G1=Index vs IndexAVWAP,\n"
-    "G3=Ticker vs TickerAVWAP, G4=\n"
-    "Ticker vs OR_High (long) or\n"
-    "OR_Low (short). G2 retired.\n"
-    "Index = QQQ only. Strict >/<;\n"
-    "equality FAILs. Pre-9:35 OR or\n"
-    "AVWAP None FAILs deterministic\n"
-    "ally. Forensic [V560-GATE]\n"
-    "lines on every eval. Hard-cut\n"
-    "to prod, no shadow rollout."
+    "v5.6.1 \u2014 data-collection.\n"
+    "Logging-only + writer-only.\n"
+    "Gate logic identical to v5.6.0\n"
+    "(L-P1 / S-P1 / G1-G3-G4).\n"
+    "QQQ now persisted to /data/\n"
+    "bars. OR window backfilled\n"
+    "9:30-9:35 ET via pre-open\n"
+    "writer warm-up + /data/or\n"
+    "snapshot. [V560-GATE] line\n"
+    "richened: 14 fields per eval.\n"
+    "[TRADE_CLOSED], [SKIP] gate\n"
+    "_state, [UNIVERSE] boot line\n"
+    "added. Backtest enablement."
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -3854,6 +3854,11 @@ def add_ticker(sym: str) -> dict:
     metrics = _fill_metrics_for_ticker(t)
     logger.info("ticker added: %s (pdc=%s or=%s)",
                 t, metrics["pdc"], metrics["or"])
+    # v5.6.1 D6 \u2014 [WATCHLIST_ADD] hook for replay universe-reconstruction.
+    try:
+        _v561_log_watchlist_add(t, reason="manual")
+    except Exception:
+        pass
     return {"ok": True, "added": True, "ticker": t, "metrics": metrics}
 
 
@@ -3879,6 +3884,11 @@ def remove_ticker(sym: str) -> dict:
     # Leave or_high/or_low/pdc entries behind — any still-open
     # position on this ticker relies on them to manage exits.
     logger.info("ticker removed: %s", t)
+    # v5.6.1 D6 \u2014 [WATCHLIST_REMOVE] hook for replay reconstruction.
+    try:
+        _v561_log_watchlist_remove(t, reason="manual")
+    except Exception:
+        pass
     open_long = t in positions
     open_short = t in short_positions
     return {"ok": True, "removed": True, "ticker": t,
@@ -3989,6 +3999,389 @@ def _v560_log_gate(ticker: str, side: str, gate: str, value, threshold, result: 
         "[V560-GATE] ticker=%s side=%s gate=%s value=%s threshold=%s result=%s",
         ticker, side, gate, val_s, thr_s, bool(result),
     )
+
+
+# ------------------------------------------------------------
+# v5.6.1 \u2014 Data-collection helpers (logging + writer extensions).
+# Pure observers; do not affect gate logic. See spec
+# /home/user/workspace/specs/v5_6_1_data_collection_improvements.md.
+# ------------------------------------------------------------
+V561_INDEX_TICKER = "QQQ"
+V561_OR_DIR_DEFAULT = "/data/or"
+
+
+def _v561_fmt_num(v) -> str:
+    """Render a float/None as a stable token for log lines.
+
+    None -> ``null`` (matches the gate_state JSON null semantics).
+    Numbers -> 4dp string with no trailing whitespace.
+    """
+    if v is None:
+        return "null"
+    try:
+        return "%.4f" % float(v)
+    except (TypeError, ValueError):
+        return "null"
+
+
+def _v561_gate_state_dict(
+    *,
+    g1: bool | None,
+    g3: bool | None,
+    g4: bool | None,
+    pass_: bool | None,
+    ticker_price: float | None,
+    ticker_avwap: float | None,
+    index_price: float | None,
+    index_avwap: float | None,
+    or_high: float | None,
+    or_low: float | None,
+) -> dict:
+    """Build the canonical gate_state payload used by both [V560-GATE]
+    and [SKIP] gate_state= lines. Booleans are coerced; floats kept None
+    when unknown so JSON encodes them as null."""
+    def _fb(x):
+        return None if x is None else bool(x)
+
+    def _ff(x):
+        if x is None:
+            return None
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "g1": _fb(g1),
+        "g3": _fb(g3),
+        "g4": _fb(g4),
+        "pass": _fb(pass_),
+        "ticker_price": _ff(ticker_price),
+        "ticker_avwap": _ff(ticker_avwap),
+        "index_price": _ff(index_price),
+        "index_avwap": _ff(index_avwap),
+        "or_high": _ff(or_high),
+        "or_low": _ff(or_low),
+    }
+
+
+def _v561_log_v560_gate_rich(
+    *,
+    ticker: str,
+    side: str,
+    ts_utc: str,
+    ticker_price,
+    ticker_avwap,
+    index_price,
+    index_avwap,
+    or_high,
+    or_low,
+    g1: bool,
+    g3: bool,
+    g4: bool,
+    pass_: bool,
+    reason: str | None,
+) -> None:
+    """v5.6.1 \u2014 single richened [V560-GATE] line.
+
+    Carries every field a replay needs to pair a SKIP/PASS with the
+    underlying numbers without consulting the bar archive.
+    """
+    logger.info(
+        "[V560-GATE] ticker=%s side=%s ts=%s "
+        "ticker_price=%s ticker_avwap=%s "
+        "index_price=%s index_avwap=%s "
+        "or_high=%s or_low=%s "
+        "g1=%s g3=%s g4=%s pass=%s reason=%s",
+        ticker, side, ts_utc,
+        _v561_fmt_num(ticker_price), _v561_fmt_num(ticker_avwap),
+        _v561_fmt_num(index_price), _v561_fmt_num(index_avwap),
+        _v561_fmt_num(or_high), _v561_fmt_num(or_low),
+        bool(g1), bool(g3), bool(g4), bool(pass_),
+        ("null" if reason is None else str(reason)),
+    )
+
+
+def _v561_log_skip(
+    *,
+    ticker: str,
+    reason: str,
+    ts_utc: str,
+    gate_state: dict | None,
+) -> None:
+    """v5.6.1 \u2014 unified [SKIP] line with gate_state.
+
+    `gate_state=None` -> emits literal ``gate_state=null`` (used for
+    pre-gate skips like cooldown / loss-cap / data-not-ready). When the
+    SKIP fires after gates have evaluated, pass the dict from
+    `_v561_gate_state_dict`.
+    """
+    if gate_state is None:
+        gs_json = "null"
+    else:
+        try:
+            gs_json = json.dumps(gate_state, separators=(",", ":"),
+                                 sort_keys=True)
+        except (TypeError, ValueError):
+            gs_json = "null"
+    logger.info(
+        "[SKIP] ticker=%s reason=%s ts=%s gate_state=%s",
+        ticker, reason, ts_utc, gs_json,
+    )
+
+
+def _v561_compose_entry_id(ticker: str, entry_ts_utc: str) -> str:
+    """Deterministic entry id: ``<TICKER>-<YYYYMMDDHHMMSS>``.
+
+    The compact ts uses the entry_ts_utc as-is, stripping non-digits;
+    if entry_ts_utc is missing/unparseable, falls back to the current
+    UTC clock so the id is always populated.
+    """
+    sym = (ticker or "").strip().upper() or "UNK"
+    raw = entry_ts_utc or ""
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) < 14:
+        digits = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    else:
+        digits = digits[:14]
+    return f"{sym}-{digits}"
+
+
+def _v561_log_entry(
+    *,
+    ticker: str,
+    side: str,
+    entry_id: str,
+    entry_ts_utc: str,
+    entry_price: float,
+    qty: int,
+) -> None:
+    """v5.6.1 \u2014 [ENTRY] line carrying entry_id for pairing.
+
+    Strictly additive: this is in addition to the legacy
+    [V510-ENTRY] line. Replay pairs by entry_id.
+    """
+    logger.info(
+        "[ENTRY] ticker=%s side=%s entry_id=%s entry_ts=%s "
+        "entry_price=%.4f qty=%d",
+        ticker, side, entry_id, entry_ts_utc,
+        float(entry_price), int(qty),
+    )
+
+
+def _v561_log_trade_closed(
+    *,
+    ticker: str,
+    side: str,
+    entry_id: str,
+    entry_ts_utc: str,
+    entry_price: float,
+    exit_ts_utc: str,
+    exit_price: float,
+    exit_reason: str,
+    qty: int,
+    pnl_dollars: float,
+    pnl_pct: float,
+    hold_seconds: int,
+) -> None:
+    """v5.6.1 \u2014 [TRADE_CLOSED] lifecycle line.
+
+    Emitted on every exit (stop, target, time, eod, manual).
+    Replay pairs to [ENTRY] via entry_id.
+    """
+    logger.info(
+        "[TRADE_CLOSED] ticker=%s side=%s entry_id=%s "
+        "entry_ts=%s entry_price=%.4f "
+        "exit_ts=%s exit_price=%.4f exit_reason=%s "
+        "qty=%d pnl_dollars=%.4f pnl_pct=%.4f hold_seconds=%d",
+        ticker, side, entry_id,
+        entry_ts_utc, float(entry_price),
+        exit_ts_utc, float(exit_price), exit_reason,
+        int(qty), float(pnl_dollars), float(pnl_pct),
+        int(hold_seconds),
+    )
+
+
+def _v561_log_universe(tickers: list | tuple) -> None:
+    """v5.6.1 \u2014 boot-time [UNIVERSE] one-shot.
+
+    Tickers are uppercased, deduped, and sorted alphabetically for a
+    stable line. Emitted once at module init.
+    """
+    seen, out = set(), []
+    for t in tickers or []:
+        s = (t or "").strip().upper()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    out.sort()
+    logger.info("[UNIVERSE] tickers=%s", ",".join(out))
+
+
+def _v561_log_watchlist_add(ticker: str, reason: str = "manual",
+                             ts_utc: str | None = None) -> None:
+    """v5.6.1 \u2014 [WATCHLIST_ADD] hook. Currently called manually; the
+    static-universe path doesn't mutate at runtime, but the hook is
+    wired so future oomph/news-driven adds emit a structured line.
+    """
+    ts = ts_utc or _utc_now_iso()
+    sym = (ticker or "").strip().upper()
+    logger.info("[WATCHLIST_ADD] ticker=%s ts=%s reason=%s", sym, ts, reason)
+
+
+def _v561_log_watchlist_remove(ticker: str, reason: str = "manual",
+                                ts_utc: str | None = None) -> None:
+    """v5.6.1 \u2014 [WATCHLIST_REMOVE] hook. Mirror of WATCHLIST_ADD."""
+    ts = ts_utc or _utc_now_iso()
+    sym = (ticker or "").strip().upper()
+    logger.info("[WATCHLIST_REMOVE] ticker=%s ts=%s reason=%s", sym, ts, reason)
+
+
+def _v561_archive_qqq_bar(bars: dict | None) -> None:
+    """v5.6.1 \u2014 D1: T-off the QQQ stream into /data/bars/<UTC>/QQQ.jsonl.
+
+    `bars` is the dict returned by fetch_1min_bars("QQQ"); we project
+    the last-closed bar onto the canonical bar_archive schema. Failure-
+    tolerant: a bad QQQ snapshot must never disrupt the trading scan.
+    """
+    try:
+        if not bars:
+            return
+        closes = bars.get("closes") or []
+        ts_arr = bars.get("timestamps") or []
+        idx = None
+        if len(closes) >= 2 and closes[-2] is not None:
+            idx = -2
+        elif len(closes) >= 1 and closes[-1] is not None:
+            idx = -1
+        if idx is None:
+            return
+        opens = bars.get("opens") or []
+        highs = bars.get("highs") or []
+        lows = bars.get("lows") or []
+        vols = bars.get("volumes") or []
+        ts_val = ts_arr[idx] if abs(idx) <= len(ts_arr) else None
+        try:
+            ts_iso = (datetime.utcfromtimestamp(int(ts_val))
+                      .strftime("%Y-%m-%dT%H:%M:%SZ")
+                      if ts_val is not None else None)
+        except Exception:
+            ts_iso = None
+        et_bucket: str | None = None
+        try:
+            now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+            et_bucket = volume_profile.session_bucket(now_et)
+        except Exception:
+            et_bucket = None
+        canon_bar = {
+            "ts": ts_iso,
+            "et_bucket": et_bucket,
+            "open":  opens[idx] if abs(idx) <= len(opens) else None,
+            "high":  highs[idx] if abs(idx) <= len(highs) else None,
+            "low":   lows[idx]  if abs(idx) <= len(lows)  else None,
+            "close": closes[idx],
+            "iex_volume": vols[idx] if abs(idx) <= len(vols) else None,
+            "iex_sip_ratio_used": None,
+            "bid": None,
+            "ask": None,
+            "last_trade_price": bars.get("current_price"),
+        }
+        bar_archive.write_bar(
+            V561_INDEX_TICKER, canon_bar,
+            base_dir=bar_archive.DEFAULT_BASE_DIR,
+        )
+    except Exception as e:
+        logger.warning("[V561-QQQ-BAR] archive error: %s", e)
+
+
+def _v561_persist_or_snapshot(
+    ticker: str,
+    *,
+    base_dir: str | os.PathLike = V561_OR_DIR_DEFAULT,
+    today_utc: str | None = None,
+) -> str | None:
+    """v5.6.1 \u2014 D2: persist OR_High / OR_Low to
+    `/data/or/<UTC-date>/<TICKER>.json` once per ticker per session.
+
+    Returns the file path on success, or None on failure (logged at
+    warning level, never raised). Reads `or_high[ticker]` / `or_low[ticker]`
+    from the live module-level dicts; if either is None the snapshot is
+    still written with null values so replay can detect the gap.
+    """
+    try:
+        sym = (ticker or "").strip().upper()
+        if not sym:
+            return None
+        day = today_utc or datetime.utcnow().strftime("%Y-%m-%d")
+        dir_path = Path(base_dir) / day
+        dir_path.mkdir(parents=True, exist_ok=True)
+        file_path = dir_path / f"{sym}.json"
+        payload = {
+            "ticker": sym,
+            "or_high": or_high.get(sym),
+            "or_low": or_low.get(sym),
+            "computed_at_utc": _utc_now_iso(),
+        }
+        tmp = str(file_path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+        os.replace(tmp, file_path)
+        return str(file_path)
+    except Exception as e:
+        logger.warning("[V561-OR-SNAP] persist %s failed: %s", ticker, e)
+        return None
+
+
+# Set tracking which tickers have had their OR snapshot persisted today.
+# Keyed by `<UTC-date>:<TICKER>` so a session boundary auto-resets.
+_v561_or_snap_taken: set = set()
+
+
+def _v561_maybe_persist_or_snapshots(now_et=None) -> int:
+    """v5.6.1 \u2014 idempotent OR-snapshot dispatcher. Run once per scan
+    cycle from inside scan_loop; persists any ticker whose snapshot is
+    not yet taken today and whose OR is seeded.
+
+    Returns the number of new files written this call. After 9:35 ET
+    every tracked ticker should have a row; pre-9:35 nothing fires.
+    """
+    try:
+        if now_et is None:
+            now_et = _now_et()
+        # Only fire after the OR window has closed (9:35 ET +).
+        if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35):
+            return 0
+        today_utc = datetime.utcnow().strftime("%Y-%m-%d")
+        # Universe = TRADE_TICKERS plus the index ticker (QQQ) since v5.6.1
+        # archives QQQ bars and replay needs the matching OR snapshot to
+        # validate the index G1 gate (QQQ has no OR_High/Low gate but the
+        # snapshot is harmless and keeps the schema uniform).
+        universe = list(TRADE_TICKERS)
+        if V561_INDEX_TICKER not in universe:
+            universe.append(V561_INDEX_TICKER)
+        n = 0
+        for sym in universe:
+            key = f"{today_utc}:{sym}"
+            if key in _v561_or_snap_taken:
+                continue
+            if sym not in or_high and sym not in or_low:
+                # OR not yet seeded \u2014 try again next cycle.
+                continue
+            path = _v561_persist_or_snapshot(sym, today_utc=today_utc)
+            if path:
+                _v561_or_snap_taken.add(key)
+                n += 1
+        return n
+    except Exception as e:
+        logger.warning("[V561-OR-SNAP] dispatcher error: %s", e)
+        return 0
+
+
+def _v561_reset_or_snap_state() -> None:
+    """Reset the per-session OR-snapshot dedup set. Called from
+    reset_daily_state() so a new RTH session re-emits snapshots."""
+    _v561_or_snap_taken.clear()
+
 
 # Positions
 positions: dict = {}
@@ -6875,12 +7268,18 @@ def check_breakout(ticker, side):
         if elapsed < 900:
             mins_left = int((900 - elapsed) / 60) + 1
             logger.info("SKIP %s [COOLDOWN] %dm left", ticker, mins_left)
+            _v561_log_skip(ticker=ticker,
+                           reason="COOLDOWN:%dm" % mins_left,
+                           ts_utc=_utc_now_iso(), gate_state=None)
             return False, None
 
     # Per-ticker daily loss cap: skip if down > $50 on this ticker today (both sides)
     ticker_pnl_today = _ticker_today_realized_pnl(ticker)
     if ticker_pnl_today < -50.0:
         logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
+        _v561_log_skip(ticker=ticker,
+                       reason="LOSS_CAP:%.2f" % ticker_pnl_today,
+                       ts_utc=_utc_now_iso(), gate_state=None)
         return False, None
 
     # Fetch current bar (Yahoo)
@@ -7000,40 +7399,48 @@ def check_breakout(ticker, side):
         g4 = v5.gate_g4_short(current_price, or_low_val)
         g4_threshold = or_low_val
 
-    # Forensic logging \u2014 [V560-GATE] one line per gate eval.
+    # Forensic logging \u2014 legacy per-gate [V560-GATE] lines retained
+    # so existing parsers keep working alongside the v5.6.1 richened
+    # single-line emission below.
     _v560_log_gate(ticker, side_label, "G1", qqq_last, qqq_avwap, g1)
     _v560_log_gate(ticker, side_label, "G3", current_price, ticker_avwap, g3)
     _v560_log_gate(ticker, side_label, "G4", current_price, g4_threshold, g4)
 
-    if not (g1 and g3 and g4):
-        failed = []
-        if not g1:
-            failed.append("G1")
-        if not g3:
-            failed.append("G3")
-        if not g4:
-            failed.append("G4")
-        logger.info(
-            "[V560-GATE][BLOCK] ticker=%s side=%s failed=%s "
-            "qqq_last=%s qqq_avwap=%s ticker_last=%.4f ticker_avwap=%s "
-            "or_high=%s or_low=%s",
-            ticker, side_label, ",".join(failed),
-            "None" if qqq_last is None else "%.4f" % qqq_last,
-            "None" if qqq_avwap is None else "%.4f" % qqq_avwap,
-            current_price,
-            "None" if ticker_avwap is None else "%.4f" % ticker_avwap,
-            "None" if or_high_val is None else "%.4f" % or_high_val,
-            "None" if or_low_val is None else "%.4f" % or_low_val,
+    pass_flag = bool(g1 and g3 and g4)
+    failed = []
+    if not g1:
+        failed.append("G1")
+    if not g3:
+        failed.append("G3")
+    if not g4:
+        failed.append("G4")
+    reason_str = (",".join(failed) if failed else None)
+    _gate_ts = _utc_now_iso()
+    # v5.6.1 D3: single richened [V560-GATE] line carrying every field
+    # replay needs to determine pass/fail without the bar archive.
+    _v561_log_v560_gate_rich(
+        ticker=ticker, side=side_label, ts_utc=_gate_ts,
+        ticker_price=current_price, ticker_avwap=ticker_avwap,
+        index_price=qqq_last, index_avwap=qqq_avwap,
+        or_high=or_high_val, or_low=or_low_val,
+        g1=g1, g3=g3, g4=g4, pass_=pass_flag,
+        reason=reason_str,
+    )
+    _gate_state = _v561_gate_state_dict(
+        g1=g1, g3=g3, g4=g4, pass_=pass_flag,
+        ticker_price=current_price, ticker_avwap=ticker_avwap,
+        index_price=qqq_last, index_avwap=qqq_avwap,
+        or_high=or_high_val, or_low=or_low_val,
+    )
+
+    if not pass_flag:
+        # v5.6.1 D5: [SKIP] line with gate_state JSON for replay false-
+        # negative analysis.
+        _v561_log_skip(
+            ticker=ticker, reason="V560_GATE_BLOCK:%s" % ",".join(failed),
+            ts_utc=_gate_ts, gate_state=_gate_state,
         )
         return False, None
-
-    logger.info(
-        "[V560-GATE][PASS] ticker=%s side=%s "
-        "qqq_last=%.4f qqq_avwap=%.4f ticker_last=%.4f ticker_avwap=%.4f "
-        "or_threshold=%.4f",
-        ticker, side_label,
-        qqq_last, qqq_avwap, current_price, ticker_avwap, g4_threshold,
-    )
 
     # Tiger 2.0 DI gate: DI+(long) / DI-(short) must exceed threshold.
     di_plus, di_minus = tiger_di(ticker)
@@ -7043,11 +7450,18 @@ def check_breakout(ticker, side):
             "SKIP %s [DI WARMUP] need %d+1 5m bars",
             ticker, DI_PERIOD,
         )
+        _v561_log_skip(ticker=ticker, reason="DI_WARMUP",
+                       ts_utc=_utc_now_iso(), gate_state=_gate_state)
         return False, None
     if di_value < TIGER_V2_DI_THRESHOLD:
         logger.info(
             "SKIP %s [%s] %.1f < %d",
             ticker, cfg.di_sign_label, di_value, TIGER_V2_DI_THRESHOLD,
+        )
+        _v561_log_skip(
+            ticker=ticker,
+            reason="DI_BELOW_THRESHOLD:%.1f<%d" % (di_value, TIGER_V2_DI_THRESHOLD),
+            ts_utc=_utc_now_iso(), gate_state=_gate_state,
         )
         return False, None
 
@@ -7065,6 +7479,11 @@ def check_breakout(ticker, side):
                 ticker, current_price, cfg.or_side_short_label,
                 or_edge_val, extension_pct,
             )
+            _v561_log_skip(
+                ticker=ticker,
+                reason="EXTENDED:%.2f%%" % extension_pct,
+                ts_utc=_utc_now_iso(), gate_state=_gate_state,
+            )
             return False, None
 
     # v4.3.0 \u2014 Stop-cap rejection. If the final stop would need to
@@ -7077,6 +7496,10 @@ def check_breakout(ticker, side):
             logger.info(
                 "SKIP %s [STOP_CAPPED] baseline=$%.2f requested_cap=$%.2f",
                 ticker, _base_stop, _sp,
+            )
+            _v561_log_skip(
+                ticker=ticker, reason="STOP_CAPPED",
+                ts_utc=_utc_now_iso(), gate_state=_gate_state,
             )
             return False, None
 
@@ -7171,6 +7594,8 @@ def execute_breakout(ticker, current_price, side):
     now_hhmm = _now_cdt().strftime("%H:%M CDT")
     now_date = now_et.strftime("%Y-%m-%d")
 
+    _entry_ts_utc = _utc_now_iso()
+    _entry_id = _v561_compose_entry_id(ticker, _entry_ts_utc)
     pos = {
         "entry_price": current_price,
         "shares": shares,
@@ -7180,7 +7605,8 @@ def execute_breakout(ticker, current_price, side):
         cfg.trail_peak_attr: current_price,
         "entry_count": entry_num,
         "entry_time": now_str,
-        "entry_ts_utc": _utc_now_iso(),
+        "entry_ts_utc": _entry_ts_utc,
+        "entry_id": _entry_id,
         "date": now_date,
         "pdc": pdc.get(ticker, 0),
     }
@@ -7189,6 +7615,18 @@ def execute_breakout(ticker, current_price, side):
         pos["trail_stop"] = None
     positions_dict[ticker] = pos
     daily_count[ticker] = entry_num
+    # v5.6.1 D4 \u2014 [ENTRY] line with entry_id for replay pairing.
+    try:
+        _v561_log_entry(
+            ticker=ticker,
+            side=("LONG" if cfg.side.is_long else "SHORT"),
+            entry_id=_entry_id,
+            entry_ts_utc=_entry_ts_utc,
+            entry_price=float(current_price),
+            qty=int(shares),
+        )
+    except Exception as _e:
+        logger.warning("[V561-ENTRY] emit error %s: %s", ticker, _e)
 
     # Paper accounting: long debits, short credits.
     paper_cash += cfg.entry_cash_delta(shares, current_price)
@@ -7437,6 +7875,42 @@ def close_breakout(ticker, price, side, reason="STOP"):
     paper_log("%s %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
               % (cfg.paper_log_close_verb, ticker, shares, price,
                  reason, pnl_val, pnl_pct))
+
+    # v5.6.1 D4 \u2014 [TRADE_CLOSED] lifecycle line. Pairs to [ENTRY] via
+    # entry_id. Reason maps the legacy short token to the spec'd
+    # canonical exit_reason vocabulary (stop|target|time|eod|manual).
+    try:
+        _entry_id_close = pos.get("entry_id") or _v561_compose_entry_id(
+            ticker, pos.get("entry_ts_utc") or "")
+        _reason_lc = str(reason or "").lower()
+        if "trail" in _reason_lc or "stop" in _reason_lc:
+            _exit_reason = "stop"
+        elif "target" in _reason_lc or "tp" in _reason_lc:
+            _exit_reason = "target"
+        elif "eod" in _reason_lc or "close" in _reason_lc:
+            _exit_reason = "eod"
+        elif "time" in _reason_lc or "shield" in _reason_lc:
+            _exit_reason = "time"
+        elif "manual" in _reason_lc:
+            _exit_reason = "manual"
+        else:
+            _exit_reason = _reason_lc or "manual"
+        _v561_log_trade_closed(
+            ticker=ticker,
+            side=("LONG" if cfg.side.is_long else "SHORT"),
+            entry_id=_entry_id_close,
+            entry_ts_utc=(pos.get("entry_ts_utc") or entry_time_str or ""),
+            entry_price=float(entry_price or 0.0),
+            exit_ts_utc=_utc_now_iso(),
+            exit_price=float(price),
+            exit_reason=_exit_reason,
+            qty=int(shares),
+            pnl_dollars=float(pnl_val),
+            pnl_pct=float(pnl_pct),
+            hold_seconds=int(_hold_s) if _hold_s is not None else 0,
+        )
+    except Exception as _e:
+        logger.warning("[V561-TRADE-CLOSED] emit error %s: %s", ticker, _e)
 
     exit_emoji_glyph = "\u2705" if pnl_val >= 0 else "\u274c"
     entry_total_val = round(entry_price * shares, 2)
@@ -8379,6 +8853,69 @@ def scan_loop():
     if is_weekend:
         return
 
+    # v5.6.1 D2(a) \u2014 pre-9:35 ET writer warm-up. Between 9:29:30 ET and
+    # 9:35:00 ET we run a stripped-down archive pass so the 9:30:00 first
+    # tick is captured (closes the OR window backfill gap). We skip the
+    # full entry/manage scan (gates aren't active until 9:35) but persist
+    # the 1m bar for QQQ + every TRADE_TICKER. Failure-tolerant.
+    _pre_open_window = (
+        now_et.hour == 9 and 29 <= now_et.minute < 35
+        and (now_et.minute > 29 or now_et.second >= 30)
+    )
+    if before_open and _pre_open_window:
+        try:
+            _clear_cycle_bar_cache()
+            _qqq_pre = fetch_1min_bars(V561_INDEX_TICKER)
+            if _qqq_pre:
+                _v561_archive_qqq_bar(_qqq_pre)
+            for _t_pre in TRADE_TICKERS:
+                try:
+                    _b_pre = fetch_1min_bars(_t_pre)
+                    if not _b_pre:
+                        continue
+                    _closes_pre = _b_pre.get("closes") or []
+                    _ts_arr_pre = _b_pre.get("timestamps") or []
+                    _idx_pre = None
+                    if len(_closes_pre) >= 2 and _closes_pre[-2] is not None:
+                        _idx_pre = -2
+                    elif len(_closes_pre) >= 1 and _closes_pre[-1] is not None:
+                        _idx_pre = -1
+                    if _idx_pre is None:
+                        continue
+                    _opens_pre = _b_pre.get("opens") or []
+                    _highs_pre = _b_pre.get("highs") or []
+                    _lows_pre = _b_pre.get("lows") or []
+                    _vols_pre = _b_pre.get("volumes") or []
+                    _ts_val_pre = (_ts_arr_pre[_idx_pre]
+                                   if abs(_idx_pre) <= len(_ts_arr_pre)
+                                   else None)
+                    try:
+                        _ts_iso_pre = (datetime.utcfromtimestamp(int(_ts_val_pre))
+                                       .strftime("%Y-%m-%dT%H:%M:%SZ")
+                                       if _ts_val_pre is not None else None)
+                    except Exception:
+                        _ts_iso_pre = None
+                    _bar_pre = {
+                        "ts": _ts_iso_pre,
+                        "et_bucket": None,
+                        "open":  _opens_pre[_idx_pre] if abs(_idx_pre) <= len(_opens_pre) else None,
+                        "high":  _highs_pre[_idx_pre] if abs(_idx_pre) <= len(_highs_pre) else None,
+                        "low":   _lows_pre[_idx_pre]  if abs(_idx_pre) <= len(_lows_pre)  else None,
+                        "close": _closes_pre[_idx_pre],
+                        "iex_volume": _vols_pre[_idx_pre] if abs(_idx_pre) <= len(_vols_pre) else None,
+                        "iex_sip_ratio_used": None,
+                        "bid": None,
+                        "ask": None,
+                        "last_trade_price": _b_pre.get("current_price"),
+                    }
+                    _v512_archive_minute_bar(_t_pre, _bar_pre)
+                except Exception as _e_pre:
+                    logger.warning("[V561-PREOPEN-BAR] %s: %s", _t_pre, _e_pre)
+        except Exception as _e_pre_outer:
+            logger.warning("[V561-PREOPEN] cycle hook error: %s", _e_pre_outer)
+        # Pre-open: archive only, no entry/manage. Return after archive.
+        return
+
     # Skip outside market hours (09:35 - 15:55 ET)
     if before_open or after_close:
         return
@@ -8433,6 +8970,24 @@ def scan_loop():
                         "The Lords have left.  %s"
                     ) % (spy_cur_r, spy_pdc_r, qqq_cur_r, qqq_pdc_r, now_hhmm_r)
                 send_telegram(regime_msg)
+
+    # v5.6.1 D1 \u2014 archive QQQ 1m bar each cycle so the index ticker is
+    # persisted alongside the 8 trade tickers. Failure-tolerant; never
+    # blocks the scan.
+    try:
+        _qqq_bars_archive = fetch_1min_bars(V561_INDEX_TICKER)
+        if _qqq_bars_archive:
+            _v561_archive_qqq_bar(_qqq_bars_archive)
+    except Exception as _e:
+        logger.warning("[V561-QQQ-BAR] cycle hook error: %s", _e)
+
+    # v5.6.1 D2 \u2014 persist OR_High/OR_Low snapshots once per ticker per
+    # session, after 9:35 ET when the OR window is closed and the gate
+    # code's or_high/or_low dicts are seeded.
+    try:
+        _v561_maybe_persist_or_snapshots(now_et=now_et)
+    except Exception as _e:
+        logger.warning("[V561-OR-SNAP] cycle hook error: %s", _e)
 
     # Always manage existing positions (stops/trails) even when paused
     try:
@@ -8682,6 +9237,12 @@ def reset_daily_state():
         paper_trades.clear()
         daily_entry_date = today
         daily_short_entry_date = today
+        # v5.6.1 \u2014 OR-snapshot dedup keyed by UTC date; clear at the
+        # session boundary so tomorrow re-emits.
+        try:
+            _v561_reset_or_snap_state()
+        except Exception:
+            logger.exception("reset_daily_state: _v561 OR snap reset failed")
         # v5.0.0 \u2014 fresh session: clear all v5 state-machine tracks so
         # tomorrow's first ARMED transition gets a clean tab. C-R5 / C-R6
         # only LOCK; only the daily reset clears.
@@ -11355,6 +11916,18 @@ def startup_catchup():
 # right TICKERS list (e.g. if a newly-added QBTS already has an
 # open paper position persisted from a previous session).
 _init_tickers()
+
+# v5.6.1 D6 \u2014 one-shot [UNIVERSE] boot line. Comma-separated alpha-
+# sorted tickers including the QQQ index ticker (now archived under
+# /data/bars/<UTC>/QQQ.jsonl). Replay reconstructs the active universe
+# from this single line instead of deduping GATE_EVAL log records.
+try:
+    _v561_universe_boot = list(TRADE_TICKERS)
+    if V561_INDEX_TICKER not in _v561_universe_boot:
+        _v561_universe_boot.append(V561_INDEX_TICKER)
+    _v561_log_universe(_v561_universe_boot)
+except Exception as _ue:
+    logger.warning("[V561-UNIVERSE] boot emit failed: %s", _ue)
 
 load_paper_state()
 
