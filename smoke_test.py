@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.2")
+    @t("version: BOT_VERSION is 5.5.3")
     def _():
-        assert m.BOT_VERSION == "5.5.2", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.3", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3774,9 +3774,61 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.5.2: BOT_VERSION bumped to 5.5.2")
+    @t("v5.5.3: BOT_VERSION bumped to 5.5.3")
     def _():
-        assert m.BOT_VERSION == "5.5.2", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.3", m.BOT_VERSION
+
+    @t("v5.5.3: shadow WS uses market-data feed (DataFeed.IEX), not trading WS")
+    def _():
+        # The shadow consumer reads bars over alpaca-py's StockDataStream
+        # with feed=DataFeed.IEX, which connects to
+        # wss://stream.data.alpaca.markets/v2/iex \u2014 a market-data
+        # endpoint. This guards against future refactors that swap in a
+        # trading-stream client (which would expose /v2/positions etc.
+        # over the same auth and break the constraint that the shadow
+        # path is market-data-only).
+        from pathlib import Path as _P
+        vp_text = (_P(__file__).parent / "volume_profile.py").read_text(
+            encoding="utf-8")
+        # 1. The live consumer imports StockDataStream (market-data WS).
+        assert "from alpaca.data.live import StockDataStream" in vp_text, \
+            "shadow consumer must use alpaca.data.live.StockDataStream"
+        # 2. It pins feed=DataFeed.IEX (market-data feed name).
+        assert "DataFeed.IEX" in vp_text, \
+            "shadow consumer must pin DataFeed.IEX market-data feed"
+        # 3. No trading-API endpoints are referenced from this module.
+        for forbidden in ("/v2/positions", "/v2/account", "/v2/orders",
+                          "/v2/portfolio", "TradingClient",
+                          "TradingStream"):
+            assert forbidden not in vp_text, (
+                f"forbidden trading-API ref {forbidden!r} found in "
+                "volume_profile.py \u2014 shadow path must be market-"
+                "data-only.")
+
+    @t("v5.5.3: _start_volume_profile prefers VAL_ALPACA_PAPER_KEY over legacy")
+    def _():
+        # Source-level guard: the cred chain must consult VAL_* first.
+        from pathlib import Path as _P
+        tg_text = (_P(__file__).parent / "trade_genius.py").read_text(
+            encoding="utf-8")
+        # Locate the function body.
+        i = tg_text.find("def _start_volume_profile")
+        assert i != -1, "_start_volume_profile not found"
+        body = tg_text[i:i + 4000]
+        # VAL_ALPACA_PAPER_KEY must appear before ALPACA_PAPER_KEY in the
+        # cred-resolution block.
+        i_val = body.find("VAL_ALPACA_PAPER_KEY")
+        i_legacy = body.find("ALPACA_PAPER_KEY")
+        # i_legacy will match the VAL_ prefix too; advance past it.
+        i_legacy_real = body.find('"ALPACA_PAPER_KEY"')
+        assert i_val != -1, "VAL_ALPACA_PAPER_KEY missing from cred chain"
+        assert i_legacy_real != -1, \
+            "legacy ALPACA_PAPER_KEY fallback missing"
+        assert i_val < i_legacy_real, \
+            "VAL_ALPACA_PAPER_KEY must be checked before legacy key"
+        # SHADOW DISABLED log line must be in place of the old soft warn.
+        assert "[SHADOW DISABLED]" in body, \
+            "missing [SHADOW DISABLED] log line"
 
     # ---- v5.4.0 offline backtest CLI ----
     @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")

@@ -804,6 +804,15 @@ def snapshot() -> dict[str, Any]:
             "shadow_pnl": _shadow_pnl_snapshot(
                 m, today, realized, unreal_sum,
             ),
+            # v5.5.3 \u2014 expose whether the shadow market-data feed
+            # bound to credentials at startup. Frontend renders a
+            # SHADOW DISABLED banner when this is "disabled_no_creds"
+            # so a silent-no-rows session is no longer ambiguous.
+            "shadow_data_status": (
+                "live"
+                if bool(getattr(m, "SHADOW_DATA_AVAILABLE", False))
+                else "disabled_no_creds"
+            ),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)
