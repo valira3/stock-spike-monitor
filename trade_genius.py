@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.6"
+BOT_VERSION = "5.5.7"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,20 +93,24 @@ BOT_VERSION = "5.5.6"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.5.6 \u2014 shadow race fix.\n"
-    "Shadow gate now reads the\n"
-    "just-closed minute bucket, not\n"
-    "the still-forming one. The IEX\n"
-    "WS only delivers a bar at the\n"
-    "END of each minute, so reading\n"
-    "the current bucket always lost\n"
-    "the race and forced cur_v=0\n"
-    "(every shadow verdict BLOCK).\n"
+    "v5.5.7 \u2014 Main tab fix.\n"
+    "Today's trades summary now\n"
+    "counts SHORT/COVER as opens\n"
+    "and closes (was 0/0 before).\n"
+    "COVER row tail shows P&L too.\n"
+    "Main tab gains a LAST SIGNAL\n"
+    "card scoped to the paper book.\n"
     "No trading-decision change."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v5.5.6 \u2014 shadow race fix.\n"
+    "Shadow gate now reads the\n"
+    "just-closed minute bucket,\n"
+    "not the still-forming one.\n"
+    "No trading-decision change.\n"
+    "\n"
     "v5.5.5 \u2014 WS observability.\n"
     "Shadow WS now counts every\n"
     "bar, logs first 5 + every\n"
@@ -889,6 +893,13 @@ logger = logging.getLogger(__name__)
 _signal_listeners: list = []
 _signal_listeners_lock = threading.Lock()
 
+# v5.5.7 \u2014 Most recent signal emitted by the main paper book. The
+# per-executor TradeGeniusBase already keeps its own ``last_signal`` for
+# the Val/Gene exec panels; this module-level mirror is the equivalent
+# for the Main (internal paper) tab so the dashboard's /api/state can
+# surface it the same way as the executor payloads.
+last_signal: "dict | None" = None
+
 
 def register_signal_listener(fn):
     """Subscribe a callable fn(event: dict) -> None to the signal bus.
@@ -922,6 +933,21 @@ def _emit_signal(event: dict) -> None:
     Async fire-and-forget: main's paper book never blocks on Alpaca.
     Per-listener exceptions are logged but never break the bus.
     """
+    # v5.5.7 \u2014 capture the latest event for the Main-tab LAST SIGNAL
+    # card before dispatching, so even a listener-less moment (or a
+    # crashing listener) still updates what the dashboard renders.
+    global last_signal
+    try:
+        last_signal = {
+            "kind": event.get("kind", ""),
+            "ticker": event.get("ticker", ""),
+            "price": float(event.get("price", 0.0) or 0.0),
+            "reason": event.get("reason", ""),
+            "timestamp_utc": event.get("timestamp_utc", _utc_now_iso()),
+        }
+    except Exception:
+        last_signal = None
+
     # Snapshot the listener list so a concurrent register/unregister can't
     # mutate what we iterate. Held under the same lock as registration.
     with _signal_listeners_lock:
