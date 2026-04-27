@@ -972,8 +972,33 @@
       // v5.5.10 \u2014 /api/state has no top-level as_of field; the
       // canonical timestamp is server_time, with shadow_pnl.as_of as
       // a fallback. The pre-fix s.as_of read was always undefined.
+      // v5.5.11 hotfix \u2014 _scFmtTs lives in a sibling IIFE and is
+      // not reachable from here; calling it threw ReferenceError and
+      // the wrapping try/catch in renderShadowPnL swallowed it, so
+      // this cell stayed on the placeholder. Inline a self-contained
+      // formatter to keep the fix local to IIFE-1.
       const asof = (s && (s.server_time || (s.shadow_pnl && s.shadow_pnl.as_of))) || null;
-      asofEl.textContent = asof ? _scFmtTs(asof) : "\u2014";
+      let formatted = "\u2014";
+      if (asof) {
+        try {
+          const d = new Date(asof);
+          if (!isNaN(d.getTime())) {
+            const opts = {
+              timeZone: "America/New_York", month: "2-digit", day: "2-digit",
+              hour: "2-digit", minute: "2-digit", hour12: false,
+            };
+            const parts = new Intl.DateTimeFormat("en-US", opts)
+              .formatToParts(d).reduce((a, p) => (a[p.type] = p.value, a), {});
+            formatted = parts.month + "/" + parts.day + " "
+                      + parts.hour + ":" + parts.minute + " ET";
+          } else {
+            formatted = String(asof);
+          }
+        } catch (e) {
+          formatted = String(asof);
+        }
+      }
+      asofEl.textContent = formatted;
     }
   }
 

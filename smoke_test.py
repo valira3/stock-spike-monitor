@@ -349,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.10")
+    @t("version: BOT_VERSION is 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.5.10", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.11", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3786,38 +3786,105 @@ def run_local() -> int:
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        # v5.5.10 supersedes; keep the test name pinned to its release
+        # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
-        # v5.5.10 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+        # v5.5.11 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
-        # v5.5.10 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+        # v5.5.11 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
-        # v5.5.10 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+        # v5.5.11 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
-        # v5.5.10 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+        # v5.5.11 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
-        # v5.5.10 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+        # v5.5.11 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+
+    @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
+    def _():
+        assert m.BOT_VERSION == "5.5.11", m.BOT_VERSION
+
+    @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
+    def _():
+        # v5.5.10 shipped a correct s.server_time read but the AS OF cell
+        # still rendered the em-dash placeholder on prod because
+        # _shadowSummaryBand (in IIFE-1) called _scFmtTs (defined in
+        # IIFE-2 of dashboard_static/app.js). IIFE locals are not
+        # visible to sibling IIFEs and _scFmtTs is not bridged to
+        # window, so the call threw ReferenceError at runtime and was
+        # swallowed by the try/catch wrapping the call site. v5.5.11
+        # inlines a self-contained formatter inside _shadowSummaryBand
+        # so the cell renders without crossing the IIFE boundary.
+        # Pin: parse the function body and assert _scFmtTs( does NOT
+        # appear inside it. _scFmtTs in IIFE-2 is left untouched (other
+        # callers use it), so this guard is body-scoped, not file-scoped.
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent
+              / "dashboard_static" / "app.js").read_text()
+        idx = js.find("function _shadowSummaryBand(")
+        assert idx != -1, "_shadowSummaryBand declaration missing from app.js"
+        brace_open = js.find("{", idx)
+        assert brace_open != -1, "_shadowSummaryBand body opening brace missing"
+        depth = 0
+        i = brace_open
+        end = None
+        n = len(js)
+        while i < n:
+            ch = js[i]
+            if ch == "/" and i + 1 < n and js[i + 1] == "/":
+                nl = js.find("\n", i)
+                i = n if nl == -1 else nl + 1
+                continue
+            if ch == "/" and i + 1 < n and js[i + 1] == "*":
+                close = js.find("*/", i + 2)
+                i = n if close == -1 else close + 2
+                continue
+            if ch in ('"', "'", "`"):
+                quote = ch
+                j = i + 1
+                while j < n:
+                    if js[j] == "\\":
+                        j += 2
+                        continue
+                    if js[j] == quote:
+                        break
+                    j += 1
+                i = j + 1
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+            i += 1
+        assert end is not None, "_shadowSummaryBand body close brace not found"
+        body = js[brace_open : end + 1]
+        assert "_scFmtTs(" not in body, (
+            "v5.5.11 regression: _shadowSummaryBand still calls "
+            "_scFmtTs, which lives in a sibling IIFE and throws "
+            "ReferenceError at runtime"
+        )
 
     @t("v5.5.9: shadow tab unrealized bar chart fallback present in app.js")
     def _():
