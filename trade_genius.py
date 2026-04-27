@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.10"
+BOT_VERSION = "5.5.11"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,6 +93,24 @@ BOT_VERSION = "5.5.10"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.11 \u2014 AS OF hotfix.\n"
+    "Shadow tab AS OF cell stayed\n"
+    "blank on v5.5.10 because the\n"
+    "_scFmtTs formatter lives in a\n"
+    "sibling IIFE and was not\n"
+    "reachable from the summary\n"
+    "band; the ReferenceError got\n"
+    "swallowed by a try/catch.\n"
+    "Inlined a self-contained ET\n"
+    "formatter inside\n"
+    "_shadowSummaryBand so the\n"
+    "cell now renders a real\n"
+    "MM/DD HH:MM ET stamp.\n"
+    "No trading-decision change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.10 \u2014 persist positions.\n"
     "Executor self.positions now\n"
     "rehydrates from state.db at\n"
@@ -106,11 +124,8 @@ CURRENT_MAIN_NOTE = (
     "stale local \u2192 quiet heal.\n"
     "Shadow tab AS OF now reads\n"
     "server_time (was blank).\n"
-    "No trading-decision change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "No trading-decision change.\n"
+    "\n"
     "v5.5.9 \u2014 shadow charts polish.\n"
     "Shadow tab now shows a per-\n"
     "ticker unrealized bar chart\n"
