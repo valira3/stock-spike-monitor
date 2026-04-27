@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.11"
+BOT_VERSION = "5.6.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,6 +93,23 @@ BOT_VERSION = "5.5.11"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.6.0 \u2014 unified AVWAP gates.\n"
+    "L-P1/S-P1 collapse to G1/G3/G4\n"
+    "all anchored on session-open\n"
+    "AVWAP. G1=Index vs IndexAVWAP,\n"
+    "G3=Ticker vs TickerAVWAP, G4=\n"
+    "Ticker vs OR_High (long) or\n"
+    "OR_Low (short). G2 retired.\n"
+    "Index = QQQ only. Strict >/<;\n"
+    "equality FAILs. Pre-9:35 OR or\n"
+    "AVWAP None FAILs deterministic\n"
+    "ally. Forensic [V560-GATE]\n"
+    "lines on every eval. Hard-cut\n"
+    "to prod, no shadow rollout."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.11 \u2014 AS OF hotfix.\n"
     "Shadow tab AS OF cell stayed\n"
     "blank on v5.5.10 because the\n"
@@ -106,11 +123,8 @@ CURRENT_MAIN_NOTE = (
     "_shadowSummaryBand so the\n"
     "cell now renders a real\n"
     "MM/DD HH:MM ET stamp.\n"
-    "No trading-decision change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "No trading-decision change.\n"
+    "\n"
     "v5.5.10 \u2014 persist positions.\n"
     "Executor self.positions now\n"
     "rehydrates from state.db at\n"
@@ -3902,12 +3916,79 @@ or_collected_date: str = ""         # date string, prevents re-collection
 # visible without tailing Railway logs.
 or_stale_skip_count: dict = {}      # ticker -> int
 
-# AVWAP state — REMOVED in v3.4.34. All AVWAP code paths (entry
-# gates, regime alert, breadth observer) were migrated to PDC to
-# match the v3.4.28 Sovereign Regime Shield ejector. Persisted
-# state keys ("avwap_data", "avwap_last_ts") are silently ignored
-# by load_paper_state for backwards compatibility with pre-v3.4.34
-# state files — no migration required.
+# AVWAP state \u2014 REMOVED in v3.4.34, RESTORED in v5.6.0 with new
+# semantics. Session-open anchored AVWAP (anchor at 09:30 ET regular
+# session open; reset daily; recomputed on every 1m bar close from the
+# bar archive). Used by the v5.6.0 unified permission gates:
+#   L-P1: G1 = Index.Last > Index.Opening_AVWAP
+#         G3 = Ticker.Last > Ticker.Opening_AVWAP
+#   S-P1: mirrored with strict <.
+# AVWAP None (no bars yet) -> G1/G3 fail deterministically. Persisted
+# state keys ("avwap_data", "avwap_last_ts") from pre-v3.4.34 are still
+# silently ignored by load_paper_state for backwards compatibility.
+# The v5.6.0 AVWAP is recomputed on the fly from the per-cycle 1m bar
+# cache, no persistence required.
+
+
+def _opening_avwap(ticker: str) -> float | None:
+    """Session-open anchored VWAP for ``ticker``.
+
+    Anchors at 09:30 ET regular-session open and includes every closed
+    1m bar from then through the most recent close. Returns None if:
+      - no bars are available yet (very first 9:30 second), OR
+      - cumulative volume is zero across the included bars.
+
+    Strict-pass gate semantics (v5.6.0): callers must treat None as
+    a hard FAIL (do not enter on insufficient data).
+    """
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return None
+    timestamps = bars.get("timestamps") or []
+    highs = bars.get("highs") or []
+    lows = bars.get("lows") or []
+    closes = bars.get("closes") or []
+    volumes = bars.get("volumes") or []
+    if not timestamps:
+        return None
+
+    now_et = _now_et()
+    session_open_et = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    open_epoch = session_open_et.timestamp()
+
+    num = 0.0
+    den = 0.0
+    n = min(len(timestamps), len(highs), len(lows), len(closes), len(volumes))
+    for i in range(n):
+        ts = timestamps[i]
+        if ts is None or ts < open_epoch:
+            continue
+        h = highs[i]
+        l = lows[i]
+        c = closes[i]
+        v = volumes[i]
+        if h is None or l is None or c is None or v is None or v <= 0:
+            continue
+        tp = (float(h) + float(l) + float(c)) / 3.0
+        num += tp * float(v)
+        den += float(v)
+    if den <= 0.0:
+        return None
+    return num / den
+
+
+def _v560_log_gate(ticker: str, side: str, gate: str, value, threshold, result: bool) -> None:
+    """v5.6.0 forensic gate-eval logger. One line per G1/G3/G4 evaluation.
+
+    Saturday's report parses these to validate the unified-AVWAP gate set.
+    Format: ``[V560-GATE] ticker=AAPL side=LONG gate=G1 value=425.10 threshold=425.04 result=True``.
+    """
+    val_s = "None" if value is None else "%.4f" % float(value)
+    thr_s = "None" if threshold is None else "%.4f" % float(threshold)
+    logger.info(
+        "[V560-GATE] ticker=%s side=%s gate=%s value=%s threshold=%s result=%s",
+        ticker, side, gate, val_s, thr_s, bool(result),
+    )
 
 # Positions
 positions: dict = {}
@@ -6890,35 +6971,69 @@ def check_breakout(ticker, side):
                 )
             return False, None
 
-    # 2-bar break confirmation
+    # 2-bar break confirmation (kept as breakout precondition; the v5.6.0
+    # G4 strict comparator below is the *permission* gate.)
     if not price_break:
         return False, None
 
-    # Polarity: current price vs PDC (side-aware)
-    if not polarity_ok:
-        return False, None
-
-    # Index anchor: SPY/QQQ vs PDC (side-aware)
-    spy_bars = fetch_1min_bars("SPY")
+    # v5.6.0 \u2014 Unified AVWAP permission gates (G1/G3/G4). G2 retired.
+    # Index = QQQ only. Strict comparators (equality FAILs). AVWAP None
+    # or pre-9:35 OR FAILs deterministically.
     qqq_bars = fetch_1min_bars("QQQ")
-    if not spy_bars or not qqq_bars:
+    if not qqq_bars:
         return False, None
-
-    spy_pdc_val = pdc.get("SPY")
-    qqq_pdc_val = pdc.get("QQQ")
-    if not spy_pdc_val or not qqq_pdc_val or spy_pdc_val <= 0 or qqq_pdc_val <= 0:
-        return False, None
+    qqq_last = qqq_bars.get("current_price")
+    qqq_avwap = _opening_avwap("QQQ")
+    ticker_avwap = _opening_avwap(ticker)
+    or_high_val = or_high.get(ticker)
+    or_low_val = or_low.get(ticker)
+    side_label = "LONG" if cfg.side.is_long else "SHORT"
 
     if cfg.side.is_long:
-        if spy_bars["current_price"] <= spy_pdc_val:
-            return False, None
-        if qqq_bars["current_price"] <= qqq_pdc_val:
-            return False, None
+        g1 = v5.gate_g1_long(qqq_last, qqq_avwap)
+        g3 = v5.gate_g3_long(current_price, ticker_avwap)
+        g4 = v5.gate_g4_long(current_price, or_high_val)
+        g4_threshold = or_high_val
     else:
-        if spy_bars["current_price"] >= spy_pdc_val:
-            return False, None
-        if qqq_bars["current_price"] >= qqq_pdc_val:
-            return False, None
+        g1 = v5.gate_g1_short(qqq_last, qqq_avwap)
+        g3 = v5.gate_g3_short(current_price, ticker_avwap)
+        g4 = v5.gate_g4_short(current_price, or_low_val)
+        g4_threshold = or_low_val
+
+    # Forensic logging \u2014 [V560-GATE] one line per gate eval.
+    _v560_log_gate(ticker, side_label, "G1", qqq_last, qqq_avwap, g1)
+    _v560_log_gate(ticker, side_label, "G3", current_price, ticker_avwap, g3)
+    _v560_log_gate(ticker, side_label, "G4", current_price, g4_threshold, g4)
+
+    if not (g1 and g3 and g4):
+        failed = []
+        if not g1:
+            failed.append("G1")
+        if not g3:
+            failed.append("G3")
+        if not g4:
+            failed.append("G4")
+        logger.info(
+            "[V560-GATE][BLOCK] ticker=%s side=%s failed=%s "
+            "qqq_last=%s qqq_avwap=%s ticker_last=%.4f ticker_avwap=%s "
+            "or_high=%s or_low=%s",
+            ticker, side_label, ",".join(failed),
+            "None" if qqq_last is None else "%.4f" % qqq_last,
+            "None" if qqq_avwap is None else "%.4f" % qqq_avwap,
+            current_price,
+            "None" if ticker_avwap is None else "%.4f" % ticker_avwap,
+            "None" if or_high_val is None else "%.4f" % or_high_val,
+            "None" if or_low_val is None else "%.4f" % or_low_val,
+        )
+        return False, None
+
+    logger.info(
+        "[V560-GATE][PASS] ticker=%s side=%s "
+        "qqq_last=%.4f qqq_avwap=%.4f ticker_last=%.4f ticker_avwap=%.4f "
+        "or_threshold=%.4f",
+        ticker, side_label,
+        qqq_last, qqq_avwap, current_price, ticker_avwap, g4_threshold,
+    )
 
     # Tiger 2.0 DI gate: DI+(long) / DI-(short) must exceed threshold.
     di_plus, di_minus = tiger_di(ticker)
@@ -11282,6 +11397,10 @@ except Exception as _dash_err:
 logger.info(
     "=== STARTUP SUMMARY === v%s | paper: $%.2f cash, %d pos, %d trades",
     BOT_VERSION, paper_cash, len(positions), len(trade_history),
+)
+# v5.6.0 \u2014 confirms the unified-AVWAP gate set is active on every boot.
+logger.info(
+    "[V560] Unified AVWAP gates: L-P1 (G1/G3/G4), S-P1 (G1/G3/G4)"
 )
 
 # Smoke-test guard — lets smoke_test.py import this module without booting

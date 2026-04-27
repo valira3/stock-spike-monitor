@@ -1760,20 +1760,68 @@ News / halt flags (needs Polygon or Benzinga subscription); L2 /
 order-book snapshots; tick-level trades; `VOL_GATE_ENFORCE=1`; new
 env-driven configs beyond v5.1.1; adaptive runtime config switching.
 
-## 19. Long permission gates (G1..G4)
+## 19. Permission gates — v5.6.0 unified AVWAP set (Healing/Limping Bison)
 
-### 19.1 Four-light gate set (v5.1.0+)
+### 19.1 Three-gate unified AVWAP set (v5.6.0+)
 
-| Gate | Light name      | Source                          | Status through v5.4.1 |
-|------|-----------------|---------------------------------|-----------------------|
-| G1   | Index Alpha     | Tiger/Buffalo §6.2              | enforced              |
-| G2   | Ticker Alpha    | Tiger/Buffalo §6.2              | enforced              |
-| G3   | 5m OR Structure | Tiger/Buffalo §6.2              | enforced              |
-| G4   | Volume          | `volume_profile.evaluate_g4(_config)` | **shadow only — `VOL_GATE_ENFORCE=0` through v5.4.1; flips in a future PR** |
+v5.6.0 retires the legacy 4-gate L-P1/S-P1 permission scan and ships a
+unified 3-gate system, symmetric for longs and shorts. **G2 is deleted.**
+The bot used to read SPY-vs-PDC as the second index gate; v5.6.0 collapses
+the index leg to **QQQ only** and re-anchors every comparator on the
+session-open AVWAP. Hard-cut to prod, no shadow rollout, no feature flag.
 
-Through v5.4.1 the bot logs G4 every minute via `_shadow_log_g4` but
-does not block any entry on it. The short-side gates read the same
-baseline; no short-specific code change.
+| Gate | Light name | Long (L-P1)                                  | Short (S-P1)                                 |
+|------|------------|----------------------------------------------|----------------------------------------------|
+| G1   | Index      | `Index.Last > Index.Opening_AVWAP`           | `Index.Last < Index.Opening_AVWAP`           |
+| ~~G2~~ | retired  | (was SPY-vs-PDC; deleted in v5.6.0)          | (was SPY-vs-PDC; deleted in v5.6.0)          |
+| G3   | Ticker     | `Ticker.Last > Ticker.Opening_AVWAP`         | `Ticker.Last < Ticker.Opening_AVWAP`         |
+| G4   | Structure  | `Ticker.Last > Ticker.OR_High`               | `Ticker.Last < Ticker.OR_Low`                |
+
+**Conventions (locked):**
+
+- **Index = QQQ only.** SPY no longer participates in the permission scan.
+- **AVWAP** = session-open anchored VWAP. Anchor at 09:30 ET regular-session
+  open, reset daily, recomputed on every 1m bar close from the per-cycle
+  bar cache. Implementation: `trade_genius._opening_avwap(ticker)`.
+- **OR window** = 5-minute opening range, 09:30–09:35 ET (existing).
+- **Comparators**: strict `>` and `<`. Equality (price == AVWAP, price ==
+  OR_High/Low) returns **FAIL**. Boundary blocks the gate.
+- **Pre-9:35 ET** (OR not yet defined): G4 returns `False` deterministically.
+- **AVWAP None** (no bars yet, or zero cumulative volume): G1/G3 return
+  `False` deterministically.
+
+**Per-direction predicates** (strict, fail-closed) live in
+`tiger_buffalo_v5.py`: `gate_g1_long`, `gate_g1_short`, `gate_g3_long`,
+`gate_g3_short`, `gate_g4_long`, `gate_g4_short`. The aggregate helpers
+`gates_pass_long(qqq_last, qqq_opening_avwap, ticker_last,
+ticker_opening_avwap, ticker_or_high)` and the symmetric
+`gates_pass_short(..., ticker_or_low)` AND the three predicates together;
+both have 5-arg signatures (smoke-guarded).
+
+**Forensic logging.** Every G1/G3/G4 evaluation emits a
+`[V560-GATE] ticker=X side=LONG|SHORT gate=G1|G3|G4 value=… threshold=…
+result=True|False` line. Blocked entries also log
+`[V560-GATE][BLOCK] ticker=X side=… failed=G1,G3,…` and passing entries
+log `[V560-GATE][PASS] ticker=X side=… qqq_last=… qqq_avwap=…
+ticker_last=… ticker_avwap=… or_threshold=…`. Saturday's report parses
+these lines to validate the cut. Existing `[V510-CAND]` and
+`[V510-SHADOW]` lines are unchanged (the volume_profile shadow grid is
+orthogonal to the permission scan and continues to evaluate the same
+TICKER+QQQ_70_100 / TICKER_ONLY_70 / QQQ_ONLY_100 / GEMINI_A_110_85
+configs on top of the new permission gates).
+
+**Startup confirmation.** Every boot logs
+`[V560] Unified AVWAP gates: L-P1 (G1/G3/G4), S-P1 (G1/G3/G4)` so the
+operator can confirm at a glance that the new gate set is wired.
+
+### 19.2 Volume-profile G4 shadow grid (legacy v5.1.0+ surface, unchanged)
+
+The volume-profile `evaluate_g4(_config)` shadow grid is independent of
+the permission scan. It continues to log the four hard-coded shadow
+configs (`TICKER+QQQ_70_100`, `TICKER_ONLY_70`, `QQQ_ONLY_100`,
+`GEMINI_A_110_85`) plus `BUCKET_FILL_100` to `[V510-SHADOW][CFG=…]` on
+every entry consideration. No volume gate is enforced (`VOL_GATE_ENFORCE`
+remains the default 0); v5.6.0 does not change the volume-profile path.
 
 ---
 
@@ -1946,4 +1994,4 @@ clears.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.5.6"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.6.0"`.*

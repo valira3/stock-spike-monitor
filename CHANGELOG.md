@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.6.0 — 2026-04-27 — Unified AVWAP Permission Gates (Healing/Limping Bison)
+
+Hard-cut to prod: replaces the legacy 4-gate L-P1/S-P1 permission set with a unified 3-gate AVWAP-anchored system, symmetric for longs and shorts. Ships before Tuesday Apr 28 RTH open. No feature flag, no shadow rollout — every entry consideration after this deploy uses the new gates.
+
+**New permission semantics (locked by Val 2026-04-27 from Gene's spec):**
+
+- **L-P1 (long, ALL three must PASS):**
+  - **G1 (Index)**: `Index.Last > Index.Opening_AVWAP`
+  - **G3 (Ticker)**: `Ticker.Last > Ticker.Opening_AVWAP`
+  - **G4 (Structure)**: `Ticker.Last > Ticker.OR_High`
+- **S-P1 (short, ALL three must PASS):**
+  - **G1 (Index)**: `Index.Last < Index.Opening_AVWAP`
+  - **G3 (Ticker)**: `Ticker.Last < Ticker.Opening_AVWAP`
+  - **G4 (Structure)**: `Ticker.Last < Ticker.OR_Low`
+
+**Conventions (locked):**
+
+- **Index = QQQ only** (single-index gate; SPY no longer participates in the permission scan).
+- **G2 retired entirely** — the old SPY-vs-PDC index gate is deleted from the permission scan and from `tiger_buffalo_v5.gates_pass_*`.
+- **AVWAP** = session-open anchored VWAP. Anchor at 09:30 ET regular-session open, reset daily, recomputed on every 1-minute bar close from the per-cycle 1m bar cache. Implementation: `trade_genius._opening_avwap(ticker)`. Cumulative-volume zero or no bars yet ⇒ returns `None`.
+- **OR window** = 5-minute opening range, 09:30–09:35 ET (existing convention preserved).
+- **Comparators**: strict `>` and `<`. Equality (price == AVWAP, price == OR_High/Low) returns FAIL. Boundary blocks the gate.
+- **Pre-9:35 ET (OR not yet defined)**: G4 returns `False` deterministically (no raise, no `None` return). Documented in `tiger_buffalo_v5.gate_g4_long`/`gate_g4_short`.
+- **AVWAP None**: G1/G3 return `False` deterministically. No entries before AVWAP has at least one bar of cumulative volume.
+
+**Code changes:**
+
+- `tiger_buffalo_v5.py`: deleted the 7-arg `gates_pass_long`/`gates_pass_short` (which required SPY/PDC inputs). New 5-arg signatures: `gates_pass_long(qqq_last, qqq_opening_avwap, ticker_last, ticker_opening_avwap, ticker_or_high)` and the symmetric short. Six new strict per-gate predicates (`gate_g1_long`, `gate_g1_short`, `gate_g3_long`, `gate_g3_short`, `gate_g4_long`, `gate_g4_short`) so callers and tests can evaluate each leg independently.
+- `trade_genius.py`: new `_opening_avwap(ticker)` helper computes session-open AVWAP from `fetch_1min_bars` (`(high+low+close)/3 × volume` summed since the 09:30 ET cutoff, divided by cumulative volume). Returns `None` when no bars are in the window or cumulative volume is zero. New `_v560_log_gate(ticker, side, gate, value, threshold, result)` forensic logger emits one `[V560-GATE]` line per G1/G3/G4 evaluation with all four fields plus the boolean result — Saturday's report parses these to validate the change. `check_breakout` now reads QQQ AVWAP, ticker AVWAP, and `or_high`/`or_low` and dispatches through the v5 strict gate predicates; the legacy SPY-PDC + QQQ-PDC + ticker-PDC polarity block was deleted. On block, emits `[V560-GATE][BLOCK]` with the `failed=` list (e.g. `failed=G1,G3`); on pass, emits `[V560-GATE][PASS]` with all four values.
+- `trade_genius.py`: `BOT_VERSION` 5.5.11 → 5.6.0. New STARTUP SUMMARY line `[V560] Unified AVWAP gates: L-P1 (G1/G3/G4), S-P1 (G1/G3/G4)` confirms on every boot that the new gate set is wired. `CURRENT_MAIN_NOTE` rewritten for v5.6.0 (each line ≤ 34 chars), with the v5.5.11 AS-OF-hotfix note pushed onto `_MAIN_HISTORY_TAIL`.
+
+**Tests / smoke (+19 net new, all passing):**
+
+- 6 unit tests for the per-gate predicates (`gate_g1_long`/`_short`, `gate_g3_long`/`_short`, `gate_g4_long`/`_short`) — each covers PASS, equality FAIL, below/above FAIL, and `None`-input FAIL.
+- 8 integration tests for the full `gates_pass_long` / `gates_pass_short` paths — 1 pass + 3 single-gate-block scenarios per direction.
+- 5 guards: `BOT_VERSION == "5.6.0"`; `CHANGELOG.md` has a v5.6.0 heading; `gates_pass_long` and `gates_pass_short` both have 5-parameter signatures (G2 retired); `tiger_buffalo_v5.py` source has no remaining `L-P1-G2` / `S-P1-G2` references; `trade_genius.py` exposes `_opening_avwap` and `_v560_log_gate`.
+- The existing `v5.5.5: ARCHITECTURE.md last-refresh footer pinned to …` and `v5.5.5: CHANGELOG.md has v… heading at top` guards re-pinned to `5.6.0`. The 8 stale `BOT_VERSION` pin tests (one per v5.5.x release) re-pinned to `5.6.0`. The `v5 C-R7` test now asserts QQQ-only wiring in `check_breakout` (SPY removed with G2).
+
+**Docs:**
+
+- `ARCHITECTURE.md` updated — permission-scan section now describes the unified 3-gate AVWAP system; G2 removed from §19 / §20 tables; last-refresh footer bumped to `BOT_VERSION = "5.6.0"`.
+- `trade_genius_algo.pdf` regenerated (algo text changed: G2 retired; G1/G3 now AVWAP-anchored).
+- `STRATEGY.md` and `COMMANDS.md` left as-is (the rule-ID surfaces are tracked from the v5.6.0 unit tests above; STRATEGY.md is being replaced wholesale in a follow-up doc PR per Gene/Val's separate refactor).
+
+**Out of scope for this PR (per spec):** no SPY combination logic, no PDC checks, no 3-speed Yellow-state branches, no feature flag / kill switch, no prior-day or multi-day AVWAP variants.
+
+---
+
 ## v5.5.11 — 2026-04-27
 
 Smoking-gun summary: v5.5.10 shipped a 2-line fix that swapped the Shadow tab AS OF cell from `s.as_of` to `s.server_time` and rendered via `_scFmtTs(asof)`. The read was correct — `/api/state` does include `server_time`. But on prod v5.5.10 the cell still rendered the static em-dash placeholder. Verified live at 18:21 UTC: `document.getElementById('ssb-asof')` resolved fine, a 12-second mutation observer saw `ssb-open`/`ssb-unr`/`ssb-active` mutate 6× each but `ssb-asof` mutate 0×, and calling `_scFmtTs` from the page-global console threw `ReferenceError: _scFmtTs is not defined`. Root cause: `dashboard_static/app.js` is split into two IIFEs. `_shadowSummaryBand` lives in IIFE-1 (lines 1–1236) and the `_scFmtTs` formatter lives in IIFE-2 (lines 1238–2785). IIFE locals are not visible to sibling IIFEs and `_scFmtTs` is never bridged to `window`, so the call threw at runtime. The throw was swallowed by the `try { _shadowSummaryBand(s); } catch (e) {}` wrapper inside `renderShadowPnL`, which is why the open / unrealized / most-active cells (lines 957–970, all *before* the failing line) updated normally on every state tick while ssb-asof never wrote. Pre-fix code never tripped this latent bug because `s.as_of` was always falsy → the `_scFmtTs` branch was never taken.
