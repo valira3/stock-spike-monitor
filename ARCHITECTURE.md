@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.5.9 · April 2026
+> **Version:** v5.5.10 · April 2026
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
 > **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/{loader,ledger,replay,__main__}.py`
 
@@ -1078,10 +1078,66 @@ held — `paper_cash`, `positions`, `short_positions`, `paper_trades`,
 `paper_all_trades`, `daily_entry_count`, `daily_short_entry_count`,
 `or_high`, `or_low`, `pdc`, `_trading_halted`, `_trading_halted_reason`,
 `bot_version` — plus the v5.2.0 `shadow_positions` table backing
-`shadow_pnl.ShadowPnL`. Writes are routed through `persistence.save_*`
-helpers; failures never raise into the trading loop. The store survives
-Railway redeploys via the persistent `/data` volume and is the source of
-truth for `_load_state()` after v5.1.8.
+`shadow_pnl.ShadowPnL`, plus the v5.5.10 `executor_positions` table
+backing the executor mirrors (see § 12.1.1 below). Writes are routed
+through `persistence.save_*` helpers; failures never raise into the
+trading loop. The store survives Railway redeploys via the persistent
+`/data` volume and is the source of truth for `_load_state()` after
+v5.1.8.
+
+#### 12.1.1 `executor_positions` table (v5.5.10+)
+
+`TradeGeniusBase.self.positions` is the executor-side mirror of the
+broker's open-position set, populated by `_record_position` after a
+successful submit and by `_reconcile_broker_positions` at boot. Through
+v5.5.9 this dict was process-local: every reboot started with `{}`,
+and `_reconcile_broker_positions` then "grafted" every broker-side
+position as an orphan with a Telegram alert — even when the bot had
+itself opened those positions normally moments before the restart.
+
+v5.5.10 mirrors the dict to a new `executor_positions` table in
+`state.db`:
+
+```sql
+CREATE TABLE executor_positions (
+  executor_name TEXT NOT NULL,    -- 'Val' or 'Gene'
+  mode TEXT NOT NULL,             -- 'paper' or 'live'
+  ticker TEXT NOT NULL,
+  side TEXT NOT NULL,             -- 'LONG' or 'SHORT'
+  qty INTEGER NOT NULL,
+  entry_price REAL NOT NULL,
+  entry_ts_utc TEXT NOT NULL,
+  source TEXT NOT NULL,           -- 'SIGNAL' | 'RECONCILE' | 'MANUAL'
+  stop REAL,
+  trail REAL,
+  last_updated_utc TEXT NOT NULL,
+  PRIMARY KEY (executor_name, mode, ticker)
+);
+```
+
+The PK includes both `executor_name` AND `mode` so Val/paper, Val/live,
+Gene/paper, and Gene/live each have an independent row set. A `/mode`
+flip wipes the in-memory dict and reloads the bucket for the new mode
+so paper rows never bleed into live or vice versa.
+
+Three lifecycle hooks keep the dict and the table in sync:
+
+- `_load_persisted_positions()` is called from `__init__` BEFORE
+  `_reconcile_broker_positions()` runs in `start()`, so a plain reboot
+  during a live session sees the persisted dict already populated.
+- `_record_position(...)` calls `_persist_position(ticker)` immediately
+  after stamping `self.positions[ticker]`.
+- `_remove_position(ticker)` is the single hook every position-close
+  path calls (`EXIT_LONG` / `EXIT_SHORT` / `EOD_CLOSE_ALL` / `cmd_halt`);
+  it pops the dict entry and deletes the DB row in one call.
+
+`_reconcile_broker_positions` reframes as a true safety net with three
+explicit outcomes, distinguished by set comparison of persisted-tickers
+vs broker-tickers:
+
+1. Persisted == broker → INFO log `[RECONCILE] clean: N position(s) match broker`, no Telegram (the common reboot case).
+2. Broker has tickers persisted does not → graft as today (source=`RECONCILE`, persist the new row), WARN log per orphan, single Telegram suffixed `(true divergence)`.
+3. Persisted has tickers broker does not → quiet self-heal: WARN log + `_remove_position(ticker)`, no Telegram, no close/exit-path call.
 
 ### 12.2 Legacy JSON shape (still relevant for the import path)
 

@@ -969,7 +969,11 @@
         : "\u2014";
     }
     if (asofEl) {
-      asofEl.textContent = (s && s.as_of) ? _scFmtTs(s.as_of) : "\u2014";
+      // v5.5.10 \u2014 /api/state has no top-level as_of field; the
+      // canonical timestamp is server_time, with shadow_pnl.as_of as
+      // a fallback. The pre-fix s.as_of read was always undefined.
+      const asof = (s && (s.server_time || (s.shadow_pnl && s.shadow_pnl.as_of))) || null;
+      asofEl.textContent = asof ? _scFmtTs(asof) : "\u2014";
     }
   }
 
