@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.4")
+    @t("version: BOT_VERSION is 5.5.5")
     def _():
-        assert m.BOT_VERSION == "5.5.4", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.5", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3776,7 +3776,96 @@ def run_local() -> int:
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        assert m.BOT_VERSION == "5.5.4", m.BOT_VERSION
+        # v5.5.5 supersedes; keep the test name pinned to its release
+        # (Val's convention) while asserting the rolling current version.
+        assert m.BOT_VERSION == "5.5.5", m.BOT_VERSION
+
+    @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
+    def _():
+        assert m.BOT_VERSION == "5.5.5", m.BOT_VERSION
+
+    @t("v5.5.5: WebsocketBarConsumer has _bars_received counter")
+    def _():
+        import volume_profile as _vp
+        c = _vp.WebsocketBarConsumer(["AAPL"], "k", "s")
+        assert hasattr(c, "_bars_received") and c._bars_received == 0
+        assert hasattr(c, "_last_bar_ts") and c._last_bar_ts is None
+        assert hasattr(c, "_last_handler_error")
+        assert hasattr(c, "_first_sample_logged") and c._first_sample_logged == 0
+
+    @t("v5.5.5: WebsocketBarConsumer.stats_snapshot returns expected keys")
+    def _():
+        import volume_profile as _vp
+        c = _vp.WebsocketBarConsumer(["AAPL", "QQQ"], "k", "s")
+        snap = c.stats_snapshot()
+        for k in (
+            "bars_received", "last_bar_ts", "last_handler_error",
+            "volumes_size_per_symbol", "tickers", "watchdog_reconnects",
+            "silence_threshold_sec",
+        ):
+            assert k in snap, (k, snap)
+        assert snap["bars_received"] == 0
+        assert set(snap["tickers"]) == {"AAPL", "QQQ"}
+
+    @t("v5.5.5: time_since_last_bar_seconds None when no bars")
+    def _():
+        import volume_profile as _vp
+        c = _vp.WebsocketBarConsumer(["AAPL"], "k", "s")
+        assert c.time_since_last_bar_seconds() is None
+
+    @t("v5.5.5: VOLPROFILE_WATCHDOG_SEC clamps to >= 30")
+    def _():
+        import volume_profile as _vp
+        os.environ["VOLPROFILE_WATCHDOG_SEC"] = "5"
+        try:
+            c = _vp.WebsocketBarConsumer(["AAPL"], "k", "s")
+            assert c._silence_threshold_sec == 30, c._silence_threshold_sec
+        finally:
+            del os.environ["VOLPROFILE_WATCHDOG_SEC"]
+
+    @t("v5.5.5: dashboard registers /api/ws_state route")
+    def _():
+        import dashboard_server as _ds
+        app = _ds._build_app()
+        routes = {r.resource.canonical for r in app.router.routes()
+                  if hasattr(r, "resource") and r.resource is not None}
+        assert "/api/ws_state" in routes, sorted(routes)
+
+    @t("v5.5.5: dashboard /api/ws_state requires auth")
+    def _():
+        # Source-grep guard \u2014 the handler must call _check_auth like /api/state.
+        import dashboard_server as _ds
+        from pathlib import Path as _P
+        src = (_P(_ds.__file__)).read_text(encoding="utf-8")
+        # Slice the h_ws_state body and verify the auth gate is present.
+        idx = src.find("async def h_ws_state(")
+        assert idx >= 0, "h_ws_state handler missing"
+        body = src[idx:idx + 1200]
+        assert "_check_auth(request)" in body, body[:400]
+
+    @t("v5.5.5: bar archive prefers _ws_consumer over Yahoo")
+    def _():
+        from pathlib import Path as _P
+        src = (_P(__file__).parent / "trade_genius.py").read_text(encoding="utf-8")
+        assert "_ws_consumer.current_volume(" in src
+        assert "if ws_vol is not None" in src
+        assert '"et_bucket": et_bucket,' in src
+
+    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.5.5")
+    def _():
+        from pathlib import Path as _P
+        arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        assert 'BOT_VERSION = "5.5.5"' in arch, "ARCHITECTURE.md footer not bumped"
+
+    @t("v5.5.5: CHANGELOG.md has v5.5.5 heading at top")
+    def _():
+        from pathlib import Path as _P
+        cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        # The first ## heading should be v5.5.5
+        head_idx = cl.find("\n## v5.5.5")
+        prior = cl.find("\n## v5.5.4")
+        assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
+            "v5.5.5 heading must precede v5.5.4 in CHANGELOG"
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():
@@ -4462,10 +4551,12 @@ def run_local() -> int:
         assert idx != -1, "scan-loop long-entry block not found"
         # v5.5.2: window widened from 2000 \u2192 5000 because the
         # bar-archive hook lives between the MTM call and the
-        # paper_holds gate, which is a deliberate ordering. The
-        # invariant being asserted is unchanged: MTM must run before
+        # paper_holds gate, which is a deliberate ordering.
+        # v5.5.5: widened again to 6500 because the WS-vs-Yahoo source
+        # selection added ~30 lines inside the same archive block.
+        # The invariant being asserted is unchanged: MTM must run before
         # the gate.
-        block = text[idx: idx + 5000]
+        block = text[idx: idx + 6500]
         mtm_pos = block.find("_v520_mtm_ticker(")
         gate_pos = block.find("if not paper_holds:")
         assert mtm_pos != -1, "_v520_mtm_ticker call missing from scan block"

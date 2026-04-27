@@ -698,6 +698,22 @@ class WebsocketBarConsumer:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._stream = None
+        # v5.5.5 \u2014 observability + watchdog state.
+        self._bars_received: int = 0
+        self._last_bar_ts: datetime | None = None
+        self._last_handler_error: str | None = None
+        self._first_sample_logged: int = 0
+        self._start_ts: datetime | None = None
+        self._watchdog_thread: threading.Thread | None = None
+        self._watchdog_reconnects: int = 0
+        # Silence threshold (seconds) before the watchdog forces a reconnect.
+        # Configurable via VOLPROFILE_WATCHDOG_SEC; clamped to >= 30s so a
+        # misconfigured tiny value can't churn the WS.
+        try:
+            raw = int(os.getenv("VOLPROFILE_WATCHDOG_SEC", "120") or "120")
+        except ValueError:
+            raw = 120
+        self._silence_threshold_sec: int = max(30, raw)
 
     # ---- public ----
 
@@ -705,10 +721,19 @@ class WebsocketBarConsumer:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        self._start_ts = datetime.now(UTC)
         self._thread = threading.Thread(
             target=self._run_forever, name="VolProfileWS", daemon=True
         )
         self._thread.start()
+        # v5.5.5 \u2014 watchdog: detect "WS idle" (handshake succeeded but no
+        # bar messages arriving) and force a reconnect.
+        if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop, name="VolProfileWatchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -725,6 +750,34 @@ class WebsocketBarConsumer:
                 return None
             v = buckets.get(minute_bucket)
             return int(v) if v is not None else None
+
+    def stats_snapshot(self) -> dict:
+        """v5.5.5 \u2014 thread-safe observability snapshot for /api/ws_state."""
+        with self._lock:
+            last = self._last_bar_ts.isoformat() if self._last_bar_ts else None
+            return {
+                "bars_received": self._bars_received,
+                "last_bar_ts": last,
+                "last_handler_error": self._last_handler_error,
+                "volumes_size_per_symbol": {
+                    sym: len(d) for sym, d in self._volumes.items()
+                },
+                "tickers": list(self._tickers),
+                "watchdog_reconnects": self._watchdog_reconnects,
+                "silence_threshold_sec": self._silence_threshold_sec,
+            }
+
+    def time_since_last_bar_seconds(self) -> float | None:
+        """Seconds since the last bar was processed by ``_on_bar``.
+
+        None when no bar has ever been received in this consumer's lifetime.
+        """
+        with self._lock:
+            last = self._last_bar_ts
+        if last is None:
+            return None
+        now = datetime.now(UTC)
+        return max(0.0, (now - last).total_seconds())
 
     # ---- internals ----
 
@@ -747,7 +800,30 @@ class WebsocketBarConsumer:
                 return
             with self._lock:
                 self._volumes.setdefault(sym, {})[bucket] = int(vol)
+                # v5.5.5 \u2014 observability: count + timestamp every successful
+                # bar so the watchdog and /api/ws_state can discriminate
+                # "WS idle" from "handler error" from "everything is fine".
+                self._bars_received += 1
+                self._last_bar_ts = datetime.now(UTC)
+                received = self._bars_received
+                logged = self._first_sample_logged
+                if logged < 5:
+                    self._first_sample_logged = logged + 1
+                    sample_now = True
+                else:
+                    sample_now = False
+            if sample_now:
+                logger.info(
+                    "[VOLPROFILE] sample bar #%d sym=%s ts=%s vol=%s bucket=%s",
+                    received, sym, ts, vol, bucket,
+                )
+            if received % 100 == 0:
+                logger.info(
+                    "[VOLPROFILE] heartbeat: total=%d last_sym=%s",
+                    received, sym,
+                )
         except Exception as e:
+            self._last_handler_error = f"{type(e).__name__}: {e}"
             logger.warning("[VOLPROFILE] ws bar handler error: %s", e)
 
     def _replay_last_5min(self) -> None:
@@ -768,6 +844,62 @@ class WebsocketBarConsumer:
                     logger.warning("[VOLPROFILE] replay %s failed: %s", t, e)
         except Exception as e:
             logger.warning("[VOLPROFILE] replay skipped: %s", e)
+
+    def _watchdog_loop(self) -> None:
+        """v5.5.5 \u2014 monitor WS bar liveness; force reconnect on long silence.
+
+        Polls every 30s. While the regular session is open (RTH gate), if
+        ``_bars_received == 0`` for >= silence-threshold seconds since
+        ``start()`` was called, OR more than silence-threshold seconds have
+        elapsed since the last bar arrived, calls ``self._stream.stop()`` so
+        ``_run_forever``'s outer reconnect loop kicks in. Always
+        defensively catches its own exceptions \u2014 the watchdog must never
+        crash silently.
+        """
+        poll_sec = 30.0
+        while not self._stop.is_set():
+            # First: sleep up front so we don't fire immediately on start.
+            # ``Event.wait`` returns True if .set() was called \u2014 in that
+            # case break out cleanly.
+            if self._stop.wait(poll_sec):
+                return
+            try:
+                # RTH gate: only force reconnects during regular trading
+                # hours. Outside the session a stalled WS is expected.
+                now_et = datetime.now(ET)
+                if session_bucket(now_et) is None:
+                    continue
+                last = self.time_since_last_bar_seconds()
+                threshold = self._silence_threshold_sec
+                if last is None:
+                    # Never received a bar: measure from start() time.
+                    started = self._start_ts
+                    if started is None:
+                        continue
+                    elapsed = (datetime.now(UTC) - started).total_seconds()
+                    if elapsed < threshold:
+                        continue
+                else:
+                    if last < threshold:
+                        continue
+                    elapsed = last
+                logger.warning(
+                    "[VOLPROFILE] watchdog: no bars for %.0fs (received=%d) \u2014 forcing reconnect",
+                    elapsed, self._bars_received,
+                )
+                self._watchdog_reconnects += 1
+                stream = self._stream
+                if stream is not None:
+                    try:
+                        stream.stop()
+                    except Exception as e:
+                        logger.warning(
+                            "[VOLPROFILE] watchdog stream.stop() failed: %s", e,
+                        )
+            except Exception as e:
+                logger.warning("[VOLPROFILE] watchdog loop error: %s", e)
+                # Never let the watchdog die.
+                continue
 
     def _run_forever(self) -> None:
         # Lazy import — keeps the rest of the module testable in

@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.4"
+BOT_VERSION = "5.5.5"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,20 +93,28 @@ BOT_VERSION = "5.5.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.5.4 \u2014 WS handler hotfix.\n"
-    "Shadow WS bar handler is now\n"
-    "an async def coroutine. The\n"
-    "alpaca-py StockDataStream\n"
-    "rejected the v5.5.3 sync\n"
-    "handler with \"handler must\n"
-    "be a coroutine function\",\n"
-    "crash-looping every ~6s.\n"
-    "Connection now stays up so\n"
-    "cur_v actually fills."
+    "v5.5.5 \u2014 WS observability.\n"
+    "Shadow WS now counts every\n"
+    "bar, logs first 5 + every\n"
+    "100th, and exposes stats on\n"
+    "/api/ws_state. Watchdog forces\n"
+    "reconnect after 120s of RTH\n"
+    "silence. Bar archive iex_vol\n"
+    "now prefers WS over Yahoo and\n"
+    "fills et_bucket. No trading-\n"
+    "decision change."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v5.5.4 \u2014 WS handler hotfix.\n"
+    "Shadow WS bar handler is now\n"
+    "an async def coroutine.\n"
+    "alpaca-py StockDataStream\n"
+    "rejected the v5.5.3 sync\n"
+    "handler and crash-looped\n"
+    "every ~6s.\n"
+    "\n"
     "v5.5.3 \u2014 shadow cred fix.\n"
     "_start_volume_profile now\n"
     "reads VAL_ALPACA_PAPER_KEY\n"
@@ -8179,14 +8187,42 @@ def scan_loop():
                                       if ts_val is not None else None)
                         except Exception:
                             ts_iso = None
+                        # v5.5.5 \u2014 prefer the WS consumer's IEX volume for
+                        # the current bucket. Yahoo's intraday endpoint
+                        # frequently returns volume=0/null on the leading-edge
+                        # bar, leaving the offline backtest CLI replaying
+                        # against zeroes. Fall back to the Yahoo value when
+                        # the WS path is unavailable, outside RTH, or has
+                        # not yet captured this bucket.
+                        yahoo_vol = vols[idx] if abs(idx) <= len(vols) else None
+                        iex_volume = yahoo_vol
+                        et_bucket: str | None = None
+                        try:
+                            now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+                            et_bucket = volume_profile.session_bucket(now_et)
+                            if (
+                                et_bucket is not None
+                                and _ws_consumer is not None
+                            ):
+                                ws_vol = _ws_consumer.current_volume(
+                                    ticker, et_bucket,
+                                )
+                                if ws_vol is not None:
+                                    iex_volume = int(ws_vol)
+                        except Exception as _e:
+                            # Never let observability break the trading scan.
+                            logger.warning(
+                                "[V510-BAR] ws-source switch %s: %s",
+                                ticker, _e,
+                            )
                         canon_bar = {
                             "ts": ts_iso,
-                            "et_bucket": None,
+                            "et_bucket": et_bucket,
                             "open":  opens[idx] if abs(idx) <= len(opens) else None,
                             "high":  highs[idx] if abs(idx) <= len(highs) else None,
                             "low":   lows[idx]  if abs(idx) <= len(lows)  else None,
                             "close": closes[idx],
-                            "iex_volume": vols[idx] if abs(idx) <= len(vols) else None,
+                            "iex_volume": iex_volume,
                             "iex_sip_ratio_used": None,
                             "bid": None,
                             "ask": None,
