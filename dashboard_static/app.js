@@ -1224,6 +1224,12 @@
       } else if (typeof renderShadowPnL === "function") {
         renderShadowPnL(window.__tgLastState);
       }
+      // v5.4.1 \u2014 charts are tab-scoped: poll /api/shadow_charts only
+      // while the Shadow tab is active. Triggers an immediate fetch on
+      // tab activation; the 60s loop below skips ticks on other tabs.
+      if (typeof window.__tgPollShadowCharts === "function") {
+        window.__tgPollShadowCharts();
+      }
     }
   }
 
@@ -2055,4 +2061,303 @@
   setInterval(() => {
     if (activeTab === "val" || activeTab === "gene") pollExecutor(activeTab);
   }, 15000);
+
+  // ─────── v5.4.1 Shadow charts (equity / heatmap / win-rate) ─────────
+  // Stable per-config palette so the same config has the same hue across
+  // all three chart groups (equity curve, heatmap row, win-rate sparkline).
+  const SHADOW_CFG_NAMES = [
+    "TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A",
+    "BUCKET_FILL_100", "REHUNT_VOL_CONFIRM", "OOMPH_ALERT",
+  ];
+  const SHADOW_CFG_COLORS = {
+    "TICKER+QQQ":         "#7dd3fc",
+    "TICKER_ONLY":        "#34d399",
+    "QQQ_ONLY":           "#fbbf24",
+    "GEMINI_A":           "#c084fc",
+    "BUCKET_FILL_100":    "#f472b6",
+    "REHUNT_VOL_CONFIRM": "#60a5fa",
+    "OOMPH_ALERT":        "#fb923c",
+  };
+  const __shadowChartInstances = {
+    equity: {},     // {cfgName: Chart}
+    winrate: {},    // {cfgName: Chart}
+    heatmap: null,
+  };
+
+  function _scText(role) {
+    // Read a CSS variable from :root so chart axis/text colors match the
+    // existing palette without hard-coding any new color literals.
+    try {
+      return getComputedStyle(document.documentElement)
+        .getPropertyValue(role).trim() || "#8a96a7";
+    } catch (e) { return "#8a96a7"; }
+  }
+
+  function _scChartReady() {
+    return typeof window !== "undefined" && typeof window.Chart === "function";
+  }
+
+  function _scBuildEquityRows(configs) {
+    const wrap = document.getElementById("shadow-equity-body");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    for (const name of SHADOW_CFG_NAMES) {
+      const data = (configs[name] && configs[name].equity_curve) || [];
+      const row = document.createElement("div");
+      row.className = "shadow-chart-row";
+      const color = SHADOW_CFG_COLORS[name] || "#7dd3fc";
+      row.innerHTML = '<div class="scr-name">'
+        + '<span class="scr-swatch" style="background:' + color + '"></span>'
+        + name + '</div>'
+        + '<div class="scr-canvas-wrap">'
+        + (data.length ? '<canvas></canvas>'
+                       : '<div class="scr-empty">no closed trades</div>')
+        + '</div>';
+      wrap.appendChild(row);
+      if (!data.length || !_scChartReady()) continue;
+      const canvas = row.querySelector("canvas");
+      const labels = data.map(p => p.ts);
+      const values = data.map(p => p.cum_pnl);
+      const prev = __shadowChartInstances.equity[name];
+      if (prev) { try { prev.destroy(); } catch (e) {} }
+      __shadowChartInstances.equity[name] = new window.Chart(canvas, {
+        type: "line",
+        data: { labels: labels, datasets: [{
+          data: values, borderColor: color, backgroundColor: color + "22",
+          fill: true, pointRadius: 0, borderWidth: 1.5, tension: 0.15,
+        }]},
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: true } },
+          scales: {
+            x: { display: false },
+            y: { ticks: { color: _scText("--text-dim"), font: { size: 9 } },
+                 grid: { color: _scText("--border"), drawTicks: false } },
+          },
+        },
+      });
+    }
+  }
+
+  function _scBuildWinrateRows(configs) {
+    const wrap = document.getElementById("shadow-winrate-body");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    let any = false;
+    for (const name of SHADOW_CFG_NAMES) {
+      const data = (configs[name] && configs[name].win_rate_rolling) || [];
+      // Hide configs with < 20 closed trades (insufficient data for
+      // a 20-trade rolling window). The endpoint already filters to
+      // trade_idx >= 20, so an empty list means "not enough trades yet."
+      if (!data.length) continue;
+      any = true;
+      const row = document.createElement("div");
+      row.className = "shadow-chart-row scr-sparkline";
+      const color = SHADOW_CFG_COLORS[name] || "#7dd3fc";
+      row.innerHTML = '<div class="scr-name">'
+        + '<span class="scr-swatch" style="background:' + color + '"></span>'
+        + name + '</div>'
+        + '<div class="scr-canvas-wrap"><canvas></canvas></div>';
+      wrap.appendChild(row);
+      if (!_scChartReady()) continue;
+      const canvas = row.querySelector("canvas");
+      const labels = data.map(p => p.trade_idx);
+      const values = data.map(p => p.win_rate);
+      const prev = __shadowChartInstances.winrate[name];
+      if (prev) { try { prev.destroy(); } catch (e) {} }
+      __shadowChartInstances.winrate[name] = new window.Chart(canvas, {
+        type: "line",
+        data: { labels: labels, datasets: [{
+          data: values, borderColor: color, backgroundColor: color + "22",
+          fill: false, pointRadius: 0, borderWidth: 1.4, tension: 0.2,
+        }]},
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: true } },
+          scales: {
+            x: { display: false },
+            y: { min: 0, max: 1, ticks: { color: _scText("--text-dim"), font: { size: 9 },
+                  callback: v => Number(v).toFixed(2) },
+                 grid: { color: _scText("--border"), drawTicks: false } },
+          },
+        },
+      });
+    }
+    if (!any) {
+      wrap.innerHTML = '<div class="scr-empty">'
+        + 'no config has reached the 20-trade window yet</div>';
+    }
+  }
+
+  function _scBuildHeatmap(configs) {
+    const canvas = document.getElementById("shadow-heatmap-canvas");
+    if (!canvas) return;
+    // Collect the union of trading days across all configs.
+    const dayMap = {};
+    for (const name of SHADOW_CFG_NAMES) {
+      const dp = (configs[name] && configs[name].daily_pnl) || [];
+      for (const d of dp) {
+        if (!dayMap[d.date]) dayMap[d.date] = {};
+        dayMap[d.date][name] = d.pnl;
+      }
+    }
+    const days = Object.keys(dayMap).sort();
+    if (!_scChartReady()) return;
+    if (__shadowChartInstances.heatmap) {
+      try { __shadowChartInstances.heatmap.destroy(); } catch (e) {}
+      __shadowChartInstances.heatmap = null;
+    }
+    if (!days.length) {
+      const ctx = canvas.getContext("2d");
+      const w = canvas.clientWidth || 600, h = canvas.clientHeight || 300;
+      canvas.width = w; canvas.height = h;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = _scText("--text-dim");
+      ctx.font = "11px JetBrains Mono, monospace";
+      ctx.fillText("no closed trades yet", 14, 22);
+      return;
+    }
+    // Find max abs P&L across all (config, day) cells for color scaling.
+    let absMax = 0;
+    for (const d of days) {
+      for (const name of SHADOW_CFG_NAMES) {
+        const v = dayMap[d][name];
+        if (typeof v === "number" && Math.abs(v) > absMax) absMax = Math.abs(v);
+      }
+    }
+    if (absMax <= 0) absMax = 1;
+    // Build a scatter chart with an emulated heatmap: one point per cell
+    // sized to a square. Chart.js v4 ships only line/bar/scatter natively,
+    // and bringing in the matrix plugin would add a second CDN dependency.
+    const points = [];
+    for (let yi = 0; yi < SHADOW_CFG_NAMES.length; yi++) {
+      const name = SHADOW_CFG_NAMES[yi];
+      for (let xi = 0; xi < days.length; xi++) {
+        const v = (dayMap[days[xi]] || {})[name];
+        if (typeof v !== "number") continue;
+        const intensity = Math.min(1, Math.abs(v) / absMax);
+        const alpha = 0.18 + 0.72 * intensity;
+        const baseColor = v >= 0 ? "52,211,153" : "248,113,113";
+        points.push({
+          x: xi, y: yi, _date: days[xi], _name: name, _pnl: v,
+          backgroundColor: "rgba(" + baseColor + "," + alpha.toFixed(2) + ")",
+        });
+      }
+    }
+    __shadowChartInstances.heatmap = new window.Chart(canvas, {
+      type: "scatter",
+      data: { datasets: [{
+        data: points,
+        pointStyle: "rect",
+        pointRadius: 12,
+        pointHoverRadius: 14,
+        backgroundColor: ctx => ctx.raw && ctx.raw.backgroundColor,
+        borderColor: "rgba(0,0,0,0)",
+      }]},
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const r = ctx.raw || {};
+                const sign = r._pnl >= 0 ? "+" : "\u2212";
+                return r._name + " \u00b7 " + r._date + " \u00b7 "
+                  + sign + "$" + Math.abs(r._pnl).toFixed(2);
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: "linear", min: -0.5, max: days.length - 0.5,
+            ticks: {
+              color: _scText("--text-dim"), font: { size: 9 },
+              stepSize: 1, autoSkip: true, maxRotation: 0,
+              callback: v => {
+                const i = Math.round(v);
+                return (i >= 0 && i < days.length) ? days[i].slice(5) : "";
+              },
+            },
+            grid: { color: _scText("--border"), drawTicks: false },
+          },
+          y: {
+            type: "linear", min: -0.5, max: SHADOW_CFG_NAMES.length - 0.5,
+            reverse: true,
+            ticks: {
+              color: _scText("--text-dim"), font: { size: 9 },
+              stepSize: 1, autoSkip: false,
+              callback: v => {
+                const i = Math.round(v);
+                return SHADOW_CFG_NAMES[i] || "";
+              },
+            },
+            grid: { color: _scText("--border"), drawTicks: false },
+          },
+        },
+      },
+    });
+  }
+
+  function _scRender(payload) {
+    const configs = (payload && payload.configs) || {};
+    // Count rendered configs (non-empty equity curves) for the head badge.
+    let withTrades = 0;
+    for (const n of SHADOW_CFG_NAMES) {
+      if (configs[n] && configs[n].equity_curve && configs[n].equity_curve.length) {
+        withTrades += 1;
+      }
+    }
+    const cnt = document.getElementById("shadow-charts-count");
+    if (cnt) cnt.textContent = "\u00b7 " + withTrades + " / " + SHADOW_CFG_NAMES.length;
+    _scBuildEquityRows(configs);
+    _scBuildHeatmap(configs);
+    _scBuildWinrateRows(configs);
+  }
+
+  let __scInflight = false;
+  async function _scPoll() {
+    if (__scInflight) return;
+    __scInflight = true;
+    try {
+      const r = await fetch("/api/shadow_charts", { credentials: "same-origin" });
+      if (!r.ok) throw new Error("http " + r.status);
+      const data = await r.json();
+      _scRender(data);
+    } catch (e) {
+      // Leave whatever was last rendered alone; an empty chart group on
+      // first error is still informative.
+    } finally {
+      __scInflight = false;
+    }
+  }
+  window.__tgPollShadowCharts = _scPoll;
+
+  setInterval(() => {
+    if (activeTab === "shadow") _scPoll();
+  }, 60000);
+
+  // Charts toggle (collapsible). Mobile defaults to collapsed so the
+  // shadow tab isn't dominated by chart real estate on a phone.
+  (function _scWireToggle() {
+    const head = document.getElementById("shadow-charts-head");
+    const body = document.getElementById("shadow-charts-body");
+    const chip = document.getElementById("shadow-charts-toggle");
+    if (!head || !body) return;
+    function setOpen(open) {
+      body.hidden = !open;
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+      if (chip) chip.textContent = open ? "hide" : "show";
+    }
+    const isMobile = (typeof window !== "undefined") && (window.innerWidth <= 720);
+    setOpen(!isMobile);
+    head.addEventListener("click", () => setOpen(body.hidden === true));
+    head.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        setOpen(body.hidden === true);
+      }
+    });
+  })();
 })();

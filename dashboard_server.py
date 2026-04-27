@@ -1144,6 +1144,116 @@ async def h_errors(request):
     return web.json_response(snap)
 
 
+# v5.4.1 \u2014 /api/shadow_charts: equity curves, day-heatmap, rolling
+# win-rate sparklines, sourced from the persisted shadow_positions table
+# (closed trades only). Cached for 30s to avoid hammering SQLite when
+# multiple browsers poll the Shadow tab in parallel.
+_SHADOW_CHARTS_CACHE_TTL = 30.0
+_shadow_charts_cache: dict = {"ts": 0.0, "payload": None}
+_shadow_charts_cache_lock = threading.Lock()
+
+
+def _shadow_charts_payload() -> dict:
+    """Build the /api/shadow_charts response from shadow_positions.
+
+    Returns a dict shaped like:
+      { "configs": { <name>: {equity_curve, daily_pnl, win_rate_rolling}, \u2026 },
+        "as_of": "<utc iso>" }
+
+    Closed trades only (exit_ts_utc IS NOT NULL). One entry per
+    SHADOW_CONFIG name from _SHADOW_PANEL_ORDER so the response always
+    carries all 7 configs even when some have no trades yet.
+    """
+    cfg_names = [n for (n, _label) in _SHADOW_PANEL_ORDER]
+    out: dict[str, dict] = {n: {
+        "equity_curve": [],
+        "daily_pnl": [],
+        "win_rate_rolling": [],
+    } for n in cfg_names}
+    rows: list[dict] = []
+    try:
+        import persistence as _p
+        # Lexical compare on ISO-8601 strings is correct for UTC, so a
+        # very early sentinel pulls every closed row.
+        all_rows = _p.load_shadow_positions_since("0000-01-01T00:00:00+00:00")
+        rows = [r for r in all_rows if r.get("exit_ts_utc")]
+    except Exception:
+        logger.exception("shadow_charts: load_shadow_positions_since failed")
+        rows = []
+    by_cfg: dict[str, list[dict]] = {n: [] for n in cfg_names}
+    for r in rows:
+        n = r.get("config_name")
+        if n in by_cfg:
+            by_cfg[n].append(r)
+    for n in cfg_names:
+        cfg_rows = sorted(
+            by_cfg[n],
+            key=lambda r: (r.get("exit_ts_utc") or ""),
+        )
+        cum = 0.0
+        equity_curve: list[dict] = []
+        daily: dict[str, dict] = {}
+        wr_rolling: list[dict] = []
+        wins_window: list[int] = []
+        for idx, r in enumerate(cfg_rows, start=1):
+            pnl = float(r.get("realized_pnl") or 0.0)
+            cum += pnl
+            ts = r.get("exit_ts_utc") or ""
+            equity_curve.append({"ts": ts, "cum_pnl": round(cum, 2)})
+            day = ts[:10] if len(ts) >= 10 else ts
+            d = daily.setdefault(day, {"date": day, "pnl": 0.0, "trades": 0})
+            d["pnl"] = round(d["pnl"] + pnl, 2)
+            d["trades"] += 1
+            wins_window.append(1 if pnl > 0 else 0)
+            if len(wins_window) > 20:
+                wins_window.pop(0)
+            if idx >= 20:
+                wr = sum(wins_window) / 20.0
+                wr_rolling.append({
+                    "trade_idx": idx,
+                    "win_rate": round(wr, 4),
+                })
+        out[n]["equity_curve"] = equity_curve
+        out[n]["daily_pnl"] = sorted(daily.values(), key=lambda d: d["date"])
+        out[n]["win_rate_rolling"] = wr_rolling
+    from datetime import datetime as _dt, timezone as _tz
+    return {
+        "configs": out,
+        "as_of": _dt.now(_tz.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+async def h_shadow_charts(request):
+    """GET /api/shadow_charts \u2014 chart-ready shadow strategy data.
+
+    Returns a JSON document with equity curves, daily P&L, and rolling
+    20-trade win rates per SHADOW_CONFIG. Cached for
+    _SHADOW_CHARTS_CACHE_TTL seconds since the underlying SQLite table
+    only changes when a shadow position closes.
+    """
+    from aiohttp import web
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    now = time.time()
+    with _shadow_charts_cache_lock:
+        ts = _shadow_charts_cache.get("ts", 0.0)
+        payload = _shadow_charts_cache.get("payload")
+        if payload is not None and (now - ts) < _SHADOW_CHARTS_CACHE_TTL:
+            return web.json_response(payload)
+    loop = asyncio.get_running_loop()
+    try:
+        payload = await loop.run_in_executor(None, _shadow_charts_payload)
+    except Exception as e:
+        logger.exception("h_shadow_charts: payload build failed")
+        return web.json_response(
+            {"ok": False, "error": f"payload failed: {e}"}, status=500,
+        )
+    with _shadow_charts_cache_lock:
+        _shadow_charts_cache["ts"] = now
+        _shadow_charts_cache["payload"] = payload
+    return web.json_response(payload)
+
+
 # v4.9.1: unauthenticated endpoint so the post-deploy GHA poller can
 # confirm Railway has rolled out the new BOT_VERSION without holding a
 # session cookie. Version is not sensitive; everything else still
@@ -1964,6 +2074,7 @@ def _build_app():
     app.router.add_post("/login", h_login)
     app.router.add_post("/logout", h_logout)
     app.router.add_get("/api/state", h_state)
+    app.router.add_get("/api/shadow_charts", h_shadow_charts)
     app.router.add_get("/api/version", h_version)
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.

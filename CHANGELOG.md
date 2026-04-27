@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.4.1 — 2026-04-26
+
+- feat (backend): new `GET /api/shadow_charts` endpoint in `dashboard_server`. Returns three blocks per `SHADOW_CONFIG` (`equity_curve`, `daily_pnl`, `win_rate_rolling`) sourced from the persisted `shadow_positions` SQLite table — closed trades only (`exit_ts_utc IS NOT NULL`). Cached for 30 s using the same lock-protected `(ts, payload)` pattern as `/api/indices`, so multiple browsers polling the Shadow tab in parallel collapse to one SQLite read per window. Always emits all 7 configs in a fixed order; configs with no closed trades render as empty arrays rather than missing keys. Same session-cookie auth as the rest of `/api/*`.
+- feat (frontend): the Shadow tab now renders three vertically-stacked chart groups above the existing per-config rows. (1) Equity curves — one Chart.js line chart per config (~100 px desktop, ~80 px mobile), Y-axis cumulative $, X-axis time. (2) Day-P&L heatmap — single ~300 px scatter chart, rows = configs, columns = trading days, cell color = green/red intensity scaled to abs-max P&L across all cells. (3) Rolling win-rate sparklines — one per config (~60 px), Y-axis 0–1, hidden if a config has < 20 closed trades.
+- feat (frontend): each config gets a stable hue across all three groups (`SHADOW_CFG_COLORS`) so `GEMINI_A`'s equity curve, heatmap row, and win-rate sparkline are always the same color. Axis colors and gridlines read from existing CSS variables (`--text-dim`, `--border`); no new color literals.
+- feat (frontend): Chart.js 4.4.0 is loaded from jsDelivr CDN with a `defer` attribute. The chart code falls back gracefully if `window.Chart` is undefined — empty wrappers render and the rest of the dashboard keeps working.
+- feat (frontend): "Charts" header is collapsible. Click / Enter / Space toggles. Default is expanded on desktop and collapsed on ≤ 720 px viewports so the Shadow tab is not dominated by chart real estate on a phone.
+- feat (frontend): tab-aware polling. `/api/shadow_charts` is fetched once on Shadow-tab activation and then every 60 s **only while the Shadow tab is active** — Main / Val / Gene ticks skip the call entirely. Matches the existing `pollExecutor` pattern.
+- tests: 3 new smoke tests — `test_v541_shadow_charts_endpoint`, `test_v541_shadow_charts_cache`, `test_v541_shadow_charts_html_present`.
+- CI guard: `BOT_VERSION` bumped to `5.4.1` (matches this heading; the version-bump-check workflow gates on both).
+
+---
+
 ## v5.4.0 — 2026-04-26
 
 - Added offline backtest CLI: `python -m backtest.replay` with replay-vs-prod validation mode. See ARCHITECTURE.md for usage.

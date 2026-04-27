@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.4.0")
+    @t("version: BOT_VERSION is 5.4.1")
     def _():
-        assert m.BOT_VERSION == "5.4.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.4.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3730,9 +3730,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.4.0: BOT_VERSION bumped to 5.4.0")
+    @t("v5.4.1: BOT_VERSION bumped to 5.4.1")
     def _():
-        assert m.BOT_VERSION == "5.4.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.4.1", m.BOT_VERSION
 
     # ---- v5.4.0 offline backtest CLI ----
     @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")
@@ -4111,6 +4111,129 @@ def run_local() -> int:
             assert k in rc, (k, rc)
         assert rc["ticker"] == "MSFT"
         assert rc["exit_reason"] == "TRAIL"
+
+    # -------- v5.4.1 shadow charts endpoint + UI --------
+
+    @t("v5.4.1: /api/shadow_charts returns 7 configs with the 3 chart blocks")
+    def _():
+        _reset_sp_db("v541_endpoint")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        # Seed 21 closed trades on TICKER+QQQ so the rolling 20-trade
+        # win-rate window emits at least one point. Alternate winners
+        # and losers so win_rate is well-defined.
+        for i in range(21):
+            ts_open = f"2026-04-2{(i % 5) + 1}T14:{30 + i:02d}:00+00:00"
+            ts_close = f"2026-04-2{(i % 5) + 1}T15:{0 + (i % 30):02d}:00+00:00"
+            tr.open_position("TICKER+QQQ", f"T{i:03d}", "long",
+                             ts_open, 100.0, snap)
+            exit_price = 110.0 if (i % 2 == 0) else 95.0
+            tr.close_position("TICKER+QQQ", f"T{i:03d}",
+                              ts_close, exit_price, "TRAIL")
+        # Reset cache so the seeded data is observed.
+        ds._shadow_charts_cache["ts"] = 0.0
+        ds._shadow_charts_cache["payload"] = None
+        payload = ds._shadow_charts_payload()
+        assert "configs" in payload, payload
+        assert "as_of" in payload and payload["as_of"], payload
+        cfgs = payload["configs"]
+        # All 7 SHADOW_CONFIG names must be present even when empty.
+        expected = {"TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A",
+                    "BUCKET_FILL_100", "REHUNT_VOL_CONFIRM", "OOMPH_ALERT"}
+        assert set(cfgs.keys()) == expected, set(cfgs.keys())
+        for name, blk in cfgs.items():
+            for k in ("equity_curve", "daily_pnl", "win_rate_rolling"):
+                assert k in blk, (name, k, blk)
+                assert isinstance(blk[k], list), (name, k)
+        seeded = cfgs["TICKER+QQQ"]
+        assert len(seeded["equity_curve"]) == 21, seeded["equity_curve"]
+        assert len(seeded["win_rate_rolling"]) >= 1, seeded["win_rate_rolling"]
+        wr0 = seeded["win_rate_rolling"][0]
+        assert "trade_idx" in wr0 and "win_rate" in wr0, wr0
+        assert wr0["trade_idx"] >= 20, wr0
+        assert 0.0 <= wr0["win_rate"] <= 1.0, wr0
+        # Empty configs must still expose empty lists, not None.
+        empty = cfgs["GEMINI_A"]
+        assert empty["equity_curve"] == [], empty
+        assert empty["daily_pnl"] == [], empty
+        assert empty["win_rate_rolling"] == [], empty
+
+    @t("v5.4.1: /api/shadow_charts response is cached for 30s")
+    def _():
+        # Two consecutive handler invocations within the 30s TTL must
+        # return the same payload object (cache hit on the second call).
+        _reset_sp_db("v541_cache")
+        tr = _sp_mod.tracker()
+        snap = {"equity": 100000.0, "cash": 50000.0,
+                "dollars_per_entry": 1000.0,
+                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        tr.open_position("TICKER+QQQ", "AAPL", "long",
+                         "2026-04-26T14:30:00+00:00", 100.0, snap)
+        tr.close_position("TICKER+QQQ", "AAPL",
+                          "2026-04-26T15:00:00+00:00", 110.0, "TRAIL")
+        # Reset cache so this test owns the first build.
+        ds._shadow_charts_cache["ts"] = 0.0
+        ds._shadow_charts_cache["payload"] = None
+        # Drive two requests through the handler; the second must hit
+        # the cache and skip the rebuild path.
+        import asyncio, json as _json
+        from aiohttp.test_utils import make_mocked_request
+        # Build a session cookie a real client would carry.
+        ds._SESSION_SECRET = b"x" * 32
+        tok = ds._make_token()
+        cookie_header = f"{ds.SESSION_COOKIE}={tok}"
+        loop = asyncio.new_event_loop()
+        try:
+            req1 = make_mocked_request("GET", "/api/shadow_charts",
+                                       headers={"Cookie": cookie_header})
+            r1 = loop.run_until_complete(ds.h_shadow_charts(req1))
+            ts1 = ds._shadow_charts_cache["ts"]
+            payload1 = ds._shadow_charts_cache["payload"]
+            assert payload1 is not None
+            req2 = make_mocked_request("GET", "/api/shadow_charts",
+                                       headers={"Cookie": cookie_header})
+            r2 = loop.run_until_complete(ds.h_shadow_charts(req2))
+            ts2 = ds._shadow_charts_cache["ts"]
+            payload2 = ds._shadow_charts_cache["payload"]
+        finally:
+            loop.close()
+        assert r1.status == 200 and r2.status == 200
+        # Cache must not have been rebuilt: identical timestamp + same
+        # payload object identity (cache hit returns the stored value).
+        assert ts1 == ts2, f"cache rebuilt within TTL: {ts1} vs {ts2}"
+        assert payload1 is payload2
+
+    @t("v5.4.1: index.html loads Chart.js + has 3 chart-group divs")
+    def _():
+        from html.parser import HTMLParser
+        html_path = (Path(__file__).parent
+                     / "dashboard_static" / "index.html")
+        text = html_path.read_text(encoding="utf-8")
+        # 1. Chart.js is loaded (CDN script tag with chart.umd in src).
+        assert "chart.umd" in text and "chart.js" in text.lower(), \
+            "Chart.js script tag missing from index.html"
+        # 2. The three chart-group divs exist with the expected ids.
+        for needed in ("shadow-equity-group", "shadow-heatmap-group",
+                       "shadow-winrate-group"):
+            assert needed in text, f"missing chart-group div #{needed}"
+        # 3. The heatmap canvas + the Charts collapsible header are wired.
+        assert "shadow-heatmap-canvas" in text
+        assert "shadow-charts-head" in text
+        assert "shadow-charts-body" in text
+        # 4. The new groups live inside the Shadow tab panel.
+        i_panel = text.find('id="tg-panel-shadow"')
+        i_groups = text.find("shadow-equity-group")
+        i_panel_close = text.find("/tg-panel-shadow")
+        assert i_panel != -1 and i_groups != -1 and i_panel_close != -1
+        assert i_panel < i_groups < i_panel_close, \
+            "chart groups must live inside the Shadow tab panel"
+        # 5. HTML still parses cleanly.
+        class _P(HTMLParser):
+            def error(self, msg):
+                raise AssertionError("malformed html: " + str(msg))
+        _P(convert_charrefs=True).feed(text)
 
     # -------- v5.2.1 shadow-accounting fixes (H2/H3/M3/M4) --------
 
