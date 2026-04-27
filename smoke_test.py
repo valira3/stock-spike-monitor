@@ -349,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.9")
+    @t("version: BOT_VERSION is 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.5.9", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.10", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3786,33 +3786,38 @@ def run_local() -> int:
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        # v5.5.9 supersedes; keep the test name pinned to its release
+        # v5.5.10 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
-        # v5.5.9 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+        # v5.5.10 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
-        # v5.5.9 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+        # v5.5.10 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
-        # v5.5.9 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+        # v5.5.10 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
-        # v5.5.9 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+        # v5.5.10 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
-        assert m.BOT_VERSION == "5.5.9", m.BOT_VERSION
+        # v5.5.10 supersedes; same pinned-name pattern.
+        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
+
+    @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
+    def _():
+        assert m.BOT_VERSION == "5.5.10", m.BOT_VERSION
 
     @t("v5.5.9: shadow tab unrealized bar chart fallback present in app.js")
     def _():
@@ -3839,6 +3844,269 @@ def run_local() -> int:
             "v5.5.9 strategies-row tint classes missing from app.css"
         assert "position: sticky" in css, \
             "v5.5.9 sticky strategies header missing from app.css"
+
+    # ---------- v5.5.10 \u2014 executor_positions persistence ----------
+    @t("v5.5.10: executor_positions table exists in state.db schema after init_db")
+    def _():
+        import persistence as p
+        p.init_db()
+        c = p._conn()
+        cur = c.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='executor_positions'"
+        )
+        row = cur.fetchone()
+        assert row is not None, \
+            "executor_positions table missing from state.db schema"
+        # PK must include executor_name AND mode AND ticker so Val/paper
+        # never overwrites Val/live or Gene/paper.
+        cur = c.execute("PRAGMA table_info(executor_positions)")
+        cols = {r[1]: r for r in cur.fetchall()}
+        for must in ("executor_name", "mode", "ticker", "side", "qty",
+                     "entry_price", "entry_ts_utc", "source",
+                     "stop", "trail", "last_updated_utc"):
+            assert must in cols, f"executor_positions missing column {must}"
+        # Sanity: PK columns flagged.
+        pk_cols = [name for name, info in cols.items() if info[5] > 0]
+        assert set(pk_cols) >= {"executor_name", "mode", "ticker"}, \
+            f"PK should cover (executor_name, mode, ticker), got {pk_cols}"
+
+    @t("v5.5.10: _record_position writes an executor_positions row")
+    def _():
+        import persistence as p
+        # Wipe any leftover rows for this synthetic NAME so the test is
+        # idempotent regardless of order.
+        c = p._conn()
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke",),
+        )
+
+        class _Bot(m.TradeGeniusBase):
+            NAME = "V510Smoke"
+            ENV_PREFIX = "V510SMOKE_"
+            def __init__(self_inner):
+                self_inner.NAME = "V510Smoke"
+                self_inner.mode = "paper"
+                self_inner.positions = {}
+
+        bot = _Bot()
+        bot._record_position("META", "LONG", 14, 680.28)
+        rows = p.load_executor_positions("V510Smoke", "paper")
+        assert "META" in rows, f"expected META row, got {rows!r}"
+        assert rows["META"]["qty"] == 14
+        assert abs(rows["META"]["entry_price"] - 680.28) < 1e-6
+        assert rows["META"]["source"] == "SIGNAL"
+        # Cleanup.
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke",),
+        )
+
+    @t("v5.5.10: _load_persisted_positions populates self.positions on __init__")
+    def _():
+        import persistence as p
+        c = p._conn()
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke2",),
+        )
+        # Pre-seed a row as if a prior process had recorded META.
+        p.save_executor_position(
+            "V510Smoke2", "paper", "META",
+            {
+                "side": "LONG", "qty": 14, "entry_price": 680.28,
+                "entry_ts_utc": "2026-04-27T17:42:18+00:00",
+                "source": "SIGNAL", "stop": None, "trail": None,
+            },
+        )
+
+        class _Bot(m.TradeGeniusBase):
+            NAME = "V510Smoke2"
+            ENV_PREFIX = "V510SMOKE2_"
+            def __init__(self_inner):
+                self_inner.NAME = "V510Smoke2"
+                self_inner.mode = "paper"
+                self_inner.positions = {}
+                # Hit the actual loader \u2014 not the parent __init__,
+                # which would also touch env/Telegram/etc.
+                self_inner._load_persisted_positions()
+
+        bot = _Bot()
+        assert "META" in bot.positions, \
+            f"persisted META not rehydrated, got {bot.positions!r}"
+        assert bot.positions["META"]["qty"] == 14
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke2",),
+        )
+
+    @t("v5.5.10: _reconcile_broker_positions is silent when persisted matches broker")
+    def _():
+        # Today's canonical case: Val booted with META 14 already
+        # persisted; broker also reports META 14. v5.5.9 would have
+        # grafted+Telegram'd; v5.5.10 must stay silent.
+        import persistence as p
+        c = p._conn()
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke3",),
+        )
+
+        class _BP:
+            symbol = "META"
+            qty = "14"
+            avg_entry_price = "680.28"
+
+        class _Client:
+            def get_all_positions(self_inner):
+                return [_BP()]
+
+        sent = []
+        class _Bot(m.TradeGeniusBase):
+            NAME = "V510Smoke3"
+            ENV_PREFIX = "V510SMOKE3_"
+            def __init__(self_inner):
+                self_inner.NAME = "V510Smoke3"
+                self_inner.mode = "paper"
+                self_inner.positions = {}
+                self_inner._load_persisted_positions()
+            def _ensure_client(self_inner):
+                return _Client()
+            def _send_own_telegram(self_inner, msg):
+                sent.append(msg)
+
+        # Pre-seed the persisted row so the bot's positions set
+        # matches the broker's set exactly.
+        p.save_executor_position(
+            "V510Smoke3", "paper", "META",
+            {
+                "side": "LONG", "qty": 14, "entry_price": 680.28,
+                "entry_ts_utc": "2026-04-27T17:00:00+00:00",
+                "source": "SIGNAL", "stop": None, "trail": None,
+            },
+        )
+        bot = _Bot()
+        bot._reconcile_broker_positions()
+        assert sent == [], \
+            f"clean reconcile must NOT Telegram, got {sent!r}"
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke3",),
+        )
+
+    @t("v5.5.10: _reconcile_broker_positions self-heals stale persisted entries quietly")
+    def _():
+        # Persisted has a ticker the broker says we no longer hold.
+        # Outcome 3: WARN log + remove, no Telegram.
+        import persistence as p
+        c = p._conn()
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke4",),
+        )
+
+        class _Client:
+            def get_all_positions(self_inner):
+                return []  # broker holds nothing
+
+        sent = []
+        class _Bot(m.TradeGeniusBase):
+            NAME = "V510Smoke4"
+            ENV_PREFIX = "V510SMOKE4_"
+            def __init__(self_inner):
+                self_inner.NAME = "V510Smoke4"
+                self_inner.mode = "paper"
+                self_inner.positions = {}
+                self_inner._load_persisted_positions()
+            def _ensure_client(self_inner):
+                return _Client()
+            def _send_own_telegram(self_inner, msg):
+                sent.append(msg)
+
+        p.save_executor_position(
+            "V510Smoke4", "paper", "STALE",
+            {
+                "side": "LONG", "qty": 5, "entry_price": 100.0,
+                "entry_ts_utc": "2026-04-27T17:00:00+00:00",
+                "source": "SIGNAL", "stop": None, "trail": None,
+            },
+        )
+        bot = _Bot()
+        assert "STALE" in bot.positions
+        bot._reconcile_broker_positions()
+        assert sent == [], \
+            f"stale-self-heal must NOT Telegram, got {sent!r}"
+        assert "STALE" not in bot.positions, \
+            "stale ticker must be removed from in-memory dict"
+        rows = p.load_executor_positions("V510Smoke4", "paper")
+        assert "STALE" not in rows, \
+            "stale ticker must be removed from executor_positions row set"
+
+    @t("v5.5.10: _reconcile_broker_positions still grafts + Telegrams on true divergence")
+    def _():
+        # Persisted does NOT have the ticker, broker does. This is a
+        # real orphan \u2014 graft and Telegram with "(true divergence)".
+        import persistence as p
+        c = p._conn()
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke5",),
+        )
+
+        class _BP:
+            symbol = "AAPL"
+            qty = "20"
+            avg_entry_price = "172.10"
+
+        class _Client:
+            def get_all_positions(self_inner):
+                return [_BP()]
+
+        sent = []
+        class _Bot(m.TradeGeniusBase):
+            NAME = "V510Smoke5"
+            ENV_PREFIX = "V510SMOKE5_"
+            def __init__(self_inner):
+                self_inner.NAME = "V510Smoke5"
+                self_inner.mode = "paper"
+                self_inner.positions = {}
+                self_inner._load_persisted_positions()
+            def _ensure_client(self_inner):
+                return _Client()
+            def _send_own_telegram(self_inner, msg):
+                sent.append(msg)
+
+        bot = _Bot()
+        assert "AAPL" not in bot.positions
+        bot._reconcile_broker_positions()
+        assert "AAPL" in bot.positions, \
+            "true orphan must be grafted into self.positions"
+        assert bot.positions["AAPL"]["source"] == "RECONCILE"
+        assert any("true divergence" in s for s in sent), \
+            f"expected '(true divergence)' Telegram, got {sent!r}"
+        # Graft must have been persisted so the next reboot stays silent.
+        rows = p.load_executor_positions("V510Smoke5", "paper")
+        assert "AAPL" in rows, "grafted orphan must be persisted to DB"
+        c.execute(
+            "DELETE FROM executor_positions WHERE executor_name = ?",
+            ("V510Smoke5",),
+        )
+
+    @t("v5.5.10: shadow tab AS OF reads s.server_time (not s.as_of) in app.js")
+    def _():
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent
+              / "dashboard_static" / "app.js").read_text()
+        # The fix replaces the bare s.as_of read with a server_time
+        # primary + shadow_pnl.as_of fallback. Pin both signals.
+        assert "s.server_time" in js, \
+            "v5.5.10 dashboard fix missing: s.server_time read absent"
+        # The pre-fix line `(s && s.as_of) ? _scFmtTs(s.as_of) : "\u2014"`
+        # must NOT survive verbatim \u2014 if it does, the AS OF cell
+        # is still always undefined.
+        assert "(s && s.as_of) ? _scFmtTs(s.as_of)" not in js, \
+            "v5.5.10 pre-fix bare s.as_of read still present in app.js"
 
     @t("v5.5.8: _today_trades synthesizes SHORT entry rows from short_trade_history")
     def _():

@@ -139,6 +139,29 @@ def init_db(path: Optional[str] = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_shadow_today "
                 "ON shadow_positions(config_name, entry_ts_utc)"
             )
+            # v5.5.10 \u2014 executor_positions: per-bot, per-mode mirror
+            # of self.positions in TradeGeniusBase, persisted across
+            # process restarts. Primary key includes executor_name AND
+            # mode so Val/paper, Val/live, Gene/paper, Gene/live never
+            # overwrite each other.
+            bootstrap.execute(
+                """
+                CREATE TABLE IF NOT EXISTS executor_positions (
+                    executor_name TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    qty INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    entry_ts_utc TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    stop REAL,
+                    trail REAL,
+                    last_updated_utc TEXT NOT NULL,
+                    PRIMARY KEY (executor_name, mode, ticker)
+                )
+                """
+            )
         finally:
             bootstrap.close()
         _initialized = True
@@ -513,6 +536,107 @@ def load_shadow_positions_since(ts_utc_iso: str) -> list[dict]:
             "exit_reason": row[9], "realized_pnl": row[10],
         })
     return out
+
+
+# ----------------------------------------------------------------------
+# v5.5.10 \u2014 executor_positions helpers
+#
+# Per-bot, per-mode mirror of TradeGeniusBase.self.positions. Lets
+# _reconcile_broker_positions distinguish a stale-restart (persisted
+# state matches broker, no Telegram needed) from a true divergence.
+# ----------------------------------------------------------------------
+def save_executor_position(
+    executor_name: str,
+    mode: str,
+    ticker: str,
+    pos: dict,
+) -> None:
+    """INSERT OR REPLACE one executor position row.
+
+    `pos` is the same shape as TradeGeniusBase.self.positions[ticker]:
+    side, qty, entry_price, entry_ts_utc, source, stop, trail.
+    """
+    c = _conn()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            "INSERT OR REPLACE INTO executor_positions "
+            "(executor_name, mode, ticker, side, qty, entry_price, "
+            " entry_ts_utc, source, stop, trail, last_updated_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                executor_name,
+                mode,
+                ticker,
+                str(pos.get("side", "")),
+                int(pos.get("qty", 0) or 0),
+                float(pos.get("entry_price", 0.0) or 0.0),
+                str(pos.get("entry_ts_utc", _utc_now_iso())),
+                str(pos.get("source", "SIGNAL")),
+                None if pos.get("stop") is None else float(pos["stop"]),
+                None if pos.get("trail") is None else float(pos["trail"]),
+                _utc_now_iso(),
+            ),
+        )
+        c.execute("COMMIT")
+    except Exception:
+        try:
+            c.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
+def load_executor_positions(
+    executor_name: str,
+    mode: str,
+) -> dict[str, dict]:
+    """Return {ticker: pos_dict} for one (executor_name, mode) pair."""
+    c = _conn()
+    cur = c.execute(
+        "SELECT ticker, side, qty, entry_price, entry_ts_utc, "
+        "       source, stop, trail "
+        "FROM executor_positions "
+        "WHERE executor_name = ? AND mode = ?",
+        (executor_name, mode),
+    )
+    out: dict[str, dict] = {}
+    for row in cur.fetchall():
+        ticker = row[0]
+        out[ticker] = {
+            "ticker": ticker,
+            "side": row[1],
+            "qty": int(row[2]),
+            "entry_price": float(row[3]),
+            "entry_ts_utc": row[4],
+            "source": row[5],
+            "stop": None if row[6] is None else float(row[6]),
+            "trail": None if row[7] is None else float(row[7]),
+        }
+    return out
+
+
+def delete_executor_position(
+    executor_name: str,
+    mode: str,
+    ticker: str,
+) -> None:
+    """DELETE one executor position row. No-op if absent."""
+    c = _conn()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            "DELETE FROM executor_positions "
+            "WHERE executor_name = ? AND mode = ? AND ticker = ?",
+            (executor_name, mode, ticker),
+        )
+        c.execute("COMMIT")
+    except Exception:
+        try:
+            c.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
 
 
 def _close_for_tests() -> None:

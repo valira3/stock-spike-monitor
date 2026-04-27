@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.9"
+BOT_VERSION = "5.5.10"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,6 +93,24 @@ BOT_VERSION = "5.5.9"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.10 \u2014 persist positions.\n"
+    "Executor self.positions now\n"
+    "rehydrates from state.db at\n"
+    "boot, so a Val/Gene restart\n"
+    "during a live session is\n"
+    "silent (no false orphan\n"
+    "Telegram). Reconcile is now\n"
+    "a true safety net: clean\n"
+    "match \u2192 no alert, broker\n"
+    "orphan \u2192 graft + alert,\n"
+    "stale local \u2192 quiet heal.\n"
+    "Shadow tab AS OF now reads\n"
+    "server_time (was blank).\n"
+    "No trading-decision change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.9 \u2014 shadow charts polish.\n"
     "Shadow tab now shows a per-\n"
     "ticker unrealized bar chart\n"
@@ -104,11 +122,8 @@ CURRENT_MAIN_NOTE = (
     "open + unrealized. Strategies\n"
     "rows tint by today's P&L and\n"
     "the header is sticky.\n"
-    "No trading-decision change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "No trading-decision change.\n"
+    "\n"
     "v5.5.8 \u2014 SHORT entry row.\n"
     "Main tab Today's Trades now\n"
     "shows the SHORT entry row for\n"
@@ -1106,6 +1121,17 @@ class TradeGeniusBase:
         # by _reconcile_broker_positions at boot. Used to detect orphans
         # the bot does not know about (broker accepted, client timed out).
         self.positions: dict = {}
+        # v5.5.10 \u2014 rehydrate from state.db BEFORE
+        # _reconcile_broker_positions runs (called from start()) so a
+        # plain reboot during a live session sees persisted == broker
+        # and stays silent. Wrapped: a bad load must never crash boot.
+        try:
+            self._load_persisted_positions()
+        except Exception:
+            logger.exception(
+                "[%s] _load_persisted_positions failed \u2014 continuing with empty dict",
+                self.NAME,
+            )
 
     # ---------- state files ----------
     def _state_file(self, mode: str = None) -> str:
@@ -1238,6 +1264,15 @@ class TradeGeniusBase:
                 logger.exception("[%s] rebuild paper client failed", self.NAME)
                 self.client = None
             self._save_state()
+            # v5.5.10 \u2014 reload positions for the new mode bucket.
+            self.positions = {}
+            try:
+                self._load_persisted_positions()
+            except Exception:
+                logger.exception(
+                    "[%s] reload persisted positions on mode flip failed",
+                    self.NAME,
+                )
             return (True, "mode set to paper")
         if nm == "live":
             if confirm_token != "confirm":
@@ -1256,6 +1291,15 @@ class TradeGeniusBase:
                 logger.exception("[%s] rebuild live client failed", self.NAME)
                 return (False, f"client rebuild after sanity failed: {e}")
             self._save_state()
+            # v5.5.10 \u2014 reload positions for the new mode bucket.
+            self.positions = {}
+            try:
+                self._load_persisted_positions()
+            except Exception:
+                logger.exception(
+                    "[%s] reload persisted positions on mode flip failed",
+                    self.NAME,
+                )
             return (True, f"mode set to live \u2014 {msg}")
         return (False, f"unknown mode: {new_mode!r} (expected 'paper' or 'live')")
 
@@ -1462,6 +1506,68 @@ class TradeGeniusBase:
                 return existing
             raise
 
+    # v5.5.10 \u2014 persistence helpers for self.positions. Backed by
+    # the executor_positions table in state.db so a process restart
+    # during a live session no longer looks like a divergence.
+    def _load_persisted_positions(self) -> None:
+        """Hydrate self.positions from state.db (executor_positions).
+
+        Called from __init__ BEFORE _reconcile_broker_positions runs
+        in start(). Silent no-op if the table is empty (first boot).
+        """
+        try:
+            rows = persistence.load_executor_positions(self.NAME, self.mode)
+        except Exception:
+            logger.exception(
+                "[%s] persistence.load_executor_positions failed",
+                self.NAME,
+            )
+            return
+        if not rows:
+            return
+        self.positions.update(rows)
+        logger.info(
+            "[%s] rehydrated %d persisted position(s) from state.db",
+            self.NAME, len(rows),
+        )
+
+    def _persist_position(self, ticker: str) -> None:
+        """INSERT OR REPLACE the row for ticker. Best-effort."""
+        pos = self.positions.get(ticker)
+        if not pos:
+            return
+        try:
+            persistence.save_executor_position(
+                self.NAME, self.mode, ticker, pos,
+            )
+        except Exception:
+            logger.exception(
+                "[%s] persistence.save_executor_position failed for %s",
+                self.NAME, ticker,
+            )
+
+    def _delete_persisted_position(self, ticker: str) -> None:
+        """DELETE the row for ticker. Best-effort."""
+        try:
+            persistence.delete_executor_position(
+                self.NAME, self.mode, ticker,
+            )
+        except Exception:
+            logger.exception(
+                "[%s] persistence.delete_executor_position failed for %s",
+                self.NAME, ticker,
+            )
+
+    def _remove_position(self, ticker: str) -> None:
+        """Remove ticker from both self.positions and state.db.
+
+        Single hook for every position-close path. The dict pop is
+        defensive (a stale-then-gone case is fine); the DB delete
+        always runs so a stray row never lingers.
+        """
+        self.positions.pop(ticker, None)
+        self._delete_persisted_position(ticker)
+
     def _record_position(self, ticker: str, side: str, qty: int, entry_price: float) -> None:
         """Stamp an executor-side record after a successful submit."""
         self.positions[ticker] = {
@@ -1474,14 +1580,27 @@ class TradeGeniusBase:
             "stop": None,
             "trail": None,
         }
+        # v5.5.10 \u2014 mirror to state.db so a restart sees this row.
+        self._persist_position(ticker)
 
     def _reconcile_broker_positions(self) -> None:
         """Run once at boot. Pull broker positions, graft any orphans.
 
-        For every broker-side position not present in self.positions,
-        reconstruct an entry with source='RECONCILE' so MTM/trail/EOD
-        manage it like a normal position. Stop/trail are left None and
-        rebuilt fresh from current price by the next MTM cycle.
+        v5.5.10 reframe: this runs AFTER _load_persisted_positions has
+        rehydrated self.positions from state.db, so it becomes a true
+        safety net rather than the primary state-bootstrap path. Three
+        outcomes:
+
+          1. Persisted set == broker set: clean reconcile, INFO log,
+             no Telegram (the common reboot case).
+          2. Broker has tickers persisted does not: true divergence \u2014
+             graft + WARN log + Telegram with "(true divergence)".
+          3. Persisted has tickers broker does not: stale local state.
+             Quietly self-heal by removing the row. WARN log only,
+             no Telegram, no close/exit path called.
+
+        For grafted orphans we keep source='RECONCILE' and persist
+        the new row so the next reboot stays silent.
         """
         client = self._ensure_client()
         if client is None:
@@ -1499,13 +1618,29 @@ class TradeGeniusBase:
             )
             return
 
-        grafted = 0
+        broker_by_ticker: dict = {}
         for bp in broker_positions or []:
             ticker = getattr(bp, "symbol", None)
             if not ticker:
                 continue
-            if ticker in self.positions:
-                continue
+            broker_by_ticker[ticker] = bp
+
+        broker_tickers = set(broker_by_ticker.keys())
+        persisted_tickers = set(self.positions.keys())
+
+        # Outcome 3: stale local state \u2014 quiet self-heal.
+        for ticker in sorted(persisted_tickers - broker_tickers):
+            logger.warning(
+                "[%s] [RECONCILE] stale local position: ticker=%s \u2014 "
+                "broker says no position, removing",
+                self.NAME, ticker,
+            )
+            self._remove_position(ticker)
+
+        # Outcome 2: graft broker orphans (true divergence).
+        grafted = 0
+        for ticker in sorted(broker_tickers - persisted_tickers):
+            bp = broker_by_ticker[ticker]
             try:
                 qty_int = int(bp.qty)
             except Exception:
@@ -1529,21 +1664,30 @@ class TradeGeniusBase:
                 "stop": None,
                 "trail": None,
             }
+            self._persist_position(ticker)
             grafted += 1
             logger.warning(
                 "[%s] [RECONCILE] grafted broker orphan: ticker=%s side=%s qty=%d entry=%.2f",
                 self.NAME, ticker, side, abs(qty_int), entry_px,
             )
 
-        if grafted > 0:
-            try:
-                self._send_own_telegram(
-                    f"\u26a0\ufe0f Reconcile: grafted {grafted} broker orphan(s) on {self.NAME} boot"
-                )
-            except Exception:
-                logger.exception(
-                    "[%s] [RECONCILE] telegram fan-out raised", self.NAME,
-                )
+        # Outcome 1: clean reconcile \u2014 silent INFO log, no Telegram.
+        if grafted == 0:
+            logger.info(
+                "[%s] [RECONCILE] clean: %d position(s) match broker",
+                self.NAME, len(broker_tickers),
+            )
+            return
+
+        try:
+            self._send_own_telegram(
+                f"\u26a0\ufe0f Reconcile: grafted {grafted} broker orphan(s) "
+                f"on {self.NAME} boot (true divergence)"
+            )
+        except Exception:
+            logger.exception(
+                "[%s] [RECONCILE] telegram fan-out raised", self.NAME,
+            )
 
     def _on_signal(self, event: dict) -> None:
         """Listener callback: dispatch on event['kind']."""
@@ -1614,11 +1758,17 @@ class TradeGeniusBase:
                 self._send_own_telegram(msg)
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
                 client.close_position(ticker)
+                # v5.5.10 \u2014 drop the local + persisted row so a
+                # reboot does not see this as a stale position.
+                self._remove_position(ticker)
                 msg = f"\u2705 {label}: {ticker} CLOSE ({reason})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
             elif kind == "EOD_CLOSE_ALL":
                 client.close_all_positions(cancel_orders=True)
+                # v5.5.10 \u2014 wipe every local + persisted row.
+                for tkr in list(self.positions.keys()):
+                    self._remove_position(tkr)
                 msg = f"\u2705 {label}: EOD close_all_positions"
                 logger.info(msg)
                 self._send_own_telegram(msg)
@@ -1715,6 +1865,10 @@ class TradeGeniusBase:
             return
         try:
             client.close_all_positions(cancel_orders=True)
+            # v5.5.10 \u2014 drop every local + persisted row so a
+            # reboot does not see them as stale positions.
+            for tkr in list(self.positions.keys()):
+                self._remove_position(tkr)
             await update.message.reply_text(
                 f"\u2705 {self.NAME}: HALT \u2014 close_all_positions fired"
             )

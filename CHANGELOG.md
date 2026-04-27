@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.5.10 — 2026-04-27
+
+Smoking-gun summary: at every Val (or Gene) executor reboot during a live session with open broker positions, a Telegram fired — `⚠️ Reconcile: grafted N broker orphan(s) on Val boot` — even though the bot had simply restarted into a session it had opened normally. Today's example: v5.5.9 deployed at 17:40 UTC, Val rebooted, found META 14 @ $680.28 on the broker (a clean v5.5.8 signal-driven entry), grafted it as an "orphan", and Telegram'd. Root cause: `TradeGeniusBase.__init__` initializes `self.positions: dict = {}` empty on every boot. The dict was only populated by `_record_position` (in-memory after a successful submit) and `_reconcile_broker_positions` (at start-time via `client.get_all_positions()`). It was NEVER persisted to disk and NEVER rehydrated at boot, so every reboot looked like total state divergence to the reconcile path. Separately, the Shadow tab top summary band's `AS OF` field was stuck on the em-dash placeholder because `dashboard_static/app.js` read `s.as_of` from `/api/state` and that key was never emitted at the top level (the canonical field is `server_time`).
+
+- feat (`persistence.py`): new `executor_positions` table in `state.db` (`/data/state.db` on Railway) with PRIMARY KEY `(executor_name, mode, ticker)` so Val/paper, Val/live, Gene/paper, Gene/live each have independent buckets and never overwrite each other. New helpers `save_executor_position`, `load_executor_positions`, `delete_executor_position` follow the existing `BEGIN IMMEDIATE`/`COMMIT` write pattern with `INSERT OR REPLACE` semantics for idempotent writes. Schema is created in `init_db()` alongside `fired_set` / `v5_long_tracks` / `shadow_positions`, so any existing TradeGenius boot after this release auto-migrates.
+- feat (`trade_genius.TradeGeniusBase`): three new methods — `_load_persisted_positions()` (read all rows for `(self.NAME, self.mode)` and populate `self.positions`), `_persist_position(ticker)` (mirror one in-memory row to the DB), and `_delete_persisted_position(ticker)` (delete one row). Plus a `_remove_position(ticker)` helper that drops the dict entry AND the DB row in one call so every position-close path stays consistent with one line of code.
+- feat (`__init__`): `_load_persisted_positions()` now runs at the end of `__init__`, BEFORE `start()` calls `_reconcile_broker_positions()`. So a plain reboot during a live session sees the persisted dict already populated and the reconcile path stays silent.
+- fix (`_record_position`): mirrors every successful entry to `executor_positions` via `_persist_position(ticker)` immediately after stamping `self.positions[ticker]`, so the next reboot picks it up.
+- fix (`_reconcile_broker_positions`): rewritten as a true safety net with three explicit outcomes, distinguished by set comparison of persisted-tickers vs broker-tickers:
+  1. Persisted == broker → INFO log `[RECONCILE] clean: N position(s) match broker`, no Telegram (the common reboot case, today's META scenario).
+  2. Broker has tickers persisted does not → graft as today (source=`RECONCILE`, persist the new row), WARN log per orphan, single Telegram suffixed `(true divergence)` so the operator can tell a real divergence from the legacy noisy alert.
+  3. Persisted has tickers broker does not → quiet self-heal: WARN log `[RECONCILE] stale local position: ticker=X — broker says no position, removing` then `_remove_position(ticker)`. No Telegram, no close/exit-path call — the broker is already in the desired state.
+- fix (close paths): every code path that closes a position now calls `_remove_position(ticker)` to drop both the in-memory dict entry and the persisted row — `EXIT_LONG`/`EXIT_SHORT` dispatch in `_on_signal`, `EOD_CLOSE_ALL` dispatch, and `cmd_halt`. Pre-fix, none of them touched `self.positions` at all (the dict was already write-only), so a stray row could only have appeared via reconcile-then-restart; with persistence on, every removal must propagate to the DB or stale rows accumulate.
+- fix (`set_mode`): a paper⇄live flip now wipes `self.positions` and calls `_load_persisted_positions()` so the executor sees the bucket for the new mode (paper rows do not bleed into live or vice versa). The `(executor_name, mode, ticker)` PK already enforces the storage-side separation; this hook makes the in-memory view match.
+- fix (`dashboard_static/app.js` `_shadowSummaryBand`): the top-summary `AS OF` cell read `s.as_of` from `/api/state`, which is never emitted at the top level. The canonical timestamp is `s.server_time` (line 880 in `dashboard_server.py`), with `s.shadow_pnl.as_of` as a fallback. Two-line change reads `s.server_time` first, falls back to `s.shadow_pnl.as_of`, then renders via the existing `_scFmtTs` helper (em-dash placeholder only when both are absent).
+- tests: 7 new in-suite smoke guards plus the existing version pin —
+  - `v5.5.10: executor_positions table exists in state.db schema after init_db`
+  - `v5.5.10: _record_position writes an executor_positions row`
+  - `v5.5.10: _load_persisted_positions populates self.positions on __init__`
+  - `v5.5.10: _reconcile_broker_positions is silent when persisted matches broker`
+  - `v5.5.10: _reconcile_broker_positions self-heals stale persisted entries quietly`
+  - `v5.5.10: _reconcile_broker_positions still grafts + Telegrams on true divergence`
+  - `v5.5.10: shadow tab AS OF reads s.server_time (not s.as_of) in app.js`
+  - Smoke version pin bumped from `5.5.9` → `5.5.10`. All v5.5.5 → v5.5.9 regression guards still pass unchanged.
+- CI guard: `BOT_VERSION` bumped to `5.5.10` (matches this heading; the version-bump-check workflow gates on both). `CURRENT_MAIN_NOTE` rewritten for v5.5.10 (each line ≤ 34 chars), with the v5.5.9 shadow-charts-polish note pushed onto `_MAIN_HISTORY_TAIL`.
+- docs: `ARCHITECTURE.md` § persistence section gained a paragraph describing the new `executor_positions` table — schema, PK rationale, and the three reconcile outcomes. `trade_genius_algo.pdf` left unchanged: this release is plumbing (executor-side persistence layer) plus a 2-line dashboard JS fix; no algorithm or trading-decision change touches the algo PDF's scope.
+
+No trading-decision change. The grafted-orphan heuristic (broker says we own X, we do not know about it → graft as RECONCILE-sourced position) is preserved exactly; v5.5.10 only stops misclassifying a stale-restart as a divergence. The pre-fix per-ticker WARN log line is preserved verbatim so existing log alerts keyed on `[RECONCILE] grafted broker orphan` continue to fire on real divergences. No change to `_emit_signal`, `evaluate_g4`, the WS consumer, paper-book sizing, or any executor entry/exit dispatch logic.
+
+---
+
 ## v5.5.9 — 2026-04-27
 
 Smoking-gun summary: OOMPH_ALERT had 207 open shadow positions and ~−$7.8k unrealized at the end of the v5.5.8 trading day, but ZERO closed trades — the weekly batch that materializes closed-trade rows doesn't run until Sat May 2. Result: every per-config chart on the Shadow tab rendered "no closed trades", the equity / win-rate / heatmap groups painted 7 blank rows, and the SHADOW STRATEGIES table gave no at-a-glance sentiment cue while the user scrolled its long open-positions detail. v5.5.9 makes the panel useful TODAY using only the existing `/api/state` shadow payload — no server change.
