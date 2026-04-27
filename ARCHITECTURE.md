@@ -1631,4 +1631,80 @@ baseline; no short-specific code change.
 
 ---
 
+## 20. Offline backtest CLI (v5.4.0)
+
+The `backtest/` package is a self-contained offline replayer. It reads
+the JSONL bar archive written by `bar_archive.write_bar` and replays
+one (or all) of the `volume_profile.SHADOW_CONFIGS` gate rules over a
+trading-day range, producing a CSV ledger of entry/exit pairs and an
+optional replay-vs-prod validation report.
+
+### 20.1 How to run
+
+```
+python -m backtest.replay \
+    --start 2026-04-20 --end 2026-04-24 \
+    --config GEMINI_A \
+    [--validate] \
+    [--out ./backtest_out/] \
+    [--bars-dir /data/bars/] \
+    [--state-db /data/state.db]
+```
+
+`--config` accepts any `SHADOW_CONFIGS` name (`TICKER+QQQ`,
+`TICKER_ONLY`, `QQQ_ONLY`, `GEMINI_A`, `BUCKET_FILL_100`) or the
+literal `ALL` to fan out across every config in one run.
+
+### 20.2 What `--validate` does
+
+In validate mode, after the replay completes, the CLI queries
+`shadow_positions` in `state.db` for the same `config_name` over the
+same date range and pairs each predicted replay entry to a prod row by
+ticker + side + entry timestamp within ±60s. The output report
+`<out>/<config>_<start>_<end>_validation.md` lists:
+
+- **match rate** = matches / total prod entries
+- **REPLAY_ONLY** entries (potential false-positive — replay would
+  have entered, prod did not)
+- **PROD_ONLY** entries (potential false-negative — prod entered,
+  replay did not)
+- average entry-price and exit-price drift across matched pairs
+
+Exit code is 0 when match rate ≥ 0.95, else 1, so CI can gate on it.
+
+### 20.3 CSV ledger columns
+
+The ledger CSV at `<out>/<config>_<start>_<end>.csv` carries one row
+per closed entry/exit pair plus a leading `# summary:` comment line.
+
+| column        | meaning                                                |
+|---------------|--------------------------------------------------------|
+| `ticker`      | uppercase symbol                                       |
+| `side`        | `BUY` (long) or `SHORT`                                |
+| `entry_ts`    | UTC ISO timestamp the position opened on a bar close   |
+| `entry_price` | bar-close price at entry                               |
+| `exit_ts`     | UTC ISO timestamp the position closed                  |
+| `exit_price`  | bar-close price at exit                                |
+| `qty`         | shares (sized off a $1000-per-position budget)         |
+| `pnl_dollars` | realized P&L in $; direction-aware                     |
+| `pnl_pct`     | realized P&L as % of entry price                       |
+| `exit_reason` | `trail_stop` · `hard_eject` · `eod`                    |
+
+The `# summary:` line gives quick totals: trade count, wins, losses,
+total P&L, win rate.
+
+### 20.4 Reused logic
+
+Gate-pass evaluation (`_gate_pass`) and the entry → exit pairing
+follow the same model proven out in
+`backtest_v510/replay_gate.py` and
+`backtest_v510/replay_gene_configs.py` — the `pnl_per_pair` math is
+ported directly. The MVP intentionally uses bar-close prices and a
+simple trail/eject/eod policy rather than re-implementing every nuance
+of `trade_genius.py`'s live decision tree; the engine's job is
+*deterministic, diff-able replay*, and `--validate` is the canary
+that flags drift between replay and prod.
+
+---
+
 *Last refresh: April 2026, against `BOT_VERSION = "5.1.2"`.*
