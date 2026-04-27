@@ -1,8 +1,8 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.3.0 · April 2026
+> **Version:** v5.4.1 · April 2026
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`
+> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/{loader,ledger,replay,__main__}.py`
 
 TradeGenius is a Python Telegram-driven trading bot with a paper book,
 two Alpaca-backed executor mirrors, and a live web dashboard. As of
@@ -19,10 +19,15 @@ Railway Volume (`persistence.py`, `/data/state.db`). **v5.2.0** added a
 real-time shadow-strategy P&L tracker (`shadow_pnl.py`); **v5.2.1**
 hardened Alpaca submits with deterministic `client_order_id` idempotency
 plus boot-time broker reconcile; **v5.3.0** moved the shadow panel to its
-own dedicated dashboard tab with click-to-expand per-config detail. The
-v5.0.0 Tiger/Buffalo entry/exit decisions are unchanged through v5.3.0
-— every v5.1.x / v5.2.x / v5.3.x add is observational or
-infrastructure-only.
+own dedicated dashboard tab with click-to-expand per-config detail.
+**v5.4.0** added the `backtest/` offline replay package and a
+`python -m backtest.replay` CLI with replay-vs-prod validation.
+**v5.4.1** layered three Chart.js visualizations onto the Shadow tab
+(equity curves, day-P&L heatmap, rolling win-rate sparklines) backed by
+a new `/api/shadow_charts` endpoint with a 30 s server-side cache. The
+v5.0.0 Tiger/Buffalo entry/exit decisions are unchanged through v5.4.1
+— every v5.1.x / v5.2.x / v5.3.x / v5.4.x add is observational,
+infrastructure, or display-only.
 
 The canonical specification of the trading logic lives in
 [`STRATEGY.md`](STRATEGY.md) at the repo root. Sections 6 and 7 below
@@ -1286,11 +1291,11 @@ state machine builds up state lazily as gates pass and stages fire.
 v4 `paper_trades`, `trade_history`, `positions`, `short_positions`,
 and the daily entry counters all roll forward unchanged.
 
-### 16.5 v5.0.x → v5.3.x — what changed (and what didn't)
+### 16.5 v5.0.x → v5.4.x — what changed (and what didn't)
 
-The Tiger/Buffalo state machine in §6 is the same code in v5.3.0 as it
-was in v5.0.0. Every v5.1.x / v5.2.x / v5.3.x release is
-observation- or infrastructure-only:
+The Tiger/Buffalo state machine in §6 is the same code in v5.4.1 as it
+was in v5.0.0. Every v5.1.x / v5.2.x / v5.3.x / v5.4.x release is
+observation-, infrastructure-, or display-only:
 
 | Release | Subject                                                       | Behavior change? |
 |---------|---------------------------------------------------------------|------------------|
@@ -1309,15 +1314,19 @@ observation- or infrastructure-only:
 | v5.2.0  | Real-time shadow-strategy P&L tracker on dashboard            | No (display)     |
 | v5.2.1  | Alpaca order idempotency + startup broker reconcile + shadow accounting fixes (H1/H2/H3/M3/M4) | No (safety) |
 | v5.3.0  | Shadow strategies moved to dedicated tab + per-config detail  | No (display)     |
+| v5.3.1  | Doc refresh: ARCHITECTURE.md + `trade_genius_algo.pdf` to v5.3.0 state | No (docs) |
+| v5.4.0  | Offline backtest CLI (`backtest/` package + `python -m backtest.replay` with `--validate`) | No (offline) |
+| v5.4.1  | Shadow tab charts (equity curves + day heatmap + win-rate sparklines) + `/api/shadow_charts` endpoint | No (display) |
+| v5.4.2  | Doc refresh: ARCHITECTURE.md + `trade_genius_algo.pdf` to v5.4.1 state | No (docs) |
 
-Result: a v5.0.0 paper-state file still loads cleanly on v5.3.0 (via
+Result: a v5.0.0 paper-state file still loads cleanly on v5.4.1 (via
 the v5.1.8 one-shot JSON-to-SQLite import path); the synthetic harness
 50/50 byte-equal goldens still match; every entry, exit, sizing, and
 stop-placement decision is identical to v5.0.0.
 
 ---
 
-## 17. Forensic Volume Filter (Anaplan logic) — v5.1.0 → v5.3.0
+## 17. Forensic Volume Filter (Anaplan logic) — v5.1.0 → v5.4.1
 
 The §17 layer asks a sharper volume question than the legacy "is volume
 high" tests: *is this minute's volume higher than the 55-trading-day
@@ -1487,10 +1496,16 @@ underlying live trade.
 7. **v5.3.0** — Shadow strategies move to a dedicated dashboard tab
    with click-to-expand per-config detail (open positions + last 10
    closed trades). See §9.5 for the wiring.
-8. **Observation window** — Val collects multiple weeks of 7-config
-   shadow data alongside `[V510-CAND]` / `[V510-MINUTE]` /
-   `[V510-VEL]` / `[V510-IDX]` / `[V510-DI]` streams.
-9. **Future PR** — Flip `VOL_GATE_ENFORCE=1` once Val has chosen the
+8. **v5.4.0** — Offline `backtest/` replay package + `python -m
+   backtest.replay` CLI with `--validate` mode pairing replay vs prod
+   `shadow_positions` (§20).
+9. **v5.4.1** — Shadow tab charts (equity curves, day-P&L heatmap,
+   rolling 20-trade win-rate sparklines) backed by
+   `/api/shadow_charts` (§21).
+10. **Observation window** — Val collects multiple weeks of 7-config
+    shadow data alongside `[V510-CAND]` / `[V510-MINUTE]` /
+    `[V510-VEL]` / `[V510-IDX]` / `[V510-DI]` streams.
+11. **Future PR** — Flip `VOL_GATE_ENFORCE=1` once Val has chosen the
    best config off live data; G4 joins G1/G2/G3 as a hard ARM
    precondition (see §19.1).
 
@@ -1618,14 +1633,14 @@ env-driven configs beyond v5.1.1; adaptive runtime config switching.
 
 ### 19.1 Four-light gate set (v5.1.0+)
 
-| Gate | Light name      | Source                          | Status through v5.1.2 |
+| Gate | Light name      | Source                          | Status through v5.4.1 |
 |------|-----------------|---------------------------------|-----------------------|
 | G1   | Index Alpha     | Tiger/Buffalo §6.2              | enforced              |
 | G2   | Ticker Alpha    | Tiger/Buffalo §6.2              | enforced              |
 | G3   | 5m OR Structure | Tiger/Buffalo §6.2              | enforced              |
-| G4   | Volume          | `volume_profile.evaluate_g4(_config)` | **shadow only — `VOL_GATE_ENFORCE=0` through v5.3.0; flips in a future PR** |
+| G4   | Volume          | `volume_profile.evaluate_g4(_config)` | **shadow only — `VOL_GATE_ENFORCE=0` through v5.4.1; flips in a future PR** |
 
-Through v5.3.0 the bot logs G4 every minute via `_shadow_log_g4` but
+Through v5.4.1 the bot logs G4 every minute via `_shadow_log_g4` but
 does not block any entry on it. The short-side gates read the same
 baseline; no short-specific code change.
 
@@ -1707,4 +1722,78 @@ that flags drift between replay and prod.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.1.2"`.*
+## 21. Shadow tab charts (v5.4.1)
+
+v5.4.1 layers three Chart.js visualizations on the Shadow tab without
+introducing any new SQLite tables — every chart is derived from the
+existing v5.2.0 `shadow_positions` rows (closed trades only,
+`exit_ts_utc IS NOT NULL`) by a new HTTP endpoint.
+
+### 21.1 Endpoint — `GET /api/shadow_charts`
+
+Defined in `dashboard_server.py`. Same session-cookie auth as the rest
+of `/api/*`. Server-side cache: a single lock-protected `(ts, payload)`
+tuple with a 30 s TTL — the same pattern used by `/api/indices` — so
+multiple browsers polling the Shadow tab in parallel collapse to one
+SQLite read per window. The response always emits all 7 configs in a
+fixed order; configs with no closed trades render as empty arrays
+rather than missing keys.
+
+Response shape:
+
+```json
+{
+  "configs": {
+    "GEMINI_A": {
+      "equity_curve":     [{"ts": "...", "cum_pnl": 0.0}, ...],
+      "daily_pnl":        [{"day": "YYYY-MM-DD", "pnl": 0.0, "trades": 0}, ...],
+      "win_rate_rolling": [{"ts": "...", "win_rate": 0.0}, ...]
+    },
+    "...": { ... }
+  },
+  "as_of": "<UTC ISO ts>"
+}
+```
+
+- `equity_curve` — cumulative realized P&L sampled per closed trade.
+- `daily_pnl` — per-trading-day total P&L plus closed-trade count.
+- `win_rate_rolling` — rolling 20-trade window win rate; the array is
+  empty (and the chart hidden client-side) for any config with fewer
+  than 20 closed trades.
+
+### 21.2 Frontend — three chart groups on the Shadow tab
+
+Chart.js 4.4.0 is loaded from jsDelivr CDN with a `defer` attribute.
+The chart code falls back gracefully if `window.Chart` is undefined —
+empty wrappers render and the rest of the dashboard keeps working.
+
+Three vertically-stacked groups sit above the existing per-config rows:
+
+1. **Equity curves** — one Chart.js line chart per config (~100 px
+   desktop, ~80 px mobile). Y-axis cumulative $, X-axis time.
+2. **Day-P&L heatmap** — single ~300 px scatter chart, rows = configs,
+   columns = trading days, cell color = green/red intensity scaled to
+   abs-max P&L across all cells.
+3. **Rolling win-rate sparklines** — one per config (~60 px), Y-axis
+   0–1, hidden when the config has < 20 closed trades.
+
+Each config gets a stable hue across all three groups
+(`SHADOW_CFG_COLORS`) so `GEMINI_A`'s equity curve, heatmap row, and
+win-rate sparkline are always the same color. Axis colors and
+gridlines read from existing CSS variables (`--text-dim`, `--border`);
+no new color literals.
+
+The "Charts" header is collapsible (click / Enter / Space toggles).
+Default is **expanded on desktop and collapsed on ≤ 720 px viewports**
+so the Shadow tab is not dominated by chart real estate on a phone.
+
+### 21.3 Polling
+
+Tab-aware: `/api/shadow_charts` is fetched once on Shadow-tab
+activation and then every 60 s **only while the Shadow tab is
+active** — Main / Val / Gene ticks skip the call entirely. Matches the
+existing `pollExecutor` pattern.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.4.2"`.*

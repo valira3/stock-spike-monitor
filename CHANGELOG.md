@@ -4,6 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.4.2 — 2026-04-26
+
+- docs: refresh `ARCHITECTURE.md` to reflect every shipped change between v5.3.0 (the previous arch-doc refresh, [PR #158](https://github.com/valira3/stock-spike-monitor/pull/158)) and v5.4.1. Header version v5.3.0 → v5.4.1; intro now covers v5.4.0 offline backtest CLI and v5.4.1 Shadow tab charts; §16.5 release table extended through v5.4.2 (adds v5.3.1 / v5.4.0 / v5.4.1 / v5.4.2 rows); §17 forensic-volume header + §17.7 rollout plan extended through v5.4.1; §19 G4 status updated to "shadow only … through v5.4.1"; §20 retained from v5.4.0 (offline backtest CLI); new §21 *Shadow tab charts* documents the v5.4.1 `GET /api/shadow_charts` endpoint, response shape (`equity_curve` / `daily_pnl` / `win_rate_rolling`), 30 s server-side cache, three Chart.js groups (equity curves, day-P&L heatmap, rolling 20-trade win-rate sparklines), stable per-config color palette, mobile-first collapsible "Charts" header, and tab-aware 60 s polling. `Source of truth` line now lists `backtest/{loader,ledger,replay,__main__}.py`. Last-refresh footer bumped to `BOT_VERSION = "5.4.2"`.
+- docs: regenerate `trade_genius_algo.pdf` from the refreshed `ARCHITECTURE.md` via `scripts/build_algo_pdf.py`. Cover page now reads **v5.4.2**.
+- CI guard: `BOT_VERSION` bumped to `5.4.2` (matches this heading; the version-bump-check workflow gates on both). `CURRENT_MAIN_NOTE` rewritten for v5.4.2 (each line ≤34 chars), with the v5.4.1 charts entry pushed onto `_MAIN_HISTORY_TAIL`.
+- tests: two version-pinned smoke assertions retargeted from `5.4.1` → `5.4.2`. No other test changes — Val confirmed no test run needed for a doc-only PR.
+
+---
+
 ## v5.4.1 — 2026-04-26
 
 - feat (backend): new `GET /api/shadow_charts` endpoint in `dashboard_server`. Returns three blocks per `SHADOW_CONFIG` (`equity_curve`, `daily_pnl`, `win_rate_rolling`) sourced from the persisted `shadow_positions` SQLite table — closed trades only (`exit_ts_utc IS NOT NULL`). Cached for 30 s using the same lock-protected `(ts, payload)` pattern as `/api/indices`, so multiple browsers polling the Shadow tab in parallel collapse to one SQLite read per window. Always emits all 7 configs in a fixed order; configs with no closed trades render as empty arrays rather than missing keys. Same session-cookie auth as the rest of `/api/*`.

@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.4.1")
+    @t("version: BOT_VERSION is 5.4.2")
     def _():
-        assert m.BOT_VERSION == "5.4.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.4.2", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3730,9 +3730,9 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.4.1: BOT_VERSION bumped to 5.4.1")
+    @t("v5.4.1: BOT_VERSION bumped to 5.4.2")
     def _():
-        assert m.BOT_VERSION == "5.4.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.4.2", m.BOT_VERSION
 
     # ---- v5.4.0 offline backtest CLI ----
     @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")
