@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.5.6 — 2026-04-27
+
+Smoking-gun summary: with v5.5.5 in place, `/api/ws_state` proved that the WS feed was healthy — `volumes_size_per_symbol = 5` per ticker — yet every shadow log line still reported `cur_v=0` / `t_pct=0` / `qqq_pct=0` / `verdict=BLOCK`. Root cause: the shadow gate computed `session_bucket(datetime.now(ET))`, which returns the still-forming current minute. The Alpaca IEX websocket only delivers a 1-minute bar at the END of that minute, so reading `_ws_consumer.current_volume(ticker, current_bucket)` always raced the WS bar close-out and returned `None` (silently coerced to 0 by the `or 0` guard). The bug pre-existed v5.5.x; v5.5.5's observability is what finally made it visible. See `diagnostics/v55x_ws_silent_smoking_gun.md` for the full forensic timeline.
+
+- fix (`volume_profile.previous_session_bucket`): new helper that floors `ts_et` to the minute boundary, subtracts one minute, and returns `session_bucket(prev)`. The just-closed minute IS in `_ws_consumer._volumes` within ~100 ms of close, so the shadow gate finally reads real volumes. Outside-session rules are inherited from `session_bucket` (premarket / weekend / holiday / post-close all return `None`). The bar-archive caller is intentionally NOT changed — it still uses `session_bucket(now_et)` because its job is to label the bar being archived right now via `et_bucket`.
+- fix (shadow callers in `trade_genius.py`): four shadow-path call sites switched from `volume_profile.session_bucket(now_et)` to `volume_profile.previous_session_bucket(now_et)` — `_shadow_log_g4` (~L2326), the REHUNT_VOL_CONFIRM check (~L2743), the OOMPH_ALERT check (~L2830), and `_v512_emit_candidate_log` (~L3230). The pure functions `evaluate_g4` / `evaluate_g4_config` are unchanged: only what the shadow callers pass as `minute_bucket` was affected.
+- tests: 2 new test files —
+  - `test_v5_5_6_previous_session_bucket.py` — walks across a representative trading day in 30 s steps and asserts the returned bucket matches "the minute that just closed". Premarket / 09:31:00 / weekend / holiday / 16:01:00 / naive datetimes all return `None`. 16:00:00 and 16:00:30 both return `'1559'`.
+  - `test_v5_5_6_shadow_uses_prev_bucket.py` — mocks `_ws_consumer` with `{AAPL: {'1026': 5000}}`, freezes wall clock to 10:27:30 ET, calls `_shadow_log_g4("AAPL", stage=1, existing_decision="HOLD")` and asserts the `[V510-SHADOW]` line carries `bucket=1026` and `ticker_pct=100` (derived from the WS bar in the just-closed bucket, NOT 0). Equivalent test for `_v512_emit_candidate_log`. Third test confirms an outside-session timestamp still returns silently (no `[V510-SHADOW]` emit).
+  - 2 new in-suite smoke guards — `v5.5.6: previous_session_bucket exists and returns just-closed bucket` and `v5.5.6: shadow paths in trade_genius use previous_session_bucket` — the latter greps `trade_genius.py` for `previous_session_bucket(now_et)` inside the two named function bodies so a future refactor that reverts to the racey path fails CI loudly.
+  - All v5.5.5 regression guards (WS observability, watchdog, archive source switch) still pass unchanged.
+- CI guard: `BOT_VERSION` bumped to `5.5.6` (matches this heading; the version-bump-check workflow gates on both). `CURRENT_MAIN_NOTE` rewritten for v5.5.6 (each line ≤ 34 chars), with the v5.5.5 observability entry pushed onto `_MAIN_HISTORY_TAIL`.
+- docs: `ARCHITECTURE.md` shadow section gained a one-paragraph note that the shadow gate evaluates the just-closed minute, not the still-forming one (current-bucket reads always race the IEX WS bar close-out). `trade_genius_algo.pdf` regenerated via `scripts/build_algo_pdf.py`; cover now reads **v5.5.6**.
+
+No trading-decision change. No change to live entry logic, sizing, exit, or paper-book accounting. The bar-archive `et_bucket` field still uses the current minute (it labels the bar being written, not a read against future state).
+
+---
+
 ## v5.5.5 — 2026-04-27
 
 Smoking-gun summary: v5.5.4's WS handler was async, the connection stayed up, and `subscribe_bars` succeeded — but no `[VOLPROFILE]` log line ever fired in 11.5 hours of prod runtime. With zero observability we couldn't tell whether bars were never reaching `_on_bar`, whether an exception inside the handler was being swallowed silently, or whether the daemon-thread asyncio loop was starved. v5.5.5 closes that blind spot with bar-counter instrumentation, a watchdog, and a dashboard surface, and starts feeding the bar archive from the WS so `--validate` actually has IEX volumes to replay against. See `diagnostics/v55x_ws_silent_smoking_gun.md` for the full forensic timeline.

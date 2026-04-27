@@ -164,6 +164,30 @@ def session_bucket(ts_et: datetime) -> str | None:
     return f"{t.hour:02d}{t.minute:02d}"
 
 
+def previous_session_bucket(ts_et: datetime) -> str | None:
+    """Returns the bucket key for the minute that JUST closed at ts_et.
+
+    The Alpaca IEX websocket only delivers a 1-minute bar at the END of
+    the minute, so the still-forming current bucket is empty until the
+    minute closes. Shadow-gate readers should ask for the just-closed
+    bucket instead.
+
+    Examples (regular session):
+        10:27:30 ET -> session_bucket(10:26:00) == '1026'
+        10:28:00 ET -> session_bucket(10:27:00) == '1027'
+
+    Returns None when the just-closed minute falls outside the regular
+    session (premarket, post-close, weekend, holiday).
+    """
+    if ts_et.tzinfo is None:
+        return None
+    if ts_et.tzinfo != ET:
+        ts_et = ts_et.astimezone(ET)
+    floored = ts_et.replace(second=0, microsecond=0)
+    prev = floored - timedelta(minutes=1)
+    return session_bucket(prev)
+
+
 # ---------------------------------------------------------------------------
 # Profile build/save/load
 # ---------------------------------------------------------------------------

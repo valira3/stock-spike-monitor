@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.5.5"
+BOT_VERSION = "5.5.6"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,6 +93,20 @@ BOT_VERSION = "5.5.5"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
+    "v5.5.6 \u2014 shadow race fix.\n"
+    "Shadow gate now reads the\n"
+    "just-closed minute bucket, not\n"
+    "the still-forming one. The IEX\n"
+    "WS only delivers a bar at the\n"
+    "END of each minute, so reading\n"
+    "the current bucket always lost\n"
+    "the race and forced cur_v=0\n"
+    "(every shadow verdict BLOCK).\n"
+    "No trading-decision change."
+)
+
+# Main-bot release note: short tail of recent releases.
+_MAIN_HISTORY_TAIL = (
     "v5.5.5 \u2014 WS observability.\n"
     "Shadow WS now counts every\n"
     "bar, logs first 5 + every\n"
@@ -102,11 +116,8 @@ CURRENT_MAIN_NOTE = (
     "silence. Bar archive iex_vol\n"
     "now prefers WS over Yahoo and\n"
     "fills et_bucket. No trading-\n"
-    "decision change."
-)
-
-# Main-bot release note: short tail of recent releases.
-_MAIN_HISTORY_TAIL = (
+    "decision change.\n"
+    "\n"
     "v5.5.4 \u2014 WS handler hotfix.\n"
     "Shadow WS bar handler is now\n"
     "an async def coroutine.\n"
@@ -2319,7 +2330,11 @@ def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
         return
     try:
         now_et = datetime.now(tz=ZoneInfo("America/New_York"))
-        bucket = volume_profile.session_bucket(now_et)
+        # v5.5.6: shadow gate evaluates the just-closed minute, not the
+        # still-forming one. The IEX websocket only delivers the bar at
+        # the END of each minute, so reading the current bucket always
+        # races the WS bar close-out and produces cur_v=0.
+        bucket = volume_profile.previous_session_bucket(now_et)
         if bucket is None:
             return  # outside session \u2014 nothing to evaluate
         idx_symbol = volume_profile.load_active_config().get("index_symbol", "QQQ")
@@ -2735,7 +2750,8 @@ def _v519_check_rehunt_arm(ticker: str, key: tuple[str, str]) -> None:
             return  # DI side weakened \u2014 don't shadow-fire this minute
 
         now_et = datetime.now(tz=ZoneInfo("America/New_York"))
-        bucket = volume_profile.session_bucket(now_et)
+        # v5.5.6: read the just-closed minute, not the still-forming one.
+        bucket = volume_profile.previous_session_bucket(now_et)
         if bucket is None:
             return
         prof = _volume_profile_cache.get(ticker)
@@ -2821,7 +2837,8 @@ def _v519_check_oomph(ticker: str, bars: dict | None = None) -> None:
         return
     try:
         now_et = datetime.now(tz=ZoneInfo("America/New_York"))
-        bucket = volume_profile.session_bucket(now_et)
+        # v5.5.6: read the just-closed minute, not the still-forming one.
+        bucket = volume_profile.previous_session_bucket(now_et)
         if bucket is None:
             return
         di_p, di_m = tiger_di(ticker)
@@ -3219,7 +3236,9 @@ def _v512_emit_candidate_log(
     """
     try:
         now_et = datetime.now(tz=ZoneInfo("America/New_York"))
-        bucket = volume_profile.session_bucket(now_et)
+        # v5.5.6: shadow path \u2014 read the just-closed minute, not the
+        # still-forming one (avoids the IEX WS bar close-out race).
+        bucket = volume_profile.previous_session_bucket(now_et)
     except Exception:
         bucket = None
     t_pct = None
