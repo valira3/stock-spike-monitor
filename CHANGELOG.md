@@ -4,6 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.5.4 — 2026-04-27
+
+- fix (data pipeline / shadow): the shadow WS bar handler `volume_profile.WebsocketBarConsumer._on_bar` is now `async def`. alpaca-py's `StockDataStream.subscribe_bars()` requires its handler to be a coroutine function — registering a plain `def` raised `handler must be a coroutine function` inside `run()` and crash-looped the consumer every ~6 seconds (Railway logs: `[VOLPROFILE] websocket error: handler must be a coroutine function; reconnecting`). With v5.5.3 the cred lookup was finally resolving (`VAL_ALPACA_PAPER_KEY` picked up for all 10 tickers), but the connection couldn't stay up so `cur_v` stayed at 0 and no `shadow_positions` were recorded. The handler body itself is purely synchronous; only the function declaration needed to be a coroutine function so the SDK accepts it.
+- tests: 1 new regression guard — `v5.5.4: shadow WS bar handler is a coroutine function` imports `volume_profile` and asserts `inspect.iscoroutinefunction(WebsocketBarConsumer._on_bar)`. A future refactor that drops `async` will fail this test loudly. Existing v5.5.3 smoke guards (DataFeed.IEX pin, cred-chain order, `[SHADOW DISABLED]` token) still pass — this hotfix doesn't touch them.
+- CI guard: `BOT_VERSION` bumped to `5.5.4` (matches this heading; the version-bump-check workflow gates on both). `CURRENT_MAIN_NOTE` rewritten for v5.5.4 (each line ≤34 chars), with the v5.5.3 cred-fix entry pushed onto `_MAIN_HISTORY_TAIL`.
+- docs: one-line note added to `ARCHITECTURE.md` shadow section noting the handler must be `async def`. PDF regen deferred — this is a single-bug hotfix; PDF will roll up at the next non-hotfix release.
+
+---
+
 ## v5.5.3 — 2026-04-27
 
 - fix (data pipeline / shadow): `_start_volume_profile()` now resolves Alpaca market-data credentials in the order `VAL_ALPACA_PAPER_KEY` / `VAL_ALPACA_PAPER_SECRET` → `ALPACA_PAPER_KEY` / `ALPACA_PAPER_SECRET` → `ALPACA_KEY` / `ALPACA_SECRET` → fail. Prod is configured with the `VAL_*` pair, so the legacy-only chain in v5.5.2 silently early-returned, leaving `_ws_consumer = None`, `cur_v = 0`, every G4 evaluation in `BLOCK / LOW_TICKER`, and `_v520_open_shadow` permanently unreachable. See `diagnostics/shadow_data_pipeline.md` Issue 2 for the full root-cause walk-through.

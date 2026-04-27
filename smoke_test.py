@@ -339,9 +339,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.5.3")
+    @t("version: BOT_VERSION is 5.5.4")
     def _():
-        assert m.BOT_VERSION == "5.5.3", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.5.4", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3774,9 +3774,27 @@ def run_local() -> int:
         assert sp["best_today"] == "TICKER+QQQ"
         assert sp["worst_today"] == "TICKER_ONLY"
 
-    @t("v5.5.3: BOT_VERSION bumped to 5.5.3")
+    @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
     def _():
-        assert m.BOT_VERSION == "5.5.3", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.5.4", m.BOT_VERSION
+
+    @t("v5.5.4: shadow WS bar handler is a coroutine function")
+    def _():
+        # Regression guard: alpaca-py StockDataStream.subscribe_bars()
+        # requires its handler to be a coroutine function (async def).
+        # In v5.5.3 the handler was a plain `def`, which raised
+        # "handler must be a coroutine function" inside run() and
+        # crash-looped the WS consumer every ~6s, leaving cur_v at 0
+        # and the shadow-position pipeline starved. Pin the type at
+        # source level so a future refactor can't regress it.
+        import inspect as _inspect
+        import volume_profile as _vp
+        consumer_cls = _vp.WebsocketBarConsumer
+        handler = consumer_cls._on_bar
+        assert _inspect.iscoroutinefunction(handler), (
+            "WebsocketBarConsumer._on_bar must be `async def` so "
+            "alpaca-py StockDataStream accepts it as a subscribe "
+            "handler (regression guard for the v5.5.3 crash-loop)")
 
     @t("v5.5.3: shadow WS uses market-data feed (DataFeed.IEX), not trading WS")
     def _():
