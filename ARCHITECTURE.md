@@ -1,8 +1,8 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.4.1 · April 2026
+> **Version:** v5.5.0 · April 2026
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/{loader,ledger,replay,__main__}.py`
+> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/{loader,ledger,replay,__main__}.py`, `scripts/nightly_backtest.py`
 
 TradeGenius is a Python Telegram-driven trading bot with a paper book,
 two Alpaca-backed executor mirrors, and a live web dashboard. As of
@@ -24,10 +24,16 @@ own dedicated dashboard tab with click-to-expand per-config detail.
 `python -m backtest.replay` CLI with replay-vs-prod validation.
 **v5.4.1** layered three Chart.js visualizations onto the Shadow tab
 (equity curves, day-P&L heatmap, rolling win-rate sparklines) backed by
-a new `/api/shadow_charts` endpoint with a 30 s server-side cache. The
-v5.0.0 Tiger/Buffalo entry/exit decisions are unchanged through v5.4.1
-— every v5.1.x / v5.2.x / v5.3.x / v5.4.x add is observational,
-infrastructure, or display-only.
+a new `/api/shadow_charts` endpoint with a 30 s server-side cache.
+**v5.5.0** added a nightly in-process backtest job (22:00 ET) that runs
+the v5.4.0 replayer against the prior trading day, writes a top-level
+`/data/backtest_reports/latest.json` index, and surfaces the result as
+a "Latest backtest" card at the top of the Shadow tab via a new
+`/api/backtest_latest` endpoint; the CLI also gained an
+`--export-equity` flag that produces dashboard-shape chart JSON
+offline. The v5.0.0 Tiger/Buffalo entry/exit decisions are unchanged
+through v5.5.0 — every v5.1.x / v5.2.x / v5.3.x / v5.4.x / v5.5.0 add
+is observational, infrastructure, or display-only.
 
 The canonical specification of the trading logic lives in
 [`STRATEGY.md`](STRATEGY.md) at the repo root. Sections 6 and 7 below
@@ -1291,11 +1297,11 @@ state machine builds up state lazily as gates pass and stages fire.
 v4 `paper_trades`, `trade_history`, `positions`, `short_positions`,
 and the daily entry counters all roll forward unchanged.
 
-### 16.5 v5.0.x → v5.4.x — what changed (and what didn't)
+### 16.5 v5.0.x → v5.5.0 — what changed (and what didn't)
 
-The Tiger/Buffalo state machine in §6 is the same code in v5.4.1 as it
-was in v5.0.0. Every v5.1.x / v5.2.x / v5.3.x / v5.4.x release is
-observation-, infrastructure-, or display-only:
+The Tiger/Buffalo state machine in §6 is the same code in v5.5.0 as it
+was in v5.0.0. Every v5.1.x / v5.2.x / v5.3.x / v5.4.x / v5.5.0 release
+is observation-, infrastructure-, or display-only:
 
 | Release | Subject                                                       | Behavior change? |
 |---------|---------------------------------------------------------------|------------------|
@@ -1318,8 +1324,9 @@ observation-, infrastructure-, or display-only:
 | v5.4.0  | Offline backtest CLI (`backtest/` package + `python -m backtest.replay` with `--validate`) | No (offline) |
 | v5.4.1  | Shadow tab charts (equity curves + day heatmap + win-rate sparklines) + `/api/shadow_charts` endpoint | No (display) |
 | v5.4.2  | Doc refresh: ARCHITECTURE.md + `trade_genius_algo.pdf` to v5.4.1 state | No (docs) |
+| v5.5.0  | Nightly backtest scheduler + `/api/backtest_latest` + Shadow tab "Latest backtest" card + `--export-equity` CLI flag | No (offline + display) |
 
-Result: a v5.0.0 paper-state file still loads cleanly on v5.4.1 (via
+Result: a v5.0.0 paper-state file still loads cleanly on v5.5.0 (via
 the v5.1.8 one-shot JSON-to-SQLite import path); the synthetic harness
 50/50 byte-equal goldens still match; every entry, exit, sizing, and
 stop-placement decision is identical to v5.0.0.
@@ -1796,4 +1803,147 @@ existing `pollExecutor` pattern.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.4.2"`.*
+## 22. Nightly backtest (v5.5.0)
+
+v5.5.0 wires the v5.4.0 offline replayer into the standard scheduler
+so a full replay-vs-prod check runs automatically every night against
+the prior trading day. The result is surfaced through a new dashboard
+endpoint and a "Latest backtest" card at the top of the Shadow tab.
+The CLI also gains an `--export-equity` flag that produces
+dashboard-shape chart JSON offline from any backtest run.
+
+### 22.1 Scheduler entry
+
+A new job is registered in `scheduler_thread()` inside
+`trade_genius.py`:
+
+```python
+("everyday", "22:00",
+ lambda: threading.Thread(target=_run_nightly_backtest,
+                          daemon=True).start()),
+```
+
+22:00 ET is post-EOD reconciliation (15:55 ET `eod_close`, 15:58 ET
+`send_eod_report`) and aligns with ~02:00 UTC year-round (within one
+hour during DST shifts). The wrapper `_run_nightly_backtest` simply
+calls `scripts.nightly_backtest.run_nightly()` on a daemon thread and
+logs the per-config count + as-of date returned by the run. **Railway
+cron is intentionally not used** — the in-process scheduler is simpler
+to reason about, shares the existing `persistence.was_fired` /
+`mark_fired` idempotency, and keeps the failure mode local (a
+container restart only loses the in-flight run, never restarts the
+container itself).
+
+`scripts/nightly_backtest.py`:
+
+1. Picks the most recent **completed** NYSE trading day via
+   `volume_profile.is_trading_day` (today is excluded — the nightly
+   runs after market close, so "completed" is the prior session).
+2. Iterates every entry in `volume_profile.SHADOW_CONFIGS`, replays
+   that day with `backtest.replay.replay_one_day`, writes the per-config
+   CSV ledger to `/data/backtest_reports/<CFG>_<DAY>_<DAY>.csv`, and
+   (when validation is enabled) also writes
+   `<CFG>_<DAY>_<DAY>_validation.md` via
+   `backtest.replay.write_validation_report`.
+3. Captures all stdout/stderr to
+   `/data/backtest_reports/<DAY>_log.txt` (via
+   `redirect_stdout` / `redirect_stderr` of an in-memory
+   `io.StringIO`).
+4. Calls `backtest.replay.write_equity_export` to write
+   `/data/backtest_reports/<DAY>_charts.json` (same shape as
+   `/api/shadow_charts`).
+5. Writes a top-level
+   `/data/backtest_reports/latest.json` index keyed by config name
+   with: `match_rate`, `replay_only_count`, `prod_only_count`,
+   `total_pnl`, `trade_count`, `win_rate`, `exit_code`. Top-level
+   keys: `as_of`, `generated_at`, `configs`.
+6. **Always exits 0** so Railway never restarts the container on
+   validation drift. Drift is surfaced through the dashboard, not the
+   orchestrator.
+
+The directory root and bar/state-DB paths are overridable via
+`BACKTEST_REPORTS_DIR`, `BACKTEST_BARS_DIR`, `BACKTEST_STATE_DB` env
+vars (defaults: `/data/backtest_reports`, `/data/bars`,
+`/data/state.db`).
+
+### 22.2 Endpoint — `GET /api/backtest_latest`
+
+`dashboard_server.h_backtest_latest` reads the file at
+`<BACKTEST_REPORTS_DIR>/latest.json` and returns its contents
+verbatim. When the file is missing or unparseable it returns a
+graceful placeholder so the dashboard never has to special-case 5xx:
+
+```json
+{ "status": "no_data", "as_of": null, "configs": {} }
+```
+
+When the file exists, the response is the raw `latest.json` payload
+(`status` defaults to `"ok"` if not present in the file). Same
+session-cookie auth as the rest of `/api/*`. No server-side cache —
+the file is small and only rewritten once per day.
+
+### 22.3 Frontend — "Latest backtest" card
+
+The Shadow tab gains a new collapsible card, positioned **above** the
+v5.4.1 Charts subsection. The card head shows the as-of date and a
+summary chip whose background color reflects the aggregate match-rate
+band (green ≥0.95, yellow 0.90–0.95, red <0.90). The body has two
+parts:
+
+1. **Headline** — three lines: aggregate match rate (color-coded),
+   best config by total P&L (name + $ + win rate), worst config by
+   total P&L.
+2. **Per-config table** — one row per `SHADOW_CONFIGS` entry with
+   columns: Config, Match, Replay-only, Prod-only, Total P&L, Trades,
+   Win rate. Match-rate cells are color-coded with the same band logic
+   as the headline.
+
+Default state is **expanded on desktop and collapsed on ≤ 720 px
+viewports**, mirroring the Charts card. Polling is tab-aware: the card
+fetches `/api/backtest_latest` immediately on Shadow-tab activation
+and then every 60 s only while the Shadow tab is active. Implemented
+as a self-contained module (`__tgPollBacktestLatest` /
+`_btlRender`) — it does not touch the v5.4.1 Chart.js click/tooltip
+handlers.
+
+### 22.4 CLI — `--export-equity`
+
+`python -m backtest.replay` accepts a new optional flag:
+
+```bash
+python -m backtest.replay \
+  --start 2026-04-22 --end 2026-04-22 \
+  --config ALL --validate \
+  --export-equity ./out/2026-04-22_charts.json \
+  --out ./out/
+```
+
+When set, after all per-config CSV ledgers and optional validation
+reports are written, the replayer also writes a JSON file at the
+given path. The shape mirrors `GET /api/shadow_charts`:
+
+```json
+{
+  "configs": {
+    "TICKER+QQQ": {
+      "equity_curve":     [{"ts": "...", "cum_pnl": 0.0}, ...],
+      "daily_pnl":        [{"date": "YYYY-MM-DD", "pnl": 0.0,
+                            "trades": 0}, ...],
+      "win_rate_rolling": [{"trade_idx": 20, "win_rate": 0.55}, ...]
+    },
+    "...": { ... }
+  },
+  "as_of": "<UTC ISO ts>"
+}
+```
+
+Computation matches `dashboard_server._shadow_charts_payload`:
+cumulative P&L per closed trade (sorted by `exit_ts`), daily P&L
+bucketed on the `exit_ts` date, rolling 20-trade win rate with the
+same warm-up gate. The nightly scheduler entry uses this helper to
+write `<DAY>_charts.json`; a developer can also invoke it directly
+from any one-off backtest run to render the same charts offline.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.5.0"`.*

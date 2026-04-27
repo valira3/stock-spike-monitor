@@ -1254,6 +1254,44 @@ async def h_shadow_charts(request):
     return web.json_response(payload)
 
 
+# v5.5.0 \u2014 /api/backtest_latest: serves the index file written by the
+# nightly_backtest scheduler entry. Graceful placeholder when the file
+# is missing so the dashboard renders cleanly on a fresh deployment.
+_BACKTEST_REPORTS_DIR = os.getenv("BACKTEST_REPORTS_DIR", "/data/backtest_reports")
+
+
+def _backtest_latest_payload() -> dict:
+    p = Path(_BACKTEST_REPORTS_DIR) / "latest.json"
+    try:
+        if not p.exists():
+            return {"status": "no_data", "as_of": None, "configs": {}}
+        raw = p.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {"status": "no_data", "as_of": None, "configs": {}}
+        data.setdefault("status", "ok")
+        data.setdefault("configs", {})
+        data.setdefault("as_of", None)
+        return data
+    except Exception:
+        logger.exception("backtest_latest: failed to load %s", p)
+        return {"status": "no_data", "as_of": None, "configs": {}}
+
+
+async def h_backtest_latest(request):
+    """GET /api/backtest_latest \u2014 nightly backtest summary index.
+
+    Returns latest.json contents, or a placeholder
+    {"status": "no_data", "as_of": null, "configs": {}} when the file is
+    absent. Always 200 so the dashboard never has to special-case 5xx.
+    """
+    from aiohttp import web
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    payload = _backtest_latest_payload()
+    return web.json_response(payload)
+
+
 # v4.9.1: unauthenticated endpoint so the post-deploy GHA poller can
 # confirm Railway has rolled out the new BOT_VERSION without holding a
 # session cookie. Version is not sensitive; everything else still
@@ -2075,6 +2113,7 @@ def _build_app():
     app.router.add_post("/logout", h_logout)
     app.router.add_get("/api/state", h_state)
     app.router.add_get("/api/shadow_charts", h_shadow_charts)
+    app.router.add_get("/api/backtest_latest", h_backtest_latest)
     app.router.add_get("/api/version", h_version)
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.

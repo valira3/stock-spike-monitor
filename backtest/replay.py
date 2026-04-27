@@ -15,6 +15,7 @@ P&L pairer.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -440,6 +441,68 @@ def write_validation_report(out_path: str, config_name: str,
 
 
 # ---------------------------------------------------------------------------
+# v5.5.0 \u2014 dashboard-shape equity export
+# ---------------------------------------------------------------------------
+
+def equity_charts_payload(rows_by_cfg: dict[str, list[dict]]) -> dict:
+    """Build a payload matching /api/shadow_charts from replay rows.
+
+    Args:
+        rows_by_cfg: mapping of config name -> list of replay rows
+            (closed trades, ordered by entry_ts).
+
+    Returns:
+        { "configs": { <name>: { equity_curve, daily_pnl,
+                                 win_rate_rolling } }, "as_of": <utc iso> }
+    """
+    out: dict[str, dict] = {}
+    for name, rows in rows_by_cfg.items():
+        cfg_rows = sorted(rows, key=lambda r: (r.get("exit_ts") or ""))
+        cum = 0.0
+        equity_curve: list[dict] = []
+        daily: dict[str, dict] = {}
+        wr_rolling: list[dict] = []
+        wins_window: list[int] = []
+        for idx, r in enumerate(cfg_rows, start=1):
+            pnl = float(r.get("pnl_dollars") or 0.0)
+            cum += pnl
+            ts = r.get("exit_ts") or ""
+            equity_curve.append({"ts": ts, "cum_pnl": round(cum, 2)})
+            day = ts[:10] if len(ts) >= 10 else ts
+            d = daily.setdefault(day, {"date": day, "pnl": 0.0, "trades": 0})
+            d["pnl"] = round(d["pnl"] + pnl, 2)
+            d["trades"] += 1
+            wins_window.append(1 if pnl > 0 else 0)
+            if len(wins_window) > 20:
+                wins_window.pop(0)
+            if idx >= 20:
+                wr = sum(wins_window) / 20.0
+                wr_rolling.append({
+                    "trade_idx": idx,
+                    "win_rate": round(wr, 4),
+                })
+        out[name] = {
+            "equity_curve": equity_curve,
+            "daily_pnl": sorted(daily.values(), key=lambda d: d["date"]),
+            "win_rate_rolling": wr_rolling,
+        }
+    return {
+        "configs": out,
+        "as_of": datetime.now(timezone.utc)
+                       .isoformat().replace("+00:00", "Z"),
+    }
+
+
+def write_equity_export(path: str | os.PathLike,
+                        rows_by_cfg: dict[str, list[dict]]) -> str:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = equity_charts_payload(rows_by_cfg)
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(p.resolve())
+
+
+# ---------------------------------------------------------------------------
 # CLI driver
 # ---------------------------------------------------------------------------
 
@@ -477,6 +540,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="Bar archive directory (default: /data/bars/)")
     p.add_argument("--state-db", default="/data/state.db",
                    help="state.db path (default: /data/state.db)")
+    # v5.5.0 \u2014 chart-shape JSON export, same format as /api/shadow_charts.
+    p.add_argument("--export-equity", default=None, metavar="PATH",
+                   help=(
+                       "Optional path. When set, write a JSON file with the "
+                       "same shape as /api/shadow_charts (configs: equity_curve, "
+                       "daily_pnl, win_rate_rolling) so dashboard charts can be "
+                       "rendered offline from a backtest run."
+                   ))
     return p
 
 
@@ -490,10 +561,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     overall_exit = 0
+    rows_by_cfg: dict[str, list[dict]] = {}
     for cfg in configs:
         all_rows: list[dict] = []
         for day in days:
             all_rows.extend(replay_one_day(args.bars_dir, day, cfg))
+        rows_by_cfg[cfg["name"]] = all_rows
         ledger_path = out_dir / f"{cfg['name']}_{args.start}_{args.end}.csv"
         ledger.write_ledger(str(ledger_path), all_rows)
         s = ledger.summarize(all_rows)
@@ -520,6 +593,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             if vr["match_rate"] < 0.95:
                 overall_exit = 1
+
+    # v5.5.0 \u2014 dashboard-shape JSON export. Emit even when no configs
+    # have trades so downstream consumers can detect "ran but empty".
+    if args.export_equity:
+        ep = write_equity_export(args.export_equity, rows_by_cfg)
+        print(f"[export-equity] -> {ep}")
     return overall_exit
 
 

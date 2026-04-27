@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.4.2"
+BOT_VERSION = "5.5.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,17 +93,26 @@ BOT_VERSION = "5.4.2"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.4.2 \u2014 doc refresh.\n"
-    "ARCHITECTURE.md and\n"
-    "trade_genius_algo.pdf\n"
-    "regenerated to v5.4.1 state.\n"
-    "Adds \u00a720 backtest CLI and\n"
-    "\u00a721 Shadow tab charts.\n"
-    "No code-logic change."
+    "v5.5.0 \u2014 nightly backtest.\n"
+    "Scheduler runs replay at\n"
+    "22:00 ET on the prior\n"
+    "trading day. Writes\n"
+    "/data/backtest_reports/\n"
+    "latest.json. New\n"
+    "/api/backtest_latest +\n"
+    "Shadow tab card. CLI gets\n"
+    "--export-equity flag for\n"
+    "offline chart JSON."
 )
 
 # Main-bot release note: short tail of recent releases.
 _MAIN_HISTORY_TAIL = (
+    "v5.4.2 \u2014 doc refresh.\n"
+    "ARCHITECTURE.md and\n"
+    "trade_genius_algo.pdf\n"
+    "regenerated to v5.4.1 state.\n"
+    "No code-logic change.\n"
+    "\n"
     "v5.4.1 \u2014 shadow charts.\n"
     "Shadow tab now shows equity\n"
     "curves, day P&L heatmap, and\n"
@@ -8243,6 +8252,27 @@ def reset_daily_state():
 # ============================================================
 # SCHEDULER THREAD
 # ============================================================
+def _run_nightly_backtest():
+    """v5.5.0 \u2014 thin wrapper that runs scripts.nightly_backtest.run_nightly.
+
+    Logged via the standard logger; never raises. The script itself always
+    exits 0, captures its own log to /data/backtest_reports/<DAY>_log.txt,
+    and writes /data/backtest_reports/latest.json so the dashboard's
+    /api/backtest_latest endpoint can surface drift.
+    """
+    try:
+        from scripts.nightly_backtest import run_nightly
+        payload = run_nightly()
+        cfg_count = len((payload or {}).get("configs", {}))
+        as_of = (payload or {}).get("as_of")
+        logger.info(
+            "Nightly backtest complete: as_of=%s configs=%d",
+            as_of, cfg_count,
+        )
+    except Exception as e:
+        logger.error("Nightly backtest failed: %s", e, exc_info=True)
+
+
 def scheduler_thread():
     """Background scheduler — all times in ET."""
     DAY_NAMES = [
@@ -8269,6 +8299,13 @@ def scheduler_thread():
         ("daily", "09:36", send_or_notification),
         ("daily", "15:55", eod_close),
         ("daily", "15:58", send_eod_report),
+        # v5.5.0 \u2014 nightly offline backtest. 22:00 ET is post-EOD
+        # reconciliation and aligns with ~02:00 UTC year-round (within
+        # one hour during DST shifts). Always exits 0; drift surfaces
+        # via the dashboard "Latest backtest" card.
+        ("everyday", "22:00",
+         lambda: threading.Thread(target=_run_nightly_backtest,
+                                   daemon=True).start()),
         ("sunday", "18:00", send_weekly_digest),
     ]
 
