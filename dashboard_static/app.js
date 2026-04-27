@@ -2084,6 +2084,85 @@
     heatmap: null,
   };
 
+  // v5.5.1: click-to-isolate state. When non-null, all three chart groups
+  // dim every config except this one. Clicking again (or the hint's X)
+  // clears it. A single state variable keeps all three groups in sync.
+  let __scIsolated = null;
+  let __scLastPayload = null;
+
+  function _scIsDim(name) {
+    return __scIsolated !== null && __scIsolated !== name;
+  }
+
+  function _scAlpha(hex, frac) {
+    // Convert "#rrggbb" + 0..1 fraction into "rgba(r,g,b,frac)".
+    const h = (hex || "").replace("#", "");
+    if (h.length !== 6) return hex;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return "rgba(" + r + "," + g + "," + b + "," + frac.toFixed(2) + ")";
+  }
+
+  function _scFmtUsd(v) {
+    const sign = v >= 0 ? "+" : "\u2212";
+    return sign + "$" + Math.abs(v).toFixed(2);
+  }
+
+  function _scFmtTs(ts) {
+    // "MM/DD HH:MM ET" \u2014 best-effort parse; fall back to raw string.
+    try {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts);
+      const opts = {
+        timeZone: "America/New_York", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      };
+      const parts = new Intl.DateTimeFormat("en-US", opts)
+        .formatToParts(d).reduce((a, p) => (a[p.type] = p.value, a), {});
+      return parts.month + "/" + parts.day + " "
+        + parts.hour + ":" + parts.minute + " ET";
+    } catch (e) { return String(ts); }
+  }
+
+  function _scOnConfigClick(name) {
+    // Toggle: clicking the active config clears isolation; clicking a
+    // different config switches isolation to it.
+    __scIsolated = (__scIsolated === name) ? null : name;
+    if (__scLastPayload) _scRender(__scLastPayload);
+  }
+
+  function _scClearIsolation() {
+    __scIsolated = null;
+    if (__scLastPayload) _scRender(__scLastPayload);
+  }
+
+  function _scUpdateHint() {
+    const wrap = document.getElementById("shadow-charts-body");
+    if (!wrap) return;
+    let hint = document.getElementById("shadow-isolate-hint");
+    if (__scIsolated === null) {
+      if (hint) hint.remove();
+      return;
+    }
+    if (!hint) {
+      hint = document.createElement("div");
+      hint.id = "shadow-isolate-hint";
+      hint.className = "shadow-isolate-hint";
+      wrap.insertBefore(hint, wrap.firstChild);
+    }
+    hint.innerHTML = '<span>Showing only: <b></b> \u00b7 click to clear</span>'
+      + '<button type="button" class="shadow-isolate-x" '
+      + 'aria-label="clear isolation">\u00d7</button>';
+    hint.querySelector("b").textContent = __scIsolated;
+    const btn = hint.querySelector(".shadow-isolate-x");
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      _scClearIsolation();
+    });
+    hint.addEventListener("click", _scClearIsolation);
+  }
+
   function _scText(role) {
     // Read a CSS variable from :root so chart axis/text colors match the
     // existing palette without hard-coding any new color literals.
@@ -2120,15 +2199,37 @@
       const values = data.map(p => p.cum_pnl);
       const prev = __shadowChartInstances.equity[name];
       if (prev) { try { prev.destroy(); } catch (e) {} }
+      // v5.5.1: dim non-isolated configs to ~20% opacity.
+      const dim = _scIsDim(name);
+      const stroke = dim ? _scAlpha(color, 0.20) : color;
+      const fill = dim ? _scAlpha(color, 0.05) : (color + "22");
+      // v5.5.1: clicking the row name or the canvas isolates this config.
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => _scOnConfigClick(name));
       __shadowChartInstances.equity[name] = new window.Chart(canvas, {
         type: "line",
         data: { labels: labels, datasets: [{
-          data: values, borderColor: color, backgroundColor: color + "22",
+          data: values, borderColor: stroke, backgroundColor: fill,
           fill: true, pointRadius: 0, borderWidth: 1.5, tension: 0.15,
         }]},
         options: {
           responsive: true, maintainAspectRatio: false, animation: false,
-          plugins: { legend: { display: false }, tooltip: { enabled: true } },
+          onClick: () => _scOnConfigClick(name),
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              enabled: true,
+              callbacks: {
+                label: ctx => {
+                  const i = ctx.dataIndex;
+                  const ts = labels[i];
+                  const v = values[i];
+                  return _scFmtTs(ts) + " \u00b7 " + _scFmtUsd(v)
+                    + " \u00b7 " + name;
+                },
+              },
+            },
+          },
           scales: {
             x: { display: false },
             y: { ticks: { color: _scText("--text-dim"), font: { size: 9 } },
@@ -2165,15 +2266,34 @@
       const values = data.map(p => p.win_rate);
       const prev = __shadowChartInstances.winrate[name];
       if (prev) { try { prev.destroy(); } catch (e) {} }
+      const dim = _scIsDim(name);
+      const stroke = dim ? _scAlpha(color, 0.20) : color;
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => _scOnConfigClick(name));
       __shadowChartInstances.winrate[name] = new window.Chart(canvas, {
         type: "line",
         data: { labels: labels, datasets: [{
-          data: values, borderColor: color, backgroundColor: color + "22",
+          data: values, borderColor: stroke, backgroundColor: stroke,
           fill: false, pointRadius: 0, borderWidth: 1.4, tension: 0.2,
         }]},
         options: {
           responsive: true, maintainAspectRatio: false, animation: false,
-          plugins: { legend: { display: false }, tooltip: { enabled: true } },
+          onClick: () => _scOnConfigClick(name),
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              enabled: true,
+              callbacks: {
+                label: ctx => {
+                  const i = ctx.dataIndex;
+                  const idx = labels[i];
+                  const wr = values[i];
+                  const pct = (wr * 100).toFixed(1) + "%";
+                  return name + " \u00b7 trade #" + idx + " \u00b7 " + pct;
+                },
+              },
+            },
+          },
           scales: {
             x: { display: false },
             y: { min: 0, max: 1, ticks: { color: _scText("--text-dim"), font: { size: 9 },
@@ -2229,6 +2349,15 @@
     // Build a scatter chart with an emulated heatmap: one point per cell
     // sized to a square. Chart.js v4 ships only line/bar/scatter natively,
     // and bringing in the matrix plugin would add a second CDN dependency.
+    // v5.5.1: also stash per-day trade counts so tooltips can show them.
+    const tradeCountByDayCfg = {};
+    for (const name of SHADOW_CFG_NAMES) {
+      const dp = (configs[name] && configs[name].daily_pnl) || [];
+      for (const d of dp) {
+        const k = d.date + "|" + name;
+        tradeCountByDayCfg[k] = d.trades;
+      }
+    }
     const points = [];
     for (let yi = 0; yi < SHADOW_CFG_NAMES.length; yi++) {
       const name = SHADOW_CFG_NAMES[yi];
@@ -2236,10 +2365,13 @@
         const v = (dayMap[days[xi]] || {})[name];
         if (typeof v !== "number") continue;
         const intensity = Math.min(1, Math.abs(v) / absMax);
-        const alpha = 0.18 + 0.72 * intensity;
+        let alpha = 0.18 + 0.72 * intensity;
+        // v5.5.1: dim non-isolated rows to ~20% of their natural opacity.
+        if (_scIsDim(name)) alpha = alpha * 0.20;
         const baseColor = v >= 0 ? "52,211,153" : "248,113,113";
         points.push({
           x: xi, y: yi, _date: days[xi], _name: name, _pnl: v,
+          _trades: tradeCountByDayCfg[days[xi] + "|" + name] || 0,
           backgroundColor: "rgba(" + baseColor + "," + alpha.toFixed(2) + ")",
         });
       }
@@ -2256,15 +2388,27 @@
       }]},
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
+        onClick: (evt, items) => {
+          // v5.5.1: clicking a heatmap cell isolates that config; clicking
+          // empty space clears isolation.
+          if (items && items.length) {
+            const r = items[0].element && items[0].element.$context
+              && items[0].element.$context.raw;
+            const pt = r || (points[items[0].index] || null);
+            if (pt && pt._name) { _scOnConfigClick(pt._name); return; }
+          }
+          _scClearIsolation();
+        },
         plugins: {
           legend: { display: false },
           tooltip: {
             callbacks: {
               label: ctx => {
                 const r = ctx.raw || {};
-                const sign = r._pnl >= 0 ? "+" : "\u2212";
+                const n = r._trades || 0;
                 return r._name + " \u00b7 " + r._date + " \u00b7 "
-                  + sign + "$" + Math.abs(r._pnl).toFixed(2);
+                  + _scFmtUsd(r._pnl)
+                  + " \u00b7 " + n + " trade" + (n === 1 ? "" : "s");
               },
             },
           },
@@ -2302,6 +2446,7 @@
 
   function _scRender(payload) {
     const configs = (payload && payload.configs) || {};
+    __scLastPayload = payload;
     // Count rendered configs (non-empty equity curves) for the head badge.
     let withTrades = 0;
     for (const n of SHADOW_CFG_NAMES) {
@@ -2314,6 +2459,7 @@
     _scBuildEquityRows(configs);
     _scBuildHeatmap(configs);
     _scBuildWinrateRows(configs);
+    _scUpdateHint();
   }
 
   let __scInflight = false;

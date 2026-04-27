@@ -843,6 +843,23 @@
     border-radius: var(--radius-sm);
   }
   #shadow-charts-body[hidden] { display: none; }
+  /* v5.5.1 \u2014 click-to-isolate hint shown above charts when one config
+     is isolated. Click anywhere on the bar (or the X) to clear. */
+  .shadow-isolate-hint {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 6px 12px; margin: 6px 12px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); cursor: pointer;
+    font-size: 11px; font-family: var(--mono); color: var(--text-muted);
+  }
+  .shadow-isolate-hint b { color: var(--text); }
+  .shadow-isolate-hint .shadow-isolate-x {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-dim); border-radius: var(--radius-sm);
+    width: 22px; height: 22px; line-height: 18px; padding: 0;
+    cursor: pointer; font-size: 14px;
+  }
+  .shadow-isolate-hint .shadow-isolate-x:hover { color: var(--text); }
   @media (max-width: 720px) {
     .shadow-chart-row { grid-template-columns: 90px 1fr; gap: 6px; }
     .shadow-chart-row .scr-canvas-wrap { height: 80px; }
