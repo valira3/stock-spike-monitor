@@ -7,6 +7,11 @@
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&f[]=jetbrains-mono@400,500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/app.css">
+<!-- v5.4.1 — Chart.js for the Shadow tab equity curves, day heatmap, and
+     rolling win-rate sparklines. Loaded from jsDelivr CDN; falls back to
+     a no-op shim if the script fails so the rest of the dashboard keeps
+     rendering. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
 <!-- v4.0.0-beta — index ticker strip (SPY/QQQ/DIA/IWM/VIX) polls /api/indices
@@ -213,6 +218,41 @@
 <div id="tg-panel-shadow" class="tg-panel" style="display:none">
 <div class="app">
   <main class="main">
+    <!-- v5.4.1 — Charts subsection. Three vertically-stacked groups
+         covering all 7 SHADOW_CONFIGS:
+           1. Equity curves     (one mini line chart per config)
+           2. Day heatmap       (rows=configs, cols=trading days)
+           3. Rolling win-rate  (one sparkline per config, hidden if <20 trades)
+         Default state: expanded on desktop, collapsed on mobile (controlled
+         by app.js using a viewport media query at boot). -->
+    <section class="grid" id="shadow-charts-section">
+      <div class="card" id="shadow-charts-card">
+        <div class="card-head shadow-charts-head" id="shadow-charts-head" role="button" tabindex="0" aria-expanded="true" aria-controls="shadow-charts-body">
+          <span class="card-title">Charts<span class="count" id="shadow-charts-count">· —</span></span>
+          <span class="chip" id="shadow-charts-toggle">hide</span>
+        </div>
+        <div class="card-body flush" id="shadow-charts-body">
+          <div class="shadow-chart-group" id="shadow-equity-group">
+            <div class="shadow-chart-group-title">Equity curves</div>
+            <div class="shadow-chart-group-body" id="shadow-equity-body">
+              <div class="empty">Waiting for shadow data&hellip;</div>
+            </div>
+          </div>
+          <div class="shadow-chart-group" id="shadow-heatmap-group">
+            <div class="shadow-chart-group-title">Day P&amp;L heatmap</div>
+            <div class="shadow-chart-group-body" id="shadow-heatmap-body">
+              <canvas id="shadow-heatmap-canvas" class="shadow-heatmap-canvas"></canvas>
+            </div>
+          </div>
+          <div class="shadow-chart-group" id="shadow-winrate-group">
+            <div class="shadow-chart-group-title">Rolling win rate (20-trade)</div>
+            <div class="shadow-chart-group-body" id="shadow-winrate-body">
+              <div class="empty">Waiting for shadow data&hellip;</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
     <section class="grid" id="shadow-pnl-section">
       <div class="card" id="shadow-pnl-card">
         <div class="card-head">
