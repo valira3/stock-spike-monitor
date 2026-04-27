@@ -1,8 +1,8 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.1.2 · April 2026
+> **Version:** v5.3.0 · April 2026
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`
+> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`
 
 TradeGenius is a Python Telegram-driven trading bot with a paper book,
 two Alpaca-backed executor mirrors, and a live web dashboard. As of
@@ -11,11 +11,18 @@ long ("The Tiger Hunts the Bison") and short ("The Wounded Buffalo /
 Gravity Trade") trades on a small, hand-curated ticker universe; emits
 ENTRY/EXIT signals on an in-process bus; and (when configured)
 replicates those signals against Alpaca paper or live via two
-independent executor bots. **v5.1.0–v5.1.2** layered an observation-only
+independent executor bots. **v5.1.x** layered an observation-only
 **Forensic Volume Filter** (`volume_profile.py`) plus **Forensic Capture**
-modules (`bar_archive.py`, `indicators.py`) on top of the v5.0.0 algorithm
-— all of v5.1.x is shadow-mode only and does not change a single
-Tiger/Buffalo entry decision.
+modules (`bar_archive.py`, `indicators.py`) on top of the v5.0.0 algorithm.
+**v5.1.8** moved persistence from atomic JSON to a SQLite database on the
+Railway Volume (`persistence.py`, `/data/state.db`). **v5.2.0** added a
+real-time shadow-strategy P&L tracker (`shadow_pnl.py`); **v5.2.1**
+hardened Alpaca submits with deterministic `client_order_id` idempotency
+plus boot-time broker reconcile; **v5.3.0** moved the shadow panel to its
+own dedicated dashboard tab with click-to-expand per-config detail. The
+v5.0.0 Tiger/Buffalo entry/exit decisions are unchanged through v5.3.0
+— every v5.1.x / v5.2.x / v5.3.x add is observational or
+infrastructure-only.
 
 The canonical specification of the trading logic lives in
 [`STRATEGY.md`](STRATEGY.md) at the repo root. Sections 6 and 7 below
@@ -101,8 +108,10 @@ tiger_buffalo_v5.py        # v5.0.0 Tiger/Buffalo state-machine helpers
 volume_profile.py          # v5.1.0 Forensic Volume Filter (shadow only)
 indicators.py              # v5.1.2 pure indicator math (rsi/ema/atr/vwap/spread)
 bar_archive.py             # v5.1.2 1m bar JSONL persistence (/data/bars/)
+persistence.py             # v5.1.8 SQLite-backed state store (/data/state.db)
+shadow_pnl.py              # v5.2.0 real-time shadow-strategy P&L tracker
 telegram_commands.py       # slash-command handlers
-smoke_test.py              # 220 local + 9 prod smoke tests
+smoke_test.py              # 262 local + 9 prod smoke tests
 synthetic_harness/         # 50-scenario byte-equal replay harness
     runner.py, recorder.py, market.py, clock.py, scenarios/, goldens/
 scripts/
@@ -520,7 +529,28 @@ stays in live; mode flips rebuild the Alpaca client through
 If either gate fails, the mode does not flip and the bot replies with
 the error reason. Paper flips have no token gate.
 
-### 8.4 Alpaca client URL hygiene
+### 8.4 Alpaca order idempotency (v5.2.1 H1)
+
+Every executor submit is routed through `_submit_order_idempotent`,
+which stamps a deterministic `client_order_id` of the form
+
+```
+f"{NAME}-{TICKER}-{utc_iso_minute}-{LONG|SHORT}"
+```
+
+(e.g. `Val-AMD-2026-04-24T13:48Z-LONG`) on the request. Alpaca rejects a
+second submit with the same `client_order_id` as a duplicate; the
+wrapper catches that rejection, refetches the existing order via
+`get_order_by_client_order_id`, and returns it as if the original submit
+succeeded. The net effect is "submit once, even after a process restart
+within the same minute." A startup hook,
+`_reconcile_broker_positions`, walks the live Alpaca positions list at
+boot, grafts any broker order that is missing from the in-process state
+back into the matching track, and DMs the executor's owners that a
+graft happened. Together H1 closes the v5.0–5.2 race where a Railway
+redeploy mid-minute could have double-submitted an entry.
+
+### 8.5 Alpaca client URL hygiene
 
 `alpaca-py 0.43.2`'s `RESTClient` builds the final URL as
 `base_url + "/" + api_version + path`, i.e. it always appends `/v2`.
@@ -691,6 +721,38 @@ px` band for sidebar/grid collapse and the index-strip "compact" mode
 that drops the absolute Δ$ value so 5 items fit on a 390-px iPhone
 horizontally.
 
+### 9.4 Shadow strategy P&L (v5.2.0)
+
+`shadow_pnl.py` (`ShadowPnL` class) is the in-process tracker for every
+shadow config that owns virtual positions. It is paper-portfolio sized
+(`PAPER_DOLLARS_PER_ENTRY`), marked-to-market on every minute close
+(`mark_to_market`), and persists rows in the `shadow_positions` table
+inside `/data/state.db`. The dashboard renders running today + cumulative
+P&L per config, win rate, and unrealized P&L. v5.2.1 H3 ungated the
+mark-to-market path from `paper_holds` so a shadow position on a ticker
+the live paper book is also holding still gets marked.
+
+### 9.5 Shadow tab (v5.3.0)
+
+Through v5.2.1 the shadow P&L block sat at the bottom of the Main tab.
+v5.3.0 promotes shadow strategies to a dedicated tab — the dashboard
+header now carries **four tabs**: Main / Val / Gene / Shadow. The Shadow
+panel hosts the same per-config running P&L block plus a click-to-expand
+row per config that calls two new `ShadowPnL` methods:
+
+- `open_positions_for(config_name)` — list of currently open virtual
+  positions for the named config, including the entry timestamp,
+  side, entry price, and live mark.
+- `recent_closed_for(config_name, limit=10)` — the last N closed
+  trades for the named config, ordered newest first, with realized
+  P&L per row.
+
+No schema migration ships with v5.3.0 — both methods read the existing
+`shadow_positions` table that v5.2.0 introduced. The two IIFEs in
+`app.js` continue to share state through the `window.__tg*` named
+bridges; the new Shadow tab simply registers a fourth `data-tg-tab`
+target alongside Main / Val / Gene.
+
 ---
 
 ## 10. Environment variables
@@ -719,13 +781,20 @@ Production typically sets this to `"5165570192,167005578"` (Val + Gene).
 
 | Variable        | Default                        | Notes                                  |
 |-----------------|--------------------------------|----------------------------------------|
-| `FMP_API_KEY`   | hard-coded fallback (free key) | PDC + quote data                       |
+| `FMP_API_KEY`   | hard-coded fallback (free key) | PDC + sector / profile lookups         |
+
+Yahoo Finance is the **sole** source of 1-minute bars from v5.1.3
+onward (the prior Finnhub data path was removed in v5.1.3). Alpaca is
+the order-routing surface and the live websocket source for the v5.1.0
+Forensic Volume Filter; FMP is used only for prior-day-close + sector
+lookups.
 
 ### 10.4 Persistence (Railway Volume)
 
 | Variable           | Default                | Notes                                     |
 |--------------------|------------------------|-------------------------------------------|
-| `PAPER_STATE_PATH` | `paper_state.json`     | Set to `/data/...` on Railway              |
+| `STATE_DB_PATH`    | `/data/state.db`       | v5.1.8 SQLite-backed state store (replaces JSON) |
+| `PAPER_STATE_PATH` | `paper_state.json`     | Legacy JSON path; kept for one-shot import migration |
 | `PAPER_LOG_PATH`   | `investment.log`       | Trade log file path (`paper_log()`)        |
 | `TRADE_LOG_FILE`   | (derived)              | Append-only `.jsonl` for full trade log    |
 | `TICKERS_FILE`     | `tickers.json`         | Editable ticker universe                   |
@@ -778,7 +847,7 @@ see §11.7.)
 | `ALPACA_ENDPOINT_PAPER`    | unset   | URL host override (no `/v2`); shared by both executors |
 | `ALPACA_ENDPOINT_TRADE`    | unset   | URL host override (no `/v2`); shared by both executors |
 
-**Production Railway naming (as of v5.1.2).**
+**Production Railway naming (as of v5.3.0).**
 
 - Val executor — paper. `VAL_ALPACA_PAPER_KEY` (26 chars) and
   `VAL_ALPACA_PAPER_SECRET` (44 chars) are set on Railway from Val's
@@ -796,7 +865,7 @@ see §11.7.)
 
 | Variable                   | Default | Notes                                                  |
 |----------------------------|---------|--------------------------------------------------------|
-| `VOL_GATE_ENFORCE`         | `0`     | Master enforcement flag. Stays `0` through v5.1.2 (shadow only). |
+| `VOL_GATE_ENFORCE`         | `0`     | Master enforcement flag. Stays `0` through v5.3.0 (shadow only). |
 | `VOL_GATE_TICKER_ENABLED`  | `1`     | Active config: anchor on per-ticker volume gate.       |
 | `VOL_GATE_INDEX_ENABLED`   | `1`     | Active config: anchor on QQQ "Market Tide" gate.       |
 | `VOL_GATE_TICKER_PCT`      | `70`    | Active-config ticker threshold (percent of ToD avg).   |
@@ -805,10 +874,12 @@ see §11.7.)
 | `VOLUME_PROFILE_DIR`       | `/data/volume_profiles` | Per-ticker baseline JSONs.                  |
 
 Defaults preserve the v5.1.1 Apr 20-24 backtest-recommended thresholds.
-The four `SHADOW_CONFIGS` (TICKER+QQQ, TICKER_ONLY, QQQ_ONLY, GEMINI_A)
-are **not** env-driven — they are hard-coded module constants in
-`volume_profile.py`; env vars only control which one would gate trades
-if `VOL_GATE_ENFORCE=1`. See §17 for details.
+The five `SHADOW_CONFIGS` (TICKER+QQQ, TICKER_ONLY, QQQ_ONLY, GEMINI_A,
+BUCKET_FILL_100) plus the two event-driven extras (REHUNT_VOL_CONFIRM,
+OOMPH_ALERT) are **not** env-driven — they are hard-coded module
+constants in `volume_profile.py` and `trade_genius.py`; env vars only
+control which one would gate trades if `VOL_GATE_ENFORCE=1`. See §17
+for details.
 
 ### 10.9 Testing
 
@@ -840,6 +911,8 @@ COPY tiger_buffalo_v5.py .   # v5.0.0
 COPY volume_profile.py .     # v5.1.0
 COPY indicators.py .         # v5.1.2
 COPY bar_archive.py .        # v5.1.2
+COPY persistence.py .        # v5.1.8
+COPY shadow_pnl.py .         # v5.2.0
 COPY dashboard_server.py .
 COPY dashboard_static/ ./dashboard_static/
 ```
@@ -855,8 +928,9 @@ includes every top-level imported module`) that parses every
 `import`/`from` line in `trade_genius.py`, intersects against local
 `.py` modules, and grep-extracts the `COPY <module>.py` directives in
 the Dockerfile — any missing entry fails CI before merge. v5.1.0 added
-`COPY volume_profile.py` and v5.1.2 added `COPY indicators.py` and
-`COPY bar_archive.py` per this guard.
+`COPY volume_profile.py`; v5.1.2 added `COPY indicators.py` and
+`COPY bar_archive.py`; v5.1.8 added `COPY persistence.py`; v5.2.0
+added `COPY shadow_pnl.py` per this guard.
 
 `COPY tickers.json` is intentionally absent — the file lives on the
 Railway Volume (`TICKERS_FILE=/data/tickers.json`) and is created at
@@ -935,9 +1009,27 @@ live-account credentials.
 
 ## 12. Persistence
 
-`paper_state.json` is written atomically (write to `.tmp`, then
-`os.replace`) every 5 minutes during `scan_loop()` and on graceful
-shutdown signals. Key fields:
+### 12.1 SQLite store (v5.1.8+)
+
+`persistence.py` owns the canonical state store at `STATE_DB_PATH`
+(default `/data/state.db` on the Railway Volume). The legacy
+`paper_state.json` is read once on first boot if the SQLite file does
+not yet exist and its rows are imported into the new schema; subsequent
+boots ignore the JSON. The store holds the same logical fields the JSON
+held — `paper_cash`, `positions`, `short_positions`, `paper_trades`,
+`paper_all_trades`, `daily_entry_count`, `daily_short_entry_count`,
+`or_high`, `or_low`, `pdc`, `_trading_halted`, `_trading_halted_reason`,
+`bot_version` — plus the v5.2.0 `shadow_positions` table backing
+`shadow_pnl.ShadowPnL`. Writes are routed through `persistence.save_*`
+helpers; failures never raise into the trading loop. The store survives
+Railway redeploys via the persistent `/data` volume and is the source of
+truth for `_load_state()` after v5.1.8.
+
+### 12.2 Legacy JSON shape (still relevant for the import path)
+
+The pre-v5.1.8 `paper_state.json` shape is preserved here because the
+JSON-to-SQLite import path reads it verbatim and the synthetic harness
+golden files retain the same shape:
 
 ```json
 {
@@ -977,29 +1069,39 @@ are silently ignored on load so old state files survive code purges.
 
 ### 13.1 Local smoke (`smoke_test.py`)
 
-**220/220 tests** at v5.1.2 (was 161 at v5.0.4, 181 at v5.1.0, 194 at
-v5.1.1). Tests are grouped via the `@t(name)` decorator. Runs on every
+**262/262 tests** at v5.3.0 (was 161 at v5.0.4, 220 at v5.1.2, 262 at
+v5.3.0). Tests are grouped via the `@t(name)` decorator. Runs on every
 PR via `.github/workflows/post-deploy-smoke.yml` (after the prod
 rollout poll succeeds). Coverage spans the trade-decision arithmetic
 (stop-chain layers, breakeven ratchet, ladder tiers, entry-extension
 guard), data helpers (`_classify_session_et`, `_or_price_sane`),
-state I/O (`paper_state.save/load/reset`), the index payload schema,
-the Yahoo helper API surface, the v5 Tiger/Buffalo rule grid (every
-`L-P*-R*`/`S-P*-R*`/`C-R*` rule has at least one test docstring
+state I/O (now `persistence.py` / SQLite via v5.1.8), the index payload
+schema, the Yahoo helper API surface, the v5 Tiger/Buffalo rule grid
+(every `L-P*-R*`/`S-P*-R*`/`C-R*` rule has at least one test docstring
 citing the rule ID), the v5.0.2 Dockerfile COPY infra-guard, the
 v5.0.3 chat-map auto-learn / fan-out, the v5.0.4 paper-key strict
 read, the v5.1.0 `[VOLPROFILE]` section (calendar helpers,
 `session_bucket` boundaries, `evaluate_g4` PASS/BLOCK paths,
 disable-on-30-symbol cap, JSON round-trip), the v5.1.1 env-driven
-A/B toggles + 3-config `SHADOW_CONFIGS` parallel emit, and the
-v5.1.2 forensic capture additions (4-tuple `SHADOW_CONFIGS` with
-`GEMINI_A` at 110/85, 4 `[CFG=...]` lines per candidate,
-`bar_archive.write_bar` + `cleanup_old_dirs`, `indicators.rsi14` /
-`ema9` / `ema21` / `atr14` / `vwap_dist_pct` / `spread_bps`
-happy-path + insufficient-bars-returns-None, and emitter-format tests
-for `[V510-MINUTE]` / `[V510-CAND]` / `[V510-FSM]` / `[V510-ENTRY]`),
-plus a handful of dashboard-route contract tests against a stub
-aiohttp app.
+A/B toggles + parallel `SHADOW_CONFIGS` emit, the v5.1.2 forensic
+capture additions (`bar_archive.write_bar` + `cleanup_old_dirs`,
+`indicators.rsi14` / `ema9` / `ema21` / `atr14` / `vwap_dist_pct` /
+`spread_bps` happy-path + insufficient-bars-returns-None, emitter
+formats for `[V510-MINUTE]` / `[V510-CAND]` / `[V510-FSM]` /
+`[V510-ENTRY]`), the v5.1.4 equity-aware sizing caps
+(`MAX_PCT_PER_ENTRY`, `MIN_RESERVE_CASH`), the v5.1.6 bucket-fill
+velocity streams (`[V510-VEL]`/`[V510-IDX]`/`[V510-DI]`), the v5.1.8
+SQLite migration (JSON-import idempotency, schema, write barriers),
+the v5.1.9 `REHUNT_VOL_CONFIRM` arm/check + `OOMPH_ALERT` minute-1/2
+state machine, the v5.2.0 `shadow_pnl` tracker (open/close/MTM,
+`open_positions_for`, `recent_closed_for`), the v5.2.1 idempotency
+layer (`_submit_order_idempotent` deterministic
+`client_order_id`, `_reconcile_broker_positions` startup graft, EOD
+orphan force-close at entry_price with `EOD_NO_MARK`, shadow MTM
+ungated from `paper_holds`, `_v521_all_shadow_config_names` registry,
+`(ticker, side)`-keyed REHUNT watch), and the v5.3.0 dashboard wiring
+(per-config open + recent-closed list, Shadow tab visibility), plus
+dashboard-route contract tests against a stub aiohttp app.
 
 ### 13.2 Synthetic harness (`synthetic_harness/`)
 
@@ -1184,36 +1286,50 @@ state machine builds up state lazily as gates pass and stages fire.
 v4 `paper_trades`, `trade_history`, `positions`, `short_positions`,
 and the daily entry counters all roll forward unchanged.
 
-### 16.5 v5.0.x → v5.1.x — what changed (and what didn't)
+### 16.5 v5.0.x → v5.3.x — what changed (and what didn't)
 
-The Tiger/Buffalo state machine in §6 is the same code in v5.1.2 as it
-was in v5.0.0. Every v5.1.x release is observation-only:
+The Tiger/Buffalo state machine in §6 is the same code in v5.3.0 as it
+was in v5.0.0. Every v5.1.x / v5.2.x / v5.3.x release is
+observation- or infrastructure-only:
 
-| Release | Subject                                                   | Behavior change? |
-|---------|-----------------------------------------------------------|------------------|
-| v5.0.2  | Dockerfile `COPY tiger_buffalo_v5.py` + infra-guard test  | No (hotfix)      |
-| v5.0.3  | Per-executor trade-confirmation DM auto-learn (chat-map)  | No (plumbing)    |
-| v5.0.4  | Revert v5.0.3 paper-key fallback (paper/live key strict)  | No (safety)      |
-| v5.1.0  | Forensic Volume Filter (`volume_profile.py`) — SHADOW     | No (logging)     |
-| v5.1.1  | Env-driven A/B toggles + 3-config parallel shadow logging | No (logging)     |
-| v5.1.2  | Forensic capture: bar archive + indicator snapshots       | No (logging)     |
+| Release | Subject                                                       | Behavior change? |
+|---------|---------------------------------------------------------------|------------------|
+| v5.0.2  | Dockerfile `COPY tiger_buffalo_v5.py` + infra-guard test      | No (hotfix)      |
+| v5.0.3  | Per-executor trade-confirmation DM auto-learn (chat-map)      | No (plumbing)    |
+| v5.0.4  | Revert v5.0.3 paper-key fallback (paper/live key strict)      | No (safety)      |
+| v5.1.0  | Forensic Volume Filter (`volume_profile.py`) — SHADOW         | No (logging)     |
+| v5.1.1  | Env-driven A/B toggles + 3-config parallel shadow logging     | No (logging)     |
+| v5.1.2  | Forensic capture: bar archive + indicator snapshots           | No (logging)     |
+| v5.1.3  | Finnhub data source removed (Yahoo + Alpaca + FMP only)       | No (cleanup)     |
+| v5.1.4  | Equity-aware position sizing (`MAX_PCT_PER_ENTRY` / `MIN_RESERVE_CASH`) | No (sizing safety) |
+| v5.1.5  | `/test` command timeout fix                                   | No (UX)          |
+| v5.1.6  | `BUCKET_FILL_100` 5th shadow config + V510-VEL/IDX/DI streams | No (logging)     |
+| v5.1.8  | SQLite-backed persistence on `/data/state.db` (replaces JSON) | No (storage)     |
+| v5.1.9  | `REHUNT_VOL_CONFIRM` + `OOMPH_ALERT` shadow configs (7 active) | No (logging)    |
+| v5.2.0  | Real-time shadow-strategy P&L tracker on dashboard            | No (display)     |
+| v5.2.1  | Alpaca order idempotency + startup broker reconcile + shadow accounting fixes (H1/H2/H3/M3/M4) | No (safety) |
+| v5.3.0  | Shadow strategies moved to dedicated tab + per-config detail  | No (display)     |
 
-Result: a v5.0.0 paper-state file still loads cleanly on v5.1.2; the
-synthetic harness 50/50 byte-equal goldens still match; every entry,
-exit, sizing, and stop-placement decision is identical to v5.0.0.
+Result: a v5.0.0 paper-state file still loads cleanly on v5.3.0 (via
+the v5.1.8 one-shot JSON-to-SQLite import path); the synthetic harness
+50/50 byte-equal goldens still match; every entry, exit, sizing, and
+stop-placement decision is identical to v5.0.0.
 
 ---
 
-## 17. Forensic Volume Filter (Anaplan logic) — v5.1.0 → v5.1.2
+## 17. Forensic Volume Filter (Anaplan logic) — v5.1.0 → v5.3.0
 
 The §17 layer asks a sharper volume question than the legacy "is volume
 high" tests: *is this minute's volume higher than the 55-trading-day
 seasonal average for THIS exact ET timestamp?* Shipped in v5.1.0 in
 **shadow mode** (computed and logged, but no entry decision changes),
 extended in v5.1.1 with env-driven A/B toggles and 3-config parallel
-shadow logging, and again in v5.1.2 with `GEMINI_A` as a 4th shadow
-config. Through v5.1.2 the gate is **still observation only**:
-`VOL_GATE_ENFORCE` defaults to `0` and is unchanged.
+shadow logging, in v5.1.2 with `GEMINI_A` as a 4th shadow config, in
+v5.1.6 with `BUCKET_FILL_100` as a 5th plus the bucket-fill velocity
+streams, and in v5.1.9 with two event-driven extras (`REHUNT_VOL_CONFIRM`
+and `OOMPH_ALERT`) that own their own virtual positions. **Seven**
+shadow configs are active through v5.3.0; the gate remains observation
+only — `VOL_GATE_ENFORCE` defaults to `0` and is unchanged.
 
 ### 17.1 Volume Library — parameters
 
@@ -1268,24 +1384,31 @@ for the parallel shadow lines. It returns
 and `reason ∈ {OK, LOW_TICKER, LOW_QQQ, STALE_PROFILE, NO_BARS,
 NO_PROFILE, DISABLED}`.
 
-### 17.4 `SHADOW_CONFIGS` — fixed analysis configs (v5.1.1 → v5.1.6)
+### 17.4 `SHADOW_CONFIGS` — fixed analysis configs (v5.1.1 → v5.1.9)
 
 `volume_profile.SHADOW_CONFIGS` is a hard-coded **5-tuple** (was
 3-tuple in v5.1.1; `GEMINI_A` was added in v5.1.2; `BUCKET_FILL_100`
 was added in v5.1.6 to support the Bucket-Fill Protocol intraminute
-velocity capture — see §17.1):
+velocity capture — see §17.4a). Two further configs ship in v5.1.9
+as event-driven extras outside the tuple:
 
-| Name              | `ticker_enabled` | `index_enabled` | `ticker_pct` | `index_pct` |
-|-------------------|------------------|-----------------|--------------|-------------|
-| `TICKER+QQQ`      | True             | True            | 70           | 100         |
-| `TICKER_ONLY`     | True             | False           | 70           | (unused)    |
-| `QQQ_ONLY`        | False            | True            | (unused)     | 100         |
-| `GEMINI_A`        | True             | True            | **110**      | **85**      |
-| `BUCKET_FILL_100` | True             | True            | **100**      | **100**     |
+| Name                 | `ticker_enabled` | `index_enabled` | `ticker_pct` | `index_pct` | Source                       |
+|----------------------|------------------|-----------------|--------------|-------------|------------------------------|
+| `TICKER+QQQ`         | True             | True            | 70           | 100         | `volume_profile.SHADOW_CONFIGS` |
+| `TICKER_ONLY`        | True             | False           | 70           | (unused)    | `volume_profile.SHADOW_CONFIGS` |
+| `QQQ_ONLY`           | False            | True            | (unused)     | 100         | `volume_profile.SHADOW_CONFIGS` |
+| `GEMINI_A`           | True             | True            | **110**      | **85**      | `volume_profile.SHADOW_CONFIGS` |
+| `BUCKET_FILL_100`    | True             | True            | **100**      | **100**     | `volume_profile.SHADOW_CONFIGS` |
+| `REHUNT_VOL_CONFIRM` | n/a              | n/a             | event-driven (≥100% bucket median + DI≥25 within 10 min after `HARD_EJECT_TIGER`) | — | `_V521_EXTRA_SHADOW_CONFIG_NAMES` (v5.1.9) |
+| `OOMPH_ALERT`        | n/a              | n/a             | event-driven (DI≥25 + BUCKET_FILL≥100% on minute 1; DI≥25 confirm on minute 2) | — | `_V521_EXTRA_SHADOW_CONFIG_NAMES` (v5.1.9) |
 
 These are NOT env-driven — env vars only choose which one would gate
 trades if `VOL_GATE_ENFORCE=1`. The point is that every line of
-shadow data is comparable across all five configs post-hoc.
+shadow data is comparable across all seven configs post-hoc. The
+**v5.2.1 M3** helper `_v521_all_shadow_config_names()` is the canonical
+union; close-fanout (`_v520_close_shadow_all`) and EOD code paths
+iterate it so any new tuple entry plus the event-driven extras is
+picked up automatically.
 
 ### 17.4a Bucket-Fill Velocity (v5.1.6)
 
@@ -1313,7 +1436,10 @@ none of them touch the trading decision.
 
 ### 17.5 Shadow log lines
 
-Per candidate, `_shadow_log_g4` now emits **6** log lines:
+Per candidate, `_shadow_log_g4` emits **6** log lines (one back-compat
+plus five `[CFG=...]` lines for the tuple). The v5.1.9 event-driven
+extras emit one additional `[V510-SHADOW][CFG=...]` line each on their
+own trigger conditions:
 
 ```
 [V510-SHADOW] ticker=AMD bucket=1448 stage=1 g4=GREEN ticker_pct=84 qqq_pct=112 reason=OK entry_decision=ENTER
@@ -1322,13 +1448,14 @@ Per candidate, `_shadow_log_g4` now emits **6** log lines:
 [V510-SHADOW][CFG=QQQ_ONLY][PCT=100]      ticker=AMD bucket=1448 stage=1            qqq_pct=112 verdict=PASS reason=OK entry_decision=ENTER
 [V510-SHADOW][CFG=GEMINI_A][PCT=110/85]   ticker=AMD bucket=1448 stage=1 t_pct=84 qqq_pct=112 verdict=BLOCK reason=LOW_TICKER entry_decision=ENTER
 [V510-SHADOW][CFG=BUCKET_FILL_100][PCT=100/100] ticker=AMD bucket=1448 stage=1 t_pct=84 qqq_pct=112 verdict=BLOCK reason=LOW_TICKER entry_decision=ENTER
+[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] ticker=AMD side=long bucket=1453 t_pct=104 di_plus=27 verdict=PASS
+[V510-SHADOW][CFG=OOMPH_ALERT] ticker=AMD side=long bucket=1448 minute1_di=27 minute1_bucket=104 minute2_di=29 verdict=PASS
 ```
 
-The first line is the v5.1.0 back-compat line (no `[CFG=...]` prefix);
-the five `[CFG=...]` lines are the v5.1.1 (3 of them), v5.1.2
-(`GEMINI_A`), and v5.1.6 (`BUCKET_FILL_100`). `entry_decision` always
-reflects what the bot actually did — these lines never gate the
-decision.
+`entry_decision` always reflects what the bot actually did — these
+lines never gate the decision. The v5.1.9 extras drop the
+`entry_decision` field because they fire post-hoc relative to the
+underlying live trade.
 
 ### 17.6 Failure modes
 
@@ -1350,10 +1477,20 @@ decision.
 3. **v5.1.2** — `GEMINI_A` added as 4th shadow config; forensic
    capture (§18) closes the asymmetric blind spot where we only
    logged what fired. Still SHADOW.
-4. **Observation window** — Val collects a clean week of 4-config
-   shadow data alongside `[V510-CAND]` skipped-candidate lines and
-   `[V510-MINUTE]` per-minute volume percentiles.
-5. **Future PR** — Flip `VOL_GATE_ENFORCE=1` once Val has chosen the
+4. **v5.1.6** — `BUCKET_FILL_100` added as 5th shadow config plus the
+   `[V510-VEL]` / `[V510-IDX]` / `[V510-DI]` velocity streams (§17.4a).
+5. **v5.1.9** — `REHUNT_VOL_CONFIRM` and `OOMPH_ALERT` added as
+   event-driven extras (now 7 active configs).
+6. **v5.2.0** — Real-time shadow P&L tracker (`shadow_pnl.py`) lifts
+   the data from append-only logs into a queryable SQLite table so the
+   dashboard can render running P&L per config.
+7. **v5.3.0** — Shadow strategies move to a dedicated dashboard tab
+   with click-to-expand per-config detail (open positions + last 10
+   closed trades). See §9.5 for the wiring.
+8. **Observation window** — Val collects multiple weeks of 7-config
+   shadow data alongside `[V510-CAND]` / `[V510-MINUTE]` /
+   `[V510-VEL]` / `[V510-IDX]` / `[V510-DI]` streams.
+9. **Future PR** — Flip `VOL_GATE_ENFORCE=1` once Val has chosen the
    best config off live data; G4 joins G1/G2/G3 as a hard ARM
    precondition (see §19.1).
 
@@ -1486,9 +1623,9 @@ env-driven configs beyond v5.1.1; adaptive runtime config switching.
 | G1   | Index Alpha     | Tiger/Buffalo §6.2              | enforced              |
 | G2   | Ticker Alpha    | Tiger/Buffalo §6.2              | enforced              |
 | G3   | 5m OR Structure | Tiger/Buffalo §6.2              | enforced              |
-| G4   | Volume          | `volume_profile.evaluate_g4(_config)` | **shadow only — `VOL_GATE_ENFORCE=0` through v5.1.2; flips in a future PR** |
+| G4   | Volume          | `volume_profile.evaluate_g4(_config)` | **shadow only — `VOL_GATE_ENFORCE=0` through v5.3.0; flips in a future PR** |
 
-Through v5.1.2 the bot logs G4 every minute via `_shadow_log_g4` but
+Through v5.3.0 the bot logs G4 every minute via `_shadow_log_g4` but
 does not block any entry on it. The short-side gates read the same
 baseline; no short-specific code change.
 
