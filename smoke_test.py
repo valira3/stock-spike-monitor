@@ -349,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.6.0")
+    @t("version: BOT_VERSION is 5.6.1")
     def _():
-        assert m.BOT_VERSION == "5.6.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.6.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3801,40 +3801,40 @@ def run_local() -> int:
     def _():
         # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.6.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
 
     @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
     def _():
@@ -4307,22 +4307,22 @@ def run_local() -> int:
         assert "if ws_vol is not None" in src
         assert '"et_bucket": et_bucket,' in src
 
-    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.6.0")
+    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.6.1")
     def _():
         # Test name pinned to its release; assertion follows BOT_VERSION.
         from pathlib import Path as _P
         arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        assert 'BOT_VERSION = "5.6.0"' in arch, "ARCHITECTURE.md footer not bumped"
+        assert 'BOT_VERSION = "5.6.1"' in arch, "ARCHITECTURE.md footer not bumped"
 
-    @t("v5.5.5: CHANGELOG.md has v5.6.0 heading at top")
+    @t("v5.5.5: CHANGELOG.md has v5.6.1 heading at top")
     def _():
         from pathlib import Path as _P
         cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
         # The first ## heading should be the current version.
-        head_idx = cl.find("\n## v5.6.0")
-        prior = cl.find("\n## v5.5.11")
+        head_idx = cl.find("\n## v5.6.1")
+        prior = cl.find("\n## v5.6.0")
         assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
-            "v5.6.0 heading must precede v5.5.11 in CHANGELOG"
+            "v5.6.1 heading must precede v5.6.0 in CHANGELOG"
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():
@@ -5411,7 +5411,315 @@ def run_local() -> int:
         assert hasattr(m, "_v560_log_gate"), \
             "_v560_log_gate forensic logger missing from trade_genius"
 
-    return run_suite("LOCAL SMOKE TESTS (v5.6.0 Unified AVWAP Permission Gates)")
+    # ---------- v5.6.1 data-collection guards ----------
+
+    @t("v5.6.1 D1: V561_INDEX_TICKER is QQQ")
+    def _():
+        assert getattr(m, "V561_INDEX_TICKER", None) == "QQQ", \
+            "v5.6.1 archive index ticker must be QQQ"
+
+    @t("v5.6.1 D1: _v561_archive_qqq_bar writes to /data/bars/<UTC>/QQQ.jsonl")
+    def _():
+        import tempfile, json as _json
+        from pathlib import Path
+        # Stand up a temp /data root, monkeypatch bar_archive's default.
+        ba = m.bar_archive
+        orig_default = ba.DEFAULT_BASE_DIR
+        with tempfile.TemporaryDirectory() as td:
+            ba.DEFAULT_BASE_DIR = td
+            try:
+                bars = {
+                    "current_price": 425.10,
+                    "closes": [425.00, 425.05, 425.10],
+                    "opens":  [424.95, 425.00, 425.05],
+                    "highs":  [425.10, 425.10, 425.15],
+                    "lows":   [424.90, 424.98, 425.00],
+                    "volumes": [12000, 11500, 11800],
+                    "timestamps": [1714224000, 1714224060, 1714224120],
+                }
+                m._v561_archive_qqq_bar(bars)
+                # Find the QQQ.jsonl file under the temp dir.
+                hits = list(Path(td).rglob("QQQ.jsonl"))
+                assert len(hits) == 1, f"expected 1 QQQ.jsonl, got {hits}"
+                line = hits[0].read_text().strip().splitlines()[-1]
+                row = _json.loads(line)
+                assert row["close"] == 425.05, row
+                assert row["last_trade_price"] == 425.10, row
+            finally:
+                ba.DEFAULT_BASE_DIR = orig_default
+
+    @t("v5.6.1 D2: _v561_persist_or_snapshot writes /data/or/<UTC>/<T>.json")
+    def _():
+        import tempfile, json as _json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            m.or_high["NVDA"] = 880.50
+            m.or_low["NVDA"] = 870.25
+            try:
+                path = m._v561_persist_or_snapshot("NVDA", base_dir=td)
+                assert path is not None and Path(path).exists(), path
+                payload = _json.loads(Path(path).read_text())
+                assert payload["ticker"] == "NVDA"
+                assert payload["or_high"] == 880.50
+                assert payload["or_low"] == 870.25
+                assert "computed_at_utc" in payload
+            finally:
+                m.or_high.pop("NVDA", None)
+                m.or_low.pop("NVDA", None)
+
+    @t("v5.6.1 D2: _v561_maybe_persist_or_snapshots is no-op pre-9:35 ET")
+    def _():
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _Z
+        early = _dt(2026, 4, 28, 9, 30, tzinfo=_Z("America/New_York"))
+        n = m._v561_maybe_persist_or_snapshots(now_et=early)
+        assert n == 0, f"pre-9:35 should write 0, got {n}"
+
+    @t("v5.6.1 D3: [V560-GATE] richened line carries all 14 fields")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_v560_gate_rich(
+                ticker="AAPL", side="LONG", ts_utc="2026-04-28T13:36:00Z",
+                ticker_price=215.50, ticker_avwap=215.10,
+                index_price=425.20, index_avwap=425.05,
+                or_high=215.40, or_low=214.80,
+                g1=True, g3=True, g4=True, pass_=True, reason=None,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[V560-GATE] " in out
+        for tok in (
+            "ticker=AAPL", "side=LONG", "ts=2026-04-28T13:36:00Z",
+            "ticker_price=215.5000", "ticker_avwap=215.1000",
+            "index_price=425.2000", "index_avwap=425.0500",
+            "or_high=215.4000", "or_low=214.8000",
+            "g1=True", "g3=True", "g4=True", "pass=True", "reason=null",
+        ):
+            assert tok in out, f"missing token {tok!r} in: {out!r}"
+
+    @t("v5.6.1 D4: _v561_compose_entry_id is deterministic")
+    def _():
+        eid = m._v561_compose_entry_id("AAPL", "2026-04-28T13:42:31Z")
+        assert eid == "AAPL-20260428134231", eid
+        # Lowercase normalised + non-digit stripped
+        eid2 = m._v561_compose_entry_id("nvda", "2026-04-28 13:42:31+00:00")
+        assert eid2 == "NVDA-20260428134231", eid2
+
+    @t("v5.6.1 D4: [TRADE_CLOSED] formatter produces expected string")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_trade_closed(
+                ticker="NVDA", side="LONG",
+                entry_id="NVDA-20260428134231",
+                entry_ts_utc="2026-04-28T13:42:31Z",
+                entry_price=880.50,
+                exit_ts_utc="2026-04-28T14:10:05Z",
+                exit_price=885.10, exit_reason="stop",
+                qty=10, pnl_dollars=46.00, pnl_pct=0.5224,
+                hold_seconds=1654,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[TRADE_CLOSED]" in out
+        for tok in (
+            "ticker=NVDA", "side=LONG",
+            "entry_id=NVDA-20260428134231",
+            "entry_ts=2026-04-28T13:42:31Z",
+            "entry_price=880.5000",
+            "exit_ts=2026-04-28T14:10:05Z",
+            "exit_price=885.1000", "exit_reason=stop",
+            "qty=10", "pnl_dollars=46.0000",
+            "pnl_pct=0.5224", "hold_seconds=1654",
+        ):
+            assert tok in out, f"missing {tok!r} in {out!r}"
+
+    @t("v5.6.1 D4: [ENTRY] line carries entry_id")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_entry(
+                ticker="MSFT", side="SHORT",
+                entry_id="MSFT-20260428143200",
+                entry_ts_utc="2026-04-28T14:32:00Z",
+                entry_price=412.10, qty=10,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[ENTRY] " in out
+        assert "entry_id=MSFT-20260428143200" in out
+        assert "side=SHORT" in out
+        assert "qty=10" in out
+
+    @t("v5.6.1 D5: [SKIP] with no gate eval emits gate_state=null")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_skip(
+                ticker="AAPL", reason="COOLDOWN:7m",
+                ts_utc="2026-04-28T13:50:00Z", gate_state=None,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[SKIP] " in out
+        assert "gate_state=null" in out, out
+        assert "ticker=AAPL" in out
+        assert "reason=COOLDOWN:7m" in out
+
+    @t("v5.6.1 D5: [SKIP] with gate state emits canonical JSON")
+    def _():
+        import json as _json
+        import logging as _lg, io as _io
+        gs = m._v561_gate_state_dict(
+            g1=True, g3=False, g4=True, pass_=False,
+            ticker_price=215.5, ticker_avwap=215.7,
+            index_price=425.0, index_avwap=425.0,
+            or_high=215.6, or_low=215.0,
+        )
+        # canonical encoding -- sort_keys, no whitespace
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_skip(
+                ticker="AAPL", reason="V560_GATE_BLOCK:G3",
+                ts_utc="2026-04-28T13:50:00Z", gate_state=gs,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        # extract gate_state= chunk
+        assert "gate_state=" in out
+        idx = out.index("gate_state=") + len("gate_state=")
+        chunk = out[idx:].strip()
+        parsed = _json.loads(chunk)
+        assert parsed["g1"] is True
+        assert parsed["g3"] is False
+        assert parsed["g4"] is True
+        assert parsed["pass"] is False
+        assert parsed["ticker_price"] == 215.5
+        assert parsed["or_high"] == 215.6
+
+    @t("v5.6.1 D6: boot [UNIVERSE] line includes QQQ + alpha-sorted")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_universe(
+                ["TSLA", "AAPL", "MSFT", "NVDA", "META",
+                 "GOOG", "AMZN", "AVGO", "QQQ"]
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue().strip().splitlines()[-1]
+        assert "[UNIVERSE] " in out
+        # Alphabetical ordering, comma-separated, QQQ present.
+        assert ("tickers=AAPL,AMZN,AVGO,GOOG,META,MSFT,NVDA,QQQ,TSLA"
+                in out), out
+
+    @t("v5.6.1 D6: [UNIVERSE] dedupes + uppercases")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_universe(["aapl", "AAPL", "msft"])
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue().strip().splitlines()[-1]
+        assert "tickers=AAPL,MSFT" in out, out
+
+    @t("v5.6.1 D6: [WATCHLIST_ADD] / [WATCHLIST_REMOVE] hooks exist")
+    def _():
+        assert callable(getattr(m, "_v561_log_watchlist_add", None))
+        assert callable(getattr(m, "_v561_log_watchlist_remove", None))
+
+    @t("v5.6.1 D6: [WATCHLIST_ADD] emits structured line")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_watchlist_add("PLTR", reason="oomph",
+                                      ts_utc="2026-04-28T14:00:00Z")
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[WATCHLIST_ADD]" in out
+        assert "ticker=PLTR" in out
+        assert "reason=oomph" in out
+        assert "ts=2026-04-28T14:00:00Z" in out
+
+    @t("v5.6.1 guard: CHANGELOG.md has v5.6.1 heading")
+    def _():
+        from pathlib import Path
+        ch = (Path(__file__).resolve().parent / "CHANGELOG.md").read_text()
+        first = next((ln for ln in ch.splitlines() if ln.startswith("## ")), "")
+        assert "v5.6.1" in first, f"top heading: {first!r}"
+
+    @t("v5.6.1 guard: gate logic not modified (gates_pass_long signature)")
+    def _():
+        # v5.6.1 must NOT touch gate logic. Pin the signature byte-for-byte
+        # against v5.6.0's parameter set.
+        import inspect
+        sig = inspect.signature(m.v5.gates_pass_long)
+        params = list(sig.parameters)
+        assert params == [
+            "qqq_last", "qqq_opening_avwap",
+            "ticker_last", "ticker_opening_avwap", "ticker_or_high",
+        ], params
+
+    @t("v5.6.1 guard: no literal em-dash in v5.6.1 helpers")
+    def _():
+        # Per spec: NEW v5.6.1 string literals must use \u2014 escape.
+        # Pre-existing v3.x/v4.x/v5.6.0 lines that already had literal
+        # em-dashes are out of scope. Restrict the scan to lines whose
+        # surrounding marker tags are v5.6.1 / v561 / V561.
+        from pathlib import Path
+        src_path = Path(__file__).resolve().parent / "trade_genius.py"
+        src = src_path.read_text()
+        bad = []
+        for i, line in enumerate(src.splitlines(), start=1):
+            if "\u2014" not in line:
+                continue
+            tag_hits = ("v5.6.1" in line or "v561" in line.lower()
+                        or "V561" in line)
+            if tag_hits:
+                bad.append((i, line[:80]))
+        assert not bad, (
+            "literal em-dash in v5.6.1-tagged line: %s" % bad[:3]
+        )
+
+    return run_suite("LOCAL SMOKE TESTS (v5.6.1 Data-Collection Improvements)")
 
 
 # ============================================================

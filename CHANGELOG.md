@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.6.1 — 2026-04-27 — Data-Collection Improvements
+
+Pure observability/data-collection patch. **No gate-logic changes** — `tiger_buffalo_v5.py` is untouched and the v5.6.0 unified AVWAP permission gates remain canonical. This release expands the on-disk archive surface and richens the structured log lines so downstream replay/analysis tooling has a complete picture of every entry consideration.
+
+**Data-collection deliverables:**
+
+- **D1 — QQQ bar archive:** `_v561_archive_qqq_bar` writes the per-cycle 1m QQQ snapshot to `/data/bars/<UTC-date>/QQQ.jsonl` alongside the 8 trade tickers. Same `bar_archive` schema, same atomic-append guarantees.
+- **D2 — OR backfill + persistence:** scan_loop now runs a pre-open archive path between 09:29:30–09:35 ET so the OR window's 5 closing 1m bars land on disk. At/after 09:35 ET, `_v561_persist_or_snapshot` writes `{ticker, or_high, or_low, computed_at_utc}` to `/data/or/<UTC-date>/<TICKER>.json` (idempotent — at most one snapshot per ticker per day).
+- **D3 — `[V560-GATE]` richened schema:** every gate evaluation now emits a single structured line carrying all 14 fields: `ticker, side, ts, ticker_price, ticker_avwap, index_price, index_avwap, or_high, or_low, g1, g3, g4, pass, reason`.
+- **D4 — Trade lifecycle:** every `[ENTRY]` line carries an `entry_id=<TICKER>-<YYYYMMDDHHMMSS>` deterministic id, and every exit emits a paired `[TRADE_CLOSED]` line with `entry_id, side, exit_reason, hold_s, pnl_usd`.
+- **D5 — `[SKIP]` with gate_state:** skip lines now embed the full gate snapshot as canonical JSON. Pre-gate skips (e.g. cooldown, loss-cap) emit `gate_state=null`.
+- **D6 — `[UNIVERSE]` boot line + `[WATCHLIST_ADD]`/`[WATCHLIST_REMOVE]`:** the alpha-sorted ticker universe (with QQQ included) is logged once at boot, and runtime watchlist mutations emit structured lines for replay.
+
+**Conventions:**
+
+- `BOT_VERSION` bumped to `5.6.1`.
+- New string literals introduced in this release use `\u2014` escape sequences rather than literal em-dashes.
+- Smoke test suite gains 16 new v5.6.1 assertions.
+
+---
+
 ## v5.6.0 — 2026-04-27 — Unified AVWAP Permission Gates (Healing/Limping Bison)
 
 Hard-cut to prod: replaces the legacy 4-gate L-P1/S-P1 permission set with a unified 3-gate AVWAP-anchored system, symmetric for longs and shorts. Ships before Tuesday Apr 28 RTH open. No feature flag, no shadow rollout — every entry consideration after this deploy uses the new gates.

@@ -1814,6 +1814,45 @@ configs on top of the new permission gates).
 `[V560] Unified AVWAP gates: L-P1 (G1/G3/G4), S-P1 (G1/G3/G4)` so the
 operator can confirm at a glance that the new gate set is wired.
 
+### 19.1.1 Data-collection log schema (v5.6.1)
+
+v5.6.1 ships a **pure observability** patch on top of v5.6.0; the gate
+predicates in `tiger_buffalo_v5.py` are unchanged. The forensic surface
+now carries a richer set of structured lines:
+
+- **`[V560-GATE]` (richened, single line)** — every gate evaluation now
+  emits one line carrying all 14 fields: `ticker, side, ts, ticker_price,
+  ticker_avwap, index_price, index_avwap, or_high, or_low, g1, g3, g4,
+  pass, reason`. The legacy per-G1/G3/G4 lines are retained for
+  backwards compat with older parsers.
+- **`[ENTRY]` carries `entry_id`** — every entry log line now includes
+  `entry_id=<TICKER>-<YYYYMMDDHHMMSS>` (deterministic from the entry
+  UTC timestamp), so each entry is paired with its eventual exit.
+- **`[TRADE_CLOSED]` (new)** — every exit emits a paired
+  `[TRADE_CLOSED] entry_id=… side=… exit_reason=… hold_s=… pnl_usd=…`
+  line. `exit_reason` is normalised to one of `stop|target|eod|time|manual`.
+- **`[SKIP]` with `gate_state` (new)** — skip lines now embed the full
+  L-P1/S-P1 gate snapshot as canonical JSON. Pre-gate skips (cooldown,
+  loss-cap, DI warmup, etc.) emit `gate_state=null`.
+- **`[UNIVERSE]` (new)** — boot logs `[UNIVERSE] tickers=…` once with
+  the alpha-sorted, dedupe'd, uppercased universe (QQQ included alongside
+  the 8 trade tickers).
+- **`[WATCHLIST_ADD]` / `[WATCHLIST_REMOVE]` (new)** — runtime watchlist
+  mutations emit one structured line each.
+
+**Bar archive surface.** `_v561_archive_qqq_bar` writes the per-cycle
+1m QQQ snapshot to `/data/bars/<UTC-date>/QQQ.jsonl` as the 9th file
+alongside the 8 trade tickers, using the same canonical `bar_archive`
+schema. The pre-open archive path (09:29:30–09:35 ET) backfills the
+OR window so the 5 OR-window 1m bars land on disk before the gates
+turn live at 09:35.
+
+**OR persistence.** At/after 09:35 ET, `_v561_persist_or_snapshot`
+writes `{ticker, or_high, or_low, computed_at_utc}` JSON to
+`/data/or/<UTC-date>/<TICKER>.json`. Idempotent — at most one snapshot
+per ticker per day; the in-memory `_v561_or_snap_taken` set is reset by
+`reset_daily_state` on the date rollover.
+
 ### 19.2 Volume-profile G4 shadow grid (legacy v5.1.0+ surface, unchanged)
 
 The volume-profile `evaluate_g4(_config)` shadow grid is independent of
@@ -1994,4 +2033,4 @@ clears.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.6.0"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.6.1"`.*
