@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.7.0 — 2026-04-27 — Unlimited Titan Strikes
+
+For the **Ten Titans only** the fixed re-entry cap (`L-P5-R3` / `S-P5-R3`) is replaced by an unlimited HOD/LOD-gated re-entry path. Strike 1 is unchanged (still gated by the v5.6.0 unified AVWAP permission set, L-P1 / S-P1, G1-G3-G4). The -$500 daily loss limit is wired explicitly to every entry path and now emits a single canonical `[KILL_SWITCH]` line on first breach. `tiger_buffalo_v5.py` is untouched — all v5.7.0 logic lives in `trade_genius.py`.
+
+**Universe — Ten Titans (new):** `AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, TSLA`. NFLX and ORCL are added to `TICKERS_DEFAULT`; the QQQ-archive, OR-snapshot, and `[UNIVERSE]` boot line all pick them up automatically through the existing v5.6.1 paths.
+
+**Deliverables:**
+
+- **D1 — NFLX + ORCL:** added to `TICKERS_DEFAULT`. Bar archive at `/data/bars/<UTC>/{NFLX,ORCL}.jsonl` and OR snapshot at `/data/or/<UTC>/{NFLX,ORCL}.json` are wired through the existing v5.6.1 helpers (no separate writer code needed). `[UNIVERSE]` boot line now emits the full 10-Titan + QQQ + SPY + QBTS list alphabetically.
+- **D2 — `TITAN_TICKERS` constant:** new module-level `TITAN_TICKERS = ["AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX", "NVDA", "ORCL", "TSLA"]` plus the feature flag `ENABLE_UNLIMITED_TITAN_STRIKES = True` (default on; `False` falls back to the v5.6.0 R3 cap path). `DAILY_LOSS_LIMIT_DOLLARS = -500.0` is published explicitly for parity with the spec.
+- **D3 — Strike 2+ Expansion Gate:** for Titans only, when strike_num >= 2:
+  - **LONG** passes iff `current_price > prior_session_HOD` (strict, fresh print) AND `index_price > index_avwap` (strict — same comparator as v5.6.0 G1). AVWAP None FAILs.
+  - **SHORT** mirrors with strict `<`.
+  - Session HOD/LOD is tracked per-ticker per-day, seeded from the first 9:30 ET print (pre-market does NOT seed), reset at 9:30 ET each session.
+  - Strike counter is per-ticker per-side per-day; increments only on successful ENTRY (not SKIP); resets at 9:30 ET.
+- **D4 — R3 bypass for Titans:** the `daily_count >= 5` cap in `check_breakout` is bypassed for tickers in `TITAN_TICKERS` when the feature flag is on. Non-Titan tickers (anything added later via `[WATCHLIST_ADD]`) still see the 5-cap and the v5.6.0 R3 re-hunt budget on `tiger_buffalo_v5`.
+- **D5 — `-$500` daily loss kill switch (sovereign brake):** the existing `_check_daily_loss_limit` (originally added in v4.7.0 at -$500) is preserved and not retuned. v5.7.0 layers a v5.7.0-native latch (`_v570_kill_switch_*`) directly on top of `[TRADE_CLOSED]` emissions so realized P&L is summed lock-step with the lifecycle log. On first breach (`<= -500.00`) every entry path returns `[SKIP] reason=daily_loss_limit_hit gate_state=null` and a single `[KILL_SWITCH] reason=daily_loss_limit triggered_at=<utc> realized_pnl=<f>` line is emitted (de-duped — never spammed). Open positions are NOT force-closed; they exit on their own normal exits and continue to emit `[TRADE_CLOSED]`. Latch resets at the next ET session boundary.
+- **D6 — New + extended log lines:**
+  - `[V570-STRIKE] ticker=<T> side=<L|S> ts=<utc> strike_num=<int> is_first=<bool> hod=<f|null> lod=<f|null> hod_break=<bool> lod_break=<bool> expansion_gate_pass=<bool>` — emitted on every entry-path evaluation. Replaces `[V560-GATE]` on Strike 2+; alongside `[V560-GATE]` on Strike 1.
+  - `[ENTRY]` gains `strike_num=<int>`. `entry_id` schema unchanged.
+  - `[TRADE_CLOSED]` gains `strike_num=<int>` (echoes the entry's strike) and `daily_realized_pnl=<f>` (running cumulative for the day after this close).
+  - `[KILL_SWITCH]` line above.
+
+**Investigation result — kill switch existed pre-PR:** `_check_daily_loss_limit` has been live since v4.7.0 with threshold sourced from `DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))`. Threshold left untouched per spec. v5.7.0 layers the new `[KILL_SWITCH]` line and the `daily_loss_limit_hit` SKIP reason on top so replay tooling can identify a halt without reading Telegram.
+
+**Conventions:**
+
+- `BOT_VERSION` bumped 5.6.1 → 5.7.0.
+- `CURRENT_MAIN_NOTE` rewritten for v5.7.0 (every line ≤ 34 chars). The v5.6.1 note rolls onto `_MAIN_HISTORY_TAIL`.
+- New string literals introduced in this release use `\u2014` escape sequences rather than literal em-dashes (CHANGELOG / ARCHITECTURE / README still use real em-dashes).
+- `tiger_buffalo_v5.py` source is byte-identical to v5.6.1 (the v5.6.0 unified AVWAP gates and the v5.0.0 state machine are unchanged).
+
+**Tests / smoke:**
+
+- 18+ new v5.7.0 assertions covering: TITAN_TICKERS shape; feature flag; HOD/LOD seeding; strike counter increment + reset; Strike 1 path (unchanged); Strike 2+ pass/fail variants (HOD break, AVWAP None, Index direction); R3 bypass for Titans + R3 still applied for non-Titans; kill-switch threshold ≤ -500.00 (boundary, just-under, just-over); kill-switch single-emission de-dupe; `[V570-STRIKE]` line shape; `[ENTRY]` and `[TRADE_CLOSED]` strike_num field; `[KILL_SWITCH]` line shape; `[UNIVERSE]` boot line includes all 10 Titans; feature-flag rollback behavior.
+- The 8 historical "BOT_VERSION bumped to 5.5.x" pinned tests, plus `version: BOT_VERSION is …`, plus `CHANGELOG.md has v… heading at top`, plus `ARCHITECTURE.md last-refresh footer pinned to …` are all re-pinned to `5.7.0`.
+
+**Docs:**
+
+- `ARCHITECTURE.md` updated — new section §22 covers the Ten Titans universe, the Strike 2+ Expansion Gate, the v5.7.0 strike counter, and the kill switch surface; last-refresh footer bumped to `BOT_VERSION = "5.7.0"`.
+- `trade_genius_algo.pdf` regenerated (Titan universe + Strike 2+ Expansion Gate + kill-switch wiring all changed).
+
+**Out of scope (per spec):** any change to v5.6.0 G1/G3/G4 comparators or AVWAP computation; true OHLC bars / volume capture; bid/ask population. Saturday cron task description update is a separate non-PR change.
+
+---
+
 ## v5.6.1 — 2026-04-27 — Data-Collection Improvements
 
 Pure observability/data-collection patch. **No gate-logic changes** — `tiger_buffalo_v5.py` is untouched and the v5.6.0 unified AVWAP permission gates remain canonical. This release expands the on-disk archive surface and richens the structured log lines so downstream replay/analysis tooling has a complete picture of every entry consideration.

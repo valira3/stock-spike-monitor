@@ -349,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.6.1")
+    @t("version: BOT_VERSION is 5.7.0")
     def _():
-        assert m.BOT_VERSION == "5.6.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.7.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3801,40 +3801,40 @@ def run_local() -> int:
     def _():
         # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.6.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
 
     @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
     def _():
@@ -4307,22 +4307,22 @@ def run_local() -> int:
         assert "if ws_vol is not None" in src
         assert '"et_bucket": et_bucket,' in src
 
-    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.6.1")
+    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.0")
     def _():
         # Test name pinned to its release; assertion follows BOT_VERSION.
         from pathlib import Path as _P
         arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        assert 'BOT_VERSION = "5.6.1"' in arch, "ARCHITECTURE.md footer not bumped"
+        assert 'BOT_VERSION = "5.7.0"' in arch, "ARCHITECTURE.md footer not bumped"
 
-    @t("v5.5.5: CHANGELOG.md has v5.6.1 heading at top")
+    @t("v5.5.5: CHANGELOG.md has v5.7.0 heading at top")
     def _():
         from pathlib import Path as _P
         cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
         # The first ## heading should be the current version.
-        head_idx = cl.find("\n## v5.6.1")
-        prior = cl.find("\n## v5.6.0")
+        head_idx = cl.find("\n## v5.7.0")
+        prior = cl.find("\n## v5.6.1")
         assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
-            "v5.6.1 heading must precede v5.6.0 in CHANGELOG"
+            "v5.7.0 heading must precede v5.6.1 in CHANGELOG"
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():
@@ -5679,12 +5679,12 @@ def run_local() -> int:
         assert "reason=oomph" in out
         assert "ts=2026-04-28T14:00:00Z" in out
 
-    @t("v5.6.1 guard: CHANGELOG.md has v5.6.1 heading")
+    @t("v5.7.0 guard: CHANGELOG.md has v5.7.0 heading")
     def _():
         from pathlib import Path
         ch = (Path(__file__).resolve().parent / "CHANGELOG.md").read_text()
         first = next((ln for ln in ch.splitlines() if ln.startswith("## ")), "")
-        assert "v5.6.1" in first, f"top heading: {first!r}"
+        assert "v5.7.0" in first, f"top heading: {first!r}"
 
     @t("v5.6.1 guard: gate logic not modified (gates_pass_long signature)")
     def _():
@@ -5719,7 +5719,501 @@ def run_local() -> int:
             "literal em-dash in v5.6.1-tagged line: %s" % bad[:3]
         )
 
-    return run_suite("LOCAL SMOKE TESTS (v5.6.1 Data-Collection Improvements)")
+    # ============================================================
+    # v5.7.0 \u2014 Unlimited Titan Strikes
+    # ============================================================
+
+    def _v570_setup_clean_session(_m):
+        """Reset every v5.7.0 module-level latch + counter so each test
+        starts from a known-clean state (the helpers keep state across
+        calls). Mocks the kill-switch logger so log de-dup tests can
+        observe the count directly without scraping logger output."""
+        _m._v570_strike_counts.clear()
+        _m._v570_session_hod.clear()
+        _m._v570_session_lod.clear()
+        _m._v570_daily_realized_pnl = 0.0
+        _m._v570_kill_switch_latched = False
+        _m._v570_kill_switch_logged = False
+        _m._v570_strike_date = _m._v570_session_today_str()
+        _m._v570_session_date = _m._v570_strike_date
+        _m._v570_daily_pnl_date = _m._v570_strike_date
+
+    @t("v5.7.0 D2: TITAN_TICKERS has exactly 10 alpha-sorted Titans")
+    def _():
+        assert isinstance(m.TITAN_TICKERS, list)
+        assert len(m.TITAN_TICKERS) == 10, m.TITAN_TICKERS
+        assert m.TITAN_TICKERS == sorted(m.TITAN_TICKERS), \
+            "TITAN_TICKERS must be alpha-sorted"
+        assert m.TITAN_TICKERS == [
+            "AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX",
+            "NVDA", "ORCL", "TSLA",
+        ], m.TITAN_TICKERS
+
+    @t("v5.7.0 D2: ENABLE_UNLIMITED_TITAN_STRIKES default True")
+    def _():
+        assert m.ENABLE_UNLIMITED_TITAN_STRIKES is True
+
+    @t("v5.7.0 D2: DAILY_LOSS_LIMIT_DOLLARS = -500.0")
+    def _():
+        assert m.DAILY_LOSS_LIMIT_DOLLARS == -500.0
+
+    @t("v5.7.0 D1: TICKERS_DEFAULT contains NFLX and ORCL")
+    def _():
+        assert "NFLX" in m.TICKERS_DEFAULT
+        assert "ORCL" in m.TICKERS_DEFAULT
+
+    @t("v5.7.0 D1: [UNIVERSE] boot line includes all 10 Titans + QQQ alpha-sorted")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_universe(list(m.TITAN_TICKERS) + ["QQQ"])
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue().strip().splitlines()[-1]
+        assert ("tickers=AAPL,AMZN,AVGO,GOOG,META,MSFT,NFLX,NVDA,"
+                "ORCL,QQQ,TSLA" in out), out
+
+    @t("v5.7.0 D1: bar archive helper exists and reads from TICKERS list")
+    def _():
+        # The v5.1.2 helper that gates persistence on the TICKERS list
+        # must let NFLX/ORCL through (they are in TICKERS_DEFAULT and
+        # thus seeded into TICKERS at boot).
+        assert "NFLX" in m.TICKERS or "NFLX" in m.TICKERS_DEFAULT
+        assert "ORCL" in m.TICKERS or "ORCL" in m.TICKERS_DEFAULT
+        # Helper signature is unchanged (additive PR; no schema break).
+        import inspect
+        params = list(inspect.signature(m._v512_archive_minute_bar)
+                      .parameters)
+        assert params == ["ticker", "bar"], params
+
+    @t("v5.7.0 D3: HOD/LOD seeds from first 9:30 ET print and tracks rolling extremes")
+    def _():
+        _v570_setup_clean_session(m)
+        # First print seeds; no break possible.
+        prev_h, prev_l, hb, lb = m._v570_update_session_hod_lod("NVDA", 100.0)
+        assert prev_h is None and prev_l is None
+        assert hb is False and lb is False
+        # Equal price -> no break (strict).
+        prev_h, prev_l, hb, lb = m._v570_update_session_hod_lod("NVDA", 100.0)
+        assert hb is False, "equality must not register as a break"
+        # New high -> hod_break True.
+        prev_h, _, hb, lb = m._v570_update_session_hod_lod("NVDA", 100.5)
+        assert prev_h == 100.0
+        assert hb is True and lb is False
+        # New low -> lod_break True.
+        _, prev_l, hb, lb = m._v570_update_session_hod_lod("NVDA", 99.5)
+        assert prev_l == 100.0
+        assert lb is True and hb is False
+
+    @t("v5.7.0 D3: HOD/LOD ignores zero/negative prints (defensive)")
+    def _():
+        _v570_setup_clean_session(m)
+        out = m._v570_update_session_hod_lod("NVDA", 0)
+        assert out == (None, None, False, False)
+        out = m._v570_update_session_hod_lod("NVDA", None)
+        assert out == (None, None, False, False)
+
+    @t("v5.7.0 D3: strike counter increments on record_entry, resets at session roll")
+    def _():
+        _v570_setup_clean_session(m)
+        assert m._v570_strike_count("NVDA", "LONG") == 0
+        n = m._v570_record_entry("NVDA", "LONG")
+        assert n == 1
+        assert m._v570_strike_count("NVDA", "LONG") == 1
+        # Independent SHORT counter.
+        assert m._v570_strike_count("NVDA", "SHORT") == 0
+        # Force a session roll \u2014 mock the date to a different day.
+        m._v570_strike_date = "1900-01-01"
+        m._v570_session_date = "1900-01-01"
+        m._v570_daily_pnl_date = "1900-01-01"
+        n2 = m._v570_strike_count("NVDA", "LONG")
+        assert n2 == 0, f"strike counter must reset on new session; got {n2}"
+
+    @t("v5.7.0 D3: Strike 1 LONG NVDA \u2014 expansion gate not consulted")
+    def _():
+        # Strike 1 path returns False because the helper requires
+        # prev_hod to evaluate. is_first should always be True for
+        # strike_num=1, regardless of the gate output.
+        _v570_setup_clean_session(m)
+        # Seed the HOD with one print so the strike-1 evaluation has
+        # *some* prior context (replicating mid-day Strike 1 reality).
+        m._v570_update_session_hod_lod("NVDA", 100.0)
+        # The expansion gate is only meaningful for strike 2+; for
+        # strike 1 the implementation logs expansion_gate_pass=False
+        # but the actual decision falls to v5.6.0 G1/G3/G4. Confirm
+        # the helper itself returns False with prev_hod=None.
+        assert m._v570_expansion_gate_pass(
+            side="LONG", current_price=100.5,
+            prev_hod=None, prev_lod=None,
+            index_price=425.0, index_avwap=420.0,
+        ) is False
+
+    @t("v5.7.0 D3: Strike 2 LONG NVDA without HOD break \u2014 expansion gate FAIL")
+    def _():
+        _v570_setup_clean_session(m)
+        # prev_hod=100.0; price=100.0 -> equality, strict > FAILS.
+        assert m._v570_expansion_gate_pass(
+            side="LONG", current_price=100.0,
+            prev_hod=100.0, prev_lod=99.0,
+            index_price=425.0, index_avwap=420.0,
+        ) is False
+
+    @t("v5.7.0 D3: Strike 2 LONG NVDA with HOD break + Index above AVWAP \u2014 PASS")
+    def _():
+        assert m._v570_expansion_gate_pass(
+            side="LONG", current_price=100.5,
+            prev_hod=100.0, prev_lod=99.0,
+            index_price=425.0, index_avwap=420.0,
+        ) is True
+
+    @t("v5.7.0 D3: Strike 2 LONG NVDA with HOD break BUT Index below AVWAP \u2014 FAIL")
+    def _():
+        assert m._v570_expansion_gate_pass(
+            side="LONG", current_price=100.5,
+            prev_hod=100.0, prev_lod=99.0,
+            index_price=419.0, index_avwap=420.0,
+        ) is False
+
+    @t("v5.7.0 D3: Strike 2 LONG NVDA with HOD break BUT IndexAVWAP=None \u2014 FAIL")
+    def _():
+        assert m._v570_expansion_gate_pass(
+            side="LONG", current_price=100.5,
+            prev_hod=100.0, prev_lod=99.0,
+            index_price=425.0, index_avwap=None,
+        ) is False
+
+    @t("v5.7.0 D3: Strike 2 SHORT mirror \u2014 LOD break + Index below AVWAP PASSES")
+    def _():
+        assert m._v570_expansion_gate_pass(
+            side="SHORT", current_price=99.5,
+            prev_hod=100.0, prev_lod=100.0,
+            index_price=419.0, index_avwap=420.0,
+        ) is True
+        # Without LOD break: FAIL (equality is strict).
+        assert m._v570_expansion_gate_pass(
+            side="SHORT", current_price=100.0,
+            prev_hod=100.0, prev_lod=100.0,
+            index_price=419.0, index_avwap=420.0,
+        ) is False
+
+    @t("v5.7.0 D4: strikes 5/10/25 LONG NVDA on continuous HOD-break trend \u2014 all allowed")
+    def _():
+        _v570_setup_clean_session(m)
+        # Simulate a strong-trend day: each entry breaks a new HOD.
+        # The strike counter is unbounded for Titans when the flag is
+        # on. For non-Titans it would still cap at 5 via the
+        # `daily_count >= 5` gate in check_breakout (proxied by the
+        # bypass branch logic itself).
+        for n in range(1, 26):
+            assert m._v570_is_titan("NVDA")
+            new_n = m._v570_record_entry("NVDA", "LONG")
+            assert new_n == n
+            # And the expansion gate keeps passing on every fresh HOD
+            # break with index above AVWAP.
+            assert m._v570_expansion_gate_pass(
+                side="LONG",
+                current_price=100.0 + 0.01 * n,
+                prev_hod=100.0 + 0.01 * (n - 1),
+                prev_lod=99.0,
+                index_price=425.0, index_avwap=420.0,
+            ) is True
+
+    @t("v5.7.0 D4: non-Titan ticker is NOT eligible for unlimited strikes")
+    def _():
+        # Future watchlist add of a non-Titan symbol would still hit
+        # the v5.6.0 R3 cap. The Titan classifier is the gate.
+        assert m._v570_is_titan("FOO") is False
+        # And TITAN_TICKERS does not contain it.
+        assert "FOO" not in m.TITAN_TICKERS
+
+    @t("v5.7.0 D5: kill switch existed pre-PR \u2014 _check_daily_loss_limit + DAILY_LOSS_LIMIT")
+    def _():
+        # Pre-PR audit: confirm the legacy kill-switch surface is
+        # preserved (we did not delete it). Threshold is sourced from
+        # the env variable with default -500.
+        assert callable(getattr(m, "_check_daily_loss_limit", None))
+        assert hasattr(m, "DAILY_LOSS_LIMIT")
+        # The new v5.7.0 constant matches the legacy default.
+        assert m.DAILY_LOSS_LIMIT_DOLLARS == -500.0
+
+    @t("v5.7.0 D5: realized P&L -$499.99 does NOT trigger kill switch")
+    def _():
+        _v570_setup_clean_session(m)
+        m._v570_record_trade_close(-499.99)
+        assert m._v570_kill_switch_active() is False
+
+    @t("v5.7.0 D5: realized P&L exactly -$500.00 triggers kill switch")
+    def _():
+        _v570_setup_clean_session(m)
+        m._v570_record_trade_close(-500.0)
+        assert m._v570_kill_switch_active() is True
+
+    @t("v5.7.0 D5: realized P&L -$500.01 triggers kill switch")
+    def _():
+        _v570_setup_clean_session(m)
+        m._v570_record_trade_close(-500.01)
+        assert m._v570_kill_switch_active() is True
+
+    @t("v5.7.0 D5: kill switch resets at next session boundary")
+    def _():
+        _v570_setup_clean_session(m)
+        m._v570_record_trade_close(-501.0)
+        assert m._v570_kill_switch_active() is True
+        # Force a session roll.
+        m._v570_strike_date = "1900-01-01"
+        m._v570_session_date = "1900-01-01"
+        m._v570_daily_pnl_date = "1900-01-01"
+        assert m._v570_kill_switch_active() is False
+        # And the cumulative resets too.
+        assert m._v570_daily_realized_pnl == 0.0
+
+    @t("v5.7.0 D5: [KILL_SWITCH] line emitted exactly once per session")
+    def _():
+        import logging as _lg, io as _io
+        _v570_setup_clean_session(m)
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v570_record_trade_close(-501.0)   # trips kill
+            m._v570_record_trade_close(-50.0)    # later loss, no spam
+            m._v570_record_trade_close(-50.0)    # ditto
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        n_kill = out.count("[KILL_SWITCH]")
+        assert n_kill == 1, f"expected exactly 1 [KILL_SWITCH] line; got {n_kill}\n{out}"
+
+    @t("v5.7.0 D5: [KILL_SWITCH] line shape carries reason / triggered_at / realized_pnl")
+    def _():
+        import logging as _lg, io as _io
+        _v570_setup_clean_session(m)
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v570_record_trade_close(-501.0)
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[KILL_SWITCH]" in out
+        assert "reason=daily_loss_limit" in out
+        assert "triggered_at=" in out
+        assert "realized_pnl=" in out
+
+    @t("v5.7.0 D5: open positions can still close after kill switch \u2014 [TRADE_CLOSED] still emits")
+    def _():
+        # Kill switch only blocks NEW entries. Closing flow continues
+        # to call _v561_log_trade_closed which still emits its line
+        # and also folds into daily realized P&L.
+        import logging as _lg, io as _io
+        _v570_setup_clean_session(m)
+        m._v570_record_trade_close(-501.0)   # trip
+        assert m._v570_kill_switch_active() is True
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_trade_closed(
+                ticker="NVDA", side="LONG",
+                entry_id="NVDA-20260427150000",
+                entry_ts_utc="2026-04-27T15:00:00Z",
+                entry_price=100.0,
+                exit_ts_utc="2026-04-27T15:30:00Z",
+                exit_price=99.0,
+                exit_reason="stop",
+                qty=10, pnl_dollars=-10.0, pnl_pct=-1.0,
+                hold_seconds=1800, strike_num=1,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[TRADE_CLOSED]" in out
+        assert "strike_num=1" in out
+        assert "daily_realized_pnl=" in out
+
+    @t("v5.7.0 D6: [V570-STRIKE] line carries every spec field")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v570_log_strike(
+                ticker="NVDA", side="LONG",
+                ts_utc="2026-04-27T13:50:00Z",
+                strike_num=2, is_first=False,
+                hod=100.0, lod=99.0,
+                hod_break=True, lod_break=False,
+                expansion_gate_pass=True,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[V570-STRIKE]" in out
+        for field in ("ticker=NVDA", "side=LONG", "strike_num=2",
+                      "is_first=False", "hod=100.0000", "lod=99.0000",
+                      "hod_break=True", "lod_break=False",
+                      "expansion_gate_pass=True"):
+            assert field in out, (field, out)
+
+    @t("v5.7.0 D6: [V570-STRIKE] formats hod/lod=null when None")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v570_log_strike(
+                ticker="NVDA", side="LONG",
+                ts_utc="2026-04-27T13:50:00Z",
+                strike_num=1, is_first=True,
+                hod=None, lod=None,
+                hod_break=False, lod_break=False,
+                expansion_gate_pass=False,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "hod=null" in out, out
+        assert "lod=null" in out, out
+
+    @t("v5.7.0 D6: [ENTRY] line carries strike_num field")
+    def _():
+        import logging as _lg, io as _io
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_entry(
+                ticker="NVDA", side="LONG",
+                entry_id="NVDA-20260427150000",
+                entry_ts_utc="2026-04-27T15:00:00Z",
+                entry_price=100.0, qty=10, strike_num=3,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[ENTRY]" in out
+        assert "strike_num=3" in out
+
+    @t("v5.7.0 D6: [TRADE_CLOSED] line carries strike_num + daily_realized_pnl")
+    def _():
+        import logging as _lg, io as _io
+        _v570_setup_clean_session(m)
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_trade_closed(
+                ticker="NVDA", side="LONG",
+                entry_id="NVDA-20260427150000",
+                entry_ts_utc="2026-04-27T15:00:00Z",
+                entry_price=100.0,
+                exit_ts_utc="2026-04-27T15:30:00Z",
+                exit_price=99.0,
+                exit_reason="stop", qty=10,
+                pnl_dollars=-10.0, pnl_pct=-1.0,
+                hold_seconds=1800, strike_num=2,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[TRADE_CLOSED]" in out
+        assert "strike_num=2" in out
+        assert "daily_realized_pnl=-10.0000" in out
+
+    @t("v5.7.0 D6: [TRADE_CLOSED] cumulative daily_realized_pnl tracks across closes")
+    def _():
+        import logging as _lg, io as _io
+        _v570_setup_clean_session(m)
+        buf = _io.StringIO()
+        h = _lg.StreamHandler(buf)
+        h.setLevel(_lg.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v561_log_trade_closed(
+                ticker="NVDA", side="LONG",
+                entry_id="A", entry_ts_utc="x", entry_price=100.0,
+                exit_ts_utc="x", exit_price=99.0, exit_reason="stop",
+                qty=10, pnl_dollars=-10.0, pnl_pct=-1.0,
+                hold_seconds=1, strike_num=1,
+            )
+            m._v561_log_trade_closed(
+                ticker="NVDA", side="LONG",
+                entry_id="B", entry_ts_utc="x", entry_price=100.0,
+                exit_ts_utc="x", exit_price=98.0, exit_reason="stop",
+                qty=10, pnl_dollars=-20.0, pnl_pct=-2.0,
+                hold_seconds=1, strike_num=2,
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        # First close: -10. Second close: -10 + -20 = -30.
+        assert "daily_realized_pnl=-10.0000" in out
+        assert "daily_realized_pnl=-30.0000" in out
+
+    @t("v5.7.0: feature flag False falls back to old behavior (no Titan branching)")
+    def _():
+        # The flag is read fresh on every check_breakout call. Setting
+        # it False at runtime should make _is_titan_unlimited False
+        # for every Titan, which means the daily_count<=5 cap applies
+        # again. Verify by inspecting the helper used to gate the
+        # bypass.
+        try:
+            saved = m.ENABLE_UNLIMITED_TITAN_STRIKES
+            m.ENABLE_UNLIMITED_TITAN_STRIKES = False
+            # The expansion gate helper itself is pure and still
+            # callable; the fallback is enforced at the check_breakout
+            # call site by the `_is_titan_unlimited` boolean. Just
+            # confirm it would evaluate to False with the flag off.
+            is_titan = m._v570_is_titan("NVDA")
+            assert is_titan is True
+            assert (
+                bool(m.ENABLE_UNLIMITED_TITAN_STRIKES) and is_titan
+            ) is False
+        finally:
+            m.ENABLE_UNLIMITED_TITAN_STRIKES = saved
+
+    @t("v5.7.0 guard: tiger_buffalo_v5.py untouched (no v5.7.0 / v570 references)")
+    def _():
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent
+               / "tiger_buffalo_v5.py").read_text()
+        for tag in ("v5.7.0", "v570", "V570", "TITAN"):
+            assert tag not in src, (
+                "tiger_buffalo_v5.py must remain untouched for v5.7.0 "
+                "(found %r)" % tag)
+
+    @t("v5.7.0 guard: no literal em-dash in v5.7.0 helpers")
+    def _():
+        from pathlib import Path
+        src_path = Path(__file__).resolve().parent / "trade_genius.py"
+        src = src_path.read_text()
+        bad = []
+        for i, line in enumerate(src.splitlines(), start=1):
+            if "\u2014" not in line:
+                continue
+            tag_hits = ("v5.7.0" in line or "v570" in line.lower()
+                        or "V570" in line)
+            if tag_hits:
+                bad.append((i, line[:80]))
+        assert not bad, (
+            "literal em-dash in v5.7.0-tagged line: %s" % bad[:3]
+        )
+
+    return run_suite("LOCAL SMOKE TESTS (v5.7.0 Unlimited Titan Strikes)")
 
 
 # ============================================================

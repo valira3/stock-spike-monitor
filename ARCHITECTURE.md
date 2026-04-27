@@ -2033,4 +2033,39 @@ clears.
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.6.1"`.*
+## 22. v5.7.0 — Unlimited Titan Strikes (Apr 2026)
+
+**Universe — Ten Titans.** v5.7.0 extends the default trade universe to ten tickers (`AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, TSLA`). NFLX and ORCL are new in this release; the existing eight roll forward unchanged. QQQ remains the index ticker for the v5.6.0 G1 / G3 gates and is also archived under `/data/bars/<UTC>/QQQ.jsonl` from v5.6.1. The `TITAN_TICKERS` module-level constant in `trade_genius.py` is the source of truth for which tickers see the v5.7.0 unlimited-strike path; non-Titan tickers (anything added later via `[WATCHLIST_ADD]`) continue to use the v5.0.0 R3 re-hunt budget on `tiger_buffalo_v5`.
+
+**Strike 1 path — unchanged.** First entry on a given (ticker, side, day) flows through the v5.6.0 unified AVWAP permission set. Both the `[V560-GATE]` rich line and the new `[V570-STRIKE]` line are emitted; gate logic is byte-identical to v5.6.1 (`tiger_buffalo_v5.py` is untouched).
+
+**Strike 2+ path — Expansion Gate.** When a Titan's per-ticker per-side per-day strike counter has already incremented at least once, the next entry attempt no longer evaluates `[V560-GATE]`. Instead the **Expansion Gate** runs:
+
+- **LONG Strike 2+:** passes iff `current_price > prior_session_HOD` (strict `>`, fresh print) AND `index_price > index_avwap` (strict `>`, same comparator as v5.6.0 G1). AVWAP `None` FAILs.
+- **SHORT Strike 2+:** mirror with strict `<`.
+
+Session HOD/LOD is **per-ticker, per-day**, seeded only from the first 9:30 ET print onward (pre-market does NOT seed). The values reset at 9:30 ET each session; the helper `_v570_update_session_hod_lod` returns the prior-tick HOD/LOD before folding in the current print, so the "fresh print" comparator is well-defined even in the first second after open.
+
+**Strike counter.** `_v570_strike_counts[(ticker, side)]` is incremented on every successful ENTRY (never on SKIP). The counter is per-ticker per-side, so a LONG Strike 1 and a SHORT Strike 1 on the same ticker on the same day both fire normally. The counter resets at 9:30 ET next session along with HOD/LOD and the kill-switch latch.
+
+**Sovereign brake — `-$500` daily loss kill switch.** v4.7.0 shipped `_check_daily_loss_limit` at -$500 (sourced from `DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))`). v5.7.0 does NOT retune the threshold; instead it layers a v5.7.0-native latch directly on top of `[TRADE_CLOSED]` emissions so realized P&L is summed lock-step with the lifecycle log, independent of the legacy halt flag. On first breach (`<= -500.00`):
+
+- A single `[KILL_SWITCH] reason=daily_loss_limit triggered_at=<utc> realized_pnl=<f>` line is emitted (de-duped — never spammed by subsequent SKIPs).
+- Every entry path (Strike 1 OR Strike 2+, all 10 Titans, both sides) returns `[SKIP] reason=daily_loss_limit_hit gate_state=null`.
+- Open positions are NOT force-closed. They exit on their own normal exits (stop, target, time, eod, manual) and continue to emit `[TRADE_CLOSED]` lines — those still update `daily_realized_pnl` for forensic completeness.
+- The latch resets at the next ET session boundary (along with the strike counter and HOD/LOD).
+
+**Feature flag.** `ENABLE_UNLIMITED_TITAN_STRIKES = True` is the default. Setting `False` reverts every Titan to the v5.6.0 + v5.0.0 R3 path (`daily_count >= 5` cap and the `transition_re_hunt` re-arm budget on `tiger_buffalo_v5`), so emergency rollback is a single-line edit and a redeploy.
+
+**New + extended log lines:**
+
+- `[V570-STRIKE] ticker=<T> side=<L|S> ts=<utc> strike_num=<int> is_first=<bool> hod=<f|null> lod=<f|null> hod_break=<bool> lod_break=<bool> expansion_gate_pass=<bool>` — emitted on every entry-path evaluation. Replaces `[V560-GATE]` on Strike 2+; alongside `[V560-GATE]` on Strike 1.
+- `[ENTRY] … strike_num=<int>` — `entry_id` schema unchanged.
+- `[TRADE_CLOSED] … strike_num=<int> daily_realized_pnl=<f>` — strike echoes the entry's value; `daily_realized_pnl` is the running cumulative for the day after this close.
+- `[KILL_SWITCH] reason=daily_loss_limit triggered_at=<utc> realized_pnl=<f>` — exactly once per session.
+
+The forensic logger module (`logger`) and the v5.6.1 SKIP/GATE schema are otherwise unchanged. Every v5.7.0 helper lives in `trade_genius.py`; `tiger_buffalo_v5.py` is byte-identical to v5.6.1.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.7.0"`.*
