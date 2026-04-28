@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.9.1 — 2026-04-28 — Retire PDC-based Sovereign Regime Eject (exit-side cleanup)
+
+Pure removal. **No new behavior.** Pairs with v5.9.0's G1 swap from AVWAP/PDC to a 5m EMA compass — the exit side now uses the same regime philosophy as the entry side instead of running a parallel PDC-based rule.
+
+**Removed.** `_sovereign_regime_eject(side)` (the dual-index PDC eject) and its only consumer/helper `_last_finalized_1min_close(ticker)`. Both `lords_left` (long-side) and `bull_vacuum` (short-side) callers in `manage_positions` / `manage_short_positions` are gone, along with their downstream `LORDS_LEFT` / `BULL_VACUUM` exit triggers. Dashboard `long_eject` / `short_eject` payload fields and the corresponding eject tiles in `dashboard_static/app.js` are removed; the SPY/QQQ vs PDC pills remain as cosmetic display only. Smoke C-R6 was inverted to assert the helper is *gone* so a future revert is caught.
+
+**Kept (deliberately).** v5.9.0's QQQ Regime Shield (5m EMA compass at G1) and forensic_stop / per_trade_brake exit logic. Per-ticker `pos_pdc` / `prev_close` references in the long-side RED_CANDLE check, the short-side POLARITY_SHIFT check, the `pdc` dict population, the `[V510-IDX]` shadow logger, and the cosmetic dashboard PDC pills are all per-ticker rules unrelated to the SPY/QQQ index eject. `LORDS_LEFT` / `BULL_VACUUM` entries in `REASON_LABELS` are retained as legacy labels so persistent trade-log rows from prior versions still render their human-readable reason.
+
+Touched: `trade_genius.py` (function + comment block + callers + REASON_LABELS comments + regime-alert comment); `dashboard_server.py` (`_sovereign_regime_snapshot` rewritten — no eject booleans, direct `fetch_1min_bars` call replaces the now-removed helper); `dashboard_static/app.js` (eject tiles removed, both regime cards); `smoke_test.py` (C-R6 assertion inverted); `bot_version.py` → 5.9.1; `CHANGELOG.md`, `ARCHITECTURE.md`. Algo PDF unchanged (no algorithm-text update; this is a removal/cleanup).
+
+---
+
 ## v5.9.0 — 2026-04-28 — QQQ Regime Shield + Recursive Forensic Stop
 
 Two-part algo release.

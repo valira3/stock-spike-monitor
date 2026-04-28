@@ -2119,12 +2119,18 @@ def run_local() -> int:
         src = inspect.getsource(m.eod_close)
         assert "v5_lock_all_tracks" in src, "C-R5 wiring missing in eod_close"
 
-    @t("v5 C-R6: Sovereign Regime Shield helper still exists (preserved)")
+    @t("v5 C-R6: Sovereign Regime Shield (PDC eject) retired in v5.9.1")
     def _():
-        # C-R6 says the Sovereign Regime Shield (Eye of the Tiger)
-        # global kill is preserved from v4. The helper that drives it
-        # MUST still exist and be callable.
-        assert callable(getattr(m, "_sovereign_regime_eject", None))
+        # v5.9.1 removed _sovereign_regime_eject() along with its
+        # LORDS_LEFT / BULL_VACUUM exit reasons. v5.9.0 already moved
+        # the entry-side index regime check to the 5m EMA compass
+        # (QQQ Regime Shield); v5.9.1 retires the matching exit-side
+        # rule so entry and exit are consistent. Assert the helper
+        # is GONE so a future revert is caught.
+        assert getattr(m, "_sovereign_regime_eject", None) is None, (
+            "v5.9.1 retired the PDC-based sovereign regime eject; "
+            "_sovereign_regime_eject must not exist anymore"
+        )
 
     @t("v5 C-R7: 9-ticker spike universe + QQQ pinned (v5.6.0: SPY retired with G2)")
     def _():
