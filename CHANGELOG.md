@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.8.4 — 2026-04-27 — Saturday weekly report parser
+
+Pure tooling. **No algorithm or live-trading paths touched.** Replaces the broken Saturday cron `873854a1`, which still parses `[V510-SHADOW]` lines that haven't existed since v5.5.x. Live prod (v5.8.x) emits `[V560-GATE]` / `[V570-STRIKE]` / `[V571-EXIT_PHASE]` / `[ENTRY]` / `[TRADE_CLOSED]` / `[SKIP]` — the new report reads exactly that schema.
+
+- **`scripts/saturday_weekly_report.py`** — CLI: `python scripts/saturday_weekly_report.py --week-start <YYYY-MM-DD> [--out-dir …] [--logs-dir …]`. Online mode pulls `deploymentLogs` from Railway GraphQL (env: `RAILWAY_API_TOKEN` / `RAILWAY_PROJECT` / `RAILWAY_SERVICE` / `RAILWAY_ENVIRONMENT`), persists per-day `day_YYYY-MM-DD.jsonl`, then parses. `--logs-dir` enables offline mode for testing against historical snapshots. Default `--week-start` is the most recent Monday before today.
+- **Report sections:** (1) headline P&L / entries / win-rate, (2) 4-config comparison table for `TICKER+QQQ` / `TICKER_ONLY` / `QQQ_ONLY` / `GEMINI_A` (allowed vs blocked, P&L sums, win rate, net swing vs actual — pairs `[ENTRY]` to `[TRADE_CLOSED]` by `entry_id` and attributes per-config decisions from the most recent `[V510-SHADOW][CFG=…]` verdict for that ticker), (3) per-exit-reason P&L breakdown (`hard_stop_2c` / `ema_trail` / `be_stop` / `velocity_fuse` / `eod` / `kill_switch`), (4) `[SKIP]` stats with top-3 most-skipped gates and 5 most-affected tickers each, (5) cumulative two-week + comparison vs prior week (auto-discovers `<out-dir>/week_<MONDAY>/report.json`), (6) anomalies / data gaps. Also writes `report.json` for next week's cumulative comparison.
+- **Tests.** `tests/test_saturday_weekly_report.py` (11 tests, all PASS) with synthetic fixtures under `tests/fixtures/saturday_report/` covering every event type, every exit reason, allowed-win + allowed-loss + blocked + skip lines, and an end-to-end offline CLI run.
+
+The Saturday cron task body should now invoke `python scripts/saturday_weekly_report.py --week-start <Monday>` instead of the legacy parser. See ARCHITECTURE.md and CLAUDE.md for the dry-run command against last week's data.
+
+---
+
 ## v5.8.3 — 2026-04-27
 
 Fix shadow_positions DB path in scripts/lib/checks.sh: /data/shadow.db -> /data/state.db

@@ -2163,6 +2163,10 @@ check_log_tags "STARTUP SUMMARY" "[UNIVERSE_GUARD]" "[V560-GATE]" "[V570-STRIKE]
 
 **Out of scope here.** The cron task bodies (`58c883b0` weekday 8:35 CT, `873854a1` Saturday 10am CT) live outside the repo and are updated by the parent agent's `schedule_cron(action="update", …)` after this PR merges. The Saturday weekly-report directory is renamed to `backtest_v57x/` in that update. Per-exit-reason P&L breakdown belongs to the Saturday cron parser; `check_log_tags` already accepts `[V571-EXIT_PHASE]` as a recognised tag so the cron can pull the data through the shared library.
 
+### Saturday weekly report (v5.8.4)
+
+`scripts/saturday_weekly_report.py` is the in-repo parser the Saturday cron `873854a1` invokes. It replaces the legacy parser that still reads `[V510-SHADOW]` lines from v5.5.x. The script pulls each Mon-Fri's `deploymentLogs` from Railway GraphQL (env: `RAILWAY_API_TOKEN`/`RAILWAY_PROJECT`/`RAILWAY_SERVICE`/`RAILWAY_ENVIRONMENT`), persists raw lines as `<out-dir>/week_<MONDAY>/day_YYYY-MM-DD.jsonl`, and parses the v5.6+ schema (`[V560-GATE]`, `[V570-STRIKE]`, `[V571-EXIT_PHASE]`, `[ENTRY]`, `[TRADE_CLOSED]`, `[SKIP]`, `[V510-SHADOW][CFG=…]`). Output is `report.md` plus `report.json` (the latter is read by next week's run for cumulative comparison). The 4 SHADOW_CONFIGS attribution pairs each `[ENTRY]`'s `entry_id` to the most recent `[V510-SHADOW][CFG=<name>]` verdict for that ticker. Offline mode (`--logs-dir <path>`) reads existing `day_*.jsonl` files instead of pulling from Railway and is the recommended dry-run path before each Saturday's cron firing.
+
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.8.1"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.8.4"`.*
