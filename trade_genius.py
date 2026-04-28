@@ -8774,6 +8774,163 @@ def close_breakout(ticker, price, side, reason="STOP"):
 
 
 # ============================================================
+# v5.10.4 \u2014 Per-ticker 5m EMA tracker for the Phase B/C machine.
+# ============================================================
+# Lazy: each ticker gets a `{closes_5m: [...], last_bucket: int|None,
+# ema9: float|None, seed_buf: [...]}` entry the first time it goes
+# through the phase pump. Reset on session boundary by callers that
+# clear position state.
+import qqq_regime as _qqq_regime_mod
+
+_TICKER_5M_EMA: dict[str, dict] = {}
+
+
+def _phase_5m_step_for_ticker(ticker: str, bars: dict) -> tuple[float | None, float | None, float | None, bool]:
+    """Derive (last_5m_open, last_5m_close, ema9_5m, seeded) for a
+    ticker from its 1m bars dict. Updates the per-ticker EMA tracker
+    only when a new 5m bucket has just closed since the last call.
+
+    Returns (open_5m, close_5m, ema9_5m, ema_seeded). open_5m and
+    close_5m are the most recently closed 5m bar; ema9_5m is None
+    until 9 closed 5m bars have been observed.
+    """
+    state = _TICKER_5M_EMA.get(ticker)
+    if state is None:
+        state = {"last_bucket": None, "ema9": None, "seed_buf": [], "last_open": None, "last_close": None}
+        _TICKER_5M_EMA[ticker] = state
+    timestamps = bars.get("timestamps") or []
+    closes = bars.get("closes") or []
+    opens = bars.get("opens") or []
+    if not timestamps or not closes:
+        return state["last_open"], state["last_close"], state["ema9"], state["ema9"] is not None
+
+    # Use the same floor(ts/300) bucketing as _resample_to_5min.
+    pairs_close: dict[int, float] = {}
+    pairs_open: dict[int, float] = {}
+    for i, t in enumerate(timestamps):
+        if t is None or i >= len(closes):
+            continue
+        c = closes[i]
+        if c is None:
+            continue
+        bucket = int(t) // 300
+        pairs_close[bucket] = float(c)
+        if i < len(opens) and opens[i] is not None and bucket not in pairs_open:
+            pairs_open[bucket] = float(opens[i])
+    ordered = sorted(pairs_close.keys())
+    if len(ordered) < 2:
+        return state["last_open"], state["last_close"], state["ema9"], state["ema9"] is not None
+    closed_buckets = ordered[:-1]  # newest is forming
+    last_seen = state["last_bucket"]
+    new_buckets = [b for b in closed_buckets if last_seen is None or b > last_seen]
+    for b in new_buckets:
+        c = pairs_close[b]
+        state["ema9"], state["seed_buf"] = _qqq_regime_mod._step_ema(
+            state["ema9"], c, _qqq_regime_mod.EMA9_PERIOD, state["seed_buf"],
+        )
+        state["last_close"] = c
+        state["last_open"] = pairs_open.get(b, c)
+        state["last_bucket"] = b
+    return state["last_open"], state["last_close"], state["ema9"], state["ema9"] is not None
+
+
+def _phase_machine_step(ticker: str, side_label: str, pos: dict, bars: dict) -> str | None:
+    """v5.10.4 Phase A/B/C step. Called from manage_positions /
+    manage_short_positions before any legacy stop check. Returns an
+    exit reason string when the Phase machine wants to close, else
+    None.
+
+    Phase A (PHASE_SURVIVAL): Maffei Inside-OR. Evaluated on the most
+    recently closed 1m candle. Returns 'forensic_stop' on EXIT.
+    Phase B layered (PHASE_NEUT_LAYERED): break-even stop already set
+    on pos['stop'] by execute_entry_2. Two-Bar Lock advances on
+    favorable 5m closes; on lock, transitions to PHASE_NEUT_LOCKED.
+    Phase C extraction (PHASE_EXTRACTION): EMA trail. 5m close
+    crossing EMA against side returns 'ema_trail'.
+
+    Daily Circuit Breaker (-$1500) and EOD (15:59:50) plumbing remain
+    on the legacy paths and emit 'daily_circuit_breaker' / 'eod'
+    independently \u2014 they are NOT replaced here.
+    """
+    state = eot_glue.get_position_state(ticker, side_label)
+    if state is None:
+        return None
+    phase = state.get("phase") or eot.PHASE_SURVIVAL
+
+    closes = [c for c in (bars.get("closes") or []) if c is not None]
+    opens = [o for o in (bars.get("opens") or []) if o is not None]
+    highs = [h for h in (bars.get("highs") or []) if h is not None]
+    lows = [l for l in (bars.get("lows") or []) if l is not None]
+
+    if phase == eot.PHASE_SURVIVAL:
+        # Maffei needs OR + last and prior 1m candle data.
+        or_h = or_high.get(ticker)
+        or_l = or_low.get(ticker)
+        # Last completed 1m candle: index -2 (newest is forming).
+        if len(closes) >= 2 and len(opens) >= 2 and len(highs) >= 2 and len(lows) >= 2:
+            cur_o = opens[-2]
+            cur_c = closes[-2]
+            cur_l = lows[-2]
+            cur_h = highs[-2]
+            prior_l = lows[-3] if len(lows) >= 3 else None
+            prior_h = highs[-3] if len(highs) >= 3 else None
+            res = eot.evaluate_maffei_inside_or(
+                "LONG" if side_label == "LONG" else "SHORT",
+                or_h, or_l, cur_o, cur_c, cur_l, cur_h, prior_l, prior_h,
+            )
+            if res.get("decision") == "EXIT":
+                try:
+                    logger.info(
+                        "[V5100-MAFFEI] ticker=%s side=%s decision=EXIT reason=%s "
+                        "or_high=%s or_low=%s cur_open=%s cur_close=%s",
+                        ticker, side_label, res.get("reason"),
+                        ("%.4f" % or_h) if or_h is not None else "None",
+                        ("%.4f" % or_l) if or_l is not None else "None",
+                        ("%.4f" % cur_o), ("%.4f" % cur_c),
+                    )
+                except Exception:
+                    pass
+                return eot.EXIT_REASON_FORENSIC_STOP
+        return None
+
+    # Phase B / Phase C both need the 5m close + EMA9.
+    o5m, c5m, ema9_5m, seeded = _phase_5m_step_for_ticker(ticker, bars)
+
+    if phase == eot.PHASE_NEUT_LAYERED:
+        # Two-Bar Lock advances on closed 5m candles. step_two_bar_lock_on_5m
+        # is idempotent within one 5m bucket as long as we haven't called
+        # it twice for the same bucket; the per-ticker tracker only emits
+        # a "new 5m close" once per bucket so this is safe.
+        if c5m is not None and o5m is not None:
+            eot_glue.step_two_bar_lock_on_5m(ticker, side_label, o5m, c5m)
+        # break-even stop is already set as pos['stop']; let legacy
+        # stop-hit fire below.
+        return None
+
+    if phase == eot.PHASE_NEUT_LOCKED:
+        # Try to advance to extraction once EMA seeded.
+        eot_glue.step_phase_c_if_eligible(ticker, side_label, ema9_5m, seeded)
+        # No exit emission; BE-stop honoured by legacy path.
+        return None
+
+    if phase == eot.PHASE_EXTRACTION:
+        # Update EMA tracking on the live state.
+        eot_glue.step_phase_c_if_eligible(ticker, side_label, ema9_5m, seeded)
+        if c5m is not None and seeded and eot_glue.evaluate_phase_c_exit(
+            ticker, side_label, c5m,
+        ):
+            try:
+                logger.info(
+                    "[V5100-PHASE-C-EMA-TRAIL] ticker=%s side=%s 5m_close=%.4f "
+                    "ema9_5m=%.4f", ticker, side_label, c5m, ema9_5m,
+                )
+            except Exception:
+                pass
+            return eot.EXIT_REASON_EMA_TRAIL
+    return None
+
+
+# ============================================================
 # MANAGE POSITIONS (stop + trail logic)
 # ============================================================
 def manage_positions():
@@ -8839,18 +8996,36 @@ def manage_positions():
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] long %s: %s", ticker, _eot_e)
 
+        # v5.10.4 \u2014 Section V Phase A/B/C machine. Runs BEFORE legacy
+        # stop checks; an EXIT decision here takes priority. Phase A
+        # Maffei -> forensic_stop, Phase C EMA trail -> ema_trail.
+        # Phase B's break-even stop is set on pos['stop'] at Entry-2
+        # time and honoured by the legacy stop-hit branch below
+        # (emits 'be_stop' there).
+        try:
+            _phase_exit = _phase_machine_step(ticker, "LONG", pos, bars)
+            if _phase_exit:
+                tickers_to_close.append((ticker, current_price, _phase_exit))
+                continue
+        except Exception as _phe:
+            logger.warning("[V5100-PHASE] long %s: %s", ticker, _phe)
+
         # v3.4.35 — Stop hit. "TRAIL" when the ladder has ratcheted past
         # the initial structural stop (capital already safe), else "STOP"
         # (initial structural stop hit with no profit locked).
+        # v5.10.4: when the v5.10.0 Phase machine has us in NEUT_LAYERED
+        # or NEUT_LOCKED, the stop is the avg_entry break-even shield;
+        # attribute as 'be_stop' (canonical Section V exit_reason).
         if current_price <= pos["stop"]:
-            # Derive TRAIL vs STOP from whether the stop has actually
-            # ratcheted above entry (i.e. capital was locked in). The
-            # previous `pos.get("trail_active")` flag was set true the
-            # first time peak_gain hit +1 % and was never unset — so a
-            # position that went +1 %, came back, and hit the *initial*
-            # structural stop was still attributed as "TRAIL" even
-            # though no profit was locked. Derive from stop level.
-            reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
+            _v510_st = eot_glue.get_position_state(ticker, "LONG")
+            if _v510_st and _v510_st.get("phase") in (
+                eot.PHASE_NEUT_LAYERED, eot.PHASE_NEUT_LOCKED, eot.PHASE_EXTRACTION,
+            ):
+                reason = eot.EXIT_REASON_BE_STOP
+            else:
+                # Derive TRAIL vs STOP from whether the stop has actually
+                # ratcheted above entry (i.e. capital was locked in).
+                reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
             tickers_to_close.append((ticker, current_price, reason))
             continue
 
@@ -8904,14 +9079,13 @@ def manage_positions():
 
         # Exit when current price crosses the ladder stop.
         if current_price <= pos["stop"]:
-            # Derive TRAIL vs STOP from whether the stop has actually
-            # ratcheted above entry (i.e. capital was locked in). The
-            # previous `pos.get("trail_active")` flag was set true the
-            # first time peak_gain hit +1 % and was never unset — so a
-            # position that went +1 %, came back, and hit the *initial*
-            # structural stop was still attributed as "TRAIL" even
-            # though no profit was locked. Derive from stop level.
-            reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
+            _v510_st = eot_glue.get_position_state(ticker, "LONG")
+            if _v510_st and _v510_st.get("phase") in (
+                eot.PHASE_NEUT_LAYERED, eot.PHASE_NEUT_LOCKED, eot.PHASE_EXTRACTION,
+            ):
+                reason = eot.EXIT_REASON_BE_STOP
+            else:
+                reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
             tickers_to_close.append((ticker, current_price, reason))
             continue
 
@@ -8997,6 +9171,15 @@ def manage_short_positions():
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] short %s: %s", ticker, _eot_e)
 
+        # v5.10.4 \u2014 Section V Phase A/B/C machine (short side).
+        try:
+            _phase_exit_s = _phase_machine_step(ticker, "SHORT", pos, bars)
+            if _phase_exit_s:
+                close_short_position(ticker, current_price, reason=_phase_exit_s)
+                continue
+        except Exception as _phe:
+            logger.warning("[V5100-PHASE] short %s: %s", ticker, _phe)
+
         # v3.4.35 — Profit-Lock Ladder replaces the 1%/$1 armed-trail.
         # Track trail_low every tick (peak = deepest price reached).
         trail_low = pos.get("trail_low", entry_price)
@@ -9030,9 +9213,16 @@ def manage_short_positions():
         trail_active = pos.get("trail_active", False)
 
         # Exit on stop hit. TRAIL vs STOP per ladder-armed state.
+        # v5.10.4: Phase B/C BE shield attribution \u2014 'be_stop'.
         exit_reason = None
         if current_price >= stop:
-            exit_reason = "TRAIL" if trail_active else "STOP"
+            _v510_st = eot_glue.get_position_state(ticker, "SHORT")
+            if _v510_st and _v510_st.get("phase") in (
+                eot.PHASE_NEUT_LAYERED, eot.PHASE_NEUT_LOCKED, eot.PHASE_EXTRACTION,
+            ):
+                exit_reason = eot.EXIT_REASON_BE_STOP
+            else:
+                exit_reason = "TRAIL" if trail_active else "STOP"
 
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
