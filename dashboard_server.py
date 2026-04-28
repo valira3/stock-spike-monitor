@@ -68,6 +68,7 @@ def _ssm():
     thread and crashes. So: prefer the already-loaded instance.
     """
     import sys
+
     # Prefer the already-loaded bot module (running as __main__)
     main_mod = sys.modules.get("__main__")
     if main_mod is not None and getattr(main_mod, "BOT_VERSION", None):
@@ -78,6 +79,7 @@ def _ssm():
         return m
     # Last resort (tests / standalone): import fresh
     import trade_genius as m  # noqa: F811
+
     return m
 
 
@@ -94,6 +96,7 @@ def _safe(fn, default):
 def _errors_snapshot_safe(executor: str) -> dict:
     try:
         import error_state as _es
+
         return _es.snapshot(executor)
     except Exception:
         return {"executor": executor, "count": 0, "severity": "green", "entries": []}
@@ -159,21 +162,23 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_high"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
-        rows.append({
-            "ticker": tkr,
-            "side": "LONG",
-            "shares": shares,
-            "entry": entry,
-            "mark": px_f if px_f is not None else entry,
-            "stop": hard_stop,
-            "trail_active": trail_active,
-            "trail_stop": trail_stop,
-            "trail_anchor": trail_anchor,
-            "effective_stop": effective_stop,
-            "unrealized": unreal,
-            "entry_time": p.get("entry_time", ""),
-            "entry_count": int(p.get("entry_count", 1) or 1),
-        })
+        rows.append(
+            {
+                "ticker": tkr,
+                "side": "LONG",
+                "shares": shares,
+                "entry": entry,
+                "mark": px_f if px_f is not None else entry,
+                "stop": hard_stop,
+                "trail_active": trail_active,
+                "trail_stop": trail_stop,
+                "trail_anchor": trail_anchor,
+                "effective_stop": effective_stop,
+                "unrealized": unreal,
+                "entry_time": p.get("entry_time", ""),
+                "entry_count": int(p.get("entry_count", 1) or 1),
+            }
+        )
     for tkr, p in shorts.items():
         px = prices.get(tkr) or p.get("entry_price")
         entry = _safe_float(p.get("entry_price")) or 0.0
@@ -185,21 +190,23 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_low"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
-        rows.append({
-            "ticker": tkr,
-            "side": "SHORT",
-            "shares": shares,
-            "entry": entry,
-            "mark": px_f if px_f is not None else entry,
-            "stop": hard_stop,
-            "trail_active": trail_active,
-            "trail_stop": trail_stop,
-            "trail_anchor": trail_anchor,
-            "effective_stop": effective_stop,
-            "unrealized": unreal,
-            "entry_time": p.get("entry_time", ""),
-            "entry_count": 1,
-        })
+        rows.append(
+            {
+                "ticker": tkr,
+                "side": "SHORT",
+                "shares": shares,
+                "entry": entry,
+                "mark": px_f if px_f is not None else entry,
+                "stop": hard_stop,
+                "trail_active": trail_active,
+                "trail_stop": trail_stop,
+                "trail_anchor": trail_anchor,
+                "effective_stop": effective_stop,
+                "unrealized": unreal,
+                "entry_time": p.get("entry_time", ""),
+                "entry_count": 1,
+            }
+        )
     return rows
 
 
@@ -235,12 +242,7 @@ def _today_trades() -> list[dict]:
         # Prefer the field each list actually carries; fall back
         # through both so the key is stable no matter which list the
         # row originated from.
-        time_key = (
-            t.get("time")
-            or t.get("entry_time")
-            or t.get("exit_time")
-            or ""
-        )
+        time_key = t.get("time") or t.get("entry_time") or t.get("exit_time") or ""
         return (
             (t.get("ticker") or "").upper(),
             str(time_key),
@@ -299,9 +301,7 @@ def _today_trades() -> list[dict]:
         if k_entry not in seen:
             seen.add(k_entry)
             out.append(synth_entry)
-            short_entries_emitted.add(
-                ((t.get("ticker") or "").upper(), str(entry_time_val))
-            )
+            short_entries_emitted.add(((t.get("ticker") or "").upper(), str(entry_time_val)))
 
         # The existing COVER row (unchanged shape).
         k_cover = _key(t, "SHORT")
@@ -411,16 +411,18 @@ def _proximity_rows() -> list[dict]:
             open_side = "LONG"
         elif t in open_shorts:
             open_side = "SHORT"
-        rows.append({
-            "ticker": t,
-            "price": px,
-            "or_high": orh,
-            "or_low": orl,
-            "pdc": pdc_v,
-            "nearest_label": best_label,
-            "nearest_pct": best_pct,  # smaller = closer
-            "open_side": open_side,
-        })
+        rows.append(
+            {
+                "ticker": t,
+                "price": px,
+                "or_high": orh,
+                "or_low": orl,
+                "pdc": pdc_v,
+                "nearest_label": best_label,
+                "nearest_pct": best_pct,  # smaller = closer
+                "open_side": open_side,
+            }
+        )
     # sort by closeness (closer first); None goes last
     rows.sort(key=lambda r: (r["nearest_pct"] is None, r["nearest_pct"] or 1e9))
     return rows
@@ -442,17 +444,19 @@ def _ticker_gates(m, tickers: list[str]) -> list[dict]:
         ext = g.get("extension_pct")
         if isinstance(ext, float):
             ext = round(ext, 2)
-        rows.append({
-            "ticker": t,
-            "side": g.get("side"),
-            "break": g.get("break"),
-            "polarity": g.get("polarity"),
-            "index": g.get("index"),
-            "di": g.get("di"),
-            "ts": g.get("ts"),
-            "or_stale_skip_count": int(skip_counts.get(t, 0)),
-            "extension_pct": ext,
-        })
+        rows.append(
+            {
+                "ticker": t,
+                "side": g.get("side"),
+                "break": g.get("break"),
+                "polarity": g.get("polarity"),
+                "index": g.get("index"),
+                "di": g.get("di"),
+                "ts": g.get("ts"),
+                "or_stale_skip_count": int(skip_counts.get(t, 0)),
+                "extension_pct": ext,
+            }
+        )
     return rows
 
 
@@ -468,6 +472,7 @@ def _next_scan_seconds(m) -> int | None:
     interval = int(getattr(m, "SCAN_INTERVAL", 60) or 60)
     try:
         from datetime import datetime, timezone
+
         age = (datetime.now(timezone.utc) - last).total_seconds()
     except Exception:
         logger.debug("_next_scan_seconds failed", exc_info=True)
@@ -481,12 +486,12 @@ def _next_scan_seconds(m) -> int | None:
 
 
 def _sovereign_regime_snapshot(m) -> dict[str, Any]:
-    """v3.4.29 — Live Sovereign Regime Shield state for the dashboard.
+    """v3.4.29 \u2014 SPY/QQQ vs PDC display snapshot for the dashboard.
 
-    Mirrors the data the Shield itself reads (SPY/QQQ PDC + the most
-    recent FINALIZED 1-minute close). The front-end uses this to tell
-    Val at a glance whether the long-eject or short-eject gate would
-    fire on the next tick, and why.
+    Originally fed the live Sovereign Regime Shield (PDC eject) UI;
+    that rule was retired in v5.9.1. The function now powers the
+    cosmetic SPY/QQQ vs PDC pills only \u2014 it does NOT drive any
+    algo decision and the long_eject/short_eject fields are gone.
 
     Shape (every field is optional — fail-closed in the UI):
 
@@ -499,24 +504,29 @@ def _sovereign_regime_snapshot(m) -> dict[str, Any]:
           "qqq_pdc":        float|None,
           "qqq_delta_pct":  float|None,
           "qqq_above_pdc":  bool|None,
-          "long_eject":     bool,          # _sovereign_regime_eject("long")
-          "short_eject":    bool,          # _sovereign_regime_eject("short")
-          "status":         str,           # ARMED_LONG | ARMED_SHORT |
-                                           # DISARMED | AWAITING | NO_PDC
+          "status":         str,           # DISARMED | AWAITING | NO_PDC
           "reason":         str,           # short human explanation
         }
+
+    v5.9.1: long_eject / short_eject fields removed along with the
+    _sovereign_regime_eject() rule. PDC pills remain for cosmetic
+    display only \u2014 they have no algo impact.
 
     Never raises. Returns a fully-populated dict with None/False
     fields if any data is missing, so the UI always has a stable
     shape.
     """
     out: dict[str, Any] = {
-        "spy_price": None, "spy_pdc": None, "spy_delta_pct": None,
+        "spy_price": None,
+        "spy_pdc": None,
+        "spy_delta_pct": None,
         "spy_above_pdc": None,
-        "qqq_price": None, "qqq_pdc": None, "qqq_delta_pct": None,
+        "qqq_price": None,
+        "qqq_pdc": None,
+        "qqq_delta_pct": None,
         "qqq_above_pdc": None,
-        "long_eject": False, "short_eject": False,
-        "status": "NO_PDC", "reason": "",
+        "status": "NO_PDC",
+        "reason": "",
     }
     try:
         pdc_map = getattr(m, "pdc", {}) or {}
@@ -527,21 +537,36 @@ def _sovereign_regime_snapshot(m) -> dict[str, Any]:
         if isinstance(qqq_pdc, (int, float)) and qqq_pdc > 0:
             out["qqq_pdc"] = float(qqq_pdc)
 
-        # Finalized 1m close the Shield actually reads.
-        helper = getattr(m, "_last_finalized_1min_close", None)
-        if callable(helper):
+        # Last finalized 1m close (cosmetic display only post-v5.9.1).
+        # Pull directly from fetch_1min_bars now that the previous
+        # _last_finalized_1min_close helper has been retired.
+        fetch_bars = getattr(m, "fetch_1min_bars", None)
+
+        def _last_close(ticker):
+            if not callable(fetch_bars):
+                return None
             try:
-                sc = helper("SPY")
-                if isinstance(sc, (int, float)):
-                    out["spy_price"] = float(sc)
+                bars = fetch_bars(ticker)
             except Exception:
-                logger.warning("sovereign_regime_snapshot: SPY close helper failed", exc_info=True)
-            try:
-                qc = helper("QQQ")
-                if isinstance(qc, (int, float)):
-                    out["qqq_price"] = float(qc)
-            except Exception:
-                logger.warning("sovereign_regime_snapshot: QQQ close helper failed", exc_info=True)
+                logger.warning(
+                    "sovereign_regime_snapshot: %s bars fetch failed",
+                    ticker,
+                    exc_info=True,
+                )
+                return None
+            if not bars:
+                return None
+            closes = [c for c in (bars.get("closes") or []) if c is not None]
+            if len(closes) < 2:
+                return None
+            return float(closes[-2])
+
+        sc = _last_close("SPY")
+        if sc is not None:
+            out["spy_price"] = sc
+        qc = _last_close("QQQ")
+        if qc is not None:
+            out["qqq_price"] = qc
 
         # Deltas (only if both price and PDC present).
         if out["spy_price"] is not None and out["spy_pdc"]:
@@ -551,44 +576,16 @@ def _sovereign_regime_snapshot(m) -> dict[str, Any]:
             out["qqq_delta_pct"] = (out["qqq_price"] - out["qqq_pdc"]) / out["qqq_pdc"] * 100.0
             out["qqq_above_pdc"] = out["qqq_price"] > out["qqq_pdc"]
 
-        # Ask the Shield itself for the ground-truth eject booleans.
-        eject = getattr(m, "_sovereign_regime_eject", None)
-        if callable(eject):
-            try:
-                out["long_eject"] = bool(eject("long"))
-            except Exception:
-                logger.warning("sovereign_regime_snapshot: long eject failed", exc_info=True)
-                out["long_eject"] = False
-            try:
-                out["short_eject"] = bool(eject("short"))
-            except Exception:
-                logger.warning("sovereign_regime_snapshot: short eject failed", exc_info=True)
-                out["short_eject"] = False
-
-        # Human-readable status.
+        # Human-readable status (cosmetic post-v5.9.1; no eject is wired).
         if out["spy_pdc"] is None or out["qqq_pdc"] is None:
             out["status"] = "NO_PDC"
             out["reason"] = "PDC not yet collected (pre-open)"
         elif out["spy_price"] is None or out["qqq_price"] is None:
             out["status"] = "AWAITING"
             out["reason"] = "waiting for first finalized 1m close"
-        elif out["long_eject"]:
-            out["status"] = "ARMED_LONG"
-            out["reason"] = "SPY and QQQ both 1m close < PDC — longs would eject"
-        elif out["short_eject"]:
-            out["status"] = "ARMED_SHORT"
-            out["reason"] = "SPY and QQQ both 1m close > PDC — shorts would eject"
         else:
-            # Both below PDC only triggers long eject; both above only short
-            # eject. Divergence is the last remaining case: one each side.
-            if (out["spy_above_pdc"] is not None
-                    and out["qqq_above_pdc"] is not None
-                    and out["spy_above_pdc"] != out["qqq_above_pdc"]):
-                out["status"] = "DISARMED"
-                out["reason"] = "SPY/QQQ diverge vs PDC — hysteresis holds"
-            else:
-                out["status"] = "DISARMED"
-                out["reason"] = "SPY and QQQ both on expected side of PDC"
+            out["status"] = "DISARMED"
+            out["reason"] = "PDC eject retired in v5.9.1 \u2014 informational only"
     except Exception as e:
         logger.debug("_sovereign_regime_snapshot failed: %s", e)
     return out
@@ -632,10 +629,7 @@ def _cached_snapshot() -> dict[str, Any]:
         # Double-check after acquiring the lock \u2014 another thread may
         # have refreshed the cache while we were waiting.
         now = time.monotonic()
-        if (
-            _snapshot_cache_value is not None
-            and (now - _snapshot_cache_ts) < _SNAPSHOT_CACHE_TTL
-        ):
+        if _snapshot_cache_value is not None and (now - _snapshot_cache_ts) < _SNAPSHOT_CACHE_TTL:
             return _snapshot_cache_value
         fresh = snapshot()
         _snapshot_cache_value = fresh
@@ -658,7 +652,10 @@ _SHADOW_PANEL_ORDER = (
 
 
 def _shadow_pnl_snapshot(
-    m, today: str, today_realized: float, today_unrealized: float,
+    m,
+    today: str,
+    today_realized: float,
+    today_unrealized: float,
 ) -> dict[str, Any]:
     """Build the dashboard payload for the bottom shadow-strategy panel.
 
@@ -672,6 +669,7 @@ def _shadow_pnl_snapshot(
     tr = None
     try:
         import shadow_pnl as _sp
+
         tr = _sp.tracker()
         summary = tr.summary(today_str=today or None)
     except Exception as e:
@@ -694,45 +692,47 @@ def _shadow_pnl_snapshot(
             try:
                 open_positions = tr.open_positions_for(name)
             except Exception as e:
-                logger.warning(
-                    "shadow_pnl open_positions_for(%s) failed: %s", name, e)
+                logger.warning("shadow_pnl open_positions_for(%s) failed: %s", name, e)
             try:
                 recent_trades = tr.recent_closed_for(name, limit=10)
             except Exception as e:
-                logger.warning(
-                    "shadow_pnl recent_closed_for(%s) failed: %s", name, e)
-        configs.append({
-            "name": name,
-            "label": label,
-            "today": {
-                "n": n_today,
-                "wr": round(wr_today, 1) if wr_today is not None else None,
-                "realized": float(s.get("today_realized", 0.0) or 0.0),
-                "unrealized": float(s.get("today_unrealized", 0.0) or 0.0),
-                "total": float(s.get("today_total", 0.0) or 0.0),
-            },
-            "cumulative": {
-                "n": n_cum,
-                "wr": round(wr_cum, 1) if wr_cum is not None else None,
-                "realized": float(
-                    s.get("cumulative_realized", 0.0) or 0.0),
-                "unrealized": float(
-                    s.get("cumulative_unrealized", 0.0) or 0.0),
-                "total": float(s.get("cumulative_total", 0.0) or 0.0),
-            },
-            # v5.3.0 \u2014 expandable detail payload.
-            "open_positions": open_positions,
-            "recent_trades": recent_trades,
-        })
+                logger.warning("shadow_pnl recent_closed_for(%s) failed: %s", name, e)
+        configs.append(
+            {
+                "name": name,
+                "label": label,
+                "today": {
+                    "n": n_today,
+                    "wr": round(wr_today, 1) if wr_today is not None else None,
+                    "realized": float(s.get("today_realized", 0.0) or 0.0),
+                    "unrealized": float(s.get("today_unrealized", 0.0) or 0.0),
+                    "total": float(s.get("today_total", 0.0) or 0.0),
+                },
+                "cumulative": {
+                    "n": n_cum,
+                    "wr": round(wr_cum, 1) if wr_cum is not None else None,
+                    "realized": float(s.get("cumulative_realized", 0.0) or 0.0),
+                    "unrealized": float(s.get("cumulative_unrealized", 0.0) or 0.0),
+                    "total": float(s.get("cumulative_total", 0.0) or 0.0),
+                },
+                # v5.3.0 \u2014 expandable detail payload.
+                "open_positions": open_positions,
+                "recent_trades": recent_trades,
+            }
+        )
 
     # Best / worst by today_total (only counts configs with at least
     # one trade today \u2014 zero-trade configs render as "--").
     active = [c for c in configs if c["today"]["n"] > 0]
     best_today = max(
-        active, key=lambda c: c["today"]["total"], default=None,
+        active,
+        key=lambda c: c["today"]["total"],
+        default=None,
     )
     worst_today = min(
-        active, key=lambda c: c["today"]["total"], default=None,
+        active,
+        key=lambda c: c["today"]["total"],
+        default=None,
     )
 
     # Paper bot comparison row \u2014 mirrors the same paper portfolio
@@ -743,14 +743,14 @@ def _shadow_pnl_snapshot(
     paper_today_n = 0
     paper_today_wins = 0
     today_paper_pnl = 0.0
-    for t in (getattr(m, "paper_trades", []) or []):
+    for t in getattr(m, "paper_trades", []) or []:
         if t.get("date") == today and t.get("action") == "SELL":
             paper_today_n += 1
             pnl = float(t.get("pnl", 0.0) or 0.0)
             today_paper_pnl += pnl
             if pnl > 0:
                 paper_today_wins += 1
-    for t in (getattr(m, "short_trade_history", []) or []):
+    for t in getattr(m, "short_trade_history", []) or []:
         if t.get("date") == today:
             paper_today_n += 1
             pnl = float(t.get("pnl", 0.0) or 0.0)
@@ -817,10 +817,10 @@ def snapshot() -> dict[str, Any]:
         except Exception:
             today = ""
         realized = 0.0
-        for t in (getattr(m, "paper_trades", []) or []):
+        for t in getattr(m, "paper_trades", []) or []:
             if t.get("date") == today and t.get("action") == "SELL":
                 realized += float(t.get("pnl", 0.0) or 0.0)
-        for t in (getattr(m, "short_trade_history", []) or []):
+        for t in getattr(m, "short_trade_history", []) or []:
             if t.get("date") == today:
                 realized += float(t.get("pnl", 0.0) or 0.0)
 
@@ -847,8 +847,7 @@ def snapshot() -> dict[str, Any]:
         # Before v4.4.1 this only reflected _scan_paused, so the UI said
         # "ACTIVE" all night even though no scanning was happening.
         scan_paused = bool(
-            getattr(m, "_scan_paused", False)
-            or getattr(m, "_scan_idle_hours", False)
+            getattr(m, "_scan_paused", False) or getattr(m, "_scan_idle_hours", False)
         )
         or_date = str(getattr(m, "or_collected_date", ""))
 
@@ -932,16 +931,17 @@ def snapshot() -> dict[str, Any]:
             # the same paper trades / unrealized totals shown above
             # (the paper book is also what drives shadow sizing).
             "shadow_pnl": _shadow_pnl_snapshot(
-                m, today, realized, unreal_sum,
+                m,
+                today,
+                realized,
+                unreal_sum,
             ),
             # v5.5.3 \u2014 expose whether the shadow market-data feed
             # bound to credentials at startup. Frontend renders a
             # SHADOW DISABLED banner when this is "disabled_no_creds"
             # so a silent-no-rows session is no longer ambiguous.
             "shadow_data_status": (
-                "live"
-                if bool(getattr(m, "SHADOW_DATA_AVAILABLE", False))
-                else "disabled_no_creds"
+                "live" if bool(getattr(m, "SHADOW_DATA_AVAILABLE", False)) else "disabled_no_creds"
             ),
         }
     except Exception as e:
@@ -956,7 +956,7 @@ SESSION_COOKIE = "spike_session"
 SESSION_DAYS = 7
 
 _PW: str = ""
-_SESSION_SECRET: bytes = b""   # set at startup; see _load_or_create_session_secret
+_SESSION_SECRET: bytes = b""  # set at startup; see _load_or_create_session_secret
 
 
 def _session_secret_path() -> str:
@@ -1010,7 +1010,8 @@ def _load_or_create_session_secret() -> bytes:
                 return data[:32]
             logger.warning(
                 "Dashboard session secret at %s too short (%d bytes) — regenerating",
-                path, len(data),
+                path,
+                len(data),
             )
     except OSError as e:
         logger.warning("Dashboard session secret read failed (%s): %s", path, e)
@@ -1031,7 +1032,8 @@ def _load_or_create_session_secret() -> bytes:
     except OSError as e:
         logger.warning(
             "Dashboard session secret write failed (%s): %s — using in-memory for this boot",
-            path, e,
+            path,
+            e,
         )
     return new_secret
 
@@ -1053,6 +1055,7 @@ def _redact_alpaca_secrets(s: str) -> str:
     if not s:
         return s
     return _ALPACA_KEY_RE.sub("[REDACTED]", s)
+
 
 # Login rate-limiter: per-IP attempt timestamps (sliding window)
 _LOGIN_WINDOW_SEC = 60
@@ -1104,10 +1107,10 @@ def _make_token(now: float | None = None) -> str:
 
 def _check_auth(request) -> bool:
     """Validate the session cookie. Rejects:
-      • missing/malformed cookie
-      • wrong signature (constant-time compare)
-      • expired token (issue ts older than SESSION_DAYS)
-      • future-dated token (clock-skew > 60s)
+    • missing/malformed cookie
+    • wrong signature (constant-time compare)
+    • expired token (issue ts older than SESSION_DAYS)
+    • future-dated token (clock-skew > 60s)
     """
     if not _SESSION_SECRET:
         return False
@@ -1119,12 +1122,11 @@ def _check_auth(request) -> bool:
         ts = int(ts_str)
     except (ValueError, AttributeError):
         return False
-    expected = hmac.new(_SESSION_SECRET, struct.pack(">Q", ts),
-                        hashlib.sha256).hexdigest()
+    expected = hmac.new(_SESSION_SECRET, struct.pack(">Q", ts), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return False
     age = time.time() - ts
-    if age < -60:    # future-dated beyond clock-skew tolerance
+    if age < -60:  # future-dated beyond clock-skew tolerance
         return False
     if age > SESSION_DAYS * 86400:
         return False
@@ -1172,23 +1174,27 @@ button:hover{background:#a8e0fc}
 
 async def h_root(request):
     from aiohttp import web
+
     if not _check_auth(request):
         return web.Response(text=_login_page(), content_type="text/html")
     idx = _STATIC_DIR / "index.html"
     if not idx.exists():
-        return web.Response(text="dashboard_static/index.html missing",
-                            status=500, content_type="text/plain")
+        return web.Response(
+            text="dashboard_static/index.html missing", status=500, content_type="text/plain"
+        )
     return web.FileResponse(idx)
 
 
 async def h_login(request):
     from aiohttp import web
+
     ip = _client_ip(request)
     if not _rate_limit_check(ip):
         logger.warning("dashboard /login rate-limited ip=%s", ip)
         return web.Response(
             text="Too many attempts. Try again in 60 seconds.",
-            status=429, content_type="text/plain",
+            status=429,
+            content_type="text/plain",
             headers={"Retry-After": str(_LOGIN_WINDOW_SEC)},
         )
     # Login-CSRF / session-fixation hardening: require Origin (or Referer)
@@ -1200,23 +1206,29 @@ async def h_login(request):
     origin = (request.headers.get("Origin") or "").strip()
     referer = (request.headers.get("Referer") or "").strip()
     if host:
+
         def _host_of(url):
             if not url:
                 return ""
             try:
                 from urllib.parse import urlparse
+
                 return (urlparse(url).netloc or "").lower()
             except Exception:
                 return ""
+
         src_host = _host_of(origin) or _host_of(referer)
         if src_host and src_host != host:
             logger.warning(
                 "dashboard /login cross-origin POST rejected host=%s src=%s ip=%s",
-                host, src_host, ip,
+                host,
+                src_host,
+                ip,
             )
             return web.Response(
                 text="Cross-origin login request rejected.",
-                status=403, content_type="text/plain",
+                status=403,
+                content_type="text/plain",
             )
     data = await request.post()
     # v4.0.8 \u2014 coerce to str before strip(). A multipart POST smuggling
@@ -1226,22 +1238,27 @@ async def h_login(request):
     raw_pw = data.get("password")
     pw = "" if raw_pw is None else str(raw_pw).strip()
     if not pw or not hmac.compare_digest(pw, _PW):
-        return web.Response(text=_login_page("Invalid password"),
-                            content_type="text/html", status=401)
+        return web.Response(
+            text=_login_page("Invalid password"), content_type="text/html", status=401
+        )
     # On success, issue a fresh timestamped token so each login starts a
     # new 7-day window. Cookie is Secure (Railway terminates TLS).
     token = _make_token()
     resp = web.HTTPFound("/")
     resp.set_cookie(
-        SESSION_COOKIE, token,
+        SESSION_COOKIE,
+        token,
         max_age=SESSION_DAYS * 24 * 3600,
-        httponly=True, samesite="Strict", secure=True,
+        httponly=True,
+        samesite="Strict",
+        secure=True,
     )
     return resp
 
 
 async def h_logout(request):
     from aiohttp import web
+
     resp = web.HTTPFound("/")
     resp.del_cookie(SESSION_COOKIE)
     return resp
@@ -1249,6 +1266,7 @@ async def h_logout(request):
 
 async def h_state(request):
     from aiohttp import web
+
     if not _check_auth(request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     # snapshot() may do blocking I/O (fetch_1min_bars). Run in executor.
@@ -1263,23 +1281,21 @@ async def h_state(request):
 # without having to ssh in and grep logs.
 async def h_ws_state(request):
     from aiohttp import web
+
     if not _check_auth(request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     try:
         import trade_genius as _tg
+
         consumer = getattr(_tg, "_ws_consumer", None)
     except Exception as e:
-        return web.json_response(
-            {"available": False, "error": f"{type(e).__name__}: {e}"}
-        )
+        return web.json_response({"available": False, "error": f"{type(e).__name__}: {e}"})
     if consumer is None:
         return web.json_response({"available": False})
     try:
         snap = consumer.stats_snapshot()
     except Exception as e:
-        return web.json_response(
-            {"available": False, "error": f"{type(e).__name__}: {e}"}
-        )
+        return web.json_response({"available": False, "error": f"{type(e).__name__}: {e}"})
     snap["available"] = True
     return web.json_response(snap)
 
@@ -1292,20 +1308,24 @@ async def h_ws_state(request):
 # dropdown so opening the dropdown does not need a full state rebuild.
 async def h_errors(request):
     from aiohttp import web
+
     if not _check_auth(request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     name = (request.match_info.get("executor") or "").strip().lower()
     if name not in ("main", "val", "gene"):
         return web.json_response(
-            {"ok": False, "error": f"unknown executor {name!r}"}, status=400,
+            {"ok": False, "error": f"unknown executor {name!r}"},
+            status=400,
         )
     try:
         import error_state as _es
+
         snap = _es.snapshot(name)
     except Exception as e:
         logger.exception("h_errors: snapshot(%s) failed", name)
         return web.json_response(
-            {"ok": False, "error": f"snapshot failed: {e}"}, status=500,
+            {"ok": False, "error": f"snapshot failed: {e}"},
+            status=500,
         )
     return web.json_response(snap)
 
@@ -1331,14 +1351,18 @@ def _shadow_charts_payload() -> dict:
     carries all 7 configs even when some have no trades yet.
     """
     cfg_names = [n for (n, _label) in _SHADOW_PANEL_ORDER]
-    out: dict[str, dict] = {n: {
-        "equity_curve": [],
-        "daily_pnl": [],
-        "win_rate_rolling": [],
-    } for n in cfg_names}
+    out: dict[str, dict] = {
+        n: {
+            "equity_curve": [],
+            "daily_pnl": [],
+            "win_rate_rolling": [],
+        }
+        for n in cfg_names
+    }
     rows: list[dict] = []
     try:
         import persistence as _p
+
         # Lexical compare on ISO-8601 strings is correct for UTC, so a
         # very early sentinel pulls every closed row.
         all_rows = _p.load_shadow_positions_since("0000-01-01T00:00:00+00:00")
@@ -1354,7 +1378,7 @@ def _shadow_charts_payload() -> dict:
     for n in cfg_names:
         cfg_rows = sorted(
             by_cfg[n],
-            key=lambda r: (r.get("exit_ts_utc") or ""),
+            key=lambda r: r.get("exit_ts_utc") or "",
         )
         cum = 0.0
         equity_curve: list[dict] = []
@@ -1375,14 +1399,17 @@ def _shadow_charts_payload() -> dict:
                 wins_window.pop(0)
             if idx >= 20:
                 wr = sum(wins_window) / 20.0
-                wr_rolling.append({
-                    "trade_idx": idx,
-                    "win_rate": round(wr, 4),
-                })
+                wr_rolling.append(
+                    {
+                        "trade_idx": idx,
+                        "win_rate": round(wr, 4),
+                    }
+                )
         out[n]["equity_curve"] = equity_curve
         out[n]["daily_pnl"] = sorted(daily.values(), key=lambda d: d["date"])
         out[n]["win_rate_rolling"] = wr_rolling
     from datetime import datetime as _dt, timezone as _tz
+
     return {
         "configs": out,
         "as_of": _dt.now(_tz.utc).isoformat().replace("+00:00", "Z"),
@@ -1398,6 +1425,7 @@ async def h_shadow_charts(request):
     only changes when a shadow position closes.
     """
     from aiohttp import web
+
     if not _check_auth(request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     now = time.time()
@@ -1412,7 +1440,8 @@ async def h_shadow_charts(request):
     except Exception as e:
         logger.exception("h_shadow_charts: payload build failed")
         return web.json_response(
-            {"ok": False, "error": f"payload failed: {e}"}, status=500,
+            {"ok": False, "error": f"payload failed: {e}"},
+            status=500,
         )
     with _shadow_charts_cache_lock:
         _shadow_charts_cache["ts"] = now
@@ -1426,6 +1455,7 @@ async def h_shadow_charts(request):
 # requires login.
 async def h_version(request):
     from aiohttp import web
+
     try:
         m = _ssm()
         version = str(getattr(m, "BOT_VERSION", "?"))
@@ -1450,7 +1480,7 @@ async def h_version(request):
 _EXECUTOR_CACHE_TTL = 15.0
 _INDICES_CACHE_TTL = 30.0
 
-_executor_cache: dict = {}        # {(name, mode): (ts, payload)}
+_executor_cache: dict = {}  # {(name, mode): (ts, payload)}
 _executor_cache_lock = threading.Lock()
 _indices_cache: dict = {"ts": 0.0, "payload": None}
 _indices_cache_lock = threading.Lock()
@@ -1540,6 +1570,7 @@ def _executor_snapshot(name: str) -> dict:
 
     try:
         acct = client.get_account()
+
         # v4.0.4 \u2014 include last_equity (equity at prior trading close
         # per Alpaca) so the front-end can compute Day P&L the same way
         # Main does (equity - last_equity). Alpaca exposes this as a
@@ -1581,15 +1612,17 @@ def _executor_snapshot(name: str) -> dict:
                 unreal_pct = float(unreal_pct_raw) * 100.0 if unreal_pct_raw is not None else 0.0
             except (TypeError, ValueError):
                 unreal_pct = 0.0
-            rows.append({
-                "symbol": str(getattr(p, "symbol", "") or ""),
-                "side": side,
-                "qty": abs(qty),
-                "avg_entry": avg_entry,
-                "current_price": cur,
-                "unrealized_pnl": unreal,
-                "unrealized_pnl_pct": unreal_pct,
-            })
+            rows.append(
+                {
+                    "symbol": str(getattr(p, "symbol", "") or ""),
+                    "side": side,
+                    "qty": abs(qty),
+                    "avg_entry": avg_entry,
+                    "current_price": cur,
+                    "unrealized_pnl": unreal,
+                    "unrealized_pnl_pct": unreal_pct,
+                }
+            )
         payload["positions"] = rows
 
         # Today's trades \u2014 filled Alpaca orders dated today in ET,
@@ -1599,6 +1632,7 @@ def _executor_snapshot(name: str) -> dict:
         try:
             from alpaca.trading.requests import GetOrdersRequest
             from alpaca.trading.enums import QueryOrderStatus
+
             m = _ssm()
             # Build the `after` filter from real ET midnight, not UTC
             # midnight of the ET date string. Between 00:00-05:00 ET the
@@ -1608,6 +1642,7 @@ def _executor_snapshot(name: str) -> dict:
             et_tz = None
             try:
                 from datetime import datetime as _dt, timezone as _tz, time as _tm
+
                 now_et = m._now_et()
                 et_tz = now_et.tzinfo
                 et_midnight = _dt.combine(now_et.date(), _tm(0, 0), tzinfo=et_tz)
@@ -1615,6 +1650,7 @@ def _executor_snapshot(name: str) -> dict:
                 today_et = now_et.strftime("%Y-%m-%d")
             except Exception:
                 from datetime import datetime as _dt2, timezone as _tz2
+
                 today_et = _dt2.now(_tz2.utc).strftime("%Y-%m-%d")
                 try:
                     after_dt = _dt2.strptime(today_et, "%Y-%m-%d").replace(tzinfo=_tz2.utc)
@@ -1622,7 +1658,8 @@ def _executor_snapshot(name: str) -> dict:
                     after_dt = None
             try:
                 req = GetOrdersRequest(
-                    status=QueryOrderStatus.CLOSED, limit=500,
+                    status=QueryOrderStatus.CLOSED,
+                    limit=500,
                     **({"after": after_dt} if after_dt else {}),
                 )
                 orders = client.get_orders(filter=req) or []
@@ -1640,7 +1677,11 @@ def _executor_snapshot(name: str) -> dict:
                     # and orders filled 00:00-05:00 ET aren't dropped as
                     # "yesterday".
                     try:
-                        fa_et = filled_at.astimezone(et_tz) if (et_tz is not None and hasattr(filled_at, "astimezone")) else filled_at
+                        fa_et = (
+                            filled_at.astimezone(et_tz)
+                            if (et_tz is not None and hasattr(filled_at, "astimezone"))
+                            else filled_at
+                        )
                         fdate = fa_et.strftime("%Y-%m-%d")
                         ftime = fa_et.strftime("%H:%M")
                         fiso = fa_et.isoformat()
@@ -1657,7 +1698,11 @@ def _executor_snapshot(name: str) -> dict:
                         continue
                     side_raw = getattr(getattr(o, "side", None), "value", "") or ""
                     side_str = str(side_raw).lower()
-                    action = "BUY" if side_str == "buy" else ("SELL" if side_str == "sell" else side_str.upper())
+                    action = (
+                        "BUY"
+                        if side_str == "buy"
+                        else ("SELL" if side_str == "sell" else side_str.upper())
+                    )
                     sym = str(getattr(o, "symbol", "") or "")
                     qty = float(getattr(o, "filled_qty", 0) or getattr(o, "qty", 0) or 0)
                     fap = getattr(o, "filled_avg_price", None)
@@ -1666,20 +1711,22 @@ def _executor_snapshot(name: str) -> dict:
                     except Exception:
                         price = None
                     cost = (qty * price) if (price is not None) else None
-                    trades_out.append({
-                        "action": action,
-                        "ticker": sym,
-                        "symbol": sym,
-                        "side": "LONG",
-                        "shares": qty,
-                        "qty": qty,
-                        "price": price,
-                        "avg_fill_price": price,
-                        "cost": cost,
-                        "time": ftime,
-                        "filled_at": fiso,
-                        "date": fdate,
-                    })
+                    trades_out.append(
+                        {
+                            "action": action,
+                            "ticker": sym,
+                            "symbol": sym,
+                            "side": "LONG",
+                            "shares": qty,
+                            "qty": qty,
+                            "price": price,
+                            "avg_fill_price": price,
+                            "cost": cost,
+                            "time": ftime,
+                            "filled_at": fiso,
+                            "date": fdate,
+                        }
+                    )
                 except Exception:
                     continue
             trades_out.sort(key=lambda t: t.get("filled_at", ""))
@@ -1730,7 +1777,10 @@ def _executor_snapshot(name: str) -> dict:
         payload["error"] = f"alpaca fetch failed: {err_type}: {err_msg}{extra_str}"
         logger.warning(
             "executor %s alpaca fetch failed: %s: %s%s",
-            name, err_type, err_msg, extra_str,
+            name,
+            err_type,
+            err_msg,
+            extra_str,
         )
 
     # v4.11.0 \u2014 attach health-pill snapshot to the per-executor
@@ -1755,6 +1805,7 @@ def _resolve_data_client():
         if key and secret:
             try:
                 from alpaca.data.historical import StockHistoricalDataClient
+
                 return StockHistoricalDataClient(key, secret)
             except Exception as e:
                 logger.warning("data client build failed for %s: %s", name, e)
@@ -1778,9 +1829,9 @@ _YAHOO_TIMEOUT = 6  # seconds per symbol; whole batch budget ~6s parallel
 _YAHOO_INDEX_LABELS = {
     "^GSPC": "S&P 500",
     "^IXIC": "Nasdaq",
-    "^DJI":  "Dow",
-    "^RUT":  "Russell 2K",
-    "^VIX":  "VIX",
+    "^DJI": "Dow",
+    "^RUT": "Russell 2K",
+    "^VIX": "VIX",
 }
 
 # Cash-index \u2192 front-month-future mapping. The futures number rides as
@@ -1789,13 +1840,13 @@ _YAHOO_INDEX_LABELS = {
 _YAHOO_INDEX_FUTURE = {
     "^GSPC": ("ES=F", "ES"),
     "^IXIC": ("NQ=F", "NQ"),
-    "^DJI":  ("YM=F", "YM"),
-    "^RUT":  ("RTY=F", "RTY"),
+    "^DJI": ("YM=F", "YM"),
+    "^RUT": ("RTY=F", "RTY"),
     # ^VIX has no liquid front-month future on this surface (VX=F is on
     # CFE, not the same nearest-month convention) \u2014 deliberately omitted.
 }
 
-_YAHOO_CASH_SYMBOLS    = ["^GSPC", "^IXIC", "^DJI", "^RUT", "^VIX"]
+_YAHOO_CASH_SYMBOLS = ["^GSPC", "^IXIC", "^DJI", "^RUT", "^VIX"]
 _YAHOO_FUTURES_SYMBOLS = ["ES=F", "NQ=F", "YM=F", "RTY=F"]
 
 
@@ -1847,6 +1898,7 @@ def _fetch_yahoo_quotes(symbols: list[str]) -> dict:
     out: dict = {}
     try:
         from concurrent.futures import ThreadPoolExecutor
+
         with ThreadPoolExecutor(max_workers=min(8, len(symbols))) as ex:
             for sym, res in zip(symbols, ex.map(_fetch_yahoo_quote_one, symbols)):
                 if res is not None:
@@ -1873,8 +1925,10 @@ def _classify_session_et() -> str:
     """
     try:
         from datetime import datetime as _dt, timezone as _tz
+
         try:
             from zoneinfo import ZoneInfo
+
             now_et = _dt.now(_tz.utc).astimezone(ZoneInfo("America/New_York"))
         except Exception:
             # Fallback: rough EST offset; AH labelling is cosmetic so this
@@ -1939,15 +1993,17 @@ def _fetch_indices() -> dict:
         # reason="vix_no_equity_feed" so the frontend can distinguish
         # "intentional placeholder" from "real equity with weird quote".
         if sym == "VIX":
-            out["indices"].append({
-                "symbol": "VIX",
-                "last": None,
-                "change": None,
-                "change_pct": None,
-                "available": False,
-                "reason": "vix_no_equity_feed",
-                "ah": False,
-            })
+            out["indices"].append(
+                {
+                    "symbol": "VIX",
+                    "last": None,
+                    "change": None,
+                    "change_pct": None,
+                    "available": False,
+                    "reason": "vix_no_equity_feed",
+                    "ah": False,
+                }
+            )
             continue
 
         snap = snapshots.get(sym)
@@ -2005,16 +2061,18 @@ def _fetch_indices() -> dict:
 
         # Real equity: show the row whenever we got a numeric last trade,
         # even if it is exactly 0 (pre-market quirk on a thin name).
-        out["indices"].append({
-            "symbol": sym,
-            "last": last,
-            "change": change,
-            "change_pct": change_pct,
-            "available": last is not None,
-            "ah": ah_flag,
-            "ah_change": ah_change,
-            "ah_change_pct": ah_change_pct,
-        })
+        out["indices"].append(
+            {
+                "symbol": sym,
+                "last": last,
+                "change": change,
+                "change_pct": change_pct,
+                "available": last is not None,
+                "ah": ah_flag,
+                "ah_change": ah_change,
+                "ah_change_pct": ah_change_pct,
+            }
+        )
 
     # v4.13.0 \u2014 append real cash indices + index futures via Yahoo. The
     # ETF rows above stay as-is so SPY/QQQ/DIA/IWM/VIX still scroll first;
@@ -2075,25 +2133,25 @@ def _fetch_indices() -> dict:
                             "change_pct": f_change_pct,
                         }
 
-                out["indices"].append({
-                    "symbol": cash_sym,
-                    "display_label": _YAHOO_INDEX_LABELS.get(
-                        cash_sym, cash_sym.lstrip("^")
-                    ),
-                    "last": last,
-                    "change": change,
-                    "change_pct": change_pct,
-                    "available": True,
-                    "source": "yahoo",
-                    # AH layer N/A here \u2014 the chart endpoint's
-                    # regularMarketPrice already reflects the most recent
-                    # session close on a weekend, so the futures badge IS
-                    # the after-hours signal for these rows.
-                    "ah": False,
-                    "ah_change": None,
-                    "ah_change_pct": None,
-                    "future": future_payload,
-                })
+                out["indices"].append(
+                    {
+                        "symbol": cash_sym,
+                        "display_label": _YAHOO_INDEX_LABELS.get(cash_sym, cash_sym.lstrip("^")),
+                        "last": last,
+                        "change": change,
+                        "change_pct": change_pct,
+                        "available": True,
+                        "source": "yahoo",
+                        # AH layer N/A here \u2014 the chart endpoint's
+                        # regularMarketPrice already reflects the most recent
+                        # session close on a weekend, so the futures badge IS
+                        # the after-hours signal for these rows.
+                        "ah": False,
+                        "ah_change": None,
+                        "ah_change_pct": None,
+                        "future": future_payload,
+                    }
+                )
     except Exception as e:
         yahoo_ok = False
         yahoo_error = f"yahoo helper raised: {e}"
@@ -2104,6 +2162,7 @@ def _fetch_indices() -> dict:
 
     try:
         from datetime import datetime as _dt, timezone as _tz
+
         out["as_of"] = _dt.now(_tz.utc).isoformat()
     except Exception:
         out["as_of"] = ""
@@ -2113,12 +2172,14 @@ def _fetch_indices() -> dict:
 async def h_executor(request):
     """GET /api/executor/{name} — per-executor tab data, cached 15s."""
     from aiohttp import web
+
     if not _check_auth(request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     name = (request.match_info.get("name") or "").strip().lower()
     if name not in ("val", "gene"):
         return web.json_response(
-            {"enabled": False, "error": f"unknown executor {name!r}"}, status=200,
+            {"enabled": False, "error": f"unknown executor {name!r}"},
+            status=200,
         )
     loop = asyncio.get_running_loop()
     payload = await loop.run_in_executor(None, _executor_snapshot, name)
@@ -2128,6 +2189,7 @@ async def h_executor(request):
 async def h_indices(request):
     """GET /api/indices — SPY/QQQ/DIA/IWM/VIX ticker strip, cached 30s."""
     from aiohttp import web
+
     if not _check_auth(request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     now = time.time()
@@ -2153,6 +2215,7 @@ async def h_trade_log(request):
       portfolio  "paper" | "tp", optional
     """
     from aiohttp import web
+
     if not _check_auth(request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     try:
@@ -2179,20 +2242,25 @@ async def h_trade_log(request):
     rows = await loop.run_in_executor(
         None,
         lambda: m.trade_log_read_tail(
-            limit=limit, since_date=since, portfolio=portfolio,
+            limit=limit,
+            since_date=since,
+            portfolio=portfolio,
         ),
     )
-    return web.json_response({
-        "ok": True,
-        "count": len(rows),
-        "schema_version": getattr(m, "TRADE_LOG_SCHEMA_VERSION", 1),
-        "rows": rows,
-        "last_error": getattr(m, "_trade_log_last_error", None),
-    })
+    return web.json_response(
+        {
+            "ok": True,
+            "count": len(rows),
+            "schema_version": getattr(m, "TRADE_LOG_SCHEMA_VERSION", 1),
+            "rows": rows,
+            "last_error": getattr(m, "_trade_log_last_error", None),
+        }
+    )
 
 
 async def h_stream(request):
     from aiohttp import web
+
     if not _check_auth(request):
         return web.Response(status=401, text="unauthorized")
     resp = web.StreamResponse(
@@ -2235,6 +2303,7 @@ async def h_stream(request):
 # ─────────────────────────────────────────────────────────────
 def _build_app():
     from aiohttp import web
+
     app = web.Application()
     app.router.add_get("/", h_root)
     app.router.add_post("/login", h_login)
@@ -2258,6 +2327,7 @@ def _build_app():
 def _run_forever(port: int):
     import asyncio as _a
     from aiohttp import web
+
     loop = _a.new_event_loop()
     _a.set_event_loop(loop)
     app = _build_app()
@@ -2280,9 +2350,7 @@ def start_in_thread() -> bool:
         logger.info("Dashboard disabled: DASHBOARD_PASSWORD not set")
         return False
     if len(_PW) < 8:
-        logger.warning(
-            "Dashboard disabled: DASHBOARD_PASSWORD must be at least 8 characters"
-        )
+        logger.warning("Dashboard disabled: DASHBOARD_PASSWORD must be at least 8 characters")
         return False
     try:
         port = int(os.getenv("DASHBOARD_PORT", "8080"))
@@ -2299,8 +2367,7 @@ def start_in_thread() -> bool:
     # as they did pre-3.4.29 for this boot only.
     _SESSION_SECRET = _load_or_create_session_secret()
 
-    t = threading.Thread(target=_run_forever, args=(port,),
-                         name="dashboard-http", daemon=True)
+    t = threading.Thread(target=_run_forever, args=(port,), name="dashboard-http", daemon=True)
     t.start()
     logger.info("Dashboard thread started (port=%d)", port)
     return True

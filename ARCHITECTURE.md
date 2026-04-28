@@ -424,7 +424,7 @@ state machine is mid-trade.
 |------|-------|----------------|
 | C-R4 | Daily-loss-limit (incl. v4.7.0 short-side cap) | `_check_daily_loss_limit()` flips `_trading_halted=True` AND calls `v5_lock_all_tracks("daily_loss_limit")` so every track moves to `LOCKED_FOR_DAY`. |
 | C-R5 | EOD force-close at 15:55 ET             | `eod_close()` walks `positions` + `short_positions` flattening every open paper position, then calls `v5_lock_all_tracks("eod")` so the next session starts fresh rather than resuming. |
-| C-R6 | Sovereign Regime Shield (Eye of the Tiger) | `_sovereign_regime_eject()` — preserved unchanged. When active, all gates are forced false and any open position is flattened. |
+| C-R6 | Sovereign Regime Shield (Eye of the Tiger) | **Retired in v5.9.1.** The PDC-based dual-index eject (`_sovereign_regime_eject()` plus `LORDS_LEFT` / `BULL_VACUUM` exit reasons) is gone. v5.9.0 already moved the entry-side index regime check to the 5m EMA compass (QQQ Regime Shield); v5.9.1 retired the matching exit-side rule so entry and exit are consistent. Per-ticker RED_CANDLE / POLARITY_SHIFT exits remain. |
 | C-R7 | 9-ticker spike universe + SPY/QQQ pinned    | `TRADE_TICKERS` is the 9-name spike list (excludes SPY/QQQ). `check_breakout` reads SPY/QQQ as polarity inputs only. |
 
 `DAILY_LOSS_LIMIT` (default −$500, env-tunable). Once today's realized
@@ -456,8 +456,9 @@ Event schema:
     "ticker":       "AAPL",        # absent on EOD_CLOSE_ALL
     "price":        175.42,        # main's reference price
     "reason":       "BREAKOUT" | "STOP" | "TRAIL" | "RED_CANDLE" |
-                    "LORDS_LEFT" | "BULL_VACUUM" | "POLARITY_SHIFT" |
-                    "EOD" | "HARD_EJECT_TIGER" | ... ,
+                    "POLARITY_SHIFT" | "EOD" | "HARD_EJECT_TIGER" | ... ,
+                    # LORDS_LEFT / BULL_VACUUM retired in v5.9.1
+                    # (PDC-based Sovereign Regime Shield removed).
     "timestamp_utc":"2026-04-24T13:45:12Z",
     "main_shares":  57,            # audit: shares the paper book traded
 }

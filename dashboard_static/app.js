@@ -594,27 +594,12 @@
       </div>`;
     };
 
-    // Eject tiles.
-    const ejectTile = (label, fired, disabled) => {
-      let cls = "srs-eject-value dis";
-      let txt = "\u25CB disarmed";
-      if (disabled) { cls = "srs-eject-value na"; txt = "\u25CB n/a"; }
-      else if (fired) { cls = "srs-eject-value armed"; txt = "\u25CF ARMED"; }
-      return `<div class="srs-eject">
-        <span class="srs-eject-label">${escapeHtml(label)}</span>
-        <span class="${cls}">${escapeHtml(txt)}</span>
-      </div>`;
-    };
-
-    const dataMissing = (status === "NO_PDC" || status === "AWAITING");
+    // v5.9.1: PDC eject rule retired \u2014 eject tiles removed. SPY/QQQ vs PDC
+    // pills below are cosmetic display only.
 
     body.innerHTML = `<div class="srs">
       ${idxRow("SPY", srs.spy_price, srs.spy_pdc, srs.spy_delta_pct, srs.spy_above_pdc)}
       ${idxRow("QQQ", srs.qqq_price, srs.qqq_pdc, srs.qqq_delta_pct, srs.qqq_above_pdc)}
-      <div class="srs-verdict">
-        ${ejectTile("Long eject",  !!srs.long_eject,  dataMissing)}
-        ${ejectTile("Short eject", !!srs.short_eject, dataMissing)}
-      </div>
       <div class="srs-reason">${escapeHtml(srs.reason || "")}</div>
     </div>`;
   }
@@ -1784,24 +1769,10 @@
         <span class="${deltaCls}">${esc(deltaTxt)}</span>
       </div>`;
     };
-    const ejectTile = (label, fired, disabled) => {
-      let cls = "srs-eject-value dis";
-      let txt = "\u25CB disarmed";
-      if (disabled) { cls = "srs-eject-value na"; txt = "\u25CB n/a"; }
-      else if (fired) { cls = "srs-eject-value armed"; txt = "\u25CF ARMED"; }
-      return `<div class="srs-eject">
-        <span class="srs-eject-label">${esc(label)}</span>
-        <span class="${cls}">${esc(txt)}</span>
-      </div>`;
-    };
-    const dataMissing = (status === "NO_PDC" || status === "AWAITING");
+    // v5.9.1: PDC eject rule retired \u2014 eject tiles removed.
     body.innerHTML = `<div class="srs">
       ${idxRow("SPY", srs.spy_price, srs.spy_pdc, srs.spy_delta_pct)}
       ${idxRow("QQQ", srs.qqq_price, srs.qqq_pdc, srs.qqq_delta_pct)}
-      <div class="srs-verdict">
-        ${ejectTile("Long eject",  !!srs.long_eject,  dataMissing)}
-        ${ejectTile("Short eject", !!srs.short_eject, dataMissing)}
-      </div>
       <div class="srs-reason">${esc(srs.reason || "")}</div>
     </div>`;
   }

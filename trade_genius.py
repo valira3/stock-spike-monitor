@@ -77,7 +77,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.9.0"
+BOT_VERSION = "5.9.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -912,17 +912,17 @@ REASON_LABELS = {
     "STOP": "\U0001f6d1 Hard Stop",
     "TRAIL": "\U0001f3af Trail Stop",
     "RED_CANDLE": "\U0001f56f Red Candle (lost daily polarity)",
-    # Long global eject — v3.4.28 Sovereign Regime Shield: SPY AND QQQ
-    # 1m finalized close BELOW their PDC. Older labels retained so rows
-    # in the persistent trade log from prior versions still render.
-    "LORDS_LEFT":      "\U0001f451 Lords Left (SPY+QQQ 1m < PDC)",
-    "LORDS_LEFT[1m]":  "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",   # legacy v2.9.8
-    "LORDS_LEFT[5m]":  "\U0001f451 Lords Left (SPY+QQQ 5m < AVWAP)",  # legacy v3.2.0–v3.4.27
+    # Long global eject \u2014 retired in v5.9.1 (Sovereign Regime Shield removed).
+    # Labels retained so rows in the persistent trade log from prior versions
+    # still render their human-readable reason.
+    "LORDS_LEFT":      "\U0001f451 Lords Left (SPY+QQQ 1m < PDC)",   # legacy v3.4.28–v5.9.0
+    "LORDS_LEFT[1m]":  "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",    # legacy v2.9.8
+    "LORDS_LEFT[5m]":  "\U0001f451 Lords Left (SPY+QQQ 5m < AVWAP)", # legacy v3.2.0–v3.4.27
     "POLARITY_SHIFT": "\U0001f504 Polarity Shift (price > PDC)",
-    # Short global eject — v3.4.28 Sovereign Regime Shield mirror.
-    "BULL_VACUUM":     "\U0001f300 Bull Vacuum (SPY+QQQ 1m > PDC)",
-    "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",  # legacy v2.9.8
-    "BULL_VACUUM[5m]": "\U0001f300 Bull Vacuum (SPY+QQQ 5m > AVWAP)",  # legacy v3.2.0–v3.4.27
+    # Short global eject \u2014 retired in v5.9.1 (mirror of LORDS_LEFT).
+    "BULL_VACUUM":     "\U0001f300 Bull Vacuum (SPY+QQQ 1m > PDC)",   # legacy v3.4.28–v5.9.0
+    "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",    # legacy v2.9.8
+    "BULL_VACUUM[5m]": "\U0001f300 Bull Vacuum (SPY+QQQ 5m > AVWAP)", # legacy v3.2.0–v3.4.27
     "EOD": "\U0001f514 End of Day",
 }
 
@@ -7710,97 +7710,32 @@ def collect_or():
 # The AVWAP entry gates (check_entry, check_short_entry), the
 # regime-change alert, the breadth observer (_classify_breadth),
 # and the v3.2.0 dual-index 5-min AVWAP ejector (_dual_index_eject)
-# were all superseded by the v3.4.28 Sovereign Regime Shield, which
-# anchors on PDC via _sovereign_regime_eject. One anchor across
-# entries, alerts, breadth, and ejects.
+# were all superseded by the v3.4.28 Sovereign Regime Shield (a
+# PDC-based eject) at the time. The Sovereign Regime Shield was
+# itself retired in v5.9.1 (see block below); the entry-side
+# index regime check now lives in the v5.9.0 5m EMA compass.
 #
 # Previously at this site: update_avwap(), _last_finalized_5min_close(),
-# _dual_index_eject(). All callers migrated to pdc.get() + the 1-minute
-# finalized-close helper below. Removed in v3.4.34.
+# _dual_index_eject(). Removed in v3.4.34.
 # ============================================================
 
 
 # ============================================================
-# v3.4.28 — SOVEREIGN REGIME SHIELD (PDC-based eject)
+# v5.9.1 \u2014 Sovereign Regime Shield (PDC eject) REMOVED
 # ============================================================
-# Why: AVWAP is a rolling mean — it drifts intraday, so an AVWAP-
-# cross eject can fire on slow sideways tape ("regime flim-flam")
-# even though the true structural level (yesterday's close) is
-# unchanged. PDC is a single static number per index per day, so
-# a PDC cross is a hard structural break rather than a drift.
+# v5.9.0 swapped the entry-side index regime check from AVWAP/PDC
+# to a 5-minute EMA compass (QQQ Regime Shield). v5.9.1 retires
+# the matching exit-side rule so entry and exit are consistent.
 #
-# Rule (same for both sides, mirrored):
+# Removed in v5.9.1:
+#   - _sovereign_regime_eject(side)        : the dual-index PDC eject
+#   - _last_finalized_1min_close(ticker)   : its only consumer/helper
+#   - lords_left / LORDS_LEFT exit reason  : long-side trigger
+#   - bull_vacuum / BULL_VACUUM exit reason: short-side trigger
 #
-#   Long  eject iff  SPY_1m_close  < SPY_PDC  AND QQQ_1m_close  < QQQ_PDC
-#   Short eject iff  SPY_1m_close  > SPY_PDC  AND QQQ_1m_close  > QQQ_PDC
-#
-# Hysteresis (spec): divergence — one index above PDC, one below —
-# means regime is UNCHANGED and no eject fires. We achieve this
-# trivially by requiring the AND to hold on both closes.
-#
-# Bar cadence: previous FULLY-CLOSED 1-minute bar (the one ending
-# at the most recent minute boundary), NOT the in-progress bar.
-# Matches the spec: "wait for the 1-minute bar to finalize."
-#
-# Fail-closed: any missing input (no bars, no PDC, too few closes)
-# → return False (do NOT eject). Locked design principle: fail-
-# closed means stay in the trade; adaptive logic never loosens
-# baseline, only tightens.
-def _last_finalized_1min_close(ticker):
-    """Close of the most recent FINALIZED 1-minute bar.
-
-    fetch_1min_bars() returns the entire intraday series including
-    the in-progress minute as the last element. We return the
-    second-to-last close so the caller always sees a bar that is
-    truly sealed (no more ticks can modify it).
-
-    Returns None on insufficient data.
-    """
-    bars = fetch_1min_bars(ticker)
-    if not bars:
-        return None
-    closes = [c for c in (bars.get("closes") or []) if c is not None]
-    if len(closes) < 2:
-        return None
-    return closes[-2]
-
-
-def _sovereign_regime_eject(side):
-    """Dual-index 1m-close vs PDC eject gate with hysteresis.
-
-    Args:
-        side: 'long'  \u2192 True iff BOTH SPY_1m_close < SPY_PDC
-                              AND QQQ_1m_close < QQQ_PDC
-              'short' \u2192 True iff BOTH SPY_1m_close > SPY_PDC
-                              AND QQQ_1m_close > QQQ_PDC
-
-    Returns False (no eject) on ANY missing/ambiguous input,
-    including the divergence case (SPY and QQQ on opposite sides
-    of their respective PDCs). Both behaviors are intentional and
-    enforce the hysteresis buffer from the spec.
-    """
-    if side not in ("long", "short"):
-        return False
-
-    spy_pdc = pdc.get("SPY")
-    qqq_pdc = pdc.get("QQQ")
-    if not spy_pdc or not qqq_pdc or spy_pdc <= 0 or qqq_pdc <= 0:
-        # PDC not yet collected (pre-open cycle, or data fetch
-        # failed). Stay-in-trade is the only safe default.
-        return False
-
-    spy_close = _last_finalized_1min_close("SPY")
-    qqq_close = _last_finalized_1min_close("QQQ")
-    if spy_close is None or qqq_close is None:
-        return False  # <2 finalized 1-min bars yet
-
-    if side == "long":
-        # Eject longs only when BOTH indices close below PDC.
-        # The AND naturally enforces the divergence hysteresis.
-        return (spy_close < spy_pdc) and (qqq_close < qqq_pdc)
-    else:
-        # Mirror for shorts: BOTH above PDC.
-        return (spy_close > spy_pdc) and (qqq_close > qqq_pdc)
+# REASON_LABELS for LORDS_LEFT/BULL_VACUUM kept so historical trade
+# rows in the persistent log still render their human-readable label.
+# ============================================================
 
 
 # ============================================================
@@ -8755,13 +8690,9 @@ def manage_positions():
     # already tight.
     retighten_all_stops(force_exit=True, fetch_prices=True)
 
-    # ── Sovereign Regime Shield (v3.4.28) ────────────────────────────────────
-    # Exit all longs ONLY when BOTH SPY and QQQ have a finalized 1-min close
-    # BELOW their respective Prior Day Close (PDC). PDC is one static price
-    # per day — a cross of it is a structural break, not intraday drift.
-    # AND-logic enforces divergence hysteresis: if only one index is below
-    # PDC (or data is missing), regime is UNCHANGED. See v3.4.28 CHANGELOG.
-    lords_left = _sovereign_regime_eject("long")
+    # v5.9.1: Sovereign Regime Shield (PDC eject) retired. Entry-side
+    # index regime now lives in the 5m EMA compass (v5.9.0); the exit
+    # side intentionally has no global index eject.
 
     for ticker in list(positions.keys()):
         bars = fetch_1min_bars(ticker)
@@ -8784,11 +8715,6 @@ def manage_positions():
             # though no profit was locked. Derive from stop level.
             reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
             tickers_to_close.append((ticker, current_price, reason))
-            continue
-
-        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close < PDC ─────────────
-        if lords_left:
-            tickers_to_close.append((ticker, current_price, "LORDS_LEFT"))
             continue
 
         # ── Eye of the Tiger: "The Red Candle" — lost Daily Polarity ─────────
@@ -8884,12 +8810,8 @@ def manage_short_positions():
     # book.
     retighten_all_stops(force_exit=True, fetch_prices=True)
 
-    # ── Sovereign Regime Shield (v3.4.28) ────────────────────────────────────
-    # Exit all shorts ONLY when BOTH SPY and QQQ have a finalized 1-min close
-    # ABOVE their respective Prior Day Close (PDC). Mirror of the long-side
-    # Sovereign Regime Shield — a PDC cross is structural, not drift. AND-
-    # logic suppresses ejects on SPY/QQQ divergence. See v3.4.28 CHANGELOG.
-    bull_vacuum = _sovereign_regime_eject("short")
+    # v5.9.1: Sovereign Regime Shield (PDC eject) retired on the short
+    # side too. Per-ticker POLARITY_SHIFT below remains.
 
     for ticker in list(short_positions.keys()):
         pos = short_positions[ticker]
@@ -8938,10 +8860,6 @@ def manage_short_positions():
         if current_price >= stop:
             exit_reason = "TRAIL" if trail_active else "STOP"
 
-
-        # ── Sovereign Regime Shield: BOTH SPY+QQQ 1m_close > PDC ─────────────
-        if not exit_reason and bull_vacuum:
-            exit_reason = "BULL_VACUUM"
 
         # ── Eye of the Tiger: "The Polarity Shift" — Price > PDC ─────────────
         # Uses completed 1m bar close (per-ticker; not part of the index shield)
@@ -9710,11 +9628,11 @@ def scan_loop():
                 len(TRADE_TICKERS), n_pos, n_short, _current_mode)
 
     # ── Regime change alert ───────────────────────────────────────────────
-    # v3.4.34: anchor swapped from AVWAP → PDC to match the
-    # v3.4.28 Sovereign Regime Shield ejector. One anchor across
-    # the whole system; no more divergent alerts vs. real ejects.
-    # Fail-closed on missing PDC: no alert fires if either index
-    # PDC is unseeded (same semantics as _sovereign_regime_eject).
+    # PDC-anchored alert: fires on dual-index 1m_close vs PDC flips.
+    # Fail-closed on missing PDC: no alert fires if either index PDC
+    # is unseeded. (The matching exit-side eject was retired in v5.9.1
+    # in favor of the v5.9.0 5m EMA compass on the entry side; this
+    # alert is observational only.)
     global _regime_bullish
     spy_pdc_r = pdc.get("SPY")
     qqq_pdc_r = pdc.get("QQQ")
