@@ -26,6 +26,15 @@ COPY error_state.py .
 COPY tiger_buffalo_v5.py .
 # v5.9.0 — QQQ Regime Shield (5m EMA3/EMA9 cross) module.
 COPY qqq_regime.py .
+# v5.10.0 — Eye-of-the-Tiger pure-function evaluators + volume baseline.
+# v5.10.1 — Live-hot-path integration glue (orchestrator).
+# Missing these COPY lines is what crash-looped the v5.10.1 Railway
+# deploy (ModuleNotFoundError on `import eye_of_tiger`); v5.10.3 wires
+# them in. Verified by tests/test_startup_smoke.py and the
+# scripts/preflight.sh dockerfile-mirror check.
+COPY eye_of_tiger.py .
+COPY volume_bucket.py .
+COPY v5_10_1_integration.py .
 # v5.1.0 — Forensic Volume Filter module (imported by trade_genius.py).
 COPY volume_profile.py .
 # v5.1.2 — Forensic capture: indicator math + 1m bar JSONL archive

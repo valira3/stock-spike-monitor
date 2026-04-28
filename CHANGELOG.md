@@ -6,7 +6,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ## v5.10.3 — 2026-04-28 — Re-ship Eye-of-the-Tiger integration with boot-hang fix + startup smoke test
 
-PLACEHOLDER — final notes appended at end of branch work.
+**Re-ships PR #189 (the v5.10.1 live-hot-path integration of the Eye-of-the-Tiger evaluators) on top of v5.10.2's revert, with the actual root cause of the Railway boot regression fixed and a startup smoke test added so it cannot happen again.**
+
+**Root cause.** The "indefinite ReadTimeout on `/api/version`" was not a hang at all — Railway's pre-revert logs (deployment `bf1f917e-ce11-4a1a-bd3a-2c142a9adb25`) show the container crash-looping at module-import time:
+
+```
+File "/app/trade_genius.py", line 46, in <module>
+    import eye_of_tiger as eot  # noqa: E402
+ModuleNotFoundError: No module named 'eye_of_tiger'
+```
+
+The `Dockerfile` uses explicit per-file `COPY` directives. v5.10.0 added `eye_of_tiger.py` and `volume_bucket.py` to the repo but never imported them at module load (only the test suite touched them), so v5.10.0 booted fine. v5.10.1 added `import eye_of_tiger as eot` and `import v5_10_1_integration as eot_glue` at the top of `trade_genius.py` but did NOT update `Dockerfile`'s `COPY` block, so the production image was missing all three modules. The container's `restartPolicyType: ON_FAILURE` (max 5 retries) cycled through five immediate ImportError exits and then idled, which is what the post-deploy poller saw as `502` followed by `ReadTimeout` on `/api/version`. Local CI / preflight passed because every `.py` file is on disk locally regardless of what the Dockerfile copies.
+
+**The fix.** `Dockerfile` now contains:
+
+```
+COPY eye_of_tiger.py .
+COPY volume_bucket.py .
+COPY v5_10_1_integration.py .
+```
+
+That's it. The `_QQQ_REGIME` initial-state, `/data/bars` archive read, and `fetch_1min_bars` first-call audit lines from the v5.10.2 CHANGELOG were red herrings — those code paths are exception-guarded and tolerant of unseeded state. The container never got far enough to reach any of them.
+
+**Startup smoke test.** `tests/test_startup_smoke.py` wires four guards into `pytest`, each runs in < 1s:
+
+1. `test_trade_genius_imports_clean_with_smoke_env` \u2014 imports `trade_genius` with `SSM_SMOKE_TEST=1` and asserts `BOT_VERSION` is set. A missing import surfaces here as `ImportError`.
+2. `test_dockerfile_copies_every_top_level_python_module` \u2014 strict structural guard. Parses the AST of `trade_genius.py` for every `import X` / `from X import ...` whose target is a sibling `.py` file, and the `COPY *.py` directives in `Dockerfile`, and fails if any imported module is missing a `COPY`. This is the regression check that would have caught v5.10.1.
+3. `test_eye_of_tiger_modules_are_present_in_dockerfile` \u2014 belt-and-suspenders explicit assertion for the three v5.10.1 modules.
+4. `test_scan_loop_no_blocking_at_first_call_with_empty_state` \u2014 calls every v5.10.1 orchestrator entry point with `None`/empty state (unseeded `_QQQ_REGIME`, no `/data/bars`, no streamed bars) and asserts no exception is raised.
+
+Verified by stashing the `Dockerfile` fix and re-running pytest: tests 2 and 3 fail loudly with the specific module name. With the fix applied: 4/4 pass.
+
+`scripts/preflight.sh` now invokes the smoke test as its dedicated step `[2/6]` so a regression in this contract surfaces with a clear PASS/FAIL label.
+
+**Algorithm content.** Identical to the v5.10.1 PR #189 cherry-pick. Section I/II/III gates in `check_breakout`, Section IV overrides at the top of `manage_positions`/`manage_short_positions`, `_tiger_hard_eject_check` retired, 15-min cooldown removed, per-ticker $50 loss cap removed. 102/102 unit tests passing. See the v5.10.1 entry below for full surface details.
+
+**References.** PR #189 (original integration; reverted), PR #190 (revert), PR #191 (this).
+
+---
 
 ---
 
