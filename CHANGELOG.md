@@ -15,6 +15,7 @@ Engine extraction PR 1: synthetic harness + engine/bars.py. No behavior change.
 - `BOT_VERSION` bumped to 5.11.0 in `bot_version.py` and the mirrored constant in `trade_genius.py`. Subsequent PRs in this release will not bump again until v5.11.1.
 - Note: spec called for 2026-04-27 archived bars but only 2026-04-28 is present in the sandbox; the 28th carries a small mid-session gap that is irrelevant to byte-equal validation since the harness compares the same input against itself across the move.
 - Removed `_MAIN_HISTORY_TAIL` from `trade_genius.py` (~801 lines). The `/version` Telegram command now shows only the current release's note. Per-release history lives in this CHANGELOG.
+- Engine extraction PR 2: pre-market QQQ regime + DI + OR seeders moved to `engine/seeders.py`. No behavior change.
 
 ---
 
