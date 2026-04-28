@@ -77,7 +77,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.9.3"
+BOT_VERSION = "5.9.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -9438,6 +9438,24 @@ def _tiger_hard_eject_check():
     """
     # -- Long positions (paper) --
     for ticker in list(positions):
+        # v5.9.4 \u2014 Titan bypass. Titans (Ten Titans universe) exit only via
+        # the v5.7.1 Bison/Buffalo FSM (forensic_stop / per_trade_brake /
+        # be_stop / ema_trail / velocity_fuse) plus the universal structural
+        # stop, trail stop, EOD, and daily-loss-limit. They must not be
+        # ejected by the legacy DI<25 hard-eject. v5.7.1 specced this gate
+        # but never wired it into the live scan loop \u2014 MSFT and TSLA were
+        # killed three times each on 2026-04-28 morning by HARD_EJECT_TIGER
+        # before this hotfix landed. NOTE: until v5.10.0 wires the FSM
+        # itself, the FSM stops above (forensic_stop / velocity_fuse /
+        # per_trade_brake / be_stop / ema_trail) are still dead code, so
+        # Titans exit ONLY via structural stop / trail stop / EOD / DLL
+        # after this guard fires.
+        if _v570_is_titan(ticker) and ENABLE_BISON_BUFFALO_EXITS:
+            logger.info(
+                "[TITAN-BYPASS] HARD_EJECT_TIGER skipped for %s long (Titan; FSM authority)",
+                ticker,
+            )
+            continue
         di_plus, _di_m = tiger_di(ticker)
         di_weak = (di_plus is not None
                    and di_plus < TIGER_V2_DI_THRESHOLD)
@@ -9464,6 +9482,13 @@ def _tiger_hard_eject_check():
 
     # -- Short positions (paper) --
     for ticker in list(short_positions):
+        # v5.9.4 \u2014 Titan bypass (mirror of the long-side guard above).
+        if _v570_is_titan(ticker) and ENABLE_BISON_BUFFALO_EXITS:
+            logger.info(
+                "[TITAN-BYPASS] HARD_EJECT_TIGER skipped for %s short (Titan; FSM authority)",
+                ticker,
+            )
+            continue
         _di_p, di_minus = tiger_di(ticker)
         di_weak = (di_minus is not None
                    and di_minus < TIGER_V2_DI_THRESHOLD)
