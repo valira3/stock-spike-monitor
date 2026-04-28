@@ -77,7 +77,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.9.1"
+BOT_VERSION = "5.9.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -9437,45 +9437,27 @@ def _build_test_progress(results):
 # v3.4.47 — HARD EJECT (Eye of the Tiger 2.0)
 # ============================================================
 def _tiger_hard_eject_check():
-    """Hard Eject: close any open position whose DI or index
-    regime has flipped against it.
+    """Hard Eject: close any open position whose DI has decayed
+    against it.
 
     Called once per scan cycle BEFORE the new-entry scan.
-    Longs: eject if DI+ < threshold OR both indices < PDC.
-    Shorts: eject if DI- < threshold OR both indices > PDC.
+    Longs: eject if DI+ < threshold.
+    Shorts: eject if DI- < threshold.
     Applies to paper (positions, short_positions).
     """
-    # Index regime flags (reuse cached bars from this cycle)
-    spy_bars = fetch_1min_bars("SPY")
-    qqq_bars = fetch_1min_bars("QQQ")
-    spy_pdc_v = pdc.get("SPY")
-    qqq_pdc_v = pdc.get("QQQ")
-
-    index_flip_down = False  # both indices below PDC -> eject longs
-    index_flip_up   = False  # both indices above PDC -> eject shorts
-    if (spy_bars and qqq_bars
-            and spy_pdc_v and qqq_pdc_v
-            and spy_pdc_v > 0 and qqq_pdc_v > 0):
-        spy_cur = spy_bars["current_price"]
-        qqq_cur = qqq_bars["current_price"]
-        index_flip_down = (spy_cur < spy_pdc_v
-                           and qqq_cur < qqq_pdc_v)
-        index_flip_up   = (spy_cur > spy_pdc_v
-                           and qqq_cur > qqq_pdc_v)
-
     # -- Long positions (paper) --
     for ticker in list(positions):
         di_plus, _di_m = tiger_di(ticker)
         di_weak = (di_plus is not None
                    and di_plus < TIGER_V2_DI_THRESHOLD)
-        if di_weak or index_flip_down:
+        if di_weak:
             price = positions[ticker].get("entry_price", 0)
             bars_t = fetch_1min_bars(ticker)
             if bars_t:
                 price = bars_t["current_price"] or price
             logger.info(
-                "HARD_EJECT_TIGER long %s di+=%s idx_flip=%s",
-                ticker, di_plus, index_flip_down,
+                "HARD_EJECT_TIGER long %s di+=%s",
+                ticker, di_plus,
             )
             close_position(ticker, price,
                            reason="HARD_EJECT_TIGER")
@@ -9494,14 +9476,14 @@ def _tiger_hard_eject_check():
         _di_p, di_minus = tiger_di(ticker)
         di_weak = (di_minus is not None
                    and di_minus < TIGER_V2_DI_THRESHOLD)
-        if di_weak or index_flip_up:
+        if di_weak:
             price = short_positions[ticker].get("entry_price", 0)
             bars_t = fetch_1min_bars(ticker)
             if bars_t:
                 price = bars_t["current_price"] or price
             logger.info(
-                "HARD_EJECT_TIGER short %s di-=%s idx_flip=%s",
-                ticker, di_minus, index_flip_up,
+                "HARD_EJECT_TIGER short %s di-=%s",
+                ticker, di_minus,
             )
             close_short_position(ticker, price, reason="HARD_EJECT_TIGER")
             # v5.1.9 \u2014 arm REHUNT_VOL_CONFIRM watch on this ticker.
@@ -9716,8 +9698,8 @@ def scan_loop():
             detail=f"{type(e).__name__}: {str(e)[:200]}",
         )
 
-    # v3.4.47 — Hard Eject: close positions whose DI or regime
-    # has flipped against them (runs before new-entry scan).
+    # v3.4.47 \u2014 Hard Eject: close positions whose DI has decayed
+    # against them (runs before new-entry scan).
     try:
         _tiger_hard_eject_check()
     except Exception as e:
