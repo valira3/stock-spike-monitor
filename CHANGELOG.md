@@ -4,6 +4,45 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.10.0 — 2026-04-28 — Project Eye of the Tiger (full algorithm rewrite, with volume bucket)
+
+**Full algorithmic rewrite per Gene Stepanov's authoritative spec (revised 2026-04-28 12:38 PM CDT, third revision today).** No feature flag. v5.6.0 → v5.9.4 entry/exit logic is replaced.
+
+Canonical truth source: [`specs/canonical/eye_of_the_tiger_gene_2026-04-28c.md`](specs/canonical/eye_of_the_tiger_gene_2026-04-28c.md). Implementation spec: [`specs/v5_10_0_eye_of_the_tiger.md`](specs/v5_10_0_eye_of_the_tiger.md).
+
+**The three new pieces in revision c (vs the 28b planning).**
+
+1. **Institutional Oomph (Volume Bucket) — Section II.1, Entry-1 gate.** Current 1m volume of the target ticker must be ≥ 100% of its 55-trading-day rolling average for that minute-of-day (HH:MM ET, RTH only). Data source: `/data/bars` archive that v5.5.x's `bar_archive.py` writes. Baseline is computed on bot startup, cached in memory, and refreshed once per session at 9:29 ET. **Cold-start (< 55 days history): pass-through with rate-limited warning log** per Val 28c decision — strict blocking would prevent virtually all entries until ~July 2026 given the recent bar-archive wiring. Volume Bucket is explicitly an Entry-1-only gate per Gene's note ("Entry 2 does NOT require... the volume bucket fill").
+
+2. **Boundary Hold (Entry-1 gate).** Two consecutive closed 1m candles strictly outside the 5m Opening Range boundary (close > OR_High for LONG, close < OR_Low for SHORT). OR window is [9:30:00 ET, 9:34:59.999 ET]. Earliest possible Entry-1 satisfaction is 9:36:00 ET. Stateless: re-evaluated against the most recent two closed 1m candles on every 1m close; a single close at/inside the boundary breaks the hold and the next two consecutive outside closes re-arm it. Also Entry-1-only.
+
+3. **Entry 2 requires FRESH NHOD/NLOD.** Entry 2 fires when 1m DI+/-(15) **crosses** > 30 (edge transition from `<= 30` on prior tick to `> 30` on current tick) **AND** price prints a fresh session-extreme strictly after `entry_1_ts` and beyond the high-water-mark recorded at Entry 1. Entry 2 fires at most once per Entry-1 lifecycle. Section II permits are NOT re-checked at Entry 2 (per Gene). Conservative interpretation: Section I (Global Permit) must still be OPEN at the moment of Entry 2 trigger to authorize the new add — flagged as an open question for Val/Gene.
+
+**Six-section structure.**
+
+- **I. Global Permit (Index Shield).** QQQ 5m close vs 9-EMA + QQQ current price vs 9:30 AVWAP. Both must align with the side. Mid-trade flip is observational only — does NOT force exit (Section V owns exit authority).
+- **II. Ticker-Specific Permits (Entry-1 gates).** Volume Bucket + Boundary Hold (both above).
+- **III. Entry & Sizing (Scaled 50/50).** Entry 1 (50%): Section I OPEN + Section II both gates + 5m DI(15) > 25 + 1m DI(15) > 25 + price printing NHOD/NLOD on the same tick. Entry 2 (additional 50%): the crossing-edge + fresh-extreme rule above.
+- **IV. High-Priority Overrides.** Sovereign Brake (per-trade -$500, immediate market exit) + Velocity Fuse (Flash Crash Protection: > 1.0% adverse move from current 1m candle open, strict). Both fire regardless of phase.
+- **V. Stop-Loss Hierarchy (Triple-Lock).** Phase A — Maffei 1-2-3 Recursive Gate: fires when current 1m candle closes back **INSIDE** the OR (Gene's wording — corrects the v5.9.0 spec drift). Audit: LONG exits if low < prior low; SHORT exits if high > prior high. Phase B step 1 — Layered Shield (on Entry 2): first 50% gets BE stop at Entry 1 price; Maffei deactivates for first 50%. Phase B step 2 — Two-Bar Lock (after 2 consecutive favorable 5m closes post-Entry-2): entire 100% stop = avg_entry. Phase C — The Leash: 5m close on the wrong side of the 5m 9-EMA exits 100% of position.
+- **VI. Systematic Machine Rules.** Unlimited Hunting (no per-session entry cap; bot strikes every time NHOD/NLOD + DMI + Section I + Section II align), Daily Circuit Breaker at -$1,500 cumulative realized loss (raised from v5.9.x's -$500), EOD Flush at 15:59:50 ET (was 15:55).
+
+**`exit_reason` enum.** `sovereign_brake`, `velocity_fuse`, `forensic_stop`, `be_stop`, `ema_trail`, `daily_circuit_breaker`, `eod`, `manual`. All legacy strings dropped.
+
+**Locked defaults (Section IX, no feature flag).** See `eye_of_tiger.py` constants. `DAILY_LOSS_LIMIT_DOLLARS` raised from -500.0 to -1500.0. EOD scheduler tick moved from 15:55 to 15:59. `_tiger_hard_eject_check` call site retired (function is dead code, kept for grep audit).
+
+**Cold-start caveat for backtests.** The `/data/bars` archive started accumulating in v5.5.x and currently has only ~5 trading days of history. For any backtest run before mid-July 2026, the Volume Bucket gate will be in cold-start (PASS-THROUGH) for nearly every (ticker, day) cell and will not materially constrain entries. Reviewers should read backtest results with this in mind: the gate is wired and tested, but its enforcement teeth come in once the archive ramps. Transition from pass-through to enforced is automatic; no code change needed.
+
+**New modules.** `eye_of_tiger.py` (pure decision functions for Sections I-VI, over plain dicts, no I/O, directly testable) and `volume_bucket.py` (`VolumeBucketBaseline` class, lazy-loaded, refresh-once-per-session at 9:29 ET).
+
+**Tests.** New unit suites at `tests/test_eye_of_tiger.py` and `tests/test_volume_bucket.py` cover all six sections including the three new pieces (Volume Bucket post-cold-start PASS, FAIL at 99%, COLDSTART pass-through with rate-limited log, Entry-2 exclusion; Boundary Hold single-close insufficient, equality break, SHORT mirror, 9:36 earliest-satisfaction timing, Entry-2 exclusion; Entry 2 crossing edge + fresh NHOD pass, no fresh NHOD fail, sustained DI without crossing edge fail, never reaches 30, fires only once).
+
+**Rollback.** No feature flag. Rollback path is revert-the-PR + redeploy.
+
+Touched (high-level): `eye_of_tiger.py` (NEW), `volume_bucket.py` (NEW), `trade_genius.py` (BOT_VERSION, DAILY_LOSS_LIMIT, EOD scheduler tick, retire `_tiger_hard_eject_check` call site), `bot_version.py` (5.9.4 → 5.10.0), `CHANGELOG.md` (this entry), `ARCHITECTURE.md` (six-section rewrite), `tests/test_eye_of_tiger.py` (NEW), `tests/test_volume_bucket.py` (NEW), `dashboard_server.py` (REASON_LABELS exit_reason enum updates).
+
+---
+
 ## v5.9.4 — 2026-04-28 — Hotfix — wire Titan bypass into `_tiger_hard_eject_check`
 
 **Hotfix. Partial fix.** Stops today's bleeding. Full FSM wiring is still deferred to v5.10.0.

@@ -1,8 +1,121 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.5.10 · April 2026
+> **Version:** v5.10.0 · April 2026 — **Project Eye of the Tiger**
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth:** `STRATEGY.md` (canonical trading-logic spec), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/{loader,ledger,replay,__main__}.py`
+> **Source of truth (v5.10.0):** `specs/canonical/eye_of_the_tiger_gene_2026-04-28c.md` (Gene's authoritative rev 28c spec), `eye_of_tiger.py` (pure-function phase machine, Sections I–VI), `volume_bucket.py` (Section II.1 Institutional Oomph baseline), `tests/test_eye_of_tiger.py`, `tests/test_volume_bucket.py`, `trade_genius.py` (orchestration + scheduler + bus). Legacy implementation surfaces (`tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/`) remain for infrastructure/observability; their *trading-logic* references below describe the v5.0–v5.9 algorithms that v5.10.0 supersedes.
+
+---
+
+## v5.10.0 — Project Eye of the Tiger (algorithm summary)
+
+The v5.10.0 algorithm is organized into six numbered sections that match
+the canonical spec rev 28c. Pure-function evaluators live in
+`eye_of_tiger.py`; the rolling per-(ticker, minute-of-day) volume baseline
+lives in `volume_bucket.py`. `trade_genius.py` orchestrates state, time,
+data, and the signal bus around them.
+
+**Section I — Global Permit (QQQ Index Shield).** Long permitted only
+when QQQ 5-minute close > 5m EMA(9) **and** QQQ current price > 9:30 ET
+session AVWAP; short is the strict mirror. Either anchor missing closes
+the gate (`reason: data_missing` or `anchor_misaligned`).
+
+**Section II — Ticker-Specific Permits (Entry-1 only).**
+1. **Volume Bucket (NEW):** rolling 55-trading-day average volume per
+   `(ticker, HH:MM ET)` minute-of-day key, threshold ratio **1.00**
+   (`current_minute_volume >= baseline` ⇒ PASS). With < 55 days of
+   archive available, `gate=COLDSTART` and the ratio test is bypassed
+   (PASS-THROUGH); a rate-limited `VOLBUCKET-COLDSTART` warning is
+   emitted once per ticker until enough data accrues.
+2. **Boundary Hold (NEW):** require **two consecutive 1-minute closes
+   strictly outside** the 5-minute opening-range boundary (long: above
+   `OR_High`; short: below `OR_Low`). Earliest possible satisfaction is
+   **09:36:00 ET**. Equality at the boundary breaks the hold.
+
+**Section III — Entry triggers and sizing.**
+- **Entry 1:** fires when Section I open + Volume Bucket OK + Boundary
+  Hold OK + DI(15) on 5m **> 25** + DI(15) on 1m **> 25** + a print at
+  NHOD (long) or NLOD (short). Strict `>` everywhere; equality fails.
+  Sizing: 50% of intended position.
+- **Entry 2 (NEW gating):** requires Entry 1 active **and** Section I
+  still open at trigger time **and** a **fresh** NHOD/NLOD print
+  (strictly beyond the highest/lowest mark since Entry 1) **and** a
+  **crossing edge** on DI(15) 1m: `prev <= 30` then `now > 30`.
+  Sustained DI > 30 without a fresh crossing does **not** re-trigger.
+  Fires once per Entry-1 lifecycle. Sizing: remaining 50%.
+
+**Section IV — Tick overrides (highest priority).**
+- **Sovereign Brake:** unrealized P&L `<= -$500` ⇒ flush position.
+- **Velocity Fuse:** intra-bar adverse move `> 1.0%` from the current
+  1-minute open (long: price below `open*(1 - 0.01)`; short: mirror) ⇒
+  flush. Strict `>` so exactly 1.0% does not fire.
+
+**Section V — Triple-Lock stops (in priority order after IV).**
+- **Maffei 1-2-3 Recursive INSIDE-OR Gate:** when a 1-minute candle
+  opens *outside* the OR boundary and closes *back inside*, exit if the
+  current 1m extreme is worse than the prior 1m extreme (long: `low <
+  prior_low`; short: `high > prior_high`). Equality holds the position.
+- **Layered Shield (Phase B step 1):** activates on Entry 2; stop moves
+  to the Entry-1 fill price.
+- **Two-Bar Lock (Phase B step 2):** two consecutive favorable 5-minute
+  closes (long: `close > open`; short: `close < open`) lock the stop to
+  the average entry price. Any unfavorable close resets the counter.
+- **The Leash / EMA Trail (Phase C Extraction):** once locked, exit on
+  any 5-minute close through the 5m EMA(9) (long: close < EMA9; short:
+  close > EMA9).
+
+**Section VI — Machine rules.**
+- **Unlimited Hunting:** no per-day trade cap; positions are allowed
+  whenever Section I + II permit.
+- **Daily Circuit Breaker:** cumulative realized P&L `<= -$1500`
+  disables new entries for the rest of the session.
+- **EOD Flush:** all positions closed at **15:59:50 ET** (was 15:55).
+
+**Phase machine.** Each open position carries `phase ∈ {SURVIVAL,
+NEUT_LAYERED, NEUT_LOCKED, EXTRACTION}`. Phase A on Entry 1 → step into
+B-Layered on Entry 2 → step into B-Locked on the second favorable 5m
+close → C-Extraction once the EMA trail is the binding stop.
+
+**`exit_reason` enum (v5.10.0).** `sovereign_brake`, `velocity_fuse`,
+`forensic_stop` (Maffei INSIDE-OR), `be_stop` (Layered Shield /
+Two-Bar Lock break-even), `ema_trail` (The Leash), `daily_circuit_breaker`,
+`eod`, `manual`. Legacy values `LORDS_LEFT`, `BULL_VACUUM`,
+`HARD_EJECT_TIGER`, `V572-ABORT`, and the dual-PDC sovereign-eject
+codes are retired and **must not** be emitted by v5.10.0 logic.
+
+**Locked defaults.** Volume Bucket lookback = 55 trading days, threshold
+ratio = 1.00, cold-start = pass-through with rate-limited log; Boundary
+Hold = 2 consecutive 1m closes strictly outside the 5m OR; DI period =
+**15** (Gene-canonical, not Wilder 14); all DI/NHOD comparisons strict
+`>`; daily circuit breaker = `-$1500`; sovereign brake = `-$500` (uses
+`<=`); velocity fuse = `> 1.0%` strict; EOD flush = 15:59:50 ET.
+
+**Cold-start caveat.** Until the `/data/bars/<YYYY-MM-DD>/<TICKER>.jsonl`
+archive carries 55 trading days for a given ticker, that ticker's
+Volume Bucket gate returns `COLDSTART` and is treated as PASS — Entry 1
+is gated only by Section I + Boundary Hold + DI + NHOD. Backtest and
+shadow-replay results during the cold-start window are not directly
+comparable to steady-state v5.10.0 production.
+
+**Rollback.** No feature flag; v5.10.0 fully overwrites v5.9.4. Rollback
+path is `git revert` of the v5.10.0 PR followed by Railway redeploy.
+
+---
+
+> **Legacy algorithm sections below (v5.0–v5.9).** The text from here
+> through the end of this document describes the v5.0 Tiger/Buffalo
+> state machine and its v5.1–v5.9 layers. Those algorithms have been
+> **superseded** by Project Eye of the Tiger above. The legacy text is
+> retained for historical context and because the *infrastructure*
+> surfaces it describes (signal bus, persistence, dashboard, backtest
+> harness, shadow P&L, executor mirrors) are still in use under the
+> v5.10.0 algorithm. Where the legacy text describes entry/exit logic,
+> exit reasons, daily limits, or EOD timing, the v5.10.0 summary above
+> is authoritative.
+
+---
+
+> **Legacy preamble (v5.5.10 · April 2026):**
+> **Source of truth (legacy):** `STRATEGY.md` (canonical trading-logic spec for v5.0–v5.9), `trade_genius.py`, `tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/{loader,ledger,replay,__main__}.py`
 
 TradeGenius is a Python Telegram-driven trading bot with a paper book,
 two Alpaca-backed executor mirrors, and a live web dashboard. As of

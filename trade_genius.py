@@ -77,7 +77,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.9.4"
+BOT_VERSION = "5.10.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -95,19 +95,18 @@ BOT_VERSION = "5.9.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.9.0 \u2014 QQQ Regime Shield\n"
-    "+ Recursive Forensic Stop.\n"
-    "G1 swaps from QQQ AVWAP\n"
-    "penny-switch to a 5m EMA3\n"
-    "vs EMA9 cross with pre-mkt\n"
-    "seeding. Phase A hard_stop_2c\n"
-    "is replaced by a Maffei 1-2-3\n"
-    "audit (lower-low / higher-\n"
-    "high) and a per-trade\n"
-    "Sovereign Brake at -$500\n"
-    "unrealized. Block only on\n"
-    "compass flip; let active\n"
-    "exits run."
+    "v5.10.0 \u2014 Eye of the Tiger.\n"
+    "Full algorithm rewrite. Six\n"
+    "sections: I Index Shield,\n"
+    "II Volume Bucket + Boundary\n"
+    "Hold (Entry-1 gates),\n"
+    "III scaled 50/50 entry,\n"
+    "IV Sovereign Brake + Vel\n"
+    "Fuse, V Triple-Lock stops,\n"
+    "VI -$1500 daily breaker +\n"
+    "EOD 15:59:50 ET. Entry 2\n"
+    "needs FRESH NHOD/NLOD.\n"
+    "No feature flag."
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -2421,7 +2420,8 @@ TITAN_TICKERS: list = [
     "NVDA", "ORCL", "TSLA",
 ]
 ENABLE_UNLIMITED_TITAN_STRIKES: bool = True
-DAILY_LOSS_LIMIT_DOLLARS: float = -500.0
+# v5.10.0 \u2014 Section VI Daily Circuit Breaker (was -$500 in v5.9.x).
+DAILY_LOSS_LIMIT_DOLLARS: float = -1500.0
 # v5.7.1 \u2014 Bison & Buffalo exit FSM (Titans only). When False, Titan
 # tickers fall back to the legacy DI/structural exits used by non-Titan
 # tickers. VELOCITY_FUSE_PCT is the strict >1.0% adverse intra-candle
@@ -5096,7 +5096,7 @@ v5_short_tracks: dict = {}   # {ticker: track_dict}
 v5_active_direction: dict = {}  # {ticker: "long"|"short"|None}
 
 # Daily loss limit (Feature 2)
-DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-500"))
+DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-1500"))
 _trading_halted: bool = False
 _trading_halted_reason: str = ""
 
@@ -8903,7 +8903,10 @@ def close_short_position(ticker, price, reason="STOP"):
 # EOD CLOSE
 # ============================================================
 def eod_close():
-    """Force-close all open long AND short positions at 15:55 ET."""
+    """Force-close all open long AND short positions at 15:59:50 ET.
+
+    v5.10.0 Section VI: EOD flush moved from 15:55 to 15:59:50 ET.
+    """
     # v4.0.0-alpha — notify executors to flatten everything on Alpaca.
     # Per-position close events still fire from close_position /
     # close_short_position below; this event lets executors shortcut with
@@ -9714,21 +9717,13 @@ def scan_loop():
             detail=f"{type(e).__name__}: {str(e)[:200]}",
         )
 
-    # v3.4.47 \u2014 Hard Eject: close positions whose DI has decayed
-    # against them (runs before new-entry scan).
-    try:
-        _tiger_hard_eject_check()
-    except Exception as e:
-        # v4.11.0 \u2014 report_error: hard-eject path failure surfaces
-        # as a paged event so the operator can investigate why an
-        # eject did not run.
-        report_error(
-            executor="main",
-            code="HARD_EJECT_EXCEPTION",
-            severity="error",
-            summary="_tiger_hard_eject_check crashed",
-            detail=f"{type(e).__name__}: {str(e)[:200]}",
-        )
+    # v5.10.0 \u2014 Project Eye of the Tiger formally retires HARD_EJECT_TIGER
+    # (legacy DI<25 hard eject). The Section V triple-lock stops
+    # (Maffei 1-2-3 / Layered Shield + Two-Bar Lock / The Leash) plus
+    # the Section IV tick overrides (sovereign_brake / velocity_fuse)
+    # are the sole exit authority. Function is retained for backwards
+    # compatibility but is no longer invoked.
+    pass  # _tiger_hard_eject_check retired \u2014 v5.10.0 Section V owns exits
 
     # Feature 8: scan pause — only block NEW entries
     if _scan_paused:
@@ -10021,7 +10016,8 @@ def scheduler_thread():
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
-        ("daily", "15:55", eod_close),
+        # v5.10.0 \u2014 EOD flush at 15:59:50 ET (was 15:55) per Section VI.
+        ("daily", "15:59", eod_close),
         ("daily", "15:58", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
     ]

@@ -391,7 +391,7 @@ def run_local() -> int:
 
     @t("version: BOT_VERSION is 5.9.0")
     def _():
-        assert m.BOT_VERSION == "5.9.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.10.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -4242,40 +4242,40 @@ def run_local() -> int:
     def _():
         # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.10.0", m.BOT_VERSION
 
     @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
     def _():
@@ -6448,9 +6448,9 @@ def run_local() -> int:
     def _():
         assert m.ENABLE_UNLIMITED_TITAN_STRIKES is True
 
-    @t("v5.7.0 D2: DAILY_LOSS_LIMIT_DOLLARS = -500.0")
+    @t("v5.10.0: DAILY_LOSS_LIMIT_DOLLARS = -1500.0")
     def _():
-        assert m.DAILY_LOSS_LIMIT_DOLLARS == -500.0
+        assert m.DAILY_LOSS_LIMIT_DOLLARS == -1500.0
 
     @t("v5.7.0 D1: TICKERS_DEFAULT contains NFLX and ORCL")
     def _():
@@ -6680,30 +6680,30 @@ def run_local() -> int:
         assert callable(getattr(m, "_check_daily_loss_limit", None))
         assert hasattr(m, "DAILY_LOSS_LIMIT")
         # The new v5.7.0 constant matches the legacy default.
-        assert m.DAILY_LOSS_LIMIT_DOLLARS == -500.0
+        assert m.DAILY_LOSS_LIMIT_DOLLARS == -1500.0
 
-    @t("v5.7.0 D5: realized P&L -$499.99 does NOT trigger kill switch")
+    @t("v5.7.0 D5: realized P&L -$1499.99 does NOT trigger kill switch")
     def _():
         _v570_setup_clean_session(m)
-        m._v570_record_trade_close(-499.99)
+        m._v570_record_trade_close(-1499.99)
         assert m._v570_kill_switch_active() is False
 
-    @t("v5.7.0 D5: realized P&L exactly -$500.00 triggers kill switch")
+    @t("v5.7.0 D5: realized P&L exactly -$1500.00 triggers kill switch")
     def _():
         _v570_setup_clean_session(m)
-        m._v570_record_trade_close(-500.0)
+        m._v570_record_trade_close(-1500.0)
         assert m._v570_kill_switch_active() is True
 
-    @t("v5.7.0 D5: realized P&L -$500.01 triggers kill switch")
+    @t("v5.7.0 D5: realized P&L -$1500.01 triggers kill switch")
     def _():
         _v570_setup_clean_session(m)
-        m._v570_record_trade_close(-500.01)
+        m._v570_record_trade_close(-1500.01)
         assert m._v570_kill_switch_active() is True
 
     @t("v5.7.0 D5: kill switch resets at next session boundary")
     def _():
         _v570_setup_clean_session(m)
-        m._v570_record_trade_close(-501.0)
+        m._v570_record_trade_close(-1501.0)
         assert m._v570_kill_switch_active() is True
         # Force a session roll.
         m._v570_strike_date = "1900-01-01"
@@ -6724,7 +6724,7 @@ def run_local() -> int:
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
-            m._v570_record_trade_close(-501.0)  # trips kill
+            m._v570_record_trade_close(-1501.0)  # trips kill
             m._v570_record_trade_close(-50.0)  # later loss, no spam
             m._v570_record_trade_close(-50.0)  # ditto
         finally:
@@ -6744,7 +6744,7 @@ def run_local() -> int:
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
-            m._v570_record_trade_close(-501.0)
+            m._v570_record_trade_close(-1501.0)
         finally:
             m.logger.removeHandler(h)
         out = buf.getvalue()
@@ -6764,7 +6764,7 @@ def run_local() -> int:
         import io as _io
 
         _v570_setup_clean_session(m)
-        m._v570_record_trade_close(-501.0)  # trip
+        m._v570_record_trade_close(-1501.0)  # trip
         assert m._v570_kill_switch_active() is True
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
