@@ -145,6 +145,30 @@
       </div>
     </section>
 
+    <!-- v5.10.6 — Eye-of-the-Tiger live state panel. Section I permit
+         pill row (LONG/SHORT) above a per-ticker grid showing Volume
+         Bucket + Boundary Hold gate state. Driven by the new fields
+         in /api/state (section_i_permit, per_ticker_v510). -->
+    <section class="grid grid-2">
+      <div class="card" style="grid-column:1 / -1">
+        <div class="card-head">
+          <span class="card-title">Eye of the Tiger · live gates</span>
+          <span class="chip" id="eot-permit-chip">—</span>
+        </div>
+        <div class="card-body" id="eot-body">
+          <div id="eot-permit-row" class="eot-permit-row" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px">
+            <span class="eot-pill" id="eot-pill-long">LONG —</span>
+            <span class="eot-pill" id="eot-pill-short">SHORT —</span>
+            <span class="eot-pill" id="eot-pill-anchor">ANCHOR —</span>
+            <span class="eot-pill" id="eot-pill-qqq" title="QQQ 5m close vs 9-EMA">QQQ —</span>
+          </div>
+          <div class="card-body flush" id="eot-tickers-body">
+            <div class="empty">Waiting for v5.10 gate state…</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- v5.5.7 — Last signal card on Main mirrors the Val/Gene exec
          panels: shows the paper executor's most recent emitted signal
          (kind, ticker, price, reason, timestamp). -->

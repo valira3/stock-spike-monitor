@@ -35,6 +35,9 @@ COPY qqq_regime.py .
 COPY eye_of_tiger.py .
 COPY volume_bucket.py .
 COPY v5_10_1_integration.py .
+# v5.10.6 \u2014 dashboard /api/state v5.10 panel helper. Missing this COPY
+# would crash dashboard_server's snapshot() with ModuleNotFoundError.
+COPY v5_10_6_snapshot.py .
 # v5.1.0 — Forensic Volume Filter module (imported by trade_genius.py).
 COPY volume_profile.py .
 # v5.1.2 — Forensic capture: indicator math + 1m bar JSONL archive

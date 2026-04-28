@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.10.6 — 2026-04-28 — Eye-of-the-Tiger closeout (dashboard panel + legacy cleanup + backtest + strategy)
+
+Final v5.10.x patch. Closes out everything deferred from v5.10.1 / v5.10.4 / v5.10.5.
+
+**Item 1 — Dashboard /api/state v5.10 panel.** `dashboard_server.snapshot()` now carries three new top-level keys: `section_i_permit` (QQQ Market Shield + Sovereign Anchor permit lights for both rails), `per_ticker_v510` (Volume Bucket + Boundary Hold gate state per trade ticker), and `per_position_v510` (phase, Sovereign Brake distance, Entry-2 fired flag per open position keyed by `"TICKER:SIDE"`). Per-position rows under `positions[]` also carry `phase`, `sovereign_brake_distance_dollars`, and `entry_2_fired`. Frontend (`dashboard_static/app.js` + `app.css`) renders an "Eye of the Tiger · live gates" card with Section I pills, per-ticker grid, and a Phase badge + SB-Δ column on every open-position row. Implementation lives in `v5_10_6_snapshot.py`. Test contract pinned at `tests/test_api_state_v510_payload.py`.
+
+**Item 2 — Legacy emitter cleanup (real this time).** Six v5.1.x – v5.9.x emitters that survived the v5.10.5 audit are now deleted: `_v519_arm_rehunt_watch`, `_v519_check_rehunt`, `_v519_check_oomph`, `_v512_emit_candidate_log`, `_v590_log_abort_if_flip`, `_v570_log_strike` (plus support state). All six had zero live call sites. Test blocks were removed from `smoke_test.py` and `test_v5_5_6_shadow_uses_prev_bucket.py`. `REHUNT_VOL_CONFIRM` / `OOMPH_ALERT` survive only as shadow-config registry names so persisted shadow positions still close cleanly. 477 lines removed from trade_genius.py.
+
+**Item 3 — Full-algorithm backtest replay.** New `backtest_v510/replay_v510_full.py` reproduces the v5.10 six-section pipeline against archived 1-minute bars and emits `backtest_v510/replay_v510_full_report.md` with per-day P&L plus Section I–V invocation counts. Guard rails fail the run when a single session loses more than $5,000 or aggregate loss exceeds $10,000. Tested in `tests/test_replay_v510_full.py`.
+
+**Item 4 — STRATEGY.md regenerated.** STRATEGY.md gains a "v5.10 Eye of the Tiger" section that supersedes the v5.0 two-stage state machine for `BOT_VERSION >= 5.10.0`. The v5.0 spec is preserved as the historical reference. **PDF note:** `scripts/build_algo_pdf.py` reads `ARCHITECTURE.md`, not STRATEGY.md, so no PDF is regenerated in this release. Operators who want a fresh PDF should refresh ARCHITECTURE.md to mirror the v5.10 spec and then re-run the script.
+
+---
+
 ## v5.10.5 — 2026-04-28 — Phase B/C Triple-Lock wiring + legacy-emitter audit
 
 **Item 1 — Phase B/C stops wired into the live hot path (Section V — Triple-Lock).** The pure helpers `step_two_bar_lock_on_5m`, `step_phase_c_if_eligible`, and `evaluate_phase_c_exit` shipped in v5.10.0/v5.10.1 (and unit-tested) but were never called from `manage_positions` / `manage_short_positions`. v5.10.5 wires them in.

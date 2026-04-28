@@ -199,6 +199,7 @@ If any gate fails, no short is taken. Critically: if the indices are green (S-P1
 |---------|------------|-----------|-------|
 | v5.0    | 2026-04-25 | Gene → Val → TradeGenius dev | Initial canonical spec. Replaces v4.x ORB Breakout + Wounded Buffalo + 4-layer stop chain. |
 | v5.0.1  | 2026-04-25 | Gene flagged | DMI/ADX period corrected from 14 → 15 in C-R2 and L-P2-R1 to match Gene's spec and the canonical `DI_PERIOD` already in `trade_genius.py`. No state-machine logic changed. |
+| v5.10.6 | 2026-04-28 | Project Eye of the Tiger closeout | Strategy regenerated to reflect the six-section v5.10 algorithm (Section I–VI below). The v5.0 two-stage state machine remains the historical reference; the live bot at `BOT_VERSION >= 5.10.0` follows the Eye-of-the-Tiger pipeline instead. |
 
 ---
 
@@ -219,3 +220,107 @@ For future readers: Gene's memo uses hunting metaphors. The mapping is preserved
 | The Tiger is finished      | `LOCKED_FOR_DAY`                                           |
 | The Bison                  | A long candidate (uptrending ticker)                       |
 | The Wounded Buffalo        | A short candidate (downtrending ticker)                    |
+
+---
+
+# v5.10 Eye of the Tiger — current canonical algorithm
+
+> **Status:** Live for `BOT_VERSION >= 5.10.0`.
+> **Authored:** Project Eye of the Tiger, shipped across v5.10.1 → v5.10.6.
+> **Replaces:** the v5.0 IDLE → ARMED → STAGE_1 → STAGE_2 → TRAILING state machine and every legacy v5.1.x — v5.9.x emitter (REHUNT, OOMPH, V512-CAND, V570-STRIKE, V572-ABORT). Those forensic shadows have been retired.
+
+The v5.10 pipeline is six discrete sections. Each section is a pure function of recent state; the live bot evaluates them top-down each minute, and a position is opened only if every gate in Sections I–III passes on the same bar.
+
+## Section I — Global Permit (QQQ Market Shield + Sovereign Anchor)
+
+Two top-of-book gates that decide whether the bot is allowed to trade at all this minute.
+
+| ID    | Gate | Pass condition |
+|-------|------|----------------|
+| I-LONG  | QQQ Market Shield | last 5-minute QQQ close > 9-period EMA of 5m closes |
+| I-SHORT | QQQ Market Shield | last 5-minute QQQ close < 9-period EMA of 5m closes |
+| I-ANCHOR | Sovereign Anchor | QQQ current price > QQQ 9:30 ET opening AVWAP (LONG); inverse for SHORT |
+
+If `I-LONG` is False, the LONG rail is dark (no LONG entries can fire); same for `I-SHORT`. The ANCHOR rail is shared between sides; live state surfaces on the dashboard as the `ANCHOR` pill in the Eye of the Tiger card.
+
+Implementation: `v5_10_1_integration.evaluate_section_i(side, qqq_close_5m, qqq_ema9, qqq_current_price, qqq_avwap_open) -> {open: bool, ...}`.
+
+## Section II — Volume Bucket + Boundary Hold
+
+Per-ticker, per-side gates that confirm there's a real move underway.
+
+### Volume Bucket
+The 55-day rolling baseline holds, for each minute of the trading day, the median 1-minute volume. The current 1-minute volume is graded against that baseline:
+
+| State      | Condition |
+|------------|-----------|
+| `PASS`      | current 1m volume ≥ baseline median for the just-closed minute |
+| `FAIL`      | current 1m volume < baseline median |
+| `COLDSTART` | baseline not yet seeded (first 55 trading days of any new ticker) |
+
+The bot allows entries during `COLDSTART` (the 55-day fail-open is intentional — the alternative is no new tickers ever); `FAIL` blocks the entry.
+
+### Boundary Hold
+Using the 9:30–10:00 ET opening range (`OR_HIGH`, `OR_LOW`):
+
+| State        | Condition |
+|--------------|-----------|
+| `ARMED`      | fewer than 2 consecutive 1m closes outside the OR window |
+| `SATISFIED`  | 2+ consecutive 1m closes outside the window (above OR_HIGH for LONG, below OR_LOW for SHORT) |
+| `BROKEN`     | a previous SATISFIED then a single close back inside the window |
+
+`SATISFIED` is the trigger for Section III's Entry 1; `BROKEN` arms a re-evaluation but does not auto-fire.
+
+## Section III — Entry 1 + Entry 2 (scaled in)
+
+Once Section I-LONG (or I-SHORT) is open AND the ticker's Section II gates are both green, **Entry 1** fires at the next 1-minute close: 50% of full size at the current price.
+
+**Entry 2** scales in to full size when, after Entry 1 has been held at least three 1-minute bars:
+
+- Position is currently in profit (`unrealized > $100`), AND
+- Sovereign Anchor still on (`I-ANCHOR` open), AND
+- QQQ Market Shield still on for this side.
+
+Entry 2 raises the position's `phase` to phase B and stamps `v5104_entry2_fired = True`. The dashboard's per-position row carries this flag.
+
+## Section IV — Sovereign Brake + Velocity Fuse
+
+Two non-negotiable exit triggers, evaluated every minute:
+
+- **Sovereign Brake.** If unrealized P&L on a single position drops to **≤ −$500**, the position is force-closed at the current 1m close. This is the dollar-stop floor and supersedes phase logic. The dashboard surfaces *distance until brake* per position as `sovereign_brake_distance_dollars` (= `unrealized + 500`); negative or near-zero values mean an imminent or already-tripped brake.
+- **Velocity Fuse.** If the 1-minute candle moves ≥ 1.0% against the position (the candle's open-to-close drop for a LONG, or open-to-close rise for a SHORT), the position closes at the current 1m close.
+
+Both triggers fire independently of phase. The brake and the fuse are the only "dollar-driven" exits in v5.10 — every other exit is structural (phase-based).
+
+## Section V — Phase A/B/C Triple-Lock
+
+Each open position progresses through three phases. The phase governs the **structural** stop and the take-profit ratchet.
+
+| Phase | Entry condition                                                       | Behavior |
+|-------|-----------------------------------------------------------------------|----------|
+| `A`   | Just opened (Entry 1 or Entry 2 has fired).                            | "Survival" — original stop. No ratchet. |
+| `B`   | Entry 2 has fired AND 5+ bars held.                                    | "Neutrality layered" — stop moves to entry price (gravity trade). |
+| `C`   | Phase B held 15+ bars AND position currently in profit.                | "Neutrality locked" / "Extraction" — stop moves to the last 5m structural pivot, locking gains. |
+
+Phase progression is monotonic: a phase B/C never demotes back to A. EOD flush (Section VI) closes regardless of phase.
+
+## Section VI — EOD Flush
+
+At 15:55 ET (or earlier per `is_eod_flush_time`), every open position is flattened at the current 1m close. Realized P&L is folded into the daily P&L counter; the daily-circuit-breaker check (`daily_circuit_breaker_tripped(cumulative_realized_pnl)`) blocks any further new entries when the day's cumulative realized P&L drops below the tripwire.
+
+---
+
+## Vocabulary mapping (Eye of the Tiger metaphor → spec terms)
+
+| Eye of the Tiger memo term | v5.10 spec term |
+|----------------------------|----------------|
+| Sovereign Anchor           | Section I-ANCHOR (QQQ vs 9:30 AVWAP)            |
+| Market Shield              | Section I QQQ 5m close vs 9-EMA                  |
+| The Eye                    | Section II Volume Bucket gate                    |
+| The Tiger's stalk          | Section II Boundary Hold (2+ closes outside OR)  |
+| First strike / Pounce      | Entry 1                                          |
+| Second strike / Triple Lock | Entry 2 + Phase B                               |
+| The Sovereign Brake        | −$500 unrealized force-close                    |
+| Velocity Fuse              | 1% adverse 1m candle move                        |
+| Phase A / B / C            | Survival / Neutrality layered / Extraction      |
+| Sundown                    | EOD flush at 15:55 ET                           |

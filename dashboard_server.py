@@ -162,6 +162,13 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_high"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
+        # v5.10.6 \u2014 surface phase / Sovereign Brake distance / Entry-2
+        # fired flag on every position row so the dashboard does not
+        # need a second join against the per_position_v510 map.
+        phase_v510 = str(p.get("phase") or "A").upper()
+        if phase_v510 not in ("A", "B", "C"):
+            phase_v510 = "A"
+        sb_distance = (unreal + 500.0) if isinstance(unreal, (int, float)) else None
         rows.append(
             {
                 "ticker": tkr,
@@ -177,6 +184,9 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
                 "entry_count": int(p.get("entry_count", 1) or 1),
+                "phase": phase_v510,
+                "sovereign_brake_distance_dollars": sb_distance,
+                "entry_2_fired": bool(p.get("v5104_entry2_fired")),
             }
         )
     for tkr, p in shorts.items():
@@ -190,6 +200,10 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_low"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
+        phase_v510 = str(p.get("phase") or "A").upper()
+        if phase_v510 not in ("A", "B", "C"):
+            phase_v510 = "A"
+        sb_distance = (unreal + 500.0) if isinstance(unreal, (int, float)) else None
         rows.append(
             {
                 "ticker": tkr,
@@ -205,6 +219,9 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
                 "entry_count": 1,
+                "phase": phase_v510,
+                "sovereign_brake_distance_dollars": sb_distance,
+                "entry_2_fired": bool(p.get("v5104_entry2_fired")),
             }
         )
     return rows
@@ -857,6 +874,30 @@ def snapshot() -> dict[str, Any]:
 
         version = str(getattr(m, "BOT_VERSION", "?"))
 
+        # v5.10.6 \u2014 Eye-of-the-Tiger live state snapshot. Surfaces
+        # Section I permit, per-ticker Volume Bucket + Boundary Hold,
+        # and per-position phase + Sovereign Brake distance so the
+        # operator can see what the v5.10 algo is actually running.
+        # Defensive: on internal error returns empty blocks so the rest
+        # of /api/state still serializes.
+        try:
+            import v5_10_6_snapshot as _v510_snap
+
+            v510_block = _v510_snap.build_v510_snapshot(
+                m,
+                tickers,
+                longs,
+                shorts,
+                prices,
+            )
+        except Exception:
+            logger.exception("v5.10.6 snapshot build failed")
+            v510_block = {
+                "section_i_permit": {},
+                "per_ticker_v510": {},
+                "per_position_v510": {},
+            }
+
         # v5.5.7 \u2014 surface the paper book's most recent emitted
         # signal so the Main tab can render a LAST SIGNAL card with the
         # same shape the per-executor panels already use.
@@ -943,6 +984,12 @@ def snapshot() -> dict[str, Any]:
             "shadow_data_status": (
                 "live" if bool(getattr(m, "SHADOW_DATA_AVAILABLE", False)) else "disabled_no_creds"
             ),
+            # v5.10.6 \u2014 Eye-of-the-Tiger live state surface for the
+            # dashboard's v5.10 panel. See v5_10_6_snapshot.py for the
+            # field schema.
+            "section_i_permit": v510_block.get("section_i_permit", {}),
+            "per_ticker_v510": v510_block.get("per_ticker_v510", {}),
+            "per_position_v510": v510_block.get("per_position_v510", {}),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)

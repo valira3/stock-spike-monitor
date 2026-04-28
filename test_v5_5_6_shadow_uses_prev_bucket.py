@@ -16,8 +16,8 @@ bucket IS in `_ws_consumer._volumes` within ~100ms of close.
 Tests:
   - _shadow_log_g4 emits a [V510-SHADOW] line whose ticker_pct derives
     from cur_v=5000 (the WS bar in the just-closed bucket), not 0.
-  - _v512_emit_candidate_log emits a [V510-CAND] line whose bucket is
-    the just-closed bucket (and t_pct derives from it accordingly).
+  - (v5.10.6 removed) the matching test for _v512_emit_candidate_log
+    \u2014 emitter retired in v5.10.6.
 
 Standalone runner (matches v5.5.5 test harness style):
 
@@ -174,42 +174,10 @@ def test_shadow_log_g4_uses_prev_bucket() -> None:
         _detach(cap)
 
 
-def test_v512_emit_candidate_log_uses_prev_bucket() -> None:
-    """[V510-CAND] line should report bucket=1026 (just-closed) and
-    t_pct derived from cur_v=5000, not 0."""
-    cap = _attach()
-    saved = []
-    saved.append(("_ws_consumer", _swap("_ws_consumer",
-                                        _StubConsumer({
-                                            "AAPL": {"1026": 5000},
-                                            "QQQ": {"1026": 1000},
-                                        }))))
-    saved.append(("_volume_profile_cache", _swap("_volume_profile_cache", {
-        "AAPL": _profile_with_bucket(5000, "1026"),
-        "QQQ": _profile_with_bucket(1000, "1026"),
-    })))
-    saved.append(("VOLUME_PROFILE_ENABLED", _swap("VOLUME_PROFILE_ENABLED", True)))
-    saved.append(("datetime", _swap("datetime", _FakeNowDatetime)))
-
-    try:
-        m._v512_emit_candidate_log(
-            "AAPL", stage=1, entered=False,
-            bars={"current_price": 100.0, "stop": 99.0,
-                  "highs": [], "lows": [], "closes": []},
-        )
-        msgs = [m_ for m_ in cap.messages()
-                if m_.startswith("[V510-CAND] ")]
-        assert msgs, f"no [V510-CAND] line emitted; got {cap.messages()!r}"
-        line = msgs[0]
-        assert "bucket=1026" in line, line
-        assert "bucket=1027" not in line, line
-        # t_pct derived from cur_v=5000 / median=5000 -> 100.
-        assert "t_pct=100" in line, line
-        assert "qqq_pct=100" in line, line
-    finally:
-        for sym, pair in reversed(saved):
-            _restore(sym, pair)
-        _detach(cap)
+# v5.10.6: removed test_v512_emit_candidate_log_uses_prev_bucket — the
+# _v512_emit_candidate_log emitter was retired in v5.10.6 alongside the
+# rest of the legacy v5.0\u2013v5.9 hot path. The companion previous-bucket
+# test for _shadow_log_g4 below still applies (that emitter is alive).
 
 
 def test_shadow_log_g4_outside_session_returns_silently() -> None:
@@ -248,7 +216,6 @@ def test_shadow_log_g4_outside_session_returns_silently() -> None:
 
 TESTS = [
     test_shadow_log_g4_uses_prev_bucket,
-    test_v512_emit_candidate_log_uses_prev_bucket,
     test_shadow_log_g4_outside_session_returns_silently,
 ]
 
