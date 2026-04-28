@@ -2383,13 +2383,13 @@ def run_local() -> int:
             # Re-running is a no-op (source already gone).
             assert p.migrate_from_json(src) == 0
 
-    @t("v5 plumbing: STRATEGY.md mentioned in trade_genius rolling release note")
+    @t("v5 plumbing: MAIN_RELEASE_NOTE aliases CURRENT_MAIN_NOTE")
     def _():
-        # STRATEGY.md is the canonical v5 spec; it must remain referenced in
-        # the rolling MAIN_RELEASE_NOTE surface (CURRENT + history tail) so
-        # /version always points users at the source of truth, even when the
-        # current note is a hotfix that doesn't itself need to repeat the ref.
-        assert "STRATEGY.md" in m.MAIN_RELEASE_NOTE
+        # The in-code rolling history tail was removed; per-release history
+        # now lives in CHANGELOG.md and /version shows only the current note.
+        # The STRATEGY.md cross-reference assertion that lived here previously
+        # depended on the deleted _MAIN_HISTORY_TAIL surface, so it is dropped.
+        assert m.MAIN_RELEASE_NOTE == m.CURRENT_MAIN_NOTE
 
     @t("infra: Dockerfile COPY whitelist includes every top-level imported module")
     def _():
