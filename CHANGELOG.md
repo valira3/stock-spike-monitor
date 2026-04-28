@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.9.2 — 2026-04-28 — Retire dual-PDC half of `HARD_EJECT_TIGER` (DI-only)
+
+Pure removal. **No new behavior.** Completes the dual-PDC eject retirement that v5.9.1 started. After this release no exit rule in the bot consumes SPY/QQQ vs PDC index-regime checks — entry and exit both look at the v5.9.0 5m EMA compass for index regime, and per-ticker PDC rules (RED_CANDLE / POLARITY_SHIFT) are unchanged.
+
+**Removed.** The dual-index PDC trigger inside `_tiger_hard_eject_check()` in `trade_genius.py`. The function previously OR-ed two triggers — DI weakness (`DI < TIGER_V2_DI_THRESHOLD`) and the index flip (`SPY_cur < SPY_PDC AND QQQ_cur < QQQ_PDC` for longs, mirror for shorts). The index-flip half is gone, along with its `spy_bars` / `qqq_bars` / `spy_pdc_v` / `qqq_pdc_v` lookups and the `index_flip_down` / `index_flip_up` flags. The `idx_flip=…` field is dropped from the `HARD_EJECT_TIGER` log line.
+
+**Kept (deliberately).** The DI-decay trigger itself — Tiger now fires on `DI+ < TIGER_V2_DI_THRESHOLD` (long) / `DI- < TIGER_V2_DI_THRESHOLD` (short) only. `TIGER_V2_DI_THRESHOLD` constant unchanged. `REHUNT_VOL_CONFIRM` arming after eject (orthogonal feature) unchanged. v5.9.0's QQQ Regime Shield (5m EMA compass at G1) and forensic_stop / per_trade_brake unchanged. Per-ticker pos_pdc / prev_close logic, the `pdc` dict and its population, dashboard PDC pills, and the `[V510-IDX]` observational logger all remain — `_tiger_hard_eject_check` was the last algo consumer that gated on dual-PDC, but other code (display, observational shadow) still reads the dict.
+
+Touched: `trade_genius.py` (function body + docstring + comment block + scan-loop comment + `BOT_VERSION`); `bot_version.py` → 5.9.2; `CHANGELOG.md`, `ARCHITECTURE.md`. Algo PDF unchanged (no algorithm-text update; this is a removal/cleanup).
+
+---
+
 ## v5.9.1 — 2026-04-28 — Retire PDC-based Sovereign Regime Eject (exit-side cleanup)
 
 Pure removal. **No new behavior.** Pairs with v5.9.0's G1 swap from AVWAP/PDC to a 5m EMA compass — the exit side now uses the same regime philosophy as the entry side instead of running a parallel PDC-based rule.
