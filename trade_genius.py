@@ -40,6 +40,8 @@ from side import Side, CONFIGS  # noqa: E402
 # stage. Unit-sizing math is preserved unchanged from v4 (50/50 staging
 # means "50% of the v4 unit, then add the other 50%").
 import tiger_buffalo_v5 as v5  # noqa: E402
+# v5.9.0 \u2014 QQQ Regime Shield: 5m EMA(3) vs EMA(9) compass for G1.
+import qqq_regime  # noqa: E402
 # v5.1.0 \u2014 forensic volume filter (shadow mode). Top-level module so the
 # v5.0.2 infra-guard test catches a missing Dockerfile COPY for it.
 import volume_profile  # noqa: E402
@@ -75,7 +77,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.8.4"
+BOT_VERSION = "5.9.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,22 +95,19 @@ BOT_VERSION = "5.8.4"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.8.0 \u2014 Dev Velocity Bundle.\n"
-    "Pure tooling release. Adds\n"
-    "CLAUDE.md / AGENTS.md agent\n"
-    "guides at repo root, a spec\n"
-    "template under specs/, and\n"
-    "scripts/preflight.sh that\n"
-    "mirrors CI locally (pytest,\n"
-    "version-bump consistency,\n"
-    "em-dash literal, forbidden\n"
-    "words, ruff format). New\n"
-    "[UNIVERSE_GUARD] startup\n"
-    "check rewrites a stale\n"
-    "/data/tickers.json so a\n"
-    "Railway redeploy never\n"
-    "trades the lagged list.\n"
-    "No algo logic touched."
+    "v5.9.0 \u2014 QQQ Regime Shield\n"
+    "+ Recursive Forensic Stop.\n"
+    "G1 swaps from QQQ AVWAP\n"
+    "penny-switch to a 5m EMA3\n"
+    "vs EMA9 cross with pre-mkt\n"
+    "seeding. Phase A hard_stop_2c\n"
+    "is replaced by a Maffei 1-2-3\n"
+    "audit (lower-low / higher-\n"
+    "high) and a per-trade\n"
+    "Sovereign Brake at -$500\n"
+    "unrealized. Block only on\n"
+    "compass flip; let active\n"
+    "exits run."
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -4098,6 +4097,259 @@ V561_INDEX_TICKER = "QQQ"
 V561_OR_DIR_DEFAULT = "/data/or"
 
 
+# ============================================================
+# v5.9.0 \u2014 QQQ Regime Shield runtime state
+# ============================================================
+# Singleton regime tracker. Lives for the life of the bot process;
+# seeded once at first compass evaluation, then advanced on each
+# finalized 5m QQQ bar via _v590_qqq_regime_tick().
+_QQQ_REGIME = qqq_regime.QQQRegime()
+_QQQ_REGIME_SEEDED = False
+_QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
+
+
+def _v590_qqq_regime_seed_once() -> None:
+    """v5.9.0 \u2014 Seed the QQQ Regime EMAs from pre-market 5m bars.
+
+    Source priority (per spec):
+      1. /data/bars/<today>/QQQ.jsonl bar archive
+      2. Alpaca historical 5m bars (IEX feed) for today 04:00 ET \u2192 now
+      3. Prior session's last 5m bars
+
+    Idempotent: subsequent calls are no-ops. Failure-tolerant: any
+    crash leaves the regime un-seeded, in which case the live tick
+    feed will warm up the EMAs naturally (compass returns None until
+    9 closed bars accumulate).
+    """
+    global _QQQ_REGIME_SEEDED
+    if _QQQ_REGIME_SEEDED:
+        return
+
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    today_0400 = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
+
+    closes = _v590_seed_from_archive(today_0400, now_et)
+    source = None
+    if closes:
+        source = "archive"
+    else:
+        closes = _v590_seed_from_alpaca(today_0400, now_et)
+        if closes:
+            source = "alpaca"
+        else:
+            closes = _v590_seed_from_prior_session(now_et)
+            if closes:
+                source = "prior_session"
+
+    if not closes:
+        logger.warning("[V572-REGIME-SEED] no source returned bars; "
+                       "compass will warm up from live ticks")
+        _QQQ_REGIME_SEEDED = True
+        return
+
+    n = _QQQ_REGIME.seed(closes, source)
+    _QQQ_REGIME_SEEDED = True
+    compass = _QQQ_REGIME.current_compass()
+    logger.info(
+        "[V572-REGIME-SEED] source=%s bars=%d ema3=%s ema9=%s compass=%s",
+        source, n,
+        ("%.4f" % _QQQ_REGIME.ema3) if _QQQ_REGIME.ema3 is not None else "None",
+        ("%.4f" % _QQQ_REGIME.ema9) if _QQQ_REGIME.ema9 is not None else "None",
+        compass if compass is not None else "None",
+    )
+
+
+def _v590_seed_from_archive(start_et, end_et):
+    """Try to read today's QQQ bar archive, resample to 5m closes.
+
+    Returns chronological list of finalized 5m closes from
+    [start_et, end_et). Returns [] on any failure or if archive
+    has no entries.
+    """
+    try:
+        date_str = start_et.strftime("%Y-%m-%d")
+        path = "/data/bars/%s/QQQ.jsonl" % date_str
+        if not os.path.exists(path):
+            return []
+        timestamps = []
+        closes = []
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                ts = rec.get("ts")
+                close = rec.get("close")
+                if ts is None or close is None:
+                    continue
+                try:
+                    if isinstance(ts, str):
+                        epoch = int(datetime.strptime(
+                            ts.replace("Z", ""), "%Y-%m-%dT%H:%M:%S",
+                        ).replace(tzinfo=timezone.utc).timestamp())
+                    else:
+                        epoch = int(ts)
+                except Exception:
+                    continue
+                if (epoch < int(start_et.timestamp())
+                        or epoch >= int(end_et.timestamp())):
+                    continue
+                timestamps.append(epoch)
+                closes.append(float(close))
+        return _resample_to_5min(timestamps, closes)
+    except Exception as e:
+        logger.debug("[V572-REGIME-SEED] archive read failed: %s", e)
+        return []
+
+
+def _v590_seed_from_alpaca(start_et, end_et):
+    """Pull today's pre-market 5m QQQ bars via Alpaca historical IEX.
+
+    Returns chronological list of finalized 5m closes. [] on failure.
+    """
+    try:
+        client = _alpaca_data_client()
+        if client is None:
+            return []
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        req = StockBarsRequest(
+            symbol_or_symbols="QQQ",
+            timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+            start=start_et.astimezone(timezone.utc),
+            end=end_et.astimezone(timezone.utc),
+            feed="iex",
+        )
+        resp = client.get_stock_bars(req)
+        data = getattr(resp, "data", {}) or {}
+        rows = data.get("QQQ", []) or []
+        closes = []
+        end_ts = int(end_et.timestamp())
+        for row in rows:
+            ts = getattr(row, "timestamp", None)
+            c = getattr(row, "close", None)
+            if ts is None or c is None:
+                continue
+            try:
+                epoch = int(ts.timestamp())
+            except Exception:
+                continue
+            # Drop the still-forming bar (one whose end > now).
+            if epoch + 300 > end_ts:
+                continue
+            closes.append(float(c))
+        return closes
+    except Exception as e:
+        logger.debug("[V572-REGIME-SEED] alpaca fetch failed: %s", e)
+        return []
+
+
+def _v590_seed_from_prior_session(now_et):
+    """Final fallback \u2014 prior session's last few 5m QQQ bars (Alpaca)."""
+    try:
+        client = _alpaca_data_client()
+        if client is None:
+            return []
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        yday = now_et - timedelta(days=1)
+        while yday.weekday() >= 5:
+            yday = yday - timedelta(days=1)
+        start = yday.replace(hour=14, minute=0, second=0, microsecond=0)
+        end = yday.replace(hour=16, minute=0, second=0, microsecond=0)
+        req = StockBarsRequest(
+            symbol_or_symbols="QQQ",
+            timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+            start=start.astimezone(timezone.utc),
+            end=end.astimezone(timezone.utc),
+            feed="iex",
+        )
+        resp = client.get_stock_bars(req)
+        data = getattr(resp, "data", {}) or {}
+        rows = data.get("QQQ", []) or []
+        closes = []
+        for row in rows:
+            c = getattr(row, "close", None)
+            if c is None:
+                continue
+            closes.append(float(c))
+        return closes
+    except Exception as e:
+        logger.debug("[V572-REGIME-SEED] prior session fetch failed: %s", e)
+        return []
+
+
+def _v590_qqq_regime_tick():
+    """v5.9.0 \u2014 Advance the QQQ regime on a freshly closed 5m bar.
+
+    Called every scan cycle. Pulls the latest QQQ 1m bars, resamples
+    to 5m closes, and advances the regime state by exactly one bar
+    when a new finalized bucket is observed (deduped by epoch//300).
+    On each new closed bar emits [V572-REGIME].
+    """
+    global _QQQ_REGIME_LAST_BUCKET
+    try:
+        bars = fetch_1min_bars(V561_INDEX_TICKER)
+        if not bars:
+            return
+        timestamps = bars.get("timestamps") or []
+        closes = bars.get("closes") or []
+        # Pair valid (ts, close) and bucket by floor(ts/300); drop newest
+        # (forming) bucket via the existing resampler logic.
+        pairs = [(int(t), float(c)) for t, c in zip(timestamps, closes)
+                 if t is not None and c is not None]
+        if not pairs:
+            return
+        pairs.sort(key=lambda p: p[0])
+        buckets = {}
+        for ts, c in pairs:
+            buckets[ts // 300] = c
+        ordered = sorted(buckets.keys())
+        if len(ordered) < 2:
+            return
+        finalized = ordered[:-1]   # drop newest, possibly forming
+        last_bucket = finalized[-1]
+        if (_QQQ_REGIME_LAST_BUCKET is not None
+                and last_bucket <= _QQQ_REGIME_LAST_BUCKET):
+            return
+        # Seed before applying the first live bar so seed math runs first.
+        _v590_qqq_regime_seed_once()
+        # Apply only the new bucket (even after a long gap, fast-forward
+        # at most one bar per cycle keeps the math monotonic).
+        new_close = buckets[last_bucket]
+        _QQQ_REGIME.update(new_close)
+        _QQQ_REGIME_LAST_BUCKET = last_bucket
+        compass = _QQQ_REGIME.current_compass()
+        logger.info(
+            "[V572-REGIME] qqq_5m_close=%.4f ema3=%s ema9=%s compass=%s",
+            new_close,
+            ("%.4f" % _QQQ_REGIME.ema3) if _QQQ_REGIME.ema3 is not None else "None",
+            ("%.4f" % _QQQ_REGIME.ema9) if _QQQ_REGIME.ema9 is not None else "None",
+            compass if compass is not None else "None",
+        )
+    except Exception as e:
+        logger.warning("[V572-REGIME] tick error: %s", e)
+
+
+def _v590_compass_for_gate():
+    """Return (ema3, ema9, compass) for the current G1 evaluation.
+
+    Triggers a one-time seed if not yet performed. Returns
+    (None, None, None) if the regime is still in warmup.
+    """
+    if not _QQQ_REGIME_SEEDED:
+        try:
+            _v590_qqq_regime_seed_once()
+        except Exception as e:
+            logger.warning("[V572-REGIME-SEED] seed failed: %s", e)
+    return _QQQ_REGIME.ema3, _QQQ_REGIME.ema9, _QQQ_REGIME.current_compass()
+
+
 def _v561_fmt_num(v) -> str:
     """Render a float/None as a stable token for log lines.
 
@@ -4426,6 +4678,43 @@ def _v570_record_entry(ticker: str, side: str) -> int:
     new_n = int(_v570_strike_counts.get(key, 0)) + 1
     _v570_strike_counts[key] = new_n
     return new_n
+
+
+# v5.9.0 \u2014 Track the QQQ compass at strike-1 entry per (ticker, side)
+# plus the entry epoch so [V572-ABORT] can report seconds_into_strike
+# when a re-strike attempt is blocked by a compass flip.
+_v590_strike_entry_compass: dict = {}   # key=(ticker, side) -> str | None
+_v590_strike_entry_epoch:   dict = {}   # key=(ticker, side) -> int
+
+
+def _v590_record_entry_compass(ticker: str, side: str,
+                               compass: str | None) -> None:
+    key = (ticker.upper(), side.upper())
+    _v590_strike_entry_compass[key] = compass
+    _v590_strike_entry_epoch[key] = int(time.time())
+
+
+def _v590_log_abort_if_flip(ticker: str, side: str,
+                            new_compass: str | None) -> None:
+    """Emit [V572-ABORT] when a re-entry attempt is blocked because
+    the QQQ compass differs from the recorded strike-1 compass.
+    Idempotent per call: only logs when (prev != new) and prev exists.
+    """
+    key = (ticker.upper(), side.upper())
+    prev = _v590_strike_entry_compass.get(key)
+    if prev is None:
+        return
+    if new_compass == prev:
+        return
+    started = _v590_strike_entry_epoch.get(key) or int(time.time())
+    seconds_into_strike = int(time.time()) - int(started)
+    logger.info(
+        "[V572-ABORT] ticker=%s side=%s prev_compass=%s new_compass=%s "
+        "seconds_into_strike=%d",
+        ticker.upper(), side.upper(), prev,
+        new_compass if new_compass is not None else "None",
+        seconds_into_strike,
+    )
 
 
 def _v570_update_session_hod_lod(
@@ -7773,34 +8062,33 @@ def check_breakout(ticker, side):
     if not price_break:
         return False, None
 
-    # v5.6.0 \u2014 Unified AVWAP permission gates (G1/G3/G4). G2 retired.
-    # Index = QQQ only. Strict comparators (equality FAILs). AVWAP None
-    # or pre-9:35 OR FAILs deterministically.
+    # v5.9.0 \u2014 Permission gates G1/G3/G4. G1 swapped from AVWAP
+    # penny-switch to QQQ 5m EMA(3) vs EMA(9) compass (Regime Shield).
+    # G3/G4 untouched. Equality / None FAILs closed everywhere.
     qqq_bars = fetch_1min_bars("QQQ")
     if not qqq_bars:
         return False, None
     qqq_last = qqq_bars.get("current_price")
-    qqq_avwap = _opening_avwap("QQQ")
+    qqq_avwap = _opening_avwap("QQQ")  # retained for forensic logging only
+    qqq_ema3, qqq_ema9, qqq_compass = _v590_compass_for_gate()
     ticker_avwap = _opening_avwap(ticker)
     or_high_val = or_high.get(ticker)
     or_low_val = or_low.get(ticker)
     side_label = "LONG" if cfg.side.is_long else "SHORT"
 
     if cfg.side.is_long:
-        g1 = v5.gate_g1_long(qqq_last, qqq_avwap)
+        g1 = v5.gate_g1_long(qqq_ema3, qqq_ema9)
         g3 = v5.gate_g3_long(current_price, ticker_avwap)
         g4 = v5.gate_g4_long(current_price, or_high_val)
         g4_threshold = or_high_val
     else:
-        g1 = v5.gate_g1_short(qqq_last, qqq_avwap)
+        g1 = v5.gate_g1_short(qqq_ema3, qqq_ema9)
         g3 = v5.gate_g3_short(current_price, ticker_avwap)
         g4 = v5.gate_g4_short(current_price, or_low_val)
         g4_threshold = or_low_val
 
-    # Forensic logging \u2014 legacy per-gate [V560-GATE] lines retained
-    # so existing parsers keep working alongside the v5.6.1 richened
-    # single-line emission below.
-    _v560_log_gate(ticker, side_label, "G1", qqq_last, qqq_avwap, g1)
+    # Forensic logging \u2014 G1 now logs ema3/ema9 instead of last/avwap.
+    _v560_log_gate(ticker, side_label, "G1", qqq_ema3, qqq_ema9, g1)
     _v560_log_gate(ticker, side_label, "G3", current_price, ticker_avwap, g3)
     _v560_log_gate(ticker, side_label, "G4", current_price, g4_threshold, g4)
 
@@ -7852,6 +8140,14 @@ def check_breakout(ticker, side):
             expansion_gate_pass=False,
         )
         if not pass_flag:
+            # v5.9.0 \u2014 if G1 specifically failed and we already had a
+            # strike fire today, the compass flipped/flattened mid-trade.
+            # Emit [V572-ABORT] so the failed re-entry is auditable.
+            try:
+                if not g1 and _v570_strike_count(ticker, side_label) >= 1:
+                    _v590_log_abort_if_flip(ticker, side_label, qqq_compass)
+            except Exception:
+                pass
             _v561_log_skip(
                 ticker=ticker,
                 reason="V560_GATE_BLOCK:%s" % ",".join(failed),
@@ -8053,6 +8349,16 @@ def execute_breakout(ticker, current_price, side):
         _v570_strike_num = _v570_record_entry(ticker, _v570_side_label)
     except Exception:
         _v570_strike_num = 1
+    # v5.9.0 \u2014 record the strike-1 compass for [V572-ABORT] mid-strike
+    # flip detection. Only stamped on the FIRST strike of a session.
+    if _v570_strike_num == 1:
+        try:
+            _, _, _entry_compass = _v590_compass_for_gate()
+            _v590_record_entry_compass(
+                ticker, _v570_side_label, _entry_compass,
+            )
+        except Exception:
+            pass
     pos = {
         "entry_price": current_price,
         "shares": shares,
@@ -8338,14 +8644,16 @@ def close_breakout(ticker, price, side, reason="STOP"):
     # v5.6.1 D4 \u2014 [TRADE_CLOSED] lifecycle line. Pairs to [ENTRY] via
     # entry_id. Reason maps the legacy short token to the spec'd
     # canonical exit_reason vocabulary (stop|target|time|eod|manual).
-    # v5.7.1 \u2014 also passes through the Bison/Buffalo Titan exit
-    # vocabulary (hard_stop_2c|be_stop|ema_trail|velocity_fuse).
+    # v5.7.1 / v5.9.0 \u2014 also passes through the Bison/Buffalo Titan
+    # exit vocabulary. v5.9.0 retires hard_stop_2c and adds forensic_stop
+    # and per_trade_brake.
     try:
         _entry_id_close = pos.get("entry_id") or _v561_compose_entry_id(
             ticker, pos.get("entry_ts_utc") or "")
         _reason_lc = str(reason or "").lower()
         _v571_reasons = {
-            "hard_stop_2c", "be_stop", "ema_trail", "velocity_fuse",
+            "forensic_stop", "per_trade_brake",
+            "be_stop", "ema_trail", "velocity_fuse",
         }
         if _reason_lc in _v571_reasons:
             _exit_reason = _reason_lc
@@ -9447,6 +9755,14 @@ def scan_loop():
             _v561_archive_qqq_bar(_qqq_bars_archive)
     except Exception as _e:
         logger.warning("[V561-QQQ-BAR] cycle hook error: %s", _e)
+
+    # v5.9.0 \u2014 advance QQQ Regime Shield on freshly closed 5m bars and
+    # emit [V572-REGIME] log on each new bar. Seed-on-first-call behavior
+    # is handled inside _v590_qqq_regime_tick / _v590_qqq_regime_seed_once.
+    try:
+        _v590_qqq_regime_tick()
+    except Exception as _e:
+        logger.warning("[V572-REGIME] cycle hook error: %s", _e)
 
     # v5.6.1 D2 \u2014 persist OR_High/OR_Low snapshots once per ticker per
     # session, after 9:35 ET when the OR window is closed and the gate

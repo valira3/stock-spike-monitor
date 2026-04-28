@@ -36,7 +36,8 @@ USER_AGENT = "tradegenius-ops/1.0"
 SHADOW_CONFIGS = ("TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A")
 
 EXIT_REASONS = (
-    "hard_stop_2c",
+    "forensic_stop",
+    "per_trade_brake",
     "ema_trail",
     "be_stop",
     "velocity_fuse",

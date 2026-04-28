@@ -2,11 +2,11 @@
 
 Fixtures under tests/fixtures/saturday_report/ exercise:
   - 1 winning allowed trade (AAPL ema_trail +$13)
-  - 1 losing allowed trade (MSFT hard_stop_2c -$2.50)
+  - 1 losing allowed trade (MSFT forensic_stop -$2.50)
   - 1 trade blocked by GEMINI_A (AAPL was FAIL on GEMINI_A -> blocked
     in that config), and another (MSFT) blocked by QQQ_ONLY/GEMINI_A.
   - 1 [SKIP] line per skipped candidate (TSLA, NVDA, GOOG)
-  - 1 of each exit reason: ema_trail, hard_stop_2c, be_stop,
+  - 1 of each exit reason: ema_trail, forensic_stop, be_stop,
     velocity_fuse, eod, kill_switch.
 """
 
@@ -156,7 +156,7 @@ def test_per_exit_reason_breakdown(swr, parsed):
     per = agg["per_exit_reason"]
     expected = {
         "ema_trail": (1, 13.0),
-        "hard_stop_2c": (1, -2.5),
+        "forensic_stop": (1, -2.5),
         "be_stop": (1, 10.0),
         "velocity_fuse": (1, -1.0),
         "eod": (1, -0.5),
