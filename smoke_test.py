@@ -45,6 +45,7 @@ def t(name: str) -> Callable:
     def decorator(fn: Callable[[], None]) -> Callable[[], None]:
         _REGISTRY.append((name, fn))
         return fn
+
     return decorator
 
 
@@ -58,8 +59,7 @@ def _execute(name: str, fn: Callable[[], None]) -> None:
         return
     except Exception as e:
         _RESULTS.append(
-            (name, False, f"{type(e).__name__}: {e}\n"
-             f"{traceback.format_exc()}\n{buf.getvalue()}")
+            (name, False, f"{type(e).__name__}: {e}\n{traceback.format_exc()}\n{buf.getvalue()}")
         )
         return
     _RESULTS.append((name, True, buf.getvalue()))
@@ -93,12 +93,12 @@ def _report(label: str) -> int:
 # LOCAL MODE
 # ============================================================
 
+
 def run_local() -> int:
     os.environ["SSM_SMOKE_TEST"] = "1"
     os.environ.setdefault("CHAT_ID", "999999999")
     os.environ.setdefault("DASHBOARD_PASSWORD", "smoketest1234")
-    os.environ.setdefault("TELEGRAM_TOKEN",
-                          "0000000000:AAAA_smoke_placeholder_token_0000000")
+    os.environ.setdefault("TELEGRAM_TOKEN", "0000000000:AAAA_smoke_placeholder_token_0000000")
 
     tmp_dir = Path("/tmp/ssm_smoke_state")
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -111,7 +111,7 @@ def run_local() -> int:
     try:
         import trade_genius as m  # noqa: E402
         import telegram_commands as m_tc  # noqa: E402  # v4.5.0 extraction
-        import dashboard_server as ds    # noqa: E402
+        import dashboard_server as ds  # noqa: E402
     except Exception as e:
         print(f"Module import failed: {e}")
         traceback.print_exc()
@@ -132,6 +132,7 @@ def run_local() -> int:
         # test cannot leak rows into the next.
         try:
             import persistence as _p
+
             _p.replace_all_tracks({}, {})
             _p.prune_fired("__never_matches__")
         except Exception:
@@ -173,8 +174,11 @@ def run_local() -> int:
         reset_state()
         m.paper_cash = 12345.67
         m.positions["XYZ"] = {
-            "shares": 10, "entry_price": 10.0, "stop_price": 9.0,
-            "entry_time": "10:00", "date": today,
+            "shares": 10,
+            "entry_price": 10.0,
+            "stop_price": 9.0,
+            "entry_time": "10:00",
+            "date": today,
         }
         m.save_paper_state()
         m.paper_cash = 0.0
@@ -194,11 +198,14 @@ def run_local() -> int:
     def _():
         class Q:
             data = f"reset_paper_confirm:{int(time.time())}"
+
             class message:
                 # arbitrary chat \u2014 auth must not depend on chat_id
                 chat_id = 424242
+
             class from_user:
                 id = int(owner_uid)
+
         ok, reason = m_tc._reset_authorized(Q())
         assert ok, f"expected allowed, reason={reason}"
 
@@ -208,10 +215,13 @@ def run_local() -> int:
         # group could tap Confirm. Must now be REJECTED.
         class Q:
             data = f"reset_paper_confirm:{int(time.time())}"
+
             class message:
                 chat_id = int(os.environ["CHAT_ID"])
+
             class from_user:
                 id = int(non_owner_uid)
+
         ok, reason = m_tc._reset_authorized(Q())
         assert not ok, "non-owner in CHAT_ID group must be rejected post-v4.4.0"
         assert "unauthorized" in reason, f"unexpected reason={reason}"
@@ -220,10 +230,13 @@ def run_local() -> int:
     def _():
         class Q:
             data = f"reset_paper_confirm:{int(time.time())}"
+
             class message:
                 chat_id = 12345
+
             class from_user:
                 id = int(non_owner_uid)
+
         ok, reason = m_tc._reset_authorized(Q())
         assert not ok and "unauthorized" in reason
 
@@ -231,9 +244,12 @@ def run_local() -> int:
     def _():
         class Q:
             data = f"reset_paper_confirm:{int(time.time())}"
+
             class message:
                 chat_id = int(os.environ["CHAT_ID"])
+
             from_user = None
+
         ok, reason = m_tc._reset_authorized(Q())
         assert not ok and "no user_id" in reason
 
@@ -241,10 +257,13 @@ def run_local() -> int:
     def _():
         class Q:
             data = f"reset_paper_confirm:{int(time.time()) - 1000}"
+
             class message:
                 chat_id = int(os.environ["CHAT_ID"])
+
             class from_user:
                 id = int(owner_uid)
+
         ok, reason = m_tc._reset_authorized(Q())
         assert not ok and "expired" in reason
 
@@ -257,13 +276,18 @@ def run_local() -> int:
         class _Base(m.TradeGeniusBase):
             NAME = "SmokeSub"
             mode = "paper"
+
             def __init__(self_inner):
                 self_inner.owner_ids = set(m.TRADEGENIUS_OWNER_IDS)
 
         bot = _Base()
-        class FakeUser: id = int(non_owner_uid)
+
+        class FakeUser:
+            id = int(non_owner_uid)
+
         class FakeUpdate:
             effective_user = FakeUser()
+
         raised = False
         try:
             asyncio.run(bot._auth_guard(FakeUpdate(), None))
@@ -278,13 +302,18 @@ def run_local() -> int:
         class _Base(m.TradeGeniusBase):
             NAME = "SmokeSub"
             mode = "paper"
+
             def __init__(self_inner):
                 self_inner.owner_ids = set(m.TRADEGENIUS_OWNER_IDS)
 
         bot = _Base()
-        class FakeUser: id = int(owner_uid)
+
+        class FakeUser:
+            id = int(owner_uid)
+
         class FakeUpdate:
             effective_user = FakeUser()
+
         result = asyncio.run(bot._auth_guard(FakeUpdate(), None))
         assert result is None
 
@@ -292,9 +321,17 @@ def run_local() -> int:
     @t("eod: _build_eod_report returns a string")
     def _():
         reset_state()
-        m.paper_trades.append({"ticker": "A", "action": "SELL", "date": today,
-                               "pnl": 10.0, "shares": 1, "price": 10.0,
-                               "time": "10:00"})
+        m.paper_trades.append(
+            {
+                "ticker": "A",
+                "action": "SELL",
+                "date": today,
+                "pnl": 10.0,
+                "shares": 1,
+                "price": 10.0,
+                "time": "10:00",
+            }
+        )
         out = m._build_eod_report(today)
         assert isinstance(out, str) and len(out) > 0
 
@@ -338,33 +375,38 @@ def run_local() -> int:
         rows = ds._today_trades()
         fake_rows = [r for r in rows if r.get("ticker") == "FAKE"]
         actions = sorted(r.get("action") for r in fake_rows)
-        assert len(fake_rows) == 2, \
+        assert len(fake_rows) == 2, (
             f"expected synth SHORT + de-duped COVER, got {len(fake_rows)}: {fake_rows}"
-        assert actions == ["COVER", "SHORT"], \
+        )
+        assert actions == ["COVER", "SHORT"], (
             f"expected one SHORT entry + one COVER row, got {actions}"
+        )
 
     # ---------- version ----------
     @t("version: BOT_NAME is TradeGenius")
     def _():
-        assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
+        assert getattr(m, "BOT_NAME", None) == "TradeGenius", (
             f"got {getattr(m, 'BOT_NAME', None)!r}"
+        )
 
-    @t("version: BOT_VERSION is 5.7.1")
+    @t("version: BOT_VERSION is 5.9.0")
     def _():
-        assert m.BOT_VERSION == "5.8.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.9.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
-        assert "beta" not in m.BOT_VERSION.lower(), \
+        assert "beta" not in m.BOT_VERSION.lower(), (
             f"BOT_VERSION still carries beta moniker: {m.BOT_VERSION!r}"
+        )
 
     @t("version: CURRENT_MAIN_NOTE begins with current BOT_VERSION")
     def _():
         # v4.11.5 — was hardcoded "v4.11.2" and got missed on .3/.4. Derive
         # from BOT_VERSION so it self-tracks every release.
         expected = f"v{m.BOT_VERSION}"
-        assert m.CURRENT_MAIN_NOTE.lstrip().startswith(expected), \
+        assert m.CURRENT_MAIN_NOTE.lstrip().startswith(expected), (
             f"note starts: {m.CURRENT_MAIN_NOTE[:40]!r}, expected prefix {expected!r}"
+        )
 
     @t("version: CURRENT_MAIN_NOTE every line <= 34 chars")
     def _():
@@ -374,53 +416,46 @@ def run_local() -> int:
     # ---------- v4.0.2-beta DI seed ----------
     @t("di_seed: _seed_di_buffer function exists")
     def _():
-        assert hasattr(m, "_seed_di_buffer"), \
-            "_seed_di_buffer missing from trade_genius module"
-        assert callable(m._seed_di_buffer), \
-            "_seed_di_buffer is not callable"
-        assert hasattr(m, "_DI_SEED_CACHE"), \
-            "_DI_SEED_CACHE module global missing"
+        assert hasattr(m, "_seed_di_buffer"), "_seed_di_buffer missing from trade_genius module"
+        assert callable(m._seed_di_buffer), "_seed_di_buffer is not callable"
+        assert hasattr(m, "_DI_SEED_CACHE"), "_DI_SEED_CACHE module global missing"
 
     @t("di_seed: DI_PREMARKET_SEED env var documented in .env.example")
     def _():
         env_path = Path(__file__).parent / ".env.example"
         assert env_path.exists(), f".env.example missing at {env_path}"
         text = env_path.read_text(encoding="utf-8")
-        assert "DI_PREMARKET_SEED" in text, \
-            "DI_PREMARKET_SEED not documented in .env.example"
+        assert "DI_PREMARKET_SEED" in text, "DI_PREMARKET_SEED not documented in .env.example"
 
     # ---------- v4.0.3-beta OR seed ----------
     @t("or_seed: _seed_opening_range function exists")
     def _():
-        assert hasattr(m, "_seed_opening_range"), \
+        assert hasattr(m, "_seed_opening_range"), (
             "_seed_opening_range missing from trade_genius module"
-        assert callable(m._seed_opening_range), \
-            "_seed_opening_range is not callable"
-        assert hasattr(m, "_seed_opening_range_all"), \
-            "_seed_opening_range_all missing"
-        assert callable(m._seed_opening_range_all), \
-            "_seed_opening_range_all is not callable"
-        assert hasattr(m, "or_stale_skip_count"), \
-            "or_stale_skip_count module global missing"
-        assert isinstance(m.or_stale_skip_count, dict), \
+        )
+        assert callable(m._seed_opening_range), "_seed_opening_range is not callable"
+        assert hasattr(m, "_seed_opening_range_all"), "_seed_opening_range_all missing"
+        assert callable(m._seed_opening_range_all), "_seed_opening_range_all is not callable"
+        assert hasattr(m, "or_stale_skip_count"), "or_stale_skip_count module global missing"
+        assert isinstance(m.or_stale_skip_count, dict), (
             f"expected dict, got {type(m.or_stale_skip_count).__name__}"
+        )
 
     @t("or_seed: staleness guard uses configurable threshold")
     def _():
-        assert hasattr(m, "OR_STALE_THRESHOLD"), \
-            "OR_STALE_THRESHOLD module global missing"
-        assert m.OR_STALE_THRESHOLD >= 0.03, \
-            f"OR_STALE_THRESHOLD {m.OR_STALE_THRESHOLD} too tight \u2014 " \
-            "v4.0.3-beta widened this to >=3% to stop killing signals " \
+        assert hasattr(m, "OR_STALE_THRESHOLD"), "OR_STALE_THRESHOLD module global missing"
+        assert m.OR_STALE_THRESHOLD >= 0.03, (
+            f"OR_STALE_THRESHOLD {m.OR_STALE_THRESHOLD} too tight \u2014 "
+            "v4.0.3-beta widened this to >=3% to stop killing signals "
             "on normal intraday volatility"
+        )
         # Functional: at 4% drift, the guard should PASS (not stale)
         # under the default 5% threshold but fail under the old 1.5%.
-        assert m._or_price_sane(100.0, 104.0) is True, \
-            "4% drift should be sane under 5% threshold"
-        assert m._or_price_sane(100.0, 104.0, threshold=0.015) is False, \
+        assert m._or_price_sane(100.0, 104.0) is True, "4% drift should be sane under 5% threshold"
+        assert m._or_price_sane(100.0, 104.0, threshold=0.015) is False, (
             "4% drift should fail under legacy 1.5% threshold"
-        assert m._or_price_sane(100.0, 110.0) is False, \
-            "10% drift must still trip the guard"
+        )
+        assert m._or_price_sane(100.0, 110.0) is False, "10% drift must still trip the guard"
 
     # ---------- v4.5.0 refactor: telegram_commands extraction ----------
     @t("refactor: telegram command handlers importable from telegram_commands")
@@ -430,30 +465,43 @@ def run_local() -> int:
         assert hasattr(m_tc, "cmd_reset"), "cmd_reset missing from telegram_commands"
         assert hasattr(m_tc, "cmd_mode"), "cmd_mode missing from telegram_commands"
         assert hasattr(m_tc, "reset_callback"), "reset_callback missing from telegram_commands"
-        assert hasattr(m_tc, "_reset_authorized"), "_reset_authorized missing from telegram_commands"
+        assert hasattr(m_tc, "_reset_authorized"), (
+            "_reset_authorized missing from telegram_commands"
+        )
 
     @t("refactor: cmd_* handlers not present on trade_genius (moved to telegram_commands)")
     def _():
-        for name in ("cmd_status", "cmd_help", "cmd_reset", "cmd_mode",
-                     "cmd_ticker", "cmd_perf", "reset_callback", "_reset_authorized"):
-            assert not hasattr(m, name), \
-                f"v4.5.0: {name} should have moved out of trade_genius"
+        for name in (
+            "cmd_status",
+            "cmd_help",
+            "cmd_reset",
+            "cmd_mode",
+            "cmd_ticker",
+            "cmd_perf",
+            "reset_callback",
+            "_reset_authorized",
+        ):
+            assert not hasattr(m, name), f"v4.5.0: {name} should have moved out of trade_genius"
 
     # ---------- v3.6.0 auth guard ----------
     @t("auth: TRADEGENIUS_OWNER_IDS exists, RH_OWNER_USER_IDS removed")
     def _():
         assert hasattr(m, "TRADEGENIUS_OWNER_IDS"), "TRADEGENIUS_OWNER_IDS missing"
-        assert isinstance(m.TRADEGENIUS_OWNER_IDS, set), \
+        assert isinstance(m.TRADEGENIUS_OWNER_IDS, set), (
             f"expected set, got {type(m.TRADEGENIUS_OWNER_IDS).__name__}"
-        assert not hasattr(m, "RH_OWNER_USER_IDS"), \
+        )
+        assert not hasattr(m, "RH_OWNER_USER_IDS"), (
             "v3.6.0: RH_OWNER_USER_IDS should be hard-renamed away"
-        assert not hasattr(m, "_RH_OWNER_USERS_RAW"), \
+        )
+        assert not hasattr(m, "_RH_OWNER_USERS_RAW"), (
             "v3.6.0: _RH_OWNER_USERS_RAW should be hard-renamed away"
+        )
 
     @t("auth: _auth_guard exists and blocks non-owners")
     def _():
         import asyncio
         from types import SimpleNamespace
+
         assert hasattr(m, "_auth_guard"), "_auth_guard function missing"
         # Pick a non-owner id guaranteed not in the whitelist.
         owner_ids = set(m.TRADEGENIUS_OWNER_IDS)
@@ -468,6 +516,7 @@ def run_local() -> int:
             update_id=1,
         )
         from telegram.ext import ApplicationHandlerStop
+
         raised = False
         try:
             asyncio.run(m._auth_guard(fake_update, None))
@@ -479,6 +528,7 @@ def run_local() -> int:
     def _():
         import asyncio
         from types import SimpleNamespace
+
         owner_ids = list(m.TRADEGENIUS_OWNER_IDS)
         assert owner_ids, "TRADEGENIUS_OWNER_IDS is empty \u2014 no owner to test"
         good_id = int(owner_ids[0])
@@ -497,12 +547,14 @@ def run_local() -> int:
     def _():
         import asyncio
         from types import SimpleNamespace
+
         fake_update = SimpleNamespace(
             effective_user=None,
             effective_chat=SimpleNamespace(id=-100123),
             update_id=3,
         )
         from telegram.ext import ApplicationHandlerStop
+
         raised = False
         try:
             asyncio.run(m._auth_guard(fake_update, None))
@@ -512,17 +564,37 @@ def run_local() -> int:
 
     @t("version: no TP/RH surfaces in module")
     def _():
-        for bad in ("tp_positions", "tp_paper_cash", "tp_trade_history",
-                    "tp_short_positions", "tp_short_trade_history",
-                    "tp_unsynced_exits", "tp_state", "tp_dm_chat_id",
-                    "_tp_trading_halted", "_tp_save_lock", "_tp_state_loaded",
-                    "save_tp_state", "load_tp_state", "send_tp_telegram",
-                    "send_traderspost_order", "manage_tp_positions",
-                    "execute_rh_entry", "rh_imap_poll_once",
-                    "cmd_tp_sync", "cmd_rh_enable", "cmd_rh_disable",
-                    "cmd_rh_status", "is_traderspost_enabled", "is_tp_update",
-                    "check_entry_rh", "RH_STARTING_CAPITAL", "RH_IMAP_ENABLED",
-                    "GMAIL_ADDRESS", "TELEGRAM_TP_TOKEN"):
+        for bad in (
+            "tp_positions",
+            "tp_paper_cash",
+            "tp_trade_history",
+            "tp_short_positions",
+            "tp_short_trade_history",
+            "tp_unsynced_exits",
+            "tp_state",
+            "tp_dm_chat_id",
+            "_tp_trading_halted",
+            "_tp_save_lock",
+            "_tp_state_loaded",
+            "save_tp_state",
+            "load_tp_state",
+            "send_tp_telegram",
+            "send_traderspost_order",
+            "manage_tp_positions",
+            "execute_rh_entry",
+            "rh_imap_poll_once",
+            "cmd_tp_sync",
+            "cmd_rh_enable",
+            "cmd_rh_disable",
+            "cmd_rh_status",
+            "is_traderspost_enabled",
+            "is_tp_update",
+            "check_entry_rh",
+            "RH_STARTING_CAPITAL",
+            "RH_IMAP_ENABLED",
+            "GMAIL_ADDRESS",
+            "TELEGRAM_TP_TOKEN",
+        ):
             assert not hasattr(m, bad), f"v3.5.0: {bad} should be removed"
 
     # ---------- v4.0.0-alpha Val executor ----------
@@ -530,11 +602,11 @@ def run_local() -> int:
     def _():
         assert hasattr(m, "TradeGeniusVal"), "TradeGeniusVal missing"
         assert hasattr(m, "TradeGeniusBase"), "TradeGeniusBase missing"
-        assert issubclass(m.TradeGeniusVal, m.TradeGeniusBase), \
+        assert issubclass(m.TradeGeniusVal, m.TradeGeniusBase), (
             "TradeGeniusVal must subclass TradeGeniusBase"
+        )
         assert m.TradeGeniusVal.NAME == "Val", f"got {m.TradeGeniusVal.NAME!r}"
-        assert m.TradeGeniusVal.ENV_PREFIX == "VAL_", \
-            f"got {m.TradeGeniusVal.ENV_PREFIX!r}"
+        assert m.TradeGeniusVal.ENV_PREFIX == "VAL_", f"got {m.TradeGeniusVal.ENV_PREFIX!r}"
 
     @t("val: signal bus registration works")
     def _():
@@ -555,6 +627,7 @@ def run_local() -> int:
     @t("val: _emit_signal dispatches to all listeners")
     def _():
         import threading as _th
+
         evt = _th.Event()
         seen = {}
 
@@ -564,12 +637,16 @@ def run_local() -> int:
 
         m.register_signal_listener(_l)
         try:
-            m._emit_signal({
-                "kind": "ENTRY_LONG", "ticker": "TEST",
-                "price": 100.0, "reason": "BREAKOUT",
-                "timestamp_utc": "2026-04-24T00:00:00Z",
-                "main_shares": 10,
-            })
+            m._emit_signal(
+                {
+                    "kind": "ENTRY_LONG",
+                    "ticker": "TEST",
+                    "price": 100.0,
+                    "reason": "BREAKOUT",
+                    "timestamp_utc": "2026-04-24T00:00:00Z",
+                    "main_shares": 10,
+                }
+            )
             assert evt.wait(2.0), "listener did not fire within 2s"
             assert seen.get("ticker") == "TEST", f"got {seen!r}"
         finally:
@@ -610,6 +687,7 @@ def run_local() -> int:
         # Register a listener, call execute_entry indirectly via _emit_signal
         # contract, confirm event shape matches schema the hook emits.
         import threading as _th
+
         evt = _th.Event()
         captured = {}
 
@@ -619,15 +697,18 @@ def run_local() -> int:
 
         m.register_signal_listener(_l)
         try:
-            m._emit_signal({
-                "kind": "EOD_CLOSE_ALL", "ticker": "",
-                "price": 0.0, "reason": "EOD",
-                "timestamp_utc": "2026-04-24T20:55:00Z",
-                "main_shares": 0,
-            })
+            m._emit_signal(
+                {
+                    "kind": "EOD_CLOSE_ALL",
+                    "ticker": "",
+                    "price": 0.0,
+                    "reason": "EOD",
+                    "timestamp_utc": "2026-04-24T20:55:00Z",
+                    "main_shares": 0,
+                }
+            )
             assert evt.wait(2.0)
-            for key in ("kind", "ticker", "price", "reason",
-                        "timestamp_utc", "main_shares"):
+            for key in ("kind", "ticker", "price", "reason", "timestamp_utc", "main_shares"):
                 assert key in captured, f"event missing {key}"
             assert captured["kind"] == "EOD_CLOSE_ALL"
         finally:
@@ -637,11 +718,11 @@ def run_local() -> int:
     @t("gene: TradeGeniusGene class exists")
     def _():
         assert hasattr(m, "TradeGeniusGene"), "TradeGeniusGene missing"
-        assert issubclass(m.TradeGeniusGene, m.TradeGeniusBase), \
+        assert issubclass(m.TradeGeniusGene, m.TradeGeniusBase), (
             "TradeGeniusGene must subclass TradeGeniusBase"
+        )
         assert m.TradeGeniusGene.NAME == "Gene", f"got {m.TradeGeniusGene.NAME!r}"
-        assert m.TradeGeniusGene.ENV_PREFIX == "GENE_", \
-            f"got {m.TradeGeniusGene.ENV_PREFIX!r}"
+        assert m.TradeGeniusGene.ENV_PREFIX == "GENE_", f"got {m.TradeGeniusGene.ENV_PREFIX!r}"
 
     @t("gene: state file path segregates paper vs live")
     def _():
@@ -665,8 +746,11 @@ def run_local() -> int:
         # Seed a profitable open short: entry=100, current=95, shares=10
         # → correct unrealized P&L is +50 (short profits when price falls).
         m.short_positions["FAKE"] = {
-            "entry_price": 100.0, "shares": 10, "stop": 105.0,
-            "entry_time": "10:00", "date": today,
+            "entry_price": 100.0,
+            "shares": 10,
+            "stop": 105.0,
+            "entry_time": "10:00",
+            "date": today,
         }
         # Force the dashboard snapshot to use our fabricated mark. The
         # snapshot calls _price_for, which reads fetch_1min_bars — patch
@@ -684,37 +768,41 @@ def run_local() -> int:
         assert row.get("side") == "SHORT", f"side={row.get('side')}"
         unreal = row.get("unrealized", 0)
         assert unreal > 0, f"profitable short pnl must be POSITIVE, got {unreal}"
-        assert abs(unreal - 50.0) < 0.01, \
-            f"expected +50.0 unrealized, got {unreal}"
+        assert abs(unreal - 50.0) < 0.01, f"expected +50.0 unrealized, got {unreal}"
         m.short_positions.pop("FAKE", None)
 
     @t("shorts_pnl: positions text shows profitable short with +sign")
     def _():
         reset_state()
         m.short_positions["FAKE"] = {
-            "entry_price": 100.0, "shares": 10, "stop": 105.0,
-            "entry_time": "10:00", "date": today,
+            "entry_price": 100.0,
+            "shares": 10,
+            "stop": 105.0,
+            "entry_time": "10:00",
+            "date": today,
         }
         saved = m.fetch_1min_bars
         try:
-            m.fetch_1min_bars = lambda t: (
-                {"current_price": 95.0} if t == "FAKE" else saved(t)
-            )
+            m.fetch_1min_bars = lambda t: {"current_price": 95.0} if t == "FAKE" else saved(t)
             txt = m._build_positions_text()
         finally:
             m.fetch_1min_bars = saved
             m.short_positions.pop("FAKE", None)
         # Expect the positions text to render FAKE's short pnl positively.
         assert "FAKE" in txt, "FAKE missing from positions text"
-        assert "P&L $+50.00" in txt or "P&L $+50" in txt, \
+        assert "P&L $+50.00" in txt or "P&L $+50" in txt, (
             f"expected positive short pnl in output:\n{txt}"
+        )
 
     @t("shorts_pnl: realized short pnl storage is positive for profitable cover")
     def _():
         reset_state()
         m.short_positions["FAKE"] = {
-            "entry_price": 100.0, "shares": 10, "stop": 105.0,
-            "entry_time": "10:00", "date": today,
+            "entry_price": 100.0,
+            "shares": 10,
+            "stop": 105.0,
+            "entry_time": "10:00",
+            "date": today,
             "entry_count": 1,
         }
         # Swallow Telegram + state save side effects.
@@ -734,15 +822,16 @@ def run_local() -> int:
             m.save_paper_state = saved_save
 
     # ---------- v4.0.0-beta dashboard endpoints ----------
-    @t("dashboard: /api/executor/val endpoint exists and returns disabled gracefully when Val is off")
+    @t(
+        "dashboard: /api/executor/val endpoint exists and returns disabled gracefully when Val is off"
+    )
     def _():
         # Simulate Val disabled by making sure the module global is None.
         saved = getattr(m, "val_executor", None)
         try:
             m.val_executor = None
             payload = ds._executor_snapshot("val")
-            assert payload.get("enabled") is False, \
-                f"expected enabled=False, got {payload}"
+            assert payload.get("enabled") is False, f"expected enabled=False, got {payload}"
             assert "error" in payload, f"error field missing: {payload}"
         finally:
             m.val_executor = saved
@@ -758,8 +847,7 @@ def run_local() -> int:
             info = r.resource.get_info()
             paths.append(info.get("path") or info.get("formatter") or "")
         assert "/api/indices" in paths, f"/api/indices not registered: {paths}"
-        assert "/api/executor/{name}" in paths, \
-            f"/api/executor/{{name}} not registered: {paths}"
+        assert "/api/executor/{name}" in paths, f"/api/executor/{{name}} not registered: {paths}"
 
     @t("dashboard: /api/indices handles missing Alpaca client gracefully")
     def _():
@@ -772,8 +860,7 @@ def run_local() -> int:
             m.gene_executor = None
             payload = ds._fetch_indices()
             assert isinstance(payload, dict), f"want dict, got {type(payload)}"
-            assert payload.get("ok") is False, \
-                f"expected ok=False, got {payload}"
+            assert payload.get("ok") is False, f"expected ok=False, got {payload}"
         finally:
             m.val_executor = saved_val
             m.gene_executor = saved_gene
@@ -782,18 +869,22 @@ def run_local() -> int:
     @t("v4.11.0: error_state module imports and exposes API")
     def _():
         import error_state
-        assert callable(getattr(error_state, "record_error", None)), \
+
+        assert callable(getattr(error_state, "record_error", None)), (
             "error_state.record_error missing"
-        assert callable(getattr(error_state, "snapshot", None)), \
-            "error_state.snapshot missing"
-        assert callable(getattr(error_state, "reset_daily", None)), \
+        )
+        assert callable(getattr(error_state, "snapshot", None)), "error_state.snapshot missing"
+        assert callable(getattr(error_state, "reset_daily", None)), (
             "error_state.reset_daily missing"
-        assert callable(getattr(error_state, "_reset_for_tests", None)), \
+        )
+        assert callable(getattr(error_state, "_reset_for_tests", None)), (
             "error_state._reset_for_tests missing"
+        )
 
     @t("v4.11.0: record_error appends and snapshot reports green/warn/red")
     def _():
         import error_state
+
         error_state._reset_for_tests()
         snap = error_state.snapshot("main")
         assert snap["count"] == 0, f"expected 0, got {snap['count']}"
@@ -817,6 +908,7 @@ def run_local() -> int:
     @t("v4.11.0: record_error rings cap at 50 entries per executor")
     def _():
         import error_state
+
         error_state._reset_for_tests()
         for i in range(60):
             error_state.record_error("main", f"CODE{i}", "error", f"line {i}", ts=f"t{i}")
@@ -831,37 +923,38 @@ def run_local() -> int:
     @t("v4.11.0: dedup gate suppresses second send within cooldown")
     def _():
         import error_state
+
         error_state._reset_for_tests()
         # Inject a fake clock so cooldown is deterministic.
         clock = {"t": 1000.0}
+
         def now_fn():
             return clock["t"]
-        first = error_state.record_error("main", "DEDUP_CODE", "error", "x",
-                                         ts="t1", now_fn=now_fn)
+
+        first = error_state.record_error("main", "DEDUP_CODE", "error", "x", ts="t1", now_fn=now_fn)
         assert first is True, "first event must dispatch"
-        second = error_state.record_error("main", "DEDUP_CODE", "error", "x",
-                                          ts="t2", now_fn=now_fn)
+        second = error_state.record_error(
+            "main", "DEDUP_CODE", "error", "x", ts="t2", now_fn=now_fn
+        )
         assert second is False, "second within cooldown must NOT dispatch"
         # Advance past 5-min cooldown; next must dispatch.
         clock["t"] += 301.0
-        third = error_state.record_error("main", "DEDUP_CODE", "error", "x",
-                                         ts="t3", now_fn=now_fn)
+        third = error_state.record_error("main", "DEDUP_CODE", "error", "x", ts="t3", now_fn=now_fn)
         assert third is True, "after cooldown event must dispatch again"
         error_state._reset_for_tests()
 
     @t("v4.11.0: reset_daily clears all three executors and dedup")
     def _():
         import error_state
+
         error_state._reset_for_tests()
         for ex in ("main", "val", "gene"):
             error_state.record_error(ex, "X", "error", "y", ts="t")
         for ex in ("main", "val", "gene"):
-            assert error_state.snapshot(ex)["count"] == 1, \
-                f"{ex} did not record"
+            assert error_state.snapshot(ex)["count"] == 1, f"{ex} did not record"
         error_state.reset_daily()
         for ex in ("main", "val", "gene"):
-            assert error_state.snapshot(ex)["count"] == 0, \
-                f"{ex} did not reset"
+            assert error_state.snapshot(ex)["count"] == 0, f"{ex} did not reset"
         # Per-executor reset only clears that executor.
         error_state.record_error("val", "Y", "error", "z", ts="t")
         error_state.record_error("gene", "Y", "error", "z", ts="t")
@@ -873,6 +966,7 @@ def run_local() -> int:
     @t("v4.11.0: record_error normalizes unknown executor and severity")
     def _():
         import error_state
+
         error_state._reset_for_tests()
         # Unknown executor falls back to main; unknown severity falls back to error.
         error_state.record_error("ROGUE", "Q", "weird", "y", ts="t")
@@ -882,8 +976,7 @@ def run_local() -> int:
 
     @t("v4.11.0: report_error wrapper exists and routes")
     def _():
-        assert callable(getattr(m, "report_error", None)), \
-            "trade_genius.report_error missing"
+        assert callable(getattr(m, "report_error", None)), "trade_genius.report_error missing"
 
     @t("v4.11.0: /api/errors/{executor} route registered")
     def _():
@@ -892,14 +985,17 @@ def run_local() -> int:
         for r in app.router.routes():
             info = r.resource.get_info()
             paths.append(info.get("path") or info.get("formatter") or "")
-        assert "/api/errors/{executor}" in paths, \
+        assert "/api/errors/{executor}" in paths, (
             f"/api/errors/{{executor}} not registered: {paths}"
+        )
 
     @t("v4.11.0: /api/state embeds errors snapshot")
     def _():
         snap = ds.snapshot()
         assert "errors" in snap, f"errors missing in /api/state: {list(snap.keys())[:20]}"
-        assert isinstance(snap["errors"], dict), f"errors should be dict, got {type(snap['errors'])}"
+        assert isinstance(snap["errors"], dict), (
+            f"errors should be dict, got {type(snap['errors'])}"
+        )
         for k in ("count", "severity", "entries", "executor"):
             assert k in snap["errors"], f"errors.{k} missing"
 
@@ -925,13 +1021,13 @@ def run_local() -> int:
     @t("v4.12.0: _fetch_indices payload exposes session + per-row ah keys")
     def _():
         payload = ds._fetch_indices()
-        assert "session" in payload, \
-            f"top-level session key missing: {list(payload.keys())}"
+        assert "session" in payload, f"top-level session key missing: {list(payload.keys())}"
         assert payload["session"] in ("rth", "pre", "post", "closed")
         for row in payload.get("indices", []):
             for k in ("ah", "ah_change", "ah_change_pct"):
-                assert k in row, \
+                assert k in row, (
                     f"row missing {k!r}: symbol={row.get('symbol')!r} keys={list(row.keys())}"
+                )
 
     # ---------- v4.13.0 \u2014 Yahoo cash indices + futures badge ----------
     @t("v4.13.0: _fetch_yahoo_quote_one returns None for a junk symbol")
@@ -947,8 +1043,9 @@ def run_local() -> int:
     def _():
         # Empty list short-circuits without touching the network.
         out = ds._fetch_yahoo_quotes([])
-        assert isinstance(out, dict) and out == {}, \
+        assert isinstance(out, dict) and out == {}, (
             f"empty input should yield empty dict, got {out!r}"
+        )
 
     @t("v4.13.0: _fetch_indices payload exposes yahoo_ok and futures schema")
     def _():
@@ -959,10 +1056,10 @@ def run_local() -> int:
         # function got past the Alpaca block, signalled by ok=True.
         if not payload.get("ok"):
             return  # Alpaca early-return path; nothing to check here.
-        assert "yahoo_ok" in payload, \
-            f"yahoo_ok missing from payload keys: {list(payload.keys())}"
-        assert isinstance(payload["yahoo_ok"], bool), \
+        assert "yahoo_ok" in payload, f"yahoo_ok missing from payload keys: {list(payload.keys())}"
+        assert isinstance(payload["yahoo_ok"], bool), (
             f"yahoo_ok must be bool, got {type(payload['yahoo_ok']).__name__}"
+        )
         # Cash-index rows (when present) must carry display_label, and any
         # future sub-object must include change_pct (the only field the
         # frontend renders). ETF rows have no display_label/future keys
@@ -972,19 +1069,17 @@ def run_local() -> int:
             sym = row.get("symbol", "")
             if sym in ds._YAHOO_CASH_SYMBOLS:
                 cash_seen = True
-                assert row.get("display_label"), \
-                    f"cash row {sym} missing display_label: {row}"
+                assert row.get("display_label"), f"cash row {sym} missing display_label: {row}"
                 fut = row.get("future")
                 if fut is not None:
-                    assert "change_pct" in fut, \
+                    assert "change_pct" in fut, (
                         f"future sub-object missing change_pct on {sym}: {fut}"
-                    assert "label" in fut, \
-                        f"future sub-object missing label on {sym}: {fut}"
+                    )
+                    assert "label" in fut, f"future sub-object missing label on {sym}: {fut}"
         # If yahoo_ok is True we must have produced at least one cash row;
         # if False, the failure mode is degraded and we accept zero.
         if payload["yahoo_ok"]:
-            assert cash_seen, \
-                "yahoo_ok=True but no cash-index rows in payload"
+            assert cash_seen, "yahoo_ok=True but no cash-index rows in payload"
 
     @t("v4.13.0: cash/futures symbol lists are mutually exclusive")
     def _():
@@ -993,7 +1088,7 @@ def run_local() -> int:
         # own row instead of riding inside ^GSPC. The two lists must stay
         # disjoint.
         cash = set(ds._YAHOO_CASH_SYMBOLS)
-        fut  = set(ds._YAHOO_FUTURES_SYMBOLS)
+        fut = set(ds._YAHOO_FUTURES_SYMBOLS)
         overlap = cash & fut
         assert not overlap, f"cash and futures lists overlap: {overlap}"
 
@@ -1002,50 +1097,55 @@ def run_local() -> int:
         # The ring-buffer log handler and /stream logs SSE event were
         # deprecated in favor of the per-executor health pill. Asserting
         # absence guards against a partial revert.
-        for name in ("_LOG_BUFFER_SIZE", "_log_buffer", "_log_seq",
-                     "_RingBufferHandler", "_install_log_handler",
-                     "_logs_since"):
-            assert not hasattr(ds, name), \
-                f"v4.11.0: dashboard_server.{name} should be removed"
+        for name in (
+            "_LOG_BUFFER_SIZE",
+            "_log_buffer",
+            "_log_seq",
+            "_RingBufferHandler",
+            "_install_log_handler",
+            "_logs_since",
+        ):
+            assert not hasattr(ds, name), f"v4.11.0: dashboard_server.{name} should be removed"
 
     # ---------- v4.3.0 extended-entry guards ----------
     @t("guard: env flags exist with documented defaults")
     def _():
-        assert hasattr(m, "ENTRY_EXTENSION_MAX_PCT"), \
-            "ENTRY_EXTENSION_MAX_PCT missing"
-        assert hasattr(m, "ENTRY_STOP_CAP_REJECT"), \
-            "ENTRY_STOP_CAP_REJECT missing"
+        assert hasattr(m, "ENTRY_EXTENSION_MAX_PCT"), "ENTRY_EXTENSION_MAX_PCT missing"
+        assert hasattr(m, "ENTRY_STOP_CAP_REJECT"), "ENTRY_STOP_CAP_REJECT missing"
         assert isinstance(m.ENTRY_EXTENSION_MAX_PCT, float)
         assert isinstance(m.ENTRY_STOP_CAP_REJECT, bool)
         # Defaults: 1.5% extension, reject-on-cap ON.
-        assert abs(m.ENTRY_EXTENSION_MAX_PCT - 1.5) < 1e-9, \
+        assert abs(m.ENTRY_EXTENSION_MAX_PCT - 1.5) < 1e-9, (
             f"expected 1.5, got {m.ENTRY_EXTENSION_MAX_PCT}"
-        assert m.ENTRY_STOP_CAP_REJECT is True, \
-            f"expected True, got {m.ENTRY_STOP_CAP_REJECT}"
+        )
+        assert m.ENTRY_STOP_CAP_REJECT is True, f"expected True, got {m.ENTRY_STOP_CAP_REJECT}"
 
     @t("guard: long extension 0.5% under 1.5% cap is allowed")
     def _():
         or_hi = 100.0
         price = or_hi * 1.005  # 0.5% extended
         ext = (price - or_hi) / or_hi * 100.0
-        assert ext <= m.ENTRY_EXTENSION_MAX_PCT, \
+        assert ext <= m.ENTRY_EXTENSION_MAX_PCT, (
             f"ext {ext:.2f}% should be <= {m.ENTRY_EXTENSION_MAX_PCT}%"
+        )
 
     @t("guard: long extension 2.0% over 1.5% cap is rejected")
     def _():
         or_hi = 100.0
         price = or_hi * 1.02  # 2.0% extended
         ext = (price - or_hi) / or_hi * 100.0
-        assert ext > m.ENTRY_EXTENSION_MAX_PCT, \
+        assert ext > m.ENTRY_EXTENSION_MAX_PCT, (
             f"ext {ext:.2f}% should be > {m.ENTRY_EXTENSION_MAX_PCT}%"
+        )
 
     @t("guard: short extension 2.0% below OR_Low is rejected")
     def _():
         or_lo = 100.0
         price = or_lo * 0.98  # 2.0% extended below
         ext = (or_lo - price) / or_lo * 100.0
-        assert ext > m.ENTRY_EXTENSION_MAX_PCT, \
+        assert ext > m.ENTRY_EXTENSION_MAX_PCT, (
             f"ext {ext:.2f}% should be > {m.ENTRY_EXTENSION_MAX_PCT}%"
+        )
 
     @t("guard: _capped_long_stop flags capped when baseline is too loose")
     def _():
@@ -1070,8 +1170,7 @@ def run_local() -> int:
         # baseline=99.10, floor=99.25 → still capped. Use entry=200,
         # or_h=200 → baseline=199.10, floor=198.50 → NOT capped.
         stop, capped, base = m._capped_long_stop(200.0, 200.0)
-        assert capped is False, \
-            f"expected capped=False for entry at OR edge, got capped={capped}"
+        assert capped is False, f"expected capped=False for entry at OR edge, got capped={capped}"
 
     @t("guard: _capped_short_stop flags capped when baseline is too loose")
     def _():
@@ -1094,8 +1193,7 @@ def run_local() -> int:
             # entries on this path would still get a capped stop (old
             # behavior), NOT be rejected.
             stop, capped, base = m._capped_long_stop(659.85, 677.06)
-            assert capped is True, \
-                "capping machinery must stay intact when reject flag is off"
+            assert capped is True, "capping machinery must stay intact when reject flag is off"
         finally:
             m.ENTRY_STOP_CAP_REJECT = saved_flag
 
@@ -1118,10 +1216,9 @@ def run_local() -> int:
         saved_di = m.tiger_di
         try:
             m.fetch_1min_bars = lambda t: {
-                "current_price": 102.0 if t == "ZZZZ" else (
-                    501.0 if t == "SPY" else 401.0
-                ),
-                "closes": [], "volumes": [],
+                "current_price": 102.0 if t == "ZZZZ" else (501.0 if t == "SPY" else 401.0),
+                "closes": [],
+                "volumes": [],
             }
             m.get_fmp_quote = lambda t: None
             m.tiger_di = lambda t: (None, None)  # warmup OK
@@ -1130,8 +1227,9 @@ def run_local() -> int:
             assert "extension_pct" in snap, f"extension_pct missing: {snap}"
             # Price 102 vs OR_High 100 → 2.00% extended on the LONG side.
             assert snap["side"] == "LONG", f"side={snap.get('side')}"
-            assert abs(snap["extension_pct"] - 2.0) < 0.01, \
+            assert abs(snap["extension_pct"] - 2.0) < 0.01, (
                 f"expected 2.0, got {snap['extension_pct']}"
+            )
         finally:
             m.fetch_1min_bars = saved_bars
             m.get_fmp_quote = saved_fmp
@@ -1144,6 +1242,7 @@ def run_local() -> int:
     # ---------- regime: banner unsticking after market close (v4.4.1) ----------
     import datetime as _dt_mod  # local alias so tests can build fixed ET datetimes.
     from zoneinfo import ZoneInfo as _ZI
+
     _ET = _ZI("America/New_York")
 
     def _freeze_et(fake_et):
@@ -1169,12 +1268,13 @@ def run_local() -> int:
         m._scan_idle_hours = False
         try:
             m.scan_loop()
-            assert m._current_mode == m.MarketMode.CLOSED, \
-                f"expected CLOSED, got {m._current_mode}"
-            assert m._current_mode_reason == "outside market hours", \
+            assert m._current_mode == m.MarketMode.CLOSED, f"expected CLOSED, got {m._current_mode}"
+            assert m._current_mode_reason == "outside market hours", (
                 f"expected 'outside market hours', got {m._current_mode_reason!r}"
-            assert m._scan_idle_hours is True, \
+            )
+            assert m._scan_idle_hours is True, (
                 f"expected _scan_idle_hours True after close, got {m._scan_idle_hours}"
+            )
         finally:
             m._now_et = saved
 
@@ -1189,12 +1289,13 @@ def run_local() -> int:
         m._scan_idle_hours = False
         try:
             m.scan_loop()
-            assert m._current_mode == m.MarketMode.CLOSED, \
-                f"expected CLOSED, got {m._current_mode}"
-            assert m._current_mode_reason == "weekend", \
+            assert m._current_mode == m.MarketMode.CLOSED, f"expected CLOSED, got {m._current_mode}"
+            assert m._current_mode_reason == "weekend", (
                 f"expected 'weekend', got {m._current_mode_reason!r}"
-            assert m._scan_idle_hours is True, \
+            )
+            assert m._scan_idle_hours is True, (
                 f"expected _scan_idle_hours True on weekend, got {m._scan_idle_hours}"
+            )
         finally:
             m._now_et = saved
 
@@ -1208,29 +1309,30 @@ def run_local() -> int:
         try:
             # scan_loop runs the full intraday path; stub the heavy bits that
             # aren't under test. We only care about _scan_idle_hours here.
-            saved_manage     = m.manage_positions
-            saved_manage_s   = m.manage_short_positions
+            saved_manage = m.manage_positions
+            saved_manage_s = m.manage_short_positions
             saved_hard_eject = m._tiger_hard_eject_check
-            saved_check      = m.check_entry
-            saved_check_s    = m.check_short_entry
-            saved_bars       = m.fetch_1min_bars
-            m.manage_positions         = lambda: None
-            m.manage_short_positions   = lambda: None
-            m._tiger_hard_eject_check  = lambda: None
-            m.check_entry              = lambda *a, **kw: None
-            m.check_short_entry        = lambda *a, **kw: None
-            m.fetch_1min_bars          = lambda t: None
+            saved_check = m.check_entry
+            saved_check_s = m.check_short_entry
+            saved_bars = m.fetch_1min_bars
+            m.manage_positions = lambda: None
+            m.manage_short_positions = lambda: None
+            m._tiger_hard_eject_check = lambda: None
+            m.check_entry = lambda *a, **kw: None
+            m.check_short_entry = lambda *a, **kw: None
+            m.fetch_1min_bars = lambda t: None
             try:
                 m.scan_loop()
             finally:
-                m.manage_positions        = saved_manage
-                m.manage_short_positions  = saved_manage_s
+                m.manage_positions = saved_manage
+                m.manage_short_positions = saved_manage_s
                 m._tiger_hard_eject_check = saved_hard_eject
-                m.check_entry             = saved_check
-                m.check_short_entry       = saved_check_s
-                m.fetch_1min_bars         = saved_bars
-            assert m._scan_idle_hours is False, \
+                m.check_entry = saved_check
+                m.check_short_entry = saved_check_s
+                m.fetch_1min_bars = saved_bars
+            assert m._scan_idle_hours is False, (
                 f"expected _scan_idle_hours False during trading hours, got {m._scan_idle_hours}"
+            )
         finally:
             m._now_et = saved
 
@@ -1239,19 +1341,22 @@ def run_local() -> int:
         reset_state()
         fake_et = _dt_mod.datetime(2026, 4, 22, 17, 0, 0, tzinfo=_ET)
         saved = _freeze_et(fake_et)
-        m._scan_paused = False         # user-pause is off
-        m._scan_idle_hours = False     # will be set True by scan_loop
+        m._scan_paused = False  # user-pause is off
+        m._scan_idle_hours = False  # will be set True by scan_loop
         try:
             m.scan_loop()
             # Now ask the dashboard serializer for a state snapshot. It
             # reads module globals directly, so we just call the builder.
             payload = ds.snapshot()
-            assert payload["gates"]["scan_paused"] is True, \
+            assert payload["gates"]["scan_paused"] is True, (
                 f"expected scan_paused True after close, got {payload['gates']['scan_paused']}"
-            assert payload["regime"]["mode"] == "CLOSED", \
+            )
+            assert payload["regime"]["mode"] == "CLOSED", (
                 f"expected regime.mode CLOSED, got {payload['regime']['mode']}"
-            assert payload["regime"]["mode_reason"] == "outside market hours", \
+            )
+            assert payload["regime"]["mode_reason"] == "outside market hours", (
                 f"expected 'outside market hours', got {payload['regime']['mode_reason']!r}"
+            )
         finally:
             m._now_et = saved
             m._scan_idle_hours = False
@@ -1260,36 +1365,43 @@ def run_local() -> int:
     @t("v4.6.0: paper_state module imports cleanly")
     def _():
         import paper_state  # noqa: F401
-        assert hasattr(paper_state, "save_paper_state"), \
-            "paper_state.save_paper_state missing"
-        assert hasattr(paper_state, "load_paper_state"), \
-            "paper_state.load_paper_state missing"
-        assert hasattr(paper_state, "_do_reset_paper"), \
-            "paper_state._do_reset_paper missing"
+
+        assert hasattr(paper_state, "save_paper_state"), "paper_state.save_paper_state missing"
+        assert hasattr(paper_state, "load_paper_state"), "paper_state.load_paper_state missing"
+        assert hasattr(paper_state, "_do_reset_paper"), "paper_state._do_reset_paper missing"
 
     @t("v4.6.0: paper_state.save_paper_state is re-exported by trade_genius")
     def _():
         import paper_state
-        assert m.save_paper_state is paper_state.save_paper_state, \
-            "trade_genius.save_paper_state is not the same callable as " \
+
+        assert m.save_paper_state is paper_state.save_paper_state, (
+            "trade_genius.save_paper_state is not the same callable as "
             "paper_state.save_paper_state \u2014 re-export broken"
-        assert m.load_paper_state is paper_state.load_paper_state, \
+        )
+        assert m.load_paper_state is paper_state.load_paper_state, (
             "trade_genius.load_paper_state re-export broken"
-        assert m._do_reset_paper is paper_state._do_reset_paper, \
+        )
+        assert m._do_reset_paper is paper_state._do_reset_paper, (
             "trade_genius._do_reset_paper re-export broken"
+        )
 
     @t("v4.6.0: paper_state owns _state_loaded and _paper_save_lock")
     def _():
         import paper_state
-        assert hasattr(paper_state, "_state_loaded"), \
+
+        assert hasattr(paper_state, "_state_loaded"), (
             "paper_state._state_loaded missing \u2014 should be owned by paper_state"
-        assert hasattr(paper_state, "_paper_save_lock"), \
+        )
+        assert hasattr(paper_state, "_paper_save_lock"), (
             "paper_state._paper_save_lock missing \u2014 should be owned by paper_state"
+        )
         # And the originals must NOT live on trade_genius any more.
-        assert not hasattr(m, "_state_loaded"), \
+        assert not hasattr(m, "_state_loaded"), (
             "v4.6.0: trade_genius._state_loaded should have moved to paper_state"
-        assert not hasattr(m, "_paper_save_lock"), \
+        )
+        assert not hasattr(m, "_paper_save_lock"), (
             "v4.6.0: trade_genius._paper_save_lock should have moved to paper_state"
+        )
 
     # ---------- v4.7.0 \u2014 long/short harmonization ----------
     @t("v4.7.0: check_entry and check_short_entry both return (bool, bars)")
@@ -1298,11 +1410,10 @@ def run_local() -> int:
         # the unified check_breakout(side) body. Inspect that single body
         # \u2014 it returns the (bool, bars) tuple on every code path.
         import inspect
+
         src = inspect.getsource(m.check_breakout)
-        assert "return False, None" in src, \
-            "check_breakout should return (False, None) on guards"
-        assert "return True, bars" in src, \
-            "check_breakout should return (True, bars) on success"
+        assert "return False, None" in src, "check_breakout should return (False, None) on guards"
+        assert "return True, bars" in src, "check_breakout should return (True, bars) on success"
 
     @t("v4.7.0: daily_short_entry_date resets daily_short_entry_count on new day")
     def _():
@@ -1319,6 +1430,7 @@ def run_local() -> int:
             # Pin _now_et to a known mid-session time so the time gate
             # doesn't short-circuit before the reset block runs.
             from datetime import datetime, timezone, timedelta
+
             saved_now = m._now_et
             m._now_et = lambda: datetime.now(timezone(timedelta(hours=-4))).replace(
                 hour=10, minute=30, second=0, microsecond=0
@@ -1328,10 +1440,12 @@ def run_local() -> int:
             finally:
                 m._now_et = saved_now
             today = m._now_et().strftime("%Y-%m-%d")
-            assert m.daily_short_entry_date == today, \
+            assert m.daily_short_entry_date == today, (
                 f"date not reset: {m.daily_short_entry_date!r}"
-            assert m.daily_short_entry_count.get("AAPL", 0) == 0, \
+            )
+            assert m.daily_short_entry_count.get("AAPL", 0) == 0, (
                 f"count not cleared: {dict(m.daily_short_entry_count)}"
+            )
         finally:
             m.daily_short_entry_date = saved_date
             m.daily_short_entry_count.clear()
@@ -1352,16 +1466,20 @@ def run_local() -> int:
             today = m._now_et().strftime("%Y-%m-%d")
             # Synthesize a closed-long loss row that exceeds DAILY_LOSS_LIMIT.
             m.paper_trades.clear()
-            m.paper_trades.append({
-                "ticker": "ZZZZ", "action": "SELL", "date": today,
-                "pnl": m.DAILY_LOSS_LIMIT - 100.0,  # already past the limit
-            })
+            m.paper_trades.append(
+                {
+                    "ticker": "ZZZZ",
+                    "action": "SELL",
+                    "date": today,
+                    "pnl": m.DAILY_LOSS_LIMIT - 100.0,  # already past the limit
+                }
+            )
             m.short_positions.clear()
             m.execute_short_entry("AAPL", 150.0)
-            assert m._trading_halted, \
-                "execute_short_entry did not halt trading on loss limit"
-            assert "AAPL" not in m.short_positions, \
+            assert m._trading_halted, "execute_short_entry did not halt trading on loss limit"
+            assert "AAPL" not in m.short_positions, (
                 "execute_short_entry opened a short despite halt"
+            )
         finally:
             m._trading_halted = saved_halted
             m._trading_halted_reason = saved_reason
@@ -1376,32 +1494,44 @@ def run_local() -> int:
         # the unified execute_breakout body. The single body calls
         # _check_daily_loss_limit once for both sides.
         import inspect
-        assert callable(getattr(m, "_check_daily_loss_limit", None)), \
+
+        assert callable(getattr(m, "_check_daily_loss_limit", None)), (
             "_check_daily_loss_limit helper missing"
+        )
         src = inspect.getsource(m.execute_breakout)
-        assert "_check_daily_loss_limit" in src, \
+        assert "_check_daily_loss_limit" in src, (
             "execute_breakout does not call _check_daily_loss_limit"
+        )
 
     @t("v4.7.0: _ticker_today_realized_pnl helper exists and aggregates long+short closed trades")
     def _():
-        assert callable(getattr(m, "_ticker_today_realized_pnl", None)), \
+        assert callable(getattr(m, "_ticker_today_realized_pnl", None)), (
             "_ticker_today_realized_pnl helper missing"
+        )
         from datetime import datetime, timezone
+
         saved_th = list(m.trade_history)
         saved_sth = list(m.short_trade_history)
         try:
             now_iso = datetime.now(timezone.utc).isoformat()
             m.trade_history.clear()
-            m.trade_history.append({
-                "ticker": "XYZ", "pnl": 30.0, "exit_time_iso": now_iso,
-            })
+            m.trade_history.append(
+                {
+                    "ticker": "XYZ",
+                    "pnl": 30.0,
+                    "exit_time_iso": now_iso,
+                }
+            )
             m.short_trade_history.clear()
-            m.short_trade_history.append({
-                "ticker": "XYZ", "pnl": -20.0, "exit_time_iso": now_iso,
-            })
+            m.short_trade_history.append(
+                {
+                    "ticker": "XYZ",
+                    "pnl": -20.0,
+                    "exit_time_iso": now_iso,
+                }
+            )
             total = m._ticker_today_realized_pnl("XYZ")
-            assert abs(total - 10.0) < 0.01, \
-                f"expected $10 net, got ${total:.2f}"
+            assert abs(total - 10.0) < 0.01, f"expected $10 net, got ${total:.2f}"
         finally:
             m.trade_history.clear()
             m.trade_history.extend(saved_th)
@@ -1411,27 +1541,32 @@ def run_local() -> int:
     @t("v4.7.0: scan_loop calls execute_short_entry after check_short_entry returns True")
     def _():
         import inspect
+
         scan_src = inspect.getsource(m.scan_loop)
         # The new control flow: capture (ok, bars) tuple then call execute.
-        assert "check_short_entry(ticker)" in scan_src, \
+        assert "check_short_entry(ticker)" in scan_src, (
             "scan_loop should call check_short_entry(ticker)"
-        assert "execute_short_entry(ticker" in scan_src, \
+        )
+        assert "execute_short_entry(ticker" in scan_src, (
             "scan_loop should call execute_short_entry(ticker, ...) on True"
+        )
         # And the new pattern uses ok/bars symmetrically with long.
-        assert scan_src.count("execute_short_entry") >= 1, \
+        assert scan_src.count("execute_short_entry") >= 1, (
             "scan_loop missing execute_short_entry call"
+        )
 
     @t("v4.7.0: daily_short_entry_date persists across save/load round-trip")
     def _():
         import paper_state
-        import tempfile, os, json
+        import tempfile
+        import os
+        import json
+
         saved_file = m.PAPER_STATE_FILE
         saved_date = m.daily_short_entry_date
         saved_loaded = paper_state._state_loaded
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False
-            ) as f:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
                 tmp_path = f.name
             m.PAPER_STATE_FILE = tmp_path
             paper_state._state_loaded = True
@@ -1439,12 +1574,14 @@ def run_local() -> int:
             m.save_paper_state()
             with open(tmp_path) as f:
                 disk = json.load(f)
-            assert disk.get("daily_short_entry_date") == "2026-04-24", \
+            assert disk.get("daily_short_entry_date") == "2026-04-24", (
                 f"date not in disk state: {disk.get('daily_short_entry_date')!r}"
+            )
             m.daily_short_entry_date = "WRONG"
             m.load_paper_state()
-            assert m.daily_short_entry_date == "2026-04-24", \
+            assert m.daily_short_entry_date == "2026-04-24", (
                 f"date not restored: {m.daily_short_entry_date!r}"
+            )
         finally:
             try:
                 os.unlink(tmp_path)
@@ -1463,6 +1600,7 @@ def run_local() -> int:
     @t("v4.9.1: rate-limiter blocks 6th attempt within window")
     def _():
         import dashboard_server as ds
+
         # Save and reset state so this test is hermetic.
         saved = dict(ds._login_attempts)
         ds._login_attempts.clear()
@@ -1470,8 +1608,9 @@ def run_local() -> int:
             ip = "203.0.113.7"
             results = [ds._rate_limit_check(ip) for _ in range(7)]
             # First 5 allowed, 6th and 7th blocked.
-            assert results == [True, True, True, True, True, False, False], \
+            assert results == [True, True, True, True, True, False, False], (
                 f"unexpected sequence: {results}"
+            )
         finally:
             ds._login_attempts.clear()
             ds._login_attempts.update(saved)
@@ -1479,6 +1618,7 @@ def run_local() -> int:
     @t("v4.9.1: rate-limiter buckets per-IP independently")
     def _():
         import dashboard_server as ds
+
         saved = dict(ds._login_attempts)
         ds._login_attempts.clear()
         try:
@@ -1495,6 +1635,7 @@ def run_local() -> int:
     @t("v4.9.1: /api/version endpoint registered")
     def _():
         import dashboard_server as ds
+
         app = ds._build_app()
         paths = [r.resource.canonical for r in app.router.routes()]
         assert "/api/version" in paths, f"/api/version not registered; got {paths}"
@@ -1507,13 +1648,17 @@ def run_local() -> int:
         # request time and returned {"version": "?"}. Exercise the
         # handler directly so a stale helper name fails loudly.
         import dashboard_server as ds
-        import asyncio, json
-        class _Req: pass
+        import asyncio
+        import json
+
+        class _Req:
+            pass
+
         resp = asyncio.new_event_loop().run_until_complete(ds.h_version(_Req()))
         body = json.loads(resp.body.decode())
-        assert body.get("version") == m.BOT_VERSION, \
+        assert body.get("version") == m.BOT_VERSION, (
             f"/api/version returned {body!r}, want version={m.BOT_VERSION!r}"
-
+        )
 
     # ============================================================
     # v5.0.0 \u2014 Tiger/Buffalo state-machine tests
@@ -1536,14 +1681,23 @@ def run_local() -> int:
 
     @t("v5 module: BOT_VERSION matches v5 major")
     def _():
-        assert m.BOT_VERSION.startswith("5."), \
-            f"v5.x expected, got {m.BOT_VERSION}"
+        assert m.BOT_VERSION.startswith("5."), f"v5.x expected, got {m.BOT_VERSION}"
 
     @t("v5 module: state names match spec D")
     def _():
-        for name in ("IDLE","ARMED","STAGE_1","STAGE_2","TRAILING",
-                     "EXITED","RE_HUNT_PENDING","LOCKED_FOR_DAY"):
-            assert getattr(v5, "STATE_" + (name if name != "LOCKED_FOR_DAY" else "LOCKED")) is not None, name
+        for name in (
+            "IDLE",
+            "ARMED",
+            "STAGE_1",
+            "STAGE_2",
+            "TRAILING",
+            "EXITED",
+            "RE_HUNT_PENDING",
+            "LOCKED_FOR_DAY",
+        ):
+            assert (
+                getattr(v5, "STATE_" + (name if name != "LOCKED_FOR_DAY" else "LOCKED")) is not None
+            ), name
         assert "STAGE_1" in v5.ALL_STATES
 
     @t("v5 module: DMI period is 15 (C-R2)")
@@ -1558,12 +1712,12 @@ def run_local() -> int:
         assert v5.STAGE2_DI_THRESHOLD == 30.0
         assert v5.HARD_EXIT_DI_THRESHOLD == 25.0
 
-    # ---------- L-P1: Long Permission Gates (v5.6.0 unified AVWAP) ----------
-    # Signature: gates_pass_long(qqq_last, qqq_avwap, ticker_last, ticker_avwap, or_high)
-    @t("v5.6.0 L-P1-G1: long requires QQQ.last > QQQ.Opening_AVWAP")
+    # ---------- L-P1: Long Permission Gates (v5.9.0 EMA cross + ticker AVWAP + OR) ----------
+    # Signature: gates_pass_long(qqq_5m_3ema, qqq_5m_9ema, ticker_last, ticker_avwap, or_high)
+    @t("v5.9.0 L-P1-G1: long requires QQQ 5m EMA3 > EMA9")
     def _():
-        assert not v5.gates_pass_long(100, 100, 50, 40, 45)  # QQQ equal
-        assert not v5.gates_pass_long(99, 100, 50, 40, 45)   # QQQ below
+        assert not v5.gates_pass_long(100, 100, 50, 40, 45)  # FLAT (equal) FAILs
+        assert not v5.gates_pass_long(99, 100, 50, 40, 45)  # EMA3 below EMA9
         assert v5.gates_pass_long(101, 100, 50, 40, 45)
 
     @t("v5.6.0 L-P1-G3: long requires ticker.last > ticker.Opening_AVWAP")
@@ -1578,9 +1732,9 @@ def run_local() -> int:
         assert not v5.gates_pass_long(101, 100, 44, 40, 45)
         assert v5.gates_pass_long(101, 100, 46, 40, 45)
 
-    @t("v5.6.0 L-P1: AVWAP None FAILs G1/G3 deterministically")
+    @t("v5.9.0 L-P1: EMA warmup (None) FAILs G1; ticker AVWAP None FAILs G3")
     def _():
-        # qqq_avwap None => G1 fails
+        # qqq_5m_9ema None => G1 fails (warmup)
         assert not v5.gates_pass_long(101, None, 50, 40, 45)
         # ticker_avwap None => G3 fails
         assert not v5.gates_pass_long(101, 100, 50, None, 45)
@@ -1590,7 +1744,7 @@ def run_local() -> int:
         # or_high None (pre-9:35) => G4 fails, no raise
         assert v5.gates_pass_long(101, 100, 50, 40, None) is False
 
-    @t("v5.6.0 L-P1: any None input fails closed (smoke)")
+    @t("v5.9.0 L-P1: any None input fails closed (smoke)")
     def _():
         assert not v5.gates_pass_long(None, 100, 50, 40, 45)
         assert not v5.gates_pass_long(101, 100, None, 40, 45)
@@ -1607,18 +1761,18 @@ def run_local() -> int:
     def _():
         # Single confirmation must NOT fire entry; second consecutive does.
         track = v5.new_track(v5.DIR_LONG)
-        assert not v5.tick_stage1_confirm(track, True)   # 1st confirm
-        fired = v5.tick_stage1_confirm(track, True)      # 2nd confirm
+        assert not v5.tick_stage1_confirm(track, True)  # 1st confirm
+        fired = v5.tick_stage1_confirm(track, True)  # 2nd confirm
         assert fired, "expected fire on 2nd consecutive confirm"
 
     @t("v5 L-P2-R2: a missed confirm RESETS the counter")
     def _():
         # If signal flips false between confirms, counter resets per spec.
         track = v5.new_track(v5.DIR_LONG)
-        v5.tick_stage1_confirm(track, True)              # confirms=1
+        v5.tick_stage1_confirm(track, True)  # confirms=1
         assert not v5.tick_stage1_confirm(track, False)  # reset to 0
         assert track["stage1_confirms"] == 0
-        assert not v5.tick_stage1_confirm(track, True)   # back to 1
+        assert not v5.tick_stage1_confirm(track, True)  # back to 1
 
     @t("v5 L-P2-R3: stage-1 entry transitions track to STAGE_1 with 50% sizing flag")
     def _():
@@ -1646,7 +1800,7 @@ def run_local() -> int:
     # ---------- L-P3: Stage 2 Strike ----------
     @t("v5 L-P3-R1: stage-2 long needs DI+(1m)>30")
     def _():
-        assert not v5.stage2_signal_long(30)   # equality fails strict >
+        assert not v5.stage2_signal_long(30)  # equality fails strict >
         assert not v5.stage2_signal_long(29)
         assert v5.stage2_signal_long(31)
 
@@ -1677,23 +1831,22 @@ def run_local() -> int:
         track = v5.new_track(v5.DIR_LONG)
         v5.transition_to_stage1(track, fill_price=100.0, initial_stop=98.0)
         v5.transition_to_stage2(track)
-        assert track["current_stop"] == 100.0, \
+        assert track["current_stop"] == 100.0, (
             f"expected stop=100.0 (original entry), got {track['current_stop']}"
+        )
 
     # ---------- L-P4: Guardrail / TRAILING ----------
     @t("v5 L-P4-R1: HL is a 5m low strictly above the previous 5m low")
     def _():
         # Equal lows are NOT a Higher Low.
-        assert v5.ratchet_long_higher_low(prev_5m_low=9.0, this_5m_low=9.0,
-                                          current_stop=8.5) == 8.5
+        assert v5.ratchet_long_higher_low(prev_5m_low=9.0, this_5m_low=9.0, current_stop=8.5) == 8.5
         # this_low > prev_low and > current_stop -> ratchet up.
         assert v5.ratchet_long_higher_low(9.0, 9.5, 8.5) == 9.5
 
     @t("v5 L-P4-R2: long ratchet is up-only; never lowers the stop")
     def _():
         # New HL is BELOW current stop -> stop unchanged.
-        assert v5.ratchet_long_higher_low(prev_5m_low=8.0, this_5m_low=8.5,
-                                          current_stop=9.0) == 9.0
+        assert v5.ratchet_long_higher_low(prev_5m_low=8.0, this_5m_low=8.5, current_stop=9.0) == 9.0
 
     @t("v5 L-P4-R3 (a): long structural-stop hit when ticker.last < current_stop")
     def _():
@@ -1712,8 +1865,7 @@ def run_local() -> int:
         track = v5.new_track(v5.DIR_LONG)
         v5.transition_to_stage1(track, 10.0, 9.5)
         v5.transition_to_stage2(track)
-        assert v5.evaluate_exit(track, ticker_last=9.99,
-                                di_1m_closed=None) == "STRUCTURAL_STOP"
+        assert v5.evaluate_exit(track, ticker_last=9.99, di_1m_closed=None) == "STRUCTURAL_STOP"
 
     @t("v5 L-P4-R3: evaluate_exit returns DI_HARD_EJECT on long DI<25")
     def _():
@@ -1721,8 +1873,7 @@ def run_local() -> int:
         v5.transition_to_stage1(track, 10.0, 9.5)
         v5.transition_to_stage2(track)
         # Ticker still ABOVE stop, DI just dropped: still exits.
-        assert v5.evaluate_exit(track, ticker_last=11.0,
-                                di_1m_closed=20.0) == "DI_HARD_EJECT"
+        assert v5.evaluate_exit(track, ticker_last=11.0, di_1m_closed=20.0) == "DI_HARD_EJECT"
 
     @t("v5 L-P4-R4: post-exit transitions track to EXITED (re-hunt available)")
     def _():
@@ -1764,8 +1915,9 @@ def run_local() -> int:
         v5.transition_to_stage1(track, 11.0, 10.5)
         v5.transition_to_stage2(track)
         v5.on_post_exit(track)
-        assert track["state"] == v5.STATE_LOCKED, \
+        assert track["state"] == v5.STATE_LOCKED, (
             f"expected LOCKED_FOR_DAY after second exit, got {track['state']}"
+        )
 
     @t("v5 L-P5-R3: a third re-hunt attempt is rejected and forces LOCKED")
     def _():
@@ -1776,12 +1928,12 @@ def run_local() -> int:
         assert not ok
         assert track["state"] == v5.STATE_LOCKED
 
-    # ---------- S-P1: Short Permission Gates (v5.6.0 unified AVWAP) ----------
-    # Signature: gates_pass_short(qqq_last, qqq_avwap, ticker_last, ticker_avwap, or_low)
-    @t("v5.6.0 S-P1-G1: short requires QQQ.last < QQQ.Opening_AVWAP")
+    # ---------- S-P1: Short Permission Gates (v5.9.0 EMA cross + ticker AVWAP + OR) ----------
+    # Signature: gates_pass_short(qqq_5m_3ema, qqq_5m_9ema, ticker_last, ticker_avwap, or_low)
+    @t("v5.9.0 S-P1-G1: short requires QQQ 5m EMA3 < EMA9")
     def _():
-        assert not v5.gates_pass_short(100, 100, 50, 60, 55)  # QQQ equal
-        assert not v5.gates_pass_short(101, 100, 50, 60, 55)  # QQQ above
+        assert not v5.gates_pass_short(100, 100, 50, 60, 55)  # FLAT (equal) FAILs
+        assert not v5.gates_pass_short(101, 100, 50, 60, 55)  # EMA3 above EMA9
         assert v5.gates_pass_short(99, 100, 50, 60, 55)
 
     @t("v5.6.0 S-P1-G3: short requires ticker.last < ticker.Opening_AVWAP")
@@ -1796,7 +1948,7 @@ def run_local() -> int:
         assert not v5.gates_pass_short(99, 100, 56, 60, 55)
         assert v5.gates_pass_short(99, 100, 54, 60, 55)
 
-    @t("v5.6.0 S-P1: AVWAP None FAILs G1/G3 deterministically")
+    @t("v5.9.0 S-P1: EMA warmup (None) FAILs G1; ticker AVWAP None FAILs G3")
     def _():
         assert not v5.gates_pass_short(99, None, 50, 60, 55)
         assert not v5.gates_pass_short(99, 100, 50, None, 55)
@@ -1805,9 +1957,9 @@ def run_local() -> int:
     def _():
         assert v5.gates_pass_short(99, 100, 50, 60, None) is False
 
-    @t("v5.6.0 S-P1: indices-bullish vetoes shorts even on a weak ticker")
+    @t("v5.9.0 S-P1: indices-bullish (compass UP) vetoes shorts even on weak ticker")
     def _():
-        # Ticker WAY below its AVWAP and OR_Low, but QQQ bullish: shorts off.
+        # Ticker WAY below its AVWAP and OR_Low, but QQQ EMA3>EMA9: shorts off.
         assert not v5.gates_pass_short(105, 100, 1, 60, 55)
 
     # ---------- S-P2: Stage 1 ----------
@@ -1854,15 +2006,19 @@ def run_local() -> int:
     @t("v5 S-P4-R1: LH is a 5m high strictly below the previous 5m high")
     def _():
         # Equal highs are NOT a Lower High.
-        assert v5.ratchet_short_lower_high(prev_5m_high=10.0, this_5m_high=10.0,
-                                           current_stop=10.5) == 10.5
+        assert (
+            v5.ratchet_short_lower_high(prev_5m_high=10.0, this_5m_high=10.0, current_stop=10.5)
+            == 10.5
+        )
         # this_high < prev_high and below current stop -> ratchet down.
         assert v5.ratchet_short_lower_high(10.0, 9.7, 10.5) == 9.7
 
     @t("v5 S-P4-R2: short ratchet is down-only; never raises the stop")
     def _():
-        assert v5.ratchet_short_lower_high(prev_5m_high=10.5, this_5m_high=10.2,
-                                           current_stop=10.0) == 10.0
+        assert (
+            v5.ratchet_short_lower_high(prev_5m_high=10.5, this_5m_high=10.2, current_stop=10.0)
+            == 10.0
+        )
 
     @t("v5 S-P4-R3: short DI<25 hard eject fires PRIORITY-1 over structural stop")
     def _():
@@ -1874,8 +2030,7 @@ def run_local() -> int:
         v5.transition_to_stage2(track)
         # ticker_last > current_stop (structural hit) AND di < 25 (DI hit)
         reason = v5.evaluate_exit(track, ticker_last=21.0, di_1m_closed=20.0)
-        assert reason == "DI_HARD_EJECT", \
-            f"S-P4-R3 priority violated: got {reason!r}"
+        assert reason == "DI_HARD_EJECT", f"S-P4-R3 priority violated: got {reason!r}"
 
     @t("v5 S-P4-R4: short structural-stop hit when ticker.last > current_stop")
     def _():
@@ -1953,16 +2108,16 @@ def run_local() -> int:
         # references v5_lock_all_tracks. A regression that removes the
         # wiring fails this string-presence test.
         import inspect
+
         src = inspect.getsource(m._check_daily_loss_limit)
-        assert "v5_lock_all_tracks" in src, \
-            "C-R4 wiring missing in _check_daily_loss_limit"
+        assert "v5_lock_all_tracks" in src, "C-R4 wiring missing in _check_daily_loss_limit"
 
     @t("v5 C-R5: eod_close calls v5_lock_all_tracks (EOD lock)")
     def _():
         import inspect
+
         src = inspect.getsource(m.eod_close)
-        assert "v5_lock_all_tracks" in src, \
-            "C-R5 wiring missing in eod_close"
+        assert "v5_lock_all_tracks" in src, "C-R5 wiring missing in eod_close"
 
     @t("v5 C-R6: Sovereign Regime Shield helper still exists (preserved)")
     def _():
@@ -1977,12 +2132,13 @@ def run_local() -> int:
         # filter rows in the dashboard, never traded directly. v5.6.0
         # retires G2 (SPY-vs-AVWAP would be the second index gate);
         # check_breakout now reads QQQ only as the single index input.
-        assert len(m.TRADE_TICKERS) == 9, \
+        assert len(m.TRADE_TICKERS) == 9, (
             f"C-R7 universe size drift: {len(m.TRADE_TICKERS)} (want 9)"
+        )
         import inspect
+
         src = inspect.getsource(m.check_breakout)
-        assert '"QQQ"' in src, \
-            "v5.6.0 G1: QQQ index wiring missing from check_breakout"
+        assert '"QQQ"' in src, "v5.6.0 G1: QQQ index wiring missing from check_breakout"
 
     # ---------- v5 plumbing ----------
     @t("v5 plumbing: paper_state.json round-trips v5 tracks")
@@ -2016,8 +2172,10 @@ def run_local() -> int:
         # v5.1.8: tracks now live in SQLite \u2014 clear the table first so a
         # prior test's leftover row doesn't masquerade as legacy data.
         import persistence as _p
+
         _p.replace_all_tracks({}, {})
         import json as _json
+
         legacy = {
             "paper_cash": 100000.0,
             "positions": {},
@@ -2025,12 +2183,16 @@ def run_local() -> int:
             "paper_all_trades": [],
             "daily_entry_count": {},
             "daily_entry_date": "",
-            "or_high": {}, "or_low": {}, "pdc": {},
+            "or_high": {},
+            "or_low": {},
+            "pdc": {},
             "or_collected_date": "",
             "user_config": {},
             "trade_history": [],
-            "short_positions": {}, "short_trade_history": [],
-            "daily_short_entry_count": {}, "daily_short_entry_date": "",
+            "short_positions": {},
+            "short_trade_history": [],
+            "daily_short_entry_count": {},
+            "daily_short_entry_date": "",
             "last_exit_time": {},
             "_scan_paused": False,
             "_trading_halted": False,
@@ -2077,6 +2239,7 @@ def run_local() -> int:
     @t("v5.1.8 persistence: fired_set round-trips mark/was/prune")
     def _():
         import persistence as p
+
         p.prune_fired("__never_matches__")  # clear table
         key = "2026-04-26-15:58-daily-15:58"
         assert not p.was_fired(key)
@@ -2095,6 +2258,7 @@ def run_local() -> int:
     @t("v5.1.8 persistence: v5_long_tracks round-trip per direction")
     def _():
         import persistence as p
+
         p.replace_all_tracks({}, {})
         long_state = {"state": "ARMED", "entry": 50.0, "ticker": "AAPL"}
         short_state = {"state": "WATCHING", "ticker": "AAPL"}
@@ -2118,6 +2282,7 @@ def run_local() -> int:
     @t("v5.1.8 persistence: replace_all_tracks atomically wipes + rewrites")
     def _():
         import persistence as p
+
         p.replace_all_tracks({"OLD": {"x": 1}}, {})
         assert "OLD" in p.load_all_tracks("long")
         # Replace with different set: OLD must disappear, NEW must appear.
@@ -2135,6 +2300,7 @@ def run_local() -> int:
         # explicit ROLLBACK on the except branch).
         import persistence as p
         import sqlite3
+
         p.prune_fired("__never_matches__")
         c = p._conn()
         try:
@@ -2153,6 +2319,7 @@ def run_local() -> int:
     @t("v5.1.8 persistence: WAL journal_mode is set")
     def _():
         import persistence as p
+
         c = p._conn()
         cur = c.execute("PRAGMA journal_mode")
         mode = cur.fetchone()[0]
@@ -2161,18 +2328,20 @@ def run_local() -> int:
     @t("v5.1.8 persistence: STATE_DB_PATH env var is honored")
     def _():
         import persistence as p
+
         # The smoke harness sets STATE_DB_PATH to a tmp path; verify
         # init_db is using that exact path, not the /data/ default.
-        assert p.STATE_DB_PATH == os.environ["STATE_DB_PATH"], \
+        assert p.STATE_DB_PATH == os.environ["STATE_DB_PATH"], (
             f"STATE_DB_PATH={p.STATE_DB_PATH!r} expected={os.environ['STATE_DB_PATH']!r}"
-        assert os.path.exists(p.STATE_DB_PATH), \
-            f"DB file not created at {p.STATE_DB_PATH}"
+        )
+        assert os.path.exists(p.STATE_DB_PATH), f"DB file not created at {p.STATE_DB_PATH}"
 
     @t("v5.1.8 persistence: migrate_from_json imports v5 keys then renames source")
     def _():
         import persistence as p
         import json as _json
         import tempfile
+
         # Wipe SQLite, build a fake legacy paper_state.json with v5 keys.
         p.replace_all_tracks({}, {})
         with tempfile.TemporaryDirectory() as td:
@@ -2212,7 +2381,9 @@ def run_local() -> int:
         # v5.0.2 hotfix guard: prevent the v4.11.0 / v5.0.0 footgun where a new
         # top-level module is added to the source tree but the Dockerfile per-file
         # COPY whitelist is forgotten, causing prod to crash on import.
-        import os, re
+        import os
+        import re
+
         repo_root = os.path.dirname(os.path.abspath(__file__))
         # Local top-level modules = .py files at repo root (excluding tests/scripts).
         local_modules = set()
@@ -2253,6 +2424,7 @@ def run_local() -> int:
         class _SmokeExec(m.TradeGeniusBase):
             NAME = "SmokeExec"
             ENV_PREFIX = env_prefix
+
         if chats_path:
             os.environ[env_prefix + "EXECUTOR_CHATS_PATH"] = chats_path
         return _SmokeExec()
@@ -2274,8 +2446,9 @@ def run_local() -> int:
         assert os.path.exists(path), "chat-map file not written"
         # Reload via fresh instance and verify identity.
         bot2 = _make_exec(chats_path=path)
-        assert bot2._owner_chats == {"111": 222, "333": 444}, \
+        assert bot2._owner_chats == {"111": 222, "333": 444}, (
             f"reload mismatch: {bot2._owner_chats}"
+        )
 
     @t("executor v5.0.3: _send_own_telegram with empty chat-map is no-op")
     def _():
@@ -2288,10 +2461,15 @@ def run_local() -> int:
         assert bot._owner_chats == {}, f"expected empty map, got {bot._owner_chats}"
         # Patch urllib.request.urlopen to detect any unexpected call.
         import urllib.request as urlreq
+
         calls = []
         orig = urlreq.urlopen
-        urlreq.urlopen = lambda *a, **kw: calls.append((a, kw)) or (_ for _ in ()).throw(
-            AssertionError("urlopen must not be called when chat-map is empty"))
+        urlreq.urlopen = lambda *a, **kw: (
+            calls.append((a, kw))
+            or (_ for _ in ()).throw(
+                AssertionError("urlopen must not be called when chat-map is empty")
+            )
+        )
         try:
             bot._send_own_telegram("hello")
         finally:
@@ -2309,12 +2487,17 @@ def run_local() -> int:
         bot._record_owner_chat("111", 222)
         bot._record_owner_chat("333", 444)
         import urllib.request as urlreq
+
         calls = []
+
         class _FakeResp:
-            def read(self_inner): return b""
+            def read(self_inner):
+                return b""
+
         def _fake_urlopen(req, timeout=10):
             calls.append((req.full_url, req.data))
             return _FakeResp()
+
         orig = urlreq.urlopen
         urlreq.urlopen = _fake_urlopen
         try:
@@ -2327,8 +2510,9 @@ def run_local() -> int:
             assert "api.telegram.org/botfake-token/sendMessage" in url, url
         chat_ids = [d for _, d in calls]
         joined = b"\n".join(chat_ids)
-        assert b"chat_id=222" in joined and b"chat_id=444" in joined, \
+        assert b"chat_id=222" in joined and b"chat_id=444" in joined, (
             f"missing chat_ids in payloads: {joined!r}"
+        )
 
     @t("executor v5.0.4: alpaca paper key reads ALPACA_PAPER_KEY when set")
     def _():
@@ -2348,20 +2532,25 @@ def run_local() -> int:
             os.remove(path)
         bot = _make_exec(chats_path=path)
         owner = next(iter(m.TRADEGENIUS_OWNER_IDS))
+
         # Simulate a PTB Update from an owner DM.
         class FakeUser:
             id = int(owner)
+
         class FakeChat:
             id = 7777777
+
         class FakeUpdate:
             effective_user = FakeUser()
             effective_chat = FakeChat()
+
         import asyncio
+
         asyncio.run(bot._auth_guard(FakeUpdate(), None))
-        assert bot._owner_chats.get(owner) == 7777777, \
-            f"auto-learn missed: {bot._owner_chats}"
+        assert bot._owner_chats.get(owner) == 7777777, f"auto-learn missed: {bot._owner_chats}"
         assert os.path.exists(path), "auto-learn did not persist to disk"
         import json as _json
+
         with open(path) as f:
             on_disk = _json.load(f)
         assert on_disk.get(owner) == 7777777, f"on-disk mismatch: {on_disk}"
@@ -2433,8 +2622,9 @@ def run_local() -> int:
             "iex_sip_ratio": 0.018,
             "window_trading_days": 55,
             "build_ts_utc": _dt.now(tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "buckets": {"1030": {"median": median_v, "p75": median_v + 100,
-                                  "p90": median_v + 500, "n": 55}},
+            "buckets": {
+                "1030": {"median": median_v, "p75": median_v + 100, "p90": median_v + 500, "n": 55}
+            },
         }
 
     @t("volprofile: evaluate_g4 Stage 1 GREEN at exactly 120%/100%")
@@ -2444,9 +2634,12 @@ def run_local() -> int:
         qqq = _fresh_profile(2000)
         qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4(
-            ticker="AAPL", minute_bucket="1030",
-            current_volume=1200, profile=prof,
-            qqq_current_volume=2000, qqq_profile=qqq,
+            ticker="AAPL",
+            minute_bucket="1030",
+            current_volume=1200,
+            profile=prof,
+            qqq_current_volume=2000,
+            qqq_profile=qqq,
             stage=1,
         )
         assert out["green"] is True, out
@@ -2456,11 +2649,16 @@ def run_local() -> int:
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4(
-            ticker="AAPL", minute_bucket="1030",
-            current_volume=1190, profile=prof,
-            qqq_current_volume=2000, qqq_profile=qqq, stage=1,
+            ticker="AAPL",
+            minute_bucket="1030",
+            current_volume=1190,
+            profile=prof,
+            qqq_current_volume=2000,
+            qqq_profile=qqq,
+            stage=1,
         )
         assert out["green"] is False
         assert out["reason"] == "LOW_TICKER", out
@@ -2469,11 +2667,16 @@ def run_local() -> int:
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4(
-            ticker="AAPL", minute_bucket="1030",
-            current_volume=1200, profile=prof,
-            qqq_current_volume=1980, qqq_profile=qqq, stage=1,
+            ticker="AAPL",
+            minute_bucket="1030",
+            current_volume=1200,
+            profile=prof,
+            qqq_current_volume=1980,
+            qqq_profile=qqq,
+            stage=1,
         )
         assert out["green"] is False
         assert out["reason"] == "LOW_QQQ", out
@@ -2483,9 +2686,13 @@ def run_local() -> int:
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
         out = vp_mod.evaluate_g4(
-            ticker="AAPL", minute_bucket="1030",
-            current_volume=1000, profile=prof,
-            qqq_current_volume=0, qqq_profile=None, stage=2,
+            ticker="AAPL",
+            minute_bucket="1030",
+            current_volume=1000,
+            profile=prof,
+            qqq_current_volume=0,
+            qqq_profile=None,
+            stage=2,
         )
         assert out["green"] is True, out
         assert out["rule"] == "V-P1-R3"
@@ -2494,9 +2701,13 @@ def run_local() -> int:
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
         out = vp_mod.evaluate_g4(
-            ticker="AAPL", minute_bucket="1030",
-            current_volume=999, profile=None,
-            qqq_current_volume=0, qqq_profile=None, stage=2,
+            ticker="AAPL",
+            minute_bucket="1030",
+            current_volume=999,
+            profile=None,
+            qqq_current_volume=0,
+            qqq_profile=None,
+            stage=2,
         )
         assert out["green"] is False
         assert out["reason"] == "NO_PROFILE_AAPL", out
@@ -2509,9 +2720,13 @@ def run_local() -> int:
         old = _dt.now(tz=_tz.utc) - _td(hours=48)
         prof["build_ts_utc"] = old.strftime("%Y-%m-%dT%H:%M:%SZ")
         out = vp_mod.evaluate_g4(
-            ticker="AAPL", minute_bucket="1030",
-            current_volume=1500, profile=prof,
-            qqq_current_volume=0, qqq_profile=None, stage=2,
+            ticker="AAPL",
+            minute_bucket="1030",
+            current_volume=1500,
+            profile=prof,
+            qqq_current_volume=0,
+            qqq_profile=None,
+            stage=2,
         )
         assert out["green"] is False
         assert out["reason"] == "STALE_PROFILE_AAPL", out
@@ -2521,9 +2736,13 @@ def run_local() -> int:
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
         out = vp_mod.evaluate_g4(
-            ticker="AAPL", minute_bucket="0930",
-            current_volume=1500, profile=prof,
-            qqq_current_volume=0, qqq_profile=None, stage=2,
+            ticker="AAPL",
+            minute_bucket="0930",
+            current_volume=1500,
+            profile=prof,
+            qqq_current_volume=0,
+            qqq_profile=None,
+            stage=2,
         )
         assert out["green"] is False
         assert out["reason"] == "NO_BUCKET_AAPL_0930", out
@@ -2534,9 +2753,12 @@ def run_local() -> int:
         try:
             vp_mod.VOLUME_PROFILE_ENABLED = False
             out = vp_mod.evaluate_g4(
-                ticker="AAPL", minute_bucket="1030",
-                current_volume=99999, profile=_fresh_profile(),
-                qqq_current_volume=99999, qqq_profile=_fresh_profile(),
+                ticker="AAPL",
+                minute_bucket="1030",
+                current_volume=99999,
+                profile=_fresh_profile(),
+                qqq_current_volume=99999,
+                qqq_profile=_fresh_profile(),
                 stage=1,
             )
             assert out["reason"] == "DISABLED", out
@@ -2547,6 +2769,7 @@ def run_local() -> int:
     @t("volprofile: profile JSON round-trip via save/load")
     def _():
         import tempfile
+
         prev_dir = vp_mod.PROFILE_DIR
         with tempfile.TemporaryDirectory() as tmpd:
             vp_mod.PROFILE_DIR = tmpd
@@ -2590,9 +2813,12 @@ def run_local() -> int:
 
     def _v511_save_env() -> dict:
         keys = (
-            "VOL_GATE_ENFORCE", "VOL_GATE_TICKER_ENABLED",
-            "VOL_GATE_INDEX_ENABLED", "VOL_GATE_TICKER_PCT",
-            "VOL_GATE_QQQ_PCT", "VOL_GATE_INDEX_SYMBOL",
+            "VOL_GATE_ENFORCE",
+            "VOL_GATE_TICKER_ENABLED",
+            "VOL_GATE_INDEX_ENABLED",
+            "VOL_GATE_TICKER_PCT",
+            "VOL_GATE_QQQ_PCT",
+            "VOL_GATE_INDEX_SYMBOL",
         )
         return {k: os.environ.get(k) for k in keys}
 
@@ -2607,9 +2833,14 @@ def run_local() -> int:
     def _():
         saved = _v511_save_env()
         try:
-            for k in ("VOL_GATE_ENFORCE", "VOL_GATE_TICKER_ENABLED",
-                     "VOL_GATE_INDEX_ENABLED", "VOL_GATE_TICKER_PCT",
-                     "VOL_GATE_QQQ_PCT", "VOL_GATE_INDEX_SYMBOL"):
+            for k in (
+                "VOL_GATE_ENFORCE",
+                "VOL_GATE_TICKER_ENABLED",
+                "VOL_GATE_INDEX_ENABLED",
+                "VOL_GATE_TICKER_PCT",
+                "VOL_GATE_QQQ_PCT",
+                "VOL_GATE_INDEX_SYMBOL",
+            ):
                 os.environ.pop(k, None)
             cfg = vp_mod.load_active_config()
             assert cfg["enforce"] is False, cfg
@@ -2659,8 +2890,9 @@ def run_local() -> int:
         cfgs = vp_mod.SHADOW_CONFIGS
         assert isinstance(cfgs, tuple) and len(cfgs) == 5, cfgs
         names = [c["name"] for c in cfgs]
-        assert names == ["TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY",
-                         "GEMINI_A", "BUCKET_FILL_100"], names
+        assert names == ["TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A", "BUCKET_FILL_100"], (
+            names
+        )
         # Thresholds match backtest recommendation.
         assert cfgs[0]["ticker_pct"] == 70 and cfgs[0]["index_pct"] == 100
         assert cfgs[1]["ticker_enabled"] is True and cfgs[1]["index_enabled"] is False
@@ -2678,13 +2910,19 @@ def run_local() -> int:
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4_config(
-            ticker="AMD", minute_bucket="1030",
-            current_volume=700, profile=prof,
-            index_current_volume=2000, index_profile=qqq,
-            ticker_enabled=True, index_enabled=True,
-            ticker_pct=70, index_pct=100,
+            ticker="AMD",
+            minute_bucket="1030",
+            current_volume=700,
+            profile=prof,
+            index_current_volume=2000,
+            index_profile=qqq,
+            ticker_enabled=True,
+            index_enabled=True,
+            ticker_pct=70,
+            index_pct=100,
         )
         assert out["verdict"] == "PASS", out
         assert out["reason"] == "OK", out
@@ -2695,13 +2933,19 @@ def run_local() -> int:
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4_config(
-            ticker="AMD", minute_bucket="1030",
-            current_volume=600, profile=prof,
-            index_current_volume=2200, index_profile=qqq,
-            ticker_enabled=True, index_enabled=True,
-            ticker_pct=70, index_pct=100,
+            ticker="AMD",
+            minute_bucket="1030",
+            current_volume=600,
+            profile=prof,
+            index_current_volume=2200,
+            index_profile=qqq,
+            ticker_enabled=True,
+            index_enabled=True,
+            ticker_pct=70,
+            index_pct=100,
         )
         assert out["verdict"] == "BLOCK", out
         assert out["reason"] == "LOW_TICKER", out
@@ -2712,11 +2956,16 @@ def run_local() -> int:
         prof = _fresh_profile(1000)
         # QQQ profile None and current vol = 0 \u2014 ticker_only must not care.
         out = vp_mod.evaluate_g4_config(
-            ticker="AMD", minute_bucket="1030",
-            current_volume=900, profile=prof,
-            index_current_volume=0, index_profile=None,
-            ticker_enabled=True, index_enabled=False,
-            ticker_pct=70, index_pct=100,
+            ticker="AMD",
+            minute_bucket="1030",
+            current_volume=900,
+            profile=prof,
+            index_current_volume=0,
+            index_profile=None,
+            ticker_enabled=True,
+            index_enabled=False,
+            ticker_pct=70,
+            index_pct=100,
         )
         assert out["verdict"] == "PASS", out
         assert out["qqq_pct"] is None, out
@@ -2725,14 +2974,20 @@ def run_local() -> int:
     @t("v5.1.1: evaluate_g4_config QQQ_ONLY ignores ticker entirely")
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         # Ticker profile None and current vol = 0 \u2014 qqq_only must not care.
         out = vp_mod.evaluate_g4_config(
-            ticker="AMD", minute_bucket="1030",
-            current_volume=0, profile=None,
-            index_current_volume=2400, index_profile=qqq,
-            ticker_enabled=False, index_enabled=True,
-            ticker_pct=70, index_pct=100,
+            ticker="AMD",
+            minute_bucket="1030",
+            current_volume=0,
+            profile=None,
+            index_current_volume=2400,
+            index_profile=qqq,
+            ticker_enabled=False,
+            index_enabled=True,
+            ticker_pct=70,
+            index_pct=100,
         )
         assert out["verdict"] == "PASS", out
         assert out["ticker_pct"] is None, out
@@ -2741,13 +2996,19 @@ def run_local() -> int:
     @t("v5.1.1: evaluate_g4_config QQQ_ONLY BLOCK low qqq")
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4_config(
-            ticker="AMD", minute_bucket="1030",
-            current_volume=0, profile=None,
-            index_current_volume=1900, index_profile=qqq,
-            ticker_enabled=False, index_enabled=True,
-            ticker_pct=70, index_pct=100,
+            ticker="AMD",
+            minute_bucket="1030",
+            current_volume=0,
+            profile=None,
+            index_current_volume=1900,
+            index_profile=qqq,
+            ticker_enabled=False,
+            index_enabled=True,
+            ticker_pct=70,
+            index_pct=100,
         )
         assert out["verdict"] == "BLOCK", out
         assert out["reason"] == "LOW_QQQ", out
@@ -2759,18 +3020,25 @@ def run_local() -> int:
         try:
             vp_mod.VOLUME_PROFILE_ENABLED = False
             out = vp_mod.evaluate_g4_config(
-                ticker="AMD", minute_bucket="1030",
-                current_volume=999, profile=_fresh_profile(),
-                index_current_volume=999, index_profile=_fresh_profile(),
-                ticker_enabled=True, index_enabled=True,
-                ticker_pct=70, index_pct=100,
+                ticker="AMD",
+                minute_bucket="1030",
+                current_volume=999,
+                profile=_fresh_profile(),
+                index_current_volume=999,
+                index_profile=_fresh_profile(),
+                ticker_enabled=True,
+                index_enabled=True,
+                ticker_pct=70,
+                index_pct=100,
             )
             assert out["verdict"] == "BLOCK", out
             assert out["reason"] == "DISABLED", out
         finally:
             vp_mod.VOLUME_PROFILE_ENABLED = prev
 
-    @t("v5.1.1: _shadow_log_g4 emits 5 [CFG=...] lines on a candidate (v5.1.6 added BUCKET_FILL_100)")
+    @t(
+        "v5.1.1: _shadow_log_g4 emits 5 [CFG=...] lines on a candidate (v5.1.6 added BUCKET_FILL_100)"
+    )
     def _():
         # Stand up an in-memory profile cache so every config has data.
         vp_mod.VOLUME_PROFILE_ENABLED = True
@@ -2779,7 +3047,8 @@ def run_local() -> int:
         prev_ws = m._ws_consumer
         try:
             prof = _fresh_profile(1000)
-            qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+            qqq = _fresh_profile(2000)
+            qqq["ticker"] = "QQQ"
             m._volume_profile_cache.clear()
             m._volume_profile_cache["AMD"] = prof
             m._volume_profile_cache["QQQ"] = qqq
@@ -2787,6 +3056,7 @@ def run_local() -> int:
             class _StubWS:
                 def current_volume(self, t, b):
                     return 1500 if t == "AMD" else 2400
+
             m._ws_consumer = _StubWS()
 
             # Force session_bucket() to return something deterministic by
@@ -2795,19 +3065,24 @@ def run_local() -> int:
             vp_mod.session_bucket = lambda _ts: "1030"
             try:
                 import logging as _logging
+
                 seen: list[str] = []
 
                 class _H(_logging.Handler):
                     def emit(self, rec):
                         seen.append(rec.getMessage())
+
                 tg_logger = _logging.getLogger("trade_genius")
-                h = _H(); h.setLevel(_logging.INFO)
-                tg_logger.addHandler(h); old_level = tg_logger.level
+                h = _H()
+                h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h)
+                old_level = tg_logger.level
                 tg_logger.setLevel(_logging.INFO)
                 try:
                     m._shadow_log_g4("AMD", stage=1, existing_decision="ENTER")
                 finally:
-                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+                    tg_logger.removeHandler(h)
+                    tg_logger.setLevel(old_level)
             finally:
                 vp_mod.session_bucket = real_session_bucket
 
@@ -2847,7 +3122,8 @@ def run_local() -> int:
         prev_ws = m._ws_consumer
         try:
             prof = _fresh_profile(1000)
-            qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+            qqq = _fresh_profile(2000)
+            qqq["ticker"] = "QQQ"
             m._volume_profile_cache.clear()
             m._volume_profile_cache["AMD"] = prof
             m._volume_profile_cache["QQQ"] = qqq
@@ -2855,30 +3131,35 @@ def run_local() -> int:
             class _StubWS:
                 def current_volume(self, t, b):
                     return 1500 if t == "AMD" else 2400
+
             m._ws_consumer = _StubWS()
             real_session_bucket = vp_mod.session_bucket
             vp_mod.session_bucket = lambda _ts: "1030"
             try:
                 import logging as _logging
+
                 seen: list[str] = []
 
                 class _H(_logging.Handler):
                     def emit(self, rec):
                         seen.append(rec.getMessage())
+
                 tg_logger = _logging.getLogger("trade_genius")
-                h = _H(); h.setLevel(_logging.INFO)
-                tg_logger.addHandler(h); old_level = tg_logger.level
+                h = _H()
+                h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h)
+                old_level = tg_logger.level
                 tg_logger.setLevel(_logging.INFO)
                 try:
                     m._shadow_log_g4("AMD", stage=1, existing_decision="ENTER")
                 finally:
-                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+                    tg_logger.removeHandler(h)
+                    tg_logger.setLevel(old_level)
             finally:
                 vp_mod.session_bucket = real_session_bucket
 
             # Exactly one back-compat line (no [CFG=]) plus the 3 cfg lines.
-            backcompat = [s for s in seen
-                          if s.startswith("[V510-SHADOW] ") and "[CFG=" not in s]
+            backcompat = [s for s in seen if s.startswith("[V510-SHADOW] ") and "[CFG=" not in s]
             assert len(backcompat) == 1, f"want 1 back-compat line, got {seen}"
         finally:
             m._volume_profile_cache.clear()
@@ -2911,26 +3192,30 @@ def run_local() -> int:
 
     @t("v5.1.6: trade_genius exposes _v516_log_velocity / _v516_log_index / _v516_log_di")
     def _():
-        for fn in ("_v516_log_velocity", "_v516_log_index",
-                   "_v516_log_di", "_v516_check_velocity"):
+        for fn in ("_v516_log_velocity", "_v516_log_index", "_v516_log_di", "_v516_check_velocity"):
             assert hasattr(m, fn) and callable(getattr(m, fn)), fn
 
     @t("v5.1.6: _v516_log_velocity emits a [V510-VEL] line")
     def _():
         import logging as _logging
+
         seen: list[str] = []
 
         class _H(_logging.Handler):
             def emit(self, rec):
                 seen.append(rec.getMessage())
+
         tg_logger = _logging.getLogger("trade_genius")
-        h = _H(); h.setLevel(_logging.INFO)
-        tg_logger.addHandler(h); old_level = tg_logger.level
+        h = _H()
+        h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h)
+        old_level = tg_logger.level
         tg_logger.setLevel(_logging.INFO)
         try:
             m._v516_log_velocity("NVDA", "1423", 42, 2871, 2840, 101.1, 78.3)
         finally:
-            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            tg_logger.removeHandler(h)
+            tg_logger.setLevel(old_level)
         line = next((s for s in seen if s.startswith("[V510-VEL]")), None)
         assert line is not None, seen
         assert "ticker=NVDA" in line, line
@@ -2946,15 +3231,19 @@ def run_local() -> int:
         import logging as _logging
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo as _ZI
+
         seen: list[str] = []
 
         class _H(_logging.Handler):
             def emit(self, rec):
                 if rec.getMessage().startswith("[V510-VEL]"):
                     seen.append(rec.getMessage())
+
         tg_logger = _logging.getLogger("trade_genius")
-        h = _H(); h.setLevel(_logging.INFO)
-        tg_logger.addHandler(h); old_level = tg_logger.level
+        h = _H()
+        h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h)
+        old_level = tg_logger.level
         tg_logger.setLevel(_logging.INFO)
         try:
             # Reset module state so the test is order-independent.
@@ -2968,7 +3257,8 @@ def run_local() -> int:
             # Third call: same minute, still over \u2014 must NOT emit again.
             m._v516_check_velocity("FAKE", "1423", t2, 300, 200, qqq_pct=90)
         finally:
-            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            tg_logger.removeHandler(h)
+            tg_logger.setLevel(old_level)
             m._v516_vel_state.pop("FAKE", None)
         assert len(seen) == 1, seen
         assert "second=42" in seen[0], seen
@@ -2977,19 +3267,24 @@ def run_local() -> int:
     @t("v5.1.6: _v516_log_index emits SPY+QQQ above-PDC verdict")
     def _():
         import logging as _logging
+
         seen: list[str] = []
 
         class _H(_logging.Handler):
             def emit(self, rec):
                 seen.append(rec.getMessage())
+
         tg_logger = _logging.getLogger("trade_genius")
-        h = _H(); h.setLevel(_logging.INFO)
-        tg_logger.addHandler(h); old_level = tg_logger.level
+        h = _H()
+        h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h)
+        old_level = tg_logger.level
         tg_logger.setLevel(_logging.INFO)
         try:
             m._v516_log_index(710.40, 708.72, 649.09, 646.79)
         finally:
-            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            tg_logger.removeHandler(h)
+            tg_logger.setLevel(old_level)
         line = next((s for s in seen if s.startswith("[V510-IDX]")), None)
         assert line is not None, seen
         assert "spy_close=710.4" in line, line
@@ -3000,20 +3295,25 @@ def run_local() -> int:
     @t("v5.1.6: _v516_log_di emits double-tap flags")
     def _():
         import logging as _logging
+
         seen: list[str] = []
 
         class _H(_logging.Handler):
             def emit(self, rec):
                 seen.append(rec.getMessage())
+
         tg_logger = _logging.getLogger("trade_genius")
-        h = _H(); h.setLevel(_logging.INFO)
-        tg_logger.addHandler(h); old_level = tg_logger.level
+        h = _H()
+        h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h)
+        old_level = tg_logger.level
         tg_logger.setLevel(_logging.INFO)
         try:
             # both >25 \u2014 double_tap_long Y
             m._v516_log_di("NVDA", 27.4, 29.1, 15.2, 12.8)
         finally:
-            tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+            tg_logger.removeHandler(h)
+            tg_logger.setLevel(old_level)
         line = next((s for s in seen if s.startswith("[V510-DI]")), None)
         assert line is not None, seen
         assert "ticker=NVDA" in line, line
@@ -3026,13 +3326,19 @@ def run_local() -> int:
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4_config(
-            ticker="AMD", minute_bucket="1030",
-            current_volume=1100, profile=prof,
-            index_current_volume=1700, index_profile=qqq,
-            ticker_enabled=True, index_enabled=True,
-            ticker_pct=110, index_pct=85,
+            ticker="AMD",
+            minute_bucket="1030",
+            current_volume=1100,
+            profile=prof,
+            index_current_volume=1700,
+            index_profile=qqq,
+            ticker_enabled=True,
+            index_enabled=True,
+            ticker_pct=110,
+            index_pct=85,
         )
         assert out["verdict"] == "PASS", out
         assert out["reason"] == "OK", out
@@ -3043,13 +3349,19 @@ def run_local() -> int:
     def _():
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prof = _fresh_profile(1000)
-        qqq = _fresh_profile(2000); qqq["ticker"] = "QQQ"
+        qqq = _fresh_profile(2000)
+        qqq["ticker"] = "QQQ"
         out = vp_mod.evaluate_g4_config(
-            ticker="AMD", minute_bucket="1030",
-            current_volume=1090, profile=prof,
-            index_current_volume=1800, index_profile=qqq,
-            ticker_enabled=True, index_enabled=True,
-            ticker_pct=110, index_pct=85,
+            ticker="AMD",
+            minute_bucket="1030",
+            current_volume=1090,
+            profile=prof,
+            index_current_volume=1800,
+            index_profile=qqq,
+            ticker_enabled=True,
+            index_enabled=True,
+            ticker_pct=110,
+            index_pct=85,
         )
         assert out["verdict"] == "BLOCK", out
         assert out["reason"] == "LOW_TICKER", out
@@ -3057,19 +3369,21 @@ def run_local() -> int:
     @t("v5.1.2: indicators module imports and exposes pure functions")
     def _():
         import indicators as ind
-        for fn in ("rsi14", "ema9", "ema21", "atr14",
-                   "vwap_dist_pct", "spread_bps"):
+
+        for fn in ("rsi14", "ema9", "ema21", "atr14", "vwap_dist_pct", "spread_bps"):
             assert hasattr(ind, fn) and callable(getattr(ind, fn)), fn
 
     @t("v5.1.2: indicators.rsi14 returns None on insufficient bars")
     def _():
         import indicators as ind
+
         assert ind.rsi14([]) is None
         assert ind.rsi14([1.0] * 14) is None  # need >= 15
 
     @t("v5.1.2: indicators.rsi14 happy path returns finite float")
     def _():
         import indicators as ind
+
         closes = [10.0 + i * 0.1 for i in range(30)]
         v = ind.rsi14(closes)
         assert v is not None and 0.0 <= v <= 100.0, v
@@ -3077,6 +3391,7 @@ def run_local() -> int:
     @t("v5.1.2: indicators.ema9 returns None below period; value above")
     def _():
         import indicators as ind
+
         assert ind.ema9([1.0] * 8) is None
         v = ind.ema9([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
         assert v is not None and 1.0 <= v <= 10.0, v
@@ -3084,6 +3399,7 @@ def run_local() -> int:
     @t("v5.1.2: indicators.ema21 returns None below period; value above")
     def _():
         import indicators as ind
+
         assert ind.ema21([1.0] * 20) is None
         closes = [float(i) for i in range(30)]
         v = ind.ema21(closes)
@@ -3092,18 +3408,20 @@ def run_local() -> int:
     @t("v5.1.2: indicators.atr14 None on insufficient bars; finite otherwise")
     def _():
         import indicators as ind
+
         assert ind.atr14([]) is None
-        bars = [{"high": 10 + i * 0.1, "low": 9.5 + i * 0.1,
-                 "close": 9.9 + i * 0.1} for i in range(30)]
+        bars = [
+            {"high": 10 + i * 0.1, "low": 9.5 + i * 0.1, "close": 9.9 + i * 0.1} for i in range(30)
+        ]
         v = ind.atr14(bars)
         assert v is not None and v > 0.0, v
 
     @t("v5.1.2: indicators.vwap_dist_pct None on empty; pct on data")
     def _():
         import indicators as ind
+
         assert ind.vwap_dist_pct([]) is None
-        bars = [{"high": 100.0, "low": 99.0, "close": 99.5, "volume": 1000}
-                for _ in range(5)]
+        bars = [{"high": 100.0, "low": 99.0, "close": 99.5, "volume": 1000} for _ in range(5)]
         bars.append({"high": 102.0, "low": 101.0, "close": 101.5, "volume": 1000})
         v = ind.vwap_dist_pct(bars)
         assert v is not None and v > 0.0, v
@@ -3111,6 +3429,7 @@ def run_local() -> int:
     @t("v5.1.2: indicators.spread_bps None on bad input; finite on good")
     def _():
         import indicators as ind
+
         assert ind.spread_bps(None, None) is None
         assert ind.spread_bps(0.0, 100.0) is None
         assert ind.spread_bps(100.0, 99.0) is None  # crossed
@@ -3120,6 +3439,7 @@ def run_local() -> int:
     @t("v5.1.6: indicators.di_plus/di_minus None on insufficient bars")
     def _():
         import indicators as ind
+
         assert ind.di_plus([]) is None
         assert ind.di_minus([]) is None
         # period=14 needs >= 15 bars
@@ -3130,12 +3450,12 @@ def run_local() -> int:
     @t("v5.1.6: indicators.di_plus > di_minus in a steady uptrend")
     def _():
         import indicators as ind
+
         bars = []
         base = 100.0
         for i in range(40):
             base += 0.5
-            bars.append({"high": base + 0.4, "low": base - 0.1,
-                         "close": base + 0.2})
+            bars.append({"high": base + 0.4, "low": base - 0.1, "close": base + 0.2})
         dp = ind.di_plus(bars)
         dm = ind.di_minus(bars)
         assert dp is not None and dm is not None, (dp, dm)
@@ -3145,12 +3465,12 @@ def run_local() -> int:
     @t("v5.1.6: indicators.di_minus > di_plus in a steady downtrend")
     def _():
         import indicators as ind
+
         bars = []
         base = 100.0
         for i in range(40):
             base -= 0.5
-            bars.append({"high": base + 0.1, "low": base - 0.4,
-                         "close": base - 0.2})
+            bars.append({"high": base + 0.1, "low": base - 0.4, "close": base - 0.2})
         dp = ind.di_plus(bars)
         dm = ind.di_minus(bars)
         assert dp is not None and dm is not None, (dp, dm)
@@ -3162,13 +3482,21 @@ def run_local() -> int:
         import tempfile
         import bar_archive as ba
         from datetime import date as _date
+
         with tempfile.TemporaryDirectory() as td:
-            bar = {"ts": "2026-04-28T14:31:00", "et_bucket": "1031",
-                   "open": 425.93, "high": 426.10, "low": 425.50,
-                   "close": 425.85, "iex_volume": 1851,
-                   "iex_sip_ratio_used": 0.082,
-                   "bid": 425.84, "ask": 425.86,
-                   "last_trade_price": 425.85}
+            bar = {
+                "ts": "2026-04-28T14:31:00",
+                "et_bucket": "1031",
+                "open": 425.93,
+                "high": 426.10,
+                "low": 425.50,
+                "close": 425.85,
+                "iex_volume": 1851,
+                "iex_sip_ratio_used": 0.082,
+                "bid": 425.84,
+                "ask": 425.86,
+                "last_trade_price": 425.85,
+            }
             today = _date(2026, 4, 28)
             path = ba.write_bar("amd", bar, base_dir=td, today=today)
             assert path is not None, "write_bar returned None"
@@ -3186,6 +3514,7 @@ def run_local() -> int:
         import tempfile
         import bar_archive as ba
         from datetime import date as _date
+
         with tempfile.TemporaryDirectory() as td:
             today = _date(2026, 4, 28)
             for i in range(5):
@@ -3199,6 +3528,7 @@ def run_local() -> int:
         import tempfile
         import bar_archive as ba
         from datetime import date as _date
+
         with tempfile.TemporaryDirectory() as td:
             for d in ("2025-01-01", "2026-04-20", "2026-04-26"):
                 _os.makedirs(f"{td}/{d}")
@@ -3216,10 +3546,10 @@ def run_local() -> int:
         import tempfile
         import bar_archive as ba
         from datetime import date as _date
+
         with tempfile.TemporaryDirectory() as td:
             today = _date(2026, 4, 28)
-            ba.write_bar("AMD", {"close": 1.0, "garbage_key": "x"},
-                         base_dir=td, today=today)
+            ba.write_bar("AMD", {"close": 1.0, "garbage_key": "x"}, base_dir=td, today=today)
             with open(f"{td}/2026-04-28/AMD.jsonl") as fh:
                 obj = _json.loads(fh.read().splitlines()[0])
             assert "garbage_key" not in obj
@@ -3232,6 +3562,7 @@ def run_local() -> int:
         # for ~3 months. v5.5.2 wires it in. If a future refactor
         # silently re-orphans the call, this test fails loudly.
         import os as _os
+
         path = _os.path.join(_os.path.dirname(m.__file__), "trade_genius.py")
         with open(path, "r", encoding="utf-8") as fh:
             src = fh.read()
@@ -3263,6 +3594,7 @@ def run_local() -> int:
         # cleanup_old_dirs into the EOD path so archived bars don't
         # accumulate forever on the Railway volume.
         import inspect
+
         src = inspect.getsource(m.eod_close)
         assert "cleanup_old_dirs" in src, (
             "bar_archive.cleanup_old_dirs not invoked from eod_close \u2014 "
@@ -3277,14 +3609,18 @@ def run_local() -> int:
         class _H(_logging.Handler):
             def emit(self, rec):
                 seen.append(rec.getMessage())
+
         tg_logger = _logging.getLogger("trade_genius")
-        h = _H(); h.setLevel(_logging.INFO)
-        tg_logger.addHandler(h); old_level = tg_logger.level
+        h = _H()
+        h.setLevel(_logging.INFO)
+        tg_logger.addHandler(h)
+        old_level = tg_logger.level
         tg_logger.setLevel(_logging.INFO)
         return seen, h, tg_logger, old_level
 
     def _v512_release_logger(h, tg_logger, old_level):
-        tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+        tg_logger.removeHandler(h)
+        tg_logger.setLevel(old_level)
 
     @t("v5.1.2: [V510-MINUTE] line emitted with expected fields")
     def _():
@@ -3295,8 +3631,7 @@ def run_local() -> int:
             _v512_release_logger(h, lg, old)
         line = next((s for s in seen if "[V510-MINUTE]" in s), None)
         assert line is not None, seen
-        for tok in ("ticker=AMD", "bucket=1448", "t_pct=84",
-                    "qqq_pct=112", "vol=12345"):
+        for tok in ("ticker=AMD", "bucket=1448", "t_pct=84", "qqq_pct=112", "vol=12345"):
             assert tok in line, (tok, line)
 
     @t("v5.1.2: [V510-MINUTE] renders None as 'null'")
@@ -3317,20 +3652,38 @@ def run_local() -> int:
         seen, h, lg, old = _v512_capture_logger()
         try:
             m._v512_log_candidate(
-                "AMD", "1450", 1, "ARMED", True,
+                "AMD",
+                "1450",
+                1,
+                "ARMED",
+                True,
                 m.CAND_REASON_BREAKOUT_CONFIRMED,
-                t_pct=92, qqq_pct=118, close=347.05, stop=343.20,
-                rsi14_=68.4, ema9_=345.80, ema21_=343.92,
-                atr14_=1.85, vwap_dist_pct_=0.42, spread_bps_=2.9,
+                t_pct=92,
+                qqq_pct=118,
+                close=347.05,
+                stop=343.20,
+                rsi14_=68.4,
+                ema9_=345.80,
+                ema21_=343.92,
+                atr14_=1.85,
+                vwap_dist_pct_=0.42,
+                spread_bps_=2.9,
             )
         finally:
             _v512_release_logger(h, lg, old)
         line = next((s for s in seen if "[V510-CAND]" in s), None)
         assert line is not None, seen
-        for tok in ("entered=YES", "reason=BREAKOUT_CONFIRMED",
-                    "rsi14=68.4", "ema9=345.8", "ema21=343.92",
-                    "atr14=1.85", "vwap_dist_pct=0.42",
-                    "spread_bps=2.9", "fsm_state=ARMED"):
+        for tok in (
+            "entered=YES",
+            "reason=BREAKOUT_CONFIRMED",
+            "rsi14=68.4",
+            "ema9=345.8",
+            "ema21=343.92",
+            "atr14=1.85",
+            "vwap_dist_pct=0.42",
+            "spread_bps=2.9",
+            "fsm_state=ARMED",
+        ):
             assert tok in line, (tok, line)
 
     @t("v5.1.2: [V510-CAND] emitted on entered=NO with null indicators")
@@ -3338,9 +3691,15 @@ def run_local() -> int:
         seen, h, lg, old = _v512_capture_logger()
         try:
             m._v512_log_candidate(
-                "AMD", "1448", 1, "OBSERVE", False,
+                "AMD",
+                "1448",
+                1,
+                "OBSERVE",
+                False,
                 m.CAND_REASON_NO_BREAKOUT,
-                t_pct=84, qqq_pct=112, close=346.19,
+                t_pct=84,
+                qqq_pct=112,
+                close=346.19,
             )
         finally:
             _v512_release_logger(h, lg, old)
@@ -3357,16 +3716,21 @@ def run_local() -> int:
 
     @t("v5.1.2: [V510-CAND] reason set is fixed and complete")
     def _():
-        for r in ("NO_BREAKOUT", "STAGE_NOT_READY", "ALREADY_OPEN",
-                  "COOL_DOWN", "MAX_POSITIONS", "BREAKOUT_CONFIRMED"):
+        for r in (
+            "NO_BREAKOUT",
+            "STAGE_NOT_READY",
+            "ALREADY_OPEN",
+            "COOL_DOWN",
+            "MAX_POSITIONS",
+            "BREAKOUT_CONFIRMED",
+        ):
             assert r in m.CAND_REASONS, r
 
     @t("v5.1.2: [V510-FSM] emits on transition")
     def _():
         seen, h, lg, old = _v512_capture_logger()
         try:
-            m._v512_log_fsm_transition("AMD", "IDLE", "WATCHING",
-                                       "VOL_SPIKE_DETECTED", "1445")
+            m._v512_log_fsm_transition("AMD", "IDLE", "WATCHING", "VOL_SPIKE_DETECTED", "1445")
         finally:
             _v512_release_logger(h, lg, old)
         line = next((s for s in seen if "[V510-FSM]" in s), None)
@@ -3379,8 +3743,7 @@ def run_local() -> int:
     def _():
         seen, h, lg, old = _v512_capture_logger()
         try:
-            m._v512_log_fsm_transition("AMD", "ARMED", "ARMED",
-                                       "noop", "1445")
+            m._v512_log_fsm_transition("AMD", "ARMED", "ARMED", "noop", "1445")
         finally:
             _v512_release_logger(h, lg, old)
         assert not any("[V510-FSM]" in s for s in seen), seen
@@ -3390,19 +3753,29 @@ def run_local() -> int:
         seen, h, lg, old = _v512_capture_logger()
         try:
             m._v512_log_entry_extension(
-                "AMD", bid=345.10, ask=345.14,
-                cash=1234.56, equity=2345.67,
-                open_positions=2, total_exposure_pct=42.5,
+                "AMD",
+                bid=345.10,
+                ask=345.14,
+                cash=1234.56,
+                equity=2345.67,
+                open_positions=2,
+                total_exposure_pct=42.5,
                 current_drawdown_pct=0.0,
             )
         finally:
             _v512_release_logger(h, lg, old)
         line = next((s for s in seen if "[V510-ENTRY]" in s), None)
         assert line is not None, seen
-        for tok in ("ticker=AMD", "bid=345.1", "ask=345.14",
-                    "cash=1234.56", "equity=2345.67",
-                    "open_positions=2", "total_exposure_pct=42.5",
-                    "current_drawdown_pct=0"):
+        for tok in (
+            "ticker=AMD",
+            "bid=345.1",
+            "ask=345.14",
+            "cash=1234.56",
+            "equity=2345.67",
+            "open_positions=2",
+            "total_exposure_pct=42.5",
+            "current_drawdown_pct=0",
+        ):
             assert tok in line, (tok, line)
 
     @t("v5.1.2: Dockerfile COPY includes indicators.py and bar_archive.py")
@@ -3437,6 +3810,7 @@ def run_local() -> int:
         # - DI on exit side is >25
         # - vol vs bucket median is >=100%
         from datetime import datetime as _dt, timezone as _tz
+
         m.VOLUME_PROFILE_ENABLED = True
         vp_mod.VOLUME_PROFILE_ENABLED = True
         prev_cache = m._volume_profile_cache.copy()
@@ -3450,6 +3824,7 @@ def run_local() -> int:
             class _StubWS:
                 def current_volume(self, t, b):
                     return 1500  # 150% of bucket median 1000
+
             m._ws_consumer = _StubWS()
 
             real_session_bucket = vp_mod.session_bucket
@@ -3463,36 +3838,44 @@ def run_local() -> int:
             }
             try:
                 m._v519_rehunt_watch.clear()
-                m._v519_arm_rehunt_watch(
-                    "AMD", "long", _dt.now(tz=_tz.utc))
+                m._v519_arm_rehunt_watch("AMD", "long", _dt.now(tz=_tz.utc))
 
                 import logging as _logging
+
                 seen: list[str] = []
 
                 class _H(_logging.Handler):
                     def emit(self, rec):
                         seen.append(rec.getMessage())
+
                 tg_logger = _logging.getLogger("trade_genius")
-                h = _H(); h.setLevel(_logging.INFO)
-                tg_logger.addHandler(h); old_level = tg_logger.level
+                h = _H()
+                h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h)
+                old_level = tg_logger.level
                 tg_logger.setLevel(_logging.INFO)
                 try:
                     m._v519_check_rehunt("AMD")
                 finally:
-                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+                    tg_logger.removeHandler(h)
+                    tg_logger.setLevel(old_level)
             finally:
                 vp_mod.session_bucket = real_session_bucket
                 m.tiger_di = real_tiger_di
                 m.fetch_1min_bars = real_fetch
 
-            cfg_lines = [s for s in seen
-                         if "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM]" in s]
-            assert len(cfg_lines) == 1, \
-                f"want 1 REHUNT line, got {len(cfg_lines)}: {seen}"
+            cfg_lines = [s for s in seen if "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM]" in s]
+            assert len(cfg_lines) == 1, f"want 1 REHUNT line, got {len(cfg_lines)}: {seen}"
             line = cfg_lines[0]
-            for needle in ("ticker=AMD", "side=long", "vol_pct=150",
-                           "rehunt_offset_min=", "shadow_entry_price=123.45",
-                           "di_plus=40", "di_minus=10"):
+            for needle in (
+                "ticker=AMD",
+                "side=long",
+                "vol_pct=150",
+                "rehunt_offset_min=",
+                "shadow_entry_price=123.45",
+                "di_plus=40",
+                "di_minus=10",
+            ):
                 assert needle in line, f"{needle!r} missing in {line!r}"
             # Watch should be marked fired so a second call doesn't re-emit.
             # v5.2.1 M4: keyed on (ticker, side) tuple.
@@ -3522,6 +3905,7 @@ def run_local() -> int:
             class _StubWS:
                 def current_volume(self, t, b):
                     return 1100  # 110% of bucket median
+
             m._ws_consumer = _StubWS()
 
             buckets = ["1030", "1031"]
@@ -3532,20 +3916,25 @@ def run_local() -> int:
             m.tiger_di = lambda _t: (35.0, 10.0)  # long DI strong both minutes
             real_fetch = m.fetch_1min_bars
             m.fetch_1min_bars = lambda _t: {
-                "current_price": 222.22, "closes": [220.0, 221.5, 222.22],
+                "current_price": 222.22,
+                "closes": [220.0, 221.5, 222.22],
             }
             try:
                 m._v519_oomph_prev.clear()
 
                 import logging as _logging
+
                 seen: list[str] = []
 
                 class _H(_logging.Handler):
                     def emit(self, rec):
                         seen.append(rec.getMessage())
+
                 tg_logger = _logging.getLogger("trade_genius")
-                h = _H(); h.setLevel(_logging.INFO)
-                tg_logger.addHandler(h); old_level = tg_logger.level
+                h = _H()
+                h.setLevel(_logging.INFO)
+                tg_logger.addHandler(h)
+                old_level = tg_logger.level
                 tg_logger.setLevel(_logging.INFO)
                 try:
                     # Minute 1: qualify (DI+ 35 > 25 AND vol_pct 110 >= 100)
@@ -3554,22 +3943,26 @@ def run_local() -> int:
                     idx["i"] = 1
                     m._v519_check_oomph("AMD")
                 finally:
-                    tg_logger.removeHandler(h); tg_logger.setLevel(old_level)
+                    tg_logger.removeHandler(h)
+                    tg_logger.setLevel(old_level)
             finally:
                 vp_mod.session_bucket = real_session_bucket
                 m.tiger_di = real_tiger_di
                 m.fetch_1min_bars = real_fetch
 
-            cfg_lines = [s for s in seen
-                         if "[V510-SHADOW][CFG=OOMPH_ALERT]" in s]
-            assert len(cfg_lines) == 1, \
-                f"want 1 OOMPH line, got {len(cfg_lines)}: {seen}"
+            cfg_lines = [s for s in seen if "[V510-SHADOW][CFG=OOMPH_ALERT]" in s]
+            assert len(cfg_lines) == 1, f"want 1 OOMPH line, got {len(cfg_lines)}: {seen}"
             line = cfg_lines[0]
-            for needle in ("ticker=AMD", "side=long",
-                           "minute1_ts=1030", "minute1_di=35",
-                           "minute1_vol_pct=110",
-                           "minute2_ts=1031", "minute2_di=35",
-                           "shadow_entry_price=222.22"):
+            for needle in (
+                "ticker=AMD",
+                "side=long",
+                "minute1_ts=1030",
+                "minute1_di=35",
+                "minute1_vol_pct=110",
+                "minute2_ts=1031",
+                "minute2_di=35",
+                "shadow_entry_price=222.22",
+            ):
                 assert needle in line, f"{needle!r} missing in {line!r}"
         finally:
             m._volume_profile_cache.clear()
@@ -3600,16 +3993,22 @@ def run_local() -> int:
     def _():
         # equity cap binds at 10% of $100k = $10,000; price $100 -> 100
         n = _sp_mod.compute_shadow_qty(
-            price=100.0, dollars_per_entry=20000.0,
-            equity=100000.0, cash=50000.0,
-            max_pct_per_entry=10.0, min_reserve_cash=500.0,
+            price=100.0,
+            dollars_per_entry=20000.0,
+            equity=100000.0,
+            cash=50000.0,
+            max_pct_per_entry=10.0,
+            min_reserve_cash=500.0,
         )
         assert n == 100, f"expected 100 shares, got {n}"
         # cash-reserve binds: cash $1000, reserve $500 -> $500 / $100 = 5
         n2 = _sp_mod.compute_shadow_qty(
-            price=100.0, dollars_per_entry=20000.0,
-            equity=100000.0, cash=1000.0,
-            max_pct_per_entry=10.0, min_reserve_cash=500.0,
+            price=100.0,
+            dollars_per_entry=20000.0,
+            equity=100000.0,
+            cash=1000.0,
+            max_pct_per_entry=10.0,
+            min_reserve_cash=500.0,
         )
         assert n2 == 5, f"expected 5 shares (cash-bound), got {n2}"
 
@@ -3618,14 +4017,19 @@ def run_local() -> int:
         _reset_sp_db("life")
         tr = _sp_mod.tracker()
         snap = {
-            "equity": 100000.0, "cash": 50000.0,
+            "equity": 100000.0,
+            "cash": 50000.0,
             "dollars_per_entry": 1000.0,
-            "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
         }
         rid = tr.open_position(
-            config_name="TICKER+QQQ", ticker="AAPL", side="long",
+            config_name="TICKER+QQQ",
+            ticker="AAPL",
+            side="long",
             entry_ts_utc="2026-04-26T14:30:00+00:00",
-            entry_price=100.0, equity_snapshot=snap,
+            entry_price=100.0,
+            equity_snapshot=snap,
         )
         assert rid is not None
         tr.mark_to_market("AAPL", 105.0)
@@ -3635,9 +4039,11 @@ def run_local() -> int:
         # qty = floor(min(1000, 10000, 49500) / 100) = 10 \u2014 unrealized = $50
         assert s["TICKER+QQQ"]["today_unrealized"] == 50.0
         pnl = tr.close_position(
-            config_name="TICKER+QQQ", ticker="AAPL",
+            config_name="TICKER+QQQ",
+            ticker="AAPL",
             exit_ts_utc="2026-04-26T15:00:00+00:00",
-            exit_price=110.0, exit_reason="HARD_EJECT_TIGER",
+            exit_price=110.0,
+            exit_reason="HARD_EJECT_TIGER",
         )
         assert pnl == 100.0, f"expected $100 realized, got {pnl}"
         s2 = tr.summary(today_str="2026-04-26")
@@ -3649,22 +4055,31 @@ def run_local() -> int:
     def _():
         _reset_sp_db("short")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         tr.open_position(
-            config_name="OOMPH_ALERT", ticker="TSLA", side="short",
+            config_name="OOMPH_ALERT",
+            ticker="TSLA",
+            side="short",
             entry_ts_utc="2026-04-26T14:30:00+00:00",
-            entry_price=200.0, equity_snapshot=snap,
+            entry_price=200.0,
+            equity_snapshot=snap,
         )
         # shorts profit when price falls
         tr.mark_to_market("TSLA", 180.0)
         s = tr.summary(today_str="2026-04-26")
         assert s["OOMPH_ALERT"]["today_unrealized"] > 0
         pnl = tr.close_position(
-            config_name="OOMPH_ALERT", ticker="TSLA",
+            config_name="OOMPH_ALERT",
+            ticker="TSLA",
             exit_ts_utc="2026-04-26T15:00:00+00:00",
-            exit_price=210.0, exit_reason="HARD_EJECT_TIGER",
+            exit_price=210.0,
+            exit_reason="HARD_EJECT_TIGER",
         )
         # qty=5; (200-210)*5 = -50
         assert pnl == -50.0, f"expected -$50, got {pnl}"
@@ -3673,18 +4088,27 @@ def run_local() -> int:
     def _():
         _reset_sp_db("persist")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         tr.open_position(
-            config_name="GEMINI_A", ticker="NVDA", side="long",
+            config_name="GEMINI_A",
+            ticker="NVDA",
+            side="long",
             entry_ts_utc="2026-04-26T14:30:00+00:00",
-            entry_price=400.0, equity_snapshot=snap,
+            entry_price=400.0,
+            equity_snapshot=snap,
         )
         tr.close_position(
-            config_name="GEMINI_A", ticker="NVDA",
+            config_name="GEMINI_A",
+            ticker="NVDA",
             exit_ts_utc="2026-04-26T15:00:00+00:00",
-            exit_price=410.0, exit_reason="TRAIL",
+            exit_price=410.0,
+            exit_reason="TRAIL",
         )
         # Drop singleton; rebuild from SQLite. The closed row should
         # rehydrate into _closed.
@@ -3698,23 +4122,23 @@ def run_local() -> int:
     def _():
         _reset_sp_db("rollup")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         # one trade dated yesterday (cumulative only)
         tr.open_position(
-            "BUCKET_FILL_100", "MSFT", "long",
-            "2026-04-25T14:30:00+00:00", 300.0, snap)
-        tr.close_position(
-            "BUCKET_FILL_100", "MSFT",
-            "2026-04-25T15:00:00+00:00", 309.0, "EOD")
+            "BUCKET_FILL_100", "MSFT", "long", "2026-04-25T14:30:00+00:00", 300.0, snap
+        )
+        tr.close_position("BUCKET_FILL_100", "MSFT", "2026-04-25T15:00:00+00:00", 309.0, "EOD")
         # one trade today (counts in both)
         tr.open_position(
-            "BUCKET_FILL_100", "MSFT", "long",
-            "2026-04-26T14:30:00+00:00", 300.0, snap)
-        tr.close_position(
-            "BUCKET_FILL_100", "MSFT",
-            "2026-04-26T15:00:00+00:00", 297.0, "STOP")
+            "BUCKET_FILL_100", "MSFT", "long", "2026-04-26T14:30:00+00:00", 300.0, snap
+        )
+        tr.close_position("BUCKET_FILL_100", "MSFT", "2026-04-26T15:00:00+00:00", 297.0, "STOP")
         s = tr.summary(today_str="2026-04-26")
         assert s["BUCKET_FILL_100"]["today_n_trades"] == 1
         assert s["BUCKET_FILL_100"]["cumulative_n_trades"] == 2
@@ -3726,15 +4150,19 @@ def run_local() -> int:
     def _():
         _reset_sp_db("dedup")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         a = tr.open_position(
-            "TICKER_ONLY", "AAPL", "long",
-            "2026-04-26T14:30:00+00:00", 100.0, snap)
+            "TICKER_ONLY", "AAPL", "long", "2026-04-26T14:30:00+00:00", 100.0, snap
+        )
         b = tr.open_position(
-            "TICKER_ONLY", "AAPL", "long",
-            "2026-04-26T14:30:00+00:00", 100.0, snap)
+            "TICKER_ONLY", "AAPL", "long", "2026-04-26T14:30:00+00:00", 100.0, snap
+        )
         assert a is not None
         assert b is None, "duplicate open should be a no-op"
         assert tr.open_count("TICKER_ONLY") == 1
@@ -3745,19 +4173,17 @@ def run_local() -> int:
         # Seed one open + one closed across two configs, then check
         # ds.snapshot() surfaces the panel payload with the live row.
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
-        tr.open_position(
-            "TICKER+QQQ", "AAPL", "long",
-            "2026-04-26T14:30:00+00:00", 100.0, snap)
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
+        tr.open_position("TICKER+QQQ", "AAPL", "long", "2026-04-26T14:30:00+00:00", 100.0, snap)
         tr.mark_to_market("AAPL", 110.0)
-        tr.open_position(
-            "QQQ_ONLY", "MSFT", "long",
-            "2026-04-26T14:30:00+00:00", 200.0, snap)
-        tr.close_position(
-            "QQQ_ONLY", "MSFT",
-            "2026-04-26T15:00:00+00:00", 210.0, "TRAIL")
+        tr.open_position("QQQ_ONLY", "MSFT", "long", "2026-04-26T14:30:00+00:00", 200.0, snap)
+        tr.close_position("QQQ_ONLY", "MSFT", "2026-04-26T15:00:00+00:00", 210.0, "TRAIL")
         out = ds.snapshot()
         assert out.get("ok"), out
         sp = out.get("shadow_pnl") or {}
@@ -3780,18 +4206,18 @@ def run_local() -> int:
     def _():
         _reset_sp_db("bw")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         # Winner: TICKER+QQQ closes +$30. Loser: TICKER_ONLY closes -$10.
-        tr.open_position("TICKER+QQQ", "AAPL", "long",
-                         "2026-04-26T14:30:00+00:00", 100.0, snap)
-        tr.close_position("TICKER+QQQ", "AAPL",
-                          "2026-04-26T15:00:00+00:00", 103.0, "TRAIL")
-        tr.open_position("TICKER_ONLY", "MSFT", "long",
-                         "2026-04-26T14:30:00+00:00", 200.0, snap)
-        tr.close_position("TICKER_ONLY", "MSFT",
-                          "2026-04-26T15:00:00+00:00", 198.0, "STOP")
+        tr.open_position("TICKER+QQQ", "AAPL", "long", "2026-04-26T14:30:00+00:00", 100.0, snap)
+        tr.close_position("TICKER+QQQ", "AAPL", "2026-04-26T15:00:00+00:00", 103.0, "TRAIL")
+        tr.open_position("TICKER_ONLY", "MSFT", "long", "2026-04-26T14:30:00+00:00", 200.0, snap)
+        tr.close_position("TICKER_ONLY", "MSFT", "2026-04-26T15:00:00+00:00", 198.0, "STOP")
         out = ds.snapshot()
         sp = out["shadow_pnl"]
         assert sp["best_today"] == "TICKER+QQQ"
@@ -3801,40 +4227,40 @@ def run_local() -> int:
     def _():
         # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.9.0", m.BOT_VERSION
 
     @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
     def _():
@@ -3851,8 +4277,8 @@ def run_local() -> int:
         # appear inside it. _scFmtTs in IIFE-2 is left untouched (other
         # callers use it), so this guard is body-scoped, not file-scoped.
         from pathlib import Path
-        js = (Path(__file__).resolve().parent
-              / "dashboard_static" / "app.js").read_text()
+
+        js = (Path(__file__).resolve().parent / "dashboard_static" / "app.js").read_text()
         idx = js.find("function _shadowSummaryBand(")
         assert idx != -1, "_shadowSummaryBand declaration missing from app.js"
         brace_open = js.find("{", idx)
@@ -3908,52 +4334,64 @@ def run_local() -> int:
         # placeholder. Greps for the v5.5.9 helper symbols + summary
         # band so a refactor that drops them fails CI loudly.
         from pathlib import Path
+
         root = Path(__file__).resolve().parent
         js = (root / "dashboard_static" / "app.js").read_text()
-        assert "_scBuildBarChart" in js, \
-            "v5.5.9 _scBuildBarChart missing from app.js"
-        assert "_scOpenPositionsByConfig" in js, \
+        assert "_scBuildBarChart" in js, "v5.5.9 _scBuildBarChart missing from app.js"
+        assert "_scOpenPositionsByConfig" in js, (
             "v5.5.9 _scOpenPositionsByConfig missing from app.js"
-        assert "_shadowSummaryBand" in js, \
-            "v5.5.9 _shadowSummaryBand missing from app.js"
+        )
+        assert "_shadowSummaryBand" in js, "v5.5.9 _shadowSummaryBand missing from app.js"
         html = (root / "dashboard_static" / "index.html").read_text()
-        assert "shadow-summary-band" in html, \
+        assert "shadow-summary-band" in html, (
             "v5.5.9 #shadow-summary-band element missing from index.html"
+        )
         css = (root / "dashboard_static" / "app.css").read_text()
-        assert "sp-tint-pos" in css and "sp-tint-neg" in css, \
+        assert "sp-tint-pos" in css and "sp-tint-neg" in css, (
             "v5.5.9 strategies-row tint classes missing from app.css"
-        assert "position: sticky" in css, \
-            "v5.5.9 sticky strategies header missing from app.css"
+        )
+        assert "position: sticky" in css, "v5.5.9 sticky strategies header missing from app.css"
 
     # ---------- v5.5.10 \u2014 executor_positions persistence ----------
     @t("v5.5.10: executor_positions table exists in state.db schema after init_db")
     def _():
         import persistence as p
+
         p.init_db()
         c = p._conn()
         cur = c.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='executor_positions'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='executor_positions'"
         )
         row = cur.fetchone()
-        assert row is not None, \
-            "executor_positions table missing from state.db schema"
+        assert row is not None, "executor_positions table missing from state.db schema"
         # PK must include executor_name AND mode AND ticker so Val/paper
         # never overwrites Val/live or Gene/paper.
         cur = c.execute("PRAGMA table_info(executor_positions)")
         cols = {r[1]: r for r in cur.fetchall()}
-        for must in ("executor_name", "mode", "ticker", "side", "qty",
-                     "entry_price", "entry_ts_utc", "source",
-                     "stop", "trail", "last_updated_utc"):
+        for must in (
+            "executor_name",
+            "mode",
+            "ticker",
+            "side",
+            "qty",
+            "entry_price",
+            "entry_ts_utc",
+            "source",
+            "stop",
+            "trail",
+            "last_updated_utc",
+        ):
             assert must in cols, f"executor_positions missing column {must}"
         # Sanity: PK columns flagged.
         pk_cols = [name for name, info in cols.items() if info[5] > 0]
-        assert set(pk_cols) >= {"executor_name", "mode", "ticker"}, \
+        assert set(pk_cols) >= {"executor_name", "mode", "ticker"}, (
             f"PK should cover (executor_name, mode, ticker), got {pk_cols}"
+        )
 
     @t("v5.5.10: _record_position writes an executor_positions row")
     def _():
         import persistence as p
+
         # Wipe any leftover rows for this synthetic NAME so the test is
         # idempotent regardless of order.
         c = p._conn()
@@ -3965,6 +4403,7 @@ def run_local() -> int:
         class _Bot(m.TradeGeniusBase):
             NAME = "V510Smoke"
             ENV_PREFIX = "V510SMOKE_"
+
             def __init__(self_inner):
                 self_inner.NAME = "V510Smoke"
                 self_inner.mode = "paper"
@@ -3986,6 +4425,7 @@ def run_local() -> int:
     @t("v5.5.10: _load_persisted_positions populates self.positions on __init__")
     def _():
         import persistence as p
+
         c = p._conn()
         c.execute(
             "DELETE FROM executor_positions WHERE executor_name = ?",
@@ -3993,17 +4433,24 @@ def run_local() -> int:
         )
         # Pre-seed a row as if a prior process had recorded META.
         p.save_executor_position(
-            "V510Smoke2", "paper", "META",
+            "V510Smoke2",
+            "paper",
+            "META",
             {
-                "side": "LONG", "qty": 14, "entry_price": 680.28,
+                "side": "LONG",
+                "qty": 14,
+                "entry_price": 680.28,
                 "entry_ts_utc": "2026-04-27T17:42:18+00:00",
-                "source": "SIGNAL", "stop": None, "trail": None,
+                "source": "SIGNAL",
+                "stop": None,
+                "trail": None,
             },
         )
 
         class _Bot(m.TradeGeniusBase):
             NAME = "V510Smoke2"
             ENV_PREFIX = "V510SMOKE2_"
+
             def __init__(self_inner):
                 self_inner.NAME = "V510Smoke2"
                 self_inner.mode = "paper"
@@ -4013,8 +4460,7 @@ def run_local() -> int:
                 self_inner._load_persisted_positions()
 
         bot = _Bot()
-        assert "META" in bot.positions, \
-            f"persisted META not rehydrated, got {bot.positions!r}"
+        assert "META" in bot.positions, f"persisted META not rehydrated, got {bot.positions!r}"
         assert bot.positions["META"]["qty"] == 14
         c.execute(
             "DELETE FROM executor_positions WHERE executor_name = ?",
@@ -4027,6 +4473,7 @@ def run_local() -> int:
         # persisted; broker also reports META 14. v5.5.9 would have
         # grafted+Telegram'd; v5.5.10 must stay silent.
         import persistence as p
+
         c = p._conn()
         c.execute(
             "DELETE FROM executor_positions WHERE executor_name = ?",
@@ -4043,33 +4490,42 @@ def run_local() -> int:
                 return [_BP()]
 
         sent = []
+
         class _Bot(m.TradeGeniusBase):
             NAME = "V510Smoke3"
             ENV_PREFIX = "V510SMOKE3_"
+
             def __init__(self_inner):
                 self_inner.NAME = "V510Smoke3"
                 self_inner.mode = "paper"
                 self_inner.positions = {}
                 self_inner._load_persisted_positions()
+
             def _ensure_client(self_inner):
                 return _Client()
+
             def _send_own_telegram(self_inner, msg):
                 sent.append(msg)
 
         # Pre-seed the persisted row so the bot's positions set
         # matches the broker's set exactly.
         p.save_executor_position(
-            "V510Smoke3", "paper", "META",
+            "V510Smoke3",
+            "paper",
+            "META",
             {
-                "side": "LONG", "qty": 14, "entry_price": 680.28,
+                "side": "LONG",
+                "qty": 14,
+                "entry_price": 680.28,
                 "entry_ts_utc": "2026-04-27T17:00:00+00:00",
-                "source": "SIGNAL", "stop": None, "trail": None,
+                "source": "SIGNAL",
+                "stop": None,
+                "trail": None,
             },
         )
         bot = _Bot()
         bot._reconcile_broker_positions()
-        assert sent == [], \
-            f"clean reconcile must NOT Telegram, got {sent!r}"
+        assert sent == [], f"clean reconcile must NOT Telegram, got {sent!r}"
         c.execute(
             "DELETE FROM executor_positions WHERE executor_name = ?",
             ("V510Smoke3",),
@@ -4080,6 +4536,7 @@ def run_local() -> int:
         # Persisted has a ticker the broker says we no longer hold.
         # Outcome 3: WARN log + remove, no Telegram.
         import persistence as p
+
         c = p._conn()
         c.execute(
             "DELETE FROM executor_positions WHERE executor_name = ?",
@@ -4091,43 +4548,51 @@ def run_local() -> int:
                 return []  # broker holds nothing
 
         sent = []
+
         class _Bot(m.TradeGeniusBase):
             NAME = "V510Smoke4"
             ENV_PREFIX = "V510SMOKE4_"
+
             def __init__(self_inner):
                 self_inner.NAME = "V510Smoke4"
                 self_inner.mode = "paper"
                 self_inner.positions = {}
                 self_inner._load_persisted_positions()
+
             def _ensure_client(self_inner):
                 return _Client()
+
             def _send_own_telegram(self_inner, msg):
                 sent.append(msg)
 
         p.save_executor_position(
-            "V510Smoke4", "paper", "STALE",
+            "V510Smoke4",
+            "paper",
+            "STALE",
             {
-                "side": "LONG", "qty": 5, "entry_price": 100.0,
+                "side": "LONG",
+                "qty": 5,
+                "entry_price": 100.0,
                 "entry_ts_utc": "2026-04-27T17:00:00+00:00",
-                "source": "SIGNAL", "stop": None, "trail": None,
+                "source": "SIGNAL",
+                "stop": None,
+                "trail": None,
             },
         )
         bot = _Bot()
         assert "STALE" in bot.positions
         bot._reconcile_broker_positions()
-        assert sent == [], \
-            f"stale-self-heal must NOT Telegram, got {sent!r}"
-        assert "STALE" not in bot.positions, \
-            "stale ticker must be removed from in-memory dict"
+        assert sent == [], f"stale-self-heal must NOT Telegram, got {sent!r}"
+        assert "STALE" not in bot.positions, "stale ticker must be removed from in-memory dict"
         rows = p.load_executor_positions("V510Smoke4", "paper")
-        assert "STALE" not in rows, \
-            "stale ticker must be removed from executor_positions row set"
+        assert "STALE" not in rows, "stale ticker must be removed from executor_positions row set"
 
     @t("v5.5.10: _reconcile_broker_positions still grafts + Telegrams on true divergence")
     def _():
         # Persisted does NOT have the ticker, broker does. This is a
         # real orphan \u2014 graft and Telegram with "(true divergence)".
         import persistence as p
+
         c = p._conn()
         c.execute(
             "DELETE FROM executor_positions WHERE executor_name = ?",
@@ -4144,27 +4609,31 @@ def run_local() -> int:
                 return [_BP()]
 
         sent = []
+
         class _Bot(m.TradeGeniusBase):
             NAME = "V510Smoke5"
             ENV_PREFIX = "V510SMOKE5_"
+
             def __init__(self_inner):
                 self_inner.NAME = "V510Smoke5"
                 self_inner.mode = "paper"
                 self_inner.positions = {}
                 self_inner._load_persisted_positions()
+
             def _ensure_client(self_inner):
                 return _Client()
+
             def _send_own_telegram(self_inner, msg):
                 sent.append(msg)
 
         bot = _Bot()
         assert "AAPL" not in bot.positions
         bot._reconcile_broker_positions()
-        assert "AAPL" in bot.positions, \
-            "true orphan must be grafted into self.positions"
+        assert "AAPL" in bot.positions, "true orphan must be grafted into self.positions"
         assert bot.positions["AAPL"]["source"] == "RECONCILE"
-        assert any("true divergence" in s for s in sent), \
+        assert any("true divergence" in s for s in sent), (
             f"expected '(true divergence)' Telegram, got {sent!r}"
+        )
         # Graft must have been persisted so the next reboot stays silent.
         rows = p.load_executor_positions("V510Smoke5", "paper")
         assert "AAPL" in rows, "grafted orphan must be persisted to DB"
@@ -4176,17 +4645,17 @@ def run_local() -> int:
     @t("v5.5.10: shadow tab AS OF reads s.server_time (not s.as_of) in app.js")
     def _():
         from pathlib import Path
-        js = (Path(__file__).resolve().parent
-              / "dashboard_static" / "app.js").read_text()
+
+        js = (Path(__file__).resolve().parent / "dashboard_static" / "app.js").read_text()
         # The fix replaces the bare s.as_of read with a server_time
         # primary + shadow_pnl.as_of fallback. Pin both signals.
-        assert "s.server_time" in js, \
-            "v5.5.10 dashboard fix missing: s.server_time read absent"
+        assert "s.server_time" in js, "v5.5.10 dashboard fix missing: s.server_time read absent"
         # The pre-fix line `(s && s.as_of) ? _scFmtTs(s.as_of) : "\u2014"`
         # must NOT survive verbatim \u2014 if it does, the AS OF cell
         # is still always undefined.
-        assert "(s && s.as_of) ? _scFmtTs(s.as_of)" not in js, \
+        assert "(s && s.as_of) ? _scFmtTs(s.as_of)" not in js, (
             "v5.5.10 pre-fix bare s.as_of read still present in app.js"
+        )
 
     @t("v5.5.8: _today_trades synthesizes SHORT entry rows from short_trade_history")
     def _():
@@ -4197,25 +4666,26 @@ def run_local() -> int:
         # plus the action="SHORT" emit, so a future refactor that drops
         # the entry-row emit fails CI loudly.
         from pathlib import Path
+
         src = Path(__file__).resolve().parent / "dashboard_server.py"
         text = src.read_text()
-        assert "v5.5.8 \u2014 SHORT entry-row synthesis" in text or \
-               "synthesize the SHORT entry row" in text, \
-               "v5.5.8 synthesis comment missing from _today_trades"
-        assert "\"action\": \"SHORT\"" in text, \
-               "synthesized SHORT entry row missing action=SHORT"
-        assert "short_positions" in text, \
-               "open-short sweep of short_positions missing"
+        assert (
+            "v5.5.8 \u2014 SHORT entry-row synthesis" in text
+            or "synthesize the SHORT entry row" in text
+        ), "v5.5.8 synthesis comment missing from _today_trades"
+        assert '"action": "SHORT"' in text, "synthesized SHORT entry row missing action=SHORT"
+        assert "short_positions" in text, "open-short sweep of short_positions missing"
 
     @t("v5.5.6: previous_session_bucket exists and returns just-closed bucket")
     def _():
         import volume_profile as _vp
         from datetime import datetime as _dt
+
         ts = _dt(2026, 4, 27, 10, 27, 30, tzinfo=_vp.ET)
-        assert hasattr(_vp, "previous_session_bucket"), \
+        assert hasattr(_vp, "previous_session_bucket"), (
             "previous_session_bucket missing from volume_profile"
-        assert _vp.previous_session_bucket(ts) == "1026", \
-            _vp.previous_session_bucket(ts)
+        )
+        assert _vp.previous_session_bucket(ts) == "1026", _vp.previous_session_bucket(ts)
         # Outside-session edge: the just-closed minute is None.
         ts_close = _dt(2026, 4, 27, 16, 1, 0, tzinfo=_vp.ET)
         assert _vp.previous_session_bucket(ts_close) is None
@@ -4225,24 +4695,28 @@ def run_local() -> int:
         # Spot-check the source so a future refactor that reverts to
         # the racey session_bucket() shows up in CI.
         from pathlib import Path as _P
+
         src = _P(__file__).resolve().parent / "trade_genius.py"
         text = src.read_text()
         # _shadow_log_g4 must call previous_session_bucket.
         idx = text.find("def _shadow_log_g4(")
         assert idx >= 0
-        body = text[idx:idx + 4000]
-        assert "previous_session_bucket(now_et)" in body, \
+        body = text[idx : idx + 4000]
+        assert "previous_session_bucket(now_et)" in body, (
             "_shadow_log_g4 must use previous_session_bucket"
+        )
         # _v512_emit_candidate_log must too.
         idx2 = text.find("def _v512_emit_candidate_log(")
         assert idx2 >= 0
-        body2 = text[idx2:idx2 + 4000]
-        assert "previous_session_bucket(now_et)" in body2, \
+        body2 = text[idx2 : idx2 + 4000]
+        assert "previous_session_bucket(now_et)" in body2, (
             "_v512_emit_candidate_log must use previous_session_bucket"
+        )
 
     @t("v5.5.5: WebsocketBarConsumer has _bars_received counter")
     def _():
         import volume_profile as _vp
+
         c = _vp.WebsocketBarConsumer(["AAPL"], "k", "s")
         assert hasattr(c, "_bars_received") and c._bars_received == 0
         assert hasattr(c, "_last_bar_ts") and c._last_bar_ts is None
@@ -4252,11 +4726,16 @@ def run_local() -> int:
     @t("v5.5.5: WebsocketBarConsumer.stats_snapshot returns expected keys")
     def _():
         import volume_profile as _vp
+
         c = _vp.WebsocketBarConsumer(["AAPL", "QQQ"], "k", "s")
         snap = c.stats_snapshot()
         for k in (
-            "bars_received", "last_bar_ts", "last_handler_error",
-            "volumes_size_per_symbol", "tickers", "watchdog_reconnects",
+            "bars_received",
+            "last_bar_ts",
+            "last_handler_error",
+            "volumes_size_per_symbol",
+            "tickers",
+            "watchdog_reconnects",
             "silence_threshold_sec",
         ):
             assert k in snap, (k, snap)
@@ -4266,12 +4745,14 @@ def run_local() -> int:
     @t("v5.5.5: time_since_last_bar_seconds None when no bars")
     def _():
         import volume_profile as _vp
+
         c = _vp.WebsocketBarConsumer(["AAPL"], "k", "s")
         assert c.time_since_last_bar_seconds() is None
 
     @t("v5.5.5: VOLPROFILE_WATCHDOG_SEC clamps to >= 30")
     def _():
         import volume_profile as _vp
+
         os.environ["VOLPROFILE_WATCHDOG_SEC"] = "5"
         try:
             c = _vp.WebsocketBarConsumer(["AAPL"], "k", "s")
@@ -4282,9 +4763,13 @@ def run_local() -> int:
     @t("v5.5.5: dashboard registers /api/ws_state route")
     def _():
         import dashboard_server as _ds
+
         app = _ds._build_app()
-        routes = {r.resource.canonical for r in app.router.routes()
-                  if hasattr(r, "resource") and r.resource is not None}
+        routes = {
+            r.resource.canonical
+            for r in app.router.routes()
+            if hasattr(r, "resource") and r.resource is not None
+        }
         assert "/api/ws_state" in routes, sorted(routes)
 
     @t("v5.5.5: dashboard /api/ws_state requires auth")
@@ -4292,16 +4777,18 @@ def run_local() -> int:
         # Source-grep guard \u2014 the handler must call _check_auth like /api/state.
         import dashboard_server as _ds
         from pathlib import Path as _P
+
         src = (_P(_ds.__file__)).read_text(encoding="utf-8")
         # Slice the h_ws_state body and verify the auth gate is present.
         idx = src.find("async def h_ws_state(")
         assert idx >= 0, "h_ws_state handler missing"
-        body = src[idx:idx + 1200]
+        body = src[idx : idx + 1200]
         assert "_check_auth(request)" in body, body[:400]
 
     @t("v5.5.5: bar archive prefers _ws_consumer over Yahoo")
     def _():
         from pathlib import Path as _P
+
         src = (_P(__file__).parent / "trade_genius.py").read_text(encoding="utf-8")
         assert "_ws_consumer.current_volume(" in src
         assert "if ws_vol is not None" in src
@@ -4311,18 +4798,21 @@ def run_local() -> int:
     def _():
         # Test name pinned to its release; assertion follows BOT_VERSION.
         from pathlib import Path as _P
-        arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        assert 'BOT_VERSION = "5.8.0"' in arch, "ARCHITECTURE.md footer not bumped"
 
-    @t("v5.5.5: CHANGELOG.md has v5.8.0 heading at top")
+        arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        assert 'BOT_VERSION = "5.9.0"' in arch, "ARCHITECTURE.md footer not bumped"
+
+    @t("v5.5.5: CHANGELOG.md has v5.9.0 heading at top")
     def _():
         from pathlib import Path as _P
+
         cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
         # The first ## heading should be the current version.
-        head_idx = cl.find("\n## v5.8.0")
-        prior = cl.find("\n## v5.7.1")
-        assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
-            "v5.8.0 heading must precede v5.7.1 in CHANGELOG"
+        head_idx = cl.find("\n## v5.9.0")
+        prior = cl.find("\n## v5.8.4")
+        assert head_idx >= 0 and (prior < 0 or head_idx < prior), (
+            "v5.9.0 heading must precede v5.8.4 in CHANGELOG"
+        )
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():
@@ -4335,12 +4825,14 @@ def run_local() -> int:
         # source level so a future refactor can't regress it.
         import inspect as _inspect
         import volume_profile as _vp
+
         consumer_cls = _vp.WebsocketBarConsumer
         handler = consumer_cls._on_bar
         assert _inspect.iscoroutinefunction(handler), (
             "WebsocketBarConsumer._on_bar must be `async def` so "
             "alpaca-py StockDataStream accepts it as a subscribe "
-            "handler (regression guard for the v5.5.3 crash-loop)")
+            "handler (regression guard for the v5.5.3 crash-loop)"
+        )
 
     @t("v5.5.3: shadow WS uses market-data feed (DataFeed.IEX), not trading WS")
     def _():
@@ -4352,33 +4844,39 @@ def run_local() -> int:
         # over the same auth and break the constraint that the shadow
         # path is market-data-only).
         from pathlib import Path as _P
-        vp_text = (_P(__file__).parent / "volume_profile.py").read_text(
-            encoding="utf-8")
+
+        vp_text = (_P(__file__).parent / "volume_profile.py").read_text(encoding="utf-8")
         # 1. The live consumer imports StockDataStream (market-data WS).
-        assert "from alpaca.data.live import StockDataStream" in vp_text, \
+        assert "from alpaca.data.live import StockDataStream" in vp_text, (
             "shadow consumer must use alpaca.data.live.StockDataStream"
+        )
         # 2. It pins feed=DataFeed.IEX (market-data feed name).
-        assert "DataFeed.IEX" in vp_text, \
-            "shadow consumer must pin DataFeed.IEX market-data feed"
+        assert "DataFeed.IEX" in vp_text, "shadow consumer must pin DataFeed.IEX market-data feed"
         # 3. No trading-API endpoints are referenced from this module.
-        for forbidden in ("/v2/positions", "/v2/account", "/v2/orders",
-                          "/v2/portfolio", "TradingClient",
-                          "TradingStream"):
+        for forbidden in (
+            "/v2/positions",
+            "/v2/account",
+            "/v2/orders",
+            "/v2/portfolio",
+            "TradingClient",
+            "TradingStream",
+        ):
             assert forbidden not in vp_text, (
                 f"forbidden trading-API ref {forbidden!r} found in "
                 "volume_profile.py \u2014 shadow path must be market-"
-                "data-only.")
+                "data-only."
+            )
 
     @t("v5.5.3: _start_volume_profile prefers VAL_ALPACA_PAPER_KEY over legacy")
     def _():
         # Source-level guard: the cred chain must consult VAL_* first.
         from pathlib import Path as _P
-        tg_text = (_P(__file__).parent / "trade_genius.py").read_text(
-            encoding="utf-8")
+
+        tg_text = (_P(__file__).parent / "trade_genius.py").read_text(encoding="utf-8")
         # Locate the function body.
         i = tg_text.find("def _start_volume_profile")
         assert i != -1, "_start_volume_profile not found"
-        body = tg_text[i:i + 4000]
+        body = tg_text[i : i + 4000]
         # VAL_ALPACA_PAPER_KEY must appear before ALPACA_PAPER_KEY in the
         # cred-resolution block.
         i_val = body.find("VAL_ALPACA_PAPER_KEY")
@@ -4386,13 +4884,10 @@ def run_local() -> int:
         # i_legacy will match the VAL_ prefix too; advance past it.
         i_legacy_real = body.find('"ALPACA_PAPER_KEY"')
         assert i_val != -1, "VAL_ALPACA_PAPER_KEY missing from cred chain"
-        assert i_legacy_real != -1, \
-            "legacy ALPACA_PAPER_KEY fallback missing"
-        assert i_val < i_legacy_real, \
-            "VAL_ALPACA_PAPER_KEY must be checked before legacy key"
+        assert i_legacy_real != -1, "legacy ALPACA_PAPER_KEY fallback missing"
+        assert i_val < i_legacy_real, "VAL_ALPACA_PAPER_KEY must be checked before legacy key"
         # SHADOW DISABLED log line must be in place of the old soft warn.
-        assert "[SHADOW DISABLED]" in body, \
-            "missing [SHADOW DISABLED] log line"
+        assert "[SHADOW DISABLED]" in body, "missing [SHADOW DISABLED] log line"
 
     # ---- v5.4.0 offline backtest CLI ----
     @t("v5.4.0 replay: loads bars + writes CSV ledger with expected columns")
@@ -4401,6 +4896,7 @@ def run_local() -> int:
         import csv as _csv
         from backtest import replay as _br
         from backtest import ledger as _bl
+
         bars_dir = tmp_dir / "v540_bars"
         if bars_dir.exists():
             shutil.rmtree(bars_dir)
@@ -4415,8 +4911,10 @@ def run_local() -> int:
 
         # 3 tickers + QQQ index. Synthetic bars: flat then spike.
         base_ts = "2026-04-21T13:30:00Z"
+
         def _ts(i):
             from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
             d = _dt.fromisoformat(base_ts.replace("Z", "+00:00"))
             return (d + _td(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -4424,23 +4922,30 @@ def run_local() -> int:
             bars = []
             for i in range(20):
                 price = 100.0 if i < 5 else (105.0 if i == 5 else 100.0)
-                bars.append({"ts": _ts(i), "close": price,
-                             "iex_volume": 50000})
+                bars.append({"ts": _ts(i), "close": price, "iex_volume": 50000})
             _write(tk, bars)
-        qbars = [{"ts": _ts(i), "close": 400.0, "iex_volume": 50000}
-                 for i in range(20)]
+        qbars = [{"ts": _ts(i), "close": 400.0, "iex_volume": 50000} for i in range(20)]
         _write("QQQ", qbars)
 
         out_dir = tmp_dir / "v540_out_a"
         if out_dir.exists():
             shutil.rmtree(out_dir)
-        rc = _br.main([
-            "--start", day, "--end", day,
-            "--config", "TICKER+QQQ",
-            "--out", str(out_dir),
-            "--bars-dir", str(bars_dir),
-            "--state-db", str(tmp_dir / "nope.db"),
-        ])
+        rc = _br.main(
+            [
+                "--start",
+                day,
+                "--end",
+                day,
+                "--config",
+                "TICKER+QQQ",
+                "--out",
+                str(out_dir),
+                "--bars-dir",
+                str(bars_dir),
+                "--state-db",
+                str(tmp_dir / "nope.db"),
+            ]
+        )
         assert rc == 0, f"replay exit code {rc}"
         csv_path = out_dir / f"TICKER+QQQ_{day}_{day}.csv"
         assert csv_path.exists(), f"missing ledger {csv_path}"
@@ -4455,6 +4960,7 @@ def run_local() -> int:
     def _():
         import shutil
         from backtest import replay as _br
+
         bars_dir = tmp_dir / "v540_bars_pnl"
         if bars_dir.exists():
             shutil.rmtree(bars_dir)
@@ -4464,27 +4970,29 @@ def run_local() -> int:
 
         def _ts(i):
             from datetime import datetime as _dt, timedelta as _td
+
             d = _dt.fromisoformat("2026-04-22T13:30:00+00:00")
             return (d + _td(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Entry at bar 5 (price 100->105 = +5%); peak 110; trail
         # stop fires at 110*(1-0.015)=108.35 \u2014 set bar 8 to 108.0.
-        prices = [100.0, 100.0, 100.0, 100.0, 100.0,
-                  105.0, 108.0, 110.0, 108.0,
-                  108.0, 108.0]
-        bars = [{"ts": _ts(i), "close": p, "iex_volume": 50000}
-                for i, p in enumerate(prices)]
+        prices = [100.0, 100.0, 100.0, 100.0, 100.0, 105.0, 108.0, 110.0, 108.0, 108.0, 108.0]
+        bars = [{"ts": _ts(i), "close": p, "iex_volume": 50000} for i, p in enumerate(prices)]
         with open(day_dir / "AAPL.jsonl", "w") as fh:
             for b in bars:
                 fh.write(__import__("json").dumps(b) + "\n")
-        qbars = [{"ts": _ts(i), "close": 400.0, "iex_volume": 50000}
-                 for i in range(len(prices))]
+        qbars = [{"ts": _ts(i), "close": 400.0, "iex_volume": 50000} for i in range(len(prices))]
         with open(day_dir / "QQQ.jsonl", "w") as fh:
             for b in qbars:
                 fh.write(__import__("json").dumps(b) + "\n")
 
-        cfg = {"name": "TEST", "ticker_enabled": True,
-               "index_enabled": True, "ticker_pct": 70, "index_pct": 70}
+        cfg = {
+            "name": "TEST",
+            "ticker_enabled": True,
+            "index_enabled": True,
+            "ticker_pct": 70,
+            "index_pct": 70,
+        }
         rows = _br.replay_one_day(str(bars_dir), day, cfg)
         assert len(rows) == 1, rows
         r = rows[0]
@@ -4502,37 +5010,77 @@ def run_local() -> int:
     def _():
         import sqlite3 as _sql
         from backtest import replay as _br
+
         # 3 replay rows, 3 prod rows aligned ticker/side/ts.
         replay_rows = [
-            {"ticker": "AAPL", "side": "BUY",
-             "entry_ts": "2026-04-23T13:31:00Z", "entry_price": 100.0,
-             "exit_ts": "2026-04-23T13:50:00Z", "exit_price": 102.0,
-             "qty": 10, "pnl_dollars": 20.0, "pnl_pct": 2.0,
-             "exit_reason": "trail_stop"},
-            {"ticker": "MSFT", "side": "BUY",
-             "entry_ts": "2026-04-23T14:00:00Z", "entry_price": 200.0,
-             "exit_ts": "2026-04-23T14:20:00Z", "exit_price": 199.0,
-             "qty": 5, "pnl_dollars": -5.0, "pnl_pct": -0.5,
-             "exit_reason": "hard_eject"},
-            {"ticker": "NVDA", "side": "BUY",
-             "entry_ts": "2026-04-23T15:00:00Z", "entry_price": 800.0,
-             "exit_ts": "2026-04-23T15:30:00Z", "exit_price": 805.0,
-             "qty": 1, "pnl_dollars": 5.0, "pnl_pct": 0.625,
-             "exit_reason": "eod"},
+            {
+                "ticker": "AAPL",
+                "side": "BUY",
+                "entry_ts": "2026-04-23T13:31:00Z",
+                "entry_price": 100.0,
+                "exit_ts": "2026-04-23T13:50:00Z",
+                "exit_price": 102.0,
+                "qty": 10,
+                "pnl_dollars": 20.0,
+                "pnl_pct": 2.0,
+                "exit_reason": "trail_stop",
+            },
+            {
+                "ticker": "MSFT",
+                "side": "BUY",
+                "entry_ts": "2026-04-23T14:00:00Z",
+                "entry_price": 200.0,
+                "exit_ts": "2026-04-23T14:20:00Z",
+                "exit_price": 199.0,
+                "qty": 5,
+                "pnl_dollars": -5.0,
+                "pnl_pct": -0.5,
+                "exit_reason": "hard_eject",
+            },
+            {
+                "ticker": "NVDA",
+                "side": "BUY",
+                "entry_ts": "2026-04-23T15:00:00Z",
+                "entry_price": 800.0,
+                "exit_ts": "2026-04-23T15:30:00Z",
+                "exit_price": 805.0,
+                "qty": 1,
+                "pnl_dollars": 5.0,
+                "pnl_pct": 0.625,
+                "exit_reason": "eod",
+            },
         ]
         prod = [
-            {"ticker": "AAPL", "side": "BUY",
-             "entry_ts_utc": "2026-04-23T13:31:30Z", "entry_price": 100.05,
-             "exit_ts_utc": "2026-04-23T13:50:00Z", "exit_price": 102.10,
-             "qty": 10, "realized_pnl": 20.5},
-            {"ticker": "MSFT", "side": "BUY",
-             "entry_ts_utc": "2026-04-23T14:00:10Z", "entry_price": 200.0,
-             "exit_ts_utc": "2026-04-23T14:20:00Z", "exit_price": 199.10,
-             "qty": 5, "realized_pnl": -4.5},
-            {"ticker": "NVDA", "side": "BUY",
-             "entry_ts_utc": "2026-04-23T15:00:45Z", "entry_price": 800.0,
-             "exit_ts_utc": "2026-04-23T15:30:00Z", "exit_price": 804.5,
-             "qty": 1, "realized_pnl": 4.5},
+            {
+                "ticker": "AAPL",
+                "side": "BUY",
+                "entry_ts_utc": "2026-04-23T13:31:30Z",
+                "entry_price": 100.05,
+                "exit_ts_utc": "2026-04-23T13:50:00Z",
+                "exit_price": 102.10,
+                "qty": 10,
+                "realized_pnl": 20.5,
+            },
+            {
+                "ticker": "MSFT",
+                "side": "BUY",
+                "entry_ts_utc": "2026-04-23T14:00:10Z",
+                "entry_price": 200.0,
+                "exit_ts_utc": "2026-04-23T14:20:00Z",
+                "exit_price": 199.10,
+                "qty": 5,
+                "realized_pnl": -4.5,
+            },
+            {
+                "ticker": "NVDA",
+                "side": "BUY",
+                "entry_ts_utc": "2026-04-23T15:00:45Z",
+                "entry_price": 800.0,
+                "exit_ts_utc": "2026-04-23T15:30:00Z",
+                "exit_price": 804.5,
+                "qty": 1,
+                "realized_pnl": 4.5,
+            },
         ]
         vr = _br.validate(replay_rows, prod)
         assert vr["match_rate"] == 1.0, vr
@@ -4545,6 +5093,7 @@ def run_local() -> int:
         import shutil
         import sqlite3 as _sql
         from backtest import replay as _br
+
         # Build empty bars dir so replay produces zero rows.
         bars_dir = tmp_dir / "v540_bars_drift"
         if bars_dir.exists():
@@ -4569,21 +5118,31 @@ def run_local() -> int:
                 "INSERT INTO shadow_positions "
                 "(config_name, ticker, side, qty, entry_ts_utc, entry_price) "
                 "VALUES (?, ?, 'BUY', 10, ?, ?)",
-                ("TICKER+QQQ", tk, f"2026-04-24T14:{30+i:02d}:00Z", 100.0 + i),
+                ("TICKER+QQQ", tk, f"2026-04-24T14:{30 + i:02d}:00Z", 100.0 + i),
             )
-        c.commit(); c.close()
+        c.commit()
+        c.close()
 
         out_dir = tmp_dir / "v540_out_drift"
         if out_dir.exists():
             shutil.rmtree(out_dir)
-        rc = _br.main([
-            "--start", "2026-04-24", "--end", "2026-04-24",
-            "--config", "TICKER+QQQ",
-            "--validate",
-            "--out", str(out_dir),
-            "--bars-dir", str(bars_dir),
-            "--state-db", str(sdb),
-        ])
+        rc = _br.main(
+            [
+                "--start",
+                "2026-04-24",
+                "--end",
+                "2026-04-24",
+                "--config",
+                "TICKER+QQQ",
+                "--validate",
+                "--out",
+                str(out_dir),
+                "--bars-dir",
+                str(bars_dir),
+                "--state-db",
+                str(sdb),
+            ]
+        )
         assert rc == 1, f"expected exit 1 (match rate < 0.95), got {rc}"
         rep = out_dir / "TICKER+QQQ_2026-04-24_2026-04-24_validation.md"
         assert rep.exists(), f"validation report missing: {rep}"
@@ -4603,8 +5162,8 @@ def run_local() -> int:
         _persist_mod._close_for_tests()
         _persist_mod.init_db(schema_path)
         rid = _persist_mod.save_shadow_position(
-            "SCHEMA_TEST", "ZZZZ", "long", 7,
-            "2026-04-26T20:30:00+00:00", 50.0)
+            "SCHEMA_TEST", "ZZZZ", "long", 7, "2026-04-26T20:30:00+00:00", 50.0
+        )
         assert rid is not None, "save_shadow_position returned None"
         opens = _persist_mod.load_open_shadow_positions()
         assert any(r["ticker"] == "ZZZZ" for r in opens), opens
@@ -4642,7 +5201,9 @@ def run_local() -> int:
             # 100 shares @ $50 long, no fetch needed: snapshot falls back
             # to entry_price when fetch_1min_bars returns None.
             m.positions["FAKE"] = {
-                "entry_price": 50.0, "shares": 100, "stop": 49.0,
+                "entry_price": 50.0,
+                "shares": 100,
+                "stop": 49.0,
             }
             snap = snap_fn()
             assert snap is not None, "snapshot returned None"
@@ -4666,14 +5227,12 @@ def run_local() -> int:
         # the JS render fn keeps working; the CSS rule now hides
         # #tg-panel-shadow on main/val/gene and shows it on shadow.
         repo = Path(__file__).parent
-        html = (repo / "dashboard_static" / "index.html").read_text(
-            encoding="utf-8")
+        html = (repo / "dashboard_static" / "index.html").read_text(encoding="utf-8")
         assert 'id="shadow-pnl-card"' in html, "card id missing"
         assert 'id="shadow-pnl-section"' in html, "section id missing"
         assert 'id="tg-panel-shadow"' in html, "shadow tab panel missing"
-        css = (repo / "dashboard_static" / "app.css").read_text(
-            encoding="utf-8")
-        assert '#tg-panel-shadow' in css, "shadow panel gate missing"
+        css = (repo / "dashboard_static" / "app.css").read_text(encoding="utf-8")
+        assert "#tg-panel-shadow" in css, "shadow panel gate missing"
         assert 'data-tg-active-tab="shadow"' in css, css[-2000:]
         assert "display: none !important" in css
 
@@ -4684,11 +5243,10 @@ def run_local() -> int:
         # Tab strip must contain the four tabs in canonical order, and
         # the new Shadow tab pane must own the shadow-pnl card.
         repo = Path(__file__).parent
-        html = (repo / "dashboard_static" / "index.html").read_text(
-            encoding="utf-8")
-        i_main   = html.find('data-tg-tab="main"')
-        i_val    = html.find('data-tg-tab="val"')
-        i_gene   = html.find('data-tg-tab="gene"')
+        html = (repo / "dashboard_static" / "index.html").read_text(encoding="utf-8")
+        i_main = html.find('data-tg-tab="main"')
+        i_val = html.find('data-tg-tab="val"')
+        i_gene = html.find('data-tg-tab="gene"')
         i_shadow = html.find('data-tg-tab="shadow"')
         assert i_main >= 0, "main tab button missing"
         assert i_val > i_main, "val tab not after main"
@@ -4710,8 +5268,7 @@ def run_local() -> int:
         # /tg-panel-main HTML comment) and assert the card id appears
         # only AFTER that boundary.
         repo = Path(__file__).parent
-        html = (repo / "dashboard_static" / "index.html").read_text(
-            encoding="utf-8")
+        html = (repo / "dashboard_static" / "index.html").read_text(encoding="utf-8")
         end_main = html.find("/tg-panel-main")
         assert end_main >= 0, "tg-panel-main close marker missing"
         i_card = html.find('id="shadow-pnl-card"')
@@ -4725,21 +5282,19 @@ def run_local() -> int:
     def _():
         _reset_sp_db("v530_detail")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         # Seed one open and one closed under TICKER+QQQ so the
         # snapshot can prove both lists are wired through.
-        tr.open_position(
-            "TICKER+QQQ", "AAPL", "long",
-            "2026-04-26T14:30:00+00:00", 100.0, snap)
+        tr.open_position("TICKER+QQQ", "AAPL", "long", "2026-04-26T14:30:00+00:00", 100.0, snap)
         tr.mark_to_market("AAPL", 110.0)
-        tr.open_position(
-            "TICKER+QQQ", "MSFT", "long",
-            "2026-04-26T14:31:00+00:00", 200.0, snap)
-        tr.close_position(
-            "TICKER+QQQ", "MSFT",
-            "2026-04-26T15:00:00+00:00", 210.0, "TRAIL")
+        tr.open_position("TICKER+QQQ", "MSFT", "long", "2026-04-26T14:31:00+00:00", 200.0, snap)
+        tr.close_position("TICKER+QQQ", "MSFT", "2026-04-26T15:00:00+00:00", 210.0, "TRAIL")
         out = ds.snapshot()
         assert out.get("ok"), out
         sp = out["shadow_pnl"]
@@ -4756,8 +5311,15 @@ def run_local() -> int:
         opens = seeded["open_positions"]
         assert len(opens) == 1, opens
         op = opens[0]
-        for k in ("ticker", "side", "qty", "entry_price",
-                  "current_mark", "unrealized", "entry_ts_utc"):
+        for k in (
+            "ticker",
+            "side",
+            "qty",
+            "entry_price",
+            "current_mark",
+            "unrealized",
+            "entry_ts_utc",
+        ):
             assert k in op, (k, op)
         assert op["ticker"] == "AAPL"
         assert op["side"] == "long"
@@ -4765,9 +5327,17 @@ def run_local() -> int:
         recs = seeded["recent_trades"]
         assert len(recs) == 1, recs
         rc = recs[0]
-        for k in ("ticker", "side", "qty", "entry_price",
-                  "exit_price", "realized_pnl", "exit_reason",
-                  "entry_ts_utc", "exit_ts_utc"):
+        for k in (
+            "ticker",
+            "side",
+            "qty",
+            "entry_price",
+            "exit_price",
+            "realized_pnl",
+            "exit_reason",
+            "entry_ts_utc",
+            "exit_ts_utc",
+        ):
             assert k in rc, (k, rc)
         assert rc["ticker"] == "MSFT"
         assert rc["exit_reason"] == "TRAIL"
@@ -4778,20 +5348,22 @@ def run_local() -> int:
     def _():
         _reset_sp_db("v541_endpoint")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         # Seed 21 closed trades on TICKER+QQQ so the rolling 20-trade
         # win-rate window emits at least one point. Alternate winners
         # and losers so win_rate is well-defined.
         for i in range(21):
             ts_open = f"2026-04-2{(i % 5) + 1}T14:{30 + i:02d}:00+00:00"
             ts_close = f"2026-04-2{(i % 5) + 1}T15:{0 + (i % 30):02d}:00+00:00"
-            tr.open_position("TICKER+QQQ", f"T{i:03d}", "long",
-                             ts_open, 100.0, snap)
+            tr.open_position("TICKER+QQQ", f"T{i:03d}", "long", ts_open, 100.0, snap)
             exit_price = 110.0 if (i % 2 == 0) else 95.0
-            tr.close_position("TICKER+QQQ", f"T{i:03d}",
-                              ts_close, exit_price, "TRAIL")
+            tr.close_position("TICKER+QQQ", f"T{i:03d}", ts_close, exit_price, "TRAIL")
         # Reset cache so the seeded data is observed.
         ds._shadow_charts_cache["ts"] = 0.0
         ds._shadow_charts_cache["payload"] = None
@@ -4800,8 +5372,15 @@ def run_local() -> int:
         assert "as_of" in payload and payload["as_of"], payload
         cfgs = payload["configs"]
         # All 7 SHADOW_CONFIG names must be present even when empty.
-        expected = {"TICKER+QQQ", "TICKER_ONLY", "QQQ_ONLY", "GEMINI_A",
-                    "BUCKET_FILL_100", "REHUNT_VOL_CONFIRM", "OOMPH_ALERT"}
+        expected = {
+            "TICKER+QQQ",
+            "TICKER_ONLY",
+            "QQQ_ONLY",
+            "GEMINI_A",
+            "BUCKET_FILL_100",
+            "REHUNT_VOL_CONFIRM",
+            "OOMPH_ALERT",
+        }
         assert set(cfgs.keys()) == expected, set(cfgs.keys())
         for name, blk in cfgs.items():
             for k in ("equity_curve", "daily_pnl", "win_rate_rolling"):
@@ -4826,34 +5405,40 @@ def run_local() -> int:
         # return the same payload object (cache hit on the second call).
         _reset_sp_db("v541_cache")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
-        tr.open_position("TICKER+QQQ", "AAPL", "long",
-                         "2026-04-26T14:30:00+00:00", 100.0, snap)
-        tr.close_position("TICKER+QQQ", "AAPL",
-                          "2026-04-26T15:00:00+00:00", 110.0, "TRAIL")
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
+        tr.open_position("TICKER+QQQ", "AAPL", "long", "2026-04-26T14:30:00+00:00", 100.0, snap)
+        tr.close_position("TICKER+QQQ", "AAPL", "2026-04-26T15:00:00+00:00", 110.0, "TRAIL")
         # Reset cache so this test owns the first build.
         ds._shadow_charts_cache["ts"] = 0.0
         ds._shadow_charts_cache["payload"] = None
         # Drive two requests through the handler; the second must hit
         # the cache and skip the rebuild path.
-        import asyncio, json as _json
+        import asyncio
+        import json as _json
         from aiohttp.test_utils import make_mocked_request
+
         # Build a session cookie a real client would carry.
         ds._SESSION_SECRET = b"x" * 32
         tok = ds._make_token()
         cookie_header = f"{ds.SESSION_COOKIE}={tok}"
         loop = asyncio.new_event_loop()
         try:
-            req1 = make_mocked_request("GET", "/api/shadow_charts",
-                                       headers={"Cookie": cookie_header})
+            req1 = make_mocked_request(
+                "GET", "/api/shadow_charts", headers={"Cookie": cookie_header}
+            )
             r1 = loop.run_until_complete(ds.h_shadow_charts(req1))
             ts1 = ds._shadow_charts_cache["ts"]
             payload1 = ds._shadow_charts_cache["payload"]
             assert payload1 is not None
-            req2 = make_mocked_request("GET", "/api/shadow_charts",
-                                       headers={"Cookie": cookie_header})
+            req2 = make_mocked_request(
+                "GET", "/api/shadow_charts", headers={"Cookie": cookie_header}
+            )
             r2 = loop.run_until_complete(ds.h_shadow_charts(req2))
             ts2 = ds._shadow_charts_cache["ts"]
             payload2 = ds._shadow_charts_cache["payload"]
@@ -4868,15 +5453,15 @@ def run_local() -> int:
     @t("v5.4.1: index.html loads Chart.js + has 3 chart-group divs")
     def _():
         from html.parser import HTMLParser
-        html_path = (Path(__file__).parent
-                     / "dashboard_static" / "index.html")
+
+        html_path = Path(__file__).parent / "dashboard_static" / "index.html"
         text = html_path.read_text(encoding="utf-8")
         # 1. Chart.js is loaded (CDN script tag with chart.umd in src).
-        assert "chart.umd" in text and "chart.js" in text.lower(), \
+        assert "chart.umd" in text and "chart.js" in text.lower(), (
             "Chart.js script tag missing from index.html"
+        )
         # 2. The three chart-group divs exist with the expected ids.
-        for needed in ("shadow-equity-group", "shadow-heatmap-group",
-                       "shadow-winrate-group"):
+        for needed in ("shadow-equity-group", "shadow-heatmap-group", "shadow-winrate-group"):
             assert needed in text, f"missing chart-group div #{needed}"
         # 3. The heatmap canvas + the Charts collapsible header are wired.
         assert "shadow-heatmap-canvas" in text
@@ -4887,12 +5472,15 @@ def run_local() -> int:
         i_groups = text.find("shadow-equity-group")
         i_panel_close = text.find("/tg-panel-shadow")
         assert i_panel != -1 and i_groups != -1 and i_panel_close != -1
-        assert i_panel < i_groups < i_panel_close, \
+        assert i_panel < i_groups < i_panel_close, (
             "chart groups must live inside the Shadow tab panel"
+        )
+
         # 5. HTML still parses cleanly.
         class _P(HTMLParser):
             def error(self, msg):
                 raise AssertionError("malformed html: " + str(msg))
+
         _P(convert_charrefs=True).feed(text)
 
     @t("v5.5.1: tooltip callbacks present on all 3 chart constructors")
@@ -4900,15 +5488,12 @@ def run_local() -> int:
         # Parse app.js and assert that each `new window.Chart(...)` block
         # has its own `plugins.tooltip.callbacks` block. This guards the
         # rich-tooltip wiring from accidental removal.
-        js_path = (Path(__file__).parent
-                   / "dashboard_static" / "app.js")
+        js_path = Path(__file__).parent / "dashboard_static" / "app.js"
         text = js_path.read_text(encoding="utf-8")
         # Slice the file at every "new window.Chart(" occurrence and walk
         # forward to the matching closing-brace of that constructor call.
-        starts = [i for i in range(len(text))
-                  if text.startswith("new window.Chart(", i)]
-        assert len(starts) >= 3, \
-            f"expected at least 3 chart constructors, found {len(starts)}"
+        starts = [i for i in range(len(text)) if text.startswith("new window.Chart(", i)]
+        assert len(starts) >= 3, f"expected at least 3 chart constructors, found {len(starts)}"
         # We only care about the 3 shadow-tab constructors. Take the
         # first 3 — they are equity / winrate / heatmap in source order.
         callback_hits = 0
@@ -4928,38 +5513,35 @@ def run_local() -> int:
             assert end is not None, "unterminated Chart() constructor"
             block = text[start:end]
             # The block must wire a tooltip with a callbacks: { ... } map.
-            assert "tooltip:" in block, \
-                "constructor missing tooltip block: " + block[:80]
-            assert "callbacks:" in block, \
-                "constructor missing tooltip.callbacks: " + block[:80]
+            assert "tooltip:" in block, "constructor missing tooltip block: " + block[:80]
+            assert "callbacks:" in block, "constructor missing tooltip.callbacks: " + block[:80]
             callback_hits += 1
-        assert callback_hits == 3, \
-            f"expected 3 tooltip.callbacks blocks, got {callback_hits}"
+        assert callback_hits == 3, f"expected 3 tooltip.callbacks blocks, got {callback_hits}"
 
     @t("v5.5.1: click-to-isolate handler present in app.js")
     def _():
         # Parse app.js and assert (a) a single isolation state variable
         # named __scIsolated exists, (b) a click handler that mutates it
         # exists, and (c) the heatmap onClick clears or sets it.
-        js_path = (Path(__file__).parent
-                   / "dashboard_static" / "app.js")
+        js_path = Path(__file__).parent / "dashboard_static" / "app.js"
         text = js_path.read_text(encoding="utf-8")
         assert "__scIsolated" in text, "isolation state variable missing"
-        assert "let __scIsolated" in text or "var __scIsolated" in text, \
+        assert "let __scIsolated" in text or "var __scIsolated" in text, (
             "__scIsolated must be declared (let/var) once at module scope"
+        )
         # The toggle handler must mutate __scIsolated.
         assert "_scOnConfigClick" in text, "_scOnConfigClick missing"
         # Find the function body and confirm it assigns __scIsolated.
         i = text.find("function _scOnConfigClick")
         assert i != -1
-        body = text[i:i + 600]
-        assert "__scIsolated =" in body, \
-            "_scOnConfigClick must assign __scIsolated"
+        body = text[i : i + 600]
+        assert "__scIsolated =" in body, "_scOnConfigClick must assign __scIsolated"
         # Each of the 3 chart constructors wires onClick / addEventListener
         # that calls _scOnConfigClick or _scClearIsolation.
         click_calls = text.count("_scOnConfigClick")
-        assert click_calls >= 3, \
+        assert click_calls >= 3, (
             f"expected >=3 click handlers calling _scOnConfigClick, got {click_calls}"
+        )
 
     # -------- v5.2.1 shadow-accounting fixes (H2/H3/M3/M4) --------
 
@@ -4967,15 +5549,22 @@ def run_local() -> int:
     def _():
         _reset_sp_db("eod_orphan")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         # Open a position. DO NOT mark_to_market \u2014 ticker stays absent
         # from the prices dict at EOD.
         rid = tr.open_position(
-            config_name="TICKER+QQQ", ticker="ZZZZ", side="long",
+            config_name="TICKER+QQQ",
+            ticker="ZZZZ",
+            side="long",
             entry_ts_utc="2026-04-26T14:30:00+00:00",
-            entry_price=42.0, equity_snapshot=snap,
+            entry_price=42.0,
+            equity_snapshot=snap,
         )
         assert rid is not None
         assert tr.open_count("TICKER+QQQ") == 1
@@ -5013,7 +5602,7 @@ def run_local() -> int:
         # selection added ~30 lines inside the same archive block.
         # The invariant being asserted is unchanged: MTM must run before
         # the gate.
-        block = text[idx: idx + 6500]
+        block = text[idx : idx + 6500]
         mtm_pos = block.find("_v520_mtm_ticker(")
         gate_pos = block.find("if not paper_holds:")
         assert mtm_pos != -1, "_v520_mtm_ticker call missing from scan block"
@@ -5029,9 +5618,13 @@ def run_local() -> int:
     def _():
         _reset_sp_db("close_all")
         tr = _sp_mod.tracker()
-        snap = {"equity": 100000.0, "cash": 50000.0,
-                "dollars_per_entry": 1000.0,
-                "max_pct_per_entry": 10.0, "min_reserve_cash": 500.0}
+        snap = {
+            "equity": 100000.0,
+            "cash": 50000.0,
+            "dollars_per_entry": 1000.0,
+            "max_pct_per_entry": 10.0,
+            "min_reserve_cash": 500.0,
+        }
         # Open a virtual position on the SAME ticker for EVERY known
         # shadow config (SHADOW_CONFIGS + extras).
         all_names = m._v521_all_shadow_config_names()
@@ -5042,9 +5635,12 @@ def run_local() -> int:
         assert "OOMPH_ALERT" in all_names, all_names
         for cfg_name in all_names:
             tr.open_position(
-                config_name=cfg_name, ticker="WXYZ", side="long",
+                config_name=cfg_name,
+                ticker="WXYZ",
+                side="long",
                 entry_ts_utc="2026-04-26T14:30:00+00:00",
-                entry_price=10.0, equity_snapshot=snap,
+                entry_price=10.0,
+                equity_snapshot=snap,
             )
         for cfg_name in all_names:
             assert tr.open_count(cfg_name) == 1, cfg_name
@@ -5064,6 +5660,7 @@ def run_local() -> int:
         m._v519_rehunt_watch.clear()
         from datetime import datetime as _dt
         from datetime import timezone as _tz
+
         ts = _dt.now(tz=_tz.utc)
         m._v519_arm_rehunt_watch("AAPL", "long", ts)
         m._v519_arm_rehunt_watch("AAPL", "short", ts)
@@ -5122,12 +5719,14 @@ def run_local() -> int:
         # construction site, not the helper alone.
         ex._shares_for = lambda price, ticker=None: 5
         ex._send_own_telegram = lambda *a, **k: None
-        ex._on_signal({
-            "kind": "ENTRY_LONG",
-            "ticker": "aapl",  # lowercase to exercise sanitizer
-            "price": 150.0,
-            "reason": "test",
-        })
+        ex._on_signal(
+            {
+                "kind": "ENTRY_LONG",
+                "ticker": "aapl",  # lowercase to exercise sanitizer
+                "price": 150.0,
+                "reason": "test",
+            }
+        )
         req = captured.get("req")
         assert req is not None, "submit_order was not called"
         coid = getattr(req, "client_order_id", None)
@@ -5168,12 +5767,14 @@ def run_local() -> int:
         ex._ensure_client = lambda: ex.client
         ex._shares_for = lambda price, ticker=None: 5
         ex._send_own_telegram = lambda *a, **k: None
-        ex._on_signal({
-            "kind": "ENTRY_SHORT",
-            "ticker": "TSLA",
-            "price": 200.0,
-            "reason": "test",
-        })
+        ex._on_signal(
+            {
+                "kind": "ENTRY_SHORT",
+                "ticker": "TSLA",
+                "price": 200.0,
+                "reason": "test",
+            }
+        )
         # Single submit attempt, single lookup, position recorded.
         assert calls["submits"] == 1, calls
         assert calls["lookups"] == 1, calls
@@ -5203,12 +5804,14 @@ def run_local() -> int:
         ex._shares_for = lambda price, ticker=None: 5
         ex._send_own_telegram = lambda *a, **k: None
         # First signal: timeout. _on_signal swallows the dispatch error.
-        ex._on_signal({
-            "kind": "ENTRY_LONG",
-            "ticker": "MSFT",
-            "price": 300.0,
-            "reason": "first",
-        })
+        ex._on_signal(
+            {
+                "kind": "ENTRY_LONG",
+                "ticker": "MSFT",
+                "price": 300.0,
+                "reason": "first",
+            }
+        )
         # First submit attempted, no lookup, no position recorded.
         assert state["submits"] == 1, state
         assert state["lookups"] == 0, state
@@ -5216,12 +5819,14 @@ def run_local() -> int:
         # Second signal in the same minute/direction: same coid, dup
         # path fires. Submit is attempted but rejected; lookup recovers.
         state["phase"] = "second"
-        ex._on_signal({
-            "kind": "ENTRY_LONG",
-            "ticker": "MSFT",
-            "price": 300.0,
-            "reason": "retry",
-        })
+        ex._on_signal(
+            {
+                "kind": "ENTRY_LONG",
+                "ticker": "MSFT",
+                "price": 300.0,
+                "reason": "retry",
+            }
+        )
         assert state["submits"] == 2, state
         assert state["lookups"] == 1, state
         # Position now recorded via the dup-as-success path.
@@ -5282,20 +5887,22 @@ def run_local() -> int:
         assert ex.positions["KNWN"] == snapshot, ex.positions["KNWN"]
 
     # ============================================================
-    # v5.6.0 \u2014 Unified AVWAP Permission Gates
+    # v5.9.0 \u2014 Permission Gates (G1 swapped to QQQ 5m EMA(3)/EMA(9))
     # ============================================================
-    @t("v5.6.0 gate_g1_long: strict > with QQQ AVWAP (equal/below FAIL, None FAIL)")
+    @t("v5.9.0 gate_g1_long: strict > QQQ EMA3 vs EMA9 (equal/below FAIL, None FAIL)")
     def _():
+        # Args are now (qqq_5m_3ema, qqq_5m_9ema). UP regime: ema3 > ema9.
         assert v5.gate_g1_long(101.0, 100.0) is True
-        assert v5.gate_g1_long(100.0, 100.0) is False  # equality FAIL
+        assert v5.gate_g1_long(100.0, 100.0) is False  # FLAT FAILs
         assert v5.gate_g1_long(99.0, 100.0) is False
-        assert v5.gate_g1_long(101.0, None) is False    # AVWAP None FAIL
+        assert v5.gate_g1_long(101.0, None) is False  # warmup FAIL
         assert v5.gate_g1_long(None, 100.0) is False
 
-    @t("v5.6.0 gate_g1_short: strict < with QQQ AVWAP")
+    @t("v5.9.0 gate_g1_short: strict < QQQ EMA3 vs EMA9")
     def _():
+        # DOWN regime: ema3 < ema9.
         assert v5.gate_g1_short(99.0, 100.0) is True
-        assert v5.gate_g1_short(100.0, 100.0) is False  # equality FAIL
+        assert v5.gate_g1_short(100.0, 100.0) is False  # FLAT FAILs
         assert v5.gate_g1_short(101.0, 100.0) is False
         assert v5.gate_g1_short(99.0, None) is False
         assert v5.gate_g1_short(None, 100.0) is False
@@ -5375,9 +5982,11 @@ def run_local() -> int:
         # G2 retired \u2014 the long gates fn must take 5 positional args
         # (qqq_last, qqq_avwap, ticker_last, ticker_avwap, or_high), not 7.
         import inspect
+
         sig = inspect.signature(v5.gates_pass_long)
-        assert len(sig.parameters) == 5, \
+        assert len(sig.parameters) == 5, (
             f"gates_pass_long expected 5 params (G2 retired), got {len(sig.parameters)}"
+        )
         names = list(sig.parameters.keys())
         assert "spy_last" not in names, "spy_last must be removed (G2 retired)"
         assert "spy_pdc" not in names, "spy_pdc must be removed (G2 retired)"
@@ -5386,6 +5995,7 @@ def run_local() -> int:
     @t("v5.6.0 guard: gates_pass_short signature has no SPY/PDC params")
     def _():
         import inspect
+
         sig = inspect.signature(v5.gates_pass_short)
         assert len(sig.parameters) == 5
         names = list(sig.parameters.keys())
@@ -5402,26 +6012,31 @@ def run_local() -> int:
 
     @t("v5.6.0 guard: trade_genius.py has _opening_avwap helper")
     def _():
-        assert hasattr(m, "_opening_avwap"), \
+        assert hasattr(m, "_opening_avwap"), (
             "_opening_avwap helper missing from trade_genius (v5.6.0 G1/G3 source)"
+        )
         assert callable(m._opening_avwap)
 
     @t("v5.6.0 guard: trade_genius.py exposes _v560_log_gate forensic logger")
     def _():
-        assert hasattr(m, "_v560_log_gate"), \
+        assert hasattr(m, "_v560_log_gate"), (
             "_v560_log_gate forensic logger missing from trade_genius"
+        )
 
     # ---------- v5.6.1 data-collection guards ----------
 
     @t("v5.6.1 D1: V561_INDEX_TICKER is QQQ")
     def _():
-        assert getattr(m, "V561_INDEX_TICKER", None) == "QQQ", \
+        assert getattr(m, "V561_INDEX_TICKER", None) == "QQQ", (
             "v5.6.1 archive index ticker must be QQQ"
+        )
 
     @t("v5.6.1 D1: _v561_archive_qqq_bar writes to /data/bars/<UTC>/QQQ.jsonl")
     def _():
-        import tempfile, json as _json
+        import tempfile
+        import json as _json
         from pathlib import Path
+
         # Stand up a temp /data root, monkeypatch bar_archive's default.
         ba = m.bar_archive
         orig_default = ba.DEFAULT_BASE_DIR
@@ -5431,9 +6046,9 @@ def run_local() -> int:
                 bars = {
                     "current_price": 425.10,
                     "closes": [425.00, 425.05, 425.10],
-                    "opens":  [424.95, 425.00, 425.05],
-                    "highs":  [425.10, 425.10, 425.15],
-                    "lows":   [424.90, 424.98, 425.00],
+                    "opens": [424.95, 425.00, 425.05],
+                    "highs": [425.10, 425.10, 425.15],
+                    "lows": [424.90, 424.98, 425.00],
                     "volumes": [12000, 11500, 11800],
                     "timestamps": [1714224000, 1714224060, 1714224120],
                 }
@@ -5450,8 +6065,10 @@ def run_local() -> int:
 
     @t("v5.6.1 D2: _v561_persist_or_snapshot writes /data/or/<UTC>/<T>.json")
     def _():
-        import tempfile, json as _json
+        import tempfile
+        import json as _json
         from pathlib import Path
+
         with tempfile.TemporaryDirectory() as td:
             m.or_high["NVDA"] = 880.50
             m.or_low["NVDA"] = 870.25
@@ -5471,35 +6088,56 @@ def run_local() -> int:
     def _():
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo as _Z
+
         early = _dt(2026, 4, 28, 9, 30, tzinfo=_Z("America/New_York"))
         n = m._v561_maybe_persist_or_snapshots(now_et=early)
         assert n == 0, f"pre-9:35 should write 0, got {n}"
 
     @t("v5.6.1 D3: [V560-GATE] richened line carries all 14 fields")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v561_log_v560_gate_rich(
-                ticker="AAPL", side="LONG", ts_utc="2026-04-28T13:36:00Z",
-                ticker_price=215.50, ticker_avwap=215.10,
-                index_price=425.20, index_avwap=425.05,
-                or_high=215.40, or_low=214.80,
-                g1=True, g3=True, g4=True, pass_=True, reason=None,
+                ticker="AAPL",
+                side="LONG",
+                ts_utc="2026-04-28T13:36:00Z",
+                ticker_price=215.50,
+                ticker_avwap=215.10,
+                index_price=425.20,
+                index_avwap=425.05,
+                or_high=215.40,
+                or_low=214.80,
+                g1=True,
+                g3=True,
+                g4=True,
+                pass_=True,
+                reason=None,
             )
         finally:
             m.logger.removeHandler(h)
         out = buf.getvalue()
         assert "[V560-GATE] " in out
         for tok in (
-            "ticker=AAPL", "side=LONG", "ts=2026-04-28T13:36:00Z",
-            "ticker_price=215.5000", "ticker_avwap=215.1000",
-            "index_price=425.2000", "index_avwap=425.0500",
-            "or_high=215.4000", "or_low=214.8000",
-            "g1=True", "g3=True", "g4=True", "pass=True", "reason=null",
+            "ticker=AAPL",
+            "side=LONG",
+            "ts=2026-04-28T13:36:00Z",
+            "ticker_price=215.5000",
+            "ticker_avwap=215.1000",
+            "index_price=425.2000",
+            "index_avwap=425.0500",
+            "or_high=215.4000",
+            "or_low=214.8000",
+            "g1=True",
+            "g3=True",
+            "g4=True",
+            "pass=True",
+            "reason=null",
         ):
             assert tok in out, f"missing token {tok!r} in: {out!r}"
 
@@ -5513,20 +6151,26 @@ def run_local() -> int:
 
     @t("v5.6.1 D4: [TRADE_CLOSED] formatter produces expected string")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v561_log_trade_closed(
-                ticker="NVDA", side="LONG",
+                ticker="NVDA",
+                side="LONG",
                 entry_id="NVDA-20260428134231",
                 entry_ts_utc="2026-04-28T13:42:31Z",
                 entry_price=880.50,
                 exit_ts_utc="2026-04-28T14:10:05Z",
-                exit_price=885.10, exit_reason="stop",
-                qty=10, pnl_dollars=46.00, pnl_pct=0.5224,
+                exit_price=885.10,
+                exit_reason="stop",
+                qty=10,
+                pnl_dollars=46.00,
+                pnl_pct=0.5224,
                 hold_seconds=1654,
             )
         finally:
@@ -5534,30 +6178,38 @@ def run_local() -> int:
         out = buf.getvalue()
         assert "[TRADE_CLOSED]" in out
         for tok in (
-            "ticker=NVDA", "side=LONG",
+            "ticker=NVDA",
+            "side=LONG",
             "entry_id=NVDA-20260428134231",
             "entry_ts=2026-04-28T13:42:31Z",
             "entry_price=880.5000",
             "exit_ts=2026-04-28T14:10:05Z",
-            "exit_price=885.1000", "exit_reason=stop",
-            "qty=10", "pnl_dollars=46.0000",
-            "pnl_pct=0.5224", "hold_seconds=1654",
+            "exit_price=885.1000",
+            "exit_reason=stop",
+            "qty=10",
+            "pnl_dollars=46.0000",
+            "pnl_pct=0.5224",
+            "hold_seconds=1654",
         ):
             assert tok in out, f"missing {tok!r} in {out!r}"
 
     @t("v5.6.1 D4: [ENTRY] line carries entry_id")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v561_log_entry(
-                ticker="MSFT", side="SHORT",
+                ticker="MSFT",
+                side="SHORT",
                 entry_id="MSFT-20260428143200",
                 entry_ts_utc="2026-04-28T14:32:00Z",
-                entry_price=412.10, qty=10,
+                entry_price=412.10,
+                qty=10,
             )
         finally:
             m.logger.removeHandler(h)
@@ -5569,15 +6221,19 @@ def run_local() -> int:
 
     @t("v5.6.1 D5: [SKIP] with no gate eval emits gate_state=null")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v561_log_skip(
-                ticker="AAPL", reason="COOLDOWN:7m",
-                ts_utc="2026-04-28T13:50:00Z", gate_state=None,
+                ticker="AAPL",
+                reason="COOLDOWN:7m",
+                ts_utc="2026-04-28T13:50:00Z",
+                gate_state=None,
             )
         finally:
             m.logger.removeHandler(h)
@@ -5590,12 +6246,20 @@ def run_local() -> int:
     @t("v5.6.1 D5: [SKIP] with gate state emits canonical JSON")
     def _():
         import json as _json
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         gs = m._v561_gate_state_dict(
-            g1=True, g3=False, g4=True, pass_=False,
-            ticker_price=215.5, ticker_avwap=215.7,
-            index_price=425.0, index_avwap=425.0,
-            or_high=215.6, or_low=215.0,
+            g1=True,
+            g3=False,
+            g4=True,
+            pass_=False,
+            ticker_price=215.5,
+            ticker_avwap=215.7,
+            index_price=425.0,
+            index_avwap=425.0,
+            or_high=215.6,
+            or_low=215.0,
         )
         # canonical encoding -- sort_keys, no whitespace
         buf = _io.StringIO()
@@ -5604,8 +6268,10 @@ def run_local() -> int:
         m.logger.addHandler(h)
         try:
             m._v561_log_skip(
-                ticker="AAPL", reason="V560_GATE_BLOCK:G3",
-                ts_utc="2026-04-28T13:50:00Z", gate_state=gs,
+                ticker="AAPL",
+                reason="V560_GATE_BLOCK:G3",
+                ts_utc="2026-04-28T13:50:00Z",
+                gate_state=gs,
             )
         finally:
             m.logger.removeHandler(h)
@@ -5624,27 +6290,29 @@ def run_local() -> int:
 
     @t("v5.6.1 D6: boot [UNIVERSE] line includes QQQ + alpha-sorted")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v561_log_universe(
-                ["TSLA", "AAPL", "MSFT", "NVDA", "META",
-                 "GOOG", "AMZN", "AVGO", "QQQ"]
+                ["TSLA", "AAPL", "MSFT", "NVDA", "META", "GOOG", "AMZN", "AVGO", "QQQ"]
             )
         finally:
             m.logger.removeHandler(h)
         out = buf.getvalue().strip().splitlines()[-1]
         assert "[UNIVERSE] " in out
         # Alphabetical ordering, comma-separated, QQQ present.
-        assert ("tickers=AAPL,AMZN,AVGO,GOOG,META,MSFT,NVDA,QQQ,TSLA"
-                in out), out
+        assert "tickers=AAPL,AMZN,AVGO,GOOG,META,MSFT,NVDA,QQQ,TSLA" in out, out
 
     @t("v5.6.1 D6: [UNIVERSE] dedupes + uppercases")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
@@ -5663,14 +6331,15 @@ def run_local() -> int:
 
     @t("v5.6.1 D6: [WATCHLIST_ADD] emits structured line")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
-            m._v561_log_watchlist_add("PLTR", reason="oomph",
-                                      ts_utc="2026-04-28T14:00:00Z")
+            m._v561_log_watchlist_add("PLTR", reason="oomph", ts_utc="2026-04-28T14:00:00Z")
         finally:
             m.logger.removeHandler(h)
         out = buf.getvalue()
@@ -5684,19 +6353,24 @@ def run_local() -> int:
         # v5.7.1 promotes the top heading; the v5.7.0 entry must still
         # exist somewhere below. Don't re-pin it as the topmost.
         from pathlib import Path
+
         ch = (Path(__file__).resolve().parent / "CHANGELOG.md").read_text()
         assert "## v5.7.0" in ch, "v5.7.0 heading missing from CHANGELOG"
 
-    @t("v5.6.1 guard: gate logic not modified (gates_pass_long signature)")
+    @t("v5.9.0 guard: gates_pass_long signature pins EMA-based G1")
     def _():
-        # v5.6.1 must NOT touch gate logic. Pin the signature byte-for-byte
-        # against v5.6.0's parameter set.
+        # v5.9.0 swaps G1 from QQQ AVWAP to QQQ 5m EMA3/EMA9 cross.
+        # Pin the parameter list to the new shape.
         import inspect
+
         sig = inspect.signature(m.v5.gates_pass_long)
         params = list(sig.parameters)
         assert params == [
-            "qqq_last", "qqq_opening_avwap",
-            "ticker_last", "ticker_opening_avwap", "ticker_or_high",
+            "qqq_5m_3ema",
+            "qqq_5m_9ema",
+            "ticker_last",
+            "ticker_opening_avwap",
+            "ticker_or_high",
         ], params
 
     @t("v5.6.1 guard: no literal em-dash in v5.6.1 helpers")
@@ -5706,19 +6380,17 @@ def run_local() -> int:
         # em-dashes are out of scope. Restrict the scan to lines whose
         # surrounding marker tags are v5.6.1 / v561 / V561.
         from pathlib import Path
+
         src_path = Path(__file__).resolve().parent / "trade_genius.py"
         src = src_path.read_text()
         bad = []
         for i, line in enumerate(src.splitlines(), start=1):
             if "\u2014" not in line:
                 continue
-            tag_hits = ("v5.6.1" in line or "v561" in line.lower()
-                        or "V561" in line)
+            tag_hits = "v5.6.1" in line or "v561" in line.lower() or "V561" in line
             if tag_hits:
                 bad.append((i, line[:80]))
-        assert not bad, (
-            "literal em-dash in v5.6.1-tagged line: %s" % bad[:3]
-        )
+        assert not bad, "literal em-dash in v5.6.1-tagged line: %s" % bad[:3]
 
     # ============================================================
     # v5.7.0 \u2014 Unlimited Titan Strikes
@@ -5743,11 +6415,18 @@ def run_local() -> int:
     def _():
         assert isinstance(m.TITAN_TICKERS, list)
         assert len(m.TITAN_TICKERS) == 10, m.TITAN_TICKERS
-        assert m.TITAN_TICKERS == sorted(m.TITAN_TICKERS), \
-            "TITAN_TICKERS must be alpha-sorted"
+        assert m.TITAN_TICKERS == sorted(m.TITAN_TICKERS), "TITAN_TICKERS must be alpha-sorted"
         assert m.TITAN_TICKERS == [
-            "AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX",
-            "NVDA", "ORCL", "TSLA",
+            "AAPL",
+            "AMZN",
+            "AVGO",
+            "GOOG",
+            "META",
+            "MSFT",
+            "NFLX",
+            "NVDA",
+            "ORCL",
+            "TSLA",
         ], m.TITAN_TICKERS
 
     @t("v5.7.0 D2: ENABLE_UNLIMITED_TITAN_STRIKES default True")
@@ -5765,7 +6444,9 @@ def run_local() -> int:
 
     @t("v5.7.0 D1: [UNIVERSE] boot line includes all 10 Titans + QQQ alpha-sorted")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
@@ -5775,8 +6456,7 @@ def run_local() -> int:
         finally:
             m.logger.removeHandler(h)
         out = buf.getvalue().strip().splitlines()[-1]
-        assert ("tickers=AAPL,AMZN,AVGO,GOOG,META,MSFT,NFLX,NVDA,"
-                "ORCL,QQQ,TSLA" in out), out
+        assert "tickers=AAPL,AMZN,AVGO,GOOG,META,MSFT,NFLX,NVDA,ORCL,QQQ,TSLA" in out, out
 
     @t("v5.7.0 D1: bar archive helper exists and reads from TICKERS list")
     def _():
@@ -5787,8 +6467,8 @@ def run_local() -> int:
         assert "ORCL" in m.TICKERS or "ORCL" in m.TICKERS_DEFAULT
         # Helper signature is unchanged (additive PR; no schema break).
         import inspect
-        params = list(inspect.signature(m._v512_archive_minute_bar)
-                      .parameters)
+
+        params = list(inspect.signature(m._v512_archive_minute_bar).parameters)
         assert params == ["ticker", "bar"], params
 
     @t("v5.7.0 D3: HOD/LOD seeds from first 9:30 ET print and tracks rolling extremes")
@@ -5847,59 +6527,101 @@ def run_local() -> int:
         # strike 1 the implementation logs expansion_gate_pass=False
         # but the actual decision falls to v5.6.0 G1/G3/G4. Confirm
         # the helper itself returns False with prev_hod=None.
-        assert m._v570_expansion_gate_pass(
-            side="LONG", current_price=100.5,
-            prev_hod=None, prev_lod=None,
-            index_price=425.0, index_avwap=420.0,
-        ) is False
+        assert (
+            m._v570_expansion_gate_pass(
+                side="LONG",
+                current_price=100.5,
+                prev_hod=None,
+                prev_lod=None,
+                index_price=425.0,
+                index_avwap=420.0,
+            )
+            is False
+        )
 
     @t("v5.7.0 D3: Strike 2 LONG NVDA without HOD break \u2014 expansion gate FAIL")
     def _():
         _v570_setup_clean_session(m)
         # prev_hod=100.0; price=100.0 -> equality, strict > FAILS.
-        assert m._v570_expansion_gate_pass(
-            side="LONG", current_price=100.0,
-            prev_hod=100.0, prev_lod=99.0,
-            index_price=425.0, index_avwap=420.0,
-        ) is False
+        assert (
+            m._v570_expansion_gate_pass(
+                side="LONG",
+                current_price=100.0,
+                prev_hod=100.0,
+                prev_lod=99.0,
+                index_price=425.0,
+                index_avwap=420.0,
+            )
+            is False
+        )
 
     @t("v5.7.0 D3: Strike 2 LONG NVDA with HOD break + Index above AVWAP \u2014 PASS")
     def _():
-        assert m._v570_expansion_gate_pass(
-            side="LONG", current_price=100.5,
-            prev_hod=100.0, prev_lod=99.0,
-            index_price=425.0, index_avwap=420.0,
-        ) is True
+        assert (
+            m._v570_expansion_gate_pass(
+                side="LONG",
+                current_price=100.5,
+                prev_hod=100.0,
+                prev_lod=99.0,
+                index_price=425.0,
+                index_avwap=420.0,
+            )
+            is True
+        )
 
     @t("v5.7.0 D3: Strike 2 LONG NVDA with HOD break BUT Index below AVWAP \u2014 FAIL")
     def _():
-        assert m._v570_expansion_gate_pass(
-            side="LONG", current_price=100.5,
-            prev_hod=100.0, prev_lod=99.0,
-            index_price=419.0, index_avwap=420.0,
-        ) is False
+        assert (
+            m._v570_expansion_gate_pass(
+                side="LONG",
+                current_price=100.5,
+                prev_hod=100.0,
+                prev_lod=99.0,
+                index_price=419.0,
+                index_avwap=420.0,
+            )
+            is False
+        )
 
     @t("v5.7.0 D3: Strike 2 LONG NVDA with HOD break BUT IndexAVWAP=None \u2014 FAIL")
     def _():
-        assert m._v570_expansion_gate_pass(
-            side="LONG", current_price=100.5,
-            prev_hod=100.0, prev_lod=99.0,
-            index_price=425.0, index_avwap=None,
-        ) is False
+        assert (
+            m._v570_expansion_gate_pass(
+                side="LONG",
+                current_price=100.5,
+                prev_hod=100.0,
+                prev_lod=99.0,
+                index_price=425.0,
+                index_avwap=None,
+            )
+            is False
+        )
 
     @t("v5.7.0 D3: Strike 2 SHORT mirror \u2014 LOD break + Index below AVWAP PASSES")
     def _():
-        assert m._v570_expansion_gate_pass(
-            side="SHORT", current_price=99.5,
-            prev_hod=100.0, prev_lod=100.0,
-            index_price=419.0, index_avwap=420.0,
-        ) is True
+        assert (
+            m._v570_expansion_gate_pass(
+                side="SHORT",
+                current_price=99.5,
+                prev_hod=100.0,
+                prev_lod=100.0,
+                index_price=419.0,
+                index_avwap=420.0,
+            )
+            is True
+        )
         # Without LOD break: FAIL (equality is strict).
-        assert m._v570_expansion_gate_pass(
-            side="SHORT", current_price=100.0,
-            prev_hod=100.0, prev_lod=100.0,
-            index_price=419.0, index_avwap=420.0,
-        ) is False
+        assert (
+            m._v570_expansion_gate_pass(
+                side="SHORT",
+                current_price=100.0,
+                prev_hod=100.0,
+                prev_lod=100.0,
+                index_price=419.0,
+                index_avwap=420.0,
+            )
+            is False
+        )
 
     @t("v5.7.0 D4: strikes 5/10/25 LONG NVDA on continuous HOD-break trend \u2014 all allowed")
     def _():
@@ -5915,13 +6637,17 @@ def run_local() -> int:
             assert new_n == n
             # And the expansion gate keeps passing on every fresh HOD
             # break with index above AVWAP.
-            assert m._v570_expansion_gate_pass(
-                side="LONG",
-                current_price=100.0 + 0.01 * n,
-                prev_hod=100.0 + 0.01 * (n - 1),
-                prev_lod=99.0,
-                index_price=425.0, index_avwap=420.0,
-            ) is True
+            assert (
+                m._v570_expansion_gate_pass(
+                    side="LONG",
+                    current_price=100.0 + 0.01 * n,
+                    prev_hod=100.0 + 0.01 * (n - 1),
+                    prev_lod=99.0,
+                    index_price=425.0,
+                    index_avwap=420.0,
+                )
+                is True
+            )
 
     @t("v5.7.0 D4: non-Titan ticker is NOT eligible for unlimited strikes")
     def _():
@@ -5974,16 +6700,18 @@ def run_local() -> int:
 
     @t("v5.7.0 D5: [KILL_SWITCH] line emitted exactly once per session")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         _v570_setup_clean_session(m)
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
-            m._v570_record_trade_close(-501.0)   # trips kill
-            m._v570_record_trade_close(-50.0)    # later loss, no spam
-            m._v570_record_trade_close(-50.0)    # ditto
+            m._v570_record_trade_close(-501.0)  # trips kill
+            m._v570_record_trade_close(-50.0)  # later loss, no spam
+            m._v570_record_trade_close(-50.0)  # ditto
         finally:
             m.logger.removeHandler(h)
         out = buf.getvalue()
@@ -5992,7 +6720,9 @@ def run_local() -> int:
 
     @t("v5.7.0 D5: [KILL_SWITCH] line shape carries reason / triggered_at / realized_pnl")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         _v570_setup_clean_session(m)
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
@@ -6008,14 +6738,18 @@ def run_local() -> int:
         assert "triggered_at=" in out
         assert "realized_pnl=" in out
 
-    @t("v5.7.0 D5: open positions can still close after kill switch \u2014 [TRADE_CLOSED] still emits")
+    @t(
+        "v5.7.0 D5: open positions can still close after kill switch \u2014 [TRADE_CLOSED] still emits"
+    )
     def _():
         # Kill switch only blocks NEW entries. Closing flow continues
         # to call _v561_log_trade_closed which still emits its line
         # and also folds into daily realized P&L.
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         _v570_setup_clean_session(m)
-        m._v570_record_trade_close(-501.0)   # trip
+        m._v570_record_trade_close(-501.0)  # trip
         assert m._v570_kill_switch_active() is True
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
@@ -6023,15 +6757,19 @@ def run_local() -> int:
         m.logger.addHandler(h)
         try:
             m._v561_log_trade_closed(
-                ticker="NVDA", side="LONG",
+                ticker="NVDA",
+                side="LONG",
                 entry_id="NVDA-20260427150000",
                 entry_ts_utc="2026-04-27T15:00:00Z",
                 entry_price=100.0,
                 exit_ts_utc="2026-04-27T15:30:00Z",
                 exit_price=99.0,
                 exit_reason="stop",
-                qty=10, pnl_dollars=-10.0, pnl_pct=-1.0,
-                hold_seconds=1800, strike_num=1,
+                qty=10,
+                pnl_dollars=-10.0,
+                pnl_pct=-1.0,
+                hold_seconds=1800,
+                strike_num=1,
             )
         finally:
             m.logger.removeHandler(h)
@@ -6042,44 +6780,63 @@ def run_local() -> int:
 
     @t("v5.7.0 D6: [V570-STRIKE] line carries every spec field")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v570_log_strike(
-                ticker="NVDA", side="LONG",
+                ticker="NVDA",
+                side="LONG",
                 ts_utc="2026-04-27T13:50:00Z",
-                strike_num=2, is_first=False,
-                hod=100.0, lod=99.0,
-                hod_break=True, lod_break=False,
+                strike_num=2,
+                is_first=False,
+                hod=100.0,
+                lod=99.0,
+                hod_break=True,
+                lod_break=False,
                 expansion_gate_pass=True,
             )
         finally:
             m.logger.removeHandler(h)
         out = buf.getvalue()
         assert "[V570-STRIKE]" in out
-        for field in ("ticker=NVDA", "side=LONG", "strike_num=2",
-                      "is_first=False", "hod=100.0000", "lod=99.0000",
-                      "hod_break=True", "lod_break=False",
-                      "expansion_gate_pass=True"):
+        for field in (
+            "ticker=NVDA",
+            "side=LONG",
+            "strike_num=2",
+            "is_first=False",
+            "hod=100.0000",
+            "lod=99.0000",
+            "hod_break=True",
+            "lod_break=False",
+            "expansion_gate_pass=True",
+        ):
             assert field in out, (field, out)
 
     @t("v5.7.0 D6: [V570-STRIKE] formats hod/lod=null when None")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v570_log_strike(
-                ticker="NVDA", side="LONG",
+                ticker="NVDA",
+                side="LONG",
                 ts_utc="2026-04-27T13:50:00Z",
-                strike_num=1, is_first=True,
-                hod=None, lod=None,
-                hod_break=False, lod_break=False,
+                strike_num=1,
+                is_first=True,
+                hod=None,
+                lod=None,
+                hod_break=False,
+                lod_break=False,
                 expansion_gate_pass=False,
             )
         finally:
@@ -6090,17 +6847,22 @@ def run_local() -> int:
 
     @t("v5.7.0 D6: [ENTRY] line carries strike_num field")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
         h.setLevel(_lg.INFO)
         m.logger.addHandler(h)
         try:
             m._v561_log_entry(
-                ticker="NVDA", side="LONG",
+                ticker="NVDA",
+                side="LONG",
                 entry_id="NVDA-20260427150000",
                 entry_ts_utc="2026-04-27T15:00:00Z",
-                entry_price=100.0, qty=10, strike_num=3,
+                entry_price=100.0,
+                qty=10,
+                strike_num=3,
             )
         finally:
             m.logger.removeHandler(h)
@@ -6110,7 +6872,9 @@ def run_local() -> int:
 
     @t("v5.7.0 D6: [TRADE_CLOSED] line carries strike_num + daily_realized_pnl")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         _v570_setup_clean_session(m)
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
@@ -6118,15 +6882,19 @@ def run_local() -> int:
         m.logger.addHandler(h)
         try:
             m._v561_log_trade_closed(
-                ticker="NVDA", side="LONG",
+                ticker="NVDA",
+                side="LONG",
                 entry_id="NVDA-20260427150000",
                 entry_ts_utc="2026-04-27T15:00:00Z",
                 entry_price=100.0,
                 exit_ts_utc="2026-04-27T15:30:00Z",
                 exit_price=99.0,
-                exit_reason="stop", qty=10,
-                pnl_dollars=-10.0, pnl_pct=-1.0,
-                hold_seconds=1800, strike_num=2,
+                exit_reason="stop",
+                qty=10,
+                pnl_dollars=-10.0,
+                pnl_pct=-1.0,
+                hold_seconds=1800,
+                strike_num=2,
             )
         finally:
             m.logger.removeHandler(h)
@@ -6137,7 +6905,9 @@ def run_local() -> int:
 
     @t("v5.7.0 D6: [TRADE_CLOSED] cumulative daily_realized_pnl tracks across closes")
     def _():
-        import logging as _lg, io as _io
+        import logging as _lg
+        import io as _io
+
         _v570_setup_clean_session(m)
         buf = _io.StringIO()
         h = _lg.StreamHandler(buf)
@@ -6145,18 +6915,34 @@ def run_local() -> int:
         m.logger.addHandler(h)
         try:
             m._v561_log_trade_closed(
-                ticker="NVDA", side="LONG",
-                entry_id="A", entry_ts_utc="x", entry_price=100.0,
-                exit_ts_utc="x", exit_price=99.0, exit_reason="stop",
-                qty=10, pnl_dollars=-10.0, pnl_pct=-1.0,
-                hold_seconds=1, strike_num=1,
+                ticker="NVDA",
+                side="LONG",
+                entry_id="A",
+                entry_ts_utc="x",
+                entry_price=100.0,
+                exit_ts_utc="x",
+                exit_price=99.0,
+                exit_reason="stop",
+                qty=10,
+                pnl_dollars=-10.0,
+                pnl_pct=-1.0,
+                hold_seconds=1,
+                strike_num=1,
             )
             m._v561_log_trade_closed(
-                ticker="NVDA", side="LONG",
-                entry_id="B", entry_ts_utc="x", entry_price=100.0,
-                exit_ts_utc="x", exit_price=98.0, exit_reason="stop",
-                qty=10, pnl_dollars=-20.0, pnl_pct=-2.0,
-                hold_seconds=1, strike_num=2,
+                ticker="NVDA",
+                side="LONG",
+                entry_id="B",
+                entry_ts_utc="x",
+                entry_price=100.0,
+                exit_ts_utc="x",
+                exit_price=98.0,
+                exit_reason="stop",
+                qty=10,
+                pnl_dollars=-20.0,
+                pnl_pct=-2.0,
+                hold_seconds=1,
+                strike_num=2,
             )
         finally:
             m.logger.removeHandler(h)
@@ -6181,9 +6967,7 @@ def run_local() -> int:
             # confirm it would evaluate to False with the flag off.
             is_titan = m._v570_is_titan("NVDA")
             assert is_titan is True
-            assert (
-                bool(m.ENABLE_UNLIMITED_TITAN_STRIKES) and is_titan
-            ) is False
+            assert (bool(m.ENABLE_UNLIMITED_TITAN_STRIKES) and is_titan) is False
         finally:
             m.ENABLE_UNLIMITED_TITAN_STRIKES = saved
 
@@ -6195,29 +6979,28 @@ def run_local() -> int:
         # but it must still not reference v5.7.0 strike-counter
         # constructs (those live in trade_genius.py).
         from pathlib import Path
-        src = (Path(__file__).resolve().parent
-               / "tiger_buffalo_v5.py").read_text()
+
+        src = (Path(__file__).resolve().parent / "tiger_buffalo_v5.py").read_text()
         for tag in ("v5.7.0", "v570", "V570", "TITAN_TICKERS"):
             assert tag not in src, (
                 "tiger_buffalo_v5.py must remain free of v5.7.0 "
-                "strike-counter constructs (found %r)" % tag)
+                "strike-counter constructs (found %r)" % tag
+            )
 
     @t("v5.7.0 guard: no literal em-dash in v5.7.0 helpers")
     def _():
         from pathlib import Path
+
         src_path = Path(__file__).resolve().parent / "trade_genius.py"
         src = src_path.read_text()
         bad = []
         for i, line in enumerate(src.splitlines(), start=1):
             if "\u2014" not in line:
                 continue
-            tag_hits = ("v5.7.0" in line or "v570" in line.lower()
-                        or "V570" in line)
+            tag_hits = "v5.7.0" in line or "v570" in line.lower() or "V570" in line
             if tag_hits:
                 bad.append((i, line[:80]))
-        assert not bad, (
-            "literal em-dash in v5.7.0-tagged line: %s" % bad[:3]
-        )
+        assert not bad, "literal em-dash in v5.7.0-tagged line: %s" % bad[:3]
 
     # ============================================================
     # v5.7.1 \u2014 Bison & Buffalo exit FSM
@@ -6230,32 +7013,56 @@ def run_local() -> int:
     def _():
         assert m.VELOCITY_FUSE_PCT == 0.01, m.VELOCITY_FUSE_PCT
 
-    @t("v5.7.1 D1 LONG: hard stop fires on 2 consec 1m closes below OR_High")
+    @t("v5.9.0 D1 LONG: forensic stop fires on close-below-OR with lower-low")
     def _():
         v5 = m.v5
         track = v5.new_track(v5.DIR_LONG)
-        v5.init_titan_exit_state(track, entry_price=100.0)
+        v5.init_titan_exit_state(track, entry_price=100.0, qty=10)
         or_high = 99.50
-        # 1st close below OR_High \u2014 counter=1, no fire
-        assert v5.update_hard_stop_counter_long(track, 99.40, or_high) is False
-        assert track["hard_stop_consec_1m_count"] == 1
-        # 2nd close below OR_High \u2014 fires
-        fired = v5.update_hard_stop_counter_long(track, 99.30, or_high)
-        assert fired is True
-        assert track["hard_stop_consec_1m_count"] == 2
-
-    @t("v5.7.1 D1 LONG: hard-stop counter resets on close back inside OR")
-    def _():
-        v5 = m.v5
-        track = v5.new_track(v5.DIR_LONG)
-        v5.init_titan_exit_state(track, entry_price=100.0)
-        or_high = 99.50
-        v5.update_hard_stop_counter_long(track, 99.40, or_high)
-        assert track["hard_stop_consec_1m_count"] == 1
-        # Close back inside OR resets to 0
-        fired = v5.update_hard_stop_counter_long(track, 99.55, or_high)
+        # First close below OR with a HIGHER low \u2014 STAY (consolidation)
+        fired = v5.update_forensic_stop_long(
+            track,
+            candle_1m_close=99.40,
+            candle_1m_low=99.30,
+            prior_candle_1m_low=99.20,
+            or_high=or_high,
+        )
         assert fired is False
-        assert track["hard_stop_consec_1m_count"] == 0
+        assert track["forensic_consecutive_count"] == 1
+        # Second close below OR with a LOWER low \u2014 EXIT
+        fired = v5.update_forensic_stop_long(
+            track,
+            candle_1m_close=99.10,
+            candle_1m_low=99.00,
+            prior_candle_1m_low=99.30,
+            or_high=or_high,
+        )
+        assert fired is True
+        assert track.get("exit_reason") == v5.EXIT_REASON_FORENSIC_STOP
+
+    @t("v5.9.0 D1 LONG: forensic counter resets on close back inside OR")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_LONG)
+        v5.init_titan_exit_state(track, entry_price=100.0, qty=10)
+        or_high = 99.50
+        v5.update_forensic_stop_long(
+            track,
+            candle_1m_close=99.40,
+            candle_1m_low=99.30,
+            prior_candle_1m_low=99.20,
+            or_high=or_high,
+        )
+        assert track["forensic_consecutive_count"] == 1
+        fired = v5.update_forensic_stop_long(
+            track,
+            candle_1m_close=99.55,
+            candle_1m_low=99.45,
+            prior_candle_1m_low=99.30,
+            or_high=or_high,
+        )
+        assert fired is False
+        assert track["forensic_consecutive_count"] == 0
 
     @t("v5.7.1 D1 LONG: BE move fires on 2nd green 5m candle close")
     def _():
@@ -6311,27 +7118,44 @@ def run_local() -> int:
     @t("v5.7.1 D2 LONG: velocity fuse fires regardless of phase")
     def _():
         v5 = m.v5
-        for phase in (v5.PHASE_INITIAL_RISK, v5.PHASE_HOUSE_MONEY,
-                      v5.PHASE_SOVEREIGN_TRAIL):
+        for phase in (v5.PHASE_INITIAL_RISK, v5.PHASE_HOUSE_MONEY, v5.PHASE_SOVEREIGN_TRAIL):
             track = v5.new_track(v5.DIR_LONG)
             v5.init_titan_exit_state(track, entry_price=100.0)
             track["phase"] = phase
             reason = v5.evaluate_titan_exit(
-                track, side=v5.DIR_LONG,
-                current_price=98.50, candle_1m_open=100.0,
+                track,
+                side=v5.DIR_LONG,
+                current_price=98.50,
+                candle_1m_open=100.0,
                 velocity_fuse_pct=0.01,
             )
             assert reason == v5.EXIT_REASON_VELOCITY_FUSE, (phase, reason)
 
-    @t("v5.7.1 D1/D2 SHORT: hard stop, BE, EMA trail, velocity fuse mirror LONG")
+    @t("v5.9.0 D1/D2 SHORT: forensic stop, BE, EMA trail, velocity fuse mirror LONG")
     def _():
         v5 = m.v5
         track = v5.new_track(v5.DIR_SHORT)
-        v5.init_titan_exit_state(track, entry_price=100.0)
+        v5.init_titan_exit_state(track, entry_price=100.0, qty=10)
         or_low = 100.50
-        # 2 consec 1m closes ABOVE OR_Low fires
-        assert v5.update_hard_stop_counter_short(track, 100.60, or_low) is False
-        assert v5.update_hard_stop_counter_short(track, 100.70, or_low) is True
+        # First close above OR_Low with LOWER high (consolidation) \u2014 STAY
+        fired = v5.update_forensic_stop_short(
+            track,
+            candle_1m_close=100.60,
+            candle_1m_high=100.65,
+            prior_candle_1m_high=100.70,
+            or_low=or_low,
+        )
+        assert fired is False
+        # Second close above OR_Low with HIGHER high \u2014 EXIT
+        fired = v5.update_forensic_stop_short(
+            track,
+            candle_1m_close=100.80,
+            candle_1m_high=100.90,
+            prior_candle_1m_high=100.65,
+            or_low=or_low,
+        )
+        assert fired is True
+        assert track.get("exit_reason") == v5.EXIT_REASON_FORENSIC_STOP
         # 2 red 5m fires BE
         track2 = v5.new_track(v5.DIR_SHORT)
         v5.init_titan_exit_state(track2, entry_price=100.0)
@@ -6356,8 +7180,7 @@ def run_local() -> int:
         track["state"] = v5.STATE_TRAILING
         track["current_stop"] = 95.0
         # Non-Titan: DI=10 -> DI_HARD_EJECT
-        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) \
-            == "DI_HARD_EJECT"
+        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) == "DI_HARD_EJECT"
         # Titan: DI=10 -> bypassed -> None
         assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=True) is None
 
@@ -6368,26 +7191,31 @@ def run_local() -> int:
         track["state"] = v5.STATE_TRAILING
         track["current_stop"] = 105.0
         # Non-Titan: SHORT DI<25 -> priority-1 hard eject
-        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) \
-            == "DI_HARD_EJECT"
+        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) == "DI_HARD_EJECT"
         # Titan: bypassed; structural stop also not hit (100 < 105) -> None
         assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=True) is None
         # Titan, structural still fires when price rises above stop
-        assert v5.evaluate_exit(track, 106.0, 10.0, is_titan=True) \
-            == "STRUCTURAL_STOP"
+        assert v5.evaluate_exit(track, 106.0, 10.0, is_titan=True) == "STRUCTURAL_STOP"
 
     @t("v5.7.1 D5: [V571-EXIT_PHASE] line carries every spec field")
     def _():
-        import io, logging, contextlib
+        import io
+        import logging
+        import contextlib
+
         buf = io.StringIO()
         h = logging.StreamHandler(buf)
         h.setLevel(logging.INFO)
         m.logger.addHandler(h)
         try:
             m._v571_log_exit_phase(
-                ticker="NVDA", side="LONG", entry_id="ent_001",
-                from_phase="initial_risk", to_phase="house_money",
-                trigger="be_2nd_green", current_stop=480.50,
+                ticker="NVDA",
+                side="LONG",
+                entry_id="ent_001",
+                from_phase="initial_risk",
+                to_phase="house_money",
+                trigger="be_2nd_green",
+                current_stop=480.50,
                 ts_utc="2026-04-28T14:00:00Z",
             )
         finally:
@@ -6403,15 +7231,19 @@ def run_local() -> int:
 
     @t("v5.7.1 D5: [V571-VELOCITY_FUSE] line emits with pct_move")
     def _():
-        import io, logging
+        import io
+        import logging
+
         buf = io.StringIO()
         h = logging.StreamHandler(buf)
         h.setLevel(logging.INFO)
         m.logger.addHandler(h)
         try:
             m._v571_log_velocity_fuse(
-                ticker="NVDA", side="LONG",
-                candle_open=100.0, current_price=98.99,
+                ticker="NVDA",
+                side="LONG",
+                candle_open=100.0,
+                current_price=98.99,
                 pct_move=-0.0101,
                 ts_utc="2026-04-28T14:00:00Z",
             )
@@ -6424,14 +7256,17 @@ def run_local() -> int:
 
     @t("v5.7.1 D5: [V571-EMA_SEED] line emits once at seed time")
     def _():
-        import io, logging
+        import io
+        import logging
+
         buf = io.StringIO()
         h = logging.StreamHandler(buf)
         h.setLevel(logging.INFO)
         m.logger.addHandler(h)
         try:
             m._v571_log_ema_seed(
-                ticker="NVDA", ema_value=480.25,
+                ticker="NVDA",
+                ema_value=480.25,
                 ts_utc="2026-04-28T14:15:00Z",
             )
         finally:
@@ -6442,27 +7277,31 @@ def run_local() -> int:
         assert "ema_value=480.2500" in out
         assert "ts=2026-04-28T14:15:00Z" in out
 
-    @t("v5.7.1 D5: [TRADE_CLOSED] exit_reason gains v5.7.1 enum values")
+    @t("v5.9.0 D5: [TRADE_CLOSED] exit_reason gains v5.9.0 enum values")
     def _():
-        # Whitebox: the close-position mapping must pass v5.7.1 reason
+        # Whitebox: the close-position mapping must pass v5.9.0 reason
         # values straight through to the [TRADE_CLOSED] line.
         from pathlib import Path
-        src = (Path(__file__).resolve().parent
-               / "trade_genius.py").read_text()
-        for r in ("hard_stop_2c", "be_stop", "ema_trail", "velocity_fuse"):
-            assert ('"' + r + '"') in src, (
-                "v5.7.1 reason %r must appear in [TRADE_CLOSED] mapping" % r)
 
-    @t("v5.7.1 guard: tiger_buffalo_v5.py contains v5.7.1 Bison/Buffalo helpers")
+        src = (Path(__file__).resolve().parent / "trade_genius.py").read_text()
+        for r in ("forensic_stop", "per_trade_brake", "be_stop", "ema_trail", "velocity_fuse"):
+            assert ('"' + r + '"') in src, (
+                "v5.9.0 reason %r must appear in [TRADE_CLOSED] mapping" % r
+            )
+
+    @t("v5.9.0 guard: tiger_buffalo_v5.py contains Bison/Buffalo helpers")
     def _():
         from pathlib import Path
-        src = (Path(__file__).resolve().parent
-               / "tiger_buffalo_v5.py").read_text()
-        # Required new helpers
+
+        src = (Path(__file__).resolve().parent / "tiger_buffalo_v5.py").read_text()
+        # Required helpers (v5.7.1 carryover + v5.9.0 forensic stop)
         for name in (
             "init_titan_exit_state",
-            "update_hard_stop_counter_long",
-            "update_hard_stop_counter_short",
+            "forensic_audit_long",
+            "forensic_audit_short",
+            "update_forensic_stop_long",
+            "update_forensic_stop_short",
+            "per_trade_sovereign_brake",
             "update_green_5m_count_long",
             "update_red_5m_count_short",
             "update_ema_5m",
@@ -6474,10 +7313,12 @@ def run_local() -> int:
             "PHASE_INITIAL_RISK",
             "PHASE_HOUSE_MONEY",
             "PHASE_SOVEREIGN_TRAIL",
-            "EXIT_REASON_HARD_STOP_2C",
+            "EXIT_REASON_FORENSIC_STOP",
+            "EXIT_REASON_PER_TRADE_BRAKE",
             "EXIT_REASON_BE_STOP",
             "EXIT_REASON_EMA_TRAIL",
             "EXIT_REASON_VELOCITY_FUSE",
+            "PER_TRADE_BRAKE_USD",
         ):
             assert name in src, "tiger_buffalo_v5.py missing %r" % name
 
@@ -6498,6 +7339,7 @@ def run_local() -> int:
     @t("v5.7.1 guard: no literal em-dash in v5.7.1 helpers")
     def _():
         from pathlib import Path
+
         for fn in ("trade_genius.py", "tiger_buffalo_v5.py"):
             src_path = Path(__file__).resolve().parent / fn
             src = src_path.read_text()
@@ -6505,12 +7347,10 @@ def run_local() -> int:
             for i, line in enumerate(src.splitlines(), start=1):
                 if "\u2014" not in line:
                     continue
-                tag_hits = ("v5.7.1" in line or "v571" in line.lower()
-                            or "V571" in line)
+                tag_hits = "v5.7.1" in line or "v571" in line.lower() or "V571" in line
                 if tag_hits:
                     bad.append((fn, i, line[:80]))
-            assert not bad, (
-                "literal em-dash in v5.7.1-tagged line: %s" % bad[:3])
+            assert not bad, "literal em-dash in v5.7.1-tagged line: %s" % bad[:3]
 
     return run_suite("LOCAL SMOKE TESTS (v5.7.1 Bison & Buffalo)")
 
@@ -6518,6 +7358,7 @@ def run_local() -> int:
 # ============================================================
 # PROD MODE
 # ============================================================
+
 
 def run_prod(url: str, password: str, expected_version: str | None) -> int:
     try:
@@ -6531,8 +7372,9 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
 
     @t("prod: /login with correct password returns 302")
     def _():
-        r = sess.post(f"{url}/login", data={"password": password},
-                      allow_redirects=False, timeout=10)
+        r = sess.post(
+            f"{url}/login", data={"password": password}, allow_redirects=False, timeout=10
+        )
         assert r.status_code == 302, f"expected 302, got {r.status_code}"
         cookie = sess.cookies.get("spike_session")
         assert cookie and ":" in cookie, f"bad cookie format: {cookie}"
@@ -6540,10 +7382,12 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
     @t("prod: /login with wrong password returns 401")
     def _():
         s2 = requests.Session()
-        r = s2.post(f"{url}/login", data={"password": "definitelywrong"},
-                    allow_redirects=False, timeout=10)
-        assert r.status_code in (401, 429), \
+        r = s2.post(
+            f"{url}/login", data={"password": "definitelywrong"}, allow_redirects=False, timeout=10
+        )
+        assert r.status_code in (401, 429), (
             f"expected 401 (or 429 if rate-limited), got {r.status_code}"
+        )
 
     @t("prod: /api/state returns JSON with version field")
     def _():
@@ -6592,13 +7436,15 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
         s5 = requests.Session()
         statuses = []
         for i in range(7):
-            r = s5.post(f"{url}/login",
-                        data={"password": "wrong-rate-limit-test"},
-                        allow_redirects=False, timeout=10)
+            r = s5.post(
+                f"{url}/login",
+                data={"password": "wrong-rate-limit-test"},
+                allow_redirects=False,
+                timeout=10,
+            )
             statuses.append(r.status_code)
             time.sleep(0.3)
-        assert 429 in statuses[5:], \
-            f"rate limit never tripped; statuses={statuses}"
+        assert 429 in statuses[5:], f"rate limit never tripped; statuses={statuses}"
 
     return run_suite("PROD SMOKE TESTS")
 
@@ -6606,6 +7452,7 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
 # ============================================================
 # SYNTHETIC HARNESS MODE (v4.9.0)
 # ============================================================
+
 
 def run_synthetic() -> int:
     """Replay all 25 synthetic-harness goldens. One t() entry per scenario.
@@ -6636,7 +7483,9 @@ def run_synthetic() -> int:
             def _():
                 ok, diff = replay_scenario(scn)
                 assert ok, f"golden mismatch for {scn}:\n{diff}"
+
             return _
+
         _make(name)
 
     return run_suite("SYNTHETIC HARNESS (v4.9.0, 50 scenarios)")
@@ -6646,16 +7495,16 @@ def run_synthetic() -> int:
 # CLI
 # ============================================================
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="TradeGenius smoke test")
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--prod", action="store_true")
-    parser.add_argument("--synthetic", action="store_true",
-                        help="replay synthetic_harness goldens after local")
-    parser.add_argument("--url",
-                        default="https://stock-spike-monitor-production.up.railway.app")
-    parser.add_argument("--password",
-                        default=os.environ.get("DASHBOARD_PASSWORD", ""))
+    parser.add_argument(
+        "--synthetic", action="store_true", help="replay synthetic_harness goldens after local"
+    )
+    parser.add_argument("--url", default="https://stock-spike-monitor-production.up.railway.app")
+    parser.add_argument("--password", default=os.environ.get("DASHBOARD_PASSWORD", ""))
     parser.add_argument("--expected-version", default=None)
     args = parser.parse_args()
 

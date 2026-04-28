@@ -1760,35 +1760,42 @@ News / halt flags (needs Polygon or Benzinga subscription); L2 /
 order-book snapshots; tick-level trades; `VOL_GATE_ENFORCE=1`; new
 env-driven configs beyond v5.1.1; adaptive runtime config switching.
 
-## 19. Permission gates — v5.6.0 unified AVWAP set (Healing/Limping Bison)
+## 19. Permission gates — v5.9.0 QQQ Regime Shield + ticker AVWAP + OR
 
-### 19.1 Three-gate unified AVWAP set (v5.6.0+)
+### 19.1 Three-gate set (v5.9.0+: G1 swapped to EMA cross)
 
-v5.6.0 retires the legacy 4-gate L-P1/S-P1 permission scan and ships a
-unified 3-gate system, symmetric for longs and shorts. **G2 is deleted.**
-The bot used to read SPY-vs-PDC as the second index gate; v5.6.0 collapses
-the index leg to **QQQ only** and re-anchors every comparator on the
-session-open AVWAP. Hard-cut to prod, no shadow rollout, no feature flag.
+v5.6.0 shipped a 3-gate unified AVWAP set (G2 retired). v5.9.0 keeps the
+3-gate shape but **swaps G1 from a `QQQ.last vs QQQ.opening_avwap`
+penny-switch to a structural `QQQ 5m EMA(3) vs EMA(9)` cross.** G3 (ticker
+AVWAP) and G4 (OR breakout) are unchanged.
 
-| Gate | Light name | Long (L-P1)                                  | Short (S-P1)                                 |
-|------|------------|----------------------------------------------|----------------------------------------------|
-| G1   | Index      | `Index.Last > Index.Opening_AVWAP`           | `Index.Last < Index.Opening_AVWAP`           |
-| ~~G2~~ | retired  | (was SPY-vs-PDC; deleted in v5.6.0)          | (was SPY-vs-PDC; deleted in v5.6.0)          |
-| G3   | Ticker     | `Ticker.Last > Ticker.Opening_AVWAP`         | `Ticker.Last < Ticker.Opening_AVWAP`         |
-| G4   | Structure  | `Ticker.Last > Ticker.OR_High`               | `Ticker.Last < Ticker.OR_Low`                |
+| Gate | Light name  | Long (L-P1)                                | Short (S-P1)                               |
+|------|-------------|--------------------------------------------|--------------------------------------------|
+| G1   | Regime      | `QQQ.5m_3EMA > QQQ.5m_9EMA`                | `QQQ.5m_3EMA < QQQ.5m_9EMA`                |
+| ~~G2~~ | retired   | (deleted in v5.6.0)                        | (deleted in v5.6.0)                        |
+| G3   | Ticker AVWAP| `Ticker.Last > Ticker.Opening_AVWAP`       | `Ticker.Last < Ticker.Opening_AVWAP`       |
+| G4   | Structure   | `Ticker.Last > Ticker.OR_High`             | `Ticker.Last < Ticker.OR_Low`              |
 
 **Conventions (locked):**
 
 - **Index = QQQ only.** SPY no longer participates in the permission scan.
-- **AVWAP** = session-open anchored VWAP. Anchor at 09:30 ET regular-session
-  open, reset daily, recomputed on every 1m bar close from the per-cycle
-  bar cache. Implementation: `trade_genius._opening_avwap(ticker)`.
+- **G1 EMA source.** `qqq_regime.QQQRegime` maintains EMA(3) and EMA(9) on
+  closed 5m QQQ bars. EMAs are **seeded pre-market** (04:00–09:30 ET)
+  with priority `bar archive → Alpaca historical IEX → prior session` so
+  the compass is hot at 09:35 ET instead of warming up live.
+- **Compass.** `current_compass()` returns `UP` (EMA3 > EMA9), `DOWN`
+  (EMA3 < EMA9), `FLAT` (equal), or `None` (warmup). G1 fails closed for
+  `FLAT` and `None`.
+- **AVWAP (ticker)** = session-open anchored VWAP for G3 only. Anchor
+  09:30 ET, reset daily, recomputed on every 1m bar close.
+  Implementation: `trade_genius._opening_avwap(ticker)`.
 - **OR window** = 5-minute opening range, 09:30–09:35 ET (existing).
-- **Comparators**: strict `>` and `<`. Equality (price == AVWAP, price ==
-  OR_High/Low) returns **FAIL**. Boundary blocks the gate.
+- **Comparators**: strict `>` and `<`. Equality returns **FAIL** on every gate.
 - **Pre-9:35 ET** (OR not yet defined): G4 returns `False` deterministically.
-- **AVWAP None** (no bars yet, or zero cumulative volume): G1/G3 return
-  `False` deterministically.
+- **None** inputs: G1/G3/G4 return `False` deterministically.
+- **Mid-strike compass flip.** Active trades let their existing exit FSM
+  run. Re-entry is blocked when G1 evaluates to FAIL because the strike-1
+  compass differs from the live compass; `[V572-ABORT]` records the flip.
 
 **Per-direction predicates** (strict, fail-closed) live in
 `tiger_buffalo_v5.py`: `gate_g1_long`, `gate_g1_short`, `gate_g3_long`,
@@ -2074,7 +2081,7 @@ The forensic logger module (`logger`) and the v5.6.1 SKIP/GATE schema are otherw
 
 **Three-phase FSM.** Each Titan position carries an explicit `phase` field:
 
-1. **`initial_risk`** — Hard stop fires on **2 consecutive 1-min candle CLOSES** outside the OR boundary (LONG: closes below `OR_High`; SHORT: closes above `OR_Low`). The counter resets to `0` only when a 1-min candle closes back inside OR; a slow grind-down keeps counting consecutive closes. On fire, exit emits `[TRADE_CLOSED] … exit_reason=hard_stop_2c`.
+1. **`initial_risk`** — **v5.9.0 Recursive Forensic Stop (Maffei 1-2-3).** Replaces the v5.7.1 `hard_stop_2c` two-consec counter. Every 1-minute close that gates outside the OR boundary (LONG: close < `OR_High`; SHORT: close > `OR_Low`) runs an audit against the **prior** 1-minute candle: LONG exits iff `current_low < prior_low`; SHORT exits iff `current_high > prior_high`. Equality and a higher-low / lower-high STAY (consolidation / wick). Closes back inside OR reset the streak. On fire, `[TRADE_CLOSED] … exit_reason=forensic_stop`. **Per-trade Sovereign Brake** also runs every tick: if unrealized P&L on the single open position reaches **-$500.00** (`(current-entry)*qty` LONG; `(entry-current)*qty` SHORT), exit immediately as `exit_reason=per_trade_brake`. This is distinct from the existing portfolio-level realized -$500 brake.
 2. **`house_money`** — After the close of the **2nd green 5-min candle** post-entry (LONG; `close > open`) — or 2nd red 5-min for SHORT — the stop ratchets to entry price (BE). The hard-stop counter is now inactive; the active exit is `current_price < entry_price` for LONG, mirrored for SHORT. On fire: `exit_reason=be_stop`.
 3. **`sovereign_trail`** — Once the 5-minute 9-period EMA is seeded (close of the 9th 5-min bar since 9:30 ET = **10:15 ET**), a 5-min CLOSE strictly below the EMA (LONG) — or strictly above (SHORT) — fires `exit_reason=ema_trail`. Before 10:15 ET the EMA is `None` and only the hard-stop / BE exits apply.
 
@@ -2091,7 +2098,9 @@ The forensic logger module (`logger`) and the v5.6.1 SKIP/GATE schema are otherw
 | Field | Type | Purpose |
 |---|---|---|
 | `phase` | str | `initial_risk` / `house_money` / `sovereign_trail` |
-| `hard_stop_consec_1m_count` | int | 0/1/2; reset on close back inside OR |
+| `forensic_consecutive_count` | int | 0..N; advanced on each Phase A close-outside-OR; reset on close back inside |
+| `entry_price` / `qty` | float / int | Cached for per-trade Sovereign Brake unrealized-P&L math |
+| `prior_1m_low` / `prior_1m_high` | float\|None | Carryover for the next-bar Forensic Stop audit |
 | `green_5m_count` (LONG) | int | Closed green 5-min bars post-entry |
 | `red_5m_count` (SHORT) | int | Closed red 5-min bars post-entry |
 | `ema_5m` | float\|None | Rolling 9-EMA on 5-min closes; `None` until 10:15 ET |
@@ -2102,7 +2111,12 @@ The forensic logger module (`logger`) and the v5.6.1 SKIP/GATE schema are otherw
 - `[V571-EXIT_PHASE] ticker=<T> side=<L|S> entry_id=<id> from_phase=<…> to_phase=<…> trigger=<be_2nd_green|be_2nd_red|ema_seeded|…> current_stop=<f> ts=<utc>` — emitted **on phase transition only** (entry → `initial_risk`; BE move → `house_money`; EMA seed → `sovereign_trail`).
 - `[V571-VELOCITY_FUSE] ticker=<T> side=<L|S> candle_open=<f> current_price=<f> pct_move=<f> ts=<utc>` — emitted on every fuse fire, immediately before the market exit.
 - `[V571-EMA_SEED] ticker=<T> ema_value=<f> ts=<utc>` — emitted exactly once per ticker per session at 10:15 ET when the EMA is first valid.
-- `[TRADE_CLOSED] … exit_reason=…` — the v5.6.1 enum (`stop|target|time|eod|manual`) gains four new values: `hard_stop_2c`, `be_stop`, `ema_trail`, `velocity_fuse`. The legacy values remain valid for non-Titan paths.
+- `[TRADE_CLOSED] … exit_reason=…` — the v5.6.1 enum (`stop|target|time|eod|manual`) gains five Titan-only values: `forensic_stop` (v5.9.0; replaces `hard_stop_2c`), `per_trade_brake` (v5.9.0), `be_stop`, `ema_trail`, `velocity_fuse`. The legacy values remain valid for non-Titan paths.
+- `[V590-FORENSIC] ticker=<T> side=<L|S> close=<f> low=<f> prior_low=<f> consec=<n> ts=<utc>` (LONG; SHORT mirrors with `high`/`prior_high`) — emitted on every Phase A 1m close that gates outside OR.
+- `[V590-PER-TRADE-BRAKE] ticker=<T> side=<L|S> entry=<f> current=<f> qty=<n> unrealized=<f> ts=<utc>` — emitted on per-trade brake fire.
+- `[V572-REGIME] qqq_5m_close=<f> ema3=<f> ema9=<f> compass=<UP|DOWN|FLAT|None>` — emitted on every closed 5m QQQ bar.
+- `[V572-REGIME-SEED] source=<archive|alpaca|prior_session> bars=<n> ema3=<f> ema9=<f> compass=<…>` — emitted once at first compass evaluation.
+- `[V572-ABORT] ticker=<T> side=<L|S> prev_compass=<…> new_compass=<…> seconds_into_strike=<n>` — emitted when re-entry is blocked due to mid-strike compass flip.
 
 **Feature flag.** `ENABLE_BISON_BUFFALO_EXITS = True` is the default. `VELOCITY_FUSE_PCT = 0.01` is the strict 1.0% threshold. Setting the flag `False` reverts every Titan to the v5.0.0 `evaluate_exit` path; the velocity fuse is also gated off.
 
@@ -2169,4 +2183,4 @@ check_log_tags "STARTUP SUMMARY" "[UNIVERSE_GUARD]" "[V560-GATE]" "[V570-STRIKE]
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.8.4"`.*
+*Last refresh: April 2026, against `BOT_VERSION = "5.9.0"`.*

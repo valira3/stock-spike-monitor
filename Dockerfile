@@ -24,6 +24,8 @@ COPY side.py .
 COPY error_state.py .
 # v5.0.0 — Tiger/Buffalo state-machine module (imported by trade_genius.py).
 COPY tiger_buffalo_v5.py .
+# v5.9.0 — QQQ Regime Shield (5m EMA3/EMA9 cross) module.
+COPY qqq_regime.py .
 # v5.1.0 — Forensic Volume Filter module (imported by trade_genius.py).
 COPY volume_profile.py .
 # v5.1.2 — Forensic capture: indicator math + 1m bar JSONL archive

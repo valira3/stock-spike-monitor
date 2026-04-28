@@ -13,7 +13,7 @@
 {"t": "2026-04-27T14:00:00.003000Z", "m": "[V510-SHADOW][CFG=GEMINI_A][PCT=110/85] ticker=MSFT bucket=2026-04-27T10:00 stage=1 t_pct=80 qqq_pct=110 verdict=FAIL reason=ticker_below_110 entry_decision=ENTER"}
 {"t": "2026-04-27T14:00:00.100000Z", "m": "[V570-STRIKE] ticker=MSFT side=SHORT ts=2026-04-27T14:00:00Z strike_num=1 is_first=True hod=380.50 lod=378.00 hod_break=False lod_break=True expansion_gate_pass=False"}
 {"t": "2026-04-27T14:00:00.120000Z", "m": "[ENTRY] ticker=MSFT side=SHORT entry_id=MSFT-20260427140000 entry_ts=2026-04-27T14:00:00Z entry_price=378.0000 qty=5 strike_num=1"}
-{"t": "2026-04-27T14:10:00.000000Z", "m": "[TRADE_CLOSED] ticker=MSFT side=SHORT entry_id=MSFT-20260427140000 entry_ts=2026-04-27T14:00:00Z entry_price=378.0000 exit_ts=2026-04-27T14:10:00Z exit_price=378.5000 exit_reason=hard_stop_2c qty=5 pnl_dollars=-2.5000 pnl_pct=-0.0013 hold_seconds=600 strike_num=1 daily_realized_pnl=10.5000"}
+{"t": "2026-04-27T14:10:00.000000Z", "m": "[TRADE_CLOSED] ticker=MSFT side=SHORT entry_id=MSFT-20260427140000 entry_ts=2026-04-27T14:00:00Z entry_price=378.0000 exit_ts=2026-04-27T14:10:00Z exit_price=378.5000 exit_reason=forensic_stop qty=5 pnl_dollars=-2.5000 pnl_pct=-0.0013 hold_seconds=600 strike_num=1 daily_realized_pnl=10.5000"}
 {"t": "2026-04-27T14:30:00.000000Z", "m": "[SKIP] ticker=NVDA reason=g1_failed ts=2026-04-27T14:30:00Z gate_state={\"g1\":false,\"g3\":true,\"g4\":true}"}
 {"t": "2026-04-27T14:31:00.000000Z", "m": "[SKIP] ticker=GOOG reason=g1_failed ts=2026-04-27T14:31:00Z gate_state={\"g1\":false,\"g3\":true,\"g4\":true}"}
 {"t": "2026-04-27T14:32:00.000000Z", "m": "[SKIP] ticker=NVDA reason=g4_failed ts=2026-04-27T14:32:00Z gate_state={\"g1\":true,\"g3\":true,\"g4\":false}"}

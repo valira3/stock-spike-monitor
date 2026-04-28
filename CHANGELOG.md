@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.9.0 — 2026-04-28 — QQQ Regime Shield + Recursive Forensic Stop
+
+Two-part algo release.
+
+**Part 1: QQQ Regime Shield (Permission Gate G1).** Replaces the v5.6.0 `QQQ.last vs QQQ.opening_avwap` AVWAP penny-switch with a structural `QQQ 5m EMA(3) vs EMA(9)` cross. The compass (UP / DOWN / FLAT) is the new G1 source for both LONG and SHORT permission paths; G3 (ticker AVWAP) and G4 (OR breakout) are unchanged. EMAs are seeded pre-market (04:00–09:30 ET) with priority `bar archive → Alpaca historical IEX → prior session` so G1 has a meaningful compass at the 09:35 OR boundary instead of warming up live. New `qqq_regime.py` module owns the EMA state. New log tags: `[V572-REGIME]` (per closed 5m bar), `[V572-REGIME-SEED]` (one line at first compass eval), `[V572-ABORT]` (re-strike blocked because mid-strike compass flipped). Re-entry block is the only gate that fires — already-open trades let their existing exit FSM run.
+
+**Part 2: Recursive Forensic Stop + per-trade Sovereign Brake (Phase A).** Retires `hard_stop_2c` (two consecutive 1m closes outside OR). Replaces it with the Maffei 1-2-3 audit: every 1m close that gates outside OR audits `low(current) vs low(prior)` (LONG) / `high(current) vs high(prior)` (SHORT). Lower-low / higher-high → EXIT (`forensic_stop`); equality or higher-low / lower-high → STAY (consolidation / wick). Adds a per-trade Sovereign Brake at -$500 unrealized P&L, distinct from the existing portfolio-level realized brake. Order in `evaluate_titan_exit`: velocity_fuse → per_trade_brake → BE-stop. New exit_reasons: `forensic_stop`, `per_trade_brake`. New log tags: `[V590-FORENSIC]`, `[V590-PER-TRADE-BRAKE]`.
+
+Touched modules: new `qqq_regime.py`; `tiger_buffalo_v5.py` (G1 signature swap, forensic helpers, per-trade brake, init_titan_exit_state extension); `trade_genius.py` (regime singleton, seed chain, tick driver, abort logger, gate callsite); `bot_version.py` → 5.9.0; CHANGELOG / ARCHITECTURE / Dockerfile / smoke_test / saturday_weekly_report enum updated.
+
+---
+
 ## v5.8.4 — 2026-04-27 — Saturday weekly report parser
 
 Pure tooling. **No algorithm or live-trading paths touched.** Replaces the broken Saturday cron `873854a1`, which still parses `[V510-SHADOW]` lines that haven't existed since v5.5.x. Live prod (v5.8.x) emits `[V560-GATE]` / `[V570-STRIKE]` / `[V571-EXIT_PHASE]` / `[ENTRY]` / `[TRADE_CLOSED]` / `[SKIP]` — the new report reads exactly that schema.
