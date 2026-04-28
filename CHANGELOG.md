@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.10.5 — 2026-04-28 — Phase B/C Triple-Lock wiring + legacy-emitter audit
+
+**Item 1 — Phase B/C stops wired into the live hot path (Section V — Triple-Lock).** The pure helpers `step_two_bar_lock_on_5m`, `step_phase_c_if_eligible`, and `evaluate_phase_c_exit` shipped in v5.10.0/v5.10.1 (and unit-tested) but were never called from `manage_positions` / `manage_short_positions`. v5.10.5 wires them in.
+
+A new helper `_v5105_phase_machine_tick(ticker, side, pos, bars)` runs once per open position per scan tick, after the Section IV overrides (Sovereign Brake / Velocity Fuse) and before the existing ladder/Maffei block. It:
+
+- Lazy-initialises the v5.10 phase state on first sight (`init_position_state_on_entry_1`) and snaps Entry-2 from the dict's `avg_entry` if scaling has already happened.
+- Computes closed 5m OHLC + EMA9 from the existing `fetch_1min_bars` payload (per-ticker, no extra HTTP round-trip).
+- On every NEW closed 5m bucket, advances the Two-Bar Lock counter via `step_two_bar_lock_on_5m`.
+- Promotes to Phase C (`step_phase_c_if_eligible`) once the lock has fired and the 5m EMA9 is seeded (≥ 9 closed 5m bars since 9:30 ET).
+- Mirrors the v5.10 phase onto a simple `pos["phase"]` field (`'A' | 'B' | 'C'`) for /api/state visibility.
+- Fires `be_stop` (Phase B break-even) when `pos["phase"] == "B"` and current price has crossed the locked level (`current_stop` ← `avg_entry`).
+- Fires `ema_trail` (Phase C "Leash") when `pos["phase"] == "C"` and `evaluate_phase_c_exit` returns True on the most recent closed 5m close.
+
+Phase A (forensic_stop / Maffei) intentionally continues to flow through the existing ladder / STOP / TRAIL / RED_CANDLE / POLARITY_SHIFT plumbing — this PR does not replace it, since `evaluate_phase_a_exit` is not defined in `eye_of_tiger.py`.
+
+`close_breakout` now calls `eot_glue.clear_position_state(...)` and drops the `(ticker, side)` entry from the new `_v5105_last_5m_bucket` debounce dict, so a re-entry after a flat starts the phase machine clean (Phase A, counter 0).
+
+Canonical exit_reason strings: `forensic_stop` (existing Phase A path unchanged in this release), `be_stop` (new), `ema_trail` (new). Section IV (`sovereign_brake`, `velocity_fuse`), Section VI (`daily_circuit_breaker`, `eod`), and the dashboard's `TRAIL` / `STOP` / `RED_CANDLE` / `POLARITY_SHIFT` attribution are all preserved unchanged.
+
+New log lines:
+
+- `[V5100-PHASE]` — phase transitions (existing — emitted from `eot_glue`).
+- `[V5100-PHASE-B-BE]` — Phase B break-even exit fires.
+- `[V5100-PHASE-C-EMA-TRAIL]` — Phase C "Leash" exit fires.
+
+**Item 2 — Legacy-emitter audit (cleanup deferred).** The six legacy emitters listed for deletion (`_v519_arm_rehunt_watch`, `_v519_check_rehunt`, `_v519_check_oomph`, `_v512_emit_candidate_log`, `_v570_log_strike`, `_v590_log_abort_if_flip`) have no live call sites in `trade_genius.py` after v5.10.3 — but `smoke_test.py` (the post-deploy CI gate) and `test_v5_5_6_shadow_uses_prev_bucket.py` still exercise four of them directly. Per the v5.10.5 spec ("If anything still calls them, document and skip that one — don't break callers"), deletion is deferred to a follow-up PR that will retire the corresponding test cases in the same change. No `exit_reason` switch/dispatch in `trade_genius.py` or `dashboard_static/app.js` references the legacy strings (`LORDS_LEFT`, `BULL_VACUUM`, `HARD_EJECT_TIGER`, `V572-ABORT`, `V510-CAND`, `V570`, `REHUNT_VOL_CONFIRM`); only docstrings, log-line tags, and shadow-config metadata reference them, all of which are fine to leave in place.
+
+**Hard rules preserved.** `#h-tick` is not hidden, the health-pill count is not dropped, and the universe is unchanged: AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, TSLA + QBTS, QQQ, SPY.
+
+---
+
 ## v5.10.4 — 2026-04-28 — Docker-build-and-boot CI gate + Entry 2 scaling (Section III)
 
 **Two intentionally narrow changes; nothing else in this PR.**
