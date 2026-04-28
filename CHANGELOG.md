@@ -4,6 +4,32 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.8.0 — 2026-04-27 — Developer Velocity Bundle
+
+Pure repo/tooling release. **No algorithm logic touched, no live trading paths modified.** Cuts subagent cold-start time, prevents CI-fail iteration cycles, and eliminates the universe-drift recovery class of incidents that hit v5.7.0.
+
+**Deliverables:**
+
+- **`CLAUDE.md`** at repo root — concise agent guide subagents read on first cold-start (where things live, mandatory PR rules, pre-push checklist, PR submission flow). Parallel **`AGENTS.md`** `@import`s it so Codex picks up the same guide.
+- **`specs/_TEMPLATE.md`** — spec scaffolding so every future release starts from a consistent shape (Decisions / Goals / Scope / Logging schema / Tests / Rollout).
+- **`scripts/preflight.sh`** — local CI mirror. BLOCKS on five checks: pytest, `BOT_VERSION` ↔ CHANGELOG consistency, em-dash literal in `.py`, forbidden-word (`scrape|crawl|scraping|crawling`), ruff format. Em-dash and forbidden-word checks are scoped to files **changed in this PR vs `origin/main`** so the pre-v5.8.0 codebase (hundreds of grandfathered literal em-dashes) does not block local runs.
+- **`bot_version.py`** — canonical version constant (mirrored to `trade_genius.py.BOT_VERSION` so the existing `version-bump-check` CI workflow keeps working unchanged).
+- **`[UNIVERSE_GUARD]` startup check** — new `_ensure_universe_consistency()` helper runs at boot in `trade_genius.py`, before `_init_tickers()`. Reads `/data/tickers.json`, compares against canonical `TICKERS_DEFAULT`, and rewrites (preserving the existing envelope format) if the file is missing, corrupt, or has drifted. Tolerant of both flat-list and `{"tickers": [...]}` envelope JSON formats.
+
+**New log tag:** `[UNIVERSE_GUARD]` — emits exactly one of three lines on every boot for post-deploy observability:
+
+- `[UNIVERSE_GUARD] universe consistent (N tickers)` — happy path
+- `[UNIVERSE_GUARD] DRIFT detected: disk=… code=… — rewriting to code` — drift caught
+- `[UNIVERSE_GUARD] /data/tickers.json corrupt (…), rewriting` — corrupt JSON
+
+If none of these appears in startup logs, the guard didn't run.
+
+**Tests.** `tests/test_universe_guard.py` covers four cases (missing file, corrupt JSON, drift detected, consistent / no rewrite needed) using pytest's `tmp_path` fixture and `monkeypatch`.
+
+**Rollback.** Revert the PR; the only runtime change is the startup-time guard call. `preflight.sh`, `CLAUDE.md`, `AGENTS.md`, `specs/_TEMPLATE.md`, and `bot_version.py` are dev-tooling only — no rollback needed for those.
+
+---
+
 ## v5.7.1 — 2026-04-28 — Bison & Buffalo exit-logic optimization
 
 Rewrites the exit-logic state machine for the **Ten Titans only**. Non-Titan tickers (anything added later via `[WATCHLIST_ADD]`) keep the legacy `evaluate_exit` path (DI<25 hard eject + structural stop) byte-for-byte. v5.7.0 carved `tiger_buffalo_v5.py` out completely; v5.7.1 carves it back in with pure Bison/Buffalo exit-FSM helpers, exercised by 15 new smoke tests. `ENABLE_BISON_BUFFALO_EXITS = True` is the default; `False` reverts every Titan to the legacy path.

@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.7.1"
+BOT_VERSION = "5.8.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,21 +93,22 @@ BOT_VERSION = "5.7.1"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.7.1 \u2014 Bison & Buffalo.\n"
-    "Titan exit FSM: hard stop on 2\n"
-    "consec 1m closes outside OR,\n"
-    "BE move on 2nd green/red 5m,\n"
-    "5m 9-EMA trail seeded 10:15.\n"
-    "Velocity Fuse: >1.0% adverse\n"
-    "intra-candle move triggers an\n"
-    "immediate market exit. DI<25\n"
-    "exits dropped for Titans only;\n"
-    "non-Titans keep legacy logic.\n"
-    "New logs: [V571-EXIT_PHASE],\n"
-    "[V571-VELOCITY_FUSE],\n"
-    "[V571-EMA_SEED]. exit_reason\n"
-    "gains hard_stop_2c, be_stop,\n"
-    "ema_trail, velocity_fuse."
+    "v5.8.0 \u2014 Dev Velocity Bundle.\n"
+    "Pure tooling release. Adds\n"
+    "CLAUDE.md / AGENTS.md agent\n"
+    "guides at repo root, a spec\n"
+    "template under specs/, and\n"
+    "scripts/preflight.sh that\n"
+    "mirrors CI locally (pytest,\n"
+    "version-bump consistency,\n"
+    "em-dash literal, forbidden\n"
+    "words, ruff format). New\n"
+    "[UNIVERSE_GUARD] startup\n"
+    "check rewrites a stale\n"
+    "/data/tickers.json so a\n"
+    "Railway redeploy never\n"
+    "trades the lagged list.\n"
+    "No algo logic touched."
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -3709,6 +3710,74 @@ def _save_tickers_file() -> bool:
     except Exception as e:
         logger.error("tickers.json save failed: %s", e)
         return False
+
+
+def _ensure_universe_consistency() -> None:
+    """v5.8.0 \u2014 prevent /data/tickers.json from lagging code's UNIVERSE.
+
+    Compares the on-disk persisted ticker list against the canonical
+    code-side TICKERS_DEFAULT. If the file is missing, corrupt, or has
+    drifted, it is rewritten to match code. Emits the new
+    [UNIVERSE_GUARD] log tag for post-deploy smoke-check observability.
+
+    Tolerant of both supported on-disk formats:
+      - flat JSON list:        ["AAPL", "MSFT", ...]
+      - envelope (current):    {"tickers": ["AAPL", ...], ...}
+
+    On rewrite, preserves the envelope format used elsewhere in the bot
+    so _load_tickers_file() keeps working unchanged.
+    """
+    from pathlib import Path
+
+    # UNIVERSE_GUARD_PATH env var lets tests redirect the persistent
+    # path to a tmp file. Production always reads the default.
+    path = Path(os.getenv("UNIVERSE_GUARD_PATH", "/data/tickers.json"))
+    expected = sorted(set(TICKERS_DEFAULT))
+
+    def _write(payload_list):
+        envelope = {
+            "tickers": payload_list,
+            "updated_utc": _utc_now_iso(),
+            "bot_version": BOT_VERSION,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(envelope, indent=2))
+        except Exception as we:
+            logger.error("[UNIVERSE_GUARD] write failed: %s", we)
+
+    if not path.exists():
+        logger.warning(
+            "[UNIVERSE_GUARD] %s missing, writing %d tickers",
+            path, len(expected),
+        )
+        _write(expected)
+        return
+
+    try:
+        raw = json.loads(path.read_text())
+        items = raw.get("tickers") if isinstance(raw, dict) else raw
+        if not isinstance(items, list):
+            raise ValueError("tickers payload is not a list")
+        on_disk = sorted({str(s).upper() for s in items if str(s).strip()})
+    except Exception as e:
+        logger.error(
+            "[UNIVERSE_GUARD] %s corrupt (%s), rewriting", path, e,
+        )
+        _write(expected)
+        return
+
+    if on_disk != expected:
+        logger.warning(
+            "[UNIVERSE_GUARD] DRIFT detected: disk=%s code=%s \u2014 rewriting to code",
+            on_disk, expected,
+        )
+        _write(expected)
+    else:
+        logger.info(
+            "[UNIVERSE_GUARD] universe consistent (%d tickers)",
+            len(expected),
+        )
 
 
 def _init_tickers() -> None:
@@ -12309,6 +12378,16 @@ def startup_catchup():
 # ============================================================
 # ENTRY POINT
 # ============================================================
+# v5.8.0 \u2014 universe-drift startup guard. Rewrites
+# /data/tickers.json if it lags the code-side TICKERS_DEFAULT, so a
+# Railway redeploy that ships a new universe never trades the stale
+# persisted list. Emits the [UNIVERSE_GUARD] log tag. Runs BEFORE
+# _init_tickers() so the loader sees the corrected file.
+try:
+    _ensure_universe_consistency()
+except Exception as _uge:
+    logger.error("[UNIVERSE_GUARD] startup check crashed: %s", _uge, exc_info=True)
+
 # v3.4.32 — load the editable ticker universe from tickers.json
 # before anything else so load_paper_state() and retighten see the
 # right TICKERS list (e.g. if a newly-added QBTS already has an
