@@ -12,53 +12,8 @@
       "near_miss_writes": [],
       "paper_log_outbox": [],
       "return_value": [
-        true,
-        {
-          "closes": [
-            270.1,
-            270.05,
-            270.02,
-            269.9,
-            269.5
-          ],
-          "current_price": 269.5,
-          "highs": [
-            270.20000000000005,
-            270.15000000000003,
-            270.12,
-            270.0,
-            269.6
-          ],
-          "lows": [
-            270.0,
-            269.95,
-            269.91999999999996,
-            269.79999999999995,
-            269.4
-          ],
-          "opens": [
-            270.15000000000003,
-            270.1,
-            270.07,
-            269.95,
-            269.55
-          ],
-          "pdc": 270.5,
-          "timestamps": [
-            1700000000,
-            1700000060,
-            1700000120,
-            1700000180,
-            1700000240
-          ],
-          "volumes": [
-            100000,
-            100000,
-            100000,
-            100000,
-            250000
-          ]
-        }
+        false,
+        null
       ],
       "save_paper_state_calls": 0,
       "signals": [],
@@ -107,6 +62,7 @@
             "added": {
               "date": "2026-04-24",
               "entry_count": 1,
+              "entry_id": "AAPL-20260424143000",
               "entry_price": 269.5,
               "entry_time": "09:30:00",
               "entry_ts_utc": "2026-04-24T14:30:00+00:00",
@@ -115,6 +71,7 @@
               "shares": 37,
               "side": "SHORT",
               "stop": 271.4,
+              "strike_num": 1,
               "trail_active": false,
               "trail_low": 269.5,
               "trail_stop": null
@@ -130,5 +87,5 @@
   ],
   "harness_version": 1,
   "scenario": "short_clean_entry",
-  "trade_genius_version": "4.11.2"
+  "trade_genius_version": "5.9.3"
 }

@@ -3,6 +3,7 @@
 Extracted from trade_genius.py in v4.5.0 for maintainability.
 Pure code motion — no behavior change.
 """
+
 from __future__ import annotations
 
 # v4.5.4 — prod runs `python trade_genius.py`, so trade_genius is registered
@@ -237,17 +238,21 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loop = asyncio.get_event_loop()
     text = await loop.run_in_executor(None, _status_text_sync)
 
-    refresh_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")
-    ]])
+    refresh_kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("\U0001f504 Refresh", callback_data="positions_refresh")]]
+    )
     await update.message.reply_text(text, reply_markup=refresh_kb)
 
     # Portfolio pie chart (run in thread to avoid blocking event loop)
     sent_photo = False
     if MATPLOTLIB_AVAILABLE and (positions or short_positions):
-        buf = await loop.run_in_executor(None, _chart_portfolio_pie, positions, short_positions, paper_cash)
+        buf = await loop.run_in_executor(
+            None, _chart_portfolio_pie, positions, short_positions, paper_cash
+        )
         if buf:
-            await update.message.reply_photo(photo=buf, caption="Portfolio Allocation", reply_markup=_menu_button())
+            await update.message.reply_photo(
+                photo=buf, caption="Portfolio Allocation", reply_markup=_menu_button()
+            )
             sent_photo = True
 
     if not sent_photo:
@@ -268,14 +273,8 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today_str = _now_et().strftime("%Y-%m-%d")
 
     # Paper portfolio
-    paper_long = [
-        t for t in trade_history
-        if t.get("date", "") == target_str
-    ]
-    paper_short = [
-        t for t in short_trade_history
-        if t.get("date", "") == target_str
-    ]
+    paper_long = [t for t in trade_history if t.get("date", "") == target_str]
+    paper_short = [t for t in short_trade_history if t.get("date", "") == target_str]
     # v3.3.1: include currently-open positions as pseudo-trades when
     # target date matches today. Past-date reports stay history-only.
     if target_str == today_str:
@@ -288,10 +287,11 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not all_paper:
         await update.effective_message.reply_text(
-            "No trades on {date}.".format(date=target_str),
-            reply_markup=_menu_button()
+            "No trades on {date}.".format(date=target_str), reply_markup=_menu_button()
         )
-        logger.info("CMD dayreport completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
+        logger.info(
+            "CMD dayreport completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0
+        )
         return
 
     paper_body = _format_dayreport_section(all_paper, header, "Paper")
@@ -307,10 +307,15 @@ async def cmd_dayreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await chart_msg.delete()
             except Exception:
                 pass
-            await update.message.reply_photo(photo=buf, caption="Trade P&L \u2014 %s" % day_label, reply_markup=_menu_button())
+            await update.message.reply_photo(
+                photo=buf, caption="Trade P&L \u2014 %s" % day_label, reply_markup=_menu_button()
+            )
         else:
             try:
-                await chart_msg.edit_text("\U0001f4ca Chart unavailable (no trades or matplotlib missing)", reply_markup=_menu_button())
+                await chart_msg.edit_text(
+                    "\U0001f4ca Chart unavailable (no trades or matplotlib missing)",
+                    reply_markup=_menu_button(),
+                )
             except Exception:
                 pass
     else:
@@ -336,7 +341,9 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except asyncio.TimeoutError:
         logger.warning("cmd_log: executor timed out after 15s")
         try:
-            await prog.edit_text("\u26a0\ufe0f Trade log timed out. Try again.", reply_markup=_menu_button())
+            await prog.edit_text(
+                "\u26a0\ufe0f Trade log timed out. Try again.", reply_markup=_menu_button()
+            )
         except Exception:
             pass
         return
@@ -373,12 +380,16 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except asyncio.TimeoutError:
         logger.warning("cmd_replay: executor timed out after 15s")
-        await update.message.reply_text("\u26a0\ufe0f Replay timed out. Try again.", reply_markup=_menu_button())
+        await update.message.reply_text(
+            "\u26a0\ufe0f Replay timed out. Try again.", reply_markup=_menu_button()
+        )
         return
 
     if text is None:
         await update.message.reply_text("No trades on %s." % day_label, reply_markup=_menu_button())
-        logger.info("CMD replay completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0)
+        logger.info(
+            "CMD replay completed in %.2fs (no trades)", asyncio.get_event_loop().time() - t0
+        )
         return
 
     await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
@@ -388,8 +399,8 @@ async def cmd_replay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show version info."""
     await update.message.reply_text(
-        "%s v%s\n%s" % (BOT_NAME, BOT_VERSION, MAIN_RELEASE_NOTE),
-        reply_markup=_menu_button())
+        "%s v%s\n%s" % (BOT_NAME, BOT_VERSION, MAIN_RELEASE_NOTE), reply_markup=_menu_button()
+    )
 
 
 async def cmd_near_misses(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -403,8 +414,7 @@ async def cmd_near_misses(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "\U0001f50d Near-misses\n%s\nNone recorded yet today.\n"
             "A near-miss is a 1m close past OR\n"
-            "that was declined by the volume gate."
-            % SEP,
+            "that was declined by the volume gate." % SEP,
             reply_markup=_menu_button(),
         )
         return
@@ -450,7 +460,8 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEP = "\u2500" * 34
     try:
         result = retighten_all_stops(
-            force_exit=True, fetch_prices=True,
+            force_exit=True,
+            fetch_prices=True,
         )
     except Exception as e:
         logger.error("cmd_retighten failed: %s", e, exc_info=True)
@@ -472,7 +483,9 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # mid-cycle state change blanked the value). Coerce with
         # `or 0.0` so the command returns a readable message instead
         # of dying with an unhandled handler exception.
-        def _fn(v): return float(v) if v is not None else 0.0
+        def _fn(v):
+            return float(v) if v is not None else 0.0
+
         any_change = False
         for d in details:
             tkr = d.get("ticker", "?")
@@ -490,9 +503,7 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append("  stop $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
                 any_change = True
             elif status == "ratcheted_trail":
-                lines.append(
-                    "%s %s [%s] trail\u2192entry" % (tkr, side, port)
-                )
+                lines.append("%s %s [%s] trail\u2192entry" % (tkr, side, port))
                 lines.append("  trail $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
                 any_change = True
             elif status == "exit":
@@ -510,20 +521,13 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append("No changes \u2014 stops already optimal.")
     lines.append(SEP)
     lines.append(
-        "Summary: %d cap, %d ratchet,"
-        % (result.get("tightened", 0),
-           result.get("ratcheted", 0))
+        "Summary: %d cap, %d ratchet," % (result.get("tightened", 0), result.get("ratcheted", 0))
     )
     lines.append(
         "%d trail\u2192entry, %d exited,"
-        % (result.get("ratcheted_trail", 0),
-           result.get("exited", 0))
+        % (result.get("ratcheted_trail", 0), result.get("exited", 0))
     )
-    lines.append(
-        "%d no-op, %d tight"
-        % (result.get("no_op", 0),
-           result.get("already_tight", 0))
-    )
+    lines.append("%d no-op, %d tight" % (result.get("no_op", 0), result.get("already_tight", 0)))
     await update.message.reply_text(
         "\n".join(lines),
         reply_markup=_menu_button(),
@@ -556,8 +560,7 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         lines.append("No trades logged yet.")
         if _trade_log_last_error:
-            lines.append("err: %s" % str(
-                _trade_log_last_error)[:28])
+            lines.append("err: %s" % str(_trade_log_last_error)[:28])
         lines.append(SEP)
         await update.message.reply_text(
             "\n".join(lines),
@@ -588,24 +591,34 @@ async def cmd_trade_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reason = str(r.get("reason", "?")).split("[")[0][:10]
         date = str(r.get("date", ""))[-5:]  # MM-DD
         # Line 1: date ticker side[port]  +/-P&L
-        lines.append("%s %-5s %s[%s] $%+.2f" % (
-            date, tkr, side, port, pnl,
-        ))
+        lines.append(
+            "%s %-5s %s[%s] $%+.2f"
+            % (
+                date,
+                tkr,
+                side,
+                port,
+                pnl,
+            )
+        )
         # Line 2: reason + entry→exit
         entry = r.get("entry_price")
         exit_ = r.get("exit_price")
         if entry is not None and exit_ is not None:
-            lines.append("  %s  $%.2f\u2192$%.2f" % (
-                reason, float(entry), float(exit_),
-            ))
+            lines.append(
+                "  %s  $%.2f\u2192$%.2f"
+                % (
+                    reason,
+                    float(entry),
+                    float(exit_),
+                )
+            )
         else:
             lines.append("  %s" % reason)
 
     lines.append(SEP)
     lines.append("By reason:")
-    for reason, (n, p) in sorted(
-        by_reason.items(), key=lambda kv: -kv[1][1]
-    ):
+    for reason, (n, p) in sorted(by_reason.items(), key=lambda kv: -kv[1][1]):
         lines.append("  %-10s %d  $%+.2f" % (reason[:10], n, p))
     if _trade_log_last_error:
         lines.append(SEP)
@@ -669,9 +682,7 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ok, msg = executor.set_mode(sub, confirm_token=confirm_token)
         except Exception as e:
             logger.exception("cmd_mode: executor.set_mode raised")
-            await update.message.reply_text(
-                f"\u274c {label}: set_mode error: {str(e)[:200]}"
-            )
+            await update.message.reply_text(f"\u274c {label}: set_mode error: {str(e)[:200]}")
             return
         marker = "\u2705" if ok else "\u274c"
         await update.message.reply_text(f"{marker} {label}: {msg}")
@@ -684,10 +695,10 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         logger.exception("/mode: refresh failed")
 
-    mode    = _current_mode
-    reason  = _current_mode_reason
-    pnl     = _current_mode_pnl
-    ts      = _current_mode_ts
+    mode = _current_mode
+    reason = _current_mode_reason
+    pnl = _current_mode_pnl
+    ts = _current_mode_ts
     profile = MODE_PROFILES.get(mode, {})
 
     ts_str = ts.strftime("%H:%M ET") if ts else "—"
@@ -696,21 +707,20 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Build compact per-ticker RSI preview (top 6 by value, highest first)
     if _current_rsi_per_ticker:
-        sorted_rsis = sorted(_current_rsi_per_ticker.items(),
-                             key=lambda kv: kv[1], reverse=True)
+        sorted_rsis = sorted(_current_rsi_per_ticker.items(), key=lambda kv: kv[1], reverse=True)
         rsi_preview = " | ".join("%s %.0f" % (tk, r) for tk, r in sorted_rsis[:6])
     else:
         rsi_preview = "—"
 
     if _current_ticker_red:
-        red_preview = ", ".join("%s $%+.0f" % (tk, p)
-                                for tk, p in _current_ticker_red[:5])
+        red_preview = ", ".join("%s $%+.0f" % (tk, p) for tk, p in _current_ticker_red[:5])
     else:
         red_preview = "none"
 
     if _current_ticker_extremes:
-        ext_preview = ", ".join("%s %.0f %s" % (tk, r, tag)
-                                for tk, r, tag in _current_ticker_extremes[:5])
+        ext_preview = ", ".join(
+            "%s %.0f %s" % (tk, r, tag) for tk, r, tag in _current_ticker_extremes[:5]
+        )
     else:
         ext_preview = "none"
 
@@ -739,11 +749,16 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         SEP,
         profile.get("note", ""),
         "",
-        "Bounds: trail %.1f-%.1f%% | entries %d-%d | shares %d-%d | score +%.2f-+%.2f" % (
-            CLAMP_TRAIL_PCT[0]*100, CLAMP_TRAIL_PCT[1]*100,
-            CLAMP_MAX_ENTRIES[0],   CLAMP_MAX_ENTRIES[1],
-            CLAMP_SHARES[0],        CLAMP_SHARES[1],
-            CLAMP_MIN_SCORE_DELTA[0], CLAMP_MIN_SCORE_DELTA[1],
+        "Bounds: trail %.1f-%.1f%% | entries %d-%d | shares %d-%d | score +%.2f-+%.2f"
+        % (
+            CLAMP_TRAIL_PCT[0] * 100,
+            CLAMP_TRAIL_PCT[1] * 100,
+            CLAMP_MAX_ENTRIES[0],
+            CLAMP_MAX_ENTRIES[1],
+            CLAMP_SHARES[0],
+            CLAMP_SHARES[1],
+            CLAMP_MIN_SCORE_DELTA[0],
+            CLAMP_MIN_SCORE_DELTA[1],
         ),
         "",
         "(v%s — observation only, no parameter is adaptive yet)" % BOT_VERSION,
@@ -787,13 +802,13 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Scan : every 60s \u2192 8:35\u20142:55 CT\n"
         "EOD  : force-close all at 2:55 CT\n"
         f"{SEP}\n"
-        "\U0001f6e1 SOVEREIGN REGIME SHIELD (v3.4.28)\n"
-        "  Lords Left & Bull Vacuum require\n"
-        "  BOTH SPY AND QQQ to cross PDC on a\n"
-        "  finalized 1-min bar close \u2192 one\n"
-        "  anchor across entries and ejects;\n"
-        "  no sector divergence ejects.\n"
-        "  (v3.4.34: AVWAP fully removed)\n"
+        "\U0001f6e1 INDEX REGIME (v5.9.0+)\n"
+        "  Entry-side QQQ Regime Shield uses\n"
+        "  a 5-min EMA compass (EMA3 vs EMA9)\n"
+        "  at G1. Exit-side dual-PDC eject\n"
+        "  retired in v5.9.1; HARD_EJECT_TIGER\n"
+        "  is DI-only (v5.9.2). v5.9.3 cleaned\n"
+        "  up the last residual labels.\n"
         f"{SEP}\n"
         "Full reference guide attached \u2193"
     )
@@ -801,8 +816,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Send PDF — try local file first, fall back to GitHub raw download
     _ALGO_PDF_URL = (
-        "https://raw.githubusercontent.com/valira3/"
-        "stock-spike-monitor/main/trade_genius_algo.pdf"
+        "https://raw.githubusercontent.com/valira3/stock-spike-monitor/main/trade_genius_algo.pdf"
     )
     pdf_path = Path("trade_genius_algo.pdf")
     tmp_path = None
@@ -810,6 +824,7 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("/algo: PDF not found locally — downloading from GitHub")
         try:
             import tempfile
+
             tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
             os.close(tmp_fd)
             await asyncio.to_thread(urllib.request.urlretrieve, _ALGO_PDF_URL, tmp_name)
@@ -868,9 +883,9 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Eye of the Tiger exits:\n"
         "  \U0001f56f Red Candle\n"
         "     price < Open OR < PDC\n"
-        "  \U0001f451 Lords Left\n"
-        "     SPY AND QQQ < PDC\n"
-        "     on finalized 1m close\n"
+        "  HARD_EJECT_TIGER (DI<25)\n"
+        "     non-Titan tickers only;\n"
+        "     Titans use the FSM\n"
         f"{SEP}\n"
         "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
         "Entry after 8:45 CT (15-min buffer)\n"
@@ -891,9 +906,8 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "EOD: closes at 2:55 CT\n"
         "\n"
         "Eye of the Tiger exits:\n"
-        "  \U0001f300 Bull Vacuum\n"
-        "     SPY AND QQQ > PDC\n"
-        "     on finalized 1m close\n"
+        "  HARD_EJECT_TIGER (DI<25)\n"
+        "     non-Titan tickers only\n"
         "  \U0001f504 Polarity Shift\n"
         "     price > PDC (1m close)\n"
         f"{SEP}\n"
@@ -982,15 +996,13 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _user = "?"
         logger.warning(
             "reset_callback blocked: data=%s chat_id=%s user_id=%s reason=%s",
-            query.data, query.message.chat_id, _user, reason,
+            query.data,
+            query.message.chat_id,
+            _user,
+            reason,
         )
         owner_users_fmt = ",".join(sorted(TRADEGENIUS_OWNER_IDS)) or "(unset)"
-        diag = (
-            "\u274c Reset blocked: %s.\n"
-            "chat_id: %s\n"
-            "user_id: %s\n"
-            "owner users: %s"
-        ) % (
+        diag = ("\u274c Reset blocked: %s.\nchat_id: %s\nuser_id: %s\nowner users: %s") % (
             reason,
             query.message.chat_id,
             _user,
@@ -1009,7 +1021,8 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("\u274c Reset cancelled.")
     elif action == "reset_paper":
         await query.edit_message_text(
-            "\u26a0\ufe0f Reset paper portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)" % paper_fmt,
+            "\u26a0\ufe0f Reset paper portfolio to $%s?\nAll trade history will be cleared.\n(Confirm within 60s.)"
+            % paper_fmt,
             reply_markup=_reset_buttons("paper"),
         )
 
@@ -1056,23 +1069,37 @@ async def cmd_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         msg, chart_buf = await asyncio.wait_for(
             loop.run_in_executor(
-                None, _perf_compute,
-                long_history, short_hist, date_filter, single_day,
-                today, label, perf_label, long_opens, short_opens,
+                None,
+                _perf_compute,
+                long_history,
+                short_hist,
+                date_filter,
+                single_day,
+                today,
+                label,
+                perf_label,
+                long_opens,
+                short_opens,
             ),
             timeout=10.0,
         )
     except asyncio.TimeoutError:
         logger.warning("cmd_perf: executor timed out after 10s")
-        await update.message.reply_text("\u26a0\ufe0f Performance report timed out. Try again.", reply_markup=_menu_button())
+        await update.message.reply_text(
+            "\u26a0\ufe0f Performance report timed out. Try again.", reply_markup=_menu_button()
+        )
         return
 
     await _reply_in_chunks(update.message, msg)
 
     if chart_buf:
-        await update.message.reply_photo(photo=chart_buf, caption="Equity Curve", reply_markup=_menu_button())
+        await update.message.reply_photo(
+            photo=chart_buf, caption="Equity Curve", reply_markup=_menu_button()
+        )
     elif MATPLOTLIB_AVAILABLE and (long_history or short_hist):
-        await update.message.reply_text("\U0001f4ca Chart unavailable (timeout or no data)", reply_markup=_menu_button())
+        await update.message.reply_text(
+            "\U0001f4ca Chart unavailable (timeout or no data)", reply_markup=_menu_button()
+        )
     else:
         await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
     logger.info("CMD perf completed in %.2fs", asyncio.get_event_loop().time() - t0)
@@ -1093,7 +1120,9 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = await loop.run_in_executor(None, _price_sync, ticker)
     try:
         if text is None:
-            await prog.edit_text("Could not fetch data for %s" % ticker, reply_markup=_menu_button())
+            await prog.edit_text(
+                "Could not fetch data for %s" % ticker, reply_markup=_menu_button()
+            )
         elif len(text) > 3800:
             await prog.delete()
             await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
@@ -1109,7 +1138,8 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if text is not None:
                 await update.message.reply_text(
-                    text[:3800], reply_markup=_menu_button(),
+                    text[:3800],
+                    reply_markup=_menu_button(),
                 )
         except Exception:
             logger.debug("cmd_price: fallback reply failed", exc_info=True)
@@ -1130,8 +1160,9 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             err or "Proximity unavailable.",
             reply_markup=_menu_button(),
         )
-        logger.info("CMD proximity completed in %.2fs (no data)",
-                    asyncio.get_event_loop().time() - t0)
+        logger.info(
+            "CMD proximity completed in %.2fs (no data)", asyncio.get_event_loop().time() - t0
+        )
         return
     body = "```\n" + text + "\n```"
     await update.message.reply_text(
@@ -1139,8 +1170,7 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=_proximity_keyboard(),
     )
-    logger.info("CMD proximity completed in %.2fs",
-                asyncio.get_event_loop().time() - t0)
+    logger.info("CMD proximity completed in %.2fs", asyncio.get_event_loop().time() - t0)
 
 
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1156,8 +1186,7 @@ async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = await loop.run_in_executor(None, _orb_sync)
     if text is None:
         await update.message.reply_text(
-            "OR not collected yet \u2014 runs at 8:35 CT.",
-            reply_markup=_menu_button()
+            "OR not collected yet \u2014 runs at 8:35 CT.", reply_markup=_menu_button()
         )
         logger.info("CMD orb completed in %.2fs (no data)", asyncio.get_event_loop().time() - t0)
         return
@@ -1176,34 +1205,43 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\U0001f50d Scanner: PAUSED\n"
             "  Tap below to resume.\n"
             "  Existing positions still managed.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume")
-            ]])
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume"
+                        )
+                    ]
+                ]
+            ),
         )
     elif action == "resume":
         _tg_module()._scan_paused = False
         await update.message.reply_text(
-            "\U0001f50d Scanner: ACTIVE\n"
-            "  Watching for breakouts.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")
-            ]])
+            "\U0001f50d Scanner: ACTIVE\n  Watching for breakouts.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")]]
+            ),
         )
     else:
         _tg = _tg_module()
         status = "PAUSED" if _tg._scan_paused else "ACTIVE"
         if _tg._scan_paused:
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume")
-            ]])
+            kb = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "\u25b6\ufe0f Resume Scanner", callback_data="monitoring_resume"
+                        )
+                    ]
+                ]
+            )
         else:
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")
-            ]])
+            kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("\u23f8 Pause Scanner", callback_data="monitoring_pause")]]
+            )
         await update.message.reply_text(
-            "\U0001f50d Scanner: %s\n"
-            "  Existing positions still managed." % status,
-            reply_markup=kb
+            "\U0001f50d Scanner: %s\n  Existing positions still managed." % status, reply_markup=kb
         )
     await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
 
@@ -1213,7 +1251,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = _build_menu_keyboard()
     await update.message.reply_text(
         "\U0001f4f1 Quick Menu\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
@@ -1224,8 +1262,12 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     missing = [t for t in TICKERS if t not in or_high]
     if not missing:
-        await update.message.reply_text("\u2705 All ORs already collected.", reply_markup=_menu_button())
-        logger.info("CMD or_now completed in %.2fs (none missing)", asyncio.get_event_loop().time() - t0)
+        await update.message.reply_text(
+            "\u2705 All ORs already collected.", reply_markup=_menu_button()
+        )
+        logger.info(
+            "CMD or_now completed in %.2fs (none missing)", asyncio.get_event_loop().time() - t0
+        )
         return
 
     lines = {t: "\u23f3" for t in missing}
@@ -1242,7 +1284,11 @@ async def cmd_or_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await loop.run_in_executor(None, _fetch_or_for_ticker, ticker)
         if result:
             recovered += 1
-            lines[ticker] = "\u2705 $%.2f\u2013$%.2f (%s)" % (result["high"], result["low"], result["src"])
+            lines[ticker] = "\u2705 $%.2f\u2013$%.2f (%s)" % (
+                result["high"],
+                result["low"],
+                result["src"],
+            )
         else:
             lines[ticker] = "\u274c failed"
         try:
@@ -1273,43 +1319,37 @@ async def cmd_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     if not args:
         # Bare /ticker defaults to list — most common case.
-        await update.message.reply_text(
-            _fmt_tickers_list(), reply_markup=_menu_button())
+        await update.message.reply_text(_fmt_tickers_list(), reply_markup=_menu_button())
         return
     sub = (args[0] or "").strip().lower()
 
     if sub in ("list", "ls", "show"):
-        await update.message.reply_text(
-            _fmt_tickers_list(), reply_markup=_menu_button())
+        await update.message.reply_text(_fmt_tickers_list(), reply_markup=_menu_button())
         return
 
     if sub in ("add", "+"):
         if len(args) < 2:
             await update.message.reply_text(
-                "Usage: /ticker add SYM\nExample: /ticker add QBTS",
-                reply_markup=_menu_button())
+                "Usage: /ticker add SYM\nExample: /ticker add QBTS", reply_markup=_menu_button()
+            )
             return
         await update.message.reply_chat_action(ChatAction.TYPING)
         # Run in executor — add_ticker does blocking HTTP (FMP + bars).
         loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(None, add_ticker, args[1])
-        await update.message.reply_text(
-            _fmt_add_reply(res), reply_markup=_menu_button())
+        await update.message.reply_text(_fmt_add_reply(res), reply_markup=_menu_button())
         return
 
     if sub in ("remove", "rm", "del", "delete", "-"):
         if len(args) < 2:
             await update.message.reply_text(
-                "Usage: /ticker remove SYM\n"
-                "Example: /ticker remove QBTS",
-                reply_markup=_menu_button())
+                "Usage: /ticker remove SYM\nExample: /ticker remove QBTS",
+                reply_markup=_menu_button(),
+            )
             return
         res = remove_ticker(args[1])
-        await update.message.reply_text(
-            _fmt_remove_reply(res), reply_markup=_menu_button())
+        await update.message.reply_text(_fmt_remove_reply(res), reply_markup=_menu_button())
         return
 
     # Unknown sub-command — show usage.
-    await update.message.reply_text(
-        _TICKER_USAGE, reply_markup=_menu_button())
-
+    await update.message.reply_text(_TICKER_USAGE, reply_markup=_menu_button())

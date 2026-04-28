@@ -8,133 +8,22 @@
       },
       "gate_snapshot_calls": [],
       "near_miss_writes": [],
-      "paper_log_outbox": [
-        "SELL AAPL 30 @ $271.00 reason=LORDS_LEFT pnl=$30.00 (0.4%)"
-      ],
+      "paper_log_outbox": [],
       "return_value": null,
-      "save_paper_state_calls": 1,
-      "signals": [
-        {
-          "kind": "EXIT_LONG",
-          "main_shares": 30,
-          "price": 271.0,
-          "reason": "LORDS_LEFT",
-          "ticker": "AAPL",
-          "timestamp_utc": "2026-04-24T15:00:00+00:00"
-        }
-      ],
+      "save_paper_state_calls": 0,
+      "signals": [],
       "state_delta": {
-        "_last_exit_time": {
-          "AAPL": {
-            "added": {
-              "__dt__": "2026-04-24T15:00:00+00:00"
-            }
-          }
-        },
-        "paper_all_trades": {
-          "after": [
-            {
-              "action": "SELL",
-              "date": "2026-04-24",
-              "entry_price": 270.0,
-              "pnl": 30.0,
-              "pnl_pct": 0.37,
-              "price": 271.0,
-              "reason": "LORDS_LEFT",
-              "shares": 30,
-              "ticker": "AAPL",
-              "time": "10:00 CDT"
-            }
-          ],
-          "before": []
-        },
-        "paper_cash": {
-          "after": 108130.0,
-          "before": 100000.0
-        },
-        "paper_trades": {
-          "after": [
-            {
-              "action": "SELL",
-              "date": "2026-04-24",
-              "entry_price": 270.0,
-              "pnl": 30.0,
-              "pnl_pct": 0.37,
-              "price": 271.0,
-              "reason": "LORDS_LEFT",
-              "shares": 30,
-              "ticker": "AAPL",
-              "time": "10:00 CDT"
-            }
-          ],
-          "before": []
-        },
         "positions": {
           "AAPL": {
-            "removed": {
-              "date": "2026-04-24",
-              "entry_count": 1,
-              "entry_price": 270.0,
-              "entry_time": "09:00:00",
-              "entry_ts_utc": "2026-04-24T13:00:00+00:00",
-              "initial_stop": 268.0,
-              "pdc": 269.0,
-              "shares": 30,
-              "stop": 268.0,
-              "trail_active": false,
-              "trail_high": 270.0
+            "trail_high": {
+              "after": 271.0,
+              "before": 270.0
             }
           }
-        },
-        "trade_history": {
-          "after": [
-            {
-              "action": "SELL",
-              "date": "2026-04-24",
-              "entry_num": 1,
-              "entry_price": 270.0,
-              "entry_time": "09:00:00",
-              "entry_time_iso": "2026-04-24T13:00:00+00:00",
-              "exit_price": 271.0,
-              "exit_time": "10:00 CDT",
-              "exit_time_iso": "2026-04-24T15:00:00+00:00",
-              "pnl": 30.0,
-              "pnl_pct": 0.37,
-              "reason": "LORDS_LEFT",
-              "shares": 30,
-              "side": "long",
-              "ticker": "AAPL"
-            }
-          ],
-          "before": []
         }
       },
-      "telegram_outbox": [
-        "\u2705 EXIT AAPL\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 30\nEntry  : $270.00  \u2192  $271.00\nCost   : $8,100.00  \u2192  $8,130.00\nP&L    : $+30.00  (+0.4%)\nReason : \ud83d\udc51 Lords Left (SPY+QQQ 1m < PDC)\nIn: 09:00:00   Out: 10:00 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-      ],
-      "trade_log_writes": [
-        {
-          "date": "2026-04-24",
-          "effective_stop_at_exit": 268.0,
-          "entry_num": 1,
-          "entry_price": 270.0,
-          "entry_time": "09:00:00",
-          "exit_price": 271.0,
-          "exit_time": "2026-04-24T15:00:00+00:00",
-          "hard_stop_at_exit": 268.0,
-          "hold_seconds": 7200.0,
-          "pnl": 30.0,
-          "pnl_pct": 0.37,
-          "portfolio": "paper",
-          "reason": "LORDS_LEFT",
-          "shares": 30,
-          "side": "LONG",
-          "ticker": "AAPL",
-          "trail_active_at_exit": false,
-          "trail_anchor_at_exit": 270.0,
-          "trail_stop_at_exit": null
-        }
-      ]
+      "telegram_outbox": [],
+      "trade_log_writes": []
     },
     {
       "action": {
@@ -167,7 +56,27 @@
       "return_value": null,
       "save_paper_state_calls": 0,
       "signals": [],
-      "state_delta": {},
+      "state_delta": {
+        "positions": {
+          "AAPL": {
+            "stop": {
+              "after": 272.13,
+              "before": 268.0
+            },
+            "trail_active": {
+              "after": true,
+              "before": false
+            },
+            "trail_high": {
+              "after": 273.5,
+              "before": 271.0
+            },
+            "trail_stop": {
+              "added": 272.13
+            }
+          }
+        }
+      },
       "telegram_outbox": [],
       "trade_log_writes": []
     },
@@ -202,12 +111,29 @@
       "return_value": null,
       "save_paper_state_calls": 0,
       "signals": [],
-      "state_delta": {},
+      "state_delta": {
+        "positions": {
+          "AAPL": {
+            "stop": {
+              "after": 273.62,
+              "before": 272.13
+            },
+            "trail_high": {
+              "after": 275.0,
+              "before": 273.5
+            },
+            "trail_stop": {
+              "after": 273.62,
+              "before": 272.13
+            }
+          }
+        }
+      },
       "telegram_outbox": [],
       "trade_log_writes": []
     }
   ],
   "harness_version": 1,
   "scenario": "loop_trail_promotion",
-  "trade_genius_version": "4.11.2"
+  "trade_genius_version": "5.9.3"
 }

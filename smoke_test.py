@@ -2119,17 +2119,26 @@ def run_local() -> int:
         src = inspect.getsource(m.eod_close)
         assert "v5_lock_all_tracks" in src, "C-R5 wiring missing in eod_close"
 
-    @t("v5 C-R6: Sovereign Regime Shield (PDC eject) retired in v5.9.1")
+    @t("v5 C-R6: Sovereign Regime Shield (PDC eject) retired in v5.9.1+")
     def _():
         # v5.9.1 removed _sovereign_regime_eject() along with its
         # LORDS_LEFT / BULL_VACUUM exit reasons. v5.9.0 already moved
         # the entry-side index regime check to the 5m EMA compass
         # (QQQ Regime Shield); v5.9.1 retires the matching exit-side
-        # rule so entry and exit are consistent. Assert the helper
-        # is GONE so a future revert is caught.
+        # rule so entry and exit are consistent. v5.9.3 also strips
+        # the residual REASON_LABELS / _SHORT_REASON entries so the
+        # legacy reason strings can never round-trip through display.
         assert getattr(m, "_sovereign_regime_eject", None) is None, (
             "v5.9.1 retired the PDC-based sovereign regime eject; "
             "_sovereign_regime_eject must not exist anymore"
+        )
+        labels = getattr(m, "REASON_LABELS", {}) or {}
+        residue_keys = [
+            k for k in labels if k.startswith("LORDS_LEFT") or k.startswith("BULL_VACUUM")
+        ]
+        assert not residue_keys, (
+            "v5.9.3 eradicated LORDS_LEFT* / BULL_VACUUM* from "
+            "REASON_LABELS; residue found: %r" % residue_keys
         )
 
     @t("v5 C-R7: 9-ticker spike universe + QQQ pinned (v5.6.0: SPY retired with G2)")

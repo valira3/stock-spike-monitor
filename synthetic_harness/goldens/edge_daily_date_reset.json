@@ -12,53 +12,8 @@
       "near_miss_writes": [],
       "paper_log_outbox": [],
       "return_value": [
-        true,
-        {
-          "closes": [
-            268.9,
-            268.95,
-            268.98,
-            269.1,
-            270.0
-          ],
-          "current_price": 270.0,
-          "highs": [
-            269.0,
-            269.05,
-            269.08000000000004,
-            269.20000000000005,
-            270.1
-          ],
-          "lows": [
-            268.79999999999995,
-            268.84999999999997,
-            268.88,
-            269.0,
-            269.9
-          ],
-          "opens": [
-            268.84999999999997,
-            268.9,
-            268.93,
-            269.05,
-            269.95
-          ],
-          "pdc": 267.5,
-          "timestamps": [
-            1700000000,
-            1700000060,
-            1700000120,
-            1700000180,
-            1700000240
-          ],
-          "volumes": [
-            100000,
-            100000,
-            100000,
-            100000,
-            250000
-          ]
-        }
+        false,
+        null
       ],
       "save_paper_state_calls": 0,
       "signals": [],
@@ -151,6 +106,7 @@
             "added": {
               "date": "2026-04-24",
               "entry_count": 1,
+              "entry_id": "AAPL-20260424143000",
               "entry_price": 270.0,
               "entry_time": "09:30:00",
               "entry_ts_utc": "2026-04-24T14:30:00+00:00",
@@ -158,6 +114,7 @@
               "pdc": 267.5,
               "shares": 37,
               "stop": 268.1,
+              "strike_num": 4,
               "trail_active": false,
               "trail_high": 270.0
             }
@@ -172,5 +129,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_daily_date_reset",
-  "trade_genius_version": "4.11.2"
+  "trade_genius_version": "5.9.3"
 }
