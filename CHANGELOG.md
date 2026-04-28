@@ -4,6 +4,32 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.9.4 — 2026-04-28 — Hotfix — wire Titan bypass into `_tiger_hard_eject_check`
+
+**Hotfix. Partial fix.** Stops today's bleeding. Full FSM wiring is still deferred to v5.10.0.
+
+**Trigger.** This morning (2026-04-28), `HARD_EJECT_TIGER` fired against Titan tickers MSFT and TSLA a combined five times — MSFT 09:23 / 09:24 CDT, TSLA 09:16 CDT, plus MSFT trade #4 at 15:25 UTC under the current SUCCESS deployment, and a TSLA companion. All five fires happened because the Titan-list bypass that v5.7.1 promised for the DI<25 hard-eject was specced, library-coded, unit-tested, log-emitter-named, and CHANGELOG'd, but the call site in `trade_genius.py:_tiger_hard_eject_check` was never edited. The function iterated every open position with no Titan filter, so MSFT's DI+ touching 23.55 below `TIGER_V2_DI_THRESHOLD=25` flushed the position straight through the legacy gate.
+
+**Root cause (v5.7.1 implementation gap).** v5.7.1 (`f000fb8`) shipped the `tiger_buffalo_v5.evaluate_exit(..., is_titan=True)` DI<25 bypass on the library side, the `tiger_buffalo_v5.evaluate_titan_exit(...)` three-phase FSM (forensic_stop / per_trade_brake / be_stop / ema_trail / velocity_fuse), the `ENABLE_BISON_BUFFALO_EXITS` feature flag (default True), the `_v571_log_exit_phase` / `_v571_log_velocity_fuse` / `_v571_log_ema_seed` emitters in `trade_genius.py`, 19+ unit tests in `smoke_test.py` plus the `tests/test_forensic_stop.py` suite, and `ARCHITECTURE.md §23` documenting the wiring as live — but ZERO new call sites in `trade_genius.py`. Every helper above has only its definition, no callers. `_tiger_hard_eject_check` was untouched. The shipped tests pass against the library; production never invoked any of it.
+
+**What this PR does.** Four-line guard at the top of each loop body in `_tiger_hard_eject_check` (one for longs, one for shorts):
+
+```python
+if _v570_is_titan(ticker) and ENABLE_BISON_BUFFALO_EXITS:
+    logger.info("[TITAN-BYPASS] HARD_EJECT_TIGER skipped for %s long (Titan; FSM authority)", ticker)
+    continue
+```
+
+Plus a unit test (`tests/test_titan_bypass_hard_eject.py`) that confirms a Titan ticker (MSFT) with DI+ < threshold is **not** flushed by `_tiger_hard_eject_check`, while a non-Titan (PLTR) with the same DI+ profile **is**. The test exercises the live `trade_genius._tiger_hard_eject_check` function — not the library — so a future regression that re-removes the guard is caught.
+
+**What this PR does NOT do.** It does not wire `evaluate_titan_exit` into the scan loop. It does not seed the 5m EMA at 10:15 ET. It does not initialize `init_titan_exit_state` from `close_breakout`. It does not route forensic_stop / per_trade_brake / be_stop / ema_trail / velocity_fuse return reasons into `close_position` / `close_short_position`. The `_v571_log_*` emitters remain orphaned. Until v5.10.0 ships, **Titans exit ONLY via**: structural stop, trail stop, EOD, daily loss limit. `forensic_stop` / `velocity_fuse` / `per_trade_brake` / `be_stop` / `ema_trail` are still dead code.
+
+**Behavior change.** For Titan tickers (AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, TSLA), `HARD_EJECT_TIGER` no longer fires. New log line `[TITAN-BYPASS] HARD_EJECT_TIGER skipped for <TICKER> <side> (Titan; FSM authority)` is emitted in Railway logs each cycle a Titan position is held below DI threshold — a diagnosable smoking-gun for v5.10.0 work and a confirmation the guard is wired. Non-Titan behavior is unchanged.
+
+Touched: `trade_genius.py` (`_tiger_hard_eject_check` body — long loop + short loop guard + comment + `BOT_VERSION` → 5.9.4); `bot_version.py` → 5.9.4; `tests/test_titan_bypass_hard_eject.py` (new); `CHANGELOG.md`.
+
+---
+
 ## v5.9.3 — 2026-04-28 — Eradicate `LORDS_LEFT` / `BULL_VACUUM` stragglers
 
 Pure cleanup. **No new behavior.** Closes out the three-step retirement of the PDC-based Sovereign Regime Shield: v5.9.1 removed the helper and call sites, v5.9.2 stripped the dual-PDC half of `HARD_EJECT_TIGER`, and v5.9.3 eradicates the residue that was left as "harmless legacy" in v5.9.1 but kept the retired vocabulary alive in user-facing surfaces.
