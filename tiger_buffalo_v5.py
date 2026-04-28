@@ -397,7 +397,8 @@ def transition_re_hunt(track: dict) -> bool:
 # ------------------------------------------------------------
 # Combined exit evaluator
 # ------------------------------------------------------------
-def evaluate_exit(track: dict, ticker_last, di_1m_closed) -> Optional[str]:
+def evaluate_exit(track: dict, ticker_last, di_1m_closed,
+                  is_titan: bool = False) -> Optional[str]:
     """Run the priority-ordered exit checks for a STAGE_2/TRAILING track.
 
     Returns the exit reason ("DI_HARD_EJECT", "STRUCTURAL_STOP") or None.
@@ -410,6 +411,11 @@ def evaluate_exit(track: dict, ticker_last, di_1m_closed) -> Optional[str]:
     di_1m_closed should be passed only on a closed 1m candle; pass None
     for intra-candle ticks (per C-R3 the structural stop still evaluates
     on every tick).
+
+    v5.7.1 \u2014 when is_titan=True, the DI<25 hard-eject is bypassed for
+    both LONG and SHORT. Bison/Buffalo Titans rely on the new exit FSM
+    (hard_stop_2c / be_stop / ema_trail / velocity_fuse). Non-Titan
+    tickers preserve the legacy DI exit path unchanged.
     """
     direction = track["direction"]
     state = track["state"]
@@ -418,8 +424,9 @@ def evaluate_exit(track: dict, ticker_last, di_1m_closed) -> Optional[str]:
     current_stop = track.get("current_stop")
 
     if direction == DIR_SHORT:
-        # S-P4-R3 priority-1
-        if di_1m_closed is not None and hard_exit_di_fail(DIR_SHORT, di_1m_closed):
+        # S-P4-R3 priority-1 \u2014 skipped for Titans (v5.7.1).
+        if (not is_titan) and di_1m_closed is not None and \
+                hard_exit_di_fail(DIR_SHORT, di_1m_closed):
             return "DI_HARD_EJECT"
         # S-P4-R4 priority-2
         if structural_stop_hit_short(ticker_last, current_stop):
@@ -430,8 +437,9 @@ def evaluate_exit(track: dict, ticker_last, di_1m_closed) -> Optional[str]:
     # L-P4-R3 (a) structural exit
     if structural_stop_hit_long(ticker_last, current_stop):
         return "STRUCTURAL_STOP"
-    # L-P4-R3 (b) DI failure
-    if di_1m_closed is not None and hard_exit_di_fail(DIR_LONG, di_1m_closed):
+    # L-P4-R3 (b) DI failure \u2014 skipped for Titans (v5.7.1).
+    if (not is_titan) and di_1m_closed is not None and \
+            hard_exit_di_fail(DIR_LONG, di_1m_closed):
         return "DI_HARD_EJECT"
     return None
 
@@ -466,3 +474,252 @@ def on_post_exit(track: dict) -> None:
 # State-machine version stamp — bumped when wire format changes.
 # ------------------------------------------------------------
 V5_STATE_VERSION = 1
+
+
+# ============================================================
+# v5.7.1 \u2014 Bison & Buffalo exit FSM (Titan-only)
+# ============================================================
+# Spec: specs/v5_7_1_stop_loss_optimization.md
+# Scope: Ten Titans only (AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX,
+#                        NVDA, ORCL, TSLA).
+# Phases:
+#   initial_risk     \u2014 hard stop on 2 consec 1-min closes outside OR
+#   house_money      \u2014 stop ratcheted to entry price (BE)
+#   sovereign_trail  \u2014 5-min close vs 9-EMA(5m); BE inactive when
+#                       EMA tightens further
+# A global Velocity Fuse runs every tick regardless of phase.
+# Non-Titan tickers continue to use the legacy DI/structural exits
+# above; v5.7.1 helpers are pure functions and do not mutate the
+# legacy track schema unless `init_titan_exit_state` is called.
+PHASE_INITIAL_RISK = "initial_risk"
+PHASE_HOUSE_MONEY = "house_money"
+PHASE_SOVEREIGN_TRAIL = "sovereign_trail"
+ALL_PHASES = (PHASE_INITIAL_RISK, PHASE_HOUSE_MONEY, PHASE_SOVEREIGN_TRAIL)
+
+EXIT_REASON_HARD_STOP_2C = "hard_stop_2c"
+EXIT_REASON_BE_STOP = "be_stop"
+EXIT_REASON_EMA_TRAIL = "ema_trail"
+EXIT_REASON_VELOCITY_FUSE = "velocity_fuse"
+
+# 9-period EMA on 5-min candles. EMA seeds at the close of the 9th
+# 5-min bar since 9:30 ET = 10:15 ET.
+EMA_5M_PERIOD = 9
+EMA_5M_SEED_BARS = 9
+EMA_5M_SEED_ET_HHMM = "10:15"  # informational; callers compute time
+
+# Velocity Fuse: strict >1.0% adverse move from current 1-min open.
+VELOCITY_FUSE_PCT_DEFAULT = 0.01
+
+
+def init_titan_exit_state(track: dict, entry_price: float) -> None:
+    """v5.7.1 \u2014 Initialize Bison/Buffalo per-position exit state.
+
+    Adds to `track`:
+      phase                      : str  (initial_risk)
+      hard_stop_consec_1m_count  : int  (0)
+      green_5m_count             : int  (0; LONG only)
+      red_5m_count               : int  (0; SHORT only)
+      ema_5m                     : float|None (None until 10:15 ET)
+      ema_5m_bars_seen           : int  (count of closed 5m bars
+                                          observed since 9:30)
+      current_stop               : float (entry-derived; stays at the
+                                          OR boundary semantics in
+                                          initial_risk)
+    Caller assigns `current_stop` to the entry-time OR boundary.
+    """
+    track["phase"] = PHASE_INITIAL_RISK
+    track["hard_stop_consec_1m_count"] = 0
+    track["green_5m_count"] = 0
+    track["red_5m_count"] = 0
+    track["ema_5m"] = None
+    track["ema_5m_bars_seen"] = 0
+    track["current_stop"] = float(entry_price)
+
+
+def update_hard_stop_counter_long(track: dict, candle_close: float,
+                                  or_high: float) -> bool:
+    """LONG hard-stop counter on a CLOSED 1-min candle.
+
+    Returns True iff this close fires the hard stop (counter >= 2).
+    Counter resets to 0 only on a 1-min close back inside OR
+    (i.e. close >= or_high). Slow grind-down keeps the counter
+    incrementing on each consecutive sub-OR close.
+    """
+    if candle_close is None or or_high is None:
+        return False
+    if candle_close < or_high:
+        track["hard_stop_consec_1m_count"] = int(
+            track.get("hard_stop_consec_1m_count", 0)) + 1
+    else:
+        track["hard_stop_consec_1m_count"] = 0
+    return track["hard_stop_consec_1m_count"] >= 2
+
+
+def update_hard_stop_counter_short(track: dict, candle_close: float,
+                                   or_low: float) -> bool:
+    """SHORT hard-stop counter on a CLOSED 1-min candle.
+
+    Mirror of LONG: increments on close > or_low, resets on
+    close <= or_low.
+    """
+    if candle_close is None or or_low is None:
+        return False
+    if candle_close > or_low:
+        track["hard_stop_consec_1m_count"] = int(
+            track.get("hard_stop_consec_1m_count", 0)) + 1
+    else:
+        track["hard_stop_consec_1m_count"] = 0
+    return track["hard_stop_consec_1m_count"] >= 2
+
+
+def update_green_5m_count_long(track: dict, candle_open: float,
+                               candle_close: float) -> bool:
+    """LONG: increment green-5m counter on a CLOSED 5-min bar with
+    close > open. Returns True iff a BE move should fire on THIS
+    bar (i.e. count just hit 2 and we're still in initial_risk).
+    """
+    if candle_open is None or candle_close is None:
+        return False
+    if candle_close > candle_open:
+        track["green_5m_count"] = int(track.get("green_5m_count", 0)) + 1
+    return (
+        track.get("phase") == PHASE_INITIAL_RISK
+        and track.get("green_5m_count", 0) >= 2
+    )
+
+
+def update_red_5m_count_short(track: dict, candle_open: float,
+                              candle_close: float) -> bool:
+    """SHORT: increment red-5m counter on a CLOSED 5-min bar with
+    close < open. Returns True iff a BE move should fire on THIS
+    bar (count just hit 2 and we're still in initial_risk).
+    """
+    if candle_open is None or candle_close is None:
+        return False
+    if candle_close < candle_open:
+        track["red_5m_count"] = int(track.get("red_5m_count", 0)) + 1
+    return (
+        track.get("phase") == PHASE_INITIAL_RISK
+        and track.get("red_5m_count", 0) >= 2
+    )
+
+
+def transition_to_house_money(track: dict, entry_price: float) -> None:
+    """v5.7.1 \u2014 Ratchet stop to entry price; hard-stop becomes inactive."""
+    track["phase"] = PHASE_HOUSE_MONEY
+    track["current_stop"] = float(entry_price)
+
+
+def transition_to_sovereign_trail(track: dict) -> None:
+    """v5.7.1 \u2014 Promote phase once 9-EMA seeded (10:15 ET)."""
+    track["phase"] = PHASE_SOVEREIGN_TRAIL
+
+
+def update_ema_5m(track: dict, candle_close: float,
+                  period: int = EMA_5M_PERIOD,
+                  seed_bars: int = EMA_5M_SEED_BARS) -> Optional[float]:
+    """Roll the 9-period EMA on closed 5-min closes.
+
+    Standard formula: EMA_t = (close - EMA_{t-1}) * (2/(period+1))
+                              + EMA_{t-1}
+    Returns the new EMA value (or None until `seed_bars` closed bars
+    have accumulated). Callers MUST drive this only on closed 5-min
+    candles; once seeded, the value persists in `track["ema_5m"]`.
+    """
+    if candle_close is None:
+        return track.get("ema_5m")
+    track["ema_5m_bars_seen"] = int(track.get("ema_5m_bars_seen", 0)) + 1
+    seen = track["ema_5m_bars_seen"]
+    prev_ema = track.get("ema_5m")
+    if prev_ema is None:
+        # Seed-on-the-Nth-bar: simple average of the first `seed_bars`
+        # closes. We accumulate the running sum in `_ema_seed_sum`.
+        track["_ema_seed_sum"] = float(
+            track.get("_ema_seed_sum", 0.0)) + float(candle_close)
+        if seen >= seed_bars:
+            ema = track["_ema_seed_sum"] / float(seed_bars)
+            track["ema_5m"] = float(ema)
+            try:
+                del track["_ema_seed_sum"]
+            except KeyError:
+                pass
+            return float(ema)
+        return None
+    # Already seeded \u2014 standard EMA recurrence.
+    k = 2.0 / (period + 1.0)
+    ema = (float(candle_close) - float(prev_ema)) * k + float(prev_ema)
+    track["ema_5m"] = float(ema)
+    return float(ema)
+
+
+def ema_trail_exit_long(track: dict, candle_close: float) -> bool:
+    """LONG sovereign trail: 5-min CLOSE strictly below the EMA fires."""
+    ema = track.get("ema_5m")
+    if ema is None or candle_close is None:
+        return False
+    return float(candle_close) < float(ema)
+
+
+def ema_trail_exit_short(track: dict, candle_close: float) -> bool:
+    """SHORT sovereign trail: 5-min CLOSE strictly above the EMA fires."""
+    ema = track.get("ema_5m")
+    if ema is None or candle_close is None:
+        return False
+    return float(candle_close) > float(ema)
+
+
+def velocity_fuse_long(current_price: float, candle_1m_open: float,
+                       pct: float = VELOCITY_FUSE_PCT_DEFAULT) -> bool:
+    """LONG velocity fuse: current_price < open * (1 - pct), strict.
+
+    Strict comparator: an exact 1.00% drop returns False; 1.001%
+    returns True. Ignores phase \u2014 caller invokes on every tick.
+    """
+    if current_price is None or candle_1m_open is None:
+        return False
+    return float(current_price) < float(candle_1m_open) * (1.0 - float(pct))
+
+
+def velocity_fuse_short(current_price: float, candle_1m_open: float,
+                        pct: float = VELOCITY_FUSE_PCT_DEFAULT) -> bool:
+    """SHORT velocity fuse: current_price > open * (1 + pct), strict."""
+    if current_price is None or candle_1m_open is None:
+        return False
+    return float(current_price) > float(candle_1m_open) * (1.0 + float(pct))
+
+
+def evaluate_titan_exit(track: dict, *,
+                        side: str,
+                        current_price: Optional[float],
+                        candle_1m_open: Optional[float],
+                        velocity_fuse_pct: float = VELOCITY_FUSE_PCT_DEFAULT
+                        ) -> Optional[str]:
+    """v5.7.1 \u2014 Run every-tick Titan exit checks.
+
+    Returns one of the v5.7.1 exit_reason values
+    (`velocity_fuse`, `hard_stop_2c`, `be_stop`, `ema_trail`) or None.
+    Velocity Fuse is checked first; phase-conditional stops follow.
+
+    Hard-stop / BE / EMA-trail counters are advanced by the dedicated
+    update_* helpers on candle CLOSES; this evaluator only checks the
+    fast intra-candle guards (Velocity Fuse + active stop level).
+    """
+    if side == DIR_LONG:
+        if velocity_fuse_long(current_price, candle_1m_open,
+                              velocity_fuse_pct):
+            return EXIT_REASON_VELOCITY_FUSE
+        stop = track.get("current_stop")
+        if (current_price is not None and stop is not None
+                and float(current_price) < float(stop)
+                and track.get("phase") == PHASE_HOUSE_MONEY):
+            return EXIT_REASON_BE_STOP
+    elif side == DIR_SHORT:
+        if velocity_fuse_short(current_price, candle_1m_open,
+                               velocity_fuse_pct):
+            return EXIT_REASON_VELOCITY_FUSE
+        stop = track.get("current_stop")
+        if (current_price is not None and stop is not None
+                and float(current_price) > float(stop)
+                and track.get("phase") == PHASE_HOUSE_MONEY):
+            return EXIT_REASON_BE_STOP
+    return None

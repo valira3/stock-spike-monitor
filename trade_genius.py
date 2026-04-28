@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.7.0"
+BOT_VERSION = "5.7.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -93,20 +93,21 @@ BOT_VERSION = "5.7.0"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.7.0 \u2014 unlimited Titans.\n"
-    "Ten Titans universe: AAPL,\n"
-    "AMZN, AVGO, GOOG, META, MSFT,\n"
-    "NFLX, NVDA, ORCL, TSLA. NFLX\n"
-    "and ORCL are new to default.\n"
-    "Strike 1 unchanged (v5.6.0\n"
-    "L-P1/S-P1). Strike 2+ on the\n"
-    "Titans bypasses R3 if HOD/LOD\n"
-    "break + IndexAVWAP confirm.\n"
-    "Sovereign brake: -$500 daily\n"
-    "loss kill switch. New logs:\n"
-    "[V570-STRIKE], [KILL_SWITCH];\n"
-    "[ENTRY] + [TRADE_CLOSED] gain\n"
-    "strike_num + daily_realized."
+    "v5.7.1 \u2014 Bison & Buffalo.\n"
+    "Titan exit FSM: hard stop on 2\n"
+    "consec 1m closes outside OR,\n"
+    "BE move on 2nd green/red 5m,\n"
+    "5m 9-EMA trail seeded 10:15.\n"
+    "Velocity Fuse: >1.0% adverse\n"
+    "intra-candle move triggers an\n"
+    "immediate market exit. DI<25\n"
+    "exits dropped for Titans only;\n"
+    "non-Titans keep legacy logic.\n"
+    "New logs: [V571-EXIT_PHASE],\n"
+    "[V571-VELOCITY_FUSE],\n"
+    "[V571-EMA_SEED]. exit_reason\n"
+    "gains hard_stop_2c, be_stop,\n"
+    "ema_trail, velocity_fuse."
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -2425,6 +2426,12 @@ TITAN_TICKERS: list = [
 ]
 ENABLE_UNLIMITED_TITAN_STRIKES: bool = True
 DAILY_LOSS_LIMIT_DOLLARS: float = -500.0
+# v5.7.1 \u2014 Bison & Buffalo exit FSM (Titans only). When False, Titan
+# tickers fall back to the legacy DI/structural exits used by non-Titan
+# tickers. VELOCITY_FUSE_PCT is the strict >1.0% adverse intra-candle
+# threshold (LONG fires <99%, SHORT fires >101% of the current 1m open).
+ENABLE_BISON_BUFFALO_EXITS: bool = True
+VELOCITY_FUSE_PCT: float = 0.01
 TICKERS_MAX = 40            # sanity upper bound to protect cycle budget
 TICKER_SYM_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,7}$")
 
@@ -4459,6 +4466,60 @@ def _v570_log_kill_switch(realized_pnl: float, ts_utc: str) -> None:
         "[KILL_SWITCH] reason=daily_loss_limit triggered_at=%s "
         "realized_pnl=%.4f",
         ts_utc, float(realized_pnl),
+    )
+
+
+# ------------------------------------------------------------
+# v5.7.1 \u2014 Bison & Buffalo exit FSM log emitters.
+# ------------------------------------------------------------
+# Spec: specs/v5_7_1_stop_loss_optimization.md \u00a75.
+# These emit one line per phase transition / per fuse fire / per
+# EMA seed (once per ticker per session). Pure I/O \u2014 callers
+# decide when to invoke; the helpers keep the wire format stable.
+def _v571_log_exit_phase(
+    *,
+    ticker: str,
+    side: str,
+    entry_id: str,
+    from_phase: str,
+    to_phase: str,
+    trigger: str,
+    current_stop: float | None,
+    ts_utc: str,
+) -> None:
+    """v5.7.1 \u2014 [V571-EXIT_PHASE] phase-transition line."""
+    logger.info(
+        "[V571-EXIT_PHASE] ticker=%s side=%s entry_id=%s "
+        "from_phase=%s to_phase=%s trigger=%s "
+        "current_stop=%s ts=%s",
+        ticker, side, entry_id, from_phase, to_phase, trigger,
+        _v561_fmt_num(current_stop), ts_utc,
+    )
+
+
+def _v571_log_velocity_fuse(
+    *,
+    ticker: str,
+    side: str,
+    candle_open: float,
+    current_price: float,
+    pct_move: float,
+    ts_utc: str,
+) -> None:
+    """v5.7.1 \u2014 [V571-VELOCITY_FUSE] intra-candle circuit breaker."""
+    logger.info(
+        "[V571-VELOCITY_FUSE] ticker=%s side=%s candle_open=%.4f "
+        "current_price=%.4f pct_move=%.4f ts=%s",
+        ticker, side, float(candle_open), float(current_price),
+        float(pct_move), ts_utc,
+    )
+
+
+def _v571_log_ema_seed(*, ticker: str, ema_value: float, ts_utc: str) -> None:
+    """v5.7.1 \u2014 [V571-EMA_SEED] one-shot 9-EMA initialization at 10:15 ET."""
+    logger.info(
+        "[V571-EMA_SEED] ticker=%s ema_value=%.4f ts=%s",
+        ticker, float(ema_value), ts_utc,
     )
 
 
@@ -8208,11 +8269,18 @@ def close_breakout(ticker, price, side, reason="STOP"):
     # v5.6.1 D4 \u2014 [TRADE_CLOSED] lifecycle line. Pairs to [ENTRY] via
     # entry_id. Reason maps the legacy short token to the spec'd
     # canonical exit_reason vocabulary (stop|target|time|eod|manual).
+    # v5.7.1 \u2014 also passes through the Bison/Buffalo Titan exit
+    # vocabulary (hard_stop_2c|be_stop|ema_trail|velocity_fuse).
     try:
         _entry_id_close = pos.get("entry_id") or _v561_compose_entry_id(
             ticker, pos.get("entry_ts_utc") or "")
         _reason_lc = str(reason or "").lower()
-        if "trail" in _reason_lc or "stop" in _reason_lc:
+        _v571_reasons = {
+            "hard_stop_2c", "be_stop", "ema_trail", "velocity_fuse",
+        }
+        if _reason_lc in _v571_reasons:
+            _exit_reason = _reason_lc
+        elif "trail" in _reason_lc or "stop" in _reason_lc:
             _exit_reason = "stop"
         elif "target" in _reason_lc or "tp" in _reason_lc:
             _exit_reason = "target"

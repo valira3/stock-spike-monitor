@@ -349,9 +349,9 @@ def run_local() -> int:
         assert getattr(m, "BOT_NAME", None) == "TradeGenius", \
             f"got {getattr(m, 'BOT_NAME', None)!r}"
 
-    @t("version: BOT_VERSION is 5.7.0")
+    @t("version: BOT_VERSION is 5.7.1")
     def _():
-        assert m.BOT_VERSION == "5.7.0", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.7.1", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3801,40 +3801,40 @@ def run_local() -> int:
     def _():
         # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.7.0", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
 
     @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
     def _():
@@ -4307,22 +4307,22 @@ def run_local() -> int:
         assert "if ws_vol is not None" in src
         assert '"et_bucket": et_bucket,' in src
 
-    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.0")
+    @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.1")
     def _():
         # Test name pinned to its release; assertion follows BOT_VERSION.
         from pathlib import Path as _P
         arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        assert 'BOT_VERSION = "5.7.0"' in arch, "ARCHITECTURE.md footer not bumped"
+        assert 'BOT_VERSION = "5.7.1"' in arch, "ARCHITECTURE.md footer not bumped"
 
-    @t("v5.5.5: CHANGELOG.md has v5.7.0 heading at top")
+    @t("v5.5.5: CHANGELOG.md has v5.7.1 heading at top")
     def _():
         from pathlib import Path as _P
         cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
         # The first ## heading should be the current version.
-        head_idx = cl.find("\n## v5.7.0")
-        prior = cl.find("\n## v5.6.1")
+        head_idx = cl.find("\n## v5.7.1")
+        prior = cl.find("\n## v5.7.0")
         assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
-            "v5.7.0 heading must precede v5.6.1 in CHANGELOG"
+            "v5.7.1 heading must precede v5.7.0 in CHANGELOG"
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():
@@ -5679,12 +5679,13 @@ def run_local() -> int:
         assert "reason=oomph" in out
         assert "ts=2026-04-28T14:00:00Z" in out
 
-    @t("v5.7.0 guard: CHANGELOG.md has v5.7.0 heading")
+    @t("v5.7.0 guard: CHANGELOG.md still has v5.7.0 heading present")
     def _():
+        # v5.7.1 promotes the top heading; the v5.7.0 entry must still
+        # exist somewhere below. Don't re-pin it as the topmost.
         from pathlib import Path
         ch = (Path(__file__).resolve().parent / "CHANGELOG.md").read_text()
-        first = next((ln for ln in ch.splitlines() if ln.startswith("## ")), "")
-        assert "v5.7.0" in first, f"top heading: {first!r}"
+        assert "## v5.7.0" in ch, "v5.7.0 heading missing from CHANGELOG"
 
     @t("v5.6.1 guard: gate logic not modified (gates_pass_long signature)")
     def _():
@@ -6186,15 +6187,20 @@ def run_local() -> int:
         finally:
             m.ENABLE_UNLIMITED_TITAN_STRIKES = saved
 
-    @t("v5.7.0 guard: tiger_buffalo_v5.py untouched (no v5.7.0 / v570 references)")
+    @t("v5.7.0 guard: tiger_buffalo_v5.py free of v5.7.0 strike-counter / TITAN refs")
     def _():
+        # v5.7.1 carved the exit-FSM Bison/Buffalo helpers BACK into
+        # tiger_buffalo_v5.py, so the v5.7.0 untouched-guard is
+        # narrowed: the file may now contain v5.7.1 / v571 helpers,
+        # but it must still not reference v5.7.0 strike-counter
+        # constructs (those live in trade_genius.py).
         from pathlib import Path
         src = (Path(__file__).resolve().parent
                / "tiger_buffalo_v5.py").read_text()
-        for tag in ("v5.7.0", "v570", "V570", "TITAN"):
+        for tag in ("v5.7.0", "v570", "V570", "TITAN_TICKERS"):
             assert tag not in src, (
-                "tiger_buffalo_v5.py must remain untouched for v5.7.0 "
-                "(found %r)" % tag)
+                "tiger_buffalo_v5.py must remain free of v5.7.0 "
+                "strike-counter constructs (found %r)" % tag)
 
     @t("v5.7.0 guard: no literal em-dash in v5.7.0 helpers")
     def _():
@@ -6213,7 +6219,300 @@ def run_local() -> int:
             "literal em-dash in v5.7.0-tagged line: %s" % bad[:3]
         )
 
-    return run_suite("LOCAL SMOKE TESTS (v5.7.0 Unlimited Titan Strikes)")
+    # ============================================================
+    # v5.7.1 \u2014 Bison & Buffalo exit FSM
+    # ============================================================
+    @t("v5.7.1 D6: ENABLE_BISON_BUFFALO_EXITS default True")
+    def _():
+        assert m.ENABLE_BISON_BUFFALO_EXITS is True
+
+    @t("v5.7.1 D6: VELOCITY_FUSE_PCT = 0.01 (strict 1.0% threshold)")
+    def _():
+        assert m.VELOCITY_FUSE_PCT == 0.01, m.VELOCITY_FUSE_PCT
+
+    @t("v5.7.1 D1 LONG: hard stop fires on 2 consec 1m closes below OR_High")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_LONG)
+        v5.init_titan_exit_state(track, entry_price=100.0)
+        or_high = 99.50
+        # 1st close below OR_High \u2014 counter=1, no fire
+        assert v5.update_hard_stop_counter_long(track, 99.40, or_high) is False
+        assert track["hard_stop_consec_1m_count"] == 1
+        # 2nd close below OR_High \u2014 fires
+        fired = v5.update_hard_stop_counter_long(track, 99.30, or_high)
+        assert fired is True
+        assert track["hard_stop_consec_1m_count"] == 2
+
+    @t("v5.7.1 D1 LONG: hard-stop counter resets on close back inside OR")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_LONG)
+        v5.init_titan_exit_state(track, entry_price=100.0)
+        or_high = 99.50
+        v5.update_hard_stop_counter_long(track, 99.40, or_high)
+        assert track["hard_stop_consec_1m_count"] == 1
+        # Close back inside OR resets to 0
+        fired = v5.update_hard_stop_counter_long(track, 99.55, or_high)
+        assert fired is False
+        assert track["hard_stop_consec_1m_count"] == 0
+
+    @t("v5.7.1 D1 LONG: BE move fires on 2nd green 5m candle close")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_LONG)
+        v5.init_titan_exit_state(track, entry_price=100.0)
+        # 1st green 5m \u2014 count=1, no fire
+        fired = v5.update_green_5m_count_long(track, 100.0, 100.5)
+        assert fired is False
+        # 2nd green 5m \u2014 fires
+        fired = v5.update_green_5m_count_long(track, 100.5, 101.0)
+        assert fired is True
+        # Apply transition
+        v5.transition_to_house_money(track, 100.0)
+        assert track["phase"] == v5.PHASE_HOUSE_MONEY
+        assert track["current_stop"] == 100.0
+
+    @t("v5.7.1 D1 LONG: 5m EMA seeds at 9th 5m bar; trail fires on close < EMA")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_LONG)
+        v5.init_titan_exit_state(track, entry_price=100.0)
+        # Feed 8 closes \u2014 EMA still None
+        for c in [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]:
+            ema = v5.update_ema_5m(track, c)
+            assert ema is None
+        # 9th close seeds the EMA
+        ema = v5.update_ema_5m(track, 100.0)
+        assert ema is not None
+        assert track["ema_5m"] == 100.0
+        # Promote phase, then a 5m close strictly below EMA fires the trail
+        v5.transition_to_sovereign_trail(track)
+        assert v5.ema_trail_exit_long(track, 99.99) is True
+        assert v5.ema_trail_exit_long(track, 100.00) is False  # strict <
+
+    @t("v5.7.1 D1 LONG: trail returns False when EMA not yet seeded")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_LONG)
+        v5.init_titan_exit_state(track, entry_price=100.0)
+        # No EMA bars consumed \u2014 must not exit
+        assert v5.ema_trail_exit_long(track, 50.0) is False
+
+    @t("v5.7.1 D2 LONG: velocity fuse fires at >1.0% drop from candle open")
+    def _():
+        v5 = m.v5
+        # Open=100, current=98.99 \u2014 1.01% drop \u2014 fires
+        assert v5.velocity_fuse_long(98.99, 100.0) is True
+        # 1.001% drop fires; exactly 1.0% does NOT
+        assert v5.velocity_fuse_long(99.0, 100.0) is False  # strict <
+        assert v5.velocity_fuse_long(98.999, 100.0) is True
+
+    @t("v5.7.1 D2 LONG: velocity fuse fires regardless of phase")
+    def _():
+        v5 = m.v5
+        for phase in (v5.PHASE_INITIAL_RISK, v5.PHASE_HOUSE_MONEY,
+                      v5.PHASE_SOVEREIGN_TRAIL):
+            track = v5.new_track(v5.DIR_LONG)
+            v5.init_titan_exit_state(track, entry_price=100.0)
+            track["phase"] = phase
+            reason = v5.evaluate_titan_exit(
+                track, side=v5.DIR_LONG,
+                current_price=98.50, candle_1m_open=100.0,
+                velocity_fuse_pct=0.01,
+            )
+            assert reason == v5.EXIT_REASON_VELOCITY_FUSE, (phase, reason)
+
+    @t("v5.7.1 D1/D2 SHORT: hard stop, BE, EMA trail, velocity fuse mirror LONG")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_SHORT)
+        v5.init_titan_exit_state(track, entry_price=100.0)
+        or_low = 100.50
+        # 2 consec 1m closes ABOVE OR_Low fires
+        assert v5.update_hard_stop_counter_short(track, 100.60, or_low) is False
+        assert v5.update_hard_stop_counter_short(track, 100.70, or_low) is True
+        # 2 red 5m fires BE
+        track2 = v5.new_track(v5.DIR_SHORT)
+        v5.init_titan_exit_state(track2, entry_price=100.0)
+        assert v5.update_red_5m_count_short(track2, 100.0, 99.5) is False
+        assert v5.update_red_5m_count_short(track2, 99.5, 99.0) is True
+        # EMA trail \u2014 close > EMA fires (after seeding)
+        track3 = v5.new_track(v5.DIR_SHORT)
+        v5.init_titan_exit_state(track3, entry_price=100.0)
+        for c in [100.0] * 9:
+            v5.update_ema_5m(track3, c)
+        assert track3["ema_5m"] == 100.0
+        assert v5.ema_trail_exit_short(track3, 100.01) is True
+        assert v5.ema_trail_exit_short(track3, 100.00) is False
+        # Velocity fuse SHORT spike
+        assert v5.velocity_fuse_short(101.01, 100.0) is True
+        assert v5.velocity_fuse_short(101.00, 100.0) is False
+
+    @t("v5.7.1 D3: DI<25 exit bypassed for Titans (LONG)")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_LONG)
+        track["state"] = v5.STATE_TRAILING
+        track["current_stop"] = 95.0
+        # Non-Titan: DI=10 -> DI_HARD_EJECT
+        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) \
+            == "DI_HARD_EJECT"
+        # Titan: DI=10 -> bypassed -> None
+        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=True) is None
+
+    @t("v5.7.1 D3: DI<25 exit bypassed for Titans (SHORT mirror)")
+    def _():
+        v5 = m.v5
+        track = v5.new_track(v5.DIR_SHORT)
+        track["state"] = v5.STATE_TRAILING
+        track["current_stop"] = 105.0
+        # Non-Titan: SHORT DI<25 -> priority-1 hard eject
+        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) \
+            == "DI_HARD_EJECT"
+        # Titan: bypassed; structural stop also not hit (100 < 105) -> None
+        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=True) is None
+        # Titan, structural still fires when price rises above stop
+        assert v5.evaluate_exit(track, 106.0, 10.0, is_titan=True) \
+            == "STRUCTURAL_STOP"
+
+    @t("v5.7.1 D5: [V571-EXIT_PHASE] line carries every spec field")
+    def _():
+        import io, logging, contextlib
+        buf = io.StringIO()
+        h = logging.StreamHandler(buf)
+        h.setLevel(logging.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v571_log_exit_phase(
+                ticker="NVDA", side="LONG", entry_id="ent_001",
+                from_phase="initial_risk", to_phase="house_money",
+                trigger="be_2nd_green", current_stop=480.50,
+                ts_utc="2026-04-28T14:00:00Z",
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[V571-EXIT_PHASE]" in out
+        assert "ticker=NVDA" in out
+        assert "from_phase=initial_risk" in out
+        assert "to_phase=house_money" in out
+        assert "trigger=be_2nd_green" in out
+        assert "current_stop=480.5" in out
+        assert "ts=2026-04-28T14:00:00Z" in out
+
+    @t("v5.7.1 D5: [V571-VELOCITY_FUSE] line emits with pct_move")
+    def _():
+        import io, logging
+        buf = io.StringIO()
+        h = logging.StreamHandler(buf)
+        h.setLevel(logging.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v571_log_velocity_fuse(
+                ticker="NVDA", side="LONG",
+                candle_open=100.0, current_price=98.99,
+                pct_move=-0.0101,
+                ts_utc="2026-04-28T14:00:00Z",
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[V571-VELOCITY_FUSE]" in out
+        assert "candle_open=100.0000" in out
+        assert "current_price=98.9900" in out
+
+    @t("v5.7.1 D5: [V571-EMA_SEED] line emits once at seed time")
+    def _():
+        import io, logging
+        buf = io.StringIO()
+        h = logging.StreamHandler(buf)
+        h.setLevel(logging.INFO)
+        m.logger.addHandler(h)
+        try:
+            m._v571_log_ema_seed(
+                ticker="NVDA", ema_value=480.25,
+                ts_utc="2026-04-28T14:15:00Z",
+            )
+        finally:
+            m.logger.removeHandler(h)
+        out = buf.getvalue()
+        assert "[V571-EMA_SEED]" in out
+        assert "ticker=NVDA" in out
+        assert "ema_value=480.2500" in out
+        assert "ts=2026-04-28T14:15:00Z" in out
+
+    @t("v5.7.1 D5: [TRADE_CLOSED] exit_reason gains v5.7.1 enum values")
+    def _():
+        # Whitebox: the close-position mapping must pass v5.7.1 reason
+        # values straight through to the [TRADE_CLOSED] line.
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent
+               / "trade_genius.py").read_text()
+        for r in ("hard_stop_2c", "be_stop", "ema_trail", "velocity_fuse"):
+            assert ('"' + r + '"') in src, (
+                "v5.7.1 reason %r must appear in [TRADE_CLOSED] mapping" % r)
+
+    @t("v5.7.1 guard: tiger_buffalo_v5.py contains v5.7.1 Bison/Buffalo helpers")
+    def _():
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent
+               / "tiger_buffalo_v5.py").read_text()
+        # Required new helpers
+        for name in (
+            "init_titan_exit_state",
+            "update_hard_stop_counter_long",
+            "update_hard_stop_counter_short",
+            "update_green_5m_count_long",
+            "update_red_5m_count_short",
+            "update_ema_5m",
+            "velocity_fuse_long",
+            "velocity_fuse_short",
+            "evaluate_titan_exit",
+            "transition_to_house_money",
+            "transition_to_sovereign_trail",
+            "PHASE_INITIAL_RISK",
+            "PHASE_HOUSE_MONEY",
+            "PHASE_SOVEREIGN_TRAIL",
+            "EXIT_REASON_HARD_STOP_2C",
+            "EXIT_REASON_BE_STOP",
+            "EXIT_REASON_EMA_TRAIL",
+            "EXIT_REASON_VELOCITY_FUSE",
+        ):
+            assert name in src, "tiger_buffalo_v5.py missing %r" % name
+
+    @t("v5.7.1 guard: legacy DI exit path preserved for non-Titans")
+    def _():
+        # Non-Titan tickers must continue to fire the DI<25 hard eject.
+        # This is the safety check that the v5.7.1 carve-out is a
+        # Titan-list guard, NOT a wholesale deletion.
+        v5 = m.v5
+        for direction in (v5.DIR_LONG, v5.DIR_SHORT):
+            track = v5.new_track(direction)
+            track["state"] = v5.STATE_TRAILING
+            track["current_stop"] = 95.0 if direction == v5.DIR_LONG else 105.0
+            tail = 100.0
+            reason = v5.evaluate_exit(track, tail, 10.0, is_titan=False)
+            assert reason == "DI_HARD_EJECT", (direction, reason)
+
+    @t("v5.7.1 guard: no literal em-dash in v5.7.1 helpers")
+    def _():
+        from pathlib import Path
+        for fn in ("trade_genius.py", "tiger_buffalo_v5.py"):
+            src_path = Path(__file__).resolve().parent / fn
+            src = src_path.read_text()
+            bad = []
+            for i, line in enumerate(src.splitlines(), start=1):
+                if "\u2014" not in line:
+                    continue
+                tag_hits = ("v5.7.1" in line or "v571" in line.lower()
+                            or "V571" in line)
+                if tag_hits:
+                    bad.append((fn, i, line[:80]))
+            assert not bad, (
+                "literal em-dash in v5.7.1-tagged line: %s" % bad[:3])
+
+    return run_suite("LOCAL SMOKE TESTS (v5.7.1 Bison & Buffalo)")
 
 
 # ============================================================

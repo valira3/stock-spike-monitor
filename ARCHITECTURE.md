@@ -2068,4 +2068,46 @@ The forensic logger module (`logger`) and the v5.6.1 SKIP/GATE schema are otherw
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.7.0"`.*
+## 23. v5.7.1 — Bison & Buffalo exit FSM (Apr 2026)
+
+**Scope.** v5.7.1 rewrites the exit-logic state machine for the Ten Titans only. Non-Titan tickers (any future `[WATCHLIST_ADD]` ticker, or any ticker with `ENABLE_BISON_BUFFALO_EXITS = False`) keep the legacy `evaluate_exit` path (DI<25 hard eject + structural stop) byte-for-byte.
+
+**Three-phase FSM.** Each Titan position carries an explicit `phase` field:
+
+1. **`initial_risk`** — Hard stop fires on **2 consecutive 1-min candle CLOSES** outside the OR boundary (LONG: closes below `OR_High`; SHORT: closes above `OR_Low`). The counter resets to `0` only when a 1-min candle closes back inside OR; a slow grind-down keeps counting consecutive closes. On fire, exit emits `[TRADE_CLOSED] … exit_reason=hard_stop_2c`.
+2. **`house_money`** — After the close of the **2nd green 5-min candle** post-entry (LONG; `close > open`) — or 2nd red 5-min for SHORT — the stop ratchets to entry price (BE). The hard-stop counter is now inactive; the active exit is `current_price < entry_price` for LONG, mirrored for SHORT. On fire: `exit_reason=be_stop`.
+3. **`sovereign_trail`** — Once the 5-minute 9-period EMA is seeded (close of the 9th 5-min bar since 9:30 ET = **10:15 ET**), a 5-min CLOSE strictly below the EMA (LONG) — or strictly above (SHORT) — fires `exit_reason=ema_trail`. Before 10:15 ET the EMA is `None` and only the hard-stop / BE exits apply.
+
+**Velocity Fuse — global override.** A circuit breaker that runs every tick the bot processes, regardless of phase. Comparison base is the **OPEN of the current (in-flight) 1-min candle**, not the prior candle's close.
+
+- **LONG fires** when `current_price < candle_1m_open * 0.99` (strict; exactly -1.00% does not trigger; -1.001% does).
+- **SHORT fires** when `current_price > candle_1m_open * 1.01` (strict).
+- On fire: `[V571-VELOCITY_FUSE]` emits, the position is market-exited immediately, and `[TRADE_CLOSED] … exit_reason=velocity_fuse` follows. Strike counter still increments correctly so the v5.7.0 expansion gate re-arms on the next entry.
+
+**DI deletion (Titan-only).** The legacy `DI+(1m) < 25` (LONG exit) and `DI-(1m) < 25` (SHORT exit) triggers are bypassed for Titans. `tiger_buffalo_v5.py:evaluate_exit(..., is_titan=True)` is the single guard. Non-Titan tickers retain both DI exits — the v5.0.0 priority order is preserved verbatim for the legacy path.
+
+**State carried per open Titan position.**
+
+| Field | Type | Purpose |
+|---|---|---|
+| `phase` | str | `initial_risk` / `house_money` / `sovereign_trail` |
+| `hard_stop_consec_1m_count` | int | 0/1/2; reset on close back inside OR |
+| `green_5m_count` (LONG) | int | Closed green 5-min bars post-entry |
+| `red_5m_count` (SHORT) | int | Closed red 5-min bars post-entry |
+| `ema_5m` | float\|None | Rolling 9-EMA on 5-min closes; `None` until 10:15 ET |
+| `current_stop` | float | Active stop level (changes as phase transitions) |
+
+**New + extended log lines.**
+
+- `[V571-EXIT_PHASE] ticker=<T> side=<L|S> entry_id=<id> from_phase=<…> to_phase=<…> trigger=<be_2nd_green|be_2nd_red|ema_seeded|…> current_stop=<f> ts=<utc>` — emitted **on phase transition only** (entry → `initial_risk`; BE move → `house_money`; EMA seed → `sovereign_trail`).
+- `[V571-VELOCITY_FUSE] ticker=<T> side=<L|S> candle_open=<f> current_price=<f> pct_move=<f> ts=<utc>` — emitted on every fuse fire, immediately before the market exit.
+- `[V571-EMA_SEED] ticker=<T> ema_value=<f> ts=<utc>` — emitted exactly once per ticker per session at 10:15 ET when the EMA is first valid.
+- `[TRADE_CLOSED] … exit_reason=…` — the v5.6.1 enum (`stop|target|time|eod|manual`) gains four new values: `hard_stop_2c`, `be_stop`, `ema_trail`, `velocity_fuse`. The legacy values remain valid for non-Titan paths.
+
+**Feature flag.** `ENABLE_BISON_BUFFALO_EXITS = True` is the default. `VELOCITY_FUSE_PCT = 0.01` is the strict 1.0% threshold. Setting the flag `False` reverts every Titan to the v5.0.0 `evaluate_exit` path; the velocity fuse is also gated off.
+
+**Module placement.** v5.7.0 carved `tiger_buffalo_v5.py` out completely (every helper landed in `trade_genius.py`). v5.7.1 carves it back IN: pure Bison/Buffalo exit-FSM helpers (`init_titan_exit_state`, `update_hard_stop_counter_long/short`, `update_green_5m_count_long`, `update_red_5m_count_short`, `update_ema_5m`, `velocity_fuse_long/short`, `evaluate_titan_exit`, plus `transition_to_house_money` / `transition_to_sovereign_trail`) live in `tiger_buffalo_v5.py` and are exercised by ~15 new smoke tests. `evaluate_exit` gains an `is_titan` kwarg for the DI deletion. The `trade_genius.py` runtime owns the log emitters, config flags, and the wiring between live ticks and these pure helpers.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.7.1"`.*
