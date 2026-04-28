@@ -55,6 +55,10 @@ import indicators  # noqa: E402
 import bar_archive  # noqa: E402
 import persistence  # noqa: E402
 import shadow_pnl  # noqa: E402
+# v5.11.0 \u2014 engine/ package extraction (PR1: bars). Module-level
+# import here so a missing Dockerfile COPY surfaces as ImportError
+# at boot rather than during the first scan tick.
+import engine  # noqa: E402
 
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
@@ -82,7 +86,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.10.7"
+BOT_VERSION = "5.11.0"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -8267,79 +8271,11 @@ def close_breakout(ticker, price, side, reason="STOP"):
 _v5105_last_5m_bucket: dict[tuple[str, str], int] = {}
 
 
-def _v5105_compute_5m_ohlc_and_ema9(bars: dict | None) -> dict | None:
-    """Return {opens, highs, lows, closes, ema9, seeded, last_bucket}
-    for closed 5m bars derived from a `fetch_1min_bars` payload.
-
-    `seeded` is True once 9 closed 5m bars are available (Gene's spec
-    requires \u2265 9 closes since 9:30 ET to seed the 5m 9-EMA). `ema9`
-    is the most recent EMA9 value, or None.
-    """
-    if not bars:
-        return None
-    ts_list = bars.get("timestamps") or []
-    opens_all = bars.get("opens") or []
-    highs_all = bars.get("highs") or []
-    lows_all = bars.get("lows") or []
-    closes_all = bars.get("closes") or []
-    if not ts_list or not closes_all:
-        return None
-
-    buckets_open: dict[int, float] = {}
-    buckets_high: dict[int, float] = {}
-    buckets_low: dict[int, float] = {}
-    buckets_close: dict[int, float] = {}
-    n = len(ts_list)
-    for i in range(n):
-        ts = ts_list[i]
-        if ts is None:
-            continue
-        o = opens_all[i] if i < len(opens_all) else None
-        h = highs_all[i] if i < len(highs_all) else None
-        lo = lows_all[i] if i < len(lows_all) else None
-        c = closes_all[i] if i < len(closes_all) else None
-        if o is None or h is None or lo is None or c is None:
-            continue
-        bucket = int(ts) // 300
-        if bucket not in buckets_open:
-            buckets_open[bucket] = o
-            buckets_high[bucket] = h
-            buckets_low[bucket] = lo
-            buckets_close[bucket] = c
-        else:
-            buckets_high[bucket] = max(buckets_high[bucket], h)
-            buckets_low[bucket] = min(buckets_low[bucket], lo)
-            buckets_close[bucket] = c
-    ordered = sorted(buckets_open.keys())
-    if len(ordered) <= 1:
-        return None
-    ordered = ordered[:-1]  # drop newest (possibly forming)
-    if not ordered:
-        return None
-    opens = [buckets_open[b] for b in ordered]
-    highs = [buckets_high[b] for b in ordered]
-    lows = [buckets_low[b] for b in ordered]
-    closes = [buckets_close[b] for b in ordered]
-    ema9 = None
-    seeded = False
-    if len(closes) >= 9:
-        # Standard EMA(9): SMA seed over first 9, then alpha = 2/(9+1).
-        seed = sum(closes[:9]) / 9.0
-        ema = seed
-        alpha = 2.0 / 10.0
-        for c in closes[9:]:
-            ema = alpha * c + (1.0 - alpha) * ema
-        ema9 = ema
-        seeded = True
-    return {
-        "opens": opens,
-        "highs": highs,
-        "lows": lows,
-        "closes": closes,
-        "ema9": ema9,
-        "seeded": seeded,
-        "last_bucket": ordered[-1],
-    }
+# v5.11.0 \u2014 compute_5m_ohlc_and_ema9 has moved to engine/bars.py.
+# The private alias below is a one-release deprecation shim so any
+# external import or replay script still works during the cut-over.
+from engine.bars import compute_5m_ohlc_and_ema9 as _engine_compute_5m_ohlc_and_ema9
+_v5105_compute_5m_ohlc_and_ema9 = _engine_compute_5m_ohlc_and_ema9
 
 
 def _v5105_phase_machine_tick(ticker: str, side: str, pos: dict, bars: dict) -> tuple[str | None, str | None]:
@@ -12572,5 +12508,6 @@ else:
         )
 
     logger.info("%s v%s started", BOT_NAME, BOT_VERSION)
+    logger.info("[ENGINE] modules loaded: %s", ", ".join(engine.LOADED_MODULES))
     send_startup_message()
     run_telegram_bot()
