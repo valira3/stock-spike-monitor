@@ -190,4 +190,4 @@ def test_scan_loop_no_blocking_at_first_call_with_empty_state(
         current_1m_open=100.0,
     )
     assert override is None
-    assert trade_genius.BOT_VERSION == "5.10.3"
+    assert trade_genius.BOT_VERSION == "5.10.4"

@@ -82,7 +82,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.10.3"
+BOT_VERSION = "5.10.4"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -7812,6 +7812,134 @@ def _check_daily_loss_limit(ticker: str) -> bool:
 
 
 # ============================================================
+# v5.10.4 \u2014 Entry 2 scale-in (Section III)
+# ============================================================
+# Spec: 1m DI cross > 30 + fresh NHOD/NLOD that extends past Entry 1's
+# HWM (after Entry 1's ts). Section II gates (Volume Bucket, Boundary
+# Hold) are NOT re-applied; Section I (global permit) IS re-evaluated
+# fresh at the trigger. Sizes 50% of the original Entry 1 share count.
+def _v5104_maybe_fire_entry_2(ticker, side, pos):
+    """Per-tick Entry 2 evaluator. Mutates ``pos`` in place on fire.
+    Always returns ``None``; check_breakout discards the return value.
+    """
+    global paper_cash
+    if pos.get("v5104_entry2_fired"):
+        return
+    cfg = CONFIGS[side]
+    side_label = "LONG" if cfg.side.is_long else "SHORT"
+
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return
+    current_price = bars.get("current_price")
+    if not current_price or current_price <= 0:
+        return
+    fmp_q = get_fmp_quote(ticker)
+    if fmp_q:
+        fmp_price = fmp_q.get("price")
+        if fmp_price and fmp_price > 0:
+            current_price = fmp_price
+
+    # Track the running HWM (long) / LWM (short) for Entry 1 since
+    # last fill; needed for the "fresh NHOD/NLOD past Entry 1" check.
+    e1_hwm = pos.get("v5104_entry1_hwm")
+    if e1_hwm is None:
+        e1_hwm = pos.get("v5104_entry1_price", current_price)
+    if cfg.side.is_long:
+        if current_price > e1_hwm:
+            pos["v5104_entry1_hwm"] = float(current_price)
+            fresh_extreme = True
+        else:
+            fresh_extreme = False
+    else:
+        if current_price < e1_hwm:
+            pos["v5104_entry1_hwm"] = float(current_price)
+            fresh_extreme = True
+        else:
+            fresh_extreme = False
+
+    # Re-evaluate Section I fresh at trigger time (spec XIV.3).
+    qqq_bars = fetch_1min_bars("QQQ")
+    if not qqq_bars:
+        return
+    qqq_last = qqq_bars.get("current_price")
+    qqq_avwap = _opening_avwap("QQQ")
+    qqq_5m_close = _QQQ_REGIME.last_close
+    qqq_ema9 = _QQQ_REGIME.ema9
+    permit = eot_glue.evaluate_section_i(
+        side_label, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap,
+    )
+    permit_open = bool(permit.get("open"))
+
+    # 1m DI for the appropriate polarity.
+    di_streams = v5_di_1m_5m(ticker)
+    di_1m_now = (
+        di_streams.get("di_plus_1m") if cfg.side.is_long
+        else di_streams.get("di_minus_1m")
+    )
+
+    decision = eot_glue.evaluate_entry_2_decision(
+        ticker, side_label,
+        entry_1_active=True,
+        permit_open_at_trigger=permit_open,
+        di_1m_now=di_1m_now,
+        fresh_nhod_or_nlod=fresh_extreme,
+        entry_2_already_fired=False,
+    )
+    if not decision.get("fire"):
+        return
+
+    # Entry-1 ts must precede now (spec III.2).
+    e1_ts = pos.get("v5104_entry1_ts_utc")
+    now_iso = _utc_now_iso()
+    if e1_ts and e1_ts >= now_iso:
+        return
+
+    # 50% of Entry-1 shares, min 1.
+    e1_shares = int(pos.get("v5104_entry1_shares") or pos.get("shares") or 0)
+    e2_shares = max(1, e1_shares // 2)
+    if e2_shares <= 0:
+        return
+
+    # Paper cash: long debits, short credits.
+    notional = float(current_price) * e2_shares
+    if cfg.side.is_long and notional > paper_cash:
+        logger.info(
+            "[V5100-ENTRY] %s skip entry_2 \u2014 insufficient cash (need $%.2f, have $%.2f)",
+            ticker, notional, paper_cash,
+        )
+        return
+    paper_cash += cfg.entry_cash_delta(e2_shares, current_price)
+
+    # Average down/up the entry price; grow share count.
+    e1_price = float(pos.get("v5104_entry1_price") or pos.get("entry_price"))
+    total_shares = e1_shares + e2_shares
+    new_avg = (e1_price * e1_shares + float(current_price) * e2_shares) / total_shares
+    pos["entry_price"] = new_avg
+    pos["shares"] = total_shares
+    pos["v5104_entry2_price"] = float(current_price)
+    pos["v5104_entry2_shares"] = int(e2_shares)
+    pos["v5104_entry2_ts_utc"] = now_iso
+    pos["v5104_entry2_fired"] = True
+
+    try:
+        logger.info(
+            "[V5100-ENTRY] ticker=%s side=%s entry_num=2 di_1m=%s "
+            "fresh_extreme=%s fill_price=%.4f shares=%d new_avg=%.4f",
+            ticker, side_label,
+            ("%.2f" % di_1m_now) if di_1m_now is not None else "None",
+            fresh_extreme, float(current_price), e2_shares, new_avg,
+        )
+    except Exception:
+        pass
+
+    try:
+        save_paper_state()
+    except Exception:
+        pass
+
+
+# ============================================================
 # ENTRY CHECK
 # ============================================================
 # v4.9.0 \u2014 unified entry gate. The legacy long/short twins
@@ -7875,8 +8003,18 @@ def check_breakout(ticker, side):
         if daily_count.get(ticker, 0) >= 5:
             return False, None
 
-    # Already in a position on this side for this ticker (paper)
+    # Already in a position on this side for this ticker (paper).
+    # v5.10.4 \u2014 if Entry 1 is active and Entry 2 has not yet fired,
+    # evaluate Section III Entry 2 (1m DI cross > 30 + fresh NHOD/NLOD
+    # past Entry 1's HWM, after Entry 1's ts). Always returns
+    # (False, None) from check_breakout; Entry 2 fills are placed in
+    # _v5104_maybe_fire_entry_2 directly so we don't recycle the
+    # Entry-1 execute_breakout path.
     if ticker in positions_dict:
+        try:
+            _v5104_maybe_fire_entry_2(ticker, side, positions_dict[ticker])
+        except Exception as _e2:
+            logger.warning("[V5100-ENTRY] entry_2 eval error %s: %s", ticker, _e2)
         return False, None
 
     # v5.10.1 \u2014 Unlimited Hunting (Section VI): no 15-min cooldown,
@@ -8208,6 +8346,17 @@ def execute_breakout(ticker, current_price, side):
         "strike_num": _v570_strike_num,
         "date": now_date,
         "pdc": pdc.get(ticker, 0),
+        # v5.10.4 \u2014 Eye-of-the-Tiger Section III Entry 2 scaling state.
+        # Stamped on Entry 1 fill so check_breakout can later detect a
+        # 1m DI-30 cross + fresh NHOD/NLOD past Entry 1's HWM and fire
+        # a 50%-sized scale-in. Cleared on close_breakout via the pos
+        # pop. v5104_entry1_hwm starts at the entry price; subsequent
+        # ticks update it on each scan cycle in check_breakout.
+        "v5104_entry1_price": float(current_price),
+        "v5104_entry1_shares": int(shares),
+        "v5104_entry1_hwm": float(current_price),
+        "v5104_entry1_ts_utc": _entry_ts_utc,
+        "v5104_entry2_fired": False,
     }
     if cfg.side.is_short:
         pos["side"] = "SHORT"
@@ -12594,6 +12743,21 @@ logger.info(
 # where that env var is read.
 if os.getenv("SSM_SMOKE_TEST", "").strip() == "1":
     logger.info("SSM_SMOKE_TEST=1 \u2014 skipping catch-up, scheduler, and Telegram loop")
+    # v5.10.4 \u2014 when invoked as the entrypoint (Docker CMD: `python
+    # trade_genius.py`), block the main thread so the dashboard
+    # daemon thread keeps serving /api/version. The CI Docker-build
+    # gate polls that endpoint to verify the container actually
+    # boots before the PR can merge. Skipped when imported under
+    # pytest (``__name__ == 'trade_genius'``) so the existing
+    # tests/test_startup_smoke.py imports keep returning promptly.
+    if __name__ == "__main__":
+        import time as _ssm_time
+        logger.info("SSM_SMOKE_TEST=1 \u2014 blocking on idle loop to keep web server alive")
+        try:
+            while True:
+                _ssm_time.sleep(60)
+        except KeyboardInterrupt:
+            pass
 else:
     # v4.0.3-beta \u2014 OR seed from Alpaca historical bars BEFORE the
     # catch-up hook, so a mid-session restart lands with correct OR
