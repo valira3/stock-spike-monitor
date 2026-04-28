@@ -82,7 +82,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.10.6"
+BOT_VERSION = "5.10.7"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -100,19 +100,18 @@ BOT_VERSION = "5.10.6"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.10.6 \u2014 closeout.\n"
-    "Dashboard Eye of the\n"
-    "Tiger panel surfaces\n"
-    "Section I permit, vol\n"
-    "bucket + boundary hold\n"
-    "per ticker, plus phase\n"
-    "and Sovereign Brake\n"
-    "distance per position.\n"
-    "Six legacy v5.1\u20135.9\n"
-    "emitters retired.\n"
-    "Full-algo backtest\n"
-    "replay added.\n"
-    "STRATEGY.md regenerated."
+    "v5.10.7 \u2014 default\n"
+    "universe trim.\n"
+    "QBTS removed from\n"
+    "TICKERS_DEFAULT \u2014 not\n"
+    "a Titan. Default\n"
+    "deployed universe is\n"
+    "now the 10 Titans plus\n"
+    "the pinned SPY/QQQ\n"
+    "anchors. Users who\n"
+    "want QBTS can still\n"
+    "/ticker add QBTS at\n"
+    "runtime."
 )
 
 # Main-bot release note: short tail of recent releases.
@@ -2407,14 +2406,14 @@ def paper_log(msg: str):
 #   - Persistence is fail-soft: if the JSON is missing, unreadable,
 #     or empty, we fall back to TICKERS_DEFAULT. Callers never see
 #     an exception.
-#   - QBTS is included in the defaults so a fresh deploy (no
-#     tickers.json yet) already tracks it.
+#   - v5.10.7: QBTS removed from defaults \u2014 not a Titan.
+#     Users who want it can `/ticker add QBTS` at runtime.
 # ------------------------------------------------------------
 TICKERS_FILE = os.getenv("TICKERS_FILE", "tickers.json")
 TICKERS_PINNED = ("SPY", "QQQ")   # always present, never removable
 TICKERS_DEFAULT = [
     "AAPL", "MSFT", "NVDA", "TSLA", "META",
-    "GOOG", "AMZN", "AVGO", "NFLX", "ORCL", "QBTS", "SPY", "QQQ",
+    "GOOG", "AMZN", "AVGO", "NFLX", "ORCL", "SPY", "QQQ",
 ]
 
 # v5.7.0 \u2014 Ten Titans universe. Used by the Strike 2+ Expansion Gate
@@ -3362,7 +3361,7 @@ def _ensure_universe_consistency() -> None:
 
 def _init_tickers() -> None:
     """Populate TICKERS from disk on startup; fall back to defaults
-    (which include QBTS and the pinned SPY/QQQ). Always ensures the
+    (which include the pinned SPY/QQQ). Always ensures the
     pinned symbols are present no matter what was on disk.
     """
     from_disk = _load_tickers_file()
@@ -12422,7 +12421,9 @@ except Exception as _uge:
 # v3.4.32 — load the editable ticker universe from tickers.json
 # before anything else so load_paper_state() and retighten see the
 # right TICKERS list (e.g. if a newly-added QBTS already has an
-# open paper position persisted from a previous session).
+# open paper position persisted from a previous session). Note
+# v5.10.7: QBTS is no longer in the defaults; the example still
+# applies if QBTS was added at runtime via `/ticker add QBTS`.
 _init_tickers()
 
 # v5.6.1 D6 \u2014 one-shot [UNIVERSE] boot line. Comma-separated alpha-
