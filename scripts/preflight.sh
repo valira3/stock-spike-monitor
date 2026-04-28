@@ -30,7 +30,7 @@ if [ -n "$BASE_REF" ]; then
   done < <(git diff --name-only "$BASE_REF"...HEAD -- '*.md' 2>/dev/null; git diff --name-only -- '*.md' 2>/dev/null; git ls-files --others --exclude-standard -- '*.md' 2>/dev/null)
 fi
 
-echo "[1/5] pytest..."
+echo "[1/6] pytest..."
 # Run any test_*.py (root level legacy + tests/ dir). -q for terse output.
 if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
   pytest -q tests/ test_*.py 2>/dev/null || pytest -q
@@ -38,7 +38,20 @@ else
   echo "  (no tests found)"
 fi
 
-echo "[2/5] BOT_VERSION <-> CHANGELOG consistency..."
+# v5.10.3 \u2014 explicit startup-smoke check. Already covered by [1/6] but
+# called out separately so a regression in the Dockerfile <-> top-level
+# imports contract surfaces with a clear failure label. v5.10.1 shipped
+# with three new top-level imports and no matching COPY lines, which
+# crash-looped the Railway container; this guard prevents a repeat.
+echo "[2/6] startup smoke (Dockerfile COPY contract)..."
+if [ -f tests/test_startup_smoke.py ]; then
+  pytest -q tests/test_startup_smoke.py
+  echo "  OK"
+else
+  echo "  SKIP: tests/test_startup_smoke.py not found"
+fi
+
+echo "[3/6] BOT_VERSION <-> CHANGELOG consistency..."
 VERSION=$(grep -E '^BOT_VERSION' bot_version.py | sed -E 's/.*"([0-9.]+)".*/\1/')
 CHANGELOG_TOP=$(grep -m1 -E '^## v' CHANGELOG.md | sed -E 's/## v([0-9.]+).*/\1/')
 TG_VERSION=$(grep -E '^BOT_VERSION' trade_genius.py | sed -E 's/.*"([0-9.]+)".*/\1/')
@@ -52,7 +65,7 @@ if [ "$VERSION" != "$TG_VERSION" ]; then
 fi
 echo "  OK: v$VERSION (bot_version.py == trade_genius.py == CHANGELOG)"
 
-echo "[3/5] em-dash literal check (lines added in this PR only)..."
+echo "[4/6] em-dash literal check (lines added in this PR only)..."
 # Pre-v5.8.0 codebase has hundreds of pre-existing literal em-dashes.
 # Only fail on lines this PR ADDS (the '+' side of the diff), so the
 # new standard is enforced going forward without grandfathering work.
@@ -87,7 +100,7 @@ if [ "$EM_FOUND" -eq 1 ]; then
 fi
 echo "  OK"
 
-echo "[4/5] forbidden-word check (lines added in this PR only)..."
+echo "[5/6] forbidden-word check (lines added in this PR only)..."
 # Same scoping rationale as em-dash check: enforce going forward.
 # Docs that document the rule itself (CLAUDE.md, AGENTS.md, this
 # script, CHANGELOG.md, ARCHITECTURE.md) are excluded entirely.
@@ -122,7 +135,7 @@ if [ "$FW_FOUND" -eq 1 ]; then
 fi
 echo "  OK"
 
-echo "[5/5] format check (ruff)..."
+echo "[6/6] format check (ruff)..."
 if command -v ruff >/dev/null 2>&1; then
   if [ "${#CHANGED_PY[@]}" -gt 0 ]; then
     ruff check "${CHANGED_PY[@]}" --quiet
