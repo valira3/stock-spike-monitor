@@ -1,0 +1,45 @@
+name: Unit tests
+
+# v5.10.4 \u2014 run the tests/ suite on every PR. The startup smoke
+# test (tests/test_startup_smoke.py) is the v5.10.1 regression-killer
+# and MUST run on every PR as a required check. The eye_of_tiger /
+# volume_bucket / forensic_stop / qqq_regime suites guard the v5.10
+# pure-function evaluators.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: pytest-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run pytest
+        run: |
+          python -m pytest tests/ -v

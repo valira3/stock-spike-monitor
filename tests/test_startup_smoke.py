@@ -136,6 +136,56 @@ def test_dockerfile_copies_every_top_level_python_module():
     )
 
 
+# Repo-root .py files that are NOT shipped to the container (test
+# scaffolding, offline tooling, etc) and therefore should not be
+# transitively-checked for COPY presence. trade_genius.py's transitive
+# imports are still checked because that is the entrypoint.
+_NOT_IN_CONTAINER = {
+    "smoke_test",
+    "test_v5_5_5_archive_source",
+    "test_v5_5_5_volprofile_observability",
+    "test_v5_5_5_watchdog",
+    "test_v5_5_6_previous_session_bucket",
+    "test_v5_5_6_shadow_uses_prev_bucket",
+    "test_v5_5_7_dashboard_main_fix",
+    "test_v5_5_8_main_short_entry_row",
+}
+
+
+def test_dockerfile_covers_transitive_first_party_imports():
+    """v5.10.4 — generalize the v5.10.3 strict guard. Walk the
+    transitive import graph starting from trade_genius.py (root) and
+    confirm every first-party .py module reachable at module top level
+    is COPYed by the Dockerfile. Catches the case where a NEW file
+    added to the repo is imported by an already-COPYed module but the
+    new file itself was forgotten in the Dockerfile.
+    """
+    dockerfile = REPO_ROOT / "Dockerfile"
+    copied = _dockerfile_copied_modules(dockerfile)
+    if "*" in copied:
+        return
+    seen: set[str] = set()
+    queue = ["trade_genius"]
+    while queue:
+        mod = queue.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        path = REPO_ROOT / f"{mod}.py"
+        if not path.exists():
+            continue
+        for imp in _local_module_imports(path):
+            if imp not in seen:
+                queue.append(imp)
+    in_container = seen - _NOT_IN_CONTAINER
+    missing = sorted(in_container - copied)
+    assert not missing, (
+        "Transitive first-party imports of trade_genius.py include "
+        "modules NOT COPYed by Dockerfile. Add a `COPY X.py .` line "
+        f"for each. Missing: {missing}"
+    )
+
+
 def test_eye_of_tiger_modules_are_present_in_dockerfile():
     """Belt-and-suspenders explicit assertion for the v5.10.1 trio.
     If a future refactor renames or splits these modules, this fails

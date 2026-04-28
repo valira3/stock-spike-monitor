@@ -12594,6 +12594,18 @@ logger.info(
 # where that env var is read.
 if os.getenv("SSM_SMOKE_TEST", "").strip() == "1":
     logger.info("SSM_SMOKE_TEST=1 \u2014 skipping catch-up, scheduler, and Telegram loop")
+    # v5.10.4 \u2014 the Docker boot-gate CI runs the production image with
+    # SSM_SMOKE_TEST=1 and polls /api/version. The dashboard thread is
+    # daemon=True so we must keep the main thread alive, otherwise the
+    # container exits before the poller can hit it.
+    if os.getenv("SSM_KEEPALIVE", "").strip() == "1":
+        logger.info("SSM_KEEPALIVE=1 \u2014 holding main thread for HTTP probes")
+        try:
+            import time as _ka_time
+            while True:
+                _ka_time.sleep(3600)
+        except KeyboardInterrupt:
+            pass
 else:
     # v4.0.3-beta \u2014 OR seed from Alpaca historical bars BEFORE the
     # catch-up hook, so a mid-session restart lands with correct OR

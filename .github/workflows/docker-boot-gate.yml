@@ -1,0 +1,115 @@
+name: Docker boot gate
+
+# v5.10.4 — primary regression-killer for the v5.10.1 boot-hang.
+#
+# The v5.10.1 disaster: trade_genius.py acquired three new top-level
+# imports (eye_of_tiger, volume_bucket, v5_10_1_integration) without
+# the matching `COPY` lines in Dockerfile, so the Railway container
+# ModuleNotFoundError-crash-looped on boot. Local CI ran on the dev
+# host filesystem (which has every .py file) and saw nothing wrong.
+#
+# This job builds the production Dockerfile and runs the resulting
+# image with SSM_SMOKE_TEST=1 (skips the Telegram/scheduler/catch-up
+# loops, but still imports every top-level module and starts the
+# dashboard web server). It then polls /api/version until it sees a
+# 200 with the expected version, or fails.
+#
+# Required check on every PR to main. If this fails, the diff would
+# crash-loop on Railway — DO NOT merge.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: docker-boot-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  docker-boot:
+    name: docker-build-and-boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read committed BOT_VERSION
+        id: version
+        run: |
+          V=$(python3 -c "import re; t=open('trade_genius.py').read(); m=re.search(r'^BOT_VERSION\s*=\s*\"([^\"]+)\"', t, re.M); print(m.group(1))")
+          echo "Committed BOT_VERSION: $V"
+          echo "bot_version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build -t tradegenius-test .
+
+      - name: Boot container with SSM_SMOKE_TEST=1
+        id: boot
+        env:
+          EXPECTED: ${{ steps.version.outputs.bot_version }}
+        run: |
+          set -e
+          # Run the production image with the smoke-test guard set so
+          # boot does not require live Alpaca/Telegram/Yahoo creds.
+          # Bind dashboard to 8080.
+          docker run -d --name tg-smoke \
+            -e SSM_SMOKE_TEST=1 \
+            -e SSM_KEEPALIVE=1 \
+            -e DASHBOARD_PORT=8080 \
+            -e DASHBOARD_PASSWORD=docker-boot-smoke-pw \
+            -e VAL_ENABLED=0 \
+            -e PAPER_STATE_PATH=/tmp/paper_state.json \
+            -e PAPER_LOG_PATH=/tmp/investment.log \
+            -e TICKERS_FILE=/tmp/tickers.json \
+            -e STATE_DB_PATH=/tmp/state.db \
+            -p 8080:8080 \
+            tradegenius-test
+
+          echo "Polling http://localhost:8080/api/version (expect=$EXPECTED) for up to 30s..."
+          ok=0
+          for i in $(seq 1 30); do
+            sleep 1
+            body=$(curl -s -o /tmp/body.json -w "%{http_code}" http://localhost:8080/api/version || true)
+            status="$body"
+            payload="$(cat /tmp/body.json 2>/dev/null || true)"
+            echo "poll $i: HTTP=$status body=$payload"
+            if [ "$status" = "200" ]; then
+              v=$(python3 -c "import json,sys; d=json.load(open('/tmp/body.json')); print(d.get('version',''))" 2>/dev/null || true)
+              if [ "$v" = "$EXPECTED" ]; then
+                ok=1
+                echo "::notice::/api/version returned $v after ${i}s"
+                break
+              fi
+            fi
+          done
+
+          if [ "$ok" != "1" ]; then
+            echo "::error::Container did not serve /api/version=$EXPECTED within 30s. See uploaded logs."
+            exit 1
+          fi
+
+      - name: Capture container logs (always)
+        if: always()
+        run: |
+          docker logs tg-smoke > /tmp/docker.log 2>&1 || true
+          tail -200 /tmp/docker.log || true
+
+      - name: Upload container logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-boot-logs
+          path: /tmp/docker.log
+          if-no-files-found: ignore
+
+      - name: Stop container
+        if: always()
+        run: |
+          docker rm -f tg-smoke || true
