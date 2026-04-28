@@ -22,20 +22,18 @@ source "${HERE}/lib/checks.sh"
 
 EXPECTED_VERSION="${1:-}"
 
-# Tag schema as of v5.10.1 (Eye-of-the-Tiger live hot path):
-#   STARTUP SUMMARY        -- bot startup banner
-#   [UNIVERSE_GUARD]       -- universe-drift guard
-#   [V5100-PERMIT]         -- Section I QQQ Index Shield state changes
-#   [V5100-VOLBUCKET]      -- Section II.1 volume-bucket gate (per-ticker)
-#   [V5100-BOUNDARY]       -- Section II.2 Boundary Hold gate (per-ticker)
-#   [V5100-ENTRY]          -- Section III Entry 1 / Entry 2 fires
+# Tag schema as of v5.8.0:
+#   STARTUP SUMMARY -- bot startup banner
+#   [UNIVERSE_GUARD] -- universe-drift guard (renamed from [UNIVERSE] in v5.8.0)
+#   [V560-GATE]      -- entry-gate decisions
+#   [V570-STRIKE]    -- Titan-strike entries
+#   [V571-EXIT_PHASE] -- exit-reason classification (v5.7.1+)
 EXPECTED_TAGS=(
     "STARTUP SUMMARY"
     "[UNIVERSE_GUARD]"
-    "[V5100-PERMIT]"
-    "[V5100-VOLBUCKET]"
-    "[V5100-BOUNDARY]"
-    "[V5100-ENTRY]"
+    "[V560-GATE]"
+    "[V570-STRIKE]"
+    "[V571-EXIT_PHASE]"
 )
 
 PASS=0
