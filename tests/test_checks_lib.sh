@@ -149,13 +149,22 @@ out=$(check_bar_archive_today 2>/dev/null); rc=$?
 assert_rc 1 "${rc}" "missing dir returns 1"
 assert_contains "exists=false" "${out}" "exists=false"
 
-echo "[11] check_shadow_db_count (informational)"
+echo "[11] check_shadow_db_count (informational, 24h breakdown)"
 reset_state
 export RAILWAY_SSH_FIXTURE="${FIX}/ssh_shadow_db.txt"
 out=$(check_shadow_db_count); rc=$?
 assert_rc 0 "${rc}" "always returns 0"
-assert_contains "SHADOW_DB total=4128" "${out}" "total parsed"
-assert_contains "GEMINI_A=22" "${out}" "breakdown contains GEMINI_A"
+assert_contains "SHADOW_DB total=545" "${out}" "total parsed"
+assert_contains "last_24h=GEMINI_A=4" "${out}" "breakdown begins with GEMINI_A"
+assert_contains "TICKER_ONLY=2" "${out}" "breakdown contains TICKER_ONLY"
+
+echo "[11b] check_shadow_db_count (no rows in last 24h)"
+reset_state
+export RAILWAY_SSH_FIXTURE="${FIX}/ssh_shadow_db_empty_24h.txt"
+out=$(check_shadow_db_count); rc=$?
+assert_rc 0 "${rc}" "always returns 0 (empty 24h)"
+assert_contains "SHADOW_DB total=545" "${out}" "total parsed (empty 24h)"
+assert_contains "last_24h=none" "${out}" "empty 24h echoes none"
 
 echo "[12] check_dashboard_state (live)"
 reset_state
