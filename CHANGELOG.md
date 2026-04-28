@@ -17,6 +17,7 @@ Engine extraction PR 1: synthetic harness + engine/bars.py. No behavior change.
 - Removed `_MAIN_HISTORY_TAIL` from `trade_genius.py` (~801 lines). The `/version` Telegram command now shows only the current release's note. Per-release history lives in this CHANGELOG.
 - Engine extraction PR 2: pre-market QQQ regime + DI + OR seeders moved to `engine/seeders.py`. No behavior change.
 - Engine extraction PR 3: Phase A/B/C state machine (`phase_machine_tick`) moved to `engine/phase_machine.py`. No behavior change.
+- Engine extraction PR 4: per-minute scan loop moved to `engine/scan.py` behind an `EngineCallbacks` Protocol (`engine/callbacks.py`). Production scan_loop is now a thin shim. No behavior change.
 
 ---
 
