@@ -4,19 +4,39 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.10.3 — 2026-04-28 — Re-ship Eye-of-the-Tiger integration with boot-hang fix + startup smoke test
+
+PLACEHOLDER — final notes appended at end of branch work.
+
+---
+
 ## v5.10.2 — 2026-04-28 — Revert v5.10.1 (Railway deploy regression)
 
 **Reverts PR #189 (`78877b3`).** v5.10.1 merged green (CI + preflight passed) but the Railway deploy never came up: the post-deploy smoke poll observed v5.10.0 → 502 → indefinite read-timeout, and `/api/version` continued to 502 well past the 5-minute deploy budget. Root cause not yet identified — the code imports cleanly locally and 102 unit tests pass, so the failure is something exposed only by the Railway boot path (likely an import-time or first-cycle interaction with `/data/bars`, `_QQQ_REGIME` initial state, or fetch_1min_bars on the live tick path).
 
 This revert restores main to the v5.10.0 algorithm-evaluator + legacy hot path state from `aa0fcd7`. The bot continues to run the legacy v5.0–v5.9 Tiger/Buffalo state machine with the daily-loss-limit (-$1500) and EOD time (15:59:50) updates from v5.10.0 still in place.
 
-**Next steps for v5.10.3 (re-attempt of v5.10.1 integration).**
+---
 
-1. Reproduce the Railway boot failure locally with the same env vars and `/data` permissions as production.
-2. Specifically audit the new `scan_loop` hooks (`refresh_volume_baseline_if_needed`, `maybe_log_permit_state`) for any I/O that could hang at boot before `/api/version` is wired.
-3. Audit the new `check_breakout` Section I/II/III block for any reference that requires `_QQQ_REGIME` to be seeded (it is None at first scan) or an OR map entry to exist (early scan ticks before 9:35 ET).
-4. Audit the new `manage_positions` / `manage_short_positions` Section IV blocks for the same.
-5. Add a startup-only smoke test that imports `trade_genius` and exercises one full `scan_loop` iteration before the post-deploy CI passes the deploy gate.
+## v5.10.1 — 2026-04-28 — Eye-of-the-Tiger live-hot-path integration
+
+**Wires the v5.10.0 pure-function evaluators (`eye_of_tiger.py`, `volume_bucket.py`) into `trade_genius.py`'s scan loop.** v5.10.0 shipped the building blocks but left the legacy v5.0–v5.9 Tiger/Buffalo state machine on the hot path; v5.10.1 makes the v5.10.0 evaluators authoritative.
+
+**New module.** `v5_10_1_integration.py` — orchestrator that owns Volume Bucket lifecycle (lazy load + 9:29 ET refresh), Section I/II/III/IV evaluation, per-(ticker, side) Boundary Hold + di_1m_prev caches, and the v5.10.0 `[V5100-*]` log signatures.
+
+**`trade_genius.py` surgery.**
+- `scan_loop` calls `refresh_volume_baseline_if_needed(now_et)` once per cycle and `maybe_log_permit_state(...)` (emits `[V5100-PERMIT]` only on state change).
+- Per-ticker scan caches the just-closed 1m bar via `eot_glue.record_1m_close(ticker, close)` for the Boundary Hold evaluator.
+- `check_breakout` Section I + II + III gates replace the v5.6.0–v5.9.4 G1/G3/G4 + V570 expansion + DI gate + extension + stop-cap block. Entry 1 fires on `[V5100-ENTRY] entry_num=1` only when Section I OPEN + Volume Bucket PASS/COLDSTART + Boundary Hold + DI(15) 5m & 1m > 25 + NHOD/NLOD all align.
+- Section IV (Sovereign Brake -$500 unrealized + Velocity Fuse > 1.0% from current 1m candle open) now runs at the top of `manage_positions` and `manage_short_positions`, emitting `[V5100-SOVEREIGN-BRAKE]` / `[V5100-VELOCITY-FUSE]` and routing to `close_position` / `close_short_position` with canonical `exit_reason` strings.
+- 15-minute per-ticker cooldown removed (Section VI Unlimited Hunting); per-ticker $50 loss cap removed (replaced by Section IV per-trade Sovereign Brake at -$500).
+- `_tiger_hard_eject_check` definition deleted. `tests/test_titan_bypass_hard_eject.py` retired.
+
+**Smoke tags.** `scripts/post_deploy_smoke.sh` now greps for `[V5100-PERMIT]`, `[V5100-VOLBUCKET]`, `[V5100-BOUNDARY]`, `[V5100-ENTRY]`.
+
+**Tests.** 102/102 passing (108 baseline minus 6 deleted Titan-bypass tests covering the removed `_tiger_hard_eject_check`). REVERTED in v5.10.2 — Railway boot regression. Re-shipped as v5.10.3 with boot-hang fix.
+
+**Rollback.** No feature flag. Rollback path is revert-the-PR + redeploy.
 
 ---
 
