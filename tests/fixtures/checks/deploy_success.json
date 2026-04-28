@@ -1,0 +1,18 @@
+{
+  "data": {
+    "deployments": {
+      "edges": [
+        {
+          "node": {
+            "id": "2a684474-9e66-44ed-ab45-227a2e8d6dee",
+            "status": "SUCCESS",
+            "meta": {
+              "commitMessage": "5.8.1",
+              "branch": "main"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

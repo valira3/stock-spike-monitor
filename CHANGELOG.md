@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.8.1 — 2026-04-27 — Infra-B post-deploy smoke + checks library
+
+Pure infra/tooling release. **No algorithm logic touched, no live trading paths modified.** Replaces the per-release manual smoke ritual (railway ssh → version → universe → log-tag schema → bar archive → shadow_data_status, ~5–10 min × 3 releases per session) with a single sourceable bash library that both the post-deploy verifier and the recurring weekday/Saturday crons call.
+
+**Deliverables:**
+
+- **`scripts/lib/checks.sh`** — sourceable library, 7 pure functions, structured one-line stdout per check, 0/1 return codes:
+  - `check_deploy_status` — Railway GraphQL `deployments(first:1)` → `DEPLOY <status> <8-char-id> v<version>`
+  - `check_universe_loaded` — greps last 200 log lines for `[UNIVERSE_GUARD]` (current schema) → `UNIVERSE <count> tickers: <list>`
+  - `check_log_tags <tag…>` — counts each tag in last 500 log lines → `TAG <name> <count>` per tag
+  - `check_no_errors` — counts `must be a coroutine` / `websocket error` / `Traceback` / `[ERROR]` → `ERRORS coroutine=N ws=N traceback=N error=N`
+  - `check_bar_archive_today` — `railway ssh` `ls /data/bars/<UTC-date>` + `du -sb` → `BARS_TODAY exists=… ticker_count=… bytes=…` (passes whenever dir exists; soft-warn on empty dir for market-closed days)
+  - `check_shadow_db_count` — sqlite3 total + last-24h breakdown by `config_name` → `SHADOW_DB total=N last_24h=…` (informational, always returns 0)
+  - `check_dashboard_state` — POST `/login` + GET `/api/state` → `DASHBOARD shadow_data_status=… version=…`
+  - All HTTP/SSH I/O is overridable via `RAILWAY_LOGS_FIXTURE` / `RAILWAY_DEPLOY_FIXTURE` / `RAILWAY_SSH_FIXTURE` / `DASHBOARD_STATE_FIXTURE` env vars so tests run offline.
+- **`scripts/post_deploy_smoke.sh`** — orchestrator. `bash scripts/post_deploy_smoke.sh <expected_version>` runs all 7 checks, tallies PASS/FAIL, exits 0 on all-pass, 1 on any-fail. Default `EXPECTED_TAGS`: `STARTUP SUMMARY`, `[UNIVERSE_GUARD]`, `[V560-GATE]`, `[V570-STRIKE]`, `[V571-EXIT_PHASE]`. Failures are informational — this script does NOT block automated merges.
+- **`tests/test_checks_lib.sh`** — 13 cases × 37 assertions, all 7 checks happy + sad paths, fixtures under `tests/fixtures/checks/`. Plain bash, no bats dependency. Run with `bash tests/test_checks_lib.sh`.
+- **`.github/workflows/scripts-lint.yml`** — soft-fail shellcheck over `scripts/*.sh` and `scripts/lib/*.sh` on every PR that touches `scripts/`. Doesn't block merges yet because pre-existing scripts may not pass.
+
+**Out of scope (handled by parent agent after this PR merges):**
+
+- Weekday cron `58c883b0` (8:35am CT) rewrite to `source scripts/lib/checks.sh` and call `scripts/post_deploy_smoke.sh`.
+- Saturday cron `873854a1` (10am CT) parser refactor onto current log schema (`[V560-GATE]` / `[V570-STRIKE]` / `[V571-EXIT_PHASE]` / `[TRADE_CLOSED]`) plus per-exit-reason P&L breakdown. Both cron task bodies live outside the repo.
+
+**Rollback.** Revert the PR. All deliverables are additive dev tooling; live runtime behavior is unchanged.
+
+---
+
 ## v5.8.0 — 2026-04-27 — Developer Velocity Bundle
 
 Pure repo/tooling release. **No algorithm logic touched, no live trading paths modified.** Cuts subagent cold-start time, prevents CI-fail iteration cycles, and eliminates the universe-drift recovery class of incidents that hit v5.7.0.
