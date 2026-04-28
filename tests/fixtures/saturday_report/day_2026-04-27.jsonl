@@ -1,0 +1,24 @@
+{"t": "2026-04-27T13:31:00.000000Z", "m": "[V510-SHADOW][CFG=TICKER+QQQ][PCT=70/100] ticker=AAPL bucket=2026-04-27T09:31 stage=1 t_pct=85 qqq_pct=120 verdict=PASS reason=both_above_thresh entry_decision=ENTER"}
+{"t": "2026-04-27T13:31:00.001000Z", "m": "[V510-SHADOW][CFG=TICKER_ONLY][PCT=70] ticker=AAPL bucket=2026-04-27T09:31 stage=1 t_pct=85 verdict=PASS reason=ticker_above_thresh entry_decision=ENTER"}
+{"t": "2026-04-27T13:31:00.002000Z", "m": "[V510-SHADOW][CFG=QQQ_ONLY][PCT=100] ticker=AAPL bucket=2026-04-27T09:31 stage=1 qqq_pct=120 verdict=PASS reason=qqq_above_thresh entry_decision=ENTER"}
+{"t": "2026-04-27T13:31:00.003000Z", "m": "[V510-SHADOW][CFG=GEMINI_A][PCT=110/85] ticker=AAPL bucket=2026-04-27T09:31 stage=1 t_pct=85 qqq_pct=120 verdict=FAIL reason=ticker_below_110 entry_decision=ENTER"}
+{"t": "2026-04-27T13:31:00.100000Z", "m": "[V570-STRIKE] ticker=AAPL side=LONG ts=2026-04-27T13:31:00Z strike_num=1 is_first=True hod=425.10 lod=423.50 hod_break=True lod_break=False expansion_gate_pass=False"}
+{"t": "2026-04-27T13:31:00.110000Z", "m": "[V560-GATE] ticker=AAPL side=LONG ts=2026-04-27T13:31:00Z ticker_price=425.20 ticker_avwap=424.80 index_price=421.5 index_avwap=420.0 or_high=425.00 or_low=423.00 g1=True g3=True g4=True pass=True reason=null"}
+{"t": "2026-04-27T13:31:00.120000Z", "m": "[ENTRY] ticker=AAPL side=LONG entry_id=AAPL-20260427133100 entry_ts=2026-04-27T13:31:00Z entry_price=425.2000 qty=10 strike_num=1"}
+{"t": "2026-04-27T13:35:00.000000Z", "m": "[V571-EXIT_PHASE] ticker=AAPL side=LONG entry_id=AAPL-20260427133100 from_phase=BAR1 to_phase=BAR2 trigger=bar1_close current_stop=424.80 ts=2026-04-27T13:35:00Z"}
+{"t": "2026-04-27T13:40:00.000000Z", "m": "[TRADE_CLOSED] ticker=AAPL side=LONG entry_id=AAPL-20260427133100 entry_ts=2026-04-27T13:31:00Z entry_price=425.2000 exit_ts=2026-04-27T13:40:00Z exit_price=426.5000 exit_reason=ema_trail qty=10 pnl_dollars=13.0000 pnl_pct=0.0031 hold_seconds=540 strike_num=1 daily_realized_pnl=13.0000"}
+{"t": "2026-04-27T14:00:00.000000Z", "m": "[V510-SHADOW][CFG=TICKER+QQQ][PCT=70/100] ticker=MSFT bucket=2026-04-27T10:00 stage=1 t_pct=80 qqq_pct=110 verdict=PASS reason=both_above_thresh entry_decision=ENTER"}
+{"t": "2026-04-27T14:00:00.001000Z", "m": "[V510-SHADOW][CFG=TICKER_ONLY][PCT=70] ticker=MSFT bucket=2026-04-27T10:00 stage=1 t_pct=80 verdict=PASS reason=ticker_above_thresh entry_decision=ENTER"}
+{"t": "2026-04-27T14:00:00.002000Z", "m": "[V510-SHADOW][CFG=QQQ_ONLY][PCT=100] ticker=MSFT bucket=2026-04-27T10:00 stage=1 qqq_pct=110 verdict=FAIL reason=qqq_below_thresh entry_decision=ENTER"}
+{"t": "2026-04-27T14:00:00.003000Z", "m": "[V510-SHADOW][CFG=GEMINI_A][PCT=110/85] ticker=MSFT bucket=2026-04-27T10:00 stage=1 t_pct=80 qqq_pct=110 verdict=FAIL reason=ticker_below_110 entry_decision=ENTER"}
+{"t": "2026-04-27T14:00:00.100000Z", "m": "[V570-STRIKE] ticker=MSFT side=SHORT ts=2026-04-27T14:00:00Z strike_num=1 is_first=True hod=380.50 lod=378.00 hod_break=False lod_break=True expansion_gate_pass=False"}
+{"t": "2026-04-27T14:00:00.120000Z", "m": "[ENTRY] ticker=MSFT side=SHORT entry_id=MSFT-20260427140000 entry_ts=2026-04-27T14:00:00Z entry_price=378.0000 qty=5 strike_num=1"}
+{"t": "2026-04-27T14:10:00.000000Z", "m": "[TRADE_CLOSED] ticker=MSFT side=SHORT entry_id=MSFT-20260427140000 entry_ts=2026-04-27T14:00:00Z entry_price=378.0000 exit_ts=2026-04-27T14:10:00Z exit_price=378.5000 exit_reason=hard_stop_2c qty=5 pnl_dollars=-2.5000 pnl_pct=-0.0013 hold_seconds=600 strike_num=1 daily_realized_pnl=10.5000"}
+{"t": "2026-04-27T14:30:00.000000Z", "m": "[SKIP] ticker=NVDA reason=g1_failed ts=2026-04-27T14:30:00Z gate_state={\"g1\":false,\"g3\":true,\"g4\":true}"}
+{"t": "2026-04-27T14:31:00.000000Z", "m": "[SKIP] ticker=GOOG reason=g1_failed ts=2026-04-27T14:31:00Z gate_state={\"g1\":false,\"g3\":true,\"g4\":true}"}
+{"t": "2026-04-27T14:32:00.000000Z", "m": "[SKIP] ticker=NVDA reason=g4_failed ts=2026-04-27T14:32:00Z gate_state={\"g1\":true,\"g3\":true,\"g4\":false}"}
+{"t": "2026-04-27T14:33:00.000000Z", "m": "[V510-SHADOW][CFG=TICKER+QQQ][PCT=70/100] ticker=TSLA bucket=2026-04-27T10:33 stage=1 t_pct=20 qqq_pct=30 verdict=FAIL reason=blocked entry_decision=SKIP"}
+{"t": "2026-04-27T14:33:00.001000Z", "m": "[V510-SHADOW][CFG=TICKER_ONLY][PCT=70] ticker=TSLA bucket=2026-04-27T10:33 stage=1 t_pct=20 verdict=FAIL reason=ticker_below_thresh entry_decision=SKIP"}
+{"t": "2026-04-27T14:33:00.002000Z", "m": "[V510-SHADOW][CFG=QQQ_ONLY][PCT=100] ticker=TSLA bucket=2026-04-27T10:33 stage=1 qqq_pct=30 verdict=FAIL reason=qqq_below_thresh entry_decision=SKIP"}
+{"t": "2026-04-27T14:33:00.003000Z", "m": "[V510-SHADOW][CFG=GEMINI_A][PCT=110/85] ticker=TSLA bucket=2026-04-27T10:33 stage=1 t_pct=20 qqq_pct=30 verdict=FAIL reason=blocked entry_decision=SKIP"}
+{"t": "2026-04-27T14:33:00.100000Z", "m": "[SKIP] ticker=TSLA reason=g4_failed ts=2026-04-27T14:33:00Z gate_state={\"g1\":true,\"g3\":true,\"g4\":false}"}

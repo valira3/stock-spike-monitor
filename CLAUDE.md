@@ -42,3 +42,15 @@ Run `bash scripts/post_deploy_smoke.sh <version>` after every release (the scrip
 ## PR submission
 - `gh pr create --title "v5.x.y: <summary>" --body-file /tmp/pr_body.md`
 - `gh pr merge <N> --squash --admin` after CI passes
+
+## Saturday weekly report (v5.8.4)
+The Saturday cron `873854a1` invokes `scripts/saturday_weekly_report.py`. Online mode pulls Railway `deploymentLogs` for the trading week (env: `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT`, `RAILWAY_SERVICE`, `RAILWAY_ENVIRONMENT`) and writes `<out-dir>/week_<MONDAY>/{day_*.jsonl, report.md, report.json}`.
+
+Dry-run before each Saturday firing (offline against last week's snapshot):
+```
+python scripts/saturday_weekly_report.py \
+  --week-start 2026-04-20 \
+  --logs-dir /home/user/workspace/backtest_v510 \
+  --out-dir /tmp/dryrun_apr20
+```
+Confirm `report.md` renders, then point the cron at `--week-start <last-Monday> --out-dir /home/user/workspace/backtest_v57x`. Parses `[V560-GATE]` / `[V570-STRIKE]` / `[V571-EXIT_PHASE]` / `[ENTRY]` / `[TRADE_CLOSED]` / `[SKIP]` / `[V510-SHADOW][CFG=…]`. Per-config attribution maps each live entry to its closest preceding `SHADOW_CFG` verdict per (config, ticker).
