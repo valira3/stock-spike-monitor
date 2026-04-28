@@ -75,6 +75,7 @@
             "added": {
               "date": "2026-04-24",
               "entry_count": 1,
+              "entry_id": "AAPL-20260424143000",
               "entry_price": 270.0,
               "entry_time": "09:30:00",
               "entry_ts_utc": "2026-04-24T14:30:00+00:00",
@@ -82,6 +83,7 @@
               "pdc": 267.5,
               "shares": 37,
               "stop": 268.1,
+              "strike_num": 2,
               "trail_active": false,
               "trail_high": 270.0
             }
@@ -221,6 +223,7 @@
             "removed": {
               "date": "2026-04-24",
               "entry_count": 1,
+              "entry_id": "AAPL-20260424143000",
               "entry_price": 270.0,
               "entry_time": "09:30:00",
               "entry_ts_utc": "2026-04-24T14:30:00+00:00",
@@ -228,6 +231,7 @@
               "pdc": 267.5,
               "shares": 37,
               "stop": 268.1,
+              "strike_num": 2,
               "trail_active": false,
               "trail_high": 270.0
             }
@@ -325,5 +329,5 @@
   ],
   "harness_version": 1,
   "scenario": "edge_cooldown_blocks_reentry",
-  "trade_genius_version": "4.11.2"
+  "trade_genius_version": "5.9.3"
 }

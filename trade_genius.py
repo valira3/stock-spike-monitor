@@ -77,7 +77,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.9.2"
+BOT_VERSION = "5.9.3"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -907,22 +907,17 @@ RELEASE_NOTE = MAIN_RELEASE_NOTE
 
 FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
 
-# Human-readable exit reason labels
+# Human-readable exit reason labels.
+# v5.9.3: LORDS_LEFT* / BULL_VACUUM* keys removed. The Sovereign Regime
+# Shield was retired in v5.9.1 and the dual-PDC HARD_EJECT_TIGER half was
+# retired in v5.9.2; v5.9.3 eradicates the residual labels. Any historical
+# trade-log rows with those raw reasons render their raw token rather than
+# a pretty label \u2014 acceptable since no live emission path remains.
 REASON_LABELS = {
     "STOP": "\U0001f6d1 Hard Stop",
     "TRAIL": "\U0001f3af Trail Stop",
     "RED_CANDLE": "\U0001f56f Red Candle (lost daily polarity)",
-    # Long global eject \u2014 retired in v5.9.1 (Sovereign Regime Shield removed).
-    # Labels retained so rows in the persistent trade log from prior versions
-    # still render their human-readable reason.
-    "LORDS_LEFT":      "\U0001f451 Lords Left (SPY+QQQ 1m < PDC)",   # legacy v3.4.28–v5.9.0
-    "LORDS_LEFT[1m]":  "\U0001f451 Lords Left (SPY/QQQ < AVWAP)",    # legacy v2.9.8
-    "LORDS_LEFT[5m]":  "\U0001f451 Lords Left (SPY+QQQ 5m < AVWAP)", # legacy v3.2.0–v3.4.27
     "POLARITY_SHIFT": "\U0001f504 Polarity Shift (price > PDC)",
-    # Short global eject \u2014 retired in v5.9.1 (mirror of LORDS_LEFT).
-    "BULL_VACUUM":     "\U0001f300 Bull Vacuum (SPY+QQQ 1m > PDC)",   # legacy v3.4.28–v5.9.0
-    "BULL_VACUUM[1m]": "\U0001f300 Bull Vacuum (SPY/QQQ > AVWAP)",    # legacy v2.9.8
-    "BULL_VACUUM[5m]": "\U0001f300 Bull Vacuum (SPY+QQQ 5m > AVWAP)", # legacy v3.2.0–v3.4.27
     "EOD": "\U0001f514 End of Day",
 }
 
@@ -2342,14 +2337,15 @@ def _parse_date_arg(args):
     return today  # fallback
 
 
-# Short reason labels for compact /dayreport display
+# Short reason labels for compact /dayreport display.
+# v5.9.3: Lords Left / Bull Vacuum entries dropped along with the
+# REASON_LABELS keys. The 1f451 / 1f300 emoji bytes will pass through
+# untouched if any pre-v5.9.1 row still carries them.
 _SHORT_REASON = {
     "\U0001f6d1": "\U0001f6d1 Stop",
     "\U0001f512": "\U0001f512 Trail",
     "\U0001f56f": "\U0001f56f Red Candle",
-    "\U0001f451": "\U0001f451 Lords Left",
     "\U0001f504": "\U0001f504 Polarity Shift",
-    "\U0001f300": "\U0001f300 Bull Vacuum",
     "\U0001f4c9": "\U0001f4c9 PDC Break",
     "\U0001f514": "\U0001f514 EOD",
 }
@@ -6480,9 +6476,10 @@ user_config: dict = {"trading_mode": "paper"}
 #   pnl:            float     — signed dollars
 #   pnl_pct:        float     — signed percent (0.23 = +0.23%)
 #   reason:         str       — EOD | TRAIL | STOP | RETRO_CAP |
-#                               BULL_VACUUM | LORDS_LEFT |
-#                               BULL_VACUUM[5m] | LORDS_LEFT[5m] |
-#                               ...
+#                               RED_CANDLE | POLARITY_SHIFT |
+#                               HARD_EJECT_TIGER | forensic_stop |
+#                               per_trade_brake | be_stop | ema_trail |
+#                               velocity_fuse | ...
 #   entry_num:      int       — add-on index (longs only; 1 for shorts)
 #   trail_active_at_exit:   bool|null
 #   trail_stop_at_exit:     float|null
@@ -7724,17 +7721,11 @@ def collect_or():
 # v5.9.1 \u2014 Sovereign Regime Shield (PDC eject) REMOVED
 # ============================================================
 # v5.9.0 swapped the entry-side index regime check from AVWAP/PDC
-# to a 5-minute EMA compass (QQQ Regime Shield). v5.9.1 retires
-# the matching exit-side rule so entry and exit are consistent.
-#
-# Removed in v5.9.1:
-#   - _sovereign_regime_eject(side)        : the dual-index PDC eject
-#   - _last_finalized_1min_close(ticker)   : its only consumer/helper
-#   - lords_left / LORDS_LEFT exit reason  : long-side trigger
-#   - bull_vacuum / BULL_VACUUM exit reason: short-side trigger
-#
-# REASON_LABELS for LORDS_LEFT/BULL_VACUUM kept so historical trade
-# rows in the persistent log still render their human-readable label.
+# to a 5-minute EMA compass (QQQ Regime Shield). v5.9.1 retired the
+# matching exit-side rule so entry and exit are consistent. v5.9.3
+# eradicated the residual REASON_LABELS / _SHORT_REASON / comment
+# residue and is now the source of truth: there is no
+# Sovereign-Regime-Shield code path anywhere in the bot.
 # ============================================================
 
 

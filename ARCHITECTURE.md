@@ -424,7 +424,7 @@ state machine is mid-trade.
 |------|-------|----------------|
 | C-R4 | Daily-loss-limit (incl. v4.7.0 short-side cap) | `_check_daily_loss_limit()` flips `_trading_halted=True` AND calls `v5_lock_all_tracks("daily_loss_limit")` so every track moves to `LOCKED_FOR_DAY`. |
 | C-R5 | EOD force-close at 15:55 ET             | `eod_close()` walks `positions` + `short_positions` flattening every open paper position, then calls `v5_lock_all_tracks("eod")` so the next session starts fresh rather than resuming. |
-| C-R6 | Sovereign Regime Shield (Eye of the Tiger) | **Fully retired by v5.9.2.** The PDC-based dual-index eject is gone in two steps: v5.9.1 removed `_sovereign_regime_eject()` (`LORDS_LEFT` / `BULL_VACUUM`); v5.9.2 stripped the dual-PDC half from `_tiger_hard_eject_check()`, leaving Tiger as a pure DI-decay eject (`HARD_EJECT_TIGER` fires on `DI < TIGER_V2_DI_THRESHOLD` only). v5.9.0 already swapped the entry-side index regime to the 5m EMA compass (QQQ Regime Shield). Per-ticker RED_CANDLE / POLARITY_SHIFT exits remain. |
+| C-R6 | Sovereign Regime Shield (Eye of the Tiger) | **Fully retired by v5.9.3.** The PDC-based dual-index eject is gone in three steps: v5.9.1 removed `_sovereign_regime_eject()` (`LORDS_LEFT` / `BULL_VACUUM`); v5.9.2 stripped the dual-PDC half from `_tiger_hard_eject_check()`, leaving Tiger as a pure DI-decay eject (`HARD_EJECT_TIGER` fires on `DI < TIGER_V2_DI_THRESHOLD` only); v5.9.3 eradicated the residual `LORDS_LEFT*` / `BULL_VACUUM*` keys from `REASON_LABELS` / `_SHORT_REASON` and the lingering Telegram strategy-help text. v5.9.0 already swapped the entry-side index regime to the 5m EMA compass (QQQ Regime Shield). Per-ticker RED_CANDLE / POLARITY_SHIFT exits remain. |
 | C-R7 | 9-ticker spike universe + SPY/QQQ pinned    | `TRADE_TICKERS` is the 9-name spike list (excludes SPY/QQQ). `check_breakout` reads SPY/QQQ as polarity inputs only. |
 
 `DAILY_LOSS_LIMIT` (default −$500, env-tunable). Once today's realized
@@ -457,8 +457,10 @@ Event schema:
     "price":        175.42,        # main's reference price
     "reason":       "BREAKOUT" | "STOP" | "TRAIL" | "RED_CANDLE" |
                     "POLARITY_SHIFT" | "EOD" | "HARD_EJECT_TIGER" | ... ,
-                    # LORDS_LEFT / BULL_VACUUM retired in v5.9.1
-                    # (PDC-based Sovereign Regime Shield removed).
+                    # PDC-based Sovereign Regime Shield fully retired:
+                    # v5.9.1 removed LORDS_LEFT/BULL_VACUUM emission,
+                    # v5.9.2 dropped the dual-PDC HARD_EJECT_TIGER half,
+                    # v5.9.3 eradicated the residual labels & comments.
     "timestamp_utc":"2026-04-24T13:45:12Z",
     "main_shares":  57,            # audit: shares the paper book traded
 }

@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.9.3 — 2026-04-28 — Eradicate `LORDS_LEFT` / `BULL_VACUUM` stragglers
+
+Pure cleanup. **No new behavior.** Closes out the three-step retirement of the PDC-based Sovereign Regime Shield: v5.9.1 removed the helper and call sites, v5.9.2 stripped the dual-PDC half of `HARD_EJECT_TIGER`, and v5.9.3 eradicates the residue that was left as "harmless legacy" in v5.9.1 but kept the retired vocabulary alive in user-facing surfaces.
+
+**Trigger.** Four trades with `reason=LORDS_LEFT` (MSFT 08:50 / 09:06 CDT, plus two TSLA companions) appeared in this morning's paper-trade output despite `/api/state` correctly reporting `version: 5.9.2` and `regime.sovereign.status: DISARMED`. Audit of every `close_position` / `close_short_position` call site in `trade_genius.py` confirmed there is **no live `LORDS_LEFT` / `BULL_VACUUM` emission path anywhere in the bot** — every reason argument is one of `STOP`, `TRAIL`, `RED_CANDLE`, `POLARITY_SHIFT`, `RETRO_CAP`, `EOD`, or `HARD_EJECT_TIGER`. The morning trades were therefore residue: stale stringly-typed labels carried over from a pre-v5.9.1 row in the persistent trade log, surfaced through `REASON_LABELS` lookup at display time. The fix is to drop the labels themselves so a stray legacy token cannot round-trip through the dashboard / Telegram exit message and look like a live rule.
+
+**Removed.**
+- `REASON_LABELS["LORDS_LEFT"]`, `["LORDS_LEFT[1m]"]`, `["LORDS_LEFT[5m]"]`, `["BULL_VACUUM"]`, `["BULL_VACUUM[1m]"]`, `["BULL_VACUUM[5m]"]` — all six legacy-label entries dropped from `trade_genius.py`. Any historical trade-log row that still carries those raw reasons now renders as the raw token rather than a pretty Telegram label, which is the desired behavior post-retirement.
+- `_SHORT_REASON` 👑 (Lords Left) and 🌀 (Bull Vacuum) entries dropped — `/dayreport` compact display no longer claims those rules exist.
+- `trade_genius.py` v5.9.1 retirement-history comment block (lines 7725-7738) collapsed to a single self-contained note that points at v5.9.3 as the source of truth.
+- `trade_genius.py` persistent-trade-log schema comment (lines 6482-6485) now lists the active reason vocabulary (`RED_CANDLE`, `POLARITY_SHIFT`, `HARD_EJECT_TIGER`, `forensic_stop`, `per_trade_brake`, `be_stop`, `ema_trail`, `velocity_fuse`) instead of the retired `BULL_VACUUM` / `LORDS_LEFT` tokens.
+- `telegram_commands.py` `/strategy` help text — the SOVEREIGN REGIME SHIELD block (which still described "Lords Left & Bull Vacuum require BOTH SPY AND QQQ to cross PDC") rewritten to describe the v5.9.0 entry-side EMA compass + the v5.9.2 DI-only Tiger, and the long/short Eye of the Tiger exit summaries no longer claim Lords Left / Bull Vacuum are live exits.
+- Stale synthetic-harness goldens (`loop_full_cycle.json`, `loop_trail_promotion.json`, `edge_trail_promotion_threshold.json`, plus 8 others that drifted on adjacent fields) re-recorded against the v5.9.3 emission vocabulary.
+
+**Strengthened.** `smoke_test.py` C-R6 now additionally asserts that `REASON_LABELS` contains no key starting with `LORDS_LEFT` or `BULL_VACUUM` — so a future revert that re-adds the labels alongside re-adding the helper (or re-adds them alone, as v5.9.1 did) is caught at smoke time.
+
+**Kept.** `ARCHITECTURE.md` C-R6 row, the `dashboard_server.py` `_sovereign_regime_snapshot` docstring, and the inline retirement-history comment in `trade_genius.py` all still reference the retired token names — they document the retirement path so a future contributor can grep for `LORDS_LEFT` and find the audit trail. The `🛡 INDEX REGIME` block in `/strategy` references the v5.9.0 → v5.9.3 timeline by version number for the same reason.
+
+**Verified.** `pytest tests/` (43 pass), `python -m synthetic_harness replay` (50 pass), and `grep -rn "LORDS_LEFT\|BULL_VACUUM"` returns only intentional historical/audit references after this PR.
+
+Touched: `trade_genius.py` (REASON_LABELS / _SHORT_REASON / two comment blocks / `BOT_VERSION`); `bot_version.py` → 5.9.3; `telegram_commands.py` (3 `/strategy` text blocks); `smoke_test.py` (C-R6 strengthened); `ARCHITECTURE.md` (C-R6 row, signal-bus reason comment); 11 `synthetic_harness/goldens/*.json` re-recorded; `CHANGELOG.md`. Algo PDF unchanged (cleanup only).
+
+---
+
 ## v5.9.2 — 2026-04-28 — Retire dual-PDC half of `HARD_EJECT_TIGER` (DI-only)
 
 Pure removal. **No new behavior.** Completes the dual-PDC eject retirement that v5.9.1 started. After this release no exit rule in the bot consumes SPY/QQQ vs PDC index-regime checks — entry and exit both look at the v5.9.0 5m EMA compass for index regime, and per-ticker PDC rules (RED_CANDLE / POLARITY_SHIFT) are unchanged.
