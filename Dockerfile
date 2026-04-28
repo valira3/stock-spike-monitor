@@ -50,6 +50,11 @@ COPY persistence.py .
 COPY shadow_pnl.py .
 # v5.4.0 — offline backtest CLI (`python -m backtest.replay`).
 COPY backtest/ ./backtest/
+# v5.11.0 — engine/ package extraction (PR1: bars). Must COPY the whole
+# package; missing this would crash trade_genius at boot with
+# ModuleNotFoundError: engine. Subsequent v5.11.x PRs append more
+# modules under engine/ (seeders, phase_machine, scan, callbacks).
+COPY engine/ ./engine/
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

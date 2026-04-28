@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.11.0 — 2026-04-28 — Engine extraction PR 1: synthetic harness + engine/bars.py
+
+Engine extraction PR 1: synthetic harness + engine/bars.py. No behavior change.
+
+- New `tests/golden/record_session.py` + `verify.py` harness: streams archived 1m bars (today_bars/2026-04-28/) through `compute_5m_ohlc_and_ema9` and writes a deterministic JSONL trace. Re-running must be byte-equal — this is the validation gate for every subsequent engine-extraction PR.
+- New `engine/bars.py` + `engine/__init__.py`. `compute_5m_ohlc_and_ema9` moved verbatim from `trade_genius.py` (was `_v5105_compute_5m_ohlc_and_ema9` at line 8270). The version-prefixed name is kept in `trade_genius.py` as a one-release deprecation shim aliased to the engine import.
+- `Dockerfile` updated to `COPY engine/` so the new package ships in the prod image.
+- New boot log line `[ENGINE] modules loaded: bars` (subsequent v5.11.x PRs will append more modules).
+- `BOT_VERSION` bumped to 5.11.0 in `bot_version.py` and the mirrored constant in `trade_genius.py`. Subsequent PRs in this release will not bump again until v5.11.1.
+- Note: spec called for 2026-04-27 archived bars but only 2026-04-28 is present in the sandbox; the 28th carries a small mid-session gap that is irrelevant to byte-equal validation since the harness compares the same input against itself across the move.
+
+---
+
 ## v5.10.7 — 2026-04-28 — QBTS removed from default universe
 
 - Removed QBTS from `TICKERS_DEFAULT` in trade_genius.py. QBTS is not a Titan and was carried in the default list as a convenience; users who want to track it can still `/ticker add QBTS` at runtime. Aligns the default deployed universe with the 10 Titans + SPY + QQQ anchors.
