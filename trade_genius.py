@@ -82,7 +82,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.10.5"
+BOT_VERSION = "5.10.6"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -100,18 +100,19 @@ BOT_VERSION = "5.10.5"
 #    - The Telegram 34-char mobile-width rule still applies to every
 #      line of both surfaces.
 CURRENT_MAIN_NOTE = (
-    "v5.10.0 \u2014 Eye of the Tiger.\n"
-    "Full algorithm rewrite. Six\n"
-    "sections: I Index Shield,\n"
-    "II Volume Bucket + Boundary\n"
-    "Hold (Entry-1 gates),\n"
-    "III scaled 50/50 entry,\n"
-    "IV Sovereign Brake + Vel\n"
-    "Fuse, V Triple-Lock stops,\n"
-    "VI -$1500 daily breaker +\n"
-    "EOD 15:59:50 ET. Entry 2\n"
-    "needs FRESH NHOD/NLOD.\n"
-    "No feature flag."
+    "v5.10.6 \u2014 closeout.\n"
+    "Dashboard Eye of the\n"
+    "Tiger panel surfaces\n"
+    "Section I permit, vol\n"
+    "bucket + boundary hold\n"
+    "per ticker, plus phase\n"
+    "and Sovereign Brake\n"
+    "distance per position.\n"
+    "Six legacy v5.1\u20135.9\n"
+    "emitters retired.\n"
+    "Full-algo backtest\n"
+    "replay added.\n"
+    "STRATEGY.md regenerated."
 )
 
 # Main-bot release note: short tail of recent releases.
