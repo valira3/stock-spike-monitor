@@ -4,6 +4,13 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.10.7 — 2026-04-28 — QBTS removed from default universe
+
+- Removed QBTS from `TICKERS_DEFAULT` in trade_genius.py. QBTS is not a Titan and was carried in the default list as a convenience; users who want to track it can still `/ticker add QBTS` at runtime. Aligns the default deployed universe with the 10 Titans + SPY + QQQ anchors.
+- Updated stale QBTS comments in trade_genius.py to reflect the new default.
+
+---
+
 ## v5.10.6 — 2026-04-28 — Eye-of-the-Tiger closeout (dashboard panel + legacy cleanup + backtest + strategy)
 
 Final v5.10.x patch. Closes out everything deferred from v5.10.1 / v5.10.4 / v5.10.5.
