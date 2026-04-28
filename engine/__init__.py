@@ -2,11 +2,11 @@
 
 Houses the per-tick decision pipeline extracted from
 `trade_genius.py`. Subsequent PRs in v5.11.x will add
-`phase_machine`, `scan`, and `callbacks`.
+`scan` and `callbacks`.
 
-Boot log line `[ENGINE] modules loaded: bars, seeders` is emitted
-at trade_genius startup so missed Dockerfile COPY lines surface
-as ImportError on boot rather than mid-session.
+Boot log line `[ENGINE] modules loaded: bars, seeders, phase_machine`
+is emitted at trade_genius startup so missed Dockerfile COPY lines
+surface as ImportError on boot rather than mid-session.
 """
 from __future__ import annotations
 
@@ -19,8 +19,9 @@ from engine.seeders import (
     seed_opening_range,
     seed_opening_range_all,
 )
+from engine.phase_machine import phase_machine_tick
 
-LOADED_MODULES = ("bars", "seeders")
+LOADED_MODULES = ("bars", "seeders", "phase_machine")
 
 __all__ = [
     "compute_5m_ohlc_and_ema9",
@@ -30,5 +31,6 @@ __all__ = [
     "seed_di_all",
     "seed_opening_range",
     "seed_opening_range_all",
+    "phase_machine_tick",
     "LOADED_MODULES",
 ]
