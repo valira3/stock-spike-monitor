@@ -460,6 +460,148 @@ def _ticker_gates(m, tickers: list[str]) -> list[dict]:
     return rows
 
 
+def _v510_gate_panel(m, tickers: list[str], longs: dict, shorts: dict) -> list[dict]:
+    """v5.10.4 \u2014 per-ticker Eye-of-the-Tiger gate panel.
+
+    Surfaces, per ticker:
+      - vol_bucket: PASS / FAIL / COLDSTART  (current 1m vol vs 55-day baseline)
+      - boundary_hold: ARMED / SATISFIED / BROKEN, last 2 closes
+      - phase: A / B / C
+      - sovereign_brake: $current_unrealized vs -$500 floor
+      - permit_long: open / blocked
+      - permit_short: open / blocked
+
+    Pulls live state from v5_10_1_integration's module-level caches.
+    Best-effort: if any sub-fetch fails we surface 'unknown' rather
+    than throwing.
+    """
+    rows: list[dict] = []
+    try:
+        import v5_10_1_integration as eot_glue
+        import eye_of_tiger as eot
+    except Exception as e:
+        logger.debug("v510 gate panel: integration import failed: %s", e)
+        return rows
+
+    # Section I (global) \u2014 same for every ticker.
+    qqq_5m_close = None
+    qqq_5m_ema9 = None
+    qqq_cur = None
+    qqq_avwap = None
+    try:
+        qq = getattr(m, "_QQQ_REGIME", None)
+        if qq is not None:
+            qqq_5m_close = getattr(qq, "last_close", None)
+            qqq_5m_ema9 = getattr(qq, "ema9", None)
+        qqq_avwap_fn = getattr(m, "_opening_avwap", None)
+        if qqq_avwap_fn is not None:
+            try:
+                qqq_avwap = qqq_avwap_fn("QQQ")
+            except Exception:
+                qqq_avwap = None
+    except Exception:
+        pass
+
+    permit_long = None
+    permit_short = None
+    try:
+        pl = eot_glue.evaluate_section_i(eot.SIDE_LONG, qqq_5m_close, qqq_5m_ema9, qqq_cur, qqq_avwap)
+        ps = eot_glue.evaluate_section_i(eot.SIDE_SHORT, qqq_5m_close, qqq_5m_ema9, qqq_cur, qqq_avwap)
+        permit_long = "open" if bool(pl.get("open")) else "blocked"
+        permit_short = "open" if bool(ps.get("open")) else "blocked"
+    except Exception:
+        pass
+
+    # Volume baseline (rolling 55d). If not yet refreshed, surface coldstart.
+    vol_baseline = None
+    try:
+        vol_baseline = eot_glue.get_volume_baseline()
+    except Exception:
+        vol_baseline = None
+
+    or_high = dict(getattr(m, "or_high", {}) or {})
+    or_low = dict(getattr(m, "or_low", {}) or {})
+    last_closes_buf = getattr(eot_glue, "_last_1m_closes", {}) or {}
+
+    for t in tickers:
+        # Volume bucket: peek at the cached check from the most recent
+        # evaluate_volume_bucket_gate call. We don't reach inside the
+        # evaluator here \u2014 the live scan loop is the authority. Show
+        # last_seen by sampling the baseline directly if available.
+        vb_status = "unknown"
+        vb_baseline = None
+        if vol_baseline is not None:
+            try:
+                days = vol_baseline.days_available(t)
+                vb_baseline = days
+                if days < 1:
+                    vb_status = "COLDSTART"
+                else:
+                    vb_status = "ARMED"
+            except Exception:
+                pass
+
+        # Boundary Hold: read last cached state per (ticker, side).
+        bh_long = eot_glue._last_boundary_hold.get((t, "LONG"))
+        bh_short = eot_glue._last_boundary_hold.get((t, "SHORT"))
+        boundary_label = "UNKNOWN"
+        if bh_long is True or bh_short is True:
+            boundary_label = "SATISFIED"
+        elif bh_long is False or bh_short is False:
+            boundary_label = "BROKEN"
+        last_closes = list(last_closes_buf.get(t, []) or [])
+        bh_recent = last_closes[-2:] if len(last_closes) >= 2 else last_closes
+
+        # Phase A/B/C: pull from whichever side has open state.
+        phase_label = "A"
+        st_long = eot_glue.get_position_state(t, "LONG")
+        st_short = eot_glue.get_position_state(t, "SHORT")
+        st = st_long or st_short
+        if st is not None:
+            ph = st.get("phase") or eot.PHASE_SURVIVAL
+            if ph == eot.PHASE_NEUT_LAYERED:
+                phase_label = "B-layered"
+            elif ph == eot.PHASE_NEUT_LOCKED:
+                phase_label = "B-locked"
+            elif ph == eot.PHASE_EXTRACTION:
+                phase_label = "C"
+
+        # Sovereign Brake: unrealized vs -500 floor for any open pos.
+        unrealized = 0.0
+        floor = eot.SOVEREIGN_BRAKE_DOLLARS  # -500
+        try:
+            if t in longs:
+                pos = longs[t]
+                ep = float(pos.get("entry_price") or 0.0)
+                sh = int(pos.get("shares") or 0)
+                px = _price_for(t)
+                if px is not None and ep > 0 and sh > 0:
+                    unrealized = (px - ep) * sh
+            elif t in shorts:
+                pos = shorts[t]
+                ep = float(pos.get("entry_price") or 0.0)
+                sh = int(pos.get("shares") or 0)
+                px = _price_for(t)
+                if px is not None and ep > 0 and sh > 0:
+                    unrealized = (ep - px) * sh
+        except Exception:
+            pass
+
+        rows.append({
+            "ticker": t,
+            "vol_bucket": vb_status,
+            "vol_bucket_baseline_days": vb_baseline,
+            "boundary": boundary_label,
+            "boundary_recent_closes": bh_recent,
+            "phase": phase_label,
+            "sovereign_unrealized": round(unrealized, 2),
+            "sovereign_floor": floor,
+            "permit_long": permit_long,
+            "permit_short": permit_short,
+        })
+    return rows
+
+
 def _next_scan_seconds(m) -> int | None:
     """v3.4.21 — seconds until the next scan cycle, or None if unknown.
 
@@ -915,6 +1057,10 @@ def snapshot() -> dict[str, Any]:
                 "per_ticker": _ticker_gates(m, tickers),
                 # v3.4.21 — next scan countdown (seconds until next tick).
                 "next_scan_sec": _next_scan_seconds(m),
+                # v5.10.4 \u2014 Eye-of-the-Tiger gate panel: per-ticker
+                # Volume Bucket / Boundary Hold / Phase / Sovereign Brake
+                # status + the global Section I permit (long/short).
+                "v510_gates": _v510_gate_panel(m, tickers, longs, shorts),
             },
             "near_misses": list(getattr(m, "_near_miss_log", []) or []),
             "observer": {

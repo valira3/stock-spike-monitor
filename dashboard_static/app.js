@@ -628,6 +628,16 @@
         rows.push(tGateRow(r));
       }
     }
+
+    // v5.10.4 \u2014 Eye-of-the-Tiger per-ticker gate panel. Renders
+    // alongside the existing per_ticker chips, never replaces them.
+    const v510 = Array.isArray(g.v510_gates) ? g.v510_gates : [];
+    if (v510.length) {
+      rows.push(`<div class="tgate-section-label">Eye-of-the-Tiger \u00b7 Vol \u00b7 Bound \u00b7 Phase \u00b7 Sov</div>`);
+      for (const r of v510) {
+        rows.push(v510GateRow(r));
+      }
+    }
     gates.innerHTML = rows.join("");
 
     // v3.4.21 — next-scan countdown visible in header tick.
@@ -647,6 +657,32 @@
     chips.push(chipFlag("Idx", r.index));
     const diLbl = (r.di === null || typeof r.di === "undefined") ? "DI \u2026" : "DI";
     chips.push(chipFlag(diLbl, r.di, r.di === null || typeof r.di === "undefined"));
+    return `<div class="tgate">
+      <span class="tgate-tkr">${escapeHtml(r.ticker)}</span>
+      <span class="tgate-chips">${chips.join("")}</span>
+    </div>`;
+  }
+
+  function v510GateRow(r) {
+    if (!r || !r.ticker) return "";
+    const chips = [];
+    const vb = String(r.vol_bucket || "UNKNOWN").toUpperCase();
+    const vbOn = (vb === "PASS" || vb === "ARMED");
+    const vbNa = (vb === "UNKNOWN" || vb === "COLDSTART");
+    chips.push(`<span class="tgate-chip ${vbNa ? "na" : (vbOn ? "on" : "off")}">Vol ${escapeHtml(vb)}</span>`);
+    const bnd = String(r.boundary || "UNKNOWN").toUpperCase();
+    const bndOn = (bnd === "SATISFIED");
+    const bndNa = (bnd === "UNKNOWN");
+    chips.push(`<span class="tgate-chip ${bndNa ? "na" : (bndOn ? "on" : "off")}">Bnd ${escapeHtml(bnd)}</span>`);
+    const ph = String(r.phase || "\u2014");
+    chips.push(`<span class="tgate-chip na">Ph ${escapeHtml(ph)}</span>`);
+    const sov = (typeof r.sovereign_unrealized === "number")
+      ? `$${r.sovereign_unrealized.toFixed(0)}` : "\u2014";
+    const sovOn = (typeof r.sovereign_unrealized === "number" && r.sovereign_unrealized > -500);
+    chips.push(`<span class="tgate-chip ${sovOn ? "on" : "off"}">Sov ${escapeHtml(sov)}</span>`);
+    const pl = !!r.permit_long, ps = !!r.permit_short;
+    const permitTxt = pl && ps ? "L+S" : (pl ? "L" : (ps ? "S" : "\u2014"));
+    chips.push(`<span class="tgate-chip ${(pl || ps) ? "on" : "off"}">Permit ${escapeHtml(permitTxt)}</span>`);
     return `<div class="tgate">
       <span class="tgate-tkr">${escapeHtml(r.ticker)}</span>
       <span class="tgate-chips">${chips.join("")}</span>
