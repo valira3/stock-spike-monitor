@@ -351,7 +351,7 @@ def run_local() -> int:
 
     @t("version: BOT_VERSION is 5.7.1")
     def _():
-        assert m.BOT_VERSION == "5.7.1", f"got {m.BOT_VERSION}"
+        assert m.BOT_VERSION == "5.8.0", f"got {m.BOT_VERSION}"
 
     @t("version: no -beta suffix")
     def _():
@@ -3801,40 +3801,40 @@ def run_local() -> int:
     def _():
         # v5.5.11 supersedes; keep the test name pinned to its release
         # (Val's convention) while asserting the rolling current version.
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.5: BOT_VERSION bumped to 5.5.5")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.6: BOT_VERSION bumped to 5.5.6")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.7: BOT_VERSION bumped to 5.5.7")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.8: BOT_VERSION bumped to 5.5.8")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.9: BOT_VERSION bumped to 5.5.9")
     def _():
         # v5.5.11 supersedes; same pinned-name pattern.
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.10: BOT_VERSION bumped to 5.5.10")
     def _():
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.11: BOT_VERSION bumped to 5.5.11")
     def _():
-        assert m.BOT_VERSION == "5.7.1", m.BOT_VERSION
+        assert m.BOT_VERSION == "5.8.0", m.BOT_VERSION
 
     @t("v5.5.11: _shadowSummaryBand does not call _scFmtTs (cross-IIFE guard)")
     def _():
@@ -4312,17 +4312,17 @@ def run_local() -> int:
         # Test name pinned to its release; assertion follows BOT_VERSION.
         from pathlib import Path as _P
         arch = (_P(__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        assert 'BOT_VERSION = "5.7.1"' in arch, "ARCHITECTURE.md footer not bumped"
+        assert 'BOT_VERSION = "5.8.0"' in arch, "ARCHITECTURE.md footer not bumped"
 
-    @t("v5.5.5: CHANGELOG.md has v5.7.1 heading at top")
+    @t("v5.5.5: CHANGELOG.md has v5.8.0 heading at top")
     def _():
         from pathlib import Path as _P
         cl = (_P(__file__).parent / "CHANGELOG.md").read_text(encoding="utf-8")
         # The first ## heading should be the current version.
-        head_idx = cl.find("\n## v5.7.1")
-        prior = cl.find("\n## v5.7.0")
+        head_idx = cl.find("\n## v5.8.0")
+        prior = cl.find("\n## v5.7.1")
         assert head_idx >= 0 and (prior < 0 or head_idx < prior), \
-            "v5.7.1 heading must precede v5.7.0 in CHANGELOG"
+            "v5.8.0 heading must precede v5.7.1 in CHANGELOG"
 
     @t("v5.5.4: shadow WS bar handler is a coroutine function")
     def _():

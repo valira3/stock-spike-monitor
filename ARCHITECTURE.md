@@ -2110,4 +2110,25 @@ The forensic logger module (`logger`) and the v5.6.1 SKIP/GATE schema are otherw
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.7.1"`.*
+## 24. v5.8.0 — Developer Velocity Bundle (Apr 2026)
+
+**Scope.** Pure repo/tooling release — no algorithm logic touched, no live trading paths modified. Cuts subagent cold-start time, prevents CI-fail iteration cycles, and eliminates the universe-drift recovery class of incidents that hit v5.7.0.
+
+**Deliverables.**
+
+- **`CLAUDE.md`** at repo root — concise agent guide that subagents read on first cold-start. Lists where things live (`entry_gate_v5.py`, `tiger_buffalo_v5.py`, `bison_v5.py`, `shadow_configs.py`, `bot_version.py`, `bar_archive.py`), mandatory PR rules (BOT_VERSION + CHANGELOG lockstep, em-dash escape, forbidden-word list, Telegram 34-char rule), pre-push checklist, and PR submission flow. **`AGENTS.md`** is a thin parallel file that `@import`s `CLAUDE.md` so Codex picks up the same guide.
+- **`specs/_TEMPLATE.md`** — spec scaffolding so every future release starts from a consistent shape (Decisions / Goals / Scope / Logging schema / Tests / Rollout).
+- **`scripts/preflight.sh`** — local CI mirror. BLOCKS on five checks: pytest, BOT_VERSION ↔ CHANGELOG consistency, em-dash literal in `.py`, forbidden-word (`scrape|crawl|scraping|crawling`), ruff format. Em-dash and forbidden-word checks are scoped to files **changed in this PR vs `origin/main`** so the pre-v5.8.0 codebase (which has hundreds of grandfathered literal em-dashes) does not block local runs. Subagents run `bash scripts/preflight.sh` before `git push`.
+- **`bot_version.py`** — canonical version constant (mirrored to `trade_genius.py.BOT_VERSION` so the existing `version-bump-check` CI workflow keeps working unchanged).
+- **`[UNIVERSE_GUARD]` startup check.** New `_ensure_universe_consistency()` helper runs at boot in `trade_genius.py`, before `_init_tickers()`. Reads `/data/tickers.json` on the persistent volume, compares the on-disk list against the canonical `TICKERS_DEFAULT`, and rewrites the file (preserving the `{"tickers": [...]}` envelope) if the file is missing, corrupt, or has drifted. Tolerant of both flat-list and envelope JSON formats. Emits one of three observability lines on every boot:
+  - `[UNIVERSE_GUARD] universe consistent (N tickers)` — happy path
+  - `[UNIVERSE_GUARD] DRIFT detected: disk=… code=… — rewriting to code` — drift caught
+  - `[UNIVERSE_GUARD] /data/tickers.json corrupt (…), rewriting` — corrupt JSON
+
+**Smoke (post-deploy).** Boot logs must contain exactly one `[UNIVERSE_GUARD]` line. If none appears, the guard didn't run.
+
+**Tests.** `tests/test_universe_guard.py` covers four cases: missing file, corrupt JSON, drift detected, and consistent (no rewrite needed) — using pytest's `tmp_path` fixture and `monkeypatch` to redirect the persistent path.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.8.0"`.*
