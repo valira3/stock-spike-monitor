@@ -41,7 +41,8 @@ _warn() {
 # Build a JSON {"query":..., "variables":...} payload safely with python3.
 _build_gql_payload() {
     local query="$1"
-    local variables="${2:-{}}"
+    local variables="${2:-}"
+    if [ -z "${variables}" ]; then variables='{}'; fi
     GQL_QUERY="${query}" GQL_VARS="${variables}" python3 -c '
 import json, os
 print(json.dumps({
@@ -55,7 +56,8 @@ print(json.dumps({
 # Honors RAILWAY_DEPLOY_FIXTURE when set.
 _railway_gql() {
     local query="$1"
-    local variables="${2:-{}}"
+    local variables="${2:-}"
+    if [ -z "${variables}" ]; then variables='{}'; fi
     if [ -n "${RAILWAY_DEPLOY_FIXTURE:-}" ] && [ -f "${RAILWAY_DEPLOY_FIXTURE}" ]; then
         cat "${RAILWAY_DEPLOY_FIXTURE}"
         return 0
@@ -129,16 +131,22 @@ edges = (((data or {}).get("data") or {}).get("deployments") or {}).get("edges")
 if not edges:
     print("|NONE|")
     raise SystemExit(0)
+import re
 node = edges[0].get("node") or {}
 did = node.get("id") or ""
 status = node.get("status") or "UNKNOWN"
 meta = node.get("meta") or {}
 version = ""
-for k in ("commitMessage", "version", "branch"):
+# Extract a SemVer-ish token from commitMessage / version / branch -- typical
+# Railway commitMessage is "v5.8.1: <title>...", so a regex pulls the X.Y.Z.
+candidate = ""
+for k in ("version", "commitMessage", "branch"):
     v = meta.get(k)
     if isinstance(v, str) and v:
-        version = v
+        candidate = v
         break
+m = re.search(r"\b(\d+\.\d+\.\d+)\b", candidate)
+version = m.group(1) if m else (candidate.splitlines()[0][:40] if candidate else "")
 # 3-field pipe-delimited record. Fields cannot contain | in practice (status
 # is an enum, id is a UUID, version is a short string).
 print(f"{did}|{status}|{version}")

@@ -75,7 +75,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.8.1"
+BOT_VERSION = "5.8.2"
 
 # v3.4.21: release notes are split into two surfaces.
 #

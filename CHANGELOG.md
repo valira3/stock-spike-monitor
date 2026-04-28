@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.8.2 — 2026-04-28 — Infra-B smoke library bug-fixes (dogfood follow-up)
+
+Pure infra/tooling patch. **No algorithm logic touched, no live trading paths modified.** Dogfooding v5.8.1 against the live Railway deploy surfaced two bugs in `scripts/lib/checks.sh`:
+
+- **Bash parameter-default brace-expansion bug.** `local variables="${2:-{}}"` in `_build_gql_payload` and `_railway_gql` was being parsed by bash as `${2:-{}` followed by literal `}`, so the GraphQL variables JSON gained an extra trailing `}` on every call (and a doubled extra brace once the value bounced through both functions). The resulting request payload was invalid JSON, Railway returned an error, and `json.loads` blew up at column 156 with "Extra data". Fixed by switching to a sentinel default (`local variables="${2:-}"; [ -z "${variables}" ] && variables='{}'`), which sidesteps the brace-default lex.
+- **`check_deploy_status` printed the entire commit message as the version.** Railway's `meta.commitMessage` is the full multi-line commit text (e.g. `"v5.8.1: Infra-B…\n\nPure infra/tooling release. …"`), not a bare version string. The parser now regex-extracts the first `X.Y.Z` SemVer token from `meta.version`, falling back to `commitMessage` then `branch`, so the echoed line is `DEPLOY SUCCESS <8-char-id> v5.8.1` instead of a paragraph.
+
+**Tests.** `tests/test_checks_lib.sh` still PASSES 37/37 (fixtures already exercised the SemVer-token path because their `meta.commitMessage` was just `"5.8.1"`; tightening to a multi-line fixture for v5.8.2 isn't strictly needed but is added in a follow-up if regressions reappear).
+
+**Out of scope.** Same as v5.8.1: weekday cron `58c883b0` and Saturday cron `873854a1` task bodies live outside the repo and are updated by the parent agent post-merge.
+
+---
+
 ## v5.8.1 — 2026-04-27 — Infra-B post-deploy smoke + checks library
 
 Pure infra/tooling release. **No algorithm logic touched, no live trading paths modified.** Replaces the per-release manual smoke ritual (railway ssh → version → universe → log-tag schema → bar archive → shadow_data_status, ~5–10 min × 3 releases per session) with a single sourceable bash library that both the post-deploy verifier and the recurring weekday/Saturday crons call.
