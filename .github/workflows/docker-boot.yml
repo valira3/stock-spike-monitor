@@ -1,0 +1,97 @@
+name: docker-boot
+
+# v5.10.4 — Docker-build-and-boot CI gate.
+#
+# Builds the production Dockerfile on the PR head commit, starts a
+# container with SSM_SMOKE_TEST=1 (skips Telegram / scheduler / live
+# broker creds), and verifies the dashboard's /api/version endpoint
+# returns a 200 with valid JSON within 30s. Catches the exact class
+# of regression that crash-looped v5.10.1 — a top-level import error
+# inside the container image — BEFORE the PR can merge.
+#
+# Required check on PRs to main.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: docker-boot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-boot:
+    name: docker-boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Build image
+        run: docker build -t tradegenius-test .
+
+      - name: Run container in smoke mode
+        # Bind 8080:8080 so we can poll /api/version from the host.
+        # SSM_SMOKE_TEST=1 skips the Telegram/scheduler/broker boot
+        # branches; trade_genius.py blocks on a sleep loop so the
+        # dashboard daemon thread keeps serving.
+        # DASHBOARD_PASSWORD must be set (>=8 chars) for the
+        # dashboard to start; the value is meaningless in CI since
+        # /api/version is unauthenticated.
+        run: |
+          docker run -d --name tg-smoke \
+            -e SSM_SMOKE_TEST=1 \
+            -e DASHBOARD_PASSWORD=ci-smoke-test-pw \
+            -e DASHBOARD_PORT=8080 \
+            -p 8080:8080 \
+            tradegenius-test
+          echo "Container started: $(docker ps -q -f name=tg-smoke)"
+
+      - name: Poll /api/version
+        id: poll
+        run: |
+          set -uo pipefail
+          ok=0
+          for i in $(seq 1 30); do
+            body=$(curl -fsS -m 3 http://localhost:8080/api/version 2>/dev/null || true)
+            if [ -n "$body" ]; then
+              echo "poll $i: $body"
+              # Validate it's a JSON object with a "version" key.
+              if printf '%s' "$body" | python -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d,dict) and 'version' in d" 2>/dev/null; then
+                echo "::notice::/api/version returned valid JSON on poll $i"
+                ok=1
+                break
+              fi
+            else
+              echo "poll $i: no response yet"
+            fi
+            sleep 1
+          done
+          if [ $ok -ne 1 ]; then
+            echo "::error::/api/version did not return valid JSON within 30s"
+            exit 1
+          fi
+
+      - name: Capture container logs on failure
+        if: failure()
+        run: |
+          mkdir -p artifacts
+          docker logs tg-smoke > artifacts/docker_logs.txt 2>&1 || true
+          docker ps -a > artifacts/docker_ps.txt 2>&1 || true
+
+      - name: Upload logs artifact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-boot-logs
+          path: artifacts/
+          if-no-files-found: ignore
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f tg-smoke || true

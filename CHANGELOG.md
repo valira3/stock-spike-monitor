@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.10.4 — 2026-04-28 — Docker-build-and-boot CI gate + Entry 2 scaling (Section III)
+
+**Two intentionally narrow changes; nothing else in this PR.**
+
+**1. Docker-build-and-boot CI gate.** Adds a new `docker-boot` job in `.github/workflows/docker-boot.yml` that runs on every PR. It `docker build`s the image, runs the container with `SSM_SMOKE_TEST=1` and `DASHBOARD_PASSWORD=ci-smoke-test-pw`, polls `http://localhost:8080/api/version` for up to 30s, and fails the PR if the endpoint does not return a 200 with valid JSON. On failure, it captures `docker logs` and uploads them as an artifact. This catches the exact regression class that crash-looped v5.10.1 — a top-level import error inside the container — *before* it can merge, instead of relying on the post-deploy smoke job that fires after main is already on Railway.
+
+To make `SSM_SMOKE_TEST=1` actually keep the container alive long enough to be polled, the existing smoke-test guard at the bottom of `trade_genius.py` now blocks the main thread on a sleep loop when invoked as `__main__`. Pytest imports of the module (which set `SSM_SMOKE_TEST=1` and rely on the import returning promptly) are unaffected — the block is gated on `__name__ == "__main__"`.
+
+**2. Entry 2 scaling (Section III).** Wires the `evaluate_entry_2_decision` / `record_entry_2` helpers from `v5_10_1_integration.py` (already unit-tested, dormant since v5.10.1) into the live hot path. Per the canonical Eye-of-the-Tiger spec (§III, rev c):
+
+- Entry 2 fires on a **1m DI cross > 30** (`di_1m_prev <= 30 and di_1m_now > 30`) plus a **fresh NHOD/NLOD** that extends past Entry 1's running HWM (long) or LWM (short), with `now_ts > entry_1_ts`.
+- Section II gates (Volume Bucket, Boundary Hold) are NOT re-applied — Entry 2 is intentionally a momentum scale-in.
+- Section I (global permit) IS re-evaluated fresh at the trigger (per spec §XIV.3); we do not cache the Entry-1 permit decision.
+- Sized at 50% of the original Entry 1 share count (min 1). Long Entry 2 debits cash; short Entry 2 credits cash. The position's `entry_price` is updated to the share-weighted average of Entry 1 + Entry 2, and `shares` grows accordingly so all downstream stop / trail / P&L math sees the combined book.
+
+Wired in `_v5104_maybe_fire_entry_2`, called from `check_breakout` whenever a position already exists for `(ticker, side)` and `v5104_entry2_fired` is False. Emits `[V5100-ENTRY] entry_num=2 di_1m=… fresh_extreme=… fill_price=… shares=… new_avg=…`.
+
+**Out of scope (separate PRs in flight).** Phase B/C, dashboard updates, backtest. Do not let v5.10.4 grow.
+
+---
+
 ## v5.10.3 — 2026-04-28 — Re-ship Eye-of-the-Tiger integration with boot-hang fix + startup smoke test
 
 **Re-ships PR #189 (the v5.10.1 live-hot-path integration of the Eye-of-the-Tiger evaluators) on top of v5.10.2's revert, with the actual root cause of the Railway boot regression fixed and a startup smoke test added so it cannot happen again.**
