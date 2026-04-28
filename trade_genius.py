@@ -8350,6 +8350,195 @@ def execute_breakout(ticker, current_price, side):
         "main_shares": int(shares),
     })
 
+    # v5.10.4 \u2014 seed v5.10.0 position state for Entry-2 / Phase B/C
+    # bookkeeping. Section III/V evaluators key off this state. The
+    # HWM at entry is the current price of the print that triggered
+    # Entry-1 (NHOD for long, NLOD for short).
+    try:
+        eot_glue.init_position_state_on_entry_1(
+            ticker,
+            _v570_side_label,
+            float(current_price),
+            int(shares),
+            now_et,
+            float(current_price),
+        )
+    except Exception as _ets_e:
+        logger.warning("[V5100-STATE] init Entry-1 %s %s: %s",
+                       ticker, _v570_side_label, _ets_e)
+
+
+# ============================================================
+# v5.10.4 \u2014 ENTRY 2 (Section III scaled re-entry, 50% size)
+# ============================================================
+def check_entry_2(ticker: str, side):
+    """Section III Entry 2 gate. Fires when an Entry-1 position is
+    open AND (a) 1m DI crosses > 30 fresh AND (b) a fresh NHOD/NLOD
+    extends past Entry-1 HWM after the Entry-1 timestamp. Section II
+    gates (Volume Bucket / Boundary Hold) DO NOT apply per spec.
+    Section I (Global Permit) is re-evaluated FRESH at trigger time
+    per spec XIV.3 conservative interpretation.
+
+    Returns (True, bars) if Entry 2 should fire, else (False, None).
+    """
+    cfg = CONFIGS[side]
+    side_label = "LONG" if cfg.side.is_long else "SHORT"
+    positions_dict = globals()[cfg.positions_attr]
+
+    if _trading_halted or _scan_paused:
+        return False, None
+    if ticker not in positions_dict:
+        return False, None
+    pos = positions_dict[ticker]
+
+    # Already fired Entry 2 for this position lifecycle? Bail.
+    state = eot_glue.get_position_state(ticker, side_label)
+    if state is None:
+        return False, None
+    if state.get("entry_2_fired"):
+        return False, None
+
+    # Daily kill switch (-$1500) blocks new entries.
+    if _v570_kill_switch_active():
+        return False, None
+
+    # EOD lockout matches check_breakout's window.
+    now_et = _now_et()
+    eod_time = now_et.replace(hour=15, minute=55, second=0, microsecond=0)
+    if now_et >= eod_time:
+        return False, None
+
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return False, None
+    current_price = bars.get("current_price")
+    if not current_price or current_price <= 0:
+        return False, None
+
+    # Re-evaluate Section I FRESH at the Entry-2 trigger tick.
+    qqq_bars = fetch_1min_bars("QQQ")
+    if not qqq_bars:
+        return False, None
+    qqq_last = qqq_bars.get("current_price")
+    qqq_avwap = _opening_avwap("QQQ")
+    qqq_5m_close = _QQQ_REGIME.last_close
+    qqq_ema9 = _QQQ_REGIME.ema9
+    permit = eot_glue.evaluate_section_i(
+        side_label, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap,
+    )
+    permit_open = bool(permit.get("open"))
+
+    # 1m DI for the relevant side.
+    di_streams = v5_di_1m_5m(ticker)
+    if cfg.side.is_long:
+        di_1m_now = di_streams.get("di_plus_1m")
+    else:
+        di_1m_now = di_streams.get("di_minus_1m")
+
+    # Fresh NHOD/NLOD past Entry-1 HWM, after Entry-1 ts.
+    e1_hwm = state.get("entry_1_hwm")
+    fresh_extreme = False
+    if e1_hwm is not None and current_price is not None:
+        if cfg.side.is_long:
+            fresh_extreme = current_price > e1_hwm
+        else:
+            fresh_extreme = current_price < e1_hwm
+
+    decision = eot_glue.evaluate_entry_2_decision(
+        ticker, side_label,
+        entry_1_active=True,
+        permit_open_at_trigger=permit_open,
+        di_1m_now=di_1m_now,
+        fresh_nhod_or_nlod=fresh_extreme,
+        entry_2_already_fired=False,
+    )
+    if not decision.get("fire"):
+        return False, None
+
+    try:
+        logger.info(
+            "[V5100-ENTRY] ticker=%s side=%s entry_num=2 di_1m=%s "
+            "fill_price=%.4f e1_hwm=%s fresh=%s",
+            ticker, side_label,
+            ("%.2f" % di_1m_now) if di_1m_now is not None else "None",
+            current_price,
+            ("%.4f" % e1_hwm) if e1_hwm is not None else "None",
+            fresh_extreme,
+        )
+    except Exception:
+        pass
+    return True, bars
+
+
+def execute_entry_2(ticker: str, current_price: float, side):
+    """Section III Entry 2 execution. Adds 50% of original shares to
+    the existing position; updates avg_entry; triggers Phase B layered
+    shield + break-even stop via record_entry_2.
+    """
+    global paper_cash
+    cfg = CONFIGS[side]
+    side_label = "LONG" if cfg.side.is_long else "SHORT"
+    positions_dict = globals()[cfg.positions_attr]
+    if ticker not in positions_dict:
+        return
+
+    pos = positions_dict[ticker]
+    e1_shares = int(pos.get("shares") or 0)
+    if e1_shares <= 0:
+        return
+    e2_shares = max(1, e1_shares // 2)  # Entry 2 = 50% of Entry 1
+    e1_price = float(pos.get("entry_price") or 0.0)
+    if e1_price <= 0:
+        return
+
+    notional = current_price * e2_shares
+    if cfg.side.is_long and notional > paper_cash:
+        logger.info(
+            "[paper] skip Entry-2 %s \u2014 insufficient cash "
+            "(need $%.2f, have $%.2f)",
+            ticker, notional, paper_cash,
+        )
+        return
+
+    # Update average and shares on the position.
+    new_total = e1_shares + e2_shares
+    new_avg = (e1_price * e1_shares + current_price * e2_shares) / new_total
+    pos["shares"] = new_total
+    pos["entry_price"] = new_avg
+    # Break-even stop: avg entry. Phase B layered shield.
+    pos["stop"] = new_avg
+    pos["initial_stop"] = new_avg
+
+    paper_cash += cfg.entry_cash_delta(e2_shares, current_price)
+
+    now_et = _now_et()
+    eot_glue.record_entry_2(
+        ticker, side_label, float(current_price), int(e2_shares), now_et,
+    )
+    try:
+        logger.info(
+            "[V5100-PHASE-B-BE] ticker=%s side=%s avg_entry=%.4f new_stop=%.4f "
+            "shares=%d (+%d)",
+            ticker, side_label, new_avg, pos["stop"], new_total, e2_shares,
+        )
+    except Exception:
+        pass
+
+    paper_log(
+        "ENTRY2 %s %s +%d @ $%.2f avg=$%.2f stop=$%.2f"
+        % (side_label, ticker, e2_shares, current_price, new_avg, pos["stop"])
+    )
+    save_paper_state()
+
+    _emit_signal({
+        "kind": cfg.entry_signal_kind,
+        "ticker": ticker,
+        "price": float(current_price),
+        "reason": "v5100_entry_2",
+        "timestamp_utc": _utc_now_iso(),
+        "main_shares": int(e2_shares),
+    })
+
 
 # ============================================================
 # CLOSE POSITION
@@ -8373,6 +8562,15 @@ def close_breakout(ticker, price, side, reason="STOP"):
     _last_exit_time[ticker] = datetime.now(timezone.utc)
 
     pos = positions_dict.pop(ticker)
+    # v5.10.4 \u2014 Section V terminal: clear v5.10.0 position state so
+    # Entry-2 / Phase-B / Phase-C bookkeeping is fresh for the next
+    # entry into this ticker on the same side.
+    try:
+        eot_glue.clear_position_state(
+            ticker, "LONG" if cfg.side.is_long else "SHORT",
+        )
+    except Exception as _ets_e:
+        logger.warning("[V5100-STATE] clear %s: %s", ticker, _ets_e)
     entry_price = pos["entry_price"]
     shares = pos["shares"]
     pnl_val = cfg.realized_pnl(entry_price, price, shares)
@@ -9785,6 +9983,15 @@ def scan_loop():
                             summary=f"Paper entry exception: {ticker}",
                             detail=f"{type(e).__name__}: {str(e)[:200]}",
                         )
+            else:
+                # v5.10.4 \u2014 Section III Entry 2 (50% scale-in) on
+                # the long side. Only fires once per Entry-1 lifecycle.
+                try:
+                    ok2, bars2 = check_entry_2(ticker, Side.LONG)
+                    if ok2 and bars2:
+                        execute_entry_2(ticker, bars2["current_price"], Side.LONG)
+                except Exception as _e2:
+                    logger.warning("[V5100-ENTRY2] long %s: %s", ticker, _e2)
         except Exception as e:
             logger.error("Entry check error %s: %s", ticker, e)
         # Short entry check (Wounded Buffalo) — same call/execute pattern as long.
@@ -9806,6 +10013,14 @@ def scan_loop():
                             summary=f"Paper short entry exception: {ticker}",
                             detail=f"{type(e).__name__}: {str(e)[:200]}",
                         )
+            else:
+                # v5.10.4 \u2014 Section III Entry 2 on the short side.
+                try:
+                    ok2, bars2 = check_entry_2(ticker, Side.SHORT)
+                    if ok2 and bars2:
+                        execute_entry_2(ticker, bars2["current_price"], Side.SHORT)
+                except Exception as _e2:
+                    logger.warning("[V5100-ENTRY2] short %s: %s", ticker, _e2)
         except Exception as e:
             logger.error("Short entry check error %s: %s", ticker, e)
 
