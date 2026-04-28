@@ -1,0 +1,12 @@
+{
+  "data": {
+    "deploymentLogs": [
+      {"message": "STARTUP SUMMARY: TradeGenius v5.8.0 booting"},
+      {"message": "[UNIVERSE_GUARD] DRIFT detected: AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,ORCL,SPY rewriting /data/tickers.json"},
+      {"message": "Traceback (most recent call last):"},
+      {"message": "  File \"trade_genius.py\", line 42, in <module>"},
+      {"message": "TypeError: must be a coroutine"},
+      {"message": "[ERROR] websocket error: connection reset"}
+    ]
+  }
+}

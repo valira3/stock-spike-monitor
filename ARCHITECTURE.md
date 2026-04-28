@@ -2131,4 +2131,38 @@ The forensic logger module (`logger`) and the v5.6.1 SKIP/GATE schema are otherw
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.8.0"`.*
+## 25. v5.8.1 — Ops scripts (Infra-B post-deploy smoke + checks library)
+
+**Scope.** Pure infra/tooling release — no algorithm logic touched, no live trading paths modified. Single shell library that both the post-deploy verification and the recurring weekday/Saturday crons call. Single source of truth for "what does a healthy TradeGenius deploy look like?"
+
+**Files.**
+
+- **`scripts/lib/checks.sh`** — sourceable bash library. Seven pure check functions, each prints a structured one-line stdout record and returns 0/1:
+  - `check_deploy_status` — Railway GraphQL `deployments(first:1)` → `DEPLOY <status> <8-char-id> v<version>`. Returns 0 on `SUCCESS`.
+  - `check_universe_loaded` — last-200 log scan for `[UNIVERSE_GUARD]` (the post-v5.8.0 schema; was `[UNIVERSE]` pre-v5.8.0). Parses both the `consistent (N tickers)` happy form and the `DRIFT detected: …` form. Returns 0 if `count >= 11`.
+  - `check_log_tags <tag…>` — variadic; counts each tag in last-500 log lines. Returns 0 if every tag occurs at least once.
+  - `check_no_errors` — counts `must be a coroutine`, `websocket error`, `Traceback`, `[ERROR]` in last-500 log lines. Returns 0 if all are zero.
+  - `check_bar_archive_today` — `railway ssh` runs `ls /data/bars/$(date -u +%Y-%m-%d)` + `du -sb`. Passes whenever the dir exists; soft-warns (stderr) when the dir is empty so market-closed days don't false-fail. Hard-fails only on a missing directory.
+  - `check_shadow_db_count` — `railway ssh` runs an inline `python3` block that opens `/data/shadow.db` with `sqlite3` and emits total + last-24h breakdown by `config_name`. Always returns 0 (informational).
+  - `check_dashboard_state` — POST `/login` with cookie jar, GET `/api/state`, parse `shadow_data_status` + `version`. Returns 0 if `status==live`.
+- **`scripts/post_deploy_smoke.sh`** — orchestrator. `bash scripts/post_deploy_smoke.sh <expected_version>` sources the library, runs all 7 checks, tallies PASS/FAIL, prints a summary, and exits 0 on all-pass / 1 on any-fail. Default `EXPECTED_TAGS` set: `STARTUP SUMMARY`, `[UNIVERSE_GUARD]`, `[V560-GATE]`, `[V570-STRIKE]`, `[V571-EXIT_PHASE]`. Failures are informational — this script does NOT block automated merges; the CI smoke gate (`post-deploy-smoke.yml`) remains the blocker.
+- **`tests/test_checks_lib.sh`** — 13 cases × 37 assertions. Each check has happy + sad fixture coverage. The library exposes `RAILWAY_LOGS_FIXTURE`, `RAILWAY_DEPLOY_FIXTURE`, `RAILWAY_SSH_FIXTURE`, and `DASHBOARD_STATE_FIXTURE` env-var overrides so tests run fully offline. Plain bash + manual asserts; no bats dependency.
+- **`.github/workflows/scripts-lint.yml`** — soft-fail shellcheck pass over `scripts/*.sh`, `scripts/lib/*.sh`, and `tests/test_checks_lib.sh` on PRs that touch `scripts/`. `continue-on-error: true` for now since pre-existing scripts may not pass.
+
+**Caller pattern.** Both `scripts/post_deploy_smoke.sh` and the recurring crons follow the same shape:
+
+```bash
+source "$(dirname "$0")/lib/checks.sh"
+export RAILWAY_API_TOKEN=… RAILWAY_PROJECT=… RAILWAY_SERVICE=… RAILWAY_ENVIRONMENT=…
+export DASHBOARD_URL=… DASHBOARD_PASSWORD=…
+check_deploy_status
+check_universe_loaded
+check_log_tags "STARTUP SUMMARY" "[UNIVERSE_GUARD]" "[V560-GATE]" "[V570-STRIKE]" "[V571-EXIT_PHASE]"
+…
+```
+
+**Out of scope here.** The cron task bodies (`58c883b0` weekday 8:35 CT, `873854a1` Saturday 10am CT) live outside the repo and are updated by the parent agent's `schedule_cron(action="update", …)` after this PR merges. The Saturday weekly-report directory is renamed to `backtest_v57x/` in that update. Per-exit-reason P&L breakdown belongs to the Saturday cron parser; `check_log_tags` already accepts `[V571-EXIT_PHASE]` as a recognised tag so the cron can pull the data through the shared library.
+
+---
+
+*Last refresh: April 2026, against `BOT_VERSION = "5.8.1"`.*

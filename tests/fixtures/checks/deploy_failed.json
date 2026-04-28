@@ -1,0 +1,17 @@
+{
+  "data": {
+    "deployments": {
+      "edges": [
+        {
+          "node": {
+            "id": "deadbeef-1111-2222-3333-444455556666",
+            "status": "FAILED",
+            "meta": {
+              "commitMessage": "5.8.1"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

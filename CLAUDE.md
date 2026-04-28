@@ -26,6 +26,9 @@ Run `bash scripts/preflight.sh` — mirrors CI checks locally:
 - em-dash literal check on .py files
 - ruff/black format check
 
+## Post-deploy smoke
+Run `bash scripts/post_deploy_smoke.sh <version>` after every release (the script sources `scripts/lib/checks.sh` for the 7 checks: deploy status, universe loaded, log-tag schema, no errors, bar archive today, shadow_db count, dashboard /api/state). Failures are informational — they do NOT block automated merges; post the output as a PR comment so the author sees it. CI will eventually invoke this automatically; the existing `post-deploy-smoke.yml` workflow remains the blocking gate.
+
 ## Tests
 - `pytest tests/` (full suite)
 - `pytest tests/test_<module>.py -k <name>` (focused)

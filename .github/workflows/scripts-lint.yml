@@ -1,0 +1,40 @@
+name: Scripts lint (shellcheck)
+
+# v5.8.1 Infra-B: lint all bash under scripts/. Soft-fail for now since
+# pre-existing scripts may not pass; we tighten this gate later.
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'tests/test_checks_lib.sh'
+      - '.github/workflows/scripts-lint.yml'
+  workflow_dispatch: {}
+
+jobs:
+  shellcheck:
+    name: shellcheck scripts/
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck
+        run: |
+          set +e
+          FAIL=0
+          for f in scripts/*.sh scripts/lib/*.sh tests/test_checks_lib.sh; do
+            [ -f "$f" ] || continue
+            echo "::group::shellcheck $f"
+            shellcheck -x "$f" || FAIL=1
+            echo "::endgroup::"
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::warning::shellcheck reported issues (soft-fail; not blocking merge)"
+          fi
+          exit 0

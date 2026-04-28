@@ -1,0 +1,12 @@
+{
+  "data": {
+    "deploymentLogs": [
+      {"message": "STARTUP SUMMARY: TradeGenius v5.8.0 booting", "timestamp": "2026-04-28T13:30:00Z"},
+      {"message": "[UNIVERSE_GUARD] universe consistent (12 tickers): AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,ORCL,SPY,QQQ", "timestamp": "2026-04-28T13:30:01Z"},
+      {"message": "[V560-GATE] AAPL gate_state=open momentum=ok", "timestamp": "2026-04-28T13:31:00Z"},
+      {"message": "[V570-STRIKE] AAPL S1 entry filled @ 195.42", "timestamp": "2026-04-28T13:31:05Z"},
+      {"message": "[V571-EXIT_PHASE] AAPL exit_reason=ema_trail pnl=+24.10", "timestamp": "2026-04-28T13:45:00Z"},
+      {"message": "[TRADE_CLOSED] AAPL realized=+24.10 hold_min=14", "timestamp": "2026-04-28T13:45:01Z"}
+    ]
+  }
+}

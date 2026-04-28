@@ -1,0 +1,6 @@
+{
+  "shadow_data_status": "live",
+  "version": "5.8.0",
+  "tickers": ["AAPL", "MSFT", "NVDA"],
+  "uptime_sec": 12345
+}
