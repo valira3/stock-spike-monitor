@@ -82,7 +82,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.10.4"
+BOT_VERSION = "5.10.5"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -8522,6 +8522,14 @@ def close_breakout(ticker, price, side, reason="STOP"):
     _last_exit_time[ticker] = datetime.now(timezone.utc)
 
     pos = positions_dict.pop(ticker)
+    # v5.10.5 \u2014 Clear v5.10 phase state + 5m-bucket debounce on close
+    # so a fresh re-entry starts in Phase A with a clean slate.
+    try:
+        _eot_side = eot.SIDE_LONG if cfg.side.is_long else eot.SIDE_SHORT
+        eot_glue.clear_position_state(ticker, _eot_side)
+        _v5105_last_5m_bucket.pop((ticker, _eot_side), None)
+    except Exception:
+        pass
     entry_price = pos["entry_price"]
     shares = pos["shares"]
     pnl_val = cfg.realized_pnl(entry_price, price, shares)
@@ -8725,6 +8733,202 @@ def close_breakout(ticker, price, side, reason="STOP"):
 
 
 # ============================================================
+# v5.10.5 \u2014 Phase B/C Triple-Lock helpers
+# ============================================================
+# Per-ticker tracking of the most recent closed 5m bar fed into the
+# phase machine, keyed by (ticker, side). Used to debounce repeated
+# step_two_bar_lock_on_5m calls until a fresh bar appears.
+_v5105_last_5m_bucket: dict[tuple[str, str], int] = {}
+
+
+def _v5105_compute_5m_ohlc_and_ema9(bars: dict | None) -> dict | None:
+    """Return {opens, highs, lows, closes, ema9, seeded, last_bucket}
+    for closed 5m bars derived from a `fetch_1min_bars` payload.
+
+    `seeded` is True once 9 closed 5m bars are available (Gene's spec
+    requires \u2265 9 closes since 9:30 ET to seed the 5m 9-EMA). `ema9`
+    is the most recent EMA9 value, or None.
+    """
+    if not bars:
+        return None
+    ts_list = bars.get("timestamps") or []
+    opens_all = bars.get("opens") or []
+    highs_all = bars.get("highs") or []
+    lows_all = bars.get("lows") or []
+    closes_all = bars.get("closes") or []
+    if not ts_list or not closes_all:
+        return None
+
+    buckets_open: dict[int, float] = {}
+    buckets_high: dict[int, float] = {}
+    buckets_low: dict[int, float] = {}
+    buckets_close: dict[int, float] = {}
+    n = len(ts_list)
+    for i in range(n):
+        ts = ts_list[i]
+        if ts is None:
+            continue
+        o = opens_all[i] if i < len(opens_all) else None
+        h = highs_all[i] if i < len(highs_all) else None
+        lo = lows_all[i] if i < len(lows_all) else None
+        c = closes_all[i] if i < len(closes_all) else None
+        if o is None or h is None or lo is None or c is None:
+            continue
+        bucket = int(ts) // 300
+        if bucket not in buckets_open:
+            buckets_open[bucket] = o
+            buckets_high[bucket] = h
+            buckets_low[bucket] = lo
+            buckets_close[bucket] = c
+        else:
+            buckets_high[bucket] = max(buckets_high[bucket], h)
+            buckets_low[bucket] = min(buckets_low[bucket], lo)
+            buckets_close[bucket] = c
+    ordered = sorted(buckets_open.keys())
+    if len(ordered) <= 1:
+        return None
+    ordered = ordered[:-1]  # drop newest (possibly forming)
+    if not ordered:
+        return None
+    opens = [buckets_open[b] for b in ordered]
+    highs = [buckets_high[b] for b in ordered]
+    lows = [buckets_low[b] for b in ordered]
+    closes = [buckets_close[b] for b in ordered]
+    ema9 = None
+    seeded = False
+    if len(closes) >= 9:
+        # Standard EMA(9): SMA seed over first 9, then alpha = 2/(9+1).
+        seed = sum(closes[:9]) / 9.0
+        ema = seed
+        alpha = 2.0 / 10.0
+        for c in closes[9:]:
+            ema = alpha * c + (1.0 - alpha) * ema
+        ema9 = ema
+        seeded = True
+    return {
+        "opens": opens,
+        "highs": highs,
+        "lows": lows,
+        "closes": closes,
+        "ema9": ema9,
+        "seeded": seeded,
+        "last_bucket": ordered[-1],
+    }
+
+
+def _v5105_phase_machine_tick(ticker: str, side: str, pos: dict, bars: dict) -> tuple[str | None, str | None]:
+    """Run one tick of the v5.10 Phase B/C machine for an open position.
+
+    Lazily initializes per-position phase state (phase 'A' on first
+    sight). Steps two-bar-lock on each new closed 5m bar. Promotes to
+    Phase C when the 5m EMA9 is seeded and the lock has fired. Emits
+    [V5100-PHASE-B-BE] / [V5100-PHASE-C-EMA-TRAIL] log lines on exit.
+
+    Returns (exit_reason, label) where exit_reason is None (no exit),
+    'be_stop', or 'ema_trail'.
+    """
+    try:
+        entry_p = pos.get("entry_price")
+        if not entry_p:
+            return None, None
+        state = eot_glue.get_position_state(ticker, side)
+        if state is None:
+            shares = int(pos.get("shares") or 0)
+            eot_glue.init_position_state_on_entry_1(
+                ticker, side,
+                entry_price=float(entry_p),
+                shares=shares,
+                entry_ts=datetime.now(tz=timezone.utc),
+                hwm_at_entry=float(entry_p),
+            )
+            state = eot_glue.get_position_state(ticker, side)
+        if state is None:
+            return None, None
+
+        # Snap Entry-2 into the v5.10 state machine when v5.10.4 has
+        # already fired the scale-in. This is the trigger for advancing
+        # the phase machine from SURVIVAL \u2192 NEUT_LAYERED, after which
+        # the Two-Bar Lock counter starts running on closed 5m bars.
+        if (not state.get("entry_2_fired")) and pos.get("v5104_entry2_fired"):
+            e2_price = pos.get("v5104_entry2_price") or pos.get("entry_price")
+            e2_shares = int(pos.get("v5104_entry2_shares") or 0) or int(pos.get("shares") or 0)
+            eot_glue.record_entry_2(
+                ticker, side,
+                entry_2_price=float(e2_price),
+                entry_2_shares=int(e2_shares),
+                entry_2_ts=datetime.now(tz=timezone.utc),
+            )
+            state = eot_glue.get_position_state(ticker, side)
+
+        # Compute closed 5m bars + EMA9.
+        bundle = _v5105_compute_5m_ohlc_and_ema9(bars)
+        if bundle is None:
+            return None, None
+
+        # On a NEW closed 5m bucket, advance the two-bar-lock counter.
+        bucket_key = (ticker, side)
+        last_seen = _v5105_last_5m_bucket.get(bucket_key)
+        new_bucket = bundle["last_bucket"]
+        if last_seen != new_bucket:
+            _v5105_last_5m_bucket[bucket_key] = new_bucket
+            last_open = bundle["opens"][-1]
+            last_close = bundle["closes"][-1]
+            eot_glue.step_two_bar_lock_on_5m(
+                ticker, side, last_open, last_close,
+            )
+            state = eot_glue.get_position_state(ticker, side)
+
+        # Promote to Phase C if EMA9 is seeded and we are LOCKED.
+        eot_glue.step_phase_c_if_eligible(
+            ticker, side, bundle["ema9"], bundle["seeded"],
+        )
+        state = eot_glue.get_position_state(ticker, side)
+
+        # Update the simple per-position phase label for /api/state.
+        phase_v5 = (state or {}).get("phase")
+        if phase_v5 == eot.PHASE_EXTRACTION:
+            pos["phase"] = "C"
+        elif phase_v5 == eot.PHASE_NEUT_LOCKED:
+            pos["phase"] = "B"
+        else:
+            pos["phase"] = "A"
+
+        # Phase C \u2014 ema_trail check on the most recent closed 5m close.
+        if pos["phase"] == "C":
+            last_close = bundle["closes"][-1]
+            if eot_glue.evaluate_phase_c_exit(ticker, side, last_close):
+                logger.warning(
+                    "[V5100-PHASE-C-EMA-TRAIL] ticker=%s side=%s "
+                    "5m_close=%.4f ema9=%s",
+                    ticker, side, last_close,
+                    ("%.4f" % bundle["ema9"]) if bundle["ema9"] is not None else "None",
+                )
+                return eot.EXIT_REASON_EMA_TRAIL, "ema_trail"
+
+        # Phase B \u2014 break-even stop on current price vs avg_entry.
+        if pos["phase"] == "B":
+            current_price = bars.get("current_price")
+            be_level = (state or {}).get("current_stop") or pos.get("entry_price") or entry_p
+            if current_price is not None and be_level is not None:
+                if side == eot.SIDE_LONG and current_price <= float(be_level):
+                    logger.warning(
+                        "[V5100-PHASE-B-BE] ticker=%s side=LONG cur=%.4f be=%.4f",
+                        ticker, current_price, float(be_level),
+                    )
+                    return eot.EXIT_REASON_BE_STOP, "be_stop"
+                if side == eot.SIDE_SHORT and current_price >= float(be_level):
+                    logger.warning(
+                        "[V5100-PHASE-B-BE] ticker=%s side=SHORT cur=%.4f be=%.4f",
+                        ticker, current_price, float(be_level),
+                    )
+                    return eot.EXIT_REASON_BE_STOP, "be_stop"
+        return None, None
+    except Exception as _phase_e:
+        logger.warning("[V5100-PHASE] tick error %s/%s: %s", ticker, side, _phase_e)
+        return None, None
+
+
+# ============================================================
 # MANAGE POSITIONS (stop + trail logic)
 # ============================================================
 def manage_positions():
@@ -8789,6 +8993,17 @@ def manage_positions():
                 continue
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] long %s: %s", ticker, _eot_e)
+
+        # v5.10.5 \u2014 Phase B/C Triple-Lock. Phase A continues to use the
+        # ladder/Maffei plumbing below; Phase B (be_stop) and Phase C
+        # (ema_trail) exits fire here when the post-Entry-2 lock /
+        # 5m-EMA9 leash trip.
+        phase_exit, _ = _v5105_phase_machine_tick(
+            ticker, eot.SIDE_LONG, pos, bars,
+        )
+        if phase_exit is not None:
+            tickers_to_close.append((ticker, current_price, phase_exit))
+            continue
 
         # v3.4.35 — Stop hit. "TRAIL" when the ladder has ratcheted past
         # the initial structural stop (capital already safe), else "STOP"
@@ -8947,6 +9162,14 @@ def manage_short_positions():
                 continue
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] short %s: %s", ticker, _eot_e)
+
+        # v5.10.5 \u2014 Phase B/C Triple-Lock (short mirror).
+        phase_exit_s, _ = _v5105_phase_machine_tick(
+            ticker, eot.SIDE_SHORT, pos, bars,
+        )
+        if phase_exit_s is not None:
+            close_short_position(ticker, current_price, reason=phase_exit_s)
+            continue
 
         # v3.4.35 — Profit-Lock Ladder replaces the 1%/$1 armed-trail.
         # Track trail_low every tick (peak = deepest price reached).
