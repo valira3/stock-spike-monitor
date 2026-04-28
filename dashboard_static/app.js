@@ -307,23 +307,33 @@
         const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
         const markCls = p.side === "SHORT" ? "mark-short" : "mark-long";
         const pnlCls = (p.unrealized ?? 0) >= 0 ? "delta-up" : "delta-down";
-        // v3.4.26: show the effective stop (trail if armed, else hard
-        // stop) with a small TRAIL badge so we can see at a glance
-        // what is actually managing the position. Falls back to
-        // p.stop when effective_stop is absent (older payloads).
         const eff = (typeof p.effective_stop === "number")
                       ? p.effective_stop : p.stop;
         const trailBadge = p.trail_active
           ? ` <span class="trail-badge" title="Trail armed — effective stop is trail_stop, not hard stop">TRAIL</span>`
           : "";
+        // v5.10.6 \u2014 Phase badge + Sovereign Brake distance. Phase
+        // mirrors pos["phase"] (A/B/C). SB distance = unrealized + 500;
+        // green > $200 (breathing room), yellow $50\u2013$200 (close),
+        // red < $50 (about to trip).
+        const phase = (p.phase === "B" || p.phase === "C") ? p.phase : "A";
+        const phaseBadge = `<span class="eot-phase-badge eot-phase-${phase}" title="v5.10 Phase ${phase}">${phase}</span>`;
+        const sb = p.sovereign_brake_distance_dollars;
+        let sbCls = "eot-sb-green", sbLabel = "—";
+        if (typeof sb === "number" && isFinite(sb)) {
+          if (sb < 50) sbCls = "eot-sb-red";
+          else if (sb < 200) sbCls = "eot-sb-yellow";
+          sbLabel = (sb >= 0 ? "+" : "−") + "$" + Math.abs(sb).toFixed(0);
+        }
         return `<tr>
-          <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}">●</span></span></td>
+          <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
           <td class="right">${p.shares}</td>
           <td class="right">${fmtPx(p.entry)}</td>
           <td class="right">${fmtPx(p.mark)}</td>
           <td class="right">${fmtPx(eff)}${trailBadge}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
+          <td class="right ${sbCls}" title="Sovereign Brake distance — fires at -$500 unrealized">${sbLabel}</td>
         </tr>`;
       }).join("");
       body.innerHTML = `<table>
@@ -332,6 +342,7 @@
           <th class="right">Sh</th><th class="right">Entry</th>
           <th class="right">Mark</th><th class="right">Stop</th>
           <th class="right">Unreal.</th>
+          <th class="right" title="Sovereign Brake distance">SB Δ</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
     }
@@ -748,6 +759,7 @@
     renderObserver(s);
     renderSovereign(s);
     renderGates(s);
+    try { renderEOT(s, sl); } catch (e) { /* never break Main */ }
     // v5.2.0 — Shadow strategy P&L panel (bottom of main dashboard).
     try { renderShadowPnL(s); } catch (e) {}
     // v4.11.0 — health pill bound to Main when active.
@@ -985,6 +997,98 @@
       }
       asofEl.textContent = formatted;
     }
+  }
+
+  // v5.10.6 \u2014 Eye-of-the-Tiger live state renderer. Reads the new
+  // /api/state fields (section_i_permit, per_ticker_v510,
+  // per_position_v510) and renders the Section I permit pills + a
+  // per-ticker grid showing Volume Bucket / Boundary Hold gate state.
+  // Per-position phase + Sovereign Brake distance are rendered inline
+  // on the Open Positions table via the v5.10.6 fields on each row.
+  function renderEOT(s, sl) {
+    const sip = (s && s.section_i_permit) || {};
+    const perTicker = (s && s.per_ticker_v510) || {};
+    const tickers = Array.isArray(s && s.tickers) ? s.tickers : Object.keys(perTicker);
+
+    const longOpen = !!sip.long_open;
+    const shortOpen = !!sip.short_open;
+    const anchorOpen = !!sip.sovereign_anchor_open;
+
+    function setPill(id, label, openFlag, sub) {
+      const el = $(id);
+      if (!el) return;
+      el.classList.remove("eot-open", "eot-closed", "eot-pending");
+      if (openFlag === true) el.classList.add("eot-open");
+      else if (openFlag === false) el.classList.add("eot-closed");
+      else el.classList.add("eot-pending");
+      el.textContent = sub ? `${label} ${sub}` : label;
+    }
+
+    setPill("eot-pill-long", "LONG", longOpen, longOpen ? "OPEN" : "CLOSED");
+    setPill("eot-pill-short", "SHORT", shortOpen, shortOpen ? "OPEN" : "CLOSED");
+    setPill("eot-pill-anchor", "ANCHOR", anchorOpen,
+      anchorOpen ? "ABOVE" : "BELOW");
+
+    const qqqClose = sip.qqq_5m_close;
+    const qqqEma9 = sip.qqq_5m_ema9;
+    let qqqLabel = "—";
+    if (typeof qqqClose === "number" && typeof qqqEma9 === "number") {
+      const delta = qqqClose - qqqEma9;
+      const sign = delta >= 0 ? "+" : "−";
+      qqqLabel = `${qqqClose.toFixed(2)} (${sign}${Math.abs(delta).toFixed(2)} vs 9EMA)`;
+    }
+    setPill("eot-pill-qqq", "QQQ", null, qqqLabel);
+
+    const chip = $("eot-permit-chip");
+    if (chip) {
+      if (longOpen && !shortOpen) chip.textContent = "LONG-only permit";
+      else if (shortOpen && !longOpen) chip.textContent = "SHORT-only permit";
+      else if (longOpen && shortOpen) chip.textContent = "BOTH-side permit";
+      else chip.textContent = "NO permit";
+    }
+
+    const body = $("eot-tickers-body");
+    if (!body) return;
+    if (!tickers || tickers.length === 0) {
+      body.innerHTML = `<div class="empty">No tickers in universe.</div>`;
+      return;
+    }
+
+    function fmtRatio(r) {
+      if (typeof r !== "number" || !isFinite(r)) return "—";
+      return (r * 100).toFixed(0) + "%";
+    }
+
+    const rowsHtml = tickers.map((t) => {
+      const row = perTicker[t] || {};
+      const vb = row.vol_bucket || {};
+      const bh = row.boundary_hold || {};
+      let vbCls = "eot-vb-cold";
+      if (vb.state === "PASS") vbCls = "eot-vb-pass";
+      else if (vb.state === "FAIL") vbCls = "eot-vb-fail";
+      const vbLabel = vb.state === "PASS" || vb.state === "FAIL"
+        ? `${vb.state} ${fmtRatio(vb.ratio)}`
+        : `${vb.state || "COLDSTART"}`;
+      let bhCls = "eot-bh-armed";
+      if (bh.state === "SATISFIED") bhCls = "eot-bh-satisfied";
+      else if (bh.state === "BROKEN") bhCls = "eot-bh-broken";
+      const sideArrow = bh.side === "LONG" ? "▲" : (bh.side === "SHORT" ? "▼" : "·");
+      const bhLabel = `${bh.state || "ARMED"} ${sideArrow}`;
+      return `<tr>
+        <td><span class="ticker">${escapeHtml(t)}</span></td>
+        <td class="${vbCls}">${escapeHtml(vbLabel)}</td>
+        <td class="${bhCls}">${escapeHtml(bhLabel)}</td>
+      </tr>`;
+    }).join("");
+
+    body.innerHTML = `<table>
+      <thead><tr>
+        <th>Ticker</th>
+        <th>Vol Bucket</th>
+        <th>Boundary Hold</th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
   }
 
   function renderShadowPnL(s) {

@@ -947,3 +947,54 @@
     top: 0;
     z-index: 2;
   }
+
+/* v5.10.6 — Eye-of-the-Tiger live gate panel. Section I permit pills,
+   per-ticker Volume Bucket / Boundary Hold grid, per-position Phase
+   badges, and Sovereign Brake distance chips. */
+.eot-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #10151c;
+  border: 1px solid #1f2937;
+  color: #8a96a7;
+  font-variant-numeric: tabular-nums;
+}
+.eot-pill.eot-open {
+  color: var(--up);
+  border-color: color-mix(in srgb, var(--up) 50%, #1f2937);
+  background: color-mix(in srgb, var(--up) 10%, #10151c);
+}
+.eot-pill.eot-closed {
+  color: var(--down);
+  border-color: color-mix(in srgb, var(--down) 40%, #1f2937);
+  background: color-mix(in srgb, var(--down) 10%, #10151c);
+}
+.eot-pill.eot-pending {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, #1f2937);
+}
+.eot-vb-pass { color: var(--up); }
+.eot-vb-fail { color: var(--down); }
+.eot-vb-cold { color: var(--warn); }
+.eot-bh-armed { color: var(--text-muted); }
+.eot-bh-satisfied { color: var(--up); }
+.eot-bh-broken { color: var(--down); }
+.eot-phase-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #1f2937;
+  color: #8a96a7;
+  margin-left: 6px;
+}
+.eot-phase-A { background: color-mix(in srgb, var(--text-muted) 30%, #10151c); color: var(--text-muted); }
+.eot-phase-B { background: color-mix(in srgb, var(--warn) 25%, #10151c); color: var(--warn); }
+.eot-phase-C { background: color-mix(in srgb, var(--up) 25%, #10151c); color: var(--up); }
+.eot-sb-green { color: var(--up); }
+.eot-sb-yellow { color: var(--warn); }
+.eot-sb-red { color: var(--down); }
