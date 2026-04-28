@@ -40,6 +40,11 @@ from side import Side, CONFIGS  # noqa: E402
 # stage. Unit-sizing math is preserved unchanged from v4 (50/50 staging
 # means "50% of the v4 unit, then add the other 50%").
 import tiger_buffalo_v5 as v5  # noqa: E402
+# v5.10.0/v5.10.1 \u2014 Eye-of-the-Tiger evaluators. v5_10_1_integration is the
+# live-hot-path glue that wires Sections I–VI into check_breakout /
+# manage_positions; eot is the pure-function evaluator surface.
+import eye_of_tiger as eot  # noqa: E402
+import v5_10_1_integration as eot_glue  # noqa: E402
 # v5.9.0 \u2014 QQQ Regime Shield: 5m EMA(3) vs EMA(9) compass for G1.
 import qqq_regime  # noqa: E402
 # v5.1.0 \u2014 forensic volume filter (shadow mode). Top-level module so the
@@ -77,7 +82,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.10.0"
+BOT_VERSION = "5.10.1"
 
 # v3.4.21: release notes are split into two surfaces.
 #
@@ -7874,26 +7879,12 @@ def check_breakout(ticker, side):
     if ticker in positions_dict:
         return False, None
 
-    # Re-entry cooldown: 15 min after any exit on this ticker
-    last_exit = _last_exit_time.get(ticker)
-    if last_exit:
-        elapsed = (datetime.now(timezone.utc) - last_exit).total_seconds()
-        if elapsed < 900:
-            mins_left = int((900 - elapsed) / 60) + 1
-            logger.info("SKIP %s [COOLDOWN] %dm left", ticker, mins_left)
-            _v561_log_skip(ticker=ticker,
-                           reason="COOLDOWN:%dm" % mins_left,
-                           ts_utc=_utc_now_iso(), gate_state=None)
-            return False, None
-
-    # Per-ticker daily loss cap: skip if down > $50 on this ticker today (both sides)
-    ticker_pnl_today = _ticker_today_realized_pnl(ticker)
-    if ticker_pnl_today < -50.0:
-        logger.info("SKIP %s [LOSS CAP] ticker P&L today: $%.2f", ticker, ticker_pnl_today)
-        _v561_log_skip(ticker=ticker,
-                       reason="LOSS_CAP:%.2f" % ticker_pnl_today,
-                       ts_utc=_utc_now_iso(), gate_state=None)
-        return False, None
+    # v5.10.1 \u2014 Unlimited Hunting (Section VI): no 15-min cooldown,
+    # no per-ticker $50 loss cap. Re-entry on the next NHOD/NLOD +
+    # DMI alignment is the spec. The global -$1,500 daily circuit
+    # breaker (handled via _v570_kill_switch_active above) plus the
+    # Section IV per-trade Sovereign Brake (-$500 unrealized) are the
+    # only loss-side gates.
 
     # Fetch current bar (Yahoo)
     bars = fetch_1min_bars(ticker)
@@ -7983,197 +7974,115 @@ def check_breakout(ticker, side):
                 )
             return False, None
 
-    # 2-bar break confirmation (kept as breakout precondition; the v5.6.0
-    # G4 strict comparator below is the *permission* gate.)
-    if not price_break:
-        return False, None
-
-    # v5.9.0 \u2014 Permission gates G1/G3/G4. G1 swapped from AVWAP
-    # penny-switch to QQQ 5m EMA(3) vs EMA(9) compass (Regime Shield).
-    # G3/G4 untouched. Equality / None FAILs closed everywhere.
+    # ------------------------------------------------------------------
+    # v5.10.1 \u2014 Eye-of-the-Tiger authoritative gates (Sections I + II + III).
+    # Replaces the v5.0\u2013v5.9 G1/G3/G4 + V570 expansion + extension +
+    # stop-cap stack. The Section IV (Sovereign Brake / Velocity Fuse)
+    # is enforced inside manage_positions / manage_short_positions.
+    # ------------------------------------------------------------------
     qqq_bars = fetch_1min_bars("QQQ")
     if not qqq_bars:
         return False, None
     qqq_last = qqq_bars.get("current_price")
-    qqq_avwap = _opening_avwap("QQQ")  # retained for forensic logging only
-    qqq_ema3, qqq_ema9, qqq_compass = _v590_compass_for_gate()
-    ticker_avwap = _opening_avwap(ticker)
+    qqq_avwap = _opening_avwap("QQQ")
+    qqq_5m_close = _QQQ_REGIME.last_close
+    qqq_ema9 = _QQQ_REGIME.ema9
     or_high_val = or_high.get(ticker)
     or_low_val = or_low.get(ticker)
     side_label = "LONG" if cfg.side.is_long else "SHORT"
 
-    if cfg.side.is_long:
-        g1 = v5.gate_g1_long(qqq_ema3, qqq_ema9)
-        g3 = v5.gate_g3_long(current_price, ticker_avwap)
-        g4 = v5.gate_g4_long(current_price, or_high_val)
-        g4_threshold = or_high_val
-    else:
-        g1 = v5.gate_g1_short(qqq_ema3, qqq_ema9)
-        g3 = v5.gate_g3_short(current_price, ticker_avwap)
-        g4 = v5.gate_g4_short(current_price, or_low_val)
-        g4_threshold = or_low_val
-
-    # Forensic logging \u2014 G1 now logs ema3/ema9 instead of last/avwap.
-    _v560_log_gate(ticker, side_label, "G1", qqq_ema3, qqq_ema9, g1)
-    _v560_log_gate(ticker, side_label, "G3", current_price, ticker_avwap, g3)
-    _v560_log_gate(ticker, side_label, "G4", current_price, g4_threshold, g4)
-
-    pass_flag = bool(g1 and g3 and g4)
-    failed = []
-    if not g1:
-        failed.append("G1")
-    if not g3:
-        failed.append("G3")
-    if not g4:
-        failed.append("G4")
-    reason_str = (",".join(failed) if failed else None)
-    _gate_ts = _utc_now_iso()
-
-    # v5.7.0 \u2014 strike accounting. Update session HOD/LOD with the
-    # current print and figure out which strike this would be.
-    _prev_hod, _prev_lod, _hod_break, _lod_break = (
-        _v570_update_session_hod_lod(ticker, current_price)
+    # Section I \u2014 Global Permit
+    permit_res = eot_glue.evaluate_section_i(
+        side_label, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap,
     )
-    _strike_num = _v570_strike_count(ticker, side_label) + 1
-    _is_first = (_strike_num == 1)
-    _is_titan_unlimited = (
-        bool(ENABLE_UNLIMITED_TITAN_STRIKES) and _v570_is_titan(ticker)
-    )
-
-    if _is_first or not _is_titan_unlimited:
-        # Strike 1 path (or non-Titan / flag off) \u2014 unchanged
-        # v5.6.0 L-P1/S-P1 permission gates apply. [V560-GATE] is
-        # emitted alongside [V570-STRIKE].
-        _v561_log_v560_gate_rich(
-            ticker=ticker, side=side_label, ts_utc=_gate_ts,
-            ticker_price=current_price, ticker_avwap=ticker_avwap,
-            index_price=qqq_last, index_avwap=qqq_avwap,
-            or_high=or_high_val, or_low=or_low_val,
-            g1=g1, g3=g3, g4=g4, pass_=pass_flag,
-            reason=reason_str,
-        )
-        _gate_state = _v561_gate_state_dict(
-            g1=g1, g3=g3, g4=g4, pass_=pass_flag,
-            ticker_price=current_price, ticker_avwap=ticker_avwap,
-            index_price=qqq_last, index_avwap=qqq_avwap,
-            or_high=or_high_val, or_low=or_low_val,
-        )
-        _v570_log_strike(
-            ticker=ticker, side=side_label, ts_utc=_gate_ts,
-            strike_num=_strike_num, is_first=_is_first,
-            hod=_prev_hod, lod=_prev_lod,
-            hod_break=_hod_break, lod_break=_lod_break,
-            expansion_gate_pass=False,
-        )
-        if not pass_flag:
-            # v5.9.0 \u2014 if G1 specifically failed and we already had a
-            # strike fire today, the compass flipped/flattened mid-trade.
-            # Emit [V572-ABORT] so the failed re-entry is auditable.
-            try:
-                if not g1 and _v570_strike_count(ticker, side_label) >= 1:
-                    _v590_log_abort_if_flip(ticker, side_label, qqq_compass)
-            except Exception:
-                pass
-            _v561_log_skip(
-                ticker=ticker,
-                reason="V560_GATE_BLOCK:%s" % ",".join(failed),
-                ts_utc=_gate_ts, gate_state=_gate_state,
-            )
-            return False, None
-    else:
-        # v5.7.0 Strike 2+ path for Titans. [V560-GATE] is replaced
-        # by the Expansion Gate (HOD/LOD break + IndexAVWAP). Strike
-        # 1 gates do NOT apply on this path \u2014 the original L-P1/S-P1
-        # check fired on the first entry; subsequent strikes ride the
-        # trend continuation signal.
-        _expansion_pass = _v570_expansion_gate_pass(
-            side=side_label,
-            current_price=current_price,
-            prev_hod=_prev_hod, prev_lod=_prev_lod,
-            index_price=qqq_last, index_avwap=qqq_avwap,
-        )
-        _gate_state = _v561_gate_state_dict(
-            g1=None, g3=None, g4=None, pass_=_expansion_pass,
-            ticker_price=current_price, ticker_avwap=ticker_avwap,
-            index_price=qqq_last, index_avwap=qqq_avwap,
-            or_high=or_high_val, or_low=or_low_val,
-        )
-        _v570_log_strike(
-            ticker=ticker, side=side_label, ts_utc=_gate_ts,
-            strike_num=_strike_num, is_first=False,
-            hod=_prev_hod, lod=_prev_lod,
-            hod_break=_hod_break, lod_break=_lod_break,
-            expansion_gate_pass=_expansion_pass,
-        )
-        if not _expansion_pass:
-            _v561_log_skip(
-                ticker=ticker,
-                reason="V570_EXPANSION_BLOCK",
-                ts_utc=_gate_ts, gate_state=_gate_state,
-            )
-            return False, None
-
-    # Tiger 2.0 DI gate: DI+(long) / DI-(short) must exceed threshold.
-    di_plus, di_minus = tiger_di(ticker)
-    di_value = di_plus if cfg.side.is_long else di_minus
-    if di_value is None:
-        logger.info(
-            "SKIP %s [DI WARMUP] need %d+1 5m bars",
-            ticker, DI_PERIOD,
-        )
-        _v561_log_skip(ticker=ticker, reason="DI_WARMUP",
-                       ts_utc=_utc_now_iso(), gate_state=_gate_state)
-        return False, None
-    if di_value < TIGER_V2_DI_THRESHOLD:
-        logger.info(
-            "SKIP %s [%s] %.1f < %d",
-            ticker, cfg.di_sign_label, di_value, TIGER_V2_DI_THRESHOLD,
-        )
+    if not permit_res.get("open"):
         _v561_log_skip(
             ticker=ticker,
-            reason="DI_BELOW_THRESHOLD:%.1f<%d" % (di_value, TIGER_V2_DI_THRESHOLD),
-            ts_utc=_utc_now_iso(), gate_state=_gate_state,
+            reason="V5100_PERMIT:%s" % permit_res.get("reason", "closed"),
+            ts_utc=_utc_now_iso(), gate_state=None,
         )
         return False, None
 
-    # v4.3.0 \u2014 Extended-entry guard. Reject when price is more than
-    # ENTRY_EXTENSION_MAX_PCT past the OR edge (above for longs, below
-    # for shorts).
-    if or_edge_val and or_edge_val > 0:
-        if cfg.side.is_long:
-            extension_pct = (current_price - or_edge_val) / or_edge_val * 100.0
-        else:
-            extension_pct = (or_edge_val - current_price) / or_edge_val * 100.0
-        if extension_pct > ENTRY_EXTENSION_MAX_PCT:
-            logger.info(
-                "SKIP %s [EXTENDED] price=$%.2f %s=$%.2f ext=%.2f%%",
-                ticker, current_price, cfg.or_side_short_label,
-                or_edge_val, extension_pct,
-            )
-            _v561_log_skip(
-                ticker=ticker,
-                reason="EXTENDED:%.2f%%" % extension_pct,
-                ts_utc=_utc_now_iso(), gate_state=_gate_state,
-            )
-            return False, None
+    # Section II.1 \u2014 Volume Bucket (Entry-1 only). Determine the
+    # minute_of_day from the last completed 1m bar.
+    try:
+        now_et_eb = datetime.now(tz=ZoneInfo("America/New_York"))
+        minute_of_day_hhmm = now_et_eb.strftime("%H:%M")
+    except Exception:
+        minute_of_day_hhmm = "09:30"
+    volumes_eb = bars.get("volumes", []) or []
+    last_completed_vol = None
+    if len(volumes_eb) >= 2 and volumes_eb[-2] is not None:
+        last_completed_vol = volumes_eb[-2]
+    elif volumes_eb and volumes_eb[-1] is not None:
+        last_completed_vol = volumes_eb[-1]
+    vol_check = eot_glue.evaluate_volume_bucket_gate(
+        ticker, minute_of_day_hhmm, last_completed_vol or 0,
+    )
+    volume_bucket_ok = eot.evaluate_volume_bucket(vol_check)
+    if not volume_bucket_ok:
+        _v561_log_skip(
+            ticker=ticker, reason="V5100_VOLBUCKET:%s" % vol_check.get("gate"),
+            ts_utc=_utc_now_iso(), gate_state=None,
+        )
+        return False, None
 
-    # v4.3.0 \u2014 Stop-cap rejection. If the final stop would need to
-    # be capped to entry \u00b1 MAX_STOP_PCT (baseline too loose), treat
-    # as a late/extended bar and skip.
-    if ENTRY_STOP_CAP_REJECT:
-        cap_arg = or_edge_val if cfg.side.is_long else pdc_val_e
-        _sp, _capped_flag, _base_stop = capped_stop_fn(cap_arg, current_price)
-        if _capped_flag:
-            logger.info(
-                "SKIP %s [STOP_CAPPED] baseline=$%.2f requested_cap=$%.2f",
-                ticker, _base_stop, _sp,
-            )
-            _v561_log_skip(
-                ticker=ticker, reason="STOP_CAPPED",
-                ts_utc=_utc_now_iso(), gate_state=_gate_state,
-            )
-            return False, None
+    # Section II.2 \u2014 Boundary Hold (Entry-1 only). Stateless: the
+    # last two closed 1m closes vs the OR edge.
+    boundary_res = eot_glue.evaluate_boundary_hold_gate(
+        ticker, side_label, or_high_val, or_low_val,
+    )
+    if not boundary_res.get("hold"):
+        _v561_log_skip(
+            ticker=ticker, reason="V5100_BOUNDARY:%s" % boundary_res.get("reason"),
+            ts_utc=_utc_now_iso(), gate_state=None,
+        )
+        return False, None
 
+    # Section III Trend Confirmation \u2014 5m DI > 25, 1m DI > 25, NHOD/NLOD.
+    di_streams = v5_di_1m_5m(ticker)
+    if cfg.side.is_long:
+        di_5m = di_streams.get("di_plus_5m")
+        di_1m = di_streams.get("di_plus_1m")
+    else:
+        di_5m = di_streams.get("di_minus_5m")
+        di_1m = di_streams.get("di_minus_1m")
+
+    # NHOD / NLOD: derive from session HOD/LOD vs current_price (strict).
+    _prev_hod, _prev_lod, hod_break, lod_break = _v570_update_session_hod_lod(
+        ticker, current_price,
+    )
+    is_extreme_print = bool(hod_break if cfg.side.is_long else lod_break)
+
+    entry1_decision = eot_glue.evaluate_entry_1_decision(
+        ticker, side_label,
+        permit_open=True,
+        volume_bucket_ok=True,
+        boundary_hold_ok=True,
+        di_5m=di_5m, di_1m=di_1m,
+        is_nhod_or_nlod=is_extreme_print,
+    )
+    if not entry1_decision.get("fire"):
+        _v561_log_skip(
+            ticker=ticker,
+            reason="V5100_ENTRY1:%s" % entry1_decision.get("reason", ""),
+            ts_utc=_utc_now_iso(), gate_state=None,
+        )
+        return False, None
+
+    # All Eye-of-the-Tiger gates pass. Bars dict carries current_price
+    # forward to execute_breakout.
+    try:
+        logger.info(
+            "[V5100-ENTRY] ticker=%s side=%s entry_num=1 di_5m=%s di_1m=%s "
+            "fill_price=%.4f",
+            ticker, side_label,
+            ("%.2f" % di_5m) if di_5m is not None else "None",
+            ("%.2f" % di_1m) if di_1m is not None else "None",
+            current_price,
+        )
+    except Exception:
+        pass
     return True, bars
 
 
@@ -8693,6 +8602,45 @@ def manage_positions():
         current_price = bars["current_price"]
         pos = positions[ticker]
 
+        # v5.10.1 \u2014 Section IV high-priority overrides (per-tick). The
+        # Sovereign Brake (-$500 unrealized) and Velocity Fuse (>1%
+        # against the current 1m candle open) are evaluated on every
+        # tick and take priority over phase-specific stops.
+        try:
+            entry_p = pos.get("entry_price")
+            shares = int(pos.get("shares") or 0)
+            unrealized = (current_price - entry_p) * shares if entry_p else 0.0
+            opens_eot = bars.get("opens") or []
+            cur_1m_open = None
+            if opens_eot:
+                cur_1m_open = opens_eot[-1] if opens_eot[-1] is not None else (
+                    opens_eot[-2] if len(opens_eot) >= 2 else None
+                )
+            override = eot_glue.evaluate_section_iv(
+                eot.SIDE_LONG,
+                unrealized_pnl_dollars=unrealized,
+                current_price=current_price,
+                current_1m_open=cur_1m_open,
+            )
+            if override == eot.EXIT_REASON_SOVEREIGN_BRAKE:
+                logger.warning(
+                    "[V5100-SOVEREIGN-BRAKE] ticker=%s side=LONG entry_avg=%.4f "
+                    "current_price=%.4f unrealized_pnl=%.2f qty=%d",
+                    ticker, entry_p or 0.0, current_price, unrealized, shares,
+                )
+                tickers_to_close.append((ticker, current_price, "sovereign_brake"))
+                continue
+            if override == eot.EXIT_REASON_VELOCITY_FUSE:
+                logger.warning(
+                    "[V5100-VELOCITY-FUSE] ticker=%s side=LONG cur=%.4f open=%s",
+                    ticker, current_price,
+                    ("%.4f" % cur_1m_open) if cur_1m_open else "None",
+                )
+                tickers_to_close.append((ticker, current_price, "velocity_fuse"))
+                continue
+        except Exception as _eot_e:
+            logger.warning("[V5100-OVERRIDE] long %s: %s", ticker, _eot_e)
+
         # v3.4.35 — Stop hit. "TRAIL" when the ladder has ratcheted past
         # the initial structural stop (capital already safe), else "STOP"
         # (initial structural stop hit with no profit locked).
@@ -8804,6 +8752,7 @@ def manage_short_positions():
     # v5.9.1: Sovereign Regime Shield (PDC eject) retired on the short
     # side too. Per-ticker POLARITY_SHIFT below remains.
 
+    _short_to_close = []
     for ticker in list(short_positions.keys()):
         pos = short_positions[ticker]
         entry_price = pos["entry_price"]
@@ -8813,6 +8762,42 @@ def manage_short_positions():
         if not bars:
             continue
         current_price = bars["current_price"]
+
+        # v5.10.1 \u2014 Section IV high-priority overrides (per-tick).
+        # SHORT P&L sign convention: unrealized = (entry - current) * shares.
+        try:
+            unrealized = (entry_price - current_price) * int(shares or 0)
+            opens_eot_s = bars.get("opens") or []
+            cur_1m_open_s = None
+            if opens_eot_s:
+                cur_1m_open_s = opens_eot_s[-1] if opens_eot_s[-1] is not None else (
+                    opens_eot_s[-2] if len(opens_eot_s) >= 2 else None
+                )
+            override_s = eot_glue.evaluate_section_iv(
+                eot.SIDE_SHORT,
+                unrealized_pnl_dollars=unrealized,
+                current_price=current_price,
+                current_1m_open=cur_1m_open_s,
+            )
+            if override_s == eot.EXIT_REASON_SOVEREIGN_BRAKE:
+                logger.warning(
+                    "[V5100-SOVEREIGN-BRAKE] ticker=%s side=SHORT entry_avg=%.4f "
+                    "current_price=%.4f unrealized_pnl=%.2f qty=%d",
+                    ticker, entry_price or 0.0, current_price, unrealized,
+                    int(shares or 0),
+                )
+                close_short_position(ticker, current_price, reason="sovereign_brake")
+                continue
+            if override_s == eot.EXIT_REASON_VELOCITY_FUSE:
+                logger.warning(
+                    "[V5100-VELOCITY-FUSE] ticker=%s side=SHORT cur=%.4f open=%s",
+                    ticker, current_price,
+                    ("%.4f" % cur_1m_open_s) if cur_1m_open_s else "None",
+                )
+                close_short_position(ticker, current_price, reason="velocity_fuse")
+                continue
+        except Exception as _eot_e:
+            logger.warning("[V5100-OVERRIDE] short %s: %s", ticker, _eot_e)
 
         # v3.4.35 — Profit-Lock Ladder replaces the 1%/$1 armed-trail.
         # Track trail_low every tick (peak = deepest price reached).
@@ -9427,92 +9412,9 @@ def _build_test_progress(results):
     return "\U0001f9ea System Test [Manual]\n%s\n%s" % (SEP, body)
 
 
-# ============================================================
-# v3.4.47 — HARD EJECT (Eye of the Tiger 2.0)
-# ============================================================
-def _tiger_hard_eject_check():
-    """Hard Eject: close any open position whose DI has decayed
-    against it.
-
-    Called once per scan cycle BEFORE the new-entry scan.
-    Longs: eject if DI+ < threshold.
-    Shorts: eject if DI- < threshold.
-    Applies to paper (positions, short_positions).
-    """
-    # -- Long positions (paper) --
-    for ticker in list(positions):
-        # v5.9.4 \u2014 Titan bypass. Titans (Ten Titans universe) exit only via
-        # the v5.7.1 Bison/Buffalo FSM (forensic_stop / per_trade_brake /
-        # be_stop / ema_trail / velocity_fuse) plus the universal structural
-        # stop, trail stop, EOD, and daily-loss-limit. They must not be
-        # ejected by the legacy DI<25 hard-eject. v5.7.1 specced this gate
-        # but never wired it into the live scan loop \u2014 MSFT and TSLA were
-        # killed three times each on 2026-04-28 morning by HARD_EJECT_TIGER
-        # before this hotfix landed. NOTE: until v5.10.0 wires the FSM
-        # itself, the FSM stops above (forensic_stop / velocity_fuse /
-        # per_trade_brake / be_stop / ema_trail) are still dead code, so
-        # Titans exit ONLY via structural stop / trail stop / EOD / DLL
-        # after this guard fires.
-        if _v570_is_titan(ticker) and ENABLE_BISON_BUFFALO_EXITS:
-            logger.info(
-                "[TITAN-BYPASS] HARD_EJECT_TIGER skipped for %s long (Titan; FSM authority)",
-                ticker,
-            )
-            continue
-        di_plus, _di_m = tiger_di(ticker)
-        di_weak = (di_plus is not None
-                   and di_plus < TIGER_V2_DI_THRESHOLD)
-        if di_weak:
-            price = positions[ticker].get("entry_price", 0)
-            bars_t = fetch_1min_bars(ticker)
-            if bars_t:
-                price = bars_t["current_price"] or price
-            logger.info(
-                "HARD_EJECT_TIGER long %s di+=%s",
-                ticker, di_plus,
-            )
-            close_position(ticker, price,
-                           reason="HARD_EJECT_TIGER")
-            # v5.1.9 \u2014 arm REHUNT_VOL_CONFIRM watch on this ticker.
-            try:
-                _v519_arm_rehunt_watch(
-                    ticker, "long", datetime.now(tz=timezone.utc))
-            except Exception as e:
-                logger.warning(
-                    "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] arm long %s: %s",
-                    ticker, e)
-
-
-    # -- Short positions (paper) --
-    for ticker in list(short_positions):
-        # v5.9.4 \u2014 Titan bypass (mirror of the long-side guard above).
-        if _v570_is_titan(ticker) and ENABLE_BISON_BUFFALO_EXITS:
-            logger.info(
-                "[TITAN-BYPASS] HARD_EJECT_TIGER skipped for %s short (Titan; FSM authority)",
-                ticker,
-            )
-            continue
-        _di_p, di_minus = tiger_di(ticker)
-        di_weak = (di_minus is not None
-                   and di_minus < TIGER_V2_DI_THRESHOLD)
-        if di_weak:
-            price = short_positions[ticker].get("entry_price", 0)
-            bars_t = fetch_1min_bars(ticker)
-            if bars_t:
-                price = bars_t["current_price"] or price
-            logger.info(
-                "HARD_EJECT_TIGER short %s di-=%s",
-                ticker, di_minus,
-            )
-            close_short_position(ticker, price, reason="HARD_EJECT_TIGER")
-            # v5.1.9 \u2014 arm REHUNT_VOL_CONFIRM watch on this ticker.
-            try:
-                _v519_arm_rehunt_watch(
-                    ticker, "short", datetime.now(tz=timezone.utc))
-            except Exception as e:
-                logger.warning(
-                    "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] arm short %s: %s",
-                    ticker, e)
+# v5.10.1 \u2014 _tiger_hard_eject_check retired. Section V (Triple-Lock stops)
+# in eye_of_tiger.py owns all exit decisions; legacy DI<25 hard-eject and
+# REHUNT_VOL_CONFIRM watches are deleted.
 
 
 # ============================================================
@@ -9691,6 +9593,24 @@ def scan_loop():
     except Exception as _e:
         logger.warning("[V561-OR-SNAP] cycle hook error: %s", _e)
 
+    # v5.10.1 \u2014 Volume Bucket baseline refresh (once per session at
+    # 9:29 ET) and Section I [V5100-PERMIT] state-change log emit.
+    try:
+        eot_glue.refresh_volume_baseline_if_needed(now_et)
+    except Exception as _e:
+        logger.warning("[V5100-VOLBUCKET] refresh hook error: %s", _e)
+    try:
+        _qqq_for_permit = fetch_1min_bars(V561_INDEX_TICKER)
+        _qqq_cur = (_qqq_for_permit or {}).get("current_price") if _qqq_for_permit else None
+        _qqq_5m_close = _QQQ_REGIME.last_close
+        _qqq_5m_ema9 = _QQQ_REGIME.ema9
+        _qqq_avwap = _opening_avwap("QQQ")
+        eot_glue.maybe_log_permit_state(
+            _qqq_5m_close, _qqq_5m_ema9, _qqq_cur, _qqq_avwap,
+        )
+    except Exception as _e:
+        logger.warning("[V5100-PERMIT] log hook error: %s", _e)
+
     # Always manage existing positions (stops/trails) even when paused
     try:
         manage_positions()
@@ -9836,33 +9756,20 @@ def scan_loop():
             # signal compute. Otherwise run check_entry so the signal
             # decision is made once for the scan cycle.
             paper_holds = ticker in positions
+            # v5.10.1 \u2014 record the just-closed 1m bar's close into the
+            # rolling buffer used by Boundary Hold (Section II.2). This
+            # is needed regardless of whether we currently hold the
+            # ticker so the buffer keeps tracking through trade
+            # lifecycles.
+            try:
+                if _bars_for_mtm:
+                    _closes_b = _bars_for_mtm.get("closes") or []
+                    if len(_closes_b) >= 2 and _closes_b[-2] is not None:
+                        eot_glue.record_1m_close(ticker, float(_closes_b[-2]))
+            except Exception as _e:
+                logger.warning("[V5100-BOUNDARY] record_1m_close %s: %s", ticker, _e)
             if not paper_holds:
                 ok, bars = check_entry(ticker)
-                # v5.1.0 SHADOW: log the V-P1 grid result for this minute
-                # without changing the entry decision. Stage is inferred
-                # from whether the bot is currently in Stage_1 or
-                # Stage_2 for this ticker; default to Stage 1 (Jab) for
-                # the new-entry decision.
-                _shadow_log_g4(ticker, stage=1, existing_decision=("ENTER" if ok else "HOLD"))
-                # v5.1.2 \u2014 [V510-CAND] for every entry consideration
-                # (closes the asymmetric blind-spot from v5.1.1).
-                try:
-                    _v512_emit_candidate_log(ticker, stage=1, entered=bool(ok and bars), bars=bars)
-                except Exception as e:
-                    logger.warning("[V510-CAND] hook error %s: %s", ticker, e)
-                # v5.1.9 \u2014 REHUNT_VOL_CONFIRM and OOMPH_ALERT shadow probes.
-                try:
-                    _v519_check_rehunt(ticker)
-                except Exception as e:
-                    logger.warning(
-                        "[V510-SHADOW][CFG=REHUNT_VOL_CONFIRM] hook %s: %s",
-                        ticker, e)
-                try:
-                    _v519_check_oomph(ticker, bars=bars)
-                except Exception as e:
-                    logger.warning(
-                        "[V510-SHADOW][CFG=OOMPH_ALERT] hook %s: %s",
-                        ticker, e)
                 if ok and bars:
                     px = bars["current_price"]
                     try:

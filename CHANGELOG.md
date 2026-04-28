@@ -4,6 +4,32 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.10.1 — 2026-04-28 — Eye-of-the-Tiger live-hot-path integration
+
+**Wires the v5.10.0 pure-function evaluators (`eye_of_tiger.py`, `volume_bucket.py`) into `trade_genius.py`'s scan loop.** v5.10.0 shipped the building blocks but left the legacy v5.0–v5.9 Tiger/Buffalo state machine on the hot path; v5.10.1 makes the v5.10.0 evaluators authoritative.
+
+**New module.** `v5_10_1_integration.py` — orchestrator that owns Volume Bucket lifecycle (lazy load + 9:29 ET refresh), Section I/II/III/IV evaluation, per-(ticker, side) Boundary Hold + di_1m_prev caches, and the v5.10.0 `[V5100-*]` log signatures.
+
+**`trade_genius.py` surgery.**
+- `scan_loop` calls `refresh_volume_baseline_if_needed(now_et)` once per cycle and `maybe_log_permit_state(...)` (emits `[V5100-PERMIT]` only on state change).
+- Per-ticker scan caches the just-closed 1m bar via `eot_glue.record_1m_close(ticker, close)` for the Boundary Hold evaluator.
+- `check_breakout` Section I + II + III gates replace the v5.6.0–v5.9.4 G1/G3/G4 + V570 expansion + DI gate + extension + stop-cap block. Entry 1 fires on `[V5100-ENTRY] entry_num=1` only when Section I OPEN + Volume Bucket PASS/COLDSTART + Boundary Hold + DI(15) 5m & 1m > 25 + NHOD/NLOD all align.
+- Section IV (Sovereign Brake -$500 unrealized + Velocity Fuse > 1.0% from current 1m candle open) now runs at the top of `manage_positions` and `manage_short_positions`, emitting `[V5100-SOVEREIGN-BRAKE]` / `[V5100-VELOCITY-FUSE]` and routing to `close_position` / `close_short_position` with canonical `exit_reason` strings.
+- 15-minute per-ticker cooldown removed (Section VI Unlimited Hunting); per-ticker $50 loss cap removed (replaced by Section IV per-trade Sovereign Brake at -$500).
+- `_tiger_hard_eject_check` definition deleted. `tests/test_titan_bypass_hard_eject.py` retired.
+
+**Version.** `BOT_VERSION = "5.10.1"` in `bot_version.py` (mirrored in `trade_genius.py`).
+
+**Smoke tags.** `scripts/post_deploy_smoke.sh` now greps for `[V5100-PERMIT]`, `[V5100-VOLBUCKET]`, `[V5100-BOUNDARY]`, `[V5100-ENTRY]`.
+
+**Tests.** 102/102 passing (108 baseline minus 6 deleted Titan-bypass tests covering the removed `_tiger_hard_eject_check`).
+
+**Deferred to v5.10.2 (out of v5.10.1 scope).** Entry 2 scaling (50% add) is wired in the orchestrator (`evaluate_entry_2_decision`, `record_entry_2`) but not yet called from `check_breakout`; the live path fires Entry 1 only. Phase B Layered Shield BE, Two-Bar Lock, and Phase C ema_trail are present in `eye_of_tiger.py` and the orchestrator (`step_two_bar_lock_on_5m`, `step_phase_c_if_eligible`, `evaluate_phase_c_exit`) but not called from `manage_positions`. Stops not covered by Section IV still flow through the legacy structural-stop / trail-stop / EOD / DLL plumbing. Spec XIV.3 open question (Section I freshness at Entry 2 trigger time) is implemented conservatively — `permit_open_at_trigger` is recomputed each call. Dashboard gate panel, `STRATEGY.md` rewrite, full-algo backtest replay, and PDF regeneration are tracked separately.
+
+**Rollback.** No feature flag. Rollback path is revert-the-PR + redeploy.
+
+---
+
 ## v5.10.0 — 2026-04-28 — Project Eye of the Tiger (full algorithm rewrite, with volume bucket)
 
 **Full algorithmic rewrite per Gene Stepanov's authoritative spec (revised 2026-04-28 12:38 PM CDT, third revision today).** No feature flag. v5.6.0 → v5.9.4 entry/exit logic is replaced.
