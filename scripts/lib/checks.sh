@@ -347,28 +347,31 @@ EOF
 }
 
 # 6. check_shadow_db_count -- "SHADOW_DB total=<N> last_24h=<c1=N,c2=N,...>".
-# Always returns 0 (informational).
+# Always returns 0 (informational). The on-disk path is /data/state.db
+# (table: shadow_positions); v5.8.2 incorrectly hardcoded /data/shadow.db.
+# Override via SHADOW_DB_PATH for testability.
 check_shadow_db_count() {
+    local db_path="${SHADOW_DB_PATH:-/data/state.db}"
     local cmd
-    cmd=$(cat <<'EOF'
-python3 - <<'PY'
+    cmd=$(cat <<EOF
+SHADOW_DB_PATH="${db_path}" python3 - <<'PY'
 import sqlite3, os, sys
-db = "/data/shadow.db"
+db = os.environ.get("SHADOW_DB_PATH", "/data/state.db")
 if not os.path.exists(db):
     print("TOTAL=0 BREAKDOWN=missing_db")
     sys.exit(0)
 con = sqlite3.connect(db)
 cur = con.cursor()
 try:
-    cur.execute("SELECT COUNT(*) FROM shadow_trades")
+    cur.execute("SELECT COUNT(*) FROM shadow_positions")
     total = cur.fetchone()[0]
 except Exception as e:
     print(f"TOTAL=0 BREAKDOWN=err:{type(e).__name__}")
     sys.exit(0)
 try:
     cur.execute(
-        "SELECT config_name, COUNT(*) FROM shadow_trades "
-        "WHERE entry_ts >= datetime('now', '-1 day') "
+        "SELECT config_name, COUNT(*) FROM shadow_positions "
+        "WHERE entry_ts_utc > strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-1 day') "
         "GROUP BY config_name ORDER BY config_name"
     )
     rows = cur.fetchall()

@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.8.3 — 2026-04-27
+
+Fix shadow_positions DB path in scripts/lib/checks.sh: /data/shadow.db -> /data/state.db
+
+---
+
 ## v5.8.2 — 2026-04-28 — Infra-B smoke library bug-fixes (dogfood follow-up)
 
 Pure infra/tooling patch. **No algorithm logic touched, no live trading paths modified.** Dogfooding v5.8.1 against the live Railway deploy surfaced two bugs in `scripts/lib/checks.sh`:
