@@ -4,6 +4,70 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.9 — 2026-04-29 — Gate display rewire (index/polarity → Section I + boundary_hold)
+
+### Symptom
+
+Prod v5.13.8 dashboard, 2026-04-29 mid-session: META satisfied the
+actual entry gate (Section I permit `long_open=true` because QQQ 5m
+close 660.93 was above ema9 659.65 and above 09:30 AVWAP 658.55, plus
+two 1m closes [670.93, 672.09] both above OR-high 668.995), but the
+dashboard `index` and `polarity` pills both rendered red. The pills
+were computing legacy v4 Tiger 2.0 fields the entry path stopped
+consulting in v5.9.0/v5.10.x, so they no longer reflected reality.
+
+### Root cause
+
+`_update_gate_snapshot` in `trade_genius.py` was still computing:
+
+- `index_ok = (spy_p > spy_pdc) AND (qqq_p > qqq_pdc)` — dual-index
+  prior-day-close compare, which is not in the Tiger Sovereign spec
+  (spec STEP 1 = QQQ 5m vs 9 EMA, STEP 2 = QQQ 5m vs 09:30 AVWAP).
+- `polarity_ok = price > pdc_val` (or `<` for short) — single-ticker
+  prior-day-close compare. The actual gate is `boundary_hold`: two
+  consecutive 1m closes outside the 5m OR high/low.
+
+The entry path (`broker/orders.py:check_breakout`) already routed
+through `eot_glue.evaluate_section_i` and `evaluate_boundary_hold_gate`
+correctly. The display fields were the only remaining PDC consumers.
+
+A matching `engine/scan.py` PDC-anchored `REGIME: BULLISH/BEARISH`
+alert was also still firing on dual-index 1m vs PDC flips. It was
+decorative-only (no entry, exit, or sentinel path consumed it) and
+likewise had no spec basis.
+
+### Fix
+
+1. `_update_gate_snapshot` now sources `index_ok` from
+   `eot_glue.evaluate_section_i(side, qqq_5m_close, qqq_5m_ema9,
+   qqq_current_price, qqq_avwap_0930)` and reads `result['open']`.
+   Same gate the entry path uses.
+2. `polarity_ok` now mirrors `eot_glue.evaluate_boundary_hold_gate(
+   ticker, side, or_high, or_low)['hold']`. Same gate the entry path
+   uses. Returns `None` (not False) when the prereqs aren't set yet
+   (`or_not_set` / `insufficient_closes`) so the dashboard can render
+   a yellow pending state instead of mis-flagging red.
+3. Deleted dead helpers `gate_two_consecutive_1m_above` /
+   `gate_two_consecutive_1m_below` from `engine/volume_baseline.py`
+   (and from `__all__`). The eight call sites in
+   `tests/test_phase2_gates.py` and the two in
+   `tests/test_tiger_sovereign_spec.py` were rewired to call
+   `eye_of_tiger.evaluate_boundary_hold(side, or_high, or_low, closes)`
+   directly (the canonical implementation since v5.10.x).
+4. Dropped the PDC regime alert block in `engine/scan.py:155-190`.
+   Removed the `_regime_bullish` module global from `trade_genius.py`
+   and the no-longer-needed reset in `reset_daily_state`.
+5. Removed the unused `pdc_val` lookup from
+   `_update_gate_snapshot`'s preamble.
+
+### Behavior change
+
+Dashboard-only. Entry, exit, sentinel, and FSM paths are untouched.
+`/version` displays the new release note. Telegram lines all under
+34 chars (mobile-width rule preserved).
+
+---
+
 ## v5.13.8 — 2026-04-29 — EMA9 pre-market seed fall-through hotfix
 
 ### Symptom

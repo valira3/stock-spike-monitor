@@ -16,6 +16,7 @@ Cold-start:
     blocked — Unlimited Hunting requires the gate to pass-through during the
     archive warmup.
 """
+
 from __future__ import annotations
 
 import logging
@@ -96,7 +97,10 @@ def rolling_55d_per_minute_avg(
         logger.warning(
             "[VOLPROFILE] %s @ %s — only %d/%d trading days available; "
             "gate pass-through (cold-start)",
-            sym, _hhmm(time_of_day), days, LOOKBACK_DAYS_55,
+            sym,
+            _hhmm(time_of_day),
+            days,
+            LOOKBACK_DAYS_55,
         )
         return None
     base = res.get("baseline")
@@ -130,29 +134,13 @@ def gate_volume_pass(
     return (ratio >= THRESHOLD_RATIO, ratio)
 
 
-def gate_two_consecutive_1m_above(
-    last_n_closes: list[float],
-    or_high: Optional[float],
-) -> bool:
-    """L-P2-S4 — TWO consecutive completed 1m candles closed strictly ABOVE
-    the 5m Opening Range High. The in-progress candle MUST NOT be counted;
-    callers are responsible for only passing fully closed bars.
-    """
-    if or_high is None or not last_n_closes or len(last_n_closes) < 2:
-        return False
-    c1, c0 = float(last_n_closes[-2]), float(last_n_closes[-1])
-    return c1 > or_high and c0 > or_high
-
-
-def gate_two_consecutive_1m_below(
-    last_n_closes: list[float],
-    or_low: Optional[float],
-) -> bool:
-    """S-P2-S4 — mirror of :func:`gate_two_consecutive_1m_above` for shorts."""
-    if or_low is None or not last_n_closes or len(last_n_closes) < 2:
-        return False
-    c1, c0 = float(last_n_closes[-2]), float(last_n_closes[-1])
-    return c1 < or_low and c0 < or_low
+# v5.13.9: gate_two_consecutive_1m_above / _below removed.
+# Their L-P2-S4 / S-P2-S4 boundary-hold contract is implemented in
+# eye_of_tiger.evaluate_boundary_hold and exposed via
+# v5_10_1_integration.evaluate_boundary_hold_gate, which is what the
+# entry path (broker/orders.check_breakout) and the dashboard
+# (_update_gate_snapshot) actually call. The functions here had no
+# non-test callers since their introduction in v5.13.0 PR 4.
 
 
 __all__ = [
@@ -160,7 +148,5 @@ __all__ = [
     "THRESHOLD_RATIO",
     "rolling_55d_per_minute_avg",
     "gate_volume_pass",
-    "gate_two_consecutive_1m_above",
-    "gate_two_consecutive_1m_below",
     "reset_cache",
 ]
