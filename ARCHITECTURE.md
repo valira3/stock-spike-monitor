@@ -66,7 +66,10 @@ notification entry used by paper_state, error_state, and the scheduler.
 v5.11.2 split the broker / position-management surface out of
 `trade_genius.py`. This is real-money path code; the synthetic harness
 (`synthetic_harness/scenarios/`) exercises every function via
-`m.<name>(...)` dispatch, and deprecation aliases preserve that surface.
+`m.<name>(...)` dispatch. The v5.11.x deprecation aliases that mirrored
+this surface back into `trade_genius`'s namespace were purged in v5.12.0;
+callers (synthetic_harness, smoke_test, telegram_commands) now import the
+broker names directly from `broker.{stops, orders, positions, lifecycle}`.
 Strict layering: stops → orders → positions → lifecycle.
 
 | File | Responsibility |
@@ -76,6 +79,25 @@ Strict layering: stops → orders → positions → lifecycle.
 | `broker/orders.py` | Order execution: `check_breakout`, `paper_shares_for`, `execute_breakout`, `close_breakout`. |
 | `broker/positions.py` | Per-tick position management: `manage_positions`, `manage_short_positions`, `_v5104_maybe_fire_entry_2`. |
 | `broker/lifecycle.py` | Entry/exit dispatchers and EOD close: `check_entry`, `execute_entry`, `close_position`, `eod_close`, plus short-side counterparts. |
+
+### executors/ (post-v5.12.0)
+
+v5.12.0 split the per-executor (Val / Gene) shadow-book runtime out of
+`trade_genius.py` into a dedicated `executors/` package. The base class
+owns the Alpaca-paper-keys handshake, signal-bus subscription, and per-
+executor error rings; the subclasses just set `NAME` / `ENV_PREFIX`. The
+v5.11.x deprecation aliases that bridged extracted helpers back into
+`trade_genius`'s namespace have been removed in v5.12.0 — callers
+(synthetic_harness, smoke_test, telegram_commands) now import from the
+canonical packages directly.
+
+| File | Responsibility |
+| --- | --- |
+| `executors/__init__.py` | Re-exports `TradeGeniusBase`, `TradeGeniusVal`, `TradeGeniusGene`. Boot log: `[EXEC] modules loaded: base, val, gene, bootstrap`. |
+| `executors/base.py` | `TradeGeniusBase` — env-prefixed Alpaca paper key resolution, signal-bus subscription, error ring, dispatch hooks. |
+| `executors/val.py` | `TradeGeniusVal(TradeGeniusBase)` — `NAME = "Val"`, `ENV_PREFIX = "VAL_"`. |
+| `executors/gene.py` | `TradeGeniusGene(TradeGeniusBase)` — `NAME = "Gene"`, `ENV_PREFIX = "GENE_"`. |
+| `executors/bootstrap.py` | `build_val_executor()`, `build_gene_executor()`, `install_globals()` — invoked by trade_genius's `__main__` block to publish the executor instances into both `trade_genius` and `telegram_commands` namespaces. |
 
 ---
 
@@ -303,6 +325,24 @@ engine/                    # v5.11.0 — extracted trading-rules engine
     phase_machine.py       # Phase A/B/C state machine (pure)
     callbacks.py           # EngineCallbacks Protocol (I/O seam)
     scan.py                # per-minute scan_loop over the universe
+telegram_ui/               # v5.11.1 — Telegram presentation layer
+    __init__.py            # re-exports public UI surface
+    charts.py              # matplotlib dayreport / equity / portfolio
+    commands.py            # synchronous command builders (sync helpers)
+    menu.py                # keyboards + callback handlers
+    runtime.py             # bot lifecycle (auth, startup, run loop)
+broker/                    # v5.11.2 — broker / position-management
+    __init__.py            # re-exports public broker surface
+    stops.py               # breakeven, capped, ladder, retighten
+    orders.py              # check_breakout, execute_breakout, close_breakout
+    positions.py           # manage_positions / manage_short_positions
+    lifecycle.py           # check_entry, execute_entry, close_position, eod_close
+executors/                 # v5.12.0 — Val / Gene shadow-book runtime
+    __init__.py            # re-exports TradeGeniusBase / Val / Gene
+    base.py                # TradeGeniusBase: paper-keys + signal subscription
+    val.py                 # TradeGeniusVal(NAME="Val", ENV_PREFIX="VAL_")
+    gene.py                # TradeGeniusGene(NAME="Gene", ENV_PREFIX="GENE_")
+    bootstrap.py           # build_val_executor, build_gene_executor, install_globals
 eye_of_tiger.py            # spec gates §I–§VI (pure functions, unchanged)
 qqq_regime.py              # QQQ Index Shield helpers (§I)
 volume_bucket.py           # §II.1 rolling 55-day volume baseline

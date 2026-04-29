@@ -51,8 +51,6 @@ from trade_genius import (
     Update,
     _TICKER_USAGE,
     _build_test_progress,
-    _chart_dayreport,
-    _chart_portfolio_pie,
     _current_breadth,
     _current_breadth_detail,
     _current_mode,
@@ -66,26 +64,10 @@ from trade_genius import (
     _current_ticker_red,
     _dashboard_sync,
     _do_reset_paper,
-    _fetch_or_for_ticker,
-    _fmt_add_reply,
-    _fmt_remove_reply,
-    _fmt_tickers_list,
-    _format_dayreport_section,
-    _log_sync,
-    _menu_button,
     _near_miss_log,
     _now_et,
-    _open_positions_as_pseudo_trades,
-    _orb_sync,
     _parse_date_arg,
-    _perf_compute,
-    _price_sync,
-    _proximity_keyboard,
-    _proximity_sync,
     _refresh_market_mode,
-    _replay_sync,
-    _reply_in_chunks,
-    _reset_buttons,
     _status_text_sync,
     _test_fmp,
     _test_positions,
@@ -110,7 +92,30 @@ from trade_genius import (
     trade_log_read_tail,
     urllib,
 )
-from telegram_ui.menu import _build_menu_keyboard  # v5.11.1 PR 3
+# v5.12.0 \u2014 telegram_ui helpers imported directly from their canonical
+# modules (deprecation aliases in trade_genius removed in v5.12.0 PR 5).
+from telegram_ui.charts import (
+    _chart_dayreport,
+    _chart_portfolio_pie,
+    _format_dayreport_section,
+    _open_positions_as_pseudo_trades,
+    _reply_in_chunks,
+)
+from telegram_ui.commands import (
+    _fetch_or_for_ticker,
+    _fmt_add_reply,
+    _fmt_remove_reply,
+    _fmt_tickers_list,
+    _log_sync,
+    _orb_sync,
+    _perf_compute,
+    _price_sync,
+    _proximity_keyboard,
+    _proximity_sync,
+    _replay_sync,
+    _reset_buttons,
+)
+from telegram_ui.menu import _build_menu_keyboard, _menu_button  # v5.11.1 PR 3
 from broker.stops import retighten_all_stops  # v5.11.2 \u2014 moved out of trade_genius
 
 
