@@ -252,3 +252,65 @@ def test_trade_genius_mentions_cutoff_and_eod():
     assert "15:49" in src
     assert "SHARED-CUTOFF" in src
     assert "SHARED-EOD" in src
+
+
+# ---------------------------------------------------------------------------
+# v5.13.1 prod-verify finding \u2014 EOD flush scheduler precision
+# Scheduler fires at 15:49:00 ET (HH:MM only); _eod_align_to_spec must
+# block until 15:49:59 ET so positions are not flushed 59 seconds early.
+# ---------------------------------------------------------------------------
+
+
+def test_eod_align_at_15_49_00_sleeps_until_spec():
+    """At 15:49:00 ET, the guard must sleep ~59s to reach 15:49:59 ET."""
+    from broker.lifecycle import _eod_align_to_spec
+
+    slept = []
+    fake_now = datetime(2026, 4, 29, 15, 49, 0, tzinfo=ET)
+    delay = _eod_align_to_spec(now=fake_now, sleep_fn=slept.append)
+    assert delay == pytest.approx(59.0, abs=0.001)
+    assert slept == [pytest.approx(59.0, abs=0.001)]
+
+
+def test_eod_align_at_15_49_59_does_not_sleep():
+    """At 15:49:59 ET, is_after_eod_et is True; no sleep required."""
+    from broker.lifecycle import _eod_align_to_spec
+
+    slept = []
+    fake_now = datetime(2026, 4, 29, 15, 49, 59, tzinfo=ET)
+    delay = _eod_align_to_spec(now=fake_now, sleep_fn=slept.append)
+    assert delay == 0.0
+    assert slept == []
+
+
+def test_eod_align_at_15_50_00_does_not_sleep():
+    """After EOD wall-clock, no sleep \u2014 run immediately."""
+    from broker.lifecycle import _eod_align_to_spec
+
+    slept = []
+    fake_now = datetime(2026, 4, 29, 15, 50, 0, tzinfo=ET)
+    delay = _eod_align_to_spec(now=fake_now, sleep_fn=slept.append)
+    assert delay == 0.0
+    assert slept == []
+
+
+def test_eod_align_skips_when_called_far_before_eod():
+    """If somehow called >5 min early, do NOT block the scheduler thread."""
+    from broker.lifecycle import _eod_align_to_spec
+
+    slept = []
+    fake_now = datetime(2026, 4, 29, 15, 30, 0, tzinfo=ET)
+    delay = _eod_align_to_spec(now=fake_now, sleep_fn=slept.append)
+    assert delay == 0.0
+    assert slept == []
+
+
+def test_eod_align_at_15_49_30_sleeps_29s():
+    """Mid-minute scheduler tick: align to remaining seconds."""
+    from broker.lifecycle import _eod_align_to_spec
+
+    slept = []
+    fake_now = datetime(2026, 4, 29, 15, 49, 30, tzinfo=ET)
+    delay = _eod_align_to_spec(now=fake_now, sleep_fn=slept.append)
+    assert delay == pytest.approx(29.0, abs=0.001)
+    assert slept == [pytest.approx(29.0, abs=0.001)]
