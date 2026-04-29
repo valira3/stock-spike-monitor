@@ -101,7 +101,6 @@ from trade_genius import (
     paper_cash,
     positions,
     remove_ticker,
-    retighten_all_stops,
     save_paper_state,
     short_positions,
     short_trade_history,
@@ -112,6 +111,7 @@ from trade_genius import (
     urllib,
 )
 from telegram_ui.menu import _build_menu_keyboard  # v5.11.1 PR 3
+from broker.stops import retighten_all_stops  # v5.11.2 \u2014 moved out of trade_genius
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
