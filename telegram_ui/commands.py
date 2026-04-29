@@ -10,7 +10,6 @@ accessor `_tg()` so __main__ vs imported execution both work.
 from __future__ import annotations
 
 import logging
-import os
 import sys as _sys
 import time
 
@@ -413,14 +412,10 @@ def _price_sync(ticker):
         lines.append("OR Low:   not collected")
 
     # v5.13.5: per-ticker PDC dropped from the active diagnostic. Under
-    # Tiger Sovereign, per-ticker PDC is only consumed by the legacy
-    # RED_CANDLE / POLARITY_SHIFT exits which are gated behind
-    # LEGACY_EXITS_ENABLED (default OFF). Surface it only when that flag
-    # is on so operators don't read it as a live gate.
-    if os.getenv("LEGACY_EXITS_ENABLED", "false").lower() in ("1", "true", "yes"):
-        pdc_strat = tg.pdc.get(ticker)
-        if pdc_strat is not None:
-            lines.append("PDC (legacy): $%.2f" % pdc_strat)
+    # Tiger Sovereign there is no live gate that uses per-ticker PDC.
+    # v5.13.10 deleted the legacy RED_CANDLE / POLARITY_SHIFT exits and
+    # their LEGACY_EXITS_ENABLED env-var gate, so the conditional PDC
+    # surface is also gone.
 
     # --- Phase 1 (Section I) permit ---
     # Read from v5_10_6_snapshot so the regime read matches the dashboard.

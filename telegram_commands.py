@@ -948,16 +948,6 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "    Runner ratchets to EOD\n"
         "\n"
         "Stop: entry + 0.75% (cap)\n"
-        f"{SEP}\n"
-        "Legacy exits (opt-in)\n"
-        "  LEGACY_EXITS_ENABLED env var\n"
-        "  default OFF as of v5.13.2.\n"
-        "  When ON, per-ticker PDC is\n"
-        "  used for legacy RED_CANDLE\n"
-        "  (long) and POLARITY_SHIFT\n"
-        "  (short) exits only \u2014 NEVER\n"
-        "  for Tiger Sovereign entries\n"
-        "  or Phase 4 sentinel logic.\n"
         f"{SEP}"
     )
     await _reply_in_chunks(update.message, text, reply_markup=_menu_button())

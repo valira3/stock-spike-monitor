@@ -310,39 +310,38 @@
         const eff = (typeof p.effective_stop === "number")
                       ? p.effective_stop : p.stop;
         const trailBadge = p.trail_active
-          ? ` <span class="trail-badge" title="Trail armed — effective stop is trail_stop, not hard stop">TRAIL</span>`
+          ? ` <span class="trail-badge" title="Trail stop is armed \u2014 the effective stop now follows price, not the original hard stop">TRAIL</span>`
           : "";
-        // v5.10.6 \u2014 Phase badge + Sovereign Brake distance. Phase
-        // mirrors pos["phase"] (A/B/C). SB distance = unrealized + 500;
-        // green > $200 (breathing room), yellow $50\u2013$200 (close),
-        // red < $50 (about to trip).
+        // v5.13.10 \u2014 SB (Sovereign Brake distance) column removed
+        // per operator request. Phase badge stays: A = fresh entry,
+        // B = first runner / partial taken, C = mature ratcheting trail.
         const phase = (p.phase === "B" || p.phase === "C") ? p.phase : "A";
-        const phaseBadge = `<span class="eot-phase-badge eot-phase-${phase}" title="v5.10 Phase ${phase}">${phase}</span>`;
-        const sb = p.sovereign_brake_distance_dollars;
-        let sbCls = "eot-sb-green", sbLabel = "—";
-        if (typeof sb === "number" && isFinite(sb)) {
-          if (sb < 50) sbCls = "eot-sb-red";
-          else if (sb < 200) sbCls = "eot-sb-yellow";
-          sbLabel = (sb >= 0 ? "+" : "−") + "$" + Math.abs(sb).toFixed(0);
-        }
+        const phaseTitle = (phase === "A")
+          ? "Phase A \u2014 fresh entry, hard stop only"
+          : (phase === "B")
+            ? "Phase B \u2014 first runner / partial taken, breakeven trail"
+            : "Phase C \u2014 mature runner, ratcheting trail stop";
+        const phaseBadge = `<span class="eot-phase-badge eot-phase-${phase}" title="${escapeHtml(phaseTitle)}">${phase}</span>`;
+        const dotTitle = (p.side === "SHORT") ? "Open short position" : "Open long position";
         return `<tr>
-          <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}">●</span></span>${phaseBadge}</td>
+          <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
           <td class="right">${p.shares}</td>
           <td class="right">${fmtPx(p.entry)}</td>
           <td class="right">${fmtPx(p.mark)}</td>
           <td class="right">${fmtPx(eff)}${trailBadge}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
-          <td class="right ${sbCls}" title="Sovereign Brake distance — fires at -$500 unrealized">${sbLabel}</td>
         </tr>`;
       }).join("");
       body.innerHTML = `<table>
         <thead><tr>
-          <th>Ticker</th><th>Side</th>
-          <th class="right">Sh</th><th class="right">Entry</th>
-          <th class="right">Mark</th><th class="right">Stop</th>
-          <th class="right">Unreal.</th>
-          <th class="right" title="Sovereign Brake distance">SB Δ</th>
+          <th title="Symbol \u00b7 colored dot shows side (green = long, red = short)">Ticker</th>
+          <th title="LONG = bought to open. SHORT = sold to open.">Side</th>
+          <th class="right" title="Number of shares">Sh</th>
+          <th class="right" title="Average fill price when the position opened">Entry</th>
+          <th class="right" title="Latest mark price">Mark</th>
+          <th class="right" title="Effective stop \u2014 trail stop if armed (TRAIL badge), otherwise the hard stop">Stop</th>
+          <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
     }
@@ -480,7 +479,7 @@
     const sumEl = $("trades-summary");
     if (sumEl) {
       if (!trades.length) {
-        sumEl.innerHTML = '<span class="ts-seg">No fills yet today.</span>';
+        sumEl.innerHTML = '<span class="ts-seg" title="No buy or sell fills have been recorded today">No fills yet today.</span>';
       } else {
         const realCls = summary.have_pnl === 0 ? "na"
                       : (summary.realized > 0 ? "up" : (summary.realized < 0 ? "down" : ""));
@@ -488,10 +487,10 @@
         const wrTxt   = summary.win_rate === null ? "—"
                       : (Math.round(summary.win_rate * 100) + "%");
         sumEl.innerHTML =
-          `<span class="ts-seg"><span class="ts-val">${summary.opens}</span> open${summary.opens===1?"":"s"}</span>` +
-          `<span class="ts-seg"><span class="ts-val">${summary.closes}</span> close${summary.closes===1?"":"s"}</span>` +
-          `<span class="ts-seg">realized <span class="ts-val ${realCls}">${realTxt}</span></span>` +
-          `<span class="ts-seg">win <span class="ts-val">${wrTxt}</span></span>`;
+          `<span class="ts-seg" title="Number of opening fills today (BUY for long, SHORT for short)"><span class="ts-val">${summary.opens}</span> open${summary.opens===1?"":"s"}</span>` +
+          `<span class="ts-seg" title="Number of closing fills today (SELL for long, COVER for short)"><span class="ts-val">${summary.closes}</span> close${summary.closes===1?"":"s"}</span>` +
+          `<span class="ts-seg" title="Sum of realized P&L from closed pairs today, after commissions">realized <span class="ts-val ${realCls}">${realTxt}</span></span>` +
+          `<span class="ts-seg" title="Win rate among closed pairs today (winners / total closed)">win <span class="ts-val">${wrTxt}</span></span>`;
       }
     }
 
@@ -666,8 +665,8 @@
       return '<div class="ts-row">'
         + '<span class="ts-row-label"><span class="ticker">' + escapeHtml(r.ticker || "") + '</span></span>'
         + '<span class="ts-row-value">'
-        +   '<span class="ts-vol-pill ' + cls + '" title="Volume gate">' + escapeHtml(status) + '</span>'
-        +   '<span class="ts-row-pair">' + twoIcon + ' ' + escapeHtml(twoLabel) + '</span>'
+        +   '<span class="ts-vol-pill ' + cls + '" title="Volume gate \u2014 PASS = volume baseline cleared, FAIL = below threshold, COLD = warming up, OFF = runtime override">' + escapeHtml(status) + '</span>'
+        +   '<span class="ts-row-pair" title="Two consecutive 1m closes either above 5m Opening Range high or below 5m OR low \u2014 part of Phase 2 boundary hold">' + twoIcon + ' ' + escapeHtml(twoLabel) + '</span>'
         + '</span>'
         + '</div>';
     }).join("");
@@ -698,10 +697,10 @@
         +     escapeHtml(r.side || "\u2014") + '</span>'
         + '</span>'
         + '<span class="ts-row-value">'
-        +   '<span class="ts-row-pair">' + _tsCheck(e1Fired) + ' Entry 1</span>'
-        +   '<span class="ts-row-pair mono">DI=' + escapeHtml(_tsNum(di, 2)) + '</span>'
-        +   '<span class="ts-row-pair">' + escapeHtml(nhodTxt) + '</span>'
-        +   '<span class="ts-row-pair">' + escapeHtml(e2Txt) + '</span>'
+        +   '<span class="ts-row-pair" title="Entry 1 \u2014 first breakout fill (5m OR break + DI/NHOD gates)">' + _tsCheck(e1Fired) + ' Entry 1</span>'
+        +   '<span class="ts-row-pair mono" title="DI+ momentum reading at the Entry 1 trigger; gate requires DI+ > 25">DI=' + escapeHtml(_tsNum(di, 2)) + '</span>'
+        +   '<span class="ts-row-pair" title="NHOD \u2014 New High Of Day at Entry 1: \u2713 = made new HOD, no NHOD = did not, \u2014 = unknown">' + escapeHtml(nhodTxt) + '</span>'
+        +   '<span class="ts-row-pair" title="Entry 2 \u2014 second add on a higher 5m close above OR; pending = cross detected, awaiting confirm">' + escapeHtml(e2Txt) + '</span>'
         + '</span>'
         + '</div>';
     }).join("");
@@ -750,10 +749,10 @@
         +   '<span class="ts-row-pair" title="Alarm B \u2014 QQQ 5m close vs 9-EMA">'
         +     _tsCheck(bTrip === null ? null : !bTrip)
         +     ' B \u0394=' + escapeHtml(_tsNum(bDelta)) + '</span>'
-        +   '<span class="ts-titan-stage">' + escapeHtml(stageLbl) + '</span>'
-        +   '<span class="ts-row-pair mono">anchor=' + escapeHtml(_tsNum(anchor)) + '</span>'
-        +   '<span class="ts-row-pair mono">next=' + escapeHtml(_tsNum(next)) + '</span>'
-        +   '<span class="ts-row-pair mono">ratchet=' + (ratchet === null ? "\u2014" : ratchet) + '</span>'
+        +   '<span class="ts-titan-stage" title="Titan Grip stage \u2014 0 = pre-arm, 1+ = trail engaged and ratcheting">' + escapeHtml(stageLbl) + '</span>'
+        +   '<span class="ts-row-pair mono" title="Titan Grip anchor price \u2014 reference price the trail is measured from">anchor=' + escapeHtml(_tsNum(anchor)) + '</span>'
+        +   '<span class="ts-row-pair mono" title="Next ratchet target \u2014 price that would advance the trail one step">next=' + escapeHtml(_tsNum(next)) + '</span>'
+        +   '<span class="ts-row-pair mono" title="Number of times the trail has ratcheted up (long) or down (short) so far">ratchet=' + (ratchet === null ? "\u2014" : ratchet) + '</span>'
         + '</span>'
         + '</div>';
     }).join("");
@@ -793,7 +792,6 @@
       el.textContent = label + ": " + (on ? "ON" : "OFF");
     }
     setFlag("ts-flag-vol", "Volume Gate", !!ff.volume_gate_enabled);
-    setFlag("ts-flag-legacy", "Legacy Exits", !!ff.legacy_exits_enabled);
   }
 
   function renderGates(s) {
@@ -829,7 +827,7 @@
       const notes = [];
       if (volOff) notes.push("Volume Gate runtime override: OFF");
       const sub = notes.length ? ` <span class="hint">\u2014 ${escapeHtml(notes.join(" \u00b7 "))}</span>` : "";
-      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
+      rows.push(`<div class="tgate-section-label" title="Per-ticker gate trip readout: Phase 1 permit (L/S/L+S/none), volume gate, and boundary-hold side">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
       for (const r of phase2List) {
         rows.push(tGateRow(r, longPermit, shortPermit, phase3ByTicker[r.ticker] || []));
       }
@@ -2136,7 +2134,7 @@
       const notes = [];
       if (volOff) notes.push("Volume Gate runtime override: OFF");
       const sub = notes.length ? ` <span class="hint">\u2014 ${esc(notes.join(" \u00b7 "))}</span>` : "";
-      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
+      rows.push(`<div class="tgate-section-label" title="Per-ticker gate trip readout: Phase 1 permit (L/S/L+S/none), volume gate, and boundary-hold side">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
       for (const r of phase2List) {
         rows.push(execTGateRow(r, longPermit, shortPermit, phase3ByTicker[r.ticker] || []));
       }
@@ -3142,7 +3140,13 @@
           posEl.innerHTML = '<option value="">— select a position —</option>' + rows.map(r => {
             const label = (r.ticker || "?") + " " + (r.side || "") + " " +
               (r.entry_ts_utc || "") + " (" + (r.status || "") + ")";
-            return '<option value="' + escAttr(r.position_id) + '">' + escHtml(label) + '</option>';
+            // v5.13.10 — surface position_id and any cached realized P&L / latest stage in the option tooltip.
+            const tipParts = ["position_id: " + (r.position_id || "")];
+            if (r.realized_pnl !== undefined && r.realized_pnl !== null) tipParts.push("realized: $" + Number(r.realized_pnl).toFixed(2));
+            if (r.latest_titan_stage !== undefined && r.latest_titan_stage !== null) tipParts.push("titan stage: " + r.latest_titan_stage);
+            if (r.latest_phase4_state) tipParts.push("phase4: " + r.latest_phase4_state);
+            const tip = tipParts.join(" \u00b7 ");
+            return '<option value="' + escAttr(r.position_id) + '" title="' + escAttr(tip) + '">' + escHtml(label) + '</option>';
           }).join("");
           if (cur && rows.some(r => r.position_id === cur)) posEl.value = cur;
         }
@@ -3154,6 +3158,130 @@
     function escHtml(s) { return String(s == null ? "" : s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
     function escAttr(s) { return escHtml(s).replace(/"/g, "&quot;"); }
 
+    // v5.13.10 — per-event-type human-readable description for the chip tooltip.
+    const TYPE_TOOLTIPS = {
+      ENTRY_DECISION:   "Entry decision — a position was opened. Payload includes entry/limit/stop prices, share count, OR_high, PDC, and a snapshot of Phase 1/2/3 gate state at fire-time.",
+      PHASE1_EVAL:      "Phase 1 evaluation — index regime + permit (long/short) recomputed.",
+      PHASE2_EVAL:      "Phase 2 evaluation — per-ticker volume gate and 5m boundary-hold check.",
+      PHASE3_CANDIDATE: "Phase 3 candidate — a ticker armed for entry but did not yet fire (DI/NHOD/cross checks).",
+      PHASE4_SENTINEL:  "Phase 4 sentinel — alarm A1/A2/B status changed (or fired) on an open position.",
+      TITAN_GRIP_STAGE: "Titan Grip stage transition — trail engaged or ratcheted to a new stage.",
+      ORDER_SUBMIT:     "Order submitted — broker order ticket sent (entry or close).",
+      ORDER_FILL:       "Order filled — broker reported fill price and quantity.",
+      ORDER_CANCEL:     "Order cancelled — the order ticket was cancelled before/after partial fill.",
+      EXIT_DECISION:    "Exit decision — the engine decided to close (alarm trip, target, EOD, manual, etc.).",
+      POSITION_CLOSED:  "Position closed — final realized P&L and hold duration recorded.",
+      REASON:           "Reason note — free-form context appended by the engine."
+    };
+
+    // v5.13.10 — per-field tooltip strings used by the inline facts strip.
+    const FIELD_TOOLTIPS = {
+      entry_price:        "Decision-time price the engine used to open the position",
+      limit_price:        "Limit price submitted on the order ticket",
+      stop_price:         "Initial hard stop price set when the position opened",
+      stop_capped:        "True if the stop was clamped by the spec\u2019s max-loss cap",
+      shares:             "Number of shares on this fill / decision",
+      qty:                "Order quantity (shares)",
+      entry_num:          "1 = primary fill, 2 = second add",
+      strike_num:         "Strike count (consecutive 5m closes above OR_high used to fire)",
+      entry_id:           "Forensic id pairing this entry to its eventual close",
+      or_high:            "5-minute opening-range high captured for this ticker",
+      or_low:             "5-minute opening-range low captured for this ticker",
+      pdc:                "Prior-day close (the regime anchor)",
+      side:               "LONG = bought to open; SHORT = sold to open",
+      fill_price:         "Actual fill price reported by the broker (paper or live)",
+      notional:           "Shares × fill price (gross dollars)",
+      order_type:         "limit / stop_market / market — ticket the close path would submit",
+      action:             "open / close — which side of the lifecycle this order is on",
+      exit_reason:        "Engine\u2019s normalized close reason (e.g. titan_a1, titan_b, eod, manual)",
+      raw_reason:         "Free-form reason string before normalization",
+      exit_price:         "Decision-time price the engine used to close the position",
+      realized_pnl:       "Realized profit/loss in dollars after commissions",
+      realized_pnl_pct:   "Realized profit/loss as a percent of entry notional",
+      hold_seconds:       "Time the position was open, in seconds",
+      alarm_codes:        "Sentinel alarm codes that fired this tick (A1=$ stop, A2=velocity, B=QQQ vs 9-EMA)",
+      fired:              "True if the sentinel actually closed the position this tick",
+      current_price:      "Last mark price observed at sentinel evaluation time",
+      state:              "Comma-joined alarm codes (or OK)",
+      stage:              "Titan Grip stage (0 = pre-arm, 1+ = trail engaged + ratcheting)",
+      anchor:             "Titan Grip anchor price the trail is measured from",
+      shares_remaining:   "Shares still open after any partial harvest"
+    };
+
+    function _lcFmtVal(k, v) {
+      if (v === null || v === undefined) return "—";
+      if (typeof v === "number") {
+        // Money-ish vs share-ish heuristics.
+        if (k === "realized_pnl" || k === "notional") return "$" + v.toFixed(2);
+        if (k === "realized_pnl_pct") return (v * 100).toFixed(2) + "%";
+        if (k === "hold_seconds") {
+          const m = Math.floor(v / 60), s = Math.round(v % 60);
+          return m + "m" + (s < 10 ? "0" : "") + s + "s";
+        }
+        if (k === "shares" || k === "qty" || k === "entry_num" || k === "strike_num" ||
+            k === "stage" || k === "shares_remaining") return String(v);
+        // Default: prices and floats with up to 4 decimals trimmed.
+        return v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+      }
+      if (typeof v === "boolean") return v ? "yes" : "no";
+      if (Array.isArray(v)) return v.join(",") || "—";
+      const s = String(v);
+      return s.length > 60 ? s.slice(0, 57) + "…" : s;
+    }
+
+    function _lcKeyOrder(et) {
+      // Return preferred field order for each known event type.
+      switch (et) {
+        case "ENTRY_DECISION":   return ["entry_price","limit_price","stop_price","shares","entry_num","strike_num","or_high","pdc","stop_capped","entry_id"];
+        case "ORDER_SUBMIT":     return ["side","qty","limit_price","price","order_type","action","raw_reason"];
+        case "ORDER_FILL":       return ["side","qty","fill_price","notional","order_type","action"];
+        case "ORDER_CANCEL":     return ["side","qty","reason"];
+        case "EXIT_DECISION":    return ["exit_reason","exit_price","entry_price","shares","raw_reason"];
+        case "POSITION_CLOSED":  return ["realized_pnl","realized_pnl_pct","hold_seconds","exit_reason"];
+        case "PHASE4_SENTINEL":  return ["state","alarm_codes","current_price","fired","exit_reason"];
+        case "TITAN_GRIP_STAGE": return ["stage","anchor","shares_remaining"];
+        default: return [];
+      }
+    }
+
+    function _lcFactsStrip(ev) {
+      const p = ev.payload || {};
+      const order = _lcKeyOrder(ev.event_type);
+      // Show known/ordered keys first, then any remaining flat scalar keys.
+      const seen = new Set();
+      const parts = [];
+      const push = (k) => {
+        if (seen.has(k)) return;
+        if (!(k in p)) return;
+        const v = p[k];
+        // Skip nested objects / large arrays — the JSON pre handles those.
+        if (v !== null && typeof v === "object" && !Array.isArray(v)) return;
+        if (Array.isArray(v) && v.length > 8) return;
+        seen.add(k);
+        const tip = FIELD_TOOLTIPS[k] || k;
+        parts.push(
+          '<span class="lifecycle-fact" title="' + escAttr(tip) + '" ' +
+          'style="display:inline-flex;gap:4px;align-items:baseline;padding:1px 6px;margin:0 4px 2px 0;' +
+          'background:var(--surface-2);border:1px solid var(--border);border-radius:3px;' +
+          'font-size:10.5px;font-family:monospace;color:var(--text-muted)">' +
+          '<span style="color:#5b6572">' + escHtml(k) + '</span>' +
+          '<span style="color:var(--text)">' + escHtml(_lcFmtVal(k, v)) + '</span>' +
+          '</span>'
+        );
+      };
+      order.forEach(push);
+      // Add remaining scalar keys not already covered.
+      Object.keys(p).forEach(k => {
+        if (seen.has(k)) return;
+        const v = p[k];
+        if (v === null || typeof v === "object") return;
+        push(k);
+      });
+      if (parts.length === 0) return "";
+      return '<div class="lifecycle-facts" style="margin-top:4px;display:flex;flex-wrap:wrap" ' +
+             'title="Click the row to expand the full JSON payload">' + parts.join("") + '</div>';
+    }
+
     function renderEvents(events, append) {
       if (!timelineEl) return;
       if (!append) timelineEl.innerHTML = "";
@@ -3164,17 +3292,20 @@
       const frag = document.createDocumentFragment();
       events.forEach(ev => {
         const color = TYPE_COLORS[ev.event_type] || "#64748b";
+        const typeTip = TYPE_TOOLTIPS[ev.event_type] || ("Event type: " + ev.event_type);
         const row = document.createElement("div");
         row.className = "lifecycle-row";
-        row.style.cssText = "padding:8px 14px;border-bottom:1px solid var(--border);font-family:inherit";
-        const reason = ev.reason_text ? '<div style="color:var(--text-dim);font-size:11px;margin-top:2px">' + escHtml(ev.reason_text) + '</div>' : "";
+        row.style.cssText = "padding:8px 14px;border-bottom:1px solid var(--border);font-family:inherit;cursor:pointer";
+        row.title = "Click to expand the full JSON payload";
+        const reason = ev.reason_text ? '<div style="color:var(--text-dim);font-size:11px;margin-top:2px" title="Engine\u2019s short note describing why this event fired">' + escHtml(ev.reason_text) + '</div>' : "";
+        const facts = _lcFactsStrip(ev);
         row.innerHTML =
-          '<div style="display:flex;gap:10px;align-items:baseline">' +
-          '  <span style="font-size:10px;color:#5b6572;font-family:monospace">#' + (ev.event_seq || 0) + '</span>' +
-          '  <span style="font-size:10.5px;color:var(--text-dim);font-family:monospace">' + escHtml(ev.event_ts_utc || "") + '</span>' +
-          '  <span class="lifecycle-chip" style="background:' + color + '22;color:' + color + ';border:1px solid ' + color + '55;padding:1px 7px;border-radius:9px;font-size:10.5px;letter-spacing:.04em">' + escHtml(ev.event_type) + '</span>' +
-          '</div>' + reason +
-          '<pre class="lifecycle-payload" style="display:none;margin:6px 0 0;padding:8px;background:var(--surface-2);border-radius:4px;font-size:11px;color:var(--text-muted);max-height:300px;overflow:auto">' + escHtml(JSON.stringify(ev.payload || {}, null, 2)) + '</pre>';
+          '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">' +
+          '  <span style="font-size:10px;color:#5b6572;font-family:monospace" title="Per-position event sequence number (monotonically increasing)">#' + (ev.event_seq || 0) + '</span>' +
+          '  <span style="font-size:10.5px;color:var(--text-dim);font-family:monospace" title="Event timestamp in UTC">' + escHtml(ev.event_ts_utc || "") + '</span>' +
+          '  <span class="lifecycle-chip" title="' + escAttr(typeTip) + '" style="background:' + color + '22;color:' + color + ';border:1px solid ' + color + '55;padding:1px 7px;border-radius:9px;font-size:10.5px;letter-spacing:.04em">' + escHtml(ev.event_type) + '</span>' +
+          '</div>' + reason + facts +
+          '<pre class="lifecycle-payload" title="Full raw event payload (JSON)" style="display:none;margin:6px 0 0;padding:8px;background:var(--surface-2);border-radius:4px;font-size:11px;color:var(--text-muted);max-height:300px;overflow:auto">' + escHtml(JSON.stringify(ev.payload || {}, null, 2)) + '</pre>';
         row.addEventListener("click", () => {
           const pre = row.querySelector(".lifecycle-payload");
           if (pre) pre.style.display = (pre.style.display === "none") ? "block" : "none";
@@ -3196,7 +3327,11 @@
         renderEvents(events, !!since);
         if (summaryEl) {
           const evList = timelineEl.querySelectorAll(".lifecycle-row");
-          summaryEl.textContent = positionId + " · " + evList.length + " events";
+          // v5.13.10 — also show the latest event type for quick orientation.
+          const lastChip = timelineEl.querySelector(".lifecycle-row:last-child .lifecycle-chip");
+          const lastTxt = lastChip ? lastChip.textContent.trim() : "";
+          summaryEl.textContent = positionId + " · " + evList.length + " events" + (lastTxt ? (" · latest: " + lastTxt) : "");
+          summaryEl.title = "Position id, total event count for this timeline, and the most recent event type";
         }
       } catch (e) {
         if (summaryEl) summaryEl.textContent = "error: " + e.message;

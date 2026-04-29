@@ -17,7 +17,6 @@ from broker.stops import (
     _retighten_long_stop,  # noqa: F401
     _retighten_short_stop,  # noqa: F401
 )
-from engine import feature_flags as _ff
 from engine.bars import compute_5m_ohlc_and_ema9
 from engine.sentinel import (
     EXIT_REASON_ALARM_A,
@@ -131,31 +130,6 @@ def _tg():
 
 
 logger = logging.getLogger(__name__)
-
-
-def _log_conflict_exit(ticker, side, legacy_reason, pos):
-    """v5.13.2 P1 #3 \u2014 emit [CONFLICT-EXIT] when a legacy exit path
-    fires AND ``_run_sentinel`` for the same position on the same tick
-    produced a non-empty ``alarms`` set.
-
-    Only fires when LEGACY_EXITS_ENABLED is True (the only path on
-    which legacy exits run). Reads ``pos["_last_sentinel_alarms"]``,
-    which ``_run_sentinel`` populates with this tick's fired alarm
-    codes (e.g. ``["A1", "C2"]``). Empty list = sentinel didn't fire,
-    so no conflict.
-    """
-    sentinel_codes = pos.get("_last_sentinel_alarms") or []
-    if not sentinel_codes:
-        return
-    side_label = "long" if side == _SENTINEL_SIDE_LONG else "short"
-    sentinel_part = ",".join(sentinel_codes)
-    logger.warning(
-        "[CONFLICT-EXIT] ticker=%s side=%s legacy=%s sentinel=%s winner=legacy",
-        ticker,
-        side_label,
-        legacy_reason,
-        sentinel_part,
-    )
 
 
 def _ensure_titan_grip(ticker, side, pos):
@@ -369,11 +343,6 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             current_price=current_price,
             current_shares=shares,
         )
-        # v5.13.2 P1 #3 \u2014 record alarm codes on the pos so legacy paths
-        # firing on the same tick can emit a [CONFLICT-EXIT] log line.
-        # Reset to empty list every tick so it reflects only this tick's
-        # sentinel evaluation. Empty list when no alarms fired.
-        pos["_last_sentinel_alarms"] = list(result.alarm_codes)
         # v5.13.6 \u2014 emit lifecycle PHASE4 / TITAN_GRIP_STAGE events on
         # state changes (best-effort, no-op when logger absent).
         _lifecycle_log_phase4_change(ticker, side, pos, result, current_price)
@@ -573,8 +542,6 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
 def manage_positions():
     """Check stops and update trailing stops for all open positions."""
     tg = _tg()
-    eot = tg.eot
-    eot_glue = tg.eot_glue
     positions = tg.positions
     tickers_to_close = []
 
@@ -598,65 +565,13 @@ def manage_positions():
         current_price = bars["current_price"]
         pos = positions[ticker]
 
-        # v5.13.2 P1 #3 \u2014 Section IV legacy override (Sovereign Brake /
-        # Velocity Fuse) gated behind LEGACY_EXITS_ENABLED. When OFF
-        # the spec-defined Sentinel A/B/C path below is the sole
-        # exit decision-maker.
-        if _ff.LEGACY_EXITS_ENABLED:
-            try:
-                entry_p = pos.get("entry_price")
-                shares = int(pos.get("shares") or 0)
-                unrealized = (current_price - entry_p) * shares if entry_p else 0.0
-                opens_eot = bars.get("opens") or []
-                cur_1m_open = None
-                if opens_eot:
-                    cur_1m_open = (
-                        opens_eot[-1]
-                        if opens_eot[-1] is not None
-                        else (opens_eot[-2] if len(opens_eot) >= 2 else None)
-                    )
-                override = eot_glue.evaluate_section_iv(
-                    eot.SIDE_LONG,
-                    unrealized_pnl_dollars=unrealized,
-                    current_price=current_price,
-                    current_1m_open=cur_1m_open,
-                )
-                if override == eot.EXIT_REASON_SOVEREIGN_BRAKE:
-                    logger.warning(
-                        "[V5100-SOVEREIGN-BRAKE] ticker=%s side=LONG entry_avg=%.4f "
-                        "current_price=%.4f unrealized_pnl=%.2f qty=%d",
-                        ticker,
-                        entry_p or 0.0,
-                        current_price,
-                        unrealized,
-                        shares,
-                    )
-                    # Run sentinel first to populate _last_sentinel_alarms so
-                    # CONFLICT-EXIT detection sees this tick's sentinel state.
-                    _run_sentinel(ticker, _SENTINEL_SIDE_LONG, pos, current_price, bars)
-                    _log_conflict_exit(ticker, _SENTINEL_SIDE_LONG, "sovereign_brake", pos)
-                    tickers_to_close.append((ticker, current_price, "sovereign_brake"))
-                    continue
-                if override == eot.EXIT_REASON_VELOCITY_FUSE:
-                    logger.warning(
-                        "[V5100-VELOCITY-FUSE] ticker=%s side=LONG cur=%.4f open=%s",
-                        ticker,
-                        current_price,
-                        ("%.4f" % cur_1m_open) if cur_1m_open else "None",
-                    )
-                    _run_sentinel(ticker, _SENTINEL_SIDE_LONG, pos, current_price, bars)
-                    _log_conflict_exit(ticker, _SENTINEL_SIDE_LONG, "velocity_fuse", pos)
-                    tickers_to_close.append((ticker, current_price, "velocity_fuse"))
-                    continue
-            except Exception as _eot_e:
-                logger.warning("[V5100-OVERRIDE] long %s: %s", ticker, _eot_e)
-
         # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (parallel
-        # alarms A & B & C). The sentinel is spec-literal: A1=-$500
-        # hard floor, A2=-1% over 60s, B=closed 5m close < 9-EMA,
-        # C=Titan Grip Harvest. Alarms are evaluated INDEPENDENTLY
-        # (not short-circuited). Always runs regardless of
-        # LEGACY_EXITS_ENABLED \u2014 it IS the spec path.
+        # alarms A & B & C). Spec-literal: A1=-$500 hard floor,
+        # A2=-1% over 60s, B=closed 5m close < 9-EMA, C=Titan Grip
+        # Harvest. Alarms are evaluated INDEPENDENTLY (not
+        # short-circuited). Sole exit decision-maker as of v5.13.10
+        # \u2014 the legacy phase-machine / ladder / RED_CANDLE path
+        # was removed when LEGACY_EXITS_ENABLED retired.
         _sentinel_reason = _run_sentinel(
             ticker,
             _SENTINEL_SIDE_LONG,
@@ -666,99 +581,6 @@ def manage_positions():
         )
         if _sentinel_reason is not None:
             tickers_to_close.append((ticker, current_price, _sentinel_reason))
-            continue
-
-        # v5.13.2 P1 #3 \u2014 Phase A/B/C state machine, structural-stop
-        # cross, RED_CANDLE polarity exit, and Profit-Lock Ladder
-        # collectively constitute the legacy exit path. All gated.
-        if not _ff.LEGACY_EXITS_ENABLED:
-            continue
-
-        # v5.10.5 \u2014 Phase B/C Triple-Lock. Phase A continues to use the
-        # ladder/Maffei plumbing below; Phase B (be_stop) and Phase C
-        # (ema_trail) exits fire here when the post-Entry-2 lock /
-        # 5m-EMA9 leash trip.
-        phase_exit, _ = tg._engine_phase_machine_tick(
-            ticker,
-            eot.SIDE_LONG,
-            pos,
-            bars,
-        )
-        if phase_exit is not None:
-            _log_conflict_exit(ticker, _SENTINEL_SIDE_LONG, phase_exit, pos)
-            tickers_to_close.append((ticker, current_price, phase_exit))
-            continue
-
-        # v3.4.35 \u2014 Stop hit. "TRAIL" when the ladder has ratcheted past
-        # the initial structural stop (capital already safe), else "STOP"
-        # (initial structural stop hit with no profit locked).
-        if current_price <= pos["stop"]:
-            reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
-            _log_conflict_exit(ticker, _SENTINEL_SIDE_LONG, reason, pos)
-            tickers_to_close.append((ticker, current_price, reason))
-            continue
-
-        # \u2500\u2500 Eye of the Tiger: "The Red Candle" \u2014 lost Daily Polarity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        # Fires when 1-min confirmed close < day open OR < PDC
-        closes = [c for c in bars.get("closes", []) if c is not None]
-        ticker_1min_close = (
-            closes[-2] if len(closes) >= 2 else (closes[-1] if closes else current_price)
-        )
-        opens = [o for o in bars.get("opens", []) if o is not None]
-        day_open = opens[0] if opens else None
-        pos_pdc = pos.get("pdc") or pos.get("prev_close")
-        lost_polarity = False
-        if day_open is not None and ticker_1min_close < day_open:
-            lost_polarity = True
-        if pos_pdc and ticker_1min_close < pos_pdc:
-            lost_polarity = True
-        if lost_polarity:
-            _log_conflict_exit(ticker, _SENTINEL_SIDE_LONG, "RED_CANDLE", pos)
-            tickers_to_close.append((ticker, current_price, "RED_CANDLE"))
-            continue
-
-        entry_price = pos["entry_price"]
-
-        # v3.4.35 \u2014 Profit-Lock Ladder replaces the 1%/$1 armed-trail.
-        # Update peak (trail_high) every tick \u2014 ladder reads this.
-        if current_price > pos.get("trail_high", entry_price):
-            pos["trail_high"] = current_price
-        peak = pos["trail_high"]
-        peak_gain_pct = (peak - entry_price) / entry_price if entry_price > 0 else 0.0
-
-        # Compute ladder stop; ratchet pos["stop"] upward only.
-        ladder_stop = _ladder_stop_long(pos)
-        if ladder_stop > pos.get("stop", 0):
-            old_stop = pos.get("stop", 0)
-            pos["stop"] = ladder_stop
-            logger.info(
-                "[LADDER] %s LONG stop ratcheted $%.2f \u2192 $%.2f (peak=$%.2f, +%.2f%%)",
-                ticker,
-                old_stop,
-                ladder_stop,
-                peak,
-                peak_gain_pct * 100,
-            )
-
-        # Arm cosmetic trail_active / trail_stop once past the 1% gate
-        # (Bullet phase ends). Keeps /api/state + exit-reason attribution
-        # (TRAIL vs STOP in _finalize_pos) working.
-        if peak_gain_pct >= 0.01:
-            if not pos.get("trail_active"):
-                pos["trail_active"] = True
-                logger.info(
-                    "Trail armed for %s at $%.2f (+%.2f%% peak) \u2014 ladder active",
-                    ticker,
-                    current_price,
-                    peak_gain_pct * 100,
-                )
-            pos["trail_stop"] = pos["stop"]
-
-        # Exit when current price crosses the ladder stop.
-        if current_price <= pos["stop"]:
-            reason = "TRAIL" if pos["stop"] > pos["entry_price"] else "STOP"
-            _log_conflict_exit(ticker, _SENTINEL_SIDE_LONG, reason, pos)
-            tickers_to_close.append((ticker, current_price, reason))
             continue
 
     # Close positions outside the loop to avoid mutation during iteration
@@ -772,10 +594,7 @@ def manage_positions():
 def manage_short_positions():
     """Check stops and trailing stops for all open short positions."""
     tg = _tg()
-    eot = tg.eot
-    eot_glue = tg.eot_glue
     short_positions = tg.short_positions
-    pdc = tg.pdc
 
     # v3.4.23 \u2014 enforce 0.75% entry cap retroactively on every open
     # short (see manage_positions for rationale). Note: manage_positions
@@ -787,70 +606,21 @@ def manage_short_positions():
     tg.retighten_all_stops(force_exit=True, fetch_prices=True)
 
     # v5.9.1: Sovereign Regime Shield (PDC eject) retired on the short
-    # side too. Per-ticker POLARITY_SHIFT below remains.
+    # side too. v5.13.10: per-ticker POLARITY_SHIFT exit also retired
+    # along with the rest of the legacy phase-machine path.
 
-    _short_to_close = []
     for ticker in list(short_positions.keys()):
         pos = short_positions[ticker]
-        entry_price = pos["entry_price"]
-        shares = pos["shares"]
 
         bars = tg.fetch_1min_bars(ticker)
         if not bars:
             continue
         current_price = bars["current_price"]
 
-        # v5.13.2 P1 #3 \u2014 Section IV legacy override (short mirror)
-        # gated behind LEGACY_EXITS_ENABLED.
-        if _ff.LEGACY_EXITS_ENABLED:
-            try:
-                unrealized = (entry_price - current_price) * int(shares or 0)
-                opens_eot_s = bars.get("opens") or []
-                cur_1m_open_s = None
-                if opens_eot_s:
-                    cur_1m_open_s = (
-                        opens_eot_s[-1]
-                        if opens_eot_s[-1] is not None
-                        else (opens_eot_s[-2] if len(opens_eot_s) >= 2 else None)
-                    )
-                override_s = eot_glue.evaluate_section_iv(
-                    eot.SIDE_SHORT,
-                    unrealized_pnl_dollars=unrealized,
-                    current_price=current_price,
-                    current_1m_open=cur_1m_open_s,
-                )
-                if override_s == eot.EXIT_REASON_SOVEREIGN_BRAKE:
-                    logger.warning(
-                        "[V5100-SOVEREIGN-BRAKE] ticker=%s side=SHORT entry_avg=%.4f "
-                        "current_price=%.4f unrealized_pnl=%.2f qty=%d",
-                        ticker,
-                        entry_price or 0.0,
-                        current_price,
-                        unrealized,
-                        int(shares or 0),
-                    )
-                    _run_sentinel(ticker, _SENTINEL_SIDE_SHORT, pos, current_price, bars)
-                    _log_conflict_exit(ticker, _SENTINEL_SIDE_SHORT, "sovereign_brake", pos)
-                    tg.close_short_position(ticker, current_price, reason="sovereign_brake")
-                    continue
-                if override_s == eot.EXIT_REASON_VELOCITY_FUSE:
-                    logger.warning(
-                        "[V5100-VELOCITY-FUSE] ticker=%s side=SHORT cur=%.4f open=%s",
-                        ticker,
-                        current_price,
-                        ("%.4f" % cur_1m_open_s) if cur_1m_open_s else "None",
-                    )
-                    _run_sentinel(ticker, _SENTINEL_SIDE_SHORT, pos, current_price, bars)
-                    _log_conflict_exit(ticker, _SENTINEL_SIDE_SHORT, "velocity_fuse", pos)
-                    tg.close_short_position(ticker, current_price, reason="velocity_fuse")
-                    continue
-            except Exception as _eot_e:
-                logger.warning("[V5100-OVERRIDE] short %s: %s", ticker, _eot_e)
-
         # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (short side
         # mirror). Alarm A: -$500 / -1%/min. Alarm B: 5m close ABOVE
-        # 9-EMA fires. Alarms run in parallel; this is the spec path
-        # and always runs.
+        # 9-EMA fires. Alarms run in parallel; sole exit path as of
+        # v5.13.10.
         _sentinel_reason_s = _run_sentinel(
             ticker,
             _SENTINEL_SIDE_SHORT,
@@ -861,81 +631,3 @@ def manage_short_positions():
         if _sentinel_reason_s is not None:
             tg.close_short_position(ticker, current_price, reason=_sentinel_reason_s)
             continue
-
-        # v5.13.2 P1 #3 \u2014 Phase B/C state machine, ladder, structural
-        # stop, and POLARITY_SHIFT exit collectively constitute the
-        # legacy short exit path. All gated behind LEGACY_EXITS_ENABLED.
-        if not _ff.LEGACY_EXITS_ENABLED:
-            continue
-
-        # v5.10.5 \u2014 Phase B/C Triple-Lock (short mirror).
-        phase_exit_s, _ = tg._engine_phase_machine_tick(
-            ticker,
-            eot.SIDE_SHORT,
-            pos,
-            bars,
-        )
-        if phase_exit_s is not None:
-            _log_conflict_exit(ticker, _SENTINEL_SIDE_SHORT, phase_exit_s, pos)
-            tg.close_short_position(ticker, current_price, reason=phase_exit_s)
-            continue
-
-        # v3.4.35 \u2014 Profit-Lock Ladder replaces the 1%/$1 armed-trail.
-        # Track trail_low every tick (peak = deepest price reached).
-        trail_low = pos.get("trail_low", entry_price)
-        if current_price < trail_low:
-            trail_low = current_price
-            pos["trail_low"] = trail_low
-        peak_gain_pct = (entry_price - trail_low) / entry_price if entry_price > 0 else 0.0
-
-        # Compute ladder stop; ratchet pos["stop"] downward only (tighter).
-        ladder_stop = _ladder_stop_short(pos)
-        if ladder_stop < pos.get("stop", float("inf")):
-            old_stop = pos.get("stop", 0)
-            pos["stop"] = ladder_stop
-            logger.info(
-                "[LADDER] %s SHORT stop ratcheted $%.2f \u2192 $%.2f (trail_low=$%.2f, +%.2f%%)",
-                ticker,
-                old_stop,
-                ladder_stop,
-                trail_low,
-                peak_gain_pct * 100,
-            )
-
-        # Arm cosmetic trail_active / trail_stop past the 1% gate.
-        if peak_gain_pct >= 0.01:
-            if not pos.get("trail_active"):
-                pos["trail_active"] = True
-                logger.info(
-                    "Trail armed for %s SHORT at $%.2f (+%.2f%% peak) \u2014 ladder active",
-                    ticker,
-                    current_price,
-                    peak_gain_pct * 100,
-                )
-            pos["trail_stop"] = pos["stop"]
-
-        stop = pos["stop"]
-        trail_active = pos.get("trail_active", False)
-
-        # Exit on stop hit. TRAIL vs STOP per ladder-armed state.
-        exit_reason = None
-        if current_price >= stop:
-            exit_reason = "TRAIL" if trail_active else "STOP"
-
-        # \u2500\u2500 Eye of the Tiger: "The Polarity Shift" \u2014 Price > PDC \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        # Uses completed 1m bar close (per-ticker; not part of the index shield)
-        if not exit_reason:
-            ticker_pdc = pdc.get(ticker, 0)
-            if ticker_pdc > 0:
-                ps_closes = [c for c in bars.get("closes", []) if c is not None]
-                ps_1min_close = (
-                    ps_closes[-2]
-                    if len(ps_closes) >= 2
-                    else (ps_closes[-1] if ps_closes else current_price)
-                )
-                if ps_1min_close > ticker_pdc:
-                    exit_reason = "POLARITY_SHIFT"
-
-        if exit_reason:
-            _log_conflict_exit(ticker, _SENTINEL_SIDE_SHORT, exit_reason, pos)
-            tg.close_short_position(ticker, current_price, exit_reason)

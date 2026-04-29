@@ -130,3 +130,59 @@ def test_bot_version_bumped():
     # so this test stays valid through future patch bumps without churn.
     parts = tuple(int(p) for p in bot_version.BOT_VERSION.split("."))
     assert parts >= (5, 13, 5), "bot_version.BOT_VERSION must be at least 5.13.5"
+
+
+def test_entry_telegram_message_no_pdc_lines():
+    """v5.13.10 \u2014 the LONG ENTRY / SHORT ENTRY message emitted from
+    ``broker/orders.py::execute_breakout`` must not advertise the legacy
+    dual-PDC gate vocabulary. v5.13.9 retired the PDC compute on the
+    dashboard; v5.13.10 retires the matching Telegram surface and replaces
+    it with the actual Section I (QQQ 5m vs 9-EMA + 09:30 AVWAP) gates.
+    """
+    sys.path.insert(0, str(REPO_ROOT))
+    if "broker.orders" in sys.modules:
+        del sys.modules["broker.orders"]
+    from broker import orders as bo  # noqa: WPS433 \u2014 import inside test by design
+
+    src = _src(bo.execute_breakout)
+    forbidden = [
+        "Price > PDC",
+        "Price < PDC",
+        "SPY > PDC",
+        "SPY < PDC",
+        "QQQ > PDC",
+        "QQQ < PDC",
+        "PDC: $%.2f",
+        "PDC      : $%.2f",
+    ]
+    for phrase in forbidden:
+        assert phrase not in src, (
+            "v5.13.10: %r should be scrubbed from the LONG/SHORT ENTRY "
+            "Telegram message in broker/orders.py::execute_breakout" % phrase
+        )
+
+
+def test_entry_telegram_message_uses_section_i_gates():
+    """v5.13.10 \u2014 the entry message must surface the actual Section I
+    gates the entry path enforces: QQQ 5m close vs 9-EMA AND vs 09:30
+    AVWAP, plus the boundary_hold (two consecutive 1m closes outside OR).
+    """
+    sys.path.insert(0, str(REPO_ROOT))
+    if "broker.orders" in sys.modules:
+        del sys.modules["broker.orders"]
+    from broker import orders as bo  # noqa: WPS433
+
+    src = _src(bo.execute_breakout)
+    required = [
+        "QQQ 5m close > 9-EMA",
+        "QQQ 5m close > 09:30 AVWAP",
+        "QQQ 5m close < 9-EMA",
+        "QQQ 5m close < 09:30 AVWAP",
+        "2nd 1m close > OR High",
+        "2nd 1m close < OR Low",
+    ]
+    for phrase in required:
+        assert phrase in src, (
+            "v5.13.10: %r must appear in the LONG/SHORT ENTRY Telegram "
+            "message in broker/orders.py::execute_breakout" % phrase
+        )

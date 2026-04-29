@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.13.9"
+BOT_VERSION = "5.13.10"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,16 +103,19 @@ BOT_VERSION = "5.13.9"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.13.9 \u2014 Gate display rewire\n"
-    "Dashboard index/polarity now\n"
-    "mirror Section I permit + the\n"
-    "boundary_hold gate the entry\n"
-    "path actually uses (QQQ 5m vs\n"
-    "9 EMA + 09:30 AVWAP, two 1m\n"
-    "closes outside OR). Drops\n"
-    "legacy PDC compute + regime\n"
-    "alert. Decorative-only \u2014 no\n"
-    "behavior change to entries."
+    "v5.13.10 \u2014 Dashboard tooltips\n"
+    "Hover-help across every panel:\n"
+    "KPIs, gates, Tiger Sovereign\n"
+    "Phase 1-4 chips, trades, shadow\n"
+    "and lifecycle controls. Each\n"
+    "lifecycle event now shows an\n"
+    "inline facts strip (prices,\n"
+    "shares, alarms, stage) with\n"
+    "per-field tooltips. SB column\n"
+    "removed from open positions.\n"
+    "Legacy Exits flag retired \u2014\n"
+    "gated paths deleted. Sentinel\n"
+    "A/B/C is sole exit path now."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

@@ -704,22 +704,62 @@ def execute_breakout(ticker, current_price, side):
         tg.logger.warning("[V510-ENTRY] snapshot error %s: %s", ticker, e)
 
     or_edge_e = or_dict.get(ticker, 0)
-    pdc_e = tg.pdc.get(ticker, 0)
     SEP_E = "\u2500" * 34
     stop_label = cfg.stop_capped_label if _stop_capped else cfg.stop_baseline_label
+
+    # v5.13.10 \u2014 Telegram entry signal lines now mirror the ACTUAL
+    # gates the entry path enforces (Tiger Sovereign Section I + boundary_hold)
+    # rather than the legacy dual-PDC vocabulary. Reads the same inputs the
+    # dashboard pills use post-v5.13.9: _QQQ_REGIME.last_close / ema9 plus
+    # the 09:30 AVWAP for QQQ. Wrapped in try/except so unit tests and
+    # smoke modes that don't seed the regime never block the entry message.
+    try:
+        _qqq_close = getattr(tg._QQQ_REGIME, "last_close", None)
+        _qqq_ema9 = getattr(tg._QQQ_REGIME, "ema9", None)
+    except Exception:
+        _qqq_close, _qqq_ema9 = None, None
+    try:
+        _qqq_avwap = tg._opening_avwap("QQQ")
+    except Exception:
+        _qqq_avwap = None
+
+    def _gate_chk(ok):
+        # ok=True \u2192 \u2713, ok=False \u2192 \u2717, ok=None \u2192 \u2014
+        if ok is True:
+            return "\u2713"
+        if ok is False:
+            return "\u2717"
+        return "\u2014"
+
     if cfg.side.is_long:
+        _ema9_ok = _qqq_close is not None and _qqq_ema9 is not None and _qqq_close > _qqq_ema9
+        _avwap_ok = _qqq_close is not None and _qqq_avwap is not None and _qqq_close > _qqq_avwap
         sig_lines = "Signal : ORB Breakout \u2191\n"
         sig_lines += "  1m close > OR High \u2713\n"
-        sig_lines += "  Price > PDC \u2713\n"
-        sig_lines += "  SPY > PDC \u2713\n"
-        sig_lines += "  QQQ > PDC \u2713\n"
+        sig_lines += "  2nd 1m close > OR High \u2713\n"
+        if _qqq_close is not None and _qqq_ema9 is not None:
+            sig_lines += "  QQQ 5m close > 9-EMA %s  (%.2f vs %.2f)\n" % (
+                _gate_chk(_ema9_ok),
+                _qqq_close,
+                _qqq_ema9,
+            )
+        else:
+            sig_lines += "  QQQ 5m close > 9-EMA \u2014\n"
+        if _qqq_close is not None and _qqq_avwap is not None:
+            sig_lines += "  QQQ 5m close > 09:30 AVWAP %s  (%.2f vs %.2f)\n" % (
+                _gate_chk(_avwap_ok),
+                _qqq_close,
+                _qqq_avwap,
+            )
+        else:
+            sig_lines += "  QQQ 5m close > 09:30 AVWAP \u2014\n"
         msg = (
             "\U0001f4c8 LONG ENTRY %s  #%d\n"
             "%s\n"
             "Price  : $%.2f  (limit $%.2f)\n"
             "Shares : %d   Cost: $%s\n"
             "Stop   : $%.2f  (%s)\n"
-            "OR High: $%.2f   PDC: $%.2f\n"
+            "OR High: $%.2f\n"
             "%s"
             "Time   : %s\n"
             "%s"
@@ -734,17 +774,32 @@ def execute_breakout(ticker, current_price, side):
             stop_price,
             stop_label,
             or_edge_e,
-            pdc_e,
             sig_lines,
             now_hhmm,
             SEP_E,
         )
     else:
+        _ema9_ok = _qqq_close is not None and _qqq_ema9 is not None and _qqq_close < _qqq_ema9
+        _avwap_ok = _qqq_close is not None and _qqq_avwap is not None and _qqq_close < _qqq_avwap
         sig_lines = "Signal   : Wounded Buffalo \u2193\n"
         sig_lines += "  1m close < OR Low \u2713\n"
-        sig_lines += "  Price < PDC \u2713\n"
-        sig_lines += "  SPY < PDC \u2713\n"
-        sig_lines += "  QQQ < PDC \u2713\n"
+        sig_lines += "  2nd 1m close < OR Low \u2713\n"
+        if _qqq_close is not None and _qqq_ema9 is not None:
+            sig_lines += "  QQQ 5m close < 9-EMA %s  (%.2f vs %.2f)\n" % (
+                _gate_chk(_ema9_ok),
+                _qqq_close,
+                _qqq_ema9,
+            )
+        else:
+            sig_lines += "  QQQ 5m close < 9-EMA \u2014\n"
+        if _qqq_close is not None and _qqq_avwap is not None:
+            sig_lines += "  QQQ 5m close < 09:30 AVWAP %s  (%.2f vs %.2f)\n" % (
+                _gate_chk(_avwap_ok),
+                _qqq_close,
+                _qqq_avwap,
+            )
+        else:
+            sig_lines += "  QQQ 5m close < 09:30 AVWAP \u2014\n"
         msg = (
             "\U0001fa78 SHORT ENTRY #%d\n"
             "%s\n"
@@ -753,7 +808,6 @@ def execute_breakout(ticker, current_price, side):
             "Shares   : %d   Proceeds: $%s\n"
             "Stop     : $%.2f (%s)\n"
             "OR Low   : $%.2f\n"
-            "PDC      : $%.2f\n"
             "%s"
             "Time     : %s\n"
             "%s"
@@ -767,7 +821,6 @@ def execute_breakout(ticker, current_price, side):
             stop_price,
             stop_label,
             or_edge_e,
-            pdc_e,
             sig_lines,
             now_hhmm,
             SEP_E,
