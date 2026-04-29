@@ -4,6 +4,127 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.14.0 — 2026-04-29 — Shadow strategy retirement
+
+### What changed
+
+The four shadow configs (`TICKER+QQQ 70/100`, `TICKER_ONLY 70`,
+`QQQ_ONLY 100`, `GEMINI_A 110/85`) and every dashboard surface that
+rendered them are removed. Diagnostic log emitters that powered the
+shadow replay engine — `[V510-CAND]`, `[V510-FSM]`, `[V510-MINUTE]` —
+are deliberately kept alive so future replay-based work can still mine
+the live trade tape. The bar archive at `/data/bars/YYYY-MM-DD/` keeps
+writing on the unchanged schema. Backtests now read from the canonical
+`trade_log.jsonl` and the `executor_positions` table instead of the
+retired `shadow_positions` table.
+
+#### Engine / shadow scoring (`trade_genius.py`, `volume_profile.py`)
+
+- Deleted the `SHADOW_CONFIGS` tuple and `evaluate_g4_config()` from
+  `volume_profile.py` (-77 lines).
+- Removed the per-bar shadow evaluation block in `trade_genius.py` that
+  emitted `[V510-SHADOW][CFG=...]` lines and the `[V520-SHADOW-PNL]`
+  open / mtm / close calls (-303 lines net).
+- Renamed `SHADOW_DATA_AVAILABLE` → `VOLUME_FEED_AVAILABLE` and the
+  startup warning `[SHADOW DISABLED]` → `[VOLFEED DISABLED]` so the
+  surviving health-check still reads correctly.
+- KEPT (load-bearing for future replay): `[V510-CAND]` (skip-reason
+  candidates), `[V510-FSM]` (state transitions), `[V510-MINUTE]`
+  (sample minute bars), and every live engine emitter (`[V5100-PERMIT]`,
+  `[V5100-BOUNDARY]`, `[V510-VEL]`, `[V510-VOLBUCKET]`, `[V510-BAR]`,
+  `[V510-DI]`).
+- Bar archive writer (`/data/bars/<date>/<TICKER>.jsonl`) is unchanged;
+  `engine/scan.py::_bars_for_mtm` is preserved (only the shadow MTM
+  hook on top of it was removed).
+
+#### Broker (`broker/orders.py`, `broker/lifecycle.py`)
+
+- `execute_breakout` no longer calls `_v520_open_shadow_all`.
+- `close_position` no longer calls `_v520_close_shadow_all`.
+- EOD lifecycle no longer force-closes shadow positions at the bell.
+
+#### Persistence (`persistence.py`)
+
+- `init_state_db` now executes `DROP TABLE IF EXISTS shadow_positions`
+  and `DROP INDEX IF EXISTS ...` on startup so the table is removed
+  in-place on first v5.14.0 boot.
+- Helpers `save_shadow_position`, `load_open_shadow_positions`,
+  `update_shadow_position`, `close_shadow_position`,
+  `count_shadow_positions_today`, `delete_shadow_positions_for_today`
+  deleted.
+- `executor_positions` table and helpers are unchanged.
+
+#### Dashboard server (`dashboard_server.py`)
+
+- Deleted `_SHADOW_PANEL_ORDER`, `_shadow_pnl_snapshot`,
+  `_shadow_charts_payload`, the `h_shadow_charts` route, and its
+  registration in `register_routes()` (-269 lines).
+- The `shadow_pnl` key is no longer attached to `/api/state`.
+- Renamed the data-feed health field on `/api/state`:
+  `shadow_data_status` → `volume_feed_status`. The pipeline cron
+  `58c883b0` already reads the renamed field; no cron change needed.
+
+#### Dashboard UI (`dashboard_static/{index.html, app.js, app.css}`)
+
+- `index.html`: deleted the Chart.js include, the Shadow nav-tab
+  button, and the entire `tg-panel-shadow` block (-81 lines).
+- `app.js`: removed `renderShadowPnL` and its call site, the four
+  shadow strategy P&L panel render functions, the Shadow entry from
+  the `TABS` array, the Shadow branch of `selectTab`, and the entire
+  shadow charts / oomph panel block (-974 lines, 3371 → 2397).
+- `app.css`: removed the shadow rules block (-284 lines). The only
+  `shadow` strings that remain are legitimate `box-shadow` CSS
+  properties.
+
+#### Backtest module (`backtest/`)
+
+- Deleted `backtest/replay.py` (the SHADOW_CONFIGS-driven replay
+  engine).
+- Rewrote `backtest/__init__.py` as a thin docstring describing the
+  data-access surface.
+- Rewrote `backtest/loader.py` around three primitives that read from
+  live data: `load_bars`, `load_prod_trades_from_log` (parses
+  `trade_log.jsonl`), `load_open_executor_positions`.
+- `backtest/__main__.py` now points at `replay_v511_full.main`.
+
+#### Tests
+
+- Deleted `tests/test_saturday_weekly_report.py` and
+  `test_v5_5_6_shadow_uses_prev_bucket.py`.
+- `smoke_test.py`: removed ~50 shadow test blocks across three sweeps
+  (-1677 lines, ~7291 → ~5614). Updated source-string check to assert
+  `[VOLFEED DISABLED]`.
+- `tests/test_dashboard_state_v5_13_2.py`: renamed
+  `shadow_data_status` assertions to `volume_feed_status`.
+- `tests/test_v5_13_7_close_order_type_wiring.py`: removed the
+  `_v520_close_shadow_all` stub.
+- `test_v5_5_6_previous_session_bucket.py`: docstring updated; logic
+  unchanged.
+
+#### Scripts / cron
+
+- Deleted `scripts/saturday_weekly_report.py`. The Saturday
+  recurring task that invoked it is unscheduled as part of this
+  release.
+
+#### Docs
+
+- `ARCHITECTURE.md`: v5.14.0 retirement banner added at top.
+- `CLAUDE.md`: shadow references replaced with v5.14.0 retirement
+  notes.
+
+### Migration / behavior at boot
+
+On the first v5.14.0 boot, `init_state_db` drops the
+`shadow_positions` table and its indexes. `/api/state` returns
+`volume_feed_status` instead of `shadow_data_status` and no
+`shadow_pnl` key. The Telegram `/version` and startup banner read
+the new `CURRENT_MAIN_NOTE`. No engine behavior change for live
+trades — entries / exits / sizing / Sentinel A/B/C are byte-identical
+to v5.13.10.
+
+---
+
 ## v5.13.10 — 2026-04-29 — Dashboard tooltips + SB column removal + Lifecycle facts strip + Telegram entry-message PDC scrub + Legacy Exits removal
 
 ### What changed

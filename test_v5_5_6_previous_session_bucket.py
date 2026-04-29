@@ -2,13 +2,15 @@
 
 Asserts the helper returns the bucket key for the minute that JUST
 closed at the given timestamp, with the same outside-session rules as
-session_bucket. The shadow gate uses this helper instead of
-session_bucket(now) to avoid the IEX websocket bar close-out race.
+session_bucket. (Originally written for the shadow gate; kept in v5.14.0
+because the helper is still consumed by other readers of the volume
+baseline.)
 
 Standalone (no pytest dep), matching the v5.5.5 test style:
 
     python test_v5_5_6_previous_session_bucket.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -92,11 +94,13 @@ def test_walks_30s_steps_match_just_closed() -> None:
     for step_sec in range(0, 60 * 60 * 7, 30):  # 7 hours, 30s steps
         ts = base.replace(
             hour=9 + (step_sec // 3600),
-            minute=(30 + (step_sec % 3600) // 60) % 60 if step_sec < 1800 else
-                   (30 + (step_sec % 3600) // 60) % 60,
+            minute=(30 + (step_sec % 3600) // 60) % 60
+            if step_sec < 1800
+            else (30 + (step_sec % 3600) // 60) % 60,
         )
         # Easier: build via timedelta.
         from datetime import timedelta
+
         ts = base + timedelta(seconds=step_sec)
         got = vp.previous_session_bucket(ts)
         if got is None:

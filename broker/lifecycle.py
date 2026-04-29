@@ -2,6 +2,7 @@
 
 Extracted from trade_genius.py in v5.11.2 PR 4.
 """
+
 from __future__ import annotations
 
 import logging
@@ -66,8 +67,7 @@ def close_short_position(ticker, price, reason="STOP"):
 # ============================================================
 # EOD CLOSE
 # ============================================================
-def _eod_align_to_spec(now: _datetime | None = None,
-                       sleep_fn=_time.sleep) -> float:
+def _eod_align_to_spec(now: _datetime | None = None, sleep_fn=_time.sleep) -> float:
     """Sleep until EOD_FLUSH_ET wall-clock if called before it.
 
     v5.13.1 prod-verify finding: scheduler fires eod_close at 15:49:00 ET
@@ -100,7 +100,8 @@ def _eod_align_to_spec(now: _datetime | None = None,
     if delay > 300:
         logger.warning(
             "[EOD FLUSH] _eod_align_to_spec: called %.0fs before EOD; "
-            "skipping align-to-spec sleep (scheduler misfire?)", delay,
+            "skipping align-to-spec sleep (scheduler misfire?)",
+            delay,
         )
         return 0.0
     logger.info(
@@ -131,14 +132,16 @@ def eod_close():
     # Per-position close events still fire from close_position /
     # close_short_position below; this event lets executors shortcut with
     # a single close_all_positions call if they prefer.
-    tg._emit_signal({
-        "kind": "EOD_CLOSE_ALL",
-        "ticker": "",
-        "price": 0.0,
-        "reason": "EOD",
-        "timestamp_utc": tg._utc_now_iso(),
-        "main_shares": 0,
-    })
+    tg._emit_signal(
+        {
+            "kind": "EOD_CLOSE_ALL",
+            "ticker": "",
+            "price": 0.0,
+            "reason": "EOD",
+            "timestamp_utc": tg._utc_now_iso(),
+            "main_shares": 0,
+        }
+    )
     positions = tg.positions
     short_positions = tg.short_positions
     n_long = len(positions)
@@ -160,7 +163,8 @@ def eod_close():
         for ticker, price in longs_to_close:
             logger.info(
                 "[EOD FLUSH] side=LONG ticker=%s price=%.2f reason=EOD",
-                ticker, float(price),
+                ticker,
+                float(price),
             )
             close_position(ticker, price, reason="EOD")
 
@@ -177,31 +181,12 @@ def eod_close():
         for ticker, price in shorts_to_close:
             logger.info(
                 "[EOD FLUSH] side=SHORT ticker=%s price=%.2f reason=EOD",
-                ticker, float(price),
+                ticker,
+                float(price),
             )
             close_short_position(ticker, price, "EOD")
 
-    # v5.2.0 \u2014 close any orphan shadow positions (configs whose
-    # would-have-entered ticker is not held live) at EOD.
-    # v5.2.1 H2: last_marks now falls back to entry_price when
-    # last_mark_price is missing, mirroring the live long/short EOD
-    # pattern above (price = entry_price when bars unavailable). The
-    # tracker's close_all_for_eod additionally force-closes any
-    # remaining orphan with EOD_NO_MARK + entry_price as the exit so
-    # nothing is silently left open.
-    try:
-        last_marks: dict[str, float] = {}
-        tr = tg.shadow_pnl.tracker()
-        with tr._lock:
-            for cfg_positions in tr._open.values():
-                for sp in cfg_positions:
-                    if sp.last_mark_price is not None:
-                        last_marks[sp.ticker] = sp.last_mark_price
-                    elif sp.ticker not in last_marks:
-                        last_marks[sp.ticker] = float(sp.entry_price)
-        tr.close_all_for_eod(last_marks)
-    except Exception as e:
-        logger.warning("[V520-SHADOW-PNL] EOD shadow close failed: %s", e)
+    # v5.14.0 \u2014 EOD shadow-close removed (shadow_pnl module deleted).
 
     _, _, total_pnl, wins, losses, n_trades = tg._today_pnl_breakdown()
     msg = (
@@ -223,8 +208,7 @@ def eod_close():
     try:
         deleted = tg.bar_archive.cleanup_old_dirs(retain_days=90)
         if deleted:
-            logger.info("[V510-BAR] retention cleanup removed %d dated dirs",
-                        len(deleted))
+            logger.info("[V510-BAR] retention cleanup removed %d dated dirs", len(deleted))
     except Exception as e:
         logger.warning("[V510-BAR] retention cleanup failed: %s", e)
     tg.save_paper_state()

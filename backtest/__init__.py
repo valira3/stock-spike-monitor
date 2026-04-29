@@ -1,12 +1,20 @@
-"""v5.4.0 offline backtest CLI package.
+"""v5.14.0 backtest data-access package.
 
-Replays SHADOW_CONFIGS over archived 1m bars in /data/bars/ and
-optionally validates predicted entries against the prod shadow_positions
-table in state.db.
+The original v5.4.0 backtest CLI replayed the (now-retired) SHADOW_CONFIGS
+volume gate against archived 1m bars. In v5.14.0 the shadow strategy and
+its `shadow_positions` table were removed; this package was reduced to a
+thin data-access layer over:
 
-Usage:
-    python -m backtest.replay --start 2026-04-20 --end 2026-04-24 \\
-        --config GEMINI_A [--validate] [--out ./backtest_out/]
+  * the per-day, per-ticker JSONL bar archive at /data/bars/<UTC>/<TICKER>.jsonl
+    (still written by `bar_archive.write_bar`)
+  * the live trade log at trade_log.jsonl (written by
+    `trade_genius.trade_log_append` whenever a real position closes)
+  * the persisted open-position mirror in `executor_positions` (state.db)
+
+Future backtest entry points should consume `load_bars` plus
+`load_prod_trades_from_log` to compare predicted entries/exits against
+the actual main-portfolio activity. The full SHADOW_CONFIGS replay
+engine was deleted with the rest of the shadow strategy.
 """
 
-__version__ = "5.4.0"
+__version__ = "5.14.0"

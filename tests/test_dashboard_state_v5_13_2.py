@@ -6,8 +6,9 @@ Asserts the rewritten dashboard surface:
     returns a Phase 1\u20134 dict with the documented keys / value types,
     even when the trade_genius module has not warmed up.
   - The full `dashboard_server.snapshot()` carries `feature_flags`,
-    `tiger_sovereign`, AND `shadow_data_status` (which the cron at
-    `/home/user/workspace/cron_tracking/58c883b0/` depends on).
+    `tiger_sovereign`, AND `volume_feed_status` (renamed from
+    `shadow_data_status` in v5.14.0; the cron at
+    `/home/user/workspace/cron_tracking/58c883b0/` reads this field).
 
 Boots the bot in SSM_SMOKE_TEST mode (no Telegram, no Alpaca, no
 Polygon) so the import path is exercised end-to-end.
@@ -226,9 +227,10 @@ def smoke_module(monkeypatch):
 
 def test_api_state_carries_v5_13_2_blocks(smoke_module):
     """dashboard_server.snapshot() must emit `feature_flags`,
-    `tiger_sovereign`, AND `shadow_data_status`. The shadow_data_status
-    field is load-bearing for the cron at
-    /home/user/workspace/cron_tracking/58c883b0/ and MUST stay.
+    `tiger_sovereign`, AND `volume_feed_status`. The volume_feed_status
+    field (renamed from shadow_data_status in v5.14.0) is load-bearing
+    for the cron at /home/user/workspace/cron_tracking/58c883b0/ and
+    MUST stay.
     """
     tg, ds = smoke_module
     snap = ds.snapshot()
@@ -254,9 +256,12 @@ def test_api_state_carries_v5_13_2_blocks(smoke_module):
     assert isinstance(p1["long"].get("permit"), bool)
     assert isinstance(p1["short"].get("permit"), bool)
 
-    # Preserved field \u2014 cron dependency
-    assert "shadow_data_status" in snap
-    assert snap["shadow_data_status"] in ("live", "disabled_no_creds")
+    # Preserved field \u2014 cron dependency.
+    # v5.14.0: renamed shadow_data_status -> volume_feed_status (the
+    # underlying volume_profile WS feed is still required by the live
+    # engine; the field reflects whether that feed is connected).
+    assert "volume_feed_status" in snap
+    assert snap["volume_feed_status"] in ("live", "disabled_no_creds")
 
     # Backward-compat fields kept
     for k in ("section_i_permit", "per_ticker_v510", "per_position_v510"):

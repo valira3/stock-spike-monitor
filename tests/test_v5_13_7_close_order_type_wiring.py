@@ -15,6 +15,7 @@ These tests stub the ``trade_genius`` module surface that
 ``close_breakout`` consumes via ``broker.orders._tg()`` so they can
 exercise the close path without the live trading harness.
 """
+
 from __future__ import annotations
 
 import sys
@@ -47,9 +48,7 @@ class _SideCfg:
     def __init__(self, side):
         self.side = side
         self.positions_attr = "positions" if side.is_long else "short_positions"
-        self.trade_history_attr = (
-            "trade_history" if side.is_long else "short_trade_history"
-        )
+        self.trade_history_attr = "trade_history" if side.is_long else "short_trade_history"
         self.history_side_label = "LONG" if side.is_long else "SHORT"
         self.paper_log_close_verb = "SELL" if side.is_long else "COVER"
         self.log_side_label = "LONG" if side.is_long else "SHORT"
@@ -76,6 +75,7 @@ class _StubTG:
     def __init__(self, *, side, ticker, pos):
         from datetime import datetime, timezone
         from zoneinfo import ZoneInfo
+
         self.datetime = datetime
         self._tz = ZoneInfo("America/Chicago")
         self.CONFIGS = {Side.LONG: _SideCfg(Side.LONG), Side.SHORT: _SideCfg(Side.SHORT)}
@@ -147,9 +147,6 @@ class _StubTG:
     def save_paper_state(self):
         return None
 
-    def _v520_close_shadow_all(self, *_a, **_kw):
-        return None
-
     def _v561_log_trade_closed(self, **_kw):
         return None
 
@@ -159,6 +156,7 @@ class _StubTG:
     @property
     def logger(self):
         import logging
+
         return logging.getLogger(__name__)
 
 
@@ -167,6 +165,7 @@ def install_stub_tg(monkeypatch):
     def _install(stub):
         monkeypatch.setitem(sys.modules, "trade_genius", stub)
         return stub
+
     return _install
 
 
@@ -186,18 +185,18 @@ def lifecycle_capture(monkeypatch, tmp_path):
     monkeypatch.setenv("LIFECYCLE_DIR", str(tmp_path))
     ll = bo._lifecycle  # the module instance close_breakout actually uses
     assert ll is not None, "broker.orders._lifecycle should be importable"
-    fresh = ll.reset_default_logger_for_tests(
-        data_dir=str(tmp_path), bot_version="5.13.7"
-    )
+    fresh = ll.reset_default_logger_for_tests(data_dir=str(tmp_path), bot_version="5.13.7")
     captured: list[dict] = []
     orig = fresh.log_event
 
     def _capture(position_id, kind, payload, **kw):
-        captured.append({
-            "position_id": position_id,
-            "kind": kind,
-            "payload": dict(payload or {}),
-        })
+        captured.append(
+            {
+                "position_id": position_id,
+                "kind": kind,
+                "payload": dict(payload or {}),
+            }
+        )
         return orig(position_id, kind, payload, **kw)
 
     fresh.log_event = _capture  # type: ignore[assignment]
@@ -285,9 +284,7 @@ def test_unknown_reason_falls_back_to_MARKET(install_stub_tg):
 # ---------------------------------------------------------------------------
 
 
-def test_lifecycle_log_order_submit_carries_order_type(
-    install_stub_tg, lifecycle_capture
-):
+def test_lifecycle_log_order_submit_carries_order_type(install_stub_tg, lifecycle_capture):
     """v5.13.6 lifecycle log: close-path ORDER_SUBMIT event payload now
     carries the resolved order_type field."""
     _logger, captured = lifecycle_capture
@@ -301,9 +298,7 @@ def test_lifecycle_log_order_submit_carries_order_type(
     assert submits[-1]["payload"]["raw_reason"] == REASON_STAGE1_HARVEST
 
 
-def test_lifecycle_log_order_submit_short_runner(
-    install_stub_tg, lifecycle_capture
-):
+def test_lifecycle_log_order_submit_short_runner(install_stub_tg, lifecycle_capture):
     _logger, captured = lifecycle_capture
     pos = _make_short_pos()
     tg = _StubTG(side=Side.SHORT, ticker="AAPL", pos=pos)

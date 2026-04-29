@@ -51,9 +51,8 @@ COPY indicators.py .
 COPY bar_archive.py .
 # v5.1.8 — SQLite-backed persistence for fired_set + v5_long_tracks.
 COPY persistence.py .
-# v5.2.0 — shadow strategy P&L tracker (imported by trade_genius.py).
-COPY shadow_pnl.py .
-# v5.4.0 — offline backtest CLI (`python -m backtest.replay`).
+# v5.14.0 — shadow_pnl.py removed (shadow strategy retired). Backtest CLI
+# kept for replay tooling but reads from trade_log.jsonl + executor_positions.
 COPY backtest/ ./backtest/
 # v5.11.0 — engine/ package extraction (PR1: bars). Must COPY the whole
 # package; missing this would crash trade_genius at boot with

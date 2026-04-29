@@ -195,10 +195,10 @@ def test_scan_loop_no_blocking_at_first_call_with_empty_state(
         current_1m_open=100.0,
     )
     assert override is None
-    # Sanity: the v5.13.x line is what's on the hot path. Asserting an
+    # Sanity: the v5.14.x line is what's on the hot path. Asserting an
     # exact version number would require a test edit on every release;
     # the version-bump CI gate already pins the expected value.
-    assert trade_genius.BOT_VERSION.startswith("5.13.")
+    assert trade_genius.BOT_VERSION.startswith("5.14.")
 
 
 def test_volume_gate_enabled_default_off_when_env_unset(monkeypatch):
@@ -216,6 +216,7 @@ def test_volume_gate_enabled_default_off_when_env_unset(monkeypatch):
     if "engine.feature_flags" in sys.modules:
         del sys.modules["engine.feature_flags"]
     from engine import feature_flags as ff
+
     assert ff.VOLUME_GATE_ENABLED is False, (
         "VOLUME_GATE_ENABLED must default to False (gate DISABLED) when "
         "the env var is unset. Got True — production default has flipped."

@@ -937,13 +937,9 @@ def close_breakout(ticker, price, side, reason="STOP"):
     if len(history_list) > tg.TRADE_HISTORY_MAX:
         history_list[:] = history_list[-tg.TRADE_HISTORY_MAX :]
 
-    # v5.2.0 \u2014 mirror live exit decision to all shadow configs. Same
-    # ticker/price/reason as the live close, so shadow P&L tracks the
-    # exact same exit logic. Failure-tolerant.
-    try:
-        tg._v520_close_shadow_all(ticker, price, reason)
-    except Exception as e:
-        tg.logger.warning("[V520-SHADOW-PNL] close hook %s: %s", ticker, e)
+    # v5.14.0 \u2014 shadow close-mirror hook removed. The live close
+    # already feeds [V510-CAND] / lifecycle / persistent trade log
+    # below; shadow virtual-position bookkeeping is gone.
 
     # Persistent trade log (paper close).
     _entry_iso = pos.get("entry_ts_utc") or entry_time_str or ""
