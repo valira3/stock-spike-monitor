@@ -11,6 +11,26 @@ from zoneinfo import ZoneInfo
 
 from broker.stops import _capped_long_stop, _capped_short_stop  # noqa: F401
 
+# v5.13.6 \u2014 per-position lifecycle log. Best-effort import so a missing
+# module never blocks trading; the wrappers below silently no-op when the
+# logger is unavailable.
+try:
+    import lifecycle_logger as _lifecycle  # noqa: F401
+except Exception:  # pragma: no cover - only triggered by deploy regressions
+    _lifecycle = None
+
+
+def _lifecycle_logger():
+    if _lifecycle is None:
+        return None
+    try:
+        tg = _tg()
+        ver = getattr(tg, "BOT_VERSION", "") if tg else ""
+        return _lifecycle.get_default_logger(bot_version=ver)
+    except Exception:
+        return None
+
+
 # v5.11.2 \u2014 prod runs `python trade_genius.py`, so trade_genius is
 # registered in sys.modules as `__main__`, NOT as `trade_genius`.
 # Mirror the alias trick used by paper_state / telegram_ui to make
@@ -518,6 +538,86 @@ def execute_breakout(ticker, current_price, side):
         pos["trail_stop"] = None
     positions_dict[ticker] = pos
     daily_count[ticker] = entry_num
+    # v5.13.6 \u2014 lifecycle log: capture Phase 1-4 evals + write ENTRY_DECISION,
+    # then ORDER_SUBMIT + ORDER_FILL. Best-effort: any exception swallowed,
+    # trading path must not be blocked by the lifecycle logger.
+    try:
+        ll = _lifecycle_logger()
+        if ll is not None:
+            try:
+                import v5_13_2_snapshot as _snap
+
+                ph1 = _snap._phase1_block(tg)
+            except Exception:
+                ph1 = {}
+            try:
+                ph2 = _snap._phase2_block(tg, [ticker])
+            except Exception:
+                ph2 = []
+            try:
+                ph3 = _snap._phase3_block(
+                    tg,
+                    {ticker: pos} if cfg.side.is_long else {},
+                    {ticker: pos} if cfg.side.is_short else {},
+                )
+            except Exception:
+                ph3 = []
+            entry_payload = {
+                "entry_price": float(current_price),
+                "limit_price": float(limit_price),
+                "shares": int(shares),
+                "stop_price": float(stop_price),
+                "stop_capped": bool(_stop_capped),
+                "entry_num": int(entry_num),
+                "strike_num": int(_v570_strike_num),
+                "entry_id": _entry_id,
+                "phase1": ph1,
+                "phase2": ph2,
+                "phase3": ph3,
+                "or_high": float(or_dict.get(ticker, 0) or 0),
+                "pdc": float(tg.pdc.get(ticker, 0) or 0),
+            }
+            position_id = ll.open_position(
+                ticker=ticker,
+                side=_v570_side_label,
+                entry_ts_utc=_entry_ts_utc,
+                payload=entry_payload,
+                reason_text=f"{_v570_side_label} entry #{entry_num} fired",
+            )
+            pos["lifecycle_position_id"] = position_id
+            ll.log_event(
+                position_id,
+                "ORDER_SUBMIT",
+                {
+                    "side": _v570_side_label,
+                    "qty": int(shares),
+                    "limit_price": float(limit_price),
+                    "order_type": "limit",
+                },
+                ticker=ticker,
+                side=_v570_side_label,
+                entry_ts_utc=_entry_ts_utc,
+            )
+            ll.log_event(
+                position_id,
+                "ORDER_FILL",
+                {
+                    "side": _v570_side_label,
+                    "qty": int(shares),
+                    "fill_price": float(current_price),
+                    "notional": float(notional),
+                },
+                reason_text="paper-fill (assumed marketable)",
+                ticker=ticker,
+                side=_v570_side_label,
+                entry_ts_utc=_entry_ts_utc,
+            )
+    except Exception as _e:
+        try:
+            tg.logger.debug("[lifecycle] entry hook %s: %s", ticker, _e)
+        except Exception:
+            pass
+
     # v5.6.1 D4 \u2014 [ENTRY] line with entry_id for replay pairing.
     try:
         tg._v561_log_entry(
@@ -945,3 +1045,62 @@ def close_breakout(ticker, price, side, reason="STOP"):
             "main_shares": int(shares),
         }
     )
+
+    # v5.13.6 \u2014 lifecycle log: EXIT_DECISION + POSITION_CLOSED. Best-effort.
+    try:
+        ll = _lifecycle_logger()
+        if ll is not None:
+            position_id = pos.get("lifecycle_position_id")
+            if not position_id:
+                # Reconstruct stable id when an older position was opened
+                # before the lifecycle hook landed.
+                position_id = _lifecycle.compose_position_id(
+                    ticker,
+                    pos.get("entry_ts_utc") or "",
+                    "LONG" if cfg.side.is_long else "SHORT",
+                )
+            side_lbl = "LONG" if cfg.side.is_long else "SHORT"
+            ll.log_event(
+                position_id,
+                "EXIT_DECISION",
+                {
+                    "exit_reason": _exit_reason,
+                    "raw_reason": str(reason or ""),
+                    "exit_price": float(price),
+                    "shares": int(shares),
+                    "entry_price": float(entry_price or 0.0),
+                },
+                reason_text=str(reason_label),
+                ticker=ticker,
+                side=side_lbl,
+                entry_ts_utc=pos.get("entry_ts_utc"),
+            )
+            ll.log_event(
+                position_id,
+                "ORDER_FILL",
+                {
+                    "side": side_lbl,
+                    "qty": int(shares),
+                    "fill_price": float(price),
+                    "action": "close",
+                },
+                ticker=ticker,
+                side=side_lbl,
+                entry_ts_utc=pos.get("entry_ts_utc"),
+            )
+            ll.close_position(
+                position_id,
+                {
+                    "realized_pnl": float(pnl_val),
+                    "realized_pnl_pct": float(pnl_pct),
+                    "hold_seconds": int(_hold_s) if _hold_s is not None else None,
+                    "exit_reason": _exit_reason,
+                    "exit_price": float(price),
+                },
+                reason_text=f"{side_lbl} closed: {_exit_reason}",
+            )
+    except Exception as _e:
+        try:
+            tg.logger.debug("[lifecycle] close hook %s: %s", ticker, _e)
+        except Exception:
+            pass

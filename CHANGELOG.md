@@ -4,6 +4,80 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.6 — 2026-04-29 — Per-position lifecycle event log
+
+Adds a forensic, append-only per-position event log so every gate
+change, decision reason, and trade activity for a stock is captured
+from entry through close. Operates entirely alongside the existing
+trading logic — **no algorithm or trading-logic changes**. If the log
+write path fails, the trading path is unaffected (best-effort writer).
+
+### What's logged
+
+One JSONL file per `position_id` under `/data/lifecycle/`. The
+`position_id` is `<TICKER>_<YYYYMMDDTHHMMSSZ>_<long|short>` — a stable
+deterministic function of the entry timestamp + ticker, so it survives
+bot restarts.
+
+Event types: `ENTRY_DECISION`, `PHASE1_EVAL`, `PHASE2_EVAL`,
+`PHASE3_CANDIDATE`, `PHASE4_SENTINEL`, `TITAN_GRIP_STAGE`,
+`ORDER_SUBMIT`, `ORDER_FILL`, `ORDER_CANCEL`, `EXIT_DECISION`,
+`POSITION_CLOSED`, `REASON`.
+
+### New module: `lifecycle_logger.py`
+
+Public API:
+
+- `LifecycleLogger.open_position(ticker, side, entry_ts_utc, payload)`
+  → `position_id`. Writes the ENTRY_DECISION line.
+- `.log_event(position_id, event_type, payload, reason_text=None)` —
+  appends one line.
+- `.close_position(position_id, payload)` — writes POSITION_CLOSED.
+- Read-side: `.list_positions(status=open|recent|closed|all)` and
+  `.read_events(position_id, since_seq=N)`.
+
+Thread-safe append via per-position `RLock`. Cached metadata index so
+the API can answer `list_positions` without re-reading every file.
+
+### Wiring (no behavior change to trading)
+
+- `broker/orders.py::execute_breakout` — calls `open_position(...)`
+  with Phase 1-3 snapshots from `v5_13_2_snapshot`, then
+  `ORDER_SUBMIT` + `ORDER_FILL`. Stores `lifecycle_position_id` on
+  the position dict so subsequent events target the same file.
+- `broker/positions.py::_run_sentinel` — diff-based: emits
+  `PHASE4_SENTINEL` only when the alarm code set changes vs prior
+  tick; emits `TITAN_GRIP_STAGE` only when the stage advances.
+  Bounded log volume.
+- `broker/orders.py::close_breakout` — emits `EXIT_DECISION`,
+  closing `ORDER_FILL`, then the terminal `POSITION_CLOSED` with
+  realized P&L summary.
+
+All hooks wrapped in `try/except` and never re-raise.
+
+### Dashboard
+
+New **Lifecycle** tab with:
+
+- `GET /api/lifecycle/positions?status=open|recent|closed|all&limit=N`
+  — list of position summaries (ticker, side, entry_ts, status,
+  last_event_ts, latest Phase 4 alarm summary).
+- `GET /api/lifecycle/{position_id}?since_seq=N` — full timeline /
+  pagination by sequence number for tail-follow polling.
+
+Renders a type-coded event timeline (green=ENTRY, blue=PHASE4,
+yellow=ORDER, red=EXIT) with click-to-expand payloads. Polls
+`since_seq` every 2s while an open position is selected.
+
+### Operational
+
+- One file per position; ~200 events × ~150 bytes = ~30 KB per
+  position. No rotation needed in this PR.
+- Storage path: `/data/lifecycle/` (Railway volume — already mounted).
+  Override with `LIFECYCLE_DIR` env if needed for tests.
+
+---
+
 ## v5.13.5 — 2026-04-29 — Telegram surface vocabulary cleanup (Phase 1-4)
 
 Telegram-bot user-facing copy was still describing the pre-v5.9.0

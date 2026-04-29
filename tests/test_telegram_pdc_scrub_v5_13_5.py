@@ -126,4 +126,7 @@ def test_bot_version_bumped():
     sys.path.insert(0, str(REPO_ROOT))
     import bot_version
 
-    assert bot_version.BOT_VERSION == "5.13.5", "bot_version.BOT_VERSION must be bumped to 5.13.5"
+    # v5.13.6 superseded v5.13.5 in the same release window; assert >= 5.13.5
+    # so this test stays valid through future patch bumps without churn.
+    parts = tuple(int(p) for p in bot_version.BOT_VERSION.split("."))
+    assert parts >= (5, 13, 5), "bot_version.BOT_VERSION must be at least 5.13.5"
