@@ -25,6 +25,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 - Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
 - Boot log: `[TELEGRAM-UI] modules loaded: charts, commands`
 
+### PR 3 — telegram_ui/menu.py
+- Moved keyboards, callback handlers, and dispatch shim (~750 lines) out of `trade_genius.py`:
+  `positions_callback`, `proximity_callback`, `monitoring_callback`,
+  `_build_menu_keyboard`, `_build_advanced_menu_keyboard`, `_menu_button`,
+  `_cb_open_menu`, `_CallbackUpdateShim`, `_invoke_from_callback`, `menu_callback`
+- Updated `telegram_commands.py` to import `_build_menu_keyboard` from `telegram_ui.menu`
+- Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
+- Boot log: `[TELEGRAM-UI] modules loaded: charts, commands, menu`
+
 ---
 
 ## v5.11.0 — 2026-04-28 — Engine extraction (trading-rules engine moved into `engine/`)

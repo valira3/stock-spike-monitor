@@ -4,11 +4,12 @@ Houses the Telegram-handler and presentation helpers extracted from
 `trade_genius.py`. PR 1 introduces `charts` (chart and dayreport
 helpers); PR 2 adds `commands` (sync command builders for /log,
 /replay, /perf, /price, /proximity, /orb, /or_now, /ticker, and the
-/reset confirmation keyboard). Subsequent PRs in v5.11.x will move
-menu callbacks and runtime, then retire deprecation shims.
+/reset confirmation keyboard); PR 3 adds `menu` (keyboards, callback
+handlers, and the _CallbackUpdateShim dispatcher). Subsequent PR in
+v5.11.x will move runtime, then retire deprecation shims.
 
-Boot log line `[TELEGRAM-UI] modules loaded: charts, commands` is
-emitted at trade_genius startup so missed Dockerfile COPY lines
+Boot log line `[TELEGRAM-UI] modules loaded: charts, commands, menu`
+is emitted at trade_genius startup so missed Dockerfile COPY lines
 surface as ImportError on boot rather than mid-session.
 """
 from __future__ import annotations
@@ -41,8 +42,20 @@ from telegram_ui.commands import (
     _fmt_add_reply,
     _fmt_remove_reply,
 )
+from telegram_ui.menu import (
+    positions_callback,
+    proximity_callback,
+    monitoring_callback,
+    _build_menu_keyboard,
+    _build_advanced_menu_keyboard,
+    _menu_button,
+    _cb_open_menu,
+    _CallbackUpdateShim,
+    _invoke_from_callback,
+    menu_callback,
+)
 
-LOADED_MODULES = ("charts", "commands")
+LOADED_MODULES = ("charts", "commands", "menu")
 
 __all__ = [
     "_dayreport_time",
@@ -69,5 +82,15 @@ __all__ = [
     "_fmt_tickers_list",
     "_fmt_add_reply",
     "_fmt_remove_reply",
+    "positions_callback",
+    "proximity_callback",
+    "monitoring_callback",
+    "_build_menu_keyboard",
+    "_build_advanced_menu_keyboard",
+    "_menu_button",
+    "_cb_open_menu",
+    "_CallbackUpdateShim",
+    "_invoke_from_callback",
+    "menu_callback",
     "LOADED_MODULES",
 ]
