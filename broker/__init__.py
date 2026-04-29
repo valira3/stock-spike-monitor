@@ -3,12 +3,14 @@
 Houses the broker / position-management code extracted from
 `trade_genius.py`. PR 1 introduces `stops` (breakeven, capped, ladder,
 and retighten helpers); PR 2 adds `orders` (check_breakout,
-execute_breakout, close_breakout, paper_shares_for). PRs 3\u20134 will
-add positions and lifecycle modules.
+execute_breakout, close_breakout, paper_shares_for); PR 3 adds
+`positions` (per-tick management: _v5104_maybe_fire_entry_2,
+manage_positions, manage_short_positions). PR 4 will add the
+lifecycle module.
 
-Boot log line `[BROKER] modules loaded: stops, orders` is emitted at
-trade_genius startup so missed Dockerfile COPY lines surface as
-ImportError on boot rather than mid-session.
+Boot log line `[BROKER] modules loaded: stops, orders, positions` is
+emitted at trade_genius startup so missed Dockerfile COPY lines surface
+as ImportError on boot rather than mid-session.
 """
 from __future__ import annotations
 
@@ -29,8 +31,13 @@ from broker.orders import (
     execute_breakout,
     close_breakout,
 )
+from broker.positions import (
+    _v5104_maybe_fire_entry_2,
+    manage_positions,
+    manage_short_positions,
+)
 
-LOADED_MODULES = ("stops", "orders")
+LOADED_MODULES = ("stops", "orders", "positions")
 
 __all__ = [
     "_breakeven_long_stop",
@@ -46,5 +53,8 @@ __all__ = [
     "paper_shares_for",
     "execute_breakout",
     "close_breakout",
+    "_v5104_maybe_fire_entry_2",
+    "manage_positions",
+    "manage_short_positions",
     "LOADED_MODULES",
 ]

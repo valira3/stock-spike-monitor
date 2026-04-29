@@ -26,6 +26,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 - Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
 - Boot log: `[BROKER] modules loaded: stops, orders`
 
+### PR 3 — broker/positions.py
+- Moved per-tick position management (~430 lines) out of `trade_genius.py`:
+  `_v5104_maybe_fire_entry_2`, `manage_positions`, `manage_short_positions`
+- `broker.orders.check_breakout` continues to reach `_v5104_maybe_fire_entry_2`
+  via the `_tg()` shim to avoid a circular import (positions → orders, orders → positions)
+- Cross-package imports: `broker.positions` imports `check_breakout` from
+  `broker.orders` and stop helpers from `broker.stops`
+- Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
+- Boot log: `[BROKER] modules loaded: stops, orders, positions`
+
 ---
 
 ## v5.11.1 — 2026-04-29 — Telegram handler extraction
