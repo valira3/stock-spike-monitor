@@ -27,7 +27,6 @@ import pytest
 # =====================================================================
 
 
-@pytest.mark.spec_gap("vAA-PR-3a", "Trade_HVP class")
 def test_trade_hvp_resets_on_strike_entry():
     """Trade_HVP must initialize to the current 5m ADX at fill time
     and reset (back to the new entry's ADX) on every fresh Strike."""
@@ -45,7 +44,6 @@ def test_trade_hvp_resets_on_strike_entry():
     assert hvp.peak == 18.0
 
 
-@pytest.mark.spec_gap("vAA-PR-3a", "DivergenceMemory class")
 def test_divergence_memory_is_per_ticker_per_side():
     """Stored_Peak_Price / Stored_Peak_RSI are keyed by (ticker, side)
     and survive across Strikes within the day; reset at session boundary."""
