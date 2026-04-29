@@ -4,6 +4,81 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.8 — 2026-04-29 — EMA9 pre-market seed fall-through hotfix
+
+### Symptom
+
+Prod v5.13.7 logs from 2026-04-29 at T+5 minutes after market open:
+
+```
+13:35:20 [V572-REGIME-SEED] source=archive bars=1 ema3=None ema9=None compass=None
+13:35:20 [V5100-PERMIT] qqq_close=657.15 qqq_ema9=None qqq_avwap=657.628 long_open=False short_open=False
+13:40:30 [V572-REGIME] qqq_5m_close=658.01 ema3=657.40 ema9=None compass=None
+13:45:41 [V572-REGIME] qqq_5m_close=657.97 ema3=657.68 ema9=None compass=None
+```
+
+`ema9` stayed `None` for ~25-45 minutes after open, blocking the
+`[V5100-PERMIT]` long/short permit gate during the most volatile window
+of the session.
+
+### Root cause
+
+`engine/seeders.py:qqq_regime_seed_once()` orchestrates the seed source
+fall-through `archive → alpaca → prior_session`. The `if closes:` guard
+short-circuits as soon as the archive returns any non-empty list. On a
+cold restart at 13:00 UTC (09:00 ET), the bot subscribes to bars only
+at market open and starts archiving them at 09:31 ET; by the 09:35 seed
+run, `/data/bars/<today>/QQQ.jsonl` contains exactly one finalized 5m
+bucket (09:30-09:34). That single bar passed the truthy guard, so the
+Alpaca historical fetch (which would have pulled ~66 5m bars covering
+04:00-09:30 ET pre-market and immediately defined ema9) never ran.
+
+### Fix
+
+New constant `engine.seeders.MIN_ARCHIVE_BARS = 9` (the EMA9 window).
+The orchestration now treats the archive as authoritative only when it
+returns ≥9 bars. Smaller reads fall through to Alpaca; if Alpaca and
+prior-session both also fail, the partial archive read is used as a
+last resort under a new source label `archive_partial`.
+
+```
+old: archive → alpaca → prior_session
+new: archive(≥9) → alpaca → prior_session → archive_partial
+```
+
+Added an info-level log when the archive is below threshold so the
+fall-through is visible in production telemetry:
+
+```
+[V572-REGIME-SEED] archive has 1 bars (< 9 minimum); falling through to Alpaca historical
+```
+
+### Files
+
+- `engine/seeders.py` — `MIN_ARCHIVE_BARS` constant + reworked
+  `qqq_regime_seed_once()` orchestration. `_qqq_seed_from_archive` /
+  `_qqq_seed_from_alpaca` / `_qqq_seed_from_prior_session` are unchanged.
+- `qqq_regime.py` — `_VALID_SEED_SOURCES` adds `"archive_partial"`.
+- `tests/test_qqq_regime_seed_orchestration.py` — new test file covering
+  the fall-through matrix (full archive uses archive; sparse archive
+  uses Alpaca; sparse archive + Alpaca empty + prior session uses
+  prior_session; sparse archive + Alpaca empty + prior session empty
+  uses archive_partial; everything empty bails out).
+- `bot_version.py`, `trade_genius.py:BOT_VERSION` — 5.13.8.
+- `trade_genius.py:CURRENT_MAIN_NOTE` — v5.13.8 deploy banner.
+
+### Follow-up: v5.14.0
+
+This hotfix unblocks the immediate symptom by leaning on the Alpaca
+historical fall-back, which already works. The deeper fix — having the
+bar archive itself capture pre-market bars (so the archive fast path
+is usable from the first restart of the day) — is scoped to v5.14.0.
+See `/home/user/workspace/diagnostics/ema9_premarket_seed_bug.md` for
+the full diagnosis and side-observation about yesterday's archive
+ending early at 15:54 ET.
+
+---
+
 ## v5.13.7 — 2026-04-29 — Entry-2 share parity (N1) + order-type wiring through close path
 
 Two fixes from the v5.13.4 spec audit:

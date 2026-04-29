@@ -18,6 +18,7 @@ during the v5.11.0 staged extraction. They are accessed via the live
 trade_genius module through `_tg()` (the same pattern paper_state.py
 and telegram_commands.py use).
 """
+
 from __future__ import annotations
 
 import json
@@ -35,13 +36,30 @@ def _tg():
     return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
 
 
+# v5.13.8 \u2014 minimum bar count for the archive fast path. EMA9 needs
+# 9 closed 5m bars to be defined; if the archive has fewer than that,
+# fall through to the Alpaca historical fetch (which can pull the full
+# pre-market window) before settling on the partial archive read.
+MIN_ARCHIVE_BARS = 9
+
+
 def qqq_regime_seed_once() -> None:
     """v5.9.0 \u2014 Seed the QQQ Regime EMAs from pre-market 5m bars.
 
     Source priority (per spec):
-      1. /data/bars/<today>/QQQ.jsonl bar archive
+      1. /data/bars/<today>/QQQ.jsonl bar archive  (≥ MIN_ARCHIVE_BARS)
       2. Alpaca historical 5m bars (IEX feed) for today 04:00 ET \u2192 now
       3. Prior session's last 5m bars
+      4. Partial archive (< MIN_ARCHIVE_BARS) \u2014 last-resort, only if
+         Alpaca and prior-session fallbacks both fail
+
+    v5.13.8 fix: previously any non-empty archive return short-circuited
+    the orchestration. On cold starts where the archive only contained
+    a handful of RTH-open bars, this prevented Alpaca from supplying
+    the pre-market 04:00 ET window and left ema9 \u201cwarming up\u201d for
+    the first \u224825 minutes of the session \u2014 exactly the volatile
+    window the permit gate needs. We now require \u22659 bars from archive
+    before treating it as authoritative.
 
     Idempotent: subsequent calls are no-ops. Failure-tolerant: any
     crash leaves the regime un-seeded, in which case the live tick
@@ -56,11 +74,20 @@ def qqq_regime_seed_once() -> None:
     now_et = datetime.now(et)
     today_0400 = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
 
-    closes = _qqq_seed_from_archive(today_0400, now_et)
+    archive_closes = _qqq_seed_from_archive(today_0400, now_et)
+    closes = None
     source = None
-    if closes:
+    if archive_closes and len(archive_closes) >= MIN_ARCHIVE_BARS:
+        closes = archive_closes
         source = "archive"
     else:
+        if archive_closes:
+            logger.info(
+                "[V572-REGIME-SEED] archive has %d bars (< %d minimum); "
+                "falling through to Alpaca historical",
+                len(archive_closes),
+                MIN_ARCHIVE_BARS,
+            )
         closes = _qqq_seed_from_alpaca(today_0400, now_et)
         if closes:
             source = "alpaca"
@@ -68,10 +95,15 @@ def qqq_regime_seed_once() -> None:
             closes = _qqq_seed_from_prior_session(now_et)
             if closes:
                 source = "prior_session"
+            elif archive_closes:
+                # Last resort: use the partial archive read.
+                closes = archive_closes
+                source = "archive_partial"
 
     if not closes:
-        logger.warning("[V572-REGIME-SEED] no source returned bars; "
-                       "compass will warm up from live ticks")
+        logger.warning(
+            "[V572-REGIME-SEED] no source returned bars; compass will warm up from live ticks"
+        )
         tg._QQQ_REGIME_SEEDED = True
         return
 
@@ -80,7 +112,8 @@ def qqq_regime_seed_once() -> None:
     compass = tg._QQQ_REGIME.current_compass()
     logger.info(
         "[V572-REGIME-SEED] source=%s bars=%d ema3=%s ema9=%s compass=%s",
-        source, n,
+        source,
+        n,
         ("%.4f" % tg._QQQ_REGIME.ema3) if tg._QQQ_REGIME.ema3 is not None else "None",
         ("%.4f" % tg._QQQ_REGIME.ema9) if tg._QQQ_REGIME.ema9 is not None else "None",
         compass if compass is not None else "None",
@@ -117,15 +150,19 @@ def _qqq_seed_from_archive(start_et, end_et):
                     continue
                 try:
                     if isinstance(ts, str):
-                        epoch = int(datetime.strptime(
-                            ts.replace("Z", ""), "%Y-%m-%dT%H:%M:%S",
-                        ).replace(tzinfo=timezone.utc).timestamp())
+                        epoch = int(
+                            datetime.strptime(
+                                ts.replace("Z", ""),
+                                "%Y-%m-%dT%H:%M:%S",
+                            )
+                            .replace(tzinfo=timezone.utc)
+                            .timestamp()
+                        )
                     else:
                         epoch = int(ts)
                 except Exception:
                     continue
-                if (epoch < int(start_et.timestamp())
-                        or epoch >= int(end_et.timestamp())):
+                if epoch < int(start_et.timestamp()) or epoch >= int(end_et.timestamp()):
                     continue
                 timestamps.append(epoch)
                 closes.append(float(close))
@@ -147,6 +184,7 @@ def _qqq_seed_from_alpaca(start_et, end_et):
             return []
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
         req = StockBarsRequest(
             symbol_or_symbols="QQQ",
             timeframe=TimeFrame(5, TimeFrameUnit.Minute),
@@ -187,6 +225,7 @@ def _qqq_seed_from_prior_session(now_et):
             return []
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
         yday = now_et - timedelta(days=1)
         while yday.weekday() >= 5:
             yday = yday - timedelta(days=1)
@@ -231,8 +270,11 @@ def qqq_regime_tick():
         closes = bars.get("closes") or []
         # Pair valid (ts, close) and bucket by floor(ts/300); drop newest
         # (forming) bucket via the existing resampler logic.
-        pairs = [(int(t), float(c)) for t, c in zip(timestamps, closes)
-                 if t is not None and c is not None]
+        pairs = [
+            (int(t), float(c))
+            for t, c in zip(timestamps, closes)
+            if t is not None and c is not None
+        ]
         if not pairs:
             return
         pairs.sort(key=lambda p: p[0])
@@ -242,10 +284,9 @@ def qqq_regime_tick():
         ordered = sorted(buckets.keys())
         if len(ordered) < 2:
             return
-        finalized = ordered[:-1]   # drop newest, possibly forming
+        finalized = ordered[:-1]  # drop newest, possibly forming
         last_bucket = finalized[-1]
-        if (tg._QQQ_REGIME_LAST_BUCKET is not None
-                and last_bucket <= tg._QQQ_REGIME_LAST_BUCKET):
+        if tg._QQQ_REGIME_LAST_BUCKET is not None and last_bucket <= tg._QQQ_REGIME_LAST_BUCKET:
             return
         # Seed before applying the first live bar so seed math runs first.
         qqq_regime_seed_once()
@@ -288,8 +329,10 @@ def seed_di_buffer(ticker):
     """
     tg = _tg()
     result = {
-        "bars_today_rth": 0, "bars_premarket": 0,
-        "bars_prior_day": 0, "di_after_seed": None,
+        "bars_today_rth": 0,
+        "bars_premarket": 0,
+        "bars_prior_day": 0,
+        "di_after_seed": None,
     }
     client = tg._alpaca_data_client()
     if client is None:
@@ -297,7 +340,10 @@ def seed_di_buffer(ticker):
         return result
 
     premarket_on = os.getenv("DI_PREMARKET_SEED", "1").strip() not in (
-        "0", "false", "False", "",
+        "0",
+        "false",
+        "False",
+        "",
     )
 
     try:
@@ -309,13 +355,13 @@ def seed_di_buffer(ticker):
 
     et = ZoneInfo("America/New_York")
     now_et = datetime.now(et)
-    today_0400 = now_et.replace(hour=4,  minute=0,  second=0, microsecond=0)
-    today_0930 = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+    today_0400 = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
+    today_0930 = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     yday = now_et - timedelta(days=1)
     # Step back over weekend to last weekday
     while yday.weekday() >= 5:
         yday = yday - timedelta(days=1)
-    yday_rth_end   = yday.replace(hour=16, minute=0, second=0, microsecond=0)
+    yday_rth_end = yday.replace(hour=16, minute=0, second=0, microsecond=0)
     yday_rth_start = yday.replace(hour=14, minute=50, second=0, microsecond=0)
 
     def _fetch(start, end):
@@ -332,8 +378,7 @@ def seed_di_buffer(ticker):
             rows = data.get(ticker, []) or []
             return rows
         except Exception as e:
-            logger.warning("DI_SEED %s alpaca fetch %s\u2192%s failed: %s",
-                           ticker, start, end, e)
+            logger.warning("DI_SEED %s alpaca fetch %s\u2192%s failed: %s", ticker, start, end, e)
             return []
 
     # Fetch today 04:00 ET \u2192 now (premarket + whatever RTH has happened)
@@ -343,8 +388,8 @@ def seed_di_buffer(ticker):
     # today_0930_ts = unix seconds of today's 09:30 ET
     today_0930_ts = int(today_0930.timestamp())
 
-    today_rth_buckets   = {}
-    today_pre_buckets   = {}
+    today_rth_buckets = {}
+    today_pre_buckets = {}
 
     for row in today_rows:
         ts = getattr(row, "timestamp", None)
@@ -355,9 +400,9 @@ def seed_di_buffer(ticker):
             epoch = int(ts.timestamp())
         except Exception:
             continue
-        h  = float(getattr(row, "high",  0) or 0)
-        lo = float(getattr(row, "low",   0) or 0)
-        c  = float(getattr(row, "close", 0) or 0)
+        h = float(getattr(row, "high", 0) or 0)
+        lo = float(getattr(row, "low", 0) or 0)
+        c = float(getattr(row, "close", 0) or 0)
         if h <= 0 or lo <= 0 or c <= 0:
             continue
         bucket = epoch // 300
@@ -365,8 +410,8 @@ def seed_di_buffer(ticker):
         if bucket not in target:
             target[bucket] = {"bucket": bucket, "high": h, "low": lo, "close": c}
         else:
-            target[bucket]["high"]  = max(target[bucket]["high"],  h)
-            target[bucket]["low"]   = min(target[bucket]["low"],   lo)
+            target[bucket]["high"] = max(target[bucket]["high"], h)
+            target[bucket]["low"] = min(target[bucket]["low"], lo)
             target[bucket]["close"] = c
 
     # Drop newest bucket if it could still be forming (now < bucket_end)
@@ -382,8 +427,8 @@ def seed_di_buffer(ticker):
 
     today_rth_list = _finalize(today_rth_buckets)
     today_pre_list = _finalize(today_pre_buckets) if premarket_on else []
-    result["bars_today_rth"]  = len(today_rth_list)
-    result["bars_premarket"]  = len(today_pre_list)
+    result["bars_today_rth"] = len(today_rth_list)
+    result["bars_premarket"] = len(today_pre_list)
 
     seeded_enough = len(today_rth_list) + len(today_pre_list) >= tg.DI_PERIOD * 2
     prior_day_list = []
@@ -398,18 +443,17 @@ def seed_di_buffer(ticker):
                 epoch = int(ts.timestamp())
             except Exception:
                 continue
-            h  = float(getattr(row, "high",  0) or 0)
-            lo = float(getattr(row, "low",   0) or 0)
-            c  = float(getattr(row, "close", 0) or 0)
+            h = float(getattr(row, "high", 0) or 0)
+            lo = float(getattr(row, "low", 0) or 0)
+            c = float(getattr(row, "close", 0) or 0)
             if h <= 0 or lo <= 0 or c <= 0:
                 continue
             bucket = epoch // 300
             if bucket not in prior_buckets:
-                prior_buckets[bucket] = {"bucket": bucket, "high": h,
-                                          "low": lo, "close": c}
+                prior_buckets[bucket] = {"bucket": bucket, "high": h, "low": lo, "close": c}
             else:
-                prior_buckets[bucket]["high"]  = max(prior_buckets[bucket]["high"],  h)
-                prior_buckets[bucket]["low"]   = min(prior_buckets[bucket]["low"],   lo)
+                prior_buckets[bucket]["high"] = max(prior_buckets[bucket]["high"], h)
+                prior_buckets[bucket]["low"] = min(prior_buckets[bucket]["low"], lo)
                 prior_buckets[bucket]["close"] = c
         prior_day_list = [prior_buckets[b] for b in sorted(prior_buckets.keys())]
         result["bars_prior_day"] = len(prior_day_list)
@@ -425,19 +469,19 @@ def seed_di_buffer(ticker):
 
     # Compute DI on the seeded state for logging
     if len(final_list) >= tg.DI_PERIOD + 1:
-        highs  = [b["high"]  for b in final_list]
-        lows   = [b["low"]   for b in final_list]
+        highs = [b["high"] for b in final_list]
+        lows = [b["low"] for b in final_list]
         closes = [b["close"] for b in final_list]
         dp, _dm = tg._compute_di(highs, lows, closes)
         result["di_after_seed"] = dp
 
     logger.info(
-        "DI_SEED ticker=%s bars_today_rth=%d bars_premarket=%d "
-        "bars_prior_day=%d di_after_seed=%s",
-        ticker, result["bars_today_rth"], result["bars_premarket"],
+        "DI_SEED ticker=%s bars_today_rth=%d bars_premarket=%d bars_prior_day=%d di_after_seed=%s",
+        ticker,
+        result["bars_today_rth"],
+        result["bars_premarket"],
         result["bars_prior_day"],
-        ("%.2f" % result["di_after_seed"])
-        if result["di_after_seed"] is not None else "None",
+        ("%.2f" % result["di_after_seed"]) if result["di_after_seed"] is not None else "None",
     )
     return result
 
@@ -458,7 +502,9 @@ def seed_di_all(tickers):
             skipped += 1
     logger.info(
         "DI_SEED_DONE tickers=%d seeded_with_nonnull_di=%d skipped=%d",
-        len(tickers), seeded, skipped,
+        len(tickers),
+        seeded,
+        skipped,
     )
 
 
@@ -489,9 +535,12 @@ def seed_opening_range(ticker):
     window_start = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     window_end = window_start + timedelta(minutes=tg.OR_WINDOW_MINUTES)
     if now_et < window_end:
-        logger.debug("OR_SEED %s skipped \u2014 window not complete (now_et=%s < end=%s)",
-                     ticker, now_et.strftime("%H:%M"),
-                     window_end.strftime("%H:%M"))
+        logger.debug(
+            "OR_SEED %s skipped \u2014 window not complete (now_et=%s < end=%s)",
+            ticker,
+            now_et.strftime("%H:%M"),
+            window_end.strftime("%H:%M"),
+        )
         return result
 
     try:
@@ -546,8 +595,12 @@ def seed_opening_range(ticker):
     logger.info(
         "OR_SEED ticker=%s or_high=%.2f or_low=%.2f bars_used=%d "
         "window_et=%s-%s source=alpaca_historical",
-        ticker, max_hi, min_lo, bars_used,
-        window_start.strftime("%H:%M"), window_end.strftime("%H:%M"),
+        ticker,
+        max_hi,
+        min_lo,
+        bars_used,
+        window_start.strftime("%H:%M"),
+        window_end.strftime("%H:%M"),
     )
     return result
 
@@ -564,8 +617,9 @@ def seed_opening_range_all(tickers):
     et = ZoneInfo("America/New_York")
     now_et = datetime.now(et)
     today = now_et.strftime("%Y-%m-%d")
-    window_end = now_et.replace(hour=9, minute=30, second=0, microsecond=0) \
-                    + timedelta(minutes=tg.OR_WINDOW_MINUTES)
+    window_end = now_et.replace(hour=9, minute=30, second=0, microsecond=0) + timedelta(
+        minutes=tg.OR_WINDOW_MINUTES
+    )
     if now_et < window_end:
         logger.info(
             "OR_SEED_DONE tickers=0 seeded=0 skipped=%d \u2014 pre-OR-window",
@@ -588,7 +642,9 @@ def seed_opening_range_all(tickers):
         tg.or_collected_date = today
     logger.info(
         "OR_SEED_DONE tickers=%d seeded=%d skipped=%d",
-        len(tickers), seeded, skipped,
+        len(tickers),
+        seeded,
+        skipped,
     )
 
 
