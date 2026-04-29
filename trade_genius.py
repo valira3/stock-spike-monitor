@@ -6053,42 +6053,11 @@ else:
     threading.Thread(target=scheduler_thread, daemon=True).start()
     threading.Thread(target=health_ping, daemon=True).start()
 
-    # v4.0.0-alpha — TradeGeniusVal executor (opt-in via env).
-    # Enabled by default if paper keys are present; VAL_ENABLED=0 force-disables.
-    # Silently skipped if disabled or creds missing so deploys without Alpaca
-    # keys still boot cleanly.
-    _val_enabled = os.getenv("VAL_ENABLED", "1").strip() not in ("0", "false", "False", "")
-    _val_has_keys = bool(os.getenv("VAL_ALPACA_PAPER_KEY", "").strip())
-    if _val_enabled and _val_has_keys:
-        try:
-            val_executor = TradeGeniusVal()
-            val_executor.start()
-            logger.info("[Val] started in %s mode", val_executor.mode)
-        except Exception:
-            logger.exception("[Val] startup failed \u2014 main continues")
-            val_executor = None
-    else:
-        logger.info(
-            "[Val] skipped (VAL_ENABLED=%s, VAL_ALPACA_PAPER_KEY set=%s)",
-            os.getenv("VAL_ENABLED", "1"), _val_has_keys,
-        )
-
-    # v4.0.0-beta — TradeGeniusGene executor (opt-in via env, same pattern).
-    _gene_enabled = os.getenv("GENE_ENABLED", "1").strip() not in ("0", "false", "False", "")
-    _gene_has_keys = bool(os.getenv("GENE_ALPACA_PAPER_KEY", "").strip())
-    if _gene_enabled and _gene_has_keys:
-        try:
-            gene_executor = TradeGeniusGene()
-            gene_executor.start()
-            logger.info("[Gene] started in %s mode", gene_executor.mode)
-        except Exception:
-            logger.exception("[Gene] startup failed \u2014 main continues")
-            gene_executor = None
-    else:
-        logger.info(
-            "[Gene] skipped (GENE_ENABLED=%s, GENE_ALPACA_PAPER_KEY set=%s)",
-            os.getenv("GENE_ENABLED", "1"), _gene_has_keys,
-        )
+    # v5.12.0 \u2014 executor bootstrap moved to executors/bootstrap.py
+    from executors.bootstrap import build_val_executor, build_gene_executor, install_globals
+    val_executor = build_val_executor()
+    gene_executor = build_gene_executor()
+    install_globals(val=val_executor, gene=gene_executor)
 
     logger.info("%s v%s started", BOT_NAME, BOT_VERSION)
     logger.info("[ENGINE] modules loaded: %s", ", ".join(engine.LOADED_MODULES))

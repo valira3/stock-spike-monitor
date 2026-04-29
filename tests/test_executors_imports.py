@@ -101,3 +101,60 @@ def test_gene_reexported_in_main_module(monkeypatch):
     import executors.gene
     import trade_genius
     assert trade_genius.TradeGeniusGene is executors.gene.TradeGeniusGene
+
+
+def test_import_bootstrap_helpers():
+    """v5.12.0 PR 3: executors.bootstrap exposes the three helpers."""
+    from executors.bootstrap import (
+        build_val_executor,
+        build_gene_executor,
+        install_globals,
+    )
+    assert callable(build_val_executor)
+    assert callable(build_gene_executor)
+    assert callable(install_globals)
+
+
+def test_build_val_returns_none_when_env_unset(monkeypatch):
+    """No VAL_ALPACA_PAPER_KEY \u2192 build_val_executor() returns None
+    without raising."""
+    monkeypatch.delenv("VAL_ALPACA_PAPER_KEY", raising=False)
+    from executors.bootstrap import build_val_executor
+    assert build_val_executor() is None
+
+
+def test_build_gene_returns_none_when_env_unset(monkeypatch):
+    """No GENE_ALPACA_PAPER_KEY \u2192 build_gene_executor() returns None."""
+    monkeypatch.delenv("GENE_ALPACA_PAPER_KEY", raising=False)
+    from executors.bootstrap import build_gene_executor
+    assert build_gene_executor() is None
+
+
+def test_install_globals_writes_to_both_namespaces(monkeypatch):
+    """install_globals(val=, gene=) must publish into both
+    trade_genius and telegram_commands module namespaces so the
+    `globals().get('val_executor')` lookup at telegram_commands.py:647
+    keeps working."""
+    monkeypatch.setenv("SSM_SMOKE_TEST", "1")
+    import trade_genius
+    import telegram_commands
+    from executors.bootstrap import install_globals
+
+    saved_tg_val = getattr(trade_genius, "val_executor", None)
+    saved_tg_gene = getattr(trade_genius, "gene_executor", None)
+    saved_tc_val = getattr(telegram_commands, "val_executor", None)
+    saved_tc_gene = getattr(telegram_commands, "gene_executor", None)
+
+    sentinel_val = object()
+    sentinel_gene = object()
+    try:
+        install_globals(val=sentinel_val, gene=sentinel_gene)
+        assert trade_genius.val_executor is sentinel_val
+        assert trade_genius.gene_executor is sentinel_gene
+        assert telegram_commands.val_executor is sentinel_val
+        assert telegram_commands.gene_executor is sentinel_gene
+    finally:
+        trade_genius.val_executor = saved_tg_val
+        trade_genius.gene_executor = saved_tg_gene
+        telegram_commands.val_executor = saved_tc_val
+        telegram_commands.gene_executor = saved_tc_gene
