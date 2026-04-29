@@ -38,7 +38,13 @@ ET = ZoneInfo("America/New_York")
 # ---------------------------------------------------------------------------
 
 def _read_tg_src() -> str:
-    return (REPO / "trade_genius.py").read_text(encoding="utf-8")
+    # v5.11.0 PR4 \u2014 the archive write inline-block moved out of
+    # trade_genius.py's scan_loop body into engine/scan.py. Concatenate
+    # both so the existing source-grep guards keep working unchanged
+    # whichever file owns the pattern.
+    tg = (REPO / "trade_genius.py").read_text(encoding="utf-8")
+    es = (REPO / "engine" / "scan.py").read_text(encoding="utf-8")
+    return tg + "\n" + es
 
 
 def test_archive_prefers_ws_consumer_when_available() -> None:
