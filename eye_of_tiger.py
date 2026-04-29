@@ -127,7 +127,16 @@ def evaluate_global_permit(
 def evaluate_volume_bucket(check_result: dict | None) -> bool:
     """Translate VolumeBucketBaseline.check() output to gate-open
     boolean. COLDSTART counts as PASS-THROUGH (gate satisfied).
+
+    Runtime override (v5.13.1): when
+    ``engine.feature_flags.VOLUME_GATE_ENABLED`` is False (production
+    default), the gate auto-passes regardless of bucket result —
+    reason ``DISABLED_BY_FLAG``. The 2-consecutive-1m boundary-hold
+    gate is unaffected and still fully enforced.
     """
+    from engine import feature_flags as _ff
+    if not _ff.VOLUME_GATE_ENABLED:
+        return True
     if not check_result:
         return False
     g = check_result.get("gate")

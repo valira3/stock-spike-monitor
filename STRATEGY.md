@@ -2,6 +2,10 @@
 
 # Tiger Sovereign System: Automated Trading Specification (v2026.4.28h)
 
+## Operational Overrides (Runtime Flags)
+
+* **VOLUME_GATE_ENABLED** (env var) — controls L-P2-S3 / S-P2-S3 volume rule. Default: `false` (DISABLED). Set to `true` on Railway to re-enable spec-strict behavior. Rationale: backtest analysis on 2026-04-28 showed the gate filtered out trades that, when allowed with full Sentinel exit logic, returned net positive (+$251 cohort P&L). Operating with gate OFF until multi-day analysis confirms direction.
+
 ## Architectural Note for Developer
 The **Sentinel Loop (Phase 4)** is a parallel monitoring system. These "Alarms" are **NOT** a sequence. The bot must check all Alarms (A, B, and C) on every single price tick. If **ANY** alarm triggers, the bot must act immediately. Alarm A (Emergency) or Alarm B (9-EMA Shield) can terminate a trade at any time, even if the "Harvest" targets in Alarm C have not been reached.
 
@@ -18,12 +22,14 @@ The **Sentinel Loop (Phase 4)** is a parallel monitoring system. These "Alarms" 
     * [YES] --> **PERMIT LONG TRADING = TRUE.** Proceed to Ticker Scan.
 
 ### PHASE 2: TICKER-SPECIFIC PERMITS (THE SCENT)
-* **STEP 3:** Does the Ticker have HIGH VOLUME? (>= 100% of 55-day rolling average for this minute)
+* **STEP 3:** Does the Ticker have HIGH VOLUME? (>= 100% of 55-day rolling average for this minute)\*
     * [NO] --> WAIT.
     * [YES] --> Proceed to Step 4.
 * **STEP 4:** Did the Ticker close TWO (2) consecutive 1m candles ABOVE its 5m Opening Range High?
     * [NO] --> WAIT.
     * [YES] --> **TICKER IS "HOT."** Proceed to Entry Trigger.
+
+\* Subject to `VOLUME_GATE_ENABLED` env var; default off.
 
 ### PHASE 3: THE STRIKE (THE ENTRY)
 * **STEP 5 (ENTRY 1):** Is 5m DI+ > 25 AND 1m DI+ > 25 AND Price at New High of Day (NHOD)?
@@ -56,12 +62,14 @@ The **Sentinel Loop (Phase 4)** is a parallel monitoring system. These "Alarms" 
     * [YES] --> **PERMIT SHORT TRADING = TRUE.** Proceed to Ticker Scan.
 
 ### PHASE 2: TICKER-SPECIFIC PERMITS (THE SCENT)
-* **STEP 3:** Does the Ticker have HIGH VOLUME? (>= 100% of 55-day rolling average for this minute)
+* **STEP 3:** Does the Ticker have HIGH VOLUME? (>= 100% of 55-day rolling average for this minute)\*
     * [NO] --> WAIT.
     * [YES] --> Proceed to Step 4.
 * **STEP 4:** Did the Ticker close TWO (2) consecutive 1m candles BELOW its 5m Opening Range Low?
     * [NO] --> WAIT.
     * [YES] --> **TICKER IS "BLEEDING."** Proceed to Entry Trigger.
+
+\* Subject to `VOLUME_GATE_ENABLED` env var; default off.
 
 ### PHASE 3: THE STRIKE (THE ENTRY)
 * **STEP 5 (ENTRY 1):** Is 5m DI- > 25 AND 1m DI- > 25 AND Price at New Low of Day (NLOD)?

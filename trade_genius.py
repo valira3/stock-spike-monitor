@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.13.0"
+BOT_VERSION = "5.13.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,12 +103,12 @@ BOT_VERSION = "5.13.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.13.0 \u2014 Tiger Sovereign\n"
-    "Sentinel Loop (Alarms A/B/C),\n"
-    "Titan Grip ratchet 0.93/1.88,\n"
-    "100% vol + 2-candle entry,\n"
-    "15:44 cutoff, 15:49 EOD,\n"
-    "LIMIT harvest / STOP MARKET."
+    "v5.13.1 \u2014 Volume gate flag\n"
+    "VOLUME_GATE_ENABLED env var,\n"
+    "default OFF (DISABLED path),\n"
+    "L-P2-S3 / S-P2-S3 togglable,\n"
+    "set =true on Railway to\n"
+    "restore spec-strict behavior."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -2526,7 +2526,7 @@ _trading_halted_reason: str = ""
 class MarketMode:
     OPEN       = "OPEN"        # 09:35 - 11:00 ET — OR breakout window
     CHOP       = "CHOP"        # 11:00 - 14:00 ET — lunch chop
-    POWER      = "POWER"       # 14:00 - 15:30 ET — power hour
+    POWER      = "POWER"       # 14:00 - 15:44:59 ET \u2014 power hour (cutoff per engine/timing.NEW_POSITION_CUTOFF_ET)
     DEFENSIVE  = "DEFENSIVE"   # triggered by realized P&L <= half loss limit
     CLOSED     = "CLOSED"      # outside market hours / weekend
 
@@ -2569,7 +2569,8 @@ MODE_PROFILES = {
         "shares":            _clamp(10,    CLAMP_SHARES),
         "min_score_delta":   _clamp(0.05,  CLAMP_MIN_SCORE_DELTA),
         "allow_shorts":      True,
-        "note":              "Power hour — baseline with entry cutoff at 15:30",
+        # MUST MATCH engine/timing.NEW_POSITION_CUTOFF_ET (15:44:59 ET)
+        "note":              "Power hour \u2014 baseline with entry cutoff at 15:44:59 ET",
     },
     MarketMode.DEFENSIVE: {
         "trail_pct":         _clamp(0.006, CLAMP_TRAIL_PCT),
@@ -6014,6 +6015,18 @@ logger.info(
 logger.info(
     "[V560] Unified AVWAP gates: L-P1 (G1/G3/G4), S-P1 (G1/G3/G4)"
 )
+# v5.13.1 \u2014 surface the Phase 2 volume-gate runtime override at boot
+# so the deploy log shows the active state of L-P2-S3 / S-P2-S3.
+try:
+    from engine import feature_flags as _ff_startup
+    _vg_state = _ff_startup.VOLUME_GATE_ENABLED
+    logger.info(
+        "[STARTUP] VOLUME_GATE_ENABLED=%s (%s)",
+        _vg_state,
+        "spec-strict path" if _vg_state else "using DISABLED_BY_FLAG path",
+    )
+except Exception as _ff_err:
+    logger.warning("[STARTUP] feature_flags read failed: %s", _ff_err)
 
 # Smoke-test guard — lets smoke_test.py import this module without booting
 # the Telegram client, scheduler, OR-collector, or dashboard. The test

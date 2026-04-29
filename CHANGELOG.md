@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.1 — 2026-04-29 — Volume-gate runtime flag (default OFF)
+
+Adds `VOLUME_GATE_ENABLED` env var to toggle the Phase 2 volume gate
+(L-P2-S3 / S-P2-S3) at runtime. **Default is `false`** — the gate is
+DISABLED in production by default. Set `VOLUME_GATE_ENABLED=true` on
+Railway to restore spec-strict behavior.
+
+### Why
+
+Backtest analysis on 2026-04-28 (`/v5_13_0_today_backtest_no_volume/report.md`
+vs `/v5_13_0_today_backtest/report.md`) showed the spec-strict 100%-of-55-day
+volume gate filtered out trades that, when re-admitted with the full
+Sentinel Loop exit logic in place, returned net positive (+$251 cohort
+P&L). Until multi-day analysis confirms direction we operate with the
+gate OFF; the env var lets us flip back to spec-strict without a code
+change.
+
+### Scope
+
+- New module `engine/feature_flags.py` — single env-var-read constant
+  `VOLUME_GATE_ENABLED` (read once at import, default `False`).
+- `engine/volume_baseline.gate_volume_pass` — early-return `(True, None)`
+  (DISABLED_BY_FLAG) when the flag is False.
+- `eye_of_tiger.evaluate_volume_bucket` — same early-return so the live
+  hot path mirrors the spec-named gate.
+- `trade_genius.py` — boot log line emits the active state next to the
+  existing `[V560]` startup banner.
+- `STRATEGY.md` — new "Operational Overrides" section near the top;
+  L-P2-S3 / S-P2-S3 footnoted with `*` referencing the flag.
+- Tests:
+    - `tests/test_phase2_gates.py` — flag-OFF auto-pass cases (volume
+      regardless of ratio), flag-ON spec-strict cases pinned via
+      monkeypatch, parity check that the 2-consecutive-1m gate stays
+      enforced when only the volume flag is OFF.
+    - `tests/test_tiger_sovereign_spec.py` — L-P2-S3 / S-P2-S3 docstrings
+      cite the flag; assertion still validates the source-level baseline
+      plumbing exists so the rule can be re-enabled at runtime.
+    - `tests/test_startup_smoke.py` — assertion that with the env var
+      unset, the constant resolves to `False`.
+
+### Behavior change
+
+The Phase 2 volume gate auto-passes on production by default. The
+2-consecutive-1m-candle gate (L-P2-S4 / S-P2-S4) and **all** other
+Phase 2 logic continue to apply unchanged. Phase 1 / 3 / 4 are
+untouched.
+
+---
+
 ## v5.13.0 — 2026-04-29 — Tiger Sovereign migration
 
 Adopts the Tiger Sovereign spec (`STRATEGY.md` v2026-04-28h) as the

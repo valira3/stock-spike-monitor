@@ -153,6 +153,12 @@ def test_L_P1_S2():
 def test_L_P2_S3():
     """L-P2-S3: Volume >= 100% of 55-day rolling average for this minute.
 
+    Rule is enforced when VOLUME_GATE_ENABLED=True. Default runtime is False
+    (gate DISABLED, auto-pass via DISABLED_BY_FLAG path — see v5.13.1 and
+    STRATEGY.md "Operational Overrides"). The 55-day baseline plumbing is
+    still required to exist so the rule can be re-enabled at runtime
+    without code changes; this test pins that source-level invariant.
+
     Spec line: ``{spec}``
     """
     spec = _spec_text("L-P2-S3")
@@ -358,6 +364,12 @@ def test_S_P1_S2():
 
 def test_S_P2_S3():
     """S-P2-S3: Volume >= 100% of 55-day rolling avg (mirror of L-P2-S3).
+
+    Rule is enforced when VOLUME_GATE_ENABLED=True. Default runtime is False
+    (gate DISABLED, auto-pass via DISABLED_BY_FLAG path — see v5.13.1 and
+    STRATEGY.md "Operational Overrides"). The 55-day baseline plumbing is
+    still required to exist so the rule can be re-enabled at runtime
+    without code changes.
 
     Spec line: ``{spec}``
     """

@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import logging
 import sys as _sys
+import time as _time
+from datetime import datetime as _datetime
 
 from broker.orders import check_breakout, execute_breakout, close_breakout
+from engine.timing import EOD_FLUSH_ET, ET as _ET, is_after_eod_et
 from side import Side
 
 # v5.11.2 \u2014 prod runs `python trade_genius.py`, so trade_genius is
@@ -63,6 +66,51 @@ def close_short_position(ticker, price, reason="STOP"):
 # ============================================================
 # EOD CLOSE
 # ============================================================
+def _eod_align_to_spec(now: _datetime | None = None,
+                       sleep_fn=_time.sleep) -> float:
+    """Sleep until EOD_FLUSH_ET wall-clock if called before it.
+
+    v5.13.1 prod-verify finding: scheduler fires eod_close at 15:49:00 ET
+    (HH:MM precision), but spec EOD_FLUSH_ET is 15:49:59 ET. This helper
+    blocks the calling thread until the spec wall-clock so positions are
+    flushed at exactly 15:49:59 ET, never earlier.
+
+    Returns the number of seconds slept (for tests/visibility). Pass a
+    fake ``sleep_fn`` and ``now`` to test without waiting.
+    """
+    if now is None:
+        now = _datetime.now(tz=_ET)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=_ET)
+    else:
+        now = now.astimezone(_ET)
+    if is_after_eod_et(now):
+        return 0.0
+    target = now.replace(
+        hour=EOD_FLUSH_ET.hour,
+        minute=EOD_FLUSH_ET.minute,
+        second=EOD_FLUSH_ET.second,
+        microsecond=0,
+    )
+    delay = (target - now).total_seconds()
+    if delay <= 0:
+        return 0.0
+    # Cap defensively: if for any reason we're called more than 5 min
+    # before EOD, just return rather than block the scheduler thread.
+    if delay > 300:
+        logger.warning(
+            "[EOD FLUSH] _eod_align_to_spec: called %.0fs before EOD; "
+            "skipping align-to-spec sleep (scheduler misfire?)", delay,
+        )
+        return 0.0
+    logger.info(
+        "[EOD FLUSH] aligning to spec wall-clock 15:49:59 ET (sleep %.1fs)",
+        delay,
+    )
+    sleep_fn(delay)
+    return delay
+
+
 def eod_close():
     """Force-close all open long AND short positions at 15:49:59 ET.
 
@@ -70,7 +118,14 @@ def eod_close():
     per Tiger Sovereign §3. Order types are unchanged in this PR (PR 6 owns
     the LIMIT/STOP MARKET split). All positions exit regardless of sentinel
     or ratchet state. One ``[EOD FLUSH]`` line is logged per position.
+
+    v5.13.1 prod-verify guard: the scheduler fires this at 15:49:00 ET (HH:MM
+    precision only). The spec wall-clock is 15:49:59 ET. If we are called
+    before EOD_FLUSH_ET, sleep until that wall-clock so positions are not
+    flushed 59 seconds early. If we are called at/after EOD_FLUSH_ET, run
+    immediately.
     """
+    _eod_align_to_spec()
     tg = _tg()
     # v4.0.0-alpha \u2014 notify executors to flatten everything on Alpaca.
     # Per-position close events still fire from close_position /
