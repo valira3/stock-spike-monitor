@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.11.2"
+BOT_VERSION = "5.12.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,10 +103,10 @@ BOT_VERSION = "5.11.2"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.11.2 \u2014 broker\n"
-    "stops, orders, positions,\n"
-    "lifecycle moved out of\n"
-    "trade_genius.py\n"
+    "v5.12.0 \u2014 executors\n"
+    "TradeGeniusBase, Val, Gene\n"
+    "moved to executors/.\n"
+    "v5.11.x aliases purged.\n"
     "Zero behavior change."
 )
 
@@ -247,14 +247,11 @@ def _emit_signal(event: dict) -> None:
 # ============================================================
 # TRADEGENIUS EXECUTOR BASE (v4.0.0-alpha)
 # ============================================================
-# v5.12.0 PR1 \u2014 TradeGeniusBase moved to executors/base.py.
-# Re-exported here for back-compat (`m.TradeGeniusBase` lookups in
-# smoke_test, dashboard probes); alias removed in v5.12.0 PR 5.
-# Import the submodule directly so a top-down `import executors`
-# from another caller doesn't leave executors.base half-initialized
-# while trade_genius re-enters the import for the same name.
+# Re-exports for back-compat with `m.TradeGeniusBase` / `m.TradeGeniusVal` /
+# `m.TradeGeniusGene` lookups in smoke_test and external probing. These are
+# the canonical public names of the executor classes.
 from executors.base import TradeGeniusBase  # noqa: E402
-from executors import TradeGeniusVal, TradeGeniusGene  # noqa: E402  # re-exported for back-compat \u2014 alias removed in v5.12.0 PR 5
+from executors import TradeGeniusVal, TradeGeniusGene  # noqa: E402
 import executors  # noqa: E402
 
 
@@ -4115,13 +4112,12 @@ ENTRY_STOP_CAP_REJECT = os.getenv("ENTRY_STOP_CAP_REJECT", "1") == "1"
 BREAKEVEN_RATCHET_PCT = 0.0050  # +0.50% profit arms breakeven
 
 
-# v5.11.2 deprecation aliases \u2014 removed in v5.12.0.
-# Stop-management helpers moved to broker/stops.py. Imported here so
-# (1) `_validate_side_config_attrs()` below can still see
-# `_capped_long_stop` / `_capped_short_stop` in this module's globals
-# via SideConfig.capped_stop_fn_name, (2) `getattr(trade_genius, ...)`
-# from `side.py` continues to resolve, and (3) `telegram_commands.py`
-# legacy `from trade_genius import retighten_all_stops` still works.
+# v5.12.0 \u2014 stop-management helpers. The `_*_stop` names are referenced
+# by `_validate_side_config_attrs()` below via SideConfig.capped_stop_fn_name
+# resolution against this module's globals; `retighten_all_stops` is called
+# by the startup retro block. The broker.orders / broker.positions /
+# broker.lifecycle names are referenced by TradeGeniusBase methods and the
+# scheduler thread, so they must resolve in this module's namespace.
 from broker.stops import (  # noqa: E402, F401
     _breakeven_long_stop,
     _breakeven_short_stop,
@@ -4138,12 +4134,12 @@ from broker.orders import (  # noqa: E402, F401
     paper_shares_for,
     execute_breakout,
     close_breakout,
-)  # v5.11.2 deprecation aliases \u2014 removed in v5.12.0
+)
 from broker.positions import (  # noqa: E402, F401
     _v5104_maybe_fire_entry_2,
     manage_positions,
     manage_short_positions,
-)  # v5.11.2 deprecation aliases \u2014 removed in v5.12.0
+)
 from broker.lifecycle import (  # noqa: E402, F401
     check_entry,
     check_short_entry,
@@ -4152,7 +4148,7 @@ from broker.lifecycle import (  # noqa: E402, F401
     close_position,
     close_short_position,
     eod_close,
-)  # v5.11.2 deprecation aliases \u2014 removed in v5.12.0
+)
 # v5.11.2 PR 2 \u2014 [TRADE_CLOSED] exit_reason vocabulary moved to
 # broker/orders.py with the close_breakout body. The v5.9.0 enum
 # values are preserved here as a guard so the smoke-test source
@@ -4512,73 +4508,25 @@ def _check_daily_loss_limit(ticker: str) -> bool:
 
 
 
-# v5.11.0 \u2014 compute_5m_ohlc_and_ema9 has moved to engine/bars.py.
-# The private alias below is a one-release deprecation shim so any
-# external import or replay script still works during the cut-over.
-from engine.bars import compute_5m_ohlc_and_ema9 as _engine_compute_5m_ohlc_and_ema9
-_v5105_compute_5m_ohlc_and_ema9 = _engine_compute_5m_ohlc_and_ema9
-
-# v5.11.0 \u2014 _v5105_phase_machine_tick has moved to engine/phase_machine.py.
-# The private alias below is a one-release deprecation shim. The 5m-bucket
-# debounce dict (`_v5105_last_5m_bucket`) is now owned by that module;
-# trade_genius accesses it via clear_phase_bucket() during position close.
-from engine.phase_machine import (
+# v5.12.0 \u2014 engine.bars / engine.phase_machine names imported here
+# under `_engine_*` aliases because broker/positions.py and broker/orders.py
+# reach into trade_genius globals via `tg._engine_phase_machine_tick` and
+# `tg._engine_clear_phase_bucket`. These are canonical re-exports, not
+# legacy shims \u2014 the engine package owns the implementations and trade_genius
+# bridges them into its namespace for the broker callers. The 5m-bucket debounce dict (`_v5105_last_5m_bucket`) is owned
+# by engine/phase_machine.py; trade_genius accesses it via clear_phase_bucket()
+# during position close.
+from engine.bars import compute_5m_ohlc_and_ema9 as _engine_compute_5m_ohlc_and_ema9  # noqa: E402, F401
+from engine.phase_machine import (  # noqa: E402, F401
     phase_machine_tick as _engine_phase_machine_tick,
     clear_phase_bucket as _engine_clear_phase_bucket,
 )
-_v5105_phase_machine_tick = _engine_phase_machine_tick
-
-# v5.11.1 deprecation aliases \u2014 removed in v5.12.0.
-# Chart and dayreport helpers have moved to telegram_ui/charts.py.
-# These re-imports preserve any external callers (synthetic harness,
-# smoke tests, replay scripts) for one release window.
-from telegram_ui.charts import (  # noqa: E402, F401
-    _dayreport_time,
-    _dayreport_sort_key,
-    _short_reason,
-    _fmt_pnl,
-    _chart_dayreport,
-    _chart_equity_curve,
-    _chart_portfolio_pie,
-    _open_positions_as_pseudo_trades,
-    _format_dayreport_section,
-    _reply_in_chunks,
-    _collect_day_rows,
-)
-from telegram_ui.commands import (  # noqa: E402, F401
-    _log_sync,
-    _replay_sync,
-    _reset_buttons,
-    _perf_compute,
-    _price_sync,
-    _proximity_sync,
-    _proximity_keyboard,
-    _orb_sync,
-    _fetch_or_for_ticker,
-    _or_now_sync,
-    _fmt_tickers_list,
-    _fmt_add_reply,
-    _fmt_remove_reply,
-)  # v5.11.1 deprecation aliases \u2014 removed in v5.12.0
-from telegram_ui.menu import (  # noqa: E402, F401
-    positions_callback,
-    proximity_callback,
-    monitoring_callback,
-    _build_menu_keyboard,
-    _build_advanced_menu_keyboard,
-    _menu_button,
-    _cb_open_menu,
-    _CallbackUpdateShim,
-    _invoke_from_callback,
-    menu_callback,
-)  # v5.11.1 deprecation aliases \u2014 removed in v5.12.0
 
 
 
 # ============================================================
 # v4.9.0 \u2014 Public entry/close API \u2014 thin wrappers
-# v5.11.2 PR 4: moved to broker/lifecycle.py. Re-exported below as
-# deprecation aliases.
+# v5.11.2 PR 4: moved to broker/lifecycle.py.
 # ============================================================
 
 
@@ -5904,7 +5852,7 @@ from telegram_ui.runtime import (  # noqa: E402, F401
     send_startup_message,
     _auth_guard,
     run_telegram_bot,
-)  # v5.11.1 deprecation aliases \u2014 removed in v5.12.0
+)
 
 
 # ============================================================

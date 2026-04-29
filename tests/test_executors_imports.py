@@ -6,6 +6,7 @@ the back-compat re-exports inside `trade_genius`.
 """
 import os
 import sys
+from pathlib import Path
 
 
 def test_import_tradegeniusbase_from_executors():
@@ -128,6 +129,19 @@ def test_build_gene_returns_none_when_env_unset(monkeypatch):
     monkeypatch.delenv("GENE_ALPACA_PAPER_KEY", raising=False)
     from executors.bootstrap import build_gene_executor
     assert build_gene_executor() is None
+
+
+def test_no_deprecation_aliases_remain_in_trade_genius():
+    """Guard: no v5.11.x deprecation alias blocks should exist in trade_genius.py.
+
+    After v5.12.0 PR 5, the file must not contain any `# vX.Y.Z deprecation
+    aliases \u2014 removed in v5.12.0` import blocks. The executors re-exports
+    are the only import-from-extracted-module patterns allowed.
+    """
+    with open(Path(__file__).parent.parent / "trade_genius.py") as f:
+        src = f.read()
+    assert "deprecation aliases" not in src, "deprecation alias comments still present"
+    assert "removed in v5.12.0" not in src, "v5.12.0 alias-removal markers still present"
 
 
 def test_install_globals_writes_to_both_namespaces(monkeypatch):

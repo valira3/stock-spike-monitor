@@ -31,10 +31,21 @@ def test_telegram_ui_runtime_imports():
     assert runtime.send_startup_message is not None
 
 
-def test_trade_genius_deprecation_aliases():
-    """Deprecation aliases in trade_genius.py route to telegram_ui.* modules."""
+def test_trade_genius_no_telegram_ui_deprecation_aliases():
+    """v5.12.0: telegram_ui chart/commands/menu deprecation aliases removed.
+
+    `_chart_dayreport`, `_perf_compute`, `menu_callback` no longer live in
+    trade_genius's namespace; callers must import them directly from
+    telegram_ui.charts / .commands / .menu. Only the runtime entry points
+    (`run_telegram_bot`, `_auth_guard`, etc.) are still re-exported for the
+    `__main__` block.
+    """
     import trade_genius as tg
-    assert tg._chart_dayreport.__module__ == "telegram_ui.charts"
-    assert tg._perf_compute.__module__ == "telegram_ui.commands"
-    assert tg.menu_callback.__module__ == "telegram_ui.menu"
+    assert not hasattr(tg, "_chart_dayreport"), \
+        "telegram_ui.charts deprecation alias should be removed in v5.12.0"
+    assert not hasattr(tg, "_perf_compute"), \
+        "telegram_ui.commands deprecation alias should be removed in v5.12.0"
+    assert not hasattr(tg, "menu_callback"), \
+        "telegram_ui.menu deprecation alias should be removed in v5.12.0"
+    # runtime entry point is canonical, not a deprecation alias.
     assert tg.run_telegram_bot.__module__ == "telegram_ui.runtime"

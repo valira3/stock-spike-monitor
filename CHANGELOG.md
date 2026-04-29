@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.12.0 — 2026-04-29 — Executors extraction + alias purge
+
+### PR 1 (#212) — executors/base.py — TradeGeniusBase extraction
+
+- Created `executors/` package
+- Moved `TradeGeniusBase` (~600 lines) out of `trade_genius.py` to `executors/base.py`
+- Re-exported in `trade_genius` for back-compat with `m.TradeGeniusBase`
+  lookups in smoke_test and dashboard probes
+- Boot log: `[EXEC] modules loaded: base`
+
+### PR 2 (#213) — executors/val.py + executors/gene.py
+
+- Moved `TradeGeniusVal` and `TradeGeniusGene` subclasses out of `trade_genius.py`
+- Both classes preserved as subclasses of `TradeGeniusBase`
+- Re-exported in `trade_genius` for back-compat with the 9 `m.TradeGeniusVal` /
+  `m.TradeGeniusGene` smoke-test cases
+- Boot log: `[EXEC] modules loaded: base, val, gene`
+
+### PR 3 (#214) — executors/bootstrap.py wiring helpers
+
+- Extracted the val/gene executor bootstrap block into
+  `executors.bootstrap.{build_val_executor, build_gene_executor, install_globals}`
+- `install_globals()` writes `val_executor` / `gene_executor` into both
+  `trade_genius` and `telegram_commands` module namespaces so the
+  `globals().get('val_executor')` lookup at telegram_commands.py:647 keeps
+  working
+- Boot log: `[EXEC] modules loaded: base, val, gene, bootstrap`
+
+### PR 4 (#211) — synthetic_harness + smoke_test explicit imports
+
+- `synthetic_harness/runner.py` and `smoke_test.py` now import the names they
+  exercise directly from their canonical homes (`broker.*`, `engine.*`,
+  `telegram_ui.*`, `executors.*`) instead of relying on the v5.11.x
+  deprecation aliases in `trade_genius`
+- The 7 `inspect.getsource()` sites in smoke_test resolve via the canonical
+  module, no longer bouncing through the trade_genius alias
+
+### PR 5 (this) — alias removal + BOT_VERSION 5.12.0
+
+- Removed all v5.11.x deprecation alias blocks from `trade_genius.py`:
+  - v5.11.2 broker re-imports (stops/orders/positions/lifecycle re-exports
+    that no longer carry the "deprecation aliases — removed in v5.12.0"
+    comment; the names trade_genius itself still calls remain as ordinary
+    canonical imports)
+  - v5.11.1 telegram_ui chart/commands/menu re-imports — purged. Callers
+    (`telegram_commands.py`) now import from `telegram_ui.{charts, commands, menu}`
+    directly.
+  - v5.11.0 `_v5105_compute_5m_ohlc_and_ema9` and `_v5105_phase_machine_tick`
+    private aliases — purged. `broker/positions.py` updated to call
+    `tg._engine_phase_machine_tick` directly.
+- `tests/test_telegram_ui_imports.py::test_trade_genius_deprecation_aliases`
+  inverted to assert the aliases are **gone**
+- `tests/test_executors_imports.py::test_no_deprecation_aliases_remain_in_trade_genius`
+  added as a permanent guard
+- **BOT_VERSION → "5.12.0"**, `CURRENT_MAIN_NOTE` synced
+
+### v5.12.0 release composition
+
+- PR 1 (#212): executors/base.py — TradeGeniusBase extraction
+- PR 2 (#213): executors/val.py + executors/gene.py — Val/Gene extraction
+- PR 3 (#214): executors/bootstrap.py — wiring helpers
+- PR 4 (#211): synthetic_harness + smoke_test explicit imports
+- PR 5 (this): v5.11.x deprecation aliases purged + BOT_VERSION 5.11.2 → 5.12.0
+- **Net: trade_genius.py 7,239 → 6,016 lines (-17% in v5.12.0; -52% session-cumulative from 12,512)**
+- Golden harness byte-equal (10,971,364 bytes) preserved across all five PRs
+- Synthetic harness baseline (38/12 of 50) preserved across all five PRs
+- Smoke baseline 361 passed / 28 failed held throughout
+
+---
+
 ## v5.11.2 — 2026-04-29 — Broker / position-management extraction
 
 ### PR 1 — broker/stops.py

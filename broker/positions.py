@@ -228,7 +228,7 @@ def manage_positions():
         # ladder/Maffei plumbing below; Phase B (be_stop) and Phase C
         # (ema_trail) exits fire here when the post-Entry-2 lock /
         # 5m-EMA9 leash trip.
-        phase_exit, _ = tg._v5105_phase_machine_tick(
+        phase_exit, _ = tg._engine_phase_machine_tick(
             ticker, eot.SIDE_LONG, pos, bars,
         )
         if phase_exit is not None:
@@ -387,7 +387,7 @@ def manage_short_positions():
             logger.warning("[V5100-OVERRIDE] short %s: %s", ticker, _eot_e)
 
         # v5.10.5 \u2014 Phase B/C Triple-Lock (short mirror).
-        phase_exit_s, _ = tg._v5105_phase_machine_tick(
+        phase_exit_s, _ = tg._engine_phase_machine_tick(
             ticker, eot.SIDE_SHORT, pos, bars,
         )
         if phase_exit_s is not None:
