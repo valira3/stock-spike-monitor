@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.13.7"
+BOT_VERSION = "5.13.8"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,14 +103,14 @@ BOT_VERSION = "5.13.7"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.13.5 \u2014 Telegram cleanup\n"
-    "Stale PDC vocabulary scrubbed\n"
-    "from /strategy, /proximity, /orb,\n"
-    "/price, deploy banner. Replaced\n"
-    "with Tiger Sovereign Phase 1-4\n"
-    "language. New /regime cmd shows\n"
-    "the Section I QQQ permit. No\n"
-    "algorithm changes \u2014 strings only."
+    "v5.13.8 \u2014 EMA9 seed hotfix\n"
+    "QQQ regime seed now requires\n"
+    ">=9 bars from /data/bars archive\n"
+    "before short-circuiting; smaller\n"
+    "reads fall through to Alpaca\n"
+    "historical (04:00 ET pre-mkt).\n"
+    "Fixes ema9=None at open on\n"
+    "cold-restart days."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

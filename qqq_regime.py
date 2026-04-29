@@ -30,7 +30,11 @@ COMPASS_UP = "UP"
 COMPASS_DOWN = "DOWN"
 COMPASS_FLAT = "FLAT"
 
-_VALID_SEED_SOURCES = ("archive", "alpaca", "prior_session")
+# v5.13.8: "archive_partial" added for the last-resort path where
+# /data/bars/<today>/QQQ.jsonl returned <9 bars and Alpaca + prior
+# session both also failed. The regime will still warm up from live
+# ticks but at least we record what we did have.
+_VALID_SEED_SOURCES = ("archive", "alpaca", "prior_session", "archive_partial")
 
 
 def _alpha(period: int) -> float:
