@@ -16,6 +16,7 @@ Six sections:
 Pure functions over plain dicts. No I/O. The integration glue lives
 in trade_genius.py.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, time as dtime, timezone
@@ -86,6 +87,7 @@ VALID_EXIT_REASONS = (
 # Section I \u2014 Global Permit (Index Shield)
 # =====================================================================
 
+
 def evaluate_global_permit(
     side: str,
     qqq_5m_close: float | None,
@@ -101,8 +103,12 @@ def evaluate_global_permit(
     """
     if side not in (SIDE_LONG, SIDE_SHORT):
         return {"open": False, "reason": f"bad_side:{side}"}
-    if (qqq_5m_close is None or qqq_5m_ema9 is None
-            or qqq_current_price is None or qqq_avwap_0930 is None):
+    if (
+        qqq_5m_close is None
+        or qqq_5m_ema9 is None
+        or qqq_current_price is None
+        or qqq_avwap_0930 is None
+    ):
         return {"open": False, "reason": "data_missing"}
     if side == SIDE_LONG:
         shield = qqq_5m_close > qqq_5m_ema9
@@ -123,17 +129,60 @@ def evaluate_global_permit(
 # Section II.1 \u2014 Volume Bucket gate (helper)
 # =====================================================================
 
-def evaluate_volume_bucket(check_result: dict | None) -> bool:
-    """Translate VolumeBucketBaseline.check() output to gate-open
-    boolean. COLDSTART counts as PASS-THROUGH (gate satisfied).
+
+def evaluate_volume_bucket(
+    check_result: dict | None,
+    now_et: datetime | None = None,
+) -> bool:
+    """Translate volume baseline check output to a gate-open boolean.
+
+    spec: L-P2-S3 / S-P2-S3 (Tiger Sovereign vAA-1) \u2014 the volume
+    gate is **time-conditional**:
+
+    * Before 10:00:00 ET \u2192 auto-pass (gate is TRUE regardless of ratio)
+    * At/after 10:00:00 ET \u2192 require ``ratio_to_55bar_avg >= 1.00``
+
+    Two input shapes are supported for backward compatibility:
+
+    * vAA shape (preferred): ``check_result`` carries
+      ``{"ratio_to_55bar_avg": float}``. ``now_et`` MUST be provided so
+      the time gate can be applied.
+    * Legacy shape (v5.10.x): ``check_result`` carries
+      ``{"gate": "PASS"|"FAIL"|"COLDSTART", ...}``. ``now_et`` may be
+      omitted; result is gate-string lookup with COLDSTART
+      pass-through.
 
     Runtime override (v5.13.1): when
     ``engine.feature_flags.VOLUME_GATE_ENABLED`` is False (production
-    default), the gate auto-passes regardless of bucket result —
-    reason ``DISABLED_BY_FLAG``. The 2-consecutive-1m boundary-hold
-    gate is unaffected and still fully enforced.
+    default as of v5.13.1) the legacy v5.10.x gate auto-passes
+    regardless of input. The vAA-1 time-conditional path is spec-
+    required and is NOT subject to the legacy flag \u2014 callers that
+    supply ``now_et`` and ``ratio_to_55bar_avg`` always get the spec
+    behaviour. The 2-consecutive-1m boundary-hold gate
+    (L-P2-S4 / S-P2-S4) is unaffected and still fully enforced.
     """
+    # vAA-1 time-conditional path \u2014 takes precedence when caller
+    # supplies a wall-clock and a ratio_to_55bar_avg field. This path
+    # is spec-mandated by L-P2-S3 / S-P2-S3 and is NOT gated by the
+    # legacy VOLUME_GATE_ENABLED flag, which existed only to bypass
+    # the v5.10.x string-gate lookup.
+    if now_et is not None and check_result is not None and ("ratio_to_55bar_avg" in check_result):
+        # spec L-P2-S3 / S-P2-S3: pre-10:00 ET auto-pass.
+        if now_et.time() < dtime(10, 0):
+            return True
+        ratio = check_result.get("ratio_to_55bar_avg")
+        if ratio is None:
+            # cold-start: insufficient archive history \u2192 pass-through.
+            return True
+        try:
+            return float(ratio) >= 1.0
+        except (TypeError, ValueError):
+            return False
+
+    # Legacy v5.10.x path \u2014 string gate lookup, subject to the
+    # runtime flag.
     from engine import feature_flags as _ff
+
     if not _ff.VOLUME_GATE_ENABLED:
         return True
     if not check_result:
@@ -146,37 +195,62 @@ def evaluate_volume_bucket(check_result: dict | None) -> bool:
 # Section II.2 \u2014 Boundary Hold
 # =====================================================================
 
+
 def evaluate_boundary_hold(
     side: str,
     or_high: float | None,
     or_low: float | None,
-    last_n_1m_closes: list[float],
+    last_n_1m_closes: list[float] | None = None,
     required_closes: int = BOUNDARY_HOLD_REQUIRED_CLOSES,
+    *,
+    prev_1m_close: float | None = None,
+    curr_1m_close: float | None = None,
 ) -> dict:
     """Two consecutive closed 1m candles strictly outside the 5m OR.
 
-    `last_n_1m_closes` is newest-last; the function inspects the most
-    recent `required_closes` entries. A close at the boundary breaks
-    the hold (strict `>` for LONG, strict `<` for SHORT).
+    spec: L-P2-S4 / S-P2-S4 (Tiger Sovereign vAA-1) \u2014 the breakout
+    permit fires only on the close of the SECOND qualifying 1m bar.
+    A close at the boundary breaks the hold (strict ``>`` for LONG,
+    strict ``<`` for SHORT).
+
+    Two input shapes are supported:
+
+    * vAA shape (preferred): ``prev_1m_close`` + ``curr_1m_close``
+      kwargs name the last two closed 1m candles directly.
+    * Legacy shape (v5.10.x): ``last_n_1m_closes`` newest-last list
+      \u2014 the function inspects the most recent ``required_closes``
+      entries. Used by ``v5_10_1_integration.evaluate_boundary_hold_gate``.
     """
     if side not in (SIDE_LONG, SIDE_SHORT):
-        return {"hold": False, "reason": f"bad_side:{side}",
-                "consecutive_outside": 0}
+        return {"hold": False, "reason": f"bad_side:{side}", "consecutive_outside": 0}
     if or_high is None or or_low is None:
-        return {"hold": False, "reason": "or_not_set",
-                "consecutive_outside": 0}
+        return {"hold": False, "reason": "or_not_set", "consecutive_outside": 0}
+
+    # vAA shape: prev/curr kwargs take precedence when supplied.
+    if prev_1m_close is not None or curr_1m_close is not None:
+        if prev_1m_close is None or curr_1m_close is None:
+            return {"hold": False, "reason": "insufficient_closes", "consecutive_outside": 0}
+        if side == SIDE_LONG:
+            prev_outside = prev_1m_close > or_high
+            curr_outside = curr_1m_close > or_high
+        else:
+            prev_outside = prev_1m_close < or_low
+            curr_outside = curr_1m_close < or_low
+        if prev_outside and curr_outside:
+            return {"hold": True, "reason": "satisfied", "consecutive_outside": 2}
+        cnt = 1 if curr_outside else 0
+        return {"hold": False, "reason": "not_satisfied", "consecutive_outside": cnt}
+
+    # Legacy shape: rolling window list.
     if not last_n_1m_closes or len(last_n_1m_closes) < required_closes:
-        return {"hold": False, "reason": "insufficient_closes",
-                "consecutive_outside": 0}
+        return {"hold": False, "reason": "insufficient_closes", "consecutive_outside": 0}
     closes = list(last_n_1m_closes)[-required_closes:]
     if side == SIDE_LONG:
         outside = [c is not None and c > or_high for c in closes]
     else:
         outside = [c is not None and c < or_low for c in closes]
-    n_consec = sum(1 for x in outside if x) if all(outside) else 0
     if all(outside):
-        return {"hold": True, "reason": "satisfied",
-                "consecutive_outside": required_closes}
+        return {"hold": True, "reason": "satisfied", "consecutive_outside": required_closes}
     # report best-effort consecutive count for diagnostics
     cnt = 0
     for x in reversed(outside):
@@ -184,8 +258,7 @@ def evaluate_boundary_hold(
             cnt += 1
         else:
             break
-    return {"hold": False, "reason": "not_satisfied",
-            "consecutive_outside": cnt}
+    return {"hold": False, "reason": "not_satisfied", "consecutive_outside": cnt}
 
 
 def boundary_hold_earliest_satisfaction_et(
@@ -209,6 +282,7 @@ def boundary_hold_earliest_satisfaction_et(
 # =====================================================================
 # Section III \u2014 Entry triggers
 # =====================================================================
+
 
 def evaluate_entry_1(
     side: str,
@@ -290,6 +364,7 @@ def is_fresh_nlod(current_price: float, entry_1_lwm: float) -> bool:
 # Section IV \u2014 Tick-by-tick overrides
 # =====================================================================
 
+
 def evaluate_sovereign_brake(
     unrealized_pnl_dollars: float,
     threshold: float = SOVEREIGN_BRAKE_DOLLARS,
@@ -332,6 +407,7 @@ def evaluate_velocity_fuse(
 # Section V \u2014 Stop-loss hierarchy
 # =====================================================================
 
+
 def evaluate_maffei_inside_or(
     side: str,
     or_high: float | None,
@@ -353,10 +429,16 @@ def evaluate_maffei_inside_or(
     """
     if side not in (SIDE_LONG, SIDE_SHORT):
         return {"gated": False, "decision": "STAY", "reason": f"bad_side:{side}"}
-    if (or_high is None or or_low is None
-            or current_1m_open is None or current_1m_close is None
-            or current_1m_low is None or current_1m_high is None
-            or prior_1m_low is None or prior_1m_high is None):
+    if (
+        or_high is None
+        or or_low is None
+        or current_1m_open is None
+        or current_1m_close is None
+        or current_1m_low is None
+        or current_1m_high is None
+        or prior_1m_low is None
+        or prior_1m_high is None
+    ):
         return {"gated": False, "decision": "STAY", "reason": "data_missing"}
     if side == SIDE_LONG:
         gated = (current_1m_close <= or_high) and (current_1m_open >= or_high)
@@ -423,6 +505,7 @@ def evaluate_ema_trail(
 # Section VI \u2014 Machine rules
 # =====================================================================
 
+
 def daily_circuit_breaker_tripped(
     cumulative_realized_pnl: float,
     threshold: float = DAILY_CIRCUIT_BREAKER_DOLLARS,
@@ -435,6 +518,7 @@ def daily_circuit_breaker_tripped(
 # =====================================================================
 # State helpers
 # =====================================================================
+
 
 def new_position_state(side: str) -> dict:
     if side not in (SIDE_LONG, SIDE_SHORT):
@@ -454,7 +538,7 @@ def new_position_state(side: str) -> dict:
         "ema_5m": None,
         "ema_seeded": False,
         # bookkeeping
-        "entry_1_hwm": None,   # session-extreme at Entry 1 time (HWM for LONG, LWM for SHORT)
+        "entry_1_hwm": None,  # session-extreme at Entry 1 time (HWM for LONG, LWM for SHORT)
         "entry_2_fired": False,
         "di_1m_prev": None,
     }

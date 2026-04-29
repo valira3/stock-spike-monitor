@@ -118,7 +118,6 @@ def test_strike_cap_3_overrides_titan_flag():
         ("11:30", 0.50, False),  # well after 10:00, fails
     ],
 )
-@pytest.mark.spec_gap("vAA-PR-2", "L-P2-S3 / S-P2-S3")
 def test_l_p2_s3_volume_gate_time_conditional(now_et_hhmm, vol_ratio, expected_pass):
     """Volume gate is auto-pass before 10:00 ET; >= 100% from 10:00 ET on."""
     from datetime import datetime
@@ -134,7 +133,6 @@ def test_l_p2_s3_volume_gate_time_conditional(now_et_hhmm, vol_ratio, expected_p
     assert result is expected_pass
 
 
-@pytest.mark.spec_gap("vAA-PR-2", "L-P2-S4")
 def test_l_p2_s4_two_consecutive_1m_closes_above_orh():
     """Boundary fires only on the close of the SECOND qualifying 1m bar."""
     from eye_of_tiger import evaluate_boundary_hold
