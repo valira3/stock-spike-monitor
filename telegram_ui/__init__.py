@@ -1,14 +1,17 @@
 """v5.11.1 \u2014 telegram_ui package.
 
 Houses the Telegram-handler and presentation helpers extracted from
-`trade_genius.py`. PR 1 introduces `charts` (chart and dayreport
-helpers); PR 2 adds `commands` (sync command builders for /log,
+`trade_genius.py`. PR 1 introduced `charts` (chart and dayreport
+helpers); PR 2 added `commands` (sync command builders for /log,
 /replay, /perf, /price, /proximity, /orb, /or_now, /ticker, and the
-/reset confirmation keyboard); PR 3 adds `menu` (keyboards, callback
-handlers, and the _CallbackUpdateShim dispatcher). Subsequent PR in
-v5.11.x will move runtime, then retire deprecation shims.
+/reset confirmation keyboard); PR 3 added `menu` (keyboards, callback
+handlers, and the _CallbackUpdateShim dispatcher); PR 4 adds
+`runtime` (bot lifecycle: auth guard, command registration, startup,
+and the run_polling loop). `send_telegram` intentionally stays in
+`trade_genius` because it's the broker-side notification entry used
+by paper_state, error_state, and the scheduler.
 
-Boot log line `[TELEGRAM-UI] modules loaded: charts, commands, menu`
+Boot log line `[TELEGRAM-UI] modules loaded: charts, commands, menu, runtime`
 is emitted at trade_genius startup so missed Dockerfile COPY lines
 surface as ImportError on boot rather than mid-session.
 """
@@ -54,8 +57,15 @@ from telegram_ui.menu import (
     _invoke_from_callback,
     menu_callback,
 )
+from telegram_ui.runtime import (
+    _set_bot_commands,
+    _send_startup_menu,
+    send_startup_message,
+    _auth_guard,
+    run_telegram_bot,
+)
 
-LOADED_MODULES = ("charts", "commands", "menu")
+LOADED_MODULES = ("charts", "commands", "menu", "runtime")
 
 __all__ = [
     "_dayreport_time",
@@ -92,5 +102,10 @@ __all__ = [
     "_CallbackUpdateShim",
     "_invoke_from_callback",
     "menu_callback",
+    "_set_bot_commands",
+    "_send_startup_menu",
+    "send_startup_message",
+    "_auth_guard",
+    "run_telegram_bot",
     "LOADED_MODULES",
 ]
