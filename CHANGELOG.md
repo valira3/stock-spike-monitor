@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.3 — 2026-04-29 — Hotfix: ship v5_13_2_snapshot.py in Docker image
+
+v5.13.2 added `v5_13_2_snapshot.py` (consumed by `dashboard_server.py`
+for the `tiger_sovereign` block in `/api/state`) but the Dockerfile only
+explicitly copies a curated set of top-level Python modules. The new
+snapshot module was missed, so production raised
+`ModuleNotFoundError: No module named 'v5_13_2_snapshot'` on every
+dashboard poll (`dashboard_server.py:906`). Trading logic itself was
+unaffected — only the dashboard `/api/state` endpoint logged the error.
+
+### Fix
+
+- **Dockerfile**: added `COPY v5_13_2_snapshot.py .` alongside the other
+  top-level module copies so the snapshot ships in the runtime image.
+- **tests/test_startup_smoke.py**: extended
+  `test_dockerfile_copies_every_top_level_python_module` to walk the AST
+  imports of both `trade_genius.py` and `dashboard_server.py` (was only
+  `trade_genius.py`). Lazy/optional imports inside try blocks or
+  functions are caught by the AST walk so a missed COPY fails the smoke
+  test in CI rather than at runtime.
+
+No behavioural changes. No spec changes.
+
+---
+
 ## v5.13.2 — 2026-04-29 — Spec-of-record cleanup + dashboard rewrite
 
 Addresses the v5.13.1 spec compliance audit (verdict WARN). Two P0 fixes,
