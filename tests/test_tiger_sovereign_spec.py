@@ -150,7 +150,6 @@ def test_L_P1_S2():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.spec_gap("PR-4", "L-P2-S3")
 def test_L_P2_S3():
     """L-P2-S3: Volume >= 100% of 55-day rolling average for this minute.
 
@@ -172,7 +171,6 @@ def test_L_P2_S3():
     )
 
 
-@pytest.mark.spec_gap("PR-4", "L-P2-S4")
 def test_L_P2_S4():
     """L-P2-S4: TWO consecutive 1m candles closed ABOVE 5m OR High.
 
@@ -209,7 +207,6 @@ def test_L_P3_S5():
     )
 
 
-@pytest.mark.spec_gap("PR-4", "L-P3-S6")
 def test_L_P3_S6():
     """L-P3-S6: 1m DI+ cross above 30 AND fresh NHOD → BUY remaining 50%.
 
@@ -363,7 +360,6 @@ def test_S_P1_S2():
     )
 
 
-@pytest.mark.spec_gap("PR-4", "S-P2-S3")
 def test_S_P2_S3():
     """S-P2-S3: Volume >= 100% of 55-day rolling avg (mirror of L-P2-S3).
 
@@ -381,7 +377,6 @@ def test_S_P2_S3():
     )
 
 
-@pytest.mark.spec_gap("PR-4", "S-P2-S4")
 def test_S_P2_S4():
     """S-P2-S4: TWO consecutive 1m candles closed BELOW 5m OR Low.
 
@@ -412,7 +407,6 @@ def test_S_P3_S5():
     )
 
 
-@pytest.mark.spec_gap("PR-4", "S-P3-S6")
 def test_S_P3_S6():
     """S-P3-S6: 1m DI- cross above 30 AND fresh NLOD → SELL SHORT remaining 50%.
 

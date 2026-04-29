@@ -1640,6 +1640,31 @@ YAHOO_HEADERS  = {"User-Agent": "Mozilla/5.0"}
 TIGER_V2_DI_THRESHOLD = float(os.getenv("TIGER_V2_DI_THRESHOLD", "25"))
 TIGER_V2_REQUIRE_VOL  = os.getenv("TIGER_V2_REQUIRE_VOL", "false").lower() in ("1", "true", "yes")
 
+# v5.13.0 PR 4 — Tiger Sovereign Phase 2 entry gates.
+#
+# These constants are the explicit, spec-named surface area for the
+# Phase 2 entry-readiness rules in STRATEGY.md (Tiger Sovereign v2026-04-28h).
+# They restate values already enforced by `volume_bucket.py` / `eye_of_tiger.py`
+# so that the rule-mapping table in STRATEGY.md ↔ trade_genius.py is greppable.
+#
+#   L-P2-S3 / S-P2-S3 — Volume gate: current 1m volume ≥ 100% of the
+#                       55-day rolling minute baseline (per symbol, per
+#                       minute-of-day, RTH only). Cold-start (< 55 trading
+#                       days available) passes through with a [VOLPROFILE]
+#                       warning so trading is not blocked during warmup.
+#   L-P2-S4 / S-P2-S4 — Confirmation gate: TWO consecutive 1m candles closed
+#                       strictly above (long) / below (short) the 5m
+#                       Opening Range edge. The in-progress (forming)
+#                       candle is NOT counted — only fully closed bars.
+#   L-P3-S6 / S-P3-S6 — Entry-2 stricter DI threshold: a literal 30 (vs
+#                       Entry-1's 25) for the 1m DI+/DI- crossing trigger.
+PHASE2_VOLUME_GATE_RATIO        = 1.00            # 100% of 55-day rolling minute baseline
+PHASE2_VOLUME_LOOKBACK_DAYS_55  = 55              # 55-day rolling minute baseline
+PHASE2_TWO_CONSECUTIVE_1M_CLOSES = True           # two_consecutive 1m closes outside OR
+PHASE2_CONSECUTIVE_1M_REQUIRED  = 2               # consecutive_1m count required
+DI_PLUS_ENTRY2_THRESHOLD        = 30              # L-P3-S6 — di_plus must cross > 30
+DI_MINUS_ENTRY2_THRESHOLD       = 30              # S-P3-S6 — di_minus must cross > 30
+
 # ============================================================
 # GLOBAL STATE
 # ============================================================

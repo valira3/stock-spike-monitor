@@ -250,6 +250,30 @@ def check_breakout(ticker, side):
     boundary_res = tg.eot_glue.evaluate_boundary_hold_gate(
         ticker, side_label, or_high_val, or_low_val,
     )
+
+    # v5.13.0 PR 4 \u2014 Tiger Sovereign Phase 2 gate audit line. Emits
+    # one [V510-CAND] line per entry consideration with both Phase 2
+    # gates' verdicts side-by-side so the JSONL log captures exactly
+    # what blocked or admitted the entry.
+    try:
+        vc_gate = (vol_check or {}).get("gate")
+        vc_ratio = (vol_check or {}).get("ratio")
+        vol_pass_str = "PASS" if vc_gate in ("PASS", "COLDSTART") else "FAIL"
+        try:
+            ratio_str = "%.3f" % float(vc_ratio) if vc_ratio is not None else "null"
+        except (TypeError, ValueError):
+            ratio_str = "null"
+        bh_consec = int(boundary_res.get("consecutive_outside") or 0)
+        candle_pass_str = "PASS" if boundary_res.get("hold") else "FAIL"
+        last2_str = "n=%d" % bh_consec
+        tg.logger.info(
+            "[V510-CAND] symbol=%s gate_volume=%s ratio=%s "
+            "gate_2candle=%s last2=%s",
+            ticker, vol_pass_str, ratio_str, candle_pass_str, last2_str,
+        )
+    except Exception:
+        pass
+
     if not boundary_res.get("hold"):
         tg._v561_log_skip(
             ticker=ticker, reason="V5100_BOUNDARY:%s" % boundary_res.get("reason"),
