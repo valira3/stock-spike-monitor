@@ -50,7 +50,6 @@ from trade_genius import (
     TelegramBadRequest,
     Update,
     _TICKER_USAGE,
-    _build_menu_keyboard,
     _build_test_progress,
     _chart_dayreport,
     _chart_portfolio_pie,
@@ -112,6 +111,7 @@ from trade_genius import (
     trade_log_read_tail,
     urllib,
 )
+from telegram_ui.menu import _build_menu_keyboard  # v5.11.1 PR 3
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
