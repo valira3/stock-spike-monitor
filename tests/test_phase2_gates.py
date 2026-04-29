@@ -45,10 +45,32 @@ def or_low_aapl():
 
 # ---------------------------------------------------------------------------
 # L-P2-S3 / S-P2-S3 — Volume gate.
+#
+# v5.13.1 — gate is flag-controlled via ``feature_flags.VOLUME_GATE_ENABLED``.
+# Production default is False (gate DISABLED, auto-pass). The spec-strict
+# threshold tests below pin the flag ON via monkeypatch so the original
+# v5.13.0 contract still has explicit coverage.
 # ---------------------------------------------------------------------------
 
 
-def test_volume_gate_below_threshold_fails(baseline_55d_aapl_at_0935):
+@pytest.fixture
+def volume_gate_on(monkeypatch):
+    """Monkeypatch the runtime flag ON so spec-strict assertions exercise
+    the threshold logic instead of the DISABLED_BY_FLAG short-circuit."""
+    from engine import feature_flags as ff
+    monkeypatch.setattr(ff, "VOLUME_GATE_ENABLED", True)
+    return ff
+
+
+@pytest.fixture
+def volume_gate_off(monkeypatch):
+    """Monkeypatch the runtime flag OFF (production default, made explicit)."""
+    from engine import feature_flags as ff
+    monkeypatch.setattr(ff, "VOLUME_GATE_ENABLED", False)
+    return ff
+
+
+def test_volume_gate_below_threshold_fails(volume_gate_on, baseline_55d_aapl_at_0935):
     from engine.volume_baseline import gate_volume_pass
     cur = 0.99 * baseline_55d_aapl_at_0935
     ok, ratio = gate_volume_pass(cur, baseline_55d_aapl_at_0935)
@@ -56,7 +78,7 @@ def test_volume_gate_below_threshold_fails(baseline_55d_aapl_at_0935):
     assert ratio == pytest.approx(0.99, abs=1e-6)
 
 
-def test_volume_gate_at_threshold_passes(baseline_55d_aapl_at_0935):
+def test_volume_gate_at_threshold_passes(volume_gate_on, baseline_55d_aapl_at_0935):
     from engine.volume_baseline import gate_volume_pass
     cur = 1.00 * baseline_55d_aapl_at_0935
     ok, ratio = gate_volume_pass(cur, baseline_55d_aapl_at_0935)
@@ -64,7 +86,7 @@ def test_volume_gate_at_threshold_passes(baseline_55d_aapl_at_0935):
     assert ratio == pytest.approx(1.00, abs=1e-6)
 
 
-def test_volume_gate_above_threshold_passes(baseline_55d_aapl_at_0935):
+def test_volume_gate_above_threshold_passes(volume_gate_on, baseline_55d_aapl_at_0935):
     from engine.volume_baseline import gate_volume_pass
     cur = 1.50 * baseline_55d_aapl_at_0935
     ok, ratio = gate_volume_pass(cur, baseline_55d_aapl_at_0935)
@@ -72,13 +94,85 @@ def test_volume_gate_above_threshold_passes(baseline_55d_aapl_at_0935):
     assert ratio == pytest.approx(1.50, abs=1e-6)
 
 
-def test_volume_gate_coldstart_passes_through():
+def test_volume_gate_coldstart_passes_through(volume_gate_on):
     """Cold-start (baseline=None) MUST pass-through so trading isn't blocked
     while the bar archive accumulates 55 trading days."""
     from engine.volume_baseline import gate_volume_pass
     ok, ratio = gate_volume_pass(50_000.0, None)
     assert ok is True
     assert ratio is None
+
+
+# ---------------------------------------------------------------------------
+# v5.13.1 — runtime flag default OFF (DISABLED_BY_FLAG path).
+# ---------------------------------------------------------------------------
+
+
+def test_volume_gate_disabled_by_default_auto_passes_below_threshold(
+    volume_gate_off, baseline_55d_aapl_at_0935
+):
+    """With VOLUME_GATE_ENABLED=False (production default), the volume gate
+    auto-passes regardless of how far below 100% threshold the current
+    minute's volume sits."""
+    from engine.volume_baseline import gate_volume_pass
+    cur = 0.05 * baseline_55d_aapl_at_0935
+    ok, ratio = gate_volume_pass(cur, baseline_55d_aapl_at_0935)
+    assert ok is True
+    assert ratio is None
+
+
+def test_volume_gate_disabled_by_default_auto_passes_zero_volume(
+    volume_gate_off, baseline_55d_aapl_at_0935
+):
+    """Even literal zero current volume must auto-pass when the flag is OFF."""
+    from engine.volume_baseline import gate_volume_pass
+    ok, ratio = gate_volume_pass(0.0, baseline_55d_aapl_at_0935)
+    assert ok is True
+    assert ratio is None
+
+
+def test_volume_gate_default_module_constant_is_false():
+    """Pin the production default — when the env var is unset at import
+    time, the constant must resolve to False."""
+    from engine import feature_flags as ff
+    import os
+    if "VOLUME_GATE_ENABLED" not in os.environ:
+        assert ff.VOLUME_GATE_ENABLED is False
+
+
+def test_two_consecutive_gate_unaffected_by_volume_flag_off(
+    volume_gate_off, or_high_aapl
+):
+    """The 2-consecutive-1m candle gate (L-P2-S4 / S-P2-S4) remains fully
+    enforced when the volume flag is OFF — only the volume gate is
+    short-circuited."""
+    from engine.volume_baseline import gate_two_consecutive_1m_above
+    closes_only_one_above = [199.50, 199.80, 200.50]
+    assert gate_two_consecutive_1m_above(closes_only_one_above, or_high_aapl) is False
+
+
+def test_eye_of_tiger_volume_bucket_disabled_by_flag(volume_gate_off):
+    """The live caller (eye_of_tiger.evaluate_volume_bucket) must return
+    True regardless of the bucket .check() result when the flag is OFF."""
+    import eye_of_tiger
+    fail_result = {"gate": "FAIL", "ratio": 0.42, "days_available": 55}
+    assert eye_of_tiger.evaluate_volume_bucket(fail_result) is True
+    assert eye_of_tiger.evaluate_volume_bucket(None) is True
+
+
+def test_eye_of_tiger_volume_bucket_enforced_when_flag_on(volume_gate_on):
+    """Mirror: when the flag is ON, the bucket result is honored."""
+    import eye_of_tiger
+    assert eye_of_tiger.evaluate_volume_bucket(
+        {"gate": "FAIL", "ratio": 0.42, "days_available": 55}
+    ) is False
+    assert eye_of_tiger.evaluate_volume_bucket(
+        {"gate": "PASS", "ratio": 1.20, "days_available": 55}
+    ) is True
+    assert eye_of_tiger.evaluate_volume_bucket(
+        {"gate": "COLDSTART", "ratio": None, "days_available": 12}
+    ) is True
+    assert eye_of_tiger.evaluate_volume_bucket(None) is False
 
 
 # ---------------------------------------------------------------------------

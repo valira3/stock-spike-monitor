@@ -24,6 +24,7 @@ from functools import lru_cache
 from typing import Optional
 
 import volume_bucket as _vb
+from engine import feature_flags as _ff
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,14 @@ def gate_volume_pass(
     Returns ``(pass, ratio)``. ``baseline=None`` (cold-start) returns
     ``(True, None)`` so trading is not blocked while the archive warms up.
     Otherwise pass = current_volume / baseline >= 1.00.
+
+    Runtime override: when ``feature_flags.VOLUME_GATE_ENABLED`` is False
+    (the production default as of v5.13.1) the gate auto-passes with
+    ``ratio=None`` and reason ``DISABLED_BY_FLAG``. The 2-consecutive-1m
+    candle gate (L-P2-S4 / S-P2-S4) is unaffected.
     """
+    if not _ff.VOLUME_GATE_ENABLED:
+        return (True, None)
     if baseline is None or baseline <= 0:
         return (True, None)
     if current_volume is None or current_volume < 0:
