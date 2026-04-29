@@ -152,9 +152,13 @@ def test_daily_breaker_blocks_at_threshold(monkeypatch):
     # Reset halted flag and seed paper_trades with -1499.99 of realized losses.
     trade_genius._trading_halted = False
     today = trade_genius._now_et().strftime("%Y-%m-%d")
-    monkeypatch.setattr(trade_genius, "paper_trades", [
-        {"date": today, "action": "SELL", "pnl": -1499.99},
-    ])
+    monkeypatch.setattr(
+        trade_genius,
+        "paper_trades",
+        [
+            {"date": today, "action": "SELL", "pnl": -1499.99},
+        ],
+    )
     monkeypatch.setattr(trade_genius, "short_trade_history", [])
     monkeypatch.setattr(trade_genius, "positions", {})
     monkeypatch.setattr(trade_genius, "short_positions", {})
@@ -164,9 +168,13 @@ def test_daily_breaker_blocks_at_threshold(monkeypatch):
     assert trade_genius._trading_halted is False
 
     # At/below the floor — entry blocked.
-    monkeypatch.setattr(trade_genius, "paper_trades", [
-        {"date": today, "action": "SELL", "pnl": -1500.0},
-    ])
+    monkeypatch.setattr(
+        trade_genius,
+        "paper_trades",
+        [
+            {"date": today, "action": "SELL", "pnl": -1500.0},
+        ],
+    )
     assert trade_genius._check_daily_loss_limit("AAPL") is False
     assert trade_genius._trading_halted is True
 
@@ -174,39 +182,93 @@ def test_daily_breaker_blocks_at_threshold(monkeypatch):
     trade_genius._trading_halted = False
 
 
-def test_daily_breaker_does_not_force_exit_existing(monkeypatch):
-    """SHARED-CB blocks NEW entries; existing positions are not exited here."""
+def test_daily_breaker_force_exits_existing(monkeypatch):
+    """v5.13.2 Track A SHARED-CB: on -$1,500 trip the breaker must
+    force-close all open longs and shorts at MARKET (reason
+    "DAILY_LOSS_LIMIT"). The close-loop runs once on the
+    false\u2192true transition of _trading_halted; subsequent ticks
+    short-circuit at the top of _check_daily_loss_limit and do not
+    re-enter the loop.
+
+    Pre-v5.13.2 this test asserted the OPPOSITE behavior (positions
+    survive the breaker trip), which contradicted STRATEGY.md \u00a73.
+    """
     import trade_genius
 
-    sent_signals = []
+    closed_longs: list[tuple[str, float, str]] = []
+    closed_shorts: list[tuple[str, float, str]] = []
 
-    def _capture_signal(payload):
-        sent_signals.append(payload)
+    def _fake_close_long(ticker, price, reason="STOP"):
+        closed_longs.append((ticker, price, reason))
+        trade_genius.positions.pop(ticker, None)
 
-    # Make sure the breaker check itself does not synthesize EOD/exit events.
+    def _fake_close_short(ticker, price, reason="STOP"):
+        closed_shorts.append((ticker, price, reason))
+        trade_genius.short_positions.pop(ticker, None)
+
     monkeypatch.setattr(trade_genius, "send_telegram", lambda *a, **k: None)
     monkeypatch.setattr(trade_genius, "v5_lock_all_tracks", lambda *a, **k: None)
-    monkeypatch.setattr(trade_genius, "_emit_signal", _capture_signal,
-                        raising=False)
-    monkeypatch.setattr(trade_genius, "get_fmp_quote", lambda *a, **k: {"price": 0})
+    monkeypatch.setattr(trade_genius, "close_position", _fake_close_long)
+    monkeypatch.setattr(trade_genius, "close_short_position", _fake_close_short)
+    # get_fmp_quote returns the position's entry price so unrealized P&L
+    # is exactly zero \u2014 the realized -$1,500 from paper_trades alone
+    # must trigger the breaker.
+    _quote_map = {"AAPL": 100.0, "TSLA": 200.0}
+    monkeypatch.setattr(
+        trade_genius,
+        "get_fmp_quote",
+        lambda t: {"price": _quote_map.get(t, 0.0)},
+    )
     monkeypatch.setattr(trade_genius, "_is_today", lambda *a, **k: False)
     monkeypatch.setattr(trade_genius, "DAILY_LOSS_LIMIT", -1500.0)
 
     trade_genius._trading_halted = False
     today = trade_genius._now_et().strftime("%Y-%m-%d")
-    monkeypatch.setattr(trade_genius, "paper_trades", [
-        {"date": today, "action": "SELL", "pnl": -1500.0},
-    ])
+    monkeypatch.setattr(
+        trade_genius,
+        "paper_trades",
+        [
+            {"date": today, "action": "SELL", "pnl": -1501.0},
+        ],
+    )
     monkeypatch.setattr(trade_genius, "short_trade_history", [])
-    monkeypatch.setattr(trade_genius, "positions", {})
-    monkeypatch.setattr(trade_genius, "short_positions", {})
+    # Seed one long and one short position; both must be force-closed.
+    monkeypatch.setattr(
+        trade_genius,
+        "positions",
+        {
+            "AAPL": {"entry_price": 100.0, "shares": 10},
+        },
+    )
+    monkeypatch.setattr(
+        trade_genius,
+        "short_positions",
+        {
+            "TSLA": {"entry_price": 200.0, "shares": 5},
+        },
+    )
 
     assert trade_genius._check_daily_loss_limit("AAPL") is False
-    # The breaker must not emit any EXIT/EOD_CLOSE_ALL signals.
-    exit_kinds = [s.get("kind") for s in sent_signals
-                  if isinstance(s, dict)
-                  and s.get("kind") in ("EXIT_LONG", "EXIT_SHORT", "EOD_CLOSE_ALL")]
-    assert exit_kinds == []
+    assert trade_genius._trading_halted is True
+    assert trade_genius.positions == {}
+    assert trade_genius.short_positions == {}
+    assert len(closed_longs) == 1
+    assert closed_longs[0][0] == "AAPL"
+    assert closed_longs[0][2] == "DAILY_LOSS_LIMIT"
+    assert len(closed_shorts) == 1
+    assert closed_shorts[0][0] == "TSLA"
+    assert closed_shorts[0][2] == "DAILY_LOSS_LIMIT"
+
+    # Idempotency: a second call must NOT re-enter the close-loop. The
+    # breaker should short-circuit at the top because _trading_halted
+    # is already True. close_position / close_short_position must not
+    # be invoked again.
+    closed_longs.clear()
+    closed_shorts.clear()
+    assert trade_genius._check_daily_loss_limit("AAPL") is False
+    assert closed_longs == []
+    assert closed_shorts == []
+
     trade_genius._trading_halted = False
 
 
@@ -215,15 +277,18 @@ def test_daily_breaker_does_not_force_exit_existing(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("hh,mm,ss,expect_in_window", [
-    (9, 35, 0, True),     # session open
-    (12, 0, 0, True),     # midday
-    (15, 30, 0, True),    # was the old cutoff — still in window now
-    (15, 44, 58, True),   # one second before cutoff
-    (15, 44, 59, False),  # at cutoff
-    (15, 45, 0, False),   # one second after cutoff
-    (9, 34, 59, False),   # before session open
-])
+@pytest.mark.parametrize(
+    "hh,mm,ss,expect_in_window",
+    [
+        (9, 35, 0, True),  # session open
+        (12, 0, 0, True),  # midday
+        (15, 30, 0, True),  # was the old cutoff -- still in window now
+        (15, 44, 58, True),  # one second before cutoff
+        (15, 44, 59, False),  # at cutoff
+        (15, 45, 0, False),  # one second after cutoff
+        (9, 34, 59, False),  # before session open
+    ],
+)
 def test_hunt_window(hh, mm, ss, expect_in_window):
     now = datetime(2026, 4, 29, hh, mm, ss, tzinfo=ET)
     assert is_in_hunt_window(now) is expect_in_window
@@ -245,9 +310,7 @@ def test_hunt_end_aligns_with_cutoff():
 def test_trade_genius_mentions_cutoff_and_eod():
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parent.parent / "trade_genius.py").read_text(
-        encoding="utf-8"
-    )
+    src = (Path(__file__).resolve().parent.parent / "trade_genius.py").read_text(encoding="utf-8")
     assert "15:44" in src
     assert "15:49" in src
     assert "SHARED-CUTOFF" in src

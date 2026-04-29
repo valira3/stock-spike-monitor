@@ -470,10 +470,6 @@ def daily_circuit_breaker_tripped(cumulative_realized_pnl: float) -> bool:
     return eot.daily_circuit_breaker_tripped(cumulative_realized_pnl)
 
 
-def is_eod_flush_time(now_et: datetime) -> bool:
-    return eot.is_eod_flush_time(now_et)
-
-
 # ---------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------
@@ -537,5 +533,4 @@ __all__ = [
     "evaluate_phase_c_exit",
     "clear_position_state",
     "daily_circuit_breaker_tripped",
-    "is_eod_flush_time",
 ]
