@@ -254,23 +254,8 @@ def _emit_signal(event: dict) -> None:
 # from another caller doesn't leave executors.base half-initialized
 # while trade_genius re-enters the import for the same name.
 from executors.base import TradeGeniusBase  # noqa: E402
+from executors import TradeGeniusVal, TradeGeniusGene  # noqa: E402  # re-exported for back-compat \u2014 alias removed in v5.12.0 PR 5
 import executors  # noqa: E402
-
-
-class TradeGeniusVal(TradeGeniusBase):
-    """Val \u2014 first Genius executor. Alpaca paper by default; Val flips
-    to live via `/mode live confirm` on Val's own Telegram bot, or via
-    `/mode val live confirm` on main's bot."""
-    NAME = "Val"
-    ENV_PREFIX = "VAL_"
-
-
-class TradeGeniusGene(TradeGeniusBase):
-    """Gene \u2014 second Genius executor, identical in behavior to Val but
-    with its own GENE_ env prefix, state files, and Telegram bot. Shipped
-    in v4.0.0-beta alongside the 3-tab dashboard."""
-    NAME = "Gene"
-    ENV_PREFIX = "GENE_"
 
 
 # Global executor instances (populated at startup if enabled). Referenced
