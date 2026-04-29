@@ -64,9 +64,12 @@ def close_short_position(ticker, price, reason="STOP"):
 # EOD CLOSE
 # ============================================================
 def eod_close():
-    """Force-close all open long AND short positions at 15:59:50 ET.
+    """Force-close all open long AND short positions at 15:49:59 ET.
 
-    v5.10.0 Section VI: EOD flush moved from 15:55 to 15:59:50 ET.
+    v5.13.0 PR-5 SHARED-EOD: EOD flush moved from 15:59:50 ET to 15:49:59 ET
+    per Tiger Sovereign §3. Order types are unchanged in this PR (PR 6 owns
+    the LIMIT/STOP MARKET split). All positions exit regardless of sentinel
+    or ratchet state. One ``[EOD FLUSH]`` line is logged per position.
     """
     tg = _tg()
     # v4.0.0-alpha \u2014 notify executors to flatten everything on Alpaca.
@@ -100,6 +103,10 @@ def eod_close():
                 price = positions[ticker]["entry_price"]
             longs_to_close.append((ticker, price))
         for ticker, price in longs_to_close:
+            logger.info(
+                "[EOD FLUSH] side=LONG ticker=%s price=%.2f reason=EOD",
+                ticker, float(price),
+            )
             close_position(ticker, price, reason="EOD")
 
     if short_positions:
@@ -113,6 +120,10 @@ def eod_close():
                 price = short_positions[ticker]["entry_price"]
             shorts_to_close.append((ticker, price))
         for ticker, price in shorts_to_close:
+            logger.info(
+                "[EOD FLUSH] side=SHORT ticker=%s price=%.2f reason=EOD",
+                ticker, float(price),
+            )
             close_short_position(ticker, price, "EOD")
 
     # v5.2.0 \u2014 close any orphan shadow positions (configs whose
