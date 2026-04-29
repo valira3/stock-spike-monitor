@@ -4,6 +4,93 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.2 — 2026-04-29 — Spec-of-record cleanup + dashboard rewrite
+
+Addresses the v5.13.1 spec compliance audit (verdict WARN). Two P0 fixes,
+one P1 architectural cleanup, one P1 sentinel-baseline correctness fix,
+plus dashboard rewrite to surface Tiger Sovereign Phase 1-4 state
+correctly. **No spec changes.** Production behaviour shifts only when
+operators set `LEGACY_EXITS_ENABLED=true` (default OFF).
+
+### Track A — Entry sizing 50/50 + Daily Circuit Breaker close-positions (P0)
+
+- **Entry sizing now matches spec.** `paper_shares_for` consumes
+  `ENTRY_1_SIZE_PCT = 0.50`; `_v5104_maybe_fire_entry_2` tops up to full
+  notional rather than adding `e1_shares // 2`. Total position notional
+  is now ≈ `PAPER_DOLLARS_PER_ENTRY` (was ~1.5×).
+- **Daily Circuit Breaker force-closes open positions.** When
+  `today_pnl <= -1500`, after `_trading_halted = True` is set, the bot
+  iterates `positions` and `short_positions` and calls
+  `close_position` / `close_short_position` with reason
+  `DAILY_LOSS_LIMIT` (maps to MARKET via `REASON_CIRCUIT_BREAKER`).
+  Idempotent on the false→true transition.
+- `ENTRY_1_SIZE_PCT` / `ENTRY_2_SIZE_PCT` are no longer dead code.
+
+### Track B — `LEGACY_EXITS_ENABLED` flag + Alarm A baseline reset (P1)
+
+- New env var `LEGACY_EXITS_ENABLED` (default `false`). When OFF, Tiger
+  Sovereign Phase 4 (Sentinel A/B/C + Titan Grip) is the sole exit
+  authority. When ON, the legacy v5.10/v5.11 exit paths run alongside
+  Sentinel and emit `[CONFLICT-EXIT]` structured logs whenever both fire
+  on the same tick.
+- Gated paths: Profit-Lock Ladder, Section IV brake/fuse, Phase A/B/C
+  state machine, RED_CANDLE long exit, POLARITY_SHIFT short exit.
+- PDC dict population stays (still consumed by dashboard pills,
+  `[V510-IDX]` shadow logger, position records).
+- **Alarm A velocity baseline reset on Entry-2 fill.** `check_alarm_a`
+  detects `last_known_shares` change and clears `pnl_history` to avoid
+  artificial deltas from pre-Entry-2 P&L samples being divided by
+  post-Entry-2 notional.
+
+### Track C — Dashboard rewrite
+
+- **Deleted retired "Sovereign Regime Shield" panel** (described the
+  PDC-based dual-index eject retired in v5.9.1).
+- **Rewrote "Eye of the Tiger · live gates" panel** as Tiger Sovereign
+  Phase 1-4 surface: Phase 1 permits per side, Phase 2 gates per
+  ticker, Phase 3 entry candidates, Phase 4 active management with
+  Sentinel A1/A2/B distance-to-trip and Titan Grip stage + ratchet
+  anchor + next harvest target.
+- **KPI row feature-flag indicators**: `Volume Gate: ON|OFF` and
+  `Legacy Exits: ON|OFF` so ops can see the runtime overrides at a
+  glance.
+- **Dropped legacy PDC pills** from per-position cards (cosmetic only,
+  no longer represent live gates).
+- `/api/state` shape: added `feature_flags` and `tiger_sovereign`
+  (phase1/2/3/4) blocks. `shadow_data_status` preserved (cron
+  dependency unbroken).
+
+### Track D — Stale constant cleanup + behavioural test conversion (P2)
+
+- Deleted `EOD_FLUSH_HHMMSS_ET = "15:59:50"` and `is_eod_flush_time`
+  from `eye_of_tiger.py`; canonical EOD constant lives in
+  `engine/timing.EOD_FLUSH_ET = time(15, 49, 59)`.
+- `tests/test_tiger_sovereign_spec.py` — 30 rule tests rewritten from
+  shallow grep-existence checks to behavioural assertions against the
+  actual evaluators (`evaluate_global_permit`, `gate_volume_pass`,
+  `check_alarm_a/b`, `check_titan_grip`, `is_after_cutoff_et`,
+  `order_type_for_reason`, etc.).
+- Test names + rule IDs preserved so audit/cron tooling that greps
+  test names still works.
+
+### Verification
+
+- 304 tests passing (was 287 in v5.13.1; +17 across the four tracks).
+- Full preflight green.
+
+### Defaults at deploy
+
+| Flag | Default |
+|------|---------|
+| `VOLUME_GATE_ENABLED` | `false` (carried from v5.13.1) |
+| `LEGACY_EXITS_ENABLED` | `false` (new) |
+
+With both flags off, the bot runs the spec-strict Tiger Sovereign
+logic only: no Phase 2 volume gate, no legacy exit paths. Set either
+to `true` on Railway to restore prior behaviour.
+
+---
+
 ## v5.13.1 — 2026-04-29 — Volume-gate runtime flag (default OFF)
 
 Adds `VOLUME_GATE_ENABLED` env var to toggle the Phase 2 volume gate

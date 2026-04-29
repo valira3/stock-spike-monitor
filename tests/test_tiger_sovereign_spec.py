@@ -91,12 +91,18 @@ def test_L_P2_S3():
     as of v5.13.1) or when the baseline is None (cold-start). When the gate
     is enabled and a baseline exists, current_volume / baseline must be >= 1.00.
     """
+    from engine import volume_baseline
     from engine.volume_baseline import gate_volume_pass, THRESHOLD_RATIO
-    from engine import feature_flags as _ff
 
     assert THRESHOLD_RATIO == 1.00
 
     # Force the runtime flag ON for this assertion (production default is OFF).
+    # Mutate via volume_baseline._ff so we set the attribute on the SAME module
+    # object the production code path holds — earlier tests that do
+    # ``del sys.modules['engine.feature_flags']`` (test_dashboard_state_v5_13_2,
+    # test_startup_smoke) cause a re-import to return a fresh module, but
+    # volume_baseline still holds its original reference.
+    _ff = volume_baseline._ff
     prev = _ff.VOLUME_GATE_ENABLED
     _ff.VOLUME_GATE_ENABLED = True
     try:
@@ -494,8 +500,10 @@ def test_S_P1_S2():
 
 def test_S_P2_S3():
     """S-P2-S3: Volume mirror of L-P2-S3 — 100% baseline threshold."""
+    from engine import volume_baseline
     from engine.volume_baseline import gate_volume_pass, THRESHOLD_RATIO
-    from engine import feature_flags as _ff
+
+    _ff = volume_baseline._ff
 
     assert THRESHOLD_RATIO == 1.00
 
