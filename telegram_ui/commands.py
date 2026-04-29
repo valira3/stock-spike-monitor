@@ -6,9 +6,11 @@ trade history, OR/PDC dicts, MATPLOTLIB_AVAILABLE, etc.) still lives
 in trade_genius; this module reaches it through the live-module
 accessor `_tg()` so __main__ vs imported execution both work.
 """
+
 from __future__ import annotations
 
 import logging
+import os
 import sys as _sys
 import time
 
@@ -58,8 +60,7 @@ def _log_sync(target_str, day_label):
         if action in OPENS:
             stop = r["stop"]
             lines.append(
-                "%s  %-5s %s  %d @ $%.2f  stop $%.2f"
-                % (tm, action, ticker, shares, price, stop)
+                "%s  %-5s %s  %d @ $%.2f  stop $%.2f" % (tm, action, ticker, shares, price, stop)
             )
         else:
             n_closed += 1
@@ -98,33 +99,39 @@ def _replay_sync(target_str, day_label):
         for t in src:
             if t.get("date", "") != target_str:
                 continue
-            rows.append({
-                "tm": t.get("time", "--:--"),
-                "ticker": t.get("ticker", "?"),
-                "action": t.get("action", "?"),
-                "price": t.get("price", 0) or 0,
-                "pnl": t.get("pnl", 0) or 0,
-            })
+            rows.append(
+                {
+                    "tm": t.get("time", "--:--"),
+                    "ticker": t.get("ticker", "?"),
+                    "action": t.get("action", "?"),
+                    "price": t.get("price", 0) or 0,
+                    "pnl": t.get("pnl", 0) or 0,
+                }
+            )
 
     def _push_history(src, open_action, close_action):
         for t in src:
             if t.get("date", "") != target_str:
                 continue
             ticker = t.get("ticker", "?")
-            rows.append({
-                "tm": t.get("entry_time", "--:--") or "--:--",
-                "ticker": ticker,
-                "action": open_action,
-                "price": t.get("entry_price", 0) or 0,
-                "pnl": 0,
-            })
-            rows.append({
-                "tm": t.get("exit_time", "--:--") or "--:--",
-                "ticker": ticker,
-                "action": close_action,
-                "price": t.get("exit_price", 0) or 0,
-                "pnl": t.get("pnl", 0) or 0,
-            })
+            rows.append(
+                {
+                    "tm": t.get("entry_time", "--:--") or "--:--",
+                    "ticker": ticker,
+                    "action": open_action,
+                    "price": t.get("entry_price", 0) or 0,
+                    "pnl": 0,
+                }
+            )
+            rows.append(
+                {
+                    "tm": t.get("exit_time", "--:--") or "--:--",
+                    "ticker": ticker,
+                    "action": close_action,
+                    "price": t.get("exit_price", 0) or 0,
+                    "pnl": t.get("pnl", 0) or 0,
+                }
+            )
 
     def _push_open_shorts(src):
         # Currently-open short positions on the target date \u2014 add a SHORT
@@ -133,13 +140,15 @@ def _replay_sync(target_str, day_label):
         for ticker, pos in src.items():
             if pos.get("date", "") != target_str:
                 continue
-            rows.append({
-                "tm": (pos.get("entry_time") or "--:--")[:5],
-                "ticker": ticker,
-                "action": "SHORT",
-                "price": pos.get("entry_price", 0) or 0,
-                "pnl": 0,
-            })
+            rows.append(
+                {
+                    "tm": (pos.get("entry_time") or "--:--")[:5],
+                    "ticker": ticker,
+                    "action": "SHORT",
+                    "price": pos.get("entry_price", 0) or 0,
+                    "pnl": 0,
+                }
+            )
 
     prefix = ""
     if target_str == today_str:
@@ -193,8 +202,7 @@ def _replay_sync(target_str, day_label):
     n_sells = wins + losses
     cum_pnl_fmt = "%+.2f" % cum_pnl
     lines.append(
-        "Final P&L: $%s  |  Trades: %d  |  W: %d  L: %d"
-        % (cum_pnl_fmt, n_sells, wins, losses)
+        "Final P&L: $%s  |  Trades: %d  |  W: %d  L: %d" % (cum_pnl_fmt, n_sells, wins, losses)
     )
     return "\n".join(lines)
 
@@ -204,14 +212,27 @@ def _reset_buttons(action: str) -> InlineKeyboardMarkup:
     tg = _tg()
     ts = int(time.time())
     confirm_data = "reset_%s_confirm:%d" % (action, ts)
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("\u2705 Confirm", callback_data=confirm_data),
-        InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel"),
-    ]])
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("\u2705 Confirm", callback_data=confirm_data),
+                InlineKeyboardButton("\u274c Cancel", callback_data="reset_cancel"),
+            ]
+        ]
+    )
 
 
-def _perf_compute(long_history, short_hist, date_filter, single_day, today,
-                  label, perf_label, long_opens=None, short_opens=None):
+def _perf_compute(
+    long_history,
+    short_hist,
+    date_filter,
+    single_day,
+    today,
+    label,
+    perf_label,
+    long_opens=None,
+    short_opens=None,
+):
     """Synchronous helper: crunch all perf stats + chart. Runs in executor.
 
     v3.3.1: `long_opens` / `short_opens` are lists of pseudo-trades for
@@ -253,8 +274,7 @@ def _perf_compute(long_history, short_hist, date_filter, single_day, today,
             pl = p.get("pnl", 0)
             pct = p.get("pnl_pct", 0)
             total_unreal += pl
-            lines.append("  \u2191 %s  %d sh  $%.2f \u2192 $%.2f"
-                         % (tk, sh, ep, cp))
+            lines.append("  \u2191 %s  %d sh  $%.2f \u2192 $%.2f" % (tk, sh, ep, cp))
             lines.append("      Unreal: $%+.2f (%+.2f%%)" % (pl, pct))
         for p in short_opens:
             tk = p.get("ticker", "?")
@@ -264,8 +284,7 @@ def _perf_compute(long_history, short_hist, date_filter, single_day, today,
             pl = p.get("pnl", 0)
             pct = p.get("pnl_pct", 0)
             total_unreal += pl
-            lines.append("  \u2193 %s  %d sh  $%.2f \u2192 $%.2f"
-                         % (tk, sh, ep, cp))
+            lines.append("  \u2193 %s  %d sh  $%.2f \u2192 $%.2f" % (tk, sh, ep, cp))
             lines.append("      Unreal: $%+.2f (%+.2f%%)" % (pl, pct))
         lines.append("  Total Unrealized: $%+.2f" % total_unreal)
         lines.append(SEP)
@@ -278,12 +297,15 @@ def _perf_compute(long_history, short_hist, date_filter, single_day, today,
         best_pnl = all_stats["best"].get("pnl", 0)
         worst_tk = all_stats["worst"].get("ticker", "?")
         worst_pnl = all_stats["worst"].get("pnl", 0)
-        lines.append("  Trades:    %d  (W:%d  L:%d)" % (
-            all_stats["n"], all_stats["wins"], all_stats["losses"]))
+        lines.append(
+            "  Trades:    %d  (W:%d  L:%d)"
+            % (all_stats["n"], all_stats["wins"], all_stats["losses"])
+        )
         lines.append("  Win Rate:  %.1f%%" % all_stats["wr"])
         lines.append("  Total P&L: $%+.2f" % all_stats["total_pnl"])
-        lines.append("  Avg Win:   $%+.2f  Avg Loss: $%+.2f"
-                     % (all_stats["avg_win"], all_stats["avg_loss"]))
+        lines.append(
+            "  Avg Win:   $%+.2f  Avg Loss: $%+.2f" % (all_stats["avg_win"], all_stats["avg_loss"])
+        )
         lines.append("  Best:      %s $%+.2f" % (best_tk, best_pnl))
         lines.append("  Worst:     %s $%+.2f" % (worst_tk, worst_pnl))
     else:
@@ -298,12 +320,16 @@ def _perf_compute(long_history, short_hist, date_filter, single_day, today,
         s_best_pnl = short_stats["best"].get("pnl", 0)
         s_worst_tk = short_stats["worst"].get("ticker", "?")
         s_worst_pnl = short_stats["worst"].get("pnl", 0)
-        lines.append("  Trades:    %d  (W:%d  L:%d)" % (
-            short_stats["n"], short_stats["wins"], short_stats["losses"]))
+        lines.append(
+            "  Trades:    %d  (W:%d  L:%d)"
+            % (short_stats["n"], short_stats["wins"], short_stats["losses"])
+        )
         lines.append("  Win Rate:  %.1f%%" % short_stats["wr"])
         lines.append("  Total P&L: $%+.2f" % short_stats["total_pnl"])
-        lines.append("  Avg Win:   $%+.2f  Avg Loss: $%+.2f"
-                     % (short_stats["avg_win"], short_stats["avg_loss"]))
+        lines.append(
+            "  Avg Win:   $%+.2f  Avg Loss: $%+.2f"
+            % (short_stats["avg_win"], short_stats["avg_loss"])
+        )
         lines.append("  Best:      %s $%+.2f" % (s_best_tk, s_best_pnl))
         lines.append("  Worst:     %s $%+.2f" % (s_worst_tk, s_worst_pnl))
     else:
@@ -315,11 +341,11 @@ def _perf_compute(long_history, short_hist, date_filter, single_day, today,
     today_short = tg._compute_perf_stats(short_hist, date_filter=today)
     lines.append("Today")
     if today_long:
-        lines.append("  Long:  %d trades  P&L $%+.2f"
-                     % (today_long["n"], today_long["total_pnl"]))
+        lines.append("  Long:  %d trades  P&L $%+.2f" % (today_long["n"], today_long["total_pnl"]))
     if today_short:
-        lines.append("  Short: %d trades  P&L $%+.2f"
-                     % (today_short["n"], today_short["total_pnl"]))
+        lines.append(
+            "  Short: %d trades  P&L $%+.2f" % (today_short["n"], today_short["total_pnl"])
+        )
     if not today_long and not today_short:
         lines.append("  No trades today")
     lines.append(SEP)
@@ -386,39 +412,41 @@ def _price_sync(ticker):
     else:
         lines.append("OR Low:   not collected")
 
-    # PDC
-    pdc_strat = tg.pdc.get(ticker)
-    if pdc_strat is not None:
-        if cur_price > pdc_strat:
-            pdc_status = "\u2705 Above (green)"
-        else:
-            pdc_status = "\u274c Below (red)"
-        lines.append("PDC:      $%.2f  %s" % (pdc_strat, pdc_status))
-    else:
-        lines.append("PDC:      $%.2f" % pdc_val)
+    # v5.13.5: per-ticker PDC dropped from the active diagnostic. Under
+    # Tiger Sovereign, per-ticker PDC is only consumed by the legacy
+    # RED_CANDLE / POLARITY_SHIFT exits which are gated behind
+    # LEGACY_EXITS_ENABLED (default OFF). Surface it only when that flag
+    # is on so operators don't read it as a live gate.
+    if os.getenv("LEGACY_EXITS_ENABLED", "false").lower() in ("1", "true", "yes"):
+        pdc_strat = tg.pdc.get(ticker)
+        if pdc_strat is not None:
+            lines.append("PDC (legacy): $%.2f" % pdc_strat)
 
-    # SPY/QQQ vs PDC (v3.4.34: swapped from AVWAP)
-    spy_pdc_t = tg.pdc.get("SPY") or 0
-    qqq_pdc_t = tg.pdc.get("QQQ") or 0
-    spy_bars = tg.fetch_1min_bars("SPY")
-    qqq_bars = tg.fetch_1min_bars("QQQ")
-    spy_price_val = spy_bars["current_price"] if spy_bars else 0
-    qqq_price_val = qqq_bars["current_price"] if qqq_bars else 0
-    spy_ok = (spy_price_val > spy_pdc_t) if (spy_bars and spy_pdc_t > 0) else False
-    qqq_ok = (qqq_price_val > qqq_pdc_t) if (qqq_bars and qqq_pdc_t > 0) else False
-    spy_below = (spy_price_val < spy_pdc_t) if (spy_bars and spy_pdc_t > 0) else False
-    qqq_below = (qqq_price_val < qqq_pdc_t) if (qqq_bars and qqq_pdc_t > 0) else False
-    spy_icon = "\u2705" if spy_ok else "\u274c"
-    qqq_icon = "\u2705" if qqq_ok else "\u274c"
-    filter_status = "active" if (spy_ok and qqq_ok) else "inactive"
-    lines.append("SPY/QQQ:  %s %s Index filters %s" % (spy_icon, qqq_icon, filter_status))
+    # --- Phase 1 (Section I) permit ---
+    # Read from v5_10_6_snapshot so the regime read matches the dashboard.
+    long_permit = False
+    short_permit = False
+    try:
+        import v5_10_6_snapshot as _v510
+
+        sip = _v510._section_i_permit(tg)
+        long_permit = bool(sip.get("long_open"))
+        short_permit = bool(sip.get("short_open"))
+    except Exception:
+        pass
+
+    long_icon = "\u2705" if long_permit else "\u274c"
+    short_icon = "\u2705" if short_permit else "\u274c"
+    lines.append("QQQ Long permit:  %s" % long_icon)
+    lines.append("QQQ Short permit: %s" % short_icon)
     lines.append(SEP)
 
     # Long entry eligible?
     in_position = ticker in tg.positions
     at_max_entries = tg.daily_entry_count.get(ticker, 0) >= 5
-    index_ok = spy_ok and qqq_ok
-    long_eligible = not in_position and not at_max_entries and index_ok and not tg._trading_halted
+    long_eligible = (
+        not in_position and not at_max_entries and long_permit and not tg._trading_halted
+    )
 
     if long_eligible:
         lines.append("Long eligible:  YES")
@@ -428,8 +456,8 @@ def _price_sync(ticker):
             reasons.append("in position")
         if at_max_entries:
             reasons.append("5 entries today")
-        if not index_ok:
-            reasons.append("index filter fails")
+        if not long_permit:
+            reasons.append("Phase 1 long permit OFF")
         if tg._trading_halted:
             reasons.append("trading halted")
         reason_str = ", ".join(reasons)
@@ -438,11 +466,14 @@ def _price_sync(ticker):
     # Short entry eligible?
     in_short = ticker in tg.short_positions
     at_max_shorts = tg.daily_short_entry_count.get(ticker, 0) >= 5
-    index_bearish = spy_below and qqq_below
-    below_or_low = (orl is not None and cur_price < orl)
-    below_pdc_short = (pdc_strat is not None and cur_price < pdc_strat)
-    short_eligible = (not in_short and not at_max_shorts and index_bearish
-                      and below_or_low and below_pdc_short and not tg._trading_halted)
+    below_or_low = orl is not None and cur_price < orl
+    short_eligible = (
+        not in_short
+        and not at_max_shorts
+        and short_permit
+        and below_or_low
+        and not tg._trading_halted
+    )
 
     if short_eligible:
         lines.append("Short eligible: YES")
@@ -452,12 +483,10 @@ def _price_sync(ticker):
             s_reasons.append("in short position")
         if at_max_shorts:
             s_reasons.append("5 short entries today")
-        if not index_bearish:
-            s_reasons.append("index filter not bearish")
+        if not short_permit:
+            s_reasons.append("Phase 1 short permit OFF")
         if not below_or_low:
             s_reasons.append("above OR Low")
-        if not below_pdc_short:
-            s_reasons.append("above PDC")
         if tg._trading_halted:
             s_reasons.append("trading halted")
         s_reason_str = ", ".join(s_reasons)
@@ -469,10 +498,13 @@ def _price_sync(ticker):
 def _proximity_sync():
     """Build proximity text (blocking I/O \u2014 run in executor).
 
-    Shows how far each ticker is from its OR-breakout trigger, plus the
-    SPY/QQQ vs PDC global gate. Read-only diagnostic view \u2014 does
-    NOT change any trade logic or adaptive parameters.
-    v3.4.34: anchor swapped from AVWAP to PDC.
+    Shows the Phase 1 (Section I) QQQ permit for each side plus per-ticker
+    distance to the entry boundary (OR High for long, OR Low for short).
+    Read-only diagnostic view \u2014 does NOT change any trade logic.
+
+    v5.13.5: PDC-based global gate dropped. Phase 1 permits read from the
+    same v5_10_6_snapshot helper the dashboard uses, so Telegram and the
+    dashboard agree on the regime read.
 
     Every visible line is <= 34 chars incl. leading 2-space indent so it
     renders without wrap inside a Telegram mobile monospace block.
@@ -491,26 +523,24 @@ def _proximity_sync():
     longs_dict = tg.positions
     shorts_dict = tg.short_positions
 
-    # --- Global: SPY/QQQ vs PDC (the long gate, v3.4.34) ---
-    spy_bars = tg.fetch_1min_bars("SPY")
-    qqq_bars = tg.fetch_1min_bars("QQQ")
-    spy_price = spy_bars["current_price"] if spy_bars else 0.0
-    qqq_price = qqq_bars["current_price"] if qqq_bars else 0.0
-    spy_pdc_p = tg.pdc.get("SPY") or 0
-    qqq_pdc_p = tg.pdc.get("QQQ") or 0
+    # --- Global: Phase 1 (Section I) permit per side ---
+    # Read from v5_10_6_snapshot._section_i_permit so the regime read
+    # matches what the dashboard renders.
+    long_ok = False
+    short_ok = False
+    qqq_close = qqq_ema9 = qqq_avwap = qqq_last = None
+    try:
+        import v5_10_6_snapshot as _v510
 
-    spy_have = spy_price > 0 and spy_pdc_p > 0
-    qqq_have = qqq_price > 0 and qqq_pdc_p > 0
-    spy_ok = spy_have and spy_price > spy_pdc_p
-    qqq_ok = qqq_have and qqq_price > qqq_pdc_p
-    spy_icon = "\u2705" if spy_ok else "\u274c"
-    qqq_icon = "\u2705" if qqq_ok else "\u274c"
-
-    long_ok = spy_ok and qqq_ok
-    # Short anchor is the mirror: SPY AND QQQ both BELOW PDC enables shorts.
-    short_ok = (spy_have and qqq_have
-                and spy_price < spy_pdc_p
-                and qqq_price < qqq_pdc_p)
+        sip = _v510._section_i_permit(tg)
+        long_ok = bool(sip.get("long_open"))
+        short_ok = bool(sip.get("short_open"))
+        qqq_close = sip.get("qqq_5m_close")
+        qqq_ema9 = sip.get("qqq_5m_ema9")
+        qqq_avwap = sip.get("qqq_avwap_0930")
+        qqq_last = sip.get("qqq_current_price")
+    except Exception:
+        pass
 
     if long_ok:
         verdict = "LONGS enabled"
@@ -527,25 +557,34 @@ def _proximity_sync():
         SEP,
     ]
 
-    # Index rows: "SPY $707.67 \u2705 vs $708.78"
-    def _idx_row(tag, px, av, icon):
-        if not (px > 0 and av > 0):
-            return "%s  --" % tag
-        return "%s $%.2f %s vs $%.2f" % (tag, px, icon, av)
+    # Phase 1 readout: QQQ 5m close, 9 EMA, 09:30 AVWAP, then permit booleans.
+    def _fmt_px(v):
+        return ("$%.2f" % v) if isinstance(v, (int, float)) and v else "--"
 
-    lines.append(_idx_row("SPY", spy_price, spy_pdc_p, spy_icon))
-    lines.append(_idx_row("QQQ", qqq_price, qqq_pdc_p, qqq_icon))
+    if qqq_last is not None:
+        lines.append("QQQ last:   %s" % _fmt_px(qqq_last))
+    if qqq_close is not None:
+        lines.append("QQQ 5m cl:  %s" % _fmt_px(qqq_close))
+    if qqq_ema9 is not None:
+        lines.append("QQQ 9 EMA:  %s" % _fmt_px(qqq_ema9))
+    if qqq_avwap is not None:
+        lines.append("QQQ AVWAP:  %s (09:30)" % _fmt_px(qqq_avwap))
+    long_icon = "\u2705" if long_ok else "\u274c"
+    short_icon = "\u2705" if short_ok else "\u274c"
+    lines.append("Long permit:  %s" % long_icon)
+    lines.append("Short permit: %s" % short_icon)
     lines.append("Gate: %s" % verdict)
     lines.append(SEP)
 
     # --- Per-ticker rows ---
     # Build one snapshot per ticker: price, gap_long (px - OR_High),
-    # gap_short (px - OR_Low), polarity vs PDC, open-position marker.
+    # gap_short (px - OR_Low), open-position marker. v5.13.5: per-ticker
+    # PDC polarity dropped from the diagnostic since it is no longer part
+    # of the Tiger Sovereign entry / exit gates.
     rows = []  # list of dicts
     for t in tg.TRADE_TICKERS:
         orh = tg.or_high.get(t)
         orl = tg.or_low.get(t)
-        pdc_val = tg.pdc.get(t)
         bars = tg.fetch_1min_bars(t)
         px = bars["current_price"] if bars else 0.0
         # Open-position marker: long takes precedence if somehow both
@@ -559,18 +598,23 @@ def _proximity_sync():
         else:
             open_mark = ""
         if not (px > 0):
-            rows.append({"t": t, "px": 0.0, "orh": orh, "orl": orl,
-                         "pdc": pdc_val, "gl": None, "gs": None,
-                         "pol": None, "mark": open_mark})
+            rows.append(
+                {
+                    "t": t,
+                    "px": 0.0,
+                    "orh": orh,
+                    "orl": orl,
+                    "gl": None,
+                    "gs": None,
+                    "mark": open_mark,
+                }
+            )
             continue
         gl = (px - orh) if (orh is not None) else None
         gs = (px - orl) if (orl is not None) else None
-        pol = None
-        if pdc_val is not None:
-            pol = 1 if px > pdc_val else (-1 if px < pdc_val else 0)
-        rows.append({"t": t, "px": px, "orh": orh, "orl": orl,
-                     "pdc": pdc_val, "gl": gl, "gs": gs, "pol": pol,
-                     "mark": open_mark})
+        rows.append(
+            {"t": t, "px": px, "orh": orh, "orl": orl, "gl": gl, "gs": gs, "mark": open_mark}
+        )
 
     # ---- LONGS table: sorted by distance to OR High ----
     # Already above OR High (gl >= 0) first (closest to / past trigger),
@@ -602,8 +646,7 @@ def _proximity_sync():
         pct = (gl / orh) * 100.0 if orh else 0.0
         trig = "\u2705 " if gl >= 0 else "  "
         sign = "+" if gl >= 0 else "-"
-        lines.append("%s%-4s %s%s$%.2f (%s%.2f%%)"
-                     % (lead, t, trig, sign, abs(gl), sign, abs(pct)))
+        lines.append("%s%-4s %s%s$%.2f (%s%.2f%%)" % (lead, t, trig, sign, abs(gl), sign, abs(pct)))
     lines.append(SEP)
 
     # ---- SHORTS table: sorted ascending by gap to OR Low ----
@@ -629,35 +672,21 @@ def _proximity_sync():
         pct = (gs / orl) * 100.0 if orl else 0.0
         trig = "\u2705 " if gs <= 0 else "  "
         sign = "+" if gs >= 0 else "-"
-        lines.append("%s%-4s %s%s$%.2f (%s%.2f%%)"
-                     % (lead, t, trig, sign, abs(gs), sign, abs(pct)))
+        lines.append("%s%-4s %s%s$%.2f (%s%.2f%%)" % (lead, t, trig, sign, abs(gs), sign, abs(pct)))
     lines.append(SEP)
 
-    # ---- Prices & Polarity vs PDC (compact) ----
-    # One cell = "<mark or 2sp><TICKER> $PRICE <arrow>" e.g.
-    # "  AAPL $234.56 \u2191" or "\U0001f7e2NVDA $198.00 \u2193". Two
-    # cells per row fit within 34ch mobile limit in the common case.
-    # If a pair would exceed the budget (e.g. a 4-digit price on one
-    # side and an emoji lead on the other), render that pair as two
-    # separate rows instead of wrapping.
-    lines.append("Prices & Polarity vs PDC")
+    # ---- Prices (compact, no polarity) ----
+    # v5.13.5: per-ticker polarity vs PDC dropped (no longer an active
+    # gate under Tiger Sovereign). Cells now just show "TICKER $PRICE".
+    lines.append("Prices")
 
     def _price_cell(r):
-        pol = r["pol"]
         px = r["px"]
         om = r["mark"]
         lead = om if om else "  "
-        if pol is None:
-            arrow = "?"
-        elif pol > 0:
-            arrow = "\u2191"
-        elif pol < 0:
-            arrow = "\u2193"
-        else:
-            arrow = "="
         if px > 0:
-            return "%s%-4s $%.2f %s" % (lead, r["t"], px, arrow)
-        return "%s%-4s  --    %s" % (lead, r["t"], arrow)
+            return "%s%-4s $%.2f" % (lead, r["t"], px)
+        return "%s%-4s  --" % (lead, r["t"])
 
     def _cell_width(cell):
         # Emoji in lead counts as 2 cells on mobile but 1 codepoint.
@@ -699,11 +728,12 @@ def _proximity_sync():
 def _proximity_keyboard():
     """Inline keyboard for /proximity: Refresh + Menu."""
     tg = _tg()
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("\U0001f504 Refresh",
-                              callback_data="proximity_refresh")],
-        [InlineKeyboardButton("\U0001f3e0 Menu", callback_data="open_menu")],
-    ])
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("\U0001f504 Refresh", callback_data="proximity_refresh")],
+            [InlineKeyboardButton("\U0001f3e0 Menu", callback_data="open_menu")],
+        ]
+    )
 
 
 def _orb_sync():
@@ -724,35 +754,31 @@ def _orb_sync():
     for t in tg.TRADE_TICKERS:
         orh = tg.or_high.get(t)
         orl = tg.or_low.get(t)
-        pdc_val = tg.pdc.get(t)
         if orh is None:
             lines.append("%s   --" % t)
             continue
         orl_str = "%.2f" % orl if orl is not None else "--"
-        pdc_str = "%.2f" % pdc_val if pdc_val is not None else "--"
-        lines.append(
-            "%s   High $%.2f  Low $%s  PDC $%s"
-            % (t, orh, orl_str, pdc_str)
-        )
+        lines.append("%s   High $%.2f  Low $%s" % (t, orh, orl_str))
 
     lines.append(SEP)
 
-    # SPY/QQQ vs PDC (v3.4.34: swapped from AVWAP)
-    spy_bars = tg.fetch_1min_bars("SPY")
-    qqq_bars = tg.fetch_1min_bars("QQQ")
-    spy_price = spy_bars["current_price"] if spy_bars else 0
-    qqq_price = qqq_bars["current_price"] if qqq_bars else 0
-    spy_pdc_u = tg.pdc.get("SPY") or 0
-    qqq_pdc_u = tg.pdc.get("QQQ") or 0
-    spy_ok = spy_price > spy_pdc_u if spy_pdc_u > 0 else False
-    qqq_ok = qqq_price > qqq_pdc_u if qqq_pdc_u > 0 else False
-    spy_icon = "\u2705" if spy_ok else "\u274c"
-    qqq_icon = "\u2705" if qqq_ok else "\u274c"
+    # v5.13.5: SPY/QQQ PDC gate retired (v5.9.0). Surface Phase 1
+    # (Section I) permit booleans instead so /orb agrees with /proximity
+    # and the dashboard.
+    long_permit = False
+    short_permit = False
+    try:
+        import v5_10_6_snapshot as _v510
 
-    spy_pdc_fmt = "%.2f" % spy_pdc_u if spy_pdc_u > 0 else "n/a"
-    qqq_pdc_fmt = "%.2f" % qqq_pdc_u if qqq_pdc_u > 0 else "n/a"
-    lines.append("SPY PDC: $%s  %s" % (spy_pdc_fmt, spy_icon))
-    lines.append("QQQ PDC: $%s  %s" % (qqq_pdc_fmt, qqq_icon))
+        sip = _v510._section_i_permit(tg)
+        long_permit = bool(sip.get("long_open"))
+        short_permit = bool(sip.get("short_open"))
+    except Exception:
+        pass
+    long_icon = "\u2705" if long_permit else "\u274c"
+    short_icon = "\u2705" if short_permit else "\u274c"
+    lines.append("Phase 1 long permit:  %s" % long_icon)
+    lines.append("Phase 1 short permit: %s" % short_icon)
 
     # Entries today
     entry_parts = []
@@ -840,8 +866,13 @@ def _or_now_sync():
                 "%s: \u2705 high=%.2f low=%.2f (%s)"
                 % (ticker, result["high"], result["low"], result["src"])
             )
-            logger.info("or_now recovered %s: high=%.2f low=%.2f (%s)",
-                        ticker, result["high"], result["low"], result["src"])
+            logger.info(
+                "or_now recovered %s: high=%.2f low=%.2f (%s)",
+                ticker,
+                result["high"],
+                result["low"],
+                result["src"],
+            )
         else:
             still_fail += 1
             results.append("%s: \u274c still missing" % ticker)
@@ -867,10 +898,12 @@ def _fmt_tickers_list() -> str:
     tg = _tg()
     n_total = len(tg.TICKERS)
     n_trade = len(tg.TRADE_TICKERS)
+
     # Build rows of up to 5 symbols each \u2014 SPY and QQQ get a trailing
     # '*' to show they're pinned, so worst case per row is 5*(5+1)+4=34.
     def _tag(t):
         return t + "*" if t in tg.TICKERS_PINNED else t
+
     rows, row = [], []
     for t in tg.TICKERS:
         row.append(_tag(t))
@@ -912,9 +945,7 @@ def _fmt_add_reply(res: dict) -> str:
     m_lines = []
 
     # Bars liveness probe \u2014 the foundation everything else depends on.
-    m_lines.append(
-        "Bars:  " + ("\u2705 reachable" if bars_ok
-                     else "\u26a0 unreachable"))
+    m_lines.append("Bars:  " + ("\u2705 reachable" if bars_ok else "\u26a0 unreachable"))
 
     # PDC with source tag so the user knows which provider answered.
     if pdc_ok and pdc_val is not None:
@@ -942,13 +973,13 @@ def _fmt_add_reply(res: dict) -> str:
     if errs:
         # Truncate per-line to stay within the 34-char budget.
         tail = "\nnote: " + errs[0][:26]
-    return (
-        "\u2705 Added %s\n"
-        "%s\n"
-        "%s\n"
-        "%s\n"
-        "Next scan will trade it.%s"
-    ) % (t, "\u2500" * 26, "\n".join(m_lines), "\u2500" * 26, tail)
+    return ("\u2705 Added %s\n%s\n%s\n%s\nNext scan will trade it.%s") % (
+        t,
+        "\u2500" * 26,
+        "\n".join(m_lines),
+        "\u2500" * 26,
+        tail,
+    )
 
 
 def _fmt_remove_reply(res: dict) -> str:
@@ -961,14 +992,5 @@ def _fmt_remove_reply(res: dict) -> str:
         return "\u2139\ufe0f %s wasn't tracked" % t
     tail = ""
     if res.get("had_open"):
-        tail = (
-            "\nOpen position stays open\n"
-            "and manages until close."
-        )
-    return (
-        "\u2705 Removed %s\n"
-        "%s\n"
-        "No new entries on %s.%s"
-    ) % (t, "\u2500" * 26, t, tail)
-
-
+        tail = "\nOpen position stays open\nand manages until close."
+    return ("\u2705 Removed %s\n%s\nNo new entries on %s.%s") % (t, "\u2500" * 26, t, tail)
