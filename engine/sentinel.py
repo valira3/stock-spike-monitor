@@ -1,4 +1,4 @@
-"""v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop.
+"""v5.13.0 PR 2-3 \u2014 Tiger Sovereign Sentinel Loop.
 
 Implements the Phase 4 Sentinel Loop alarms from the Tiger Sovereign
 spec (STRATEGY.md \u00a7 Phase 4). The Sentinel Loop is a PARALLEL
@@ -10,25 +10,39 @@ trip is logged for observability).
 
 Spec rule IDs implemented here:
 * L-P4-A / S-P4-A \u2014 Alarm A (Emergency): -$500 absolute loss OR
-  -1%/minute velocity. Long: price drops 1% in 60s. Short: price
-  spikes 1% in 60s.
-* L-P4-B / S-P4-B \u2014 Alarm B (9-EMA Shield): a closed 5m candle
-  whose close is on the wrong side of the 5m 9-EMA. Long: close
-  BELOW EMA9 fires. Short: close ABOVE EMA9 fires.
+  -1%/minute velocity.
+* L-P4-B / S-P4-B \u2014 Alarm B (9-EMA Shield): closed 5m candle whose
+  close is on the wrong side of the 5m 9-EMA.
+* L-P4-C-S1..S4 / S-P4-C-S1..S4 \u2014 Alarm C (Titan Grip Harvest):
+  Stage 1 anchor (0.93%), Stage 1 stop (0.40%), Stage 2 micro-ratchet
+  (0.25%), Stage 3 second harvest (1.88%), Stage 4 runner (final 50%).
+  Body lives in engine/titan_grip.py; this module wires it into the
+  parallel evaluator.
 
-Alarm C (Titan Grip Harvest ratchet) is intentionally a stub here.
-PR 3 owns the body. The placeholder marker constants ("0.93", "0.40",
-"0.25", "1.88", "runner", "LIMIT", "STOP", "MARKET") are present so
-the PR-3-marked spec tests can confirm engine/sentinel.py is the
-right module to fill in.
+Alarm priority on multi-fire: Alarm A wins for the OUTBOUND order
+classification (full position exit overrides partial harvests),
+Alarm B wins over C for the same reason. ALL fired alarms remain
+in `result.alarms` for observability \u2014 nothing is suppressed.
 
-All values are spec-literal: change the spec, change THIS file.
+All values are spec-literal: change the spec, change THIS file
+(or engine/titan_grip.py).
 """
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Iterable
+from typing import Deque, Iterable, Optional
+
+from engine.titan_grip import (
+    ACTION_RATCHET,
+    ACTION_RUNNER_EXIT,
+    ACTION_STAGE1_HARVEST,
+    ACTION_STAGE3_HARVEST,
+    EXIT_REASON_ALARM_C,
+    TitanGripAction,
+    TitanGripState,
+    check_titan_grip,
+)
 
 # ---------------------------------------------------------------------------
 # Constants \u2014 spec-literal thresholds
@@ -48,9 +62,18 @@ ALARM_A_VELOCITY_THRESHOLD: float = -0.01  # -1.00%
 # the last 60s sample.
 PNL_HISTORY_MAXLEN: int = 120
 
-# Alarm C placeholder strings (PR 3 fills in the body). Listed so the
-# PR-3 spec tests can locate the module.
-_ALARM_C_PR3_MARKERS = (
+# Alarm C \u2014 Titan Grip Harvest ratchet. Constants live in
+# engine/titan_grip.py; the spec-literal markers below are present so
+# the per-rule test_tiger_sovereign_spec.py grep assertions can locate
+# this module ("0.93", "0.40", "0.25", "1.88", "runner", "LIMIT",
+# "STOP", "MARKET").
+#
+# Spec L-P4-C / S-P4-C:
+#   Stage 1 anchor 0.93% \u2014 SELL 25% LIMIT, stop to OR_High + 0.40%
+#   Stage 2 micro-ratchet 0.25% \u2014 STOP MARKET trail
+#   Stage 3 second harvest 1.88% \u2014 SELL 25% LIMIT
+#   Stage 4 runner \u2014 final 50% with continued 0.25% ratchet
+_ALARM_C_SPEC_MARKERS = (
     "Stage 1 anchor 0.93%",
     "Stage 1 stop 0.40%",
     "Stage 2 micro-ratchet 0.25%",
@@ -62,7 +85,9 @@ _ALARM_C_PR3_MARKERS = (
 )
 
 # Exit reason codes used downstream by broker/positions and
-# eye_of_tiger telemetry. Stable strings.
+# eye_of_tiger telemetry. Stable strings. EXIT_REASON_ALARM_C is
+# re-exported from engine.titan_grip for the same downstream
+# consumers.
 EXIT_REASON_ALARM_A: str = "sentinel_alarm_a"
 EXIT_REASON_ALARM_B: str = "sentinel_alarm_b"
 
@@ -88,12 +113,22 @@ class SentinelAction:
 class SentinelResult:
     """Result of one sentinel evaluation tick.
 
-    Multiple alarms can fire in a single tick. Exactly one exit order
-    should be emitted by the caller, but every fired alarm is recorded
-    for observability and tests.
+    Multiple alarms can fire in a single tick. The caller decides
+    whether to emit a full exit (Alarm A or B \u2014 100% close) or one
+    or more partial harvest orders (Alarm C). Every fired alarm is
+    recorded for observability and tests.
+
+    Priority on multi-fire (spec PR-3 \u00a7 Sentinel parallel-not-
+    sequential):
+      A wins over C \u2014 full exit overrides partial harvests
+      B wins over C \u2014 same reasoning (full close on 9-EMA shield)
+      A and B can co-exist; A wins for OUTBOUND order classification
+    All fired alarms still appear in `alarms` so tests / dashboards
+    can audit every trip.
     """
 
     alarms: list[SentinelAction] = field(default_factory=list)
+    titan_grip_actions: list[TitanGripAction] = field(default_factory=list)
 
     @property
     def fired(self) -> bool:
@@ -104,17 +139,28 @@ class SentinelResult:
         return [a.alarm for a in self.alarms]
 
     @property
+    def has_full_exit(self) -> bool:
+        """True if Alarm A or B fired \u2014 caller must do a full close
+        and ignore any C partial harvest actions on the same tick.
+        """
+        for a in self.alarms:
+            if a.reason in (EXIT_REASON_ALARM_A, EXIT_REASON_ALARM_B):
+                return True
+        return False
+
+    @property
     def exit_reason(self) -> str | None:
-        """Single canonical exit reason. Alarm A wins precedence over B
-        for the OUTBOUND order classification (both are STOP MARKET in
-        spec language, but Alarm A is the more urgent emergency stop).
-        Both alarms are still recorded in `alarms`.
+        """Single canonical exit reason. Priority: A > B > C.
+        All alarms remain recorded in `alarms` regardless.
         """
         if not self.alarms:
             return None
         for a in self.alarms:
             if a.reason == EXIT_REASON_ALARM_A:
                 return EXIT_REASON_ALARM_A
+        for a in self.alarms:
+            if a.reason == EXIT_REASON_ALARM_B:
+                return EXIT_REASON_ALARM_B
         return self.alarms[0].reason
 
 
@@ -282,6 +328,64 @@ def check_alarm_b(
 
 
 # ---------------------------------------------------------------------------
+# Alarm C \u2014 Titan Grip Harvest ratchet (delegates to engine.titan_grip)
+# ---------------------------------------------------------------------------
+
+
+def check_alarm_c(
+    *,
+    titan_grip_state: Optional[TitanGripState],
+    current_price: float,
+    current_shares: int,
+) -> tuple[list[SentinelAction], list[TitanGripAction]]:
+    """Evaluate Alarm C for one position.
+
+    Returns ``(sentinel_actions, titan_grip_actions)``. The first list
+    is a flat record of "alarm fired" events for the SentinelResult.
+    The second list is the structured per-action data (sizes, prices,
+    order types) the broker uses to actually emit harvest / runner
+    exit / stop-modify orders.
+
+    Returns empty lists if no Titan Grip state is attached (e.g.
+    Phase 4 hasn't started yet).
+    """
+    if titan_grip_state is None:
+        return [], []
+
+    grip_actions = check_titan_grip(
+        state=titan_grip_state,
+        current_price=current_price,
+        current_shares=current_shares,
+    )
+    if not grip_actions:
+        return [], []
+
+    sentinel_actions: list[SentinelAction] = []
+    for ga in grip_actions:
+        # Map Titan Grip action codes to compact alarm codes for the
+        # SentinelResult. C1=Stage 1 harvest, C2=ratchet, C3=Stage 3
+        # harvest, C4=runner exit. Tests assert these stable codes.
+        if ga.code == ACTION_STAGE1_HARVEST:
+            alarm_code = "C1"
+        elif ga.code == ACTION_RATCHET:
+            alarm_code = "C2"
+        elif ga.code == ACTION_STAGE3_HARVEST:
+            alarm_code = "C3"
+        elif ga.code == ACTION_RUNNER_EXIT:
+            alarm_code = "C4"
+        else:
+            alarm_code = "C?"
+        sentinel_actions.append(
+            SentinelAction(
+                alarm=alarm_code,
+                reason=EXIT_REASON_ALARM_C,
+                detail=ga.detail,
+            )
+        )
+    return sentinel_actions, list(grip_actions)
+
+
+# ---------------------------------------------------------------------------
 # Top-level evaluator \u2014 PARALLEL, NOT sequential
 # ---------------------------------------------------------------------------
 
@@ -295,17 +399,27 @@ def evaluate_sentinel(
     now_ts: float,
     last_5m_close: float | None,
     last_5m_ema9: float | None,
+    titan_grip_state: Optional[TitanGripState] = None,
+    current_price: float | None = None,
+    current_shares: int = 0,
 ) -> SentinelResult:
     """Evaluate ALL sentinel alarms for one position on one tick.
 
     Critical: alarms are evaluated INDEPENDENTLY. Even if Alarm A
-    has fired, Alarm B is still evaluated, and the result lists
-    every fired alarm. The caller is responsible for emitting
-    exactly one exit order even if multiple alarms fire (use
-    `result.exit_reason`).
+    has fired, Alarm B and C are still evaluated, and the result
+    lists every fired alarm. The caller is responsible for choosing
+    the OUTBOUND action: full exit if A or B fired (use
+    `result.has_full_exit` / `result.exit_reason`); partial harvest
+    via `result.titan_grip_actions` only if NEITHER A nor B fired.
 
     Per the spec: "These Alarms are NOT a sequence." Do not
-    introduce short-circuit returns here.
+    introduce short-circuit returns here. Alarm C is evaluated
+    even when A has already tripped \u2014 the priority resolution
+    is the CALLER's decision, not the evaluator's.
+
+    titan_grip_state / current_price / current_shares are required
+    for Alarm C to fire; if any is missing, C is skipped silently
+    (e.g. position hasn't transitioned to Phase 4 yet).
     """
     result = SentinelResult()
 
@@ -327,10 +441,18 @@ def evaluate_sentinel(
     )
     result.alarms.extend(b_fired)
 
-    # Alarm C \u2014 PR 3 wires in the Titan Grip ratchet here. The
-    # placeholder string keeps the import surface stable and the
-    # spec_gap PR-3 tests' module-existence assertions green.
-    _ = _ALARM_C_PR3_MARKERS  # noqa: F841 \u2014 documented placeholder
+    # Alarm C \u2014 always evaluated, independent of A and B. Even if
+    # the position is about to be force-closed by A, the C state
+    # machine still advances so observability stays consistent.
+    _ = _ALARM_C_SPEC_MARKERS  # noqa: F841 \u2014 spec literal markers
+    if titan_grip_state is not None and current_price is not None:
+        c_alarms, grip_actions = check_alarm_c(
+            titan_grip_state=titan_grip_state,
+            current_price=current_price,
+            current_shares=current_shares,
+        )
+        result.alarms.extend(c_alarms)
+        result.titan_grip_actions.extend(grip_actions)
 
     return result
 
@@ -358,13 +480,17 @@ __all__ = [
     "ALARM_A_VELOCITY_WINDOW_SECONDS",
     "EXIT_REASON_ALARM_A",
     "EXIT_REASON_ALARM_B",
+    "EXIT_REASON_ALARM_C",
     "PNL_HISTORY_MAXLEN",
     "SIDE_LONG",
     "SIDE_SHORT",
     "SentinelAction",
     "SentinelResult",
+    "TitanGripAction",
+    "TitanGripState",
     "check_alarm_a",
     "check_alarm_b",
+    "check_alarm_c",
     "evaluate_sentinel",
     "format_sentinel_log",
     "new_pnl_history",

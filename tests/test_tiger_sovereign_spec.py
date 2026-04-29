@@ -259,7 +259,6 @@ def test_L_P4_B():
     assert "check_alarm_b" in body, "L-P4-B: check_alarm_b() not defined."
 
 
-@pytest.mark.spec_gap("PR-3", "L-P4-C-S1")
 def test_L_P4_C_S1():
     """L-P4-C-S1: At OR_High +0.93% sell 25% LIMIT, move stop to OR_High +0.40%.
 
@@ -278,7 +277,6 @@ def test_L_P4_C_S1():
     )
 
 
-@pytest.mark.spec_gap("PR-3", "L-P4-C-S2")
 def test_L_P4_C_S2():
     """L-P4-C-S2: Every +0.25% step above 0.93% moves stop +0.25%.
 
@@ -295,7 +293,6 @@ def test_L_P4_C_S2():
     )
 
 
-@pytest.mark.spec_gap("PR-3", "L-P4-C-S3")
 def test_L_P4_C_S3():
     """L-P4-C-S3: At OR_High +1.88% sell second 25% LIMIT.
 
@@ -312,7 +309,6 @@ def test_L_P4_C_S3():
     )
 
 
-@pytest.mark.spec_gap("PR-3", "L-P4-C-S4")
 def test_L_P4_C_S4():
     """L-P4-C-S4: Final 50% runner with continued +0.25% ratchet.
 
@@ -446,7 +442,6 @@ def test_S_P4_B():
     assert "check_alarm_b" in body, "S-P4-B: check_alarm_b() missing."
 
 
-@pytest.mark.spec_gap("PR-3", "S-P4-C-S1")
 def test_S_P4_C_S1():
     """S-P4-C-S1: Price <= OR_Low - 0.93% buy-cover 25% LIMIT, stop to OR_Low - 0.40%.
 
@@ -461,7 +456,6 @@ def test_S_P4_C_S1():
     )
 
 
-@pytest.mark.spec_gap("PR-3", "S-P4-C-S2")
 def test_S_P4_C_S2():
     """S-P4-C-S2: Every -0.25% step below -0.93% moves stop -0.25%.
 
@@ -476,7 +470,6 @@ def test_S_P4_C_S2():
     )
 
 
-@pytest.mark.spec_gap("PR-3", "S-P4-C-S3")
 def test_S_P4_C_S3():
     """S-P4-C-S3: At OR_Low - 1.88% buy-cover second 25% LIMIT.
 
@@ -491,7 +484,6 @@ def test_S_P4_C_S3():
     )
 
 
-@pytest.mark.spec_gap("PR-3", "S-P4-C-S4")
 def test_S_P4_C_S4():
     """S-P4-C-S4: Final 50% runner with continued -0.25% ratchet.
 
