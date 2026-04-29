@@ -305,3 +305,168 @@ def test_a_and_b_fire_for_both_sides(side):
     )
     codes = result.alarm_codes
     assert "A1" in codes and "B" in codes
+
+
+# ---------------------------------------------------------------------------
+# v5.13.2 P1 #4 \u2014 Alarm A baseline reset on share-count change (Entry-2)
+# ---------------------------------------------------------------------------
+
+
+from engine.sentinel import maybe_reset_pnl_baseline_on_shares_change
+
+
+def test_baseline_reset_first_call_records_silently():
+    """First call after pos creation seeds the share-count cache, no clear."""
+    history = new_pnl_history()
+    record_pnl(history, ts=1000.0, pnl=-10.0)
+    record_pnl(history, ts=1010.0, pnl=-15.0)
+    pos = {"shares": 10, "entry_price": 100.0}
+    cleared = maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=1020.0, current_unrealized_pnl=-20.0,
+    )
+    assert cleared is False
+    assert len(history) == 2  # untouched
+    assert pos["_sentinel_last_known_shares"] == 10
+
+
+def test_baseline_reset_unchanged_shares_no_clear():
+    """Same share count tick-after-tick \u2014 history accumulates normally."""
+    history = new_pnl_history()
+    record_pnl(history, ts=1000.0, pnl=-10.0)
+    pos = {"shares": 10, "entry_price": 100.0}
+    # Seed cache.
+    maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=1010.0, current_unrealized_pnl=-12.0,
+    )
+    # Tick again, same shares.
+    cleared = maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=1020.0, current_unrealized_pnl=-15.0,
+    )
+    assert cleared is False
+    assert len(history) == 1  # caller hasn't appended yet; helper untouched
+
+
+def test_baseline_reset_on_shares_change_clears_and_reseeds():
+    """When pos['shares'] changes (Entry-2 fill), history is cleared + reseeded."""
+    history = new_pnl_history()
+    for i in range(5):
+        record_pnl(history, ts=1000.0 + i * 10, pnl=-10.0 - i)
+    pos = {"shares": 10, "entry_price": 100.0}
+    # Seed.
+    maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=1050.0, current_unrealized_pnl=-15.0,
+    )
+    assert len(history) == 5
+
+    # Entry-2 fills: shares 10 -> 15, entry_price recomputed to avg.
+    pos["shares"] = 15
+    pos["entry_price"] = 98.33
+    cleared = maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=1060.0, current_unrealized_pnl=-50.0,
+    )
+    assert cleared is True
+    # History was cleared and reseeded with the (1060, -50.0) sample.
+    assert len(history) == 1
+    assert history[0] == (1060.0, -50.0)
+    assert pos["_sentinel_last_known_shares"] == 15
+
+
+def test_alarm_a2_does_not_trip_on_artificial_entry_2_delta():
+    """Entry-2 step-shift in dollar P&L MUST NOT trip A2 velocity.
+
+    Scenario: 10 shares @ $100 (Entry-1, notional $1000). Position
+    drifts mildly -$10 over 30s. Then Entry-2 fills, bumping shares
+    to 15 @ avg $98.33 (notional ~$1475). Without the baseline reset,
+    the cached samples were computed against the pre-Entry-2 notional,
+    and the first post-Entry-2 unrealized P&L (which jumps step-wise
+    because the avg entry just moved) compared against a 60s-old
+    sample produces an artificial >1% / 60s "velocity" reading.
+    """
+    history = new_pnl_history()
+    pos = {"shares": 10, "entry_price": 100.0}
+
+    # Phase 1 \u2014 Entry-1 only, mild drift over 30s.
+    for i, pnl in enumerate([0.0, -2.0, -5.0, -10.0]):
+        ts = 1000.0 + i * 10
+        # Detector first (no-op since shares unchanged across ticks),
+        # then record this tick's sample.
+        maybe_reset_pnl_baseline_on_shares_change(
+            pos, history, now_ts=ts, current_unrealized_pnl=pnl,
+        )
+        record_pnl(history, ts=ts, pnl=pnl)
+
+    # Phase 2 \u2014 Entry-2 fills at t=1040. Shares 10 -> 15, avg
+    # entry $100 -> ~$98.33. Suppose unrealized P&L jumps from -$10
+    # (vs $100 entry) to -$30 (vs new avg, with extra shares at the
+    # current price). Without reset, the "1 minute ago" sample is 0.0
+    # (t=1000), so delta = -30 - 0 = -$30 over current notional
+    # ~$1475 = -2.03% \u2014 A2 trips spuriously.
+    pos["shares"] = 15
+    pos["entry_price"] = 98.33
+    fill_ts = 1040.0
+    fill_pnl = -30.0
+    cleared = maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=fill_ts, current_unrealized_pnl=fill_pnl,
+    )
+    assert cleared is True, "Entry-2 must reset the velocity baseline"
+    # Helper reseeds with the fill-time sample; caller would also
+    # record but the helper already inserted (fill_ts, fill_pnl).
+
+    # Phase 3 \u2014 30s of mild drift after Entry-2 (-$30 -> -$33). With
+    # the baseline reset, the only sample <= now-60s is the post-fill
+    # seed at t=1040 (-$30), so delta is -$3 / $1475 = -0.20% \u2014 NO trip.
+    for i, pnl in enumerate([-31.0, -32.0, -33.0]):
+        ts = 1050.0 + i * 10
+        maybe_reset_pnl_baseline_on_shares_change(
+            pos, history, now_ts=ts, current_unrealized_pnl=pnl,
+        )
+        record_pnl(history, ts=ts, pnl=pnl)
+
+    now_ts = 1100.0  # 60s after the Entry-2 fill seed
+    notional = 15 * 98.33
+    fired = check_alarm_a(
+        side=SIDE_LONG,
+        unrealized_pnl=-33.0,
+        position_value=notional,
+        pnl_history=history,
+        now_ts=now_ts,
+    )
+    assert not any(a.alarm == "A2" for a in fired), (
+        "A2 must NOT trip on the post-Entry-2 step-shift artefact"
+    )
+
+
+def test_alarm_a2_still_trips_on_real_velocity_after_entry_2():
+    """After baseline reset, A2 must still fire on a genuine post-Entry-2 drop.
+
+    Sanity check that the reset doesn't permanently disable A2: if
+    real velocity emerges after the reset, A2 must still trigger.
+    """
+    history = new_pnl_history()
+    pos = {"shares": 10, "entry_price": 100.0}
+    record_pnl(history, ts=1000.0, pnl=0.0)
+    maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=1000.0, current_unrealized_pnl=0.0,
+    )
+
+    # Entry-2 fills.
+    pos["shares"] = 15
+    pos["entry_price"] = 98.33
+    cleared = maybe_reset_pnl_baseline_on_shares_change(
+        pos, history, now_ts=1010.0, current_unrealized_pnl=-30.0,
+    )
+    assert cleared is True
+
+    # 60s later, real -2% velocity vs the post-Entry-2 baseline.
+    notional = 15 * 98.33  # ~$1475
+    drop = -0.02 * notional - 30.0  # 2% of notional below the seed
+    fired = check_alarm_a(
+        side=SIDE_LONG,
+        unrealized_pnl=drop,
+        position_value=notional,
+        pnl_history=history,
+        now_ts=1070.0,
+    )
+    assert any(a.alarm == "A2" for a in fired), (
+        "Real post-reset velocity must still trip A2"
+    )

@@ -82,6 +82,15 @@
       <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" id="k-session" style="font-size:20px">—</span><span class="kpi-sub" id="k-session-sub">—</span></div>
     </section>
 
+    <!-- v5.13.2 — Feature-flag indicators. Compact pills inline below the
+         KPI row so the operator can see at-a-glance which spec rules are
+         currently overridden via env vars. ON = grey neutral (spec-strict);
+         OFF = accent (operator override). -->
+    <section class="ts-flags-row" aria-label="Feature flags">
+      <span class="ts-flag" id="ts-flag-vol" title="VOLUME_GATE_ENABLED — Phase 2 volume gate (L-P2-S3 / S-P2-S3). When OFF the gate auto-passes.">Volume Gate: —</span>
+      <span class="ts-flag" id="ts-flag-legacy" title="LEGACY_EXITS_ENABLED — pre-Sentinel exit logic. When OFF only the Sentinel A/B/C alarms drive exits.">Legacy Exits: —</span>
+    </section>
+
     <section class="grid grid-2">
       <div class="card">
         <div class="card-head"><span class="card-title">Open positions<span class="count" id="pos-count">· 0</span></span></div>
@@ -145,25 +154,47 @@
       </div>
     </section>
 
-    <!-- v5.10.6 — Eye-of-the-Tiger live state panel. Section I permit
-         pill row (LONG/SHORT) above a per-ticker grid showing Volume
-         Bucket + Boundary Hold gate state. Driven by the new fields
-         in /api/state (section_i_permit, per_ticker_v510). -->
+    <!-- v5.13.2 — Tiger Sovereign live state panel. Surfaces the spec-
+         correct Phase 1-4 state (per-side permit, gates, candidates,
+         active management) so the operator can see what the algo is
+         actually evaluating. Driven by the new `tiger_sovereign` block
+         in /api/state. -->
     <section class="grid grid-2">
       <div class="card" style="grid-column:1 / -1">
         <div class="card-head">
-          <span class="card-title">Eye of the Tiger · live gates</span>
-          <span class="chip" id="eot-permit-chip">—</span>
+          <span class="card-title">Tiger Sovereign · Live State</span>
+          <span class="chip" id="ts-overall-chip">—</span>
         </div>
-        <div class="card-body" id="eot-body">
-          <div id="eot-permit-row" class="eot-permit-row" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px">
-            <span class="eot-pill" id="eot-pill-long">LONG —</span>
-            <span class="eot-pill" id="eot-pill-short">SHORT —</span>
-            <span class="eot-pill" id="eot-pill-anchor">ANCHOR —</span>
-            <span class="eot-pill" id="eot-pill-qqq" title="QQQ 5m close vs 9-EMA">QQQ —</span>
+        <div class="card-body" id="ts-body">
+          <div class="ts-phase" id="ts-phase1-long">
+            <div class="ts-phase-head">Phase 1 · Permit (LONG)</div>
+            <div class="ts-phase-body" id="ts-phase1-long-body">
+              <div class="empty">Waiting for permit state…</div>
+            </div>
           </div>
-          <div class="card-body flush" id="eot-tickers-body">
-            <div class="empty">Waiting for v5.10 gate state…</div>
+          <div class="ts-phase" id="ts-phase1-short">
+            <div class="ts-phase-head">Phase 1 · Permit (SHORT)</div>
+            <div class="ts-phase-body" id="ts-phase1-short-body">
+              <div class="empty">Waiting for permit state…</div>
+            </div>
+          </div>
+          <div class="ts-phase" id="ts-phase2">
+            <div class="ts-phase-head">Phase 2 · Gates</div>
+            <div class="ts-phase-body" id="ts-phase2-body">
+              <div class="empty">Waiting for gate state…</div>
+            </div>
+          </div>
+          <div class="ts-phase" id="ts-phase3">
+            <div class="ts-phase-head">Phase 3 · Entry candidates</div>
+            <div class="ts-phase-body" id="ts-phase3-body">
+              <div class="empty">No armed candidates.</div>
+            </div>
+          </div>
+          <div class="ts-phase" id="ts-phase4">
+            <div class="ts-phase-head">Phase 4 · Active management</div>
+            <div class="ts-phase-body" id="ts-phase4-body">
+              <div class="empty">No open positions.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -208,20 +239,11 @@
       </div>
     </section>
 
-    <!-- v3.4.29 — Sovereign Regime Shield live panel.
-         Shows whether the PDC-based dual-index eject would fire on the
-         next tick, SPY/QQQ prices vs PDC, and the shield's verdict. -->
+    <!-- v5.13.2 — Sovereign Regime Shield panel retired (PDC dual-index
+         eject was decommissioned in v5.9.1). The "Gates · entry checks"
+         card is preserved on its own row. -->
     <section class="grid grid-2">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">Sovereign Regime Shield</span>
-          <span class="chip" id="srs-status">—</span>
-        </div>
-        <div class="card-body" id="srs-body">
-          <div class="empty">Loading regime state…</div>
-        </div>
-      </div>
-      <div class="card">
+      <div class="card" style="grid-column:1 / -1">
         <div class="card-head"><span class="card-title">Gates · entry checks</span></div>
         <div id="gates-body">
           <div class="empty">Loading gate status…</div>

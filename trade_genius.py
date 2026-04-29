@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.13.1"
+BOT_VERSION = "5.13.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -4548,7 +4548,65 @@ def _check_daily_loss_limit(ticker: str) -> bool:
             "[DAILY-BREAKER] day_pnl=%.2f threshold=%.2f action=BLOCK_ENTRY",
             today_pnl, float(DAILY_LOSS_LIMIT_DOLLARS),
         )
+        # v5.13.2 Track A SHARED-CB: on the false\u2192true transition of
+        # _trading_halted, force-close all open longs and shorts at MARKET
+        # per STRATEGY.md \u00a73. The close-loop runs inside this guard so
+        # subsequent ticks (which short-circuit at the top via the
+        # `if _trading_halted` check above) do not re-enter it. Reason
+        # "DAILY_LOSS_LIMIT" matches REASON_CIRCUIT_BREAKER in
+        # broker/order_types.py and maps to ORDER_TYPE_MARKET.
+        was_halted = _trading_halted
         _trading_halted = True
+        if not was_halted:
+            try:
+                long_tickers = list(positions.keys())
+                for pos_ticker in long_tickers:
+                    try:
+                        fmp = get_fmp_quote(pos_ticker)
+                        live_px = fmp.get("price", 0) if fmp else 0
+                        if not live_px or live_px <= 0:
+                            live_px = positions[pos_ticker].get(
+                                "entry_price", 0
+                            )
+                        logger.info(
+                            "[DAILY-BREAKER] force-close side=LONG "
+                            "ticker=%s price=%.2f reason=DAILY_LOSS_LIMIT",
+                            pos_ticker, float(live_px),
+                        )
+                        close_position(
+                            pos_ticker, live_px, reason="DAILY_LOSS_LIMIT",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[DAILY-BREAKER] long close failed for %s",
+                            pos_ticker,
+                        )
+                short_tickers = list(short_positions.keys())
+                for pos_ticker in short_tickers:
+                    try:
+                        fmp = get_fmp_quote(pos_ticker)
+                        live_px = fmp.get("price", 0) if fmp else 0
+                        if not live_px or live_px <= 0:
+                            live_px = short_positions[pos_ticker].get(
+                                "entry_price", 0
+                            )
+                        logger.info(
+                            "[DAILY-BREAKER] force-close side=SHORT "
+                            "ticker=%s price=%.2f reason=DAILY_LOSS_LIMIT",
+                            pos_ticker, float(live_px),
+                        )
+                        close_short_position(
+                            pos_ticker, live_px, reason="DAILY_LOSS_LIMIT",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[DAILY-BREAKER] short close failed for %s",
+                            pos_ticker,
+                        )
+            except Exception:
+                logger.exception(
+                    "[DAILY-BREAKER] force-close loop failed",
+                )
         pnl_fmt = "%+.2f" % today_pnl
         limit_fmt = "%.2f" % DAILY_LOSS_LIMIT
         _trading_halted_reason = "Daily loss limit hit: $%s" % pnl_fmt

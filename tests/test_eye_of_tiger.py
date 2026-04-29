@@ -367,19 +367,10 @@ def test_circuit_breaker_trips_at_exactly_minus_1500():
     assert eot.daily_circuit_breaker_tripped(-1500.0) is True
 
 
-def test_eod_flush_at_15_59_50():
-    now = datetime(2026, 4, 28, 15, 59, 50)
-    assert eot.is_eod_flush_time(now) is True
-
-
-def test_eod_flush_just_before():
-    now = datetime(2026, 4, 28, 15, 59, 49)
-    assert eot.is_eod_flush_time(now) is False
-
-
-def test_eod_flush_after():
-    now = datetime(2026, 4, 28, 16, 0, 0)
-    assert eot.is_eod_flush_time(now) is True
+def test_canonical_eod_constant_is_15_49_59():
+    from datetime import time
+    from engine.timing import EOD_FLUSH_ET
+    assert EOD_FLUSH_ET == time(15, 49, 59)
 
 
 # ---------------------------------------------------------------------

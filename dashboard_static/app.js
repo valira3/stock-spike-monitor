@@ -562,57 +562,227 @@
     }
   }
 
-  // v3.4.29 — Sovereign Regime Shield card.
-  function renderSovereign(s) {
-    const body = $("srs-body");
-    const chip = $("srs-status");
-    if (!body || !chip) return;
-    const srs = (s.regime && s.regime.sovereign) || null;
-    if (!srs) {
-      body.innerHTML = '<div class="empty">Regime data unavailable.</div>';
-      chip.textContent = "—";
-      chip.className = "chip";
+  // v5.13.2 \u2014 Sovereign Regime Shield panel retired (PDC dual-index
+  // eject rule was decommissioned in v5.9.1). The renderer is gone;
+  // the shared `regime.sovereign` payload remains in /api/state for
+  // any external consumers but is no longer drawn on the dashboard.
+
+  // v5.13.2 \u2014 Tiger Sovereign Phase 1\u20134 renderer. Replaces the
+  // v5.10.6 "Eye of the Tiger" panel with the spec-correct Phase
+  // surface. Reads `state.tiger_sovereign` directly. All cells are
+  // None-safe \u2014 missing fields render as em-dashes.
+  function _tsCheck(ok) {
+    if (ok === true) return '<span class="ts-ok">\u2713</span>';
+    if (ok === false) return '<span class="ts-no">\u2717</span>';
+    return '<span class="ts-pending">\u2014</span>';
+  }
+  function _tsNum(v, digits) {
+    if (v === null || v === undefined || !isFinite(v)) return "\u2014";
+    return Number(v).toFixed(digits === undefined ? 2 : digits);
+  }
+  function _tsMoney(v) {
+    if (v === null || v === undefined || !isFinite(v)) return "\u2014";
+    const n = Number(v);
+    const sign = n >= 0 ? "+" : "\u2212";
+    return sign + "$" + Math.abs(n).toFixed(2);
+  }
+  function _tsPermitRow(label, ok, leftValue, rightValue, leftLabel, rightLabel) {
+    return '<div class="ts-row">'
+      + '<span class="ts-row-label">' + _tsCheck(ok) + ' ' + escapeHtml(label) + '</span>'
+      + '<span class="ts-row-value">'
+      +   '<span class="ts-row-pair">' + escapeHtml(leftLabel) + ' '
+      +     '<span class="mono">' + escapeHtml(leftValue) + '</span></span>'
+      +   '<span class="ts-row-pair">' + escapeHtml(rightLabel) + ' '
+      +     '<span class="mono">' + escapeHtml(rightValue) + '</span></span>'
+      + '</span>'
+      + '</div>';
+  }
+  function _tsRenderPhase1Side(bodyId, side, blk) {
+    const body = $(bodyId);
+    if (!body) return false;
+    if (!blk || Object.keys(blk).length === 0) {
+      body.innerHTML = '<div class="empty">Waiting for permit state\u2026</div>';
+      return false;
+    }
+    const close = (typeof blk.qqq_5m_close === "number") ? blk.qqq_5m_close : null;
+    const ema9 = (typeof blk.qqq_5m_ema9 === "number") ? blk.qqq_5m_ema9 : null;
+    const last = (typeof blk.qqq_last === "number") ? blk.qqq_last : null;
+    const avwap = (typeof blk.qqq_avwap_0930 === "number") ? blk.qqq_avwap_0930 : null;
+    let okEma = null, okAvwap = null;
+    if (close !== null && ema9 !== null) {
+      okEma = (side === "LONG") ? (close > ema9) : (close < ema9);
+    }
+    if (last !== null && avwap !== null) {
+      okAvwap = (side === "LONG") ? (last > avwap) : (last < avwap);
+    }
+    const cmpEma = (side === "LONG") ? "> EMA9" : "< EMA9";
+    const cmpAvwap = (side === "LONG") ? "> AVWAP_0930" : "< AVWAP_0930";
+    const permit = !!blk.permit;
+    const permitCls = permit ? "ts-permit-green" : "ts-permit-red";
+    const permitTxt = permit ? "GREEN" : "RED";
+    body.innerHTML = ''
+      + _tsPermitRow("QQQ 5m close " + cmpEma, okEma,
+          _tsNum(close), _tsNum(ema9), "close=", "ema9=")
+      + _tsPermitRow("QQQ " + cmpAvwap, okAvwap,
+          _tsNum(last), _tsNum(avwap), "last=", "avwap=")
+      + '<div class="ts-row ts-permit-line">'
+      +   '<span class="ts-row-label">Permit</span>'
+      +   '<span class="ts-row-value"><span class="ts-permit-pill ' + permitCls + '">'
+      +     escapeHtml(permitTxt) + '</span></span>'
+      + '</div>';
+    return permit;
+  }
+  function _tsRenderPhase2(blk) {
+    const body = $("ts-phase2-body");
+    if (!body) return;
+    const rows = Array.isArray(blk) ? blk : [];
+    if (rows.length === 0) {
+      body.innerHTML = '<div class="empty">Waiting for gate state\u2026</div>';
       return;
     }
+    const html = rows.map((r) => {
+      const status = String(r.vol_gate_status || "COLD");
+      let cls = "ts-gate-cold";
+      if (status === "PASS") cls = "ts-gate-pass";
+      else if (status === "FAIL") cls = "ts-gate-fail";
+      else if (status === "OFF") cls = "ts-gate-off";
+      const above = !!r.two_consec_above;
+      const below = !!r.two_consec_below;
+      let twoLabel = "\u2014", twoIcon = _tsCheck(null);
+      if (above) { twoLabel = "above OR_high"; twoIcon = _tsCheck(true); }
+      else if (below) { twoLabel = "below OR_low"; twoIcon = _tsCheck(true); }
+      else { twoLabel = "no 2-consec"; twoIcon = _tsCheck(false); }
+      return '<div class="ts-row">'
+        + '<span class="ts-row-label"><span class="ticker">' + escapeHtml(r.ticker || "") + '</span></span>'
+        + '<span class="ts-row-value">'
+        +   '<span class="ts-vol-pill ' + cls + '" title="Volume gate">' + escapeHtml(status) + '</span>'
+        +   '<span class="ts-row-pair">' + twoIcon + ' ' + escapeHtml(twoLabel) + '</span>'
+        + '</span>'
+        + '</div>';
+    }).join("");
+    body.innerHTML = html;
+  }
+  function _tsRenderPhase3(blk) {
+    const body = $("ts-phase3-body");
+    if (!body) return;
+    const rows = Array.isArray(blk) ? blk : [];
+    if (rows.length === 0) {
+      body.innerHTML = '<div class="empty">No armed candidates.</div>';
+      return;
+    }
+    const html = rows.map((r) => {
+      const e1Fired = !!r.entry1_fired;
+      const e2Fired = !!r.entry2_fired;
+      const e2Pending = !!r.entry2_cross_pending;
+      const di = (typeof r.entry1_di === "number") ? r.entry1_di : null;
+      const nhodTxt = (r.entry1_nhod === true) ? "NHOD\u2713"
+        : (r.entry1_nhod === false ? "no NHOD" : "NHOD \u2014");
+      const e2Txt = e2Fired
+        ? "Entry 2 \u2713"
+        : (e2Pending ? "Entry 2 cross pending" : "Entry 2 \u2014");
+      return '<div class="ts-row">'
+        + '<span class="ts-row-label">'
+        +   '<span class="ticker">' + escapeHtml(r.ticker || "") + '</span> '
+        +   '<span class="ts-side ts-side-' + (r.side === "SHORT" ? "short" : "long") + '">'
+        +     escapeHtml(r.side || "\u2014") + '</span>'
+        + '</span>'
+        + '<span class="ts-row-value">'
+        +   '<span class="ts-row-pair">' + _tsCheck(e1Fired) + ' Entry 1</span>'
+        +   '<span class="ts-row-pair mono">DI=' + escapeHtml(_tsNum(di, 2)) + '</span>'
+        +   '<span class="ts-row-pair">' + escapeHtml(nhodTxt) + '</span>'
+        +   '<span class="ts-row-pair">' + escapeHtml(e2Txt) + '</span>'
+        + '</span>'
+        + '</div>';
+    }).join("");
+    body.innerHTML = html;
+  }
+  function _tsRenderPhase4(blk) {
+    const body = $("ts-phase4-body");
+    if (!body) return;
+    const rows = Array.isArray(blk) ? blk : [];
+    if (rows.length === 0) {
+      body.innerHTML = '<div class="empty">No open positions.</div>';
+      return;
+    }
+    const html = rows.map((r) => {
+      const sen = r.sentinel || {};
+      const tg = r.titan_grip || {};
+      const a1 = (typeof sen.a1_pnl === "number") ? sen.a1_pnl : null;
+      const a1Th = (typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500;
+      const a1Trip = (a1 !== null) ? (a1 <= a1Th) : null;
+      const a2 = (typeof sen.a2_velocity === "number") ? sen.a2_velocity : null;
+      const a2Th = (typeof sen.a2_threshold === "number") ? sen.a2_threshold : -0.01;
+      const a2Trip = (a2 !== null) ? (a2 <= a2Th) : null;
+      const bDelta = (typeof sen.b_delta === "number") ? sen.b_delta : null;
+      const bTrip = (bDelta !== null)
+        ? ((r.side === "LONG") ? (bDelta < 0) : (bDelta > 0))
+        : null;
+      const stage = (typeof tg.stage === "number") ? tg.stage : null;
+      const anchor = (typeof tg.anchor === "number") ? tg.anchor : null;
+      const next = (typeof tg.next_target === "number") ? tg.next_target : null;
+      const ratchet = (typeof tg.ratchet_steps === "number") ? tg.ratchet_steps : null;
+      const stageLbl = (stage === null) ? "\u2014"
+        : ("Stage " + stage);
+      return '<div class="ts-row ts-row-multi">'
+        + '<span class="ts-row-label">'
+        +   '<span class="ticker">' + escapeHtml(r.ticker || "") + '</span> '
+        +   '<span class="ts-side ts-side-' + (r.side === "SHORT" ? "short" : "long") + '">'
+        +     escapeHtml(r.side || "\u2014") + '</span>'
+        + '</span>'
+        + '<span class="ts-row-value">'
+        +   '<span class="ts-row-pair" title="Alarm A1 \u2014 hard P&L stop at -$500">'
+        +     _tsCheck(a1Trip === null ? null : !a1Trip)
+        +     ' A1 ' + escapeHtml(_tsMoney(a1)) + ' / ' + escapeHtml(_tsMoney(a1Th)) + '</span>'
+        +   '<span class="ts-row-pair" title="Alarm A2 \u2014 velocity stop">'
+        +     _tsCheck(a2Trip === null ? null : !a2Trip)
+        +     ' A2 ' + escapeHtml(_tsNum(a2, 4)) + '/s</span>'
+        +   '<span class="ts-row-pair" title="Alarm B \u2014 QQQ 5m close vs 9-EMA">'
+        +     _tsCheck(bTrip === null ? null : !bTrip)
+        +     ' B \u0394=' + escapeHtml(_tsNum(bDelta)) + '</span>'
+        +   '<span class="ts-titan-stage">' + escapeHtml(stageLbl) + '</span>'
+        +   '<span class="ts-row-pair mono">anchor=' + escapeHtml(_tsNum(anchor)) + '</span>'
+        +   '<span class="ts-row-pair mono">next=' + escapeHtml(_tsNum(next)) + '</span>'
+        +   '<span class="ts-row-pair mono">ratchet=' + (ratchet === null ? "\u2014" : ratchet) + '</span>'
+        + '</span>'
+        + '</div>';
+    }).join("");
+    body.innerHTML = html;
+  }
+  function renderTigerSovereign(s) {
+    const ts = (s && s.tiger_sovereign) || null;
+    const chip = $("ts-overall-chip");
+    if (!ts) {
+      if (chip) chip.textContent = "\u2014";
+      return;
+    }
+    const p1 = ts.phase1 || {};
+    const longPermit = _tsRenderPhase1Side("ts-phase1-long-body", "LONG", p1.long || {});
+    const shortPermit = _tsRenderPhase1Side("ts-phase1-short-body", "SHORT", p1.short || {});
+    _tsRenderPhase2(ts.phase2 || []);
+    _tsRenderPhase3(ts.phase3 || []);
+    _tsRenderPhase4(ts.phase4 || []);
+    if (chip) {
+      let label = "NO permit";
+      if (longPermit && shortPermit) label = "BOTH-side permit";
+      else if (longPermit) label = "LONG-only permit";
+      else if (shortPermit) label = "SHORT-only permit";
+      chip.textContent = label;
+    }
+  }
 
-    // Header chip — one word status.
-    const status = srs.status || "NO_PDC";
-    let chipCls = "chip chip-srs-dis";
-    let chipTxt = "Disarmed";
-    if (status === "ARMED_LONG")      { chipCls = "chip chip-srs-armed"; chipTxt = "Long-eject armed"; }
-    else if (status === "ARMED_SHORT") { chipCls = "chip chip-srs-armed"; chipTxt = "Short-eject armed"; }
-    else if (status === "AWAITING")    { chipCls = "chip chip-srs-wait";  chipTxt = "Awaiting 1m close"; }
-    else if (status === "NO_PDC")      { chipCls = "chip chip-srs-wait";  chipTxt = "No PDC yet"; }
-    chip.textContent = chipTxt;
-    chip.className = chipCls;
-
-    // Index rows.
-    const idxRow = (sym, price, pdc, delta, above) => {
-      const priceTxt = (typeof price === "number") ? price.toFixed(2) : "—";
-      const pdcTxt   = (typeof pdc === "number")   ? `PDC ${pdc.toFixed(2)}` : "PDC —";
-      let deltaCls = "srs-delta na";
-      let deltaTxt = "—";
-      if (typeof delta === "number") {
-        deltaCls = "srs-delta " + (delta >= 0 ? "up" : "down");
-        const sign = delta >= 0 ? "+" : "";
-        deltaTxt = `${sign}${delta.toFixed(2)}%`;
-      }
-      return `<div class="srs-idx">
-        <span class="srs-sym">${escapeHtml(sym)}</span>
-        <span class="srs-price">${escapeHtml(priceTxt)}</span>
-        <span class="srs-pdc">${escapeHtml(pdcTxt)}</span>
-        <span class="${deltaCls}">${escapeHtml(deltaTxt)}</span>
-      </div>`;
-    };
-
-    // v5.9.1: PDC eject rule retired \u2014 eject tiles removed. SPY/QQQ vs PDC
-    // pills below are cosmetic display only.
-
-    body.innerHTML = `<div class="srs">
-      ${idxRow("SPY", srs.spy_price, srs.spy_pdc, srs.spy_delta_pct, srs.spy_above_pdc)}
-      ${idxRow("QQQ", srs.qqq_price, srs.qqq_pdc, srs.qqq_delta_pct, srs.qqq_above_pdc)}
-      <div class="srs-reason">${escapeHtml(srs.reason || "")}</div>
-    </div>`;
+  // v5.13.2 \u2014 feature-flag pill renderer. ON = grey neutral
+  // (spec-strict baseline). OFF = accent (operator override active).
+  function renderFeatureFlags(state) {
+    const ff = (state && state.feature_flags) || {};
+    function setFlag(id, label, on) {
+      const el = $(id);
+      if (!el) return;
+      el.classList.remove("ts-flag-on", "ts-flag-off");
+      el.classList.add(on ? "ts-flag-on" : "ts-flag-off");
+      el.textContent = label + ": " + (on ? "ON" : "OFF");
+    }
+    setFlag("ts-flag-vol", "Volume Gate", !!ff.volume_gate_enabled);
+    setFlag("ts-flag-legacy", "Legacy Exits", !!ff.legacy_exits_enabled);
   }
 
   function renderGates(s) {
@@ -757,9 +927,9 @@
     renderTrades(s, sl);
     renderLastSignal(s);
     renderObserver(s);
-    renderSovereign(s);
     renderGates(s);
-    try { renderEOT(s, sl); } catch (e) { /* never break Main */ }
+    try { renderTigerSovereign(s); } catch (e) { /* never break Main */ }
+    try { renderFeatureFlags(s); } catch (e) { /* never break Main */ }
     // v5.2.0 — Shadow strategy P&L panel (bottom of main dashboard).
     try { renderShadowPnL(s); } catch (e) {}
     // v4.11.0 — health pill bound to Main when active.
@@ -999,97 +1169,11 @@
     }
   }
 
-  // v5.10.6 \u2014 Eye-of-the-Tiger live state renderer. Reads the new
-  // /api/state fields (section_i_permit, per_ticker_v510,
-  // per_position_v510) and renders the Section I permit pills + a
-  // per-ticker grid showing Volume Bucket / Boundary Hold gate state.
-  // Per-position phase + Sovereign Brake distance are rendered inline
-  // on the Open Positions table via the v5.10.6 fields on each row.
-  function renderEOT(s, sl) {
-    const sip = (s && s.section_i_permit) || {};
-    const perTicker = (s && s.per_ticker_v510) || {};
-    const tickers = Array.isArray(s && s.tickers) ? s.tickers : Object.keys(perTicker);
+  // v5.13.2 \u2014 the v5.10.6 Eye-of-the-Tiger renderer was retired in
+  // favor of renderTigerSovereign() above. The legacy /api/state
+  // fields (section_i_permit, per_ticker_v510, per_position_v510)
+  // remain for backward compat but are no longer drawn here.
 
-    const longOpen = !!sip.long_open;
-    const shortOpen = !!sip.short_open;
-    const anchorOpen = !!sip.sovereign_anchor_open;
-
-    function setPill(id, label, openFlag, sub) {
-      const el = $(id);
-      if (!el) return;
-      el.classList.remove("eot-open", "eot-closed", "eot-pending");
-      if (openFlag === true) el.classList.add("eot-open");
-      else if (openFlag === false) el.classList.add("eot-closed");
-      else el.classList.add("eot-pending");
-      el.textContent = sub ? `${label} ${sub}` : label;
-    }
-
-    setPill("eot-pill-long", "LONG", longOpen, longOpen ? "OPEN" : "CLOSED");
-    setPill("eot-pill-short", "SHORT", shortOpen, shortOpen ? "OPEN" : "CLOSED");
-    setPill("eot-pill-anchor", "ANCHOR", anchorOpen,
-      anchorOpen ? "ABOVE" : "BELOW");
-
-    const qqqClose = sip.qqq_5m_close;
-    const qqqEma9 = sip.qqq_5m_ema9;
-    let qqqLabel = "—";
-    if (typeof qqqClose === "number" && typeof qqqEma9 === "number") {
-      const delta = qqqClose - qqqEma9;
-      const sign = delta >= 0 ? "+" : "−";
-      qqqLabel = `${qqqClose.toFixed(2)} (${sign}${Math.abs(delta).toFixed(2)} vs 9EMA)`;
-    }
-    setPill("eot-pill-qqq", "QQQ", null, qqqLabel);
-
-    const chip = $("eot-permit-chip");
-    if (chip) {
-      if (longOpen && !shortOpen) chip.textContent = "LONG-only permit";
-      else if (shortOpen && !longOpen) chip.textContent = "SHORT-only permit";
-      else if (longOpen && shortOpen) chip.textContent = "BOTH-side permit";
-      else chip.textContent = "NO permit";
-    }
-
-    const body = $("eot-tickers-body");
-    if (!body) return;
-    if (!tickers || tickers.length === 0) {
-      body.innerHTML = `<div class="empty">No tickers in universe.</div>`;
-      return;
-    }
-
-    function fmtRatio(r) {
-      if (typeof r !== "number" || !isFinite(r)) return "—";
-      return (r * 100).toFixed(0) + "%";
-    }
-
-    const rowsHtml = tickers.map((t) => {
-      const row = perTicker[t] || {};
-      const vb = row.vol_bucket || {};
-      const bh = row.boundary_hold || {};
-      let vbCls = "eot-vb-cold";
-      if (vb.state === "PASS") vbCls = "eot-vb-pass";
-      else if (vb.state === "FAIL") vbCls = "eot-vb-fail";
-      const vbLabel = vb.state === "PASS" || vb.state === "FAIL"
-        ? `${vb.state} ${fmtRatio(vb.ratio)}`
-        : `${vb.state || "COLDSTART"}`;
-      let bhCls = "eot-bh-armed";
-      if (bh.state === "SATISFIED") bhCls = "eot-bh-satisfied";
-      else if (bh.state === "BROKEN") bhCls = "eot-bh-broken";
-      const sideArrow = bh.side === "LONG" ? "▲" : (bh.side === "SHORT" ? "▼" : "·");
-      const bhLabel = `${bh.state || "ARMED"} ${sideArrow}`;
-      return `<tr>
-        <td><span class="ticker">${escapeHtml(t)}</span></td>
-        <td class="${vbCls}">${escapeHtml(vbLabel)}</td>
-        <td class="${bhCls}">${escapeHtml(bhLabel)}</td>
-      </tr>`;
-    }).join("");
-
-    body.innerHTML = `<table>
-      <thead><tr>
-        <th>Ticker</th>
-        <th>Vol Bucket</th>
-        <th>Boundary Hold</th>
-      </tr></thead>
-      <tbody>${rowsHtml}</tbody>
-    </table>`;
-  }
 
   function renderShadowPnL(s) {
     // v5.5.9 \u2014 keep the top summary band in sync with the same
