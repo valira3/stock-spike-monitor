@@ -7,12 +7,25 @@ from __future__ import annotations
 import logging
 import sys as _sys
 
+import time as _time
+
 from broker.orders import check_breakout  # noqa: F401
 from broker.stops import (
     _ladder_stop_long,
     _ladder_stop_short,
     _retighten_long_stop,  # noqa: F401
     _retighten_short_stop,  # noqa: F401
+)
+from engine.bars import compute_5m_ohlc_and_ema9
+from engine.sentinel import (
+    EXIT_REASON_ALARM_A,
+    EXIT_REASON_ALARM_B,
+    SIDE_LONG as _SENTINEL_SIDE_LONG,
+    SIDE_SHORT as _SENTINEL_SIDE_SHORT,
+    evaluate_sentinel,
+    format_sentinel_log,
+    new_pnl_history,
+    record_pnl,
 )
 
 # v5.11.2 \u2014 prod runs `python trade_genius.py`, so trade_genius is
@@ -31,6 +44,70 @@ def _tg():
 
 
 logger = logging.getLogger(__name__)
+
+
+def _run_sentinel(ticker, side, pos, current_price, bars):
+    """v5.13.0 PR 2 \u2014 evaluate Tiger Sovereign Sentinel Loop alarms.
+
+    Runs Alarm A (-$500 / -1%/min) AND Alarm B (5m close vs 9-EMA)
+    independently \u2014 NOT short-circuited. Returns the sentinel
+    EXIT reason string if any alarm fires, else None. Multi-alarm
+    trips are logged in full but only one exit reason is returned
+    (caller emits exactly one exit order).
+
+    Side: ``"LONG"`` or ``"SHORT"`` matching the sentinel SIDE_*
+    constants.
+    """
+    try:
+        entry_p = pos.get("entry_price")
+        shares = int(pos.get("shares") or 0)
+        if not entry_p or shares <= 0:
+            return None
+        if side == _SENTINEL_SIDE_LONG:
+            unrealized = (current_price - entry_p) * shares
+        else:
+            unrealized = (entry_p - current_price) * shares
+        position_value = float(entry_p) * shares
+
+        history = pos.get("pnl_history")
+        if history is None:
+            history = new_pnl_history()
+            pos["pnl_history"] = history
+        now_ts = _time.time()
+        record_pnl(history, now_ts, unrealized)
+
+        last_5m_close = None
+        last_5m_ema9 = None
+        try:
+            five = compute_5m_ohlc_and_ema9(bars)
+            if five and five.get("seeded"):
+                closes_5m = five.get("closes") or []
+                if closes_5m:
+                    last_5m_close = closes_5m[-1]
+                last_5m_ema9 = five.get("ema9")
+        except Exception:
+            last_5m_close = None
+            last_5m_ema9 = None
+
+        result = evaluate_sentinel(
+            side=side,
+            unrealized_pnl=unrealized,
+            position_value=position_value,
+            pnl_history=history,
+            now_ts=now_ts,
+            last_5m_close=last_5m_close,
+            last_5m_ema9=last_5m_ema9,
+        )
+        if not result.fired:
+            return None
+        logger.warning(
+            "%s",
+            format_sentinel_log(ticker, pos.get("position_id"), result),
+        )
+        return result.exit_reason
+    except Exception as e:
+        logger.warning("[SENTINEL] error ticker=%s side=%s: %s", ticker, side, e)
+        return None
 
 
 def _v5104_maybe_fire_entry_2(ticker, side, pos):
@@ -224,6 +301,18 @@ def manage_positions():
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] long %s: %s", ticker, _eot_e)
 
+        # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (parallel
+        # alarms A & B). Runs in addition to v5.10.1 Section IV
+        # overrides. The sentinel is spec-literal: A1=-$500 hard
+        # floor, A2=-1% over 60s, B=closed 5m close < 9-EMA. Alarms
+        # are evaluated INDEPENDENTLY (not short-circuited).
+        _sentinel_reason = _run_sentinel(
+            ticker, _SENTINEL_SIDE_LONG, pos, current_price, bars,
+        )
+        if _sentinel_reason is not None:
+            tickers_to_close.append((ticker, current_price, _sentinel_reason))
+            continue
+
         # v5.10.5 \u2014 Phase B/C Triple-Lock. Phase A continues to use the
         # ladder/Maffei plumbing below; Phase B (be_stop) and Phase C
         # (ema_trail) exits fire here when the post-Entry-2 lock /
@@ -385,6 +474,17 @@ def manage_short_positions():
                 continue
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] short %s: %s", ticker, _eot_e)
+
+        # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (short side
+        # mirror). Alarm A: -$500 / -1%/min. Alarm B: 5m close ABOVE
+        # 9-EMA fires. Alarms run in parallel with each other and
+        # ALSO with the v5.10.1 Section IV overrides above.
+        _sentinel_reason_s = _run_sentinel(
+            ticker, _SENTINEL_SIDE_SHORT, pos, current_price, bars,
+        )
+        if _sentinel_reason_s is not None:
+            tg.close_short_position(ticker, current_price, reason=_sentinel_reason_s)
+            continue
 
         # v5.10.5 \u2014 Phase B/C Triple-Lock (short mirror).
         phase_exit_s, _ = tg._engine_phase_machine_tick(
