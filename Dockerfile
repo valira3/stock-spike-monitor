@@ -65,6 +65,11 @@ COPY telegram_ui/ ./telegram_ui/
 # ModuleNotFoundError: broker. Subsequent v5.11.2 PRs append
 # orders, positions, and lifecycle modules.
 COPY broker/ ./broker/
+# v5.12.0 — executors/ package extraction (PR1: base). Same rule:
+# missing this COPY would crash trade_genius at boot with
+# ModuleNotFoundError: executors. Subsequent v5.12.0 PRs append
+# val, gene, and bootstrap modules.
+COPY executors/ ./executors/
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .
