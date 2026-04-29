@@ -2526,7 +2526,7 @@ _trading_halted_reason: str = ""
 class MarketMode:
     OPEN       = "OPEN"        # 09:35 - 11:00 ET — OR breakout window
     CHOP       = "CHOP"        # 11:00 - 14:00 ET — lunch chop
-    POWER      = "POWER"       # 14:00 - 15:30 ET — power hour
+    POWER      = "POWER"       # 14:00 - 15:44:59 ET \u2014 power hour (cutoff per engine/timing.NEW_POSITION_CUTOFF_ET)
     DEFENSIVE  = "DEFENSIVE"   # triggered by realized P&L <= half loss limit
     CLOSED     = "CLOSED"      # outside market hours / weekend
 
@@ -2569,7 +2569,8 @@ MODE_PROFILES = {
         "shares":            _clamp(10,    CLAMP_SHARES),
         "min_score_delta":   _clamp(0.05,  CLAMP_MIN_SCORE_DELTA),
         "allow_shorts":      True,
-        "note":              "Power hour — baseline with entry cutoff at 15:30",
+        # MUST MATCH engine/timing.NEW_POSITION_CUTOFF_ET (15:44:59 ET)
+        "note":              "Power hour \u2014 baseline with entry cutoff at 15:44:59 ET",
     },
     MarketMode.DEFENSIVE: {
         "trail_pct":         _clamp(0.006, CLAMP_TRAIL_PCT),
