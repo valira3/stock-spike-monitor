@@ -27,6 +27,7 @@ in `result.alarms` for observability \u2014 nothing is suppressed.
 All values are spec-literal: change the spec, change THIS file
 (or engine/titan_grip.py).
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -48,10 +49,11 @@ from engine.titan_grip import (
 # Constants \u2014 spec-literal thresholds
 # ---------------------------------------------------------------------------
 
-# Alarm A1 \u2014 absolute hard floor. Long unrealized P&L <= -$500 fires.
+# Alarm A_LOSS \u2014 absolute hard floor. Long unrealized P&L <= -$500 fires.
+# (vAA-1 rename: legacy A_one code replaced by A_LOSS; legacy strings deleted.)
 ALARM_A_HARD_LOSS_DOLLARS: float = -500.0
 
-# Alarm A2 \u2014 velocity. -1% over the last 60 seconds, measured as
+# Alarm A_FLASH \u2014 velocity. -1% over the last 60 seconds, measured as
 # (P&L_now - P&L_60s_ago) / position_value <= -0.01. The window is
 # strictly 60 seconds; the comparison is inclusive of -1.0% exactly.
 ALARM_A_VELOCITY_WINDOW_SECONDS: int = 60
@@ -104,7 +106,7 @@ SIDE_SHORT = "SHORT"
 class SentinelAction:
     """Single alarm trip."""
 
-    alarm: str  # "A1", "A2", "B"
+    alarm: str  # "A_LOSS", "A_FLASH", "B", "C", "D", "E"
     reason: str  # one of EXIT_REASON_*
     detail: str = ""
 
@@ -199,7 +201,7 @@ def maybe_reset_pnl_baseline_on_shares_change(
 ) -> bool:
     """v5.13.2 P1 #4 \u2014 reset Alarm A velocity baseline on share-count change.
 
-    The Alarm A2 velocity check compares ``unrealized_pnl_now`` with a
+    The Alarm A_FLASH velocity check compares ``unrealized_pnl_now`` with a
     sample drawn from ~60 seconds ago, dividing the delta by current
     ``position_value = entry_price * shares``. When Entry-2 fills, the
     position's ``entry_price`` (an average) and ``shares`` both change.
@@ -236,9 +238,7 @@ def maybe_reset_pnl_baseline_on_shares_change(
     return True
 
 
-def _pnl_at_or_before(
-    history: Iterable[tuple[float, float]], target_ts: float
-) -> float | None:
+def _pnl_at_or_before(history: Iterable[tuple[float, float]], target_ts: float) -> float | None:
     """Return the most recent P&L sample whose ts <= target_ts.
 
     Returns None if no sample exists at or before target_ts. Walking
@@ -268,7 +268,7 @@ def check_alarm_a(
 ) -> list[SentinelAction]:
     """Evaluate Alarm A for one position.
 
-    Returns a list of fired sub-alarms. Both A1 (hard floor) and A2
+    Returns a list of fired sub-alarms. Both A_LOSS (hard floor) and A_FLASH
     (velocity) are evaluated independently \u2014 if both fire on the
     same tick, both appear in the output. The caller maps the list
     to a single exit order if any element is non-empty.
@@ -276,25 +276,25 @@ def check_alarm_a(
     Side-symmetric: P&L is signed in dollars from the position
     holder's perspective. Long: pnl = (current - entry) * shares.
     Short: pnl = (entry - current) * shares. Either way, unrealized
-    <= -$500 fires A1 and a 60s drop of more than 1% of position
-    value (sign convention: pnl_now - pnl_60s_ago) fires A2.
+    <= -$500 fires A_LOSS and a 60s drop of more than 1% of position
+    value (sign convention: pnl_now - pnl_60s_ago) fires A_FLASH.
 
     Args:
         side: "LONG" or "SHORT". Used only for telemetry detail.
         unrealized_pnl: Signed unrealized $ P&L right now.
         position_value: Notional position value in dollars
-            (entry_price * shares). Must be > 0; else A2 is skipped.
+            (entry_price * shares). Must be > 0; else A_FLASH is skipped.
         pnl_history: Iterable of (ts, pnl) pairs. May be None or empty.
         now_ts: Current tick timestamp in seconds.
     """
     fired: list[SentinelAction] = []
 
-    # A1 \u2014 absolute hard floor. -$500 triggers exactly at the
+    # A_LOSS \u2014 absolute hard floor. -$500 triggers exactly at the
     # boundary (`<=`). The boundary value is spec-literal.
     if unrealized_pnl <= ALARM_A_HARD_LOSS_DOLLARS:
         fired.append(
             SentinelAction(
-                alarm="A1",
+                alarm="A_LOSS",
                 reason=EXIT_REASON_ALARM_A,
                 detail=(
                     f"side={side} unrealized_pnl=${unrealized_pnl:.2f} "
@@ -303,7 +303,7 @@ def check_alarm_a(
             )
         )
 
-    # A2 \u2014 velocity. Need history and a positive position value.
+    # A_FLASH \u2014 velocity. Need history and a positive position value.
     if pnl_history and position_value and position_value > 0:
         target = now_ts - ALARM_A_VELOCITY_WINDOW_SECONDS
         prior = _pnl_at_or_before(pnl_history, target)
@@ -313,7 +313,7 @@ def check_alarm_a(
             if velocity <= ALARM_A_VELOCITY_THRESHOLD:
                 fired.append(
                     SentinelAction(
-                        alarm="A2",
+                        alarm="A_FLASH",
                         reason=EXIT_REASON_ALARM_A,
                         detail=(
                             f"side={side} pnl_60s_delta=${delta:.2f} "
@@ -357,10 +357,7 @@ def check_alarm_b(
                 SentinelAction(
                     alarm="B",
                     reason=EXIT_REASON_ALARM_B,
-                    detail=(
-                        f"side=LONG 5m_close={last_5m_close:.4f} "
-                        f"< 9ema={last_5m_ema9:.4f}"
-                    ),
+                    detail=(f"side=LONG 5m_close={last_5m_close:.4f} < 9ema={last_5m_ema9:.4f}"),
                 )
             )
     elif side == SIDE_SHORT:
@@ -370,10 +367,7 @@ def check_alarm_b(
                 SentinelAction(
                     alarm="B",
                     reason=EXIT_REASON_ALARM_B,
-                    detail=(
-                        f"side=SHORT 5m_close={last_5m_close:.4f} "
-                        f"> 9ema={last_5m_ema9:.4f}"
-                    ),
+                    detail=(f"side=SHORT 5m_close={last_5m_close:.4f} > 9ema={last_5m_ema9:.4f}"),
                 )
             )
     return fired
@@ -512,7 +506,7 @@ def evaluate_sentinel(
 def format_sentinel_log(ticker: str, position_id: str | None, result: SentinelResult) -> str:
     """Render a structured one-line log entry for a sentinel trip.
 
-    Format: ``[SENTINEL] pos=<id> ticker=<t> alarms=[A1,B] action=EXIT
+    Format: ``[SENTINEL] pos=<id> ticker=<t> alarms=[A_LOSS,B] action=EXIT
     reason=<top> detail=<...>``
     """
     if not result.fired:

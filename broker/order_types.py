@@ -8,7 +8,7 @@ STOP MARKET vs. MARKET split is one source of truth.
 Spec mapping (STRATEGY.md):
     Profit-taking (Stage 1, Stage 3 harvest, Stage 4 runner exit
     via positive-slippage limit) → LIMIT
-    Defensive stops (Alarm A1 hard floor, Alarm A2 velocity, Alarm B
+    Defensive stops (Alarm A_LOSS hard floor, Alarm A_FLASH velocity, Alarm B
     9-EMA shield, Stage 2 ratchet trail) → STOP_MARKET
     EOD flush + Daily Circuit Breaker → MARKET
 
@@ -17,6 +17,7 @@ The runner exit (Stage 4) uses STOP_MARKET when the trail is hit
 immediate execution"). LIMIT-style runner exits are not in the spec
 text — only Stages 1 and 3 are explicit Limit orders.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -45,30 +46,36 @@ ORDER_TYPE_STOP: str = ORDER_TYPE_STOP_MARKET
 
 # Profit-taking reasons (LIMIT). Stage 1 + Stage 3 are explicit harvests
 # in STRATEGY.md; both are spec-mandated LIMIT orders.
-_HARVEST_REASONS = frozenset({
-    REASON_STAGE1_HARVEST,
-    REASON_STAGE3_HARVEST,
-})
+_HARVEST_REASONS = frozenset(
+    {
+        REASON_STAGE1_HARVEST,
+        REASON_STAGE3_HARVEST,
+    }
+)
 
 # Defensive-stop reasons (STOP MARKET). All of these are spec-mandated
 # STOP MARKET in STRATEGY.md §3 ORDER TYPE SPECIFICATIONS:
 # "All defensive stops...must be STOP MARKET orders".
-_STOP_REASONS = frozenset({
-    REASON_RATCHET,
-    REASON_RUNNER_EXIT,
-    REASON_ALARM_A,
-    REASON_ALARM_B,
-})
+_STOP_REASONS = frozenset(
+    {
+        REASON_RATCHET,
+        REASON_RUNNER_EXIT,
+        REASON_ALARM_A,
+        REASON_ALARM_B,
+    }
+)
 
 # Plain MARKET reasons. STRATEGY.md §3:
 # "DAILY CIRCUIT BREAKER: ...close all open positions immediately
 #  using MARKET orders."
 # "END OF DAY (EOD) FLUSH: ...close all open positions using MARKET
 #  orders."
-_MARKET_REASONS = frozenset({
-    REASON_EOD,
-    REASON_CIRCUIT_BREAKER,
-})
+_MARKET_REASONS = frozenset(
+    {
+        REASON_EOD,
+        REASON_CIRCUIT_BREAKER,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -81,9 +88,9 @@ class ExitOrder:
     pure makes the order-type mapping testable without an Alpaca stub.
     """
 
-    direction: str   # "LONG" or "SHORT"
+    direction: str  # "LONG" or "SHORT"
     qty: int
-    price: float     # limit / stop price; 0.0 for MARKET
+    price: float  # limit / stop price; 0.0 for MARKET
     reason: str
     order_type: str  # one of ORDER_TYPE_*
 

@@ -267,7 +267,7 @@ def test_L_P4_A():
         now_ts=1000.0,
     )
     codes = {a.alarm for a in fired}
-    assert "A1" in codes
+    assert "A_LOSS" in codes
 
     # A1 does not fire above floor.
     fired_safe = check_alarm_a(
@@ -288,7 +288,7 @@ def test_L_P4_A():
         pnl_history=history,
         now_ts=1000.0,
     )
-    assert "A2" in {a.alarm for a in fired_vel}
+    assert "A_FLASH" in {a.alarm for a in fired_vel}
 
 
 def test_L_P4_B():
@@ -598,7 +598,7 @@ def test_S_P4_A():
         pnl_history=None,
         now_ts=1000.0,
     )
-    assert "A1" in {a.alarm for a in fired}
+    assert "A_LOSS" in {a.alarm for a in fired}
 
     # SHORT velocity test: pnl drops by >1% of position value in 60s.
     fired_vel = check_alarm_a(
@@ -608,7 +608,7 @@ def test_S_P4_A():
         pnl_history=[(940.0, 0.0)],
         now_ts=1000.0,
     )
-    assert "A2" in {a.alarm for a in fired_vel}
+    assert "A_FLASH" in {a.alarm for a in fired_vel}
 
 
 def test_S_P4_B():

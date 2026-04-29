@@ -566,7 +566,7 @@ def manage_positions():
         pos = positions[ticker]
 
         # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (parallel
-        # alarms A & B & C). Spec-literal: A1=-$500 hard floor,
+        # alarms A & B & C). Spec-literal: A_LOSS=-$500 hard floor,
         # A2=-1% over 60s, B=closed 5m close < 9-EMA, C=Titan Grip
         # Harvest. Alarms are evaluated INDEPENDENTLY (not
         # short-circuited). Sole exit decision-maker as of v5.13.10
