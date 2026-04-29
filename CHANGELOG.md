@@ -17,6 +17,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 - Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
 - Boot log: `[TELEGRAM-UI] modules loaded: charts`
 
+### PR 2 — telegram_ui/commands.py
+- Moved sync command builders (~900 lines) out of `trade_genius.py`:
+  `_log_sync`, `_replay_sync`, `_reset_buttons`, `_perf_compute`, `_price_sync`,
+  `_proximity_sync`, `_proximity_keyboard`, `_orb_sync`, `_fetch_or_for_ticker`,
+  `_or_now_sync`, `_fmt_tickers_list`, `_fmt_add_reply`, `_fmt_remove_reply`
+- Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
+- Boot log: `[TELEGRAM-UI] modules loaded: charts, commands`
+
 ---
 
 ## v5.11.0 — 2026-04-28 — Engine extraction (trading-rules engine moved into `engine/`)
