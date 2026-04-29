@@ -2,6 +2,7 @@
 
 Extracted from trade_genius.py in v5.11.2 PR 3.
 """
+
 from __future__ import annotations
 
 import logging
@@ -125,22 +126,29 @@ def _apply_titan_grip_partial(ticker, side, pos, action, current_price):
         # on the action is LIMIT per spec; PR 6 owns the executor
         # swap to actually submit a LIMIT order.
         try:
-            tg._emit_signal({
-                "kind": "TITAN_GRIP_PARTIAL",
-                "ticker": ticker,
-                "side": side,
-                "stage": code,
-                "shares": int(n),
-                "price": float(current_price),
-                "order_type": action.order_type,
-                "reason": EXIT_REASON_ALARM_C,
-                "timestamp_utc": tg._utc_now_iso(),
-            })
+            tg._emit_signal(
+                {
+                    "kind": "TITAN_GRIP_PARTIAL",
+                    "ticker": ticker,
+                    "side": side,
+                    "stage": code,
+                    "shares": int(n),
+                    "price": float(current_price),
+                    "order_type": action.order_type,
+                    "reason": EXIT_REASON_ALARM_C,
+                    "timestamp_utc": tg._utc_now_iso(),
+                }
+            )
         except Exception:
             pass
         logger.info(
             "[TITAN-GRIP] %s side=%s %s shares=%d price=%.4f order_type=%s",
-            ticker, side, code, n, float(current_price), action.order_type,
+            ticker,
+            side,
+            code,
+            n,
+            float(current_price),
+            action.order_type,
         )
         return True
     if code == ACTION_RATCHET:
@@ -157,7 +165,9 @@ def _apply_titan_grip_partial(ticker, side, pos, action, current_price):
                 pos["stop"] = anchor
                 logger.info(
                     "[TITAN-GRIP] %s LONG ratchet stop %.4f -> %.4f",
-                    ticker, old_stop, anchor,
+                    ticker,
+                    old_stop,
+                    anchor,
                 )
         else:
             old_stop = pos.get("stop") or 0.0
@@ -165,7 +175,9 @@ def _apply_titan_grip_partial(ticker, side, pos, action, current_price):
                 pos["stop"] = anchor
                 logger.info(
                     "[TITAN-GRIP] %s SHORT ratchet stop %.4f -> %.4f",
-                    ticker, old_stop, anchor,
+                    ticker,
+                    old_stop,
+                    anchor,
                 )
         return False
     return False
@@ -268,7 +280,11 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
                 runner_exit = True
                 continue
             _apply_titan_grip_partial(
-                ticker, side, pos, action, current_price,
+                ticker,
+                side,
+                pos,
+                action,
+                current_price,
             )
         if runner_exit:
             return EXIT_REASON_ALARM_C
@@ -327,19 +343,21 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
     qqq_5m_close = tg._QQQ_REGIME.last_close
     qqq_ema9 = tg._QQQ_REGIME.ema9
     permit = tg.eot_glue.evaluate_section_i(
-        side_label, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap,
+        side_label,
+        qqq_5m_close,
+        qqq_ema9,
+        qqq_last,
+        qqq_avwap,
     )
     permit_open = bool(permit.get("open"))
 
     # 1m DI for the appropriate polarity.
     di_streams = tg.v5_di_1m_5m(ticker)
-    di_1m_now = (
-        di_streams.get("di_plus_1m") if cfg.side.is_long
-        else di_streams.get("di_minus_1m")
-    )
+    di_1m_now = di_streams.get("di_plus_1m") if cfg.side.is_long else di_streams.get("di_minus_1m")
 
     decision = tg.eot_glue.evaluate_entry_2_decision(
-        ticker, side_label,
+        ticker,
+        side_label,
         entry_1_active=True,
         permit_open_at_trigger=permit_open,
         di_1m_now=di_1m_now,
@@ -355,9 +373,24 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
     if e1_ts and e1_ts >= now_iso:
         return
 
-    # 50% of Entry-1 shares, min 1.
+    # v5.13.2 Track A \u2014 spec L-P3-S6 / S-P3-S6: Entry-2 brings the
+    # position up to ~100% of PAPER_DOLLARS_PER_ENTRY notional (Entry-1
+    # already laid down 50% via paper_shares_for + ENTRY_1_SIZE_PCT).
+    # We compute the full-notional target at the current_price the
+    # Entry-2 trigger sees, then top up by (target_full - e1_shares).
+    # Pre-v5.13.2 this was `e1_shares // 2` which combined with the
+    # then-100% Entry-1 sizing produced ~150% notional total.
+    from eye_of_tiger import ENTRY_1_SIZE_PCT, ENTRY_2_SIZE_PCT  # noqa: F401
+
     e1_shares = int(pos.get("v5104_entry1_shares") or pos.get("shares") or 0)
-    e2_shares = max(1, e1_shares // 2)
+    target_full = max(1, int(tg.PAPER_DOLLARS_PER_ENTRY // float(current_price)))
+    # ENTRY_2_SIZE_PCT participates in the sanity check: full = E1 + E2,
+    # so E1+E2 \u2248 1.0. If somebody changes the constants in eye_of_tiger
+    # the assertion below catches it before we ship a non-spec sizing.
+    assert abs((ENTRY_1_SIZE_PCT + ENTRY_2_SIZE_PCT) - 1.0) < 1e-6, (
+        "ENTRY_1_SIZE_PCT + ENTRY_2_SIZE_PCT must sum to 1.0"
+    )
+    e2_shares = max(1, target_full - e1_shares)
     if e2_shares <= 0:
         return
 
@@ -366,7 +399,9 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
     if cfg.side.is_long and notional > tg.paper_cash:
         logger.info(
             "[V5100-ENTRY] %s skip entry_2 \u2014 insufficient cash (need $%.2f, have $%.2f)",
-            ticker, notional, tg.paper_cash,
+            ticker,
+            notional,
+            tg.paper_cash,
         )
         return
     tg.paper_cash += cfg.entry_cash_delta(e2_shares, current_price)
@@ -386,9 +421,13 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
         logger.info(
             "[V5100-ENTRY] ticker=%s side=%s entry_num=2 di_1m=%s "
             "fresh_extreme=%s fill_price=%.4f shares=%d new_avg=%.4f",
-            ticker, side_label,
+            ticker,
+            side_label,
             ("%.2f" % di_1m_now) if di_1m_now is not None else "None",
-            fresh_extreme, float(current_price), e2_shares, new_avg,
+            fresh_extreme,
+            float(current_price),
+            e2_shares,
+            new_avg,
         )
     except Exception:
         pass
@@ -441,8 +480,10 @@ def manage_positions():
             opens_eot = bars.get("opens") or []
             cur_1m_open = None
             if opens_eot:
-                cur_1m_open = opens_eot[-1] if opens_eot[-1] is not None else (
-                    opens_eot[-2] if len(opens_eot) >= 2 else None
+                cur_1m_open = (
+                    opens_eot[-1]
+                    if opens_eot[-1] is not None
+                    else (opens_eot[-2] if len(opens_eot) >= 2 else None)
                 )
             override = eot_glue.evaluate_section_iv(
                 eot.SIDE_LONG,
@@ -454,14 +495,19 @@ def manage_positions():
                 logger.warning(
                     "[V5100-SOVEREIGN-BRAKE] ticker=%s side=LONG entry_avg=%.4f "
                     "current_price=%.4f unrealized_pnl=%.2f qty=%d",
-                    ticker, entry_p or 0.0, current_price, unrealized, shares,
+                    ticker,
+                    entry_p or 0.0,
+                    current_price,
+                    unrealized,
+                    shares,
                 )
                 tickers_to_close.append((ticker, current_price, "sovereign_brake"))
                 continue
             if override == eot.EXIT_REASON_VELOCITY_FUSE:
                 logger.warning(
                     "[V5100-VELOCITY-FUSE] ticker=%s side=LONG cur=%.4f open=%s",
-                    ticker, current_price,
+                    ticker,
+                    current_price,
                     ("%.4f" % cur_1m_open) if cur_1m_open else "None",
                 )
                 tickers_to_close.append((ticker, current_price, "velocity_fuse"))
@@ -475,7 +521,11 @@ def manage_positions():
         # floor, A2=-1% over 60s, B=closed 5m close < 9-EMA. Alarms
         # are evaluated INDEPENDENTLY (not short-circuited).
         _sentinel_reason = _run_sentinel(
-            ticker, _SENTINEL_SIDE_LONG, pos, current_price, bars,
+            ticker,
+            _SENTINEL_SIDE_LONG,
+            pos,
+            current_price,
+            bars,
         )
         if _sentinel_reason is not None:
             tickers_to_close.append((ticker, current_price, _sentinel_reason))
@@ -486,7 +536,10 @@ def manage_positions():
         # (ema_trail) exits fire here when the post-Entry-2 lock /
         # 5m-EMA9 leash trip.
         phase_exit, _ = tg._engine_phase_machine_tick(
-            ticker, eot.SIDE_LONG, pos, bars,
+            ticker,
+            eot.SIDE_LONG,
+            pos,
+            bars,
         )
         if phase_exit is not None:
             tickers_to_close.append((ticker, current_price, phase_exit))
@@ -510,7 +563,9 @@ def manage_positions():
         # \u2500\u2500 Eye of the Tiger: "The Red Candle" \u2014 lost Daily Polarity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         # Fires when 1-min confirmed close < day open OR < PDC
         closes = [c for c in bars.get("closes", []) if c is not None]
-        ticker_1min_close = closes[-2] if len(closes) >= 2 else (closes[-1] if closes else current_price)
+        ticker_1min_close = (
+            closes[-2] if len(closes) >= 2 else (closes[-1] if closes else current_price)
+        )
         opens = [o for o in bars.get("opens", []) if o is not None]
         day_open = opens[0] if opens else None
         pos_pdc = pos.get("pdc") or pos.get("prev_close")
@@ -538,9 +593,12 @@ def manage_positions():
             old_stop = pos.get("stop", 0)
             pos["stop"] = ladder_stop
             logger.info(
-                "[LADDER] %s LONG stop ratcheted $%.2f \u2192 $%.2f "
-                "(peak=$%.2f, +%.2f%%)",
-                ticker, old_stop, ladder_stop, peak, peak_gain_pct * 100,
+                "[LADDER] %s LONG stop ratcheted $%.2f \u2192 $%.2f (peak=$%.2f, +%.2f%%)",
+                ticker,
+                old_stop,
+                ladder_stop,
+                peak,
+                peak_gain_pct * 100,
             )
 
         # Arm cosmetic trail_active / trail_stop once past the 1% gate
@@ -551,7 +609,9 @@ def manage_positions():
                 pos["trail_active"] = True
                 logger.info(
                     "Trail armed for %s at $%.2f (+%.2f%% peak) \u2014 ladder active",
-                    ticker, current_price, peak_gain_pct * 100,
+                    ticker,
+                    current_price,
+                    peak_gain_pct * 100,
                 )
             pos["trail_stop"] = pos["stop"]
 
@@ -614,8 +674,10 @@ def manage_short_positions():
             opens_eot_s = bars.get("opens") or []
             cur_1m_open_s = None
             if opens_eot_s:
-                cur_1m_open_s = opens_eot_s[-1] if opens_eot_s[-1] is not None else (
-                    opens_eot_s[-2] if len(opens_eot_s) >= 2 else None
+                cur_1m_open_s = (
+                    opens_eot_s[-1]
+                    if opens_eot_s[-1] is not None
+                    else (opens_eot_s[-2] if len(opens_eot_s) >= 2 else None)
                 )
             override_s = eot_glue.evaluate_section_iv(
                 eot.SIDE_SHORT,
@@ -627,7 +689,10 @@ def manage_short_positions():
                 logger.warning(
                     "[V5100-SOVEREIGN-BRAKE] ticker=%s side=SHORT entry_avg=%.4f "
                     "current_price=%.4f unrealized_pnl=%.2f qty=%d",
-                    ticker, entry_price or 0.0, current_price, unrealized,
+                    ticker,
+                    entry_price or 0.0,
+                    current_price,
+                    unrealized,
                     int(shares or 0),
                 )
                 tg.close_short_position(ticker, current_price, reason="sovereign_brake")
@@ -635,7 +700,8 @@ def manage_short_positions():
             if override_s == eot.EXIT_REASON_VELOCITY_FUSE:
                 logger.warning(
                     "[V5100-VELOCITY-FUSE] ticker=%s side=SHORT cur=%.4f open=%s",
-                    ticker, current_price,
+                    ticker,
+                    current_price,
                     ("%.4f" % cur_1m_open_s) if cur_1m_open_s else "None",
                 )
                 tg.close_short_position(ticker, current_price, reason="velocity_fuse")
@@ -648,7 +714,11 @@ def manage_short_positions():
         # 9-EMA fires. Alarms run in parallel with each other and
         # ALSO with the v5.10.1 Section IV overrides above.
         _sentinel_reason_s = _run_sentinel(
-            ticker, _SENTINEL_SIDE_SHORT, pos, current_price, bars,
+            ticker,
+            _SENTINEL_SIDE_SHORT,
+            pos,
+            current_price,
+            bars,
         )
         if _sentinel_reason_s is not None:
             tg.close_short_position(ticker, current_price, reason=_sentinel_reason_s)
@@ -656,7 +726,10 @@ def manage_short_positions():
 
         # v5.10.5 \u2014 Phase B/C Triple-Lock (short mirror).
         phase_exit_s, _ = tg._engine_phase_machine_tick(
-            ticker, eot.SIDE_SHORT, pos, bars,
+            ticker,
+            eot.SIDE_SHORT,
+            pos,
+            bars,
         )
         if phase_exit_s is not None:
             tg.close_short_position(ticker, current_price, reason=phase_exit_s)
@@ -676,9 +749,12 @@ def manage_short_positions():
             old_stop = pos.get("stop", 0)
             pos["stop"] = ladder_stop
             logger.info(
-                "[LADDER] %s SHORT stop ratcheted $%.2f \u2192 $%.2f "
-                "(trail_low=$%.2f, +%.2f%%)",
-                ticker, old_stop, ladder_stop, trail_low, peak_gain_pct * 100,
+                "[LADDER] %s SHORT stop ratcheted $%.2f \u2192 $%.2f (trail_low=$%.2f, +%.2f%%)",
+                ticker,
+                old_stop,
+                ladder_stop,
+                trail_low,
+                peak_gain_pct * 100,
             )
 
         # Arm cosmetic trail_active / trail_stop past the 1% gate.
@@ -687,7 +763,9 @@ def manage_short_positions():
                 pos["trail_active"] = True
                 logger.info(
                     "Trail armed for %s SHORT at $%.2f (+%.2f%% peak) \u2014 ladder active",
-                    ticker, current_price, peak_gain_pct * 100,
+                    ticker,
+                    current_price,
+                    peak_gain_pct * 100,
                 )
             pos["trail_stop"] = pos["stop"]
 
@@ -699,14 +777,17 @@ def manage_short_positions():
         if current_price >= stop:
             exit_reason = "TRAIL" if trail_active else "STOP"
 
-
         # \u2500\u2500 Eye of the Tiger: "The Polarity Shift" \u2014 Price > PDC \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         # Uses completed 1m bar close (per-ticker; not part of the index shield)
         if not exit_reason:
             ticker_pdc = pdc.get(ticker, 0)
             if ticker_pdc > 0:
                 ps_closes = [c for c in bars.get("closes", []) if c is not None]
-                ps_1min_close = ps_closes[-2] if len(ps_closes) >= 2 else (ps_closes[-1] if ps_closes else current_price)
+                ps_1min_close = (
+                    ps_closes[-2]
+                    if len(ps_closes) >= 2
+                    else (ps_closes[-1] if ps_closes else current_price)
+                )
                 if ps_1min_close > ticker_pdc:
                     exit_reason = "POLARITY_SHIFT"
 

@@ -92,7 +92,12 @@ def _make_pos(
 
 def test_entry_2_fires_on_long_di_cross_and_fresh_nhod(tg, monkeypatch):
     """Long: 1m DI crosses 25 \u2192 35 (edge > 30) AND price extends
-    above Entry-1 HWM. Section I open. Expect Entry 2 fires at 50%."""
+    above Entry-1 HWM. Section I open.
+
+    v5.13.2 Track A: Entry-2 sizes itself to top the position up to
+    ~100% of PAPER_DOLLARS_PER_ENTRY notional, computed at the
+    trigger-time current_price. Pre-v5.13.2 it was e1_shares // 2.
+    """
     # Step 1: price 104 (BELOW current HWM 105) so the seed call does
     # NOT push HWM forward. Caches di_1m_prev=20 in eot_glue.
     _stub_market(tg, monkeypatch, ticker_price=104.0)
@@ -117,10 +122,96 @@ def test_entry_2_fires_on_long_di_cross_and_fresh_nhod(tg, monkeypatch):
     tg._v5104_maybe_fire_entry_2("AAPL", tg.Side.LONG, pos)
 
     assert pos["v5104_entry2_fired"] is True
-    assert pos["v5104_entry2_shares"] == 5  # 50% of 10
-    assert pos["shares"] == 15
-    # Avg entry: (100*10 + 110*5) / 15 = 1550/15 = 103.333...
-    assert abs(pos["entry_price"] - (100 * 10 + 110 * 5) / 15.0) < 1e-6
+    # Target full notional at trigger price = floor(10000/110) = 90.
+    # E1 was 10 shares (pre-seeded), so E2 = 90 - 10 = 80; total 90.
+    target_full = int(tg.PAPER_DOLLARS_PER_ENTRY // 110.0)
+    expected_e2 = max(1, target_full - 10)
+    assert pos["v5104_entry2_shares"] == expected_e2
+    assert pos["shares"] == 10 + expected_e2
+    # Avg entry weighted by shares.
+    expected_avg = (100 * 10 + 110 * expected_e2) / (10 + expected_e2)
+    assert abs(pos["entry_price"] - expected_avg) < 1e-6
+
+
+def test_paper_shares_for_uses_entry_1_size_pct(tg, monkeypatch):
+    """v5.13.2 Track A: paper_shares_for must apply ENTRY_1_SIZE_PCT
+    so Entry-1 only consumes 50% of PAPER_DOLLARS_PER_ENTRY notional.
+    """
+    from broker.orders import paper_shares_for
+    from eye_of_tiger import ENTRY_1_SIZE_PCT
+
+    assert ENTRY_1_SIZE_PCT == 0.50
+    # PAPER_DOLLARS_PER_ENTRY default = 10000; at price 100 \u2192
+    # floor(10000 * 0.50 / 100) = 50 shares (NOT 100).
+    monkeypatch.setattr(tg, "PAPER_DOLLARS_PER_ENTRY", 10000.0)
+    assert paper_shares_for(100.0) == 50
+
+    # Half of $20k @ price $200 = floor(20000*0.5/200) = 50.
+    monkeypatch.setattr(tg, "PAPER_DOLLARS_PER_ENTRY", 20000.0)
+    assert paper_shares_for(200.0) == 50
+
+    # Sanity: invalid / zero price returns 0.
+    assert paper_shares_for(0.0) == 0
+    assert paper_shares_for(-1.0) == 0
+
+
+def test_entry_1_plus_entry_2_total_approximates_full_notional(tg, monkeypatch):
+    """v5.13.2 Track A: Entry-1 (paper_shares_for) + Entry-2 top-up should
+    bring the position to ~floor(PAPER_DOLLARS_PER_ENTRY / price), within
+    \u00b11 share for floor rounding.
+    """
+    from broker.orders import paper_shares_for
+
+    monkeypatch.setattr(tg, "PAPER_DOLLARS_PER_ENTRY", 10000.0)
+    # Entry-1 at price 100 \u2192 50 shares (50% of full).
+    e1_shares = paper_shares_for(100.0)
+    assert e1_shares == 50
+
+    # Simulate Entry-2 at a slightly different price 110.
+    _stub_market(tg, monkeypatch, ticker_price=110.0)
+    pos = _make_pos(tg, entry_price=100.0, shares=e1_shares, hwm=105.0)
+    monkeypatch.setattr(
+        tg,
+        "v5_di_1m_5m",
+        lambda t: {
+            "di_plus_1m": 35.0,
+            "di_minus_1m": 0.0,
+            "di_plus_5m": 30.0,
+            "di_minus_5m": 0.0,
+        },
+    )
+    # Seed di_prev with one sub-30 print so the subsequent 35 is a cross.
+    _stub_market(tg, monkeypatch, ticker_price=104.0)
+    monkeypatch.setattr(
+        tg,
+        "v5_di_1m_5m",
+        lambda t: {
+            "di_plus_1m": 20.0,
+            "di_minus_1m": 0.0,
+            "di_plus_5m": 30.0,
+            "di_minus_5m": 0.0,
+        },
+    )
+    tg._v5104_maybe_fire_entry_2("AAPL", tg.Side.LONG, pos)
+    assert pos["v5104_entry2_fired"] is False
+
+    _stub_market(tg, monkeypatch, ticker_price=110.0)
+    monkeypatch.setattr(
+        tg,
+        "v5_di_1m_5m",
+        lambda t: {
+            "di_plus_1m": 35.0,
+            "di_minus_1m": 0.0,
+            "di_plus_5m": 30.0,
+            "di_minus_5m": 0.0,
+        },
+    )
+    tg._v5104_maybe_fire_entry_2("AAPL", tg.Side.LONG, pos)
+    assert pos["v5104_entry2_fired"] is True
+
+    # Total shares should approximate full notional at the entry-2 price.
+    target_full = int(tg.PAPER_DOLLARS_PER_ENTRY // 110.0)
+    assert abs(pos["shares"] - target_full) <= 1
 
 
 def test_entry_2_skips_when_no_di_cross(tg, monkeypatch):

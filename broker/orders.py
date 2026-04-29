@@ -2,6 +2,7 @@
 
 Extracted from trade_genius.py in v5.11.2 PR 2.
 """
+
 from __future__ import annotations
 
 import sys as _sys
@@ -65,8 +66,10 @@ def check_breakout(ticker, side):
     # normal exits; this gate only blocks NEW entries.
     if tg._v570_kill_switch_active():
         tg._v561_log_skip(
-            ticker=ticker, reason="daily_loss_limit_hit",
-            ts_utc=tg._utc_now_iso(), gate_state=None,
+            ticker=ticker,
+            reason="daily_loss_limit_hit",
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
         )
         return False, None
 
@@ -136,8 +139,12 @@ def check_breakout(ticker, side):
         tg.or_stale_skip_count[ticker] = tg.or_stale_skip_count.get(ticker, 0) + 1
         tg.logger.warning(
             "SKIP %s %s \u2014 %s $%.2f is %.1f%% from live $%.2f (stale?)",
-            ticker, cfg.skip_label, cfg.or_side_label,
-            or_dict[ticker], pct, current_price,
+            ticker,
+            cfg.skip_label,
+            cfg.or_side_label,
+            or_dict[ticker],
+            pct,
+            current_price,
         )
         return False, None
 
@@ -148,10 +155,7 @@ def check_breakout(ticker, side):
         price_break = tg._tiger_two_bar_long(closes, or_edge_val)
     else:
         price_break = tg._tiger_two_bar_short(closes, or_edge_val)
-    polarity_ok = (
-        current_price > pdc_val_e if cfg.side.is_long
-        else current_price < pdc_val_e
-    )
+    polarity_ok = current_price > pdc_val_e if cfg.side.is_long else current_price < pdc_val_e
 
     volumes = bars.get("volumes", [])
     vol_pct = None
@@ -176,18 +180,29 @@ def check_breakout(ticker, side):
             tg.logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
             if price_break:
                 tg._record_near_miss(
-                    ticker=ticker, side=cfg.log_side_label, reason="DATA_NOT_READY",
-                    close=round(last_close, 2), level=round(or_edge_val, 2),
-                    vol_bar=None, vol_avg=None, vol_pct=None,
+                    ticker=ticker,
+                    side=cfg.log_side_label,
+                    reason="DATA_NOT_READY",
+                    close=round(last_close, 2),
+                    level=round(or_edge_val, 2),
+                    vol_bar=None,
+                    vol_avg=None,
+                    vol_pct=None,
                 )
             return False, None
         if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
-            tg.logger.info("SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol)
+            tg.logger.info(
+                "SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol
+            )
             if price_break:
                 tg._record_near_miss(
-                    ticker=ticker, side=cfg.log_side_label, reason="LOW_VOL",
-                    close=round(last_close, 2), level=round(or_edge_val, 2),
-                    vol_bar=int(entry_bar_vol), vol_avg=int(avg_vol),
+                    ticker=ticker,
+                    side=cfg.log_side_label,
+                    reason="LOW_VOL",
+                    close=round(last_close, 2),
+                    level=round(or_edge_val, 2),
+                    vol_bar=int(entry_bar_vol),
+                    vol_avg=int(avg_vol),
                     vol_pct=round(vol_pct, 1) if vol_pct is not None else None,
                 )
             return False, None
@@ -211,13 +226,18 @@ def check_breakout(ticker, side):
 
     # Section I \u2014 Global Permit
     permit_res = tg.eot_glue.evaluate_section_i(
-        side_label, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap,
+        side_label,
+        qqq_5m_close,
+        qqq_ema9,
+        qqq_last,
+        qqq_avwap,
     )
     if not permit_res.get("open"):
         tg._v561_log_skip(
             ticker=ticker,
             reason="V5100_PERMIT:%s" % permit_res.get("reason", "closed"),
-            ts_utc=tg._utc_now_iso(), gate_state=None,
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
         )
         return False, None
 
@@ -235,20 +255,27 @@ def check_breakout(ticker, side):
     elif volumes_eb and volumes_eb[-1] is not None:
         last_completed_vol = volumes_eb[-1]
     vol_check = tg.eot_glue.evaluate_volume_bucket_gate(
-        ticker, minute_of_day_hhmm, last_completed_vol or 0,
+        ticker,
+        minute_of_day_hhmm,
+        last_completed_vol or 0,
     )
     volume_bucket_ok = tg.eot.evaluate_volume_bucket(vol_check)
     if not volume_bucket_ok:
         tg._v561_log_skip(
-            ticker=ticker, reason="V5100_VOLBUCKET:%s" % vol_check.get("gate"),
-            ts_utc=tg._utc_now_iso(), gate_state=None,
+            ticker=ticker,
+            reason="V5100_VOLBUCKET:%s" % vol_check.get("gate"),
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
         )
         return False, None
 
     # Section II.2 \u2014 Boundary Hold (Entry-1 only). Stateless: the
     # last two closed 1m closes vs the OR edge.
     boundary_res = tg.eot_glue.evaluate_boundary_hold_gate(
-        ticker, side_label, or_high_val, or_low_val,
+        ticker,
+        side_label,
+        or_high_val,
+        or_low_val,
     )
 
     # v5.13.0 PR 4 \u2014 Tiger Sovereign Phase 2 gate audit line. Emits
@@ -267,17 +294,22 @@ def check_breakout(ticker, side):
         candle_pass_str = "PASS" if boundary_res.get("hold") else "FAIL"
         last2_str = "n=%d" % bh_consec
         tg.logger.info(
-            "[V510-CAND] symbol=%s gate_volume=%s ratio=%s "
-            "gate_2candle=%s last2=%s",
-            ticker, vol_pass_str, ratio_str, candle_pass_str, last2_str,
+            "[V510-CAND] symbol=%s gate_volume=%s ratio=%s gate_2candle=%s last2=%s",
+            ticker,
+            vol_pass_str,
+            ratio_str,
+            candle_pass_str,
+            last2_str,
         )
     except Exception:
         pass
 
     if not boundary_res.get("hold"):
         tg._v561_log_skip(
-            ticker=ticker, reason="V5100_BOUNDARY:%s" % boundary_res.get("reason"),
-            ts_utc=tg._utc_now_iso(), gate_state=None,
+            ticker=ticker,
+            reason="V5100_BOUNDARY:%s" % boundary_res.get("reason"),
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
         )
         return False, None
 
@@ -292,23 +324,27 @@ def check_breakout(ticker, side):
 
     # NHOD / NLOD: derive from session HOD/LOD vs current_price (strict).
     _prev_hod, _prev_lod, hod_break, lod_break = tg._v570_update_session_hod_lod(
-        ticker, current_price,
+        ticker,
+        current_price,
     )
     is_extreme_print = bool(hod_break if cfg.side.is_long else lod_break)
 
     entry1_decision = tg.eot_glue.evaluate_entry_1_decision(
-        ticker, side_label,
+        ticker,
+        side_label,
         permit_open=True,
         volume_bucket_ok=True,
         boundary_hold_ok=True,
-        di_5m=di_5m, di_1m=di_1m,
+        di_5m=di_5m,
+        di_1m=di_1m,
         is_nhod_or_nlod=is_extreme_print,
     )
     if not entry1_decision.get("fire"):
         tg._v561_log_skip(
             ticker=ticker,
             reason="V5100_ENTRY1:%s" % entry1_decision.get("reason", ""),
-            ts_utc=tg._utc_now_iso(), gate_state=None,
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
         )
         return False, None
 
@@ -316,9 +352,9 @@ def check_breakout(ticker, side):
     # forward to execute_breakout.
     try:
         tg.logger.info(
-            "[V5100-ENTRY] ticker=%s side=%s entry_num=1 di_5m=%s di_1m=%s "
-            "fill_price=%.4f",
-            ticker, side_label,
+            "[V5100-ENTRY] ticker=%s side=%s entry_num=1 di_5m=%s di_1m=%s fill_price=%.4f",
+            ticker,
+            side_label,
             ("%.2f" % di_5m) if di_5m is not None else "None",
             ("%.2f" % di_1m) if di_1m is not None else "None",
             current_price,
@@ -329,17 +365,26 @@ def check_breakout(ticker, side):
 
 
 def paper_shares_for(price: float) -> int:
-    """Dollar-sized paper order: floor(PAPER_DOLLARS_PER_ENTRY / price),
-    min 1. Returns 0 only when price <= 0 (invalid).
+    """Dollar-sized paper order for Entry-1: floor(
+    PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT / price), min 1.
+    Returns 0 only when price <= 0 (invalid).
 
     v3.4.45 \u2014 paper now sizes by notional like RH does, scaled to the
     $100k paper book (default $10k/entry vs RH's $1.5k/$25k). This
     fixes the old flat 10-share behavior that made $400 NVDA cost 80x
     more risk per entry than $5 QBTS.
+
+    v5.13.2 Track A \u2014 spec L-P3-S5 / S-P3-S5 says Entry-1 = 50% of the
+    full target. ENTRY_1_SIZE_PCT (eye_of_tiger) is now wired in here;
+    Entry-2 in broker/positions.py tops the position up to ~100% of
+    PAPER_DOLLARS_PER_ENTRY notional.
     """
     if price <= 0:
         return 0
-    return max(1, int(_tg().PAPER_DOLLARS_PER_ENTRY // price))
+    from eye_of_tiger import ENTRY_1_SIZE_PCT
+
+    dollars = _tg().PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT
+    return max(1, int(dollars // price))
 
 
 def execute_breakout(ticker, current_price, side):
@@ -372,19 +417,25 @@ def execute_breakout(ticker, current_price, side):
         cap_arg = or_dict.get(ticker, current_price)
     else:
         cap_arg = tg.pdc.get(ticker, current_price)
-    stop_price, _stop_capped, _stop_baseline = capped_stop_fn(
-        cap_arg, current_price
-    )
+    stop_price, _stop_capped, _stop_baseline = capped_stop_fn(cap_arg, current_price)
     if _stop_capped:
         if cfg.side.is_long:
             tg.logger.info(
                 "%s stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
-                ticker, _stop_baseline, stop_price, current_price, tg.MAX_STOP_PCT * 100,
+                ticker,
+                _stop_baseline,
+                stop_price,
+                current_price,
+                tg.MAX_STOP_PCT * 100,
             )
         else:
             tg.logger.info(
                 "%s short stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
-                ticker, _stop_baseline, stop_price, current_price, tg.MAX_STOP_PCT * 100,
+                ticker,
+                _stop_baseline,
+                stop_price,
+                current_price,
+                tg.MAX_STOP_PCT * 100,
             )
 
     # Dollar-sized paper entry; shares scale with price.
@@ -392,18 +443,20 @@ def execute_breakout(ticker, current_price, side):
     notional = current_price * shares
     if shares <= 0:
         if cfg.side.is_long:
-            tg.logger.warning("[paper] skip %s \u2014 invalid price $%.2f",
-                              ticker, current_price)
+            tg.logger.warning("[paper] skip %s \u2014 invalid price $%.2f", ticker, current_price)
         else:
-            tg.logger.warning("[paper] skip short %s \u2014 invalid price $%.2f",
-                              ticker, current_price)
+            tg.logger.warning(
+                "[paper] skip short %s \u2014 invalid price $%.2f", ticker, current_price
+            )
         return
 
     # Long entry needs cash to buy; short entry credits cash on open.
     if cfg.side.is_long and notional > tg.paper_cash:
         tg.logger.info(
             "[paper] skip %s \u2014 insufficient cash (need $%.2f, have $%.2f)",
-            ticker, notional, tg.paper_cash,
+            ticker,
+            notional,
+            tg.paper_cash,
         )
         return
 
@@ -428,7 +481,9 @@ def execute_breakout(ticker, current_price, side):
         try:
             _, _, _entry_compass = tg._v590_compass_for_gate()
             tg._v590_record_entry_compass(
-                ticker, _v570_side_label, _entry_compass,
+                ticker,
+                _v570_side_label,
+                _entry_compass,
             )
         except Exception:
             pass
@@ -501,8 +556,15 @@ def execute_breakout(ticker, current_price, side):
 
     tg.paper_log(
         "%s %s %d @ $%.2f (limit $%.2f) stop=$%.2f entry#%d"
-        % (cfg.paper_log_entry_verb, ticker, shares, current_price,
-           limit_price, stop_price, entry_num)
+        % (
+            cfg.paper_log_entry_verb,
+            ticker,
+            shares,
+            current_price,
+            limit_price,
+            stop_price,
+            entry_num,
+        )
     )
 
     # v5.1.2 \u2014 emit forensic entry snapshot. Strictly additive: this
@@ -529,7 +591,8 @@ def execute_breakout(ticker, current_price, side):
         dd_pct = 0.0
         tg._v512_log_entry_extension(
             ticker,
-            bid=bid_v, ask=ask_v,
+            bid=bid_v,
+            ask=ask_v,
             cash=round(tg.paper_cash, 2),
             equity=round(equity_v, 2),
             open_positions=open_pos,
@@ -542,9 +605,7 @@ def execute_breakout(ticker, current_price, side):
     or_edge_e = or_dict.get(ticker, 0)
     pdc_e = tg.pdc.get(ticker, 0)
     SEP_E = "\u2500" * 34
-    stop_label = (
-        cfg.stop_capped_label if _stop_capped else cfg.stop_baseline_label
-    )
+    stop_label = cfg.stop_capped_label if _stop_capped else cfg.stop_baseline_label
     if cfg.side.is_long:
         sig_lines = "Signal : ORB Breakout \u2191\n"
         sig_lines += "  1m close > OR High \u2713\n"
@@ -561,10 +622,22 @@ def execute_breakout(ticker, current_price, side):
             "%s"
             "Time   : %s\n"
             "%s"
-        ) % (ticker, entry_num, SEP_E,
-             current_price, limit_price,
-             shares, format(notional, ",.2f"),
-             stop_price, stop_label, or_edge_e, pdc_e, sig_lines, now_hhmm, SEP_E)
+        ) % (
+            ticker,
+            entry_num,
+            SEP_E,
+            current_price,
+            limit_price,
+            shares,
+            format(notional, ",.2f"),
+            stop_price,
+            stop_label,
+            or_edge_e,
+            pdc_e,
+            sig_lines,
+            now_hhmm,
+            SEP_E,
+        )
     else:
         sig_lines = "Signal   : Wounded Buffalo \u2193\n"
         sig_lines += "  1m close < OR Low \u2713\n"
@@ -583,21 +656,35 @@ def execute_breakout(ticker, current_price, side):
             "%s"
             "Time     : %s\n"
             "%s"
-        ) % (entry_num, SEP_E, ticker, current_price,
-             shares, format(notional, ",.2f"),
-             stop_price, stop_label, or_edge_e, pdc_e, sig_lines, now_hhmm, SEP_E)
+        ) % (
+            entry_num,
+            SEP_E,
+            ticker,
+            current_price,
+            shares,
+            format(notional, ",.2f"),
+            stop_price,
+            stop_label,
+            or_edge_e,
+            pdc_e,
+            sig_lines,
+            now_hhmm,
+            SEP_E,
+        )
     tg.send_telegram(msg)
 
     tg.save_paper_state()
 
-    tg._emit_signal({
-        "kind": cfg.entry_signal_kind,
-        "ticker": ticker,
-        "price": float(current_price),
-        "reason": cfg.entry_signal_reason,
-        "timestamp_utc": tg._utc_now_iso(),
-        "main_shares": int(shares),
-    })
+    tg._emit_signal(
+        {
+            "kind": cfg.entry_signal_kind,
+            "ticker": ticker,
+            "price": float(current_price),
+            "reason": cfg.entry_signal_reason,
+            "timestamp_utc": tg._utc_now_iso(),
+            "main_shares": int(shares),
+        }
+    )
 
 
 def close_breakout(ticker, price, side, reason="STOP"):
@@ -686,7 +773,7 @@ def close_breakout(ticker, price, side, reason="STOP"):
     }
     history_list.append(history_record)
     if len(history_list) > tg.TRADE_HISTORY_MAX:
-        history_list[:] = history_list[-tg.TRADE_HISTORY_MAX:]
+        history_list[:] = history_list[-tg.TRADE_HISTORY_MAX :]
 
     # v5.2.0 \u2014 mirror live exit decision to all shadow configs. Same
     # ticker/price/reason as the live close, so shadow P&L tracks the
@@ -726,9 +813,10 @@ def close_breakout(ticker, price, side, reason="STOP"):
     _log_row.update(tg._trade_log_snapshot_pos(pos))
     tg.trade_log_append(_log_row)
 
-    tg.paper_log("%s %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
-                 % (cfg.paper_log_close_verb, ticker, shares, price,
-                    reason, pnl_val, pnl_pct))
+    tg.paper_log(
+        "%s %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
+        % (cfg.paper_log_close_verb, ticker, shares, price, reason, pnl_val, pnl_pct)
+    )
 
     # v5.6.1 D4 \u2014 [TRADE_CLOSED] lifecycle line. Pairs to [ENTRY] via
     # entry_id. Reason maps the legacy short token to the spec'd
@@ -738,11 +826,15 @@ def close_breakout(ticker, price, side, reason="STOP"):
     # and per_trade_brake.
     try:
         _entry_id_close = pos.get("entry_id") or tg._v561_compose_entry_id(
-            ticker, pos.get("entry_ts_utc") or "")
+            ticker, pos.get("entry_ts_utc") or ""
+        )
         _reason_lc = str(reason or "").lower()
         _v571_reasons = {
-            "forensic_stop", "per_trade_brake",
-            "be_stop", "ema_trail", "velocity_fuse",
+            "forensic_stop",
+            "per_trade_brake",
+            "be_stop",
+            "ema_trail",
+            "velocity_fuse",
         }
         if _reason_lc in _v571_reasons:
             _exit_reason = _reason_lc
@@ -795,10 +887,22 @@ def close_breakout(ticker, price, side, reason="STOP"):
             "Reason : %s\n"
             "In: %s   Out: %s\n"
             "%s"
-        ) % (exit_emoji_glyph, ticker, SEP_X,
-             shares, entry_price, price,
-             format(entry_total_val, ",.2f"), format(notional, ",.2f"),
-             pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
+        ) % (
+            exit_emoji_glyph,
+            ticker,
+            SEP_X,
+            shares,
+            entry_price,
+            price,
+            format(entry_total_val, ",.2f"),
+            format(notional, ",.2f"),
+            pnl_val,
+            pnl_pct,
+            reason_label,
+            entry_hhmm,
+            now_hhmm,
+            SEP_X,
+        )
     else:
         msg = (
             "%s SHORT CLOSED\n"
@@ -811,19 +915,33 @@ def close_breakout(ticker, price, side, reason="STOP"):
             "Reason : %s\n"
             "In: %s   Out: %s\n"
             "%s"
-        ) % (exit_emoji_glyph, SEP_X, ticker, shares,
-             entry_price, format(entry_total_val, ",.2f"),
-             price, format(notional, ",.2f"),
-             pnl_val, pnl_pct, reason_label, entry_hhmm, now_hhmm, SEP_X)
+        ) % (
+            exit_emoji_glyph,
+            SEP_X,
+            ticker,
+            shares,
+            entry_price,
+            format(entry_total_val, ",.2f"),
+            price,
+            format(notional, ",.2f"),
+            pnl_val,
+            pnl_pct,
+            reason_label,
+            entry_hhmm,
+            now_hhmm,
+            SEP_X,
+        )
     tg.send_telegram(msg)
 
     tg.save_paper_state()
 
-    tg._emit_signal({
-        "kind": cfg.exit_signal_kind,
-        "ticker": ticker,
-        "price": float(price),
-        "reason": reason,
-        "timestamp_utc": tg._utc_now_iso(),
-        "main_shares": int(shares),
-    })
+    tg._emit_signal(
+        {
+            "kind": cfg.exit_signal_kind,
+            "ticker": ticker,
+            "price": float(price),
+            "reason": reason,
+            "timestamp_utc": tg._utc_now_iso(),
+            "main_shares": int(shares),
+        }
+    )
