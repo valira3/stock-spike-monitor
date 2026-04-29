@@ -4,6 +4,62 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.7 — 2026-04-29 — Entry-2 share parity (N1) + order-type wiring through close path
+
+Two fixes from the v5.13.4 spec audit:
+
+### N1 (sub-P2): Entry-2 sized to match Entry-1 share count
+
+Spec (STRATEGY.md L-P3-S6 / S-P3-S6) mandates a **50/50 split by share
+count**: "BUY remaining 50%" of a 50/50 split means E2 share count
+equals E1 share count. Pre-v5.13.7 we computed
+`target_full = floor(PAPER_DOLLARS_PER_ENTRY / current_price)` and
+`E2 = target_full - E1` — dollar-notional parity, which produced an
+asymmetric split whenever the price drifted between Entry-1 fill and
+Entry-2 trigger.
+
+**Behavioral effect on paper P&L (long side, $10,000/entry):**
+
+| Scenario | E1 price | E1 shares | E2 price | E2 (pre-v5.13.7) | E2 (v5.13.7) |
+|---|---|---|---|---|---|
+| Same price | $50 | 100 | $50 | 100 | 100 |
+| Price up 10% | $50 | 100 | $55 | 81 (asymmetric) | 100 (spec-correct) |
+| Price down 4% | $50 | 100 | $48 | 108 (asymmetric) | 100 (spec-correct) |
+
+Defensive fallback: if `e1_shares == 0` (Entry-1 didn't actually fire —
+shouldn't happen but be safe), Entry-2 keeps the legacy dollar-parity
+sizing so we never silently size to 1 share.
+
+The `ENTRY_1_SIZE_PCT + ENTRY_2_SIZE_PCT == 1.0` runtime assert is
+preserved.
+
+### MINOR: order-type wiring through close path
+
+`broker.order_types.order_type_for_reason` already maps reason codes
+to `LIMIT` / `STOP_MARKET` / `MARKET` per spec, but `close_breakout`
+in `broker/orders.py` did not consume it — the resolved type was
+metadata-only. The paper book is unaffected (it ignores order_type),
+but a future Alpaca live bridge would have always submitted MARKET.
+
+Now:
+- `close_breakout` resolves `order_type_for_reason(reason)` and
+  threads it into the `_emit_signal` payload (`order_type` field) so
+  any downstream executor sees it.
+- The v5.13.6 lifecycle log emits a new `ORDER_SUBMIT` event on close
+  carrying the resolved `order_type`. `ORDER_FILL` on close also now
+  carries it for forensic alignment.
+
+**No behavior change in paper P&L** — paper book ignores order_type;
+this fix is exclusively for live broker correctness.
+
+### Out of scope
+
+- No changes to entry sizing percentages (still 50/50).
+- No spec rule changes.
+- Legacy exit code path (gated, unrelated) untouched.
+
+---
+
 ## v5.13.6 — 2026-04-29 — Per-position lifecycle event log
 
 Adds a forensic, append-only per-position event log so every gate
