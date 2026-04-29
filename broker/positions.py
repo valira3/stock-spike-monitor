@@ -496,24 +496,30 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
     if e1_ts and e1_ts >= now_iso:
         return
 
-    # v5.13.2 Track A \u2014 spec L-P3-S6 / S-P3-S6: Entry-2 brings the
-    # position up to ~100% of PAPER_DOLLARS_PER_ENTRY notional (Entry-1
-    # already laid down 50% via paper_shares_for + ENTRY_1_SIZE_PCT).
-    # We compute the full-notional target at the current_price the
-    # Entry-2 trigger sees, then top up by (target_full - e1_shares).
-    # Pre-v5.13.2 this was `e1_shares // 2` which combined with the
-    # then-100% Entry-1 sizing produced ~150% notional total.
+    # v5.13.7 \u2014 N1: spec L-P3-S6 / S-P3-S6 mandates a 50/50 split by
+    # SHARE COUNT, not by dollar notional. Pre-v5.13.7 we computed
+    # target_full = floor(PAPER_DOLLARS_PER_ENTRY / current_price) and
+    # then E2 = target_full - e1_shares; that produced an asymmetric
+    # share split whenever the price drifted between Entry-1 fill and
+    # Entry-2 trigger. The spec says "BUY remaining 50%" of a 50/50
+    # split, which means E2 == E1 in the typical full-fill case.
+    # Defensive fallback: if e1_shares is missing/zero (Entry-1 didn't
+    # actually fire \u2014 shouldn't happen), preserve the old dollar-parity
+    # behavior so we never silently size to 1 share.
     from eye_of_tiger import ENTRY_1_SIZE_PCT, ENTRY_2_SIZE_PCT  # noqa: F401
 
     e1_shares = int(pos.get("v5104_entry1_shares") or pos.get("shares") or 0)
-    target_full = max(1, int(tg.PAPER_DOLLARS_PER_ENTRY // float(current_price)))
     # ENTRY_2_SIZE_PCT participates in the sanity check: full = E1 + E2,
     # so E1+E2 \u2248 1.0. If somebody changes the constants in eye_of_tiger
     # the assertion below catches it before we ship a non-spec sizing.
     assert abs((ENTRY_1_SIZE_PCT + ENTRY_2_SIZE_PCT) - 1.0) < 1e-6, (
         "ENTRY_1_SIZE_PCT + ENTRY_2_SIZE_PCT must sum to 1.0"
     )
-    e2_shares = max(1, target_full - e1_shares)
+    if e1_shares > 0:
+        e2_shares = e1_shares
+    else:
+        target_full = max(1, int(tg.PAPER_DOLLARS_PER_ENTRY // float(current_price)))
+        e2_shares = max(1, target_full)
     if e2_shares <= 0:
         return
 

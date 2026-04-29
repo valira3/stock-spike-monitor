@@ -9,6 +9,7 @@ import sys as _sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from broker.order_types import order_type_for_reason
 from broker.stops import _capped_long_stop, _capped_short_stop  # noqa: F401
 
 # v5.13.6 \u2014 per-position lifecycle log. Best-effort import so a missing
@@ -794,6 +795,12 @@ def close_breakout(ticker, price, side, reason="STOP"):
     this single body is parameterized by SideConfig. Synthetic-harness
     goldens enforce byte-equal Telegram + paper_log + trade_log output
     against the v4.8.2 baseline.
+
+    v5.13.7 \u2014 the resolved order type from ``order_type_for_reason``
+    is now threaded into the ``_emit_signal`` payload and the lifecycle
+    log's ``ORDER_SUBMIT`` event so a future Alpaca live bridge submits
+    LIMIT / STOP_MARKET / MARKET per spec instead of always defaulting
+    to MARKET.
     """
     tg = _tg()
     cfg = tg.CONFIGS[side]
@@ -802,6 +809,8 @@ def close_breakout(ticker, price, side, reason="STOP"):
 
     if ticker not in positions_dict:
         return
+
+    resolved_order_type = order_type_for_reason(reason)
 
     tg._last_exit_time[ticker] = tg.datetime.now(timezone.utc)
 
@@ -1043,6 +1052,9 @@ def close_breakout(ticker, price, side, reason="STOP"):
             "reason": reason,
             "timestamp_utc": tg._utc_now_iso(),
             "main_shares": int(shares),
+            # v5.13.7 \u2014 spec-correct order type for the live broker.
+            # Paper book ignores this; the Alpaca bridge consumes it.
+            "order_type": resolved_order_type,
         }
     )
 
@@ -1075,6 +1087,25 @@ def close_breakout(ticker, price, side, reason="STOP"):
                 side=side_lbl,
                 entry_ts_utc=pos.get("entry_ts_utc"),
             )
+            # v5.13.7 \u2014 forensic record of the order type the close
+            # would submit to a live broker. Paper book ignores this;
+            # carrying it on ORDER_SUBMIT means a future Alpaca bridge
+            # has the spec-mandated LIMIT / STOP_MARKET / MARKET split.
+            ll.log_event(
+                position_id,
+                "ORDER_SUBMIT",
+                {
+                    "side": side_lbl,
+                    "qty": int(shares),
+                    "price": float(price),
+                    "raw_reason": str(reason or ""),
+                    "order_type": resolved_order_type,
+                    "action": "close",
+                },
+                ticker=ticker,
+                side=side_lbl,
+                entry_ts_utc=pos.get("entry_ts_utc"),
+            )
             ll.log_event(
                 position_id,
                 "ORDER_FILL",
@@ -1083,6 +1114,7 @@ def close_breakout(ticker, price, side, reason="STOP"):
                     "qty": int(shares),
                     "fill_price": float(price),
                     "action": "close",
+                    "order_type": resolved_order_type,
                 },
                 ticker=ticker,
                 side=side_lbl,
