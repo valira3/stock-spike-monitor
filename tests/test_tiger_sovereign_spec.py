@@ -232,7 +232,6 @@ def test_L_P3_S6():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.spec_gap("PR-2", "L-P4-A")
 def test_L_P4_A():
     """L-P4-A: Trade lost $500 OR price dropped 1% in single minute → exit 100%.
 
@@ -248,7 +247,6 @@ def test_L_P4_A():
     assert "check_alarm_a" in body, "L-P4-A: check_alarm_a() not defined."
 
 
-@pytest.mark.spec_gap("PR-2", "L-P4-B")
 def test_L_P4_B():
     """L-P4-B: 5-minute candle CLOSE below 5m 9-EMA → exit 100%.
 
@@ -430,7 +428,6 @@ def test_S_P3_S6():
     )
 
 
-@pytest.mark.spec_gap("PR-2", "S-P4-A")
 def test_S_P4_A():
     """S-P4-A: Trade lost $500 OR price spiked 1% in single minute → exit 100%.
 
@@ -443,7 +440,6 @@ def test_S_P4_A():
     assert "check_alarm_a" in body, "S-P4-A: check_alarm_a() missing."
 
 
-@pytest.mark.spec_gap("PR-2", "S-P4-B")
 def test_S_P4_B():
     """S-P4-B: 5-minute candle CLOSE above 5m 9-EMA → exit 100%.
 
