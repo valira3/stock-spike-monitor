@@ -4,6 +4,101 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.0 — 2026-04-29 — Tiger Sovereign migration
+
+Adopts the Tiger Sovereign spec (`STRATEGY.md` v2026-04-28h) as the
+canonical strategy, replacing the v5 strategy doc. Rule IDs from the
+spec are wired into per-rule tests in `tests/test_tiger_sovereign_spec.py`
+and code comments cite the rule IDs throughout. All 30 rule tests pass
+with zero `@pytest.mark.spec_gap` markers remaining.
+
+### PR 1 (#216) — Spec adoption + per-rule test scaffold
+
+- Replaced `STRATEGY.md` with the Tiger Sovereign spec verbatim
+- Archived prior strategy at `docs/spec_archive/v5_strategy_pre_tiger_sovereign.md`
+- Added `tests/test_tiger_sovereign_spec.py` with one test per rule ID
+  (12 long, 12 short, 6 shared = 30 tests)
+- Added `tests/spec_gap_report.py` to inventory `@pytest.mark.spec_gap`
+  markers (PR-2 through PR-6)
+- Behavior change: NONE — read-only
+
+### PR 2 (#217) — Sentinel Loop with parallel Alarms A & B
+
+- New `engine/sentinel.py` with pure functions:
+  `check_alarm_a` (-$500 hard floor + -1%/min velocity),
+  `check_alarm_b` (5m close vs 9-EMA),
+  `evaluate_sentinel` (parallel — never short-circuits)
+- Wired into per-tick loop in `broker/positions.py`
+- Per-position bounded P&L history (deque, maxlen=120)
+
+### PR 3 (#219) — Titan Grip Harvest ratchet (Alarm C)
+
+- New `engine/titan_grip.py` state machine implementing Stages 1-4:
+  Stage 1 anchor at OR_High + 0.93%, Stage 1 stop at +0.40%,
+  Stage 2 micro-ratchet (+0.25% per step),
+  Stage 3 second harvest at +1.88%,
+  Stage 4 runner with continued +0.25% trail
+- Short side mirrors with OR_Low minus the same offsets
+- Replaced prior tier-table ratchet
+- Each emitted action carries a spec-mandated `order_type`
+  (LIMIT for harvests, STOP_MARKET for ratchet/runner)
+
+### PR 4 (#218) — Phase 2 entry gates
+
+- New `engine/volume_baseline.py` with 55-day rolling per-minute
+  volume baseline (`L-P2-S3` / `S-P2-S3`: volume ≥ 100% of average)
+- Two-consecutive-1m-candle confirmation above OR_High / below OR_Low
+  (`L-P2-S4` / `S-P2-S4`)
+- Tightens Phase 2 — entries that previously fired on a single candle
+  now require the volume gate AND two confirmed closes
+
+### PR 5 (#220) — Timing rules
+
+- `SHARED-CUTOFF`: New-position cutoff moved from 15:30 ET to 15:44:59 ET
+- `SHARED-EOD`: EOD flush moved from 15:59:50 ET to 15:49:59 ET
+- `SHARED-HUNT`: Verified unlimited hunting until cutoff
+- `SHARED-CB`: Verified daily circuit breaker at -$1,500
+
+### PR 6 (this PR) — Order types + version bump
+
+- New `broker/order_types.py` — single source of truth for the
+  reason → order-type mapping per STRATEGY.md §3:
+  - Profit-taking (Stage 1, Stage 3 harvest) → LIMIT
+  - Defensive stops (Alarm A1, Alarm A2, Alarm B, Stage 2 ratchet,
+    Stage 4 runner exit) → STOP MARKET
+  - EOD flush, Daily Circuit Breaker → MARKET
+- Public helpers: `order_type_for_reason(reason)`, `submit_exit(...)`
+- Removed both `@pytest.mark.spec_gap("PR-6", ...)` markers; tests now
+  assert `order_type_for_reason` returns the spec-correct type
+- Added `tests/test_order_types.py` covering long + short side
+  scenarios for every reason class
+- BOT_VERSION 5.12.0 → 5.13.0 in both `trade_genius.py` and `bot_version.py`
+- CURRENT_MAIN_NOTE updated to v5.13.0 — Tiger Sovereign
+
+### Order-type mapping (PR 6 reference table)
+
+| Spec rule | Reason code | Order type |
+|---|---|---|
+| `L-P4-C-S1` / `S-P4-C-S1` | `C1_STAGE1_HARVEST` | LIMIT |
+| `L-P4-C-S2` / `S-P4-C-S2` | `C2_RATCHET` | STOP MARKET |
+| `L-P4-C-S3` / `S-P4-C-S3` | `C3_STAGE3_HARVEST` | LIMIT |
+| `L-P4-C-S4` / `S-P4-C-S4` | `C4_RUNNER_EXIT` | STOP MARKET |
+| `L-P4-A` / `S-P4-A` | `sentinel_alarm_a` | STOP MARKET |
+| `L-P4-B` / `S-P4-B` | `sentinel_alarm_b` | STOP MARKET |
+| `SHARED-EOD` | `EOD` | MARKET |
+| `SHARED-CB` | `DAILY_LOSS_LIMIT` | MARKET |
+
+### Validation
+
+- 30/30 spec tests pass; `tests/spec_gap_report.py` inventory empty
+- Golden harness (`tests/golden/v5_10_7_session_2026-04-28.jsonl`)
+  unchanged at 10,971,364 bytes — PR 6 only touches order-submission
+  decision logic, not the 5m EMA computation that the harness records
+- Synthetic harness baseline preserved
+- Smoke test: 361 + 30 spec tests passing
+
+---
+
 ## v5.12.0 — 2026-04-29 — Executors extraction + alias purge
 
 ### PR 1 (#212) — executors/base.py — TradeGeniusBase extraction

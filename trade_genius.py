@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.12.0"
+BOT_VERSION = "5.13.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,11 +103,12 @@ BOT_VERSION = "5.12.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.12.0 \u2014 executors\n"
-    "TradeGeniusBase, Val, Gene\n"
-    "moved to executors/.\n"
-    "v5.11.x aliases purged.\n"
-    "Zero behavior change."
+    "v5.13.0 \u2014 Tiger Sovereign\n"
+    "Sentinel Loop (Alarms A/B/C),\n"
+    "Titan Grip ratchet 0.93/1.88,\n"
+    "100% vol + 2-candle entry,\n"
+    "15:44 cutoff, 15:49 EOD,\n"
+    "LIMIT harvest / STOP MARKET."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

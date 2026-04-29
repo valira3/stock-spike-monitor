@@ -562,7 +562,6 @@ def test_SHARED_HUNT():
     )
 
 
-@pytest.mark.spec_gap("PR-6", "SHARED-ORDER-PROFIT")
 def test_SHARED_ORDER_PROFIT():
     """SHARED-ORDER-PROFIT: All profit-taking exits via LIMIT orders.
 
@@ -570,19 +569,31 @@ def test_SHARED_ORDER_PROFIT():
     """
     spec = _spec_text("SHARED-ORDER-PROFIT")
     sentinel_path = REPO_ROOT / "engine" / "sentinel.py"
-    # PR 6 audits exit code paths; we expect explicit "LIMIT" markers
-    # in the harvest stages once PR 3+6 land.
+    order_types_path = REPO_ROOT / "broker" / "order_types.py"
     assert sentinel_path.exists(), (
         "SHARED-ORDER-PROFIT: engine/sentinel.py absent. Spec: " + spec
     )
+    assert order_types_path.exists(), (
+        "SHARED-ORDER-PROFIT: broker/order_types.py absent. Spec: " + spec
+    )
     body = sentinel_path.read_text(encoding="utf-8")
+    ot_body = order_types_path.read_text(encoding="utf-8")
     assert "LIMIT" in body, (
-        "SHARED-ORDER-PROFIT: harvest exits must use LIMIT order type. "
+        "SHARED-ORDER-PROFIT: harvest exits must reference LIMIT. "
         "Spec: " + spec
     )
+    # PR 6: order_types.py owns the reason→type mapping. Harvest
+    # reasons must map to LIMIT.
+    from broker.order_types import (
+        order_type_for_reason,
+        REASON_STAGE1_HARVEST,
+        REASON_STAGE3_HARVEST,
+        ORDER_TYPE_LIMIT,
+    )
+    assert order_type_for_reason(REASON_STAGE1_HARVEST) == ORDER_TYPE_LIMIT
+    assert order_type_for_reason(REASON_STAGE3_HARVEST) == ORDER_TYPE_LIMIT
 
 
-@pytest.mark.spec_gap("PR-6", "SHARED-ORDER-STOP")
 def test_SHARED_ORDER_STOP():
     """SHARED-ORDER-STOP: All defensive stops via STOP MARKET orders.
 
@@ -590,11 +601,29 @@ def test_SHARED_ORDER_STOP():
     """
     spec = _spec_text("SHARED-ORDER-STOP")
     sentinel_path = REPO_ROOT / "engine" / "sentinel.py"
+    order_types_path = REPO_ROOT / "broker" / "order_types.py"
     assert sentinel_path.exists(), (
         "SHARED-ORDER-STOP: engine/sentinel.py absent. Spec: " + spec
     )
+    assert order_types_path.exists(), (
+        "SHARED-ORDER-STOP: broker/order_types.py absent. Spec: " + spec
+    )
     body = sentinel_path.read_text(encoding="utf-8")
     assert "STOP" in body and "MARKET" in body, (
-        "SHARED-ORDER-STOP: defensive stops must use STOP MARKET. "
+        "SHARED-ORDER-STOP: defensive stops must reference STOP MARKET. "
         "Spec: " + spec
     )
+    # PR 6: order_types.py owns the reason→type mapping. Stop
+    # reasons must map to STOP_MARKET.
+    from broker.order_types import (
+        order_type_for_reason,
+        REASON_ALARM_A,
+        REASON_ALARM_B,
+        REASON_RATCHET,
+        REASON_RUNNER_EXIT,
+        ORDER_TYPE_STOP_MARKET,
+    )
+    assert order_type_for_reason(REASON_ALARM_A) == ORDER_TYPE_STOP_MARKET
+    assert order_type_for_reason(REASON_ALARM_B) == ORDER_TYPE_STOP_MARKET
+    assert order_type_for_reason(REASON_RATCHET) == ORDER_TYPE_STOP_MARKET
+    assert order_type_for_reason(REASON_RUNNER_EXIT) == ORDER_TYPE_STOP_MARKET
