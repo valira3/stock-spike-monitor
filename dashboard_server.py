@@ -898,6 +898,46 @@ def snapshot() -> dict[str, Any]:
                 "per_position_v510": {},
             }
 
+        # v5.13.2 \u2014 Tiger Sovereign Phase 1\u20134 snapshot for the rewritten
+        # dashboard panel. Sits alongside the v5.10.6 fields above; the
+        # dashboard reads `tiger_sovereign` directly, while the legacy
+        # fields stay for backward compatibility.
+        try:
+            import v5_13_2_snapshot as _ts_snap
+
+            tiger_sovereign_block = _ts_snap.build_tiger_sovereign_snapshot(
+                m,
+                tickers,
+                longs,
+                shorts,
+                prices,
+            )
+        except Exception:
+            logger.exception("v5.13.2 tiger_sovereign snapshot build failed")
+            tiger_sovereign_block = {
+                "phase1": {},
+                "phase2": [],
+                "phase3": [],
+                "phase4": [],
+            }
+
+        # v5.13.2 \u2014 runtime feature-flag indicators. Dashboard surfaces
+        # these as small ON/OFF pills below the KPI row so the operator
+        # can see at-a-glance which spec rules are currently overridden
+        # via env vars.
+        try:
+            from engine import feature_flags as _ff
+
+            feature_flags_block = {
+                "volume_gate_enabled": bool(getattr(_ff, "VOLUME_GATE_ENABLED", False)),
+                "legacy_exits_enabled": bool(getattr(_ff, "LEGACY_EXITS_ENABLED", False)),
+            }
+        except Exception:
+            feature_flags_block = {
+                "volume_gate_enabled": False,
+                "legacy_exits_enabled": False,
+            }
+
         # v5.5.7 \u2014 surface the paper book's most recent emitted
         # signal so the Main tab can render a LAST SIGNAL card with the
         # same shape the per-executor panels already use.
@@ -986,10 +1026,18 @@ def snapshot() -> dict[str, Any]:
             ),
             # v5.10.6 \u2014 Eye-of-the-Tiger live state surface for the
             # dashboard's v5.10 panel. See v5_10_6_snapshot.py for the
-            # field schema.
+            # field schema. Kept for backward compatibility \u2014 the
+            # rewritten v5.13.2 dashboard reads `tiger_sovereign` below.
             "section_i_permit": v510_block.get("section_i_permit", {}),
             "per_ticker_v510": v510_block.get("per_ticker_v510", {}),
             "per_position_v510": v510_block.get("per_position_v510", {}),
+            # v5.13.2 \u2014 Tiger Sovereign Phase 1\u20134 snapshot for the
+            # rewritten dashboard panel. See v5_13_2_snapshot.py for
+            # the field schema.
+            "tiger_sovereign": tiger_sovereign_block,
+            # v5.13.2 \u2014 runtime feature-flag indicators (Volume Gate,
+            # Legacy Exits). Operator visibility for env-var overrides.
+            "feature_flags": feature_flags_block,
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)
