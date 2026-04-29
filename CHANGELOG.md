@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.11.2 — Broker / position-management extraction (in progress)
+
+### PR 1 — broker/stops.py
+
+- Created `broker/` package
+- Moved stop-management helpers (~600 lines) out of `trade_genius.py`:
+  `_breakeven_long_stop`, `_breakeven_short_stop`, `_capped_long_stop`,
+  `_capped_short_stop`, `_ladder_stop_long`, `_ladder_stop_short`,
+  `_retighten_long_stop`, `_retighten_short_stop`, `retighten_all_stops`
+- `telegram_commands.py` now imports `retighten_all_stops` from `broker.stops`
+- `side.py` `getattr(trade_genius, capped_stop_fn_name)` continues to resolve via deprecation alias
+- Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
+- Boot log: `[BROKER] modules loaded: stops`
+
+---
+
 ## v5.11.1 — 2026-04-29 — Telegram handler extraction
 
 ### PR 1 — telegram_ui/charts.py
