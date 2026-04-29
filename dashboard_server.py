@@ -2426,6 +2426,75 @@ async def h_stream(request):
     return resp
 
 
+# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# v5.13.6 \u2014 per-position lifecycle log endpoints
+# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+_LIFECYCLE_POSITION_ID_RE = re.compile(r"^[A-Za-z0-9._-]+_\d{8}T\d{6}Z_(long|short)$")
+
+
+def _lifecycle_logger_safe():
+    try:
+        import lifecycle_logger as _ll
+
+        return _ll.get_default_logger()
+    except Exception:
+        return None
+
+
+async def h_lifecycle_positions(request):
+    """GET /api/lifecycle/positions?status=open|recent|closed|all&limit=20"""
+    from aiohttp import web
+
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    status = (request.query.get("status") or "all").strip().lower()
+    if status not in ("open", "closed", "recent", "all"):
+        status = "all"
+    try:
+        limit = int(request.query.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    ll = _lifecycle_logger_safe()
+    if ll is None:
+        return web.json_response(
+            {"ok": False, "error": "lifecycle_unavailable", "positions": []}, status=200
+        )
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(None, lambda: ll.list_positions(status, limit))
+    return web.json_response({"ok": True, "count": len(rows), "positions": rows})
+
+
+async def h_lifecycle_position(request):
+    """GET /api/lifecycle/{position_id}?since_seq=N \u2014 full timeline."""
+    from aiohttp import web
+
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    position_id = (request.match_info.get("position_id") or "").strip()
+    if not _LIFECYCLE_POSITION_ID_RE.match(position_id):
+        return web.json_response({"ok": False, "error": "bad position_id"}, status=400)
+    try:
+        since_seq = int(request.query.get("since_seq", "0"))
+    except (TypeError, ValueError):
+        since_seq = 0
+    ll = _lifecycle_logger_safe()
+    if ll is None:
+        return web.json_response(
+            {"ok": False, "error": "lifecycle_unavailable", "events": []}, status=200
+        )
+    loop = asyncio.get_running_loop()
+    events = await loop.run_in_executor(None, lambda: ll.read_events(position_id, since_seq))
+    return web.json_response(
+        {
+            "ok": True,
+            "position_id": position_id,
+            "count": len(events),
+            "events": events,
+        }
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # Thread entrypoint — started from trade_genius.py
 # ─────────────────────────────────────────────────────────────
@@ -2446,6 +2515,9 @@ def _build_app():
     app.router.add_get("/api/indices", h_indices)
     # v4.11.0 \u2014 health-pill tap-to-expand endpoint.
     app.router.add_get("/api/errors/{executor}", h_errors)
+    # v5.13.6 \u2014 per-position lifecycle event log endpoints.
+    app.router.add_get("/api/lifecycle/positions", h_lifecycle_positions)
+    app.router.add_get("/api/lifecycle/{position_id}", h_lifecycle_position)
     app.router.add_get("/stream", h_stream)
     if _STATIC_DIR.exists():
         app.router.add_static("/static/", path=_STATIC_DIR, show_index=False)

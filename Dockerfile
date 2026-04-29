@@ -39,6 +39,10 @@ COPY v5_10_1_integration.py .
 # would crash dashboard_server's snapshot() with ModuleNotFoundError.
 COPY v5_10_6_snapshot.py .
 COPY v5_13_2_snapshot.py .
+# v5.13.6 \u2014 per-position lifecycle event log. Missing this COPY would
+# crash trade_genius at boot since broker.orders / broker.positions
+# import the module for entry/sentinel/exit hooks.
+COPY lifecycle_logger.py .
 # v5.1.0 — Forensic Volume Filter module (imported by trade_genius.py).
 COPY volume_profile.py .
 # v5.1.2 — Forensic capture: indicator math + 1m bar JSONL archive

@@ -1542,7 +1542,7 @@
   }
 
   // --- Tab switching ---------------------------------------------------
-  const TABS = ["main", "val", "gene", "shadow"];
+  const TABS = ["main", "val", "gene", "shadow", "lifecycle"];
   let activeTab = "main";
 
   // v4.1.4-dash \u2014 H2: one-shot /api/state warmup when user lands on
@@ -1608,6 +1608,11 @@
       // tab activation; the 60s loop below skips ticks on other tabs.
       if (typeof window.__tgPollShadowCharts === "function") {
         window.__tgPollShadowCharts();
+      }
+    }
+    if (name === "lifecycle") {
+      if (typeof window.__tgLifecycleActivate === "function") {
+        window.__tgLifecycleActivate();
       }
     }
   }
@@ -3085,5 +3090,147 @@
         setOpen(body.hidden === true);
       }
     });
+  })();
+
+  // -------------------------------------------------------------------
+  // v5.13.6 — Lifecycle tab
+  // -------------------------------------------------------------------
+  (function () {
+    const PANEL = document.getElementById("tg-panel-lifecycle");
+    if (!PANEL) return;
+    const filterEl = document.getElementById("lifecycle-filter");
+    const posEl = document.getElementById("lifecycle-position");
+    const refreshBtn = document.getElementById("lifecycle-refresh");
+    const timelineEl = document.getElementById("lifecycle-timeline");
+    const countEl = document.getElementById("lifecycle-count");
+    const evCountEl = document.getElementById("lifecycle-event-count");
+    const summaryEl = document.getElementById("lifecycle-position-summary");
+    const statusEl = document.getElementById("lifecycle-status");
+    const badgeEl = document.getElementById("tg-badge-lifecycle");
+
+    const TYPE_COLORS = {
+      ENTRY_DECISION:   "#22c55e",
+      PHASE1_EVAL:      "#60a5fa",
+      PHASE2_EVAL:      "#60a5fa",
+      PHASE3_CANDIDATE: "#60a5fa",
+      PHASE4_SENTINEL:  "#3b82f6",
+      TITAN_GRIP_STAGE: "#a78bfa",
+      ORDER_SUBMIT:     "#facc15",
+      ORDER_FILL:       "#facc15",
+      ORDER_CANCEL:     "#f97316",
+      EXIT_DECISION:    "#ef4444",
+      POSITION_CLOSED:  "#ef4444",
+      REASON:           "#94a3b8",
+    };
+
+    let lastSeq = 0;
+    let pollTimer = null;
+    let activePositionId = "";
+
+    async function fetchPositions() {
+      const status = filterEl ? filterEl.value : "all";
+      try {
+        const r = await fetch("/api/lifecycle/positions?status=" + encodeURIComponent(status) + "&limit=40", { credentials: "same-origin" });
+        if (!r.ok) throw new Error("http " + r.status);
+        const data = await r.json();
+        const rows = (data && data.positions) || [];
+        if (countEl) countEl.textContent = "· " + rows.length;
+        if (badgeEl) badgeEl.textContent = rows.length ? String(rows.length) : "—";
+        if (statusEl) statusEl.textContent = rows.length ? (status + " " + rows.length) : "no positions";
+        if (posEl) {
+          const cur = posEl.value;
+          posEl.innerHTML = '<option value="">— select a position —</option>' + rows.map(r => {
+            const label = (r.ticker || "?") + " " + (r.side || "") + " " +
+              (r.entry_ts_utc || "") + " (" + (r.status || "") + ")";
+            return '<option value="' + escAttr(r.position_id) + '">' + escHtml(label) + '</option>';
+          }).join("");
+          if (cur && rows.some(r => r.position_id === cur)) posEl.value = cur;
+        }
+      } catch (e) {
+        if (statusEl) statusEl.textContent = "error: " + e.message;
+      }
+    }
+
+    function escHtml(s) { return String(s == null ? "" : s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+    function escAttr(s) { return escHtml(s).replace(/"/g, "&quot;"); }
+
+    function renderEvents(events, append) {
+      if (!timelineEl) return;
+      if (!append) timelineEl.innerHTML = "";
+      if (!events || events.length === 0) {
+        if (!append) timelineEl.innerHTML = '<div class="empty">No events for this position.</div>';
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      events.forEach(ev => {
+        const color = TYPE_COLORS[ev.event_type] || "#64748b";
+        const row = document.createElement("div");
+        row.className = "lifecycle-row";
+        row.style.cssText = "padding:8px 14px;border-bottom:1px solid var(--border);font-family:inherit";
+        const reason = ev.reason_text ? '<div style="color:var(--text-dim);font-size:11px;margin-top:2px">' + escHtml(ev.reason_text) + '</div>' : "";
+        row.innerHTML =
+          '<div style="display:flex;gap:10px;align-items:baseline">' +
+          '  <span style="font-size:10px;color:#5b6572;font-family:monospace">#' + (ev.event_seq || 0) + '</span>' +
+          '  <span style="font-size:10.5px;color:var(--text-dim);font-family:monospace">' + escHtml(ev.event_ts_utc || "") + '</span>' +
+          '  <span class="lifecycle-chip" style="background:' + color + '22;color:' + color + ';border:1px solid ' + color + '55;padding:1px 7px;border-radius:9px;font-size:10.5px;letter-spacing:.04em">' + escHtml(ev.event_type) + '</span>' +
+          '</div>' + reason +
+          '<pre class="lifecycle-payload" style="display:none;margin:6px 0 0;padding:8px;background:var(--surface-2);border-radius:4px;font-size:11px;color:var(--text-muted);max-height:300px;overflow:auto">' + escHtml(JSON.stringify(ev.payload || {}, null, 2)) + '</pre>';
+        row.addEventListener("click", () => {
+          const pre = row.querySelector(".lifecycle-payload");
+          if (pre) pre.style.display = (pre.style.display === "none") ? "block" : "none";
+        });
+        frag.appendChild(row);
+        if (Number(ev.event_seq) > lastSeq) lastSeq = Number(ev.event_seq);
+      });
+      timelineEl.appendChild(frag);
+      if (evCountEl) evCountEl.textContent = "· " + timelineEl.querySelectorAll(".lifecycle-row").length;
+    }
+
+    async function fetchTimeline(positionId, since) {
+      try {
+        const url = "/api/lifecycle/" + encodeURIComponent(positionId) + (since ? ("?since_seq=" + since) : "");
+        const r = await fetch(url, { credentials: "same-origin" });
+        if (!r.ok) throw new Error("http " + r.status);
+        const data = await r.json();
+        const events = (data && data.events) || [];
+        renderEvents(events, !!since);
+        if (summaryEl) {
+          const evList = timelineEl.querySelectorAll(".lifecycle-row");
+          summaryEl.textContent = positionId + " · " + evList.length + " events";
+        }
+      } catch (e) {
+        if (summaryEl) summaryEl.textContent = "error: " + e.message;
+      }
+    }
+
+    function selectPosition(positionId) {
+      activePositionId = positionId || "";
+      lastSeq = 0;
+      if (timelineEl) timelineEl.innerHTML = '<div class="empty">Loading…</div>';
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      if (!activePositionId) {
+        if (timelineEl) timelineEl.innerHTML = '<div class="empty">Select a position to view its timeline.</div>';
+        return;
+      }
+      fetchTimeline(activePositionId, 0);
+      // Tail-follow: poll for new events every 2s. Closed positions
+      // won't grow but the cost of one HTTP/304-equivalent every 2s is
+      // low and the file is local-disk-cheap server-side.
+      pollTimer = setInterval(() => {
+        if (!activePositionId) return;
+        fetchTimeline(activePositionId, lastSeq);
+      }, 2000);
+    }
+
+    if (filterEl) filterEl.addEventListener("change", () => fetchPositions());
+    if (posEl) posEl.addEventListener("change", () => selectPosition(posEl.value));
+    if (refreshBtn) refreshBtn.addEventListener("click", () => {
+      fetchPositions();
+      if (activePositionId) fetchTimeline(activePositionId, 0);
+    });
+
+    window.__tgLifecycleActivate = function () {
+      fetchPositions();
+    };
   })();
 })();

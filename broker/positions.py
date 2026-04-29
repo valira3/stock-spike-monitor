@@ -39,6 +39,82 @@ from engine.titan_grip import (
     TitanGripState,
 )
 
+# v5.13.6 \u2014 best-effort import of lifecycle logger.
+try:
+    import lifecycle_logger as _lifecycle  # noqa: F401
+except Exception:  # pragma: no cover
+    _lifecycle = None
+
+
+def _lifecycle_logger():
+    if _lifecycle is None:
+        return None
+    try:
+        tg = _tg()
+        ver = getattr(tg, "BOT_VERSION", "") if tg else ""
+        return _lifecycle.get_default_logger(bot_version=ver)
+    except Exception:
+        return None
+
+
+def _lifecycle_log_phase4_change(ticker, side, pos, result, current_price):
+    """Emit PHASE4_SENTINEL / TITAN_GRIP_STAGE events when state changes
+    vs the prior tick. Best-effort: any exception swallowed.
+    """
+    try:
+        ll = _lifecycle_logger()
+        if ll is None:
+            return
+        position_id = pos.get("lifecycle_position_id")
+        if not position_id:
+            return
+        side_lbl = "LONG" if side == _SENTINEL_SIDE_LONG else "SHORT"
+        # Sentinel state summary - the codes that fired this tick.
+        codes = list(getattr(result, "alarm_codes", None) or [])
+        prior = pos.get("_lifecycle_prev_alarm_codes")
+        if prior != codes:
+            pos["_lifecycle_prev_alarm_codes"] = list(codes)
+            ll.log_event(
+                position_id,
+                "PHASE4_SENTINEL",
+                {
+                    "alarm_codes": codes,
+                    "fired": bool(getattr(result, "fired", False)),
+                    "exit_reason": getattr(result, "exit_reason", None),
+                    "current_price": float(current_price),
+                    "state": ",".join(codes) if codes else "OK",
+                },
+                ticker=ticker,
+                side=side_lbl,
+                entry_ts_utc=pos.get("entry_ts_utc"),
+                reason_text=(f"sentinel {','.join(codes)}" if codes else "sentinel ok"),
+            )
+        # Titan grip stage transition.
+        st = pos.get("titan_grip_state")
+        cur_stage = getattr(st, "stage", None) if st is not None else None
+        prev_stage = pos.get("_lifecycle_prev_titan_stage", "__init__")
+        if cur_stage is not None and cur_stage != prev_stage:
+            pos["_lifecycle_prev_titan_stage"] = cur_stage
+            ll.log_event(
+                position_id,
+                "TITAN_GRIP_STAGE",
+                {
+                    "stage": cur_stage,
+                    "anchor": float(getattr(st, "current_stop_anchor", 0) or 0),
+                    "shares_remaining": int(pos.get("shares") or 0),
+                },
+                ticker=ticker,
+                side=side_lbl,
+                entry_ts_utc=pos.get("entry_ts_utc"),
+                reason_text=f"titan grip stage -> {cur_stage}",
+            )
+    except Exception as e:
+        try:
+            logger.debug("[lifecycle] phase4 change %s: %s", ticker, e)
+        except Exception:
+            pass
+
+
 # v5.11.2 \u2014 prod runs `python trade_genius.py`, so trade_genius is
 # registered in sys.modules as `__main__`, NOT as `trade_genius`.
 # Mirror the alias trick used by paper_state / telegram_ui to make
@@ -75,7 +151,10 @@ def _log_conflict_exit(ticker, side, legacy_reason, pos):
     sentinel_part = ",".join(sentinel_codes)
     logger.warning(
         "[CONFLICT-EXIT] ticker=%s side=%s legacy=%s sentinel=%s winner=legacy",
-        ticker, side_label, legacy_reason, sentinel_part,
+        ticker,
+        side_label,
+        legacy_reason,
+        sentinel_part,
     )
 
 
@@ -253,7 +332,10 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         # notional. Computing velocity against new notional produces an
         # artificial spike. Detect the change and rebuild baseline.
         maybe_reset_pnl_baseline_on_shares_change(
-            pos, history, now_ts, unrealized,
+            pos,
+            history,
+            now_ts,
+            unrealized,
         )
         record_pnl(history, now_ts, unrealized)
 
@@ -292,6 +374,9 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         # Reset to empty list every tick so it reflects only this tick's
         # sentinel evaluation. Empty list when no alarms fired.
         pos["_last_sentinel_alarms"] = list(result.alarm_codes)
+        # v5.13.6 \u2014 emit lifecycle PHASE4 / TITAN_GRIP_STAGE events on
+        # state changes (best-effort, no-op when logger absent).
+        _lifecycle_log_phase4_change(ticker, side, pos, result, current_price)
         if not result.fired:
             return None
         # Always log every fired alarm \u2014 multi-fire trips include
@@ -519,8 +604,10 @@ def manage_positions():
                 opens_eot = bars.get("opens") or []
                 cur_1m_open = None
                 if opens_eot:
-                    cur_1m_open = opens_eot[-1] if opens_eot[-1] is not None else (
-                        opens_eot[-2] if len(opens_eot) >= 2 else None
+                    cur_1m_open = (
+                        opens_eot[-1]
+                        if opens_eot[-1] is not None
+                        else (opens_eot[-2] if len(opens_eot) >= 2 else None)
                     )
                 override = eot_glue.evaluate_section_iv(
                     eot.SIDE_LONG,
@@ -532,7 +619,11 @@ def manage_positions():
                     logger.warning(
                         "[V5100-SOVEREIGN-BRAKE] ticker=%s side=LONG entry_avg=%.4f "
                         "current_price=%.4f unrealized_pnl=%.2f qty=%d",
-                        ticker, entry_p or 0.0, current_price, unrealized, shares,
+                        ticker,
+                        entry_p or 0.0,
+                        current_price,
+                        unrealized,
+                        shares,
                     )
                     # Run sentinel first to populate _last_sentinel_alarms so
                     # CONFLICT-EXIT detection sees this tick's sentinel state.
@@ -543,7 +634,8 @@ def manage_positions():
                 if override == eot.EXIT_REASON_VELOCITY_FUSE:
                     logger.warning(
                         "[V5100-VELOCITY-FUSE] ticker=%s side=LONG cur=%.4f open=%s",
-                        ticker, current_price,
+                        ticker,
+                        current_price,
                         ("%.4f" % cur_1m_open) if cur_1m_open else "None",
                     )
                     _run_sentinel(ticker, _SENTINEL_SIDE_LONG, pos, current_price, bars)
@@ -710,8 +802,10 @@ def manage_short_positions():
                 opens_eot_s = bars.get("opens") or []
                 cur_1m_open_s = None
                 if opens_eot_s:
-                    cur_1m_open_s = opens_eot_s[-1] if opens_eot_s[-1] is not None else (
-                        opens_eot_s[-2] if len(opens_eot_s) >= 2 else None
+                    cur_1m_open_s = (
+                        opens_eot_s[-1]
+                        if opens_eot_s[-1] is not None
+                        else (opens_eot_s[-2] if len(opens_eot_s) >= 2 else None)
                     )
                 override_s = eot_glue.evaluate_section_iv(
                     eot.SIDE_SHORT,
@@ -723,7 +817,10 @@ def manage_short_positions():
                     logger.warning(
                         "[V5100-SOVEREIGN-BRAKE] ticker=%s side=SHORT entry_avg=%.4f "
                         "current_price=%.4f unrealized_pnl=%.2f qty=%d",
-                        ticker, entry_price or 0.0, current_price, unrealized,
+                        ticker,
+                        entry_price or 0.0,
+                        current_price,
+                        unrealized,
                         int(shares or 0),
                     )
                     _run_sentinel(ticker, _SENTINEL_SIDE_SHORT, pos, current_price, bars)
@@ -733,7 +830,8 @@ def manage_short_positions():
                 if override_s == eot.EXIT_REASON_VELOCITY_FUSE:
                     logger.warning(
                         "[V5100-VELOCITY-FUSE] ticker=%s side=SHORT cur=%.4f open=%s",
-                        ticker, current_price,
+                        ticker,
+                        current_price,
                         ("%.4f" % cur_1m_open_s) if cur_1m_open_s else "None",
                     )
                     _run_sentinel(ticker, _SENTINEL_SIDE_SHORT, pos, current_price, bars)
