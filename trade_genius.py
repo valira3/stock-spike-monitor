@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.11.1"
+BOT_VERSION = "5.11.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,12 +103,10 @@ BOT_VERSION = "5.11.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.11.1 \u2014 telegram\n"
-    "handler extraction.\n"
-    "Telegram UI surface\n"
-    "moved into telegram_ui/\n"
-    "package (charts,\n"
-    "commands, menu, runtime).\n"
+    "v5.11.2 \u2014 broker\n"
+    "stops, orders, positions,\n"
+    "lifecycle moved out of\n"
+    "trade_genius.py\n"
     "Zero behavior change."
 )
 
@@ -5287,6 +5285,15 @@ from broker.positions import (  # noqa: E402, F401
     manage_positions,
     manage_short_positions,
 )  # v5.11.2 deprecation aliases \u2014 removed in v5.12.0
+from broker.lifecycle import (  # noqa: E402, F401
+    check_entry,
+    check_short_entry,
+    execute_entry,
+    execute_short_entry,
+    close_position,
+    close_short_position,
+    eod_close,
+)  # v5.11.2 deprecation aliases \u2014 removed in v5.12.0
 # v5.11.2 PR 2 \u2014 [TRADE_CLOSED] exit_reason vocabulary moved to
 # broker/orders.py with the close_breakout body. The v5.9.0 enum
 # values are preserved here as a guard so the smoke-test source
@@ -5711,135 +5718,9 @@ from telegram_ui.menu import (  # noqa: E402, F401
 
 # ============================================================
 # v4.9.0 \u2014 Public entry/close API \u2014 thin wrappers
+# v5.11.2 PR 4: moved to broker/lifecycle.py. Re-exported below as
+# deprecation aliases.
 # ============================================================
-# check_breakout / execute_breakout / close_breakout above are the
-# canonical unified bodies. The public names below preserve the call
-# sites that scan_loop, manage_positions, manage_short_positions,
-# eod_close, and the dashboard server use. They forward to the unified
-# bodies via Side.LONG / Side.SHORT.
-def check_entry(ticker):
-    return check_breakout(ticker, Side.LONG)
-
-
-def check_short_entry(ticker):
-    return check_breakout(ticker, Side.SHORT)
-
-
-def execute_entry(ticker, current_price):
-    return execute_breakout(ticker, current_price, Side.LONG)
-
-
-def execute_short_entry(ticker, current_price):
-    return execute_breakout(ticker, current_price, Side.SHORT)
-
-
-def close_position(ticker, price, reason="STOP"):
-    return close_breakout(ticker, price, Side.LONG, reason)
-
-
-def close_short_position(ticker, price, reason="STOP"):
-    return close_breakout(ticker, price, Side.SHORT, reason)
-
-
-# ============================================================
-# EOD CLOSE
-# ============================================================
-def eod_close():
-    """Force-close all open long AND short positions at 15:59:50 ET.
-
-    v5.10.0 Section VI: EOD flush moved from 15:55 to 15:59:50 ET.
-    """
-    # v4.0.0-alpha — notify executors to flatten everything on Alpaca.
-    # Per-position close events still fire from close_position /
-    # close_short_position below; this event lets executors shortcut with
-    # a single close_all_positions call if they prefer.
-    _emit_signal({
-        "kind": "EOD_CLOSE_ALL",
-        "ticker": "",
-        "price": 0.0,
-        "reason": "EOD",
-        "timestamp_utc": _utc_now_iso(),
-        "main_shares": 0,
-    })
-    n_long = len(positions)
-    n_short = len(short_positions)
-
-    if not positions and not short_positions:
-        logger.info("EOD close: no open positions (long or short)")
-
-    if positions:
-        logger.info("EOD close: closing %d long positions", n_long)
-        longs_to_close = []
-        for ticker in list(positions.keys()):
-            bars = fetch_1min_bars(ticker)
-            if bars:
-                price = bars["current_price"]
-            else:
-                price = positions[ticker]["entry_price"]
-            longs_to_close.append((ticker, price))
-        for ticker, price in longs_to_close:
-            close_position(ticker, price, reason="EOD")
-
-    if short_positions:
-        logger.info("EOD close: closing %d short positions", n_short)
-        shorts_to_close = []
-        for ticker in list(short_positions.keys()):
-            bars = fetch_1min_bars(ticker)
-            if bars:
-                price = bars["current_price"]
-            else:
-                price = short_positions[ticker]["entry_price"]
-            shorts_to_close.append((ticker, price))
-        for ticker, price in shorts_to_close:
-            close_short_position(ticker, price, "EOD")
-
-    # v5.2.0 \u2014 close any orphan shadow positions (configs whose
-    # would-have-entered ticker is not held live) at EOD.
-    # v5.2.1 H2: last_marks now falls back to entry_price when
-    # last_mark_price is missing, mirroring the live long/short EOD
-    # pattern above (price = entry_price when bars unavailable). The
-    # tracker's close_all_for_eod additionally force-closes any
-    # remaining orphan with EOD_NO_MARK + entry_price as the exit so
-    # nothing is silently left open.
-    try:
-        last_marks: dict[str, float] = {}
-        tr = shadow_pnl.tracker()
-        with tr._lock:
-            for cfg_positions in tr._open.values():
-                for sp in cfg_positions:
-                    if sp.last_mark_price is not None:
-                        last_marks[sp.ticker] = sp.last_mark_price
-                    elif sp.ticker not in last_marks:
-                        last_marks[sp.ticker] = float(sp.entry_price)
-        tr.close_all_for_eod(last_marks)
-    except Exception as e:
-        logger.warning("[V520-SHADOW-PNL] EOD shadow close failed: %s", e)
-
-    _, _, total_pnl, wins, losses, n_trades = _today_pnl_breakdown()
-    msg = (
-        f"EOD CLOSE Complete\n"
-        f"  Trades: {n_trades}  W/L: {wins}/{losses}\n"
-        f"  Day P&L: ${total_pnl:+.2f}\n"
-        f"  Cash: ${paper_cash:,.2f}"
-    )
-    send_telegram(msg)
-    # C-R5: EOD force-close flattens any open v5 position regardless of
-    # state \u2014 we lock every track so the next session starts fresh
-    # rather than resuming a half-mid-state machine.
-    try:
-        v5_lock_all_tracks("eod")
-    except Exception:
-        logger.exception("v5_lock_all_tracks failed (eod)")
-    # v5.5.2 \u2014 enforce 90-day retention on the bar archive once per
-    # day at EOD. Failure-tolerant; never raises.
-    try:
-        deleted = bar_archive.cleanup_old_dirs(retain_days=90)
-        if deleted:
-            logger.info("[V510-BAR] retention cleanup removed %d dated dirs",
-                        len(deleted))
-    except Exception as e:
-        logger.warning("[V510-BAR] retention cleanup failed: %s", e)
-    save_paper_state()
 
 
 # ============================================================

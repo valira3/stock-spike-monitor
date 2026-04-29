@@ -4,7 +4,7 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v5.11.2 — Broker / position-management extraction (in progress)
+## v5.11.2 — 2026-04-29 — Broker / position-management extraction
 
 ### PR 1 — broker/stops.py
 
@@ -35,6 +35,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
   `broker.orders` and stop helpers from `broker.stops`
 - Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
 - Boot log: `[BROKER] modules loaded: stops, orders, positions`
+
+### PR 4 — broker/lifecycle.py + version bump
+- Moved entry/exit dispatchers and EOD close out of `trade_genius.py`:
+  `check_entry`, `check_short_entry`, `execute_entry`, `execute_short_entry`,
+  `close_position`, `close_short_position`, `eod_close`
+- Added `tests/test_broker_imports.py` regression guard
+- **BOT_VERSION → "5.11.2"**, CURRENT_MAIN_NOTE synced
+- Boot log: `[BROKER] modules loaded: stops, orders, positions, lifecycle`
+
+### v5.11.2 release composition
+- PR 1 (#207): broker/stops.py — stop-management helpers
+- PR 2 (#208): broker/orders.py — order execution
+- PR 3 (#209): broker/positions.py — per-tick position management
+- PR 4 (this): broker/lifecycle.py — entry/exit dispatchers + version bump
+- **Net: trade_genius.py 8,933 → ~7,150 lines (~20% reduction)**
+- Golden harness byte-equal across all four PRs
+- Synthetic harness baseline (38/12) preserved across all four PRs
+- Smoke baseline 361 / 28 held throughout
 
 ---
 

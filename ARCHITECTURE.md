@@ -61,6 +61,22 @@ notification entry used by paper_state, error_state, and the scheduler.
 | `telegram_ui/menu.py` | Keyboards, callback handlers (`positions_callback`, `proximity_callback`, `monitoring_callback`), `_CallbackUpdateShim`, and `menu_callback` dispatch. |
 | `telegram_ui/runtime.py` | Bot lifecycle: `_auth_guard`, `_set_bot_commands`, `send_startup_message`, `run_telegram_bot`. |
 
+### broker/ (post-v5.11.2)
+
+v5.11.2 split the broker / position-management surface out of
+`trade_genius.py`. This is real-money path code; the synthetic harness
+(`synthetic_harness/scenarios/`) exercises every function via
+`m.<name>(...)` dispatch, and deprecation aliases preserve that surface.
+Strict layering: stops → orders → positions → lifecycle.
+
+| File | Responsibility |
+| --- | --- |
+| `broker/__init__.py` | Re-exports the public broker surface. Boot log: `[BROKER] modules loaded: stops, orders, positions, lifecycle`. |
+| `broker/stops.py` | Stop-management helpers: breakeven, capped, ladder, retighten, `retighten_all_stops`. |
+| `broker/orders.py` | Order execution: `check_breakout`, `paper_shares_for`, `execute_breakout`, `close_breakout`. |
+| `broker/positions.py` | Per-tick position management: `manage_positions`, `manage_short_positions`, `_v5104_maybe_fire_entry_2`. |
+| `broker/lifecycle.py` | Entry/exit dispatchers and EOD close: `check_entry`, `execute_entry`, `close_position`, `eod_close`, plus short-side counterparts. |
+
 ---
 
 ## v5.10.0 — Project Eye of the Tiger (algorithm summary)
