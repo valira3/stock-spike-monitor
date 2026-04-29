@@ -21,7 +21,9 @@
      (CSS-only animation, ~30s loop, pauses on hover/tap, respects
      prefers-reduced-motion). Inline overflow:auto stays as the no-JS
      fallback so the tickers are still reachable if app.js fails to load. -->
-<div id="idx-strip" class="idx-strip" style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px;color:#e7ecf3;padding:6px 14px;white-space:nowrap;position:relative">
+<!-- Index ticker strip — each tile shows: symbol, last price, change % vs prior close.
+     [AH] = after-hours move; [NQ/ES] = front-month future vs prior close. -->
+<div id="idx-strip" class="idx-strip" title="Major indices (SPY/QQQ/DIA/IWM/VIX). [AH] = after-hours move. [NQ/ES …] = front-month future vs prior close." style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px;color:#e7ecf3;padding:6px 14px;white-space:nowrap;position:relative">
   <span id="idx-placeholder" style="color:#5b6572">indices loading…</span>
 </div>
 
@@ -35,11 +37,11 @@
     <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
   </svg>
   <span style="font-weight:600;font-size:13.5px;letter-spacing:-0.005em;color:#e7ecf3">TradeGenius</span>
-  <span id="tg-brand-ver" style="font-size:10.5px;color:#5b6572;margin-left:4px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">v…</span>
-  <span id="tg-live-pill" style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
-    <span id="h-pulse" style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block" class="pulse"></span>
+  <span id="tg-brand-ver" title="Bot version currently running on the server" style="font-size:10.5px;color:#5b6572;margin-left:4px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">v…</span>
+  <span id="tg-live-pill" title="Live status — pulsing dot means /api/state is responding; countdown shows seconds until next scan" style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
+    <span id="h-pulse" title="Heartbeat — pulses on every /api/state poll" style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block" class="pulse"></span>
     <span style="color:#e7ecf3">LIVE</span>
-    <span id="h-tick" style="color:#5b6572;font-variant-numeric:tabular-nums" title="next scan countdown" aria-label="next scan countdown">&mdash;</span>
+    <span id="h-tick" style="color:#5b6572;font-variant-numeric:tabular-nums" title="Seconds until next scan loop iteration" aria-label="next scan countdown">&mdash;</span>
   </span>
   <!-- v4.11.0 — per-executor health pill. Tap to expand last 10 errors.
        Bound to whichever tab is active (main/val/gene). -->
@@ -51,7 +53,7 @@
     <div class="tg-health-pop-head"><span id="tg-health-pop-title">Errors today</span><button type="button" id="tg-health-close" aria-label="Close">&times;</button></div>
     <div id="tg-health-list" class="tg-health-list"><div class="tg-health-empty">No errors today.</div></div>
   </div>
-  <span id="tg-brand-clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
+  <span id="tg-brand-clock" title="Current US/Eastern (ET) market clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
 </div>
 
 <!-- v4.0.0-beta / v5.3.0 — 4-tab switcher (Main / Val / Gene / Shadow).
@@ -60,11 +62,11 @@
      Shadow tab (v5.3.0) hosts the per-config shadow-strategy panel
      that previously lived at the bottom of Main. -->
 <nav id="tg-tabs" style="display:flex;gap:0;background:#10151c;border-bottom:1px solid #1f2937;padding:0 14px">
-  <button type="button" class="tg-tab tg-tab-on" data-tg-tab="main" style="background:transparent;border:none;color:#e7ecf3;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid #7dd3fc">Main <span style="color:#5b6572;font-size:10.5px">📄 Paper</span></button>
-  <button type="button" class="tg-tab" data-tg-tab="val" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Val <span id="tg-badge-val" style="color:#5b6572;font-size:10.5px">—</span></button>
-  <button type="button" class="tg-tab" data-tg-tab="gene" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Gene <span id="tg-badge-gene" style="color:#5b6572;font-size:10.5px">—</span></button>
-  <button type="button" class="tg-tab" data-tg-tab="shadow" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Shadow <span id="tg-badge-shadow" style="color:#5b6572;font-size:10.5px">—</span></button>
-  <button type="button" class="tg-tab" data-tg-tab="lifecycle" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Lifecycle <span id="tg-badge-lifecycle" style="color:#5b6572;font-size:10.5px">—</span></button>
+  <button type="button" class="tg-tab tg-tab-on" data-tg-tab="main" title="Main paper-trading dashboard (default executor)" style="background:transparent;border:none;color:#e7ecf3;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid #7dd3fc">Main <span style="color:#5b6572;font-size:10.5px" title="Paper-trading mode">📄 Paper</span></button>
+  <button type="button" class="tg-tab" data-tg-tab="val" title="Val executor dashboard (per-executor live state)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Val <span id="tg-badge-val" style="color:#5b6572;font-size:10.5px">—</span></button>
+  <button type="button" class="tg-tab" data-tg-tab="gene" title="Gene executor dashboard (per-executor live state)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Gene <span id="tg-badge-gene" style="color:#5b6572;font-size:10.5px">—</span></button>
+  <button type="button" class="tg-tab" data-tg-tab="shadow" title="Shadow strategies — paper P&L for the candidate gating configs (no real fills)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Shadow <span id="tg-badge-shadow" style="color:#5b6572;font-size:10.5px">—</span></button>
+  <button type="button" class="tg-tab" data-tg-tab="lifecycle" title="Per-position event timeline (entries, exits, gate trips, fills)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Lifecycle <span id="tg-badge-lifecycle" style="color:#5b6572;font-size:10.5px">—</span></button>
 </nav>
 
 <div id="tg-panel-main" class="tg-panel">
@@ -75,12 +77,12 @@
     <div class="banner hide" id="banner"></div>
 
     <section class="kpi-row">
-      <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" id="k-equity">—</span><span class="kpi-sub" id="k-equity-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" id="k-pnl">—</span><span class="kpi-sub" id="k-pnl-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" id="k-open">—</span><span class="kpi-sub" id="k-open-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Gate</span><span class="kpi-value" id="k-gate" style="font-size:20px">—</span><span class="kpi-sub" id="k-gate-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Regime</span><span class="kpi-value" id="k-regime" style="font-size:20px">—</span><span class="kpi-sub" id="k-regime-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" id="k-session" style="font-size:20px">—</span><span class="kpi-sub" id="k-session-sub">—</span></div>
+      <div class="kpi" title="Total account equity (cash + long market value − short liability)"><span class="kpi-label">Equity</span><span class="kpi-value" id="k-equity">—</span><span class="kpi-sub" id="k-equity-sub">—</span></div>
+      <div class="kpi" title="Realized + unrealized profit/loss for the current trading day"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" id="k-pnl">—</span><span class="kpi-sub" id="k-pnl-sub">—</span></div>
+      <div class="kpi" title="Number of currently open positions"><span class="kpi-label">Open</span><span class="kpi-value" id="k-open">—</span><span class="kpi-sub" id="k-open-sub">—</span></div>
+      <div class="kpi" title="Trading gate state: Armed = ready to take new entries, Halted = entries blocked"><span class="kpi-label">Gate</span><span class="kpi-value" id="k-gate" style="font-size:20px">—</span><span class="kpi-sub" id="k-gate-sub">—</span></div>
+      <div class="kpi" title="Market regime read: bullish / neutral / bearish, derived from breadth + RSI"><span class="kpi-label">Regime</span><span class="kpi-value" id="k-regime" style="font-size:20px">—</span><span class="kpi-sub" id="k-regime-sub">—</span></div>
+      <div class="kpi" title="Current market session: pre-market, regular hours (RTH), or after-hours"><span class="kpi-label">Session</span><span class="kpi-value" id="k-session" style="font-size:20px">—</span><span class="kpi-sub" id="k-session-sub">—</span></div>
     </section>
 
     <!-- v5.13.2 — Feature-flag indicators. Compact pills inline below the
@@ -88,13 +90,12 @@
          currently overridden via env vars. ON = grey neutral (spec-strict);
          OFF = accent (operator override). -->
     <section class="ts-flags-row" aria-label="Feature flags">
-      <span class="ts-flag" id="ts-flag-vol" title="VOLUME_GATE_ENABLED — Phase 2 volume gate (L-P2-S3 / S-P2-S3). When OFF the gate auto-passes.">Volume Gate: —</span>
-      <span class="ts-flag" id="ts-flag-legacy" title="LEGACY_EXITS_ENABLED — pre-Sentinel exit logic. When OFF only the Sentinel A/B/C alarms drive exits.">Legacy Exits: —</span>
+      <span class="ts-flag" id="ts-flag-vol" title="VOLUME_GATE_ENABLED — Phase 2 volume bucket gate (L-P2-S3 / S-P2-S3). ON = spec-strict. OFF = operator override, gate auto-passes.">Volume Gate: —</span>
     </section>
 
     <section class="grid grid-2">
       <div class="card">
-        <div class="card-head"><span class="card-title">Open positions<span class="count" id="pos-count">· 0</span></span></div>
+        <div class="card-head"><span class="card-title" title="Currently open positions — one row per ticker with side, fill, mark, stop, and unrealized P&L">Open positions<span class="count" id="pos-count" title="Number of open positions">· 0</span></span></div>
         <div class="card-body flush" id="pos-body">
           <div class="empty">No open positions.</div>
         </div>
@@ -148,7 +149,7 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><span class="card-title">Proximity<span class="count" id="prox-count">· —</span></span></div>
+        <div class="card-head"><span class="card-title" title="Proximity to entry boundaries — % distance to nearest OR high/low; the bar fills as price approaches">Proximity<span class="count" id="prox-count" title="Number of tickers being tracked">· —</span></span></div>
         <div class="card-body flush" id="prox-list">
           <div class="empty">Waiting for data…</div>
         </div>
@@ -163,36 +164,36 @@
     <section class="grid grid-2">
       <div class="card" style="grid-column:1 / -1">
         <div class="card-head">
-          <span class="card-title">Tiger Sovereign · Live State</span>
-          <span class="chip" id="ts-overall-chip">—</span>
+          <span class="card-title" title="Tiger Sovereign live state — the four-phase entry/management state machine">Tiger Sovereign · Live State</span>
+          <span class="chip" id="ts-overall-chip" title="Aggregate Phase 1 permit state across long and short">—</span>
         </div>
         <div class="card-body" id="ts-body">
           <div class="ts-phase" id="ts-phase1-long">
-            <div class="ts-phase-head">Phase 1 · Permit (LONG)</div>
+            <div class="ts-phase-head" title="Phase 1 — long-side permit. Requires QQQ 5m close > 9-EMA AND QQQ price > AVWAP from 09:30.">Phase 1 · Permit (LONG)</div>
             <div class="ts-phase-body" id="ts-phase1-long-body">
               <div class="empty">Waiting for permit state…</div>
             </div>
           </div>
           <div class="ts-phase" id="ts-phase1-short">
-            <div class="ts-phase-head">Phase 1 · Permit (SHORT)</div>
+            <div class="ts-phase-head" title="Phase 1 — short-side permit. Requires QQQ 5m close < 9-EMA AND QQQ price < AVWAP from 09:30.">Phase 1 · Permit (SHORT)</div>
             <div class="ts-phase-body" id="ts-phase1-short-body">
               <div class="empty">Waiting for permit state…</div>
             </div>
           </div>
           <div class="ts-phase" id="ts-phase2">
-            <div class="ts-phase-head">Phase 2 · Gates</div>
+            <div class="ts-phase-head" title="Phase 2 — per-ticker gates (volume bucket + boundary hold). All must pass for an entry candidate to arm.">Phase 2 · Gates</div>
             <div class="ts-phase-body" id="ts-phase2-body">
               <div class="empty">Waiting for gate state…</div>
             </div>
           </div>
           <div class="ts-phase" id="ts-phase3">
-            <div class="ts-phase-head">Phase 3 · Entry candidates</div>
+            <div class="ts-phase-head" title="Phase 3 — armed entry candidates. Entry 1 fires on DI+ break; Entry 2 fires on a 1m close across the OR boundary.">Phase 3 · Entry candidates</div>
             <div class="ts-phase-body" id="ts-phase3-body">
               <div class="empty">No armed candidates.</div>
             </div>
           </div>
           <div class="ts-phase" id="ts-phase4">
-            <div class="ts-phase-head">Phase 4 · Active management</div>
+            <div class="ts-phase-head" title="Phase 4 — active management for open positions: Sentinel alarms (A1 hard P&L stop, A2 velocity, B QQQ regime) and Titan Grip ratchet trail.">Phase 4 · Active management</div>
             <div class="ts-phase-body" id="ts-phase4-body">
               <div class="empty">No open positions.</div>
             </div>
@@ -207,8 +208,8 @@
     <section class="grid grid-2">
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Last signal</span>
-          <span class="chip" id="last-sig-chip">—</span>
+          <span class="card-title" title="Most recent signal emitted by the paper executor (entry / exit / skip with reason and timestamp)">Last signal</span>
+          <span class="chip" id="last-sig-chip" title="Signal type · ticker">—</span>
         </div>
         <div class="card-body" id="last-sig-body">
           <div class="empty">No signals received yet.</div>
@@ -216,8 +217,8 @@
       </div>
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Today's trades<span class="count" id="trades-count">· 0</span></span>
-          <span class="chip" id="trades-realized">—</span>
+          <span class="card-title" title="All fills (opens + closes) recorded today, newest first">Today's trades<span class="count" id="trades-count" title="Number of fills today">· 0</span></span>
+          <span class="chip" id="trades-realized" title="Running realized P&L from closed trades today">—</span>
         </div>
         <!-- v3.4.31 — one-line daily summary sits above the rows. -->
         <div class="trades-summary" id="trades-summary">—</div>
@@ -229,7 +230,7 @@
 
     <section class="grid grid-2">
       <div class="card">
-        <div class="card-head"><span class="card-title">Observer</span></div>
+        <div class="card-head"><span class="card-title" title="Regime observer — the underlying numbers behind the Regime KPI (breadth %, RSI states, top loser)">Observer</span></div>
         <div class="card-body">
           <div class="key-val-grid" id="obs-body">
             <dt>Breadth detail</dt><dd id="obs-breadth" style="text-align:right">—</dd>
@@ -245,7 +246,7 @@
          card is preserved on its own row. -->
     <section class="grid grid-2">
       <div class="card" style="grid-column:1 / -1">
-        <div class="card-head"><span class="card-title">Gates · entry checks</span></div>
+        <div class="card-head"><span class="card-title" title="Entry gates — global checks (halt / scan / OR collected) plus per-ticker chips: Permit (Phase 1), Vol (volume bucket), Boundary (2-close hold)">Gates · entry checks</span></div>
         <div id="gates-body">
           <div class="empty">Loading gate status…</div>
         </div>
@@ -285,10 +286,10 @@
          config, and "as of" timestamp. Mirrors the index ticker strip
          pattern. Populated by renderShadowSummary on every state poll. -->
     <div id="shadow-summary-band" class="shadow-summary-band" aria-live="polite">
-      <span class="ssb-cell"><span class="ssb-label">Open</span><span class="ssb-value" id="ssb-open">—</span></span>
-      <span class="ssb-cell"><span class="ssb-label">Unrealized</span><span class="ssb-value" id="ssb-unr">—</span></span>
-      <span class="ssb-cell"><span class="ssb-label">Most active</span><span class="ssb-value" id="ssb-active">—</span></span>
-      <span class="ssb-cell ssb-asof"><span class="ssb-label">As of</span><span class="ssb-value" id="ssb-asof">—</span></span>
+      <span class="ssb-cell" title="Total open shadow positions across all configs"><span class="ssb-label">Open</span><span class="ssb-value" id="ssb-open">—</span></span>
+      <span class="ssb-cell" title="Total unrealized P&L across all open shadow positions"><span class="ssb-label">Unrealized</span><span class="ssb-value" id="ssb-unr">—</span></span>
+      <span class="ssb-cell" title="Config with the most open shadow positions right now"><span class="ssb-label">Most active</span><span class="ssb-value" id="ssb-active">—</span></span>
+      <span class="ssb-cell ssb-asof" title="Server timestamp of the snapshot used to populate this band"><span class="ssb-label">As of</span><span class="ssb-value" id="ssb-asof">—</span></span>
     </div>
     <!-- v5.4.1 — Charts subsection. Three vertically-stacked groups
          covering all 7 SHADOW_CONFIGS:
@@ -300,8 +301,8 @@
     <section class="grid" id="shadow-charts-section">
       <div class="card" id="shadow-charts-card">
         <div class="card-head shadow-charts-head" id="shadow-charts-head" role="button" tabindex="0" aria-expanded="true" aria-controls="shadow-charts-body">
-          <span class="card-title">Charts<span class="count" id="shadow-charts-count">· —</span></span>
-          <span class="chip" id="shadow-charts-toggle">hide</span>
+          <span class="card-title" title="Charts — equity curves, day P&L heatmap, and rolling win rate per shadow config">Charts<span class="count" id="shadow-charts-count" title="Number of charts rendered">· —</span></span>
+          <span class="chip" id="shadow-charts-toggle" title="Show or hide the charts">hide</span>
         </div>
         <div class="card-body flush" id="shadow-charts-body">
           <div class="shadow-chart-group" id="shadow-equity-group">
@@ -328,15 +329,15 @@
     <section class="grid" id="shadow-pnl-section">
       <div class="card" id="shadow-pnl-card">
         <div class="card-head">
-          <span class="card-title">Shadow strategies<span class="count" id="shadow-count">· —</span></span>
-          <span class="chip chip-warn" id="shadow-status-pill" style="display:none">SHADOW DISABLED — no market-data creds</span>
-          <span class="chip" id="shadow-best">—</span>
+          <span class="card-title" title="Shadow strategy configs — each row is a candidate gating profile being paper-tracked. Click a row for open positions + recent trades.">Shadow strategies<span class="count" id="shadow-count" title="Number of shadow configs">· —</span></span>
+          <span class="chip chip-warn" id="shadow-status-pill" title="Shadow data pipeline is disabled — missing market-data credentials" style="display:none">SHADOW DISABLED — no market-data creds</span>
+          <span class="chip" id="shadow-best" title="Top-performing shadow config (by cumulative P&L)">—</span>
         </div>
         <div class="card-body flush">
           <div class="shadow-pnl-head">
-            <span class="sp-h-name">Config</span>
-            <span class="sp-h-section">Today</span>
-            <span class="sp-h-section">Cumulative</span>
+            <span class="sp-h-name" title="Shadow config name">Config</span>
+            <span class="sp-h-section" title="Today's realized + unrealized P&L for this config">Today</span>
+            <span class="sp-h-section" title="Cumulative realized P&L since this config went live">Cumulative</span>
           </div>
           <div id="shadow-pnl-body" class="shadow-pnl-body">
             <div class="empty">Waiting for shadow data&hellip;</div>
@@ -357,29 +358,29 @@
     <section class="grid">
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Lifecycle <span class="count" id="lifecycle-count">· 0</span></span>
-          <span class="chip" id="lifecycle-status">—</span>
+          <span class="card-title" title="Lifecycle — per-position event timeline (entries, exits, gate trips, fills)">Lifecycle <span class="count" id="lifecycle-count" title="Number of positions matching the current filter">· 0</span></span>
+          <span class="chip" id="lifecycle-status" title="Status of the lifecycle data feed">—</span>
         </div>
         <div class="card-body" id="lifecycle-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <label style="font-size:11px;color:var(--text-dim)">Filter</label>
-          <select id="lifecycle-filter" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-family:inherit;font-size:12px">
-            <option value="open">Open</option>
-            <option value="recent">Recent</option>
-            <option value="closed">Closed</option>
-            <option value="all" selected>All</option>
+          <label style="font-size:11px;color:var(--text-dim)" title="Filter the position list below">Filter</label>
+          <select id="lifecycle-filter" title="Open = currently held · Recent = closed in last 24h · Closed = all closed · All = everything tracked" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-family:inherit;font-size:12px">
+            <option value="open" title="Currently open positions only">Open</option>
+            <option value="recent" title="Positions closed within the last 24 hours">Recent</option>
+            <option value="closed" title="All closed (historical) positions">Closed</option>
+            <option value="all" selected title="All positions ever tracked, regardless of state">All</option>
           </select>
-          <select id="lifecycle-position" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-family:inherit;font-size:12px;min-width:280px">
+          <select id="lifecycle-position" title="Pick a position to load its full event timeline" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-family:inherit;font-size:12px;min-width:280px">
             <option value="">— select a position —</option>
           </select>
-          <button id="lifecycle-refresh" type="button" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);padding:4px 10px;border-radius:4px;font-family:inherit;font-size:12px;cursor:pointer">Refresh</button>
+          <button id="lifecycle-refresh" type="button" title="Reload the position list and the active timeline" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);padding:4px 10px;border-radius:4px;font-family:inherit;font-size:12px;cursor:pointer">Refresh</button>
         </div>
       </div>
     </section>
     <section class="grid">
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Timeline <span class="count" id="lifecycle-event-count">· 0</span></span>
-          <span class="chip" id="lifecycle-position-summary">—</span>
+          <span class="card-title" title="Event timeline for the selected position (oldest first)">Timeline <span class="count" id="lifecycle-event-count" title="Number of events in this timeline">· 0</span></span>
+          <span class="chip" id="lifecycle-position-summary" title="Selected position summary (ticker, side, status)">—</span>
         </div>
         <div class="card-body flush" id="lifecycle-timeline">
           <div class="empty">Select a position to view its timeline.</div>

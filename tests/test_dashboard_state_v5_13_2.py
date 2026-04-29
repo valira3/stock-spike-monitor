@@ -239,9 +239,9 @@ def test_api_state_carries_v5_13_2_blocks(smoke_module):
     ff = snap["feature_flags"]
     assert isinstance(ff, dict)
     assert "volume_gate_enabled" in ff
-    assert "legacy_exits_enabled" in ff
     assert isinstance(ff["volume_gate_enabled"], bool)
-    assert isinstance(ff["legacy_exits_enabled"], bool)
+    # v5.13.10: legacy_exits_enabled retired. Snapshot must not surface it.
+    assert "legacy_exits_enabled" not in ff
 
     assert "tiger_sovereign" in snap
     ts_blk = snap["tiger_sovereign"]

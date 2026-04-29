@@ -4,6 +4,212 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.10 — 2026-04-29 — Dashboard tooltips + SB column removal + Lifecycle facts strip + Telegram entry-message PDC scrub + Legacy Exits removal
+
+### What changed
+
+A broad pass of hover-help across the dashboard, layout cleanup of the
+open positions table, a meaningful enrichment of the Lifecycle tab, a
+follow-up scrub of the legacy dual-PDC vocabulary from the Telegram
+LONG ENTRY / SHORT ENTRY message (the v5.13.5 scrub missed this one),
+AND a full removal of the Legacy Exits feature flag plus all the gated
+legacy exit code paths it guarded. The only engine surface change is
+the last item; the rest is UI / messaging only.
+
+#### Telegram entry message (`broker/orders.py::execute_breakout`)
+
+- Removed the four hard-coded `✓` claims that were no longer real:
+  - `Price > PDC ✓` / `Price < PDC ✓`
+  - `SPY > PDC ✓` / `SPY < PDC ✓`
+  - `QQQ > PDC ✓` / `QQQ < PDC ✓`
+- Removed the `PDC: $...` line from the message body (no longer a gate).
+- Added the actual Section I gate readouts the entry path enforces:
+  - LONG: `QQQ 5m close > 9-EMA <chk> (close vs ema9)` and
+    `QQQ 5m close > 09:30 AVWAP <chk> (close vs avwap)`
+  - SHORT: same with the comparators flipped.
+- Renamed the boundary line for clarity: the prior single
+  `1m close > OR High ✓` line is now followed by an explicit
+  `2nd 1m close > OR High ✓` line so users can see that the
+  two-consecutive-close boundary_hold rule is what fired (`< OR Low`
+  for shorts).
+- Reads `tg._QQQ_REGIME.last_close` / `.ema9` and `tg._opening_avwap("QQQ")`
+  defensively (returns `—` if either is unseeded), so unit tests and
+  smoke modes never block the entry message.
+- Two new tests in `tests/test_telegram_pdc_scrub_v5_13_5.py` enforce
+  the scrub and the new Section I phrasing.
+
+#### Dashboard `index.html`
+
+- Index strip, brand version pill, brand clock, LIVE pill, h-pulse,
+  h-tick: tooltips added or improved.
+- All five nav tabs (Main / Val / Gene / Shadow / Lifecycle) carry
+  per-tab tooltips.
+- All six KPI tiles (Equity, Day P&L, Open positions, Gate state,
+  Regime, Session) carry tooltips.
+- Tiger Sovereign card and its five phase headers carry tooltips.
+- Open positions, Proximity, Observer, Gates, Last signal, and
+  Today’s trades cards carry tooltips on the title and chips.
+- Feature-flag pills carry ON/OFF semantics in their tooltips.
+- Shadow summary band (4 cells), strategy chips, charts panel and
+  PnL table head carry tooltips.
+- Lifecycle controls: filter, position picker, refresh, count
+  badges, and timeline header all carry tooltips.
+
+#### Dashboard `app.js`
+
+- **SB (Soft-Block delta) column removed from open positions** —
+  the calc block, `<td>` cell, and `<th>` header are gone. The
+  `.eot-sb-*` CSS classes are now unused but left in place
+  (harmless dead code, slated for next cleanup).
+- Open-positions table headers and row badges (Phase A/B/C, TRAIL,
+  side dot) carry tooltips.
+- Tiger Sovereign Phase 3 row chips: Entry 1 fired, DI+ value,
+  NHOD status, and Entry 2 status each carry tooltips.
+- Tiger Sovereign Phase 4 row chips: Alarm A1/A2/B (already had
+  tooltips), plus Titan Grip stage, anchor, next, and ratchet
+  steps now also carry tooltips.
+- Volume gate pill and 2-consecutive boundary chip carry tooltips.
+- Trades-summary segments (opens, closes, realized, win) carry
+  tooltips.
+- Per-ticker gate section label carries a tooltip.
+
+#### Lifecycle tab — inline facts strip
+
+Each lifecycle event row used to show only `#seq | timestamp |
+EVENT_TYPE chip | reason_text`, with the full JSON payload hidden
+behind a click. v5.13.10 now also surfaces the most useful payload
+fields inline as small `key=value` chips with per-field tooltips.
+The full JSON pre-block is still available on click.
+
+Known-event field ordering and tooltips:
+
+- `ENTRY_DECISION`: entry_price, limit_price, stop_price, shares,
+  entry_num, strike_num, or_high, pdc, stop_capped, entry_id
+- `ORDER_SUBMIT`: side, qty, limit_price/price, order_type, action,
+  raw_reason
+- `ORDER_FILL`: side, qty, fill_price, notional, order_type, action
+- `ORDER_CANCEL`: side, qty, reason
+- `EXIT_DECISION`: exit_reason, exit_price, entry_price, shares,
+  raw_reason
+- `POSITION_CLOSED`: realized_pnl, realized_pnl_pct, hold_seconds,
+  exit_reason
+- `PHASE4_SENTINEL`: state, alarm_codes, current_price, fired,
+  exit_reason
+- `TITAN_GRIP_STAGE`: stage, anchor, shares_remaining
+
+The event-type chip itself also carries a tooltip describing what the
+event type means (e.g. “Phase 4 sentinel — alarm A1/A2/B status
+changed on an open position”).
+
+Formatting helpers in `_lcFmtVal`:
+
+- `realized_pnl` / `notional` → `$xxx.xx`
+- `realized_pnl_pct` → `xx.xx%`
+- `hold_seconds` → `MmSSs`
+- Integer-y fields → plain integer
+- Other floats → trimmed up to 4 decimals
+- Booleans → `yes`/`no`
+- Arrays of ≤8 scalars → comma-joined; longer arrays/objects skipped
+  (still visible via the JSON pre-block)
+
+Lifecycle position picker dropdown — each option now carries a
+tooltip showing the full `position_id`, plus cached `realized_pnl`,
+latest Titan stage, and latest Phase 4 state when those metadata
+fields are present in the `/api/lifecycle/positions` response.
+
+Lifecycle timeline summary chip — now also shows the latest event
+type (“… · latest: TITAN_GRIP_STAGE”) so the user can see at a
+glance what the most recent transition was without scrolling.
+
+#### Legacy Exits removal (engine surface change)
+
+v5.13.2 introduced `LEGACY_EXITS_ENABLED` (default OFF) as the kill
+switch for the pre-Tiger-Sovereign exit paths so they could be re-armed
+for canary windows alongside Tiger Sovereign Phase 4 (Sentinel A/B/C +
+Titan Grip). The flag has been OFF in prod since v5.13.2 deployed.
+v5.13.10 retires the flag and deletes the gated code outright.
+
+Deleted from `broker/positions.py`:
+
+- `manage_positions` long-side: Section IV legacy override
+  (Sovereign-Brake / Velocity-Fuse), Phase B/C state-machine tick,
+  structural-stop cross, RED_CANDLE polarity exit, Profit-Lock
+  Ladder ratchet, cosmetic `trail_active`/`trail_stop` arming, and
+  the ladder-stop exit branch. Sentinel A/B/C is now the sole
+  exit decision-maker on the long side.
+- `manage_short_positions` short-side: the mirror set — Section IV
+  short override, Phase B/C state-machine tick, ladder ratchet,
+  cosmetic trail arming, stop-cross exit, and the per-ticker
+  POLARITY_SHIFT (price > PDC) exit. Sentinel A/B/C is now the sole
+  exit decision-maker on the short side too.
+- `_log_conflict_exit` helper (only called from legacy paths).
+- The `pos["_last_sentinel_alarms"]` stash that fed `[CONFLICT-EXIT]`
+  log lines.
+- The `from engine import feature_flags as _ff` import (now unused).
+
+Deleted from `engine/feature_flags.py`:
+
+- `LEGACY_EXITS_ENABLED` constant. Removed from `__all__`. Docstring
+  rewritten to flag the retirement; the env var is now ignored if
+  still set on Railway.
+
+Deleted from the dashboard surface:
+
+- The Legacy Exits ON/OFF pill in `index.html` (`#ts-flag-legacy`)
+  and its `setFlag` wiring in `app.js`.
+- `legacy_exits_enabled` from the `feature_flags` block of
+  `dashboard_server.snapshot()`.
+- The Telegram `/flags` row labeled “Legacy exits (opt-in)”.
+- The conditional PDC-strategy block in `telegram_ui/commands.py`
+  that only rendered when the env var was true (and its now-unused
+  `import os`).
+
+Tests:
+
+- Deleted `tests/test_phase4_legacy_flag.py` (470 lines, all
+  exercising the gated paths).
+- Updated `tests/test_dashboard_state_v5_13_2.py` line 242 from
+  `assert "legacy_exits_enabled" in ff` to
+  `assert "legacy_exits_enabled" not in ff` (snapshot must no
+  longer surface the field).
+
+Net diff: `broker/positions.py` shrinks from 941 → 633 lines
+(308 lines removed). No behavior change vs prod since v5.13.2 — the
+flag has been OFF in prod the whole time.
+
+### Files touched
+
+- `dashboard_static/index.html` — ~60 tooltip additions/improvements;
+  Legacy Exits pill removed.
+- `dashboard_static/app.js` — SB column removal, ~30 inline tooltips,
+  full Lifecycle `renderEvents` rewrite with `TYPE_TOOLTIPS`,
+  `FIELD_TOOLTIPS`, `_lcFmtVal`, `_lcKeyOrder`, `_lcFactsStrip`;
+  Legacy Exits `setFlag` line removed.
+- `broker/orders.py::execute_breakout` — Telegram entry-message PDC
+  scrub + Section I gate readouts.
+- `broker/positions.py` — Legacy exit paths removed (308 lines).
+- `engine/feature_flags.py` — `LEGACY_EXITS_ENABLED` retired.
+- `dashboard_server.py` — `legacy_exits_enabled` removed from snapshot.
+- `telegram_commands.py` — `/flags` Legacy exits row removed.
+- `telegram_ui/commands.py` — Legacy PDC-strategy conditional removed.
+- `tests/test_telegram_pdc_scrub_v5_13_5.py` — 2 new tests for the
+  Section I gate phrasing.
+- `tests/test_dashboard_state_v5_13_2.py` — assertion flipped.
+- `tests/test_phase4_legacy_flag.py` — deleted.
+- `bot_version.py`, `trade_genius.py` — BOT_VERSION + CURRENT_MAIN_NOTE
+- `CHANGELOG.md` — this entry.
+
+### Tests / preflight
+
+- 11/11 PDC-scrub tests pass.
+- Updated dashboard-state test asserts the new shape.
+- Preflight em-dash + forbidden-word checks remain `*.py`/`*.md`
+  scoped — JS/HTML real em-dashes continue to be allowed (this is
+  intentional, see `scripts/preflight.sh`).
+- `node -c dashboard_static/app.js` clean.
+
+---
+
 ## v5.13.9 — 2026-04-29 — Gate display rewire (index/polarity → Section I + boundary_hold)
 
 ### Symptom

@@ -963,12 +963,10 @@ def snapshot() -> dict[str, Any]:
 
             feature_flags_block = {
                 "volume_gate_enabled": bool(getattr(_ff, "VOLUME_GATE_ENABLED", False)),
-                "legacy_exits_enabled": bool(getattr(_ff, "LEGACY_EXITS_ENABLED", False)),
             }
         except Exception:
             feature_flags_block = {
                 "volume_gate_enabled": False,
-                "legacy_exits_enabled": False,
             }
 
         # v5.5.7 \u2014 surface the paper book's most recent emitted
@@ -1068,8 +1066,10 @@ def snapshot() -> dict[str, Any]:
             # rewritten dashboard panel. See v5_13_2_snapshot.py for
             # the field schema.
             "tiger_sovereign": tiger_sovereign_block,
-            # v5.13.2 \u2014 runtime feature-flag indicators (Volume Gate,
-            # Legacy Exits). Operator visibility for env-var overrides.
+            # v5.13.2 \u2014 runtime feature-flag indicators (Volume Gate).
+            # Operator visibility for env-var overrides. v5.13.10 retired
+            # the Legacy Exits flag entirely (legacy paths removed).
+            #
             "feature_flags": feature_flags_block,
         }
     except Exception as e:

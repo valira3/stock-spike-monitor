@@ -1,4 +1,4 @@
-"""engine.feature_flags — runtime overrides for Tiger Sovereign rule strictness.
+"""engine.feature_flags \u2014 runtime overrides for Tiger Sovereign rule strictness.
 
 Centralizes env-var-driven flags that toggle individual spec rules on/off
 without code changes. Flags are evaluated once at import time so the live
@@ -20,26 +20,18 @@ VOLUME_GATE_ENABLED
     ``VOLUME_GATE_ENABLED=true`` on Railway to re-enable spec-strict
     behavior.
 
+Retired flags
+-------------
 LEGACY_EXITS_ENABLED
-    Controls whether the pre-Tiger-Sovereign exit paths (Profit-Lock
-    Ladder, Section IV Sovereign-Brake / Velocity-Fuse, Phase A/B/C
-    state machine, RED_CANDLE long polarity exit, POLARITY_SHIFT short
-    exit) run alongside Tiger Sovereign Phase 4 (Sentinel A/B/C +
-    Titan Grip). Default: ``False`` (legacy exits DISABLED).
-
-    When False: positions are managed exclusively by ``_run_sentinel``;
-    legacy exit blocks are skipped entirely. PDC dict population is
-    untouched (still consumed by dashboard pills, ``[V510-IDX]``
-    shadow logger, and position records); only the exit-decision use
-    of legacy paths is gated.
-
-    When True: existing v5.13.1 behaviour preserved. Whenever a legacy
-    exit fires AND ``_run_sentinel`` for the same position on the same
-    tick produced a non-empty ``alarms`` set, a ``[CONFLICT-EXIT]``
-    structured log line is emitted for shadow analysis. Set
-    ``LEGACY_EXITS_ENABLED=true`` on Railway to re-enable legacy paths
-    for canary windows.
+    Removed in v5.13.10. The pre-Tiger-Sovereign exit paths
+    (Profit-Lock Ladder, Section IV Sovereign-Brake / Velocity-Fuse,
+    Phase A/B/C state machine, RED_CANDLE long polarity exit,
+    POLARITY_SHIFT short exit) and the entire env-var-gated wiring
+    around them have been deleted from broker/positions.py. Tiger
+    Sovereign Phase 4 (Sentinel A/B/C + Titan Grip) is now the sole
+    exit path. The Railway env var, if still set, is ignored.
 """
+
 from __future__ import annotations
 
 import os
@@ -53,7 +45,6 @@ def _read_bool(name: str, default: bool = False) -> bool:
 
 
 VOLUME_GATE_ENABLED: bool = _read_bool("VOLUME_GATE_ENABLED", False)
-LEGACY_EXITS_ENABLED: bool = _read_bool("LEGACY_EXITS_ENABLED", False)
 
 
-__all__ = ["VOLUME_GATE_ENABLED", "LEGACY_EXITS_ENABLED"]
+__all__ = ["VOLUME_GATE_ENABLED"]
