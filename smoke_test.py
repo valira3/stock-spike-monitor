@@ -1411,7 +1411,8 @@ def run_local() -> int:
         # \u2014 it returns the (bool, bars) tuple on every code path.
         import inspect
 
-        src = inspect.getsource(m.check_breakout)
+        from broker.orders import check_breakout
+        src = inspect.getsource(check_breakout)
         assert "return False, None" in src, "check_breakout should return (False, None) on guards"
         assert "return True, bars" in src, "check_breakout should return (True, bars) on success"
 
@@ -1498,7 +1499,8 @@ def run_local() -> int:
         assert callable(getattr(m, "_check_daily_loss_limit", None)), (
             "_check_daily_loss_limit helper missing"
         )
-        src = inspect.getsource(m.execute_breakout)
+        from broker.orders import execute_breakout
+        src = inspect.getsource(execute_breakout)
         assert "_check_daily_loss_limit" in src, (
             "execute_breakout does not call _check_daily_loss_limit"
         )
@@ -1542,7 +1544,8 @@ def run_local() -> int:
     def _():
         import inspect
 
-        scan_src = inspect.getsource(m.scan_loop)
+        from engine.scan import scan_loop
+        scan_src = inspect.getsource(scan_loop)
         # The new control flow: capture (ok, bars) tuple then call execute.
         assert "check_short_entry(ticker)" in scan_src, (
             "scan_loop should call check_short_entry(ticker)"
@@ -2116,7 +2119,8 @@ def run_local() -> int:
     def _():
         import inspect
 
-        src = inspect.getsource(m.eod_close)
+        from broker.lifecycle import eod_close
+        src = inspect.getsource(eod_close)
         assert "v5_lock_all_tracks" in src, "C-R5 wiring missing in eod_close"
 
     @t("v5 C-R6: Sovereign Regime Shield (PDC eject) retired in v5.9.1+")
@@ -2152,7 +2156,8 @@ def run_local() -> int:
         )
         import inspect
 
-        src = inspect.getsource(m.check_breakout)
+        from broker.orders import check_breakout
+        src = inspect.getsource(check_breakout)
         assert '"QQQ"' in src, "v5.6.0 G1: QQQ index wiring missing from check_breakout"
 
     # ---------- v5 plumbing ----------
@@ -3610,7 +3615,8 @@ def run_local() -> int:
         # accumulate forever on the Railway volume.
         import inspect
 
-        src = inspect.getsource(m.eod_close)
+        from broker.lifecycle import eod_close
+        src = inspect.getsource(eod_close)
         assert "cleanup_old_dirs" in src, (
             "bar_archive.cleanup_old_dirs not invoked from eod_close \u2014 "
             "90d retention is unenforced. See v5.5.2."

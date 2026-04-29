@@ -25,6 +25,19 @@ from synthetic_harness.scenarios import (
     get_scenario,
 )
 
+# v5.12.0 PR4 — explicit imports replace m.<func> dispatch. Aliases in
+# trade_genius.py still resolve, so both paths work; PR 5 removes them.
+from broker.lifecycle import (
+    check_entry,
+    check_short_entry,
+    execute_entry,
+    execute_short_entry,
+    close_position,
+    close_short_position,
+    eod_close,
+)
+from broker.positions import manage_positions, manage_short_positions
+
 GOLDENS_DIR = Path(__file__).parent / "goldens"
 HARNESS_VERSION = 1
 
@@ -95,25 +108,29 @@ def _dispatch(action: Action, m, market: SyntheticMarket,
     k = action.kind
     args = action.args
     if k == "check_entry":
-        return m.check_entry(*args)
+        return check_entry(*args)
     if k == "check_short_entry":
-        return m.check_short_entry(*args)
+        return check_short_entry(*args)
     if k == "execute_entry":
-        return m.execute_entry(*args)
+        return execute_entry(*args)
     if k == "execute_short_entry":
-        return m.execute_short_entry(*args)
+        return execute_short_entry(*args)
     if k == "close_position":
-        return m.close_position(*args)
+        return close_position(*args)
     if k == "close_short_position":
-        return m.close_short_position(*args)
+        return close_short_position(*args)
     if k == "scan_loop":
+        # scan_loop is a parameterless wrapper in trade_genius.py that
+        # builds _ProdCallbacks and dispatches to engine.scan.scan_loop.
+        # The engine-level function takes a callbacks arg, so we keep the
+        # m.<func> form here intentionally — not a deprecation alias.
         return m.scan_loop()
     if k == "manage_positions":
-        return m.manage_positions()
+        return manage_positions()
     if k == "manage_short_positions":
-        return m.manage_short_positions()
+        return manage_short_positions()
     if k == "eod_close":
-        return m.eod_close()
+        return eod_close()
     if k == "tick_minutes":
         clock.tick_minutes(args[0])
         return None
