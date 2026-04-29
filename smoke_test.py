@@ -7086,6 +7086,33 @@ def run_local() -> int:
                     bad.append((fn, i, line[:80]))
             assert not bad, "literal em-dash in v5.7.1-tagged line: %s" % bad[:3]
 
+    @t("v5.13.0 PR1: tiger_sovereign spec — compliant rules pass")
+    def _():
+        # Run only the rules already implemented per v5.12.0 (the
+        # @pytest.mark.spec_gap-marked rules are excluded — those are the
+        # PR 2-6 to-do list and are expected to fail until then).
+        import subprocess
+
+        repo = Path(__file__).resolve().parent
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(repo / "tests" / "test_tiger_sovereign_spec.py"),
+                "-v",
+                "-m",
+                "not spec_gap",
+            ],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, (
+            "tiger_sovereign compliant subset failed:\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
     return run_suite("LOCAL SMOKE TESTS (v5.7.1 Bison & Buffalo)")
 
 

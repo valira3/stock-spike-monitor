@@ -6,6 +6,77 @@
 
 ---
 
+## Strategy Compliance — v5.13.0 (Tiger Sovereign)
+
+The v5.13.0 series adopts the Tiger Sovereign trading specification
+(`STRATEGY.md`, `tiger_sovereign_spec_v2026-04-28h`). The previous v5
+strategy doc is archived at
+`docs/spec_archive/v5_strategy_pre_tiger_sovereign.md`.
+
+Adoption is staged across an integration branch (`v5_13_0_integration`)
+so prod stays on **v5.12.0** until **PR 6** merges to `main` with the
+`BOT_VERSION` bump. PRs 1–5 land on the integration branch only.
+
+### v5.13.0 PR sequence
+
+| PR | Branch | Delivers | Behavior change |
+|---|---|---|---|
+| **PR 1** | `v5_13_0/pr1-spec-and-tests` | Adopt STRATEGY.md, archive v5 spec, add `tests/test_tiger_sovereign_spec.py` per-rule scaffold + `spec_gap` marker + `spec_gap_report.py`. Wire compliant subset into smoke. | **None.** |
+| **PR 2** | `v5_13_0/pr2-sentinel-alarms` | `engine/sentinel.py` Alarm A (-$500 OR -1%/min) and Alarm B (5m close vs 9-EMA), wired into per-tick loop for long+short. | YES |
+| **PR 3** | `v5_13_0/pr3-titan-grip-ratchet` | Titan Grip Harvest ratchet: OR_High +0.93% Stage 1 (sell 25%, stop to +0.40%); +0.25% micro-ratchet; OR_High +1.88% Stage 3 (sell 25%); 50% runner Stage 4. Mirror short side. | YES |
+| **PR 4** | `v5_13_0/pr4-phase-2-gates` | `L-P2-S3`/`S-P2-S3` 55-day rolling per-minute volume baseline ≥100% gate; `L-P2-S4`/`S-P2-S4` two-consecutive-1m-close-above-OR-High (or below OR-Low). | YES |
+| **PR 5** | `v5_13_0/pr5-timing-rules` | `SHARED-CUTOFF` 15:44:59 ET new-position cutoff; `SHARED-EOD` 15:49:59 ET EOD flush; `SHARED-HUNT` unlimited hunting until cutoff. | YES |
+| **PR 6** | `v5_13_0/pr6-order-types-and-ship` | Order-type audit (LIMIT for harvest, STOP MARKET for defensive stops). `BOT_VERSION` 5.12.0 → 5.13.0. CHANGELOG. Merges integration → main. | YES |
+
+### Rule-ID inventory
+
+PR 1 introduces `tests/test_tiger_sovereign_spec.py`. Each rule ID below
+is asserted; rules already complied with by v5.12.0 PASS, rules not yet
+implemented FAIL with a `@pytest.mark.spec_gap("PR-N", "rule-id")`
+marker so the failure becomes the precise to-do list for PRs 2–5.
+
+#### Rules already compliant in v5.12.0 (passing in PR 1)
+
+- `L-P1-S1` — QQQ 5m price > 9-EMA (long permit).
+- `L-P1-S2` — QQQ price > 9:30 anchor VWAP (long permit).
+- `L-P3-S5` — 5m DI+ > 25 AND 1m DI+ > 25 (DI threshold matches `TIGER_V2_DI_THRESHOLD = 25`).
+- `S-P1-S1` — QQQ 5m price < 9-EMA (short permit, mirror).
+- `S-P1-S2` — QQQ price < 9:30 anchor VWAP (short permit, mirror).
+- `S-P3-S5` — 5m DI- > 25 AND 1m DI- > 25 (DI threshold).
+- `SHARED-CB` — Daily circuit breaker = -$1,500 (`DAILY_LOSS_LIMIT_DOLLARS = -1500.0`).
+
+#### PR 1 NOT_IMPLEMENTED gaps (closed by PRs 2–5)
+
+| Rule ID | Gap | Closed by |
+|---|---|---|
+| `L-P2-S3` / `S-P2-S3` | Volume ≥ 100% 55-day rolling per-minute average | **PR 4** |
+| `L-P2-S4` / `S-P2-S4` | Two consecutive 1m candles closed above OR_High (or below OR_Low) | **PR 4** |
+| `L-P3-S6` / `S-P3-S6` | 1m DI threshold > 30 AND fresh NHOD/NLOD for Entry 2 | **PR 4** (verified during gates work) |
+| `L-P4-A` / `S-P4-A` | -$500 OR -1%/min single-minute alarm → exit 100% | **PR 2** |
+| `L-P4-B` / `S-P4-B` | 5m candle CLOSE vs 5m 9-EMA → exit 100% | **PR 2** |
+| `L-P4-C-S1` / `S-P4-C-S1` | OR_High +0.93% / OR_Low -0.93% Stage 1 harvest + stop to ±0.40% | **PR 3** |
+| `L-P4-C-S2` / `S-P4-C-S2` | ±0.25% micro-ratchet steps | **PR 3** |
+| `L-P4-C-S3` / `S-P4-C-S3` | OR_High +1.88% / OR_Low -1.88% Stage 3 second harvest | **PR 3** |
+| `L-P4-C-S4` / `S-P4-C-S4` | 50% runner with continued ±0.25% ratchet | **PR 3** |
+| `SHARED-CUTOFF` | New-position cutoff at 15:44:59 ET (currently 15:30 ET) | **PR 5** |
+| `SHARED-EOD` | EOD flush at 15:49:59 ET (currently 15:59:50 ET) | **PR 5** |
+| `SHARED-HUNT` | Unlimited hunting until 15:44:59 cutoff | **PR 5** |
+| `SHARED-ORDER-PROFIT` | Profit-taking via LIMIT orders | **PR 6** |
+| `SHARED-ORDER-STOP` | Defensive stops via STOP MARKET orders | **PR 6** |
+
+### Production posture during the series
+
+- `main` HEAD remains at v5.12.0 (`c562876`) — Railway deploys nothing
+  until PR 6 merges.
+- The integration branch is not deployed.
+- `BOT_VERSION` is unchanged in PRs 1–5; the `version-bump-check`
+  workflow only enforces the bump on PRs to `main`, so integration PRs
+  use the `[skip-version]` token in the title for clarity.
+- Smoke and synthetic harnesses run on each integration PR; PR 1 has
+  zero behavior change so harness baselines hold.
+
+---
+
 ## Module map (post-v5.11.0)
 
 v5.11.0 split the trading-rules engine out of `trade_genius.py` into a
