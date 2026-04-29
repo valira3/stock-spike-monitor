@@ -177,6 +177,13 @@ plus boot-time broker reconcile; **v5.3.0** moved the shadow panel to its
 own dedicated dashboard tab with click-to-expand per-config detail.
 **v5.4.0** added the `backtest/` offline replay package and a
 `python -m backtest.replay` CLI with replay-vs-prod validation.
+**v5.11.0 PR 6** ports the canonical full-day replay harness into the
+repo at `backtest/replay_v511_full.py` and rewires it to consume
+`engine.scan.scan_loop` directly via a `RecordOnlyCallbacks` impl of
+the `EngineCallbacks` Protocol — backtests now drive the same scan
+body the bot runs in prod, eliminating the parallel re-implementation
+of seeding/phase logic that the workspace-only `replay_v510_full_v4.py`
+carried.
 **v5.4.1** layered three Chart.js visualizations onto the Shadow tab
 (equity curves, day-P&L heatmap, rolling win-rate sparklines) backed by
 a new `/api/shadow_charts` endpoint with a 30 s server-side cache. The
