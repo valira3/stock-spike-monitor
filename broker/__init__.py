@@ -2,10 +2,11 @@
 
 Houses the broker / position-management code extracted from
 `trade_genius.py`. PR 1 introduces `stops` (breakeven, capped, ladder,
-and retighten helpers). PRs 2\u20134 will add orders, positions, and
-lifecycle modules.
+and retighten helpers); PR 2 adds `orders` (check_breakout,
+execute_breakout, close_breakout, paper_shares_for). PRs 3\u20134 will
+add positions and lifecycle modules.
 
-Boot log line `[BROKER] modules loaded: stops` is emitted at
+Boot log line `[BROKER] modules loaded: stops, orders` is emitted at
 trade_genius startup so missed Dockerfile COPY lines surface as
 ImportError on boot rather than mid-session.
 """
@@ -22,8 +23,14 @@ from broker.stops import (
     _retighten_short_stop,
     retighten_all_stops,
 )
+from broker.orders import (
+    check_breakout,
+    paper_shares_for,
+    execute_breakout,
+    close_breakout,
+)
 
-LOADED_MODULES = ("stops",)
+LOADED_MODULES = ("stops", "orders")
 
 __all__ = [
     "_breakeven_long_stop",
@@ -35,5 +42,9 @@ __all__ = [
     "_retighten_long_stop",
     "_retighten_short_stop",
     "retighten_all_stops",
+    "check_breakout",
+    "paper_shares_for",
+    "execute_breakout",
+    "close_breakout",
     "LOADED_MODULES",
 ]
