@@ -47,14 +47,13 @@ import eye_of_tiger as eot  # noqa: E402
 import v5_10_1_integration as eot_glue  # noqa: E402
 # v5.9.0 \u2014 QQQ Regime Shield: 5m EMA(3) vs EMA(9) compass for G1.
 import qqq_regime  # noqa: E402
-# v5.1.0 \u2014 forensic volume filter (shadow mode). Top-level module so the
+# v5.1.0 \u2014 forensic volume filter. Top-level module so the
 # v5.0.2 infra-guard test catches a missing Dockerfile COPY for it.
 import volume_profile  # noqa: E402
 # v5.1.2 \u2014 forensic capture: bar archive + indicators.
 import indicators  # noqa: E402
 import bar_archive  # noqa: E402
 import persistence  # noqa: E402
-import shadow_pnl  # noqa: E402
 # v5.11.0 \u2014 engine/ package extraction (PR1: bars). Module-level
 # import here so a missing Dockerfile COPY surfaces as ImportError
 # at boot rather than during the first scan tick.
@@ -95,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.13.10"
+BOT_VERSION = "5.14.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,19 +102,19 @@ BOT_VERSION = "5.13.10"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.13.10 \u2014 Dashboard tooltips\n"
-    "Hover-help across every panel:\n"
-    "KPIs, gates, Tiger Sovereign\n"
-    "Phase 1-4 chips, trades, shadow\n"
-    "and lifecycle controls. Each\n"
-    "lifecycle event now shows an\n"
-    "inline facts strip (prices,\n"
-    "shares, alarms, stage) with\n"
-    "per-field tooltips. SB column\n"
-    "removed from open positions.\n"
-    "Legacy Exits flag retired \u2014\n"
-    "gated paths deleted. Sentinel\n"
-    "A/B/C is sole exit path now."
+    "v5.14.0 \u2014 Shadow retired\n"
+    "All four shadow configs and\n"
+    "the [V510-SHADOW] / [V520-\n"
+    "SHADOW-PNL] log emitters are\n"
+    "gone. Diagnostic emitters\n"
+    "[V510-CAND], [V510-FSM] and\n"
+    "[V510-MINUTE] stay live for\n"
+    "future replay-based work.\n"
+    "Dashboard Shadow tab, charts\n"
+    "and oomph panel removed; the\n"
+    "shadow_data_status field is\n"
+    "now volume_feed_status. The\n"
+    "shadow_positions table drops."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -510,28 +509,31 @@ TRADE_TICKERS = [t for t in TICKERS if t not in TICKERS_PINNED]
 
 
 # ------------------------------------------------------------
-# v5.1.0 \u2014 Forensic Volume Filter (SHADOW MODE).
+# v5.1.0 \u2014 Forensic Volume Filter.
 # ------------------------------------------------------------
-# In v5.1.0 the gate logs every minute via the [V510-SHADOW] prefix
-# but does NOT change any entry decision. v5.1.1 will flip enforcement
-# on after Val reviews a week of shadow data.
+# v5.14.0: shadow gate evaluation removed. The module still owns the
+# 55-day per-minute baseline + IEX WebSocket consumer; live enforcement
+# is gated behind VOL_GATE_ENFORCE and the Tiger Sovereign permits.
+# v5.14.0 also retired the [V510-SHADOW] / [V510-SHADOW][CFG=...] log
+# stream; diagnostics now flow through [V510-CAND] / [V510-FSM] /
+# [V510-MINUTE] only.
 VOLUME_PROFILE_ENABLED: bool = True
 _volume_profile_cache: dict = {}        # {ticker: profile dict}
 _ws_consumer = None                      # set by _start_volume_profile()
-# v5.5.3 \u2014 set True only when _start_volume_profile() resolved
-# market-data credentials and started the WS consumer. Surfaced to the
-# dashboard via /api/state.shadow_data_status.
-SHADOW_DATA_AVAILABLE: bool = False
+# True only when _start_volume_profile() resolved market-data
+# credentials and started the WS consumer. Surfaced to the dashboard
+# via /api/state.volume_feed_status.
+VOLUME_FEED_AVAILABLE: bool = False
 
 
 def _start_volume_profile() -> None:
-    """Boot the shadow-mode volume layer once at process start.
+    """Boot the forensic volume layer once at process start.
 
     Hard-disables itself if the watchlist exceeds the free-plan IEX
     websocket symbol cap (30). On disable, evaluate_g4 returns DISABLED
     and the bot trades normally.
     """
-    global VOLUME_PROFILE_ENABLED, _ws_consumer, SHADOW_DATA_AVAILABLE
+    global VOLUME_PROFILE_ENABLED, _ws_consumer, VOLUME_FEED_AVAILABLE
     if len(TICKERS) > volume_profile.WS_SYMBOL_CAP_FREE_IEX:
         logger.warning(
             "[VOLPROFILE] watchlist=%d > 30 symbols, exceeds free IEX cap; "
@@ -566,11 +568,11 @@ def _start_volume_profile() -> None:
               or "")
     if not key or not secret:
         logger.warning(
-            "[SHADOW DISABLED] no Alpaca market-data credentials found "
+            "[VOLFEED DISABLED] no Alpaca market-data credentials found "
             "(set VAL_ALPACA_PAPER_KEY/SECRET or ALPACA_PAPER_KEY/SECRET); "
-            "shadow_positions will not record any rows this session."
+            "volume baseline + WS feed will be unavailable this session."
         )
-        SHADOW_DATA_AVAILABLE = False
+        VOLUME_FEED_AVAILABLE = False
         return
 
     # Synchronous startup rebuild if any profile is missing/stale.
@@ -600,11 +602,11 @@ def _start_volume_profile() -> None:
             list(TICKERS), key, secret,
         )
         _ws_consumer.start()
-        SHADOW_DATA_AVAILABLE = True
+        VOLUME_FEED_AVAILABLE = True
     except Exception as e:
         logger.error("[VOLPROFILE] websocket startup failed: %s", e)
         _ws_consumer = None
-        SHADOW_DATA_AVAILABLE = False
+        VOLUME_FEED_AVAILABLE = False
 
     # Nightly rebuild thread (21:00 ET).
     def _nightly_loop():
@@ -634,321 +636,18 @@ def _start_volume_profile() -> None:
     ).start()
 
 
-def _shadow_log_g4(ticker: str, stage: int, existing_decision) -> None:
-    """Emit shadow log lines per candidate evaluation. Failure-tolerant: if
-    anything in the gate path raises, log and move on. SHADOW MODE: the
-    caller's decision is untouched (v5.1.1 keeps VOL_GATE_ENFORCE=0).
-
-    v5.1.1 emits four log lines per call:
-      - the original [V510-SHADOW] line (kept for back-compat with the
-        v5.1.0 grep + Apr 20-24 backtest tooling)
-      - three [V510-SHADOW][CFG=...] lines for the fixed analysis configs
-        TICKER+QQQ at 70/100, TICKER_ONLY at 70, QQQ_ONLY at 100. These
-        emit on every candidate regardless of which env-driven config is
-        active.
-    """
-    if not VOLUME_PROFILE_ENABLED:
-        return
-    try:
-        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
-        # v5.5.6: shadow gate evaluates the just-closed minute, not the
-        # still-forming one. The IEX websocket only delivers the bar at
-        # the END of each minute, so reading the current bucket always
-        # races the WS bar close-out and produces cur_v=0.
-        bucket = volume_profile.previous_session_bucket(now_et)
-        if bucket is None:
-            return  # outside session \u2014 nothing to evaluate
-        idx_symbol = volume_profile.load_active_config().get("index_symbol", "QQQ")
-        cur_v = 0
-        cur_qqq = 0
-        if _ws_consumer is not None:
-            cur_v = _ws_consumer.current_volume(ticker, bucket) or 0
-            cur_qqq = _ws_consumer.current_volume(idx_symbol, bucket) or 0
-        ticker_profile = _volume_profile_cache.get(ticker)
-        idx_profile = _volume_profile_cache.get(idx_symbol)
-
-        # v5.1.6: intraminute velocity capture. Emits [V510-VEL] on the
-        # FIRST tick (within a candle) where running_vol >= bucket size.
-        # Pure observation \u2014 no trading-path effect.
-        try:
-            if ticker_profile is not None:
-                bucket_size = volume_profile._bucket_median(ticker_profile, bucket)
-                qqq_pct_for_vel = None
-                if idx_profile is not None:
-                    qmed = volume_profile._bucket_median(idx_profile, bucket)
-                    if qmed:
-                        qqq_pct_for_vel = int(round((cur_qqq / qmed) * 100.0))
-                _v516_check_velocity(
-                    ticker, bucket, now_et, cur_v, bucket_size,
-                    qqq_pct=qqq_pct_for_vel,
-                )
-        except Exception:
-            pass
-
-        # (1) Original v5.1.0 shadow line \u2014 unchanged for back-compat.
-        g4 = volume_profile.evaluate_g4(
-            ticker=ticker,
-            minute_bucket=bucket,
-            current_volume=cur_v,
-            profile=ticker_profile,
-            qqq_current_volume=cur_qqq,
-            qqq_profile=idx_profile,
-            stage=stage,
-        )
-        logger.info(
-            "[V510-SHADOW] ticker=%s bucket=%s stage=%d g4=%s "
-            "ticker_pct=%s qqq_pct=%s reason=%s entry_decision=%s",
-            ticker, bucket, stage,
-            "GREEN" if g4["green"] else "RED",
-            g4.get("ticker_pct"), g4.get("qqq_pct"),
-            g4["reason"], existing_decision,
-        )
-
-        # (2) Three parallel analysis configs \u2014 emit greppable lines.
-        for cfg in volume_profile.SHADOW_CONFIGS:
-            try:
-                res = volume_profile.evaluate_g4_config(
-                    ticker=ticker,
-                    minute_bucket=bucket,
-                    current_volume=cur_v,
-                    profile=ticker_profile,
-                    index_current_volume=cur_qqq,
-                    index_profile=idx_profile,
-                    ticker_enabled=cfg["ticker_enabled"],
-                    index_enabled=cfg["index_enabled"],
-                    ticker_pct=cfg["ticker_pct"],
-                    index_pct=cfg["index_pct"],
-                )
-                # PCT label per config: TICKER+QQQ shows both, the
-                # single-anchor configs show only the live anchor.
-                if cfg["ticker_enabled"] and cfg["index_enabled"]:
-                    pct_label = "%d/%d" % (cfg["ticker_pct"], cfg["index_pct"])
-                    pct_fields = "t_pct=%s qqq_pct=%s" % (
-                        res.get("ticker_pct"), res.get("qqq_pct"))
-                elif cfg["ticker_enabled"]:
-                    pct_label = "%d" % cfg["ticker_pct"]
-                    pct_fields = "t_pct=%s" % res.get("ticker_pct")
-                else:
-                    pct_label = "%d" % cfg["index_pct"]
-                    pct_fields = "qqq_pct=%s" % res.get("qqq_pct")
-                logger.info(
-                    "[V510-SHADOW][CFG=%s][PCT=%s] ticker=%s bucket=%s stage=%d "
-                    "%s verdict=%s reason=%s entry_decision=%s",
-                    cfg["name"], pct_label, ticker, bucket, stage,
-                    pct_fields, res["verdict"], res["reason"], existing_decision,
-                )
-                # v5.2.0 \u2014 if the live bot would have entered AND this
-                # config's verdict is PASS, open a virtual shadow long
-                # position. Stage 1 only \u2014 stage 2 calls are existing
-                # position maintenance (no new entries).
-                if (stage == 1
-                        and str(existing_decision) == "ENTER"
-                        and res.get("verdict") == "PASS"):
-                    try:
-                        bars_v520 = fetch_1min_bars(ticker)
-                        px_v520 = (bars_v520 or {}).get("current_price")
-                    except Exception:
-                        px_v520 = None
-                    if px_v520:
-                        _v520_open_shadow(
-                            cfg["name"], ticker, "long", float(px_v520))
-            except Exception as e:
-                logger.warning(
-                    "[V510-SHADOW] cfg=%s eval error %s: %s",
-                    cfg.get("name"), ticker, e)
-    except Exception as e:
-        logger.warning("[V510-SHADOW] eval error %s: %s", ticker, e)
-
-
 # ---------------------------------------------------------------------------
-# v5.2.0 \u2014 Shadow strategy P&L tracker integration.
+# v5.14.0 \u2014 Shadow strategy infrastructure removed.
 #
-# Each SHADOW_CONFIGS entry that emits a would-have-entered verdict opens
-# a virtual position via shadow_pnl.tracker(). Sizing reuses the v5.1.4
-# equity-aware formula but pulls equity/cash from the MAIN PAPER PORTFOLIO
-# (Tiger/Buffalo book \u2014 the same one tracked via v5_long_tracks) so
-# shadow P&L is directly comparable to the paper bot's P&L. No Alpaca
-# round-trip is involved in the shadow flow. Failure-tolerant: any error
-# in the shadow path logs a warning and lets the live bot continue.
+# Prior to v5.14.0 this section emitted [V510-SHADOW][CFG=...] lines for
+# the 5 SHADOW_CONFIGS analysis profiles, owned [V520-SHADOW-PNL] virtual
+# position open/mtm/close, and exposed `_shadow_log_g4`,
+# `_v520_paper_equity_snapshot`, `_v520_open_shadow`, `_v520_mtm_ticker`,
+# `_v520_close_shadow_all`, `_v521_all_shadow_config_names`. All deleted.
+# Live diagnostics now flow through [V510-CAND] / [V510-FSM] /
+# [V510-MINUTE] only; bar archive at /data/bars/ remains the canonical
+# substrate for offline backtests.
 # ---------------------------------------------------------------------------
-
-# Sizing caps for shadow positions. Mirror v5.1.4's defaults so shadow
-# P&L stays comparable to the live executors' sizing rules. Overridable
-# via env so a paper-only tuning run does not need a code change.
-_V520_SHADOW_MAX_PCT_PER_ENTRY = float(
-    os.getenv("PAPER_MAX_PCT_PER_ENTRY", "10.0") or 10.0)
-_V520_SHADOW_MIN_RESERVE_CASH = float(
-    os.getenv("PAPER_MIN_RESERVE_CASH", "500.0") or 500.0)
-
-
-def _v520_paper_equity_snapshot() -> dict | None:
-    """Snapshot the MAIN PAPER PORTFOLIO equity/cash for shadow sizing.
-
-    The paper book is the canonical comparator for shadow strategies
-    (Tiger/Buffalo, tracked via v5_long_tracks). Equity is derived as
-
-        paper_equity = paper_cash + sum(long mark-to-market value)
-                       \u2212 sum(short buy-back liability)
-
-    using the SAME accounting convention as the dashboard's `_equity()`
-    helper. We use entry price as a fallback when a live mark is not
-    available so a missing 1m bar never blocks a shadow open.
-
-    Returns None when the paper book has no cash field (e.g. fixture
-    boot order). Callers treat None as "skip shadow open this cycle".
-    """
-    try:
-        cash = globals().get("paper_cash", None)
-        if cash is None:
-            return None
-        cash_f = float(cash)
-        long_mv = 0.0
-        for tkr, pos in (positions or {}).items():
-            try:
-                shares = float(pos.get("shares", 0) or 0)
-                if shares <= 0:
-                    continue
-                mark = None
-                try:
-                    bars = fetch_1min_bars(tkr)
-                    if bars and bars.get("current_price"):
-                        mark = float(bars["current_price"])
-                except Exception:
-                    mark = None
-                if mark is None or mark <= 0:
-                    mark = float(pos.get("entry_price", 0) or 0)
-                long_mv += mark * shares
-            except Exception:
-                continue
-        short_liab = 0.0
-        for tkr, pos in (short_positions or {}).items():
-            try:
-                shares = float(pos.get("shares", 0) or 0)
-                if shares <= 0:
-                    continue
-                mark = None
-                try:
-                    bars = fetch_1min_bars(tkr)
-                    if bars and bars.get("current_price"):
-                        mark = float(bars["current_price"])
-                except Exception:
-                    mark = None
-                if mark is None or mark <= 0:
-                    mark = float(pos.get("entry_price", 0) or 0)
-                short_liab += mark * shares
-            except Exception:
-                continue
-        equity = cash_f + long_mv - short_liab
-        return {
-            "equity": equity,
-            "cash": cash_f,
-            "dollars_per_entry": float(
-                globals().get("PAPER_DOLLARS_PER_ENTRY", 10000.0) or 10000.0),
-            "max_pct_per_entry": _V520_SHADOW_MAX_PCT_PER_ENTRY,
-            "min_reserve_cash": _V520_SHADOW_MIN_RESERVE_CASH,
-        }
-    except Exception as e:
-        logger.warning("[V520-SHADOW-PNL] paper equity snapshot failed: %s", e)
-        return None
-
-
-def _v520_open_shadow(
-    config_name: str, ticker: str, side: str, entry_price: float,
-) -> None:
-    """Open a virtual shadow position for `config_name` on `ticker`.
-
-    Sizing pulls the paper portfolio's equity; if that snapshot fails
-    we skip silently \u2014 the live trading path is unaffected.
-    """
-    if entry_price is None or entry_price <= 0:
-        return
-    snap = _v520_paper_equity_snapshot()
-    if snap is None:
-        return
-    try:
-        rid = shadow_pnl.tracker().open_position(
-            config_name=config_name, ticker=ticker, side=side,
-            entry_ts_utc=datetime.now(tz=timezone.utc),
-            entry_price=float(entry_price),
-            equity_snapshot=snap,
-        )
-        if rid is not None:
-            logger.info(
-                "[V520-SHADOW-PNL] OPEN cfg=%s ticker=%s side=%s "
-                "entry=$%.2f paper_eq=$%.0f paper_cash=$%.0f",
-                config_name, ticker, side, float(entry_price),
-                snap["equity"], snap["cash"],
-            )
-    except Exception as e:
-        logger.warning(
-            "[V520-SHADOW-PNL] open failed cfg=%s t=%s: %s",
-            config_name, ticker, e)
-
-
-def _v520_mtm_ticker(ticker: str, current_price: float) -> None:
-    """Mark-to-market every open shadow position on `ticker`. Called
-    once per scan cycle per ticker. Failure-tolerant.
-    """
-    try:
-        if current_price is None or current_price <= 0:
-            return
-        shadow_pnl.tracker().mark_to_market(
-            ticker=ticker, current_price=float(current_price),
-            current_ts=datetime.now(tz=timezone.utc),
-        )
-    except Exception as e:
-        logger.warning("[V520-SHADOW-PNL] mtm error t=%s: %s", ticker, e)
-
-
-# v5.2.1 M3: canonical shadow-config registry. SHADOW_CONFIGS is a
-# tuple of dicts (each with a "name" key); REHUNT_VOL_CONFIRM and
-# OOMPH_ALERT are event-driven extras that own their own virtual
-# positions but live outside SHADOW_CONFIGS. This helper returns the
-# union so close-fanout / EOD code paths iterate every config that can
-# possibly hold an open shadow position.
-_V521_EXTRA_SHADOW_CONFIG_NAMES: tuple[str, ...] = (
-    "REHUNT_VOL_CONFIRM", "OOMPH_ALERT",
-)
-
-
-def _v521_all_shadow_config_names() -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for cfg in volume_profile.SHADOW_CONFIGS:
-        n = cfg.get("name") if isinstance(cfg, dict) else None
-        if n and n not in seen:
-            seen.add(n)
-            names.append(n)
-    for n in _V521_EXTRA_SHADOW_CONFIG_NAMES:
-        if n not in seen:
-            seen.add(n)
-            names.append(n)
-    return names
-
-
-def _v520_close_shadow_all(
-    ticker: str, exit_price: float, reason: str,
-) -> None:
-    """Close every open shadow position on `ticker` across ALL configs
-    using the live exit price + reason. Mirrors the live bot's exit
-    decisions one-for-one so shadow P&L is comparable.
-    """
-    try:
-        if exit_price is None or exit_price <= 0:
-            return
-        tr = shadow_pnl.tracker()
-        # v5.2.1 M3: iterate the canonical registry instead of a
-        # hardcoded subset. Any new SHADOW_CONFIGS entry, plus the
-        # event-driven extras, is picked up automatically.
-        for cfg_name in _v521_all_shadow_config_names():
-            tr.close_position(
-                config_name=cfg_name, ticker=ticker,
-                exit_ts_utc=datetime.now(tz=timezone.utc),
-                exit_price=float(exit_price),
-                exit_reason=str(reason or "STOP"),
-            )
-    except Exception as e:
-        logger.warning("[V520-SHADOW-PNL] close error t=%s: %s", ticker, e)
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +831,7 @@ def _v516_log_di(
 ) -> None:
     """Emit one [V510-DI] line per candidate. `double_tap_long` is Y iff
     DI+ at t-1 and t are BOTH > threshold; `double_tap_short` mirrors on
-    DI-. Required for L-P2 / S-P2 validation in shadow.
+    DI-. Required for L-P2 / S-P2 validation.
     """
     try:
         def _tap(prev, now):
@@ -6066,7 +5765,7 @@ except Exception as _ue:
 
 load_paper_state()
 
-# v5.1.0 \u2014 boot the forensic volume layer (shadow mode). Safe to run
+# v5.1.0 \u2014 boot the forensic volume layer. Safe to run
 # even without Alpaca credentials; the module will log and proceed.
 try:
     _start_volume_profile()

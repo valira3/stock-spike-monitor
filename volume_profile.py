@@ -1,4 +1,4 @@
-"""volume_profile.py \u2014 Forensic Volume Filter (v5.1.1, SHADOW MODE).
+"""volume_profile.py \u2014 Forensic Volume Filter.
 
 Builds a 55-trading-day per-minute volume baseline for each watched ticker
 using Alpaca SIP historical 1m bars (free-plan compliant: end < now-16min),
@@ -8,9 +8,9 @@ the free plan), and exposes a §17.2 V-P1 grid evaluator (`evaluate_g4`).
 Live volumes are read from a persistent Alpaca /iex websocket bar stream
 (free-plan cap: 30 symbols).
 
-This module is SHADOW MODE in v5.1.0: callers are expected to log G4
-evaluations but NOT change any entry decision. v5.1.1 will flip
-enforcement on after Val reviews a week of shadow data.
+v5.14.0: shadow-config evaluator + SHADOW_CONFIGS tuple removed. Live
+enforcement is still gated behind VOL_GATE_ENFORCE; when 0 the gate
+logs but does not change any entry decision.
 
 Public surface (all sync; no asyncio in callers' codepaths):
     is_trading_day, trading_days_back, session_bucket
@@ -21,6 +21,7 @@ Public surface (all sync; no asyncio in callers' codepaths):
 
 No new dependencies beyond stdlib + the already-pinned alpaca-py.
 """
+
 from __future__ import annotations
 
 import json
@@ -53,30 +54,32 @@ UTC = timezone.utc
 
 # NYSE holidays for 2026 and 2027. Verified against the official NYSE
 # calendar; if the bot is still running in 2028 these need to be extended.
-NYSE_HOLIDAYS: frozenset[str] = frozenset({
-    # 2026
-    "2026-01-01",  # New Year's Day
-    "2026-01-19",  # MLK Day
-    "2026-02-16",  # Presidents Day
-    "2026-04-03",  # Good Friday
-    "2026-05-25",  # Memorial Day
-    "2026-06-19",  # Juneteenth
-    "2026-07-03",  # Jul 3 (Jul 4 falls Saturday — Friday observance)
-    "2026-09-07",  # Labor Day
-    "2026-11-26",  # Thanksgiving
-    "2026-12-25",  # Christmas
-    # 2027
-    "2027-01-01",
-    "2027-01-18",
-    "2027-02-15",
-    "2027-03-26",  # Good Friday
-    "2027-05-31",
-    "2027-06-18",  # Juneteenth observed (Jun 19 is Sat)
-    "2027-07-05",  # Jul 5 (Jul 4 falls Sunday — Monday observance)
-    "2027-09-06",
-    "2027-11-25",
-    "2027-12-24",  # Dec 25 falls Saturday — Friday observance
-})
+NYSE_HOLIDAYS: frozenset[str] = frozenset(
+    {
+        # 2026
+        "2026-01-01",  # New Year's Day
+        "2026-01-19",  # MLK Day
+        "2026-02-16",  # Presidents Day
+        "2026-04-03",  # Good Friday
+        "2026-05-25",  # Memorial Day
+        "2026-06-19",  # Juneteenth
+        "2026-07-03",  # Jul 3 (Jul 4 falls Saturday \u2014 Friday observance)
+        "2026-09-07",  # Labor Day
+        "2026-11-26",  # Thanksgiving
+        "2026-12-25",  # Christmas
+        # 2027
+        "2027-01-01",
+        "2027-01-18",
+        "2027-02-15",
+        "2027-03-26",  # Good Friday
+        "2027-05-31",
+        "2027-06-18",  # Juneteenth observed (Jun 19 is Sat)
+        "2027-07-05",  # Jul 5 (Jul 4 falls Sunday \u2014 Monday observance)
+        "2027-09-06",
+        "2027-11-25",
+        "2027-12-24",  # Dec 25 falls Saturday \u2014 Friday observance
+    }
+)
 
 # Early-close days. Map ET date string -> last regular-session minute label.
 EARLY_CLOSE_DATES: dict[str, str] = {
@@ -86,7 +89,9 @@ EARLY_CLOSE_DATES: dict[str, str] = {
     "2027-12-23": "13:00",
 }
 
-REGULAR_OPEN = dtime(9, 31)   # first bucket label (the 09:30-bar minute is excluded; 09:31 = first complete minute bar)
+REGULAR_OPEN = dtime(
+    9, 31
+)  # first bucket label (the 09:30-bar minute is excluded; 09:31 = first complete minute bar)
 REGULAR_CLOSE = dtime(16, 0)  # exclusive — last bucket is 15:59
 EARLY_CLOSE_DEFAULT = dtime(13, 0)
 
@@ -94,6 +99,7 @@ EARLY_CLOSE_DEFAULT = dtime(13, 0)
 # ---------------------------------------------------------------------------
 # Calendar helpers
 # ---------------------------------------------------------------------------
+
 
 def is_trading_day(d: date) -> bool:
     """True if `d` is a NYSE regular trading day (weekday + not holiday)."""
@@ -192,6 +198,7 @@ def previous_session_bucket(ts_et: datetime) -> str | None:
 # Profile build/save/load
 # ---------------------------------------------------------------------------
 
+
 def _utc_now() -> datetime:
     return datetime.now(tz=UTC)
 
@@ -253,12 +260,16 @@ def is_profile_stale(profile: dict, now_utc: datetime) -> bool:
 # Alpaca client helpers (lazy import — keeps the module unit-testable)
 # ---------------------------------------------------------------------------
 
+
 def _historical_client(alpaca_key: str, alpaca_secret: str):
     from alpaca.data.historical import StockHistoricalDataClient
+
     return StockHistoricalDataClient(alpaca_key, alpaca_secret)
 
 
-def _fetch_1m_bars(client, ticker: str, start_utc: datetime, end_utc: datetime, feed: str) -> list[dict]:
+def _fetch_1m_bars(
+    client, ticker: str, start_utc: datetime, end_utc: datetime, feed: str
+) -> list[dict]:
     """Fetch 1-minute bars for `ticker` over [start_utc, end_utc]. Returns
     a list of dicts: {"ts_et": datetime, "volume": int}. Pages through
     next_page_token implicitly (alpaca-py handles pagination).
@@ -528,42 +539,18 @@ def evaluate_g4(
 
 
 # ---------------------------------------------------------------------------
-# v5.1.1 \u2014 env-driven A/B toggles + 3-config parallel shadow evaluator
+# v5.1.1 \u2014 env-driven A/B toggles for the live volume gate.
 # ---------------------------------------------------------------------------
-#
-# v5.1.0 was shadow-only and hard-coded ticker \u2265120% AND QQQ \u2265100%. The Apr
-# 20-24 backtest showed 70%/100% is the best risk-adjusted config. v5.1.1
-# lets us A/B-test ticker-only vs QQQ-only vs both anchors next week WITHOUT
-# redeploying:
-#
-#   1. The "active config" (read from env at module-import time) is the one
-#      that would gate trades if VOL_GATE_ENFORCE=1. It defaults to the
-#      backtest-recommended TICKER+QQQ at 70/100 with enforcement OFF.
-#   2. Three FIXED analysis configs are emitted as parallel shadow verdicts
-#      on every candidate, regardless of which one is "active":
-#          TICKER+QQQ at 70/100   (recommended)
-#          TICKER_ONLY at 70
-#          QQQ_ONLY  at 100
-#      These three are NOT env-driven \u2014 they are hard-coded so a single
-#      week of logs can be analyzed cleanly post-hoc.
+# v5.1.0 was hard-coded ticker \u2265120% AND QQQ \u2265100%. v5.1.1 lets us
+# A/B-test ticker-only vs QQQ-only vs both anchors via env without
+# redeploying. The "active config" (read from env at module-import
+# time) is the one that would gate trades if VOL_GATE_ENFORCE=1. It
+# defaults to TICKER+QQQ at 70/100 with enforcement OFF.
+# v5.14.0: the parallel-shadow analysis configs were removed.
 
-# Hard-coded analysis configs for parallel shadow verdicts.
-# v5.1.2 adds GEMINI_A (110/85): Gemini-suggested config that emerged as the
-# only one with positive net P&L swing in Apr 20-24 backtest.
-SHADOW_CONFIGS: tuple[dict, ...] = (
-    {"name": "TICKER+QQQ", "ticker_enabled": True, "index_enabled": True,
-     "ticker_pct": 70, "index_pct": 100},
-    {"name": "TICKER_ONLY", "ticker_enabled": True, "index_enabled": False,
-     "ticker_pct": 70, "index_pct": 100},
-    {"name": "QQQ_ONLY", "ticker_enabled": False, "index_enabled": True,
-     "ticker_pct": 70, "index_pct": 100},
-    {"name": "GEMINI_A", "ticker_enabled": True, "index_enabled": True,
-     "ticker_pct": 110, "index_pct": 85},
-    # v5.1.6: Bucket-Fill Protocol \u2014 both legs must fully fill their bucket.
-    # Used for early-fire intraminute observation via [V510-VEL]. Strict gate.
-    {"name": "BUCKET_FILL_100", "ticker_enabled": True, "index_enabled": True,
-     "ticker_pct": 100, "index_pct": 100},
-)
+# v5.14.0 \u2014 SHADOW_CONFIGS tuple + multi-config evaluator removed.
+# load_active_config() and evaluate_g4 (the single env-driven gate)
+# remain for the live volume layer.
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -603,78 +590,14 @@ def load_active_config() -> dict:
     }
 
 
-def evaluate_g4_config(
-    ticker: str,
-    minute_bucket: str,
-    current_volume: int,
-    profile: dict | None,
-    index_current_volume: int,
-    index_profile: dict | None,
-    *,
-    ticker_enabled: bool,
-    index_enabled: bool,
-    ticker_pct: int,
-    index_pct: int,
-) -> dict:
-    """Per-anchor configurable evaluator used for v5.1.1 shadow logging.
-
-    Returns dict with keys:
-        verdict   : 'PASS' | 'BLOCK'
-        reason    : 'OK' | 'LOW_TICKER' | 'LOW_QQQ' | 'STALE_PROFILE'
-                    | 'NO_BARS' | 'DISABLED' | 'NO_PROFILE'
-        ticker_pct: int | None  \u2014 live-vs-baseline percentage (rounded)
-        qqq_pct   : int | None  \u2014 live-vs-baseline percentage (rounded)
-
-    If both anchors are disabled, the verdict is PASS with reason OK
-    (degenerate config: no gate, no block).
-    """
-    if not VOLUME_PROFILE_ENABLED:
-        return {"verdict": "BLOCK", "reason": "DISABLED",
-                "ticker_pct": None, "qqq_pct": None}
-
-    t_pct: int | None = None
-    q_pct: int | None = None
-
-    if ticker_enabled:
-        if profile is None:
-            return {"verdict": "BLOCK", "reason": "NO_PROFILE",
-                    "ticker_pct": None, "qqq_pct": None}
-        if is_profile_stale(profile, _utc_now()):
-            return {"verdict": "BLOCK", "reason": "STALE_PROFILE",
-                    "ticker_pct": None, "qqq_pct": None}
-        median_v = _bucket_median(profile, minute_bucket)
-        if not median_v:
-            return {"verdict": "BLOCK", "reason": "NO_BARS",
-                    "ticker_pct": None, "qqq_pct": None}
-        t_pct = int(round((current_volume / median_v) * 100.0))
-
-    if index_enabled:
-        if index_profile is None:
-            return {"verdict": "BLOCK", "reason": "NO_PROFILE",
-                    "ticker_pct": t_pct, "qqq_pct": None}
-        if is_profile_stale(index_profile, _utc_now()):
-            return {"verdict": "BLOCK", "reason": "STALE_PROFILE",
-                    "ticker_pct": t_pct, "qqq_pct": None}
-        idx_median = _bucket_median(index_profile, minute_bucket)
-        if not idx_median:
-            return {"verdict": "BLOCK", "reason": "NO_BARS",
-                    "ticker_pct": t_pct, "qqq_pct": None}
-        q_pct = int(round((index_current_volume / idx_median) * 100.0))
-
-    if ticker_enabled and t_pct is not None and t_pct < ticker_pct:
-        return {"verdict": "BLOCK", "reason": "LOW_TICKER",
-                "ticker_pct": t_pct, "qqq_pct": q_pct}
-    if index_enabled and q_pct is not None and q_pct < index_pct:
-        return {"verdict": "BLOCK", "reason": "LOW_QQQ",
-                "ticker_pct": t_pct, "qqq_pct": q_pct}
-
-    return {"verdict": "PASS", "reason": "OK",
-            "ticker_pct": t_pct, "qqq_pct": q_pct}
+# v5.14.0 \u2014 evaluate_g4_config removed (was the per-anchor multi-config
+# evaluator used only by the deleted shadow logging path).
 
 
 # ---------------------------------------------------------------------------
 # Nightly rebuild
 # ---------------------------------------------------------------------------
+
 
 def rebuild_all_profiles(
     tickers: list[str],
@@ -703,6 +626,7 @@ def rebuild_all_profiles(
 # ---------------------------------------------------------------------------
 # Websocket bar consumer
 # ---------------------------------------------------------------------------
+
 
 class WebsocketBarConsumer:
     """Persistent /iex websocket subscription. Maintains an in-memory
@@ -746,15 +670,14 @@ class WebsocketBarConsumer:
             return
         self._stop.clear()
         self._start_ts = datetime.now(UTC)
-        self._thread = threading.Thread(
-            target=self._run_forever, name="VolProfileWS", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run_forever, name="VolProfileWS", daemon=True)
         self._thread.start()
         # v5.5.5 \u2014 watchdog: detect "WS idle" (handshake succeeded but no
         # bar messages arriving) and force a reconnect.
         if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
             self._watchdog_thread = threading.Thread(
-                target=self._watchdog_loop, name="VolProfileWatchdog",
+                target=self._watchdog_loop,
+                name="VolProfileWatchdog",
                 daemon=True,
             )
             self._watchdog_thread.start()
@@ -783,9 +706,7 @@ class WebsocketBarConsumer:
                 "bars_received": self._bars_received,
                 "last_bar_ts": last,
                 "last_handler_error": self._last_handler_error,
-                "volumes_size_per_symbol": {
-                    sym: len(d) for sym, d in self._volumes.items()
-                },
+                "volumes_size_per_symbol": {sym: len(d) for sym, d in self._volumes.items()},
                 "tickers": list(self._tickers),
                 "watchdog_reconnects": self._watchdog_reconnects,
                 "silence_threshold_sec": self._silence_threshold_sec,
@@ -839,12 +760,17 @@ class WebsocketBarConsumer:
             if sample_now:
                 logger.info(
                     "[VOLPROFILE] sample bar #%d sym=%s ts=%s vol=%s bucket=%s",
-                    received, sym, ts, vol, bucket,
+                    received,
+                    sym,
+                    ts,
+                    vol,
+                    bucket,
                 )
             if received % 100 == 0:
                 logger.info(
                     "[VOLPROFILE] heartbeat: total=%d last_sym=%s",
-                    received, sym,
+                    received,
+                    sym,
                 )
         except Exception as e:
             self._last_handler_error = f"{type(e).__name__}: {e}"
@@ -909,7 +835,8 @@ class WebsocketBarConsumer:
                     elapsed = last
                 logger.warning(
                     "[VOLPROFILE] watchdog: no bars for %.0fs (received=%d) \u2014 forcing reconnect",
-                    elapsed, self._bars_received,
+                    elapsed,
+                    self._bars_received,
                 )
                 self._watchdog_reconnects += 1
                 stream = self._stream
@@ -918,7 +845,8 @@ class WebsocketBarConsumer:
                         stream.stop()
                     except Exception as e:
                         logger.warning(
-                            "[VOLPROFILE] watchdog stream.stop() failed: %s", e,
+                            "[VOLPROFILE] watchdog stream.stop() failed: %s",
+                            e,
                         )
             except Exception as e:
                 logger.warning("[VOLPROFILE] watchdog loop error: %s", e)
@@ -938,9 +866,7 @@ class WebsocketBarConsumer:
         backoff = 1.0
         while not self._stop.is_set():
             try:
-                self._stream = StockDataStream(
-                    self._key, self._secret, feed=DataFeed.IEX
-                )
+                self._stream = StockDataStream(self._key, self._secret, feed=DataFeed.IEX)
                 self._stream.subscribe_bars(self._on_bar, *self._tickers)
                 self._replay_last_5min()
                 logger.info("[VOLPROFILE] /iex websocket connecting (n=%d)", len(self._tickers))

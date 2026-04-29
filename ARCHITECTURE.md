@@ -1,8 +1,20 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.11.0 · April 2026 — **Engine extraction**
+> **Version:** v5.14.0 · April 2026 — **Shadow retirement**
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth (v5.11.0):** `specs/canonical/eye_of_the_tiger_gene_2026-04-28c.md` (Gene's authoritative rev 28c spec — the 28c spec is unchanged from v5.10.0; v5.11.0 is a refactor release), `eye_of_tiger.py` (pure-function spec gates, Sections I–VI), `engine/` (per-tick orchestration extracted from `trade_genius.py` in v5.11.0), `volume_bucket.py` (Section II.1 Institutional Oomph baseline), `tests/test_eye_of_tiger.py`, `tests/test_volume_bucket.py`, `tests/golden/` (byte-equal harness gating engine moves), `trade_genius.py` (bot lifecycle: WebSocket / broker / Telegram / persistence / dashboard). Legacy implementation surfaces (`tiger_buffalo_v5.py`, `volume_profile.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/`) remain for infrastructure/observability; their *trading-logic* references below describe the v5.0–v5.9 algorithms that v5.10.0 superseded.
+>
+> **v5.14.0 retirement (READ FIRST):** the shadow strategy and its supporting surfaces were removed in v5.14.0. Specifically:
+> - `shadow_pnl.py` module (deleted) — the in-process `ShadowPnL` tracker is gone
+> - `volume_profile.SHADOW_CONFIGS` tuple + `evaluate_g4_config` (deleted) — only the live-engine `evaluate_g4` path remains
+> - `[V510-SHADOW][CFG=...]`, `[V520-SHADOW-PNL]`, and the `[SHADOW DISABLED]` warning (renamed to `[VOLFEED DISABLED]`)
+> - `shadow_positions` SQLite table (`DROP TABLE IF EXISTS` runs on boot)
+> - Dashboard Shadow tab + `/api/shadow_charts` endpoint + `shadow_pnl` key in `/api/state` (the `shadow_data_status` field was renamed to `volume_feed_status`)
+> - Saturday weekly cron `873854a1` + `scripts/saturday_weekly_report.py`
+> - `backtest/replay.py` (the SHADOW_CONFIGS replay engine); `backtest/replay_v511_full.py` remains
+>
+> The forensic capture log emitters `[V510-CAND]`, `[V510-FSM]`, `[V510-MINUTE]`, `[V510-VEL]`, `[V510-DI]`, `[V510-VOLBUCKET]`, `[V510-BAR]`, and the `/data/bars/YYYY-MM-DD/<TICKER>.jsonl` bar archive ALL remain live so future backtests can be rebuilt against `trade_log.jsonl` (live entries) and `executor_positions` (open positions). The trading-logic sections below still reference shadow surfaces — treat those references as historical context describing the v5.0–v5.13 era.
+>
+> **Source of truth (v5.11.0):** `specs/canonical/eye_of_the_tiger_gene_2026-04-28c.md` (Gene's authoritative rev 28c spec — the 28c spec is unchanged from v5.10.0; v5.11.0 is a refactor release), `eye_of_tiger.py` (pure-function spec gates, Sections I–VI), `engine/` (per-tick orchestration extracted from `trade_genius.py` in v5.11.0), `volume_bucket.py` (Section II.1 Institutional Oomph baseline), `tests/test_eye_of_tiger.py`, `tests/test_volume_bucket.py`, `tests/golden/` (byte-equal harness gating engine moves), `trade_genius.py` (bot lifecycle: WebSocket / broker / Telegram / persistence / dashboard). Legacy implementation surfaces (`tiger_buffalo_v5.py`, `volume_profile.py`, `bar_archive.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/`) remain for infrastructure/observability; their *trading-logic* references below describe the v5.0–v5.9 algorithms that v5.10.0 superseded.
 
 ---
 

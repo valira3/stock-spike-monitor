@@ -687,156 +687,8 @@ def _cached_snapshot() -> dict[str, Any]:
         return fresh
 
 
-# v5.2.0 \u2014 ordered list of shadow configs as they appear on the
-# dashboard panel. The first 5 mirror volume_profile.SHADOW_CONFIGS;
-# REHUNT_VOL_CONFIRM and OOMPH_ALERT are the v5.1.9 additions.
-_SHADOW_PANEL_ORDER = (
-    ("TICKER+QQQ", "TICKER+QQQ (70/100)"),
-    ("TICKER_ONLY", "TICKER_ONLY (70)"),
-    ("QQQ_ONLY", "QQQ_ONLY (100)"),
-    ("GEMINI_A", "GEMINI_A (110/85)"),
-    ("BUCKET_FILL_100", "BUCKET_FILL_100"),
-    ("REHUNT_VOL_CONFIRM", "REHUNT_VOL_CONFIRM"),
-    ("OOMPH_ALERT", "OOMPH_ALERT"),
-)
-
-
-def _shadow_pnl_snapshot(
-    m,
-    today: str,
-    today_realized: float,
-    today_unrealized: float,
-) -> dict[str, Any]:
-    """Build the dashboard payload for the bottom shadow-strategy panel.
-
-    Returns:
-      { "configs": [ {name, label, today: {...}, cumulative: {...}}, ... ],
-        "paper_bot": {label, today, cumulative},
-        "best_today": "TICKER+QQQ" | None,
-        "worst_today": "BUCKET_FILL_100" | None }
-    """
-    configs: list[dict[str, Any]] = []
-    tr = None
-    try:
-        import shadow_pnl as _sp
-
-        tr = _sp.tracker()
-        summary = tr.summary(today_str=today or None)
-    except Exception as e:
-        logger.warning("shadow_pnl summary failed: %s", e)
-        summary = {}
-    for name, label in _SHADOW_PANEL_ORDER:
-        s = summary.get(name) or {}
-        n_today = int(s.get("today_n_trades", 0) or 0)
-        wins_today = int(s.get("today_wins", 0) or 0)
-        wr_today = (wins_today / n_today * 100.0) if n_today else None
-        n_cum = int(s.get("cumulative_n_trades", 0) or 0)
-        wins_cum = int(s.get("cumulative_wins", 0) or 0)
-        wr_cum = (wins_cum / n_cum * 100.0) if n_cum else None
-        # v5.3.0 \u2014 per-config detail for the Shadow tab. Safe
-        # against tracker errors (tr is None / bad call) so the panel
-        # still renders without detail.
-        open_positions: list[dict[str, Any]] = []
-        recent_trades: list[dict[str, Any]] = []
-        if tr is not None:
-            try:
-                open_positions = tr.open_positions_for(name)
-            except Exception as e:
-                logger.warning("shadow_pnl open_positions_for(%s) failed: %s", name, e)
-            try:
-                recent_trades = tr.recent_closed_for(name, limit=10)
-            except Exception as e:
-                logger.warning("shadow_pnl recent_closed_for(%s) failed: %s", name, e)
-        configs.append(
-            {
-                "name": name,
-                "label": label,
-                "today": {
-                    "n": n_today,
-                    "wr": round(wr_today, 1) if wr_today is not None else None,
-                    "realized": float(s.get("today_realized", 0.0) or 0.0),
-                    "unrealized": float(s.get("today_unrealized", 0.0) or 0.0),
-                    "total": float(s.get("today_total", 0.0) or 0.0),
-                },
-                "cumulative": {
-                    "n": n_cum,
-                    "wr": round(wr_cum, 1) if wr_cum is not None else None,
-                    "realized": float(s.get("cumulative_realized", 0.0) or 0.0),
-                    "unrealized": float(s.get("cumulative_unrealized", 0.0) or 0.0),
-                    "total": float(s.get("cumulative_total", 0.0) or 0.0),
-                },
-                # v5.3.0 \u2014 expandable detail payload.
-                "open_positions": open_positions,
-                "recent_trades": recent_trades,
-            }
-        )
-
-    # Best / worst by today_total (only counts configs with at least
-    # one trade today \u2014 zero-trade configs render as "--").
-    active = [c for c in configs if c["today"]["n"] > 0]
-    best_today = max(
-        active,
-        key=lambda c: c["today"]["total"],
-        default=None,
-    )
-    worst_today = min(
-        active,
-        key=lambda c: c["today"]["total"],
-        default=None,
-    )
-
-    # Paper bot comparison row \u2014 mirrors the same paper portfolio
-    # whose equity now drives shadow sizing, so the row is a true
-    # apples-to-apples comparison vs the per-config rollups above.
-    # Source: paper_trades (long SELLs) + short_trade_history (short
-    # COVERs), date-filtered to today.
-    paper_today_n = 0
-    paper_today_wins = 0
-    today_paper_pnl = 0.0
-    for t in getattr(m, "paper_trades", []) or []:
-        if t.get("date") == today and t.get("action") == "SELL":
-            paper_today_n += 1
-            pnl = float(t.get("pnl", 0.0) or 0.0)
-            today_paper_pnl += pnl
-            if pnl > 0:
-                paper_today_wins += 1
-    for t in getattr(m, "short_trade_history", []) or []:
-        if t.get("date") == today:
-            paper_today_n += 1
-            pnl = float(t.get("pnl", 0.0) or 0.0)
-            today_paper_pnl += pnl
-            if pnl > 0:
-                paper_today_wins += 1
-    paper_wr = (paper_today_wins / paper_today_n * 100.0) if paper_today_n else None
-    paper_total_today = today_paper_pnl + float(today_unrealized or 0.0)
-    paper_bot = {
-        "label": "PAPER BOT",
-        "today": {
-            "n": paper_today_n,
-            "wr": round(paper_wr, 1) if paper_wr is not None else None,
-            "realized": round(today_paper_pnl, 2),
-            "unrealized": round(float(today_unrealized or 0.0), 2),
-            "total": round(paper_total_today, 2),
-        },
-        "cumulative": {
-            # The paper cumulative tracker lives in paper_state and is
-            # not summed here \u2014 we surface today's paper for a
-            # direct shadow vs paper comparison and let the rest of the
-            # dashboard cover all-time paper equity.
-            "n": paper_today_n,
-            "wr": round(paper_wr, 1) if paper_wr is not None else None,
-            "realized": round(today_paper_pnl, 2),
-            "unrealized": round(float(today_unrealized or 0.0), 2),
-            "total": round(paper_total_today, 2),
-        },
-    }
-
-    return {
-        "configs": configs,
-        "paper_bot": paper_bot,
-        "best_today": best_today["name"] if best_today else None,
-        "worst_today": worst_today["name"] if worst_today else None,
-    }
+# v5.14.0 \u2014 _SHADOW_PANEL_ORDER + _shadow_pnl_snapshot removed
+# (Shadow strategy panel retired).
 
 
 def snapshot() -> dict[str, Any]:
@@ -1038,22 +890,12 @@ def snapshot() -> dict[str, Any]:
             # directly so the pill updates on every SSE / state poll
             # tick without a separate /api/errors round-trip.
             "errors": _errors_snapshot_safe("main"),
-            # v5.2.0 \u2014 shadow strategy P&L block for the bottom panel.
-            # Every config row + a PAPER_BOT comparison row built from
-            # the same paper trades / unrealized totals shown above
-            # (the paper book is also what drives shadow sizing).
-            "shadow_pnl": _shadow_pnl_snapshot(
-                m,
-                today,
-                realized,
-                unreal_sum,
-            ),
-            # v5.5.3 \u2014 expose whether the shadow market-data feed
-            # bound to credentials at startup. Frontend renders a
-            # SHADOW DISABLED banner when this is "disabled_no_creds"
-            # so a silent-no-rows session is no longer ambiguous.
-            "shadow_data_status": (
-                "live" if bool(getattr(m, "SHADOW_DATA_AVAILABLE", False)) else "disabled_no_creds"
+            # v5.14.0 \u2014 shadow_pnl key removed (shadow strategy retired).
+            # v5.14.0 \u2014 shadow_data_status renamed to volume_feed_status.
+            # The underlying volume_profile WS feed is still required by the
+            # live engine, so we keep a status indicator (just renamed).
+            "volume_feed_status": (
+                "live" if bool(getattr(m, "VOLUME_FEED_AVAILABLE", False)) else "disabled_no_creds"
             ),
             # v5.10.6 \u2014 Eye-of-the-Tiger live state surface for the
             # dashboard's v5.10 panel. See v5_10_6_snapshot.py for the
@@ -1403,10 +1245,10 @@ async def h_state(request):
     return web.json_response(snap)
 
 
-# v5.5.5 \u2014 shadow WS observability surface. Mirrors the same
+# v5.5.5 \u2014 volume-feed WS observability surface. Mirrors the same
 # session-cookie auth as /api/state. Returns the live WebsocketBarConsumer
 # stats so an operator can discriminate "WS idle" from "handler error"
-# without having to ssh in and grep logs.
+# without having to ssh in and grep logs. (v5.14.0: was "shadow WS" comment.)
 async def h_ws_state(request):
     from aiohttp import web
 
@@ -1458,123 +1300,8 @@ async def h_errors(request):
     return web.json_response(snap)
 
 
-# v5.4.1 \u2014 /api/shadow_charts: equity curves, day-heatmap, rolling
-# win-rate sparklines, sourced from the persisted shadow_positions table
-# (closed trades only). Cached for 30s to avoid hammering SQLite when
-# multiple browsers poll the Shadow tab in parallel.
-_SHADOW_CHARTS_CACHE_TTL = 30.0
-_shadow_charts_cache: dict = {"ts": 0.0, "payload": None}
-_shadow_charts_cache_lock = threading.Lock()
-
-
-def _shadow_charts_payload() -> dict:
-    """Build the /api/shadow_charts response from shadow_positions.
-
-    Returns a dict shaped like:
-      { "configs": { <name>: {equity_curve, daily_pnl, win_rate_rolling}, \u2026 },
-        "as_of": "<utc iso>" }
-
-    Closed trades only (exit_ts_utc IS NOT NULL). One entry per
-    SHADOW_CONFIG name from _SHADOW_PANEL_ORDER so the response always
-    carries all 7 configs even when some have no trades yet.
-    """
-    cfg_names = [n for (n, _label) in _SHADOW_PANEL_ORDER]
-    out: dict[str, dict] = {
-        n: {
-            "equity_curve": [],
-            "daily_pnl": [],
-            "win_rate_rolling": [],
-        }
-        for n in cfg_names
-    }
-    rows: list[dict] = []
-    try:
-        import persistence as _p
-
-        # Lexical compare on ISO-8601 strings is correct for UTC, so a
-        # very early sentinel pulls every closed row.
-        all_rows = _p.load_shadow_positions_since("0000-01-01T00:00:00+00:00")
-        rows = [r for r in all_rows if r.get("exit_ts_utc")]
-    except Exception:
-        logger.exception("shadow_charts: load_shadow_positions_since failed")
-        rows = []
-    by_cfg: dict[str, list[dict]] = {n: [] for n in cfg_names}
-    for r in rows:
-        n = r.get("config_name")
-        if n in by_cfg:
-            by_cfg[n].append(r)
-    for n in cfg_names:
-        cfg_rows = sorted(
-            by_cfg[n],
-            key=lambda r: r.get("exit_ts_utc") or "",
-        )
-        cum = 0.0
-        equity_curve: list[dict] = []
-        daily: dict[str, dict] = {}
-        wr_rolling: list[dict] = []
-        wins_window: list[int] = []
-        for idx, r in enumerate(cfg_rows, start=1):
-            pnl = float(r.get("realized_pnl") or 0.0)
-            cum += pnl
-            ts = r.get("exit_ts_utc") or ""
-            equity_curve.append({"ts": ts, "cum_pnl": round(cum, 2)})
-            day = ts[:10] if len(ts) >= 10 else ts
-            d = daily.setdefault(day, {"date": day, "pnl": 0.0, "trades": 0})
-            d["pnl"] = round(d["pnl"] + pnl, 2)
-            d["trades"] += 1
-            wins_window.append(1 if pnl > 0 else 0)
-            if len(wins_window) > 20:
-                wins_window.pop(0)
-            if idx >= 20:
-                wr = sum(wins_window) / 20.0
-                wr_rolling.append(
-                    {
-                        "trade_idx": idx,
-                        "win_rate": round(wr, 4),
-                    }
-                )
-        out[n]["equity_curve"] = equity_curve
-        out[n]["daily_pnl"] = sorted(daily.values(), key=lambda d: d["date"])
-        out[n]["win_rate_rolling"] = wr_rolling
-    from datetime import datetime as _dt, timezone as _tz
-
-    return {
-        "configs": out,
-        "as_of": _dt.now(_tz.utc).isoformat().replace("+00:00", "Z"),
-    }
-
-
-async def h_shadow_charts(request):
-    """GET /api/shadow_charts \u2014 chart-ready shadow strategy data.
-
-    Returns a JSON document with equity curves, daily P&L, and rolling
-    20-trade win rates per SHADOW_CONFIG. Cached for
-    _SHADOW_CHARTS_CACHE_TTL seconds since the underlying SQLite table
-    only changes when a shadow position closes.
-    """
-    from aiohttp import web
-
-    if not _check_auth(request):
-        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
-    now = time.time()
-    with _shadow_charts_cache_lock:
-        ts = _shadow_charts_cache.get("ts", 0.0)
-        payload = _shadow_charts_cache.get("payload")
-        if payload is not None and (now - ts) < _SHADOW_CHARTS_CACHE_TTL:
-            return web.json_response(payload)
-    loop = asyncio.get_running_loop()
-    try:
-        payload = await loop.run_in_executor(None, _shadow_charts_payload)
-    except Exception as e:
-        logger.exception("h_shadow_charts: payload build failed")
-        return web.json_response(
-            {"ok": False, "error": f"payload failed: {e}"},
-            status=500,
-        )
-    with _shadow_charts_cache_lock:
-        _shadow_charts_cache["ts"] = now
-        _shadow_charts_cache["payload"] = payload
-    return web.json_response(payload)
+# v5.14.0 \u2014 /api/shadow_charts endpoint + cache removed
+# (Shadow tab retired; underlying shadow_positions table dropped).
 
 
 # v4.9.1: unauthenticated endpoint so the post-deploy GHA poller can
@@ -2507,7 +2234,6 @@ def _build_app():
     app.router.add_post("/logout", h_logout)
     app.router.add_get("/api/state", h_state)
     app.router.add_get("/api/ws_state", h_ws_state)
-    app.router.add_get("/api/shadow_charts", h_shadow_charts)
     app.router.add_get("/api/version", h_version)
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.

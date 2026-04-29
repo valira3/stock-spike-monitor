@@ -3,7 +3,7 @@
 ## Where things live
 - Entry decision logic: `entry_gate_v5.py` (the V570-STRIKE / V560-GATE path)
 - Exit logic (Bison hard-stop + Buffalo trail): `tiger_buffalo_v5.py`, `bison_v5.py`
-- Shadow configs: `shadow_configs.py` (4 SHADOW_CONFIGS: TICKER+QQQ 70/100, TICKER_ONLY 70, QQQ_ONLY 100, GEMINI_A 110/85)
+- Shadow configs: RETIRED in v5.14.0. The SHADOW_CONFIGS evaluator + shadow strategy P&L tracker + shadow_positions table + Saturday weekly report cron were all removed. Forensic capture log lines (`[V510-CAND]`, `[V510-FSM]`, `[V510-MINUTE]`, `[V510-VEL]`, `[V510-DI]`, `[V510-VOLBUCKET]`, `[V510-BAR]`) and the `/data/bars/YYYY-MM-DD/<TICKER>.jsonl` archive remain live for future backtests.
 - Universe / tickers: code expects `/data/tickers.json` on persistent volume; default in `config.py` UNIVERSE
 - Version: `bot_version.py` (`BOT_VERSION = "5.x.y"`)
 - Bar archive writer: `bar_archive.py` (writes to `/data/bars/YYYY-MM-DD/<TICKER>.jsonl`)
@@ -27,7 +27,7 @@ Run `bash scripts/preflight.sh` — mirrors CI checks locally:
 - ruff/black format check
 
 ## Post-deploy smoke
-Run `bash scripts/post_deploy_smoke.sh <version>` after every release (the script sources `scripts/lib/checks.sh` for the 7 checks: deploy status, universe loaded, log-tag schema, no errors, bar archive today, shadow_db count, dashboard /api/state). Failures are informational — they do NOT block automated merges; post the output as a PR comment so the author sees it. CI will eventually invoke this automatically; the existing `post-deploy-smoke.yml` workflow remains the blocking gate.
+Run `bash scripts/post_deploy_smoke.sh <version>` after every release (the script sources `scripts/lib/checks.sh` for the checks: deploy status, universe loaded, log-tag schema, no errors, bar archive today, dashboard /api/state). v5.14.0 dropped the shadow_db row-count check along with the rest of the shadow strategy. Failures are informational — they do NOT block automated merges; post the output as a PR comment so the author sees it. CI will eventually invoke this automatically; the existing `post-deploy-smoke.yml` workflow remains the blocking gate.
 
 ## Tests
 - `pytest tests/` (full suite)
@@ -37,20 +37,11 @@ Run `bash scripts/post_deploy_smoke.sh <version>` after every release (the scrip
 ## Common gotchas
 - Universe drift: `/data/tickers.json` on persistent volume can lag code's `UNIVERSE` list. v5.8.0 startup guard auto-rewrites it.
 - Railway redeploy != restart: use `deploymentRedeploy` mutation, NOT `deploymentRestart` (which can hang in 502).
-- Shadow logs: every new release should add a `[V5xy-<TAG>]` schema; document it in CHANGELOG.
+- Forensic logs: every new release should add a `[V5xy-<TAG>]` schema; document it in CHANGELOG. (v5.14.0: `[V510-SHADOW][CFG=...]` and `[V520-SHADOW-PNL]` were retired with the shadow strategy; `[V510-CAND]`/`[V510-FSM]`/`[V510-MINUTE]` plus all live-engine tags remain.)
 
 ## PR submission
 - `gh pr create --title "v5.x.y: <summary>" --body-file /tmp/pr_body.md`
 - `gh pr merge <N> --squash --admin` after CI passes
 
-## Saturday weekly report (v5.8.4)
-The Saturday cron `873854a1` invokes `scripts/saturday_weekly_report.py`. Online mode pulls Railway `deploymentLogs` for the trading week (env: `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT`, `RAILWAY_SERVICE`, `RAILWAY_ENVIRONMENT`) and writes `<out-dir>/week_<MONDAY>/{day_*.jsonl, report.md, report.json}`.
-
-Dry-run before each Saturday firing (offline against last week's snapshot):
-```
-python scripts/saturday_weekly_report.py \
-  --week-start 2026-04-20 \
-  --logs-dir /home/user/workspace/backtest_v510 \
-  --out-dir /tmp/dryrun_apr20
-```
-Confirm `report.md` renders, then point the cron at `--week-start <last-Monday> --out-dir /home/user/workspace/backtest_v57x`. Parses `[V560-GATE]` / `[V570-STRIKE]` / `[V571-EXIT_PHASE]` / `[ENTRY]` / `[TRADE_CLOSED]` / `[SKIP]` / `[V510-SHADOW][CFG=…]`. Per-config attribution maps each live entry to its closest preceding `SHADOW_CFG` verdict per (config, ticker).
+## Saturday weekly report
+RETIRED in v5.14.0. `scripts/saturday_weekly_report.py` and the cron `873854a1` were both deleted with the shadow strategy. The bar archive at `/data/bars/YYYY-MM-DD/<TICKER>.jsonl` and the live-engine forensic logs (`[V510-CAND]`, `[V510-FSM]`, `[V510-MINUTE]`, `[ENTRY]`, `[TRADE_CLOSED]`, etc.) remain available for any future weekly-report harness. The replacement should consume `trade_log.jsonl` for actual entries instead of the deleted `shadow_positions` table.

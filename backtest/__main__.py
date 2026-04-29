@@ -1,8 +1,11 @@
-"""Module entry point so `python -m backtest.replay` works.
+"""Module entry point for `python -m backtest`.
 
-`python -m backtest` (no submodule) defers to backtest.replay.main.
+v5.14.0: the legacy SHADOW_CONFIGS replay was retired. The full
+v5.11.x backtest engine still lives at backtest.replay_v511_full and
+remains the recommended entry point.
 """
-from .replay import main
+
+from .replay_v511_full import main
 import sys
 
 if __name__ == "__main__":

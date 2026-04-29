@@ -13,7 +13,7 @@ Module-level state from trade_genius referenced inside the loop
 helpers (`_clear_cycle_bar_cache`, `_v561_archive_qqq_bar`,
 `_v512_archive_minute_bar`, `_v590_qqq_regime_tick`,
 `_v561_maybe_persist_or_snapshots`, `_update_gate_snapshot`,
-`_v520_mtm_ticker`, `_opening_avwap`) remain owned by trade_genius.py
+`_opening_avwap`, `_v512_archive_minute_bar`) remain owned by trade_genius.py
 and accessed through the live module via `_tg()` (the same pattern
 seeders.py / phase_machine.py use). This avoids circular imports
 during the v5.11.0 staged extraction.
@@ -298,17 +298,15 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
         logger.error("_update_gate_snapshot error %s: %s", ticker, e)
     # Long entry check \u2014 run once per ticker and fan out to both books.
     try:
-        # v5.2.1 H3 \u2014 mark-to-market shadow positions UNCONDITIONALLY,
-        # regardless of whether paper currently holds the ticker. Prior
-        # behavior gated MTM behind `not paper_holds` which silently
-        # froze shadow marks the moment paper opened a position on
-        # the same ticker.
+        # v5.14.0 \u2014 shadow MTM hook removed. _bars_for_mtm is still
+        # fetched here because the bar archive write below depends on
+        # it; the fetch_1min_bars call is cached by _cycle_bar_cache so
+        # the cost is essentially zero.
         try:
             _bars_for_mtm = callbacks.fetch_1min_bars(ticker)
-            if _bars_for_mtm and _bars_for_mtm.get("current_price"):
-                tg._v520_mtm_ticker(ticker, _bars_for_mtm["current_price"])
         except Exception as e:
-            logger.warning("[V520-SHADOW-PNL] mtm hook %s: %s", ticker, e)
+            logger.warning("[V510-BAR] fetch hook %s: %s", ticker, e)
+            _bars_for_mtm = None
         # v5.5.2 \u2014 persist the most-recently-completed 1m bar to
         # /data/bars/YYYY-MM-DD/{TICKER}.jsonl so the offline backtest
         # CLI has something to replay. fetch_1min_bars already cached

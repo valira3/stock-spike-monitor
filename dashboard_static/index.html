@@ -7,11 +7,6 @@
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&f[]=jetbrains-mono@400,500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/app.css">
-<!-- v5.4.1 — Chart.js for the Shadow tab equity curves, day heatmap, and
-     rolling win-rate sparklines. Loaded from jsDelivr CDN; falls back to
-     a no-op shim if the script fails so the rest of the dashboard keeps
-     rendering. -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
 <!-- v4.0.0-beta — index ticker strip (SPY/QQQ/DIA/IWM/VIX) polls /api/indices
@@ -56,16 +51,14 @@
   <span id="tg-brand-clock" title="Current US/Eastern (ET) market clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
 </div>
 
-<!-- v4.0.0-beta / v5.3.0 — 4-tab switcher (Main / Val / Gene / Shadow).
+<!-- v4.0.0-beta / v5.3.0 / v5.14.0 — tab switcher (Main / Val / Gene / Lifecycle).
      Only one panel is visible at a time. Main is the existing full
-     dashboard; Val and Gene poll /api/executor/{name} every 15s. The
-     Shadow tab (v5.3.0) hosts the per-config shadow-strategy panel
-     that previously lived at the bottom of Main. -->
+     dashboard; Val and Gene poll /api/executor/{name} every 15s.
+     v5.14.0 — Shadow tab removed (shadow strategy retired). -->
 <nav id="tg-tabs" style="display:flex;gap:0;background:#10151c;border-bottom:1px solid #1f2937;padding:0 14px">
   <button type="button" class="tg-tab tg-tab-on" data-tg-tab="main" title="Main paper-trading dashboard (default executor)" style="background:transparent;border:none;color:#e7ecf3;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid #7dd3fc">Main <span style="color:#5b6572;font-size:10.5px" title="Paper-trading mode">📄 Paper</span></button>
   <button type="button" class="tg-tab" data-tg-tab="val" title="Val executor dashboard (per-executor live state)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Val <span id="tg-badge-val" style="color:#5b6572;font-size:10.5px">—</span></button>
   <button type="button" class="tg-tab" data-tg-tab="gene" title="Gene executor dashboard (per-executor live state)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Gene <span id="tg-badge-gene" style="color:#5b6572;font-size:10.5px">—</span></button>
-  <button type="button" class="tg-tab" data-tg-tab="shadow" title="Shadow strategies — paper P&L for the candidate gating configs (no real fills)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Shadow <span id="tg-badge-shadow" style="color:#5b6572;font-size:10.5px">—</span></button>
   <button type="button" class="tg-tab" data-tg-tab="lifecycle" title="Per-position event timeline (entries, exits, gate trips, fills)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Lifecycle <span id="tg-badge-lifecycle" style="color:#5b6572;font-size:10.5px">—</span></button>
 </nav>
 
@@ -273,81 +266,6 @@
      fills every field with em-dashes plus a "Gene executor not
      configured" placeholder banner. -->
 <div id="tg-panel-gene" class="tg-panel tg-exec-panel" data-tg-exec="gene" style="display:none"></div>
-
-<!-- v5.3.0 — Shadow tab panel. Hosts the per-config Shadow strategies
-     card (moved out of Main) plus per-row expandable detail (open
-     positions + recent closed trades). Populated from /api/state
-     shadow_pnl block on the same cadence as Main. -->
-<div id="tg-panel-shadow" class="tg-panel" style="display:none">
-<div class="app">
-  <main class="main">
-    <!-- v5.5.9 — Top summary band. Compact strip showing total open
-         positions across configs, total unrealized $, most-active
-         config, and "as of" timestamp. Mirrors the index ticker strip
-         pattern. Populated by renderShadowSummary on every state poll. -->
-    <div id="shadow-summary-band" class="shadow-summary-band" aria-live="polite">
-      <span class="ssb-cell" title="Total open shadow positions across all configs"><span class="ssb-label">Open</span><span class="ssb-value" id="ssb-open">—</span></span>
-      <span class="ssb-cell" title="Total unrealized P&L across all open shadow positions"><span class="ssb-label">Unrealized</span><span class="ssb-value" id="ssb-unr">—</span></span>
-      <span class="ssb-cell" title="Config with the most open shadow positions right now"><span class="ssb-label">Most active</span><span class="ssb-value" id="ssb-active">—</span></span>
-      <span class="ssb-cell ssb-asof" title="Server timestamp of the snapshot used to populate this band"><span class="ssb-label">As of</span><span class="ssb-value" id="ssb-asof">—</span></span>
-    </div>
-    <!-- v5.4.1 — Charts subsection. Three vertically-stacked groups
-         covering all 7 SHADOW_CONFIGS:
-           1. Equity curves     (one mini line chart per config)
-           2. Day heatmap       (rows=configs, cols=trading days)
-           3. Rolling win-rate  (one sparkline per config, hidden if <20 trades)
-         Default state: expanded on desktop, collapsed on mobile (controlled
-         by app.js using a viewport media query at boot). -->
-    <section class="grid" id="shadow-charts-section">
-      <div class="card" id="shadow-charts-card">
-        <div class="card-head shadow-charts-head" id="shadow-charts-head" role="button" tabindex="0" aria-expanded="true" aria-controls="shadow-charts-body">
-          <span class="card-title" title="Charts — equity curves, day P&L heatmap, and rolling win rate per shadow config">Charts<span class="count" id="shadow-charts-count" title="Number of charts rendered">· —</span></span>
-          <span class="chip" id="shadow-charts-toggle" title="Show or hide the charts">hide</span>
-        </div>
-        <div class="card-body flush" id="shadow-charts-body">
-          <div class="shadow-chart-group" id="shadow-equity-group">
-            <div class="shadow-chart-group-title">Equity curves</div>
-            <div class="shadow-chart-group-body" id="shadow-equity-body">
-              <div class="empty">Waiting for shadow data&hellip;</div>
-            </div>
-          </div>
-          <div class="shadow-chart-group" id="shadow-heatmap-group">
-            <div class="shadow-chart-group-title">Day P&amp;L heatmap</div>
-            <div class="shadow-chart-group-body" id="shadow-heatmap-body">
-              <canvas id="shadow-heatmap-canvas" class="shadow-heatmap-canvas"></canvas>
-            </div>
-          </div>
-          <div class="shadow-chart-group" id="shadow-winrate-group">
-            <div class="shadow-chart-group-title">Rolling win rate (20-trade)</div>
-            <div class="shadow-chart-group-body" id="shadow-winrate-body">
-              <div class="empty">Waiting for shadow data&hellip;</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-    <section class="grid" id="shadow-pnl-section">
-      <div class="card" id="shadow-pnl-card">
-        <div class="card-head">
-          <span class="card-title" title="Shadow strategy configs — each row is a candidate gating profile being paper-tracked. Click a row for open positions + recent trades.">Shadow strategies<span class="count" id="shadow-count" title="Number of shadow configs">· —</span></span>
-          <span class="chip chip-warn" id="shadow-status-pill" title="Shadow data pipeline is disabled — missing market-data credentials" style="display:none">SHADOW DISABLED — no market-data creds</span>
-          <span class="chip" id="shadow-best" title="Top-performing shadow config (by cumulative P&L)">—</span>
-        </div>
-        <div class="card-body flush">
-          <div class="shadow-pnl-head">
-            <span class="sp-h-name" title="Shadow config name">Config</span>
-            <span class="sp-h-section" title="Today's realized + unrealized P&L for this config">Today</span>
-            <span class="sp-h-section" title="Cumulative realized P&L since this config went live">Cumulative</span>
-          </div>
-          <div id="shadow-pnl-body" class="shadow-pnl-body">
-            <div class="empty">Waiting for shadow data&hellip;</div>
-          </div>
-        </div>
-      </div>
-    </section>
-  </main>
-</div>
-</div><!-- /tg-panel-shadow -->
 
 <!-- v5.13.6 — Lifecycle tab. Per-position event timeline reading the
      /api/lifecycle/* endpoints. Selector lists open + recent closed
