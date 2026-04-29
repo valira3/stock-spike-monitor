@@ -194,3 +194,24 @@ def test_scan_loop_no_blocking_at_first_call_with_empty_state(
     # exact version number would require a test edit on every release;
     # the version-bump CI gate already pins the expected value.
     assert trade_genius.BOT_VERSION.startswith("5.13.")
+
+
+def test_volume_gate_enabled_default_off_when_env_unset(monkeypatch):
+    """v5.13.1 — VOLUME_GATE_ENABLED env var defaults to False when unset.
+
+    Production default is OFF (volume gate DISABLED). This pin guards
+    against a regression where the default flips to True and the bot
+    silently restarts under spec-strict behavior.
+    """
+    monkeypatch.delenv("VOLUME_GATE_ENABLED", raising=False)
+    sys.path.insert(0, str(REPO_ROOT))
+    # Force re-import so the module-level read of os.environ honors the
+    # monkeypatched (deleted) env var rather than a previously-cached
+    # value from another test.
+    if "engine.feature_flags" in sys.modules:
+        del sys.modules["engine.feature_flags"]
+    from engine import feature_flags as ff
+    assert ff.VOLUME_GATE_ENABLED is False, (
+        "VOLUME_GATE_ENABLED must default to False (gate DISABLED) when "
+        "the env var is unset. Got True — production default has flipped."
+    )
