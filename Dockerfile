@@ -55,6 +55,11 @@ COPY backtest/ ./backtest/
 # ModuleNotFoundError: engine. Subsequent v5.11.x PRs append more
 # modules under engine/ (seeders, phase_machine, scan, callbacks).
 COPY engine/ ./engine/
+# v5.11.1 — telegram_ui/ package extraction (PR1: charts). Same rule:
+# missing this COPY would crash trade_genius at boot with
+# ModuleNotFoundError: telegram_ui. Subsequent v5.11.1 PRs append
+# sync, menu, and runtime modules.
+COPY telegram_ui/ ./telegram_ui/
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

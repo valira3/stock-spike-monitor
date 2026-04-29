@@ -4,6 +4,21 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.11.1 — Telegram handler extraction (in progress)
+
+### PR 1 — telegram_ui/charts.py
+
+- Created `telegram_ui/` package
+- Moved chart and dayreport helpers (470 lines) out of `trade_genius.py`:
+  `_chart_dayreport`, `_chart_equity_curve`, `_chart_portfolio_pie`,
+  `_open_positions_as_pseudo_trades`, `_format_dayreport_section`,
+  `_collect_day_rows`, `_reply_in_chunks`, plus formatter helpers
+  (`_dayreport_time`, `_dayreport_sort_key`, `_short_reason`, `_fmt_pnl`)
+- Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
+- Boot log: `[TELEGRAM-UI] modules loaded: charts`
+
+---
+
 ## v5.11.0 — 2026-04-28 — Engine extraction (trading-rules engine moved into `engine/`)
 
 Engine extraction release. The trading rules engine — bar aggregation,
