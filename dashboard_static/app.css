@@ -257,28 +257,24 @@
   .gate:last-child { border-bottom: none; }
   .gate-name .hint { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
 
-  /* v3.4.29 — Sovereign Regime Shield panel */
-  .srs { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .srs-idx { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; min-width: 0; }
-  .srs-idx:last-child { border-bottom: none; }
-  .srs-sym { font-weight: 600; font-family: var(--mono); letter-spacing: 0.02em; }
-  .srs-price { font-family: var(--mono); color: var(--text); }
-  .srs-pdc { font-family: var(--mono); color: var(--text-dim); font-size: 11.5px; }
-  .srs-delta { font-family: var(--mono); text-align: right; min-width: 64px; font-size: 12px; }
-  .srs-delta.up   { color: var(--up); }
-  .srs-delta.down { color: var(--down); }
-  .srs-delta.na   { color: var(--text-dim); }
-  .srs-verdict { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 6px; border-top: 1px solid var(--border); }
-  .srs-eject { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; }
-  .srs-eject-label { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; }
-  .srs-eject-value { font-weight: 600; font-family: var(--mono); font-size: 12.5px; }
-  .srs-eject-value.armed { color: var(--down); }
-  .srs-eject-value.dis   { color: var(--up); }
-  .srs-eject-value.na    { color: var(--text-dim); }
-  .srs-reason { color: var(--text-dim); font-size: 11.5px; padding-top: 4px; word-break: break-word; overflow-wrap: anywhere; }
-  .chip-srs-armed { background: var(--down-dim); color: var(--down); }
-  .chip-srs-wait  { background: var(--warn-dim, rgba(255,170,0,0.15)); color: var(--warn, #ffaa00); }
-  .chip-srs-dis   { background: var(--up-dim); color: var(--up); }
+  /* v5.13.2 — Sovereign Regime Shield CSS retired (PDC dual-index eject
+     decommissioned in v5.9.1). The exec panels (Val/Gene) still embed
+     the same card skeleton; .srs-* / .chip-srs-* rules below are kept
+     scoped to those skeletons only via the `.tg-exec-panel` ancestor. */
+  .tg-exec-panel .srs { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .tg-exec-panel .srs-idx { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; min-width: 0; }
+  .tg-exec-panel .srs-idx:last-child { border-bottom: none; }
+  .tg-exec-panel .srs-sym { font-weight: 600; font-family: var(--mono); letter-spacing: 0.02em; }
+  .tg-exec-panel .srs-price { font-family: var(--mono); color: var(--text); }
+  .tg-exec-panel .srs-pdc { font-family: var(--mono); color: var(--text-dim); font-size: 11.5px; }
+  .tg-exec-panel .srs-delta { font-family: var(--mono); text-align: right; min-width: 64px; font-size: 12px; }
+  .tg-exec-panel .srs-delta.up   { color: var(--up); }
+  .tg-exec-panel .srs-delta.down { color: var(--down); }
+  .tg-exec-panel .srs-delta.na   { color: var(--text-dim); }
+  .tg-exec-panel .srs-reason { color: var(--text-dim); font-size: 11.5px; padding-top: 4px; word-break: break-word; overflow-wrap: anywhere; }
+  .tg-exec-panel .chip-srs-armed { background: var(--down-dim); color: var(--down); }
+  .tg-exec-panel .chip-srs-wait  { background: var(--warn-dim, rgba(255,170,0,0.15)); color: var(--warn, #ffaa00); }
+  .tg-exec-panel .chip-srs-dis   { background: var(--up-dim); color: var(--up); }
 
   /* v3.4.21 — per-ticker entry-gate row */
   .tgate { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 12px; }
@@ -948,40 +944,10 @@
     z-index: 2;
   }
 
-/* v5.10.6 — Eye-of-the-Tiger live gate panel. Section I permit pills,
-   per-ticker Volume Bucket / Boundary Hold grid, per-position Phase
-   badges, and Sovereign Brake distance chips. */
-.eot-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: #10151c;
-  border: 1px solid #1f2937;
-  color: #8a96a7;
-  font-variant-numeric: tabular-nums;
-}
-.eot-pill.eot-open {
-  color: var(--up);
-  border-color: color-mix(in srgb, var(--up) 50%, #1f2937);
-  background: color-mix(in srgb, var(--up) 10%, #10151c);
-}
-.eot-pill.eot-closed {
-  color: var(--down);
-  border-color: color-mix(in srgb, var(--down) 40%, #1f2937);
-  background: color-mix(in srgb, var(--down) 10%, #10151c);
-}
-.eot-pill.eot-pending {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, #1f2937);
-}
-.eot-vb-pass { color: var(--up); }
-.eot-vb-fail { color: var(--down); }
-.eot-vb-cold { color: var(--warn); }
-.eot-bh-armed { color: var(--text-muted); }
-.eot-bh-satisfied { color: var(--up); }
-.eot-bh-broken { color: var(--down); }
+/* v5.10.6 — per-position Phase badges + Sovereign Brake distance chips.
+   The Eye-of-the-Tiger panel itself was retired in v5.13.2 (replaced by
+   the Tiger Sovereign Phase 1-4 panel below); these styles remain in
+   use by the Open Positions table renderer (renderPositions). */
 .eot-phase-badge {
   display: inline-block;
   padding: 1px 6px;
@@ -998,3 +964,172 @@
 .eot-sb-green { color: var(--up); }
 .eot-sb-yellow { color: var(--warn); }
 .eot-sb-red { color: var(--down); }
+
+/* v5.13.2 — Tiger Sovereign live state panel.
+   Phase 1 (per-side permit) / Phase 2 (gates) / Phase 3 (entry
+   candidates) / Phase 4 (active management). Match the existing dark
+   theme — uses the same surface / border / accent tokens as the rest
+   of the dashboard, no new colors invented. */
+.ts-flags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 0 6px;
+  margin: -4px 0 8px;
+}
+.ts-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.ts-flag-on {
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.ts-flag-off {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.ts-phase {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ts-phase:last-child {
+  border-bottom: none;
+}
+.ts-phase-head {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.ts-phase-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 12px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.ts-row-multi { flex-wrap: wrap; }
+.ts-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 500;
+}
+.ts-row-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  color: var(--text-muted);
+}
+.ts-row-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.ts-ok { color: var(--up); font-weight: 600; }
+.ts-no { color: var(--down); font-weight: 600; }
+.ts-pending { color: var(--text-dim); }
+.ts-permit-line { padding-top: 2px; }
+.ts-permit-pill {
+  display: inline-flex;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  border: 1px solid var(--border);
+}
+.ts-permit-green {
+  color: var(--up);
+  background: color-mix(in srgb, var(--up) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--up) 40%, var(--border));
+}
+.ts-permit-red {
+  color: var(--down);
+  background: color-mix(in srgb, var(--down) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--down) 40%, var(--border));
+}
+.ts-vol-pill {
+  display: inline-flex;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.ts-gate-pass {
+  color: var(--up);
+  border-color: color-mix(in srgb, var(--up) 40%, var(--border));
+  background: color-mix(in srgb, var(--up) 12%, var(--surface-2));
+}
+.ts-gate-fail {
+  color: var(--down);
+  border-color: color-mix(in srgb, var(--down) 40%, var(--border));
+  background: color-mix(in srgb, var(--down) 12%, var(--surface-2));
+}
+.ts-gate-cold {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface-2));
+}
+.ts-gate-off {
+  color: var(--text-dim);
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+.ts-side {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.ts-side-long {
+  color: var(--up);
+  background: color-mix(in srgb, var(--up) 18%, var(--surface-2));
+}
+.ts-side-short {
+  color: var(--down);
+  background: color-mix(in srgb, var(--down) 18%, var(--surface-2));
+}
+.ts-titan-stage {
+  display: inline-flex;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
