@@ -116,24 +116,29 @@ def test_trade_genius_imports_clean_with_smoke_env(monkeypatch):
 
 
 def test_dockerfile_copies_every_top_level_python_module():
-    """Strict guard. Every sibling .py module imported at top level by
-    trade_genius.py must also be COPYed by the Dockerfile, otherwise
-    the production container will crash with ModuleNotFoundError on
-    first import. This is the v5.10.1 root-cause regression.
+    """Strict guard. Every sibling .py module imported (top-level OR
+    lazily inside a function/try block) by ``trade_genius.py`` or
+    ``dashboard_server.py`` must also be COPYed by the Dockerfile,
+    otherwise the production container will crash with
+    ModuleNotFoundError on first execution. This is the v5.10.1
+    root-cause regression \u2014 extended in v5.13.3 to cover
+    ``dashboard_server.py`` after v5.13.2 shipped a lazy
+    ``import v5_13_2_snapshot`` inside ``snapshot()`` that was missed
+    by the trade_genius-only check.
     """
-    tg = REPO_ROOT / "trade_genius.py"
     dockerfile = REPO_ROOT / "Dockerfile"
-    imported = _local_module_imports(tg)
     copied = _dockerfile_copied_modules(dockerfile)
     if "*" in copied:
         return
-    missing = sorted(imported - copied)
-    assert not missing, (
-        "trade_genius.py imports modules at top level that are NOT "
-        "COPYed by the Dockerfile. The Railway container will crash "
-        "with ModuleNotFoundError on boot. Add a `COPY <name>.py .` "
-        f"line for each. Missing: {missing}"
-    )
+    for entry_module in ("trade_genius.py", "dashboard_server.py"):
+        imported = _local_module_imports(REPO_ROOT / entry_module)
+        missing = sorted(imported - copied)
+        assert not missing, (
+            f"{entry_module} imports modules that are NOT COPYed by "
+            "the Dockerfile. The Railway container will crash with "
+            "ModuleNotFoundError. Add a `COPY <name>.py .` line for "
+            f"each. Missing: {missing}"
+        )
 
 
 def test_eye_of_tiger_modules_are_present_in_dockerfile():
