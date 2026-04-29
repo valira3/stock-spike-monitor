@@ -261,3 +261,29 @@ def test_api_state_carries_v5_13_2_blocks(smoke_module):
     # Backward-compat fields kept
     for k in ("section_i_permit", "per_ticker_v510", "per_position_v510"):
         assert k in snap
+
+
+# ---------------------------------------------------------------------------
+# v5.13.4 \u2014 Proximity widget contract test (PDC dropped, permit_side added)
+# ---------------------------------------------------------------------------
+
+
+def test_proximity_rows_drops_pdc_and_carries_permit_side(smoke_module):
+    """v5.13.4 \u2014 proximity rows must:
+    - never set nearest_label to "PDC" (entry-relevant boundaries only)
+    - carry a `permit_side` field reflecting Phase 1 permit state
+    - omit the legacy `pdc` field (reduces dashboard surface area).
+    """
+    _, ds = smoke_module
+    rows = ds._proximity_rows()
+    assert isinstance(rows, list)
+    valid_labels = {"OR-high", "OR-low", ""}
+    valid_permit_sides = {"LONG", "SHORT", "BOTH", "NONE"}
+    for r in rows:
+        assert r.get("nearest_label") in valid_labels, (
+            f"proximity row carries unexpected nearest_label {r.get('nearest_label')!r} "
+            "\u2014 v5.13.4 only allows OR-high / OR-low / empty"
+        )
+        assert "permit_side" in r, "proximity row missing permit_side"
+        assert r["permit_side"] in valid_permit_sides
+        assert "pdc" not in r, "proximity row should no longer expose `pdc` field"

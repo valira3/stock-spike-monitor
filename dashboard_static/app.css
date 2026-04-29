@@ -285,6 +285,7 @@
   .tgate-chip.on  { background: var(--up-dim);      color: var(--up); }
   .tgate-chip.off { background: var(--down-dim);    color: var(--down); }
   .tgate-chip.na  { background: var(--surface-3);   color: var(--text-dim); }
+  .tgate-chip.warm { background: var(--warn-dim);   color: var(--warn); }
   .tgate-section-label { padding: 10px 14px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); border-top: 1px solid var(--border); }
 
   .row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 12.5px; }
