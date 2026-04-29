@@ -7,12 +7,33 @@ from __future__ import annotations
 import logging
 import sys as _sys
 
+import time as _time
+
 from broker.orders import check_breakout  # noqa: F401
 from broker.stops import (
     _ladder_stop_long,
     _ladder_stop_short,
     _retighten_long_stop,  # noqa: F401
     _retighten_short_stop,  # noqa: F401
+)
+from engine.bars import compute_5m_ohlc_and_ema9
+from engine.sentinel import (
+    EXIT_REASON_ALARM_A,
+    EXIT_REASON_ALARM_B,
+    EXIT_REASON_ALARM_C,
+    SIDE_LONG as _SENTINEL_SIDE_LONG,
+    SIDE_SHORT as _SENTINEL_SIDE_SHORT,
+    evaluate_sentinel,
+    format_sentinel_log,
+    new_pnl_history,
+    record_pnl,
+)
+from engine.titan_grip import (
+    ACTION_RATCHET,
+    ACTION_RUNNER_EXIT,
+    ACTION_STAGE1_HARVEST,
+    ACTION_STAGE3_HARVEST,
+    TitanGripState,
 )
 
 # v5.11.2 \u2014 prod runs `python trade_genius.py`, so trade_genius is
@@ -31,6 +52,230 @@ def _tg():
 
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_titan_grip(ticker, side, pos):
+    """Lazily attach a TitanGripState to a position once Phase 4 is
+    active. Returns the existing or newly-created state, or None if
+    OR_High / OR_Low are not yet seeded for this ticker (in which
+    case Alarm C is skipped this tick).
+
+    The state is stored on ``pos["titan_grip_state"]`` (sidecar dict
+    pattern from PR 2). It's created exactly once per position and
+    survives until the position closes \u2014 close_breakout pops the
+    whole pos dict, taking the state with it.
+    """
+    state = pos.get("titan_grip_state")
+    if state is not None:
+        return state
+    tg = _tg()
+    or_high = (tg.or_high or {}).get(ticker)
+    or_low = (tg.or_low or {}).get(ticker)
+    if or_high is None or or_low is None:
+        return None
+    entry_p = pos.get("entry_price")
+    shares = int(pos.get("shares") or 0)
+    if not entry_p or shares <= 0:
+        return None
+    state = TitanGripState(
+        position_id=str(pos.get("position_id") or ticker),
+        direction=side,
+        entry_price=float(entry_p),
+        or_high=float(or_high),
+        or_low=float(or_low),
+        original_shares=int(shares),
+    )
+    pos["titan_grip_state"] = state
+    return state
+
+
+def _apply_titan_grip_partial(ticker, side, pos, action, current_price):
+    """Apply a Titan Grip partial-harvest action to a position.
+
+    For Stage 1 / Stage 3 harvests (25% LIMIT each) we reduce
+    pos["shares"] in place and emit a partial-harvest signal so
+    executors / dashboards see the action. The remaining position
+    continues to be managed by the existing manage_positions loop;
+    its stop is updated via pos["stop"] so the existing exit-on-stop
+    branch fires the runner exit.
+
+    Returns True if the action consumed shares (and thus reduced
+    the position), False otherwise (ratchet-only / runner-exit).
+    """
+    tg = _tg()
+    code = action.code
+    if code in (ACTION_STAGE1_HARVEST, ACTION_STAGE3_HARVEST):
+        cur_shares = int(pos.get("shares") or 0)
+        n = int(min(action.shares, cur_shares))
+        if n <= 0:
+            return False
+        pos["shares"] = cur_shares - n
+        # Mirror the partial-harvest into paper accounting using the
+        # same long/short cash-flow conventions as close_breakout. The
+        # SIDE_LONG branch credits sale proceeds; SHORT debits cover.
+        try:
+            if side == _SENTINEL_SIDE_LONG:
+                tg.paper_cash += float(current_price) * n
+            else:
+                tg.paper_cash -= float(current_price) * n
+        except Exception:
+            pass
+        # Emit a structured signal so any executor wired into
+        # _emit_signal can route the partial. Order type recorded
+        # on the action is LIMIT per spec; PR 6 owns the executor
+        # swap to actually submit a LIMIT order.
+        try:
+            tg._emit_signal({
+                "kind": "TITAN_GRIP_PARTIAL",
+                "ticker": ticker,
+                "side": side,
+                "stage": code,
+                "shares": int(n),
+                "price": float(current_price),
+                "order_type": action.order_type,
+                "reason": EXIT_REASON_ALARM_C,
+                "timestamp_utc": tg._utc_now_iso(),
+            })
+        except Exception:
+            pass
+        logger.info(
+            "[TITAN-GRIP] %s side=%s %s shares=%d price=%.4f order_type=%s",
+            ticker, side, code, n, float(current_price), action.order_type,
+        )
+        return True
+    if code == ACTION_RATCHET:
+        # Move the existing pos["stop"] to the new ratchet anchor so
+        # the existing manage_positions stop-cross branch fires the
+        # runner exit naturally.
+        anchor = float(action.price)
+        state = pos.get("titan_grip_state")
+        if state is not None and state.current_stop_anchor is not None:
+            anchor = float(state.current_stop_anchor)
+        if side == _SENTINEL_SIDE_LONG:
+            old_stop = pos.get("stop") or 0.0
+            if anchor > old_stop:
+                pos["stop"] = anchor
+                logger.info(
+                    "[TITAN-GRIP] %s LONG ratchet stop %.4f -> %.4f",
+                    ticker, old_stop, anchor,
+                )
+        else:
+            old_stop = pos.get("stop") or 0.0
+            if old_stop == 0.0 or anchor < old_stop:
+                pos["stop"] = anchor
+                logger.info(
+                    "[TITAN-GRIP] %s SHORT ratchet stop %.4f -> %.4f",
+                    ticker, old_stop, anchor,
+                )
+        return False
+    return False
+
+
+def _run_sentinel(ticker, side, pos, current_price, bars):
+    """v5.13.0 PR 2-3 \u2014 evaluate Tiger Sovereign Sentinel Loop.
+
+    Runs Alarm A (-$500 / -1%/min), Alarm B (5m close vs 9-EMA), AND
+    Alarm C (Titan Grip Harvest ratchet) INDEPENDENTLY \u2014 not
+    short-circuited. Per the spec: "These Alarms are NOT a sequence."
+
+    Priority on multi-fire (returned exit reason):
+      A wins over B and C \u2014 -$500 / velocity is an emergency stop.
+      B wins over C \u2014 9-EMA shield is a full close.
+      A and B both fired: A's reason wins; both appear in the log.
+    The log line lists every fired alarm regardless.
+
+    Returns the sentinel EXIT reason string if any FULL-EXIT alarm
+    fires (A or B), else None. Alarm C partial harvests are applied
+    in-place (pos["shares"] reduced, stop ratcheted) and return None
+    so the caller does NOT close the position; the runner exits
+    through the existing manage_positions stop-cross branch when
+    the ratcheted stop is hit.
+
+    Side: ``"LONG"`` or ``"SHORT"`` matching the sentinel SIDE_*
+    constants.
+    """
+    try:
+        entry_p = pos.get("entry_price")
+        shares = int(pos.get("shares") or 0)
+        if not entry_p or shares <= 0:
+            return None
+        if side == _SENTINEL_SIDE_LONG:
+            unrealized = (current_price - entry_p) * shares
+        else:
+            unrealized = (entry_p - current_price) * shares
+        position_value = float(entry_p) * shares
+
+        history = pos.get("pnl_history")
+        if history is None:
+            history = new_pnl_history()
+            pos["pnl_history"] = history
+        now_ts = _time.time()
+        record_pnl(history, now_ts, unrealized)
+
+        last_5m_close = None
+        last_5m_ema9 = None
+        try:
+            five = compute_5m_ohlc_and_ema9(bars)
+            if five and five.get("seeded"):
+                closes_5m = five.get("closes") or []
+                if closes_5m:
+                    last_5m_close = closes_5m[-1]
+                last_5m_ema9 = five.get("ema9")
+        except Exception:
+            last_5m_close = None
+            last_5m_ema9 = None
+
+        # PR 3 \u2014 Alarm C state. Created lazily: if OR_High/OR_Low
+        # aren't seeded yet, the Titan Grip arm is skipped silently
+        # this tick (state stays None inside evaluate_sentinel).
+        grip_state = _ensure_titan_grip(ticker, side, pos)
+
+        result = evaluate_sentinel(
+            side=side,
+            unrealized_pnl=unrealized,
+            position_value=position_value,
+            pnl_history=history,
+            now_ts=now_ts,
+            last_5m_close=last_5m_close,
+            last_5m_ema9=last_5m_ema9,
+            titan_grip_state=grip_state,
+            current_price=current_price,
+            current_shares=shares,
+        )
+        if not result.fired:
+            return None
+        # Always log every fired alarm \u2014 multi-fire trips include
+        # both A/B/C codes for observability.
+        logger.warning(
+            "%s",
+            format_sentinel_log(ticker, pos.get("position_id"), result),
+        )
+
+        # Priority: if A or B fired, full exit overrides any C
+        # actions (don't double-harvest before closing). This is the
+        # "A wins" rule. C partial actions are still in
+        # result.titan_grip_actions for the log but NOT applied.
+        if result.has_full_exit:
+            return result.exit_reason
+
+        # Alarm C only path \u2014 apply partial harvests / ratchet in
+        # place. The runner exit (C4) is signalled by setting the
+        # exit reason; everything else (C1/C2/C3) keeps the position
+        # alive with reduced shares / new stop.
+        runner_exit = False
+        for action in result.titan_grip_actions:
+            if action.code == ACTION_RUNNER_EXIT:
+                runner_exit = True
+                continue
+            _apply_titan_grip_partial(
+                ticker, side, pos, action, current_price,
+            )
+        if runner_exit:
+            return EXIT_REASON_ALARM_C
+        return None
+    except Exception as e:
+        logger.warning("[SENTINEL] error ticker=%s side=%s: %s", ticker, side, e)
+        return None
 
 
 def _v5104_maybe_fire_entry_2(ticker, side, pos):
@@ -224,6 +469,18 @@ def manage_positions():
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] long %s: %s", ticker, _eot_e)
 
+        # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (parallel
+        # alarms A & B). Runs in addition to v5.10.1 Section IV
+        # overrides. The sentinel is spec-literal: A1=-$500 hard
+        # floor, A2=-1% over 60s, B=closed 5m close < 9-EMA. Alarms
+        # are evaluated INDEPENDENTLY (not short-circuited).
+        _sentinel_reason = _run_sentinel(
+            ticker, _SENTINEL_SIDE_LONG, pos, current_price, bars,
+        )
+        if _sentinel_reason is not None:
+            tickers_to_close.append((ticker, current_price, _sentinel_reason))
+            continue
+
         # v5.10.5 \u2014 Phase B/C Triple-Lock. Phase A continues to use the
         # ladder/Maffei plumbing below; Phase B (be_stop) and Phase C
         # (ema_trail) exits fire here when the post-Entry-2 lock /
@@ -385,6 +642,17 @@ def manage_short_positions():
                 continue
         except Exception as _eot_e:
             logger.warning("[V5100-OVERRIDE] short %s: %s", ticker, _eot_e)
+
+        # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (short side
+        # mirror). Alarm A: -$500 / -1%/min. Alarm B: 5m close ABOVE
+        # 9-EMA fires. Alarms run in parallel with each other and
+        # ALSO with the v5.10.1 Section IV overrides above.
+        _sentinel_reason_s = _run_sentinel(
+            ticker, _SENTINEL_SIDE_SHORT, pos, current_price, bars,
+        )
+        if _sentinel_reason_s is not None:
+            tg.close_short_position(ticker, current_price, reason=_sentinel_reason_s)
+            continue
 
         # v5.10.5 \u2014 Phase B/C Triple-Lock (short mirror).
         phase_exit_s, _ = tg._engine_phase_machine_tick(

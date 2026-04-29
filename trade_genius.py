@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.12.0"
+BOT_VERSION = "5.13.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,11 +103,12 @@ BOT_VERSION = "5.12.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.12.0 \u2014 executors\n"
-    "TradeGeniusBase, Val, Gene\n"
-    "moved to executors/.\n"
-    "v5.11.x aliases purged.\n"
-    "Zero behavior change."
+    "v5.13.0 \u2014 Tiger Sovereign\n"
+    "Sentinel Loop (Alarms A/B/C),\n"
+    "Titan Grip ratchet 0.93/1.88,\n"
+    "100% vol + 2-candle entry,\n"
+    "15:44 cutoff, 15:49 EOD,\n"
+    "LIMIT harvest / STOP MARKET."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1639,6 +1640,31 @@ YAHOO_HEADERS  = {"User-Agent": "Mozilla/5.0"}
 # v3.4.47 — Eye of the Tiger 2.0 protocol configuration
 TIGER_V2_DI_THRESHOLD = float(os.getenv("TIGER_V2_DI_THRESHOLD", "25"))
 TIGER_V2_REQUIRE_VOL  = os.getenv("TIGER_V2_REQUIRE_VOL", "false").lower() in ("1", "true", "yes")
+
+# v5.13.0 PR 4 — Tiger Sovereign Phase 2 entry gates.
+#
+# These constants are the explicit, spec-named surface area for the
+# Phase 2 entry-readiness rules in STRATEGY.md (Tiger Sovereign v2026-04-28h).
+# They restate values already enforced by `volume_bucket.py` / `eye_of_tiger.py`
+# so that the rule-mapping table in STRATEGY.md ↔ trade_genius.py is greppable.
+#
+#   L-P2-S3 / S-P2-S3 — Volume gate: current 1m volume ≥ 100% of the
+#                       55-day rolling minute baseline (per symbol, per
+#                       minute-of-day, RTH only). Cold-start (< 55 trading
+#                       days available) passes through with a [VOLPROFILE]
+#                       warning so trading is not blocked during warmup.
+#   L-P2-S4 / S-P2-S4 — Confirmation gate: TWO consecutive 1m candles closed
+#                       strictly above (long) / below (short) the 5m
+#                       Opening Range edge. The in-progress (forming)
+#                       candle is NOT counted — only fully closed bars.
+#   L-P3-S6 / S-P3-S6 — Entry-2 stricter DI threshold: a literal 30 (vs
+#                       Entry-1's 25) for the 1m DI+/DI- crossing trigger.
+PHASE2_VOLUME_GATE_RATIO        = 1.00            # 100% of 55-day rolling minute baseline
+PHASE2_VOLUME_LOOKBACK_DAYS_55  = 55              # 55-day rolling minute baseline
+PHASE2_TWO_CONSECUTIVE_1M_CLOSES = True           # two_consecutive 1m closes outside OR
+PHASE2_CONSECUTIVE_1M_REQUIRED  = 2               # consecutive_1m count required
+DI_PLUS_ENTRY2_THRESHOLD        = 30              # L-P3-S6 — di_plus must cross > 30
+DI_MINUS_ENTRY2_THRESHOLD       = 30              # S-P3-S6 — di_minus must cross > 30
 
 # ============================================================
 # GLOBAL STATE
@@ -4446,6 +4472,35 @@ def _ticker_today_realized_pnl(ticker: str) -> float:
     return pnl
 
 
+# v5.13.0 PR-5 SHARED-CUTOFF / SHARED-HUNT — single source of truth for the
+# new-position cutoff (15:44:59 ET) lives in engine/timing.py. This wrapper
+# adds the [SHARED-CUTOFF] log line and integrates with the entry path.
+from engine.timing import (
+    NEW_POSITION_CUTOFF_ET as _NEW_POSITION_CUTOFF_ET,
+    EOD_FLUSH_ET as _EOD_FLUSH_ET,
+    is_after_cutoff_et as _is_after_cutoff_et,
+    is_after_eod_et as _is_after_eod_et,
+)
+
+
+def _check_new_position_cutoff(ticker: str) -> bool:
+    """SHARED-CUTOFF gate: returns True if a NEW position may still be opened.
+
+    At/after 15:44:59 ET, this returns False and emits a structured log line.
+    Existing positions are NOT touched here — sentinel/ratchet manage them
+    through SHARED-EOD (15:49:59 ET).
+    """
+    now_et = _now_et()
+    if _is_after_cutoff_et(now_et):
+        logger.info(
+            "[SHARED-CUTOFF] ticker=%s now_et=%s cutoff_et=%s action=BLOCK_ENTRY",
+            ticker, now_et.strftime("%H:%M:%S"),
+            _NEW_POSITION_CUTOFF_ET.strftime("%H:%M:%S"),
+        )
+        return False
+    return True
+
+
 def _check_daily_loss_limit(ticker: str) -> bool:
     """Return True if entry should proceed; False if daily loss limit
     halts trading.
@@ -4486,6 +4541,12 @@ def _check_daily_loss_limit(ticker: str) -> bool:
 
     logger.info("Daily P&L check: $%.2f (limit $%.2f)", today_pnl, DAILY_LOSS_LIMIT)
     if today_pnl <= DAILY_LOSS_LIMIT:
+        # v5.13.0 PR-5 SHARED-CB: structured circuit-breaker line. Logged once
+        # at the moment of breach and on every subsequent blocked entry.
+        logger.info(
+            "[DAILY-BREAKER] day_pnl=%.2f threshold=%.2f action=BLOCK_ENTRY",
+            today_pnl, float(DAILY_LOSS_LIMIT_DOLLARS),
+        )
         _trading_halted = True
         pnl_fmt = "%+.2f" % today_pnl
         limit_fmt = "%.2f" % DAILY_LOSS_LIMIT
@@ -5156,9 +5217,11 @@ def scheduler_thread():
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
-        # v5.10.0 \u2014 EOD flush at 15:59:50 ET (was 15:55) per Section VI.
-        ("daily", "15:59", eod_close),
-        ("daily", "15:58", send_eod_report),
+        # v5.13.0 PR-5 SHARED-EOD \u2014 EOD flush moved from 15:59 to 15:49 ET
+        # (target wall-clock 15:49:59 ET per spec). EOD report now precedes
+        # the flush by one minute.
+        ("daily", "15:49", eod_close),
+        ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
     ]
 
