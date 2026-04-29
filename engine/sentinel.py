@@ -184,6 +184,58 @@ def record_pnl(history: Deque[tuple[float, float]], ts: float, pnl: float) -> No
     history.append((float(ts), float(pnl)))
 
 
+# v5.13.2 P1 #4 \u2014 share-count key used by the baseline-reset detector
+# below. Stored as a sidecar field on the position dict so the
+# detector remains stateless and decoupled from any sentinel state
+# object the position may or may not carry.
+_PNL_BASELINE_LAST_SHARES_KEY = "_sentinel_last_known_shares"
+
+
+def maybe_reset_pnl_baseline_on_shares_change(
+    pos: dict,
+    history: Deque[tuple[float, float]],
+    now_ts: float,
+    current_unrealized_pnl: float,
+) -> bool:
+    """v5.13.2 P1 #4 \u2014 reset Alarm A velocity baseline on share-count change.
+
+    The Alarm A2 velocity check compares ``unrealized_pnl_now`` with a
+    sample drawn from ~60 seconds ago, dividing the delta by current
+    ``position_value = entry_price * shares``. When Entry-2 fills, the
+    position's ``entry_price`` (an average) and ``shares`` both change.
+    The cached ``pnl_history`` deque, however, still holds samples
+    computed against the pre-Entry-2 notional. Computing the velocity
+    against the new notional produces an artificial spike (a wider
+    notional makes the same dollar P&L look like a smaller velocity,
+    but the dollar P&L itself shifts step-wise across the fill so the
+    delta is large for a single tick).
+
+    Detection is share-count-based, which is the most direct signal:
+    Entry-2, partial harvests (Titan Grip Stage 1 / Stage 3), and any
+    other share-count mutation all flip ``pos["shares"]`` and thus
+    invalidate the cached baseline. The first call after creation
+    records the baseline silently; subsequent calls compare and reset
+    on change.
+
+    Returns True iff the deque was cleared and reseeded with the
+    current sample (caller can use this for telemetry / tests).
+    Otherwise returns False and leaves history untouched.
+    """
+    try:
+        cur_shares = int(pos.get("shares") or 0)
+    except (TypeError, ValueError):
+        return False
+    last_shares = pos.get(_PNL_BASELINE_LAST_SHARES_KEY)
+    pos[_PNL_BASELINE_LAST_SHARES_KEY] = cur_shares
+    if last_shares is None or last_shares == cur_shares:
+        return False
+    # Share count changed since last tick \u2014 clear stale baseline and
+    # reseed with current sample so the velocity window starts fresh.
+    history.clear()
+    history.append((float(now_ts), float(current_unrealized_pnl)))
+    return True
+
+
 def _pnl_at_or_before(
     history: Iterable[tuple[float, float]], target_ts: float
 ) -> float | None:
@@ -493,6 +545,7 @@ __all__ = [
     "check_alarm_c",
     "evaluate_sentinel",
     "format_sentinel_log",
+    "maybe_reset_pnl_baseline_on_shares_change",
     "new_pnl_history",
     "record_pnl",
 ]
