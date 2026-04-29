@@ -392,14 +392,25 @@
           : "";
       const lbl = r.nearest_label || "—";
       const pctText = pct !== null ? `${(pct * 100).toFixed(2)}% · ${lbl}` : "—";
-      return `<div class="prox-row">
+      // v5.13.4 — permit-side chip (Phase 1 entry-relevant boundary).
+      const permitSide = r.permit_side || "NONE";
+      const permitChip = renderPermitSideChip(permitSide);
+      const dim = (permitSide === "NONE") ? ' style="opacity:0.55"' : '';
+      return `<div class="prox-row"${dim}>
         <span class="prox-ticker">${escapeHtml(r.ticker)} ${mark}</span>
         <span class="prox-price">${fmtPx(r.price)}</span>
         <div class="prox-bar"><div class="prox-fill ${warn ? "warn" : "ok"}" style="width:${fill}%"></div></div>
-        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${pctText}</span>
+        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${pctText} ${permitChip}</span>
       </div>`;
     }).join("");
     list.innerHTML = html;
+  }
+
+  function renderPermitSideChip(permitSide) {
+    if (permitSide === "BOTH") return `<span class="tgate-chip on" title="Phase 1 permit: long + short">L+S</span>`;
+    if (permitSide === "LONG") return `<span class="tgate-chip on" title="Phase 1 long permit active">L</span>`;
+    if (permitSide === "SHORT") return `<span class="tgate-chip on" title="Phase 1 short permit active">S</span>`;
+    return `<span class="tgate-chip na" title="No Phase 1 permit \u2014 breakout would not fire">no permit</span>`;
   }
 
   // v3.4.30 — time may already arrive pre-formatted as "09:11 CDT"
@@ -793,20 +804,34 @@
     rows.push(gateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
     rows.push(gateRow("OR collected", g.or_collected_date || "—", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
 
-    // v3.5.x — per-ticker entry-gate chips. Volume removed (not an
-    // active gate: TIGER_V2_REQUIRE_VOL defaults false). DI chip added —
-    // the actual Tiger 2.0 gate after price/polarity/index.
-    const per = Array.isArray(g.per_ticker) ? g.per_ticker : [];
-    if (per.length) {
-      const warming = per.some(r => r && r.di === null);
-      const rsiUnknown = (s && s.regime && s.regime.rsi_regime === "UNKNOWN");
+    // v5.13.4 \u2014 per-ticker chip set surfaces Tiger Sovereign Phase 2
+    // state: Permit (Phase 1 per-side QQQ permit), Vol (Volume Bucket
+    // gate), Boundary (Boundary Hold 2-close confirmation). Phase 3
+    // entry-fired status (E1/E2) is appended when present. Legacy
+    // Brk/PDC/Idx/DI chips are no longer rendered \u2014 the spec rules
+    // changed in v5.13.x and per-ticker PDC is exit-only behind a
+    // runtime flag.
+    const ts = (s && s.tiger_sovereign) || {};
+    const phase2List = Array.isArray(ts.phase2) ? ts.phase2 : [];
+    if (phase2List.length) {
+      const phase1 = ts.phase1 || {};
+      const longPermit = !!(phase1.long && phase1.long.permit);
+      const shortPermit = !!(phase1.short && phase1.short.permit);
+      const phase3List = Array.isArray(ts.phase3) ? ts.phase3 : [];
+      const phase3ByTicker = {};
+      for (const r of phase3List) {
+        if (!r || !r.ticker) continue;
+        if (!phase3ByTicker[r.ticker]) phase3ByTicker[r.ticker] = [];
+        phase3ByTicker[r.ticker].push(r);
+      }
+      const ff = (s && s.feature_flags) || {};
+      const volOff = !ff.volume_gate_enabled;
       const notes = [];
-      if (warming) notes.push("DI warming up (needs 16 closed 5m bars)");
-      if (rsiUnknown) notes.push("RSI regime: UNKNOWN (informational \u2014 not a gate)");
+      if (volOff) notes.push("Volume Gate runtime override: OFF");
       const sub = notes.length ? ` <span class="hint">\u2014 ${escapeHtml(notes.join(" \u00b7 "))}</span>` : "";
-      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Brk \u00b7 PDC \u00b7 Idx \u00b7 DI${sub}</div>`);
-      for (const r of per) {
-        rows.push(tGateRow(r));
+      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
+      for (const r of phase2List) {
+        rows.push(tGateRow(r, longPermit, shortPermit, phase3ByTicker[r.ticker] || []));
       }
     }
     gates.innerHTML = rows.join("");
@@ -817,28 +842,66 @@
     updateNextScanLabel();
   }
 
-  function tGateRow(r) {
+  function tGateRow(r, longPermit, shortPermit, phase3Rows) {
     if (!r || !r.ticker) return "";
     const chips = [];
-    if (r.side === "LONG") chips.push(`<span class="tgate-chip na">L</span>`);
-    else if (r.side === "SHORT") chips.push(`<span class="tgate-chip na">S</span>`);
-    else chips.push(`<span class="tgate-chip na">\u2014</span>`);
-    chips.push(chipFlag("Brk", r.break));
-    chips.push(chipFlag("PDC", r.polarity));
-    chips.push(chipFlag("Idx", r.index));
-    const diLbl = (r.di === null || typeof r.di === "undefined") ? "DI \u2026" : "DI";
-    chips.push(chipFlag(diLbl, r.di, r.di === null || typeof r.di === "undefined"));
+    chips.push(permitChip(longPermit, shortPermit));
+    chips.push(volChip(r.vol_gate_status));
+    chips.push(boundaryChip(r.two_consec_above, r.two_consec_below));
+    const fired = entryFiredChips(phase3Rows || []);
+    if (fired) chips.push(fired);
     return `<div class="tgate">
       <span class="tgate-tkr">${escapeHtml(r.ticker)}</span>
       <span class="tgate-chips">${chips.join("")}</span>
     </div>`;
   }
 
-  function chipFlag(label, val, naOverride) {
-    if (naOverride || val === null || typeof val === "undefined") {
-      return `<span class="tgate-chip na">${escapeHtml(label)}</span>`;
+  function permitChip(longPermit, shortPermit) {
+    const lCls = longPermit ? "on" : "off";
+    const sCls = shortPermit ? "on" : "off";
+    const lTxt = longPermit ? "L\u2713" : "L\u2717";
+    const sTxt = shortPermit ? "S\u2713" : "S\u2717";
+    const title = "Phase 1 \u2014 Section I QQQ permit (per side)";
+    return `<span class="tgate-chip ${lCls}" title="${escapeHtml(title)}">${escapeHtml(lTxt)}</span>` +
+           `<span class="tgate-chip ${sCls}" title="${escapeHtml(title)}">${escapeHtml(sTxt)}</span>`;
+  }
+
+  function volChip(status) {
+    const s = (status || "").toString().toUpperCase();
+    let cls = "na";
+    if (s === "PASS") cls = "on";
+    else if (s === "FAIL") cls = "off";
+    else if (s === "COLD") cls = "warm";
+    else if (s === "OFF") cls = "na";
+    const lbl = s ? `Vol ${s}` : "Vol \u2014";
+    const title = s === "OFF"
+      ? "Volume Bucket gate \u2014 VOLUME_GATE_ENABLED override is OFF"
+      : "Volume Bucket gate";
+    return `<span class="tgate-chip ${cls}" title="${escapeHtml(title)}">${escapeHtml(lbl)}</span>`;
+  }
+
+  function boundaryChip(twoAbove, twoBelow) {
+    const title = "Boundary Hold (2 consecutive closes)";
+    if (twoAbove) {
+      return `<span class="tgate-chip on" title="${escapeHtml(title)}">\u2191\u2191</span>`;
     }
-    return `<span class="tgate-chip ${val ? "on" : "off"}">${escapeHtml(label)}</span>`;
+    if (twoBelow) {
+      return `<span class="tgate-chip on" title="${escapeHtml(title)}">\u2193\u2193</span>`;
+    }
+    return `<span class="tgate-chip na" title="${escapeHtml(title)}">\u2026</span>`;
+  }
+
+  function entryFiredChips(phase3Rows) {
+    let e1 = false, e2 = false;
+    for (const r of phase3Rows) {
+      if (r.entry1_fired) e1 = true;
+      if (r.entry2_fired) e2 = true;
+    }
+    if (!e1 && !e2) return "";
+    const out = [];
+    if (e1) out.push(`<span class="tgate-chip on" title="Entry 1 fired">E1\u2713</span>`);
+    if (e2) out.push(`<span class="tgate-chip on" title="Entry 2 fired">E2\u2713</span>`);
+    return out.join("");
   }
 
   function updateNextScanLabel() {
@@ -1909,14 +1972,24 @@
           : "";
       const lbl = r.nearest_label || "\u2014";
       const pctText = pct !== null ? `${(pct * 100).toFixed(2)}% \u00b7 ${lbl}` : "\u2014";
-      return `<div class="prox-row">
+      const permitSide = r.permit_side || "NONE";
+      const permitChip = execRenderPermitSideChip(permitSide);
+      const dim = (permitSide === "NONE") ? ' style="opacity:0.55"' : '';
+      return `<div class="prox-row"${dim}>
         <span class="prox-ticker">${esc(r.ticker)} ${mark}</span>
         <span class="prox-price">${fmtPxExec(r.price)}</span>
         <div class="prox-bar"><div class="prox-fill ${warn ? "warn" : "ok"}" style="width:${fill}%"></div></div>
-        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${esc(pctText)}</span>
+        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${esc(pctText)} ${permitChip}</span>
       </div>`;
     }).join("");
     list.innerHTML = html;
+  }
+
+  function execRenderPermitSideChip(permitSide) {
+    if (permitSide === "BOTH") return `<span class="tgate-chip on" title="Phase 1 permit: long + short">L+S</span>`;
+    if (permitSide === "LONG") return `<span class="tgate-chip on" title="Phase 1 long permit active">L</span>`;
+    if (permitSide === "SHORT") return `<span class="tgate-chip on" title="Phase 1 short permit active">S</span>`;
+    return `<span class="tgate-chip na" title="No Phase 1 permit \u2014 breakout would not fire">no permit</span>`;
   }
 
   function renderExecSovereign(panel, s) {
@@ -1965,23 +2038,58 @@
     </div>`;
   }
 
-  function execChipFlag(label, val, naOverride) {
-    if (naOverride || val === null || typeof val === "undefined") {
-      return `<span class="tgate-chip na">${esc(label)}</span>`;
-    }
-    return `<span class="tgate-chip ${val ? "on" : "off"}">${esc(label)}</span>`;
+  function execPermitChip(longPermit, shortPermit) {
+    const lCls = longPermit ? "on" : "off";
+    const sCls = shortPermit ? "on" : "off";
+    const lTxt = longPermit ? "L\u2713" : "L\u2717";
+    const sTxt = shortPermit ? "S\u2713" : "S\u2717";
+    const title = "Phase 1 \u2014 Section I QQQ permit (per side)";
+    return `<span class="tgate-chip ${lCls}" title="${esc(title)}">${esc(lTxt)}</span>` +
+           `<span class="tgate-chip ${sCls}" title="${esc(title)}">${esc(sTxt)}</span>`;
   }
-  function execTGateRow(r) {
+  function execVolChip(status) {
+    const s = (status || "").toString().toUpperCase();
+    let cls = "na";
+    if (s === "PASS") cls = "on";
+    else if (s === "FAIL") cls = "off";
+    else if (s === "COLD") cls = "warm";
+    else if (s === "OFF") cls = "na";
+    const lbl = s ? `Vol ${s}` : "Vol \u2014";
+    const title = s === "OFF"
+      ? "Volume Bucket gate \u2014 VOLUME_GATE_ENABLED override is OFF"
+      : "Volume Bucket gate";
+    return `<span class="tgate-chip ${cls}" title="${esc(title)}">${esc(lbl)}</span>`;
+  }
+  function execBoundaryChip(twoAbove, twoBelow) {
+    const title = "Boundary Hold (2 consecutive closes)";
+    if (twoAbove) {
+      return `<span class="tgate-chip on" title="${esc(title)}">\u2191\u2191</span>`;
+    }
+    if (twoBelow) {
+      return `<span class="tgate-chip on" title="${esc(title)}">\u2193\u2193</span>`;
+    }
+    return `<span class="tgate-chip na" title="${esc(title)}">\u2026</span>`;
+  }
+  function execEntryFiredChips(phase3Rows) {
+    let e1 = false, e2 = false;
+    for (const r of phase3Rows) {
+      if (r.entry1_fired) e1 = true;
+      if (r.entry2_fired) e2 = true;
+    }
+    if (!e1 && !e2) return "";
+    const out = [];
+    if (e1) out.push(`<span class="tgate-chip on" title="Entry 1 fired">E1\u2713</span>`);
+    if (e2) out.push(`<span class="tgate-chip on" title="Entry 2 fired">E2\u2713</span>`);
+    return out.join("");
+  }
+  function execTGateRow(r, longPermit, shortPermit, phase3Rows) {
     if (!r || !r.ticker) return "";
     const chips = [];
-    if (r.side === "LONG") chips.push(`<span class="tgate-chip na">L</span>`);
-    else if (r.side === "SHORT") chips.push(`<span class="tgate-chip na">S</span>`);
-    else chips.push(`<span class="tgate-chip na">\u2014</span>`);
-    chips.push(execChipFlag("Brk", r.break));
-    chips.push(execChipFlag("PDC", r.polarity));
-    chips.push(execChipFlag("Idx", r.index));
-    const diLbl = (r.di === null || typeof r.di === "undefined") ? "DI \u2026" : "DI";
-    chips.push(execChipFlag(diLbl, r.di, r.di === null || typeof r.di === "undefined"));
+    chips.push(execPermitChip(longPermit, shortPermit));
+    chips.push(execVolChip(r.vol_gate_status));
+    chips.push(execBoundaryChip(r.two_consec_above, r.two_consec_below));
+    const fired = execEntryFiredChips(phase3Rows || []);
+    if (fired) chips.push(fired);
     return `<div class="tgate">
       <span class="tgate-tkr">${esc(r.ticker)}</span>
       <span class="tgate-chips">${chips.join("")}</span>
@@ -2004,16 +2112,29 @@
     rows.push(execGateRow("Trading halted", g.trading_halted ? "HALTED" : "Armed", !g.trading_halted, g.halt_reason || ""));
     rows.push(execGateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
     rows.push(execGateRow("OR collected", g.or_collected_date || "\u2014", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
-    const per = Array.isArray(g.per_ticker) ? g.per_ticker : [];
-    if (per.length) {
-      const warming = per.some(r => r && r.di === null);
-      const rsiUnknown = (s && s.regime && s.regime.rsi_regime === "UNKNOWN");
+    // v5.13.4 \u2014 same Phase 2 chip set rendered on the Main view.
+    const ts = (s && s.tiger_sovereign) || {};
+    const phase2List = Array.isArray(ts.phase2) ? ts.phase2 : [];
+    if (phase2List.length) {
+      const phase1 = ts.phase1 || {};
+      const longPermit = !!(phase1.long && phase1.long.permit);
+      const shortPermit = !!(phase1.short && phase1.short.permit);
+      const phase3List = Array.isArray(ts.phase3) ? ts.phase3 : [];
+      const phase3ByTicker = {};
+      for (const r of phase3List) {
+        if (!r || !r.ticker) continue;
+        if (!phase3ByTicker[r.ticker]) phase3ByTicker[r.ticker] = [];
+        phase3ByTicker[r.ticker].push(r);
+      }
+      const ff = (s && s.feature_flags) || {};
+      const volOff = !ff.volume_gate_enabled;
       const notes = [];
-      if (warming) notes.push("DI warming up (needs 16 closed 5m bars)");
-      if (rsiUnknown) notes.push("RSI regime: UNKNOWN (informational \u2014 not a gate)");
+      if (volOff) notes.push("Volume Gate runtime override: OFF");
       const sub = notes.length ? ` <span class="hint">\u2014 ${esc(notes.join(" \u00b7 "))}</span>` : "";
-      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Brk \u00b7 PDC \u00b7 Idx \u00b7 DI${sub}</div>`);
-      for (const r of per) rows.push(execTGateRow(r));
+      rows.push(`<div class="tgate-section-label">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
+      for (const r of phase2List) {
+        rows.push(execTGateRow(r, longPermit, shortPermit, phase3ByTicker[r.ticker] || []));
+      }
     }
     gates.innerHTML = rows.join("");
   }

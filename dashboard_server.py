@@ -399,7 +399,11 @@ def _today_trades() -> list[dict]:
 
 
 def _proximity_rows() -> list[dict]:
-    """Compute simple proximity metric for TRADE_TICKERS: distance to nearest level."""
+    """Distance to the entry-relevant breakout boundary per ticker.
+
+    Tiger Sovereign: only OR-high (long permit) and OR-low (short permit)
+    are entry-relevant. PDC is not part of entry proximity.
+    """
     m = _ssm()
     rows: list[dict] = []
     try:
@@ -408,16 +412,45 @@ def _proximity_rows() -> list[dict]:
         tickers = []
     open_longs = set(getattr(m, "positions", {}) or {})
     open_shorts = set(getattr(m, "short_positions", {}) or {})
+    long_permit = False
+    short_permit = False
+    try:
+        import v5_10_6_snapshot as _v510_snap
+
+        sip = _v510_snap._section_i_permit(m) or {}
+        long_permit = bool(sip.get("long_open"))
+        short_permit = bool(sip.get("short_open"))
+    except Exception:
+        pass
+    if long_permit and short_permit:
+        permit_side = "BOTH"
+    elif long_permit:
+        permit_side = "LONG"
+    elif short_permit:
+        permit_side = "SHORT"
+    else:
+        permit_side = "NONE"
     for t in tickers:
         px = _price_for(t)
         orh = (getattr(m, "or_high", {}) or {}).get(t)
         orl = (getattr(m, "or_low", {}) or {}).get(t)
-        pdc_v = (getattr(m, "pdc", {}) or {}).get(t)
-        # distance to nearest of OR-high / OR-low / PDC, expressed as % of price
         best_pct = None
         best_label = ""
         if px and px > 0:
-            for label, lvl in (("OR-high", orh), ("OR-low", orl), ("PDC", pdc_v)):
+            candidates: list[tuple[str, float]] = []
+            if long_permit and orh:
+                candidates.append(("OR-high", orh))
+            if short_permit and orl:
+                candidates.append(("OR-low", orl))
+            if not candidates:
+                # No permit active \u2014 still report whichever boundary is
+                # closer so the operator sees how far we are, but mark
+                # the row "no permit" via permit_side="NONE".
+                if orh:
+                    candidates.append(("OR-high", orh))
+                if orl:
+                    candidates.append(("OR-low", orl))
+            for label, lvl in candidates:
                 if lvl:
                     d = abs(px - lvl) / px
                     if best_pct is None or d < best_pct:
@@ -434,10 +467,10 @@ def _proximity_rows() -> list[dict]:
                 "price": px,
                 "or_high": orh,
                 "or_low": orl,
-                "pdc": pdc_v,
                 "nearest_label": best_label,
                 "nearest_pct": best_pct,  # smaller = closer
                 "open_side": open_side,
+                "permit_side": permit_side,
             }
         )
     # sort by closeness (closer first); None goes last

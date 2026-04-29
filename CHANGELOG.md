@@ -4,6 +4,81 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.13.4 — 2026-04-29 — Dashboard pill cleanup (Phase 2 surface) + proximity to entry boundaries only
+
+Frontend-only refactor of the operator dashboard so the per-ticker chips
+and the Proximity widget reflect the Tiger Sovereign Phase 1–4 spec
+(live as of v5.13.2) instead of legacy v5.9.x gate names. **No
+algorithm or trading-logic changes** — the underlying snapshot already
+publishes the correct shape; this PR only changes how `dashboard_server`
+shapes proximity output and how `app.js` renders the pills.
+
+### Per-ticker pills (Phase 2 surface)
+
+The `GATES · ENTRY CHECKS` per-ticker rows previously rendered legacy
+chips `Brk · PDC · Idx · DI` (pre-Tiger-Sovereign concepts: index-PDC
+regime gate retired in v5.9.1, per-ticker PDC is now legacy-exit-only,
+DI was a v5.10.x concept). Replaced with a 3-chip set sourced from
+`tiger_sovereign.phase1` + `tiger_sovereign.phase2`:
+
+- **Permit** (Phase 1) — `L✓/L✗ S✓/S✗` two-pill pair from
+  `phase1.long.permit` and `phase1.short.permit`.
+- **Vol** — `phase2[ticker].vol_gate_status` (PASS/FAIL/COLD/OFF).
+  COLD renders amber; OFF is dimmed and the section sub-label shows
+  the runtime `VOLUME_GATE_ENABLED` override notice.
+- **Boundary** — `↑↑` / `↓↓` / `…` from `two_consec_above` /
+  `two_consec_below` (Boundary Hold 2-close confirmation).
+- **E1✓ / E2✓** — appended when `phase3` shows entry 1 / entry 2
+  fired for the ticker.
+
+Section sub-label changed:
+`Per-ticker · Brk · PDC · Idx · DI` → `Per-ticker · Permit · Vol · Boundary`.
+
+Applied to both the Main view and the Executor panel renderers.
+
+### Proximity widget
+
+`_proximity_rows()` previously reported distance to the nearest of
+{OR-high, OR-low, **PDC**}. Under Tiger Sovereign, PDC is not an
+entry-relevant level (it stayed in the dashboard from the v5.9.x
+regime gate that was retired). New behaviour:
+
+- OR-high is candidate when `phase1.long.permit` is true.
+- OR-low is candidate when `phase1.short.permit` is true.
+- When neither permit is active: closer of OR-high/OR-low is shown
+  but the row is dimmed and tagged `no permit` so the operator sees
+  a breakout would not currently fire.
+- PDC is dropped entirely from proximity. (Per-ticker PDC remains in
+  per-position legacy-exit telemetry only when `LEGACY_EXITS_ENABLED=true`.)
+
+New backend field on each proximity row: `permit_side`
+∈ {LONG, SHORT, BOTH, NONE}. The legacy `pdc` field is removed.
+
+### Backend snapshot fields
+
+The `_ticker_gates` snapshot fields (`break / polarity / index / di`)
+are preserved on `gates.per_ticker` for any non-dashboard surface
+that may still consume them (Telegram etc.); only the dashboard
+renderers stopped reading them.
+
+### Tests
+
+- `tests/test_dashboard_state_v5_13_2.py` — new
+  `test_proximity_rows_drops_pdc_and_carries_permit_side` asserting
+  `nearest_label ∈ {"OR-high","OR-low",""}`, `permit_side` present,
+  and the legacy `pdc` field absent.
+
+### Manual verification
+
+- Load the dashboard with no positions → per-ticker rows render
+  three chips (Permit / Vol / Boundary) per ticker; section sub-label
+  reads `Per-ticker · Permit · Vol · Boundary`.
+- Proximity widget shows percent-to-OR-high/OR-low and a permit-side
+  chip; when no permit is active, rows are dimmed and the chip reads
+  `no permit`.
+
+---
+
 ## v5.13.3 — 2026-04-29 — Hotfix: ship v5_13_2_snapshot.py in Docker image
 
 v5.13.2 added `v5_13_2_snapshot.py` (consumed by `dashboard_server.py`
