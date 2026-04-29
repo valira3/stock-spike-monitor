@@ -11,7 +11,7 @@ Six sections:
   III. Entry & Sizing (Scaled 50/50)           \u2014 evaluate_entry_1 / evaluate_entry_2
   IV.  High-Priority Overrides (tick-by-tick)  \u2014 evaluate_sovereign_brake / evaluate_velocity_fuse
   V.   Stop-Loss Hierarchy (Triple-Lock)       \u2014 evaluate_maffei_inside_or / two_bar_lock_step / evaluate_ema_trail
-  VI.  Systematic Machine Rules                \u2014 daily_circuit_breaker_tripped / is_eod_flush_time
+  VI.  Systematic Machine Rules                \u2014 daily_circuit_breaker_tripped
 
 Pure functions over plain dicts. No I/O. The integration glue lives
 in trade_genius.py.
@@ -40,7 +40,6 @@ LEASH_EMA_PERIOD = 9
 LEASH_EMA_TIMEFRAME_MIN = 5
 
 DAILY_CIRCUIT_BREAKER_DOLLARS = -1500.0
-EOD_FLUSH_HHMMSS_ET = "15:59:50"
 
 OR_WINDOW_START_HHMM_ET = "09:30"
 OR_WINDOW_END_HHMM_ET = "09:35"
@@ -431,21 +430,6 @@ def daily_circuit_breaker_tripped(
     if cumulative_realized_pnl is None:
         return False
     return float(cumulative_realized_pnl) <= threshold
-
-
-def is_eod_flush_time(
-    now_et: datetime,
-    flush_hhmmss: str = EOD_FLUSH_HHMMSS_ET,
-) -> bool:
-    """True at or after EOD flush wall-clock time on a trading
-    day. Caller passes ET-naive or ET-aware datetime.
-    """
-    if now_et is None:
-        return False
-    parts = flush_hhmmss.split(":")
-    h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
-    cutoff = dtime(h, m, s)
-    return now_et.time() >= cutoff
 
 
 # =====================================================================
