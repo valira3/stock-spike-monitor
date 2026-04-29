@@ -1,8 +1,50 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.10.0 · April 2026 — **Project Eye of the Tiger**
+> **Version:** v5.11.0 · April 2026 — **Engine extraction**
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
-> **Source of truth (v5.10.0):** `specs/canonical/eye_of_the_tiger_gene_2026-04-28c.md` (Gene's authoritative rev 28c spec), `eye_of_tiger.py` (pure-function phase machine, Sections I–VI), `volume_bucket.py` (Section II.1 Institutional Oomph baseline), `tests/test_eye_of_tiger.py`, `tests/test_volume_bucket.py`, `trade_genius.py` (orchestration + scheduler + bus). Legacy implementation surfaces (`tiger_buffalo_v5.py`, `volume_profile.py`, `indicators.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/`) remain for infrastructure/observability; their *trading-logic* references below describe the v5.0–v5.9 algorithms that v5.10.0 supersedes.
+> **Source of truth (v5.11.0):** `specs/canonical/eye_of_the_tiger_gene_2026-04-28c.md` (Gene's authoritative rev 28c spec — the 28c spec is unchanged from v5.10.0; v5.11.0 is a refactor release), `eye_of_tiger.py` (pure-function spec gates, Sections I–VI), `engine/` (per-tick orchestration extracted from `trade_genius.py` in v5.11.0), `volume_bucket.py` (Section II.1 Institutional Oomph baseline), `tests/test_eye_of_tiger.py`, `tests/test_volume_bucket.py`, `tests/golden/` (byte-equal harness gating engine moves), `trade_genius.py` (bot lifecycle: WebSocket / broker / Telegram / persistence / dashboard). Legacy implementation surfaces (`tiger_buffalo_v5.py`, `volume_profile.py`, `bar_archive.py`, `shadow_pnl.py`, `persistence.py`, `dashboard_server.py`, `dashboard_static/{app.js,app.css,index.html}`, `backtest/`) remain for infrastructure/observability; their *trading-logic* references below describe the v5.0–v5.9 algorithms that v5.10.0 superseded.
+
+---
+
+## Module map (post-v5.11.0)
+
+v5.11.0 split the trading-rules engine out of `trade_genius.py` into a
+dedicated `engine/` package. The split is mechanical — **no algorithm
+change** — and was gated by the byte-equal `tests/golden/` harness on
+every PR. Spec source: see the v5.11.0 extraction spec carried in the
+project's spec set (mirrors `specs/v5_11_0_engine_extraction.md`).
+
+| File | Responsibility |
+| --- | --- |
+| `engine/__init__.py` | Re-exports the public engine surface so callers do `from engine import …`. Boot log line: `[ENGINE] modules loaded: bars, seeders, phase_machine, callbacks, scan`. |
+| `engine/bars.py` | 5-minute OHLC + EMA(9) aggregation. `compute_5m_ohlc_and_ema9` (formerly `_v5105_compute_5m_ohlc_and_ema9` in `trade_genius.py`) plus 1m/5m bar normalization helpers shared between prod and replay. Pure compute, no I/O. |
+| `engine/seeders.py` | Pre-market warmup as a unit. `qqq_regime_seed_once` (was `_v590_qqq_regime_seed_once`), `qqq_regime_tick`, `seed_di_buffer`/`seed_di_all`, `seed_opening_range`/`seed_opening_range_all`. Touches Alpaca + bar-archive readers via the same env-flag toggles as before; the seed paths (archive → Alpaca → prior-session) are unchanged. |
+| `engine/phase_machine.py` | Phase A → B-Layered → B-Locked → C-Extraction state machine. `phase_machine_tick(ticker, side, pos, bars)` is a pure decision function over `eye_of_tiger.evaluate_*` (the spec gates) — no broker/Telegram/db calls inside. Position state mutators that drive the lock-step transitions live here. |
+| `engine/callbacks.py` | `EngineCallbacks` Protocol (`execute_entry`, `execute_exit`, `get_position`, `alert`, `now_et`, …). Names every side effect the engine performs so the engine itself can stay free of `trade_genius` imports for I/O. Prod passes a wrapper around the existing `trade_genius` functions; the replay/test harness passes a record-only mock that just appends to a trade list. |
+| `engine/scan.py` | Per-minute `scan_loop()` over the universe — the orchestration body that was inlined inside `trade_genius.scan_loop`. Drives `engine.bars`, the seeders, the phase machine, and the spec gates against an injected `EngineCallbacks`. The `trade_genius.scan_loop` retained at the call site is now a thin shim that builds the callback impl and delegates. |
+
+**Unchanged / canonical homes:**
+
+- `eye_of_tiger.py` — spec gates §I–§VI (Global Permit, Volume Bucket, Boundary Hold, DI/NHOD entry triggers, tick overrides, Triple-Lock stops, machine rules). Pure functions; v5.11.0 did not touch this file.
+- `indicators.py` — DI(15), EMA, RSI, ATR, VWAP, spread math. Pure compute, called by `engine/seeders.py` and `engine/phase_machine.py`.
+- `qqq_regime.py` — QQQ Index Shield logic (§I); the `engine/seeders.py` warmup wraps this module's seeding helpers but does not re-implement them.
+- `volume_bucket.py` — §II.1 Institutional Oomph rolling 55-day per-(ticker, minute-of-day) baseline. Untouched by v5.11.0.
+
+**The `EngineCallbacks` Protocol seam.** The point of the Protocol in
+`engine/callbacks.py` is to keep the per-tick decision path I/O-free
+inside `engine/`. Prod ships an `EngineCallbacks` impl that wraps the
+existing `trade_genius` broker / Telegram / position-store / clock
+helpers; replay and unit tests ship a `RecordOnlyCallbacks` impl that
+appends emitted entries/exits to a list and uses a synthetic clock.
+This is what makes the byte-equal harness in `tests/golden/` possible
+without ever touching network or db.
+
+**Migration shims (v5.11.0 only).** The version-prefixed private names
+that callers in `trade_genius.py` historically used (e.g.
+`_v5105_compute_5m_ohlc_and_ema9`, `_v590_qqq_regime_seed_once`,
+`_v5105_phase_machine_tick`) are retained for one release as
+aliases that point at the public `engine.*` names. They will be
+deleted in v5.12.0; new code should `from engine import …` directly.
 
 ---
 
@@ -213,7 +255,19 @@ Concurrency model:
 ## 2. Repo layout
 
 ```
-trade_genius.py            # main bot; BOT_VERSION lives here
+trade_genius.py            # bot lifecycle (post-v5.11.0): WebSocket, broker,
+                           # Telegram, persistence, dashboard, scheduler;
+                           # BOT_VERSION + CURRENT_MAIN_NOTE live here
+engine/                    # v5.11.0 — extracted trading-rules engine
+    __init__.py            # re-exports the public engine surface
+    bars.py                # 5m OHLC + EMA9 aggregation
+    seeders.py             # pre-market QQQ regime / DI / OR seeders
+    phase_machine.py       # Phase A/B/C state machine (pure)
+    callbacks.py           # EngineCallbacks Protocol (I/O seam)
+    scan.py                # per-minute scan_loop over the universe
+eye_of_tiger.py            # spec gates §I–§VI (pure functions, unchanged)
+qqq_regime.py              # QQQ Index Shield helpers (§I)
+volume_bucket.py           # §II.1 rolling 55-day volume baseline
 dashboard_server.py        # aiohttp dashboard backend (~1.9 kLOC)
 dashboard_static/
     index.html             # single-page dashboard shell
@@ -222,16 +276,18 @@ dashboard_static/
 side.py                    # Side enum + SideConfig table (long/short collapse)
 paper_state.py             # paper book persistence (extracted in v4.6.0)
 error_state.py             # per-executor error rings + dedup gate (v4.11.0)
-tiger_buffalo_v5.py        # v5.0.0 Tiger/Buffalo state-machine helpers
+tiger_buffalo_v5.py        # v5.0.0 Tiger/Buffalo state-machine helpers (legacy)
 volume_profile.py          # v5.1.0 Forensic Volume Filter (shadow only)
 indicators.py              # v5.1.2 pure indicator math (rsi/ema/atr/vwap/spread)
 bar_archive.py             # v5.1.2 1m bar JSONL persistence (/data/bars/)
 persistence.py             # v5.1.8 SQLite-backed state store (/data/state.db)
 shadow_pnl.py              # v5.2.0 real-time shadow-strategy P&L tracker
 telegram_commands.py       # slash-command handlers
-smoke_test.py              # 262 local + 9 prod smoke tests
+smoke_test.py              # local + prod smoke tests
 synthetic_harness/         # 50-scenario byte-equal replay harness
     runner.py, recorder.py, market.py, clock.py, scenarios/, goldens/
+tests/golden/              # v5.11.0 byte-equal harness gating engine/* moves
+    record_session.py, verify.py, v5_10_7_session_2026-04-28.jsonl
 scripts/
     build_algo_pdf.py      # regenerates trade_genius_algo.pdf from this file
 Dockerfile                 # explicit per-file COPY whitelist (see §11 Gotchas)
@@ -328,8 +384,11 @@ whose minute the new instance lands inside.
 
 ### 5.2 Scan loop (`scan_loop`)
 
-`scheduler_thread` calls `scan_loop()` every `SCAN_INTERVAL = 60` s. The
-loop's structure:
+`scheduler_thread` calls `scan_loop()` every `SCAN_INTERVAL = 60` s.
+**Post-v5.11.0** the body of `scan_loop` lives in `engine/scan.py`; the
+function in `trade_genius.py` is a thin shim that builds an
+`EngineCallbacks` impl (broker calls, position lookup, Telegram alerts,
+clock) and delegates. The loop's structure (unchanged):
 
 1. `_refresh_market_mode()` — refresh the OPEN/CHOP/POWER/DEFENSIVE/CLOSED
    classifier *before* any early-return so the dashboard banner stays
