@@ -503,7 +503,6 @@ def test_S_P4_C_S4():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.spec_gap("PR-5", "SHARED-CUTOFF")
 def test_SHARED_CUTOFF():
     """SHARED-CUTOFF: New-position cutoff at 15:44:59 ET.
 
@@ -533,7 +532,6 @@ def test_SHARED_CB():
     )
 
 
-@pytest.mark.spec_gap("PR-5", "SHARED-EOD")
 def test_SHARED_EOD():
     """SHARED-EOD: EOD flush at 15:49:59 ET.
 
@@ -548,7 +546,6 @@ def test_SHARED_EOD():
     )
 
 
-@pytest.mark.spec_gap("PR-5", "SHARED-HUNT")
 def test_SHARED_HUNT():
     """SHARED-HUNT: Unlimited hunting until 15:44:59 cutoff.
 

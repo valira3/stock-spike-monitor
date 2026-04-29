@@ -360,6 +360,11 @@ def execute_breakout(ticker, current_price, side):
     if not tg._check_daily_loss_limit(ticker):
         return
 
+    # v5.13.0 PR-5 SHARED-CUTOFF: block NEW entries at/after 15:44:59 ET.
+    # Existing positions remain managed by sentinel/ratchet through EOD.
+    if not tg._check_new_position_cutoff(ticker):
+        return
+
     now_et = tg._now_et()
     limit_price = round(current_price + cfg.limit_offset, 2)
     or_dict = getattr(tg, cfg.or_attr)

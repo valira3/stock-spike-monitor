@@ -4471,6 +4471,35 @@ def _ticker_today_realized_pnl(ticker: str) -> float:
     return pnl
 
 
+# v5.13.0 PR-5 SHARED-CUTOFF / SHARED-HUNT — single source of truth for the
+# new-position cutoff (15:44:59 ET) lives in engine/timing.py. This wrapper
+# adds the [SHARED-CUTOFF] log line and integrates with the entry path.
+from engine.timing import (
+    NEW_POSITION_CUTOFF_ET as _NEW_POSITION_CUTOFF_ET,
+    EOD_FLUSH_ET as _EOD_FLUSH_ET,
+    is_after_cutoff_et as _is_after_cutoff_et,
+    is_after_eod_et as _is_after_eod_et,
+)
+
+
+def _check_new_position_cutoff(ticker: str) -> bool:
+    """SHARED-CUTOFF gate: returns True if a NEW position may still be opened.
+
+    At/after 15:44:59 ET, this returns False and emits a structured log line.
+    Existing positions are NOT touched here — sentinel/ratchet manage them
+    through SHARED-EOD (15:49:59 ET).
+    """
+    now_et = _now_et()
+    if _is_after_cutoff_et(now_et):
+        logger.info(
+            "[SHARED-CUTOFF] ticker=%s now_et=%s cutoff_et=%s action=BLOCK_ENTRY",
+            ticker, now_et.strftime("%H:%M:%S"),
+            _NEW_POSITION_CUTOFF_ET.strftime("%H:%M:%S"),
+        )
+        return False
+    return True
+
+
 def _check_daily_loss_limit(ticker: str) -> bool:
     """Return True if entry should proceed; False if daily loss limit
     halts trading.
@@ -4511,6 +4540,12 @@ def _check_daily_loss_limit(ticker: str) -> bool:
 
     logger.info("Daily P&L check: $%.2f (limit $%.2f)", today_pnl, DAILY_LOSS_LIMIT)
     if today_pnl <= DAILY_LOSS_LIMIT:
+        # v5.13.0 PR-5 SHARED-CB: structured circuit-breaker line. Logged once
+        # at the moment of breach and on every subsequent blocked entry.
+        logger.info(
+            "[DAILY-BREAKER] day_pnl=%.2f threshold=%.2f action=BLOCK_ENTRY",
+            today_pnl, float(DAILY_LOSS_LIMIT_DOLLARS),
+        )
         _trading_halted = True
         pnl_fmt = "%+.2f" % today_pnl
         limit_fmt = "%.2f" % DAILY_LOSS_LIMIT
@@ -5181,9 +5216,11 @@ def scheduler_thread():
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
-        # v5.10.0 \u2014 EOD flush at 15:59:50 ET (was 15:55) per Section VI.
-        ("daily", "15:59", eod_close),
-        ("daily", "15:58", send_eod_report),
+        # v5.13.0 PR-5 SHARED-EOD \u2014 EOD flush moved from 15:59 to 15:49 ET
+        # (target wall-clock 15:49:59 ET per spec). EOD report now precedes
+        # the flush by one minute.
+        ("daily", "15:49", eod_close),
+        ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
     ]
 
