@@ -94,18 +94,13 @@ BOT_VERSION = "5.11.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.10.7 \u2014 default\n"
-    "universe trim.\n"
-    "QBTS removed from\n"
-    "TICKERS_DEFAULT \u2014 not\n"
-    "a Titan. Default\n"
-    "deployed universe is\n"
-    "now the 10 Titans plus\n"
-    "the pinned SPY/QQQ\n"
-    "anchors. Users who\n"
-    "want QBTS can still\n"
-    "/ticker add QBTS at\n"
-    "runtime."
+    "v5.11.0 \u2014 engine\n"
+    "extraction. Trading\n"
+    "rules engine moved\n"
+    "into engine/ package\n"
+    "behind EngineCallbacks\n"
+    "Protocol. Zero behavior\n"
+    "change."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

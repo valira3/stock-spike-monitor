@@ -4,20 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v5.11.0 — 2026-04-28 — Engine extraction (PR 1) + release-note cleanup
+## v5.11.0 — 2026-04-28 — Engine extraction (trading-rules engine moved into `engine/`)
 
-Engine extraction PR 1: synthetic harness + engine/bars.py. No behavior change.
+Engine extraction release. The trading rules engine — bar aggregation,
+pre-market seeding, phase machine, and per-minute scan loop — has been
+moved into a dedicated `engine/` package behind a small `EngineCallbacks`
+Protocol seam. **Zero behavior change.** `trade_genius.py` shrinks from
+12,576 → 10,757 lines; the per-tick decision path is now importable in
+isolation, which makes the replay/test surface dramatically smaller.
 
-- New `tests/golden/record_session.py` + `verify.py` harness: streams archived 1m bars (today_bars/2026-04-28/) through `compute_5m_ohlc_and_ema9` and writes a deterministic JSONL trace. Re-running must be byte-equal — this is the validation gate for every subsequent engine-extraction PR.
-- New `engine/bars.py` + `engine/__init__.py`. `compute_5m_ohlc_and_ema9` moved verbatim from `trade_genius.py` (was `_v5105_compute_5m_ohlc_and_ema9` at line 8270). The version-prefixed name is kept in `trade_genius.py` as a one-release deprecation shim aliased to the engine import.
-- `Dockerfile` updated to `COPY engine/` so the new package ships in the prod image.
-- New boot log line `[ENGINE] modules loaded: bars` (subsequent v5.11.x PRs will append more modules).
-- `BOT_VERSION` bumped to 5.11.0 in `bot_version.py` and the mirrored constant in `trade_genius.py`. Subsequent PRs in this release will not bump again until v5.11.1.
-- Note: spec called for 2026-04-27 archived bars but only 2026-04-28 is present in the sandbox; the 28th carries a small mid-session gap that is irrelevant to byte-equal validation since the harness compares the same input against itself across the move.
-- Removed `_MAIN_HISTORY_TAIL` from `trade_genius.py` (~801 lines). The `/version` Telegram command now shows only the current release's note. Per-release history lives in this CHANGELOG.
-- Engine extraction PR 2: pre-market QQQ regime + DI + OR seeders moved to `engine/seeders.py`. No behavior change.
-- Engine extraction PR 3: Phase A/B/C state machine (`phase_machine_tick`) moved to `engine/phase_machine.py`. No behavior change.
-- Engine extraction PR 4: per-minute scan loop moved to `engine/scan.py` behind an `EngineCallbacks` Protocol (`engine/callbacks.py`). Production scan_loop is now a thin shim. No behavior change.
+### Modules added
+
+- `engine/__init__.py` — public surface re-exports: `compute_5m_ohlc_and_ema9`, `qqq_regime_seed_once`, `qqq_regime_tick`, `seed_di_buffer`, `seed_di_all`, `seed_opening_range`, `seed_opening_range_all`, `phase_machine_tick`, `EngineCallbacks`, `scan_loop`. Boot log: `[ENGINE] modules loaded: bars, seeders, phase_machine, callbacks, scan`.
+- `engine/bars.py` — 5-minute OHLC + EMA(9) aggregation (`compute_5m_ohlc_and_ema9`) and bar normalization helpers shared between prod and replay.
+- `engine/seeders.py` — pre-market warmup: QQQ regime seed/tick, DI(15) buffer seed, opening-range seed (single-ticker and universe variants).
+- `engine/phase_machine.py` — Phase A → B-Layered → B-Locked → C-Extraction state machine (`phase_machine_tick`); pure decision function over `eye_of_tiger.evaluate_*`.
+- `engine/callbacks.py` — `EngineCallbacks` Protocol that names every side effect the engine performs (broker calls, position lookup, alerts, clock). Prod injects a wrapper around `trade_genius` functions; replay injects a record-only mock.
+- `engine/scan.py` — per-minute `scan_loop()` over the universe; the production `scan_loop` in `trade_genius.py` is now a thin shim that builds the callback impl and delegates.
+
+### Removed
+
+- `_MAIN_HISTORY_TAIL` (~801 lines of in-code rolling release history) deleted from `trade_genius.py`. The `/version` Telegram command now shows only `CURRENT_MAIN_NOTE` (the active release). **`CHANGELOG.md` is the canonical history** — every prior release's note is preserved here.
+
+### Validation
+
+A byte-equal synthetic harness (`tests/golden/record_session.py` +
+`verify.py`) was introduced in PR 1 and re-run after every subsequent
+extraction PR. The harness streams archived 1m bars from
+`today_bars/2026-04-28/` through the engine and writes a deterministic
+JSONL trace; the trace must be byte-identical pre/post each move.
+Verified across all five extraction PRs — no floating-point drift, no
+log line drift. Smoke baseline holds at ~364 passed / 25 pre-existing
+failures.
+
+### Migration notes
+
+For one release only, version-prefixed private aliases are kept in
+`trade_genius.py` for callers we haven't migrated yet (e.g.
+`_v5105_compute_5m_ohlc_and_ema9 = compute_5m_ohlc_and_ema9`,
+`_v590_qqq_regime_seed_once = qqq_regime_seed_once`,
+`_v5105_phase_machine_tick = phase_machine_tick`). **These shims will
+be removed in v5.12.0.** New code should import from `engine` directly.
+
+### Release composition (per-PR audit trail)
+
+- **PR 1** (#196): synthetic harness + `engine/bars.py`. Introduced `tests/golden/{record_session,verify}.py`, the deterministic JSONL trace gate that every subsequent PR re-ran; moved `compute_5m_ohlc_and_ema9` verbatim from `trade_genius.py:8270` (was `_v5105_compute_5m_ohlc_and_ema9`); added `engine/__init__.py`; `Dockerfile` updated to `COPY engine/`; first boot log line `[ENGINE] modules loaded: bars`. `BOT_VERSION` bumped to 5.11.0 here; subsequent PRs do not bump.
+- **PR 2** (#197): `engine/seeders.py`. Pre-market QQQ regime + DI(15) buffer + opening-range seeders moved as a unit (was `_v590_qqq_regime_seed_once`, `_seed_di_buffer`, `_seed_di_all`, `_seed_opening_range`, `_seed_opening_range_all`). No behavior change.
+- **PR 3** (#199): `engine/phase_machine.py`. Phase A/B/C state machine moved (was `_v5105_phase_machine_tick`, ~500 lines). Harness byte-equal across move.
+- **PR 4** (#200): `engine/callbacks.py` + `engine/scan.py`. `EngineCallbacks` Protocol introduced; `scan_loop` body moved behind it; production `scan_loop` in `trade_genius.py` reduced to a thin shim that constructs the callback impl and delegates.
+- **Cleanup PR** (#198): removed `_MAIN_HISTORY_TAIL` (~801 lines) from `trade_genius.py`; `/version` Telegram surface now shows only `CURRENT_MAIN_NOTE`.
+- **PR 5** (this PR): `ARCHITECTURE.md` refresh for the new module map; algo PDF regenerated; this CHANGELOG entry tidied; `CURRENT_MAIN_NOTE` updated to v5.11.0.
 
 ---
 
