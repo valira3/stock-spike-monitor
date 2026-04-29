@@ -5,6 +5,7 @@ Covers Tiger Sovereign Phase 4 alarms A (-$500 / -1%/min) and B
 tick (parallel-not-sequential) and that exactly one exit reason is
 emitted even when multiple alarms trip.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -26,12 +27,12 @@ from engine.sentinel import (
 
 
 # ---------------------------------------------------------------------------
-# Alarm A1 \u2014 hard floor at -$500
+# Alarm A_LOSS \u2014 hard floor at -$500
 # ---------------------------------------------------------------------------
 
 
 def test_alarm_a1_fires_at_exactly_minus_500():
-    """A1 must fire at the spec-literal boundary: pnl <= -$500."""
+    """A_LOSS must fire at the spec-literal boundary: pnl <= -$500."""
     fired = check_alarm_a(
         side=SIDE_LONG,
         unrealized_pnl=-500.0,
@@ -39,10 +40,10 @@ def test_alarm_a1_fires_at_exactly_minus_500():
         pnl_history=None,
         now_ts=1000.0,
     )
-    assert any(a.alarm == "A1" for a in fired), (
-        "A1 must fire at exactly -$500 (boundary inclusive)"
+    assert any(a.alarm == "A_LOSS" for a in fired), (
+        "A_LOSS must fire at exactly -$500 (boundary inclusive)"
     )
-    a1 = next(a for a in fired if a.alarm == "A1")
+    a1 = next(a for a in fired if a.alarm == "A_LOSS")
     assert a1.reason == EXIT_REASON_ALARM_A
 
 
@@ -55,7 +56,7 @@ def test_alarm_a1_does_not_fire_at_minus_499():
         pnl_history=None,
         now_ts=1000.0,
     )
-    assert not any(a.alarm == "A1" for a in fired)
+    assert not any(a.alarm == "A_LOSS" for a in fired)
 
 
 def test_alarm_a1_constant_is_exactly_minus_500():
@@ -63,12 +64,12 @@ def test_alarm_a1_constant_is_exactly_minus_500():
 
 
 # ---------------------------------------------------------------------------
-# Alarm A2 \u2014 -1% over 60 seconds
+# Alarm A_FLASH \u2014 -1% over 60 seconds
 # ---------------------------------------------------------------------------
 
 
 def test_alarm_a2_fires_when_60s_velocity_is_minus_1_01_percent():
-    """A2 fires when (delta / position_value) <= -0.01 over the last 60s.
+    """A_FLASH fires when (delta / position_value) <= -0.01 over the last 60s.
 
     Delta of -101 on a $10,000 notional is -1.01% \u2014 fires.
     """
@@ -81,13 +82,11 @@ def test_alarm_a2_fires_when_60s_velocity_is_minus_1_01_percent():
         pnl_history=history,
         now_ts=1060.0,
     )
-    assert any(a.alarm == "A2" for a in fired), (
-        "A2 must fire when 60s velocity is -1.01%"
-    )
+    assert any(a.alarm == "A_FLASH" for a in fired), "A_FLASH must fire when 60s velocity is -1.01%"
 
 
 def test_alarm_a2_does_not_fire_at_minus_0_99_percent():
-    """At -0.99% over 60s, A2 does NOT fire."""
+    """At -0.99% over 60s, A_FLASH does NOT fire."""
     history = new_pnl_history()
     record_pnl(history, ts=1000.0, pnl=0.0)
     fired = check_alarm_a(
@@ -97,7 +96,7 @@ def test_alarm_a2_does_not_fire_at_minus_0_99_percent():
         pnl_history=history,
         now_ts=1060.0,
     )
-    assert not any(a.alarm == "A2" for a in fired)
+    assert not any(a.alarm == "A_FLASH" for a in fired)
 
 
 def test_alarm_a2_does_not_fire_without_history():
@@ -110,7 +109,7 @@ def test_alarm_a2_does_not_fire_without_history():
         pnl_history=history,
         now_ts=1060.0,
     )
-    assert not any(a.alarm == "A2" for a in fired)
+    assert not any(a.alarm == "A_FLASH" for a in fired)
 
 
 def test_alarm_a2_short_side_uses_signed_pnl():
@@ -128,7 +127,7 @@ def test_alarm_a2_short_side_uses_signed_pnl():
         pnl_history=history,
         now_ts=1060.0,
     )
-    assert any(a.alarm == "A2" for a in fired)
+    assert any(a.alarm == "A_FLASH" for a in fired)
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +176,14 @@ def test_alarm_b_short_does_not_fire_on_close_below_ema9():
 
 def test_alarm_b_skipped_when_ema9_unseeded():
     """No EMA9 yet (less than 9 closed 5m bars) \u2014 alarm is silent."""
-    assert check_alarm_b(
-        side=SIDE_LONG,
-        last_5m_close=99.0,
-        last_5m_ema9=None,
-    ) == []
+    assert (
+        check_alarm_b(
+            side=SIDE_LONG,
+            last_5m_close=99.0,
+            last_5m_ema9=None,
+        )
+        == []
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,19 +203,19 @@ def test_alarms_a_and_b_fire_independently_in_same_tick():
 
     result = evaluate_sentinel(
         side=SIDE_LONG,
-        unrealized_pnl=-600.0,        # triggers A1 (hard floor)
+        unrealized_pnl=-600.0,  # triggers A_LOSS (hard floor)
         position_value=10000.0,
         pnl_history=history,
-        now_ts=1060.0,                # 60s after history start
-        last_5m_close=99.0,           # below EMA9 \u2014 triggers B
+        now_ts=1060.0,  # 60s after history start
+        last_5m_close=99.0,  # below EMA9 \u2014 triggers B
         last_5m_ema9=100.0,
     )
 
     codes = result.alarm_codes
-    assert "A1" in codes, f"expected A1 in {codes}"
+    assert "A_LOSS" in codes, f"expected A_LOSS in {codes}"
     assert "B" in codes, f"expected B in {codes}"
-    # And A2 because pnl dropped from 0 to -600 over 60s on $10k = -6%
-    assert "A2" in codes, f"expected A2 in {codes}"
+    # And A_FLASH because pnl dropped from 0 to -600 over 60s on $10k = -6%
+    assert "A_FLASH" in codes, f"expected A_FLASH in {codes}"
 
 
 def test_one_exit_reason_even_with_multiple_alarms():
@@ -260,11 +262,11 @@ def test_evaluate_sentinel_only_b_fires_when_a_quiet():
     record_pnl(history, ts=1000.0, pnl=-50.0)
     result = evaluate_sentinel(
         side=SIDE_LONG,
-        unrealized_pnl=-90.0,          # well above A1 floor (-$500)
-        position_value=10000.0,        # delta of -$40 / $10k = -0.40% (< 1%)
+        unrealized_pnl=-90.0,  # well above A_LOSS floor (-$500)
+        position_value=10000.0,  # delta of -$40 / $10k = -0.40% (< 1%)
         pnl_history=history,
         now_ts=1060.0,
-        last_5m_close=99.0,            # below EMA9
+        last_5m_close=99.0,  # below EMA9
         last_5m_ema9=100.0,
     )
     assert result.alarm_codes == ["B"]
@@ -277,6 +279,7 @@ def test_pnl_history_is_bounded():
     for i in range(500):
         record_pnl(history, ts=float(i), pnl=float(i))
     from engine.sentinel import PNL_HISTORY_MAXLEN
+
     assert len(history) == PNL_HISTORY_MAXLEN
 
 
@@ -304,7 +307,7 @@ def test_a_and_b_fire_for_both_sides(side):
         last_5m_ema9=ema,
     )
     codes = result.alarm_codes
-    assert "A1" in codes and "B" in codes
+    assert "A_LOSS" in codes and "B" in codes
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +325,10 @@ def test_baseline_reset_first_call_records_silently():
     record_pnl(history, ts=1010.0, pnl=-15.0)
     pos = {"shares": 10, "entry_price": 100.0}
     cleared = maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=1020.0, current_unrealized_pnl=-20.0,
+        pos,
+        history,
+        now_ts=1020.0,
+        current_unrealized_pnl=-20.0,
     )
     assert cleared is False
     assert len(history) == 2  # untouched
@@ -336,11 +342,17 @@ def test_baseline_reset_unchanged_shares_no_clear():
     pos = {"shares": 10, "entry_price": 100.0}
     # Seed cache.
     maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=1010.0, current_unrealized_pnl=-12.0,
+        pos,
+        history,
+        now_ts=1010.0,
+        current_unrealized_pnl=-12.0,
     )
     # Tick again, same shares.
     cleared = maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=1020.0, current_unrealized_pnl=-15.0,
+        pos,
+        history,
+        now_ts=1020.0,
+        current_unrealized_pnl=-15.0,
     )
     assert cleared is False
     assert len(history) == 1  # caller hasn't appended yet; helper untouched
@@ -354,7 +366,10 @@ def test_baseline_reset_on_shares_change_clears_and_reseeds():
     pos = {"shares": 10, "entry_price": 100.0}
     # Seed.
     maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=1050.0, current_unrealized_pnl=-15.0,
+        pos,
+        history,
+        now_ts=1050.0,
+        current_unrealized_pnl=-15.0,
     )
     assert len(history) == 5
 
@@ -362,7 +377,10 @@ def test_baseline_reset_on_shares_change_clears_and_reseeds():
     pos["shares"] = 15
     pos["entry_price"] = 98.33
     cleared = maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=1060.0, current_unrealized_pnl=-50.0,
+        pos,
+        history,
+        now_ts=1060.0,
+        current_unrealized_pnl=-50.0,
     )
     assert cleared is True
     # History was cleared and reseeded with the (1060, -50.0) sample.
@@ -372,7 +390,7 @@ def test_baseline_reset_on_shares_change_clears_and_reseeds():
 
 
 def test_alarm_a2_does_not_trip_on_artificial_entry_2_delta():
-    """Entry-2 step-shift in dollar P&L MUST NOT trip A2 velocity.
+    """Entry-2 step-shift in dollar P&L MUST NOT trip A_FLASH velocity.
 
     Scenario: 10 shares @ $100 (Entry-1, notional $1000). Position
     drifts mildly -$10 over 30s. Then Entry-2 fills, bumping shares
@@ -391,7 +409,10 @@ def test_alarm_a2_does_not_trip_on_artificial_entry_2_delta():
         # Detector first (no-op since shares unchanged across ticks),
         # then record this tick's sample.
         maybe_reset_pnl_baseline_on_shares_change(
-            pos, history, now_ts=ts, current_unrealized_pnl=pnl,
+            pos,
+            history,
+            now_ts=ts,
+            current_unrealized_pnl=pnl,
         )
         record_pnl(history, ts=ts, pnl=pnl)
 
@@ -400,13 +421,16 @@ def test_alarm_a2_does_not_trip_on_artificial_entry_2_delta():
     # (vs $100 entry) to -$30 (vs new avg, with extra shares at the
     # current price). Without reset, the "1 minute ago" sample is 0.0
     # (t=1000), so delta = -30 - 0 = -$30 over current notional
-    # ~$1475 = -2.03% \u2014 A2 trips spuriously.
+    # ~$1475 = -2.03% \u2014 A_FLASH trips spuriously.
     pos["shares"] = 15
     pos["entry_price"] = 98.33
     fill_ts = 1040.0
     fill_pnl = -30.0
     cleared = maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=fill_ts, current_unrealized_pnl=fill_pnl,
+        pos,
+        history,
+        now_ts=fill_ts,
+        current_unrealized_pnl=fill_pnl,
     )
     assert cleared is True, "Entry-2 must reset the velocity baseline"
     # Helper reseeds with the fill-time sample; caller would also
@@ -418,7 +442,10 @@ def test_alarm_a2_does_not_trip_on_artificial_entry_2_delta():
     for i, pnl in enumerate([-31.0, -32.0, -33.0]):
         ts = 1050.0 + i * 10
         maybe_reset_pnl_baseline_on_shares_change(
-            pos, history, now_ts=ts, current_unrealized_pnl=pnl,
+            pos,
+            history,
+            now_ts=ts,
+            current_unrealized_pnl=pnl,
         )
         record_pnl(history, ts=ts, pnl=pnl)
 
@@ -431,29 +458,35 @@ def test_alarm_a2_does_not_trip_on_artificial_entry_2_delta():
         pnl_history=history,
         now_ts=now_ts,
     )
-    assert not any(a.alarm == "A2" for a in fired), (
-        "A2 must NOT trip on the post-Entry-2 step-shift artefact"
+    assert not any(a.alarm == "A_FLASH" for a in fired), (
+        "A_FLASH must NOT trip on the post-Entry-2 step-shift artefact"
     )
 
 
 def test_alarm_a2_still_trips_on_real_velocity_after_entry_2():
-    """After baseline reset, A2 must still fire on a genuine post-Entry-2 drop.
+    """After baseline reset, A_FLASH must still fire on a genuine post-Entry-2 drop.
 
     Sanity check that the reset doesn't permanently disable A2: if
-    real velocity emerges after the reset, A2 must still trigger.
+    real velocity emerges after the reset, A_FLASH must still trigger.
     """
     history = new_pnl_history()
     pos = {"shares": 10, "entry_price": 100.0}
     record_pnl(history, ts=1000.0, pnl=0.0)
     maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=1000.0, current_unrealized_pnl=0.0,
+        pos,
+        history,
+        now_ts=1000.0,
+        current_unrealized_pnl=0.0,
     )
 
     # Entry-2 fills.
     pos["shares"] = 15
     pos["entry_price"] = 98.33
     cleared = maybe_reset_pnl_baseline_on_shares_change(
-        pos, history, now_ts=1010.0, current_unrealized_pnl=-30.0,
+        pos,
+        history,
+        now_ts=1010.0,
+        current_unrealized_pnl=-30.0,
     )
     assert cleared is True
 
@@ -467,6 +500,4 @@ def test_alarm_a2_still_trips_on_real_velocity_after_entry_2():
         pnl_history=history,
         now_ts=1070.0,
     )
-    assert any(a.alarm == "A2" for a in fired), (
-        "Real post-reset velocity must still trip A2"
-    )
+    assert any(a.alarm == "A_FLASH" for a in fired), "Real post-reset velocity must still trip A2"

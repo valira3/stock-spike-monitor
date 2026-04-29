@@ -326,7 +326,6 @@ def test_shared_eod_154959():
 # ----- Alarm A (codes renamed in vAA-1: A1→A_LOSS, A2→A_FLASH; legacy strings deleted) -----
 
 
-@pytest.mark.spec_gap("vAA-PR-7", "SENT-A1-CODE-RENAME")
 def test_sent_a_loss_hard_loss_fires_at_minus_500_inclusive():
     from engine.sentinel import check_alarm_a
 
@@ -342,7 +341,6 @@ def test_sent_a_loss_hard_loss_fires_at_minus_500_inclusive():
     assert not any(a.alarm == "A1" for a in fired)
 
 
-@pytest.mark.spec_gap("vAA-PR-7", "SENT-A2-CODE-RENAME")
 def test_sent_a_flash_move_minus_1pct_in_60s():
     from engine.sentinel import check_alarm_a
 
@@ -360,7 +358,6 @@ def test_sent_a_flash_move_minus_1pct_in_60s():
     assert not any(a.alarm == "A2" for a in fired)
 
 
-@pytest.mark.spec_gap("vAA-PR-7", "SENT-A-LEGACY-STRINGS-DELETED")
 def test_sent_a_legacy_codes_absent_from_engine_module():
     """Source-level guarantee: no string literal 'A1' or 'A2' survives in engine/sentinel.py.
     Historical comments referencing the rename are allowed."""

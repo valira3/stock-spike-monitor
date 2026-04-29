@@ -76,7 +76,7 @@ def test_lifecycle_positions_lists_after_open(lifecycle_server):
 def test_lifecycle_position_full_timeline(lifecycle_server):
     ds, ll = lifecycle_server
     pid = ll.open_position("MSFT", "SHORT", "2026-04-29T15:00:00Z", {})
-    ll.log_event(pid, "PHASE4_SENTINEL", {"alarm_codes": ["A1"]})
+    ll.log_event(pid, "PHASE4_SENTINEL", {"alarm_codes": ["A_LOSS"]})
     ll.log_event(pid, "EXIT_DECISION", {"exit_reason": "stop"})
     ll.close_position(pid, {"realized_pnl": -50.0})
 
