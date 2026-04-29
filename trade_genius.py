@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.13.4"
+BOT_VERSION = "5.13.5"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,12 +103,14 @@ BOT_VERSION = "5.13.4"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.13.1 \u2014 Volume gate flag\n"
-    "VOLUME_GATE_ENABLED env var,\n"
-    "default OFF (DISABLED path),\n"
-    "L-P2-S3 / S-P2-S3 togglable,\n"
-    "set =true on Railway to\n"
-    "restore spec-strict behavior."
+    "v5.13.5 \u2014 Telegram cleanup\n"
+    "Stale PDC vocabulary scrubbed\n"
+    "from /strategy, /proximity, /orb,\n"
+    "/price, deploy banner. Replaced\n"
+    "with Tiger Sovereign Phase 1-4\n"
+    "language. New /regime cmd shows\n"
+    "the Section I QQQ permit. No\n"
+    "algorithm changes \u2014 strings only."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
