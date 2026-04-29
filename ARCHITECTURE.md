@@ -46,6 +46,21 @@ that callers in `trade_genius.py` historically used (e.g.
 aliases that point at the public `engine.*` names. They will be
 deleted in v5.12.0; new code should `from engine import …` directly.
 
+### telegram_ui/ (post-v5.11.1)
+
+v5.11.1 split the Telegram UI surface out of `trade_genius.py` into a
+dedicated `telegram_ui/` package. Pure presentation; no trading logic.
+`send_telegram` remains in `trade_genius.py` because it's the broker-side
+notification entry used by paper_state, error_state, and the scheduler.
+
+| File | Responsibility |
+| --- | --- |
+| `telegram_ui/__init__.py` | Re-exports the public UI surface. Boot log: `[TELEGRAM-UI] modules loaded: charts, commands, menu, runtime`. |
+| `telegram_ui/charts.py` | Matplotlib builders for dayreport, equity curve, portfolio pie. Dayreport row formatters. |
+| `telegram_ui/commands.py` | Synchronous command builders (`_log_sync`, `_replay_sync`, `_perf_compute`, `_price_sync`, `_proximity_sync`, `_orb_sync`, etc.). Construct text/keyboards; do not send. |
+| `telegram_ui/menu.py` | Keyboards, callback handlers (`positions_callback`, `proximity_callback`, `monitoring_callback`), `_CallbackUpdateShim`, and `menu_callback` dispatch. |
+| `telegram_ui/runtime.py` | Bot lifecycle: `_auth_guard`, `_set_bot_commands`, `send_startup_message`, `run_telegram_bot`. |
+
 ---
 
 ## v5.10.0 — Project Eye of the Tiger (algorithm summary)

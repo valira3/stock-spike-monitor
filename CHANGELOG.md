@@ -4,7 +4,7 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v5.11.1 — Telegram handler extraction (in progress)
+## v5.11.1 — 2026-04-29 — Telegram handler extraction
 
 ### PR 1 — telegram_ui/charts.py
 
@@ -33,6 +33,25 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 - Updated `telegram_commands.py` to import `_build_menu_keyboard` from `telegram_ui.menu`
 - Deprecation aliases in `trade_genius.py` (one-release window, removed v5.12.0)
 - Boot log: `[TELEGRAM-UI] modules loaded: charts, commands, menu`
+
+### PR 4 — telegram_ui/runtime.py + version bump
+- Moved bot lifecycle (~250 lines) out of `trade_genius.py`:
+  `_set_bot_commands`, `_send_startup_menu`, `send_startup_message`,
+  `_auth_guard`, `run_telegram_bot`
+- `send_telegram` intentionally stays in `trade_genius.py` (broker-side
+  notification entry used by paper_state, error_state, scheduler)
+- Added `tests/test_telegram_ui_imports.py` regression guard
+- **BOT_VERSION → "5.11.1"**
+- Boot log: `[TELEGRAM-UI] modules loaded: charts, commands, menu, runtime`
+
+### v5.11.1 release composition
+- PR 1 (#203): telegram_ui/charts.py — chart and dayreport helpers
+- PR 2 (#204): telegram_ui/commands.py — sync command builders
+- PR 3 (#205): telegram_ui/menu.py — keyboards and callback dispatch
+- PR 4 (this): telegram_ui/runtime.py — bot lifecycle + version bump
+- **Net: trade_genius.py 10,752 → ~8,800 lines (~18% reduction)**
+- Golden harness remained byte-equal (10,971,364 bytes) across all four PRs
+- Smoke baseline 361 passed / 28 failed held throughout
 
 ---
 
