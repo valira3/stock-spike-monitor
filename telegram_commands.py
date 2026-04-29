@@ -92,6 +92,7 @@ from trade_genius import (
     trade_log_read_tail,
     urllib,
 )
+
 # v5.12.0 \u2014 telegram_ui helpers imported directly from their canonical
 # modules (deprecation aliases in trade_genius removed in v5.12.0 PR 5).
 from telegram_ui.charts import (
@@ -185,6 +186,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /orb         Today's OR levels\n"
         "  /orb recover Recollect missing\n"
         "  /proximity   Gap to breakout\n"
+        "  /regime      Phase 1 permit\n"
         "  /mode        Market regime\n"
         "\n"
         "Reports\n"
@@ -862,66 +864,100 @@ async def cmd_algo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show compact strategy summary."""
+    """Show compact strategy summary (Tiger Sovereign Phase 1-4)."""
     SEP = "\u2500" * 26
     text = (
         f"\U0001f4d8 Strategy v{BOT_VERSION}\n"
+        f"  Tiger Sovereign (Phase 1-4)\n"
         f"{SEP}\n"
-        "\U0001f4c8 LONG \u2014 ORB Breakout\n"
-        "Entry after 8:45 CT (15-min buffer)\n"
-        "Entry (all must be true):\n"
-        "  \u2022 1m close > OR High\n"
-        "  \u2022 Price > PDC\n"
-        "  \u2022 SPY > PDC\n"
-        "  \u2022 QQQ > PDC\n"
-        "Stop: OR High \u2212 $0.90\n"
-        "Ladder (peak \u2192 stop):\n"
-        "  +1% \u2192 peak \u2212 0.50%\n"
-        "  +2% \u2192 peak \u2212 0.40%\n"
-        "  +3% \u2192 peak \u2212 0.30%\n"
-        "  +4% \u2192 peak \u2212 0.20%\n"
-        "  +5%+ \u2192 peak \u2212 0.10%\n"
-        "Size: 10 shares \u00b7 limit order\n"
-        "Max: 5 entries/ticker/day\n"
-        "EOD: closes at 2:55 CT\n"
+        "\U0001f4c8 LONG \u2014 The Bison\n"
         "\n"
-        "Eye of the Tiger exits:\n"
-        "  \U0001f56f Red Candle\n"
-        "     price < Open OR < PDC\n"
-        "  HARD_EJECT_TIGER (DI<25)\n"
-        "     non-Titan tickers only;\n"
-        "     Titans use the FSM\n"
+        "Phase 1 \u2014 Section I Permit\n"
+        "  \u2022 QQQ 5m close > 9 EMA\n"
+        "  \u2022 QQQ price > 09:30 AVWAP\n"
+        "  Both true \u2192 LONG permit ON\n"
+        "\n"
+        "Phase 2 \u2014 Per-Ticker Gates\n"
+        "  \u2022 Volume Bucket: PASS / FAIL\n"
+        "    / COLD / OFF\n"
+        "    (VOLUME_GATE_ENABLED env\n"
+        "     var; default OFF)\n"
+        "  \u2022 Boundary Hold: 2 consecutive\n"
+        "    1m closes ABOVE OR High\n"
+        "\n"
+        "Phase 3 \u2014 Entry Triggers\n"
+        "  \u2022 Entry 1: 5m DI+ > 25 AND\n"
+        "    1m DI+ > 25 AND NHOD\n"
+        "    \u2192 BUY 50%\n"
+        "  \u2022 Entry 2: 1m DI+ crosses\n"
+        "    above 30 AND fresh NHOD\n"
+        "    \u2192 BUY remaining 50%\n"
+        "\n"
+        "Phase 4 \u2014 Sentinel Loop\n"
+        "  \u2022 Alarm A (Emergency): -$500\n"
+        "    or -1% in 1 min \u2192 EXIT 100%\n"
+        "  \u2022 Alarm B (9-EMA Shield):\n"
+        "    5m close < 5m 9 EMA\n"
+        "    \u2192 EXIT 100%\n"
+        "  \u2022 Alarm C (Titan Grip):\n"
+        "    +0.93% \u2192 sell 25%, stop to\n"
+        "      OR_High + 0.40%\n"
+        "    +0.25% ratchet on stop\n"
+        "    +1.88% \u2192 sell 25% more\n"
+        "    Runner ratchets to EOD\n"
+        "\n"
+        "Stop: entry \u2212 0.75% (cap)\n"
+        "Size: dollar-based paper sizing\n"
+        "New entries cutoff: 14:44:59 CT\n"
+        "EOD flush: 14:49:59 CT\n"
+        "Daily breaker: -$1,500 \u2192 halt\n"
         f"{SEP}\n"
         "\U0001f4c9 SHORT \u2014 Wounded Buffalo\n"
-        "Entry after 8:45 CT (15-min buffer)\n"
-        "Entry (all must be true):\n"
-        "  \u2022 1m close < OR Low\n"
-        "  \u2022 Price < PDC\n"
-        "  \u2022 SPY < PDC\n"
-        "  \u2022 QQQ < PDC\n"
-        "Stop: PDC + $0.90\n"
-        "Ladder (peak \u2192 stop):\n"
-        "  +1% \u2192 peak + 0.50%\n"
-        "  +2% \u2192 peak + 0.40%\n"
-        "  +3% \u2192 peak + 0.30%\n"
-        "  +4% \u2192 peak + 0.20%\n"
-        "  +5%+ \u2192 peak + 0.10%\n"
-        "Size: 10 shares \u00b7 limit order\n"
-        "Max: 5 entries/ticker/day\n"
-        "EOD: closes at 2:55 CT\n"
         "\n"
-        "Eye of the Tiger exits:\n"
-        "  HARD_EJECT_TIGER (DI<25)\n"
-        "     non-Titan tickers only\n"
-        "  \U0001f504 Polarity Shift\n"
-        "     price > PDC (1m close)\n"
+        "Phase 1 \u2014 Section I Permit\n"
+        "  \u2022 QQQ 5m close < 9 EMA\n"
+        "  \u2022 QQQ price < 09:30 AVWAP\n"
+        "  Both true \u2192 SHORT permit ON\n"
+        "\n"
+        "Phase 2 \u2014 Per-Ticker Gates\n"
+        "  \u2022 Volume Bucket: PASS / FAIL\n"
+        "    / COLD / OFF\n"
+        "  \u2022 Boundary Hold: 2 consecutive\n"
+        "    1m closes BELOW OR Low\n"
+        "\n"
+        "Phase 3 \u2014 Entry Triggers\n"
+        "  \u2022 Entry 1: 5m DI- > 25 AND\n"
+        "    1m DI- > 25 AND NLOD\n"
+        "    \u2192 SHORT 50%\n"
+        "  \u2022 Entry 2: 1m DI- crosses\n"
+        "    above 30 AND fresh NLOD\n"
+        "    \u2192 SHORT remaining 50%\n"
+        "\n"
+        "Phase 4 \u2014 Sentinel Loop\n"
+        "  \u2022 Alarm A (Emergency): -$500\n"
+        "    or +1% spike in 1 min\n"
+        "    \u2192 COVER 100%\n"
+        "  \u2022 Alarm B (9-EMA Shield):\n"
+        "    5m close > 5m 9 EMA\n"
+        "    \u2192 COVER 100%\n"
+        "  \u2022 Alarm C (Titan Grip):\n"
+        "    -0.93% \u2192 cover 25%, stop to\n"
+        "      OR_Low \u2212 0.40%\n"
+        "    -0.25% ratchet on stop\n"
+        "    -1.88% \u2192 cover 25% more\n"
+        "    Runner ratchets to EOD\n"
+        "\n"
+        "Stop: entry + 0.75% (cap)\n"
         f"{SEP}\n"
-        "\U0001f6e1 Regime Shield (v3.4.28)\n"
-        "  Global eject requires BOTH\n"
-        "  SPY and QQQ to cross PDC on\n"
-        "  a finalized 1m close. One\n"
-        "  anchor across entries and\n"
-        "  ejects (v3.4.34: AVWAP gone)\n"
+        "Legacy exits (opt-in)\n"
+        "  LEGACY_EXITS_ENABLED env var\n"
+        "  default OFF as of v5.13.2.\n"
+        "  When ON, per-ticker PDC is\n"
+        "  used for legacy RED_CANDLE\n"
+        "  (long) and POLARITY_SHIFT\n"
+        "  (short) exits only \u2014 NEVER\n"
+        "  for Tiger Sovereign entries\n"
+        "  or Phase 4 sentinel logic.\n"
         f"{SEP}"
     )
     await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
@@ -1176,6 +1212,56 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=_proximity_keyboard(),
     )
     logger.info("CMD proximity completed in %.2fs", asyncio.get_event_loop().time() - t0)
+
+
+async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the current Phase 1 (Section I) QQQ permit state.
+
+    v5.13.5: replaces the legacy SPY/QQQ-vs-PDC global gate diagnostic.
+    Reads from v5_10_6_snapshot._section_i_permit so this view agrees
+    with the dashboard.
+    """
+    SEP = "\u2500" * 26
+    long_open = False
+    short_open = False
+    qqq_close = qqq_ema9 = qqq_avwap = qqq_last = None
+    try:
+        import v5_10_6_snapshot as _v510
+        import trade_genius as _tg_mod
+
+        sip = _v510._section_i_permit(_tg_mod)
+        long_open = bool(sip.get("long_open"))
+        short_open = bool(sip.get("short_open"))
+        qqq_close = sip.get("qqq_5m_close")
+        qqq_ema9 = sip.get("qqq_5m_ema9")
+        qqq_avwap = sip.get("qqq_avwap_0930")
+        qqq_last = sip.get("qqq_current_price")
+    except Exception:
+        pass
+
+    def _fmt(v):
+        return ("$%.2f" % v) if isinstance(v, (int, float)) and v else "--"
+
+    long_icon = "\u2705" if long_open else "\u274c"
+    short_icon = "\u2705" if short_open else "\u274c"
+
+    text = (
+        f"\U0001f6e1 REGIME \u2014 Phase 1 (Section I)\n"
+        f"{SEP}\n"
+        f"QQQ last:   {_fmt(qqq_last)}\n"
+        f"QQQ 5m cl:  {_fmt(qqq_close)}\n"
+        f"QQQ 9 EMA:  {_fmt(qqq_ema9)}\n"
+        f"QQQ AVWAP:  {_fmt(qqq_avwap)} (09:30)\n"
+        f"{SEP}\n"
+        f"Long permit:  {long_icon}\n"
+        f"Short permit: {short_icon}\n"
+        f"{SEP}\n"
+        f"Long  = QQQ 5m close > 9 EMA\n"
+        f"        AND QQQ > 09:30 AVWAP\n"
+        f"Short = QQQ 5m close < 9 EMA\n"
+        f"        AND QQQ < 09:30 AVWAP"
+    )
+    await update.message.reply_text(text, reply_markup=_menu_button())
 
 
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -7,6 +7,7 @@ positions, paper_cash, _now_et, send_telegram, etc.) still live in
 trade_genius; this module reaches them through the live-module
 accessor `_tg()` so __main__ vs imported execution both work.
 """
+
 from __future__ import annotations
 
 import logging
@@ -116,9 +117,10 @@ def send_startup_message():
         f"{tg.CURRENT_MAIN_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
-        f"Strategy: ORB Long + Wounded Buffalo Short | PDC anchor\n"
-        f"Scan:     every {tg.SCAN_INTERVAL}s  |  Trail: Bison +1.0% / min $1.00\n"
-        f"Stops:    Long OR_High\u2212$0.90  |  Short PDC+$0.90\n"
+        f"Strategy: Tiger Sovereign | Phase 1-4\n"
+        f"Phase 1: QQQ 9 EMA + 09:30 AVWAP\n"
+        f"Scan:     every {tg.SCAN_INTERVAL}s\n"
+        f"Stops:    entry \u00b1 0.75% (cap)\n"
         f"{SEP}\n"
         f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
         f"Market:   {market_status}\n"
@@ -151,7 +153,9 @@ async def _auth_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_id = getattr(update, "update_id", None)
     logger.warning(
         "auth_guard: dropped non-owner update (update_id=%s user_id=%r chat_id=%r)",
-        update_id, user_id_str or "(none)", chat_id_str or "(none)",
+        update_id,
+        user_id_str or "(none)",
+        chat_id_str or "(none)",
     )
     raise ApplicationHandlerStop
 
@@ -164,10 +168,7 @@ def run_telegram_bot():
     # when trade_genius first imports telegram_ui.runtime.
     import telegram_commands
 
-    app = (Application.builder()
-           .token(tg.TELEGRAM_TOKEN)
-           .post_init(_set_bot_commands)
-           .build())
+    app = Application.builder().token(tg.TELEGRAM_TOKEN).post_init(_set_bot_commands).build()
 
     # v3.6.0 \u2014 Owner auth guard: every update is screened against
     # TRADEGENIUS_OWNER_IDS before any downstream handler sees it.
@@ -191,6 +192,8 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("price", telegram_commands.cmd_price))
     app.add_handler(CommandHandler("orb", telegram_commands.cmd_orb))
     app.add_handler(CommandHandler("proximity", telegram_commands.cmd_proximity))
+    # v5.13.5 \u2014 Phase 1 (Section I) permit diagnostic.
+    app.add_handler(CommandHandler("regime", telegram_commands.cmd_regime))
     app.add_handler(CommandHandler("monitoring", telegram_commands.cmd_monitoring))
     app.add_handler(CommandHandler("algo", telegram_commands.cmd_algo))
     app.add_handler(CommandHandler("strategy", telegram_commands.cmd_strategy))

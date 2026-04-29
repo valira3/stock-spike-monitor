@@ -45,7 +45,12 @@ class FakeRequest:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # Use asyncio.run so each handler invocation gets a fresh event loop.
+    # The previous get_event_loop() pattern blew up when an earlier test
+    # (test_v5_5_5_volprofile_observability.py) called asyncio.run() and
+    # closed the default loop, leaving the lifecycle handlers without a
+    # valid loop on subsequent invocations.
+    return asyncio.run(coro)
 
 
 def test_lifecycle_positions_empty(lifecycle_server):

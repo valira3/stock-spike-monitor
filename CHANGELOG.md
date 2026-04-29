@@ -78,6 +78,78 @@ yellow=ORDER, red=EXIT) with click-to-expand payloads. Polls
 
 ---
 
+## v5.13.5 — 2026-04-29 — Telegram surface vocabulary cleanup (Phase 1-4)
+
+Telegram-bot user-facing copy was still describing the pre-v5.9.0
+dual-PDC entry/exit model. v5.13.4 cleaned the dashboard but the
+Telegram surface still surfaced PDC as an active gate in `/strategy`,
+`/proximity`, `/orb`, `/price <ticker>`, and the deploy banner ("PDC
+anchor"). **Strings only — no algorithm or trading-logic changes.**
+
+### What changed
+
+- **`/strategy`** — rewritten from the legacy ORB-Long + Wounded-Buffalo
+  bullet list (PDC-based entry rules, OR_High − $0.90 / PDC + $0.90
+  stops) into the Tiger Sovereign Phase 1–4 description:
+  - Phase 1: QQQ 5m close vs 9 EMA + QQQ vs 09:30 AVWAP permit
+  - Phase 2: Volume Bucket (PASS/FAIL/COLD/OFF, `VOLUME_GATE_ENABLED`
+    env var, default OFF) and Boundary Hold (2 consecutive 1m closes)
+  - Phase 3: Entry-1 (DI+ ≥ 25, NHOD) → 50%, Entry-2 (DI+ cross 30,
+    fresh NHOD) → remaining 50%
+  - Phase 4: Sentinel A (Emergency), B (9-EMA Shield), C (Titan Grip
+    harvest + 0.25% ratchet)
+  - Stops: entry ± 0.75% cap (matches `MAX_STOP_PCT` in
+    `trade_genius.py`)
+  - Footnote on `LEGACY_EXITS_ENABLED` (default OFF) for the opt-in
+    RED_CANDLE / POLARITY_SHIFT exits.
+- **`/proximity`** — global "SPY/QQQ vs PDC" gate replaced with the
+  Phase 1 (Section I) QQQ permit booleans (read from
+  `v5_10_6_snapshot._section_i_permit`, same source the dashboard
+  uses). Per-ticker rows keep gap-to-OR-High / gap-to-OR-Low; the
+  bottom "Prices & Polarity vs PDC" block is now just "Prices" — PDC
+  polarity arrows dropped.
+- **`/regime`** (new) — diagnostic command surfacing QQQ last, 5m
+  close, 9 EMA, 09:30 AVWAP, plus `Long permit ✓/✗` and `Short permit
+  ✓/✗`. Replaces the never-existed-but-frequently-asked-for
+  `/spy_qqq` global-gate diagnostic.
+- **`/price <ticker>`** — per-ticker PDC line now suppressed by
+  default; only rendered when `LEGACY_EXITS_ENABLED=true` and clearly
+  labeled "PDC (legacy)". Long/short eligibility now reads from the
+  Phase 1 permit instead of the SPY/QQQ-PDC gate; "above PDC" / "below
+  PDC" reasons removed.
+- **`/orb`** — bottom "SPY PDC / QQQ PDC" rows replaced with "Phase 1
+  long permit / Phase 1 short permit". Per-ticker rows drop the PDC
+  column.
+- **Deploy banner** (`telegram_ui/runtime.py`) — strategy line changed
+  from `"ORB Long + Wounded Buffalo Short | PDC anchor"` to
+  `"Tiger Sovereign | Phase 1-4"`; stops line changed from
+  `"Long OR_High−$0.90 | Short PDC+$0.90"` to `"entry ± 0.75% (cap)"`.
+- **`CURRENT_MAIN_NOTE`** updated to describe v5.13.5.
+- **`/help`** menu now lists `/regime` alongside `/proximity` and
+  `/mode`.
+
+### Tests
+
+- `tests/test_telegram_pdc_scrub_v5_13_5.py` (new) asserts:
+  - `/strategy` body does NOT contain `"SPY > PDC"`, `"SPY < PDC"`,
+    `"QQQ > PDC"`, `"QQQ < PDC"`, `"PDC + $0.90"`, or
+    `"OR High − $0.90"`.
+  - `/strategy` body DOES contain `"Phase 1"` and `"Permit"`.
+  - `/proximity` rendered text does NOT contain `"above PDC"` or
+    `"below PDC"`.
+  - `/proximity` rendered text DOES contain `"Long permit"` /
+    `"Short permit"`.
+
+### Out of scope
+
+- No algorithm changes. The Tiger Sovereign FSM, sentinel loop,
+  legacy-exit gating, and snapshot helpers are all unchanged.
+- Per-ticker PDC is still computed and stored in `tg.pdc` (still
+  consumed by the optional legacy exits) — only the user-facing
+  display changed.
+
+---
+
 ## v5.13.4 — 2026-04-29 — Dashboard pill cleanup (Phase 2 surface) + proximity to entry boundaries only
 
 Frontend-only refactor of the operator dashboard so the per-ticker chips
