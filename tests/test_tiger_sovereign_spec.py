@@ -130,20 +130,28 @@ def test_L_P2_S3():
 
 
 def test_L_P2_S4():
-    """L-P2-S4: TWO consecutive 1m candles closed strictly ABOVE 5m OR High."""
-    from engine.volume_baseline import gate_two_consecutive_1m_above
+    """L-P2-S4: TWO consecutive 1m candles closed strictly ABOVE 5m OR High.
+    v5.13.9: contract owned by eye_of_tiger.evaluate_boundary_hold.
+    """
+    import eye_of_tiger as eot
 
     or_high = 100.0
+    or_low = 99.0
     # Two strict-above closes -> hold.
-    assert gate_two_consecutive_1m_above([100.5, 101.0], or_high) is True
+    res = eot.evaluate_boundary_hold("LONG", or_high, or_low, [100.5, 101.0])
+    assert bool(res.get("hold")) is True
     # One above + one below -> no hold.
-    assert gate_two_consecutive_1m_above([101.0, 99.5], or_high) is False
+    res = eot.evaluate_boundary_hold("LONG", or_high, or_low, [101.0, 99.5])
+    assert bool(res.get("hold")) is False
     # At-boundary close breaks hold (strict >).
-    assert gate_two_consecutive_1m_above([100.5, 100.0], or_high) is False
+    res = eot.evaluate_boundary_hold("LONG", or_high, or_low, [100.5, 100.0])
+    assert bool(res.get("hold")) is False
     # Insufficient closes -> no hold.
-    assert gate_two_consecutive_1m_above([101.0], or_high) is False
+    res = eot.evaluate_boundary_hold("LONG", or_high, or_low, [101.0])
+    assert bool(res.get("hold")) is False
     # No OR_high -> no hold.
-    assert gate_two_consecutive_1m_above([101.0, 102.0], None) is False
+    res = eot.evaluate_boundary_hold("LONG", None, or_low, [101.0, 102.0])
+    assert bool(res.get("hold")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +312,7 @@ def test_L_P4_B():
 def _long_titan_state(or_high=100.0, shares=400):
     from engine.titan_grip import TitanGripState
     from eye_of_tiger import SIDE_LONG
+
     return TitanGripState(
         position_id="t1",
         direction=SIDE_LONG,
@@ -338,9 +347,7 @@ def test_L_P4_C_S1():
     assert harvest.order_type == ORDER_TYPE_LIMIT
     assert harvest.shares == int(400 * TITAN_GRIP_STAGE1_HARVEST_FRAC)
     # Stage 1 stop placed at OR_High + 0.40%.
-    assert state.current_stop_anchor == pytest.approx(
-        100.0 * (1.0 + TITAN_GRIP_STAGE1_STOP_PCT)
-    )
+    assert state.current_stop_anchor == pytest.approx(100.0 * (1.0 + TITAN_GRIP_STAGE1_STOP_PCT))
     assert state.stage == 1
 
 
@@ -519,16 +526,24 @@ def test_S_P2_S3():
 
 
 def test_S_P2_S4():
-    """S-P2-S4: TWO consecutive 1m candles closed strictly BELOW 5m OR Low."""
-    from engine.volume_baseline import gate_two_consecutive_1m_below
+    """S-P2-S4: TWO consecutive 1m candles closed strictly BELOW 5m OR Low.
+    v5.13.9: contract owned by eye_of_tiger.evaluate_boundary_hold.
+    """
+    import eye_of_tiger as eot
 
+    or_high = 101.0
     or_low = 100.0
-    assert gate_two_consecutive_1m_below([99.5, 99.0], or_low) is True
-    assert gate_two_consecutive_1m_below([99.5, 100.5], or_low) is False
+    res = eot.evaluate_boundary_hold("SHORT", or_high, or_low, [99.5, 99.0])
+    assert bool(res.get("hold")) is True
+    res = eot.evaluate_boundary_hold("SHORT", or_high, or_low, [99.5, 100.5])
+    assert bool(res.get("hold")) is False
     # At-boundary close breaks hold.
-    assert gate_two_consecutive_1m_below([99.5, 100.0], or_low) is False
-    assert gate_two_consecutive_1m_below([99.5], or_low) is False
-    assert gate_two_consecutive_1m_below([99.0, 98.5], None) is False
+    res = eot.evaluate_boundary_hold("SHORT", or_high, or_low, [99.5, 100.0])
+    assert bool(res.get("hold")) is False
+    res = eot.evaluate_boundary_hold("SHORT", or_high, or_low, [99.5])
+    assert bool(res.get("hold")) is False
+    res = eot.evaluate_boundary_hold("SHORT", or_high, None, [99.0, 98.5])
+    assert bool(res.get("hold")) is False
 
 
 def test_S_P3_S5():
@@ -613,6 +628,7 @@ def test_S_P4_B():
 def _short_titan_state(or_low=100.0, shares=400):
     from engine.titan_grip import TitanGripState
     from eye_of_tiger import SIDE_SHORT
+
     return TitanGripState(
         position_id="s1",
         direction=SIDE_SHORT,
@@ -642,9 +658,7 @@ def test_S_P4_C_S1():
     harvest = [a for a in actions if a.code == ACTION_STAGE1_HARVEST][0]
     assert harvest.order_type == ORDER_TYPE_LIMIT
     assert harvest.shares == int(400 * TITAN_GRIP_STAGE1_HARVEST_FRAC)
-    assert state.current_stop_anchor == pytest.approx(
-        100.0 * (1.0 - TITAN_GRIP_STAGE1_STOP_PCT)
-    )
+    assert state.current_stop_anchor == pytest.approx(100.0 * (1.0 - TITAN_GRIP_STAGE1_STOP_PCT))
     assert state.stage == 1
 
 

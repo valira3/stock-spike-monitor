@@ -7,7 +7,7 @@ routed through the `EngineCallbacks` Protocol so replay (PR 6) can drop
 in a record-only mock.
 
 Module-level state from trade_genius referenced inside the loop
-(`_scan_idle_hours`, `_last_scan_time`, `_regime_bullish`, `positions`,
+(`_scan_idle_hours`, `_last_scan_time`, `positions`,
 `short_positions`, `pdc`, `TRADE_TICKERS`, `V561_INDEX_TICKER`,
 `_QQQ_REGIME`, `_ws_consumer`, `_current_mode`, `_scan_paused`) and
 helpers (`_clear_cycle_bar_cache`, `_v561_archive_qqq_bar`,
@@ -23,6 +23,7 @@ a thin `def scan_loop(): engine.scan.scan_loop(_ProdCallbacks())`
 shim so any importer that resolves `trade_genius.scan_loop` keeps
 working.
 """
+
 from __future__ import annotations
 
 import logging
@@ -59,7 +60,9 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     try:
         tg._refresh_market_mode()
     except Exception:
-        logger.exception("_refresh_market_mode failed (ignored \u2014 observation only, runs at idle cycles too)")
+        logger.exception(
+            "_refresh_market_mode failed (ignored \u2014 observation only, runs at idle cycles too)"
+        )
 
     # Idle-state flag drives gates.scan_paused on the dashboard so the
     # UI can tell "scanner is not scanning right now" after hours without
@@ -79,7 +82,8 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     # full entry/manage scan (gates aren't active until 9:35) but persist
     # the 1m bar for QQQ + every TRADE_TICKER. Failure-tolerant.
     _pre_open_window = (
-        now_et.hour == 9 and 29 <= now_et.minute < 35
+        now_et.hour == 9
+        and 29 <= now_et.minute < 35
         and (now_et.minute > 29 or now_et.second >= 30)
     )
     if before_open and _pre_open_window:
@@ -106,23 +110,29 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                     _highs_pre = _b_pre.get("highs") or []
                     _lows_pre = _b_pre.get("lows") or []
                     _vols_pre = _b_pre.get("volumes") or []
-                    _ts_val_pre = (_ts_arr_pre[_idx_pre]
-                                   if abs(_idx_pre) <= len(_ts_arr_pre)
-                                   else None)
+                    _ts_val_pre = (
+                        _ts_arr_pre[_idx_pre] if abs(_idx_pre) <= len(_ts_arr_pre) else None
+                    )
                     try:
-                        _ts_iso_pre = (datetime.utcfromtimestamp(int(_ts_val_pre))
-                                       .strftime("%Y-%m-%dT%H:%M:%SZ")
-                                       if _ts_val_pre is not None else None)
+                        _ts_iso_pre = (
+                            datetime.utcfromtimestamp(int(_ts_val_pre)).strftime(
+                                "%Y-%m-%dT%H:%M:%SZ"
+                            )
+                            if _ts_val_pre is not None
+                            else None
+                        )
                     except Exception:
                         _ts_iso_pre = None
                     _bar_pre = {
                         "ts": _ts_iso_pre,
                         "et_bucket": None,
-                        "open":  _opens_pre[_idx_pre] if abs(_idx_pre) <= len(_opens_pre) else None,
-                        "high":  _highs_pre[_idx_pre] if abs(_idx_pre) <= len(_highs_pre) else None,
-                        "low":   _lows_pre[_idx_pre]  if abs(_idx_pre) <= len(_lows_pre)  else None,
+                        "open": _opens_pre[_idx_pre] if abs(_idx_pre) <= len(_opens_pre) else None,
+                        "high": _highs_pre[_idx_pre] if abs(_idx_pre) <= len(_highs_pre) else None,
+                        "low": _lows_pre[_idx_pre] if abs(_idx_pre) <= len(_lows_pre) else None,
                         "close": _closes_pre[_idx_pre],
-                        "iex_volume": _vols_pre[_idx_pre] if abs(_idx_pre) <= len(_vols_pre) else None,
+                        "iex_volume": _vols_pre[_idx_pre]
+                        if abs(_idx_pre) <= len(_vols_pre)
+                        else None,
                         "iex_sip_ratio_used": None,
                         "bid": None,
                         "ask": None,
@@ -150,44 +160,22 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
 
     n_pos = len(tg.positions)
     n_short = len(tg.short_positions)
-    logger.info("Scanning %d stocks | pos=%d short=%d | mode=%s",
-                len(tg.TRADE_TICKERS), n_pos, n_short, tg._current_mode)
+    logger.info(
+        "Scanning %d stocks | pos=%d short=%d | mode=%s",
+        len(tg.TRADE_TICKERS),
+        n_pos,
+        n_short,
+        tg._current_mode,
+    )
 
-    # \u2500\u2500 Regime change alert \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    # PDC-anchored alert: fires on dual-index 1m_close vs PDC flips.
-    # Fail-closed on missing PDC: no alert fires if either index PDC
-    # is unseeded. (The matching exit-side eject was retired in v5.9.1
-    # in favor of the v5.9.0 5m EMA compass on the entry side; this
-    # alert is observational only.)
-    spy_pdc_r = tg.pdc.get("SPY")
-    qqq_pdc_r = tg.pdc.get("QQQ")
-    if spy_pdc_r and qqq_pdc_r and spy_pdc_r > 0 and qqq_pdc_r > 0:
-        spy_bars_r = callbacks.fetch_1min_bars("SPY")
-        qqq_bars_r = callbacks.fetch_1min_bars("QQQ")
-        if spy_bars_r and qqq_bars_r:
-            spy_cur_r = spy_bars_r["current_price"]
-            qqq_cur_r = qqq_bars_r["current_price"]
-            now_bullish = (spy_cur_r > spy_pdc_r) and (qqq_cur_r > qqq_pdc_r)
-            if tg._regime_bullish is None:
-                tg._regime_bullish = now_bullish
-            elif now_bullish != tg._regime_bullish:
-                tg._regime_bullish = now_bullish
-                now_hhmm_r = callbacks.now_cdt().strftime("%H:%M CDT")
-                if now_bullish:
-                    regime_msg = (
-                        "\U0001f7e2 REGIME: BULLISH\n"
-                        "SPY $%.2f > PDC $%.2f\n"
-                        "QQQ $%.2f > PDC $%.2f\n"
-                        "The Lords are back.  %s"
-                    ) % (spy_cur_r, spy_pdc_r, qqq_cur_r, qqq_pdc_r, now_hhmm_r)
-                else:
-                    regime_msg = (
-                        "\U0001f534 REGIME: BEARISH\n"
-                        "SPY $%.2f < PDC $%.2f\n"
-                        "QQQ $%.2f < PDC $%.2f\n"
-                        "The Lords have left.  %s"
-                    ) % (spy_cur_r, spy_pdc_r, qqq_cur_r, qqq_pdc_r, now_hhmm_r)
-                callbacks.alert(regime_msg)
+    # v5.13.9 \u2014 The PDC-anchored "REGIME: BULLISH/BEARISH" alert that
+    # used to live here was retired. It compared SPY/QQQ 1m current
+    # price to prior-day-close, which is not part of the Tiger Sovereign
+    # spec (STEP 1 = QQQ 5m vs 9 EMA, STEP 2 = QQQ 5m vs 09:30 AVWAP)
+    # and was decorative-only \u2014 no entry, exit, or sentinel path
+    # consumed it. Removed alongside the matching `_update_gate_snapshot`
+    # rewire so the dashboard `index`/`polarity` pills mirror the
+    # actual gates the entry path uses.
 
     # v5.6.1 D1 \u2014 archive QQQ 1m bar each cycle so the index ticker is
     # persisted alongside the 8 trade tickers. Failure-tolerant; never
@@ -228,7 +216,10 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         _qqq_5m_ema9 = tg._QQQ_REGIME.ema9
         _qqq_avwap = tg._opening_avwap("QQQ")
         eot_glue.maybe_log_permit_state(
-            _qqq_5m_close, _qqq_5m_ema9, _qqq_cur, _qqq_avwap,
+            _qqq_5m_close,
+            _qqq_5m_ema9,
+            _qqq_cur,
+            _qqq_avwap,
         )
     except Exception as _e:
         logger.warning("[V5100-PERMIT] log hook error: %s", _e)
@@ -269,7 +260,9 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
 
     # Feature 8: scan pause \u2014 only block NEW entries
     if tg._scan_paused:
-        logger.info("SCAN CYCLE done in %.2fs \u2014 paused (manage only)", time.time() - cycle_start)
+        logger.info(
+            "SCAN CYCLE done in %.2fs \u2014 paused (manage only)", time.time() - cycle_start
+        )
         return
 
     # Check for new entries on tradable tickers (long + short).
@@ -281,7 +274,11 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     for ticker in tg.TRADE_TICKERS:
         _per_ticker_tick(callbacks, ticker)
 
-    logger.info("SCAN CYCLE done in %.2fs \u2014 %d tickers", time.time() - cycle_start, len(tg.TRADE_TICKERS))
+    logger.info(
+        "SCAN CYCLE done in %.2fs \u2014 %d tickers",
+        time.time() - cycle_start,
+        len(tg.TRADE_TICKERS),
+    )
 
 
 def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
@@ -338,9 +335,11 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                     vols = _bars_for_mtm.get("volumes") or []
                     ts_val = ts_arr[idx] if abs(idx) <= len(ts_arr) else None
                     try:
-                        ts_iso = (datetime.utcfromtimestamp(int(ts_val))
-                                  .strftime("%Y-%m-%dT%H:%M:%SZ")
-                                  if ts_val is not None else None)
+                        ts_iso = (
+                            datetime.utcfromtimestamp(int(ts_val)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            if ts_val is not None
+                            else None
+                        )
                     except Exception:
                         ts_iso = None
                     # v5.5.5 \u2014 prefer the WS consumer's IEX volume for
@@ -356,12 +355,10 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                     try:
                         now_et = datetime.now(tz=ZoneInfo("America/New_York"))
                         et_bucket = volume_profile.session_bucket(now_et)
-                        if (
-                            et_bucket is not None
-                            and tg._ws_consumer is not None
-                        ):
+                        if et_bucket is not None and tg._ws_consumer is not None:
                             ws_vol = tg._ws_consumer.current_volume(
-                                ticker, et_bucket,
+                                ticker,
+                                et_bucket,
                             )
                             if ws_vol is not None:
                                 iex_volume = int(ws_vol)
@@ -369,14 +366,15 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         # Never let observability break the trading scan.
                         logger.warning(
                             "[V510-BAR] ws-source switch %s: %s",
-                            ticker, _e,
+                            ticker,
+                            _e,
                         )
                     canon_bar = {
                         "ts": ts_iso,
                         "et_bucket": et_bucket,
-                        "open":  opens[idx] if abs(idx) <= len(opens) else None,
-                        "high":  highs[idx] if abs(idx) <= len(highs) else None,
-                        "low":   lows[idx]  if abs(idx) <= len(lows)  else None,
+                        "open": opens[idx] if abs(idx) <= len(opens) else None,
+                        "high": highs[idx] if abs(idx) <= len(highs) else None,
+                        "low": lows[idx] if abs(idx) <= len(lows) else None,
                         "close": closes[idx],
                         "iex_volume": iex_volume,
                         "iex_sip_ratio_used": None,

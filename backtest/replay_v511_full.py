@@ -55,6 +55,7 @@ and trade-pairing reports were v4's job; that layer can be rebuilt
 on top of `RecordOnlyCallbacks.entries` / `.exits` once we trust
 the seam end-to-end.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -78,6 +79,7 @@ logger = logging.getLogger("backtest.replay_v511")
 # ---------------------------------------------------------------------------
 # Bar loading
 # ---------------------------------------------------------------------------
+
 
 def _load_jsonl(path: Path) -> list[dict]:
     if not path.is_file():
@@ -134,6 +136,7 @@ def load_day_bars(bars_dir: Path, date_str: str, ticker: str) -> list[dict]:
 # Record-only callbacks
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RecordOnlyCallbacks:
     """Satisfies `engine.callbacks.EngineCallbacks` without side effects.
@@ -152,8 +155,7 @@ class RecordOnlyCallbacks:
             regression test asserts these are populated.
     """
 
-    clock_et: datetime = field(
-        default_factory=lambda: datetime(2026, 4, 28, 9, 35, tzinfo=ET))
+    clock_et: datetime = field(default_factory=lambda: datetime(2026, 4, 28, 9, 35, tzinfo=ET))
     bars_by_ticker: dict[str, list[dict]] = field(default_factory=dict)
 
     entries: list[dict] = field(default_factory=list)
@@ -188,8 +190,10 @@ class RecordOnlyCallbacks:
         highs = [b.get("high") for b in visible]
         lows = [b.get("low") for b in visible]
         closes = [b.get("close") for b in visible]
-        vols = [b.get("iex_volume") if b.get("iex_volume") is not None
-                else b.get("volume") for b in visible]
+        vols = [
+            b.get("iex_volume") if b.get("iex_volume") is not None else b.get("volume")
+            for b in visible
+        ]
         timestamps = [int(b["_dt"].timestamp()) for b in visible]
         last_close = next((c for c in reversed(closes) if c is not None), None)
         return {
@@ -228,49 +232,58 @@ class RecordOnlyCallbacks:
 
     # ---- Order execution ----------------------------------------------
     def execute_entry(self, ticker: str, price: float) -> None:
-        self.entries.append({
-            "ts": self.clock_et.isoformat(),
-            "ticker": ticker,
-            "price": price,
-            "side": "long",
-        })
+        self.entries.append(
+            {
+                "ts": self.clock_et.isoformat(),
+                "ticker": ticker,
+                "price": price,
+                "side": "long",
+            }
+        )
 
     def execute_short_entry(self, ticker: str, price: float) -> None:
-        self.short_entries.append({
-            "ts": self.clock_et.isoformat(),
-            "ticker": ticker,
-            "price": price,
-            "side": "short",
-        })
+        self.short_entries.append(
+            {
+                "ts": self.clock_et.isoformat(),
+                "ticker": ticker,
+                "price": price,
+                "side": "short",
+            }
+        )
 
-    def execute_exit(self, ticker: str, side: str, price: float,
-                     reason: str) -> None:
-        self.exits.append({
-            "ts": self.clock_et.isoformat(),
-            "ticker": ticker,
-            "side": side,
-            "price": price,
-            "reason": reason,
-        })
+    def execute_exit(self, ticker: str, side: str, price: float, reason: str) -> None:
+        self.exits.append(
+            {
+                "ts": self.clock_et.isoformat(),
+                "ticker": ticker,
+                "side": side,
+                "price": price,
+                "reason": reason,
+            }
+        )
 
     # ---- Operator surface ---------------------------------------------
     def alert(self, msg: str) -> None:
         self.alerts.append(msg)
 
-    def report_error(self, *, executor: str, code: str, severity: str,
-                     summary: str, detail: str) -> None:
-        self.errors.append({
-            "executor": executor,
-            "code": code,
-            "severity": severity,
-            "summary": summary,
-            "detail": detail,
-        })
+    def report_error(
+        self, *, executor: str, code: str, severity: str, summary: str, detail: str
+    ) -> None:
+        self.errors.append(
+            {
+                "executor": executor,
+                "code": code,
+                "severity": severity,
+                "summary": summary,
+                "detail": detail,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
 # Fake `trade_genius` module \u2014 satisfies engine.scan's `_tg()` indirection
 # ---------------------------------------------------------------------------
+
 
 def _install_fake_tg(tickers: list[str]) -> SimpleNamespace:
     """Install a record-only stub in `sys.modules["trade_genius"]`.
@@ -289,7 +302,7 @@ def _install_fake_tg(tickers: list[str]) -> SimpleNamespace:
     fake._scan_paused = False
     fake._current_mode = "REPLAY"
     fake._last_scan_time = None
-    fake._regime_bullish = None
+    # v5.13.9 \u2014 _regime_bullish removed; scan.py no longer reads it.
     fake.positions = {}
     fake.short_positions = {}
     fake.pdc = {}
@@ -319,8 +332,7 @@ def _install_fake_tg(tickers: list[str]) -> SimpleNamespace:
 # Replay driver
 # ---------------------------------------------------------------------------
 
-DEFAULT_TICKERS = ["AAPL", "AMZN", "AVGO", "GOOG", "META",
-                   "MSFT", "NFLX", "NVDA", "ORCL", "TSLA"]
+DEFAULT_TICKERS = ["AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX", "NVDA", "ORCL", "TSLA"]
 
 
 @dataclass
@@ -384,13 +396,15 @@ def run_replay(
             _engine_scan.scan_loop(cb)
         except Exception as e:
             logger.error("scan_loop crashed at %s: %s", cur.isoformat(), e)
-            cb.errors.append({
-                "executor": "replay_driver",
-                "code": "SCAN_LOOP_EXCEPTION",
-                "severity": "error",
-                "summary": f"scan_loop crashed at {cur.isoformat()}",
-                "detail": f"{type(e).__name__}: {str(e)[:200]}",
-            })
+            cb.errors.append(
+                {
+                    "executor": "replay_driver",
+                    "code": "SCAN_LOOP_EXCEPTION",
+                    "severity": "error",
+                    "summary": f"scan_loop crashed at {cur.isoformat()}",
+                    "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                }
+            )
         minutes += 1
         cur = cur + timedelta(minutes=1)
 
@@ -406,6 +420,7 @@ def run_replay(
 # Report
 # ---------------------------------------------------------------------------
 
+
 def format_report(result: ReplayResult) -> str:
     cb = result.callbacks
     pnl = 0.0
@@ -420,8 +435,7 @@ def format_report(result: ReplayResult) -> str:
         f"- fetch_1min_bars calls: {len(cb.fetch_calls)}",
         f"- alerts emitted: {len(cb.alerts)}",
         f"- errors logged: {len(cb.errors)}",
-        f"- entries: {len(cb.entries)}  (long={len(cb.entries)} "
-        f"short={len(cb.short_entries)})",
+        f"- entries: {len(cb.entries)}  (long={len(cb.entries)} short={len(cb.short_entries)})",
         f"- exits:   {len(cb.exits)}",
         f"- paired round-trips: {len(paired)}  pnl=${pnl:+.2f}",
         "",
@@ -432,8 +446,7 @@ def format_report(result: ReplayResult) -> str:
     lines.append("")
     lines.append("## Exits")
     for x in cb.exits:
-        lines.append(
-            f"- {x['ts']} {x['ticker']} {x['side']} @ {x['price']} ({x['reason']})")
+        lines.append(f"- {x['ts']} {x['ticker']} {x['side']} @ {x['price']} ({x['reason']})")
     lines.append("")
     return "\n".join(lines)
 
@@ -451,21 +464,24 @@ def _pair_entries_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
         e = by_key[key].pop(0)
         sign = 1.0 if x["side"] == "long" else -1.0
         pnl = sign * (float(x["price"]) - float(e["price"]))
-        paired.append({
-            "ticker": x["ticker"],
-            "side": x["side"],
-            "entry_ts": e["ts"],
-            "exit_ts": x["ts"],
-            "entry_price": e["price"],
-            "exit_price": x["price"],
-            "pnl": pnl,
-        })
+        paired.append(
+            {
+                "ticker": x["ticker"],
+                "side": x["side"],
+                "entry_ts": e["ts"],
+                "exit_ts": x["ts"],
+                "entry_price": e["price"],
+                "exit_price": x["price"],
+                "pnl": pnl,
+            }
+        )
     return paired
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -477,8 +493,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "parallel re-implementation."
         ),
     )
-    p.add_argument("--date", required=True,
-                   help="YYYY-MM-DD session date (e.g. 2026-04-28)")
+    p.add_argument("--date", required=True, help="YYYY-MM-DD session date (e.g. 2026-04-28)")
     p.add_argument(
         "--bars-dir",
         default="/home/user/workspace/today_bars",
@@ -488,14 +503,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "use tests/fixtures/replay_v511_minimal."
         ),
     )
-    p.add_argument("--tickers", default=",".join(DEFAULT_TICKERS),
-                   help="Comma-separated trade universe override")
-    p.add_argument("--start", default="09:35",
-                   help="ET start time HH:MM (default 09:35)")
-    p.add_argument("--end", default="15:55",
-                   help="ET end time HH:MM (default 15:55)")
-    p.add_argument("--out", default=None,
-                   help="Optional output path for the markdown report")
+    p.add_argument(
+        "--tickers",
+        default=",".join(DEFAULT_TICKERS),
+        help="Comma-separated trade universe override",
+    )
+    p.add_argument("--start", default="09:35", help="ET start time HH:MM (default 09:35)")
+    p.add_argument("--end", default="15:55", help="ET end time HH:MM (default 15:55)")
+    p.add_argument("--out", default=None, help="Optional output path for the markdown report")
     return p
 
 

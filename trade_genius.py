@@ -95,7 +95,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.13.8"
+BOT_VERSION = "5.13.9"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -103,14 +103,16 @@ BOT_VERSION = "5.13.8"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.13.8 \u2014 EMA9 seed hotfix\n"
-    "QQQ regime seed now requires\n"
-    ">=9 bars from /data/bars archive\n"
-    "before short-circuiting; smaller\n"
-    "reads fall through to Alpaca\n"
-    "historical (04:00 ET pre-mkt).\n"
-    "Fixes ema9=None at open on\n"
-    "cold-restart days."
+    "v5.13.9 \u2014 Gate display rewire\n"
+    "Dashboard index/polarity now\n"
+    "mirror Section I permit + the\n"
+    "boundary_hold gate the entry\n"
+    "path actually uses (QQQ 5m vs\n"
+    "9 EMA + 09:30 AVWAP, two 1m\n"
+    "closes outside OR). Drops\n"
+    "legacy PDC compute + regime\n"
+    "alert. Decorative-only \u2014 no\n"
+    "behavior change to entries."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -2641,12 +2643,23 @@ _current_ticker_extremes: list = []     # list of (ticker, rsi, "OB"/"OS")
 # Shape: {ticker: {
 #     "side": "LONG"|"SHORT",
 #     "break": bool,              # 1m close crossed OR (above/below)
-#     "polarity": bool,           # price vs PDC on the right side
-#     "index": bool,              # SPY/QQQ on the right side of PDC
+#     "polarity": bool|None,      # Phase 2 boundary hold (2 closed 1m
+#                                 # candles outside the 5m OR edge for
+#                                 # this side). None = OR/closes not
+#                                 # yet available. Spec STEP 4.
+#     "index": bool|None,         # Section I global permit for this
+#                                 # side (QQQ 5m close vs 9-EMA + QQQ
+#                                 # vs 09:30 AVWAP). None = inputs not
+#                                 # ready. Spec STEPS 1-2.
 #     "di": bool|None,            # DI+/DI- >= TIGER_V2_DI_THRESHOLD;
 #                                 # None = warmup (DI not yet computable)
 #     "ts": iso timestamp,
 # }}
+# v5.13.9: "polarity" + "index" rewired to Tiger Sovereign spec rules.
+# Pre-v5.13.9 these fields read PDC (v4 Tiger 2.0 era), which was
+# decorative-only \u2014 the entry path (broker/orders.check_breakout)
+# already uses Section I permit + Boundary Hold. Old PDC compute is
+# removed.
 # v3.5.x: vol_pct / vol_ok removed — Tiger 2.0 replaced the volume gate
 # with DI+/DI-, and TIGER_V2_REQUIRE_VOL defaults to False. Keeping the
 # fields on the snapshot was decorative and misled diagnosis.
@@ -2688,7 +2701,6 @@ def _update_gate_snapshot(ticker):
         return
     or_h = or_high[ticker]
     or_l = or_low[ticker]
-    pdc_val = pdc.get(ticker)
 
     bars = fetch_1min_bars(ticker)
     if not bars:
@@ -2697,14 +2709,13 @@ def _update_gate_snapshot(ticker):
     if price is None or price <= 0:
         return
 
+    # v5.13.9: PDC override removed (legacy v4 polarity field is gone).
+    # FMP price override is still useful as the most-recent quote.
     fmp_q = get_fmp_quote(ticker)
     if fmp_q:
         fmp_price = fmp_q.get("price")
         if fmp_price and fmp_price > 0:
             price = fmp_price
-        fmp_pdc = fmp_q.get("previousClose")
-        if fmp_pdc and fmp_pdc > 0:
-            pdc_val = fmp_pdc
 
     if price > or_h:
         side = "LONG"
@@ -2716,25 +2727,46 @@ def _update_gate_snapshot(ticker):
         side = "LONG" if abs(price - or_h) < abs(price - or_l) else "SHORT"
         break_ok = False
 
-    if pdc_val and pdc_val > 0:
-        polarity_ok = (price > pdc_val) if side == "LONG" else (price < pdc_val)
-    else:
-        polarity_ok = False
+    # v5.13.9 \u2014 polarity = Phase 2 Boundary Hold for this side.
+    # Spec STEP 4: TWO consecutive closed 1m candles strictly outside
+    # the 5m OR edge. Reads the same evaluator the entry path uses so
+    # the dashboard cannot disagree with the bot. None when inputs are
+    # not yet available (OR not seeded, or fewer than 2 closes).
+    polarity_ok: bool | None
+    try:
+        bh_res = eot_glue.evaluate_boundary_hold_gate(ticker, side, or_h, or_l)
+        if bh_res.get("reason") in ("or_not_set", "insufficient_closes"):
+            polarity_ok = None
+        else:
+            polarity_ok = bool(bh_res.get("hold"))
+    except Exception:
+        polarity_ok = None
 
-    spy_pdc_val = pdc.get("SPY")
-    qqq_pdc_val = pdc.get("QQQ")
-    index_ok = None
-    if spy_pdc_val and qqq_pdc_val and spy_pdc_val > 0 and qqq_pdc_val > 0:
-        spy_bars = fetch_1min_bars("SPY")
-        qqq_bars = fetch_1min_bars("QQQ")
-        if spy_bars and qqq_bars:
-            spy_p = spy_bars.get("current_price")
-            qqq_p = qqq_bars.get("current_price")
-            if spy_p and qqq_p:
-                if side == "LONG":
-                    index_ok = (spy_p > spy_pdc_val) and (qqq_p > qqq_pdc_val)
-                else:
-                    index_ok = (spy_p < spy_pdc_val) and (qqq_p < qqq_pdc_val)
+    # v5.13.9 \u2014 index = Section I global permit for this side.
+    # Spec STEPS 1-2: LONG requires QQQ 5m close > 9-EMA AND QQQ price
+    # > 09:30 AVWAP. SHORT mirrors with strict-below. None when QQQ
+    # regime / AVWAP are not yet seeded.
+    index_ok: bool | None
+    try:
+        qqq_bars_idx = fetch_1min_bars("QQQ")
+        qqq_last = qqq_bars_idx.get("current_price") if qqq_bars_idx else None
+        qqq_avwap = _opening_avwap("QQQ")
+        qqq_5m_close = _QQQ_REGIME.last_close
+        qqq_ema9 = _QQQ_REGIME.ema9
+        if (
+            qqq_last is None
+            or qqq_avwap is None
+            or qqq_5m_close is None
+            or qqq_ema9 is None
+        ):
+            index_ok = None
+        else:
+            permit = eot_glue.evaluate_section_i(
+                side, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap
+            )
+            index_ok = bool(permit.get("open"))
+    except Exception:
+        index_ok = None
 
     di_plus, di_minus = tiger_di(ticker)
     if di_plus is None or di_minus is None:
@@ -2758,20 +2790,21 @@ def _update_gate_snapshot(ticker):
     _gate_snapshot[ticker] = {
         "side": side,
         "break": bool(break_ok),
-        "polarity": bool(polarity_ok),
+        "polarity": polarity_ok,
         "index": index_ok,
         "di": di_ok,
         "extension_pct": extension_pct,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
 
+    pol_str = "None" if polarity_ok is None else str(bool(polarity_ok))
     idx_str = "None" if index_ok is None else str(bool(index_ok))
     di_str = "None" if di_ok is None else str(bool(di_ok))
     logger.info(
         "GATE_EVAL ticker=%s price=%.2f or_hi=%.2f or_lo=%.2f "
         "side=%s break=%s polarity=%s index=%s di=%s",
         ticker, price, or_h, or_l, side, bool(break_ok),
-        bool(polarity_ok), idx_str, di_str,
+        pol_str, idx_str, di_str,
     )
 
 
@@ -3520,7 +3553,9 @@ _scan_paused: bool = False
 # top of every scan cycle, independent of market hours, so the dashboard
 # banner reflects reality after the close instead of sticking on POWER.
 _scan_idle_hours: bool = False
-_regime_bullish = None          # None=unknown, True/False tracks last known regime
+# v5.13.9 \u2014 _regime_bullish (PDC-anchored bull/bear flag) was retired
+# alongside the matching scan.py alert. The dashboard index/polarity
+# pills now mirror Section I permit + boundary_hold instead.
 _last_exit_time: dict = {}     # ticker -> datetime (UTC) of last exit
 _last_scan_time = None           # datetime (UTC), updated each scan cycle
 
@@ -5175,7 +5210,7 @@ def reset_daily_state():
     (v3.4.34: AVWAP reset removed — AVWAP state no longer tracked.)
     """
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason
-    global daily_short_entry_count, daily_short_entry_date, _regime_bullish, _current_rsi_regime
+    global daily_short_entry_count, daily_short_entry_date, _current_rsi_regime
 
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -5242,12 +5277,9 @@ def reset_daily_state():
     except Exception:
         logger.exception("reset_daily_state: _last_exit_time prune failed")
 
-    # Regime-transition alert is driven by a module-global first-seen
-    # comparison. Without a daily reset, a mid-session restart comparing
-    # the freshly-computed regime to a stale value would fire a spurious
-    # "REGIME SHIFT" alert on the first scan. Clear at session open so
-    # first-of-day classification is a clean first transition.
-    _regime_bullish = None
+    # v5.13.9 \u2014 _regime_bullish reset removed alongside the retired
+    # PDC regime alert. _current_rsi_regime continues to reset here
+    # so the RSI regime classifier starts each session clean.
     _current_rsi_regime = "UNKNOWN"
 
 
