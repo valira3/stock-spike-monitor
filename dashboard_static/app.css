@@ -103,6 +103,10 @@
     100% { box-shadow: 0 0 0 0   rgba(52, 211, 153, 0); }
   }
   .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  /* v5.17.0 — 4-up KPI variant (Equity / Day P&L / Open / Session). The
+     legacy 6-up grid is preserved for the Val/Gene exec panels which
+     still render six tiles. The Main panel uses .kpi-row.kpi-row-4. */
+  .kpi-row.kpi-row-4 { grid-template-columns: repeat(4, 1fr); }
   .kpi {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 14px 16px;
@@ -253,40 +257,14 @@
   .prox-fill.ok   { background: linear-gradient(90deg, var(--accent), var(--up)); }
   .prox-pct { width: 110px; text-align: left; font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
 
-  .gate { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
-  .gate:last-child { border-bottom: none; }
-  .gate-name .hint { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
-
-  /* v5.13.2 — Sovereign Regime Shield CSS retired (PDC dual-index eject
-     decommissioned in v5.9.1). The exec panels (Val/Gene) still embed
-     the same card skeleton; .srs-* / .chip-srs-* rules below are kept
-     scoped to those skeletons only via the `.tg-exec-panel` ancestor. */
-  .tg-exec-panel .srs { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .tg-exec-panel .srs-idx { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; min-width: 0; }
-  .tg-exec-panel .srs-idx:last-child { border-bottom: none; }
-  .tg-exec-panel .srs-sym { font-weight: 600; font-family: var(--mono); letter-spacing: 0.02em; }
-  .tg-exec-panel .srs-price { font-family: var(--mono); color: var(--text); }
-  .tg-exec-panel .srs-pdc { font-family: var(--mono); color: var(--text-dim); font-size: 11.5px; }
-  .tg-exec-panel .srs-delta { font-family: var(--mono); text-align: right; min-width: 64px; font-size: 12px; }
-  .tg-exec-panel .srs-delta.up   { color: var(--up); }
-  .tg-exec-panel .srs-delta.down { color: var(--down); }
-  .tg-exec-panel .srs-delta.na   { color: var(--text-dim); }
-  .tg-exec-panel .srs-reason { color: var(--text-dim); font-size: 11.5px; padding-top: 4px; word-break: break-word; overflow-wrap: anywhere; }
-  .tg-exec-panel .chip-srs-armed { background: var(--down-dim); color: var(--down); }
-  .tg-exec-panel .chip-srs-wait  { background: var(--warn-dim, rgba(255,170,0,0.15)); color: var(--warn, #ffaa00); }
-  .tg-exec-panel .chip-srs-dis   { background: var(--up-dim); color: var(--up); }
-
-  /* v3.4.21 — per-ticker entry-gate row */
-  .tgate { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 12px; }
-  .tgate:last-child { border-bottom: none; }
-  .tgate-tkr { font-weight: 600; letter-spacing: 0.01em; }
-  .tgate-chips { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+  /* v5.17.0 — Permit-side chip on Proximity rows (Val/Gene exec panel).
+     The legacy .gate / .srs-* / .chip-srs-* / .tgate row CSS was retired
+     when Sovereign Regime Shield + Gates·entry-checks panels were dropped
+     from the executor tab; the only surviving piece is the .tgate-chip
+     pill, still used by execRenderPermitSideChip on Proximity. */
   .tgate-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 500; font-family: var(--mono); }
   .tgate-chip.on  { background: var(--up-dim);      color: var(--up); }
-  .tgate-chip.off { background: var(--down-dim);    color: var(--down); }
   .tgate-chip.na  { background: var(--surface-3);   color: var(--text-dim); }
-  .tgate-chip.warm { background: var(--warn-dim);   color: var(--warn); }
-  .tgate-section-label { padding: 10px 14px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); border-top: 1px solid var(--border); }
 
   .row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 12.5px; }
   .row .k { color: var(--text-muted); }
@@ -335,6 +313,9 @@
        to visible). Keeps flex-column gap so sections still space cleanly. */
     .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; height: auto; }
     .kpi-row { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    /* v5.17.0 — 4-up KPI row collapses to 2x2 at tablet width to keep
+       value typography readable. */
+    .kpi-row.kpi-row-4 { grid-template-columns: repeat(2, 1fr); }
   }
 
   /* Phone (≤640px): stack KPIs 2-up, single-column grids, dense */
@@ -356,7 +337,6 @@
     .prox-ticker { width: 50px; }
     .prox-price { width: 62px; }
     .prox-pct { width: 100px; font-size: 10.5px; }
-    .gate { padding: 8px 12px; font-size: 11.5px; gap: 8px; }
     .key-val-grid { font-size: 11.5px; gap: 5px 12px; }
 
     /* v4.2.2 \u2014 Today's Trades on phones: single line, fits 375px.
@@ -595,14 +575,6 @@
     font-family: var(--mono); font-size: 12px; color: var(--text-muted);
   }
 
-  /* ─── v4.10.0 — GATE tri-state coloring ────────────────────────────
-     Distinguish "market closed" (muted) from "manually paused" (amber)
-     from "armed/ready" (green). HALTED keeps its existing red. */
-  .gate-armed       { color: var(--up); }
-  .gate-paused      { color: var(--warn); }
-  .gate-after-hours { color: var(--text-muted); }
-  .gate-halted      { color: var(--down); }
-
   /* ─── v4.12.0 — ticker auto-marquee + after-hours badge ────────────
      When the rendered items don't fit, JS adds .idx-marquee on the strip
      and duplicates the .idx-track inner HTML so a single CSS animation
@@ -682,171 +654,339 @@
 .eot-sb-yellow { color: var(--warn); }
 .eot-sb-red { color: var(--down); }
 
-/* v5.13.2 — Tiger Sovereign live state panel.
-   Phase 1 (per-side permit) / Phase 2 (gates) / Phase 3 (entry
-   candidates) / Phase 4 (active management). Match the existing dark
-   theme — uses the same surface / border / accent tokens as the rest
-   of the dashboard, no new colors invented. */
-.ts-flags-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 0 0 6px;
-  margin: -4px 0 8px;
+
+/* ═══════════════════════════════════════════════════════════════════
+   v5.17.0 — Permit Matrix + Weather Check + per-position Sentinel
+   ───────────────────────────────────────────────────────────────────
+   Replaces the legacy Tiger Sovereign Phase 1-4 vertical panel (and
+   the Observer + Gates·entry checks panels). Same data source — the
+   `tiger_sovereign` block in /api/state — pivoted to a per-Titan row
+   layout so the operator can read the entry checklist horizontally
+   for every ticker at a glance.
+
+   All colors and surfaces re-use the existing dashboard tokens
+   (--surface, --border, --up, --down, --warn, --accent) so the
+   matrix stays visually consistent with the rest of the app.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── Weather Check banner (Phase 1 verdict) ─────────────────────── */
+.pmtx-weather-section { margin-top: 0; }
+.pmtx-weather {
+  display: flex; align-items: stretch; gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  min-width: 0;
 }
-.ts-flag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 10px;
-  border-radius: 999px;
+.pmtx-weather-pending { border-left-color: var(--text-dim); }
+.pmtx-weather-green   { border-left-color: var(--up); }
+.pmtx-weather-red     { border-left-color: var(--down); }
+.pmtx-weather-amber   { border-left-color: var(--warn); }
+
+.pmtx-weather-icon {
+  width: 38px; height: 38px; flex-shrink: 0;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  align-self: center;
+  font-family: var(--sans);
+}
+.pmtx-weather-green  .pmtx-weather-icon {
+  background: color-mix(in srgb, var(--up) 14%, var(--surface-2));
+  color: var(--up);
+}
+.pmtx-weather-red    .pmtx-weather-icon {
+  background: color-mix(in srgb, var(--down) 14%, var(--surface-2));
+  color: var(--down);
+}
+.pmtx-weather-amber  .pmtx-weather-icon {
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface-2));
+  color: var(--warn);
+}
+
+.pmtx-weather-body { flex: 1 1 auto; min-width: 0; }
+.pmtx-weather-eyebrow {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--text-dim); font-weight: 600;
+  margin-bottom: 3px;
+}
+.pmtx-weather-verdict {
+  font-size: 15px; font-weight: 700;
+  letter-spacing: -0.005em;
+  color: var(--text);
+}
+.pmtx-weather-green  .pmtx-weather-verdict { color: var(--up); }
+.pmtx-weather-red    .pmtx-weather-verdict { color: var(--down); }
+.pmtx-weather-amber  .pmtx-weather-verdict { color: var(--warn); }
+.pmtx-weather-detail {
+  font-size: 11.5px; color: var(--text-muted);
+  margin-top: 3px; line-height: 1.45;
   font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
+  word-break: break-word;
+}
+.pmtx-weather-stats {
+  display: flex; gap: 16px;
+  align-items: center; flex-shrink: 0;
+  font-family: var(--mono);
+  border-left: 1px solid var(--border);
+  padding-left: 14px;
+}
+.pmtx-weather-stat {
+  display: flex; flex-direction: column;
+  font-size: 11px; color: var(--text-dim);
+  text-align: right; line-height: 1.3;
+}
+.pmtx-weather-stat-num {
+  color: var(--text); font-weight: 600; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Permit Matrix table (desktop) ──────────────────────────────── */
+.pmtx-table-wrap {
+  /* Allow horizontal scroll if a narrow viewport falls between the
+     desktop table and mobile-card breakpoints (e.g. embedded iframe). */
+  width: 100%; overflow-x: auto; overscroll-behavior: contain;
+}
+.pmtx-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 12.5px; min-width: 720px;
+}
+.pmtx-table thead th {
+  font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-dim);
+  font-weight: 600; text-align: center;
+  padding: 9px 6px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  position: sticky; top: 0; z-index: 1;
+}
+.pmtx-table thead th.pmtx-col-titan { text-align: left; padding-left: 14px; }
+.pmtx-table thead th.pmtx-col-state { text-align: right; padding-right: 14px; }
+.pmtx-table tbody td {
+  padding: 11px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: center; vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+.pmtx-table tbody tr:last-child td { border-bottom: none; }
+.pmtx-table tbody tr:hover { background: var(--surface-2); }
+.pmtx-table td.pmtx-col-titan { text-align: left; padding-left: 14px; }
+.pmtx-table td.pmtx-col-state { text-align: right; padding-right: 14px; }
+
+.pmtx-titan {
+  display: flex; flex-direction: column; gap: 1px;
+  font-family: var(--sans);
+}
+.pmtx-titan-name {
+  font-weight: 700; font-size: 13px;
+  letter-spacing: -0.005em; color: var(--text);
+}
+.pmtx-titan-meta {
+  font-size: 10.5px; color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+/* Gate cell: ✓ pass / ✕ fail / − pending */
+.pmtx-gate {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  font-size: 12px; font-weight: 700;
+  font-family: var(--sans);
+}
+.pmtx-gate-pass { background: color-mix(in srgb, var(--up)   18%, var(--surface-2)); color: var(--up);   }
+.pmtx-gate-fail { background: color-mix(in srgb, var(--down) 18%, var(--surface-2)); color: var(--down); }
+.pmtx-gate-pend { background: var(--surface-2); color: var(--text-dim); }
+.pmtx-gate-warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); color: var(--warn); }
+
+/* Strike Cap dots (3 per row, max) */
+.pmtx-strike-cap {
+  display: inline-flex; gap: 4px; align-items: center;
+  vertical-align: middle;
+}
+.pmtx-strike-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
+.pmtx-strike-dot.pmtx-strike-used   { background: var(--accent); border-color: var(--accent); }
+.pmtx-strike-dot.pmtx-strike-locked { background: var(--down);   border-color: var(--down); }
+
+/* State pill (IDLE / ARMED / IN POS / LOCKED) */
+.pmtx-state-pill {
+  display: inline-block;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  font-family: var(--sans);
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  cursor: help;
-}
-.ts-flag-on {
-  color: var(--text-muted);
-  background: var(--surface-2);
-  border-color: var(--border);
-}
-.ts-flag-off {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-}
-.ts-phase {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-}
-.ts-phase:last-child {
-  border-bottom: none;
-}
-.ts-phase-head {
-  font-size: 10px;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin-bottom: 6px;
-  font-weight: 600;
-}
-.ts-phase-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.ts-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0;
-  font-size: 12px;
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-.ts-row-multi { flex-wrap: wrap; }
-.ts-row-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text);
-  font-weight: 500;
-}
-.ts-row-value {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  color: var(--text-muted);
-}
-.ts-row-pair {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   white-space: nowrap;
 }
-.ts-ok { color: var(--up); font-weight: 600; }
-.ts-no { color: var(--down); font-weight: 600; }
-.ts-pending { color: var(--text-dim); }
-.ts-permit-line { padding-top: 2px; }
-.ts-permit-pill {
-  display: inline-flex;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-weight: 600;
-  font-size: 10.5px;
-  letter-spacing: 0.05em;
-  border: 1px solid var(--border);
-}
-.ts-permit-green {
-  color: var(--up);
-  background: color-mix(in srgb, var(--up) 12%, var(--surface-2));
-  border-color: color-mix(in srgb, var(--up) 40%, var(--border));
-}
-.ts-permit-red {
-  color: var(--down);
-  background: color-mix(in srgb, var(--down) 12%, var(--surface-2));
-  border-color: color-mix(in srgb, var(--down) 40%, var(--border));
-}
-.ts-vol-pill {
-  display: inline-flex;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-}
-.ts-gate-pass {
-  color: var(--up);
-  border-color: color-mix(in srgb, var(--up) 40%, var(--border));
-  background: color-mix(in srgb, var(--up) 12%, var(--surface-2));
-}
-.ts-gate-fail {
-  color: var(--down);
-  border-color: color-mix(in srgb, var(--down) 40%, var(--border));
-  background: color-mix(in srgb, var(--down) 12%, var(--surface-2));
-}
-.ts-gate-cold {
+.pmtx-state-idle   { color: var(--text-muted); }
+.pmtx-state-armed  {
   color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
   background: color-mix(in srgb, var(--warn) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
 }
-.ts-gate-off {
-  color: var(--text-dim);
-  border-color: var(--border);
-  background: var(--surface-2);
-}
-.ts-side {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-.ts-side-long {
+.pmtx-state-inpos  {
   color: var(--up);
-  background: color-mix(in srgb, var(--up) 18%, var(--surface-2));
+  background: color-mix(in srgb, var(--up) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--up) 40%, var(--border));
 }
-.ts-side-short {
+.pmtx-state-locked {
   color: var(--down);
-  background: color-mix(in srgb, var(--down) 18%, var(--surface-2));
+  background: color-mix(in srgb, var(--down) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--down) 40%, var(--border));
 }
-.ts-titan-stage {
-  display: inline-flex;
-  padding: 1px 8px;
+
+/* ─── Per-position Sentinel detail strip (rendered inline under the
+       matched row when a position is open). 5 cells: A B C D E. ─── */
+.pmtx-sentinel-row td {
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  padding: 0 0 10px 0 !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+.pmtx-sentinel-strip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  padding: 8px 14px 6px;
+  margin: 0 4px;
+}
+.pmtx-sentinel-cell {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 8px;
+  text-align: center;
+  display: flex; flex-direction: column; gap: 1px;
+  min-width: 0;
+}
+.pmtx-sentinel-cell.pmtx-sen-safe   { border-color: color-mix(in srgb, var(--up)   40%, var(--border)); }
+.pmtx-sentinel-cell.pmtx-sen-armed  { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+.pmtx-sentinel-cell.pmtx-sen-trip   { border-color: color-mix(in srgb, var(--down) 40%, var(--border));
+                                      background: color-mix(in srgb, var(--down) 8%, var(--surface-2)); }
+.pmtx-sen-letter {
+  font-family: var(--sans);
+  font-size: 12px; font-weight: 800;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+.pmtx-sentinel-cell.pmtx-sen-safe  .pmtx-sen-letter { color: var(--up); }
+.pmtx-sentinel-cell.pmtx-sen-armed .pmtx-sen-letter { color: var(--warn); }
+.pmtx-sentinel-cell.pmtx-sen-trip  .pmtx-sen-letter { color: var(--down); }
+.pmtx-sen-name {
+  font-size: 9px; line-height: 1.2;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-family: var(--sans);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pmtx-sen-val {
+  font-family: var(--mono); font-size: 10.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ─── Mobile: card-stack layout under 720 px ─────────────────────── */
+.pmtx-cards { display: none; padding: 6px 10px 10px; }
+@media (max-width: 720px) {
+  .pmtx-table-wrap { display: none; }
+  .pmtx-cards { display: flex; flex-direction: column; gap: 8px; }
+  .pmtx-weather { flex-wrap: wrap; gap: 10px; padding: 11px 14px; }
+  .pmtx-weather-stats {
+    border-left: none; padding-left: 0;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    width: 100%; gap: 14px;
+    justify-content: flex-start;
+  }
+  .pmtx-weather-stat { text-align: left; }
+}
+.pmtx-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.pmtx-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+}
+.pmtx-card-title {
+  display: flex; flex-direction: column; gap: 1px; min-width: 0;
+}
+.pmtx-card-title .pmtx-titan-name { font-size: 14px; }
+.pmtx-card-gates {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+.pmtx-card-gate {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 5px 4px;
+  background: var(--surface);
   border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 600;
-  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  min-width: 0;
 }
+.pmtx-card-gate-label {
+  font-size: 8.5px; line-height: 1.1;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-dim); font-family: var(--sans);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  width: 100%; text-align: center;
+}
+.pmtx-card-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 7px;
+  font-size: 10.5px; color: var(--text-dim);
+  font-family: var(--mono);
+}
+.pmtx-card-last {
+  font-size: 10.5px; color: var(--text-muted);
+  font-family: var(--mono);
+}
+.pmtx-card-last.pmtx-pnl-up   { color: var(--up); }
+.pmtx-card-last.pmtx-pnl-down { color: var(--down); }
+.pmtx-card-sentinel { padding: 0; gap: 4px; }
+.pmtx-card-sentinel .pmtx-sentinel-strip {
+  padding: 6px 0 0; margin: 0;
+  gap: 4px;
+}
+.pmtx-card-sentinel .pmtx-sentinel-cell {
+  padding: 5px 4px;
+}
+.pmtx-card-sentinel .pmtx-sen-name { font-size: 8.5px; }
+.pmtx-card-sentinel .pmtx-sen-val  { font-size: 9.5px; }
+
+/* ─── Even smaller phone (≤400 px): tighter sentinel cells ───────── */
+@media (max-width: 400px) {
+  .pmtx-card-sentinel .pmtx-sen-name { display: none; }
+  .pmtx-sentinel-strip { gap: 3px; }
+  .pmtx-card { padding: 9px 10px; }
+}
+
+/* ─── Last-trade tail in the desktop matrix (compact) ────────────── */
+.pmtx-last {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--text-dim); white-space: nowrap;
+}
+.pmtx-last.pmtx-pnl-up   { color: var(--up);   font-weight: 600; }
+.pmtx-last.pmtx-pnl-down { color: var(--down); font-weight: 600; }
+
+/* ─── Reuse: drop bottom border on rows immediately followed by a
+       sentinel-detail row so the strip visually attaches to its
+       parent position row. JS adds .pmtx-row-attached for this. ─── */
+.pmtx-row-attached td { border-bottom-color: transparent; }

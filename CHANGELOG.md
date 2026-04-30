@@ -4,6 +4,79 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.17.0 — 2026-04-29 — Dashboard redesign: Permit Matrix + Weather Check
+
+Full dashboard redesign for Tiger Sovereign vAA-1. The legacy v5.13.2 Phase
+1–4 vertical panel, Observer panel, Gates·entry-checks panel, and Volume
+Gate flag pill are all retired; their content is now folded into a new
+**Weather Check** banner (single-line market-wide permit verdict) plus a
+**Permit Matrix** card (per-Titan row × gate-stage table on desktop, per-
+Titan card stack on mobile, with an inline A/B/C/D/E sentinel detail strip
+that unfolds for Titans currently in a position).
+
+No engine changes — purely a presentation refactor. The `/api/state` shape
+is unchanged from v5.16.0; the new dashboard reads `tiger_sovereign.phase1`
+(Weather Check verdict), `phase2` + `phase3` + `tickers` (matrix rows), and
+`phase4[].sentinel` + `phase4[].titan_grip` (sentinel detail strip).
+
+### Main tab — what's gone
+
+- **GATE + REGIME KPI tiles** — collapsed into the Weather Check banner.
+  KPI row trimmed from 6 tiles to 4 (Equity / Day P&L / Open / Session).
+- **Volume Gate flag pill** — folded into the per-Titan VOL CONFIRM column
+  in the Permit Matrix.
+- **Tiger Sovereign Phase 1–4 panel** — replaced by the matrix rows.
+  Per-Titan state (5M ORB, ADX>20, DI+ 5M, DI+ 1M, VOL CONFIRM, STRIKE CAP,
+  STATE, LAST TRADE) is now in a single readable table.
+- **Observer panel** — never carried operational signal; deleted.
+- **Gates · entry-checks panel** — duplicated info now in the matrix.
+
+### Val/Gene tabs — portfolio-only redesign
+
+These tabs are scoped to per-executor portfolio state, so the market-wide
+Permit Matrix and Weather Check live only on Main. The exec tabs lose:
+
+- **Sovereign Regime Shield card** — was a relic of the v5.9.1 dual-index
+  PDC eject rule (decommissioned; only chip skeletons remained).
+- **Gates · entry-checks card** — duplicate of the Main matrix.
+- **Gate + Regime KPI tiles** — same redundancy logic.
+
+KPI row matches Main's (Equity / Day P&L / Open / Session). Open positions,
+Proximity, Last signal, Today's trades, and Account diagnostics all stay.
+
+### Code purge (no production behavior change)
+
+Dead JS removed (~640 lines net): `_tsRender*`, `renderTigerSovereign`,
+`renderObserver`, `renderFeatureFlags`, `renderGates` (kept only the
+next-scan-countdown shim), `tGateRow`/`permitChip`/`volChip`/`boundaryChip`/
+`entryFiredChips`/`gateRow`, plus the executor-side `renderExecSovereign` /
+`renderExecGates` and their chip helpers, plus the `applyGateTriState`
+helper + window bridge (no remaining callers).
+
+Dead CSS removed (~210 lines): the `.ts-*` block (lines 692-859 of
+app.css), the `.gate` row layout, `.gate-armed/.gate-paused/.gate-after-
+hours/.gate-halted` color classes, the `.srs-*` and `.chip-srs-*` Sovereign
+Regime Shield rules, and the `.tgate` row container (kept only `.tgate-
+chip` since it's still used by Val/Gene's Proximity permit-side chips).
+
+### Files touched
+
+- `dashboard_static/index.html` — KPI row 6→4, dropped 4 panels, added
+  Weather Check banner + Permit Matrix card.
+- `dashboard_static/app.css` — added `.kpi-row-4`, full Permit Matrix +
+  Weather Check + Sentinel detail rules + ≤720px / ≤400px mobile overrides;
+  pruned `.ts-*` / `.gate*` / `.srs-*` / `.chip-srs-*` / `.tgate` row CSS.
+- `dashboard_static/app.js` — added `renderWeatherCheck`,
+  `renderPermitMatrix`, `_pmtxBuildRow`, `_pmtxSentinelStrip`,
+  `_pmtxGateCell`, `_pmtxNum`, `_pmtxMoney`, `_pmtxIndex`; wired into
+  `renderAll` after `renderNextScanCountdown`. Dropped Gate + Regime KPI
+  refresh from `refreshExecSharedKpis` and `renderExecutor`. Reinstated
+  `updateNextScanLabel` (was tangled in the deleted `renderGates`).
+- `bot_version.py`, `trade_genius.py` — bump to 5.17.0.
+- `tests/test_startup_smoke.py` — pin to `5.17.` prefix.
+
+---
+
 ## v5.16.0 — 2026-04-29 — Legacy purge
 
 Removes four classes of legacy code now that Tiger Sovereign vAA-1 is the

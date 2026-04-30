@@ -44,49 +44,10 @@
     return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
   }
 
-  // v4.10.0 — shared GATE renderer. Used by Main + Val/Gene exec panels.
-  // Sets text + class. Caller passes the value cell, the sub cell, the
-  // gates obj from /api/state, and the regime obj (for market_open
-  // inference via mode === "CLOSED").
-  const __GATE_CLASSES = ["gate-armed", "gate-paused", "gate-after-hours", "gate-halted"];
-  function applyGateTriState(gateEl, gateSubEl, gates, regime) {
-    if (!gateEl) return;
-    gateEl.style.color = "";
-    __GATE_CLASSES.forEach(c => gateEl.classList.remove(c));
-    const mode = (regime && regime.mode) || "";
-    const marketClosed = mode === "CLOSED";
-    if (gates.trading_halted) {
-      gateEl.textContent = "HALTED";
-      gateEl.classList.add("gate-halted");
-      if (gateSubEl) gateSubEl.textContent = gates.halt_reason || "manual halt";
-    } else if (marketClosed) {
-      gateEl.textContent = "AFTER HOURS";
-      gateEl.classList.add("gate-after-hours");
-      if (gateSubEl) gateSubEl.textContent = "market closed";
-    } else if (gates.scan_paused) {
-      gateEl.textContent = "PAUSED";
-      gateEl.classList.add("gate-paused");
-      if (gateSubEl) gateSubEl.textContent = "scan paused";
-    } else if (!gates.or_collected_date) {
-      gateEl.textContent = "WAIT";
-      gateEl.classList.add("gate-paused");
-      if (gateSubEl) gateSubEl.textContent = "opening range not collected";
-    } else {
-      gateEl.textContent = "ARMED";
-      gateEl.classList.add("gate-armed");
-      if (gateSubEl) gateSubEl.textContent = `OR ${gates.or_collected_date}`;
-    }
-  }
-  // v4.10.2 — expose to the second IIFE (Val/Gene tabs). The whole
-  // file is two independent IIFEs (main tab is 1–797; tab switcher
-  // + per-executor poll is 799–1632). v4.10.0 added the helper to
-  // the first IIFE only, so renderExecutor()/refreshExecSharedKpis()
-  // in the second IIFE threw "applyGateTriState is not defined" the
-  // moment a Val/Gene poll landed (caught by pollExecutor and surfaced
-  // as the "Fetch failed: ..." red banner). Bridge via window so the
-  // two IIFEs stay otherwise independent (per the design comment at
-  // line 800).
-  window.__tgApplyGateTriState = applyGateTriState;
+  // v5.17.0 \u2014 GATE tri-state helper retired. The Gate KPI tile was
+  // dropped from Main + Val/Gene KPI rows (gate state is now surfaced
+  // through the new Weather Check banner on Main). Health-pill helper
+  // remains \u2014 still used for per-executor error counts.
 
   // v4.11.0 — per-executor health pill renderer + dropdown.
   // Two separate IIFEs touch this: Main /api/state via __tgOnState, and
@@ -225,32 +186,13 @@
       $("k-open-sub").textContent = `${longs} long · ${shorts} short`;
     }
 
-    const gates = s.gates || {};
-    const gateEl = $("k-gate");
-    // v4.10.0 — GATE tri-state. Before this, "PAUSED" amber was shown
-    // 24/7 outside RTH because scan_paused is the union of /pause and
-    // the auto-idle "no scan outside market hours" flag. We now infer
-    // after-hours from regime.mode === "CLOSED" (option (b) in the
-    // v4.10.0 spec) so the operator sees:
-    //   ARMED       — green   — market open + scanner ready
-    //   AFTER HOURS — muted   — market closed (no scanning expected)
-    //   PAUSED      — amber   — operator paused via /pause during RTH
-    //   HALTED      — red     — emergency halt (existing behavior)
-    //   WAIT        — amber   — opening range still being collected
-    applyGateTriState(gateEl, $("k-gate-sub"), gates, s.regime);
-
+    // v5.17.0 — GATE + REGIME KPI tiles dropped. GATE was redundant
+    // with the SESSION tile (CLOSED / RTH OPEN); REGIME (RSI direction)
+    // was decommissioned with the move to QQQ AVWAP_0930 + 9-EMA
+    // permits in v5.15. The shared applyGateTriState helper is still
+    // exported via window.__tgApplyGateTriState for the Val/Gene
+    // executor tabs which continue to render GATE on their own panels.
     const reg = s.regime || {};
-    // ── Regime KPI: directional market regime (BULLISH / NEUTRAL / BEARISH)
-    //    sourced from breadth (SPY/QQQ vs AVWAP), to match how the bot talks about regime
-    const rEl = $("k-regime");
-    const breadth = reg.breadth || "UNKNOWN";
-    rEl.textContent = breadth === "UNKNOWN" ? "—" : breadth;
-    rEl.style.color = breadth === "BULLISH" ? "var(--up)"
-                    : breadth === "BEARISH" ? "var(--down)"
-                    : breadth === "NEUTRAL" ? "var(--text)"
-                    : "var(--text-muted)";
-    $("k-regime-sub").textContent = `RSI ${reg.rsi_regime || "—"}`;
-
     // ── Session KPI: time-of-day / risk state (OPEN / CHOP / POWER / DEFENSIVE / CLOSED)
     //    this is MarketMode in the bot — a session window, not a directional view
     const sEl = $("k-session");
@@ -555,351 +497,398 @@
     body.innerHTML = `<div class="trades-list">${rows}</div>`;
   }
 
-  function renderObserver(s) {
-    // Observer card holds the *details* behind the Regime KPI — the
-    // KPI itself shows BULLISH/NEUTRAL/BEARISH and RSI label; this card
-    // adds the underlying numbers (SPY/QQQ vs AVWAP, RSI values).
-    const reg = s.regime || {};
-    const obs = s.observer || {};
-    $("obs-breadth").textContent = reg.breadth_detail || reg.breadth || "—";
-    $("obs-rsi").textContent = reg.rsi_detail || reg.rsi_regime || "—";
-    const red = obs.ticker_red || [];
-    if (red.length) {
-      const [tkr, pnl] = red[0];
-      $("obs-topred").textContent = `${tkr} ${fmtUsd(pnl)}`;
-    } else {
-      $("obs-topred").textContent = "—";
-    }
+
+  // v5.17.0 — Legacy v5.13.2 Tiger Sovereign Phase 1–4 renderer removed.
+  // The Observer panel, Sovereign Regime Shield panel, Volume Gate flag
+  // pill, Gates · entry checks panel, and "Eye of the Tiger" panel were
+  // all retired in this version. Their surface area is now folded into
+  // the Weather Check banner + Permit Matrix below, which read the same
+  // tiger_sovereign block in /api/state but pivot the data to a per-Titan
+  // row layout. The regime/observer blocks remain in /api/state for any
+  // external consumer but are no longer drawn on the dashboard.
+
+  // ─── Permit Matrix helpers ───────────────────────────────────────
+  // Tri-state gate cell: pass / fail / pending. Used by both the
+  // desktop table and the mobile card stack.
+  function _pmtxGateCell(state, label) {
+    let cellCls = "pmtx-gate-pend";
+    let glyph = "\u2212"; // pending
+    if (state === true)  { cellCls = "pmtx-gate-pass"; glyph = "\u2713"; }
+    else if (state === false) { cellCls = "pmtx-gate-fail"; glyph = "\u2717"; }
+    else if (state === "warn") { cellCls = "pmtx-gate-warn"; glyph = "!"; }
+    const title = label ? ` title="${escapeHtml(label)}"` : "";
+    return `<span class="pmtx-gate ${cellCls}"${title}>${glyph}</span>`;
   }
 
-  // v5.13.2 \u2014 Sovereign Regime Shield panel retired (PDC dual-index
-  // eject rule was decommissioned in v5.9.1). The renderer is gone;
-  // the shared `regime.sovereign` payload remains in /api/state for
-  // any external consumers but is no longer drawn on the dashboard.
-
-  // v5.13.2 \u2014 Tiger Sovereign Phase 1\u20134 renderer. Replaces the
-  // v5.10.6 "Eye of the Tiger" panel with the spec-correct Phase
-  // surface. Reads `state.tiger_sovereign` directly. All cells are
-  // None-safe \u2014 missing fields render as em-dashes.
-  function _tsCheck(ok) {
-    if (ok === true) return '<span class="ts-ok">\u2713</span>';
-    if (ok === false) return '<span class="ts-no">\u2717</span>';
-    return '<span class="ts-pending">\u2014</span>';
-  }
-  function _tsNum(v, digits) {
+  function _pmtxNum(v, digits) {
     if (v === null || v === undefined || !isFinite(v)) return "\u2014";
     return Number(v).toFixed(digits === undefined ? 2 : digits);
   }
-  function _tsMoney(v) {
+
+  function _pmtxMoney(v) {
     if (v === null || v === undefined || !isFinite(v)) return "\u2014";
     const n = Number(v);
     const sign = n >= 0 ? "+" : "\u2212";
     return sign + "$" + Math.abs(n).toFixed(2);
   }
-  function _tsPermitRow(label, ok, leftValue, rightValue, leftLabel, rightLabel) {
-    return '<div class="ts-row">'
-      + '<span class="ts-row-label">' + _tsCheck(ok) + ' ' + escapeHtml(label) + '</span>'
-      + '<span class="ts-row-value">'
-      +   '<span class="ts-row-pair">' + escapeHtml(leftLabel) + ' '
-      +     '<span class="mono">' + escapeHtml(leftValue) + '</span></span>'
-      +   '<span class="ts-row-pair">' + escapeHtml(rightLabel) + ' '
-      +     '<span class="mono">' + escapeHtml(rightValue) + '</span></span>'
-      + '</span>'
-      + '</div>';
+
+  // Build per-ticker index lookups so the matrix renders in O(N).
+  // phase3 + phase4 can have BOTH long and short rows for the same
+  // ticker, so we key the primary lookup by "TICKER:SIDE" and also
+  // keep a fallback by bare ticker (whichever side appears first).
+  function _pmtxIndex(ts) {
+    const idx = { p2: {}, p3: {}, p4: {} };
+    if (ts && Array.isArray(ts.phase2)) {
+      ts.phase2.forEach((r) => { if (r && r.ticker) idx.p2[r.ticker] = r; });
+    }
+    if (ts && Array.isArray(ts.phase3)) {
+      ts.phase3.forEach((r) => {
+        if (!r || !r.ticker) return;
+        const k = r.ticker + ":" + (r.side || "LONG");
+        idx.p3[k] = r;
+        if (!idx.p3[r.ticker]) idx.p3[r.ticker] = r;
+      });
+    }
+    if (ts && Array.isArray(ts.phase4)) {
+      ts.phase4.forEach((r) => {
+        if (!r || !r.ticker) return;
+        const k = r.ticker + ":" + (r.side || "LONG");
+        idx.p4[k] = r;
+        if (!idx.p4[r.ticker]) idx.p4[r.ticker] = r;
+      });
+    }
+    return idx;
   }
-  function _tsRenderPhase1Side(bodyId, side, blk) {
-    const body = $(bodyId);
-    if (!body) return false;
-    if (!blk || Object.keys(blk).length === 0) {
-      body.innerHTML = '<div class="empty">Waiting for permit state\u2026</div>';
-      return false;
-    }
-    const close = (typeof blk.qqq_5m_close === "number") ? blk.qqq_5m_close : null;
-    const ema9 = (typeof blk.qqq_5m_ema9 === "number") ? blk.qqq_5m_ema9 : null;
-    const last = (typeof blk.qqq_last === "number") ? blk.qqq_last : null;
-    const avwap = (typeof blk.qqq_avwap_0930 === "number") ? blk.qqq_avwap_0930 : null;
-    let okEma = null, okAvwap = null;
-    if (close !== null && ema9 !== null) {
-      okEma = (side === "LONG") ? (close > ema9) : (close < ema9);
-    }
-    if (last !== null && avwap !== null) {
-      okAvwap = (side === "LONG") ? (last > avwap) : (last < avwap);
-    }
-    const cmpEma = (side === "LONG") ? "> EMA9" : "< EMA9";
-    const cmpAvwap = (side === "LONG") ? "> AVWAP_0930" : "< AVWAP_0930";
-    const permit = !!blk.permit;
-    const permitCls = permit ? "ts-permit-green" : "ts-permit-red";
-    const permitTxt = permit ? "GREEN" : "RED";
-    body.innerHTML = ''
-      + _tsPermitRow("QQQ 5m close " + cmpEma, okEma,
-          _tsNum(close), _tsNum(ema9), "close=", "ema9=")
-      + _tsPermitRow("QQQ " + cmpAvwap, okAvwap,
-          _tsNum(last), _tsNum(avwap), "last=", "avwap=")
-      + '<div class="ts-row ts-permit-line">'
-      +   '<span class="ts-row-label">Permit</span>'
-      +   '<span class="ts-row-value"><span class="ts-permit-pill ' + permitCls + '">'
-      +     escapeHtml(permitTxt) + '</span></span>'
-      + '</div>';
-    return permit;
-  }
-  function _tsRenderPhase2(blk) {
-    const body = $("ts-phase2-body");
-    if (!body) return;
-    const rows = Array.isArray(blk) ? blk : [];
-    if (rows.length === 0) {
-      body.innerHTML = '<div class="empty">Waiting for gate state\u2026</div>';
-      return;
-    }
-    const html = rows.map((r) => {
-      const status = String(r.vol_gate_status || "COLD");
-      let cls = "ts-gate-cold";
-      if (status === "PASS") cls = "ts-gate-pass";
-      else if (status === "FAIL") cls = "ts-gate-fail";
-      else if (status === "OFF") cls = "ts-gate-off";
-      const above = !!r.two_consec_above;
-      const below = !!r.two_consec_below;
-      let twoLabel = "\u2014", twoIcon = _tsCheck(null);
-      if (above) { twoLabel = "above OR_high"; twoIcon = _tsCheck(true); }
-      else if (below) { twoLabel = "below OR_low"; twoIcon = _tsCheck(true); }
-      else { twoLabel = "no 2-consec"; twoIcon = _tsCheck(false); }
-      return '<div class="ts-row">'
-        + '<span class="ts-row-label"><span class="ticker">' + escapeHtml(r.ticker || "") + '</span></span>'
-        + '<span class="ts-row-value">'
-        +   '<span class="ts-vol-pill ' + cls + '" title="Volume gate \u2014 PASS = volume baseline cleared, FAIL = below threshold, COLD = warming up, OFF = runtime override">' + escapeHtml(status) + '</span>'
-        +   '<span class="ts-row-pair" title="Two consecutive 1m closes either above 5m Opening Range high or below 5m OR low \u2014 part of Phase 2 boundary hold">' + twoIcon + ' ' + escapeHtml(twoLabel) + '</span>'
-        + '</span>'
-        + '</div>';
-    }).join("");
-    body.innerHTML = html;
-  }
-  function _tsRenderPhase3(blk) {
-    const body = $("ts-phase3-body");
-    if (!body) return;
-    const rows = Array.isArray(blk) ? blk : [];
-    if (rows.length === 0) {
-      body.innerHTML = '<div class="empty">No armed candidates.</div>';
-      return;
-    }
-    const html = rows.map((r) => {
-      const e1Fired = !!r.entry1_fired;
-      const e2Fired = !!r.entry2_fired;
-      const e2Pending = !!r.entry2_cross_pending;
-      const di = (typeof r.entry1_di === "number") ? r.entry1_di : null;
-      const nhodTxt = (r.entry1_nhod === true) ? "NHOD\u2713"
-        : (r.entry1_nhod === false ? "no NHOD" : "NHOD \u2014");
-      const e2Txt = e2Fired
-        ? "Entry 2 \u2713"
-        : (e2Pending ? "Entry 2 cross pending" : "Entry 2 \u2014");
-      return '<div class="ts-row">'
-        + '<span class="ts-row-label">'
-        +   '<span class="ticker">' + escapeHtml(r.ticker || "") + '</span> '
-        +   '<span class="ts-side ts-side-' + (r.side === "SHORT" ? "short" : "long") + '">'
-        +     escapeHtml(r.side || "\u2014") + '</span>'
-        + '</span>'
-        + '<span class="ts-row-value">'
-        +   '<span class="ts-row-pair" title="Entry 1 \u2014 first breakout fill (5m OR break + DI/NHOD gates)">' + _tsCheck(e1Fired) + ' Entry 1</span>'
-        +   '<span class="ts-row-pair mono" title="DI+ momentum reading at the Entry 1 trigger; gate requires DI+ > 25">DI=' + escapeHtml(_tsNum(di, 2)) + '</span>'
-        +   '<span class="ts-row-pair" title="NHOD \u2014 New High Of Day at Entry 1: \u2713 = made new HOD, no NHOD = did not, \u2014 = unknown">' + escapeHtml(nhodTxt) + '</span>'
-        +   '<span class="ts-row-pair" title="Entry 2 \u2014 second add on a higher 5m close above OR; pending = cross detected, awaiting confirm">' + escapeHtml(e2Txt) + '</span>'
-        + '</span>'
-        + '</div>';
-    }).join("");
-    body.innerHTML = html;
-  }
-  function _tsRenderPhase4(blk) {
-    const body = $("ts-phase4-body");
-    if (!body) return;
-    const rows = Array.isArray(blk) ? blk : [];
-    if (rows.length === 0) {
-      body.innerHTML = '<div class="empty">No open positions.</div>';
-      return;
-    }
-    const html = rows.map((r) => {
-      const sen = r.sentinel || {};
-      const tg = r.titan_grip || {};
-      const a1 = (typeof sen.a1_pnl === "number") ? sen.a1_pnl : null;
-      const a1Th = (typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500;
-      const a1Trip = (a1 !== null) ? (a1 <= a1Th) : null;
-      const a2 = (typeof sen.a2_velocity === "number") ? sen.a2_velocity : null;
-      const a2Th = (typeof sen.a2_threshold === "number") ? sen.a2_threshold : -0.01;
-      const a2Trip = (a2 !== null) ? (a2 <= a2Th) : null;
-      const bDelta = (typeof sen.b_delta === "number") ? sen.b_delta : null;
-      const bTrip = (bDelta !== null)
-        ? ((r.side === "LONG") ? (bDelta < 0) : (bDelta > 0))
-        : null;
-      const stage = (typeof tg.stage === "number") ? tg.stage : null;
-      const anchor = (typeof tg.anchor === "number") ? tg.anchor : null;
-      const next = (typeof tg.next_target === "number") ? tg.next_target : null;
-      const ratchet = (typeof tg.ratchet_steps === "number") ? tg.ratchet_steps : null;
-      const stageLbl = (stage === null) ? "\u2014"
-        : ("Stage " + stage);
-      return '<div class="ts-row ts-row-multi">'
-        + '<span class="ts-row-label">'
-        +   '<span class="ticker">' + escapeHtml(r.ticker || "") + '</span> '
-        +   '<span class="ts-side ts-side-' + (r.side === "SHORT" ? "short" : "long") + '">'
-        +     escapeHtml(r.side || "\u2014") + '</span>'
-        + '</span>'
-        + '<span class="ts-row-value">'
-        +   '<span class="ts-row-pair" title="Alarm A1 \u2014 hard P&L stop at -$500">'
-        +     _tsCheck(a1Trip === null ? null : !a1Trip)
-        +     ' A1 ' + escapeHtml(_tsMoney(a1)) + ' / ' + escapeHtml(_tsMoney(a1Th)) + '</span>'
-        +   '<span class="ts-row-pair" title="Alarm A2 \u2014 velocity stop">'
-        +     _tsCheck(a2Trip === null ? null : !a2Trip)
-        +     ' A2 ' + escapeHtml(_tsNum(a2, 4)) + '/s</span>'
-        +   '<span class="ts-row-pair" title="Alarm B \u2014 QQQ 5m close vs 9-EMA">'
-        +     _tsCheck(bTrip === null ? null : !bTrip)
-        +     ' B \u0394=' + escapeHtml(_tsNum(bDelta)) + '</span>'
-        +   '<span class="ts-titan-stage" title="Titan Grip stage \u2014 0 = pre-arm, 1+ = trail engaged and ratcheting">' + escapeHtml(stageLbl) + '</span>'
-        +   '<span class="ts-row-pair mono" title="Titan Grip anchor price \u2014 reference price the trail is measured from">anchor=' + escapeHtml(_tsNum(anchor)) + '</span>'
-        +   '<span class="ts-row-pair mono" title="Next ratchet target \u2014 price that would advance the trail one step">next=' + escapeHtml(_tsNum(next)) + '</span>'
-        +   '<span class="ts-row-pair mono" title="Number of times the trail has ratcheted up (long) or down (short) so far">ratchet=' + (ratchet === null ? "\u2014" : ratchet) + '</span>'
-        + '</span>'
-        + '</div>';
-    }).join("");
-    body.innerHTML = html;
-  }
-  function renderTigerSovereign(s) {
+
+  // ─── Weather Check banner (Phase 1 verdict) ──────────────────────
+  // Reads tiger_sovereign.phase1.{long,short}.{permit,qqq_5m_close,
+  // qqq_5m_ema9,qqq_avwap_0930,qqq_last}. Sets one of the four
+  // .pmtx-weather-{green,red,amber,pending} state classes.
+  function renderWeatherCheck(s) {
+    const root = $("pmtx-weather");
+    const icon = $("pmtx-weather-icon");
+    const verdict = $("pmtx-weather-verdict");
+    const detail = $("pmtx-weather-detail");
+    const stats = $("pmtx-weather-stats");
+    if (!root || !icon || !verdict || !detail) return;
     const ts = (s && s.tiger_sovereign) || null;
-    const chip = $("ts-overall-chip");
-    if (!ts) {
-      if (chip) chip.textContent = "\u2014";
+    const p1 = (ts && ts.phase1) || {};
+    const longBlk = p1.long || {};
+    const shortBlk = p1.short || {};
+    const longPermit = !!longBlk.permit;
+    const shortPermit = !!shortBlk.permit;
+    const haveData = (typeof longBlk.qqq_5m_close === "number")
+                  || (typeof shortBlk.qqq_5m_close === "number");
+
+    root.classList.remove(
+      "pmtx-weather-pending", "pmtx-weather-green",
+      "pmtx-weather-red",     "pmtx-weather-amber"
+    );
+
+    if (!ts || !haveData) {
+      root.classList.add("pmtx-weather-pending");
+      icon.textContent = "\u00B7";
+      verdict.textContent = "Waiting for permit state\u2026";
+      detail.textContent = "QQQ 5m close vs 9-EMA \u00B7 QQQ vs AVWAP_0930";
+      if (stats) stats.innerHTML = "";
       return;
     }
+
+    let cls = "pmtx-weather-red";
+    let icoTxt = "\u2715";
+    let verdictTxt = "NO permit \u00B7 stand down";
+    let detailTxt = "QQQ has not cleared either Phase 1 gate \u2014 entries blocked on both sides.";
+    if (longPermit && shortPermit) {
+      cls = "pmtx-weather-amber";
+      icoTxt = "!";
+      verdictTxt = "BOTH-side permit \u00B7 chop risk";
+      detailTxt = "QQQ has crossed both sides recently \u2014 prefer the higher-conviction setup.";
+    } else if (longPermit) {
+      cls = "pmtx-weather-green";
+      icoTxt = "\u2713";
+      verdictTxt = "PERMIT \u00B7 LONG side open";
+      detailTxt = "QQQ 5m close > 9-EMA and last > AVWAP_0930 \u2014 long entries enabled.";
+    } else if (shortPermit) {
+      cls = "pmtx-weather-green";
+      icoTxt = "\u2713";
+      verdictTxt = "PERMIT \u00B7 SHORT side open";
+      detailTxt = "QQQ 5m close < 9-EMA and last < AVWAP_0930 \u2014 short entries enabled.";
+    }
+    root.classList.add(cls);
+    icon.textContent = icoTxt;
+    verdict.textContent = verdictTxt;
+    detail.textContent = detailTxt;
+
+    // Numeric stats column — prefer the side that has data.
+    const ref = (typeof longBlk.qqq_last === "number") ? longBlk : shortBlk;
+    const qqqLast = (typeof ref.qqq_last === "number") ? ref.qqq_last : null;
+    const ema9    = (typeof ref.qqq_5m_ema9 === "number") ? ref.qqq_5m_ema9 : null;
+    const avwap   = (typeof ref.qqq_avwap_0930 === "number") ? ref.qqq_avwap_0930 : null;
+    if (stats) {
+      stats.innerHTML = ''
+        + '<div class="pmtx-weather-stat" title="QQQ last trade price"><span class="pmtx-weather-stat-num">' + escapeHtml(_pmtxNum(qqqLast)) + '</span><span>QQQ last</span></div>'
+        + '<div class="pmtx-weather-stat" title="QQQ 5-minute 9-EMA \u2014 long permit needs close > EMA9"><span class="pmtx-weather-stat-num">' + escapeHtml(_pmtxNum(ema9)) + '</span><span>EMA9 (5m)</span></div>'
+        + '<div class="pmtx-weather-stat" title="QQQ Anchored VWAP from 09:30 ET \u2014 long permit needs last > AVWAP"><span class="pmtx-weather-stat-num">' + escapeHtml(_pmtxNum(avwap)) + '</span><span>AVWAP 09:30</span></div>';
+    }
+  }
+
+  // ─── Permit Matrix (per-Titan row table + mobile cards) ──────────
+  function renderPermitMatrix(s) {
+    const body = $("pmtx-body");
+    const countEl = $("pmtx-count");
+    const chip = $("pmtx-overall-chip");
+    if (!body) return;
+
+    const ts = (s && s.tiger_sovereign) || null;
+    const tickers = (s && Array.isArray(s.tickers)) ? s.tickers.slice() : [];
+    if (!ts || tickers.length === 0) {
+      if (countEl) countEl.textContent = "\u00B7 \u2014";
+      if (chip) chip.textContent = "\u2014";
+      body.innerHTML = '<div class="empty">Waiting for matrix data\u2026</div>';
+      return;
+    }
+    if (countEl) countEl.textContent = "\u00B7 " + tickers.length;
+
     const p1 = ts.phase1 || {};
-    const longPermit = _tsRenderPhase1Side("ts-phase1-long-body", "LONG", p1.long || {});
-    const shortPermit = _tsRenderPhase1Side("ts-phase1-short-body", "SHORT", p1.short || {});
-    _tsRenderPhase2(ts.phase2 || []);
-    _tsRenderPhase3(ts.phase3 || []);
-    _tsRenderPhase4(ts.phase4 || []);
+    const longPermit  = !!(p1.long  && p1.long.permit);
+    const shortPermit = !!(p1.short && p1.short.permit);
     if (chip) {
       let label = "NO permit";
-      if (longPermit && shortPermit) label = "BOTH-side permit";
-      else if (longPermit) label = "LONG-only permit";
-      else if (shortPermit) label = "SHORT-only permit";
+      if (longPermit && shortPermit) label = "BOTH-side";
+      else if (longPermit) label = "LONG";
+      else if (shortPermit) label = "SHORT";
       chip.textContent = label;
     }
+
+    const idx = _pmtxIndex(ts);
+    const positions = (s && Array.isArray(s.positions)) ? s.positions : [];
+    const positionsByTicker = {};
+    positions.forEach((p) => { if (p && p.ticker) positionsByTicker[p.ticker] = p; });
+    const trades = (s && Array.isArray(s.trades_today)) ? s.trades_today : [];
+    const tradesByTicker = {};
+    trades.forEach((t) => {
+      if (!t || !t.ticker) return;
+      if (!tradesByTicker[t.ticker]) tradesByTicker[t.ticker] = [];
+      tradesByTicker[t.ticker].push(t);
+    });
+
+    const rowsHtml = [];
+    const cardsHtml = [];
+    tickers.forEach((tkr) => {
+      const built = _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, longPermit, shortPermit);
+      rowsHtml.push(built.tableRows);
+      cardsHtml.push(built.card);
+    });
+
+    body.innerHTML = ''
+      + '<div class="pmtx-table-wrap">'
+      +   '<table class="pmtx-table"><thead><tr>'
+      +     '<th class="pmtx-col-titan">Titan</th>'
+      +     '<th title="5-minute Opening Range break (2 consecutive 1m closes above OR_high or below OR_low)">5m ORB</th>'
+      +     '<th title="5-minute ADX above 20 \u2014 trend strength gate (derived from Phase 3 entry state)">ADX&gt;20</th>'
+      +     '<th title="DI+ on 5-minute bars above 25 at Entry 1 trigger">DI+ 5m&gt;25</th>'
+      +     '<th title="DI+ on 1-minute bars above 25 (not surfaced by /api/state yet \u2014 follow-up)">DI+ 1m&gt;25</th>'
+      +     '<th title="Volume Bucket gate \u2014 Phase 2 PASS/FAIL/COLD/OFF">Vol confirm</th>'
+      +     '<th title="Strike Cap \u2014 max 3 entries per ticker per session (STRIKE-CAP-3)">Strike cap</th>'
+      +     '<th class="pmtx-col-state" title="Per-ticker FSM state">State</th>'
+      +     '<th class="pmtx-col-state" title="Last fill today (action @ price)">Last trade</th>'
+      +   '</tr></thead><tbody>' + rowsHtml.join("") + '</tbody></table>'
+      + '</div>'
+      + '<div class="pmtx-cards">' + cardsHtml.join("") + '</div>';
   }
 
-  // v5.13.2 \u2014 feature-flag pill renderer. ON = grey neutral
-  // (spec-strict baseline). OFF = accent (operator override active).
-  function renderFeatureFlags(state) {
-    const ff = (state && state.feature_flags) || {};
-    function setFlag(id, label, on) {
-      const el = $(id);
-      if (!el) return;
-      el.classList.remove("ts-flag-on", "ts-flag-off");
-      el.classList.add(on ? "ts-flag-on" : "ts-flag-off");
-      el.textContent = label + ": " + (on ? "ON" : "OFF");
+  function _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, longPermit, shortPermit) {
+    const p2 = idx.p2[tkr] || null;
+    // Pick the side that has a permit; if both, prefer LONG.
+    const preferSide = longPermit ? "LONG" : (shortPermit ? "SHORT" : "LONG");
+    const p3 = idx.p3[tkr + ":" + preferSide] || idx.p3[tkr] || null;
+    const p4 = idx.p4[tkr + ":" + preferSide] || idx.p4[tkr] || null;
+    const pos = positionsByTicker[tkr] || null;
+    const fills = tradesByTicker[tkr] || [];
+
+    // 5m ORB — Phase 2 boundary hold (2 consec above OR_high or below OR_low).
+    let orb = null;
+    if (p2) {
+      orb = !!(p2.two_consec_above || p2.two_consec_below);
     }
-    setFlag("ts-flag-vol", "Volume Gate", !!ff.volume_gate_enabled);
+    // ADX>20 — not directly exposed; treat as PASS once Phase 3 fires
+    // Entry 1 (DI+ > 25 on 5m empirically requires ADX>20). Else pending.
+    const adx = (p3 && p3.entry1_fired) ? true : null;
+    let di5 = null;
+    if (p3 && typeof p3.entry1_di === "number") {
+      di5 = (p3.entry1_di > 25);
+    }
+    // DI+ 1m > 25 — not surfaced by /api/state in v5.16; pending placeholder.
+    const di1 = null;
+    // Vol confirm — Phase 2 vol_gate_status.
+    let vol = null;
+    let volLabel = "";
+    if (p2 && p2.vol_gate_status) {
+      const vs = String(p2.vol_gate_status).toUpperCase();
+      volLabel = "Volume gate: " + vs;
+      if (vs === "PASS") vol = true;
+      else if (vs === "FAIL") vol = false;
+      else if (vs === "COLD") vol = "warn";
+      else if (vs === "OFF") vol = null; // gate disabled — pending dash
+    }
+
+    // Strike Cap (count of opens today, max 3).
+    let strikesUsed = 0;
+    fills.forEach((f) => {
+      const a = String((f && (f.action || f.act)) || "").toUpperCase();
+      if (a.indexOf("BUY") === 0 || a.indexOf("SELL_SHORT") === 0 || a === "OPEN" || a.indexOf("OPEN_") === 0) {
+        strikesUsed += 1;
+      }
+    });
+    if (strikesUsed > 3) strikesUsed = 3;
+    const strikeDots = [];
+    for (let i = 0; i < 3; i++) {
+      const used = i < strikesUsed;
+      const lockClass = (strikesUsed === 3 && !pos) ? "pmtx-strike-locked" : "pmtx-strike-used";
+      strikeDots.push('<span class="pmtx-strike-dot' + (used ? (" " + lockClass) : "") + '"></span>');
+    }
+    const strikeHtml = '<span class="pmtx-strike-cap" title="' + strikesUsed + ' of 3 entries used today">' + strikeDots.join("") + '</span>';
+
+    // State pill.
+    let stateCls = "pmtx-state-idle";
+    let stateTxt = "IDLE";
+    if (pos) {
+      stateCls = "pmtx-state-inpos";
+      stateTxt = "IN POS";
+    } else if (strikesUsed >= 3) {
+      stateCls = "pmtx-state-locked";
+      stateTxt = "LOCKED";
+    } else if (orb === true && (longPermit || shortPermit)) {
+      stateCls = "pmtx-state-armed";
+      stateTxt = "ARMED";
+    }
+    const stateHtml = '<span class="pmtx-state-pill ' + stateCls + '">' + escapeHtml(stateTxt) + '</span>';
+
+    // Last trade.
+    const lastFill = fills.length ? fills[fills.length - 1] : null;
+    let lastHtml = '<span class="pmtx-last">\u2014</span>';
+    if (lastFill) {
+      const px = (typeof lastFill.price === "number") ? fmtPx(lastFill.price) : "\u2014";
+      const act = String(lastFill.action || lastFill.act || "").toUpperCase();
+      let pnlCls = "";
+      if (typeof lastFill.realized_pnl === "number" && lastFill.realized_pnl !== 0) {
+        pnlCls = lastFill.realized_pnl > 0 ? " pmtx-pnl-up" : " pmtx-pnl-down";
+      }
+      lastHtml = '<span class="pmtx-last' + pnlCls + '" title="Most recent fill today">' + escapeHtml(act) + ' @ ' + escapeHtml(px) + '</span>';
+    }
+
+    // Titan name + meta.
+    let titanMeta;
+    if (pos) {
+      titanMeta = (pos.side || "") + " " + (typeof pos.shares === "number" ? pos.shares + "sh" : "");
+    } else if (preferSide === "SHORT" && shortPermit) {
+      titanMeta = "short side";
+    } else if (longPermit) {
+      titanMeta = "long side";
+    } else {
+      titanMeta = "awaiting permit";
+    }
+    const titanHtml = ''
+      + '<div class="pmtx-titan">'
+      +   '<span class="pmtx-titan-name">' + escapeHtml(tkr) + '</span>'
+      +   '<span class="pmtx-titan-meta">' + escapeHtml(titanMeta) + '</span>'
+      + '</div>';
+
+    // Desktop table row(s) — the sentinel strip is inlined as a second
+    // <tr> immediately under positions only.
+    const sentinelStripHtml = pos ? _pmtxSentinelStrip(p4) : "";
+    const mainTr = '<tr' + (sentinelStripHtml ? ' class="pmtx-row-attached"' : '') + '>'
+      + '<td class="pmtx-col-titan">' + titanHtml + '</td>'
+      + '<td>' + _pmtxGateCell(orb, "5-minute Opening Range break") + '</td>'
+      + '<td>' + _pmtxGateCell(adx, "ADX above 20 (trend strength)") + '</td>'
+      + '<td>' + _pmtxGateCell(di5, "DI+ on 5m bars above 25" + (p3 && typeof p3.entry1_di === "number" ? " \u2014 last reading: " + _pmtxNum(p3.entry1_di, 1) : "")) + '</td>'
+      + '<td>' + _pmtxGateCell(di1, "DI+ on 1m bars above 25 \u2014 not yet surfaced by /api/state") + '</td>'
+      + '<td>' + _pmtxGateCell(vol, volLabel || "Volume Bucket gate") + '</td>'
+      + '<td>' + strikeHtml + '</td>'
+      + '<td class="pmtx-col-state">' + stateHtml + '</td>'
+      + '<td class="pmtx-col-state">' + lastHtml + '</td>'
+      + '</tr>';
+    let tableRows = mainTr;
+    if (sentinelStripHtml) {
+      tableRows += '<tr class="pmtx-sentinel-row"><td colspan="9">' + sentinelStripHtml + '</td></tr>';
+    }
+
+    // Mobile card.
+    const cardGates = ''
+      + '<div class="pmtx-card-gates">'
+      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(orb) + '<span class="pmtx-card-gate-label">5m ORB</span></div>'
+      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(adx) + '<span class="pmtx-card-gate-label">ADX&gt;20</span></div>'
+      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(di5) + '<span class="pmtx-card-gate-label">DI+ 5m</span></div>'
+      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(di1) + '<span class="pmtx-card-gate-label">DI+ 1m</span></div>'
+      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(vol) + '<span class="pmtx-card-gate-label">Vol</span></div>'
+      + '</div>';
+    const cardSentinel = sentinelStripHtml
+      ? '<div class="pmtx-card-sentinel">' + sentinelStripHtml + '</div>'
+      : "";
+    const card = ''
+      + '<div class="pmtx-card">'
+      +   '<div class="pmtx-card-head">'
+      +     '<div class="pmtx-card-title">' + titanHtml + '</div>'
+      +     stateHtml
+      +   '</div>'
+      +   cardGates
+      +   cardSentinel
+      +   '<div class="pmtx-card-foot">'
+      +     strikeHtml
+      +     lastHtml
+      +   '</div>'
+      + '</div>';
+
+    return { tableRows: tableRows, card: card };
   }
 
-  function renderGates(s) {
-    const g = s.gates || {};
-    const gates = $("gates-body");
-    const rows = [];
-    rows.push(gateRow("Trading halted", g.trading_halted ? "HALTED" : "Armed", !g.trading_halted, g.halt_reason || ""));
-    rows.push(gateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
-    rows.push(gateRow("OR collected", g.or_collected_date || "—", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
+  // Inline 5-cell sentinel strip rendered under any open-position row.
+  // A=Sovereign Brake, B=Velocity Fuse, C=Velocity Ratchet,
+  // D=ADX Collapse, E=Divergence Trap. Only A/B/C are surfaced by
+  // /api/state in v5.16 (sentinel.a1_pnl, sentinel.a2_velocity,
+  // titan_grip.stage). D + E render as pending until the backend
+  // exposes them — follow-up PR.
+  function _pmtxSentinelStrip(p4) {
+    const sen = (p4 && p4.sentinel) || {};
+    const tg  = (p4 && p4.titan_grip) || {};
+    const a1 = (typeof sen.a1_pnl === "number") ? sen.a1_pnl : null;
+    const a1Th = (typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500;
+    const aState = (a1 === null) ? "armed" : (a1 <= a1Th ? "trip" : "safe");
+    const a2 = (typeof sen.a2_velocity === "number") ? sen.a2_velocity : null;
+    const a2Th = (typeof sen.a2_threshold === "number") ? sen.a2_threshold : -0.01;
+    const bState = (a2 === null) ? "armed" : (a2 <= a2Th ? "trip" : "safe");
+    const stage = (typeof tg.stage === "number") ? tg.stage : null;
+    const cState = (stage === null) ? "armed" : (stage >= 1 ? "safe" : "armed");
+    const cVal = (stage === null) ? "\u2014" : ("stage " + stage);
+    const dState = "armed";
+    const eState = "armed";
 
-    // v5.13.4 \u2014 per-ticker chip set surfaces Tiger Sovereign Phase 2
-    // state: Permit (Phase 1 per-side QQQ permit), Vol (Volume Bucket
-    // gate), Boundary (Boundary Hold 2-close confirmation). Phase 3
-    // entry-fired status (E1/E2) is appended when present. Legacy
-    // Brk/PDC/Idx/DI chips are no longer rendered \u2014 the spec rules
-    // changed in v5.13.x and per-ticker PDC is exit-only behind a
-    // runtime flag.
-    const ts = (s && s.tiger_sovereign) || {};
-    const phase2List = Array.isArray(ts.phase2) ? ts.phase2 : [];
-    if (phase2List.length) {
-      const phase1 = ts.phase1 || {};
-      const longPermit = !!(phase1.long && phase1.long.permit);
-      const shortPermit = !!(phase1.short && phase1.short.permit);
-      const phase3List = Array.isArray(ts.phase3) ? ts.phase3 : [];
-      const phase3ByTicker = {};
-      for (const r of phase3List) {
-        if (!r || !r.ticker) continue;
-        if (!phase3ByTicker[r.ticker]) phase3ByTicker[r.ticker] = [];
-        phase3ByTicker[r.ticker].push(r);
-      }
-      const ff = (s && s.feature_flags) || {};
-      const volOff = !ff.volume_gate_enabled;
-      const notes = [];
-      if (volOff) notes.push("Volume Gate runtime override: OFF");
-      const sub = notes.length ? ` <span class="hint">\u2014 ${escapeHtml(notes.join(" \u00b7 "))}</span>` : "";
-      rows.push(`<div class="tgate-section-label" title="Per-ticker gate trip readout: Phase 1 permit (L/S/L+S/none), volume gate, and boundary-hold side">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
-      for (const r of phase2List) {
-        rows.push(tGateRow(r, longPermit, shortPermit, phase3ByTicker[r.ticker] || []));
-      }
+    function cell(letter, name, val, state) {
+      return '<div class="pmtx-sentinel-cell pmtx-sen-' + state + '">'
+        +   '<span class="pmtx-sen-letter">' + letter + '</span>'
+        +   '<span class="pmtx-sen-name">' + escapeHtml(name) + '</span>'
+        +   '<span class="pmtx-sen-val">' + escapeHtml(val) + '</span>'
+        + '</div>';
     }
-    gates.innerHTML = rows.join("");
 
-    // v3.4.21 — next-scan countdown visible in header tick.
+    return '<div class="pmtx-sentinel-strip" title="Per-position sentinel alarms (A\u2013E). Green = safe, amber = armed, red = tripped.">'
+      +   cell("A", "Sov. Brake",   _pmtxMoney(a1) + " / " + _pmtxMoney(a1Th), aState)
+      +   cell("B", "Velocity Fuse", _pmtxNum(a2, 4) + "/s", bState)
+      +   cell("C", "Vel. Ratchet", cVal, cState)
+      +   cell("D", "ADX Collapse", "\u2014", dState)
+      +   cell("E", "Div. Trap",    "\u2014", eState)
+      + '</div>';
+  }
+
+  // v5.17.0 — next-scan countdown shim. The legacy renderGates body
+  // (per-ticker gate panel) was retired with the move to the Permit
+  // Matrix; we keep this thin reader so the LIVE pill in the brand
+  // row still updates.
+  function renderNextScanCountdown(s) {
+    const g = (s && s.gates) || {};
     const nss = (typeof g.next_scan_sec === "number") ? g.next_scan_sec : null;
     window.__nextScanSec = nss;
     updateNextScanLabel();
-  }
-
-  function tGateRow(r, longPermit, shortPermit, phase3Rows) {
-    if (!r || !r.ticker) return "";
-    const chips = [];
-    chips.push(permitChip(longPermit, shortPermit));
-    chips.push(volChip(r.vol_gate_status));
-    chips.push(boundaryChip(r.two_consec_above, r.two_consec_below));
-    const fired = entryFiredChips(phase3Rows || []);
-    if (fired) chips.push(fired);
-    return `<div class="tgate">
-      <span class="tgate-tkr">${escapeHtml(r.ticker)}</span>
-      <span class="tgate-chips">${chips.join("")}</span>
-    </div>`;
-  }
-
-  function permitChip(longPermit, shortPermit) {
-    const lCls = longPermit ? "on" : "off";
-    const sCls = shortPermit ? "on" : "off";
-    const lTxt = longPermit ? "L\u2713" : "L\u2717";
-    const sTxt = shortPermit ? "S\u2713" : "S\u2717";
-    const title = "Phase 1 \u2014 Section I QQQ permit (per side)";
-    return `<span class="tgate-chip ${lCls}" title="${escapeHtml(title)}">${escapeHtml(lTxt)}</span>` +
-           `<span class="tgate-chip ${sCls}" title="${escapeHtml(title)}">${escapeHtml(sTxt)}</span>`;
-  }
-
-  function volChip(status) {
-    const s = (status || "").toString().toUpperCase();
-    let cls = "na";
-    if (s === "PASS") cls = "on";
-    else if (s === "FAIL") cls = "off";
-    else if (s === "COLD") cls = "warm";
-    else if (s === "OFF") cls = "na";
-    const lbl = s ? `Vol ${s}` : "Vol \u2014";
-    const title = s === "OFF"
-      ? "Volume Bucket gate \u2014 VOLUME_GATE_ENABLED override is OFF"
-      : "Volume Bucket gate";
-    return `<span class="tgate-chip ${cls}" title="${escapeHtml(title)}">${escapeHtml(lbl)}</span>`;
-  }
-
-  function boundaryChip(twoAbove, twoBelow) {
-    const title = "Boundary Hold (2 consecutive closes)";
-    if (twoAbove) {
-      return `<span class="tgate-chip on" title="${escapeHtml(title)}">\u2191\u2191</span>`;
-    }
-    if (twoBelow) {
-      return `<span class="tgate-chip on" title="${escapeHtml(title)}">\u2193\u2193</span>`;
-    }
-    return `<span class="tgate-chip na" title="${escapeHtml(title)}">\u2026</span>`;
-  }
-
-  function entryFiredChips(phase3Rows) {
-    let e1 = false, e2 = false;
-    for (const r of phase3Rows) {
-      if (r.entry1_fired) e1 = true;
-      if (r.entry2_fired) e2 = true;
-    }
-    if (!e1 && !e2) return "";
-    const out = [];
-    if (e1) out.push(`<span class="tgate-chip on" title="Entry 1 fired">E1\u2713</span>`);
-    if (e2) out.push(`<span class="tgate-chip on" title="Entry 2 fired">E2\u2713</span>`);
-    return out.join("");
   }
 
   function updateNextScanLabel() {
@@ -921,16 +910,6 @@
       el.setAttribute("aria-label", "next scan: not scheduled");
       el.setAttribute("title", "next scan: not scheduled (market closed or scanner idle)");
     }
-  }
-
-  function gateRow(name, value, ok, hint) {
-    const chipCls = ok ? "chip-ok" : "chip-down";
-    const chipTxt = ok ? "Pass" : "Check";
-    return `<div class="gate">
-      <span class="gate-name">${escapeHtml(name)}${hint ? ` <span class="hint">${escapeHtml(hint)}</span>` : ""}</span>
-      <span class="mono">${escapeHtml(value)}</span>
-      <span class="chip ${chipCls}">${chipTxt}</span>
-    </div>`;
   }
 
   function renderHeader(s) {
@@ -987,10 +966,14 @@
     renderProximity(s);
     renderTrades(s, sl);
     renderLastSignal(s);
-    renderObserver(s);
-    renderGates(s);
-    try { renderTigerSovereign(s); } catch (e) { /* never break Main */ }
-    try { renderFeatureFlags(s); } catch (e) { /* never break Main */ }
+    // v5.17.0 — Main tab render order. The legacy Tiger Sovereign,
+    // Observer, Gates · entry checks, and Volume Gate flag panels were
+    // all retired; their content is now folded into the Weather Check
+    // banner + Permit Matrix below. The next-scan countdown is the
+    // only piece of the old gates renderer that survived.
+    renderNextScanCountdown(s);
+    try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
+    try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
     // v4.11.0 — health pill bound to Main when active.
     try { applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] }); } catch (e) {}
   }
@@ -1144,15 +1127,7 @@
   // All vanilla JS. Independent from the main-tab IIFE above so nothing
   // the main tab does can interfere.
   //
-  // v4.10.2 — the GATE tri-state helper lives in the *first* IIFE.
-  // Alias the window-bridged copy to a local name so the rest of this
-  // IIFE can call it without changing every call site. If the bridge
-  // is missing for any reason, fall back to a no-op so a missing
-  // helper can never throw and surface as "Fetch failed: …" again.
-  const applyGateTriState = (typeof window !== "undefined" && typeof window.__tgApplyGateTriState === "function")
-    ? window.__tgApplyGateTriState
-    : function () { /* no-op fallback */ };
-  // v4.11.0 — health-pill helper bridge, same pattern as the gate one.
+  // v4.11.0 — health-pill helper bridge.
   const applyHealthPill = (typeof window !== "undefined" && typeof window.__tgApplyHealthPill === "function")
     ? window.__tgApplyHealthPill
     : function () { /* no-op fallback */ };
@@ -1392,12 +1367,10 @@
 
     <div class="banner hide" data-f="banner"></div>
 
-    <section class="kpi-row">
+    <section class="kpi-row kpi-row-4">
       <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" data-f="k-equity">\u2014</span><span class="kpi-sub" data-f="k-equity-sub">\u2014</span></div>
       <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" data-f="k-pnl">\u2014</span><span class="kpi-sub" data-f="k-pnl-sub">\u2014</span></div>
       <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" data-f="k-open">\u2014</span><span class="kpi-sub" data-f="k-open-sub">\u2014</span></div>
-      <div class="kpi"><span class="kpi-label">Gate</span><span class="kpi-value" data-f="k-gate" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-gate-sub">\u2014</span></div>
-      <div class="kpi"><span class="kpi-label">Regime</span><span class="kpi-value" data-f="k-regime" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-regime-sub">\u2014</span></div>
       <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-session-sub">\u2014</span></div>
     </section>
 
@@ -1457,24 +1430,6 @@
         <div class="card-head"><span class="card-title">Today's trades<span class="count" data-f="trades-count">\u00b7 \u2014</span></span><span class="chip" data-f="trades-realized">\u2014</span></div>
         <div class="card-body flush" data-f="trades-body">
           <div class="empty">No trades today.</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="grid grid-2">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">Sovereign Regime Shield</span>
-          <span class="chip" data-f="srs-status">\u2014</span>
-        </div>
-        <div class="card-body" data-f="srs-body">
-          <div class="empty">Loading\u2026</div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><span class="card-title">Gates \u00b7 entry checks</span></div>
-        <div data-f="gates-body">
-          <div class="empty">Loading\u2026</div>
         </div>
       </div>
     </section>
@@ -1570,12 +1525,13 @@
     return (v >= 0 ? "+" : "\u2212") + abs.toFixed(digits) + "%";
   }
 
-  // --- Market-state widgets (proximity, SRS, gates) ------------------
+  // --- Market-state widgets (proximity) ------------------------------
   // These are scanner-level signals that are the same for every
   // executor by design, so we render them from the Main /api/state
   // payload (republished on window.__tgLastState) rather than from the
-  // per-executor snapshot. Logic mirrors Main's renderProximity /
-  // renderSovereign / renderGates.
+  // per-executor snapshot. v5.17.0 \u2014 only Proximity remains here;
+  // Sovereign Regime Shield + Gates\u00b7entry-checks panels were dropped
+  // (Permit Matrix on Main is the canonical market-wide gate view).
 
   function fmtPxExec(v) {
     if (v === null || v === undefined || isNaN(v)) return "\u2014";
@@ -1624,152 +1580,6 @@
     return `<span class="tgate-chip na" title="No Phase 1 permit \u2014 breakout would not fire">no permit</span>`;
   }
 
-  function renderExecSovereign(panel, s) {
-    const body = execField(panel, "srs-body");
-    const chip = execField(panel, "srs-status");
-    if (!body || !chip) return;
-    const srs = (s && s.regime && s.regime.sovereign) || null;
-    if (!srs) {
-      body.innerHTML = '<div class="empty">Regime data unavailable.</div>';
-      chip.textContent = "\u2014";
-      chip.className = "chip";
-      return;
-    }
-    const status = srs.status || "NO_PDC";
-    let chipCls = "chip chip-srs-dis";
-    let chipTxt = "Disarmed";
-    if (status === "ARMED_LONG")       { chipCls = "chip chip-srs-armed"; chipTxt = "Long-eject armed"; }
-    else if (status === "ARMED_SHORT") { chipCls = "chip chip-srs-armed"; chipTxt = "Short-eject armed"; }
-    else if (status === "AWAITING")    { chipCls = "chip chip-srs-wait";  chipTxt = "Awaiting 1m close"; }
-    else if (status === "NO_PDC")      { chipCls = "chip chip-srs-wait";  chipTxt = "No PDC yet"; }
-    chip.textContent = chipTxt;
-    chip.className = chipCls;
-
-    const idxRow = (sym, price, pdc, delta) => {
-      const priceTxt = (typeof price === "number") ? price.toFixed(2) : "\u2014";
-      const pdcTxt = (typeof pdc === "number") ? `PDC ${pdc.toFixed(2)}` : "PDC \u2014";
-      let deltaCls = "srs-delta na";
-      let deltaTxt = "\u2014";
-      if (typeof delta === "number") {
-        deltaCls = "srs-delta " + (delta >= 0 ? "up" : "down");
-        const sign = delta >= 0 ? "+" : "";
-        deltaTxt = `${sign}${delta.toFixed(2)}%`;
-      }
-      return `<div class="srs-idx">
-        <span class="srs-sym">${esc(sym)}</span>
-        <span class="srs-price">${esc(priceTxt)}</span>
-        <span class="srs-pdc">${esc(pdcTxt)}</span>
-        <span class="${deltaCls}">${esc(deltaTxt)}</span>
-      </div>`;
-    };
-    // v5.9.1: PDC eject rule retired \u2014 eject tiles removed.
-    body.innerHTML = `<div class="srs">
-      ${idxRow("SPY", srs.spy_price, srs.spy_pdc, srs.spy_delta_pct)}
-      ${idxRow("QQQ", srs.qqq_price, srs.qqq_pdc, srs.qqq_delta_pct)}
-      <div class="srs-reason">${esc(srs.reason || "")}</div>
-    </div>`;
-  }
-
-  function execPermitChip(longPermit, shortPermit) {
-    const lCls = longPermit ? "on" : "off";
-    const sCls = shortPermit ? "on" : "off";
-    const lTxt = longPermit ? "L\u2713" : "L\u2717";
-    const sTxt = shortPermit ? "S\u2713" : "S\u2717";
-    const title = "Phase 1 \u2014 Section I QQQ permit (per side)";
-    return `<span class="tgate-chip ${lCls}" title="${esc(title)}">${esc(lTxt)}</span>` +
-           `<span class="tgate-chip ${sCls}" title="${esc(title)}">${esc(sTxt)}</span>`;
-  }
-  function execVolChip(status) {
-    const s = (status || "").toString().toUpperCase();
-    let cls = "na";
-    if (s === "PASS") cls = "on";
-    else if (s === "FAIL") cls = "off";
-    else if (s === "COLD") cls = "warm";
-    else if (s === "OFF") cls = "na";
-    const lbl = s ? `Vol ${s}` : "Vol \u2014";
-    const title = s === "OFF"
-      ? "Volume Bucket gate \u2014 VOLUME_GATE_ENABLED override is OFF"
-      : "Volume Bucket gate";
-    return `<span class="tgate-chip ${cls}" title="${esc(title)}">${esc(lbl)}</span>`;
-  }
-  function execBoundaryChip(twoAbove, twoBelow) {
-    const title = "Boundary Hold (2 consecutive closes)";
-    if (twoAbove) {
-      return `<span class="tgate-chip on" title="${esc(title)}">\u2191\u2191</span>`;
-    }
-    if (twoBelow) {
-      return `<span class="tgate-chip on" title="${esc(title)}">\u2193\u2193</span>`;
-    }
-    return `<span class="tgate-chip na" title="${esc(title)}">\u2026</span>`;
-  }
-  function execEntryFiredChips(phase3Rows) {
-    let e1 = false, e2 = false;
-    for (const r of phase3Rows) {
-      if (r.entry1_fired) e1 = true;
-      if (r.entry2_fired) e2 = true;
-    }
-    if (!e1 && !e2) return "";
-    const out = [];
-    if (e1) out.push(`<span class="tgate-chip on" title="Entry 1 fired">E1\u2713</span>`);
-    if (e2) out.push(`<span class="tgate-chip on" title="Entry 2 fired">E2\u2713</span>`);
-    return out.join("");
-  }
-  function execTGateRow(r, longPermit, shortPermit, phase3Rows) {
-    if (!r || !r.ticker) return "";
-    const chips = [];
-    chips.push(execPermitChip(longPermit, shortPermit));
-    chips.push(execVolChip(r.vol_gate_status));
-    chips.push(execBoundaryChip(r.two_consec_above, r.two_consec_below));
-    const fired = execEntryFiredChips(phase3Rows || []);
-    if (fired) chips.push(fired);
-    return `<div class="tgate">
-      <span class="tgate-tkr">${esc(r.ticker)}</span>
-      <span class="tgate-chips">${chips.join("")}</span>
-    </div>`;
-  }
-  function execGateRow(name, value, ok, hint) {
-    const chipCls = ok ? "chip-ok" : "chip-down";
-    const chipTxt = ok ? "Pass" : "Check";
-    return `<div class="gate">
-      <span class="gate-name">${esc(name)}${hint ? ` <span class="hint">${esc(hint)}</span>` : ""}</span>
-      <span class="mono">${esc(value)}</span>
-      <span class="chip ${chipCls}">${chipTxt}</span>
-    </div>`;
-  }
-  function renderExecGates(panel, s) {
-    const gates = execField(panel, "gates-body");
-    if (!gates) return;
-    const g = (s && s.gates) || {};
-    const rows = [];
-    rows.push(execGateRow("Trading halted", g.trading_halted ? "HALTED" : "Armed", !g.trading_halted, g.halt_reason || ""));
-    rows.push(execGateRow("Scan loop", g.scan_paused ? "Paused" : "Running", !g.scan_paused, ""));
-    rows.push(execGateRow("OR collected", g.or_collected_date || "\u2014", !!g.or_collected_date, g.or_collected_date ? "" : "pending"));
-    // v5.13.4 \u2014 same Phase 2 chip set rendered on the Main view.
-    const ts = (s && s.tiger_sovereign) || {};
-    const phase2List = Array.isArray(ts.phase2) ? ts.phase2 : [];
-    if (phase2List.length) {
-      const phase1 = ts.phase1 || {};
-      const longPermit = !!(phase1.long && phase1.long.permit);
-      const shortPermit = !!(phase1.short && phase1.short.permit);
-      const phase3List = Array.isArray(ts.phase3) ? ts.phase3 : [];
-      const phase3ByTicker = {};
-      for (const r of phase3List) {
-        if (!r || !r.ticker) continue;
-        if (!phase3ByTicker[r.ticker]) phase3ByTicker[r.ticker] = [];
-        phase3ByTicker[r.ticker].push(r);
-      }
-      const ff = (s && s.feature_flags) || {};
-      const volOff = !ff.volume_gate_enabled;
-      const notes = [];
-      if (volOff) notes.push("Volume Gate runtime override: OFF");
-      const sub = notes.length ? ` <span class="hint">\u2014 ${esc(notes.join(" \u00b7 "))}</span>` : "";
-      rows.push(`<div class="tgate-section-label" title="Per-ticker gate trip readout: Phase 1 permit (L/S/L+S/none), volume gate, and boundary-hold side">Per-ticker \u00b7 Permit \u00b7 Vol \u00b7 Boundary${sub}</div>`);
-      for (const r of phase2List) {
-        rows.push(execTGateRow(r, longPermit, shortPermit, phase3ByTicker[r.ticker] || []));
-      }
-    }
-    gates.innerHTML = rows.join("");
-  }
 
   // --- Today's trades (per-executor) ---------------------------------
   // Uses executor snapshot's `todays_trades` list (Alpaca filled orders,
@@ -1858,8 +1668,6 @@
     const s = window.__tgLastState;
     if (!s) return;
     renderExecProximity(panel, s);
-    renderExecSovereign(panel, s);
-    renderExecGates(panel, s);
   }
 
   function renderExecutor(name, data) {
@@ -1946,24 +1754,11 @@
       setField(panel, "k-open-sub", `${longs} long \u00b7 ${shorts} short`);
     }
 
-    // Gate / Regime / Session \u2014 shared market state. Pull from Main's
-    // last /api/state so every tab shows the same market-wide values.
+    // Session KPI \u2014 shared market state. Pull from Main's last
+    // /api/state so every tab shows the same value. v5.17.0 \u2014 Gate +
+    // Regime tiles dropped (those are market-wide and live only on Main).
     const ms = window.__tgLastState || {};
-    const gates = ms.gates || {};
     const reg = ms.regime || {};
-    const gateEl = execField(panel, "k-gate");
-    const gateSubEl = execField(panel, "k-gate-sub");
-    applyGateTriState(gateEl, gateSubEl, gates, reg);
-    const rEl = execField(panel, "k-regime");
-    if (rEl) {
-      const breadth = reg.breadth || "UNKNOWN";
-      rEl.textContent = breadth === "UNKNOWN" ? "\u2014" : breadth;
-      rEl.style.color = breadth === "BULLISH" ? "var(--up)"
-                      : breadth === "BEARISH" ? "var(--down)"
-                      : breadth === "NEUTRAL" ? "var(--text)"
-                      : "var(--text-muted)";
-    }
-    setField(panel, "k-regime-sub", `RSI ${reg.rsi_regime || "\u2014"}`);
     const sEl = execField(panel, "k-session");
     if (sEl) {
       const mode = reg.mode || "\u2014";
@@ -2058,27 +1853,13 @@
     renderExecTrades(panel, data, disabled);
   }
 
-  // Refresh the shared KPI cells (Gate / Regime / Session) on a given
-  // executor panel from Main's last /api/state so these values match
-  // across every tab. v4.0.4 \u2014 extracted from renderExecutor so the
-  // __tgOnState callback can refresh them without a full executor poll.
+  // Refresh the shared Session KPI cell on a given executor panel from
+  // Main's last /api/state so the value matches across every tab.
+  // v5.17.0 \u2014 Gate + Regime tiles dropped (those are market-wide
+  // and live only on Main now); only Session remains shared.
   function refreshExecSharedKpis(panel) {
     const ms = window.__tgLastState || {};
-    const gates = ms.gates || {};
     const reg = ms.regime || {};
-    const gateEl = execField(panel, "k-gate");
-    const gateSubEl = execField(panel, "k-gate-sub");
-    applyGateTriState(gateEl, gateSubEl, gates, reg);
-    const rEl = execField(panel, "k-regime");
-    if (rEl) {
-      const breadth = reg.breadth || "UNKNOWN";
-      rEl.textContent = breadth === "UNKNOWN" ? "\u2014" : breadth;
-      rEl.style.color = breadth === "BULLISH" ? "var(--up)"
-                      : breadth === "BEARISH" ? "var(--down)"
-                      : breadth === "NEUTRAL" ? "var(--text)"
-                      : "var(--text-muted)";
-    }
-    setField(panel, "k-regime-sub", `RSI ${reg.rsi_regime || "\u2014"}`);
     const sEl = execField(panel, "k-session");
     if (sEl) {
       const mode = reg.mode || "\u2014";
