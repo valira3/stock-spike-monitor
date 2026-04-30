@@ -864,19 +864,25 @@
   .pmtx-detail-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* v5.20.0 — Tiger Sovereign v15.0 spec definitions block. Lives inside
-   the expanded permit-matrix detail row, immediately below the stats
-   grid. Each <dt>/<dd> pair is one gate, formatted as a compact
-   two-column definition list at desktop widths and stacked at narrow
-   widths. */
-.pmtx-spec-defs {
+/* v5.20.3 — Pipeline component card grid. Lives inside the expanded
+   permit-matrix detail row, immediately below the stats grid. Each
+   card represents one pipeline component (Phase 1/2/3, an alarm, or
+   the strike counter) and surfaces:
+     - phase chip (P1 / P2 / P3 / AL / POS)
+     - component name
+     - one-line short description (no verbose spec text)
+     - live state: status badge (PASS / FAIL / COLD / PEND / OFF /
+       SAFE / TRIP / IN POS / LOCKED / IDLE / USED) + numeric value
+   The grid auto-flows 4 cards/row at desktop, 3 at tablet, 2 at
+   narrow, 1 at mobile. Replaces the v5.20.0 spec-definitions <dl>. */
+.pmtx-comp-grid {
   margin: 10px 0 6px;
   padding: 10px 12px;
   border: 1px dashed var(--border);
   border-radius: 6px;
   background: var(--surface-2);
 }
-.pmtx-spec-defs-head {
+.pmtx-comp-head-line {
   font-family: var(--sans);
   font-size: 10px;
   text-transform: uppercase;
@@ -884,39 +890,105 @@
   color: var(--text-dim);
   margin-bottom: 8px;
 }
-.pmtx-spec-defs-list {
+.pmtx-comp-cards {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) 1fr;
-  column-gap: 16px;
-  row-gap: 6px;
-  margin: 0;
-  padding: 0;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
 }
-.pmtx-spec-defs-list dt {
+.pmtx-comp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  min-height: 76px;
+}
+.pmtx-comp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pmtx-comp-chip {
+  display: inline-block;
   font-family: var(--sans);
-  font-size: 11.5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  line-height: 1.1;
+}
+.pmtx-comp-name {
+  font-family: var(--sans);
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  margin: 0;
 }
-.pmtx-spec-defs-list dd {
+.pmtx-comp-desc {
   font-family: var(--sans);
-  font-size: 11.5px;
-  color: var(--text-muted);
-  margin: 0;
-  line-height: 1.45;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.35;
 }
-.pmtx-spec-defs-list dd strong {
+.pmtx-comp-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+.pmtx-comp-badge {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  line-height: 1.1;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.pmtx-comp-val {
+  font-family: var(--mono);
+  font-size: 11px;
   color: var(--text);
-  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* State color tints. Card border + badge color reflect the verdict. */
+.pmtx-comp-pass    { border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-pass    .pmtx-comp-badge { background: color-mix(in srgb, #22c55e 22%, transparent); color: #22c55e; border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-fail    { border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-fail    .pmtx-comp-badge { background: color-mix(in srgb, #ef4444 22%, transparent); color: #ef4444; border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-warn    { border-color: color-mix(in srgb, #f59e0b 50%, var(--border)); }
+.pmtx-comp-warn    .pmtx-comp-badge { background: color-mix(in srgb, #f59e0b 22%, transparent); color: #f59e0b; border-color: color-mix(in srgb, #f59e0b 50%, var(--border)); }
+.pmtx-comp-pend    .pmtx-comp-badge { background: var(--surface-2); color: var(--text-dim); }
+.pmtx-comp-off     .pmtx-comp-badge { background: var(--surface-2); color: var(--text-dim); opacity: 0.65; }
+.pmtx-comp-off     { opacity: 0.7; }
+.pmtx-comp-safe    { border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-safe    .pmtx-comp-badge { background: color-mix(in srgb, #22c55e 22%, transparent); color: #22c55e; border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-trip    { border-color: color-mix(in srgb, #ef4444 60%, var(--border)); }
+.pmtx-comp-trip    .pmtx-comp-badge { background: color-mix(in srgb, #ef4444 28%, transparent); color: #ef4444; border-color: color-mix(in srgb, #ef4444 60%, var(--border)); }
+.pmtx-comp-inpos   { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+.pmtx-comp-inpos   .pmtx-comp-badge { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+.pmtx-comp-locked  { border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-locked  .pmtx-comp-badge { background: color-mix(in srgb, #ef4444 22%, transparent); color: #ef4444; border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-used    .pmtx-comp-badge { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #f59e0b; border-color: color-mix(in srgb, #f59e0b 40%, var(--border)); }
+.pmtx-comp-idle    .pmtx-comp-badge { background: var(--surface-2); color: var(--text-dim); }
+@media (max-width: 1024px) {
+  .pmtx-comp-cards { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 720px) {
-  .pmtx-spec-defs-list {
-    grid-template-columns: 1fr;
-    row-gap: 2px;
-  }
-  .pmtx-spec-defs-list dt { margin-top: 6px; }
-  .pmtx-spec-defs-list dt:first-child { margin-top: 0; }
+  .pmtx-comp-cards { grid-template-columns: repeat(2, 1fr); }
+  .pmtx-comp-card { min-height: 72px; padding: 7px 9px; }
+}
+@media (max-width: 480px) {
+  .pmtx-comp-cards { grid-template-columns: 1fr; }
 }
 
 /* Price · Distance cell — folds the retired Proximity card into a
