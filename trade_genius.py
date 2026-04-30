@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.19.3"
+BOT_VERSION = "5.19.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,12 +102,13 @@ BOT_VERSION = "5.19.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.19.3 \u2014 Permit Matrix rows\n"
-    "expand again on click (regress\n"
-    "fix), tab choice (Main/Val/\n"
-    "Gene/Lifecycle) persists across\n"
-    "redeploys, and dashboard login\n"
-    "now lasts 90 days instead of 7."
+    "v5.19.4 \u2014 Permit Matrix rows\n"
+    "now stay expanded across data\n"
+    "refreshes; clicking outside\n"
+    "collapses. Open positions\n"
+    "panel sits above Weather Check\n"
+    "now. Column tooltips cite the\n"
+    "Tiger Sovereign spec rule IDs."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

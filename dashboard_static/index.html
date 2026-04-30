@@ -80,28 +80,13 @@
       <div class="kpi" title="Current market session: pre-market, regular hours (RTH), or after-hours"><span class="kpi-label">Session</span><span class="kpi-value" id="k-session" style="font-size:20px">—</span><span class="kpi-sub" id="k-session-sub">—</span></div>
     </section>
 
-    <!-- v5.17.0 — Weather Check banner (Phase 1 Sovereign verdict).
-         Renders at the top of the trading body so the operator's first
-         glance answers: "can I take an entry right now, and on which
-         side?". Reads tiger_sovereign.phase1.{long,short}.{permit,...}
-         from /api/state. The pill class (.pmtx-weather-{green,red,amber})
-         is set by JS based on the long/short permit combination. -->
-    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
-      <div class="pmtx-weather pmtx-weather-pending" id="pmtx-weather">
-        <div class="pmtx-weather-icon" id="pmtx-weather-icon" aria-hidden="true">·</div>
-        <div class="pmtx-weather-body">
-          <div class="pmtx-weather-eyebrow">Weather check · Phase 1 Sovereign</div>
-          <div class="pmtx-weather-verdict" id="pmtx-weather-verdict">Waiting for permit state…</div>
-          <div class="pmtx-weather-detail" id="pmtx-weather-detail">QQQ 5m close vs 9-EMA · QQQ vs AVWAP_0930</div>
-        </div>
-        <div class="pmtx-weather-stats" id="pmtx-weather-stats" aria-hidden="true"></div>
-      </div>
-    </section>
-
     <!-- v5.18.0 — Open positions runs full-width. Proximity card was
          retired and folded into the Permit Matrix as a Price · Distance
          column (price + bar shows how close each Titan is to its OR
-         boundary, replacing the standalone proximity strip). -->
+         boundary, replacing the standalone proximity strip).
+         v5.19.4 — promoted ABOVE the Weather Check banner so the operator's
+         first glance answers "what am I holding right now?" before the
+         conditional "can I take a new entry?" verdict. -->
     <section class="grid">
       <div class="card">
         <div class="card-head"><span class="card-title" title="Currently open positions — one row per ticker with side, fill, mark, stop, and unrealized P&L">Open positions<span class="count" id="pos-count" title="Number of open positions">· 0</span></span></div>
@@ -157,6 +142,24 @@
         </div>
       </div>
 
+    </section>
+
+    <!-- v5.17.0 — Weather Check banner (Phase 1 Sovereign verdict).
+         Reads tiger_sovereign.phase1.{long,short}.{permit,...} from
+         /api/state. The pill class (.pmtx-weather-{green,red,amber}) is
+         set by JS based on the long/short permit combination.
+         v5.19.4 — demoted to sit BELOW Open positions per operator request,
+         so currently-held risk is the first thing on the page. -->
+    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
+      <div class="pmtx-weather pmtx-weather-pending" id="pmtx-weather">
+        <div class="pmtx-weather-icon" id="pmtx-weather-icon" aria-hidden="true">·</div>
+        <div class="pmtx-weather-body">
+          <div class="pmtx-weather-eyebrow">Weather check · Phase 1 Sovereign</div>
+          <div class="pmtx-weather-verdict" id="pmtx-weather-verdict">Waiting for permit state…</div>
+          <div class="pmtx-weather-detail" id="pmtx-weather-detail">QQQ 5m close vs 9-EMA · QQQ vs AVWAP_0930</div>
+        </div>
+        <div class="pmtx-weather-stats" id="pmtx-weather-stats" aria-hidden="true"></div>
+      </div>
     </section>
 
     <!-- v5.17.0 — PERMIT MATRIX. Replaces the legacy Tiger Sovereign

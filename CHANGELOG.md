@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.19.4 \u2014 2026-04-30 \u2014 Sticky expand, panel reorder, spec-cited matrix headers
+
+### Why
+
+Three follow-up issues from operator review of v5.19.3:
+
+1. **Permit Matrix rows expanded on click and then "immediately collapsed."** v5.19.3 widened the `hasDetail` gate so the detail row gets emitted, and the click handler does flip `pmtx-row-expanded` / `pmtx-detail-open`. The regression is upstream of the toggle: every `/api/state` SSE push (every 1\u20132s) calls `body.innerHTML = \u2026`, wiping the live class. The user perceives a click that flashes open and snaps shut. Sticky state must live OUTSIDE the rendered DOM so the next render can re-apply it.
+
+2. **Open positions sat below the Weather Check banner.** Operator request: currently-held risk should be the first thing visible on Main; the conditional "can I take a new entry?" verdict comes second.
+
+3. **Permit Matrix column headers and tooltips drifted from the Tiger Sovereign vAA-1 spec.** The `ADX>20` column was labeled like a primary spec gate even though the spec only uses ADX in Sentinel alarms (SENT-C, SENT-D); `5m ORB` glossed over the exact "two consecutive 1m closes strictly above/below" rule and the 09:35:59 ET freeze; tooltips never cited rule IDs (`L-P2-S4`, `L-P3-AUTH`, `STRIKE-CAP-3`, etc.) so the dashboard was orphaned from the spec.
+
+### What
+
+#### `dashboard_static/app.js` \u2014 Bug #1 (sticky expand + outside-click)
+
+- `body.__pmtxExpandedSet` (Set, lives across renders): the source of truth for "which ticker(s) are expanded".
+- `_pmtxApplyExpanded()` reads the Set and toggles `pmtx-row-expanded` on every `tr.pmtx-row` and `pmtx-detail-open` on every `tr.pmtx-detail-row`. Called at the end of `renderPermitMatrix(\u2026)` after the `innerHTML` write, so each /api/state push restores the operator's choice.
+- Click handler: clears the Set, then re-adds the clicked ticker iff it wasn't already expanded. **Single-open semantics:** clicking a different row replaces the prior expansion; re-clicking the same row collapses it.
+- Document-level click listener: when the click target is outside the matrix body, clears the Set and re-applies. The matrix's own click handler still wins for in-matrix clicks because it short-circuits via `body.contains(ev.target)`.
+
+#### `dashboard_static/index.html` \u2014 Bug #2 (panel reorder)
+
+- `<section class="grid">` containing the Open positions card is now BEFORE the `<section class="pmtx-weather-section">` Weather Check banner. Both sections kept their full inner markup; only the order swapped.
+- Comments updated on both sections to record the swap and why.
+
+#### `dashboard_static/app.js` \u2014 Bug #3 (spec-cited headers)
+
+- `5m ORB` \u2192 `ORB`, tooltip rewritten: "L-P2-S4 / S-P2-S4 \u2014 ORH/ORL Boundary. Two consecutive 1m candles must close strictly above the 5m ORH (long) or strictly below the 5m ORL (short). ORH/ORL frozen at 09:35:59 ET on the 5m bar that closes at 09:35."
+- `ADX>20` \u2192 `Trend`, tooltip rewritten: "Trend strength proxy (not a primary spec gate). Lights up once the Phase 3 master anchor fires (5m DI\u00b1 > 25), which empirically requires 5m ADX > 20." Honest about what the column actually measures.
+- `DI\u00b1 5m>25` \u2192 `5m DI\u00b1`, tooltip rewritten: "L-P3-AUTH / S-P3-AUTH \u2014 Phase 3 master anchor. 5m DI+ > 25 (long) or 5m DI\u2212 > 25 (short). If FALSE \u2192 no entry, regardless of 1m DI."
+- `Vol` tooltip rewritten: "L-P2-S3 / S-P2-S3 \u2014 Volume gate. Auto-passes before 10:00 ET. After 10:00 ET, requires 1m volume \u2265 1.00\u00d7 rolling 55-bar same-minute average."
+- `Strikes` tooltip rewritten: "STRIKE-CAP-3 \u2014 maximum 3 Strikes per ticker per session. STRIKE-FLAT-GATE: next strike requires position fully flat. Counters reset at 09:30:00 ET."
+- `State` tooltip rewritten: "Per-ticker FSM \u2014 IDLE \u00b7 ARMED (P1+P2 satisfied, awaiting P3) \u00b7 IN POS \u00b7 LOCKED (3-of-3 used)."
+- `Dist` tooltip references L-P2-S4 / S-P2-S4.
+
+### Tests
+
+- `tests/test_dashboard_pmtx_sticky_expand_v5_19_4.py` \u2014 string-level audit confirming `__pmtxExpandedSet`, `_pmtxApplyExpanded`, single-open semantics, and outside-click handler are all in `app.js`.
+- `tests/test_dashboard_panel_order_v5_19_4.py` \u2014 reads `index.html` and asserts the Open positions section appears before the Weather Check section.
+- `tests/test_dashboard_pmtx_spec_headers_v5_19_4.py` \u2014 string-level audit confirming the new headers (`ORB`, `Trend`, `5m DI\u00b1`) and rule IDs (`L-P2-S4`, `L-P3-AUTH`, `STRIKE-CAP-3`, `L-P2-S3`) are in tooltips.
+
+Manual verify: Playwright harness with proximity-only mock state \u2014 click expand, simulate three /api/state re-renders, row stays open. Click a different row, prior collapses, new opens. Click outside, all collapse.
+
+### Deploy
+
+Standard squash + delete-branch. No env / volume changes; dashboard JS + HTML only. Railway picks up the new image automatically.
+
+---
+
 ## v5.19.3 \u2014 2026-04-30 \u2014 Dashboard fixes: row expand, tab + login persistence
 
 ### Why
