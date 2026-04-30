@@ -143,9 +143,29 @@ def gate_volume_pass(
 # non-test callers since their introduction in v5.13.0 PR 4.
 
 
+def compute_55_bar_avg(
+    ticker: str,
+    minute_of_day: tuple[int, int],
+    asof_date: date,
+) -> Optional[float]:
+    """Spec-named accessor for the 55-bar same-minute volume baseline.
+
+    Thin wrapper over :func:`rolling_55d_per_minute_avg` that takes the
+    minute-of-day as a ``(hour, minute)`` tuple to match the spec
+    text in STRATEGY.md (``L-P2-S3`` / ``S-P2-S3``). Returns the
+    average per-minute volume across up to 55 prior trading days for
+    ``ticker`` at the same ``(hour:minute)`` slot, or ``None`` when
+    the archive holds insufficient history (caller treats ``None`` as
+    gate auto-pass / cold-start pass-through).
+    """
+    h, m = minute_of_day
+    return rolling_55d_per_minute_avg(ticker, time(h, m), asof_date)
+
+
 __all__ = [
     "LOOKBACK_DAYS_55",
     "THRESHOLD_RATIO",
+    "compute_55_bar_avg",
     "rolling_55d_per_minute_avg",
     "gate_volume_pass",
     "reset_cache",

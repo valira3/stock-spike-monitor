@@ -149,7 +149,7 @@ def test_list_recent_sorts_by_last_event(tmp_logger):
     import time
 
     time.sleep(0.001)
-    tmp_logger.log_event(pid_b, "PHASE4_SENTINEL", {"alarm_codes": ["A1"]})
+    tmp_logger.log_event(pid_b, "PHASE4_SENTINEL", {"alarm_codes": ["A_LOSS"]})
     rows = tmp_logger.list_positions("recent")
     assert rows[0]["position_id"] == pid_b
 

@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.14.0"
+BOT_VERSION = "5.15.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -492,7 +492,11 @@ TITAN_TICKERS: list = [
     "AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX",
     "NVDA", "ORCL", "TSLA",
 ]
-ENABLE_UNLIMITED_TITAN_STRIKES: bool = True
+# v5.15.0 vAA-1 \u2014 STRIKE-CAP-3 retires the unlimited-Titan path. The
+# constant is preserved at module level (False) for back-compat with
+# legacy smoke checks; STRIKE-CAP-3 in `strike_entry_allowed` is the
+# active gate.
+ENABLE_UNLIMITED_TITAN_STRIKES: bool = False
 # v5.10.0 \u2014 Section VI Daily Circuit Breaker (was -$500 in v5.9.x).
 DAILY_LOSS_LIMIT_DOLLARS: float = -1500.0
 # v5.7.1 \u2014 Bison & Buffalo exit FSM (Titans only). When False, Titan
@@ -1833,12 +1837,72 @@ def _v570_strike_count(ticker: str, side: str) -> int:
 
 def _v570_record_entry(ticker: str, side: str) -> int:
     """Increment the strike counter on a successful ENTRY and
-    return the strike_num that was just consumed."""
+    return the strike_num that was just consumed.
+
+    v5.15.0 vAA-1 \u2014 STRIKE-CAP-3 enforced: a 4th attempt is rejected
+    with RuntimeError("STRIKE-CAP-3 reached"); the counter remains
+    at 3. Callers should pre-check via ``strike_entry_allowed``;
+    this raise is a defensive belt-and-braces check.
+    """
     _v570_reset_if_new_session()
     key = (ticker.upper(), side.upper())
-    new_n = int(_v570_strike_counts.get(key, 0)) + 1
+    cur = int(_v570_strike_counts.get(key, 0))
+    if cur >= 3:
+        raise RuntimeError("STRIKE-CAP-3 reached")
+    new_n = cur + 1
     _v570_strike_counts[key] = new_n
     return new_n
+
+
+# v5.15.0 vAA-1 \u2014 STRIKE-CAP-3 + STRIKE-FLAT-GATE.
+# spec: tests/test_tiger_sovereign_vAA_spec.py
+#         ::test_strike_cap_3_blocks_fourth_entry
+#         ::test_strike_flat_gate_blocks_until_position_closes
+def _v570_strike_must_be_flat(
+    ticker: str,
+    side: str,
+    positions: dict | None = None,
+) -> bool:
+    """STRIKE-FLAT-GATE: True iff (ticker, side) holds zero shares.
+
+    The gate prevents Strike N+1 from stacking into an open Strike N
+    position. Spec rule STRIKE-FLAT-GATE: a new Strike fires only
+    after the prior Strike has fully closed (shares == 0).
+
+    ``positions`` is a {f"{ticker}:{side}": {...}} mapping; missing
+    keys are treated as flat (no position). For first-Strike entries
+    the absence of any prior position is the expected case.
+    """
+    if not positions:
+        return True
+    key = f"{ticker.upper()}:{side.upper()}"
+    pos = positions.get(key)
+    if not pos:
+        return True
+    try:
+        return int(pos.get("shares", 0) or 0) == 0
+    except (TypeError, ValueError):
+        return True
+
+
+def strike_entry_allowed(
+    ticker: str,
+    side: str,
+    positions: dict | None = None,
+) -> bool:
+    """STRIKE-CAP-3 + STRIKE-FLAT-GATE composite gate.
+
+    Returns False when EITHER:
+      * the (ticker, side) Strike count has already reached 3 today
+        (STRIKE-CAP-3), OR
+      * a prior Strike still holds shares > 0 (STRIKE-FLAT-GATE).
+
+    Returns True only when the next Strike attempt is permitted
+    under both gates.
+    """
+    if _v570_strike_count(ticker, side) >= 3:
+        return False
+    return _v570_strike_must_be_flat(ticker, side, positions=positions)
 
 
 # v5.9.0 \u2014 Track the QQQ compass at strike-1 entry per (ticker, side)

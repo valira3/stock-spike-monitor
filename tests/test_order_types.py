@@ -6,6 +6,7 @@ consistent with the action codes emitted by ``engine.titan_grip``
 and ``engine.sentinel``. Long-side and short-side scenarios are both
 covered.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -95,7 +96,7 @@ def test_submit_exit_long_stage3_harvest_is_limit():
 
 
 def test_submit_exit_long_alarm_a_is_stop_market():
-    """Long Alarm A1 (-$500 hard floor) → STOP MARKET, not plain MARKET."""
+    """Long Alarm A_LOSS (-$500 hard floor) → STOP MARKET, not plain MARKET."""
     order = submit_exit("LONG", qty=100, price=99.50, reason=REASON_ALARM_A)
     assert order.order_type == ORDER_TYPE_STOP_MARKET
 

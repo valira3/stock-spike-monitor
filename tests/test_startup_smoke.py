@@ -195,10 +195,10 @@ def test_scan_loop_no_blocking_at_first_call_with_empty_state(
         current_1m_open=100.0,
     )
     assert override is None
-    # Sanity: the v5.14.x line is what's on the hot path. Asserting an
+    # Sanity: the v5.15.x line is what's on the hot path. Asserting an
     # exact version number would require a test edit on every release;
     # the version-bump CI gate already pins the expected value.
-    assert trade_genius.BOT_VERSION.startswith("5.14.")
+    assert trade_genius.BOT_VERSION.startswith("5.15.")
 
 
 def test_volume_gate_enabled_default_off_when_env_unset(monkeypatch):

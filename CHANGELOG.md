@@ -4,6 +4,99 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.15.0 — 2026-04-29 — Tiger Sovereign vAA-1 (PR series #237-#244)
+
+### What changed
+
+v5.15.0 lands the Tiger Sovereign vAA-1 morphing-strategy spec as a
+series of seven internally-merged PRs plus this ship PR. The spec
+turns the entry/exit lifecycle into a five-alarm sentinel that
+evaluates A, B, C, D, and E in parallel on every tick, plus a
+strike-model rebuild that caps strikes at 3 and prices entries with
+LIMIT orders.
+
+#### PR-1 (#237) — spec adoption + tests
+
+- Adopted `tiger_sovereign_spec_vAA-1.md` as the canonical strategy
+  contract.
+- Added `tests/test_tiger_sovereign_vAA_spec.py` covering every rule
+  in the spec; gaps marked with `@pytest.mark.spec_gap(...)` and
+  removed PR-by-PR as the implementation lands.
+
+#### PR-3a (#238) — momentum-state foundation
+
+- New module `engine/momentum_state.py` with `ADXTrendWindow`
+  (3-element ring of 1m ADX values used by Alarm C) and
+  `DivergenceMemory` (per-(ticker, side) RSI/price peak tracker used
+  by Alarm E).
+- Comprehensive unit tests for both classes.
+
+#### PR-7 (#239) — Alarm A rename
+
+- Renamed legacy `A_one` / `A_loss_one` symbols to `A_LOSS` /
+  `A_FLASH` to match the spec; deleted the obsolete strings.
+  No behavioral change \u2014 wiring rename only.
+
+#### PR-2 (#240) — Phase 2 gates
+
+- Added Phase-2 entry gates in `engine/eye_of_tiger.py`: volume
+  baseline, EMA9 reclaim guard, and the master-anchor authorization
+  for Strike-3 fills.
+- Added the helper module `engine/volume_baseline.py`.
+
+#### PR-5 (#241) — Alarm D HVP Lock
+
+- New `check_alarm_d` in `engine/sentinel.py`: full MARKET exit when
+  the 5m ADX has decayed below 75% of the per-Strike high-water
+  mark, gated by the safety-floor ADX of 25 so flat trades cannot
+  be flushed.
+- `TradeHVP` dataclass tracks the per-trade ADX peak.
+
+#### PR-3b (#242) — Strike model
+
+- Capped strike count at 3 (`STRIKE-CAP-3`).
+- Implemented `STRIKE-FLAT-GATE` so Strike 2 and 3 can only fire
+  after a flat-base has formed.
+- Switched entry pricing from MARKET to LIMIT for the Strike fills.
+- Note: a few sub-rules (TradeHVP write-back at fill time,
+  `evaluate_strike_sizing`, `_v5104_maybe_fire_entry_1/2`
+  refactor, MARKET\u2192LIMIT call-site switch) are deferred to a
+  v5.15.1 follow-up; their tests remain `spec_gap`-marked.
+
+#### PR-4 (#243) — Velocity Ratchet (Alarm C)
+
+- New module `engine/velocity_ratchet.py` and `check_alarm_c`
+  in `engine/sentinel.py`: when the 1m ADX trend window prints
+  three strictly-decreasing samples, propose a tighter STOP MARKET
+  at `current_price * (1 \u2213 0.0025)`. Replaces the legacy Titan
+  Grip Harvest harvest-take logic.
+- `EXIT_REASON_VELOCITY_RATCHET` is the new top-level reason;
+  `EXIT_REASON_ALARM_C` is kept as a back-compat alias.
+
+#### PR-6 (this PR, #244) — Divergence Trap (Alarm E) + ship
+
+- Added `check_alarm_e_pre` (entry-time filter for Strike 2 / 3:
+  blocks the strike when the candidate tick prints a divergence vs
+  the stored peak in `DivergenceMemory`; Strike 1 is never blocked).
+- Added `check_alarm_e_post` (in-trade ratchet: proposes a tighter
+  STOP MARKET at `current_price * (1 \u2213 0.0025)` when a
+  divergence prints; never loosens an existing stop).
+- Wired `check_alarm_e_post` into `evaluate_sentinel` alongside A,
+  B, C, and D \u2014 all five alarms evaluate in parallel on every
+  tick. New kwargs: `divergence_memory`, `current_rsi_15`, `ticker`.
+- New constants: `ALARM_E_RATCHET_PCT = 0.0025`,
+  `EXIT_REASON_DIVERGENCE_TRAP = "DIVERGENCE_TRAP"`.
+- Bumped `BOT_VERSION` to `5.15.0` in `bot_version.py` and
+  `trade_genius.py`.
+
+### Test count at ship
+
+426 passing + 3 newly-unmarked PR-6 tests = 429 passing on the
+integration tip; 5 `vAA-PR-1`-tagged spec-gap skips remain (see
+PR-3b deferral note above) for v5.15.1.
+
+---
+
 ## v5.14.0 — 2026-04-29 — Shadow strategy retirement
 
 ### What changed

@@ -174,7 +174,7 @@ def test_build_tiger_sovereign_snapshot_with_positions():
         "b_delta",
     ):
         assert k in sen
-    # A1 PnL = (152 - 150) * 10 = +20
+    # A_LOSS PnL = (152 - 150) * 10 = +20
     assert sen["a1_pnl"] == pytest.approx(20.0)
     assert sen["a1_threshold"] == pytest.approx(-500.0)
     tg = aapl4["titan_grip"]
