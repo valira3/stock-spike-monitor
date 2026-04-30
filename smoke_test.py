@@ -3924,7 +3924,73 @@ def run_local() -> int:
 
         js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
         assert "bypassed (warming)" in js
-        assert 'data-pmtx-comp-grid="v5.20.6"' in js
+
+    @t("v5.20.7: Authority card reads section_i_permit booleans")
+    def _():
+        # Pre-hotfix the Authority card read sip.open / sip.qqq_aligned /
+        # sip.index_aligned which don't exist on section_i_permit. Every
+        # row rendered as an em dash. Fix: read sip.long_open /
+        # sip.short_open / sip.sovereign_anchor_open plus QQQ alignment.
+        # JS comments stripped before legacy-token scan so the rationale
+        # comment block above the rewire doesn't trip the check.
+        import re as _re
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        for tok in (
+            "sip.long_open",
+            "sip.short_open",
+            "sip.sovereign_anchor_open",
+        ):
+            assert tok in js, f"Authority wiring missing {tok}"
+        js_nc = _re.sub(r"/\*.*?\*/", "", js, flags=_re.DOTALL)
+        js_nc = _re.sub(r"//[^\n]*", "", js_nc)
+        assert "sip.qqq_aligned" not in js_nc
+        assert "sip.index_aligned" not in js_nc
+        assert "Permit & QQQ alignment" in js
+
+    @t("v5.20.7: per-position cards render no-position fallback")
+    def _():
+        # When ppv is empty (no open position) Alarm A / Alarm B / POS
+        # Strikes must surface a single explanatory row, not three em
+        # dashes. The predicate name is _hasOpenPos.
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        assert "_hasOpenPos" in js, "no-pos predicate missing"
+        assert "(no open position)" in js, "no-pos fallback row missing"
+
+    @t("v5.20.7: app.css single-scroll architecture")
+    def _():
+        # Base .app must not declare display:grid or 100dvh, and base
+        # .main must not declare overflow-y:auto. Together those rules
+        # produced the desktop double-scroll feel. CSS comments are
+        # stripped before scanning so the v5.20.7 explanatory comment
+        # block doesn't trip the check.
+        import re as _re
+        from pathlib import Path as _P
+
+        css = (_P(__file__).parent / "dashboard_static" / "app.css").read_text(encoding="utf-8")
+        no_comments = _re.sub(r"/\*.*?\*/", "", css, flags=_re.DOTALL)
+        media_idx = no_comments.find("@media")
+        base = no_comments[:media_idx] if media_idx > 0 else no_comments
+
+        app_idx = base.find(".app {")
+        assert app_idx >= 0, "base .app rule missing"
+        app_end = base.find("}", app_idx)
+        app_body = base[app_idx:app_end]
+        assert "display: grid" not in app_body, app_body
+        assert "100dvh" not in app_body, app_body
+
+        main_idx = base.find(".main {")
+        assert main_idx >= 0, "base .main rule missing"
+        main_end = base.find("}", main_idx)
+        main_body = base[main_idx:main_end]
+        assert "overflow-y: auto" not in main_body, main_body
+
+        assert 'data-pmtx-comp-grid="v5.20.7"' in (
+            _P(__file__).parent / "dashboard_static" / "app.js"
+        ).read_text(encoding="utf-8")
 
     @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.1")
     def _():

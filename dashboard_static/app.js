@@ -679,15 +679,27 @@
             ? (_fmtInt(vb.days_available) + "/55")
             : null],
         ]);
+    // v5.20.7 \u2014 Authority card sources Section-I permit alignment
+    // (long_open / short_open / sovereign_anchor_open) and QQQ price
+    // vs EMA9 / vs AVWAP from section_i_permit. Earlier wiring read
+    // sip.open / sip.qqq_aligned / sip.index_aligned, none of which
+    // are emitted by /api/state, so every row rendered as a dim em
+    // dash. The rewired card surfaces the actual gating signals.
     const p3aMetrics = _metricsHtml([
-      ["Permit open",  (sip && typeof sip.open === "boolean")
-        ? (sip.open ? "yes" : "no")
+      ["Long permit",  (sip && typeof sip.long_open === "boolean")
+        ? (sip.long_open ? "yes" : "no")
         : null],
-      ["QQQ aligned",  (sip && typeof sip.qqq_aligned === "boolean")
-        ? (sip.qqq_aligned ? "yes" : "no")
+      ["Short permit", (sip && typeof sip.short_open === "boolean")
+        ? (sip.short_open ? "yes" : "no")
         : null],
-      ["Index aligned", (sip && typeof sip.index_aligned === "boolean")
-        ? (sip.index_aligned ? "yes" : "no")
+      ["Sov. anchor",  (sip && typeof sip.sovereign_anchor_open === "boolean")
+        ? (sip.sovereign_anchor_open ? "yes" : "no")
+        : null],
+      ["QQQ vs EMA9",  (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
+        ? (sip.qqq_5m_close > sip.qqq_5m_ema9 ? "above" : "below")
+        : null],
+      ["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
+        ? (sip.qqq_current_price > sip.qqq_avwap_0930 ? "above" : "below")
         : null],
     ]);
     const p3mMetrics = _metricsHtml([
@@ -701,17 +713,28 @@
             + (typeof di.sufficient === "boolean" ? (di.sufficient ? " (ok)" : " (low)") : ""))
         : null],
     ]);
-    const alAMetrics = _metricsHtml([
-      ["Unrealized",       _fmtPct(sb.unrealized_pct, 2)],
-      ["Brake threshold",  _fmtPct(sb.brake_threshold_pct, 2)],
-      ["Time in pos",      (sb.time_in_position_min !== undefined && sb.time_in_position_min !== null)
-        ? (_fmtNum(sb.time_in_position_min, 1) + " min")
-        : null],
-    ]);
-    const alBMetrics = _metricsHtml([
-      ["Last 5m move",     _fmtPct(vf.last_5m_move_pct, 3)],
-      ["Fuse threshold",   _fmtPct(vf.fuse_threshold_pct, 2)],
-    ]);
+    // v5.20.7 \u2014 the per-position cards (Sovereign brake / Velocity
+    // fuse / Strikes) are only meaningful while a position is open. With
+    // no open position the upstream wiring delivers ppv510=null, which
+    // becomes ppv={} here and every row renders as a dim em dash. When
+    // that happens, surface a single explanatory row (same UX as the
+    // volume-bypass treatment in v5.20.6).
+    const _hasOpenPos = !!(ppv && Object.keys(ppv).length > 0);
+    const alAMetrics = _hasOpenPos
+      ? _metricsHtml([
+          ["Unrealized",       _fmtPct(sb.unrealized_pct, 2)],
+          ["Brake threshold",  _fmtPct(sb.brake_threshold_pct, 2)],
+          ["Time in pos",      (sb.time_in_position_min !== undefined && sb.time_in_position_min !== null)
+            ? (_fmtNum(sb.time_in_position_min, 1) + " min")
+            : null],
+        ])
+      : _metricsHtml([["Status", "(no open position)"]]);
+    const alBMetrics = _hasOpenPos
+      ? _metricsHtml([
+          ["Last 5m move",     _fmtPct(vf.last_5m_move_pct, 3)],
+          ["Fuse threshold",   _fmtPct(vf.fuse_threshold_pct, 2)],
+        ])
+      : _metricsHtml([["Status", "(no open position)"]]);
     const stkHistory = Array.isArray(stk.strike_history) ? stk.strike_history : [];
     const _stkLast5 = stkHistory.slice(-5).map((e) => {
       if (!e) return "\u2014";
@@ -720,12 +743,14 @@
       const k = e.kind || e.event || "";
       return (t + (k ? (" " + k) : "")).trim() || "\u2014";
     });
-    const posMetrics = _metricsHtml([
-      ["Strikes used",  (stk.strikes_count !== undefined && stk.strikes_count !== null)
-        ? (_fmtInt(stk.strikes_count) + "/3")
-        : null],
-      ["History",       _stkLast5.length ? _stkLast5.join(" \u00b7 ") : null],
-    ]);
+    const posMetrics = _hasOpenPos
+      ? _metricsHtml([
+          ["Strikes used",  (stk.strikes_count !== undefined && stk.strikes_count !== null)
+            ? (_fmtInt(stk.strikes_count) + "/3")
+            : null],
+          ["History",       _stkLast5.length ? _stkLast5.join(" \u00b7 ") : null],
+        ])
+      : _metricsHtml([["Status", "(no open position)"]]);
 
     function card(chip, name, desc, state, val, metrics) {
       return '<div class="pmtx-comp-card pmtx-comp-' + state + '">'
@@ -742,13 +767,13 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.6">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.7">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
       +     card("P2", "Boundary",    "Two consec 1m closes thru OR", p2bState, p2bVal, p2bMetrics)
       +     card("P2", "Volume",      "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal, p2vMetrics)
-      +     card("P3", "Authority",   "5m DI\u00b1 > 25",            p3aState, p3aVal, p3aMetrics)
+      +     card("P3", "Authority",   "Permit & QQQ alignment",    p3aState, p3aVal, p3aMetrics)
       +     card("P3", "Momentum",    "5m ADX > 20",                  p3mState, p3mVal, p3mMetrics)
       +     card("AL", "Sov. Brake",  "Per-position $ stop",          alAState, alAVal, alAMetrics)
       +     card("AL", "Velocity Fuse", "Per-position velocity stop", alBState, alBVal, alBMetrics)

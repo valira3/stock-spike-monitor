@@ -4,6 +4,112 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.7 — 2026-04-30 — Authority wiring, single-scroll, no-pos UX
+
+### Why
+Fast follow-up to v5.20.6. Once the Weather card and component grid landed
+the operator (Val) immediately spotted three remaining issues during live
+use:
+
+1. **Authority card still empty.** Every row rendered as a dim em dash
+   because the JS read `sip.open` / `sip.qqq_aligned` / `sip.index_aligned`
+   — fields that don't exist on `section_i_permit`. The actual gating
+   booleans are `long_open`, `short_open`, `sovereign_anchor_open`, and the
+   relevant QQQ alignment is derivable from the same QQQ price/EMA9/AVWAP
+   triple already wired into the Weather card.
+2. **Double-scrollbar feel.** `.app { display: grid; grid-template-rows:
+   auto 1fr; height: 100dvh }` plus `.main { overflow-y: auto }` created
+   a desktop-only inner scroll container that pinned the header in the
+   `auto` row while the rest scrolled inside the `1fr` row. The mouse
+   wheel hit the inner container first, producing a perceived "two
+   scrollbars" effect. The mobile media query at ≤900px already
+   collapsed this with `display: block; height: auto; overflow: visible`,
+   so the fix is to promote that rule to the base layer and let the
+   page itself own the scroll at every viewport. Trade-off accepted by
+   operator: the brand/version header now scrolls away with the rest of
+   the page.
+3. **Per-position cards (Sov. Brake / Velocity Fuse / Strikes) empty.**
+   Not a wiring bug — these only have data when a position is open and
+   `per_position_v510` is keyed by `<TICKER>:<SIDE>`. With no open
+   position, every row collapses to a dim em dash, which the operator
+   reads as a broken card. UX fix: when `ppv` is empty, surface a single
+   `(no open position)` row, mirroring the v5.20.6 volume-gate-bypass
+   treatment.
+
+### Changes
+
+#### dashboard_static/app.js
+
+- `p3aMetrics` rewired to read from `sip` (section_i_permit) using the
+  actual field names: `long_open`, `short_open`, `sovereign_anchor_open`,
+  plus derived `QQQ vs EMA9` (sip.qqq_5m_close > sip.qqq_5m_ema9) and
+  `QQQ vs AVWAP` (sip.qqq_current_price > sip.qqq_avwap_0930). Five
+  populated rows in steady state.
+- Authority `card()` description updated from `5m DI± > 25` to
+  `Permit & QQQ alignment` so the subtitle matches the new content. The
+  legacy DI-threshold copy was a holdover from an earlier card layout.
+- New `_hasOpenPos` predicate (`!!(ppv && Object.keys(ppv).length > 0)`)
+  drives Alarm A / Alarm B / POS Strikes metric rendering. When false,
+  each card renders a single `Status: (no open position)` row instead
+  of three dim em dashes. When a position opens, the existing
+  `sb.unrealized_pct` / `vf.last_5m_move_pct` / `stk.strikes_count`
+  rows render unchanged.
+- `data-pmtx-comp-grid` version marker bumped to `v5.20.7`.
+
+#### dashboard_static/app.css
+
+- Base `.app` rule simplified: `display: block; height: auto`. Removed
+  `display: grid`, `grid-template-columns/rows`, and `height: 100dvh`.
+- Base `.main` rule simplified: kept `padding`, `display: flex`,
+  `flex-direction`, `gap`, and `min-width: 0`. Removed `overflow-y: auto`
+  and `overscroll-behavior: contain` so the page body owns scroll.
+- `@media (max-width: 900px)` block: redundant `.app { display: block;
+  height: auto }` and `.main { overflow: visible; height: auto }` rules
+  retained as a defensive backstop with an updated comment block.
+  Padding/gap mobile overrides untouched.
+
+#### trade_genius.py + bot_version.py
+
+- BOT_VERSION = "5.20.7" in both files.
+- CURRENT_MAIN_NOTE rewritten for v5.20.7 (13 lines, all ≤34 chars).
+
+#### tests/test_v5_20_7_authority_and_scroll_fix.py (new)
+
+- `test_authority_uses_sip_permit_fields`: source-grep that
+  `dashboard_static/app.js` references `sip.long_open`, `sip.short_open`,
+  `sip.sovereign_anchor_open` inside the `p3aMetrics` block.
+- `test_authority_does_not_use_legacy_fields`: confirms `sip.open` and
+  `sip.qqq_aligned` and `sip.index_aligned` no longer appear in app.js.
+- `test_authority_tagline_updated`: confirms the `card("P3", "Authority",
+  "Permit & QQQ alignment", ...)` line is present (legacy `5m DI± > 25`
+  copy is gone).
+- `test_no_open_position_row_present`: confirms the `(no open position)`
+  string and `_hasOpenPos` predicate exist in app.js.
+- `test_app_css_no_dual_scroll_container`: confirms `.app` no longer
+  declares `display: grid` or `height: 100dvh` at the base layer, and
+  `.main` no longer declares `overflow-y: auto` at the base layer.
+  (CSS comments are stripped before scanning so the explanatory block
+  comment doesn't trip the check.)
+
+#### smoke_test.py
+
+- New source-grep guards mirroring the test additions so the local-CI
+  smoke run catches regressions even before pytest runs.
+
+### Validation plan
+
+1. Preflight 6 stages (pytest, startup smoke, version consistency,
+   em-dash check, forbidden-word check, ruff format) must pass.
+2. Post-deploy: confirm Authority card renders 5 populated rows on a
+   live ticker (long permit yes/no, short permit yes/no, sov. anchor
+   yes/no, QQQ vs EMA9 above/below, QQQ vs AVWAP above/below).
+3. Confirm Sov. Brake / Velocity Fuse / Strikes render `(no open
+   position)` row while no position is open.
+4. Confirm desktop page scrolls as a single unit (no inner scrollbar
+   on `.main`, no sticky header).
+
+---
+
 ## v5.20.6 — 2026-04-30 — Card metric hotfix + volume gate bypass
 
 ### Why
