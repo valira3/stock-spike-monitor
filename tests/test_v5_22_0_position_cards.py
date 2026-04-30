@@ -66,7 +66,7 @@ def _read_css() -> str:
 # ---------------------------------------------------------------------------
 def test_bot_version_is_5_22_0():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.23.3"' in text, "bot_version.py must report 5.23.3"
+    assert 'BOT_VERSION = "5.24.0"' in text, "bot_version.py must report 5.24.0"
 
 
 def test_grid_marker_is_v5_22_0():

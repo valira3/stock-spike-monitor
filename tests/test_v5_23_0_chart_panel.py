@@ -70,7 +70,7 @@ def _strip_py_comments(src: str) -> str:
 # 1. Version pin -------------------------------------------------------
 def test_bot_version_is_5_23_0():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.23.3"' in text, "bot_version.py must report 5.23.3"
+    assert 'BOT_VERSION = "5.24.0"' in text, "bot_version.py must report 5.24.0"
 
 
 # 2. Component grid marker --------------------------------------------

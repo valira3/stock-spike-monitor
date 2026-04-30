@@ -665,6 +665,39 @@ class TradeGeniusBase:
         # v5.5.10 \u2014 mirror to state.db so a restart sees this row.
         self._persist_position(ticker)
 
+    def _close_position_idempotent(self, client, ticker: str, label: str, reason: str) -> None:
+        """Close a position on Alpaca, swallowing the 40410000 \"position
+        not found\" error as a benign no-op.
+
+        v5.24.0 \u2014 Alpaca returns ``{"code":40410000}`` whenever you
+        ask it to close a position that no longer exists (already sold,
+        or never opened on this account). With three executors plus
+        the paper book, harmless races (e.g. an executor lagging the
+        EOD flatten) used to surface as red \u274c ticks on Telegram.
+        We now treat 40410000 as success: drop the local + persisted
+        row and log a quiet info-level line. Any OTHER error still
+        propagates to ``_on_signal``\u2019s outer ``except`` so real
+        Alpaca outages still page the operator.
+        """
+        try:
+            client.close_position(ticker)
+        except Exception as exc:
+            msg = str(exc)
+            if "40410000" in msg or "position not found" in msg.lower():
+                logger.info(
+                    "[%s] CLOSE %s \u2014 already flat on broker (%s)",
+                    self.NAME,
+                    ticker,
+                    reason,
+                )
+                self._remove_position(ticker)
+                return
+            raise
+        self._remove_position(ticker)
+        ok = f"\u2705 {label}: {ticker} CLOSE ({reason})"
+        logger.info(ok)
+        self._send_own_telegram(ok)
+
     def _reconcile_broker_positions(self) -> None:
         """Run once at boot. Pull broker positions, graft any orphans.
 
@@ -878,9 +911,20 @@ class TradeGeniusBase:
                 "market",
             )
 
+        # v5.24.0 \u2014 honour the paper book's qty when present so each
+        # executor mirrors the same share count the paper book booked.
+        # Before: executors recomputed via ``_shares_for`` (uses the
+        # executor's own dollars_per_entry, defaulting to $10k), while
+        # the paper book sized Entry-1 at $10k * ENTRY_1_SIZE_PCT (0.5)
+        # = $5k. Result was Val/Gene buying 2x the paper book's qty for
+        # Entry-1 fires, then 4x on the rebalanced Entry-2. Honouring
+        # ``main_shares`` keeps every executor's per-ticker quantity
+        # aligned with the paper book and with each other.
+        signal_qty = int(event.get("main_shares") or 0)
+
         try:
             if kind == "ENTRY_LONG":
-                qty = self._shares_for(price, ticker=ticker)
+                qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
                     return
                 coid = self._build_client_order_id(ticker, "LONG")
@@ -892,7 +936,7 @@ class TradeGeniusBase:
                 logger.info(msg)
                 self._send_own_telegram(msg)
             elif kind == "ENTRY_SHORT":
-                qty = self._shares_for(price, ticker=ticker)
+                qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
                     return
                 coid = self._build_client_order_id(ticker, "SHORT")
@@ -904,13 +948,24 @@ class TradeGeniusBase:
                 logger.info(msg)
                 self._send_own_telegram(msg)
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
-                client.close_position(ticker)
-                # v5.5.10 \u2014 drop the local + persisted row so a
-                # reboot does not see this as a stale position.
-                self._remove_position(ticker)
-                msg = f"\u2705 {label}: {ticker} CLOSE ({reason})"
-                logger.info(msg)
-                self._send_own_telegram(msg)
+                # v5.24.0 \u2014 ``state.db.executor_positions`` (loaded
+                # into ``self.positions`` on boot, kept in sync via
+                # ``_record_position`` / ``_remove_position``) is the
+                # source of truth for whether THIS executor has the
+                # ticker open. If it doesn't, skip silently \u2014 a
+                # divergent paper book may have flagged an exit for
+                # something this executor never opened, and calling
+                # ``client.close_position`` against an already-flat
+                # account just produces a 40410000 false alarm.
+                if ticker not in self.positions:
+                    logger.info(
+                        "[%s] %s %s skipped \u2014 no position tracked",
+                        self.NAME,
+                        kind,
+                        ticker,
+                    )
+                    return
+                self._close_position_idempotent(client, ticker, label, reason)
             elif kind == "EOD_CLOSE_ALL":
                 client.close_all_positions(cancel_orders=True)
                 # v5.5.10 \u2014 wipe every local + persisted row.

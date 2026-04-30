@@ -1118,7 +1118,7 @@ def execute_breakout(ticker, current_price, side):
     )
 
 
-def close_breakout(ticker, price, side, reason="STOP"):
+def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
     """Side-parameterized close.
 
     v4.9.0 \u2014 unified body. The legacy long/short twins were deleted;
@@ -1131,6 +1131,13 @@ def close_breakout(ticker, price, side, reason="STOP"):
     log's ``ORDER_SUBMIT`` event so a future Alpaca live bridge submits
     LIMIT / STOP_MARKET / MARKET per spec instead of always defaulting
     to MARKET.
+
+    v5.24.0 \u2014 ``suppress_signal=True`` skips the ``_emit_signal``
+    fan-out so the EOD loop can flatten the paper book per-ticker (for
+    cash/trade_log bookkeeping) without spamming executors with a
+    duplicate ``EXIT_LONG`` event on top of the single ``EOD_CLOSE_ALL``
+    that ``eod_close`` already fires up front. Lifecycle log + Telegram
+    + paper_state still update normally.
     """
     tg = _tg()
     cfg = tg.CONFIGS[side]
@@ -1380,19 +1387,20 @@ def close_breakout(ticker, price, side, reason="STOP"):
 
     tg.save_paper_state()
 
-    tg._emit_signal(
-        {
-            "kind": cfg.exit_signal_kind,
-            "ticker": ticker,
-            "price": float(price),
-            "reason": reason,
-            "timestamp_utc": tg._utc_now_iso(),
-            "main_shares": int(shares),
-            # v5.13.7 \u2014 spec-correct order type for the live broker.
-            # Paper book ignores this; the Alpaca bridge consumes it.
-            "order_type": resolved_order_type,
-        }
-    )
+    if not suppress_signal:
+        tg._emit_signal(
+            {
+                "kind": cfg.exit_signal_kind,
+                "ticker": ticker,
+                "price": float(price),
+                "reason": reason,
+                "timestamp_utc": tg._utc_now_iso(),
+                "main_shares": int(shares),
+                # v5.13.7 \u2014 spec-correct order type for the live broker.
+                # Paper book ignores this; the Alpaca bridge consumes it.
+                "order_type": resolved_order_type,
+            }
+        )
 
     # v5.13.6 \u2014 lifecycle log: EXIT_DECISION + POSITION_CLOSED. Best-effort.
     try:
