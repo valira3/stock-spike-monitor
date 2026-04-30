@@ -4,6 +4,112 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.21.0 — 2026-04-30 — Mobile hscroll fix + click-to-titan + vAA-1 alarm unification + Daily SMA Stack
+
+### Why
+Four deliverables roll together because alarm-vocabulary unification
+touches the same files (`v5_13_2_snapshot.py`, `dashboard_static/app.js`,
+`telegram_commands.py`) that any one of them would have touched on its
+own. Sequencing them as separate hotfixes would have produced three
+back-to-back conflicts. v5.21.0 is the coordinated landing.
+
+### Changes
+
+**(1) Mobile double horizontal-scroll fix (carried from the never-shipped v5.20.10)**
+- `dashboard_static/app.css` — inside `@media (max-width: 640px)`
+  removed the legacy `.card-body.flush { overflow-x: auto; ... }` rule
+  (pre-dated v4.5.1, made redundant when `.pmtx-table-wrap` got its
+  own scroller). Caused two same-axis nested scrollers to fight on
+  iPhone-class viewports. The inner `.pmtx-table-wrap` retains its
+  own `overflow-x: auto` so the operator can still swipe the matrix
+  sideways within the card.
+- `tests/test_v5_21_0_mobile_hscroll_fix.py` — three source-grep
+  regression tests pin the rule removal, the inner scroller, and
+  the explanatory comment.
+
+**(2) Click an open position → expand its Titan in the Permit Matrix**
+- `dashboard_static/app.js` — position rows now carry
+  `data-pos-ticker`, `tabindex="0"`, `role="button"`,
+  `aria-controls="pmtx-body"`, and `cursor: pointer`. A delegated
+  click handler (wired once per SSE session via `__posClickWired`)
+  reads the ticker, locates `#pmtx-body`, mutates
+  `__pmtxExpandedSet` (single-open semantics), calls
+  `__pmtxApplyExpanded()`, updates `aria-expanded`, and
+  `scrollIntoView({behavior:"smooth", block:"center"})` on the
+  matching Titan row. Keyboard support: Enter / Space on a focused
+  position row triggers the same expand path.
+- `tests/test_v5_21_0_dashboard_alarm_strip.py` — source-grep
+  assertions for the click-handler wiring.
+
+**(3) Alarm vocabulary unified to vAA-1 spec across snapshot, dashboard, Telegram**
+The canonical spec (`/home/user/workspace/tiger_sovereign_spec_vAA-1.md`)
+defines six alarms evaluated in parallel: A1 Loss, A2 Flash, B Trend
+Death, C Velocity Ratchet, D HVP Lock, E Divergence Trap. Prior to
+v5.21.0 the dashboard surfaced only 2 of the 6 with real data and
+used three different vocabularies across snapshot / dashboard /
+Telegram. Unified now.
+- `v5_13_2_snapshot.py` — `_sentinel_block` extended with six new
+  per-position sub-dicts: `a_loss`, `a_flash`, `b_trend_death`,
+  `c_velocity_ratchet`, `d_hvp_lock`, `e_divergence_trap`. Each
+  carries spec-shaped fields plus `armed` / `triggered` booleans.
+  Legacy keys (`a1_pnl`, `a1_threshold`, `a2_velocity`,
+  `a2_threshold`, `b_close`, `b_ema9`, `b_delta`) preserved for
+  one-release backwards-compat.
+- `dashboard_static/app.js` — `_pmtxSentinelStrip` rewritten to 6
+  cells with "Letter + short name" labels (`A1 Loss`, `A2 Flash`,
+  `B Trend Death`, `C Vel. Ratchet`, `D HVP Lock`, `E Div. Trap`).
+  D and E now consume real backend data instead of the previous
+  hardcoded em-dash placeholders. Helper functions `_pmtxPickAlarm`
+  and `_pmtxAlarmStateClass` added.
+- `dashboard_static/app.css` — `.pmtx-sentinel-strip`
+  `grid-template-columns` bumped from `repeat(5, 1fr)` to
+  `repeat(6, 1fr)`. On `≤720px` the grid wraps to `repeat(3, 1fr)`
+  so each cell stays readable on phones.
+- `dashboard_static/app.js` (tooltips) — strings around the strip
+  rewritten from legacy A1/A2/Sov.Brake/Velocity Fuse/Titan Grip
+  vocabulary to vAA-1 names. Header tooltip now states the
+  parallel-evaluation architectural rule.
+- `telegram_commands.py` — `cmd_strategy` Phase 4 section
+  rewritten to "Sentinel Loop (all parallel)" with all 6 alarms.
+  Phase 3 entry section rewritten from Entry-1 / Entry-2 to the
+  Strike sizing model (STRIKE-CAP-3, L-P3-FULL, L-P3-SCALED-A,
+  L-P3-SCALED-B). Mirror block updated for the SHORT (Wounded
+  Buffalo) side. Titan Grip Harvest stages entirely removed.
+- `tests/test_v5_21_0_sentinel_block_schema.py` — 8 tests pinning
+  the new sentinel sub-dict schema and trigger semantics.
+- `tests/test_telegram_pdc_scrub_v5_13_5.py` —
+  `test_strategy_mentions_tiger_sovereign_phases` retargeted to
+  assert `"Sentinel Loop"` instead of the removed `"Phase 4"`.
+
+**(4) Daily SMA Stack panel inside expanded Titan rows**
+- `engine/sma_stack.py` (NEW) — pure-functional
+  `compute_sma_stack(daily_closes)` returning per-ticker SMA values
+  for windows 12 / 22 / 55 / 100 / 200, with deltas, above-flags,
+  classification (`bullish` / `bearish` / `mixed`) and substate
+  (`all_above` / `all_below` / `above_short_below_long` /
+  `below_short_above_long` / `scrambled`).
+- `engine/daily_bars.py` (NEW) — `get_recent_daily_closes(ticker)`
+  with injectable fetcher and 30-minute per-process TTL cache.
+- `v5_13_2_snapshot.py` — each per-Titan phase2 row in the
+  Permit Matrix payload now carries `sma_stack` (None on failure).
+- `dashboard_static/app.js` — `_pmtxSmaStackPanel(smaStack)` helper
+  renders the new section as a sibling of the existing Pipeline
+  Components strip inside each expanded Titan row.
+- `dashboard_static/app.css` — `.pmtx-sma-*` rules added at the end
+  of the file with chart-matching swatch colors
+  (12=white, 22=blue, 55=yellow, 100=green, 200=cyan).
+- `tests/test_v5_21_0_sma_stack.py` (10 tests) and
+  `tests/test_v5_21_0_sma_panel_frontend.py` (8 tests).
+
+### Version surface
+- `bot_version.py` / `trade_genius.py` — `BOT_VERSION = "5.21.0"`,
+  `CURRENT_MAIN_NOTE` rewritten (every line ≤34 chars).
+- `dashboard_static/app.js` — `data-pmtx-comp-grid` bumped to
+  `"v5.21.0"`.
+- `smoke_test.py` — grid marker + new v5.21.0 smoke guards added.
+
+---
+
 ## v5.20.9 — 2026-04-30 — Permit Matrix table column order matches card/process order
 
 ### Why

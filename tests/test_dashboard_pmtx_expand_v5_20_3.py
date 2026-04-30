@@ -78,8 +78,9 @@ def test_grid_emits_eight_components():
         ('"P2"', '"Volume"'),
         ('"P3"', '"Authority"'),
         ('"P3"', '"Momentum"'),
-        ('"AL"', '"Sov. Brake"'),
-        ('"AL"', '"Velocity Fuse"'),
+        # v5.21.0: renamed from "Sov. Brake" / "Velocity Fuse" to vAA-1 labels.
+        ('"AL"', '"A1 Loss"'),
+        ('"AL"', '"A2 Flash"'),
         ('"POS"', '"Strikes"'),
     ]
     for chip, name in expected_cards:
@@ -92,7 +93,7 @@ def test_grid_emits_eight_components():
         '"Permit & QQQ alignment"',
         '"5m ADX > 20"',
         '"Per-position $ stop"',
-        '"Per-position velocity stop"',
+        '"1-min adverse velocity %"',
         '"Strikes used today (cap 3)"',
     ):
         assert desc in src, f"missing card description {desc!r}"
@@ -161,7 +162,8 @@ def test_position_only_cards_show_off_when_no_position():
     # The "no pos" labelling for both alarm cards.
     helper_idx = src.find("function _pmtxComponentGrid(d)")
     assert helper_idx >= 0
-    helper_block = src[helper_idx : helper_idx + 5000]
+    # v5.21.0: bumped window from 5000 to 6500 to cover expanded alarm logic.
+    helper_block = src[helper_idx : helper_idx + 6500]
     # Both alarms must short-circuit on `!d.pos`.
     no_pos_branches = helper_block.count("if (!d.pos)")
     assert no_pos_branches >= 2, (
@@ -174,7 +176,9 @@ def test_strikes_card_reflects_strike_counter_states():
     """The Strikes card must distinguish IN POS, LOCKED (3/3), USED, IDLE."""
     src = _read_js()
     helper_idx = src.find("function _pmtxComponentGrid(d)")
-    helper_block = src[helper_idx : helper_idx + 5000]
+    # v5.21.0: alarm A/B sections expanded with vAA-1 fallback logic;
+    # bumped window from 5000 to 6500 to accommodate the larger function body.
+    helper_block = src[helper_idx : helper_idx + 6500]
     assert '"inpos"' in helper_block
     assert '"locked"' in helper_block
     assert '"used"' in helper_block

@@ -254,7 +254,7 @@
         const trailBadge = p.trail_active
           ? ` <span class="trail-badge" title="Trail stop is armed \u2014 the effective stop now follows price, not the original hard stop">TRAIL</span>`
           : "";
-        // v5.13.10 — SB (Sovereign Brake distance) column removed
+        // v5.13.10 — SB (Alarm A1 Loss distance) column removed
         // per operator request. Phase badge stays: A = fresh entry,
         // B = first runner / partial taken, C = mature ratcheting trail.
         const phase = (p.phase === "B" || p.phase === "C") ? p.phase : "A";
@@ -265,7 +265,7 @@
             : "Phase C \u2014 mature runner, ratcheting trail stop";
         const phaseBadge = `<span class="eot-phase-badge eot-phase-${phase}" title="${escapeHtml(phaseTitle)}">${phase}</span>`;
         const dotTitle = (p.side === "SHORT") ? "Open short position" : "Open long position";
-        return `<tr>
+        return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
           <td class="right">${p.shares}</td>
@@ -286,6 +286,47 @@
           <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
+    }
+
+    // v5.21.0 — Click-to-Titan: clicking any position row expands the
+    // matching Titan in the Permit Matrix and scrolls it into view.
+    // Wire once using __posClickWired sentinel (renderPositions rebuilds
+    // innerHTML on every SSE tick, so we must not re-attach every time).
+    if (!body.__posClickWired) {
+      body.addEventListener("click", function _posRowClick(ev) {
+        const tr = ev.target.closest("tr[data-pos-ticker]");
+        if (!tr) return;
+        const ticker = tr.getAttribute("data-pos-ticker");
+        if (!ticker) return;
+        // Locate the Permit Matrix body. It may be in a different panel
+        // (Val tab), so search document-wide by data-f attribute.
+        const pmtxBody = document.querySelector('[data-f="pmtx-body"]');
+        if (!pmtxBody) return;
+        const titanRow = pmtxBody.querySelector('tr.pmtx-row[data-pmtx-tkr="' + ticker + '"]');
+        if (!titanRow) return; // position exists but no Titan row (stale/delisted)
+        // Single-open semantics: clear existing expansion, add this ticker.
+        if (!pmtxBody.__pmtxExpandedSet) pmtxBody.__pmtxExpandedSet = new Set();
+        pmtxBody.__pmtxExpandedSet.clear();
+        pmtxBody.__pmtxExpandedSet.add(ticker);
+        if (typeof pmtxBody.__pmtxApplyExpanded === "function") pmtxBody.__pmtxApplyExpanded();
+        // Update aria-expanded on the clicked row.
+        const allPosTrs = body.querySelectorAll("tr[data-pos-ticker]");
+        allPosTrs.forEach((r) => r.setAttribute("aria-expanded", "false"));
+        tr.setAttribute("aria-expanded", "true");
+        // Scroll the Titan row into view only when it is in the DOM.
+        if (document.body.contains(titanRow)) {
+          titanRow.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      });
+      // Keyboard: Enter/Space on a focused position row triggers expand.
+      body.addEventListener("keydown", function _posRowKey(ev) {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        const tr = ev.target.closest("tr[data-pos-ticker]");
+        if (!tr) return;
+        ev.preventDefault();
+        tr.click();
+      });
+      body.__posClickWired = true;
     }
 
     // portfolio strip always shows if portfolio data present
@@ -611,24 +652,32 @@
     else if (d.adx === false) { p3mState = "fail"; p3mVal = "blocked"; }
     else                       { p3mState = "pend"; p3mVal = "\u2014"; }
 
-    // Alarm A \u00b7 Sovereign Brake. Only meaningful when in position.
+    // Alarm A1 Loss (vAA-1 SENT-A_LOSS) \u00b7 Per-position $ stop. Only meaningful when in position.
     const sen = (d.p4 && d.p4.sentinel) || {};
-    const a1 = (typeof sen.a1_pnl === "number") ? sen.a1_pnl : null;
-    const a1Th = (typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500;
+    const _aLossObj = (sen.a_loss && typeof sen.a_loss === "object") ? sen.a_loss : null;
+    const a1 = _aLossObj ? ((typeof _aLossObj.pnl === "number") ? _aLossObj.pnl : null)
+                         : ((typeof sen.a1_pnl === "number") ? sen.a1_pnl : null);
+    const a1Th = _aLossObj ? ((typeof _aLossObj.threshold === "number") ? _aLossObj.threshold : -500)
+                           : ((typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500);
     let alAState; let alAVal;
     if (!d.pos)               { alAState = "off"; alAVal = "no pos"; }
     else if (a1 === null)      { alAState = "pend"; alAVal = "\u2014"; }
     else if (a1 <= a1Th)       { alAState = "trip"; alAVal = _pmtxMoney(a1); }
     else                        { alAState = "safe"; alAVal = _pmtxMoney(a1); }
 
-    // Alarm B \u00b7 Velocity Fuse.
-    const a2 = (typeof sen.a2_velocity === "number") ? sen.a2_velocity : null;
-    const a2Th = (typeof sen.a2_threshold === "number") ? sen.a2_threshold : -0.01;
+    // Alarm A2 Flash (vAA-1 SENT-A_FLASH) \u00b7 1-min adverse velocity.
+    // New key: a_flash.velocity_pct (ratio, e.g. -0.013 = -1.3% adverse).
+    // Legacy a2_velocity was a per-second rate \u2014 units differ, so only
+    // show the new key; fall back to pend when the new sub-dict is absent.
+    const _aFlashObj = (sen.a_flash && typeof sen.a_flash === "object") ? sen.a_flash : null;
+    const a2VelPct = _aFlashObj ? ((typeof _aFlashObj.velocity_pct === "number") ? _aFlashObj.velocity_pct : null) : null;
+    const a2ThPct  = _aFlashObj ? ((typeof _aFlashObj.threshold_pct === "number") ? _aFlashObj.threshold_pct : -0.01) : -0.01;
+    const a2Triggered = _aFlashObj ? !!_aFlashObj.triggered : false;
     let alBState; let alBVal;
-    if (!d.pos)              { alBState = "off"; alBVal = "no pos"; }
-    else if (a2 === null)     { alBState = "pend"; alBVal = "\u2014"; }
-    else if (a2 <= a2Th)      { alBState = "trip"; alBVal = _pmtxNum(a2, 4) + "/s"; }
-    else                       { alBState = "safe"; alBVal = _pmtxNum(a2, 4) + "/s"; }
+    if (!d.pos)                 { alBState = "off";  alBVal = "no pos"; }
+    else if (a2VelPct === null) { alBState = "pend"; alBVal = "\u2014"; }
+    else if (a2Triggered)       { alBState = "trip"; alBVal = _pmtxNum(a2VelPct * 100, 2) + "%"; }
+    else                         { alBState = "safe"; alBVal = _pmtxNum(a2VelPct * 100, 2) + "%"; }
 
     // Position \u00b7 Strike count (max 3 per ticker per day).
     const su = d.strikesUsed || 0;
@@ -768,7 +817,7 @@
     const alAMetrics = _hasOpenPos
       ? _metricsHtml([
           ["Unrealized",       _fmtPct(sb.unrealized_pct, 2)],
-          ["Brake threshold",  _fmtPct(sb.brake_threshold_pct, 2)],
+          ["Loss threshold",   _fmtPct(sb.brake_threshold_pct, 2)],
           ["Time in pos",      (sb.time_in_position_min !== undefined && sb.time_in_position_min !== null)
             ? (_fmtNum(sb.time_in_position_min, 1) + " min")
             : null],
@@ -776,8 +825,8 @@
       : _metricsHtml([["Status", "(no open position)"]]);
     const alBMetrics = _hasOpenPos
       ? _metricsHtml([
-          ["Last 5m move",     _fmtPct(vf.last_5m_move_pct, 3)],
-          ["Fuse threshold",   _fmtPct(vf.fuse_threshold_pct, 2)],
+          ["1-min velocity",   _fmtPct(vf.last_5m_move_pct, 3)],
+          ["Flash threshold",  _fmtPct(vf.fuse_threshold_pct, 2)],
         ])
       : _metricsHtml([["Status", "(no open position)"]]);
     const stkHistory = Array.isArray(stk.strike_history) ? stk.strike_history : [];
@@ -812,7 +861,7 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.9">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.21.0">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
@@ -820,8 +869,8 @@
       +     card("P2", "Volume",      "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal, p2vMetrics)
       +     card("P3", "Authority",   "Permit & QQQ alignment",    p3aState, p3aVal, p3aMetrics)
       +     card("P3", "Momentum",    "5m ADX > 20",                  p3mState, p3mVal, p3mMetrics)
-      +     card("AL", "Sov. Brake",  "Per-position $ stop",          alAState, alAVal, alAMetrics)
-      +     card("AL", "Velocity Fuse", "Per-position velocity stop", alBState, alBVal, alBMetrics)
+      +     card("AL", "A1 Loss",     "Per-position $ stop",          alAState, alAVal, alAMetrics)
+      +     card("AL", "A2 Flash",    "1-min adverse velocity %",    alBState, alBVal, alBMetrics)
       +     card("POS", "Strikes",    "Strikes used today (cap 3)",   posState, posVal, posMetrics)
       +   '</div>'
       + '</div>';
@@ -1095,6 +1144,156 @@
     _pmtxApplyExpanded();
   }
 
+  // v5.21.0 — Daily SMA stack panel. Renders the new per-row SMA
+  // section inside the expanded Titan detail panel, just after the
+  // pipeline-components comp-strip. Returns an HTML string.
+  // Handles null sma_stack defensively — renders a placeholder instead
+  // of crashing. None-safe per window: if smas[window] is null, renders
+  // a dash in the swatch column with no gate chip and no delta.
+  function _pmtxSmaStackPanel(smaStack) {
+    if (!smaStack) {
+      return '<div class="pmtx-sma-section pmtx-sma-unavailable">'
+        + 'Daily SMA stack \u2014 data not available'
+        + '</div>';
+    }
+
+    var dc = smaStack.daily_close;
+    var smas = smaStack.smas || {};
+    var deltasAbs = smaStack.deltas_abs || {};
+    var deltasPct = smaStack.deltas_pct || {};
+    var above = smaStack.above || {};
+    var cls = smaStack.stack_classification || 'mixed';
+    var substate = smaStack.stack_substate || 'scrambled';
+    var orderChips = smaStack.order_chips || [];
+    var orderRelations = smaStack.order_relations || [];
+
+    // --- headline stack pill -------------------------------------------
+    var pillLabel;
+    var pillCls;
+    if (cls === 'bullish') {
+      pillLabel = 'Bullish stack';
+      pillCls = 'pmtx-sma-stack-pill pmtx-sma-pill-bullish';
+    } else if (cls === 'bearish') {
+      pillLabel = 'Bearish stack';
+      pillCls = 'pmtx-sma-stack-pill pmtx-sma-pill-bearish';
+    } else {
+      // mixed: map substate
+      var substateMap = {
+        all_above: 'Above all SMAs',
+        all_below: 'Below all SMAs',
+        above_short_below_long: 'Above short-term \u00b7 below long-term',
+        below_short_above_long: 'Below short-term \u00b7 above long-term',
+        scrambled: 'Scrambled'
+      };
+      pillLabel = substateMap[substate] || 'Scrambled';
+      pillCls = 'pmtx-sma-stack-pill pmtx-sma-pill-mixed';
+    }
+
+    var pillHtml = '<span class="' + pillCls + '">'
+      + '<span class="pmtx-sma-pill-dot"></span>'
+      + escapeHtml(pillLabel)
+      + '</span>';
+
+    // --- section heading -----------------------------------------------
+    var headHtml = '<div class="pmtx-sma-section-head">'
+      + '<span>Daily SMA stack</span>'
+      + '<span class="pmtx-sma-kbd">new</span>'
+      + '<span class="pmtx-sma-help">daily close vs. 12\u00a0/\u00a022\u00a0/\u00a055\u00a0/\u00a0100\u00a0/\u00a0200-day SMA \u00b7 &ldquo;bullish stack&rdquo; when 12&gt;22&gt;55</span>'
+      + pillHtml
+      + '</div>';
+
+    // --- table header --------------------------------------------------
+    var WINDOWS = [12, 22, 55, 100, 200];
+    var theadHtml = '<thead><tr>'
+      + '<th class="pmtx-sma-label-col">Daily close</th>';
+    WINDOWS.forEach(function(w) {
+      theadHtml += '<th><span class="pmtx-sma-swatch pmtx-sma-sw-' + w + '"></span>SMA\u00a0' + w + '</th>';
+    });
+    theadHtml += '</tr></thead>';
+
+    // --- table body row ------------------------------------------------
+    var dcStr = (dc !== null && dc !== undefined) ? ('$' + dc.toFixed(2)) : '\u2014';
+    var tbodyHtml = '<tbody><tr>'
+      + '<td class="pmtx-sma-label-col pmtx-sma-close-cell">' + escapeHtml(dcStr) + '</td>';
+
+    WINDOWS.forEach(function(w) {
+      var smaVal = (smas[w] !== undefined && smas[w] !== null) ? smas[w] : null;
+      if (smaVal === null) {
+        tbodyHtml += '<td><span class="pmtx-sma-none">\u2014</span></td>';
+        return;
+      }
+      var isAbove = above[w];
+      var gateClass = isAbove ? 'pmtx-sma-gate pmtx-sma-gate-pass' : 'pmtx-sma-gate pmtx-sma-gate-fail';
+      var gateMark = isAbove ? '\u2713' : '\u2717';
+
+      var dAbs = (deltasAbs[w] !== null && deltasAbs[w] !== undefined) ? deltasAbs[w] : null;
+      var dPct = (deltasPct[w] !== null && deltasPct[w] !== undefined) ? deltasPct[w] : null;
+      var deltaHtml = '';
+      if (dAbs !== null && dPct !== null) {
+        var sign = dAbs >= 0 ? '+' : '';
+        var pctSign = dPct >= 0 ? '+' : '';
+        var deltaClass = dAbs >= 0 ? 'pmtx-sma-delta pmtx-sma-delta-pos' : 'pmtx-sma-delta pmtx-sma-delta-neg';
+        var absStr = sign + '$' + Math.abs(dAbs).toFixed(2);
+        var pctStr = pctSign + (dPct * 100).toFixed(1) + '%';
+        deltaHtml = '<span class="' + deltaClass + '">' + escapeHtml(absStr + ' \u00b7 ' + pctStr) + '</span>';
+      }
+
+      tbodyHtml += '<td>'
+        + '<span class="' + gateClass + '">' + gateMark + '</span>'
+        + deltaHtml
+        + '</td>';
+    });
+    tbodyHtml += '</tr></tbody>';
+
+    // --- footer order-line --------------------------------------------
+    // Consume order_chips and order_relations to render SMA 12 op SMA 22 op SMA 55
+    var opMap = { gt: '>', lt: '<', eq: '=', unknown: '?' };
+    var opCssMap = { gt: 'pmtx-sma-order-op-ok', lt: 'pmtx-sma-order-op-bad', eq: 'pmtx-sma-order-op-neut', unknown: 'pmtx-sma-order-op-neut' };
+
+    var footerInner = '<div class="pmtx-sma-order-line">'
+      + '<span class="pmtx-sma-order-lbl">Order</span>';
+
+    for (var i = 0; i < orderChips.length; i++) {
+      var chip = orderChips[i];
+      var chipW = chip.window;
+      var chipVal = (chip.value !== null && chip.value !== undefined) ? chip.value.toFixed(2) : '\u2014';
+      footerInner += '<span class="pmtx-sma-order-chip">'
+        + '<span class="pmtx-sma-swatch pmtx-sma-sw-' + chipW + '"></span>'
+        + 'SMA\u00a0' + chipW + '\u00a0\u00b7\u00a0' + escapeHtml(chipVal)
+        + '</span>';
+      if (i < orderRelations.length) {
+        var rel = orderRelations[i];
+        var opSym = opMap[rel] || '?';
+        var opCls = 'pmtx-sma-order-op ' + (opCssMap[rel] || 'pmtx-sma-order-op-neut');
+        footerInner += '<span class="' + opCls + '">' + escapeHtml(opSym) + '</span>';
+      }
+    }
+
+    // Headline verdict tag (right-aligned)
+    if (cls === 'bullish') {
+      footerInner += '<span class="pmtx-sma-order-verdict pmtx-sma-order-verdict-bullish">12 &gt; 22 &gt; 55 \u2713</span>';
+    } else if (cls === 'bearish') {
+      footerInner += '<span class="pmtx-sma-order-verdict pmtx-sma-order-verdict-bearish">12 &lt; 22 &lt; 55 \u2717</span>';
+    }
+
+    footerInner += '</div>';
+
+    var tfootHtml = '<tfoot><tr><td colspan="6">' + footerInner + '</td></tr></tfoot>';
+
+    // --- assemble ---------------------------------------------------
+    return '<div class="pmtx-sma-section">'
+      + headHtml
+      + '<div class="pmtx-sma-wrap">'
+      + '<table class="pmtx-sma-table">'
+      + theadHtml
+      + tbodyHtml
+      + tfootHtml
+      + '</table>'
+      + '</div>'
+      + '</div>';
+  }
+
+
   function _pmtxBuildRow(
     tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
     longPermit, shortPermit,
@@ -1104,6 +1303,8 @@
     perPositionV510 = perPositionV510 || {};
     regimeBlock = regimeBlock || {};
     const p2 = idx.p2[tkr] || null;
+    // v5.21.0 — sma_stack is nested in the phase2 row dict.
+    const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
     // Pick the side that has a permit; if both, prefer LONG.
     const preferSide = longPermit ? "LONG" : (shortPermit ? "SHORT" : "LONG");
     const p3 = idx.p3[tkr + ":" + preferSide] || idx.p3[tkr] || null;
@@ -1297,6 +1498,7 @@
             regimeBlock: regimeBlock,
             sectionIPermit: sectionIPermit,
           })
+        + _pmtxSmaStackPanel(smaStack)
         + (sentinelStripHtml || "");
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
         + '<td colspan="9">' + detailInner + '</td></tr>';
@@ -1339,41 +1541,169 @@
       +  '</div>';
   }
 
-  // Inline 5-cell sentinel strip rendered under any open-position row.
-  // A=Sovereign Brake, B=Velocity Fuse, C=Velocity Ratchet,
-  // D=ADX Collapse, E=Divergence Trap. Only A/B/C are surfaced by
-  // /api/state in v5.16 (sentinel.a1_pnl, sentinel.a2_velocity,
-  // titan_grip.stage). D + E render as pending until the backend
-  // exposes them — follow-up PR.
+  // v5.21.0 — Helper: pick new vAA-1 alarm sub-dict from sentinel object,
+  // with graceful fall-back to legacy flat keys when new key is absent.
+  // newKey   : e.g. "a_loss"    (sentinel sub-dict key)
+  // legacyMap: e.g. { pnl: "a1_pnl", threshold: "a1_threshold" }
+  //            maps sub-dict field names to the legacy flat key names.
+  // Returns the resolved sub-dict (may have null values if all legacy
+  // lookups also miss).
+  function _pmtxPickAlarm(sen, newKey, legacyMap) {
+    // Prefer the vAA-1 sub-dict when it is a real object.
+    const newVal = sen[newKey];
+    if (newVal && typeof newVal === "object") return newVal;
+    // Fall back: build a minimal object from legacy flat keys.
+    const out = {};
+    for (const [field, legKey] of Object.entries(legacyMap || {})) {
+      const v = sen[legKey];
+      out[field] = (v !== undefined) ? v : null;
+    }
+    return out;
+  }
+
+  // v5.21.0 — Helper: derive 'triggered' | 'armed' | 'idle' state class
+  // from a resolved alarm sub-dict.
+  function _pmtxAlarmStateClass(alarm) {
+    if (!alarm || typeof alarm !== "object") return "idle";
+    if (alarm.triggered) return "triggered";
+    if (alarm.armed)     return "armed";
+    return "idle";
+  }
+
+  // v5.21.0 — Inline 5-cell sentinel strip rendered under any open-position
+  // row. Labels and data sources follow vAA-1 spec (tiger_sovereign_spec_vAA-1
+  // Section 5). New keys preferred; legacy keys used as fallback during the
+  // deploy window when new backend fields are not yet present.
+  //
+  // Alarm exit classification per spec Section 5 architectural rule:
+  //   A1/A2/B/D -> MARKET EXIT   |   C/E -> STOP MARKET ratchets
   function _pmtxSentinelStrip(p4) {
     const sen = (p4 && p4.sentinel) || {};
-    const tg  = (p4 && p4.titan_grip) || {};
-    const a1 = (typeof sen.a1_pnl === "number") ? sen.a1_pnl : null;
-    const a1Th = (typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500;
-    const aState = (a1 === null) ? "armed" : (a1 <= a1Th ? "trip" : "safe");
-    const a2 = (typeof sen.a2_velocity === "number") ? sen.a2_velocity : null;
-    const a2Th = (typeof sen.a2_threshold === "number") ? sen.a2_threshold : -0.01;
-    const bState = (a2 === null) ? "armed" : (a2 <= a2Th ? "trip" : "safe");
-    const stage = (typeof tg.stage === "number") ? tg.stage : null;
-    const cState = (stage === null) ? "armed" : (stage >= 1 ? "safe" : "armed");
-    const cVal = (stage === null) ? "\u2014" : ("stage " + stage);
-    const dState = "armed";
-    const eState = "armed";
 
-    function cell(letter, name, val, state) {
+    // --- Cell A1: Loss ---
+    // vAA-1 SENT-A_LOSS: unrealized PnL <= -$500 -> MARKET EXIT.
+    const aLoss = _pmtxPickAlarm(sen, "a_loss", {
+      pnl: "a1_pnl",
+      threshold: "a1_threshold"
+    });
+    const aLossPnl = (typeof aLoss.pnl === "number") ? aLoss.pnl : null;
+    const aLossTh  = (typeof aLoss.threshold === "number") ? aLoss.threshold : -500;
+    // Ensure armed/triggered are coherent when falling back to legacy.
+    if (aLoss.armed === null || aLoss.armed === undefined) {
+      aLoss.armed     = (aLossPnl !== null);
+      aLoss.triggered = (aLossPnl !== null && aLossPnl <= aLossTh);
+    }
+    const a1State  = _pmtxAlarmStateClass(aLoss);
+    const a1Val    = _pmtxMoney(aLossPnl) + " / " + _pmtxMoney(aLossTh);
+
+    // --- Cell A2: Flash ---
+    // vAA-1 SENT-A_FLASH: 60-second PnL velocity <= -1.0% of position value.
+    // The new key stores velocity_pct (a plain ratio, e.g. -0.013 = -1.3%).
+    // Legacy key a2_velocity was a per-second rate (units: pnl/s, NOT a %);
+    // reconciling units is unsafe, so we default to "—" when only the legacy
+    // key is present and the new sub-dict is absent.
+    // TODO(v5.21.0): remove legacy fallback once deploy window closes.
+    const aFlash = _pmtxPickAlarm(sen, "a_flash", {
+      // Intentionally no legacy map here — unit mismatch makes the legacy
+      // a2_velocity value misleading as a percent. Prefer safe "—".
+      velocity_pct: null,
+      threshold_pct: null
+    });
+    const a2VelPct = (typeof aFlash.velocity_pct === "number") ? aFlash.velocity_pct : null;
+    const a2ThPct  = (typeof aFlash.threshold_pct === "number") ? aFlash.threshold_pct : -0.01;
+    if (aFlash.armed === null || aFlash.armed === undefined) {
+      aFlash.armed     = (a2VelPct !== null);
+      aFlash.triggered = (a2VelPct !== null && a2VelPct <= a2ThPct);
+    }
+    const a2State = _pmtxAlarmStateClass(aFlash);
+    const a2Val   = (a2VelPct !== null)
+      ? (_pmtxNum(a2VelPct * 100, 2) + "% / " + _pmtxNum(a2ThPct * 100, 2) + "%")
+      : "\u2014";
+
+    // --- Cell B: Trend Death ---
+    // vAA-1 SENT-B: 5m QQQ close crosses 9-EMA in the adverse direction.
+    const bTrend = _pmtxPickAlarm(sen, "b_trend_death", {
+      close: "b_close",
+      ema9:  "b_ema9",
+      delta: "b_delta"
+    });
+    const bClose = (typeof bTrend.close === "number") ? bTrend.close : null;
+    const bEma9  = (typeof bTrend.ema9  === "number") ? bTrend.ema9  : null;
+    const bDelta = (typeof bTrend.delta === "number") ? bTrend.delta : null;
+    if (bTrend.armed === null || bTrend.armed === undefined) {
+      bTrend.armed     = (bClose !== null && bEma9 !== null);
+      bTrend.triggered = false; // legacy sentinel does not record a triggered flag
+    }
+    const bState = _pmtxAlarmStateClass(bTrend);
+    const bVal   = (bClose !== null && bEma9 !== null)
+      ? ("close=" + _pmtxNum(bClose) + " / ema=" + _pmtxNum(bEma9) +
+         (bDelta !== null ? " / \u0394=" + _pmtxNum(bDelta) : ""))
+      : "\u2014";
+
+    // --- Cell C: Velocity Ratchet ---
+    // vAA-1 SENT-C: three strictly-decreasing 1m ADX values -> STOP MARKET.
+    const cRatchet = _pmtxPickAlarm(sen, "c_velocity_ratchet", {});
+    const cWindow  = Array.isArray(cRatchet.adx_window) ? cRatchet.adx_window : [null, null, null];
+    const cStop    = (typeof cRatchet.stop_price === "number") ? cRatchet.stop_price : null;
+    const cState   = _pmtxAlarmStateClass(cRatchet);
+    let cAdxStr = cWindow.map(v => (v !== null && v !== undefined) ? _pmtxNum(v, 1) : "\u2014").join("\u2192");
+    let cVal    = "adx [" + cAdxStr + "]";
+    if (cRatchet.triggered && cStop !== null) cVal += " \u2192 stop " + _pmtxMoney(cStop);
+
+    // --- Cell D: HVP Lock ---
+    // vAA-1 SENT-D: current 5m ADX < 75% of Trade_HVP -> MARKET EXIT.
+    // Real data now flows from backend (d_hvp_lock sub-dict).
+    const dHvp       = _pmtxPickAlarm(sen, "d_hvp_lock", {});
+    const dCur5m     = (typeof dHvp.current_5m_adx === "number") ? dHvp.current_5m_adx : null;
+    const dTradeHvp  = (typeof dHvp.trade_hvp      === "number") ? dHvp.trade_hvp      : null;
+    const dRatio     = (typeof dHvp.ratio           === "number") ? dHvp.ratio          : null;
+    const dState     = _pmtxAlarmStateClass(dHvp);
+    const dVal       = (dCur5m !== null && dTradeHvp !== null && dRatio !== null)
+      ? ("ADX " + _pmtxNum(dCur5m, 1) + " / peak " + _pmtxNum(dTradeHvp, 1) +
+         " (" + _pmtxNum(dRatio * 100, 0) + "%)")
+      : "\u2014";
+
+    // --- Cell E: Divergence Trap ---
+    // vAA-1 SENT-E: price extreme + RSI divergence -> blocks S2/S3 or ratchets stop.
+    // Real data now flows from backend (e_divergence_trap sub-dict).
+    const eTrap    = _pmtxPickAlarm(sen, "e_divergence_trap", {});
+    const eState   = _pmtxAlarmStateClass(eTrap);
+    let eVal;
+    if (eTrap.triggered) {
+      if (eTrap.pre_blocked_for_strike !== null && eTrap.pre_blocked_for_strike !== undefined) {
+        eVal = "blocks S" + eTrap.pre_blocked_for_strike;
+      } else if (eTrap.post_ratchet_stop !== null && eTrap.post_ratchet_stop !== undefined) {
+        eVal = "stop " + _pmtxMoney(eTrap.post_ratchet_stop);
+      } else {
+        eVal = "triggered";
+      }
+    } else if (eTrap.armed) {
+      const eCurRsi  = (typeof eTrap.current_rsi_15   === "number") ? eTrap.current_rsi_15   : null;
+      const ePeakRsi = (typeof eTrap.stored_peak_rsi  === "number") ? eTrap.stored_peak_rsi  : null;
+      eVal = (eCurRsi !== null && ePeakRsi !== null)
+        ? ("RSI " + _pmtxNum(eCurRsi, 1) + " / peak " + _pmtxNum(ePeakRsi, 1))
+        : "\u2014";
+    } else {
+      eVal = "\u2014";
+    }
+
+    function cell(label, subtitle, val, state) {
       return '<div class="pmtx-sentinel-cell pmtx-sen-' + state + '">'
-        +   '<span class="pmtx-sen-letter">' + letter + '</span>'
-        +   '<span class="pmtx-sen-name">' + escapeHtml(name) + '</span>'
+        +   '<span class="pmtx-sen-letter">' + escapeHtml(label) + '</span>'
+        +   '<span class="pmtx-sen-name">' + escapeHtml(subtitle) + '</span>'
         +   '<span class="pmtx-sen-val">' + escapeHtml(val) + '</span>'
         + '</div>';
     }
 
-    return '<div class="pmtx-sentinel-strip" title="Per-position sentinel alarms (A\u2013E). Green = safe, amber = armed, red = tripped.">'
-      +   cell("A", "Sov. Brake",   _pmtxMoney(a1) + " / " + _pmtxMoney(a1Th), aState)
-      +   cell("B", "Velocity Fuse", _pmtxNum(a2, 4) + "/s", bState)
-      +   cell("C", "Vel. Ratchet", cVal, cState)
-      +   cell("D", "ADX Collapse", "\u2014", dState)
-      +   cell("E", "Div. Trap",    "\u2014", eState)
+    return '<div class="pmtx-sentinel-strip"'
+      +   ' title="Sentinel Loop \u2014 all 6 alarms evaluated in parallel.'
+      +   ' A1/A2/B/D trigger MARKET EXIT; C/E trigger STOP MARKET ratchets.">'
+      +   cell("A1 Loss",       "Per-position $ stop",    a1Val, a1State)
+      +   cell("A2 Flash",      "1-min adverse %",        a2Val, a2State)
+      +   cell("B Trend Death", "5m close vs 9-EMA",      bVal,  bState)
+      +   cell("C Vel. Ratchet","3 declining 1m ADX",     cVal,  cState)
+      +   cell("D HVP Lock",    "5m ADX < 75% peak",      dVal,  dState)
+      +   cell("E Div. Trap",   "Price extreme + RSI div", eVal, eState)
       + '</div>';
   }
 
@@ -2508,8 +2838,8 @@
       PHASE1_EVAL:      "Phase 1 evaluation — index regime + permit (long/short) recomputed.",
       PHASE2_EVAL:      "Phase 2 evaluation — per-ticker volume gate and 5m boundary-hold check.",
       PHASE3_CANDIDATE: "Phase 3 candidate — a ticker armed for entry but did not yet fire (DI/NHOD/cross checks).",
-      PHASE4_SENTINEL:  "Phase 4 sentinel — alarm A1/A2/B status changed (or fired) on an open position.",
-      TITAN_GRIP_STAGE: "Titan Grip stage transition — trail engaged or ratcheted to a new stage.",
+      PHASE4_SENTINEL:  "Phase 4 sentinel — Sentinel Loop alarm status changed (or fired) on an open position. A1 Loss / A2 Flash / B Trend Death / C Vel. Ratchet / D HVP Lock / E Div. Trap.",
+      TITAN_GRIP_STAGE: "Trail ratchet stage transition — stop anchor advanced to a new ratchet level.",
       ORDER_SUBMIT:     "Order submitted — broker order ticket sent (entry or close).",
       ORDER_FILL:       "Order filled — broker reported fill price and quantity.",
       ORDER_CANCEL:     "Order cancelled — the order ticket was cancelled before/after partial fill.",
@@ -2543,12 +2873,12 @@
       realized_pnl:       "Realized profit/loss in dollars after commissions",
       realized_pnl_pct:   "Realized profit/loss as a percent of entry notional",
       hold_seconds:       "Time the position was open, in seconds",
-      alarm_codes:        "Sentinel alarm codes that fired this tick (A1=$ stop, A2=velocity, B=QQQ vs 9-EMA)",
+      alarm_codes:        "Sentinel alarm codes that fired this tick (A_LOSS=$ stop, A_FLASH=1-min velocity, B=QQQ vs 9-EMA, C=velocity ratchet, D=HVP lock, E=divergence trap)",
       fired:              "True if the sentinel actually closed the position this tick",
       current_price:      "Last mark price observed at sentinel evaluation time",
       state:              "Comma-joined alarm codes (or OK)",
-      stage:              "Titan Grip stage (0 = pre-arm, 1+ = trail engaged + ratcheting)",
-      anchor:             "Titan Grip anchor price the trail is measured from",
+      stage:              "Ratchet stage (0 = pre-arm, 1+ = trail engaged + ratcheting)",
+      anchor:             "Trail anchor price the stop is measured from",
       shares_remaining:   "Shares still open after any partial harvest"
     };
 
