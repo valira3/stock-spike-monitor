@@ -707,19 +707,47 @@
       + '<div class="pmtx-table-wrap">'
       +   '<table class="pmtx-table"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
-      +     '<th class="pmtx-col-orb" title="5-minute Opening Range break (2 consecutive 1m closes above OR_high or below OR_low)">5m ORB</th>'
-      +     '<th class="pmtx-col-adx" title="5-minute ADX above 20 \u2014 trend strength gate (derived from Phase 3 entry state)">ADX&gt;20</th>'
-      +     '<th class="pmtx-col-diplus" title="DI on 5-minute bars above 25 at Entry 1 trigger \u2014 DI+ for LONG permits, DI\u2212 for SHORT">DI\u00b1 5m&gt;25</th>'
-      +     '<th class="pmtx-col-vol" title="Volume Bucket gate \u2014 Phase 2 PASS/FAIL/COLD/OFF">Vol</th>'
-      +     '<th class="pmtx-col-strike" title="Strike Cap \u2014 max 3 entries per ticker per session (STRIKE-CAP-3, long+short combined)">Strikes</th>'
-      +     '<th class="pmtx-col-state" title="Per-ticker FSM state">State</th>'
-      +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to nearest OR boundary (ORH=OR-high, ORL=OR-low)">Dist</th>'
+      +     '<th class="pmtx-col-orb" title="L-P2-S4 / S-P2-S4 \u2014 ORH/ORL Boundary. Two consecutive 1m candles must close strictly above the 5m ORH (long) or strictly below the 5m ORL (short). ORH/ORL frozen at 09:35:59 ET on the 5m bar that closes at 09:35.">ORB</th>'
+      +     '<th class="pmtx-col-adx" title="Trend strength proxy (not a primary spec gate). Lights up once the Phase 3 master anchor fires (5m DI\u00b1 > 25), which empirically requires 5m ADX > 20.">Trend</th>'
+      +     '<th class="pmtx-col-diplus" title="L-P3-AUTH / S-P3-AUTH \u2014 Phase 3 master anchor. 5m DI+ > 25 (long) or 5m DI\u2212 > 25 (short). If FALSE \u2192 no entry, regardless of 1m DI.">5m DI\u00b1</th>'
+      +     '<th class="pmtx-col-vol" title="L-P2-S3 / S-P2-S3 \u2014 Volume gate. Auto-passes before 10:00 ET. After 10:00 ET, requires 1m volume \u2265 1.00\u00d7 rolling 55-bar same-minute average.">Vol</th>'
+      +     '<th class="pmtx-col-strike" title="STRIKE-CAP-3 \u2014 maximum 3 Strikes per ticker per session. STRIKE-FLAT-GATE: next strike requires position fully flat. Counters reset at 09:30:00 ET.">Strikes</th>'
+      +     '<th class="pmtx-col-state" title="Per-ticker FSM \u2014 IDLE \u00b7 ARMED (P1+P2 satisfied, awaiting P3) \u00b7 IN POS \u00b7 LOCKED (3-of-3 used).">State</th>'
+      +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to nearest OR boundary (ORH=OR-high, ORL=OR-low). Boundary defined by L-P2-S4 / S-P2-S4.">Dist</th>'
       +     '<th class="pmtx-col-expand" aria-label="Toggle detail"></th>'
       +   '</tr></thead><tbody>' + rowsHtml.join("") + '</tbody></table>'
       + '</div>';
 
     // Wire up the click-to-expand toggle. One delegated handler attached
     // to body so we don't leak listeners on every re-render.
+    //
+    // v5.19.4 \u2014 sticky expand. Previously the expanded class was set
+    // on the live DOM only, so the next /api/state push (every 1\u20132s
+    // via SSE) re-built body.innerHTML and wiped the class \u2014 the
+    // user saw the row "immediately collapse". The fix:
+    //   1. Track expanded ticker(s) in body.__pmtxExpandedSet (Set).
+    //   2. After every render (just below) re-apply the classes.
+    //   3. Click handler updates the Set, then re-applies. Single-open
+    //      semantics: clicking a different row replaces the prior
+    //      expansion. Re-clicking the same row collapses it.
+    //   4. Document-level "click outside" listener clears the Set so
+    //      clicking anywhere outside the matrix collapses the open row.
+    if (!body.__pmtxExpandedSet) body.__pmtxExpandedSet = new Set();
+    function _pmtxApplyExpanded() {
+      const set = body.__pmtxExpandedSet || new Set();
+      const allMain = body.querySelectorAll("tr.pmtx-row[data-pmtx-tkr]");
+      allMain.forEach((r) => {
+        const t = r.getAttribute("data-pmtx-tkr");
+        const want = set.has(t);
+        r.classList.toggle("pmtx-row-expanded", want);
+      });
+      const allDetail = body.querySelectorAll("tr.pmtx-detail-row[data-pmtx-tkr]");
+      allDetail.forEach((r) => {
+        const t = r.getAttribute("data-pmtx-tkr");
+        r.classList.toggle("pmtx-detail-open", set.has(t));
+      });
+    }
+    body.__pmtxApplyExpanded = _pmtxApplyExpanded;
     if (!body.__pmtxExpandWired) {
       body.addEventListener("click", function (ev) {
         const trigger = ev.target.closest("tr.pmtx-row[data-pmtx-tkr]");
@@ -727,11 +755,27 @@
         const tkr = trigger.getAttribute("data-pmtx-tkr");
         const detail = body.querySelector('tr.pmtx-detail-row[data-pmtx-tkr="' + tkr + '"]');
         if (!detail) return; // no detail to expand for this row
-        const open = trigger.classList.toggle("pmtx-row-expanded");
-        detail.classList.toggle("pmtx-detail-open", open);
+        const set = body.__pmtxExpandedSet;
+        const wasOpen = set.has(tkr);
+        set.clear(); // single-open semantics
+        if (!wasOpen) set.add(tkr);
+        _pmtxApplyExpanded();
+      });
+      // Outside-click collapses any open detail. Capture phase so the
+      // matrix's own click handler still wins for in-matrix clicks.
+      document.addEventListener("click", function (ev) {
+        if (!body.__pmtxExpandedSet || body.__pmtxExpandedSet.size === 0) return;
+        // If the click landed on a tab button, header chip, or anything
+        // outside this body, collapse all expanded rows.
+        if (!body.contains(ev.target)) {
+          body.__pmtxExpandedSet.clear();
+          if (typeof body.__pmtxApplyExpanded === "function") body.__pmtxApplyExpanded();
+        }
       });
       body.__pmtxExpandWired = true;
     }
+    // Re-apply after every render (innerHTML above wiped the classes).
+    _pmtxApplyExpanded();
   }
 
   function _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker, longPermit, shortPermit) {
