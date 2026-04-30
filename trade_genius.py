@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.15.1"
+BOT_VERSION = "5.16.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,19 +102,17 @@ BOT_VERSION = "5.15.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.14.0 \u2014 Shadow retired\n"
-    "All four shadow configs and\n"
-    "the [V510-SHADOW] / [V520-\n"
-    "SHADOW-PNL] log emitters are\n"
-    "gone. Diagnostic emitters\n"
-    "[V510-CAND], [V510-FSM] and\n"
-    "[V510-MINUTE] stay live for\n"
-    "future replay-based work.\n"
-    "Dashboard Shadow tab, charts\n"
-    "and oomph panel removed; the\n"
-    "shadow_data_status field is\n"
-    "now volume_feed_status. The\n"
-    "shadow_positions table drops."
+    "v5.16.0 \u2014 Legacy purge\n"
+    "Tiger Sovereign vAA-1 is the\n"
+    "only strategy. engine.titan_\n"
+    "grip shim, shadow tombstone\n"
+    "comments, v4 paper_state\n"
+    "migration, and the non-Titan\n"
+    "DI exit fallback are gone.\n"
+    "5-of-5 sentinel surface (A\n"
+    "B C D E) with LIMIT-priced\n"
+    "Strike entries is the live\n"
+    "production path."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -493,17 +491,13 @@ TITAN_TICKERS: list = [
     "NVDA", "ORCL", "TSLA",
 ]
 # v5.15.0 vAA-1 \u2014 STRIKE-CAP-3 retires the unlimited-Titan path. The
-# constant is preserved at module level (False) for back-compat with
-# legacy smoke checks; STRIKE-CAP-3 in `strike_entry_allowed` is the
-# active gate.
+# constant is pinned False at module level; STRIKE-CAP-3 in
+# `strike_entry_allowed` is the active gate.
 ENABLE_UNLIMITED_TITAN_STRIKES: bool = False
-# v5.10.0 \u2014 Section VI Daily Circuit Breaker (was -$500 in v5.9.x).
+# Section VI Daily Circuit Breaker.
 DAILY_LOSS_LIMIT_DOLLARS: float = -1500.0
-# v5.7.1 \u2014 Bison & Buffalo exit FSM (Titans only). When False, Titan
-# tickers fall back to the legacy DI/structural exits used by non-Titan
-# tickers. VELOCITY_FUSE_PCT is the strict >1.0% adverse intra-candle
-# threshold (LONG fires <99%, SHORT fires >101% of the current 1m open).
-ENABLE_BISON_BUFFALO_EXITS: bool = True
+# Velocity Fuse: strict >1.0% adverse intra-candle threshold
+# (LONG fires <99%, SHORT fires >101% of the current 1m open).
 VELOCITY_FUSE_PCT: float = 0.01
 TICKERS_MAX = 40            # sanity upper bound to protect cycle budget
 TICKER_SYM_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,7}$")
@@ -515,12 +509,10 @@ TRADE_TICKERS = [t for t in TICKERS if t not in TICKERS_PINNED]
 # ------------------------------------------------------------
 # v5.1.0 \u2014 Forensic Volume Filter.
 # ------------------------------------------------------------
-# v5.14.0: shadow gate evaluation removed. The module still owns the
-# 55-day per-minute baseline + IEX WebSocket consumer; live enforcement
-# is gated behind VOL_GATE_ENFORCE and the Tiger Sovereign permits.
-# v5.14.0 also retired the [V510-SHADOW] / [V510-SHADOW][CFG=...] log
-# stream; diagnostics now flow through [V510-CAND] / [V510-FSM] /
-# [V510-MINUTE] only.
+# Owns the 55-day per-minute baseline + IEX WebSocket consumer; live
+# enforcement is gated behind VOL_GATE_ENFORCE and the Tiger Sovereign
+# permits. Diagnostics flow through [V510-CAND] / [V510-FSM] /
+# [V510-MINUTE].
 VOLUME_PROFILE_ENABLED: bool = True
 _volume_profile_cache: dict = {}        # {ticker: profile dict}
 _ws_consumer = None                      # set by _start_volume_profile()
@@ -640,18 +632,9 @@ def _start_volume_profile() -> None:
     ).start()
 
 
-# ---------------------------------------------------------------------------
-# v5.14.0 \u2014 Shadow strategy infrastructure removed.
-#
-# Prior to v5.14.0 this section emitted [V510-SHADOW][CFG=...] lines for
-# the 5 SHADOW_CONFIGS analysis profiles, owned [V520-SHADOW-PNL] virtual
-# position open/mtm/close, and exposed `_shadow_log_g4`,
-# `_v520_paper_equity_snapshot`, `_v520_open_shadow`, `_v520_mtm_ticker`,
-# `_v520_close_shadow_all`, `_v521_all_shadow_config_names`. All deleted.
-# Live diagnostics now flow through [V510-CAND] / [V510-FSM] /
-# [V510-MINUTE] only; bar archive at /data/bars/ remains the canonical
-# substrate for offline backtests.
-# ---------------------------------------------------------------------------
+# Live diagnostics flow through [V510-CAND] / [V510-FSM] / [V510-MINUTE]
+# only. Bar archive at /data/bars/ is the canonical substrate for offline
+# backtests.
 
 
 # ---------------------------------------------------------------------------

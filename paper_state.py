@@ -5,6 +5,7 @@ motion \u2014 zero behavior change. The mutable state globals
 (paper_cash, positions, etc.) still live in trade_genius; this module
 reads/writes them through the live-module accessor below.
 """
+
 from __future__ import annotations
 
 # v4.5.4 / v4.6.0 \u2014 prod runs `python trade_genius.py`, so trade_genius
@@ -67,7 +68,8 @@ def save_paper_state():
         logger.warning(
             "DATA LOSS GUARD: no trade history or open positions but "
             "cash=$%.2f (start=$%.0f) \u2014 possible trade history wipe!",
-            tg.paper_cash, tg.PAPER_STARTING_CAPITAL,
+            tg.paper_cash,
+            tg.PAPER_STARTING_CAPITAL,
         )
     # v4.1.1: snapshot construction moved INSIDE the lock so a concurrent
     # save (5-min periodic + scan-loop close_position) cannot build a
@@ -129,29 +131,29 @@ def load_paper_state():
     global _state_loaded
     tg = _tg()
 
-    # v5.1.8 \u2014 ensure SQLite store is initialized BEFORE the JSON load
-    # path so the migrate-from-JSON helper can import any pre-existing
-    # v5_*_tracks blob into SQLite on first boot under the new scheme.
+    # Ensure SQLite store is initialized before the JSON load path so the
+    # subsequent load_all_tracks call returns any tracks that were already
+    # persisted by a prior boot.
     try:
         persistence.init_db()
-        persistence.migrate_from_json(tg.PAPER_STATE_FILE)
     except Exception as e:
-        logger.warning("persistence init/migrate failed: %s", e)
+        logger.warning("persistence init failed: %s", e)
 
     if not os.path.exists(tg.PAPER_STATE_FILE):
-        tg.paper_log("No saved state at %s. Starting fresh $%.0f."
-                     % (tg.PAPER_STATE_FILE, tg.PAPER_STARTING_CAPITAL))
+        tg.paper_log(
+            "No saved state at %s. Starting fresh $%.0f."
+            % (tg.PAPER_STATE_FILE, tg.PAPER_STARTING_CAPITAL)
+        )
         # Pull any v5 tracks already in SQLite (e.g. left over from a
         # previous run whose JSON file was rotated away).
         try:
             from tiger_buffalo_v5 import load_track as _v5_load, DIR_LONG, DIR_SHORT
+
             tg.v5_long_tracks = {
-                t: _v5_load(s, DIR_LONG)
-                for t, s in persistence.load_all_tracks("long").items()
+                t: _v5_load(s, DIR_LONG) for t, s in persistence.load_all_tracks("long").items()
             }
             tg.v5_short_tracks = {
-                t: _v5_load(s, DIR_SHORT)
-                for t, s in persistence.load_all_tracks("short").items()
+                t: _v5_load(s, DIR_SHORT) for t, s in persistence.load_all_tracks("short").items()
             }
         except Exception as v5e:
             logger.warning("v5 SQLite restore failed: %s", v5e)
@@ -203,6 +205,7 @@ def load_paper_state():
         # backward-compat with state files written by v4.6.0 and earlier.
         tg.daily_short_entry_date = state.get("daily_short_entry_date", "")
         raw_exit = state.get("last_exit_time", {})
+
         # Normalize to UTC-aware. Older persisted state may contain
         # tz-naive ISO strings; mixing those with tz-aware datetime.now
         # raises "can't subtract offset-naive and offset-aware" and kills
@@ -213,6 +216,7 @@ def load_paper_state():
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
+
         # Per-key try/except: one malformed stored value MUST NOT wipe
         # every ticker's cooldown map. Previously a single bad row in
         # paper_state.json disabled the 15-min re-entry guard for the
@@ -224,7 +228,8 @@ def load_paper_state():
             except Exception:
                 logger.warning(
                     "load_paper_state: dropping malformed last_exit_time[%r]=%r",
-                    _k, _v,
+                    _k,
+                    _v,
                 )
 
         # Load persisted flags
@@ -232,27 +237,18 @@ def load_paper_state():
         tg._trading_halted = state.get("_trading_halted", False)
         tg._trading_halted_reason = state.get("_trading_halted_reason", "")
 
-        # v5.1.8 \u2014 Tiger/Buffalo tracks now live in SQLite via
-        # persistence.load_all_tracks(). Two compat paths handled:
-        # (a) v4 paper_state.json with no v5_* keys at all,
-        # (b) v5.0.0\u20135.1.7 paper_state.json with v5_* keys still
-        #     present \u2014 migrate_from_json (run earlier in this fn)
-        #     copied them into SQLite and renamed the source to
-        #     .migrated.bak, so load_all_tracks now returns them.
-        # Any malformed row is sanitized via tiger_buffalo_v5.load_track.
+        # Tiger/Buffalo tracks live in SQLite via persistence.load_all_tracks().
+        # Any v5_* keys in the JSON file itself are ignored; the SQLite store is
+        # the sole source of truth. Malformed rows are sanitized via
+        # tiger_buffalo_v5.load_track.
         try:
             from tiger_buffalo_v5 import load_track, DIR_LONG, DIR_SHORT
+
             sql_long = persistence.load_all_tracks("long")
             sql_short = persistence.load_all_tracks("short")
-            tg.v5_long_tracks = {
-                t: load_track(sql_long.get(t), DIR_LONG) for t in sql_long
-            }
-            tg.v5_short_tracks = {
-                t: load_track(sql_short.get(t), DIR_SHORT) for t in sql_short
-            }
-            tg.v5_active_direction = dict(
-                state.get("v5_active_direction", {}) or {}
-            )
+            tg.v5_long_tracks = {t: load_track(sql_long.get(t), DIR_LONG) for t in sql_long}
+            tg.v5_short_tracks = {t: load_track(sql_short.get(t), DIR_SHORT) for t in sql_short}
+            tg.v5_active_direction = dict(state.get("v5_active_direction", {}) or {})
         except Exception as v5e:
             logger.warning(
                 "v5 tracks restore failed: %s \u2014 starting clean",
@@ -272,8 +268,12 @@ def load_paper_state():
             tg._trading_halted_reason = ""
 
         _state_loaded = True
-        logger.info("Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
-                    tg.paper_cash, len(tg.positions), len(tg.trade_history))
+        logger.info(
+            "Loaded paper state: cash=$%.2f, %d positions, %d trade_history",
+            tg.paper_cash,
+            len(tg.positions),
+            len(tg.trade_history),
+        )
     except Exception as e:
         # v4.0.8 \u2014 previously we set _state_loaded = True and returned,
         # which let the next periodic save stamp a partially-loaded
@@ -286,7 +286,8 @@ def load_paper_state():
         logger.error(
             "load_paper_state failed: %s \u2014 resetting to fresh book to "
             "avoid persisting partial state on top of the on-disk file",
-            e, exc_info=True,
+            e,
+            exc_info=True,
         )
         tg.paper_cash = tg.PAPER_STARTING_CAPITAL
         tg.positions.clear()

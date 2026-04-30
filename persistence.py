@@ -110,10 +110,9 @@ def init_db(path: Optional[str] = None) -> None:
                 )
                 """
             )
-            # v5.14.0 \u2014 shadow_positions table dropped (shadow
-            # infrastructure retired). Old indexes are dropped too so a
-            # repeat boot doesn't trip on orphaned indexes when the
-            # table is gone.
+            # Idempotent cleanup of the deleted shadow_positions table
+            # and its indexes. Kept so a fresh boot on a stale DB volume
+            # doesn't trip on orphaned schema objects.
             bootstrap.execute("DROP INDEX IF EXISTS idx_shadow_open")
             bootstrap.execute("DROP INDEX IF EXISTS idx_shadow_today")
             bootstrap.execute("DROP TABLE IF EXISTS shadow_positions")
@@ -328,87 +327,6 @@ def replace_all_tracks(
         except Exception:
             pass
         raise
-
-
-# ----------------------------------------------------------------------
-# JSON -> SQLite migration
-# ----------------------------------------------------------------------
-def migrate_from_json(json_path: str) -> int:
-    """One-shot import of v5 tracks from an existing paper_state.json.
-
-    Returns the number of track rows imported (long + short). Renames
-    the source file to <path>.migrated.bak so a subsequent boot does
-    not re-apply it. Idempotent: if the .bak already exists or the
-    source is missing, this is a no-op.
-    """
-    if not json_path or not os.path.exists(json_path):
-        return 0
-    try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            blob = json.load(f)
-    except Exception as e:
-        logger.warning("migrate_from_json: could not read %s: %s", json_path, e)
-        return 0
-    long_raw = blob.get("v5_long_tracks") or {}
-    short_raw = blob.get("v5_short_tracks") or {}
-    if not long_raw and not short_raw:
-        return 0
-    imported = 0
-    c = _conn()
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        now = _utc_now_iso()
-        for ticker, st in long_raw.items():
-            c.execute(
-                "INSERT OR IGNORE INTO v5_long_tracks "
-                "(ticker, state_json, updated_at_utc) VALUES (?, ?, ?)",
-                (
-                    _LONG_PREFIX + ticker,
-                    json.dumps(st, default=str, separators=(",", ":")),
-                    now,
-                ),
-            )
-            imported += 1
-        for ticker, st in short_raw.items():
-            c.execute(
-                "INSERT OR IGNORE INTO v5_long_tracks "
-                "(ticker, state_json, updated_at_utc) VALUES (?, ?, ?)",
-                (
-                    _SHORT_PREFIX + ticker,
-                    json.dumps(st, default=str, separators=(",", ":")),
-                    now,
-                ),
-            )
-            imported += 1
-        c.execute("COMMIT")
-    except Exception:
-        try:
-            c.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-    bak = json_path + ".migrated.bak"
-    try:
-        if not os.path.exists(bak):
-            os.rename(json_path, bak)
-            logger.info(
-                "persistence: migrated %d v5 tracks from %s -> SQLite, renamed source to %s",
-                imported,
-                json_path,
-                bak,
-            )
-    except OSError as e:
-        logger.warning(
-            "persistence: imported %d tracks but could not rename %s: %s",
-            imported,
-            json_path,
-            e,
-        )
-    return imported
-
-
-# v5.14.0 \u2014 shadow_positions helpers removed (table dropped). All
-# legacy save/update/load_*_shadow_position* helpers deleted.
 
 
 # ----------------------------------------------------------------------

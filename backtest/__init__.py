@@ -1,7 +1,7 @@
 """v5.14.0 backtest data-access package.
 
 The original v5.4.0 backtest CLI replayed the (now-retired) SHADOW_CONFIGS
-volume gate against archived 1m bars. In v5.14.0 the shadow strategy and
+volume gate against archived 1m bars. The shadow strategy and
 its `shadow_positions` table were removed; this package was reduced to a
 thin data-access layer over:
 

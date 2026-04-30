@@ -1860,27 +1860,6 @@ def run_local() -> int:
         assert not v5.structural_stop_hit_long(ticker_last=10.0, current_stop=10.0)
         assert not v5.structural_stop_hit_long(10.5, 10.0)
 
-    @t("v5 L-P4-R3 (b): long DI<25 hard exit fires on closed 1m candle")
-    def _():
-        assert v5.hard_exit_di_fail(v5.DIR_LONG, di_1m=24.99)
-        assert not v5.hard_exit_di_fail(v5.DIR_LONG, di_1m=25.0)
-        assert not v5.hard_exit_di_fail(v5.DIR_LONG, di_1m=None)
-
-    @t("v5 L-P4-R3: evaluate_exit returns STRUCTURAL_STOP when long stop hit")
-    def _():
-        track = v5.new_track(v5.DIR_LONG)
-        v5.transition_to_stage1(track, 10.0, 9.5)
-        v5.transition_to_stage2(track)
-        assert v5.evaluate_exit(track, ticker_last=9.99, di_1m_closed=None) == "STRUCTURAL_STOP"
-
-    @t("v5 L-P4-R3: evaluate_exit returns DI_HARD_EJECT on long DI<25")
-    def _():
-        track = v5.new_track(v5.DIR_LONG)
-        v5.transition_to_stage1(track, 10.0, 9.5)
-        v5.transition_to_stage2(track)
-        # Ticker still ABOVE stop, DI just dropped: still exits.
-        assert v5.evaluate_exit(track, ticker_last=11.0, di_1m_closed=20.0) == "DI_HARD_EJECT"
-
     @t("v5 L-P4-R4: post-exit transitions track to EXITED (re-hunt available)")
     def _():
         track = v5.new_track(v5.DIR_LONG)
@@ -2026,32 +2005,10 @@ def run_local() -> int:
             == 10.0
         )
 
-    @t("v5 S-P4-R3: short DI<25 hard eject fires PRIORITY-1 over structural stop")
-    def _():
-        # Configure a track where BOTH structural stop AND DI<25 conditions
-        # are true simultaneously. The result MUST be DI_HARD_EJECT, not
-        # STRUCTURAL_STOP \u2014 short-side priority inversion per S-P4-R3.
-        track = v5.new_track(v5.DIR_SHORT)
-        v5.transition_to_stage1(track, 20.0, 20.5)
-        v5.transition_to_stage2(track)
-        # ticker_last > current_stop (structural hit) AND di < 25 (DI hit)
-        reason = v5.evaluate_exit(track, ticker_last=21.0, di_1m_closed=20.0)
-        assert reason == "DI_HARD_EJECT", f"S-P4-R3 priority violated: got {reason!r}"
-
     @t("v5 S-P4-R4: short structural-stop hit when ticker.last > current_stop")
     def _():
         assert v5.structural_stop_hit_short(ticker_last=21.0, current_stop=20.5)
         assert not v5.structural_stop_hit_short(ticker_last=20.5, current_stop=20.5)
-
-    @t("v5 S-P4-R4: structural exit fires when DI is healthy but stop is breached")
-    def _():
-        track = v5.new_track(v5.DIR_SHORT)
-        v5.transition_to_stage1(track, 20.0, 20.5)
-        v5.transition_to_stage2(track)
-        # DI still healthy (>= 25) so the priority-1 check is silent;
-        # structural stop fires.
-        reason = v5.evaluate_exit(track, ticker_last=21.0, di_1m_closed=30.0)
-        assert reason == "STRUCTURAL_STOP"
 
     # ---------- S-P5: Re-Hunt ----------
     @t("v5 S-P5-R1: short reclamation requires ticker.last < original_entry")
@@ -2190,12 +2147,12 @@ def run_local() -> int:
         assert loaded["current_stop"] == 50.0  # safety lock
         assert m.v5_active_direction.get("AAPL") == "long"
 
-    @t("v5 plumbing: legacy v4 paper_state file loads as IDLE (migration)")
+    @t("v5 plumbing: paper_state file with no v5_* keys loads as IDLE")
     def _():
-        # A v4 paper_state.json never wrote v5_* keys. Loader MUST treat
-        # absent keys as a fresh start (no exception, tracks empty).
-        # v5.1.8: tracks now live in SQLite \u2014 clear the table first so a
-        # prior test's leftover row doesn't masquerade as legacy data.
+        # A paper_state.json that lacks v5_* keys (fresh boot, or a file
+        # written by an older shape) MUST load as IDLE without exception.
+        # Tracks live in SQLite \u2014 clear the table first so a prior
+        # test's leftover row doesn't masquerade as missing-keys data.
         import persistence as _p
 
         _p.replace_all_tracks({}, {})
@@ -2360,38 +2317,6 @@ def run_local() -> int:
             f"STATE_DB_PATH={p.STATE_DB_PATH!r} expected={os.environ['STATE_DB_PATH']!r}"
         )
         assert os.path.exists(p.STATE_DB_PATH), f"DB file not created at {p.STATE_DB_PATH}"
-
-    @t("v5.1.8 persistence: migrate_from_json imports v5 keys then renames source")
-    def _():
-        import persistence as p
-        import json as _json
-        import tempfile
-
-        # Wipe SQLite, build a fake legacy paper_state.json with v5 keys.
-        p.replace_all_tracks({}, {})
-        with tempfile.TemporaryDirectory() as td:
-            src = os.path.join(td, "paper_state.json")
-            blob = {
-                "paper_cash": 100000.0,
-                "v5_long_tracks": {
-                    "AAPL": {"state": "TRAILING", "ticker": "AAPL"},
-                },
-                "v5_short_tracks": {
-                    "TSLA": {"state": "WATCHING", "ticker": "TSLA"},
-                },
-            }
-            with open(src, "w") as f:
-                _json.dump(blob, f)
-            n = p.migrate_from_json(src)
-            assert n == 2, f"expected 2 imports, got {n}"
-            # Source file renamed.
-            assert not os.path.exists(src), "source not renamed"
-            assert os.path.exists(src + ".migrated.bak"), "bak missing"
-            # Tracks now in SQLite.
-            assert p.load_track("AAPL", "long")["state"] == "TRAILING"
-            assert p.load_track("TSLA", "short")["state"] == "WATCHING"
-            # Re-running is a no-op (source already gone).
-            assert p.migrate_from_json(src) == 0
 
     @t("v5 plumbing: MAIN_RELEASE_NOTE aliases CURRENT_MAIN_NOTE")
     def _():
@@ -2828,7 +2753,7 @@ def run_local() -> int:
         assert "COPY volume_profile.py" in df, "Dockerfile missing volume_profile.py COPY"
 
     # ---------------------------------------------------------------
-    # v5.1.1 \u2014 env-driven A/B toggles + 3-config parallel evaluator (shadow gate retired in v5.14.0)
+    # v5.1.1 \u2014 env-driven A/B toggles + parallel evaluator
     # ---------------------------------------------------------------
 
     def _v511_save_env() -> dict:
@@ -3487,11 +3412,9 @@ def run_local() -> int:
         assert hasattr(m, "bar_archive")
 
     # ------------------------------------------------------------------
-    # v5.14.0 \u2014 REHUNT_VOL_CONFIRM and OOMPH_ALERT configs and the
-    # shadow_pnl tracker were retired in v5.14.0. Their dedicated tests
-    # were deleted; the volume_profile + bar_archive + indicators +
+    # The volume_profile + bar_archive + indicators +
     # [V510-CAND]/[V510-FSM]/[V510-MINUTE]/[V510-VEL]/[V510-DI] log
-    # emitter tests remain (forensic capture is still live).
+    # emitter tests remain (forensic capture is live).
     # ------------------------------------------------------------------
 
     @t("v5.5.4: BOT_VERSION bumped to 5.5.4")
@@ -3976,15 +3899,13 @@ def run_local() -> int:
         assert i_val != -1, "VAL_ALPACA_PAPER_KEY missing from cred chain"
         assert i_legacy_real != -1, "legacy ALPACA_PAPER_KEY fallback missing"
         assert i_val < i_legacy_real, "VAL_ALPACA_PAPER_KEY must be checked before legacy key"
-        # v5.14.0: SHADOW DISABLED log line was renamed to VOLFEED DISABLED.
         # The underlying volume_profile WS is still required by the live
-        # engine, so the warning must remain emitted under its new label.
+        # engine, so a [VOLFEED DISABLED] warning must remain emitted
+        # when credentials are unset.
         assert "[VOLFEED DISABLED]" in body, "missing [VOLFEED DISABLED] log line"
 
-    # v5.14.0 \u2014 v5.4.0 offline backtest, v5.3.0 Shadow tab, v5.4.1
-    # shadow charts endpoint, and v5.2.1 shadow-accounting H2/H3/M3/M4
-    # fixtures all retired with the shadow strategy. The replay logic is
-    # being rebuilt against the executor_positions table (see backtest/).
+    # The replay logic is being rebuilt against the executor_positions
+    # table (see backtest/) using the /data/bars/ JSONL archive.
 
     # ==================================================================
     # === v5.2.1 Idempotency + Reconcile ===
@@ -5062,10 +4983,6 @@ def run_local() -> int:
     # ============================================================
     # v5.7.1 \u2014 Bison & Buffalo exit FSM
     # ============================================================
-    @t("v5.7.1 D6: ENABLE_BISON_BUFFALO_EXITS default True")
-    def _():
-        assert m.ENABLE_BISON_BUFFALO_EXITS is True
-
     @t("v5.7.1 D6: VELOCITY_FUSE_PCT = 0.01 (strict 1.0% threshold)")
     def _():
         assert m.VELOCITY_FUSE_PCT == 0.01, m.VELOCITY_FUSE_PCT
@@ -5230,30 +5147,6 @@ def run_local() -> int:
         assert v5.velocity_fuse_short(101.01, 100.0) is True
         assert v5.velocity_fuse_short(101.00, 100.0) is False
 
-    @t("v5.7.1 D3: DI<25 exit bypassed for Titans (LONG)")
-    def _():
-        v5 = m.v5
-        track = v5.new_track(v5.DIR_LONG)
-        track["state"] = v5.STATE_TRAILING
-        track["current_stop"] = 95.0
-        # Non-Titan: DI=10 -> DI_HARD_EJECT
-        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) == "DI_HARD_EJECT"
-        # Titan: DI=10 -> bypassed -> None
-        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=True) is None
-
-    @t("v5.7.1 D3: DI<25 exit bypassed for Titans (SHORT mirror)")
-    def _():
-        v5 = m.v5
-        track = v5.new_track(v5.DIR_SHORT)
-        track["state"] = v5.STATE_TRAILING
-        track["current_stop"] = 105.0
-        # Non-Titan: SHORT DI<25 -> priority-1 hard eject
-        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=False) == "DI_HARD_EJECT"
-        # Titan: bypassed; structural stop also not hit (100 < 105) -> None
-        assert v5.evaluate_exit(track, 100.0, 10.0, is_titan=True) is None
-        # Titan, structural still fires when price rises above stop
-        assert v5.evaluate_exit(track, 106.0, 10.0, is_titan=True) == "STRUCTURAL_STOP"
-
     @t("v5.7.1 D5: [V571-EXIT_PHASE] line carries every spec field")
     def _():
         import io
@@ -5378,20 +5271,6 @@ def run_local() -> int:
             "PER_TRADE_BRAKE_USD",
         ):
             assert name in src, "tiger_buffalo_v5.py missing %r" % name
-
-    @t("v5.7.1 guard: legacy DI exit path preserved for non-Titans")
-    def _():
-        # Non-Titan tickers must continue to fire the DI<25 hard eject.
-        # This is the safety check that the v5.7.1 carve-out is a
-        # Titan-list guard, NOT a wholesale deletion.
-        v5 = m.v5
-        for direction in (v5.DIR_LONG, v5.DIR_SHORT):
-            track = v5.new_track(direction)
-            track["state"] = v5.STATE_TRAILING
-            track["current_stop"] = 95.0 if direction == v5.DIR_LONG else 105.0
-            tail = 100.0
-            reason = v5.evaluate_exit(track, tail, 10.0, is_titan=False)
-            assert reason == "DI_HARD_EJECT", (direction, reason)
 
     @t("v5.7.1 guard: no literal em-dash in v5.7.1 helpers")
     def _():

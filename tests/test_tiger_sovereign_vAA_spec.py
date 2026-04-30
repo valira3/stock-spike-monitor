@@ -567,14 +567,15 @@ def test_short_strike_order_priced_at_bid_times_0_999():
 
 
 def test_titan_grip_module_removed_or_neutered():
-    """Titan Grip Harvest is deleted in vAA-1. Module presence with a
-    `check_titan_grip` that returns harvest actions is a regression."""
+    """Titan Grip Harvest is deleted in vAA-1; the shim was removed in
+    v5.16.0. Module presence is a regression. If a shim ever reappears
+    its `check_titan_grip` must still return no harvest actions."""
     try:
         from engine import titan_grip
     except ImportError:
-        return  # acceptable: module deleted
+        return  # expected post-v5.16.0: module deleted
 
     if hasattr(titan_grip, "check_titan_grip"):
-        # If kept as a shim, it must return no harvest actions.
+        # If a shim ever reappears, it must return no harvest actions.
         result = titan_grip.check_titan_grip(state=None, current_price=100.0, current_shares=100)
         assert result == [] or result is None

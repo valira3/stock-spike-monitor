@@ -5,12 +5,15 @@ This module owns one test per rule ID extracted from ``STRATEGY.md``
 
 v5.13.2 (Track D) — Each test now EXERCISES the actual evaluator
 (``eye_of_tiger.evaluate_global_permit``, ``engine.sentinel.check_alarm_*``,
-``engine.titan_grip.check_titan_grip``, ``engine.timing.is_after_*``,
+``engine.velocity_ratchet.evaluate_velocity_ratchet``, ``engine.timing.is_after_*``,
 ``broker.order_types.order_type_for_reason``) rather than asserting that
 a constant string appears in source. Test names + rule IDs are unchanged
 so downstream cron / audit tooling that greps test names still works.
 
-The deeper unit tests (``test_titan_grip.py``, ``test_sentinel.py``,
+v5.16.0 \u2014 ``engine.titan_grip`` shim removed; Velocity Ratchet under
+``engine.velocity_ratchet`` is the canonical Alarm C evaluator.
+
+The deeper unit tests (``test_velocity_ratchet.py``, ``test_sentinel.py``,
 ``test_phase2_gates.py``, ``test_timing_rules.py``) own exhaustive
 behavioural coverage. This file pins the spec-level "this rule is
 implemented and behaves as written" contract for each rule ID.

@@ -687,7 +687,6 @@ def _cached_snapshot() -> dict[str, Any]:
         return fresh
 
 
-# v5.14.0 \u2014 _SHADOW_PANEL_ORDER + _shadow_pnl_snapshot removed
 # (Shadow strategy panel retired).
 
 
@@ -890,8 +889,6 @@ def snapshot() -> dict[str, Any]:
             # directly so the pill updates on every SSE / state poll
             # tick without a separate /api/errors round-trip.
             "errors": _errors_snapshot_safe("main"),
-            # v5.14.0 \u2014 shadow_pnl key removed (shadow strategy retired).
-            # v5.14.0 \u2014 shadow_data_status renamed to volume_feed_status.
             # The underlying volume_profile WS feed is still required by the
             # live engine, so we keep a status indicator (just renamed).
             "volume_feed_status": (
@@ -1248,7 +1245,7 @@ async def h_state(request):
 # v5.5.5 \u2014 volume-feed WS observability surface. Mirrors the same
 # session-cookie auth as /api/state. Returns the live WebsocketBarConsumer
 # stats so an operator can discriminate "WS idle" from "handler error"
-# without having to ssh in and grep logs. (v5.14.0: was "shadow WS" comment.)
+# without having to ssh in and grep logs.
 async def h_ws_state(request):
     from aiohttp import web
 
@@ -1300,7 +1297,6 @@ async def h_errors(request):
     return web.json_response(snap)
 
 
-# v5.14.0 \u2014 /api/shadow_charts endpoint + cache removed
 # (Shadow tab retired; underlying shadow_positions table dropped).
 
 

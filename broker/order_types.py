@@ -30,7 +30,11 @@ ORDER_TYPE_STOP_MARKET: str = "STOP_MARKET"
 ORDER_TYPE_MARKET: str = "MARKET"
 
 # Stable reason codes — used as inputs to ``order_type_for_reason``.
-# These match the strings emitted by engine.sentinel and engine.titan_grip.
+# v5.16.0: engine.titan_grip was deleted; the four C1/C2/C3/C4 reasons
+# below are dead-code constants kept only for the lookup table's stable
+# mapping in case external callers ever resurface those strings.
+# Live exit reasons emitted by engine.sentinel are sentinel_alarm_a,
+# sentinel_alarm_b, sentinel_velocity_ratchet, HVP_LOCK, DIVERGENCE_TRAP.
 REASON_STAGE1_HARVEST: str = "C1_STAGE1_HARVEST"
 REASON_STAGE3_HARVEST: str = "C3_STAGE3_HARVEST"
 REASON_RATCHET: str = "C2_RATCHET"

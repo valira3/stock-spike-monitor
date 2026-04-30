@@ -298,7 +298,7 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
         logger.error("_update_gate_snapshot error %s: %s", ticker, e)
     # Long entry check \u2014 run once per ticker and fan out to both books.
     try:
-        # v5.14.0 \u2014 shadow MTM hook removed. _bars_for_mtm is still
+        # _bars_for_mtm is still
         # fetched here because the bar archive write below depends on
         # it; the fetch_1min_bars call is cached by _cycle_bar_cache so
         # the cost is essentially zero.

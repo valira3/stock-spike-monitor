@@ -6,11 +6,9 @@ normalizes the published median to the IEX scale (the live-feed scale on
 the free plan), and exposes a §17.2 V-P1 grid evaluator (`evaluate_g4`).
 
 Live volumes are read from a persistent Alpaca /iex websocket bar stream
-(free-plan cap: 30 symbols).
-
-v5.14.0: shadow-config evaluator + SHADOW_CONFIGS tuple removed. Live
-enforcement is still gated behind VOL_GATE_ENFORCE; when 0 the gate
-logs but does not change any entry decision.
+(free-plan cap: 30 symbols). Live enforcement is gated behind
+VOL_GATE_ENFORCE; when 0 the gate logs but does not change any entry
+decision.
 
 Public surface (all sync; no asyncio in callers' codepaths):
     is_trading_day, trading_days_back, session_bucket
@@ -546,11 +544,6 @@ def evaluate_g4(
 # redeploying. The "active config" (read from env at module-import
 # time) is the one that would gate trades if VOL_GATE_ENFORCE=1. It
 # defaults to TICKER+QQQ at 70/100 with enforcement OFF.
-# v5.14.0: the parallel-shadow analysis configs were removed.
-
-# v5.14.0 \u2014 SHADOW_CONFIGS tuple + multi-config evaluator removed.
-# load_active_config() and evaluate_g4 (the single env-driven gate)
-# remain for the live volume layer.
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -588,10 +581,6 @@ def load_active_config() -> dict:
         "index_pct": index_pct,
         "index_symbol": index_symbol,
     }
-
-
-# v5.14.0 \u2014 evaluate_g4_config removed (was the per-anchor multi-config
-# evaluator used only by the deleted shadow logging path).
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,77 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.16.0 — 2026-04-29 — Legacy purge
+
+Removes four classes of legacy code now that Tiger Sovereign vAA-1 is the
+sole live strategy. No behavior change on the hot path: every deletion
+targets either dead code with no production caller, or stale comment
+graveyards left over from earlier-version cleanups.
+
+### What changed
+
+- **Bucket 1 — `engine/titan_grip.py` shim deleted.** The module was a
+  v5.13.x compatibility wrapper that mapped the legacy C1/C2/C3/C4 harvest
+  reasons to LIMIT/STOP_MARKET order types. Production switched to the
+  Velocity Ratchet (`engine.velocity_ratchet`) as the canonical Alarm C
+  evaluator in v5.14.x, and no engine emits the C-series reasons anymore.
+  The two cross-check tests in `tests/test_order_types.py` are removed;
+  the harvest-reason tests in `tests/test_v5_13_7_close_order_type_wiring.py`
+  are renamed and re-documented as legacy back-compat pins on the
+  reason→order-type lookup table.
+- **Bucket 2 — shadow-strategy tombstone comments stripped.** 25+ comments
+  across `trade_genius.py`, `dashboard_server.py`, `broker/`, `engine/`,
+  `persistence.py`, `volume_profile.py`, `backtest/__init__.py`, and
+  `smoke_test.py` referenced the v5.10.x shadow configs that were removed
+  in v5.14.0. The idempotent SQLite `DROP TABLE shadow_positions` and
+  `DROP INDEX idx_shadow_*` statements in `persistence.py` are preserved
+  (one-line cleanup of stale prod DB rows on boot).
+- **Bucket 3 — v4 paper_state migration path removed.**
+  `persistence.migrate_from_json` (the one-shot v5.0→v5.1.8 importer that
+  copied `v5_*_tracks` blobs into SQLite and renamed the source to
+  `.migrated.bak`) is deleted, along with its caller in
+  `paper_state.load_paper_state` and its smoke test. Robust
+  absence-of-v5-keys handling is preserved: a `paper_state.json` that
+  lacks `v5_*_tracks` keys still loads as IDLE without raising.
+- **Bucket 4 — legacy DI/structural exit path removed.**
+  `tiger_buffalo_v5.evaluate_exit` and `tiger_buffalo_v5.hard_exit_di_fail`
+  are deleted. They had no production caller as of v5.7.1, when
+  `ENABLE_BISON_BUFFALO_EXITS` flipped to permanent True and the Bison /
+  Buffalo exit FSM (forensic_stop / be_stop / ema_trail / velocity_fuse /
+  per_trade_brake) became the sole live exit surface for every ticker.
+  The dead `_v570_unlimited` branch in `broker/orders.check_breakout` (gated
+  by the permanently-False `ENABLE_UNLIMITED_TITAN_STRIKES` flag) is
+  collapsed to the always-cap-5 path; STRIKE-CAP-3 from v5.15.0 vAA-1 is
+  the active strike gate. The `ENABLE_BISON_BUFFALO_EXITS` constant itself
+  is removed (no production reads).
+- **Banner update.** `CURRENT_MAIN_NOTE` in `trade_genius.py` is rewritten
+  to a v5.16.0 banner (12 lines, all under 34 chars for Telegram
+  mobile-width compliance).
+- **Version bump.** `bot_version.BOT_VERSION` and `trade_genius.BOT_VERSION`
+  go 5.15.1 → 5.16.0; `tests/test_startup_smoke.py` prefix assertion goes
+  `5.15.` → `5.16.`.
+
+### Test surface
+
+357 pytest tests pass (same count as v5.15.1). Preflight 6/6 PASS. Three
+pre-existing failures in `tests/test_tiger_sovereign_vAA_spec.py`
+(`test_strike_cap_3_blocks_fourth_entry`,
+`test_strike_flat_gate_blocks_until_position_closes`,
+`test_strike_cap_3_overrides_titan_flag`) are inherited from main —
+out of scope for this PR.
+
+### Surfaces preserved (intentionally)
+
+- `TITAN_TICKERS` constant — the 10-ticker universe is real, not legacy.
+- `ENABLE_UNLIMITED_TITAN_STRIKES = False` — pinned by
+  `tests/test_tiger_sovereign_vAA_spec.py::test_strike_cap_3_overrides_titan_flag`.
+- `_v570_is_titan` helper — referenced by smoke pins; cheap to keep.
+- `tiger_buffalo_v5.HARD_EXIT_DI_THRESHOLD`, `structural_stop_hit_long/short`
+  — referenced by smoke pins, no production caller; left in place to
+  avoid further smoke-suite churn in this already-broad PR.
+
+---
+
 ## v5.15.1 — 2026-04-29 — Tiger Sovereign vAA-1 final wiring
 
 Sentinel surface goes from 2-of-5 (A, B) to 5-of-5 (A, B, C, D, E)
