@@ -1305,9 +1305,11 @@
     }
     const bars = _isMobile() ? _resample5m(rawBars) : rawBars;
 
-    // X axis spans 4:00 ET (et_min=240) to 16:00 ET (et_min=960).
-    const X_MIN = 240;
-    const X_MAX = 960;
+    // v5.23.3 — X axis spans 8:00 ET (=7am CT, et_min=480) to 18:00 ET
+    // (=5pm CT, et_min=1080). Window covers the full 7am-5pm CT user
+    // request: late premarket + RTH + early postmarket.
+    const X_MIN = 480;
+    const X_MAX = 1080;
     // Y axis: tight envelope around prices + OR levels.
     let yMin = Infinity, yMax = -Infinity;
     for (const b of bars) {
@@ -1353,9 +1355,17 @@
       const y = yOf(p);
       ctx.fillText("$" + p.toFixed(2), PAD_L - 6, y + 4);
     }
-    // X axis labels (4am, 9:30, 12:00, 16:00).
+    // X axis labels in CT (operator's local TZ): 7am, 8:30, 12:00, 3:00, 5pm.
+    // Mapping ET→CT is -1h: 8am ET=7am CT, 9:30 ET=8:30 CT, 13:00 ET=12 CT,
+    // 16:00 ET=3pm CT, 18:00 ET=5pm CT.
     ctx.textAlign = "center";
-    const xTicks = [{m: 240, l: "4:00"}, {m: 570, l: "9:30"}, {m: 720, l: "12:00"}, {m: 960, l: "16:00"}];
+    const xTicks = [
+      {m: 480,  l: "7am"},
+      {m: 570,  l: "8:30"},
+      {m: 780,  l: "12pm"},
+      {m: 960,  l: "3pm"},
+      {m: 1080, l: "5pm"},
+    ];
     for (const t of xTicks) {
       ctx.fillText(t.l, xOf(t.m), cssH - 6);
     }
@@ -1425,27 +1435,42 @@
     }
     ctx.stroke();
 
-    // Entry/exit markers from the trade-log fills.
+    // v5.23.3 — Entry/exit markers, sourced from paper_state (open
+    // positions + closed history). Each ts is full ISO UTC; we map
+    // it to ET minute-of-day directly so the marker aligns with the
+    // chart's ET-anchored x-axis instead of using rough hour-arithmetic.
     const trades = (payload && Array.isArray(payload.trades)) ? payload.trades : [];
+    const utcIsoToEtMin = (tsIso) => {
+      if (!tsIso || typeof tsIso !== "string") return null;
+      const dt = new Date(tsIso);
+      if (isNaN(dt.getTime())) return null;
+      // Use Intl to get ET hour/minute; DST-safe.
+      try {
+        const parts = new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/New_York",
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+        }).formatToParts(dt);
+        let hh = 0, mm = 0;
+        for (const p of parts) {
+          if (p.type === "hour") hh = parseInt(p.value, 10);
+          if (p.type === "minute") mm = parseInt(p.value, 10);
+        }
+        if (hh === 24) hh = 0;  // Intl quirk
+        return hh * 60 + mm;
+      } catch (_e) {
+        return null;
+      }
+    };
     for (const t of trades) {
       const drawMark = (tsIso, price, kind) => {
         if (!tsIso || typeof price !== "number") return;
-        const m = /T(\d{2}):(\d{2})/.exec(tsIso);
-        if (!m) return;
-        // ts is UTC; rough ET conversion: subtract 5h (winter) / 4h (summer).
-        // We have ET minute on bars already, so map to nearest bar's et_min.
-        const utcMin = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
-        // Find bar whose ts hour:min match.
-        let nearest = null, nearestDelta = Infinity;
-        for (const b of bars) {
-          const m2 = /T(\d{2}):(\d{2})/.exec(b.ts || "");
-          if (!m2) continue;
-          const bMin = parseInt(m2[1], 10) * 60 + parseInt(m2[2], 10);
-          const d = Math.abs(bMin - utcMin);
-          if (d < nearestDelta) { nearestDelta = d; nearest = b; }
-        }
-        if (!nearest || typeof nearest.et_min !== "number") return;
-        const x = xOf(nearest.et_min);
+        const etMin = utcIsoToEtMin(tsIso);
+        if (etMin === null) return;
+        // Clamp to plot window so off-axis trades don't draw outside.
+        if (etMin < X_MIN || etMin > X_MAX) return;
+        const x = xOf(etMin);
         const y = yOf(price);
         ctx.fillStyle = kind === "entry" ? "#3ec28f" : "#e26a6a";
         ctx.beginPath();
@@ -1453,7 +1478,7 @@
           // upward triangle
           ctx.moveTo(x, y - 6); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4);
         } else {
-          // downward triangle
+          // downward triangle (X-mark style for exits would also work)
           ctx.moveTo(x, y + 6); ctx.lineTo(x - 5, y - 4); ctx.lineTo(x + 5, y - 4);
         }
         ctx.closePath();

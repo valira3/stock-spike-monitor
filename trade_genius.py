@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.23.2"
+BOT_VERSION = "5.23.3"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,23 +102,23 @@ BOT_VERSION = "5.23.2"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.23.2 \u2014 Intraday chart\n"
-    "hotfix + expanded-row order.\n"
-    "v5.23.0 helpers read short\n"
-    "keys (o/h/l/c) but the bar\n"
-    "archive stores open/high/\n"
-    "low/close, so /api/intraday\n"
-    "returned all-null OHLC and\n"
-    "the chart drew nothing. Now\n"
-    "reads the archive's actual\n"
-    "field names + regression\n"
-    "guard in tests. Also: the\n"
-    "expanded Titan row reflows\n"
-    "to cards \u2192 alarm strip \u2192\n"
-    "SMA stack \u2192 chart, so the\n"
-    "sentinel alarms sit right\n"
-    "under the cards instead of\n"
-    "below the heavy chart."
+    "v5.23.3 \u2014 Intraday chart\n"
+    "window + correct markers.\n"
+    "X-axis now spans 7am\u20135pm CT\n"
+    "(8am\u201318:00 ET): late pre-\n"
+    "market + RTH + early post-\n"
+    "market. Bars beyond the WS\n"
+    "archive's RTH-only window\n"
+    "are pulled from Alpaca on\n"
+    "demand (60s in-process\n"
+    "cache, IEX feed). Entry/\n"
+    "exit markers now sourced\n"
+    "from paper_state (open\n"
+    "positions + closed history)\n"
+    "instead of trade_log, so\n"
+    "OPEN positions get entry\n"
+    "triangles too \u2014 trade_log\n"
+    "only writes on close."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

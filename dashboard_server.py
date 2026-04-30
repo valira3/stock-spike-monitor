@@ -2128,22 +2128,129 @@ async def h_trade_log(request):
 _INTRADAY_BARS_DIR = os.getenv("BARS_DIR", "/data/bars")
 _INTRADAY_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})")
 
+# v5.23.3 \u2014 Extended-hours bar window: 7am CT \u2192 5pm CT, which is
+# 8am ET \u2192 6pm ET. The on-disk archive only carries the live WS
+# stream's RTH bars (09:30\u201316:00 ET), so we pull premarket and
+# postmarket bars from Alpaca historical on demand. Process-local
+# cache keyed by (ticker, day) prevents hammering Alpaca when a user
+# expands several rows or refreshes the dashboard.
+_INTRADAY_FETCH_CACHE: dict = {}
+_INTRADAY_FETCH_TTL_S = 60.0
+_INTRADAY_WINDOW_START_ET_MIN = 8 * 60  # 08:00 ET = 7:00 CT
+_INTRADAY_WINDOW_END_ET_MIN = 18 * 60  # 18:00 ET = 17:00 CT
 
-def _intraday_load_today_bars(ticker: str, day: str) -> list[dict]:
-    """Return today's 1m bars for `ticker` from the on-disk archive.
 
-    Empty list on missing day directory or missing ticker file. The
-    loader silently skips malformed JSON lines so a partially-corrupt
-    archive cannot break the chart endpoint.
+def _intraday_fetch_alpaca_bars(ticker: str, day: str) -> list[dict]:
+    """Pull 1m bars 8am\u201318:00 ET for `ticker` on `day` from Alpaca.
+
+    Returns dicts in the same shape as the on-disk archive
+    ({open,high,low,close,iex_volume,ts}) so downstream helpers can
+    consume the result without branching. Empty list on any failure
+    (no creds, network error, etc.) so the caller can fall back to
+    the on-disk archive without raising.
     """
     try:
-        from backtest.loader import load_bars
-    except Exception:  # pragma: no cover \u2014 import shouldn't fail in prod
-        return []
-    try:
-        return load_bars(_INTRADAY_BARS_DIR, day, ticker)
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed
     except Exception:
         return []
+    m = _ssm()
+    client = None
+    try:
+        client = m._alpaca_data_client()
+    except Exception:
+        return []
+    if client is None:
+        return []
+    try:
+        et = ZoneInfo("America/New_York")
+        # day is 'YYYY-MM-DD' in UTC sense; the chart window is keyed off
+        # ET so we anchor the request to ET boundaries and let Alpaca
+        # return UTC timestamps.
+        d = datetime.strptime(day, "%Y-%m-%d")
+        start_et = d.replace(hour=8, minute=0, tzinfo=et)
+        end_et = d.replace(hour=18, minute=0, tzinfo=et) + timedelta(minutes=1)
+        req = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Minute,
+            start=start_et,
+            end=end_et,
+            feed=DataFeed.IEX,
+        )
+        resp = client.get_stock_bars(req)
+    except Exception as e:
+        logger.debug("intraday alpaca fetch failed for %s: %s", ticker, e)
+        return []
+    raw = []
+    try:
+        if hasattr(resp, "data"):
+            raw = resp.data.get(ticker.upper(), []) or resp.data.get(ticker, []) or []
+    except Exception:
+        raw = []
+    out: list[dict] = []
+    for b in raw:
+        ts = getattr(b, "timestamp", None)
+        if ts is None:
+            continue
+        try:
+            ts_iso = (
+                ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if ts.tzinfo is None
+                else (
+                    ts.astimezone(__import__("datetime").timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    )
+                )
+            )
+        except Exception:
+            continue
+        out.append(
+            {
+                "ts": ts_iso,
+                "open": float(getattr(b, "open", 0) or 0),
+                "high": float(getattr(b, "high", 0) or 0),
+                "low": float(getattr(b, "low", 0) or 0),
+                "close": float(getattr(b, "close", 0) or 0),
+                "iex_volume": int(getattr(b, "volume", 0) or 0),
+            }
+        )
+    return out
+
+
+def _intraday_load_today_bars(ticker: str, day: str) -> list[dict]:
+    """Return 8am\u201318:00 ET 1m bars for `ticker` on `day`.
+
+    Strategy:
+    1. Try the live Alpaca historical fetcher (covers premarket +
+       RTH + postmarket). Result cached in-process for 60s.
+    2. Fall back to the on-disk JSONL archive (RTH only, written
+       by the live WS bar archiver) if Alpaca returns empty.
+
+    Empty list on total failure. Malformed entries silently skipped.
+    """
+    import time
+
+    cache_key = (ticker.upper(), day)
+    now = time.time()
+    cached = _INTRADAY_FETCH_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _INTRADAY_FETCH_TTL_S:
+        return cached[1]
+    bars = _intraday_fetch_alpaca_bars(ticker, day)
+    if not bars:
+        try:
+            from backtest.loader import load_bars
+
+            bars = load_bars(_INTRADAY_BARS_DIR, day, ticker)
+        except Exception:
+            bars = []
+    # Filter to only today (drop stale carry-overs from previous days
+    # that the archiver leaves at the head of the file).
+    bars = [b for b in bars if str(b.get("ts") or "").startswith(day)]
+    _INTRADAY_FETCH_CACHE[cache_key] = (now, bars)
+    return bars
 
 
 def _intraday_et_minute(ts_iso: str) -> int | None:
@@ -2285,36 +2392,121 @@ def _intraday_ema9_5m(bars5: list[dict]) -> list[float | None]:
 
 
 def _intraday_today_trades(m, ticker: str, day: str) -> list[dict]:
-    """Return today's entry/exit fills for `ticker` from the trade log.
+    """Return today's actual entry/exit fills for `ticker`.
 
-    Uses trade_log_read_tail with since=day and a generous limit so we
-    pick up both legs of intraday round-trips. Each row already carries
-    entry_ts / exit_ts / entry_price / exit_price / side, which the
-    frontend uses to plot triangles.
+    Markers must reflect what the bot actually did, not what the trade
+    log happens to surface. The trade log only writes on round-trip
+    closure, so for OPEN positions we'd see no entry marker at all if
+    we only read it. The right sources are paper_state.json:
+
+    - paper_state.positions[ticker]:           open LONG entries
+    - paper_state.short_positions[ticker]:     open SHORT entries
+    - paper_state.trade_history (today only):  closed LONG round-trips
+    - paper_state.short_trade_history (today): closed SHORT round-trips
+
+    Each emitted row carries:
+      side          'LONG' or 'SHORT'
+      qty           share count
+      entry_ts      full ISO UTC (or None if unknown)
+      entry_price   numeric
+      exit_ts       full ISO UTC (or None if still open)
+      exit_price    numeric (or None if still open)
+      realized_pnl  numeric (None for open)
+      exit_reason   string (None for open)
+      open          True if still open at read-time
+
+    Empty list on any read failure.
     """
-    try:
-        rows = m.trade_log_read_tail(limit=2000, since_date=day, portfolio="paper") or []
-    except Exception:
-        return []
-    out: list[dict] = []
     tu = ticker.upper()
-    for r in rows:
-        if (r.get("ticker") or "").upper() != tu:
-            continue
-        if (r.get("date") or "") != day:
-            continue
-        out.append(
-            {
-                "side": r.get("side"),
-                "qty": r.get("qty"),
-                "entry_ts": r.get("entry_ts"),
-                "entry_price": r.get("entry_price"),
-                "exit_ts": r.get("exit_ts"),
-                "exit_price": r.get("exit_price"),
-                "realized_pnl": r.get("realized_pnl"),
-                "exit_reason": r.get("exit_reason"),
-            }
-        )
+    out: list[dict] = []
+
+    # --- Open positions (LONG + SHORT) -----------------------------
+    try:
+        pos_dict = getattr(m, "positions", None)
+        if isinstance(pos_dict, dict):
+            p = pos_dict.get(tu) or pos_dict.get(ticker)
+            if isinstance(p, dict) and p.get("entry_price") is not None:
+                # Filter to today only via entry_ts_utc.
+                ets = str(p.get("entry_ts_utc") or "")
+                if ets.startswith(day):
+                    out.append(
+                        {
+                            "side": "LONG",
+                            "qty": p.get("shares"),
+                            "entry_ts": p.get("entry_ts_utc"),
+                            "entry_price": float(p.get("entry_price")),
+                            "exit_ts": None,
+                            "exit_price": None,
+                            "realized_pnl": None,
+                            "exit_reason": None,
+                            "open": True,
+                        }
+                    )
+    except Exception:
+        pass
+    try:
+        spos_dict = getattr(m, "short_positions", None)
+        if isinstance(spos_dict, dict):
+            p = spos_dict.get(tu) or spos_dict.get(ticker)
+            if isinstance(p, dict) and p.get("entry_price") is not None:
+                ets = str(p.get("entry_ts_utc") or "")
+                if ets.startswith(day):
+                    out.append(
+                        {
+                            "side": "SHORT",
+                            "qty": p.get("shares"),
+                            "entry_ts": p.get("entry_ts_utc"),
+                            "entry_price": float(p.get("entry_price")),
+                            "exit_ts": None,
+                            "exit_price": None,
+                            "realized_pnl": None,
+                            "exit_reason": None,
+                            "open": True,
+                        }
+                    )
+    except Exception:
+        pass
+
+    # --- Closed round-trips (LONG + SHORT) -------------------------
+    def _from_history(rows, side_default):
+        for r in rows or []:
+            try:
+                if (r.get("ticker") or "").upper() != tu:
+                    continue
+                ets = str(r.get("entry_time_iso") or "")
+                xts = str(r.get("exit_time_iso") or "")
+                # A round-trip belongs to `day` if either leg is on `day`.
+                if not (ets.startswith(day) or xts.startswith(day)):
+                    continue
+                side = (r.get("side") or side_default or "LONG").upper()
+                out.append(
+                    {
+                        "side": side,
+                        "qty": r.get("shares"),
+                        "entry_ts": r.get("entry_time_iso"),
+                        "entry_price": float(r.get("entry_price"))
+                        if r.get("entry_price") is not None
+                        else None,
+                        "exit_ts": r.get("exit_time_iso"),
+                        "exit_price": float(r.get("exit_price"))
+                        if r.get("exit_price") is not None
+                        else None,
+                        "realized_pnl": r.get("pnl"),
+                        "exit_reason": r.get("reason"),
+                        "open": False,
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+
+    try:
+        _from_history(getattr(m, "trade_history", None), "LONG")
+    except Exception:
+        pass
+    try:
+        _from_history(getattr(m, "short_trade_history", None), "SHORT")
+    except Exception:
+        pass
     return out
 
 
