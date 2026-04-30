@@ -208,6 +208,47 @@ def record_1m_close(ticker: str, close: float) -> None:
         del buf[0 : len(buf) - 4]
 
 
+def record_latest_1m_close(ticker: str, closes: list) -> bool:
+    """Pick the newest non-None close from a Yahoo-style ``closes``
+    list and append it to the per-ticker rolling buffer used by
+    Boundary Hold. Returns True iff a new value was recorded.
+
+    v5.20.4 \u2014 Yahoo's intraday minute response keeps a forming
+    bar at ``closes[-2]`` whose value is ``None`` until the minute
+    boundary fully passes; by then the snapshot at ``[-1]`` has
+    already shifted everything down a slot. The original guard
+    ``if len >= 2 and closes[-2] is not None`` therefore failed on
+    nearly every scan cycle, leaving ``_last_1m_closes`` empty for
+    the entire session and starving every Phase 2 boundary check.
+    This helper mirrors the bar-archive writer's existing
+    walk-back: scan up to 4 slots from ``[-2]`` looking for the
+    most recent non-None close, then fall back to ``[-1]`` if
+    nothing earlier qualifies. De-dup against the last value
+    already in the buffer so successive scan cycles within the
+    same minute do not register the same closed bar twice.
+    """
+    if not closes:
+        return False
+    chosen: Optional[float] = None
+    # Walk back from [-2] up to 4 slots to find the newest fully
+    # closed bar.
+    for back in range(2, min(len(closes), 5) + 1):
+        v = closes[-back]
+        if v is not None:
+            chosen = float(v)
+            break
+    # Last-resort fallback to the snapshot at [-1].
+    if chosen is None and closes[-1] is not None:
+        chosen = float(closes[-1])
+    if chosen is None:
+        return False
+    existing = _last_1m_closes.get(ticker) or []
+    if existing and existing[-1] == chosen:
+        return False
+    record_1m_close(ticker, chosen)
+    return True
+
+
 def evaluate_boundary_hold_gate(
     ticker: str,
     side: str,
@@ -521,6 +562,7 @@ __all__ = [
     "maybe_log_permit_state",
     "evaluate_volume_bucket_gate",
     "record_1m_close",
+    "record_latest_1m_close",
     "evaluate_boundary_hold_gate",
     "evaluate_entry_1_decision",
     "evaluate_entry_2_decision",

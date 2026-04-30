@@ -392,11 +392,15 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
         # is needed regardless of whether we currently hold the
         # ticker so the buffer keeps tracking through trade
         # lifecycles.
+        # v5.20.4 \u2014 swap the inline ``closes[-2] is not None`` guard
+        # for ``record_latest_1m_close``, which walks back from
+        # ``[-2]`` to find the newest non-None close (Yahoo keeps
+        # a forming-bar None at ``[-2]`` for nearly the whole RTH
+        # session, which silently starved the boundary buffer for
+        # every ticker every cycle prior to this fix).
         try:
             if _bars_for_mtm:
-                _closes_b = _bars_for_mtm.get("closes") or []
-                if len(_closes_b) >= 2 and _closes_b[-2] is not None:
-                    eot_glue.record_1m_close(ticker, float(_closes_b[-2]))
+                eot_glue.record_latest_1m_close(ticker, _bars_for_mtm.get("closes") or [])
         except Exception as _e:
             logger.warning("[V5100-BOUNDARY] record_1m_close %s: %s", ticker, _e)
         if not paper_holds:
