@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.25.0"
+BOT_VERSION = "5.26.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,27 +97,19 @@ BOT_VERSION = "5.25.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.25.0 \u2014 Post-action\n"
-    "Alpaca reconcile + Val/Gene\n"
-    "exec chips on the dashboard\n"
-    "header. Two changes:\n"
-    "(1) every successful ENTRY\n"
-    "or EXIT submit now calls\n"
-    "client.get_open_position(t)\n"
-    "and rewrites the local row\n"
-    "from the broker book, so a\n"
-    "partial fill or stack-drift\n"
-    "self-heals immediately\n"
-    "instead of waiting for the\n"
-    "next boot. EOD_CLOSE_ALL\n"
-    "still runs the full sweep.\n"
-    "(2) /api/state now exposes\n"
-    "executors_status so the\n"
-    "dashboard header lights up\n"
-    "Val and Gene chips when\n"
-    "their bootstrap returned a\n"
-    "live executor (vs missing\n"
-    "PAPER_KEY or *_ENABLED=0)."
+    "v5.26.0 spec-strict cut\n"
+    "(Tiger Sovereign v15.0).\n"
+    "Hard delete of non-spec\n"
+    "regime shields, Volume\n"
+    "Gate, premarket recalc,\n"
+    "Titan-Grip harvests, and\n"
+    "DI prior-session seed.\n"
+    "RULING #1: A-A/A-B/A-D\n"
+    "exits go LIMIT (+/-0.5%).\n"
+    "RULING #2: Alarm D peak\n"
+    "is session-wide HWM.\n"
+    "RULING #4: R-2 hard stop\n"
+    "(-$500) is STOP MARKET."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
