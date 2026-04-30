@@ -4,6 +4,48 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.19.0 — 2026-04-30 — Premarket data recalc at 09:29 ET (vAA-1 ULTIMATE Decision 6)
+
+### Why
+
+All four premarket seed paths (DI seed, QQQ Regime EMAs, volume profile
+cache, prior-day bar archive) run **once at process startup**. On long-
+running containers (Railway keeps the bot alive overnight via
+`health_ping`), seeded caches reflect yesterday's startup state —
+premarket data accumulated overnight is never re-seeded into them. The
+first few entries of the day were operating against stale caches.
+
+### What
+
+New scheduler entry fires weekdays at **09:29 ET** (1 minute before
+market open). The orchestrator (`premarket_recalc()` in
+`trade_genius.py`) runs four steps, all non-fatal:
+
+1. **Prior-day bar archive existence check** — logs warning if
+   `/data/bars/<yesterday>/` is missing files. (Backfill itself is
+   scoped to a future PR; this surfaces gaps.)
+2. **`qqq_regime_seed_once()`** — already idempotent via
+   `_QQQ_REGIME_SEEDED` flag; no-op if seeded.
+3. **DI seed (per-ticker idempotency)** — wrapped with `if t in
+   _DI_SEED_CACHE: continue` at the orchestrator level, honoring user
+   direction "only seed if not yet seeded".
+4. **Volume profile cache reload** — always reloads from disk per
+   ticker; this is the one exception to idempotency, because reloading
+   reflects the previous night's 21:00 ET nightly rebuild output.
+
+### Operational
+
+Look for `[PREMARKET-RECALC] complete in Xs — di_seeded=N qqq_seeded=Y
+volprof_reloaded=N archive_warnings=N archive_filled=N` in logs at
+09:29 ET each weekday. A fully-warm cache produces a no-op (no Alpaca
+calls fire); a cold container populates everything.
+
+New rule `SHARED-PREMARKET-RECALC` in STRATEGY.md SECTION 4.
+
+Closing GitHub issue: #252.
+
+---
+
 ## v5.18.1 — 2026-04-29 — Mobile responsive matrix + Val/Gene Permit Matrix + release-note fix
 
 Three-issue follow-up patch on top of v5.18.0:

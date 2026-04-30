@@ -104,6 +104,7 @@ Master anchor: `S-P3-AUTH`: `5m_DI- > 25`.
 | `SHARED-EOD` | EOD flush | `15:49:59 ET` (MARKET) |
 | `SHARED-ORDER-PROFIT` | Profit-taking exits use **LIMIT** orders |
 | `SHARED-ORDER-STOP` | Defensive stops + ratchets use **STOP MARKET** orders |
+| `SHARED-PREMARKET-RECALC` | At `09:29 ET` (1 min before open) — recalculate premarket data caches: DI seed (idempotent per-ticker via `_DI_SEED_CACHE`), QQQ Regime EMAs (idempotent via `_QQQ_REGIME_SEEDED`), volume profile cache reload (always; picks up 21:00 ET nightly rebuild), prior-day bar archive existence check. All non-fatal. Added in v5.19.0 per vAA-1 ULTIMATE Decision 6. |
 
 ---
 

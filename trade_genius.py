@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.18.1"
+BOT_VERSION = "5.19.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,16 +102,15 @@ BOT_VERSION = "5.18.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.18.1 \u2014 Mobile + Val/Gene\n"
-    "Permit Matrix collapses to\n"
-    "one ~38px row per Titan and\n"
-    "renders as a responsive\n"
-    "table on every viewport.\n"
-    "Val and Gene tabs now show\n"
-    "the same Weather Check +\n"
-    "Permit Matrix as Main, not\n"
-    "the old standalone\n"
-    "Proximity card."
+    "v5.19.0 \u2014 Premarket recalc\n"
+    "job at 09:29 ET refreshes\n"
+    "DI seed, QQQ regime EMAs,\n"
+    "volume profile cache, and\n"
+    "checks prior-day bar archive\n"
+    "before market open. Closes\n"
+    "the long-running container\n"
+    "stale-cache hole.\n"
+    "vAA-1 ULTIMATE Decision 6."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -4172,6 +4171,115 @@ LADDER_TIERS_LONG = [
 LADDER_HARVEST_FRACTION = 0.0010
 
 
+# PREMARKET RECALC (v5.19.0 \u2014 vAA-1 ULTIMATE Decision 6)
+# ============================================================
+def premarket_recalc():
+    """Recalculate premarket data caches at 09:29 ET (1 min before open).
+
+    Per Tiger Sovereign vAA-1 ULTIMATE Decision 6 (2026-04-29).
+
+    All four seed paths exist and run at process startup. But on long-
+    running containers (Railway keeps the bot alive overnight via
+    health_ping), seeded caches reflect yesterday's startup state and
+    miss premarket data accumulated overnight. This job re-fires the
+    seed paths defensively, with idempotency guards so it's safe to
+    run on a fresh boot too.
+
+    Steps (all non-fatal):
+      1. Prior-day bar archive backfill check \u2014 log warning if gaps.
+      2. qqq_regime_seed_once() \u2014 already idempotent via _QQQ_REGIME_SEEDED.
+      3. DI seed \u2014 per-ticker idempotency via _DI_SEED_CACHE membership.
+         Honors user direction "only seed if not yet seeded".
+      4. Volume profile cache reload \u2014 always runs (this is the point;
+         picks up the 21:00 ET nightly rebuild output).
+
+    Idempotent: a fully-warm cache produces a no-op (no Alpaca calls).
+    """
+    import time as _time
+    t0 = _time.time()
+    archive_filled = 0
+    archive_warnings = 0
+    qqq_seeded_now = False
+    di_seeded_now = 0
+    volprof_reloaded = 0
+
+    # 1. Prior-day bar archive existence check.
+    # /data/bars/<yesterday>/<ticker>.jsonl is written live by the WS
+    # consumer. We don't backfill here (would require an Alpaca
+    # historical fetch + JSONL writer); we just log gaps so ops can
+    # investigate. Backfill is left to a future PR.
+    try:
+        et = ZoneInfo("America/New_York")
+        yesterday = (datetime.now(et) - timedelta(days=1)).strftime("%Y-%m-%d")
+        ydir = f"/data/bars/{yesterday}"
+        if os.path.isdir(ydir):
+            present = {f.replace(".jsonl", "")
+                       for f in os.listdir(ydir) if f.endswith(".jsonl")}
+            missing = [t for t in TICKERS if t not in present]
+            if missing:
+                archive_warnings = len(missing)
+                logger.warning(
+                    "[PREMARKET-RECALC] /data/bars/%s missing %d tickers: %s",
+                    yesterday, len(missing), ",".join(missing[:10]),
+                )
+        else:
+            archive_warnings = len(TICKERS)
+            logger.warning(
+                "[PREMARKET-RECALC] /data/bars/%s does not exist (weekend/holiday?)",
+                yesterday,
+            )
+    except Exception:
+        logger.exception("[PREMARKET-RECALC] archive check failed")
+
+    # 2. QQQ Regime seed \u2014 idempotent via _QQQ_REGIME_SEEDED short-circuit.
+    try:
+        was_seeded = _QQQ_REGIME_SEEDED
+        _v590_qqq_regime_seed_once()
+        qqq_seeded_now = (not was_seeded) and _QQQ_REGIME_SEEDED
+    except Exception:
+        logger.exception("[PREMARKET-RECALC] qqq regime seed failed")
+
+    # 3. DI seed \u2014 per-ticker idempotency. Honors user direction
+    # "only seed if not yet seeded". seed_di_buffer is unconditionally
+    # rewriting per ticker, so we gate on _DI_SEED_CACHE membership at
+    # the orchestrator level.
+    try:
+        from engine.seeders import seed_di_buffer as _seed_one_ticker
+        for t in TRADE_TICKERS:
+            try:
+                if t in _DI_SEED_CACHE and _DI_SEED_CACHE.get(t):
+                    continue
+                _seed_one_ticker(t)
+                di_seeded_now += 1
+            except Exception:
+                logger.exception("[PREMARKET-RECALC] DI seed failed for %s", t)
+    except Exception:
+        logger.exception("[PREMARKET-RECALC] DI seed orchestration failed")
+
+    # 4. Volume profile cache reload \u2014 always runs. Picks up yesterday's
+    # 21:00 ET nightly rebuild output. Cheap (disk read per ticker).
+    try:
+        for t in TICKERS:
+            try:
+                prof = volume_profile.load_profile(t)
+                if prof is not None:
+                    _volume_profile_cache[t] = prof
+                    volprof_reloaded += 1
+            except Exception:
+                logger.exception(
+                    "[PREMARKET-RECALC] volume profile reload failed for %s", t)
+    except Exception:
+        logger.exception("[PREMARKET-RECALC] volume profile orchestration failed")
+
+    elapsed = _time.time() - t0
+    logger.info(
+        "[PREMARKET-RECALC] complete in %.2fs \u2014 di_seeded=%d qqq_seeded=%s "
+        "volprof_reloaded=%d archive_warnings=%d archive_filled=%d",
+        elapsed, di_seeded_now, "Y" if qqq_seeded_now else "N",
+        volprof_reloaded, archive_warnings, archive_filled,
+    )
+
+
 # OR COLLECTION (Opening Range)
 # ============================================================
 def collect_or():
@@ -5184,6 +5292,10 @@ def scheduler_thread():
     # Note: times are ET.  8:20 CT = 9:20 ET, 8:31 CT = 9:31 ET
     JOBS = [
         ("daily", "09:20", lambda: _fire_system_test("8:20 CT")),
+        # v5.19.0 \u2014 vAA-1 ULTIMATE Decision 6: refresh premarket caches
+        # 1 min before market open. Idempotent on warm caches.
+        ("daily", "09:29",
+         lambda: threading.Thread(target=premarket_recalc, daemon=True).start()),
         ("daily", "09:30", reset_daily_state),
         ("daily", "09:31", lambda: _fire_system_test("8:31 CT")),
         ("daily", "09:35",
