@@ -839,8 +839,23 @@
     // clickable when there's something interesting to expand (open
     // position OR a recorded fill today). Detail row is rendered next
     // to it but hidden by default (.pmtx-detail-open toggles via JS).
+    // v5.19.3 — a row is also expandable when proximity carries any
+    // useful payload (live price, nearest-boundary label, OR_high/OR_low).
+    // Pre-market and quiet RTH sessions have no positions or fills yet,
+    // so before this fix the matrix had nothing clickable for hours —
+    // even though the detail panel surfaces price + boundary info that
+    // does exist. Click stays open until the user clicks the same row
+    // again (the toggle handler at body level was always doing this;
+    // the regression was that hasDetail was false everywhere pre-market
+    // so no .pmtx-detail-row was ever rendered).
     const sentinelStripHtml = pos ? _pmtxSentinelStrip(p4) : "";
-    const hasDetail = !!(pos || lastFill);
+    const proxHasDetail = !!(prox && (
+      typeof prox.price === "number"
+      || prox.nearest_label
+      || typeof prox.or_high === "number"
+      || typeof prox.or_low === "number"
+    ));
+    const hasDetail = !!(pos || lastFill || proxHasDetail);
     const expandIcon = hasDetail
       ? '<span class="pmtx-expand-chev" aria-hidden="true">\u203a</span>'
       : '<span class="pmtx-expand-chev pmtx-expand-empty" aria-hidden="true"></span>';
@@ -1272,9 +1287,28 @@
     }
   }
 
+  // v5.19.3 — persist the user's tab choice across page reloads and
+  // container redeploys via localStorage. Without this, every redeploy
+  // (which forces a fresh fetch) snaps the user back to Main even when
+  // they had Val or Gene open. Storage key is namespaced; we ignore
+  // localStorage failures (private browsing, disabled storage) and just
+  // fall through to the default-Main behavior.
+  const TG_TAB_KEY = "tg-active-tab";
+  function _tgSaveActiveTab(name) {
+    try { window.localStorage.setItem(TG_TAB_KEY, name); } catch (e) { /* ignore */ }
+  }
+  function _tgLoadActiveTab() {
+    try {
+      const v = window.localStorage.getItem(TG_TAB_KEY);
+      if (v && TABS.includes(v)) return v;
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
   function selectTab(name) {
     if (!TABS.includes(name)) return;
     activeTab = name;
+    _tgSaveActiveTab(name);
     document.body.setAttribute("data-tg-active-tab", name);
     for (const t of TABS) {
       const panel = $$("tg-panel-" + t);
@@ -1306,6 +1340,18 @@
 
   for (const btn of document.querySelectorAll(".tg-tab")) {
     btn.addEventListener("click", () => selectTab(btn.getAttribute("data-tg-tab")));
+  }
+
+  // v5.19.3 — restore the previously selected tab on boot. Runs after
+  // the click handlers are wired so the panels and tab chrome get the
+  // proper visibility/highlight state via the same selectTab path.
+  // Defaults to Main if storage is empty or unreadable, matching prior
+  // behavior. Lifecycle / Val / Gene activation hooks fire from inside
+  // selectTab so deep-linking back to those tabs after a redeploy gets
+  // a clean polling/render pass without an extra refresh.
+  const __tgInitialTab = _tgLoadActiveTab();
+  if (__tgInitialTab && __tgInitialTab !== "main") {
+    selectTab(__tgInitialTab);
   }
 
   // --- Index strip -----------------------------------------------------
