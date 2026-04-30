@@ -477,7 +477,6 @@ def test_sent_d_market_exit_when_5m_adx_below_75pct_of_peak():
 # ----- Alarm E \\u2014 NEW Divergence Trap -----
 
 
-@pytest.mark.spec_gap("vAA-PR-6", "SENT-E-PRE blocks Strike 2/3 only")
 def test_sent_e_pre_blocks_strike_2_3_not_strike_1():
     from engine.sentinel import check_alarm_e_pre
     from engine.momentum_state import DivergenceMemory
@@ -508,7 +507,6 @@ def test_sent_e_pre_blocks_strike_2_3_not_strike_1():
     assert strike_1 is False
 
 
-@pytest.mark.spec_gap("vAA-PR-6", "SENT-E-POST in-trade ratchet")
 def test_sent_e_post_ratchets_stop_when_divergence_in_trade():
     from engine.sentinel import check_alarm_e_post
     from engine.momentum_state import DivergenceMemory
@@ -531,7 +529,6 @@ def test_sent_e_post_ratchets_stop_when_divergence_in_trade():
 # ----- Sentinel parallelism contract -----
 
 
-@pytest.mark.spec_gap("vAA-PR-6", "SENT-A/B/C/D/E parallel dispatch")
 def test_sentinels_evaluate_in_parallel_not_sequence():
     """The architectural rule: A, B, C, D, E all evaluated; no short-circuit.
     evaluate_sentinel must return ALL fired alarms, not just the first."""

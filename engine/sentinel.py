@@ -43,7 +43,7 @@ from engine.velocity_ratchet import (
 )
 
 if TYPE_CHECKING:
-    from engine.momentum_state import ADXTrendWindow
+    from engine.momentum_state import ADXTrendWindow, DivergenceMemory
 
 # ---------------------------------------------------------------------------
 # Constants \u2014 spec-literal thresholds
@@ -471,6 +471,99 @@ def check_alarm_d(
 
 
 # ---------------------------------------------------------------------------
+# Alarm E \u2014 Divergence Trap (vAA-1 SENT-E)
+# ---------------------------------------------------------------------------
+
+# Spec literal: in-trade divergence ratchet uses the same 0.25%
+# protective offset as the Velocity Ratchet (Alarm C). Co-located
+# with the constant in engine.velocity_ratchet but redeclared here
+# for spec readability.
+ALARM_E_RATCHET_PCT: float = RATCHET_STOP_PCT
+
+EXIT_REASON_DIVERGENCE_TRAP: str = "DIVERGENCE_TRAP"
+
+
+def check_alarm_e_pre(
+    *,
+    memory: "DivergenceMemory",
+    ticker: str,
+    side: str,
+    current_price: float,
+    current_rsi_15: float,
+    strike_num: int,
+) -> bool:
+    """Pre-fire divergence filter for Strike 2 / Strike 3.
+
+    spec: vAA-1 SENT-E-PRE. Strike 1 is never blocked (no prior
+    peak yet by definition); Strike 2 and Strike 3 are blocked when
+    the current tick prints a divergence vs the stored peak in
+    DivergenceMemory.
+
+    Returns True iff the candidate Strike should be BLOCKED.
+    """
+    if strike_num < 2:
+        return False
+    return memory.is_diverging(
+        ticker=ticker,
+        side=side,
+        current_price=current_price,
+        current_rsi_15=current_rsi_15,
+    )
+
+
+def check_alarm_e_post(
+    *,
+    memory: "DivergenceMemory",
+    ticker: str,
+    side: str,
+    current_price: float,
+    current_rsi_15: float,
+    current_stop_price: float | None,
+) -> SentinelAction | None:
+    """In-trade divergence ratchet.
+
+    spec: vAA-1 SENT-E-POST. While a position is open, if the
+    current tick prints a divergence vs the stored peak, propose a
+    tighter STOP MARKET at ``current_price * (1 \u2213 0.0025)`` in the
+    protective direction. The ratchet never loosens \u2014 if the
+    proposed stop is not strictly tighter than the existing stop,
+    return ``None``.
+
+    Returns a single ``SentinelAction(alarm="E", ...)`` carrying the
+    proposed stop in ``detail_stop_price``, or ``None``.
+    """
+    if not memory.is_diverging(
+        ticker=ticker,
+        side=side,
+        current_price=current_price,
+        current_rsi_15=current_rsi_15,
+    ):
+        return None
+
+    side_u = str(side).upper()
+    if side_u == SIDE_LONG:
+        proposed = round(float(current_price) * (1.0 - ALARM_E_RATCHET_PCT), 4)
+        if current_stop_price is not None and proposed <= float(current_stop_price):
+            return None
+    elif side_u == SIDE_SHORT:
+        proposed = round(float(current_price) * (1.0 + ALARM_E_RATCHET_PCT), 4)
+        if current_stop_price is not None and proposed >= float(current_stop_price):
+            return None
+    else:
+        return None
+
+    return SentinelAction(
+        alarm="E",
+        reason=EXIT_REASON_DIVERGENCE_TRAP,
+        detail=(
+            f"side={side_u} divergence_trap new_stop={proposed:.4f} "
+            f"(current={current_price:.4f}, offset={ALARM_E_RATCHET_PCT * 100:.2f}%)"
+        ),
+        detail_stop_price=proposed,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Top-level evaluator \u2014 PARALLEL, NOT sequential
 # ---------------------------------------------------------------------------
 
@@ -490,6 +583,9 @@ def evaluate_sentinel(
     trade_hvp: TradeHVP | None = None,
     current_adx_5m: float | None = None,
     current_stop_price: float | None = None,
+    divergence_memory: "DivergenceMemory | None" = None,
+    current_rsi_15: float | None = None,
+    ticker: str | None = None,
 ) -> SentinelResult:
     """Evaluate ALL sentinel alarms for one position on one tick.
 
@@ -557,6 +653,27 @@ def evaluate_sentinel(
         if d_action is not None:
             result.alarms.append(d_action)
 
+    # Alarm E \u2014 Divergence Trap (in-trade ratchet). Independent of
+    # A/B/C/D. Requires divergence_memory + current_rsi_15 + ticker +
+    # current_price + current_stop_price; otherwise silently skipped.
+    if (
+        divergence_memory is not None
+        and current_rsi_15 is not None
+        and ticker is not None
+        and current_price is not None
+        and current_stop_price is not None
+    ):
+        e_action = check_alarm_e_post(
+            memory=divergence_memory,
+            ticker=ticker,
+            side=side,
+            current_price=float(current_price),
+            current_rsi_15=float(current_rsi_15),
+            current_stop_price=float(current_stop_price),
+        )
+        if e_action is not None:
+            result.alarms.append(e_action)
+
     return result
 
 
@@ -585,9 +702,11 @@ __all__ = [
     "ALARM_A_VELOCITY_WINDOW_SECONDS",
     "ALARM_D_HVP_FRACTION",
     "ALARM_D_SAFETY_FLOOR_ADX",
+    "ALARM_E_RATCHET_PCT",
     "EXIT_REASON_ALARM_A",
     "EXIT_REASON_ALARM_B",
     "EXIT_REASON_ALARM_C",
+    "EXIT_REASON_DIVERGENCE_TRAP",
     "EXIT_REASON_HVP_LOCK",
     "EXIT_REASON_VELOCITY_RATCHET",
     "PNL_HISTORY_MAXLEN",
@@ -601,6 +720,8 @@ __all__ = [
     "check_alarm_b",
     "check_alarm_c",
     "check_alarm_d",
+    "check_alarm_e_post",
+    "check_alarm_e_pre",
     "evaluate_sentinel",
     "evaluate_velocity_ratchet",
     "format_sentinel_log",
