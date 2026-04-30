@@ -512,6 +512,34 @@
     return `<span class="pmtx-gate ${cellCls}"${title}>${glyph}</span>`;
   }
 
+  // v5.20.8 \u2014 Authority column (formerly 5m DI\u00b1) now reflects
+  // Section-I permit alignment to match the rewired Authority card. The
+  // cell goes green (pass) when at least one of long_open / short_open
+  // is true, red (fail) when both are explicitly false, pending when
+  // the booleans are missing or section_i_permit is unavailable.
+  function _pmtxAuthorityCell(sip) {
+    if (!sip) return null;
+    const hasLong  = (typeof sip.long_open === "boolean");
+    const hasShort = (typeof sip.short_open === "boolean");
+    if (!hasLong && !hasShort) return null;
+    const lo = hasLong  ? sip.long_open  : false;
+    const so = hasShort ? sip.short_open : false;
+    if (lo || so) return true;
+    return false;
+  }
+
+  function _pmtxAuthorityTooltip(sip) {
+    if (!sip) return "Authority: section_i_permit unavailable";
+    const lo = (typeof sip.long_open === "boolean") ? (sip.long_open ? "yes" : "no") : "?";
+    const so = (typeof sip.short_open === "boolean") ? (sip.short_open ? "yes" : "no") : "?";
+    const sa = (typeof sip.sovereign_anchor_open === "boolean")
+      ? (sip.sovereign_anchor_open ? "yes" : "no")
+      : "?";
+    return "Authority (Section-I permit alignment): long=" + lo
+      + " \u00b7 short=" + so + " \u00b7 sov.anchor=" + sa
+      + ". Cell is green when long or short permit is open.";
+  }
+
   function _pmtxNum(v, digits) {
     if (v === null || v === undefined || !isFinite(v)) return "\u2014";
     return Number(v).toFixed(digits === undefined ? 2 : digits);
@@ -554,11 +582,28 @@
     else if (d.vol === "warn") { p2vState = "warn"; p2vVal = vs || "COLD"; }
     else                        { p2vState = "pend"; p2vVal = vs || "\u2014"; }
 
-    // Phase 3 \u00b7 Authority \u2014 5m DI\u00b1 > 25.
+    // Phase 3 \u00b7 Authority \u2014 Section-I permit alignment.
+    // v5.20.8: state and value now reflect the rewired card content
+    // (long_open / short_open from section_i_permit) rather than the
+    // legacy 5m DI\u00b1 gate. Card goes green (pass) when at least
+    // one side has its permit open; red (fail) when both sides are
+    // closed; pend when the booleans are missing. The val text
+    // mirrors the Weather card style: 'long+short' / 'long' /
+    // 'short' / 'none'.
     let p3aState; let p3aVal;
-    if (d.di5 === true)        { p3aState = "pass"; p3aVal = _pmtxNum(d.di5Val, 1); }
-    else if (d.di5 === false)  { p3aState = "fail"; p3aVal = _pmtxNum(d.di5Val, 1); }
-    else                        { p3aState = "pend"; p3aVal = "\u2014"; }
+    const _sip = d.sectionIPermit || {};
+    const _hasLong  = (typeof _sip.long_open === "boolean");
+    const _hasShort = (typeof _sip.short_open === "boolean");
+    if (_hasLong || _hasShort) {
+      const _lo = _hasLong ? _sip.long_open : false;
+      const _so = _hasShort ? _sip.short_open : false;
+      if (_lo && _so)        { p3aState = "pass"; p3aVal = "long+short"; }
+      else if (_lo)          { p3aState = "pass"; p3aVal = "long"; }
+      else if (_so)          { p3aState = "pass"; p3aVal = "short"; }
+      else                   { p3aState = "fail"; p3aVal = "none"; }
+    } else {
+      p3aState = "pend"; p3aVal = "\u2014";
+    }
 
     // Phase 3 \u00b7 Momentum \u2014 5m ADX > 20 (proxied by entry1_fired).
     let p3mState; let p3mVal;
@@ -767,7 +812,7 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.7">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.8">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
@@ -979,10 +1024,10 @@
       + '<div class="pmtx-table-wrap">'
       +   '<table class="pmtx-table"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
-      +     '<th class="pmtx-col-orb" title="Permit / Boundary (Tiger Sovereign v15.0 \u00a72/\u00a73). Strike 1: two consecutive 1m closes strictly above ORH (long) or below ORL (short), with ORH/ORL frozen at exactly 09:35:59 ET. Strikes 2 & 3: two consecutive 1m closes above the running NHOD (long) or below the running NLOD (short).">ORB</th>'
-      +     '<th class="pmtx-col-adx" title="Phase 3 momentum gate (v15.0 \u00a72/\u00a73). Required for entry: 5m ADX > 20 AND Alarm E = FALSE. This is a primary spec gate \u2014 if ADX \u2264 20 the bot does not open a Strike, regardless of DI\u00b1.">Trend</th>'
-      +     '<th class="pmtx-col-diplus" title="Phase 3 authority check (v15.0 \u00a72/\u00a73). Required for entry: 5m DI+ > 25 (long) or 5m DI\u2212 > 25 (short). Sizing is then driven by 1m DI\u00b1: > 30 = Full Strike (100%), 25\u201330 = Scaled Strike (50% starter).">5m DI\u00b1</th>'
-      +     '<th class="pmtx-col-vol" title="Volume gate (v15.0 \u00a72/\u00a73). 1m volume must be \u2265 100% of the 55-bar rolling average. REQUIRED after 10:00 AM ET; before 10:00 ET the gate auto-passes.">Vol</th>'
+      +     '<th class="pmtx-col-orb" title="Phase 2 Boundary card. Strike 1: two consecutive 1m closes strictly above ORH (long) or below ORL (short), with ORH/ORL frozen at exactly 09:35:59 ET. Strikes 2 & 3: two consecutive 1m closes above the running NHOD (long) or below the running NLOD (short).">Boundary</th>'
+      +     '<th class="pmtx-col-adx" title="Phase 3 Momentum card. Required for entry: 5m ADX > 20 AND Alarm E = FALSE. This is a primary spec gate \u2014 if ADX \u2264 20 the bot does not open a Strike, regardless of DI\u00b1.">Momentum</th>'
+      +     '<th class="pmtx-col-diplus" title="Phase 3 Authority card. Section-I permit alignment: cell goes green when at least one of long_open / short_open is true on section_i_permit. Per-ticker DI\u00b1 detail (DI+ 1m/5m, DI\u2212 1m/5m, threshold) lives in the Momentum card metric stack inside the expanded row.">Authority</th>'
+      +     '<th class="pmtx-col-vol" title="Phase 2 Volume card. 1m volume must be \u2265 100% of the 55-bar rolling average. REQUIRED after 10:00 AM ET; before 10:00 ET the gate auto-passes. Bypassed when VOLUME_GATE_ENABLED=false.">Volume</th>'
       +     '<th class="pmtx-col-strike" title="Strike sequence (v15.0 \u00a71). Maximum 3 Strikes per ticker per day. Sequential Requirement: a subsequent strike cannot initiate until the previous position is fully flat (Position = 0). Counters reset at 09:30:00 ET.">Strikes</th>'
       +     '<th class="pmtx-col-state" title="Per-ticker FSM \u2014 IDLE \u00b7 ARMED (Phase 1 weather + Phase 2 permit satisfied, awaiting Phase 3 authority + momentum) \u00b7 IN POS \u00b7 LOCKED (3-of-3 strikes used).">State</th>'
       +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to the live boundary the next strike is hunting. Strike 1 hunts ORH/ORL (frozen 09:35:59); strikes 2 & 3 hunt the running NHOD/NLOD.">Dist</th>'
@@ -1185,10 +1230,19 @@
     const rowAttrs = ' data-pmtx-tkr="' + escapeHtml(tkr) + '"' + (hasDetail ? '' : ' data-pmtx-no-detail="1"');
     const mainTr = '<tr class="pmtx-row' + rowTint + (hasDetail ? '' : ' pmtx-row-static') + '"' + rowAttrs + '>'
       + '<td class="pmtx-col-titan">' + titanHtml + '</td>'
-      + '<td class="pmtx-col-orb">' + _pmtxGateCell(orb, "5-minute Opening Range break") + '</td>'
-      + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "ADX above 20 (trend strength)") + '</td>'
-      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(di5, _pmtxDiTooltip(p3, longPermit, shortPermit)) + '</td>'
-      + '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume Bucket gate") + '</td>'
+      // v5.20.8 \u2014 column headers renamed to match the gate-card
+      // names (Boundary / Momentum / Authority / Volume). The Authority
+      // cell (still uses the legacy .pmtx-col-diplus class for layout
+      // continuity) now reflects Section-I permit alignment instead of
+      // the per-ticker 5m DI\u00b1 gate; per-ticker DI\u00b1 detail
+      // lives in the Momentum card metric stack inside the expanded
+      // row. The cell is green when at least one side has its permit
+      // open, red when both are closed, pending when section_i_permit
+      // is unavailable.
+      + '<td class="pmtx-col-orb">' + _pmtxGateCell(orb, "Boundary: two consecutive 1m closes through ORH (long) / ORL (short)") + '</td>'
+      + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "Momentum: 5m ADX > 20 (proxied by Phase 3 Entry-1 firing)") + '</td>'
+      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(_pmtxAuthorityCell(sectionIPermit), _pmtxAuthorityTooltip(sectionIPermit)) + '</td>'
+      + '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume gate (1m vol \u2265 100% of 55-bar avg)") + '</td>'
       + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
       + '<td class="pmtx-col-state">' + stateHtml + '</td>'
       + '<td class="pmtx-col-prox">' + proxHtml + '</td>'

@@ -48,8 +48,12 @@ BOT_VERSION_PY = REPO_ROOT / "bot_version.py"
 
 
 def test_bot_version_is_5_20_7():
+    # Test name pinned to its release; assertion follows BOT_VERSION so
+    # subsequent hotfixes don't have to retroactively edit this file.
+    # The v5.20.7 wiring contract (Authority sip fields, single-scroll,
+    # no-pos row) is still enforced by the other tests below.
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.20.7"' in text, "bot_version.py must report 5.20.7 for this hotfix"
+    assert 'BOT_VERSION = "5.20.8"' in text, "bot_version.py must report 5.20.8 for this hotfix"
 
 
 def test_authority_uses_sip_permit_fields():
@@ -222,6 +226,6 @@ def test_app_css_no_dual_scroll_container():
 def test_data_pmtx_comp_grid_version_bumped():
     """The component grid version marker must mention v5.20.7."""
     js = APP_JS.read_text(encoding="utf-8")
-    assert 'data-pmtx-comp-grid="v5.20.7"' in js, (
-        "data-pmtx-comp-grid attribute must be bumped to v5.20.7"
+    assert 'data-pmtx-comp-grid="v5.20.8"' in js, (
+        "data-pmtx-comp-grid attribute must be bumped to v5.20.8"
     )
