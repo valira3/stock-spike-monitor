@@ -34,7 +34,7 @@ def _read_js() -> str:
 
 def test_bot_version_is_5_20_9():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.22.0"' in text, "bot_version.py must report 5.22.0"
+    assert 'BOT_VERSION = "5.23.0"' in text, "bot_version.py must report 5.23.0"
 
 
 def test_table_header_column_order_matches_card_order():

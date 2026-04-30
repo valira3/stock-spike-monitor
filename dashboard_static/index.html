@@ -184,21 +184,11 @@
       </div>
     </section>
 
-    <!-- v5.17.0 — Last signal + Today's trades pair (kept). Last signal
-         is the paper executor's most recent emitted signal; Today's
-         trades is the running fill log. Observer / Gates·entry checks
-         panels retired in v5.17.0 — their content is now folded into
-         the Permit Matrix above. -->
-    <section class="grid grid-2">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title" title="Most recent signal emitted by the paper executor (entry / exit / skip with reason and timestamp)">Last signal</span>
-          <span class="chip" id="last-sig-chip" title="Signal type · ticker">—</span>
-        </div>
-        <div class="card-body" id="last-sig-body">
-          <div class="empty">No signals received yet.</div>
-        </div>
-      </div>
+    <!-- v5.23.0 — Today's trades panel. The companion 'Last signal' card
+         was retired here (it was usually empty after a redeploy and
+         the trade log already carries the same entry/exit info with
+         history). 'Today's trades' now spans full width on Main. -->
+    <section class="grid">
       <div class="card">
         <div class="card-head">
           <span class="card-title" title="All fills (opens + closes) recorded today, newest first">Today's trades<span class="count" id="trades-count" title="Number of fills today">· 0</span></span>
@@ -217,8 +207,8 @@
 
 </div><!-- /tg-panel-main -->
 
-<!-- v4.0.0-beta / v5.18.0 — Val tab panel. Portfolio-only mirror of Main:
-     KPIs (Equity/Day P&L/Open/Session), open positions, last signal,
+<!-- v4.0.0-beta / v5.18.0 / v5.23.0 — Val tab panel. Portfolio-only mirror
+     of Main: KPIs (Equity/Day P&L/Open/Session), open positions, today's
      trades, and per-executor Proximity. Permit Matrix is market-wide
      and lives only on Main (would be redundant duplication). Populated
      from /api/executor/val every 15s. A `data-tg-exec` attribute on the

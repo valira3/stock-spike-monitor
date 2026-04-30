@@ -2118,6 +2118,283 @@ async def h_trade_log(request):
     )
 
 
+# v5.23.0 \u2014 Intraday chart endpoint. Serves OHLC bars + key levels
+# (OR high/low, AVWAP from 9:30 ET, 5m EMA9) and entry/exit markers for
+# a single ticker so the dashboard can render an inline chart panel
+# inside an expanded Permit Matrix Titan card. Read-only: no globals
+# are mutated. Bars come from the on-disk JSONL archive that the WS
+# feed writes (no live API call), so latency stays low and the dash
+# does not contend with the live scan loop for the rate-limit budget.
+_INTRADAY_BARS_DIR = os.getenv("BARS_DIR", "/data/bars")
+_INTRADAY_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})")
+
+
+def _intraday_load_today_bars(ticker: str, day: str) -> list[dict]:
+    """Return today's 1m bars for `ticker` from the on-disk archive.
+
+    Empty list on missing day directory or missing ticker file. The
+    loader silently skips malformed JSON lines so a partially-corrupt
+    archive cannot break the chart endpoint.
+    """
+    try:
+        from backtest.loader import load_bars
+    except Exception:  # pragma: no cover \u2014 import shouldn't fail in prod
+        return []
+    try:
+        return load_bars(_INTRADAY_BARS_DIR, day, ticker)
+    except Exception:
+        return []
+
+
+def _intraday_et_minute(ts_iso: str) -> int | None:
+    """Map a bar 'ts' (ISO UTC) to ET minute-of-day, or None on parse fail.
+
+    DST-aware via zoneinfo. ET minute-of-day = hour*60 + minute. Used to
+    bucket bars into premarket (4:00\u201309:30, mins 240\u2013570), RTH
+    (09:30\u201316:00, mins 570\u2013960), and to anchor AVWAP at 09:30.
+    """
+    try:
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+
+        # Tolerate trailing Z and naive timestamps.
+        s = ts_iso.rstrip("Z")
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        et = dt.astimezone(ZoneInfo("America/New_York"))
+        return et.hour * 60 + et.minute
+    except Exception:
+        return None
+
+
+def _intraday_compute_avwap(bars: list[dict], anchor_min: int = 570) -> list[float | None]:
+    """Anchored VWAP from 09:30 ET. Premarket bars get None (no anchor yet).
+
+    Per-bar typical price = (h + l + c) / 3, weighted by iex_volume. The
+    cumulative numerator/denominator reset at the anchor minute, mirroring
+    how trade_genius's `_v513_compute_avwap_0930` builds the QQQ AVWAP.
+    Bars before the anchor return None so the frontend can leave that
+    portion of the line unplotted instead of drawing a misleading curve.
+    """
+    out: list[float | None] = []
+    pv_sum = 0.0
+    v_sum = 0.0
+    started = False
+    for b in bars:
+        et_min = _intraday_et_minute(str(b.get("ts") or ""))
+        if et_min is None or et_min < anchor_min:
+            out.append(None)
+            continue
+        try:
+            h = float(b.get("h") or 0)
+            lo = float(b.get("l") or 0)
+            c = float(b.get("c") or 0)
+            v = float(b.get("iex_volume") or 0)
+        except (TypeError, ValueError):
+            out.append(None)
+            continue
+        if not h or not lo or not c:
+            out.append(out[-1] if out else None)
+            continue
+        tp = (h + lo + c) / 3.0
+        if not started:
+            pv_sum = 0.0
+            v_sum = 0.0
+            started = True
+        pv_sum += tp * v
+        v_sum += v
+        out.append((pv_sum / v_sum) if v_sum > 0 else tp)
+    return out
+
+
+def _intraday_resample_5m(bars: list[dict]) -> list[dict]:
+    """Aggregate 1m bars into 5m bars keyed by ET 5-minute bucket.
+
+    Each output row carries: ts (first bar's ts), et_min (bucket start),
+    o/h/l/c, v. Buckets are aligned to wall-clock 5-minute boundaries
+    in ET so 09:30, 09:35, 09:40 \u2026 are stable across dates.
+    """
+    out: list[dict] = []
+    cur_bucket: int | None = None
+    cur: dict | None = None
+    for b in bars:
+        et_min = _intraday_et_minute(str(b.get("ts") or ""))
+        if et_min is None:
+            continue
+        bucket = (et_min // 5) * 5
+        try:
+            o = float(b.get("o") or 0)
+            h = float(b.get("h") or 0)
+            lo = float(b.get("l") or 0)
+            c = float(b.get("c") or 0)
+            v = float(b.get("iex_volume") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (o and h and lo and c):
+            continue
+        if bucket != cur_bucket:
+            if cur is not None:
+                out.append(cur)
+            cur_bucket = bucket
+            cur = {"ts": b.get("ts"), "et_min": bucket, "o": o, "h": h, "l": lo, "c": c, "v": v}
+        else:
+            assert cur is not None
+            cur["h"] = max(cur["h"], h)
+            cur["l"] = min(cur["l"], lo)
+            cur["c"] = c
+            cur["v"] += v
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _intraday_ema9_5m(bars5: list[dict]) -> list[float | None]:
+    """Standard 9-period EMA over the 5m closes. None until 9 bars seen.
+
+    Frontend overlays this on the same time axis as the 1m bars by
+    pairing each 5m EMA value with all 1m bars whose et_min falls in
+    that 5m bucket.
+    """
+    out: list[float | None] = []
+    k = 2.0 / (9 + 1)
+    ema: float | None = None
+    for i, b in enumerate(bars5):
+        try:
+            c = float(b.get("c") or 0)
+        except (TypeError, ValueError):
+            out.append(None)
+            continue
+        if i < 8:
+            out.append(None)
+            continue
+        if i == 8:
+            seed = sum(float(x.get("c") or 0) for x in bars5[:9]) / 9.0
+            ema = seed
+            out.append(ema)
+            continue
+        if ema is None:
+            out.append(None)
+            continue
+        ema = c * k + ema * (1 - k)
+        out.append(ema)
+    return out
+
+
+def _intraday_today_trades(m, ticker: str, day: str) -> list[dict]:
+    """Return today's entry/exit fills for `ticker` from the trade log.
+
+    Uses trade_log_read_tail with since=day and a generous limit so we
+    pick up both legs of intraday round-trips. Each row already carries
+    entry_ts / exit_ts / entry_price / exit_price / side, which the
+    frontend uses to plot triangles.
+    """
+    try:
+        rows = m.trade_log_read_tail(limit=2000, since_date=day, portfolio="paper") or []
+    except Exception:
+        return []
+    out: list[dict] = []
+    tu = ticker.upper()
+    for r in rows:
+        if (r.get("ticker") or "").upper() != tu:
+            continue
+        if (r.get("date") or "") != day:
+            continue
+        out.append(
+            {
+                "side": r.get("side"),
+                "qty": r.get("qty"),
+                "entry_ts": r.get("entry_ts"),
+                "entry_price": r.get("entry_price"),
+                "exit_ts": r.get("exit_ts"),
+                "exit_price": r.get("exit_price"),
+                "realized_pnl": r.get("realized_pnl"),
+                "exit_reason": r.get("exit_reason"),
+            }
+        )
+    return out
+
+
+def _intraday_build_payload(ticker: str) -> dict:
+    """Compose the /api/intraday/{ticker} response body. Pure function:
+    no network I/O, only on-disk JSONL + live globals (or_high/or_low).
+    Keeping it pure makes the handler easy to unit-test.
+    """
+    from datetime import datetime, timezone
+
+    m = _ssm()
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    bars = _intraday_load_today_bars(ticker, day)
+    avwap = _intraday_compute_avwap(bars)
+    bars5 = _intraday_resample_5m(bars)
+    ema9_5m = _intraday_ema9_5m(bars5)
+    # Pair each 5m EMA value with its bucket so the frontend can match
+    # back to 1m bars by et_min // 5.
+    ema9_by_bucket: dict[int, float] = {}
+    for b5, e in zip(bars5, ema9_5m):
+        if e is not None and isinstance(b5.get("et_min"), int):
+            ema9_by_bucket[int(b5["et_min"])] = float(e)
+    or_high = None
+    or_low = None
+    try:
+        oh = getattr(m, "or_high", {}) or {}
+        ol = getattr(m, "or_low", {}) or {}
+        v = oh.get(ticker.upper())
+        or_high = float(v) if v is not None else None
+        v = ol.get(ticker.upper())
+        or_low = float(v) if v is not None else None
+    except Exception:
+        pass
+    trades = _intraday_today_trades(m, ticker, day)
+    # Slim per-bar payload \u2014 only fields the chart needs.
+    bars_out: list[dict] = []
+    for i, b in enumerate(bars):
+        et_min = _intraday_et_minute(str(b.get("ts") or ""))
+        if et_min is None:
+            continue
+        bars_out.append(
+            {
+                "ts": b.get("ts"),
+                "et_min": et_min,
+                "o": b.get("o"),
+                "h": b.get("h"),
+                "l": b.get("l"),
+                "c": b.get("c"),
+                "v": b.get("iex_volume"),
+                "avwap": avwap[i] if i < len(avwap) else None,
+                "ema9_5m": ema9_by_bucket.get((et_min // 5) * 5),
+            }
+        )
+    return {
+        "ok": True,
+        "ticker": ticker.upper(),
+        "date": day,
+        "bars": bars_out,
+        "or_high": or_high,
+        "or_low": or_low,
+        "trades": trades,
+        "bar_count": len(bars_out),
+    }
+
+
+async def h_intraday(request):
+    """GET /api/intraday/{ticker} \u2014 today's 1m bars + key levels."""
+    from aiohttp import web
+
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    raw = (request.match_info.get("ticker") or "").strip().upper()
+    # Defensive: accept only [A-Z0-9.] tickers, max 10 chars.
+    if not raw or not re.match(r"^[A-Z0-9.]{1,10}$", raw):
+        return web.json_response({"ok": False, "error": "bad ticker"}, status=400)
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(None, _intraday_build_payload, raw)
+    return web.json_response(payload)
+
+
 async def h_stream(request):
     from aiohttp import web
 
@@ -2249,6 +2526,8 @@ def _build_app():
     # v5.13.6 \u2014 per-position lifecycle event log endpoints.
     app.router.add_get("/api/lifecycle/positions", h_lifecycle_positions)
     app.router.add_get("/api/lifecycle/{position_id}", h_lifecycle_position)
+    # v5.23.0 \u2014 inline chart panel data source for the expanded Titan card.
+    app.router.add_get("/api/intraday/{ticker}", h_intraday)
     app.router.add_get("/stream", h_stream)
     if _STATIC_DIR.exists():
         app.router.add_static("/static/", path=_STATIC_DIR, show_index=False)

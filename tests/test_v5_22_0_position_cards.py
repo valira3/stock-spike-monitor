@@ -66,13 +66,13 @@ def _read_css() -> str:
 # ---------------------------------------------------------------------------
 def test_bot_version_is_5_22_0():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.22.0"' in text, "bot_version.py must report 5.22.0"
+    assert 'BOT_VERSION = "5.23.0"' in text, "bot_version.py must report 5.23.0"
 
 
 def test_grid_marker_is_v5_22_0():
     js = _strip_js_comments(_read_js())
-    assert 'data-pmtx-comp-grid="v5.22.0"' in js, (
-        "data-pmtx-comp-grid attribute must be bumped to v5.22.0"
+    assert 'data-pmtx-comp-grid="v5.23.0"' in js, (
+        "data-pmtx-comp-grid attribute must be bumped to v5.23.0"
     )
     # And the legacy v5.21.1 marker must not survive in executable code.
     assert 'data-pmtx-comp-grid="v5.21.1"' not in js, (
@@ -141,7 +141,7 @@ def test_sentinel_strip_passes_alarm_kinds():
         '"d_hvp_lock"',
         '"e_divergence_trap"',
     ):
-        assert f"_pmtxAlarmStateClass(" in js and kind in js, (
+        assert "_pmtxAlarmStateClass(" in js and kind in js, (
             f"sentinel cell must pass alarm kind {kind} to state classifier"
         )
 

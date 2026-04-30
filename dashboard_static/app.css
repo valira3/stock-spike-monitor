@@ -1546,3 +1546,88 @@
 .pmtx-sma-order-verdict-bearish { color: var(--down, #ff5a6f); }
 
 /* ─── End v5.21.0 Daily SMA Stack panel ─────────────────────────── */
+
+/* v5.23.0 — Intraday chart panel. Sits between the component-state    */
+/* grid and the SMA stack inside an expanded Titan detail row.         */
+/* Canvas fills the section width; height is fixed for desktop and     */
+/* collapses on mobile so the chart still fits inside the matrix       */
+/* row's vertical envelope. Section box mirrors the SMA section so     */
+/* the two read as siblings.                                            */
+
+.pmtx-intraday-section {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(8,14,28,0.55);
+  padding: 10px 14px 12px;
+}
+
+.pmtx-intraday-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.pmtx-intraday-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pmtx-intraday-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pmtx-intraday-canvas {
+  display: block;
+  width: 100%;
+  height: 320px;
+  border-radius: 8px;
+  background: #0e1318;
+}
+
+.pmtx-intraday-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pmtx-intraday-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pmtx-intraday-leg::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.pmtx-intraday-leg-or { color: #e5b85c; }
+.pmtx-intraday-leg-avwap { color: #7aa6ff; }
+.pmtx-intraday-leg-ema9 { color: #c084fc; }
+.pmtx-intraday-leg-entry { color: #3ec28f; }
+.pmtx-intraday-leg-exit { color: #e26a6a; }
+
+@media (max-width: 720px) {
+  .pmtx-intraday-canvas {
+    height: 220px;
+  }
+  .pmtx-intraday-section {
+    padding: 8px 10px 10px;
+  }
+  .pmtx-intraday-legend {
+    gap: 8px;
+    font-size: 10px;
+  }
+}
