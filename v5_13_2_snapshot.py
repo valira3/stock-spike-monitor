@@ -42,9 +42,40 @@ the empty skeleton (`{"phase1": {}, "phase2": [], "phase3": [],
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import v5_10_6_snapshot as _v510
+
+_logger = logging.getLogger("trade_genius")
+
+
+# ---------------------------------------------------------------------------
+# EXPECTED_KEYS contract
+# ---------------------------------------------------------------------------
+# Callers and tests rely on this dict to validate the output schema.
+# Keys map to the set of field names present in each sub-block.
+# Do NOT remove or rename existing keys -- add only.
+
+EXPECTED_KEYS: dict[str, set] = {
+    "sentinel": {
+        # Legacy keys -- kept for one-release backwards compatibility.
+        "a1_pnl",
+        "a1_threshold",
+        "a2_velocity",
+        "a2_threshold",
+        "b_close",
+        "b_ema9",
+        "b_delta",
+        # vAA-1 alarm sub-dicts.
+        "a_loss",
+        "a_flash",
+        "b_trend_death",
+        "c_velocity_ratchet",
+        "d_hvp_lock",
+        "e_divergence_trap",
+    }
+}
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +113,27 @@ def _phase1_block(m) -> dict:
 # ---------------------------------------------------------------------------
 # Phase 2 \u2014 per-ticker gates
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# v5.21.0 -- daily SMA stack helper
+# ---------------------------------------------------------------------------
+
+
+def _compute_sma_stack_safe(ticker: str) -> dict | None:
+    """Compute the daily SMA stack for `ticker`. Returns None on any
+    failure (network unavailable, missing credentials, insufficient
+    history) so the snapshot never crashes.
+    """
+    try:
+        from engine.daily_bars import get_recent_daily_closes
+        from engine.sma_stack import compute_sma_stack
+
+        closes = get_recent_daily_closes(ticker, 250)
+        return compute_sma_stack(closes)
+    except Exception as exc:
+        _logger.warning("v5.21.0 sma_stack: failed for %s: %s", ticker, exc)
+        return None
 
 
 _VOL_GATE_MAP = {
@@ -137,12 +189,17 @@ def _phase2_block(m, tickers: list[str]) -> list[dict]:
             bh_side = bh.get("side")
             two_above = bool(bh_state == "SATISFIED" and bh_side == "LONG")
             two_below = bool(bh_state == "SATISFIED" and bh_side == "SHORT")
+            # v5.21.0 -- daily SMA stack (informational panel, not a gate).
+            # Wrapped in try/except so any network or data failure degrades
+            # gracefully to None without crashing the snapshot.
+            sma_stack = _compute_sma_stack_safe(t)
             rows.append(
                 {
                     "ticker": t,
                     "vol_gate_status": mapped,
                     "two_consec_above": two_above,
                     "two_consec_below": two_below,
+                    "sma_stack": sma_stack,
                 }
             )
         except Exception:
@@ -233,6 +290,12 @@ def _phase3_block(m, longs: dict, shorts: dict) -> list[dict]:
 _SENTINEL_A1_THRESHOLD = -500.0
 _SENTINEL_A2_THRESHOLD = -0.01
 
+# vAA-1 alarm D threshold (spec SENT-D: ratio < 0.75).
+_SENTINEL_D_HVP_FRACTION = 0.75
+
+# vAA-1 alarm C/E ratchet offset: 0.25% protective stop.
+_SENTINEL_RATCHET_PCT = 0.0025
+
 
 def _qqq_5m_state(m) -> tuple[float | None, float | None]:
     """Reuse v5.10.6 helper \u2014 Phase 4 Alarm B uses the same QQQ 5m
@@ -247,15 +310,35 @@ def _qqq_5m_state(m) -> tuple[float | None, float | None]:
 def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
     """Build the Phase 4 sentinel sub-block for one open position.
 
-    A1 = unrealized P&L in dollars (fires at <= -$500).
-    A2 = velocity over the last sample window in $/sec (fires <= -0.01).
-    B  = QQQ 5m close vs 9-EMA (Alarm B uses the per-side rule).
+    Returns the 7 legacy keys (a1_pnl, a1_threshold, a2_velocity,
+    a2_threshold, b_close, b_ema9, b_delta) for backwards compatibility
+    PLUS the 6 vAA-1 alarm sub-dicts (a_loss, a_flash, b_trend_death,
+    c_velocity_ratchet, d_hvp_lock, e_divergence_trap).
 
-    All values are best-effort reads. Missing state \u2192 None so the
-    renderer dims the row instead of crashing.
+    All values are best-effort reads. Missing state -> None so the
+    renderer dims the row instead of crashing. Read-only: no engine
+    exit logic is called.
     """
-    out = {
-        "a1_pnl": None,
+    # -----------------------------------------------------------------
+    # Shared computation: unrealized PnL
+    # -----------------------------------------------------------------
+    unreal: float | None = None
+    try:
+        entry = _safe_float(pos.get("entry_price")) or 0.0
+        shares = int(pos.get("shares", 0) or 0)
+        mark = _safe_float(prices.get(ticker)) or entry
+        if side == "LONG":
+            unreal = float((mark - entry) * shares)
+        else:
+            unreal = float((entry - mark) * shares)
+    except Exception:
+        pass
+
+    # -----------------------------------------------------------------
+    # Legacy keys (kept unchanged -- callers rely on these)
+    # -----------------------------------------------------------------
+    out: dict = {
+        "a1_pnl": unreal,
         "a1_threshold": _SENTINEL_A1_THRESHOLD,
         "a2_velocity": None,
         "a2_threshold": _SENTINEL_A2_THRESHOLD,
@@ -263,17 +346,6 @@ def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
         "b_ema9": None,
         "b_delta": None,
     }
-    try:
-        entry = _safe_float(pos.get("entry_price")) or 0.0
-        shares = int(pos.get("shares", 0) or 0)
-        mark = _safe_float(prices.get(ticker)) or entry
-        if side == "LONG":
-            unreal = (mark - entry) * shares
-        else:
-            unreal = (entry - mark) * shares
-        out["a1_pnl"] = float(unreal)
-    except Exception:
-        pass
     try:
         # Velocity is recorded by broker.positions when the sentinel
         # runs; expose it if it lives on the position dict.
@@ -283,6 +355,8 @@ def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
         out["a2_velocity"] = _safe_float(v)
     except Exception:
         pass
+    qqq_close: float | None = None
+    qqq_ema9: float | None = None
     try:
         qqq_close, qqq_ema9 = _qqq_5m_state(m)
         out["b_close"] = qqq_close
@@ -291,6 +365,252 @@ def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
             out["b_delta"] = float(qqq_close) - float(qqq_ema9)
     except Exception:
         pass
+
+    # -----------------------------------------------------------------
+    # vAA-1 Alarm A_LOSS
+    # Spec SENT-A_LOSS: unrealized_pnl <= -$500 -> MARKET EXIT.
+    # -----------------------------------------------------------------
+    a_loss_armed = unreal is not None
+    a_loss_triggered = bool(
+        a_loss_armed and unreal is not None and unreal <= _SENTINEL_A1_THRESHOLD
+    )
+    out["a_loss"] = {
+        "pnl": unreal,
+        "threshold": _SENTINEL_A1_THRESHOLD,
+        "armed": a_loss_armed,
+        "triggered": a_loss_triggered,
+    }
+
+    # -----------------------------------------------------------------
+    # vAA-1 Alarm A_FLASH
+    # Spec SENT-A_FLASH: (pnl_now - pnl_60s_ago) / position_value <= -0.01.
+    # Source: pos["pnl_history"] deque of (ts, pnl) samples.
+    # -----------------------------------------------------------------
+    a_flash_velocity: float | None = None
+    a_flash_armed = False
+    a_flash_triggered = False
+    try:
+        pnl_history = pos.get("pnl_history")
+        now_ts = _safe_float(pos.get("last_sentinel_ts"))
+        entry_v = _safe_float(pos.get("entry_price")) or 0.0
+        shares_v = int(pos.get("shares", 0) or 0)
+        position_value = entry_v * shares_v
+        if (
+            pnl_history is not None
+            and now_ts is not None
+            and position_value > 0
+            and unreal is not None
+        ):
+            target_ts = now_ts - 60.0
+            prior_pnl: float | None = None
+            for ts_s, pnl_s in pnl_history:
+                if ts_s <= target_ts:
+                    prior_pnl = pnl_s
+                else:
+                    break
+            if prior_pnl is not None:
+                delta = unreal - prior_pnl
+                velocity_pct = delta / position_value
+                a_flash_velocity = velocity_pct
+                a_flash_armed = True
+                # Spec uses strict less-than for flash (< -0.01).
+                a_flash_triggered = velocity_pct < _SENTINEL_A2_THRESHOLD
+    except Exception:
+        pass
+    out["a_flash"] = {
+        "velocity_pct": a_flash_velocity,
+        "threshold_pct": _SENTINEL_A2_THRESHOLD,
+        "window_sec": 60,
+        "armed": a_flash_armed,
+        "triggered": a_flash_triggered,
+    }
+
+    # -----------------------------------------------------------------
+    # vAA-1 Alarm B_TREND_DEATH
+    # Spec SENT-B: 5m bar close crosses 9-EMA, per-side.
+    # Gate: only triggered on a confirmed 5m bar close (on_5m_close).
+    # -----------------------------------------------------------------
+    b_side_note = "LONG: close < ema9 fires" if side == "LONG" else "SHORT: close > ema9 fires"
+    b_armed = bool(side in ("LONG", "SHORT"))
+    b_triggered = False
+    try:
+        if b_armed and qqq_close is not None and qqq_ema9 is not None:
+            on_5m = bool(pos.get("on_5m_close", False))
+            if on_5m:
+                if side == "LONG":
+                    b_triggered = qqq_close < qqq_ema9
+                else:
+                    b_triggered = qqq_close > qqq_ema9
+            # When on_5m_close is absent/False, armed stays True but
+            # triggered stays False -- dashboard shows "watching".
+    except Exception:
+        pass
+    out["b_trend_death"] = {
+        "close": qqq_close,
+        "ema9": qqq_ema9,
+        "delta": (
+            float(qqq_close) - float(qqq_ema9)
+            if qqq_close is not None and qqq_ema9 is not None
+            else None
+        ),
+        "armed": b_armed,
+        "triggered": b_triggered,
+        "side_aware_note": b_side_note,
+    }
+
+    # -----------------------------------------------------------------
+    # vAA-1 Alarm C_VELOCITY_RATCHET
+    # Spec SENT-C: three strictly-decreasing 1m ADX values.
+    # Source: pos["adx_1m_history"] -- list or deque of recent values.
+    # -----------------------------------------------------------------
+    c_adx_window: list[float | None] = [None, None, None]
+    c_monotone = False
+    c_stop: float | None = None
+    c_armed = False
+    c_triggered = False
+    try:
+        adx_hist = pos.get("adx_1m_history")
+        if adx_hist is not None:
+            hist_list = list(adx_hist)
+            if len(hist_list) >= 3:
+                h0 = _safe_float(hist_list[-3])
+                h1 = _safe_float(hist_list[-2])
+                h2 = _safe_float(hist_list[-1])
+                c_adx_window = [h0, h1, h2]
+                if h0 is not None and h1 is not None and h2 is not None:
+                    c_armed = True
+                    c_monotone = bool(h0 > h1 > h2)
+                    c_triggered = c_monotone
+                    if c_triggered:
+                        current_price_c = _safe_float(prices.get(ticker))
+                        if current_price_c is not None:
+                            if side == "LONG":
+                                c_stop = round(current_price_c * (1.0 - _SENTINEL_RATCHET_PCT), 4)
+                            else:
+                                c_stop = round(current_price_c * (1.0 + _SENTINEL_RATCHET_PCT), 4)
+    except Exception:
+        pass
+    out["c_velocity_ratchet"] = {
+        "adx_window": c_adx_window,
+        "monotone_decreasing": c_monotone,
+        "stop_price": c_stop,
+        "armed": c_armed,
+        "triggered": c_triggered,
+    }
+
+    # -----------------------------------------------------------------
+    # vAA-1 Alarm D_HVP_LOCK
+    # Spec SENT-D: current_5m_adx < 0.75 * trade_hvp.peak.
+    # Sources: pos["trade_hvp"] (TradeHVP object) and
+    #          pos["adx_5m_current"] or prices dict for 5m ADX.
+    # -----------------------------------------------------------------
+    d_trade_hvp_val: float | None = None
+    d_current_5m: float | None = None
+    d_ratio: float | None = None
+    d_armed = False
+    d_triggered = False
+    try:
+        trade_hvp_obj = pos.get("trade_hvp")
+        if trade_hvp_obj is not None:
+            try:
+                d_trade_hvp_val = float(trade_hvp_obj.peak)
+                d_armed = True
+            except (RuntimeError, AttributeError, TypeError):
+                d_trade_hvp_val = None
+                d_armed = False
+        # Fallback: plain float stored under trade_hvp key.
+        if d_trade_hvp_val is None:
+            raw_hvp = _safe_float(pos.get("trade_hvp"))
+            if raw_hvp is not None:
+                d_trade_hvp_val = raw_hvp
+                d_armed = True
+        if d_armed:
+            d_current_5m = _safe_float(pos.get("adx_5m_current"))
+            if d_current_5m is None:
+                # Try prices dict as fallback channel.
+                d_current_5m = _safe_float(prices.get("__adx_5m__"))
+            if d_trade_hvp_val is not None and d_current_5m is not None and d_trade_hvp_val > 0:
+                d_ratio = d_current_5m / d_trade_hvp_val
+                d_triggered = d_ratio < _SENTINEL_D_HVP_FRACTION
+    except Exception:
+        pass
+    out["d_hvp_lock"] = {
+        "trade_hvp": d_trade_hvp_val,
+        "current_5m_adx": d_current_5m,
+        "ratio": d_ratio,
+        "threshold_ratio": _SENTINEL_D_HVP_FRACTION,
+        "armed": d_armed,
+        "triggered": d_triggered,
+    }
+
+    # -----------------------------------------------------------------
+    # vAA-1 Alarm E_DIVERGENCE_TRAP
+    # Spec SENT-E: current price makes a new extreme while RSI diverges.
+    # Sources: pos["stored_peak_price"], pos["stored_peak_rsi"],
+    #          prices dict for current price, pos["current_rsi_15"].
+    # -----------------------------------------------------------------
+    e_peak_price: float | None = None
+    e_peak_rsi: float | None = None
+    e_cur_price: float | None = None
+    e_cur_rsi: float | None = None
+    e_is_extreme = False
+    e_rsi_div = False
+    e_pre_strike: int | None = None
+    e_post_stop: float | None = None
+    e_armed = False
+    e_triggered = False
+    try:
+        e_peak_price = _safe_float(pos.get("stored_peak_price"))
+        e_peak_rsi = _safe_float(pos.get("stored_peak_rsi"))
+        e_cur_price = _safe_float(prices.get(ticker))
+        e_cur_rsi = _safe_float(pos.get("current_rsi_15") or pos.get("rsi_15"))
+        e_armed = (
+            e_peak_price is not None
+            and e_peak_rsi is not None
+            and e_cur_price is not None
+            and e_cur_rsi is not None
+        )
+        if e_armed:
+            if side == "LONG":
+                e_is_extreme = e_cur_price > e_peak_price  # type: ignore[operator]
+                e_rsi_div = e_cur_rsi < e_peak_rsi  # type: ignore[operator]
+            else:
+                e_is_extreme = e_cur_price < e_peak_price  # type: ignore[operator]
+                e_rsi_div = e_cur_rsi > e_peak_rsi  # type: ignore[operator]
+            e_triggered = e_is_extreme and e_rsi_div
+            if e_triggered:
+                # pre_blocked_for_strike: next strike that would be
+                # blocked is 2 (if strike_num < 2) or 3 (if == 2).
+                strike_num = pos.get("strike_num")
+                if strike_num is not None:
+                    try:
+                        sn = int(strike_num)
+                        if sn < 2:
+                            e_pre_strike = 2
+                        elif sn == 2:
+                            e_pre_strike = 3
+                    except (TypeError, ValueError):
+                        pass
+                # post_ratchet_stop: protective stop price.
+                if side == "LONG":
+                    e_post_stop = round(e_cur_price * (1.0 - _SENTINEL_RATCHET_PCT), 4)
+                else:
+                    e_post_stop = round(e_cur_price * (1.0 + _SENTINEL_RATCHET_PCT), 4)
+    except Exception:
+        pass
+    out["e_divergence_trap"] = {
+        "stored_peak_price": e_peak_price,
+        "stored_peak_rsi": e_peak_rsi,
+        "current_price": e_cur_price,
+        "current_rsi_15": e_cur_rsi,
+        "is_extreme": e_is_extreme,
+        "rsi_diverging": e_rsi_div,
+        "pre_blocked_for_strike": e_pre_strike,
+        "post_ratchet_stop": e_post_stop,
+        "armed": e_armed,
+        "triggered": e_triggered,
+    }
+
     return out
 
 
@@ -416,4 +736,4 @@ def build_tiger_sovereign_snapshot(
     return out
 
 
-__all__ = ["build_tiger_sovereign_snapshot"]
+__all__ = ["build_tiger_sovereign_snapshot", "EXPECTED_KEYS"]

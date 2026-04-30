@@ -332,7 +332,9 @@
     .card-body { padding: 10px 12px; }
     table { font-size: 11.5px; }
     thead th, tbody td { padding: 7px 8px; }
-    .card-body.flush { overflow-x: auto; overscroll-behavior: contain; }
+    /* v5.21.0: removed redundant overflow-x:auto on .card-body.flush at phone breakpoint.
+       Caused double horizontal scroll on iPhone (.pmtx-table-wrap already owns its own scroller).
+       Pre-dates v4.5.1 (commit 198ff3f), no longer needed. */
     .prox-row { padding: 7px 12px; gap: 8px; font-size: 11.5px; }
     .prox-ticker { width: 50px; }
     .prox-price { width: 62px; }
@@ -1128,7 +1130,9 @@
 }
 
 /* ─── Per-position Sentinel detail strip (rendered inline under the
-       matched row when a position is open). 5 cells: A B C D E. ─── */
+       matched row when a position is open). 6 cells in vAA-1:
+       A1 Loss · A2 Flash · B Trend Death · C Vel. Ratchet ·
+       D HVP Lock · E Div. Trap. v5.21.0 grid bumped from 5→6 columns. ─── */
 .pmtx-sentinel-row td {
   background: color-mix(in srgb, var(--accent) 5%, var(--surface));
   padding: 0 0 10px 0 !important;
@@ -1136,10 +1140,15 @@
 }
 .pmtx-sentinel-strip {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   padding: 8px 14px 6px;
   margin: 0 4px;
+}
+@media (max-width: 720px) {
+  /* v5.21.0: on phone, 6 cells in one row gets too cramped.
+     Wrap to 3+3 grid so each cell keeps a readable width. */
+  .pmtx-sentinel-strip { grid-template-columns: repeat(3, 1fr); }
 }
 .pmtx-sentinel-cell {
   background: var(--surface-2);
@@ -1257,3 +1266,254 @@
        sentinel-detail row so the strip visually attaches to its
        parent position row. JS adds .pmtx-row-attached for this. ─── */
 .pmtx-row-attached td { border-bottom-color: transparent; }
+
+/* ─── v5.21.0: Daily SMA Stack panel (.pmtx-sma-*) ──────────────── */
+/* Sibling block inside .detail-inner, below the comp-strip.          */
+/* Color swatches match the chart: 12=white, 22=blue, 55=yellow,      */
+/* 100=green, 200=cyan.                                                */
+
+.pmtx-sma-section {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(8,14,28,0.55);
+  overflow: hidden;
+}
+
+.pmtx-sma-unavailable {
+  padding: 12px 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.pmtx-sma-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.pmtx-sma-kbd {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border-soft, rgba(35,49,82,0.55));
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pmtx-sma-help {
+  color: var(--text-dim);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 11px;
+}
+
+.pmtx-sma-stack-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  letter-spacing: 0.02em;
+  margin-left: auto;
+  text-transform: none;
+}
+
+.pmtx-sma-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.pmtx-sma-pill-bullish {
+  background: rgba(47,207,110,0.15);
+  color: #6bf09d;
+  border-color: rgba(47,207,110,0.4);
+}
+.pmtx-sma-pill-bullish .pmtx-sma-pill-dot {
+  background: var(--up, #2fcf6e);
+  box-shadow: 0 0 7px rgba(47,207,110,0.6);
+}
+
+.pmtx-sma-pill-bearish {
+  background: rgba(255,90,111,0.15);
+  color: #ff8d9c;
+  border-color: rgba(255,90,111,0.4);
+}
+.pmtx-sma-pill-bearish .pmtx-sma-pill-dot {
+  background: var(--down, #ff5a6f);
+  box-shadow: 0 0 7px rgba(255,90,111,0.6);
+}
+
+.pmtx-sma-pill-mixed {
+  background: rgba(245,185,74,0.13);
+  color: #f5cc7a;
+  border-color: rgba(245,185,74,0.4);
+}
+.pmtx-sma-pill-mixed .pmtx-sma-pill-dot {
+  background: var(--warn, #f5b94a);
+}
+
+.pmtx-sma-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.pmtx-sma-table thead th {
+  background: rgba(18,28,52,0.85);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.pmtx-sma-table thead th.pmtx-sma-label-col {
+  text-align: left;
+  padding-left: 14px;
+}
+
+.pmtx-sma-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.08);
+}
+
+/* Per-window swatch colors matching the chart */
+.pmtx-sma-sw-12  { background: #ffffff; }
+.pmtx-sma-sw-22  { background: #5aa9ff; }
+.pmtx-sma-sw-55  { background: #f5d75a; }
+.pmtx-sma-sw-100 { background: #4fd47a; }
+.pmtx-sma-sw-200 { background: #6fe0e8; }
+
+.pmtx-sma-table tbody td {
+  padding: 11px 8px;
+  text-align: center;
+  border-bottom: 1px solid var(--border-soft, rgba(35,49,82,0.55));
+  font-variant-numeric: tabular-nums;
+}
+
+.pmtx-sma-table tbody td.pmtx-sma-label-col {
+  text-align: left;
+  padding-left: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pmtx-sma-close-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.pmtx-sma-gate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pmtx-sma-gate-pass {
+  background: rgba(47,207,110,0.15);
+  color: var(--up, #2fcf6e);
+  border: 1px solid rgba(47,207,110,0.45);
+}
+
+.pmtx-sma-gate-fail {
+  background: rgba(255,90,111,0.13);
+  color: var(--down, #ff5a6f);
+  border: 1px solid rgba(255,90,111,0.45);
+}
+
+.pmtx-sma-delta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  display: block;
+}
+
+.pmtx-sma-delta-pos { color: rgba(111,224,165,0.85); }
+.pmtx-sma-delta-neg { color: rgba(255,141,156,0.85); }
+
+.pmtx-sma-none {
+  color: var(--text-dim);
+}
+
+.pmtx-sma-table tfoot td {
+  padding: 11px 14px;
+  background: rgba(18,28,52,0.6);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.pmtx-sma-order-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pmtx-sma-order-lbl {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10.5px;
+}
+
+.pmtx-sma-order-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(8,14,28,0.7);
+  border: 1px solid var(--border-soft, rgba(35,49,82,0.55));
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pmtx-sma-order-op {
+  color: var(--text-dim);
+  font-weight: 700;
+}
+
+.pmtx-sma-order-op-ok  { color: var(--up, #2fcf6e); }
+.pmtx-sma-order-op-bad { color: var(--down, #ff5a6f); }
+.pmtx-sma-order-op-neut { color: var(--text-dim); }
+
+.pmtx-sma-order-verdict {
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.pmtx-sma-order-verdict-bullish { color: var(--up, #2fcf6e); }
+.pmtx-sma-order-verdict-bearish { color: var(--down, #ff5a6f); }
+
+/* ─── End v5.21.0 Daily SMA Stack panel ─────────────────────────── */

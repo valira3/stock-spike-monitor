@@ -73,10 +73,12 @@ def test_strategy_mentions_phase1_and_permit(telegram_modules):
 
 
 def test_strategy_mentions_tiger_sovereign_phases(telegram_modules):
+    """vAA-1: Phase 4 renamed to Sentinel Loop; check Phases 1-3 + Sentinel Loop."""
     tc, _ui, _rt = telegram_modules
     body = _src(tc.cmd_strategy)
-    for phase in ("Phase 1", "Phase 2", "Phase 3", "Phase 4"):
+    for phase in ("Phase 1", "Phase 2", "Phase 3"):
         assert phase in body, "/strategy must surface %s" % phase
+    assert "Sentinel Loop" in body, "/strategy must surface Sentinel Loop (vAA-1 replaces Phase 4)"
 
 
 def test_proximity_no_pdc_polarity_phrases(telegram_modules):

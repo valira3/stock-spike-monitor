@@ -3988,7 +3988,7 @@ def run_local() -> int:
         main_body = base[main_idx:main_end]
         assert "overflow-y: auto" not in main_body, main_body
 
-        assert 'data-pmtx-comp-grid="v5.20.9"' in (
+        assert 'data-pmtx-comp-grid="v5.21.0"' in (
             _P(__file__).parent / "dashboard_static" / "app.js"
         ).read_text(encoding="utf-8")
 
@@ -4025,6 +4025,74 @@ def run_local() -> int:
         # The four val branches: long+short / long / short / none.
         for branch in ('"long+short"', '"long"', '"short"', '"none"'):
             assert branch in js_nc, f"p3aVal branch {branch} missing"
+
+    @t("v5.21.0: .card-body.flush has no overflow-x rule on phone breakpoint")
+    def _():
+        # v5.21.0 carries forward the never-shipped v5.20.10 mobile
+        # double-horizontal-scroll fix. The legacy rule
+        # `.card-body.flush { overflow-x: auto; ... }` inside
+        # `@media (max-width: 640px)` is removed so only the inner
+        # `.pmtx-table-wrap` owns horizontal scroll on iPhone-class
+        # viewports. CSS comments are stripped before scanning so the
+        # v5.21.0 explanatory comment does not trip this guard.
+        import re as _re
+        from pathlib import Path as _P
+
+        css = (_P(__file__).parent / "dashboard_static" / "app.css").read_text(encoding="utf-8")
+        css_nc = _re.sub(r"/\*.*?\*/", "", css, flags=_re.DOTALL)
+
+        m = _re.search(r"@media\s*\(\s*max-width:\s*640px\s*\)\s*\{", css_nc)
+        assert m, "phone @media block not found"
+        depth = 1
+        i = m.end()
+        while i < len(css_nc) and depth > 0:
+            ch = css_nc[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            i += 1
+        block = css_nc[m.end() : i]
+        assert ".card-body.flush" not in block or "overflow-x" not in block, (
+            "v5.21.0: .card-body.flush must not declare overflow-x in the "
+            "phone @media block (legacy rule that fights .pmtx-table-wrap)"
+        )
+
+    @t("v5.21.0: sentinel strip uses vAA-1 'Letter + short name' labels")
+    def _():
+        # vAA-1 spec mandates 6 alarms; the dashboard sentinel strip
+        # surfaces all 6 with letter+short-name labels.
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        for label in (
+            "A1 Loss",
+            "A2 Flash",
+            "B Trend Death",
+            "C Vel. Ratchet",
+            "D HVP Lock",
+            "E Div. Trap",
+        ):
+            assert label in js, f"vAA-1 sentinel label {label!r} missing from app.js"
+
+    @t("v5.21.0: position rows carry data-pos-ticker (click-to-titan deep-link)")
+    def _():
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        assert "data-pos-ticker" in js, (
+            "v5.21.0: position table rows must carry data-pos-ticker for click-to-titan"
+        )
+        assert "__posClickWired" in js, (
+            "v5.21.0: position click handler must be guarded by __posClickWired"
+        )
+
+    @t("v5.21.0: Daily SMA Stack panel helper exists")
+    def _():
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        assert "_pmtxSmaStackPanel" in js, "v5.21.0: _pmtxSmaStackPanel helper missing from app.js"
 
     @t(
         "v5.20.9: Permit Matrix gate columns ordered Boundary \u2192 Volume \u2192 Authority \u2192 Momentum"
