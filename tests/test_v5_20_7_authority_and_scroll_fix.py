@@ -53,7 +53,7 @@ def test_bot_version_is_5_20_7():
     # The v5.20.7 wiring contract (Authority sip fields, single-scroll,
     # no-pos row) is still enforced by the other tests below.
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.23.0"' in text, "bot_version.py must report 5.23.0 for this hotfix"
+    assert 'BOT_VERSION = "5.23.2"' in text, "bot_version.py must report 5.23.2 for this hotfix"
 
 
 def test_authority_uses_sip_permit_fields():

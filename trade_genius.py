@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.23.0"
+BOT_VERSION = "5.23.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,25 +102,23 @@ BOT_VERSION = "5.23.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.23.0 \u2014 Click-scroll fix +\n"
-    "intraday chart panel + Last\n"
-    "signal removal. Clicking a\n"
-    "position chip now scrolls to\n"
-    "the matching Titan in the\n"
-    "Permit Matrix and expands it\n"
-    "on Main, Val, and Gene tabs\n"
-    "(handler now picks Main's\n"
-    "id=pmtx-body before falling\n"
-    "back to the active panel).\n"
-    "Expanded Titan card gains an\n"
-    "intraday chart between the\n"
-    "component cards and the SMA\n"
-    "stack: 1m bars desktop, 5m\n"
-    "mobile, OR H/L + AVWAP from\n"
-    "9:30 ET + 5m EMA9 + entry\n"
-    "and exit markers, served by\n"
-    "/api/intraday. Last signal\n"
-    "card retired everywhere."
+    "v5.23.2 \u2014 Intraday chart\n"
+    "hotfix + expanded-row order.\n"
+    "v5.23.0 helpers read short\n"
+    "keys (o/h/l/c) but the bar\n"
+    "archive stores open/high/\n"
+    "low/close, so /api/intraday\n"
+    "returned all-null OHLC and\n"
+    "the chart drew nothing. Now\n"
+    "reads the archive's actual\n"
+    "field names + regression\n"
+    "guard in tests. Also: the\n"
+    "expanded Titan row reflows\n"
+    "to cards \u2192 alarm strip \u2192\n"
+    "SMA stack \u2192 chart, so the\n"
+    "sentinel alarms sit right\n"
+    "under the cards instead of\n"
+    "below the heavy chart."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

@@ -2190,9 +2190,9 @@ def _intraday_compute_avwap(bars: list[dict], anchor_min: int = 570) -> list[flo
             out.append(None)
             continue
         try:
-            h = float(b.get("h") or 0)
-            lo = float(b.get("l") or 0)
-            c = float(b.get("c") or 0)
+            h = float(b.get("high") or 0)
+            lo = float(b.get("low") or 0)
+            c = float(b.get("close") or 0)
             v = float(b.get("iex_volume") or 0)
         except (TypeError, ValueError):
             out.append(None)
@@ -2227,10 +2227,10 @@ def _intraday_resample_5m(bars: list[dict]) -> list[dict]:
             continue
         bucket = (et_min // 5) * 5
         try:
-            o = float(b.get("o") or 0)
-            h = float(b.get("h") or 0)
-            lo = float(b.get("l") or 0)
-            c = float(b.get("c") or 0)
+            o = float(b.get("open") or 0)
+            h = float(b.get("high") or 0)
+            lo = float(b.get("low") or 0)
+            c = float(b.get("close") or 0)
             v = float(b.get("iex_volume") or 0)
         except (TypeError, ValueError):
             continue
@@ -2359,10 +2359,10 @@ def _intraday_build_payload(ticker: str) -> dict:
             {
                 "ts": b.get("ts"),
                 "et_min": et_min,
-                "o": b.get("o"),
-                "h": b.get("h"),
-                "l": b.get("l"),
-                "c": b.get("c"),
+                "o": b.get("open"),
+                "h": b.get("high"),
+                "l": b.get("low"),
+                "c": b.get("close"),
                 "v": b.get("iex_volume"),
                 "avwap": avwap[i] if i < len(avwap) else None,
                 "ema9_5m": ema9_by_bucket.get((et_min // 5) * 5),
