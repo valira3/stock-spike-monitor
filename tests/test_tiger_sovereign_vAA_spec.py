@@ -392,7 +392,6 @@ def test_sent_b_long_5m_close_below_ema9_fires():
 # ----- Alarm C \\u2014 NEW Velocity Ratchet -----
 
 
-@pytest.mark.spec_gap("vAA-PR-4", "SENT-C velocity ratchet")
 def test_sent_c_velocity_ratchet_3_decreasing_1m_adx():
     """Three strictly-decreasing 1m ADX values \\u2192 ratchet stop to current \\u00b1 0.25%."""
     from engine.sentinel import check_alarm_c
@@ -416,7 +415,6 @@ def test_sent_c_velocity_ratchet_3_decreasing_1m_adx():
     assert math.isclose(new_stop, 99.75, abs_tol=1e-6)
 
 
-@pytest.mark.spec_gap("vAA-PR-4", "SENT-C strictly monotone")
 def test_sent_c_does_not_fire_on_non_monotone():
     """Equal or non-decreasing values do NOT trigger."""
     from engine.sentinel import check_alarm_c
@@ -436,7 +434,6 @@ def test_sent_c_does_not_fire_on_non_monotone():
         assert not actions, f"unexpected fire on {triple}"
 
 
-@pytest.mark.spec_gap("vAA-PR-4", "SENT-C ratchet does not loosen")
 def test_sent_c_ratchet_only_tightens():
     """If the existing stop is already tighter, do NOT loosen it."""
     from engine.sentinel import check_alarm_c
@@ -577,7 +574,6 @@ def test_short_strike_order_priced_at_bid_times_0_999():
 # =====================================================================
 
 
-@pytest.mark.spec_gap("vAA-PR-4", "TITAN-GRIP-DELETED")
 def test_titan_grip_module_removed_or_neutered():
     """Titan Grip Harvest is deleted in vAA-1. Module presence with a
     `check_titan_grip` that returns harvest actions is a regression."""
