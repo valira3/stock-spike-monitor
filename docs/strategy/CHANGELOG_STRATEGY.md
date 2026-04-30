@@ -1,8 +1,11 @@
 # STRATEGY.md changelog
 
+## vAA-1 ULTIMATE Decision 1 — adopted in v5.19.1 (2026-04-30)
+Unifies `STRIKE-CAP-3` from per-(ticker, side) to per-ticker. The 3-strike-per-day cap now applies to a ticker across both sides combined (long+short). `STRIKE-FLAT-GATE` remains per-side because long and short positions are independent.
+
 ## vAA-1 — adopted in v5.15.0 (pending)
 Supersedes v2026-04-28h. Headline changes:
-- Strike Model with `STRIKE-CAP-3` (max 3 Strikes per (ticker, side) per day) and `STRIKE-FLAT-GATE`.
+- Strike Model with `STRIKE-CAP-3` (max 3 Strikes per (ticker, side) per day; tightened to per-ticker in v5.19.1) and `STRIKE-FLAT-GATE`.
 - Phase 2 volume gate is time-conditional (`L-P2-S3` / `S-P2-S3`): auto-passes before 10:00 ET; ≥ 100% of 55-bar same-minute baseline after.
 - Phase 3 sizing rewritten as momentum-sensitive: 1m DI± > 30 → 100% (`L-P3-FULL`); 25 ≤ 1m DI± ≤ 30 → 50% Scaled-A; add Scaled-B only on DI±>30 + fresh NHOD/NLOD + Alarm E False.
 - Order pricing: `LIMIT @ ask × 1.001` (long), `LIMIT @ bid × 0.999` (short).

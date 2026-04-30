@@ -29,7 +29,7 @@ This document is the single source of truth for the trading model. Code comments
 ## SECTION 1 — System Concepts
 
 ### 1.1 The Strike Model (`STRIKE-1` … `STRIKE-3`)
-- **`STRIKE-CAP-3`**: Maximum **3 Strikes per (ticker, side) per trading day**.
+- **`STRIKE-CAP-3`**: Maximum **3 Strikes per ticker per trading day** (long + short combined). vAA-1 ULTIMATE Decision 1 — unified from per-(ticker, side) to per-ticker.
 - **`STRIKE-FLAT-GATE`**: Strike `N+1` may not initiate until the position from Strike `N` is fully flat (`Position == 0`).
 - **`STRIKE-RESET`**: All Strike counters and per-Strike state reset at 09:30:00 ET.
 
@@ -165,7 +165,7 @@ Trigger conditions:
 | `L-P2-S3`, `S-P2-S3` | `eye_of_tiger.evaluate_volume_bucket` (extend with time gate) |
 | `L-P2-S4`, `S-P2-S4` | `eye_of_tiger.evaluate_boundary_hold` |
 | `L-P3-*`, `S-P3-*` | `eye_of_tiger.evaluate_strike_sizing` (NEW; replaces Entry-1 / Entry-2) |
-| `STRIKE-CAP-3`, `STRIKE-FLAT-GATE` | `trade_genius.py` (extends `_v570_strike_*`) |
+| `STRIKE-CAP-3` (per-ticker), `STRIKE-FLAT-GATE` (per-side) | `trade_genius.py` (extends `_v570_strike_*`) |
 | `SHARED-HARD-STOP` | `engine/sentinel.check_alarm_a` (subsumed under `SENT-A_LOSS`) |
 | `SHARED-CB`, `SHARED-CUTOFF`, `SHARED-EOD` | `engine/timing.py` |
 | `SHARED-ORDER-*` | `broker/orders.py` |
@@ -182,7 +182,7 @@ Trigger conditions:
 
 - **Titan Grip Harvest** (`Stage 1 0.93%`, `0.40% stop`, `0.25% micro-ratchet`, `Stage 3 1.88%`, `Stage 4 runner`) — entirely deleted in vAA-1. Module `engine/titan_grip.py` is repurposed (or deleted in favor of `engine/velocity_ratchet.py`).
 - **Fixed 50/50 entry sequence** (`evaluate_entry_1` / `evaluate_entry_2`) — replaced by `evaluate_strike_sizing`. Kept as deprecated thin wrappers for one release to avoid wide-blast renames.
-- **`ENABLE_UNLIMITED_TITAN_STRIKES = True`** — incompatible with `STRIKE-CAP-3`. Default flips to `False`; Titans now obey the 3-strike cap unless explicitly overridden by env var (which is itself flagged for retirement).
+- **`ENABLE_UNLIMITED_TITAN_STRIKES = True`** — incompatible with `STRIKE-CAP-3`. Default flips to `False`; Titans now obey the 3-strike-per-ticker cap (long+short combined) unless explicitly overridden by env var (which is itself flagged for retirement).
 
 ---
 
@@ -193,6 +193,6 @@ These were called out in `tiger_sovereign_vAA_understanding.md` and are locked h
 1. RSI(15) = **15-period RSI on 1m bars**.
 2. "55-bar rolling average" = 55 same-minute bars across prior trading days.
 3. Velocity Ratchet trigger = **strictly monotone-decreasing** 1m ADX over 3 bars.
-4. `STRIKE-CAP-3` overrides `ENABLE_UNLIMITED_TITAN_STRIKES`.
+4. `STRIKE-CAP-3` overrides `ENABLE_UNLIMITED_TITAN_STRIKES`. v5.19.1: cap is **per-ticker** (long+short combined), not per-(ticker, side).
 5. All profit-taking happens via stop-ratchet trips, Alarm D, or EOD. No fixed harvests.
 6. Alarm A code names **renamed**: `A1` → `A_LOSS`, `A2` → `A_FLASH`. Legacy strings deleted everywhere (engine, dashboard, forensic, log formatters).

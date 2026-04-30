@@ -4,7 +4,57 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v5.19.0 — 2026-04-30 — Premarket data recalc at 09:29 ET (vAA-1 ULTIMATE Decision 6)
+## v5.19.1 \u2014 2026-04-30 \u2014 STRIKE-CAP-3 unified to per-ticker (vAA-1 ULTIMATE Decision 1)
+
+### Why
+
+Under v5.15.0+, `STRIKE-CAP-3` capped strikes at 3 per **(ticker, side)**
+per day, allowing up to 6 entries on the same ticker (3 long + 3 short).
+The vAA-1 ULTIMATE spec (Decision 1) tightens this to 3 strikes per
+**ticker** per day, long+short combined. This caps daily exposure on a
+single name and prevents whipsaw entries from burning through 6 strikes
+in a chop.
+
+### What
+
+- `_v570_strike_counts` key changed from `(ticker, side)` to `ticker`.
+  Long and short entries on the same ticker now share one counter.
+- `_v570_strike_count(ticker, side)` and `_v570_record_entry(ticker, side)`
+  keep their signatures for call-site compatibility but ignore `side` in
+  the dict lookup. Hot-path callers (`broker/orders.py:520`) require no
+  changes.
+- `strike_entry_allowed(ticker, side, positions)` now consults the
+  per-ticker counter. The fourth combined entry on a ticker is blocked.
+- `_v570_strike_must_be_flat` (STRIKE-FLAT-GATE) stays **per-side**.
+  You can be flat long while holding short — the flat gate is about
+  not stacking into an open same-side strike, not about cross-side
+  exclusivity.
+
+### Tests
+
+- `tests/test_strike_cap_unified.py` (NEW) — long-2 + short-1 fills the
+  cap; the fourth attempt (any side) is blocked.
+- `tests/test_tiger_sovereign_vAA_spec.py::test_strike_cap_3_blocks_fourth_entry`
+  updated to assert the per-ticker semantics.
+- `smoke_test.py` D3/D4 fixtures (lines 4546, 4671) updated for the
+  unified counter — the legacy "independent SHORT counter" assertion is
+  removed, and the 25-strikes-on-NVDA fixture is rewritten as a 3-strike
+  cap exhaustion test.
+
+### Risk / mitigation
+
+Low. Rolling state is in-memory only (`_v570_strike_counts: dict`); the
+first session boundary after deploy resets it cleanly. No persisted
+state migration is required because the counter is regenerated each day
+at 09:30 ET via `_v570_reset_if_new_session()`.
+
+### Closes
+
+- #251
+
+---
+
+## v5.19.0 \u2014 2026-04-30 \u2014 Premarket data recalc at 09:29 ET (vAA-1 ULTIMATE Decision 6)
 
 ### Why
 

@@ -79,18 +79,27 @@ def test_divergence_memory_is_per_ticker_per_side():
 
 
 def test_strike_cap_3_blocks_fourth_entry():
-    """Maximum 3 Strikes per (ticker, side) per day."""
+    """Maximum 3 Strikes per ticker per day (long+short combined).
+
+    v5.19.1 vAA-1 ULTIMATE Decision 1 \\u2014 unified from per-(ticker,
+    side) to per-ticker. A 4th entry on the ticker is blocked
+    regardless of which side it would open on.
+    """
     import trade_genius as tg
 
     tg._v570_strike_counts.clear()
     for _ in range(3):
         tg._v570_record_entry("NVDA", "LONG")
     assert tg._v570_strike_count("NVDA", "LONG") == 3
+    # Per-ticker cap: SHORT count also reads 3 (same counter).
+    assert tg._v570_strike_count("NVDA", "SHORT") == 3
 
     # Implementation must expose a blocker:
-    from trade_genius import strike_entry_allowed  # NEW symbol
+    from trade_genius import strike_entry_allowed  # exported symbol
 
+    # 4th attempt is blocked on EITHER side.
     assert strike_entry_allowed("NVDA", "LONG") is False
+    assert strike_entry_allowed("NVDA", "SHORT") is False
 
 
 def test_strike_flat_gate_blocks_until_position_closes():
