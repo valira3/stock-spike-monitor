@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.20.3"
+BOT_VERSION = "5.20.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,15 +102,15 @@ BOT_VERSION = "5.20.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.20.3 \u2014 expanded-view\n"
-    "redesign. Each ticker\n"
-    "shows a card grid of\n"
-    "pipeline components: P1\n"
-    "weather, P2 boundary +\n"
-    "volume, P3 authority +\n"
-    "momentum, alarms A/B,\n"
-    "strikes. Verbose v15.0\n"
-    "spec <dl> retired."
+    "v5.20.4 \u2014 Boundary Hold\n"
+    "close recorder fallback.\n"
+    "Walks back from [-2] to\n"
+    "find newest non-None\n"
+    "close so Yahoo's forming\n"
+    "bar no longer starves\n"
+    "the buffer. Phase 2 OR\n"
+    "breakdowns now actually\n"
+    "register."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

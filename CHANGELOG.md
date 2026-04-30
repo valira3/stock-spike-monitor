@@ -4,6 +4,81 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.4 \u2014 2026-04-30 \u2014 Boundary Hold close recorder fallback (Yahoo forming-bar fix)
+
+### Why
+
+During the Apr 30 morning session every short setup the bot saw was
+being skipped with `V5100_BOUNDARY:insufficient_closes` and
+`gate_2candle=FAIL last2=n=0`. NVDA, AMZN, GOOG, MSFT, and AVGO were all
+deeply below their OR_low (NVDA 34/40 closes, AMZN 35/40, GOOG 32/40)
+and the bar archive on disk had clean 1m data, but `/api/state.per_ticker_v510`
+showed `boundary_hold.last_two_closes: []` for every single trade ticker.
+
+### Root cause
+
+`engine/scan.py` fed the boundary buffer with:
+
+```python
+if len(_closes_b) >= 2 and _closes_b[-2] is not None:
+    eot_glue.record_1m_close(ticker, float(_closes_b[-2]))
+```
+
+Yahoo's intraday minute response keeps a forming bar at `closes[-2]`
+whose value is `None` until the minute boundary fully passes; by then a
+new forming bar has shifted everything down a slot. So `closes[-2] is None`
+is the dominant case during RTH, the guard silently never fires, and
+`record_1m_close` is essentially never called. The bug has been latent
+since v5.10.1; it only became visible after the v5.20.2 EMA9 fix cleared
+Phase 1 enough for the empty Phase 2 buffer to matter.
+
+The bar-archive writer at `engine/scan.py:317-330` already handled the
+same Yahoo quirk by walking back from `[-2]` to find a non-None close,
+which is why disk had 40 bars per ticker even though the in-memory
+tracker was empty.
+
+### Fix
+
+- New helper `record_latest_1m_close(ticker, closes)` in
+  `v5_10_1_integration.py`: walks back up to 4 slots from `[-2]` for the
+  newest non-None close, falls back to `[-1]` only when nothing earlier
+  qualifies, and de-dups against the last value already in the buffer
+  so successive scan cycles within the same minute do not register the
+  same closed bar twice.
+- `engine/scan.py:396-407` now calls the helper instead of the inline
+  guarded block. One-line caller, identical behavior on the happy path,
+  resilient to Yahoo's forming-bar `None`s.
+
+### Validation
+
+Within a few scan cycles after deploy, every active ticker's
+`/api/state.per_ticker_v510.<TKR>.boundary_hold.last_two_closes` should
+populate, and `[V5100-BOUNDARY]` log lines should start emitting real
+`prior_close=` and `current_close=` values instead of `None`. NVDA at
+200-201 vs OR_low 208.50 should flip the SHORT boundary to SATISFIED
+after 2 consecutive 1m closes.
+
+### Tests
+
+12 new tests in `tests/test_v5_20_4_boundary_record_fallback.py` cover:
+full-array happy path, `[-2]` None fallback to `[-3]`, `[-2]/[-3]` None
+fallback to last-resort `[-1]`, all-None gives up, empty list, single
+element, de-dup against last buffered value, walk-back capped at 4,
+buffer trimmed to 4, return value semantics, and an end-to-end engine
+harness simulating 5 successive Yahoo-shaped responses.
+
+### Out of scope
+
+- `V5100_PERMIT:shield_and_anchor` is still blocking Phase 1 short
+  permits. Likely cascades from the same starved buffer; reassess after
+  this lands.
+- SPY missing from `/data/bars/<date>/` (subscribed but no archive
+  file). Observability gap, not a trading-path bug.
+- The Mon-Fri pipeline cron still queries the dropped `shadow_positions`
+  table and errors on the row-count check; harmless but noisy.
+
+---
+
 ## v5.20.3 \u2014 2026-04-30 \u2014 Permit Matrix expanded view: pipeline component card grid
 
 ### Why
