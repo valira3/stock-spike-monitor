@@ -26,7 +26,6 @@ from engine.seeders import (
     seed_opening_range,
     seed_opening_range_all,
 )
-from engine.phase_machine import phase_machine_tick
 from engine.sentinel import (
     SentinelAction,
     SentinelResult,
@@ -35,7 +34,7 @@ from engine.sentinel import (
     evaluate_sentinel,
 )
 
-LOADED_MODULES = ("bars", "seeders", "phase_machine", "callbacks", "scan", "sentinel")
+LOADED_MODULES = ("bars", "seeders", "callbacks", "scan", "sentinel")
 
 __all__ = [
     "compute_5m_ohlc_and_ema9",
@@ -49,7 +48,6 @@ __all__ = [
     "recompute_di_for_unseeded",
     "seed_opening_range",
     "seed_opening_range_all",
-    "phase_machine_tick",
     "SentinelAction",
     "SentinelResult",
     "check_alarm_a",

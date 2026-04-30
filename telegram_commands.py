@@ -31,17 +31,12 @@ from trade_genius import (
     BOT_NAME,
     BOT_VERSION,
     CDT,
-    CLAMP_MAX_ENTRIES,
-    CLAMP_MIN_SCORE_DELTA,
-    CLAMP_SHARES,
-    CLAMP_TRAIL_PCT,
     ChatAction,
     ContextTypes,
     DAILY_LOSS_LIMIT,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     MAIN_RELEASE_NOTE,
-    MODE_PROFILES,
     PAPER_STARTING_CAPITAL,
     Path,
     RESET_CONFIRM_WINDOW_SEC,
@@ -51,23 +46,10 @@ from trade_genius import (
     Update,
     _TICKER_USAGE,
     _build_test_progress,
-    _current_breadth,
-    _current_breadth_detail,
-    _current_mode,
-    _current_mode_pnl,
-    _current_mode_reason,
-    _current_mode_ts,
-    _current_rsi_detail,
-    _current_rsi_per_ticker,
-    _current_rsi_regime,
-    _current_ticker_extremes,
-    _current_ticker_red,
     _dashboard_sync,
     _do_reset_paper,
-    _near_miss_log,
     _now_et,
     _parse_date_arg,
-    _refresh_market_mode,
     _status_text_sync,
     _test_fmp,
     _test_positions,
@@ -117,7 +99,6 @@ from telegram_ui.commands import (
     _reset_buttons,
 )
 from telegram_ui.menu import _build_menu_keyboard, _menu_button  # v5.11.1 PR 3
-from broker.stops import retighten_all_stops  # v5.11.2 \u2014 moved out of trade_genius
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -411,132 +392,22 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_near_misses(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent near-miss entries — breakouts that cleared price
-    but were declined by the volume gate. Read-only diagnostic;
-    fail-closed behavior is unchanged.
-    """
-    log = list(_near_miss_log)
-    SEP = "\u2500" * 34
-    if not log:
-        await update.message.reply_text(
-            "\U0001f50d Near-misses\n%s\nNone recorded yet today.\n"
-            "A near-miss is a 1m close past OR\n"
-            "that was declined by the volume gate." % SEP,
-            reply_markup=_menu_button(),
-        )
-        return
-    lines = ["\U0001f50d Near-misses (last %d)" % len(log), SEP]
-    for row in log[:10]:
-        # Each row: "09:47 META LONG LOW_VOL 48%"
-        ts = row.get("ts", "")
-        try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            hhmm = dt.astimezone(CDT).strftime("%H:%M")
-        except Exception:
-            hhmm = "--:--"
-        tkr = row.get("ticker", "?")
-        side = row.get("side", "?")
-        reason = row.get("reason", "?")
-        vp = row.get("vol_pct")
-        vp_str = ("%d%%" % int(vp)) if isinstance(vp, (int, float)) else "n/a"
-        close_v = row.get("close")
-        level_v = row.get("level")
-        head = "%s %s %s %s" % (hhmm, tkr, side, reason)
-        if close_v is not None and level_v is not None:
-            lines.append(head)
-            lines.append("  close $%.2f vs $%.2f  vol %s" % (close_v, level_v, vp_str))
-        else:
-            lines.append("%s  vol %s" % (head, vp_str))
-    lines.append(SEP)
-    lines.append("Diagnostic only \u2014 no entries made.")
+    """v5.26.0 \u2014 near-miss tracker removed (volume gate is bypassed)."""
     await update.message.reply_text(
-        "\n".join(lines),
+        "\U0001f50d Near-misses removed in v5.26.0\n"
+        "(volume gate bypassed; no near-miss feed).",
         reply_markup=_menu_button(),
     )
 
 
 async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually run the 0.75% retro-cap across every open position.
-
-    The cap already runs automatically on startup and every manage
-    cycle, so this is mostly a transparency tool — it shows what the
-    cap would do right now. force_exit=True is ON: a position whose
-    retightened stop is already breached will be exited immediately,
-    same as the automatic pass.
+    """v5.26.0 \u2014 stop-retighten machinery removed.
+    Spec only has the R-2 hard stop and per-tick A-C / A-E ratchets,
+    both wired through the sentinel.
     """
-    SEP = "\u2500" * 34
-    try:
-        result = retighten_all_stops(
-            force_exit=True,
-            fetch_prices=True,
-        )
-    except Exception as e:
-        logger.error("cmd_retighten failed: %s", e, exc_info=True)
-        await update.message.reply_text(
-            "\u26a0\ufe0f retighten failed: %s" % str(e)[:200],
-            reply_markup=_menu_button(),
-        )
-        return
-
-    lines = ["\U0001f527 Stop retighten", SEP]
-    details = result.get("details", [])
-    if not details:
-        lines.append("No open positions.")
-    else:
-        # Audit: the tightened / ratcheted / ratcheted_trail branches
-        # previously fed `old`/`new` straight into "%.2f" which raises
-        # TypeError when retighten_all_stops returns None for either
-        # (happens when the caller skipped the price-fetch step or a
-        # mid-cycle state change blanked the value). Coerce with
-        # `or 0.0` so the command returns a readable message instead
-        # of dying with an unhandled handler exception.
-        def _fn(v):
-            return float(v) if v is not None else 0.0
-
-        any_change = False
-        for d in details:
-            tkr = d.get("ticker", "?")
-            side = d.get("side", "?")
-            port = d.get("portfolio", "?")
-            status = d.get("status", "?")
-            old = d.get("old_stop")
-            new = d.get("new_stop")
-            if status == "tightened":
-                lines.append("%s %s [%s] cap" % (tkr, side, port))
-                lines.append("  stop $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
-                any_change = True
-            elif status == "ratcheted":
-                lines.append("%s %s [%s] breakeven" % (tkr, side, port))
-                lines.append("  stop $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
-                any_change = True
-            elif status == "ratcheted_trail":
-                lines.append("%s %s [%s] trail\u2192entry" % (tkr, side, port))
-                lines.append("  trail $%.2f \u2192 $%.2f" % (_fn(old), _fn(new)))
-                any_change = True
-            elif status == "exit":
-                lines.append("%s %s [%s] EXITED" % (tkr, side, port))
-                lines.append("  breached at cap $%.2f" % _fn(new))
-                any_change = True
-            elif status == "no_op":
-                lines.append("%s %s [%s] trail armed" % (tkr, side, port))
-            elif status == "already_tight":
-                lines.append("%s %s [%s] already tight" % (tkr, side, port))
-                if old is not None:
-                    lines.append("  stop $%.2f" % _fn(old))
-        if not any_change:
-            lines.append("")
-            lines.append("No changes \u2014 stops already optimal.")
-    lines.append(SEP)
-    lines.append(
-        "Summary: %d cap, %d ratchet," % (result.get("tightened", 0), result.get("ratcheted", 0))
-    )
-    lines.append(
-        "%d trail\u2192entry, %d exited,"
-        % (result.get("ratcheted_trail", 0), result.get("exited", 0))
-    )
-    lines.append("%d no-op, %d tight" % (result.get("no_op", 0), result.get("already_tight", 0)))
     await update.message.reply_text(
-        "\n".join(lines),
+        "\U0001f527 /retighten removed in v5.26.0\n"
+        "(stop ladder + breakeven cap deleted per spec).",
         reply_markup=_menu_button(),
     )
 
@@ -696,79 +567,14 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     SEP = "\u2500" * 34
-    # Refresh once on demand so manual checks outside scan cadence are fresh.
-    try:
-        _refresh_market_mode()
-    except Exception:
-        logger.exception("/mode: refresh failed")
-
-    mode = _current_mode
-    reason = _current_mode_reason
-    pnl = _current_mode_pnl
-    ts = _current_mode_ts
-    profile = MODE_PROFILES.get(mode, {})
-
-    ts_str = ts.strftime("%H:%M ET") if ts else "—"
-    shorts = "ON" if profile.get("allow_shorts") else "OFF"
-    trail_bps = int(round(profile.get("trail_pct", 0) * 10000))
-
-    # Build compact per-ticker RSI preview (top 6 by value, highest first)
-    if _current_rsi_per_ticker:
-        sorted_rsis = sorted(_current_rsi_per_ticker.items(), key=lambda kv: kv[1], reverse=True)
-        rsi_preview = " | ".join("%s %.0f" % (tk, r) for tk, r in sorted_rsis[:6])
-    else:
-        rsi_preview = "—"
-
-    if _current_ticker_red:
-        red_preview = ", ".join("%s $%+.0f" % (tk, p) for tk, p in _current_ticker_red[:5])
-    else:
-        red_preview = "none"
-
-    if _current_ticker_extremes:
-        ext_preview = ", ".join(
-            "%s %.0f %s" % (tk, r, tag) for tk, r, tag in _current_ticker_extremes[:5]
-        )
-    else:
-        ext_preview = "none"
-
     lines = [
-        "\U0001f9ed MARKET MODE  %s" % ts_str,
+        "\U0001f9ed MARKET MODE",
         SEP,
-        "Mode:       %s" % mode,
-        "Reason:     %s" % reason,
-        "Realized:   $%+.2f  (loss limit $%+.2f)" % (pnl, DAILY_LOSS_LIMIT),
+        "MarketMode classifier removed in v5.26.0",
+        "per Tiger Sovereign v15.0 spec-strict pass.",
         SEP,
-        "Observers (advisory — not yet applied):",
-        "  Breadth:  %s" % _current_breadth,
-        "            %s" % (_current_breadth_detail or "—"),
-        "  RSI:      %s" % _current_rsi_regime,
-        "            %s" % (_current_rsi_detail or "—"),
-        "  Per-tkr:  %s" % rsi_preview,
-        "  Red:      %s" % red_preview,
-        "  Extremes: %s" % ext_preview,
-        SEP,
-        "Profile (advisory — not yet applied):",
-        "  trail_pct       %.3f%%  (%d bps)" % (profile.get("trail_pct", 0) * 100, trail_bps),
-        "  max_entries     %d / ticker / day" % profile.get("max_entries", 0),
-        "  shares          %d" % profile.get("shares", 0),
-        "  min_score_delta +%.2f" % profile.get("min_score_delta", 0),
-        "  allow_shorts    %s" % shorts,
-        SEP,
-        profile.get("note", ""),
-        "",
-        "Bounds: trail %.1f-%.1f%% | entries %d-%d | shares %d-%d | score +%.2f-+%.2f"
-        % (
-            CLAMP_TRAIL_PCT[0] * 100,
-            CLAMP_TRAIL_PCT[1] * 100,
-            CLAMP_MAX_ENTRIES[0],
-            CLAMP_MAX_ENTRIES[1],
-            CLAMP_SHARES[0],
-            CLAMP_SHARES[1],
-            CLAMP_MIN_SCORE_DELTA[0],
-            CLAMP_MIN_SCORE_DELTA[1],
-        ),
-        "",
-        "(v%s — observation only, no parameter is adaptive yet)" % BOT_VERSION,
+        "Loss limit: $%+.2f" % DAILY_LOSS_LIMIT,
+        "(v%s)" % BOT_VERSION,
     ]
     await update.message.reply_text("\n".join(lines), reply_markup=_menu_button())
 

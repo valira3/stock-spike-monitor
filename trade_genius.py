@@ -45,11 +45,6 @@ import tiger_buffalo_v5 as v5  # noqa: E402
 # manage_positions; eot is the pure-function evaluator surface.
 import eye_of_tiger as eot  # noqa: E402
 import v5_10_1_integration as eot_glue  # noqa: E402
-# v5.9.0 \u2014 QQQ Regime Shield: 5m EMA(3) vs EMA(9) compass for G1.
-import qqq_regime  # noqa: E402
-# v5.1.0 \u2014 forensic volume filter. Top-level module so the
-# v5.0.2 infra-guard test catches a missing Dockerfile COPY for it.
-import volume_profile  # noqa: E402
 # v5.1.2 \u2014 forensic capture: bar archive + indicators.
 import indicators  # noqa: E402
 import bar_archive  # noqa: E402
@@ -492,23 +487,8 @@ TICKERS_DEFAULT = [
     "GOOG", "AMZN", "AVGO", "NFLX", "ORCL", "SPY", "QQQ",
 ]
 
-# v5.7.0 \u2014 Ten Titans universe. Used by the Strike 2+ Expansion Gate
-# (HOD/LOD-based unlimited re-entry) below. Alphabetically ordered;
-# exactly 10 tickers. Non-Titan tickers added via [WATCHLIST_ADD]
-# continue to use the v5.6.0 R3 re-hunt cap.
-TITAN_TICKERS: list = [
-    "AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX",
-    "NVDA", "ORCL", "TSLA",
-]
-# v5.15.0 vAA-1 \u2014 STRIKE-CAP-3 retires the unlimited-Titan path. The
-# constant is pinned False at module level; STRIKE-CAP-3 in
-# `strike_entry_allowed` is the active gate.
-ENABLE_UNLIMITED_TITAN_STRIKES: bool = False
 # Section VI Daily Circuit Breaker.
 DAILY_LOSS_LIMIT_DOLLARS: float = -1500.0
-# Velocity Fuse: strict >1.0% adverse intra-candle threshold
-# (LONG fires <99%, SHORT fires >101% of the current 1m open).
-VELOCITY_FUSE_PCT: float = 0.01
 TICKERS_MAX = 40            # sanity upper bound to protect cycle budget
 TICKER_SYM_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,7}$")
 
@@ -517,134 +497,10 @@ TRADE_TICKERS = [t for t in TICKERS if t not in TICKERS_PINNED]
 
 
 # ------------------------------------------------------------
-# v5.1.0 \u2014 Forensic Volume Filter.
-# ------------------------------------------------------------
-# Owns the 55-day per-minute baseline + IEX WebSocket consumer; live
-# enforcement is gated behind VOL_GATE_ENFORCE and the Tiger Sovereign
-# permits. Diagnostics flow through [V510-CAND] / [V510-FSM] /
-# [V510-MINUTE].
-VOLUME_PROFILE_ENABLED: bool = True
-_volume_profile_cache: dict = {}        # {ticker: profile dict}
-_ws_consumer = None                      # set by _start_volume_profile()
-# True only when _start_volume_profile() resolved market-data
-# credentials and started the WS consumer. Surfaced to the dashboard
-# via /api/state.volume_feed_status.
-VOLUME_FEED_AVAILABLE: bool = False
-
-
-def _start_volume_profile() -> None:
-    """Boot the forensic volume layer once at process start.
-
-    Hard-disables itself if the watchlist exceeds the free-plan IEX
-    websocket symbol cap (30). On disable, evaluate_g4 returns DISABLED
-    and the bot trades normally.
-    """
-    global VOLUME_PROFILE_ENABLED, _ws_consumer, VOLUME_FEED_AVAILABLE
-    if len(TICKERS) > volume_profile.WS_SYMBOL_CAP_FREE_IEX:
-        logger.warning(
-            "[VOLPROFILE] watchlist=%d > 30 symbols, exceeds free IEX cap; "
-            "upgrade to Algo Trader Plus or reduce watchlist. "
-            "Volume profile DISABLED.",
-            len(TICKERS),
-        )
-        VOLUME_PROFILE_ENABLED = False
-        volume_profile.VOLUME_PROFILE_ENABLED = False
-        return
-
-    # Seed cache from disk (best-effort).
-    for t in TICKERS:
-        prof = volume_profile.load_profile(t)
-        if prof is not None:
-            _volume_profile_cache[t] = prof
-
-    # v5.5.3 \u2014 cred lookup chain:
-    #   VAL_ALPACA_PAPER_KEY/SECRET (prod) \u2192
-    #   ALPACA_PAPER_KEY/SECRET (legacy)   \u2192
-    #   ALPACA_KEY/SECRET (legacy)         \u2192 fail.
-    # Market-data-only use of Val's Alpaca paper key. Shadow strategies
-    # have their own ledger; do NOT call /v2/positions, /v2/account, or
-    # any trading endpoint from this code path.
-    key = (os.getenv("VAL_ALPACA_PAPER_KEY")
-           or os.getenv("ALPACA_PAPER_KEY")
-           or os.getenv("ALPACA_KEY")
-           or "")
-    secret = (os.getenv("VAL_ALPACA_PAPER_SECRET")
-              or os.getenv("ALPACA_PAPER_SECRET")
-              or os.getenv("ALPACA_SECRET")
-              or "")
-    if not key or not secret:
-        logger.warning(
-            "[VOLFEED DISABLED] no Alpaca market-data credentials found "
-            "(set VAL_ALPACA_PAPER_KEY/SECRET or ALPACA_PAPER_KEY/SECRET); "
-            "volume baseline + WS feed will be unavailable this session."
-        )
-        VOLUME_FEED_AVAILABLE = False
-        return
-
-    # Synchronous startup rebuild if any profile is missing/stale.
-    now = datetime.now(timezone.utc)
-    needs_rebuild = [
-        t for t in TICKERS
-        if (t not in _volume_profile_cache
-            or volume_profile.is_profile_stale(_volume_profile_cache[t], now))
-    ]
-    if needs_rebuild:
-        logger.info(
-            "[VOLPROFILE] startup rebuild needed for %d/%d tickers",
-            len(needs_rebuild), len(TICKERS),
-        )
-        try:
-            volume_profile.rebuild_all_profiles(needs_rebuild, key, secret)
-            for t in needs_rebuild:
-                prof = volume_profile.load_profile(t)
-                if prof is not None:
-                    _volume_profile_cache[t] = prof
-        except Exception as e:
-            logger.error("[VOLPROFILE] startup rebuild crashed: %s", e)
-
-    # Spawn the websocket consumer (daemon thread).
-    try:
-        _ws_consumer = volume_profile.WebsocketBarConsumer(
-            list(TICKERS), key, secret,
-        )
-        _ws_consumer.start()
-        VOLUME_FEED_AVAILABLE = True
-    except Exception as e:
-        logger.error("[VOLPROFILE] websocket startup failed: %s", e)
-        _ws_consumer = None
-        VOLUME_FEED_AVAILABLE = False
-
-    # Nightly rebuild thread (21:00 ET).
-    def _nightly_loop():
-        from zoneinfo import ZoneInfo as _ZI
-        et = _ZI("America/New_York")
-        while True:
-            try:
-                now_et = datetime.now(tz=et)
-                target = now_et.replace(hour=21, minute=0, second=0, microsecond=0)
-                if target <= now_et:
-                    target = target + timedelta(days=1)
-                sleep_s = max(60.0, (target - now_et).total_seconds())
-                time.sleep(sleep_s)
-                logger.info("[VOLPROFILE] nightly rebuild starting...")
-                volume_profile.rebuild_all_profiles(list(TICKERS), key, secret)
-                for t in TICKERS:
-                    prof = volume_profile.load_profile(t)
-                    if prof is not None:
-                        _volume_profile_cache[t] = prof
-                logger.info("[VOLPROFILE] nightly rebuild done")
-            except Exception as e:
-                logger.error("[VOLPROFILE] nightly thread error: %s", e)
-                time.sleep(300)
-
-    threading.Thread(
-        target=_nightly_loop, name="VolProfileNightly", daemon=True,
-    ).start()
-
-
-# Live diagnostics flow through [V510-CAND] / [V510-FSM] / [V510-MINUTE]
-# only. Bar archive at /data/bars/ is the canonical substrate for offline
-# backtests.
+# v5.26.0 \u2014 Volume Gate (BL-3 / BU-3) BYPASSED 2026-04-30. The 55-day
+# rolling per-minute baseline, IEX WebSocket consumer, and nightly rebuild
+# thread were removed. Bar archive at /data/bars/ is the canonical
+# substrate for offline backtests.
 
 
 # ---------------------------------------------------------------------------
@@ -655,25 +511,6 @@ def _start_volume_profile() -> None:
 # redeploy. None of these change the trading decision; they are pure
 # observation layers.
 # ---------------------------------------------------------------------------
-
-# Enumerated reasons used by [V510-CAND]. Kept as constants so the
-# smoke tests can assert the surface area is fixed.
-CAND_REASON_NO_BREAKOUT = "NO_BREAKOUT"
-CAND_REASON_STAGE_NOT_READY = "STAGE_NOT_READY"
-CAND_REASON_ALREADY_OPEN = "ALREADY_OPEN"
-CAND_REASON_COOL_DOWN = "COOL_DOWN"
-CAND_REASON_MAX_POSITIONS = "MAX_POSITIONS"
-CAND_REASON_BREAKOUT_CONFIRMED = "BREAKOUT_CONFIRMED"
-
-CAND_REASONS = (
-    CAND_REASON_NO_BREAKOUT,
-    CAND_REASON_STAGE_NOT_READY,
-    CAND_REASON_ALREADY_OPEN,
-    CAND_REASON_COOL_DOWN,
-    CAND_REASON_MAX_POSITIONS,
-    CAND_REASON_BREAKOUT_CONFIRMED,
-)
-
 
 def _fmt_num(v) -> str:
     """Render a number for log lines. None \u2192 'null' so logs are
@@ -688,231 +525,6 @@ def _fmt_num(v) -> str:
         return ("%.4f" % float(v)).rstrip("0").rstrip(".") or "0"
     except (TypeError, ValueError):
         return "null"
-
-
-def _v512_log_minute(
-    ticker: str,
-    bucket: str | None,
-    t_pct,
-    qqq_pct,
-    close,
-    vol,
-) -> None:
-    """Emit one [V510-MINUTE] line per ticker per minute close.
-
-    All numerics may be None \u2014 they render as 'null'. Failure-
-    tolerant: never raises.
-    """
-    try:
-        logger.info(
-            "[V510-MINUTE] ticker=%s bucket=%s t_pct=%s qqq_pct=%s close=%s vol=%s",
-            ticker, bucket if bucket is not None else "null",
-            _fmt_num(t_pct), _fmt_num(qqq_pct),
-            _fmt_num(close), _fmt_num(vol),
-        )
-    except Exception as e:
-        logger.warning("[V510-MINUTE] emit error %s: %s", ticker, e)
-
-
-# v5.1.6 \u2014 intraminute velocity capture state.
-#
-# Tracks the FIRST second-mark within each (ticker, minute) where running
-# IEX volume crossed 100% of the bucket median. Emitted once per minute
-# per ticker; reset on minute boundary. Pure observation \u2014 used only by
-# the [V510-VEL] log line. No trading-path effect.
-_v516_vel_state: dict[str, tuple[str, int]] = {}
-
-
-def _v516_log_velocity(
-    ticker: str,
-    minute_bucket: str | None,
-    second: int,
-    running_vol,
-    bucket_size,
-    pct,
-    qqq_pct,
-) -> None:
-    """Emit one [V510-VEL] line on the FIRST tick where running volume
-    crosses 100% of bucket median for the active candle. Failure-tolerant.
-    """
-    try:
-        logger.info(
-            "[V510-VEL] ticker=%s minute=%s second=%d running_vol=%s "
-            "bucket=%s pct=%s qqq_pct=%s",
-            ticker, minute_bucket if minute_bucket is not None else "null",
-            int(second), _fmt_num(running_vol), _fmt_num(bucket_size),
-            _fmt_num(pct), _fmt_num(qqq_pct),
-        )
-    except Exception as e:
-        logger.warning("[V510-VEL] emit error %s: %s", ticker, e)
-
-
-def _v516_check_velocity(
-    ticker: str,
-    minute_bucket: str | None,
-    now_et,
-    running_vol,
-    bucket_size,
-    qqq_pct=None,
-) -> None:
-    """If running_vol >= bucket_size and we have not yet logged a
-    [V510-VEL] for this (ticker, minute), log one. Computes the second-
-    mark from `now_et` minute-boundary. Stateful but failure-tolerant.
-    """
-    try:
-        if minute_bucket is None or bucket_size in (None, 0):
-            return
-        rv = float(running_vol or 0)
-        bs = float(bucket_size)
-        if bs <= 0.0 or rv < bs:
-            return
-        # Already logged for this (ticker, minute)?
-        prev = _v516_vel_state.get(ticker)
-        if prev is not None and prev[0] == minute_bucket:
-            return
-        try:
-            second = int(now_et.second)
-        except Exception:
-            second = 0
-        pct = round((rv / bs) * 100.0, 2)
-        _v516_vel_state[ticker] = (minute_bucket, second)
-        _v516_log_velocity(
-            ticker, minute_bucket, second,
-            running_vol, bucket_size, pct, qqq_pct,
-        )
-    except Exception as e:
-        logger.warning("[V510-VEL] check error %s: %s", ticker, e)
-
-
-def _v516_log_index(
-    spy_close,
-    spy_pdc,
-    qqq_close,
-    qqq_pdc,
-) -> None:
-    """Emit one [V510-IDX] line per candidate consideration. Captures
-    SPY+QQQ close vs prior-day close so post-hoc analysis can validate
-    the L-P1 / S-P1 index-direction leg of the Bucket-Fill Protocol.
-    """
-    try:
-        sa = "null"
-        qa = "null"
-        try:
-            if spy_close is not None and spy_pdc is not None:
-                sa = "Y" if float(spy_close) > float(spy_pdc) else "N"
-        except (TypeError, ValueError):
-            sa = "null"
-        try:
-            if qqq_close is not None and qqq_pdc is not None:
-                qa = "Y" if float(qqq_close) > float(qqq_pdc) else "N"
-        except (TypeError, ValueError):
-            qa = "null"
-        logger.info(
-            "[V510-IDX] spy_close=%s spy_pdc=%s spy_above=%s "
-            "qqq_close=%s qqq_pdc=%s qqq_above=%s",
-            _fmt_num(spy_close), _fmt_num(spy_pdc), sa,
-            _fmt_num(qqq_close), _fmt_num(qqq_pdc), qa,
-        )
-    except Exception as e:
-        logger.warning("[V510-IDX] emit error: %s", e)
-
-
-def _v516_log_di(
-    ticker: str,
-    di_plus_prev,
-    di_plus_now,
-    di_minus_prev,
-    di_minus_now,
-    *,
-    di_threshold: float = 25.0,
-) -> None:
-    """Emit one [V510-DI] line per candidate. `double_tap_long` is Y iff
-    DI+ at t-1 and t are BOTH > threshold; `double_tap_short` mirrors on
-    DI-. Required for L-P2 / S-P2 validation.
-    """
-    try:
-        def _tap(prev, now):
-            try:
-                if prev is None or now is None:
-                    return "null"
-                return "Y" if (float(prev) > di_threshold and
-                               float(now) > di_threshold) else "N"
-            except (TypeError, ValueError):
-                return "null"
-        logger.info(
-            "[V510-DI] ticker=%s di_plus_t-1=%s di_plus_t=%s "
-            "di_minus_t-1=%s di_minus_t=%s "
-            "double_tap_long=%s double_tap_short=%s",
-            ticker, _fmt_num(di_plus_prev), _fmt_num(di_plus_now),
-            _fmt_num(di_minus_prev), _fmt_num(di_minus_now),
-            _tap(di_plus_prev, di_plus_now),
-            _tap(di_minus_prev, di_minus_now),
-        )
-    except Exception as e:
-        logger.warning("[V510-DI] emit error %s: %s", ticker, e)
-
-
-def _v512_log_candidate(
-    ticker: str,
-    bucket: str | None,
-    stage: int,
-    fsm_state: str,
-    entered: bool,
-    reason: str,
-    *,
-    t_pct=None,
-    qqq_pct=None,
-    close=None,
-    stop=None,
-    rsi14_=None,
-    ema9_=None,
-    ema21_=None,
-    atr14_=None,
-    vwap_dist_pct_=None,
-    spread_bps_=None,
-) -> None:
-    """Emit one [V510-CAND] line per entry consideration.
-
-    Fires on EVERY consideration \u2014 fired AND not-fired \u2014 so the
-    asymmetric blind spot from v5.1.1 is closed. Indicator fields can
-    be None and will render as 'null'.
-    """
-    try:
-        logger.info(
-            "[V510-CAND] ticker=%s bucket=%s stage=%d fsm_state=%s "
-            "entered=%s reason=%s t_pct=%s qqq_pct=%s close=%s stop=%s "
-            "rsi14=%s ema9=%s ema21=%s atr14=%s "
-            "vwap_dist_pct=%s spread_bps=%s",
-            ticker, bucket if bucket is not None else "null", int(stage),
-            fsm_state, "YES" if entered else "NO", reason,
-            _fmt_num(t_pct), _fmt_num(qqq_pct),
-            _fmt_num(close), _fmt_num(stop),
-            _fmt_num(rsi14_), _fmt_num(ema9_), _fmt_num(ema21_),
-            _fmt_num(atr14_), _fmt_num(vwap_dist_pct_), _fmt_num(spread_bps_),
-        )
-    except Exception as e:
-        logger.warning("[V510-CAND] emit error %s: %s", ticker, e)
-
-
-def _v512_log_fsm_transition(
-    ticker: str,
-    from_state: str,
-    to_state: str,
-    reason: str,
-    bucket: str | None = None,
-) -> None:
-    """Emit [V510-FSM] only on actual transitions. No-ops (from==to)
-    must NOT log \u2014 the test asserts this."""
-    try:
-        if from_state == to_state:
-            return
-        logger.info(
-            "[V510-FSM] ticker=%s from=%s to=%s reason=%s bucket=%s",
-            ticker, from_state, to_state, reason,
-            bucket if bucket is not None else "null",
-        )
-    except Exception as e:
-        logger.warning("[V510-FSM] emit error %s: %s", ticker, e)
 
 
 def _v512_log_entry_extension(
@@ -976,12 +588,10 @@ def _v512_archive_minute_bar(ticker: str, bar: dict) -> None:
         sym = (ticker or "").strip().upper()
         if not sym:
             return
-        # Stay within the same caps as v5.1.0 so we never persist for
-        # symbols we are not actively tracking.
+        # Skip persistence for symbols outside the active watchlist
+        # (QQQ/SPY are always allowed for index forensics).
         try:
             if sym not in TICKERS and sym not in ("QQQ", "SPY"):
-                return
-            if len(TICKERS) > volume_profile.WS_SYMBOL_CAP_FREE_IEX:
                 return
         except Exception:
             pass
@@ -1240,23 +850,6 @@ def _fill_metrics_for_ticker(ticker: str) -> dict:
                 # Pre-09:35 is not an error — explicitly flag pending.
                 filled["or_pending"] = True
 
-            # RSI warm-up — compute from available closes. This doesn't
-            # cache anything (the scanner recomputes each cycle from
-            # live bars), but it proves the bar history is deep enough
-            # for _compute_rsi to return a real number on the next scan.
-            closes = [c for c in (bars.get("closes") or []) if c is not None]
-            if len(closes) >= RSI_PERIOD + 1:
-                try:
-                    rsi_val = _compute_rsi(closes)
-                    if rsi_val is not None:
-                        filled["rsi"] = True
-                        filled["rsi_val"] = float(rsi_val)
-                except Exception as e:
-                    filled["errors"].append(
-                        "RSI warm-up: %s" % str(e)[:30])
-            else:
-                filled["errors"].append(
-                    "RSI needs %d closes" % (RSI_PERIOD + 1))
         else:
             filled["errors"].append("no 1m bars")
     except Exception as e:
@@ -1334,43 +927,21 @@ def remove_ticker(sym: str) -> dict:
 # paths). Production entries call paper_shares_for(price) instead.
 SHARES         = 10
 PAPER_DOLLARS_PER_ENTRY = float(os.getenv("PAPER_DOLLARS_PER_ENTRY", "10000"))
-STOP_OFFSET    = 0.50    # Initial stop: entry - $0.50
-# Trail: +1.0% trigger, max(price*1.0%, $1.00) distance — see manage_positions()
-TRAIL_TRIGGER  = 1.00    # Legacy constant (unused — trail is now percentage-based)
-TRAIL_STEP     = 0.50    # Legacy constant (unused — trail is now percentage-based)
 
 SCAN_INTERVAL  = 60      # seconds between scans
 YAHOO_TIMEOUT  = 8       # seconds
 YAHOO_HEADERS  = {"User-Agent": "Mozilla/5.0"}
 
-# v3.4.47 — Eye of the Tiger 2.0 protocol configuration
-TIGER_V2_DI_THRESHOLD = float(os.getenv("TIGER_V2_DI_THRESHOLD", "25"))
-TIGER_V2_REQUIRE_VOL  = os.getenv("TIGER_V2_REQUIRE_VOL", "false").lower() in ("1", "true", "yes")
-
-# v5.13.0 PR 4 — Tiger Sovereign Phase 2 entry gates.
+# v5.26.0 \u2014 Tiger Sovereign Phase 2 entry gates (spec-strict).
 #
-# These constants are the explicit, spec-named surface area for the
-# Phase 2 entry-readiness rules in STRATEGY.md (Tiger Sovereign v2026-04-28h).
-# They restate values already enforced by `volume_bucket.py` / `eye_of_tiger.py`
-# so that the rule-mapping table in STRATEGY.md ↔ trade_genius.py is greppable.
-#
-#   L-P2-S3 / S-P2-S3 — Volume gate: current 1m volume ≥ 100% of the
-#                       55-day rolling minute baseline (per symbol, per
-#                       minute-of-day, RTH only). Cold-start (< 55 trading
-#                       days available) passes through with a [VOLPROFILE]
-#                       warning so trading is not blocked during warmup.
-#   L-P2-S4 / S-P2-S4 — Confirmation gate: TWO consecutive 1m candles closed
-#                       strictly above (long) / below (short) the 5m
-#                       Opening Range edge. The in-progress (forming)
-#                       candle is NOT counted — only fully closed bars.
-#   L-P3-S6 / S-P3-S6 — Entry-2 stricter DI threshold: a literal 30 (vs
-#                       Entry-1's 25) for the 1m DI+/DI- crossing trigger.
-PHASE2_VOLUME_GATE_RATIO        = 1.00            # 100% of 55-day rolling minute baseline
-PHASE2_VOLUME_LOOKBACK_DAYS_55  = 55              # 55-day rolling minute baseline
-PHASE2_TWO_CONSECUTIVE_1M_CLOSES = True           # two_consecutive 1m closes outside OR
-PHASE2_CONSECUTIVE_1M_REQUIRED  = 2               # consecutive_1m count required
-DI_PLUS_ENTRY2_THRESHOLD        = 30              # L-P3-S6 — di_plus must cross > 30
-DI_MINUS_ENTRY2_THRESHOLD       = 30              # S-P3-S6 — di_minus must cross > 30
+# Volume Gate (BL-3 / BU-3) is BYPASSED 2026-04-30. Permit gates and DI
+# thresholds remain spec-mandated:
+#   BL-2 / BU-2 \u2014 two consecutive closed 1m bars above/below target.
+#   BS-3 / BF-3 \u2014 1m DI > 30 triggers Full Strike (100%).
+PHASE2_TWO_CONSECUTIVE_1M_CLOSES = True
+PHASE2_CONSECUTIVE_1M_REQUIRED  = 2
+DI_PLUS_ENTRY2_THRESHOLD        = 30
+DI_MINUS_ENTRY2_THRESHOLD       = 30
 
 # ============================================================
 # GLOBAL STATE
@@ -1499,22 +1070,6 @@ _recompute_di_for_unseeded = _engine_recompute_di_for_unseeded
 _recompute_qqq_regime_if_unwarm = _engine_recompute_qqq_regime_if_unwarm
 _seed_opening_range = _engine_seed_opening_range
 _seed_opening_range_all = _engine_seed_opening_range_all
-
-
-def _v590_compass_for_gate():
-    """Return (ema3, ema9, compass) for the current G1 evaluation.
-
-    Triggers a seed if the regime is still warming. v5.20.2: gate is
-    `ema9 is None` rather than `not _QQQ_REGIME_SEEDED` so we keep
-    retrying until the EMA actually arms, even if a prior pass set
-    the legacy seal flag with a partial seed.
-    """
-    if _QQQ_REGIME.ema9 is None:
-        try:
-            _v590_qqq_regime_seed_once()
-        except Exception as e:
-            logger.warning("[V572-REGIME-SEED] seed failed: %s", e)
-    return _QQQ_REGIME.ema3, _QQQ_REGIME.ema9, _QQQ_REGIME.current_compass()
 
 
 def _v561_fmt_num(v) -> str:
@@ -1799,11 +1354,6 @@ _v570_kill_switch_latched: bool = False
 _v570_kill_switch_logged: bool = False
 
 
-def _v570_is_titan(ticker: str) -> bool:
-    """Return True iff `ticker` is in the Ten Titans universe."""
-    return (ticker or "").strip().upper() in TITAN_TICKERS
-
-
 def _v570_session_today_str() -> str:
     """Today as ET date string \u2014 anchors the daily counters."""
     try:
@@ -1940,20 +1490,6 @@ def strike_entry_allowed(
     return _v570_strike_must_be_flat(ticker, side, positions=positions)
 
 
-# v5.9.0 \u2014 Track the QQQ compass at strike-1 entry per (ticker, side)
-# plus the entry epoch so [V572-ABORT] can report seconds_into_strike
-# when a re-strike attempt is blocked by a compass flip.
-_v590_strike_entry_compass: dict = {}   # key=(ticker, side) -> str | None
-_v590_strike_entry_epoch:   dict = {}   # key=(ticker, side) -> int
-
-
-def _v590_record_entry_compass(ticker: str, side: str,
-                               compass: str | None) -> None:
-    key = (ticker.upper(), side.upper())
-    _v590_strike_entry_compass[key] = compass
-    _v590_strike_entry_epoch[key] = int(time.time())
-
-
 def _v570_update_session_hod_lod(
     ticker: str, current_price: float | None,
 ) -> tuple[float | None, float | None, bool, bool]:
@@ -1997,94 +1533,12 @@ def _v570_is_session_open() -> bool:
     return now_et >= open_t
 
 
-def _v570_expansion_gate_pass(
-    *,
-    side: str,
-    current_price: float | None,
-    prev_hod: float | None,
-    prev_lod: float | None,
-    index_price: float | None,
-    index_avwap: float | None,
-) -> bool:
-    """v5.7.0 \u2014 Strike 2+ Expansion Gate.
-
-    LONG passes iff price > prior session HOD (strict) AND
-    index_price > index_avwap (strict, same as v5.6.0 G1).
-    SHORT mirrors with strict ``<``. AVWAP None FAILs.
-    """
-    if current_price is None or index_price is None or index_avwap is None:
-        return False
-    if side.upper() == "LONG":
-        if prev_hod is None:
-            return False
-        return (float(current_price) > float(prev_hod)
-                and float(index_price) > float(index_avwap))
-    if prev_lod is None:
-        return False
-    return (float(current_price) < float(prev_lod)
-            and float(index_price) < float(index_avwap))
-
-
 def _v570_log_kill_switch(realized_pnl: float, ts_utc: str) -> None:
     """v5.7.0 \u2014 single [KILL_SWITCH] line on first breach."""
     logger.info(
         "[KILL_SWITCH] reason=daily_loss_limit triggered_at=%s "
         "realized_pnl=%.4f",
         ts_utc, float(realized_pnl),
-    )
-
-
-# ------------------------------------------------------------
-# v5.7.1 \u2014 Bison & Buffalo exit FSM log emitters.
-# ------------------------------------------------------------
-# Spec: specs/v5_7_1_stop_loss_optimization.md \u00a75.
-# These emit one line per phase transition / per fuse fire / per
-# EMA seed (once per ticker per session). Pure I/O \u2014 callers
-# decide when to invoke; the helpers keep the wire format stable.
-def _v571_log_exit_phase(
-    *,
-    ticker: str,
-    side: str,
-    entry_id: str,
-    from_phase: str,
-    to_phase: str,
-    trigger: str,
-    current_stop: float | None,
-    ts_utc: str,
-) -> None:
-    """v5.7.1 \u2014 [V571-EXIT_PHASE] phase-transition line."""
-    logger.info(
-        "[V571-EXIT_PHASE] ticker=%s side=%s entry_id=%s "
-        "from_phase=%s to_phase=%s trigger=%s "
-        "current_stop=%s ts=%s",
-        ticker, side, entry_id, from_phase, to_phase, trigger,
-        _v561_fmt_num(current_stop), ts_utc,
-    )
-
-
-def _v571_log_velocity_fuse(
-    *,
-    ticker: str,
-    side: str,
-    candle_open: float,
-    current_price: float,
-    pct_move: float,
-    ts_utc: str,
-) -> None:
-    """v5.7.1 \u2014 [V571-VELOCITY_FUSE] intra-candle circuit breaker."""
-    logger.info(
-        "[V571-VELOCITY_FUSE] ticker=%s side=%s candle_open=%.4f "
-        "current_price=%.4f pct_move=%.4f ts=%s",
-        ticker, side, float(candle_open), float(current_price),
-        float(pct_move), ts_utc,
-    )
-
-
-def _v571_log_ema_seed(*, ticker: str, ema_value: float, ts_utc: str) -> None:
-    """v5.7.1 \u2014 [V571-EMA_SEED] one-shot 9-EMA initialization at 10:15 ET."""
-    logger.info(
-        "[V571-EMA_SEED] ticker=%s ema_value=%.4f ts=%s",
-        ticker, float(ema_value), ts_utc,
     )
 
 
@@ -2145,21 +1599,12 @@ def _v561_archive_qqq_bar(bars: dict | None) -> None:
                       if ts_val is not None else None)
         except Exception:
             ts_iso = None
-        et_bucket: str | None = None
-        try:
-            now_et = datetime.now(tz=ZoneInfo("America/New_York"))
-            et_bucket = volume_profile.session_bucket(now_et)
-        except Exception:
-            et_bucket = None
         canon_bar = {
             "ts": ts_iso,
-            "et_bucket": et_bucket,
             "open":  opens[idx] if abs(idx) <= len(opens) else None,
             "high":  highs[idx] if abs(idx) <= len(highs) else None,
             "low":   lows[idx]  if abs(idx) <= len(lows)  else None,
             "close": closes[idx],
-            "iex_volume": vols[idx] if abs(idx) <= len(vols) else None,
-            "iex_sip_ratio_used": None,
             "bid": None,
             "ask": None,
             "last_trade_price": bars.get("current_price"),
@@ -2312,132 +1757,18 @@ _trading_halted: bool = False
 _trading_halted_reason: str = ""
 
 # ============================================================
-# MARKET MODE (scaffolding — NO behavior change in this version)
+# MARKET MODE (DELETED v5.26.0 \u2014 non-spec scaffolding)
 # ============================================================
-# Classifies each scan cycle into one of four behavioral regimes and
-# exposes a corresponding (frozen, clamped) profile of parameters.
-# This version ONLY logs the classification and exposes it via /mode;
-# no entry/exit code reads the profile yet. The goal is to observe the
-# classifier in production for a week before wiring any parameter to it.
-#
-# Design principles for when this is wired up:
-#   1. Adaptive logic only makes things MORE conservative than baseline,
-#      never looser. The baseline is the floor; profiles can raise it.
-#   2. Every adaptive parameter is bounded — see CLAMP_* below. A runaway
-#      classifier cannot push any value outside these bounds.
-#   3. Hard floors (DAILY_LOSS_LIMIT, min trail distance $1.00, min 1
-#      share) are constants outside the profile system. They never move.
+# v5.26.0: MarketMode classifier, MODE_PROFILES, breadth/RSI observers,
+# and ticker-heat lists were all non-spec scaffolding. Deleted per Tiger
+# Sovereign v15.0 spec-strict pass.
 
+# MarketMode kept as a stub label for legacy log lines. CLOSED is the
+# only value used. Spec-strict: no profiles, no observers, no clamps.
 class MarketMode:
-    OPEN       = "OPEN"        # 09:35 - 11:00 ET — OR breakout window
-    CHOP       = "CHOP"        # 11:00 - 14:00 ET — lunch chop
-    POWER      = "POWER"       # 14:00 - 15:44:59 ET \u2014 power hour (cutoff per engine/timing.NEW_POSITION_CUTOFF_ET)
-    DEFENSIVE  = "DEFENSIVE"   # triggered by realized P&L <= half loss limit
-    CLOSED     = "CLOSED"      # outside market hours / weekend
+    CLOSED = "CLOSED"
 
-# Clamps: hard bounds any adaptive value must stay inside.
-# baseline values (what the bot uses TODAY, before this scaffold):
-#   trail_pct      = 0.010    max entries/ticker/day = 5
-#   shares         = 10       min score gate         = (none, all signals pass)
-CLAMP_TRAIL_PCT         = (0.006, 0.018)   # 0.6% - 1.8%
-CLAMP_MAX_ENTRIES       = (1, 5)
-CLAMP_SHARES            = (1, 10)
-CLAMP_MIN_SCORE_DELTA   = (0.0, 0.15)      # added to baseline score gate
-
-def _clamp(val, bounds):
-    lo, hi = bounds
-    return max(lo, min(hi, val))
-
-# Each profile is a frozen dict of the tunables + the rationale.
-# All numeric values are pre-clamped by construction via _clamp().
-# If you edit these, keep every value inside its CLAMP_* range.
-MODE_PROFILES = {
-    MarketMode.OPEN: {
-        "trail_pct":         _clamp(0.012, CLAMP_TRAIL_PCT),
-        "max_entries":       _clamp(5,     CLAMP_MAX_ENTRIES),
-        "shares":            _clamp(10,    CLAMP_SHARES),
-        "min_score_delta":   _clamp(0.00,  CLAMP_MIN_SCORE_DELTA),
-        "allow_shorts":      True,
-        "note":              "OR breakout window — baseline risk",
-    },
-    MarketMode.CHOP: {
-        "trail_pct":         _clamp(0.008, CLAMP_TRAIL_PCT),
-        "max_entries":       _clamp(2,     CLAMP_MAX_ENTRIES),
-        "shares":            _clamp(10,    CLAMP_SHARES),
-        "min_score_delta":   _clamp(0.10,  CLAMP_MIN_SCORE_DELTA),
-        "allow_shorts":      True,
-        "note":              "Lunch chop — tighter trails, fewer re-entries",
-    },
-    MarketMode.POWER: {
-        "trail_pct":         _clamp(0.010, CLAMP_TRAIL_PCT),
-        "max_entries":       _clamp(3,     CLAMP_MAX_ENTRIES),
-        "shares":            _clamp(10,    CLAMP_SHARES),
-        "min_score_delta":   _clamp(0.05,  CLAMP_MIN_SCORE_DELTA),
-        "allow_shorts":      True,
-        # MUST MATCH engine/timing.NEW_POSITION_CUTOFF_ET (15:44:59 ET)
-        "note":              "Power hour \u2014 baseline with entry cutoff at 15:44:59 ET",
-    },
-    MarketMode.DEFENSIVE: {
-        "trail_pct":         _clamp(0.006, CLAMP_TRAIL_PCT),
-        "max_entries":       _clamp(1,     CLAMP_MAX_ENTRIES),
-        "shares":            _clamp(5,     CLAMP_SHARES),
-        "min_score_delta":   _clamp(0.15,  CLAMP_MIN_SCORE_DELTA),
-        "allow_shorts":      False,
-        "note":              "Down >=50% of daily loss limit — size down, shorts off",
-    },
-    MarketMode.CLOSED: {
-        "trail_pct":         _clamp(0.010, CLAMP_TRAIL_PCT),
-        "max_entries":       _clamp(5,     CLAMP_MAX_ENTRIES),
-        "shares":            _clamp(10,    CLAMP_SHARES),
-        "min_score_delta":   _clamp(0.00,  CLAMP_MIN_SCORE_DELTA),
-        "allow_shorts":      True,
-        "note":              "Market closed — no action",
-    },
-}
-
-# Last-computed mode snapshot, refreshed each scan. Read by /mode.
 _current_mode: str = MarketMode.CLOSED
-_current_mode_reason: str = "not yet classified"
-_current_mode_pnl: float = 0.0
-_current_mode_ts = None
-
-# ============================================================
-# MARKET MODE OBSERVERS (v3.1 scaffolding — observation only)
-# ============================================================
-# Three independent observers that do NOT gate any trade. They run
-# alongside the MarketMode classifier, are logged on transitions, and
-# surface in /mode. After a week of observation we'll decide which
-# (if any) deserve to actually influence trading behavior.
-#
-# 1) BREADTH   — SPY/QQQ vs their PDC → BULLISH/NEUTRAL/BEARISH
-#    (v3.4.34: anchor swapped from AVWAP to PDC)
-# 2) RSI       — 14-period on resampled 5-min bars, SPY+QQQ aggregate
-#                  → OVERBOUGHT/NEUTRAL/OVERSOLD; plus a per-ticker dict
-# 3) TICKER    — per-ticker today realized P&L + current per-ticker RSI
-#    HEAT        → lists of tickers that are already red or already at
-#                  extremes, surfaced in /mode for pattern-spotting
-#
-# Thresholds are deliberately conservative for the observation phase.
-# If a knob is eventually wired, it'll use these same thresholds or
-# tighter ones, never looser.
-
-BREADTH_TOLERANCE_PCT    = 0.001   # ±0.1% around PDC counts as NEUTRAL
-RSI_OVERBOUGHT           = 70.0
-RSI_OVERSOLD             = 30.0
-RSI_PERIOD               = 14
-RSI_BAR_MINUTES          = 5
-RSI_MIN_BARS_REQUIRED    = RSI_PERIOD + 1   # Wilder RSI needs P+1 closes
-TICKER_RED_THRESHOLD_USD = -5.0    # tickers with today P&L <= this are "red"
-
-# Observer snapshot — refreshed each scan.
-_current_breadth: str = "UNKNOWN"
-_current_breadth_detail: str = ""
-_current_rsi_regime: str = "UNKNOWN"
-_current_rsi_detail: str = ""
-_current_rsi_per_ticker: dict = {}      # ticker -> float RSI
-_current_ticker_pnl: dict = {}          # ticker -> realized P&L today
-_current_ticker_red: list = []          # list of (ticker, pnl) sorted worst-first
-_current_ticker_extremes: list = []     # list of (ticker, rsi, "OB"/"OS")
 
 # v3.4.21 — per-ticker entry-gate snapshot for dashboard rendering.
 # Populated by _update_gate_snapshot() on every scan cycle.
@@ -2452,41 +1783,12 @@ _current_ticker_extremes: list = []     # list of (ticker, rsi, "OB"/"OS")
 #                                 # side (QQQ 5m close vs 9-EMA + QQQ
 #                                 # vs 09:30 AVWAP). None = inputs not
 #                                 # ready. Spec STEPS 1-2.
-#     "di": bool|None,            # DI+/DI- >= TIGER_V2_DI_THRESHOLD;
+#     "di": bool|None,            # DI+/DI- >= 25 (BS-1 / BF-1 Authority);
 #                                 # None = warmup (DI not yet computable)
 #     "ts": iso timestamp,
 # }}
-# v5.13.9: "polarity" + "index" rewired to Tiger Sovereign spec rules.
-# Pre-v5.13.9 these fields read PDC (v4 Tiger 2.0 era), which was
-# decorative-only \u2014 the entry path (broker/orders.check_breakout)
-# already uses Section I permit + Boundary Hold. Old PDC compute is
-# removed.
-# v3.5.x: vol_pct / vol_ok removed — Tiger 2.0 replaced the volume gate
-# with DI+/DI-, and TIGER_V2_REQUIRE_VOL defaults to False. Keeping the
-# fields on the snapshot was decorative and misled diagnosis.
 # Read-only from outside the scan loop; never cleared mid-scan.
 _gate_snapshot: dict = {}
-
-# v3.4.21 — near-miss ring buffer. Breakouts that cleared the price
-# gate (1m close past OR) but were declined by volume confirmation.
-# Bounded to last 20 entries. Exposed via /api/state and /near_misses.
-# Records only — no effect on entry decisions (fail-closed stays).
-_NEAR_MISS_MAX = 20
-_near_miss_log: list = []
-
-
-def _record_near_miss(**row):
-    """Prepend a near-miss record. Trim to _NEAR_MISS_MAX.
-
-    Expected keys: ticker, side, reason, close, level, vol_bar, vol_avg,
-    vol_pct, ts. Missing keys are allowed — stored as-is.
-    """
-    global _near_miss_log
-    row.setdefault("ts", datetime.now(timezone.utc).isoformat())
-    _near_miss_log.insert(0, row)
-    if len(_near_miss_log) > _NEAR_MISS_MAX:
-        _near_miss_log = _near_miss_log[:_NEAR_MISS_MAX]
-
 
 def _update_gate_snapshot(ticker):
     """Recompute the dashboard gate snapshot for ``ticker`` from the
@@ -2573,9 +1875,9 @@ def _update_gate_snapshot(ticker):
     if di_plus is None or di_minus is None:
         di_ok = None  # warmup
     elif side == "LONG":
-        di_ok = di_plus >= TIGER_V2_DI_THRESHOLD
+        di_ok = di_plus >= 25  # BS-1 Authority Check
     else:
-        di_ok = di_minus >= TIGER_V2_DI_THRESHOLD
+        di_ok = di_minus >= 25  # BF-1 Authority Check
 
     # v4.3.0 \u2014 extension_pct: signed distance of price past the
     # relevant OR edge. LONG = (price \u2212 OR_High)/OR_High*100;
@@ -2607,116 +1909,6 @@ def _update_gate_snapshot(ticker):
         ticker, price, or_h, or_l, side, bool(break_ok),
         pol_str, idx_str, di_str,
     )
-
-
-def _classify_breadth():
-    """Observer 1: breadth from SPY/QQQ vs their PDC.
-    Returns (label, detail). Never raises.
-    v3.4.34: anchor swapped from AVWAP → PDC.
-    """
-    try:
-        # fetch_1min_bars is cycle-cached — if the scan loop already
-        # fetched SPY/QQQ this cycle we reuse; otherwise we fetch once.
-        spy_bars = fetch_1min_bars("SPY")
-        qqq_bars = fetch_1min_bars("QQQ")
-        spy_px = spy_bars.get("current_price") if spy_bars else None
-        qqq_px = qqq_bars.get("current_price") if qqq_bars else None
-        spy_anchor = pdc.get("SPY") or 0
-        qqq_anchor = pdc.get("QQQ") or 0
-        if not (spy_px and qqq_px and spy_anchor and qqq_anchor):
-            return ("UNKNOWN", "SPY/QQQ price or PDC not ready")
-
-        spy_diff = (spy_px - spy_anchor) / spy_anchor
-        qqq_diff = (qqq_px - qqq_anchor) / qqq_anchor
-        tol = BREADTH_TOLERANCE_PCT
-
-        def _side(d):
-            if d >  tol: return "above"
-            if d < -tol: return "below"
-            return "at"
-
-        spy_side = _side(spy_diff)
-        qqq_side = _side(qqq_diff)
-        detail = "SPY %+.2f%% %s PDC | QQQ %+.2f%% %s PDC" % (
-            spy_diff * 100, spy_side, qqq_diff * 100, qqq_side)
-
-        if spy_side == "above" and qqq_side == "above":
-            return ("BULLISH", detail)
-        if spy_side == "below" and qqq_side == "below":
-            return ("BEARISH", detail)
-        return ("NEUTRAL", detail)
-    except Exception as e:
-        logger.debug("_classify_breadth failed: %s", e)
-        return ("UNKNOWN", "breadth computation failed")
-
-
-def _resample_to_5min(timestamps, closes):
-    """Resample a 1-min close series into 5-min bar closes.
-
-    Each 5-min bar closes on the last 1-min close whose epoch second falls
-    inside the [bar_start, bar_start+300) window aligned to UTC minute
-    boundaries (9:30:00, 9:35:00, 9:40:00, …). Partial/forming bars are
-    dropped — only complete 5-min intervals contribute.
-
-    Returns a list of floats (oldest-first). Robust to None closes and to
-    timestamps in any order (will sort).
-    """
-    if not timestamps or not closes or len(timestamps) != len(closes):
-        return []
-    # Pair and drop Nones, then sort by timestamp ascending.
-    pairs = [(int(t), float(c)) for t, c in zip(timestamps, closes)
-             if t is not None and c is not None]
-    if not pairs:
-        return []
-    pairs.sort(key=lambda p: p[0])
-
-    # Bucket by floor(ts / 300). Last close in each bucket is the bar close.
-    buckets = {}
-    for ts, c in pairs:
-        bucket = ts // 300
-        buckets[bucket] = c   # overwrites — last wins
-
-    # Drop the most recent (possibly forming) bucket so we only return
-    # closed bars. Safe heuristic: if the last pair's ts doesn't reach
-    # (bucket+1)*300 - 60, the bar is still forming. We conservatively
-    # drop the newest bucket always — partial bars are noisy for RSI.
-    ordered = sorted(buckets.keys())
-    if len(ordered) >= 1:
-        ordered = ordered[:-1]   # drop newest (possibly partial)
-    return [buckets[b] for b in ordered]
-
-
-def _compute_rsi(closes, period=RSI_PERIOD):
-    """Wilder's RSI on a list of closes (oldest-first).
-    Returns float in [0, 100], or None if not enough data.
-    """
-    if not closes or len(closes) < period + 1:
-        return None
-    try:
-        gains = 0.0
-        losses = 0.0
-        # Seed average gain/loss over the first `period` deltas.
-        for i in range(1, period + 1):
-            delta = closes[i] - closes[i - 1]
-            if delta > 0: gains += delta
-            else:         losses += -delta
-        avg_gain = gains / period
-        avg_loss = losses / period
-
-        # Wilder smoothing for remaining deltas.
-        for i in range(period + 1, len(closes)):
-            delta = closes[i] - closes[i - 1]
-            gain = delta if delta > 0 else 0.0
-            loss = -delta if delta < 0 else 0.0
-            avg_gain = (avg_gain * (period - 1) + gain) / period
-            avg_loss = (avg_loss * (period - 1) + loss) / period
-
-        if avg_loss == 0:
-            return 100.0
-        rs = avg_gain / avg_loss
-        return 100.0 - (100.0 / (1.0 + rs))
-    except Exception:
-        return None
 
 
 # ============================================================
@@ -3184,25 +2376,6 @@ def v5_opening_range_low_5m(ticker):
     return None
 
 
-def v5_lock_all_tracks(reason: str) -> int:
-    """Force every v5 track to LOCKED_FOR_DAY. Used by:
-      - C-R4 daily-loss-limit
-      - C-R5 EOD force-close
-      - C-R6 Sovereign Regime Shield
-
-    Returns the count of tracks locked (excluding those already locked).
-    """
-    locked = 0
-    for bucket in (v5_long_tracks, v5_short_tracks):
-        for tk, track in bucket.items():
-            if track.get("state") != v5.STATE_LOCKED:
-                v5.transition_to_locked(track)
-                locked += 1
-    if locked:
-        logger.info("v5: locked %d tracks (%s)", locked, reason)
-    return locked
-
-
 def _tiger_two_bar_long(closes, or_h):
     """True if the last 2 closed 1m closes are both > OR high.
 
@@ -3221,103 +2394,6 @@ def _tiger_two_bar_short(closes, or_l):
     if not closes or len(closes) < 2:
         return False
     return closes[-1] < or_l and closes[-2] < or_l
-
-
-def _rsi_for_ticker(ticker):
-    """Compute current RSI(14) on 5-min bars for a ticker, using cached bars.
-    Returns float or None. Never raises.
-    """
-    try:
-        bars = fetch_1min_bars(ticker)   # cached per cycle
-        if not bars:
-            return None
-        closes_5m = _resample_to_5min(bars.get("timestamps", []),
-                                      bars.get("closes", []))
-        if len(closes_5m) < RSI_MIN_BARS_REQUIRED:
-            return None
-        return _compute_rsi(closes_5m)
-    except Exception as e:
-        logger.debug("_rsi_for_ticker %s failed: %s", ticker, e)
-        return None
-
-
-def _classify_rsi_regime():
-    """Observer 2: aggregate RSI regime from SPY+QQQ 5-min RSI.
-    Returns (label, detail, per_ticker_dict). Never raises.
-    """
-    per_ticker = {}
-    try:
-        spy_rsi = _rsi_for_ticker("SPY")
-        qqq_rsi = _rsi_for_ticker("QQQ")
-        if spy_rsi is not None: per_ticker["SPY"] = spy_rsi
-        if qqq_rsi is not None: per_ticker["QQQ"] = qqq_rsi
-
-        # Per-ticker RSI for the trade universe. Uses the cycle cache,
-        # so if scan_loop already fetched these bars this cycle there's
-        # no extra network call.
-        for t in TRADE_TICKERS:
-            v = _rsi_for_ticker(t)
-            if v is not None:
-                per_ticker[t] = v
-
-        if spy_rsi is None or qqq_rsi is None:
-            return ("UNKNOWN", "SPY/QQQ RSI not ready (need %d closed 5m bars)" %
-                    RSI_MIN_BARS_REQUIRED, per_ticker)
-
-        avg = (spy_rsi + qqq_rsi) / 2.0
-        detail = "SPY %.1f | QQQ %.1f | avg %.1f" % (spy_rsi, qqq_rsi, avg)
-        if avg >= RSI_OVERBOUGHT: return ("OVERBOUGHT", detail, per_ticker)
-        if avg <= RSI_OVERSOLD:   return ("OVERSOLD",   detail, per_ticker)
-        return ("NEUTRAL", detail, per_ticker)
-    except Exception as e:
-        logger.debug("_classify_rsi_regime failed: %s", e)
-        return ("UNKNOWN", "RSI regime computation failed", per_ticker)
-
-
-def _per_ticker_today_pnl():
-    """Observer 3a: realized P&L today, bucketed by ticker.
-    Returns dict ticker -> float. Never raises.
-    Reads paper_trades (long SELLs) AND short_trade_history (short COVERs).
-    Short COVERs never appear in paper_trades — they live in short_trade_history.
-    """
-    try:
-        today_str = _now_et().strftime("%Y-%m-%d")
-        out = {}
-        for t in paper_trades:
-            if t.get("date") != today_str: continue
-            if t.get("action") != "SELL": continue
-            tk = t.get("ticker", "?")
-            out[tk] = out.get(tk, 0.0) + (t.get("pnl", 0) or 0)
-        for t in short_trade_history:
-            if t.get("date") != today_str: continue
-            tk = t.get("ticker", "?")
-            out[tk] = out.get(tk, 0.0) + (t.get("pnl", 0) or 0)
-        return out
-    except Exception as e:
-        logger.debug("_per_ticker_today_pnl failed: %s", e)
-        return {}
-
-
-def _classify_ticker_heat(per_ticker_pnl, per_ticker_rsi):
-    """Observer 3b: build the ticker-heat lists for /mode and logs.
-    Returns (red_list, extremes_list):
-      red_list:       [(ticker, pnl), …] worst-first, pnl <= RED threshold
-      extremes_list:  [(ticker, rsi, "OB"|"OS"), …] tickers in RSI extremes
-    """
-    try:
-        red = [(tk, p) for tk, p in per_ticker_pnl.items()
-               if p <= TICKER_RED_THRESHOLD_USD]
-        red.sort(key=lambda x: x[1])   # most negative first
-
-        extremes = []
-        for tk, r in per_ticker_rsi.items():
-            if r >= RSI_OVERBOUGHT: extremes.append((tk, r, "OB"))
-            elif r <= RSI_OVERSOLD: extremes.append((tk, r, "OS"))
-        extremes.sort(key=lambda x: x[1], reverse=True)   # highest RSI first
-        return (red, extremes)
-    except Exception as e:
-        logger.debug("_classify_ticker_heat failed: %s", e)
-        return ([], [])
 
 
 def _compute_today_realized_pnl() -> float:
@@ -3358,110 +2434,13 @@ def _today_pnl_breakdown() -> tuple:
     return (sells, covers, total, wins, losses, len(combined))
 
 
-def get_current_mode(now_et=None) -> tuple:
-    """Classify the current market mode. Returns (mode, reason, pnl_used).
-    Priority: CLOSED > DEFENSIVE > time-of-day bucket.
-    """
-    if now_et is None:
-        now_et = _now_et()
-
-    # CLOSED: weekends and outside the same window scan_loop() skips.
-    if now_et.weekday() >= 5:
-        return (MarketMode.CLOSED, "weekend", 0.0)
-    before_open = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35)
-    after_close = now_et.hour >= 16 or (now_et.hour == 15 and now_et.minute >= 55)
-    if before_open or after_close:
-        return (MarketMode.CLOSED, "outside market hours", 0.0)
-
-    # DEFENSIVE: realized P&L today is at or below half the daily loss limit.
-    # Uses paper portfolio's P&L as the canonical risk signal (TP mirrors it).
-    today_pnl = _compute_today_realized_pnl()
-    half_limit = DAILY_LOSS_LIMIT / 2.0   # e.g. -500 / 2 = -250
-    if today_pnl <= half_limit:
-        reason = "realized P&L $%+.2f <= half limit $%+.2f" % (today_pnl, half_limit)
-        return (MarketMode.DEFENSIVE, reason, today_pnl)
-
-    # Time-of-day buckets.
-    hm = now_et.hour * 60 + now_et.minute
-    if hm < 11 * 60:
-        return (MarketMode.OPEN,  "09:35-11:00 ET", today_pnl)
-    if hm < 14 * 60:
-        return (MarketMode.CHOP,  "11:00-14:00 ET", today_pnl)
-    return (MarketMode.POWER,     "14:00-15:55 ET", today_pnl)
-
-
 def _refresh_market_mode():
-    """Recompute the cached mode + observers. Called at the top of every
-    scan cycle. Pure observation — no side effects beyond updating module
-    state and emitting log lines on transitions.
+    """Spec-strict v5.26.0: classifier deleted; this is now a no-op
+    kept so legacy scan-loop callers can keep calling it without
+    raising. The /mode telegram surface and dashboard banner have
+    been migrated off these snapshots.
     """
-    global _current_mode, _current_mode_reason, _current_mode_pnl, _current_mode_ts
-    global _current_breadth, _current_breadth_detail
-    global _current_rsi_regime, _current_rsi_detail, _current_rsi_per_ticker
-    global _current_ticker_pnl, _current_ticker_red, _current_ticker_extremes
-
-    prev_mode     = _current_mode
-    prev_breadth  = _current_breadth
-    prev_rsi      = _current_rsi_regime
-
-    now_et = _now_et()
-
-    # Core mode classifier.
-    mode, reason, pnl = get_current_mode(now_et)
-    _current_mode        = mode
-    _current_mode_reason = reason
-    _current_mode_pnl    = pnl
-    _current_mode_ts     = now_et
-    if mode != prev_mode:
-        logger.info("MarketMode: %s -> %s (%s)", prev_mode, mode, reason)
-
-    # Observers — each is individually safe and independent. A failure in
-    # one never blocks the others or affects the core mode. All skipped
-    # entirely when market is CLOSED (no meaningful data to classify).
-    if mode == MarketMode.CLOSED:
-        _current_breadth = "UNKNOWN"
-        _current_breadth_detail = "market closed"
-        _current_rsi_regime = "UNKNOWN"
-        _current_rsi_detail = "market closed"
-        _current_rsi_per_ticker = {}
-        _current_ticker_pnl = {}
-        _current_ticker_red = []
-        _current_ticker_extremes = []
-        return
-
-    try:
-        _current_breadth, _current_breadth_detail = _classify_breadth()
-    except Exception:
-        logger.exception("breadth observer failed (ignored)")
-        _current_breadth, _current_breadth_detail = ("UNKNOWN", "observer crashed")
-    if _current_breadth != prev_breadth:
-        logger.info("MarketMode.breadth: %s -> %s (%s)",
-                    prev_breadth, _current_breadth, _current_breadth_detail)
-
-    try:
-        rsi_label, rsi_detail, rsi_map = _classify_rsi_regime()
-        _current_rsi_regime      = rsi_label
-        _current_rsi_detail      = rsi_detail
-        _current_rsi_per_ticker  = rsi_map
-    except Exception:
-        logger.exception("RSI observer failed (ignored)")
-        _current_rsi_regime, _current_rsi_detail, _current_rsi_per_ticker = (
-            "UNKNOWN", "observer crashed", {})
-    if _current_rsi_regime != prev_rsi:
-        logger.info("MarketMode.rsi: %s -> %s (%s)",
-                    prev_rsi, _current_rsi_regime, _current_rsi_detail)
-
-    try:
-        _current_ticker_pnl = _per_ticker_today_pnl()
-        red, extremes = _classify_ticker_heat(_current_ticker_pnl,
-                                              _current_rsi_per_ticker)
-        _current_ticker_red      = red
-        _current_ticker_extremes = extremes
-    except Exception:
-        logger.exception("ticker-heat observer failed (ignored)")
-        _current_ticker_pnl = {}
-        _current_ticker_red = []
-        _current_ticker_extremes = []
+    return
 
 
 # Scan pause (Feature 8) — user-set via Telegram /pause /resume.
@@ -4211,162 +3190,6 @@ LADDER_TIERS_LONG = [
 LADDER_HARVEST_FRACTION = 0.0010
 
 
-# PREMARKET RECALC (v5.19.0 \u2014 vAA-1 ULTIMATE Decision 6)
-# ============================================================
-def premarket_recalc():
-    """Recalculate premarket data caches at 09:29 ET (1 min before open).
-
-    Per Tiger Sovereign vAA-1 ULTIMATE Decision 6 (2026-04-29).
-
-    All four seed paths exist and run at process startup. But on long-
-    running containers (Railway keeps the bot alive overnight via
-    health_ping), seeded caches reflect yesterday's startup state and
-    miss premarket data accumulated overnight. This job re-fires the
-    seed paths defensively, with idempotency guards so it's safe to
-    run on a fresh boot too.
-
-    Steps (all non-fatal):
-      1. Prior-day bar archive backfill check \u2014 log warning if gaps.
-      2. qqq_regime_seed_once() \u2014 already idempotent via _QQQ_REGIME_SEEDED.
-      3. DI seed \u2014 per-ticker idempotency via _DI_SEED_CACHE membership.
-         Honors user direction "only seed if not yet seeded".
-      4. Volume profile cache reload \u2014 always runs (this is the point;
-         picks up the 21:00 ET nightly rebuild output).
-
-    Idempotent: a fully-warm cache produces a no-op (no Alpaca calls).
-    """
-    import time as _time
-    t0 = _time.time()
-    archive_filled = 0
-    archive_warnings = 0
-    qqq_seeded_now = False
-    di_seeded_now = 0
-    volprof_reloaded = 0
-
-    # 1. Prior-day bar archive existence check.
-    # /data/bars/<yesterday>/<ticker>.jsonl is written live by the WS
-    # consumer. We don't backfill here (would require an Alpaca
-    # historical fetch + JSONL writer); we just log gaps so ops can
-    # investigate. Backfill is left to a future PR.
-    try:
-        et = ZoneInfo("America/New_York")
-        yesterday = (datetime.now(et) - timedelta(days=1)).strftime("%Y-%m-%d")
-        ydir = f"/data/bars/{yesterday}"
-        if os.path.isdir(ydir):
-            present = {f.replace(".jsonl", "")
-                       for f in os.listdir(ydir) if f.endswith(".jsonl")}
-            missing = [t for t in TICKERS if t not in present]
-            if missing:
-                archive_warnings = len(missing)
-                logger.warning(
-                    "[PREMARKET-RECALC] /data/bars/%s missing %d tickers: %s",
-                    yesterday, len(missing), ",".join(missing[:10]),
-                )
-        else:
-            archive_warnings = len(TICKERS)
-            logger.warning(
-                "[PREMARKET-RECALC] /data/bars/%s does not exist (weekend/holiday?)",
-                yesterday,
-            )
-    except Exception:
-        logger.exception("[PREMARKET-RECALC] archive check failed")
-
-    # 2. QQQ Regime seed \u2014 v5.20.2: gate on ema9 (the actual warm signal),
-    # not the legacy _QQQ_REGIME_SEEDED flag. Force-reseed when ema9 is
-    # still None so a prior partial seed (e.g. premarket bars=4) can be
-    # replaced by a fresh fetch that picks up bars Alpaca had not yet
-    # aggregated. This makes the 09:29 ET pass meaningful even when a
-    # cold-start at boot only saw a handful of premarket buckets.
-    try:
-        was_warm = _QQQ_REGIME.ema9 is not None
-        _v590_qqq_regime_seed_once(force_reseed=not was_warm)
-        qqq_seeded_now = (not was_warm) and (_QQQ_REGIME.ema9 is not None)
-    except Exception:
-        logger.exception("[PREMARKET-RECALC] qqq regime seed failed")
-
-    # 3. DI seed \u2014 per-ticker idempotency. Honors user direction
-    # "only seed if not yet seeded". seed_di_buffer is unconditionally
-    # rewriting per ticker, so we gate on _DI_SEED_CACHE membership at
-    # the orchestrator level.
-    try:
-        from engine.seeders import seed_di_buffer as _seed_one_ticker
-        for t in TRADE_TICKERS:
-            try:
-                if t in _DI_SEED_CACHE and _DI_SEED_CACHE.get(t):
-                    continue
-                _seed_one_ticker(t)
-                di_seeded_now += 1
-            except Exception:
-                logger.exception("[PREMARKET-RECALC] DI seed failed for %s", t)
-    except Exception:
-        logger.exception("[PREMARKET-RECALC] DI seed orchestration failed")
-
-    # 4. Volume profile cache reload \u2014 always runs. Picks up yesterday's
-    # 21:00 ET nightly rebuild output. Cheap (disk read per ticker).
-    try:
-        for t in TICKERS:
-            try:
-                prof = volume_profile.load_profile(t)
-                if prof is not None:
-                    _volume_profile_cache[t] = prof
-                    volprof_reloaded += 1
-            except Exception:
-                logger.exception(
-                    "[PREMARKET-RECALC] volume profile reload failed for %s", t)
-    except Exception:
-        logger.exception("[PREMARKET-RECALC] volume profile orchestration failed")
-
-    elapsed = _time.time() - t0
-    logger.info(
-        "[PREMARKET-RECALC] complete in %.2fs \u2014 di_seeded=%d qqq_seeded=%s "
-        "volprof_reloaded=%d archive_warnings=%d archive_filled=%d",
-        elapsed, di_seeded_now, "Y" if qqq_seeded_now else "N",
-        volprof_reloaded, archive_warnings, archive_filled,
-    )
-
-
-# DI RECOMPUTE (v5.20.1 \u2014 09:31 ET safety net)
-# ============================================================
-def di_recompute_0931():
-    """Re-seed DI for any ticker that had insufficient premarket bars.
-
-    Fires at 09:31 ET, 1 minute after the bell. By this time today's first
-    5m bar (09:30:00\u219209:34:59) is forming but not yet closed; the seeder's
-    fetch window ends at 09:30 ET so this job re-pulls premarket from
-    Alpaca only if a previous boot/recalc came up short. tiger_di() merges
-    the seed buffer with live 5m buckets, so as today's RTH bars close
-    DI naturally arms even when the seed alone is < 15 bars.
-
-    Idempotent: tickers already seeded with \u226515 bars are left alone.
-    Non-fatal: per-ticker errors logged via the seeder's exception handler.
-    """
-    try:
-        _recompute_di_for_unseeded(list(TRADE_TICKERS))
-    except Exception:
-        logger.exception("[DI-RECOMPUTE-0931] orchestration failed")
-
-
-# QQQ REGIME RECOMPUTE (v5.20.2 \u2014 09:31 ET safety net for EMA9)
-# ============================================================
-def qqq_regime_recompute_0931():
-    """Force-reseed the QQQ regime EMA9 if it is still None at 09:31 ET.
-
-    Mirrors di_recompute_0931 \u2014 same trigger, same idempotency shape.
-    The Phase 1 (L-P1-G1 / S-P1-G1) permit gate is fail-closed when
-    compass is None, so a half-warm regime blocks every long/short permit
-    until live ticks accumulate \u22659 closed 5m bars (~25 min into RTH).
-    This recompute closes that window: at 09:31 ET it pulls today's full
-    04:00\u2192now ET premarket via Alpaca/archive and re-seeds the regime
-    state from scratch when ema9 is still None.
-
-    Non-fatal: any error is logged via the helper's exception handler.
-    """
-    try:
-        _recompute_qqq_regime_if_unwarm()
-    except Exception:
-        logger.exception("[QQQ-REGIME-RECOMPUTE-0931] orchestration failed")
-
-
 # OR COLLECTION (Opening Range)
 # ============================================================
 def collect_or():
@@ -4733,11 +3556,6 @@ def _check_daily_loss_limit(ticker: str) -> bool:
             "No new entries until tomorrow."
         ) % (pnl_fmt, limit_fmt)
         send_telegram(halt_msg)
-        # C-R4: daily-loss-limit forces every v5 track to LOCKED_FOR_DAY.
-        try:
-            v5_lock_all_tracks("daily_loss_limit")
-        except Exception:
-            logger.exception("v5_lock_all_tracks failed (daily loss limit)")
         return False
 
     return True
@@ -4753,10 +3571,17 @@ def _check_daily_loss_limit(ticker: str) -> bool:
 # by engine/phase_machine.py; trade_genius accesses it via clear_phase_bucket()
 # during position close.
 from engine.bars import compute_5m_ohlc_and_ema9 as _engine_compute_5m_ohlc_and_ema9  # noqa: E402, F401
-from engine.phase_machine import (  # noqa: E402, F401
-    phase_machine_tick as _engine_phase_machine_tick,
-    clear_phase_bucket as _engine_clear_phase_bucket,
-)
+
+
+# v5.26.0: engine/phase_machine.py deleted (non-spec FSM). The broker
+# layer still calls `tg._engine_clear_phase_bucket` after each close \u2014
+# replace with a no-op so the call site keeps compiling.
+def _engine_phase_machine_tick(*args, **kwargs):
+    return None
+
+
+def _engine_clear_phase_bucket(*args, **kwargs):
+    return None
 
 
 
@@ -5289,7 +4114,7 @@ def reset_daily_state():
     (v3.4.34: AVWAP reset removed — AVWAP state no longer tracked.)
     """
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason
-    global daily_short_entry_count, daily_short_entry_date, _current_rsi_regime
+    global daily_short_entry_count, daily_short_entry_date
 
     now_et = _now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -5357,9 +4182,7 @@ def reset_daily_state():
         logger.exception("reset_daily_state: _last_exit_time prune failed")
 
     # v5.13.9 \u2014 _regime_bullish reset removed alongside the retired
-    # PDC regime alert. _current_rsi_regime continues to reset here
-    # so the RSI regime classifier starts each session clean.
-    _current_rsi_regime = "UNKNOWN"
+    # PDC regime alert. v5.26.0 \u2014 RSI regime classifier deleted.
 
 
 # ============================================================
