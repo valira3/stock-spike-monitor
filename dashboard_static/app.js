@@ -3,7 +3,7 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // v4.1.8-dash \u2014 Robinhood view was removed in v3.5.0 along with the
+  // v4.1.8-dash — Robinhood view was removed in v3.5.0 along with the
   // RH portfolio payload. The toggle + storage machinery + slice()
   // indirection lingered as dead code. Now simplified: only the paper
   // portfolio is ever rendered, so the slice is computed inline where
@@ -44,10 +44,10 @@
     return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
   }
 
-  // v5.17.0 \u2014 GATE tri-state helper retired. The Gate KPI tile was
+  // v5.17.0 — GATE tri-state helper retired. The Gate KPI tile was
   // dropped from Main + Val/Gene KPI rows (gate state is now surfaced
   // through the new Weather Check banner on Main). Health-pill helper
-  // remains \u2014 still used for per-executor error counts.
+  // remains — still used for per-executor error counts.
 
   // v4.11.0 — per-executor health pill renderer + dropdown.
   // Two separate IIFEs touch this: Main /api/state via __tgOnState, and
@@ -254,7 +254,7 @@
         const trailBadge = p.trail_active
           ? ` <span class="trail-badge" title="Trail stop is armed \u2014 the effective stop now follows price, not the original hard stop">TRAIL</span>`
           : "";
-        // v5.13.10 \u2014 SB (Sovereign Brake distance) column removed
+        // v5.13.10 — SB (Sovereign Brake distance) column removed
         // per operator request. Phase badge stays: A = fresh entry,
         // B = first runner / partial taken, C = mature ratcheting trail.
         const phase = (p.phase === "B" || p.phase === "C") ? p.phase : "A";
@@ -311,48 +311,12 @@
     }
   }
 
-  function renderProximity(s) {
-    const rows = s.proximity || [];
-    $("prox-count").textContent = `· ${rows.length} tracked`;
-    const list = $("prox-list");
-    if (!rows.length) {
-      list.innerHTML = `<div class="empty">No tickers configured.</div>`;
-      return;
-    }
-    const html = rows.map((r) => {
-      const pct = (r.nearest_pct !== null && r.nearest_pct !== undefined) ? r.nearest_pct : null;
-      // Convert "distance" (0 = touching) to a bar width where closer = longer bar.
-      // Clamp: 0% distance → 100% bar; 2% distance → 0% bar.
-      let fill = 0;
-      if (pct !== null) fill = Math.max(0, Math.min(100, Math.round((1 - Math.min(pct, 0.02) / 0.02) * 100)));
-      const warn = pct !== null && pct < 0.005;
-      const mark = r.open_side === "SHORT"
-        ? '<span class="mark mark-short" title="Open short">●</span>'
-        : r.open_side === "LONG"
-          ? '<span class="mark mark-long" title="Open long">●</span>'
-          : "";
-      const lbl = r.nearest_label || "—";
-      const pctText = pct !== null ? `${(pct * 100).toFixed(2)}% · ${lbl}` : "—";
-      // v5.13.4 — permit-side chip (Phase 1 entry-relevant boundary).
-      const permitSide = r.permit_side || "NONE";
-      const permitChip = renderPermitSideChip(permitSide);
-      const dim = (permitSide === "NONE") ? ' style="opacity:0.55"' : '';
-      return `<div class="prox-row"${dim}>
-        <span class="prox-ticker">${escapeHtml(r.ticker)} ${mark}</span>
-        <span class="prox-price">${fmtPx(r.price)}</span>
-        <div class="prox-bar"><div class="prox-fill ${warn ? "warn" : "ok"}" style="width:${fill}%"></div></div>
-        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${pctText} ${permitChip}</span>
-      </div>`;
-    }).join("");
-    list.innerHTML = html;
-  }
-
-  function renderPermitSideChip(permitSide) {
-    if (permitSide === "BOTH") return `<span class="tgate-chip on" title="Phase 1 permit: long + short">L+S</span>`;
-    if (permitSide === "LONG") return `<span class="tgate-chip on" title="Phase 1 long permit active">L</span>`;
-    if (permitSide === "SHORT") return `<span class="tgate-chip on" title="Phase 1 short permit active">S</span>`;
-    return `<span class="tgate-chip na" title="No Phase 1 permit \u2014 breakout would not fire">no permit</span>`;
-  }
+  // v5.18.0 — the standalone Main-tab Proximity card was retired and its
+  // data (live price + % distance to nearest OR boundary) was folded into
+  // the Permit Matrix Price·Distance column (see _pmtxBuildRow below).
+  // Val/Gene tabs still render their own per-executor proximity strip
+  // via execRenderProximity in IIFE-2 — those panels are portfolio-only
+  // and don't carry a Permit Matrix.
 
   // v3.4.30 — time may already arrive pre-formatted as "09:11 CDT"
   // (current server) or as an ISO-8601 string; accept both.
@@ -445,7 +409,7 @@
     const rows = trades.map((t) => {
       const tm   = fmtTradeTime(t.time || t.entry_time);
       const act  = (t.action || "").toUpperCase();
-      // v5.5.7 \u2014 classify by open vs close, not strictly BUY/SELL.
+      // v5.5.7 — classify by open vs close, not strictly BUY/SELL.
       // SHORT entries pair with COVER exits; treating only BUY/SELL as
       // tradable actions hid realized pnl on COVER rows.
       const isOpen  = (act === "BUY" || act === "SHORT");
@@ -455,14 +419,14 @@
       const shares = t.shares;
       const px    = t.price ?? t.entry_price ?? t.exit_price;
 
-      // Action chip \u2014 open (green) / close (red). Symbol still
+      // Action chip — open (green) / close (red). Symbol still
       // carries LONG/SHORT colour coding to avoid double-cueing.
       const actCls = isClose ? "act-sell" : "act-buy";
       const actLbl = act || (side === "SHORT" ? "SHORT" : "LONG");
 
-      // v4.2.1 \u2014 tail column (between action and unit price):
-      //   open  \u2192 total cost, subdued
-      //   close \u2192 signed pnl + matching-colour pnl %
+      // v4.2.1 — tail column (between action and unit price):
+      //   open  → total cost, subdued
+      //   close → signed pnl + matching-colour pnl %
       let tailHtml = "\u2014";
       if (isOpen) {
         const cost = (typeof t.cost === "number" && isFinite(t.cost))
@@ -671,15 +635,28 @@
       if (!tradesByTicker[t.ticker]) tradesByTicker[t.ticker] = [];
       tradesByTicker[t.ticker].push(t);
     });
+    // v5.18.0 — fold standalone Proximity card into the matrix. Each
+    // /api/state.proximity row carries price + nearest_pct + nearest_label
+    // for one ticker; index by ticker so _pmtxBuildRow can look it up.
+    const proximity = (s && Array.isArray(s.proximity)) ? s.proximity : [];
+    const proximityByTicker = {};
+    proximity.forEach((r) => { if (r && r.ticker) proximityByTicker[r.ticker] = r; });
 
     const rowsHtml = [];
     const cardsHtml = [];
     tickers.forEach((tkr) => {
-      const built = _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, longPermit, shortPermit);
+      const built = _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker, longPermit, shortPermit);
       rowsHtml.push(built.tableRows);
       cardsHtml.push(built.card);
     });
 
+    // v5.18.0 — row layout collapsed to match the original mockup:
+    // one ~38px row per Titan; the per-position sentinel strip is no
+    // longer always rendered — it's an expand-on-click detail row.
+    // "DI+ 1m" column was dropped (always pending in v5.16/v5.18 —
+    // not surfaced by /api/state). "Last trade" moved into the detail
+    // panel; "Price · Distance" replaces it as the trailing cell so
+    // the standalone Proximity card retires cleanly.
     body.innerHTML = ''
       + '<div class="pmtx-table-wrap">'
       +   '<table class="pmtx-table"><thead><tr>'
@@ -687,17 +664,32 @@
       +     '<th title="5-minute Opening Range break (2 consecutive 1m closes above OR_high or below OR_low)">5m ORB</th>'
       +     '<th title="5-minute ADX above 20 \u2014 trend strength gate (derived from Phase 3 entry state)">ADX&gt;20</th>'
       +     '<th title="DI+ on 5-minute bars above 25 at Entry 1 trigger">DI+ 5m&gt;25</th>'
-      +     '<th title="DI+ on 1-minute bars above 25 (not surfaced by /api/state yet \u2014 follow-up)">DI+ 1m&gt;25</th>'
       +     '<th title="Volume Bucket gate \u2014 Phase 2 PASS/FAIL/COLD/OFF">Vol confirm</th>'
-      +     '<th title="Strike Cap \u2014 max 3 entries per ticker per session (STRIKE-CAP-3)">Strike cap</th>'
+      +     '<th class="pmtx-col-strike" title="Strike Cap \u2014 max 3 entries per ticker per session (STRIKE-CAP-3)">Strikes</th>'
       +     '<th class="pmtx-col-state" title="Per-ticker FSM state">State</th>'
-      +     '<th class="pmtx-col-state" title="Last fill today (action @ price)">Last trade</th>'
+      +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to nearest OR boundary (replaces the standalone Proximity card)">Price \u00b7 Distance</th>'
+      +     '<th class="pmtx-col-expand" aria-label="Toggle detail"></th>'
       +   '</tr></thead><tbody>' + rowsHtml.join("") + '</tbody></table>'
       + '</div>'
       + '<div class="pmtx-cards">' + cardsHtml.join("") + '</div>';
+
+    // Wire up the click-to-expand toggle. One delegated handler attached
+    // to body so we don't leak listeners on every re-render.
+    if (!body.__pmtxExpandWired) {
+      body.addEventListener("click", function (ev) {
+        const trigger = ev.target.closest("tr.pmtx-row[data-pmtx-tkr]");
+        if (!trigger) return;
+        const tkr = trigger.getAttribute("data-pmtx-tkr");
+        const detail = body.querySelector('tr.pmtx-detail-row[data-pmtx-tkr="' + tkr + '"]');
+        if (!detail) return; // no detail to expand for this row
+        const open = trigger.classList.toggle("pmtx-row-expanded");
+        detail.classList.toggle("pmtx-detail-open", open);
+      });
+      body.__pmtxExpandWired = true;
+    }
   }
 
-  function _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, longPermit, shortPermit) {
+  function _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker, longPermit, shortPermit) {
     const p2 = idx.p2[tkr] || null;
     // Pick the side that has a permit; if both, prefer LONG.
     const preferSide = longPermit ? "LONG" : (shortPermit ? "SHORT" : "LONG");
@@ -705,6 +697,7 @@
     const p4 = idx.p4[tkr + ":" + preferSide] || idx.p4[tkr] || null;
     const pos = positionsByTicker[tkr] || null;
     const fills = tradesByTicker[tkr] || [];
+    const prox = proximityByTicker[tkr] || null;
 
     // 5m ORB — Phase 2 boundary hold (2 consec above OR_high or below OR_low).
     let orb = null;
@@ -718,8 +711,6 @@
     if (p3 && typeof p3.entry1_di === "number") {
       di5 = (p3.entry1_di > 25);
     }
-    // DI+ 1m > 25 — not surfaced by /api/state in v5.16; pending placeholder.
-    const di1 = null;
     // Vol confirm — Phase 2 vol_gate_status.
     let vol = null;
     let volLabel = "";
@@ -729,7 +720,7 @@
       if (vs === "PASS") vol = true;
       else if (vs === "FAIL") vol = false;
       else if (vs === "COLD") vol = "warn";
-      else if (vs === "OFF") vol = null; // gate disabled — pending dash
+      else if (vs === "OFF") vol = null; // gate disabled \u2014 pending dash
     }
 
     // Strike Cap (count of opens today, max 3).
@@ -764,7 +755,7 @@
     }
     const stateHtml = '<span class="pmtx-state-pill ' + stateCls + '">' + escapeHtml(stateTxt) + '</span>';
 
-    // Last trade.
+    // Last trade (rendered inside the expand-detail panel only).
     const lastFill = fills.length ? fills[fills.length - 1] : null;
     let lastHtml = '<span class="pmtx-last">\u2014</span>';
     if (lastFill) {
@@ -777,60 +768,92 @@
       lastHtml = '<span class="pmtx-last' + pnlCls + '" title="Most recent fill today">' + escapeHtml(act) + ' @ ' + escapeHtml(px) + '</span>';
     }
 
-    // Titan name + meta.
-    let titanMeta;
-    if (pos) {
-      titanMeta = (pos.side || "") + " " + (typeof pos.shares === "number" ? pos.shares + "sh" : "");
-    } else if (preferSide === "SHORT" && shortPermit) {
-      titanMeta = "short side";
-    } else if (longPermit) {
-      titanMeta = "long side";
-    } else {
-      titanMeta = "awaiting permit";
-    }
+    // Titan name only — v5.18.0 dropped the second-line meta string
+    // ("long side"/"awaiting permit"/"short side"/"LONG 50sh") because
+    // the row tint, State pill, and Price·Distance column already
+    // convey the same information and the meta line was eating ~12px
+    // of vertical space per Titan.
     const titanHtml = ''
       + '<div class="pmtx-titan">'
       +   '<span class="pmtx-titan-name">' + escapeHtml(tkr) + '</span>'
-      +   '<span class="pmtx-titan-meta">' + escapeHtml(titanMeta) + '</span>'
       + '</div>';
 
-    // Desktop table row(s) — the sentinel strip is inlined as a second
-    // <tr> immediately under positions only.
+    // v5.18.0 — Price · Distance cell. Replaces the standalone
+    // Proximity card. Shows live last + a thin bar that fills as price
+    // approaches the nearest OR boundary (0% distance → 100% bar,
+    // 2% distance → 0% bar). Bar tints amber inside 0.5%.
+    const proxHtml = _pmtxProxCell(prox);
+
+    // Row tint follows Phase 1 permit (matches mockup .permit-go /
+    // .permit-block tints).
+    let rowTint = "";
+    if (longPermit || shortPermit) rowTint = " pmtx-row-permit-go";
+    if (strikesUsed >= 3 && !pos)  rowTint = " pmtx-row-permit-block";
+
+    // v5.18.0 — single ~38px row per Titan (mockup spec). The row is
+    // clickable when there's something interesting to expand (open
+    // position OR a recorded fill today). Detail row is rendered next
+    // to it but hidden by default (.pmtx-detail-open toggles via JS).
     const sentinelStripHtml = pos ? _pmtxSentinelStrip(p4) : "";
-    const mainTr = '<tr' + (sentinelStripHtml ? ' class="pmtx-row-attached"' : '') + '>'
+    const hasDetail = !!(pos || lastFill);
+    const expandIcon = hasDetail
+      ? '<span class="pmtx-expand-chev" aria-hidden="true">\u203a</span>'
+      : '<span class="pmtx-expand-chev pmtx-expand-empty" aria-hidden="true"></span>';
+    const rowAttrs = ' data-pmtx-tkr="' + escapeHtml(tkr) + '"' + (hasDetail ? '' : ' data-pmtx-no-detail="1"');
+    const mainTr = '<tr class="pmtx-row' + rowTint + (hasDetail ? '' : ' pmtx-row-static') + '"' + rowAttrs + '>'
       + '<td class="pmtx-col-titan">' + titanHtml + '</td>'
       + '<td>' + _pmtxGateCell(orb, "5-minute Opening Range break") + '</td>'
       + '<td>' + _pmtxGateCell(adx, "ADX above 20 (trend strength)") + '</td>'
       + '<td>' + _pmtxGateCell(di5, "DI+ on 5m bars above 25" + (p3 && typeof p3.entry1_di === "number" ? " \u2014 last reading: " + _pmtxNum(p3.entry1_di, 1) : "")) + '</td>'
-      + '<td>' + _pmtxGateCell(di1, "DI+ on 1m bars above 25 \u2014 not yet surfaced by /api/state") + '</td>'
       + '<td>' + _pmtxGateCell(vol, volLabel || "Volume Bucket gate") + '</td>'
-      + '<td>' + strikeHtml + '</td>'
+      + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
       + '<td class="pmtx-col-state">' + stateHtml + '</td>'
-      + '<td class="pmtx-col-state">' + lastHtml + '</td>'
+      + '<td class="pmtx-col-prox">' + proxHtml + '</td>'
+      + '<td class="pmtx-col-expand">' + expandIcon + '</td>'
       + '</tr>';
     let tableRows = mainTr;
-    if (sentinelStripHtml) {
-      tableRows += '<tr class="pmtx-sentinel-row"><td colspan="9">' + sentinelStripHtml + '</td></tr>';
+    if (hasDetail) {
+      const detailInner = ''
+        + '<div class="pmtx-detail-grid">'
+        +   '<div class="pmtx-detail-stat"><div class="l">Last trade today</div><div class="v">' + lastHtml + '</div></div>'
+        +   (prox && typeof prox.price === "number"
+              ? '<div class="pmtx-detail-stat"><div class="l">Last price</div><div class="v">' + escapeHtml(fmtPx(prox.price)) + '</div></div>'
+              : '')
+        +   (prox && prox.nearest_label
+              ? '<div class="pmtx-detail-stat"><div class="l">Nearest boundary</div><div class="v">' + escapeHtml(prox.nearest_label) + '</div></div>'
+              : '')
+        +   (prox && (typeof prox.or_high === "number" || typeof prox.or_low === "number")
+              ? '<div class="pmtx-detail-stat"><div class="l">OR range</div><div class="v">'
+                + escapeHtml(typeof prox.or_low === "number" ? fmtPx(prox.or_low) : "\u2014")
+                + ' \u2013 '
+                + escapeHtml(typeof prox.or_high === "number" ? fmtPx(prox.or_high) : "\u2014")
+                + '</div></div>'
+              : '')
+        + '</div>'
+        + (sentinelStripHtml || "");
+      tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
+        + '<td colspan="9">' + detailInner + '</td></tr>';
     }
 
-    // Mobile card.
+    // Mobile card. "DI+ 1m" pill dropped (matches the desktop column
+    // drop above). Card head still carries State pill + Price·Dist.
     const cardGates = ''
       + '<div class="pmtx-card-gates">'
       +   '<div class="pmtx-card-gate">' + _pmtxGateCell(orb) + '<span class="pmtx-card-gate-label">5m ORB</span></div>'
       +   '<div class="pmtx-card-gate">' + _pmtxGateCell(adx) + '<span class="pmtx-card-gate-label">ADX&gt;20</span></div>'
       +   '<div class="pmtx-card-gate">' + _pmtxGateCell(di5) + '<span class="pmtx-card-gate-label">DI+ 5m</span></div>'
-      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(di1) + '<span class="pmtx-card-gate-label">DI+ 1m</span></div>'
       +   '<div class="pmtx-card-gate">' + _pmtxGateCell(vol) + '<span class="pmtx-card-gate-label">Vol</span></div>'
       + '</div>';
     const cardSentinel = sentinelStripHtml
       ? '<div class="pmtx-card-sentinel">' + sentinelStripHtml + '</div>'
       : "";
     const card = ''
-      + '<div class="pmtx-card">'
+      + '<div class="pmtx-card' + rowTint + '">'
       +   '<div class="pmtx-card-head">'
       +     '<div class="pmtx-card-title">' + titanHtml + '</div>'
       +     stateHtml
       +   '</div>'
+      +   '<div class="pmtx-card-prox">' + proxHtml + '</div>'
       +   cardGates
       +   cardSentinel
       +   '<div class="pmtx-card-foot">'
@@ -840,6 +863,33 @@
       + '</div>';
 
     return { tableRows: tableRows, card: card };
+  }
+
+  // v5.18.0 — single Price · Distance cell, used in the table
+  // and inside the mobile card. Folds the retired Proximity card into
+  // a one-line representation: live last + a thin proximity bar +
+  // % distance to the nearest OR boundary.
+  function _pmtxProxCell(prox) {
+    if (!prox) return '<span class="pmtx-prox-empty" title="No proximity data yet">\u2014</span>';
+    const pct = (prox.nearest_pct !== null && prox.nearest_pct !== undefined && isFinite(prox.nearest_pct))
+      ? prox.nearest_pct : null;
+    let fill = 0;
+    if (pct !== null) {
+      // 0% distance → 100% fill, 2% distance → 0% fill.
+      fill = Math.max(0, Math.min(100, Math.round((1 - Math.min(pct, 0.02) / 0.02) * 100)));
+    }
+    const warn = pct !== null && pct < 0.005;
+    const px = (typeof prox.price === "number") ? fmtPx(prox.price) : "\u2014";
+    const lbl = prox.nearest_label || "\u2014";
+    const pctText = pct !== null ? (pct * 100).toFixed(2) + "% \u00b7 " + escapeHtml(lbl) : escapeHtml(lbl);
+    const titleText = pct !== null
+      ? "Last " + px + " \u2014 " + (pct * 100).toFixed(3) + "% from " + lbl
+      : "Last " + px;
+    return '<div class="pmtx-prox" title="' + escapeHtml(titleText) + '">'
+      +    '<span class="pmtx-prox-price">' + escapeHtml(px) + '</span>'
+      +    '<div class="pmtx-prox-bar"><div class="pmtx-prox-fill ' + (warn ? "warn" : "ok") + '" style="width:' + fill + '%"></div></div>'
+      +    '<span class="pmtx-prox-pct' + (warn ? " pmtx-prox-warn" : "") + '">' + pctText + '</span>'
+      +  '</div>';
   }
 
   // Inline 5-cell sentinel strip rendered under any open-position row.
@@ -916,8 +966,8 @@
     const ver = `v${s.version || "?"}`;
     const verEl = document.getElementById("tg-brand-ver");
     if (verEl) verEl.textContent = ver;
-    // v4.2.2 \u2014 extract tz token (ET/CDT/CT/PT/PST/\u2026) from
-    // server_time_label tail, e.g. "Fri Apr 24 \u00b7 13:09:13 ET".
+    // v4.2.2 — extract tz token (ET/CDT/CT/PT/PST/\u2026) from
+    // server_time_label tail, e.g. "Fri Apr 24 · 13:09:13 ET".
     // The client-side tick loop renders the actual HH:MM:SS every
     // second; we only cache the tz label here so the clock shows it.
     const lbl = s.server_time_label || "";
@@ -926,10 +976,10 @@
     if (typeof window.__tgTickClock === "function") window.__tgTickClock();
   }
 
-  // v5.5.7 \u2014 Main tab LAST SIGNAL card. Mirrors the exec-panel
+  // v5.5.7 — Main tab LAST SIGNAL card. Mirrors the exec-panel
   // formatting (kind / ticker / price / reason / timestamp). Reads
   // s.last_signal which is the paper executor's most recent emitted
-  // signal (entry/exit/eod). Empty/null \u2192 "No signals received yet."
+  // signal (entry/exit/eod). Empty/null → "No signals received yet."
   function renderLastSignal(s) {
     const ls = s && s.last_signal;
     const chip = $("last-sig-chip");
@@ -963,14 +1013,14 @@
     renderHeader(s);
     renderKPIs(s, sl);
     renderPositions(s, sl);
-    renderProximity(s);
     renderTrades(s, sl);
     renderLastSignal(s);
-    // v5.17.0 — Main tab render order. The legacy Tiger Sovereign,
-    // Observer, Gates · entry checks, and Volume Gate flag panels were
-    // all retired; their content is now folded into the Weather Check
-    // banner + Permit Matrix below. The next-scan countdown is the
-    // only piece of the old gates renderer that survived.
+    // v5.18.0 — Main tab render order. The standalone Proximity card
+    // was retired; live price + distance-to-OR is now folded into the
+    // Permit Matrix Price·Distance column. v5.17.0 retired the legacy
+    // Tiger Sovereign / Observer / Gates panels (folded into Weather
+    // Check + Permit Matrix). The next-scan countdown is the only
+    // piece of the old gates renderer that survived.
     renderNextScanCountdown(s);
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
@@ -978,7 +1028,7 @@
     try { applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] }); } catch (e) {}
   }
 
-  // v4.1.8-dash \u2014 portfolio view toggle removed (Robinhood was
+  // v4.1.8-dash — portfolio view toggle removed (Robinhood was
   // deleted in v3.5.0). Only the paper portfolio exists; nothing to
   // wire.
 
@@ -1042,7 +1092,7 @@
       stopStream();
       startPolling();
       // try to re-open SSE after a delay (guard against multiple scheduled
-      // reconnects \u2014 the 3s stale-data watchdog can fire back-to-back
+      // reconnects — the 3s stale-data watchdog can fire back-to-back
       // and queue up duplicates otherwise).
       scheduleStreamReconnect(15000);
     };
@@ -1082,7 +1132,7 @@
     scheduleStreamReconnect(4000);
   }
 
-  // v4.2.2 \u2014 client-side 1Hz clock tick. Renders HH:MM:SS + tz
+  // v4.2.2 — client-side 1Hz clock tick. Renders HH:MM:SS + tz
   // label (e.g. "13:09:13 ET") in the row-2 clock. Uses browser local
   // time so seconds advance smoothly; the tz token comes from the
   // server's server_time_label tail, cached in window.__tgClockTz.
@@ -1095,7 +1145,7 @@
     const mm = String(d.getMinutes()).padStart(2, "0");
     const ss = String(d.getSeconds()).padStart(2, "0");
     const tz = window.__tgClockTz || "";
-    // v4.3.1 \u2014 drop seconds on very narrow phones (<=360px) so
+    // v4.3.1 — drop seconds on very narrow phones (<=360px) so
     // the HH:MM TZ label fits inline with logo/version/LIVE pill.
     const narrow = window.matchMedia && window.matchMedia("(max-width: 360px)").matches;
     const t = narrow ? `${hh}:${mm}` : `${hh}:${mm}:${ss}`;
@@ -1163,12 +1213,12 @@
   const TABS = ["main", "val", "gene", "lifecycle"];
   let activeTab = "main";
 
-  // v4.1.4-dash \u2014 H2: one-shot /api/state warmup when user lands on
+  // v4.1.4-dash — H2: one-shot /api/state warmup when user lands on
   // Val/Gene before Main has populated window.__tgLastState. Without
-  // this, shared KPIs (Gate/Regime/Session) render as "\u2014" for up to
+  // this, shared KPIs (Gate/Regime/Session) render as "—" for up to
   // 15s until the executor poll + Main SSE tick both land. Guarded so
   // we only fire once per tab-switch event, and never blocks the
-  // executor poll \u2014 both run in parallel.
+  // executor poll — both run in parallel.
   let __tgWarmupInFlight = false;
   async function warmupSharedState() {
     if (__tgWarmupInFlight) return;
@@ -1181,7 +1231,7 @@
       window.__tgLastState = s;
       if (typeof window.__tgOnState === "function") window.__tgOnState(s);
     } catch (e) {
-      // swallow \u2014 next Main SSE/poll tick will populate
+      // swallow — next Main SSE/poll tick will populate
     } finally {
       __tgWarmupInFlight = false;
     }
@@ -1529,8 +1579,8 @@
   // These are scanner-level signals that are the same for every
   // executor by design, so we render them from the Main /api/state
   // payload (republished on window.__tgLastState) rather than from the
-  // per-executor snapshot. v5.17.0 \u2014 only Proximity remains here;
-  // Sovereign Regime Shield + Gates\u00b7entry-checks panels were dropped
+  // per-executor snapshot. v5.17.0 — only Proximity remains here;
+  // Sovereign Regime Shield + Gates·entry-checks panels were dropped
   // (Permit Matrix on Main is the canonical market-wide gate view).
 
   function fmtPxExec(v) {
@@ -1697,7 +1747,7 @@
     }
 
     // KPI row ----------------------------------------------------------
-    // v4.0.4 \u2014 mirror Main's KPI row exactly. Equity / Cash / BP come
+    // v4.0.4 — mirror Main's KPI row exactly. Equity / Cash / BP come
     // from the executor snapshot; Day P&L is computed server-side as
     // (equity \u2212 last_equity) from Alpaca's account object. Gate /
     // Regime / Session are market-wide and read from Main's /api/state
@@ -1754,8 +1804,8 @@
       setField(panel, "k-open-sub", `${longs} long \u00b7 ${shorts} short`);
     }
 
-    // Session KPI \u2014 shared market state. Pull from Main's last
-    // /api/state so every tab shows the same value. v5.17.0 \u2014 Gate +
+    // Session KPI — shared market state. Pull from Main's last
+    // /api/state so every tab shows the same value. v5.17.0 — Gate +
     // Regime tiles dropped (those are market-wide and live only on Main).
     const ms = window.__tgLastState || {};
     const reg = ms.regime || {};
@@ -1855,7 +1905,7 @@
 
   // Refresh the shared Session KPI cell on a given executor panel from
   // Main's last /api/state so the value matches across every tab.
-  // v5.17.0 \u2014 Gate + Regime tiles dropped (those are market-wide
+  // v5.17.0 — Gate + Regime tiles dropped (those are market-wide
   // and live only on Main now); only Session remains shared.
   function refreshExecSharedKpis(panel) {
     const ms = window.__tgLastState || {};

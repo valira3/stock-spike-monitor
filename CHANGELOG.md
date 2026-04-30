@@ -4,6 +4,91 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.18.0 — 2026-04-29 — Permit Matrix row collapse + Proximity merge
+
+Dashboard density refactor: the v5.17.0 Permit Matrix shipped with ~70–90px
+tall rows because each row carried a multi-line Titan cell (name + side meta)
+plus a permanently-rendered sentinel-strip subrow under every IN-POS Titan.
+For a 4-Titan layout that meant ~280–360px of vertical real estate just for
+the matrix on Main, which pushed the Open positions grid below the fold on
+13" laptop viewports. v5.18.0 collapses each Titan to a single ~38px row
+matching the original Tiger Sovereign mockup
+(`titan_permits_mockup/permit_matrix_only.html`), and folds the standalone
+Proximity card into a new Price · Distance column inside the matrix.
+
+No engine changes — pure presentation refactor. `/api/state` shape is
+unchanged (still emits `proximity[]`, `tiger_sovereign.phase4[].sentinel`,
+etc.); only the Main-tab dashboard JS/CSS/HTML changes.
+
+### Main tab — what's gone
+
+- **Proximity card** (the dedicated 4-row price + bar + %·label panel that
+  sat under the KPI strip in v5.17). Its data is now rendered inline as a
+  single Price · Distance cell per Titan inside the Permit Matrix. The
+  underlying `_proximity_rows()` payload is still emitted by
+  `dashboard_server.py` and is still consumed by the Val/Gene exec tabs
+  via `renderExecProximity` (those tabs do not have a Permit Matrix and
+  rely on the standalone strip).
+- **Permanent sentinel sub-row** under every IN-POS Titan. Sentinel A/B/C
+  detail is now hidden by default and revealed by clicking the row
+  (chevron rotates 90°), matching the mockup's `tr.detail` pattern.
+- **Two-line Titan cell** with "long side / awaiting permit" meta text
+  under the Titan name. The same information is conveyed by the row tint
+  (green/red bar on permit-go/permit-block) plus the existing State pill.
+- **DI+ 1m column** — was always pending (`null`) since v5.16+ and not
+  surfaced by `/api/state`. Removed entirely from the table; the
+  per-Titan column count is unchanged because the new Price · Distance
+  column replaces it.
+
+### Main tab — what's new
+
+- **Price · Distance column** in Permit Matrix. Each Titan row shows
+  live last price + a thin proximity bar + `% · OR-high|OR-low` label.
+  Bar fills as price approaches the entry-relevant boundary; tints amber
+  when within 0.5%. Tooltip carries the verbose `Last NNN.NN — N.NNN%
+  from OR-high` form for hover inspection.
+- **Click-to-expand sentinel detail** for IN-POS Titans. A new chevron
+  in the rightmost column toggles a `tr.pmtx-detail-row` carrying the
+  existing 5-cell sentinel strip (A1 P&L, A2 Velocity, B Velocity Fuse,
+  C Ratchet, D ADX Collapse, E Divergence Trap) plus a stat grid (Last
+  trade timestamp, Last trade price, Nearest boundary, OR range). Static
+  Titans (no open position, no trade today) show no chevron.
+- **Row tint** for at-a-glance permit verdict: green left-bar for Titans
+  whose long-side gates are GO with `long_permit` open, red for short.
+  Replaces the deleted Titan-meta line.
+- **Open positions panel** is now full-width single-column on Main since
+  it no longer shares its row with the retired Proximity card.
+
+### Mobile (≤720px)
+
+The `.pmtx-cards` mobile card stack is unchanged structurally — each card
+still folds the per-Titan gate stages into a vertical layout. The new
+Price · Distance cell is appended to each card's stat grid alongside
+Strikes, so the mobile view also surfaces proximity inline.
+
+### Files touched
+
+- `dashboard_static/index.html` — removed Proximity `<section>`; Open
+  positions section dropped its grid wrapper.
+- `dashboard_static/app.js` — deleted `renderProximity` and
+  `renderPermitSideChip` (IIFE-1, ~lines 314–355 in v5.17); rewrote
+  `renderPermitMatrix` and `_pmtxBuildRow` with the new column layout
+  and click-to-expand machinery; added `_pmtxProxCell` helper. Delegated
+  click handler is wired idempotently via `body.__pmtxExpandWired`.
+- `dashboard_static/app.css` — tightened `.pmtx-table` cell padding from
+  the v5.17 default to 8×8px to match mockup; added `.pmtx-row-permit-go`
+  / `.pmtx-row-permit-block` row tints; added `.pmtx-expand-chev`
+  rotate-on-open animation; added `.pmtx-detail-row` collapsed-by-default
+  styles; added `.pmtx-prox` cell layout (price + bar + pct grid with
+  warn tint <0.5%); added column-width helpers for prox/strike/expand.
+
+### Compatibility
+
+No backend changes. No CI changes. `/api/state` consumers (Telegram
+bots, alarm sentinels, downstream replays) all see identical payloads.
+
+---
+
 ## v5.17.0 — 2026-04-29 — Dashboard redesign: Permit Matrix + Weather Check
 
 Full dashboard redesign for Tiger Sovereign vAA-1. The legacy v5.13.2 Phase

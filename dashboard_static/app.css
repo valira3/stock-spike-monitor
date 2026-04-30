@@ -753,7 +753,7 @@
 }
 .pmtx-table {
   width: 100%; border-collapse: collapse;
-  font-size: 12.5px; min-width: 720px;
+  font-size: 12.5px; min-width: 760px;
 }
 .pmtx-table thead th {
   font-size: 9.5px; text-transform: uppercase;
@@ -765,31 +765,139 @@
   white-space: nowrap;
   position: sticky; top: 0; z-index: 1;
 }
-.pmtx-table thead th.pmtx-col-titan { text-align: left; padding-left: 14px; }
-.pmtx-table thead th.pmtx-col-state { text-align: right; padding-right: 14px; }
+.pmtx-table thead th.pmtx-col-titan  { text-align: left;  padding-left: 14px; }
+.pmtx-table thead th.pmtx-col-state  { text-align: right; padding-right: 6px; }
+.pmtx-table thead th.pmtx-col-prox   { text-align: right; padding-right: 8px; width: 168px; }
+.pmtx-table thead th.pmtx-col-strike { width: 58px; }
+.pmtx-table thead th.pmtx-col-expand { width: 22px; padding-right: 10px; }
+/* v5.18.0 — row padding tightened from 11px 6px to 8px 8px to match
+   the original mockup density (~38px per row vs ~44px+ before). */
 .pmtx-table tbody td {
-  padding: 11px 6px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--border);
   text-align: center; vertical-align: middle;
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
 }
 .pmtx-table tbody tr:last-child td { border-bottom: none; }
-.pmtx-table tbody tr:hover { background: var(--surface-2); }
-.pmtx-table td.pmtx-col-titan { text-align: left; padding-left: 14px; }
-.pmtx-table td.pmtx-col-state { text-align: right; padding-right: 14px; }
+.pmtx-table tbody tr.pmtx-row { cursor: default; transition: background .15s; }
+.pmtx-table tbody tr.pmtx-row:not(.pmtx-row-static):hover { background: var(--surface-2); cursor: pointer; }
+.pmtx-table td.pmtx-col-titan  { text-align: left;  padding-left: 14px; }
+.pmtx-table td.pmtx-col-state  { text-align: right; padding-right: 6px; }
+.pmtx-table td.pmtx-col-prox   { text-align: right; padding-right: 8px; }
+.pmtx-table td.pmtx-col-strike { padding: 8px 4px; }
+.pmtx-table td.pmtx-col-expand { padding-right: 10px; color: var(--text-dim); }
+
+/* Row tints follow Phase 1 permit: GO (any side permitted) gets a
+   faint green wash; BLOCK (3-of-3 strikes used and no open position)
+   gets a faint red wash. Matches the mockup's tr.permit-go /
+   tr.permit-block convention. */
+.pmtx-table tbody tr.pmtx-row-permit-go {
+  background: color-mix(in srgb, var(--up)   5%, transparent);
+}
+.pmtx-table tbody tr.pmtx-row-permit-go:hover {
+  background: color-mix(in srgb, var(--up)   8%, var(--surface-2));
+}
+.pmtx-table tbody tr.pmtx-row-permit-block {
+  background: color-mix(in srgb, var(--down) 5%, transparent);
+}
+.pmtx-table tbody tr.pmtx-row-permit-block:hover {
+  background: color-mix(in srgb, var(--down) 8%, var(--surface-2));
+}
 
 .pmtx-titan {
-  display: flex; flex-direction: column; gap: 1px;
+  display: flex; align-items: center; gap: 6px;
   font-family: var(--sans);
+  /* v5.18.0 — single-line titan cell. Previous two-line layout
+     (name + meta) was deleted; State pill conveys the same info. */
 }
 .pmtx-titan-name {
   font-weight: 700; font-size: 13px;
   letter-spacing: -0.005em; color: var(--text);
 }
+/* Kept for backwards compatibility with any embedders that still
+   render a meta line; not used by the v5.18.0 main path. */
 .pmtx-titan-meta {
   font-size: 10.5px; color: var(--text-dim);
   font-family: var(--mono);
+}
+
+/* Click-to-expand chevron in the trailing column. Rotates 90° when
+   the row is expanded. */
+.pmtx-expand-chev {
+  display: inline-block;
+  font-size: 14px; line-height: 1;
+  color: var(--text-dim);
+  transition: transform .15s ease, color .15s;
+}
+.pmtx-expand-chev.pmtx-expand-empty { opacity: 0.18; }
+.pmtx-row.pmtx-row-expanded .pmtx-expand-chev {
+  transform: rotate(90deg); color: var(--text);
+}
+
+/* Expand-on-click detail row. Hidden by default; .pmtx-detail-open
+   is toggled by the delegated click handler in renderPermitMatrix. */
+.pmtx-detail-row { display: none; }
+.pmtx-detail-row.pmtx-detail-open { display: table-row; }
+.pmtx-detail-row td {
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+  padding: 12px 14px 14px 36px !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-top: 1px dashed var(--border);
+}
+.pmtx-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px 18px;
+  margin-bottom: 6px;
+}
+.pmtx-detail-stat .l {
+  color: var(--text-dim); font-size: 9.5px;
+  text-transform: uppercase; letter-spacing: 0.07em;
+  font-family: var(--sans); margin-bottom: 2px;
+}
+.pmtx-detail-stat .v {
+  font-variant-numeric: tabular-nums; font-size: 12.5px;
+  font-family: var(--mono); color: var(--text);
+}
+@media (max-width: 720px) {
+  .pmtx-detail-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Price · Distance cell — folds the retired Proximity card into a
+   compact one-row glyph: live last + thin proximity bar + % to
+   nearest OR boundary. Bar fills as price approaches (0 distance →
+   100% bar). Tints amber inside 0.5%. */
+.pmtx-prox {
+  display: inline-grid;
+  grid-template-columns: 56px 56px auto;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  text-align: right;
+  width: 100%;
+}
+.pmtx-prox-price {
+  font-size: 11.5px; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.pmtx-prox-bar {
+  position: relative; height: 4px; border-radius: 2px;
+  background: var(--surface-2); overflow: hidden;
+}
+.pmtx-prox-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--up); border-radius: 2px;
+  transition: width .25s ease;
+}
+.pmtx-prox-fill.warn { background: var(--warn); }
+.pmtx-prox-pct {
+  font-size: 10.5px; color: var(--text-dim);
+  white-space: nowrap;
+}
+.pmtx-prox-pct.pmtx-prox-warn { color: var(--warn); }
+.pmtx-prox-empty {
+  color: var(--text-dim); font-family: var(--mono); font-size: 11px;
 }
 
 /* Gate cell: ✓ pass / ✕ fail / − pending */
