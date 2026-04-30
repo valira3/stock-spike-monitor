@@ -512,6 +512,236 @@ def seed_di_buffer(ticker):
     return result
 
 
+# v5.20.5 \u2014 RTH fallback for DI seeding when premarket is too thin.
+# Alpaca IEX premarket bars are sparse (live evidence 2026-04-30: 1\u20139
+# 5m buckets across 10 tickers, threshold = 15). The premarket-only
+# seeder leaves _DI_SEED_CACHE unset for those tickers; tiger_di() then
+# has to wait ~80 minutes of pure RTH bars before it can compute,
+# which silently denies every SHORT entry on `di=None` for the entire
+# opening hour. This fallback extends the fetch window into completed
+# RTH 5m buckets so the seed can clear the threshold mid-session.
+def seed_di_buffer_with_rth_fallback(ticker):
+    """Premarket-first, then RTH-fallback DI seeder.
+
+    Calls ``seed_di_buffer(ticker)`` first. If it returns
+    ``sufficient=False`` AND we are at/past 09:30 ET, fetches Alpaca
+    IEX 1m bars from 09:30 ET up to the most recently completed 5m
+    boundary, buckets them into 5m OHLC, merges with whatever
+    premarket bars came back, and commits to ``_DI_SEED_CACHE`` only
+    when the combined count meets ``PREMARKET_DI_MIN_BARS``.
+
+    Idempotent. Safe to call repeatedly across the session.
+
+    Returns the same shape dict as ``seed_di_buffer`` plus an
+    ``rth_bars`` field for observability.
+    """
+    pre = seed_di_buffer(ticker)
+    # Defensive: if a monkey-patched / shim seed_di_buffer returns None
+    # or anything non-dict, treat as insufficient and continue. The
+    # outer recompute_di_for_unseeded loop already wraps each call in
+    # try/except, but isolating the malformed-result case here keeps
+    # the legacy contract (\"failed=N\") intact.
+    if not isinstance(pre, dict):
+        pre = {"sufficient": False, "bars_premarket": 0}
+    if pre.get("sufficient"):
+        pre["rth_bars"] = 0
+        return pre
+
+    tg = _tg()
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    rth_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    if now_et < rth_open:
+        pre["rth_bars"] = 0
+        return pre
+
+    # Last completed 5m boundary (e.g. at 10:43 ET, last completed is 10:40).
+    cutoff_minute = (now_et.minute // 5) * 5
+    rth_end = now_et.replace(minute=cutoff_minute, second=0, microsecond=0)
+    if rth_end <= rth_open:
+        pre["rth_bars"] = 0
+        return pre
+
+    client = tg._alpaca_data_client()
+    if client is None:
+        pre["rth_bars"] = 0
+        return pre
+
+    try:
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+    except Exception as e:
+        logger.debug("DI_SEED_RTH %s alpaca import failed: %s", ticker, e)
+        pre["rth_bars"] = 0
+        return pre
+
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Minute,
+            start=rth_open.astimezone(timezone.utc),
+            end=rth_end.astimezone(timezone.utc),
+            feed="iex",
+        )
+        resp = client.get_stock_bars(req)
+        data = getattr(resp, "data", {}) or {}
+        rth_rows = data.get(ticker, []) or []
+    except Exception as e:
+        logger.warning(
+            "DI_SEED_RTH %s alpaca fetch %s\u2192%s failed: %s",
+            ticker,
+            rth_open,
+            rth_end,
+            e,
+        )
+        pre["rth_bars"] = 0
+        return pre
+
+    rth_open_ts = int(rth_open.timestamp())
+    rth_end_ts = int(rth_end.timestamp())
+    rth_buckets = {}
+    for row in rth_rows:
+        ts = getattr(row, "timestamp", None)
+        if ts is None:
+            continue
+        try:
+            epoch = int(ts.timestamp())
+        except Exception:
+            continue
+        if epoch < rth_open_ts or epoch >= rth_end_ts:
+            continue
+        h = float(getattr(row, "high", 0) or 0)
+        lo = float(getattr(row, "low", 0) or 0)
+        c = float(getattr(row, "close", 0) or 0)
+        if h <= 0 or lo <= 0 or c <= 0:
+            continue
+        bucket = epoch // 300
+        if bucket not in rth_buckets:
+            rth_buckets[bucket] = {"bucket": bucket, "high": h, "low": lo, "close": c}
+        else:
+            rth_buckets[bucket]["high"] = max(rth_buckets[bucket]["high"], h)
+            rth_buckets[bucket]["low"] = min(rth_buckets[bucket]["low"], lo)
+            rth_buckets[bucket]["close"] = c
+
+    # Drop newest bucket if it could still be forming (mirrors
+    # seed_di_buffer's discipline). rth_end is already snapped to a
+    # completed 5m boundary so this is belt-and-suspenders.
+    rth_ordered = sorted(rth_buckets.keys())
+    if rth_ordered:
+        last_end_ts = (rth_ordered[-1] + 1) * 300
+        if int(now_et.timestamp()) < last_end_ts:
+            rth_ordered = rth_ordered[:-1]
+    rth_final = [rth_buckets[b] for b in rth_ordered]
+
+    # Merge with whatever premarket cache we managed to collect.
+    # seed_di_buffer didn't commit (sufficient=False), so we re-derive
+    # the premarket list by re-reading the cache (it would only be set
+    # if a prior call already passed). Here we simply trust the
+    # premarket result count from `pre` and re-run the same fetch path
+    # via Alpaca to recover the list. Cheaper alternative: rely on
+    # rth_final alone when premarket count is small.
+    combined = list(rth_final)
+    pre_n = int(pre.get("bars_premarket") or 0)
+    if pre_n > 0:
+        # Re-fetch premarket so the merged buffer has both halves.
+        try:
+            win_start = now_et.replace(
+                hour=PREMARKET_DI_WINDOW_START_HHMM[0],
+                minute=PREMARKET_DI_WINDOW_START_HHMM[1],
+                second=0,
+                microsecond=0,
+            )
+            win_end = now_et.replace(
+                hour=PREMARKET_DI_WINDOW_END_HHMM[0],
+                minute=PREMARKET_DI_WINDOW_END_HHMM[1],
+                second=0,
+                microsecond=0,
+            )
+            req2 = StockBarsRequest(
+                symbol_or_symbols=ticker,
+                timeframe=TimeFrame.Minute,
+                start=win_start.astimezone(timezone.utc),
+                end=win_end.astimezone(timezone.utc),
+                feed="iex",
+            )
+            resp2 = client.get_stock_bars(req2)
+            pdata = getattr(resp2, "data", {}) or {}
+            prows = pdata.get(ticker, []) or []
+            ws_ts = int(win_start.timestamp())
+            we_ts = int(win_end.timestamp())
+            pre_buckets = {}
+            for row in prows:
+                ts = getattr(row, "timestamp", None)
+                if ts is None:
+                    continue
+                try:
+                    epoch = int(ts.timestamp())
+                except Exception:
+                    continue
+                if epoch < ws_ts or epoch >= we_ts:
+                    continue
+                h = float(getattr(row, "high", 0) or 0)
+                lo = float(getattr(row, "low", 0) or 0)
+                c = float(getattr(row, "close", 0) or 0)
+                if h <= 0 or lo <= 0 or c <= 0:
+                    continue
+                bucket = epoch // 300
+                if bucket not in pre_buckets:
+                    pre_buckets[bucket] = {"bucket": bucket, "high": h, "low": lo, "close": c}
+                else:
+                    pre_buckets[bucket]["high"] = max(pre_buckets[bucket]["high"], h)
+                    pre_buckets[bucket]["low"] = min(pre_buckets[bucket]["low"], lo)
+                    pre_buckets[bucket]["close"] = c
+            pre_ordered = sorted(pre_buckets.keys())
+            pre_list = [pre_buckets[b] for b in pre_ordered]
+            # Merge: dedupe by bucket, premarket first then RTH.
+            seen = set()
+            merged = []
+            for b in pre_list + rth_final:
+                if b["bucket"] in seen:
+                    continue
+                seen.add(b["bucket"])
+                merged.append(b)
+            merged.sort(key=lambda x: x["bucket"])
+            combined = merged
+        except Exception as e:
+            logger.warning("DI_SEED_RTH %s premarket re-fetch failed: %s", ticker, e)
+
+    rth_count = len(rth_final)
+    combined_count = len(combined)
+    sufficient = combined_count >= PREMARKET_DI_MIN_BARS
+    di_after_seed = None
+    if sufficient:
+        tg._DI_SEED_CACHE[ticker] = combined
+        if combined_count >= tg.DI_PERIOD + 1:
+            highs = [b["high"] for b in combined]
+            lows = [b["low"] for b in combined]
+            closes = [b["close"] for b in combined]
+            try:
+                dp, _dm = tg._compute_di(highs, lows, closes)
+                di_after_seed = dp
+            except Exception:
+                di_after_seed = None
+
+    logger.info(
+        "DI_SEED_RTH ticker=%s premarket_bars=%d rth_bars=%d combined=%d "
+        "sufficient=%s di_after_seed=%s",
+        ticker,
+        pre_n,
+        rth_count,
+        combined_count,
+        "Y" if sufficient else "N",
+        ("%.2f" % di_after_seed) if di_after_seed is not None else "None",
+    )
+
+    out = dict(pre)
+    out["rth_bars"] = rth_count
+    out["sufficient"] = sufficient
+    out["di_after_seed"] = di_after_seed
+    out["window_et"] = "08:00-09:30 + RTH-09:30->%02d:%02d" % (rth_end.hour, rth_end.minute)
+    return out
+
+
 def seed_di_all(tickers):
     """Run seed_di_buffer for every ticker and emit a summary line.
 
@@ -682,14 +912,14 @@ def seed_opening_range_all(tickers):
 
 
 def recompute_di_for_unseeded(tickers):
-    """v5.20.1 \u2014 09:31 ET recompute pass.
+    """v5.20.1 \u2014 09:31 ET recompute pass (extended in v5.20.5).
 
-    Re-runs seed_di_buffer ONLY for tickers whose _DI_SEED_CACHE entry is
-    still missing or empty (i.e. premarket-only seed didn't reach the
-    \u226515 bar threshold at 09:29 ET). At 09:31 ET the seeder fetch window
-    has closed (we never read past 09:30 ET), but tiger_di() will see
-    today's freshly-arrived 5m RTH bars from the live tick path on its
-    next call \u2014 the seed itself is just one half of the merged buffer.
+    Re-runs the DI seeder ONLY for tickers whose _DI_SEED_CACHE entry is
+    still missing or empty. v5.20.5: now routes through
+    ``seed_di_buffer_with_rth_fallback`` so the recompute can actually
+    populate the cache from completed RTH 5m buckets when premarket was
+    too thin (live evidence 2026-04-30: 0/10 tickers cleared the
+    premarket threshold).
 
     Idempotent: tickers already seeded are left alone. Non-fatal: per-
     ticker exceptions are logged and skipped.
@@ -707,7 +937,7 @@ def recompute_di_for_unseeded(tickers):
             already_seeded += 1
             continue
         try:
-            seed_di_buffer(t)
+            seed_di_buffer_with_rth_fallback(t)
             recomputed += 1
         except Exception:
             logger.exception("DI_RECOMPUTE %s crashed", t)
@@ -785,6 +1015,7 @@ __all__ = [
     "recompute_qqq_regime_if_unwarm",
     "QQQ_REGIME_MIN_BARS_FOR_EMA9",
     "seed_di_buffer",
+    "seed_di_buffer_with_rth_fallback",
     "seed_di_all",
     "recompute_di_for_unseeded",
     "seed_opening_range",

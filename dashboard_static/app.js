@@ -593,7 +593,129 @@
     else if (su > 0)       { posState = "used"; posVal = su + "/3 used"; }
     else                    { posState = "idle"; posVal = "0/3 \u00b7 idle"; }
 
-    function card(chip, name, desc, state, val) {
+    // v5.20.5 \u2014 helpers to format metric rows (key/value) beneath
+    // each card state. Null-safe: missing values render as a dim dash so
+    // the row layout remains stable while the data is still warming up.
+    function _fmtNum(v, digits) {
+      if (v === null || v === undefined || (typeof v === "number" && !isFinite(v))) return null;
+      const n = Number(v);
+      if (!isFinite(n)) return null;
+      return n.toFixed(typeof digits === "number" ? digits : 2);
+    }
+    function _fmtPct(v, digits) {
+      const s = _fmtNum(v, digits);
+      return s === null ? null : (s + "%");
+    }
+    function _fmtInt(v) {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      if (!isFinite(n)) return null;
+      return String(Math.trunc(n));
+    }
+    function _metricRow(label, value) {
+      const cls = (value === null || value === undefined || value === "")
+        ? "pmtx-comp-metric-row pmtx-comp-metric-empty"
+        : "pmtx-comp-metric-row";
+      const v = (value === null || value === undefined || value === "") ? "\u2014" : value;
+      return '<div class="' + cls + '">'
+        +     '<span class="pmtx-comp-metric-key">' + escapeHtml(label) + '</span>'
+        +     '<span class="pmtx-comp-metric-val">' + escapeHtml(String(v)) + '</span>'
+        +   '</div>';
+    }
+    function _metricsHtml(rows) {
+      if (!rows || !rows.length) return "";
+      const inner = rows.map((r) => _metricRow(r[0], r[1])).join("");
+      return '<div class="pmtx-comp-metrics">' + inner + '</div>';
+    }
+
+    // Source data for new card metric rows (v5.20.5).
+    const ptv = d.ptv510 || {};
+    const ppv = d.ppv510 || {};
+    const reg = d.regimeBlock || {};
+    const sip = d.sectionIPermit || {};
+    const di = ptv.di || {};
+    const vb = ptv.vol_bucket || {};
+    const bh = ptv.boundary_hold || {};
+    const sb = ppv.sovereign_brake || {};
+    const vf = ppv.velocity_fuse || {};
+    const stk = ppv.strikes || {};
+
+    const p1Metrics = _metricsHtml([
+      ["QQQ price",    _fmtNum(reg.qqq_price, 2)],
+      ["QQQ 5m close", _fmtNum(reg.qqq_5m_close, 2)],
+      ["QQQ EMA9",     _fmtNum(reg.qqq_ema9, 2)],
+      ["QQQ AVWAP",    _fmtNum(reg.qqq_avwap, 2)],
+    ]);
+    const _bhSide = (bh.side || "").toString().toUpperCase();
+    const _bhConsec = (_bhSide === "LONG")
+      ? bh.long_consecutive_outside
+      : (_bhSide === "SHORT" ? bh.short_consecutive_outside : null);
+    const p2bMetrics = _metricsHtml([
+      ["Side",            _bhSide || null],
+      ["OR high",         _fmtNum(bh.or_high, 2)],
+      ["OR low",          _fmtNum(bh.or_low, 2)],
+      ["Last two closes", Array.isArray(bh.last_two_closes)
+        ? bh.last_two_closes.map((x) => _fmtNum(x, 2) || "\u2014").join(" / ")
+        : null],
+      ["Consec outside",  _fmtInt(_bhConsec)],
+    ]);
+    const p2vMetrics = _metricsHtml([
+      ["Current vol",  _fmtInt(vb.current_1m_vol)],
+      ["Baseline 55d", _fmtNum(vb.baseline_at_minute, 0)],
+      ["Ratio 55-bar", _fmtNum(vb.ratio_to_55bar_avg, 2)],
+      ["Days avail",   (vb.days_available !== undefined && vb.days_available !== null)
+        ? (_fmtInt(vb.days_available) + "/55")
+        : null],
+    ]);
+    const p3aMetrics = _metricsHtml([
+      ["Permit open",  (sip && typeof sip.open === "boolean")
+        ? (sip.open ? "yes" : "no")
+        : null],
+      ["QQQ aligned",  (sip && typeof sip.qqq_aligned === "boolean")
+        ? (sip.qqq_aligned ? "yes" : "no")
+        : null],
+      ["Index aligned", (sip && typeof sip.index_aligned === "boolean")
+        ? (sip.index_aligned ? "yes" : "no")
+        : null],
+    ]);
+    const p3mMetrics = _metricsHtml([
+      ["DI+ 1m",     _fmtNum(di.di_plus_1m, 2)],
+      ["DI- 1m",     _fmtNum(di.di_minus_1m, 2)],
+      ["DI+ 5m",     _fmtNum(di.di_plus_5m, 2)],
+      ["DI- 5m",     _fmtNum(di.di_minus_5m, 2)],
+      ["Threshold",  _fmtNum(di.threshold, 2)],
+      ["Seed bars",  (di.seed_bars !== undefined && di.seed_bars !== null)
+        ? (_fmtInt(di.seed_bars)
+            + (typeof di.sufficient === "boolean" ? (di.sufficient ? " (ok)" : " (low)") : ""))
+        : null],
+    ]);
+    const alAMetrics = _metricsHtml([
+      ["Unrealized",       _fmtPct(sb.unrealized_pct, 2)],
+      ["Brake threshold",  _fmtPct(sb.brake_threshold_pct, 2)],
+      ["Time in pos",      (sb.time_in_position_min !== undefined && sb.time_in_position_min !== null)
+        ? (_fmtNum(sb.time_in_position_min, 1) + " min")
+        : null],
+    ]);
+    const alBMetrics = _metricsHtml([
+      ["Last 5m move",     _fmtPct(vf.last_5m_move_pct, 3)],
+      ["Fuse threshold",   _fmtPct(vf.fuse_threshold_pct, 2)],
+    ]);
+    const stkHistory = Array.isArray(stk.strike_history) ? stk.strike_history : [];
+    const _stkLast5 = stkHistory.slice(-5).map((e) => {
+      if (!e) return "\u2014";
+      if (typeof e === "string") return e;
+      const t = e.ts || e.time || "";
+      const k = e.kind || e.event || "";
+      return (t + (k ? (" " + k) : "")).trim() || "\u2014";
+    });
+    const posMetrics = _metricsHtml([
+      ["Strikes used",  (stk.strikes_count !== undefined && stk.strikes_count !== null)
+        ? (_fmtInt(stk.strikes_count) + "/3")
+        : null],
+      ["History",       _stkLast5.length ? _stkLast5.join(" \u00b7 ") : null],
+    ]);
+
+    function card(chip, name, desc, state, val, metrics) {
       return '<div class="pmtx-comp-card pmtx-comp-' + state + '">'
         +   '<div class="pmtx-comp-head">'
         +     '<span class="pmtx-comp-chip">' + escapeHtml(chip) + '</span>'
@@ -604,20 +726,21 @@
         +     '<span class="pmtx-comp-badge">' + escapeHtml(state.toUpperCase()) + '</span>'
         +     '<span class="pmtx-comp-val">' + escapeHtml(val) + '</span>'
         +   '</div>'
+        +   (metrics || "")
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.3">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.5">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
-      +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val)
-      +     card("P2", "Boundary",    "Two consec 1m closes thru OR", p2bState, p2bVal)
-      +     card("P2", "Volume",      "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal)
-      +     card("P3", "Authority",   "5m DI\u00b1 > 25",            p3aState, p3aVal)
-      +     card("P3", "Momentum",    "5m ADX > 20",                  p3mState, p3mVal)
-      +     card("AL", "Sov. Brake",  "Per-position $ stop",          alAState, alAVal)
-      +     card("AL", "Velocity Fuse", "Per-position velocity stop", alBState, alBVal)
-      +     card("POS", "Strikes",    "Strikes used today (cap 3)",   posState, posVal)
+      +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
+      +     card("P2", "Boundary",    "Two consec 1m closes thru OR", p2bState, p2bVal, p2bMetrics)
+      +     card("P2", "Volume",      "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal, p2vMetrics)
+      +     card("P3", "Authority",   "5m DI\u00b1 > 25",            p3aState, p3aVal, p3aMetrics)
+      +     card("P3", "Momentum",    "5m ADX > 20",                  p3mState, p3mVal, p3mMetrics)
+      +     card("AL", "Sov. Brake",  "Per-position $ stop",          alAState, alAVal, alAMetrics)
+      +     card("AL", "Velocity Fuse", "Per-position velocity stop", alBState, alBVal, alBMetrics)
+      +     card("POS", "Strikes",    "Strikes used today (cap 3)",   posState, posVal, posMetrics)
       +   '</div>'
       + '</div>';
   }
@@ -784,9 +907,23 @@
     const proximityByTicker = {};
     proximity.forEach((r) => { if (r && r.ticker) proximityByTicker[r.ticker] = r; });
 
+    // v5.20.5 \u2014 expanded card metrics. /api/state now ships per-ticker
+    // and per-position v510 metric blocks (di / vol_bucket / boundary_hold
+    // / sovereign_brake / velocity_fuse / strikes); the regime block is
+    // already shipped by phase1. Pass the lookups down to _pmtxBuildRow
+    // so each card can render numeric rows beneath its state badge.
+    const perTickerV510 = (s && s.per_ticker_v510) || {};
+    const perPositionV510 = (s && s.per_position_v510) || {};
+    const regimeBlock = (s && s.regime) || {};
+    const sectionIPermit = (s && s.section_i_permit) || null;
+
     const rowsHtml = [];
     tickers.forEach((tkr) => {
-      const built = _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker, longPermit, shortPermit);
+      const built = _pmtxBuildRow(
+        tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
+        longPermit, shortPermit,
+        perTickerV510, perPositionV510, regimeBlock, sectionIPermit
+      );
       rowsHtml.push(built.tableRows);
     });
 
@@ -876,7 +1013,14 @@
     _pmtxApplyExpanded();
   }
 
-  function _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker, longPermit, shortPermit) {
+  function _pmtxBuildRow(
+    tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
+    longPermit, shortPermit,
+    perTickerV510, perPositionV510, regimeBlock, sectionIPermit
+  ) {
+    perTickerV510 = perTickerV510 || {};
+    perPositionV510 = perPositionV510 || {};
+    regimeBlock = regimeBlock || {};
     const p2 = idx.p2[tkr] || null;
     // Pick the side that has a permit; if both, prefer LONG.
     const preferSide = longPermit ? "LONG" : (shortPermit ? "SHORT" : "LONG");
@@ -1054,6 +1198,13 @@
             strikesUsed: strikesUsed,
             pos: pos,
             p4: p4,
+            // v5.20.5 \u2014 numeric metric rows surfaced beneath each card state.
+            ptv510: perTickerV510[tkr] || null,
+            ppv510: pos
+              ? (perPositionV510[tkr + ":" + (pos.side || preferSide).toUpperCase()] || null)
+              : null,
+            regimeBlock: regimeBlock,
+            sectionIPermit: sectionIPermit,
           })
         + (sentinelStripHtml || "");
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'

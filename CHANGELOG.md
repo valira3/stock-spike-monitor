@@ -4,6 +4,125 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.5 — 2026-04-30 — Volume gate WS source + DI RTH fallback + expanded card metrics
+
+### Why
+
+Live forensics on Apr 30 (post-v5.20.4 deploy) revealed two distinct
+health issues that were keeping the bot from firing trades even after
+the Boundary Hold buffer started populating:
+
+1. **Volume Bucket gate starved.** The dashboard showed `volume_feed_status: "live"`
+   and `[VOLPROFILE]` log lines confirmed the WebSocket consumer was
+   capturing real bucket volumes (e.g. NVDA 20206 @ 14:26 UTC), yet
+   every single `[V5100-VOLBUCKET]` log line read `current_vol=0`. The
+   entry gate at `broker/orders.py:347-352` was reading
+   `bars["volumes"][-2]` from Yahoo, which ships `volume=0/None` on the
+   trailing-edge bar for ~30-60s after each minute close.
+2. **DI seed insufficient for the entire opening hour.** Alpaca IEX
+   premarket data is too thin on most names (1-9 5m bars vs the
+   required 15). At 09:36 ET, 0/10 tickers had cleared the
+   `PREMARKET_DI_MIN_BARS=15` threshold; the existing
+   `recompute_di_for_unseeded` job at 09:31 ET re-ran the same
+   premarket-only seeder, which never produced more bars on its own.
+   `tiger_di()` therefore returned `None` for every gate evaluation
+   until enough RTH 5m bars accumulated organically (~10:30 ET).
+
+A third workstream was already queued: the v5.20.3 component-state
+card grid surfaced PASS/FAIL/PEND badges but no underlying numbers,
+so operators couldn't tell *how close* a gate was to passing.
+
+### Changes
+
+**Change 1 — Volume gate WS-first lookup** (`broker/orders.py`)
+
+- Extracted volume-source resolution into
+  `_resolve_last_completed_volume(tg, ticker, now_et, bars)`.
+- Precedence: WS consumer's `current_volume(ticker, previous_session_bucket(now_et))`
+  → Yahoo `volumes[-2]` → Yahoo `volumes[-1]`. WS values <= 0 are
+  treated as not-yet-captured and fall through to Yahoo.
+- Mirrors the v5.5.5 swap that engine/scan.py already applied for the
+  bar archive writer; the entry gate now uses the same source of truth.
+- Smoke-test guard added: `broker/orders.py` source must contain
+  `_ws_consumer.current_volume(`, `_resolve_last_completed_volume`,
+  and `previous_session_bucket` (mirrors smoke_test.py:3859 for v5.5.5).
+
+**Change 2 — DI seed RTH fallback** (`engine/seeders.py`, `trade_genius.py`)
+
+- New `seed_di_buffer_with_rth_fallback(ticker)` in `engine/seeders.py`
+  (line 523). Calls `seed_di_buffer(ticker)` first; if insufficient AND
+  we are at/past 09:30 ET, fetches Alpaca IEX 1m bars from 09:30 ET to
+  the most recently closed 5m boundary, buckets them into 5m OHLC,
+  merges with the premarket cache (re-fetched and deduped by bucket),
+  and commits to `_DI_SEED_CACHE` only when combined ≥ 15.
+- `recompute_di_for_unseeded` (line 951) now dispatches to the new
+  helper instead of `seed_di_buffer`.
+- New scheduler entries at 10:00 ET and 10:30 ET retry the recompute
+  for any ticker still missing a sufficient seed (in addition to the
+  existing 09:31 ET job).
+- Logs emit `DI_SEED_RTH ticker=X premarket_bars=N rth_bars=M combined=K
+  sufficient=Y/N` so the cron health check can confirm progress.
+
+**Change 3 — Dashboard expanded card metrics** (`v5_10_6_snapshot.py`,
+`dashboard_static/app.js`, `dashboard_static/app.css`)
+
+- `_per_position_v510` now ships three additional blocks per
+  `TICKER:SIDE` entry:
+  - `sovereign_brake`: `{unrealized_pct, brake_threshold_pct,
+    brake_threshold_dollars: -500.0, time_in_position_min}`
+  - `velocity_fuse`: `{last_5m_move_pct, fuse_threshold_pct: 1.0}`
+  - `strikes`: `{strikes_count, strike_history}` (history is a stub
+    list until a per-ticker event log is wired separately)
+- `_vol_bucket_per_ticker` accepts a new `prev_minute_hhmm` param so
+  the dashboard reads from the same just-closed bucket the entry gate
+  uses; new fields: `current_1m_vol`, `baseline_at_minute`,
+  `ratio_to_55bar_avg`, `days_available`, `lookup_bucket`.
+- `_boundary_hold_per_ticker` adds `long_consecutive_outside` and
+  `short_consecutive_outside` so the Boundary Hold card can show
+  progress toward the 2-of-2 trigger.
+- New `_di_per_ticker` block: `{di_plus_1m, di_minus_1m, di_plus_5m,
+  di_minus_5m, threshold, seed_bars, sufficient}`.
+- Dashboard `_pmtxComponentGrid()` now renders a key/value
+  `.pmtx-comp-metrics` stack beneath each card state badge. Eight
+  cards: P1 Weather, P2 Boundary, P2 Volume, P3 Authority, P3 Momentum,
+  AL Sov.Brake, AL Velocity Fuse, POS Strikes. Null values render as a
+  dimmed em dash so layout stays stable while data is warming up.
+- CSS: `.pmtx-comp-metric-row` is a flex key/value line; metric stack
+  is capped at 132px (≈8 rows) with overflow scroll so cards never
+  stretch unbounded.
+
+### Tests
+
+- `tests/test_v5_20_5_vol_source_orders.py` — 9 tests covering WS-vs-Yahoo
+  precedence, previous-vs-current bucket lookup, exception swallowing,
+  premarket / weekend skips, and Yahoo-only edge cases.
+- `tests/test_v5_20_5_di_seed_rth_fallback.py` — 5 tests covering the
+  before-RTH skip, RTH bars insufficient, RTH bars sufficient, the
+  idempotency short-circuit when premarket already passed, and the
+  source-level routing of `recompute_di_for_unseeded` through the new
+  helper.
+- `tests/test_v5_20_5_card_metrics.py` — 8 tests covering all metric
+  blocks present, SHORT pnl inversion, null-safety with missing data,
+  malformed entry_time, legacy field preservation, and helper-level
+  null-safety.
+- Smoke-test guards added at `smoke_test.py:3863-3892` (volume gate
+  WS check, DI seeder RTH-fallback wiring check).
+
+### Live validation (post-deploy)
+
+1. Pull recent prod logs and confirm `[V5100-VOLBUCKET]` lines now
+   show `current_vol > 0` for all tickers during RTH.
+2. After 09:35 / 10:00 / 10:30 ET retry jobs run, confirm
+   `[GATE_EVAL]` lines stop showing `di=None` for tickers whose
+   `seed_bars >= 16`.
+3. Pull `/api/state` and inspect `per_ticker_v510.<t>.di`,
+   `per_ticker_v510.<t>.vol_bucket.days_available`, and
+   `per_position_v510.<key>.sovereign_brake` blocks.
+4. Visually confirm dashboard expanded cards render the new metric
+   rows.
+
+---
+
 ## v5.20.4 \u2014 2026-04-30 \u2014 Boundary Hold close recorder fallback (Yahoo forming-bar fix)
 
 ### Why

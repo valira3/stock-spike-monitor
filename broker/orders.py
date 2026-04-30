@@ -42,6 +42,50 @@ if "trade_genius" not in _sys.modules and "__main__" in _sys.modules:
         _sys.modules["trade_genius"] = _main
 
 
+def _resolve_last_completed_volume(tg, ticker, now_et, bars):
+    """v5.20.5 \u2014 pick the volume value for the Volume Bucket gate.
+
+    Precedence (first non-zero wins):
+      1. WS consumer's IEX volume for ``previous_session_bucket(now_et)``.
+         The WS feed lags Yahoo by < 1s and reports the just-closed
+         bar's true cumulative volume immediately, whereas Yahoo's
+         intraday endpoint ships ``volume=0/None`` on the trailing-edge
+         bar for ~30-60s after each minute close.
+      2. Yahoo ``volumes[-2]`` (the last fully closed minute) when
+         non-None.
+      3. Yahoo ``volumes[-1]`` (the forming bar) as last-resort.
+
+    Any unexpected exception in the WS branch is swallowed (logged at
+    WARNING) so the entry path always falls back to Yahoo. Returns the
+    chosen integer volume (or ``None`` when both sources are empty).
+    """
+    ws_vol = None
+    try:
+        _ws_consumer = getattr(tg, "_ws_consumer", None)
+        if _ws_consumer is not None and now_et is not None:
+            from volume_profile import previous_session_bucket as _prev_bucket
+
+            _pb = _prev_bucket(now_et)
+            if _pb is not None:
+                ws_vol = _ws_consumer.current_volume(ticker, _pb)
+    except Exception as _ws_e:
+        try:
+            tg.logger.warning("[V5100-VOLBUCKET] ws-source switch %s: %s", ticker, _ws_e)
+        except Exception:
+            pass
+
+    volumes_eb = (bars or {}).get("volumes", []) or []
+    yahoo_last_completed = None
+    if len(volumes_eb) >= 2 and volumes_eb[-2] is not None:
+        yahoo_last_completed = volumes_eb[-2]
+    elif volumes_eb and volumes_eb[-1] is not None:
+        yahoo_last_completed = volumes_eb[-1]
+
+    if ws_vol is not None and ws_vol > 0:
+        return ws_vol
+    return yahoo_last_completed
+
+
 def _tg():
     """Live trade_genius module (handles __main__ vs imported cases)."""
     return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
@@ -318,13 +362,22 @@ def check_breakout(ticker, side):
         now_et_eb = tg.datetime.now(tz=ZoneInfo("America/New_York"))
         minute_of_day_hhmm = now_et_eb.strftime("%H:%M")
     except Exception:
+        now_et_eb = None
         minute_of_day_hhmm = "09:30"
-    volumes_eb = bars.get("volumes", []) or []
-    last_completed_vol = None
-    if len(volumes_eb) >= 2 and volumes_eb[-2] is not None:
-        last_completed_vol = volumes_eb[-2]
-    elif volumes_eb and volumes_eb[-1] is not None:
-        last_completed_vol = volumes_eb[-1]
+
+    # v5.20.5 \u2014 prefer the WS consumer's IEX volume for the just-closed
+    # 1m bucket. Yahoo's intraday endpoint returns volume=0/null on the
+    # trailing-edge bar for ~30-60s after each minute close, which fed
+    # every Volume Bucket gate eval a current_vol=0 (forensics 2026-04-30).
+    # v5.5.5 already applied this swap in engine/scan.py for the bar
+    # archive; this mirrors it for the entry-1 gate. The actual lookup
+    # is factored into ``_resolve_last_completed_volume`` so the unit
+    # tests can exercise the WS-vs-Yahoo precedence without spinning up
+    # the full check_breakout pipeline.
+    last_completed_vol = _resolve_last_completed_volume(
+        tg=tg, ticker=ticker, now_et=now_et_eb, bars=bars
+    )
+
     vol_check = tg.eot_glue.evaluate_volume_bucket_gate(
         ticker,
         minute_of_day_hhmm,
