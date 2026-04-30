@@ -3988,7 +3988,7 @@ def run_local() -> int:
         main_body = base[main_idx:main_end]
         assert "overflow-y: auto" not in main_body, main_body
 
-        assert 'data-pmtx-comp-grid="v5.21.1"' in (
+        assert 'data-pmtx-comp-grid="v5.22.0"' in (
             _P(__file__).parent / "dashboard_static" / "app.js"
         ).read_text(encoding="utf-8")
 

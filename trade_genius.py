@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.21.1"
+BOT_VERSION = "5.22.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,18 +102,21 @@ BOT_VERSION = "5.21.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.21.1 \u2014 SMA Stack hotfix:\n"
-    "daily-bar fetcher now uses\n"
-    "feed=iex so paper-tier\n"
-    "Alpaca returns data instead\n"
-    "of the SIP rejection that\n"
-    "made every Titan render\n"
-    "\u2018data not available\u2019.\n"
-    "Carries forward all v5.21.0\n"
-    "changes: mobile hscroll fix,\n"
-    "click-to-titan deep link,\n"
-    "vAA-1 alarm vocabulary, and\n"
-    "Daily SMA Stack panel."
+    "v5.22.0 \u2014 Side-aware position\n"
+    "cards + traffic-light alarms.\n"
+    "Authority and Momentum cards\n"
+    "now hide the irrelevant side\n"
+    "when a position is open (LONG\n"
+    "hides Short permit + DI-,\n"
+    "SHORT hides Long permit +\n"
+    "DI+). Sentinel strip alarms\n"
+    "go green when safe, yellow\n"
+    "within 25% of threshold, red\n"
+    "when triggered, gray when no\n"
+    "position. Component cards\n"
+    "tighten on \u2264480px and \u2264390px\n"
+    "phones so the expanded Titan\n"
+    "fits without scrolling."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
