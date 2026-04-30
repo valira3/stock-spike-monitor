@@ -4,6 +4,70 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.23.3 — 2026-04-30 — Extended-hours chart window + correct entry/exit markers
+
+### Why
+Operator review of the v5.23.2 chart caught two issues:
+
+1. **Window was too narrow.** The chart x-axis spanned 4am–16:00 ET
+   (premarket + RTH only). Operators want **7am–5pm CT** (= 8am–18:00 ET):
+   late premarket + RTH + early postmarket, which matches their
+   actual workflow window.
+2. **Entry markers were wrong.** Visible markers didn't match the
+   bot's actual fills ("we didn't buy that many stocks"). Root cause:
+   `_intraday_today_trades` read from `trade_log_read_tail`, which only
+   records on round-trip *closure*. OPEN positions wrote no trade-log
+   row, so they got no entry triangle. And the keys the helper looked
+   for (`entry_ts`, `exit_ts`) don't exist in the trade log either —
+   the actual keys are `entry_time` (HH:MM:SS) and `exit_time` (full
+   ISO). So even closed trades plotted at the wrong x-position.
+
+### What
+- `dashboard_server.py`:
+  - New `_intraday_fetch_alpaca_bars(ticker, day)` pulls 1m bars over
+    [08:00 ET, 18:00 ET] from Alpaca historical with `feed=DataFeed.IEX`
+    (matches the v5.21.1 SMA-stack hotfix; paper-tier compatible).
+  - `_intraday_load_today_bars` rewritten as a two-tier fetcher:
+    Alpaca historical first (covers premarket + postmarket), on-disk
+    JSONL archive as fallback (RTH only). 60s in-process cache keyed
+    by `(ticker, day)` keeps Alpaca traffic bounded.
+  - `_intraday_today_trades` rewritten to source markers from
+    `paper_state` directly:
+    - `positions[ticker]`            → open LONG entry markers
+    - `short_positions[ticker]`      → open SHORT entry markers
+    - `trade_history` (today)        → closed LONG round-trip markers
+    - `short_trade_history` (today)  → closed SHORT round-trip markers
+    Each row now carries `entry_ts` (full ISO UTC), `entry_price`,
+    `exit_ts`/`exit_price` if closed, plus `open: bool`. The
+    `entry_ts_utc` field on open positions is the precise UTC fill
+    time, so the marker lands on the exact 1m bar where the bot
+    bought.
+- `dashboard_static/app.js`:
+  - `_drawIntradayChart` X axis bumped to `[480, 1080]` (8am–18:00 ET).
+  - X-axis labels switched to operator-local CT: 7am, 8:30, 12pm,
+    3pm, 5pm.
+  - Marker placement rewritten to use `Intl.DateTimeFormat` with
+    `timeZone: "America/New_York"` for DST-safe ET conversion of UTC
+    timestamps, rather than the v5.23.0 "find nearest bar by UTC
+    minute-of-hour" heuristic which broke on hour-rollover edges.
+  - Markers outside the plot window are clamped/skipped instead of
+    drawing off-axis.
+- Tests updated to cover the new window, the Alpaca fallback path,
+  and the paper_state-sourced markers.
+
+### Risks
+Medium. The Alpaca historical fetcher is a new external dependency on
+the chart hot path — mitigated by the on-disk archive fallback (so
+offline/key-less environments still get RTH bars from the WS feed)
+and by the 60s cache (so chart-heavy operator workflows don't hammer
+the Alpaca rate-limit budget that the live scan loop also consumes).
+The paper_state read uses module globals, so the helper is
+testable without the SQLite/JSON file (existing test pattern).
+Marker placement now uses the standard `Intl` API which is supported
+in every browser the dashboard targets.
+
+---
+
 ## v5.23.2 — 2026-04-30 — Intraday chart hotfix + expanded-row reorder
 
 ### Why

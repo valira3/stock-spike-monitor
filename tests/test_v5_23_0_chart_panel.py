@@ -70,7 +70,7 @@ def _strip_py_comments(src: str) -> str:
 # 1. Version pin -------------------------------------------------------
 def test_bot_version_is_5_23_0():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.23.2"' in text, "bot_version.py must report 5.23.2"
+    assert 'BOT_VERSION = "5.23.3"' in text, "bot_version.py must report 5.23.3"
 
 
 # 2. Component grid marker --------------------------------------------
@@ -212,11 +212,17 @@ def test_backend_route_registered():
 def test_payload_shape_from_synthetic_bars(monkeypatch, tmp_path):
     # Drive the pure-function payload builder with a fake bar archive
     # under tmp_path. We mock _ssm() to return a stub module, redirect
-    # _INTRADAY_BARS_DIR to tmp_path, and verify the response keys.
+    # _INTRADAY_BARS_DIR to tmp_path, force the Alpaca fetcher to
+    # return [] so we exercise the on-disk fallback, and verify the
+    # response keys.
     sys.path.insert(0, str(REPO_ROOT))
     import importlib
 
     mod = importlib.import_module("dashboard_server")
+    # Bypass any in-process cache from previous tests / runs.
+    mod._INTRADAY_FETCH_CACHE.clear()
+    # Force Alpaca fetcher to return [] so we exercise on-disk fallback.
+    monkeypatch.setattr(mod, "_intraday_fetch_alpaca_bars", lambda t, d: [])
 
     # Build a tiny bar file: 3 bars at 09:30, 09:31, 09:32 ET.
     from datetime import datetime, timezone, timedelta
@@ -253,9 +259,14 @@ def test_payload_shape_from_synthetic_bars(monkeypatch, tmp_path):
     class _StubMod:
         or_high = {"AAPL": 105.0}
         or_low = {"AAPL": 99.0}
+        # v5.23.3: marker source switched from trade_log to paper_state.
+        positions: dict = {}
+        short_positions: dict = {}
+        trade_history: list = []
+        short_trade_history: list = []
 
-        def trade_log_read_tail(self, **kwargs):
-            return []
+        def _alpaca_data_client(self):
+            return None
 
     monkeypatch.setattr(mod, "_ssm", lambda: _StubMod())
 
@@ -281,3 +292,121 @@ def test_payload_shape_from_synthetic_bars(monkeypatch, tmp_path):
     assert first["l"] == 99.5, f"low should be populated, got {first['l']}"
     assert first["c"] == 100.2, f"close should be populated, got {first['c']}"
     assert isinstance(payload["trades"], list)
+
+
+# 7. v5.23.3 \u2014 extended-hours window + paper_state-sourced markers ---
+def test_v5_23_3_alpaca_fetcher_exists_and_uses_iex_feed():
+    """The new historical fetcher must be defined and request the IEX feed."""
+    py = DASHBOARD_PY.read_text(encoding="utf-8")
+    code = _strip_py_comments(py)
+    assert "def _intraday_fetch_alpaca_bars(" in code, (
+        "_intraday_fetch_alpaca_bars helper must exist"
+    )
+    # Locate the function body and verify it uses DataFeed.IEX (free tier).
+    start = code.find("def _intraday_fetch_alpaca_bars(")
+    body = code[start : start + 3000]
+    assert "DataFeed.IEX" in body, "_intraday_fetch_alpaca_bars must request feed=DataFeed.IEX"
+    assert "TimeFrame.Minute" in body, "fetcher must request 1m bars"
+
+
+def test_v5_23_3_load_today_bars_calls_alpaca_first():
+    """_intraday_load_today_bars must try Alpaca before the on-disk archive."""
+    py = DASHBOARD_PY.read_text(encoding="utf-8")
+    code = _strip_py_comments(py)
+    start = code.find("def _intraday_load_today_bars(")
+    assert start > 0, "_intraday_load_today_bars must exist"
+    body = code[start : start + 2000]
+    alpaca_pos = body.find("_intraday_fetch_alpaca_bars(")
+    archive_pos = body.find("load_bars(")
+    assert alpaca_pos > 0, "must call Alpaca fetcher"
+    assert archive_pos > 0, "must keep on-disk archive fallback"
+    assert alpaca_pos < archive_pos, "Alpaca fetch must precede on-disk archive fallback"
+
+
+def test_v5_23_3_today_trades_reads_paper_state():
+    """_intraday_today_trades must read paper_state globals, not trade_log."""
+    py = DASHBOARD_PY.read_text(encoding="utf-8")
+    code = _strip_py_comments(py)
+    start = code.find("def _intraday_today_trades(")
+    assert start > 0, "_intraday_today_trades must exist"
+    # Find the end of the function (next top-level def).
+    end = code.find("\ndef ", start + 1)
+    body = code[start : end if end > 0 else start + 6000]
+    # Required sources.
+    assert 'getattr(m, "positions"' in body, "must read paper_state.positions"
+    assert 'getattr(m, "short_positions"' in body, "must read paper_state.short_positions"
+    assert 'getattr(m, "trade_history"' in body, "must read paper_state.trade_history"
+    assert 'getattr(m, "short_trade_history"' in body, "must read paper_state.short_trade_history"
+    # Must NOT use the old trade_log_read_tail path.
+    assert "trade_log_read_tail" not in body, (
+        "v5.23.3 markers no longer come from trade_log_read_tail"
+    )
+
+
+def test_v5_23_3_today_trades_emits_open_flag_and_full_iso():
+    """Open positions must surface with open=True and full ISO entry_ts."""
+    sys.path.insert(0, str(REPO_ROOT))
+    import importlib
+
+    mod = importlib.import_module("dashboard_server")
+
+    class _M:
+        positions = {
+            "AAPL": {
+                "entry_price": 200.0,
+                "shares": 10,
+                "entry_ts_utc": "2026-04-30T14:35:00+00:00",
+            }
+        }
+        short_positions: dict = {}
+        trade_history: list = []
+        short_trade_history = [
+            {
+                "ticker": "NVDA",
+                "side": "short",
+                "shares": 5,
+                "entry_price": 100.0,
+                "exit_price": 99.0,
+                "pnl": 5.0,
+                "reason": "TP",
+                "entry_time_iso": "2026-04-30T15:00:00+00:00",
+                "exit_time_iso": "2026-04-30T15:30:00+00:00",
+            }
+        ]
+
+    rows = mod._intraday_today_trades(_M(), "AAPL", "2026-04-30")
+    assert len(rows) == 1
+    assert rows[0]["open"] is True
+    assert rows[0]["side"] == "LONG"
+    assert rows[0]["entry_ts"] == "2026-04-30T14:35:00+00:00"
+    assert rows[0]["entry_price"] == 200.0
+    assert rows[0]["exit_ts"] is None
+
+    nvda = mod._intraday_today_trades(_M(), "NVDA", "2026-04-30")
+    assert len(nvda) == 1
+    assert nvda[0]["open"] is False
+    assert nvda[0]["side"] == "SHORT"
+    assert nvda[0]["exit_price"] == 99.0
+    assert nvda[0]["realized_pnl"] == 5.0
+
+
+def test_v5_23_3_extended_hours_x_axis_bumped():
+    """app.js plot window must span 8am\u201318:00 ET (480\u20131080 et_min)."""
+    js = APP_JS.read_text(encoding="utf-8")
+    code = _strip_js_comments(js)
+    # New window: minutes-of-ET from 480 (8am ET = 7am CT) to 1080 (18:00 ET = 17:00 CT).
+    assert "480" in code and "1080" in code, "new x-axis bounds must appear"
+    # Old 240/960 window must not be the active plot bounds in the chart code.
+    # We allow the literals to appear in unrelated math, but the canonical
+    # `[240, 960]` pair must not survive.
+    assert "[240, 960]" not in code, "old plot window must be removed"
+
+
+def test_v5_23_3_intraday_window_constants():
+    """dashboard_server must expose 480/1080 ET-minute window constants."""
+    py = DASHBOARD_PY.read_text(encoding="utf-8")
+    code = _strip_py_comments(py)
+    assert "_INTRADAY_WINDOW_START_ET_MIN" in code, "start-ET window constant required"
+    assert "_INTRADAY_WINDOW_END_ET_MIN" in code, "end-ET window constant required"
+    assert "_INTRADAY_FETCH_CACHE" in code, "in-process cache map required"
+    assert "_INTRADAY_FETCH_TTL_S" in code, "in-process cache TTL constant required"

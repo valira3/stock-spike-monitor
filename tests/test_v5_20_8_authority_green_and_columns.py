@@ -62,7 +62,7 @@ def _strip_js_comments(src: str) -> str:
 
 def test_bot_version_is_5_20_8():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.23.2"' in text, "bot_version.py must report 5.23.2"
+    assert 'BOT_VERSION = "5.23.3"' in text, "bot_version.py must report 5.23.3"
 
 
 def test_p3a_state_uses_or_semantics_with_sip_booleans():

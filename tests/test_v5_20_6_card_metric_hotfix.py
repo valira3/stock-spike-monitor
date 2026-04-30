@@ -42,7 +42,7 @@ def test_bot_version_is_5_20_6():
     # The v5.20.6 wiring contract is still enforced by the other
     # source-grep assertions in this module.
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.23.2"' in text, "bot_version.py must report 5.23.2"
+    assert 'BOT_VERSION = "5.23.3"' in text, "bot_version.py must report 5.23.3"
 
 
 def test_weather_card_reads_section_i_permit_fields():
