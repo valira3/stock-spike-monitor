@@ -4,6 +4,86 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.25.0 — 2026-04-30 — Post-action Alpaca reconcile + enabled-exec chips
+
+### Why
+v5.24.0 made `self.positions` the per-executor source of truth, but the
+row only got written from the **signal** payload (`main_shares`, the
+stale entry price the engine emitted). If the broker filled a different
+qty (partial fill, stacking on top of a pre-existing row, IOC reject),
+the local row drifted from the authoritative book until the next reboot
+ran `_reconcile_broker_positions`. Operators noticed Val's intra-day
+dashboard qty mismatching Alpaca's account view by single-share amounts
+after rebalances. The reconcile lag also masked the rare 40410000
+"position not found" race: if an EXIT submit succeeded but Alpaca had
+already flattened the row out from under us, our local copy could
+linger past EOD.
+
+Separately, the Val/Gene executor tabs already render full state via
+`/api/executor/{name}`, but there was no at-a-glance signal on the
+shared dashboard header showing which executors were running this
+boot. Operators had to click the tabs to find out Gene was disabled
+(which is the common state — `GENE_ALPACA_PAPER_KEY` is unset on
+Railway pending dual-account funding).
+
+### What changed
+
+1. **Per-ticker post-action reconcile.**
+   `executors/base.py` gains `_reconcile_position_with_broker(ticker)`
+   which calls `client.get_open_position(ticker)` (single-symbol, fast
+   — distinct from the boot-time `get_all_positions` full pull) and
+   either overwrites `self.positions[ticker]` qty/entry_price from the
+   broker, drops the local row on 40410000, or leaves state untouched
+   on any other API error. `_on_signal` calls it after every
+   successful `ENTRY_LONG` / `ENTRY_SHORT` / `EXIT_LONG` / `EXIT_SHORT`
+   submit. `EOD_CLOSE_ALL` additionally re-runs the boot-style full
+   sweep (`_reconcile_broker_positions`) after `close_all_positions`,
+   so any laggard fill or stale local row gets cleaned up against the
+   now-flat broker book. Telegram silent — the calling ENTRY/EXIT path
+   already sent its own confirmation.
+
+2. **`executors_status` on `/api/state`.**
+   `dashboard_server._executors_status_snapshot(m)` returns
+   `{val: {enabled, mode}, gene: {enabled, mode}}`. "Enabled" mirrors
+   the bootstrap contract: an executor is enabled iff its bootstrap
+   returned a non-None instance, which means `<PREFIX>_ENABLED` was
+   truthy AND `<PREFIX>_ALPACA_PAPER_KEY` was set.
+
+3. **Header chips on the dashboard.**
+   `dashboard_static/index.html` adds a small chip group right after
+   the version pill: `Val ✓ / Gene —`. Lit chip = running this boot;
+   dim chip = bootstrap returned None. Title surfaces the executor's
+   mode (`paper` / `live`) for quick triage. `app.js renderHeader()`
+   binds the chips to `state.executors_status` on every poll.
+
+### Tests
+New file `tests/test_v5_25_0_post_action_reconcile.py` (13 tests):
+- `_reconcile_position_with_broker` overwrites qty/entry, drops row on
+  40410000, leaves state untouched on other errors, grafts an
+  untracked broker row when local is empty.
+- `_on_signal` calls the helper after `ENTRY_LONG`, `ENTRY_SHORT`,
+  `EXIT_LONG`. The `EXIT_LONG` post-reconcile drops the local row even
+  when the close raced and returned 40410000.
+- `EOD_CLOSE_ALL` runs the full `get_all_positions` sweep.
+- `_executors_status_snapshot` handles both-enabled, gene-disabled, and
+  attrs-missing cases. Full `snapshot()` exposes `executors_status`.
+
+### Files touched
+- `executors/base.py` — new helper `_reconcile_position_with_broker`,
+  wired into all four ENTRY/EXIT branches and EOD_CLOSE_ALL.
+- `dashboard_server.py` — new `_executors_status_snapshot(m)` plus the
+  `executors_status` key in `snapshot()` output.
+- `dashboard_static/index.html` — `<span id="tg-exec-chips">` group.
+- `dashboard_static/app.js` — chip render block in `renderHeader(s)`.
+- `bot_version.py`, `trade_genius.py` — bumped to `5.25.0`,
+  `CURRENT_MAIN_NOTE` rewritten.
+- `tests/test_v5_25_0_post_action_reconcile.py` — new (13 tests).
+- Version-pin tests bumped to `5.25.`:
+  `test_v5_20_6/7/8/9_*.py`, `test_v5_22_0_*.py`, `test_v5_23_0_*.py`,
+  `test_v5_24_0_*.py`, `test_startup_smoke.py`.
+
+---
+
 ## v5.24.0 — 2026-04-30 — Per-executor position tracking + qty fan-out + EOD dedupe
 
 ### Why

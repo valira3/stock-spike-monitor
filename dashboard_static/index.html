@@ -33,6 +33,15 @@
   </svg>
   <span style="font-weight:600;font-size:13.5px;letter-spacing:-0.005em;color:#e7ecf3">TradeGenius</span>
   <span id="tg-brand-ver" title="Bot version currently running on the server" style="font-size:10.5px;color:#5b6572;margin-left:4px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">v…</span>
+  <!-- v5.25.0 — Enabled-executor chips. Reads /api/state.executors_status
+       and renders one chip per executor (Val, Gene). Lit chip = running
+       this boot; dim chip = bootstrap returned None (missing PAPER_KEY
+       or *_ENABLED=0). Title surfaces the executor's mode for quick
+       triage without opening the per-executor tab. -->
+  <span id="tg-exec-chips" style="display:inline-flex;gap:4px;margin-left:6px;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:10px" aria-label="Enabled executors">
+    <span id="tg-exec-chip-val" class="tg-exec-chip tg-exec-off" title="Val executor — status loading" style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:999px;background:#10151c;border:1px solid #1f2937;color:#5b6572">Val <span class="tg-exec-mark">—</span></span>
+    <span id="tg-exec-chip-gene" class="tg-exec-chip tg-exec-off" title="Gene executor — status loading" style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:999px;background:#10151c;border:1px solid #1f2937;color:#5b6572">Gene <span class="tg-exec-mark">—</span></span>
+  </span>
   <span id="tg-live-pill" title="Live status — pulsing dot means /api/state is responding; countdown shows seconds until next scan" style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
     <span id="h-pulse" title="Heartbeat — pulses on every /api/state poll" style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block" class="pulse"></span>
     <span style="color:#e7ecf3">LIVE</span>

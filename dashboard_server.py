@@ -690,6 +690,39 @@ def _cached_snapshot() -> dict[str, Any]:
 # (Shadow strategy panel retired).
 
 
+def _executors_status_snapshot(m) -> dict:
+    """v5.25.0 \u2014 small per-executor enabled/mode block for /api/state.
+
+    Returns ``{"val": {"enabled": bool, "mode": str|None},
+    "gene": {...}}``. Used by the dashboard header chips so an
+    operator can see at a glance which Alpaca executors are wired
+    up. Never raises \u2014 any attribute lookup error degrades to
+    ``enabled=False, mode=None``.
+
+    "enabled" mirrors the bootstrap contract: an executor is
+    "enabled" iff its bootstrap returned a non-None instance, which
+    means ``<PREFIX>_ENABLED`` was truthy AND
+    ``<PREFIX>_ALPACA_PAPER_KEY`` was set. A None instance means
+    either the operator turned the executor off or the keys are
+    missing on Railway \u2014 both render as a dimmed chip.
+    """
+    out: dict = {}
+    for name, attr in (("val", "val_executor"), ("gene", "gene_executor")):
+        try:
+            inst = getattr(m, attr, None)
+        except Exception:
+            inst = None
+        if inst is None:
+            out[name] = {"enabled": False, "mode": None}
+            continue
+        try:
+            mode = str(getattr(inst, "mode", "") or "") or None
+        except Exception:
+            mode = None
+        out[name] = {"enabled": True, "mode": mode}
+    return out
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -910,6 +943,14 @@ def snapshot() -> dict[str, Any]:
             # the Legacy Exits flag entirely (legacy paths removed).
             #
             "feature_flags": feature_flags_block,
+            # v5.25.0 \u2014 enabled-exec chips for the dashboard header.
+            # Reports which Alpaca-backed executors are wired up at boot.
+            # Each entry: {enabled: bool, mode: str|None}. Disabled means
+            # the executor's bootstrap returned None (missing PAPER_KEY,
+            # explicit *_ENABLED=0, or build failure). Front-end renders
+            # \u2713 / \u2014 chips next to the version pill so an operator
+            # sees executor coverage at a glance without switching tabs.
+            "executors_status": _executors_status_snapshot(m),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)

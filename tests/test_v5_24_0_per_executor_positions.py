@@ -60,7 +60,7 @@ class _SideCfg:
 
 class _StubTG:
     BOT_NAME = "TradeGenius"
-    BOT_VERSION = "5.24.0"
+    BOT_VERSION = "5.25.0"
     TRADE_HISTORY_MAX = 1000
     REASON_LABELS: dict = {}
 
