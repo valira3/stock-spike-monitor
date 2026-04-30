@@ -1,12 +1,14 @@
-"""v5.19.4 \u2014 Permit Matrix headers correlate to Tiger Sovereign vAA-1 spec.
+"""v5.20.0 \u2014 Permit Matrix headers correlate to Tiger Sovereign v15.0 spec.
 
-Spec source of truth: ``tiger_sovereign_spec_vAA-1.md`` (rule IDs
-``L-P2-S3``, ``L-P2-S4``, ``L-P3-AUTH``, ``STRIKE-CAP-3``, etc.).
+Spec source of truth: ``tiger_sovereign-spec-v15-1.md`` (\u00a71 strikes,
+\u00a72/\u00a73 long/short permits, \u00a74 risk/timing).
 
-Prior to v5.19.4 the column tooltips referred to internal naming
-(\"Phase 2 PASS/FAIL/COLD/OFF\", \"Entry 1 trigger\", \"Volume Bucket gate\")
-that didn't match the spec wording. v5.19.4 rewrites the tooltips to
-quote the spec line for line and cite the rule IDs.
+Prior to v5.19.4 the tooltips referred to internal naming. v5.19.4
+quoted the spec line for line and cited rule IDs (``L-P2-S3``,
+``STRIKE-CAP-3``, etc.). v5.20.0 supersedes that wording: rule IDs
+were retired (the Tiger Sovereign v15.0 spec dropped the per-rule ID
+hierarchy and re-indexed by section number) and the tooltips now
+quote v15.0 directly. These tests pin the v15.0 wording.
 
 These tests are string-level audits of ``dashboard_static/app.js``.
 """
@@ -22,47 +24,61 @@ def _read() -> str:
     return APP_JS.read_text(encoding="utf-8")
 
 
-def test_orb_header_and_tooltip_cite_l_p2_s4():
+def test_orb_header_and_tooltip_cite_v15_section():
     src = _read()
     # Header text trimmed: \"5m ORB\" -> \"ORB\".
     assert ">ORB</th>" in src
-    # Tooltip cites the rule ID and the 09:35:59 ET freeze.
-    assert "L-P2-S4 / S-P2-S4" in src
+    # Tooltip cites Tiger Sovereign v15.0 \u00a72/\u00a73 (no rule IDs).
+    assert "Tiger Sovereign v15.0" in src
     assert "09:35:59 ET" in src
-    assert "Two consecutive 1m candles" in src
+    assert "two consecutive 1m closes" in src
+    # Strike sequence is explicit: S1 hunts ORH/ORL, S2/S3 hunt NHOD/NLOD.
+    assert "ORH" in src and "ORL" in src
+    assert "NHOD" in src and "NLOD" in src
 
 
-def test_trend_column_marked_as_proxy_not_spec_gate():
+def test_trend_column_marked_as_primary_spec_gate():
+    """v15.0 \u2014 5m ADX>20 is now a PRIMARY spec gate (was a proxy in
+    v5.19.4). The tooltip must reflect the upgrade."""
     src = _read()
-    # Header changed: \"ADX>20\" -> \"Trend\". The column stays for visual
-    # parity but the tooltip is honest.
+    # Header stays "Trend" for visual parity with the matrix layout.
     assert ">Trend</th>" in src
-    assert "not a primary spec gate" in src
+    # v15.0: ADX>20 is a primary entry gate, not a proxy.
+    assert "5m ADX > 20" in src
+    assert "primary spec gate" in src
 
 
 def test_p3_auth_master_anchor_tooltip():
     src = _read()
     # Header trimmed: \"DI\u00b1 5m>25\" -> \"5m DI\u00b1\".
     assert ">5m DI\\u00b1</th>" in src
-    # Tooltip cites the rule IDs and the strict \"if FALSE \u2192 no entry\"
-    # semantics.
-    assert "L-P3-AUTH / S-P3-AUTH" in src
-    assert "Phase 3 master anchor" in src
+    # v15.0 \u00a72/\u00a73: 5m DI\u00b1 > 25 is the Phase 3 authority check;
+    # 1m DI\u00b1 drives sizing.
+    assert "5m DI+ > 25" in src
+    assert "Phase 3 authority" in src
+    # Sizing band: 1m DI\u00b1 > 30 = Full, 25\u201330 = Scaled.
+    assert "Full Strike" in src
+    assert "Scaled Strike" in src
 
 
-def test_volume_gate_tooltip_cites_l_p2_s3():
+def test_volume_gate_tooltip_cites_55bar_average_and_10am_threshold():
     src = _read()
-    assert "L-P2-S3 / S-P2-S3" in src
-    # Time-conditional: auto-pass before 10:00 ET, then 1.0\u00d7 rolling
-    # 55-bar same-minute average.
-    assert "Auto-passes before 10:00 ET" in src
-    assert "55-bar same-minute average" in src
+    # v15.0: 1m volume \u2265 100% of 55-bar rolling average. Required
+    # after 10:00 ET; auto-passes before 10:00 ET.
+    assert "55-bar rolling average" in src
+    assert "10:00" in src and "ET" in src
+    # \"Required after 10:00\" + \"auto-passes\" / \"before 10:00\" wording.
+    assert "auto-passes" in src.lower() or "auto-pass" in src.lower()
 
 
-def test_strikes_tooltip_cites_strike_cap_3_and_flat_gate():
+def test_strikes_tooltip_cites_3_per_day_cap_and_sequential():
     src = _read()
-    assert "STRIKE-CAP-3" in src
-    assert "STRIKE-FLAT-GATE" in src
+    # v15.0 \u00a71: max 3 Strikes per ticker per day.
+    assert "Maximum 3 Strikes" in src
+    assert "per ticker per day" in src
+    # Sequential Requirement \u2014 spec verbatim phrase.
+    assert "Sequential Requirement" in src
+    # Daily reset boundary.
     assert "09:30:00 ET" in src
 
 

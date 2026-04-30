@@ -525,7 +525,7 @@ def test_SHARED_EOD():
 
 
 def test_SHARED_HUNT():
-    """SHARED-HUNT: Unlimited hunting until the 15:44:59 cutoff."""
+    """SHARED-HUNT: v15.0 entry window is 09:36:00\u201315:44:59 EST."""
     from engine.timing import (
         HUNT_START_ET,
         HUNT_END_ET,
@@ -533,7 +533,10 @@ def test_SHARED_HUNT():
         is_in_hunt_window,
     )
 
-    assert HUNT_START_ET == time(9, 35, 0)
+    # v15.0 \u00a74 (Shared Rules): "Entry Window: 09:36:00 to 15:44:59
+    # EST." Pre-v5.20.0 the start was 09:35:00; v15.0 pushes it one
+    # minute later because ORH/ORL freeze at 09:35:59.
+    assert HUNT_START_ET == time(9, 36, 0)
     assert HUNT_END_ET == NEW_POSITION_CUTOFF_ET == time(15, 44, 59)
 
     in_window = datetime(2026, 4, 28, 12, 0, 0, tzinfo=ET)

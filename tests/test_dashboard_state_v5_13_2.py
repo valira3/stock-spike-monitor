@@ -183,15 +183,26 @@ def test_build_tiger_sovereign_snapshot_with_positions():
 
 
 def test_build_tiger_sovereign_snapshot_volume_gate_off_flag(monkeypatch):
-    """When VOLUME_GATE_ENABLED is False, phase2 vol_gate_status must
-    be \"OFF\" (operator-override visibility).
+    """When VOLUME_GATE_ENABLED is False (operator override), phase2
+    vol_gate_status must be \"OFF\" so operators can see the override.
+
+    v5.20.0: production default is now True (v15.0 spec primary permit).
+    Setting VOLUME_GATE_ENABLED=0 explicitly forces the gate OFF; this
+    test pins the off-flag wiring through that explicit override.
     """
     sys.path.insert(0, str(REPO_ROOT))
-    monkeypatch.delenv("VOLUME_GATE_ENABLED", raising=False)
+    monkeypatch.setenv("VOLUME_GATE_ENABLED", "0")
     # Reload feature_flags so the module-level constant picks up the
-    # absence of the env var.
+    # patched env var. We must drop both the sys.modules entry AND the
+    # parent package's cached attribute, otherwise ``from engine import
+    # feature_flags`` resolves through the still-bound attribute on the
+    # parent ``engine`` package and returns the previously-loaded module.
     if "engine.feature_flags" in sys.modules:
         del sys.modules["engine.feature_flags"]
+    import engine as _engine_pkg  # noqa: F401
+
+    if hasattr(_engine_pkg, "feature_flags"):
+        delattr(_engine_pkg, "feature_flags")
     if "v5_13_2_snapshot" in sys.modules:
         del sys.modules["v5_13_2_snapshot"]
     import v5_13_2_snapshot as ts

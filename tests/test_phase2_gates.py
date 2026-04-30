@@ -140,14 +140,37 @@ def test_volume_gate_disabled_by_default_auto_passes_zero_volume(
     assert ratio is None
 
 
-def test_volume_gate_default_module_constant_is_false():
-    """Pin the production default — when the env var is unset at import
-    time, the constant must resolve to False."""
-    from engine import feature_flags as ff
-    import os
+def test_volume_gate_default_module_constant_is_true(monkeypatch):
+    """v15.0 SPEC pin: with the env var unset at import time, the
+    VOLUME_GATE_ENABLED constant must resolve to True (gate ON).
 
-    if "VOLUME_GATE_ENABLED" not in os.environ:
-        assert ff.VOLUME_GATE_ENABLED is False
+    Tiger Sovereign v15.0 \u00a72/\u00a73 require the volume gate as a
+    primary Phase-2 permit (1m volume >= 100% of 55-bar avg, REQUIRED
+    after 10:00 AM). Production default is therefore ON; only an
+    explicit operator override (VOLUME_GATE_ENABLED=0 / false) disables
+    the gate. This guards against a silent regression flipping the
+    default back to the pre-v5.20.0 OFF state.
+    """
+    import os
+    import sys
+
+    monkeypatch.delenv("VOLUME_GATE_ENABLED", raising=False)
+    # Force a clean reload so any earlier sibling tests that
+    # monkeypatched the env var and reloaded the module do not leak
+    # their (False) constant into this test. We must clear both the
+    # sys.modules entry AND the parent package attribute (Python keeps
+    # the bound attribute on the parent and ``from engine import
+    # feature_flags`` resolves through that, ignoring sys.modules).
+    if "engine.feature_flags" in sys.modules:
+        del sys.modules["engine.feature_flags"]
+    import engine as _engine_pkg  # noqa: F401
+
+    if hasattr(_engine_pkg, "feature_flags"):
+        delattr(_engine_pkg, "feature_flags")
+    from engine import feature_flags as ff
+
+    assert "VOLUME_GATE_ENABLED" not in os.environ
+    assert ff.VOLUME_GATE_ENABLED is True
 
 
 def test_two_consecutive_gate_unaffected_by_volume_flag_off(volume_gate_off, or_high_aapl):

@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.19.4"
+BOT_VERSION = "5.20.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,13 +102,16 @@ BOT_VERSION = "5.19.4"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.19.4 \u2014 Permit Matrix rows\n"
-    "now stay expanded across data\n"
-    "refreshes; clicking outside\n"
-    "collapses. Open positions\n"
-    "panel sits above Weather Check\n"
-    "now. Column tooltips cite the\n"
-    "Tiger Sovereign spec rule IDs."
+    "v5.20.0 \u2014 Tiger Sovereign\n"
+    "v15.0 spec conformance.\n"
+    "Entry window 09:36\u201315:44:59.\n"
+    "Strikes 2/3 hunt NHOD/NLOD.\n"
+    "5m ADX>20 momentum gate.\n"
+    "Alarm E pre-filter blocks\n"
+    "S2/S3 on divergence. Volume\n"
+    "gate ON by default. Strike\n"
+    "cap 3/day. Val/Gene panels\n"
+    "reorder Open above Weather."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1164,7 +1167,10 @@ def _fill_metrics_for_ticker(ticker: str) -> dict:
         "errors": [],
     }
     now_et = _now_et()
-    or_window_end = now_et.replace(hour=9, minute=35,
+    # v15.0 SPEC: ORH/ORL freeze at exactly 09:35:59 ET. The OR window
+    # is open through 09:35:59 inclusive; bars whose close timestamp is
+    # strictly less than 09:36:00 belong to the OR window.
+    or_window_end = now_et.replace(hour=9, minute=36,
                                    second=0, microsecond=0)
     past_or_window = now_et >= or_window_end
 
@@ -4314,8 +4320,12 @@ def collect_or():
         return
 
     logger.info("Collecting Opening Range for %s ...", today)
+    # v15.0 SPEC: ORH/ORL fixed at exactly 09:35:59 ET. The OR window is
+    # the inclusive minute range 09:30:00..09:35:59, which is the half-open
+    # bar range [09:30:00, 09:36:00) so the 09:35 candle (open 09:35:00,
+    # close 09:35:59) is INCLUDED in the OR aggregation.
     market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-    or_end = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+    or_end = now_et.replace(hour=9, minute=36, second=0, microsecond=0)
     open_ts = int(market_open.timestamp())
     end_ts = int(or_end.timestamp())
 
@@ -4326,7 +4336,8 @@ def collect_or():
                 logger.warning("OR: No bars for %s", ticker)
                 continue
 
-            # Filter bars in [09:30, 09:35) window
+            # v15.0 SPEC: filter bars in [09:30, 09:36) \u2014 includes the
+            # 09:35 candle so ORH/ORL freeze at 09:35:59.
             max_high = None
             min_low = None
             for i, ts in enumerate(bars["timestamps"]):

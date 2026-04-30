@@ -864,6 +864,61 @@
   .pmtx-detail-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* v5.20.0 — Tiger Sovereign v15.0 spec definitions block. Lives inside
+   the expanded permit-matrix detail row, immediately below the stats
+   grid. Each <dt>/<dd> pair is one gate, formatted as a compact
+   two-column definition list at desktop widths and stacked at narrow
+   widths. */
+.pmtx-spec-defs {
+  margin: 10px 0 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.pmtx-spec-defs-head {
+  font-family: var(--sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.pmtx-spec-defs-list {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) 1fr;
+  column-gap: 16px;
+  row-gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+.pmtx-spec-defs-list dt {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+.pmtx-spec-defs-list dd {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.45;
+}
+.pmtx-spec-defs-list dd strong {
+  color: var(--text);
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .pmtx-spec-defs-list {
+    grid-template-columns: 1fr;
+    row-gap: 2px;
+  }
+  .pmtx-spec-defs-list dt { margin-top: 6px; }
+  .pmtx-spec-defs-list dt:first-child { margin-top: 0; }
+}
+
 /* Price · Distance cell — folds the retired Proximity card into a
    compact one-row glyph: live last + thin proximity bar + % to
    nearest OR boundary. Bar fills as price approaches (0 distance →
