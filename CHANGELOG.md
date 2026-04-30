@@ -4,6 +4,111 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.1 \u2014 2026-04-30 \u2014 Premarket-only DI seed + 09:31 ET recompute
+
+### Why
+
+v5.20.0 inherited a DI 5m seeder that pulled prior-day 14:50\u219216:00 ET
+bars (14 5m buckets) as a tail seed when premarket bars were
+unavailable. This produced two distinct failure modes:
+
+1. **`di_after_seed=None` for every ticker on a fresh boot** \u2014 the
+   prior-day fetch yields 14 buckets but `tiger_di()` requires \u226516
+   (`DI_PERIOD + 1`), so DI returned None until today's RTH bars
+   accumulated to lift the merged buffer over the threshold.
+2. **Stale momentum in the seed** \u2014 yesterday's late-session DI
+   contributed to today's first calculation, biasing the very first
+   entry decisions toward yesterday's regime.
+
+The operator directive (`val@ 2026-04-30`): "The 15 bars in question
+for DI should be collected from premarket. If missing, recompute at
+the time of market entry \u2014 09:31 ET."
+
+### What changed
+
+#### `engine/seeders.py.seed_di_buffer` \u2014 premarket-only window
+
+- **Fetch window**: 08:00\u219209:30 ET (last 90 minutes before the open).
+  Yields up to 18\u00d7 5m buckets when premarket is liquid \u2014 3 bars of
+  headroom above the `PREMARKET_DI_MIN_BARS = 15` threshold.
+- **Removed**: prior-day 14:50\u219216:00 ET tail-seed code path. No
+  cross-session contamination of DI.
+- **Removed**: today's RTH fetch path inside the seeder. The seeder
+  is now strictly a premarket primer; once 09:30 ET passes, today's
+  5m RTH buckets arrive via the live tick feed and `tiger_di()` merges
+  them with the seed at read time.
+- **Conditional cache write**: `_DI_SEED_CACHE[ticker]` is only set
+  when premarket yielded \u226515 bars. Insufficient runs leave the cache
+  unset so a later recompute (or live RTH bars) can supersede cleanly
+  without partial-buffer interference.
+- **New return-key**: `sufficient: bool` \u2014 truthy iff \u226515 bars
+  cached. The legacy keys `bars_today_rth` and `bars_prior_day` are
+  removed (always 0/0 in the new design); `bars_premarket` is the
+  only count that matters. `seed_di_all` summary line now reports
+  `seeded_with_sufficient_premarket=N insufficient=N` instead of
+  `seeded_with_nonnull_di=N skipped=N`.
+- **New log line shape**:
+  `DI_SEED ticker=X window_et=08:00-09:30 bars_premarket=N
+  sufficient=Y/N di_after_seed=...`
+
+#### `engine/seeders.py.recompute_di_for_unseeded` (new)
+
+- Iterates the trade ticker list and re-runs `seed_di_buffer` ONLY for
+  tickers whose `_DI_SEED_CACHE` entry is missing or has <15 bars.
+- Idempotent for already-seeded tickers; non-fatal on per-ticker errors.
+- Emits `[DI-RECOMPUTE-0931]` summary line with
+  `recomputed=N already_seeded=N failed=N`.
+
+#### `trade_genius.py.di_recompute_0931` (new)
+
+- Wrapper called by the scheduler at 09:31 ET. Hands off to
+  `recompute_di_for_unseeded(TRADE_TICKERS)` and swallows any orchestration
+  exception with a logged traceback.
+
+#### Scheduler JOBS table
+
+- **09:31 ET row** now fires both the system-test ping (`_fire_system_test("8:31 CT")`)
+  AND the DI recompute job. The system test fires synchronously; the
+  recompute runs on a daemon thread so it cannot delay the test.
+- The previous 09:31 single-handler row was unsafe to duplicate \u2014 the
+  scheduler builds `job_key = fire_key + day + hhmm` so two rows with
+  the same `(day, hhmm)` would deduplicate via the `fired_set` SQLite
+  table. Combining into one lambda preserves the existing fired-set
+  semantics.
+
+#### Constants exposed by `engine.seeders`
+
+- `PREMARKET_DI_WINDOW_START_HHMM = (8, 0)`
+- `PREMARKET_DI_WINDOW_END_HHMM = (9, 30)`
+- `PREMARKET_DI_MIN_BARS = 15` \u2014 must equal `trade_genius.DI_PERIOD`
+
+### Operator-visible behavior
+
+- Liquid premarket day: DI armed at 09:29 ET (premarket_recalc tick).
+  First entry at 09:36 ET sees a fully-seeded buffer.
+- Illiquid premarket day: DI seed insufficient. 09:31 ET recompute
+  re-tries; usually still insufficient on its own. `tiger_di()` adds
+  today's 5m RTH bars as they close, so DI typically arms by ~09:35\u201309:40 ET.
+  Phase 3 entry path correctly fails closed on `5m DI > 25` when DI
+  is None, so no bad trades fire during warmup.
+- DI no longer contaminated by yesterday's late-session momentum.
+
+### Files
+
+- `engine/seeders.py` \u2014 rewrite of `seed_di_buffer`, new
+  `recompute_di_for_unseeded`, new constants, updated `seed_di_all`
+  summary message.
+- `engine/__init__.py` \u2014 export `recompute_di_for_unseeded`.
+- `trade_genius.py` \u2014 new `di_recompute_0931`; scheduler 09:31 row
+  combined with system-test fire; import of new seeder symbol;
+  `BOT_VERSION = "5.20.1"`; `CURRENT_MAIN_NOTE` updated.
+- `bot_version.py` \u2014 `BOT_VERSION = "5.20.1"`.
+- `tests/test_di_seed_premarket_only.py` \u2014 new file: premarket-window
+  bucket math, conditional cache write, recompute idempotency, 09:31
+  scheduler-row presence.
+
+---
+
 ## v5.20.0 \u2014 2026-04-30 \u2014 Tiger Sovereign v15.0 spec conformance (engine + UI)
 
 ### Why
