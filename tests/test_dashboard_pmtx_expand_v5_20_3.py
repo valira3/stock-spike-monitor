@@ -89,7 +89,7 @@ def test_grid_emits_eight_components():
     for desc in (
         '"QQQ regime + AVWAP"',
         '"Two consec 1m closes thru OR"',
-        '"5m DI\\u00b1 > 25"',
+        '"Permit & QQQ alignment"',
         '"5m ADX > 20"',
         '"Per-position $ stop"',
         '"Per-position velocity stop"',

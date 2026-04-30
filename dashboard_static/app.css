@@ -43,14 +43,19 @@
   .num, .mono, code, kbd, pre, table td, table th { font-variant-numeric: tabular-nums lining-nums; }
   .mono, code, kbd { font-family: var(--mono); }
 
+  /* v5.20.7 — single-scroll architecture. Earlier desktop layout used
+     display:grid + height:100dvh on .app and overflow-y:auto on .main
+     to pin the header in an `auto` row while the rest scrolled inside
+     a `1fr` row. With sticky-header behavior gone the dual containers
+     produced a double-scrollbar feel (mouse wheel and trackpad both
+     hit the inner container first). The mobile breakpoint already
+     used display:block + overflow:visible; promoting that universally
+     gives the whole page a single, natural scroll. */
   .app {
-    display: grid;
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-    height: 100dvh;
+    display: block;
+    height: auto;
   }
   .main {
-    overflow-y: auto; overscroll-behavior: contain;
     padding: 18px 20px 32px;
     display: flex; flex-direction: column; gap: 18px;
     /* v3.4.30 — critical for mobile: let grid/flex descendants shrink
@@ -296,21 +301,16 @@
 
   /* Tablet (≤900px): page scrolls naturally; header wraps */
   @media (max-width: 900px) {
+    /* v5.20.7 — base .app/.main are now display:block + page-level scroll
+       at every viewport. The phone overrides retain only padding/gap +
+       explicit display:block/overflow:visible as a defensive backstop in
+       case a future rule re-introduces the desktop grid scroll container. */
     .app {
-      /* v4.10.1 — drop the desktop grid layout on phones. Desktop wants
-         display:grid + height:100dvh so .main owns the scroll container.
-         On mobile we want the page itself to scroll, so collapse .app to
-         block layout: that kills the `1fr` ghost row and the 100dvh
-         clamp that together swallowed Today's Trades / Observer / Log
-         Tail below the proximity panel on 390×844. */
       display: block;
       height: auto;
     }
     .h-brand { padding-right: 10px; }
     .h-brand-name { font-size: 12.5px; }
-    /* v4.10.1 — release .main from the desktop scroll container; the
-       page body owns scroll on mobile now (html/body overflow defaults
-       to visible). Keeps flex-column gap so sections still space cleanly. */
     .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; height: auto; }
     .kpi-row { grid-template-columns: repeat(3, 1fr); gap: 10px; }
     /* v5.17.0 — 4-up KPI row collapses to 2x2 at tablet width to keep
