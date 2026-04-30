@@ -4,6 +4,87 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.23.0 — 2026-04-30 — Click-scroll fix + intraday chart panel + Last signal removal
+
+### Why
+Three operator-friction items left over from v5.22.0 review:
+
+1. **Click-scroll regression** — clicking a position chip on the Main
+   tab no longer scrolled to the matching Titan in the Permit Matrix.
+   The handler queried `[data-f="pmtx-body"]`, but Main's matrix body
+   uses `id="pmtx-body"` (no `data-f`); only Val/Gene panels carry the
+   `data-f` attribute. The deep-link broke as soon as the user was on
+   Main, which is the default tab.
+2. **Last signal card was dead surface** — backed by an in-memory
+   `last_signal` global that resets on every redeploy. The card showed
+   `null` even when 4 positions were open. The information is already
+   carried (with full history) in `Today's trades`, so the panel was
+   net negative: it consumed a grid-2 cell and signalled nothing.
+3. **No intraday chart inside the expanded Titan card** — operators
+   wanted to see today's price action, OR boundaries, AVWAP, and 5m
+   EMA9 alongside the component-state cards and the SMA stack without
+   leaving the dashboard.
+
+### What
+- `dashboard_static/app.js`:
+  - Position-row click handler at `_posRowClick` now resolves the
+    Permit Matrix body in three steps: `getElementById("pmtx-body")`
+    first (Main), then the active tab panel's `[data-f="pmtx-body"]`
+    (Val/Gene), then any `[data-f="pmtx-body"]` in the document. The
+    Main path no longer falls through to a hidden Val/Gene panel.
+  - `renderLastSignal` function deleted; its call inside `renderAll`
+    removed. The `applyExecData` Last-signal block (Val/Gene) and the
+    `execSkeleton` HTML for the `last-sig-*` `data-f` hooks are also
+    removed.
+  - New `_pmtxIntradayChartPanel(tkr)` returns the chart placeholder
+    HTML; new `_pmtxHydrateIntradayCharts(root)` fetches
+    `/api/intraday/{tkr}` (TTL-cached 60s) and paints to a Canvas.
+    The hydrator runs from `_pmtxApplyExpanded` whenever at least one
+    detail row is open, so the chart only loads when visible.
+  - The Canvas renderer draws OHLC sticks, AVWAP (RTH-only), 5m EMA9,
+    OR H/L horizontal lines, and entry/exit triangles from the trade
+    log. Mobile path resamples to 5m via `window.matchMedia`.
+- `dashboard_static/index.html`:
+  - Main-tab `Last signal` card removed; the `Today's trades` panel
+    now spans full width inside its `<section class="grid">`. Header
+    comment updated to v5.23.0.
+  - Val tab panel header comment updated to drop the "last signal"
+    line.
+- `dashboard_static/app.css`: new `.pmtx-intraday-section` block with
+  desktop (320px tall canvas) and `<=720px` (220px) breakpoints, plus
+  legend swatches matching the Canvas palette (yellow OR, blue AVWAP,
+  purple EMA9, green entry, red exit).
+- `dashboard_server.py`: new `/api/intraday/{ticker}` endpoint. Reads
+  bars from `/data/bars/YYYY-MM-DD/{TICKER}.jsonl` via
+  `backtest.loader.load_bars`, computes anchored VWAP from 09:30 ET,
+  resamples to 5m for the EMA9 line, joins entries/exits from the
+  trade log, and includes `or_high`/`or_low` from the live globals.
+  Pure-function shell (`_intraday_build_payload`) so unit tests can
+  drive it without a live `_check_auth` cookie. Same auth pattern as
+  `/api/state`; rejects malformed tickers with 400.
+- `bot_version.py`, `trade_genius.py`: BOT_VERSION 5.22.0 → 5.23.0.
+  `CURRENT_MAIN_NOTE` rewritten for the 3-bullet release narrative
+  (all 19 lines ≤ 34 chars).
+- `tests/test_v5_23_0_chart_panel.py`: new test module covering
+  version pins, click-scroll selector wording, Last-signal removal
+  grep, intraday chart panel HTML markers, and pure-function payload
+  shape.
+- Historical pin bumps: `test_v5_20_{6,7,8,9}_*.py` and
+  `test_startup_smoke.py` updated for the 5.23.x regime.
+
+### Risks / mitigation
+- **Bar archive may be empty pre-market or for non-Titan tickers**:
+  the endpoint returns `bars: []` and the Canvas renders "No bars
+  yet for today — waiting for the WS feed." instead of crashing.
+- **AVWAP precision differs slightly from `_v513_compute_avwap_0930`**
+  because the dashboard uses iex_volume directly without the SIP
+  scaling some bars carry. The chart is a visual aid — the engine
+  still uses its own AVWAP for permit decisions.
+- **/api/intraday is paged out of cache after 60s** so a freshly
+  printed bar appears on the next state poll, not instantaneously.
+
+---
+
 ## v5.22.0 — 2026-04-30 — Side-aware position cards + traffic-light alarms
 
 ### Why

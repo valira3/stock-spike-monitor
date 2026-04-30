@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.22.0"
+BOT_VERSION = "5.23.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,21 +102,25 @@ BOT_VERSION = "5.22.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.22.0 \u2014 Side-aware position\n"
-    "cards + traffic-light alarms.\n"
-    "Authority and Momentum cards\n"
-    "now hide the irrelevant side\n"
-    "when a position is open (LONG\n"
-    "hides Short permit + DI-,\n"
-    "SHORT hides Long permit +\n"
-    "DI+). Sentinel strip alarms\n"
-    "go green when safe, yellow\n"
-    "within 25% of threshold, red\n"
-    "when triggered, gray when no\n"
-    "position. Component cards\n"
-    "tighten on \u2264480px and \u2264390px\n"
-    "phones so the expanded Titan\n"
-    "fits without scrolling."
+    "v5.23.0 \u2014 Click-scroll fix +\n"
+    "intraday chart panel + Last\n"
+    "signal removal. Clicking a\n"
+    "position chip now scrolls to\n"
+    "the matching Titan in the\n"
+    "Permit Matrix and expands it\n"
+    "on Main, Val, and Gene tabs\n"
+    "(handler now picks Main's\n"
+    "id=pmtx-body before falling\n"
+    "back to the active panel).\n"
+    "Expanded Titan card gains an\n"
+    "intraday chart between the\n"
+    "component cards and the SMA\n"
+    "stack: 1m bars desktop, 5m\n"
+    "mobile, OR H/L + AVWAP from\n"
+    "9:30 ET + 5m EMA9 + entry\n"
+    "and exit markers, served by\n"
+    "/api/intraday. Last signal\n"
+    "card retired everywhere."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

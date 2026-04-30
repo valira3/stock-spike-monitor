@@ -298,9 +298,27 @@
         if (!tr) return;
         const ticker = tr.getAttribute("data-pos-ticker");
         if (!ticker) return;
-        // Locate the Permit Matrix body. It may be in a different panel
-        // (Val tab), so search document-wide by data-f attribute.
-        const pmtxBody = document.querySelector('[data-f="pmtx-body"]');
+        // v5.23.0 — Locate the Permit Matrix body in the *active* tab.
+        // The Main tab body uses id="pmtx-body" while Val/Gene panels
+        // use data-f="pmtx-body". The previous selector only matched
+        // Val/Gene, so clicking from the Main positions table either
+        // hit the wrong (hidden) panel or no-op'd entirely. Try the
+        // visible candidates in order: Main id, then any panel whose
+        // own data-f body is currently in the viewport flow.
+        let pmtxBody = document.getElementById("pmtx-body");
+        if (!pmtxBody) {
+          // Fallback: pick the data-f body inside the currently active
+          // tab panel (data-tg-active-tab on body).
+          const activeTab = document.body.getAttribute("data-tg-active-tab") || "main";
+          const activePanel = document.getElementById("tg-panel-" + activeTab);
+          if (activePanel) {
+            pmtxBody = activePanel.querySelector('[data-f="pmtx-body"]');
+          }
+        }
+        if (!pmtxBody) {
+          // Last-resort: any data-f pmtx-body in the document.
+          pmtxBody = document.querySelector('[data-f="pmtx-body"]');
+        }
         if (!pmtxBody) return;
         const titanRow = pmtxBody.querySelector('tr.pmtx-row[data-pmtx-tkr="' + ticker + '"]');
         if (!titanRow) return; // position exists but no Titan row (stale/delisted)
@@ -909,7 +927,7 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.22.0">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.23.0">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
@@ -1160,6 +1178,13 @@
         const t = r.getAttribute("data-pmtx-tkr");
         r.classList.toggle("pmtx-detail-open", set.has(t));
       });
+      // v5.23.0 — hydrate the intraday chart inside each open detail
+      // row. _pmtxHydrateIntradayCharts() is idempotent (TTL-cached) so
+      // re-calling on every apply is cheap; skipping the call when no
+      // rows are open avoids any DOM scan when the matrix is collapsed.
+      if (set.size > 0 && typeof _pmtxHydrateIntradayCharts === "function") {
+        try { _pmtxHydrateIntradayCharts(body); } catch (e) {}
+      }
     }
     body.__pmtxApplyExpanded = _pmtxApplyExpanded;
     if (!body.__pmtxExpandWired) {
@@ -1190,6 +1215,292 @@
     }
     // Re-apply after every render (innerHTML above wiped the classes).
     _pmtxApplyExpanded();
+  }
+
+  // v5.23.0 — Intraday chart panel placeholder + hydration. The
+  // expanded Titan card needs a per-ticker chart of premarket + RTH
+  // 1m bars (5m on mobile) with OR high/low, anchored VWAP, 5m EMA9,
+  // and entry/exit markers. We emit a lightweight Canvas placeholder
+  // here and hydrate it post-render so the matrix HTML build stays
+  // O(N) and synchronous \u2014 fetching bars during render would
+  // serialize requests against the same /api/state interval. Returns
+  // a string suitable for direct concat into the detail HTML.
+  function _pmtxIntradayChartPanel(tkr) {
+    if (!tkr) return "";
+    return '<div class="pmtx-intraday-section" data-intraday-chart="' + escapeHtml(tkr) + '">'
+      +   '<div class="pmtx-intraday-head">'
+      +     '<span class="pmtx-intraday-title">Intraday \u00b7 ' + escapeHtml(tkr) + '</span>'
+      +     '<span class="pmtx-intraday-meta" data-intraday-meta>Loading bars\u2026</span>'
+      +   '</div>'
+      +   '<canvas class="pmtx-intraday-canvas" data-intraday-canvas width="1200" height="320"></canvas>'
+      +   '<div class="pmtx-intraday-legend">'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-or">OR H/L</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-avwap">AVWAP</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-ema9">EMA9 (5m)</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-entry">Entry</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-exit">Exit</span>'
+      +   '</div>'
+      + '</div>';
+  }
+
+  // Cache so we don't refetch on every state poll. Keyed by ticker;
+  // value is { ts, payload } where ts is monotonic ms. TTL 60s \u2014
+  // long enough to cover several /api/state cycles, short enough that
+  // a freshly-printed bar shows up within a minute.
+  const _intradayCache = {};
+  const _INTRADAY_TTL_MS = 60 * 1000;
+
+  function _isMobile() {
+    try {
+      return window.matchMedia && window.matchMedia("(max-width: 720px)").matches;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Resample 1m bars to 5m for the mobile path. Aligns to wall-clock
+  // 5-minute boundaries via et_min so 09:30, 09:35 \u2026 are stable.
+  function _resample5m(bars) {
+    const out = [];
+    let cur = null;
+    for (let i = 0; i < bars.length; i++) {
+      const b = bars[i];
+      if (typeof b.et_min !== "number") continue;
+      const bucket = Math.floor(b.et_min / 5) * 5;
+      if (!cur || cur.et_min !== bucket) {
+        if (cur) out.push(cur);
+        cur = { et_min: bucket, ts: b.ts, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v || 0,
+                avwap: b.avwap, ema9_5m: b.ema9_5m };
+      } else {
+        cur.h = Math.max(cur.h, b.h);
+        cur.l = Math.min(cur.l, b.l);
+        cur.c = b.c;
+        cur.v = (cur.v || 0) + (b.v || 0);
+        if (b.avwap !== null && b.avwap !== undefined) cur.avwap = b.avwap;
+        if (b.ema9_5m !== null && b.ema9_5m !== undefined) cur.ema9_5m = b.ema9_5m;
+      }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
+  function _drawIntradayChart(canvas, payload) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    // Resize to backing-store pixels for crisp rendering on HiDPI.
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 1200;
+    const cssH = canvas.clientHeight || 320;
+    if (canvas.width !== Math.round(cssW * dpr)) canvas.width = Math.round(cssW * dpr);
+    if (canvas.height !== Math.round(cssH * dpr)) canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const rawBars = payload && Array.isArray(payload.bars) ? payload.bars : [];
+    if (!rawBars.length) {
+      ctx.fillStyle = "#888";
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.fillText("No bars yet for today\u2014waiting for the WS feed.", 12, 28);
+      return;
+    }
+    const bars = _isMobile() ? _resample5m(rawBars) : rawBars;
+
+    // X axis spans 4:00 ET (et_min=240) to 16:00 ET (et_min=960).
+    const X_MIN = 240;
+    const X_MAX = 960;
+    // Y axis: tight envelope around prices + OR levels.
+    let yMin = Infinity, yMax = -Infinity;
+    for (const b of bars) {
+      if (typeof b.l === "number") yMin = Math.min(yMin, b.l);
+      if (typeof b.h === "number") yMax = Math.max(yMax, b.h);
+    }
+    const oh = (typeof payload.or_high === "number") ? payload.or_high : null;
+    const ol = (typeof payload.or_low === "number") ? payload.or_low : null;
+    if (oh !== null) { yMin = Math.min(yMin, oh); yMax = Math.max(yMax, oh); }
+    if (ol !== null) { yMin = Math.min(yMin, ol); yMax = Math.max(yMax, ol); }
+    if (!isFinite(yMin) || !isFinite(yMax)) return;
+    const yPad = (yMax - yMin) * 0.08 || 0.5;
+    yMin -= yPad; yMax += yPad;
+
+    const PAD_L = 56, PAD_R = 12, PAD_T = 14, PAD_B = 22;
+    const plotW = cssW - PAD_L - PAD_R;
+    const plotH = cssH - PAD_T - PAD_B;
+    const xOf = (m) => PAD_L + ((m - X_MIN) / (X_MAX - X_MIN)) * plotW;
+    const yOf = (p) => PAD_T + (1 - (p - yMin) / (yMax - yMin)) * plotH;
+
+    // Background + grid + 9:30 ET vertical separator.
+    ctx.fillStyle = "#0e1318";
+    ctx.fillRect(PAD_L, PAD_T, plotW, plotH);
+    ctx.strokeStyle = "#1f2730";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 1; i < 6; i++) {
+      const y = PAD_T + (i / 6) * plotH;
+      ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = "#3a4a5c";
+    ctx.beginPath();
+    ctx.moveTo(xOf(570), PAD_T); ctx.lineTo(xOf(570), PAD_T + plotH);
+    ctx.stroke();
+
+    // Y axis labels (5 ticks).
+    ctx.fillStyle = "#9aa6b2";
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 4; i++) {
+      const p = yMin + (i / 4) * (yMax - yMin);
+      const y = yOf(p);
+      ctx.fillText("$" + p.toFixed(2), PAD_L - 6, y + 4);
+    }
+    // X axis labels (4am, 9:30, 12:00, 16:00).
+    ctx.textAlign = "center";
+    const xTicks = [{m: 240, l: "4:00"}, {m: 570, l: "9:30"}, {m: 720, l: "12:00"}, {m: 960, l: "16:00"}];
+    for (const t of xTicks) {
+      ctx.fillText(t.l, xOf(t.m), cssH - 6);
+    }
+
+    // OR high/low horizontal lines.
+    ctx.lineWidth = 1.5;
+    if (oh !== null) {
+      ctx.strokeStyle = "#e5b85c";
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, yOf(oh)); ctx.lineTo(PAD_L + plotW, yOf(oh));
+      ctx.stroke();
+    }
+    if (ol !== null) {
+      ctx.strokeStyle = "#e5b85c";
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, yOf(ol)); ctx.lineTo(PAD_L + plotW, yOf(ol));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Candles (thin OHLC sticks). Body width scales with bar count.
+    const bw = Math.max(1, Math.min(6, plotW / Math.max(bars.length, 1) - 1));
+    for (const b of bars) {
+      if (typeof b.et_min !== "number") continue;
+      const x = xOf(b.et_min);
+      const yH = yOf(b.h);
+      const yL = yOf(b.l);
+      const yO = yOf(b.o);
+      const yC = yOf(b.c);
+      const up = b.c >= b.o;
+      ctx.strokeStyle = up ? "#3ec28f" : "#e26a6a";
+      ctx.fillStyle = up ? "#3ec28f" : "#e26a6a";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, yH); ctx.lineTo(x, yL);
+      ctx.stroke();
+      ctx.fillRect(x - bw / 2, Math.min(yO, yC), bw, Math.max(1, Math.abs(yC - yO)));
+    }
+
+    // AVWAP line (RTH only, premarket bars carry null).
+    ctx.strokeStyle = "#7aa6ff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    for (const b of bars) {
+      if (typeof b.et_min !== "number") continue;
+      if (b.avwap === null || b.avwap === undefined) { started = false; continue; }
+      const x = xOf(b.et_min), y = yOf(b.avwap);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // EMA9 (5m) line.
+    ctx.strokeStyle = "#c084fc";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    started = false;
+    for (const b of bars) {
+      if (typeof b.et_min !== "number") continue;
+      if (b.ema9_5m === null || b.ema9_5m === undefined) { started = false; continue; }
+      const x = xOf(b.et_min), y = yOf(b.ema9_5m);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Entry/exit markers from the trade-log fills.
+    const trades = (payload && Array.isArray(payload.trades)) ? payload.trades : [];
+    for (const t of trades) {
+      const drawMark = (tsIso, price, kind) => {
+        if (!tsIso || typeof price !== "number") return;
+        const m = /T(\d{2}):(\d{2})/.exec(tsIso);
+        if (!m) return;
+        // ts is UTC; rough ET conversion: subtract 5h (winter) / 4h (summer).
+        // We have ET minute on bars already, so map to nearest bar's et_min.
+        const utcMin = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+        // Find bar whose ts hour:min match.
+        let nearest = null, nearestDelta = Infinity;
+        for (const b of bars) {
+          const m2 = /T(\d{2}):(\d{2})/.exec(b.ts || "");
+          if (!m2) continue;
+          const bMin = parseInt(m2[1], 10) * 60 + parseInt(m2[2], 10);
+          const d = Math.abs(bMin - utcMin);
+          if (d < nearestDelta) { nearestDelta = d; nearest = b; }
+        }
+        if (!nearest || typeof nearest.et_min !== "number") return;
+        const x = xOf(nearest.et_min);
+        const y = yOf(price);
+        ctx.fillStyle = kind === "entry" ? "#3ec28f" : "#e26a6a";
+        ctx.beginPath();
+        if (kind === "entry") {
+          // upward triangle
+          ctx.moveTo(x, y - 6); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4);
+        } else {
+          // downward triangle
+          ctx.moveTo(x, y + 6); ctx.lineTo(x - 5, y - 4); ctx.lineTo(x + 5, y - 4);
+        }
+        ctx.closePath();
+        ctx.fill();
+      };
+      drawMark(t.entry_ts, t.entry_price, "entry");
+      drawMark(t.exit_ts, t.exit_price, "exit");
+    }
+  }
+
+  function _pmtxHydrateIntradayCharts(root) {
+    const scope = root || document;
+    const sections = scope.querySelectorAll('[data-intraday-chart]');
+    sections.forEach(function(section) {
+      const tkr = section.getAttribute("data-intraday-chart");
+      if (!tkr) return;
+      // Skip if already painted within TTL.
+      const cached = _intradayCache[tkr];
+      const now = Date.now();
+      const canvas = section.querySelector('[data-intraday-canvas]');
+      const meta = section.querySelector('[data-intraday-meta]');
+      if (cached && (now - cached.ts) < _INTRADAY_TTL_MS && cached.payload) {
+        if (canvas) _drawIntradayChart(canvas, cached.payload);
+        if (meta) {
+          const n = (cached.payload.bars || []).length;
+          meta.textContent = n + " bars \u00b7 " + (_isMobile() ? "5m" : "1m");
+        }
+        return;
+      }
+      fetch("/api/intraday/" + encodeURIComponent(tkr), { credentials: "same-origin" })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(payload) {
+          if (!payload || !payload.ok) {
+            if (meta) meta.textContent = "chart unavailable";
+            return;
+          }
+          _intradayCache[tkr] = { ts: Date.now(), payload: payload };
+          if (canvas) _drawIntradayChart(canvas, payload);
+          if (meta) {
+            const n = (payload.bars || []).length;
+            meta.textContent = n + " bars \u00b7 " + (_isMobile() ? "5m" : "1m");
+          }
+        })
+        .catch(function() {
+          if (meta) meta.textContent = "chart fetch failed";
+        });
+    });
   }
 
   // v5.21.0 — Daily SMA stack panel. Renders the new per-row SMA
@@ -1546,6 +1857,14 @@
             regimeBlock: regimeBlock,
             sectionIPermit: sectionIPermit,
           })
+        // v5.23.0 — inline intraday chart panel. Placed between the
+        // component-state grid and the SMA stack so the operator's eye
+        // moves down the page in scan order: live alarms / process
+        // states (cards) \u2192 today's price action (chart) \u2192 daily
+        // structural context (SMA stack). The placeholder div is hydrated
+        // post-render by _pmtxHydrateIntradayCharts() which fetches
+        // /api/intraday/{tkr} and paints to a Canvas.
+        + _pmtxIntradayChartPanel(tkr)
         + _pmtxSmaStackPanel(smaStack)
         + (sentinelStripHtml || "");
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
@@ -1874,29 +2193,10 @@
     if (typeof window.__tgTickClock === "function") window.__tgTickClock();
   }
 
-  // v5.5.7 — Main tab LAST SIGNAL card. Mirrors the exec-panel
-  // formatting (kind / ticker / price / reason / timestamp). Reads
-  // s.last_signal which is the paper executor's most recent emitted
-  // signal (entry/exit/eod). Empty/null → "No signals received yet."
-  function renderLastSignal(s) {
-    const ls = s && s.last_signal;
-    const chip = $("last-sig-chip");
-    const body = $("last-sig-body");
-    if (chip) chip.textContent = (ls && ls.kind) ? ls.kind : "none";
-    if (!body) return;
-    if (!ls || !ls.kind) {
-      body.innerHTML = `<div class="empty">No signals received yet.</div>`;
-      return;
-    }
-    const px = (typeof ls.price === "number" && ls.price)
-      ? " @ " + fmtUsd(ls.price) : "";
-    const reason = ls.reason ? ` \u00b7 ${escapeHtml(ls.reason)}` : "";
-    body.innerHTML = `<div class="mono" style="font-size:12px;color:var(--text-muted)">
-      <span style="color:var(--accent)">${escapeHtml(ls.kind)}</span>
-      ${escapeHtml(ls.ticker || "")}${px}${reason}
-      <span style="color:var(--text-dim)"> \u00b7 ${escapeHtml(ls.timestamp_utc || "")}</span>
-    </div>`;
-  }
+  // v5.23.0 — renderLastSignal removed. The Last signal card was
+  // backed by an in-memory global that resets on every redeploy,
+  // so the field was almost always null even when positions were
+  // open. Card removed from Main, Val, and Gene tabs.
 
   function renderAll(s) {
     if (!s || !s.ok) return;
@@ -1912,7 +2212,6 @@
     renderKPIs(s, sl);
     renderPositions(s, sl);
     renderTrades(s, sl);
-    renderLastSignal(s);
     // v5.18.0 — Main tab render order. The standalone Proximity card
     // was retired; live price + distance-to-OR is now folded into the
     // Permit Matrix Price·Distance column. v5.17.0 retired the legacy
@@ -2427,16 +2726,7 @@
       </div>
     </section>
 
-    <section class="grid grid-2">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">Last signal</span>
-          <span class="chip" data-f="last-sig-chip">\u2014</span>
-        </div>
-        <div class="card-body" data-f="last-sig-body">
-          <div class="empty">No signals received yet.</div>
-        </div>
-      </div>
+    <section class="grid">
       <div class="card">
         <div class="card-head"><span class="card-title">Today's trades<span class="count" data-f="trades-count">\u00b7 \u2014</span></span><span class="chip" data-f="trades-realized">\u2014</span></div>
         <div class="card-body flush" data-f="trades-body">
@@ -2811,24 +3101,8 @@
       setField(panel, "port-shortliab", fmtUsd(shorted));
     }
 
-    // Last signal card -------------------------------------------------
-    const ls = data && data.last_signal;
-    const sigBody = execField(panel, "last-sig-body");
-    const sigChip = execField(panel, "last-sig-chip");
-    if (sigChip) sigChip.textContent = disabled ? "\u2014" : (ls && ls.kind ? ls.kind : "none");
-    if (sigBody) {
-      if (disabled || !ls || !ls.kind) {
-        sigBody.innerHTML = `<div class="empty">No signals received yet.</div>`;
-      } else {
-        const px = ls.price ? " @ $" + fmtNum(ls.price, 2) : "";
-        const reason = ls.reason ? ` \u00b7 ${esc(ls.reason)}` : "";
-        sigBody.innerHTML = `<div class="mono" style="font-size:12px;color:var(--text-muted)">
-          <span style="color:var(--accent)">${esc(ls.kind)}</span>
-          ${esc(ls.ticker || "")}${px}${reason}
-          <span style="color:var(--text-dim)"> \u00b7 ${esc(ls.timestamp_utc || "")}</span>
-        </div>`;
-      }
-    }
+    // v5.23.0 — Last signal card removed (was backed by in-memory
+    // global that reset on redeploy, so almost always null).
 
     // Diagnostics ------------------------------------------------------
     setField(panel, "d-account", account.account_number || "\u2014");
