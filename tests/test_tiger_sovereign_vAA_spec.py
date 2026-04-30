@@ -450,7 +450,6 @@ def test_sent_c_ratchet_only_tightens():
 # ----- Alarm D \\u2014 NEW HVP Lock -----
 
 
-@pytest.mark.spec_gap("vAA-PR-5", "SENT-D HVP lock")
 def test_sent_d_market_exit_when_5m_adx_below_75pct_of_peak():
     from engine.sentinel import check_alarm_d
     from engine.momentum_state import TradeHVP

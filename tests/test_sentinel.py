@@ -501,3 +501,121 @@ def test_alarm_a2_still_trips_on_real_velocity_after_entry_2():
         now_ts=1070.0,
     )
     assert any(a.alarm == "A_FLASH" for a in fired), "Real post-reset velocity must still trip A2"
+
+
+# ---------------------------------------------------------------------------
+# Alarm D \u2014 HVP Lock (vAA-1 SENT-D)
+# ---------------------------------------------------------------------------
+
+
+def _hvp_with_peak(initial: float, peak: float):
+    """Helper: TradeHVP opened at ``initial`` then ratcheted up to ``peak``."""
+    from engine.momentum_state import TradeHVP
+
+    hvp = TradeHVP()
+    hvp.on_strike_open(initial_adx_5m=initial)
+    hvp.update(current_adx_5m=peak)
+    return hvp
+
+
+def test_alarm_d_fires_when_5m_adx_below_75pct_of_peak():
+    """SENT-D: strict less-than 0.75 * peak fires when peak >= 25."""
+    from engine.sentinel import EXIT_REASON_HVP_LOCK, check_alarm_d
+
+    hvp = _hvp_with_peak(20.0, 40.0)  # 0.75 * 40 = 30.0
+    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=29.99, side=SIDE_LONG)
+    assert res is not None
+    assert res.alarm == "D"
+    assert res.reason == EXIT_REASON_HVP_LOCK
+
+
+def test_alarm_d_does_not_fire_when_peak_below_safety_floor():
+    """SENT-D safety floor: peak < 25 \u2192 no fire even if adx_now collapses."""
+    from engine.sentinel import check_alarm_d
+
+    hvp = _hvp_with_peak(10.0, 24.99)  # peak just under 25 floor
+    # Even adx_now = 0 must not fire \u2014 the trade never had momentum.
+    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=0.0, side=SIDE_LONG)
+    assert res is None
+
+
+def test_alarm_d_strict_less_than_does_not_fire_at_exact_75pct():
+    """SENT-D: equality at 0.75 * peak is NOT a trigger (strict <)."""
+    from engine.sentinel import check_alarm_d
+
+    hvp = _hvp_with_peak(20.0, 40.0)  # 0.75 * 40 = 30.0 exactly
+    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=30.0, side=SIDE_LONG)
+    assert res is None
+
+
+def test_alarm_d_side_agnostic_long_and_short_both_fire():
+    """SENT-D is side-symmetric: ADX is unsigned, so LONG and SHORT
+    fire under identical conditions.
+    """
+    from engine.sentinel import check_alarm_d
+
+    hvp_long = _hvp_with_peak(20.0, 40.0)
+    hvp_short = _hvp_with_peak(20.0, 40.0)
+    long_res = check_alarm_d(trade_hvp=hvp_long, current_adx_5m=20.0, side=SIDE_LONG)
+    short_res = check_alarm_d(trade_hvp=hvp_short, current_adx_5m=20.0, side=SIDE_SHORT)
+    assert long_res is not None and long_res.alarm == "D"
+    assert short_res is not None and short_res.alarm == "D"
+    # detail string carries the side label for observability
+    assert "LONG" in long_res.detail
+    assert "SHORT" in short_res.detail
+
+
+def test_alarm_d_returns_none_when_no_strike_open():
+    """check_alarm_d must tolerate a TradeHVP that has never been opened
+    (RuntimeError on .peak access) \u2014 returns None silently. This is
+    the defensive path used by evaluate_sentinel before PR-3b lands.
+    """
+    from engine.momentum_state import TradeHVP
+    from engine.sentinel import check_alarm_d
+
+    hvp = TradeHVP()  # never on_strike_open
+    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=10.0, side=SIDE_LONG)
+    assert res is None
+    # And the None-trade_hvp branch is also safe.
+    res_none = check_alarm_d(trade_hvp=None, current_adx_5m=10.0, side=SIDE_LONG)
+    assert res_none is None
+
+
+def test_evaluate_sentinel_threads_alarm_d_when_trade_hvp_supplied():
+    """SENT-D wires through evaluate_sentinel and contributes to has_full_exit."""
+    from engine.sentinel import EXIT_REASON_HVP_LOCK
+
+    hvp = _hvp_with_peak(20.0, 40.0)
+    result = evaluate_sentinel(
+        side=SIDE_LONG,
+        unrealized_pnl=0.0,  # no A
+        position_value=10000.0,
+        pnl_history=None,
+        now_ts=1000.0,
+        last_5m_close=None,  # no B
+        last_5m_ema9=None,
+        trade_hvp=hvp,
+        current_adx_5m=29.0,  # below 30 \u2192 D fires
+    )
+    assert any(a.alarm == "D" for a in result.alarms)
+    assert result.has_full_exit is True
+    assert result.exit_reason == EXIT_REASON_HVP_LOCK
+
+
+def test_evaluate_sentinel_skips_alarm_d_when_trade_hvp_absent():
+    """Defensive: evaluate_sentinel must not raise when trade_hvp is omitted
+    (PR-3b is parallel and may merge later \u2014 this code is dead-code-safe
+    until then).
+    """
+    result = evaluate_sentinel(
+        side=SIDE_LONG,
+        unrealized_pnl=0.0,
+        position_value=10000.0,
+        pnl_history=None,
+        now_ts=1000.0,
+        last_5m_close=None,
+        last_5m_ema9=None,
+        # trade_hvp + current_adx_5m intentionally omitted
+    )
+    assert not any(a.alarm == "D" for a in result.alarms)
+    assert result.fired is False
