@@ -566,6 +566,24 @@ def execute_breakout(ticker, current_price, side):
         pos["trail_stop"] = None
     positions_dict[ticker] = pos
     daily_count[ticker] = entry_num
+
+    # v5.15.1 vAA-1 \u2014 SENT-D HVP lock fill hook. Install (or re-seed)
+    # the per-(ticker, side) TradeHVP at Strike open with the live
+    # 5m ADX so subsequent sentinel ticks can detect a >25% decay
+    # from peak and exit. ADX warmup may not be complete yet (boot
+    # window, fresh ticker); ensure_trade_hvp tolerates None and
+    # the safety-floor branch in check_alarm_d holds the alarm
+    # dormant until the seed exceeds 25.
+    try:
+        from broker.positions import ensure_trade_hvp as _ensure_trade_hvp
+
+        _adx_streams = tg.v5_adx_1m_5m(ticker) if hasattr(tg, "v5_adx_1m_5m") else {}
+        _ensure_trade_hvp(ticker, _v570_side_label, _adx_streams.get("adx_5m"))
+    except Exception as _e:
+        try:
+            tg.logger.debug("[SENT-D] HVP fill-hook %s: %s", ticker, _e)
+        except Exception:
+            pass
     # v5.13.6 \u2014 lifecycle log: capture Phase 1-4 evals + write ENTRY_DECISION,
     # then ORDER_SUBMIT + ORDER_FILL. Best-effort: any exception swallowed,
     # trading path must not be blocked by the lifecycle logger.
@@ -901,6 +919,17 @@ def close_breakout(ticker, price, side, reason="STOP"):
         _eot_side = tg.eot.SIDE_LONG if cfg.side.is_long else tg.eot.SIDE_SHORT
         tg.eot_glue.clear_position_state(ticker, _eot_side)
         tg._engine_clear_phase_bucket(ticker, _eot_side)
+    except Exception:
+        pass
+
+    # v5.15.1 vAA-1 \u2014 drop the per-(ticker, side) TradeHVP and ADX
+    # window when the position closes so a re-entry starts with a
+    # fresh peak. Idempotent: silently no-ops on missing keys.
+    try:
+        from broker.positions import clear_trade_hvp as _clear_trade_hvp
+
+        _close_side_label = "LONG" if cfg.side.is_long else "SHORT"
+        _clear_trade_hvp(ticker, _close_side_label)
     except Exception:
         pass
     entry_price = pos["entry_price"]

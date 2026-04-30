@@ -568,3 +568,146 @@ def transition_phase_to_extraction(state: dict) -> dict:
     """
     state["phase"] = PHASE_EXTRACTION
     return state
+
+
+# =====================================================================
+# v5.15.1 vAA-1 \u2014 Phase 3 momentum-sensitive sizing (evaluate_strike_sizing)
+# =====================================================================
+#
+# Spec rules:
+#   L-P3-AUTH      master anchor: side-correct 5m DMI must exceed 25
+#   L-P3-FULL      1m DI > 30 \u2192 FULL Strike (100% of intended)
+#   L-P3-SCALED-A  25 <= 1m DI <= 30 AND held=0 \u2192 SCALED_A (50%)
+#   L-P3-SCALED-B  add-on (held>0): 1m DI > 30 AND fresh extreme AND
+#                  Alarm E PRE = False \u2192 SCALED_B (50% on top of held)
+#   S-P3-* mirrors apply for SHORT \u2014 caller passes side-correct DI
+#                  values (DI- for SHORT) so the function is side-symmetric.
+#
+# This is a pure decision function: no I/O, no state mutation. The
+# caller is responsible for:
+#   - mapping side LONG/SHORT to DI+/DI-
+#   - feeding ``is_fresh_extreme`` (NHOD for LONG, NLOD for SHORT)
+#   - consulting check_alarm_e_pre to populate ``alarm_e_blocked``
+#   - applying ``intended_shares`` floor / ceiling externally
+
+P3_AUTH_DI_THRESHOLD = 25.0  # 5m DMI master anchor (strict >)
+P3_FULL_DI_THRESHOLD = 30.0  # 1m DI for FULL / add-on (strict >)
+P3_SCALED_A_DI_LO = 25.0  # 1m DI lower bound for SCALED_A (inclusive)
+P3_SCALED_A_DI_HI = 30.0  # 1m DI upper bound for SCALED_A (inclusive)
+
+SIZE_LABEL_FULL = "FULL"
+SIZE_LABEL_SCALED_A = "SCALED_A"
+SIZE_LABEL_SCALED_B = "SCALED_B"
+SIZE_LABEL_WAIT = "WAIT"
+
+
+class StrikeSizingDecision:
+    """Decision record returned by ``evaluate_strike_sizing``.
+
+    Attributes
+    ----------
+    size_label : str
+        One of ``FULL``, ``SCALED_A``, ``SCALED_B``, ``WAIT``.
+    shares_to_buy : int
+        Number of shares the caller should send on the LIMIT order.
+        Zero when ``size_label == WAIT``.
+    reason : str
+        Short human-readable rationale string for log lines.
+    """
+
+    __slots__ = ("size_label", "shares_to_buy", "reason")
+
+    def __init__(self, size_label: str, shares_to_buy: int, reason: str = "") -> None:
+        self.size_label = size_label
+        self.shares_to_buy = int(shares_to_buy)
+        self.reason = reason
+
+    def __repr__(self) -> str:  # pragma: no cover \u2014 debug aid only
+        return (
+            f"StrikeSizingDecision(size_label={self.size_label!r}, "
+            f"shares_to_buy={self.shares_to_buy}, reason={self.reason!r})"
+        )
+
+
+def evaluate_strike_sizing(
+    *,
+    side: str,
+    di_5m: float | None,
+    di_1m: float | None,
+    is_fresh_extreme: bool,
+    intended_shares: int,
+    held_shares_this_strike: int = 0,
+    alarm_e_blocked: bool = False,
+) -> StrikeSizingDecision:
+    """Pure decision: how big a Strike entry should fire (or whether to wait).
+
+    Spec: vAA-1 L-P3-AUTH / FULL / SCALED-A / SCALED-B and S-P3 mirrors.
+
+    Inputs are side-correct DMI values: for LONG pass DI+, for SHORT
+    pass DI- (caller maps the polarity). ``intended_shares`` is the
+    full-fill share count; SCALED tiers return ``intended_shares // 2``.
+
+    The function never raises on bad inputs \u2014 missing DI values
+    (None) deterministically degrade to WAIT.
+    """
+    side_u = (side or "").strip().upper()
+    if side_u not in (SIDE_LONG, SIDE_SHORT):
+        return StrikeSizingDecision(SIZE_LABEL_WAIT, 0, f"unknown side {side!r}")
+
+    intended = max(0, int(intended_shares))
+    if intended <= 0:
+        return StrikeSizingDecision(SIZE_LABEL_WAIT, 0, "intended_shares <= 0")
+
+    # L-P3-AUTH master anchor: side-correct 5m DMI must STRICTLY exceed
+    # 25. Equality fails (test_l_p3_master_anchor_5m_di_must_exceed_25
+    # passes di_5m=25.0 and expects WAIT).
+    if di_5m is None or float(di_5m) <= P3_AUTH_DI_THRESHOLD:
+        return StrikeSizingDecision(
+            SIZE_LABEL_WAIT, 0, f"5m DI {di_5m} <= {P3_AUTH_DI_THRESHOLD} (anchor fail)"
+        )
+
+    if di_1m is None:
+        return StrikeSizingDecision(SIZE_LABEL_WAIT, 0, "1m DI is None")
+    di1 = float(di_1m)
+
+    held = max(0, int(held_shares_this_strike))
+
+    # Add-on (SCALED-B) decision applies when the trade already holds
+    # shares from a prior tier within this Strike. Spec L-P3-SCALED-B:
+    # add-on requires 1m DI > 30 AND fresh extreme AND Alarm E PRE = False.
+    if held > 0:
+        if alarm_e_blocked:
+            return StrikeSizingDecision(SIZE_LABEL_WAIT, 0, "add-on blocked by Alarm E PRE")
+        if not is_fresh_extreme:
+            return StrikeSizingDecision(
+                SIZE_LABEL_WAIT, 0, "add-on requires fresh extreme (NHOD/NLOD)"
+            )
+        if di1 > P3_FULL_DI_THRESHOLD:
+            return StrikeSizingDecision(
+                SIZE_LABEL_SCALED_B,
+                intended // 2,
+                f"add-on SCALED_B 1m DI {di1:.2f} > {P3_FULL_DI_THRESHOLD}",
+            )
+        return StrikeSizingDecision(
+            SIZE_LABEL_WAIT, 0, f"add-on requires 1m DI > {P3_FULL_DI_THRESHOLD}"
+        )
+
+    # First fill of this Strike (held == 0). Alarm E PRE never blocks
+    # the FIRST entry per spec (memory has no peak yet by definition).
+    if di1 > P3_FULL_DI_THRESHOLD:
+        return StrikeSizingDecision(
+            SIZE_LABEL_FULL,
+            intended,
+            f"FULL 1m DI {di1:.2f} > {P3_FULL_DI_THRESHOLD}",
+        )
+    if P3_SCALED_A_DI_LO <= di1 <= P3_SCALED_A_DI_HI:
+        return StrikeSizingDecision(
+            SIZE_LABEL_SCALED_A,
+            intended // 2,
+            f"SCALED_A 1m DI {di1:.2f} in [{P3_SCALED_A_DI_LO},{P3_SCALED_A_DI_HI}]",
+        )
+    return StrikeSizingDecision(
+        SIZE_LABEL_WAIT,
+        0,
+        f"1m DI {di1:.2f} below {P3_SCALED_A_DI_LO} (no tier match)",
+    )

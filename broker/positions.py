@@ -18,6 +18,7 @@ from broker.stops import (
     _retighten_short_stop,  # noqa: F401
 )
 from engine.bars import compute_5m_ohlc_and_ema9
+from engine.momentum_state import ADXTrendWindow, DivergenceMemory, TradeHVP
 from engine.sentinel import (
     SIDE_LONG as _SENTINEL_SIDE_LONG,
     SIDE_SHORT as _SENTINEL_SIDE_SHORT,
@@ -27,6 +28,90 @@ from engine.sentinel import (
     new_pnl_history,
     record_pnl,
 )
+
+# v5.15.1 vAA-1 \u2014 Sentinel-loop momentum state caches.
+#
+# These three module-level holders are the live in-memory state that
+# Alarms C, D, and E read on every sentinel tick:
+#
+#   _adx_window_per_position : per-(ticker, side) 3-element 1m ADX ring.
+#       Seeded lazily on the first _run_sentinel call for a position;
+#       cleared at session reset and on close.
+#   _divergence_memory       : single global DivergenceMemory keyed by
+#       (ticker, side). session_reset() is called at 09:30 ET via the
+#       same hook that clears _v570_strike_counts.
+#   _trade_hvp_per_position  : per-(ticker, side) TradeHVP. Instantiated
+#       and ``on_strike_open(initial_adx_5m)``-seeded at Strike fill
+#       time (broker.orders.execute_breakout). Updated on every
+#       _run_sentinel tick with the current 5m ADX.
+#
+# All three are intentionally module-level (not attached to ``pos``)
+# because the sentinel loop runs across positions and we want a single
+# mutation point. The session_reset hook calls reset_session_state()
+# below, which clears all three and also fires DivergenceMemory's
+# session_reset() so the underlying dict is wiped.
+_adx_window_per_position: dict = {}
+_divergence_memory: DivergenceMemory = DivergenceMemory()
+_trade_hvp_per_position: dict = {}
+
+
+def get_divergence_memory() -> DivergenceMemory:
+    """Return the singleton DivergenceMemory used by Alarm E.
+
+    Exposed so trade_genius.py session reset hook (and tests) can
+    call session_reset() without importing the private name.
+    """
+    return _divergence_memory
+
+
+def get_trade_hvp(ticker: str, side: str) -> TradeHVP | None:
+    """Return the live TradeHVP for (ticker, side) or None.
+
+    The position-fill site (broker.orders) calls
+    ``ensure_trade_hvp(ticker, side, initial_adx_5m)`` to install one;
+    sentinel ticks read it via this getter to feed Alarm D.
+    """
+    key = (str(ticker).upper(), str(side).upper())
+    return _trade_hvp_per_position.get(key)
+
+
+def ensure_trade_hvp(ticker: str, side: str, initial_adx_5m: float | None) -> TradeHVP:
+    """Install / re-seed the TradeHVP for (ticker, side).
+
+    Called at Strike fill time. ``initial_adx_5m`` may be None when
+    warmup is incomplete; in that case we seed the peak with 0.0 and
+    the safety-floor branch in check_alarm_d keeps the alarm dormant
+    until a real reading arrives.
+    """
+    key = (str(ticker).upper(), str(side).upper())
+    hvp = _trade_hvp_per_position.get(key)
+    if hvp is None:
+        hvp = TradeHVP()
+        _trade_hvp_per_position[key] = hvp
+    seed = float(initial_adx_5m) if initial_adx_5m is not None else 0.0
+    hvp.on_strike_open(seed)
+    return hvp
+
+
+def clear_trade_hvp(ticker: str, side: str) -> None:
+    """Drop the TradeHVP for (ticker, side) on position close."""
+    key = (str(ticker).upper(), str(side).upper())
+    _trade_hvp_per_position.pop(key, None)
+    _adx_window_per_position.pop(key, None)
+
+
+def reset_session_state() -> None:
+    """Clear all sentinel-loop momentum state at session boundary.
+
+    Called from trade_genius._v570_reset_if_new_session at 09:30 ET
+    alongside _v570_strike_counts.clear(). DivergenceMemory's stored
+    peaks are wiped via session_reset(); per-position ADX windows and
+    TradeHVPs are dropped wholesale (positions don't survive EOD).
+    """
+    _adx_window_per_position.clear()
+    _trade_hvp_per_position.clear()
+    _divergence_memory.session_reset()
+
 
 # v5.15.0 PR-4 \u2014 Titan Grip Harvest deleted in vAA-1; Velocity Ratchet
 # replaces it (engine.sentinel.check_alarm_c \u2192 engine.velocity_ratchet).
@@ -174,11 +259,75 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             last_5m_close = None
             last_5m_ema9 = None
 
-        # v5.15.0 PR-4 \u2014 Alarm C is the Velocity Ratchet. The 1m
-        # ADXTrendWindow is wired in a follow-up PR; until then we pass
-        # adx_window=None so check_alarm_c silently skips. The current
-        # protective stop (if any) is read from pos["stop"] so the
-        # never-loosen invariant works once the window is wired.
+        # v5.15.1 vAA-1 \u2014 wire ADXTrendWindow / TradeHVP /
+        # DivergenceMemory live into the sentinel evaluator. Each
+        # branch silently degrades if the underlying ADX/RSI helper
+        # is missing or warmup is incomplete (returns None), so the
+        # call site never raises and partial-warmup positions match
+        # the v5.15.0 dormant behaviour.
+        tg = _tg()
+        side_key = (str(ticker).upper(), str(side).upper())
+
+        # ADX (1m, 5m). Either may be None during warmup.
+        adx_1m = None
+        adx_5m = None
+        try:
+            if tg is not None and hasattr(tg, "v5_adx_1m_5m"):
+                adx_streams = tg.v5_adx_1m_5m(ticker)
+                adx_1m = adx_streams.get("adx_1m")
+                adx_5m = adx_streams.get("adx_5m")
+        except Exception as _e:
+            logger.debug("[SENTINEL] ADX compute failed %s: %s", ticker, _e)
+
+        # ADXTrendWindow \u2014 Alarm C. Push only when we have a fresh
+        # 1m reading; otherwise keep the existing buffer state.
+        adx_window = _adx_window_per_position.get(side_key)
+        if adx_window is None:
+            adx_window = ADXTrendWindow()
+            _adx_window_per_position[side_key] = adx_window
+        if adx_1m is not None:
+            adx_window.push(float(adx_1m))
+
+        # TradeHVP \u2014 Alarm D. Installed at Strike fill via
+        # broker.orders.ensure_trade_hvp; we just look it up and
+        # forward the live 5m ADX. If the position predates the
+        # fill-hook (mid-session restart, paper replay), the lookup
+        # may return None and Alarm D silently sits out.
+        trade_hvp = _trade_hvp_per_position.get(side_key)
+        if trade_hvp is not None and adx_5m is not None:
+            try:
+                trade_hvp.update(float(adx_5m))
+            except Exception as _e:
+                logger.debug("[SENTINEL] HVP update failed %s: %s", ticker, _e)
+
+        # RSI(15) on 1m closes \u2014 Alarm E. The existing _compute_rsi
+        # helper accepts an explicit period kwarg; pass 15 so the
+        # divergence detector reads on the spec timeframe.
+        rsi_15 = None
+        try:
+            if tg is not None and hasattr(tg, "_compute_rsi"):
+                closes_1m = (bars or {}).get("closes") or []
+                if closes_1m:
+                    rsi_15 = tg._compute_rsi(closes_1m, period=15)
+        except Exception as _e:
+            logger.debug("[SENTINEL] RSI(15) compute failed %s: %s", ticker, _e)
+
+        # DivergenceMemory \u2014 update the stored peak BEFORE the
+        # sentinel evaluation so the in-trade ratchet (Alarm E POST)
+        # reads the same epoch's view of the world. update() is
+        # max-monotone and direction-aware, so duplicate ticks are
+        # safe.
+        if rsi_15 is not None:
+            try:
+                _divergence_memory.update(
+                    ticker=ticker,
+                    side=side,
+                    price=float(current_price),
+                    rsi=float(rsi_15),
+                )
+            except Exception as _e:
+                logger.debug("[SENTINEL] divergence update failed %s: %s", ticker, _e)
+
         result = evaluate_sentinel(
             side=side,
             unrealized_pnl=unrealized,
@@ -187,10 +336,15 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             now_ts=now_ts,
             last_5m_close=last_5m_close,
             last_5m_ema9=last_5m_ema9,
-            adx_window=None,
+            adx_window=adx_window,
             current_price=current_price,
             current_shares=shares,
+            trade_hvp=trade_hvp,
+            current_adx_5m=adx_5m,
             current_stop_price=pos.get("stop"),
+            divergence_memory=_divergence_memory,
+            current_rsi_15=rsi_15,
+            ticker=ticker,
         )
         # v5.13.6 \u2014 emit lifecycle PHASE4 events on state changes
         # (best-effort, no-op when logger absent).
@@ -312,6 +466,44 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
     )
     if not decision.get("fire"):
         return
+
+    # v5.15.1 vAA-1 \u2014 SENT-E-PRE: block Strike 2/3 entries when the
+    # current tick prints a divergence vs the stored peak. Strike 1
+    # (Entry-1) is never blocked because the memory has no peak yet.
+    # We compute current RSI(15) on 1m closes and consult
+    # check_alarm_e_pre against the singleton DivergenceMemory.
+    try:
+        from engine.sentinel import check_alarm_e_pre as _check_alarm_e_pre
+
+        _strike_num = int(pos.get("strike_num") or 1) + 1  # Entry-2 \u2192 Strike 2
+        _closes_1m = (bars or {}).get("closes") or []
+        _rsi15 = (
+            tg._compute_rsi(_closes_1m, period=15)
+            if (_closes_1m and hasattr(tg, "_compute_rsi"))
+            else None
+        )
+        if _rsi15 is not None:
+            _blocked = _check_alarm_e_pre(
+                memory=_divergence_memory,
+                ticker=ticker,
+                side=side_label,
+                current_price=float(current_price),
+                current_rsi_15=float(_rsi15),
+                strike_num=_strike_num,
+            )
+            if _blocked:
+                logger.info(
+                    "[SENT-E-PRE] %s strike_num=%d %s blocked: divergence vs stored peak "
+                    "price=%.4f rsi15=%.2f",
+                    ticker,
+                    _strike_num,
+                    side_label,
+                    float(current_price),
+                    float(_rsi15),
+                )
+                return
+    except Exception as _e:
+        logger.debug("[SENT-E-PRE] %s eval skipped: %s", ticker, _e)
 
     # Entry-1 ts must precede now (spec III.2).
     e1_ts = pos.get("v5104_entry1_ts_utc")
