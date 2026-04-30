@@ -22,6 +22,20 @@ from collections import deque
 import pytest
 
 
+# v5.15.0 PR-3b \u2014 reset module-level Strike counters between tests in
+# this file so STRIKE-CAP-3 and STRIKE-FLAT-GATE assertions are not
+# polluted by sibling tests that drive the counter to 3.
+@pytest.fixture(autouse=True)
+def _reset_strike_counters():
+    try:
+        import trade_genius as tg
+
+        tg._v570_strike_counts.clear()
+    except Exception:
+        pass
+    yield
+
+
 # =====================================================================
 # SECTION 0 \\u2014 Glossary / state objects
 # =====================================================================
@@ -64,7 +78,6 @@ def test_divergence_memory_is_per_ticker_per_side():
 # =====================================================================
 
 
-@pytest.mark.spec_gap("vAA-PR-3", "STRIKE-CAP-3")
 def test_strike_cap_3_blocks_fourth_entry():
     """Maximum 3 Strikes per (ticker, side) per day."""
     import trade_genius as tg
@@ -80,7 +93,6 @@ def test_strike_cap_3_blocks_fourth_entry():
     assert strike_entry_allowed("NVDA", "LONG") is False
 
 
-@pytest.mark.spec_gap("vAA-PR-3", "STRIKE-FLAT-GATE")
 def test_strike_flat_gate_blocks_until_position_closes():
     """Strike N+1 cannot fire until prior Strike's position == 0."""
     from trade_genius import strike_entry_allowed
@@ -92,7 +104,6 @@ def test_strike_flat_gate_blocks_until_position_closes():
     assert strike_entry_allowed("NVDA", "LONG", positions=fake_positions) is True
 
 
-@pytest.mark.spec_gap("vAA-PR-3", "STRIKE-CAP-3 overrides ENABLE_UNLIMITED_TITAN_STRIKES")
 def test_strike_cap_3_overrides_titan_flag():
     """vAA-1 explicitly retires unlimited Titan strikes."""
     import trade_genius as tg
@@ -547,7 +558,6 @@ def test_sentinels_evaluate_in_parallel_not_sequence():
 # =====================================================================
 
 
-@pytest.mark.spec_gap("vAA-PR-3b", "ORDER-LIMIT-PRICE-LONG")
 def test_long_strike_order_priced_at_ask_times_1_001():
     from broker.orders import compute_strike_limit_price
 
@@ -555,7 +565,6 @@ def test_long_strike_order_priced_at_ask_times_1_001():
     assert math.isclose(px, 100.1, abs_tol=1e-6)
 
 
-@pytest.mark.spec_gap("vAA-PR-3b", "ORDER-LIMIT-PRICE-SHORT")
 def test_short_strike_order_priced_at_bid_times_0_999():
     from broker.orders import compute_strike_limit_price
 
