@@ -47,6 +47,33 @@ def _tg():
     return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
 
 
+# v5.15.0 vAA-1 \u2014 spec rules ORDER-LIMIT-PRICE-LONG / -SHORT.
+# Strike entries cross the spread by 0.10% (LONG) / -0.10% (SHORT)
+# to favour fills while bounding slippage. The Sentinel STOP MARKET
+# defensive exits remain MARKET orders \u2014 only entries are LIMIT.
+ALARM_STRIKE_LIMIT_LONG_FACTOR: float = 1.001  # ask * 1.001
+ALARM_STRIKE_LIMIT_SHORT_FACTOR: float = 0.999  # bid * 0.999
+
+
+def compute_strike_limit_price(side: str, ask: float, bid: float) -> float:
+    """Strike-entry LIMIT price per vAA-1 ORDER-LIMIT-PRICE-LONG/SHORT.
+
+    LONG  -> ``ask * 1.001``
+    SHORT -> ``bid * 0.999``
+
+    Side is matched case-insensitively against ``"LONG"``/``"SHORT"``.
+    The result is NOT rounded \u2014 the spec test asserts the raw float
+    via ``math.isclose(..., abs_tol=1e-6)``; rounding to 2 decimals
+    fails on SHORT (``99.95 * 0.999 = 99.85005`` vs ``99.85``).
+    """
+    s = (side or "").strip().upper()
+    if s == "LONG":
+        return float(ask) * ALARM_STRIKE_LIMIT_LONG_FACTOR
+    if s == "SHORT":
+        return float(bid) * ALARM_STRIKE_LIMIT_SHORT_FACTOR
+    raise ValueError(f"compute_strike_limit_price: unknown side {side!r}")
+
+
 def check_breakout(ticker, side):
     """Side-parameterized entry gate.
 

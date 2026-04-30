@@ -4553,9 +4553,9 @@ def run_local() -> int:
             "TSLA",
         ], m.TITAN_TICKERS
 
-    @t("v5.7.0 D2: ENABLE_UNLIMITED_TITAN_STRIKES default True")
+    @t("v5.15.0 vAA-1: ENABLE_UNLIMITED_TITAN_STRIKES default False (STRIKE-CAP-3)")
     def _():
-        assert m.ENABLE_UNLIMITED_TITAN_STRIKES is True
+        assert m.ENABLE_UNLIMITED_TITAN_STRIKES is False
 
     @t("v5.10.0: DAILY_LOSS_LIMIT_DOLLARS = -1500.0")
     def _():
