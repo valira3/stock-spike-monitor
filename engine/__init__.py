@@ -1,14 +1,11 @@
-"""v5.11.0 \u2014 engine package.
+"""v5.26.0 \u2014 engine package (spec-strict).
 
-Houses the per-tick decision pipeline extracted from
-`trade_genius.py`. PR 4 adds `callbacks` (the `EngineCallbacks`
-Protocol) and `scan` (the per-minute scan loop). Subsequent PRs
-in v5.11.x will retire deprecation shims.
-
-Boot log line `[ENGINE] modules loaded: bars, seeders, phase_machine,
-callbacks, scan` is emitted at trade_genius startup so missed
-Dockerfile COPY lines surface as ImportError on boot rather than
-mid-session.
+Per-tick decision pipeline. Stage 1 + Stage 3 spec-strict cuts of
+v5.26.0 deleted daily_bars, feature_flags, volume_baseline, sma_stack,
+phase_machine modules + the non-spec seeder helpers (DI seed, QQQ
+regime seed/tick, archive/Alpaca prior-session fallbacks). What
+remains: bars (5m OHLC + EMA9), seeders (OR freeze only), callbacks,
+scan, sentinel.
 """
 
 from __future__ import annotations
@@ -17,12 +14,6 @@ from engine.bars import compute_5m_ohlc_and_ema9
 from engine.callbacks import EngineCallbacks
 from engine.scan import scan_loop
 from engine.seeders import (
-    qqq_regime_seed_once,
-    qqq_regime_tick,
-    recompute_di_for_unseeded,
-    recompute_qqq_regime_if_unwarm,
-    seed_di_buffer,
-    seed_di_all,
     seed_opening_range,
     seed_opening_range_all,
 )
@@ -40,12 +31,6 @@ __all__ = [
     "compute_5m_ohlc_and_ema9",
     "EngineCallbacks",
     "scan_loop",
-    "qqq_regime_seed_once",
-    "qqq_regime_tick",
-    "recompute_qqq_regime_if_unwarm",
-    "seed_di_buffer",
-    "seed_di_all",
-    "recompute_di_for_unseeded",
     "seed_opening_range",
     "seed_opening_range_all",
     "SentinelAction",

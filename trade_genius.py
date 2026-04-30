@@ -1053,23 +1053,43 @@ _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
 
 
 from engine.seeders import (
-    qqq_regime_seed_once as _engine_qqq_regime_seed_once,
-    qqq_regime_tick as _engine_qqq_regime_tick,
-    recompute_di_for_unseeded as _engine_recompute_di_for_unseeded,
-    recompute_qqq_regime_if_unwarm as _engine_recompute_qqq_regime_if_unwarm,
-    seed_di_buffer as _engine_seed_di_buffer,
-    seed_di_all as _engine_seed_di_all,
     seed_opening_range as _engine_seed_opening_range,
     seed_opening_range_all as _engine_seed_opening_range_all,
 )
-_v590_qqq_regime_seed_once = _engine_qqq_regime_seed_once
-_v590_qqq_regime_tick = _engine_qqq_regime_tick
-_seed_di_buffer = _engine_seed_di_buffer
-_seed_di_all = _engine_seed_di_all
-_recompute_di_for_unseeded = _engine_recompute_di_for_unseeded
-_recompute_qqq_regime_if_unwarm = _engine_recompute_qqq_regime_if_unwarm
 _seed_opening_range = _engine_seed_opening_range
 _seed_opening_range_all = _engine_seed_opening_range_all
+
+
+def _qqq_weather_tick():
+    """v5.26.0 RULING #5 \u2014 advance QQQ 5m EMA9 used by BL-1 / BU-1
+    Weather. Pulls QQQ 1m bars via `fetch_1min_bars`, derives 5m OHLC
+    via `compute_5m_ohlc_and_ema9`, and writes the latest close + EMA9
+    into the `_QQQ_REGIME` cache. Fail-closed: any exception leaves
+    the prior cached values untouched (Weather check then sees stale-
+    or-None and rejects entries).
+    """
+    global _QQQ_REGIME, _QQQ_REGIME_LAST_BUCKET
+    try:
+        bars = fetch_1min_bars(V561_INDEX_TICKER)
+        if not bars:
+            return
+        five = _engine_compute_5m_ohlc_and_ema9(bars)
+        if not five:
+            return
+        bucket = five.get("last_bucket")
+        if bucket is None or bucket == _QQQ_REGIME_LAST_BUCKET:
+            return
+        closes = five.get("closes") or []
+        if not closes:
+            return
+        _QQQ_REGIME.last_close = closes[-1]
+        _QQQ_REGIME.ema9 = five.get("ema9")
+        _QQQ_REGIME_LAST_BUCKET = bucket
+    except Exception as _e:
+        logger.warning("[regime] qqq weather tick error: %s", _e)
+
+
+_v590_qqq_regime_tick = _qqq_weather_tick
 
 
 def _v561_fmt_num(v) -> str:
@@ -4101,59 +4121,19 @@ def scheduler_thread():
     last_state_save = _now_et() - timedelta(minutes=6)
     last_fired_prune = _now_et()
 
-    # Job table: (day, "HH:MM", function)
-    # Note: times are ET.  8:20 CT = 9:20 ET, 8:31 CT = 9:31 ET
+    # Job table: (day, "HH:MM", function). Times are ET.
+    # v5.26.0 \u2014 09:29 premarket_recalc, 09:31 di_recompute_0931 +
+    # qqq_regime_recompute_0931, and 10:00 / 10:30 DI safety-net
+    # retries deleted (non-spec). 09:30 reset, 09:35 OR collect, R-4
+    # 15:49 EOD flush retained.
     JOBS = [
         ("daily", "09:20", lambda: _fire_system_test("8:20 CT")),
-        # v5.19.0 \u2014 vAA-1 ULTIMATE Decision 6: refresh premarket caches
-        # 1 min before market open. Idempotent on warm caches.
-        ("daily", "09:29",
-         lambda: threading.Thread(target=premarket_recalc, daemon=True).start()),
         ("daily", "09:30", reset_daily_state),
-        # v5.20.1 + v5.20.2 \u2014 09:31 ET combined: system-test ping +
-        # DI recompute (v5.20.1) + QQQ regime recompute (v5.20.2) for
-        # any ticker / regime that came up short on premarket bars.
-        # Both recomputes run on daemon threads so the system test
-        # fires immediately on schedule and the two safety nets run
-        # in parallel.
-        (
-            "daily", "09:31",
-            lambda: (
-                _fire_system_test("8:31 CT"),
-                threading.Thread(
-                    target=di_recompute_0931, daemon=True,
-                ).start(),
-                threading.Thread(
-                    target=qqq_regime_recompute_0931, daemon=True,
-                ).start(),
-            ),
-        ),
+        ("daily", "09:31", lambda: _fire_system_test("8:31 CT")),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
-        # v5.20.5 \u2014 DI seed safety-net retries. Premarket Alpaca IEX
-        # bars are sometimes too thin even at 09:31 ET (live evidence
-        # 2026-04-30: 0/10 tickers cleared the 15-bar threshold). The
-        # 09:31 recompute now uses an RTH-fallback seeder; we run it
-        # again at 10:00 and 10:30 to pick up any ticker whose Alpaca
-        # call failed transiently or whose RTH bars only just
-        # accumulated enough to clear the threshold. All three calls
-        # are idempotent (already-seeded tickers are skipped).
-        (
-            "daily", "10:00",
-            lambda: threading.Thread(
-                target=di_recompute_0931, daemon=True,
-            ).start(),
-        ),
-        (
-            "daily", "10:30",
-            lambda: threading.Thread(
-                target=di_recompute_0931, daemon=True,
-            ).start(),
-        ),
-        # v5.13.0 PR-5 SHARED-EOD \u2014 EOD flush moved from 15:59 to 15:49 ET
-        # (target wall-clock 15:49:59 ET per spec). EOD report now precedes
-        # the flush by one minute.
+        # R-4: EOD flush at 15:49:59 ET per Tiger Sovereign v15.0.
         ("daily", "15:49", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
@@ -4963,14 +4943,9 @@ else:
     # Startup catch-up
     startup_catchup()
 
-    # v4.0.2-beta \u2014 DI seed from Alpaca historical bars so the DI gate
-    # is armed on the first scan cycle rather than waiting ~70 min
-    # of live RTH. Failures here are non-fatal: DI simply warms up
-    # naturally from live ticks as before.
-    try:
-        _seed_di_all(list(TRADE_TICKERS))
-    except Exception:
-        logger.exception("DI_SEED startup failed \u2014 continuing without seed")
+    # v5.26.0 \u2014 DI seed from prior session deleted (non-spec). DI now
+    # warms up naturally from live ticks during RTH; entries that
+    # require DI authority simply wait for warmup per BS-1 / BF-1.
 
     # Background threads
     threading.Thread(target=scheduler_thread, daemon=True).start()
