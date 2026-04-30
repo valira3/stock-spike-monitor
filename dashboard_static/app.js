@@ -474,6 +474,34 @@
   // ─── Permit Matrix helpers ───────────────────────────────────────
   // Tri-state gate cell: pass / fail / pending. Used by both the
   // desktop table and the mobile card stack.
+  // v5.19.2 \u2014 OR-high / OR-low boundary labels render as compact
+  // ORH / ORL in matrix cells. The server's /api/state contract still
+  // emits the full "OR-high" / "OR-low" strings (pinned by
+  // tests/test_dashboard_state_v5_13_2.py); abbreviation is purely
+  // client-side so the API surface is unchanged.
+  function _pmtxAbbrevBoundary(label) {
+    if (!label) return "";
+    const s = String(label);
+    if (s === "OR-high") return "ORH";
+    if (s === "OR-low")  return "ORL";
+    return s;
+  }
+
+  // v5.19.2 \u2014 DI gate is side-aware. The server's entry1_di field is
+  // already the side-correct reading (DI+ for LONG, DI\u2212 for SHORT,
+  // see v5_13_2_snapshot._phase3_row). The header reads DI\u00b1; the
+  // tooltip names the actual side and value when known.
+  function _pmtxDiTooltip(p3, longPermit, shortPermit) {
+    let sideLabel = "DI\u00b1";
+    if (longPermit && !shortPermit) sideLabel = "DI+";
+    else if (shortPermit && !longPermit) sideLabel = "DI\u2212";
+    let tip = sideLabel + " on 5m bars above 25";
+    if (p3 && typeof p3.entry1_di === "number") {
+      tip += " \u2014 last reading: " + _pmtxNum(p3.entry1_di, 1);
+    }
+    return tip;
+  }
+
   function _pmtxGateCell(state, label) {
     let cellCls = "pmtx-gate-pend";
     let glyph = "\u2212"; // pending
@@ -671,21 +699,21 @@
     // not surfaced by /api/state). "Last trade" moved into the detail
     // panel; "Price · Distance" replaces it as the trailing cell so
     // the standalone Proximity card retires cleanly.
-    // v5.18.1 \u2014 dropped the separate .pmtx-cards mobile path. The
-    // same compact table renders on every viewport; ADX/DI+5m/Vol-confirm
-    // columns hide on \u2264720px (CSS) so the row stays readable on a
-    // 390px phone without the per-gate label clutter the cards layout had.
+    // v5.19.2 \u2014 mobile shows ALL columns (ADX / DI\u00b1 / Vol) like
+    // desktop; the table-wrap allows horizontal scroll if the row
+    // exceeds the viewport. Headers are condensed (Vol, Dist, DI\u00b1
+    // 5m>25) and OR-high/OR-low render as ORH/ORL in the body.
     body.innerHTML = ''
       + '<div class="pmtx-table-wrap">'
       +   '<table class="pmtx-table"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
       +     '<th class="pmtx-col-orb" title="5-minute Opening Range break (2 consecutive 1m closes above OR_high or below OR_low)">5m ORB</th>'
       +     '<th class="pmtx-col-adx" title="5-minute ADX above 20 \u2014 trend strength gate (derived from Phase 3 entry state)">ADX&gt;20</th>'
-      +     '<th class="pmtx-col-diplus" title="DI+ on 5-minute bars above 25 at Entry 1 trigger">DI+ 5m&gt;25</th>'
-      +     '<th class="pmtx-col-vol" title="Volume Bucket gate \u2014 Phase 2 PASS/FAIL/COLD/OFF">Vol confirm</th>'
-      +     '<th class="pmtx-col-strike" title="Strike Cap \u2014 max 3 entries per ticker per session (STRIKE-CAP-3)">Strikes</th>'
+      +     '<th class="pmtx-col-diplus" title="DI on 5-minute bars above 25 at Entry 1 trigger \u2014 DI+ for LONG permits, DI\u2212 for SHORT">DI\u00b1 5m&gt;25</th>'
+      +     '<th class="pmtx-col-vol" title="Volume Bucket gate \u2014 Phase 2 PASS/FAIL/COLD/OFF">Vol</th>'
+      +     '<th class="pmtx-col-strike" title="Strike Cap \u2014 max 3 entries per ticker per session (STRIKE-CAP-3, long+short combined)">Strikes</th>'
       +     '<th class="pmtx-col-state" title="Per-ticker FSM state">State</th>'
-      +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to nearest OR boundary (replaces the standalone Proximity card)">Price \u00b7 Distance</th>'
+      +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to nearest OR boundary (ORH=OR-high, ORL=OR-low)">Dist</th>'
       +     '<th class="pmtx-col-expand" aria-label="Toggle detail"></th>'
       +   '</tr></thead><tbody>' + rowsHtml.join("") + '</tbody></table>'
       + '</div>';
@@ -821,7 +849,7 @@
       + '<td class="pmtx-col-titan">' + titanHtml + '</td>'
       + '<td class="pmtx-col-orb">' + _pmtxGateCell(orb, "5-minute Opening Range break") + '</td>'
       + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "ADX above 20 (trend strength)") + '</td>'
-      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(di5, "DI+ on 5m bars above 25" + (p3 && typeof p3.entry1_di === "number" ? " \u2014 last reading: " + _pmtxNum(p3.entry1_di, 1) : "")) + '</td>'
+      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(di5, _pmtxDiTooltip(p3, longPermit, shortPermit)) + '</td>'
       + '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume Bucket gate") + '</td>'
       + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
       + '<td class="pmtx-col-state">' + stateHtml + '</td>'
@@ -837,7 +865,7 @@
               ? '<div class="pmtx-detail-stat"><div class="l">Last price</div><div class="v">' + escapeHtml(fmtPx(prox.price)) + '</div></div>'
               : '')
         +   (prox && prox.nearest_label
-              ? '<div class="pmtx-detail-stat"><div class="l">Nearest boundary</div><div class="v">' + escapeHtml(prox.nearest_label) + '</div></div>'
+              ? '<div class="pmtx-detail-stat"><div class="l">Nearest boundary</div><div class="v" title="' + escapeHtml(prox.nearest_label) + '">' + escapeHtml(_pmtxAbbrevBoundary(prox.nearest_label)) + '</div></div>'
               : '')
         +   (prox && (typeof prox.or_high === "number" || typeof prox.or_low === "number")
               ? '<div class="pmtx-detail-stat"><div class="l">OR range</div><div class="v">'
@@ -874,10 +902,13 @@
     }
     const warn = pct !== null && pct < 0.005;
     const px = (typeof prox.price === "number") ? fmtPx(prox.price) : "\u2014";
-    const lbl = prox.nearest_label || "\u2014";
+    const fullLbl = prox.nearest_label || "\u2014";
+    const lbl = _pmtxAbbrevBoundary(fullLbl) || "\u2014";
     const pctText = pct !== null ? (pct * 100).toFixed(2) + "% \u00b7 " + escapeHtml(lbl) : escapeHtml(lbl);
+    // Tooltip keeps the full "OR-high" / "OR-low" label so the operator
+    // sees the unambiguous boundary name on hover.
     const titleText = pct !== null
-      ? "Last " + px + " \u2014 " + (pct * 100).toFixed(3) + "% from " + lbl
+      ? "Last " + px + " \u2014 " + (pct * 100).toFixed(3) + "% from " + fullLbl
       : "Last " + px;
     return '<div class="pmtx-prox" title="' + escapeHtml(titleText) + '">'
       +    '<span class="pmtx-prox-price">' + escapeHtml(px) + '</span>'

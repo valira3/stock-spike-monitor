@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.19.1"
+BOT_VERSION = "5.19.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,15 +102,15 @@ BOT_VERSION = "5.19.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.19.1 \u2014 STRIKE-CAP-3\n"
-    "unified to per-ticker.\n"
-    "Long+short entries on the\n"
-    "same ticker now share one\n"
-    "counter, capping the ticker\n"
-    "at 3 strikes per day total.\n"
-    "STRIKE-FLAT-GATE stays per\n"
-    "side. vAA-1 ULTIMATE\n"
-    "Decision 1."
+    "v5.19.2 \u2014 Permit Matrix\n"
+    "shows ALL columns on mobile\n"
+    "(parity with desktop), with\n"
+    "horizontal scroll on narrow\n"
+    "phones. Headers condensed:\n"
+    "Vol Confirm \u2192 Vol, Price\n"
+    "\u00b7 Distance \u2192 Dist, DI+\n"
+    "\u2192 DI\u00b1 (side-aware tip).\n"
+    "OR-high/low \u2192 ORH/ORL."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
