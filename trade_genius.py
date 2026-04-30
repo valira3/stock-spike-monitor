@@ -1039,6 +1039,7 @@ V561_OR_DIR_DEFAULT = "/data/or"
 # Singleton regime tracker. Lives for the life of the bot process;
 # seeded once at first compass evaluation, then advanced on each
 # finalized 5m QQQ bar via _v590_qqq_regime_tick().
+import qqq_regime  # noqa: E402
 _QQQ_REGIME = qqq_regime.QQQRegime()
 _QQQ_REGIME_SEEDED = False
 _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close

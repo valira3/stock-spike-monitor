@@ -1,59 +1,35 @@
-"""v5.11.0 PR6 \u2014 canonical replay harness, consumes engine.scan directly.
+"""v5.26.0 stage7 \u2014 real-trade_genius replay harness.
 
-This harness replaces the workspace-only `replay_v510_full_v4.py`
-(36 KB, 791 lines) which carried a parallel re-implementation of
-the per-minute scan/seed/phase logic that drifted from prod every
-release. As of v5.11.0 the engine package (`engine.bars`,
-`engine.seeders`, `engine.phase_machine`, `engine.callbacks`,
-`engine.scan`) exposes a structural seam \u2014 the `EngineCallbacks`
-Protocol \u2014 so backtests can drive the same scan body the bot runs
-in prod, with broker / Telegram / clock calls routed through a
-record-only mock instead of a parallel re-implementation.
+Drives the real `trade_genius` module (v5.26.0 spec-strict) per-minute
+over an archived day with a record-only callbacks layer. Replaces the
+v5.11 SimpleNamespace `_install_fake_tg` stub harness; the goal is
+correlation between replay and prod.
 
 Architecture:
 
-  * `RecordOnlyCallbacks` satisfies the `engine.callbacks.EngineCallbacks`
-    Protocol. Every method either appends to a recording list or
-    returns a deterministic stub (e.g. `now_et()` returns the
-    simulated wall-clock the driver has advanced to). No method
-    talks to a broker, Telegram, or persistence.
+  * `setup_real_tg_environment()` sets `SSM_SMOKE_TEST=1` plus dummy
+    Telegram credentials so `import trade_genius` succeeds without
+    hitting the Telegram API or starting the scheduler / dashboard
+    threads.
+  * `RecordOnlyBrokerLayer` monkey-patches the broker order-placement
+    surface inside trade_genius / broker.* so any LIMIT / STOP_MARKET /
+    MARKET / cancel that the real code attempts is captured to a list.
+  * `RecordOnlyTelegram` monkey-patches `send_telegram` /
+    `send_telegram_alert` to capture messages.
+  * `BacktestClock` is the single source of truth for the simulated
+    wall-clock; `_now_et` / `_now_cdt` are monkey-patched to read it.
+  * `RecordOnlyCallbacks` satisfies `engine.callbacks.EngineCallbacks`
+    by delegating most methods to the REAL trade_genius / broker code.
+    `manage_positions`, `check_entry`, `execute_entry`, etc. all hit
+    the production code paths \u2014 only side effects (orders, Telegram,
+    persistence) are intercepted.
 
-  * `_install_fake_tg(...)` plants a `SimpleNamespace` in
-    `sys.modules["trade_genius"]` with every global / helper that
-    `engine.scan` reaches for via its `_tg()` indirection (see
-    engine/scan.py top-of-file docstring for the canonical list).
-    Helpers are stubbed to no-ops; globals are seeded with sane
-    defaults (TRADE_TICKERS, _scan_paused=False, pdc={}, etc.).
+CLI:
 
-  * `run_replay(date_str, tickers, bars_dir)` loads pre-market +
-    RTH 1m JSONL bars from `<bars_dir>/<date>/`, walks per-minute
-    from 09:35 ET to 15:55 ET, and on each tick calls
-    `engine.scan.scan_loop(callbacks)`. The fetch-bars callback
-    returns the last N bars as of the simulated clock so the
-    engine sees "live" market data the same way prod does.
-
-  * Real production data lives at /home/user/workspace/today_bars/
-    (workspace, not in repo \u2014 too large). For CI / regression we
-    ship a minimal fixture under tests/fixtures/replay_v511_minimal/
-    with one ticker (AAPL) and a handful of pre-market + RTH bars.
-
-Usage:
-
-    # Real workspace data (full Apr 28 session):
     python -m backtest.replay_v511_full \\
-        --date 2026-04-28 \\
-        --bars-dir /home/user/workspace/today_bars
-
-    # CI fixture:
-    python -m backtest.replay_v511_full \\
-        --date 2026-04-28 \\
-        --bars-dir tests/fixtures/replay_v511_minimal
-
-This harness is intentionally tiny relative to v4: the goal is to
-prove the seam works, not to mirror v4's gate-by-gate ledger. P&L
-and trade-pairing reports were v4's job; that layer can be rebuilt
-on top of `RecordOnlyCallbacks.entries` / `.exits` once we trust
-the seam end-to-end.
+        --date 2026-04-30 \\
+        --bars-dir /home/user/workspace/today_bars \\
+        --output /home/user/workspace/v526_today_backtest/raw_run.json
 """
 
 from __future__ import annotations
@@ -61,12 +37,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys as _sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -77,7 +53,7 @@ logger = logging.getLogger("backtest.replay_v511")
 
 
 # ---------------------------------------------------------------------------
-# Bar loading
+# Bar loading (unchanged from v5.11 harness)
 # ---------------------------------------------------------------------------
 
 
@@ -111,12 +87,7 @@ def _parse_ts(ts: str | None) -> datetime | None:
 
 
 def load_day_bars(bars_dir: Path, date_str: str, ticker: str) -> list[dict]:
-    """Load pre-market + RTH 1m bars for `ticker` on `date_str`.
-
-    Pre-market bars (if any) live under `<bars_dir>/<date>/premarket/<TICKER>.jsonl`;
-    RTH bars live at `<bars_dir>/<date>/<TICKER>.jsonl`. Returned list is
-    sorted ascending by UTC ts and tagged with a parsed `_dt` field.
-    """
+    """Load pre-market + RTH 1m bars for `ticker` on `date_str`."""
     rth = _load_jsonl(bars_dir / date_str / f"{ticker}.jsonl")
     pre = _load_jsonl(bars_dir / date_str / "premarket" / f"{ticker}.jsonl")
     bars = list(pre) + list(rth)
@@ -133,30 +104,298 @@ def load_day_bars(bars_dir: Path, date_str: str, ticker: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Record-only callbacks
+# Step 1 \u2014 environment setup so real trade_genius imports cleanly
+# ---------------------------------------------------------------------------
+
+
+def setup_real_tg_environment() -> None:
+    """Set env vars so `import trade_genius` succeeds without network I/O.
+
+    `SSM_SMOKE_TEST=1` is the canonical escape hatch in trade_genius.py
+    that skips the Telegram bot loop, the scheduler thread, and the
+    startup catch-up. The dummy `TELEGRAM_TOKEN` / `CHAT_ID` keep the
+    module-level `Application.builder()` happy. The Alpaca executor
+    bootstrap fails closed when `PAPER_KEY` is missing, which is fine
+    \u2014 the harness installs a record-only broker layer afterwards.
+    """
+    os.environ.setdefault("SSM_SMOKE_TEST", "1")
+    os.environ.setdefault("TELEGRAM_TOKEN", "0:backtest_dummy_token")
+    os.environ.setdefault("CHAT_ID", "0")
+    os.environ.setdefault("DASHBOARD_PASSWORD", "")
+    # Make sure trade_genius does not try to seed from external data.
+    os.environ.setdefault("TG_BACKTEST_MODE", "1")
+
+
+# ---------------------------------------------------------------------------
+# Step 2 \u2014 simulated clock
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BacktestClock:
+    """Single source of truth for `_now_et` / `_now_cdt` during replay.
+
+    The driver advances `now` minute-by-minute before each
+    `scan_loop` call. Production-code paths that read the clock via
+    `trade_genius._now_et()` (monkey-patched at install time) see this
+    deterministic value instead of the wall clock.
+    """
+
+    now: datetime = field(default_factory=lambda: datetime(2026, 4, 30, 9, 35, tzinfo=ET))
+
+    def now_et(self) -> datetime:
+        return self.now
+
+    def now_cdt(self) -> datetime:
+        return self.now.astimezone(CDT)
+
+
+# ---------------------------------------------------------------------------
+# Step 3 \u2014 record-only broker layer
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecordOnlyBrokerLayer:
+    """Captures every order-placement attempt from the real broker code.
+
+    Strategy: monkey-patch the public `client` / `alpaca` / executor
+    surface inside trade_genius so the production order-routing code
+    paths run, but the actual REST calls are no-ops that append a
+    record dict. Each record has: ts, ticker, side, order_type, qty,
+    price (limit/stop), reason, order_id.
+    """
+
+    orders: list[dict] = field(default_factory=list)
+    cancellations: list[dict] = field(default_factory=list)
+    _next_id: int = 0
+
+    def _alloc_id(self) -> str:
+        self._next_id += 1
+        return f"backtest-{self._next_id:06d}"
+
+    def place_limit_order(self, *, ticker: str, side: str, qty: int,
+                          limit_price: float, reason: str,
+                          ts: datetime | None = None) -> str:
+        oid = self._alloc_id()
+        self.orders.append({
+            "ts": (ts or datetime.now(tz=ET)).isoformat(),
+            "ticker": ticker,
+            "side": side,
+            "order_type": "LIMIT",
+            "qty": int(qty),
+            "limit_price": float(limit_price),
+            "stop_price": None,
+            "reason": reason,
+            "order_id": oid,
+        })
+        return oid
+
+    def place_stop_market_order(self, *, ticker: str, side: str, qty: int,
+                                stop_price: float, reason: str,
+                                ts: datetime | None = None) -> str:
+        oid = self._alloc_id()
+        self.orders.append({
+            "ts": (ts or datetime.now(tz=ET)).isoformat(),
+            "ticker": ticker,
+            "side": side,
+            "order_type": "STOP_MARKET",
+            "qty": int(qty),
+            "limit_price": None,
+            "stop_price": float(stop_price),
+            "reason": reason,
+            "order_id": oid,
+        })
+        return oid
+
+    def place_market_order(self, *, ticker: str, side: str, qty: int,
+                           reason: str, ts: datetime | None = None) -> str:
+        oid = self._alloc_id()
+        self.orders.append({
+            "ts": (ts or datetime.now(tz=ET)).isoformat(),
+            "ticker": ticker,
+            "side": side,
+            "order_type": "MARKET",
+            "qty": int(qty),
+            "limit_price": None,
+            "stop_price": None,
+            "reason": reason,
+            "order_id": oid,
+        })
+        return oid
+
+    def cancel_order(self, *, order_id: str,
+                     ts: datetime | None = None) -> bool:
+        self.cancellations.append({
+            "ts": (ts or datetime.now(tz=ET)).isoformat(),
+            "order_id": order_id,
+        })
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Step 4 \u2014 record-only Telegram
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecordOnlyTelegram:
+    messages: list[dict] = field(default_factory=list)
+
+    def send(self, message: str, chat: str = "") -> None:
+        self.messages.append({"chat": chat, "message": str(message)})
+
+
+# ---------------------------------------------------------------------------
+# Step 5 \u2014 record-only position store
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecordOnlyPositionStore:
+    """Wraps trade_genius.positions / .short_positions so the harness
+    can read mutations the real code performs.
+
+    Production code mutates the dicts in place (e.g.
+    `positions[ticker] = {...}`); we simply snapshot them through the
+    callback get/has/set/remove surface.
+    """
+    positions: dict[str, dict] = field(default_factory=dict)
+    short_positions: dict[str, dict] = field(default_factory=dict)
+
+    def get(self, ticker: str, side: str) -> dict | None:
+        if str(side).lower() == "long":
+            return self.positions.get(ticker)
+        return self.short_positions.get(ticker)
+
+    def has_long(self, ticker: str) -> bool:
+        return ticker in self.positions
+
+    def has_short(self, ticker: str) -> bool:
+        return ticker in self.short_positions
+
+    def set(self, ticker: str, side: str, position: dict) -> None:
+        if str(side).lower() == "long":
+            self.positions[ticker] = position
+        else:
+            self.short_positions[ticker] = position
+
+    def remove(self, ticker: str, side: str) -> None:
+        if str(side).lower() == "long":
+            self.positions.pop(ticker, None)
+        else:
+            self.short_positions.pop(ticker, None)
+
+
+# ---------------------------------------------------------------------------
+# Step 6 \u2014 install the record-only layers into the real trade_genius
+# ---------------------------------------------------------------------------
+
+
+def install_record_only_layers(
+    tg, clock: BacktestClock, broker_layer: RecordOnlyBrokerLayer,
+    telegram_layer: RecordOnlyTelegram, position_store: RecordOnlyPositionStore,
+) -> None:
+    """Monkey-patch trade_genius so order placement / Telegram / clock
+    read from the harness's recording surfaces.
+
+    Patches applied:
+      * `trade_genius._now_et` / `_now_cdt` \u2192 BacktestClock
+      * `trade_genius.send_telegram` \u2192 RecordOnlyTelegram.send
+      * `trade_genius.positions` / `.short_positions` already exist as
+        module dicts; we replace the references with the harness's
+        store dicts so the production code mutates ours instead.
+      * `trade_genius.client.*` order-placement surface (if present)
+        \u2192 RecordOnlyBrokerLayer methods. Different bot versions wire
+        Alpaca through different shim names; this routine attempts a
+        few common ones and silently skips any that aren't present.
+    """
+    # Clock.
+    tg._now_et = clock.now_et
+    tg._now_cdt = clock.now_cdt
+
+    # Telegram.
+    if hasattr(tg, "send_telegram"):
+        tg.send_telegram = lambda msg, *a, **kw: telegram_layer.send(msg)
+    if hasattr(tg, "send_telegram_alert"):
+        tg.send_telegram_alert = lambda msg, *a, **kw: telegram_layer.send(msg)
+    if hasattr(tg, "send_startup_message"):
+        tg.send_startup_message = lambda *a, **kw: None
+
+    # Position dicts \u2014 swap module-level references so production code
+    # mutates the harness-owned dicts.
+    tg.positions = position_store.positions
+    tg.short_positions = position_store.short_positions
+
+    # Broker order surface \u2014 trade_genius.client is the Alpaca shim
+    # (paper book). When `SSM_SMOKE_TEST=1` it's likely a stub; we
+    # replace its order methods with recording wrappers anyway so
+    # any code path that tries to place an order ends up here.
+    _client = getattr(tg, "client", None)
+    if _client is not None:
+        def _submit_limit(symbol, qty, side, limit_price, **kw):
+            return broker_layer.place_limit_order(
+                ticker=symbol, side=str(side), qty=int(qty),
+                limit_price=float(limit_price),
+                reason=kw.get("reason", "unknown"),
+                ts=clock.now,
+            )
+
+        def _submit_stop(symbol, qty, side, stop_price, **kw):
+            return broker_layer.place_stop_market_order(
+                ticker=symbol, side=str(side), qty=int(qty),
+                stop_price=float(stop_price),
+                reason=kw.get("reason", "unknown"),
+                ts=clock.now,
+            )
+
+        def _submit_market(symbol, qty, side, **kw):
+            return broker_layer.place_market_order(
+                ticker=symbol, side=str(side), qty=int(qty),
+                reason=kw.get("reason", "unknown"),
+                ts=clock.now,
+            )
+
+        def _cancel(order_id, **kw):
+            return broker_layer.cancel_order(order_id=str(order_id), ts=clock.now)
+
+        for name in ("submit_limit_order", "place_limit_order"):
+            if hasattr(_client, name):
+                setattr(_client, name, _submit_limit)
+        for name in ("submit_stop_order", "place_stop_market_order"):
+            if hasattr(_client, name):
+                setattr(_client, name, _submit_stop)
+        for name in ("submit_market_order", "place_market_order"):
+            if hasattr(_client, name):
+                setattr(_client, name, _submit_market)
+        for name in ("cancel_order",):
+            if hasattr(_client, name):
+                setattr(_client, name, _cancel)
+
+
+# ---------------------------------------------------------------------------
+# Step 7 \u2014 RecordOnlyCallbacks (real-tg-aware)
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class RecordOnlyCallbacks:
-    """Satisfies `engine.callbacks.EngineCallbacks` without side effects.
+    """`EngineCallbacks` impl that delegates most methods to real tg.
 
-    Attributes:
-        clock_et: simulated wall-clock in ET. Driver advances this
-            minute-by-minute before each `scan_loop` invocation.
-        bars_by_ticker: full-day bars keyed by ticker. The fetch
-            callback slices these up to and including `clock_et`.
-        positions / short_positions: empty dicts here \u2014 the harness
-            does not (yet) simulate holdings. `has_long` / `has_short`
-            return False so every scan eligible ticker is treated as
-            a fresh entry candidate.
-        entries / exits / alerts / errors / ticks: append-only logs
-            of everything the engine asks the callbacks to do. The
-            regression test asserts these are populated.
+    The harness owns the clock, bars, position store, broker recorder,
+    and telegram recorder. The PRODUCTION trade_genius / broker code
+    runs unchanged for entry-signal evaluation, position management,
+    and exit handling \u2014 only the side effects route to the record-
+    only layers via the monkey-patches installed by
+    `install_record_only_layers`.
     """
 
-    clock_et: datetime = field(default_factory=lambda: datetime(2026, 4, 28, 9, 35, tzinfo=ET))
-    bars_by_ticker: dict[str, list[dict]] = field(default_factory=dict)
+    tg: Any  # the real trade_genius module
+    clock: BacktestClock
+    bars_by_ticker: dict[str, list[dict]]
+    broker_layer: RecordOnlyBrokerLayer
+    telegram_layer: RecordOnlyTelegram
+    position_store: RecordOnlyPositionStore
 
     entries: list[dict] = field(default_factory=list)
     exits: list[dict] = field(default_factory=list)
@@ -166,23 +405,18 @@ class RecordOnlyCallbacks:
     fetch_calls: list[str] = field(default_factory=list)
     ticks: list[datetime] = field(default_factory=list)
 
-    # ---- Clock --------------------------------------------------------
+    # ---- Clock -------------------------------------------------------
     def now_et(self) -> datetime:
-        return self.clock_et
+        return self.clock.now_et()
 
     def now_cdt(self) -> datetime:
-        return self.clock_et.astimezone(CDT)
+        return self.clock.now_cdt()
 
-    # ---- Market data --------------------------------------------------
+    # ---- Market data -------------------------------------------------
     def fetch_1min_bars(self, ticker: str) -> Any:
-        """Return the rolling parallel-array shape `engine.scan` expects.
-
-        Includes only bars whose timestamp is <= the simulated clock
-        so the engine sees the same forward-only view it would in prod.
-        """
         self.fetch_calls.append(ticker)
         all_bars = self.bars_by_ticker.get(ticker.upper()) or []
-        cutoff = self.clock_et.astimezone(timezone.utc)
+        cutoff = self.clock.now.astimezone(timezone.utc)
         visible = [b for b in all_bars if b["_dt"] <= cutoff]
         if not visible:
             return None
@@ -206,253 +440,164 @@ class RecordOnlyCallbacks:
             "timestamps": timestamps,
         }
 
-    # ---- Position store -----------------------------------------------
+    # ---- Position store ----------------------------------------------
     def get_position(self, ticker: str, side: str) -> dict | None:
-        return None
+        return self.position_store.get(ticker, side)
 
     def has_long(self, ticker: str) -> bool:
-        return False
+        return self.position_store.has_long(ticker)
 
     def has_short(self, ticker: str) -> bool:
-        return False
+        return self.position_store.has_short(ticker)
 
-    # ---- Position management ------------------------------------------
+    def set_position(self, ticker: str, side: str, position: dict) -> None:
+        self.position_store.set(ticker, side, position)
+
+    def remove_position(self, ticker: str, side: str) -> None:
+        self.position_store.remove(ticker, side)
+
+    # ---- Position management \u2014 delegate to real tg ------------------
     def manage_positions(self) -> None:
-        return None
+        try:
+            self.tg.manage_positions()
+        except Exception as e:
+            logger.debug("manage_positions raised: %s", e)
+            self.errors.append({
+                "executor": "replay_driver",
+                "code": "MANAGE_POSITIONS_EXCEPTION",
+                "severity": "warning",
+                "summary": "manage_positions raised",
+                "detail": f"{type(e).__name__}: {str(e)[:200]}",
+            })
 
     def manage_short_positions(self) -> None:
-        return None
+        try:
+            self.tg.manage_short_positions()
+        except Exception as e:
+            logger.debug("manage_short_positions raised: %s", e)
+            self.errors.append({
+                "executor": "replay_driver",
+                "code": "MANAGE_SHORT_POSITIONS_EXCEPTION",
+                "severity": "warning",
+                "summary": "manage_short_positions raised",
+                "detail": f"{type(e).__name__}: {str(e)[:200]}",
+            })
 
-    # ---- Entry signals ------------------------------------------------
+    # ---- Entry signals \u2014 delegate to real tg -------------------------
     def check_entry(self, ticker: str) -> tuple[bool, Any]:
-        return (False, None)
+        try:
+            return self.tg.check_entry(ticker)
+        except Exception as e:
+            logger.debug("check_entry(%s) raised: %s", ticker, e)
+            return (False, None)
 
     def check_short_entry(self, ticker: str) -> tuple[bool, Any]:
-        return (False, None)
+        try:
+            return self.tg.check_short_entry(ticker)
+        except Exception as e:
+            logger.debug("check_short_entry(%s) raised: %s", ticker, e)
+            return (False, None)
 
-    # ---- Order execution ----------------------------------------------
+    # ---- Order execution \u2014 delegate to real tg + record -------------
     def execute_entry(self, ticker: str, price: float) -> None:
-        self.entries.append(
-            {
-                "ts": self.clock_et.isoformat(),
-                "ticker": ticker,
-                "price": price,
-                "side": "long",
-            }
-        )
+        # Record the harness-level entry first so the report has it
+        # even if the real execute_entry raises mid-flight.
+        self.entries.append({
+            "ts": self.clock.now.isoformat(),
+            "ticker": ticker,
+            "side": "long",
+            "price": float(price),
+        })
+        try:
+            self.tg.execute_entry(ticker, price)
+        except Exception as e:
+            logger.debug("execute_entry(%s) raised: %s", ticker, e)
 
     def execute_short_entry(self, ticker: str, price: float) -> None:
-        self.short_entries.append(
-            {
-                "ts": self.clock_et.isoformat(),
-                "ticker": ticker,
-                "price": price,
-                "side": "short",
-            }
-        )
+        self.short_entries.append({
+            "ts": self.clock.now.isoformat(),
+            "ticker": ticker,
+            "side": "short",
+            "price": float(price),
+        })
+        try:
+            self.tg.execute_short_entry(ticker, price)
+        except Exception as e:
+            logger.debug("execute_short_entry(%s) raised: %s", ticker, e)
 
     def execute_exit(self, ticker: str, side: str, price: float, reason: str) -> None:
-        self.exits.append(
-            {
-                "ts": self.clock_et.isoformat(),
-                "ticker": ticker,
-                "side": side,
-                "price": price,
-                "reason": reason,
-            }
-        )
+        self.exits.append({
+            "ts": self.clock.now.isoformat(),
+            "ticker": ticker,
+            "side": str(side).lower(),
+            "price": float(price),
+            "reason": reason,
+        })
+        try:
+            if str(side).lower() == "long":
+                self.tg.close_position(ticker, price, reason)
+            else:
+                self.tg.close_short_position(ticker, price, reason)
+        except Exception as e:
+            logger.debug("execute_exit(%s/%s) raised: %s", ticker, side, e)
 
-    # ---- Operator surface ---------------------------------------------
+    # ---- Operator surface --------------------------------------------
     def alert(self, msg: str) -> None:
         self.alerts.append(msg)
+        self.telegram_layer.send(msg)
 
-    def report_error(
-        self, *, executor: str, code: str, severity: str, summary: str, detail: str
-    ) -> None:
-        self.errors.append(
-            {
-                "executor": executor,
-                "code": code,
-                "severity": severity,
-                "summary": summary,
-                "detail": detail,
-            }
+    def report_error(self, *, executor: str, code: str, severity: str,
+                     summary: str, detail: str) -> None:
+        self.errors.append({
+            "executor": executor,
+            "code": code,
+            "severity": severity,
+            "summary": summary,
+            "detail": detail,
+        })
+
+    # ---- Broker passthroughs (Protocol methods) ----------------------
+    def place_limit_order(self, *, ticker: str, side: str, qty: int,
+                          limit_price: float, reason: str) -> str:
+        return self.broker_layer.place_limit_order(
+            ticker=ticker, side=side, qty=qty,
+            limit_price=limit_price, reason=reason, ts=self.clock.now,
         )
 
+    def place_stop_market_order(self, *, ticker: str, side: str, qty: int,
+                                stop_price: float, reason: str) -> str:
+        return self.broker_layer.place_stop_market_order(
+            ticker=ticker, side=side, qty=qty,
+            stop_price=stop_price, reason=reason, ts=self.clock.now,
+        )
+
+    def place_market_order(self, *, ticker: str, side: str, qty: int,
+                           reason: str) -> str:
+        return self.broker_layer.place_market_order(
+            ticker=ticker, side=side, qty=qty,
+            reason=reason, ts=self.clock.now,
+        )
+
+    def cancel_order(self, *, order_id: str) -> bool:
+        return self.broker_layer.cancel_order(order_id=order_id, ts=self.clock.now)
+
+    def send_telegram(self, *, chat: str, message: str) -> None:
+        self.telegram_layer.send(message, chat=chat)
+
 
 # ---------------------------------------------------------------------------
-# Fake `trade_genius` module \u2014 satisfies engine.scan's `_tg()` indirection
+# Step 8 \u2014 P&L pairing
 # ---------------------------------------------------------------------------
 
 
-def _install_fake_tg(tickers: list[str]) -> SimpleNamespace:
-    """Install a record-only stub in `sys.modules["trade_genius"]`.
+def pair_entries_to_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
+    """Greedy FIFO pairing on (ticker, side) for crude realized P&L.
 
-    `engine.scan._tg()` resolves the live trade_genius module via
-    `sys.modules.get("trade_genius") or sys.modules.get("__main__")`.
-    For replay we need a stand-in with every global / helper the scan
-    body touches; everything is a no-op that records the access.
+    Returns a list of dicts: ticker, side, entry_ts, exit_ts,
+    entry_price, exit_price, pnl_dollars. Long pnl = exit - entry;
+    short pnl = entry - exit. No share-count math (entries/exits do
+    not always carry it cleanly through the harness yet).
     """
-    fake = SimpleNamespace()
-
-    # Globals
-    fake.TRADE_TICKERS = list(tickers)
-    fake.V561_INDEX_TICKER = "QQQ"
-    fake._scan_idle_hours = False
-    fake._scan_paused = False
-    fake._current_mode = "REPLAY"
-    fake._last_scan_time = None
-    # v5.13.9 \u2014 _regime_bullish removed; scan.py no longer reads it.
-    fake.positions = {}
-    fake.short_positions = {}
-    fake.pdc = {}
-    fake._ws_consumer = None
-    fake._QQQ_REGIME = SimpleNamespace(last_close=None, ema9=None)
-
-    # No-op helpers \u2014 all wrapped in try/except inside engine.scan
-    # so a missing attribute would crash the loop, but a no-op is fine.
-    fake._refresh_market_mode = lambda: None
-    fake._clear_cycle_bar_cache = lambda: None
-    fake._v561_archive_qqq_bar = lambda *a, **kw: None
-    fake._v512_archive_minute_bar = lambda *a, **kw: None
-    fake._v590_qqq_regime_tick = lambda: None
-    fake._v561_maybe_persist_or_snapshots = lambda *a, **kw: None
-    fake._update_gate_snapshot = lambda *a, **kw: None
-    fake._v520_mtm_ticker = lambda *a, **kw: None
-    fake._opening_avwap = lambda *a, **kw: None
-
-    # Stash a recorder for tests / debugging.
-    fake._replay_marker = "v5.11.0-pr6-replay-fake-tg"
-
-    _sys.modules["trade_genius"] = fake
-    return fake
-
-
-# ---------------------------------------------------------------------------
-# Replay driver
-# ---------------------------------------------------------------------------
-
-DEFAULT_TICKERS = ["AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX", "NVDA", "ORCL", "TSLA"]
-
-
-@dataclass
-class ReplayResult:
-    date: str
-    tickers: list[str]
-    minutes_processed: int
-    callbacks: RecordOnlyCallbacks
-
-
-def run_replay(
-    date_str: str,
-    tickers: list[str] | None = None,
-    bars_dir: Path | str = Path("/home/user/workspace/today_bars"),
-    *,
-    start_hhmm: tuple[int, int] = (9, 35),
-    end_hhmm: tuple[int, int] = (15, 55),
-) -> ReplayResult:
-    """Drive `engine.scan.scan_loop` per-minute over an archived day.
-
-    Args:
-        date_str: 'YYYY-MM-DD' \u2014 the session date.
-        tickers: trade-universe override; defaults to the v5.11 Titan 10.
-        bars_dir: parent dir containing `<date>/{TICKER}.jsonl` and
-            optional `<date>/premarket/{TICKER}.jsonl` files.
-        start_hhmm / end_hhmm: ET wall-clock window to step through.
-    """
-    bars_dir = Path(bars_dir)
-    tickers = list(tickers or DEFAULT_TICKERS)
-    universe = tickers + ["QQQ", "SPY"]
-
-    # Load all bars up front, keyed by ticker.
-    bars_by_ticker: dict[str, list[dict]] = {}
-    for tk in universe:
-        bars_by_ticker[tk] = load_day_bars(bars_dir, date_str, tk)
-
-    # Fake trade_genius module so engine.scan._tg() finds something.
-    _install_fake_tg(tickers)
-
-    # Import after fake install so engine.scan resolves the stub when
-    # it caches `_tg()` at first call.
-    import engine.scan as _engine_scan
-
-    # Build callbacks. Initial clock = start of window.
-    yyyy, mm, dd = (int(p) for p in date_str.split("-"))
-    start_dt = datetime(yyyy, mm, dd, start_hhmm[0], start_hhmm[1], tzinfo=ET)
-    end_dt = datetime(yyyy, mm, dd, end_hhmm[0], end_hhmm[1], tzinfo=ET)
-
-    cb = RecordOnlyCallbacks(
-        clock_et=start_dt,
-        bars_by_ticker=bars_by_ticker,
-    )
-
-    # Step minute-by-minute.
-    cur = start_dt
-    minutes = 0
-    while cur <= end_dt:
-        cb.clock_et = cur
-        cb.ticks.append(cur)
-        try:
-            _engine_scan.scan_loop(cb)
-        except Exception as e:
-            logger.error("scan_loop crashed at %s: %s", cur.isoformat(), e)
-            cb.errors.append(
-                {
-                    "executor": "replay_driver",
-                    "code": "SCAN_LOOP_EXCEPTION",
-                    "severity": "error",
-                    "summary": f"scan_loop crashed at {cur.isoformat()}",
-                    "detail": f"{type(e).__name__}: {str(e)[:200]}",
-                }
-            )
-        minutes += 1
-        cur = cur + timedelta(minutes=1)
-
-    return ReplayResult(
-        date=date_str,
-        tickers=tickers,
-        minutes_processed=minutes,
-        callbacks=cb,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
-
-
-def format_report(result: ReplayResult) -> str:
-    cb = result.callbacks
-    pnl = 0.0
-    paired = _pair_entries_exits(cb.entries, cb.exits)
-    for p in paired:
-        pnl += p["pnl"]
-    lines = [
-        f"# v5.11.0 replay (engine seam) \u2014 {result.date}",
-        "",
-        f"- universe: {', '.join(result.tickers)}",
-        f"- minutes processed: {result.minutes_processed}",
-        f"- fetch_1min_bars calls: {len(cb.fetch_calls)}",
-        f"- alerts emitted: {len(cb.alerts)}",
-        f"- errors logged: {len(cb.errors)}",
-        f"- entries: {len(cb.entries)}  (long={len(cb.entries)} short={len(cb.short_entries)})",
-        f"- exits:   {len(cb.exits)}",
-        f"- paired round-trips: {len(paired)}  pnl=${pnl:+.2f}",
-        "",
-        "## Entries",
-    ]
-    for e in cb.entries:
-        lines.append(f"- {e['ts']} {e['ticker']} long @ {e['price']}")
-    lines.append("")
-    lines.append("## Exits")
-    for x in cb.exits:
-        lines.append(f"- {x['ts']} {x['ticker']} {x['side']} @ {x['price']} ({x['reason']})")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _pair_entries_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
-    """Greedy FIFO pairing on (ticker, side) for crude P&L."""
     by_key: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for e in entries:
         by_key[(e["ticker"], e["side"])].append(dict(e))
@@ -464,18 +609,184 @@ def _pair_entries_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
         e = by_key[key].pop(0)
         sign = 1.0 if x["side"] == "long" else -1.0
         pnl = sign * (float(x["price"]) - float(e["price"]))
-        paired.append(
-            {
-                "ticker": x["ticker"],
-                "side": x["side"],
-                "entry_ts": e["ts"],
-                "exit_ts": x["ts"],
-                "entry_price": e["price"],
-                "exit_price": x["price"],
-                "pnl": pnl,
-            }
-        )
+        paired.append({
+            "ticker": x["ticker"],
+            "side": x["side"],
+            "entry_ts": e["ts"],
+            "exit_ts": x["ts"],
+            "entry_price": e["price"],
+            "exit_price": x["price"],
+            "pnl_dollars": round(pnl, 4),
+        })
     return paired
+
+
+def summarize(entries: list[dict], exits: list[dict],
+              pairs: list[dict]) -> dict:
+    wins = sum(1 for p in pairs if p["pnl_dollars"] > 0)
+    losses = sum(1 for p in pairs if p["pnl_dollars"] < 0)
+    total = round(sum(p["pnl_dollars"] for p in pairs), 4)
+    return {
+        "entries": len(entries),
+        "exits": len(exits),
+        "wins": wins,
+        "losses": losses,
+        "total_pnl": total,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Step 9 \u2014 driver
+# ---------------------------------------------------------------------------
+
+DEFAULT_TICKERS = ["AAPL", "AMZN", "AVGO", "GOOG", "META", "MSFT", "NFLX", "NVDA", "ORCL", "TSLA"]
+
+
+@dataclass
+class ReplayResult:
+    date: str
+    tickers: list[str]
+    minutes_processed: int
+    callbacks: RecordOnlyCallbacks
+    bot_version: str
+
+
+def run_replay(
+    date_str: str,
+    tickers: list[str] | None = None,
+    bars_dir: Path | str = Path("/home/user/workspace/today_bars"),
+    *,
+    start_hhmm: tuple[int, int] = (9, 35),
+    end_hhmm: tuple[int, int] = (15, 55),
+) -> ReplayResult:
+    """Drive `engine.scan.scan_loop` per-minute over an archived day."""
+    bars_dir = Path(bars_dir)
+    tickers = list(tickers or DEFAULT_TICKERS)
+    universe = tickers + ["QQQ", "SPY"]
+
+    # Load all bars up front, keyed by ticker.
+    bars_by_ticker: dict[str, list[dict]] = {}
+    for tk in universe:
+        bars_by_ticker[tk] = load_day_bars(bars_dir, date_str, tk)
+
+    # 1) Set the env up so the real tg imports without booting Telegram.
+    setup_real_tg_environment()
+
+    # 2) Import the real trade_genius. SSM_SMOKE_TEST=1 short-circuits
+    #    the boot sequence so we land with the module fully constructed
+    #    but no Telegram bot, no scheduler, no dashboard threads.
+    import trade_genius as _tg  # noqa: E402
+
+    # 3) Build the recording layers + clock.
+    yyyy, mm, dd = (int(p) for p in date_str.split("-"))
+    start_dt = datetime(yyyy, mm, dd, start_hhmm[0], start_hhmm[1], tzinfo=ET)
+    end_dt = datetime(yyyy, mm, dd, end_hhmm[0], end_hhmm[1], tzinfo=ET)
+
+    clock = BacktestClock(now=start_dt)
+    broker_layer = RecordOnlyBrokerLayer()
+    telegram_layer = RecordOnlyTelegram()
+    position_store = RecordOnlyPositionStore()
+
+    # 4) Install monkey-patches into the real trade_genius.
+    install_record_only_layers(_tg, clock, broker_layer, telegram_layer, position_store)
+
+    # 5) Build the callbacks.
+    cb = RecordOnlyCallbacks(
+        tg=_tg,
+        clock=clock,
+        bars_by_ticker=bars_by_ticker,
+        broker_layer=broker_layer,
+        telegram_layer=telegram_layer,
+        position_store=position_store,
+    )
+
+    # 6) Step minute-by-minute through the session.
+    import engine.scan as _engine_scan
+    cur = start_dt
+    minutes = 0
+    while cur <= end_dt:
+        clock.now = cur
+        cb.ticks.append(cur)
+        try:
+            _engine_scan.scan_loop(cb)
+        except Exception as e:
+            logger.warning("scan_loop crashed at %s: %s", cur.isoformat(), e)
+            cb.errors.append({
+                "executor": "replay_driver",
+                "code": "SCAN_LOOP_EXCEPTION",
+                "severity": "error",
+                "summary": f"scan_loop crashed at {cur.isoformat()}",
+                "detail": f"{type(e).__name__}: {str(e)[:200]}",
+            })
+        minutes += 1
+        cur = cur + timedelta(minutes=1)
+
+    return ReplayResult(
+        date=date_str,
+        tickers=tickers,
+        minutes_processed=minutes,
+        callbacks=cb,
+        bot_version=getattr(_tg, "BOT_VERSION", "unknown"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 10 \u2014 JSON report
+# ---------------------------------------------------------------------------
+
+
+def build_json_report(result: ReplayResult) -> dict:
+    cb = result.callbacks
+    pairs = pair_entries_to_exits(cb.entries + cb.short_entries, cb.exits)
+    summary = summarize(cb.entries + cb.short_entries, cb.exits, pairs)
+    return {
+        "date": result.date,
+        "version": result.bot_version,
+        "minutes_processed": result.minutes_processed,
+        "tickers": result.tickers,
+        "entries": cb.entries + cb.short_entries,
+        "exits": cb.exits,
+        "orders": cb.broker_layer.orders,
+        "cancellations": cb.broker_layer.cancellations,
+        "telegram_messages": cb.telegram_layer.messages,
+        "alerts": cb.alerts,
+        "errors": cb.errors,
+        "pnl_pairs": pairs,
+        "summary": summary,
+    }
+
+
+def format_text_report(result: ReplayResult) -> str:
+    cb = result.callbacks
+    pairs = pair_entries_to_exits(cb.entries + cb.short_entries, cb.exits)
+    summary = summarize(cb.entries + cb.short_entries, cb.exits, pairs)
+    lines = [
+        f"# v{result.bot_version} replay (real trade_genius) \u2014 {result.date}",
+        "",
+        f"- universe: {', '.join(result.tickers)}",
+        f"- minutes processed: {result.minutes_processed}",
+        f"- fetch_1min_bars calls: {len(cb.fetch_calls)}",
+        f"- alerts: {len(cb.alerts)}  errors: {len(cb.errors)}",
+        f"- entries: {len(cb.entries)} long, {len(cb.short_entries)} short",
+        f"- exits: {len(cb.exits)}",
+        f"- orders recorded: {len(cb.broker_layer.orders)}  cancels: {len(cb.broker_layer.cancellations)}",
+        f"- paired round-trips: {len(pairs)}  total P&L: ${summary['total_pnl']:+.2f}",
+        f"- wins: {summary['wins']}  losses: {summary['losses']}",
+        "",
+    ]
+    if cb.entries or cb.short_entries:
+        lines.append("## Entries")
+        for e in cb.entries + cb.short_entries:
+            lines.append(f"- {e['ts']} {e['ticker']} {e['side']} @ {e['price']}")
+        lines.append("")
+    if cb.exits:
+        lines.append("## Exits")
+        for x in cb.exits:
+            lines.append(
+                f"- {x['ts']} {x['ticker']} {x['side']} @ {x['price']} ({x['reason']})"
+            )
+        lines.append("")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -487,30 +798,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m backtest.replay_v511_full",
         description=(
-            "v5.11.0 PR6 replay harness. Drives engine.scan.scan_loop "
-            "per-minute over an archived day with a record-only callbacks "
-            "mock. Replaces the workspace-only replay_v510_full_v4.py "
-            "parallel re-implementation."
+            "v5.26.0 stage7 replay harness. Drives the REAL trade_genius "
+            "module (v5.26.0 spec-strict) per-minute over an archived day "
+            "with a record-only callbacks layer."
         ),
     )
-    p.add_argument("--date", required=True, help="YYYY-MM-DD session date (e.g. 2026-04-28)")
+    p.add_argument("--date", required=True, help="YYYY-MM-DD session date")
     p.add_argument(
-        "--bars-dir",
-        default="/home/user/workspace/today_bars",
-        help=(
-            "Parent dir of <date>/{TICKER}.jsonl files. Default points "
-            "at the workspace bar archive (NOT shipped in repo). For CI, "
-            "use tests/fixtures/replay_v511_minimal."
-        ),
+        "--bars-dir", default="/home/user/workspace/today_bars",
+        help="Parent dir of <date>/{TICKER}.jsonl files",
     )
     p.add_argument(
-        "--tickers",
-        default=",".join(DEFAULT_TICKERS),
+        "--tickers", default=",".join(DEFAULT_TICKERS),
         help="Comma-separated trade universe override",
     )
-    p.add_argument("--start", default="09:35", help="ET start time HH:MM (default 09:35)")
-    p.add_argument("--end", default="15:55", help="ET end time HH:MM (default 15:55)")
-    p.add_argument("--out", default=None, help="Optional output path for the markdown report")
+    p.add_argument("--start", default="09:35", help="ET start time HH:MM")
+    p.add_argument("--end", default="15:55", help="ET end time HH:MM")
+    p.add_argument("--output", default=None,
+                   help="Write JSON report to this path (else stdout text)")
     return p
 
 
@@ -527,12 +832,14 @@ def main(argv: list[str] | None = None) -> int:
         start_hhmm=(sh, sm),
         end_hhmm=(eh, em),
     )
-    report = format_report(result)
-    if args.out:
-        Path(args.out).write_text(report, encoding="utf-8")
-        print(f"wrote {args.out}")
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(build_json_report(result), indent=2),
+                            encoding="utf-8")
+        print(f"wrote {out_path}")
     else:
-        print(report)
+        print(format_text_report(result))
     return 0
 
 

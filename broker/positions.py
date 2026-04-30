@@ -11,12 +11,9 @@ import sys as _sys
 import time as _time
 
 from broker.orders import check_breakout  # noqa: F401
-from broker.stops import (
-    _ladder_stop_long,
-    _ladder_stop_short,
-    _retighten_long_stop,  # noqa: F401
-    _retighten_short_stop,  # noqa: F401
-)
+# v5.26.0 \u2014 broker.stops module deleted. Imports were unused in this
+# file's body and the surviving R-2 hard stop flows through the
+# sentinel exit path.
 from engine.bars import compute_5m_ohlc_and_ema9
 from engine.momentum_state import ADXTrendWindow, DivergenceMemory, TradeHVP
 from engine.sentinel import (
