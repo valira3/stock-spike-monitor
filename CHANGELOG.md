@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.21.1 — 2026-04-30 — SMA Stack hotfix: Alpaca daily-bar fetcher uses IEX feed
+
+### Why
+The v5.21.0 SMA Stack panel rendered "data not available" for every
+Titan in production. Root cause: `engine/daily_bars.py::_default_fetcher`
+built its `StockBarsRequest` without a `feed=` argument, so alpaca-py
+defaulted to SIP. The paper-tier subscription rejected every call with
+`subscription does not permit querying recent SIP data`, the safe
+wrapper logged a WARNING, and `sma_stack` was set to `None` for every
+ticker. Frontend correctly rendered the unavailable state.
+
+### What
+- `engine/daily_bars.py`: `_default_fetcher` now passes `feed="iex"`
+  to `StockBarsRequest`, matching the existing pattern used in
+  `engine/seeders.py` and `volume_profile.py`.
+- `tests/test_v5_21_1_sma_iex_feed.py` (new): regression test asserts
+  the fetcher passes `feed="iex"` to `StockBarsRequest` and that the
+  source no longer constructs a `StockBarsRequest` without a feed kwarg.
+- `smoke_test.py`: new guard that greps `engine/daily_bars.py` for the
+  `feed="iex"` literal.
+
+### Verification plan post-deploy
+1. Watch Railway deploy.
+2. Hit `/api/state` and confirm `tiger_sovereign.phase2[*].sma_stack`
+   is no longer all `None`.
+3. Tail prod logs for 5 minutes; confirm `v5.21.0 sma_stack: failed for`
+   warnings stop firing.
+4. Open the dashboard, expand any Titan, confirm SMA Stack panel
+   shows real numbers.
+
+---
+
 ## v5.21.0 — 2026-04-30 — Mobile hscroll fix + click-to-titan + vAA-1 alarm unification + Daily SMA Stack
 
 ### Why

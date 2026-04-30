@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.21.0"
+BOT_VERSION = "5.21.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,23 +102,18 @@ BOT_VERSION = "5.21.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.21.0 \u2014 Big release:\n"
-    "(1) Mobile double hscroll\n"
-    "fix carried from v5.20.10.\n"
-    "(2) Click an open position\n"
-    "to expand its Titan in the\n"
-    "Permit Matrix.\n"
-    "(3) Alarm vocabulary now\n"
-    "matches vAA-1 spec across\n"
-    "snapshot, dashboard, and\n"
-    "Telegram: A1 Loss, A2 Flash,\n"
-    "B Trend Death, C Vel.\n"
-    "Ratchet, D HVP Lock, E Div.\n"
-    "Trap. All 6 evaluated in\n"
-    "parallel.\n"
-    "(4) Daily SMA Stack panel\n"
-    "(12/22/55/100/200) inside\n"
-    "expanded Titan rows."
+    "v5.21.1 \u2014 SMA Stack hotfix:\n"
+    "daily-bar fetcher now uses\n"
+    "feed=iex so paper-tier\n"
+    "Alpaca returns data instead\n"
+    "of the SIP rejection that\n"
+    "made every Titan render\n"
+    "\u2018data not available\u2019.\n"
+    "Carries forward all v5.21.0\n"
+    "changes: mobile hscroll fix,\n"
+    "click-to-titan deep link,\n"
+    "vAA-1 alarm vocabulary, and\n"
+    "Daily SMA Stack panel."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

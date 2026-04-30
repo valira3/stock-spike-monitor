@@ -116,12 +116,16 @@ def _default_fetcher(ticker: str, lookback: int) -> list[float]:
     end_dt = datetime.datetime.now(datetime.timezone.utc)
     start_dt = end_dt - datetime.timedelta(days=lookback + 10)  # small buffer
 
+    # v5.21.1: must specify feed="iex" to match paper-subscription tier;
+    # without this Alpaca defaults to SIP and rejects with
+    # "subscription does not permit querying recent SIP data".
     request = StockBarsRequest(
         symbol_or_symbols=ticker,
         timeframe=TimeFrame.Day,
         start=start_dt,
         end=end_dt,
         limit=lookback + 10,
+        feed="iex",
     )
     bars = client.get_stock_bars(request)
     # bars is a BarSet; iterate over ticker bars

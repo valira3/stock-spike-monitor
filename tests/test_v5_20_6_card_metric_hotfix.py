@@ -42,7 +42,7 @@ def test_bot_version_is_5_20_6():
     # The v5.20.6 wiring contract is still enforced by the other
     # source-grep assertions in this module.
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.21.0"' in text, "bot_version.py must report 5.21.0"
+    assert 'BOT_VERSION = "5.21.1"' in text, "bot_version.py must report 5.21.1"
 
 
 def test_weather_card_reads_section_i_permit_fields():
@@ -157,6 +157,6 @@ def test_data_pmtx_comp_grid_version_bumped():
     # Marker pinned to current BOT_VERSION so subsequent hotfixes
     # don't have to retroactively edit this file.
     js = APP_JS.read_text(encoding="utf-8")
-    assert 'data-pmtx-comp-grid="v5.21.0"' in js, (
-        "data-pmtx-comp-grid attribute must be bumped to v5.21.0"
+    assert 'data-pmtx-comp-grid="v5.21.1"' in js, (
+        "data-pmtx-comp-grid attribute must be bumped to v5.21.1"
     )
