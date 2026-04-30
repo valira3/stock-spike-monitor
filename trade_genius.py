@@ -3019,77 +3019,19 @@ def _entry_bar_volume(volumes, lookback=5):
     return 0, False
 
 
-# v3.4.21 — Stop cap for late/extended entries.
-#
-# Baseline stop = OR_High − $0.90 (long) or PDC + $0.90 (short). That
-# anchor is appropriate when price breaks at the OR trigger, but on a
-# bar that closes well past the level the baseline stop sits far below
-# (or above) the entry, inflating risk. Example from v3.4.20: MSFT long
-# entered at $425.93 vs OR_High $420.16, baseline stop $419.26 = $6.67
-# risk = −1.56% on entry.
-#
-# Cap: stop distance must not exceed MAX_STOP_PCT of the entry price.
-# Final stop = tighter of {baseline, entry ± MAX_STOP_PCT}.
-# Invariant (locked design principle): cap can only TIGHTEN the stop,
-# never loosen it — a stop closer to entry than baseline is always
-# more conservative for both long and short.
-MAX_STOP_PCT = 0.0075  # 0.75% max from entry
-
-# v4.3.0 \u2014 Extended-entry guard.
-#
-# On 2026-04-24 12:42 CDT, META entered long at $677.06 while OR_High
-# was $659.85 \u2014 entry was +2.61% above OR. All four gates
-# (break/polarity/index/DI) were green, so the stop-cap kicked in and
-# clamped the stop to entry \u2212 0.75% = $671.98. 32 min later
-# HARD_EJECT_TIGER fired at -0.3% when DI+ wobbled. A capped stop on an
-# entry already extended past the OR trigger has near-zero room for
-# noise \u2192 predictable stop-out.
-#
-# ENTRY_EXTENSION_MAX_PCT rejects any long whose price is more than
-# this % above OR_High (symmetric for shorts below OR_Low).
-# ENTRY_STOP_CAP_REJECT rejects entries that would need stop capping
-# \u2014 this is a second, narrower guard: the cap is itself a signal
-# that the entry bar closed too far past the OR edge.
-ENTRY_EXTENSION_MAX_PCT = float(os.getenv("ENTRY_EXTENSION_MAX_PCT", "1.5"))
-ENTRY_STOP_CAP_REJECT = os.getenv("ENTRY_STOP_CAP_REJECT", "1") == "1"
+# v5.26.0 \u2014 stop-cap, extended-entry guard, breakeven ratchet
+# constants deleted. Tiger Sovereign v15.0 spec uses a single R-2
+# -$500 hard STOP MARKET rail (computed inline in
+# broker.orders.execute_breakout). MAX_STOP_PCT, ENTRY_EXTENSION_MAX_PCT,
+# ENTRY_STOP_CAP_REJECT, BREAKEVEN_RATCHET_PCT are not part of the
+# spec and have been removed.
 
 
-# v3.4.25 — Breakeven ratchet (Stage 1)
-# ----------------------------------------------------------------
-# Once a position is in profit by BREAKEVEN_RATCHET_PCT, pull the
-# stop to entry price (breakeven). This closes the gap between the
-# fixed 0.75% entry cap and the 1% trail-arm threshold — without it,
-# a short that moves +0.8% in our favor still has its stop pinned
-# 0.75% above entry (i.e., 1.58% above current market), so a wick
-# back would give back ~2x the current profit.
-#
-# Locked design preserved:
-#   - MORE conservative than baseline, never looser. Breakeven is
-#     always tighter than entry±0.75% by construction.
-#   - Fail-closed: missing data → no ratchet, leave existing stop
-#     alone.
-#   - Trail interaction: if trail is already armed, ratchet is a
-#     no-op (trail is ≥ as tight as breakeven already).
-BREAKEVEN_RATCHET_PCT = 0.0050  # +0.50% profit arms breakeven
-
-
-# v5.12.0 \u2014 stop-management helpers. The `_*_stop` names are referenced
-# by `_validate_side_config_attrs()` below via SideConfig.capped_stop_fn_name
-# resolution against this module's globals; `retighten_all_stops` is called
-# by the startup retro block. The broker.orders / broker.positions /
+# v5.26.0 \u2014 broker.stops module deleted. R-2 -$500 hard stop is
+# computed inline in broker.orders.execute_breakout per Tiger
+# Sovereign v15.0 \u00a7Risk Rails. The broker.orders / broker.positions /
 # broker.lifecycle names are referenced by TradeGeniusBase methods and the
 # scheduler thread, so they must resolve in this module's namespace.
-from broker.stops import (  # noqa: E402, F401
-    _breakeven_long_stop,
-    _breakeven_short_stop,
-    _capped_long_stop,
-    _capped_short_stop,
-    _ladder_stop_long,
-    _ladder_stop_short,
-    _retighten_long_stop,
-    _retighten_short_stop,
-    retighten_all_stops,
-)
 from broker.orders import (  # noqa: E402, F401
     check_breakout,
     paper_shares_for,
@@ -3131,7 +3073,6 @@ def _validate_side_config_attrs() -> None:
             cfg.daily_count_attr,
             cfg.daily_date_attr,
             cfg.trade_history_attr,
-            cfg.capped_stop_fn_name,
         ):
             assert attr in g, (
                 f"SideConfig({cfg.side.value}) references missing "
@@ -3142,52 +3083,9 @@ def _validate_side_config_attrs() -> None:
 _validate_side_config_attrs()
 
 
-# v3.4.36 — Profit-Lock Ladder (peak-anchored give-back)
-# ----------------------------------------------------------------
-# Six-tier ratchet driven by peak gain %. Peak is trail_high for
-# long, trail_low for short. v3.4.35's gain-anchored tiers (entry +
-# X%) made the gap between peak and stop WIDEN as peak grew — the
-# opposite of the trailing-stop instinct. v3.4.36 inverts this: the
-# stop sits a shrinking % below peak, so the tighter the trade
-# works, the less give-back is allowed.
-#
-#   Peak gain %  Long give-back  Short give-back  Phase
-#   -----------  --------------  ---------------  -------
-#   < 1.0%       initial stop    initial stop     Bullet
-#   ≥ 1.0%      peak − 0.50%    peak + 0.50%     Arm
-#   ≥ 2.0%      peak − 0.40%    peak + 0.40%     Lock
-#   ≥ 3.0%      peak − 0.30%    peak + 0.30%     Tight
-#   ≥ 4.0%      peak − 0.20%    peak + 0.20%     Tighter
-#   ≥ 5.0%      peak − 0.10%    peak + 0.10%     Harvest
-#
-# Design:
-#   - PEAK-ANCHORED: stop is always defined as a % below peak (for
-#     long) or above peak (for short). As peak ratchets up, the stop
-#     ratchets up with it; the gap between them shrinks at higher
-#     tiers.
-#   - ONE-WAY: the returned stop is always max(existing_trail, tier)
-#     for longs / min(existing_trail, tier) for shorts — never
-#     looser. If a pullback happens, trail_high doesn't move and the
-#     stop holds exactly where it was.
-#   - SUB-1% TIER: returns `initial_stop` (the OR-based structural
-#     stop). Legacy positions without initial_stop fall back to
-#     pos["stop"].
-#   - NEVER LOOSER THAN INITIAL: final result is clamped by
-#     max(tier_stop, initial_stop) for long — the structural stop is
-#     a permanent floor. Mirrors with min(...) for short.
-LADDER_TIERS_LONG = [
-    # (peak_gain_trigger, give_back_pct_below_peak)
-    (0.05, 0.0010),   # ≥ 5% → peak − 0.10% (Harvest)
-    (0.04, 0.0020),   # ≥ 4% → peak − 0.20% (Tighter)
-    (0.03, 0.0030),   # ≥ 3% → peak − 0.30% (Tight)
-    (0.02, 0.0040),   # ≥ 2% → peak − 0.40% (Lock)
-    (0.01, 0.0050),   # ≥ 1% → peak − 0.50% (Arm)
-]
-# v3.4.35 had a separate LADDER_HARVEST_FRACTION; v3.4.36 rolls that
-# concept into the tier table (the ≥5% tier is just the tightest
-# give-back). Alias kept so any external readers don't crash; value is
-# now the ≥5% give-back fraction itself.
-LADDER_HARVEST_FRACTION = 0.0010
+# v5.26.0 \u2014 Profit-Lock Ladder deleted. Tiger Sovereign v15.0
+# defines exit harvests via Sentinels A-A..A-E + the R-2 -$500 hard
+# stop; peak-anchored give-back tiers are not part of the spec.
 
 
 # OR COLLECTION (Opening Range)
@@ -4992,46 +4890,12 @@ except Exception as _uge:
 # applies if QBTS was added at runtime via `/ticker add QBTS`.
 _init_tickers()
 
-# v5.6.1 D6 \u2014 one-shot [UNIVERSE] boot line. Comma-separated alpha-
-# sorted tickers including the QQQ index ticker (now archived under
-# /data/bars/<UTC>/QQQ.jsonl). Replay reconstructs the active universe
-# from this single line instead of deduping GATE_EVAL log records.
-try:
-    _v561_universe_boot = list(TRADE_TICKERS)
-    if V561_INDEX_TICKER not in _v561_universe_boot:
-        _v561_universe_boot.append(V561_INDEX_TICKER)
-    _v561_log_universe(_v561_universe_boot)
-except Exception as _ue:
-    logger.warning("[V561-UNIVERSE] boot emit failed: %s", _ue)
-
+# v5.26.0 \u2014 [V561-UNIVERSE] boot line, _start_volume_profile boot,
+# retighten_all_stops startup retro all deleted. Volume profile / cap
+# tightening / universe-line apparatus is not part of Tiger Sovereign
+# v15.0. load_paper_state() still required \u2014 it restores open
+# positions from the prior session.
 load_paper_state()
-
-# v5.1.0 \u2014 boot the forensic volume layer. Safe to run
-# even without Alpaca credentials; the module will log and proceed.
-try:
-    _start_volume_profile()
-except Exception as _vpe:
-    logger.error("[VOLPROFILE] _start_volume_profile crashed: %s", _vpe, exc_info=True)
-
-# v3.4.23 — on startup, retighten every open position's stop to the
-# 0.75% cap. Positions that were opened before the cap shipped (or
-# that somehow have a drifted stop) get tightened here. force_exit is
-# ON but fetch_prices is OFF: at process start the scanner loop
-# hasn't run yet, so we'd hit Yahoo cold and probably get stale quotes
-# anyway. Use entry_price as the "current" proxy — by construction
-# the new capped stop can't be breached at entry_price (entry ±0.75%
-# never equals entry), so force_exit is effectively silent on startup.
-# The immediate-exit path fires from the first manage cycle instead,
-# where real quotes are available.
-try:
-    _retro = retighten_all_stops(force_exit=True, fetch_prices=False)
-    if _retro.get("tightened") or _retro.get("exited"):
-        logger.info("[RETRO_CAP] startup: tightened %d, exited %d",
-                    _retro.get("tightened", 0),
-                    _retro.get("exited", 0))
-except Exception as _e:
-    logger.error("[RETRO_CAP] startup retighten failed: %s",
-                 _e, exc_info=True)
 
 # Live dashboard (read-only web UI). Env-gated: off unless DASHBOARD_PASSWORD is set.
 # Runs in its own thread with its own asyncio loop — never touches PTB's loop.

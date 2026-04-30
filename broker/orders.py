@@ -129,7 +129,6 @@ def check_breakout(ticker, side):
     or_dict = getattr(tg, cfg.or_attr)
     positions_dict = getattr(tg, cfg.positions_attr)
     daily_count = getattr(tg, cfg.daily_count_attr)
-    capped_stop_fn = getattr(tg, cfg.capped_stop_fn_name)
 
     if tg._trading_halted:
         return False, None
@@ -603,44 +602,34 @@ def execute_breakout(ticker, current_price, side):
     cfg = tg.CONFIGS[side]
     positions_dict = getattr(tg, cfg.positions_attr)
     daily_count = getattr(tg, cfg.daily_count_attr)
-    capped_stop_fn = getattr(tg, cfg.capped_stop_fn_name)
 
     # Daily loss limit (shared between long/short).
     if not tg._check_daily_loss_limit(ticker):
         return
 
     # v5.13.0 PR-5 SHARED-CUTOFF: block NEW entries at/after 15:44:59 ET.
-    # Existing positions remain managed by sentinel/ratchet through EOD.
     if not tg._check_new_position_cutoff(ticker):
         return
 
     now_et = tg._now_et()
     limit_price = round(current_price + cfg.limit_offset, 2)
     or_dict = getattr(tg, cfg.or_attr)
+
+    # v5.26.0 \u2014 R-2 hard stop. Spec mandates a -$500 STOP MARKET
+    # rail per Strike (Tiger Sovereign v15.0 \u00a7Risk Rails). Stop
+    # placement makes (entry \u2212 stop) \u00d7 shares == $500 for longs,
+    # symmetric for shorts. _stop_capped / _stop_baseline kept as
+    # placeholders so downstream telemetry stays compile-clean; both
+    # are False / equal to stop_price under the spec rule.
+    _R2_DOLLARS = 500.0
+    _starter_for_stop = max(1, int(paper_shares_for(current_price)) * 2)
+    _per_share_risk = _R2_DOLLARS / _starter_for_stop
     if cfg.side.is_long:
-        cap_arg = or_dict.get(ticker, current_price)
+        stop_price = round(current_price - _per_share_risk, 2)
     else:
-        cap_arg = tg.pdc.get(ticker, current_price)
-    stop_price, _stop_capped, _stop_baseline = capped_stop_fn(cap_arg, current_price)
-    if _stop_capped:
-        if cfg.side.is_long:
-            tg.logger.info(
-                "%s stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
-                ticker,
-                _stop_baseline,
-                stop_price,
-                current_price,
-                tg.MAX_STOP_PCT * 100,
-            )
-        else:
-            tg.logger.info(
-                "%s short stop capped: baseline=$%.2f -> capped=$%.2f (entry=$%.2f, %.2f%% cap)",
-                ticker,
-                _stop_baseline,
-                stop_price,
-                current_price,
-                tg.MAX_STOP_PCT * 100,
-            )
+        stop_price = round(current_price + _per_share_risk, 2)
+    _stop_capped = False
+    _stop_baseline = stop_price
 
     # Dollar-sized paper entry; shares scale with price.
     # ``paper_shares_for`` returns the legacy 50% Entry-1 starter. The v15.0
