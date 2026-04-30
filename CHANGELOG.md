@@ -4,6 +4,75 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.6 — 2026-04-30 — Card metric hotfix + volume gate bypass
+
+### Why
+Fast follow-up to v5.20.5. Once the expanded component cards landed in prod
+the operator (Val) immediately spotted three issues during live use:
+
+1. **Weather card was empty.** Every row rendered as a dim em dash because the
+   JS read `regime.qqq_price` / `regime.qqq_5m_close` / `regime.qqq_ema9` /
+   `regime.qqq_avwap` — fields that don't exist on the top-level `regime`
+   block. The QQQ price/EMA9/AVWAP triple actually lives on
+   `section_i_permit` (`qqq_current_price`, `qqq_5m_close`, `qqq_5m_ema9`,
+   `qqq_avwap_0930`).
+2. **Double scrollbars on desktop.** `.pmtx-comp-metrics { max-height: 132px;
+   overflow-y: auto }` created an inner per-card scrollbar that fought the
+   page scroll — the mouse wheel got trapped inside whichever card was under
+   the cursor. The longest metric stack is 6 rows after this hotfix's
+   Weather expansion, which fits naturally without any cap.
+3. **Volume Baseline / Ratio rows blank.** Not a code bug — the 55-day
+   baseline and 55-bar ratio require historical data the bot doesn't have
+   yet (currently `days_available=2-3`). The `bb.check()` call returns
+   `baseline=None` until enough days accumulate. Operator decision: bypass
+   the volume gate entirely until the baseline warms up, and hide the
+   meaningless metric rows during the bypass window.
+
+### Changes
+
+#### dashboard_static/app.js
+
+- `p1Metrics` now reads from `sip` (section_i_permit) using the actual
+  field names: `qqq_current_price`, `qqq_5m_close`, `qqq_5m_ema9`,
+  `qqq_avwap_0930`. Two extra rows added (`Breadth`, `RSI regime` from
+  `regime`) since the section_i swap freed up the visual budget.
+- `p2vMetrics` is now conditional: when `volStatus === "OFF"` (the gate
+  bypass state surfaced from `feature_flags.VOLUME_GATE_ENABLED=false`),
+  the card renders a single `Volume gate: bypassed (warming)` row instead
+  of the four warming-up em-dash rows. When the gate is back on, the
+  original 4-row stack renders unchanged.
+- `data-pmtx-comp-grid` version marker bumped to `v5.20.6`.
+
+#### dashboard_static/app.css
+
+- `.pmtx-comp-metrics`: removed `max-height: 132px` and `overflow-y: auto`.
+  Card height now follows content. With the longest stack at 6 rows
+  (Weather), nothing scrolls inside the card.
+
+#### Operations
+
+Railway env var `VOLUME_GATE_ENABLED=false` was set on the production
+service immediately after this PR merged. The volume gate is now bypassed
+in the live entry-evaluation path (`eye_of_tiger.evaluate_volume_bucket`
+short-circuits to PASS when the flag is false). The dashboard
+`vol_gate_status` column reads `OFF` so the operator can see the override
+in one glance. The intent is to keep the bypass on through the 55-day
+baseline warm-up and re-enable it once `days_available >= 30`.
+
+### Files
+- `bot_version.py` — BOT_VERSION 5.20.6
+- `trade_genius.py` — BOT_VERSION + CURRENT_MAIN_NOTE rewrite
+- `dashboard_static/app.js` — Weather wiring + Volume bypass label + version marker
+- `dashboard_static/app.css` — dropped max-height / overflow-y
+- `CHANGELOG.md` — this entry
+- `tests/test_v5_20_6_card_metric_hotfix.py` — new (3 tests)
+- `smoke_test.py` — source-grep guards for the Weather wiring + bypass label
+
+### Tests
+All 6 preflight stages pass. Total tests up by 3.
+
+---
+
 ## v5.20.5 — 2026-04-30 — Volume gate WS source + DI RTH fallback + expanded card metrics
 
 ### Why

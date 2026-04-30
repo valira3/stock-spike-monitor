@@ -993,8 +993,10 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 132px; /* ~8 rows */
-  overflow-y: auto;
+  /* v5.20.6 — dropped max-height + overflow-y. The inner scrollbar was
+     fighting the page scroll on desktop and trapping the mouse wheel.
+     The longest stack is 6 rows (P1 Weather), which fits naturally
+     inside the card without any cap. */
   font-family: var(--mono);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;

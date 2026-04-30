@@ -640,11 +640,17 @@
     const vf = ppv.velocity_fuse || {};
     const stk = ppv.strikes || {};
 
+    // v5.20.6 — Weather card sources QQQ price/EMA9/AVWAP from
+    // section_i_permit (the only place the dashboard ships them).
+    // Earlier wiring read reg.qqq_* fields that don't exist on the
+    // top-level regime block, so every row rendered as a dim em dash.
     const p1Metrics = _metricsHtml([
-      ["QQQ price",    _fmtNum(reg.qqq_price, 2)],
-      ["QQQ 5m close", _fmtNum(reg.qqq_5m_close, 2)],
-      ["QQQ EMA9",     _fmtNum(reg.qqq_ema9, 2)],
-      ["QQQ AVWAP",    _fmtNum(reg.qqq_avwap, 2)],
+      ["QQQ price",    _fmtNum(sip.qqq_current_price, 2)],
+      ["QQQ 5m close", _fmtNum(sip.qqq_5m_close, 2)],
+      ["QQQ 5m EMA9",  _fmtNum(sip.qqq_5m_ema9, 2)],
+      ["QQQ AVWAP",    _fmtNum(sip.qqq_avwap_0930, 2)],
+      ["Breadth",      reg.breadth || null],
+      ["RSI regime",   reg.rsi_regime || null],
     ]);
     const _bhSide = (bh.side || "").toString().toUpperCase();
     const _bhConsec = (_bhSide === "LONG")
@@ -659,14 +665,20 @@
         : null],
       ["Consec outside",  _fmtInt(_bhConsec)],
     ]);
-    const p2vMetrics = _metricsHtml([
-      ["Current vol",  _fmtInt(vb.current_1m_vol)],
-      ["Baseline 55d", _fmtNum(vb.baseline_at_minute, 0)],
-      ["Ratio 55-bar", _fmtNum(vb.ratio_to_55bar_avg, 2)],
-      ["Days avail",   (vb.days_available !== undefined && vb.days_available !== null)
-        ? (_fmtInt(vb.days_available) + "/55")
-        : null],
-    ]);
+    // v5.20.6 — when the volume gate is bypassed (VOLUME_GATE_ENABLED=false
+    // → vol_gate_status="OFF"), the baseline / ratio rows are meaningless
+    // until the 55-day history warms up. Render a single explanatory row
+    // instead of four em-dashes.
+    const p2vMetrics = (String(d.volStatus || "").toUpperCase() === "OFF")
+      ? _metricsHtml([["Volume gate", "bypassed (warming)"]])
+      : _metricsHtml([
+          ["Current vol",  _fmtInt(vb.current_1m_vol)],
+          ["Baseline 55d", _fmtNum(vb.baseline_at_minute, 0)],
+          ["Ratio 55-bar", _fmtNum(vb.ratio_to_55bar_avg, 2)],
+          ["Days avail",   (vb.days_available !== undefined && vb.days_available !== null)
+            ? (_fmtInt(vb.days_available) + "/55")
+            : null],
+        ]);
     const p3aMetrics = _metricsHtml([
       ["Permit open",  (sip && typeof sip.open === "boolean")
         ? (sip.open ? "yes" : "no")
@@ -730,7 +742,7 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.5">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.6">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)

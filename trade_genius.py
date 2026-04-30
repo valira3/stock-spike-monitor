@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.20.5"
+BOT_VERSION = "5.20.6"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,15 +102,18 @@ BOT_VERSION = "5.20.5"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.20.5 \u2014 Volume gate now\n"
-    "reads WS feed (Yahoo was\n"
-    "shipping vol=0 on the\n"
-    "trailing bar). DI seed\n"
-    "falls back to RTH 5m\n"
-    "buckets when premarket\n"
-    "is too thin. Cards now\n"
-    "surface the numbers\n"
-    "behind each gate state."
+    "v5.20.6 \u2014 Hotfix on top of\n"
+    "v5.20.5. Weather card now\n"
+    "reads QQQ price/EMA9/AVWAP\n"
+    "from section_i_permit so\n"
+    "the metric stack populates.\n"
+    "Removed inner scrollbar on\n"
+    "component cards (was\n"
+    "fighting page scroll on\n"
+    "desktop). Volume gate set\n"
+    "to bypass via env var\n"
+    "until 55-day baseline\n"
+    "warms up."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
