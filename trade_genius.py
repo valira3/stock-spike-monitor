@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.19.2"
+BOT_VERSION = "5.19.3"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,15 +102,12 @@ BOT_VERSION = "5.19.2"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.19.2 \u2014 Permit Matrix\n"
-    "shows ALL columns on mobile\n"
-    "(parity with desktop), with\n"
-    "horizontal scroll on narrow\n"
-    "phones. Headers condensed:\n"
-    "Vol Confirm \u2192 Vol, Price\n"
-    "\u00b7 Distance \u2192 Dist, DI+\n"
-    "\u2192 DI\u00b1 (side-aware tip).\n"
-    "OR-high/low \u2192 ORH/ORL."
+    "v5.19.3 \u2014 Permit Matrix rows\n"
+    "expand again on click (regress\n"
+    "fix), tab choice (Main/Val/\n"
+    "Gene/Lifecycle) persists across\n"
+    "redeploys, and dashboard login\n"
+    "now lasts 90 days instead of 7."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

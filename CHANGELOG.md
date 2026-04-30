@@ -4,6 +4,83 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.19.3 \u2014 2026-04-30 \u2014 Dashboard fixes: row expand, tab + login persistence
+
+### Why
+
+Three usability bugs reported against v5.19.2:
+
+1. **Permit Matrix rows weren't expanding on click** anymore. The
+   click handler is fine \u2014 the regression is upstream: `hasDetail`
+   was `pos || lastFill`, and pre-market sessions have neither, so no
+   `.pmtx-detail-row` was ever emitted. Bug shipped in v5.18.0 when
+   the standalone Proximity card folded into the matrix detail panel
+   without `hasDetail` being widened to include proximity payload. It
+   only surfaced now because Val tested during pre-market.
+2. **Active tab snapped back to Main on every page reload / redeploy**
+   even when the user had Val or Gene open. The active-tab state
+   lived only in a body data-attribute set in-memory; a fresh fetch
+   wiped it.
+3. **Login session expired sooner than necessary**. The signing key
+   has been persistent (`/data/dashboard_secret.key`) since v3.4.29,
+   so the cookie does survive across redeploys, but `SESSION_DAYS=7`
+   meant Val had to re-enter the password every week regardless.
+
+### What
+
+- **Row expand fix** (`dashboard_static/app.js`, `_pmtxBuildRow`):
+  `hasDetail` is now `!!(pos || lastFill || proxHasDetail)`, where
+  `proxHasDetail` is true when proximity carries any of `price`,
+  `nearest_label`, `or_high`, `or_low`. Pre-market and quiet RTH
+  sessions can now expand every row that has live price + boundary
+  info, which is what the detail panel was already designed to show.
+  The toggle handler at `body.__pmtxExpandWired` was already correct
+  (it is delegate-bound on the parent body, which survives innerHTML
+  swaps; `classList.toggle` already implements click-to-collapse on
+  the second click) \u2014 no change there.
+- **Tab persistence** (`dashboard_static/app.js`, `selectTab` + boot):
+  every `selectTab(name)` call writes the chosen tab to
+  `localStorage["tg-active-tab"]`. After click handlers wire up on
+  page load, a small bootstrap reads that value and re-invokes
+  `selectTab` if it's not Main, so panel visibility, tab chrome
+  highlight, and per-tab activation hooks (executor poll, lifecycle
+  activate) all run through the same code path. localStorage failures
+  (private browsing, disabled storage) fall through to Main without
+  raising.
+- **Login lifetime** (`dashboard_server.py`): `SESSION_DAYS = 7` \u2192
+  `SESSION_DAYS = 90`. Cookie behavior, signing, and CSRF guards are
+  unchanged \u2014 just a longer expiry window. The stale `_make_token`
+  docstring ("process-local random bytes, so restarts invalidate all
+  sessions") was rewritten to reflect the persistent-key reality
+  introduced in v3.4.29.
+
+### Tests
+
+- `tests/test_dashboard_pmtx_expand_v5_19_3.py` \u2014 calls
+  `_pmtxBuildRow` (via the inlined dashboard preview harness) with
+  the four input shapes and asserts the table-rows contain a
+  `pmtx-detail-row` exactly when proximity, position, or fill is
+  present.
+- `tests/test_dashboard_session_days_v5_19_3.py` \u2014 imports
+  `dashboard_server` and pins `SESSION_DAYS == 90` so the value can
+  only change with a deliberate test update.
+- `tests/test_dashboard_tab_persistence_v5_19_3.py` \u2014 string-level
+  audit of `dashboard_static/app.js` confirming the localStorage save
+  call inside `selectTab` and the boot-time read.
+
+Full preflight (6/6 stages) green; smoke and version-consistency
+guards still pass.
+
+### Deploy
+
+No migration. New cookies issued after deploy will have `Max-Age` of
+90 days; existing 7-day cookies remain valid until their original
+expiry. To force-rotate the signing key (and invalidate every active
+session), set `DASHBOARD_SESSION_SECRET` on Railway to a new 64-hex
+value and redeploy.
+
+---
+
 ## v5.19.2 \u2014 2026-04-30 \u2014 Permit Matrix mobile parity + condensed headers
 
 ### Why

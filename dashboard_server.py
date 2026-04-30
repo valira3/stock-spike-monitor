@@ -920,7 +920,12 @@ def snapshot() -> dict[str, Any]:
 # HTTP server
 # ─────────────────────────────────────────────────────────────
 SESSION_COOKIE = "spike_session"
-SESSION_DAYS = 7
+# v5.19.3 \u2014 bumped from 7 to 90 days so a power user who only opens
+# the dashboard a couple of times per month doesn't get bounced to /login
+# every redeploy. The signing key is already persisted to disk via
+# _load_or_create_session_secret, so a longer expiry is the only knob
+# that controls how often Val has to re-enter the dashboard password.
+SESSION_DAYS = 90
 
 _PW: str = ""
 _SESSION_SECRET: bytes = b""  # set at startup; see _load_or_create_session_secret
@@ -1061,8 +1066,12 @@ def _rate_limit_check(ip: str) -> bool:
 
 def _make_token(now: float | None = None) -> str:
     """Issue a session token: HMAC(_SESSION_SECRET, ts) + ":" + ts.
+
     The timestamp lets us enforce expiry without DB state. Secret is
-    process-local random bytes, so restarts invalidate all sessions.
+    loaded once at startup from a persistent file on the Railway volume
+    (see _load_or_create_session_secret), so the cookie survives across
+    container redeploys for the full SESSION_DAYS window. Tests can
+    rotate it via the DASHBOARD_SESSION_SECRET env var.
     """
     if now is None:
         now = time.time()
