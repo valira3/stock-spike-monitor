@@ -198,7 +198,7 @@ def test_scan_loop_no_blocking_at_first_call_with_empty_state(
     # Sanity: the v5.19.x line is what's on the hot path. Asserting an
     # exact version number would require a test edit on every release;
     # the version-bump CI gate already pins the expected value.
-    assert trade_genius.BOT_VERSION.startswith("5.24.")
+    assert trade_genius.BOT_VERSION.startswith("5.25.")
 
 
 def test_volume_gate_enabled_default_on_when_env_unset(monkeypatch):

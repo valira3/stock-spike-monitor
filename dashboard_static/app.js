@@ -2211,6 +2211,43 @@
     const ver = `v${s.version || "?"}`;
     const verEl = document.getElementById("tg-brand-ver");
     if (verEl) verEl.textContent = ver;
+    // v5.25.0 — Enabled-executor chips. Reads s.executors_status
+    // (added in dashboard_server._executors_status_snapshot) and lights
+    // up one chip per executor when its bootstrap returned a non-None
+    // instance. Dim chip = disabled (missing PAPER_KEY or *_ENABLED=0).
+    const execStatus = (s && s.executors_status) || {};
+    ["val", "gene"].forEach((name) => {
+      const chip = document.getElementById(`tg-exec-chip-${name}`);
+      if (!chip) return;
+      const entry = execStatus[name] || { enabled: false, mode: null };
+      const enabled = !!entry.enabled;
+      const mode = entry.mode || "";
+      const mark = chip.querySelector(".tg-exec-mark");
+      const label = name.charAt(0).toUpperCase() + name.slice(1);
+      if (enabled) {
+        chip.classList.remove("tg-exec-off");
+        chip.classList.add("tg-exec-on");
+        chip.style.background = "#0f2417";
+        chip.style.borderColor = "#1f5c3a";
+        chip.style.color = "#34d399";
+        if (mark) mark.textContent = "\u2713";
+        chip.setAttribute(
+          "title",
+          `${label} executor enabled${mode ? ` (${mode} mode)` : ""}`
+        );
+      } else {
+        chip.classList.remove("tg-exec-on");
+        chip.classList.add("tg-exec-off");
+        chip.style.background = "#10151c";
+        chip.style.borderColor = "#1f2937";
+        chip.style.color = "#5b6572";
+        if (mark) mark.textContent = "\u2014";
+        chip.setAttribute(
+          "title",
+          `${label} executor disabled (missing PAPER_KEY or *_ENABLED=0)`
+        );
+      }
+    });
     // v4.2.2 — extract tz token (ET/CDT/CT/PT/PST/\u2026) from
     // server_time_label tail, e.g. "Fri Apr 24 · 13:09:13 ET".
     // The client-side tick loop renders the actual HH:MM:SS every

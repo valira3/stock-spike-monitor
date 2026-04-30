@@ -698,6 +698,117 @@ class TradeGeniusBase:
         logger.info(ok)
         self._send_own_telegram(ok)
 
+    def _reconcile_position_with_broker(self, ticker: str) -> None:
+        """v5.25.0 \u2014 single-ticker post-action reconcile.
+
+        Called immediately after every successful ENTRY/EXIT submit
+        so the executor's local view of ``self.positions[ticker]`` is
+        re-synced from the broker's authoritative book. Three outcomes:
+
+          1. Broker has the position: overwrite local qty / entry_price
+             with the broker's values (covers partial fills, prior
+             stacking, executor / paper-book qty drift).
+          2. Broker reports 40410000 \"position not found\": drop the
+             local row \u2014 the position is flat on the broker, so
+             we must reflect that even if a stale row lingered.
+          3. Any other API failure: WARN log, leave state untouched.
+             A transient outage must not corrupt local truth; the
+             next signal or boot reconcile will heal it.
+
+        Unlike ``_reconcile_broker_positions`` (the boot-time full
+        sweep using ``get_all_positions``), this calls
+        ``client.get_open_position(ticker)`` for a single symbol so
+        the post-action path stays cheap. No Telegram fan-out \u2014
+        the calling ENTRY/EXIT path already sent its own confirmation.
+        """
+        client = self._ensure_client()
+        if client is None:
+            logger.warning(
+                "[%s] [POST-RECONCILE] no alpaca client \u2014 skipping %s",
+                self.NAME,
+                ticker,
+            )
+            return
+        try:
+            bp = client.get_open_position(ticker)
+        except Exception as exc:
+            msg = str(exc)
+            if "40410000" in msg or "position not found" in msg.lower():
+                # Broker says flat \u2014 drop our row if it lingers.
+                if ticker in self.positions:
+                    logger.info(
+                        "[%s] [POST-RECONCILE] %s flat on broker, removing local row",
+                        self.NAME,
+                        ticker,
+                    )
+                    self._remove_position(ticker)
+                else:
+                    logger.debug(
+                        "[%s] [POST-RECONCILE] %s flat on broker, already untracked",
+                        self.NAME,
+                        ticker,
+                    )
+                return
+            logger.warning(
+                "[%s] [POST-RECONCILE] get_open_position(%s) failed: %s "
+                "\u2014 leaving local state untouched",
+                self.NAME,
+                ticker,
+                exc,
+            )
+            return
+
+        # Broker has the position \u2014 sync qty + entry_price.
+        try:
+            qty_int = int(bp.qty)
+        except Exception:
+            logger.exception(
+                "[%s] [POST-RECONCILE] bad qty on %s, skipping sync",
+                self.NAME,
+                ticker,
+            )
+            return
+        side = "LONG" if qty_int > 0 else "SHORT"
+        try:
+            entry_px = float(bp.avg_entry_price)
+        except Exception:
+            entry_px = 0.0
+        existing = self.positions.get(ticker)
+        if existing is None:
+            # Broker has it but we don't \u2014 graft the row.
+            self.positions[ticker] = {
+                "ticker": ticker,
+                "side": side,
+                "qty": abs(qty_int),
+                "entry_price": entry_px,
+                "entry_ts_utc": datetime.now(timezone.utc).isoformat(),
+                "source": "POST_RECONCILE",
+                "stop": None,
+                "trail": None,
+            }
+            logger.warning(
+                "[%s] [POST-RECONCILE] grafted untracked broker row %s side=%s qty=%d entry=%.2f",
+                self.NAME,
+                ticker,
+                side,
+                abs(qty_int),
+                entry_px,
+            )
+        else:
+            existing["qty"] = abs(qty_int)
+            existing["side"] = side
+            if entry_px:
+                existing["entry_price"] = entry_px
+            logger.info(
+                "[%s] [POST-RECONCILE] %s synced from broker: side=%s qty=%d entry=%.2f",
+                self.NAME,
+                ticker,
+                side,
+                abs(qty_int),
+                entry_px,
+            )
+        self._persist_position(ticker)
+
     def _reconcile_broker_positions(self) -> None:
         """Run once at boot. Pull broker positions, graft any orphans.
 
@@ -935,6 +1046,8 @@ class TradeGeniusBase:
                 msg = f"\u2705 {label}: {ticker} BUY {qty} shares @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
+                # v5.25.0 \u2014 sync local row from broker authoritative book.
+                self._reconcile_position_with_broker(ticker)
             elif kind == "ENTRY_SHORT":
                 qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
@@ -947,6 +1060,8 @@ class TradeGeniusBase:
                 msg = f"\u2705 {label}: {ticker} SELL {qty} shares short @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
+                # v5.25.0 \u2014 sync local row from broker authoritative book.
+                self._reconcile_position_with_broker(ticker)
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
                 # v5.24.0 \u2014 ``state.db.executor_positions`` (loaded
                 # into ``self.positions`` on boot, kept in sync via
@@ -966,6 +1081,10 @@ class TradeGeniusBase:
                     )
                     return
                 self._close_position_idempotent(client, ticker, label, reason)
+                # v5.25.0 \u2014 confirm flat on broker (covers a partial
+                # close, a 40410000 race, or anything else that would
+                # leave self.positions diverged from the broker).
+                self._reconcile_position_with_broker(ticker)
             elif kind == "EOD_CLOSE_ALL":
                 client.close_all_positions(cancel_orders=True)
                 # v5.5.10 \u2014 wipe every local + persisted row.
@@ -974,6 +1093,15 @@ class TradeGeniusBase:
                 msg = f"\u2705 {label}: EOD close_all_positions"
                 logger.info(msg)
                 self._send_own_telegram(msg)
+                # v5.25.0 \u2014 full sweep so any laggard fills or stale
+                # rows get reconciled against the now-flat broker book.
+                try:
+                    self._reconcile_broker_positions()
+                except Exception:
+                    logger.exception(
+                        "[%s] EOD_CLOSE_ALL post-sweep reconcile raised",
+                        self.NAME,
+                    )
             else:
                 logger.warning("[%s] unknown signal kind %r", self.NAME, kind)
         except Exception as e:
