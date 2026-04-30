@@ -4,6 +4,70 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.8 — 2026-04-30 — Authority green-on-either-side + table column rename
+
+### Why
+Fast follow-up to v5.20.7. Two clarifications from the operator (Val) once
+the Authority wiring landed:
+
+1. **Authority should go green when EITHER side is ready, not only when
+   both line up.** v5.20.7 wired the Authority card to read
+   `sip.long_open` / `sip.short_open` / `sip.sovereign_anchor_open` and
+   showed each row, but the top-line state pill required a stricter mental
+   model than the gate actually enforces. The Section I permit gate fires
+   on `long_open OR short_open`, so the card and the matching table column
+   should turn green as soon as either side is permitted. Showing red/dim
+   while the bot is willing to take a long was misleading.
+2. **Table column headers should match the card names.** The component
+   table still labelled its columns `ORB`, `Trend`, `5m DI±`, `Vol` —
+   leftovers from v5.10 nomenclature. The cards above the table were
+   renamed to Boundary / Momentum / Authority / Volume in v5.20.x and the
+   operator was bouncing between two vocabularies. The `5m DI±` column
+   body cell was also still showing per-ticker DI± — useful detail, but
+   it lives in the expanded Momentum card metric stack now, so the column
+   itself should mirror the Authority gate (permit alignment) instead.
+
+### Changes
+- `dashboard_static/app.js`
+  - Added `_pmtxAuthorityCell(sip)` and `_pmtxAuthorityTooltip(sip)` next
+    to the existing `_pmtxGateCell` helpers. The cell helper returns
+    `true` when either `long_open` or `short_open` is `true`, `false`
+    when both are explicitly `false`, and `null` when the booleans are
+    missing — i.e. it follows the gate, not the per-side detail.
+  - Rewired the Authority card `p3aState` block (~line 557-578) to set
+    `state` from `long_open || short_open` and `val` to `"long+short"`,
+    `"long"`, `"short"`, `"none"`, or `"—"` depending on which sides are
+    permitted. The card now turns green as soon as one side is open.
+  - Renamed the four component table headers: `ORB → Boundary`,
+    `Trend → Momentum`, `5m DI± → Authority`, `Vol → Volume`. CSS class
+    names (`pmtx-col-orb`, `pmtx-col-adx`, `pmtx-col-diplus`,
+    `pmtx-col-vol`) are unchanged so layout, widths and existing styles
+    keep working.
+  - Rewired the Authority body cell to call
+    `_pmtxGateCell(_pmtxAuthorityCell(sectionIPermit), _pmtxAuthorityTooltip(sectionIPermit))`
+    so it mirrors the card. Per-ticker DI± stays accessible inside the
+    expanded Momentum card metric stack.
+  - Tooltip strings on Boundary / Momentum / Volume column cells were
+    refreshed so the hover text matches the new vocabulary.
+  - Bumped `data-pmtx-comp-grid` marker to `"v5.20.8"`.
+- `bot_version.py` / `trade_genius.py` — `BOT_VERSION = "5.20.8"`,
+  `CURRENT_MAIN_NOTE` rewritten (still ≤34 chars per line for the
+  Telegram mobile-width rule).
+- New tests in `tests/test_v5_20_8_authority_green_and_columns.py` and
+  smoke guards added to `smoke_test.py` covering the column rename, the
+  Authority body-cell rewire, the new helpers, and the `long_open ||
+  short_open` state logic.
+
+### Live behaviour after deploy
+- AAPL row with `long_open=true`, `short_open=false` → Authority card
+  pill green, val `"long"`; table Authority cell green ✓.
+- All four table column headers read Boundary / Momentum / Authority /
+  Volume.
+- Per-ticker DI± numeric still appears inside the expanded Momentum
+  card metric stack (unchanged from v5.20.7).
+
+---
+
 ## v5.20.7 — 2026-04-30 — Authority wiring, single-scroll, no-pos UX
 
 ### Why

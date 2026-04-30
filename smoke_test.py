@@ -3988,9 +3988,79 @@ def run_local() -> int:
         main_body = base[main_idx:main_end]
         assert "overflow-y: auto" not in main_body, main_body
 
-        assert 'data-pmtx-comp-grid="v5.20.7"' in (
+        assert 'data-pmtx-comp-grid="v5.20.8"' in (
             _P(__file__).parent / "dashboard_static" / "app.js"
         ).read_text(encoding="utf-8")
+
+    @t("v5.20.8: Authority cell helper + state goes green on long_open || short_open")
+    def _():
+        # The card and the table column should both turn green when at
+        # least one side has its permit open. The helper
+        # _pmtxAuthorityCell collapses (long_open, short_open) to a
+        # single tri-state (true / false / null) for the table cell, and
+        # the p3aState block in the card uses the same OR semantics for
+        # state and a long+short / long / short / none / em-dash for val.
+        # JS block + line comments are stripped before scanning so the
+        # rationale comment block (which mentions the OR semantics in
+        # plain text) doesn't accidentally satisfy the assertion.
+        import re as _re
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        js_nc = _re.sub(r"/\*.*?\*/", "", js, flags=_re.DOTALL)
+        js_nc = _re.sub(r"//[^\n]*", "", js_nc)
+
+        # Helper exists and the table body cell calls it.
+        assert "_pmtxAuthorityCell" in js_nc, "Authority cell helper missing"
+        assert "_pmtxAuthorityTooltip" in js_nc, "Authority tooltip helper missing"
+        assert "_pmtxAuthorityCell(sectionIPermit)" in js_nc, (
+            "Authority body cell must call _pmtxAuthorityCell(sectionIPermit)"
+        )
+
+        # p3aState block must use long_open and short_open with OR
+        # semantics (one of them being true is sufficient for pass).
+        assert "_sip.long_open" in js_nc and "_sip.short_open" in js_nc, (
+            "p3aState must source _sip.long_open and _sip.short_open"
+        )
+        # The four val branches: long+short / long / short / none.
+        for branch in ('"long+short"', '"long"', '"short"', '"none"'):
+            assert branch in js_nc, f"p3aVal branch {branch} missing"
+
+    @t("v5.20.8: component table column headers renamed to card vocabulary")
+    def _():
+        # ORB \u2192 Boundary, Trend \u2192 Momentum, 5m DI\u00b1 \u2192
+        # Authority, Vol \u2192 Volume. CSS class names (.pmtx-col-orb,
+        # .pmtx-col-adx, .pmtx-col-diplus, .pmtx-col-vol) are unchanged
+        # so layout/widths/styles continue to apply, but the visible
+        # header text and the body-cell tooltip vocabulary now match
+        # the cards above the table.
+        #
+        # JS comments are stripped before scanning the legacy-token
+        # check so the v5.20.8 rationale block (which mentions the old
+        # names by design) does not trip the guard.
+        import re as _re
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        for header in (
+            ">Boundary</th>",
+            ">Momentum</th>",
+            ">Authority</th>",
+            ">Volume</th>",
+        ):
+            assert header in js, f"renamed header {header!r} missing"
+
+        js_nc = _re.sub(r"/\*.*?\*/", "", js, flags=_re.DOTALL)
+        js_nc = _re.sub(r"//[^\n]*", "", js_nc)
+        for legacy in (
+            ">ORB</th>",
+            ">Trend</th>",
+            ">5m DI\\u00b1</th>",
+            ">Vol</th>",
+        ):
+            assert legacy not in js_nc, (
+                f"legacy column header {legacy!r} still present in executable JS"
+            )
 
     @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.1")
     def _():
