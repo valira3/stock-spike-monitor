@@ -34,6 +34,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Iterable, Optional
 
+from engine.momentum_state import TradeHVP
 from engine.titan_grip import (
     ACTION_RATCHET,
     ACTION_RUNNER_EXIT,
@@ -92,6 +93,15 @@ _ALARM_C_SPEC_MARKERS = (
 # consumers.
 EXIT_REASON_ALARM_A: str = "sentinel_alarm_a"
 EXIT_REASON_ALARM_B: str = "sentinel_alarm_b"
+# Alarm D \u2014 HVP Lock. Full MARKET exit when 5m ADX has decayed
+# below 75% of the per-Strike high-water-mark, gated by a safety
+# floor so trades that never built momentum cannot be flushed.
+EXIT_REASON_HVP_LOCK: str = "HVP_LOCK"
+ALARM_D_HVP_FRACTION: float = 0.75
+# Safety floor flagged for review at PR-5 merge: a peak below 25
+# means the trade never registered as a real trend, so the lock is
+# suppressed.
+ALARM_D_SAFETY_FLOOR_ADX: float = 25.0
 
 SIDE_LONG = "LONG"
 SIDE_SHORT = "SHORT"
@@ -106,7 +116,7 @@ SIDE_SHORT = "SHORT"
 class SentinelAction:
     """Single alarm trip."""
 
-    alarm: str  # "A_LOSS", "A_FLASH", "B", "C", "D", "E"
+    alarm: str  # "A_LOSS", "A_FLASH", "B", "C1..C4", "D", "E"
     reason: str  # one of EXIT_REASON_*
     detail: str = ""
 
@@ -142,17 +152,21 @@ class SentinelResult:
 
     @property
     def has_full_exit(self) -> bool:
-        """True if Alarm A or B fired \u2014 caller must do a full close
+        """True if Alarm A, B, or D fired \u2014 caller must do a full close
         and ignore any C partial harvest actions on the same tick.
         """
         for a in self.alarms:
-            if a.reason in (EXIT_REASON_ALARM_A, EXIT_REASON_ALARM_B):
+            if a.reason in (
+                EXIT_REASON_ALARM_A,
+                EXIT_REASON_ALARM_B,
+                EXIT_REASON_HVP_LOCK,
+            ):
                 return True
         return False
 
     @property
     def exit_reason(self) -> str | None:
-        """Single canonical exit reason. Priority: A > B > C.
+        """Single canonical exit reason. Priority: A > B > D > C.
         All alarms remain recorded in `alarms` regardless.
         """
         if not self.alarms:
@@ -163,6 +177,9 @@ class SentinelResult:
         for a in self.alarms:
             if a.reason == EXIT_REASON_ALARM_B:
                 return EXIT_REASON_ALARM_B
+        for a in self.alarms:
+            if a.reason == EXIT_REASON_HVP_LOCK:
+                return EXIT_REASON_HVP_LOCK
         return self.alarms[0].reason
 
 
@@ -432,6 +449,49 @@ def check_alarm_c(
 
 
 # ---------------------------------------------------------------------------
+# Alarm D \u2014 HVP Lock (vAA-1 SENT-D)
+# ---------------------------------------------------------------------------
+
+
+def check_alarm_d(
+    *,
+    trade_hvp: TradeHVP | None,
+    current_adx_5m: float,
+    side: str = "",
+) -> SentinelAction | None:
+    """Evaluate Alarm D (HVP Lock) for one position.
+
+    spec: vAA-1 SENT-D HVP lock. Fires when the trade's high-water-mark
+    5m ADX has decayed by more than 25% (current_adx_5m strictly less
+    than 75% of peak) AND the trade originally registered >= 25 ADX at
+    its peak (safety floor). The safety floor value is flagged for
+    review at PR-5 merge.
+
+    Side-symmetric: ADX is unsigned, so the trigger and action are
+    identical for LONG and SHORT. Returns ``None`` when no alarm fires
+    or when no Strike has opened on ``trade_hvp`` yet.
+    """
+    if trade_hvp is None:
+        return None
+    try:
+        peak = trade_hvp.peak
+    except RuntimeError:
+        return None
+    if peak < ALARM_D_SAFETY_FLOOR_ADX:
+        return None
+    threshold = ALARM_D_HVP_FRACTION * peak
+    if current_adx_5m < threshold:
+        return SentinelAction(
+            alarm="D",
+            reason=EXIT_REASON_HVP_LOCK,
+            detail=(
+                f"side={side} adx={current_adx_5m:.2f} peak={peak:.2f} threshold={threshold:.2f}"
+            ),
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Top-level evaluator \u2014 PARALLEL, NOT sequential
 # ---------------------------------------------------------------------------
 
@@ -448,6 +508,8 @@ def evaluate_sentinel(
     titan_grip_state: Optional[TitanGripState] = None,
     current_price: float | None = None,
     current_shares: int = 0,
+    trade_hvp: TradeHVP | None = None,
+    current_adx_5m: float | None = None,
 ) -> SentinelResult:
     """Evaluate ALL sentinel alarms for one position on one tick.
 
@@ -500,14 +562,29 @@ def evaluate_sentinel(
         result.alarms.extend(c_alarms)
         result.titan_grip_actions.extend(grip_actions)
 
+    # Alarm D \u2014 HVP Lock. Independent of A/B/C. Defensive: trade_hvp
+    # is set in PR-3b at Strike fill time. Until PR-3b lands, this
+    # branch is dead-code-safe (the kwarg defaults to None and
+    # check_alarm_d returns None on missing state).
+    if trade_hvp is not None and current_adx_5m is not None:
+        d_action = check_alarm_d(
+            trade_hvp=trade_hvp,
+            current_adx_5m=float(current_adx_5m),
+            side=side,
+        )
+        if d_action is not None:
+            result.alarms.append(d_action)
+
     return result
 
 
 def format_sentinel_log(ticker: str, position_id: str | None, result: SentinelResult) -> str:
     """Render a structured one-line log entry for a sentinel trip.
 
-    Format: ``[SENTINEL] pos=<id> ticker=<t> alarms=[A_LOSS,B] action=EXIT
-    reason=<top> detail=<...>``
+    Format: ``[SENTINEL] pos=<id> ticker=<t> alarms=[A_LOSS,B,D] action=EXIT
+    reason=<top> detail=<...>``. The alarm-string list may include any
+    combination of ``A_LOSS``, ``A_FLASH``, ``B``, ``C1``..``C4``, ``D``,
+    or ``E``.
     """
     if not result.fired:
         return ""
@@ -524,9 +601,12 @@ __all__ = [
     "ALARM_A_HARD_LOSS_DOLLARS",
     "ALARM_A_VELOCITY_THRESHOLD",
     "ALARM_A_VELOCITY_WINDOW_SECONDS",
+    "ALARM_D_HVP_FRACTION",
+    "ALARM_D_SAFETY_FLOOR_ADX",
     "EXIT_REASON_ALARM_A",
     "EXIT_REASON_ALARM_B",
     "EXIT_REASON_ALARM_C",
+    "EXIT_REASON_HVP_LOCK",
     "PNL_HISTORY_MAXLEN",
     "SIDE_LONG",
     "SIDE_SHORT",
@@ -537,6 +617,7 @@ __all__ = [
     "check_alarm_a",
     "check_alarm_b",
     "check_alarm_c",
+    "check_alarm_d",
     "evaluate_sentinel",
     "format_sentinel_log",
     "maybe_reset_pnl_baseline_on_shares_change",
