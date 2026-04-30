@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.18.0"
+BOT_VERSION = "5.18.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,17 +102,16 @@ BOT_VERSION = "5.18.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.16.0 \u2014 Legacy purge\n"
-    "Tiger Sovereign vAA-1 is the\n"
-    "only strategy. engine.titan_\n"
-    "grip shim, shadow tombstone\n"
-    "comments, v4 paper_state\n"
-    "migration, and the non-Titan\n"
-    "DI exit fallback are gone.\n"
-    "5-of-5 sentinel surface (A\n"
-    "B C D E) with LIMIT-priced\n"
-    "Strike entries is the live\n"
-    "production path."
+    "v5.18.1 \u2014 Mobile + Val/Gene\n"
+    "Permit Matrix collapses to\n"
+    "one ~38px row per Titan and\n"
+    "renders as a responsive\n"
+    "table on every viewport.\n"
+    "Val and Gene tabs now show\n"
+    "the same Weather Check +\n"
+    "Permit Matrix as Main, not\n"
+    "the old standalone\n"
+    "Proximity card."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
