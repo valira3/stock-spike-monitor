@@ -280,9 +280,12 @@ def test_daily_breaker_force_exits_existing(monkeypatch):
 @pytest.mark.parametrize(
     "hh,mm,ss,expect_in_window",
     [
-        (9, 35, 0, True),  # session open
+        # v15.0 SPEC: Entry Window 09:36:00 to 15:44:59 EST.
+        (9, 35, 0, False),  # 09:35:00 \u2014 inside OR window, no entry yet
+        (9, 35, 59, False),  # 09:35:59 \u2014 ORH/ORL freeze instant
+        (9, 36, 0, True),  # 09:36:00 \u2014 entry window opens
         (12, 0, 0, True),  # midday
-        (15, 30, 0, True),  # was the old cutoff -- still in window now
+        (15, 30, 0, True),  # was the old cutoff \u2014 still in window now
         (15, 44, 58, True),  # one second before cutoff
         (15, 44, 59, False),  # at cutoff
         (15, 45, 0, False),  # one second after cutoff
@@ -297,7 +300,8 @@ def test_hunt_window(hh, mm, ss, expect_in_window):
 def test_hunt_end_aligns_with_cutoff():
     """SHARED-HUNT explicitly extends through the cutoff itself."""
     assert HUNT_END_ET == NEW_POSITION_CUTOFF_ET
-    assert HUNT_START_ET == time(9, 35, 0)
+    # v15.0 SPEC: Entry Window starts at 09:36:00 EST (was 09:35 pre-v5.20.0).
+    assert HUNT_START_ET == time(9, 36, 0)
 
 
 # ---------------------------------------------------------------------------

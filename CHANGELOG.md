@@ -4,6 +4,211 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.0 \u2014 2026-04-30 \u2014 Tiger Sovereign v15.0 spec conformance (engine + UI)
+
+### Why
+
+v15.0 of the Tiger Sovereign spec was issued as the finalized
+production-ready specification, deprecating every prior version
+(including the vAA-1 ULTIMATE doc that v5.19.x was tracking). A full
+conformance audit (`/home/user/workspace/specs/v15_conformance_audit.md`,
+14 findings, 9 critical) showed the live engine had drifted in nine
+places relative to v15.0:
+
+1. **Entry window** \u2014 v15.0 \u00a74: "09:36:00 to 15:44:59 EST".
+   Engine had `09:35:00` as the hunt-window start.
+2. **OR window end** \u2014 v15.0 \u00a70: "ORH / ORL: Fixed price
+   levels established at exactly 09:35:59." Engine was freezing OR at
+   09:34:59 (excluding the 09:35 candle).
+3. **Strike-cap** \u2014 v15.0 \u00a71: "Maximum 3 Strikes per ticker
+   per day." Engine still used a daily cap of 5.
+4. **Strike 2/3 boundary target** \u2014 v15.0 \u00a71/\u00a72/\u00a73:
+   strikes 2 & 3 must hunt the running NHOD/NLOD, not the original
+   ORH/ORL. Engine was still using ORH/ORL for every strike.
+5. **Phase-3 momentum gate** \u2014 v15.0 \u00a72/\u00a73: "5m ADX > 20
+   AND Alarm E = FALSE." Engine had no 5m ADX>20 hard gate; the closest
+   surface was an Alarm-D safety floor at ADX 25.
+6. **Alarm E pre-entry filter on S2/S3** \u2014 v15.0 \u00a71.2:
+   "Pre-Entry Filter: If a price prints a new extreme but RSI(15) is
+   diverging \u2026, the bot is prohibited from opening new Strike 2 or
+   Strike 3 positions." Engine had no pre-entry Alarm E check.
+7. **Volume gate** \u2014 v15.0 \u00a72/\u00a73 makes the volume gate
+   a primary Phase-2 permit (1m volume \u2265 100% of 55-bar avg,
+   REQUIRED after 10:00 AM). Engine default for `VOLUME_GATE_ENABLED`
+   was OFF; the spec-mandatory time-conditional path was also
+   conditioned on a `now_et` argument that the live caller never passed,
+   silently bypassing the gate.
+8. **Divergence memory storage** \u2014 v15.0 \u00a70 glossary requires
+   storing `(price, RSI)` at the exact tick of every new NHOD/NLOD;
+   engine was conditionally storing only when RSI also confirmed,
+   silently dropping the very ticks that produce the Alarm E signal.
+9. **Alarm A flash-move threshold** \u2014 v15.0 \u00a7Addendum: "1m
+   price move > 1% against position". Engine used `<=` (\u22651%);
+   tightened to strict `<` so exactly 1% does not fire the alarm.
+
+The dashboard surface had also drifted: matrix tooltips still cited
+old rule IDs (`L-P2-S4`, `STRIKE-CAP-3`, etc.) and called the ADX
+column "not a primary spec gate" when v15.0 makes ADX>20 the primary
+momentum gate. Operators also asked for the Val/Gene panel pair to
+adopt the same Open-positions-above-Weather order shipped on Main in
+v5.19.4.
+
+### What \u2014 engine
+
+#### `engine/timing.py`
+- `HUNT_START_ET` 09:35:00 \u2192 09:36:00 (v15.0 \u00a74).
+
+#### `eye_of_tiger.py`
+- `OR_WINDOW_END_HHMM_ET` 09:35 \u2192 09:36 with comment citing v15.0
+  \u00a70: ORH/ORL frozen at 09:35:59, so OR is the half-open minute
+  range `[09:30, 09:36)` and the 09:35 candle is INCLUDED.
+
+#### `trade_genius.py`
+- `_fill_metrics_for_ticker.or_window_end` 09:35 \u2192 09:36 (matches
+  the `OR_WINDOW_END_HHMM_ET` change in `eye_of_tiger.py`).
+- `collect_or` window upper bound 09:35 \u2192 09:36 with comment
+  documenting the v15.0 alignment.
+
+#### `broker/orders.py.check_entry`
+- Entry-window guard: `time(9, 35)` \u2192 `time(9, 36)`.
+- EOD short-circuit: `time(15, 55)` \u2192 `time(15, 44, 59)` (matches
+  v15.0 \u00a74: no new entries after 15:44:59).
+- Wired the unified `tg.strike_entry_allowed(ticker, side, view)`
+  helper through a `_flat_gate_view` projection of `tg.positions` and
+  `tg.short_positions` into `f"{ticker}:{SIDE}"` keys, so STRIKE-CAP-3
+  + STRIKE-FLAT-GATE are enforced verbatim.
+- Daily count cap 5 \u2192 3 (v15.0 \u00a71).
+- Strike-aware boundary: strikes 2 & 3 hunt
+  `tg._v570_session_hod[ticker]` (long) /
+  `tg._v570_session_lod[ticker]` (short) instead of OR levels.
+- 5m ADX>20 hard gate via `tg.v5_adx_1m_5m(ticker)["adx_5m"]`. Fails
+  closed (no entry) if the indicator can't be computed.
+- Pre-entry Alarm E filter for strikes 2 & 3 via
+  `engine.sentinel.check_alarm_e_pre` reading
+  `broker.positions.get_divergence_memory()`.
+- `now_et=ZoneInfo("America/New_York")` plumbed through to
+  `tg.eot.evaluate_volume_bucket(\u2026)` so the spec-mandatory
+  time-conditional path activates (auto-pass before 10:00 ET; require
+  bucket pass after).
+
+#### `volume_bucket.py`
+- `VolumeBucketBaseline.check` now also returns `ratio_to_55bar_avg`
+  (alias of the existing `ratio` field) so the v15.0 spec name resolves
+  in downstream callers.
+
+#### `engine/feature_flags.py`
+- `VOLUME_GATE_ENABLED` default: `False` \u2192 `True` (v15.0 \u00a72
+  / \u00a73 makes the gate a primary Phase-2 permit). Operator override
+  via env var still supported.
+
+#### `engine/sentinel.py.check_alarm_a`
+- Velocity threshold tightened from `<=` to strict `<` so a price move
+  of exactly 1% against position does not trigger the flash-move alarm
+  (v15.0 \u00a7Addendum: "> 1%").
+
+#### `engine/momentum_state.py.DivergenceMemory.update`
+- Storage is now unconditional on the RSI relationship: every new
+  price extreme overwrites the prior `(price, rsi)` peak. The
+  divergence test (`is_diverging`) compares current RSI vs stored RSI
+  but does NOT influence storage. Pre-v5.20.0 the LONG path required
+  `rsi >= stored_rsi` to store, which silently dropped the very NHOD
+  ticks v15.0 wants captured (the ones that subsequently form the
+  Alarm E divergence signal).
+
+#### `broker/orders.py.execute_breakout` \u2014 sizing wire-in
+- `eye_of_tiger.evaluate_strike_sizing` is now invoked on every
+  Strike-1 fill in the live entry path. The helper has existed since
+  v5.15.0 but was previously only exercised by unit tests; the live
+  path always fired the legacy 50% Entry-1 starter regardless of the
+  spec-tier 1m DI value. The wire-in maps:
+  * **FULL** (1m DI\u00b1 > 30) \u2192 fills 100% in a single fill
+    (2 \u00d7 starter shares) and pre-sets `v5104_entry2_fired=True`
+    on the position dict so the legacy Entry-2 add-on does NOT
+    double-fill.
+  * **SCALED_A** (1m DI\u00b1 in [25, 30]) \u2192 fills 50% starter
+    (existing behavior); leaves `v5104_entry2_fired=False` so
+    Entry-2 may add the remaining 50% under the spec scale-in
+    conditions (`_v5104_maybe_fire_entry_2`).
+  * **WAIT** \u2192 defensive abort (the L-P3-AUTH master-anchor
+    gate in `check_breakout` should already have caught this; this
+    is a backstop).
+  Each fire emits `[V15-SIZING] <ticker> side=<...> tier=<...>
+  shares=<N> (1m DI=<...>, 5m DI=<...>)`. The position dict is
+  stamped with `v15_size_label` and `v15_size_reason` for forensic
+  capture in `[TRADE_CLOSED]`. Wrapped in try/except: any helper
+  exception falls back to the legacy 50% starter so a sizing-helper
+  bug never blocks a trade. New conformance tests in
+  `tests/test_spec_v15_conformance.py` (9 tests) pin the contract
+  the wire-in depends on (FULL doubles starter, SCALED_A equals
+  starter, boundary cases at 25.0 and 30.0, anchor-fail and missing
+  DI both yield WAIT, and the `v5104_entry2_fired` flag mapping).
+
+### What \u2014 UI
+
+#### `dashboard_static/app.js`
+- `execSkeleton(...)` (Val + Gene panel render path): the Open
+  positions `<section class="grid">` is now emitted BEFORE the
+  `pmtx-weather-section` Weather Check banner, mirroring the swap
+  shipped on Main in v5.19.4.
+- `renderPermitMatrix(...)` column tooltips rewritten to v15.0 wording.
+  Rule-ID references (`L-P2-S4`, `S-P2-S4`, `L-P3-AUTH`, `L-P2-S3`,
+  `STRIKE-CAP-3`, `STRIKE-FLAT-GATE`) are dropped; ADX is now described
+  as the primary momentum gate ("5m ADX > 20 AND Alarm E = FALSE")
+  rather than "not a primary spec gate".
+- `_pmtxBuildRow(...)` detail panel: each gate row now carries the
+  full v15.0 spec definition (Weather, Permit, Volume Gate, Authority,
+  Momentum, Sizing, Strike Sequence, Hard Stop, Circuit Breaker,
+  Alarms A\u2013E, Entry Window, EOD Flush) so the operator can
+  cross-check the live verdict against the verbatim rule.
+
+### What \u2014 spec & docs
+
+- `STRATEGY.md` rewritten as the v15.0-aligned in-repo strategy doc.
+  vAA-1 morphing notes deleted; the new doc is the single source of
+  truth and links to `/home/user/workspace/tiger-sovereign-spec-v15-1.md`.
+
+### What \u2014 tests
+
+Nine pre-existing tests asserted pre-v15.0 behavior and have been
+rewritten to pin the new contract:
+
+- `tests/test_timing_rules.py::test_hunt_window` \u2014 09:35 cases
+  flipped to 09:36; the 09:35:30 case is now "before window".
+- `tests/test_timing_rules.py::test_hunt_end_aligns_with_cutoff`
+  \u2014 start time 09:35 \u2192 09:36.
+- `tests/test_eye_of_tiger.py::test_boundary_hold_earliest_satisfaction_time_is_0936`
+  \u2014 expected satisfaction time 09:36 \u2192 09:37 (with OR end at
+  09:35:59 and `BOUNDARY_HOLD_REQUIRED_CLOSES = 2`, the second
+  qualifying close is the 09:37 candle).
+- `tests/test_momentum_state.py::test_divergence_memory_long_update_only_when_both_conditions_met`
+  and `..._short_mirrors_long` \u2014 rewritten to assert
+  unconditional-on-RSI storage.
+- `tests/test_phase2_gates.py::test_volume_gate_default_module_constant_is_true`
+  (renamed from `_is_false`) \u2014 default ON pin.
+- `tests/test_startup_smoke.py::test_volume_gate_enabled_default_on_when_env_unset`
+  (renamed from `_off_`) \u2014 default ON pin via env-deletion path.
+- `tests/test_startup_smoke.py::test_scan_loop_no_blocking_at_first_call_with_empty_state`
+  \u2014 `BOT_VERSION` prefix `5.19.` \u2192 `5.20.`.
+- `tests/test_dashboard_state_v5_13_2.py::test_build_tiger_sovereign_snapshot_volume_gate_off_flag`
+  \u2014 now sets `VOLUME_GATE_ENABLED=0` explicitly to exercise the
+  operator-override path.
+- `tests/test_tiger_sovereign_spec.py::test_SHARED_HUNT` \u2014
+  `HUNT_START_ET` 09:35 \u2192 09:36.
+
+All three reload-the-feature-flags helpers also drop the cached
+attribute on the `engine` parent package, otherwise
+`from engine import feature_flags` resolves through the still-bound
+parent attribute and returns the previously-loaded module.
+
+### What \u2014 versioning
+
+- `bot_version.py.BOT_VERSION` and `trade_genius.py.BOT_VERSION`
+  bumped to `5.20.0`.
+- `CURRENT_MAIN_NOTE` rewritten for v5.20.0 (10 lines, all
+  \u2264 34 chars wide).
+
+---
+
 ## v5.19.4 \u2014 2026-04-30 \u2014 Sticky expand, panel reorder, spec-cited matrix headers
 
 ### Why

@@ -1,198 +1,161 @@
-# Tiger Sovereign System — Authoritative Spec (vAA-1, dated 2026-04-29)
+# Tiger Sovereign System \u2014 Strategy (v15.0, finalized 2026-04-30)
 
-**Status:** Authoritative going forward. Supersedes `tiger_sovereign_spec_v2026-04-28h.md`.
-**Source:** Migration spec `tiger-sovereign-morphing-spec-vAA-1.md`, expanded to executable form.
-**Anchor PR:** v5.15.0 (planned).
+**Status:** Finalized production-ready specification. Supersedes every
+prior version including the vAA-1 ULTIMATE morphing doc.
+**Source:** `/home/user/workspace/tiger-sovereign-spec-v15-1.md`
+(developer-issued canonical text).
+**Anchor PR:** v5.20.0 \u2014 spec-v15-conformance.
 
-This document is the single source of truth for the trading model. Code comments cite rule IDs (e.g. `L-P3-S5`, `SENT-D`); tests in `tests/test_tiger_sovereign_spec.py` cite the same IDs. When the spec changes, update **doc → tests → code** in that order.
-
----
-
-## SECTION 0 — Glossary
-
-| Term | Definition |
-|---|---|
-| **ORH / ORL** | Opening Range High / Low. Frozen at 09:35:59 ET on the 5m bar that closes at 09:35. |
-| **NHOD / NLOD** | Dynamic New High / New Low of Day. Updates real-time on every 1m bar close from 09:30 ET onward. |
-| **HWM / HVP** | High Water Mark / High Value Point. Peak recorded indicator value during the active session window. |
-| **Trade_HVP** | Per-Strike variable: peak 5m ADX observed during the lifetime of the active Strike. **Resets at Strike entry.** |
-| **Stored_Peak_Price** | Per-(ticker, side) variable for Alarm E. Holds the most-recent extreme price (NHOD for longs, NLOD for shorts) at the moment the corresponding RSI(15) peak was recorded. |
-| **Stored_Peak_RSI** | Per-(ticker, side) variable for Alarm E. Holds the RSI(15) value at the moment Stored_Peak_Price was set. |
-| **Strike** | A complete trade lifecycle on one (ticker, side): Entry → Exit. |
-| **Alarm** | A parallel-evaluated exit / sizing-block trigger in the Sentinel Loop. |
-| **Velocity Ratchet** | The Alarm-C mechanism: three consecutive declining 1m ADX values trigger a tight stop. |
-| **HVP Lock** | The Alarm-D mechanism: 5m ADX falling below 75% of Trade_HVP triggers a market exit. |
-| **Divergence Trap** | The Alarm-E mechanism: a new price extreme combined with a lower (long) / higher (short) RSI(15) blocks new strikes pre-entry and ratchets the stop post-entry. |
+This document is the in-repo strategy reference. The full canonical
+spec lives in the workspace path above; this file mirrors it with the
+fields each code surface needs to enforce. When the canonical spec
+changes, update the canonical file, then this file, then tests, then
+code \u2014 in that order.
 
 ---
 
-## SECTION 1 — System Concepts
+## SECTION 0 \u2014 Glossary of terms
 
-### 1.1 The Strike Model (`STRIKE-1` … `STRIKE-3`)
-- **`STRIKE-CAP-3`**: Maximum **3 Strikes per ticker per trading day** (long + short combined). vAA-1 ULTIMATE Decision 1 — unified from per-(ticker, side) to per-ticker.
-- **`STRIKE-FLAT-GATE`**: Strike `N+1` may not initiate until the position from Strike `N` is fully flat (`Position == 0`).
-- **`STRIKE-RESET`**: All Strike counters and per-Strike state reset at 09:30:00 ET.
-
-### 1.2 Alarm E — Divergence Trap (cross-cutting)
-- **`SENT-E-PRE`** (pre-entry filter): If the current price prints a new extreme (NHOD for longs / NLOD for shorts) **AND** RSI(15) is diverging (`current_rsi < Stored_Peak_RSI` for longs; `current_rsi > Stored_Peak_RSI` for shorts), the bot is **prohibited** from opening **Strike 2 or Strike 3** positions. Strike 1 is unaffected.
-- **`SENT-E-POST`** (in-trade): If divergence is detected on a held position, ratchet a **STOP MARKET** order to `current_price × (1 − 0.0025)` for longs / `current_price × (1 + 0.0025)` for shorts. The ratchet only moves in the protective direction; never loosens.
-
----
-
-## SECTION 2 — The Bison (Long Strategy)
-
-### Phase 1 — Weather (`L-P1-S1`, `L-P1-S2`)
-- **`L-P1-S1`**: QQQ (5m) close > QQQ 5m 9-EMA. If FALSE → STOP.
-- **`L-P1-S2`**: QQQ (current price) > QQQ 09:30 anchor VWAP. If FALSE → STOP.
-- Both TRUE → `PERMIT_LONG = TRUE`.
-
-### Phase 2 — Permits (`L-P2-S3`, `L-P2-S4`)
-- **`L-P2-S3` Volume Gate** *(time-conditional)*:
-  - If `now_et < 10:00:00 ET` → **gate auto-passes (TRUE)**.
-  - If `now_et ≥ 10:00:00 ET` → require `ticker_1m_volume ≥ 1.00 × rolling_avg_55_bar(same_minute_of_day)`.
-- **`L-P2-S4` ORH Boundary**: Two consecutive 1m candles must close strictly above the 5m ORH. The breakout permit fires on the close of the second qualifying 1m bar.
-
-### Phase 3 — The Strike (Sizing & Execution)
-
-Master anchor (gate): `L-P3-AUTH`: `5m_DI+ > 25`. If FALSE → no entry, regardless of 1m DI+.
-
-When the master anchor is TRUE, sizing is **momentum-sensitive**:
-
-- **`L-P3-FULL`** (Full Strike, 100%): If `1m_DI+ > 30` → enter **100%** of intended size immediately.
-  - Order: `LIMIT @ ask × 1.001`.
-- **`L-P3-SCALED-A`** (Scaled-A, 50%): If `25 ≤ 1m_DI+ ≤ 30` → enter **50%** of intended size.
-  - Order: `LIMIT @ ask × 1.001`.
-- **`L-P3-SCALED-B`** (Scaled-B add-on, +50%): While holding a Scaled-A position, add the remaining 50% iff:
-  1. `1m_DI+ > 30`, **AND**
-  2. price prints a fresh NHOD, **AND**
-  3. `Alarm E (SENT-E-PRE) == False`.
-  - Order: `LIMIT @ ask × 1.001`.
-
-For all sizing decisions, the active Strike's `Trade_HVP` initializes to the current 5m ADX value at fill time and updates on every 5m bar close.
+* **ORH / ORL.** Opening Range High / Low. Fixed price levels
+  established at exactly **09:35:59**.
+* **NHOD / NLOD.** New High / Low of Day. Dynamic price levels
+  updating in real time as the ticker prints fresh session extremes.
+* **HWM / HVP.** High Water Mark / High Value Point. The highest
+  recorded value of an indicator (typically 5m ADX) during the trade
+  lifecycle.
+* **Trade_HVP.** Variable tracking peak 5m ADX during an active
+  Strike. Resets to zero at the start of each new Strike.
+* **Stored_Peak_Price / Stored_Peak_RSI.** Memory variables for
+  Alarm E. Stored at the exact tick of every new NHOD/NLOD,
+  unconditionally on the RSI relationship (the divergence signal is
+  produced at query time by comparing live RSI to stored RSI).
 
 ---
 
-## SECTION 3 — The Wounded Buffalo (Short Strategy)
+## SECTION 1 \u2014 System concepts
 
-Mirror of Section 2 with inequality direction flipped, DI− replacing DI+, ORL replacing ORH, NLOD replacing NHOD.
+### 1.1 Strike sequence
+A Strike is one full trade lifecycle (Entry to Exit). **Maximum
+3 Strikes per ticker per day.**
 
-### Phase 1 — Weather (`S-P1-S1`, `S-P1-S2`)
-- **`S-P1-S1`**: QQQ (5m) close < QQQ 5m 9-EMA.
-- **`S-P1-S2`**: QQQ (current) < QQQ 09:30 anchor VWAP.
+* **Sequential requirement.** A subsequent Strike cannot initiate
+  until the previous position is fully flat (Position = 0).
+* **Permission ladder:**
+  * **Strike 1.** Triggered by 2x 1m close above ORH (long) /
+    below ORL (short).
+  * **Strike 2 & 3.** Triggered by 2x 1m close above the running
+    NHOD (long) / below the running NLOD (short).
 
-### Phase 2 — Permits (`S-P2-S3`, `S-P2-S4`)
-- **`S-P2-S3` Volume Gate**: same time-conditional logic as `L-P2-S3` (auto-pass before 10:00 ET).
-- **`S-P2-S4` ORL Boundary**: two consecutive 1m closes strictly below 5m ORL.
+### 1.2 Alarm E \u2014 the divergence trap
+The bot monitors the relationship between price and RSI(15) at every
+new NHOD / NLOD.
 
-### Phase 3 — The Strike
-
-Master anchor: `S-P3-AUTH`: `5m_DI- > 25`.
-
-- **`S-P3-FULL`**: `1m_DI- > 30` → 100% size, `LIMIT @ bid × 0.999`.
-- **`S-P3-SCALED-A`**: `25 ≤ 1m_DI- ≤ 30` → 50%, `LIMIT @ bid × 0.999`.
-- **`S-P3-SCALED-B`**: add-on requires `1m_DI- > 30` AND fresh NLOD AND `Alarm E == False`, `LIMIT @ bid × 0.999`.
-
----
-
-## SECTION 4 — Shared Risk & Timing
-
-| Rule ID | Rule | Value |
-|---|---|---|
-| `SHARED-HARD-STOP` | Per-trade hard stop | `unrealized_pnl ≤ -$500` → MARKET EXIT |
-| `SHARED-CB` | Daily circuit breaker | `realized_pnl_today ≤ -$1,500` → halt + flatten |
-| `SHARED-CUTOFF` | New-position cutoff | `15:44:59 ET` |
-| `SHARED-EOD` | EOD flush | `15:49:59 ET` (MARKET) |
-| `SHARED-ORDER-PROFIT` | Profit-taking exits use **LIMIT** orders |
-| `SHARED-ORDER-STOP` | Defensive stops + ratchets use **STOP MARKET** orders |
-| `SHARED-PREMARKET-RECALC` | At `09:29 ET` (1 min before open) — recalculate premarket data caches: DI seed (idempotent per-ticker via `_DI_SEED_CACHE`), QQQ Regime EMAs (idempotent via `_QQQ_REGIME_SEEDED`), volume profile cache reload (always; picks up 21:00 ET nightly rebuild), prior-day bar archive existence check. All non-fatal. Added in v5.19.0 per vAA-1 ULTIMATE Decision 6. |
+* **Pre-entry filter.** If a price prints a new extreme but RSI(15)
+  is diverging (lower for longs, higher for shorts), the bot is
+  prohibited from opening new Strike 2 or Strike 3 positions.
+* **Post-entry sentinel.** If divergence is detected while a
+  position is open, immediately ratchet the resting STOP MARKET to
+  Current Price \u00b1 0.25%.
 
 ---
 
-## SECTION 5 — The Sentinel Loop (parallel monitor)
+## SECTION 2 \u2014 The Bison (long strategy)
 
-> **Architectural rule:** All five alarms (A, B, C, D, E) are evaluated in **parallel** on every per-tick or per-bar update. They are NOT a sequence. Caller resolves priority: any of {A, B, D} → full MARKET EXIT; otherwise apply {C, E} ratchets and any C harvest events. Alarm E pre-entry filter is consulted by the Strike sizing logic, not the per-tick exit loop.
+### Phase 1 & 2 \u2014 Weather and permits
+* **Weather.** QQQ(5m) > 9-EMA AND QQQ > 9:30 AM Anchor VWAP.
+* **Permit.** Two consecutive 1m closes above the target level
+  (ORH for Strike 1, NHOD for Strikes 2 & 3).
+* **Volume gate.** 1m volume \u2265 100% of the 55-bar rolling
+  average. **Required after 10:00 AM ET.**
 
-### `SENT-A` — Emergency Shield (split, codes renamed in vAA-1)
-- **`SENT-A_LOSS`** (Hard Loss): `unrealized_pnl ≤ -$500` → MARKET EXIT. Code: `A_LOSS` (legacy `A1` deleted).
-- **`SENT-A_FLASH`** (Flash Move): single-minute price move > 1.0% against the position → MARKET EXIT. Code: `A_FLASH` (legacy `A2` deleted).
-  - Window: 60 seconds. Threshold: `(pnl_now - pnl_60s_ago) / position_value ≤ -0.01`.
-- **Migration note:** v5.15.0 deletes the legacy code strings `"A1"` / `"A2"` from `engine/sentinel.py`, dashboard surfaces, forensic capture filters, and log line formatters. No dual-emit window; clean break.
-
-### `SENT-B` — Trend Death (5m EMA9 cross)
-- A 5m bar **closes** below 5m 9-EMA (long) / above 5m 9-EMA (short) → MARKET EXIT.
-- Triggered on 5m bar close, not intra-bar.
-
-### `SENT-C` — Velocity Ratchet (REPLACES Titan Grip Harvest)
-- Maintain a sliding window of the last three 1m ADX values: `[adx_1m_t-2, adx_1m_t-1, adx_1m_t]`.
-- Trigger condition: `adx_1m_t < adx_1m_t-1 < adx_1m_t-2` (strictly decreasing for 3 consecutive 1m bars).
-- Action: ratchet a **STOP MARKET** order to:
-  - Long: `current_price × (1 − 0.0025)`
-  - Short: `current_price × (1 + 0.0025)`
-- Ratchet rule: only move in the protective direction; never loosen an existing stop. If a stop is already tighter, leave it.
-
-### `SENT-D` — HVP Lock (NEW)
-- Track `Trade_HVP = max(Trade_HVP, current_5m_adx)` on every 5m bar close during the active Strike.
-- Trigger condition: `current_5m_adx < 0.75 × Trade_HVP`.
-- Action: MARKET EXIT.
-- `Trade_HVP` is per-Strike state and resets when the Strike closes (full flat).
-
-### `SENT-E` — Divergence Trap (NEW)
-
-State (per ticker, per side, persists across Strikes within the day):
-- `Stored_Peak_Price`: extreme price (NHOD/NLOD) at last RSI(15) peak.
-- `Stored_Peak_RSI`: RSI(15) value at that moment.
-
-Update on every 1m bar close:
-- **Long**: if `current_price > Stored_Peak_Price` AND `current_rsi_15 ≥ Stored_Peak_RSI` → update both.
-- **Short**: if `current_price < Stored_Peak_Price` AND `current_rsi_15 ≤ Stored_Peak_RSI` → update both.
-
-Trigger conditions:
-- **`SENT-E-PRE`** (sizing gate; consulted by Strike-2/3 entry only):
-  - Long: `current_price > Stored_Peak_Price` AND `current_rsi_15 < Stored_Peak_RSI` → **block Strike 2/3 entry**.
-  - Short: `current_price < Stored_Peak_Price` AND `current_rsi_15 > Stored_Peak_RSI` → **block Strike 2/3 entry**.
-- **`SENT-E-POST`** (in-trade):
-  - Same condition as PRE → ratchet **STOP MARKET** to `current_price × (1 ∓ 0.0025)` (in the protective direction). Never loosens.
-
-`Stored_Peak_*` does not reset between Strikes within the day; it resets at 09:30 ET each session.
+### Phase 3 \u2014 The Strike (sizing & execution)
+* **Authority check.** 5m DI+ MUST be > 25.
+* **Momentum check.** 5m ADX > 20 AND **Alarm E = FALSE**.
+* **Full Strike (100% size).** Trigger: 1m DI+ > 30.
+  * **Order:** LIMIT at Ask \u00d7 1.001.
+* **Scaled Strike (50% starter).** Trigger: 1m DI+ in [25, 30].
+  * **Order:** LIMIT at Ask \u00d7 1.001.
+  * **Scale-in.** Add the remaining 50% only if (1m DI+ > 30) AND
+    (new NHOD) AND (Alarm E = FALSE).
 
 ---
 
-## Spec → code mapping (rule IDs → modules)
+## SECTION 3 \u2014 The Wounded Buffalo (short strategy)
 
-| Rule ID | Module |
-|---|---|
-| `L-P1-*`, `S-P1-*` | `eye_of_tiger.evaluate_global_permit` |
-| `L-P2-S3`, `S-P2-S3` | `eye_of_tiger.evaluate_volume_bucket` (extend with time gate) |
-| `L-P2-S4`, `S-P2-S4` | `eye_of_tiger.evaluate_boundary_hold` |
-| `L-P3-*`, `S-P3-*` | `eye_of_tiger.evaluate_strike_sizing` (NEW; replaces Entry-1 / Entry-2) |
-| `STRIKE-CAP-3` (per-ticker), `STRIKE-FLAT-GATE` (per-side) | `trade_genius.py` (extends `_v570_strike_*`) |
-| `SHARED-HARD-STOP` | `engine/sentinel.check_alarm_a` (subsumed under `SENT-A_LOSS`) |
-| `SHARED-CB`, `SHARED-CUTOFF`, `SHARED-EOD` | `engine/timing.py` |
-| `SHARED-ORDER-*` | `broker/orders.py` |
-| `SENT-A_LOSS`, `SENT-A_FLASH` | `engine/sentinel.check_alarm_a` |
-| `SENT-B` | `engine/sentinel.check_alarm_b` |
-| `SENT-C` | `engine/sentinel.check_alarm_c` (REWRITE; delegates to new `engine/velocity_ratchet.py`) |
-| `SENT-D` | `engine/sentinel.check_alarm_d` (NEW) |
-| `SENT-E-PRE`, `SENT-E-POST` | `engine/sentinel.check_alarm_e` (NEW) + `eye_of_tiger.evaluate_strike_2_3_gate` (NEW) |
-| `Trade_HVP`, `Stored_Peak_*` | `engine/momentum_state.py` (NEW) |
+Mirror of Section 2 with sign flips on every comparison:
 
----
+### Phase 1 & 2 \u2014 Weather and permits
+* **Weather.** QQQ(5m) < 9-EMA AND QQQ < 9:30 AM Anchor VWAP.
+* **Permit.** Two consecutive 1m closes below the target level
+  (ORL for Strike 1, NLOD for Strikes 2 & 3).
+* **Volume gate.** Same 100% / 55-bar / required-after-10:00 contract.
 
-## Removed / deprecated
-
-- **Titan Grip Harvest** (`Stage 1 0.93%`, `0.40% stop`, `0.25% micro-ratchet`, `Stage 3 1.88%`, `Stage 4 runner`) — entirely deleted in vAA-1. Module `engine/titan_grip.py` is repurposed (or deleted in favor of `engine/velocity_ratchet.py`).
-- **Fixed 50/50 entry sequence** (`evaluate_entry_1` / `evaluate_entry_2`) — replaced by `evaluate_strike_sizing`. Kept as deprecated thin wrappers for one release to avoid wide-blast renames.
-- **`ENABLE_UNLIMITED_TITAN_STRIKES = True`** — incompatible with `STRIKE-CAP-3`. Default flips to `False`; Titans now obey the 3-strike-per-ticker cap (long+short combined) unless explicitly overridden by env var (which is itself flagged for retirement).
+### Phase 3 \u2014 The Strike (sizing & execution)
+* **Authority check.** 5m DI\u2212 MUST be > 25.
+* **Momentum check.** 5m ADX > 20 AND **Alarm E = FALSE**.
+* **Full Strike (100% size).** Trigger: 1m DI\u2212 > 30.
+  * **Order:** LIMIT at Bid \u00d7 0.999.
+* **Scaled Strike (50% starter).** Trigger: 1m DI\u2212 in [25, 30].
+  * **Order:** LIMIT at Bid \u00d7 0.999.
+  * **Scale-in.** Add the remaining 50% only if (1m DI\u2212 > 30) AND
+    (new NLOD) AND (Alarm E = FALSE).
 
 ---
 
-## Outstanding interpretation questions (locked unless user revises)
+## SECTION 4 \u2014 Shared rules and risk management
 
-These were called out in `tiger_sovereign_vAA_understanding.md` and are locked here pending confirmation:
+* **Entry window.** 09:36:00 to 15:44:59 EST. No new entries after
+  15:44:59.
+* **Hard protection.** Immediate resting STOP MARKET at \u2212$500
+  (per position).
+* **Daily circuit breaker.** Halt all trading and flatten all
+  positions if session P&L reaches \u2212$1,500.
+* **EOD flush.** Absolute market close at 15:49:59 EST.
 
-1. RSI(15) = **15-period RSI on 1m bars**.
-2. "55-bar rolling average" = 55 same-minute bars across prior trading days.
-3. Velocity Ratchet trigger = **strictly monotone-decreasing** 1m ADX over 3 bars.
-4. `STRIKE-CAP-3` overrides `ENABLE_UNLIMITED_TITAN_STRIKES`. v5.19.1: cap is **per-ticker** (long+short combined), not per-(ticker, side).
-5. All profit-taking happens via stop-ratchet trips, Alarm D, or EOD. No fixed harvests.
-6. Alarm A code names **renamed**: `A1` → `A_LOSS`, `A2` → `A_FLASH`. Legacy strings deleted everywhere (engine, dashboard, forensic, log formatters).
+---
+
+## ADDENDUM \u2014 The Sentinels (exit protection)
+
+| Alarm | Trigger | Action |
+| ----- | ------- | ------ |
+| **A. Flash Move** | 1m price move > 1% against position | MARKET EXIT |
+| **B. Trend Death** | 5m candle closes across the 5m 9-EMA | MARKET EXIT |
+| **C. Tiger Grip** | 3 consecutive 1m ADX declines | RATCHET STOP \u00b1 0.25% |
+| **D. HVP Lock** | 5m ADX falls below 75% of session peak (HWM) | MARKET EXIT |
+| **E. Divergence** | New extreme printed on lower (long) / higher (short) RSI(15) | RATCHET STOP \u00b1 0.25% (also blocks new S2/S3) |
+
+---
+
+## Implementation map (where each rule lives)
+
+| Rule | Source surface |
+| ---- | --------------- |
+| Entry window 09:36\u201315:44:59 | `engine/timing.py` (`HUNT_START_ET`, `NEW_POSITION_CUTOFF_ET`); enforced in `broker/orders.py.check_entry`. |
+| ORH/ORL freeze 09:35:59 | OR aggregation: `eye_of_tiger.py.OR_WINDOW_END_HHMM_ET = "09:36"` (half-open bound including the 09:35 candle); `trade_genius.py.collect_or` and `_fill_metrics_for_ticker.or_window_end` use the same `09:36` upper bound. |
+| Strike 1 boundary (2x close above ORH / below ORL) | `eye_of_tiger.py.evaluate_boundary_hold` + `BOUNDARY_HOLD_REQUIRED_CLOSES = 2`. |
+| Strike 2/3 boundary (NHOD/NLOD) | `broker/orders.py.check_entry` strike-aware boundary path; reads `tg._v570_session_hod[ticker]` / `tg._v570_session_lod[ticker]`. |
+| Volume gate (\u2265 100% / 55-bar, required after 10:00 ET) | `volume_bucket.py.VolumeBucketBaseline.check`; live caller passes `now_et=ZoneInfo("America/New_York")` so the spec-mandatory time-conditional path activates. Default ON via `engine/feature_flags.py.VOLUME_GATE_ENABLED = True`. |
+| Authority (5m DI\u00b1 > 25) | `broker/orders.py.check_entry` reads `tg.v5_adx_1m_5m(ticker)`. |
+| Momentum (5m ADX > 20) | Hard gate in `broker/orders.py.check_entry`; fails closed if `adx_5m` is unavailable. |
+| Alarm E pre-entry filter (S2/S3) | `engine/sentinel.py.check_alarm_e_pre`, called from `broker/orders.py.check_entry`; reads `broker/positions.py.get_divergence_memory()`. |
+| Sizing (Full / Scaled) | `eye_of_tiger.py.evaluate_strike_sizing` wired into `broker/orders.py.execute_breakout`. FULL (1m DI\u00b1 > 30) fills 100% in one fill and pre-sets `v5104_entry2_fired=True` so the legacy Entry-2 add-on does not double-fill. SCALED_A (1m DI\u00b1 in [25, 30]) fills 50% starter; Entry-2 may top up under spec scale-in conditions. WAIT defensively aborts entry. Helper exceptions fall back to the legacy 50% starter so a sizing bug never blocks a trade. |
+| Strike cap 3/day + sequential requirement | `tg.strike_entry_allowed(ticker, side, view)` invoked from `broker/orders.py.check_entry`. |
+| Hard stop \u2212$500 | Polling loop + Sentinel backstop in `broker/positions.py`. |
+| Daily circuit breaker \u2212$1,500 | `eye_of_tiger.py.DAILY_CIRCUIT_BREAKER_DOLLARS`. |
+| EOD flush 15:49:59 | `engine/timing.py.is_after_eod_et`. |
+| Alarm A (flash > 1%) | `engine/sentinel.py.check_alarm_a` with strict `<` velocity threshold. |
+| Alarm B (5m EMA cross) | `engine/sentinel.py.check_alarm_b`. |
+| Alarm C (3 ADX declines) | `engine/sentinel.py.check_alarm_c`. |
+| Alarm D (HVP lock) | `engine/sentinel.py.check_alarm_d`. |
+| Alarm E (divergence post-entry) | `engine/sentinel.py.check_alarm_e` + `engine/momentum_state.py.DivergenceMemory`. |
+
+---
+
+## Operator dashboard \u2014 spec surface
+
+The Permit Matrix on Main and on the Val/Gene exec panels shows the
+live verdict for each gate. v5.20.0 wires the **expanded detail row**
+to print the verbatim v15.0 spec for each gate
+(`renderPermitMatrix._pmtxBuildRow` in `dashboard_static/app.js`)
+so operators can compare \"what the engine says\" to \"what the spec
+says\" without leaving the UI.

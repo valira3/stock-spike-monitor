@@ -14,6 +14,7 @@ the gate is PASS-THROUGH with a once-per-session warning log
 virtually no entries would fire until the archive accumulates ~55
 sessions, which would defeat Unlimited Hunting.
 """
+
 from __future__ import annotations
 
 import json
@@ -112,10 +113,13 @@ class VolumeBucketBaseline:
         bb.check("AAPL", "09:35", 12500)        # -> {gate: PASS|FAIL|COLDSTART, ...}
     """
 
-    def __init__(self, base_dir: str = DEFAULT_BARS_DIR,
-                 lookback_days: int = VOLUME_BUCKET_LOOKBACK_DAYS,
-                 threshold_ratio: float = VOLUME_BUCKET_THRESHOLD_RATIO,
-                 cold_start_passthrough: bool = VOLUME_BUCKET_COLD_START_PASSTHROUGH):
+    def __init__(
+        self,
+        base_dir: str = DEFAULT_BARS_DIR,
+        lookback_days: int = VOLUME_BUCKET_LOOKBACK_DAYS,
+        threshold_ratio: float = VOLUME_BUCKET_THRESHOLD_RATIO,
+        cold_start_passthrough: bool = VOLUME_BUCKET_COLD_START_PASSTHROUGH,
+    ):
         self.base_dir = base_dir
         self.lookback_days = lookback_days
         self.threshold_ratio = threshold_ratio
@@ -180,27 +184,30 @@ class VolumeBucketBaseline:
                     new_baseline[ticker][k] = total / n
 
         self.baseline = new_baseline
-        self.days_available_per_ticker = {
-            t: len(s) for t, s in days_seen.items()
-        }
+        self.days_available_per_ticker = {t: len(s) for t, s in days_seen.items()}
         self._cold_start_logged.clear()
         self.last_refresh_utc = datetime.utcnow()
         logger.info(
             "[V5100-VOLBUCKET-REFRESH] tickers=%d days_window=%d at=%s",
-            len(new_baseline), self.lookback_days,
+            len(new_baseline),
+            self.lookback_days,
             self.last_refresh_utc.isoformat() + "Z",
         )
 
     def days_available(self, ticker: str) -> int:
         return self.days_available_per_ticker.get(ticker.upper(), 0)
 
-    def check(self, ticker: str, minute_of_day: str,
-              current_volume: float | int) -> dict:
+    def check(self, ticker: str, minute_of_day: str, current_volume: float | int) -> dict:
         """Evaluate the gate. Returns dict with:
             gate: 'PASS' | 'FAIL' | 'COLDSTART'
             ratio: current_volume / baseline (or None if COLDSTART)
+            ratio_to_55bar_avg: alias for ratio (v15.0 spec field name)
             baseline: float | None
             days_available: int
+
+        v15.0 SPEC: the spec calls the comparator "ratio_to_55bar_avg";
+        we emit it as an alias so the time-conditional 10:00 ET path in
+        ``eye_of_tiger.evaluate_volume_bucket`` activates.
         """
         sym = ticker.upper()
         key = _bucket_key(minute_of_day)
@@ -210,26 +217,57 @@ class VolumeBucketBaseline:
                 if sym not in self._cold_start_logged:
                     logger.warning(
                         "[V5100-VOLBUCKET-COLDSTART] ticker=%s days_available=%d",
-                        sym, days,
+                        sym,
+                        days,
                     )
                     self._cold_start_logged.add(sym)
-                return {"gate": "COLDSTART", "ratio": None,
-                        "baseline": None, "days_available": days}
-            return {"gate": "FAIL", "ratio": None,
-                    "baseline": None, "days_available": days}
+                return {
+                    "gate": "COLDSTART",
+                    "ratio": None,
+                    "ratio_to_55bar_avg": None,
+                    "baseline": None,
+                    "days_available": days,
+                }
+            return {
+                "gate": "FAIL",
+                "ratio": None,
+                "ratio_to_55bar_avg": None,
+                "baseline": None,
+                "days_available": days,
+            }
         if key is None:
-            return {"gate": "FAIL", "ratio": None,
-                    "baseline": None, "days_available": days}
+            return {
+                "gate": "FAIL",
+                "ratio": None,
+                "ratio_to_55bar_avg": None,
+                "baseline": None,
+                "days_available": days,
+            }
         b = self.baseline.get(sym, {}).get(key)
         if b is None or b <= 0.0:
-            return {"gate": "FAIL", "ratio": None,
-                    "baseline": b, "days_available": days}
+            return {
+                "gate": "FAIL",
+                "ratio": None,
+                "ratio_to_55bar_avg": None,
+                "baseline": b,
+                "days_available": days,
+            }
         try:
             cv = float(current_volume)
         except (TypeError, ValueError):
-            return {"gate": "FAIL", "ratio": None,
-                    "baseline": b, "days_available": days}
+            return {
+                "gate": "FAIL",
+                "ratio": None,
+                "ratio_to_55bar_avg": None,
+                "baseline": b,
+                "days_available": days,
+            }
         ratio = cv / b
         gate = "PASS" if ratio >= self.threshold_ratio else "FAIL"
-        return {"gate": gate, "ratio": ratio,
-                "baseline": b, "days_available": days}
+        return {
+            "gate": gate,
+            "ratio": ratio,
+            "ratio_to_55bar_avg": ratio,
+            "baseline": b,
+            "days_available": days,
+        }

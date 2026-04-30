@@ -26,9 +26,10 @@ NEW_POSITION_CUTOFF_ET: time = time(15, 44, 59)
 EOD_FLUSH_ET: time = time(15, 49, 59)
 
 # Hunt window: from regular-session open through SHARED-CUTOFF.
-# SHARED-HUNT explicitly says "look for new trades until the 15:44:59 cutoff",
-# so the hunt-end constant is intentionally identical to NEW_POSITION_CUTOFF_ET.
-HUNT_START_ET: time = time(9, 35, 0)
+# v15.0 SPEC: Entry Window 09:36:00 to 15:44:59 EST. ORH/ORL freeze at 09:35:59;
+# the earliest valid 2x 1m close above/below ORH/ORL completes on the 09:37 close,
+# so the hunt window opens at 09:36:00 (one bar before the earliest possible fire).
+HUNT_START_ET: time = time(9, 36, 0)
 HUNT_END_ET: time = NEW_POSITION_CUTOFF_ET
 
 # Regular session bounds — used by callers that need a market-hours predicate.

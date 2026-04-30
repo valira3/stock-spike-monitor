@@ -707,13 +707,13 @@
       + '<div class="pmtx-table-wrap">'
       +   '<table class="pmtx-table"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
-      +     '<th class="pmtx-col-orb" title="L-P2-S4 / S-P2-S4 \u2014 ORH/ORL Boundary. Two consecutive 1m candles must close strictly above the 5m ORH (long) or strictly below the 5m ORL (short). ORH/ORL frozen at 09:35:59 ET on the 5m bar that closes at 09:35.">ORB</th>'
-      +     '<th class="pmtx-col-adx" title="Trend strength proxy (not a primary spec gate). Lights up once the Phase 3 master anchor fires (5m DI\u00b1 > 25), which empirically requires 5m ADX > 20.">Trend</th>'
-      +     '<th class="pmtx-col-diplus" title="L-P3-AUTH / S-P3-AUTH \u2014 Phase 3 master anchor. 5m DI+ > 25 (long) or 5m DI\u2212 > 25 (short). If FALSE \u2192 no entry, regardless of 1m DI.">5m DI\u00b1</th>'
-      +     '<th class="pmtx-col-vol" title="L-P2-S3 / S-P2-S3 \u2014 Volume gate. Auto-passes before 10:00 ET. After 10:00 ET, requires 1m volume \u2265 1.00\u00d7 rolling 55-bar same-minute average.">Vol</th>'
-      +     '<th class="pmtx-col-strike" title="STRIKE-CAP-3 \u2014 maximum 3 Strikes per ticker per session. STRIKE-FLAT-GATE: next strike requires position fully flat. Counters reset at 09:30:00 ET.">Strikes</th>'
-      +     '<th class="pmtx-col-state" title="Per-ticker FSM \u2014 IDLE \u00b7 ARMED (P1+P2 satisfied, awaiting P3) \u00b7 IN POS \u00b7 LOCKED (3-of-3 used).">State</th>'
-      +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to nearest OR boundary (ORH=OR-high, ORL=OR-low). Boundary defined by L-P2-S4 / S-P2-S4.">Dist</th>'
+      +     '<th class="pmtx-col-orb" title="Permit / Boundary (Tiger Sovereign v15.0 \u00a72/\u00a73). Strike 1: two consecutive 1m closes strictly above ORH (long) or below ORL (short), with ORH/ORL frozen at exactly 09:35:59 ET. Strikes 2 & 3: two consecutive 1m closes above the running NHOD (long) or below the running NLOD (short).">ORB</th>'
+      +     '<th class="pmtx-col-adx" title="Phase 3 momentum gate (v15.0 \u00a72/\u00a73). Required for entry: 5m ADX > 20 AND Alarm E = FALSE. This is a primary spec gate \u2014 if ADX \u2264 20 the bot does not open a Strike, regardless of DI\u00b1.">Trend</th>'
+      +     '<th class="pmtx-col-diplus" title="Phase 3 authority check (v15.0 \u00a72/\u00a73). Required for entry: 5m DI+ > 25 (long) or 5m DI\u2212 > 25 (short). Sizing is then driven by 1m DI\u00b1: > 30 = Full Strike (100%), 25\u201330 = Scaled Strike (50% starter).">5m DI\u00b1</th>'
+      +     '<th class="pmtx-col-vol" title="Volume gate (v15.0 \u00a72/\u00a73). 1m volume must be \u2265 100% of the 55-bar rolling average. REQUIRED after 10:00 AM ET; before 10:00 ET the gate auto-passes.">Vol</th>'
+      +     '<th class="pmtx-col-strike" title="Strike sequence (v15.0 \u00a71). Maximum 3 Strikes per ticker per day. Sequential Requirement: a subsequent strike cannot initiate until the previous position is fully flat (Position = 0). Counters reset at 09:30:00 ET.">Strikes</th>'
+      +     '<th class="pmtx-col-state" title="Per-ticker FSM \u2014 IDLE \u00b7 ARMED (Phase 1 weather + Phase 2 permit satisfied, awaiting Phase 3 authority + momentum) \u00b7 IN POS \u00b7 LOCKED (3-of-3 strikes used).">State</th>'
+      +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to the live boundary the next strike is hunting. Strike 1 hunts ORH/ORL (frozen 09:35:59); strikes 2 & 3 hunt the running NHOD/NLOD.">Dist</th>'
       +     '<th class="pmtx-col-expand" aria-label="Toggle detail"></th>'
       +   '</tr></thead><tbody>' + rowsHtml.join("") + '</tbody></table>'
       + '</div>';
@@ -933,6 +933,47 @@
                 + escapeHtml(typeof prox.or_high === "number" ? fmtPx(prox.or_high) : "\u2014")
                 + '</div></div>'
               : '')
+        + '</div>'
+        // v5.20.0 \u2014 v15.0 spec definitions per gate. Operators read
+        // these to cross-check the live verdict against the verbatim
+        // spec rule. Sourced from Tiger Sovereign v15.0 \u00a70\u2013\u00a74
+        // + Sentinel Addendum.
+        + '<div class="pmtx-spec-defs" data-pmtx-spec="v15.0">'
+        +   '<div class="pmtx-spec-defs-head">Tiger Sovereign v15.0 \u00b7 spec definitions</div>'
+        +   '<dl class="pmtx-spec-defs-list">'
+        +     '<dt>Phase 1 \u00b7 Weather</dt>'
+        +     '<dd>Long: QQQ(5m) &gt; 9-EMA <strong>AND</strong> QQQ &gt; 9:30 AM Anchor VWAP. Short: mirrored (QQQ &lt; 9-EMA <strong>AND</strong> &lt; AVWAP_0930).</dd>'
+        +     '<dt>Phase 2 \u00b7 Permit (boundary)</dt>'
+        +     '<dd>Two consecutive 1m closes strictly above the target level (Strike 1: ORH frozen 09:35:59 \u00b7 Strikes 2 &amp; 3: running NHOD). Short: mirrored against ORL / NLOD.</dd>'
+        +     '<dt>Phase 2 \u00b7 Volume gate</dt>'
+        +     '<dd>1m volume \u2265 100% of the 55-bar rolling average. <strong>REQUIRED after 10:00 AM ET</strong>; auto-passes before 10:00 ET.</dd>'
+        +     '<dt>Phase 3 \u00b7 Authority</dt>'
+        +     '<dd>5m DI+ &gt; 25 (long) or 5m DI\u2212 &gt; 25 (short). If FALSE \u2192 no Strike, regardless of 1m DI.</dd>'
+        +     '<dt>Phase 3 \u00b7 Momentum</dt>'
+        +     '<dd><strong>5m ADX &gt; 20 AND Alarm E = FALSE.</strong> Both required \u2014 ADX is now a primary spec gate.</dd>'
+        +     '<dt>Phase 3 \u00b7 Sizing</dt>'
+        +     '<dd>Full Strike (100%): 1m DI\u00b1 &gt; 30. Scaled Strike (50% starter): 1m DI\u00b1 in [25, 30]. Order: LIMIT at Ask\u00d71.001 (long) / Bid\u00d70.999 (short).</dd>'
+        +     '<dt>Strike sequence</dt>'
+        +     '<dd>Maximum 3 Strikes per ticker per day. Sequential Requirement: a subsequent strike cannot initiate until the previous position is fully flat (Position = 0).</dd>'
+        +     '<dt>Alarm A \u00b7 Flash Move</dt>'
+        +     '<dd>1m price move &gt; 1% against position \u2192 MARKET EXIT.</dd>'
+        +     '<dt>Alarm B \u00b7 Trend Death</dt>'
+        +     '<dd>5-minute candle closes across the 5m 9-EMA \u2192 MARKET EXIT.</dd>'
+        +     '<dt>Alarm C \u00b7 Tiger Grip</dt>'
+        +     '<dd>3 consecutive 1m ADX declines \u2192 RATCHET STOP \u00b1 0.25%.</dd>'
+        +     '<dt>Alarm D \u00b7 HVP Lock</dt>'
+        +     '<dd>5m ADX falls below 75% of session peak (HWM / Trade_HVP) \u2192 MARKET EXIT.</dd>'
+        +     '<dt>Alarm E \u00b7 Divergence</dt>'
+        +     '<dd>New extreme printed on lower (long) / higher (short) RSI(15) \u2192 RATCHET STOP \u00b1 0.25%, AND prohibits opening new Strike 2 / Strike 3.</dd>'
+        +     '<dt>Risk \u00b7 Hard stop</dt>'
+        +     '<dd>Resting STOP MARKET at \u2212$500 per position.</dd>'
+        +     '<dt>Risk \u00b7 Daily circuit breaker</dt>'
+        +     '<dd>Halt all trading and flatten if session P&amp;L reaches \u2212$1,500.</dd>'
+        +     '<dt>Entry window</dt>'
+        +     '<dd>09:36:00 to 15:44:59 EST. No new entries after 15:44:59.</dd>'
+        +     '<dt>EOD flush</dt>'
+        +     '<dd>Absolute market close at 15:49:59 EST.</dd>'
+        +   '</dl>'
         + '</div>'
         + (sentinelStripHtml || "");
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
@@ -1549,18 +1590,9 @@
       <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-session-sub">\u2014</span></div>
     </section>
 
-    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
-      <div class="pmtx-weather pmtx-weather-pending" data-f="pmtx-weather">
-        <div class="pmtx-weather-icon" data-f="pmtx-weather-icon" aria-hidden="true">\u00B7</div>
-        <div class="pmtx-weather-body">
-          <div class="pmtx-weather-eyebrow">Weather check \u00b7 Phase 1 Sovereign</div>
-          <div class="pmtx-weather-verdict" data-f="pmtx-weather-verdict">Waiting for permit state\u2026</div>
-          <div class="pmtx-weather-detail" data-f="pmtx-weather-detail">QQQ 5m close vs 9-EMA \u00b7 QQQ vs AVWAP_0930</div>
-        </div>
-        <div class="pmtx-weather-stats" data-f="pmtx-weather-stats" aria-hidden="true"></div>
-      </div>
-    </section>
-
+    <!-- v5.20.0 \u2014 Open positions sits ABOVE the Weather Check banner so currently-held risk
+         is visible first; the Weather banner (a conditional "can I take a new entry?" verdict)
+         appears immediately below. Mirrors the Main panel reorder shipped in v5.19.4. -->
     <section class="grid">
       <div class="card">
         <div class="card-head"><span class="card-title">Open positions<span class="count" data-f="pos-count">\u00b7 0</span></span></div>
@@ -1596,10 +1628,24 @@
       </div>
     </section>
 
+    <!-- v5.20.0 \u2014 Weather Check banner (Phase 1 Sovereign verdict) sits BELOW Open positions
+         so the operator sees held risk first and the new-entry permit second. -->
+    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
+      <div class="pmtx-weather pmtx-weather-pending" data-f="pmtx-weather">
+        <div class="pmtx-weather-icon" data-f="pmtx-weather-icon" aria-hidden="true">\u00B7</div>
+        <div class="pmtx-weather-body">
+          <div class="pmtx-weather-eyebrow">Weather check \u00b7 Phase 1 Sovereign</div>
+          <div class="pmtx-weather-verdict" data-f="pmtx-weather-verdict">Waiting for permit state\u2026</div>
+          <div class="pmtx-weather-detail" data-f="pmtx-weather-detail">QQQ 5m close vs 9-EMA \u00b7 QQQ vs AVWAP_0930</div>
+        </div>
+        <div class="pmtx-weather-stats" data-f="pmtx-weather-stats" aria-hidden="true"></div>
+      </div>
+    </section>
+
     <section class="grid">
       <div class="card">
         <div class="card-head">
-          <span class="card-title" title="Per-Titan view of the Tiger Sovereign vAA-1 entry checklist (market-wide \u2014 same data as Main).">Permit Matrix<span class="count" data-f="pmtx-count">\u00b7 \u2014</span></span>
+          <span class="card-title" title="Per-Titan view of the Tiger Sovereign v15.0 entry checklist (market-wide \u2014 same data as Main).">Permit Matrix<span class="count" data-f="pmtx-count">\u00b7 \u2014</span></span>
           <span class="chip" data-f="pmtx-overall-chip" title="Aggregate Phase 1 permit state across long and short">\u2014</span>
         </div>
         <div class="card-body flush" data-f="pmtx-body">

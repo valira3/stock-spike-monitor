@@ -79,35 +79,44 @@ def test_divergence_memory_separate_state_per_ticker_and_side():
 
 
 def test_divergence_memory_long_update_only_when_both_conditions_met():
+    # v15.0 SPEC (Glossary): "Stored_Peak_Price / Stored_Peak_RSI:
+    # Memory variables for Alarm E tracking. They store the price
+    # extreme and the corresponding RSI(15) value at the exact tick
+    # of a new NHOD/NLOD." -> The memory updates on EVERY new price
+    # extreme regardless of whether RSI is higher or lower (the RSI
+    # comparison is what produces the Alarm E divergence signal at
+    # query time, not what gates the memory write).
     mem = DivergenceMemory()
     mem.update("AAPL", "LONG", price=190.0, rsi=72.0)
 
-    # Higher price BUT lower RSI: rejected (rsi >= stored_rsi violated).
+    # Higher price (new NHOD) with LOWER RSI: store both.
     mem.update("AAPL", "LONG", price=192.0, rsi=70.0)
-    assert mem.peak("AAPL", "LONG") == (190.0, 72.0)
+    assert mem.peak("AAPL", "LONG") == (192.0, 70.0)
 
-    # Equal price BUT higher RSI: rejected (price > stored_price violated).
-    mem.update("AAPL", "LONG", price=190.0, rsi=80.0)
-    assert mem.peak("AAPL", "LONG") == (190.0, 72.0)
+    # Equal price is NOT a new extreme \u2014 do not overwrite RSI.
+    mem.update("AAPL", "LONG", price=192.0, rsi=80.0)
+    assert mem.peak("AAPL", "LONG") == (192.0, 70.0)
 
-    # Higher price AND equal RSI: accepted (rsi >= is inclusive).
-    mem.update("AAPL", "LONG", price=193.0, rsi=72.0)
-    assert mem.peak("AAPL", "LONG") == (193.0, 72.0)
+    # Higher price with equal RSI: store both.
+    mem.update("AAPL", "LONG", price=193.0, rsi=70.0)
+    assert mem.peak("AAPL", "LONG") == (193.0, 70.0)
 
-    # Higher price AND higher RSI: accepted.
+    # Higher price with higher RSI: store both.
     mem.update("AAPL", "LONG", price=195.0, rsi=78.0)
     assert mem.peak("AAPL", "LONG") == (195.0, 78.0)
 
 
 def test_divergence_memory_short_update_mirrors_long():
+    # v15.0 SPEC: store price+RSI on every new NLOD regardless of RSI
+    # direction. The RSI comparison is at is_diverging() time.
     mem = DivergenceMemory()
     mem.update("NVDA", "SHORT", price=400.0, rsi=30.0)
 
-    # Lower price BUT higher RSI: rejected (rsi <= stored_rsi violated).
+    # Lower price (new NLOD) with HIGHER RSI: store both.
     mem.update("NVDA", "SHORT", price=395.0, rsi=35.0)
-    assert mem.peak("NVDA", "SHORT") == (400.0, 30.0)
+    assert mem.peak("NVDA", "SHORT") == (395.0, 35.0)
 
-    # Lower price AND lower RSI: accepted.
+    # Lower price with lower RSI: store both.
     mem.update("NVDA", "SHORT", price=390.0, rsi=25.0)
     assert mem.peak("NVDA", "SHORT") == (390.0, 25.0)
 

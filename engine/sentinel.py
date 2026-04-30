@@ -314,7 +314,10 @@ def check_alarm_a(
         if prior is not None:
             delta = unrealized_pnl - prior
             velocity = delta / position_value
-            if velocity <= ALARM_A_VELOCITY_THRESHOLD:
+            # v15.0 SPEC: "1m price move > 1% against position -> MARKET EXIT".
+            # Use a strict less-than comparison so an exact -1.000% move does
+            # not trigger; only moves that exceed -1% fire the alarm.
+            if velocity < ALARM_A_VELOCITY_THRESHOLD:
                 fired.append(
                     SentinelAction(
                         alarm="A_FLASH",
@@ -322,7 +325,7 @@ def check_alarm_a(
                         detail=(
                             f"side={side} pnl_60s_delta=${delta:.2f} "
                             f"velocity={velocity * 100:.2f}% "
-                            f"<= {ALARM_A_VELOCITY_THRESHOLD * 100:.2f}%"
+                            f"< {ALARM_A_VELOCITY_THRESHOLD * 100:.2f}%"
                         ),
                     )
                 )

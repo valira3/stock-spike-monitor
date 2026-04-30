@@ -123,11 +123,21 @@ class DivergenceMemory:
         return (str(ticker).upper(), str(side).upper())
 
     def update(self, ticker: str, side: str, price: float, rsi: float) -> None:
-        """Conditionally raise the stored peak.
+        """Store the (price, rsi) pair when price sets a new session extreme.
 
-        For LONG: stored only if ``price > stored_price`` AND
-        ``rsi >= stored_rsi`` (or no prior entry exists). For SHORT
-        the inequality on price flips to ``<``.
+        v15.0 SPEC \u00a70 (Glossary) defines
+        ``Stored_Peak_Price`` / ``Stored_Peak_RSI`` as the price extreme
+        and the corresponding RSI(15) value captured at the exact tick
+        of a new NHOD/NLOD. Storage is unconditional on the RSI
+        relationship: every new price extreme overwrites the prior peak,
+        regardless of whether the RSI confirmed or diverged. The
+        divergence test (``is_diverging``) compares the current RSI vs
+        the stored RSI but does NOT influence storage.
+
+        Pre-v5.20.0 the LONG path required ``rsi >= stored_rsi`` to
+        store, which silently dropped the very NHOD ticks the spec
+        wants captured (the ones that subsequently form the divergence
+        signal). Spec-compliant behaviour stores on every new extreme.
         """
         k = self._key(ticker, side)
         p = float(price)
@@ -137,13 +147,11 @@ class DivergenceMemory:
         if cur is None:
             self._peaks[k] = (p, r)
             return
-        sp, sr = cur
-        if side_u == "LONG":
-            if p > sp and r >= sr:
-                self._peaks[k] = (p, r)
-        elif side_u == "SHORT":
-            if p < sp and r <= sr:
-                self._peaks[k] = (p, r)
+        sp, _sr = cur
+        if side_u == "LONG" and p > sp:
+            self._peaks[k] = (p, r)
+        elif side_u == "SHORT" and p < sp:
+            self._peaks[k] = (p, r)
         # Unknown side: ignore (defensive; callers are expected to pass
         # LONG or SHORT only).
 

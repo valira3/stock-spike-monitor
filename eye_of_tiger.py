@@ -43,7 +43,10 @@ LEASH_EMA_TIMEFRAME_MIN = 5
 DAILY_CIRCUIT_BREAKER_DOLLARS = -1500.0
 
 OR_WINDOW_START_HHMM_ET = "09:30"
-OR_WINDOW_END_HHMM_ET = "09:35"
+# v15.0 SPEC: ORH/ORL fixed at exactly 09:35:59 ET. End-of-OR is the half-open
+# minute boundary 09:36, so bars with close < 09:36 belong to the OR (this
+# includes the 09:35 candle).
+OR_WINDOW_END_HHMM_ET = "09:36"
 BOUNDARY_HOLD_REQUIRED_CLOSES = 2
 
 PERMIT_QQQ_EMA_PERIOD = 9

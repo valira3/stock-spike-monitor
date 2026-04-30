@@ -95,12 +95,17 @@ def check_breakout(ticker, side):
     now_et = tg._now_et()
     today = now_et.strftime("%Y-%m-%d")
 
-    # Timing gate: after 09:35 ET (OR window close + 2-bar confirm)
-    market_open = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+    # v15.0 SPEC Entry Window: 09:36:00 to 15:44:59 EST.
+    # ORH/ORL freeze at 09:35:59; earliest valid 2x 1m close completes
+    # on the 09:37 candle close, but we open the gate at 09:36:00 (one
+    # bar before earliest fire) to align with the spec wording.
+    market_open = now_et.replace(hour=9, minute=36, second=0, microsecond=0)
     if now_et < market_open:
         return False, None
-    eod_time = now_et.replace(hour=15, minute=55, second=0, microsecond=0)
-    if now_et >= eod_time:
+    # SHARED-CUTOFF: no new entries at/after 15:44:59 ET (matches
+    # engine.timing.NEW_POSITION_CUTOFF_ET, also enforced in execute_breakout).
+    cutoff_time = now_et.replace(hour=15, minute=44, second=59, microsecond=0)
+    if now_et >= cutoff_time:
         return False, None
 
     # Reset daily entry counts if new day
@@ -125,10 +130,31 @@ def check_breakout(ticker, side):
     if ticker not in or_dict or ticker not in tg.pdc:
         return False, None
 
-    # Daily entry cap (max 5). v5.15.0 STRIKE-CAP-3 retired the per-Titan
-    # unlimited-strikes path; the 5-strike cap now applies uniformly to
-    # every ticker.
-    if daily_count.get(ticker, 0) >= 5:
+    # v15.0 SPEC STRIKE-CAP-3: Maximum 3 Strikes per ticker per day
+    # (long + short combined). Enforced via _v570_strike_count which is
+    # incremented on each successful entry; the strike_entry_allowed
+    # helper also enforces the sequential (flat-gate) requirement.
+    # `positions_dict` is keyed by ticker (paper_positions/short_positions);
+    # we project it into the (ticker:side) shape expected by the flat-gate.
+    side_label_for_cap = "LONG" if cfg.side.is_long else "SHORT"
+    _flat_gate_view: dict = {}
+    try:
+        for _t, _p in (tg.positions or {}).items():
+            _flat_gate_view[f"{str(_t).upper()}:LONG"] = _p
+        for _t, _p in (tg.short_positions or {}).items():
+            _flat_gate_view[f"{str(_t).upper()}:SHORT"] = _p
+    except Exception:
+        _flat_gate_view = {}
+    if not tg.strike_entry_allowed(ticker, side_label_for_cap, _flat_gate_view):
+        tg._v561_log_skip(
+            ticker=ticker,
+            reason="strike_cap_3_or_flat_gate",
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
+        )
+        return False, None
+    # Belt-and-suspenders: legacy daily_count cap aligned to spec value (3).
+    if daily_count.get(ticker, 0) >= 3:
         return False, None
 
     # Already in a position on this side for this ticker (paper).
@@ -304,7 +330,14 @@ def check_breakout(ticker, side):
         minute_of_day_hhmm,
         last_completed_vol or 0,
     )
-    volume_bucket_ok = tg.eot.evaluate_volume_bucket(vol_check)
+    # v15.0 SPEC: pass now_et so the time-conditional 10:00 ET gate
+    # activates. Pre-10:00 ET auto-passes; at/after 10:00 ET requires
+    # ratio_to_55bar_avg >= 1.00 (100% of 55-bar rolling avg).
+    try:
+        _now_et_vg = tg.datetime.now(tz=ZoneInfo("America/New_York"))
+    except Exception:
+        _now_et_vg = None
+    volume_bucket_ok = tg.eot.evaluate_volume_bucket(vol_check, now_et=_now_et_vg)
     if not volume_bucket_ok:
         tg._v561_log_skip(
             ticker=ticker,
@@ -314,13 +347,29 @@ def check_breakout(ticker, side):
         )
         return False, None
 
+    # v15.0 SPEC Permission Ladder:
+    #   Strike 1 \u2014 2x consecutive 1m close above ORH (long) / below ORL (short).
+    #   Strike 2 & 3 \u2014 2x consecutive 1m close above NHOD (long) / below NLOD (short).
+    # The session HOD/LOD tracker (_v570_session_hod / _v570_session_lod) holds
+    # the running session extremes. Fall back to ORH/ORL if no session extreme
+    # is recorded yet (very early in the session).
+    _next_strike_num = tg._v570_strike_count(ticker) + 1
+    if _next_strike_num >= 2:
+        _sess_hod = tg._v570_session_hod.get(ticker.upper())
+        _sess_lod = tg._v570_session_lod.get(ticker.upper())
+        boundary_high = _sess_hod if _sess_hod is not None else or_high_val
+        boundary_low = _sess_lod if _sess_lod is not None else or_low_val
+    else:
+        boundary_high = or_high_val
+        boundary_low = or_low_val
+
     # Section II.2 \u2014 Boundary Hold (Entry-1 only). Stateless: the
-    # last two closed 1m closes vs the OR edge.
+    # last two closed 1m closes vs the boundary edge (ORH/ORL or NHOD/NLOD).
     boundary_res = tg.eot_glue.evaluate_boundary_hold_gate(
         ticker,
         side_label,
-        or_high_val,
-        or_low_val,
+        boundary_high,
+        boundary_low,
     )
 
     # v5.13.0 PR 4 \u2014 Tiger Sovereign Phase 2 gate audit line. Emits
@@ -367,12 +416,69 @@ def check_breakout(ticker, side):
         di_5m = di_streams.get("di_minus_5m")
         di_1m = di_streams.get("di_minus_1m")
 
+    # v15.0 SPEC Phase 3 Momentum Check: 5m ADX > 20 AND Alarm E = FALSE.
+    # The ADX > 20 condition is a hard pre-entry gate (was missing pre-v5.20.0).
+    try:
+        adx_streams = tg.v5_adx_1m_5m(ticker)
+        adx_5m = adx_streams.get("adx_5m") if adx_streams else None
+    except Exception:
+        adx_5m = None
+    if adx_5m is None or float(adx_5m) <= 20.0:
+        tg._v561_log_skip(
+            ticker=ticker,
+            reason="V15_MOMENTUM_ADX_5M:%s"
+            % (("%.2f" % float(adx_5m)) if adx_5m is not None else "none"),
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
+        )
+        return False, None
+
     # NHOD / NLOD: derive from session HOD/LOD vs current_price (strict).
     _prev_hod, _prev_lod, hod_break, lod_break = tg._v570_update_session_hod_lod(
         ticker,
         current_price,
     )
     is_extreme_print = bool(hod_break if cfg.side.is_long else lod_break)
+
+    # v15.0 SPEC Alarm E pre-entry filter:
+    #   Spec \u00a71.2: "If a price prints a new extreme but RSI(15) is
+    #   diverging (lower for Longs, higher for Shorts), the bot is prohibited
+    #   from opening new Strike 2 or Strike 3 positions."
+    # Strike 1 is unaffected by the pre-filter; the post-entry sentinel covers it.
+    if _next_strike_num >= 2:
+        try:
+            from engine.sentinel import check_alarm_e_pre as _alarm_e_pre
+            from broker.positions import get_divergence_memory as _get_dm
+
+            _closes_1m_e = (bars or {}).get("closes") or []
+            _rsi15_e = (
+                tg._compute_rsi(_closes_1m_e, period=15)
+                if _closes_1m_e and hasattr(tg, "_compute_rsi")
+                else None
+            )
+            if _rsi15_e is not None:
+                _e_blocked = _alarm_e_pre(
+                    memory=_get_dm(),
+                    ticker=ticker,
+                    side=side_label,
+                    current_price=float(current_price),
+                    current_rsi_15=float(_rsi15_e),
+                    strike_num=_next_strike_num,
+                )
+                if _e_blocked:
+                    tg._v561_log_skip(
+                        ticker=ticker,
+                        reason="V15_ALARM_E_PRE_STRIKE%d" % _next_strike_num,
+                        ts_utc=tg._utc_now_iso(),
+                        gate_state=None,
+                    )
+                    return False, None
+        except Exception as _alarm_e_err:
+            tg.logger.warning(
+                "[V15-ALARM-E] %s pre-filter eval error: %s",
+                ticker,
+                _alarm_e_err,
+            )
 
     entry1_decision = tg.eot_glue.evaluate_entry_1_decision(
         ticker,
@@ -484,7 +590,71 @@ def execute_breakout(ticker, current_price, side):
             )
 
     # Dollar-sized paper entry; shares scale with price.
-    shares = paper_shares_for(current_price)
+    # ``paper_shares_for`` returns the legacy 50% Entry-1 starter. The v15.0
+    # spec sizing tier (\u00a72/\u00a73) is decided by ``evaluate_strike_sizing``
+    # against the live 1m DI value on the side-correct polarity:
+    #   FULL     (1m DI > 30)         \u2192 100% in one fill (= 2 \u00d7 starter)
+    #   SCALED_A (1m DI in [25, 30])  \u2192 50% starter; Entry-2 may top up
+    #   WAIT                          \u2192 don't enter (defensive: check_breakout's
+    #                                    L-P3-AUTH gate already covers this)
+    starter_shares = paper_shares_for(current_price)
+    shares = starter_shares
+    _v15_size_label = "FULL"  # legacy default for telemetry
+    _v15_size_reason = ""
+    try:
+        from eye_of_tiger import evaluate_strike_sizing as _v15_eval_sizing
+
+        _di_streams = tg.v5_di_1m_5m(ticker) if hasattr(tg, "v5_di_1m_5m") else {}
+        if cfg.side.is_long:
+            _v15_di_5m = _di_streams.get("di_plus_5m")
+            _v15_di_1m = _di_streams.get("di_plus_1m")
+        else:
+            _v15_di_5m = _di_streams.get("di_minus_5m")
+            _v15_di_1m = _di_streams.get("di_minus_1m")
+        _v15_decision = _v15_eval_sizing(
+            side="LONG" if cfg.side.is_long else "SHORT",
+            di_5m=_v15_di_5m,
+            di_1m=_v15_di_1m,
+            is_fresh_extreme=False,
+            intended_shares=int(starter_shares) * 2,
+            held_shares_this_strike=0,
+            alarm_e_blocked=False,
+        )
+        _v15_size_label = _v15_decision.size_label
+        _v15_size_reason = _v15_decision.reason
+        # Map the spec tier back to the legacy two-leg sizing model:
+        #   FULL       \u2192 fill 100% now (2 \u00d7 starter); Entry-2 must NOT top up
+        #   SCALED_A   \u2192 fill 50% starter (existing behavior); Entry-2 may top up
+        #   SCALED_B   \u2192 not reachable here (held=0 path); fall through
+        #   WAIT       \u2192 abort entry; check_breakout should have caught this
+        if _v15_size_label == "FULL":
+            shares = int(_v15_decision.shares_to_buy)
+        elif _v15_size_label == "SCALED_A":
+            shares = int(_v15_decision.shares_to_buy)
+        elif _v15_size_label == "WAIT":
+            tg.logger.info(
+                "[V15-SIZING] %s side=%s WAIT (defensive abort): %s",
+                ticker,
+                "LONG" if cfg.side.is_long else "SHORT",
+                _v15_decision.reason,
+            )
+            return
+        tg.logger.info(
+            "[V15-SIZING] %s side=%s tier=%s shares=%d (1m DI=%s, 5m DI=%s)",
+            ticker,
+            "LONG" if cfg.side.is_long else "SHORT",
+            _v15_size_label,
+            int(shares),
+            ("%.2f" % _v15_di_1m) if _v15_di_1m is not None else "None",
+            ("%.2f" % _v15_di_5m) if _v15_di_5m is not None else "None",
+        )
+    except Exception as _v15_err:
+        # Defensive: a sizing-helper exception MUST NOT block the trade.
+        # Fall through to the legacy ``starter_shares`` (50% Entry-1).
+        tg.logger.warning("[V15-SIZING] %s eval error: %s", ticker, _v15_err)
+        shares = starter_shares
+        _v15_size_label = "FULL"
+        _v15_size_reason = "sizing eval error \u2014 fell back to legacy starter"
     notional = current_price * shares
     if shares <= 0:
         if cfg.side.is_long:
@@ -552,11 +722,23 @@ def execute_breakout(ticker, current_price, side):
         # a 50%-sized scale-in. Cleared on close_breakout via the pos
         # pop. v5104_entry1_hwm starts at the entry price; subsequent
         # ticks update it on each scan cycle in check_breakout.
+        #
+        # v5.20.0 v15.0-sizing wire-in: when ``evaluate_strike_sizing``
+        # returned FULL (1m DI > 30), we already filled 100% of the
+        # intended notional in this single fill, so Entry-2 must NOT
+        # try to top up. We pre-set ``v5104_entry2_fired = True`` to
+        # short-circuit ``_v5104_maybe_fire_entry_2``. SCALED_A leaves
+        # the flag False (legacy 50%-starter behavior) so Entry-2 can
+        # add the remaining 50% under the spec scale-in conditions.
         "v5104_entry1_price": float(current_price),
         "v5104_entry1_shares": int(shares),
         "v5104_entry1_hwm": float(current_price),
         "v5104_entry1_ts_utc": _entry_ts_utc,
-        "v5104_entry2_fired": False,
+        "v5104_entry2_fired": (_v15_size_label == "FULL"),
+        # v5.20.0: forensic stamp of the v15.0 sizing tier on the
+        # position so [TRADE_CLOSED] / lifecycle log can echo it.
+        "v15_size_label": str(_v15_size_label),
+        "v15_size_reason": str(_v15_size_reason),
     }
     if cfg.side.is_short:
         pos["side"] = "SHORT"

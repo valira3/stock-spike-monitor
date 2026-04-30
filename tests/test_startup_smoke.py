@@ -198,26 +198,37 @@ def test_scan_loop_no_blocking_at_first_call_with_empty_state(
     # Sanity: the v5.19.x line is what's on the hot path. Asserting an
     # exact version number would require a test edit on every release;
     # the version-bump CI gate already pins the expected value.
-    assert trade_genius.BOT_VERSION.startswith("5.19.")
+    assert trade_genius.BOT_VERSION.startswith("5.20.")
 
 
-def test_volume_gate_enabled_default_off_when_env_unset(monkeypatch):
-    """v5.13.1 — VOLUME_GATE_ENABLED env var defaults to False when unset.
+def test_volume_gate_enabled_default_on_when_env_unset(monkeypatch):
+    """v5.20.0 \u2014 VOLUME_GATE_ENABLED defaults to True when env unset.
 
-    Production default is OFF (volume gate DISABLED). This pin guards
-    against a regression where the default flips to True and the bot
-    silently restarts under spec-strict behavior.
+    Tiger Sovereign v15.0 \u00a72/\u00a73 makes the volume gate a primary
+    Phase-2 permit (1m volume >= 100% of 55-bar avg, REQUIRED after
+    10:00 AM ET). Production default is therefore ON; only an explicit
+    operator override disables the gate. This pin replaces the
+    pre-v5.20.0 \"default OFF\" guard and protects against the
+    constant flipping back.
     """
     monkeypatch.delenv("VOLUME_GATE_ENABLED", raising=False)
     sys.path.insert(0, str(REPO_ROOT))
     # Force re-import so the module-level read of os.environ honors the
     # monkeypatched (deleted) env var rather than a previously-cached
-    # value from another test.
+    # value from another test. We must drop both the sys.modules entry
+    # AND the parent package attribute, otherwise the ``from engine
+    # import feature_flags`` form resolves through the still-bound
+    # parent attribute and returns the previously-loaded module.
     if "engine.feature_flags" in sys.modules:
         del sys.modules["engine.feature_flags"]
+    import engine as _engine_pkg  # noqa: F401
+
+    if hasattr(_engine_pkg, "feature_flags"):
+        delattr(_engine_pkg, "feature_flags")
     from engine import feature_flags as ff
 
-    assert ff.VOLUME_GATE_ENABLED is False, (
-        "VOLUME_GATE_ENABLED must default to False (gate DISABLED) when "
-        "the env var is unset. Got True — production default has flipped."
+    assert ff.VOLUME_GATE_ENABLED is True, (
+        "VOLUME_GATE_ENABLED must default to True (gate ENABLED) when "
+        "the env var is unset (v15.0 spec primary permit). Got False \u2014 "
+        "production default has regressed to pre-v5.20.0 behavior."
     )
