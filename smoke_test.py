@@ -3988,7 +3988,7 @@ def run_local() -> int:
         main_body = base[main_idx:main_end]
         assert "overflow-y: auto" not in main_body, main_body
 
-        assert 'data-pmtx-comp-grid="v5.21.0"' in (
+        assert 'data-pmtx-comp-grid="v5.21.1"' in (
             _P(__file__).parent / "dashboard_static" / "app.js"
         ).read_text(encoding="utf-8")
 
@@ -4093,6 +4093,23 @@ def run_local() -> int:
 
         js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
         assert "_pmtxSmaStackPanel" in js, "v5.21.0: _pmtxSmaStackPanel helper missing from app.js"
+
+    @t("v5.21.1: daily-bar fetcher requests IEX feed (paper-tier compatible)")
+    def _():
+        # v5.21.1 hotfix: without feed="iex" Alpaca defaults to SIP and
+        # the paper-tier subscription rejects with "subscription does not
+        # permit querying recent SIP data". Production logs from the
+        # v5.21.0 deploy showed every Titan failing this way, leaving
+        # sma_stack=None and rendering "data not available" everywhere.
+        from pathlib import Path as _P
+
+        src = (_P(__file__).parent / "engine" / "daily_bars.py").read_text(encoding="utf-8")
+        assert 'feed="iex"' in src, (
+            'v5.21.1: engine/daily_bars.py must pass feed="iex" to '
+            "StockBarsRequest -- without it Alpaca defaults to SIP and "
+            "paper-tier rejects with 'subscription does not permit "
+            "querying recent SIP data'"
+        )
 
     @t(
         "v5.20.9: Permit Matrix gate columns ordered Boundary \u2192 Volume \u2192 Authority \u2192 Momentum"

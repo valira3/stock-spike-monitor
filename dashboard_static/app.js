@@ -861,7 +861,7 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.21.0">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.21.1">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)

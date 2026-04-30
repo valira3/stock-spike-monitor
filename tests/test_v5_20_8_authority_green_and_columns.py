@@ -62,7 +62,7 @@ def _strip_js_comments(src: str) -> str:
 
 def test_bot_version_is_5_20_8():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.21.0"' in text, "bot_version.py must report 5.21.0"
+    assert 'BOT_VERSION = "5.21.1"' in text, "bot_version.py must report 5.21.1"
 
 
 def test_p3a_state_uses_or_semantics_with_sip_booleans():
@@ -138,7 +138,7 @@ def test_pmtx_col_classes_preserved_for_layout():
 
 def test_data_pmtx_comp_grid_marker_is_5_20_8():
     js = _read_js()
-    assert 'data-pmtx-comp-grid="v5.21.0"' in js, "data-pmtx-comp-grid must be bumped to v5.20.9"
+    assert 'data-pmtx-comp-grid="v5.21.1"' in js, "data-pmtx-comp-grid must be bumped to v5.20.9"
 
 
 def test_authority_card_tagline_unchanged_from_v5_20_7():
