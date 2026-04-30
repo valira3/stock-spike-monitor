@@ -1035,17 +1035,12 @@
   .pmtx-prox-price { width: 48px; font-size: 11px; }
   .pmtx-prox-bar { width: 36px; }
   .pmtx-prox-pct { font-size: 10px; }
-  /* Hide gate columns whose values live in the detail row anyway. */
-  .pmtx-table thead th.pmtx-col-adx,
-  .pmtx-table thead th.pmtx-col-diplus,
-  .pmtx-table thead th.pmtx-col-vol,
-  .pmtx-table td.pmtx-col-adx,
-  .pmtx-table td.pmtx-col-diplus,
-  .pmtx-table td.pmtx-col-vol { display: none; }
-  /* Detail row colspan was 9; visible cell count is 6 on mobile.
-     The detail <td colspan="9"> still works because hidden cells
-     don\u2019t collapse the colspan \u2014 it spans across all
-     remaining visible cells. */
+  /* v5.19.2 \u2014 mobile shows ALL 9 columns (parity with desktop).
+     The legacy \u2264720px display:none on ADX/DI\u00b1/Vol was removed
+     so operators don\u2019t have to expand the detail row to read those
+     gates. The .pmtx-table-wrap already has overflow-x: auto, and the
+     table\u2019s min-width: 760px lets the row scroll horizontally on
+     phones below ~760px CSS pixels. */
   .pmtx-detail-row td { padding: 10px 12px 12px 14px !important; }
   .pmtx-detail-grid { grid-template-columns: repeat(2, 1fr); gap: 8px 12px; }
   /* Weather banner stays readable on a phone. */

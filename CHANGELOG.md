@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.19.2 \u2014 2026-04-30 \u2014 Permit Matrix mobile parity + condensed headers
+
+### Why
+
+On phones ≤720px CSS, the Permit Matrix was hiding three of its most
+informative columns (ADX>20, DI+ 5m>25, Vol confirm). To see those
+gates the operator had to expand each row — a friction the desktop
+view doesn't have. The DI+ header was also misleading on SHORT
+permits (the underlying snapshot is DI− for short side, not DI+).
+
+### What
+
+- **Mobile parity** (`dashboard_static/app.css`): the ≤720px
+  `display:none` rule on `.pmtx-col-adx / -diplus / -vol` is removed.
+  All 9 columns render on every viewport. The `.pmtx-table-wrap`
+  already has `overflow-x: auto` and `min-width: 760px`, so phones
+  narrower than ~760px CSS now horizontal-scroll the row instead of
+  hiding columns.
+- **Header rename** (`dashboard_static/app.js`):
+  - `Vol confirm` → `Vol` (compact)
+  - `Price · Distance` → `Dist` (compact)
+  - `DI+ 5m>25` → `DI± 5m>25` (acknowledges both sides; the
+    `entry1_di` snapshot from `v5_13_2_snapshot._phase3_row` is
+    already side-correct — DI+ for LONG, DI− for SHORT)
+- **Side-aware tooltip** (`_pmtxDiTooltip`): when only LONG permits
+  are open the tooltip reads `DI+ on 5m bars above 25 — last reading
+  X.X`; only SHORT → `DI−`; both / neither → `DI±`.
+- **Boundary abbreviation** (`_pmtxAbbrevBoundary`): `OR-high` →
+  `ORH`, `OR-low` → `ORL` rendered in the Dist cell and the detail
+  row's "Nearest boundary" stat. Hover tooltip preserves the full
+  unambiguous name. Server-side `nearest_label` contract is
+  unchanged (still emits `OR-high` / `OR-low`, pinned by
+  `tests/test_dashboard_state_v5_13_2.py:285`).
+
+### Tests
+
+No behavioral changes to the Python surface. Existing
+`test_proximity_rows_drops_pdc_and_carries_permit_side` still
+passes (server contract unchanged). Front-end is render-only;
+spot-checked at 360 / 390 / 720 / 1024 / 1280px.
+
+### Risk / mitigation
+
+None for the live trading path. Pure dashboard render. Worst case
+the horizontal scroll feels unfamiliar on a 360px phone; the
+operator can pinch-zoom or rotate to landscape.
+
+---
+
 ## v5.19.1 \u2014 2026-04-30 \u2014 STRIKE-CAP-3 unified to per-ticker (vAA-1 ULTIMATE Decision 1)
 
 ### Why
