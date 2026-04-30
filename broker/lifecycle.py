@@ -56,12 +56,12 @@ def execute_short_entry(ticker, current_price):
     return execute_breakout(ticker, current_price, Side.SHORT)
 
 
-def close_position(ticker, price, reason="STOP"):
-    return close_breakout(ticker, price, Side.LONG, reason)
+def close_position(ticker, price, reason="STOP", suppress_signal=False):
+    return close_breakout(ticker, price, Side.LONG, reason, suppress_signal=suppress_signal)
 
 
-def close_short_position(ticker, price, reason="STOP"):
-    return close_breakout(ticker, price, Side.SHORT, reason)
+def close_short_position(ticker, price, reason="STOP", suppress_signal=False):
+    return close_breakout(ticker, price, Side.SHORT, reason, suppress_signal=suppress_signal)
 
 
 # ============================================================
@@ -166,7 +166,14 @@ def eod_close():
                 ticker,
                 float(price),
             )
-            close_position(ticker, price, reason="EOD")
+            # v5.24.0 \u2014 suppress per-ticker EXIT_LONG fan-out: the
+            # EOD_CLOSE_ALL emit at the top of this function is the
+            # single canonical flatten signal for executors. Without
+            # this guard, executors get an EXIT_LONG per ticker AFTER
+            # close_all_positions has already emptied the Alpaca book,
+            # producing spurious 40410000 "position not found" errors
+            # that surface as red ticks on Telegram.
+            close_position(ticker, price, reason="EOD", suppress_signal=True)
 
     if short_positions:
         logger.info("EOD close: closing %d short positions", n_short)
@@ -184,7 +191,10 @@ def eod_close():
                 ticker,
                 float(price),
             )
-            close_short_position(ticker, price, "EOD")
+            # v5.24.0 \u2014 see LONG branch above. EOD_CLOSE_ALL already
+            # fired; per-ticker EXIT_SHORT fan-out is suppressed so
+            # executors do not double-close an already-flat book.
+            close_short_position(ticker, price, "EOD", suppress_signal=True)
 
     _, _, total_pnl, wins, losses, n_trades = tg._today_pnl_breakdown()
     msg = (

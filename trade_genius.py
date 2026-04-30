@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.23.3"
+BOT_VERSION = "5.24.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,23 +102,36 @@ BOT_VERSION = "5.23.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.23.3 \u2014 Intraday chart\n"
-    "window + correct markers.\n"
-    "X-axis now spans 7am\u20135pm CT\n"
-    "(8am\u201318:00 ET): late pre-\n"
-    "market + RTH + early post-\n"
-    "market. Bars beyond the WS\n"
-    "archive's RTH-only window\n"
-    "are pulled from Alpaca on\n"
-    "demand (60s in-process\n"
-    "cache, IEX feed). Entry/\n"
-    "exit markers now sourced\n"
-    "from paper_state (open\n"
-    "positions + closed history)\n"
-    "instead of trade_log, so\n"
-    "OPEN positions get entry\n"
-    "triangles too \u2014 trade_log\n"
-    "only writes on close."
+    "v5.24.0 \u2014 Per-executor\n"
+    "position tracking + qty\n"
+    "fan-out + EOD dedupe.\n"
+    "Three behavioural fixes:\n"
+    "(1) executors now honour\n"
+    "the paper book's\n"
+    "main_shares field on entry\n"
+    "signals instead of\n"
+    "recomputing via\n"
+    "_shares_for. This pins\n"
+    "Val/Gene per-ticker qty\n"
+    "to the same number the\n"
+    "paper book booked (fixes\n"
+    "2x Entry-1 doubling).\n"
+    "(2) self.positions is the\n"
+    "source of truth on the\n"
+    "EXIT_LONG hot path; calls\n"
+    "are skipped when the\n"
+    "executor never opened the\n"
+    "ticker, and Alpaca 4041\n"
+    "position-not-found errors\n"
+    "are now silent (drop the\n"
+    "local row, no Telegram).\n"
+    "(3) EOD per-ticker close\n"
+    "loop runs with\n"
+    "suppress_signal=True so\n"
+    "the canonical\n"
+    "EOD_CLOSE_ALL emit is the\n"
+    "only flatten signal\n"
+    "executors see."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

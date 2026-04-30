@@ -4,6 +4,84 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.24.0 — 2026-04-30 — Per-executor position tracking + qty fan-out + EOD dedupe
+
+### Why
+The Apr 30 EOD flush surfaced two latent bugs:
+
+1. **Telegram spam.** Operators got `❌ Val paper: AAPL failed: position not
+   found` ticks for every long position at 14:49 CT. Investigation showed
+   all four EOD SELLs filled correctly on Alpaca; the red ticks were a
+   second close attempt firing **after** `close_all_positions` had already
+   flattened the book.
+2. **Quantity doubling.** Every executor (Val, Gene) was buying ~2× the
+   paper book's Entry-1 size. Paper book sizes Entry-1 at
+   `floor(PAPER_DOLLARS_PER_ENTRY × ENTRY_1_SIZE_PCT / price)` =
+   `floor($10k × 0.5 / price)` = $5k notional. Executors recomputed via
+   `_shares_for(price)` which uses `dollars_per_entry` ($10k default), with
+   no halving. Result: AAPL paper=18 / Val=36, TSLA paper=13 / Val=26 —
+   exactly 2× when only Entry-1 fired.
+
+### What changed
+
+#### 1. EOD per-ticker close loop suppresses the executor fan-out
+`broker.orders.close_breakout` now accepts `suppress_signal: bool = False`.
+When `True`, the per-ticker `_emit_signal` call is skipped while every
+other side effect (Telegram, paper_state, paper_log, lifecycle log) still
+fires normally. `broker.lifecycle.eod_close()` passes `suppress_signal=True`
+on both the long and short EOD loops, so the canonical `EOD_CLOSE_ALL`
+event emitted at the top of `eod_close()` is the **only** flatten signal
+executors see. Non-EOD closes (STOP, TARGET, sentinel A/B, ratchet, etc.)
+are unchanged — they continue to emit per-ticker `EXIT_LONG` / `EXIT_SHORT`
+as before.
+
+#### 2. Executors honour `main_shares` from the signal
+`executors.base.TradeGeniusBase._on_signal` now reads
+`event.get("main_shares")` first; if it's a positive int, the executor
+uses it directly instead of recomputing. Falls back to the legacy
+`_shares_for(price)` path when `main_shares` is missing or zero (back-
+compat with any test or replay harness that emits a stripped signal).
+Result: every executor now mirrors the paper book's per-ticker quantity
+exactly — Val/Gene/etc. buy the same number of shares the paper book
+booked, no more 2× drift.
+
+#### 3. `self.positions` is the EXIT_LONG source of truth + idempotent close
+New helper `executors.base.TradeGeniusBase._close_position_idempotent`:
+* Skips the broker call entirely when the ticker is **not** in
+  `self.positions` (the executor never opened it locally).
+* Catches Alpaca `40410000 "position not found"` and treats it as a
+  benign no-op — drops the local + persisted row, logs an info-level
+  line, and does NOT emit a `❌` Telegram. Any other Alpaca error
+  still propagates so real outages still page the operator.
+
+`self.positions` is already loaded from `state.db.executor_positions` on
+boot and reconciled against the broker via `_reconcile_broker_positions`,
+so each executor truly maintains its own ledger of open positions and
+quantities (Val's positions ≠ Gene's positions ≠ paper book's positions).
+
+### Tests
+`tests/test_v5_24_0_per_executor_positions.py` — nine focused tests
+cover: `suppress_signal` skipping `_emit_signal`; default emit still
+firing; `lifecycle.close_position` forwarding the flag; executor sizing
+from `main_shares`; legacy fallback when `main_shares` is missing or 0;
+EXIT skip when ticker not tracked; 40410000 swallowed as no-op;
+non-40410000 Alpaca errors still page the operator. All 633 pre-existing
+tests pass.
+
+### Files
+* `broker/orders.py` — `close_breakout(suppress_signal=False)`, conditional
+  `_emit_signal` call.
+* `broker/lifecycle.py` — `close_position` / `close_short_position` thread
+  `suppress_signal`; `eod_close()` passes `suppress_signal=True` on both
+  long and short loops.
+* `executors/base.py` — `_on_signal` honours `main_shares`, EXIT path now
+  source-of-truths off `self.positions` and routes through
+  `_close_position_idempotent` which swallows 40410000.
+* `bot_version.py`, `trade_genius.py` — `BOT_VERSION = "5.24.0"`.
+* `trade_genius.py` — `CURRENT_MAIN_NOTE` rewritten (≤34 char/line).
+
+---
+
 ## v5.23.3 — 2026-04-30 — Extended-hours chart window + correct entry/exit markers
 
 ### Why
