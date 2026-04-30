@@ -151,34 +151,9 @@ def test_submit_exit_rejects_bad_direction():
         submit_exit("LONGISH", qty=10, price=100.0, reason=REASON_EOD)
 
 
-# ---------------------------------------------------------------------------
-# Cross-module consistency — engine.titan_grip emits the same order_type
-# strings that broker.order_types maps reasons to.
-# ---------------------------------------------------------------------------
-
-
-def test_titan_grip_action_codes_match_reason_codes():
-    """The TitanGrip ACTION_* codes are the canonical reason strings."""
-    from engine.titan_grip import (
-        ACTION_RATCHET,
-        ACTION_RUNNER_EXIT,
-        ACTION_STAGE1_HARVEST,
-        ACTION_STAGE3_HARVEST,
-    )
-
-    assert ACTION_STAGE1_HARVEST == REASON_STAGE1_HARVEST
-    assert ACTION_STAGE3_HARVEST == REASON_STAGE3_HARVEST
-    assert ACTION_RATCHET == REASON_RATCHET
-    assert ACTION_RUNNER_EXIT == REASON_RUNNER_EXIT
-
-
-def test_titan_grip_order_type_strings_match_order_types_module():
-    """engine.titan_grip and broker.order_types agree on the type string."""
-    from engine.titan_grip import ORDER_TYPE_LIMIT as TG_LIMIT
-    from engine.titan_grip import ORDER_TYPE_STOP_MARKET as TG_STOP
-
-    assert TG_LIMIT == ORDER_TYPE_LIMIT
-    assert TG_STOP == ORDER_TYPE_STOP_MARKET
+# v5.16.0: engine.titan_grip cross-check tests removed with the shim itself.
+# The harvest reason constants live in broker.order_types only; the velocity
+# ratchet's exit reason is sentinel_velocity_ratchet, not C2_RATCHET.
 
 
 def test_exit_order_dataclass_is_frozen():

@@ -207,17 +207,6 @@ def stage2_signal_short(di_minus_1m) -> bool:
     return di_minus_1m is not None and di_minus_1m > STAGE2_DI_THRESHOLD
 
 
-def hard_exit_di_fail(direction: str, di_1m) -> bool:
-    """L-P4-R3 (b) / S-P4-R3: DI < 25 on closed 1m candle.
-
-    On the short side this is priority-1 over the structural-stop check
-    per S-P4-R3 — caller must enforce that ordering.
-    """
-    if di_1m is None:
-        return False
-    return di_1m < HARD_EXIT_DI_THRESHOLD
-
-
 def winning_rule_long(ticker_last, original_entry_price) -> bool:
     """L-P3-R3: Stage 2 only fires if stage-1 fills are in profit."""
     if original_entry_price is None or ticker_last is None:
@@ -397,57 +386,6 @@ def transition_re_hunt(track: dict) -> bool:
     track["post_entry_5m_lows"] = []
     track["post_entry_5m_highs"] = []
     return True
-
-
-# ------------------------------------------------------------
-# Combined exit evaluator
-# ------------------------------------------------------------
-def evaluate_exit(track: dict, ticker_last, di_1m_closed, is_titan: bool = False) -> Optional[str]:
-    """Run the priority-ordered exit checks for a STAGE_2/TRAILING track.
-
-    Returns the exit reason ("DI_HARD_EJECT", "STRUCTURAL_STOP") or None.
-
-    Direction-aware ordering:
-      - Long (L-P4-R3): structural stop OR DI<25; either fires.
-      - Short (S-P4-R3): DI<25 priority-1 (BEFORE structural-stop check),
-        S-P4-R4 structural priority-2.
-
-    di_1m_closed should be passed only on a closed 1m candle; pass None
-    for intra-candle ticks (per C-R3 the structural stop still evaluates
-    on every tick).
-
-    v5.7.1 \u2014 when is_titan=True, the DI<25 hard-eject is bypassed for
-    both LONG and SHORT. Bison/Buffalo Titans rely on the new exit FSM
-    (forensic_stop / be_stop / ema_trail / velocity_fuse / per_trade_brake).
-    Non-Titan tickers preserve the legacy DI exit path unchanged.
-    """
-    direction = track["direction"]
-    state = track["state"]
-    if state not in (STATE_STAGE_2, STATE_TRAILING):
-        return None
-    current_stop = track.get("current_stop")
-
-    if direction == DIR_SHORT:
-        # S-P4-R3 priority-1 \u2014 skipped for Titans (v5.7.1).
-        if (
-            (not is_titan)
-            and di_1m_closed is not None
-            and hard_exit_di_fail(DIR_SHORT, di_1m_closed)
-        ):
-            return "DI_HARD_EJECT"
-        # S-P4-R4 priority-2
-        if structural_stop_hit_short(ticker_last, current_stop):
-            return "STRUCTURAL_STOP"
-        return None
-
-    # Long
-    # L-P4-R3 (a) structural exit
-    if structural_stop_hit_long(ticker_last, current_stop):
-        return "STRUCTURAL_STOP"
-    # L-P4-R3 (b) DI failure \u2014 skipped for Titans (v5.7.1).
-    if (not is_titan) and di_1m_closed is not None and hard_exit_di_fail(DIR_LONG, di_1m_closed):
-        return "DI_HARD_EJECT"
-    return None
 
 
 # ------------------------------------------------------------

@@ -250,8 +250,11 @@ def test_close_short_position_resolves_order_type_from_reason(install_stub_tg):
     assert tg.signals[-1]["order_type"] == ORDER_TYPE_MARKET
 
 
-def test_titan_grip_harvest_close_uses_LIMIT(install_stub_tg):
-    """Stage 1 / Stage 3 harvest reasons resolve to LIMIT."""
+def test_legacy_harvest_close_reason_still_maps_to_LIMIT(install_stub_tg):
+    """v5.16.0: Stage 1 / Stage 3 harvest reason codes are dead in production
+    (no engine emits them post-Velocity Ratchet) but the lookup table still
+    maps them to LIMIT for back-compat. Test pinned so the reason → type
+    contract doesn't drift if these codes ever reappear."""
     for reason in (REASON_STAGE1_HARVEST, REASON_STAGE3_HARVEST):
         pos = _make_long_pos()
         tg = _StubTG(side=Side.LONG, ticker="AAPL", pos=pos)
@@ -260,8 +263,10 @@ def test_titan_grip_harvest_close_uses_LIMIT(install_stub_tg):
         assert tg.signals[-1]["order_type"] == ORDER_TYPE_LIMIT, reason
 
 
-def test_titan_grip_runner_stop_uses_STOP_MARKET(install_stub_tg):
-    """Stage 4 runner exit + Stage 2 ratchet + Alarm A/B → STOP_MARKET."""
+def test_alarm_a_b_and_legacy_runner_close_use_STOP_MARKET(install_stub_tg):
+    """v5.16.0: Alarm A / Alarm B fire from the live sentinel; runner_exit /
+    ratchet are dead reason codes from the deleted Titan Grip Harvest
+    pinned here for back-compat."""
     for reason in (REASON_RUNNER_EXIT, REASON_RATCHET, REASON_ALARM_A):
         pos = _make_long_pos()
         tg = _StubTG(side=Side.LONG, ticker="AAPL", pos=pos)

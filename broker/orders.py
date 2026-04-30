@@ -125,14 +125,11 @@ def check_breakout(ticker, side):
     if ticker not in or_dict or ticker not in tg.pdc:
         return False, None
 
-    # Daily entry cap (max 5). v5.7.0 \u2014 bypassed for Ten Titans
-    # when ENABLE_UNLIMITED_TITAN_STRIKES is True; Titan re-entry
-    # is governed by the Strike 2+ Expansion Gate further down.
-    _v570_titan = tg._v570_is_titan(ticker)
-    _v570_unlimited = bool(tg.ENABLE_UNLIMITED_TITAN_STRIKES) and _v570_titan
-    if not _v570_unlimited:
-        if daily_count.get(ticker, 0) >= 5:
-            return False, None
+    # Daily entry cap (max 5). v5.15.0 STRIKE-CAP-3 retired the per-Titan
+    # unlimited-strikes path; the 5-strike cap now applies uniformly to
+    # every ticker.
+    if daily_count.get(ticker, 0) >= 5:
+        return False, None
 
     # Already in a position on this side for this ticker (paper).
     # v5.10.4 \u2014 if Entry 1 is active and Entry 2 has not yet fired,
@@ -993,9 +990,8 @@ def close_breakout(ticker, price, side, reason="STOP"):
     if len(history_list) > tg.TRADE_HISTORY_MAX:
         history_list[:] = history_list[-tg.TRADE_HISTORY_MAX :]
 
-    # v5.14.0 \u2014 shadow close-mirror hook removed. The live close
+    # The live close
     # already feeds [V510-CAND] / lifecycle / persistent trade log
-    # below; shadow virtual-position bookkeeping is gone.
 
     # Persistent trade log (paper close).
     _entry_iso = pos.get("entry_ts_utc") or entry_time_str or ""

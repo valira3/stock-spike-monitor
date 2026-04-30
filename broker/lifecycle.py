@@ -186,8 +186,6 @@ def eod_close():
             )
             close_short_position(ticker, price, "EOD")
 
-    # v5.14.0 \u2014 EOD shadow-close removed (shadow_pnl module deleted).
-
     _, _, total_pnl, wins, losses, n_trades = tg._today_pnl_breakdown()
     msg = (
         f"EOD CLOSE Complete\n"
