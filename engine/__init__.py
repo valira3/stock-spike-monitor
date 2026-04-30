@@ -10,6 +10,7 @@ callbacks, scan` is emitted at trade_genius startup so missed
 Dockerfile COPY lines surface as ImportError on boot rather than
 mid-session.
 """
+
 from __future__ import annotations
 
 from engine.bars import compute_5m_ohlc_and_ema9
@@ -18,6 +19,7 @@ from engine.scan import scan_loop
 from engine.seeders import (
     qqq_regime_seed_once,
     qqq_regime_tick,
+    recompute_di_for_unseeded,
     seed_di_buffer,
     seed_di_all,
     seed_opening_range,
@@ -42,6 +44,7 @@ __all__ = [
     "qqq_regime_tick",
     "seed_di_buffer",
     "seed_di_all",
+    "recompute_di_for_unseeded",
     "seed_opening_range",
     "seed_opening_range_all",
     "phase_machine_tick",

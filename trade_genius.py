@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.20.0"
+BOT_VERSION = "5.20.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,16 +102,14 @@ BOT_VERSION = "5.20.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.20.0 \u2014 Tiger Sovereign\n"
-    "v15.0 spec conformance.\n"
-    "Entry window 09:36\u201315:44:59.\n"
-    "Strikes 2/3 hunt NHOD/NLOD.\n"
-    "5m ADX>20 momentum gate.\n"
-    "Alarm E pre-filter blocks\n"
-    "S2/S3 on divergence. Volume\n"
-    "gate ON by default. Strike\n"
-    "cap 3/day. Val/Gene panels\n"
-    "reorder Open above Weather."
+    "v5.20.1 \u2014 Premarket-only DI\n"
+    "seed (08:00\u201309:30 ET, 18\n"
+    "5m bars). Drops prior-day\n"
+    "tail seed. New 09:31 ET\n"
+    "recompute job arms DI\n"
+    "before first entry tick.\n"
+    "DI ready at open when\n"
+    "premarket has \u226515 bars."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1473,6 +1471,7 @@ _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
 from engine.seeders import (
     qqq_regime_seed_once as _engine_qqq_regime_seed_once,
     qqq_regime_tick as _engine_qqq_regime_tick,
+    recompute_di_for_unseeded as _engine_recompute_di_for_unseeded,
     seed_di_buffer as _engine_seed_di_buffer,
     seed_di_all as _engine_seed_di_all,
     seed_opening_range as _engine_seed_opening_range,
@@ -1482,6 +1481,7 @@ _v590_qqq_regime_seed_once = _engine_qqq_regime_seed_once
 _v590_qqq_regime_tick = _engine_qqq_regime_tick
 _seed_di_buffer = _engine_seed_di_buffer
 _seed_di_all = _engine_seed_di_all
+_recompute_di_for_unseeded = _engine_recompute_di_for_unseeded
 _seed_opening_range = _engine_seed_opening_range
 _seed_opening_range_all = _engine_seed_opening_range_all
 
@@ -4303,6 +4303,27 @@ def premarket_recalc():
     )
 
 
+# DI RECOMPUTE (v5.20.1 \u2014 09:31 ET safety net)
+# ============================================================
+def di_recompute_0931():
+    """Re-seed DI for any ticker that had insufficient premarket bars.
+
+    Fires at 09:31 ET, 1 minute after the bell. By this time today's first
+    5m bar (09:30:00\u219209:34:59) is forming but not yet closed; the seeder's
+    fetch window ends at 09:30 ET so this job re-pulls premarket from
+    Alpaca only if a previous boot/recalc came up short. tiger_di() merges
+    the seed buffer with live 5m buckets, so as today's RTH bars close
+    DI naturally arms even when the seed alone is < 15 bars.
+
+    Idempotent: tickers already seeded with \u226515 bars are left alone.
+    Non-fatal: per-ticker errors logged via the seeder's exception handler.
+    """
+    try:
+        _recompute_di_for_unseeded(list(TRADE_TICKERS))
+    except Exception:
+        logger.exception("[DI-RECOMPUTE-0931] orchestration failed")
+
+
 # OR COLLECTION (Opening Range)
 # ============================================================
 def collect_or():
@@ -5325,7 +5346,19 @@ def scheduler_thread():
         ("daily", "09:29",
          lambda: threading.Thread(target=premarket_recalc, daemon=True).start()),
         ("daily", "09:30", reset_daily_state),
-        ("daily", "09:31", lambda: _fire_system_test("8:31 CT")),
+        # v5.20.1 \u2014 09:31 ET combined: system-test ping +
+        # DI recompute for any ticker that came up short on premarket
+        # bars. The recompute runs in a background thread so the system
+        # test fires immediately on schedule.
+        (
+            "daily", "09:31",
+            lambda: (
+                _fire_system_test("8:31 CT"),
+                threading.Thread(
+                    target=di_recompute_0931, daemon=True,
+                ).start(),
+            ),
+        ),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
