@@ -42,8 +42,14 @@ def _tg():
 # pre-market window) before settling on the partial archive read.
 MIN_ARCHIVE_BARS = 9
 
+# v5.20.2 \u2014 minimum closed 5m bars required to fully warm EMA9. Used by
+# qqq_regime_seed_once and the 09:31 ET / live-tick recompute paths to
+# decide whether the regime is "hot" (idempotent seal allowed) or still
+# "warming" (callers should retry).
+QQQ_REGIME_MIN_BARS_FOR_EMA9 = 9
 
-def qqq_regime_seed_once() -> None:
+
+def qqq_regime_seed_once(force_reseed: bool = False) -> None:
     """v5.9.0 \u2014 Seed the QQQ Regime EMAs from pre-market 5m bars.
 
     Source priority (per spec):
@@ -61,13 +67,26 @@ def qqq_regime_seed_once() -> None:
     window the permit gate needs. We now require \u22659 bars from archive
     before treating it as authoritative.
 
-    Idempotent: subsequent calls are no-ops. Failure-tolerant: any
-    crash leaves the regime un-seeded, in which case the live tick
-    feed will warm up the EMAs naturally (compass returns None until
-    9 closed bars accumulate).
+    v5.20.2 fix: idempotency is no longer permanent on first call. The
+    seal flag (_QQQ_REGIME_SEEDED=True) is now set ONLY after ema9 has
+    actually warmed (≥9 closed 5m bars applied). If the first attempt
+    pulled <9 bars, the regime stays unsealed and subsequent callers
+    (premarket_recalc 09:29, the new 09:31 recompute, and the live tick
+    gap-fill in qqq_regime_tick) will retry until ema9 is non-None.
+    Pass `force_reseed=True` to bypass the seal even when set \u2014 used
+    by the recompute paths so a partial seed can be replaced by a
+    later, larger one.
+
+    Failure-tolerant: any crash leaves the regime un-seeded, in which
+    case the live tick feed will warm up the EMAs naturally and the
+    next gap-fill tick will retry the seed.
     """
     tg = _tg()
-    if tg._QQQ_REGIME_SEEDED:
+    # v5.20.2: only honor the seal when ema9 actually warmed. A stale
+    # half-warm seal (set by old behavior) can still be unblocked via
+    # force_reseed; otherwise we fall through and try again every call.
+    already_warm = tg._QQQ_REGIME.ema9 is not None
+    if tg._QQQ_REGIME_SEEDED and already_warm and not force_reseed:
         return
 
     et = ZoneInfo("America/New_York")
@@ -104,19 +123,31 @@ def qqq_regime_seed_once() -> None:
         logger.warning(
             "[V572-REGIME-SEED] no source returned bars; compass will warm up from live ticks"
         )
-        tg._QQQ_REGIME_SEEDED = True
+        # v5.20.2: do NOT seal on empty fetch; let later passes retry.
         return
 
+    # v5.20.2: when force_reseed is set we wipe regime state first so the
+    # fresh seed is authoritative and not blended into a half-warm one.
+    if force_reseed:
+        tg._QQQ_REGIME.ema3 = None
+        tg._QQQ_REGIME.ema9 = None
+        tg._QQQ_REGIME._seed_buf3 = []
+        tg._QQQ_REGIME._seed_buf9 = []
+        tg._QQQ_REGIME.bars_seen = 0
+
     n = tg._QQQ_REGIME.seed(closes, source)
-    tg._QQQ_REGIME_SEEDED = True
+    # v5.20.2: only seal when ema9 actually warmed (≥9 bars applied).
+    if tg._QQQ_REGIME.ema9 is not None:
+        tg._QQQ_REGIME_SEEDED = True
     compass = tg._QQQ_REGIME.current_compass()
     logger.info(
-        "[V572-REGIME-SEED] source=%s bars=%d ema3=%s ema9=%s compass=%s",
+        "[V572-REGIME-SEED] source=%s bars=%d ema3=%s ema9=%s compass=%s sealed=%s",
         source,
         n,
         ("%.4f" % tg._QQQ_REGIME.ema3) if tg._QQQ_REGIME.ema3 is not None else "None",
         ("%.4f" % tg._QQQ_REGIME.ema9) if tg._QQQ_REGIME.ema9 is not None else "None",
         compass if compass is not None else "None",
+        "Y" if tg._QQQ_REGIME_SEEDED else "N",
     )
 
 
@@ -290,6 +321,16 @@ def qqq_regime_tick():
             return
         # Seed before applying the first live bar so seed math runs first.
         qqq_regime_seed_once()
+        # v5.20.2 gap-fill: if ema9 is still None at this point (premarket
+        # source had <9 bars on every prior pass), force-reseed using
+        # whatever data is now available before applying today's live
+        # close. This lets the regime self-heal mid-session without
+        # waiting for live ticks to organically accumulate 9 bars.
+        if tg._QQQ_REGIME.ema9 is None:
+            try:
+                qqq_regime_seed_once(force_reseed=True)
+            except Exception as _e:
+                logger.warning("[V572-REGIME] gap-fill reseed failed: %s", _e)
         # Apply only the new bucket (even after a long gap, fast-forward
         # at most one bar per cycle keeps the math monotonic).
         new_close = buckets[last_bucket]
@@ -681,9 +722,68 @@ def recompute_di_for_unseeded(tickers):
     return {"recomputed": recomputed, "already_seeded": already_seeded, "failed": failed}
 
 
+def recompute_qqq_regime_if_unwarm():
+    """v5.20.2 \u2014 09:31 ET safety net for the QQQ regime EMA9.
+
+    Mirror of recompute_di_for_unseeded but for the QQQ regime. Fires
+    at 09:31 ET (1 minute after the bell) and re-runs qqq_regime_seed_once
+    with force_reseed=True if ema9 is still None. By 09:31 ET today's
+    first 5m bar (09:30:00→09:34:59) is forming, but the seeder's
+    fetch window covers 04:00→now ET so this pass picks up any
+    premarket bars Alpaca had not yet aggregated when the previous
+    boot/recalc ran (cold-start within ~30s of the bell is the typical
+    scenario where bars=4 from premarket leaves ema9=None).
+
+    Idempotent: a fully-warm regime (ema9 non-None) short-circuits.
+    Non-fatal: per-attempt exceptions are logged and swallowed.
+
+    Returns dict {"reseeded": bool, "already_warm": bool, "failed": bool,
+                  "ema9": float|None, "bars_seen": int}.
+    """
+    tg = _tg()
+    if tg._QQQ_REGIME.ema9 is not None:
+        logger.info(
+            "[QQQ-REGIME-RECOMPUTE-0931] already warm bars_seen=%d ema9=%.4f",
+            tg._QQQ_REGIME.bars_seen,
+            tg._QQQ_REGIME.ema9,
+        )
+        return {
+            "reseeded": False,
+            "already_warm": True,
+            "failed": False,
+            "ema9": tg._QQQ_REGIME.ema9,
+            "bars_seen": tg._QQQ_REGIME.bars_seen,
+        }
+    try:
+        qqq_regime_seed_once(force_reseed=True)
+    except Exception:
+        logger.exception("[QQQ-REGIME-RECOMPUTE-0931] reseed crashed")
+        return {
+            "reseeded": False,
+            "already_warm": False,
+            "failed": True,
+            "ema9": tg._QQQ_REGIME.ema9,
+            "bars_seen": tg._QQQ_REGIME.bars_seen,
+        }
+    logger.info(
+        "[QQQ-REGIME-RECOMPUTE-0931] reseed bars_seen=%d ema9=%s",
+        tg._QQQ_REGIME.bars_seen,
+        ("%.4f" % tg._QQQ_REGIME.ema9) if tg._QQQ_REGIME.ema9 is not None else "None",
+    )
+    return {
+        "reseeded": True,
+        "already_warm": False,
+        "failed": False,
+        "ema9": tg._QQQ_REGIME.ema9,
+        "bars_seen": tg._QQQ_REGIME.bars_seen,
+    }
+
+
 __all__ = [
     "qqq_regime_seed_once",
     "qqq_regime_tick",
+    "recompute_qqq_regime_if_unwarm",
+    "QQQ_REGIME_MIN_BARS_FOR_EMA9",
     "seed_di_buffer",
     "seed_di_all",
     "recompute_di_for_unseeded",

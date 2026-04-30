@@ -4,6 +4,122 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.2 \u2014 2026-04-30 \u2014 QQQ regime EMA9 premarket reseed + continuous gap-fill
+
+### Why
+
+v5.20.1 fixed the DI premarket seed but the **QQQ regime EMA9** seeder
+(`engine/seeders.py:qqq_regime_seed_once`) had the same shape of bug
+in a different stream. On 2026-04-30 the dashboard returned
+`section_i_permit.qqq_5m_ema9 = null` and the prod log showed
+`[V572-REGIME-SEED] source=alpaca bars=4 ema3=665.97 ema9=None` at
+13:29:38 UTC \u2014 60 seconds before market open. Result: the Phase 1
+L-P1-G1 / S-P1-G1 permit gate was fail-closed for the first \u224825
+minutes of RTH because EMA9 needs 9 closed 5m bars to seed and the
+seeder only got 4 from Alpaca's premarket aggregation.
+
+The seeder set `_QQQ_REGIME_SEEDED = True` after that single attempt
+regardless of whether ema9 was actually computed, so subsequent
+callers (`_v590_compass_for_gate`, `qqq_regime_tick`, `premarket_recalc`)
+short-circuited and the half-warm state persisted until live ticks
+organically accumulated 5 more bars.
+
+The operator directive (`val@ 2026-04-30`): "Need do those premarket
+and make sure that we always have them. If anything missed at any
+point of time, recompute."
+
+### What changed
+
+#### `engine/seeders.py:qqq_regime_seed_once` \u2014 deferred seal + force_reseed
+
+- **Idempotency seal deferred**: `_QQQ_REGIME_SEEDED = True` is set
+  ONLY after `tg._QQQ_REGIME.ema9 is not None`. A partial seed (e.g.
+  bars=4 from premarket) leaves the flag False so subsequent passes
+  retry instead of trusting a half-warm state.
+- **`force_reseed=True` argument**: bypasses the seal even when set,
+  wipes regime state (`ema3`, `ema9`, seed buffers, `bars_seen`)
+  before re-applying the fresh fetch. Used by the 09:31 recompute
+  path and the live-tick gap-fill so a partial seed can be replaced
+  by a later, larger one without blending the math.
+- **Empty-fetch path no longer seals**: when no source returned bars
+  the function now returns without writing the seal flag, letting
+  later passes try again.
+- **New constant**: `QQQ_REGIME_MIN_BARS_FOR_EMA9 = 9` (documents the
+  threshold; matches `qqq_regime.EMA9_PERIOD`).
+- **Log line gains `sealed=Y|N`** so the operator can see whether a
+  given pass actually warmed EMA9.
+
+#### `engine/seeders.py:qqq_regime_tick` \u2014 live-tick gap-fill
+
+- After the existing `qqq_regime_seed_once()` call, if `ema9` is
+  still None we now invoke `qqq_regime_seed_once(force_reseed=True)`
+  before applying the fresh live close. The regime self-heals on
+  every closed 5m bar until ema9 arms, even if every prior pass
+  came up short.
+
+#### `engine/seeders.py:recompute_qqq_regime_if_unwarm` \u2014 09:31 ET safety net
+
+- New helper, mirror of `recompute_di_for_unseeded`. Short-circuits
+  when ema9 is already non-None; otherwise calls
+  `qqq_regime_seed_once(force_reseed=True)`. Logs
+  `[QQQ-REGIME-RECOMPUTE-0931]` either way for cron forensics.
+- Returns `{reseeded, already_warm, failed, ema9, bars_seen}`.
+
+#### `trade_genius.py:qqq_regime_recompute_0931`
+
+- New scheduler wrapper for the helper above. Wired into the existing
+  `09:31 ET` job tuple alongside `di_recompute_0931`; both run on
+  daemon threads so the system-test ping fires immediately on
+  schedule and the two safety nets run in parallel.
+
+#### `trade_genius.py:premarket_recalc` step 2 \u2014 ema9 gate
+
+- The 09:29 ET recalc previously gated on `_QQQ_REGIME_SEEDED`,
+  which became permanent after the first (possibly partial) attempt.
+  It now gates on `_QQQ_REGIME.ema9 is None` and passes
+  `force_reseed=True` whenever the regime is not yet warm. Result:
+  the 09:29 pass is meaningful even when boot saw only a handful of
+  premarket bars.
+
+#### `trade_genius.py:_v590_compass_for_gate` \u2014 ema9 gate
+
+- Gate flipped from `not _QQQ_REGIME_SEEDED` to `_QQQ_REGIME.ema9 is None`.
+  Even if a stale partial seal exists from an old build, every
+  permit-eval call retries the seed until ema9 arms.
+
+### Tests
+
+New file `tests/test_qqq_regime_premarket_v520_2.py`:
+
+1. Empty fetch leaves `_QQQ_REGIME_SEEDED=False`.
+2. Partial fetch (bars=4) leaves `_QQQ_REGIME_SEEDED=False` and
+   ema9=None.
+3. Full fetch (bars=12) seals and ema9 is non-None.
+4. `force_reseed=True` wipes prior state and re-applies fresh closes.
+5. `recompute_qqq_regime_if_unwarm` is a no-op when already warm and
+   re-seeds when not warm.
+6. `qqq_regime_tick` gap-fill: after a partial pre-seed, a fresh tick
+   triggers force_reseed and warms ema9.
+7. Scheduler `JOBS` table contains a `09:31` entry whose lambda
+   reaches `qqq_regime_recompute_0931`.
+
+### Behavior at 09:30 ET on next deploy
+
+- Boot: seed pulls Alpaca premarket; if bars≥9, seal + log
+  `sealed=Y`. If bars<9, seal=N, retry on next tick.
+- 09:29 ET: `premarket_recalc` re-fetches premarket; same gate.
+- 09:30 ET: live-tick path observes the first finalized 5m bucket,
+  invokes `qqq_regime_seed_once`; if ema9 still None, force_reseed.
+- 09:31 ET: `qqq_regime_recompute_0931` runs on a daemon thread; if
+  ema9 still None, force_reseed picks up any premarket bars Alpaca
+  newly aggregated since boot.
+- Continuous: every closed 5m tick re-runs the gap-fill until ema9
+  is non-None.
+
+No change to permit semantics, no change to QQQ regime math.
+
+---
+
 ## v5.20.1 \u2014 2026-04-30 \u2014 Premarket-only DI seed + 09:31 ET recompute
 
 ### Why

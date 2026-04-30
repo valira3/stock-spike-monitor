@@ -139,14 +139,17 @@ def test_sparse_archive_all_fallbacks_empty_uses_archive_partial(
     assert qr.ema9 is None
 
 
-def test_all_sources_empty_marks_seeded_no_crash(patched_seeders):
-    """No bars from any source \u2014 must not crash, must mark seeded so
-    we don't retry every tick."""
+def test_all_sources_empty_does_not_seal(patched_seeders):
+    """v5.20.2 \u2014 no bars from any source must NOT seal the regime; later
+    passes (premarket_recalc, 09:31 recompute, live-tick gap-fill) need
+    to retry. The pre-v5.20.2 behavior was the opposite (seal=True on
+    empty fetch) which masked partial-seed bugs."""
     seeders.qqq_regime_seed_once()
     qr = patched_seeders._QQQ_REGIME
-    assert patched_seeders._QQQ_REGIME_SEEDED is True
+    assert patched_seeders._QQQ_REGIME_SEEDED is False
     assert qr.seed_source is None  # never assigned
     assert qr.bars_seen == 0
+    assert qr.ema9 is None
 
 
 def test_idempotent_already_seeded_returns_immediately(
