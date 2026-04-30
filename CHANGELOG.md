@@ -4,6 +4,75 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.15.1 — 2026-04-29 — Tiger Sovereign vAA-1 final wiring
+
+Sentinel surface goes from 2-of-5 (A, B) to 5-of-5 (A, B, C, D, E)
+with LIMIT-priced Strike entries. v5.15.0 landed the spec scaffolding
+and Alarm E module; v5.15.1 wires the live state caches and pricing
+hooks so Alarms C, D, and E actually fire in production.
+
+### What changed
+
+- **Live momentum state in `_run_sentinel`** (`broker/positions.py`):
+  module-level caches keyed by `(ticker, side)` track an
+  `ADXTrendWindow` (last three 1m ADX), a `TradeHVP` (peak 5m ADX
+  since fill), and a singleton `DivergenceMemory` (RSI(15) + price
+  peaks per ticker/side). Each tick now computes adx_1m / adx_5m via
+  `v5_adx_1m_5m`, pushes into the window, updates HVP, refreshes
+  divergence memory with current RSI(15), and passes all six new
+  kwargs (adx_window, current_adx_5m, trade_hvp, divergence_memory,
+  current_rsi_15, ticker) into `evaluate_sentinel`. Alarms C, D, and
+  E are now active on the hot path.
+- **Wilder ADX helpers in `trade_genius.py`**: `_compute_adx` mirrors
+  the smoothing convention used by `_compute_di`; `v5_adx_1m_5m`
+  returns the (adx_1m, adx_5m) tuple consumed by the sentinel. Both
+  require `2 * DI_PERIOD` bars to seed and return None below that
+  threshold.
+- **Strike-fill TradeHVP hook** (`broker/orders.py:execute_breakout`):
+  immediately after the position dict is populated, calls
+  `ensure_trade_hvp(ticker, side, initial_adx_5m)` so the Alarm D
+  peak anchor starts from the actual fill-time 5m ADX. The
+  corresponding `clear_trade_hvp` runs in `close_breakout`.
+- **09:30 ET session reset**
+  (`trade_genius.py:_v570_reset_if_new_session`): when the new-session
+  branch fires, also calls `broker.positions.reset_session_state()`
+  to wipe DivergenceMemory, ADX windows, and TradeHVPs alongside the
+  existing strike-count reset. Prevents stale yesterday peaks from
+  blocking today's first entries.
+- **Alarm E PRE filter on Strike 2/3 entries**
+  (`broker/positions.py:_v5104_maybe_fire_entry_2`): after the
+  decision returns `fire=True` but before the order request is
+  emitted, computes RSI(15) on 1m closes and calls
+  `check_alarm_e_pre(memory=..., strike_num=current_strike+1, ...)`.
+  Blocked entries log `[SENT-E-PRE]` and short-circuit; previously
+  Alarm E only ran POST-fill via the sentinel.
+- **MARKET → LIMIT entry switch** (`executors/base.py:_on_signal`):
+  new `_build_entry_request(side, qty, coid)` helper fetches a quote
+  via `tg._v512_quote_snapshot(ticker)`, computes
+  `compute_strike_limit_price(side, ask, bid)`
+  (LONG: ask*1.001, SHORT: bid*0.999, rounded to a cent), and emits a
+  `LimitOrderRequest`. Any quote-fetch failure or stale-quote
+  exception falls back to the prior `MarketOrderRequest` path with a
+  warning log so trading continues.
+- **`evaluate_strike_sizing` in `eye_of_tiger.py`** (closes the last
+  five vAA-PR-1 spec_gap tests): returns a `StrikeSizingDecision`
+  with `size_label` ∈ {FULL, SCALED_A, SCALED_B, WAIT} and
+  `shares_to_buy`. Anchors on di_5m > 25.0 and gates the held=0 vs
+  add-on paths on di_1m thresholds (FULL: di_1m > 30 with intended
+  size; SCALED_A: 25 ≤ di_1m ≤ 30 with intended//2; SCALED_B add-on:
+  not alarm_e_blocked AND is_fresh_extreme AND di_1m > 30).
+  L-P3-AUTH, L-P3-FULL, L-P3-SCALED-A, L-P3-SCALED-B, and S-P3-FULL
+  spec_gap markers removed.
+
+### Test count
+
+394 passed, 0 skipped, 0 failed (was 389 passed + 5 spec_gap skipped
+on v5.15.0). Three pre-existing Strike-cap failures on
+`--run-spec-gaps` are inherited from main and out of scope for this
+release.
+
+---
+
 ## v5.15.0 — 2026-04-29 — Tiger Sovereign vAA-1 (PR series #237-#244)
 
 ### What changed

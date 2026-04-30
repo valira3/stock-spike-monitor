@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.15.0"
+BOT_VERSION = "5.15.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -1816,6 +1816,20 @@ def _v570_reset_if_new_session() -> None:
     if _v570_strike_date != today:
         _v570_strike_counts.clear()
         _v570_strike_date = today
+        # v5.15.1 vAA-1 \u2014 wipe sentinel-loop momentum state at the
+        # session boundary alongside the strike counters. Clears
+        # ADXTrendWindow per position, TradeHVP per position, and
+        # DivergenceMemory's stored peaks so a fresh session starts
+        # with empty caches per spec SENT-E session_reset.
+        try:
+            from broker.positions import reset_session_state as _reset_sentinel_state
+
+            _reset_sentinel_state()
+        except Exception as _e:
+            try:
+                logger.debug("[SENT-RESET] %s", _e)
+            except Exception:
+                pass
     if _v570_session_date != today:
         _v570_session_hod.clear()
         _v570_session_lod.clear()
@@ -2790,6 +2804,123 @@ def _compute_di(highs, lows, closes, period=DI_PERIOD):
         return di_plus, di_minus
     except Exception:
         return None, None
+
+
+def _compute_adx(highs, lows, closes, period=DI_PERIOD):
+    # v5.15.1 vAA-1 \u2014 Wilder ADX. Mirrors _compute_di's smoothing
+    # pipeline so DI+/DI-/ADX agree byte-for-byte. ADX is the Wilder-
+    # smoothed DX series, where DX_i = 100 * |+DI_i \u2212 \u2212DI_i| /
+    # (+DI_i + \u2212DI_i). Needs at least 2*period bars to seed both
+    # the DI smoothing (period bars) and the DX smoothing (another
+    # period bars). Returns None on insufficient data so callers can
+    # silently degrade (Alarm C / D simply skip).
+    n = len(closes)
+    if n < 2 * period or len(highs) < 2 * period or len(lows) < 2 * period:
+        return None
+    try:
+        raw_pdm = []
+        raw_ndm = []
+        raw_tr  = []
+        for i in range(1, n):
+            up_move   = highs[i]  - highs[i - 1]
+            down_move = lows[i - 1] - lows[i]
+            pdm = up_move   if (up_move   > down_move and up_move   > 0) else 0.0
+            ndm = down_move if (down_move > up_move   and down_move > 0) else 0.0
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i]  - closes[i - 1]),
+            )
+            raw_pdm.append(pdm)
+            raw_ndm.append(ndm)
+            raw_tr.append(tr)
+
+        # Seed Wilder smoothing on first `period` raw values.
+        smooth_pdm = sum(raw_pdm[:period])
+        smooth_ndm = sum(raw_ndm[:period])
+        smooth_tr  = sum(raw_tr[:period])
+
+        # Build the DX series, advancing Wilder smoothing one step at
+        # a time. The DX seed point is the first index where smoothed
+        # values exist (after period raw deltas \u2192 raw_tr index 0..period-1
+        # consumed in the seed). Subsequent indices feed both the DI
+        # roll forward AND the DX collection.
+        dx_series: list[float] = []
+        if smooth_tr > 0:
+            dp0 = 100.0 * smooth_pdm / smooth_tr
+            dn0 = 100.0 * smooth_ndm / smooth_tr
+            denom0 = dp0 + dn0
+            if denom0 > 0:
+                dx_series.append(100.0 * abs(dp0 - dn0) / denom0)
+            else:
+                dx_series.append(0.0)
+
+        for i in range(period, len(raw_tr)):
+            smooth_pdm = smooth_pdm - smooth_pdm / period + raw_pdm[i]
+            smooth_ndm = smooth_ndm - smooth_ndm / period + raw_ndm[i]
+            smooth_tr  = smooth_tr  - smooth_tr  / period + raw_tr[i]
+            if smooth_tr <= 0:
+                continue
+            dp = 100.0 * smooth_pdm / smooth_tr
+            dn = 100.0 * smooth_ndm / smooth_tr
+            denom = dp + dn
+            if denom <= 0:
+                dx_series.append(0.0)
+            else:
+                dx_series.append(100.0 * abs(dp - dn) / denom)
+
+        if len(dx_series) < period:
+            return None
+        # ADX seed: simple average of first `period` DX values.
+        adx = sum(dx_series[:period]) / period
+        # Wilder smoothing thereafter.
+        for i in range(period, len(dx_series)):
+            adx = (adx * (period - 1) + dx_series[i]) / period
+        return float(adx)
+    except Exception:
+        return None
+
+
+def v5_adx_1m_5m(ticker):
+    """v5.15.1 vAA-1 \u2014 Wilder ADX on both 1m and 5m timeframes.
+
+    Returns dict ``{"adx_1m": float|None, "adx_5m": float|None}``.
+    Reuses the same bar streams as ``v5_di_1m_5m`` (same per-cycle
+    cache via fetch_1min_bars), so ADX and DI agree on the same
+    underlying tape. Either value can be None when warmup is
+    incomplete (need >= 2 * DMI_PERIOD bars).
+    """
+    out = {"adx_1m": None, "adx_5m": None}
+    bars = fetch_1min_bars(ticker)
+    if not bars:
+        return out
+    closes_1m = [c for c in bars.get("closes", []) if c is not None]
+    highs_1m  = [h for h in bars.get("highs",  []) if h is not None]
+    lows_1m   = [lo for lo in bars.get("lows", []) if lo is not None]
+    n = min(len(closes_1m), len(highs_1m), len(lows_1m))
+    if n >= 2 * DI_PERIOD:
+        out["adx_1m"] = _compute_adx(highs_1m[:n], lows_1m[:n], closes_1m[:n])
+    # 5m \u2014 reuse the same seed+live merge that v5_di_1m_5m uses.
+    live_5m = _resample_to_5min_ohlc_buckets(
+        bars.get("timestamps", []),
+        bars.get("highs",  []),
+        bars.get("lows",   []),
+        bars.get("closes", []),
+    )
+    seed = _DI_SEED_CACHE.get(ticker) or []
+    merged = {}
+    for b in seed:
+        merged[b["bucket"]] = (b["high"], b["low"], b["close"])
+    for b in live_5m:
+        merged[b["bucket"]] = (b["high"], b["low"], b["close"])
+    if merged:
+        keys = sorted(merged.keys())
+        h5 = [merged[k][0] for k in keys]
+        l5 = [merged[k][1] for k in keys]
+        c5 = [merged[k][2] for k in keys]
+        if len(c5) >= 2 * DI_PERIOD:
+            out["adx_5m"] = _compute_adx(h5, l5, c5)
+    return out
 
 
 # ------------------------------------------------------------

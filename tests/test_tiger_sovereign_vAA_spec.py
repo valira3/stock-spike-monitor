@@ -174,7 +174,6 @@ def test_l_p2_s4_two_consecutive_1m_closes_above_orh():
 # =====================================================================
 
 
-@pytest.mark.spec_gap("vAA-PR-1", "L-P3-FULL")
 def test_l_p3_full_di_gt_30_enters_full_size():
     """1m DI+ > 30 with 5m DI+ > 25 anchor \\u2192 Full Strike (100%)."""
     from eye_of_tiger import evaluate_strike_sizing
@@ -192,7 +191,6 @@ def test_l_p3_full_di_gt_30_enters_full_size():
     assert decision.shares_to_buy == 100
 
 
-@pytest.mark.spec_gap("vAA-PR-1", "L-P3-SCALED-A")
 def test_l_p3_scaled_a_di_in_25_30_enters_50pct():
     """25 <= 1m DI+ <= 30 \\u2192 Scaled-A 50%."""
     from eye_of_tiger import evaluate_strike_sizing
@@ -211,7 +209,6 @@ def test_l_p3_scaled_a_di_in_25_30_enters_50pct():
         assert decision.shares_to_buy == 50
 
 
-@pytest.mark.spec_gap("vAA-PR-1", "L-P3-SCALED-B")
 def test_l_p3_scaled_b_addon_requires_all_three_conditions():
     """Add-on 50% only if DI+>30 AND fresh NHOD AND Alarm E False."""
     from eye_of_tiger import evaluate_strike_sizing
@@ -255,7 +252,6 @@ def test_l_p3_scaled_b_addon_requires_all_three_conditions():
     assert decision_no_extreme.size_label == "WAIT"
 
 
-@pytest.mark.spec_gap("vAA-PR-1", "L-P3-AUTH master anchor")
 def test_l_p3_master_anchor_5m_di_must_exceed_25():
     """If 5m DI+ <= 25, NO sizing decision passes regardless of 1m DI+."""
     from eye_of_tiger import evaluate_strike_sizing
@@ -277,7 +273,6 @@ def test_l_p3_master_anchor_5m_di_must_exceed_25():
 # =====================================================================
 
 
-@pytest.mark.spec_gap("vAA-PR-1", "S-P3-FULL")
 def test_s_p3_full_di_minus_gt_30_enters_full_size():
     from eye_of_tiger import evaluate_strike_sizing
 

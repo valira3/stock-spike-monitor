@@ -16,6 +16,7 @@ Verbatim move \u2014 zero behavior change. Sub-classes (TradeGeniusVal,
 TradeGeniusGene) and the `val_executor` / `gene_executor` module-level
 singletons remain in trade_genius.py through v5.12.0 PR 2 / PR 3.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,10 +29,15 @@ import urllib.request
 from datetime import datetime, timezone
 
 from telegram import (
-    BotCommand, BotCommandScopeAllPrivateChats, Update,
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    Update,
 )
 from telegram.ext import (
-    Application, ApplicationHandlerStop, CommandHandler, TypeHandler,
+    Application,
+    ApplicationHandlerStop,
+    CommandHandler,
+    TypeHandler,
 )
 
 import persistence
@@ -69,8 +75,8 @@ class TradeGeniusBase:
     creds must succeed and report ACTIVE).
     """
 
-    NAME = "BASE"        # override: "Val", "Gene"
-    ENV_PREFIX = ""      # override: "VAL_", "GENE_"
+    NAME = "BASE"  # override: "Val", "Gene"
+    ENV_PREFIX = ""  # override: "VAL_", "GENE_"
 
     def __init__(self):
         p = self.ENV_PREFIX
@@ -92,9 +98,7 @@ class TradeGeniusBase:
         # No per-bot VAL_/GENE_TELEGRAM_OWNER_IDS — intentionally removed.
         self.owner_ids = set(_tg().TRADEGENIUS_OWNER_IDS)
         try:
-            self.dollars_per_entry = float(
-                os.getenv(p + "DOLLARS_PER_ENTRY", "10000")
-            )
+            self.dollars_per_entry = float(os.getenv(p + "DOLLARS_PER_ENTRY", "10000"))
         except ValueError:
             self.dollars_per_entry = 10000.0
         # v5.1.4 \u2014 equity-aware sizing caps for the LIVE executor
@@ -106,15 +110,11 @@ class TradeGeniusBase:
         # that Alpaca then rejects on the 4th signal. Paper book sizing
         # is unaffected.
         try:
-            self.max_pct_per_entry = float(
-                os.getenv(p + "MAX_PCT_PER_ENTRY", "10.0")
-            )
+            self.max_pct_per_entry = float(os.getenv(p + "MAX_PCT_PER_ENTRY", "10.0"))
         except ValueError:
             self.max_pct_per_entry = 10.0
         try:
-            self.min_reserve_cash = float(
-                os.getenv(p + "MIN_RESERVE_CASH", "500.0")
-            )
+            self.min_reserve_cash = float(os.getenv(p + "MIN_RESERVE_CASH", "500.0"))
         except ValueError:
             self.min_reserve_cash = 500.0
         self.mode = "paper"
@@ -136,8 +136,7 @@ class TradeGeniusBase:
         # into _auth_guard). Trade confirmations fan out to every entry.
         default_chats_path = f"/data/executor_chats_{self.NAME.lower()}.json"
         self._owner_chats_path = (
-            os.getenv(p + "EXECUTOR_CHATS_PATH", "").strip()
-            or default_chats_path
+            os.getenv(p + "EXECUTOR_CHATS_PATH", "").strip() or default_chats_path
         )
         self._owner_chats: dict[str, int] = {}
         self._load_owner_chats()
@@ -153,7 +152,9 @@ class TradeGeniusBase:
             except ValueError:
                 logger.warning(
                     "[%s] %sTELEGRAM_CHAT_ID is not an int (%r); ignoring as seed",
-                    self.NAME, p, self.telegram_chat_id,
+                    self.NAME,
+                    p,
+                    self.telegram_chat_id,
                 )
         # Track whether we've already logged the "empty chat-map" warning
         # so the warning fires once per process, not on every signal.
@@ -233,6 +234,7 @@ class TradeGeniusBase:
         double-prefixed URLs (https://.../v2/v2/account -> 404).
         """
         from alpaca.trading.client import TradingClient  # lazy import
+
         m = (mode or self.mode).strip().lower()
         if m == "live":
             key, secret = self.live_key, self.live_secret
@@ -283,14 +285,17 @@ class TradeGeniusBase:
         buying_power = getattr(acct, "buying_power", "?")
         logger.info(
             "[%s] live sanity: account=%s status=%s cash=%s bp=%s",
-            self.NAME, account_number, status, cash, buying_power,
+            self.NAME,
+            account_number,
+            status,
+            cash,
+            buying_power,
         )
         if "ACTIVE" not in status:
             return (False, f"account not ACTIVE (status={status})")
         return (
             True,
-            f"live OK \u2014 acct={account_number} status={status} "
-            f"cash={cash} bp={buying_power}",
+            f"live OK \u2014 acct={account_number} status={status} cash={cash} bp={buying_power}",
         )
 
     # ---------- mode control ----------
@@ -320,8 +325,7 @@ class TradeGeniusBase:
             if confirm_token != "confirm":
                 return (
                     False,
-                    "live flip requires the literal 'confirm' token: "
-                    "/mode val live confirm",
+                    "live flip requires the literal 'confirm' token: /mode val live confirm",
                 )
             ok, msg = self._live_sanity_check()
             if not ok:
@@ -373,7 +377,11 @@ class TradeGeniusBase:
             logger.warning(
                 "[%s] [SIZING_FALLBACK] get_account failed (%s) \u2014 "
                 "using legacy fixed-size sizing $%.0f / $%.2f = %d sh",
-                self.NAME, e, self.dollars_per_entry, price, legacy_qty,
+                self.NAME,
+                e,
+                self.dollars_per_entry,
+                price,
+                legacy_qty,
             )
             return legacy_qty
         equity_cap = equity * (self.max_pct_per_entry / 100.0)
@@ -383,17 +391,26 @@ class TradeGeniusBase:
             logger.info(
                 "[%s] [INSUFFICIENT_EQUITY] ticker=%s price=$%.2f "
                 "cash=$%.2f reserve=$%.2f cap=$%.2f",
-                self.NAME, ticker if ticker else "n/a", price,
-                cash, self.min_reserve_cash, equity_cap,
+                self.NAME,
+                ticker if ticker else "n/a",
+                price,
+                cash,
+                self.min_reserve_cash,
+                equity_cap,
             )
             return 0
         if effective < self.dollars_per_entry:
             logger.info(
                 "[%s] [SIZE_CAPPED] %s requested=$%.0f effective=$%.0f "
                 "equity=$%.0f cash=$%.0f cap=$%.0f reserve=$%.0f",
-                self.NAME, ticker if ticker else "n/a",
-                self.dollars_per_entry, effective,
-                equity, cash, equity_cap, self.min_reserve_cash,
+                self.NAME,
+                ticker if ticker else "n/a",
+                self.dollars_per_entry,
+                effective,
+                equity,
+                cash,
+                equity_cap,
+                self.min_reserve_cash,
             )
         return max(1, int(effective // price))
 
@@ -415,13 +432,16 @@ class TradeGeniusBase:
         except Exception:
             logger.exception(
                 "[%s] failed to load owner-chats file (%s); starting empty",
-                self.NAME, path,
+                self.NAME,
+                path,
             )
             return
         if not isinstance(raw, dict):
             logger.warning(
                 "[%s] owner-chats file %s has unexpected shape %s; ignoring",
-                self.NAME, path, type(raw).__name__,
+                self.NAME,
+                path,
+                type(raw).__name__,
             )
             return
         for k, v in raw.items():
@@ -464,7 +484,10 @@ class TradeGeniusBase:
         self._save_owner_chats()
         logger.info(
             "[%s] learned owner chat: owner_id=%s chat_id=%s (now %d entries)",
-            self.NAME, owner_id, chat_id, len(self._owner_chats),
+            self.NAME,
+            owner_id,
+            chat_id,
+            len(self._owner_chats),
         )
 
     def _send_own_telegram(self, text: str) -> None:
@@ -483,26 +506,32 @@ class TradeGeniusBase:
                 logger.warning(
                     "[%s] notifications EMPTY \u2014 DM this executor's bot "
                     "/start to enable trade confirmations (chat-map at %s)",
-                    self.NAME, self._owner_chats_path,
+                    self.NAME,
+                    self._owner_chats_path,
                 )
                 self._empty_chats_warned = True
             return
         import urllib.parse
+
         url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
         # Iterate a snapshot so a concurrent _record_owner_chat can't
         # mutate the dict mid-loop.
         for owner_id, chat_id in list(self._owner_chats.items()):
             try:
-                data = urllib.parse.urlencode({
-                    "chat_id": chat_id,
-                    "text": text,
-                }).encode("utf-8")
+                data = urllib.parse.urlencode(
+                    {
+                        "chat_id": chat_id,
+                        "text": text,
+                    }
+                ).encode("utf-8")
                 req = urllib.request.Request(url, data=data, method="POST")
                 urllib.request.urlopen(req, timeout=10).read()
             except Exception:
                 logger.exception(
                     "[%s] telegram send failed (owner_id=%s chat_id=%s)",
-                    self.NAME, owner_id, chat_id,
+                    self.NAME,
+                    owner_id,
+                    chat_id,
                 )
 
     # ---------- v5.2.1 idempotency + reconcile ----------
@@ -537,13 +566,16 @@ class TradeGeniusBase:
                 except Exception:
                     logger.exception(
                         "[%s] [IDEMPOTENCY] dup rejected but lookup failed coid=%s",
-                        self.NAME, coid,
+                        self.NAME,
+                        coid,
                     )
                     raise
                 logger.warning(
                     "[%s] [IDEMPOTENCY] submit_order duplicate rejected as expected: "
                     "coid=%s order_id=%s",
-                    self.NAME, coid, getattr(existing, "id", "?"),
+                    self.NAME,
+                    coid,
+                    getattr(existing, "id", "?"),
                 )
                 return existing
             raise
@@ -570,7 +602,8 @@ class TradeGeniusBase:
         self.positions.update(rows)
         logger.info(
             "[%s] rehydrated %d persisted position(s) from state.db",
-            self.NAME, len(rows),
+            self.NAME,
+            len(rows),
         )
 
     def _persist_position(self, ticker: str) -> None:
@@ -580,24 +613,31 @@ class TradeGeniusBase:
             return
         try:
             persistence.save_executor_position(
-                self.NAME, self.mode, ticker, pos,
+                self.NAME,
+                self.mode,
+                ticker,
+                pos,
             )
         except Exception:
             logger.exception(
                 "[%s] persistence.save_executor_position failed for %s",
-                self.NAME, ticker,
+                self.NAME,
+                ticker,
             )
 
     def _delete_persisted_position(self, ticker: str) -> None:
         """DELETE the row for ticker. Best-effort."""
         try:
             persistence.delete_executor_position(
-                self.NAME, self.mode, ticker,
+                self.NAME,
+                self.mode,
+                ticker,
             )
         except Exception:
             logger.exception(
                 "[%s] persistence.delete_executor_position failed for %s",
-                self.NAME, ticker,
+                self.NAME,
+                ticker,
             )
 
     def _remove_position(self, ticker: str) -> None:
@@ -656,7 +696,8 @@ class TradeGeniusBase:
         except Exception as e:
             logger.error(
                 "[%s] [RECONCILE] get_all_positions failed: %s",
-                self.NAME, e,
+                self.NAME,
+                e,
             )
             return
 
@@ -675,7 +716,8 @@ class TradeGeniusBase:
             logger.warning(
                 "[%s] [RECONCILE] stale local position: ticker=%s \u2014 "
                 "broker says no position, removing",
-                self.NAME, ticker,
+                self.NAME,
+                ticker,
             )
             self._remove_position(ticker)
 
@@ -688,7 +730,8 @@ class TradeGeniusBase:
             except Exception:
                 logger.exception(
                     "[%s] [RECONCILE] bad qty on %s, skipping",
-                    self.NAME, ticker,
+                    self.NAME,
+                    ticker,
                 )
                 continue
             side = "LONG" if qty_int > 0 else "SHORT"
@@ -710,14 +753,19 @@ class TradeGeniusBase:
             grafted += 1
             logger.warning(
                 "[%s] [RECONCILE] grafted broker orphan: ticker=%s side=%s qty=%d entry=%.2f",
-                self.NAME, ticker, side, abs(qty_int), entry_px,
+                self.NAME,
+                ticker,
+                side,
+                abs(qty_int),
+                entry_px,
             )
 
         # Outcome 1: clean reconcile \u2014 silent INFO log, no Telegram.
         if grafted == 0:
             logger.info(
                 "[%s] [RECONCILE] clean: %d position(s) match broker",
-                self.NAME, len(broker_tickers),
+                self.NAME,
+                len(broker_tickers),
             )
             return
 
@@ -728,7 +776,8 @@ class TradeGeniusBase:
             )
         except Exception:
             logger.exception(
-                "[%s] [RECONCILE] telegram fan-out raised", self.NAME,
+                "[%s] [RECONCILE] telegram fan-out raised",
+                self.NAME,
             )
 
     def _on_signal(self, event: dict) -> None:
@@ -756,16 +805,78 @@ class TradeGeniusBase:
         client = self._ensure_client()
         if client is None:
             logger.warning(
-                "[%s] skip %s %s \u2014 no alpaca client", self.NAME, kind, ticker,
+                "[%s] skip %s %s \u2014 no alpaca client",
+                self.NAME,
+                kind,
+                ticker,
             )
             return
 
         try:
-            from alpaca.trading.requests import MarketOrderRequest, ClosePositionRequest
+            from alpaca.trading.requests import (
+                MarketOrderRequest,
+                LimitOrderRequest,
+                ClosePositionRequest,
+            )
             from alpaca.trading.enums import OrderSide, TimeInForce
         except Exception:
             logger.exception("[%s] alpaca imports failed", self.NAME)
             return
+
+        # v5.15.1 vAA-1 \u2014 helper to build the Strike-entry order request.
+        # Tries to fetch a live (bid, ask) quote and emit a LIMIT order at
+        # ``compute_strike_limit_price(side, ask, bid)`` per spec rules
+        # ORDER-LIMIT-PRICE-LONG / -SHORT. Falls back to MARKET on any
+        # quote-fetch failure so a transient data outage never silently
+        # skips a Strike fire \u2014 the entry signal must still fill.
+        def _build_entry_request(side_label: str, qty: int, coid: str):
+            order_side = OrderSide.BUY if side_label == "LONG" else OrderSide.SELL
+            try:
+                from broker.orders import compute_strike_limit_price
+
+                tg_mod = _tg()
+                bid = ask = None
+                if tg_mod is not None and hasattr(tg_mod, "_v512_quote_snapshot"):
+                    bid, ask = tg_mod._v512_quote_snapshot(ticker)
+                if bid is not None and ask is not None and bid > 0 and ask > 0:
+                    limit_px = compute_strike_limit_price(
+                        side=side_label, ask=float(ask), bid=float(bid)
+                    )
+                    return (
+                        LimitOrderRequest(
+                            symbol=ticker,
+                            qty=qty,
+                            side=order_side,
+                            time_in_force=TimeInForce.DAY,
+                            client_order_id=coid,
+                            limit_price=round(float(limit_px), 2),
+                        ),
+                        f"limit @ {round(float(limit_px), 2)} (bid={bid:.4f},ask={ask:.4f})",
+                    )
+                logger.warning(
+                    "[%s] %s %s no bid/ask available, falling back to MARKET",
+                    self.NAME,
+                    kind,
+                    ticker,
+                )
+            except Exception as _e:
+                logger.warning(
+                    "[%s] %s %s LIMIT build failed (%s), falling back to MARKET",
+                    self.NAME,
+                    kind,
+                    ticker,
+                    _e,
+                )
+            return (
+                MarketOrderRequest(
+                    symbol=ticker,
+                    qty=qty,
+                    side=order_side,
+                    time_in_force=TimeInForce.DAY,
+                    client_order_id=coid,
+                ),
+                "market",
+            )
 
         try:
             if kind == "ENTRY_LONG":
@@ -773,14 +884,11 @@ class TradeGeniusBase:
                 if qty <= 0:
                     return
                 coid = self._build_client_order_id(ticker, "LONG")
-                order = self._submit_order_idempotent(client, MarketOrderRequest(
-                    symbol=ticker, qty=qty,
-                    side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
-                    client_order_id=coid,
-                ), coid)
+                req, order_descr = _build_entry_request("LONG", qty, coid)
+                order = self._submit_order_idempotent(client, req, coid)
                 oid = getattr(order, "id", "?")
                 self._record_position(ticker, "LONG", qty, price)
-                msg = f"\u2705 {label}: {ticker} BUY {qty} shares @ market (order_id={oid})"
+                msg = f"\u2705 {label}: {ticker} BUY {qty} shares @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
             elif kind == "ENTRY_SHORT":
@@ -788,14 +896,11 @@ class TradeGeniusBase:
                 if qty <= 0:
                     return
                 coid = self._build_client_order_id(ticker, "SHORT")
-                order = self._submit_order_idempotent(client, MarketOrderRequest(
-                    symbol=ticker, qty=qty,
-                    side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
-                    client_order_id=coid,
-                ), coid)
+                req, order_descr = _build_entry_request("SHORT", qty, coid)
+                order = self._submit_order_idempotent(client, req, coid)
                 oid = getattr(order, "id", "?")
                 self._record_position(ticker, "SHORT", qty, price)
-                msg = f"\u2705 {label}: {ticker} SELL {qty} shares short @ market (order_id={oid})"
+                msg = f"\u2705 {label}: {ticker} SELL {qty} shares short @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
@@ -850,7 +955,9 @@ class TradeGeniusBase:
                     logger.exception("[%s] _record_owner_chat raised", self.NAME)
             return
         logger.warning(
-            "[%s] auth_guard dropped non-owner (user_id=%r)", self.NAME, uid or "(none)",
+            "[%s] auth_guard dropped non-owner (user_id=%r)",
+            self.NAME,
+            uid or "(none)",
         )
         raise ApplicationHandlerStop
 
@@ -859,8 +966,7 @@ class TradeGeniusBase:
         args = context.args if context and hasattr(context, "args") else []
         if not args:
             await update.message.reply_text(
-                f"{self.NAME} mode: {self.mode}\n"
-                f"Usage: /mode paper  |  /mode live confirm"
+                f"{self.NAME} mode: {self.mode}\nUsage: /mode paper  |  /mode live confirm"
             )
             return
         new_mode = args[0]
@@ -901,9 +1007,7 @@ class TradeGeniusBase:
         """Emergency close_all_positions."""
         client = self._ensure_client()
         if client is None:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: no alpaca client"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: no alpaca client")
             return
         try:
             client.close_all_positions(cancel_orders=True)
@@ -915,15 +1019,10 @@ class TradeGeniusBase:
                 f"\u2705 {self.NAME}: HALT \u2014 close_all_positions fired"
             )
         except Exception as e:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: halt failed: {e}"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: halt failed: {e}")
 
     async def cmd_version(self, update, context):
-        await update.message.reply_text(
-            f"{self.NAME} executor v{BOT_VERSION}\n"
-            f"mode: {self.mode}"
-        )
+        await update.message.reply_text(f"{self.NAME} executor v{BOT_VERSION}\nmode: {self.mode}")
 
     # --- v4.0.1: expanded executor-bot command surface --------------
 
@@ -942,21 +1041,21 @@ class TradeGeniusBase:
         """/cash — quick account balance glance."""
         client = self._ensure_client()
         if client is None:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: no alpaca client"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: no alpaca client")
             return
         try:
             acct = client.get_account()
             cash = float(getattr(acct, "cash", 0) or 0)
-            bp   = float(getattr(acct, "buying_power", 0) or 0)
-            eq   = float(getattr(acct, "equity", 0) or 0)
+            bp = float(getattr(acct, "buying_power", 0) or 0)
+            eq = float(getattr(acct, "equity", 0) or 0)
             # v5.1.4 \u2014 surface the equity-aware sizing caps so
             # operators can see what the next entry will be sized at.
             equity_cap = eq * (self.max_pct_per_entry / 100.0)
             cash_avail = max(0.0, cash - self.min_reserve_cash)
             next_entry = min(
-                self.dollars_per_entry, equity_cap, cash_avail,
+                self.dollars_per_entry,
+                equity_cap,
+                cash_avail,
             )
             await update.message.reply_text(
                 f"\U0001f4b0 {self.NAME} ({self.mode})\n"
@@ -969,24 +1068,18 @@ class TradeGeniusBase:
                 f"  next entry: ${next_entry:,.2f}"
             )
         except Exception as e:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: cash fetch failed: {e}"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: cash fetch failed: {e}")
 
     async def cmd_positions(self, update, context):
         """/positions — compact positions list only."""
         client = self._ensure_client()
         if client is None:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: no alpaca client"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: no alpaca client")
             return
         try:
             positions = client.get_all_positions()
             if not positions:
-                await update.message.reply_text(
-                    f"{self.NAME}: no open positions"
-                )
+                await update.message.reply_text(f"{self.NAME}: no open positions")
                 return
             lines = [f"{self.NAME} positions ({len(positions)})"]
             for p in positions[:25]:
@@ -996,85 +1089,73 @@ class TradeGeniusBase:
                 try:
                     upl = float(getattr(p, "unrealized_pl", 0) or 0)
                     pct = float(getattr(p, "unrealized_plpc", 0) or 0) * 100
-                    lines.append(
-                        f"  {sym}: {qty} @ {avg} "
-                        f"pnl=${upl:+,.2f} ({pct:+.2f}%)"
-                    )
+                    lines.append(f"  {sym}: {qty} @ {avg} pnl=${upl:+,.2f} ({pct:+.2f}%)")
                 except Exception:
                     lines.append(f"  {sym}: {qty} @ {avg}")
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: positions fetch failed: {e}"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: positions fetch failed: {e}")
 
     async def cmd_orders(self, update, context):
         """/orders — recent orders (last 10)."""
         client = self._ensure_client()
         if client is None:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: no alpaca client"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: no alpaca client")
             return
         try:
             from alpaca.trading.requests import GetOrdersRequest
             from alpaca.trading.enums import QueryOrderStatus
+
             req = GetOrdersRequest(
-                status=QueryOrderStatus.ALL, limit=10,
+                status=QueryOrderStatus.ALL,
+                limit=10,
             )
             orders = client.get_orders(filter=req)
             if not orders:
-                await update.message.reply_text(
-                    f"{self.NAME}: no recent orders"
-                )
+                await update.message.reply_text(f"{self.NAME}: no recent orders")
                 return
             lines = [f"{self.NAME} recent orders ({len(orders)})"]
             for o in orders:
-                sym   = getattr(o, "symbol", "?")
-                side  = getattr(getattr(o, "side", None), "value", "?")
-                qty   = getattr(o, "qty", "?") or getattr(o, "notional", "?")
-                stat  = getattr(getattr(o, "status", None), "value", "?")
+                sym = getattr(o, "symbol", "?")
+                side = getattr(getattr(o, "side", None), "value", "?")
+                qty = getattr(o, "qty", "?") or getattr(o, "notional", "?")
+                stat = getattr(getattr(o, "status", None), "value", "?")
                 filled = getattr(o, "filled_avg_price", None)
                 tail = f" @ {filled}" if filled else ""
                 lines.append(f"  {sym} {side} {qty} [{stat}]{tail}")
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
-            await update.message.reply_text(
-                f"\u274c {self.NAME}: orders fetch failed: {e}"
-            )
+            await update.message.reply_text(f"\u274c {self.NAME}: orders fetch failed: {e}")
 
     async def cmd_signal(self, update, context):
         """/signal — show last signal received from main's bus."""
         sig = self.last_signal
         if not sig:
-            await update.message.reply_text(
-                f"{self.NAME}: no signals received yet"
-            )
+            await update.message.reply_text(f"{self.NAME}: no signals received yet")
             return
         try:
             import json as _json
+
             pretty = _json.dumps(sig, indent=2, default=str)[:1500]
         except Exception:
             pretty = str(sig)[:1500]
-        await update.message.reply_text(
-            f"{self.NAME} last signal:\n{pretty}"
-        )
+        await update.message.reply_text(f"{self.NAME} last signal:\n{pretty}")
 
     # -----------------------------------------------------------------
 
     # Commands shown in Telegram's BotFather / slash menu. Keep short
     # descriptions — Telegram truncates aggressively on mobile.
     TG_MENU_COMMANDS = [
-        ("status",    "Account, positions, and P&L"),
+        ("status", "Account, positions, and P&L"),
         ("positions", "Open positions only"),
-        ("orders",    "Recent orders (last 10)"),
-        ("cash",      "Account balance snapshot"),
-        ("signal",    "Last signal from main"),
-        ("mode",      "Show or change mode (paper / live)"),
-        ("halt",      "Emergency halt \u2014 flatten all"),
-        ("ping",      "Liveness check"),
-        ("version",   "Show running version"),
-        ("help",      "List available commands"),
+        ("orders", "Recent orders (last 10)"),
+        ("cash", "Account balance snapshot"),
+        ("signal", "Last signal from main"),
+        ("mode", "Show or change mode (paper / live)"),
+        ("halt", "Emergency halt \u2014 flatten all"),
+        ("ping", "Liveness check"),
+        ("version", "Show running version"),
+        ("help", "List available commands"),
     ]
 
     async def cmd_help(self, update, context):
@@ -1090,11 +1171,8 @@ class TradeGeniusBase:
         no manual BotFather /setcommands needed."""
         try:
             cmds = [BotCommand(c, d) for c, d in self.TG_MENU_COMMANDS]
-            await app.bot.set_my_commands(
-                cmds, scope=BotCommandScopeAllPrivateChats()
-            )
-            logger.info("[%s] registered %d telegram menu commands",
-                        self.NAME, len(cmds))
+            await app.bot.set_my_commands(cmds, scope=BotCommandScopeAllPrivateChats())
+            logger.info("[%s] registered %d telegram menu commands", self.NAME, len(cmds))
         except Exception:
             logger.exception("[%s] set_my_commands failed", self.NAME)
 
@@ -1112,11 +1190,7 @@ class TradeGeniusBase:
         # we drive the lifecycle manually (initialize/start/updater) to
         # avoid the set_wakeup_fd main-thread restriction. Instead we
         # call _post_init_register_menu directly after initialize() below.
-        app = (
-            Application.builder()
-            .token(self.telegram_token)
-            .build()
-        )
+        app = Application.builder().token(self.telegram_token).build()
         self._tg_app = app
         app.add_handler(TypeHandler(Update, self._auth_guard), group=-1)
         app.add_handler(CommandHandler("mode", self.cmd_mode))
@@ -1137,8 +1211,7 @@ class TradeGeniusBase:
         await self._post_init_register_menu(app)
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        logger.info("[%s] telegram loop running (token=...%s)",
-                    self.NAME, self.telegram_token[-6:])
+        logger.info("[%s] telegram loop running (token=...%s)", self.NAME, self.telegram_token[-6:])
         # Park forever — updater polls in its own task. Exits only when
         # the thread/process is torn down.
         try:
@@ -1188,5 +1261,3 @@ class TradeGeniusBase:
         # can still own the main-process asyncio loop.
         t = threading.Thread(target=self._run_tg_loop, daemon=True, name=f"{self.NAME}_tg")
         t.start()
-
-
