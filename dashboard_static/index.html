@@ -98,7 +98,11 @@
       </div>
     </section>
 
-    <section class="grid grid-2">
+    <!-- v5.18.0 — Open positions runs full-width. Proximity card was
+         retired and folded into the Permit Matrix as a Price · Distance
+         column (price + bar shows how close each Titan is to its OR
+         boundary, replacing the standalone proximity strip). -->
+    <section class="grid">
       <div class="card">
         <div class="card-head"><span class="card-title" title="Currently open positions — one row per ticker with side, fill, mark, stop, and unrealized P&L">Open positions<span class="count" id="pos-count" title="Number of open positions">· 0</span></span></div>
         <div class="card-body flush" id="pos-body">
@@ -153,12 +157,6 @@
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head"><span class="card-title" title="Proximity to entry boundaries — % distance to nearest OR high/low; the bar fills as price approaches">Proximity<span class="count" id="prox-count" title="Number of tickers being tracked">· —</span></span></div>
-        <div class="card-body flush" id="prox-list">
-          <div class="empty">Waiting for data…</div>
-        </div>
-      </div>
     </section>
 
     <!-- v5.17.0 — PERMIT MATRIX. Replaces the legacy Tiger Sovereign
@@ -216,14 +214,12 @@
 
 </div><!-- /tg-panel-main -->
 
-<!-- v4.0.0-beta — Val tab panel. Mirrors Main's widget layout (KPIs, open
-     positions, proximity, trades, observer, regime shield, gates) so
-     Val's executor state is visible with the same visual vocabulary.
-     Populated from /api/executor/val every 15s.  Widgets that do not
-     apply to per-executor snapshots (proximity, regime shield, gates,
-     observer, trades table) are rendered as dim placeholders so the
-     grid stays stable.  A `data-tg-exec` attribute on the root lets
-     the shared render fn address the right field ids. -->
+<!-- v4.0.0-beta / v5.18.0 — Val tab panel. Portfolio-only mirror of Main:
+     KPIs (Equity/Day P&L/Open/Session), open positions, last signal,
+     trades, and per-executor Proximity. Permit Matrix is market-wide
+     and lives only on Main (would be redundant duplication). Populated
+     from /api/executor/val every 15s. A `data-tg-exec` attribute on the
+     root lets the shared render fn address the right field ids. -->
 <div id="tg-panel-val" class="tg-panel tg-exec-panel" data-tg-exec="val" style="display:none"></div>
 
 <!-- v4.0.0-beta — Gene tab panel. Same skeleton as Val.  When Gene is
