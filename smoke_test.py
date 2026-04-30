@@ -3887,6 +3887,45 @@ def run_local() -> int:
         body = src[idx : idx + 2400]
         assert "seed_di_buffer_with_rth_fallback(" in body, body[:400]
 
+    @t("v5.20.6: Weather card metric stack reads section_i_permit")
+    def _():
+        # Pre-hotfix the Weather card read reg.qqq_* fields that don't
+        # exist on the regime block, so every row rendered as an em
+        # dash. The fix wires through sip.qqq_current_price etc.
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        for tok in (
+            "sip.qqq_current_price",
+            "sip.qqq_5m_close",
+            "sip.qqq_5m_ema9",
+            "sip.qqq_avwap_0930",
+        ):
+            assert tok in js, f"Weather wiring missing {tok}"
+        assert "reg.qqq_price" not in js
+        assert "reg.qqq_avwap" not in js
+
+    @t("v5.20.6: component card metrics have no inner scrollbar cap")
+    def _():
+        import re as _re
+        from pathlib import Path as _P
+
+        css = (_P(__file__).parent / "dashboard_static" / "app.css").read_text(encoding="utf-8")
+        idx = css.find(".pmtx-comp-metrics {")
+        assert idx >= 0, ".pmtx-comp-metrics rule missing"
+        end = css.find("}", idx)
+        body = _re.sub(r"/\*.*?\*/", "", css[idx:end], flags=_re.DOTALL)
+        assert "max-height:" not in body, body
+        assert "overflow-y:" not in body, body
+
+    @t("v5.20.6: volume card surfaces 'bypassed' label when gate=OFF")
+    def _():
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+        assert "bypassed (warming)" in js
+        assert 'data-pmtx-comp-grid="v5.20.6"' in js
+
     @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.1")
     def _():
         # Test name pinned to its release; assertion follows BOT_VERSION.
