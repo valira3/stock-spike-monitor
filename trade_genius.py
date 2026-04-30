@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.20.8"
+BOT_VERSION = "5.20.9"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,19 +102,16 @@ BOT_VERSION = "5.20.8"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.20.8 \u2014 Hotfix on top of\n"
-    "v5.20.7. Authority card +\n"
-    "table column now go green\n"
-    "when at least one side has\n"
-    "its permit open (long_open\n"
-    "or short_open). Table\n"
-    "headers renamed to match\n"
-    "card names: ORB\u2192Boundary,\n"
-    "Trend\u2192Momentum, 5m DI\u00b1\u2192\n"
-    "Authority. DI\u00b1 detail still\n"
-    "lives in the Momentum card\n"
-    "metric stack inside the\n"
-    "expanded row."
+    "v5.20.9 \u2014 Hotfix on top of\n"
+    "v5.20.8. Permit Matrix\n"
+    "table columns reordered to\n"
+    "match the card / process\n"
+    "order: Boundary, Volume,\n"
+    "Authority, Momentum. Card\n"
+    "vocabulary, gate logic and\n"
+    "green-on-either-side\n"
+    "semantics are unchanged\n"
+    "from v5.20.8."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
