@@ -69,21 +69,33 @@
 
     <div class="banner hide" id="banner"></div>
 
-    <section class="kpi-row">
+    <!-- v5.17.0 — KPI row trimmed from 6 to 4 cards. GATE / REGIME removed:
+         GATE was redundant (Session card already conveys CLOSED / RTH OPEN);
+         REGIME (RSI direction) was decommissioned in v5.15 when the algo
+         moved to QQQ AVWAP_0930 + 9-EMA permits as the sole regime gate. -->
+    <section class="kpi-row kpi-row-4">
       <div class="kpi" title="Total account equity (cash + long market value − short liability)"><span class="kpi-label">Equity</span><span class="kpi-value" id="k-equity">—</span><span class="kpi-sub" id="k-equity-sub">—</span></div>
       <div class="kpi" title="Realized + unrealized profit/loss for the current trading day"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" id="k-pnl">—</span><span class="kpi-sub" id="k-pnl-sub">—</span></div>
       <div class="kpi" title="Number of currently open positions"><span class="kpi-label">Open</span><span class="kpi-value" id="k-open">—</span><span class="kpi-sub" id="k-open-sub">—</span></div>
-      <div class="kpi" title="Trading gate state: Armed = ready to take new entries, Halted = entries blocked"><span class="kpi-label">Gate</span><span class="kpi-value" id="k-gate" style="font-size:20px">—</span><span class="kpi-sub" id="k-gate-sub">—</span></div>
-      <div class="kpi" title="Market regime read: bullish / neutral / bearish, derived from breadth + RSI"><span class="kpi-label">Regime</span><span class="kpi-value" id="k-regime" style="font-size:20px">—</span><span class="kpi-sub" id="k-regime-sub">—</span></div>
       <div class="kpi" title="Current market session: pre-market, regular hours (RTH), or after-hours"><span class="kpi-label">Session</span><span class="kpi-value" id="k-session" style="font-size:20px">—</span><span class="kpi-sub" id="k-session-sub">—</span></div>
     </section>
 
-    <!-- v5.13.2 — Feature-flag indicators. Compact pills inline below the
-         KPI row so the operator can see at-a-glance which spec rules are
-         currently overridden via env vars. ON = grey neutral (spec-strict);
-         OFF = accent (operator override). -->
-    <section class="ts-flags-row" aria-label="Feature flags">
-      <span class="ts-flag" id="ts-flag-vol" title="VOLUME_GATE_ENABLED — Phase 2 volume bucket gate (L-P2-S3 / S-P2-S3). ON = spec-strict. OFF = operator override, gate auto-passes.">Volume Gate: —</span>
+    <!-- v5.17.0 — Weather Check banner (Phase 1 Sovereign verdict).
+         Renders at the top of the trading body so the operator's first
+         glance answers: "can I take an entry right now, and on which
+         side?". Reads tiger_sovereign.phase1.{long,short}.{permit,...}
+         from /api/state. The pill class (.pmtx-weather-{green,red,amber})
+         is set by JS based on the long/short permit combination. -->
+    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
+      <div class="pmtx-weather pmtx-weather-pending" id="pmtx-weather">
+        <div class="pmtx-weather-icon" id="pmtx-weather-icon" aria-hidden="true">·</div>
+        <div class="pmtx-weather-body">
+          <div class="pmtx-weather-eyebrow">Weather check · Phase 1 Sovereign</div>
+          <div class="pmtx-weather-verdict" id="pmtx-weather-verdict">Waiting for permit state…</div>
+          <div class="pmtx-weather-detail" id="pmtx-weather-detail">QQQ 5m close vs 9-EMA · QQQ vs AVWAP_0930</div>
+        </div>
+        <div class="pmtx-weather-stats" id="pmtx-weather-stats" aria-hidden="true"></div>
+      </div>
     </section>
 
     <section class="grid grid-2">
@@ -149,55 +161,33 @@
       </div>
     </section>
 
-    <!-- v5.13.2 — Tiger Sovereign live state panel. Surfaces the spec-
-         correct Phase 1-4 state (per-side permit, gates, candidates,
-         active management) so the operator can see what the algo is
-         actually evaluating. Driven by the new `tiger_sovereign` block
-         in /api/state. -->
-    <section class="grid grid-2">
-      <div class="card" style="grid-column:1 / -1">
+    <!-- v5.17.0 — PERMIT MATRIX. Replaces the legacy Tiger Sovereign
+         Phase 1-4 vertical panel. Same data source (tiger_sovereign.
+         phase1/phase2/phase3/phase4) but pivoted: Titans (10 tickers)
+         as rows, Phase-2/3 gates as columns. State pill on the right
+         summarizes the current per-ticker FSM state
+         (IDLE / ARMED / IN POS / LOCKED). Strike Cap dots show how many
+         entries the ticker has used today (max 3 per STRIKE-CAP-3).
+
+         Mobile: the table switches to a card-stack layout under 720 px
+         (one card per ticker, gates as labeled chip rows). -->
+    <section class="grid">
+      <div class="card">
         <div class="card-head">
-          <span class="card-title" title="Tiger Sovereign live state — the four-phase entry/management state machine">Tiger Sovereign · Live State</span>
-          <span class="chip" id="ts-overall-chip" title="Aggregate Phase 1 permit state across long and short">—</span>
+          <span class="card-title" title="Permit Matrix — per-Titan view of the Tiger Sovereign vAA-1 entry checklist. Columns are the Phase 2 / Phase 3 gates. ✓ = pass, ✕ = fail, − = not yet evaluated.">Permit Matrix<span class="count" id="pmtx-count" title="Number of Titans being tracked">· —</span></span>
+          <span class="chip" id="pmtx-overall-chip" title="Aggregate Phase 1 permit state across long and short">—</span>
         </div>
-        <div class="card-body" id="ts-body">
-          <div class="ts-phase" id="ts-phase1-long">
-            <div class="ts-phase-head" title="Phase 1 — long-side permit. Requires QQQ 5m close > 9-EMA AND QQQ price > AVWAP from 09:30.">Phase 1 · Permit (LONG)</div>
-            <div class="ts-phase-body" id="ts-phase1-long-body">
-              <div class="empty">Waiting for permit state…</div>
-            </div>
-          </div>
-          <div class="ts-phase" id="ts-phase1-short">
-            <div class="ts-phase-head" title="Phase 1 — short-side permit. Requires QQQ 5m close < 9-EMA AND QQQ price < AVWAP from 09:30.">Phase 1 · Permit (SHORT)</div>
-            <div class="ts-phase-body" id="ts-phase1-short-body">
-              <div class="empty">Waiting for permit state…</div>
-            </div>
-          </div>
-          <div class="ts-phase" id="ts-phase2">
-            <div class="ts-phase-head" title="Phase 2 — per-ticker gates (volume bucket + boundary hold). All must pass for an entry candidate to arm.">Phase 2 · Gates</div>
-            <div class="ts-phase-body" id="ts-phase2-body">
-              <div class="empty">Waiting for gate state…</div>
-            </div>
-          </div>
-          <div class="ts-phase" id="ts-phase3">
-            <div class="ts-phase-head" title="Phase 3 — armed entry candidates. Entry 1 fires on DI+ break; Entry 2 fires on a 1m close across the OR boundary.">Phase 3 · Entry candidates</div>
-            <div class="ts-phase-body" id="ts-phase3-body">
-              <div class="empty">No armed candidates.</div>
-            </div>
-          </div>
-          <div class="ts-phase" id="ts-phase4">
-            <div class="ts-phase-head" title="Phase 4 — active management for open positions: Sentinel alarms (A1 hard P&L stop, A2 velocity, B QQQ regime) and Titan Grip ratchet trail.">Phase 4 · Active management</div>
-            <div class="ts-phase-body" id="ts-phase4-body">
-              <div class="empty">No open positions.</div>
-            </div>
-          </div>
+        <div class="card-body flush" id="pmtx-body">
+          <div class="empty">Waiting for matrix data…</div>
         </div>
       </div>
     </section>
 
-    <!-- v5.5.7 — Last signal card on Main mirrors the Val/Gene exec
-         panels: shows the paper executor's most recent emitted signal
-         (kind, ticker, price, reason, timestamp). -->
+    <!-- v5.17.0 — Last signal + Today's trades pair (kept). Last signal
+         is the paper executor's most recent emitted signal; Today's
+         trades is the running fill log. Observer / Gates·entry checks
+         panels retired in v5.17.0 — their content is now folded into
+         the Permit Matrix above. -->
     <section class="grid grid-2">
       <div class="card">
         <div class="card-head">
@@ -217,31 +207,6 @@
         <div class="trades-summary" id="trades-summary">—</div>
         <div class="card-body flush" id="trades-body">
           <div class="empty">No trades yet today.</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="grid grid-2">
-      <div class="card">
-        <div class="card-head"><span class="card-title" title="Regime observer — the underlying numbers behind the Regime KPI (breadth %, RSI states, top loser)">Observer</span></div>
-        <div class="card-body">
-          <div class="key-val-grid" id="obs-body">
-            <dt>Breadth detail</dt><dd id="obs-breadth" style="text-align:right">—</dd>
-            <dt>RSI detail</dt><dd id="obs-rsi" style="text-align:right">—</dd>
-            <dt>Top red today</dt><dd id="obs-topred">—</dd>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- v5.13.2 — Sovereign Regime Shield panel retired (PDC dual-index
-         eject was decommissioned in v5.9.1). The "Gates · entry checks"
-         card is preserved on its own row. -->
-    <section class="grid grid-2">
-      <div class="card" style="grid-column:1 / -1">
-        <div class="card-head"><span class="card-title" title="Entry gates — global checks (halt / scan / OR collected) plus per-ticker chips: Permit (Phase 1), Vol (volume bucket), Boundary (2-close hold)">Gates · entry checks</span></div>
-        <div id="gates-body">
-          <div class="empty">Loading gate status…</div>
         </div>
       </div>
     </section>
