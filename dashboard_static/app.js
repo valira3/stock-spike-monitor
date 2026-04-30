@@ -1857,16 +1857,19 @@
             regimeBlock: regimeBlock,
             sectionIPermit: sectionIPermit,
           })
-        // v5.23.0 — inline intraday chart panel. Placed between the
-        // component-state grid and the SMA stack so the operator's eye
-        // moves down the page in scan order: live alarms / process
-        // states (cards) \u2192 today's price action (chart) \u2192 daily
-        // structural context (SMA stack). The placeholder div is hydrated
+        // v5.23.2 \u2014 expanded-row scan order: component-state cards
+        // (process state at-a-glance) \u2192 sentinel alarm strip (live
+        // alarm status for the open position) \u2192 SMA stack (daily
+        // structural context) \u2192 intraday chart (today's price action
+        // with OR/AVWAP/EMA9 overlays). The chart sits at the bottom
+        // because it's the most visually heavy element and operators
+        // typically only need it after they've already triaged the
+        // alarm/SMA context above. The chart placeholder is hydrated
         // post-render by _pmtxHydrateIntradayCharts() which fetches
         // /api/intraday/{tkr} and paints to a Canvas.
-        + _pmtxIntradayChartPanel(tkr)
+        + (sentinelStripHtml || "")
         + _pmtxSmaStackPanel(smaStack)
-        + (sentinelStripHtml || "");
+        + _pmtxIntradayChartPanel(tkr);
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
         + '<td colspan="9">' + detailInner + '</td></tr>';
     }

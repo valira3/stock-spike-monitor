@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.23.2 — 2026-04-30 — Intraday chart hotfix + expanded-row reorder
+
+### Why
+Live validation of v5.23.0 immediately after deploy revealed two
+issues:
+
+1. **Chart rendered blank.** `/api/intraday/QQQ` returned 329 bars but
+   every `o/h/l/c` field was `null`. Root cause: the on-disk JSONL
+   archive (set by the v5.5.x bar-archive wiring) stores keys
+   `open/high/low/close` and `iex_volume`, but the v5.23.0 helpers
+   (`_intraday_compute_avwap`, `_intraday_resample_5m`, the `bars_out`
+   loop in `_intraday_build_payload`) read the short keys `o/h/l/c`.
+   Tests passed because the synthetic-bar fixture also used short keys,
+   mirroring the bug rather than catching it.
+2. **Sentinel alarms felt missing.** Operator feedback after the
+   v5.23.0 deploy: "where did the alarms go?" The alarm strip was
+   still rendering, but it was concatenated *last* in the expanded
+   row — below the heavy intraday chart — so it fell off the visible
+   viewport on most screens. The chart visually buried the alarms.
+
+### What
+- `dashboard_server.py`: three call sites updated to read the archive's
+  actual field names — `b.get("open")`, `b.get("high")`, `b.get("low")`,
+  `b.get("close")`. `iex_volume` was already correct.
+- `dashboard_static/app.js`: expanded-row concat order changed from
+  `cards → chart → SMA → alarms` to `cards → alarms → SMA → chart`.
+  Operators now see live process-state cards, then live alarm status
+  for the open position, then daily structural context (SMA stack),
+  then today's price action (chart) at the bottom.
+- `tests/test_v5_23_0_chart_panel.py`:
+  - Synthetic-bar fixture writes prod-schema keys, and the
+    `test_payload_shape_from_synthetic_bars` test adds explicit
+    assertions that OHLC values are populated (not null) — a
+    regression guard so this exact failure mode can't ship again.
+  - `test_intraday_panel_concat_order` updated to assert the new
+    four-element strict order (grid → sentinel → sma → chart).
+- Version pins bumped: `bot_version.py`, `trade_genius.py` BOT_VERSION
+  + CURRENT_MAIN_NOTE, historical test pins.
+
+### Risks
+Low. The OHLC fix is a pure schema-name correction on three call sites
+introduced in the prior release; no behavior change beyond the fields
+now resolving to real values. The reorder is a visual reflow only —
+no new code paths, no data changes, no API changes. The chart still
+hydrates from the same `_pmtxApplyExpanded` hook regardless of where
+it sits in the DOM. Both the OHLC regression assertion and the new
+four-element order assertion run in CI.
+
+---
+
 ## v5.23.0 — 2026-04-30 — Click-scroll fix + intraday chart panel + Last signal removal
 
 ### Why

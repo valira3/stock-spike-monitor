@@ -70,7 +70,7 @@ def _strip_py_comments(src: str) -> str:
 # 1. Version pin -------------------------------------------------------
 def test_bot_version_is_5_23_0():
     text = BOT_VERSION_PY.read_text(encoding="utf-8")
-    assert 'BOT_VERSION = "5.23.0"' in text, "bot_version.py must report 5.23.0"
+    assert 'BOT_VERSION = "5.23.2"' in text, "bot_version.py must report 5.23.2"
 
 
 # 2. Component grid marker --------------------------------------------
@@ -153,18 +153,24 @@ def test_intraday_panel_html_markers():
 
 def test_intraday_panel_concat_order():
     js = APP_JS.read_text(encoding="utf-8")
-    # In the expanded-detail HTML build, _pmtxIntradayChartPanel must
-    # appear between _pmtxComponentGrid and _pmtxSmaStackPanel.
+    # v5.23.2 \u2014 expanded-row scan order:
+    #   _pmtxComponentGrid \u2192 sentinelStripHtml \u2192 _pmtxSmaStackPanel
+    #   \u2192 _pmtxIntradayChartPanel
+    # Alarms (sentinel strip) sit right under the cards so they aren't
+    # pushed below the heavy chart. Chart sits at the bottom because
+    # it's the most visually heavy element.
     code = _strip_js_comments(js)
-    # Locate the detailInner concat region by finding all three calls.
     grid_calls = [m.start() for m in re.finditer(r"\+\s*_pmtxComponentGrid\(", code)]
-    chart_calls = [m.start() for m in re.finditer(r"\+\s*_pmtxIntradayChartPanel\(", code)]
+    sentinel_calls = [m.start() for m in re.finditer(r"\+\s*\(sentinelStripHtml\b", code)]
     sma_calls = [m.start() for m in re.finditer(r"\+\s*_pmtxSmaStackPanel\(", code)]
-    assert grid_calls and chart_calls and sma_calls, "all three concat calls must exist"
-    # The chart concat must lie between the grid and sma calls.
-    assert grid_calls[0] < chart_calls[0] < sma_calls[0], (
-        "_pmtxIntradayChartPanel must be concatenated between "
-        "_pmtxComponentGrid and _pmtxSmaStackPanel"
+    chart_calls = [m.start() for m in re.finditer(r"\+\s*_pmtxIntradayChartPanel\(", code)]
+    assert grid_calls and sentinel_calls and sma_calls and chart_calls, (
+        "all four concat calls must exist"
+    )
+    # Required strict order: grid < sentinel < sma < chart.
+    assert grid_calls[0] < sentinel_calls[0] < sma_calls[0] < chart_calls[0], (
+        "expanded-row concat order must be: _pmtxComponentGrid -> sentinelStripHtml "
+        "-> _pmtxSmaStackPanel -> _pmtxIntradayChartPanel"
     )
 
 
@@ -225,16 +231,18 @@ def test_payload_shape_from_synthetic_bars(monkeypatch, tmp_path):
     lines = []
     for mm, price in enumerate([100.0, 101.0, 102.0]):
         ts = f"{day}T{base_h:02d}:{30 + mm:02d}:00+00:00"
+        # NOTE: prod archive uses open/high/low/close (NOT o/h/l/c).
+        # See backtest/loader.py and the JSONL written by trade_genius.
         lines.append(
             '{"ts": "'
             + ts
-            + '", "o": '
+            + '", "open": '
             + str(price)
-            + ', "h": '
+            + ', "high": '
             + str(price + 0.5)
-            + ', "l": '
+            + ', "low": '
             + str(price - 0.5)
-            + ', "c": '
+            + ', "close": '
             + str(price + 0.2)
             + ', "iex_volume": 1000}'
         )
@@ -264,4 +272,12 @@ def test_payload_shape_from_synthetic_bars(monkeypatch, tmp_path):
         assert "et_min" in b
         assert "o" in b and "h" in b and "l" in b and "c" in b
         assert "avwap" in b  # may be None for non-RTH
+    # Critical regression guard: confirm OHLC values are populated
+    # (not null). v5.23.0 had a bug where prod helpers read o/h/l/c
+    # but archive stored open/high/low/close, producing all-null bars.
+    first = payload["bars"][0]
+    assert first["o"] == 100.0, f"open should be populated, got {first['o']}"
+    assert first["h"] == 100.5, f"high should be populated, got {first['h']}"
+    assert first["l"] == 99.5, f"low should be populated, got {first['l']}"
+    assert first["c"] == 100.2, f"close should be populated, got {first['c']}"
     assert isinstance(payload["trades"], list)
