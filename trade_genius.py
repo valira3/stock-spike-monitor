@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.20.1"
+BOT_VERSION = "5.20.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,14 +102,13 @@ BOT_VERSION = "5.20.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.20.1 \u2014 Premarket-only DI\n"
-    "seed (08:00\u201309:30 ET, 18\n"
-    "5m bars). Drops prior-day\n"
-    "tail seed. New 09:31 ET\n"
-    "recompute job arms DI\n"
-    "before first entry tick.\n"
-    "DI ready at open when\n"
-    "premarket has \u226515 bars."
+    "v5.20.2 \u2014 QQQ regime EMA9\n"
+    "premarket reseed + gap-fill.\n"
+    "Seal deferred until ema9 is\n"
+    "warm. 09:31 ET recompute job\n"
+    "runs alongside DI. Live ticks\n"
+    "force-reseed if ema9 None.\n"
+    "Phase 1 permits hot at open."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1472,6 +1471,7 @@ from engine.seeders import (
     qqq_regime_seed_once as _engine_qqq_regime_seed_once,
     qqq_regime_tick as _engine_qqq_regime_tick,
     recompute_di_for_unseeded as _engine_recompute_di_for_unseeded,
+    recompute_qqq_regime_if_unwarm as _engine_recompute_qqq_regime_if_unwarm,
     seed_di_buffer as _engine_seed_di_buffer,
     seed_di_all as _engine_seed_di_all,
     seed_opening_range as _engine_seed_opening_range,
@@ -1482,6 +1482,7 @@ _v590_qqq_regime_tick = _engine_qqq_regime_tick
 _seed_di_buffer = _engine_seed_di_buffer
 _seed_di_all = _engine_seed_di_all
 _recompute_di_for_unseeded = _engine_recompute_di_for_unseeded
+_recompute_qqq_regime_if_unwarm = _engine_recompute_qqq_regime_if_unwarm
 _seed_opening_range = _engine_seed_opening_range
 _seed_opening_range_all = _engine_seed_opening_range_all
 
@@ -1489,10 +1490,12 @@ _seed_opening_range_all = _engine_seed_opening_range_all
 def _v590_compass_for_gate():
     """Return (ema3, ema9, compass) for the current G1 evaluation.
 
-    Triggers a one-time seed if not yet performed. Returns
-    (None, None, None) if the regime is still in warmup.
+    Triggers a seed if the regime is still warming. v5.20.2: gate is
+    `ema9 is None` rather than `not _QQQ_REGIME_SEEDED` so we keep
+    retrying until the EMA actually arms, even if a prior pass set
+    the legacy seal flag with a partial seed.
     """
-    if not _QQQ_REGIME_SEEDED:
+    if _QQQ_REGIME.ema9 is None:
         try:
             _v590_qqq_regime_seed_once()
         except Exception as e:
@@ -4254,11 +4257,16 @@ def premarket_recalc():
     except Exception:
         logger.exception("[PREMARKET-RECALC] archive check failed")
 
-    # 2. QQQ Regime seed \u2014 idempotent via _QQQ_REGIME_SEEDED short-circuit.
+    # 2. QQQ Regime seed \u2014 v5.20.2: gate on ema9 (the actual warm signal),
+    # not the legacy _QQQ_REGIME_SEEDED flag. Force-reseed when ema9 is
+    # still None so a prior partial seed (e.g. premarket bars=4) can be
+    # replaced by a fresh fetch that picks up bars Alpaca had not yet
+    # aggregated. This makes the 09:29 ET pass meaningful even when a
+    # cold-start at boot only saw a handful of premarket buckets.
     try:
-        was_seeded = _QQQ_REGIME_SEEDED
-        _v590_qqq_regime_seed_once()
-        qqq_seeded_now = (not was_seeded) and _QQQ_REGIME_SEEDED
+        was_warm = _QQQ_REGIME.ema9 is not None
+        _v590_qqq_regime_seed_once(force_reseed=not was_warm)
+        qqq_seeded_now = (not was_warm) and (_QQQ_REGIME.ema9 is not None)
     except Exception:
         logger.exception("[PREMARKET-RECALC] qqq regime seed failed")
 
@@ -4322,6 +4330,27 @@ def di_recompute_0931():
         _recompute_di_for_unseeded(list(TRADE_TICKERS))
     except Exception:
         logger.exception("[DI-RECOMPUTE-0931] orchestration failed")
+
+
+# QQQ REGIME RECOMPUTE (v5.20.2 \u2014 09:31 ET safety net for EMA9)
+# ============================================================
+def qqq_regime_recompute_0931():
+    """Force-reseed the QQQ regime EMA9 if it is still None at 09:31 ET.
+
+    Mirrors di_recompute_0931 \u2014 same trigger, same idempotency shape.
+    The Phase 1 (L-P1-G1 / S-P1-G1) permit gate is fail-closed when
+    compass is None, so a half-warm regime blocks every long/short permit
+    until live ticks accumulate \u22659 closed 5m bars (~25 min into RTH).
+    This recompute closes that window: at 09:31 ET it pulls today's full
+    04:00\u2192now ET premarket via Alpaca/archive and re-seeds the regime
+    state from scratch when ema9 is still None.
+
+    Non-fatal: any error is logged via the helper's exception handler.
+    """
+    try:
+        _recompute_qqq_regime_if_unwarm()
+    except Exception:
+        logger.exception("[QQQ-REGIME-RECOMPUTE-0931] orchestration failed")
 
 
 # OR COLLECTION (Opening Range)
@@ -5346,16 +5375,21 @@ def scheduler_thread():
         ("daily", "09:29",
          lambda: threading.Thread(target=premarket_recalc, daemon=True).start()),
         ("daily", "09:30", reset_daily_state),
-        # v5.20.1 \u2014 09:31 ET combined: system-test ping +
-        # DI recompute for any ticker that came up short on premarket
-        # bars. The recompute runs in a background thread so the system
-        # test fires immediately on schedule.
+        # v5.20.1 + v5.20.2 \u2014 09:31 ET combined: system-test ping +
+        # DI recompute (v5.20.1) + QQQ regime recompute (v5.20.2) for
+        # any ticker / regime that came up short on premarket bars.
+        # Both recomputes run on daemon threads so the system test
+        # fires immediately on schedule and the two safety nets run
+        # in parallel.
         (
             "daily", "09:31",
             lambda: (
                 _fire_system_test("8:31 CT"),
                 threading.Thread(
                     target=di_recompute_0931, daemon=True,
+                ).start(),
+                threading.Thread(
+                    target=qqq_regime_recompute_0931, daemon=True,
                 ).start(),
             ),
         ),
