@@ -3860,6 +3860,33 @@ def run_local() -> int:
         assert "if ws_vol is not None" in src
         assert '"et_bucket": et_bucket,' in src
 
+    @t("v5.20.5: volume bucket gate prefers _ws_consumer over Yahoo")
+    def _():
+        # Mirror of the v5.5.5 source-grep guard, applied to the entry
+        # gate path in broker/orders.py. v5.20.5 forensics showed Yahoo
+        # ships volume=0/None on the trailing-edge bar for ~30-60s after
+        # each minute close, starving every Volume Bucket gate eval.
+        from pathlib import Path as _P
+
+        src = (_P(__file__).parent / "broker" / "orders.py").read_text(encoding="utf-8")
+        assert "_ws_consumer.current_volume(" in src
+        assert "_resolve_last_completed_volume" in src
+        assert "previous_session_bucket" in src
+
+    @t("v5.20.5: DI seeder has RTH fallback wired into recompute")
+    def _():
+        # Premarket-only DI seed left 0/10 tickers seeded on Apr 30; the
+        # fallback extends the data window into RTH proper.
+        from pathlib import Path as _P
+
+        src = (_P(__file__).parent / "engine" / "seeders.py").read_text(encoding="utf-8")
+        assert "def seed_di_buffer_with_rth_fallback(" in src
+        # recompute_di_for_unseeded must dispatch to the new helper.
+        idx = src.find("def recompute_di_for_unseeded(")
+        assert idx >= 0, "recompute_di_for_unseeded missing"
+        body = src[idx : idx + 2400]
+        assert "seed_di_buffer_with_rth_fallback(" in body, body[:400]
+
     @t("v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.1")
     def _():
         # Test name pinned to its release; assertion follows BOT_VERSION.

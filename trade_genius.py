@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.20.4"
+BOT_VERSION = "5.20.5"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,15 +102,15 @@ BOT_VERSION = "5.20.4"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.20.4 \u2014 Boundary Hold\n"
-    "close recorder fallback.\n"
-    "Walks back from [-2] to\n"
-    "find newest non-None\n"
-    "close so Yahoo's forming\n"
-    "bar no longer starves\n"
-    "the buffer. Phase 2 OR\n"
-    "breakdowns now actually\n"
-    "register."
+    "v5.20.5 \u2014 Volume gate now\n"
+    "reads WS feed (Yahoo was\n"
+    "shipping vol=0 on the\n"
+    "trailing bar). DI seed\n"
+    "falls back to RTH 5m\n"
+    "buckets when premarket\n"
+    "is too thin. Cards now\n"
+    "surface the numbers\n"
+    "behind each gate state."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -5398,6 +5398,26 @@ def scheduler_thread():
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
+        # v5.20.5 \u2014 DI seed safety-net retries. Premarket Alpaca IEX
+        # bars are sometimes too thin even at 09:31 ET (live evidence
+        # 2026-04-30: 0/10 tickers cleared the 15-bar threshold). The
+        # 09:31 recompute now uses an RTH-fallback seeder; we run it
+        # again at 10:00 and 10:30 to pick up any ticker whose Alpaca
+        # call failed transiently or whose RTH bars only just
+        # accumulated enough to clear the threshold. All three calls
+        # are idempotent (already-seeded tickers are skipped).
+        (
+            "daily", "10:00",
+            lambda: threading.Thread(
+                target=di_recompute_0931, daemon=True,
+            ).start(),
+        ),
+        (
+            "daily", "10:30",
+            lambda: threading.Thread(
+                target=di_recompute_0931, daemon=True,
+            ).start(),
+        ),
         # v5.13.0 PR-5 SHARED-EOD \u2014 EOD flush moved from 15:59 to 15:49 ET
         # (target wall-clock 15:49:59 ET per spec). EOD report now precedes
         # the flush by one minute.
