@@ -4,6 +4,59 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.3 \u2014 2026-04-30 \u2014 Permit Matrix expanded view: pipeline component card grid
+
+### Why
+
+The expanded permit-matrix row dumped the verbatim Tiger Sovereign v15.0
+spec text inside every ticker (16 `<dt>/<dd>` pairs covering every gate,
+alarm, and risk rule). That worked as a reference card during the v15.0
+rollout but it buried the live state \u2014 operators had to mentally pair
+the per-ticker indicator at the top of the matrix with the spec text
+below to know what was actually happening.
+
+v5.20.3 replaces the verbose `<dl>` with a responsive component card grid.
+Each card is one pipeline component (Phase 1/2/3, an alarm, or the strike
+counter) and surfaces:
+
+- phase chip (P1 / P2 / P3 / AL / POS)
+- component name and one-line short description
+- live state: status badge (PASS / FAIL / COLD / PEND / OFF / SAFE / TRIP /
+  IN POS / LOCKED / IDLE / USED) + numeric value
+
+The verbatim spec lives in `tiger_sovereign-spec-v15-1.md`; the dashboard
+is no longer a redundant copy of it.
+
+### What changed
+
+- `dashboard_static/app.js` \u2014 new `_pmtxComponentGrid(d)` helper that
+  emits 8 cards: P1 Weather, P2 Boundary, P2 Volume, P3 Authority,
+  P3 Momentum, AL Sov.Brake, AL Velocity Fuse, POS Strikes. The expanded
+  detail panel calls it instead of inlining the v15.0 `<dl>`.
+- `dashboard_static/app.css` \u2014 retired `.pmtx-spec-defs*` classes;
+  added `.pmtx-comp-grid`, `.pmtx-comp-cards`, `.pmtx-comp-card`,
+  `.pmtx-comp-chip`, `.pmtx-comp-name`, `.pmtx-comp-desc`,
+  `.pmtx-comp-state`, `.pmtx-comp-badge`, `.pmtx-comp-val`, plus state
+  tints `.pmtx-comp-{pass,fail,warn,pend,off,safe,trip,inpos,locked,used,idle}`.
+  Grid auto-flows 4 cards/row at desktop, 3 at \u22641024px, 2 at \u2264720px,
+  1 at \u2264480px.
+- `bot_version.py` + `trade_genius.py` \u2014 BOT_VERSION 5.20.2 \u2192 5.20.3.
+- `CURRENT_MAIN_NOTE` rewritten for the new release (\u226434 chars/line).
+- `tests/test_dashboard_pmtx_expand_v5_20_3.py` \u2014 new string-level
+  audits pinning the helper, the grid markup, the 8 component cards,
+  and the absence of the retired `pmtx-spec-defs` block.
+
+### Behavior parity
+
+The verbatim v15.0 spec is no longer rendered inside the expanded row.
+The spec source of truth (`tiger_sovereign-spec-v15-1.md`) is unchanged.
+All prior live data (`pmtx-detail-grid` stats, `pmtx-sentinel-strip`,
+and the per-row gate cells) renders identically. The expand/collapse
+click handler (`body.__pmtxExpandWired`) and the `hasDetail` gate are
+unchanged.
+
+---
+
 ## v5.20.2 \u2014 2026-04-30 \u2014 QQQ regime EMA9 premarket reseed + continuous gap-fill
 
 ### Why

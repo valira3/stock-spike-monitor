@@ -524,6 +524,104 @@
     return sign + "$" + Math.abs(n).toFixed(2);
   }
 
+  // v5.20.3 \u2014 expanded-row component card grid. Replaces the
+  // verbatim v15.0 spec <dl> with a responsive 3\u20134-cards-per-row
+  // grid: each card is a single pipeline component (Phase 1/2/3, an
+  // alarm, or the strike counter) showing a short description plus
+  // current state (status badge + numeric value). Operators reading
+  // the row no longer need to mentally cross-reference live data with
+  // the verbatim spec text \u2014 the card surfaces both inline.
+  function _pmtxComponentGrid(d) {
+    // Phase 1 \u00b7 Weather \u2014 the QQQ regime + AVWAP gate that controls
+    // long/short permits.
+    let p1State; let p1Val;
+    if (d.longPermit && d.shortPermit) { p1State = "pass"; p1Val = "long+short"; }
+    else if (d.longPermit)             { p1State = "pass"; p1Val = "long permit"; }
+    else if (d.shortPermit)            { p1State = "pass"; p1Val = "short permit"; }
+    else                                { p1State = "fail"; p1Val = "no permit"; }
+
+    // Phase 2 \u00b7 Boundary \u2014 two consecutive 1m closes through the OR.
+    let p2bState; let p2bVal;
+    if (d.orb === true)       { p2bState = "pass"; p2bVal = "two consec"; }
+    else if (d.orb === false) { p2bState = "fail"; p2bVal = "hold"; }
+    else                       { p2bState = "pend"; p2bVal = "\u2014"; }
+
+    // Phase 2 \u00b7 Volume \u2014 1m volume \u2265 100% of 55-bar avg.
+    let p2vState; let p2vVal;
+    const vs = String(d.volStatus || "").toUpperCase();
+    if (d.vol === true)        { p2vState = "pass"; p2vVal = vs || "PASS"; }
+    else if (d.vol === false)  { p2vState = "fail"; p2vVal = vs || "FAIL"; }
+    else if (d.vol === "warn") { p2vState = "warn"; p2vVal = vs || "COLD"; }
+    else                        { p2vState = "pend"; p2vVal = vs || "\u2014"; }
+
+    // Phase 3 \u00b7 Authority \u2014 5m DI\u00b1 > 25.
+    let p3aState; let p3aVal;
+    if (d.di5 === true)        { p3aState = "pass"; p3aVal = _pmtxNum(d.di5Val, 1); }
+    else if (d.di5 === false)  { p3aState = "fail"; p3aVal = _pmtxNum(d.di5Val, 1); }
+    else                        { p3aState = "pend"; p3aVal = "\u2014"; }
+
+    // Phase 3 \u00b7 Momentum \u2014 5m ADX > 20 (proxied by entry1_fired).
+    let p3mState; let p3mVal;
+    if (d.adx === true)       { p3mState = "pass"; p3mVal = "fired"; }
+    else if (d.adx === false) { p3mState = "fail"; p3mVal = "blocked"; }
+    else                       { p3mState = "pend"; p3mVal = "\u2014"; }
+
+    // Alarm A \u00b7 Sovereign Brake. Only meaningful when in position.
+    const sen = (d.p4 && d.p4.sentinel) || {};
+    const a1 = (typeof sen.a1_pnl === "number") ? sen.a1_pnl : null;
+    const a1Th = (typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500;
+    let alAState; let alAVal;
+    if (!d.pos)               { alAState = "off"; alAVal = "no pos"; }
+    else if (a1 === null)      { alAState = "pend"; alAVal = "\u2014"; }
+    else if (a1 <= a1Th)       { alAState = "trip"; alAVal = _pmtxMoney(a1); }
+    else                        { alAState = "safe"; alAVal = _pmtxMoney(a1); }
+
+    // Alarm B \u00b7 Velocity Fuse.
+    const a2 = (typeof sen.a2_velocity === "number") ? sen.a2_velocity : null;
+    const a2Th = (typeof sen.a2_threshold === "number") ? sen.a2_threshold : -0.01;
+    let alBState; let alBVal;
+    if (!d.pos)              { alBState = "off"; alBVal = "no pos"; }
+    else if (a2 === null)     { alBState = "pend"; alBVal = "\u2014"; }
+    else if (a2 <= a2Th)      { alBState = "trip"; alBVal = _pmtxNum(a2, 4) + "/s"; }
+    else                       { alBState = "safe"; alBVal = _pmtxNum(a2, 4) + "/s"; }
+
+    // Position \u00b7 Strike count (max 3 per ticker per day).
+    const su = d.strikesUsed || 0;
+    let posState; let posVal;
+    if (d.pos)            { posState = "inpos"; posVal = su + "/3 \u00b7 in pos"; }
+    else if (su >= 3)      { posState = "locked"; posVal = "3/3 \u00b7 locked"; }
+    else if (su > 0)       { posState = "used"; posVal = su + "/3 used"; }
+    else                    { posState = "idle"; posVal = "0/3 \u00b7 idle"; }
+
+    function card(chip, name, desc, state, val) {
+      return '<div class="pmtx-comp-card pmtx-comp-' + state + '">'
+        +   '<div class="pmtx-comp-head">'
+        +     '<span class="pmtx-comp-chip">' + escapeHtml(chip) + '</span>'
+        +     '<span class="pmtx-comp-name">' + escapeHtml(name) + '</span>'
+        +   '</div>'
+        +   '<div class="pmtx-comp-desc">' + escapeHtml(desc) + '</div>'
+        +   '<div class="pmtx-comp-state">'
+        +     '<span class="pmtx-comp-badge">' + escapeHtml(state.toUpperCase()) + '</span>'
+        +     '<span class="pmtx-comp-val">' + escapeHtml(val) + '</span>'
+        +   '</div>'
+        + '</div>';
+    }
+
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.3">'
+      +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
+      +   '<div class="pmtx-comp-cards">'
+      +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val)
+      +     card("P2", "Boundary",    "Two consec 1m closes thru OR", p2bState, p2bVal)
+      +     card("P2", "Volume",      "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal)
+      +     card("P3", "Authority",   "5m DI\u00b1 > 25",            p3aState, p3aVal)
+      +     card("P3", "Momentum",    "5m ADX > 20",                  p3mState, p3mVal)
+      +     card("AL", "Sov. Brake",  "Per-position $ stop",          alAState, alAVal)
+      +     card("AL", "Velocity Fuse", "Per-position velocity stop", alBState, alBVal)
+      +     card("POS", "Strikes",    "Strikes used today (cap 3)",   posState, posVal)
+      +   '</div>'
+      + '</div>';
+  }
+
   // Build per-ticker index lookups so the matrix renders in O(N).
   // phase3 + phase4 can have BOTH long and short rows for the same
   // ticker, so we key the primary lookup by "TICKER:SIDE" and also
@@ -934,47 +1032,29 @@
                 + '</div></div>'
               : '')
         + '</div>'
-        // v5.20.0 \u2014 v15.0 spec definitions per gate. Operators read
-        // these to cross-check the live verdict against the verbatim
-        // spec rule. Sourced from Tiger Sovereign v15.0 \u00a70\u2013\u00a74
-        // + Sentinel Addendum.
-        + '<div class="pmtx-spec-defs" data-pmtx-spec="v15.0">'
-        +   '<div class="pmtx-spec-defs-head">Tiger Sovereign v15.0 \u00b7 spec definitions</div>'
-        +   '<dl class="pmtx-spec-defs-list">'
-        +     '<dt>Phase 1 \u00b7 Weather</dt>'
-        +     '<dd>Long: QQQ(5m) &gt; 9-EMA <strong>AND</strong> QQQ &gt; 9:30 AM Anchor VWAP. Short: mirrored (QQQ &lt; 9-EMA <strong>AND</strong> &lt; AVWAP_0930).</dd>'
-        +     '<dt>Phase 2 \u00b7 Permit (boundary)</dt>'
-        +     '<dd>Two consecutive 1m closes strictly above the target level (Strike 1: ORH frozen 09:35:59 \u00b7 Strikes 2 &amp; 3: running NHOD). Short: mirrored against ORL / NLOD.</dd>'
-        +     '<dt>Phase 2 \u00b7 Volume gate</dt>'
-        +     '<dd>1m volume \u2265 100% of the 55-bar rolling average. <strong>REQUIRED after 10:00 AM ET</strong>; auto-passes before 10:00 ET.</dd>'
-        +     '<dt>Phase 3 \u00b7 Authority</dt>'
-        +     '<dd>5m DI+ &gt; 25 (long) or 5m DI\u2212 &gt; 25 (short). If FALSE \u2192 no Strike, regardless of 1m DI.</dd>'
-        +     '<dt>Phase 3 \u00b7 Momentum</dt>'
-        +     '<dd><strong>5m ADX &gt; 20 AND Alarm E = FALSE.</strong> Both required \u2014 ADX is now a primary spec gate.</dd>'
-        +     '<dt>Phase 3 \u00b7 Sizing</dt>'
-        +     '<dd>Full Strike (100%): 1m DI\u00b1 &gt; 30. Scaled Strike (50% starter): 1m DI\u00b1 in [25, 30]. Order: LIMIT at Ask\u00d71.001 (long) / Bid\u00d70.999 (short).</dd>'
-        +     '<dt>Strike sequence</dt>'
-        +     '<dd>Maximum 3 Strikes per ticker per day. Sequential Requirement: a subsequent strike cannot initiate until the previous position is fully flat (Position = 0).</dd>'
-        +     '<dt>Alarm A \u00b7 Flash Move</dt>'
-        +     '<dd>1m price move &gt; 1% against position \u2192 MARKET EXIT.</dd>'
-        +     '<dt>Alarm B \u00b7 Trend Death</dt>'
-        +     '<dd>5-minute candle closes across the 5m 9-EMA \u2192 MARKET EXIT.</dd>'
-        +     '<dt>Alarm C \u00b7 Tiger Grip</dt>'
-        +     '<dd>3 consecutive 1m ADX declines \u2192 RATCHET STOP \u00b1 0.25%.</dd>'
-        +     '<dt>Alarm D \u00b7 HVP Lock</dt>'
-        +     '<dd>5m ADX falls below 75% of session peak (HWM / Trade_HVP) \u2192 MARKET EXIT.</dd>'
-        +     '<dt>Alarm E \u00b7 Divergence</dt>'
-        +     '<dd>New extreme printed on lower (long) / higher (short) RSI(15) \u2192 RATCHET STOP \u00b1 0.25%, AND prohibits opening new Strike 2 / Strike 3.</dd>'
-        +     '<dt>Risk \u00b7 Hard stop</dt>'
-        +     '<dd>Resting STOP MARKET at \u2212$500 per position.</dd>'
-        +     '<dt>Risk \u00b7 Daily circuit breaker</dt>'
-        +     '<dd>Halt all trading and flatten if session P&amp;L reaches \u2212$1,500.</dd>'
-        +     '<dt>Entry window</dt>'
-        +     '<dd>09:36:00 to 15:44:59 EST. No new entries after 15:44:59.</dd>'
-        +     '<dt>EOD flush</dt>'
-        +     '<dd>Absolute market close at 15:49:59 EST.</dd>'
-        +   '</dl>'
-        + '</div>'
+        // v5.20.3 \u2014 component-state card grid. Replaces the
+        // verbose v15.0 spec-definitions <dl>; the spec rules live in
+        // tiger_sovereign-spec-v15-1.md and the operator no longer
+        // needs to read the entire spec inside every expanded row.
+        // Each card: phase chip + name + short description + status
+        // badge + numeric value. Phases 1/2/3, alarms (A/B), and the
+        // strike counter are surfaced directly from the live indices
+        // already computed above (orb, adx, di5, vol, longPermit,
+        // shortPermit, strikesUsed, p4 sentinel/titan_grip).
+        + _pmtxComponentGrid({
+            tkr: tkr,
+            longPermit: longPermit,
+            shortPermit: shortPermit,
+            orb: orb,
+            vol: vol,
+            volStatus: (p2 && p2.vol_gate_status) || null,
+            adx: adx,
+            di5: di5,
+            di5Val: (p3 && typeof p3.entry1_di === "number") ? p3.entry1_di : null,
+            strikesUsed: strikesUsed,
+            pos: pos,
+            p4: p4,
+          })
         + (sentinelStripHtml || "");
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
         + '<td colspan="9">' + detailInner + '</td></tr>';
