@@ -524,16 +524,30 @@
     return idx;
   }
 
-  // ─── Weather Check banner (Phase 1 verdict) ──────────────────────
+  // v5.18.1 \u2014 dual-scope element lookup so renderWeatherCheck and
+  // renderPermitMatrix can render into either Main's id-bearing DOM or
+  // a per-panel skeleton (Val/Gene) that uses [data-f="..."] hooks.
+  // When `panel` is null/undefined we fall back to document-level
+  // getElementById; otherwise we look up by data-f attribute within the
+  // panel root. Same key string is used in both branches \u2014 callers
+  // just pass the bare key (e.g. "pmtx-weather").
+  function _pmtxEl(panel, key) {
+    if (panel) return panel.querySelector('[data-f="' + key + '"]');
+    return $(key);
+  }
+
+  // \u2500\u2500\u2500 Weather Check banner (Phase 1 verdict) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Reads tiger_sovereign.phase1.{long,short}.{permit,qqq_5m_close,
   // qqq_5m_ema9,qqq_avwap_0930,qqq_last}. Sets one of the four
   // .pmtx-weather-{green,red,amber,pending} state classes.
-  function renderWeatherCheck(s) {
-    const root = $("pmtx-weather");
-    const icon = $("pmtx-weather-icon");
-    const verdict = $("pmtx-weather-verdict");
-    const detail = $("pmtx-weather-detail");
-    const stats = $("pmtx-weather-stats");
+  // v5.18.1 \u2014 optional `panel` arg lets Val/Gene tabs reuse the
+  // exact same renderer against their own copy of the DOM.
+  function renderWeatherCheck(s, panel) {
+    const root = _pmtxEl(panel, "pmtx-weather");
+    const icon = _pmtxEl(panel, "pmtx-weather-icon");
+    const verdict = _pmtxEl(panel, "pmtx-weather-verdict");
+    const detail = _pmtxEl(panel, "pmtx-weather-detail");
+    const stats = _pmtxEl(panel, "pmtx-weather-stats");
     if (!root || !icon || !verdict || !detail) return;
     const ts = (s && s.tiger_sovereign) || null;
     const p1 = (ts && ts.phase1) || {};
@@ -596,11 +610,13 @@
     }
   }
 
-  // ─── Permit Matrix (per-Titan row table + mobile cards) ──────────
-  function renderPermitMatrix(s) {
-    const body = $("pmtx-body");
-    const countEl = $("pmtx-count");
-    const chip = $("pmtx-overall-chip");
+  // \u2500\u2500\u2500 Permit Matrix (per-Titan row table) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // v5.18.1 \u2014 optional `panel` arg lets Val/Gene tabs reuse the
+  // exact same renderer (data is market-wide, just different DOM mount).
+  function renderPermitMatrix(s, panel) {
+    const body = _pmtxEl(panel, "pmtx-body");
+    const countEl = _pmtxEl(panel, "pmtx-count");
+    const chip = _pmtxEl(panel, "pmtx-overall-chip");
     if (!body) return;
 
     const ts = (s && s.tiger_sovereign) || null;
@@ -643,11 +659,9 @@
     proximity.forEach((r) => { if (r && r.ticker) proximityByTicker[r.ticker] = r; });
 
     const rowsHtml = [];
-    const cardsHtml = [];
     tickers.forEach((tkr) => {
       const built = _pmtxBuildRow(tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker, longPermit, shortPermit);
       rowsHtml.push(built.tableRows);
-      cardsHtml.push(built.card);
     });
 
     // v5.18.0 — row layout collapsed to match the original mockup:
@@ -657,21 +671,24 @@
     // not surfaced by /api/state). "Last trade" moved into the detail
     // panel; "Price · Distance" replaces it as the trailing cell so
     // the standalone Proximity card retires cleanly.
+    // v5.18.1 \u2014 dropped the separate .pmtx-cards mobile path. The
+    // same compact table renders on every viewport; ADX/DI+5m/Vol-confirm
+    // columns hide on \u2264720px (CSS) so the row stays readable on a
+    // 390px phone without the per-gate label clutter the cards layout had.
     body.innerHTML = ''
       + '<div class="pmtx-table-wrap">'
       +   '<table class="pmtx-table"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
-      +     '<th title="5-minute Opening Range break (2 consecutive 1m closes above OR_high or below OR_low)">5m ORB</th>'
-      +     '<th title="5-minute ADX above 20 \u2014 trend strength gate (derived from Phase 3 entry state)">ADX&gt;20</th>'
-      +     '<th title="DI+ on 5-minute bars above 25 at Entry 1 trigger">DI+ 5m&gt;25</th>'
-      +     '<th title="Volume Bucket gate \u2014 Phase 2 PASS/FAIL/COLD/OFF">Vol confirm</th>'
+      +     '<th class="pmtx-col-orb" title="5-minute Opening Range break (2 consecutive 1m closes above OR_high or below OR_low)">5m ORB</th>'
+      +     '<th class="pmtx-col-adx" title="5-minute ADX above 20 \u2014 trend strength gate (derived from Phase 3 entry state)">ADX&gt;20</th>'
+      +     '<th class="pmtx-col-diplus" title="DI+ on 5-minute bars above 25 at Entry 1 trigger">DI+ 5m&gt;25</th>'
+      +     '<th class="pmtx-col-vol" title="Volume Bucket gate \u2014 Phase 2 PASS/FAIL/COLD/OFF">Vol confirm</th>'
       +     '<th class="pmtx-col-strike" title="Strike Cap \u2014 max 3 entries per ticker per session (STRIKE-CAP-3)">Strikes</th>'
       +     '<th class="pmtx-col-state" title="Per-ticker FSM state">State</th>'
       +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to nearest OR boundary (replaces the standalone Proximity card)">Price \u00b7 Distance</th>'
       +     '<th class="pmtx-col-expand" aria-label="Toggle detail"></th>'
       +   '</tr></thead><tbody>' + rowsHtml.join("") + '</tbody></table>'
-      + '</div>'
-      + '<div class="pmtx-cards">' + cardsHtml.join("") + '</div>';
+      + '</div>';
 
     // Wire up the click-to-expand toggle. One delegated handler attached
     // to body so we don't leak listeners on every re-render.
@@ -802,10 +819,10 @@
     const rowAttrs = ' data-pmtx-tkr="' + escapeHtml(tkr) + '"' + (hasDetail ? '' : ' data-pmtx-no-detail="1"');
     const mainTr = '<tr class="pmtx-row' + rowTint + (hasDetail ? '' : ' pmtx-row-static') + '"' + rowAttrs + '>'
       + '<td class="pmtx-col-titan">' + titanHtml + '</td>'
-      + '<td>' + _pmtxGateCell(orb, "5-minute Opening Range break") + '</td>'
-      + '<td>' + _pmtxGateCell(adx, "ADX above 20 (trend strength)") + '</td>'
-      + '<td>' + _pmtxGateCell(di5, "DI+ on 5m bars above 25" + (p3 && typeof p3.entry1_di === "number" ? " \u2014 last reading: " + _pmtxNum(p3.entry1_di, 1) : "")) + '</td>'
-      + '<td>' + _pmtxGateCell(vol, volLabel || "Volume Bucket gate") + '</td>'
+      + '<td class="pmtx-col-orb">' + _pmtxGateCell(orb, "5-minute Opening Range break") + '</td>'
+      + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "ADX above 20 (trend strength)") + '</td>'
+      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(di5, "DI+ on 5m bars above 25" + (p3 && typeof p3.entry1_di === "number" ? " \u2014 last reading: " + _pmtxNum(p3.entry1_di, 1) : "")) + '</td>'
+      + '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume Bucket gate") + '</td>'
       + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
       + '<td class="pmtx-col-state">' + stateHtml + '</td>'
       + '<td class="pmtx-col-prox">' + proxHtml + '</td>'
@@ -835,34 +852,11 @@
         + '<td colspan="9">' + detailInner + '</td></tr>';
     }
 
-    // Mobile card. "DI+ 1m" pill dropped (matches the desktop column
-    // drop above). Card head still carries State pill + Price·Dist.
-    const cardGates = ''
-      + '<div class="pmtx-card-gates">'
-      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(orb) + '<span class="pmtx-card-gate-label">5m ORB</span></div>'
-      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(adx) + '<span class="pmtx-card-gate-label">ADX&gt;20</span></div>'
-      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(di5) + '<span class="pmtx-card-gate-label">DI+ 5m</span></div>'
-      +   '<div class="pmtx-card-gate">' + _pmtxGateCell(vol) + '<span class="pmtx-card-gate-label">Vol</span></div>'
-      + '</div>';
-    const cardSentinel = sentinelStripHtml
-      ? '<div class="pmtx-card-sentinel">' + sentinelStripHtml + '</div>'
-      : "";
-    const card = ''
-      + '<div class="pmtx-card' + rowTint + '">'
-      +   '<div class="pmtx-card-head">'
-      +     '<div class="pmtx-card-title">' + titanHtml + '</div>'
-      +     stateHtml
-      +   '</div>'
-      +   '<div class="pmtx-card-prox">' + proxHtml + '</div>'
-      +   cardGates
-      +   cardSentinel
-      +   '<div class="pmtx-card-foot">'
-      +     strikeHtml
-      +     lastHtml
-      +   '</div>'
-      + '</div>';
-
-    return { tableRows: tableRows, card: card };
+    // v5.18.1 \u2014 mobile cards path retired. The same compact table
+    // is used at every viewport (CSS hides ADX / DI+5m / Vol-confirm
+    // columns on \u2264720px). The `card` field is kept in the return
+    // signature for any embedders still calling _pmtxBuildRow directly.
+    return { tableRows: tableRows, card: "" };
   }
 
   // v5.18.0 — single Price · Distance cell, used in the table
@@ -1170,6 +1164,16 @@
   startStream();
   // also fire one immediate poll so the UI populates fast even before first SSE tick
   pollOnce();
+
+  // v5.18.1 \u2014 expose Permit Matrix + Weather Check renderers so the
+  // Val/Gene exec IIFE (separate closure below) can mount the same
+  // widgets inside its panel skeletons. Both functions accept (s, panel)
+  // \u2014 when panel is null they look up by id (Main DOM); when panel
+  // is the exec panel root they query [data-f="..."] inside it.
+  if (typeof window !== "undefined") {
+    window.__tgRenderWeatherCheck = renderWeatherCheck;
+    window.__tgRenderPermitMatrix = renderPermitMatrix;
+  }
 })();
 
 (() => {
@@ -1424,7 +1428,19 @@
       <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-session-sub">\u2014</span></div>
     </section>
 
-    <section class="grid grid-2">
+    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
+      <div class="pmtx-weather pmtx-weather-pending" data-f="pmtx-weather">
+        <div class="pmtx-weather-icon" data-f="pmtx-weather-icon" aria-hidden="true">\u00B7</div>
+        <div class="pmtx-weather-body">
+          <div class="pmtx-weather-eyebrow">Weather check \u00b7 Phase 1 Sovereign</div>
+          <div class="pmtx-weather-verdict" data-f="pmtx-weather-verdict">Waiting for permit state\u2026</div>
+          <div class="pmtx-weather-detail" data-f="pmtx-weather-detail">QQQ 5m close vs 9-EMA \u00b7 QQQ vs AVWAP_0930</div>
+        </div>
+        <div class="pmtx-weather-stats" data-f="pmtx-weather-stats" aria-hidden="true"></div>
+      </div>
+    </section>
+
+    <section class="grid">
       <div class="card">
         <div class="card-head"><span class="card-title">Open positions<span class="count" data-f="pos-count">\u00b7 0</span></span></div>
         <div class="card-body flush" data-f="pos-body">
@@ -1457,11 +1473,16 @@
           </div>
         </div>
       </div>
+    </section>
 
+    <section class="grid">
       <div class="card">
-        <div class="card-head"><span class="card-title">Proximity<span class="count" data-f="prox-count">\u00b7 \u2014</span></span></div>
-        <div class="card-body flush" data-f="prox-list">
-          <div class="empty">Loading\u2026</div>
+        <div class="card-head">
+          <span class="card-title" title="Per-Titan view of the Tiger Sovereign vAA-1 entry checklist (market-wide \u2014 same data as Main).">Permit Matrix<span class="count" data-f="pmtx-count">\u00b7 \u2014</span></span>
+          <span class="chip" data-f="pmtx-overall-chip" title="Aggregate Phase 1 permit state across long and short">\u2014</span>
+        </div>
+        <div class="card-body flush" data-f="pmtx-body">
+          <div class="empty">Waiting for matrix data\u2026</div>
         </div>
       </div>
     </section>
@@ -1575,60 +1596,28 @@
     return (v >= 0 ? "+" : "\u2212") + abs.toFixed(digits) + "%";
   }
 
-  // --- Market-state widgets (proximity) ------------------------------
+  // --- Market-state widgets (Weather Check + Permit Matrix) ---------
   // These are scanner-level signals that are the same for every
   // executor by design, so we render them from the Main /api/state
   // payload (republished on window.__tgLastState) rather than from the
-  // per-executor snapshot. v5.17.0 — only Proximity remains here;
-  // Sovereign Regime Shield + Gates·entry-checks panels were dropped
-  // (Permit Matrix on Main is the canonical market-wide gate view).
+  // per-executor snapshot.
+  // v5.17.0 \u2014 dropped Sovereign Regime Shield + Gates\u00b7entry-checks.
+  // v5.18.1 \u2014 retired the standalone Proximity card and replaced it
+  // with the Weather Check banner + Permit Matrix card from Main, so
+  // the per-executor tabs surface the same gate view operators see on
+  // Main. Both renderers accept an optional `panel` arg so they read
+  // [data-f="..."] hooks inside the exec panel.
+  //
+  // fmtPxExec is kept for any future per-exec price formatter wiring.
 
   function fmtPxExec(v) {
     if (v === null || v === undefined || isNaN(v)) return "\u2014";
     return "$" + Number(v).toFixed(2);
   }
 
-  function renderExecProximity(panel, s) {
-    const list = execField(panel, "prox-list");
-    const count = execField(panel, "prox-count");
-    if (!list) return;
-    const rows = (s && Array.isArray(s.proximity)) ? s.proximity : [];
-    if (count) count.textContent = "\u00b7 " + rows.length + " tracked";
-    if (!rows.length) {
-      list.innerHTML = `<div class="empty">No tickers configured.</div>`;
-      return;
-    }
-    const html = rows.map((r) => {
-      const pct = (r.nearest_pct !== null && r.nearest_pct !== undefined) ? r.nearest_pct : null;
-      let fill = 0;
-      if (pct !== null) fill = Math.max(0, Math.min(100, Math.round((1 - Math.min(pct, 0.02) / 0.02) * 100)));
-      const warn = pct !== null && pct < 0.005;
-      const mark = r.open_side === "SHORT"
-        ? '<span class="mark mark-short" title="Open short">\u25CF</span>'
-        : r.open_side === "LONG"
-          ? '<span class="mark mark-long" title="Open long">\u25CF</span>'
-          : "";
-      const lbl = r.nearest_label || "\u2014";
-      const pctText = pct !== null ? `${(pct * 100).toFixed(2)}% \u00b7 ${lbl}` : "\u2014";
-      const permitSide = r.permit_side || "NONE";
-      const permitChip = execRenderPermitSideChip(permitSide);
-      const dim = (permitSide === "NONE") ? ' style="opacity:0.55"' : '';
-      return `<div class="prox-row"${dim}>
-        <span class="prox-ticker">${esc(r.ticker)} ${mark}</span>
-        <span class="prox-price">${fmtPxExec(r.price)}</span>
-        <div class="prox-bar"><div class="prox-fill ${warn ? "warn" : "ok"}" style="width:${fill}%"></div></div>
-        <span class="prox-pct" style="color:${warn ? 'var(--warn)' : 'var(--text-muted)'}">${esc(pctText)} ${permitChip}</span>
-      </div>`;
-    }).join("");
-    list.innerHTML = html;
-  }
-
-  function execRenderPermitSideChip(permitSide) {
-    if (permitSide === "BOTH") return `<span class="tgate-chip on" title="Phase 1 permit: long + short">L+S</span>`;
-    if (permitSide === "LONG") return `<span class="tgate-chip on" title="Phase 1 long permit active">L</span>`;
-    if (permitSide === "SHORT") return `<span class="tgate-chip on" title="Phase 1 short permit active">S</span>`;
-    return `<span class="tgate-chip na" title="No Phase 1 permit \u2014 breakout would not fire">no permit</span>`;
-  }
+  // v5.18.1 \u2014 renderExecProximity + execRenderPermitSideChip removed.
+  // The Val/Gene tabs now render the same Weather Check + Permit Matrix
+  // as Main (renderWeatherCheck/renderPermitMatrix accept a panel arg).
 
 
   // --- Today's trades (per-executor) ---------------------------------
@@ -1717,7 +1706,16 @@
   function renderExecMarketState(panel) {
     const s = window.__tgLastState;
     if (!s) return;
-    renderExecProximity(panel, s);
+    // v5.18.1 \u2014 the standalone Proximity card was replaced with the
+    // same Weather Check + Permit Matrix sections shown on Main. Both
+    // renderers accept an optional `panel` arg so they read the
+    // [data-f="..."] hooks inside this exec panel instead of Main's id
+    // hooks. Data is market-wide (window.__tgLastState is Main's last
+    // /api/state payload) so the Val/Gene tabs see the exact same
+    // gates Main does. Renderers live in the Main IIFE above and are
+    // bridged across closures via window.__tgRender{WeatherCheck,PermitMatrix}.
+    try { if (typeof window.__tgRenderWeatherCheck === "function") window.__tgRenderWeatherCheck(s, panel); } catch (e) {}
+    try { if (typeof window.__tgRenderPermitMatrix === "function") window.__tgRenderPermitMatrix(s, panel); } catch (e) {}
   }
 
   function renderExecutor(name, data) {

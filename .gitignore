@@ -3,3 +3,4 @@ CODE_REVIEW.md
 
 *.log
 dashboard_secret.key
+paper_state.json

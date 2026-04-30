@@ -63,7 +63,34 @@ if [ "$VERSION" != "$TG_VERSION" ]; then
   echo "FAIL: bot_version.py BOT_VERSION=$VERSION but trade_genius.py BOT_VERSION=$TG_VERSION"
   exit 1
 fi
-echo "  OK: v$VERSION (bot_version.py == trade_genius.py == CHANGELOG)"
+
+# v5.18.1 \u2014 release-note guard. trade_genius.py defines CURRENT_MAIN_NOTE,
+# the body Telegram quotes on every release banner and on /version. The
+# repo also has smoke_test.py which already enforces this contract, but
+# preflight invokes pytest as `pytest tests/ test_*.py` which does NOT
+# pick up smoke_test.py (filename does not match test_*.py and is not
+# under tests/). v5.18.0 shipped with CURRENT_MAIN_NOTE still pinned to
+# the v5.16.0 "Legacy purge" body for that reason. Parse the literal
+# directly here so the check survives without an importable trade_genius.
+NOTE_HEAD=$(python3 -c "
+import re
+with open('trade_genius.py') as f: src = f.read()
+m = re.search(r'CURRENT_MAIN_NOTE = \(\n((?:.*\n)+?)\)', src)
+assert m, 'CURRENT_MAIN_NOTE block not found'
+txt = ''
+for line in m.group(1).splitlines():
+    line = line.strip()
+    if line.startswith('\"') and line.endswith('\"'):
+        txt += line[1:-1].encode().decode('unicode_escape')
+print(txt.split('\n', 1)[0])
+")
+EXPECTED_HEAD_PREFIX="v$VERSION"
+if [[ "$NOTE_HEAD" != "$EXPECTED_HEAD_PREFIX"* ]]; then
+  echo "FAIL: CURRENT_MAIN_NOTE first line '$NOTE_HEAD' does not start with '$EXPECTED_HEAD_PREFIX'"
+  echo "      \u2014 update trade_genius.CURRENT_MAIN_NOTE before bumping BOT_VERSION"
+  exit 1
+fi
+echo "  OK: v$VERSION (bot_version.py == trade_genius.py == CHANGELOG, CURRENT_MAIN_NOTE leads with v$VERSION)"
 
 echo "[4/6] em-dash literal check (lines added in this PR only)..."
 # Pre-v5.8.0 codebase has hundreds of pre-existing literal em-dashes.

@@ -4,6 +4,78 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.18.1 — 2026-04-29 — Mobile responsive matrix + Val/Gene Permit Matrix + release-note fix
+
+Three-issue follow-up patch on top of v5.18.0:
+
+### 1. Mobile Permit Matrix — drop the cards-stack, render the same table
+
+v5.18.0 swapped to a per-Titan card stack under 720px so the gates could
+be shown as label-per-chip rows. Operator feedback: the per-gate label
+in every card is clutter and visually dissimilar from the desktop
+layout. v5.18.1 makes the same `<table class="pmtx-table">` responsive
+instead — the ADX, DI+ 5m, and Vol-confirm columns hide on ≤720px
+(their values are inside the click-to-expand detail row anyway), and
+the remaining six columns (Titan / 5m ORB / Strikes / State / Price ·
+Distance / chevron) tighten font-size + padding to fit a 390px iPhone
+viewport. Under 400px we trim further (5m ORB → 32px, prox-bar → 28px)
+so 360px Android viewports still read clean. The `.pmtx-cards` CSS
+class remains as a `display:none` stub for deploy-race safety against
+clients holding stale JS that still emits the cards markup.
+
+### 2. Val / Gene tabs — replace Proximity card with Weather Check + Permit Matrix
+
+The v5.17/v5.18 Val and Gene tabs still showed the legacy standalone
+Proximity card (price + bar + nearest-OR strip per ticker) under their
+portfolio mirror. Operator feedback: the gates these executors are
+actually subject to are exactly the gates Main shows in the Permit
+Matrix, so the Proximity card is stale info and a divergent UI. v5.18.1
+replaces the per-executor Proximity card with the same Weather Check
+banner + Permit Matrix card rendered on Main. Data is market-wide
+(reads `window.__tgLastState`, the most-recent `/api/state` payload
+republished by the Main IIFE), so Val/Gene see the exact same Phase 1
+verdict and per-Titan gate rows as Main. `renderWeatherCheck` and
+`renderPermitMatrix` now accept an optional `panel` second arg that
+switches their DOM lookups from `getElementById` to a `data-f="..."`
+attribute query inside the panel root, so a single renderer feeds all
+three tabs. The dead `renderExecProximity` and
+`execRenderPermitSideChip` helpers are removed.
+
+### 3. Telegram release notes — fix `CURRENT_MAIN_NOTE` drift + add preflight guard
+
+v5.18.0 (and v5.17.0 before it) shipped with `trade_genius.CURRENT_MAIN_NOTE`
+still stuck at the v5.16.0 "Legacy purge" body, so every `/version`
+response and every `🚀 vX.Y.Z deployed` Telegram banner trailed a stale
+release description. Root cause: `smoke_test.py` already enforces
+`CURRENT_MAIN_NOTE` first-line == `f"v{BOT_VERSION}"`, but `smoke_test.py`
+lives at the repo root (not under `tests/`) and the filename does not
+match `test_*.py`, so `pytest tests/ test_*.py` (the preflight invocation)
+never picks it up. v5.18.1 (a) updates `CURRENT_MAIN_NOTE` to the v5.18.1
+body, and (b) adds an explicit shell assertion to `scripts/preflight.sh`
+step [3/6] that imports `trade_genius` and `bot_version` and checks that
+`CURRENT_MAIN_NOTE.split("\n")[0]` starts with `f"v{BOT_VERSION}"`. So
+the release-note miss is now a preflight failure rather than a
+production post-mortem.
+
+### Files touched
+
+- `dashboard_static/app.js` — `renderWeatherCheck`/`renderPermitMatrix`
+  gain optional `panel` arg via new `_pmtxEl` lookup helper; `execSkeleton`
+  swaps Proximity card for Weather Check + Permit Matrix sections;
+  `renderExecMarketState` now calls `renderWeatherCheck` +
+  `renderPermitMatrix` with the panel root; `renderExecProximity` and
+  `execRenderPermitSideChip` removed.
+- `dashboard_static/app.css` — already swapped to responsive-table
+  block in v5.18.1 mobile fix (no further change here).
+- `trade_genius.py` — `BOT_VERSION` 5.18.0 → 5.18.1; `CURRENT_MAIN_NOTE`
+  rewritten to the v5.18.1 body.
+- `bot_version.py` — `BOT_VERSION` 5.18.0 → 5.18.1.
+- `scripts/preflight.sh` — step [3/6] grows a release-note guard.
+- `tests/test_startup_smoke.py` — already pinned to `5.18.` prefix; no
+  change required.
+
+---
+
 ## v5.18.0 — 2026-04-29 — Permit Matrix row collapse + Proximity merge
 
 Dashboard density refactor: the v5.17.0 Permit Matrix shipped with ~70–90px

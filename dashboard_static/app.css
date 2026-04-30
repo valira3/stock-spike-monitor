@@ -1006,10 +1006,49 @@
 }
 
 /* ─── Mobile: card-stack layout under 720 px ─────────────────────── */
-.pmtx-cards { display: none; padding: 6px 10px 10px; }
+/* v5.18.1 \u2014 mobile responsive table.
+   The v5.18.0 separate `.pmtx-cards` stack is retired; the same
+   compact table renders at every viewport. On \u2264720px the
+   ADX, DI+ 5m, and Vol-confirm columns hide (their values are
+   already inside the click-to-expand detail row), and cell
+   padding/font tighten so 6 columns fit a 390px phone:
+     Titan | 5m ORB | Strikes | State | Price·Distance | chevron
+*/
 @media (max-width: 720px) {
-  .pmtx-table-wrap { display: none; }
-  .pmtx-cards { display: flex; flex-direction: column; gap: 8px; }
+  .pmtx-table { font-size: 11.5px; min-width: 0; }
+  .pmtx-table thead th {
+    padding: 8px 4px; font-size: 8.5px; letter-spacing: 0.06em;
+  }
+  .pmtx-table tbody td { padding: 7px 4px; }
+  .pmtx-table thead th.pmtx-col-titan,
+  .pmtx-table td.pmtx-col-titan  { padding-left: 10px; }
+  .pmtx-table thead th.pmtx-col-prox  { width: auto; padding-right: 4px; }
+  .pmtx-table td.pmtx-col-prox       { padding-right: 4px; }
+  .pmtx-table thead th.pmtx-col-strike,
+  .pmtx-table td.pmtx-col-strike { width: 42px; padding: 7px 2px; }
+  .pmtx-table thead th.pmtx-col-state,
+  .pmtx-table td.pmtx-col-state  { padding-right: 2px; }
+  .pmtx-table thead th.pmtx-col-expand,
+  .pmtx-table td.pmtx-col-expand { padding-right: 6px; }
+  .pmtx-titan-name { font-size: 12.5px; }
+  .pmtx-state-pill { font-size: 9.5px; padding: 2px 6px; }
+  .pmtx-prox-price { width: 48px; font-size: 11px; }
+  .pmtx-prox-bar { width: 36px; }
+  .pmtx-prox-pct { font-size: 10px; }
+  /* Hide gate columns whose values live in the detail row anyway. */
+  .pmtx-table thead th.pmtx-col-adx,
+  .pmtx-table thead th.pmtx-col-diplus,
+  .pmtx-table thead th.pmtx-col-vol,
+  .pmtx-table td.pmtx-col-adx,
+  .pmtx-table td.pmtx-col-diplus,
+  .pmtx-table td.pmtx-col-vol { display: none; }
+  /* Detail row colspan was 9; visible cell count is 6 on mobile.
+     The detail <td colspan="9"> still works because hidden cells
+     don\u2019t collapse the colspan \u2014 it spans across all
+     remaining visible cells. */
+  .pmtx-detail-row td { padding: 10px 12px 12px 14px !important; }
+  .pmtx-detail-grid { grid-template-columns: repeat(2, 1fr); gap: 8px 12px; }
+  /* Weather banner stays readable on a phone. */
   .pmtx-weather { flex-wrap: wrap; gap: 10px; padding: 11px 14px; }
   .pmtx-weather-stats {
     border-left: none; padding-left: 0;
@@ -1020,71 +1059,24 @@
   }
   .pmtx-weather-stat { text-align: left; }
 }
-.pmtx-card {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  display: flex; flex-direction: column; gap: 8px;
-}
-.pmtx-card-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px;
-}
-.pmtx-card-title {
-  display: flex; flex-direction: column; gap: 1px; min-width: 0;
-}
-.pmtx-card-title .pmtx-titan-name { font-size: 14px; }
-.pmtx-card-gates {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-}
-.pmtx-card-gate {
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 5px 4px;
-  background: var(--surface);
-  border-radius: 4px;
-  min-width: 0;
-}
-.pmtx-card-gate-label {
-  font-size: 8.5px; line-height: 1.1;
-  text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text-dim); font-family: var(--sans);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  width: 100%; text-align: center;
-}
-.pmtx-card-foot {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px;
-  border-top: 1px solid var(--border);
-  padding-top: 7px;
-  font-size: 10.5px; color: var(--text-dim);
-  font-family: var(--mono);
-}
-.pmtx-card-last {
-  font-size: 10.5px; color: var(--text-muted);
-  font-family: var(--mono);
-}
-.pmtx-card-last.pmtx-pnl-up   { color: var(--up); }
-.pmtx-card-last.pmtx-pnl-down { color: var(--down); }
-.pmtx-card-sentinel { padding: 0; gap: 4px; }
-.pmtx-card-sentinel .pmtx-sentinel-strip {
-  padding: 6px 0 0; margin: 0;
-  gap: 4px;
-}
-.pmtx-card-sentinel .pmtx-sentinel-cell {
-  padding: 5px 4px;
-}
-.pmtx-card-sentinel .pmtx-sen-name { font-size: 8.5px; }
-.pmtx-card-sentinel .pmtx-sen-val  { font-size: 9.5px; }
 
-/* ─── Even smaller phone (≤400 px): tighter sentinel cells ───────── */
+/* On viewports \u2264400px the row gets very tight; further trim. */
 @media (max-width: 400px) {
-  .pmtx-card-sentinel .pmtx-sen-name { display: none; }
-  .pmtx-sentinel-strip { gap: 3px; }
-  .pmtx-card { padding: 9px 10px; }
+  .pmtx-table { font-size: 11px; }
+  .pmtx-table thead th { padding: 7px 3px; font-size: 8px; }
+  .pmtx-table tbody td { padding: 6px 3px; }
+  .pmtx-titan-name { font-size: 12px; }
+  .pmtx-prox-bar { width: 28px; }
+  .pmtx-prox-price { width: 44px; font-size: 10.5px; }
+  .pmtx-prox-pct { font-size: 9.5px; }
 }
+
+/* The retired `.pmtx-cards` selector still appears in old class
+   strings on /api/state polls that race the v5.18.1 deploy; keep
+   the rule so an in-flight payload from v5.18.0 doesn\u2019t flash
+   a broken card stack mid-upgrade. After one /api/state cycle the
+   element is replaced by the table and these rules become inert. */
+.pmtx-cards { display: none; }
 
 /* ─── Last-trade tail in the desktop matrix (compact) ────────────── */
 .pmtx-last {
