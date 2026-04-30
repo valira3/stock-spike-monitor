@@ -10,7 +10,10 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from broker.order_types import order_type_for_reason
-from broker.stops import _capped_long_stop, _capped_short_stop  # noqa: F401
+
+# v5.26.0 \u2014 broker.stops module deleted. R-2 -$500 hard stop is
+# computed inline in execute_breakout per Tiger Sovereign v15.0
+# \u00a7Risk Rails.
 
 # v5.13.6 \u2014 per-position lifecycle log. Best-effort import so a missing
 # module never blocks trading; the wrappers below silently no-op when the
@@ -40,50 +43,6 @@ if "trade_genius" not in _sys.modules and "__main__" in _sys.modules:
     _main = _sys.modules["__main__"]
     if getattr(_main, "BOT_NAME", None) == "TradeGenius":
         _sys.modules["trade_genius"] = _main
-
-
-def _resolve_last_completed_volume(tg, ticker, now_et, bars):
-    """v5.20.5 \u2014 pick the volume value for the Volume Bucket gate.
-
-    Precedence (first non-zero wins):
-      1. WS consumer's IEX volume for ``previous_session_bucket(now_et)``.
-         The WS feed lags Yahoo by < 1s and reports the just-closed
-         bar's true cumulative volume immediately, whereas Yahoo's
-         intraday endpoint ships ``volume=0/None`` on the trailing-edge
-         bar for ~30-60s after each minute close.
-      2. Yahoo ``volumes[-2]`` (the last fully closed minute) when
-         non-None.
-      3. Yahoo ``volumes[-1]`` (the forming bar) as last-resort.
-
-    Any unexpected exception in the WS branch is swallowed (logged at
-    WARNING) so the entry path always falls back to Yahoo. Returns the
-    chosen integer volume (or ``None`` when both sources are empty).
-    """
-    ws_vol = None
-    try:
-        _ws_consumer = getattr(tg, "_ws_consumer", None)
-        if _ws_consumer is not None and now_et is not None:
-            from volume_profile import previous_session_bucket as _prev_bucket
-
-            _pb = _prev_bucket(now_et)
-            if _pb is not None:
-                ws_vol = _ws_consumer.current_volume(ticker, _pb)
-    except Exception as _ws_e:
-        try:
-            tg.logger.warning("[V5100-VOLBUCKET] ws-source switch %s: %s", ticker, _ws_e)
-        except Exception:
-            pass
-
-    volumes_eb = (bars or {}).get("volumes", []) or []
-    yahoo_last_completed = None
-    if len(volumes_eb) >= 2 and volumes_eb[-2] is not None:
-        yahoo_last_completed = volumes_eb[-2]
-    elif volumes_eb and volumes_eb[-1] is not None:
-        yahoo_last_completed = volumes_eb[-1]
-
-    if ws_vol is not None and ws_vol > 0:
-        return ws_vol
-    return yahoo_last_completed
 
 
 def _tg():
@@ -247,20 +206,9 @@ def check_breakout(ticker, side):
         if fmp_pdc and fmp_pdc > 0:
             tg.pdc[ticker] = fmp_pdc
 
-    # OR sanity check: OR-edge must be within OR_STALE_THRESHOLD of live price.
-    if not tg._or_price_sane(or_dict[ticker], current_price):
-        pct = abs(or_dict[ticker] - current_price) / current_price * 100
-        tg.or_stale_skip_count[ticker] = tg.or_stale_skip_count.get(ticker, 0) + 1
-        tg.logger.warning(
-            "SKIP %s %s \u2014 %s $%.2f is %.1f%% from live $%.2f (stale?)",
-            ticker,
-            cfg.skip_label,
-            cfg.or_side_label,
-            or_dict[ticker],
-            pct,
-            current_price,
-        )
-        return False, None
+    # v5.26.0 \u2014 OR sanity check (_or_price_sane / OR_STALE_THRESHOLD)
+    # deleted: not part of Tiger Sovereign v15.0. OR freeze at 09:35:59
+    # is authoritative.
 
     or_edge_val = or_dict[ticker]
     pdc_val_e = tg.pdc[ticker]
@@ -286,40 +234,9 @@ def check_breakout(ticker, side):
             vol_pct = (entry_bar_vol / avg_vol) * 100.0
             vol_ok = vol_pct >= 150.0
 
-    # Volume confirmation: entry bar volume >= 1.5x session average.
-    # Gated by TIGER_V2_REQUIRE_VOL (default False); Tiger 2.0 replaces
-    # the vol filter with DI.
-    if tg.TIGER_V2_REQUIRE_VOL and len(volumes) >= 5:
-        if not vol_ready_flag:
-            tg.logger.info("SKIP %s [DATA NOT READY] no closed bar with volume in last 5", ticker)
-            if price_break:
-                tg._record_near_miss(
-                    ticker=ticker,
-                    side=cfg.log_side_label,
-                    reason="DATA_NOT_READY",
-                    close=round(last_close, 2),
-                    level=round(or_edge_val, 2),
-                    vol_bar=None,
-                    vol_avg=None,
-                    vol_pct=None,
-                )
-            return False, None
-        if avg_vol > 0 and entry_bar_vol < avg_vol * 1.5:
-            tg.logger.info(
-                "SKIP %s [LOW VOL] entry bar %.0f vs avg %.0f", ticker, entry_bar_vol, avg_vol
-            )
-            if price_break:
-                tg._record_near_miss(
-                    ticker=ticker,
-                    side=cfg.log_side_label,
-                    reason="LOW_VOL",
-                    close=round(last_close, 2),
-                    level=round(or_edge_val, 2),
-                    vol_bar=int(entry_bar_vol),
-                    vol_avg=int(avg_vol),
-                    vol_pct=round(vol_pct, 1) if vol_pct is not None else None,
-                )
-            return False, None
+    # v5.26.0 \u2014 TIGER_V2_REQUIRE_VOL legacy 1.5x-avg vol filter
+    # deleted. Tiger Sovereign v15.0 BL-3 / BU-3 Volume Gate is BYPASSED
+    # as of 2026-04-30 per spec amendment.
 
     # ------------------------------------------------------------------
     # v5.10.1 \u2014 Eye-of-the-Tiger authoritative gates (Sections I + II + III).
@@ -355,49 +272,8 @@ def check_breakout(ticker, side):
         )
         return False, None
 
-    # Section II.1 \u2014 Volume Bucket (Entry-1 only). Determine the
-    # minute_of_day from the last completed 1m bar.
-    try:
-        now_et_eb = tg.datetime.now(tz=ZoneInfo("America/New_York"))
-        minute_of_day_hhmm = now_et_eb.strftime("%H:%M")
-    except Exception:
-        now_et_eb = None
-        minute_of_day_hhmm = "09:30"
-
-    # v5.20.5 \u2014 prefer the WS consumer's IEX volume for the just-closed
-    # 1m bucket. Yahoo's intraday endpoint returns volume=0/null on the
-    # trailing-edge bar for ~30-60s after each minute close, which fed
-    # every Volume Bucket gate eval a current_vol=0 (forensics 2026-04-30).
-    # v5.5.5 already applied this swap in engine/scan.py for the bar
-    # archive; this mirrors it for the entry-1 gate. The actual lookup
-    # is factored into ``_resolve_last_completed_volume`` so the unit
-    # tests can exercise the WS-vs-Yahoo precedence without spinning up
-    # the full check_breakout pipeline.
-    last_completed_vol = _resolve_last_completed_volume(
-        tg=tg, ticker=ticker, now_et=now_et_eb, bars=bars
-    )
-
-    vol_check = tg.eot_glue.evaluate_volume_bucket_gate(
-        ticker,
-        minute_of_day_hhmm,
-        last_completed_vol or 0,
-    )
-    # v15.0 SPEC: pass now_et so the time-conditional 10:00 ET gate
-    # activates. Pre-10:00 ET auto-passes; at/after 10:00 ET requires
-    # ratio_to_55bar_avg >= 1.00 (100% of 55-bar rolling avg).
-    try:
-        _now_et_vg = tg.datetime.now(tz=ZoneInfo("America/New_York"))
-    except Exception:
-        _now_et_vg = None
-    volume_bucket_ok = tg.eot.evaluate_volume_bucket(vol_check, now_et=_now_et_vg)
-    if not volume_bucket_ok:
-        tg._v561_log_skip(
-            ticker=ticker,
-            reason="V5100_VOLBUCKET:%s" % vol_check.get("gate"),
-            ts_utc=tg._utc_now_iso(),
-            gate_state=None,
-        )
-        return False, None
+    # v5.26.0 \u2014 Volume Bucket gate (Section II.1) deleted. BL-3 / BU-3
+    # are BYPASSED per spec amendment 2026-04-30.
 
     # v15.0 SPEC Permission Ladder:
     #   Strike 1 \u2014 2x consecutive 1m close above ORH (long) / below ORL (short).
@@ -424,31 +300,8 @@ def check_breakout(ticker, side):
         boundary_low,
     )
 
-    # v5.13.0 PR 4 \u2014 Tiger Sovereign Phase 2 gate audit line. Emits
-    # one [V510-CAND] line per entry consideration with both Phase 2
-    # gates' verdicts side-by-side so the JSONL log captures exactly
-    # what blocked or admitted the entry.
-    try:
-        vc_gate = (vol_check or {}).get("gate")
-        vc_ratio = (vol_check or {}).get("ratio")
-        vol_pass_str = "PASS" if vc_gate in ("PASS", "COLDSTART") else "FAIL"
-        try:
-            ratio_str = "%.3f" % float(vc_ratio) if vc_ratio is not None else "null"
-        except (TypeError, ValueError):
-            ratio_str = "null"
-        bh_consec = int(boundary_res.get("consecutive_outside") or 0)
-        candle_pass_str = "PASS" if boundary_res.get("hold") else "FAIL"
-        last2_str = "n=%d" % bh_consec
-        tg.logger.info(
-            "[V510-CAND] symbol=%s gate_volume=%s ratio=%s gate_2candle=%s last2=%s",
-            ticker,
-            vol_pass_str,
-            ratio_str,
-            candle_pass_str,
-            last2_str,
-        )
-    except Exception:
-        pass
+    # v5.26.0 \u2014 [V510-CAND] gate-audit log line deleted (Volume Gate
+    # bypass leaves only the 2-candle hold for this telemetry).
 
     if not boundary_res.get("hold"):
         tg._v561_log_skip(
