@@ -4,6 +4,73 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.22.0 — 2026-04-30 — Side-aware position cards + traffic-light alarms
+
+### Why
+Follow-up to v5.21.0/v5.21.1: with click-to-Titan deep links shipped
+and the SMA Stack panel restored, two operator-friction issues were
+left on the table.
+
+1. The expanded Titan card showed both long-side and short-side
+   indicators (Authority permits, DI+ and DI- rows) regardless of
+   which direction the open position was on. Operators had to mentally
+   filter the irrelevant half on every glance.
+2. The 6-cell sentinel strip used a binary safe/armed/trip palette;
+   `armed` was already yellow, but it never differentiated a comfortably
+   armed alarm from one approaching its trigger threshold. Operators
+   wanted a true traffic light: green (clear), yellow (close), red
+   (triggered), gray (n/a).
+3. The 4 component cards stayed at full desktop size on phones, eating
+   the entire screen when the user expanded a Titan from a 390px
+   viewport.
+
+### What
+- `dashboard_static/app.js`:
+  - `_pmtxComponentGrid`: P3 Authority and P3 Momentum cards now
+    consult `d.pos.side`. When LONG, the Short permit row and DI- rows
+    are hidden. When SHORT, the Long permit row and DI+ rows are
+    hidden. When flat, all four sides remain visible (entry-side hint).
+    QQQ vs EMA9 / AVWAP rows now render "above/below (ok|fail)" with
+    side-correct "ok/fail" semantics.
+  - `_pmtxAlarmStateClass(alarm, kind)` rewritten to return
+    `safe|warn|trip|idle` instead of `safe|armed|trip`. Per-alarm warn
+    bands: A_LOSS at 75% of $-stop, A_FLASH at 75% of velocity
+    threshold, B_TREND_DEATH within 0.25% of EMA9 cross,
+    C_VELOCITY_RATCHET on 1-of-3 ADX declines, D_HVP_LOCK within 0.10
+    above the floor ratio, E_DIVERGENCE_TRAP whenever armed (forming).
+  - All 6 sentinel cells in `_pmtxSentinelStrip` now pass their alarm
+    kind to the state classifier.
+  - Grid version marker bumped from `v5.21.1` to `v5.22.0`.
+- `dashboard_static/app.css`:
+  - New `.pmtx-sen-warn` and `.pmtx-sen-idle` classes for yellow and
+    gray sentinel cells. `.pmtx-sen-armed` retained as a yellow alias
+    for the deploy window.
+  - New `@media (max-width: 480px)` and `@media (max-width: 390px)`
+    blocks tighten `.pmtx-comp-card` min-height, padding, font sizes,
+    chip/badge/metric scale so the expanded Titan fits a phone.
+- `bot_version.py`, `trade_genius.py`: BOT_VERSION 5.21.1 -> 5.22.0,
+  CURRENT_MAIN_NOTE rewritten (still ≤34 chars per line).
+- `smoke_test.py`: `data-pmtx-comp-grid` guard updated to `v5.22.0`.
+- `tests/test_v5_22_0_position_cards.py` (new): asserts side-aware
+  row filtering, traffic-light state class transitions, and the
+  warn-band 75% boundary for A_LOSS / A_FLASH / D_HVP_LOCK.
+- Historical test pins bumped from 5.21.1 to 5.22.0 in
+  `test_v5_20_{6,7,8,9}_*.py`.
+
+### Verification plan post-deploy
+1. Watch Railway deploy. Confirm STARTUP SUMMARY logs `v5.22.0`.
+2. Open dashboard, expand any Titan; check rendered HTML for
+   `data-pmtx-comp-grid="v5.22.0"`.
+3. Open a paper LONG on QBTS or AAPL, expand its Titan, confirm:
+   - Authority card shows only `Long permit` (not Short).
+   - Momentum card shows only DI+ rows (not DI-).
+   - Sentinel strip cells render with green/yellow/red borders
+     according to live values.
+4. Resize browser to 390px (DevTools mobile preset); confirm component
+   cards are now compact (~60-64px each, smaller fonts/padding).
+
+---
+
 ## v5.21.1 — 2026-04-30 — SMA Stack hotfix: Alpaca daily-bar fetcher uses IEX feed
 
 ### Why

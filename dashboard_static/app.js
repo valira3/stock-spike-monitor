@@ -779,34 +779,82 @@
     // sip.open / sip.qqq_aligned / sip.index_aligned, none of which
     // are emitted by /api/state, so every row rendered as a dim em
     // dash. The rewired card surfaces the actual gating signals.
-    const p3aMetrics = _metricsHtml([
-      ["Long permit",  (sip && typeof sip.long_open === "boolean")
+    //
+    // v5.22.0 \u2014 side relevance: when an open position exists,
+    // hide the irrelevant permit row. A LONG position cares about
+    // long_open (and QQQ vs EMA9 / AVWAP, which are the long
+    // alignment checks); a SHORT position cares about short_open.
+    // Sov. anchor stays visible either way (it's bilaterally
+    // relevant). When flat, both sides show as before.
+    const _posSide = (d.pos && typeof d.pos.side === "string")
+      ? d.pos.side.toUpperCase()
+      : null;
+    const _showLongAuth  = (_posSide === null) || (_posSide === "LONG");
+    const _showShortAuth = (_posSide === null) || (_posSide === "SHORT");
+    const _p3aRows = [];
+    if (_showLongAuth) {
+      _p3aRows.push(["Long permit", (sip && typeof sip.long_open === "boolean")
         ? (sip.long_open ? "yes" : "no")
-        : null],
-      ["Short permit", (sip && typeof sip.short_open === "boolean")
+        : null]);
+    }
+    if (_showShortAuth) {
+      _p3aRows.push(["Short permit", (sip && typeof sip.short_open === "boolean")
         ? (sip.short_open ? "yes" : "no")
-        : null],
-      ["Sov. anchor",  (sip && typeof sip.sovereign_anchor_open === "boolean")
-        ? (sip.sovereign_anchor_open ? "yes" : "no")
-        : null],
-      ["QQQ vs EMA9",  (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
+        : null]);
+    }
+    _p3aRows.push(["Sov. anchor", (sip && typeof sip.sovereign_anchor_open === "boolean")
+      ? (sip.sovereign_anchor_open ? "yes" : "no")
+      : null]);
+    // QQQ alignment rows: when LONG show "above" check (long alignment);
+    // when SHORT show "below" check (short alignment); when flat, show
+    // the raw above/below comparison for both as before.
+    if (_posSide === "LONG") {
+      _p3aRows.push(["QQQ vs EMA9", (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
+        ? (sip.qqq_5m_close > sip.qqq_5m_ema9 ? "above (ok)" : "below (fail)")
+        : null]);
+      _p3aRows.push(["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
+        ? (sip.qqq_current_price > sip.qqq_avwap_0930 ? "above (ok)" : "below (fail)")
+        : null]);
+    } else if (_posSide === "SHORT") {
+      _p3aRows.push(["QQQ vs EMA9", (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
+        ? (sip.qqq_5m_close < sip.qqq_5m_ema9 ? "below (ok)" : "above (fail)")
+        : null]);
+      _p3aRows.push(["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
+        ? (sip.qqq_current_price < sip.qqq_avwap_0930 ? "below (ok)" : "above (fail)")
+        : null]);
+    } else {
+      _p3aRows.push(["QQQ vs EMA9", (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
         ? (sip.qqq_5m_close > sip.qqq_5m_ema9 ? "above" : "below")
-        : null],
-      ["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
+        : null]);
+      _p3aRows.push(["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
         ? (sip.qqq_current_price > sip.qqq_avwap_0930 ? "above" : "below")
-        : null],
-    ]);
-    const p3mMetrics = _metricsHtml([
-      ["DI+ 1m",     _fmtNum(di.di_plus_1m, 2)],
-      ["DI- 1m",     _fmtNum(di.di_minus_1m, 2)],
-      ["DI+ 5m",     _fmtNum(di.di_plus_5m, 2)],
-      ["DI- 5m",     _fmtNum(di.di_minus_5m, 2)],
-      ["Threshold",  _fmtNum(di.threshold, 2)],
-      ["Seed bars",  (di.seed_bars !== undefined && di.seed_bars !== null)
-        ? (_fmtInt(di.seed_bars)
-            + (typeof di.sufficient === "boolean" ? (di.sufficient ? " (ok)" : " (low)") : ""))
-        : null],
-    ]);
+        : null]);
+    }
+    const p3aMetrics = _metricsHtml(_p3aRows);
+
+    // v5.22.0 \u2014 Momentum card: when in position, only show the
+    // side that matters. LONG cares about DI+ (long-side momentum);
+    // SHORT cares about DI- (short-side momentum). Threshold and seed
+    // are always shown.
+    const _p3mRows = [];
+    if (_posSide === "LONG") {
+      _p3mRows.push(["DI+ 1m", _fmtNum(di.di_plus_1m, 2)]);
+      _p3mRows.push(["DI+ 5m", _fmtNum(di.di_plus_5m, 2)]);
+    } else if (_posSide === "SHORT") {
+      _p3mRows.push(["DI- 1m", _fmtNum(di.di_minus_1m, 2)]);
+      _p3mRows.push(["DI- 5m", _fmtNum(di.di_minus_5m, 2)]);
+    } else {
+      _p3mRows.push(["DI+ 1m", _fmtNum(di.di_plus_1m, 2)]);
+      _p3mRows.push(["DI- 1m", _fmtNum(di.di_minus_1m, 2)]);
+      _p3mRows.push(["DI+ 5m", _fmtNum(di.di_plus_5m, 2)]);
+      _p3mRows.push(["DI- 5m", _fmtNum(di.di_minus_5m, 2)]);
+    }
+    _p3mRows.push(["Threshold", _fmtNum(di.threshold, 2)]);
+    _p3mRows.push(["Seed bars", (di.seed_bars !== undefined && di.seed_bars !== null)
+      ? (_fmtInt(di.seed_bars)
+          + (typeof di.sufficient === "boolean" ? (di.sufficient ? " (ok)" : " (low)") : ""))
+      : null]);
+    const p3mMetrics = _metricsHtml(_p3mRows);
     // v5.20.7 \u2014 the per-position cards (Sovereign brake / Velocity
     // fuse / Strikes) are only meaningful while a position is open. With
     // no open position the upstream wiring delivers ppv510=null, which
@@ -861,7 +909,7 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.21.1">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.22.0">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
@@ -1561,13 +1609,86 @@
     return out;
   }
 
-  // v5.21.0 — Helper: derive 'triggered' | 'armed' | 'idle' state class
-  // from a resolved alarm sub-dict.
-  function _pmtxAlarmStateClass(alarm) {
+  // v5.21.0 — Helper: derive a state class from a resolved alarm
+  // sub-dict.
+  //
+  // v5.22.0 — traffic-light semantics. The strip now answers "how
+  // close is this alarm to firing?" at a glance:
+  //
+  //   safe  (green)  = armed, far from threshold (>25% headroom)
+  //   warn  (yellow) = armed, within 25% of threshold (>= 75% of trigger)
+  //   trip  (red)    = triggered (already fired, exit issued)
+  //   idle  (gray)   = not in position / no data yet
+  //
+  // Each alarm decides its own warn band because the units differ:
+  //   A1 Loss          : pnl    vs threshold (both negative dollars)
+  //   A2 Flash         : velocity_pct vs threshold_pct (negative ratios)
+  //   B Trend Death    : delta = close - ema9; warn when |delta| within
+  //                      0.25% of cross relative to close
+  //   C Vel. Ratchet   : 2-of-3 strictly-decreasing ADX values = warn
+  //   D HVP Lock       : ratio (current/peak) vs threshold_ratio (0.75);
+  //                      warn when ratio between threshold and
+  //                      threshold/0.75*0.85 (i.e. ratio in [0.75, 0.85])
+  //   E Divergence Trap: armed-not-triggered = warn (divergence forming)
+  function _pmtxAlarmStateClass(alarm, kind) {
     if (!alarm || typeof alarm !== "object") return "idle";
-    if (alarm.triggered) return "triggered";
-    if (alarm.armed)     return "armed";
-    return "idle";
+    if (alarm.triggered) return "trip";
+    if (!alarm.armed) return "idle";
+    // Armed-but-not-triggered: distinguish safe (green) from warn (yellow).
+    const WARN_FRACTION = 0.75; // within 25% of threshold = yellow
+    switch (kind) {
+      case "a_loss": {
+        const pnl = (typeof alarm.pnl === "number") ? alarm.pnl : null;
+        const th = (typeof alarm.threshold === "number") ? alarm.threshold : -500;
+        if (pnl === null) return "safe";
+        // Both pnl and threshold are negative; alarm fires when pnl <= th.
+        // Yellow when pnl <= 0.75 * th (e.g. <= -$375 for th=-$500).
+        return (pnl <= WARN_FRACTION * th) ? "warn" : "safe";
+      }
+      case "a_flash": {
+        const v = (typeof alarm.velocity_pct === "number") ? alarm.velocity_pct : null;
+        const th = (typeof alarm.threshold_pct === "number") ? alarm.threshold_pct : -0.01;
+        if (v === null) return "safe";
+        return (v <= WARN_FRACTION * th) ? "warn" : "safe";
+      }
+      case "b_trend_death": {
+        const close = (typeof alarm.close === "number") ? alarm.close : null;
+        const ema9 = (typeof alarm.ema9 === "number") ? alarm.ema9 : null;
+        const delta = (typeof alarm.delta === "number") ? alarm.delta
+          : (close !== null && ema9 !== null) ? (close - ema9) : null;
+        if (close === null || delta === null || close === 0) return "safe";
+        // Warn when |delta| relative to close is within 0.25% (close to crossing).
+        return (Math.abs(delta) / Math.abs(close) <= 0.0025) ? "warn" : "safe";
+      }
+      case "c_velocity_ratchet": {
+        const win = Array.isArray(alarm.adx_window) ? alarm.adx_window : [];
+        // Warn when 2-of-3 consecutive declines exist (last decline pending).
+        if (win.length >= 3) {
+          const a = win[0], b = win[1], c = win[2];
+          if (typeof a === "number" && typeof b === "number" && typeof c === "number") {
+            const declines = (a > b ? 1 : 0) + (b > c ? 1 : 0);
+            if (declines >= 1 && !alarm.monotone_decreasing) return "warn";
+          }
+        }
+        return "safe";
+      }
+      case "d_hvp_lock": {
+        const ratio = (typeof alarm.ratio === "number") ? alarm.ratio : null;
+        const th = (typeof alarm.threshold_ratio === "number") ? alarm.threshold_ratio : 0.75;
+        if (ratio === null) return "safe";
+        // Triggered when ratio < th. Warn when ratio is between th and
+        // th/WARN_FRACTION (i.e. within 25% above the trigger band).
+        const warnHi = th / WARN_FRACTION; // e.g. 0.75 / 0.75 = 1.0; cap below.
+        return (ratio >= th && ratio <= Math.min(warnHi, th + 0.10)) ? "warn" : "safe";
+      }
+      case "e_divergence_trap": {
+        // Spec: armed-not-triggered means divergence is forming.
+        // Treat that as warn so operators see it brewing.
+        return "warn";
+      }
+      default:
+        return "safe";
+    }
   }
 
   // v5.21.0 — Inline 5-cell sentinel strip rendered under any open-position
@@ -1593,7 +1714,7 @@
       aLoss.armed     = (aLossPnl !== null);
       aLoss.triggered = (aLossPnl !== null && aLossPnl <= aLossTh);
     }
-    const a1State  = _pmtxAlarmStateClass(aLoss);
+    const a1State  = _pmtxAlarmStateClass(aLoss, "a_loss");
     const a1Val    = _pmtxMoney(aLossPnl) + " / " + _pmtxMoney(aLossTh);
 
     // --- Cell A2: Flash ---
@@ -1615,7 +1736,7 @@
       aFlash.armed     = (a2VelPct !== null);
       aFlash.triggered = (a2VelPct !== null && a2VelPct <= a2ThPct);
     }
-    const a2State = _pmtxAlarmStateClass(aFlash);
+    const a2State = _pmtxAlarmStateClass(aFlash, "a_flash");
     const a2Val   = (a2VelPct !== null)
       ? (_pmtxNum(a2VelPct * 100, 2) + "% / " + _pmtxNum(a2ThPct * 100, 2) + "%")
       : "\u2014";
@@ -1634,7 +1755,7 @@
       bTrend.armed     = (bClose !== null && bEma9 !== null);
       bTrend.triggered = false; // legacy sentinel does not record a triggered flag
     }
-    const bState = _pmtxAlarmStateClass(bTrend);
+    const bState = _pmtxAlarmStateClass(bTrend, "b_trend_death");
     const bVal   = (bClose !== null && bEma9 !== null)
       ? ("close=" + _pmtxNum(bClose) + " / ema=" + _pmtxNum(bEma9) +
          (bDelta !== null ? " / \u0394=" + _pmtxNum(bDelta) : ""))
@@ -1645,7 +1766,7 @@
     const cRatchet = _pmtxPickAlarm(sen, "c_velocity_ratchet", {});
     const cWindow  = Array.isArray(cRatchet.adx_window) ? cRatchet.adx_window : [null, null, null];
     const cStop    = (typeof cRatchet.stop_price === "number") ? cRatchet.stop_price : null;
-    const cState   = _pmtxAlarmStateClass(cRatchet);
+    const cState   = _pmtxAlarmStateClass(cRatchet, "c_velocity_ratchet");
     let cAdxStr = cWindow.map(v => (v !== null && v !== undefined) ? _pmtxNum(v, 1) : "\u2014").join("\u2192");
     let cVal    = "adx [" + cAdxStr + "]";
     if (cRatchet.triggered && cStop !== null) cVal += " \u2192 stop " + _pmtxMoney(cStop);
@@ -1657,7 +1778,7 @@
     const dCur5m     = (typeof dHvp.current_5m_adx === "number") ? dHvp.current_5m_adx : null;
     const dTradeHvp  = (typeof dHvp.trade_hvp      === "number") ? dHvp.trade_hvp      : null;
     const dRatio     = (typeof dHvp.ratio           === "number") ? dHvp.ratio          : null;
-    const dState     = _pmtxAlarmStateClass(dHvp);
+    const dState     = _pmtxAlarmStateClass(dHvp, "d_hvp_lock");
     const dVal       = (dCur5m !== null && dTradeHvp !== null && dRatio !== null)
       ? ("ADX " + _pmtxNum(dCur5m, 1) + " / peak " + _pmtxNum(dTradeHvp, 1) +
          " (" + _pmtxNum(dRatio * 100, 0) + "%)")
@@ -1667,7 +1788,7 @@
     // vAA-1 SENT-E: price extreme + RSI divergence -> blocks S2/S3 or ratchets stop.
     // Real data now flows from backend (e_divergence_trap sub-dict).
     const eTrap    = _pmtxPickAlarm(sen, "e_divergence_trap", {});
-    const eState   = _pmtxAlarmStateClass(eTrap);
+    const eState   = _pmtxAlarmStateClass(eTrap, "e_divergence_trap");
     let eVal;
     if (eTrap.triggered) {
       if (eTrap.pre_blocked_for_strike !== null && eTrap.pre_blocked_for_strike !== undefined) {
