@@ -3988,7 +3988,7 @@ def run_local() -> int:
         main_body = base[main_idx:main_end]
         assert "overflow-y: auto" not in main_body, main_body
 
-        assert 'data-pmtx-comp-grid="v5.20.8"' in (
+        assert 'data-pmtx-comp-grid="v5.20.9"' in (
             _P(__file__).parent / "dashboard_static" / "app.js"
         ).read_text(encoding="utf-8")
 
@@ -4025,6 +4025,40 @@ def run_local() -> int:
         # The four val branches: long+short / long / short / none.
         for branch in ('"long+short"', '"long"', '"short"', '"none"'):
             assert branch in js_nc, f"p3aVal branch {branch} missing"
+
+    @t(
+        "v5.20.9: Permit Matrix gate columns ordered Boundary \u2192 Volume \u2192 Authority \u2192 Momentum"
+    )
+    def _():
+        # The header row and the body cells must both list the four
+        # gate columns in card / process order: Boundary (Phase 2),
+        # Volume (Phase 2), Authority (Phase 3 permit alignment),
+        # Momentum (Phase 3 ADX). Header and body must agree or data
+        # ends up under the wrong column.
+        from pathlib import Path as _P
+
+        js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
+
+        h_b = js.find(">Boundary</th>")
+        h_v = js.find(">Volume</th>")
+        h_a = js.find(">Authority</th>")
+        h_m = js.find(">Momentum</th>")
+        assert h_b >= 0 and h_v >= 0 and h_a >= 0 and h_m >= 0, "renamed headers missing"
+        assert h_b < h_v < h_a < h_m, (
+            "header order must be Boundary \u2192 Volume \u2192 Authority \u2192 Momentum; got "
+            f"Boundary@{h_b}, Volume@{h_v}, Authority@{h_a}, Momentum@{h_m}"
+        )
+
+        b_b = js.find('<td class="pmtx-col-orb">')
+        b_v = js.find('<td class="pmtx-col-vol">')
+        b_a = js.find('<td class="pmtx-col-diplus">')
+        b_m = js.find('<td class="pmtx-col-adx">')
+        assert b_b >= 0 and b_v >= 0 and b_a >= 0 and b_m >= 0, "body cells missing"
+        assert b_b < b_v < b_a < b_m, (
+            "body cell order must mirror header order "
+            "(orb \u2192 vol \u2192 diplus \u2192 adx); got "
+            f"orb@{b_b}, vol@{b_v}, diplus@{b_a}, adx@{b_m}"
+        )
 
     @t("v5.20.8: component table column headers renamed to card vocabulary")
     def _():

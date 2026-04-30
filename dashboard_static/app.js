@@ -812,7 +812,7 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.8">'
+    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.20.9">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
@@ -1025,9 +1025,9 @@
       +   '<table class="pmtx-table"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
       +     '<th class="pmtx-col-orb" title="Phase 2 Boundary card. Strike 1: two consecutive 1m closes strictly above ORH (long) or below ORL (short), with ORH/ORL frozen at exactly 09:35:59 ET. Strikes 2 & 3: two consecutive 1m closes above the running NHOD (long) or below the running NLOD (short).">Boundary</th>'
-      +     '<th class="pmtx-col-adx" title="Phase 3 Momentum card. Required for entry: 5m ADX > 20 AND Alarm E = FALSE. This is a primary spec gate \u2014 if ADX \u2264 20 the bot does not open a Strike, regardless of DI\u00b1.">Momentum</th>'
-      +     '<th class="pmtx-col-diplus" title="Phase 3 Authority card. Section-I permit alignment: cell goes green when at least one of long_open / short_open is true on section_i_permit. Per-ticker DI\u00b1 detail (DI+ 1m/5m, DI\u2212 1m/5m, threshold) lives in the Momentum card metric stack inside the expanded row.">Authority</th>'
       +     '<th class="pmtx-col-vol" title="Phase 2 Volume card. 1m volume must be \u2265 100% of the 55-bar rolling average. REQUIRED after 10:00 AM ET; before 10:00 ET the gate auto-passes. Bypassed when VOLUME_GATE_ENABLED=false.">Volume</th>'
+      +     '<th class="pmtx-col-diplus" title="Phase 3 Authority card. Section-I permit alignment: cell goes green when at least one of long_open / short_open is true on section_i_permit. Per-ticker DI\u00b1 detail (DI+ 1m/5m, DI\u2212 1m/5m, threshold) lives in the Momentum card metric stack inside the expanded row.">Authority</th>'
+      +     '<th class="pmtx-col-adx" title="Phase 3 Momentum card. Required for entry: 5m ADX > 20 AND Alarm E = FALSE. This is a primary spec gate \u2014 if ADX \u2264 20 the bot does not open a Strike, regardless of DI\u00b1.">Momentum</th>'
       +     '<th class="pmtx-col-strike" title="Strike sequence (v15.0 \u00a71). Maximum 3 Strikes per ticker per day. Sequential Requirement: a subsequent strike cannot initiate until the previous position is fully flat (Position = 0). Counters reset at 09:30:00 ET.">Strikes</th>'
       +     '<th class="pmtx-col-state" title="Per-ticker FSM \u2014 IDLE \u00b7 ARMED (Phase 1 weather + Phase 2 permit satisfied, awaiting Phase 3 authority + momentum) \u00b7 IN POS \u00b7 LOCKED (3-of-3 strikes used).">State</th>'
       +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to the live boundary the next strike is hunting. Strike 1 hunts ORH/ORL (frozen 09:35:59); strikes 2 & 3 hunt the running NHOD/NLOD.">Dist</th>'
@@ -1240,9 +1240,9 @@
       // open, red when both are closed, pending when section_i_permit
       // is unavailable.
       + '<td class="pmtx-col-orb">' + _pmtxGateCell(orb, "Boundary: two consecutive 1m closes through ORH (long) / ORL (short)") + '</td>'
-      + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "Momentum: 5m ADX > 20 (proxied by Phase 3 Entry-1 firing)") + '</td>'
-      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(_pmtxAuthorityCell(sectionIPermit), _pmtxAuthorityTooltip(sectionIPermit)) + '</td>'
       + '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume gate (1m vol \u2265 100% of 55-bar avg)") + '</td>'
+      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(_pmtxAuthorityCell(sectionIPermit), _pmtxAuthorityTooltip(sectionIPermit)) + '</td>'
+      + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "Momentum: 5m ADX > 20 (proxied by Phase 3 Entry-1 firing)") + '</td>'
       + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
       + '<td class="pmtx-col-state">' + stateHtml + '</td>'
       + '<td class="pmtx-col-prox">' + proxHtml + '</td>'

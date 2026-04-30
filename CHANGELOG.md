@@ -4,6 +4,48 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.20.9 — 2026-04-30 — Permit Matrix table column order matches card/process order
+
+### Why
+Fast follow-up to v5.20.8. With the table headers now matching the card
+vocabulary (Boundary / Volume / Authority / Momentum), the operator (Val)
+pointed out that the columns were still in the v5.10 ordering: Boundary,
+**Momentum**, Authority, **Volume**. That fights both the card row above
+the table (Weather → Boundary → Volume → Authority → Momentum) and
+the natural pipeline order (Phase 2 boundary, Phase 2 volume, Phase 3
+permit alignment, Phase 3 ADX). Reordering the table to match means the
+operator reads the same sequence top-to-bottom in the cards and
+left-to-right in the table.
+
+### Changes
+- `dashboard_static/app.js`
+  - Reordered the four gate columns in both the `<thead>` and the row
+    body builder. New order: **Boundary → Volume → Authority →
+    Momentum** (matching the card grid above the table). Strikes /
+    State / Dist / expand toggle remain at the right edge in the same
+    order. CSS class names are unchanged so widths and styles continue
+    to apply, only the DOM order of the `<th>` and `<td>` cells changes.
+  - Bumped `data-pmtx-comp-grid` marker to `"v5.20.9"`.
+- `bot_version.py` / `trade_genius.py` — `BOT_VERSION = "5.20.9"`,
+  `CURRENT_MAIN_NOTE` rewritten (still ≤34 chars per line).
+- `tests/test_v5_20_9_column_order.py` — new column-order pin
+  (header DOM order + body cell order) plus a guard that the renamed
+  card vocabulary is still in place.
+- Smoke guard added to `smoke_test.py` mirroring the column-order pin.
+- Bumped grid-marker / BOT_VERSION pins in
+  `tests/test_v5_20_6_card_metric_hotfix.py`,
+  `tests/test_v5_20_7_authority_and_scroll_fix.py`, and
+  `tests/test_v5_20_8_authority_green_and_columns.py` (precedent: test
+  name pinned to release; assertion follows BOT_VERSION).
+
+### Live behaviour after deploy
+- Permit Matrix table columns read, left-to-right:
+  `Titan | Boundary | Volume | Authority | Momentum | Strikes | State | Dist | (toggle)`
+- Card grid above the table is unchanged: Weather → Boundary →
+  Volume → Authority → Momentum.
+
+---
+
 ## v5.20.8 — 2026-04-30 — Authority green-on-either-side + table column rename
 
 ### Why
