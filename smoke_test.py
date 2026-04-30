@@ -4543,21 +4543,33 @@ def run_local() -> int:
         out = m._v570_update_session_hod_lod("NVDA", None)
         assert out == (None, None, False, False)
 
-    @t("v5.7.0 D3: strike counter increments on record_entry, resets at session roll")
+    @t("v5.19.1 D3: per-ticker strike counter (LONG+SHORT combined), resets at session roll")
     def _():
+        # v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 STRIKE-CAP-3 unified
+        # from per-(ticker, side) to per-ticker. Long and short share
+        # one counter on the same ticker.
         _v570_setup_clean_session(m)
         assert m._v570_strike_count("NVDA", "LONG") == 0
         n = m._v570_record_entry("NVDA", "LONG")
         assert n == 1
         assert m._v570_strike_count("NVDA", "LONG") == 1
-        # Independent SHORT counter.
-        assert m._v570_strike_count("NVDA", "SHORT") == 0
+        # Per-ticker counter: SHORT reads the same value as LONG.
+        assert m._v570_strike_count("NVDA", "SHORT") == 1
+        # A SHORT entry on the same ticker increments the SAME counter.
+        n2 = m._v570_record_entry("NVDA", "SHORT")
+        assert n2 == 2
+        assert m._v570_strike_count("NVDA", "LONG") == 2
+        assert m._v570_strike_count("NVDA", "SHORT") == 2
         # Force a session roll \u2014 mock the date to a different day.
         m._v570_strike_date = "1900-01-01"
         m._v570_session_date = "1900-01-01"
         m._v570_daily_pnl_date = "1900-01-01"
-        n2 = m._v570_strike_count("NVDA", "LONG")
-        assert n2 == 0, f"strike counter must reset on new session; got {n2}"
+        n3 = m._v570_strike_count("NVDA", "LONG")
+        assert n3 == 0, f"strike counter must reset on new session; got {n3}"
+        # Different ticker is independent.
+        m._v570_strike_counts.clear()
+        m._v570_record_entry("NVDA", "LONG")
+        assert m._v570_strike_count("AAPL", "LONG") == 0
 
     @t("v5.7.0 D3: Strike 1 LONG NVDA \u2014 expansion gate not consulted")
     def _():
@@ -4668,31 +4680,33 @@ def run_local() -> int:
             is False
         )
 
-    @t("v5.7.0 D4: strikes 5/10/25 LONG NVDA on continuous HOD-break trend \u2014 all allowed")
+    @t("v5.19.1 D4: STRIKE-CAP-3 caps a Titan ticker at 3 strikes per day (long+short combined)")
     def _():
+        # v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 STRIKE-CAP-3 is
+        # per-ticker, long+short combined. The 4th attempt raises
+        # RuntimeError("STRIKE-CAP-3 reached"). Replaces the legacy
+        # "unlimited Titan strikes" 25-iteration fixture, which was
+        # broken by the v5.15.0 cap raise.
         _v570_setup_clean_session(m)
-        # Simulate a strong-trend day: each entry breaks a new HOD.
-        # The strike counter is unbounded for Titans when the flag is
-        # on. For non-Titans it would still cap at 5 via the
-        # `daily_count >= 5` gate in check_breakout (proxied by the
-        # bypass branch logic itself).
-        for n in range(1, 26):
-            assert m._v570_is_titan("NVDA")
-            new_n = m._v570_record_entry("NVDA", "LONG")
-            assert new_n == n
-            # And the expansion gate keeps passing on every fresh HOD
-            # break with index above AVWAP.
-            assert (
-                m._v570_expansion_gate_pass(
-                    side="LONG",
-                    current_price=100.0 + 0.01 * n,
-                    prev_hod=100.0 + 0.01 * (n - 1),
-                    prev_lod=99.0,
-                    index_price=425.0,
-                    index_avwap=420.0,
-                )
-                is True
-            )
+        assert m._v570_is_titan("NVDA")
+        # First 3 strikes succeed (any side mix).
+        assert m._v570_record_entry("NVDA", "LONG") == 1
+        assert m._v570_record_entry("NVDA", "LONG") == 2
+        assert m._v570_record_entry("NVDA", "SHORT") == 3
+        # 4th attempt raises regardless of side.
+        try:
+            m._v570_record_entry("NVDA", "LONG")
+            raise AssertionError("4th LONG attempt should have raised")
+        except RuntimeError as e:
+            assert "STRIKE-CAP-3" in str(e)
+        try:
+            m._v570_record_entry("NVDA", "SHORT")
+            raise AssertionError("4th SHORT attempt should have raised")
+        except RuntimeError as e:
+            assert "STRIKE-CAP-3" in str(e)
+        # Counter remains pinned at 3.
+        assert m._v570_strike_count("NVDA", "LONG") == 3
+        assert m._v570_strike_count("NVDA", "SHORT") == 3
 
     @t("v5.7.0 D4: non-Titan ticker is NOT eligible for unlimited strikes")
     def _():

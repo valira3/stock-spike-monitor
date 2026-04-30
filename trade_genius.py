@@ -94,7 +94,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.19.0"
+BOT_VERSION = "5.19.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -102,15 +102,15 @@ BOT_VERSION = "5.19.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.19.0 \u2014 Premarket recalc\n"
-    "job at 09:29 ET refreshes\n"
-    "DI seed, QQQ regime EMAs,\n"
-    "volume profile cache, and\n"
-    "checks prior-day bar archive\n"
-    "before market open. Closes\n"
-    "the long-running container\n"
-    "stale-cache hole.\n"
-    "vAA-1 ULTIMATE Decision 6."
+    "v5.19.1 \u2014 STRIKE-CAP-3\n"
+    "unified to per-ticker.\n"
+    "Long+short entries on the\n"
+    "same ticker now share one\n"
+    "counter, capping the ticker\n"
+    "at 3 strikes per day total.\n"
+    "STRIKE-FLAT-GATE stays per\n"
+    "side. vAA-1 ULTIMATE\n"
+    "Decision 1."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1748,11 +1748,16 @@ def _v561_log_watchlist_remove(ticker: str, reason: str = "manual",
 # /home/user/workspace/specs/v5_7_0_unlimited_titan_strikes.md.
 # ------------------------------------------------------------
 
-# Per-ticker per-side per-day strike counter. Reset at session
-# start (9:30 ET). Strike N counts how many entries on this side
-# have already fired today; strike_num for the next attempt is
-# (count + 1).
-_v570_strike_counts: dict = {}   # key=(ticker,side) -> int
+# Per-ticker per-day strike counter. Reset at session
+# start (9:30 ET). Strike N counts how many entries on this
+# ticker have already fired today across BOTH sides combined;
+# strike_num for the next attempt is (count + 1).
+#
+# v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 STRIKE-CAP-3 unified
+# from per-(ticker, side) to per-ticker. Long+short entries on
+# the same ticker now share one counter, capping a ticker at 3
+# strikes per day total. STRIKE-FLAT-GATE remains per-side.
+_v570_strike_counts: dict = {}   # key=ticker -> int
 _v570_strike_date: str = ""
 
 # Per-ticker per-day session HOD/LOD tracker. Seeded from the
@@ -1822,15 +1827,20 @@ def _v570_reset_if_new_session() -> None:
         _v570_kill_switch_logged = False
 
 
-def _v570_strike_count(ticker: str, side: str) -> int:
+def _v570_strike_count(ticker: str, side: str = "") -> int:
     """Return the number of entries already filled today on
-    (ticker, side). The next attempt is strike_num = count + 1."""
+    ``ticker`` across both sides combined. The next attempt is
+    strike_num = count + 1.
+
+    v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 the ``side`` argument
+    is preserved for call-site compatibility but is no longer
+    consulted; long and short share a single per-ticker counter.
+    """
     _v570_reset_if_new_session()
-    return int(_v570_strike_counts.get(
-        (ticker.upper(), side.upper()), 0))
+    return int(_v570_strike_counts.get(ticker.upper(), 0))
 
 
-def _v570_record_entry(ticker: str, side: str) -> int:
+def _v570_record_entry(ticker: str, side: str = "") -> int:
     """Increment the strike counter on a successful ENTRY and
     return the strike_num that was just consumed.
 
@@ -1838,9 +1848,13 @@ def _v570_record_entry(ticker: str, side: str) -> int:
     with RuntimeError("STRIKE-CAP-3 reached"); the counter remains
     at 3. Callers should pre-check via ``strike_entry_allowed``;
     this raise is a defensive belt-and-braces check.
+
+    v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 ``side`` is accepted for
+    call-site compatibility but ignored: long+short entries on the
+    same ticker share one counter (per-ticker cap of 3 total).
     """
     _v570_reset_if_new_session()
-    key = (ticker.upper(), side.upper())
+    key = ticker.upper()
     cur = int(_v570_strike_counts.get(key, 0))
     if cur >= 3:
         raise RuntimeError("STRIKE-CAP-3 reached")
@@ -1888,14 +1902,19 @@ def strike_entry_allowed(
     """STRIKE-CAP-3 + STRIKE-FLAT-GATE composite gate.
 
     Returns False when EITHER:
-      * the (ticker, side) Strike count has already reached 3 today
-        (STRIKE-CAP-3), OR
-      * a prior Strike still holds shares > 0 (STRIKE-FLAT-GATE).
+      * the per-ticker Strike count has already reached 3 today
+        (STRIKE-CAP-3 \u2014 long+short combined), OR
+      * a prior Strike on this side still holds shares > 0
+        (STRIKE-FLAT-GATE \u2014 still per-side).
 
     Returns True only when the next Strike attempt is permitted
     under both gates.
+
+    v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 cap is per-ticker; the
+    flat gate stays per-side because long and short positions are
+    independent (you can be flat long while holding short).
     """
-    if _v570_strike_count(ticker, side) >= 3:
+    if _v570_strike_count(ticker) >= 3:
         return False
     return _v570_strike_must_be_flat(ticker, side, positions=positions)
 
