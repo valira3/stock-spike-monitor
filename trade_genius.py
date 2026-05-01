@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.6"
+BOT_VERSION = "6.0.7"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,25 +97,26 @@ BOT_VERSION = "6.0.6"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.6 dashboard fix:\n"
-    "TRAIL badge now fires\n"
-    "on Alarm-F chandelier.\n"
-    "Before: badge only lit\n"
-    "on legacy trail_active\n"
-    "(Phase B/C breakeven).\n"
-    "Alarm F mutates pos.stop\n"
-    "directly via Sentinel,\n"
-    "never sets trail_active,\n"
-    "so a stage-3 chandelier\n"
-    "ratcheting every minute\n"
-    "looked like a static\n"
-    "hard stop on the UI.\n"
-    "Fix: serializer surfaces\n"
-    "chandelier_stage from\n"
-    "trail_state. Frontend\n"
-    "ORs it with trail_active\n"
-    "in both Open Positions\n"
-    "and executor tabs."
+    "v6.0.7 fixes + mobile UI:\n"
+    "1) post-action reconcile\n"
+    "   race no longer treats\n"
+    "   Alpaca's 1-2 s eventual\n"
+    "   consistency window as a\n"
+    "   true divergence, so MSFT\n"
+    "   no longer deletes then\n"
+    "   re-grafts, and NFLX no\n"
+    "   longer re-grafts as\n"
+    "   orphan right after EXIT.\n"
+    "2) iPhone Pro Max (430 px):\n"
+    "   brand-row clock + chips\n"
+    "   fit inline, Permit\n"
+    "   Matrix + Today's Trades\n"
+    "   stop clipping at right\n"
+    "   edge.\n"
+    "3) cleanup: removed 4 stale\n"
+    "   skipped tiger_sovereign\n"
+    "   tests; smoke now\n"
+    "   623p / 0s / 0f."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

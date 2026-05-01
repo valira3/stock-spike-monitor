@@ -4,6 +4,62 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.7 — 2026-05-01 — Post-action reconcile race fix + iPhone Pro Max mobile UI + cleanup
+
+### Why
+Val saw `⚠️ Reconcile: grafted 1 broker orphan(s) on Val boot (true divergence)` on Telegram and asked why MSFT and NFLX were re-grafted as untracked broker orphans on the Val executor's boot reconcile after a clean session. Forensic walk through `executor_positions` and Railway logs showed two distinct timing windows where `_reconcile_position_with_broker` mistook Alpaca REST eventual-consistency latency for true divergence:
+
+- **Post-ENTRY race (MSFT)**: ENTRY fired at 19:22:24.682, the post-action reconcile read `get_open_position("MSFT")` 1.22 s later (19:22:25.902) and got HTTP 404 / 40410000 — standard Alpaca behaviour for ~1–2 s after a fresh fill propagates from the matching engine to the position-cache replicas. Pre-v6.0.7 the reconcile interpreted the 404 as "broker is flat, drop the local row", deleted the just-recorded position, and on next periodic cycle (or boot) saw the broker side reappear and grafted it back as `source='RECONCILE', stop=None, trail=None`.
+- **Post-EXIT race (NFLX)**: TRADE_CLOSED at 19:00:17.862 cleared the local row; post-action reconcile at 19:00:19.081 (1.22 s later) still saw broker holding qty=106 because the close hadn't settled yet. Pre-v6.0.7 grafted a phantom POST_RECONCILE row, which became the orphan the next boot's reconcile flagged.
+
+Both races fire only inside the narrow ~1–2 s window after a write action against Alpaca's REST API; the periodic reconcile (~30 s cadence) was always outside it and is the path the existing `tests/test_v5_25_0_reconcile.py` covers. Hence the race was real, reproducible from logs, and never caught in CI.
+
+Valira separately asked for the iPhone Pro Max (430 px) dashboard to stop clipping the right edge of every card. Live measurement at 430×932 (Playwright, real chrome render) showed `document.body.scrollWidth = 500 px` against a 430-px viewport — a 70-px horizontal scroll on every page — caused by `#tg-brand-clock` (76 px wide, `white-space: nowrap`) overflowing the brand row. The clock chain is `[svg · TradeGenius · v6.0.6 · Val ✓ Gene — · LIVE ♻ 00s · health-pill · HH:MM:SS ET]` and the cumulative width is ~488 px after the existing 500-band shrinks. Every downstream card was shifted right by 70 px and clipped: Today's Trades unit price showed only `$2`, `$1`, `$4`; Permit Matrix STRIKES dots and the State pill were cut at the right viewport edge.
+
+Third, four `tiger_sovereign_spec` cases have been `@pytest.mark.skip` for several weeks awaiting a v5.18 spec rewrite that never landed (the Volume Gate stubs `test_L_P2_S3` / `test_S_P2_S3` and the legacy `test_SHARED_ORDER_PROFIT` / `test_SHARED_ORDER_STOP` shared-bracket cases). They were noise on every smoke run; the underlying behaviour is now covered by the v5.20+ spec correlation suite.
+
+### What
+
+**Post-action reconcile race fix** (`executors/base.py`)
+- New module-level constants: `RECONCILE_GRACE_SECONDS = 4.0`, `RECONCILE_RETRY_SLEEP = 0.6`. A 4-second budget is generous for Alpaca's 99p settle latency (typ ~1.5 s) without holding the order loop noticeably longer.
+- New per-executor state: `self._last_action_ts: dict[str, float]` recording the `time.monotonic()` of the most recent ENTRY/EXIT for every ticker.
+- New helpers: `_stamp_action(ticker)` (called at the end of `_record_position` and on both branches of `_close_position_idempotent`), `_within_action_grace(ticker)` (bool predicate), `_get_open_position_settled(client, ticker, expect)` (polling helper that retries `get_open_position` while the response disagrees with `expect` AND the grace window is open).
+- `_reconcile_position_with_broker` gains an `expect: str = "any"` parameter:
+  - `expect="present"` (set at every `ENTRY_LONG` / `ENTRY_SHORT` callsite in `_on_signal`): if the broker side returns 40410000 inside the grace window, retry; if still flat after grace, **leave the local row alone** instead of deleting it. The post-ENTRY race path now logs `[RECONCILE] post-action expect=present, broker not yet visible inside grace, leaving local row in place` and exits cleanly.
+  - `expect="flat"` (set at every `EXIT_LONG` / `EXIT_SHORT` callsite): if the broker still has the position inside the grace window, retry; if still present after grace, **leave it untracked** instead of grafting a phantom POST_RECONCILE row.
+  - `expect="any"` (default, used by the periodic reconcile and the boot reconcile): single-shot, legacy behaviour preserved verbatim. The 13 existing v5_25_0 reconcile tests pass unchanged.
+
+**Mobile UI for iPhone Pro Max 430 px**
+- `dashboard_static/app.js` — the `__tgTickClock` narrow-mode threshold raised from `<=360px` to `<=480px`. The clock now renders `HH:MM TZ` (no `:SS`) on every phone-class viewport including iPhone 13/14/15 standard (390) and Pro Max (430). Frees ~21 px and is the single largest contribution to the overflow fix.
+- `dashboard_static/app.css` — new `@media (max-width: 480px)` block (lines 1737–1830 area):
+  - Brand row: tighter gap (5 px), smaller padding (8/10), exec chips drop to 10 px font with 1/6 padding, LIVE pill padding tightens to 3/7, health pill padding tightens to 2/6, clock font 10.5 px. Total recovered: ~50 px (combined with the JS HH:MM change, the brand row now fits 430 with 0 px overflow at all three executor states Val / Val+Gene / Val+Gene+Lifecycle).
+  - Permit Matrix: cell padding trims to 3 px, State pill border drops to 0 (-8 px per row), `pmtx-table-wrap` gets a `mask-image` right-edge fade (18 px) signalling horizontal scroll affordance without obscuring real cells. The wrap retains its `overflow-x: auto` so the full 760-px row is reachable by swipe.
+  - General: card-head/card-body padding 9/10, card-title 10.5 px, KPI padding 9/10 / value 17 px / sub 10 px.
+- New `@media (max-width: 432px)` band exact-targets Pro Max for the four-tab nav strip and the Today's Trades summary line, both of which were occasionally wrapping at exactly 430 px before this change.
+
+**Cleanup**
+- `tests/test_tiger_sovereign_spec.py` — four stale skipped cases removed (`test_L_P2_S3`, `test_S_P2_S3`, `test_SHARED_ORDER_PROFIT`, `test_SHARED_ORDER_STOP`). Replaced inline with `# v6.0.7: removed …` comment markers so the deletions are visible in the file and traceable back to this release.
+
+- `bot_version.py` and `trade_genius.py` BOT_VERSION 6.0.6 → 6.0.7; `CURRENT_MAIN_NOTE` rewritten (20 lines, all ≤34 chars).
+
+### Tests
+New `tests/test_v6_0_7_post_action_race.py` (11 cases) locks in the new race-aware behaviour:
+- `_within_action_grace` returns False when no stamp recorded, True for fresh stamp, False after grace expiry.
+- `_get_open_position_settled` with `expect="present"`: returns immediately on first hit, polls and returns once Alpaca's eventual-consistency window closes, returns None after grace exhausts.
+- `_get_open_position_settled` with `expect="flat"`: returns immediately on 40410000, polls past a stale broker-still-has-it state, returns the stale position after grace exhausts.
+- `_reconcile_position_with_broker(expect="present")` post-ENTRY race: local row preserved when broker not yet visible inside grace; logs the grace-leave message rather than the divergence-delete message.
+- `_reconcile_position_with_broker(expect="flat")` post-EXIT race: phantom-graft suppressed when broker still has the position inside grace; the periodic cycle later (outside grace) correctly grafts it if the divergence is real.
+- Legacy `expect="any"` path (used by periodic + boot reconcile): one-shot behaviour identical to pre-v6.0.7. The 13 existing `tests/test_v5_25_0_reconcile.py` cases pass unchanged.
+
+**Smoke baseline**: `SSM_SMOKE_TEST=1 python -m pytest tests/ -q` → **623 passed / 0 skipped / 0 failed** (was 612 / 4 / 0 before this PR: +11 new race tests, -4 stale skipped tiger_sovereign tests, +0 fail).
+
+**Mobile verification**: Playwright at 430×932 confirms `document.body.scrollWidth == 430` post-fix on Main, Val, and Lifecycle tabs (was 500 pre-fix). Permit Matrix swipe scroll preserved; mask-image fade indicates affordance.
+
+### Backwards compatibility
+Fully backwards compatible. The new `expect` parameter on `_reconcile_position_with_broker` defaults to `"any"` so every caller that doesn't pass `expect=` explicitly retains pre-v6.0.7 behaviour. The grace-window helpers add no-op cost on the periodic / boot path (no stamp → grace returns False → single-shot fast path). The mobile CSS changes are all inside phone-class media queries (≤480 / ≤432) so desktop / tablet rendering is identical to v6.0.6.
+
+---
+
 ## v6.0.6 — 2026-05-01 — Dashboard fix: TRAIL badge now fires on Alarm-F chandelier
 
 ### Why

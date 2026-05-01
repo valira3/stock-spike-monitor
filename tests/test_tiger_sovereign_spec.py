@@ -86,11 +86,8 @@ def test_L_P1_S2():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="v5.26.0: BL-3 (Volume Gate) BYPASSED -- engine.volume_baseline deleted")
-def test_L_P2_S3():
-    """L-P2-S3 was the long-side volume gate assertion. v5.26.0 removed
-    the gate entirely (engine.volume_baseline deleted) per operator policy.
-    """
+# v6.0.7: removed test_L_P2_S3 (BL-3 Volume Gate) -- gate bypassed in v5.26.0
+# when engine.volume_baseline was deleted; the empty stub served no purpose.
 
 
 def test_L_P2_S4():
@@ -317,11 +314,8 @@ def test_S_P1_S2():
     assert "anchor" in res["reason"]
 
 
-@pytest.mark.skip(reason="v5.26.0: BU-3 (Volume Gate) BYPASSED -- engine.volume_baseline deleted")
-def test_S_P2_S3():
-    """S-P2-S3 was the short-side volume gate assertion. v5.26.0
-    removed the gate entirely per operator policy.
-    """
+# v6.0.7: removed test_S_P2_S3 (BU-3 Volume Gate) -- gate bypassed in v5.26.0
+# when engine.volume_baseline was deleted; the empty stub served no purpose.
 
 
 def test_S_P2_S4():
@@ -495,22 +489,7 @@ def test_SHARED_HUNT():
     assert is_in_hunt_window(after_cutoff) is False
 
 
-@pytest.mark.skip(
-    reason="v5.26.0: REASON_STAGE3_HARVEST symbol removed (Stage-3 harvest not in v15.1 spec)"
-)
-def test_SHARED_ORDER_PROFIT():
-    """v5.26.0: REASON_STAGE3_HARVEST was deleted with non-spec stages.
-    LIMIT-for-profit invariant for surviving reasons is exercised by
-    other broker.order_types tests.
-    """
-
-
-@pytest.mark.skip(
-    reason="v5.26.0: REASON_RATCHET / REASON_RUNNER_EXIT symbols removed by sentinel rulings"
-)
-def test_SHARED_ORDER_STOP():
-    """v5.26.0: spec-strict pruning removed REASON_RATCHET and
-    REASON_RUNNER_EXIT from broker.order_types. Defensive STOP MARKET
-    invariants that survive (Alarm A / B -> STOP MARKET) are covered
-    by test_sentinel.py.
-    """
+# v6.0.7: removed test_SHARED_ORDER_PROFIT and test_SHARED_ORDER_STOP --
+# the symbols they referenced (REASON_STAGE3_HARVEST, REASON_RATCHET,
+# REASON_RUNNER_EXIT) were deleted in v5.26.0 by spec-strict pruning.
+# Surviving STOP/LIMIT invariants are covered by test_sentinel.py.
