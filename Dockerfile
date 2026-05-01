@@ -49,6 +49,12 @@ COPY volume_profile.py .
 # (imported by trade_genius.py).
 COPY indicators.py .
 COPY bar_archive.py .
+# v5.31.0 -- Forensic capture writers (decisions/exits/macro/daily) used by
+# trade_genius._qqq_weather_tick (macro), broker/orders (entry+exit), engine/
+# scan (indicator snapshots), broker/lifecycle (daily OHLC). Top-level COPY
+# required so the Railway container can resolve the lazy `from forensic_capture
+# import ...` imports inside those call sites.
+COPY forensic_capture.py .
 # v5.1.8 — SQLite-backed persistence for fired_set + v5_long_tracks.
 COPY persistence.py .
 # v5.14.0 — shadow_pnl.py removed (shadow strategy retired). Backtest CLI

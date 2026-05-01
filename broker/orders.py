@@ -6,6 +6,7 @@ Extracted from trade_genius.py in v5.11.2 PR 2.
 from __future__ import annotations
 
 import sys as _sys
+import time as _time_orders
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -93,6 +94,10 @@ def check_breakout(ticker, side):
         return False, None
     if tg._scan_paused:
         return False, None
+
+    # v5.31.0 \u2014 forensic decision-stack latency timer. Captures the
+    # wall-time cost of the gate stack from entry through emission.
+    _decision_start = _time_orders.monotonic()
 
     now_et = tg._now_et()
     today = now_et.strftime("%Y-%m-%d")
@@ -305,6 +310,24 @@ def check_breakout(ticker, side):
     _decision_or_low = or_low_val
     _decision_pdc = pdc_val_e
 
+    # v5.31.0 \u2014 quote snapshot at decision time (live bid/ask). Used
+    # by the forensic decision record to score fill quality and capture
+    # spread context for backtest replay. Failure-tolerant: returns
+    # (None, None) when the data client is unreachable.
+    _decision_bid = None
+    _decision_ask = None
+    _decision_spread_bps = None
+    try:
+        _b, _a = tg._v512_quote_snapshot(ticker)
+        _decision_bid = _b
+        _decision_ask = _a
+        if _b and _a and _b > 0 and _a > 0 and (_a + _b) > 0:
+            _mid = (_a + _b) / 2.0
+            if _mid > 0:
+                _decision_spread_bps = round((_a - _b) / _mid * 10000.0, 2)
+    except Exception:
+        pass
+
     def _emit_decision(decision_str: str) -> None:
         try:
             from forensic_capture import (
@@ -366,6 +389,11 @@ def check_breakout(ticker, side):
                 permit_open=True,
                 alarm_e_blocked=_g("_e_blocked"),
                 sentinel_state=None,
+                # v5.31.0 \u2014 quote snapshot + decision-stack latency
+                entry_bid=_decision_bid,
+                entry_ask=_decision_ask,
+                spread_bps=_decision_spread_bps,
+                decision_latency_ms=round((_time_orders.monotonic() - _decision_start) * 1000.0, 2),
             )
         except Exception:
             pass
@@ -1359,6 +1387,95 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
         "%s %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%)"
         % (cfg.paper_log_close_verb, ticker, shares, price, reason, pnl_val, pnl_pct)
     )
+
+    # v5.31.0 \u2014 forensic exit record. Single funnel for ALL exits
+    # (sentinel A/A2/B/F, EOD, manual). Captures alarm code, peak
+    # excursion, MAE/MFE, and trail stage so a backtest can replay the
+    # full trade lifecycle. Failure-tolerant: a forensic write must
+    # NEVER raise into the trading path.
+    try:
+        from forensic_capture import write_exit_record as _write_exit
+
+        _trail_state = pos.get("trail_state")
+        _trail_stage = getattr(_trail_state, "stage", None) if _trail_state else None
+        _peak_close = getattr(_trail_state, "peak_close", None) if _trail_state else None
+        _bars_seen = getattr(_trail_state, "bars_seen", None) if _trail_state else None
+        if _peak_close is None:
+            try:
+                if cfg.side.is_long:
+                    _peak_close = tg._v570_session_hod.get(ticker.upper())
+                else:
+                    _peak_close = tg._v570_session_lod.get(ticker.upper())
+            except Exception:
+                _peak_close = None
+        if _bars_seen is None and _hold_s is not None:
+            try:
+                _bars_seen = int(max(0, _hold_s // 60))
+            except Exception:
+                _bars_seen = None
+
+        # Map reason string to alarm label. The reason vocabulary is
+        # spec-stable: A/A2 from sentinel A (per_trade_brake / velocity),
+        # B from sentinel B (ema_trail), F from chandelier.
+        _reason_lc = (str(reason or "")).lower()
+        if "per_trade_brake" in _reason_lc or "a_loss" in _reason_lc:
+            _alarm_label = "A1"
+        elif "velocity" in _reason_lc or "a_flash" in _reason_lc or "a2" in _reason_lc:
+            _alarm_label = "A2"
+        elif "ema_trail" in _reason_lc or "alarm_b" in _reason_lc or "9_ema" in _reason_lc:
+            _alarm_label = "B"
+        elif "chandelier" in _reason_lc or "alarm_f" in _reason_lc:
+            _alarm_label = "F"
+        elif "eod" in _reason_lc:
+            _alarm_label = "EOD"
+        elif "manual" in _reason_lc:
+            _alarm_label = "MANUAL"
+        else:
+            _alarm_label = None
+
+        # MAE / MFE in bps from the per-position min-adverse / max-favorable
+        # trackers maintained by the sentinel loop (v5.31.0). Falls back to
+        # peak_close as a one-sided MFE proxy when the trackers are missing.
+        _mae_bps = None
+        _mfe_bps = None
+        try:
+            if entry_price and entry_price > 0:
+                _min_adv = pos.get("v531_min_adverse_price")
+                _max_fav = pos.get("v531_max_favorable_price") or _peak_close
+                if cfg.side.is_long:
+                    if _min_adv is not None:
+                        _mae_bps = round((_min_adv - entry_price) / entry_price * 10000.0, 1)
+                    if _max_fav is not None:
+                        _mfe_bps = round((_max_fav - entry_price) / entry_price * 10000.0, 1)
+                else:
+                    if _min_adv is not None:
+                        _mae_bps = round((entry_price - _min_adv) / entry_price * 10000.0, 1)
+                    if _max_fav is not None:
+                        _mfe_bps = round((entry_price - _max_fav) / entry_price * 10000.0, 1)
+        except Exception:
+            pass
+
+        _write_exit(
+            ticker=ticker,
+            side=("LONG" if cfg.side.is_long else "SHORT"),
+            ts_utc=tg._utc_now_iso(),
+            exit_price=float(price) if price is not None else None,
+            entry_price=float(entry_price) if entry_price is not None else None,
+            entry_ts_utc=(pos.get("entry_ts_utc") or entry_time_str or None),
+            shares=int(shares) if shares is not None else None,
+            fill_slippage_bps=None,
+            alarm_triggered=_alarm_label,
+            exit_reason_code=str(reason) if reason is not None else None,
+            peak_close_at_exit=_peak_close,
+            trail_stage_at_exit=_trail_stage,
+            bars_in_trade=_bars_seen,
+            mae_bps=_mae_bps,
+            mfe_bps=_mfe_bps,
+            pnl_dollars=round(pnl_val, 2) if pnl_val is not None else None,
+            pnl_pct=round(pnl_pct, 2) if pnl_pct is not None else None,
+        )
+    except Exception:
+        pass
 
     # v5.6.1 D4 \u2014 [TRADE_CLOSED] lifecycle line. Pairs to [ENTRY] via
     # entry_id. Reason maps the legacy short token to the spec'd

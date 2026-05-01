@@ -37,6 +37,83 @@ def _tg():
     return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
 
 
+def _v531_build_permit_state(tg, ticker: str) -> dict | None:
+    """v5.31.0 \u2014 assemble a per-minute permit_state blob for the
+    indicator snapshot stream. Captures boundary-hold (LONG + SHORT) and
+    the live trail-stop / stage of any open position so the lifecycle
+    overlay's per-minute trail-stop staircase has data.
+
+    Failure-tolerant \u2014 returns None on any error so the caller can
+    pass it through cleanly. Boundary-hold reads use the same
+    ``eot_glue.evaluate_boundary_hold_gate`` call the gate stack uses;
+    trail-stop snapshots read off ``pos['trail_state']`` (the TrailState
+    dataclass attached lazily by ``_run_sentinel``).
+    """
+    try:
+        sym = (ticker or "").upper()
+        or_h = None
+        or_l = None
+        try:
+            or_h = tg.or_high.get(sym) if hasattr(tg, "or_high") else None
+            or_l = tg.or_low.get(sym) if hasattr(tg, "or_low") else None
+        except Exception:
+            pass
+
+        bh_long = None
+        bh_short = None
+        try:
+            if or_h is not None and or_l is not None:
+                _r_l = eot_glue.evaluate_boundary_hold_gate(sym, "LONG", or_h, or_l)
+                bh_long = bool(_r_l.get("hold")) if isinstance(_r_l, dict) else None
+                _r_s = eot_glue.evaluate_boundary_hold_gate(sym, "SHORT", or_h, or_l)
+                bh_short = bool(_r_s.get("hold")) if isinstance(_r_s, dict) else None
+        except Exception:
+            pass
+
+        # Open-position trail-state snapshot for the lifecycle overlay.
+        # Captures the per-minute trail-stop ladder + stage transitions
+        # so a backtest can reconstruct the exact stop the engine would
+        # have proposed at any minute the position was alive.
+        trail = None
+        try:
+            for _attr, _label in (("positions", "LONG"), ("short_positions", "SHORT")):
+                _book = getattr(tg, _attr, None) or {}
+                _pos = _book.get(sym)
+                if _pos is None:
+                    continue
+                _ts = _pos.get("trail_state")
+                if _ts is None:
+                    trail = {
+                        "side": _label,
+                        "stage": 0,
+                        "last_proposed_stop": _pos.get("stop"),
+                        "peak_close": None,
+                        "bars_seen": None,
+                    }
+                else:
+                    trail = {
+                        "side": _label,
+                        "stage": getattr(_ts, "stage", 0),
+                        "last_proposed_stop": getattr(_ts, "last_proposed_stop", None)
+                        or _pos.get("stop"),
+                        "peak_close": getattr(_ts, "peak_close", None),
+                        "bars_seen": getattr(_ts, "bars_seen", None),
+                    }
+                break
+        except Exception:
+            trail = None
+
+        return {
+            "boundary_hold_long": bh_long,
+            "boundary_hold_short": bh_short,
+            "or_high": or_h,
+            "or_low": or_l,
+            "trail": trail,
+        }
+    except Exception:
+        return None
+
+
 def scan_loop(callbacks: EngineCallbacks) -> None:
     """Main scan: manage positions, check new entries. Runs every 60s."""
     tg = _tg()
@@ -119,6 +196,9 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                         "bid": _q_bid_pre,
                         "ask": _q_ask_pre,
                         "last_trade_price": _b_pre.get("current_price"),
+                        # v5.31.0 \u2014 Yahoo source has no trade_count / vwap.
+                        "trade_count": None,
+                        "bar_vwap": None,
                     }
                     tg._v512_archive_minute_bar(_t_pre, _bar_pre)
                 except Exception as _e_pre:
@@ -261,6 +341,9 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         "bid": _q_bid,
                         "ask": _q_ask,
                         "last_trade_price": _bars_for_mtm.get("current_price"),
+                        # v5.31.0 \u2014 Yahoo source has no trade_count / vwap.
+                        "trade_count": None,
+                        "bar_vwap": None,
                     }
                     tg._v512_archive_minute_bar(ticker, canon_bar)
                     # v5.26.2 \u2014 per-minute forensic indicator snapshot.
@@ -322,6 +405,7 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                                 else None
                             ),
                             sentinel_state=None,
+                            permit_state=_v531_build_permit_state(tg, ticker),
                         )
                     except Exception as _e_ind:
                         logger.warning(

@@ -204,6 +204,58 @@ def eod_close():
         f"  Cash: ${tg.paper_cash:,.2f}"
     )
     tg.send_telegram(msg)
+
+    # v5.31.0 \u2014 daily OHLC archive. After all positions flush, write
+    # one row per trade-ticker to /data/bars/daily/{TICKER}.jsonl with the
+    # session's open / high / low / close / volume + OR / PDC / sess HOD/LOD.
+    # Cross-day flat archive: a backtest can stream a ticker's full daily
+    # history with a single open-and-tail. Failure-tolerant.
+    try:
+        from forensic_capture import write_daily_bar as _write_daily
+
+        _today_iso = tg._now_et().strftime("%Y-%m-%d")
+        _trade_tickers = list(getattr(tg, "TRADE_TICKERS", []) or [])
+        for _t in _trade_tickers:
+            try:
+                _sym = str(_t).upper()
+                _bars = tg.fetch_1min_bars(_sym) or {}
+                _opens = _bars.get("opens") or []
+                _highs = _bars.get("highs") or []
+                _lows = _bars.get("lows") or []
+                _closes = _bars.get("closes") or []
+                _vols = _bars.get("volumes") or []
+                _o = next((x for x in _opens if x is not None), None)
+                _h = max((x for x in _highs if x is not None), default=None)
+                _l = min((x for x in _lows if x is not None), default=None)
+                _c = None
+                for _x in reversed(_closes):
+                    if _x is not None:
+                        _c = _x
+                        break
+                _v = sum((x for x in _vols if x is not None), 0)
+                _write_daily(
+                    ticker=_sym,
+                    date_str=_today_iso,
+                    open_=_o,
+                    high=_h,
+                    low=_l,
+                    close=_c,
+                    volume=_v if _v else None,
+                    or_high=(tg.or_high.get(_sym) if hasattr(tg, "or_high") else None),
+                    or_low=(tg.or_low.get(_sym) if hasattr(tg, "or_low") else None),
+                    pdc=(tg.pdc.get(_sym) if hasattr(tg, "pdc") else None),
+                    sess_hod=(
+                        tg._v570_session_hod.get(_sym) if hasattr(tg, "_v570_session_hod") else None
+                    ),
+                    sess_lod=(
+                        tg._v570_session_lod.get(_sym) if hasattr(tg, "_v570_session_lod") else None
+                    ),
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+
     # C-R5: EOD force-close flattens any open v5 position regardless of
     # state \u2014 we lock every track so the next session starts fresh
     # rather than resuming a half-mid-state machine.

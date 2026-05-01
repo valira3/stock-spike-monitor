@@ -2304,6 +2304,11 @@ def _intraday_fetch_alpaca_bars(ticker: str, day: str) -> list[dict]:
             )
         except Exception:
             continue
+        # v5.31.0 \u2014 capture Alpaca-only trade_count + bar_vwap fields.
+        # The Bar object exposes them as attributes (raw API keys n / vw);
+        # missing on Yahoo-sourced bars and harmless to include here.
+        _tc = getattr(b, "trade_count", None)
+        _vw = getattr(b, "vwap", None)
         out.append(
             {
                 "ts": ts_iso,
@@ -2312,6 +2317,8 @@ def _intraday_fetch_alpaca_bars(ticker: str, day: str) -> list[dict]:
                 "low": float(getattr(b, "low", 0) or 0),
                 "close": float(getattr(b, "close", 0) or 0),
                 "iex_volume": int(getattr(b, "volume", 0) or 0),
+                "trade_count": (int(_tc) if _tc is not None else None),
+                "bar_vwap": (float(_vw) if _vw is not None else None),
             }
         )
     return out
@@ -2383,6 +2390,9 @@ def _intraday_compute_avwap(bars: list[dict], anchor_min: int = 570) -> list[flo
     how trade_genius's `_v513_compute_avwap_0930` builds the QQQ AVWAP.
     Bars before the anchor return None so the frontend can leave that
     portion of the line unplotted instead of drawing a misleading curve.
+
+    v5.31.0 \u2014 ``anchor_min`` is now caller-tunable. Pass 480 for a
+    premarket-anchored AVWAP starting at 08:00 ET.
     """
     out: list[float | None] = []
     pv_sum = 0.0
@@ -2413,6 +2423,63 @@ def _intraday_compute_avwap(bars: list[dict], anchor_min: int = 570) -> list[flo
         v_sum += v
         out.append((pv_sum / v_sum) if v_sum > 0 else tp)
     return out
+
+
+def _intraday_compute_avwap_band(
+    bars: list[dict], anchor_min: int = 570
+) -> tuple[list[float | None], list[float | None]]:
+    """v5.31.0 \u2014 per-bar AVWAP \u00b11\u03c3 band aligned to ``_intraday_compute_avwap``.
+
+    Running volume-weighted variance: the band sigma at bar i is the
+    sqrt of the weighted variance of typical-price about the running
+    AVWAP through bar i. Returns parallel ``(hi, lo)`` lists matching
+    the bars list 1-to-1, with ``None`` entries for bars before the
+    anchor (mirroring ``_intraday_compute_avwap``).
+    """
+    hi: list[float | None] = []
+    lo: list[float | None] = []
+    pv_sum = 0.0
+    v_sum = 0.0
+    pv2_sum = 0.0  # \u03a3 v * tp\u00b2
+    started = False
+    for b in bars:
+        et_min = _intraday_et_minute(str(b.get("ts") or ""))
+        if et_min is None or et_min < anchor_min:
+            hi.append(None)
+            lo.append(None)
+            continue
+        try:
+            h_v = float(b.get("high") or 0)
+            l_v = float(b.get("low") or 0)
+            c_v = float(b.get("close") or 0)
+            v_v = float(b.get("iex_volume") or 0)
+        except (TypeError, ValueError):
+            hi.append(None)
+            lo.append(None)
+            continue
+        if not h_v or not l_v or not c_v:
+            hi.append(hi[-1] if hi else None)
+            lo.append(lo[-1] if lo else None)
+            continue
+        tp = (h_v + l_v + c_v) / 3.0
+        if not started:
+            pv_sum = 0.0
+            v_sum = 0.0
+            pv2_sum = 0.0
+            started = True
+        pv_sum += tp * v_v
+        v_sum += v_v
+        pv2_sum += v_v * tp * tp
+        if v_sum > 0:
+            mu = pv_sum / v_sum
+            var = max(0.0, (pv2_sum / v_sum) - (mu * mu))
+            sigma = var**0.5
+            hi.append(mu + sigma)
+            lo.append(mu - sigma)
+        else:
+            hi.append(tp)
+            lo.append(tp)
+    return hi, lo
 
 
 def _intraday_resample_5m(bars: list[dict]) -> list[dict]:
@@ -2607,10 +2674,162 @@ def _intraday_today_trades(m, ticker: str, day: str) -> list[dict]:
     return out
 
 
+def _intraday_build_lifecycle(ticker: str, day: str) -> dict:
+    """v5.31.0 \u2014 build the open-position lifecycle overlay payload.
+
+    Reads the day's forensic JSONL streams (``decisions/{TICKER}.jsonl``,
+    ``exits/{TICKER}.jsonl``, ``indicators/{TICKER}.jsonl``) plus live
+    open-position state and emits a chart-friendly block:
+
+    ``{"entries": [...], "exits": [...], "trail_series": [...], "open": [...]}``
+
+    All arrays carry ``et_min`` keys so the frontend can plot directly
+    via ``xOf(et_min)``. Failure-tolerant: any read error returns the
+    empty shape so the chart never breaks on a missing forensic file.
+    """
+    from pathlib import Path as _P
+
+    sym = (ticker or "").strip().upper()
+    out = {"entries": [], "exits": [], "trail_series": [], "open": []}
+    if not sym:
+        return out
+    base = _P("/data/forensics") / day
+
+    def _load_jsonl(path: _P) -> list[dict]:
+        rows: list[dict] = []
+        try:
+            if not path.exists():
+                return rows
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return rows
+
+    # Entry markers \u2014 only the records with decision == "ENTER".
+    try:
+        for r in _load_jsonl(base / "decisions" / f"{sym}.jsonl"):
+            if str(r.get("decision") or "").upper() != "ENTER":
+                continue
+            et_min = _intraday_et_minute(str(r.get("ts_utc") or ""))
+            if et_min is None:
+                continue
+            out["entries"].append(
+                {
+                    "et_min": et_min,
+                    "ts_utc": r.get("ts_utc"),
+                    "price": r.get("current_price"),
+                    "side": r.get("side"),
+                    "strike_num": r.get("strike_num"),
+                    "entry_bid": r.get("entry_bid"),
+                    "entry_ask": r.get("entry_ask"),
+                    "spread_bps": r.get("spread_bps"),
+                }
+            )
+    except Exception:
+        pass
+
+    # Exit markers \u2014 from the new exits stream (v5.31.0).
+    try:
+        for r in _load_jsonl(base / "exits" / f"{sym}.jsonl"):
+            et_min = _intraday_et_minute(str(r.get("ts_utc") or ""))
+            if et_min is None:
+                continue
+            entry_et = _intraday_et_minute(str(r.get("entry_ts_utc") or ""))
+            out["exits"].append(
+                {
+                    "et_min": et_min,
+                    "ts_utc": r.get("ts_utc"),
+                    "price": r.get("exit_price"),
+                    "side": r.get("side"),
+                    "entry_et_min": entry_et,
+                    "entry_price": r.get("entry_price"),
+                    "alarm": r.get("alarm_triggered"),
+                    "reason": r.get("exit_reason_code"),
+                    "trail_stage": r.get("trail_stage_at_exit"),
+                    "peak_close": r.get("peak_close_at_exit"),
+                    "bars_in_trade": r.get("bars_in_trade"),
+                    "mae_bps": r.get("mae_bps"),
+                    "mfe_bps": r.get("mfe_bps"),
+                    "pnl_dollars": r.get("pnl_dollars"),
+                    "pnl_pct": r.get("pnl_pct"),
+                }
+            )
+    except Exception:
+        pass
+
+    # Trail-stop staircase \u2014 from indicator snapshots' permit_state.trail.
+    # Only emit a point when the snapshot has trail data (i.e. the position
+    # was open during that minute). Skipped minutes \u2192 frontend draws a
+    # break in the staircase.
+    try:
+        for r in _load_jsonl(base / "indicators" / f"{sym}.jsonl"):
+            et_min = _intraday_et_minute(str(r.get("ts_utc") or ""))
+            if et_min is None:
+                continue
+            ps = r.get("permit_state") or {}
+            tr = ps.get("trail") if isinstance(ps, dict) else None
+            if not isinstance(tr, dict):
+                continue
+            stop = tr.get("last_proposed_stop")
+            if stop is None:
+                continue
+            out["trail_series"].append(
+                {
+                    "et_min": et_min,
+                    "stop": stop,
+                    "stage": tr.get("stage"),
+                    "side": tr.get("side"),
+                    "peak_close": tr.get("peak_close"),
+                }
+            )
+    except Exception:
+        pass
+
+    # Live open-position rail \u2014 still-open trades. Used by the frontend
+    # to extend an entry-price horizontal line out to "now" (drift visual).
+    try:
+        m = _ssm()
+        for _attr, _label in (("positions", "LONG"), ("short_positions", "SHORT")):
+            book = getattr(m, _attr, None) or {}
+            pos = book.get(sym)
+            if pos is None:
+                continue
+            entry_et = _intraday_et_minute(str(pos.get("entry_ts_utc") or ""))
+            if entry_et is None:
+                continue
+            out["open"].append(
+                {
+                    "et_min": entry_et,
+                    "side": _label,
+                    "entry_price": pos.get("entry_price"),
+                    "shares": pos.get("shares"),
+                    "current_stop": pos.get("stop"),
+                }
+            )
+    except Exception:
+        pass
+
+    return out
+
+
 def _intraday_build_payload(ticker: str) -> dict:
     """Compose the /api/intraday/{ticker} response body. Pure function:
     no network I/O, only on-disk JSONL + live globals (or_high/or_low).
     Keeping it pure makes the handler easy to unit-test.
+
+    v5.31.0 \u2014 payload now also carries ``pdc``, ``sess_hod``,
+    ``sess_lod``, an AVWAP \u00b11\u03c3 band (``avwap_hi``/``avwap_lo``
+    per bar), a premarket-anchored AVWAP series (``pm_avwap`` per bar),
+    a ``sentinel_events`` list, and the open-position ``lifecycle``
+    overlay block (entries / exits / trail_series / open).
     """
     from datetime import datetime, timezone
 
@@ -2618,6 +2837,8 @@ def _intraday_build_payload(ticker: str) -> dict:
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     bars = _intraday_load_today_bars(ticker, day)
     avwap = _intraday_compute_avwap(bars)
+    avwap_hi, avwap_lo = _intraday_compute_avwap_band(bars)
+    pm_avwap = _intraday_compute_avwap(bars, anchor_min=480)
     bars5 = _intraday_resample_5m(bars)
     ema9_5m = _intraday_ema9_5m(bars5)
     # Pair each 5m EMA value with its bucket so the frontend can match
@@ -2628,6 +2849,9 @@ def _intraday_build_payload(ticker: str) -> dict:
             ema9_by_bucket[int(b5["et_min"])] = float(e)
     or_high = None
     or_low = None
+    pdc = None
+    sess_hod = None
+    sess_lod = None
     try:
         oh = getattr(m, "or_high", {}) or {}
         ol = getattr(m, "or_low", {}) or {}
@@ -2635,9 +2859,46 @@ def _intraday_build_payload(ticker: str) -> dict:
         or_high = float(v) if v is not None else None
         v = ol.get(ticker.upper())
         or_low = float(v) if v is not None else None
+        # v5.31.0 \u2014 PDC + session HOD/LOD for the new chart reference lines.
+        _pdc_d = getattr(m, "pdc", {}) or {}
+        _hod_d = getattr(m, "_v570_session_hod", {}) or {}
+        _lod_d = getattr(m, "_v570_session_lod", {}) or {}
+        v = _pdc_d.get(ticker.upper())
+        pdc = float(v) if v is not None else None
+        v = _hod_d.get(ticker.upper())
+        sess_hod = float(v) if v is not None else None
+        v = _lod_d.get(ticker.upper())
+        sess_lod = float(v) if v is not None else None
     except Exception:
         pass
     trades = _intraday_today_trades(m, ticker, day)
+
+    # v5.31.0 \u2014 sentinel arm/trip events from the bounded module-level
+    # deque populated by ``broker/positions.py:_run_sentinel``. Filtered
+    # to the requested ticker; only events from today are returned.
+    sentinel_events: list[dict] = []
+    try:
+        ev_list = getattr(m, "_sentinel_arm_events", None) or []
+        for ev in list(ev_list):
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get("ticker") or "").upper() != ticker.upper():
+                continue
+            et_min = _intraday_et_minute(str(ev.get("ts_utc") or ""))
+            if et_min is None:
+                continue
+            sentinel_events.append(
+                {
+                    "et_min": et_min,
+                    "ts_utc": ev.get("ts_utc"),
+                    "codes": ev.get("codes") or [],
+                    "price": ev.get("price"),
+                    "fired": bool(ev.get("fired")),
+                }
+            )
+    except Exception:
+        pass
+
     # Slim per-bar payload \u2014 only fields the chart needs.
     bars_out: list[dict] = []
     for i, b in enumerate(bars):
@@ -2654,9 +2915,18 @@ def _intraday_build_payload(ticker: str) -> dict:
                 "c": b.get("close"),
                 "v": b.get("iex_volume"),
                 "avwap": avwap[i] if i < len(avwap) else None,
+                # v5.31.0 \u2014 AVWAP band + premarket-anchored AVWAP.
+                "avwap_hi": avwap_hi[i] if i < len(avwap_hi) else None,
+                "avwap_lo": avwap_lo[i] if i < len(avwap_lo) else None,
+                "pm_avwap": pm_avwap[i] if i < len(pm_avwap) else None,
                 "ema9_5m": ema9_by_bucket.get((et_min // 5) * 5),
             }
         )
+
+    # v5.31.0 \u2014 open-position lifecycle overlay block (entries / exits /
+    # trail-stop staircase / live open positions).
+    lifecycle = _intraday_build_lifecycle(ticker, day)
+
     return {
         "ok": True,
         "ticker": ticker.upper(),
@@ -2664,7 +2934,12 @@ def _intraday_build_payload(ticker: str) -> dict:
         "bars": bars_out,
         "or_high": or_high,
         "or_low": or_low,
+        "pdc": pdc,
+        "sess_hod": sess_hod,
+        "sess_lod": sess_lod,
         "trades": trades,
+        "sentinel_events": sentinel_events,
+        "lifecycle": lifecycle,
         "bar_count": len(bars_out),
     }
 
