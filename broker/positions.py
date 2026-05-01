@@ -54,6 +54,15 @@ _adx_window_per_position: dict = {}
 _divergence_memory: DivergenceMemory = DivergenceMemory()
 _trade_hvp_per_position: dict = {}
 
+# v6.0.4 \u2014 once-per-(ticker, side, error-class) escalation flags. The
+# Sentinel hot path is wrapped in a broad ``try/except Exception`` to keep
+# a single bad tick from killing the scan loop, but a swallowed warning
+# every cycle is easy to miss. The set below tracks which (ticker, side,
+# exc_type) tuples have already been escalated to ``[SENTINEL][CRITICAL]``
+# so we log the loud version exactly once per process while still
+# preserving the existing per-tick warning trail.
+_sentinel_critical_seen: set = set()
+
 
 def get_divergence_memory() -> DivergenceMemory:
     """Return the singleton DivergenceMemory used by Alarm E.
@@ -535,7 +544,25 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
                         )
         return None
     except Exception as e:
+        # v6.0.4 \u2014 keep the per-tick warning for trail-style debugging,
+        # but escalate the FIRST occurrence of each (ticker, side, exc_type)
+        # to CRITICAL with a stack trace. A swallowed AttributeError used
+        # to silently disable Alarms A/B/C/F for the rest of the process
+        # (see paper_state.py header comment for the v6.0.4 root cause).
         logger.warning("[SENTINEL] error ticker=%s side=%s: %s", ticker, side, e)
+        _key = (ticker, side, type(e).__name__)
+        if _key not in _sentinel_critical_seen:
+            _sentinel_critical_seen.add(_key)
+            logger.critical(
+                "[SENTINEL][CRITICAL] first %s on ticker=%s side=%s \u2014 "
+                "sentinel evaluation aborted, no Alarms A/B/C/F will fire "
+                "for this position until the underlying error is fixed: %s",
+                type(e).__name__,
+                ticker,
+                side,
+                e,
+                exc_info=True,
+            )
         return None
 
 

@@ -44,6 +44,97 @@ _paper_save_lock = threading.Lock()
 _state_loaded = False
 
 
+# v6.0.4 \u2014 Sentinel persistence rehydration.
+#
+# Background: ``save_paper_state`` writes ``state`` with
+# ``json.dump(..., default=str)``. The ``default=str`` callback fires for
+# any non-JSON-serializable value (e.g. ``collections.deque``,
+# ``engine.alarm_f_trail.TrailState``) and stringifies the value to its
+# ``repr()``. On reload, ``json.load`` returns those fields as plain
+# strings rather than the live container. The Sentinel hot path then
+# crashes on the first ``history.append(...)`` call (str has no append),
+# the broad ``try/except`` in ``broker.positions._maybe_emit_sentinel``
+# swallows the AttributeError, and Alarms A/B/C/F never run for the
+# rest of the process lifetime.
+#
+# Two-pronged fix in v6.0.4:
+#
+#  (1) STRIP-ON-SAVE: ``_strip_runtime_caches`` removes the per-tick
+#      caches from each position dict before they reach ``json.dump``.
+#      These fields are pure runtime memory \u2014 ``pnl_history`` is a
+#      bounded deque rebuilt within seconds of any restart, and
+#      ``trail_state`` reseats itself within MIN_BARS_BEFORE_ARM=3 1m
+#      bars. Persisting them was a latent bug since v5.13.2 / v5.28.0.
+#
+#  (2) REHYDRATE-ON-LOAD: ``_rehydrate_runtime_caches`` is a defensive
+#      pass over loaded ``positions`` / ``short_positions``. If older
+#      paper_state.json files (from v6.0.3 and earlier) still hold
+#      string remnants, this resets them to fresh objects so the very
+#      next Sentinel tick succeeds.
+_RUNTIME_CACHE_KEYS = ("pnl_history", "trail_state", "v531_prior_alarm_codes")
+
+
+def _strip_runtime_caches(pos_map):
+    """Return a copy of ``pos_map`` with non-JSON-friendly runtime caches dropped.
+
+    Each value is shallow-copied so the in-memory dict the live engine
+    keeps using retains the deque / TrailState references; only the
+    on-disk snapshot loses them.
+    """
+    out = {}
+    for ticker, pos in (pos_map or {}).items():
+        if isinstance(pos, dict):
+            stripped = {k: v for k, v in pos.items() if k not in _RUNTIME_CACHE_KEYS}
+            out[ticker] = stripped
+        else:
+            out[ticker] = pos
+    return out
+
+
+def _rehydrate_runtime_caches(pos_map):
+    """Repair string-typed runtime caches surviving from older saves.
+
+    Mutates ``pos_map`` in place. Imports happen lazily so this module
+    stays importable even if engine.* hasn't loaded yet.
+    """
+    if not pos_map:
+        return
+    try:
+        from engine.sentinel import new_pnl_history
+    except Exception:
+        new_pnl_history = None
+    try:
+        from engine.alarm_f_trail import TrailState
+    except Exception:
+        TrailState = None
+    repaired = 0
+    for ticker, pos in pos_map.items():
+        if not isinstance(pos, dict):
+            continue
+        ph = pos.get("pnl_history")
+        if ph is None or isinstance(ph, str):
+            if new_pnl_history is not None:
+                pos["pnl_history"] = new_pnl_history()
+                repaired += 1
+            else:
+                pos.pop("pnl_history", None)
+        ts = pos.get("trail_state")
+        if ts is None or isinstance(ts, str):
+            if TrailState is not None:
+                pos["trail_state"] = TrailState.fresh()
+                repaired += 1
+            else:
+                pos.pop("trail_state", None)
+        prior = pos.get("v531_prior_alarm_codes")
+        if isinstance(prior, str):
+            pos["v531_prior_alarm_codes"] = []
+            repaired += 1
+    if repaired:
+        logger.info(
+            "[PERSISTENCE] rehydrated %d runtime cache field(s) on load", repaired
+        )
+
+
 def save_paper_state():
     """Persist paper trading + strategy state to disk. Thread-safe, atomic."""
     tg = _tg()
@@ -79,7 +170,10 @@ def save_paper_state():
     with _paper_save_lock:
         state = {
             "paper_cash": tg.paper_cash,
-            "positions": dict(tg.positions),
+            # v6.0.4 \u2014 strip per-tick runtime caches (pnl_history /
+            # trail_state / v531_prior_alarm_codes) before serialization.
+            # See _strip_runtime_caches docstring for the why.
+            "positions": _strip_runtime_caches(tg.positions),
             "paper_trades": list(tg.paper_trades),
             "paper_all_trades": list(tg.paper_all_trades[-500:]),
             "daily_entry_count": dict(tg.daily_entry_count),
@@ -90,7 +184,7 @@ def save_paper_state():
             "or_collected_date": tg.or_collected_date,
             "user_config": dict(tg.user_config),
             "trade_history": list(tg.trade_history),
-            "short_positions": dict(tg.short_positions),
+            "short_positions": _strip_runtime_caches(tg.short_positions),
             "short_trade_history": list(tg.short_trade_history[-500:]),
             # v3.4.34: avwap_data / avwap_last_ts no longer persisted.
             "daily_short_entry_count": dict(tg.daily_short_entry_count),
@@ -174,6 +268,11 @@ def load_paper_state():
         # would otherwise merge stale in-memory state on top of disk state.
         tg.positions.clear()
         tg.positions.update(state.get("positions", {}))
+        # v6.0.4 \u2014 defense-in-depth: repair any string-typed runtime
+        # caches left over from older saves so the first Sentinel tick
+        # after restart succeeds. New saves strip these via
+        # _strip_runtime_caches and never round-trip through JSON.
+        _rehydrate_runtime_caches(tg.positions)
         tg.paper_trades.clear()
         tg.paper_trades.extend(state.get("paper_trades", []))
         tg.paper_all_trades.clear()
@@ -194,6 +293,7 @@ def load_paper_state():
         tg.trade_history.extend(state.get("trade_history", []))
         tg.short_positions.clear()
         tg.short_positions.update(state.get("short_positions", {}))
+        _rehydrate_runtime_caches(tg.short_positions)
         tg.short_trade_history.clear()
         tg.short_trade_history.extend(state.get("short_trade_history", []))
         # v3.4.34: legacy "avwap_data"/"avwap_last_ts" keys in old

@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.3"
+BOT_VERSION = "6.0.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,20 +97,21 @@ BOT_VERSION = "6.0.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.3 polish:\n"
-    "Open-positions tables now\n"
-    "have parity across tabs.\n"
-    "Main gains a % column\n"
-    "computed from unrealized\n"
-    "over cost basis. Val and\n"
-    "Gene gain a Stop column\n"
-    "that cross-references the\n"
-    "engine's effective stop\n"
-    "by symbol, with the same\n"
-    "TRAIL badge Main shows\n"
-    "when the trail stop is\n"
-    "armed. Both tables are\n"
-    "now 8 columns wide."
+    "v6.0.4 hotfix:\n"
+    "Sentinel persistence bug.\n"
+    "Process restarts were\n"
+    "reloading pnl_history\n"
+    "and trail_state as the\n"
+    "string repr of the live\n"
+    "objects, so every tick\n"
+    "raised AttributeError\n"
+    "and Alarm A/B/C/F never\n"
+    "ran. Fix: strip these\n"
+    "runtime caches before\n"
+    "saving and rehydrate\n"
+    "any string remnants on\n"
+    "load. Trail stops will\n"
+    "now ratchet correctly."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

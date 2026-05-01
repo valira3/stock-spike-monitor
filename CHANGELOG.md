@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.4 — 2026-05-01 — Hotfix: Sentinel persistence rehydration (Alarms A/B/C/F were silently dead)
+
+### Why
+During live diagnosis of "why isn't TSLA's stop ratcheting at +2.35R?" we discovered every Sentinel tick on every open position was throwing `'str' object has no attribute 'append'` and the broad `try/except` in `broker/positions.py:_run_sentinel` was swallowing it. Net effect: **Alarms A (loss / velocity), B (5m close vs 9-EMA shield), C (velocity ratchet), and F (chandelier trail) had not run since the most recent Railway redeploy.** TSLA was still on its R-2 hard stop alone; the chandelier trail that should have armed at +1R favorable never advanced past `bars_seen=0`. Eugene's earlier "why didn't we exit when QQQ flipped the cloud at 11:05 / lost DI+ at 11:08?" was the same root cause — Alarm B is the cloud / DI shield, and it was equally crashed.
+
+Root cause: `paper_state.save_paper_state` writes its snapshot with `json.dump(state, f, indent=2, default=str)`. The `default=str` callback fires for any non-JSON-serializable value (`collections.deque`, `engine.alarm_f_trail.TrailState`) and stringifies the value to its `repr()`. On reload, `json.load` returns those fields as plain strings rather than the live container. The first `record_pnl(history, ts, unrealized)` call after restart blew up on `history.append((ts, pnl))` because `history` was now `'deque([(1.0, 0.5), ...], maxlen=120)'` rather than a deque. The exception was caught and logged at WARNING; nothing escalated. Confirmed via SSH probe of `/data/paper_state.json` — all three open positions had `pnl_history` and `trail_state` typed as `str`, with the `repr()` text intact. Latent since v5.13.2 (when `pnl_history` joined the position dict) and v5.28.0 (when `trail_state` did); only became user-visible today because three redeploys in a row (v6.0.1/2/3) restarted the process repeatedly with persisted state on disk.
+
+### What
+- **`paper_state._strip_runtime_caches`** — new helper. Returns a shallow copy of a `positions` map with three runtime-cache keys dropped: `pnl_history`, `trail_state`, `v531_prior_alarm_codes`. Called from `save_paper_state` for both `tg.positions` and `tg.short_positions` so the on-disk snapshot never contains them. The live in-memory dicts are untouched — the engine continues using its deque / TrailState references uninterrupted.
+- **`paper_state._rehydrate_runtime_caches`** — new defense-in-depth helper. Walks loaded positions and, for any `pnl_history` or `trail_state` that came back as a string (or is missing entirely), installs a fresh `new_pnl_history()` deque or `TrailState.fresh()`. Live correctly-typed objects are passed through untouched (replacing them mid-session would wipe in-flight Alarm F stage progression). Logs `[PERSISTENCE] rehydrated N runtime cache field(s) on load` once when it had to repair anything.
+- **`broker/positions.py` — once-per-(ticker, side, exc_type) `[SENTINEL][CRITICAL]` escalation.** The existing per-tick WARNING is preserved for tail-style debugging, but the FIRST occurrence of each error class on each position is now logged at CRITICAL with a stack trace and a clear "sentinel evaluation aborted, no Alarms A/B/C/F will fire for this position until the underlying error is fixed" message. A future regression like this one cannot go silent for an entire trading session. State is held in a module-level `_sentinel_critical_seen: set`.
+- `bot_version.py` and `trade_genius.py` BOT_VERSION 6.0.3 → 6.0.4; `CURRENT_MAIN_NOTE` rewritten (15 lines, all ≤34 chars).
+
+### Tests
+New `tests/test_v6_0_4_sentinel_persistence.py` (14 cases): runtime-cache key list is canonical; strip removes pnl_history / trail_state / v531_prior_alarm_codes individually; strip handles empty / None; strip output is JSON-serializable without `default=` (the regression-pinning test); rehydrate repairs string-typed pnl_history into a fresh empty deque that accepts `.append`; rehydrate repairs string-typed trail_state into a fresh `TrailState.fresh()` (stage=0, bars_seen=0, peak_close=None); rehydrate handles missing keys; rehydrate preserves correctly-typed live deque and TrailState (does NOT wipe stage=2 in-flight); rehydrate handles empty / None; rehydrate repairs string-typed v531_prior_alarm_codes into `[]`; **end-to-end save → strip → json round-trip → rehydrate restores a working position whose first `pnl_history.append` after restart succeeds** (this is the regression-pinning test for the bug); broker.positions exposes `_sentinel_critical_seen` set for future test teardown hooks.
+
+### Backwards compatibility
+Fully backwards compatible. Existing v6.0.3 paper_state.json files (with string-typed `pnl_history` / `trail_state`) are repaired in place by the rehydrate path on first load. New saves never write the runtime caches, so subsequent loads short-circuit to fresh objects. The `pnl_history` repair discards any samples that were stringified (the velocity baseline rebuilds within seconds of any restart anyway); the `trail_state` repair resets to Stage 0 (the chandelier rearms within `MIN_BARS_BEFORE_ARM = 3` 1m bars). For an active position like TSLA at +2.35R favorable, this means Alarm F arms BE within 3 minutes of the v6.0.4 deploy and the stop ratchets to entry +$0.01.
+
+---
+
 ## v6.0.3 — 2026-05-01 — Open-positions table parity across Main / Val / Gene tabs
 
 ### Why
