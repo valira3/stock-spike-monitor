@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.30.0"
+BOT_VERSION = "5.30.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,13 +97,13 @@ BOT_VERSION = "5.30.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.30.0 add F to strip:\n"
-    "Alarm F chandelier cell\n"
-    "between B and C, stage\n"
-    "+ trail stop + peak.\n"
-    "v5.29.0: hide bypassed UI.\n"
-    "v5.28.3: cache-bust assets.\n"
-    "v5.28.0: F primary exit."
+    "v5.30.1 premarket data:\n"
+    "Yahoo includePrePost=1\n"
+    "so 08:00 ET warm-up\n"
+    "actually fills bars.\n"
+    "Drop dead daily_bars\n"
+    "import (441 warns/min).\n"
+    "v5.30.0: F on strip."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -2892,9 +2892,19 @@ def fetch_1min_bars(ticker):
         return cached if cached != "__FAILED__" else None
 
     t0 = time.time()
+    # v5.30.1 \u2014 includePrePost=true so the 08:00\u201309:30 ET premarket
+    # warm-up loop in engine.scan actually receives bars to archive into
+    # /data/bars/<today>/<ticker>.jsonl. Prior to this the loop ran every
+    # minute starting at 08:00 ET but Yahoo only returned RTH bars, so
+    # the bar archive (and the dashboard charts that read from it) stayed
+    # frozen at yesterday's 19:59 close until 09:30. Including premarket
+    # bars does not affect entry / OR / sentinel logic: callers downstream
+    # filter by ts (e.g. opening-range collection bounds bars to
+    # [09:30, 09:36) ET) so premarket bars only flow where they should
+    # \u2014 the bar archive and the dashboard chart panel.
     url = (
         "https://query1.finance.yahoo.com/v8/finance/chart/%s"
-        "?interval=1m&range=1d&includePrePost=false" % ticker
+        "?interval=1m&range=1d&includePrePost=true" % ticker
     )
     try:
         req = urllib.request.Request(url, headers=YAHOO_HEADERS)

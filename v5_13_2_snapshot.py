@@ -125,19 +125,19 @@ def _phase1_block(m) -> dict:
 
 
 def _compute_sma_stack_safe(ticker: str) -> dict | None:
-    """Compute the daily SMA stack for `ticker`. Returns None on any
-    failure (network unavailable, missing credentials, insufficient
-    history) so the snapshot never crashes.
+    """v5.30.1 \u2014 the daily SMA stack panel was retired when v5.26.0
+    deleted ``engine.daily_bars`` and ``engine.sma_stack`` (Stage 1
+    spec-strict cut). The helper survived the cut and was still imported
+    on every snapshot tick, throwing ``ModuleNotFoundError`` and emitting
+    441+ ``v5.21.0 sma_stack: failed for <ticker>`` warnings per minute
+    in production. This stub returns ``None`` cleanly so ``sma_stack`` in
+    the Phase 2 row stays empty and the frontend ``_pmtxSmaStackPanel``
+    null-guard renders "data not available" without log noise. Kept
+    rather than ripped out so the call site in ``_phase2_block`` and the
+    ``test_v5_21_0_sma_panel_frontend.py`` null-path coverage do not
+    need to change.
     """
-    try:
-        from engine.daily_bars import get_recent_daily_closes
-        from engine.sma_stack import compute_sma_stack
-
-        closes = get_recent_daily_closes(ticker, 250)
-        return compute_sma_stack(closes)
-    except Exception as exc:
-        _logger.warning("v5.21.0 sma_stack: failed for %s: %s", ticker, exc)
-        return None
+    return None
 
 
 _VOL_GATE_MAP = {

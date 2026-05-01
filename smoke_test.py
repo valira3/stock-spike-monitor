@@ -4094,21 +4094,33 @@ def run_local() -> int:
         js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
         assert "_pmtxSmaStackPanel" in js, "v5.21.0: _pmtxSmaStackPanel helper missing from app.js"
 
-    @t("v5.21.1: daily-bar fetcher requests IEX feed (paper-tier compatible)")
+    @t("v5.30.1: daily-bar fetcher retired (engine.daily_bars deleted in v5.26.0)")
     def _():
-        # v5.21.1 hotfix: without feed="iex" Alpaca defaults to SIP and
-        # the paper-tier subscription rejects with "subscription does not
-        # permit querying recent SIP data". Production logs from the
-        # v5.21.0 deploy showed every Titan failing this way, leaving
-        # sma_stack=None and rendering "data not available" everywhere.
+        # v5.30.1: engine.daily_bars and engine.sma_stack were deleted in
+        # the v5.26.0 spec-strict cut, but v5_13_2_snapshot.py kept
+        # importing them on every snapshot tick \u2014 emitting 441+
+        # ModuleNotFoundError warnings per minute. v5.30.1 stubs the
+        # helper to return None so the SMA panel cleanly renders
+        # "data not available". This check enforces the deletion stays
+        # gone: if anyone reintroduces engine.daily_bars without
+        # rewiring the snapshot helper, we fail loudly here.
         from pathlib import Path as _P
 
-        src = (_P(__file__).parent / "engine" / "daily_bars.py").read_text(encoding="utf-8")
-        assert 'feed="iex"' in src, (
-            'v5.21.1: engine/daily_bars.py must pass feed="iex" to '
-            "StockBarsRequest -- without it Alpaca defaults to SIP and "
-            "paper-tier rejects with 'subscription does not permit "
-            "querying recent SIP data'"
+        repo_root = _P(__file__).parent
+        assert not (repo_root / "engine" / "daily_bars.py").exists(), (
+            "v5.30.1: engine/daily_bars.py was deleted in v5.26.0 and must "
+            "stay deleted; if you reintroduce it, also rewire "
+            "v5_13_2_snapshot._compute_sma_stack_safe."
+        )
+        assert not (repo_root / "engine" / "sma_stack.py").exists(), (
+            "v5.30.1: engine/sma_stack.py was deleted in v5.26.0 and must "
+            "stay deleted; if you reintroduce it, also rewire "
+            "v5_13_2_snapshot._compute_sma_stack_safe."
+        )
+        snapshot_src = (repo_root / "v5_13_2_snapshot.py").read_text(encoding="utf-8")
+        assert "from engine.daily_bars import" not in snapshot_src, (
+            "v5.30.1: v5_13_2_snapshot.py must not import engine.daily_bars; "
+            "_compute_sma_stack_safe should be a None-returning stub."
         )
 
     @t(
