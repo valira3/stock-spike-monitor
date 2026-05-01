@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.7"
+BOT_VERSION = "6.0.8"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,26 +97,33 @@ BOT_VERSION = "6.0.7"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.7 fixes + mobile UI:\n"
-    "1) post-action reconcile\n"
-    "   race no longer treats\n"
-    "   Alpaca's 1-2 s eventual\n"
-    "   consistency window as a\n"
-    "   true divergence, so MSFT\n"
-    "   no longer deletes then\n"
-    "   re-grafts, and NFLX no\n"
-    "   longer re-grafts as\n"
-    "   orphan right after EXIT.\n"
-    "2) iPhone Pro Max (430 px):\n"
-    "   brand-row clock + chips\n"
-    "   fit inline, Permit\n"
-    "   Matrix + Today's Trades\n"
-    "   stop clipping at right\n"
-    "   edge.\n"
-    "3) cleanup: removed 4 stale\n"
-    "   skipped tiger_sovereign\n"
-    "   tests; smoke now\n"
-    "   623p / 0s / 0f."
+    "v6.0.8 session-state +\n"
+    "mobile fix:\n"
+    "1) Apr 30 NVDA strike 2/3\n"
+    "   misfire root-caused to\n"
+    "   Railway redeploys\n"
+    "   wiping in-memory HOD/\n"
+    "   LOD/strike-counter.\n"
+    "   Two new SQLite tables\n"
+    "   (session_state +\n"
+    "   session_globals)\n"
+    "   mirror the dicts and\n"
+    "   rehydrate on boot, so\n"
+    "   a 198.57 print after a\n"
+    "   redeploy no longer\n"
+    "   registers as a fresh\n"
+    "   lod_break vs the real\n"
+    "   197.38 session LOD.\n"
+    "2) iPhone (480 px) the\n"
+    "   expanded permit row\n"
+    "   used to render 653 px\n"
+    "   wide on a 453 px\n"
+    "   viewport, clipping\n"
+    "   component-card\n"
+    "   descriptions; the td\n"
+    "   is now constrained\n"
+    "   so card text wraps\n"
+    "   inside the viewport."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1522,6 +1529,19 @@ _v570_daily_pnl_date: str = ""
 _v570_kill_switch_latched: bool = False
 _v570_kill_switch_logged: bool = False
 
+# v6.0.8 \u2014 session-state persistence. Module-level dicts above
+# wipe on every Railway redeploy; on Apr 30 a 9-redeploy day
+# caused NVDA strike 2/3 to fire off shallow LODs because the
+# in-memory _v570_session_lod for NVDA had been cleared mid-RTH
+# despite the real session LOD already being set. We now mirror
+# strike_counts / session_hod / session_lod / daily_realized_pnl
+# / kill_switch_latched to the session_state + session_globals
+# tables in persistence.py and rehydrate-from-disk on the FIRST
+# call to _v570_reset_if_new_session() per ET date in this
+# process. Subsequent calls within the same ET date skip the
+# rehydrate (idempotent via _v570_rehydrated_for_date).
+_v570_rehydrated_for_date: str = ""
+
 
 def _v570_session_today_str() -> str:
     """Today as ET date string \u2014 anchors the daily counters."""
@@ -1532,12 +1552,67 @@ def _v570_session_today_str() -> str:
     return now_et.strftime("%Y-%m-%d")
 
 
+def _v570_rehydrate_from_disk(today: str) -> None:
+    """v6.0.8 \u2014 read session_state + session_globals rows for
+    ``today`` (ET date) and seed the in-memory v570 dicts so a
+    Railway redeploy mid-RTH does not wipe HOD/LOD/strike/P&L
+    state. Failure-tolerant: any error is logged-and-swallowed,
+    leaving the in-memory dicts at their default-empty state.
+
+    Idempotent across the day via _v570_rehydrated_for_date \u2014 only
+    the first call per ET date in this process touches disk; the
+    background rollover at 9:30 ET resets the flag below.
+    """
+    global _v570_rehydrated_for_date
+    global _v570_daily_realized_pnl, _v570_kill_switch_latched
+    if _v570_rehydrated_for_date == today:
+        return
+    try:
+        rows = persistence.load_session_state_for_date(today)
+        for ticker, st in rows.items():
+            sym = (ticker or "").strip().upper()
+            if not sym:
+                continue
+            hod = st.get("session_hod")
+            lod = st.get("session_lod")
+            sc = int(st.get("strike_count") or 0)
+            if hod is not None:
+                _v570_session_hod[sym] = float(hod)
+            if lod is not None:
+                _v570_session_lod[sym] = float(lod)
+            if sc > 0:
+                _v570_strike_counts[sym] = sc
+        globals_rows = persistence.load_session_globals_for_date(today)
+        pnl_row = globals_rows.get("daily_realized_pnl")
+        if pnl_row is not None and pnl_row.get("value_real") is not None:
+            _v570_daily_realized_pnl = float(pnl_row["value_real"])
+        ks_row = globals_rows.get("kill_switch_latched")
+        if ks_row is not None and ks_row.get("value_int") is not None:
+            _v570_kill_switch_latched = bool(int(ks_row["value_int"]))
+        try:
+            logger.info(
+                "[SESSION-REHYDRATE] et_date=%s tickers=%d "
+                "daily_pnl=%.4f kill_switch=%s",
+                today, len(rows), float(_v570_daily_realized_pnl),
+                _v570_kill_switch_latched,
+            )
+        except Exception:
+            pass
+    except Exception as _e:
+        try:
+            logger.warning("[SESSION-REHYDRATE] failed: %s", _e)
+        except Exception:
+            pass
+    finally:
+        _v570_rehydrated_for_date = today
+
+
 def _v570_reset_if_new_session() -> None:
     """Reset strike counters / HOD-LOD / daily P&L / kill switch
     when a new ET session begins. Idempotent."""
     global _v570_strike_date, _v570_session_date, _v570_daily_pnl_date
     global _v570_kill_switch_latched, _v570_kill_switch_logged
-    global _v570_daily_realized_pnl
+    global _v570_daily_realized_pnl, _v570_rehydrated_for_date
     today = _v570_session_today_str()
     if _v570_strike_date != today:
         _v570_strike_counts.clear()
@@ -1565,6 +1640,22 @@ def _v570_reset_if_new_session() -> None:
         _v570_daily_pnl_date = today
         _v570_kill_switch_latched = False
         _v570_kill_switch_logged = False
+    # v6.0.8 \u2014 if the ET date has rolled forward since the last
+    # rehydrate, prune yesterday's rows + reset the rehydrate flag
+    # so the next call seeds today's bucket fresh from disk (which
+    # at the day boundary is an empty bucket - exactly the desired
+    # post-reset state).
+    if _v570_rehydrated_for_date and _v570_rehydrated_for_date != today:
+        try:
+            persistence.prune_session_state(today)
+            persistence.prune_session_globals(today)
+        except Exception:
+            pass
+        _v570_rehydrated_for_date = ""
+    # On the first call per ET date in this process, seed dicts
+    # from disk. Idempotent thereafter via _v570_rehydrated_for_date.
+    if _v570_rehydrated_for_date != today:
+        _v570_rehydrate_from_disk(today)
 
 
 def _v570_strike_count(ticker: str, side: str = "") -> int:
@@ -1600,6 +1691,14 @@ def _v570_record_entry(ticker: str, side: str = "") -> int:
         raise RuntimeError("STRIKE-CAP-3 reached")
     new_n = cur + 1
     _v570_strike_counts[key] = new_n
+    # v6.0.8 \u2014 mirror to disk so Railway redeploys cannot reset
+    # the strike counter back to 0 mid-session. Failure-tolerant.
+    try:
+        persistence.save_session_state(
+            key, _v570_session_today_str(), strike_count=new_n,
+        )
+    except Exception:
+        pass
     return new_n
 
 
@@ -1683,10 +1782,26 @@ def _v570_update_session_hod_lod(
     px = float(current_price)
     hod_break = (prev_hod is not None and px > prev_hod)
     lod_break = (prev_lod is not None and px < prev_lod)
+    new_hod: float | None = None
+    new_lod: float | None = None
     if prev_hod is None or px > prev_hod:
         _v570_session_hod[sym] = px
+        new_hod = px
     if prev_lod is None or px < prev_lod:
         _v570_session_lod[sym] = px
+        new_lod = px
+    # v6.0.8 \u2014 mirror to disk only when HOD or LOD actually moved
+    # (avoids one disk write per quote on every quiet print). The
+    # COALESCE in save_session_state preserves whichever side did
+    # not change. Failure-tolerant.
+    if new_hod is not None or new_lod is not None:
+        try:
+            persistence.save_session_state(
+                sym, _v570_session_today_str(),
+                session_hod=new_hod, session_lod=new_lod,
+            )
+        except Exception:
+            pass
     return prev_hod, prev_lod, hod_break, lod_break
 
 
@@ -1729,6 +1844,21 @@ def _v570_record_trade_close(pnl_dollars: float) -> float:
                 )
             finally:
                 _v570_kill_switch_logged = True
+    # v6.0.8 \u2014 mirror cumulative P&L + kill-switch latch to disk
+    # so a Railway redeploy cannot zero out the running total or
+    # silently un-latch the kill switch mid-session. Failure-tolerant.
+    today = _v570_session_today_str()
+    try:
+        persistence.save_session_global(
+            "daily_realized_pnl", today,
+            value_real=float(_v570_daily_realized_pnl),
+        )
+        persistence.save_session_global(
+            "kill_switch_latched", today,
+            value_int=1 if _v570_kill_switch_latched else 0,
+        )
+    except Exception:
+        pass
     return _v570_daily_realized_pnl
 
 

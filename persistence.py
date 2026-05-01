@@ -139,6 +139,39 @@ def init_db(path: Optional[str] = None) -> None:
                 )
                 """
             )
+            # v6.0.8 \u2014 per-ticker per-ET-date session state. Persists the
+            # in-memory dicts (_v570_session_hod, _v570_session_lod,
+            # _v570_strike_counts) across Railway redeploys. Keyed by
+            # et_date so a stale row from yesterday is naturally
+            # ignored on rehydrate when today != stored et_date.
+            bootstrap.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_state (
+                    ticker TEXT NOT NULL,
+                    et_date TEXT NOT NULL,
+                    session_hod REAL,
+                    session_lod REAL,
+                    strike_count INTEGER NOT NULL DEFAULT 0,
+                    last_updated_utc TEXT NOT NULL,
+                    PRIMARY KEY (ticker, et_date)
+                )
+                """
+            )
+            # v6.0.8 \u2014 scalar session-globals. One row per
+            # (key, et_date) holding daily-realized-pnl and the
+            # kill-switch latch flags.
+            bootstrap.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_globals (
+                    key TEXT NOT NULL,
+                    et_date TEXT NOT NULL,
+                    value_real REAL,
+                    value_int INTEGER,
+                    last_updated_utc TEXT NOT NULL,
+                    PRIMARY KEY (key, et_date)
+                )
+                """
+            )
         finally:
             bootstrap.close()
         _initialized = True
@@ -427,6 +460,196 @@ def delete_executor_position(
         except Exception:
             pass
         raise
+
+
+# ----------------------------------------------------------------------
+# v6.0.8 \u2014 session_state / session_globals helpers
+#
+# All write helpers are FAILURE-TOLERANT: any sqlite3 error is logged
+# and swallowed so a corrupt or unwritable state.db can never raise
+# into the trading path. Read helpers return None / empty-dict on any
+# error so the caller falls back to in-memory defaults exactly as if
+# the row did not exist.
+# ----------------------------------------------------------------------
+def save_session_state(
+    ticker: str,
+    et_date: str,
+    *,
+    session_hod: Optional[float] = None,
+    session_lod: Optional[float] = None,
+    strike_count: Optional[int] = None,
+) -> None:
+    """UPSERT one (ticker, et_date) row. Fields left at None preserve
+    their existing stored value via COALESCE, so callers can update
+    HOD without clobbering LOD or strike_count and vice versa.
+    """
+    sym = (ticker or "").strip().upper()
+    if not sym or not et_date:
+        return
+    try:
+        c = _conn()
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            "INSERT INTO session_state "
+            "(ticker, et_date, session_hod, session_lod, strike_count, last_updated_utc) "
+            "VALUES (?, ?, ?, ?, COALESCE(?, 0), ?) "
+            "ON CONFLICT(ticker, et_date) DO UPDATE SET "
+            "  session_hod = COALESCE(excluded.session_hod, session_state.session_hod), "
+            "  session_lod = COALESCE(excluded.session_lod, session_state.session_lod), "
+            "  strike_count = COALESCE(excluded.strike_count, session_state.strike_count), "
+            "  last_updated_utc = excluded.last_updated_utc",
+            (
+                sym,
+                et_date,
+                None if session_hod is None else float(session_hod),
+                None if session_lod is None else float(session_lod),
+                None if strike_count is None else int(strike_count),
+                _utc_now_iso(),
+            ),
+        )
+        c.execute("COMMIT")
+    except Exception as e:
+        try:
+            _conn().execute("ROLLBACK")
+        except Exception:
+            pass
+        logger.warning("save_session_state failed for %s/%s: %s", sym, et_date, e)
+
+
+def load_session_state_for_date(et_date: str) -> dict[str, dict]:
+    """Return {ticker: {session_hod, session_lod, strike_count}} for
+    every row matching ``et_date``. Empty dict on any error."""
+    out: dict[str, dict] = {}
+    if not et_date:
+        return out
+    try:
+        c = _conn()
+        cur = c.execute(
+            "SELECT ticker, session_hod, session_lod, strike_count "
+            "FROM session_state WHERE et_date = ?",
+            (et_date,),
+        )
+        for row in cur.fetchall():
+            ticker = row[0]
+            out[ticker] = {
+                "session_hod": None if row[1] is None else float(row[1]),
+                "session_lod": None if row[2] is None else float(row[2]),
+                "strike_count": int(row[3] or 0),
+            }
+    except Exception as e:
+        logger.warning("load_session_state_for_date(%s) failed: %s", et_date, e)
+    return out
+
+
+def prune_session_state(keep_et_date: str) -> int:
+    """Delete every session_state row whose et_date != keep_et_date.
+    Called once per ET-day rollover so the table never accretes
+    yesterday's HOD/LOD. Returns rows deleted (0 on error)."""
+    if not keep_et_date:
+        return 0
+    try:
+        c = _conn()
+        c.execute("BEGIN IMMEDIATE")
+        cur = c.execute(
+            "DELETE FROM session_state WHERE et_date != ?",
+            (keep_et_date,),
+        )
+        deleted = cur.rowcount or 0
+        c.execute("COMMIT")
+        return deleted
+    except Exception as e:
+        try:
+            _conn().execute("ROLLBACK")
+        except Exception:
+            pass
+        logger.warning("prune_session_state failed: %s", e)
+        return 0
+
+
+def save_session_global(
+    key: str,
+    et_date: str,
+    *,
+    value_real: Optional[float] = None,
+    value_int: Optional[int] = None,
+) -> None:
+    """UPSERT one scalar (key, et_date) row. Either or both columns
+    may be supplied; the unspecified one is preserved via COALESCE.
+    Used for daily_realized_pnl (real) + kill_switch_latched (int)."""
+    if not key or not et_date:
+        return
+    try:
+        c = _conn()
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            "INSERT INTO session_globals "
+            "(key, et_date, value_real, value_int, last_updated_utc) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(key, et_date) DO UPDATE SET "
+            "  value_real = COALESCE(excluded.value_real, session_globals.value_real), "
+            "  value_int = COALESCE(excluded.value_int, session_globals.value_int), "
+            "  last_updated_utc = excluded.last_updated_utc",
+            (
+                key,
+                et_date,
+                None if value_real is None else float(value_real),
+                None if value_int is None else int(value_int),
+                _utc_now_iso(),
+            ),
+        )
+        c.execute("COMMIT")
+    except Exception as e:
+        try:
+            _conn().execute("ROLLBACK")
+        except Exception:
+            pass
+        logger.warning("save_session_global(%s/%s) failed: %s", key, et_date, e)
+
+
+def load_session_globals_for_date(et_date: str) -> dict[str, dict]:
+    """Return {key: {value_real, value_int}} for every row matching
+    ``et_date``. Empty dict on any error."""
+    out: dict[str, dict] = {}
+    if not et_date:
+        return out
+    try:
+        c = _conn()
+        cur = c.execute(
+            "SELECT key, value_real, value_int FROM session_globals WHERE et_date = ?",
+            (et_date,),
+        )
+        for row in cur.fetchall():
+            out[row[0]] = {
+                "value_real": None if row[1] is None else float(row[1]),
+                "value_int": None if row[2] is None else int(row[2]),
+            }
+    except Exception as e:
+        logger.warning("load_session_globals_for_date(%s) failed: %s", et_date, e)
+    return out
+
+
+def prune_session_globals(keep_et_date: str) -> int:
+    """Delete every session_globals row whose et_date != keep_et_date.
+    Returns rows deleted (0 on error)."""
+    if not keep_et_date:
+        return 0
+    try:
+        c = _conn()
+        c.execute("BEGIN IMMEDIATE")
+        cur = c.execute(
+            "DELETE FROM session_globals WHERE et_date != ?",
+            (keep_et_date,),
+        )
+        deleted = cur.rowcount or 0
+        c.execute("COMMIT")
+        return deleted
+    except Exception as e:
+        try:
+            _conn().execute("ROLLBACK")
+        except Exception:
+            pass
+        logger.warning("prune_session_globals failed: %s", e)
+        return 0
 
 
 def _close_for_tests() -> None:
