@@ -4,6 +4,23 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.2 — 2026-05-01 — Hotfix: SMA stack daily-bars fetcher must use IEX feed
+
+### Why
+v6.0.1 shipped the daily SMA stack rebuild and the panel still rendered "data not available" for every titan. Live diagnosis: `_daily_closes_for_sma` was 403'ing on every call with `subscription does not permit querying recent SIP data`. Alpaca's `StockBarsRequest` defaults to the SIP feed; our paper-trading credentials are the free/basic tier which only permits the IEX feed. The rest of the codebase already pins `feed=IEX` (`dashboard_server.py`, `volume_profile.py`, `engine/seeders.py`); the v6.0.1 fetcher was the lone outlier.
+
+### What
+- `trade_genius._daily_closes_for_sma` now passes `feed="iex"` to `StockBarsRequest`. Verified live on prod via railway-ssh probe: AAPL returns 245 daily bars and the snapshot helper produces a fully populated `sma_stack` payload (daily_close, all 5 SMAs, classification=bullish, substate=all_above).
+- `bot_version.py` and `trade_genius.py` BOT_VERSION 6.0.1 → 6.0.2; `CURRENT_MAIN_NOTE` rewritten (14 lines, all ≤34 chars).
+
+### Tests
+No new tests — the fetcher branches (`feed="iex"` plumbing, fallback paths) are already covered by `tests/test_v6_0_1_sma_stack.py` against the lazy-getattr injection. Unit tests don't exercise live Alpaca calls.
+
+### Backwards compatibility
+No schema or contract change. Pure parameter addition to an outbound HTTP call. Every other caller (and the dashboard's `sma_stack` consumer) is untouched.
+
+---
+
 ## v6.0.1 — 2026-05-01 — Chart zoom persistence + restored daily SMA stack + remove QBTS from titan universe
 
 ### Why
