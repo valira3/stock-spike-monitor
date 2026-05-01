@@ -480,118 +480,21 @@ def check_breakout(ticker, side):
     )
     is_extreme_print = bool(hod_break if cfg.side.is_long else lod_break)
 
-    # v5.26.2 \u2014 Strike-1 NHOD/NLOD-on-close gate. The Section II.2
-    # boundary hold above already enforces 2x consecutive 1m closes vs
-    # ORH/ORL for Strike 1. Per the v5.26.2 spec amendment, Strike 1
-    # must ALSO satisfy a NHOD/NLOD close confirmation: the most recent
-    # closed 1m bar must close strictly above the prior session HOD
-    # (long) / strictly below the prior session LOD (short).
-    #
-    # Why a 1-bar gate rather than a 2-bar boundary-hold gate (which
-    # would mirror Strikes 2&3 byte-for-byte): the session HOD/LOD is
-    # updated tick-by-tick, so by definition the *closes* themselves
-    # contribute to the running extreme. Requiring 2 closes both
-    # strictly outside the running extreme is structurally impossible
-    # for a fresh break \u2014 the very close that breaks the extreme
-    # immediately becomes the new extreme. The 1-bar variant is the
-    # mathematically meaningful Strike 1 analogue: combined with the
-    # ORH/ORL 2-bar hold already required, this enforces both "2x
-    # consecutive close past OR boundary" AND "latest close past prior
-    # session extreme".
-    #
-    # When no prior session extreme exists yet (first qualifying print
-    # of the session), the gate skips \u2014 a Strike-1 entry must be
-    # backed by a confirmed NHOD/NLOD close.
-    if _next_strike_num == 1:
-        # Strike 1 NHOD/NLOD-on-close gate (1-bar variant).
-        # Spec: "match Strike 2&3 entry gate" \u2014 fundamentally checks that
-        # the latest 1m close establishes a new session HOD (long) / LOD
-        # (short) on a closed-bar basis.
-        # Implementation: compare _last_1m_close vs the session HOD/LOD
-        # captured BEFORE this tick was folded in (i.e. session extreme at
-        # end of prior minute in backtest; pre-tick in live). This is the
-        # `_prev_hod`/`_prev_lod` returned by _v570_update_session_hod_lod.
-        # Auto-pass when no prior session extreme exists (insufficient data),
-        # mirroring evaluate_boundary_hold_gate's insufficient-closes default.
-        # 1-bar (not 2-bar): Strike 2&3 byte-for-byte 2-bar against running
-        # session HOD/LOD is structurally impossible because the running
-        # extreme always includes the bar's intraday high tick \u2265 close,
-        # so a closed-bar 'past extreme' check on a fresh break must use the
-        # pre-bar snapshot, and the consolidation-then-2-closes pattern only
-        # exists once a prior strike has fired.
-        # Compare to session HOD/LOD computed from CLOSED 1m bars only
-        # (max/min of all prior 1m closes today). This is the closed-bar
-        # session extreme as of end-of-prior-minute. We deliberately do NOT
-        # use _prev_hod/_prev_lod (the tick-by-tick running session extreme)
-        # because intra-bar ticks always set the running extreme \u2265 the
-        # bar's close, making a "close past running extreme" check
-        # structurally unfireable on a fresh break.
-        _closes_buf_s1 = list(tg.eot_glue._last_1m_closes.get(ticker, []))
-        _last_1m_close = float(_closes_buf_s1[-1]) if _closes_buf_s1 else None
-        _prior_closes_s1 = (
-            [float(x) for x in _closes_buf_s1[:-1]] if len(_closes_buf_s1) >= 2 else []
-        )
-        _sess_hod_close = max(_prior_closes_s1) if _prior_closes_s1 else None
-        _sess_lod_close = min(_prior_closes_s1) if _prior_closes_s1 else None
-        if cfg.side.is_long:
-            if _sess_hod_close is None:
-                _nhod_hold = True  # auto-pass: no prior closed-bar reference
-                _nhod_reason = "no_prior_extreme_autopass"
-            elif _last_1m_close is None:
-                _nhod_hold = False
-                _nhod_reason = "no_close"
-            elif _last_1m_close > _sess_hod_close:
-                _nhod_hold = True
-                _nhod_reason = "satisfied"
-            else:
-                _nhod_hold = False
-                _nhod_reason = "close_inside_extreme"
-        else:
-            if _sess_lod_close is None:
-                _nhod_hold = True  # auto-pass: no prior closed-bar reference
-                _nhod_reason = "no_prior_extreme_autopass"
-            elif _last_1m_close is None:
-                _nhod_hold = False
-                _nhod_reason = "no_close"
-            elif _last_1m_close < _sess_lod_close:
-                _nhod_hold = True
-                _nhod_reason = "satisfied"
-            else:
-                _nhod_hold = False
-                _nhod_reason = "close_inside_extreme"
-        nhod_res = {
-            "hold": _nhod_hold,
-            "reason": _nhod_reason,
-            "consecutive_outside": 1 if _nhod_hold else 0,
-        }
-        try:
-            from forensic_capture import write_boundary_record as _write_boundary
-
-            _write_boundary(
-                ticker=ticker,
-                side=side_label,
-                ts_utc=tg._utc_now_iso(),
-                boundary_label="NHOD_NLOD_1BAR_CLOSED_BARS",
-                boundary_high=_sess_hod_close,
-                boundary_low=_sess_lod_close,
-                last_close=_last_1m_close,
-                prior_close=(_closes_buf_s1[-2] if len(_closes_buf_s1) >= 2 else None),
-                consecutive_outside=nhod_res.get("consecutive_outside"),
-                hold=nhod_res.get("hold"),
-                reason=nhod_res.get("reason"),
-                strike_num=_next_strike_num,
-            )
-        except Exception:
-            pass
-        if not nhod_res.get("hold"):
-            tg._v561_log_skip(
-                ticker=ticker,
-                reason="V15_STRIKE1_NHOD_NLOD:%s" % nhod_res.get("reason"),
-                ts_utc=tg._utc_now_iso(),
-                gate_state=None,
-            )
-            _emit_decision("SKIP:V15_STRIKE1_NHOD_NLOD:%s" % nhod_res.get("reason"))
-            return False, None
+    # v5.31.3 \u2014 Strike-1 NHOD/NLOD-on-close gate REMOVED.
+    # Until v5.31.2 Strike 1 had to clear two gates: (1) the
+    # Section II.2 boundary hold (2x consecutive 1m close vs ORH/ORL)
+    # and (2) a NHOD/NLOD-on-close confirmation (latest 1m close past
+    # the prior closed-bar session HOD/LOD). The NHOD/NLOD layer was
+    # introduced in v5.26.2 as additional confirmation but in practice
+    # filtered out clean Strike-1 setups whose break of OR happened
+    # *before* the day's running session high; those entries would
+    # have been profitable. Removed here so Strike 1 again only
+    # requires the OR boundary hold (consistent with the rest of the
+    # v15 spec, which scopes NHOD/NLOD to the post-entry sentinel).
+    # is_extreme_print and _prev_hod/_prev_lod above are still used
+    # by the forensic decision record (is_nhod_or_nlod, prev_sess_hod
+    # / prev_sess_lod fields), so the upstream call to
+    # _v570_update_session_hod_lod is intentionally retained.
 
     # v15.0 SPEC Alarm E pre-entry filter:
     #   Spec \u00a71.2: "If a price prints a new extreme but RSI(15) is
