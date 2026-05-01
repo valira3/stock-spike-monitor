@@ -143,6 +143,29 @@ def _safe_float(v):
         return None
 
 
+def _chandelier_stage(pos: dict) -> int:
+    """Read Alarm-F chandelier stage from pos["trail_state"].
+
+    Stage codes (engine.alarm_f_trail.TrailState):
+        0 INACTIVE \u2014 trail not armed yet
+        1 BREAKEVEN \u2014 BE installed, trail engaged
+        2 CHANDELIER_WIDE \u2014 active trailing
+        3 CHANDELIER_TIGHT \u2014 last 30min tight trailing
+
+    v6.0.6 \u2014 added so the dashboard TRAIL badge can fire on
+    Alarm-F-driven trails (which never set the legacy trail_active
+    flag because Alarm F overwrites pos["stop"] directly via the
+    Sentinel pipeline). Returns 0 when trail_state missing or
+    malformed; never raises."""
+    try:
+        ts = pos.get("trail_state") if pos else None
+        if ts is None:
+            return 0
+        return int(getattr(ts, "stage", 0) or 0)
+    except Exception:
+        return 0
+
+
 def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
     rows: list[dict] = []
     for tkr, p in longs.items():
@@ -162,6 +185,12 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_high"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
+        # v6.0.6 \u2014 expose Alarm-F chandelier stage so the UI TRAIL
+        # badge fires when the chandelier has armed (stage >= 1) even
+        # when the legacy trail_active flag is False. Alarm F mutates
+        # pos["stop"] directly via the Sentinel pipeline rather than
+        # going through the legacy trail_stop path.
+        chandelier_stage = _chandelier_stage(p)
         # v5.10.6 \u2014 surface phase / Sovereign Brake distance / Entry-2
         # fired flag on every position row so the dashboard does not
         # need a second join against the per_position_v510 map.
@@ -181,6 +210,7 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "trail_stop": trail_stop,
                 "trail_anchor": trail_anchor,
                 "effective_stop": effective_stop,
+                "chandelier_stage": chandelier_stage,
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
                 "entry_count": int(p.get("entry_count", 1) or 1),
@@ -200,6 +230,7 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_low"))
         effective_stop = trail_stop if (trail_active and trail_stop is not None) else hard_stop
+        chandelier_stage = _chandelier_stage(p)
         phase_v510 = str(p.get("phase") or "A").upper()
         if phase_v510 not in ("A", "B", "C"):
             phase_v510 = "A"
@@ -216,6 +247,7 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "trail_stop": trail_stop,
                 "trail_anchor": trail_anchor,
                 "effective_stop": effective_stop,
+                "chandelier_stage": chandelier_stage,
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
                 "entry_count": 1,

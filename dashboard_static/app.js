@@ -269,7 +269,17 @@
         const pnlCls = (p.unrealized ?? 0) >= 0 ? "delta-up" : "delta-down";
         const eff = (typeof p.effective_stop === "number")
                       ? p.effective_stop : p.stop;
-        const trailBadge = p.trail_active
+        // v6.0.6 \u2014 TRAIL badge fires for either trail mechanism:
+        //   * legacy trail_active (Phase B/C breakeven trail, sets
+        //     pos.trail_stop and pos.trail_active=True)
+        //   * Alarm-F chandelier (mutates pos.stop directly via
+        //     Sentinel; surfaces as p.chandelier_stage >= 1).
+        // Without this, an actively ratcheting chandelier looks like
+        // a static hard stop on the dashboard even though the engine
+        // is tightening it every minute.
+        const _trailArmed = p.trail_active
+          || (Number.isFinite(Number(p.chandelier_stage)) && Number(p.chandelier_stage) >= 1);
+        const trailBadge = _trailArmed
           ? ` <span class="trail-badge" title="Trail stop is armed \u2014 the effective stop now follows price, not the original hard stop">TRAIL</span>`
           : "";
         // v5.13.10 — SB (Alarm A1 Loss distance) column removed
@@ -4056,7 +4066,11 @@
           if (!_mp || !_mp.ticker) continue;
           const _eff = (typeof _mp.effective_stop === "number")
                          ? _mp.effective_stop : _mp.stop;
-          _stopBySym[_mp.ticker] = { eff: _eff, trail: !!_mp.trail_active };
+          // v6.0.6 \u2014 chandelier stage >= 1 also counts as armed trail
+          // (Alarm F never sets the legacy trail_active flag).
+          const _chStage = Number(_mp.chandelier_stage) || 0;
+          const _trailArmed = !!_mp.trail_active || _chStage >= 1;
+          _stopBySym[_mp.ticker] = { eff: _eff, trail: _trailArmed };
         }
         const rows = positions.map(p => {
           const upok = (Number(p.unrealized_pnl) || 0) >= 0;

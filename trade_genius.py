@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.5"
+BOT_VERSION = "6.0.6"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,26 +97,25 @@ BOT_VERSION = "6.0.5"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.5 hotfix:\n"
-    "Yahoo trailing-None +\n"
-    "Alpaca-IEX primary 1m.\n"
-    "Yahoo's 1m series ended\n"
-    "with None for the\n"
-    "forming minute, tripping\n"
-    "float(closes[-1]) and\n"
-    "freezing Alarm F's gate.\n"
-    "Fix 1: walk back to last\n"
-    "finite close, finite-only\n"
-    "H/L/C for ATR (broker/\n"
-    "positions.py).\n"
-    "Fix 2: fetch_1min_bars\n"
-    "now Alpaca-IEX primary,\n"
-    "Yahoo fallback. Both\n"
-    "fail -> [SENTINEL]\n"
-    "[CRITICAL] log + 1-shot\n"
-    "Telegram per ticker.\n"
-    "FMP keeps current_price\n"
-    "realtime for entries."
+    "v6.0.6 dashboard fix:\n"
+    "TRAIL badge now fires\n"
+    "on Alarm-F chandelier.\n"
+    "Before: badge only lit\n"
+    "on legacy trail_active\n"
+    "(Phase B/C breakeven).\n"
+    "Alarm F mutates pos.stop\n"
+    "directly via Sentinel,\n"
+    "never sets trail_active,\n"
+    "so a stage-3 chandelier\n"
+    "ratcheting every minute\n"
+    "looked like a static\n"
+    "hard stop on the UI.\n"
+    "Fix: serializer surfaces\n"
+    "chandelier_stage from\n"
+    "trail_state. Frontend\n"
+    "ORs it with trail_active\n"
+    "in both Open Positions\n"
+    "and executor tabs."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
