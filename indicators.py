@@ -93,6 +93,34 @@ def atr14(bars: Sequence[dict]) -> float | None:
         return None
 
 
+def atr5_1m(bars: Sequence[dict]) -> float | None:
+    """5-period Wilder ATR on 1-minute bars. Bars need `high`, `low`, `close`.
+    Needs >= 6 bars (5 true-range values for the seed). Wilder method \u2014
+    same style as atr14.
+
+    Designed for the v6.1.0 ATR-scaled trailing stop; shorter window
+    reacts faster to intraday volatility shifts than the 14-period ATR.
+    """
+    if bars is None or len(bars) < 6:
+        return None
+    try:
+        trs: list[float] = []
+        for i in range(1, len(bars)):
+            h = float(bars[i]["high"])
+            l = float(bars[i]["low"])
+            pc = float(bars[i - 1]["close"])
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            trs.append(tr)
+        if len(trs) < 5:
+            return None
+        atr = sum(trs[:5]) / 5.0
+        for tr in trs[5:]:
+            atr = (atr * 4.0 + tr) / 5.0
+        return round(atr, 4)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
 def vwap_dist_pct(bars: Sequence[dict]) -> float | None:
     """% distance of last close from session VWAP, computed from the bar
     list (assumes session-bounded). Bars need `high`, `low`, `close`,
@@ -193,4 +221,71 @@ def spread_bps(bid: float | None, ask: float | None) -> float | None:
             return None
         return round(((a - b) / mid) * 10000.0, 4)
     except (TypeError, ValueError):
+        return None
+
+
+def pre_market_range_atr(
+    bars: "Sequence[dict]",
+    window_minutes: int = 15,
+    period: int = 5,
+) -> "float | None":
+    """ATR(``period``) computed over pre-market 1-minute bars for the
+    v6.1.0 ATR-normalized OR-break entry gate.
+
+    ``bars`` is a list of 1-minute OHLC dicts with keys ``high``, ``low``,
+    ``close``, and either ``ts`` or ``timestamp`` (Unix epoch int).
+    Bars are expected oldest-first.  Only bars whose epoch falls in the
+    08:30-09:25 ET range (inclusive) are used; the most recent
+    ``window_minutes`` of those are then selected for the ATR computation.
+
+    Returns ``None`` when the filtered slice contains fewer than
+    ``period``+1 bars (insufficient data).  Never raises.
+    """
+    if not bars:
+        return None
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        from datetime import datetime as _dt, timezone as _tz
+
+        _ET = _ZI("America/New_York")
+
+        def _epoch_to_hhmm(epoch: int) -> tuple:
+            d = _dt.fromtimestamp(epoch, tz=_tz.utc).astimezone(_ET)
+            return d.hour * 60 + d.minute
+
+        pm_bars: list = []
+        for b in bars:
+            ts_raw = b.get("ts") or b.get("timestamp")
+            if ts_raw is None:
+                continue
+            try:
+                mins = _epoch_to_hhmm(int(ts_raw))
+            except (TypeError, ValueError):
+                continue
+            # 08:30 = 510 minutes; 09:25 = 565 minutes (inclusive)
+            if 510 <= mins <= 565:
+                pm_bars.append(b)
+
+        if len(pm_bars) < period + 1:
+            return None
+
+        # Take the most-recent window_minutes bars from the filtered slice
+        pm_slice = pm_bars[-window_minutes:] if window_minutes < len(pm_bars) else pm_bars
+        if len(pm_slice) < period + 1:
+            return None
+
+        # Wilder ATR(period)
+        trs: list = []
+        for i in range(1, len(pm_slice)):
+            hi = float(pm_slice[i]["high"])
+            lo = float(pm_slice[i]["low"])
+            pc = float(pm_slice[i - 1]["close"])
+            trs.append(max(hi - lo, abs(hi - pc), abs(lo - pc)))
+        if len(trs) < period:
+            return None
+        atr_val = sum(trs[:period]) / float(period)
+        for tr in trs[period:]:
+            atr_val = (atr_val * (period - 1) + tr) / float(period)
+        return round(atr_val, 4)
+    except Exception:
         return None

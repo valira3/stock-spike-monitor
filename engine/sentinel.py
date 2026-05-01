@@ -127,6 +127,14 @@ ALARM_B_CONFIRM_BARS: int = 2
 # tests can flip them per-case via monkeypatch.
 ALARM_C_ENABLED: bool = False
 ALARM_D_ENABLED: bool = False
+
+# ---------------------------------------------------------------------------
+# v6.1.0 \u2014 ATR-scaled trailing stop feature flag
+# ---------------------------------------------------------------------------
+# Set False to fall back to the fixed-cents protective stop path (backward
+# compat). Flip off via monkeypatch in tests or env override if shadow data
+# shows regression before a full rollback is warranted.
+_V610_ATR_TRAIL_ENABLED: bool = True
 ALARM_E_ENABLED: bool = False
 
 SIDE_LONG = "LONG"
@@ -419,7 +427,54 @@ def check_alarm_a(
 
 # ---------------------------------------------------------------------------
 # Alarm A_STOP_PRICE \u2014 v5.31.4 price-rail protective stop
+# v6.1.0 \u2014 enhanced with ATR-scaled 3-stage trailing stop with profit-protect ratchet
 # ---------------------------------------------------------------------------
+
+# v6.1.0 stage thresholds (multiples of ATR)
+_ATR_TRAIL_STAGE1_THRESHOLD: float = 1.0   # pnl_per_share < 1x ATR  -> 1.0x trail
+_ATR_TRAIL_STAGE2_THRESHOLD: float = 3.0   # pnl_per_share < 3x ATR  -> 1.5x trail
+_ATR_TRAIL_STAGE1_MULT: float = 1.0
+_ATR_TRAIL_STAGE2_MULT: float = 1.5
+_ATR_TRAIL_LOCKIN_FRAC: float = 0.5        # Stage 3: give back at most 50%% of peak profit
+_ATR_TRAIL_FLOOR_MULT: float = 0.3         # absolute floor: never tighter than 0.3x ATR
+
+
+def _compute_atr_trail_distance(
+    atr: float,
+    position_pnl_per_share: float,
+    peak_open_profit_per_share: float,
+) -> float:
+    """Compute the v6.1.0 ATR-scaled trail distance (in price units).
+
+    Three stages, keyed on how much per-share profit the position is
+    carrying relative to the current ATR:
+
+      Stage 1 (pnl < 1 x ATR in profit): trail = 1.0 x ATR
+      Stage 2 (1 x ATR <= pnl < 3 x ATR in profit): trail = 1.5 x ATR
+      Stage 3 (pnl >= 3 x ATR in profit): lock-in mode \u2014 trail =
+          max(0.5 x peak_open_profit_per_share, 0.3 x ATR)
+
+    An absolute floor of 0.3 x ATR is applied in all stages so the
+    trail never collapses to a micro-stop in low-volatility regimes.
+
+    Arguments are pre-validated by the caller; ``atr`` must be > 0.
+    Returns a positive float (price distance, not direction-adjusted).
+    """
+    floor = _ATR_TRAIL_FLOOR_MULT * atr
+    if position_pnl_per_share >= _ATR_TRAIL_STAGE2_THRESHOLD * atr:
+        # Stage 3 \u2014 lock-in: cap give-back at 50%% of peak open profit.
+        # Peak may be 0 or negative (trade never ran positive); fall back
+        # to Stage 2 distance so we never widen unexpectedly.
+        lockin_dist = _ATR_TRAIL_LOCKIN_FRAC * max(peak_open_profit_per_share, 0.0)
+        if lockin_dist <= 0.0:
+            lockin_dist = _ATR_TRAIL_STAGE2_MULT * atr
+        return max(lockin_dist, floor)
+    elif position_pnl_per_share >= _ATR_TRAIL_STAGE1_THRESHOLD * atr:
+        # Stage 2 \u2014 widened trail as position moves further in profit.
+        return max(_ATR_TRAIL_STAGE2_MULT * atr, floor)
+    else:
+        # Stage 1 \u2014 initial trail equal to one ATR.
+        return max(_ATR_TRAIL_STAGE1_MULT * atr, floor)
 
 
 def check_alarm_a_stop_price(
@@ -427,6 +482,12 @@ def check_alarm_a_stop_price(
     side: str,
     current_price: float | None,
     current_stop_price: float | None,
+    # v6.1.0 ATR trail optional params \u2014 ignored when _V610_ATR_TRAIL_ENABLED
+    # is False or when ATR data is unavailable (falls back to fixed-cents path).
+    atr_value: float | None = None,
+    position_pnl_per_share: float | None = None,
+    peak_open_profit_per_share: float | None = None,
+    entry_price: float | None = None,
 ) -> list[SentinelAction]:
     """Evaluate the v5.31.4 price-based protective stop.
 
@@ -435,12 +496,20 @@ def check_alarm_a_stop_price(
     by ``broker/orders.py`` from ``eye_of_tiger.STOP_PCT_OF_ENTRY``
     at entry: long stop = entry \u00d7 0.995, short stop = entry \u00d7 1.005.
 
-    Side-symmetric:
-      * LONG: fires when ``current_price <= current_stop_price``.
-      * SHORT: fires when ``current_price >= current_stop_price``.
+    v6.1.0 enhancement (``_V610_ATR_TRAIL_ENABLED=True``): when
+    ``atr_value``, ``position_pnl_per_share``, ``peak_open_profit_per_share``,
+    and ``entry_price`` are all provided, the protective stop level is
+    recomputed as an ATR-scaled trailing stop with a 3-stage ratchet
+    and a 50%% peak-profit lock-in at Stage 3. The fixed-cents
+    ``current_stop_price`` is used as the fallback when ATR data is
+    unavailable or the feature flag is off.
 
-    Sits out silently when either input is None (e.g. price feed gap
-    or no protective stop on file). The position-level R-2 dollar
+    Side-symmetric:
+      * LONG: fires when ``current_price <= stop_level``.
+      * SHORT: fires when ``current_price >= stop_level``.
+
+    Sits out silently when either price input is None (e.g. price feed
+    gap or no protective stop on file). The position-level R-2 dollar
     rail and Alarm B's 9-EMA shield remain as deeper backstops.
 
     Returns a list with at most one SentinelAction.
@@ -452,27 +521,61 @@ def check_alarm_a_stop_price(
         sp = float(current_stop_price)
     except (TypeError, ValueError):
         return []
+
+    # v6.1.0 \u2014 attempt to recompute stop via ATR-scaled trail when the
+    # feature flag is enabled and all required inputs are present.
+    atr_trail_active: bool = False
+    if (
+        _V610_ATR_TRAIL_ENABLED
+        and atr_value is not None
+        and position_pnl_per_share is not None
+        and peak_open_profit_per_share is not None
+        and entry_price is not None
+    ):
+        try:
+            atr_f = float(atr_value)
+            pnl_ps = float(position_pnl_per_share)
+            peak_ps = float(peak_open_profit_per_share)
+            ep = float(entry_price)
+            if atr_f > 0.0:
+                trail_dist = _compute_atr_trail_distance(atr_f, pnl_ps, peak_ps)
+                # Ratchet the ATR-computed stop: never move it against the
+                # position direction \u2014 only tighten (raise for long, lower for
+                # short). The fixed-cents stop from broker/orders.py acts as
+                # the hard minimum boundary below this ratchet.
+                if side == SIDE_LONG:
+                    atr_stop = ep + pnl_ps - trail_dist
+                    sp = max(sp, atr_stop)  # never loosen below the initial stop
+                elif side == SIDE_SHORT:
+                    atr_stop = ep - pnl_ps + trail_dist
+                    sp = min(sp, atr_stop)  # never loosen above the initial stop
+                atr_trail_active = True
+        except (TypeError, ValueError):
+            pass  # fall through to fixed-cents path
+
     fired: list[SentinelAction] = []
     if side == SIDE_LONG:
         if cp <= sp:
+            trail_tag = " atr_trail=1" if atr_trail_active else ""
             fired.append(
                 SentinelAction(
                     alarm="A_STOP_PRICE",
                     reason=EXIT_REASON_PRICE_STOP,
                     detail=(
-                        f"side=LONG mark={cp:.4f} <= stop={sp:.4f}"
+                        f"side=LONG mark={cp:.4f} <= stop={sp:.4f}{trail_tag}"
                     ),
                     detail_stop_price=sp,
                 )
             )
     elif side == SIDE_SHORT:
         if cp >= sp:
+            trail_tag = " atr_trail=1" if atr_trail_active else ""
             fired.append(
                 SentinelAction(
                     alarm="A_STOP_PRICE",
                     reason=EXIT_REASON_PRICE_STOP,
                     detail=(
-                        f"side=SHORT mark={cp:.4f} >= stop={sp:.4f}"
+                        f"side=SHORT mark={cp:.4f} >= stop={sp:.4f}{trail_tag}"
                     ),
                     detail_stop_price=sp,
                 )
@@ -480,7 +583,6 @@ def check_alarm_a_stop_price(
     return fired
 
 
-# ---------------------------------------------------------------------------
 # Alarm B \u2014 9-EMA Shield (5m close vs 9-EMA)
 # ---------------------------------------------------------------------------
 
@@ -493,6 +595,15 @@ def check_alarm_b(
     prev_5m_close: float | None = None,
     prev_5m_ema9: float | None = None,
     confirm_bars: int = 1,
+    # v6.1.0 params: stateful two-bar confirmation via per-position counter.
+    # When position_id is supplied AND _V610_EMA_CONFIRM_ENABLED is True,
+    # the function uses _ema_cross_pending[position_id] to track consecutive
+    # cross bars and only fires after two consecutive cross bars. Callers that
+    # do not supply position_id get the legacy (confirm_bars-based) path.
+    position_id: str | None = None,
+    # now_et: datetime in America/New_York used for lunch-chop suppression.
+    # When None the suppression check is skipped (treats as outside window).
+    now_et: "datetime | None" = None,
 ) -> list[SentinelAction]:
     """Evaluate Alarm B for one position.
 
