@@ -217,11 +217,13 @@ def check_breakout(ticker, side):
 
     or_edge_val = or_dict[ticker]
     pdc_val_e = tg.pdc[ticker]
-    # 2-bar OR breakout/breakdown confirmation (Tiger 2.0).
+    # v6.1.0 — ATR-normalized OR-break check (replaces fixed-cents tiger-2-bar).
+    # When _V610_ATR_OR_BREAK_ENABLED is True, break uses k*ATR threshold.
+    # Legacy _tiger_two_bar_long/short is preserved as the fallback path.
     if cfg.side.is_long:
-        price_break = tg._tiger_two_bar_long(closes, or_edge_val)
+        price_break = tg._v610_or_break_long(closes, or_edge_val, ticker)
     else:
-        price_break = tg._tiger_two_bar_short(closes, or_edge_val)
+        price_break = tg._v610_or_break_short(closes, or_edge_val, ticker)
     polarity_ok = current_price > pdc_val_e if cfg.side.is_long else current_price < pdc_val_e
 
     volumes = bars.get("volumes", [])
@@ -339,8 +341,41 @@ def check_breakout(ticker, side):
         boundary_high = _sess_hod if _sess_hod is not None else or_high_val
         boundary_low = _sess_lod if _sess_lod is not None else or_low_val
     else:
+        # v6.1.0 — Strike 1: apply ATR-normalized threshold when enabled.
+        # The boundary hold gate compares closes strictly against boundary_high
+        # (LONG) / boundary_low (SHORT).  Shifting the boundary by k*ATR
+        # tightens or loosens the required extension before firing.
+        # When ATR is unavailable or the flag is off, raw OR edges are used.
         boundary_high = or_high_val
         boundary_low = or_low_val
+        try:
+            if (
+                getattr(tg, "_V610_ATR_OR_BREAK_ENABLED", False)
+                and or_high_val is not None
+                and or_low_val is not None
+            ):
+                _v610_k = float(getattr(tg, "V610_OR_BREAK_K", 0.6))
+                _v610_atr = tg._v610_compute_pm_atr(ticker)
+                if _v610_atr is not None and _v610_atr > 0:
+                    boundary_high = or_high_val + _v610_k * _v610_atr
+                    boundary_low  = or_low_val  - _v610_k * _v610_atr
+        except Exception as _v610_e:
+            tg.logger.debug(
+                "[V610-OR-BREAK] boundary adjustment error %s: %s",
+                ticker,
+                _v610_e,
+            )
+
+    # v6.1.0 — late-OR window: update the late-OR range when inside
+    # 11:00-12:00 ET and the standard break has not yet fired.
+    try:
+        if getattr(tg, "V610_LATE_OR_ENABLED", False):
+            _now_h = now_et.hour
+            _now_m = now_et.minute
+            if _now_h == 11 or (_now_h == 12 and _now_m == 0):
+                tg._v610_update_late_or(ticker, now_et)
+    except Exception:
+        pass
 
     # v5.26.2 \u2014 forensic decision-record helper. Built once with the
     # context that is invariant across the gate-stack body (current_price,
@@ -614,6 +649,12 @@ def check_breakout(ticker, side):
             ("%.2f" % di_1m) if di_1m is not None else "None",
             current_price,
         )
+    except Exception:
+        pass
+    # v6.1.0 — mark standard OR break as fired for this ticker so the
+    # late-OR window (V610_LATE_OR_ENABLED) does not re-evaluate.
+    try:
+        tg._v610_or_break_fired[ticker] = True
     except Exception:
         pass
     _emit_decision("ENTER")
