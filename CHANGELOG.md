@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.28.3 — 2026-05-01 — Static asset cache-bust (force browser reload across deploys)
+
+### Why
+v5.28.1 + v5.28.2 fixed the always-render alarm strip and the permit-row expand gate, but the user reported "still don't see it" after both went live. Investigation found the live `/static/app.js` bundle on Railway *did* contain the fix (verified via `curl`), yet the rendered dashboard was still showing the old behavior. Root cause: `dashboard_static/index.html` references the assets without any version querystring (`<script src="/static/app.js" defer>`), and the `aiohttp.web.add_static` handler emits no `Cache-Control` header, so browsers and the Fastly CDN keep serving cached copies across deploys. The user's browser was loading a v5.28.0-era app.js and would not pick up subsequent fixes until a manual hard-refresh — and even hard-refresh is unreliable when SSL session resumption short-circuits the validation.
+
+### Change
+- `dashboard_server.py::h_root` — stops returning the static `index.html` as a `FileResponse` and instead reads it, rewrites the two asset references to include a `?v=<BOT_VERSION>` querystring, and serves the result with strict `Cache-Control: no-cache, no-store, must-revalidate` headers. Static assets themselves are unchanged on disk so direct hits still work; only the served HTML changes.
+- Result: every redeploy bumps `BOT_VERSION`, which bumps the asset URL, which forces every browser to fetch the new bundle on the next page load — no manual hard-refresh required.
+
+### Acceptance
+- Local: `curl /` returns HTML with `app.js?v=5.28.3` and `app.css?v=5.28.3` plus the new `Cache-Control` header.
+- Live: after deploy, dashboard hard-refresh shows `?v=5.28.3` on the script tag in DevTools → Network tab.
+- Existing static endpoints unchanged: `/static/app.js` and `/static/app.css` still serve directly with no versioning.
+
+---
+
 ## v5.28.2 — 2026-05-01 — Permit-row detail gate fix (alarm strip on open-permit cards)
 
 ### Why

@@ -1199,7 +1199,32 @@ async def h_root(request):
         return web.Response(
             text="dashboard_static/index.html missing", status=500, content_type="text/plain"
         )
-    return web.FileResponse(idx)
+    # v5.28.3 \u2014 cache-bust /static/app.js and /static/app.css with the
+    # current BOT_VERSION so a redeploy forces every browser to reload
+    # the bundle. Without this, the browser holds onto a cached app.js
+    # across deploys (Railway serves no Cache-Control header on static
+    # assets but Fastly + browser heuristics still cache). The user hit
+    # exactly this on the v5.28.1/v5.28.2 push: the live bundle had the
+    # fix but the rendered dashboard was still running an older cached
+    # copy. Cheap mitigation: rewrite the two asset references in the
+    # served index.html with a ?v=<version> query string. Static files
+    # themselves are unchanged so the on-disk path stays valid.
+    try:
+        _bv = str(getattr(_ssm(), "BOT_VERSION", "unknown"))
+    except Exception:
+        _bv = "unknown"
+    html = idx.read_text(encoding="utf-8")
+    html = html.replace('href="/static/app.css"', f'href="/static/app.css?v={_bv}"', 1)
+    html = html.replace('src="/static/app.js"',  f'src="/static/app.js?v={_bv}"',  1)
+    return web.Response(
+        text=html,
+        content_type="text/html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 async def h_login(request):
