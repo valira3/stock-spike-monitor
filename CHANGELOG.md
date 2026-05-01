@@ -4,6 +4,78 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.26.2 — 2026-04-30 — Strike-1 NHOD/NLOD alignment + forensic capture
+
+### Why
+User request: "match Strike 1 to Strike 2 and 3 entry gate" and "record
+all relevant data during trading so that we can do future backtest with
+all possible data that we might need." Strike 2 and Strike 3 require
+the latest 1m close to break the running session HOD (long) / LOD
+(short) on top of their boundary-hold gate; Strike 1 historically only
+demanded ORH/ORL 2-bar hold. v5.26.2 adds an analogous NHOD/NLOD-on-close
+requirement to Strike 1 and lays down a per-minute forensic JSONL
+capture surface so future backtests can replay every gate evaluation
+with full bar context.
+
+### What changed
+
+- **`broker/orders.py`** — Strike-1 entry path now evaluates a NHOD/NLOD
+  gate AFTER the existing ORH/ORL 2-bar boundary-hold check. The gate
+  compares the latest 1m close against the closed-bar session extreme
+  (max/min of all prior 1m closes today). Auto-passes when no prior
+  closed-bar reference exists, mirroring the boundary-hold gate's
+  insufficient-closes default. The gate is intentionally 1-bar (not
+  2-bar): byte-for-byte mirroring of the Strike 2/3 2-bar pattern
+  against the running session HOD/LOD is structurally unfireable on
+  Strike 1 because intra-bar ticks always set the running extreme
+  ≥ the bar's close — the closed-bar interpretation captures the
+  same intent. Skip reason: `V15_STRIKE1_NHOD_NLOD:<satisfied|no_close|
+  no_prior_extreme_autopass|close_inside_extreme>`.
+
+- **`forensic_capture.py`** — NEW append-only JSONL writers under
+  `/data/forensics/<YYYY-MM-DD>/{decisions,boundary,indicators}/<TICKER>.jsonl`.
+  Three records: `write_decision_record` (per entry-check return point),
+  `write_boundary_record` (every boundary-hold gate evaluation including
+  the new NHOD_NLOD_1BAR_CLOSED_BARS surface), `write_indicator_snapshot`
+  (per-ticker per-minute DI± 1m/5m, ADX 1m/5m, RSI(15), session HOD/LOD,
+  ORH/ORL, PDC, strike_count, bid/ask, OHLCV). All writers are failure-
+  tolerant — they never raise into the trading path.
+
+- **`broker/orders.py`** — wired forensic capture into every post-gate
+  return point in `check_breakout`: boundary fail, ADX fail, NHOD/NLOD
+  fail, alarm-E fail, entry1 fail, success. Decision records are emitted
+  via the `_emit_decision()` closure that reads the enclosing-frame
+  locals so the captured snapshot reflects the live values of
+  `boundary_res`, `nhod_res`, `di_5m`, `di_1m`, `adx_5m`, `_rsi15_e`,
+  `_prev_hod`, `_prev_lod` at the moment of the decision.
+
+- **`engine/scan.py`** — populates bid/ask via
+  `tg._v512_quote_snapshot()` in both RTH and premarket warm-up canon
+  bars; adds `iex_volume` to the RTH canon bar (was missing); writes a
+  per-minute indicator snapshot via
+  `forensic_capture.write_indicator_snapshot()` for every TRADE_TICKER.
+
+### Backtest verification (2026-04-30 today_bars)
+
+- 24 entries / 24 prior baseline; 23 fire identically.
+- Prod targets: TSLA LONG 11:01 ✅, NVDA SHORT 09:41 ✅, GOOG LONG 11:01
+  ✅, AAPL LONG 12:21 → 12:26 (delayed 5 minutes — 12:21 close 270.89
+  was below the prior closed-bar session HOD 271.63 so the new gate
+  correctly blocked; AAPL re-fires at 12:26 when close exceeds prior
+  closed-bar HOD). All four are still winning long-side entries; AAPL
+  shifts in time only — expected behavior of the stricter gate.
+
+### Spec impact
+
+None. The new NHOD/NLOD-on-close requirement is a strictly additive
+filter on Strike 1 — every Strike 1 entry that fires under v5.26.2
+would have fired under v5.26.1; the converse does not hold (some
+entries are now blocked when the latest 1m close is inside the prior
+closed-bar session extreme). Strikes 2 and 3 are untouched. Forensic
+capture is purely passive; it never raises into the trading path.
+
+---
+
 ## v5.26.1 — 2026-04-30 — Premarket warm-up window
 
 ### Why

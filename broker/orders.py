@@ -291,6 +291,85 @@ def check_breakout(ticker, side):
         boundary_high = or_high_val
         boundary_low = or_low_val
 
+    # v5.26.2 \u2014 forensic decision-record helper. Built once with the
+    # context that is invariant across the gate-stack body (current_price,
+    # ORH/ORL, PDC, QQQ snapshot). Mutated locals (DI, ADX, RSI, prev
+    # session HOD/LOD, boundary holds) are read off the enclosing frame
+    # via getlocals at emit time. The helper is fully wrapped \u2014 a
+    # forensic write can NEVER raise into the trading path.
+    _decision_qqq_last = qqq_last
+    _decision_qqq_avwap = qqq_avwap
+    _decision_qqq_5m = qqq_5m_close
+    _decision_qqq_ema9 = qqq_ema9
+    _decision_or_high = or_high_val
+    _decision_or_low = or_low_val
+    _decision_pdc = pdc_val_e
+
+    def _emit_decision(decision_str: str) -> None:
+        try:
+            from forensic_capture import (
+                write_decision_record as _write_decision,
+            )
+
+            _frame_locals = locals()
+            # Walk up to the enclosing function frame so we read the live
+            # values of di_5m / di_1m / adx_5m / boundary_res / nhod_res
+            # at the moment of the decision rather than helper-frame None.
+            import sys as _sys_d
+
+            _f = _sys_d._getframe(1)
+            _outer = _f.f_locals if _f is not None else {}
+
+            def _g(name):
+                return _outer.get(name) if name in _outer else None
+
+            _b_pri = _g("boundary_res") or {}
+            _b_s1 = _g("nhod_res") or {}
+            _sess_hod = None
+            _sess_lod = None
+            try:
+                _sess_hod = tg._v570_session_hod.get(ticker.upper())
+                _sess_lod = tg._v570_session_lod.get(ticker.upper())
+            except Exception:
+                pass
+            _write_decision(
+                ticker=ticker,
+                side=side_label,
+                ts_utc=tg._utc_now_iso(),
+                strike_num=_g("_next_strike_num"),
+                decision=decision_str,
+                current_price=current_price,
+                last_close=last_close,
+                or_high=_decision_or_high,
+                or_low=_decision_or_low,
+                pdc=_decision_pdc,
+                qqq_last=_decision_qqq_last,
+                qqq_avwap=_decision_qqq_avwap,
+                qqq_5m_close=_decision_qqq_5m,
+                qqq_ema9=_decision_qqq_ema9,
+                sess_hod=_sess_hod,
+                sess_lod=_sess_lod,
+                prev_sess_hod=_g("_prev_hod"),
+                prev_sess_lod=_g("_prev_lod"),
+                di_1m=_g("di_1m"),
+                di_5m=_g("di_5m"),
+                adx_1m=(
+                    (_g("adx_streams") or {}).get("adx_1m")
+                    if _g("adx_streams") is not None
+                    else None
+                ),
+                adx_5m=_g("adx_5m"),
+                rsi_15=_g("_rsi15_e"),
+                boundary_hold_or=(_b_pri.get("hold") if isinstance(_b_pri, dict) else None),
+                boundary_hold_nhod_nlod=(_b_s1.get("hold") if isinstance(_b_s1, dict) else None),
+                is_extreme_print=_g("is_extreme_print"),
+                permit_open=True,
+                alarm_e_blocked=_g("_e_blocked"),
+                sentinel_state=None,
+            )
+        except Exception:
+            pass
+
     # Section II.2 \u2014 Boundary Hold (Entry-1 only). Stateless: the
     # last two closed 1m closes vs the boundary edge (ORH/ORL or NHOD/NLOD).
     boundary_res = tg.eot_glue.evaluate_boundary_hold_gate(
@@ -299,6 +378,29 @@ def check_breakout(ticker, side):
         boundary_high,
         boundary_low,
     )
+
+    # v5.26.2 \u2014 forensic capture of the primary boundary gate result.
+    try:
+        from forensic_capture import write_boundary_record as _write_boundary_pri
+
+        _closes_pri = list(tg.eot_glue._last_1m_closes.get(ticker, []))
+        _label_pri = "NHOD_NLOD" if _next_strike_num >= 2 else "ORH_ORL"
+        _write_boundary_pri(
+            ticker=ticker,
+            side=side_label,
+            ts_utc=tg._utc_now_iso(),
+            boundary_label=_label_pri,
+            boundary_high=boundary_high,
+            boundary_low=boundary_low,
+            last_close=(_closes_pri[-1] if _closes_pri else None),
+            prior_close=(_closes_pri[-2] if len(_closes_pri) >= 2 else None),
+            consecutive_outside=boundary_res.get("consecutive_outside"),
+            hold=boundary_res.get("hold"),
+            reason=boundary_res.get("reason"),
+            strike_num=_next_strike_num,
+        )
+    except Exception:
+        pass
 
     # v5.26.0 \u2014 [V510-CAND] gate-audit log line deleted (Volume Gate
     # bypass leaves only the 2-candle hold for this telemetry).
@@ -310,6 +412,7 @@ def check_breakout(ticker, side):
             ts_utc=tg._utc_now_iso(),
             gate_state=None,
         )
+        _emit_decision("SKIP:V5100_BOUNDARY:%s" % boundary_res.get("reason"))
         return False, None
 
     # Section III Trend Confirmation \u2014 5m DI > 25, 1m DI > 25, NHOD/NLOD.
@@ -336,6 +439,10 @@ def check_breakout(ticker, side):
             ts_utc=tg._utc_now_iso(),
             gate_state=None,
         )
+        _emit_decision(
+            "SKIP:V15_MOMENTUM_ADX_5M:%s"
+            % (("%.2f" % float(adx_5m)) if adx_5m is not None else "none")
+        )
         return False, None
 
     # NHOD / NLOD: derive from session HOD/LOD vs current_price (strict).
@@ -344,6 +451,119 @@ def check_breakout(ticker, side):
         current_price,
     )
     is_extreme_print = bool(hod_break if cfg.side.is_long else lod_break)
+
+    # v5.26.2 \u2014 Strike-1 NHOD/NLOD-on-close gate. The Section II.2
+    # boundary hold above already enforces 2x consecutive 1m closes vs
+    # ORH/ORL for Strike 1. Per the v5.26.2 spec amendment, Strike 1
+    # must ALSO satisfy a NHOD/NLOD close confirmation: the most recent
+    # closed 1m bar must close strictly above the prior session HOD
+    # (long) / strictly below the prior session LOD (short).
+    #
+    # Why a 1-bar gate rather than a 2-bar boundary-hold gate (which
+    # would mirror Strikes 2&3 byte-for-byte): the session HOD/LOD is
+    # updated tick-by-tick, so by definition the *closes* themselves
+    # contribute to the running extreme. Requiring 2 closes both
+    # strictly outside the running extreme is structurally impossible
+    # for a fresh break \u2014 the very close that breaks the extreme
+    # immediately becomes the new extreme. The 1-bar variant is the
+    # mathematically meaningful Strike 1 analogue: combined with the
+    # ORH/ORL 2-bar hold already required, this enforces both "2x
+    # consecutive close past OR boundary" AND "latest close past prior
+    # session extreme".
+    #
+    # When no prior session extreme exists yet (first qualifying print
+    # of the session), the gate skips \u2014 a Strike-1 entry must be
+    # backed by a confirmed NHOD/NLOD close.
+    if _next_strike_num == 1:
+        # Strike 1 NHOD/NLOD-on-close gate (1-bar variant).
+        # Spec: "match Strike 2&3 entry gate" \u2014 fundamentally checks that
+        # the latest 1m close establishes a new session HOD (long) / LOD
+        # (short) on a closed-bar basis.
+        # Implementation: compare _last_1m_close vs the session HOD/LOD
+        # captured BEFORE this tick was folded in (i.e. session extreme at
+        # end of prior minute in backtest; pre-tick in live). This is the
+        # `_prev_hod`/`_prev_lod` returned by _v570_update_session_hod_lod.
+        # Auto-pass when no prior session extreme exists (insufficient data),
+        # mirroring evaluate_boundary_hold_gate's insufficient-closes default.
+        # 1-bar (not 2-bar): Strike 2&3 byte-for-byte 2-bar against running
+        # session HOD/LOD is structurally impossible because the running
+        # extreme always includes the bar's intraday high tick \u2265 close,
+        # so a closed-bar 'past extreme' check on a fresh break must use the
+        # pre-bar snapshot, and the consolidation-then-2-closes pattern only
+        # exists once a prior strike has fired.
+        # Compare to session HOD/LOD computed from CLOSED 1m bars only
+        # (max/min of all prior 1m closes today). This is the closed-bar
+        # session extreme as of end-of-prior-minute. We deliberately do NOT
+        # use _prev_hod/_prev_lod (the tick-by-tick running session extreme)
+        # because intra-bar ticks always set the running extreme \u2265 the
+        # bar's close, making a "close past running extreme" check
+        # structurally unfireable on a fresh break.
+        _closes_buf_s1 = list(tg.eot_glue._last_1m_closes.get(ticker, []))
+        _last_1m_close = float(_closes_buf_s1[-1]) if _closes_buf_s1 else None
+        _prior_closes_s1 = (
+            [float(x) for x in _closes_buf_s1[:-1]] if len(_closes_buf_s1) >= 2 else []
+        )
+        _sess_hod_close = max(_prior_closes_s1) if _prior_closes_s1 else None
+        _sess_lod_close = min(_prior_closes_s1) if _prior_closes_s1 else None
+        if cfg.side.is_long:
+            if _sess_hod_close is None:
+                _nhod_hold = True  # auto-pass: no prior closed-bar reference
+                _nhod_reason = "no_prior_extreme_autopass"
+            elif _last_1m_close is None:
+                _nhod_hold = False
+                _nhod_reason = "no_close"
+            elif _last_1m_close > _sess_hod_close:
+                _nhod_hold = True
+                _nhod_reason = "satisfied"
+            else:
+                _nhod_hold = False
+                _nhod_reason = "close_inside_extreme"
+        else:
+            if _sess_lod_close is None:
+                _nhod_hold = True  # auto-pass: no prior closed-bar reference
+                _nhod_reason = "no_prior_extreme_autopass"
+            elif _last_1m_close is None:
+                _nhod_hold = False
+                _nhod_reason = "no_close"
+            elif _last_1m_close < _sess_lod_close:
+                _nhod_hold = True
+                _nhod_reason = "satisfied"
+            else:
+                _nhod_hold = False
+                _nhod_reason = "close_inside_extreme"
+        nhod_res = {
+            "hold": _nhod_hold,
+            "reason": _nhod_reason,
+            "consecutive_outside": 1 if _nhod_hold else 0,
+        }
+        try:
+            from forensic_capture import write_boundary_record as _write_boundary
+
+            _write_boundary(
+                ticker=ticker,
+                side=side_label,
+                ts_utc=tg._utc_now_iso(),
+                boundary_label="NHOD_NLOD_1BAR_CLOSED_BARS",
+                boundary_high=_sess_hod_close,
+                boundary_low=_sess_lod_close,
+                last_close=_last_1m_close,
+                prior_close=(_closes_buf_s1[-2] if len(_closes_buf_s1) >= 2 else None),
+                consecutive_outside=nhod_res.get("consecutive_outside"),
+                hold=nhod_res.get("hold"),
+                reason=nhod_res.get("reason"),
+                strike_num=_next_strike_num,
+            )
+        except Exception:
+            pass
+        if not nhod_res.get("hold"):
+            tg._v561_log_skip(
+                ticker=ticker,
+                reason="V15_STRIKE1_NHOD_NLOD:%s" % nhod_res.get("reason"),
+                ts_utc=tg._utc_now_iso(),
+                gate_state=None,
+            )
+            _emit_decision("SKIP:V15_STRIKE1_NHOD_NLOD:%s" % nhod_res.get("reason"))
+            return False, None
 
     # v15.0 SPEC Alarm E pre-entry filter:
     #   Spec \u00a71.2: "If a price prints a new extreme but RSI(15) is
@@ -377,6 +597,7 @@ def check_breakout(ticker, side):
                         ts_utc=tg._utc_now_iso(),
                         gate_state=None,
                     )
+                    _emit_decision("SKIP:V15_ALARM_E_PRE_STRIKE%d" % _next_strike_num)
                     return False, None
         except Exception as _alarm_e_err:
             tg.logger.warning(
@@ -402,6 +623,7 @@ def check_breakout(ticker, side):
             ts_utc=tg._utc_now_iso(),
             gate_state=None,
         )
+        _emit_decision("SKIP:V5100_ENTRY1:%s" % entry1_decision.get("reason", ""))
         return False, None
 
     # All Eye-of-the-Tiger gates pass. Bars dict carries current_price
@@ -417,6 +639,7 @@ def check_breakout(ticker, side):
         )
     except Exception:
         pass
+    _emit_decision("ENTER")
     return True, bars
 
 

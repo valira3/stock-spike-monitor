@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.26.1"
+BOT_VERSION = "5.26.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,13 +97,15 @@ BOT_VERSION = "5.26.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.26.1 premarket warm-up.\n"
-    "Engine wakes 1.5h before RTH\n"
-    "open (08:00 ET) and archives\n"
-    "1m bars for QQQ + each\n"
-    "TRADE_TICKER through 09:35.\n"
-    "No entries / no manage in\n"
-    "the warm-up window."
+    "v5.26.2 Strike-1 NHOD/NLOD\n"
+    "alignment + forensic capture.\n"
+    "Strike-1 now requires latest\n"
+    "1m close past prior closed-bar\n"
+    "session HOD (long) / LOD\n"
+    "(short), in addition to ORH/ORL\n"
+    "2-bar boundary hold. Per-minute\n"
+    "forensic JSONL writers capture\n"
+    "decisions, boundary, indicators."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

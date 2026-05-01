@@ -99,6 +99,12 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                         )
                     except Exception:
                         _ts_iso_pre = None
+                    # v5.26.2 \u2014 populate bid/ask from Alpaca latest quote
+                    # in the premarket warm-up window too. Failure-tolerant.
+                    try:
+                        _q_bid_pre, _q_ask_pre = tg._v512_quote_snapshot(_t_pre)
+                    except Exception:
+                        _q_bid_pre, _q_ask_pre = (None, None)
                     _bar_pre = {
                         "ts": _ts_iso_pre,
                         "et_bucket": None,
@@ -110,8 +116,8 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                         if abs(_idx_pre) <= len(_vols_pre)
                         else None,
                         "iex_sip_ratio_used": None,
-                        "bid": None,
-                        "ask": None,
+                        "bid": _q_bid_pre,
+                        "ask": _q_ask_pre,
                         "last_trade_price": _b_pre.get("current_price"),
                     }
                     tg._v512_archive_minute_bar(_t_pre, _bar_pre)
@@ -236,6 +242,13 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         et_bucket = volume_profile.session_bucket(now_et)
                     except Exception:
                         pass
+                    # v5.26.2 \u2014 populate bid/ask from the Alpaca latest
+                    # quote snapshot. Failure-tolerant; (None, None) on miss.
+                    try:
+                        _q_bid, _q_ask = tg._v512_quote_snapshot(ticker)
+                    except Exception:
+                        _q_bid, _q_ask = (None, None)
+                    _vols_rth = _bars_for_mtm.get("volumes") or []
                     canon_bar = {
                         "ts": ts_iso,
                         "et_bucket": et_bucket,
@@ -243,12 +256,79 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         "high": highs[idx] if abs(idx) <= len(highs) else None,
                         "low": lows[idx] if abs(idx) <= len(lows) else None,
                         "close": closes[idx],
+                        "iex_volume": _vols_rth[idx] if abs(idx) <= len(_vols_rth) else None,
                         "iex_sip_ratio_used": None,
-                        "bid": None,
-                        "ask": None,
+                        "bid": _q_bid,
+                        "ask": _q_ask,
                         "last_trade_price": _bars_for_mtm.get("current_price"),
                     }
                     tg._v512_archive_minute_bar(ticker, canon_bar)
+                    # v5.26.2 \u2014 per-minute forensic indicator snapshot.
+                    # Pulls the same DI/ADX/RSI streams the gate stack will
+                    # read on this tick; written to /data/forensics/<date>/
+                    # indicators/<TICKER>.jsonl. Failure-tolerant.
+                    try:
+                        from forensic_capture import (
+                            write_indicator_snapshot as _write_ind,
+                        )
+
+                        _di_s = tg.v5_di_1m_5m(ticker) if hasattr(tg, "v5_di_1m_5m") else None
+                        _adx_s = tg.v5_adx_1m_5m(ticker) if hasattr(tg, "v5_adx_1m_5m") else None
+                        _closes_for_rsi = [c for c in (closes or []) if c is not None]
+                        _rsi15 = (
+                            tg._compute_rsi(_closes_for_rsi, period=15)
+                            if _closes_for_rsi and hasattr(tg, "_compute_rsi")
+                            else None
+                        )
+                        _vol_idx = (
+                            (_bars_for_mtm.get("volumes") or [])[idx]
+                            if abs(idx) <= len(_bars_for_mtm.get("volumes") or [])
+                            else None
+                        )
+                        _write_ind(
+                            ticker=ticker,
+                            ts_utc=ts_iso,
+                            bar_close=closes[idx],
+                            bar_open=opens[idx] if abs(idx) <= len(opens) else None,
+                            bar_high=highs[idx] if abs(idx) <= len(highs) else None,
+                            bar_low=lows[idx] if abs(idx) <= len(lows) else None,
+                            bar_volume=_vol_idx,
+                            bid=_q_bid,
+                            ask=_q_ask,
+                            last_trade_price=_bars_for_mtm.get("current_price"),
+                            or_high=tg.or_high.get(ticker) if hasattr(tg, "or_high") else None,
+                            or_low=tg.or_low.get(ticker) if hasattr(tg, "or_low") else None,
+                            pdc=(tg.pdc.get(ticker) if hasattr(tg, "pdc") else None),
+                            sess_hod=(
+                                tg._v570_session_hod.get(ticker.upper())
+                                if hasattr(tg, "_v570_session_hod")
+                                else None
+                            ),
+                            sess_lod=(
+                                tg._v570_session_lod.get(ticker.upper())
+                                if hasattr(tg, "_v570_session_lod")
+                                else None
+                            ),
+                            di_plus_1m=(_di_s or {}).get("di_plus_1m"),
+                            di_minus_1m=(_di_s or {}).get("di_minus_1m"),
+                            di_plus_5m=(_di_s or {}).get("di_plus_5m"),
+                            di_minus_5m=(_di_s or {}).get("di_minus_5m"),
+                            adx_1m=(_adx_s or {}).get("adx_1m"),
+                            adx_5m=(_adx_s or {}).get("adx_5m"),
+                            rsi_15=_rsi15,
+                            strike_count=(
+                                tg._v570_strike_count(ticker)
+                                if hasattr(tg, "_v570_strike_count")
+                                else None
+                            ),
+                            sentinel_state=None,
+                        )
+                    except Exception as _e_ind:
+                        logger.warning(
+                            "[V526-FORENSIC] indicator snapshot %s: %s",
+                            ticker,
+                            _e_ind,
+                        )
         except Exception as e:
             logger.warning("[bar] archive hook %s: %s", ticker, e)
         # Spec Section II.2 (Boundary Hold) requires a rolling buffer of
