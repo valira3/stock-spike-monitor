@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import v5_10_1_integration as eot_glue
 import volume_profile
 
 from engine.callbacks import EngineCallbacks
@@ -252,6 +253,19 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                     tg._v512_archive_minute_bar(ticker, canon_bar)
         except Exception as e:
             logger.warning("[bar] archive hook %s: %s", ticker, e)
+        # Spec Section II.2 (Boundary Hold) requires a rolling buffer of
+        # the most recent closed 1m closes. `record_latest_1m_close` walks
+        # back from [-2] to find the newest non-None close (Yahoo keeps a
+        # forming-bar None at [-2] for most of RTH); without this hook
+        # `_last_1m_closes` stays empty and `evaluate_boundary_hold_gate`
+        # returns insufficient_closes \u2192 polarity=None forever.
+        try:
+            if _bars_for_mtm:
+                eot_glue.record_latest_1m_close(
+                    ticker, _bars_for_mtm.get("closes") or []
+                )
+        except Exception as _e:
+            logger.warning("[V5100-BOUNDARY] record_1m_close %s: %s", ticker, _e)
         paper_holds = callbacks.has_long(ticker)
         if not paper_holds:
             ok, bars = callbacks.check_entry(ticker)

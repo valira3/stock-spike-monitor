@@ -301,6 +301,11 @@ def install_record_only_layers(
 
     Patches applied:
       * `trade_genius._now_et` / `_now_cdt` \u2192 BacktestClock
+      * `trade_genius.fetch_1min_bars` \u2192 reads from harness bar store
+        (avoids Yahoo Finance network calls per ticker per minute)
+      * `trade_genius.get_fmp_quote` \u2192 synthesizes from harness bars
+        (avoids financialmodelingprep.com network calls)
+      * `trade_genius._cycle_bar_cache` \u2192 cleared each tick advance
       * `trade_genius.send_telegram` \u2192 RecordOnlyTelegram.send
       * `trade_genius.positions` / `.short_positions` already exist as
         module dicts; we replace the references with the harness's
@@ -313,6 +318,67 @@ def install_record_only_layers(
     # Clock.
     tg._now_et = clock.now_et
     tg._now_cdt = clock.now_cdt
+
+    # Bar fetch \u2014 the engine's `fetch_1min_bars` is called from many
+    # sites in trade_genius (gate snapshot, position management, exit
+    # checks, etc.) and hits Yahoo Finance directly. Patch it to read
+    # from the harness bar store, returning the prod-shape dict that
+    # downstream code expects.
+    # We close over `_bars_owner`; the driver sets `_bars_owner["bars"]`
+    # after this function returns via `tg._harness_bars_owner`.
+    _bars_owner = {"bars": None, "clock": clock}
+
+    def _harness_fetch_1min_bars(ticker: str):
+        bars = (_bars_owner["bars"] or {}).get(ticker.upper()) or []
+        if not bars:
+            return None
+        cutoff = clock.now.astimezone(timezone.utc)
+        visible = [b for b in bars if b["_dt"] <= cutoff]
+        if not visible:
+            return None
+        opens = [b.get("open") for b in visible]
+        highs = [b.get("high") for b in visible]
+        lows = [b.get("low") for b in visible]
+        closes = [b.get("close") for b in visible]
+        vols = [b.get("iex_volume") if b.get("iex_volume") is not None else b.get("volume") for b in visible]
+        timestamps = [int(b["_dt"].timestamp()) for b in visible]
+        last_close = next((c for c in reversed(closes) if c is not None), 0.0)
+        # `pdc` is previous-day close; harness bars don't carry that, so
+        # fall back to the first bar's open as a stand-in. Production paths
+        # that strictly need PDC will short-circuit, which is fine for replay.
+        first_open = next((o for o in opens if o is not None), last_close)
+        return {
+            "timestamps": timestamps,
+            "opens": opens,
+            "highs": highs,
+            "lows": lows,
+            "closes": closes,
+            "volumes": vols,
+            "current_price": last_close or 0.0,
+            "pdc": first_open or 0.0,
+        }
+
+    def _harness_get_fmp_quote(ticker: str):
+        bars = _harness_fetch_1min_bars(ticker)
+        if not bars or not bars.get("current_price"):
+            return None
+        cp = bars["current_price"]
+        # Synthesize a tight bid/ask quote around the last close. Spec
+        # uses bid * 0.999 (long limit) and ask * 1.001 (short limit) so
+        # spread of $0.02 is fine for replay; real spreads vary.
+        return {
+            "symbol": ticker,
+            "price": cp,
+            "bid": round(cp - 0.01, 2),
+            "ask": round(cp + 0.01, 2),
+            "timestamp": int(clock.now.timestamp() * 1000),
+        }
+
+    tg.fetch_1min_bars = _harness_fetch_1min_bars
+    tg.get_fmp_quote = _harness_get_fmp_quote
+    # Expose attach hook so the driver can plug in bars_by_ticker after
+    # the layers are installed.
+    tg._harness_bars_owner = _bars_owner
 
     # Telegram.
     if hasattr(tg, "send_telegram"):
@@ -690,6 +756,9 @@ def run_replay(
     # 4) Install monkey-patches into the real trade_genius.
     install_record_only_layers(_tg, clock, broker_layer, telegram_layer, position_store)
 
+    # 4b) Wire the harness bar store into tg's record-only fetch_1min_bars.
+    _tg._harness_bars_owner["bars"] = bars_by_ticker
+
     # 5) Build the callbacks.
     cb = RecordOnlyCallbacks(
         tg=_tg,
@@ -707,6 +776,11 @@ def run_replay(
     while cur <= end_dt:
         clock.now = cur
         cb.ticks.append(cur)
+        # Clear the per-cycle bar cache so each tick re-reads from the
+        # harness bar store at the new clock time.
+        _cache = getattr(_tg, "_cycle_bar_cache", None)
+        if _cache is not None and hasattr(_cache, "clear"):
+            _cache.clear()
         try:
             _engine_scan.scan_loop(cb)
         except Exception as e:
