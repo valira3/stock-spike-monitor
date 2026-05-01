@@ -86,50 +86,11 @@ def test_L_P1_S2():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="v5.26.0: BL-3 (Volume Gate) BYPASSED -- engine.volume_baseline deleted")
 def test_L_P2_S3():
-    """L-P2-S3: Volume must reach 100% of the 55-day rolling per-minute baseline.
-
-    Behavioural assertion against ``gate_volume_pass``. The gate auto-passes
-    when ``feature_flags.VOLUME_GATE_ENABLED`` is False (production default
-    as of v5.13.1) or when the baseline is None (cold-start). When the gate
-    is enabled and a baseline exists, current_volume / baseline must be >= 1.00.
+    """L-P2-S3 was the long-side volume gate assertion. v5.26.0 removed
+    the gate entirely (engine.volume_baseline deleted) per operator policy.
     """
-    from engine import volume_baseline
-    from engine.volume_baseline import gate_volume_pass, THRESHOLD_RATIO
-
-    assert THRESHOLD_RATIO == 1.00
-
-    # Force the runtime flag ON for this assertion (production default is OFF).
-    # Mutate via volume_baseline._ff so we set the attribute on the SAME module
-    # object the production code path holds — earlier tests that do
-    # ``del sys.modules['engine.feature_flags']`` (test_dashboard_state_v5_13_2,
-    # test_startup_smoke) cause a re-import to return a fresh module, but
-    # volume_baseline still holds its original reference.
-    _ff = volume_baseline._ff
-    prev = _ff.VOLUME_GATE_ENABLED
-    _ff.VOLUME_GATE_ENABLED = True
-    try:
-        # Below baseline -> fail.
-        ok, ratio = gate_volume_pass(current_volume=900.0, baseline=1000.0)
-        assert ok is False
-        assert ratio is not None and ratio < 1.00
-
-        # At baseline -> pass.
-        ok, ratio = gate_volume_pass(current_volume=1000.0, baseline=1000.0)
-        assert ok is True
-        assert ratio == pytest.approx(1.00)
-
-        # Above baseline -> pass.
-        ok, ratio = gate_volume_pass(current_volume=1500.0, baseline=1000.0)
-        assert ok is True
-        assert ratio is not None and ratio > 1.00
-
-        # Cold-start (baseline=None) -> pass-through.
-        ok, ratio = gate_volume_pass(current_volume=10.0, baseline=None)
-        assert ok is True
-        assert ratio is None
-    finally:
-        _ff.VOLUME_GATE_ENABLED = prev
 
 
 def test_L_P2_S4():
@@ -356,24 +317,11 @@ def test_S_P1_S2():
     assert "anchor" in res["reason"]
 
 
+@pytest.mark.skip(reason="v5.26.0: BU-3 (Volume Gate) BYPASSED -- engine.volume_baseline deleted")
 def test_S_P2_S3():
-    """S-P2-S3: Volume mirror of L-P2-S3 — 100% baseline threshold."""
-    from engine import volume_baseline
-    from engine.volume_baseline import gate_volume_pass, THRESHOLD_RATIO
-
-    _ff = volume_baseline._ff
-
-    assert THRESHOLD_RATIO == 1.00
-
-    prev = _ff.VOLUME_GATE_ENABLED
-    _ff.VOLUME_GATE_ENABLED = True
-    try:
-        ok, _ = gate_volume_pass(current_volume=999.99, baseline=1000.0)
-        assert ok is False
-        ok, _ = gate_volume_pass(current_volume=1000.01, baseline=1000.0)
-        assert ok is True
-    finally:
-        _ff.VOLUME_GATE_ENABLED = prev
+    """S-P2-S3 was the short-side volume gate assertion. v5.26.0
+    removed the gate entirely per operator policy.
+    """
 
 
 def test_S_P2_S4():
@@ -547,31 +495,22 @@ def test_SHARED_HUNT():
     assert is_in_hunt_window(after_cutoff) is False
 
 
+@pytest.mark.skip(
+    reason="v5.26.0: REASON_STAGE3_HARVEST symbol removed (Stage-3 harvest not in v15.1 spec)"
+)
 def test_SHARED_ORDER_PROFIT():
-    """SHARED-ORDER-PROFIT: All profit-taking exits via LIMIT orders."""
-    from broker.order_types import (
-        order_type_for_reason,
-        REASON_STAGE1_HARVEST,
-        REASON_STAGE3_HARVEST,
-        ORDER_TYPE_LIMIT,
-    )
-
-    assert order_type_for_reason(REASON_STAGE1_HARVEST) == ORDER_TYPE_LIMIT
-    assert order_type_for_reason(REASON_STAGE3_HARVEST) == ORDER_TYPE_LIMIT
+    """v5.26.0: REASON_STAGE3_HARVEST was deleted with non-spec stages.
+    LIMIT-for-profit invariant for surviving reasons is exercised by
+    other broker.order_types tests.
+    """
 
 
+@pytest.mark.skip(
+    reason="v5.26.0: REASON_RATCHET / REASON_RUNNER_EXIT symbols removed by sentinel rulings"
+)
 def test_SHARED_ORDER_STOP():
-    """SHARED-ORDER-STOP: All defensive stops via STOP MARKET orders."""
-    from broker.order_types import (
-        order_type_for_reason,
-        REASON_ALARM_A,
-        REASON_ALARM_B,
-        REASON_RATCHET,
-        REASON_RUNNER_EXIT,
-        ORDER_TYPE_STOP_MARKET,
-    )
-
-    assert order_type_for_reason(REASON_ALARM_A) == ORDER_TYPE_STOP_MARKET
-    assert order_type_for_reason(REASON_ALARM_B) == ORDER_TYPE_STOP_MARKET
-    assert order_type_for_reason(REASON_RATCHET) == ORDER_TYPE_STOP_MARKET
-    assert order_type_for_reason(REASON_RUNNER_EXIT) == ORDER_TYPE_STOP_MARKET
+    """v5.26.0: spec-strict pruning removed REASON_RATCHET and
+    REASON_RUNNER_EXIT from broker.order_types. Defensive STOP MARKET
+    invariants that survive (Alarm A / B -> STOP MARKET) are covered
+    by test_sentinel.py.
+    """

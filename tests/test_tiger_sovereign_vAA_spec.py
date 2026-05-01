@@ -114,11 +114,18 @@ def test_strike_flat_gate_blocks_until_position_closes():
 
 
 def test_strike_cap_3_overrides_titan_flag():
-    """vAA-1 explicitly retires unlimited Titan strikes."""
+    """vAA-1 explicitly retires unlimited Titan strikes.
+
+    v5.26.0 spec-strict pruning: the ``ENABLE_UNLIMITED_TITAN_STRIKES``
+    feature flag was deleted entirely (the override path is not in the
+    Tiger Sovereign v15.1 spec). The strike cap of 3 is now
+    unconditional. We assert the flag is absent rather than False.
+    """
     import trade_genius as tg
 
-    assert tg.ENABLE_UNLIMITED_TITAN_STRIKES is False, (
-        "ENABLE_UNLIMITED_TITAN_STRIKES must default OFF in v5.15.0"
+    assert not hasattr(tg, "ENABLE_UNLIMITED_TITAN_STRIKES"), (
+        "v5.26.0: ENABLE_UNLIMITED_TITAN_STRIKES flag must be deleted, not just"
+        " disabled \u2014 v15.1 spec mandates an unconditional strike cap of 3."
     )
 
 
@@ -463,18 +470,29 @@ def test_sent_c_ratchet_only_tightens():
 
 
 def test_sent_d_market_exit_when_5m_adx_below_75pct_of_peak():
-    from engine.sentinel import check_alarm_d
-    from engine.momentum_state import TradeHVP
+    """v5.26.0 RULING #2: Alarm D reads from session-wide HWM keyed by
+    ticker, not per-Strike TradeHVP.peak. Side-symmetric ADX.
+    """
+    from engine.sentinel import (
+        check_alarm_d,
+        record_session_5m_adx,
+        _SESSION_5M_ADX_HWM,
+    )
 
-    hvp = TradeHVP()
-    hvp.on_strike_open(initial_adx_5m=20.0)
-    hvp.update(current_adx_5m=40.0)  # peak = 40
+    # Reset HWM for the test ticker to keep cross-test isolation.
+    _SESSION_5M_ADX_HWM.pop("NVDA", None)
+    record_session_5m_adx("NVDA", 20.0)
+    record_session_5m_adx("NVDA", 40.0)  # session HWM = 40
 
     # 75% of 40 = 30.0
-    res_just_below = check_alarm_d(trade_hvp=hvp, current_adx_5m=29.99)
+    res_just_below = check_alarm_d(
+        ticker="NVDA", current_adx_5m=29.99, side="LONG"
+    )
     assert res_just_below is not None and res_just_below.alarm == "D"
 
-    res_above = check_alarm_d(trade_hvp=hvp, current_adx_5m=30.0)
+    res_above = check_alarm_d(
+        ticker="NVDA", current_adx_5m=30.0, side="LONG"
+    )
     assert res_above is None  # exactly 75% does NOT fire (strict)
 
 
