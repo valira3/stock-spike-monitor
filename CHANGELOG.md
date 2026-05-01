@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.28.1 — 2026-05-01 — Always-render alarm strip on expanded titan cards
+
+### Why
+
+When there were no open positions (pre-market, after EOD close, or any quiet RTH window), the Sentinel Loop alarm strip on expanded titan cards rendered as an empty string. The strip simply disappeared, which made the dashboard look broken even though the bot was running normally.
+
+### What
+
+The per-titan sentinel strip now renders unconditionally on expanded titan cards. Behaviour:
+
+- **With an open position** (unchanged): each of the six alarm cells (A1 Loss, A2 Flash, B Trend Death, C Vel. Ratchet, D HVP Lock, E Div. Trap) reflects live sentinel data, with state classes `safe` / `warn` / `trip` / `idle` painting the cell border and letter.
+- **Without an open position** (new): every cell is forced to `idle` state with an em-dash placeholder value. A small dim banner reading "no open position · alarms idle" appears above the strip so the layout is identifiable at a glance.
+
+The layout (six-cell grid, cell sizes, ordering) is identical in both states so the user always sees the same panel and the same alarms in the same positions.
+
+### Files
+
+- `dashboard_static/app.js` — `_pmtxSentinelStrip(p4, hasPos)` gains a `hasPos` parameter; when false, all six cells route to `idle` with em-dash values and a leading banner is emitted. The render gate at the call site changes from `pos ? _pmtxSentinelStrip(p4) : ""` to `_pmtxSentinelStrip(p4, !!pos)` so the strip always renders when the card has any expandable detail.
+- `dashboard_static/app.css` — new `.pmtx-sentinel-strip-wrap` (vertical flex around banner + strip) and `.pmtx-sentinel-banner` (small uppercase dim label above the strip when no open position).
+- `bot_version.py` / `trade_genius.py` — 5.28.0 → 5.28.1; CURRENT_MAIN_NOTE rewritten (each line ≤ 34 chars).
+
+No backend changes; this is a pure UI fix and ships independently of the v5.28.0 alarm portfolio simplification.
+
+---
+
 ## v5.28.0 — 2026-05-01 — Alarm F as primary chandelier exit + portfolio simplification
 
 ### Why

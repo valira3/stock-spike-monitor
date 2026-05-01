@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.28.0"
+BOT_VERSION = "5.28.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,15 +97,15 @@ BOT_VERSION = "5.28.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.28.0 Alarm F redesigned\n"
-    "as primary chandelier exit:\n"
-    "closed-bar 1m cross fires\n"
-    "full close. C/D/E gated off\n"
-    "to cut sentinel noise. A/B\n"
-    "kept as safety nets. Tuned\n"
-    "S2=1R, WIDE/TIGHT 2x/1x ATR.\n"
-    "Apr 30 backtest: -$175 to\n"
-    "+$207 (380% improvement)."
+    "v5.28.1 alarm strip always\n"
+    "shows on expanded titans:\n"
+    "idle placeholders + banner\n"
+    "when no open position, so\n"
+    "the panel never collapses.\n"
+    "v5.28.0 base: F primary\n"
+    "chandelier exit, C/D/E off,\n"
+    "tuned S2=1R WIDE/TIGHT 2/1.\n"
+    "Apr 30: -$175 to +$207."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
