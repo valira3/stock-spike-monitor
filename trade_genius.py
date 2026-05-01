@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.8.1"
+BOT_VERSION = "6.1.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,29 +97,29 @@ BOT_VERSION = "6.0.8.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.8.1 mobile hotfix:\n"
-    "v6.0.8's expanded permit\n"
-    "row CSS didn't shrink the\n"
-    "<td> because table-cell\n"
-    "width is set by table\n"
-    "layout, not max-width.\n"
-    "Live measure: td=653 px on\n"
-    "a 453 px viewport, cards\n"
-    "605 px, descriptions still\n"
-    "clipped. Fix: only on the\n"
-    "expanded row, td becomes\n"
-    "display:block + sticky;\n"
-    "left:0 + width:calc(100vw\n"
-    "- 24px), so it leaves the\n"
-    "table layout and pins to\n"
-    "the viewport. Verified\n"
-    "live: td 653 -> 366 px,\n"
-    "card 605 -> 318 px; the\n"
-    "collapsed matrix above\n"
-    "keeps its swipe-to-see\n"
-    "ADX/DI/Vol behavior. No\n"
-    "backend changes; v6.0.8\n"
-    "persistence still active."
+    "v6.1.0 P&L recovery bundle:\n"
+    "three algo upgrades shipped\n"
+    "after 5/1 TRUE backtest\n"
+    "closed -$8.32 against ~$143\n"
+    "per share of available swing\n"
+    "across the universe.\n"
+    "#1 ATR-scaled trailing stop\n"
+    "with profit-protect ratchet:\n"
+    "3 stages (1.0x / 1.5x / 50%\n"
+    "of peak open profit) plus\n"
+    "0.3x ATR floor. Replaces\n"
+    "fixed-cents trail in\n"
+    "sentinel_a_stop_price.\n"
+    "#2 two-bar EMA-cross exit\n"
+    "plus lunch-chop suppression\n"
+    "(11:30-13:00 ET) on\n"
+    "sentinel_b_ema_cross.\n"
+    "#3 ATR-normalized OR-break\n"
+    "entry gate (k=0.6) plus\n"
+    "late-OR window 11:00-12:00\n"
+    "ET. All three behind feature\n"
+    "flags for instant rollback.\n"
+    "655 tests pass."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -952,6 +952,36 @@ PHASE2_TWO_CONSECUTIVE_1M_CLOSES = True
 PHASE2_CONSECUTIVE_1M_REQUIRED  = 2
 DI_PLUS_ENTRY2_THRESHOLD        = 30
 DI_MINUS_ENTRY2_THRESHOLD       = 30
+
+# ============================================================
+# v6.1.0 — ATR-normalized OR-break entry gate (#3)
+# ============================================================
+# Master feature flag. False -> fall back to fixed-cents path (legacy).
+_V610_ATR_OR_BREAK_ENABLED: bool = False
+
+# Multiplier k: break fires when price > OR_high + k * ATR_pre_market.
+# Symmetric for short (below OR_low - k * ATR).
+V610_OR_BREAK_K: float = 0.25
+
+# Late-OR re-evaluation window: 11:00-12:00 ET. Only fires when the
+# standard 09:30-10:30 window never triggered for that ticker.
+# Gate behind this flag; set False to disable entirely.
+V610_LATE_OR_ENABLED: bool = True
+
+# Per-ticker storage of pre-market ATR (keyed by ticker, set at OR-seed
+# time or lazily on first check). Cleared at daily reset alongside
+# or_high / or_low.
+_v610_pm_atr: dict = {}              # ticker -> float | None
+
+# Per-ticker flag: True once the standard OR-break gate has fired for a
+# ticker in the current session. Used to decide whether the late-OR
+# re-evaluation is eligible.
+_v610_or_break_fired: dict = {}      # ticker -> bool
+
+# Per-ticker late-OR range: high/low of the first 30 min of 11:00-12:00
+# ET window. Populated lazily on first check after 11:00 ET.
+_v610_late_or_high: dict = {}        # ticker -> float
+_v610_late_or_low: dict = {}         # ticker -> float
 
 # ============================================================
 # GLOBAL STATE
@@ -2776,6 +2806,194 @@ def _tiger_two_bar_short(closes, or_l):
     if not closes or len(closes) < 2:
         return False
     return closes[-1] < or_l and closes[-2] < or_l
+
+
+# ============================================================
+# v6.1.0 — ATR-normalized OR-break helpers
+# ============================================================
+
+def _v610_compute_pm_atr(ticker: str) -> "float | None":
+    """Return pre-market ATR(5) for *ticker*, caching in _v610_pm_atr.
+
+    Computes over the 08:30-09:25 ET slice from fetch_1min_bars cache.
+    Falls back to ATR(5) of the first 5 RTH bars when pre-market bars
+    are insufficient.  Returns None when both paths lack enough data.
+    """
+    global _v610_pm_atr
+    if ticker in _v610_pm_atr:
+        return _v610_pm_atr[ticker]
+
+    from indicators import pre_market_range_atr as _pm_atr_fn, atr5_1m as _atr5_fn
+
+    bars_dict = fetch_1min_bars(ticker)
+    if not bars_dict:
+        _v610_pm_atr[ticker] = None
+        return None
+
+    timestamps = bars_dict.get("timestamps") or []
+    highs      = bars_dict.get("highs")      or []
+    lows       = bars_dict.get("lows")       or []
+    closes     = bars_dict.get("closes")     or []
+    opens      = bars_dict.get("opens")      or []
+
+    bar_dicts = []
+    for i, ts in enumerate(timestamps):
+        if i >= len(closes):
+            break
+        bar_dicts.append({
+            "ts":    ts,
+            "open":  opens[i]  if i < len(opens)  else closes[i],
+            "high":  highs[i]  if i < len(highs)  else closes[i],
+            "low":   lows[i]   if i < len(lows)   else closes[i],
+            "close": closes[i],
+        })
+
+    atr_val = _pm_atr_fn(bar_dicts, window_minutes=15, period=5)
+    if atr_val is not None:
+        _v610_pm_atr[ticker] = atr_val
+        return atr_val
+
+    # Fallback: first 5 RTH bars (09:30-09:35 ET)
+    from zoneinfo import ZoneInfo as _ZI
+    from datetime import datetime as _dt, timezone as _tz
+    _ET_fb = _ZI("America/New_York")
+    rth_bars = []
+    for b in bar_dicts:
+        ts_raw = b.get("ts")
+        if ts_raw is None:
+            continue
+        try:
+            d = _dt.fromtimestamp(int(ts_raw), tz=_tz.utc).astimezone(_ET_fb)
+            h, m = d.hour, d.minute
+        except Exception:
+            continue
+        if h == 9 and 30 <= m <= 35:
+            rth_bars.append(b)
+    atr_val = _atr5_fn(rth_bars) if len(rth_bars) >= 6 else None
+    _v610_pm_atr[ticker] = atr_val
+    return atr_val
+
+
+def _v610_or_break_long(closes: list, or_h: float, ticker: str) -> bool:
+    """ATR-normalized OR-break check for LONG (v6.1.0).
+
+    When _V610_ATR_OR_BREAK_ENABLED is True, requires both of the last
+    two 1m closes to exceed or_h + V610_OR_BREAK_K * ATR_pre_market.
+    Falls back to the plain _tiger_two_bar_long when the flag is False
+    or ATR is unavailable.
+    """
+    if not _V610_ATR_OR_BREAK_ENABLED:
+        return _tiger_two_bar_long(closes, or_h)
+    pm_atr = _v610_compute_pm_atr(ticker)
+    if pm_atr is None or pm_atr <= 0:
+        return _tiger_two_bar_long(closes, or_h)
+    threshold = or_h + V610_OR_BREAK_K * pm_atr
+    if not closes or len(closes) < 2:
+        return False
+    return closes[-1] > threshold and closes[-2] > threshold
+
+
+def _v610_or_break_short(closes: list, or_l: float, ticker: str) -> bool:
+    """ATR-normalized OR-break check for SHORT (v6.1.0, symmetric).
+
+    Requires both of the last two 1m closes to be below
+    or_l - V610_OR_BREAK_K * ATR_pre_market.
+    """
+    if not _V610_ATR_OR_BREAK_ENABLED:
+        return _tiger_two_bar_short(closes, or_l)
+    pm_atr = _v610_compute_pm_atr(ticker)
+    if pm_atr is None or pm_atr <= 0:
+        return _tiger_two_bar_short(closes, or_l)
+    threshold = or_l - V610_OR_BREAK_K * pm_atr
+    if not closes or len(closes) < 2:
+        return False
+    return closes[-1] < threshold and closes[-2] < threshold
+
+
+def _v610_update_late_or(ticker: str, now_et_obj) -> None:
+    """Lazily build the late-OR range (11:00-11:30 ET high/low) for *ticker*.
+
+    Called when V610_LATE_OR_ENABLED is True and current time is in the
+    11:00-12:00 ET window.  Idempotent once built.  Reads the per-cycle
+    bar cache; no-ops when bars are unavailable.
+    """
+    global _v610_late_or_high, _v610_late_or_low
+    if ticker in _v610_late_or_high and ticker in _v610_late_or_low:
+        return
+
+    bars_dict = fetch_1min_bars(ticker)
+    if not bars_dict:
+        return
+    timestamps = bars_dict.get("timestamps") or []
+    highs      = bars_dict.get("highs")      or []
+    lows       = bars_dict.get("lows")       or []
+
+    from zoneinfo import ZoneInfo as _ZI
+    from datetime import datetime as _dt, timezone as _tz
+    _ET_lo = _ZI("America/New_York")
+    window_h: list = []
+    window_l: list = []
+    for i, ts in enumerate(timestamps):
+        if ts is None:
+            continue
+        try:
+            d = _dt.fromtimestamp(int(ts), tz=_tz.utc).astimezone(_ET_lo)
+            h_et, m_et = d.hour, d.minute
+        except Exception:
+            continue
+        # First 30 minutes of the late-OR window: 11:00-11:30 ET
+        if h_et == 11 and 0 <= m_et <= 30:
+            if i < len(highs) and highs[i] is not None:
+                window_h.append(float(highs[i]))
+            if i < len(lows) and lows[i] is not None:
+                window_l.append(float(lows[i]))
+
+    if window_h and window_l:
+        _v610_late_or_high[ticker] = max(window_h)
+        _v610_late_or_low[ticker]  = min(window_l)
+
+
+def _v610_late_or_break_long(closes: list, ticker: str) -> bool:
+    """Late-OR LONG break check: two consecutive closes above late-OR high.
+
+    Returns False when V610_LATE_OR_ENABLED is False, the late-OR range
+    is not yet built, the standard OR already fired, or closes are
+    insufficient.  ATR-normalized threshold is applied when available.
+    """
+    if not V610_LATE_OR_ENABLED:
+        return False
+    if _v610_or_break_fired.get(ticker):
+        return False
+    late_h = _v610_late_or_high.get(ticker)
+    if late_h is None:
+        return False
+    if not closes or len(closes) < 2:
+        return False
+    pm_atr = _v610_compute_pm_atr(ticker)
+    if pm_atr is not None and pm_atr > 0 and _V610_ATR_OR_BREAK_ENABLED:
+        threshold = late_h + V610_OR_BREAK_K * pm_atr
+    else:
+        threshold = late_h
+    return closes[-1] > threshold and closes[-2] > threshold
+
+
+def _v610_late_or_break_short(closes: list, ticker: str) -> bool:
+    """Late-OR SHORT break check: two consecutive closes below late-OR low."""
+    if not V610_LATE_OR_ENABLED:
+        return False
+    if _v610_or_break_fired.get(ticker):
+        return False
+    late_l = _v610_late_or_low.get(ticker)
+    if late_l is None:
+        return False
+    if not closes or len(closes) < 2:
+        return False
+    pm_atr = _v610_compute_pm_atr(ticker)
+    if pm_atr is not None and pm_atr > 0 and _V610_ATR_OR_BREAK_ENABLED:
+        threshold = late_l - V610_OR_BREAK_K * pm_atr
+    else:
+        threshold = late_l
+    return closes[-1] < threshold and closes[-2] < threshold
 
 
 def _compute_today_realized_pnl() -> float:
@@ -4721,6 +4939,11 @@ def reset_daily_state():
         pdc.clear()
         or_stale_skip_count.clear()
         or_collected_date = ""
+        # v6.1.0 — clear ATR OR-break session state alongside OR data.
+        _v610_pm_atr.clear()
+        _v610_or_break_fired.clear()
+        _v610_late_or_high.clear()
+        _v610_late_or_low.clear()
 
     if daily_entry_date != today:
         daily_entry_count.clear()
