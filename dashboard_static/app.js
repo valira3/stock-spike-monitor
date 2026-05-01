@@ -1365,6 +1365,18 @@
     }
     body.__pmtxApplyExpanded = _pmtxApplyExpanded;
     if (!body.__pmtxExpandWired) {
+      // v6.0.1 \u2014 when a row collapses (re-click toggle or outside-
+      // click), drop its persisted chart view so the next time it opens
+      // we start at the full session window. Mutates _chartViewByTkr in
+      // place; safe to call with an empty/undefined set.
+      function _pmtxResetChartViewsFor(set) {
+        if (!set || typeof set.forEach !== "function") return;
+        set.forEach(function (t) {
+          if (t && _chartViewByTkr && _chartViewByTkr[t]) {
+            delete _chartViewByTkr[t];
+          }
+        });
+      }
       body.addEventListener("click", function (ev) {
         const trigger = ev.target.closest("tr.pmtx-row[data-pmtx-tkr]");
         if (!trigger) return;
@@ -1373,6 +1385,11 @@
         if (!detail) return; // no detail to expand for this row
         const set = body.__pmtxExpandedSet;
         const wasOpen = set.has(tkr);
+        // Reset persisted chart views for every ticker leaving the open
+        // set. Single-open semantics: if a different row was open, that
+        // ticker collapses too. If we're re-clicking the same row, that
+        // ticker also leaves the set.
+        _pmtxResetChartViewsFor(set);
         set.clear(); // single-open semantics
         if (!wasOpen) set.add(tkr);
         _pmtxApplyExpanded();
@@ -1384,6 +1401,7 @@
         // If the click landed on a tab button, header chip, or anything
         // outside this body, collapse all expanded rows.
         if (!body.contains(ev.target)) {
+          _pmtxResetChartViewsFor(body.__pmtxExpandedSet);
           body.__pmtxExpandedSet.clear();
           if (typeof body.__pmtxApplyExpanded === "function") body.__pmtxApplyExpanded();
         }
@@ -1438,15 +1456,29 @@
   // event listeners can mutate the visible window and trigger redraws
   // without recomputing the payload. Defaults to the full 7am\u20135pm CT
   // window (et_min 480\u20131080).
+  //
+  // v6.0.1 \u2014 the matrix re-renders on every /api/state poll, which
+  // tears down the canvas DOM node. The WeakMap-keyed-by-canvas store
+  // therefore lost its zoom/pan window each render, snapping the chart
+  // back to the full session within ~1s. Fix: persist the user-visible
+  // window per ticker in a plain dict that survives canvas destruction,
+  // and seed each freshly-mounted canvas from it. Hover/wired stay
+  // per-canvas (transient UI state).
   const _CHART_FULL_X_MIN = 480;
   const _CHART_FULL_X_MAX = 1080;
   const _chartViewState = new WeakMap();
+  const _chartViewByTkr = {};
+  function _chartTkrKey(canvas) {
+    return (canvas && canvas.dataset && canvas.dataset.intradayTkr) || "";
+  }
   function _chartGetState(canvas) {
     let st = _chartViewState.get(canvas);
     if (!st) {
+      const tkr = _chartTkrKey(canvas);
+      const persisted = tkr && _chartViewByTkr[tkr];
       st = {
-        xMin: _CHART_FULL_X_MIN,
-        xMax: _CHART_FULL_X_MAX,
+        xMin: persisted ? persisted.xMin : _CHART_FULL_X_MIN,
+        xMax: persisted ? persisted.xMax : _CHART_FULL_X_MAX,
         hoverEtMin: null,
         hoverPx: null,
         hoverPy: null,
@@ -1455,6 +1487,11 @@
       _chartViewState.set(canvas, st);
     }
     return st;
+  }
+  function _chartPersistView(canvas, st) {
+    const tkr = _chartTkrKey(canvas);
+    if (!tkr) return;
+    _chartViewByTkr[tkr] = { xMin: st.xMin, xMax: st.xMax };
   }
 
   function _isMobile() {
@@ -1970,6 +2007,7 @@
       if (newMin < _CHART_FULL_X_MIN) { newMin = _CHART_FULL_X_MIN; newMax = newMin + newSpan; }
       if (newMax > _CHART_FULL_X_MAX) { newMax = _CHART_FULL_X_MAX; newMin = newMax - newSpan; }
       _vs.xMin = newMin; _vs.xMax = newMax;
+      _chartPersistView(canvas, _vs);
       _redraw();
     }, { passive: false });
     let _drag = null;
@@ -1997,6 +2035,7 @@
         if (newMax > _CHART_FULL_X_MAX) { newMax = _CHART_FULL_X_MAX; newMin = newMax - span; }
         _vs.xMin = newMin; _vs.xMax = newMax;
         _vs.hoverEtMin = null;
+        _chartPersistView(canvas, _vs);
         _redraw();
         return;
       }
@@ -2025,6 +2064,7 @@
     canvas.addEventListener("dblclick", function () {
       _vs.xMin = _CHART_FULL_X_MIN;
       _vs.xMax = _CHART_FULL_X_MAX;
+      _chartPersistView(canvas, _vs);
       _redraw();
     });
     canvas.style.cursor = "crosshair";

@@ -4101,33 +4101,32 @@ def run_local() -> int:
         js = (_P(__file__).parent / "dashboard_static" / "app.js").read_text(encoding="utf-8")
         assert "_pmtxSmaStackPanel" in js, "v5.21.0: _pmtxSmaStackPanel helper missing from app.js"
 
-    @t("v5.30.1: daily-bar fetcher retired (engine.daily_bars deleted in v5.26.0)")
+    @t("v6.0.1: daily SMA stack rebuilt + wired into snapshot")
     def _():
-        # v5.30.1: engine.daily_bars and engine.sma_stack were deleted in
-        # the v5.26.0 spec-strict cut, but v5_13_2_snapshot.py kept
-        # importing them on every snapshot tick \u2014 emitting 441+
-        # ModuleNotFoundError warnings per minute. v5.30.1 stubs the
-        # helper to return None so the SMA panel cleanly renders
-        # "data not available". This check enforces the deletion stays
-        # gone: if anyone reintroduces engine.daily_bars without
-        # rewiring the snapshot helper, we fail loudly here.
+        # v6.0.1: the v5.30.1 "keep deleted" check is replaced by an
+        # affirmative wiring check. engine/sma_stack.py is back as a
+        # pure-logic compute helper; v5_13_2_snapshot._compute_sma_stack_safe
+        # imports it and consumes daily closes from
+        # trade_genius._daily_closes_for_sma. If anyone re-stubs the
+        # snapshot helper to return None unconditionally we fail here.
         from pathlib import Path as _P
 
         repo_root = _P(__file__).parent
-        assert not (repo_root / "engine" / "daily_bars.py").exists(), (
-            "v5.30.1: engine/daily_bars.py was deleted in v5.26.0 and must "
-            "stay deleted; if you reintroduce it, also rewire "
-            "v5_13_2_snapshot._compute_sma_stack_safe."
-        )
-        assert not (repo_root / "engine" / "sma_stack.py").exists(), (
-            "v5.30.1: engine/sma_stack.py was deleted in v5.26.0 and must "
-            "stay deleted; if you reintroduce it, also rewire "
-            "v5_13_2_snapshot._compute_sma_stack_safe."
+        assert (repo_root / "engine" / "sma_stack.py").exists(), (
+            "v6.0.1: engine/sma_stack.py must exist (pure-logic SMA helper)."
         )
         snapshot_src = (repo_root / "v5_13_2_snapshot.py").read_text(encoding="utf-8")
-        assert "from engine.daily_bars import" not in snapshot_src, (
-            "v5.30.1: v5_13_2_snapshot.py must not import engine.daily_bars; "
-            "_compute_sma_stack_safe should be a None-returning stub."
+        assert "from engine import sma_stack" in snapshot_src, (
+            "v6.0.1: v5_13_2_snapshot.py must import engine.sma_stack."
+        )
+        assert "_daily_closes_for_sma" in snapshot_src, (
+            "v6.0.1: v5_13_2_snapshot.py must consult _daily_closes_for_sma."
+        )
+        # The compute helper must not be a hard-coded None stub anymore.
+        # Look for the v6.0.1 docstring marker that replaced the v5.30.1 one.
+        assert "v6.0.1" in snapshot_src and "daily SMA stack restored" in snapshot_src, (
+            "v6.0.1: _compute_sma_stack_safe must be the rebuilt helper, "
+            "not the v5.30.1 None-returning stub."
         )
 
     @t(

@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.1 — 2026-05-01 — Chart zoom persistence + restored daily SMA stack + remove QBTS from titan universe
+
+### Why
+Three user-reported issues against v6.0.0 — chart zoom snapping back within ~1s, the Daily SMA stack panel still rendering "data not available", and QBTS reappearing despite not being a Titan we trade. All three are dashboard / config surface fixes; no algo change.
+
+### What
+- **UI — Chart zoom / pan persistence.** The intraday chart's zoom and pan window now survives the periodic /api/state matrix re-render. v6.0.0 stored the visible window in a `WeakMap` keyed by the canvas DOM node; the matrix HTML is rebuilt on every poll, so each render destroyed the canvas and the user-visible window snapped back to the full session within ~1s. v6.0.1 adds a per-ticker `_chartViewByTkr` plain dict that survives canvas teardown. Wheel / drag / dblclick all persist their mutated window; `_chartGetState` seeds a freshly-mounted canvas from the saved values. The view resets to the full session only when the row collapses (outside-click or re-click toggle), implementing the "unless we move away from the card" semantics.
+- **Engine — Daily SMA stack restored.** v5.30.1 stubbed `_compute_sma_stack_safe` to return `None` after v5.26.0 deleted `engine.daily_bars` / `engine.sma_stack` in the Stage-1 spec-strict cut, so the panel always rendered the "data not available" placeholder. New `engine/sma_stack.py` is a pure-logic helper that computes daily-close, SMA(12/22/55/100/200), absolute and percent deltas, above-flags, classification (bullish / bearish / mixed), substate, order chips, and adjacent order relations. `trade_genius._daily_closes_for_sma` provides the daily closes via Alpaca `StockBarsRequest(timeframe=Day)`; the snapshot helper caches them once per UTC calendar day per ticker (negative-cached on failure for 60s) so the snapshot tick path stays cheap.
+- **Config — QBTS removed from default universe.** `TICKERS_DEFAULT` and `tickers.json` no longer seed QBTS. `_ensure_universe_consistency()` will detect drift on the persisted `/data/tickers.json` at next startup and rewrite it to match the new code-side default. SPY and QQQ retained as pinned reference symbols. `bot_version.py` and `trade_genius.py` BOT_VERSION 6.0.0 → 6.0.1; `CURRENT_MAIN_NOTE` rewritten (15 lines, all ≤34 chars).
+
+### Tests
+- New `tests/test_v6_0_1_chart_zoom_persist.py` (4 cases): per-ticker persist dict exists, persist hooks present in three mutation paths (wheel / drag / dblclick), collapse-reset wired in re-click and outside-click handlers, `_chartGetState` seeds from the persist dict.
+- New `tests/test_v6_0_1_sma_stack.py` (11 cases): under-12 closes returns None, payload shape contains every dashboard-consumed key, SMA(12) on a known sequence equals the arithmetic mean of the last 12 closes, partial windows produce None for unsupported windows, monotonic uptrend classifies bullish, monotonic downtrend classifies bearish, order relations have N-1 entries, the `_compute_sma_stack_safe` snapshot helper consumes the injected fetcher and returns None when the fetcher is absent.
+- New `tests/test_v6_0_1_titan_universe.py` (3 cases): QBTS not in `TICKERS_DEFAULT` source block, QBTS not in `tickers.json` seed, the 12 retained titans + SPY + QQQ are still present.
+- `node --check dashboard_static/app.js` parses cleanly.
+
+### Backwards compatibility
+The `sma_stack` payload shape matches the v5.21.0 frontend null-safe contract (the same `_pmtxSmaStackPanel` reads it). Tickers added at runtime via `/ticker add QBTS` keep working — only the default seed lost it. Daily-close fetch is no-op when no Alpaca credentials are set; the panel falls back to the existing "data not available" placeholder.
+
+---
+
 ## v6.0.0 — 2026-05-01 — Bundled UI/engine release: weather asterisk + PDC-anchored EMA9 + chart UX + momentum insights
 
 ### Why
