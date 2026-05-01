@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.4"
+BOT_VERSION = "6.0.5"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,21 +97,26 @@ BOT_VERSION = "6.0.4"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.4 hotfix:\n"
-    "Sentinel persistence bug.\n"
-    "Process restarts were\n"
-    "reloading pnl_history\n"
-    "and trail_state as the\n"
-    "string repr of the live\n"
-    "objects, so every tick\n"
-    "raised AttributeError\n"
-    "and Alarm A/B/C/F never\n"
-    "ran. Fix: strip these\n"
-    "runtime caches before\n"
-    "saving and rehydrate\n"
-    "any string remnants on\n"
-    "load. Trail stops will\n"
-    "now ratchet correctly."
+    "v6.0.5 hotfix:\n"
+    "Yahoo trailing-None +\n"
+    "Alpaca-IEX primary 1m.\n"
+    "Yahoo's 1m series ended\n"
+    "with None for the\n"
+    "forming minute, tripping\n"
+    "float(closes[-1]) and\n"
+    "freezing Alarm F's gate.\n"
+    "Fix 1: walk back to last\n"
+    "finite close, finite-only\n"
+    "H/L/C for ATR (broker/\n"
+    "positions.py).\n"
+    "Fix 2: fetch_1min_bars\n"
+    "now Alpaca-IEX primary,\n"
+    "Yahoo fallback. Both\n"
+    "fail -> [SENTINEL]\n"
+    "[CRITICAL] log + 1-shot\n"
+    "Telegram per ticker.\n"
+    "FMP keeps current_price\n"
+    "realtime for entries."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -3110,26 +3115,218 @@ def report_error(executor: str, code: str, severity: str, summary: str,
 # already fetched without doubling network calls.
 _cycle_bar_cache: dict = {}
 
+# v6.0.5 \u2014 pdc cache keyed by (ticker_upper, et_date_iso). Alpaca's daily
+# previous-close is yesterday's RTH close which doesn't change intra-session,
+# so we look it up once per ticker per ET trading day instead of on every
+# scan cycle. Value is float (success) or None (lookup failed; we'll retry
+# next cycle in case the daily endpoint was transient).
+_alpaca_pdc_cache: dict = {}
+
+# v6.0.5 \u2014 one-shot guard so the dual-source-failure CRITICAL notification
+# only fires once per ticker per process lifetime. Without this, a sustained
+# outage (e.g. Alpaca + Yahoo both down for an hour) would spam a
+# notification every scan cycle (~12/min). The flag resets on process
+# restart, which is the right reset semantics: a redeploy means we want to
+# know if it's still broken.
+_dual_source_critical_emitted: set = set()
+
 
 def _clear_cycle_bar_cache():
     """Reset the per-cycle bar cache. Called at the top of scan_loop()."""
     _cycle_bar_cache.clear()
 
 
-def fetch_1min_bars(ticker):
-    """Fetch 1-min intraday bars from Yahoo Finance.
+def _alpaca_pdc(ticker: str, client) -> float | None:
+    """Return previous-day RTH close for ``ticker`` from Alpaca daily bars.
+
+    Cached per ticker per ET date. ``None`` on any failure (caller must
+    tolerate \u2014 downstream code reads bars["pdc"] with a 0-fallback).
+    """
+    sym = (ticker or "").strip().upper()
+    if not sym:
+        return None
+    et = ZoneInfo("America/New_York")
+    today_et = datetime.now(et).date().isoformat()
+    ckey = (sym, today_et)
+    if ckey in _alpaca_pdc_cache:
+        return _alpaca_pdc_cache[ckey]
+    if client is None:
+        return None
+    try:
+        from alpaca.data.requests import StockBarsRequest  # type: ignore
+        from alpaca.data.timeframe import TimeFrame  # type: ignore
+        from alpaca.data.enums import DataFeed  # type: ignore
+    except Exception as e:
+        logger.debug("alpaca pdc import failed for %s: %s", sym, e)
+        return None
+    # Pull a 10 calendar-day window so we always have at least one prior
+    # trading day even across long weekends / market holidays.
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=10)
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=sym,
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+            feed=DataFeed.IEX,
+        )
+        resp = client.get_stock_bars(req)
+        rows = []
+        if hasattr(resp, "data"):
+            rows = resp.data.get(sym, []) or []
+        # Alpaca's daily bars come oldest-first; the LAST bar with a
+        # timestamp strictly before today's ET date is yesterday's RTH
+        # close (Alpaca closes the daily bar at 16:00 ET so today's bar,
+        # if present mid-session, is still forming and must be skipped).
+        prev_close = None
+        for b in rows:
+            ts = getattr(b, "timestamp", None)
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            bar_date_et = ts.astimezone(et).date().isoformat()
+            if bar_date_et >= today_et:
+                continue
+            c = getattr(b, "close", None)
+            if c is None:
+                continue
+            try:
+                prev_close = float(c)
+            except (TypeError, ValueError):
+                continue
+        _alpaca_pdc_cache[ckey] = prev_close
+        return prev_close
+    except Exception as e:
+        logger.debug("alpaca pdc fetch failed for %s: %s", sym, e)
+        # Negative-cache for this ET day so we don't retry every cycle
+        # if the call is structurally broken (e.g. delisted symbol).
+        # Yahoo fallback path will still supply pdc when it runs.
+        return None
+
+
+def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
+    """v6.0.5 \u2014 Alpaca-IEX 1m bar fetch in the same dict shape as the
+    legacy Yahoo path. Covers 08:00\u201318:00 ET so the premarket warm-up
+    loop and the bar archive keep working exactly like they did under
+    Yahoo's ``includePrePost=true``.
+
+    Returns the same dict shape as ``_fetch_1min_bars_yahoo`` on success,
+    or ``None`` on any failure (no creds, alpaca-py missing, network
+    error, empty response). Caller is responsible for falling back to
+    Yahoo on ``None``.
+
+    Lists are oldest-first to match Yahoo's ordering. Unlike Yahoo,
+    Alpaca only emits a bar when at least one trade prints in that
+    minute, so closes/highs/lows are guaranteed non-None\u2014which is the
+    whole reason for this swap. The trailing-None walk-back in
+    broker/positions.py stays in place as defense-in-depth for the
+    Yahoo fallback case.
+    """
+    sym = (ticker or "").strip().upper()
+    if not sym:
+        return None
+    t0 = time.time()
+    client = _alpaca_data_client()
+    if client is None:
+        logger.debug("Alpaca %s: no data client", sym)
+        return None
+    try:
+        from alpaca.data.requests import StockBarsRequest  # type: ignore
+        from alpaca.data.timeframe import TimeFrame  # type: ignore
+        from alpaca.data.enums import DataFeed  # type: ignore
+    except Exception as e:
+        logger.debug("alpaca 1m import failed for %s: %s", sym, e)
+        return None
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    start_et = now_et.replace(hour=8, minute=0, second=0, microsecond=0)
+    end_et = now_et.replace(hour=18, minute=0, second=0, microsecond=0) + timedelta(minutes=1)
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=sym,
+            timeframe=TimeFrame.Minute,
+            start=start_et.astimezone(timezone.utc),
+            end=end_et.astimezone(timezone.utc),
+            feed=DataFeed.IEX,
+        )
+        resp = client.get_stock_bars(req)
+    except Exception as e:
+        logger.debug("Alpaca %s: fetch failed: %s (%.2fs)", sym, e, time.time() - t0)
+        return None
+    rows = []
+    try:
+        if hasattr(resp, "data"):
+            rows = resp.data.get(sym, []) or resp.data.get(ticker, []) or []
+    except Exception:
+        rows = []
+    if not rows:
+        logger.debug("Alpaca %s: empty rows (%.2fs)", sym, time.time() - t0)
+        return None
+    timestamps: list[int] = []
+    opens: list[float] = []
+    highs: list[float] = []
+    lows: list[float] = []
+    closes: list[float] = []
+    volumes: list[int] = []
+    for b in rows:
+        ts = getattr(b, "timestamp", None)
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        try:
+            timestamps.append(int(ts.timestamp()))
+            opens.append(float(getattr(b, "open", 0) or 0))
+            highs.append(float(getattr(b, "high", 0) or 0))
+            lows.append(float(getattr(b, "low", 0) or 0))
+            closes.append(float(getattr(b, "close", 0) or 0))
+            volumes.append(int(getattr(b, "volume", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    if not timestamps or not closes:
+        logger.debug("Alpaca %s: no usable bars after parse (%.2fs)", sym, time.time() - t0)
+        return None
+    # current_price MUST be near-real-time: engine/scan.py uses it as the
+    # entry execution price (px = bars["current_price"]). Yahoo's
+    # ``regularMarketPrice`` was tick-current; Alpaca's last 1m bar close
+    # is up to ~60s stale. To preserve entry-pricing semantics on the
+    # Alpaca path we ask FMP for the live quote (already the bot's
+    # canonical realtime source \u2014 see get_fmp_quote use sites). Last
+    # bar close is the fallback if FMP is down so we never regress to 0.
+    current_price = 0
+    try:
+        _fmp_q = get_fmp_quote(sym) or {}
+        _fmp_px = _fmp_q.get("price")
+        if _fmp_px is not None:
+            current_price = float(_fmp_px) or 0
+    except Exception:
+        current_price = 0
+    if not current_price and closes:
+        current_price = closes[-1]
+    pdc_val = _alpaca_pdc(sym, client) or 0
+    out = {
+        "timestamps": timestamps,
+        "opens": opens,
+        "highs": highs,
+        "lows": lows,
+        "closes": closes,
+        "volumes": volumes,
+        "current_price": current_price,
+        "pdc": pdc_val,
+    }
+    logger.debug("Alpaca %s: %d bars, %.2fs", sym, len(timestamps), time.time() - t0)
+    return out
+
+
+def _fetch_1min_bars_yahoo(ticker):
+    """Legacy Yahoo Finance 1m fetch. Kept as a fallback when the
+    Alpaca primary path returns None.
 
     Returns dict with keys: timestamps, opens, highs, lows, closes,
     volumes, current_price, pdc.  Returns None on failure.
-
-    Results are cached per scan cycle (see _cycle_bar_cache).
     """
-    cached = _cycle_bar_cache.get(ticker)
-    if cached is not None:
-        # Sentinel for negative cache (prior fetch failed): keep returning
-        # None for the rest of the cycle rather than retrying.
-        return cached if cached != "__FAILED__" else None
-
     t0 = time.time()
     # v5.30.1 \u2014 includePrePost=true so the 08:00\u201309:30 ET premarket
     # warm-up loop in engine.scan actually receives bars to archive into
@@ -3153,7 +3350,6 @@ def fetch_1min_bars(ticker):
         result = data.get("chart", {}).get("result")
         if not result:
             logger.debug("Yahoo %s: empty result (%.2fs)", ticker, time.time() - t0)
-            _cycle_bar_cache[ticker] = "__FAILED__"
             return None
         r = result[0]
         meta = r.get("meta", {})
@@ -3162,7 +3358,6 @@ def fetch_1min_bars(ticker):
 
         if not timestamps:
             logger.debug("Yahoo %s: no timestamps (%.2fs)", ticker, time.time() - t0)
-            _cycle_bar_cache[ticker] = "__FAILED__"
             return None
 
         logger.debug("Yahoo %s: %.2fs", ticker, time.time() - t0)
@@ -3178,12 +3373,92 @@ def fetch_1min_bars(ticker):
                     or meta.get("chartPreviousClose")
                     or 0),
         }
-        _cycle_bar_cache[ticker] = out
         return out
     except Exception as e:
-        logger.debug("fetch_1min_bars %s failed: %s (%.2fs)", ticker, e, time.time() - t0)
-        _cycle_bar_cache[ticker] = "__FAILED__"
+        logger.debug("Yahoo %s: fetch failed: %s (%.2fs)", ticker, e, time.time() - t0)
         return None
+
+
+def fetch_1min_bars(ticker):
+    """Fetch 1-min intraday bars. v6.0.5: Alpaca-IEX primary, Yahoo fallback.
+
+    Returns dict with keys: timestamps, opens, highs, lows, closes,
+    volumes, current_price, pdc.  Returns None when both sources fail.
+
+    Source order:
+      1. Alpaca historical 1m (IEX feed, 08:00\u201318:00 ET window). This
+         is the new primary because Yahoo's intraday feed trails a
+         literal None for the still-forming current minute, which broke
+         Alarm F's last_1m_close gate and froze every bot's trail
+         (v6.0.5 root cause). Alpaca only emits a bar when a trade prints
+         in that minute, so closes are always finite.
+      2. Yahoo Finance (legacy path). Kept as a fallback because Alpaca
+         credentials may be missing in test/dev environments and the
+         IEX feed can be sparse on extremely thin tickers. The
+         broker/positions.py walk-back stays in place to handle Yahoo's
+         trailing-None on this fallback path.
+      3. Both sources failed: log [SENTINEL][CRITICAL] and notify once
+         per ticker per process. Returns None.
+
+    Results are cached per scan cycle (see _cycle_bar_cache).
+    """
+    cached = _cycle_bar_cache.get(ticker)
+    if cached is not None:
+        # Sentinel for negative cache (prior fetch failed): keep returning
+        # None for the rest of the cycle rather than retrying.
+        return cached if cached != "__FAILED__" else None
+
+    out = _fetch_1min_bars_alpaca(ticker)
+    if out is not None:
+        _cycle_bar_cache[ticker] = out
+        return out
+
+    # Alpaca returned nothing; fall back to Yahoo.
+    out = _fetch_1min_bars_yahoo(ticker)
+    if out is not None:
+        # Don't fill the pdc-from-Yahoo into the alpaca cache; both sources
+        # already wrote their own pdc into ``out`` directly.
+        _cycle_bar_cache[ticker] = out
+        return out
+
+    # Both sources failed. Emit CRITICAL log + one-shot notification per
+    # ticker so a real outage surfaces immediately. Negative-cache so we
+    # don't retry inside this cycle.
+    _cycle_bar_cache[ticker] = "__FAILED__"
+    logger.error(
+        "[SENTINEL][CRITICAL] fetch_1min_bars %s: both Alpaca and Yahoo "
+        "failed. Alarm F trail and 5m EMA9 reconstruction will be "
+        "unavailable for this ticker until a source recovers.",
+        ticker,
+    )
+    if ticker not in _dual_source_critical_emitted:
+        _dual_source_critical_emitted.add(ticker)
+        try:
+            _notify_dual_source_failure(ticker)
+        except Exception as e:
+            logger.debug(
+                "dual-source notify failed for %s: %s (non-fatal)", ticker, e
+            )
+    return None
+
+
+def _notify_dual_source_failure(ticker: str) -> None:
+    """v6.0.5 \u2014 one-shot Telegram notification when both Alpaca and
+    Yahoo fail for the same ticker. Best-effort: any exception is logged
+    by the caller and swallowed so a notification outage never blocks
+    trading.
+    """
+    msg = (
+        "[CRITICAL] {t}: 1m bars unavailable from BOTH Alpaca and Yahoo. "
+        "Trail / EMA9 ratcheting is offline for this ticker. Existing "
+        "hard stops still active; entries paused on this name."
+    ).format(t=ticker)
+    try:
+        send_telegram(msg)
+    except Exception:
+        # If telegram itself is the outage, fall back to logger.error
+        # which the operator's log dashboard surfaces.
+        logger.error("[SENTINEL][CRITICAL][NOTIFY-FAIL] %s", msg)
 
 
 def get_last_1min_close(ticker):

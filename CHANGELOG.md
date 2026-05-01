@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.5 — 2026-05-01 — Hotfix: Yahoo trailing-None + Alpaca-IEX promoted to primary 1m source
+
+### Why
+v6.0.4 unblocked the Sentinel error path so Alarms A/B/C/F could run, but TSLA's bars_seen still froze at 1 after the redeploy and the protective stop never advanced off the entry-time hard stop ($390.35) despite mark trading +$5.40/share favorable. Direct read of `broker/positions.py:_run_sentinel` revealed a second, independent bug at the *input* layer: Yahoo's 1m chart endpoint emits a literal `None` in `closes[-1]` for the still-forming current minute (and sometimes for sparse premarket bars). The naive `float(closes_1m[-1])` raised `TypeError`, the enclosing `try/except` set `last_1m_close = None`, and `evaluate_sentinel`'s Alarm F gate (`last_1m_close is not None`) silently skipped. `update_trail()` was never called — hence `bars_seen` never advanced and BREAKEVEN never armed. NVDA's stop hit at 17:57:55 via Alarm A_STOP_PRICE (which doesn't depend on `last_1m_close`), proving the rest of Sentinel was healthy.
+
+While fixing the trailing-None at the consumer, the broader question came up: "if Yahoo is unreliable for the data needed for ratcheting, can we use Alpaca?" Yes — the codebase already authenticates an Alpaca-IEX historical client (`_alpaca_data_client()`) that's used in 6 other places (daily SMA stack, OR seeding, intraday chart panel, volume profile). Alpaca's 1m bars are tick-direct from the exchange and only emit when a trade prints, so they have no trailing-None pathology by construction. Promoting Alpaca to primary fixes the root cause across every 1m consumer (Sentinel, OR detection, 5m EMA9, bar archive, premarket warmup) instead of patching just the trail consumer.
+
+### What
+- **`broker/positions.py` lines 408-456** — walk-back over trailing `None` to find the most recent finite `last_1m_close`; build aligned finite-only H/L/C lists for `atr_from_bars` (drops any row where any of high / low / close is None). Defensive even with Alpaca primary because Yahoo remains the fallback path and may still surface trailing-None when it serves any consumer.
+- **`trade_genius.fetch_1min_bars`** — reordered to **Alpaca-IEX primary, Yahoo fallback, [SENTINEL][CRITICAL] + one-shot Telegram on dual-source failure**. Source-1 (`_fetch_1min_bars_alpaca`) covers 08:00–18:00 ET (matches Yahoo's `includePrePost=true` window so the premarket warm-up loop, bar archive, and chart panel are unchanged). Source-2 (`_fetch_1min_bars_yahoo`) is the legacy path, kept verbatim. Both fail → returns None, logs `[SENTINEL][CRITICAL] fetch_1min_bars %s: both Alpaca and Yahoo failed`, and fires `send_telegram(...)` exactly once per ticker per process so a real outage surfaces immediately without spamming. The cycle bar cache and negative-cache sentinel work unchanged.
+- **`_alpaca_pdc(ticker, client)`** — new helper, reads previous-day RTH close from Alpaca daily bars (IEX feed). Cached per ticker per ET date so we hit the daily endpoint once per ticker per session. Feeds `bars["pdc"]` which `compute_5m_ohlc_and_ema9` (Phase C trail) depends on.
+- **`current_price` semantics preserved.** `engine/scan.py` uses `bars["current_price"]` as the entry execution price; Yahoo's `regularMarketPrice` was tick-current and Alpaca's last 1m close is up to ~60s stale. The Alpaca path now asks `get_fmp_quote()` for the live quote (already the bot's canonical realtime source) and falls back to last-bar-close only if FMP is down. No regression to entry pricing.
+- `bot_version.py` and `trade_genius.py` BOT_VERSION 6.0.4 → 6.0.5; `CURRENT_MAIN_NOTE` rewritten (19 lines, all ≤34 chars).
+
+### Tests
+New `tests/test_v6_0_5_yahoo_trailing_none.py` (11 cases) locks in the walk-back: trailing-None falls back to prior finite, multiple trailing Nones still find finite, no-finite returns None, empty input returns None, finite-last passes through, pre-v6.0.5 bug repro (`float(None)` raises), aligned-drops-trailing-None-row, aligned-drops-any-row-with-a-None, aligned three lists stay same length, empty arrays handled gracefully, end-to-end ATR-from-bars on Yahoo-shaped trailing-None input produces a finite ATR.
+
+New `tests/test_v6_0_5_alpaca_primary.py` (11 cases) locks in the source-routing contract: Alpaca success short-circuits Yahoo (Yahoo never called); Alpaca-None falls back to Yahoo; both-None returns None and logs `[SENTINEL][CRITICAL]` and fires telegram; one-shot per ticker (3 cycles → 1 telegram); per-ticker (different tickers each get their own telegram); telegram failure does not break orchestrator; cycle cache hit skips both helpers; negative cache returns None without re-call; Alpaca path window starts at 08:00 ET (premarket coverage preserved); current_price falls back to last close when FMP is down; dict shape matches Yahoo contract (all 8 keys present).
+
+### Backwards compatibility
+Fully backwards compatible. The Alpaca primary path activates automatically when Alpaca credentials are present (Val and Gene paper-trading keys are already in the live env). When Alpaca credentials are missing (e.g. test envs), the orchestrator silently falls back to Yahoo — same behavior as v6.0.4. Bar-archive consumers (`/data/bars/<today>/`, the Saturday backtest cron `873854a1`) see no schema change since the dict shape is identical between sources. **Note for backtest replay:** today's archive (2026-05-01) will have a Yahoo-then-Alpaca seam at the v6.0.5 deploy time; intra-day replay across that boundary is fine but the seam is documented here.
+
+---
+
 ## v6.0.4 — 2026-05-01 — Hotfix: Sentinel persistence rehydration (Alarms A/B/C/F were silently dead)
 
 ### Why
