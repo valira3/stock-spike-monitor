@@ -283,6 +283,18 @@
             : "Phase C \u2014 mature runner, ratcheting trail stop";
         const phaseBadge = `<span class="eot-phase-badge eot-phase-${phase}" title="${escapeHtml(phaseTitle)}">${phase}</span>`;
         const dotTitle = (p.side === "SHORT") ? "Open short position" : "Open long position";
+        // v6.0.3: % column added for parity with Val/Gene executor tabs.
+        // cost basis = entry * shares; unrealized / cost_basis gives the
+        // same percent the broker payload exposes as unrealized_pnl_pct.
+        let pctTxt = "\u2014";
+        const _entryNum = Number(p.entry);
+        const _shNum = Number(p.shares);
+        const _unrNum = Number(p.unrealized);
+        if (Number.isFinite(_entryNum) && _entryNum > 0
+            && Number.isFinite(_shNum) && _shNum > 0
+            && Number.isFinite(_unrNum)) {
+          pctTxt = fmtPct((_unrNum / (_entryNum * _shNum)) * 100);
+        }
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
@@ -291,6 +303,7 @@
           <td class="right">${fmtPx(p.mark)}</td>
           <td class="right">${fmtPx(eff)}${trailBadge}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
+          <td class="right ${pnlCls}">${pctTxt}</td>
         </tr>`;
       }).join("");
       body.innerHTML = `<table>
@@ -302,6 +315,7 @@
           <th class="right" title="Latest mark price">Mark</th>
           <th class="right" title="Effective stop \u2014 trail stop if armed (TRAIL badge), otherwise the hard stop">Stop</th>
           <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
+          <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
     }
@@ -4027,16 +4041,42 @@
       } else if (!positions.length) {
         posBody.innerHTML = `<div class="empty">No open positions.</div>`;
       } else {
+        // v6.0.3: Stop column added for parity with the Main positions
+        // table. The /api/executor/<name> payload doesn't carry stop
+        // levels (those live on the engine state, not the broker), so we
+        // cross-reference Main's last /api/state by symbol. window.__tgLastState
+        // is published by Main on every poll. Falls back to em-dash when
+        // Main hasn't populated yet (initial page load before first state
+        // tick) or the symbol isn't tracked there (shouldn't happen, but
+        // we don't crash).
+        const _mainState = (typeof window !== "undefined" && window.__tgLastState) || {};
+        const _mainPositions = Array.isArray(_mainState.positions) ? _mainState.positions : [];
+        const _stopBySym = {};
+        for (const _mp of _mainPositions) {
+          if (!_mp || !_mp.ticker) continue;
+          const _eff = (typeof _mp.effective_stop === "number")
+                         ? _mp.effective_stop : _mp.stop;
+          _stopBySym[_mp.ticker] = { eff: _eff, trail: !!_mp.trail_active };
+        }
         const rows = positions.map(p => {
           const upok = (Number(p.unrealized_pnl) || 0) >= 0;
           const color = upok ? "var(--up)" : "var(--down)";
           const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
+          const _stopInfo = _stopBySym[p.symbol] || null;
+          let _stopTxt = "\u2014";
+          if (_stopInfo && Number.isFinite(_stopInfo.eff)) {
+            _stopTxt = fmtNum(_stopInfo.eff, 2);
+            if (_stopInfo.trail) {
+              _stopTxt += ` <span class="trail-badge" title="Trail stop is armed">TRAIL</span>`;
+            }
+          }
           return `<tr>
             <td style="padding:6px 10px">${esc(p.symbol)}</td>
             <td style="padding:6px 10px" class="${sideCls}">${esc(p.side)}</td>
             <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.qty, 0)}</td>
             <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.avg_entry, 2)}</td>
             <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.current_price, 2)}</td>
+            <td class="mono" style="padding:6px 10px;text-align:right">${_stopTxt}</td>
             <td class="mono" style="padding:6px 10px;text-align:right;color:${color}">${fmtUsd(p.unrealized_pnl)}</td>
             <td class="mono" style="padding:6px 10px;text-align:right;color:${color}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
           </tr>`;
@@ -4049,6 +4089,7 @@
               <th style="text-align:right;padding:8px 10px">Qty</th>
               <th style="text-align:right;padding:8px 10px">Avg Entry</th>
               <th style="text-align:right;padding:8px 10px">Mark</th>
+              <th style="text-align:right;padding:8px 10px" title="Effective stop from the engine (Main state). TRAIL badge means the trail stop is armed.">Stop</th>
               <th style="text-align:right;padding:8px 10px">Unrealized</th>
               <th style="text-align:right;padding:8px 10px">%</th>
             </tr></thead>
