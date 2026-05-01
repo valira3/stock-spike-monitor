@@ -3325,7 +3325,13 @@
     const tz = window.__tgClockTz || "";
     // v4.3.1 — drop seconds on very narrow phones (<=360px) so
     // the HH:MM TZ label fits inline with logo/version/LIVE pill.
-    const narrow = window.matchMedia && window.matchMedia("(max-width: 360px)").matches;
+    // v6.0.7 — extend to <=480px (covers iPhone 13/14/15 standard
+    // 390 AND iPhone Pro Max 430). At 430 the brand row overflowed
+    // by ~70px (body scrollWidth=500, viewport=430) which pushed
+    // every page card to the right and clipped Today's Trades and
+    // the Permit Matrix STRIKES/State columns. Dropping the :SS
+    // segment recovers ~21px and brings the row inside the viewport.
+    const narrow = window.matchMedia && window.matchMedia("(max-width: 480px)").matches;
     const t = narrow ? `${hh}:${mm}` : `${hh}:${mm}:${ss}`;
     el.textContent = tz ? `${t} ${tz}` : t;
   };

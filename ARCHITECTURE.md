@@ -1,6 +1,95 @@
 # TradeGenius — System Architecture
 
-> **Version:** v5.14.0 · April 2026 — **Shadow retirement**
+> **Version:** v6.0.7 · May 2026 — **Post-action reconcile race fix + iPhone Pro Max mobile UI**
+>
+> **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
+> is a stability series after the v5.x algorithm consolidation. Each
+> release in this series is small, focused, and ships hot to prod.
+> The full per-release WHY/WHAT/TESTS narrative lives in `CHANGELOG.md`
+> — this document is the runtime architecture surface.
+>
+> - **v6.0.0** (2026-04-28) — dual-broker (Val + Gene) executor split.
+>   `executors/base.py` introduces `BaseExecutor` (broker-agnostic
+>   reconciliation, position recording, idempotent close, and the
+>   periodic + boot reconcile loops). `executors/val.py` and
+>   `executors/gene.py` thin-wrap the per-broker config. Live engine
+>   ticks fan out to every enabled executor; persistence keys by
+>   `(executor_name, ticker)`.
+> - **v6.0.1** (2026-04-29) — QBTS removed from `TICKERS_DEFAULT`.
+>   Outstanding: prior open QBTS positions on Val/Gene executors
+>   continue to be managed until they exit; new entries are blocked.
+> - **v6.0.2** (2026-04-29) — SMA stack persistence rehydration:
+>   `bars["sma_stack"]` re-warmed from the daily-bars cache on boot
+>   so Phase 1 Sovereign doesn't see `None` for the first 5 minutes
+>   after a deploy. (Outstanding: an unrelated SMA-stack-None edge
+>   case is on the carry-forward list; Val deferred the hotfix.)
+> - **v6.0.3** (2026-04-30) — sentinel forensic-emission hotfix.
+>   `[SENTINEL]` lines now include `pos_qty` / `pos_side` so Alarm A/B/C
+>   audits don't have to cross-reference `executor_positions` to
+>   reconstruct the sign of the position.
+> - **v6.0.4** (2026-05-01) — sentinel persistence rehydration hotfix.
+>   `pos["sentinel_state"]` was lost across boot, causing Alarm F's
+>   `bars_seen` counter to reset to 0 every redeploy. Fix: serialize
+>   `TrailState` into `executor_positions.trail_state_json` on every
+>   stop write; rehydrate on `_load_positions_from_db` boot.
+> - **v6.0.5** (2026-05-01) — Yahoo trailing-None hotfix +
+>   Alpaca-IEX promoted to primary 1m bars source. `trade_genius.fetch_1min_bars`
+>   reordered: Alpaca primary, Yahoo fallback, dual-source-failure
+>   `[SENTINEL][CRITICAL]` + Telegram. `broker/positions.py:_run_sentinel`
+>   walks back over trailing `None` to find the most recent finite
+>   `last_1m_close` so Alarm F's gate (`last_1m_close is not None`)
+>   stops silently skipping.
+> - **v6.0.6** (2026-05-01) — Dashboard fix: TRAIL badge now fires
+>   on Alarm-F chandelier. `dashboard_server.py` exposes
+>   `chandelier_stage` (0=INACTIVE, 1=BREAKEVEN, 2=CHANDELIER_WIDE,
+>   3=CHANDELIER_TIGHT) on every position row;
+>   `dashboard_static/app.js` ORs `p.trail_active` with
+>   `chandelier_stage >= 1` for the badge.
+> - **v6.0.7** (2026-05-01, this release) — post-action reconcile
+>   race fix + iPhone Pro Max (430 px) mobile UI overflow fix +
+>   stale-test cleanup. See "Reconcile state machine — v6.0.7"
+>   subsection below for the new `expect=` parameter and the
+>   `_get_open_position_settled` polling helper.
+>
+> ## Reconcile state machine — v6.0.7
+>
+> `executors/base.py:_reconcile_position_with_broker(client, ticker, ...)`
+> takes a new keyword `expect: str = "any"`:
+>
+> | expect      | Caller                                      | Behaviour on mismatch                            |
+> |-------------|---------------------------------------------|--------------------------------------------------|
+> | `"any"`     | Periodic reconcile (~30 s), boot reconcile  | Single-shot, legacy v5.25 behaviour preserved.   |
+> | `"present"` | `_on_signal` post-`ENTRY_LONG` / `ENTRY_SHORT` | Retry if broker returns 40410000 inside the 4 s grace; if still flat after grace, leave the local row in place (do NOT delete). |
+> | `"flat"`    | `_on_signal` post-`EXIT_LONG` / `EXIT_SHORT`   | Retry if broker still has the position inside the 4 s grace; if still present after grace, leave it untracked (do NOT graft a phantom POST_RECONCILE row). |
+>
+> The grace window is per-ticker, stamped on every successful
+> ENTRY (`_record_position`) or EXIT (`_close_position_idempotent`)
+> via `self._last_action_ts[ticker] = time.monotonic()`. Module
+> constants: `RECONCILE_GRACE_SECONDS = 4.0`,
+> `RECONCILE_RETRY_SLEEP = 0.6`. The polling helper
+> `_get_open_position_settled` retries `get_open_position` while
+> the response disagrees with `expect` AND the grace is open;
+> after grace, it returns the last response so the caller can
+> decide whether to act.
+>
+> Why this matters: Alpaca REST `get_open_position` is eventually
+> consistent for ~1–2 s after a fill. Pre-v6.0.7, `_on_signal`'s
+> post-action reconcile mistook this window for true divergence
+> and either (a) deleted the just-recorded local row (post-ENTRY
+> race) or (b) grafted a phantom POST_RECONCILE row over a
+> just-closed position (post-EXIT race). The race surfaces on
+> the next periodic / boot reconcile as a "true divergence"
+> Telegram with `source='RECONCILE', stop=None, trail=None`.
+>
+> ---
+>
+> **v5.14.0 retirement (READ FIRST):** the shadow strategy and its supporting surfaces were removed in v5.14.0. Specifically:
+>
+> _The remainder of this document still describes the v5.14.0 baseline.
+> The v6.0.x deltas above are layered on top; for any conflict, the
+> sections above and `CHANGELOG.md` are authoritative._
+
+> **Version (legacy header preserved for reference):** v5.14.0 · April 2026 — **Shadow retirement**
 > **Repo:** `valira3/stock-spike-monitor` · **Service:** `tradegenius.up.railway.app`
 >
 > **v5.14.0 retirement (READ FIRST):** the shadow strategy and its supporting surfaces were removed in v5.14.0. Specifically:

@@ -1733,3 +1733,112 @@
     font-size: 10px;
   }
 }
+
+/* ════════════════════════════════════════════════════════
+   v6.0.7 — iPhone Pro Max (430 px) brand-row overflow + mobile UI
+   readability pass. Live measurement at 430×932 showed the brand row
+   content width totalled ≈500 px so #tg-brand-clock pushed body.
+   scrollWidth to 500: every card was shifted right and clipped on
+   the right edge (Today's Trades unit price, Permit Matrix STRIKES
+   dots + State pill, idx-strip ticker tail). The companion JS change
+   in app.js drops the :SS segment of the clock at <=480 px, freeing
+   ~21 px; the rules below tighten chip / pill / gap sizing for the
+   final ~50 px so the row sits cleanly inside 430 with no body
+   horizontal scroll. ═══════════════════════════════════════════════ */
+@media (max-width: 480px) {
+  /* Brand row — keep nowrap, push every chip into the smallest
+     readable size that still passes a touch-target audit. The 500-band
+     rule above already handles 430-class viewports but its sizing was
+     calibrated when the row had fewer chips (no Val/Gene exec chips,
+     no health pill). */
+  #tg-brand-row {
+    gap: 5px !important;
+    padding: 8px 10px !important;
+  }
+  #tg-brand-ver {
+    font-size: 9.5px !important;
+    margin-left: 0 !important;
+  }
+  /* Exec chips (Val ✓ / Gene —) compress significantly. The chip
+     glyph stays readable; only the surround padding shrinks. */
+  #tg-exec-chips {
+    gap: 3px !important;
+    font-size: 10px !important;
+  }
+  #tg-exec-chips .tg-exec-chip,
+  #tg-exec-chips > span {
+    padding: 1px 6px !important;
+    font-size: 10px !important;
+  }
+  #tg-live-pill {
+    padding: 3px 7px !important;
+    font-size: 10.5px !important;
+  }
+  .tg-health-pill {
+    padding: 2px 6px !important;
+    font-size: 10px !important;
+    gap: 4px !important;
+  }
+  /* Clock now renders HH:MM TZ (no seconds) per the JS rule above. */
+  #tg-brand-clock {
+    font-size: 10.5px !important;
+    letter-spacing: 0 !important;
+  }
+
+  /* Permit Matrix readability — the table-wrap retains overflow-x:auto
+     so the full 760 px row is reachable by swipe, but at 430 every
+     non-essential horizontal pixel was a tax. Trim cell padding once
+     more, drop the State pill border to flat fill (saves ~8 px), and
+     hint that the table scrolls with a soft fade on the right edge. */
+  .pmtx-table tbody td,
+  .pmtx-table thead th {
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+  .pmtx-table thead th.pmtx-col-titan,
+  .pmtx-table td.pmtx-col-titan {
+    padding-left: 8px;
+  }
+  .pmtx-state-pill {
+    border-width: 0 !important;
+    padding: 2px 5px !important;
+  }
+  /* Soft right-edge fade on the matrix wrap to signal scroll affordance.
+     Pure CSS, no JS hook — a sticky pseudo using mask-image keeps the
+     real cells unobstructed. */
+  .pmtx-table-wrap {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+            mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+  }
+  .pmtx-table-wrap.pmtx-fully-scrolled {
+    -webkit-mask-image: none;
+            mask-image: none;
+  }
+
+  /* General element sizing — tighten card padding so each card uses
+     more horizontal real estate for content. The card-body padding
+     was 12 px which on 430 leaves only 406 px for content. */
+  .card-head { padding: 9px 10px; }
+  .card-body { padding: 9px 10px; }
+  .card-title { font-size: 10.5px; }
+
+  /* KPI row 4-up: at 430 the existing 2-up wrap from the 640-band
+     applies (good) — just trim padding so the value typography breathes. */
+  .kpi { padding: 9px 10px; gap: 4px; }
+  .kpi-value { font-size: 17px; }
+  .kpi-sub { font-size: 10px; }
+}
+
+/* Specifically iPhone Pro Max class (430 px exact). The 480-band
+   above carries 90% of the work; this band only handles the last
+   couple of pixels for the four-tab nav strip + the trades summary
+   line, both of which were occasionally wrapping at exactly 430. */
+@media (max-width: 432px) {
+  .tg-tabs { gap: 8px; padding: 8px 10px; }
+  .tg-tab { padding: 7px 10px; font-size: 12px; }
+  .trades-summary {
+    font-size: 10.5px;
+    gap: 2px 8px;
+    padding: 6px 10px;
+  }
+}

@@ -25,6 +25,7 @@ import logging
 import os
 import sys as _sys
 import threading
+import time
 import urllib.request
 from datetime import datetime, timezone
 
@@ -58,6 +59,18 @@ def _tg():
 
 
 logger = logging.getLogger(__name__)
+
+# v6.0.7 \u2014 Alpaca's REST get_open_position is eventually consistent.
+# After ENTRY submit, it can return 40410000 ("position not found") for
+# ~1-2 s before the fill propagates. After EXIT submit, it can still
+# return the pre-cover position for ~1-2 s. Pre-v6.0.7, the post-action
+# reconcile took the first response at face value, which deleted rows
+# the ENTRY just created (and grafted phantoms after EXIT covers).
+# RECONCILE_GRACE_SECONDS bounds how long we will retry to confirm the
+# expected outcome; RECONCILE_RETRY_SLEEP is the per-attempt backoff.
+# Both are module-level so smoke tests can monkey-patch them to 0.
+RECONCILE_GRACE_SECONDS = 4.0
+RECONCILE_RETRY_SLEEP = 0.6
 
 
 class TradeGeniusBase:
@@ -164,6 +177,14 @@ class TradeGeniusBase:
         # by _reconcile_broker_positions at boot. Used to detect orphans
         # the bot does not know about (broker accepted, client timed out).
         self.positions: dict = {}
+        # v6.0.7 \u2014 wall-clock of the last ENTRY/EXIT submit per ticker,
+        # used by _reconcile_position_with_broker to detect Alpaca's REST
+        # eventual-consistency window. Within this grace, a 40410000 from
+        # get_open_position right after an ENTRY (or a still-has-position
+        # right after an EXIT) is the broker side lagging the local fill,
+        # NOT a real divergence. Tracked here, not on the dict, so cleared
+        # rows do not lose the timestamp.
+        self._last_action_ts: dict = {}
         # v5.5.10 \u2014 rehydrate from state.db BEFORE
         # _reconcile_broker_positions runs (called from start()) so a
         # plain reboot during a live session sees persisted == broker
@@ -650,6 +671,13 @@ class TradeGeniusBase:
         self.positions.pop(ticker, None)
         self._delete_persisted_position(ticker)
 
+    def _stamp_action(self, ticker: str) -> None:
+        """v6.0.7 \u2014 record wall-clock of the last ENTRY/EXIT submit
+        so the post-action reconcile knows when Alpaca's REST eventual-
+        consistency window started. See RECONCILE_GRACE_SECONDS.
+        """
+        self._last_action_ts[ticker] = time.monotonic()
+
     def _record_position(self, ticker: str, side: str, qty: int, entry_price: float) -> None:
         """Stamp an executor-side record after a successful submit."""
         self.positions[ticker] = {
@@ -664,6 +692,8 @@ class TradeGeniusBase:
         }
         # v5.5.10 \u2014 mirror to state.db so a restart sees this row.
         self._persist_position(ticker)
+        # v6.0.7 \u2014 mark the eventual-consistency window for this ticker.
+        self._stamp_action(ticker)
 
     def _close_position_idempotent(self, client, ticker: str, label: str, reason: str) -> None:
         """Close a position on Alpaca, swallowing the 40410000 \"position
@@ -691,15 +721,80 @@ class TradeGeniusBase:
                     reason,
                 )
                 self._remove_position(ticker)
+                # v6.0.7 \u2014 even on the 404 fast-path the broker may need
+                # a moment before its book reflects flat; mark the window.
+                self._stamp_action(ticker)
                 return
             raise
         self._remove_position(ticker)
+        # v6.0.7 \u2014 mark the eventual-consistency window for this ticker
+        # so the immediate post-EXIT reconcile does not graft a phantom row.
+        self._stamp_action(ticker)
         ok = f"\u2705 {label}: {ticker} CLOSE ({reason})"
         logger.info(ok)
         self._send_own_telegram(ok)
 
-    def _reconcile_position_with_broker(self, ticker: str) -> None:
-        """v5.25.0 \u2014 single-ticker post-action reconcile.
+    def _within_action_grace(self, ticker: str) -> bool:
+        """v6.0.7 \u2014 True iff a recent ENTRY/EXIT submit for ``ticker``
+        is still inside Alpaca's REST eventual-consistency window.
+        """
+        ts = self._last_action_ts.get(ticker)
+        if ts is None:
+            return False
+        return (time.monotonic() - ts) < RECONCILE_GRACE_SECONDS
+
+    def _get_open_position_settled(self, client, ticker: str, expect: str):
+        """v6.0.7 \u2014 poll get_open_position until the answer matches
+        ``expect`` or the grace window expires.
+
+        Returns ``(bp, status)`` where:
+          - ``bp`` is the Alpaca position object (or None if broker is flat),
+          - ``status`` is one of ``"present"``, ``"flat"``, or ``"error"``.
+
+        ``expect`` is one of:
+          - ``"present"``: post-ENTRY caller \u2014 retry while broker says
+            flat (40410000) inside the grace window. After grace, accept
+            \"flat\" as final.
+          - ``"flat"``: post-EXIT caller \u2014 retry while broker still has
+            the position inside the grace window. After grace, accept
+            \"present\" as final.
+          - ``"any"``: caller does not have a posted action (e.g., periodic
+            sweep) \u2014 single shot, no retry.
+
+        Other API errors short-circuit to ``status="error"`` so the caller
+        can leave local state untouched (transient outage must not corrupt
+        truth).
+        """
+        deadline = time.monotonic() + RECONCILE_GRACE_SECONDS
+        last_err = None
+        while True:
+            try:
+                bp = client.get_open_position(ticker)
+                if expect == "flat" and time.monotonic() < deadline:
+                    # Broker still has it; this is the post-EXIT eventual-
+                    # consistency window. Wait and retry.
+                    time.sleep(RECONCILE_RETRY_SLEEP)
+                    continue
+                return bp, "present"
+            except Exception as exc:
+                msg = str(exc)
+                is_flat = "40410000" in msg or "position not found" in msg.lower()
+                if not is_flat:
+                    last_err = exc
+                    return None, "error"
+                if expect == "present" and time.monotonic() < deadline:
+                    # Broker says flat; this is the post-ENTRY eventual-
+                    # consistency window. Wait and retry.
+                    time.sleep(RECONCILE_RETRY_SLEEP)
+                    continue
+                return None, "flat"
+        # Unreachable but kept for static analysers.
+        if last_err is not None:
+            logger.warning("[%s] settled poll terminal err %s", self.NAME, last_err)
+        return None, "error"
+
+    def _reconcile_position_with_broker(self, ticker: str, expect: str = "any") -> None:
+        """v5.25.0 / v6.0.7 \u2014 single-ticker post-action reconcile.
 
         Called immediately after every successful ENTRY/EXIT submit
         so the executor's local view of ``self.positions[ticker]`` is
@@ -715,6 +810,22 @@ class TradeGeniusBase:
              A transient outage must not corrupt local truth; the
              next signal or boot reconcile will heal it.
 
+        v6.0.7 \u2014 the ``expect`` parameter says what outcome the
+        caller expects so the helper can ride out Alpaca's REST
+        eventual-consistency window:
+
+          - ``"present"`` (post-ENTRY): retry on 40410000 inside grace.
+            If the broker is still flat after grace, leave local state
+            untouched (do not delete the row the ENTRY just created);
+            the next periodic reconcile will catch a real divergence.
+          - ``"flat"`` (post-EXIT): retry while broker still has the
+            position inside grace. If broker still has it after grace,
+            the EXIT really did fail \u2014 leave the row alone and let
+            the next signal heal it (do not graft a phantom row from a
+            position the bot just tried to close).
+          - ``"any"`` (default, periodic sweep / pre-v6.0.7 callers):
+            single-shot legacy behaviour preserved.
+
         Unlike ``_reconcile_broker_positions`` (the boot-time full
         sweep using ``get_all_positions``), this calls
         ``client.get_open_position(ticker)`` for a single symbol so
@@ -729,36 +840,69 @@ class TradeGeniusBase:
                 ticker,
             )
             return
-        try:
-            bp = client.get_open_position(ticker)
-        except Exception as exc:
-            msg = str(exc)
-            if "40410000" in msg or "position not found" in msg.lower():
-                # Broker says flat \u2014 drop our row if it lingers.
-                if ticker in self.positions:
-                    logger.info(
-                        "[%s] [POST-RECONCILE] %s flat on broker, removing local row",
-                        self.NAME,
-                        ticker,
-                    )
-                    self._remove_position(ticker)
+
+        if expect == "any":
+            # Legacy single-shot path (periodic sweep). Behaviour preserved.
+            try:
+                bp = client.get_open_position(ticker)
+                status = "present"
+            except Exception as exc:
+                msg = str(exc)
+                if "40410000" in msg or "position not found" in msg.lower():
+                    bp, status = None, "flat"
                 else:
-                    logger.debug(
-                        "[%s] [POST-RECONCILE] %s flat on broker, already untracked",
+                    logger.warning(
+                        "[%s] [POST-RECONCILE] get_open_position(%s) failed: %s "
+                        "\u2014 leaving local state untouched",
                         self.NAME,
                         ticker,
+                        exc,
                     )
+                    return
+        else:
+            bp, status = self._get_open_position_settled(client, ticker, expect)
+            if status == "error":
+                logger.warning(
+                    "[%s] [POST-RECONCILE] get_open_position(%s) errored "
+                    "\u2014 leaving local state untouched (expect=%s)",
+                    self.NAME,
+                    ticker,
+                    expect,
+                )
                 return
-            logger.warning(
-                "[%s] [POST-RECONCILE] get_open_position(%s) failed: %s "
-                "\u2014 leaving local state untouched",
-                self.NAME,
-                ticker,
-                exc,
-            )
+
+        if status == "flat":
+            if expect == "present":
+                # Post-ENTRY: broker still flat after grace. Could be a
+                # genuine reject the submit-path missed, but more often it
+                # is a slow-fill paper account. DO NOT delete the local
+                # row \u2014 next periodic reconcile will heal a real flat.
+                logger.warning(
+                    "[%s] [POST-RECONCILE] %s broker flat after %.1fs grace post-ENTRY "
+                    "\u2014 leaving local row in place (next periodic sweep will heal)",
+                    self.NAME,
+                    ticker,
+                    RECONCILE_GRACE_SECONDS,
+                )
+                return
+            # expect in ("flat", "any"): legacy behaviour \u2014 broker says
+            # flat, drop our row if it lingers.
+            if ticker in self.positions:
+                logger.info(
+                    "[%s] [POST-RECONCILE] %s flat on broker, removing local row",
+                    self.NAME,
+                    ticker,
+                )
+                self._remove_position(ticker)
+            else:
+                logger.debug(
+                    "[%s] [POST-RECONCILE] %s flat on broker, already untracked",
+                    self.NAME,
+                    ticker,
+                )
             return
 
-        # Broker has the position \u2014 sync qty + entry_price.
+        # status == "present": broker has the position \u2014 sync qty + entry_price.
         try:
             qty_int = int(bp.qty)
         except Exception:
@@ -775,6 +919,18 @@ class TradeGeniusBase:
             entry_px = 0.0
         existing = self.positions.get(ticker)
         if existing is None:
+            if expect == "flat":
+                # Post-EXIT: broker still has the position after grace. The
+                # close did not take. DO NOT graft a phantom row \u2014 next
+                # signal or periodic reconcile will heal a real divergence.
+                logger.warning(
+                    "[%s] [POST-RECONCILE] %s broker still has position after "
+                    "%.1fs grace post-EXIT \u2014 leaving untracked (next sweep heals)",
+                    self.NAME,
+                    ticker,
+                    RECONCILE_GRACE_SECONDS,
+                )
+                return
             # Broker has it but we don't \u2014 graft the row.
             self.positions[ticker] = {
                 "ticker": ticker,
@@ -1046,8 +1202,9 @@ class TradeGeniusBase:
                 msg = f"\u2705 {label}: {ticker} BUY {qty} shares @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
-                # v5.25.0 \u2014 sync local row from broker authoritative book.
-                self._reconcile_position_with_broker(ticker)
+                # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
+                # with eventual-consistency-aware grace window.
+                self._reconcile_position_with_broker(ticker, expect="present")
             elif kind == "ENTRY_SHORT":
                 qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
@@ -1060,8 +1217,9 @@ class TradeGeniusBase:
                 msg = f"\u2705 {label}: {ticker} SELL {qty} shares short @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
-                # v5.25.0 \u2014 sync local row from broker authoritative book.
-                self._reconcile_position_with_broker(ticker)
+                # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
+                # with eventual-consistency-aware grace window.
+                self._reconcile_position_with_broker(ticker, expect="present")
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
                 # v5.24.0 \u2014 ``state.db.executor_positions`` (loaded
                 # into ``self.positions`` on boot, kept in sync via
@@ -1081,10 +1239,10 @@ class TradeGeniusBase:
                     )
                     return
                 self._close_position_idempotent(client, ticker, label, reason)
-                # v5.25.0 \u2014 confirm flat on broker (covers a partial
-                # close, a 40410000 race, or anything else that would
-                # leave self.positions diverged from the broker).
-                self._reconcile_position_with_broker(ticker)
+                # v5.25.0 / v6.0.7 \u2014 confirm flat on broker, with grace
+                # to ride out Alpaca's eventual-consistency window so we
+                # do not graft a phantom row from a still-pending close.
+                self._reconcile_position_with_broker(ticker, expect="flat")
             elif kind == "EOD_CLOSE_ALL":
                 client.close_all_positions(cancel_orders=True)
                 # v5.5.10 \u2014 wipe every local + persisted row.
