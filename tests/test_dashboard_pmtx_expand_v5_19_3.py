@@ -27,14 +27,19 @@ def test_app_js_exists():
 
 
 def test_has_detail_includes_prox():
-    """The hasDetail expression must reference the proxHasDetail flag."""
+    """The hasDetail expression must reference the proxHasDetail flag.
+
+    v5.28.2 widened the gate to also include open Phase-1 permits so
+    permit-go rows expand even before any proximity data has flowed.
+    The proxHasDetail clause itself must still be present \u2014 v5.19.3
+    behavior continues to hold for pre-market rows that have proximity
+    info but no permit yet.
+    """
     src = _read_app_js()
-    # The exact line we expect to find. If a future refactor renames
-    # the locals, update this pin deliberately along with the behavior
-    # being tested.
-    assert "const hasDetail = !!(pos || lastFill || proxHasDetail);" in src, (
-        "hasDetail must include proxHasDetail so pre-market rows expand"
-    )
+    assert (
+        "const hasDetail = !!(pos || lastFill || proxHasDetail || longPermit || shortPermit);"
+        in src
+    ), "hasDetail must include proxHasDetail (v5.19.3) and longPermit/shortPermit (v5.28.2)"
 
 
 def test_prox_has_detail_checks_all_four_payload_keys():

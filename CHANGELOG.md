@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.28.2 — 2026-05-01 — Permit-row detail gate fix (alarm strip on open-permit cards)
+
+### Why
+v5.28.1 made `_pmtxSentinelStrip` always render with idle fallback, but the strip lives inside the per-Titan detail row, and that detail row was still gated on `hasDetail = pos || lastFill || proxHasDetail`. A Titan with an open Phase-1 permit (long or short) but no position, no fill, and no proximity data yet — common in pre-market and quiet RTH windows — therefore had `hasDetail=false`, no detail row was emitted, and clicking the row produced an empty expand. The user reported "I still don't see the alarm on the open permit cards" after the v5.28.1 deploy went live; this is the gate that was missing.
+
+### Change
+- `dashboard_static/app.js` — `hasDetail` now also considers `longPermit || shortPermit`. A row with a green `pmtx-row-permit-go` tint is always expandable, and the expand always carries the v5.28.1 idle alarm strip plus its "no open position · alarms idle" banner.
+- No changes to `_pmtxSentinelStrip` itself — the v5.28.1 fallback path is what now becomes visible.
+
+### Acceptance
+- Render smoke (`/tmp/render_smoke.js`) still passes both branches (open-position + no-position).
+- Manual: open dashboard pre-market, find a Titan with an open permit, click to expand → strip renders with all 6 cells in idle and the banner.
+- No-permit, no-pos, no-prox rows still render without a detail (chev shows the empty placeholder), unchanged from prior behavior.
+
+---
+
 ## v5.28.1 — 2026-05-01 — Always-render alarm strip on expanded titan cards
 
 ### Why
