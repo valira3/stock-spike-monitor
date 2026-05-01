@@ -750,8 +750,19 @@
 /* ─── Permit Matrix table (desktop) ──────────────────────────────── */
 .pmtx-table-wrap {
   /* Allow horizontal scroll if a narrow viewport falls between the
-     desktop table and mobile-card breakpoints (e.g. embedded iframe). */
-  width: 100%; overflow-x: auto; overscroll-behavior: contain;
+     desktop table and mobile-card breakpoints (e.g. embedded iframe).
+     v5.31.1 — overscroll-behavior on both axes (the prior `contain`
+     shorthand) trapped vertical wheel events when the cursor was over
+     the matrix: with overflow-x:auto the wrap is a scroll container,
+     and `contain` on the Y axis blocked wheel chaining up to the page
+     scroller, so the page would not scroll while hovering the matrix.
+     Scope containment to X only, and explicitly disable Y overflow so
+     the browser routes vertical wheel deltas to the page. */
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 .pmtx-table {
   width: 100%; border-collapse: collapse;
