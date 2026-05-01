@@ -108,6 +108,23 @@ def test_pre_market_range_atr_empty_returns_none():
 # ---------------------------------------------------------------------------
 
 import trade_genius as tg_mod
+import pytest
+
+
+@pytest.fixture
+def atr_or_break_enabled():
+    """Force-enable the ATR OR-break flag for tests that exercise the ATR path.
+
+    The module-level default is False (v6.1.0 ships the gate dormant
+    until k is calibrated from shadow data). Tests that specifically
+    cover the ATR-on behaviour use this fixture to flip it on locally.
+    """
+    orig = tg_mod._V610_ATR_OR_BREAK_ENABLED
+    tg_mod._V610_ATR_OR_BREAK_ENABLED = True
+    try:
+        yield
+    finally:
+        tg_mod._V610_ATR_OR_BREAK_ENABLED = orig
 
 
 def _set_pm_atr(ticker: str, val: float | None) -> None:
@@ -127,7 +144,7 @@ def _clear_state(ticker: str) -> None:
 # Test 1: ATR threshold replaces fixed-cents (known-ATR case)
 # ---------------------------------------------------------------------------
 
-def test_atr_threshold_replaces_fixed_cents():
+def test_atr_threshold_replaces_fixed_cents(atr_or_break_enabled):
     """When ATR is known and flag is on, break requires closes > or_h + k*ATR."""
     ticker = "AAPL"
     _clear_state(ticker)
@@ -156,7 +173,7 @@ def test_atr_threshold_replaces_fixed_cents():
 # Test 2: Low-vol ATR threshold is tighter than old fixed-cents
 # ---------------------------------------------------------------------------
 
-def test_low_vol_atr_smaller_than_fixed():
+def test_low_vol_atr_smaller_than_fixed(atr_or_break_enabled):
     """Low-vol stock: ATR(5) < typical fixed-cent gap; threshold is tighter."""
     ticker = "LVL"
     _clear_state(ticker)
@@ -182,7 +199,7 @@ def test_low_vol_atr_smaller_than_fixed():
 # Test 3: High-vol ATR threshold is larger than old fixed-cents (filters chop)
 # ---------------------------------------------------------------------------
 
-def test_high_vol_atr_larger_than_fixed():
+def test_high_vol_atr_larger_than_fixed(atr_or_break_enabled):
     """High-vol ticker (TSLA-like): ATR(5) is large; filters shallow breaks."""
     ticker = "TSLA"
     _clear_state(ticker)
@@ -209,7 +226,7 @@ def test_high_vol_atr_larger_than_fixed():
 # Test 4: Late-OR window fires when standard OR never triggered
 # ---------------------------------------------------------------------------
 
-def test_late_or_window_fires():
+def test_late_or_window_fires(atr_or_break_enabled):
     """No break in 9:30-10:30, but closes above late-OR high in 11:00-12:00."""
     ticker = "META"
     _clear_state(ticker)
@@ -302,7 +319,7 @@ def test_disabled_flag_falls_back():
 # Test 7: Short break is symmetric to long break
 # ---------------------------------------------------------------------------
 
-def test_short_break_symmetric():
+def test_short_break_symmetric(atr_or_break_enabled):
     """Break-below uses the same k*ATR distance as break-above."""
     ticker = "AMZN"
     _clear_state(ticker)

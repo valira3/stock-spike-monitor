@@ -2781,11 +2781,11 @@ Feature flags: `_V610_EMA_CONFIRM_ENABLED = True` (master), `_V610_LUNCH_SUPPRES
 
 `trade_genius.py`, `broker/orders.py`, `indicators.py:pre_market_range_atr`.
 
-OR-break threshold replaced from fixed-cents to `k × ATR_pre_market` where `k = V610_OR_BREAK_K = 0.6`. `pre_market_range_atr(bars, window_minutes=15, period=5)` filters 08:30–09:25 ET 1-min bars and computes Wilder ATR(5). Falls back to ATR(5) of the first 5 RTH bars if pre-market is sparse. Symmetric for short side.
+OR-break threshold replaced from fixed-cents to `k × ATR_pre_market` where `k = V610_OR_BREAK_K = 0.25` (defensive starting point; awaiting calibration). `pre_market_range_atr(bars, window_minutes=15, period=5)` filters 08:30–09:25 ET 1-min bars and computes Wilder ATR(5). Falls back to ATR(5) of the first 5 RTH bars if pre-market is sparse. Symmetric for short side.
 
 Late-OR window: if the standard 9:30–10:30 OR-break never triggered for that ticker, the late-window opening range (first 30 min of 11:00–12:00 ET) becomes eligible during 11:00–12:00 ET. New module-level state `_v610_pm_atr`, `_v610_or_break_fired`, `_v610_late_or_high`, `_v610_late_or_low` — all cleared by `reset_daily_state`. `broker/orders.py:price_break` now consults `_v610_or_break_long/short`; Strike-1 `boundary_high/low` shifts by `k×ATR`.
 
-Feature flags: `_V610_ATR_OR_BREAK_ENABLED = True`, `V610_LATE_OR_ENABLED = True`. When the master flag is False, routes back through `_tiger_two_bar_long/short` (existing fixed-cents path).
+Feature flags: `_V610_ATR_OR_BREAK_ENABLED = False` (ships dormant in v6.1.0; flipping on awaits calibration of `V610_OR_BREAK_K` against the Apr 27–May 1 weekly shadow data due tomorrow morning), `V610_LATE_OR_ENABLED = True`. When the master flag is False, routes back through `_tiger_two_bar_long/short` (existing fixed-cents path) and the late-OR window logic does not contribute new entries either.
 
 ### Validation
 

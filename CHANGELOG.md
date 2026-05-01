@@ -37,11 +37,11 @@ Estimated recoverable P&L on 5/1 from stacking the three fixes: **~+$250**, cons
 
 **#3 — ATR-normalized OR-break entry gate + late-OR window** (`trade_genius.py`, `broker/orders.py`, `indicators.py`)
 - New `pre_market_range_atr(bars, window_minutes=15, period=5)` in `indicators.py`: filters 08:30–09:25 ET 1-min bars and computes Wilder ATR(5).
-- OR-break threshold replaced from fixed-cents to `k × ATR_pre_market` where `k = V610_OR_BREAK_K = 0.6`. Symmetric for short side. Falls back to ATR(5) of first 5 RTH bars if pre-market is sparse.
+- OR-break threshold replaced from fixed-cents to `k × ATR_pre_market` where `k = V610_OR_BREAK_K = 0.25` (defensive starting point, will be calibrated post-shadow). Symmetric for short side. Falls back to ATR(5) of first 5 RTH bars if pre-market is sparse.
 - Late-OR window 11:00–12:00 ET (`V610_LATE_OR_ENABLED = True`): if the standard 9:30–10:30 OR-break never triggered for that ticker, the late-window OR (first 30 min) becomes eligible. Most of 5/1's missed entries (META, AVGO especially) broke in this band.
 - New module-level state in `trade_genius.py`: `_v610_pm_atr`, `_v610_or_break_fired`, `_v610_late_or_high`, `_v610_late_or_low`. All cleared by `reset_daily_state`.
-- Feature flag: `_V610_ATR_OR_BREAK_ENABLED = True`. When False, routes back to existing `_tiger_two_bar_long/short` fixed-cents path.
-- Expected impact on 5/1 retro: META, AVGO, AMZN, ORCL each becomes eligible for ≥1 entry; assuming 25% capture of available swing, ~+$60.
+- Feature flag: `_V610_ATR_OR_BREAK_ENABLED = False` (ships dormant; routes back to existing `_tiger_two_bar_long/short` fixed-cents path). The clean v6.1.0 backtest of 2026-05-01 produced byte-identical output with the flag on or off — the entries that fired on 5/1 don't go through this gate at all. The k multiplier was an unvalidated guess (originally 0.6, lowered to 0.25 in commit e81d4ce) so we ship the gate compiled-in but inactive until the Saturday weekly shadow report (cron 873854a1, 5-day window Apr 27 – May 1) provides forensic data to calibrate `V610_OR_BREAK_K` against actual missed-entry candidates. Flip the flag to True post-calibration in v6.1.1 or later.
+- Expected impact on 5/1 retro: META, AVGO, AMZN, ORCL each becomes eligible for ≥1 entry once flag is enabled; assuming 25% capture of available swing, ~+$60. Zero impact while flag remains False.
 
 ### Tests
 - 5 new tests for #1 (`tests/test_v610_atr_trail.py`)

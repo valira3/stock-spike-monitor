@@ -957,7 +957,7 @@ DI_MINUS_ENTRY2_THRESHOLD       = 30
 # v6.1.0 — ATR-normalized OR-break entry gate (#3)
 # ============================================================
 # Master feature flag. False -> fall back to fixed-cents path (legacy).
-_V610_ATR_OR_BREAK_ENABLED: bool = True
+_V610_ATR_OR_BREAK_ENABLED: bool = False
 
 # Multiplier k: break fires when price > OR_high + k * ATR_pre_market.
 # Symmetric for short (below OR_low - k * ATR).
