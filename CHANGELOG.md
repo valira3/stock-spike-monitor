@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.30.1 — 2026-05-01 — Premarket bar data + drop dead `daily_bars` import
+
+### Why
+Two defects surfaced during the v5.30.0 post-deploy verification:
+
+1. **Bars were not populating during the premarket warm-up window.** v5.26.1 added an 08:00–09:35 ET warm-up loop in `engine.scan` that calls `fetch_1min_bars` every minute and archives the result to `/data/bars/<today>/<ticker>.jsonl` so the bar archive is fully populated before the entry engine activates at 09:35. In production today the loop ran on schedule but Yahoo returned only RTH bars — every `<ticker>.jsonl` ended up with the same yesterday-19:59 close repeated 11+ times, and the dashboard chart panel had nothing fresh to draw. Root cause: `fetch_1min_bars` requested `includePrePost=false`, which excludes the 04:00–09:30 ET premarket session.
+2. **441 noisy warnings per minute.** v5.26.0 deleted `engine/daily_bars.py` and `engine/sma_stack.py` (Stage 1 spec-strict cut) but `v5_13_2_snapshot._compute_sma_stack_safe` kept importing them on every snapshot tick, throwing `ModuleNotFoundError: No module named 'engine.daily_bars'` once per ticker per cycle (~441 lines/min in the v5.30.0 deploy logs).
+
+### Change
+- `trade_genius.py::fetch_1min_bars` — Yahoo URL flipped from `includePrePost=false` to `includePrePost=true`. Premarket bars only flow into call sites that don't filter by ts; everything that matters (opening range collection, session-open AVWAP, OR freeze) already strict-filters with `[09:30, 09:36)` or `ts >= open_epoch`, so the change is a pure win for the bar archive and the dashboard chart panel.
+- `v5_13_2_snapshot.py::_compute_sma_stack_safe` — replaced with a `return None` stub. Module imports removed. Call site in `_phase2_block` is unchanged (it already accepts `None`); the frontend `_pmtxSmaStackPanel` null-guard renders "data not available" cleanly.
+- `smoke_test.py` — old `v5.21.1: daily-bar fetcher requests IEX feed` check (which read `engine/daily_bars.py` and has been broken since v5.26.0) replaced with a `v5.30.1: daily-bar fetcher retired` check that asserts `engine/daily_bars.py` and `engine/sma_stack.py` stay deleted and `v5_13_2_snapshot.py` no longer imports them.
+- `bot_version.py` / `trade_genius.py`: BOT_VERSION → `5.30.1`. `CURRENT_MAIN_NOTE` rewritten (every line ≤ 34 chars).
+
+### Acceptance
+- After deploy, `/data/bars/<today>/<ticker>.jsonl` files grow during the 08:00–09:30 ET window with `ts` values from today's premarket session (each minute, not yesterday's 19:59 close repeated).
+- Production logs no longer emit `v5.21.0 sma_stack: failed for <ticker>: No module named 'engine.daily_bars'`. Verified via Railway log tail post-deploy.
+- `/api/state.per_ticker_v510[*].sma_stack` is `None` for every ticker (unchanged behaviour from v5.30.0; the dead import was already failing back to `None`, just noisily).
+- Existing OR / AVWAP / sentinel logic unaffected: each call site that consumes `fetch_1min_bars` output already filters bars by `ts` against the 09:30 ET session open, so the additional premarket bars are a no-op for those code paths.
+
+---
+
 ## v5.30.0 — 2026-05-01 — Add Alarm F (chandelier trail) cell to sentinel strip
 
 ### Why
