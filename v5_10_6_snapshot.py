@@ -497,6 +497,85 @@ def _per_position_v510(longs: dict, shorts: dict, prices: dict) -> dict:
     return out
 
 
+def _global_qqq_direction(m) -> str | None:
+    """v5.31.5 \u2014 classify the live QQQ direction (UP / DOWN / FLAT).
+
+    Uses the SAME `(EMA9 OR AVWAP) AND DI` rule that the per-stock
+    classifier uses, so the divergence flag is symmetric. The QQQ DI
+    streams are read via the same v5_di_1m_5m helper used by the
+    Section III gate. Returns None on any error so the dashboard
+    treats the comparison as data-missing.
+    """
+    try:
+        from engine.local_weather import classify_local_weather
+        regime = getattr(m, "_QQQ_REGIME", None)
+        if regime is None:
+            return None
+        close_5m = _safe_float(getattr(regime, "last_close", None))
+        ema9_5m = _safe_float(getattr(regime, "ema9", None))
+        last = _qqq_current_price(m)
+        avwap = _qqq_avwap_open(m)
+        try:
+            di_streams = m.v5_di_1m_5m("QQQ") or {}
+        except Exception:
+            di_streams = {}
+        di_plus = _safe_float(di_streams.get("di_plus_1m"))
+        di_minus = _safe_float(di_streams.get("di_minus_1m"))
+        return classify_local_weather(
+            close_5m, ema9_5m, last, avwap, di_plus, di_minus,
+        )
+    except Exception:
+        return None
+
+
+def _local_weather_per_ticker(m, tickers: list[str], di_blk: dict) -> dict:
+    """v5.31.5 \u2014 build the per-ticker local-weather payload.
+
+    Each entry surfaces the raw inputs (5m close, EMA9, last, AVWAP)
+    plus the classified direction and the divergence flag (True iff
+    local direction differs from QQQ AND neither is 'flat').
+    """
+    try:
+        from engine.local_weather import classify_local_weather
+    except Exception:
+        return {}
+    out: dict = {}
+    cache = getattr(m, "_TICKER_REGIME", None) or {}
+    global_dir = _global_qqq_direction(m)
+    for tkr in tickers:
+        try:
+            sym = tkr.upper() if isinstance(tkr, str) else tkr
+            entry = cache.get(sym) or {}
+            close_5m = _safe_float(entry.get("last_close_5m"))
+            ema9_5m = _safe_float(entry.get("ema9_5m"))
+            last = _safe_float(entry.get("last"))
+            avwap = _safe_float(entry.get("avwap"))
+            di_entry = (di_blk or {}).get(tkr) or {}
+            di_plus = _safe_float(di_entry.get("di_plus_1m"))
+            di_minus = _safe_float(di_entry.get("di_minus_1m"))
+            direction = classify_local_weather(
+                close_5m, ema9_5m, last, avwap, di_plus, di_minus,
+            )
+            divergence = bool(
+                global_dir is not None
+                and direction != "flat"
+                and global_dir != "flat"
+                and direction != global_dir
+            )
+            out[tkr] = {
+                "direction": direction,
+                "divergence": divergence,
+                "global_direction": global_dir,
+                "last_close_5m": close_5m,
+                "ema9_5m": ema9_5m,
+                "last": last,
+                "avwap": avwap,
+            }
+        except Exception:
+            continue
+    return out
+
+
 def build_v510_snapshot(m, tickers: list[str], longs: dict, shorts: dict, prices: dict) -> dict:
     """Top-level v5.10 snapshot. Never raises; on internal error returns
     the partial dict accumulated so far so the parent /api/state still
@@ -552,6 +631,16 @@ def build_v510_snapshot(m, tickers: list[str], longs: dict, shorts: dict, prices
         di_blk = _di_per_ticker(m, list(tickers))
     except Exception:
         di_blk = {}
+    # v5.31.5 \u2014 per-ticker local weather block. Reads the
+    # _TICKER_REGIME cache populated by _ticker_weather_tick_all() each
+    # scan cycle, classifies the ticker's local direction with the same
+    # rule the override gate uses, and flags whether it diverges from
+    # the global QQQ direction. The dashboard renders this as a per-stock
+    # Weather card and as the Weather column glyph in the permit matrix.
+    try:
+        wx_blk = _local_weather_per_ticker(m, list(tickers), di_blk)
+    except Exception:
+        wx_blk = {}
     per_t: dict = {}
     for t in tickers:
         per_t[t] = {
@@ -585,6 +674,16 @@ def build_v510_snapshot(m, tickers: list[str], longs: dict, shorts: dict, prices
                 "threshold": None,
                 "seed_bars": 0,
                 "sufficient": False,
+            },
+            "weather": wx_blk.get(t)
+            or {
+                "direction": "flat",
+                "divergence": False,
+                "global_direction": None,
+                "last_close_5m": None,
+                "ema9_5m": None,
+                "last": None,
+                "avwap": None,
             },
         }
     out["per_ticker_v510"] = per_t

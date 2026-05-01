@@ -269,13 +269,59 @@ def check_breakout(ticker, side):
         qqq_avwap,
     )
     if not permit_res.get("open"):
-        tg._v561_log_skip(
-            ticker=ticker,
-            reason="V5100_PERMIT:%s" % permit_res.get("reason", "closed"),
-            ts_utc=tg._utc_now_iso(),
-            gate_state=None,
-        )
-        return False, None
+        # v5.31.5 \u2014 per-stock local-weather override. When the global
+        # QQQ permit is closed for this side, check whether the ticker's
+        # OWN price action (5m close past EMA9 OR last past opening AVWAP)
+        # plus 1m DI confirmation is decisively pointing the other way.
+        # If so, the gate opens locally and the entry path proceeds.
+        # Either rejection (or both) collapses to the same skip log,
+        # tagged so we can audit how often the override fires in prod.
+        try:
+            from engine.local_weather import evaluate_local_override
+            _local_reg = (tg._TICKER_REGIME or {}).get(ticker.upper()) or {}
+            _local_di = tg.v5_di_1m_5m(ticker) or {}
+            _override = evaluate_local_override(
+                side_label,
+                _local_reg.get("last_close_5m"),
+                _local_reg.get("ema9_5m"),
+                _local_reg.get("last"),
+                _local_reg.get("avwap"),
+                _local_di.get("di_plus_1m"),
+                _local_di.get("di_minus_1m"),
+            )
+        except Exception as _e:
+            tg.logger.warning(
+                "[LOCAL_OVERRIDE] eval error %s/%s: %s",
+                ticker,
+                side_label,
+                _e,
+            )
+            _override = {"open": False, "reason": "eval_error"}
+        if _override.get("open"):
+            tg.logger.info(
+                "[LOCAL_OVERRIDE] ticker=%s side=%s OPEN reason=%s qqq_reason=%s",
+                ticker,
+                side_label,
+                _override.get("reason"),
+                permit_res.get("reason"),
+            )
+            # Fall through to the rest of the gate stack \u2014 the
+            # ticker's own structure has earned the entry chance.
+        else:
+            tg.logger.info(
+                "[LOCAL_OVERRIDE] ticker=%s side=%s REJECT qqq_reason=%s local_reason=%s",
+                ticker,
+                side_label,
+                permit_res.get("reason"),
+                _override.get("reason"),
+            )
+            tg._v561_log_skip(
+                ticker=ticker,
+                reason="V5100_PERMIT:%s" % permit_res.get("reason", "closed"),
+                ts_utc=tg._utc_now_iso(),
+                gate_state=None,
+            )
+            return False, None
 
     # v5.26.0 \u2014 Volume Bucket gate (Section II.1) deleted. BL-3 / BU-3
     # are BYPASSED per spec amendment 2026-04-30.
