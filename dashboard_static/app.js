@@ -605,6 +605,32 @@
     return false;
   }
 
+  // v5.31.5 \u2014 per-stock Weather column glyph. Lives at table position 2,
+  // between Titan and Boundary. Shows `x` when neither side has any kind of
+  // permit (global QQQ closed AND local override would not flip it open).
+  // Otherwise shows a green up-arrow for long-aligned local weather, a
+  // green down-arrow for short-aligned, or an em-dash while the data is
+  // still warming up. The directional arrow + alignment is sourced from
+  // the per-ticker weather block (per_ticker_v510[t].weather.direction).
+  function _pmtxWeatherCell(ptv, longPermit, shortPermit) {
+    const wx = (ptv && ptv.weather) || null;
+    const dir = (wx && typeof wx.direction === "string") ? wx.direction : "flat";
+    const div = !!(wx && wx.divergence);
+    const tooltipBase = div
+      ? "Local weather diverges from global QQQ direction. "
+      : "";
+    if (!longPermit && !shortPermit && dir === "flat") {
+      return '<span class="pmtx-wx pmtx-wx-none" title="' + escapeHtml(tooltipBase + "No permit: global QQQ closed both sides and the local override is not aligned") + '">x</span>';
+    }
+    if (dir === "up") {
+      return '<span class="pmtx-wx pmtx-wx-up" title="' + escapeHtml(tooltipBase + "Local weather is long-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2191</span>';
+    }
+    if (dir === "down") {
+      return '<span class="pmtx-wx pmtx-wx-down" title="' + escapeHtml(tooltipBase + "Local weather is short-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2193</span>';
+    }
+    return '<span class="pmtx-wx pmtx-wx-flat" title="' + escapeHtml("Local weather is flat or warming up \u2014 not enough structure or DI confirmation yet") + '">\u2014</span>';
+  }
+
   function _pmtxAuthorityTooltip(sip) {
     if (!sip) return "Authority: section_i_permit unavailable";
     const lo = (typeof sip.long_open === "boolean") ? (sip.long_open ? "yes" : "no") : "?";
@@ -782,6 +808,32 @@
       ["Breadth",      reg.breadth || null],
       ["RSI regime",   reg.rsi_regime || null],
     ]);
+
+    // v5.31.5 \u2014 Per-stock Weather card. Mirrors the Phase-1 global
+    // Weather card but reads the ticker's own 5m EMA9 / AVWAP / DI.
+    // State: pass = local direction is decisively up or down; warn =
+    // local direction diverges from global QQQ; pend = flat / warming.
+    // The card surfaces the same numeric inputs the local-override
+    // gate uses, so the operator can reason about why an override
+    // fired (or didn't) without combing the logs.
+    const wx = (d.ptv510 && d.ptv510.weather) || {};
+    const _wxDir = (typeof wx.direction === "string") ? wx.direction : "flat";
+    const _wxDiv = !!wx.divergence;
+    const _wxGlobal = (typeof wx.global_direction === "string") ? wx.global_direction : null;
+    let pLwState; let pLwVal;
+    if (_wxDir === "up")        { pLwState = _wxDiv ? "warn" : "pass"; pLwVal = _wxDiv ? "long (diverges)" : "long"; }
+    else if (_wxDir === "down") { pLwState = _wxDiv ? "warn" : "pass"; pLwVal = _wxDiv ? "short (diverges)" : "short"; }
+    else                         { pLwState = "pend"; pLwVal = "flat"; }
+    const pLwMetrics = _metricsHtml([
+      ["Local 5m close", _fmtNum(wx.last_close_5m, 2)],
+      ["Local 5m EMA9",  _fmtNum(wx.ema9_5m, 2)],
+      ["Local last",     _fmtNum(wx.last, 2)],
+      ["Local AVWAP",    _fmtNum(wx.avwap, 2)],
+      ["DI+ 1m",          _fmtNum(di.di_plus_1m, 2)],
+      ["DI\u2212 1m",     _fmtNum(di.di_minus_1m, 2)],
+      ["Global QQQ",      _wxGlobal || null],
+      ["Divergence",      _wxDiv ? "yes" : (_wxGlobal ? "no" : null)],
+    ]);
     const _bhSide = (bh.side || "").toString().toUpperCase();
     const _bhConsec = (_bhSide === "LONG")
       ? bh.long_consecutive_outside
@@ -955,6 +1007,7 @@
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
+      +     card("P1", "Local Weather", "Per-stock EMA9 + AVWAP + DI", pLwState, pLwVal, pLwMetrics)
       +     card("P2", "Boundary",    "Two consec 1m closes thru OR", p2bState, p2bVal, p2bMetrics)
       +     (_showVolume ? card("P2", "Volume", "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal, p2vMetrics) : '')
       +     card("P3", "Authority",   "Permit & QQQ alignment",    p3aState, p3aVal, p3aMetrics)
@@ -1180,6 +1233,7 @@
       + '<div class="pmtx-table-wrap">'
       +   '<table class="pmtx-table' + (showVolume ? '' : ' pmtx-no-volume') + '"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
+      +     '<th class="pmtx-col-weather" title="v5.31.5 per-stock local weather. Glyph: x = no permit (global QQQ blocks both sides AND no local override); green up arrow = long-aligned local weather; green down arrow = short-aligned local weather. Local weather is (5m close past EMA9 OR last past opening AVWAP) AND 1m DI confirmation, evaluated per ticker.">Weather</th>'
       +     '<th class="pmtx-col-orb" title="Phase 2 Boundary card. Strike 1: two consecutive 1m closes strictly above ORH (long) or below ORL (short), with ORH/ORL frozen at exactly 09:35:59 ET. Strikes 2 & 3: two consecutive 1m closes above the running NHOD (long) or below the running NLOD (short).">Boundary</th>'
       +     (showVolume ? '<th class="pmtx-col-vol" title="Phase 2 Volume card. 1m volume must be \u2265 100% of the 55-bar rolling average. REQUIRED after 10:00 AM ET; before 10:00 ET the gate auto-passes. Bypassed when VOLUME_GATE_ENABLED=false.">Volume</th>' : '')
       +     '<th class="pmtx-col-diplus" title="Phase 3 Authority card. Section-I permit alignment: cell goes green when at least one of long_open / short_open is true on section_i_permit. Per-ticker DI\u00b1 detail (DI+ 1m/5m, DI\u2212 1m/5m, threshold) lives in the Momentum card metric stack inside the expanded row.">Authority</th>'
@@ -2217,8 +2271,22 @@
       ? '<span class="pmtx-expand-chev" aria-hidden="true">\u203a</span>'
       : '<span class="pmtx-expand-chev pmtx-expand-empty" aria-hidden="true"></span>';
     const rowAttrs = ' data-pmtx-tkr="' + escapeHtml(tkr) + '"' + (hasDetail ? '' : ' data-pmtx-no-detail="1"');
+    // v5.31.5 \u2014 per-stock Weather cell. Lives at position 2, between
+    // Titan and Boundary. Glyph maps:
+    //   x        \u2014 no permit (long_open=false AND short_open=false AND
+    //              the local override would not open either side either)
+    //   green up  \u2014 long-aligned local weather (direction=='up')
+    //   green dn  \u2014 short-aligned local weather (direction=='down')
+    //   em-dash   \u2014 data still warming up / classifier returned 'flat'
+    const _wxHtml = _pmtxWeatherCell(
+      perTickerV510[tkr] || null,
+      !!longPermit,
+      !!shortPermit,
+    );
+
     const mainTr = '<tr class="pmtx-row' + rowTint + (hasDetail ? '' : ' pmtx-row-static') + '"' + rowAttrs + '>'
       + '<td class="pmtx-col-titan">' + titanHtml + '</td>'
+      + '<td class="pmtx-col-weather">' + _wxHtml + '</td>'
       // v5.20.8 \u2014 column headers renamed to match the gate-card
       // names (Boundary / Momentum / Authority / Volume). The Authority
       // cell (still uses the legacy .pmtx-col-diplus class for layout
@@ -2303,7 +2371,9 @@
         + _pmtxIntradayChartPanel(tkr);
       // v5.29.0 — detail row colspan tracks the visible column count so
       // hiding the Volume column doesn't leave a gap above the detail.
-      const _detailColspan = showVolume ? 9 : 8;
+      // v5.31.5 — bumped by one to account for the per-stock Weather
+      // column inserted at position 2 in the header above.
+      const _detailColspan = showVolume ? 10 : 9;
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
         + '<td colspan="' + _detailColspan + '">' + detailInner + '</td></tr>';
     }

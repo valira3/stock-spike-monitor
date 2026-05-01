@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.31.4"
+BOT_VERSION = "5.31.5"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,14 +97,15 @@ BOT_VERSION = "5.31.4"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.31.4 percent-stop:\n"
-    "Stop = entry x 0.5% (sym\n"
-    "long/short). Sentinel\n"
-    "fires STOP MARKET when\n"
-    "mark crosses the stop.\n"
-    "R-2 dollar rail kept as\n"
-    "deeper backstop. Val tab\n"
-    "session-color fix."
+    "v5.31.5 local override:\n"
+    "Per-stock local weather\n"
+    "can open the gate when\n"
+    "global QQQ blocks. Loose\n"
+    "rule: (close past EMA9 OR\n"
+    "last past AVWAP) AND DI\n"
+    "confirms. Permit matrix\n"
+    "adds Weather column +\n"
+    "per-stock card."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1044,6 +1045,21 @@ _QQQ_REGIME = qqq_regime.QQQRegime()
 _QQQ_REGIME_SEEDED = False
 _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
 
+# v5.31.5 \u2014 per-stock local weather cache. Mirrors _QQQ_REGIME but
+# keyed by ticker so the local-override gate can read each stock's own
+# 5m close + EMA9 (and the dashboard can render the per-stock Weather
+# card). Populated by _qqq_weather_tick() on every scan cycle for the
+# union of TRADE_TICKERS + open-position tickers. Each entry is a dict:
+#   {
+#     "last_close_5m": float | None,
+#     "ema9_5m":       float | None,
+#     "last":          float | None,  # most recent 1m current_price
+#     "avwap":         float | None,  # opening AVWAP from 09:30 ET
+#     "updated_ts":    str | None,    # ISO UTC of last update
+#     "last_bucket":   int | None,    # epoch_seconds // 300 dedupe key
+#   }
+_TICKER_REGIME: dict[str, dict] = {}
+
 # v5.31.0 \u2014 bounded deque of sentinel arm/trip events for chart overlay.
 # Appended by broker.positions._run_sentinel whenever an alarm fires or the
 # armed-code set changes. Read by dashboard_server._intraday_build_payload
@@ -1120,6 +1136,87 @@ def _qqq_weather_tick():
 
 
 _v590_qqq_regime_tick = _qqq_weather_tick
+
+
+def _ticker_weather_tick(ticker: str) -> None:
+    """v5.31.5 \u2014 advance per-stock 5m EMA9 + last + AVWAP cache.
+
+    Mirrors the QQQ weather tick but for one trade ticker. Used by
+    the per-stock local-override gate (engine.local_weather) and by
+    the dashboard's per-stock Weather card.
+
+    Fail-closed: any exception leaves the prior cached entry untouched.
+    """
+    if not ticker:
+        return
+    sym = ticker.upper()
+    try:
+        bars = fetch_1min_bars(sym)
+        if not bars:
+            return
+        five = _engine_compute_5m_ohlc_and_ema9(bars)
+        if not five:
+            return
+        bucket = five.get("last_bucket")
+        prev = _TICKER_REGIME.get(sym) or {}
+        prev_bucket = prev.get("last_bucket")
+        # Always refresh `last` + `avwap` (1m granularity); only refresh
+        # 5m close + ema9 when the bucket has rolled forward, matching
+        # the QQQ tick's dedupe semantics.
+        last_px = bars.get("current_price")
+        try:
+            avwap_v = _opening_avwap(sym)
+        except Exception:
+            avwap_v = None
+        new_close = prev.get("last_close_5m")
+        new_ema9 = prev.get("ema9_5m")
+        if bucket is not None and bucket != prev_bucket:
+            closes = five.get("closes") or []
+            if closes:
+                new_close = closes[-1]
+            new_ema9 = five.get("ema9")
+        _TICKER_REGIME[sym] = {
+            "last_close_5m": new_close,
+            "ema9_5m": new_ema9,
+            "last": last_px,
+            "avwap": avwap_v,
+            "updated_ts": _utc_now_iso(),
+            "last_bucket": bucket if bucket is not None else prev_bucket,
+        }
+    except Exception as _e:
+        logger.warning("[regime] ticker weather tick error %s: %s", sym, _e)
+
+
+def _ticker_weather_tick_all() -> None:
+    """v5.31.5 \u2014 walk active tickers and refresh the per-stock cache.
+
+    Active = TRADE_TICKERS \u222a tickers with an open position. We avoid
+    walking every ticker in TICKERS to keep the per-cycle cost bounded.
+    Open-position tickers are included even if they're outside
+    TRADE_TICKERS so the local-override and dashboard card still work
+    on a manually-pinned legacy position.
+    """
+    try:
+        active = set()
+        for t in (TRADE_TICKERS or []):
+            if t:
+                active.add(t.upper())
+        try:
+            for t in (long_positions or {}).keys():
+                if t:
+                    active.add(t.upper())
+        except Exception:
+            pass
+        try:
+            for t in (short_positions or {}).keys():
+                if t:
+                    active.add(t.upper())
+        except Exception:
+            pass
+        for sym in active:
+            _ticker_weather_tick(sym)
+    except Exception as _e:
+        logger.warning("[regime] ticker weather tick-all error: %s", _e)
 
 
 def _v561_fmt_num(v) -> str:

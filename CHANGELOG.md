@@ -4,6 +4,33 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.31.5 — 2026-05-01 — Per-stock local weather override + Weather column
+
+### Why
+Global QQQ permits (Section I) sometimes block clean per-stock setups. The motivating example: at 11:17 ET on May 1 2026, TSLA had two consecutive 1m closes above ORH (392.14, 392.07 vs ORH 386.67) with DI+ 1m=28.85 > DI- 1m=16.95 — a textbook long breakout. QQQ permit was open for long that minute (so this exact case wasn't blocked), but the operator wanted symmetric coverage for the inverse case: a stock decisively going one direction while QQQ is closed for that side. Adds a per-stock local-weather override; surfaces the new signal to the dashboard so the operator can see it without combing logs.
+
+### What
+- `engine/local_weather.py` (new) — `evaluate_local_override(side, ticker_5m_close, ticker_5m_ema9, ticker_last, ticker_avwap, di_plus_1m, di_minus_1m)` returning `{open, reason, weather_direction, ema9_aligned, avwap_aligned, di_aligned}`. Loose rule chosen by Val: `(close past EMA9 OR last past opening AVWAP) AND DI confirms direction`. Plus `classify_local_weather` for the dashboard's per-stock Weather column glyph (`up` / `down` / `flat`).
+- `trade_genius.py` — new `_TICKER_REGIME` dict cache (per-stock 5m close + EMA9 + last + opening AVWAP, mirrors `_QQQ_REGIME`). New `_ticker_weather_tick(ticker)` and `_ticker_weather_tick_all()` helpers populate the cache for active tickers (TRADE_TICKERS plus open positions) using the same `engine.bars.compute_5m_ohlc_and_ema9` path the QQQ tick uses.
+- `engine/scan.py` — calls `_ticker_weather_tick_all()` immediately after the existing QQQ weather tick each cycle; failure-tolerant.
+- `broker/orders.py` (Section I gate, lines ~271-324) — when `evaluate_section_i` rejects the side, evaluates `evaluate_local_override` against the per-stock cache + `v5_di_1m_5m`. If the override returns `open`, the entry path proceeds (rest of the gate stack still applies); otherwise the original V5100_PERMIT skip log fires. Adds `[LOCAL_OVERRIDE] ticker=… side=… OPEN|REJECT qqq_reason=… local_reason=…` log lines for forensic auditing.
+- `v5_10_6_snapshot.py` — new `_local_weather_per_ticker` and `_global_qqq_direction` helpers; each `per_ticker_v510[t]` entry now carries a `weather` block (`{direction, divergence, global_direction, last_close_5m, ema9_5m, last, avwap}`).
+- `dashboard_static/app.js` — new `_pmtxWeatherCell` renders the Weather column glyph (green up arrow / green down arrow / muted x / em-dash). Weather column inserted at table position 2 between Titan and Boundary. Detail-row colspan bumped 9→10 (8→9 with volume hidden). New per-stock Local Weather card added to the expanded-row component grid alongside the global Weather card; metrics show local 5m close / EMA9 / last / AVWAP / DI± 1m / global QQQ direction / divergence.
+- `dashboard_static/app.css` — `.pmtx-col-weather`, `.pmtx-wx-up`, `.pmtx-wx-down`, `.pmtx-wx-none`, `.pmtx-wx-flat` styles. Up/down arrows tinted green (--up); the no-permit `x` tinted red-muted (--down); flat dim (text-dim).
+- `bot_version.py`, `trade_genius.py` — BOT_VERSION 5.31.4 → 5.31.5.
+- `trade_genius.py` — CURRENT_MAIN_NOTE rewritten (9 lines, all ≤34 chars).
+
+### Tests
+- New `tests/test_v5_31_5_local_override.py` (13 cases): TSLA-style long override opens, symmetric short override, single-leg structure (EMA9 OR AVWAP), DI-rejects trap, structure-rejects veto, data-missing collapse, bad-side rejection, partial-input still evaluates, plus classifier sanity (up / down / flat / data-missing / neutral structure).
+- `node --check dashboard_static/app.js` parses cleanly.
+- `pytest --ignore=tests/test_v5_10_4_entry_2_wiring.py` and `smoke_test.py` baselines unchanged from v5.31.4.
+- All preflight gates (em-dash escape, forbidden-word, version-bump consistency, ruff) still pass on touched files.
+
+### Migration
+The override is purely additive — the original `evaluate_section_i` rejection still applies whenever the local-override evaluator returns `open=False` (which is its default whenever any input is None). Existing entries that would have skipped on `V5100_PERMIT:*` still skip unless the per-stock structure + DI both confirm the rejected side. The cache is fail-closed (any exception in `_ticker_weather_tick` leaves the prior entry untouched, and the override evaluator returns closed when its inputs are None), so a missing per-stock cache entry collapses to the legacy behaviour.
+
+---
+
 ## v5.31.4 — 2026-05-01 — Percent-of-entry stop + Val tab session-color fix
 
 ### Why

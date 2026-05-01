@@ -239,6 +239,16 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception as _e:
         logger.warning("[regime] cycle hook error: %s", _e)
 
+    # v5.31.5 \u2014 per-stock local weather cache for the local-override
+    # gate and the dashboard's per-stock Weather card. Walks active
+    # tickers (TRADE_TICKERS plus open positions) and refreshes each
+    # one's 5m close + EMA9 + last + AVWAP. Fail-closed inside the
+    # helper so a single bad ticker can't break the cycle.
+    try:
+        tg._ticker_weather_tick_all()
+    except Exception as _e:
+        logger.warning("[regime] ticker weather cycle hook error: %s", _e)
+
     try:
         tg._v561_maybe_persist_or_snapshots(now_et=now_et)
     except Exception as _e:

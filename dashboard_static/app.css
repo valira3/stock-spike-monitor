@@ -801,6 +801,23 @@
 .pmtx-table td.pmtx-col-strike { padding: 8px 4px; }
 .pmtx-table td.pmtx-col-expand { padding-right: 10px; color: var(--text-dim); }
 
+/* v5.31.5 — Per-stock Weather column. Lives at table position 2.
+   Glyphs: green up arrow (long-aligned), green down arrow (short-aligned),
+   muted x (no permit on either side), em-dash (warming up / flat). */
+.pmtx-table thead th.pmtx-col-weather { width: 56px; }
+.pmtx-table td.pmtx-col-weather       { width: 56px; padding: 8px 4px; }
+.pmtx-wx {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px;
+  font-weight: 700; font-size: 13px;
+  font-family: var(--sans);
+  line-height: 1;
+}
+.pmtx-wx-up   { background: color-mix(in srgb, var(--up)   18%, var(--surface-2)); color: var(--up);   }
+.pmtx-wx-down { background: color-mix(in srgb, var(--up)   18%, var(--surface-2)); color: var(--up);   }
+.pmtx-wx-none { background: color-mix(in srgb, var(--down) 14%, var(--surface-2)); color: var(--down); }
+.pmtx-wx-flat { background: var(--surface-2); color: var(--text-dim); }
+
 /* Row tints follow Phase 1 permit: GO (any side permitted) gets a
    faint green wash; BLOCK (3-of-3 strikes used and no open position)
    gets a faint red wash. Matches the mockup's tr.permit-go /
