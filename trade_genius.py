@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.0"
+BOT_VERSION = "6.0.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,21 +97,21 @@ BOT_VERSION = "6.0.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.0 UI/engine bundle:\n"
-    "Weather column gains a\n"
-    "divergence asterisk when\n"
-    "local direction differs\n"
-    "from global QQQ. PDC\n"
-    "anchors the EMA9 seed so\n"
-    "the line shows from bar 1\n"
-    "instead of waiting 45 min.\n"
-    "Each row carries a 1m\n"
-    "sparkline. Charts gain\n"
-    "wheel zoom, drag pan,\n"
-    "hover OHLC tooltip + an\n"
-    "expanded legend. Momentum\n"
-    "card surfaces ADX/DI/VWAP\n"
-    "distance-to-trigger gaps."
+    "v6.0.1 patches:\n"
+    "Chart zoom + pan now\n"
+    "survive the periodic\n"
+    "matrix re-render. The\n"
+    "per-ticker view persists\n"
+    "until the row collapses,\n"
+    "then resets to the full\n"
+    "session for the next open.\n"
+    "Daily SMA stack panel is\n"
+    "back: real 12 / 22 / 55 /\n"
+    "100 / 200-day SMAs feed\n"
+    "the bullish / bearish\n"
+    "stack pill again. QBTS\n"
+    "removed from the titan\n"
+    "universe per request."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -478,12 +478,15 @@ TICKERS_FILE = os.getenv("TICKERS_FILE", "tickers.json")
 TICKERS_PINNED = ("SPY", "QQQ")   # always present, never removable
 # v5.27.0 \u2014 NFLX, ORCL added to default universe (NFLX was today's
 # biggest live winner +$90.63; ORCL has seen recurring spike behavior).
-# QBTS retained from runtime tickers.json overlay (user opt-in via
-# /ticker add).
+# v6.0.1 \u2014 QBTS removed from the titan universe per user request
+# ("we are not trading QBTS"). The on-disk /data/tickers.json was still
+# overlaying it; _ensure_universe_consistency() will now detect drift
+# against this code-side default and rewrite the file at next startup.
+# Users who still want it can re-add at runtime via /ticker add QBTS.
 TICKERS_DEFAULT = [
     "AAPL", "MSFT", "NVDA", "TSLA", "META",
     "GOOG", "AMZN", "AVGO", "NFLX", "ORCL",
-    "QBTS", "SPY", "QQQ",
+    "SPY", "QQQ",
 ]
 
 # Section VI Daily Circuit Breaker.
@@ -2335,6 +2338,83 @@ def _alpaca_data_client():
     except Exception as e:
         logger.debug("alpaca data client build failed: %s", e)
         return None
+
+
+def _daily_closes_for_sma(ticker: str, needed: int = 210) -> list[float] | None:
+    """v6.0.1 \u2014 fetch the most recent ``needed`` daily closes for
+    ``ticker``, oldest-first. Used by the Daily SMA stack panel
+    (``v5_13_2_snapshot._compute_sma_stack_safe``) which caches the
+    result once per RTH calendar day so this only runs once per ticker
+    per day in steady state.
+
+    Returns ``None`` on any failure (no Alpaca client, alpaca-py
+    missing, network error, ticker symbol unknown). Caller must treat
+    ``None`` as "not available" and the frontend renders the fallback.
+    """
+    sym = (ticker or "").strip().upper()
+    if not sym:
+        return None
+    client = _alpaca_data_client()
+    if client is None:
+        return None
+    try:
+        from alpaca.data.requests import StockBarsRequest  # type: ignore
+        from alpaca.data.timeframe import TimeFrame  # type: ignore
+    except Exception as e:
+        logger.debug("alpaca StockBarsRequest import failed: %s", e)
+        return None
+    # Pull a generous calendar window (need ``needed`` trading days; ~252
+    # trading days per year, so 1.6x covers weekends/holidays comfortably).
+    from datetime import datetime, timedelta, timezone
+
+    end = datetime.now(timezone.utc)
+    # Roughly 1.7 calendar days per trading day handles weekends + holidays.
+    lookback_days = max(int(needed * 1.7), 60)
+    start = end - timedelta(days=lookback_days)
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=sym,
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+        )
+        resp = client.get_stock_bars(req)
+    except Exception as e:
+        logger.debug("daily-bars fetch failed for %s: %s", sym, e)
+        return None
+    bars = None
+    try:
+        # alpaca-py BarSet has a ``data`` dict[symbol, list[Bar]] and
+        # also indexes via __getitem__; both shapes have shown up across
+        # versions, so try both.
+        data = getattr(resp, "data", None)
+        if isinstance(data, dict):
+            bars = data.get(sym)
+        if bars is None:
+            try:
+                bars = resp[sym]
+            except Exception:
+                bars = None
+    except Exception as e:
+        logger.debug("daily-bars unpack failed for %s: %s", sym, e)
+        return None
+    if not bars:
+        return None
+    closes: list[float] = []
+    for b in bars:
+        c = getattr(b, "close", None)
+        if c is None:
+            continue
+        try:
+            closes.append(float(c))
+        except (TypeError, ValueError):
+            continue
+    if not closes:
+        return None
+    # Trim to the most recent ``needed`` values.
+    if len(closes) > needed:
+        closes = closes[-needed:]
+    return closes
 
 
 

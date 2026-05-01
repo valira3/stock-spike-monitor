@@ -46,8 +46,27 @@ import logging
 from typing import Any
 
 import v5_10_6_snapshot as _v510
+from engine import sma_stack as _sma_stack_engine
 
 _logger = logging.getLogger("trade_genius")
+
+
+# ---------------------------------------------------------------------------
+# v6.0.1 -- daily-close cache for the SMA stack panel.
+# ---------------------------------------------------------------------------
+# The SMA stack needs the most recent ~210 daily closes per ticker so we
+# can compute SMA(200). Daily closes only change once per RTH session,
+# so we cache (closes, fetched_at_iso_date) per ticker and only refetch
+# when the calendar date rolls. Failures are negative-cached for
+# CACHE_FAIL_TTL_SECONDS so a flaky network read does not hammer the
+# upstream every snapshot tick (the snapshot fires every few seconds).
+#
+# Wire-up: ``trade_genius._daily_closes_for_sma`` is the canonical
+# fetcher; we call it via getattr so this module stays importable in
+# tests that do not need trade_genius's heavy runtime.
+_DAILY_CLOSES_CACHE: dict[str, dict] = {}
+_CACHE_FAIL_TTL_SECONDS = 60.0  # negative-cache window on fetch failure
+_NEEDED_CLOSES = 210            # 200 + small buffer for safety
 
 
 # ---------------------------------------------------------------------------
@@ -125,19 +144,87 @@ def _phase1_block(m) -> dict:
 
 
 def _compute_sma_stack_safe(ticker: str) -> dict | None:
-    """v5.30.1 \u2014 the daily SMA stack panel was retired when v5.26.0
-    deleted ``engine.daily_bars`` and ``engine.sma_stack`` (Stage 1
-    spec-strict cut). The helper survived the cut and was still imported
-    on every snapshot tick, throwing ``ModuleNotFoundError`` and emitting
-    441+ ``v5.21.0 sma_stack: failed for <ticker>`` warnings per minute
-    in production. This stub returns ``None`` cleanly so ``sma_stack`` in
-    the Phase 2 row stays empty and the frontend ``_pmtxSmaStackPanel``
-    null-guard renders "data not available" without log noise. Kept
-    rather than ripped out so the call site in ``_phase2_block`` and the
-    ``test_v5_21_0_sma_panel_frontend.py`` null-path coverage do not
-    need to change.
+    """v6.0.1 -- daily SMA stack restored.
+
+    The v5.30.1 stub returned ``None`` after v5.26.0 deleted the old
+    engine helpers in the Stage 1 spec-strict cut. Per the v6.0.1
+    request, we now fetch the most recent ~210 daily closes via
+    ``trade_genius._daily_closes_for_sma`` (Alpaca historical with a
+    once-per-RTH-day cache) and feed them through ``engine.sma_stack``
+    to produce the full payload the dashboard renders.
+
+    Returns ``None`` if the fetcher is unavailable, the call fails, or
+    we got fewer than 12 closes back. The frontend null-guard then
+    renders "data not available" \u2014 the same fallback the legacy
+    stub gave \u2014 so the row never crashes during warmup.
     """
-    return None
+    if not ticker:
+        return None
+    sym = str(ticker).strip().upper()
+    if not sym:
+        return None
+
+    closes = _get_cached_daily_closes(sym)
+    if not closes:
+        return None
+    try:
+        return _sma_stack_engine.compute_sma_stack(closes)
+    except Exception as e:  # belt-and-braces -- never crash the snapshot
+        _logger.debug("sma_stack compute failed for %s: %s", sym, e)
+        return None
+
+
+def _get_cached_daily_closes(ticker: str) -> list[float] | None:
+    """Return cached daily closes for ``ticker`` (oldest-first, most
+    recent last). Refreshes once per RTH calendar day; on fetch failure
+    falls back to whatever was cached last and negative-caches the
+    failure for ``_CACHE_FAIL_TTL_SECONDS`` so we do not hammer the
+    upstream from every snapshot tick.
+    """
+    import time
+    from datetime import datetime, timezone
+
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now_mono = time.monotonic()
+    cached = _DAILY_CLOSES_CACHE.get(ticker)
+    if cached:
+        # If today's date matches the last successful fetch, reuse it.
+        if cached.get("date_iso") == today_iso and cached.get("closes"):
+            return cached.get("closes")
+        # Negative-cache window from the most recent failed attempt.
+        last_fail = cached.get("last_fail_mono")
+        if last_fail is not None and (now_mono - last_fail) < _CACHE_FAIL_TTL_SECONDS:
+            # Inside the cooldown window -- reuse the prior closes if any.
+            return cached.get("closes") or None
+
+    fetched: list[float] | None = None
+    try:
+        import trade_genius as _tg  # heavy module -- import lazily
+
+        fetcher = getattr(_tg, "_daily_closes_for_sma", None)
+        if callable(fetcher):
+            fetched = fetcher(ticker, _NEEDED_CLOSES)
+    except Exception as e:
+        _logger.debug("daily-closes fetch failed for %s: %s", ticker, e)
+        fetched = None
+
+    if fetched and len(fetched) >= 12:
+        _DAILY_CLOSES_CACHE[ticker] = {
+            "date_iso": today_iso,
+            "closes": list(fetched),
+            "last_fail_mono": None,
+        }
+        return list(fetched)
+
+    # Fetch failed -- mark negative-cache window and return whatever we
+    # had previously (may be None).
+    prior = (cached or {}).get("closes")
+    _DAILY_CLOSES_CACHE[ticker] = {
+        "date_iso": (cached or {}).get("date_iso"),
+        "closes": prior,
+        "last_fail_mono": now_mono,
+    }
+    return prior
 
 
 _VOL_GATE_MAP = {
