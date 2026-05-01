@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.31.2 — 2026-05-01 — Session KPI label fix (was stuck on CLOSED)
+
+### Why
+The Session KPI on the main dashboard read "CLOSED" during regular trading hours. Root cause: the v5.26.0 spec-strict pass deleted the `MarketMode` classifier (along with `MODE_PROFILES`, breadth/RSI observers, and ticker-heat lists), but kept `MarketMode.CLOSED` and `_current_mode = MarketMode.CLOSED` as a stub for legacy log lines. `_refresh_market_mode()` was reduced to a no-op `return`. `dashboard_server.py` /api/state continued to read `getattr(m, "_current_mode", "UNKNOWN")` into `regime.mode`, so the value was permanently frozen at `"CLOSED"` and the frontend faithfully displayed it. The bug landed quietly in v5.26.0 and only surfaced now because attention shifted to other KPIs in the same period.
+
+### What
+- `dashboard_server.py` (lines ~770-803) — replaced the `getattr(m, "_current_mode")` read with a real session classifier that consults `m._now_et()` and emits one of `PRE` / `OR` / `OPEN` / `POWER` / `AFTER` / `CLOSED`. Window boundaries mirror `engine/scan.py` (RTH 09:30-16:00 ET, OR 09:30-09:35, power hour 15:30-16:00, premarket from 04:00 ET, after-hours through 20:00 ET, weekends always closed). Falls back to the legacy `_current_mode` read on any exception so the endpoint stays serializable.
+- `dashboard_static/app.js` — added `__tgSessionColor(mode)` helper (lines ~6-24) as the single source of truth for the label-to-color mapping. Main, Val, and Gene panels all call it. Color map: OPEN green, OR/POWER/CHOP warn, PRE/AFTER dim, CLOSED muted, DEFENSIVE down.
+- `bot_version.py`, `trade_genius.py` — BOT_VERSION bumped to 5.31.2.
+- `trade_genius.py` — CURRENT_MAIN_NOTE rewritten (8 lines, all ≤34 chars).
+
+### Tests
+- No new automated tests. The classifier is a pure ET-time-to-string mapping with the boundaries already matched by `engine/scan.py:127-130` (which has its own coverage in `smoke_test.py:1268-1362`). Validated by walking every branch by inspection against the existing scan-loop window logic.
+- All preflight gates still pass (pytest, smoke, version-bump, em-dash, forbidden-word, ruff).
+
+### Migration
+None. Pure dashboard fix; no schema change to `regime.mode` (still a string), no scan-loop or executor side effects.
+
+---
+
 ## v5.31.1 — 2026-05-01 — Permit Matrix wheel-trap fix
 
 ### Why
