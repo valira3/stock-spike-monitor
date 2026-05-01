@@ -408,11 +408,47 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         last_1m_close = None
         last_1m_atr = None
         try:
-            highs_1m = (bars or {}).get("highs") or []
-            lows_1m = (bars or {}).get("lows") or []
-            closes_1m = (bars or {}).get("closes") or []
-            if closes_1m:
-                last_1m_close = float(closes_1m[-1])
+            highs_1m_raw = (bars or {}).get("highs") or []
+            lows_1m_raw = (bars or {}).get("lows") or []
+            closes_1m_raw = (bars or {}).get("closes") or []
+            # v6.0.5 \u2014 Yahoo's 1m series trails a None for the still-
+            # forming current minute (sometimes for empty premarket bars
+            # too). Naive ``closes[-1]`` then yields None and float(None)
+            # raises, killing Alarm F's last_1m_close every cycle. Walk
+            # backward to the most recent finite close, and align ATR on
+            # the matching i-prefix where ALL three series are finite.
+            n_close = len(closes_1m_raw)
+            for _i in range(n_close - 1, -1, -1):
+                _c = closes_1m_raw[_i]
+                if _c is not None:
+                    try:
+                        last_1m_close = float(_c)
+                    except (TypeError, ValueError):
+                        last_1m_close = None
+                    break
+            # Build aligned finite-only H/L/C lists for ATR. Only keep
+            # bars where high, low, AND close are all non-None / finite.
+            highs_1m: list[float] = []
+            lows_1m: list[float] = []
+            closes_1m: list[float] = []
+            n_align = min(len(highs_1m_raw), len(lows_1m_raw), n_close)
+            for _i in range(n_align):
+                _h = highs_1m_raw[_i]
+                _l = lows_1m_raw[_i]
+                _c = closes_1m_raw[_i]
+                if _h is None or _l is None or _c is None:
+                    continue
+                try:
+                    highs_1m.append(float(_h))
+                    lows_1m.append(float(_l))
+                    closes_1m.append(float(_c))
+                except (TypeError, ValueError):
+                    # Drop any non-numeric stragglers to keep ATR clean.
+                    if highs_1m and len(highs_1m) > len(closes_1m):
+                        highs_1m.pop()
+                    if lows_1m and len(lows_1m) > len(closes_1m):
+                        lows_1m.pop()
+                    continue
             if highs_1m and lows_1m and closes_1m:
                 last_1m_atr = atr_from_bars(highs_1m, lows_1m, closes_1m, period=14)
         except Exception:
