@@ -745,10 +745,25 @@
     else                                { p1State = "fail"; p1Val = "no permit"; }
 
     // Phase 2 \u00b7 Boundary \u2014 two consecutive 1m closes through the OR.
+    // v6.1.1 \u2014 surface the v6.1.0 ATR-normalized OR-break state. When
+    // the gate is enabled the val text shows the active k-multiplier;
+    // when dormant (default in v6.1.0) it shows "OR only" to make the
+    // legacy entry path explicit. The card colour still reflects the raw
+    // ORB pass/fail state so existing semantics are preserved.
+    const _v610OrEnabled = !!(d.v610Flags && d.v610Flags.or_break_enabled);
+    const _v610OrK = (d.v610Flags && typeof d.v610Flags.or_break_k === "number") ? d.v610Flags.or_break_k : 0.0;
+    const _v610LateOr = !!(d.v610Flags && d.v610Flags.late_or_enabled);
+    let _orBreakSuffix = "";
+    if (_v610OrEnabled && _v610OrK > 0) {
+      _orBreakSuffix = " \u00b7 \u2265OR+" + _v610OrK.toFixed(2) + "\u00d7ATR";
+      if (_v610LateOr) _orBreakSuffix += " \u00b7 late-OR";
+    } else {
+      _orBreakSuffix = " \u00b7 OR only";
+    }
     let p2bState; let p2bVal;
-    if (d.orb === true)       { p2bState = "pass"; p2bVal = "two consec"; }
-    else if (d.orb === false) { p2bState = "fail"; p2bVal = "hold"; }
-    else                       { p2bState = "pend"; p2bVal = "\u2014"; }
+    if (d.orb === true)       { p2bState = "pass"; p2bVal = "two consec" + _orBreakSuffix; }
+    else if (d.orb === false) { p2bState = "fail"; p2bVal = "hold" + _orBreakSuffix; }
+    else                       { p2bState = "pend"; p2bVal = "\u2014" + _orBreakSuffix; }
 
     // Phase 2 \u00b7 Volume \u2014 1m volume \u2265 100% of 55-bar avg.
     let p2vState; let p2vVal;
@@ -780,6 +795,20 @@
     } else {
       p3aState = "pend"; p3aVal = "\u2014";
     }
+    // v6.1.1 \u2014 EMA-confirm + lunch-suppression state surfaced as a
+    // suffix on the Phase 3 Authority card. Mirrors the OR-break suffix
+    // pattern on the Phase 2 Boundary card. Defaults make missing flags
+    // render as legacy single-bar / no-window behaviour.
+    const _v610EmaConfirm = !!(d.v610Flags && d.v610Flags.ema_confirm_enabled);
+    const _v610Lunch      = !!(d.v610Flags && d.v610Flags.lunch_suppression_enabled);
+    let _emaSuffix = "";
+    if (_v610EmaConfirm) {
+      _emaSuffix = " \u00b7 EMA 2-bar";
+      if (_v610Lunch) _emaSuffix += " \u00b7 lunch \u2713";
+    } else if (_v610Lunch) {
+      _emaSuffix = " \u00b7 lunch \u2713";
+    }
+    if (_emaSuffix) p3aVal = p3aVal + _emaSuffix;
 
     // Phase 3 \u00b7 Momentum \u2014 5m ADX > 20 (proxied by entry1_fired).
     let p3mState; let p3mVal;
@@ -1312,13 +1341,20 @@
     // visible, matching legacy behaviour.
     const showAlarmF = (ff.alarm_f_enabled !== false);
 
+    // v6.1.1 \u2014 surface v6.1.0 strategy feature flags so existing
+    // expanded-row cards (Phase 2 Boundary, Phase 3 Authority, Alarm F)
+    // can decorate their value text with the active strategy state.
+    // Defaults to a conservative all-off shape so a missing v610_flags
+    // block (older deploys) renders as legacy.
+    const v610Flags = (s && s.v610_flags) || {};
+
     const rowsHtml = [];
     tickers.forEach((tkr) => {
       const built = _pmtxBuildRow(
         tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
         longPermit, shortPermit,
         perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
-        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF }
+        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF, v610Flags: v610Flags }
       );
       rowsHtml.push(built.tableRows);
     });
@@ -2487,6 +2523,8 @@
     const showAlarmD  = visibilityOpts.showAlarmD  !== false;
     const showAlarmE  = visibilityOpts.showAlarmE  !== false;
     const showAlarmF  = visibilityOpts.showAlarmF  !== false;
+    // v6.1.1 \u2014 v6.1.0 strategy flag block.
+    const v610Flags   = visibilityOpts.v610Flags || {};
     const p2 = idx.p2[tkr] || null;
     // v5.21.0 — sma_stack is nested in the phase2 row dict.
     const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
@@ -2716,6 +2754,9 @@
               : null,
             regimeBlock: regimeBlock,
             sectionIPermit: sectionIPermit,
+            // v6.1.1 \u2014 strategy flags decorate Phase 2 Boundary + Phase 3
+            // Authority cards with active OR-break / EMA-confirm state.
+            v610Flags: v610Flags,
           })
         // v5.23.2 \u2014 expanded-row scan order: component-state cards
         // (process state at-a-glance) \u2192 sentinel alarm strip (live
@@ -2982,6 +3023,9 @@
     const fStageName = (typeof fChand.stage_name === "string") ? fChand.stage_name : "INACTIVE";
     const fPeak      = (typeof fChand.peak_close === "number") ? fChand.peak_close : null;
     const fStop      = (typeof fChand.proposed_stop === "number") ? fChand.proposed_stop : null;
+    // v6.1.1 \u2014 ATR-trail width fields, surfaced when _V610_ATR_TRAIL_ENABLED.
+    const fAtrVal    = (typeof fChand.atr_value === "number" && fChand.atr_value > 0) ? fChand.atr_value : null;
+    const fAtrMult   = (typeof fChand.atr_mult  === "number" && fChand.atr_mult  > 0) ? fChand.atr_mult  : null;
     if (fChand.armed === null || fChand.armed === undefined) {
       fChand.armed     = fStage >= 1;
       fChand.triggered = false;
@@ -2994,7 +3038,14 @@
       const _stageLabel = { 1: "BE", 2: "WIDE", 3: "TIGHT" }[fStage] || fStageName;
       const _stopStr = (fStop !== null) ? _pmtxMoney(fStop) : "\u2014";
       const _peakStr = (fPeak !== null) ? _pmtxMoney(fPeak) : "\u2014";
-      fVal = _stageLabel + " \u00b7 stop " + _stopStr + " / peak " + _peakStr;
+      // v6.1.1 \u2014 append the active ATR width when stage 2/3.
+      // Format: "WIDE \u00b7 stop $103.20 / peak $104.10 \u00b7 2.0x ATR ($0.45)".
+      // Falls back gracefully when the trail predates v6.1.1 deploy.
+      let _atrSuffix = "";
+      if (fAtrMult !== null && fAtrVal !== null) {
+        _atrSuffix = " \u00b7 " + _pmtxNum(fAtrMult, 1) + "x ATR (" + _pmtxMoney(fAtrVal) + ")";
+      }
+      fVal = _stageLabel + " \u00b7 stop " + _stopStr + " / peak " + _peakStr + _atrSuffix;
     }
 
     // --- Cell C: Velocity Ratchet ---

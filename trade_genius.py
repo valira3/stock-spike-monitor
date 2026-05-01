@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.1.0"
+BOT_VERSION = "6.1.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,29 +97,27 @@ BOT_VERSION = "6.1.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.1.0 P&L recovery bundle:\n"
-    "three algo upgrades shipped\n"
-    "after 5/1 TRUE backtest\n"
-    "closed -$8.32 against ~$143\n"
-    "per share of available swing\n"
-    "across the universe.\n"
-    "#1 ATR-scaled trailing stop\n"
-    "with profit-protect ratchet:\n"
-    "3 stages (1.0x / 1.5x / 50%\n"
-    "of peak open profit) plus\n"
-    "0.3x ATR floor. Replaces\n"
-    "fixed-cents trail in\n"
-    "sentinel_a_stop_price.\n"
-    "#2 two-bar EMA-cross exit\n"
-    "plus lunch-chop suppression\n"
-    "(11:30-13:00 ET) on\n"
-    "sentinel_b_ema_cross.\n"
-    "#3 ATR-normalized OR-break\n"
-    "entry gate (k=0.6) plus\n"
-    "late-OR window 11:00-12:00\n"
-    "ET. All three behind feature\n"
-    "flags for instant rollback.\n"
-    "655 tests pass."
+    "v6.1.1 dashboard-only patch:\n"
+    "surface v6.1.0 strategy in\n"
+    "existing expanded matrix\n"
+    "cards, no algo changes.\n"
+    "Alarm F card now shows\n"
+    "active ATR multiple plus\n"
+    "dollar width when WIDE/\n"
+    "TIGHT stage is armed.\n"
+    "Phase 2 Boundary card now\n"
+    "shows OR-only when gate\n"
+    "dormant or k-multiplier\n"
+    "+ late-OR when active.\n"
+    "Phase 3 Authority card\n"
+    "shows EMA 2-bar / lunch\n"
+    "suppression suffix when\n"
+    "the v6.1.0 flags are on.\n"
+    "/api/state now ships a\n"
+    "v610_flags block with\n"
+    "atr_trail / ema_confirm\n"
+    "/ or_break / late_or\n"
+    "booleans plus or_break_k."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
