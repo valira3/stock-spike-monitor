@@ -622,44 +622,26 @@ def execute_breakout(ticker, current_price, side):
     limit_price = round(current_price + cfg.limit_offset, 2)
     or_dict = getattr(tg, cfg.or_attr)
 
-    # v5.26.0 \u2014 R-2 hard stop. Spec mandates a -$500 STOP MARKET
-    # rail per Strike (Tiger Sovereign v15.0 \u00a7Risk Rails). Stop
-    # placement makes (entry \u2212 stop) \u00d7 shares == $500 for longs,
-    # symmetric for shorts. _stop_capped / _stop_baseline kept as
-    # placeholders so downstream telemetry stays compile-clean; both
-    # are False / equal to stop_price under the spec rule.
+    # v5.31.4 \u2014 percent-of-entry stop. Spec change from v5.26.0:
+    # the stop is no longer reverse-derived from the R-2 dollar rail.
+    # Operator request "stop should not be sized by the number of
+    # shares" \u2014 a $500 fixed dollar rail divided by share count
+    # produced wildly different percent stops on cheap vs expensive
+    # tickers ($5 stocks got tight stops, $200+ tickers got 5%+ stops).
+    # New rule: STOP_PCT_OF_ENTRY (default 0.005 = 0.5%) is symmetric
+    # for long and short. Share sizing remains notional ($10k/entry,
+    # 50% Entry-1 starter, doubled by Entry-2 to FULL).
     #
-    # v5.27.0 \u2014 the dollar magnitude scales with current portfolio
-    # value via ``eye_of_tiger.scaled_sovereign_brake_dollars`` (floor
-    # $100, ceiling $500). When the live portfolio cannot be computed
-    # (no tg, no quotes), the spec-default $500 wins. The stop
-    # placement formula (R / shares per-share risk) is unchanged.
-    _R2_DOLLARS = 500.0
-    try:
-        from eye_of_tiger import scaled_sovereign_brake_dollars
+    # The R-2 dollar-rail backstop in engine.sentinel.evaluate_sentinel
+    # remains unchanged \u2014 a runaway move that beats the price stop
+    # in absolute $ terms still trips R-2 as the deeper safety net.
+    from eye_of_tiger import STOP_PCT_OF_ENTRY
 
-        _pv = float(getattr(tg, "paper_cash", 0.0))
-        _long = getattr(tg, "positions", {}) or {}
-        _short = getattr(tg, "short_positions", {}) or {}
-        _gq = getattr(tg, "get_fmp_quote", None)
-        for _pt, _pp in _long.items():
-            _qq = (_gq(_pt) if _gq else None) or {}
-            _px = float(_qq.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
-            _pv += _px * float(_pp.get("shares") or 0)
-        for _pt, _pp in _short.items():
-            _qq = (_gq(_pt) if _gq else None) or {}
-            _px = float(_qq.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
-            _pv -= _px * float(_pp.get("shares") or 0)
-        if _pv > 0:
-            _R2_DOLLARS = abs(scaled_sovereign_brake_dollars(_pv))
-    except Exception:
-        _R2_DOLLARS = 500.0
-    _starter_for_stop = max(1, int(paper_shares_for(current_price)) * 2)
-    _per_share_risk = _R2_DOLLARS / _starter_for_stop
+    _pct = float(STOP_PCT_OF_ENTRY)
     if cfg.side.is_long:
-        stop_price = round(current_price - _per_share_risk, 2)
+        stop_price = round(current_price * (1.0 - _pct), 2)
     else:
-        stop_price = round(current_price + _per_share_risk, 2)
+        stop_price = round(current_price * (1.0 + _pct), 2)
     _stop_capped = False
     _stop_baseline = stop_price
 

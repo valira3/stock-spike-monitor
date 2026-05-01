@@ -84,6 +84,14 @@ EXIT_REASON_R2_HARD_STOP: str = "sentinel_r2_hard_stop"
 EXIT_REASON_ALARM_A: str = "sentinel_a_flash_loss"
 EXIT_REASON_ALARM_B: str = "sentinel_b_ema_cross"
 EXIT_REASON_ALARM_D: str = "sentinel_d_adx_decline"
+# v5.31.4 \u2014 price-based protective stop. Fires STOP MARKET when the
+# current mark crosses the position's protective stop price (entry \u00d7
+# 0.995 long / entry \u00d7 1.005 short, set in broker/orders.py from
+# eye_of_tiger.STOP_PCT_OF_ENTRY). This sub-alarm sits next to A_LOSS
+# under Alarm A: it is the price rail backstop, while A_LOSS is the
+# dollar rail. The price rail typically fires first in a slow drift
+# scenario where the dollar threshold has not yet been reached.
+EXIT_REASON_PRICE_STOP: str = "sentinel_a_stop_price"
 # Backward-compat alias \u2014 some callers still import EXIT_REASON_HVP_LOCK.
 EXIT_REASON_HVP_LOCK: str = EXIT_REASON_ALARM_D
 
@@ -184,10 +192,13 @@ class SentinelResult:
 
         v5.28.0: Alarm F's closed-bar chandelier cross (alarm code
         ``F_EXIT``) is now a full-exit reason alongside R-2/A/B/D.
+        v5.31.4: Alarm A_STOP_PRICE (mark crossed protective stop
+        price) is also a full-exit reason \u2014 STOP MARKET, 100% close.
         """
         for a in self.alarms:
             if a.reason in (
                 EXIT_REASON_R2_HARD_STOP,
+                EXIT_REASON_PRICE_STOP,
                 EXIT_REASON_ALARM_A,
                 EXIT_REASON_ALARM_B,
                 EXIT_REASON_ALARM_D,
@@ -199,7 +210,11 @@ class SentinelResult:
     @property
     def exit_reason(self) -> str | None:
         """Single canonical exit reason.
-        Priority: R-2 hard stop > A-A > A-B > F-EXIT > A-D > C.
+        Priority: R-2 hard stop > A_STOP_PRICE > A-A > A-B > F-EXIT > A-D > C.
+        v5.31.4: A_STOP_PRICE (price-rail mark cross) is wedged just
+        below R-2. Both are STOP MARKET full-exit rails; R-2 stays on
+        top because the dollar floor is the deepest rail (R-2 only fires
+        when price rail has either been disabled or moved past).
         F-EXIT (chandelier cross) is wedged between B and D \u2014 above
         D because in v5.28.0 D is gated off, and below B because B's
         2-bar 9-EMA confirmation is a stronger structural signal.
@@ -210,6 +225,9 @@ class SentinelResult:
         for a in self.alarms:
             if a.reason == EXIT_REASON_R2_HARD_STOP:
                 return EXIT_REASON_R2_HARD_STOP
+        for a in self.alarms:
+            if a.reason == EXIT_REASON_PRICE_STOP:
+                return EXIT_REASON_PRICE_STOP
         for a in self.alarms:
             if a.reason == EXIT_REASON_ALARM_A:
                 return EXIT_REASON_ALARM_A
@@ -396,6 +414,69 @@ def check_alarm_a(
                         ),
                     )
                 )
+    return fired
+
+
+# ---------------------------------------------------------------------------
+# Alarm A_STOP_PRICE \u2014 v5.31.4 price-rail protective stop
+# ---------------------------------------------------------------------------
+
+
+def check_alarm_a_stop_price(
+    *,
+    side: str,
+    current_price: float | None,
+    current_stop_price: float | None,
+) -> list[SentinelAction]:
+    """Evaluate the v5.31.4 price-based protective stop.
+
+    Fires a full-exit STOP MARKET when the current mark crosses the
+    position's protective stop price. The stop price itself is set
+    by ``broker/orders.py`` from ``eye_of_tiger.STOP_PCT_OF_ENTRY``
+    at entry: long stop = entry \u00d7 0.995, short stop = entry \u00d7 1.005.
+
+    Side-symmetric:
+      * LONG: fires when ``current_price <= current_stop_price``.
+      * SHORT: fires when ``current_price >= current_stop_price``.
+
+    Sits out silently when either input is None (e.g. price feed gap
+    or no protective stop on file). The position-level R-2 dollar
+    rail and Alarm B's 9-EMA shield remain as deeper backstops.
+
+    Returns a list with at most one SentinelAction.
+    """
+    if current_price is None or current_stop_price is None:
+        return []
+    try:
+        cp = float(current_price)
+        sp = float(current_stop_price)
+    except (TypeError, ValueError):
+        return []
+    fired: list[SentinelAction] = []
+    if side == SIDE_LONG:
+        if cp <= sp:
+            fired.append(
+                SentinelAction(
+                    alarm="A_STOP_PRICE",
+                    reason=EXIT_REASON_PRICE_STOP,
+                    detail=(
+                        f"side=LONG mark={cp:.4f} <= stop={sp:.4f}"
+                    ),
+                    detail_stop_price=sp,
+                )
+            )
+    elif side == SIDE_SHORT:
+        if cp >= sp:
+            fired.append(
+                SentinelAction(
+                    alarm="A_STOP_PRICE",
+                    reason=EXIT_REASON_PRICE_STOP,
+                    detail=(
+                        f"side=SHORT mark={cp:.4f} >= stop={sp:.4f}"
+                    ),
+                    detail_stop_price=sp,
+                )
+            )
     return fired
 
 
@@ -907,6 +988,18 @@ def evaluate_sentinel(
         hard_loss_threshold=hard_loss_threshold,
     )
     result.alarms.extend(a_fired)
+
+    # v5.31.4 \u2014 Alarm A_STOP_PRICE (price-rail protective stop).
+    # Independent of A_LOSS / A_FLASH; fires when the live mark crosses
+    # the per-position protective stop set at entry by broker/orders.py
+    # (entry \u00d7 (1 \u2213 STOP_PCT_OF_ENTRY)). Sits out silently when
+    # either price input is missing.
+    a_stop_fired = check_alarm_a_stop_price(
+        side=side,
+        current_price=current_price,
+        current_stop_price=current_stop_price,
+    )
+    result.alarms.extend(a_stop_fired)
 
     # Alarm B \u2014 always evaluated, independent of A. v5.27.0 widens
     # the cross to 2-bar confirm by default; spec-strict 1-bar fires

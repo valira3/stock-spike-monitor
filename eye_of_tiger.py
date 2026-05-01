@@ -33,6 +33,15 @@ ENTRY_1_SIZE_PCT = 0.50
 ENTRY_2_SIZE_PCT = 0.50
 ENTRY_2_REQUIRE_FRESH_NHOD = True
 
+# v5.31.4 \u2014 percent-of-entry stop. The R-2 hard stop in v5.26.0
+# reverse-derived a price stop from a fixed $500 rail divided by
+# share count, which produced 5%%+ stops on $200 tickers and tight
+# stops on $5 tickers. Switched to a symmetric percent-of-entry rule
+# at operator request ("stop should not be sized by the number of
+# shares"). The dollar-rail R-2 backstop remains in evaluate_sentinel
+# as the deeper safety net.
+STOP_PCT_OF_ENTRY = 0.005  # 0.5%% \u2014 long stop = entry * 0.995, short stop = entry * 1.005
+
 SOVEREIGN_BRAKE_DOLLARS = -500.0
 VELOCITY_FUSE_PCT = 0.01
 
