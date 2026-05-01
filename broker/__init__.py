@@ -6,6 +6,7 @@ hard stop now flows through the sentinel exit path. The remaining
 re-exports below are the surface trade_genius.py + tests still pull
 through ``broker.<symbol>``.
 """
+
 from __future__ import annotations
 
 from broker.orders import (

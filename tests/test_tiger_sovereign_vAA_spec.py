@@ -485,14 +485,10 @@ def test_sent_d_market_exit_when_5m_adx_below_75pct_of_peak():
     record_session_5m_adx("NVDA", 40.0)  # session HWM = 40
 
     # 75% of 40 = 30.0
-    res_just_below = check_alarm_d(
-        ticker="NVDA", current_adx_5m=29.99, side="LONG"
-    )
+    res_just_below = check_alarm_d(ticker="NVDA", current_adx_5m=29.99, side="LONG")
     assert res_just_below is not None and res_just_below.alarm == "D"
 
-    res_above = check_alarm_d(
-        ticker="NVDA", current_adx_5m=30.0, side="LONG"
-    )
+    res_above = check_alarm_d(ticker="NVDA", current_adx_5m=30.0, side="LONG")
     assert res_above is None  # exactly 75% does NOT fire (strict)
 
 

@@ -394,8 +394,7 @@ async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_near_misses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """v5.26.0 \u2014 near-miss tracker removed (volume gate is bypassed)."""
     await update.message.reply_text(
-        "\U0001f50d Near-misses removed in v5.26.0\n"
-        "(volume gate bypassed; no near-miss feed).",
+        "\U0001f50d Near-misses removed in v5.26.0\n(volume gate bypassed; no near-miss feed).",
         reply_markup=_menu_button(),
     )
 
@@ -406,8 +405,7 @@ async def cmd_retighten(update: Update, context: ContextTypes.DEFAULT_TYPE):
     both wired through the sentinel.
     """
     await update.message.reply_text(
-        "\U0001f527 /retighten removed in v5.26.0\n"
-        "(stop ladder + breakeven cap deleted per spec).",
+        "\U0001f527 /retighten removed in v5.26.0\n(stop ladder + breakeven cap deleted per spec).",
         reply_markup=_menu_button(),
     )
 

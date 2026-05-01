@@ -180,9 +180,7 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         )
 
     if tg._scan_paused:
-        logger.info(
-            "SCAN CYCLE done in %.2fs (paused, manage only)", time.time() - cycle_start
-        )
+        logger.info("SCAN CYCLE done in %.2fs (paused, manage only)", time.time() - cycle_start)
         return
 
     for ticker in tg.TRADE_TICKERS:
@@ -261,9 +259,7 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
         # returns insufficient_closes \u2192 polarity=None forever.
         try:
             if _bars_for_mtm:
-                eot_glue.record_latest_1m_close(
-                    ticker, _bars_for_mtm.get("closes") or []
-                )
+                eot_glue.record_latest_1m_close(ticker, _bars_for_mtm.get("closes") or [])
         except Exception as _e:
             logger.warning("[V5100-BOUNDARY] record_1m_close %s: %s", ticker, _e)
         paper_holds = callbacks.has_long(ticker)

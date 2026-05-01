@@ -180,62 +180,84 @@ class RecordOnlyBrokerLayer:
         self._next_id += 1
         return f"backtest-{self._next_id:06d}"
 
-    def place_limit_order(self, *, ticker: str, side: str, qty: int,
-                          limit_price: float, reason: str,
-                          ts: datetime | None = None) -> str:
+    def place_limit_order(
+        self,
+        *,
+        ticker: str,
+        side: str,
+        qty: int,
+        limit_price: float,
+        reason: str,
+        ts: datetime | None = None,
+    ) -> str:
         oid = self._alloc_id()
-        self.orders.append({
-            "ts": (ts or datetime.now(tz=ET)).isoformat(),
-            "ticker": ticker,
-            "side": side,
-            "order_type": "LIMIT",
-            "qty": int(qty),
-            "limit_price": float(limit_price),
-            "stop_price": None,
-            "reason": reason,
-            "order_id": oid,
-        })
+        self.orders.append(
+            {
+                "ts": (ts or datetime.now(tz=ET)).isoformat(),
+                "ticker": ticker,
+                "side": side,
+                "order_type": "LIMIT",
+                "qty": int(qty),
+                "limit_price": float(limit_price),
+                "stop_price": None,
+                "reason": reason,
+                "order_id": oid,
+            }
+        )
         return oid
 
-    def place_stop_market_order(self, *, ticker: str, side: str, qty: int,
-                                stop_price: float, reason: str,
-                                ts: datetime | None = None) -> str:
+    def place_stop_market_order(
+        self,
+        *,
+        ticker: str,
+        side: str,
+        qty: int,
+        stop_price: float,
+        reason: str,
+        ts: datetime | None = None,
+    ) -> str:
         oid = self._alloc_id()
-        self.orders.append({
-            "ts": (ts or datetime.now(tz=ET)).isoformat(),
-            "ticker": ticker,
-            "side": side,
-            "order_type": "STOP_MARKET",
-            "qty": int(qty),
-            "limit_price": None,
-            "stop_price": float(stop_price),
-            "reason": reason,
-            "order_id": oid,
-        })
+        self.orders.append(
+            {
+                "ts": (ts or datetime.now(tz=ET)).isoformat(),
+                "ticker": ticker,
+                "side": side,
+                "order_type": "STOP_MARKET",
+                "qty": int(qty),
+                "limit_price": None,
+                "stop_price": float(stop_price),
+                "reason": reason,
+                "order_id": oid,
+            }
+        )
         return oid
 
-    def place_market_order(self, *, ticker: str, side: str, qty: int,
-                           reason: str, ts: datetime | None = None) -> str:
+    def place_market_order(
+        self, *, ticker: str, side: str, qty: int, reason: str, ts: datetime | None = None
+    ) -> str:
         oid = self._alloc_id()
-        self.orders.append({
-            "ts": (ts or datetime.now(tz=ET)).isoformat(),
-            "ticker": ticker,
-            "side": side,
-            "order_type": "MARKET",
-            "qty": int(qty),
-            "limit_price": None,
-            "stop_price": None,
-            "reason": reason,
-            "order_id": oid,
-        })
+        self.orders.append(
+            {
+                "ts": (ts or datetime.now(tz=ET)).isoformat(),
+                "ticker": ticker,
+                "side": side,
+                "order_type": "MARKET",
+                "qty": int(qty),
+                "limit_price": None,
+                "stop_price": None,
+                "reason": reason,
+                "order_id": oid,
+            }
+        )
         return oid
 
-    def cancel_order(self, *, order_id: str,
-                     ts: datetime | None = None) -> bool:
-        self.cancellations.append({
-            "ts": (ts or datetime.now(tz=ET)).isoformat(),
-            "order_id": order_id,
-        })
+    def cancel_order(self, *, order_id: str, ts: datetime | None = None) -> bool:
+        self.cancellations.append(
+            {
+                "ts": (ts or datetime.now(tz=ET)).isoformat(),
+                "order_id": order_id,
+            }
+        )
         return True
 
 
@@ -266,6 +288,7 @@ class RecordOnlyPositionStore:
     `positions[ticker] = {...}`); we simply snapshot them through the
     callback get/has/set/remove surface.
     """
+
     positions: dict[str, dict] = field(default_factory=dict)
     short_positions: dict[str, dict] = field(default_factory=dict)
 
@@ -299,8 +322,11 @@ class RecordOnlyPositionStore:
 
 
 def install_record_only_layers(
-    tg, clock: BacktestClock, broker_layer: RecordOnlyBrokerLayer,
-    telegram_layer: RecordOnlyTelegram, position_store: RecordOnlyPositionStore,
+    tg,
+    clock: BacktestClock,
+    broker_layer: RecordOnlyBrokerLayer,
+    telegram_layer: RecordOnlyTelegram,
+    position_store: RecordOnlyPositionStore,
 ) -> None:
     """Monkey-patch trade_genius so order placement / Telegram / clock
     read from the harness's recording surfaces.
@@ -346,7 +372,10 @@ def install_record_only_layers(
         highs = [b.get("high") for b in visible]
         lows = [b.get("low") for b in visible]
         closes = [b.get("close") for b in visible]
-        vols = [b.get("iex_volume") if b.get("iex_volume") is not None else b.get("volume") for b in visible]
+        vols = [
+            b.get("iex_volume") if b.get("iex_volume") is not None else b.get("volume")
+            for b in visible
+        ]
         timestamps = [int(b["_dt"].timestamp()) for b in visible]
         last_close = next((c for c in reversed(closes) if c is not None), 0.0)
         # `pdc` is previous-day close; harness bars don't carry that, so
@@ -411,39 +440,49 @@ def install_record_only_layers(
         # Snapshot the position BEFORE tg deletes it from the dict.
         pos_snap = position_store.positions.get(ticker)
         try:
-            res = _orig_close_long(ticker, price, reason, suppress_signal=suppress_signal) \
-                if _orig_close_long is not None else None
+            res = (
+                _orig_close_long(ticker, price, reason, suppress_signal=suppress_signal)
+                if _orig_close_long is not None
+                else None
+            )
         finally:
-            broker_layer.closes.append({
-                "ts": clock.now.isoformat(),
-                "ticker": ticker,
-                "side": "long",
-                "exit_price": float(price) if price is not None else None,
-                "reason": reason,
-                "entry_price": (pos_snap or {}).get("entry_price"),
-                "shares": (pos_snap or {}).get("shares"),
-                "entry_ts_utc": (pos_snap or {}).get("entry_ts_utc")
-                                or (pos_snap or {}).get("entry_time"),
-            })
+            broker_layer.closes.append(
+                {
+                    "ts": clock.now.isoformat(),
+                    "ticker": ticker,
+                    "side": "long",
+                    "exit_price": float(price) if price is not None else None,
+                    "reason": reason,
+                    "entry_price": (pos_snap or {}).get("entry_price"),
+                    "shares": (pos_snap or {}).get("shares"),
+                    "entry_ts_utc": (pos_snap or {}).get("entry_ts_utc")
+                    or (pos_snap or {}).get("entry_time"),
+                }
+            )
         return res
 
     def _wrapped_close_short_position(ticker, price, reason="STOP", suppress_signal=False):
         pos_snap = position_store.short_positions.get(ticker)
         try:
-            res = _orig_close_short(ticker, price, reason, suppress_signal=suppress_signal) \
-                if _orig_close_short is not None else None
+            res = (
+                _orig_close_short(ticker, price, reason, suppress_signal=suppress_signal)
+                if _orig_close_short is not None
+                else None
+            )
         finally:
-            broker_layer.closes.append({
-                "ts": clock.now.isoformat(),
-                "ticker": ticker,
-                "side": "short",
-                "exit_price": float(price) if price is not None else None,
-                "reason": reason,
-                "entry_price": (pos_snap or {}).get("entry_price"),
-                "shares": (pos_snap or {}).get("shares"),
-                "entry_ts_utc": (pos_snap or {}).get("entry_ts_utc")
-                                or (pos_snap or {}).get("entry_time"),
-            })
+            broker_layer.closes.append(
+                {
+                    "ts": clock.now.isoformat(),
+                    "ticker": ticker,
+                    "side": "short",
+                    "exit_price": float(price) if price is not None else None,
+                    "reason": reason,
+                    "entry_price": (pos_snap or {}).get("entry_price"),
+                    "shares": (pos_snap or {}).get("shares"),
+                    "entry_ts_utc": (pos_snap or {}).get("entry_ts_utc")
+                    or (pos_snap or {}).get("entry_time"),
+                }
+            )
         return res
 
     if _orig_close_long is not None:
@@ -457,9 +496,12 @@ def install_record_only_layers(
     # any code path that tries to place an order ends up here.
     _client = getattr(tg, "client", None)
     if _client is not None:
+
         def _submit_limit(symbol, qty, side, limit_price, **kw):
             return broker_layer.place_limit_order(
-                ticker=symbol, side=str(side), qty=int(qty),
+                ticker=symbol,
+                side=str(side),
+                qty=int(qty),
                 limit_price=float(limit_price),
                 reason=kw.get("reason", "unknown"),
                 ts=clock.now,
@@ -467,7 +509,9 @@ def install_record_only_layers(
 
         def _submit_stop(symbol, qty, side, stop_price, **kw):
             return broker_layer.place_stop_market_order(
-                ticker=symbol, side=str(side), qty=int(qty),
+                ticker=symbol,
+                side=str(side),
+                qty=int(qty),
                 stop_price=float(stop_price),
                 reason=kw.get("reason", "unknown"),
                 ts=clock.now,
@@ -475,7 +519,9 @@ def install_record_only_layers(
 
         def _submit_market(symbol, qty, side, **kw):
             return broker_layer.place_market_order(
-                ticker=symbol, side=str(side), qty=int(qty),
+                ticker=symbol,
+                side=str(side),
+                qty=int(qty),
                 reason=kw.get("reason", "unknown"),
                 ts=clock.now,
             )
@@ -586,26 +632,30 @@ class RecordOnlyCallbacks:
             self.tg.manage_positions()
         except Exception as e:
             logger.debug("manage_positions raised: %s", e)
-            self.errors.append({
-                "executor": "replay_driver",
-                "code": "MANAGE_POSITIONS_EXCEPTION",
-                "severity": "warning",
-                "summary": "manage_positions raised",
-                "detail": f"{type(e).__name__}: {str(e)[:200]}",
-            })
+            self.errors.append(
+                {
+                    "executor": "replay_driver",
+                    "code": "MANAGE_POSITIONS_EXCEPTION",
+                    "severity": "warning",
+                    "summary": "manage_positions raised",
+                    "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                }
+            )
 
     def manage_short_positions(self) -> None:
         try:
             self.tg.manage_short_positions()
         except Exception as e:
             logger.debug("manage_short_positions raised: %s", e)
-            self.errors.append({
-                "executor": "replay_driver",
-                "code": "MANAGE_SHORT_POSITIONS_EXCEPTION",
-                "severity": "warning",
-                "summary": "manage_short_positions raised",
-                "detail": f"{type(e).__name__}: {str(e)[:200]}",
-            })
+            self.errors.append(
+                {
+                    "executor": "replay_driver",
+                    "code": "MANAGE_SHORT_POSITIONS_EXCEPTION",
+                    "severity": "warning",
+                    "summary": "manage_short_positions raised",
+                    "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                }
+            )
 
     # ---- Entry signals \u2014 delegate to real tg -------------------------
     def check_entry(self, ticker: str) -> tuple[bool, Any]:
@@ -626,37 +676,43 @@ class RecordOnlyCallbacks:
     def execute_entry(self, ticker: str, price: float) -> None:
         # Record the harness-level entry first so the report has it
         # even if the real execute_entry raises mid-flight.
-        self.entries.append({
-            "ts": self.clock.now.isoformat(),
-            "ticker": ticker,
-            "side": "long",
-            "price": float(price),
-        })
+        self.entries.append(
+            {
+                "ts": self.clock.now.isoformat(),
+                "ticker": ticker,
+                "side": "long",
+                "price": float(price),
+            }
+        )
         try:
             self.tg.execute_entry(ticker, price)
         except Exception as e:
             logger.debug("execute_entry(%s) raised: %s", ticker, e)
 
     def execute_short_entry(self, ticker: str, price: float) -> None:
-        self.short_entries.append({
-            "ts": self.clock.now.isoformat(),
-            "ticker": ticker,
-            "side": "short",
-            "price": float(price),
-        })
+        self.short_entries.append(
+            {
+                "ts": self.clock.now.isoformat(),
+                "ticker": ticker,
+                "side": "short",
+                "price": float(price),
+            }
+        )
         try:
             self.tg.execute_short_entry(ticker, price)
         except Exception as e:
             logger.debug("execute_short_entry(%s) raised: %s", ticker, e)
 
     def execute_exit(self, ticker: str, side: str, price: float, reason: str) -> None:
-        self.exits.append({
-            "ts": self.clock.now.isoformat(),
-            "ticker": ticker,
-            "side": str(side).lower(),
-            "price": float(price),
-            "reason": reason,
-        })
+        self.exits.append(
+            {
+                "ts": self.clock.now.isoformat(),
+                "ticker": ticker,
+                "side": str(side).lower(),
+                "price": float(price),
+                "reason": reason,
+            }
+        )
         try:
             if str(side).lower() == "long":
                 self.tg.close_position(ticker, price, reason)
@@ -670,36 +726,51 @@ class RecordOnlyCallbacks:
         self.alerts.append(msg)
         self.telegram_layer.send(msg)
 
-    def report_error(self, *, executor: str, code: str, severity: str,
-                     summary: str, detail: str) -> None:
-        self.errors.append({
-            "executor": executor,
-            "code": code,
-            "severity": severity,
-            "summary": summary,
-            "detail": detail,
-        })
+    def report_error(
+        self, *, executor: str, code: str, severity: str, summary: str, detail: str
+    ) -> None:
+        self.errors.append(
+            {
+                "executor": executor,
+                "code": code,
+                "severity": severity,
+                "summary": summary,
+                "detail": detail,
+            }
+        )
 
     # ---- Broker passthroughs (Protocol methods) ----------------------
-    def place_limit_order(self, *, ticker: str, side: str, qty: int,
-                          limit_price: float, reason: str) -> str:
+    def place_limit_order(
+        self, *, ticker: str, side: str, qty: int, limit_price: float, reason: str
+    ) -> str:
         return self.broker_layer.place_limit_order(
-            ticker=ticker, side=side, qty=qty,
-            limit_price=limit_price, reason=reason, ts=self.clock.now,
+            ticker=ticker,
+            side=side,
+            qty=qty,
+            limit_price=limit_price,
+            reason=reason,
+            ts=self.clock.now,
         )
 
-    def place_stop_market_order(self, *, ticker: str, side: str, qty: int,
-                                stop_price: float, reason: str) -> str:
+    def place_stop_market_order(
+        self, *, ticker: str, side: str, qty: int, stop_price: float, reason: str
+    ) -> str:
         return self.broker_layer.place_stop_market_order(
-            ticker=ticker, side=side, qty=qty,
-            stop_price=stop_price, reason=reason, ts=self.clock.now,
+            ticker=ticker,
+            side=side,
+            qty=qty,
+            stop_price=stop_price,
+            reason=reason,
+            ts=self.clock.now,
         )
 
-    def place_market_order(self, *, ticker: str, side: str, qty: int,
-                           reason: str) -> str:
+    def place_market_order(self, *, ticker: str, side: str, qty: int, reason: str) -> str:
         return self.broker_layer.place_market_order(
-            ticker=ticker, side=side, qty=qty,
-            reason=reason, ts=self.clock.now,
+            ticker=ticker,
+            side=side,
+            qty=qty,
+            reason=reason,
+            ts=self.clock.now,
         )
 
     def cancel_order(self, *, order_id: str) -> bool:
@@ -733,20 +804,21 @@ def pair_entries_to_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
         e = by_key[key].pop(0)
         sign = 1.0 if x["side"] == "long" else -1.0
         pnl = sign * (float(x["price"]) - float(e["price"]))
-        paired.append({
-            "ticker": x["ticker"],
-            "side": x["side"],
-            "entry_ts": e["ts"],
-            "exit_ts": x["ts"],
-            "entry_price": e["price"],
-            "exit_price": x["price"],
-            "pnl_dollars": round(pnl, 4),
-        })
+        paired.append(
+            {
+                "ticker": x["ticker"],
+                "side": x["side"],
+                "entry_ts": e["ts"],
+                "exit_ts": x["ts"],
+                "entry_price": e["price"],
+                "exit_price": x["price"],
+                "pnl_dollars": round(pnl, 4),
+            }
+        )
     return paired
 
 
-def summarize(entries: list[dict], exits: list[dict],
-              pairs: list[dict]) -> dict:
+def summarize(entries: list[dict], exits: list[dict], pairs: list[dict]) -> dict:
     wins = sum(1 for p in pairs if p["pnl_dollars"] > 0)
     losses = sum(1 for p in pairs if p["pnl_dollars"] < 0)
     total = round(sum(p["pnl_dollars"] for p in pairs), 4)
@@ -829,6 +901,7 @@ def run_replay(
 
     # 6) Step minute-by-minute through the session.
     import engine.scan as _engine_scan
+
     cur = start_dt
     minutes = 0
     while cur <= end_dt:
@@ -843,13 +916,15 @@ def run_replay(
             _engine_scan.scan_loop(cb)
         except Exception as e:
             logger.warning("scan_loop crashed at %s: %s", cur.isoformat(), e)
-            cb.errors.append({
-                "executor": "replay_driver",
-                "code": "SCAN_LOOP_EXCEPTION",
-                "severity": "error",
-                "summary": f"scan_loop crashed at {cur.isoformat()}",
-                "detail": f"{type(e).__name__}: {str(e)[:200]}",
-            })
+            cb.errors.append(
+                {
+                    "executor": "replay_driver",
+                    "code": "SCAN_LOOP_EXCEPTION",
+                    "severity": "error",
+                    "summary": f"scan_loop crashed at {cur.isoformat()}",
+                    "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                }
+            )
         minutes += 1
         cur = cur + timedelta(minutes=1)
 
@@ -874,15 +949,17 @@ def _broker_closes_to_exits(closes: list[dict]) -> list[dict]:
     """
     out = []
     for c in closes:
-        out.append({
-            "ts": c.get("ts"),
-            "ticker": c.get("ticker"),
-            "side": c.get("side"),
-            "price": c.get("exit_price"),
-            "reason": c.get("reason"),
-            "entry_price": c.get("entry_price"),
-            "shares": c.get("shares"),
-        })
+        out.append(
+            {
+                "ts": c.get("ts"),
+                "ticker": c.get("ticker"),
+                "side": c.get("side"),
+                "price": c.get("exit_price"),
+                "reason": c.get("reason"),
+                "entry_price": c.get("entry_price"),
+                "shares": c.get("shares"),
+            }
+        )
     return out
 
 
@@ -939,9 +1016,7 @@ def format_text_report(result: ReplayResult) -> str:
     if cb.exits:
         lines.append("## Exits")
         for x in cb.exits:
-            lines.append(
-                f"- {x['ts']} {x['ticker']} {x['side']} @ {x['price']} ({x['reason']})"
-            )
+            lines.append(f"- {x['ts']} {x['ticker']} {x['side']} @ {x['price']} ({x['reason']})")
         lines.append("")
     return "\n".join(lines)
 
@@ -962,17 +1037,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--date", required=True, help="YYYY-MM-DD session date")
     p.add_argument(
-        "--bars-dir", default="/home/user/workspace/today_bars",
+        "--bars-dir",
+        default="/home/user/workspace/today_bars",
         help="Parent dir of <date>/{TICKER}.jsonl files",
     )
     p.add_argument(
-        "--tickers", default=",".join(DEFAULT_TICKERS),
+        "--tickers",
+        default=",".join(DEFAULT_TICKERS),
         help="Comma-separated trade universe override",
     )
     p.add_argument("--start", default="09:35", help="ET start time HH:MM")
     p.add_argument("--end", default="15:55", help="ET end time HH:MM")
-    p.add_argument("--output", default=None,
-                   help="Write JSON report to this path (else stdout text)")
+    p.add_argument(
+        "--output", default=None, help="Write JSON report to this path (else stdout text)"
+    )
     return p
 
 
@@ -992,8 +1070,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(build_json_report(result), indent=2),
-                            encoding="utf-8")
+        out_path.write_text(json.dumps(build_json_report(result), indent=2), encoding="utf-8")
         print(f"wrote {out_path}")
     else:
         print(format_text_report(result))

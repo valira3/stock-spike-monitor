@@ -19,6 +19,7 @@ Zero behavior change. The Protocol is structural; nothing checks it at
 runtime, so the production `_ProdCallbacks` shim does not inherit from
 it.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -60,8 +61,9 @@ class EngineCallbacks(Protocol):
 
     # --- Operator surface -----------------------------------------------
     def alert(self, msg: str) -> None: ...
-    def report_error(self, *, executor: str, code: str, severity: str,
-                     summary: str, detail: str) -> None: ...
+    def report_error(
+        self, *, executor: str, code: str, severity: str, summary: str, detail: str
+    ) -> None: ...
 
     # --- Broker order placement (record-only in replay) -----------------
     # v5.26.0 stage7: added so the replay harness can record orders that
@@ -69,12 +71,13 @@ class EngineCallbacks(Protocol):
     # hitting Alpaca. Production is unaffected: the Protocol is structural
     # and `_ProdCallbacks` does not implement these (trade_genius reaches
     # broker.* directly).
-    def place_limit_order(self, *, ticker: str, side: str, qty: int,
-                          limit_price: float, reason: str) -> str: ...
-    def place_stop_market_order(self, *, ticker: str, side: str, qty: int,
-                                stop_price: float, reason: str) -> str: ...
-    def place_market_order(self, *, ticker: str, side: str, qty: int,
-                           reason: str) -> str: ...
+    def place_limit_order(
+        self, *, ticker: str, side: str, qty: int, limit_price: float, reason: str
+    ) -> str: ...
+    def place_stop_market_order(
+        self, *, ticker: str, side: str, qty: int, stop_price: float, reason: str
+    ) -> str: ...
+    def place_market_order(self, *, ticker: str, side: str, qty: int, reason: str) -> str: ...
     def cancel_order(self, *, order_id: str) -> bool: ...
 
     # --- Telegram (record-only in replay) -------------------------------

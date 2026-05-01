@@ -552,9 +552,7 @@ def test_alarm_d_fires_when_5m_adx_below_75pct_of_peak():
     from engine.sentinel import EXIT_REASON_HVP_LOCK, check_alarm_d
 
     _seed_session_5m_adx("NVDA", 20.0, 40.0)  # 0.75 * 40 = 30.0
-    res = check_alarm_d(
-        ticker="NVDA", current_adx_5m=29.99, side=SIDE_LONG
-    )
+    res = check_alarm_d(ticker="NVDA", current_adx_5m=29.99, side=SIDE_LONG)
     assert res is not None
     assert res.alarm == "D"
     assert res.reason == EXIT_REASON_HVP_LOCK
@@ -588,12 +586,8 @@ def test_alarm_d_side_agnostic_long_and_short_both_fire():
     # Use distinct tickers so the session HWMs are isolated.
     _seed_session_5m_adx("AAPL", 20.0, 40.0)
     _seed_session_5m_adx("NVDA", 20.0, 40.0)
-    long_res = check_alarm_d(
-        ticker="AAPL", current_adx_5m=20.0, side=SIDE_LONG
-    )
-    short_res = check_alarm_d(
-        ticker="NVDA", current_adx_5m=20.0, side=SIDE_SHORT
-    )
+    long_res = check_alarm_d(ticker="AAPL", current_adx_5m=20.0, side=SIDE_LONG)
+    short_res = check_alarm_d(ticker="NVDA", current_adx_5m=20.0, side=SIDE_SHORT)
     assert long_res is not None and long_res.alarm == "D"
     assert short_res is not None and short_res.alarm == "D"
     # detail string carries the side label for observability
@@ -609,9 +603,7 @@ def test_alarm_d_returns_none_when_no_session_hwm_recorded():
 
     # Reset the HWM \u2014 no samples recorded.
     _SESSION_5M_ADX_HWM.pop("GOOG", None)
-    res = check_alarm_d(
-        ticker="GOOG", current_adx_5m=10.0, side=SIDE_LONG
-    )
+    res = check_alarm_d(ticker="GOOG", current_adx_5m=10.0, side=SIDE_LONG)
     assert res is None
 
 

@@ -93,8 +93,8 @@ def order_type_for_reason(reason: str) -> str:
 def compute_sentinel_limit_price(side: str, bid: float, ask: float) -> float:
     """Per RULING #1, sentinel-driven LIMIT exits are placed at:
 
-      LONG  exit \u2192 Bid * 0.995  (0.5% below bid, sells out cleanly)
-      SHORT exit \u2192 Ask * 1.005  (0.5% above ask, covers cleanly)
+    LONG  exit \u2192 Bid * 0.995  (0.5% below bid, sells out cleanly)
+    SHORT exit \u2192 Ask * 1.005  (0.5% above ask, covers cleanly)
     """
     s = (side or "").strip().upper()
     if s == "LONG":

@@ -7,6 +7,7 @@ were deleted in v4.9.0 along with the SSM_USE_COLLAPSED feature flag.
 
 Pure module \u2014 no imports from trade_genius. Safe to import from anywhere.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ class SideConfig:
     payloads byte-for-byte \u2014 the synthetic-harness goldens are the
     enforcement mechanism.
     """
+
     side: Side
     # OR attribute name on the ticker row ("or_high" vs "or_low").
     or_attr: str
