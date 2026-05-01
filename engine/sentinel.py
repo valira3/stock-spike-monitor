@@ -141,6 +141,29 @@ SIDE_LONG = "LONG"
 SIDE_SHORT = "SHORT"
 
 
+# === v6.1.0 ema-cross confirmation state ===
+# Feature flag: flip to False to restore single-bar (legacy) behaviour
+# for check_alarm_b without removing any code.
+_V610_EMA_CONFIRM_ENABLED: bool = True
+
+# Feature flag: flip to False to disable the 11:30-13:00 ET lunch
+# suppression window (useful for back-testing or manual override).
+_V610_LUNCH_SUPPRESSION_ENABLED: bool = True
+
+# Lunch-chop suppression window boundaries (Eastern Time, inclusive start,
+# exclusive end). Exits are blocked inside [LUNCH_START, LUNCH_END).
+_V610_LUNCH_START_HOUR: int = 11
+_V610_LUNCH_START_MIN: int = 30
+_V610_LUNCH_END_HOUR: int = 13
+_V610_LUNCH_END_MIN: int = 0
+
+# Per-position counter: number of consecutive bars where the EMA cross
+# condition has been True for a given position_id. Keyed by position_id
+# (string). Resets to 0 when the condition flips False for that position.
+_ema_cross_pending: dict[str, int] = {}
+# === end v6.1.0 ema-cross confirmation state ===
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -624,10 +647,85 @@ def check_alarm_b(
     ``confirm_bars`` values are not supported \u2014 we only have prev/
     last in the contract.
 
+    v6.1.0 \u2014 when ``position_id`` is provided and
+    ``_V610_EMA_CONFIRM_ENABLED`` is True, a stateful per-position
+    counter (``_ema_cross_pending``) replaces the prev/last pair
+    approach. The counter increments on each consecutive cross bar and
+    fires only at counter >= 2. The counter resets to 0 when the cross
+    condition is False. If ``_V610_LUNCH_SUPPRESSION_ENABLED`` is True
+    and ``now_et`` falls inside [11:30, 13:00) ET, the exit is blocked
+    regardless of counter value (counter still increments so the state
+    is consistent once the window reopens).
+
     Returns a list with at most one SentinelAction.
     """
     if last_5m_close is None or last_5m_ema9 is None:
         return []
+
+    # -----------------------------------------------------------------------
+    # v6.1.0 stateful two-bar confirmation path.
+    # Only taken when a position_id is supplied AND the feature flag is on.
+    # -----------------------------------------------------------------------
+    if position_id is not None and _V610_EMA_CONFIRM_ENABLED:
+        # Determine whether the cross condition is currently True.
+        cross_true: bool
+        if side == SIDE_LONG:
+            cross_true = last_5m_close < last_5m_ema9
+        elif side == SIDE_SHORT:
+            cross_true = last_5m_close > last_5m_ema9
+        else:
+            cross_true = False
+
+        if cross_true:
+            _ema_cross_pending[position_id] = _ema_cross_pending.get(position_id, 0) + 1
+        else:
+            # Cross condition is False: reset counter and sit out.
+            _ema_cross_pending[position_id] = 0
+            return []
+
+        count = _ema_cross_pending[position_id]
+
+        # Lunch-chop suppression: block the exit during 11:30-13:00 ET.
+        # The counter still incremented above so state remains consistent.
+        if _V610_LUNCH_SUPPRESSION_ENABLED and now_et is not None:
+            from engine.timing import ET as _ET
+            # Normalise to ET so comparisons are DST-aware.
+            if now_et.tzinfo is None:
+                now_et_norm = now_et.replace(tzinfo=_ET)
+            else:
+                now_et_norm = now_et.astimezone(_ET)
+            lunch_start_mins = _V610_LUNCH_START_HOUR * 60 + _V610_LUNCH_START_MIN
+            lunch_end_mins = _V610_LUNCH_END_HOUR * 60 + _V610_LUNCH_END_MIN
+            now_mins = now_et_norm.hour * 60 + now_et_norm.minute
+            if lunch_start_mins <= now_mins < lunch_end_mins:
+                return []
+
+        if count < 2:
+            return []
+
+        # Two or more consecutive cross bars confirmed \u2014 fire the exit.
+        if side == SIDE_LONG:
+            detail_str = (
+                f"side=LONG v610 2bar count={count} "
+                f"last_close={last_5m_close:.4f}<last_ema9={last_5m_ema9:.4f}"
+            )
+        else:
+            detail_str = (
+                f"side=SHORT v610 2bar count={count} "
+                f"last_close={last_5m_close:.4f}>last_ema9={last_5m_ema9:.4f}"
+            )
+        return [
+            SentinelAction(
+                alarm="B",
+                reason=EXIT_REASON_ALARM_B,
+                detail=detail_str,
+            )
+        ]
+
+    # -----------------------------------------------------------------------
+    # Legacy path: v5.27.0 prev/last pair confirmation (confirm_bars).
+    # Taken when position_id is None or _V610_EMA_CONFIRM_ENABLED is False.
+    # -----------------------------------------------------------------------
 
     # 2-bar confirm path \u2014 require both the most recent closed bar
     # AND the bar before it to be on the wrong side of THEIR
@@ -689,6 +787,24 @@ def check_alarm_b(
                 )
             )
     return fired_1
+
+
+# === v6.1.0 ema-cross confirmation helpers ===
+
+def reset_ema_cross_pending(position_id: str | None = None) -> None:
+    """Reset the v6.1.0 EMA-cross pending counter.
+
+    When called with a ``position_id``, only that position's counter is
+    cleared (use on position close). When called with no argument (or
+    ``None``), the entire module-level dict is cleared (use in tests or
+    at session reset).
+    """
+    if position_id is None:
+        _ema_cross_pending.clear()
+    else:
+        _ema_cross_pending.pop(position_id, None)
+
+# === end v6.1.0 ema-cross confirmation helpers ===
 
 
 # ---------------------------------------------------------------------------
@@ -1057,6 +1173,9 @@ def evaluate_sentinel(
     entry_price: float | None = None,
     last_1m_close: float | None = None,
     last_1m_atr: float | None = None,
+    # v6.1.0 \u2014 pass-through to check_alarm_b stateful counter path.
+    position_id: str | None = None,
+    now_et: "datetime | None" = None,
 ) -> SentinelResult:
     """Evaluate ALL sentinel alarms for one position on one tick.
 
@@ -1122,6 +1241,8 @@ def evaluate_sentinel(
         prev_5m_close=prev_5m_close,
         prev_5m_ema9=prev_5m_ema9,
         confirm_bars=alarm_b_confirm_bars,
+        position_id=position_id,
+        now_et=now_et,
     )
     result.alarms.extend(b_fired)
 
@@ -1278,4 +1399,9 @@ __all__ = [
     "record_pnl",
     "record_session_5m_adx",
     "reset_session_5m_adx",
+    # v6.1.0 exports
+    "_V610_EMA_CONFIRM_ENABLED",
+    "_V610_LUNCH_SUPPRESSION_ENABLED",
+    "_ema_cross_pending",
+    "reset_ema_cross_pending",
 ]
