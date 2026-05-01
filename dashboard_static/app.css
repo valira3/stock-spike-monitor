@@ -1842,3 +1842,29 @@
     padding: 6px 10px;
   }
 }
+
+/* v6.0.8 - the expanded permit-matrix row's <td> uses colspan and was
+   rendering ~653 px wide on a 453 px iPhone viewport, clipping the
+   right edge of every component-card description (e.g. "Phase 2 entry
+   gate" was cut off after "Phase 2 entr"). Constrain the td and its
+   descendants so block-level children inside cannot push the row past
+   the visible viewport. The other media queries above shrink fonts
+   and gaps; this block fixes the actual width-overflow root cause. */
+@media (max-width: 480px) {
+  .pmtx-detail-row td {
+    max-width: 100vw;
+    box-sizing: border-box;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    padding: 10px 10px 12px 12px !important;
+  }
+  .pmtx-detail-row td > * { min-width: 0; max-width: 100%; }
+  .pmtx-detail-grid { min-width: 0; }
+  .pmtx-comp-cards { min-width: 0; }
+  .pmtx-comp-card { min-width: 0; }
+  .pmtx-comp-desc {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
+  }
+}

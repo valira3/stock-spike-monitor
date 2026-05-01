@@ -45,11 +45,34 @@
 >   3=CHANDELIER_TIGHT) on every position row;
 >   `dashboard_static/app.js` ORs `p.trail_active` with
 >   `chandelier_stage >= 1` for the badge.
-> - **v6.0.7** (2026-05-01, this release) — post-action reconcile
+> - **v6.0.7** (2026-05-01) — post-action reconcile
 >   race fix + iPhone Pro Max (430 px) mobile UI overflow fix +
 >   stale-test cleanup. See "Reconcile state machine — v6.0.7"
 >   subsection below for the new `expect=` parameter and the
 >   `_get_open_position_settled` polling helper.
+> - **v6.0.8** (2026-05-01, this release) — session-state SQLite
+>   persistence + mobile expanded-permit-row width fix. Apr 30 had
+>   9 Railway redeploys during RTH; the in-memory `_v570_session_hod` /
+>   `_v570_session_lod` / `_v570_strike_counts` /
+>   `_v570_daily_realized_pnl` / `_v570_kill_switch_latched`
+>   reset to empty on every redeploy, causing NVDA strike 2/3 to
+>   fire off shallow LODs (real session LOD 197.38; post-redeploy
+>   prints at 198.57 and 198.20 registered as fresh `lod_break`s
+>   vs `prev_lod=None`). Two new SQLite tables `session_state`
+>   (per ticker per ET-date) and `session_globals` (scalars) in
+>   `persistence.py` mirror the dicts on every mutation;
+>   `_v570_rehydrate_from_disk(today)` in `trade_genius.py` seeds
+>   the dicts on the first call to `_v570_reset_if_new_session()`
+>   per ET date in this process. Idempotent across the day via
+>   `_v570_rehydrated_for_date`. ET-date keying so a stale row from
+>   yesterday is naturally pruned on the day-rollover transition.
+>   Mobile fix: `dashboard_static/app.css` adds an
+>   `@media (max-width: 480px)` block that constrains
+>   `.pmtx-detail-row td` with `max-width: 100vw` +
+>   `box-sizing: border-box` + `overflow-wrap: anywhere`, so the
+>   colspan'd td no longer renders 653 px wide on a 453 px viewport
+>   and component-card descriptions wrap inside the visible area.
+>   See "Session-state persistence — v6.0.8" subsection below.
 >
 > ## Reconcile state machine — v6.0.7
 >
@@ -80,6 +103,86 @@
 > just-closed position (post-EXIT race). The race surfaces on
 > the next periodic / boot reconcile as a "true divergence"
 > Telegram with `source='RECONCILE', stop=None, trail=None`.
+>
+> ## Session-state persistence — v6.0.8
+>
+> `trade_genius.py` keeps five pieces of session-scoped state at
+> module scope: `_v570_strike_counts` (per ticker entry counter),
+> `_v570_session_hod` / `_v570_session_lod` (per ticker session
+> high/low), `_v570_daily_realized_pnl` (running cumulative P&L),
+> and `_v570_kill_switch_latched` (daily-loss floor breach flag).
+> Pre-v6.0.8 these were Python dicts/floats living only in the
+> running process. Every Railway redeploy started a fresh process
+> and the values all came up empty, regardless of whether the real
+> ET session had already established HOD/LOD or fired strike 1.
+>
+> Apr 30 2026 had 9 redeploys during RTH and the failure mode
+> showed itself on NVDA: real session LOD = 197.38 set at 14:18 ET;
+> redeploy at 14:32 ET wiped `_v570_session_lod["NVDA"]`; print at
+> 14:35 ET = 198.57 hit `_v570_update_session_hod_lod` with
+> `prev_lod = None`, registered as a fresh `lod_break` (the gate is
+> `prev_lod is not None and px < prev_lod` so when prev is None we
+> seed but don't break — but the strike-2 entry path was reading
+> the *post-update* state machine and treating the seed itself as a
+> break trigger via the surrounding gate logic). Strike 2 fired at
+> a price 1.19 above the real LOD; strike 3 followed off 198.20
+> four minutes later off the same redeploy-blank state. Both should
+> have been blocked.
+>
+> v6.0.8 adds two SQLite tables in `persistence.py`:
+> `session_state(ticker, et_date, session_hod, session_lod,
+> strike_count, last_updated_utc)` keyed on `(ticker, et_date)`,
+> and `session_globals(key, et_date, value_real, value_int,
+> last_updated_utc)` keyed on `(key, et_date)`. ET-date keying
+> means a stale row from yesterday is naturally ignored on
+> rehydrate when today != stored et_date.
+>
+> Six new failure-tolerant helpers expose UPSERT-with-COALESCE
+> writes plus per-date reads and prunes:
+> `save_session_state`, `load_session_state_for_date`,
+> `prune_session_state`, `save_session_global`,
+> `load_session_globals_for_date`, `prune_session_globals`.
+> Every write helper wraps the sqlite3 call in try/except and
+> logs+swallows on failure — a corrupt or unwritable state.db can
+> never raise into the trading path.
+>
+> `trade_genius.py` adds `_v570_rehydrate_from_disk(today)` which
+> reads both tables for `today` and seeds the in-memory v570 dicts.
+> `_v570_reset_if_new_session()` calls it on the FIRST entry per
+> ET date in this process; subsequent calls within the same ET
+> date short-circuit via `_v570_rehydrated_for_date == today`. On
+> the day-rollover transition (`_v570_rehydrated_for_date != today
+> and not empty`), yesterday's rows are pruned via
+> `persistence.prune_session_state(today)` +
+> `prune_session_globals(today)`.
+>
+> Three call sites mirror state TO disk:
+> - `_v570_record_entry()` after every increment
+>   (`save_session_state(strike_count=new_n)`),
+> - `_v570_update_session_hod_lod()` only when HOD or LOD actually
+>   moved (avoids one disk write per quote on quiet prints),
+> - `_v570_record_trade_close()` after every cumulative-P&L update
+>   (writes both `daily_realized_pnl` and the `kill_switch_latched`
+>   int to `session_globals`).
+>
+> Net effect on the Apr 30 NVDA scenario: redeploy at 14:32 ET ->
+> fresh process boots -> dicts come up empty -> first call into
+> `_v570_reset_if_new_session()` hits `_v570_rehydrate_from_disk("2026-04-30")`
+> which seeds `_v570_session_lod["NVDA"] = 197.38` from the row
+> the 14:18 ET update wrote -> the 14:35 ET 198.57 print is
+> correctly NOT a fresh `lod_break` (`prev_lod=197.38, px=198.57`).
+> Strike 2/3 stays blocked.
+>
+> Mobile expanded-permit-row width fix (separate workstream in
+> the same release): the `<td>` of `.pmtx-detail-row` uses colspan
+> across the full Permit Matrix table and previously rendered
+> 653 px wide on a 453 px iPhone 13 viewport, clipping every
+> component-card description at the right edge. The new
+> `@media (max-width: 480px)` block in `dashboard_static/app.css`
+> constrains the td with `max-width: 100vw`, `box-sizing:
+> border-box`, and `overflow-wrap: anywhere`, and tightens its
+> descendants (`min-width: 0`, `max-width: 100%`) so block-level
+> children inside cannot push the row past the visible viewport.
 >
 > ---
 >

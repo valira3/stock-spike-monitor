@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.8 — 2026-05-01 — Session-state SQLite persistence + mobile expanded permit row fix
+
+### Why
+Apr 30 had 9 Railway redeploys during RTH and Val/Gene each emitted a spurious NVDA strike 2/3 ENTRY off a shallow LOD shortly after one of those redeploys. Forensic walk through Railway logs + `_v570_session_lod` traces showed the root cause was that `_v570_session_hod`, `_v570_session_lod`, `_v570_strike_counts`, `_v570_daily_realized_pnl`, and `_v570_kill_switch_latched` all live in module-level Python dicts/floats inside `trade_genius.py`. Every redeploy starts a fresh process, the dicts come up empty, and the first quote after boot is treated as the session's first print regardless of what the real session HOD/LOD already was. NVDA's real session LOD on Apr 30 was 197.38 set at 14:18 ET; after the 14:32 ET redeploy the in-memory LOD reset to None, and a 14:35 ET print at 198.57 was registered as a fresh `lod_break` (since `prev_lod is None and px is not None` was treated as new), gating strike 2. Strike 3 followed off a 198.20 print four minutes later off the same redeploy-blank state. Both should have been blocked because 198.57 and 198.20 are above the real persisted 197.38 LOD.
+
+The mobile expanded-permit-row clip is a separate Valira ask: live measurement at 453 px viewport (Playwright iPhone 13) with the AAPL row expanded showed the inner `<td colspan>` element rendering 653 px wide, causing every component-card description ("Phase 2 entry gate", "alarm-F chandelier rope", etc.) to clip at the right viewport edge. The other 480-px and 432-px media blocks shrink fonts and gaps but do not constrain the actual width of the colspan'd td, which is what allowed the inner grid to push past the visible viewport.
+
+### What
+
+**Session-state persistence** (`persistence.py`, `trade_genius.py`)
+- Two new SQLite tables in `init_db()`: `session_state(ticker, et_date, session_hod, session_lod, strike_count, last_updated_utc)` keyed on `(ticker, et_date)`, and `session_globals(key, et_date, value_real, value_int, last_updated_utc)` keyed on `(key, et_date)`. ET-date keying so a stale row from yesterday is naturally ignored on rehydrate when today != stored et_date.
+- Six new failure-tolerant helpers: `save_session_state`, `load_session_state_for_date`, `prune_session_state`, `save_session_global`, `load_session_globals_for_date`, `prune_session_globals`. Every write helper wraps the sqlite3 call in try/except, logs+swallows on failure, never raises into the trading path. UPSERT uses `COALESCE(excluded.x, table.x)` so callers can update HOD without clobbering LOD or strike_count and vice versa.
+- New `_v570_rehydrate_from_disk(today)` in trade_genius.py reads both tables for `today` and seeds the in-memory v570 dicts. Idempotent across the day via `_v570_rehydrated_for_date` — only the first call per ET date in this process touches disk.
+- `_v570_reset_if_new_session()` now calls `_v570_rehydrate_from_disk(today)` on the first call per ET date and prunes yesterday's rows on the day-rollover transition.
+- `_v570_record_entry()` mirrors `strike_count` to disk after every increment.
+- `_v570_update_session_hod_lod()` mirrors HOD/LOD to disk only when one of them actually moved (avoids one disk write per quote on quiet prints).
+- `_v570_record_trade_close()` mirrors `daily_realized_pnl` and the `kill_switch_latched` int flag to `session_globals` after every close.
+
+Net effect: the Apr 30 NVDA scenario now plays out as: redeploy at 14:32 ET, fresh process boots, dicts come up empty, FIRST call into `_v570_reset_if_new_session()` hits `_v570_rehydrate_from_disk("2026-04-30")` which seeds `_v570_session_lod["NVDA"] = 197.38` from the row written by the 14:18 ET update, and the 14:35 ET print at 198.57 is correctly NOT a fresh lod_break (`prev_lod=197.38, px=198.57, lod_break=False`). Strike 2/3 stays blocked.
+
+**Mobile expanded permit row width fix** (`dashboard_static/app.css`)
+- New `@media (max-width: 480px)` block constrains `.pmtx-detail-row td` with `max-width: 100vw`, `box-sizing: border-box`, `overflow-wrap: anywhere`, and tightens its descendants (`min-width: 0`, `max-width: 100%`) so block-level children inside cannot push the row past the visible viewport. `.pmtx-comp-desc` gets `overflow-wrap: anywhere` + `white-space: normal` so multi-word descriptions wrap rather than overflow.
+
+### Tests
+- New `tests/test_v6_0_8_session_persist.py` (10 tests): table creation, save/load roundtrip, COALESCE preserves unchanged fields, ET-date keying isolates dates, prune removes other dates, session_globals roundtrip + COALESCE, and two end-to-end regression tests that re-import trade_genius after seeding disk and confirm `_v570_session_lod["NVDA"] = 197.38` is rehydrated and that a 198.57 print after the redeploy does NOT register as a fresh lod_break.
+
+### Compat
+- Existing rows in `fired_set`, `v5_long_tracks`, `executor_positions` untouched. The two new tables are created idempotently in `init_db()`; older state.db files on the Railway volume gain the new tables on first boot of v6.0.8.
+- `_v570_*` API surface unchanged. All persist-mirror code paths are wrapped in try/except so a corrupt or unwritable state.db can never raise into the trading path.
+
+---
+
 ## v6.0.7 — 2026-05-01 — Post-action reconcile race fix + iPhone Pro Max mobile UI + cleanup
 
 ### Why
