@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.2"
+BOT_VERSION = "6.0.3"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,20 +97,20 @@ BOT_VERSION = "6.0.2"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.2 hotfix:\n"
-    "Daily SMA stack now\n"
-    "actually populates. The\n"
-    "v6.0.1 fetcher silently\n"
-    "returned None because\n"
-    "Alpaca's daily-bars\n"
-    "endpoint defaults to\n"
-    "SIP, which our paper\n"
-    "keys cannot query.\n"
-    "Switched to feed=iex to\n"
-    "match the rest of the\n"
-    "codebase. SMA stack pill\n"
-    "renders bullish / bearish\n"
-    "again on every titan."
+    "v6.0.3 polish:\n"
+    "Open-positions tables now\n"
+    "have parity across tabs.\n"
+    "Main gains a % column\n"
+    "computed from unrealized\n"
+    "over cost basis. Val and\n"
+    "Gene gain a Stop column\n"
+    "that cross-references the\n"
+    "engine's effective stop\n"
+    "by symbol, with the same\n"
+    "TRAIL badge Main shows\n"
+    "when the trail stop is\n"
+    "armed. Both tables are\n"
+    "now 8 columns wide."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

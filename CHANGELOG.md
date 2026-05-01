@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.3 — 2026-05-01 — Open-positions table parity across Main / Val / Gene tabs
+
+### Why
+User noticed the Main "Open positions" table and the Val/Gene executor positions tables had drifted out of column parity:
+- Main showed `Ticker | Side | Sh | Entry | Mark | Stop | Unreal.` (no %).
+- Val/Gene showed `Ticker | Side | Qty | Avg Entry | Mark | Unrealized | %` (no Stop).
+Reading the same set of open positions on different tabs gave different exit-posture information. Operators had to flip between tabs to see both the trail/hard stop and the percent return on a position.
+
+### What
+- **Main gains a % column.** New trailing column, same green/red color logic as the Unreal. cell. Computed client-side from `unrealized / (entry * shares) * 100`. Falls back to em-dash when any of those are non-finite (e.g. mid-fill or stale state). Formatted via the existing `fmtPct` helper so the leading +/- and decimal precision match every other percent on the dashboard.
+- **Val/Gene gain a Stop column** placed between Mark and Unrealized to mirror Main's column order. The `/api/executor/<name>` payload doesn't carry stop levels (those live on the engine state, not the broker), so the client looks them up by symbol against `window.__tgLastState.positions[]`, which Main publishes on every poll. Falls back to em-dash if Main's state hasn't populated yet (initial page load before the first state tick) or the symbol isn't tracked there. When the engine's `trail_active` is true on a position, the same TRAIL badge that Main shows is rendered alongside the price, so the exit posture reads identically across tabs.
+- Both tables are now 8 columns wide (verified by the new parity test).
+- `bot_version.py` and `trade_genius.py` BOT_VERSION 6.0.2 → 6.0.3; `CURRENT_MAIN_NOTE` rewritten (14 lines, all ≤34 chars).
+
+### Tests
+New `tests/test_v6_0_3_positions_parity.py` (9 cases): % header present in Main, % cell uses unrealized over cost-basis (not just entry, not just shares), % cell color matches the Unreal. pnlCls so the columns can never disagree, % cell defaults to em-dash on missing data; Stop header present in Val/Gene, Stop cell cross-references `window.__tgLastState`, Stop cell defaults to em-dash when Main hasn't populated, Stop cell renders the TRAIL badge when `trail_active`, both header rows have exactly 8 `<th>` elements (parity invariant).
+
+### Backwards compatibility
+Pure additive UI change. No payload schema, no engine-side change, no test infra change. The Stop column on Val/Gene is read-only and degrades gracefully to em-dash if Main's state isn't loaded.
+
+---
+
 ## v6.0.2 — 2026-05-01 — Hotfix: SMA stack daily-bars fetcher must use IEX feed
 
 ### Why
