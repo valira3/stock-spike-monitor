@@ -1801,7 +1801,12 @@
     // again (the toggle handler at body level was always doing this;
     // the regression was that hasDetail was false everywhere pre-market
     // so no .pmtx-detail-row was ever rendered).
-    const sentinelStripHtml = pos ? _pmtxSentinelStrip(p4) : "";
+    // v5.28.1 \u2014 sentinel strip always renders on expanded titan cards.
+    // When there is no open position, every alarm cell shows in the idle
+    // state with an em-dash placeholder so the user always sees the alarm
+    // panel layout (rather than the panel collapsing entirely between
+    // sessions). The strip's leading banner indicates "no open position".
+    const sentinelStripHtml = _pmtxSentinelStrip(p4, !!pos);
     const proxHasDetail = !!(prox && (
       typeof prox.price === "number"
       || prox.nearest_label
@@ -2045,7 +2050,14 @@
   //
   // Alarm exit classification per spec Section 5 architectural rule:
   //   A1/A2/B/D -> MARKET EXIT   |   C/E -> STOP MARKET ratchets
-  function _pmtxSentinelStrip(p4) {
+  function _pmtxSentinelStrip(p4, hasPos) {
+    // v5.28.1 \u2014 hasPos: when false, every cell is forced to the idle
+    // state with an em-dash value, and a small banner labels the strip
+    // as "no open position". The cell layout is kept identical so users
+    // see the same six alarms in the same order regardless of session
+    // state. When true, behaves exactly as before: cells reflect live
+    // sentinel data from p4.sentinel.
+    if (hasPos === undefined) hasPos = true;
     const sen = (p4 && p4.sentinel) || {};
 
     // --- Cell A1: Loss ---
@@ -2163,15 +2175,40 @@
         + '</div>';
     }
 
-    return '<div class="pmtx-sentinel-strip"'
+    // v5.28.1 \u2014 when no open position, force every cell to idle state
+    // with an em-dash value. Layout stays identical so the panel never
+    // appears "missing". When in position, the per-cell live values and
+    // states computed above are used.
+    let _a1State = a1State, _a1Val = a1Val;
+    let _a2State = a2State, _a2Val = a2Val;
+    let _bState  = bState,  _bVal  = bVal;
+    let _cState  = cState,  _cVal  = cVal;
+    let _dState  = dState,  _dVal  = dVal;
+    let _eState  = eState,  _eVal  = eVal;
+    if (!hasPos) {
+      _a1State = _a2State = _bState = _cState = _dState = _eState = "idle";
+      _a1Val   = _a2Val   = _bVal   = _cVal   = _dVal   = _eVal   = "\u2014";
+    }
+
+    const banner = hasPos
+      ? ""
+      : '<div class="pmtx-sentinel-banner"'
+        + ' title="No open position \u2014 alarms idle. Will arm when the bot enters.">'
+        +   'no open position \u00b7 alarms idle'
+        + '</div>';
+
+    return '<div class="pmtx-sentinel-strip-wrap">'
+      + banner
+      + '<div class="pmtx-sentinel-strip"'
       +   ' title="Sentinel Loop \u2014 all 6 alarms evaluated in parallel.'
       +   ' A1/A2/B/D trigger MARKET EXIT; C/E trigger STOP MARKET ratchets.">'
-      +   cell("A1 Loss",       "Per-position $ stop",    a1Val, a1State)
-      +   cell("A2 Flash",      "1-min adverse %",        a2Val, a2State)
-      +   cell("B Trend Death", "5m close vs 9-EMA",      bVal,  bState)
-      +   cell("C Vel. Ratchet","3 declining 1m ADX",     cVal,  cState)
-      +   cell("D HVP Lock",    "5m ADX < 75% peak",      dVal,  dState)
-      +   cell("E Div. Trap",   "Price extreme + RSI div", eVal, eState)
+      +   cell("A1 Loss",       "Per-position $ stop",    _a1Val, _a1State)
+      +   cell("A2 Flash",      "1-min adverse %",        _a2Val, _a2State)
+      +   cell("B Trend Death", "5m close vs 9-EMA",      _bVal,  _bState)
+      +   cell("C Vel. Ratchet","3 declining 1m ADX",     _cVal,  _cState)
+      +   cell("D HVP Lock",    "5m ADX < 75% peak",      _dVal,  _dState)
+      +   cell("E Div. Trap",   "Price extreme + RSI div", _eVal, _eState)
+      + '</div>'
       + '</div>';
   }
 

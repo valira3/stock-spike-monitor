@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.26.1"
+BOT_VERSION = "5.28.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,13 +97,15 @@ BOT_VERSION = "5.26.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.26.1 premarket warm-up.\n"
-    "Engine wakes 1.5h before RTH\n"
-    "open (08:00 ET) and archives\n"
-    "1m bars for QQQ + each\n"
-    "TRADE_TICKER through 09:35.\n"
-    "No entries / no manage in\n"
-    "the warm-up window."
+    "v5.28.1 alarm strip always\n"
+    "shows on expanded titans:\n"
+    "idle placeholders + banner\n"
+    "when no open position, so\n"
+    "the panel never collapses.\n"
+    "v5.28.0 base: F primary\n"
+    "chandelier exit, C/D/E off,\n"
+    "tuned S2=1R WIDE/TIGHT 2/1.\n"
+    "Apr 30: -$175 to +$207."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -468,9 +470,14 @@ def paper_log(msg: str):
 # ------------------------------------------------------------
 TICKERS_FILE = os.getenv("TICKERS_FILE", "tickers.json")
 TICKERS_PINNED = ("SPY", "QQQ")   # always present, never removable
+# v5.27.0 \u2014 NFLX, ORCL added to default universe (NFLX was today's
+# biggest live winner +$90.63; ORCL has seen recurring spike behavior).
+# QBTS retained from runtime tickers.json overlay (user opt-in via
+# /ticker add).
 TICKERS_DEFAULT = [
     "AAPL", "MSFT", "NVDA", "TSLA", "META",
-    "GOOG", "AMZN", "AVGO", "NFLX", "ORCL", "SPY", "QQQ",
+    "GOOG", "AMZN", "AVGO", "NFLX", "ORCL",
+    "QBTS", "SPY", "QQQ",
 ]
 
 # Section VI Daily Circuit Breaker.
@@ -3384,13 +3391,49 @@ def _check_daily_loss_limit(ticker: str) -> bool:
         if live_px > 0:
             today_pnl += (pos["entry_price"] - live_px) * (pos.get("shares") or 0)
 
-    logger.info("Daily P&L check: $%.2f (limit $%.2f)", today_pnl, DAILY_LOSS_LIMIT)
-    if today_pnl <= DAILY_LOSS_LIMIT:
+    # v5.27.0 \u2014 portfolio-scaled daily circuit breaker. The legacy
+    # ``DAILY_LOSS_LIMIT`` env var still wins when set explicitly
+    # (operator override); otherwise the scaled threshold derived from
+    # current portfolio value drives the halt. ``portfolio_value_now``
+    # is paper_cash + open long market value \u2212 open short liability,
+    # mirrored from the /accounts and /portfolio commands.
+    try:
+        from eye_of_tiger import scaled_daily_circuit_breaker_dollars
+
+        portfolio_value_now = paper_cash
+        for _pt, _pp in positions.items():
+            _fmp = get_fmp_quote(_pt) or {}
+            _px = float(_fmp.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
+            portfolio_value_now += _px * float(_pp.get("shares") or 0)
+        for _pt, _pp in short_positions.items():
+            _fmp = get_fmp_quote(_pt) or {}
+            _px = float(_fmp.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
+            # Short liability subtracts from portfolio.
+            portfolio_value_now -= _px * float(_pp.get("shares") or 0)
+        scaled_limit = scaled_daily_circuit_breaker_dollars(portfolio_value_now)
+    except Exception:
+        scaled_limit = float(DAILY_LOSS_LIMIT)
+        portfolio_value_now = None
+    # The effective limit is whichever is LESS aggressive (closer to
+    # zero) of the env override and the scaled value \u2014 i.e. the
+    # scaled limit can only TIGHTEN (smaller portfolio = smaller halt
+    # dollars), never loosen below the operator override.
+    effective_limit = max(float(DAILY_LOSS_LIMIT), float(scaled_limit))
+    logger.info(
+        "Daily P&L check: $%.2f (legacy_limit $%.2f, scaled_limit $%.2f, "
+        "effective $%.2f, portfolio $%s)",
+        today_pnl,
+        float(DAILY_LOSS_LIMIT),
+        float(scaled_limit),
+        float(effective_limit),
+        ("%.2f" % portfolio_value_now) if portfolio_value_now is not None else "n/a",
+    )
+    if today_pnl <= effective_limit:
         # v5.13.0 PR-5 SHARED-CB: structured circuit-breaker line. Logged once
         # at the moment of breach and on every subsequent blocked entry.
         logger.info(
             "[DAILY-BREAKER] day_pnl=%.2f threshold=%.2f action=BLOCK_ENTRY",
-            today_pnl, float(DAILY_LOSS_LIMIT_DOLLARS),
+            today_pnl, float(effective_limit),
         )
         # v5.13.2 Track A SHARED-CB: on the false\u2192true transition of
         # _trading_halted, force-close all open longs and shorts at MARKET
@@ -3452,7 +3495,7 @@ def _check_daily_loss_limit(ticker: str) -> bool:
                     "[DAILY-BREAKER] force-close loop failed",
                 )
         pnl_fmt = "%+.2f" % today_pnl
-        limit_fmt = "%.2f" % DAILY_LOSS_LIMIT
+        limit_fmt = "%.2f" % effective_limit
         _trading_halted_reason = "Daily loss limit hit: $%s" % pnl_fmt
         halt_msg = (
             "STOP Trading halted — daily loss limit hit\n"

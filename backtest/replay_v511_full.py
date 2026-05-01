@@ -810,12 +810,21 @@ class RecordOnlyCallbacks:
 
 
 def pair_entries_to_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
-    """Greedy FIFO pairing on (ticker, side) for crude realized P&L.
+    """Greedy FIFO pairing on (ticker, side) for realized P&L.
 
     Returns a list of dicts: ticker, side, entry_ts, exit_ts,
-    entry_price, exit_price, pnl_dollars. Long pnl = exit - entry;
-    short pnl = entry - exit. No share-count math (entries/exits do
-    not always carry it cleanly through the harness yet).
+    entry_price, exit_price, shares, pnl_per_share, pnl_dollars.
+
+    v5.27.0 \u2014 P&L is now share-aware so the backtest can be compared
+    apples-to-apples against prod's portfolio P&L. The exit record
+    populated by ``_broker_closes_to_exits`` carries ``shares`` from
+    the live position snapshot (see
+    ``install_record_only_layers._wrapped_close_position``); the entry
+    record may not carry shares directly, so we read it from the exit
+    side first and fall back to the entry's ``shares`` when present.
+    Pairs that lack share counts on BOTH sides fall back to per-share
+    P&L (legacy behaviour) with ``shares=None`` recorded so the report
+    can flag them.
     """
     by_key: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for e in entries:
@@ -827,7 +836,18 @@ def pair_entries_to_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
             continue
         e = by_key[key].pop(0)
         sign = 1.0 if x["side"] == "long" else -1.0
-        pnl = sign * (float(x["price"]) - float(e["price"]))
+        per_share = sign * (float(x["price"]) - float(e["price"]))
+        # Prefer shares from the exit (live position snapshot at
+        # close time); fall back to entry shares; finally fall back to
+        # 1 (per-share P&L) so older harness paths don't crash.
+        shares = x.get("shares") or e.get("shares")
+        if shares is None:
+            pnl = per_share
+            shares_recorded = None
+        else:
+            shares = int(shares)
+            pnl = per_share * shares
+            shares_recorded = shares
         paired.append(
             {
                 "ticker": x["ticker"],
@@ -836,6 +856,8 @@ def pair_entries_to_exits(entries: list[dict], exits: list[dict]) -> list[dict]:
                 "exit_ts": x["ts"],
                 "entry_price": e["price"],
                 "exit_price": x["price"],
+                "shares": shares_recorded,
+                "pnl_per_share": round(per_share, 4),
                 "pnl_dollars": round(pnl, 4),
             }
         )
@@ -846,12 +868,23 @@ def summarize(entries: list[dict], exits: list[dict], pairs: list[dict]) -> dict
     wins = sum(1 for p in pairs if p["pnl_dollars"] > 0)
     losses = sum(1 for p in pairs if p["pnl_dollars"] < 0)
     total = round(sum(p["pnl_dollars"] for p in pairs), 4)
+    # v5.27.0 \u2014 share-aware diagnostics. ``pairs_missing_shares`` flags
+    # round-trips that fell back to per-share P&L because the exit
+    # snapshot didn't carry a share count; total_pnl on those pairs is
+    # under-stated by exactly the share multiplier.
+    pairs_missing_shares = sum(1 for p in pairs if p.get("shares") is None)
+    total_per_share = round(
+        sum(p.get("pnl_per_share", p["pnl_dollars"]) for p in pairs),
+        4,
+    )
     return {
         "entries": len(entries),
         "exits": len(exits),
         "wins": wins,
         "losses": losses,
         "total_pnl": total,
+        "total_pnl_per_share": total_per_share,
+        "pairs_missing_shares": pairs_missing_shares,
     }
 
 

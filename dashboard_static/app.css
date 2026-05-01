@@ -1155,6 +1155,23 @@
   padding: 0 0 10px 0 !important;
   border-bottom: 1px solid var(--border) !important;
 }
+/* v5.28.1 — wrapper around the sentinel strip plus optional "no open
+   position" banner. The strip itself stays the same six-cell grid; the
+   banner is a small, dim label that appears only when there is no live
+   position so users always see the alarm panel layout. */
+.pmtx-sentinel-strip-wrap {
+  display: flex; flex-direction: column;
+}
+.pmtx-sentinel-banner {
+  font-family: var(--sans);
+  font-size: 10px; line-height: 1.3;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 6px 14px 0;
+  margin: 0 4px;
+  opacity: 0.8;
+}
 .pmtx-sentinel-strip {
   display: grid;
   grid-template-columns: repeat(6, 1fr);

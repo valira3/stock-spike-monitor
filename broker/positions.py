@@ -15,9 +15,11 @@ from broker.orders import check_breakout  # noqa: F401
 # v5.26.0 \u2014 broker.stops module deleted. Imports were unused in this
 # file's body and the surviving R-2 hard stop flows through the
 # sentinel exit path.
+from engine.alarm_f_trail import TrailState, atr_from_bars
 from engine.bars import compute_5m_ohlc_and_ema9
 from engine.momentum_state import ADXTrendWindow, DivergenceMemory, TradeHVP
 from engine.sentinel import (
+    ALARM_B_CONFIRM_BARS,
     SIDE_LONG as _SENTINEL_SIDE_LONG,
     SIDE_SHORT as _SENTINEL_SIDE_SHORT,
     evaluate_sentinel,
@@ -246,6 +248,12 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
 
         last_5m_close = None
         last_5m_ema9 = None
+        # v5.27.0 \u2014 prev (bucket -2) close + EMA9 to feed Alarm B
+        # 2-bar confirmation. None when the EMA9 history hasn't seeded
+        # at the prior bucket yet; check_alarm_b silently sits out in
+        # that case (insufficient history).
+        prev_5m_close: float | None = None
+        prev_5m_ema9: float | None = None
         try:
             five = compute_5m_ohlc_and_ema9(bars)
             if five and five.get("seeded"):
@@ -253,9 +261,15 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
                 if closes_5m:
                     last_5m_close = closes_5m[-1]
                 last_5m_ema9 = five.get("ema9")
+                ema9_series = five.get("ema9_series") or []
+                if len(closes_5m) >= 2 and len(ema9_series) >= 2 and ema9_series[-2] is not None:
+                    prev_5m_close = closes_5m[-2]
+                    prev_5m_ema9 = ema9_series[-2]
         except Exception:
             last_5m_close = None
             last_5m_ema9 = None
+            prev_5m_close = None
+            prev_5m_ema9 = None
 
         # v5.15.1 vAA-1 \u2014 wire ADXTrendWindow / TradeHVP /
         # DivergenceMemory live into the sentinel evaluator. Each
@@ -326,6 +340,53 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             except Exception as _e:
                 logger.debug("[SENTINEL] divergence update failed %s: %s", ticker, _e)
 
+        # v5.27.0 \u2014 portfolio-scaled Alarm A. Mirrors the
+        # ``_check_daily_loss_limit`` computation: paper_cash + open
+        # long market value \u2212 open short liability. Quote lookups
+        # are best-effort; on failure the value falls back to None
+        # and ``evaluate_sentinel`` uses the spec-default -$500.
+        portfolio_value = None
+        try:
+            if tg is not None and hasattr(tg, "paper_cash"):
+                pv = float(tg.paper_cash)
+                long_pos = getattr(tg, "positions", {}) or {}
+                short_pos = getattr(tg, "short_positions", {}) or {}
+                _get_q = getattr(tg, "get_fmp_quote", None)
+                for _pt, _pp in long_pos.items():
+                    _qq = (_get_q(_pt) if _get_q else None) or {}
+                    _px = float(_qq.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
+                    pv += _px * float(_pp.get("shares") or 0)
+                for _pt, _pp in short_pos.items():
+                    _qq = (_get_q(_pt) if _get_q else None) or {}
+                    _px = float(_qq.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
+                    pv -= _px * float(_pp.get("shares") or 0)
+                portfolio_value = pv if pv > 0 else None
+        except Exception:
+            portfolio_value = None
+
+        # v5.28.0 \u2014 Alarm F state + ATR(14) on 1m closes. State is
+        # lazily attached to the position dict so existing positions
+        # carried across a process restart pick it up on their next
+        # sentinel tick. ATR may be None during the first 14 bars; the
+        # alarm silently waits before arming Stage 2/3.
+        trail_state = pos.get("trail_state")
+        if trail_state is None:
+            trail_state = TrailState.fresh()
+            pos["trail_state"] = trail_state
+        last_1m_close = None
+        last_1m_atr = None
+        try:
+            highs_1m = (bars or {}).get("highs") or []
+            lows_1m = (bars or {}).get("lows") or []
+            closes_1m = (bars or {}).get("closes") or []
+            if closes_1m:
+                last_1m_close = float(closes_1m[-1])
+            if highs_1m and lows_1m and closes_1m:
+                last_1m_atr = atr_from_bars(highs_1m, lows_1m, closes_1m, period=14)
+        except Exception:
+            last_1m_close = None
+            last_1m_atr = None
+
         result = evaluate_sentinel(
             side=side,
             unrealized_pnl=unrealized,
@@ -334,6 +395,10 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             now_ts=now_ts,
             last_5m_close=last_5m_close,
             last_5m_ema9=last_5m_ema9,
+            prev_5m_close=prev_5m_close,
+            prev_5m_ema9=prev_5m_ema9,
+            alarm_b_confirm_bars=ALARM_B_CONFIRM_BARS,
+            portfolio_value=portfolio_value,
             adx_window=adx_window,
             current_price=current_price,
             current_shares=shares,
@@ -343,6 +408,11 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             divergence_memory=_divergence_memory,
             current_rsi_15=rsi_15,
             ticker=ticker,
+            trail_state=trail_state,
+            entry_price=entry_p,
+            last_1m_close=last_1m_close,
+            last_1m_atr=last_1m_atr,
+            initial_stop_price=pos.get("initial_stop"),
         )
         # v5.13.6 \u2014 emit lifecycle PHASE4 events on state changes
         # (best-effort, no-op when logger absent).
@@ -361,28 +431,50 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         if result.has_full_exit:
             return result.exit_reason
 
-        # Alarm C only path \u2014 install the proposed stop tighten in
-        # place. The runner exits naturally through the existing
-        # manage_positions stop-cross branch when the new stop is hit.
+        # Alarm C / Alarm F stop-tighten path \u2014 merge by side-aware
+        # best (long: max, short: min) so the broker stop is the
+        # tightest of the two reactive trails. Each alarm logs its
+        # own line for observability.
         for action in result.alarms:
-            if action.alarm == "C" and action.detail_stop_price is not None:
-                new_stop = float(action.detail_stop_price)
-                old_stop = pos.get("stop") or 0.0
-                if side == _SENTINEL_SIDE_LONG:
-                    if new_stop > old_stop:
-                        pos["stop"] = new_stop
+            if action.detail_stop_price is None:
+                continue
+            if action.alarm not in ("C", "F"):
+                continue
+            new_stop = float(action.detail_stop_price)
+            old_stop = pos.get("stop") or 0.0
+            if side == _SENTINEL_SIDE_LONG:
+                if new_stop > old_stop:
+                    pos["stop"] = new_stop
+                    if action.alarm == "C":
                         logger.info(
                             "[VELOCITY-RATCHET] %s LONG stop %.4f -> %.4f",
                             ticker,
                             old_stop,
                             new_stop,
                         )
-                else:
-                    if old_stop == 0.0 or new_stop < old_stop:
-                        pos["stop"] = new_stop
+                    else:
+                        logger.info(
+                            "[ALARM-F-TRAIL] %s LONG stage=%d stop %.4f -> %.4f",
+                            ticker,
+                            getattr(trail_state, "stage", 0),
+                            old_stop,
+                            new_stop,
+                        )
+            else:
+                if old_stop == 0.0 or new_stop < old_stop:
+                    pos["stop"] = new_stop
+                    if action.alarm == "C":
                         logger.info(
                             "[VELOCITY-RATCHET] %s SHORT stop %.4f -> %.4f",
                             ticker,
+                            old_stop,
+                            new_stop,
+                        )
+                    else:
+                        logger.info(
+                            "[ALARM-F-TRAIL] %s SHORT stage=%d stop %.4f -> %.4f",
+                            ticker,
+                            getattr(trail_state, "stage", 0),
                             old_stop,
                             new_stop,
                         )
