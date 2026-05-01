@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.26.0"
+BOT_VERSION = "5.26.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,19 +97,13 @@ BOT_VERSION = "5.26.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.26.0 spec-strict cut\n"
-    "(Tiger Sovereign v15.0).\n"
-    "Hard delete of non-spec\n"
-    "regime shields, Volume\n"
-    "Gate, premarket recalc,\n"
-    "Titan-Grip harvests, and\n"
-    "DI prior-session seed.\n"
-    "RULING #1: A-A/A-B/A-D\n"
-    "exits go LIMIT (+/-0.5%).\n"
-    "RULING #2: Alarm D peak\n"
-    "is session-wide HWM.\n"
-    "RULING #4: R-2 hard stop\n"
-    "(-$500) is STOP MARKET."
+    "v5.26.1 premarket warm-up.\n"
+    "Engine wakes 1.5h before RTH\n"
+    "open (08:00 ET) and archives\n"
+    "1m bars for QQQ + each\n"
+    "TRADE_TICKER through 09:35.\n"
+    "No entries / no manage in\n"
+    "the warm-up window."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
