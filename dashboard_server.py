@@ -850,16 +850,26 @@ def snapshot() -> dict[str, Any]:
         # the volume_gate_enabled key for compatibility with the existing
         # KPI-row pill but read it from a hard default (False) when the
         # shim is gone, matching production behaviour since v5.13.1.
+        # v5.30.0 \u2014 also surface alarm_f_enabled. Alarm F (chandelier
+        # trail) has no module-level kill switch in engine.sentinel, so it
+        # is unconditionally True whenever the sentinel module imports
+        # successfully. The frontend uses this flag to render the F cell
+        # in the sentinel strip the same way it conditionally renders
+        # C / D / E.
         try:
             from engine import sentinel as _sen
 
             alarm_c_enabled = bool(getattr(_sen, "ALARM_C_ENABLED", False))
             alarm_d_enabled = bool(getattr(_sen, "ALARM_D_ENABLED", False))
             alarm_e_enabled = bool(getattr(_sen, "ALARM_E_ENABLED", False))
+            # Alarm F has no ALARM_F_ENABLED toggle; True when the
+            # module imports (i.e. the runtime knows what F is).
+            alarm_f_enabled = True
         except Exception:
             alarm_c_enabled = False
             alarm_d_enabled = False
             alarm_e_enabled = False
+            alarm_f_enabled = False
         try:
             from engine import feature_flags as _ff  # legacy shim, may be absent
 
@@ -871,6 +881,7 @@ def snapshot() -> dict[str, Any]:
             "alarm_c_enabled": alarm_c_enabled,
             "alarm_d_enabled": alarm_d_enabled,
             "alarm_e_enabled": alarm_e_enabled,
+            "alarm_f_enabled": alarm_f_enabled,
         }
 
         # v5.5.7 \u2014 surface the paper book's most recent emitted

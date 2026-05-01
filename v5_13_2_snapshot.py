@@ -74,6 +74,10 @@ EXPECTED_KEYS: dict[str, set] = {
         "c_velocity_ratchet",
         "d_hvp_lock",
         "e_divergence_trap",
+        # v5.30.0 \u2014 Alarm F chandelier trail state (read from
+        # pos["trail_state"]). Always present for open positions; idle
+        # default for the no-position render path.
+        "f_chandelier",
     }
 }
 
@@ -609,6 +613,47 @@ def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
         "post_ratchet_stop": e_post_stop,
         "armed": e_armed,
         "triggered": e_triggered,
+    }
+
+    # -----------------------------------------------------------------
+    # v5.30.0 \u2014 Alarm F (Hybrid Chandelier Trailing Stop) status block.
+    # Sourced from pos["trail_state"] (engine.alarm_f_trail.TrailState).
+    # Stage codes: 0 INACTIVE, 1 BREAKEVEN, 2 CHANDELIER_WIDE,
+    # 3 CHANDELIER_TIGHT. Armed once stage >= 1 (BE installed); the
+    # "triggered" flag is left False because Alarm F never closes a
+    # position by itself \u2014 the broker stop-cross does, and the closed-
+    # bar chandelier-cross full-exit fires through evaluate_sentinel
+    # rather than this read-only snapshot. Missing trail_state -> idle.
+    # -----------------------------------------------------------------
+    f_stage: int = 0
+    f_peak_close: float | None = None
+    f_proposed_stop: float | None = None
+    f_bars_seen: int = 0
+    f_armed = False
+    try:
+        ts = pos.get("trail_state") if pos else None
+        if ts is not None:
+            f_stage = int(getattr(ts, "stage", 0) or 0)
+            f_peak_close = _safe_float(getattr(ts, "peak_close", None))
+            f_proposed_stop = _safe_float(getattr(ts, "last_proposed_stop", None))
+            f_bars_seen = int(getattr(ts, "bars_seen", 0) or 0)
+            f_armed = f_stage >= 1
+    except Exception:
+        pass
+    f_stage_name = {
+        0: "INACTIVE",
+        1: "BREAKEVEN",
+        2: "CHANDELIER_WIDE",
+        3: "CHANDELIER_TIGHT",
+    }.get(f_stage, "INACTIVE")
+    out["f_chandelier"] = {
+        "stage": f_stage,
+        "stage_name": f_stage_name,
+        "peak_close": f_peak_close,
+        "proposed_stop": f_proposed_stop,
+        "bars_seen": f_bars_seen,
+        "armed": f_armed,
+        "triggered": False,
     }
 
     return out

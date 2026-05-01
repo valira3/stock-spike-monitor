@@ -1131,6 +1131,10 @@
     const showAlarmC = !!ff.alarm_c_enabled;
     const showAlarmD = !!ff.alarm_d_enabled;
     const showAlarmE = !!ff.alarm_e_enabled;
+    // v5.30.0 — alarm_f_enabled defaults to true (Alarm F has no kill
+    // switch). Older /api/state payloads without the key will keep F
+    // visible, matching legacy behaviour.
+    const showAlarmF = (ff.alarm_f_enabled !== false);
 
     const rowsHtml = [];
     tickers.forEach((tkr) => {
@@ -1138,7 +1142,7 @@
         tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
         longPermit, shortPermit,
         perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
-        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE }
+        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF }
       );
       rowsHtml.push(built.tableRows);
     });
@@ -1714,6 +1718,7 @@
     const showAlarmC  = visibilityOpts.showAlarmC  !== false;
     const showAlarmD  = visibilityOpts.showAlarmD  !== false;
     const showAlarmE  = visibilityOpts.showAlarmE  !== false;
+    const showAlarmF  = visibilityOpts.showAlarmF  !== false;
     const p2 = idx.p2[tkr] || null;
     // v5.21.0 — sma_stack is nested in the phase2 row dict.
     const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
@@ -1838,6 +1843,7 @@
       showAlarmC: showAlarmC,
       showAlarmD: showAlarmD,
       showAlarmE: showAlarmE,
+      showAlarmF: showAlarmF,
     });
     const proxHasDetail = !!(prox && (
       typeof prox.price === "number"
@@ -2105,11 +2111,16 @@
     // the matching ALARM_*_ENABLED flag is false (production default for
     // C / D / E since v5.28.0). Defaults preserve legacy behaviour
     // (everything visible) for callers that don't pass opts.
+    // v5.30.0 \u2014 opts.showAlarmF surfaces the chandelier trail cell
+    // (canonical position: between B and C, i.e. spec ordering A1/A2/B/F/C/D/E).
+    // Reads p4.sentinel.f_chandelier (stage / peak_close / proposed_stop)
+    // emitted by v5_13_2_snapshot.py. Default visible.
     if (hasPos === undefined) hasPos = true;
     opts = opts || {};
     const showAlarmC = (opts.showAlarmC !== false);
     const showAlarmD = (opts.showAlarmD !== false);
     const showAlarmE = (opts.showAlarmE !== false);
+    const showAlarmF = (opts.showAlarmF !== false);
     const sen = (p4 && p4.sentinel) || {};
 
     // --- Cell A1: Loss ---
@@ -2171,6 +2182,34 @@
       ? ("close=" + _pmtxNum(bClose) + " / ema=" + _pmtxNum(bEma9) +
          (bDelta !== null ? " / \u0394=" + _pmtxNum(bDelta) : ""))
       : "\u2014";
+
+    // --- Cell F: Chandelier Trail (v5.30.0) ---
+    // Alarm F (engine.alarm_f_trail) ratchets a stop on top of the live
+    // position. Stage 0 INACTIVE / 1 BREAKEVEN / 2 CHANDELIER_WIDE /
+    // 3 CHANDELIER_TIGHT. Armed at stage >= 1; the broker stop-cross
+    // realises the exit, so "triggered" is left False in the snapshot.
+    // Cell colours: idle when stage 0, warn when stages 1\u20133 (active
+    // trail in place but not yet hit), trip never (the close-bar exit
+    // path closes the position before the snapshot updates).
+    const fChand     = _pmtxPickAlarm(sen, "f_chandelier", {});
+    const fStage     = (typeof fChand.stage === "number") ? fChand.stage : 0;
+    const fStageName = (typeof fChand.stage_name === "string") ? fChand.stage_name : "INACTIVE";
+    const fPeak      = (typeof fChand.peak_close === "number") ? fChand.peak_close : null;
+    const fStop      = (typeof fChand.proposed_stop === "number") ? fChand.proposed_stop : null;
+    if (fChand.armed === null || fChand.armed === undefined) {
+      fChand.armed     = fStage >= 1;
+      fChand.triggered = false;
+    }
+    const fState = _pmtxAlarmStateClass(fChand, "f_chandelier");
+    let fVal;
+    if (fStage <= 0) {
+      fVal = "\u2014";
+    } else {
+      const _stageLabel = { 1: "BE", 2: "WIDE", 3: "TIGHT" }[fStage] || fStageName;
+      const _stopStr = (fStop !== null) ? _pmtxMoney(fStop) : "\u2014";
+      const _peakStr = (fPeak !== null) ? _pmtxMoney(fPeak) : "\u2014";
+      fVal = _stageLabel + " \u00b7 stop " + _stopStr + " / peak " + _peakStr;
+    }
 
     // --- Cell C: Velocity Ratchet ---
     // vAA-1 SENT-C: three strictly-decreasing 1m ADX values -> STOP MARKET.
@@ -2234,12 +2273,13 @@
     let _a1State = a1State, _a1Val = a1Val;
     let _a2State = a2State, _a2Val = a2Val;
     let _bState  = bState,  _bVal  = bVal;
+    let _fState  = fState,  _fVal  = fVal;
     let _cState  = cState,  _cVal  = cVal;
     let _dState  = dState,  _dVal  = dVal;
     let _eState  = eState,  _eVal  = eVal;
     if (!hasPos) {
-      _a1State = _a2State = _bState = _cState = _dState = _eState = "idle";
-      _a1Val   = _a2Val   = _bVal   = _cVal   = _dVal   = _eVal   = "\u2014";
+      _a1State = _a2State = _bState = _fState = _cState = _dState = _eState = "idle";
+      _a1Val   = _a2Val   = _bVal   = _fVal   = _cVal   = _dVal   = _eVal   = "\u2014";
     }
 
     const banner = hasPos
@@ -2257,6 +2297,7 @@
       +   cell("A1 Loss",       "Per-position $ stop",    _a1Val, _a1State)
       +   cell("A2 Flash",      "1-min adverse %",        _a2Val, _a2State)
       +   cell("B Trend Death", "5m close vs 9-EMA",      _bVal,  _bState)
+      +   (showAlarmF ? cell("F Chandelier",  "BE/wide/tight trail",     _fVal,  _fState) : '')
       +   (showAlarmC ? cell("C Vel. Ratchet","3 declining 1m ADX",     _cVal,  _cState) : '')
       +   (showAlarmD ? cell("D HVP Lock",    "5m ADX < 75% peak",      _dVal,  _dState) : '')
       +   (showAlarmE ? cell("E Div. Trap",   "Price extreme + RSI div", _eVal, _eState) : '')

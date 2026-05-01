@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.30.0 — 2026-05-01 — Add Alarm F (chandelier trail) cell to sentinel strip
+
+### Why
+v5.29.0 hid the bypassed C / D / E cells in the sentinel strip, leaving only A1, A2, B visible. The user pointed out that Alarm F — the primary chandelier exit shipped in v5.28.0 — also belongs on the strip and was missing entirely. The strip pre-dates Alarm F: the snapshot only ever emitted six alarms (A1/A2/B/C/D/E), and the renderer mirrored that. This release exposes F end-to-end so the operator can see the chandelier trail's stage, proposed stop, and peak close inline alongside the other alarms.
+
+### Change
+- `v5_13_2_snapshot.py::_sentinel_block` — emits a new `f_chandelier` sub-dict per ticker with `stage`, `stage_name` (`INACTIVE` / `BREAKEVEN` / `CHANDELIER_WIDE` / `CHANDELIER_TIGHT`), `peak_close`, `proposed_stop`, `bars_seen`, `armed` (true once `stage >= 1`), `triggered` (always false; F realises exits via the broker stop-cross or the closed-bar full-exit path, not the snapshot). Sourced from `pos["trail_state"]` (`engine.alarm_f_trail.TrailState`). Added to `EXPECTED_KEYS["sentinel"]`.
+- `dashboard_server.py::snapshot` — `feature_flags` now includes `alarm_f_enabled` (always `True` when the engine.sentinel module imports; F has no module-level kill switch).
+- `dashboard_static/app.js::_pmtxSentinelStrip` — accepts `opts.showAlarmF` and renders an "F Chandelier" cell positioned between B and C (canonical spec ordering A1 / A2 / B / F / C / D / E). Cell shows `BE · stop $X.XX / peak $X.XX` once stage ≥ 1, em-dash idle when stage 0. Default `true` so legacy callers see F.
+- `renderPermitMatrix` reads `feature_flags.alarm_f_enabled` (defaults true when absent), threads `showAlarmF` through `_pmtxBuildRow` to the strip.
+
+### Acceptance
+- `/api/state.feature_flags` carries `alarm_f_enabled: true`.
+- `/api/state.phase4[*].sentinel` carries `f_chandelier` with all 7 keys for every open position.
+- Sentinel strip in prod now shows 4 cells (A1, A2, B, F) instead of 3, with F idle until the position's chandelier arms.
+- Smoke harness `/tmp/render_smoke_v530.js` covers prod-default-with-F, all-visible ordering (B<F<C), F-stage-0 idle, F hidden, legacy no-opts, no-pos with banner. All cases PASS.
+- `tests/test_dashboard_state_v5_13_2.py` extended to assert `f_chandelier` shape on the snapshot.
+
+---
+
 ## v5.29.0 — 2026-05-01 — Hide bypassed UI components (volume + alarms C/D/E)
 
 ### Why
