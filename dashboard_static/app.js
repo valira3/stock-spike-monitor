@@ -619,16 +619,65 @@
     const tooltipBase = div
       ? "Local weather diverges from global QQQ direction. "
       : "";
+    // v6.0.0 \u2014 small star marker overlaid on the glyph when local
+    // direction != global direction. Lets operators scan the matrix
+    // and spot contrarian-trending tickers without expanding cards.
+    const star = div
+      ? '<sup class="pmtx-wx-star" aria-hidden="true">*</sup>'
+      : "";
+    const divClass = div ? " pmtx-wx-div" : "";
     if (!longPermit && !shortPermit && dir === "flat") {
-      return '<span class="pmtx-wx pmtx-wx-none" title="' + escapeHtml(tooltipBase + "No permit: global QQQ closed both sides and the local override is not aligned") + '">x</span>';
+      return '<span class="pmtx-wx pmtx-wx-none' + divClass + '" title="' + escapeHtml(tooltipBase + "No permit: global QQQ closed both sides and the local override is not aligned") + '">x' + star + '</span>';
     }
     if (dir === "up") {
-      return '<span class="pmtx-wx pmtx-wx-up" title="' + escapeHtml(tooltipBase + "Local weather is long-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2191</span>';
+      return '<span class="pmtx-wx pmtx-wx-up' + divClass + '" title="' + escapeHtml(tooltipBase + "Local weather is long-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2191' + star + '</span>';
     }
     if (dir === "down") {
-      return '<span class="pmtx-wx pmtx-wx-down" title="' + escapeHtml(tooltipBase + "Local weather is short-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2193</span>';
+      return '<span class="pmtx-wx pmtx-wx-down' + divClass + '" title="' + escapeHtml(tooltipBase + "Local weather is short-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2193' + star + '</span>';
     }
-    return '<span class="pmtx-wx pmtx-wx-flat" title="' + escapeHtml("Local weather is flat or warming up \u2014 not enough structure or DI confirmation yet") + '">\u2014</span>';
+    return '<span class="pmtx-wx pmtx-wx-flat' + divClass + '" title="' + escapeHtml((div ? tooltipBase : "") + "Local weather is flat or warming up \u2014 not enough structure or DI confirmation yet") + '">\u2014' + star + '</span>';
+  }
+
+  // v6.0.0 \u2014 Mini-chart sparkline for the collapsed row's Trend
+  // column. Renders an inline SVG polyline covering today's 1m closes
+  // (downsampled server-side to \u2264 60 points). Stroke goes green
+  // when last > open, red when last < open, neutral when missing.
+  // Width 80px / height 24px keeps it scannable across the matrix
+  // without disrupting row height. The tooltip surfaces hi/lo/last
+  // and the open price so an operator can quickly read the day so far.
+  function _pmtxMiniChartCell(ptv) {
+    const mc = ptv && ptv.mini_chart;
+    if (!mc || !Array.isArray(mc.points) || mc.points.length < 2) {
+      return '<span class="pmtx-mini pmtx-mini-empty" title="No intraday closes yet">\u2014</span>';
+    }
+    const pts = mc.points;
+    const hi = (typeof mc.hi === "number") ? mc.hi : Math.max.apply(null, pts);
+    const lo = (typeof mc.lo === "number") ? mc.lo : Math.min.apply(null, pts);
+    const open = (typeof mc.open === "number") ? mc.open : pts[0];
+    const last = (typeof mc.last === "number") ? mc.last : pts[pts.length - 1];
+    const span = Math.max(hi - lo, 0.0001);
+    const W = 80, H = 24, padY = 2;
+    const stepX = (W - 2) / (pts.length - 1);
+    let d = "";
+    for (let i = 0; i < pts.length; i++) {
+      const x = 1 + i * stepX;
+      const y = padY + (1 - (pts[i] - lo) / span) * (H - padY * 2);
+      d += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
+    }
+    let cls = "pmtx-mini-flat";
+    if (last > open) cls = "pmtx-mini-up";
+    else if (last < open) cls = "pmtx-mini-down";
+    const tip = "Open " + open.toFixed(2)
+      + " \u00b7 Last " + last.toFixed(2)
+      + " \u00b7 Hi " + hi.toFixed(2)
+      + " \u00b7 Lo " + lo.toFixed(2)
+      + " (" + pts.length + " pts)";
+    return '<svg class="pmtx-mini ' + cls + '" viewBox="0 0 ' + W + ' ' + H
+      + '" width="' + W + '" height="' + H + '" preserveAspectRatio="none"'
+      + ' role="img" aria-label="' + escapeHtml(tip) + '">'
+      + '<title>' + escapeHtml(tip) + '</title>'
+      + '<path d="' + d.trim() + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"></path>'
+      + '</svg>';
   }
 
   function _pmtxAuthorityTooltip(sip) {
@@ -942,6 +991,38 @@
       ? (_fmtInt(di.seed_bars)
           + (typeof di.sufficient === "boolean" ? (di.sufficient ? " (ok)" : " (low)") : ""))
       : null]);
+    // v6.0.0 \u2014 distance-to-next-trigger insights. Surfaces how far
+    // each Phase 3 gate is from flipping so an operator can scan for
+    // "about to fire" tickers without reading raw indicator feeds.
+    // ADX 5m gap: positive = below the 20 trigger; <=0 = passing.
+    // DI long/short gap: threshold \u2212 DI; positive = below threshold.
+    // DI cross: DI+ \u2212 DI-; positive = long-leaning. VWAP/EMA9 gaps
+    // are signed % deltas of last vs the level. Side-aware in-position.
+    const md = (d.ptv510 && d.ptv510.momentum_distances) || {};
+    function _fmtGap(v, digits, suffix) {
+      const s = _fmtNum(v, digits);
+      if (s === null) return null;
+      const n = Number(v);
+      const sign = (isFinite(n) && n > 0) ? "+" : "";
+      return sign + s + (suffix || "");
+    }
+    if (typeof md.adx_5m === "number" || typeof md.adx_5m_gap === "number") {
+      const adxLabel = (typeof md.adx_5m === "number")
+        ? _fmtNum(md.adx_5m, 2) + " (gap " + _fmtGap(md.adx_5m_gap, 2) + ")"
+        : ("gap " + _fmtGap(md.adx_5m_gap, 2));
+      _p3mRows.push(["ADX 5m", adxLabel]);
+    }
+    if (_posSide === "LONG") {
+      _p3mRows.push(["DI+ gap", _fmtGap(md.di_long_gap, 2)]);
+    } else if (_posSide === "SHORT") {
+      _p3mRows.push(["DI- gap", _fmtGap(md.di_short_gap, 2)]);
+    } else {
+      _p3mRows.push(["DI+ gap", _fmtGap(md.di_long_gap, 2)]);
+      _p3mRows.push(["DI- gap", _fmtGap(md.di_short_gap, 2)]);
+    }
+    _p3mRows.push(["DI cross", _fmtGap(md.di_cross_gap, 2)]);
+    _p3mRows.push(["vs AVWAP",  _fmtGap(md.vwap_gap_pct, 3, "%")]);
+    _p3mRows.push(["vs EMA9 5m", _fmtGap(md.ema9_gap_pct, 3, "%")]);
     const p3mMetrics = _metricsHtml(_p3mRows);
     // v5.20.7 \u2014 the per-position cards (Sovereign brake / Velocity
     // fuse / Strikes) are only meaningful while a position is open. With
@@ -1241,6 +1322,7 @@
       +     '<th class="pmtx-col-strike" title="Strike sequence (v15.0 \u00a71). Maximum 3 Strikes per ticker per day. Sequential Requirement: a subsequent strike cannot initiate until the previous position is fully flat (Position = 0). Counters reset at 09:30:00 ET.">Strikes</th>'
       +     '<th class="pmtx-col-state" title="Per-ticker FSM \u2014 IDLE \u00b7 ARMED (Phase 1 weather + Phase 2 permit satisfied, awaiting Phase 3 authority + momentum) \u00b7 IN POS \u00b7 LOCKED (3-of-3 strikes used).">State</th>'
       +     '<th class="pmtx-col-prox" title="Live last price \u00b7 distance to the live boundary the next strike is hunting. Strike 1 hunts ORH/ORL (frozen 09:35:59); strikes 2 & 3 hunt the running NHOD/NLOD.">Dist</th>'
+      +     '<th class="pmtx-col-mini" title="v6.0.0 mini-chart. Today\u2019s 1m closes downsampled to fit a 60-pt sparkline. Green tint when last > open, red when last < open. Hover for hi/lo/last.">Today</th>'
       +     '<th class="pmtx-col-expand" aria-label="Toggle detail"></th>'
       +   '</tr></thead><tbody>' + rowsHtml.join("") + '</tbody></table>'
       + '</div>';
@@ -1330,10 +1412,16 @@
       +   '<canvas class="pmtx-intraday-canvas" data-intraday-canvas width="1200" height="320"></canvas>'
       +   '<div class="pmtx-intraday-legend">'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-or">OR H/L</span>'
-      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-avwap">AVWAP</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-avwap">AVWAP \u00b11\u03c3</span>'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-ema9">EMA9 (5m)</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-pdc">PDC</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-hod">HOD/LOD</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-vol">Volume</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-sentinel">Sentinel</span>'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-entry">Entry</span>'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-exit">Exit</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-trail">Trail stop</span>'
+      +     '<span class="pmtx-intraday-hint" title="Wheel zooms, drag pans, hover for OHLC tooltip, double-click resets the view">scroll \u00b7 drag \u00b7 dblclick</span>'
       +   '</div>'
       + '</div>';
   }
@@ -1344,6 +1432,30 @@
   // a freshly-printed bar shows up within a minute.
   const _intradayCache = {};
   const _INTRADAY_TTL_MS = 60 * 1000;
+
+  // v6.0.0 \u2014 per-canvas chart-view state for zoom/pan/hover. The
+  // canvas DOM node is the key; we attach a state object so wheel/drag
+  // event listeners can mutate the visible window and trigger redraws
+  // without recomputing the payload. Defaults to the full 7am\u20135pm CT
+  // window (et_min 480\u20131080).
+  const _CHART_FULL_X_MIN = 480;
+  const _CHART_FULL_X_MAX = 1080;
+  const _chartViewState = new WeakMap();
+  function _chartGetState(canvas) {
+    let st = _chartViewState.get(canvas);
+    if (!st) {
+      st = {
+        xMin: _CHART_FULL_X_MIN,
+        xMax: _CHART_FULL_X_MAX,
+        hoverEtMin: null,
+        hoverPx: null,
+        hoverPy: null,
+        wired: false,
+      };
+      _chartViewState.set(canvas, st);
+    }
+    return st;
+  }
 
   function _isMobile() {
     try {
@@ -1403,11 +1515,21 @@
     // v5.23.3 — X axis spans 8:00 ET (=7am CT, et_min=480) to 18:00 ET
     // (=5pm CT, et_min=1080). Window covers the full 7am-5pm CT user
     // request: late premarket + RTH + early postmarket.
-    const X_MIN = 480;
-    const X_MAX = 1080;
-    // Y axis: tight envelope around prices + OR levels.
+    // v6.0.0 — X window is now driven by the per-canvas chart state so
+    // wheel/drag events can zoom/pan without rebuilding the payload.
+    const _vs = _chartGetState(canvas);
+    let X_MIN = (typeof _vs.xMin === "number") ? _vs.xMin : 480;
+    let X_MAX = (typeof _vs.xMax === "number") ? _vs.xMax : 1080;
+    if (X_MAX - X_MIN < 30) X_MAX = X_MIN + 30; // floor at 30 min
+    if (X_MIN < 480) X_MIN = 480;
+    if (X_MAX > 1080) X_MAX = 1080;
+    _vs.xMin = X_MIN; _vs.xMax = X_MAX;
+    // Y axis: tight envelope around prices + OR levels (visible window).
+    // v6.0.0 — Y is now scoped to bars within [X_MIN, X_MAX] so zoomed
+    // views adjust their price range automatically.
     let yMin = Infinity, yMax = -Infinity;
     for (const b of bars) {
+      if (typeof b.et_min === "number" && (b.et_min < X_MIN || b.et_min > X_MAX)) continue;
       if (typeof b.l === "number") yMin = Math.min(yMin, b.l);
       if (typeof b.h === "number") yMax = Math.max(yMax, b.h);
     }
@@ -1745,6 +1867,167 @@
       yMin: yMin, yMax: yMax,
       PAD_L: PAD_L, plotW: plotW,
     });
+
+    // v6.0.0 \u2014 hover crosshair + tooltip. The pointer-handler stores
+    // hoverEtMin/hoverPx/hoverPy on the canvas state and redraws.
+    if (typeof _vs.hoverEtMin === "number"
+        && _vs.hoverEtMin >= X_MIN && _vs.hoverEtMin <= X_MAX) {
+      const hx = xOf(_vs.hoverEtMin);
+      ctx.strokeStyle = "rgba(180,200,220,0.35)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(hx, PAD_T); ctx.lineTo(hx, PAD_T + priceH);
+      ctx.stroke();
+      // Find nearest bar by et_min for tooltip.
+      let near = null;
+      let bestD = Infinity;
+      for (let i = 0; i < bars.length; i++) {
+        const b = bars[i];
+        if (typeof b.et_min !== "number") continue;
+        const d = Math.abs(b.et_min - _vs.hoverEtMin);
+        if (d < bestD) { bestD = d; near = b; }
+      }
+      if (near) {
+        const lines = [];
+        // Convert ET min to CT label (HH:MM).
+        const _etH = Math.floor(near.et_min / 60);
+        const _etM = near.et_min % 60;
+        let _ctH = _etH - 1; if (_ctH < 0) _ctH += 24;
+        const tlabel = String(_ctH).padStart(2, "0") + ":" + String(_etM).padStart(2, "0") + " CT";
+        lines.push(tlabel);
+        if (typeof near.o === "number") lines.push("O " + near.o.toFixed(2));
+        if (typeof near.h === "number") lines.push("H " + near.h.toFixed(2));
+        if (typeof near.l === "number") lines.push("L " + near.l.toFixed(2));
+        if (typeof near.c === "number") lines.push("C " + near.c.toFixed(2));
+        if (typeof near.v === "number") lines.push("V " + (near.v >= 1000 ? (near.v/1000).toFixed(1)+"k" : String(near.v)));
+        if (typeof near.avwap === "number") lines.push("AVWAP " + near.avwap.toFixed(2));
+        if (typeof near.ema9_5m === "number") lines.push("EMA9 " + near.ema9_5m.toFixed(2));
+        // Draw tooltip box.
+        ctx.font = "11px system-ui, sans-serif";
+        const lineH = 13;
+        let boxW = 0;
+        for (const l of lines) boxW = Math.max(boxW, ctx.measureText(l).width);
+        boxW += 12;
+        const boxH = lineH * lines.length + 10;
+        let bx = hx + 8;
+        if (bx + boxW > PAD_L + plotW) bx = hx - boxW - 8;
+        let by = PAD_T + 8;
+        if (typeof _vs.hoverPy === "number") {
+          by = Math.max(PAD_T + 4, Math.min(PAD_T + priceH - boxH - 4, _vs.hoverPy - boxH/2));
+        }
+        ctx.fillStyle = "rgba(14,19,24,0.92)";
+        ctx.strokeStyle = "#2a3540";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.rect(bx, by, boxW, boxH);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#cdd6e0";
+        ctx.textAlign = "left";
+        for (let i = 0; i < lines.length; i++) {
+          ctx.fillText(lines[i], bx + 6, by + 14 + i * lineH);
+        }
+      }
+    }
+  }
+
+  // v6.0.0 \u2014 Wire pointer + wheel events on the intraday canvas to
+  // drive the per-canvas chart-view state. Idempotent via _vs.wired.
+  // Wheel = zoom centered on cursor; drag = pan; double-click = reset.
+  function _wireIntradayChartInteraction(canvas) {
+    const _vs = _chartGetState(canvas);
+    if (_vs.wired) return;
+    _vs.wired = true;
+    const _xMinFromPx = (px, plotL, plotW) => _vs.xMin + ((px - plotL) / plotW) * (_vs.xMax - _vs.xMin);
+    const _layout = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth || 1200;
+      const cssH = canvas.clientHeight || 320;
+      // Match _drawIntradayChart pads.
+      const PAD_L = 56, PAD_R = 12, PAD_T = 14, PAD_B = 22;
+      return { dpr, cssW, cssH, PAD_L, PAD_R, PAD_T, PAD_B,
+               plotW: cssW - PAD_L - PAD_R, plotH: cssH - PAD_T - PAD_B };
+    };
+    const _redraw = () => {
+      const cached = _intradayCache[canvas.dataset.intradayTkr || ""];
+      const payload = cached ? cached.payload : canvas._lastPayload;
+      if (payload) _drawIntradayChart(canvas, payload);
+    };
+    canvas.addEventListener("wheel", function (ev) {
+      ev.preventDefault();
+      const lay = _layout();
+      const rect = canvas.getBoundingClientRect();
+      const px = ev.clientX - rect.left;
+      if (px < lay.PAD_L || px > lay.PAD_L + lay.plotW) return;
+      const cursorX = _xMinFromPx(px, lay.PAD_L, lay.plotW);
+      // Wheel up (deltaY < 0) zooms in.
+      const factor = ev.deltaY < 0 ? 0.85 : 1.18;
+      const newSpan = Math.max(30, Math.min(_CHART_FULL_X_MAX - _CHART_FULL_X_MIN,
+        (_vs.xMax - _vs.xMin) * factor));
+      const cursorFrac = (cursorX - _vs.xMin) / (_vs.xMax - _vs.xMin);
+      let newMin = cursorX - cursorFrac * newSpan;
+      let newMax = newMin + newSpan;
+      if (newMin < _CHART_FULL_X_MIN) { newMin = _CHART_FULL_X_MIN; newMax = newMin + newSpan; }
+      if (newMax > _CHART_FULL_X_MAX) { newMax = _CHART_FULL_X_MAX; newMin = newMax - newSpan; }
+      _vs.xMin = newMin; _vs.xMax = newMax;
+      _redraw();
+    }, { passive: false });
+    let _drag = null;
+    canvas.addEventListener("pointerdown", function (ev) {
+      const lay = _layout();
+      const rect = canvas.getBoundingClientRect();
+      const px = ev.clientX - rect.left;
+      if (px < lay.PAD_L || px > lay.PAD_L + lay.plotW) return;
+      _drag = { x: px, xMin0: _vs.xMin, xMax0: _vs.xMax, plotW: lay.plotW };
+      canvas.setPointerCapture && canvas.setPointerCapture(ev.pointerId);
+      canvas.style.cursor = "grabbing";
+    });
+    canvas.addEventListener("pointermove", function (ev) {
+      const lay = _layout();
+      const rect = canvas.getBoundingClientRect();
+      const px = ev.clientX - rect.left;
+      const py = ev.clientY - rect.top;
+      if (_drag) {
+        const dx = px - _drag.x;
+        const span = _drag.xMax0 - _drag.xMin0;
+        const shift = -(dx / _drag.plotW) * span;
+        let newMin = _drag.xMin0 + shift;
+        let newMax = _drag.xMax0 + shift;
+        if (newMin < _CHART_FULL_X_MIN) { newMin = _CHART_FULL_X_MIN; newMax = newMin + span; }
+        if (newMax > _CHART_FULL_X_MAX) { newMax = _CHART_FULL_X_MAX; newMin = newMax - span; }
+        _vs.xMin = newMin; _vs.xMax = newMax;
+        _vs.hoverEtMin = null;
+        _redraw();
+        return;
+      }
+      // Hover \u2014 update crosshair if inside the price plot region.
+      if (px < lay.PAD_L || px > lay.PAD_L + lay.plotW
+          || py < lay.PAD_T || py > lay.PAD_T + lay.plotH * 0.85) {
+        if (_vs.hoverEtMin !== null) { _vs.hoverEtMin = null; _redraw(); }
+        return;
+      }
+      const xv = _xMinFromPx(px, lay.PAD_L, lay.plotW);
+      _vs.hoverEtMin = xv;
+      _vs.hoverPx = px;
+      _vs.hoverPy = py;
+      _redraw();
+    });
+    const _endDrag = function (ev) {
+      _drag = null;
+      canvas.style.cursor = "crosshair";
+      try { canvas.releasePointerCapture && canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
+    };
+    canvas.addEventListener("pointerup", _endDrag);
+    canvas.addEventListener("pointercancel", _endDrag);
+    canvas.addEventListener("pointerleave", function () {
+      if (_vs.hoverEtMin !== null) { _vs.hoverEtMin = null; _redraw(); }
+    });
+    canvas.addEventListener("dblclick", function () {
+      _vs.xMin = _CHART_FULL_X_MIN;
+      _vs.xMax = _CHART_FULL_X_MAX;
+      _redraw();
+    });
+    canvas.style.cursor = "crosshair";
   }
 
   // v5.31.0 \u2014 Open-position lifecycle overlay. Reads payload.lifecycle
@@ -1932,7 +2215,15 @@
       const canvas = section.querySelector('[data-intraday-canvas]');
       const meta = section.querySelector('[data-intraday-meta]');
       if (cached && (now - cached.ts) < _INTRADAY_TTL_MS && cached.payload) {
-        if (canvas) _drawIntradayChart(canvas, cached.payload);
+        if (canvas) {
+          // v6.0.0 \u2014 stash ticker + payload on the canvas so the
+          // wheel/drag/hover handlers can issue redraws without going
+          // back through the fetch path.
+          canvas.dataset.intradayTkr = tkr;
+          canvas._lastPayload = cached.payload;
+          _drawIntradayChart(canvas, cached.payload);
+          _wireIntradayChartInteraction(canvas);
+        }
         if (meta) {
           const n = (cached.payload.bars || []).length;
           meta.textContent = n + " bars \u00b7 " + (_isMobile() ? "5m" : "1m");
@@ -1947,7 +2238,12 @@
             return;
           }
           _intradayCache[tkr] = { ts: Date.now(), payload: payload };
-          if (canvas) _drawIntradayChart(canvas, payload);
+          if (canvas) {
+            canvas.dataset.intradayTkr = tkr;
+            canvas._lastPayload = payload;
+            _drawIntradayChart(canvas, payload);
+            _wireIntradayChartInteraction(canvas);
+          }
           if (meta) {
             const n = (payload.bars || []).length;
             meta.textContent = n + " bars \u00b7 " + (_isMobile() ? "5m" : "1m");
@@ -2303,6 +2599,7 @@
       + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
       + '<td class="pmtx-col-state">' + stateHtml + '</td>'
       + '<td class="pmtx-col-prox">' + proxHtml + '</td>'
+      + '<td class="pmtx-col-mini">' + _pmtxMiniChartCell(perTickerV510[tkr] || null) + '</td>'
       + '<td class="pmtx-col-expand">' + expandIcon + '</td>'
       + '</tr>';
     let tableRows = mainTr;
@@ -2373,7 +2670,8 @@
       // hiding the Volume column doesn't leave a gap above the detail.
       // v5.31.5 — bumped by one to account for the per-stock Weather
       // column inserted at position 2 in the header above.
-      const _detailColspan = showVolume ? 10 : 9;
+      // v6.0.0 — bumped again for the new Trend mini-chart column.
+      const _detailColspan = showVolume ? 11 : 10;
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
         + '<td colspan="' + _detailColspan + '">' + detailInner + '</td></tr>';
     }

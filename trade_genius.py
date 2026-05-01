@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.31.5"
+BOT_VERSION = "6.0.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,15 +97,21 @@ BOT_VERSION = "5.31.5"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.31.5 local override:\n"
-    "Per-stock local weather\n"
-    "can open the gate when\n"
-    "global QQQ blocks. Loose\n"
-    "rule: (close past EMA9 OR\n"
-    "last past AVWAP) AND DI\n"
-    "confirms. Permit matrix\n"
-    "adds Weather column +\n"
-    "per-stock card."
+    "v6.0.0 UI/engine bundle:\n"
+    "Weather column gains a\n"
+    "divergence asterisk when\n"
+    "local direction differs\n"
+    "from global QQQ. PDC\n"
+    "anchors the EMA9 seed so\n"
+    "the line shows from bar 1\n"
+    "instead of waiting 45 min.\n"
+    "Each row carries a 1m\n"
+    "sparkline. Charts gain\n"
+    "wheel zoom, drag pan,\n"
+    "hover OHLC tooltip + an\n"
+    "expanded legend. Momentum\n"
+    "card surfaces ADX/DI/VWAP\n"
+    "distance-to-trigger gaps."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1088,7 +1094,12 @@ def _qqq_weather_tick():
         bars = fetch_1min_bars(V561_INDEX_TICKER)
         if not bars:
             return
-        five = _engine_compute_5m_ohlc_and_ema9(bars)
+        # v6.0.0 \u2014 pass PDC so the EMA9 can engage immediately on a
+        # synthetic PDC-anchored 9-bar prefix when fewer than 9 closed
+        # 5m bars exist (e.g. first 45 min of session, thin premarket).
+        five = _engine_compute_5m_ohlc_and_ema9(
+            bars, pdc=bars.get("pdc")
+        )
         if not five:
             return
         bucket = five.get("last_bucket")
@@ -1154,7 +1165,10 @@ def _ticker_weather_tick(ticker: str) -> None:
         bars = fetch_1min_bars(sym)
         if not bars:
             return
-        five = _engine_compute_5m_ohlc_and_ema9(bars)
+        # v6.0.0 \u2014 PDC-anchored synthetic prefix so per-stock weather
+        # has a defensible EMA9 from bar #1 instead of the first 45min
+        # of every session being unusable.
+        five = _engine_compute_5m_ohlc_and_ema9(bars, pdc=bars.get("pdc"))
         if not five:
             return
         bucket = five.get("last_bucket")

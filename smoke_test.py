@@ -1687,9 +1687,14 @@ def run_local() -> int:
         assert "S-P4-R3" in body, "S-P4-R3 priority-1 rule missing"
         assert "C-R7" in body, "C-R7 universe rule missing"
 
-    @t("v5 module: BOT_VERSION matches v5 major")
+    @t("v5 module: BOT_VERSION is a non-empty MAJOR.x string")
     def _():
-        assert m.BOT_VERSION.startswith("5."), f"v5.x expected, got {m.BOT_VERSION}"
+        # v6.0.0 cut-over: this guard used to pin v5.x, but the version line
+        # has progressed. Smoke just ensures the constant is well-formed and
+        # at or above v5; the version-bump CI workflow is the strict pin.
+        assert isinstance(m.BOT_VERSION, str) and m.BOT_VERSION
+        major = m.BOT_VERSION.split(".", 1)[0]
+        assert major.isdigit() and int(major) >= 5, f"unexpected: {m.BOT_VERSION}"
 
     @t("v5 module: state names match spec D")
     def _():
