@@ -15,6 +15,7 @@ from broker.orders import check_breakout  # noqa: F401
 # v5.26.0 \u2014 broker.stops module deleted. Imports were unused in this
 # file's body and the surviving R-2 hard stop flows through the
 # sentinel exit path.
+from engine.alarm_f_trail import TrailState, atr_from_bars
 from engine.bars import compute_5m_ohlc_and_ema9
 from engine.momentum_state import ADXTrendWindow, DivergenceMemory, TradeHVP
 from engine.sentinel import (
@@ -363,6 +364,29 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         except Exception:
             portfolio_value = None
 
+        # v5.28.0 \u2014 Alarm F state + ATR(14) on 1m closes. State is
+        # lazily attached to the position dict so existing positions
+        # carried across a process restart pick it up on their next
+        # sentinel tick. ATR may be None during the first 14 bars; the
+        # alarm silently waits before arming Stage 2/3.
+        trail_state = pos.get("trail_state")
+        if trail_state is None:
+            trail_state = TrailState.fresh()
+            pos["trail_state"] = trail_state
+        last_1m_close = None
+        last_1m_atr = None
+        try:
+            highs_1m = (bars or {}).get("highs") or []
+            lows_1m = (bars or {}).get("lows") or []
+            closes_1m = (bars or {}).get("closes") or []
+            if closes_1m:
+                last_1m_close = float(closes_1m[-1])
+            if highs_1m and lows_1m and closes_1m:
+                last_1m_atr = atr_from_bars(highs_1m, lows_1m, closes_1m, period=14)
+        except Exception:
+            last_1m_close = None
+            last_1m_atr = None
+
         result = evaluate_sentinel(
             side=side,
             unrealized_pnl=unrealized,
@@ -384,6 +408,11 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             divergence_memory=_divergence_memory,
             current_rsi_15=rsi_15,
             ticker=ticker,
+            trail_state=trail_state,
+            entry_price=entry_p,
+            last_1m_close=last_1m_close,
+            last_1m_atr=last_1m_atr,
+            initial_stop_price=pos.get("initial_stop"),
         )
         # v5.13.6 \u2014 emit lifecycle PHASE4 events on state changes
         # (best-effort, no-op when logger absent).
@@ -402,28 +431,50 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         if result.has_full_exit:
             return result.exit_reason
 
-        # Alarm C only path \u2014 install the proposed stop tighten in
-        # place. The runner exits naturally through the existing
-        # manage_positions stop-cross branch when the new stop is hit.
+        # Alarm C / Alarm F stop-tighten path \u2014 merge by side-aware
+        # best (long: max, short: min) so the broker stop is the
+        # tightest of the two reactive trails. Each alarm logs its
+        # own line for observability.
         for action in result.alarms:
-            if action.alarm == "C" and action.detail_stop_price is not None:
-                new_stop = float(action.detail_stop_price)
-                old_stop = pos.get("stop") or 0.0
-                if side == _SENTINEL_SIDE_LONG:
-                    if new_stop > old_stop:
-                        pos["stop"] = new_stop
+            if action.detail_stop_price is None:
+                continue
+            if action.alarm not in ("C", "F"):
+                continue
+            new_stop = float(action.detail_stop_price)
+            old_stop = pos.get("stop") or 0.0
+            if side == _SENTINEL_SIDE_LONG:
+                if new_stop > old_stop:
+                    pos["stop"] = new_stop
+                    if action.alarm == "C":
                         logger.info(
                             "[VELOCITY-RATCHET] %s LONG stop %.4f -> %.4f",
                             ticker,
                             old_stop,
                             new_stop,
                         )
-                else:
-                    if old_stop == 0.0 or new_stop < old_stop:
-                        pos["stop"] = new_stop
+                    else:
+                        logger.info(
+                            "[ALARM-F-TRAIL] %s LONG stage=%d stop %.4f -> %.4f",
+                            ticker,
+                            getattr(trail_state, "stage", 0),
+                            old_stop,
+                            new_stop,
+                        )
+            else:
+                if old_stop == 0.0 or new_stop < old_stop:
+                    pos["stop"] = new_stop
+                    if action.alarm == "C":
                         logger.info(
                             "[VELOCITY-RATCHET] %s SHORT stop %.4f -> %.4f",
                             ticker,
+                            old_stop,
+                            new_stop,
+                        )
+                    else:
+                        logger.info(
+                            "[ALARM-F-TRAIL] %s SHORT stage=%d stop %.4f -> %.4f",
+                            ticker,
+                            getattr(trail_state, "stage", 0),
                             old_stop,
                             new_stop,
                         )

@@ -607,13 +607,20 @@ def test_alarm_d_returns_none_when_no_session_hwm_recorded():
     assert res is None
 
 
-def test_evaluate_sentinel_threads_alarm_d_when_session_hwm_seeded():
+def test_evaluate_sentinel_threads_alarm_d_when_session_hwm_seeded(monkeypatch):
     """SENT-D wires through evaluate_sentinel and contributes to has_full_exit.
 
     v5.26.0 RULING #2: evaluate_sentinel reads the session HWM via the
     ``ticker`` kwarg; trade_hvp is accepted for back-compat but ignored.
+
+    v5.28.0 \u2014 Alarm D is gated off by default in the simplified
+    portfolio. The test continues to verify the wiring is intact by
+    flipping the flag on for the duration of the test.
     """
+    import engine.sentinel as _sentinel
     from engine.sentinel import EXIT_REASON_HVP_LOCK
+
+    monkeypatch.setattr(_sentinel, "ALARM_D_ENABLED", True)
 
     _seed_session_5m_adx("TSLA", 20.0, 40.0)
     result = evaluate_sentinel(

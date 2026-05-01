@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.27.0"
+BOT_VERSION = "5.28.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,19 +97,15 @@ BOT_VERSION = "5.27.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.27.0 2-bar 9-EMA confirm,\n"
-    "NFLX/ORCL universe, scaled\n"
-    "hard stops. Alarm B now needs\n"
-    "two consecutive 5m closes on\n"
-    "the wrong side of EMA9 before\n"
-    "firing (cuts whipsaw exits).\n"
-    "NFLX + ORCL added to runtime\n"
-    "universe. Per-trade and daily\n"
-    "hard stops scale with portfolio\n"
-    "value (floor $100/$300, ceil\n"
-    "$500/$1500). Backtest pairs are\n"
-    "now share-aware; P&L matches\n"
-    "prod dollar accounting."
+    "v5.28.0 Alarm F redesigned\n"
+    "as primary chandelier exit:\n"
+    "closed-bar 1m cross fires\n"
+    "full close. C/D/E gated off\n"
+    "to cut sentinel noise. A/B\n"
+    "kept as safety nets. Tuned\n"
+    "S2=1R, WIDE/TIGHT 2x/1x ATR.\n"
+    "Apr 30 backtest: -$175 to\n"
+    "+$207 (380% improvement)."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

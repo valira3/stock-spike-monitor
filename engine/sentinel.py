@@ -34,6 +34,15 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Deque, Iterable, Optional
 
+from engine.alarm_f_trail import (
+    EXIT_REASON_ALARM_F,
+    EXIT_REASON_ALARM_F_EXIT,
+    TrailState,
+    chandelier_level as _f_chandelier_level,
+    propose_stop as _f_propose_stop,
+    should_exit_on_close_cross as _f_should_exit_on_close_cross,
+    update_trail as _f_update_trail,
+)
 from engine.momentum_state import TradeHVP
 from engine.velocity_ratchet import (
     EXIT_REASON_VELOCITY_RATCHET,
@@ -96,6 +105,22 @@ EXIT_REASON_ALARM_C: str = EXIT_REASON_VELOCITY_RATCHET
 # and the backtest harness (replay_v511_full) supply both bars.
 ALARM_B_CONFIRM_BARS: int = 2
 
+# v5.28.0 \u2014 Alarm portfolio simplification. Ablation on Apr 30 prod
+# data (see /tmp/ablation_results.json, /tmp/abl2_results.json) showed:
+#   \u2022 Alarm C (Velocity Ratchet) fires constantly but never causes an
+#     exit because its 0.25%-of-current trail is co-dominated by Alarm
+#     B / R-2 \u2014 it adds noise without P&L (\u0394 = -$14 of 13 pairs).
+#   \u2022 Alarms D and E never fired on Apr 30. They remain in the code
+#     for spec compliance but are gated off pending a prod-data review.
+# Alarm F's new closed-bar exit (this release) is intended to subsume
+# both C's role (faster trail) and a portion of B's role (faster
+# confirmation). Alarms A and B remain enabled as the deep safety net
+# and the structural EMA cross. The flags are class-style constants so
+# tests can flip them per-case via monkeypatch.
+ALARM_C_ENABLED: bool = False
+ALARM_D_ENABLED: bool = False
+ALARM_E_ENABLED: bool = False
+
 SIDE_LONG = "LONG"
 SIDE_SHORT = "SHORT"
 
@@ -114,7 +139,7 @@ class SentinelAction:
     price; otherwise it is None.
     """
 
-    alarm: str  # "A_LOSS", "A_FLASH", "B", "C1..C4", "D", "E"
+    alarm: str  # "A_LOSS", "A_FLASH", "B", "C1..C4", "D", "E", "F"
     reason: str  # one of EXIT_REASON_*
     detail: str = ""
     detail_stop_price: Optional[float] = None
@@ -154,8 +179,11 @@ class SentinelResult:
 
     @property
     def has_full_exit(self) -> bool:
-        """True if R-2 hard stop, A-A, A-B, or A-D fired \u2014 caller must
-        do a full close and ignore any C stop-tighten on the same tick.
+        """True if any full-exit alarm fired \u2014 caller must do a 100%
+        close and ignore any stop-tighten proposals on the same tick.
+
+        v5.28.0: Alarm F's closed-bar chandelier cross (alarm code
+        ``F_EXIT``) is now a full-exit reason alongside R-2/A/B/D.
         """
         for a in self.alarms:
             if a.reason in (
@@ -163,6 +191,7 @@ class SentinelResult:
                 EXIT_REASON_ALARM_A,
                 EXIT_REASON_ALARM_B,
                 EXIT_REASON_ALARM_D,
+                EXIT_REASON_ALARM_F_EXIT,
             ):
                 return True
         return False
@@ -170,7 +199,10 @@ class SentinelResult:
     @property
     def exit_reason(self) -> str | None:
         """Single canonical exit reason.
-        Priority: R-2 hard stop > A-A > A-B > A-D > C.
+        Priority: R-2 hard stop > A-A > A-B > F-EXIT > A-D > C.
+        F-EXIT (chandelier cross) is wedged between B and D \u2014 above
+        D because in v5.28.0 D is gated off, and below B because B's
+        2-bar 9-EMA confirmation is a stronger structural signal.
         All alarms remain recorded in `alarms` regardless.
         """
         if not self.alarms:
@@ -184,6 +216,9 @@ class SentinelResult:
         for a in self.alarms:
             if a.reason == EXIT_REASON_ALARM_B:
                 return EXIT_REASON_ALARM_B
+        for a in self.alarms:
+            if a.reason == EXIT_REASON_ALARM_F_EXIT:
+                return EXIT_REASON_ALARM_F_EXIT
         for a in self.alarms:
             if a.reason == EXIT_REASON_ALARM_D:
                 return EXIT_REASON_ALARM_D
@@ -684,6 +719,114 @@ def check_alarm_e_post(
 
 
 # ---------------------------------------------------------------------------
+# Alarm F \u2014 Hybrid Chandelier Trailing Stop (v5.28.0)
+# ---------------------------------------------------------------------------
+
+
+def check_alarm_f(
+    *,
+    state: TrailState,
+    side: str,
+    entry_price: float,
+    last_close: float | None,
+    atr_value: float | None,
+    r_dollars: float,
+    shares: int,
+    current_stop_price: float | None,
+) -> list[SentinelAction]:
+    """Evaluate Alarm F (Hybrid Chandelier Trail) for one position.
+
+    v5.28.0 \u2014 Alarm F now serves two roles:
+      1. **Closed-bar exit** (alarm code ``F_EXIT``, reason
+         ``EXIT_REASON_ALARM_F_EXIT``): when Stage \u2265 2 (chandelier
+         armed) and ``last_close`` has crossed the chandelier level
+         (long: close \u2264 level; short: close \u2265 level), fire a
+         100% exit. Mirrors Alarm B's pattern; this is what makes F
+         effective in the backtest harness (no broker stop fills) and
+         resilient to gap-down skips in production.
+      2. **Stop tighten** (alarm code ``F``, reason
+         ``EXIT_REASON_ALARM_F``): propose a strictly-tighter
+         protective stop carried in ``detail_stop_price`` for the live
+         broker. Same as v5.28.0 pre-redesign behaviour.
+
+    Both can fire on the same tick (the close just crossed AND the
+    chandelier is still tighter than the current stop). The caller's
+    full-exit priority (``has_full_exit``) ensures the exit wins.
+
+    Mutates ``state`` in place (peak_close ratchet, stage transitions,
+    last_proposed_stop bookkeeping).
+
+    Silently sits out when ``last_close`` is None (no closed bar yet)
+    or when shares/r_dollars are non-positive (degenerate position).
+    Stage 2/3 transitions further require ``atr_value`` to be available.
+    """
+    if last_close is None:
+        return []
+    if shares <= 0 or r_dollars <= 0.0:
+        return []
+
+    _f_update_trail(
+        state=state,
+        side=side,
+        entry_price=float(entry_price),
+        last_close=float(last_close),
+        atr_value=atr_value,
+        r_dollars=float(r_dollars),
+        shares=int(shares),
+    )
+
+    actions: list[SentinelAction] = []
+
+    # 1. Closed-bar exit \u2014 stage >= 2 AND close has crossed the level.
+    cross_level = _f_should_exit_on_close_cross(
+        state=state,
+        side=side,
+        last_close=float(last_close),
+        atr_value=atr_value,
+    )
+    if cross_level is not None:
+        side_u = str(side).upper()
+        cmp_glyph = "<=" if side_u == SIDE_LONG else ">="
+        atr_disp = atr_value if atr_value is not None else "na"
+        actions.append(
+            SentinelAction(
+                alarm="F_EXIT",
+                reason=EXIT_REASON_ALARM_F_EXIT,
+                detail=(
+                    f"side={side_u} chandelier_cross stage={state.stage} "
+                    f"close={float(last_close):.4f} {cmp_glyph} "
+                    f"level={cross_level:.4f} "
+                    f"peak_close={state.peak_close:.4f} atr={atr_disp}"
+                ),
+            )
+        )
+
+    # 2. Stop tighten \u2014 always evaluated (propose tighter active stop).
+    proposed = _f_propose_stop(
+        state=state,
+        side=side,
+        entry_price=float(entry_price),
+        atr_value=atr_value,
+        current_stop_price=current_stop_price,
+    )
+    if proposed is not None:
+        actions.append(
+            SentinelAction(
+                alarm="F",
+                reason=EXIT_REASON_ALARM_F,
+                detail=(
+                    f"side={str(side).upper()} chandelier stage={state.stage} "
+                    f"new_stop={proposed:.4f} peak_close="
+                    f"{state.peak_close:.4f} atr={atr_value if atr_value is not None else 'na'}"
+                ),
+                detail_stop_price=proposed,
+            )
+        )
+
+    return actions
+
+
+# ---------------------------------------------------------------------------
 # Top-level evaluator \u2014 PARALLEL, NOT sequential
 # ---------------------------------------------------------------------------
 
@@ -710,6 +853,18 @@ def evaluate_sentinel(
     divergence_memory: "DivergenceMemory | None" = None,
     current_rsi_15: float | None = None,
     ticker: str | None = None,
+    # v5.28.0 \u2014 Alarm F initial-stop pin. When provided, 1R per share
+    # is taken as ``abs(entry_price - initial_stop_price)`` (the actual
+    # per-share risk taken at entry). When omitted, falls back to a
+    # 0.5%-of-entry proxy (matches the v528 sim that produced +$407).
+    initial_stop_price: float | None = None,
+    # v5.28.0 \u2014 Alarm F (Hybrid Chandelier Trail). Optional; the alarm
+    # silently sits out when ``trail_state`` or ``entry_price`` is None,
+    # or when ``shares`` is 0, or when ``last_1m_close`` is None.
+    trail_state: TrailState | None = None,
+    entry_price: float | None = None,
+    last_1m_close: float | None = None,
+    last_1m_atr: float | None = None,
 ) -> SentinelResult:
     """Evaluate ALL sentinel alarms for one position on one tick.
 
@@ -766,11 +921,11 @@ def evaluate_sentinel(
     )
     result.alarms.extend(b_fired)
 
-    # Alarm C \u2014 always evaluated, independent of A and B. The
-    # Velocity Ratchet only fires when the 1m ADX trend window prints
-    # three strictly-decreasing samples; a partial window or missing
-    # price feed silently skips C.
-    if adx_window is not None and current_price is not None:
+    # Alarm C \u2014 v5.28.0 gated off by default (``ALARM_C_ENABLED=False``).
+    # Ablation showed C tightens a stop that the harness can't fire from,
+    # adding log noise without P&L. The check stays in the code so a
+    # future release can flip the flag back on without a rewrite.
+    if ALARM_C_ENABLED and adx_window is not None and current_price is not None:
         c_alarms, _legacy = check_alarm_c(
             adx_window=adx_window,
             side=side,
@@ -780,11 +935,9 @@ def evaluate_sentinel(
         )
         result.alarms.extend(c_alarms)
 
-    # Alarm D \u2014 ADX decline. Independent of A/B/C. RULING #2: reads
-    # session-wide HWM keyed by ticker, NOT per-Strike trade_hvp. The
-    # ``trade_hvp`` kwarg is accepted but ignored. Skipped silently
-    # when ticker is None (caller couldn't identify the position).
-    if ticker is not None and current_adx_5m is not None:
+    # Alarm D \u2014 v5.28.0 gated off by default (``ALARM_D_ENABLED=False``).
+    # Did not fire on Apr 30; held back pending a richer prod-data review.
+    if ALARM_D_ENABLED and ticker is not None and current_adx_5m is not None:
         d_action = check_alarm_d(
             ticker=ticker,
             current_adx_5m=float(current_adx_5m),
@@ -794,11 +947,11 @@ def evaluate_sentinel(
         if d_action is not None:
             result.alarms.append(d_action)
 
-    # Alarm E \u2014 Divergence Trap (in-trade ratchet). Independent of
-    # A/B/C/D. Requires divergence_memory + current_rsi_15 + ticker +
-    # current_price + current_stop_price; otherwise silently skipped.
+    # Alarm E \u2014 v5.28.0 gated off by default (``ALARM_E_ENABLED=False``).
+    # Did not fire on Apr 30; held back pending a richer prod-data review.
     if (
-        divergence_memory is not None
+        ALARM_E_ENABLED
+        and divergence_memory is not None
         and current_rsi_15 is not None
         and ticker is not None
         and current_price is not None
@@ -814,6 +967,46 @@ def evaluate_sentinel(
         )
         if e_action is not None:
             result.alarms.append(e_action)
+
+    # Alarm F \u2014 Hybrid Chandelier Trail (v5.28.0). Independent of
+    # A/B/C/D/E. Requires trail_state + entry_price + last_1m_close +
+    # current_shares > 0; ATR is optional (Stage 1 BE proposal works
+    # without it; Stage 2/3 chandelier waits for ATR readiness).
+    # ``r_dollars`` reuses the same portfolio-scaled threshold as
+    # Alarm A above (positive value): hard_loss_threshold is negative,
+    # so flip the sign to get 1R per-trade dollars.
+    if (
+        trail_state is not None
+        and entry_price is not None
+        and last_1m_close is not None
+        and current_shares > 0
+    ):
+        # Per-share R = actual entry-time stop distance when known,
+        # else 0.5%-of-entry fallback (matches the v528 simulation that
+        # produced +$407 on the Apr 30 22-pair set). The position-level
+        # ``hard_loss_threshold`` (-$500 portfolio brake) is too coarse
+        # for an intraday trail \u2014 across 16-106 share lots it works
+        # out to $5-$30 per share, so +1R favorable rarely fires.
+        if initial_stop_price is not None and entry_price is not None:
+            r_per_share = abs(float(entry_price) - float(initial_stop_price))
+        else:
+            r_per_share = abs(float(entry_price)) * 0.005
+        if r_per_share <= 0.0:
+            r_per_share = abs(float(entry_price)) * 0.005
+        # Convert to position-level dollars so ``check_alarm_f`` /
+        # ``update_trail`` recover ``r_per_share = r_dollars / shares``.
+        r_dollars = r_per_share * float(current_shares)
+        f_actions = check_alarm_f(
+            state=trail_state,
+            side=side,
+            entry_price=float(entry_price),
+            last_close=float(last_1m_close),
+            atr_value=last_1m_atr,
+            r_dollars=r_dollars,
+            shares=int(current_shares),
+            current_stop_price=current_stop_price,
+        )
+        result.alarms.extend(f_actions)
 
     return result
 
@@ -848,6 +1041,12 @@ __all__ = [
     "EXIT_REASON_ALARM_B",
     "EXIT_REASON_ALARM_C",
     "EXIT_REASON_ALARM_D",
+    "EXIT_REASON_ALARM_F",
+    "EXIT_REASON_ALARM_F_EXIT",
+    "ALARM_C_ENABLED",
+    "ALARM_D_ENABLED",
+    "ALARM_E_ENABLED",
+    "TrailState",
     "EXIT_REASON_DIVERGENCE_TRAP",
     "EXIT_REASON_HVP_LOCK",
     "EXIT_REASON_R2_HARD_STOP",
@@ -865,6 +1064,7 @@ __all__ = [
     "check_alarm_d",
     "check_alarm_e_post",
     "check_alarm_e_pre",
+    "check_alarm_f",
     "evaluate_sentinel",
     "evaluate_velocity_ratchet",
     "format_sentinel_log",
