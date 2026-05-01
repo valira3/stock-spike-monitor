@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.29.0"
+BOT_VERSION = "5.30.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,12 +97,12 @@ BOT_VERSION = "5.29.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.29.0 hide bypassed UI:\n"
-    "volume col/card + alarms\n"
-    "C/D/E auto-hide via flags.\n"
+    "v5.30.0 add F to strip:\n"
+    "Alarm F chandelier cell\n"
+    "between B and C, stage\n"
+    "+ trail stop + peak.\n"
+    "v5.29.0: hide bypassed UI.\n"
     "v5.28.3: cache-bust assets.\n"
-    "v5.28.2: open-permit rows.\n"
-    "v5.28.1: idle alarm strip.\n"
     "v5.28.0: F primary exit."
 )
 

@@ -177,6 +177,24 @@ def test_build_tiger_sovereign_snapshot_with_positions():
     # A_LOSS PnL = (152 - 150) * 10 = +20
     assert sen["a1_pnl"] == pytest.approx(20.0)
     assert sen["a1_threshold"] == pytest.approx(-500.0)
+    # v5.30.0: Alarm F (chandelier trail) sub-dict exposed for the strip.
+    assert "f_chandelier" in sen, "sentinel must carry f_chandelier sub-dict"
+    fc = sen["f_chandelier"]
+    for k in (
+        "stage",
+        "stage_name",
+        "peak_close",
+        "proposed_stop",
+        "bars_seen",
+        "armed",
+        "triggered",
+    ):
+        assert k in fc, f"f_chandelier missing key: {k}"
+    # Default for a position with no trail_state attached: stage 0 INACTIVE.
+    assert fc["stage"] == 0
+    assert fc["stage_name"] == "INACTIVE"
+    assert fc["armed"] is False
+    assert fc["triggered"] is False
     tg = aapl4["titan_grip"]
     for k in ("stage", "anchor", "next_target", "ratchet_steps"):
         assert k in tg
