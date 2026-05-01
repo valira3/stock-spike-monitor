@@ -927,12 +927,18 @@
         + '</div>';
     }
 
+    // v5.29.0 — Volume card hidden when feature flag bypasses the gate.
+    // The Volume column in the matrix table hides at the same time so the
+    // expanded view stays consistent with the row above. When d.showVolume
+    // is undefined (legacy callers), the card renders — preserves prior
+    // behaviour for any embedder that hasn't been updated yet.
+    const _showVolume = (d.showVolume !== false);
     return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.23.0">'
       +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
       +   '<div class="pmtx-comp-cards">'
       +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
       +     card("P2", "Boundary",    "Two consec 1m closes thru OR", p2bState, p2bVal, p2bMetrics)
-      +     card("P2", "Volume",      "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal, p2vMetrics)
+      +     (_showVolume ? card("P2", "Volume", "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal, p2vMetrics) : '')
       +     card("P3", "Authority",   "Permit & QQQ alignment",    p3aState, p3aVal, p3aMetrics)
       +     card("P3", "Momentum",    "5m ADX > 20",                  p3mState, p3mVal, p3mMetrics)
       +     card("AL", "A1 Loss",     "Per-position $ stop",          alAState, alAVal, alAMetrics)
@@ -1114,12 +1120,25 @@
     const regimeBlock = (s && s.regime) || {};
     const sectionIPermit = (s && s.section_i_permit) || null;
 
+    // v5.29.0 — hide bypassed components driven by /api/state.feature_flags.
+    // Volume column / card hide when volume_gate_enabled=false; sentinel-strip
+    // cells for Alarms C/D/E hide when their respective alarm_*_enabled flags
+    // are false. Defaults are conservative (hide) so a missing flag block
+    // matches production behaviour. Flags read once per render and threaded
+    // down to _pmtxBuildRow so every helper sees a consistent view.
+    const ff = (s && s.feature_flags) || {};
+    const showVolume = !!ff.volume_gate_enabled;
+    const showAlarmC = !!ff.alarm_c_enabled;
+    const showAlarmD = !!ff.alarm_d_enabled;
+    const showAlarmE = !!ff.alarm_e_enabled;
+
     const rowsHtml = [];
     tickers.forEach((tkr) => {
       const built = _pmtxBuildRow(
         tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
         longPermit, shortPermit,
-        perTickerV510, perPositionV510, regimeBlock, sectionIPermit
+        perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
+        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE }
       );
       rowsHtml.push(built.tableRows);
     });
@@ -1137,10 +1156,10 @@
     // 5m>25) and OR-high/OR-low render as ORH/ORL in the body.
     body.innerHTML = ''
       + '<div class="pmtx-table-wrap">'
-      +   '<table class="pmtx-table"><thead><tr>'
+      +   '<table class="pmtx-table' + (showVolume ? '' : ' pmtx-no-volume') + '"><thead><tr>'
       +     '<th class="pmtx-col-titan">Titan</th>'
       +     '<th class="pmtx-col-orb" title="Phase 2 Boundary card. Strike 1: two consecutive 1m closes strictly above ORH (long) or below ORL (short), with ORH/ORL frozen at exactly 09:35:59 ET. Strikes 2 & 3: two consecutive 1m closes above the running NHOD (long) or below the running NLOD (short).">Boundary</th>'
-      +     '<th class="pmtx-col-vol" title="Phase 2 Volume card. 1m volume must be \u2265 100% of the 55-bar rolling average. REQUIRED after 10:00 AM ET; before 10:00 ET the gate auto-passes. Bypassed when VOLUME_GATE_ENABLED=false.">Volume</th>'
+      +     (showVolume ? '<th class="pmtx-col-vol" title="Phase 2 Volume card. 1m volume must be \u2265 100% of the 55-bar rolling average. REQUIRED after 10:00 AM ET; before 10:00 ET the gate auto-passes. Bypassed when VOLUME_GATE_ENABLED=false.">Volume</th>' : '')
       +     '<th class="pmtx-col-diplus" title="Phase 3 Authority card. Section-I permit alignment: cell goes green when at least one of long_open / short_open is true on section_i_permit. Per-ticker DI\u00b1 detail (DI+ 1m/5m, DI\u2212 1m/5m, threshold) lives in the Momentum card metric stack inside the expanded row.">Authority</th>'
       +     '<th class="pmtx-col-adx" title="Phase 3 Momentum card. Required for entry: 5m ADX > 20 AND Alarm E = FALSE. This is a primary spec gate \u2014 if ADX \u2264 20 the bot does not open a Strike, regardless of DI\u00b1.">Momentum</th>'
       +     '<th class="pmtx-col-strike" title="Strike sequence (v15.0 \u00a71). Maximum 3 Strikes per ticker per day. Sequential Requirement: a subsequent strike cannot initiate until the previous position is fully flat (Position = 0). Counters reset at 09:30:00 ET.">Strikes</th>'
@@ -1681,11 +1700,20 @@
   function _pmtxBuildRow(
     tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
     longPermit, shortPermit,
-    perTickerV510, perPositionV510, regimeBlock, sectionIPermit
+    perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
+    visibilityOpts
   ) {
     perTickerV510 = perTickerV510 || {};
     perPositionV510 = perPositionV510 || {};
     regimeBlock = regimeBlock || {};
+    // v5.29.0 — visibility options drive flag-driven hiding of bypassed
+    // components. Defaults preserve legacy behaviour (everything visible)
+    // for callers that don't pass an opts object.
+    visibilityOpts = visibilityOpts || {};
+    const showVolume  = visibilityOpts.showVolume  !== false;
+    const showAlarmC  = visibilityOpts.showAlarmC  !== false;
+    const showAlarmD  = visibilityOpts.showAlarmD  !== false;
+    const showAlarmE  = visibilityOpts.showAlarmE  !== false;
     const p2 = idx.p2[tkr] || null;
     // v5.21.0 — sma_stack is nested in the phase2 row dict.
     const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
@@ -1806,7 +1834,11 @@
     // state with an em-dash placeholder so the user always sees the alarm
     // panel layout (rather than the panel collapsing entirely between
     // sessions). The strip's leading banner indicates "no open position".
-    const sentinelStripHtml = _pmtxSentinelStrip(p4, !!pos);
+    const sentinelStripHtml = _pmtxSentinelStrip(p4, !!pos, {
+      showAlarmC: showAlarmC,
+      showAlarmD: showAlarmD,
+      showAlarmE: showAlarmE,
+    });
     const proxHasDetail = !!(prox && (
       typeof prox.price === "number"
       || prox.nearest_label
@@ -1837,7 +1869,7 @@
       // open, red when both are closed, pending when section_i_permit
       // is unavailable.
       + '<td class="pmtx-col-orb">' + _pmtxGateCell(orb, "Boundary: two consecutive 1m closes through ORH (long) / ORL (short)") + '</td>'
-      + '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume gate (1m vol \u2265 100% of 55-bar avg)") + '</td>'
+      + (showVolume ? '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume gate (1m vol \u2265 100% of 55-bar avg)") + '</td>' : '')
       + '<td class="pmtx-col-diplus">' + _pmtxGateCell(_pmtxAuthorityCell(sectionIPermit), _pmtxAuthorityTooltip(sectionIPermit)) + '</td>'
       + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "Momentum: 5m ADX > 20 (proxied by Phase 3 Entry-1 firing)") + '</td>'
       + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
@@ -1886,6 +1918,8 @@
             strikesUsed: strikesUsed,
             pos: pos,
             p4: p4,
+            // v5.29.0 — component grid honors the same volume-gate flag.
+            showVolume: showVolume,
             // v5.20.5 \u2014 numeric metric rows surfaced beneath each card state.
             ptv510: perTickerV510[tkr] || null,
             ppv510: pos
@@ -1907,8 +1941,11 @@
         + (sentinelStripHtml || "")
         + _pmtxSmaStackPanel(smaStack)
         + _pmtxIntradayChartPanel(tkr);
+      // v5.29.0 — detail row colspan tracks the visible column count so
+      // hiding the Volume column doesn't leave a gap above the detail.
+      const _detailColspan = showVolume ? 9 : 8;
       tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
-        + '<td colspan="9">' + detailInner + '</td></tr>';
+        + '<td colspan="' + _detailColspan + '">' + detailInner + '</td></tr>';
     }
 
     // v5.18.1 \u2014 mobile cards path retired. The same compact table
@@ -2057,14 +2094,22 @@
   //
   // Alarm exit classification per spec Section 5 architectural rule:
   //   A1/A2/B/D -> MARKET EXIT   |   C/E -> STOP MARKET ratchets
-  function _pmtxSentinelStrip(p4, hasPos) {
+  function _pmtxSentinelStrip(p4, hasPos, opts) {
     // v5.28.1 \u2014 hasPos: when false, every cell is forced to the idle
     // state with an em-dash value, and a small banner labels the strip
     // as "no open position". The cell layout is kept identical so users
     // see the same six alarms in the same order regardless of session
     // state. When true, behaves exactly as before: cells reflect live
     // sentinel data from p4.sentinel.
+    // v5.29.0 \u2014 opts.showAlarm{C,D,E} hide the corresponding cells when
+    // the matching ALARM_*_ENABLED flag is false (production default for
+    // C / D / E since v5.28.0). Defaults preserve legacy behaviour
+    // (everything visible) for callers that don't pass opts.
     if (hasPos === undefined) hasPos = true;
+    opts = opts || {};
+    const showAlarmC = (opts.showAlarmC !== false);
+    const showAlarmD = (opts.showAlarmD !== false);
+    const showAlarmE = (opts.showAlarmE !== false);
     const sen = (p4 && p4.sentinel) || {};
 
     // --- Cell A1: Loss ---
@@ -2212,9 +2257,9 @@
       +   cell("A1 Loss",       "Per-position $ stop",    _a1Val, _a1State)
       +   cell("A2 Flash",      "1-min adverse %",        _a2Val, _a2State)
       +   cell("B Trend Death", "5m close vs 9-EMA",      _bVal,  _bState)
-      +   cell("C Vel. Ratchet","3 declining 1m ADX",     _cVal,  _cState)
-      +   cell("D HVP Lock",    "5m ADX < 75% peak",      _dVal,  _dState)
-      +   cell("E Div. Trap",   "Price extreme + RSI div", _eVal, _eState)
+      +   (showAlarmC ? cell("C Vel. Ratchet","3 declining 1m ADX",     _cVal,  _cState) : '')
+      +   (showAlarmD ? cell("D HVP Lock",    "5m ADX < 75% peak",      _dVal,  _dState) : '')
+      +   (showAlarmE ? cell("E Div. Trap",   "Price extreme + RSI div", _eVal, _eState) : '')
       + '</div>'
       + '</div>';
   }

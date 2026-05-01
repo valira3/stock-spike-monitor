@@ -842,16 +842,36 @@ def snapshot() -> dict[str, Any]:
         # these as small ON/OFF pills below the KPI row so the operator
         # can see at-a-glance which spec rules are currently overridden
         # via env vars.
+        # v5.29.0 \u2014 also surface alarm_{c,d,e}_enabled so the dashboard
+        # can hide bypassed components in the Permit Matrix (volume column /
+        # card, sentinel-strip cells for Alarms C / D / E). Sourced from
+        # engine.sentinel module-level flags (ALARM_C_ENABLED etc.). The
+        # legacy engine.feature_flags shim was removed in v5.26.0; we keep
+        # the volume_gate_enabled key for compatibility with the existing
+        # KPI-row pill but read it from a hard default (False) when the
+        # shim is gone, matching production behaviour since v5.13.1.
         try:
-            from engine import feature_flags as _ff
+            from engine import sentinel as _sen
 
-            feature_flags_block = {
-                "volume_gate_enabled": bool(getattr(_ff, "VOLUME_GATE_ENABLED", False)),
-            }
+            alarm_c_enabled = bool(getattr(_sen, "ALARM_C_ENABLED", False))
+            alarm_d_enabled = bool(getattr(_sen, "ALARM_D_ENABLED", False))
+            alarm_e_enabled = bool(getattr(_sen, "ALARM_E_ENABLED", False))
         except Exception:
-            feature_flags_block = {
-                "volume_gate_enabled": False,
-            }
+            alarm_c_enabled = False
+            alarm_d_enabled = False
+            alarm_e_enabled = False
+        try:
+            from engine import feature_flags as _ff  # legacy shim, may be absent
+
+            volume_gate_enabled = bool(getattr(_ff, "VOLUME_GATE_ENABLED", False))
+        except Exception:
+            volume_gate_enabled = False
+        feature_flags_block = {
+            "volume_gate_enabled": volume_gate_enabled,
+            "alarm_c_enabled": alarm_c_enabled,
+            "alarm_d_enabled": alarm_d_enabled,
+            "alarm_e_enabled": alarm_e_enabled,
+        }
 
         # v5.5.7 \u2014 surface the paper book's most recent emitted
         # signal so the Main tab can render a LAST SIGNAL card with the
@@ -1215,7 +1235,7 @@ async def h_root(request):
         _bv = "unknown"
     html = idx.read_text(encoding="utf-8")
     html = html.replace('href="/static/app.css"', f'href="/static/app.css?v={_bv}"', 1)
-    html = html.replace('src="/static/app.js"',  f'src="/static/app.js?v={_bv}"',  1)
+    html = html.replace('src="/static/app.js"', f'src="/static/app.js?v={_bv}"', 1)
     return web.Response(
         text=html,
         content_type="text/html",

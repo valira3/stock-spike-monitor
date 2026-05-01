@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.29.0 — 2026-05-01 — Hide bypassed UI components (volume + alarms C/D/E)
+
+### Why
+Production has run with `VOLUME_GATE_ENABLED=False` (vAA-1 spec path supersedes it) and `ALARM_C/D/E_ENABLED=False` (Velocity Ratchet, HVP Lock, Divergence Trap retired) since v5.28.0, but the dashboard still rendered the dead components: a Volume column and Volume card always showing the bypassed state, and three sentinel-strip cells (C / D / E) permanently idle. The user reported the matrix was visually busy with rows and cards that never participate in entry / exit decisions. Removing them from the markup lets the matrix breathe and signals which gates actually drive live behaviour.
+
+### Change
+- `dashboard_server.py::snapshot` — the `/api/state.feature_flags` block now also surfaces `alarm_c_enabled`, `alarm_d_enabled`, `alarm_e_enabled`, sourced from the `engine.sentinel.ALARM_*_ENABLED` module-level flags. The existing `volume_gate_enabled` key is retained. All four default to `False` if the imports fail, matching production. The legacy `engine.feature_flags` shim path remains for `volume_gate_enabled` (the shim was never removed, only stays empty in prod).
+- `dashboard_static/app.js::renderPermitMatrix` — reads the four flags once per render and threads `{showVolume, showAlarmC, showAlarmD, showAlarmE}` into `_pmtxBuildRow`. The Volume `<th>` is conditionally emitted, the table gets a `pmtx-no-volume` class when the column hides, and the detail-row `colspan` adjusts (9 → 8) so the expand pane spans the right number of columns.
+- `dashboard_static/app.js::_pmtxBuildRow` — accepts `visibilityOpts`, conditionally emits the Volume `<td>`, and propagates the alarm-cell flags into `_pmtxSentinelStrip` via an opts arg.
+- `dashboard_static/app.js::_pmtxComponentGrid` — reads `d.showVolume` and skips the Volume card in the expanded component grid when the flag is false. Caller threads it through.
+- `dashboard_static/app.js::_pmtxSentinelStrip` — accepts `opts.showAlarmC/D/E` and conditionally emits each cell. Defaults preserve legacy behaviour (everything visible) so older callers don't regress.
+
+### Acceptance
+- `/api/state.feature_flags` returns `{volume_gate_enabled, alarm_c_enabled, alarm_d_enabled, alarm_e_enabled}` (all `false` in prod).
+- Permit matrix renders 8 columns (no Volume header / cells); detail row colspan=8.
+- Expanded component grid omits the Volume card.
+- Sentinel strip renders 3 cells (A1 Loss, A2 Flash, B Trend Death) when C / D / E are all disabled — banner still appears for no-position rows.
+- Legacy callers / missing flags block: everything stays visible (no regression for old embedders).
+- Smoke harness `/tmp/render_smoke_v529.js` covers legacy-6, prod-3, no-pos-3, only-D-hidden-5 cases.
+
+---
+
 ## v5.28.3 — 2026-05-01 — Static asset cache-bust (force browser reload across deploys)
 
 ### Why

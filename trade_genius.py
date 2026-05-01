@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.28.3"
+BOT_VERSION = "5.29.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,14 +97,12 @@ BOT_VERSION = "5.28.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.28.3 fix: cache-bust\n"
-    "app.js + app.css with\n"
-    "BOT_VERSION query string\n"
-    "so deploys reload bundles.\n"
-    "v5.28.2: open-permit rows\n"
-    "expand to show idle strip.\n"
-    "v5.28.1: idle alarm strip\n"
-    "+ banner when no position.\n"
+    "v5.29.0 hide bypassed UI:\n"
+    "volume col/card + alarms\n"
+    "C/D/E auto-hide via flags.\n"
+    "v5.28.3: cache-bust assets.\n"
+    "v5.28.2: open-permit rows.\n"
+    "v5.28.1: idle alarm strip.\n"
     "v5.28.0: F primary exit."
 )
 
