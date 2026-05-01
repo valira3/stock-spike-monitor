@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.31.0"
+BOT_VERSION = "5.31.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,16 +97,14 @@ BOT_VERSION = "5.31.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.31.0 chart polish:\n"
-    "PDC, HOD, LOD, volume\n"
-    "sub-pane, AVWAP \u00b11\u03c3 band,\n"
-    "PM AVWAP+EMA9, sentinel\n"
-    "diamonds. Lifecycle\n"
-    "overlay: entries/exits,\n"
-    "trail staircase, MAE/MFE.\n"
-    "Forensic streams: exits,\n"
-    "macro, daily OHLC,\n"
-    "trade_count + bar_vwap."
+    "v5.31.1 scroll fix:\n"
+    "Permit Matrix wrap no\n"
+    "longer traps wheel\n"
+    "events. Hovering the\n"
+    "matrix scrolls the page\n"
+    "normally; horizontal\n"
+    "scroll inside the wrap\n"
+    "still works."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

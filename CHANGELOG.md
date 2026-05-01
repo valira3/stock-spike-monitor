@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.31.1 — 2026-05-01 — Permit Matrix wheel-trap fix
+
+### Why
+Mouse over the Permit Matrix blocked the page from scrolling vertically. The desktop matrix wrapper (`.pmtx-table-wrap`) declared `overflow-x: auto` plus `overscroll-behavior: contain`. The shorthand applies to both axes, so once the wrap became a scroll container in X the browser also treated it as the target for vertical wheel events and `contain` prevented those wheel deltas from chaining up to the page scroller. Net effect: with the cursor anywhere over the matrix, scrolling did nothing.
+
+### What
+- `dashboard_static/app.css` — `.pmtx-table-wrap`:
+  - Split the shorthand into `overscroll-behavior-x: contain` (still suppresses horizontal bounce inside the wrap) and `overscroll-behavior-y: auto` (lets vertical wheel deltas chain to the page).
+  - Added `overflow-y: hidden` so the wrap is explicitly *not* a vertical scroll container; vertical wheel events route to the page scroller (the body, per the v5.20.7 single-scroll architecture).
+  - In-file comment block documents the regression and the fix so a future revert is unlikely.
+- `bot_version.py`, `trade_genius.py` — BOT_VERSION bumped to 5.31.1.
+- `trade_genius.py` — CURRENT_MAIN_NOTE rewritten for the patch (8 lines, all ≤34 chars).
+
+### Tests
+- No new automated tests — this is a CSS-only fix in a property whose effect is purely on browser wheel-event routing, which our headless test stack does not simulate. Validated manually by reading the CSS spec for `overscroll-behavior` (per-axis containment) and matching it to the page's single-scroll architecture (the body is the only Y scroller).
+- All existing preflight gates (pytest, startup smoke, version-bump, em-dash, forbidden-word, ruff) still pass.
+
+### Migration
+None. Pure dashboard CSS patch.
+
+---
+
 ## v5.31.0 — 2026-05-01 — Chart polish + forensic expansion + open-position lifecycle overlay
 
 ### Why
