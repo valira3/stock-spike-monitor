@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.1"
+BOT_VERSION = "6.0.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,21 +97,20 @@ BOT_VERSION = "6.0.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.1 patches:\n"
-    "Chart zoom + pan now\n"
-    "survive the periodic\n"
-    "matrix re-render. The\n"
-    "per-ticker view persists\n"
-    "until the row collapses,\n"
-    "then resets to the full\n"
-    "session for the next open.\n"
-    "Daily SMA stack panel is\n"
-    "back: real 12 / 22 / 55 /\n"
-    "100 / 200-day SMAs feed\n"
-    "the bullish / bearish\n"
-    "stack pill again. QBTS\n"
-    "removed from the titan\n"
-    "universe per request."
+    "v6.0.2 hotfix:\n"
+    "Daily SMA stack now\n"
+    "actually populates. The\n"
+    "v6.0.1 fetcher silently\n"
+    "returned None because\n"
+    "Alpaca's daily-bars\n"
+    "endpoint defaults to\n"
+    "SIP, which our paper\n"
+    "keys cannot query.\n"
+    "Switched to feed=iex to\n"
+    "match the rest of the\n"
+    "codebase. SMA stack pill\n"
+    "renders bullish / bearish\n"
+    "again on every titan."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -2372,11 +2371,18 @@ def _daily_closes_for_sma(ticker: str, needed: int = 210) -> list[float] | None:
     lookback_days = max(int(needed * 1.7), 60)
     start = end - timedelta(days=lookback_days)
     try:
+        # v6.0.2: free/basic Alpaca subscriptions cannot query SIP data;
+        # the rest of the codebase pins feed=IEX (see dashboard_server.py,
+        # volume_profile.py, engine/seeders.py) so we match that
+        # convention. Without this, every call 403s with
+        # "subscription does not permit querying recent SIP data" and the
+        # dashboard reports "daily SMA is not available".
         req = StockBarsRequest(
             symbol_or_symbols=sym,
             timeframe=TimeFrame.Day,
             start=start,
             end=end,
+            feed="iex",
         )
         resp = client.get_stock_bars(req)
     except Exception as e:
