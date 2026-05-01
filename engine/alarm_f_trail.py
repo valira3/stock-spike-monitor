@@ -113,6 +113,14 @@ class TrailState:
     last_proposed_stop: Optional[float] = None
     # Number of post-entry bars seen. Used by MIN_BARS_BEFORE_ARM.
     bars_seen: int = 0
+    # v6.1.1 \u2014 most recent ATR value passed to update_trail; surfaced
+    # to the dashboard Alarm F card so the operator can see the trail's
+    # active ATR multiple and dollar width without ssh-ing into the box.
+    # None until the ATR(14) window seeds.
+    last_atr: Optional[float] = None
+    # v6.1.1 \u2014 the ATR multiplier currently being applied: WIDE_MULT
+    # (Stage 2) or TIGHT_MULT (Stage 3). 0.0 when stage < 2 (BE only).
+    last_mult: float = 0.0
 
     @classmethod
     def fresh(cls) -> "TrailState":
@@ -245,6 +253,20 @@ def update_trail(
             target = state.stage2_arm_favorable + STAGE3_ARM_ATR_MULT * state.stage2_arm_atr
             if favorable >= target:
                 state.stage = STAGE_CHANDELIER_TIGHT
+
+    # v6.1.1 \u2014 persist the most recent ATR + active multiplier so the
+    # dashboard Alarm F card can render the trail's effective width
+    # without re-deriving it. last_mult tracks the multiplier that
+    # WOULD apply at the current stage (0.0 at BE/inactive, WIDE_MULT
+    # at Stage 2, TIGHT_MULT at Stage 3).
+    if atr_value is not None:
+        state.last_atr = float(atr_value)
+    if state.stage == STAGE_CHANDELIER_TIGHT:
+        state.last_mult = TIGHT_MULT
+    elif state.stage == STAGE_CHANDELIER_WIDE:
+        state.last_mult = WIDE_MULT
+    else:
+        state.last_mult = 0.0
 
     return state
 

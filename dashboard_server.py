@@ -964,9 +964,42 @@ def snapshot() -> dict[str, Any]:
             now_iso = ""
             now_label = ""
 
+        # v6.1.1 \u2014 surface the v6.1.0 strategy feature flags so the
+        # dashboard can decorate existing cards (Alarm F chandelier,
+        # Phase 2 Boundary, Phase 3 Authority) with the active trail /
+        # OR-break / EMA-confirm state. Reads booleans + the OR-break
+        # k multiplier from the running modules; defaults to safe values
+        # if anything is missing post-deploy.
+        try:
+            from engine import sentinel as _sent_mod
+            v610_atr_trail = bool(getattr(_sent_mod, "_V610_ATR_TRAIL_ENABLED", False))
+            v610_ema_confirm = bool(getattr(_sent_mod, "_V610_EMA_CONFIRM_ENABLED", False))
+            v610_lunch_supp = bool(getattr(_sent_mod, "_V610_LUNCH_SUPPRESSION_ENABLED", False))
+        except Exception:
+            v610_atr_trail = False
+            v610_ema_confirm = False
+            v610_lunch_supp = False
+        try:
+            v610_or_break = bool(getattr(m, "_V610_ATR_OR_BREAK_ENABLED", False))
+            v610_or_break_k = float(getattr(m, "V610_OR_BREAK_K", 0.0) or 0.0)
+            v610_late_or = bool(getattr(m, "V610_LATE_OR_ENABLED", False))
+        except Exception:
+            v610_or_break = False
+            v610_or_break_k = 0.0
+            v610_late_or = False
+        v610_flags = {
+            "atr_trail_enabled": v610_atr_trail,
+            "ema_confirm_enabled": v610_ema_confirm,
+            "lunch_suppression_enabled": v610_lunch_supp,
+            "or_break_enabled": v610_or_break,
+            "or_break_k": v610_or_break_k,
+            "late_or_enabled": v610_late_or,
+        }
+
         return {
             "ok": True,
             "version": version,
+            "v610_flags": v610_flags,
             "server_time": now_iso,
             "server_time_label": now_label,
             "portfolio": {

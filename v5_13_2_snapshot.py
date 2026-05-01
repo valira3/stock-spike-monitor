@@ -717,6 +717,8 @@ def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
     f_proposed_stop: float | None = None
     f_bars_seen: int = 0
     f_armed = False
+    f_atr_value: float | None = None
+    f_atr_mult: float = 0.0
     try:
         ts = pos.get("trail_state") if pos else None
         if ts is not None:
@@ -725,6 +727,15 @@ def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
             f_proposed_stop = _safe_float(getattr(ts, "last_proposed_stop", None))
             f_bars_seen = int(getattr(ts, "bars_seen", 0) or 0)
             f_armed = f_stage >= 1
+            # v6.1.1 \u2014 surface ATR width so the dashboard can render the
+            # trail's effective dollar distance from peak_close (e.g. "1.0x
+            # ATR \u00b7 $0.42"). Read defensively in case state pre-dates
+            # the new fields after a deploy mid-position.
+            f_atr_value = _safe_float(getattr(ts, "last_atr", None))
+            try:
+                f_atr_mult = float(getattr(ts, "last_mult", 0.0) or 0.0)
+            except Exception:
+                f_atr_mult = 0.0
     except Exception:
         pass
     f_stage_name = {
@@ -741,6 +752,12 @@ def _sentinel_block(m, ticker: str, pos: dict, side: str, prices: dict) -> dict:
         "bars_seen": f_bars_seen,
         "armed": f_armed,
         "triggered": False,
+        # v6.1.1 \u2014 ATR-trail width fields. atr_value is None until
+        # ATR(14) seeds; atr_mult is 0.0 at Stage 0/1 (no ATR-scaled
+        # component), WIDE_MULT (2.0) at Stage 2, TIGHT_MULT (1.0) at
+        # Stage 3.
+        "atr_value": f_atr_value,
+        "atr_mult": f_atr_mult,
     }
 
     return out

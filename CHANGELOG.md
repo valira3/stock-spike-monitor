@@ -4,6 +4,33 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.1.1 — 2026-05-01 — dashboard-only: surface v6.1.0 strategy in expanded matrix cards
+
+### Why
+v6.1.0 shipped three algo upgrades behind feature flags but left the dashboard UI silent about which strategy is actually live. Operators had to ssh into the box and read source flags to know whether the ATR trail was armed, what multiplier was in effect, whether the OR-break gate was the legacy fixed-cents path or the new ATR-normalized one, and whether the EMA-confirm + lunch-suppression windows were active. v6.1.1 surfaces all of this through three existing cards in the expanded permit-matrix row — no new DOM, no new endpoints, no algo changes.
+
+### What
+
+**Backend (`engine/alarm_f_trail.py`, `v5_13_2_snapshot.py`, `dashboard_server.py`)**
+- `TrailState` gained two persisted fields: `last_atr` (most recent ATR(14) value passed to `update_trail`) and `last_mult` (the active multiplier — 0.0 at Stage 0/1, `WIDE_MULT=2.0` at Stage 2, `TIGHT_MULT=1.0` at Stage 3). Both are read defensively from the existing call path; no new compute.
+- `_pmtxAlarmF` snapshot block now includes `atr_value` and `atr_mult` keys alongside the existing `stage / stage_name / peak_close / proposed_stop / bars_seen / armed / triggered` fields.
+- Top-level `/api/state` payload now includes a `v610_flags` block: `{atr_trail_enabled, ema_confirm_enabled, lunch_suppression_enabled, or_break_enabled, or_break_k, late_or_enabled}`. Read defensively from `engine.sentinel` and `trade_genius` modules; falls back to all-off if any module is missing.
+
+**Frontend (`dashboard_static/app.js` only — no `index.html` change)**
+- **Alarm F card** (Cell F in the sentinel strip): when stage 2/3 is armed, val text now appends ` \u00b7 1.0\u00d7 ATR ($0.42)` showing the active multiplier and the ATR-derived dollar width. Stage 0/1 unchanged.
+- **Phase 2 Boundary card** (component grid): val text now suffixes with the active OR-break threshold. Examples: `two consec \u00b7 OR only` (gate dormant — current default in v6.1.0), `two consec \u00b7 \u2265OR+0.25\u00d7ATR \u00b7 late-OR` (gate enabled with late-OR window). Card colour still reflects raw ORB pass/fail.
+- **Phase 3 Authority card** (component grid): val text now suffixes with `EMA 2-bar \u00b7 lunch \u2713` when the v6.1.0 EMA-confirm + lunch-suppression flags are on. Falls back to legacy single-bar / no-window display when off.
+- New flag plumbing: `s.v610_flags` is read once in `renderPermitMatrix` and threaded down to `_pmtxBuildRow` via the existing `visibilityOpts` dict, then to `_pmtxComponentGrid` via the existing `d` parameter. Zero new function signatures.
+
+### Tests
+No algo changes → per minor-release rule, no full-suite re-run. Targeted: `tests/test_v610_atr_trail.py` (must still pass with the new TrailState fields), JSON shape validation of `/api/state` payload.
+
+### Caveats / rollback
+- The new `f_chandelier.atr_value` / `f_chandelier.atr_mult` fields are **None / 0.0** for any position whose `TrailState` was created before this deploy. Mid-position rollover is graceful — the JS check (`fAtrVal > 0 && fAtrMult > 0`) skips the suffix and the card renders identically to v6.1.0. Net effect: positions opened after deploy show ATR width; positions carried over show the legacy compact format until they reset.
+- Per the minor-release rule (third-component bump), `ARCHITECTURE.md` and `trade_genius_algo.pdf` are NOT updated by this release.
+
+---
+
 ## v6.1.0 — 2026-05-01 — P&L recovery bundle (3 algo upgrades)
 
 ### Why
