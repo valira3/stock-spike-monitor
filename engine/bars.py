@@ -13,13 +13,18 @@ Zero behavior change. Validated byte-equal pre/post the move via
 from __future__ import annotations
 
 
-def compute_5m_ohlc_and_ema9(bars: dict | None) -> dict | None:
+def compute_5m_ohlc_and_ema9(
+    bars: dict | None, pdc: float | None = None
+) -> dict | None:
     """Return {opens, highs, lows, closes, ema9, seeded, last_bucket}
     for closed 5m bars derived from a `fetch_1min_bars` payload.
 
-    `seeded` is True once 9 closed 5m bars are available (Gene's spec
-    requires \u2265 9 closes since 9:30 ET to seed the 5m 9-EMA). `ema9`
-    is the most recent EMA9 value, or None.
+    `seeded` is True once a usable EMA9 value can be produced. With
+    \u2265 9 closed 5m bars this matches the original Gene spec. v6.0.0
+    adds a synthetic-prefix path: when fewer than 9 closed bars exist
+    AND ``pdc`` is provided, a 9-bar synthetic history flat at PDC is
+    prepended (SMA seed = PDC) and the standard EMA recursion runs on
+    the real bars. ``ema9`` is the most recent EMA9 value, or None.
     """
     if not bars:
         return None
@@ -73,13 +78,24 @@ def compute_5m_ohlc_and_ema9(bars: dict | None) -> dict | None:
     # the most recent bucket. The series is aligned with ``closes`` and
     # ``opens``; entries before the SMA seed slot are None.
     ema9_series: list[float | None] = [None] * len(closes)
+    alpha = 2.0 / 10.0
     if len(closes) >= 9:
         # Standard EMA(9): SMA seed over first 9, then alpha = 2/(9+1).
         seed = sum(closes[:9]) / 9.0
         ema = seed
-        alpha = 2.0 / 10.0
         ema9_series[8] = seed
         for idx, c in enumerate(closes[9:], start=9):
+            ema = alpha * c + (1.0 - alpha) * ema
+            ema9_series[idx] = ema
+        ema9 = ema
+        seeded = True
+    elif pdc is not None and pdc > 0 and len(closes) >= 1:
+        # v6.0.0 \u2014 synthetic 9-bar PDC-anchored prefix. Seed = PDC
+        # (SMA of 9 synthetic flat-at-PDC closes). Real bars then
+        # advance the EMA at the standard alpha so the regime gate has
+        # a defensible reading from bar #1 instead of waiting 45 min.
+        ema = float(pdc)
+        for idx, c in enumerate(closes):
             ema = alpha * c + (1.0 - alpha) * ema
             ema9_series[idx] = ema
         ema9 = ema

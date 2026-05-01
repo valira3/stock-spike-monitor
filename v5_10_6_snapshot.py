@@ -528,6 +528,149 @@ def _global_qqq_direction(m) -> str | None:
         return None
 
 
+def _mini_chart_per_ticker(m, tickers: list[str]) -> dict:
+    """v6.0.0 \u2014 lightweight sparkline payload for the collapsed
+    permit-matrix row.
+
+    Returns a dict keyed by ticker: ``{points: list[float], hi, lo,
+    open, last, count}``. ``points`` is a downsampled (max 60) series
+    of 1m closes for today's RTH session so the dashboard can paint a
+    20-pixel-wide trend strip per row without an extra fetch. Failure
+    on any single ticker is silently coerced to an empty payload so a
+    feed hiccup never collapses the matrix.
+    """
+    out: dict = {}
+    try:
+        fetch = getattr(m, "fetch_1min_bars", None)
+    except Exception:
+        fetch = None
+    if fetch is None:
+        return out
+    for t in tickers:
+        try:
+            bars = fetch(t)
+            if not bars:
+                out[t] = {"points": [], "hi": None, "lo": None,
+                          "open": None, "last": None, "count": 0}
+                continue
+            # Use today's 1m closes if exposed; fall back to current_price
+            # alone when the structured stream is missing.
+            closes_raw = bars.get("closes_1m") or bars.get("closes") or []
+            closes: list[float] = []
+            for c in closes_raw:
+                try:
+                    cf = float(c)
+                except (TypeError, ValueError):
+                    continue
+                if cf > 0:
+                    closes.append(cf)
+            # Downsample to at most 60 points for a tight sparkline.
+            n = len(closes)
+            if n > 60:
+                step = max(1, n // 60)
+                pts = closes[::step][-60:]
+            else:
+                pts = list(closes)
+            cur = _safe_float(bars.get("current_price"))
+            if cur is not None and (not pts or pts[-1] != cur):
+                pts.append(cur)
+            if not pts:
+                out[t] = {"points": [], "hi": None, "lo": None,
+                          "open": None, "last": cur, "count": 0}
+                continue
+            hi = max(pts)
+            lo = min(pts)
+            out[t] = {
+                "points": [round(p, 4) for p in pts],
+                "hi": round(hi, 4),
+                "lo": round(lo, 4),
+                "open": round(pts[0], 4),
+                "last": round(pts[-1], 4),
+                "count": len(pts),
+            }
+        except Exception:
+            out[t] = {"points": [], "hi": None, "lo": None,
+                      "open": None, "last": None, "count": 0}
+    return out
+
+
+def _momentum_distances_per_ticker(
+    m, tickers: list[str], di_blk: dict, wx_blk: dict
+) -> dict:
+    """v6.0.0 \u2014 distance-to-next-trigger metrics for the Momentum card.
+
+    Surfaces the gap between the current state of each Phase 3 gate and
+    the value at which it would flip to PASS. The dashboard renders this
+    so an operator can answer "how close is this ticker to firing?"
+    without reading raw DI/ADX feeds.
+
+    Per-ticker entry:
+      - adx_5m, adx_1m: current ADX values (None on warmup)
+      - adx_threshold: 20.0 (Phase 3 spec gate)
+      - adx_5m_gap: 20 \u2212 adx_5m  (positive = below trigger; <=0 = passing)
+      - di_long_gap: threshold \u2212 di_plus_1m
+      - di_short_gap: threshold \u2212 di_minus_1m
+      - di_cross_gap: di_plus_1m \u2212 di_minus_1m  (positive = long-leaning)
+      - vwap_gap_pct: (last \u2212 avwap) / avwap  (positive = above AVWAP)
+      - ema9_gap_pct: (last \u2212 ema9_5m) / ema9_5m
+
+    All fields null-safe; any missing input drops only that field.
+    """
+    out: dict = {}
+    threshold = _safe_float(getattr(m, "TIGER_V2_DI_THRESHOLD", None))
+    adx_fn = getattr(m, "v5_adx_1m_5m", None)
+    for t in tickers:
+        di = di_blk.get(t) or {}
+        wx = wx_blk.get(t) or {}
+        adx_1m = None
+        adx_5m = None
+        if adx_fn is not None:
+            try:
+                adx_raw = adx_fn(t) or {}
+                adx_1m = _safe_float(adx_raw.get("adx_1m"))
+                adx_5m = _safe_float(adx_raw.get("adx_5m"))
+            except Exception:
+                pass
+        di_p_1m = _safe_float(di.get("di_plus_1m"))
+        di_m_1m = _safe_float(di.get("di_minus_1m"))
+        last = _safe_float(wx.get("last"))
+        avwap = _safe_float(wx.get("avwap"))
+        ema9 = _safe_float(wx.get("ema9_5m"))
+
+        adx_5m_gap = None
+        if adx_5m is not None:
+            adx_5m_gap = round(20.0 - adx_5m, 3)
+        di_long_gap = None
+        di_short_gap = None
+        if threshold is not None:
+            if di_p_1m is not None:
+                di_long_gap = round(threshold - di_p_1m, 3)
+            if di_m_1m is not None:
+                di_short_gap = round(threshold - di_m_1m, 3)
+        di_cross_gap = None
+        if di_p_1m is not None and di_m_1m is not None:
+            di_cross_gap = round(di_p_1m - di_m_1m, 3)
+        vwap_gap_pct = None
+        if last is not None and avwap and avwap > 0.0:
+            vwap_gap_pct = round((last - avwap) / avwap * 100.0, 4)
+        ema9_gap_pct = None
+        if last is not None and ema9 and ema9 > 0.0:
+            ema9_gap_pct = round((last - ema9) / ema9 * 100.0, 4)
+
+        out[t] = {
+            "adx_1m": adx_1m,
+            "adx_5m": adx_5m,
+            "adx_threshold": 20.0,
+            "adx_5m_gap": adx_5m_gap,
+            "di_long_gap": di_long_gap,
+            "di_short_gap": di_short_gap,
+            "di_cross_gap": di_cross_gap,
+            "vwap_gap_pct": vwap_gap_pct,
+            "ema9_gap_pct": ema9_gap_pct,
+        }
+    return out
+
+
 def _local_weather_per_ticker(m, tickers: list[str], di_blk: dict) -> dict:
     """v5.31.5 \u2014 build the per-ticker local-weather payload.
 
@@ -641,6 +784,18 @@ def build_v510_snapshot(m, tickers: list[str], longs: dict, shorts: dict, prices
         wx_blk = _local_weather_per_ticker(m, list(tickers), di_blk)
     except Exception:
         wx_blk = {}
+    # v6.0.0 \u2014 sparkline payload for each row's mini-chart.
+    try:
+        mini_blk = _mini_chart_per_ticker(m, list(tickers))
+    except Exception:
+        mini_blk = {}
+    # v6.0.0 \u2014 distance-to-next-trigger metrics for the Momentum card.
+    try:
+        mom_blk = _momentum_distances_per_ticker(
+            m, list(tickers), di_blk, wx_blk
+        )
+    except Exception:
+        mom_blk = {}
     per_t: dict = {}
     for t in tickers:
         per_t[t] = {
@@ -684,6 +839,27 @@ def build_v510_snapshot(m, tickers: list[str], longs: dict, shorts: dict, prices
                 "ema9_5m": None,
                 "last": None,
                 "avwap": None,
+            },
+            "mini_chart": mini_blk.get(t)
+            or {
+                "points": [],
+                "hi": None,
+                "lo": None,
+                "open": None,
+                "last": None,
+                "count": 0,
+            },
+            "momentum_distances": mom_blk.get(t)
+            or {
+                "adx_1m": None,
+                "adx_5m": None,
+                "adx_threshold": 20.0,
+                "adx_5m_gap": None,
+                "di_long_gap": None,
+                "di_short_gap": None,
+                "di_cross_gap": None,
+                "vwap_gap_pct": None,
+                "ema9_gap_pct": None,
             },
         }
     out["per_ticker_v510"] = per_t

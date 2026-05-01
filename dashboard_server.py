@@ -2555,35 +2555,68 @@ def _intraday_resample_5m(bars: list[dict]) -> list[dict]:
     return out
 
 
-def _intraday_ema9_5m(bars5: list[dict]) -> list[float | None]:
-    """Standard 9-period EMA over the 5m closes. None until 9 bars seen.
+def _intraday_ema9_5m(
+    bars5: list[dict], pdc: float | None = None
+) -> list[float | None]:
+    """Standard 9-period EMA over the 5m closes.
+
+    v6.0.0: when the real bar count is < 9 and ``pdc`` is provided,
+    a synthetic 9-bar history flat at PDC is prepended to the series
+    so the EMA9 line is always populated for every real bar. Without
+    a synthetic prefix the line stayed empty for the first ~45 minutes
+    of every session (and longer on tickers with thin premarket), so
+    operators saw "data unavailable" precisely when they needed the
+    indicator most.
+
+    Mathematics: 9 synthetic closes flat at PDC produce SMA seed = PDC.
+    Standard EMA recursion (alpha = 0.2) then advances on each real
+    bar: ema_i = c_i * k + ema_(i-1) * (1 - k). This is equivalent to
+    assuming yesterday's close held flat through the unknown stretch
+    of premarket and then letting real prints pull the indicator. Once
+    enough real bars accumulate, the synthetic prior decays out at the
+    standard exponential rate.
 
     Frontend overlays this on the same time axis as the 1m bars by
     pairing each 5m EMA value with all 1m bars whose et_min falls in
-    that 5m bucket.
+    that 5m bucket. Output length always equals ``len(bars5)``.
     """
     out: list[float | None] = []
     k = 2.0 / (9 + 1)
-    ema: float | None = None
-    for i, b in enumerate(bars5):
+    n = len(bars5)
+    real_closes: list[float] = []
+    for b in bars5:
         try:
-            c = float(b.get("c") or 0)
+            real_closes.append(float(b.get("c") or 0))
         except (TypeError, ValueError):
-            out.append(None)
-            continue
-        if i < 8:
-            out.append(None)
-            continue
-        if i == 8:
-            seed = sum(float(x.get("c") or 0) for x in bars5[:9]) / 9.0
-            ema = seed
+            real_closes.append(0.0)
+    if n == 0:
+        return out
+    if n >= 9:
+        # Plenty of real bars: seed = SMA of first 9 real closes.
+        seed = sum(real_closes[:9]) / 9.0
+        seed_idx = 8  # first slot to emit a value (bar #9)
+        for i in range(n):
+            if i < seed_idx:
+                out.append(None)
+                continue
+            if i == seed_idx:
+                ema = seed
+                out.append(ema)
+                continue
+            ema = real_closes[i] * k + ema * (1 - k)
             out.append(ema)
-            continue
-        if ema is None:
-            out.append(None)
-            continue
-        ema = c * k + ema * (1 - k)
-        out.append(ema)
+        return out
+    if pdc is not None and pdc > 0:
+        # Synthetic 9-bar prefix flat at PDC: SMA seed = PDC.
+        # Real bars advance the EMA from this prior.
+        ema = float(pdc)
+        for i in range(n):
+            ema = real_closes[i] * k + ema * (1 - k)
+            out.append(ema)
+        return out
+    # No PDC available: fall back to the strict pre-v6.0.0 rule.
+    for _ in range(n):
+        out.append(None)
     return out
 
 
@@ -2872,13 +2905,8 @@ def _intraday_build_payload(ticker: str) -> dict:
     avwap_hi, avwap_lo = _intraday_compute_avwap_band(bars)
     pm_avwap = _intraday_compute_avwap(bars, anchor_min=480)
     bars5 = _intraday_resample_5m(bars)
-    ema9_5m = _intraday_ema9_5m(bars5)
-    # Pair each 5m EMA value with its bucket so the frontend can match
-    # back to 1m bars by et_min // 5.
-    ema9_by_bucket: dict[int, float] = {}
-    for b5, e in zip(bars5, ema9_5m):
-        if e is not None and isinstance(b5.get("et_min"), int):
-            ema9_by_bucket[int(b5["et_min"])] = float(e)
+    # v6.0.0 \u2014 PDC must be available BEFORE the EMA9 calc so the
+    # synthetic-prefix seed can engage on thin-premarket tickers.
     or_high = None
     or_low = None
     pdc = None
@@ -2903,6 +2931,13 @@ def _intraday_build_payload(ticker: str) -> dict:
         sess_lod = float(v) if v is not None else None
     except Exception:
         pass
+    ema9_5m = _intraday_ema9_5m(bars5, pdc=pdc)
+    # Pair each 5m EMA value with its bucket so the frontend can match
+    # back to 1m bars by et_min // 5.
+    ema9_by_bucket: dict[int, float] = {}
+    for b5, e in zip(bars5, ema9_5m):
+        if e is not None and isinstance(b5.get("et_min"), int):
+            ema9_by_bucket[int(b5["et_min"])] = float(e)
     trades = _intraday_today_trades(m, ticker, day)
 
     # v5.31.0 \u2014 sentinel arm/trip events from the bounded module-level

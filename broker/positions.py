@@ -275,7 +275,10 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         prev_5m_close: float | None = None
         prev_5m_ema9: float | None = None
         try:
-            five = compute_5m_ohlc_and_ema9(bars)
+            # v6.0.0 \u2014 pass PDC so the EMA9 has a synthetic seed
+            # when fewer than 9 closed 5m bars exist (e.g. positions
+            # opened in the first 45 min of the session).
+            five = compute_5m_ohlc_and_ema9(bars, pdc=bars.get("pdc"))
             if five and five.get("seeded"):
                 closes_5m = five.get("closes") or []
                 if closes_5m:

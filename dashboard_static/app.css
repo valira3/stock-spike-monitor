@@ -818,6 +818,45 @@
 .pmtx-wx-none { background: color-mix(in srgb, var(--down) 14%, var(--surface-2)); color: var(--down); }
 .pmtx-wx-flat { background: var(--surface-2); color: var(--text-dim); }
 
+/* v6.0.0 — Divergence marker. When local weather direction != global
+   QQQ direction, the glyph wears a small superscript asterisk and a
+   subtle 1px ring so operators can scan the column for contrarian
+   tickers. Star uses currentColor so it inherits the glyph color
+   (green for up/down, red for none, muted for flat). */
+.pmtx-wx-div {
+  outline: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  outline-offset: 0;
+}
+.pmtx-wx-star {
+  font-size: 9px;
+  line-height: 1;
+  margin-left: 2px;
+  margin-top: -6px;
+  color: currentColor;
+  font-weight: 800;
+}
+
+/* v6.0.0 — Trend mini-chart cell. SVG polyline of today's 1m closes,
+   colored by net direction since the open. Sized 80×24 so the column
+   stays compact alongside Dist. */
+.pmtx-table thead th.pmtx-col-mini { width: 96px; text-align: center; }
+.pmtx-table td.pmtx-col-mini       { width: 96px; padding: 6px 4px; text-align: center; }
+.pmtx-mini {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.pmtx-mini-up   { color: var(--up);   background: color-mix(in srgb, var(--up)   10%, var(--surface-2)); }
+.pmtx-mini-down { color: var(--down); background: color-mix(in srgb, var(--down) 10%, var(--surface-2)); }
+.pmtx-mini-flat { color: var(--text-dim); }
+.pmtx-mini-empty {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
 /* Row tints follow Phase 1 permit: GO (any side permitted) gets a
    faint green wash; BLOCK (3-of-3 strikes used and no open position)
    gets a faint red wash. Matches the mockup's tr.permit-go /
@@ -1663,6 +1702,24 @@
 .pmtx-intraday-leg-ema9 { color: #c084fc; }
 .pmtx-intraday-leg-entry { color: #3ec28f; }
 .pmtx-intraday-leg-exit { color: #e26a6a; }
+/* v6.0.0 — expanded legend so every layer the renderer paints is
+   labelled. The hint chip describes the new wheel/drag/dblclick UX. */
+.pmtx-intraday-leg-pdc { color: #b08bff; }
+.pmtx-intraday-leg-hod { color: #67c4d6; }
+.pmtx-intraday-leg-vol { color: #6c8595; }
+.pmtx-intraday-leg-sentinel { color: #ffb24a; }
+.pmtx-intraday-leg-trail { color: #f0c356; }
+.pmtx-intraday-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+  cursor: help;
+}
+.pmtx-intraday-canvas {
+  cursor: crosshair;
+  touch-action: none;
+}
 
 @media (max-width: 720px) {
   .pmtx-intraday-canvas {

@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.0 — 2026-05-01 — Bundled UI/engine release: weather asterisk + PDC-anchored EMA9 + chart UX + momentum insights
+
+### Why
+Five related improvements were ready at the same time and share the same v5.10.6 dashboard surface, so they ship together as a single major-version cut. The Phase 3 Momentum card and the intraday chart were the two surfaces operators stared at most often — both got upgraded. The PDC-anchored EMA9 closes a long-standing gap where the regime gate's EMA9 reading stayed empty for the first ~45 minutes of every session.
+
+### What
+- **Engine — PDC-anchored EMA9 seed.** `engine/bars.compute_5m_ohlc_and_ema9` and `dashboard_server._intraday_ema9_5m` now accept an optional `pdc=` argument. When fewer than 9 closed 5m bars exist AND `pdc` is provided, a synthetic 9-bar history flat at PDC is prepended (SMA seed = PDC), and the standard EMA recursion (α = 0.2) advances on each real bar. With ≥9 real bars the original Gene path runs unchanged, byte-equal to v5.31.5. With no PDC, the strict pre-v6.0.0 rule still holds (every slot None until bar #9). Wired through: `_qqq_weather_tick` (regime gate), `_ticker_weather_tick` (per-stock weather), `dashboard_server` chart EMA9 line, and `broker/positions._run_sentinel`.
+- **UI — Weather column divergence asterisk.** When a ticker's local weather direction (up / down / flat) differs from global QQQ's, the Weather glyph gets a small superscript star plus a 1px ring. Lets operators scan the matrix for contrarian tickers without reading the per-stock card.
+- **UI — Trend mini-chart column.** Each collapsed permit-matrix row gets an 80×24 SVG sparkline of today's 1m closes (downsampled to ≤60 points server-side, plus the live `current_price`). Color follows net direction since open. Tooltip surfaces open / last / hi / lo / count.
+- **UI — Intraday chart interactivity.** Wheel zoom (cursor-centered, factor 0.85 in / 1.18 out, min span 30 min, clamped to the 480–1080 ET window). Drag pan via pointer events. Double-click resets to the full session. Hover crosshair plus an OHLC + Volume + AVWAP + EMA9 tooltip box. Y-axis auto-scopes to the visible window. Per-canvas state lives in a `WeakMap`. Legend gains PDC, HOD/LOD, Volume, Sentinel, Trail-stop chips and a UX hint chip ("scroll · drag · dblclick").
+- **UI — Momentum card distance-to-next-trigger.** New `momentum_distances` block on each `per_ticker_v510[t]`: `adx_5m_gap`, `di_long_gap`, `di_short_gap`, `di_cross_gap`, `vwap_gap_pct`, `ema9_gap_pct`. Card metric stack now shows ADX 5m + gap, side-aware DI gap, DI cross delta, and signed VWAP / EMA9 percentage gaps so operators can see how close each Phase 3 gate is to flipping.
+- `bot_version.py`, `trade_genius.py` — BOT_VERSION 5.31.5 → 6.0.0.
+- `trade_genius.py` — CURRENT_MAIN_NOTE rewritten (14 lines, all ≤34 chars).
+
+### Tests
+- New `tests/test_v6_0_0_pdc_seed.py` (10 cases): empty / degenerate inputs, < 9 bars + PDC engages synthetic prefix, < 9 bars without PDC stays unseeded, ≥9 bars ignores PDC (byte-equal), dashboard_server `_intraday_ema9_5m` parity tests.
+- New `tests/test_v6_0_0_mini_chart.py` (7 cases): no fetch fn, None bars, small series + current_price append, current==last no dup, > 60 closes downsamples, current-price-only fallback, garbage-close filtering, per-ticker failure isolation.
+- New `tests/test_v6_0_0_momentum_distances.py` (6 cases): math correctness for long-leaning ticker, short-leaning di_cross sign, missing ADX feed null-safety, missing weather block, missing threshold, ADX threshold constant 20.
+- `node --check dashboard_static/app.js` parses cleanly.
+
+### Backwards compatibility
+All new payload fields default to safe null shapes when upstream data is missing. Existing `/api/state` consumers that don't read the new keys are unaffected. PDC-seed path is opt-in (callers must pass `pdc=`); legacy callers see byte-equal output.
+
+---
+
 ## v5.31.5 — 2026-05-01 — Per-stock local weather override + Weather column
 
 ### Why

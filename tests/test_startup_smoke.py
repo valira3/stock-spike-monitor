@@ -195,13 +195,13 @@ def test_scan_loop_no_blocking_at_first_call_with_empty_state(
         current_1m_open=100.0,
     )
     assert override is None
-    # Sanity: the v5.19.x line is what's on the hot path. Asserting an
-    # exact version number would require a test edit on every release;
-    # the version-bump CI gate already pins the expected value.
-    # v5.26.0: spec-strict pruning bumped the version to 5.26.x. The
-    # version-bump CI gate is the authoritative pin; this smoke test
-    # only requires that BOT_VERSION is a non-empty 5.x string.
-    assert trade_genius.BOT_VERSION.startswith("5.")
+    # Sanity: the v6.0.0 cut-over moved the version off the v5.x line.
+    # The version-bump CI gate is the authoritative pin; this smoke
+    # test only requires that BOT_VERSION is a non-empty MAJOR.x string
+    # at or above the v5 baseline.
+    assert isinstance(trade_genius.BOT_VERSION, str)
+    _major = trade_genius.BOT_VERSION.split(".", 1)[0]
+    assert _major.isdigit() and int(_major) >= 5
 
 
 # v5.26.0: VOLUME_GATE_ENABLED test removed -- BL-3 / BU-3 (Volume Gate)
