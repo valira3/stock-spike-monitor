@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.0.8.1"
+BOT_VERSION = "6.1.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,29 +97,29 @@ BOT_VERSION = "6.0.8.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.0.8.1 mobile hotfix:\n"
-    "v6.0.8's expanded permit\n"
-    "row CSS didn't shrink the\n"
-    "<td> because table-cell\n"
-    "width is set by table\n"
-    "layout, not max-width.\n"
-    "Live measure: td=653 px on\n"
-    "a 453 px viewport, cards\n"
-    "605 px, descriptions still\n"
-    "clipped. Fix: only on the\n"
-    "expanded row, td becomes\n"
-    "display:block + sticky;\n"
-    "left:0 + width:calc(100vw\n"
-    "- 24px), so it leaves the\n"
-    "table layout and pins to\n"
-    "the viewport. Verified\n"
-    "live: td 653 -> 366 px,\n"
-    "card 605 -> 318 px; the\n"
-    "collapsed matrix above\n"
-    "keeps its swipe-to-see\n"
-    "ADX/DI/Vol behavior. No\n"
-    "backend changes; v6.0.8\n"
-    "persistence still active."
+    "v6.1.0 P&L recovery bundle:\n"
+    "three algo upgrades shipped\n"
+    "after 5/1 TRUE backtest\n"
+    "closed -$8.32 against ~$143\n"
+    "per share of available swing\n"
+    "across the universe.\n"
+    "#1 ATR-scaled trailing stop\n"
+    "with profit-protect ratchet:\n"
+    "3 stages (1.0x / 1.5x / 50%\n"
+    "of peak open profit) plus\n"
+    "0.3x ATR floor. Replaces\n"
+    "fixed-cents trail in\n"
+    "sentinel_a_stop_price.\n"
+    "#2 two-bar EMA-cross exit\n"
+    "plus lunch-chop suppression\n"
+    "(11:30-13:00 ET) on\n"
+    "sentinel_b_ema_cross.\n"
+    "#3 ATR-normalized OR-break\n"
+    "entry gate (k=0.6) plus\n"
+    "late-OR window 11:00-12:00\n"
+    "ET. All three behind feature\n"
+    "flags for instant rollback.\n"
+    "655 tests pass."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

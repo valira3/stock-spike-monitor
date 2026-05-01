@@ -4,6 +4,61 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.1.0 — 2026-05-01 — P&L recovery bundle (3 algo upgrades)
+
+### Why
+The v6.0.8.1 TRUE backtest against 2026-05-01 bars (full RTH, all 11 universe tickers, gap-patched via Alpaca-IEX backfill) closed at **−$8.32** on 7 entries (3W/3L, 1 still open). Hindsight max available swing across the universe was **~$143/share** (sum of best-long + best-short per ticker). Three structural failures were responsible:
+
+1. **Entry coverage** — META ($20.65/sh available), AVGO ($14.28), AMZN ($15.47), ORCL ($10.22) had double-digit per-share swings and the algo never fired a single entry. Root cause: fixed-cents OR-break thresholds invalidated before the late-morning breaks that defined today's tape.
+2. **Premature exits** — TSLA long 11:50 exited at +$1.00/sh after a 15-min hold, leaving $3.12/sh (24 sh = +$74.88) on the table when the move continued to $397.74 by 12:35. NVDA short held 1 minute for +$14, left $51.50 on the table. Three trades killed by `sentinel_b_ema_cross` on minor pullbacks (NFLX, NVDA, NVDA) — the exit fires on first cross-against-position bar.
+3. **Win/loss asymmetry** — avg win +$35, avg loss −$38; mathematically guaranteed bleed at 50% W/L. The trailing stop in `sentinel_a_stop_price` is a fixed-cent distance, indifferent to the ticker's volatility regime.
+
+Estimated recoverable P&L on 5/1 from stacking the three fixes: **~+$250**, conservatively haircut 50% to **~+$125** (vs actual −$8.32).
+
+### What
+
+**#1 — ATR-scaled trailing stop with profit-protect ratchet** (`engine/sentinel.py:check_alarm_a_stop_price`, `indicators.py`)
+- New `atr5_1m(bars)` in `indicators.py`: 5-period Wilder ATR on 1-minute bars (≥6 bars required, returns `None` on insufficient data; same style as existing `atr14`).
+- New helper `_compute_atr_trail_distance(atr, pnl_per_share, peak_per_share)` implementing 3-stage trail:
+  - Stage 1 (pnl < 1× ATR in profit): trail = 1.0 × ATR
+  - Stage 2 (1× ≤ pnl < 3× ATR): trail = 1.5 × ATR
+  - Stage 3 (pnl ≥ 3× ATR): trail = 0.5 × peak_open_profit_per_share (lock-in mode)
+  - Floor (all stages): trail ≥ 0.3 × ATR
+- Four new optional kwargs on `check_alarm_a_stop_price` (`atr_value`, `position_pnl_per_share`, `peak_open_profit_per_share`, `entry_price`) — fully backward-compatible (all default `None`, bypassing the ATR path).
+- Feature flag: `_V610_ATR_TRAIL_ENABLED = True` for instant rollback.
+- Expected impact on 5/1 retro: TSLA +$24 → +$80–$100, NVDA short +$14 → +$45–$60, NFLX short +$67 → +$80+. Single-trade flip large enough to turn the day positive.
+
+**#2 — Two-bar EMA-cross confirmation + lunch-chop suppression** (`engine/sentinel.py:check_alarm_b`)
+- New per-position counter `_ema_cross_pending: dict[str, int]` keyed by `position_id`. Cross-against-position increments; non-cross resets to 0; exit fires only at count ≥ 2.
+- Lunch-chop window 11:30–13:00 ET (uses `engine.timing.ET`) blocks the exit; counter still advances during suppression so state stays coherent when the window closes.
+- Two feature flags: `_V610_EMA_CONFIRM_ENABLED = True` (master), `_V610_LUNCH_SUPPRESSION_ENABLED = True` (sub-flag).
+- New `reset_ema_cross_pending()` helper for position-close and test cleanup, exported in `__all__`.
+- Expected impact on 5/1 retro: NFLX long held 48 min for −$17 instead of getting stopped out and missing the +$50 same-direction continuation. NVDA short 1-min hold becomes ≥ 2-min hold capturing more of the $1.03/sh tail.
+
+**#3 — ATR-normalized OR-break entry gate + late-OR window** (`trade_genius.py`, `broker/orders.py`, `indicators.py`)
+- New `pre_market_range_atr(bars, window_minutes=15, period=5)` in `indicators.py`: filters 08:30–09:25 ET 1-min bars and computes Wilder ATR(5).
+- OR-break threshold replaced from fixed-cents to `k × ATR_pre_market` where `k = V610_OR_BREAK_K = 0.6`. Symmetric for short side. Falls back to ATR(5) of first 5 RTH bars if pre-market is sparse.
+- Late-OR window 11:00–12:00 ET (`V610_LATE_OR_ENABLED = True`): if the standard 9:30–10:30 OR-break never triggered for that ticker, the late-window OR (first 30 min) becomes eligible. Most of 5/1's missed entries (META, AVGO especially) broke in this band.
+- New module-level state in `trade_genius.py`: `_v610_pm_atr`, `_v610_or_break_fired`, `_v610_late_or_high`, `_v610_late_or_low`. All cleared by `reset_daily_state`.
+- Feature flag: `_V610_ATR_OR_BREAK_ENABLED = True`. When False, routes back to existing `_tiger_two_bar_long/short` fixed-cents path.
+- Expected impact on 5/1 retro: META, AVGO, AMZN, ORCL each becomes eligible for ≥1 entry; assuming 25% capture of available swing, ~+$60.
+
+### Tests
+- 5 new tests for #1 (`tests/test_v610_atr_trail.py`)
+- 6 new tests for #2 (`tests/test_v610_ema_confirm.py`)
+- 7 required + 4 indicator helper tests for #3 (`tests/test_v610_atr_or_break.py`)
+- **Full suite: 655 passed, 0 failures, 0 regressions** (up from 638 on v6.0.8.1).
+
+### Caveats
+- 5/1-retro estimates are single-day. Validate against Apr 20–24 baseline + Apr 27–May 1 weekly shadow data (Saturday cron output) before flipping any flag to default-on for live. All three flags can be reverted without code changes.
+- Backfilled bars used in 5/1 TRUE backtest are slightly cleaner than realtime IEX would have been, so the −$8.32 baseline is mildly optimistic vs what live prod actually got. The +$125 recovery estimate is therefore conservative.
+- This release does NOT fix the carry-forward plumbing items (15:55 hard cutoff in `engine/scan.py`, broken EOD `tg.v5_lock_all_tracks`, missing SPY archive path). Those remain on the carry-forward list.
+
+### Architecture / docs
+Minor bump: `ARCHITECTURE.md` banner updated to v6.1.0; `trade_genius_algo.pdf` regenerated (the algo PDF source `trade_genius_algo.md` gets a new "v6.1.0 — P&L recovery bundle" section documenting the three algo changes and their feature flags).
+
+---
+
 ## v6.0.8.1 — 2026-05-01 — Mobile expanded permit row width hotfix
 
 ### Why

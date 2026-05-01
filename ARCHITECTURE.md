@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.0.7 · May 2026 — **Post-action reconcile race fix + iPhone Pro Max mobile UI**
+> **Version:** v6.1.0 · May 2026 — **P&L recovery bundle: ATR trailing stop + 2-bar EMA confirm + ATR OR-break**
 >
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each
@@ -73,6 +73,36 @@
 >   colspan'd td no longer renders 653 px wide on a 453 px viewport
 >   and component-card descriptions wrap inside the visible area.
 >   See "Session-state persistence — v6.0.8" subsection below.
+> - **v6.0.8.1** (2026-05-01) — mobile expanded permit row width
+>   hotfix. v6.0.8's `@media (max-width: 480px)` rule set
+>   `max-width: 100vw` on `.pmtx-detail-row td`, but `max-width`
+>   is ignored by the table layout algorithm. Switched the
+>   expanded-row `<td>` to `display: block` + `position: sticky`
+>   + `width: calc(100vw - 24px)` scoped to
+>   `tr.pmtx-detail-row.pmtx-detail-open > td`. CSS-only.
+> - **v6.1.0** (2026-05-01, this release) — P&L recovery bundle:
+>   three algo upgrades shipped together after the 5/1 TRUE backtest
+>   closed at −$8.32 against ~$143/share of available swing across
+>   the universe. (1) **ATR-scaled trailing stop with profit-protect
+>   ratchet** in `engine/sentinel.py:check_alarm_a_stop_price` —
+>   replaces fixed-cents trail with 3-stage ATR distance (1.0× →
+>   1.5× → 50% of peak open profit) plus a 0.3× ATR floor; new
+>   `atr5_1m(bars)` helper in `indicators.py`. (2) **Two-bar EMA-cross
+>   confirmation + lunch-chop suppression** in `check_alarm_b` —
+>   per-position counter `_ema_cross_pending`, requires two
+>   consecutive cross-against bars before firing, blocks exit
+>   between 11:30–13:00 ET. (3) **ATR-normalized OR-break entry
+>   gate + late-OR window** in `trade_genius.py` /
+>   `broker/orders.py` — break threshold = `0.6 ×
+>   pre_market_range_atr` (replaces fixed cents); new late-OR
+>   window 11:00–12:00 ET fires only if standard 9:30–10:30
+>   OR-break never triggered. All three behind feature flags
+>   (`_V610_ATR_TRAIL_ENABLED`, `_V610_EMA_CONFIRM_ENABLED`,
+>   `_V610_LUNCH_SUPPRESSION_ENABLED`, `_V610_ATR_OR_BREAK_ENABLED`,
+>   `V610_LATE_OR_ENABLED`) for instant rollback. 655 tests pass.
+>   Validate against weekly shadow data before flipping any flag
+>   to default-off. See "v6.1.0 — P&L recovery bundle" subsection
+>   below.
 >
 > ## Reconcile state machine — v6.0.7
 >
@@ -2711,4 +2741,60 @@ check_log_tags "STARTUP SUMMARY" "[UNIVERSE_GUARD]" "[V560-GATE]" "[V570-STRIKE]
 
 ---
 
-*Last refresh: April 2026, against `BOT_VERSION = "5.9.0"`.*
+## v6.1.0 — P&L recovery bundle (May 2026)
+
+Three algo upgrades shipped together. Each lives behind its own feature flag so any one of them can be reverted without redeploying.
+
+### Why
+The v6.0.8.1 TRUE backtest against 2026-05-01 bars (full RTH, 11 universe tickers, gap-patched via Alpaca-IEX backfill) closed at −$8.32 on 7 entries (3W/3L, 1 still open). Hindsight max available swing across the universe was ~$143/share. Three structural failures:
+
+1. Entry coverage — 4 tickers (META $20.65/sh, AVGO $14.28, AMZN $15.47, ORCL $10.22) had double-digit per-share swings and the algo never fired a single entry.
+2. Premature exits — TSLA long 11:50 exited at +$1.00/sh, missed continuation to +$3.12/sh ($74.88 on 24 sh). NVDA short held 1 minute. Three trades killed by `sentinel_b_ema_cross` on minor pullbacks.
+3. Win/loss asymmetry — avg win +$35, avg loss −$38; 50% W/L = guaranteed bleed because the trailing stop is fixed-cents and indifferent to volatility.
+
+### #1 ATR-scaled trailing stop with profit-protect ratchet
+
+`engine/sentinel.py:check_alarm_a_stop_price` + `indicators.py:atr5_1m`.
+
+Replaces the fixed-cents trail with a 3-stage ATR-distance trail keyed off the position's open P&L per share:
+
+| Stage | Condition | Trail distance |
+|---|---|---|
+| 1 (initial) | `pnl_per_share < 1× ATR(5,1m)` | `1.0 × ATR` |
+| 2 (widen) | `1× ≤ pnl < 3× ATR` | `1.5 × ATR` |
+| 3 (lock-in) | `pnl ≥ 3× ATR` | `0.5 × peak_open_profit_per_share` |
+| Floor (all) | always | `≥ 0.3 × ATR` |
+
+New kwargs on `check_alarm_a_stop_price`: `atr_value`, `position_pnl_per_share`, `peak_open_profit_per_share`, `entry_price`. All default `None`; when `None`, the legacy fixed-cents path runs unchanged. Feature flag: `_V610_ATR_TRAIL_ENABLED = True`.
+
+### #2 Two-bar EMA-cross confirmation + lunch-chop suppression
+
+`engine/sentinel.py:check_alarm_b`.
+
+Per-position counter `_ema_cross_pending: dict[str, int]` keyed by `position_id`. On each call: if the cross-against-position condition is True, increment; if False, reset to 0. Exit fires only at count ≥ 2.
+
+Lunch-chop suppression: between 11:30 and 13:00 ET (uses `engine.timing.ET`), the exit is blocked even if the counter has reached 2. The counter still advances during suppression so state stays coherent when the window closes.
+
+Feature flags: `_V610_EMA_CONFIRM_ENABLED = True` (master), `_V610_LUNCH_SUPPRESSION_ENABLED = True` (sub-flag). New `reset_ema_cross_pending()` helper for position-close and test cleanup, exported in `__all__`. When master flag is False, behavior reverts to the legacy single-bar `confirm_bars` path. Callers without `position_id` also take the legacy path (backward compat).
+
+### #3 ATR-normalized OR-break entry gate + late-OR window
+
+`trade_genius.py`, `broker/orders.py`, `indicators.py:pre_market_range_atr`.
+
+OR-break threshold replaced from fixed-cents to `k × ATR_pre_market` where `k = V610_OR_BREAK_K = 0.6`. `pre_market_range_atr(bars, window_minutes=15, period=5)` filters 08:30–09:25 ET 1-min bars and computes Wilder ATR(5). Falls back to ATR(5) of the first 5 RTH bars if pre-market is sparse. Symmetric for short side.
+
+Late-OR window: if the standard 9:30–10:30 OR-break never triggered for that ticker, the late-window opening range (first 30 min of 11:00–12:00 ET) becomes eligible during 11:00–12:00 ET. New module-level state `_v610_pm_atr`, `_v610_or_break_fired`, `_v610_late_or_high`, `_v610_late_or_low` — all cleared by `reset_daily_state`. `broker/orders.py:price_break` now consults `_v610_or_break_long/short`; Strike-1 `boundary_high/low` shifts by `k×ATR`.
+
+Feature flags: `_V610_ATR_OR_BREAK_ENABLED = True`, `V610_LATE_OR_ENABLED = True`. When the master flag is False, routes back through `_tiger_two_bar_long/short` (existing fixed-cents path).
+
+### Validation
+
+5 + 6 + 11 new tests: `tests/test_v610_atr_trail.py`, `tests/test_v610_ema_confirm.py`, `tests/test_v610_atr_or_break.py`. Full suite 655 passed, 0 failures, 0 regressions (up from 638 on v6.0.8.1).
+
+### Rollback playbook
+
+If a flag-on flips a single day worse than expected, set the relevant module-level constant to `False` in a follow-up patch release — no schema/data migration required. The 5 flags (`_V610_ATR_TRAIL_ENABLED`, `_V610_EMA_CONFIRM_ENABLED`, `_V610_LUNCH_SUPPRESSION_ENABLED`, `_V610_ATR_OR_BREAK_ENABLED`, `V610_LATE_OR_ENABLED`) can be flipped independently. Recommended pre-prod validation: run each fix in shadow against the Apr 27–May 1 weekly shadow data (Saturday cron output) and the Apr 20–24 baseline before flipping default-off.
+
+---
+
+*Last refresh: May 2026, against `BOT_VERSION = "6.1.0"`.*
