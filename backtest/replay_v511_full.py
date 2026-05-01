@@ -372,10 +372,22 @@ def install_record_only_layers(
         highs = [b.get("high") for b in visible]
         lows = [b.get("low") for b in visible]
         closes = [b.get("close") for b in visible]
-        vols = [
-            b.get("iex_volume") if b.get("iex_volume") is not None else b.get("volume")
-            for b in visible
-        ]
+        # Archived 1m bars carry IEX-only volumes; IEX reports 0 for
+        # most off-tape ticks, which collapses session AVWAP to None
+        # (sum-of-volume == 0) and locks the Permit gate closed for
+        # the entire replay. Substitute a uniform synthetic volume of
+        # 1 per bar so AVWAP degenerates to the typical-price mean,
+        # an unbiased proxy for the unobserved consolidated VWAP.
+        # Volume Bucket gates (BL-3/BU-3) are BYPASSED in v5.26.0 so
+        # absolute volume magnitudes have no other effect on entries.
+        vols = []
+        for b in visible:
+            iv = b.get("iex_volume")
+            if iv is None:
+                iv = b.get("volume")
+            if iv is None or iv <= 0:
+                iv = 1
+            vols.append(iv)
         timestamps = [int(b["_dt"].timestamp()) for b in visible]
         last_close = next((c for c in reversed(closes) if c is not None), 0.0)
         # `pdc` is previous-day close; harness bars don't carry that, so
@@ -594,10 +606,22 @@ class RecordOnlyCallbacks:
         highs = [b.get("high") for b in visible]
         lows = [b.get("low") for b in visible]
         closes = [b.get("close") for b in visible]
-        vols = [
-            b.get("iex_volume") if b.get("iex_volume") is not None else b.get("volume")
-            for b in visible
-        ]
+        # Archived 1m bars carry IEX-only volumes; IEX reports 0 for
+        # most off-tape ticks, which collapses session AVWAP to None
+        # (sum-of-volume == 0) and locks the Permit gate closed for
+        # the entire replay. Substitute a uniform synthetic volume of
+        # 1 per bar so AVWAP degenerates to the typical-price mean,
+        # an unbiased proxy for the unobserved consolidated VWAP.
+        # Volume Bucket gates (BL-3/BU-3) are BYPASSED in v5.26.0 so
+        # absolute volume magnitudes have no other effect on entries.
+        vols = []
+        for b in visible:
+            iv = b.get("iex_volume")
+            if iv is None:
+                iv = b.get("volume")
+            if iv is None or iv <= 0:
+                iv = 1
+            vols.append(iv)
         timestamps = [int(b["_dt"].timestamp()) for b in visible]
         last_close = next((c for c in reversed(closes) if c is not None), None)
         return {
@@ -902,11 +926,27 @@ def run_replay(
     # 6) Step minute-by-minute through the session.
     import engine.scan as _engine_scan
 
+    # Seed OR/pdc once when we cross 09:36 ET (mirrors the production
+    # 09:35 ET scheduler kick that calls collect_or). The harness
+    # bar-feed monkey-patch makes collect_or read replay bars rather
+    # than hit Alpaca/Yahoo.
+    or_seeded = False
+
     cur = start_dt
     minutes = 0
     while cur <= end_dt:
         clock.now = cur
         cb.ticks.append(cur)
+        # Trigger OR collection once at/after 09:36 ET on the simulated
+        # clock. Production schedules collect_or() at 09:35 ET via the
+        # scheduler thread; the harness drives scan_loop directly so
+        # we invoke the collection step explicitly here.
+        if (not or_seeded) and (cur.hour, cur.minute) >= (9, 36):
+            try:
+                _tg.collect_or()
+            except Exception as _seed_err:
+                logger.warning("harness collect_or failed: %s", _seed_err)
+            or_seeded = True
         # Clear the per-cycle bar cache so each tick re-reads from the
         # harness bar store at the new clock time.
         _cache = getattr(_tg, "_cycle_bar_cache", None)
@@ -1055,7 +1095,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.WARNING)
+    import os as _os
+
+    _lvl = _os.environ.get("LOG_LEVEL", "WARNING").upper()
+    logging.basicConfig(
+        level=getattr(logging, _lvl, logging.WARNING),
+        format="%(levelname)s:%(name)s:%(message)s",
+        force=True,
+    )
     args = _build_parser().parse_args(argv)
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     sh, sm = (int(x) for x in args.start.split(":"))
