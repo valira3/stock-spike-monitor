@@ -961,7 +961,7 @@ _V610_ATR_OR_BREAK_ENABLED: bool = True
 
 # Multiplier k: break fires when price > OR_high + k * ATR_pre_market.
 # Symmetric for short (below OR_low - k * ATR).
-V610_OR_BREAK_K: float = 0.6
+V610_OR_BREAK_K: float = 0.25
 
 # Late-OR re-evaluation window: 11:00-12:00 ET. Only fires when the
 # standard 09:30-10:30 window never triggered for that ticker.
