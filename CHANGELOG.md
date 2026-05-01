@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.8.1 — 2026-05-01 — Mobile expanded permit row width hotfix
+
+### Why
+v6.0.8's `@media (max-width: 480px)` rules set `max-width: 100vw` on `.pmtx-detail-row td`, but `max-width` is ignored by the table layout algorithm — a `<td>`'s width is driven by the table's column widths, not the cell's own max-width. Live measurement on iPhone 13 (viewport 453 px) against the deployed v6.0.8 dashboard with the AAPL row expanded showed the colspan'd `<td>` still rendering at 653 px and the `.pmtx-comp-card` inside it at 605 px, clipping every component-card description at the right edge exactly as before the v6.0.8 fix.
+
+### What
+- Switch the expanded-row `<td>` to `display: block` + `position: sticky` + `left: 0` + `width: calc(100vw - 24px)` inside the `@media (max-width: 480px)` block, scoped to `tr.pmtx-detail-row.pmtx-detail-open > td` so collapsed rows are unaffected. `display:block` takes the cell out of the table layout entirely, freeing it to honor an explicit width; `position:sticky; left:0` pins it to the visible viewport even when the parent `.pmtx-table-wrap` is horizontally scrolled (the collapsed matrix still scrolls under the expanded card, swipe behavior preserved). All `!important` to override the existing v6.0.8 desktop rules.
+- Verified live on iPhone 13 via `page.addStyleTag`: td 653 → 366 px, card 605 → 318 px, all 8 component cards fit within the viewport, collapsed-row matrix swipe still works.
+
+### Tests
+CSS-only change, no logic touched. Per the minor-release rule, no new pytest run, no architecture doc or algo PDF update.
+
+---
+
 ## v6.0.8 — 2026-05-01 — Session-state SQLite persistence + mobile expanded permit row fix
 
 ### Why
