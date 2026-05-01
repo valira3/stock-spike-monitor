@@ -1813,7 +1813,14 @@
       || typeof prox.or_high === "number"
       || typeof prox.or_low === "number"
     ));
-    const hasDetail = !!(pos || lastFill || proxHasDetail);
+    // v5.28.2 — a Titan with an open Phase-1 permit (long or short) is also
+    // expandable even before any proximity data has flowed. Without this, a
+    // row with .pmtx-row-permit-go tint had hasDetail=false during quiet
+    // pre-market windows, so the detail row — which carries the alarm strip
+    // surfaced by v5.28.1 — never rendered. The user's complaint that the
+    // alarm panel was missing on expanded permit cards traced to exactly
+    // this gate, not to the strip function itself.
+    const hasDetail = !!(pos || lastFill || proxHasDetail || longPermit || shortPermit);
     const expandIcon = hasDetail
       ? '<span class="pmtx-expand-chev" aria-hidden="true">\u203a</span>'
       : '<span class="pmtx-expand-chev pmtx-expand-empty" aria-hidden="true"></span>';

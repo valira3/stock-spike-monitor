@@ -196,6 +196,14 @@ def test_expand_handler_still_wired_at_body_level():
 
 
 def test_has_detail_gate_unchanged():
-    """``hasDetail`` is still ``pos || lastFill || proxHasDetail`` \u2014\n    v5.20.3 must not have regressed the v5.19.3 fix."""
+    """``hasDetail`` still keeps the v5.19.3 prox clause.
+
+    v5.28.2 widened the gate further to include open Phase-1 permits so
+    permit-go rows expand even before proximity data flows. The v5.19.3
+    prox clause must remain intact alongside the new permit clause.
+    """
     src = _read_js()
-    assert "const hasDetail = !!(pos || lastFill || proxHasDetail);" in src
+    assert (
+        "const hasDetail = !!(pos || lastFill || proxHasDetail || longPermit || shortPermit);"
+        in src
+    )
