@@ -1351,11 +1351,13 @@ def run_local() -> int:
             assert payload["gates"]["scan_paused"] is True, (
                 f"expected scan_paused True after close, got {payload['gates']['scan_paused']}"
             )
-            assert payload["regime"]["mode"] == "CLOSED", (
-                f"expected regime.mode CLOSED, got {payload['regime']['mode']}"
+            # v5.31.2: dashboard now computes regime.mode from real ET time.
+            # 17:00 ET on a weekday lands in the after-hours window.
+            assert payload["regime"]["mode"] == "AFTER", (
+                f"expected regime.mode AFTER, got {payload['regime']['mode']}"
             )
-            assert payload["regime"]["mode_reason"] == "outside market hours", (
-                f"expected 'outside market hours', got {payload['regime']['mode_reason']!r}"
+            assert payload["regime"]["mode_reason"] == "after-hours session", (
+                f"expected 'after-hours session', got {payload['regime']['mode_reason']!r}"
             )
         finally:
             m._now_et = saved

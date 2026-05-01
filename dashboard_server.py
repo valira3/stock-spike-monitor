@@ -767,8 +767,40 @@ def snapshot() -> dict[str, Any]:
         sovereign = _sovereign_regime_snapshot(m)
 
         # Regime / observer
-        mode = str(getattr(m, "_current_mode", "UNKNOWN"))
-        mode_reason = str(getattr(m, "_current_mode_reason", ""))
+        # v5.31.2 \u2014 session label is now computed from real ET time.
+        # The legacy MarketMode classifier was retired in v5.26.0 but the
+        # dashboard kept reading the dead _current_mode global, which was
+        # frozen at "CLOSED" forever. The KPI showed CLOSED during RTH.
+        # Mirror engine/scan.py's window logic so PRE / RTH OPEN / POWER /
+        # AFTER / CLOSED reflect the actual session, with weekends and
+        # the standard OR / power / wind-down windows respected.
+        try:
+            _now_et_session = m._now_et()
+            _hh, _mm = _now_et_session.hour, _now_et_session.minute
+            _is_weekend = _now_et_session.weekday() >= 5
+            if _is_weekend:
+                mode, mode_reason = "CLOSED", "weekend"
+            elif _hh < 4:
+                mode, mode_reason = "CLOSED", "overnight"
+            elif _hh < 8:
+                mode, mode_reason = "PRE", "early premarket"
+            elif _hh < 9 or (_hh == 9 and _mm < 30):
+                mode, mode_reason = "PRE", "premarket warm-up"
+            elif _hh == 9 and _mm < 35:
+                mode, mode_reason = "OR", "opening range (09:30-09:35 ET)"
+            elif _hh < 15 or (_hh == 15 and _mm < 30):
+                mode, mode_reason = "OPEN", "RTH open"
+            elif _hh == 15 and _mm < 55:
+                mode, mode_reason = "POWER", "power hour wind-down"
+            elif _hh < 16:
+                mode, mode_reason = "POWER", "final 5 min - no new entries"
+            elif _hh < 20:
+                mode, mode_reason = "AFTER", "after-hours session"
+            else:
+                mode, mode_reason = "CLOSED", "after-hours closed"
+        except Exception:
+            mode = str(getattr(m, "_current_mode", "UNKNOWN"))
+            mode_reason = str(getattr(m, "_current_mode_reason", ""))
         breadth = str(getattr(m, "_current_breadth", "UNKNOWN"))
         breadth_detail = str(getattr(m, "_current_breadth_detail", ""))
         rsi_regime = str(getattr(m, "_current_rsi_regime", "UNKNOWN"))

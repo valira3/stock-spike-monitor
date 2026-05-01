@@ -3,6 +3,26 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // v5.31.2 — single source of truth for the Session KPI color map.
+  // Used by Main, Val, and Gene panels so the label → color mapping
+  // can never drift. Backend emits PRE / OR / OPEN / POWER / AFTER /
+  // CLOSED based on real ET time (dashboard_server.py /api/state).
+  // DEFENSIVE / CHOP are kept for backward-compat.
+  function __tgSessionColor(mode) {
+    switch (mode) {
+      case "DEFENSIVE": return "var(--down)";
+      case "CHOP":
+      case "POWER":
+      case "OR":      return "var(--warn)";
+      case "PRE":
+      case "AFTER":   return "var(--text-dim)";
+      case "CLOSED":
+      case "\u2014":  return "var(--text-muted)";
+      case "OPEN":    return "var(--up)";
+      default:        return "var(--up)";
+    }
+  }
+
   // v4.1.8-dash — Robinhood view was removed in v3.5.0 along with the
   // RH portfolio payload. The toggle + storage machinery + slice()
   // indirection lingered as dead code. Now simplified: only the paper
@@ -196,13 +216,11 @@
     // ── Session KPI: time-of-day / risk state (OPEN / CHOP / POWER / DEFENSIVE / CLOSED)
     //    this is MarketMode in the bot — a session window, not a directional view
     const sEl = $("k-session");
+    // v5.31.2 — backend now emits real session labels (PRE / OR / OPEN /
+    // POWER / AFTER / CLOSED) computed from ET time.
     const mode = reg.mode || "—";
     sEl.textContent = mode;
-    sEl.style.color = mode === "DEFENSIVE" ? "var(--down)"
-                    : mode === "CHOP" ? "var(--warn)"
-                    : mode === "CLOSED" ? "var(--text-muted)"
-                    : mode === "—" ? "var(--text-muted)"
-                    : "var(--up)";
+    sEl.style.color = __tgSessionColor(mode);
     $("k-session-sub").textContent = reg.mode_reason || "—";
   }
 
@@ -3572,11 +3590,7 @@
     if (sEl) {
       const mode = reg.mode || "\u2014";
       sEl.textContent = mode;
-      sEl.style.color = mode === "DEFENSIVE" ? "var(--down)"
-                      : mode === "CHOP" ? "var(--warn)"
-                      : mode === "CLOSED" ? "var(--text-muted)"
-                      : mode === "\u2014" ? "var(--text-muted)"
-                      : "var(--up)";
+      sEl.style.color = __tgSessionColor(mode);
     }
     setField(panel, "k-session-sub", reg.mode_reason || "\u2014");
 
@@ -3657,11 +3671,7 @@
     if (sEl) {
       const mode = reg.mode || "\u2014";
       sEl.textContent = mode;
-      sEl.style.color = mode === "DEFENSIVE" ? "var(--down)"
-                      : mode === "CHOP" ? "var(--warn)"
-                      : mode === "CLOSED" ? "var(--text-muted)"
-                      : mode === "\u2014" ? "var(--text-muted)"
-                      : "var(--up)";
+      sEl.style.color = __tgSessionColor(mode);
     }
     setField(panel, "k-session-sub", reg.mode_reason || "\u2014");
   }
