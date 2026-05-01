@@ -4,6 +4,67 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.26.0 — 2026-04-30 — Spec-strict cut (Tiger Sovereign v15.0)
+
+### Why
+Tiger Sovereign v15.0 ratified a tight perimeter: BL-1/BU-1 Weather +
+the Phase-4 Sentinel Loop, with explicit rulings on order-type routing
+and on the scope of Alarm D's peak. The codebase had accumulated
+multiple non-spec subsystems — regime shields beyond plain QQQ Weather,
+a Volume Gate (BYPASSED 2026-04-30 per spec amendment), premarket DI
+recalc + prior-session DI seeding, and the Titan-Grip multi-stage
+harvest staircase. v5.26.0 hard-deletes everything outside the spec
+perimeter and aligns surviving paths to the rulings.
+
+### What changed
+
+- **Stage 1–2 — non-spec module + dead-code purge.** Deleted the
+  retired regime-shield, Volume-Gate, Titan-Grip harvest, and prior-
+  session DI seeding subsystems from `trade_genius.py`,
+  `broker/orders.py`, `broker/positions.py`, and `side.py`. Removed
+  `broker/stops.py` capped-stop helpers (the surviving R-2 hard stop
+  now flows through the sentinel exit path). Removed
+  `retighten_all_stops` callers.
+- **Stage 3 — engine prune.** Rewrote `engine/scan.py` to a minimal
+  scanner (no `eot_glue.refresh_volume_baseline_if_needed`, no
+  `[V510-...]` log tags). Rewrote `engine/seeders.py` to keep only
+  `seed_opening_range` + `seed_opening_range_all`. Updated
+  `engine/__init__.py` exports accordingly.
+- **Stage 4 — broker order-type alignment (RULING #1).** Rewrote
+  `broker/order_types.py`: A-A flash loss, A-B 5m EMA cross, A-D ADX
+  decline route through `ORDER_TYPE_LIMIT` at ±0.5% (long exit at
+  Bid×0.995, short exit at Ask×1.005). Added
+  `compute_sentinel_limit_price(side, bid, ask)`. Removed Stage-1 /
+  Stage-3 / runner-exit Titan-Grip reason constants.
+- **Stage 5 — sentinel rulings (`engine/sentinel.py`).**
+  - **RULING #1**: distinct `EXIT_REASON_ALARM_A` /
+    `EXIT_REASON_ALARM_B` / `EXIT_REASON_ALARM_D` strings; all three
+    route to LIMIT in the broker mapping.
+  - **RULING #2**: Alarm D now reads from a session-wide 5m ADX HWM
+    (`_SESSION_5M_ADX_HWM` keyed by ticker), not from per-Strike
+    `Trade_HVP.peak`. Exposes `record_session_5m_adx`,
+    `get_session_5m_adx_hwm`, `reset_session_5m_adx`. The
+    `trade_hvp` kwarg on `check_alarm_d` is retained for signature
+    stability but is ignored.
+  - **RULING #4**: the A_LOSS sub-alarm (-$500 hard floor) is tagged
+    `EXIT_REASON_R2_HARD_STOP` and routes through STOP MARKET per
+    Tiger Sovereign v15.0 §Risk Rails R-2. A_FLASH velocity stays on
+    `EXIT_REASON_ALARM_A` and routes LIMIT.
+  - `SentinelResult.has_full_exit` and `.exit_reason` updated with
+    priority R-2 > A-A > A-B > A-D > C.
+- **Stage 6 — version + changelog.** Bumped `BOT_VERSION` to 5.26.0
+  in `bot_version.py` and `trade_genius.py`. `CURRENT_MAIN_NOTE`
+  rewritten (Telegram 34-char per line).
+
+### Out of scope (deferred)
+- RULING #8 cascade-fix pass (`pdc` field cleanup,
+  `_update_gate_snapshot` rewrites). Tracked separately.
+- Test / smoke-test / preflight breakage from deleted helpers (e.g.
+  `_resolve_last_completed_volume`, `broker.stops`, deleted scheduler
+  jobs). The spec-strict mandate explicitly defers preflight repair.
+
+---
+
 ## v5.25.0 — 2026-04-30 — Post-action Alpaca reconcile + enabled-exec chips
 
 ### Why

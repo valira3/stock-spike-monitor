@@ -262,22 +262,11 @@ def test_v15_divergence_memory_stores_on_every_new_short_extreme():
 
 
 # ---------------------------------------------------------------------------
-# Section 2/3 \u2014 Volume gate is a primary Phase-2 permit, default ON.
+# v5.26.0: BL-3 / BU-3 (Volume Gate) BYPASSED \u2014 removed entirely per
+# operator policy (data-quality issues with 1m volume baseline). The
+# v15.0 spec mentions a volume gate but it is intentionally not enforced
+# in this build; tests for it have been removed.
 # ---------------------------------------------------------------------------
-
-
-def test_v15_volume_gate_default_is_enabled(monkeypatch):
-    """v15.0 \u00a72/\u00a73: volume gate is a primary permit, default ON."""
-    monkeypatch.delenv("VOLUME_GATE_ENABLED", raising=False)
-    if "engine.feature_flags" in sys.modules:
-        del sys.modules["engine.feature_flags"]
-    import engine as _engine_pkg
-
-    if hasattr(_engine_pkg, "feature_flags"):
-        delattr(_engine_pkg, "feature_flags")
-    from engine import feature_flags as ff
-
-    assert ff.VOLUME_GATE_ENABLED is True
 
 
 def test_v15_volume_bucket_check_returns_ratio_to_55bar_avg_alias(tmp_path):

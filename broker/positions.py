@@ -11,12 +11,10 @@ import sys as _sys
 import time as _time
 
 from broker.orders import check_breakout  # noqa: F401
-from broker.stops import (
-    _ladder_stop_long,
-    _ladder_stop_short,
-    _retighten_long_stop,  # noqa: F401
-    _retighten_short_stop,  # noqa: F401
-)
+
+# v5.26.0 \u2014 broker.stops module deleted. Imports were unused in this
+# file's body and the surviving R-2 hard stop flows through the
+# sentinel exit path.
 from engine.bars import compute_5m_ohlc_and_ema9
 from engine.momentum_state import ADXTrendWindow, DivergenceMemory, TradeHVP
 from engine.sentinel import (
@@ -591,17 +589,9 @@ def manage_positions():
     positions = tg.positions
     tickers_to_close = []
 
-    # v3.4.23 \u2014 enforce 0.75% entry cap on every open long position
-    # before the regular stop/trail pass. This catches pre-cap positions
-    # and any position whose stored stop has drifted wider than the cap.
-    # Also fires immediate exit on positions that have already breached
-    # the retro-tightened stop. Idempotent \u2014 fast when everything is
-    # already tight.
-    tg.retighten_all_stops(force_exit=True, fetch_prices=True)
-
-    # v5.9.1: Sovereign Regime Shield (PDC eject) retired. Entry-side
-    # index regime now lives in the 5m EMA compass (v5.9.0); the exit
-    # side intentionally has no global index eject.
+    # v5.26.0 \u2014 retighten_all_stops removed. The R-2 hard stop is set
+    # at entry and is fixed for the life of the position; periodic
+    # cap-retightening is non-spec.
 
     for ticker in list(positions.keys()):
         bars = tg.fetch_1min_bars(ticker)
@@ -642,14 +632,7 @@ def manage_short_positions():
     tg = _tg()
     short_positions = tg.short_positions
 
-    # v3.4.23 \u2014 enforce 0.75% entry cap retroactively on every open
-    # short (see manage_positions for rationale). Note: manage_positions
-    # and manage_short_positions are called back-to-back by the scan
-    # loop, so calling retighten_all_stops from both is redundant-but-
-    # cheap. Kept in both for defensive symmetry: if a future refactor
-    # reorders or skips one manager, the cap still holds for the other
-    # book.
-    tg.retighten_all_stops(force_exit=True, fetch_prices=True)
+    # v5.26.0 \u2014 retighten_all_stops removed (mirrors manage_positions).
 
     # v5.9.1: Sovereign Regime Shield (PDC eject) retired on the short
     # side too. v5.13.10: per-ticker POLARITY_SHIFT exit also retired

@@ -4,3 +4,5 @@ CODE_REVIEW.md
 *.log
 dashboard_secret.key
 paper_state.json
+debug_replay.py
+trade_log.jsonl

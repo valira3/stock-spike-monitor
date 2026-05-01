@@ -7,6 +7,7 @@ were deleted in v4.9.0 along with the SSM_USE_COLLAPSED feature flag.
 
 Pure module \u2014 no imports from trade_genius. Safe to import from anywhere.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ class SideConfig:
     payloads byte-for-byte \u2014 the synthetic-harness goldens are the
     enforcement mechanism.
     """
+
     side: Side
     # OR attribute name on the ticker row ("or_high" vs "or_low").
     or_attr: str
@@ -41,8 +43,6 @@ class SideConfig:
     daily_count_attr: str
     daily_date_attr: str
     trade_history_attr: str
-    # Stop-cap helper name (resolved via getattr in trade_genius)
-    capped_stop_fn_name: str
     # v4.9.0 \u2014 fields added for the real Stage B2 collapse.
     # Lower-case "long"/"short" written into trade_history rows + log lines.
     history_side_label: str
@@ -98,7 +98,6 @@ LONG = SideConfig(
     daily_count_attr="daily_entry_count",
     daily_date_attr="daily_entry_date",
     trade_history_attr="trade_history",
-    capped_stop_fn_name="_capped_long_stop",
     history_side_label="long",
     log_side_label="LONG",
     paper_log_entry_verb="BUY",
@@ -123,7 +122,6 @@ SHORT = SideConfig(
     daily_count_attr="daily_short_entry_count",
     daily_date_attr="daily_short_entry_date",
     trade_history_attr="short_trade_history",
-    capped_stop_fn_name="_capped_short_stop",
     history_side_label="short",
     log_side_label="SHORT",
     paper_log_entry_verb="SHORT",

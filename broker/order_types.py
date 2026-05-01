@@ -1,79 +1,56 @@
-"""broker.order_types — v5.13.0 PR 6 SHARED-ORDER-PROFIT / SHARED-ORDER-STOP.
+"""broker.order_types \u2014 v5.26.0 spec-strict order-type mapping.
 
-Centralizes the spec-mandated order-type mapping for Tiger Sovereign
-(STRATEGY.md §3 Shared rules). Every exit path that emits an Alpaca
-order MUST go through ``order_type_for_reason`` so the LIMIT vs.
-STOP MARKET vs. MARKET split is one source of truth.
-
-Spec mapping (STRATEGY.md):
-    Profit-taking (Stage 1, Stage 3 harvest, Stage 4 runner exit
-    via positive-slippage limit) → LIMIT
-    Defensive stops (Alarm A_LOSS hard floor, Alarm A_FLASH velocity, Alarm B
-    9-EMA shield, Stage 2 ratchet trail) → STOP_MARKET
-    EOD flush + Daily Circuit Breaker → MARKET
-
-The runner exit (Stage 4) uses STOP_MARKET when the trail is hit
-(spec: "All defensive stops...must be STOP MARKET orders to guarantee
-immediate execution"). LIMIT-style runner exits are not in the spec
-text — only Stages 1 and 3 are explicit Limit orders.
+Tiger Sovereign v15.0 mapping per RULING #1: sentinel A-A / A-B / A-D
+exits emit LIMIT orders at +/- 0.5% from current. A_LOSS (R-2 hard
+stop, -$500) is a STOP MARKET. EOD flush + Daily Circuit Breaker emit
+MARKET orders. Stage-1 / Stage-3 Titan-Grip harvest constants from
+v5.16.0 are deleted (dead code).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Spec-literal order-type tokens. Strings (not enums) so downstream
-# code can pass them directly to the Alpaca SDK request constructors
-# or to internal logging without an extra mapping layer.
 ORDER_TYPE_LIMIT: str = "LIMIT"
 ORDER_TYPE_STOP_MARKET: str = "STOP_MARKET"
 ORDER_TYPE_MARKET: str = "MARKET"
 
-# Stable reason codes — used as inputs to ``order_type_for_reason``.
-# v5.16.0: engine.titan_grip was deleted; the four C1/C2/C3/C4 reasons
-# below are dead-code constants kept only for the lookup table's stable
-# mapping in case external callers ever resurface those strings.
-# Live exit reasons emitted by engine.sentinel are sentinel_alarm_a,
-# sentinel_alarm_b, sentinel_velocity_ratchet, HVP_LOCK, DIVERGENCE_TRAP.
-REASON_STAGE1_HARVEST: str = "C1_STAGE1_HARVEST"
-REASON_STAGE3_HARVEST: str = "C3_STAGE3_HARVEST"
-REASON_RATCHET: str = "C2_RATCHET"
-REASON_RUNNER_EXIT: str = "C4_RUNNER_EXIT"
-REASON_ALARM_A: str = "sentinel_alarm_a"
-REASON_ALARM_B: str = "sentinel_alarm_b"
+# v5.26.0 reason codes. Sentinel-driven exits (A-A flash loss, A-B 5m
+# EMA cross, A-D ADX decline) route through LIMIT per RULING #1. The
+# R-2 hard stop (-$500) routes through STOP MARKET. EOD + circuit
+# breaker route through MARKET.
+REASON_ALARM_A: str = "sentinel_a_flash_loss"
+REASON_ALARM_B: str = "sentinel_b_ema_cross"
+REASON_ALARM_D: str = "sentinel_d_adx_decline"
+REASON_R2_HARD_STOP: str = "sentinel_r2_hard_stop"
+REASON_VELOCITY_RATCHET: str = "sentinel_velocity_ratchet"
+REASON_HVP_LOCK: str = "HVP_LOCK"
+REASON_DIVERGENCE_TRAP: str = "DIVERGENCE_TRAP"
 REASON_EOD: str = "EOD"
 REASON_CIRCUIT_BREAKER: str = "DAILY_LOSS_LIMIT"
 
-# Bucket constants for callers that prefer a coarse classification.
-ORDER_TYPE_HARVEST: str = ORDER_TYPE_LIMIT
-ORDER_TYPE_STOP: str = ORDER_TYPE_STOP_MARKET
-
-# Profit-taking reasons (LIMIT). Stage 1 + Stage 3 are explicit harvests
-# in STRATEGY.md; both are spec-mandated LIMIT orders.
-_HARVEST_REASONS = frozenset(
+# RULING #1: sentinel A-A / A-B / A-D defensive exits use LIMIT (not
+# STOP MARKET, not MARKET). HVP_LOCK and DIVERGENCE_TRAP are also
+# limit-routed harvests.
+_LIMIT_REASONS = frozenset(
     {
-        REASON_STAGE1_HARVEST,
-        REASON_STAGE3_HARVEST,
-    }
-)
-
-# Defensive-stop reasons (STOP MARKET). All of these are spec-mandated
-# STOP MARKET in STRATEGY.md §3 ORDER TYPE SPECIFICATIONS:
-# "All defensive stops...must be STOP MARKET orders".
-_STOP_REASONS = frozenset(
-    {
-        REASON_RATCHET,
-        REASON_RUNNER_EXIT,
         REASON_ALARM_A,
         REASON_ALARM_B,
+        REASON_ALARM_D,
+        REASON_HVP_LOCK,
+        REASON_DIVERGENCE_TRAP,
     }
 )
 
-# Plain MARKET reasons. STRATEGY.md §3:
-# "DAILY CIRCUIT BREAKER: ...close all open positions immediately
-#  using MARKET orders."
-# "END OF DAY (EOD) FLUSH: ...close all open positions using MARKET
-#  orders."
+# R-2 hard stop and the velocity ratchet stay STOP MARKET.
+_STOP_REASONS = frozenset(
+    {
+        REASON_R2_HARD_STOP,
+        REASON_VELOCITY_RATCHET,
+    }
+)
+
+# EOD flush and the daily-loss circuit breaker close at MARKET.
 _MARKET_REASONS = frozenset(
     {
         REASON_EOD,
@@ -86,10 +63,8 @@ _MARKET_REASONS = frozenset(
 class ExitOrder:
     """Order spec returned by ``submit_exit``.
 
-    Pure data — no I/O. Callers translate this into an Alpaca request
-    (MarketOrderRequest / LimitOrderRequest / StopOrderRequest) or an
-    internal paper-broker entry. Keeping the type/qty/price decision
-    pure makes the order-type mapping testable without an Alpaca stub.
+    Pure data \u2014 no I/O. Callers translate this into a broker request
+    or an internal paper-broker entry.
     """
 
     direction: str  # "LONG" or "SHORT"
@@ -103,12 +78,10 @@ def order_type_for_reason(reason: str) -> str:
     """Return the spec-mandated order type for an exit reason.
 
     Unknown reasons fall back to MARKET (matching legacy behavior of
-    ``client.close_position``). The fallback exists so partial
-    instrumentation during the v5.13.0 rollout can't accidentally
-    submit the wrong type — known reasons get the correct mapping;
-    unknown reasons stay on the historic MARKET path.
+    ``client.close_position``). RULING #1 routes A-A / A-B / A-D
+    through LIMIT.
     """
-    if reason in _HARVEST_REASONS:
+    if reason in _LIMIT_REASONS:
         return ORDER_TYPE_LIMIT
     if reason in _STOP_REASONS:
         return ORDER_TYPE_STOP_MARKET
@@ -117,23 +90,22 @@ def order_type_for_reason(reason: str) -> str:
     return ORDER_TYPE_MARKET
 
 
-def submit_exit(direction: str, qty: int, price: float, reason: str) -> ExitOrder:
-    """Build an ExitOrder with the spec-correct order type.
+def compute_sentinel_limit_price(side: str, bid: float, ask: float) -> float:
+    """Per RULING #1, sentinel-driven LIMIT exits are placed at:
 
-    The function is pure — it does NOT call Alpaca. It returns the
-    structured order spec so callers can either submit it through
-    a real client or record it as a paper-broker fill. Short-side
-    mirroring is handled by ``direction``: a short harvest is a
-    BUY-LIMIT below entry, a short stop is a BUY-STOP above entry.
-    The direction string is preserved so the broker layer can map
-    LONG → SELL / SHORT → BUY when it actually emits the order.
-
-    Args:
-        direction: "LONG" or "SHORT"
-        qty: number of shares to close (must be > 0)
-        price: limit/stop price; pass 0.0 for MARKET reasons
-        reason: stable reason code (see REASON_* constants)
+    LONG  exit \u2192 Bid * 0.995  (0.5% below bid, sells out cleanly)
+    SHORT exit \u2192 Ask * 1.005  (0.5% above ask, covers cleanly)
     """
+    s = (side or "").strip().upper()
+    if s == "LONG":
+        return float(bid) * 0.995
+    if s == "SHORT":
+        return float(ask) * 1.005
+    raise ValueError(f"compute_sentinel_limit_price: unknown side {side!r}")
+
+
+def submit_exit(direction: str, qty: int, price: float, reason: str) -> ExitOrder:
+    """Build an ExitOrder with the spec-correct order type."""
     if qty <= 0:
         raise ValueError(f"submit_exit: qty must be > 0, got {qty}")
     if direction not in ("LONG", "SHORT"):
@@ -149,19 +121,19 @@ def submit_exit(direction: str, qty: int, price: float, reason: str) -> ExitOrde
 
 __all__ = [
     "ExitOrder",
-    "ORDER_TYPE_HARVEST",
     "ORDER_TYPE_LIMIT",
     "ORDER_TYPE_MARKET",
-    "ORDER_TYPE_STOP",
     "ORDER_TYPE_STOP_MARKET",
     "REASON_ALARM_A",
     "REASON_ALARM_B",
-    "REASON_CIRCUIT_BREAKER",
+    "REASON_ALARM_D",
+    "REASON_R2_HARD_STOP",
+    "REASON_VELOCITY_RATCHET",
+    "REASON_HVP_LOCK",
+    "REASON_DIVERGENCE_TRAP",
     "REASON_EOD",
-    "REASON_RATCHET",
-    "REASON_RUNNER_EXIT",
-    "REASON_STAGE1_HARVEST",
-    "REASON_STAGE3_HARVEST",
+    "REASON_CIRCUIT_BREAKER",
+    "compute_sentinel_limit_price",
     "order_type_for_reason",
     "submit_exit",
 ]

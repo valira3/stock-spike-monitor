@@ -16,6 +16,7 @@ from engine.sentinel import (
     ALARM_A_HARD_LOSS_DOLLARS,
     EXIT_REASON_ALARM_A,
     EXIT_REASON_ALARM_B,
+    EXIT_REASON_R2_HARD_STOP,
     SIDE_LONG,
     SIDE_SHORT,
     check_alarm_a,
@@ -23,7 +24,9 @@ from engine.sentinel import (
     evaluate_sentinel,
     new_pnl_history,
     record_pnl,
+    record_session_5m_adx,
 )
+from engine.sentinel import _SESSION_5M_ADX_HWM
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +47,10 @@ def test_alarm_a1_fires_at_exactly_minus_500():
         "A_LOSS must fire at exactly -$500 (boundary inclusive)"
     )
     a1 = next(a for a in fired if a.alarm == "A_LOSS")
-    assert a1.reason == EXIT_REASON_ALARM_A
+    # vAA-1 / RULING #4: A_LOSS sub-alarm uses EXIT_REASON_R2_HARD_STOP
+    # (Tiger Sovereign v15.0 Risk Rails R-2 \u2014 STOP MARKET).
+    # A_FLASH sub-alarm continues to use EXIT_REASON_ALARM_A.
+    assert a1.reason == EXIT_REASON_R2_HARD_STOP
 
 
 def test_alarm_a1_does_not_fire_at_minus_499():
@@ -235,7 +241,10 @@ def test_one_exit_reason_even_with_multiple_alarms():
         last_5m_close=99.0,
         last_5m_ema9=100.0,
     )
-    assert result.exit_reason == EXIT_REASON_ALARM_A  # A wins precedence
+    # vAA-1 / RULING #4: priority is R-2 > A_FLASH > B > D. With
+    # unrealized_pnl=-600 the A_LOSS sub-alarm fires first, mapped to
+    # EXIT_REASON_R2_HARD_STOP, which outranks B.
+    assert result.exit_reason == EXIT_REASON_R2_HARD_STOP
     assert len(result.alarms) >= 2  # but B is still in the list
 
 
@@ -509,7 +518,13 @@ def test_alarm_a2_still_trips_on_real_velocity_after_entry_2():
 
 
 def _hvp_with_peak(initial: float, peak: float):
-    """Helper: TradeHVP opened at ``initial`` then ratcheted up to ``peak``."""
+    """Helper: TradeHVP opened at ``initial`` then ratcheted up to ``peak``.
+
+    v5.26.0 RULING #2: this still constructs a TradeHVP for tests that
+    pass it through evaluate_sentinel, but Alarm D no longer reads
+    .peak \u2014 it reads from the session-wide HWM keyed by ticker.
+    Tests that exercise Alarm D must seed the session HWM separately.
+    """
     from engine.momentum_state import TradeHVP
 
     hvp = TradeHVP()
@@ -518,24 +533,38 @@ def _hvp_with_peak(initial: float, peak: float):
     return hvp
 
 
+def _seed_session_5m_adx(ticker: str, *samples: float) -> None:
+    """Seed the session 5m ADX HWM dict for Alarm D tests.
+
+    Resets the per-ticker HWM first so cross-test ordering does not
+    leak peaks. Records each sample via record_session_5m_adx.
+    """
+    _SESSION_5M_ADX_HWM.pop(ticker, None)
+    for s in samples:
+        record_session_5m_adx(ticker, s)
+
+
 def test_alarm_d_fires_when_5m_adx_below_75pct_of_peak():
-    """SENT-D: strict less-than 0.75 * peak fires when peak >= 25."""
+    """SENT-D: strict less-than 0.75 * peak fires when peak >= 25.
+
+    v5.26.0 RULING #2: peak is read from the session HWM keyed by ticker.
+    """
     from engine.sentinel import EXIT_REASON_HVP_LOCK, check_alarm_d
 
-    hvp = _hvp_with_peak(20.0, 40.0)  # 0.75 * 40 = 30.0
-    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=29.99, side=SIDE_LONG)
+    _seed_session_5m_adx("NVDA", 20.0, 40.0)  # 0.75 * 40 = 30.0
+    res = check_alarm_d(ticker="NVDA", current_adx_5m=29.99, side=SIDE_LONG)
     assert res is not None
     assert res.alarm == "D"
     assert res.reason == EXIT_REASON_HVP_LOCK
 
 
 def test_alarm_d_does_not_fire_when_peak_below_safety_floor():
-    """SENT-D safety floor: peak < 25 \u2192 no fire even if adx_now collapses."""
+    """SENT-D safety floor: session peak < 25 \u2192 no fire even if adx collapses."""
     from engine.sentinel import check_alarm_d
 
-    hvp = _hvp_with_peak(10.0, 24.99)  # peak just under 25 floor
-    # Even adx_now = 0 must not fire \u2014 the trade never had momentum.
-    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=0.0, side=SIDE_LONG)
+    _seed_session_5m_adx("NVDA", 10.0, 24.99)  # peak just under 25 floor
+    # Even adx_now = 0 must not fire \u2014 the session never had momentum.
+    res = check_alarm_d(ticker="NVDA", current_adx_5m=0.0, side=SIDE_LONG)
     assert res is None
 
 
@@ -543,21 +572,22 @@ def test_alarm_d_strict_less_than_does_not_fire_at_exact_75pct():
     """SENT-D: equality at 0.75 * peak is NOT a trigger (strict <)."""
     from engine.sentinel import check_alarm_d
 
-    hvp = _hvp_with_peak(20.0, 40.0)  # 0.75 * 40 = 30.0 exactly
-    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=30.0, side=SIDE_LONG)
+    _seed_session_5m_adx("NVDA", 20.0, 40.0)  # 0.75 * 40 = 30.0 exactly
+    res = check_alarm_d(ticker="NVDA", current_adx_5m=30.0, side=SIDE_LONG)
     assert res is None
 
 
 def test_alarm_d_side_agnostic_long_and_short_both_fire():
     """SENT-D is side-symmetric: ADX is unsigned, so LONG and SHORT
-    fire under identical conditions.
+    fire under identical conditions on the same session HWM.
     """
     from engine.sentinel import check_alarm_d
 
-    hvp_long = _hvp_with_peak(20.0, 40.0)
-    hvp_short = _hvp_with_peak(20.0, 40.0)
-    long_res = check_alarm_d(trade_hvp=hvp_long, current_adx_5m=20.0, side=SIDE_LONG)
-    short_res = check_alarm_d(trade_hvp=hvp_short, current_adx_5m=20.0, side=SIDE_SHORT)
+    # Use distinct tickers so the session HWMs are isolated.
+    _seed_session_5m_adx("AAPL", 20.0, 40.0)
+    _seed_session_5m_adx("NVDA", 20.0, 40.0)
+    long_res = check_alarm_d(ticker="AAPL", current_adx_5m=20.0, side=SIDE_LONG)
+    short_res = check_alarm_d(ticker="NVDA", current_adx_5m=20.0, side=SIDE_SHORT)
     assert long_res is not None and long_res.alarm == "D"
     assert short_res is not None and short_res.alarm == "D"
     # detail string carries the side label for observability
@@ -565,27 +595,27 @@ def test_alarm_d_side_agnostic_long_and_short_both_fire():
     assert "SHORT" in short_res.detail
 
 
-def test_alarm_d_returns_none_when_no_strike_open():
-    """check_alarm_d must tolerate a TradeHVP that has never been opened
-    (RuntimeError on .peak access) \u2014 returns None silently. This is
-    the defensive path used by evaluate_sentinel before PR-3b lands.
+def test_alarm_d_returns_none_when_no_session_hwm_recorded():
+    """v5.26.0 RULING #2: when the session HWM is below the safety floor
+    (e.g. early-session, no 5m ADX samples yet), Alarm D returns None.
     """
-    from engine.momentum_state import TradeHVP
     from engine.sentinel import check_alarm_d
 
-    hvp = TradeHVP()  # never on_strike_open
-    res = check_alarm_d(trade_hvp=hvp, current_adx_5m=10.0, side=SIDE_LONG)
+    # Reset the HWM \u2014 no samples recorded.
+    _SESSION_5M_ADX_HWM.pop("GOOG", None)
+    res = check_alarm_d(ticker="GOOG", current_adx_5m=10.0, side=SIDE_LONG)
     assert res is None
-    # And the None-trade_hvp branch is also safe.
-    res_none = check_alarm_d(trade_hvp=None, current_adx_5m=10.0, side=SIDE_LONG)
-    assert res_none is None
 
 
-def test_evaluate_sentinel_threads_alarm_d_when_trade_hvp_supplied():
-    """SENT-D wires through evaluate_sentinel and contributes to has_full_exit."""
+def test_evaluate_sentinel_threads_alarm_d_when_session_hwm_seeded():
+    """SENT-D wires through evaluate_sentinel and contributes to has_full_exit.
+
+    v5.26.0 RULING #2: evaluate_sentinel reads the session HWM via the
+    ``ticker`` kwarg; trade_hvp is accepted for back-compat but ignored.
+    """
     from engine.sentinel import EXIT_REASON_HVP_LOCK
 
-    hvp = _hvp_with_peak(20.0, 40.0)
+    _seed_session_5m_adx("TSLA", 20.0, 40.0)
     result = evaluate_sentinel(
         side=SIDE_LONG,
         unrealized_pnl=0.0,  # no A
@@ -594,7 +624,7 @@ def test_evaluate_sentinel_threads_alarm_d_when_trade_hvp_supplied():
         now_ts=1000.0,
         last_5m_close=None,  # no B
         last_5m_ema9=None,
-        trade_hvp=hvp,
+        ticker="TSLA",
         current_adx_5m=29.0,  # below 30 \u2192 D fires
     )
     assert any(a.alarm == "D" for a in result.alarms)

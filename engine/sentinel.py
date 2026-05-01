@@ -64,18 +64,23 @@ ALARM_A_VELOCITY_THRESHOLD: float = -0.01  # -1.00%
 # the last 60s sample.
 PNL_HISTORY_MAXLEN: int = 120
 
-# Exit reason codes used downstream by broker/positions and
-# eye_of_tiger telemetry. Stable strings.
-EXIT_REASON_ALARM_A: str = "sentinel_alarm_a"
-EXIT_REASON_ALARM_B: str = "sentinel_alarm_b"
-# Alarm D \u2014 HVP Lock. Full MARKET exit when 5m ADX has decayed
-# below 75% of the per-Strike high-water-mark, gated by a safety
-# floor so trades that never built momentum cannot be flushed.
-EXIT_REASON_HVP_LOCK: str = "HVP_LOCK"
+# Exit reason codes per RULING #1 (LIMIT exits) + RULING #4 (R-2 hard
+# stop tagging). Stable strings consumed by broker/positions and
+# broker/order_types.
+#
+# RULING #1: A-A flash loss, A-B EMA cross, A-D ADX decline emit LIMIT
+# exits at +/-0.5% from current. R-2 hard stop (-$500, A_LOSS sub-
+# alarm) emits STOP MARKET per Tiger Sovereign v15.0 \u00a7Risk Rails R-2.
+EXIT_REASON_R2_HARD_STOP: str = "sentinel_r2_hard_stop"
+EXIT_REASON_ALARM_A: str = "sentinel_a_flash_loss"
+EXIT_REASON_ALARM_B: str = "sentinel_b_ema_cross"
+EXIT_REASON_ALARM_D: str = "sentinel_d_adx_decline"
+# Backward-compat alias \u2014 some callers still import EXIT_REASON_HVP_LOCK.
+EXIT_REASON_HVP_LOCK: str = EXIT_REASON_ALARM_D
+
+# Alarm D \u2014 ADX decline: 5m ADX falls below 75% of session HWM
+# (per RULING #2, session-scoped, NOT per-Strike Trade_HVP).
 ALARM_D_HVP_FRACTION: float = 0.75
-# Safety floor flagged for review at PR-5 merge: a peak below 25
-# means the trade never registered as a real trend, so the lock is
-# suppressed.
 ALARM_D_SAFETY_FLOOR_ADX: float = 25.0
 
 # vAA-1: the new Alarm C reason. Kept as ``EXIT_REASON_ALARM_C`` for
@@ -140,25 +145,30 @@ class SentinelResult:
 
     @property
     def has_full_exit(self) -> bool:
-        """True if Alarm A, B, or D fired \u2014 caller must do a full close
-        and ignore any C stop-tighten on the same tick.
+        """True if R-2 hard stop, A-A, A-B, or A-D fired \u2014 caller must
+        do a full close and ignore any C stop-tighten on the same tick.
         """
         for a in self.alarms:
             if a.reason in (
+                EXIT_REASON_R2_HARD_STOP,
                 EXIT_REASON_ALARM_A,
                 EXIT_REASON_ALARM_B,
-                EXIT_REASON_HVP_LOCK,
+                EXIT_REASON_ALARM_D,
             ):
                 return True
         return False
 
     @property
     def exit_reason(self) -> str | None:
-        """Single canonical exit reason. Priority: A > B > D > C.
+        """Single canonical exit reason.
+        Priority: R-2 hard stop > A-A > A-B > A-D > C.
         All alarms remain recorded in `alarms` regardless.
         """
         if not self.alarms:
             return None
+        for a in self.alarms:
+            if a.reason == EXIT_REASON_R2_HARD_STOP:
+                return EXIT_REASON_R2_HARD_STOP
         for a in self.alarms:
             if a.reason == EXIT_REASON_ALARM_A:
                 return EXIT_REASON_ALARM_A
@@ -166,8 +176,8 @@ class SentinelResult:
             if a.reason == EXIT_REASON_ALARM_B:
                 return EXIT_REASON_ALARM_B
         for a in self.alarms:
-            if a.reason == EXIT_REASON_HVP_LOCK:
-                return EXIT_REASON_HVP_LOCK
+            if a.reason == EXIT_REASON_ALARM_D:
+                return EXIT_REASON_ALARM_D
         return self.alarms[0].reason
 
 
@@ -293,15 +303,17 @@ def check_alarm_a(
     """
     fired: list[SentinelAction] = []
 
-    # A_LOSS \u2014 absolute hard floor. -$500 triggers exactly at the
-    # boundary (`<=`). The boundary value is spec-literal.
+    # A_LOSS \u2014 R-2 hard stop (-$500). Per Tiger Sovereign v15.0
+    # \u00a7Risk Rails R-2, this is a STOP MARKET (NOT a LIMIT, unlike
+    # the A-A / A-B / A-D RULING #1 LIMIT exits). The reason string
+    # routes to ORDER_TYPE_STOP_MARKET via broker.order_types.
     if unrealized_pnl <= ALARM_A_HARD_LOSS_DOLLARS:
         fired.append(
             SentinelAction(
                 alarm="A_LOSS",
-                reason=EXIT_REASON_ALARM_A,
+                reason=EXIT_REASON_R2_HARD_STOP,
                 detail=(
-                    f"side={side} unrealized_pnl=${unrealized_pnl:.2f} "
+                    f"side={side} R-2 hard stop unrealized_pnl=${unrealized_pnl:.2f} "
                     f"<= ${ALARM_A_HARD_LOSS_DOLLARS:.2f}"
                 ),
             )
@@ -431,43 +443,76 @@ def check_alarm_c(
 
 
 # ---------------------------------------------------------------------------
-# Alarm D \u2014 HVP Lock (vAA-1 SENT-D)
+# Alarm D \u2014 ADX decline (RULING #2: session-wide HWM, NOT per-Strike)
 # ---------------------------------------------------------------------------
+
+# RULING #2 SessionHWM tracker. Session-wide max 5m ADX per ticker since
+# 09:30 ET, decoupled from per-Strike Trade_HVP scope. scan.py calls
+# ``record_session_5m_adx`` on each closed 5m bar; the daily session
+# reset hook clears the dict.
+_SESSION_5M_ADX_HWM: dict[str, float] = {}
+
+
+def record_session_5m_adx(ticker: str, adx: float) -> None:
+    """Update the session-wide 5m ADX HWM for ``ticker``.
+
+    Idempotent: only raises the recorded peak; never lowers it. scan.py
+    calls this on every closed 5m bar regardless of position state.
+    """
+    if not ticker:
+        return
+    try:
+        a = float(adx)
+    except (TypeError, ValueError):
+        return
+    cur = _SESSION_5M_ADX_HWM.get(ticker, 0.0)
+    if a > cur:
+        _SESSION_5M_ADX_HWM[ticker] = a
+
+
+def get_session_5m_adx_hwm(ticker: str) -> float:
+    """Return the session-wide 5m ADX HWM for ``ticker`` (0.0 if unset)."""
+    return _SESSION_5M_ADX_HWM.get(ticker, 0.0)
+
+
+def reset_session_5m_adx() -> None:
+    """Clear all session-wide 5m ADX HWM state. Called at 09:30 ET reset."""
+    _SESSION_5M_ADX_HWM.clear()
 
 
 def check_alarm_d(
     *,
-    trade_hvp: TradeHVP | None,
+    ticker: str,
     current_adx_5m: float,
     side: str = "",
+    trade_hvp: TradeHVP | None = None,  # legacy, ignored under RULING #2
 ) -> SentinelAction | None:
-    """Evaluate Alarm D (HVP Lock) for one position.
+    """Evaluate Alarm D (ADX decline) for one position.
 
-    spec: vAA-1 SENT-D HVP lock. Fires when the trade's high-water-mark
-    5m ADX has decayed by more than 25% (current_adx_5m strictly less
-    than 75% of peak) AND the trade originally registered >= 25 ADX at
-    its peak (safety floor). The safety floor value is flagged for
-    review at PR-5 merge.
+    RULING #2: read peak from session-wide ``_SESSION_5M_ADX_HWM`` keyed
+    by ticker, NOT from per-Strike ``trade_hvp.peak``. Fires when
+    current 5m ADX drops below 75% of the session peak AND the session
+    peak was at least 25 ADX (safety floor).
 
-    Side-symmetric: ADX is unsigned, so the trigger and action are
-    identical for LONG and SHORT. Returns ``None`` when no alarm fires
-    or when no Strike has opened on ``trade_hvp`` yet.
+    Side-symmetric: ADX is unsigned. Returns ``None`` when the session
+    HWM is below the safety floor (e.g. early-session or low-ADX day).
+
+    The ``trade_hvp`` kwarg is retained for signature stability but is
+    no longer consulted \u2014 RULING #2 deliberately decouples Alarm D
+    from per-Strike Trade_HVP scope.
     """
-    if trade_hvp is None:
-        return None
-    try:
-        peak = trade_hvp.peak
-    except RuntimeError:
-        return None
+    _ = trade_hvp  # explicit: legacy kwarg, RULING #2 ignores it
+    peak = get_session_5m_adx_hwm(ticker)
     if peak < ALARM_D_SAFETY_FLOOR_ADX:
         return None
     threshold = ALARM_D_HVP_FRACTION * peak
     if current_adx_5m < threshold:
         return SentinelAction(
             alarm="D",
-            reason=EXIT_REASON_HVP_LOCK,
+            reason=EXIT_REASON_ALARM_D,
             detail=(
-                f"side={side} adx={current_adx_5m:.2f} peak={peak:.2f} threshold={threshold:.2f}"
+                f"side={side} ticker={ticker} adx={current_adx_5m:.2f} "
+                f"session_peak={peak:.2f} threshold={threshold:.2f}"
             ),
         )
     return None
@@ -643,15 +688,16 @@ def evaluate_sentinel(
         )
         result.alarms.extend(c_alarms)
 
-    # Alarm D \u2014 HVP Lock. Independent of A/B/C. Defensive: trade_hvp
-    # is set in PR-3b at Strike fill time. Until PR-3b lands, this
-    # branch is dead-code-safe (the kwarg defaults to None and
-    # check_alarm_d returns None on missing state).
-    if trade_hvp is not None and current_adx_5m is not None:
+    # Alarm D \u2014 ADX decline. Independent of A/B/C. RULING #2: reads
+    # session-wide HWM keyed by ticker, NOT per-Strike trade_hvp. The
+    # ``trade_hvp`` kwarg is accepted but ignored. Skipped silently
+    # when ticker is None (caller couldn't identify the position).
+    if ticker is not None and current_adx_5m is not None:
         d_action = check_alarm_d(
-            trade_hvp=trade_hvp,
+            ticker=ticker,
             current_adx_5m=float(current_adx_5m),
             side=side,
+            trade_hvp=trade_hvp,
         )
         if d_action is not None:
             result.alarms.append(d_action)
@@ -709,8 +755,10 @@ __all__ = [
     "EXIT_REASON_ALARM_A",
     "EXIT_REASON_ALARM_B",
     "EXIT_REASON_ALARM_C",
+    "EXIT_REASON_ALARM_D",
     "EXIT_REASON_DIVERGENCE_TRAP",
     "EXIT_REASON_HVP_LOCK",
+    "EXIT_REASON_R2_HARD_STOP",
     "EXIT_REASON_VELOCITY_RATCHET",
     "PNL_HISTORY_MAXLEN",
     "RATCHET_STOP_PCT",
@@ -728,7 +776,10 @@ __all__ = [
     "evaluate_sentinel",
     "evaluate_velocity_ratchet",
     "format_sentinel_log",
+    "get_session_5m_adx_hwm",
     "maybe_reset_pnl_baseline_on_shares_change",
     "new_pnl_history",
     "record_pnl",
+    "record_session_5m_adx",
+    "reset_session_5m_adx",
 ]
