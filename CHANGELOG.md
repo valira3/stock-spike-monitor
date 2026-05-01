@@ -4,6 +4,65 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.31.0 — 2026-05-01 — Chart polish + forensic expansion + open-position lifecycle overlay
+
+### Why
+The intraday chart panel exposed only price candles + AVWAP + EMA9 + entry/exit triangles. Two gaps blocked deeper post-trade review:
+1. **Chart context was thin.** No prior-day close, session HOD/LOD, volume sub-pane, AVWAP ±1σ band, premarket-anchored AVWAP, or sentinel arm/trip markers — all of which the engine *already computes* but the panel was discarding.
+2. **Forensic capture was not full-loop.** Entries had a forensic stream, but exits did not, so any backtest replay of "why did this exit fire here" had to reverse-engineer from prod logs. Macro context (QQQ regime / breadth / RSI) was likewise missing minute-by-minute.
+
+v5.31.0 closes both gaps in one PR, plus adds an **open-position lifecycle overlay** so the chart shows the full life of every trade: entry triangle, trail-stop staircase, MAE/MFE excursion band, alarm-coded exit triangle, and a live rail for still-open positions.
+
+### What
+**Chart backend (`dashboard_server._intraday_build_payload`)** now also emits:
+- `pdc` (prior-day close from bar archive), `sess_hod` / `sess_lod` (running session extremes)
+- `avwap_hi` / `avwap_lo` per bar (running volume-weighted variance → ±1σ band)
+- `pm_avwap` per bar (premarket-anchored AVWAP from 8:00 ET, separate series)
+- `sentinel_events` (bounded list of arm/trip events from `trade_genius._sentinel_arm_events`)
+- `lifecycle` block via new `_intraday_build_lifecycle(ticker, day)` reader: `{entries, exits, trail_series, open}`, all keyed by `et_min` for direct chart placement.
+
+**Frontend (`dashboard_static/app.js _drawIntradayChart`)** new layers:
+- Volume sub-pane (15% of plot height) with slate histogram bars
+- PDC dashed purple, HOD solid green, LOD solid red — each labelled
+- AVWAP ±1σ band (translucent blue polygon) under the AVWAP line
+- Premarket AVWAP (dashed, 0.55 alpha) for `et_min < 570`
+- Sentinel diamonds (amber = armed/changed, red = fired)
+- New `_drawLifecycleOverlay(ctx, payload, geom)` helper: entry triangles labelled `L 42` / `S 30`, exit triangles color-coded by alarm (`A1`/`A2`/`B`/`F`/`EOD`/`MANUAL`), dashed amber trail-stop staircase with stage-transition notches, translucent MAE (red) / MFE (green) excursion bands, and a dashed live rail at entry price for still-open trades.
+
+**Forensic capture (`forensic_capture.py`)** — new streams:
+- `write_exit_record` → `{date}/exits/{TICKER}.jsonl` with alarm code, MAE/MFE bps, trail stage at exit, peak close, slippage bps, P&L
+- `write_macro_snapshot` → `{date}/macro.jsonl` (day-scoped, no per-ticker segment) with QQQ/SPY/VIX last + regime/breadth/RSI labels per minute
+- `write_daily_bar` → `{base_dir}/{TICKER}.jsonl` (cross-day flat archive at `/data/bars/daily/`) with OHLC + OR + PDC + session HOD/LOD per ticker per session
+- `write_decision_record` extended with `entry_bid` / `entry_ask` / `spread_bps` / `decision_latency_ms`
+- `write_indicator_snapshot` extended with `permit_state` (boundary-hold gate state + trail snapshot)
+
+**Forensic call sites:**
+- `broker/orders.py:check_breakout` captures bid/ask snapshot + decision latency before the entry record write
+- `broker/orders.py:close_breakout` writes an exit record after every paper_log line (sentinel A1/A2/B/F + EOD + manual), with MAE/MFE bps from `pos["v531_min_adverse_price"]` / `pos["v531_max_favorable_price"]`
+- `broker/positions.py:_run_sentinel` updates MAE/MFE trackers every tick, then appends to `_sentinel_arm_events` deque (bounded to 500) on any fired alarm or armed-code change
+- `broker/lifecycle.py:eod_close` writes one daily bar per `TRADE_TICKERS` member at end-of-day
+- `engine/scan.py` builds `permit_state` (boundary-hold gate result + trail snapshot) and threads it into every indicator snapshot
+- `trade_genius.py:_qqq_weather_tick` writes a macro snapshot whenever the QQQ regime bucket advances
+
+**Bar archive (`bar_archive.py`)** — schema extension:
+- `BAR_SCHEMA_FIELDS` adds `trade_count` and `bar_vwap` (Alpaca path now wires `bar.trade_count` / `bar.vwap` directly; Yahoo path emits None for both pending an upstream provider; canon QQQ archive carries None until the producer is wired)
+- New `DAILY_BAR_SCHEMA_FIELDS` + `write_daily_bar` for the cross-day flat archive
+- New `_normalise_daily_bar` (drops unknown keys, defaults missing keys to None)
+
+### Tests
+`tests/test_v5_31_0_chart_and_forensic.py` (11 tests, all passing):
+- `write_exit_record` / `write_macro_snapshot` / `write_daily_bar` round-trip
+- `bar_archive.write_daily_bar` schema projection (extraneous keys dropped)
+- `BAR_SCHEMA_FIELDS` includes `trade_count` + `bar_vwap`
+- `_intraday_compute_avwap_band` invariants (`lo ≤ avwap ≤ hi`, anchor alignment with `_intraday_compute_avwap`, premarket anchor 480 vs RTH default 570)
+- `_intraday_build_lifecycle` shape via local replica (production fn reads `/data/forensics`)
+- `_sentinel_arm_events` global exists, is a list, and the cap-trim invariant correctly retains the most recent 500 entries
+
+### Migration
+No schema migration. New forensic streams append-only; existing readers ignore new fields. Chart payload extensions are additive (frontend gracefully no-ops on missing keys). Bar archive schema additions default to None for legacy producers.
+
+---
+
 ## v5.30.1 — 2026-05-01 — Premarket bar data + drop dead `daily_bars` import
 
 ### Why

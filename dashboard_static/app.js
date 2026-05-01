@@ -1350,23 +1350,30 @@
     const PAD_L = 56, PAD_R = 12, PAD_T = 14, PAD_B = 22;
     const plotW = cssW - PAD_L - PAD_R;
     const plotH = cssH - PAD_T - PAD_B;
+    // v5.31.0 \u2014 split plot vertically: price 85% on top, volume 15% on bottom.
+    const VOL_FRAC = 0.15;
+    const priceH = Math.max(40, plotH * (1 - VOL_FRAC) - 4);
+    const volH = Math.max(20, plotH * VOL_FRAC);
+    const VOL_TOP = PAD_T + priceH + 4;
     const xOf = (m) => PAD_L + ((m - X_MIN) / (X_MAX - X_MIN)) * plotW;
-    const yOf = (p) => PAD_T + (1 - (p - yMin) / (yMax - yMin)) * plotH;
+    const yOf = (p) => PAD_T + (1 - (p - yMin) / (yMax - yMin)) * priceH;
 
     // Background + grid + 9:30 ET vertical separator.
     ctx.fillStyle = "#0e1318";
-    ctx.fillRect(PAD_L, PAD_T, plotW, plotH);
+    ctx.fillRect(PAD_L, PAD_T, plotW, priceH);
+    ctx.fillStyle = "#0b1014";
+    ctx.fillRect(PAD_L, VOL_TOP, plotW, volH);
     ctx.strokeStyle = "#1f2730";
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 1; i < 6; i++) {
-      const y = PAD_T + (i / 6) * plotH;
+      const y = PAD_T + (i / 6) * priceH;
       ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y);
     }
     ctx.stroke();
     ctx.strokeStyle = "#3a4a5c";
     ctx.beginPath();
-    ctx.moveTo(xOf(570), PAD_T); ctx.lineTo(xOf(570), PAD_T + plotH);
+    ctx.moveTo(xOf(570), PAD_T); ctx.lineTo(xOf(570), PAD_T + priceH);
     ctx.stroke();
 
     // Y axis labels (5 ticks).
@@ -1411,6 +1418,83 @@
     }
     ctx.setLineDash([]);
 
+    // v5.31.0 \u2014 PDC (prior-day close) dashed purple, HOD/LOD solid thin.
+    const pdc = (typeof payload.pdc === "number") ? payload.pdc : null;
+    const sessHod = (typeof payload.sess_hod === "number") ? payload.sess_hod : null;
+    const sessLod = (typeof payload.sess_lod === "number") ? payload.sess_lod : null;
+    if (pdc !== null && pdc >= yMin && pdc <= yMax) {
+      ctx.strokeStyle = "#a78bfa";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, yOf(pdc)); ctx.lineTo(PAD_L + plotW, yOf(pdc));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#a78bfa";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("PDC", PAD_L + 4, yOf(pdc) - 2);
+    }
+    if (sessHod !== null && sessHod >= yMin && sessHod <= yMax) {
+      ctx.strokeStyle = "#34d399";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, yOf(sessHod)); ctx.lineTo(PAD_L + plotW, yOf(sessHod));
+      ctx.stroke();
+      ctx.fillStyle = "#34d399";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("HOD", PAD_L + 4, yOf(sessHod) - 2);
+    }
+    if (sessLod !== null && sessLod >= yMin && sessLod <= yMax) {
+      ctx.strokeStyle = "#f87171";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, yOf(sessLod)); ctx.lineTo(PAD_L + plotW, yOf(sessLod));
+      ctx.stroke();
+      ctx.fillStyle = "#f87171";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("LOD", PAD_L + 4, yOf(sessLod) + 10);
+    }
+
+    // v5.31.0 \u2014 AVWAP \u00b11\u03c3 band, filled translucent under the AVWAP line.
+    // Band points come from payload.bars[].avwap_hi / .avwap_lo (RTH-only,
+    // null in premarket). We build a top polyline forward then bottom backward.
+    {
+      const top = [];
+      const bot = [];
+      for (const b of bars) {
+        if (typeof b.et_min !== "number") continue;
+        const hi = b.avwap_hi, lo = b.avwap_lo;
+        if (hi === null || hi === undefined || lo === null || lo === undefined) {
+          if (top.length) {
+            ctx.fillStyle = "rgba(122,166,255,0.08)";
+            ctx.beginPath();
+            ctx.moveTo(top[0].x, top[0].y);
+            for (let i = 1; i < top.length; i++) ctx.lineTo(top[i].x, top[i].y);
+            for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i].x, bot[i].y);
+            ctx.closePath();
+            ctx.fill();
+            top.length = 0; bot.length = 0;
+          }
+          continue;
+        }
+        const x = xOf(b.et_min);
+        top.push({x: x, y: yOf(hi)});
+        bot.push({x: x, y: yOf(lo)});
+      }
+      if (top.length) {
+        ctx.fillStyle = "rgba(122,166,255,0.08)";
+        ctx.beginPath();
+        ctx.moveTo(top[0].x, top[0].y);
+        for (let i = 1; i < top.length; i++) ctx.lineTo(top[i].x, top[i].y);
+        for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i].x, bot[i].y);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
     // Candles (thin OHLC sticks). Body width scales with bar count.
     const bw = Math.max(1, Math.min(6, plotW / Math.max(bars.length, 1) - 1));
     for (const b of bars) {
@@ -1430,7 +1514,27 @@
       ctx.fillRect(x - bw / 2, Math.min(yO, yC), bw, Math.max(1, Math.abs(yC - yO)));
     }
 
-    // AVWAP line (RTH only, premarket bars carry null).
+    // v5.31.0 \u2014 Volume sub-pane histogram (slate bars, scaled to max v).
+    {
+      let vMax = 0;
+      for (const b of bars) {
+        if (typeof b.v === "number" && b.v > vMax) vMax = b.v;
+      }
+      if (vMax > 0) {
+        ctx.fillStyle = "#334155";
+        for (const b of bars) {
+          if (typeof b.et_min !== "number") continue;
+          if (typeof b.v !== "number" || b.v <= 0) continue;
+          const x = xOf(b.et_min);
+          const h = (b.v / vMax) * (volH - 2);
+          ctx.fillRect(x - bw / 2, VOL_TOP + (volH - h), bw, h);
+        }
+      }
+    }
+
+    // AVWAP line. Pre-v5.31.0 reset on null bars (premarket); v5.31.0 also
+    // draws PM AVWAP when bars carry it (lighter alpha) so the band+line is
+    // continuous from 8am ET onward.
     ctx.strokeStyle = "#7aa6ff";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -1444,7 +1548,32 @@
     }
     ctx.stroke();
 
-    // EMA9 (5m) line.
+    // v5.31.0 \u2014 Premarket AVWAP (anchored 8:00 ET, et_min<570) drawn at
+    // 0.55 alpha so it visually fades into the RTH AVWAP after 9:30.
+    {
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = "#7aa6ff";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      let pmStarted = false;
+      for (const b of bars) {
+        if (typeof b.et_min !== "number") continue;
+        if (b.et_min >= 570) break;
+        const v = b.pm_avwap;
+        if (v === null || v === undefined) { pmStarted = false; continue; }
+        const x = xOf(b.et_min), y = yOf(v);
+        if (!pmStarted) { ctx.moveTo(x, y); pmStarted = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    // EMA9 (5m) line. v5.31.0: relax the reset so PM bars draw too
+    // (premarket EMA9 also produced when bars carry it).
     ctx.strokeStyle = "#c084fc";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -1458,11 +1587,8 @@
     }
     ctx.stroke();
 
-    // v5.23.3 — Entry/exit markers, sourced from paper_state (open
-    // positions + closed history). Each ts is full ISO UTC; we map
-    // it to ET minute-of-day directly so the marker aligns with the
-    // chart's ET-anchored x-axis instead of using rough hour-arithmetic.
-    const trades = (payload && Array.isArray(payload.trades)) ? payload.trades : [];
+    // v5.23.3 \u2014 ET minute-of-day mapper (DST-safe via Intl). v5.31.0
+    // hoisted above sentinel/lifecycle markers so they can share it.
     const utcIsoToEtMin = (tsIso) => {
       if (!tsIso || typeof tsIso !== "string") return null;
       const dt = new Date(tsIso);
@@ -1486,6 +1612,32 @@
         return null;
       }
     };
+
+    // v5.31.0 \u2014 Sentinel arm/trip markers (diamonds). Amber = armed/changed,
+    // red = fired. Source: payload.sentinel_events (ts_utc + price).
+    const sentinelEvents = (payload && Array.isArray(payload.sentinel_events))
+      ? payload.sentinel_events : [];
+    for (const ev of sentinelEvents) {
+      if (!ev || typeof ev.price !== "number") continue;
+      const etMin = utcIsoToEtMin(ev.ts_utc);
+      if (etMin === null) continue;
+      if (etMin < X_MIN || etMin > X_MAX) continue;
+      const x = xOf(etMin), y = yOf(ev.price);
+      ctx.fillStyle = ev.fired ? "#ef4444" : "#fbbf24";
+      ctx.beginPath();
+      ctx.moveTo(x, y - 5);
+      ctx.lineTo(x + 4, y);
+      ctx.lineTo(x, y + 5);
+      ctx.lineTo(x - 4, y);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // v5.23.3 \u2014 Entry/exit markers, sourced from paper_state (open
+    // positions + closed history). Each ts is full ISO UTC; we map
+    // it to ET minute-of-day directly so the marker aligns with the
+    // chart's ET-anchored x-axis instead of using rough hour-arithmetic.
+    const trades = (payload && Array.isArray(payload.trades)) ? payload.trades : [];
     for (const t of trades) {
       const drawMark = (tsIso, price, kind) => {
         if (!tsIso || typeof price !== "number") return;
@@ -1509,6 +1661,190 @@
       };
       drawMark(t.entry_ts, t.entry_price, "entry");
       drawMark(t.exit_ts, t.exit_price, "exit");
+    }
+
+    // v5.31.0 \u2014 Lifecycle overlay (entries, exits, trail-stop staircase,
+    // MAE/MFE band, live position rail). Source: payload.lifecycle, populated
+    // by dashboard_server._intraday_build_lifecycle from forensic streams.
+    _drawLifecycleOverlay(ctx, payload, {
+      xOf: xOf, yOf: yOf,
+      X_MIN: X_MIN, X_MAX: X_MAX,
+      utcIsoToEtMin: utcIsoToEtMin,
+      yMin: yMin, yMax: yMax,
+      PAD_L: PAD_L, plotW: plotW,
+    });
+  }
+
+  // v5.31.0 \u2014 Open-position lifecycle overlay. Reads payload.lifecycle
+  // (entries[], exits[], trail_series[], open[]) and renders:
+  //   * Entry triangles (up, green long / red short) labelled side+shares
+  //   * Exit triangles (down, color-coded by alarm A1/A2/B/F/EOD/MANUAL)
+  //   * Trail-stop staircase (dashed amber step line of trail.stop)
+  //   * Stage-transition tick marks (notches where trail.stage changes)
+  //   * MAE/MFE shaded band per closed pair (translucent red/green)
+  //   * Live position rail (horizontal at entry_price extending to "now") for open[]
+  function _drawLifecycleOverlay(ctx, payload, geom) {
+    const lc = payload && payload.lifecycle;
+    if (!lc || typeof lc !== "object") return;
+    const xOf = geom.xOf, yOf = geom.yOf;
+    const X_MIN = geom.X_MIN, X_MAX = geom.X_MAX;
+    const yMin = geom.yMin, yMax = geom.yMax;
+    const utcIsoToEtMin = geom.utcIsoToEtMin;
+    const PAD_L = geom.PAD_L, plotW = geom.plotW;
+    const inWin = (m) => m !== null && m >= X_MIN && m <= X_MAX;
+    const inPrice = (p) => typeof p === "number" && p >= yMin && p <= yMax;
+
+    // Alarm \u2192 color map for exit triangles.
+    const ALARM_COLOR = {
+      A1: "#fb7185",  // per-trade brake
+      A2: "#f97316",  // velocity
+      B:  "#a78bfa",  // 9-EMA cross
+      F:  "#fbbf24",  // chandelier
+      EOD: "#94a3b8",
+      MANUAL: "#64748b",
+    };
+
+    // MAE/MFE bands (drawn first so triangles sit on top). Backend supplies
+    // each exit with ``et_min`` (exit), ``entry_et_min`` (entry), ``price``,
+    // ``entry_price``, ``side``, ``mae_bps``/``mfe_bps``.
+    const exits = Array.isArray(lc.exits) ? lc.exits : [];
+    for (const ex of exits) {
+      if (!ex) continue;
+      const entMin = (typeof ex.entry_et_min === "number") ? ex.entry_et_min : null;
+      const exMin = (typeof ex.et_min === "number") ? ex.et_min : null;
+      if (!inWin(entMin) || !inWin(exMin)) continue;
+      const ep = ex.entry_price;
+      if (!inPrice(ep)) continue;
+      const x0 = xOf(entMin), x1 = xOf(exMin);
+      // MAE: adverse excursion (below ep for long, above ep for short).
+      // Backend reports mae_bps / mfe_bps as positive bps from entry.
+      const side = (ex.side || "long").toLowerCase();
+      const longSide = side === "long";
+      if (typeof ex.mae_bps === "number" && ex.mae_bps > 0) {
+        const maePrice = longSide
+          ? ep * (1 - ex.mae_bps / 10000)
+          : ep * (1 + ex.mae_bps / 10000);
+        if (inPrice(maePrice)) {
+          ctx.fillStyle = "rgba(239,68,68,0.10)";
+          const yA = yOf(ep), yB = yOf(maePrice);
+          ctx.fillRect(x0, Math.min(yA, yB), x1 - x0, Math.abs(yB - yA));
+        }
+      }
+      if (typeof ex.mfe_bps === "number" && ex.mfe_bps > 0) {
+        const mfePrice = longSide
+          ? ep * (1 + ex.mfe_bps / 10000)
+          : ep * (1 - ex.mfe_bps / 10000);
+        if (inPrice(mfePrice)) {
+          ctx.fillStyle = "rgba(34,197,94,0.10)";
+          const yA = yOf(ep), yB = yOf(mfePrice);
+          ctx.fillRect(x0, Math.min(yA, yB), x1 - x0, Math.abs(yB - yA));
+        }
+      }
+    }
+
+    // Trail-stop staircase + stage transition ticks. Backend supplies each
+    // point with ``et_min``, ``stop``, ``stage``.
+    const trail = Array.isArray(lc.trail_series) ? lc.trail_series : [];
+    if (trail.length) {
+      ctx.strokeStyle = "#fbbf24";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      let prevX = null, prevY = null, prevStage = null;
+      for (const pt of trail) {
+        if (!pt) continue;
+        const m = (typeof pt.et_min === "number") ? pt.et_min : null;
+        if (!inWin(m)) continue;
+        if (typeof pt.stop !== "number" || !inPrice(pt.stop)) continue;
+        const x = xOf(m), y = yOf(pt.stop);
+        if (prevX === null) {
+          ctx.moveTo(x, y);
+        } else {
+          // Step: horizontal then vertical.
+          ctx.lineTo(x, prevY);
+          ctx.lineTo(x, y);
+        }
+        prevX = x; prevY = y;
+        if (prevStage !== null && pt.stage !== prevStage) {
+          // Notch tick on stage change.
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4); ctx.stroke();
+          ctx.beginPath();
+          ctx.setLineDash([4, 3]);
+          ctx.moveTo(x, y);
+        }
+        prevStage = pt.stage;
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Live position rail \u2014 horizontal at entry_price from entry_ts to "now".
+    const open = Array.isArray(lc.open) ? lc.open : [];
+    if (open.length) {
+      // "now" = last bar's et_min, fallback to X_MAX.
+      const bars = (payload && Array.isArray(payload.bars)) ? payload.bars : [];
+      let nowMin = X_MAX;
+      for (let i = bars.length - 1; i >= 0; i--) {
+        if (typeof bars[i].et_min === "number") { nowMin = bars[i].et_min; break; }
+      }
+      for (const op of open) {
+        if (!op) continue;
+        const m = (typeof op.et_min === "number") ? op.et_min : null;
+        if (!inWin(m)) continue;
+        if (!inPrice(op.entry_price)) continue;
+        ctx.strokeStyle = (op.side || "long").toLowerCase() === "long"
+          ? "rgba(62,194,143,0.55)" : "rgba(226,106,106,0.55)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(xOf(m), yOf(op.entry_price));
+        ctx.lineTo(xOf(Math.min(nowMin, X_MAX)), yOf(op.entry_price));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Entry triangles (up, labelled side+shares). Backend supplies each
+    // entry with ``et_min``, ``ts_utc``, ``price``, ``side``.
+    const entries = Array.isArray(lc.entries) ? lc.entries : [];
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.textAlign = "left";
+    for (const en of entries) {
+      if (!en) continue;
+      const m = (typeof en.et_min === "number") ? en.et_min : null;
+      if (!inWin(m) || !inPrice(en.price)) continue;
+      const x = xOf(m), y = yOf(en.price);
+      const longSide = (en.side || "long").toLowerCase() === "long";
+      ctx.fillStyle = longSide ? "#34d399" : "#f87171";
+      ctx.beginPath();
+      ctx.moveTo(x, y - 7); ctx.lineTo(x - 6, y + 5); ctx.lineTo(x + 6, y + 5);
+      ctx.closePath();
+      ctx.fill();
+      const lbl = (longSide ? "L" : "S")
+        + (typeof en.shares === "number" ? " " + en.shares : "");
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fillText(lbl, x + 8, y + 4);
+    }
+
+    // Exit triangles (down, color-coded by alarm).
+    for (const ex of exits) {
+      if (!ex) continue;
+      const m = (typeof ex.et_min === "number") ? ex.et_min : null;
+      if (!inWin(m) || !inPrice(ex.price)) continue;
+      const x = xOf(m), y = yOf(ex.price);
+      ctx.fillStyle = ALARM_COLOR[(ex.alarm || "").toUpperCase()] || "#e26a6a";
+      ctx.beginPath();
+      ctx.moveTo(x, y + 7); ctx.lineTo(x - 6, y - 5); ctx.lineTo(x + 6, y - 5);
+      ctx.closePath();
+      ctx.fill();
+      const lbl = (ex.alarm || "").toUpperCase();
+      if (lbl) {
+        ctx.fillStyle = "#cbd5e1";
+        ctx.fillText(lbl, x + 8, y - 4);
+      }
     }
   }
 

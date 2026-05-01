@@ -227,6 +227,26 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             unrealized = (entry_p - current_price) * shares
         position_value = float(entry_p) * shares
 
+        # v5.31.0 \u2014 maintain per-position MAE / MFE trackers. The
+        # exit-record forensic writer reads these on close to compute
+        # max-adverse and max-favorable excursion in bps. Tracked in raw
+        # price space so a backtest can also recompute against entry_price.
+        try:
+            _cur_min = pos.get("v531_min_adverse_price")
+            _cur_max = pos.get("v531_max_favorable_price")
+            if side == _SENTINEL_SIDE_LONG:
+                if _cur_min is None or current_price < _cur_min:
+                    pos["v531_min_adverse_price"] = float(current_price)
+                if _cur_max is None or current_price > _cur_max:
+                    pos["v531_max_favorable_price"] = float(current_price)
+            else:
+                if _cur_min is None or current_price > _cur_min:
+                    pos["v531_min_adverse_price"] = float(current_price)
+                if _cur_max is None or current_price < _cur_max:
+                    pos["v531_max_favorable_price"] = float(current_price)
+        except Exception:
+            pass
+
         history = pos.get("pnl_history")
         if history is None:
             history = new_pnl_history()
@@ -417,6 +437,38 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         # v5.13.6 \u2014 emit lifecycle PHASE4 events on state changes
         # (best-effort, no-op when logger absent).
         _lifecycle_log_phase4_change(ticker, side, pos, result, current_price)
+        # v5.31.0 \u2014 record sentinel arm/trip events for chart overlay.
+        # Append to trade_genius._sentinel_arm_events on either:
+        #   * result.fired (any alarm tripped this tick)
+        #   * armed-code set changed vs previous tick (state transition)
+        # Bounded to ~500 entries to avoid unbounded growth.
+        try:
+            _codes = sorted({a.alarm for a in (result.alarms or []) if a and a.alarm})
+            _prior = pos.get("v531_prior_alarm_codes") or []
+            if result.fired or _codes != list(_prior):
+                _tg_mod = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+                if _tg_mod is not None:
+                    _ev_list = getattr(_tg_mod, "_sentinel_arm_events", None)
+                    if isinstance(_ev_list, list):
+                        _ts_iso_fn = getattr(_tg_mod, "_utc_now_iso", None)
+                        _ts_iso = _ts_iso_fn() if callable(_ts_iso_fn) else None
+                        _ev_list.append(
+                            {
+                                "ticker": ticker,
+                                "side": side,
+                                "ts_utc": _ts_iso,
+                                "codes": _codes,
+                                "price": float(current_price)
+                                if current_price is not None
+                                else None,
+                                "fired": bool(result.fired),
+                            }
+                        )
+                        if len(_ev_list) > 500:
+                            del _ev_list[0 : len(_ev_list) - 500]
+            pos["v531_prior_alarm_codes"] = _codes
+        except Exception:
+            pass
         if not result.fired:
             return None
         # Always log every fired alarm \u2014 multi-fire trips include

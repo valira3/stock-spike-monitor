@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.30.1"
+BOT_VERSION = "5.31.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,13 +97,16 @@ BOT_VERSION = "5.30.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.30.1 premarket data:\n"
-    "Yahoo includePrePost=1\n"
-    "so 08:00 ET warm-up\n"
-    "actually fills bars.\n"
-    "Drop dead daily_bars\n"
-    "import (441 warns/min).\n"
-    "v5.30.0: F on strip."
+    "v5.31.0 chart polish:\n"
+    "PDC, HOD, LOD, volume\n"
+    "sub-pane, AVWAP \u00b11\u03c3 band,\n"
+    "PM AVWAP+EMA9, sentinel\n"
+    "diamonds. Lifecycle\n"
+    "overlay: entries/exits,\n"
+    "trail staircase, MAE/MFE.\n"
+    "Forensic streams: exits,\n"
+    "macro, daily OHLC,\n"
+    "trade_count + bar_vwap."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1043,6 +1046,12 @@ _QQQ_REGIME = qqq_regime.QQQRegime()
 _QQQ_REGIME_SEEDED = False
 _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
 
+# v5.31.0 \u2014 bounded deque of sentinel arm/trip events for chart overlay.
+# Appended by broker.positions._run_sentinel whenever an alarm fires or the
+# armed-code set changes. Read by dashboard_server._intraday_build_payload
+# and clamped to ~500 entries to avoid unbounded growth.
+_sentinel_arm_events: list[dict] = []
+
 
 from engine.seeders import (
     seed_opening_range as _engine_seed_opening_range,
@@ -1077,6 +1086,37 @@ def _qqq_weather_tick():
         _QQQ_REGIME.last_close = closes[-1]
         _QQQ_REGIME.ema9 = five.get("ema9")
         _QQQ_REGIME_LAST_BUCKET = bucket
+
+        # v5.31.0 \u2014 per-minute macro snapshot for backtest replay.
+        # Day-scoped JSONL at /data/forensics/<date>/macro.jsonl. Captures
+        # QQQ + SPY current quotes plus regime/breadth/RSI labels so a
+        # replay can reconstruct the exact macro context the live engine
+        # saw at each decision. Failure-tolerant.
+        try:
+            from forensic_capture import write_macro_snapshot as _write_macro
+
+            _qqq_last_v = bars.get("current_price")
+            _spy_last_v = None
+            try:
+                _spy_bars = fetch_1min_bars("SPY")
+                if _spy_bars:
+                    _spy_last_v = _spy_bars.get("current_price")
+            except Exception:
+                pass
+            _write_macro(
+                ts_utc=_utc_now_iso(),
+                qqq_last=_qqq_last_v,
+                spy_last=_spy_last_v,
+                vix_or_uvxy=None,
+                qqq_5m_close=closes[-1],
+                qqq_avwap=(_opening_avwap("QQQ") if "_opening_avwap" in globals() else None),
+                qqq_ema9=five.get("ema9"),
+                regime_mode=globals().get("_current_mode"),
+                breadth=globals().get("_current_breadth"),
+                rsi_regime=globals().get("_current_rsi_regime"),
+            )
+        except Exception:
+            pass
     except Exception as _e:
         logger.warning("[regime] qqq weather tick error: %s", _e)
 
@@ -1620,6 +1660,9 @@ def _v561_archive_qqq_bar(bars: dict | None) -> None:
             "bid": None,
             "ask": None,
             "last_trade_price": bars.get("current_price"),
+            # v5.31.0 \u2014 Yahoo source has no trade_count / vwap; schema accepts None.
+            "trade_count": None,
+            "bar_vwap": None,
         }
         bar_archive.write_bar(
             V561_INDEX_TICKER, canon_bar,

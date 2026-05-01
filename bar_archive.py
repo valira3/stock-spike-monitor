@@ -11,6 +11,7 @@ Public API:
 The `today` parameter exists so smoke tests can stub the date without
 freezing system time.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,11 +26,37 @@ DEFAULT_BASE_DIR = "/data/bars"
 DEFAULT_RETAIN_DAYS = 90
 
 # Schema fields a bar SHOULD carry. Missing fields are written as null.
+# v5.31.0 \u2014 added trade_count + bar_vwap (Alpaca-only fields; Yahoo-
+# sourced bars carry None for both, which the schema accepts).
 BAR_SCHEMA_FIELDS = (
-    "ts", "et_bucket",
-    "open", "high", "low", "close",
-    "iex_volume", "iex_sip_ratio_used",
-    "bid", "ask", "last_trade_price",
+    "ts",
+    "et_bucket",
+    "open",
+    "high",
+    "low",
+    "close",
+    "iex_volume",
+    "iex_sip_ratio_used",
+    "bid",
+    "ask",
+    "last_trade_price",
+    "trade_count",
+    "bar_vwap",
+)
+
+DAILY_BAR_SCHEMA_FIELDS = (
+    "date",
+    "ticker",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "or_high",
+    "or_low",
+    "pdc",
+    "sess_hod",
+    "sess_lod",
 )
 
 
@@ -83,6 +110,52 @@ def write_bar(
         return None
 
 
+DEFAULT_DAILY_BAR_DIR = "/data/bars/daily"
+
+
+def _normalise_daily_bar(bar: dict) -> dict:
+    """v5.31.0 \u2014 project a daily bar onto DAILY_BAR_SCHEMA_FIELDS.
+
+    Unknown keys are dropped; missing keys default to None.
+    """
+    out: dict = {}
+    for k in DAILY_BAR_SCHEMA_FIELDS:
+        out[k] = bar.get(k) if bar is not None else None
+    return out
+
+
+def write_daily_bar(
+    ticker: str,
+    bar: dict,
+    *,
+    base_dir: str | os.PathLike = DEFAULT_DAILY_BAR_DIR,
+) -> str | None:
+    """v5.31.0 \u2014 append a daily OHLC line to
+    ``{base_dir}/{TICKER}.jsonl`` (no per-date subdir; cross-day flat
+    archive). Returns the absolute path on success, or None on failure
+    (failure-tolerant: never raises into the caller).
+
+    Sister of :func:`write_bar`. Used by ``broker/lifecycle.py:eod_close``
+    to capture one row per trade-ticker per session at end-of-day.
+    """
+    if not ticker:
+        return None
+    try:
+        sym = str(ticker).strip().upper()
+        if not sym:
+            return None
+        dir_path = Path(base_dir)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        file_path = dir_path / f"{sym}.jsonl"
+        line = json.dumps(_normalise_daily_bar(bar), separators=(",", ":")) + "\n"
+        with open(file_path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+        return str(file_path)
+    except Exception as e:
+        logger.warning("[BAR-ARCHIVE] write_daily_bar %s failed: %s", ticker, e)
+        return None
+
+
 def cleanup_old_dirs(
     *,
     base_dir: str | os.PathLike = DEFAULT_BASE_DIR,
@@ -115,8 +188,7 @@ def cleanup_old_dirs(
                     child.rmdir()
                     deleted.append(str(child))
                 except OSError as e:
-                    logger.warning("[BAR-ARCHIVE] cleanup %s failed: %s",
-                                   child, e)
+                    logger.warning("[BAR-ARCHIVE] cleanup %s failed: %s", child, e)
     except Exception as e:
         logger.warning("[BAR-ARCHIVE] cleanup_old_dirs failed: %s", e)
     return deleted
