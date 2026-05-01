@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.0.6 — 2026-05-01 — Dashboard fix: TRAIL badge now fires on Alarm-F chandelier
+
+### Why
+With v6.0.5 live and the Alarm-F chandelier visibly ratcheting NFLX SHORT's stop ($93.51 → $92.2557 over 7 minutes, stage advancing through BREAKEVEN → CHANDELIER_WIDE → CHANDELIER_TIGHT), the dashboard's Open Positions table showed the ratcheted stop in the Stop column but **no TRAIL indicator** to tell the operator the stop was being managed by an active trail. The badge logic in `dashboard_static/app.js` only checked the legacy `pos.trail_active` flag, which is set exclusively by the Phase B/C breakeven trail (`trade_genius.py`). Alarm F (Hybrid Chandelier Trailing Stop) takes a different path: when its `evaluate_sentinel` returns a stop-tighten action, `broker/positions.py:_run_sentinel` (lines 547/565) overwrites `pos["stop"]` directly. It never touches `trail_active`/`trail_stop`. Result: a position with `chandelier_stage=3, peak_close=92.18, proposed_stop=92.1582` looked indistinguishable on the UI from a static hard stop sitting at $92.1582 since entry. Operator-asked: "No indicator for trail on open positions."
+
+### What
+- **`dashboard_server.py`** — new `_chandelier_stage(pos)` helper reads `pos["trail_state"].stage` (the `engine.alarm_f_trail.TrailState` dataclass) defensively (returns 0 on missing/malformed `trail_state` rather than raising). `_serialize_positions` now emits `chandelier_stage` on every row (both LONG and SHORT branches). Stage codes: 0=INACTIVE, 1=BREAKEVEN, 2=CHANDELIER_WIDE, 3=CHANDELIER_TIGHT. Armed once stage ≥ 1.
+- **`dashboard_static/app.js`** — TRAIL badge now ORs `p.trail_active` with `chandelier_stage >= 1`. Two render paths fixed: the Open Positions table (line 272 area) and the executor positions table (line 4059 area, where the stop info is cross-referenced from Main state by symbol). Tooltip on the Stop column header is unchanged — "trail stop if armed (TRAIL badge), otherwise the hard stop" remains accurate now that both trail mechanisms feed the badge.
+- `bot_version.py` and `trade_genius.py` BOT_VERSION 6.0.5 → 6.0.6; `CURRENT_MAIN_NOTE` rewritten (20 lines, all ≤24 chars).
+
+### Tests
+New `tests/test_v6_0_6_chandelier_trail_badge.py` (15 cases). `_chandelier_stage` helper: reads stage from TrailState, returns 0 when trail_state missing, returns 0 for None pos, handles malformed stage attribute, handles stage 0, handles stage 3 (tight). `_serialize_positions` wiring: chandelier_stage exposed on LONG row at stage 0/1/2/3; chandelier_stage exposed on SHORT row at stage 3 (NFLX-on-prod scenario, with `trail_active=False` confirming legacy flag stays untouched); missing trail_state emits stage 0; legacy `trail_active=True` path unchanged (effective_stop still follows trail_stop, chandelier_stage=0); both trail paths armed simultaneously surface independently; empty inputs do not crash.
+
+### Backwards compatibility
+Fully backwards compatible. The new `chandelier_stage` field is purely additive on the JSON payload — older clients ignore it. The legacy `trail_active`/`trail_stop`/`trail_anchor`/`effective_stop` fields are unchanged in semantics and population. Frontend OR-logic means a position armed only on the legacy trail still shows TRAIL exactly as before. No backend behavior change: the engine's stop-decision logic in `manage_positions` and `_run_sentinel` is untouched — this release is dashboard-only.
+
+---
+
 ## v6.0.5 — 2026-05-01 — Hotfix: Yahoo trailing-None + Alpaca-IEX promoted to primary 1m source
 
 ### Why
