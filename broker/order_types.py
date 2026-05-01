@@ -23,6 +23,8 @@ REASON_ALARM_A: str = "sentinel_a_flash_loss"
 REASON_ALARM_B: str = "sentinel_b_ema_cross"
 REASON_ALARM_D: str = "sentinel_d_adx_decline"
 REASON_R2_HARD_STOP: str = "sentinel_r2_hard_stop"
+# v5.31.4 \u2014 price-rail STOP MARKET when mark crosses protective stop.
+REASON_PRICE_STOP: str = "sentinel_a_stop_price"
 REASON_VELOCITY_RATCHET: str = "sentinel_velocity_ratchet"
 REASON_HVP_LOCK: str = "HVP_LOCK"
 REASON_DIVERGENCE_TRAP: str = "DIVERGENCE_TRAP"
@@ -42,10 +44,13 @@ _LIMIT_REASONS = frozenset(
     }
 )
 
-# R-2 hard stop and the velocity ratchet stay STOP MARKET.
+# R-2 hard stop and the velocity ratchet stay STOP MARKET. v5.31.4
+# adds the price-rail protective stop here \u2014 same order type, same
+# semantics (immediate market-close on cross).
 _STOP_REASONS = frozenset(
     {
         REASON_R2_HARD_STOP,
+        REASON_PRICE_STOP,
         REASON_VELOCITY_RATCHET,
     }
 )
@@ -128,6 +133,7 @@ __all__ = [
     "REASON_ALARM_B",
     "REASON_ALARM_D",
     "REASON_R2_HARD_STOP",
+    "REASON_PRICE_STOP",
     "REASON_VELOCITY_RATCHET",
     "REASON_HVP_LOCK",
     "REASON_DIVERGENCE_TRAP",

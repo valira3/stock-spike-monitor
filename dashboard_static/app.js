@@ -2925,6 +2925,14 @@
   if (typeof window !== "undefined") {
     window.__tgRenderWeatherCheck = renderWeatherCheck;
     window.__tgRenderPermitMatrix = renderPermitMatrix;
+    // v5.31.4 — expose Session color helper to the per-executor IIFE
+    // below. Defined inside this IIFE; without the bridge it's
+    // unreachable from the second IIFE (where Val/Gene tabs render),
+    // and renderExecutor throws "__tgSessionColor is not defined" —
+    // surfacing as the misleading "Fetch failed: ..." banner because
+    // the exception is caught by pollExecutor's try/catch around the
+    // fetch. Symptom: open positions don't render on Val/Gene tabs.
+    window.__tgSessionColor = __tgSessionColor;
   }
 })();
 
@@ -3590,7 +3598,12 @@
     if (sEl) {
       const mode = reg.mode || "\u2014";
       sEl.textContent = mode;
-      sEl.style.color = __tgSessionColor(mode);
+      // v5.31.4 — read from window. The helper lives in the main IIFE;
+      // referencing it as a bare identifier here throws ReferenceError.
+      const _color = (typeof window !== "undefined" && window.__tgSessionColor)
+        ? window.__tgSessionColor(mode)
+        : "var(--up)";
+      sEl.style.color = _color;
     }
     setField(panel, "k-session-sub", reg.mode_reason || "\u2014");
 
@@ -3671,7 +3684,11 @@
     if (sEl) {
       const mode = reg.mode || "\u2014";
       sEl.textContent = mode;
-      sEl.style.color = __tgSessionColor(mode);
+      // v5.31.4 — read from window. Same scope-bridge as in renderExecutor.
+      const _color = (typeof window !== "undefined" && window.__tgSessionColor)
+        ? window.__tgSessionColor(mode)
+        : "var(--up)";
+      sEl.style.color = _color;
     }
     setField(panel, "k-session-sub", reg.mode_reason || "\u2014");
   }

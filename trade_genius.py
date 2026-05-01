@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "5.31.3"
+BOT_VERSION = "5.31.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,14 +97,14 @@ BOT_VERSION = "5.31.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v5.31.3 strike-1 gate:\n"
-    "Strike 1 NHOD/NLOD-on-\n"
-    "close gate removed. The\n"
-    "OR boundary hold (2x 1m\n"
-    "close vs ORH/ORL) is now\n"
-    "the sole strike-1 gate.\n"
-    "Sentinel still covers\n"
-    "post-entry NHOD/NLOD."
+    "v5.31.4 percent-stop:\n"
+    "Stop = entry x 0.5% (sym\n"
+    "long/short). Sentinel\n"
+    "fires STOP MARKET when\n"
+    "mark crosses the stop.\n"
+    "R-2 dollar rail kept as\n"
+    "deeper backstop. Val tab\n"
+    "session-color fix."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

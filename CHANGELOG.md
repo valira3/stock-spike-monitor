@@ -4,6 +4,32 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.31.4 — 2026-05-01 — Percent-of-entry stop + Val tab session-color fix
+
+### Why
+Two bugs landed together. First, the v5.26.0 stop-derivation logic in `broker/orders.py` reverse-derived the per-share stop price from the R-2 dollar rail (-$500 / shares). On a $5 stock with 2,000 shares the implied stop was $0.25 (5%), but on a $200 stock with 50 shares it was $10 (5%) — a $200 SHORT @ $197.45 with 50 shares produced a *displayed* stop of $207.45, a >5% adverse move. Operator's call ("stop should not be sized by the number of shares"): replace the reverse-derived stop with a symmetric percent-of-entry rule. Second, v5.31.2 introduced a second IIFE in `dashboard_static/app.js` that referenced `__tgSessionColor` by bare name; the function was scoped inside IIFE#1 and `not defined` from IIFE#2 — Val's tab broke with `Fetch failed: __tgSessionColor is not defined` and open positions stopped rendering.
+
+### What
+- `eye_of_tiger.py` — new `STOP_PCT_OF_ENTRY = 0.005` (0.5%) constant. Symmetric: long stop = entry × 0.995, short stop = entry × 1.005. The per-trade R-2 dollar rail (-$500) and `SOVEREIGN_BRAKE_DOLLARS` are unchanged and stay as the deeper backstop in `evaluate_sentinel`.
+- `broker/orders.py` (lines ~625-664) — replaced the R-2 reverse-derived stop block with `stop_price = round(entry × (1 ∓ STOP_PCT_OF_ENTRY), 2)`. Share sizing (notional, 50% Entry-1 starter, FULL doubles to ~100%) is unchanged.
+- `engine/sentinel.py` — new `EXIT_REASON_PRICE_STOP` constant and new `check_alarm_a_stop_price` function. Wired into `evaluate_sentinel` next to Alarm A; emits a full-exit `SentinelAction(alarm="A_STOP_PRICE")` with detail_stop_price set when the live mark crosses the protective stop. Added to `has_full_exit` and the `exit_reason` priority chain (R-2 hard stop > A_STOP_PRICE > A-A > A-B > F-EXIT > A-D > C). Both R-2 and the price rail can fire on the same tick — both are recorded in `result.alarms`; R-2 wins the canonical exit_reason as the deepest rail.
+- `broker/order_types.py` — new `REASON_PRICE_STOP` constant (string-identical to `EXIT_REASON_PRICE_STOP`); added to `_STOP_REASONS` so it routes through `ORDER_TYPE_STOP_MARKET` (same as R-2 and the velocity ratchet).
+- `dashboard_static/app.js` — three edits to fix the IIFE#2 scope bug. IIFE#1: `window.__tgSessionColor = __tgSessionColor` exposes the helper globally. IIFE#2 (lines ~3603 and ~3688): replaced bare `__tgSessionColor(mode)` reads with `(typeof window !== "undefined" && window.__tgSessionColor) ? window.__tgSessionColor(mode) : <fallback>` guarded reads.
+- Live state hotpatch (operational, not in this PR): `/data/paper_state.json` was SSH-edited to move the existing NVDA SHORT stop from $207.45 to $198.44 (= 197.45 × 1.005) and the container was SIGTERM-reloaded. The position will auto-exit on the first tick after deploy where mark ≥ $198.44.
+- `bot_version.py`, `trade_genius.py` — BOT_VERSION 5.31.3 → 5.31.4.
+- `trade_genius.py` — CURRENT_MAIN_NOTE rewritten (8 lines, all ≤34 chars).
+
+### Tests
+- New `tests/test_v5_31_4_percent_stop.py` (12 cases): STOP_PCT_OF_ENTRY value, long/short arithmetic, NVDA live-state arithmetic ($198.44), price rail boundary inclusivity (mark==stop fires), missing-input no-op, evaluate_sentinel wiring, R-2 outranking the price rail when both fire, broker order-type routing (REASON_PRICE_STOP → STOP_MARKET), broker/sentinel constant string parity, and an app.js scope assertion for the `window.__tgSessionColor` export and reads.
+- `node --check dashboard_static/app.js` parses cleanly.
+- `pytest --ignore=tests/test_v5_10_4_entry_2_wiring.py` and `smoke_test.py` baselines unchanged from v5.31.3.
+- All preflight gates (em-dash escape, forbidden-word, version-bump consistency, ruff) still pass on touched files.
+
+### Migration
+The price-rail stop is a tighter exit than the v5.26.0 derived stop on most price points. At NVDA $200, 0.5% = $0.99 of adverse motion — the bot will get stopped out far sooner than under the R-2 $500-loss threshold, and far sooner than under the v5.26.0 reverse-derived stop on cheap tickers. The R-2 dollar rail remains the deeper backstop. Existing open positions on deploy day take the new stop on the next sentinel tick (entry_price × (1 ∓ 0.005)); the live NVDA stop hotpatch is already in place so its first post-deploy tick will trigger A_STOP_PRICE if the mark is at/above $198.44.
+
+---
+
 ## v5.31.3 — 2026-05-01 — Strike-1 NHOD/NLOD-on-close gate removed
 
 ### Why
