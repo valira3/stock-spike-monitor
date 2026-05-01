@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.26.1 — 2026-04-30 — Premarket warm-up window
+
+### Why
+The v5.26.0 scan loop only fired a single bar-archive tick during a
+narrow 09:29:30–09:35 ET pre-open window, leaving the rest of the
+premarket session (04:00–09:30 ET) without any persisted bars in
+`/data/bars/<date>/`. Downstream consumers — the dashboard intraday
+view, replay/backtest harnesses, and any future warm-up indicators —
+have to backfill from Alpaca on demand each time. The user request:
+"Change the engine to wake up 1.5 hours before market to ensure that
+we populate all the pre-market data."
+
+### What changed
+
+- **`engine/scan.py`** — widened `_pre_open_window` from
+  `[09:29:30, 09:35)` to `[08:00:00, 09:35)` ET. The engine now runs
+  the same QQQ + per-ticker 1m bar archive cycle every minute starting
+  at 08:00 ET (1.5h before RTH open). No entries / no `manage_positions`
+  in this window — only `_v561_archive_qqq_bar` and
+  `_v512_archive_minute_bar` per `TRADE_TICKER`.
+
+### Spec impact
+None. The premarket window does not run `_qqq_weather_tick`,
+`check_entry`, `manage_positions`, or any sentinel evaluation — only
+bar persistence. Entry semantics activate at 09:35 ET as before.
+
+---
+
 ## v5.26.0 — 2026-04-30 — Spec-strict cut (Tiger Sovereign v15.0)
 
 ### Why

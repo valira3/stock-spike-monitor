@@ -55,13 +55,13 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     if is_weekend:
         return
 
-    # Pre-9:35 ET writer warm-up: archive the 09:30 first tick so the OR
-    # window backfill gap is closed. No entries / no manage in this window.
-    _pre_open_window = (
-        now_et.hour == 9
-        and 29 <= now_et.minute < 35
-        and (now_et.minute > 29 or now_et.second >= 30)
-    )
+    # v5.26.1 \u2014 premarket warm-up window: 08:00 ET (1.5h before RTH
+    # open) through 09:35 ET. During this window we archive every
+    # minute's 1m bar for QQQ and each TRADE_TICKER so the bar archive
+    # is fully populated before the entry engine activates at 09:35.
+    # No entries / no manage_positions in this window. Replaces the
+    # previous narrow 09:29:30\u201309:35 single-tick warm-up.
+    _pre_open_window = now_et.hour == 8 or (now_et.hour == 9 and now_et.minute < 35)
     if before_open and _pre_open_window:
         try:
             tg._clear_cycle_bar_cache()
