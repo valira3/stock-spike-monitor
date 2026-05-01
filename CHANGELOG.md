@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.31.3 — 2026-05-01 — Strike-1 NHOD/NLOD-on-close gate removed
+
+### Why
+The Strike-1 entry path enforced two stacked confirmations: (1) the Section II.2 boundary hold (2x consecutive closed 1m bars vs ORH/ORL) and (2) a NHOD/NLOD-on-close gate (most recent closed 1m bar past the prior closed-bar session HOD/LOD). The second layer was added in v5.26.2 as additional confirmation. In live operation it filtered out clean Strike-1 setups where the OR break happened *before* the running session high — meaning the price had already broken OR with momentum but the entry was suppressed because that same bar's close did not exceed an earlier intraday close from the same session. Many of those suppressions were profitable trades. The post-entry sentinel (v15 spec §1.2) already covers the NHOD/NLOD divergence concern, so the pre-entry layer was redundant.
+
+### What
+- `broker/orders.py` (lines ~483-498): removed the `if _next_strike_num == 1:` block (~110 lines) that computed `_sess_hod_close` / `_sess_lod_close` from the closed-bar buffer, evaluated the 1-bar NHOD/NLOD condition, wrote a `NHOD_NLOD_1BAR_CLOSED_BARS` boundary record, and returned `SKIP:V15_STRIKE1_NHOD_NLOD:*` on miss. Replaced with a documentation comment explaining the removal and pointing to the post-entry sentinel for ongoing NHOD/NLOD coverage. The upstream call to `_v570_update_session_hod_lod` (which produces `is_extreme_print`, `_prev_hod`, `_prev_lod`) is intentionally retained because the forensic decision record at line ~645 still surfaces those fields.
+- `bot_version.py`, `trade_genius.py` — BOT_VERSION 5.31.2 → 5.31.3.
+- `trade_genius.py` — CURRENT_MAIN_NOTE rewritten (8 lines, all ≤34 chars).
+
+### Tests
+- No tests reference `V15_STRIKE1_NHOD_NLOD` or `NHOD_NLOD_1BAR_CLOSED_BARS` by name; the gate's removal does not break any assertion.
+- `pytest --ignore=tests/test_v5_10_4_entry_2_wiring.py` and `smoke_test.py` baselines unchanged from v5.31.2.
+- All preflight gates (em-dash, forbidden-word, version-bump, ruff) still pass.
+
+### Migration
+None. Strike 1 will fire on more entries than v5.31.2 — specifically on OR-break setups where the latest 1m close had not yet exceeded the session's prior closed-bar HOD (long) or undercut the prior closed-bar LOD (short). Strikes 2 and 3 are unaffected. The post-entry sentinel still covers RSI-divergence on new extremes.
+
+---
+
 ## v5.31.2 — 2026-05-01 — Session KPI label fix (was stuck on CLOSED)
 
 ### Why
