@@ -8,10 +8,12 @@
     "GOOG",
     "AMZN",
     "AVGO",
+    "NFLX",
+    "ORCL",
     "QBTS",
     "SPY",
     "QQQ"
   ],
-  "updated_utc": "2026-04-22T16:23:14.096552+00:00",
-  "bot_version": "3.4.32"
+  "updated_utc": "2026-04-30T22:00:00.000000+00:00",
+  "bot_version": "5.27.0"
 }

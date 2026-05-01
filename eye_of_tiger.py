@@ -42,6 +42,62 @@ LEASH_EMA_TIMEFRAME_MIN = 5
 
 DAILY_CIRCUIT_BREAKER_DOLLARS = -1500.0
 
+# v5.27.0 \u2014 portfolio-scaled stop tiers.
+#
+# The legacy absolute thresholds (per-trade Sovereign Brake at -$500;
+# daily Circuit Breaker at -$1500) were calibrated against the v5.x
+# default $100,000 paper book. On smaller portfolios (e.g. a $20k
+# personal account or a paper run after drawdown) those absolute caps
+# let a single bad trade or three losing trades chew through 5\u201315%%
+# of the book before any halt fires.
+#
+# v5.27.0 introduces a percentage-of-portfolio scaling layer. The
+# scaling factors are calibrated to reproduce the legacy absolutes
+# at $100k (0.5%% per-trade, 1.5%% daily) and clamp to a hard floor
+# of $100 / $300 so the ratchet still has bite at very small books.
+# An upper cap preserves the legacy absolutes for larger books \u2014
+# never get bigger than $500 / $1500 even if the user funds beyond
+# the calibration point.
+SOVEREIGN_BRAKE_PORTFOLIO_PCT = 0.005  # 0.5%% of portfolio per-trade
+DAILY_CIRCUIT_BREAKER_PORTFOLIO_PCT = 0.015  # 1.5%% of portfolio per-day
+SOVEREIGN_BRAKE_FLOOR_DOLLARS = 100.0
+SOVEREIGN_BRAKE_CEILING_DOLLARS = 500.0  # match legacy absolute
+DAILY_CIRCUIT_BREAKER_FLOOR_DOLLARS = 300.0
+DAILY_CIRCUIT_BREAKER_CEILING_DOLLARS = 1500.0  # match legacy absolute
+
+
+def scaled_sovereign_brake_dollars(portfolio_value: float | None) -> float:
+    """v5.27.0 \u2014 per-trade brake scaled to portfolio.
+
+    Returns a NEGATIVE dollar threshold (e.g. -250.0 means a single
+    position trips the brake at -$250 unrealized). When ``portfolio``
+    is None or non-positive we fall back to the legacy absolute
+    ``SOVEREIGN_BRAKE_DOLLARS`` so warm-up paths stay deterministic.
+    """
+    if portfolio_value is None or portfolio_value <= 0:
+        return float(SOVEREIGN_BRAKE_DOLLARS)
+    raw = float(portfolio_value) * SOVEREIGN_BRAKE_PORTFOLIO_PCT
+    clamped = max(SOVEREIGN_BRAKE_FLOOR_DOLLARS, min(SOVEREIGN_BRAKE_CEILING_DOLLARS, raw))
+    return -clamped
+
+
+def scaled_daily_circuit_breaker_dollars(portfolio_value: float | None) -> float:
+    """v5.27.0 \u2014 daily realized-loss halt scaled to portfolio.
+
+    Returns a NEGATIVE dollar threshold. Falls back to the legacy
+    ``DAILY_CIRCUIT_BREAKER_DOLLARS`` when ``portfolio`` is None or
+    non-positive.
+    """
+    if portfolio_value is None or portfolio_value <= 0:
+        return float(DAILY_CIRCUIT_BREAKER_DOLLARS)
+    raw = float(portfolio_value) * DAILY_CIRCUIT_BREAKER_PORTFOLIO_PCT
+    clamped = max(
+        DAILY_CIRCUIT_BREAKER_FLOOR_DOLLARS,
+        min(DAILY_CIRCUIT_BREAKER_CEILING_DOLLARS, raw),
+    )
+    return -clamped
+
+
 OR_WINDOW_START_HHMM_ET = "09:30"
 # v15.0 SPEC: ORH/ORL fixed at exactly 09:35:59 ET. End-of-OR is the half-open
 # minute boundary 09:36, so bars with close < 09:36 belong to the OR (this

@@ -6,4 +6,4 @@ local-CI mirror reads this file as the source of truth for the
 version-bump consistency check.
 """
 
-BOT_VERSION = "5.26.2"
+BOT_VERSION = "5.27.0"

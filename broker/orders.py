@@ -697,7 +697,32 @@ def execute_breakout(ticker, current_price, side):
     # symmetric for shorts. _stop_capped / _stop_baseline kept as
     # placeholders so downstream telemetry stays compile-clean; both
     # are False / equal to stop_price under the spec rule.
+    #
+    # v5.27.0 \u2014 the dollar magnitude scales with current portfolio
+    # value via ``eye_of_tiger.scaled_sovereign_brake_dollars`` (floor
+    # $100, ceiling $500). When the live portfolio cannot be computed
+    # (no tg, no quotes), the spec-default $500 wins. The stop
+    # placement formula (R / shares per-share risk) is unchanged.
     _R2_DOLLARS = 500.0
+    try:
+        from eye_of_tiger import scaled_sovereign_brake_dollars
+
+        _pv = float(getattr(tg, "paper_cash", 0.0))
+        _long = getattr(tg, "positions", {}) or {}
+        _short = getattr(tg, "short_positions", {}) or {}
+        _gq = getattr(tg, "get_fmp_quote", None)
+        for _pt, _pp in _long.items():
+            _qq = (_gq(_pt) if _gq else None) or {}
+            _px = float(_qq.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
+            _pv += _px * float(_pp.get("shares") or 0)
+        for _pt, _pp in _short.items():
+            _qq = (_gq(_pt) if _gq else None) or {}
+            _px = float(_qq.get("price") or 0.0) or float(_pp.get("entry_price") or 0.0)
+            _pv -= _px * float(_pp.get("shares") or 0)
+        if _pv > 0:
+            _R2_DOLLARS = abs(scaled_sovereign_brake_dollars(_pv))
+    except Exception:
+        _R2_DOLLARS = 500.0
     _starter_for_stop = max(1, int(paper_shares_for(current_price)) * 2)
     _per_share_risk = _R2_DOLLARS / _starter_for_stop
     if cfg.side.is_long:

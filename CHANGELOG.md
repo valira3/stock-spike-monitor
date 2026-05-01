@@ -4,6 +4,112 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v5.27.0 — 2026-04-30 — 2-bar 9-EMA confirm, NFLX/ORCL universe, portfolio-scaled hard stops
+
+### Why
+
+User request: "1) Loosen sentinel_b_ema_cross: require N-bar confirmation
+(close below EMA9 for 2 bars, not 1). 2) Add NFLX (and ORCL) to backtest's
+TRADE_TICKERS universe. Backtest should match position size approach to
+production. Scale $500 / $1500 stop losses to portfolio (i.e., they
+should be smaller with smaller portfolio - minimum $100/$300)."
+
+The v5.26.2 backtest reported -$6.64 on a day prod made +$159.62 — the
+harness was computing per-share P&L instead of dollar P&L, so apples-to-
+apples comparison was impossible. Alarm B was firing on a single 5m
+close flick across the 9-EMA, which catches whipsaws into the exit
+door. The R-2 hard stop and daily circuit breaker were both calibrated
+to the legacy $100K reference portfolio; on a smaller cash account
+those absolutes can over-allow risk by orders of magnitude.
+
+### What changed
+
+- **`engine/sentinel.py`** — `check_alarm_b` now accepts `prev_5m_close`,
+  `prev_5m_ema9`, and `confirm_bars` kwargs. With `confirm_bars=2` (the
+  prod default via `ALARM_B_CONFIRM_BARS`) the alarm only fires when
+  BOTH the most recent and the prior 5m close print on the wrong side
+  of their respective EMA9 values. The default is back-compat 1-bar so
+  every existing test stays green. `check_alarm_a` accepts a configurable
+  `hard_loss_threshold` kwarg (default `-$500`) so callers can pass a
+  portfolio-scaled brake derived from `eye_of_tiger`. `evaluate_sentinel`
+  takes optional `portfolio_value` and forwards a scaled threshold
+  through to Alarm A; when the value is missing the spec-default $500
+  applies.
+- **`engine/bars.py`** — `compute_5m_ohlc_and_ema9` now also returns
+  `ema9_series` (per-bucket EMA9 history aligned with closes). Entries
+  before the SMA seed slot are `None`. Stateless; deterministic for
+  backtest replay.
+- **`broker/positions.py`** — `_run_sentinel` reads `ema9_series[-2]` to
+  obtain the prior 5m close + EMA9 and forwards them with
+  `alarm_b_confirm_bars=ALARM_B_CONFIRM_BARS` (=2). Computes live
+  portfolio value (paper_cash + open longs − open shorts, mirroring the
+  `_check_daily_loss_limit` path) and forwards it as `portfolio_value`
+  so the per-trade hard-loss threshold scales with account size.
+- **`broker/orders.py`** — `execute_breakout`'s entry-time STOP MARKET
+  rail (`_R2_DOLLARS`) now scales via
+  `eye_of_tiger.scaled_sovereign_brake_dollars` against the live
+  portfolio value (floor $100, ceiling $500). When the live value can't
+  be computed the spec-default $500 wins. Stop-placement formula
+  (`R / shares` per-share risk) is unchanged.
+- **`eye_of_tiger.py`** — Added `SOVEREIGN_BRAKE_PORTFOLIO_PCT` (0.5%%)
+  and `DAILY_CIRCUIT_BREAKER_PORTFOLIO_PCT` (1.5%%), floor / ceiling
+  constants ($100/$500 and $300/$1500), and two helpers:
+  `scaled_sovereign_brake_dollars(portfolio)` and
+  `scaled_daily_circuit_breaker_dollars(portfolio)`. Both clamp the
+  raw percentage between floor and ceiling and return a NEGATIVE dollar
+  threshold; `None` / non-positive portfolio falls back to the legacy
+  absolute (-$500 / -$1500) so warm-up paths stay deterministic.
+- **`trade_genius.py`** — `_check_daily_loss_limit` computes
+  `portfolio_value_now` and uses
+  `effective_limit = max(env_legacy, scaled)` — i.e. the scaled value
+  can only TIGHTEN, never loosen below the operator override.
+  `TICKERS_DEFAULT` retains QBTS in the runtime fallback.
+- **`tickers.json`** — Universe is now AAPL, MSFT, NVDA, TSLA, META,
+  GOOG, AMZN, AVGO, NFLX, ORCL, QBTS, SPY, QQQ.
+- **`backtest/replay_v511_full.py`** — `pair_entries_to_exits` is
+  share-aware: reads the share count from the exit snapshot first, the
+  entry second, and falls back to per-share P&L (with `shares=None`
+  recorded) when neither is available. `summarize` adds
+  `total_pnl_per_share` and `pairs_missing_shares` diagnostics so
+  reports can flag fallback rows.
+- **`v5_10_1_integration.py`** — `evaluate_section_iv` accepts optional
+  `portfolio_value` and forwards it to `scaled_sovereign_brake_dollars`.
+  (Smoke-test caller only — no prod entry path uses this branch.)
+- **`tests/test_v5_27_0.py`** — 25 new unit tests covering: 2-bar EMA9
+  confirm gate (both-below fires, only-last fires only at 1-bar default,
+  missing-prev sits out), brake helpers (None / floor / mid-band /
+  $100K calibration / ceiling for both sovereign and daily),
+  `evaluate_sentinel` portfolio-aware Alarm A wiring, NFLX / ORCL
+  presence in `tickers.json` + `TICKERS_DEFAULT` source + backtest
+  `DEFAULT_TICKERS`, share-aware pairing (with shares: dollar P&L;
+  without shares: per-share fallback with `pairs_missing_shares`).
+
+### Backtest comparison (2026-04-30)
+
+- v5.26.2 baseline (per-share P&L only): 24 entries, 23 exits,
+  `total_pnl=-$6.64` (per-share).
+- v5.27.0 (share-aware): 26 entries (+2 from NFLX/ORCL), 22 exits,
+  9 wins / 12 losses, `total_pnl=-$174.76` (dollars), `pairs_missing_shares=0`.
+  Per-share equivalent: -$11.61 vs baseline -$6.64. The slightly worse
+  per-share number on this choppy day is consistent with the 2-bar
+  hold filter trading off whipsaw protection for slower exits.
+
+### Operational notes
+
+- The 2-bar confirm gate degrades gracefully: when the EMA9 history
+  hasn't seeded a prior bucket yet, `check_alarm_b` silently sits out
+  the tick rather than falling back to 1-bar logic. Insufficient
+  history is treated as insufficient evidence.
+- The portfolio-scaled brake threshold uses `max(env_override, scaled)`
+  semantics: setting `DAILY_LOSS_LIMIT=-100` via env will not LOOSEN
+  the daily breaker even if the scaled value would be -$300; the
+  operator override stays in force when it's tighter.
+- `tiger_buffalo_v5.evaluate_titan_exit` and the `evaluate_section_iv`
+  prod entry remain vestigial (no production callers); the new kwargs
+  are wired only for completeness on the smoke-test path.
+
+---
+
 ## v5.26.2 — 2026-04-30 — Strike-1 NHOD/NLOD alignment + forensic capture
 
 ### Why

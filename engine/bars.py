@@ -9,6 +9,7 @@ is kept in trade_genius.py for one release as a deprecation shim.
 Zero behavior change. Validated byte-equal pre/post the move via
 `tests/golden/verify.py`.
 """
+
 from __future__ import annotations
 
 
@@ -67,13 +68,20 @@ def compute_5m_ohlc_and_ema9(bars: dict | None) -> dict | None:
     closes = [buckets_close[b] for b in ordered]
     ema9 = None
     seeded = False
+    # v5.27.0 \u2014 expose per-bar ema9 series so callers (e.g. Alarm B
+    # 2-bar confirm) can read the EMA9 reading at bucket -2 as well as
+    # the most recent bucket. The series is aligned with ``closes`` and
+    # ``opens``; entries before the SMA seed slot are None.
+    ema9_series: list[float | None] = [None] * len(closes)
     if len(closes) >= 9:
         # Standard EMA(9): SMA seed over first 9, then alpha = 2/(9+1).
         seed = sum(closes[:9]) / 9.0
         ema = seed
         alpha = 2.0 / 10.0
-        for c in closes[9:]:
+        ema9_series[8] = seed
+        for idx, c in enumerate(closes[9:], start=9):
             ema = alpha * c + (1.0 - alpha) * ema
+            ema9_series[idx] = ema
         ema9 = ema
         seeded = True
     return {
@@ -82,6 +90,7 @@ def compute_5m_ohlc_and_ema9(bars: dict | None) -> dict | None:
         "lows": lows,
         "closes": closes,
         "ema9": ema9,
+        "ema9_series": ema9_series,
         "seeded": seeded,
         "last_bucket": ordered[-1],
     }

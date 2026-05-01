@@ -358,14 +358,25 @@ def evaluate_section_iv(
     unrealized_pnl_dollars: Optional[float],
     current_price: Optional[float],
     current_1m_open: Optional[float],
+    portfolio_value: Optional[float] = None,
 ) -> Optional[str]:
     """Returns None when no override fires, otherwise an exit_reason
     string from `eye_of_tiger.VALID_EXIT_REASONS`.
+
+    v5.27.0 \u2014 ``portfolio_value`` (optional) drives the per-trade
+    Sovereign Brake threshold via
+    ``eot.scaled_sovereign_brake_dollars``. Smaller portfolio = tighter
+    brake (floor -$100); larger portfolios cap at the legacy -$500.
+    When the portfolio is unknown (None or non-positive) we fall back
+    to the legacy absolute -$500 threshold.
     """
-    if unrealized_pnl_dollars is not None and eot.evaluate_sovereign_brake(
-        unrealized_pnl_dollars,
-    ):
-        return eot.EXIT_REASON_SOVEREIGN_BRAKE
+    if unrealized_pnl_dollars is not None:
+        threshold = eot.scaled_sovereign_brake_dollars(portfolio_value)
+        if eot.evaluate_sovereign_brake(
+            unrealized_pnl_dollars,
+            threshold=threshold,
+        ):
+            return eot.EXIT_REASON_SOVEREIGN_BRAKE
     if eot.evaluate_velocity_fuse(side, current_price, current_1m_open):
         return eot.EXIT_REASON_VELOCITY_FUSE
     return None
