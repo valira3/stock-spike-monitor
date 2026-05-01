@@ -168,6 +168,12 @@ class RecordOnlyBrokerLayer:
 
     orders: list[dict] = field(default_factory=list)
     cancellations: list[dict] = field(default_factory=list)
+    # Position closes captured via the tg.close_position /
+    # tg.close_short_position wrappers installed in
+    # `install_record_only_layers`. Each record has the entry side
+    # ("long" / "short"), exit price + reason, and the entry snapshot
+    # we read off the position store immediately before tg removed it.
+    closes: list[dict] = field(default_factory=list)
     _next_id: int = 0
 
     def _alloc_id(self) -> str:
@@ -392,6 +398,58 @@ def install_record_only_layers(
     # mutates the harness-owned dicts.
     tg.positions = position_store.positions
     tg.short_positions = position_store.short_positions
+
+    # Close-fn wrappers \u2014 production exit paths (manage_positions /
+    # manage_short_positions / eod_close / sentinel rails) all funnel
+    # through `tg.close_position` / `tg.close_short_position`. Wrap
+    # both module attributes so every close (regardless of caller)
+    # is captured into broker_layer.closes with full entry context.
+    _orig_close_long = getattr(tg, "close_position", None)
+    _orig_close_short = getattr(tg, "close_short_position", None)
+
+    def _wrapped_close_position(ticker, price, reason="STOP", suppress_signal=False):
+        # Snapshot the position BEFORE tg deletes it from the dict.
+        pos_snap = position_store.positions.get(ticker)
+        try:
+            res = _orig_close_long(ticker, price, reason, suppress_signal=suppress_signal) \
+                if _orig_close_long is not None else None
+        finally:
+            broker_layer.closes.append({
+                "ts": clock.now.isoformat(),
+                "ticker": ticker,
+                "side": "long",
+                "exit_price": float(price) if price is not None else None,
+                "reason": reason,
+                "entry_price": (pos_snap or {}).get("entry_price"),
+                "shares": (pos_snap or {}).get("shares"),
+                "entry_ts_utc": (pos_snap or {}).get("entry_ts_utc")
+                                or (pos_snap or {}).get("entry_time"),
+            })
+        return res
+
+    def _wrapped_close_short_position(ticker, price, reason="STOP", suppress_signal=False):
+        pos_snap = position_store.short_positions.get(ticker)
+        try:
+            res = _orig_close_short(ticker, price, reason, suppress_signal=suppress_signal) \
+                if _orig_close_short is not None else None
+        finally:
+            broker_layer.closes.append({
+                "ts": clock.now.isoformat(),
+                "ticker": ticker,
+                "side": "short",
+                "exit_price": float(price) if price is not None else None,
+                "reason": reason,
+                "entry_price": (pos_snap or {}).get("entry_price"),
+                "shares": (pos_snap or {}).get("shares"),
+                "entry_ts_utc": (pos_snap or {}).get("entry_ts_utc")
+                                or (pos_snap or {}).get("entry_time"),
+            })
+        return res
+
+    if _orig_close_long is not None:
+        tg.close_position = _wrapped_close_position
+    if _orig_close_short is not None:
+        tg.close_short_position = _wrapped_close_short_position
 
     # Broker order surface \u2014 trade_genius.client is the Alpaca shim
     # (paper book). When `SSM_SMOKE_TEST=1` it's likely a stub; we
@@ -809,19 +867,44 @@ def run_replay(
 # ---------------------------------------------------------------------------
 
 
+def _broker_closes_to_exits(closes: list[dict]) -> list[dict]:
+    """Translate `broker_layer.closes` records (captured via the
+    tg.close_position / tg.close_short_position wrappers) into the
+    harness `exits` shape so they pair cleanly against entries.
+    """
+    out = []
+    for c in closes:
+        out.append({
+            "ts": c.get("ts"),
+            "ticker": c.get("ticker"),
+            "side": c.get("side"),
+            "price": c.get("exit_price"),
+            "reason": c.get("reason"),
+            "entry_price": c.get("entry_price"),
+            "shares": c.get("shares"),
+        })
+    return out
+
+
 def build_json_report(result: ReplayResult) -> dict:
     cb = result.callbacks
-    pairs = pair_entries_to_exits(cb.entries + cb.short_entries, cb.exits)
-    summary = summarize(cb.entries + cb.short_entries, cb.exits, pairs)
+    # Production exits flow through tg.close_position /
+    # tg.close_short_position; the harness wrappers capture them in
+    # broker_layer.closes. Merge with any harness-direct exits and use
+    # the unified list for pairing.
+    merged_exits = list(cb.exits) + _broker_closes_to_exits(cb.broker_layer.closes)
+    pairs = pair_entries_to_exits(cb.entries + cb.short_entries, merged_exits)
+    summary = summarize(cb.entries + cb.short_entries, merged_exits, pairs)
     return {
         "date": result.date,
         "version": result.bot_version,
         "minutes_processed": result.minutes_processed,
         "tickers": result.tickers,
         "entries": cb.entries + cb.short_entries,
-        "exits": cb.exits,
+        "exits": merged_exits,
         "orders": cb.broker_layer.orders,
         "cancellations": cb.broker_layer.cancellations,
+        "closes_raw": cb.broker_layer.closes,
         "telegram_messages": cb.telegram_layer.messages,
         "alerts": cb.alerts,
         "errors": cb.errors,
