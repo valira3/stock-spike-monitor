@@ -4,6 +4,35 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.3.1 — 2026-05-01 — Wire `position_id` + `now_et` into `evaluate_sentinel`
+
+### Why
+The v6.3.0 weekly backtest (Apr 27 – May 1) produced **byte-identical results to v6.2.0** — same cash deltas, same fills, same Sentinel A/B split (A: 42 trades / +$921 / 66.7% win, B: 30 trades / −$158 / 20.0% win), zero diff. Root cause: the v6.3.0 noise-cross filter sits inside the v6.1.0 stateful EMA-cross path at `engine/sentinel.py:697`, gated on `position_id is not None and _V610_EMA_CONFIRM_ENABLED`. The only call site that invokes `evaluate_sentinel` (`broker/positions.py:458`) never passed `position_id` (despite it being available at line 157 for PHASE4 logging) nor `now_et`. Result: every Sentinel B exit fell through to the legacy 2-bar confirm path. **Both the v6.3.0 noise-cross filter AND the v6.1.0 lunch-chop suppression were dead code in production and backtest.**
+
+Verified by adding a `print` to the v6.3.0 filter block and re-running 4/28 (10 sentinel_b_ema_cross exits): zero hits in the v6.1.0 path.
+
+### What
+
+**Fix** (`broker/positions.py:458`)
+- Read `pos.get("lifecycle_position_id")` once and pass it as `position_id=` to `evaluate_sentinel`.
+- Read `_tg().now_et()` (wallclock in prod, harness clock in backtest via `tg._now_et` monkeypatch) and pass as `now_et=`. Wrapped in try/except to tolerate startup edge cases.
+
+Files modified:
+- `broker/positions.py` — 14-line patch around the `evaluate_sentinel` call.
+- `tests/test_v631_sentinel_wiring.py` — regression test that imports `_run_sentinel`, opens a position with a known `lifecycle_position_id`, and asserts the v6.1.0 stateful counter (`_ema_cross_pending`) gets bumped — proving the path executes.
+- `bot_version.py` + `trade_genius.py` — version bump to 6.3.1.
+- `CHANGELOG.md` — this entry.
+
+Per the user's minor-release rule (2026-05-01): patch/hotfix bumps **do not** require ARCHITECTURE.md / PDF updates.
+
+### Backtest expectation
+With the wiring fixed, the v6.3.0 noise-cross filter should now actually run. The Apr 27 – May 1 5-day backtest will be re-executed against v6.3.1 to measure the real impact on Sentinel B exits. Results appended to `/home/user/workspace/v630_week_backtest/report.md`.
+
+### Back-compat
+Positions without a `lifecycle_position_id` (which would be unusual; lifecycle ids are assigned at order-fill time) silently fall through to the legacy path, matching v6.3.0 behavior. The `now_et` argument is optional in `check_alarm_b`; passing it enables the v6.1.0 lunch-chop suppression (11:30–13:00 ET) without breaking any caller that omits it.
+
+---
+
 ## v6.3.0 — 2026-05-01 — Sentinel B noise-cross filter
 
 ### Why
