@@ -80,6 +80,12 @@ COPY broker/ ./broker/
 # ModuleNotFoundError: executors. Subsequent v5.12.0 PRs append
 # val, gene, and bootstrap modules.
 COPY executors/ ./executors/
+# v6.5.0 — ingest/ package (always-on Algo Plus ingest module). Same
+# rule: missing this COPY would crash trade_genius at boot with
+# ModuleNotFoundError: ingest (line 51 of trade_genius.py imports
+# ingest.algo_plus as ingest_algo_plus). Holds AlgoPlusIngest,
+# BarAssembler, ConnectionHealth, GapDetector, RestBackfillWorker.
+COPY ingest/ ./ingest/
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

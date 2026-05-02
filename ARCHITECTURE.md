@@ -2577,6 +2577,238 @@ News / halt flags (needs Polygon or Benzinga subscription); L2 /
 order-book snapshots; tick-level trades; `VOL_GATE_ENFORCE=1`; new
 env-driven configs beyond v5.1.1; adaptive runtime config switching.
 
+## 18a. Always-On Algo Plus Ingest (v6.5.0)
+
+This section documents the always-on ingest layer introduced in v6.5.0.
+Source module: `ingest/algo_plus.py`.
+
+### 18a.1 Component overview
+
+Five components collaborate to provide continuous bar archiving across the
+extended session (04:00–20:00 ET) via Alpaca Algo Plus SIP feed:
+
+| Component | Responsibility |
+|---|---|
+| `AlgoPlusIngest` | Top-level coordinator. Resolves credentials, subscribes the `StockDataStream`, owns the reconnect loop, and wires `on_bar_callback` to `BarAssembler`. Launched as a daemon thread at boot alongside `scheduler_thread`. Source: `ingest/algo_plus.py`. |
+| `BarAssembler` | Validates the raw SIP bar payload, fills `trade_count` and `bar_vwap` from SIP-specific fields, and emits a canonical bar dict ready for `bar_archive.write_bar`. |
+| `ConnectionHealth` | 5-state machine (see §18a.2). Tracks WebSocket liveness and gates whether `GapDetector` runs on the normal 5-minute cadence or the accelerated 1-minute REST_ONLY cadence. |
+| `GapDetector` | Reads `/data/bars/TODAY/*.jsonl` bar timestamps for each subscribed ticker, finds spans of ≥ 3 consecutive missing 1-minute bars (`GAP_THRESHOLD_MINUTES = 3`), and enqueues `(ticker, gap_start_utc, gap_end_utc)` tuples to `RestBackfillWorker`. Runs on boot, on every LIVE reconnect, and periodically. |
+| `RestBackfillWorker` | Background thread. Dequeues gap tuples, issues `GET /v2/stocks/{sym}/bars?timeframe=1Min&feed=sip` REST requests at ≤ 200 req/min (Algo Plus budget), and writes bars that pass the `ts`-dedup check via `bar_archive.write_bar`. Sleep between requests: 0.35 s (≈ 171 req/min). |
+
+### 18a.2 ConnectionHealth state machine
+
+```
+            ┌──────────────┐
+    boot ──▶│  CONNECTING  │
+            └──────┬───────┘
+                   │ handshake OK
+                   ▼
+            ┌──────────────┐
+    ┌──────▶│     LIVE     │◀───────────────────────┐
+    │       └──────┬───────┘                        │
+    │              │ stream error / timeout          │ reconnect OK
+    │              ▼                                 │
+    │       ┌──────────────┐   backoff(n)     ┌─────┴────────┐
+    │       │  DEGRADED    │─────────────────▶│  RECONNECTING│
+    │       └──────┬───────┘                  └──────────────┘
+    │              │ 3 consecutive failures
+    │              ▼
+    │       ┌──────────────┐
+    └───────│   REST_ONLY  │  (GapDetector continues; WS suspended)
+            └──────────────┘
+                   │ next scheduled reconnect attempt (every 5 min)
+                   └──────▶ RECONNECTING
+```
+
+State transitions:
+
+- **LIVE → DEGRADED:** Any stream error, missed heartbeat (> 120 s with no bar on a session day), or exception in `on_bar_callback`.
+- **DEGRADED → RECONNECTING:** After exponential backoff (5 s, 10 s, 20 s, 40 s, 80 s, cap 300 s).
+- **RECONNECTING → LIVE:** Successful re-subscribe and first bar received.
+- **RECONNECTING → DEGRADED:** Reconnect attempt fails; failure counter increments.
+- **DEGRADED → REST_ONLY:** 3 consecutive reconnect failures. `GapDetector` triggers an immediate REST backfill for the outage window.
+- **REST_ONLY → RECONNECTING:** Every 5 minutes, one reconnect attempt.
+
+On any transition to DEGRADED or REST_ONLY, `GapDetector` fires immediately
+(does not wait for the 5-minute periodic cadence).
+
+### 18a.3 Bar flow sequence — normal boot and live path
+
+```
+Process boot
+    │
+    ├── _alpaca_data_client() resolves VAL_ALPACA_PAPER_KEY ✓
+    │
+    ├── AlgoPlusIngest.start()
+    │       │
+    │       ├── StockDataStream(key, secret, feed="sip").subscribe_bars(
+    │       │       on_bar_callback, *TICKERS
+    │       │   )
+    │       │
+    │       ├── GapDetector.run_on_boot()
+    │       │       │
+    │       │       └── for each ticker: find last archived bar ts
+    │       │               if gap > 3 min → enqueue (ticker, gap_start, now)
+    │       │
+    │       └── ConnectionHealth → CONNECTING
+    │
+    ├── (WebSocket handshake completes)
+    │       │
+    │       └── ConnectionHealth → LIVE
+    │
+    ├── Per-minute: on_bar_callback(bar_data)
+    │       │
+    │       ├── BarAssembler.accept(bar_data)
+    │       │       (validates schema; fills trade_count, bar_vwap from SIP fields)
+    │       │
+    │       └── bar_archive.write_bar(ticker, bar)
+    │               → /data/bars/2026-04-28/NVDA.jsonl  (append)
+    │
+    ├── Every 5 min: GapDetector.run_periodic()
+    │       └── same gap scan → RestBackfillWorker queue if gaps found
+    │
+    └── RestBackfillWorker (background thread, rate-limited)
+            │
+            ├── dequeue (ticker, start_ts, end_ts)
+            ├── GET /v2/stocks/{ticker}/bars?start=...&end=...
+            │       &timeframe=1Min&feed=sip&limit=1000
+            ├── for each bar: dedup check → write_bar() if new
+            └── sleep(0.35) between requests  (≤200 req/min budget)
+```
+
+Bar path in plain terms: WebSocket bar → `on_bar_callback` →
+`BarAssembler.accept` → `bar_archive.write_bar` →
+`/data/bars/YYYY-MM-DD/TICKER.jsonl`.
+
+### 18a.4 Gap detection contract
+
+- **Threshold:** `GAP_THRESHOLD_MINUTES = 3`. A span of 3 or more consecutive
+  missing 1-minute bars triggers a REST backfill request.
+- **Run triggers:**
+  - On boot — after WebSocket subscription succeeds. Looks back to 04:00 ET
+    for the current session day (skips weekends and holidays).
+  - On reconnect — immediately after `ConnectionHealth` transitions to LIVE,
+    covering the outage window precisely.
+  - Periodic — every 5 minutes via the `scheduler_thread` elapsed-time check
+    (analogous to the `state_elapsed >= 5` pattern at `trade_genius.py:5292`).
+    In `REST_ONLY` state the cadence tightens to every 1 minute to bound
+    backfill lag.
+
+### 18a.5 REST backfill rate-limit budget
+
+Alpaca Algo Plus tier: 200 requests/min on the data REST API.
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| Endpoint | `GET /v2/stocks/{sym}/bars` | Alpaca data API v2 |
+| Feed param | `feed=sip` | Algo Plus unlocks SIP; required for 04:00–20:00 |
+| Timeframe | `timeframe=1Min` | Matches `BAR_SCHEMA_FIELDS` granularity |
+| Limit per request | 1000 bars | Alpaca max per call |
+| Sleep between requests | 0.35 s | ~171 req/min, within 200 req/min budget |
+| Chunk size (time) | 1000 min ≈ 16.7 h | One request covers a full extended session |
+| Dedup check | Compare `ts` field vs existing JSONL `ts` values | Skip write if already present |
+
+For a 10-ticker watchlist a full-day backfill (04:00–20:00 ET, 960 min/ticker)
+requires at most 10 REST calls. At 0.35 s sleep that is 3.5 s total — well within
+any restart recovery budget.
+
+### 18a.6 BAR_SCHEMA_FIELDS — `feed_source` addition (M-4)
+
+v6.5.0 adds `feed_source` as a new field in `BAR_SCHEMA_FIELDS`
+(`bar_archive.py:31–45`). Value is `"sip"` for bars collected under Algo Plus
+or `"iex"` for bars collected on the legacy IEX feed. Legacy bars written
+before the migration carry `None` for this field.
+
+**Backward-compat guarantee:** `backtest/loader.py` already reads all
+schema fields via `.get(k)`, so a missing `feed_source` key returns `None`
+without any code change. Do not rename or reorder existing `BAR_SCHEMA_FIELDS`
+entries — only additive extension is permitted at this boundary.
+
+### 18a.7 `shadow_data_status` contract
+
+`shadow_data_status` is a discrete observability field in `/api/state`
+(populated by `IngestHealthReporter` every 30 s). Contract:
+
+```
+shadow_data_status: "live" | "degraded" | "offline" | "unconfigured"
+```
+
+| Status | Meaning | Operator action |
+|---|---|---|
+| `live` | WS connected; last bar received < 90 s ago (or market closed) | None |
+| `degraded` | WS disconnected; REST backfill running; gap < 15 min | Monitor |
+| `offline` | REST_ONLY state; gap ≥ 15 min or WS has never connected | Investigate |
+| `unconfigured` | `VAL_ALPACA_PAPER_KEY` not set; no ingest possible | Fix env vars |
+
+`shadow_data_status="live"` is trustworthy only when **both** conditions hold:
+(a) `ConnectionHealth = LIVE` AND (b) last bar timestamp for at least one
+subscribed ticker is within 90 seconds of wall clock (or the market is outside
+04:00–20:00 ET). The dashboard shadow panel renders this as a color pill:
+green = live, yellow = degraded, red = offline/unconfigured. Prior "silent
+zeros" failure mode (empty shadow P&L table with no visible warning) is
+eliminated.
+
+### 18a.8 `/api/state` additions
+
+Three new fields in the `/api/state` JSON response (additive; no breaking
+change to existing consumers):
+
+| Field | Type | Description |
+|---|---|---|
+| `shadow_disabled` | bool | `True` when `VAL_ALPACA_PAPER_KEY` is absent; emits `[INGEST SHADOW DISABLED]` at boot |
+| `shadow_data_status` | string | See §18a.7 contract |
+| `ingest_status` | dict | Snapshot from `IngestHealthReporter` (see below) |
+
+`ingest_status` shape:
+
+```json
+{
+  "status": "live",
+  "last_bar_age_s": 47,
+  "open_gaps_today": 0,
+  "bars_today": 1203,
+  "ws_state": "LIVE"
+}
+```
+
+### 18a.9 Extended REST window and SIP feed promotion
+
+**REST window:** `_fetch_1min_bars_alpaca()` window expanded from
+`08:00–18:00 ET` to `04:00–20:00 ET` (`trade_genius.py:3629–3630`). This
+covers the full extended-session range that Alpaca SIP supports on US equity
+days. The change only affects what bars are available in `_cycle_bar_cache`;
+no logic dependency exists on the old window boundary.
+
+**SIP feed promotion:** All REST calls that previously pinned `feed=DataFeed.IEX`
+or `feed="iex"` are promoted to `feed=DataFeed.SIP` system-wide (patch P-5,
+`trade_genius.py:3557, 3637, 2579`). IEX is retained as a fallback: if a SIP
+request returns an empty bar list, the fetcher retries with IEX and logs the
+downgrade. SIP is the consolidated tape; premarket and after-hours bars are
+only available via SIP on Algo Plus.
+
+### 18a.10 Boot wiring
+
+The `ingest_loop` daemon thread is launched in `trade_genius.py` during the
+process boot sequence, immediately adjacent to `scheduler_thread`:
+
+```python
+# trade_genius.py — boot sequence (alongside scheduler_thread)
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
+
+ingest_thread = threading.Thread(target=ingest_loop, daemon=True)
+ingest_thread.start()
+```
+
+`ingest_loop` (defined in `ingest/algo_plus.py`) runs its own internal
+watchdog: on any unhandled exception it sets `ConnectionHealth` to `DEGRADED`,
+applies exponential backoff, and re-enters the WebSocket subscription loop.
+The ingest thread is fully isolated from the scan loop — it shares no mutable
+globals and all archive writes are append-only to JSONL files via the
+existing failure-tolerant `bar_archive.write_bar` surface.
+
+---
+
 ## 19. Permission gates — v5.9.0 QQQ Regime Shield + ticker AVWAP + OR
 
 ### 19.1 Three-gate set (v5.9.0+: G1 swapped to EMA cross)
@@ -3112,4 +3344,4 @@ Three independent module-level flags: `V620_LOCAL_OR_BREAK_ENABLED`, `V620_FAST_
 
 ---
 
-*Last refresh: May 2026, against `BOT_VERSION = "6.2.0"`.*
+*Last refresh: May 2026, against `BOT_VERSION = "6.5.0"`.*

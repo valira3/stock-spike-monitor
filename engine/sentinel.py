@@ -145,6 +145,17 @@ ALARM_B_ENABLED: bool = False
 _V610_ATR_TRAIL_ENABLED: bool = True
 ALARM_E_ENABLED: bool = False
 
+# v6.4.4 \u2014 min-hold gate on PRICE_STOP (Alarm-A protective stop).
+# Devi 84day_2026_sip analysis: 266/269 under-10min pairs exit on
+# sentinel_a_stop_price for -$6,649 (vs +$13,235 run total). Block the
+# 50 bp protective stop under 10 minutes from entry; deeper rails (R-2
+# -$500, daily circuit -$1,500, Alarm-A flash >1%/min) still fire.
+# Applied in broker/positions.py:_run_sentinel right before the
+# ``has_full_exit`` short-circuit. Flag exists so the gate can be
+# disabled via monkeypatch without a deploy.
+_V644_MIN_HOLD_GATE_ENABLED: bool = True
+_V644_MIN_HOLD_SECONDS: int = 600
+
 SIDE_LONG = "LONG"
 SIDE_SHORT = "SHORT"
 
@@ -482,12 +493,12 @@ def check_alarm_a(
 # ---------------------------------------------------------------------------
 
 # v6.1.0 stage thresholds (multiples of ATR)
-_ATR_TRAIL_STAGE1_THRESHOLD: float = 1.0   # pnl_per_share < 1x ATR  -> 1.0x trail
-_ATR_TRAIL_STAGE2_THRESHOLD: float = 3.0   # pnl_per_share < 3x ATR  -> 1.5x trail
+_ATR_TRAIL_STAGE1_THRESHOLD: float = 1.0  # pnl_per_share < 1x ATR  -> 1.0x trail
+_ATR_TRAIL_STAGE2_THRESHOLD: float = 3.0  # pnl_per_share < 3x ATR  -> 1.5x trail
 _ATR_TRAIL_STAGE1_MULT: float = 1.0
 _ATR_TRAIL_STAGE2_MULT: float = 1.5
-_ATR_TRAIL_LOCKIN_FRAC: float = 0.5        # Stage 3: give back at most 50%% of peak profit
-_ATR_TRAIL_FLOOR_MULT: float = 0.3         # absolute floor: never tighter than 0.3x ATR
+_ATR_TRAIL_LOCKIN_FRAC: float = 0.5  # Stage 3: give back at most 50%% of peak profit
+_ATR_TRAIL_FLOOR_MULT: float = 0.3  # absolute floor: never tighter than 0.3x ATR
 
 
 def _compute_atr_trail_distance(
@@ -612,9 +623,7 @@ def check_alarm_a_stop_price(
                 SentinelAction(
                     alarm="A_STOP_PRICE",
                     reason=EXIT_REASON_PRICE_STOP,
-                    detail=(
-                        f"side=LONG mark={cp:.4f} <= stop={sp:.4f}{trail_tag}"
-                    ),
+                    detail=(f"side=LONG mark={cp:.4f} <= stop={sp:.4f}{trail_tag}"),
                     detail_stop_price=sp,
                 )
             )
@@ -625,9 +634,7 @@ def check_alarm_a_stop_price(
                 SentinelAction(
                     alarm="A_STOP_PRICE",
                     reason=EXIT_REASON_PRICE_STOP,
-                    detail=(
-                        f"side=SHORT mark={cp:.4f} >= stop={sp:.4f}{trail_tag}"
-                    ),
+                    detail=(f"side=SHORT mark={cp:.4f} >= stop={sp:.4f}{trail_tag}"),
                     detail_stop_price=sp,
                 )
             )
@@ -725,6 +732,7 @@ def check_alarm_b(
         # The counter still incremented above so state remains consistent.
         if _V610_LUNCH_SUPPRESSION_ENABLED and now_et is not None:
             from engine.timing import ET as _ET
+
             # Normalise to ET so comparisons are DST-aware.
             if now_et.tzinfo is None:
                 now_et_norm = now_et.replace(tzinfo=_ET)
@@ -845,6 +853,7 @@ def check_alarm_b(
 
 # === v6.1.0 ema-cross confirmation helpers ===
 
+
 def reset_ema_cross_pending(position_id: str | None = None) -> None:
     """Reset the v6.1.0 EMA-cross pending counter.
 
@@ -857,6 +866,7 @@ def reset_ema_cross_pending(position_id: str | None = None) -> None:
         _ema_cross_pending.clear()
     else:
         _ema_cross_pending.pop(position_id, None)
+
 
 # === end v6.1.0 ema-cross confirmation helpers ===
 
@@ -1436,8 +1446,11 @@ __all__ = [
     "TrailState",
     "EXIT_REASON_DIVERGENCE_TRAP",
     "EXIT_REASON_HVP_LOCK",
+    "EXIT_REASON_PRICE_STOP",
     "EXIT_REASON_R2_HARD_STOP",
     "EXIT_REASON_VELOCITY_RATCHET",
+    "_V644_MIN_HOLD_GATE_ENABLED",
+    "_V644_MIN_HOLD_SECONDS",
     "PNL_HISTORY_MAXLEN",
     "RATCHET_STOP_PCT",
     "RatchetDecision",

@@ -4,6 +4,84 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.5.0 — 2026-05-03 — always-on Algo Plus ingest
+
+### Ingest layer (new — ingest/algo_plus.py)
+- **M-1:** New `ingest/algo_plus.py` module implementing:
+  - `ConnectionHealth` — 5-state machine (CONNECTING / LIVE / DEGRADED / RECONNECTING / REST_ONLY), thread-safe module-level singleton.
+  - `BarAssembler` — validates schema, fills trade_count + bar_vwap, writes via `bar_archive.write_bar()`. Tags `feed_source="sip"` on every bar.
+  - `GapDetector` — detects spans of >= 3 consecutive missing 1-min bars from the daily JSONL archive.
+  - `RestBackfillWorker` — background thread; dequeues (ticker, start_ts, end_ts), fetches via Alpaca REST (feed=sip, limit=1000), deduplicates, writes. 0.35s sleep between requests.
+  - `AlgoPlusIngest` — top-level orchestrator with `start()` / `stop()`.
+  - `ingest_loop()` — long-running daemon target with exponential backoff [5, 10, 20, 40, 80, 160, 300] seconds.
+  - `_resolve_alpaca_creds()` — VAL_ALPACA_PAPER_KEY first, GENE_ALPACA_PAPER_KEY second, (None, None) on miss. Emits `[INGEST SHADOW DISABLED]` WARNING when no creds.
+  - `_ingest_health_snapshot()` — returns the dict served by P-6 `/api/state`.
+- **M-2:** `ingest_loop` daemon thread launched at bot boot in `trade_genius.py`. SSM_SMOKE_TEST=1 path skips it.
+- **M-4:** `feed_source` field added to `BAR_SCHEMA_FIELDS` in `bar_archive.py`. Defaults to None for legacy bars.
+- **M-5:** `gap_detect_task()` wired into `scheduler_thread` on a 5-minute elapsed-time check (analogous to the existing state-save cadence).
+
+### Patches
+- **P-1:** Obsolete smoke_test `_start_volume_profile` assertions replaced with v6.5.0 equivalent asserting `ingest.algo_plus._resolve_alpaca_creds` prefers VAL_ALPACA_PAPER_KEY. Comment-only reference at line 2746 updated.
+- **P-2:** `_v512_archive_minute_bar` wiring in `engine/scan.py` at lines 207 (preopen) and 362 (RTH) confirmed present. No code change required.
+- **P-3:** `shadow_disabled` boolean and `shadow_data_status` field added to `/api/state` via `dashboard_server.py` snapshot. Emits `[INGEST SHADOW DISABLED]` warning when no Alpaca creds are found.
+- **P-4:** REST fetch window in `_fetch_1min_bars_alpaca()` expanded from `08:00-18:00` to `04:00-20:00 ET` to capture full premarket and after-hours sessions available via Algo Plus SIP feed.
+- **P-5:** `feed=DataFeed.SIP` (or `feed="sip"`) promoted at `trade_genius.py` lines covering daily SMA bars, previous-day close bars, and 1-minute bars. Each site falls back to IEX if SIP returns empty (defense-in-depth per spec section 5 risk register).
+- **P-6:** `ingest_status` dict added to `/api/state` response — fields: `status`, `last_bar_age_s`, `open_gaps_today`, `bars_today`, `ws_state`.
+
+### UI
+- **UI-1:** `dashboard_static/app.css` line 817: `.pmtx-wx-down` now uses `var(--down)` (red) instead of `var(--up)` (green) for short-aligned tickers. Already applied by parent agent.
+
+### Schema
+- `bar_archive.BAR_SCHEMA_FIELDS` gains `"feed_source"` as final entry (additive; existing `_normalise_bar` handles missing keys via `.get()`).
+
+### Tests
+- New `tests/test_v650_ingest.py`: 17 test cases covering cred resolution chain, schema, GapDetector math, ConnectionHealth state transitions, and [INGEST SHADOW DISABLED] log.
+- `smoke_test.py`: removed v5.5.3 `_start_volume_profile` assertion (function deleted in v5.26.0); replaced with v6.5.0 equivalent asserting `_resolve_alpaca_creds` VAL-first ordering.
+
+### Open items for Val
+- M-3 (ARCHITECTURE.md update) and PDF refresh are not included in this PR — deferred to follow-on.
+- SIP WebSocket streaming entitlement for `VAL_ALPACA_PAPER_KEY` should be confirmed before AlgoPlusIngest WebSocket path goes live (spec Open Question 1). If SIP WS is not provisioned, the ingest module degrades to REST_ONLY polling automatically.
+
+---
+
+## v6.4.4 — 2026-05-02 — Min-hold gate on Alarm-A protective stop
+
+### Why
+Devi's 84day_2026_sip backtest (12 tickers, Jan 2 – May 1) flagged the single biggest known ROI lever in v6.4.3: ~20% of pairs (269 of 1,373) exit before the 10-minute mark and bleed -$6,560 combined. Removing that bleed lifts the run from +$13,235 to +$19,795 (+49.6%) without touching any other parameter. The cross-tab (`pairs_with_reason.json`, generated for this PR) showed the bleed is a single-cause regression, not a fan-out: **266 of the 269 violators (98.9%) exit on `sentinel_a_stop_price`** (Alarm-A 50 bp protective stop). The other 3 are Alarm-F chandelier and net-positive.
+
+The 50 bp stop (`STOP_PCT_OF_ENTRY`, set at entry by `broker/orders.py` from `eye_of_tiger.py`) is much tighter than the spec's actual risk rails: R-2 hard stop -$500, daily circuit -$1,500. It is a *trailing discipline* tool, not the deep risk rail. Today there is no minimum-hold guard anywhere in the codebase — `grep -rn "min_hold|MIN_HOLD|hold_min|TIME_STOP|early_exit"` against `engine/` and `trade_genius.py` returns zero matches. The rail fires the moment the mark crosses the level, which on a noisy 1-min tick can happen 2-9 minutes after entry before the position has had a chance to develop.
+
+### What
+**Fix — block `EXIT_REASON_PRICE_STOP` under 10 minutes from entry** (`broker/positions.py:_run_sentinel`, `engine/sentinel.py`)
+- New constants in `engine/sentinel.py`: `_V644_MIN_HOLD_GATE_ENABLED: bool = True` (kill-switch flag) and `_V644_MIN_HOLD_SECONDS: int = 600`. Both exported via `__all__` so test monkeypatches resolve.
+- New helper `broker/positions.py:_v644_position_hold_seconds(pos)` reads `pos["entry_ts_utc"]` (already set at fill time in `broker/orders.py:858`) and compares against `_tg()._now_et()` so backtests on monkey-patched harness clocks return deterministic hold values. Returns `None` on missing/unparseable entry_ts or any clock error so a clock outage cannot disable a real stop (fail-open: gate sits out, the stop fires normally).
+- The gate is inserted in `_run_sentinel` immediately before the `if result.has_full_exit: return result.exit_reason` short-circuit. When the result's exit reason is `EXIT_REASON_PRICE_STOP` AND `hold_seconds < 600` AND the kill-switch flag is on, the function logs `[V644-MIN-HOLD] <ticker> <side> blocked PRICE_STOP hold=<n>s<600s; deeper rails still armed` and returns `None`. The Alarm-C / Alarm-F stop-tighten path (which executes after `has_full_exit` returns) is unaffected, so the trail keeps ratcheting toward the bleed-out level normally and may eventually fire a non-suppressed full-exit on the next tick.
+
+**Targeted, not blanket.** R-2 hard stop (`sentinel_r2_hard_stop`), Alarm-A flash velocity (`sentinel_a_flash_loss`, fires on >1%/min), Alarm-B EMA cross (`sentinel_b_ema_cross`), Alarm-D HVP lock (`sentinel_d_adx_decline`), Alarm-F chandelier (`sentinel_f_chandelier_exit`) emit **different exit reasons** and continue to fire normally under 10 minutes. The daily circuit breaker -$1,500 is enforced upstream of `_run_sentinel` and is not affected. So the deepest risk rails remain in place; only the 50 bp trailing discipline rail is held off the first 10 minutes.
+
+### Risk
+- A stock that flash-crashes 4% in 5 minutes used to be caught by the 50 bp PRICE_STOP at -$30 to -$100; under v6.4.4 the position holds until either Alarm-A flash velocity (>1%/min) OR R-2 (-$500) catches it. Worst-case incremental loss per blocked stop is bounded by the deeper rails. Devi's sample of the 10 worst under-10min losses (forensics.md §3) shows individual losses of -$66 to -$113 — well under the deeper rails.
+- Mitigation: the kill-switch flag `_V644_MIN_HOLD_GATE_ENABLED` lets ops disable the gate via monkeypatch / env override without redeploy if a flash-crash exposes a gap.
+
+### Validation
+- New unit test file `tests/test_v644_min_hold_gate.py` covers four cases: (a) PRICE_STOP under 10min returns `None` (suppressed), (b) PRICE_STOP at exactly 10min fires (boundary), (c) PRICE_STOP after 10min fires unchanged, (d) R-2 hard stop under 10min fires regardless. Both LONG and SHORT sides covered. Plus a kill-switch case (gate-off → PRICE_STOP fires under 10min as before).
+- Smoke validation on three days from the 84day_2026_sip dataset (results in PR description). Expected: under-10min PRICE_STOP pair count drops to ~0; total day P&L lifts; deeper-rail exits unchanged.
+
+### Files
+- `bot_version.py`: 6.4.3 → 6.4.4.
+- `trade_genius.py`: BOT_VERSION 6.4.3 → 6.4.4. CURRENT_MAIN_NOTE rewritten (≤34 char/line) to describe the gate.
+- `engine/sentinel.py`: two new module-level constants + `__all__` additions.
+- `broker/positions.py`: helper + import + 24-line gate block in `_run_sentinel`.
+- `tests/test_v644_min_hold_gate.py`: new unit test file.
+- `CHANGELOG.md`: this entry.
+
+### Out of scope
+- No architecture/PDF rebuild — patch release.
+- No change to any other alarm threshold.
+- No env-var surface — the kill-switch is a Python module flag for now (single-process deploy on Railway). A `V644_MIN_HOLD_GATE` env var can be added later if ops needs runtime toggling.
+
+---
+
 ## v6.3.2 — 2026-05-01 — Backtest cleanups: EOD lock, 16:00 cutoff, harness clock
 
 ### Why
