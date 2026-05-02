@@ -499,6 +499,12 @@ class AlgoPlusIngest:
         self._tickers = self._get_tickers()
         _health.set(CONNECTING)
         _update_ingest_stats(status="unconfigured", ws_state=CONNECTING)
+        # v6.5.0 \u2014 register module-level singleton so gap_detect_task()
+        # in trade_genius.py can find the active backfill worker queue.
+        import sys as _sys
+        _mod = _sys.modules.get(__name__)
+        if _mod is not None:
+            setattr(_mod, "_current_ingest", self)
         self._run_ws_ingest()
 
     def stop(self) -> None:
@@ -511,6 +517,11 @@ class AlgoPlusIngest:
             except Exception:
                 pass
             self._stream = None
+        # v6.5.0 \u2014 clear singleton on stop.
+        import sys as _sys
+        _mod = _sys.modules.get(__name__)
+        if _mod is not None and getattr(_mod, "_current_ingest", None) is self:
+            setattr(_mod, "_current_ingest", None)
 
     def _run_ws_ingest(self) -> None:
         """Connect WebSocket, subscribe to tickers, block until disconnect."""
