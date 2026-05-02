@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.3.0"
+BOT_VERSION = "6.3.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,29 +97,31 @@ BOT_VERSION = "6.3.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.3.0 Sentinel B noise-\n"
-    "cross filter. Forensics:\n"
-    "Apr 27-May 1 backtest had\n"
-    "Sentinel B at -$278 with\n"
-    "a 6% win rate vs Sentinel\n"
-    "A at +$259 / 70% wins.\n"
-    "Sixteen of 17 B losers\n"
-    "closed within -0.05% to\n"
-    "-0.37% adverse - all 1m\n"
-    "noise. Filter requires\n"
-    "adverse drawdown to clear\n"
-    "0.10\u00d7ATR(1m) before the\n"
-    "5m EMA-cross exit can\n"
-    "fire. Position sits out\n"
-    "(no counter reset) when\n"
-    "blocked - waits for the\n"
-    "move to confirm or for\n"
-    "the cross to flip. New\n"
-    "v630_flags on /api/state.\n"
-    "Local Weather card and\n"
-    "B Trend Death sentinel\n"
-    "cell append a noise\u22650.10\n"
-    "\u00d7ATR suffix when active."
+    "v6.3.1 hotfix: wire\n"
+    "position_id and now_et\n"
+    "into evaluate_sentinel\n"
+    "at broker/positions.py.\n"
+    "v6.3.0 backtest produced\n"
+    "byte-identical results\n"
+    "to v6.2.0 baseline; root\n"
+    "cause was that the only\n"
+    "call site for the sent-\n"
+    "inel never threaded the\n"
+    "position_id through, so\n"
+    "engine/sentinel.py:697\n"
+    "never entered the v6.1.0\n"
+    "stateful path. v6.3.0\n"
+    "noise-cross filter and\n"
+    "v6.1.0 lunch suppression\n"
+    "were both dead code. Now\n"
+    "both activate: lifecycle\n"
+    "position_id passed plus\n"
+    "_tg().now_et() forwarded\n"
+    "to the alarm B path. No\n"
+    "behavior change for any\n"
+    "position that lacks a\n"
+    "lifecycle id (back-compat\n"
+    "falls through to legacy)."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

@@ -455,6 +455,19 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             last_1m_close = None
             last_1m_atr = None
 
+        # v6.3.1 \u2014 wire position_id + now_et into the sentinel.
+        # Without these, the v6.1.0 stateful EMA-cross path and the v6.3.0
+        # noise-cross filter inside it (engine/sentinel.py:697 gates on
+        # ``position_id is not None``) silently fall through to the legacy
+        # 2-bar confirm path, leaving both features as dead code in prod
+        # and backtest. The lifecycle position_id is already resolved at
+        # broker/positions.py:157 for PHASE4 logging; reuse it here.
+        _v631_position_id = pos.get("lifecycle_position_id")
+        try:
+            _v631_now_et = _tg().now_et()
+        except Exception:
+            _v631_now_et = None
+
         result = evaluate_sentinel(
             side=side,
             unrealized_pnl=unrealized,
@@ -481,6 +494,8 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             last_1m_close=last_1m_close,
             last_1m_atr=last_1m_atr,
             initial_stop_price=pos.get("initial_stop"),
+            position_id=_v631_position_id,
+            now_et=_v631_now_et,
         )
         # v5.13.6 \u2014 emit lifecycle PHASE4 events on state changes
         # (best-effort, no-op when logger absent).
