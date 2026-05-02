@@ -92,6 +92,10 @@ EXIT_REASON_ALARM_D: str = "sentinel_d_adx_decline"
 # dollar rail. The price rail typically fires first in a slow drift
 # scenario where the dollar threshold has not yet been reached.
 EXIT_REASON_PRICE_STOP: str = "sentinel_a_stop_price"
+# v6.5.1 \u2014 deep-stop rail that fires during the v6.4.4 min_hold
+# blocking window when price blows through 75 bp past entry. Bypasses
+# the gate so blow-through losses are capped without disabling it.
+EXIT_REASON_V651_DEEP_STOP: str = "sentinel_v651_deep_stop"
 # Backward-compat alias \u2014 some callers still import EXIT_REASON_HVP_LOCK.
 EXIT_REASON_HVP_LOCK: str = EXIT_REASON_ALARM_D
 
@@ -155,6 +159,15 @@ ALARM_E_ENABLED: bool = False
 # disabled via monkeypatch without a deploy.
 _V644_MIN_HOLD_GATE_ENABLED: bool = True
 _V644_MIN_HOLD_SECONDS: int = 600
+
+# v6.5.1 \u2014 deep-stop during min_hold window. The 50 bp protective rail
+# is blocked under 10 minutes from entry (v6.4.4 gate). When mark blows
+# through -0.75% (long) or +0.75% (short) inside that window, this rail
+# fires immediately to cap blow-through losses.
+# Devi 84day_2026_sip: 30/164 forced losers exited worse than -0.75%
+# at the 10-min mark, accounting for $-2,500 (vs $-715 if cut at 75bp).
+_V651_DEEP_STOP_ENABLED: bool = True
+_V651_DEEP_STOP_PCT: float = 0.0075  # 75 bp
 
 SIDE_LONG = "LONG"
 SIDE_SHORT = "SHORT"
@@ -269,6 +282,7 @@ class SentinelResult:
             if a.reason in (
                 EXIT_REASON_R2_HARD_STOP,
                 EXIT_REASON_PRICE_STOP,
+                EXIT_REASON_V651_DEEP_STOP,
                 EXIT_REASON_ALARM_A,
                 EXIT_REASON_ALARM_B,
                 EXIT_REASON_ALARM_D,
@@ -295,6 +309,9 @@ class SentinelResult:
         for a in self.alarms:
             if a.reason == EXIT_REASON_R2_HARD_STOP:
                 return EXIT_REASON_R2_HARD_STOP
+        for a in self.alarms:
+            if a.reason == EXIT_REASON_V651_DEEP_STOP:
+                return EXIT_REASON_V651_DEEP_STOP
         for a in self.alarms:
             if a.reason == EXIT_REASON_PRICE_STOP:
                 return EXIT_REASON_PRICE_STOP
@@ -1451,6 +1468,9 @@ __all__ = [
     "EXIT_REASON_VELOCITY_RATCHET",
     "_V644_MIN_HOLD_GATE_ENABLED",
     "_V644_MIN_HOLD_SECONDS",
+    "_V651_DEEP_STOP_ENABLED",
+    "_V651_DEEP_STOP_PCT",
+    "EXIT_REASON_V651_DEEP_STOP",
     "PNL_HISTORY_MAXLEN",
     "RATCHET_STOP_PCT",
     "RatchetDecision",

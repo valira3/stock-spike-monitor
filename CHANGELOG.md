@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.5.1 (2026-05-XX) — Deep-stop during min_hold window
+
+- Added v6.5.1 deep-stop rail that fires at -0.75% (long) / +0.75% (short)
+  during the v6.4.4 min_hold blocking window. The 50 bp protective rail
+  remains blocked under 10 minutes (preserving the +$1.7k v6.4.4 lift),
+  but blow-throughs past -0.75% now exit immediately instead of being
+  forced to ride to t=10min.
+- New exit reason: sentinel_v651_deep_stop
+- New tunables: _V651_DEEP_STOP_ENABLED, _V651_DEEP_STOP_PCT
+- Backtest: caps 30 forced-hold losers, est. +$715 84-day lift (bound).
+
+---
+
 ## v6.5.0 — 2026-05-03 — always-on Algo Plus ingest
 
 ### Ingest layer (new — ingest/algo_plus.py)
