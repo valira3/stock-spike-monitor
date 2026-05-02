@@ -1071,6 +1071,27 @@ def snapshot() -> dict[str, Any]:
             "chandelier_wide_mult": v640_chand_wide,
             "chandelier_tight_mult": v640_chand_tight,
         }
+        # v6.4.2 \u2014 post-loss cooldown surface. Reads the configurable
+        # window from eye_of_tiger.POST_LOSS_COOLDOWN_MIN (env-driven,
+        # default 30) and the live registry via
+        # trade_genius.get_active_cooldowns(). Defaults to a safe empty
+        # state so a missing v642_flags / active_cooldowns key in
+        # /api/state degrades the dashboard chip to hidden.
+        try:
+            from eye_of_tiger import POST_LOSS_COOLDOWN_MIN as _v642_cd_min
+            v642_cooldown_min = int(_v642_cd_min)
+        except Exception:
+            v642_cooldown_min = 30
+        try:
+            import trade_genius as _v642_tg
+            v642_active = list(_v642_tg.get_active_cooldowns())
+        except Exception:
+            v642_active = []
+        v642_flags = {
+            "post_loss_cooldown_min": v642_cooldown_min,
+            "post_loss_cooldown_enabled": v642_cooldown_min > 0,
+            "active_count": len(v642_active),
+        }
 
         return {
             "ok": True,
@@ -1079,6 +1100,8 @@ def snapshot() -> dict[str, Any]:
             "v620_flags": v620_flags,
             "v630_flags": v630_flags,
             "v640_flags": v640_flags,
+            "v642_flags": v642_flags,
+            "active_cooldowns": v642_active,
             "server_time": now_iso,
             "server_time_label": now_label,
             "portfolio": {

@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.4.1"
+BOT_VERSION = "6.4.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,29 +97,33 @@ BOT_VERSION = "6.4.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.4.1 asymmetric stops:\n"
-    "long 50bp, short 30bp.\n"
-    "Apr 27\u2013May 1 sweep showed\n"
-    "shorts asymmetric per-sh:\n"
-    "avg loss -$2.02 vs win\n"
-    "+$1.65. Tightening short\n"
-    "stop 50\u219230bp lifted weekly\n"
-    "P&L +$262 (+30%): +$865\n"
-    "\u2192 +$1,127 over 5 days,\n"
-    "short WR 51.6%\u219258.3%, no\n"
-    "impact on longs (34 pairs\n"
-    "~$585 unchanged). 25bp\n"
-    "chopped on noise (-$112\n"
-    "vs 30bp); 30bp empirical\n"
-    "sweet spot. Engine: new\n"
-    "STOP_PCT_LONG=0.005 and\n"
-    "STOP_PCT_SHORT=0.003 in\n"
-    "eye_of_tiger.py; orders\n"
-    "picks per-side pct.\n"
-    "STOP_PCT_OF_ENTRY kept\n"
-    "as back-compat alias.\n"
-    "R-2 dollar-rail backstop\n"
-    "unchanged. Patch bump:\n"
+    "v6.4.2 post-loss cooldown:\n"
+    "after a stop-out, block\n"
+    "new entries on same\n"
+    "(ticker, side) for 30 min.\n"
+    "Apr 27\u2013May 1 backtest:\n"
+    "three same-side same-tkr\n"
+    "reentries within 30 min of\n"
+    "a stop \u2014 TSLA, META, AMZN\n"
+    "shorts \u2014 ALL three lost\n"
+    "again. Clean chase pattern\n"
+    "3-for-3 losers. Adding\n"
+    "30-min cooldown captures\n"
+    "all three (+$107/wk lift)\n"
+    "without blocking productive\n"
+    "post-WIN reentry chains\n"
+    "(NVDA, MSFT, ORCL).\n"
+    "Configurable env\n"
+    "POST_LOSS_COOLDOWN_MIN\n"
+    "(default 30; 0 disables).\n"
+    "Engine: record on losing\n"
+    "close, veto in\n"
+    "execute_breakout. Surfaced\n"
+    "on dashboard: header CD\n"
+    "chip + popover w/ each\n"
+    "(ticker, side, MM:SS).\n"
+    "Reset cross-day in\n"
+    "reset_daily_state. Patch:\n"
     "no architecture/PDF."
 )
 
@@ -3094,6 +3098,15 @@ _scan_idle_hours: bool = False
 _last_exit_time: dict = {}     # ticker -> datetime (UTC) of last exit
 _last_scan_time = None           # datetime (UTC), updated each scan cycle
 
+# v6.4.2 \u2014 post-loss cooldown registry. After every losing exit, the
+# engine records (until_utc, last_loss_pnl) keyed by (ticker, side). New
+# entries on that (ticker, side) are vetoed in execute_breakout while the
+# until_utc timestamp is still in the future. Entries are auto-pruned by
+# is_in_post_loss_cooldown / get_active_cooldowns when they expire, so the
+# dict stays small. Cleared by reset_daily_state alongside _last_exit_time.
+# See eye_of_tiger.POST_LOSS_COOLDOWN_MIN for the configurable window.
+_post_loss_cooldown: dict = {}  # (ticker, side) -> {"until_utc": dt, "loss_pnl": float, "loss_ts_utc": dt}
+
 # User config
 user_config: dict = {"trading_mode": "paper"}
 
@@ -4257,6 +4270,107 @@ def _check_new_position_cutoff(ticker: str) -> bool:
     return True
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def record_post_loss_cooldown(ticker: str, side: str, pnl: float, exit_ts_utc=None) -> None:
+    """v6.4.2 \u2014 record a stop-out so the next entry on (ticker, side) is gated.
+
+    Called from broker.orders.close_breakout for any losing exit (pnl < 0).
+    No-op when POST_LOSS_COOLDOWN_MIN <= 0 (operator disabled the feature).
+    Side is normalized to lowercase ('long'/'short'). Existing entry for the
+    same key is overwritten so back-to-back losses extend the cooldown from
+    the most recent stop \u2014 the chase pattern we want to break is exactly
+    the back-to-back case.
+    """
+    try:
+        from eye_of_tiger import POST_LOSS_COOLDOWN_MIN as _cd_min
+        cd_min = int(_cd_min)
+    except Exception:
+        cd_min = 30
+    if cd_min <= 0 or pnl is None or pnl >= 0:
+        return
+    side_norm = (side or "").strip().lower()
+    if side_norm not in ("long", "short"):
+        return
+    loss_ts = exit_ts_utc or _now_utc()
+    until = loss_ts + timedelta(minutes=cd_min)
+    _post_loss_cooldown[(ticker, side_norm)] = {
+        "until_utc": until,
+        "loss_pnl": float(pnl),
+        "loss_ts_utc": loss_ts,
+    }
+    logger.info(
+        "[V642-COOLDOWN] RECORD ticker=%s side=%s loss_pnl=$%.2f "
+        "until_utc=%s window_min=%d",
+        ticker, side_norm, float(pnl),
+        until.strftime("%Y-%m-%dT%H:%M:%SZ"), cd_min,
+    )
+
+
+def is_in_post_loss_cooldown(ticker: str, side: str):
+    """v6.4.2 \u2014 return entry dict if (ticker, side) is currently cooling
+    down, else None. Auto-prunes expired entries.
+    """
+    side_norm = (side or "").strip().lower()
+    key = (ticker, side_norm)
+    entry = _post_loss_cooldown.get(key)
+    if not entry:
+        return None
+    now = _now_utc()
+    if entry["until_utc"] <= now:
+        _post_loss_cooldown.pop(key, None)
+        return None
+    return entry
+
+
+def _check_post_loss_cooldown(ticker: str, side: str) -> bool:
+    """v6.4.2 entry gate: returns True if entry may proceed, False while a
+    recent loss on (ticker, side) is still inside the cooldown window.
+    """
+    entry = is_in_post_loss_cooldown(ticker, side)
+    if not entry:
+        return True
+    now = _now_utc()
+    remaining = max(0, int((entry["until_utc"] - now).total_seconds()))
+    logger.info(
+        "[V642-COOLDOWN] BLOCK ticker=%s side=%s loss_pnl=$%.2f "
+        "remaining_sec=%d action=BLOCK_ENTRY",
+        ticker, (side or "").lower(), float(entry.get("loss_pnl", 0)),
+        remaining,
+    )
+    return False
+
+
+def get_active_cooldowns() -> list:
+    """v6.4.2 \u2014 snapshot of currently-active post-loss cooldowns for the
+    dashboard. Auto-prunes expired entries on read. Returns a list of dicts
+    safe to JSON-serialize via /api/state.
+    """
+    now = _now_utc()
+    out = []
+    for key in list(_post_loss_cooldown.keys()):
+        entry = _post_loss_cooldown.get(key)
+        if not entry:
+            continue
+        if entry["until_utc"] <= now:
+            _post_loss_cooldown.pop(key, None)
+            continue
+        ticker, side = key
+        remaining_sec = max(0, int((entry["until_utc"] - now).total_seconds()))
+        out.append({
+            "ticker": ticker,
+            "side": side,
+            "until_utc": entry["until_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "remaining_sec": remaining_sec,
+            "loss_pnl": round(float(entry.get("loss_pnl", 0)), 2),
+            "loss_ts_utc": entry["loss_ts_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+    out.sort(key=lambda r: r["remaining_sec"])
+    return out
+
+
 def _check_daily_loss_limit(ticker: str) -> bool:
     """Return True if entry should proceed; False if daily loss limit
     halts trading.
@@ -5047,6 +5161,30 @@ def reset_daily_state():
             )
     except Exception:
         logger.exception("reset_daily_state: _last_exit_time prune failed")
+
+    # v6.4.2 \u2014 post-loss cooldown registry. Same cross-day cleanup
+    # rationale as _last_exit_time above: yesterday's 15:54 stop-out
+    # should not gate today's first 30 min of trading. Drop any entry
+    # whose loss timestamp predates today's 09:30 ET session open. Live
+    # entries (until_utc still in the future from intraday losses) are
+    # auto-pruned by is_in_post_loss_cooldown / get_active_cooldowns on
+    # read; this block only handles the cross-day case.
+    try:
+        stale_cd = [
+            k for k, v in list(_post_loss_cooldown.items())
+            if v is not None
+            and v.get("loss_ts_utc") is not None
+            and v["loss_ts_utc"].astimezone(ET) < session_open_et
+        ]
+        for k in stale_cd:
+            _post_loss_cooldown.pop(k, None)
+        if stale_cd:
+            logger.info(
+                "reset_daily_state: pruned %d stale _post_loss_cooldown entries",
+                len(stale_cd),
+            )
+    except Exception:
+        logger.exception("reset_daily_state: _post_loss_cooldown prune failed")
 
     # v5.13.9 \u2014 _regime_bullish reset removed alongside the retired
     # PDC regime alert. v5.26.0 \u2014 RSI regime classifier deleted.
