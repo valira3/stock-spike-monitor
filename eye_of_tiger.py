@@ -47,7 +47,17 @@ ENTRY_2_REQUIRE_FRESH_NHOD = True
 # at operator request ("stop should not be sized by the number of
 # shares"). The dollar-rail R-2 backstop remains in evaluate_sentinel
 # as the deeper safety net.
-STOP_PCT_OF_ENTRY = 0.005  # 0.5%% \u2014 long stop = entry * 0.995, short stop = entry * 1.005
+STOP_PCT_OF_ENTRY = 0.005  # 0.5%% \u2014 long stop = entry * 0.995 (v6.4.1: short uses STOP_PCT_SHORT)
+
+# v6.4.1 \u2014 asymmetric stops. Backtest sweep (Apr 27\u2013May 1, see
+# /home/user/workspace/v640_short_stop_sweep/report.md) showed shorts have
+# asymmetric per-share variance: avg short loss was -$2.02/share vs avg
+# short win at +$1.65/share. Tightening short stops to 30bp (vs symmetric
+# 50bp baseline) lifted weekly P&L by +$262 (+30%) without hurting longs.
+# 25bp was too tight (chopped out on noise). 30bp is the empirical sweet
+# spot. Long pct unchanged at 50bp.
+STOP_PCT_LONG = 0.005   # 50bp \u2014 long stop = entry * (1 - 0.005)
+STOP_PCT_SHORT = 0.003  # 30bp \u2014 short stop = entry * (1 + 0.003)
 
 SOVEREIGN_BRAKE_DOLLARS = -500.0
 VELOCITY_FUSE_PCT = 0.01
