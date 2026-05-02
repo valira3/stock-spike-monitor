@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.3.2 — 2026-05-01 — Backtest cleanups: EOD lock, 16:00 cutoff, harness clock
+
+### Why
+Three small infra bugs were warping every backtest run since the v5 series shipped. None of them showed up as failures because each was wrapped in an exception swallow or guarded by a falsy default. Together they hid the true behavior of v6.1.0 lunch-chop suppression, kept Alarm A's velocity tracker out of sync with simulated time, and clipped 5 minutes off the trading day.
+
+### What
+
+**Fix #1 — `v5_lock_all_tracks` was never defined** (`trade_genius.py`)
+- `broker/lifecycle.eod_close` and `_check_daily_loss_limit` both reference `tg.v5_lock_all_tracks(reason)`, but the function did not exist anywhere in the codebase. Every EOD lock call raised `AttributeError`, which the surrounding try/except silently swallowed. v5 tracks remained mid-state across day boundaries in backtest.
+- Smoke tests `C-R4` / `C-R5` only enforced source-string presence (e.g. `assert "v5_lock_all_tracks" in inspect.getsource(eod_close)`), so the defect went undetected for ~6 months.
+- v6.3.2 ships the function (transitions every long+short track to `STATE_LOCKED` via `tiger_buffalo_v5.transition_to_locked`, returns the count, logs `[V5-LOCK]`) and wires it into `_check_daily_loss_limit` so C-R4 also activates.
+
+**Fix #2 — 15:55 hard cutoff** (`engine/scan.py:129`)
+- `after_close = now_et.hour >= 16 or (now_et.hour == 15 and now_et.minute >= 55)` was clipping the final 5 minutes of every session. `_scan_idle_hours` flipped True at 15:55, freezing position management and entry candidates.
+- Changed to `after_close = now_et.hour >= 16`. The engine now manages positions through the full 15:55 – 16:00 closing 5-min bucket, matching the v6.x exit-path expectations (Sentinel A flash floor, Sentinel B 5m close cross).
+
+**Fix #3 — `now_ts` was wallclock-based** (`broker/positions.py`)
+- Alarm A's 1m velocity tracker (`pnl_history`) was sampling `_time.time()` every tick, even in backtest. The harness already monkey-patches `_now_et` to `BacktestClock.now_et`, but `now_ts` ignored it, so velocity samples spanned wallclock seconds while the rest of the engine ran on simulated time. In a fast backtest, hours of simulated tape compress into seconds of wallclock, making Alarm A's velocity guard nearly always hot.
+- v6.3.2 derives `now_ts = _tg()._now_et().timestamp()` with a fallback to wallclock. In prod the two values are within microseconds (verified). In backtest they now agree exactly.
+- v6.3.2 also fixes a v6.3.1 typo: that patch read `_tg().now_et()` but no such attribute exists — the canonical accessor is `_tg()._now_et()`. Every call raised `AttributeError`, the try/except set `_v631_now_et = None`, and `engine/sentinel.py:718` (`if _V610_LUNCH_SUPPRESSION_ENABLED and now_et is not None`) silently no-op'd. **v6.1.0 lunch-chop suppression was still dead code under v6.3.1**; v6.3.2 actually activates it.
+
+### Tests
+- `tests/test_v632_backtest_cleanups.py` — three regression tests:
+  1. `v5_lock_all_tracks` matches the smoke-test C-R4 contract (returns 2, both tracks LOCKED_FOR_DAY).
+  2. `eod_close` calling `v5_lock_all_tracks` actually transitions tracks (not just present-as-string).
+  3. `manage_positions` derives `now_ts` from the harness clock under monkey-patched `_now_et`.
+
+### Files modified
+- `trade_genius.py` — `v5_lock_all_tracks` definition, C-R4 wiring, version bump, CURRENT_MAIN_NOTE.
+- `engine/scan.py` — 1-line cutoff change.
+- `broker/positions.py` — `now_ts` derivation, v6.3.1 `now_et` typo fix.
+- `bot_version.py` — version bump.
+- `CHANGELOG.md` — this entry.
+- `tests/test_v632_backtest_cleanups.py` — new regression tests.
+
+Per the minor-release rule (2026-05-01): patch bump, no ARCHITECTURE.md / PDF updates.
+
+### Backtest expectation
+Re-run the Apr 27 – May 1 5-day backtest against v6.3.2. With v6.1.0 lunch suppression actually live for the first time, with stuck-EOD positions cleanly locked, and with a deterministic Alarm A clock, the results should be a more honest read on the v6.3.0 filter's contribution. Anticipated direction: lunch suppression (11:30 – 13:00 ET) reduces Sentinel B trade count further; the 4/30 META "un-stuck" effect shrinks because the v6.3.0 baseline now also locks at EOD; net P&L still positive vs v6.2.0 but with cleaner attribution.
+
+### Back-compat
+All three changes are silent improvements:
+- Track locking adds a journal log line but does not change any in-memory shape that wasn't already locked-or-cleared on the next session reset.
+- The 5-minute cutoff change permits engine activity that v6.1.x – v6.3.1 simply skipped; behavior in 09:35 – 15:55 ET is unchanged.
+- `now_ts` derivation matches wallclock in prod within microseconds, so live trading is unaffected.
+
+---
+
 ## v6.3.1 — 2026-05-01 — Wire `position_id` + `now_et` into `evaluate_sentinel`
 
 ### Why

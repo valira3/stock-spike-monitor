@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.3.1"
+BOT_VERSION = "6.3.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,31 +97,31 @@ BOT_VERSION = "6.3.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.3.1 hotfix: wire\n"
-    "position_id and now_et\n"
-    "into evaluate_sentinel\n"
-    "at broker/positions.py.\n"
-    "v6.3.0 backtest produced\n"
-    "byte-identical results\n"
-    "to v6.2.0 baseline; root\n"
-    "cause was that the only\n"
-    "call site for the sent-\n"
-    "inel never threaded the\n"
-    "position_id through, so\n"
-    "engine/sentinel.py:697\n"
-    "never entered the v6.1.0\n"
-    "stateful path. v6.3.0\n"
-    "noise-cross filter and\n"
+    "v6.3.2 backtest cleanups:\n"
+    "three small infra fixes\n"
+    "that were warping every\n"
+    "backtest run since v5.0.\n"
+    "(1) Add v5_lock_all_tracks\n"
+    "(was referenced by EOD\n"
+    "and daily breaker but\n"
+    "never defined; calls were\n"
+    "silently swallowed by\n"
+    "try/except). (2) Move\n"
+    "after_close from 15:55 to\n"
+    "16:00 ET so the engine\n"
+    "manages the full final\n"
+    "5-min bucket. (3) Derive\n"
+    "now_ts from harness clock\n"
+    "_tg()._now_et() instead\n"
+    "of _time.time() so Alarm\n"
+    "A velocity is determin-\n"
+    "istic in backtest; also\n"
+    "fixes a v6.3.1 typo that\n"
+    "called _tg().now_et()\n"
+    "(no such attr) leaving\n"
     "v6.1.0 lunch suppression\n"
-    "were both dead code. Now\n"
-    "both activate: lifecycle\n"
-    "position_id passed plus\n"
-    "_tg().now_et() forwarded\n"
-    "to the alarm B path. No\n"
-    "behavior change for any\n"
-    "position that lacks a\n"
-    "lifecycle id (back-compat\n"
-    "falls through to legacy)."
+    "dead. Patch only \u2014\n"
+    "no architecture changes."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -2080,6 +2080,43 @@ v5_long_tracks: dict = {}    # {ticker: track_dict}
 v5_short_tracks: dict = {}   # {ticker: track_dict}
 # C-R1: at most one direction is active per ticker per session.
 v5_active_direction: dict = {}  # {ticker: "long"|"short"|None}
+
+
+def v5_lock_all_tracks(reason: str) -> int:
+    """v6.3.2 \u2014 lock every live v5 track to LOCKED_FOR_DAY.
+
+    Implements the C-R4 (daily-loss-limit), C-R5 (EOD), and C-R6
+    (Sovereign Regime Shield) contract referenced by smoke_test
+    cases C-R4/C-R5 and called from broker/lifecycle.eod_close. Was
+    referenced but never defined since the v5 series shipped
+    (smoke tests only enforced source-string presence, not behaviour),
+    so EOD lock and daily-breaker lock were silently swallowed by
+    the surrounding try/except at every call site.
+
+    Args:
+        reason: short tag ("eod", "daily_loss", "shield", "test")
+            included in the log line. No semantic effect.
+
+    Returns:
+        Total number of tracks transitioned (long + short).
+    """
+    n = 0
+    for _bucket in (v5_long_tracks, v5_short_tracks):
+        for _track in _bucket.values():
+            try:
+                v5.transition_to_locked(_track)
+                n += 1
+            except Exception:
+                logger.exception(
+                    "v5_lock_all_tracks: transition failed for %s", _track,
+                )
+    if n:
+        logger.info(
+            "[V5-LOCK] reason=%s locked_tracks=%d (long=%d short=%d)",
+            reason, n, len(v5_long_tracks), len(v5_short_tracks),
+        )
+    return n
+
 
 # Daily loss limit (Feature 2)
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-1500"))
@@ -4362,6 +4399,16 @@ def _check_daily_loss_limit(ticker: str) -> bool:
                 logger.exception(
                     "[DAILY-BREAKER] force-close loop failed",
                 )
+        # v6.3.2 C-R4: lock every v5 track on daily-breaker trip so
+        # in-flight tracks cannot resume tomorrow mid-state. Mirrors the
+        # C-R5 EOD lock path. The smoke-test C-R4 source-string check
+        # has been failing on main since the v5 series shipped because
+        # the function was never defined; v6.3.2 ships the function and
+        # this wiring together.
+        try:
+            v5_lock_all_tracks("daily_loss")
+        except Exception:
+            logger.exception("v5_lock_all_tracks failed (daily_loss)")
         pnl_fmt = "%+.2f" % today_pnl
         limit_fmt = "%.2f" % effective_limit
         _trading_halted_reason = "Daily loss limit hit: $%s" % pnl_fmt

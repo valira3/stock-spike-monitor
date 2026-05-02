@@ -260,7 +260,16 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         if history is None:
             history = new_pnl_history()
             pos["pnl_history"] = history
-        now_ts = _time.time()
+        # v6.3.2 \u2014 derive now_ts from the harness clock instead of
+        # _time.time(). In backtests, _now_et is monkey-patched to the
+        # BacktestClock, so its timestamp drives Alarm A's 1m velocity
+        # tracker deterministically. In prod, _now_et() and time.time()
+        # are within microseconds of each other (verified). Falls back
+        # to wallclock if the clock accessor ever raises.
+        try:
+            now_ts = _tg()._now_et().timestamp()
+        except Exception:
+            now_ts = _time.time()
 
         # v5.13.2 P1 #4 \u2014 Alarm A velocity baseline reset on Entry-2 fill.
         # When share count changes (Entry-2 fills, partial harvests), the
@@ -462,9 +471,16 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         # 2-bar confirm path, leaving both features as dead code in prod
         # and backtest. The lifecycle position_id is already resolved at
         # broker/positions.py:157 for PHASE4 logging; reuse it here.
+        # v6.3.2 \u2014 fix v6.3.1 typo: was _tg().now_et() (no such
+        # attribute), always raised AttributeError so _v631_now_et was
+        # always None. The v6.1.0 lunch-chop suppression branch in
+        # engine/sentinel.py:718 silently no-ops when now_et is None,
+        # so that feature was still dead code under v6.3.1. Use the
+        # canonical _now_et() accessor so the harness override flows
+        # through in backtests and the lunch-chop branch activates.
         _v631_position_id = pos.get("lifecycle_position_id")
         try:
-            _v631_now_et = _tg().now_et()
+            _v631_now_et = _tg()._now_et()
         except Exception:
             _v631_now_et = None
 
