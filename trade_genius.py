@@ -48,6 +48,7 @@ import v5_10_1_integration as eot_glue  # noqa: E402
 # v5.1.2 \u2014 forensic capture: bar archive + indicators.
 import indicators  # noqa: E402
 import bar_archive  # noqa: E402
+import ingest.algo_plus as ingest_algo_plus  # noqa: E402  v6.5.0 M-1
 import persistence  # noqa: E402
 # v5.11.0 \u2014 engine/ package extraction (PR1: bars). Module-level
 # import here so a missing Dockerfile COPY surfaces as ImportError
@@ -89,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.4.4"
+BOT_VERSION = "6.5.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -2565,20 +2566,34 @@ def _daily_closes_for_sma(ticker: str, needed: int = 210) -> list[float] | None:
     lookback_days = max(int(needed * 1.7), 60)
     start = end - timedelta(days=lookback_days)
     try:
-        # v6.0.2: free/basic Alpaca subscriptions cannot query SIP data;
-        # the rest of the codebase pins feed=IEX (see dashboard_server.py,
-        # volume_profile.py, engine/seeders.py) so we match that
-        # convention. Without this, every call 403s with
-        # "subscription does not permit querying recent SIP data" and the
-        # dashboard reports "daily SMA is not available".
+        # v6.5.0 P-5 — promoted to SIP feed (Algo Plus unlocks consolidated
+        # tape). Falls back to IEX if SIP returns empty (defense-in-depth
+        # per spec section 5 risk register).
         req = StockBarsRequest(
             symbol_or_symbols=sym,
             timeframe=TimeFrame.Day,
             start=start,
             end=end,
-            feed="iex",
+            feed="sip",
         )
         resp = client.get_stock_bars(req)
+        _daily_sma_bars_tmp = None
+        try:
+            _d = getattr(resp, "data", None)
+            if isinstance(_d, dict):
+                _daily_sma_bars_tmp = _d.get(sym)
+        except Exception:
+            _daily_sma_bars_tmp = None
+        if not _daily_sma_bars_tmp:
+            logger.debug("daily-bars SIP empty for %s, retrying IEX", sym)
+            req_iex = StockBarsRequest(
+                symbol_or_symbols=sym,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+                feed="iex",
+            )
+            resp = client.get_stock_bars(req_iex)
     except Exception as e:
         logger.debug("daily-bars fetch failed for %s: %s", sym, e)
         return None
@@ -3549,17 +3564,31 @@ def _alpaca_pdc(ticker: str, client) -> float | None:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=10)
     try:
+        # v6.5.0 P-5 — promoted to SIP feed; falls back to IEX if SIP
+        # returns empty (defense-in-depth per spec section 5 risk register).
         req = StockBarsRequest(
             symbol_or_symbols=sym,
             timeframe=TimeFrame.Day,
             start=start,
             end=end,
-            feed=DataFeed.IEX,
+            feed=DataFeed.SIP,
         )
         resp = client.get_stock_bars(req)
         rows = []
         if hasattr(resp, "data"):
             rows = resp.data.get(sym, []) or []
+        if not rows:
+            logger.debug("pdc SIP empty for %s, retrying IEX", sym)
+            req_iex = StockBarsRequest(
+                symbol_or_symbols=sym,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+                feed=DataFeed.IEX,
+            )
+            resp_iex = client.get_stock_bars(req_iex)
+            if hasattr(resp_iex, "data"):
+                rows = resp_iex.data.get(sym, []) or []
         # Alpaca's daily bars come oldest-first; the LAST bar with a
         # timestamp strictly before today's ET date is yesterday's RTH
         # close (Alpaca closes the daily bar at 16:00 ET so today's bar,
@@ -3626,15 +3655,20 @@ def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
         return None
     et = ZoneInfo("America/New_York")
     now_et = datetime.now(et)
-    start_et = now_et.replace(hour=8, minute=0, second=0, microsecond=0)
-    end_et = now_et.replace(hour=18, minute=0, second=0, microsecond=0) + timedelta(minutes=1)
+    # v6.5.0 P-4 — expanded window from 08:00–18:00 to 04:00–20:00 ET
+    # to capture full premarket (04:00–09:30) and after-hours (16:00–20:00)
+    # sessions now available via Algo Plus SIP feed.
+    start_et = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
+    end_et = now_et.replace(hour=20, minute=0, second=0, microsecond=0) + timedelta(minutes=1)
     try:
+        # v6.5.0 P-5 — promoted to SIP feed; falls back to IEX if SIP
+        # returns empty (defense-in-depth per spec section 5 risk register).
         req = StockBarsRequest(
             symbol_or_symbols=sym,
             timeframe=TimeFrame.Minute,
             start=start_et.astimezone(timezone.utc),
             end=end_et.astimezone(timezone.utc),
-            feed=DataFeed.IEX,
+            feed=DataFeed.SIP,
         )
         resp = client.get_stock_bars(req)
     except Exception as e:
@@ -3647,7 +3681,22 @@ def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
     except Exception:
         rows = []
     if not rows:
-        logger.debug("Alpaca %s: empty rows (%.2fs)", sym, time.time() - t0)
+        logger.debug("Alpaca %s: SIP empty, retrying IEX (%.2fs)", sym, time.time() - t0)
+        try:
+            req_iex = StockBarsRequest(
+                symbol_or_symbols=sym,
+                timeframe=TimeFrame.Minute,
+                start=start_et.astimezone(timezone.utc),
+                end=end_et.astimezone(timezone.utc),
+                feed=DataFeed.IEX,
+            )
+            resp_iex = client.get_stock_bars(req_iex)
+            if hasattr(resp_iex, "data"):
+                rows = resp_iex.data.get(sym, []) or resp_iex.data.get(ticker, []) or []
+        except Exception as e_iex:
+            logger.debug("Alpaca %s: IEX fallback failed: %s", sym, e_iex)
+    if not rows:
+        logger.debug("Alpaca %s: empty rows after SIP+IEX (%.2fs)", sym, time.time() - t0)
         return None
     timestamps: list[int] = []
     opens: list[float] = []
@@ -5190,6 +5239,59 @@ def reset_daily_state():
 
 
 # ============================================================
+# v6.5.0 M-5 — GAP DETECT TASK
+# ============================================================
+def gap_detect_task() -> None:
+    """Poll GapDetector for each active ticker and enqueue backfill jobs.
+
+    Runs every 5 minutes from scheduler_thread (elapsed-time check
+    analogous to state_elapsed >= 5 at the periodic state-save block).
+    Failure-tolerant: any error is logged and swallowed so the scheduler
+    loop keeps running.
+    """
+    try:
+        detector = ingest_algo_plus.GapDetector()
+        backfill = ingest_algo_plus._ingest_health_snapshot  # noqa: F841 — used below
+        tickers = list(TICKERS or [])
+        if not tickers:
+            return
+        from zoneinfo import ZoneInfo as _ZI
+        et = _ZI("America/New_York")
+        now_et = _now_et()
+        session_start = now_et.replace(
+            hour=4, minute=0, second=0, microsecond=0
+        ).astimezone(None)
+        import ingest.algo_plus as _iap
+        _worker = None
+        try:
+            ingest_inst = getattr(_iap, "_current_ingest", None)
+            if ingest_inst is not None:
+                _worker = ingest_inst._backfill
+        except Exception:
+            pass
+        total_gaps = 0
+        for ticker in tickers:
+            try:
+                gaps = detector.detect_gaps(
+                    ticker,
+                    session_start.replace(tzinfo=None).replace(
+                        tzinfo=__import__("datetime").timezone.utc
+                    ) if hasattr(session_start, "utctimetuple") else session_start,
+                    now_et,
+                )
+                total_gaps += len(gaps)
+                if _worker is not None:
+                    for gap_start, gap_end in gaps:
+                        _worker.enqueue(ticker, gap_start, gap_end)
+            except Exception as _ge:
+                logger.debug("[GAP] detect error for %s: %s", ticker, _ge)
+        if total_gaps:
+            logger.info("[GAP] gap_detect_task: %d gap(s) enqueued for backfill", total_gaps)
+    except Exception as e:
+        logger.warning("[GAP] gap_detect_task failed: %s", e)
+
+
+# ============================================================
 # SCHEDULER THREAD
 # ============================================================
 def scheduler_thread():
@@ -5206,6 +5308,7 @@ def scheduler_thread():
     last_scan = _now_et() - timedelta(seconds=SCAN_INTERVAL + 1)
     last_state_save = _now_et() - timedelta(minutes=6)
     last_fired_prune = _now_et()
+    last_gap_detect = _now_et() - timedelta(minutes=6)  # v6.5.0 M-5
 
     # Job table: (day, "HH:MM", function). Times are ET.
     # v5.26.0 \u2014 09:29 premarket_recalc, 09:31 di_recompute_0931 +
@@ -5287,6 +5390,15 @@ def scheduler_thread():
         if state_elapsed >= 5:
             last_state_save = now_et
             threading.Thread(target=save_paper_state, daemon=True).start()
+
+        # v6.5.0 M-5 — gap detection every 5 minutes. Enqueues REST
+        # backfill jobs for any consecutive missing 1-min bar spans.
+        gap_elapsed = (now_et - last_gap_detect).total_seconds() / 60
+        if gap_elapsed >= 5:
+            last_gap_detect = now_et
+            threading.Thread(
+                target=gap_detect_task, daemon=True, name="gap_detect"
+            ).start()
 
         time.sleep(30)
 
@@ -6036,6 +6148,13 @@ else:
     # Background threads
     threading.Thread(target=scheduler_thread, daemon=True).start()
     threading.Thread(target=health_ping, daemon=True).start()
+    # v6.5.0 M-2 — always-on Algo Plus ingest worker (SSM_SMOKE_TEST path
+    # skips this block entirely so the smoke test never spawns the thread).
+    threading.Thread(
+        target=ingest_algo_plus.ingest_loop,
+        daemon=True,
+        name="ingest_loop",
+    ).start()
 
     # v5.12.0 \u2014 executor bootstrap moved to executors/bootstrap.py
     from executors.bootstrap import build_val_executor, build_gene_executor, install_globals

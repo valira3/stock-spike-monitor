@@ -2743,9 +2743,8 @@ def run_local() -> int:
 
     @t("volprofile: trade_genius hard-disables module when watchlist > 30")
     def _():
-        # We can't safely call _start_volume_profile() here (it would try
-        # to spawn a websocket thread). Instead simulate the cap check
-        # the function performs.
+        # _start_volume_profile was removed in v5.26.0 (WebSocket consumer
+        # deleted). Simulate the watchlist cap check directly.
         big = ["A%d" % i for i in range(31)]
         assert len(big) > vp_mod.WS_SYMBOL_CAP_FREE_IEX, "test setup broken"
 
@@ -4219,29 +4218,32 @@ def run_local() -> int:
             "v5.9.0 heading must precede v5.8.4 in CHANGELOG"
         )
 
-    @t("v5.5.3: _start_volume_profile prefers VAL_ALPACA_PAPER_KEY over legacy")
+    @t("v6.5.0: ingest.algo_plus._resolve_alpaca_creds prefers VAL_ALPACA_PAPER_KEY")
     def _():
-        # Source-level guard: the cred chain must consult VAL_* first.
+        # Regression guard: _start_volume_profile was removed in v5.26.0.
+        # v6.5.0 replaces the broken cred-resolution path with the new
+        # ingest.algo_plus module which correctly prefers VAL_ALPACA_PAPER_KEY
+        # before falling back to GENE_ALPACA_PAPER_KEY.
         from pathlib import Path as _P
+        import ast as _ast
 
-        tg_text = (_P(__file__).parent / "trade_genius.py").read_text(encoding="utf-8")
-        # Locate the function body.
-        i = tg_text.find("def _start_volume_profile")
-        assert i != -1, "_start_volume_profile not found"
-        body = tg_text[i : i + 4000]
-        # VAL_ALPACA_PAPER_KEY must appear before ALPACA_PAPER_KEY in the
-        # cred-resolution block.
+        src = (_P(__file__).parent / "ingest" / "algo_plus.py").read_text(
+            encoding="utf-8"
+        )
+        # Locate _resolve_alpaca_creds function body
+        i = src.find("def _resolve_alpaca_creds")
+        assert i != -1, "_resolve_alpaca_creds not found in ingest/algo_plus.py"
+        body = src[i : i + 2000]
         i_val = body.find("VAL_ALPACA_PAPER_KEY")
-        i_legacy = body.find("ALPACA_PAPER_KEY")
-        # i_legacy will match the VAL_ prefix too; advance past it.
-        i_legacy_real = body.find('"ALPACA_PAPER_KEY"')
-        assert i_val != -1, "VAL_ALPACA_PAPER_KEY missing from cred chain"
-        assert i_legacy_real != -1, "legacy ALPACA_PAPER_KEY fallback missing"
-        assert i_val < i_legacy_real, "VAL_ALPACA_PAPER_KEY must be checked before legacy key"
-        # The underlying volume_profile WS is still required by the live
-        # engine, so a [VOLFEED DISABLED] warning must remain emitted
-        # when credentials are unset.
-        assert "[VOLFEED DISABLED]" in body, "missing [VOLFEED DISABLED] log line"
+        i_gene = body.find("GENE_ALPACA_PAPER_KEY")
+        assert i_val != -1, "VAL_ALPACA_PAPER_KEY missing from _resolve_alpaca_creds"
+        assert i_gene != -1, "GENE_ALPACA_PAPER_KEY missing from _resolve_alpaca_creds"
+        assert i_val < i_gene, (
+            "VAL_ALPACA_PAPER_KEY must be checked before GENE_ALPACA_PAPER_KEY"
+        )
+        assert "INGEST SHADOW DISABLED" in body, (
+            "[INGEST SHADOW DISABLED] log line missing from _resolve_alpaca_creds"
+        )
 
     # The replay logic is being rebuilt against the executor_positions
     # table (see backtest/) using the /data/bars/ JSONL archive.

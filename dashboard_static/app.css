@@ -814,7 +814,7 @@
   line-height: 1;
 }
 .pmtx-wx-up   { background: color-mix(in srgb, var(--up)   18%, var(--surface-2)); color: var(--up);   }
-.pmtx-wx-down { background: color-mix(in srgb, var(--up)   18%, var(--surface-2)); color: var(--up);   }
+.pmtx-wx-down { background: color-mix(in srgb, var(--down) 18%, var(--surface-2)); color: var(--down); }
 .pmtx-wx-none { background: color-mix(in srgb, var(--down) 14%, var(--surface-2)); color: var(--down); }
 .pmtx-wx-flat { background: var(--surface-2); color: var(--text-dim); }
 

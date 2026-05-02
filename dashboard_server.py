@@ -1111,6 +1111,28 @@ def snapshot() -> dict[str, Any]:
             "active_count": len(v642_active),
         }
 
+        # v6.5.0 P-3 / P-6 — ingest health and shadow_data_status.
+        # shadow_disabled = True when no Alpaca creds are configured.
+        # shadow_data_status: "live" | "degraded" | "offline" | "unconfigured"
+        # ingest_status dict: status, last_bar_age_s, open_gaps_today,
+        #   bars_today, ws_state (per spec section 4.5).
+        try:
+            import ingest.algo_plus as _iap
+            _ingest_snap = _iap._ingest_health_snapshot()
+            shadow_data_status = _ingest_snap.get("status", "unconfigured")
+            shadow_disabled = shadow_data_status == "unconfigured"
+            ingest_status = _ingest_snap
+        except Exception:
+            shadow_data_status = "unconfigured"
+            shadow_disabled = True
+            ingest_status = {
+                "status": "unconfigured",
+                "last_bar_age_s": None,
+                "open_gaps_today": 0,
+                "bars_today": 0,
+                "ws_state": "CONNECTING",
+            }
+
         return {
             "ok": True,
             "version": version,
@@ -1199,6 +1221,15 @@ def snapshot() -> dict[str, Any]:
             # \u2713 / \u2014 chips next to the version pill so an operator
             # sees executor coverage at a glance without switching tabs.
             "executors_status": _executors_status_snapshot(m),
+            # v6.5.0 P-3 — shadow ingest observability.
+            # shadow_disabled = True when no Alpaca creds are configured;
+            # surface as a red pill on the dashboard.
+            "shadow_disabled": shadow_disabled,
+            "shadow_data_status": shadow_data_status,
+            # v6.5.0 P-6 — full ingest pipeline health snapshot.
+            # Fields: status, last_bar_age_s, open_gaps_today,
+            #   bars_today, ws_state.
+            "ingest_status": ingest_status,
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)

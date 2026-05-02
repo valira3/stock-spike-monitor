@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.5.0 — 2026-05-03 — always-on Algo Plus ingest
+
+### Ingest layer (new — ingest/algo_plus.py)
+- **M-1:** New `ingest/algo_plus.py` module implementing:
+  - `ConnectionHealth` — 5-state machine (CONNECTING / LIVE / DEGRADED / RECONNECTING / REST_ONLY), thread-safe module-level singleton.
+  - `BarAssembler` — validates schema, fills trade_count + bar_vwap, writes via `bar_archive.write_bar()`. Tags `feed_source="sip"` on every bar.
+  - `GapDetector` — detects spans of >= 3 consecutive missing 1-min bars from the daily JSONL archive.
+  - `RestBackfillWorker` — background thread; dequeues (ticker, start_ts, end_ts), fetches via Alpaca REST (feed=sip, limit=1000), deduplicates, writes. 0.35s sleep between requests.
+  - `AlgoPlusIngest` — top-level orchestrator with `start()` / `stop()`.
+  - `ingest_loop()` — long-running daemon target with exponential backoff [5, 10, 20, 40, 80, 160, 300] seconds.
+  - `_resolve_alpaca_creds()` — VAL_ALPACA_PAPER_KEY first, GENE_ALPACA_PAPER_KEY second, (None, None) on miss. Emits `[INGEST SHADOW DISABLED]` WARNING when no creds.
+  - `_ingest_health_snapshot()` — returns the dict served by P-6 `/api/state`.
+- **M-2:** `ingest_loop` daemon thread launched at bot boot in `trade_genius.py`. SSM_SMOKE_TEST=1 path skips it.
+- **M-4:** `feed_source` field added to `BAR_SCHEMA_FIELDS` in `bar_archive.py`. Defaults to None for legacy bars.
+- **M-5:** `gap_detect_task()` wired into `scheduler_thread` on a 5-minute elapsed-time check (analogous to the existing state-save cadence).
+
+### Patches
+- **P-1:** Obsolete smoke_test `_start_volume_profile` assertions replaced with v6.5.0 equivalent asserting `ingest.algo_plus._resolve_alpaca_creds` prefers VAL_ALPACA_PAPER_KEY. Comment-only reference at line 2746 updated.
+- **P-2:** `_v512_archive_minute_bar` wiring in `engine/scan.py` at lines 207 (preopen) and 362 (RTH) confirmed present. No code change required.
+- **P-3:** `shadow_disabled` boolean and `shadow_data_status` field added to `/api/state` via `dashboard_server.py` snapshot. Emits `[INGEST SHADOW DISABLED]` warning when no Alpaca creds are found.
+- **P-4:** REST fetch window in `_fetch_1min_bars_alpaca()` expanded from `08:00-18:00` to `04:00-20:00 ET` to capture full premarket and after-hours sessions available via Algo Plus SIP feed.
+- **P-5:** `feed=DataFeed.SIP` (or `feed="sip"`) promoted at `trade_genius.py` lines covering daily SMA bars, previous-day close bars, and 1-minute bars. Each site falls back to IEX if SIP returns empty (defense-in-depth per spec section 5 risk register).
+- **P-6:** `ingest_status` dict added to `/api/state` response — fields: `status`, `last_bar_age_s`, `open_gaps_today`, `bars_today`, `ws_state`.
+
+### UI
+- **UI-1:** `dashboard_static/app.css` line 817: `.pmtx-wx-down` now uses `var(--down)` (red) instead of `var(--up)` (green) for short-aligned tickers. Already applied by parent agent.
+
+### Schema
+- `bar_archive.BAR_SCHEMA_FIELDS` gains `"feed_source"` as final entry (additive; existing `_normalise_bar` handles missing keys via `.get()`).
+
+### Tests
+- New `tests/test_v650_ingest.py`: 17 test cases covering cred resolution chain, schema, GapDetector math, ConnectionHealth state transitions, and [INGEST SHADOW DISABLED] log.
+- `smoke_test.py`: removed v5.5.3 `_start_volume_profile` assertion (function deleted in v5.26.0); replaced with v6.5.0 equivalent asserting `_resolve_alpaca_creds` VAL-first ordering.
+
+### Open items for Val
+- M-3 (ARCHITECTURE.md update) and PDF refresh are not included in this PR — deferred to follow-on.
+- SIP WebSocket streaming entitlement for `VAL_ALPACA_PAPER_KEY` should be confirmed before AlgoPlusIngest WebSocket path goes live (spec Open Question 1). If SIP WS is not provisioned, the ingest module degrades to REST_ONLY polling automatically.
+
+---
+
 ## v6.4.4 — 2026-05-02 — Min-hold gate on Alarm-A protective stop
 
 ### Why

@@ -42,6 +42,10 @@ BAR_SCHEMA_FIELDS = (
     "last_trade_price",
     "trade_count",
     "bar_vwap",
+    # v6.5.0 M-4 — feed provenance tag ("sip" or "iex").
+    # Defaults to None for legacy bars written before the SIP migration.
+    # The _normalise_bar helper already handles missing keys via .get().
+    "feed_source",
 )
 
 DAILY_BAR_SCHEMA_FIELDS = (
