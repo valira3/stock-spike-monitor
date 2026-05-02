@@ -3342,6 +3342,103 @@
         );
       }
     });
+    // v6.4.2 — post-loss cooldown chip + popover. Reads s.v642_flags and
+    // s.active_cooldowns (both added in dashboard_server.h_state). Chip
+    // is hidden entirely when the feature is disabled
+    // (post_loss_cooldown_min == 0); dim when no cooldowns active; lit
+    // amber with a count when 1+ (ticker, side) pairs are cooling down.
+    // Each row in the popover shows TICKER side (loss $X) MM:SS left.
+    try {
+      const cdChip = document.getElementById("tg-cooldown-chip");
+      if (cdChip) {
+        const v642 = (s && s.v642_flags) || {};
+        const cdEnabled = !!v642.post_loss_cooldown_enabled;
+        const cdMin = (typeof v642.post_loss_cooldown_min === "number")
+          ? v642.post_loss_cooldown_min : 30;
+        const cds = (s && Array.isArray(s.active_cooldowns)) ? s.active_cooldowns : [];
+        const cdCountEl = document.getElementById("tg-cooldown-count");
+        const cdWinEl   = document.getElementById("tg-cooldown-window");
+        const cdWinDet  = document.getElementById("tg-cooldown-window-detail");
+        const cdListEl  = document.getElementById("tg-cooldown-list");
+        if (!cdEnabled) {
+          cdChip.style.display = "none";
+        } else {
+          cdChip.style.display = "inline-flex";
+          if (cdCountEl) cdCountEl.textContent = String(cds.length);
+          if (cdWinEl)   cdWinEl.textContent   = "\u00b7" + cdMin + "m";
+          if (cdWinDet)  cdWinDet.textContent  = "Window: " + cdMin + " min after each loss";
+          if (cds.length > 0) {
+            cdChip.style.background   = "#2a1d05";
+            cdChip.style.borderColor  = "#7c5a14";
+            cdChip.style.color        = "#fbbf24";
+            cdChip.setAttribute("title",
+              cds.length + " active post-loss cooldown" + (cds.length === 1 ? "" : "s") +
+              " (" + cdMin + "-min window) \u2014 click for details");
+          } else {
+            cdChip.style.background   = "#10151c";
+            cdChip.style.borderColor  = "#1f2937";
+            cdChip.style.color        = "#5b6572";
+            cdChip.setAttribute("title",
+              "No active post-loss cooldowns (" + cdMin + "-min window) \u2014 click for details");
+          }
+          if (cdListEl) {
+            if (cds.length === 0) {
+              cdListEl.innerHTML =
+                '<div style="color:#5b6572;font-style:italic">No active cooldowns.</div>';
+            } else {
+              cdListEl.innerHTML = cds.map(function (cd) {
+                const tkr = (cd.ticker || "?").toString();
+                const sd  = (cd.side || "?").toString().toUpperCase();
+                const rem = Math.max(0, cd.remaining_sec | 0);
+                const mm  = Math.floor(rem / 60);
+                const ss  = rem % 60;
+                const remStr = (mm < 10 ? "0" : "") + mm + ":" + (ss < 10 ? "0" : "") + ss;
+                const loss = (typeof cd.loss_pnl === "number")
+                  ? "$" + cd.loss_pnl.toFixed(2) : "";
+                const sdColor = sd === "LONG" ? "#34d399" : "#f87171";
+                return '<div style="display:flex;align-items:center;justify-content:space-between;'
+                     + 'padding:4px 6px;background:#10151c;border:1px solid #1f2937;border-radius:4px">'
+                     + '<span><span style="color:#e7ecf3;font-weight:600">' + tkr + '</span> '
+                     + '<span style="color:' + sdColor + ';font-size:10px;margin-left:4px">' + sd + '</span></span>'
+                     + '<span style="display:flex;align-items:center;gap:8px">'
+                     + '<span style="color:#f87171;font-size:10px">' + loss + '</span>'
+                     + '<span style="color:#fbbf24;font-variant-numeric:tabular-nums">' + remStr + '</span>'
+                     + '</span></div>';
+              }).join("");
+            }
+          }
+        }
+      }
+      // Wire chip toggle once.
+      if (!window.__tgCooldownPopWired) {
+        window.__tgCooldownPopWired = true;
+        const chip = document.getElementById("tg-cooldown-chip");
+        const pop  = document.getElementById("tg-cooldown-pop");
+        const close = document.getElementById("tg-cooldown-close");
+        if (chip && pop) {
+          chip.addEventListener("click", function (e) {
+            e.stopPropagation();
+            const open = pop.style.display !== "none";
+            pop.style.display = open ? "none" : "block";
+            chip.setAttribute("aria-expanded", open ? "false" : "true");
+          });
+        }
+        if (close && pop) {
+          close.addEventListener("click", function () {
+            pop.style.display = "none";
+            if (chip) chip.setAttribute("aria-expanded", "false");
+          });
+        }
+        document.addEventListener("click", function (e) {
+          if (!pop || pop.style.display === "none") return;
+          if (pop.contains(e.target)) return;
+          if (chip && chip.contains(e.target)) return;
+          pop.style.display = "none";
+          if (chip) chip.setAttribute("aria-expanded", "false");
+        });
+      }
+    } catch (e) { /* dashboard chip is best-effort */ }
+
     // v4.2.2 — extract tz token (ET/CDT/CT/PT/PST/\u2026) from
     // server_time_label tail, e.g. "Fri Apr 24 · 13:09:13 ET".
     // The client-side tick loop renders the actual HH:MM:SS every

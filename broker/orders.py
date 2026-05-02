@@ -721,6 +721,16 @@ def execute_breakout(ticker, current_price, side):
     if not tg._check_new_position_cutoff(ticker):
         return
 
+    # v6.4.2 \u2014 post-loss cooldown gate. After a stop-out (any losing exit)
+    # on the same (ticker, side), block new entries for POST_LOSS_COOLDOWN_MIN
+    # minutes (default 30). Backtest at
+    # /home/user/workspace/v641_week_backtest/report.md showed 3-for-3 same-
+    # side same-ticker re-entries within 30 min of a stop all lost again.
+    # Helper logs a [V642-COOLDOWN] BLOCK line when it vetoes.
+    _side_label = "long" if cfg.side.is_long else "short"
+    if not tg._check_post_loss_cooldown(ticker, _side_label):
+        return
+
     now_et = tg._now_et()
     limit_price = round(current_price + cfg.limit_offset, 2)
     or_dict = getattr(tg, cfg.or_attr)
@@ -1293,6 +1303,18 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
             pnl_pct = (entry_price - price) / entry_price * 100
     else:
         pnl_pct = 0
+
+    # v6.4.2 \u2014 record post-loss cooldown for any losing exit so the next
+    # entry on the same (ticker, side) is gated for POST_LOSS_COOLDOWN_MIN
+    # minutes. No-op for winners and for losses when the operator has set
+    # POST_LOSS_COOLDOWN_MIN=0. record_post_loss_cooldown handles its own
+    # logging and side normalization.
+    try:
+        _cooldown_side = "long" if cfg.side.is_long else "short"
+        tg.record_post_loss_cooldown(ticker, _cooldown_side, float(pnl_val))
+    except Exception:
+        # Cooldown is a guardrail \u2014 never let it block an exit from settling.
+        pass
     now_et = tg._now_et()
     now_hhmm = tg._now_cdt().strftime("%H:%M CDT")
     now_date = now_et.strftime("%Y-%m-%d")

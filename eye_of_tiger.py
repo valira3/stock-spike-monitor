@@ -59,6 +59,23 @@ STOP_PCT_OF_ENTRY = 0.005  # 0.5%% \u2014 long stop = entry * 0.995 (v6.4.1: sho
 STOP_PCT_LONG = 0.005   # 50bp \u2014 long stop = entry * (1 - 0.005)
 STOP_PCT_SHORT = 0.003  # 30bp \u2014 short stop = entry * (1 + 0.003)
 
+# v6.4.2 \u2014 post-loss cooldown. After a stop-out (any losing exit), block
+# new entries on the same (ticker, side) for POST_LOSS_COOLDOWN_MIN minutes.
+# Apr 27\u2013May 1 backtest at /home/user/workspace/v641_week_backtest/report.md
+# showed three same-side same-ticker re-entries fired within 30 minutes of
+# a stop-out (TSLA short, META short, AMZN short) and ALL three lost money
+# again \u2014 a clean chase pattern. Adding a 30-minute cooldown captures all
+# three on the sample (+$107/wk lift) without blocking productive
+# post-WIN re-entry chains (NVDA shorts, MSFT shorts, ORCL longs).
+#
+# Configurable via env (default 30); operators can disable by setting
+# POST_LOSS_COOLDOWN_MIN=0.
+import os as _os
+try:
+    POST_LOSS_COOLDOWN_MIN = int(_os.getenv("POST_LOSS_COOLDOWN_MIN", "30"))
+except ValueError:
+    POST_LOSS_COOLDOWN_MIN = 30
+
 SOVEREIGN_BRAKE_DOLLARS = -500.0
 VELOCITY_FUSE_PCT = 0.01
 
