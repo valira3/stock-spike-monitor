@@ -126,7 +126,11 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
 
     is_weekend = now_et.weekday() >= 5
     before_open = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35)
-    after_close = now_et.hour >= 16 or (now_et.hour == 15 and now_et.minute >= 55)
+    # v6.3.2 \u2014 hard cutoff moved 15:55 \u2192 16:00 ET so the engine
+    # keeps managing positions and accepting candidates through the full
+    # final 5-minute bucket. The 15:55 ceiling was clipping ~5 minutes
+    # of legitimate exit/entry activity per day in backtest and prod.
+    after_close = now_et.hour >= 16
     tg._scan_idle_hours = bool(is_weekend or before_open or after_close)
 
     if is_weekend:
