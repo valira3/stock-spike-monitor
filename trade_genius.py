@@ -2566,7 +2566,7 @@ def _daily_closes_for_sma(ticker: str, needed: int = 210) -> list[float] | None:
     lookback_days = max(int(needed * 1.7), 60)
     start = end - timedelta(days=lookback_days)
     try:
-        # v6.5.0 P-5 — promoted to SIP feed (Algo Plus unlocks consolidated
+        # v6.5.0 P-5 \u2014 promoted to SIP feed (Algo Plus unlocks consolidated
         # tape). Falls back to IEX if SIP returns empty (defense-in-depth
         # per spec section 5 risk register).
         req = StockBarsRequest(
@@ -3564,7 +3564,7 @@ def _alpaca_pdc(ticker: str, client) -> float | None:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=10)
     try:
-        # v6.5.0 P-5 — promoted to SIP feed; falls back to IEX if SIP
+        # v6.5.0 P-5 \u2014 promoted to SIP feed; falls back to IEX if SIP
         # returns empty (defense-in-depth per spec section 5 risk register).
         req = StockBarsRequest(
             symbol_or_symbols=sym,
@@ -3655,13 +3655,13 @@ def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
         return None
     et = ZoneInfo("America/New_York")
     now_et = datetime.now(et)
-    # v6.5.0 P-4 — expanded window from 08:00–18:00 to 04:00–20:00 ET
+    # v6.5.0 P-4 \u2014 expanded window from 08:00–18:00 to 04:00–20:00 ET
     # to capture full premarket (04:00–09:30) and after-hours (16:00–20:00)
     # sessions now available via Algo Plus SIP feed.
     start_et = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
     end_et = now_et.replace(hour=20, minute=0, second=0, microsecond=0) + timedelta(minutes=1)
     try:
-        # v6.5.0 P-5 — promoted to SIP feed; falls back to IEX if SIP
+        # v6.5.0 P-5 \u2014 promoted to SIP feed; falls back to IEX if SIP
         # returns empty (defense-in-depth per spec section 5 risk register).
         req = StockBarsRequest(
             symbol_or_symbols=sym,
@@ -5239,7 +5239,7 @@ def reset_daily_state():
 
 
 # ============================================================
-# v6.5.0 M-5 — GAP DETECT TASK
+# v6.5.0 M-5 \u2014 GAP DETECT TASK
 # ============================================================
 def gap_detect_task() -> None:
     """Poll GapDetector for each active ticker and enqueue backfill jobs.
@@ -5251,7 +5251,7 @@ def gap_detect_task() -> None:
     """
     try:
         detector = ingest_algo_plus.GapDetector()
-        backfill = ingest_algo_plus._ingest_health_snapshot  # noqa: F841 — used below
+        backfill = ingest_algo_plus._ingest_health_snapshot  # noqa: F841 \u2014 used below
         tickers = list(TICKERS or [])
         if not tickers:
             return
@@ -5391,7 +5391,7 @@ def scheduler_thread():
             last_state_save = now_et
             threading.Thread(target=save_paper_state, daemon=True).start()
 
-        # v6.5.0 M-5 — gap detection every 5 minutes. Enqueues REST
+        # v6.5.0 M-5 \u2014 gap detection every 5 minutes. Enqueues REST
         # backfill jobs for any consecutive missing 1-min bar spans.
         gap_elapsed = (now_et - last_gap_detect).total_seconds() / 60
         if gap_elapsed >= 5:
@@ -6148,7 +6148,7 @@ else:
     # Background threads
     threading.Thread(target=scheduler_thread, daemon=True).start()
     threading.Thread(target=health_ping, daemon=True).start()
-    # v6.5.0 M-2 — always-on Algo Plus ingest worker (SSM_SMOKE_TEST path
+    # v6.5.0 M-2 \u2014 always-on Algo Plus ingest worker (SSM_SMOKE_TEST path
     # skips this block entirely so the smoke test never spawns the thread).
     threading.Thread(
         target=ingest_algo_plus.ingest_loop,
