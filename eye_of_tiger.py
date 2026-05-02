@@ -27,7 +27,14 @@ from typing import Optional
 # ---------------------------------------------------------------------
 
 DMI_PERIOD = 15
-ENTRY_1_DI_THRESHOLD = 25.0
+# v6.2.0 \u2014 Entry-1 DI threshold lowered 25.0 -> 22.0 globally.
+# Forensics on 5/1 prod showed 44 V5100_ENTRY1:di_5m rejections on TSLA
+# alone where DI+_5m sat in [22, 25) on a +2.03% trend day; 100%
+# would-have-profited at 5-min forward returns. The same gate also
+# blocked clean breakouts on AVGO/GOOG/AMZN. ADX>20 (the strongest-edge
+# gate) is unchanged so this stays a momentum-confirmed entry; we are
+# only widening the directional-imbalance hurdle.
+ENTRY_1_DI_THRESHOLD = 22.0
 ENTRY_2_DI_THRESHOLD = 30.0
 ENTRY_1_SIZE_PCT = 0.50
 ENTRY_2_SIZE_PCT = 0.50

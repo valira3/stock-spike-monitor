@@ -282,6 +282,14 @@ def check_breakout(ticker, side):
             from engine.local_weather import evaluate_local_override
             _local_reg = (tg._TICKER_REGIME or {}).get(ticker.upper()) or {}
             _local_di = tg.v5_di_1m_5m(ticker) or {}
+            # v6.2.0 \u2014 plumb OR edges + pre-market ATR so the override
+            # can fire its new OR-break leg when QQQ permit is closed but
+            # the ticker has cleared OR by k*ATR. Failure-tolerant: any
+            # missing input collapses the leg to False inside the helper.
+            try:
+                _atr_pm_for_override = tg._v610_compute_pm_atr(ticker)
+            except Exception:
+                _atr_pm_for_override = None
             _override = evaluate_local_override(
                 side_label,
                 _local_reg.get("last_close_5m"),
@@ -290,6 +298,9 @@ def check_breakout(ticker, side):
                 _local_reg.get("avwap"),
                 _local_di.get("di_plus_1m"),
                 _local_di.get("di_minus_1m"),
+                or_high=or_high_val,
+                or_low=or_low_val,
+                atr_pm=_atr_pm_for_override,
             )
         except Exception as _e:
             tg.logger.warning(
@@ -481,11 +492,16 @@ def check_breakout(ticker, side):
 
     # Section II.2 \u2014 Boundary Hold (Entry-1 only). Stateless: the
     # last two closed 1m closes vs the boundary edge (ORH/ORL or NHOD/NLOD).
+    # v6.2.0 \u2014 pass current ET clock so the boundary helper can
+    # relax the 2-bar hold to 1-bar before 10:30 ET (pre-momentum
+    # confirmation window). Falls back to spec-strict 2-bar hold if
+    # now_et is unavailable.
     boundary_res = tg.eot_glue.evaluate_boundary_hold_gate(
         ticker,
         side_label,
         boundary_high,
         boundary_low,
+        now_et=now_et,
     )
 
     # v5.26.2 \u2014 forensic capture of the primary boundary gate result.

@@ -121,10 +121,15 @@ def test_L_P2_S4():
 
 
 def test_L_P3_S5():
-    """L-P3-S5: 5m DI+ > 25 AND 1m DI+ > 25 AND price at NHOD -> Entry 1 fires."""
+    """L-P3-S5: 5m DI+ > THRESHOLD AND 1m DI+ > THRESHOLD AND price at NHOD -> Entry 1 fires.
+
+    v6.2.0: ENTRY_1_DI_THRESHOLD lowered 25.0 -> 22.0 (forensics-backed).
+    Edge cases use threshold itself for strict-`>` check rather than a
+    hard-coded 25.0.
+    """
     from eye_of_tiger import evaluate_entry_1, SIDE_LONG, ENTRY_1_DI_THRESHOLD
 
-    assert ENTRY_1_DI_THRESHOLD == 25.0
+    assert ENTRY_1_DI_THRESHOLD == 22.0
 
     base_kwargs = dict(
         permit_open=True,
@@ -137,12 +142,12 @@ def test_L_P3_S5():
     fire = evaluate_entry_1(SIDE_LONG, di_5m=30.0, di_1m=28.0, **base_kwargs)
     assert fire["fire"] is True
 
-    # DI threshold is strict `>`. At exactly 25 -> no fire.
-    no_fire_5m = evaluate_entry_1(SIDE_LONG, di_5m=25.0, di_1m=28.0, **base_kwargs)
+    # DI threshold is strict `>`. Exactly at threshold -> no fire.
+    no_fire_5m = evaluate_entry_1(SIDE_LONG, di_5m=ENTRY_1_DI_THRESHOLD, di_1m=28.0, **base_kwargs)
     assert no_fire_5m["fire"] is False
     assert no_fire_5m["reason"] == "di_5m"
 
-    no_fire_1m = evaluate_entry_1(SIDE_LONG, di_5m=30.0, di_1m=25.0, **base_kwargs)
+    no_fire_1m = evaluate_entry_1(SIDE_LONG, di_5m=30.0, di_1m=ENTRY_1_DI_THRESHOLD, **base_kwargs)
     assert no_fire_1m["fire"] is False
     assert no_fire_1m["reason"] == "di_1m"
 
@@ -340,10 +345,13 @@ def test_S_P2_S4():
 
 
 def test_S_P3_S5():
-    """S-P3-S5: 5m DI- > 25 AND 1m DI- > 25 AND price at NLOD -> Entry 1 SHORT fires."""
+    """S-P3-S5: 5m DI- > THRESHOLD AND 1m DI- > THRESHOLD AND price at NLOD -> Entry 1 SHORT fires.
+
+    v6.2.0: ENTRY_1_DI_THRESHOLD lowered 25.0 -> 22.0.
+    """
     from eye_of_tiger import evaluate_entry_1, SIDE_SHORT, ENTRY_1_DI_THRESHOLD
 
-    assert ENTRY_1_DI_THRESHOLD == 25.0
+    assert ENTRY_1_DI_THRESHOLD == 22.0
 
     base_kwargs = dict(
         permit_open=True,
@@ -354,7 +362,7 @@ def test_S_P3_S5():
     fire = evaluate_entry_1(SIDE_SHORT, di_5m=30.0, di_1m=28.0, **base_kwargs)
     assert fire["fire"] is True
 
-    boundary = evaluate_entry_1(SIDE_SHORT, di_5m=25.0, di_1m=28.0, **base_kwargs)
+    boundary = evaluate_entry_1(SIDE_SHORT, di_5m=ENTRY_1_DI_THRESHOLD, di_1m=28.0, **base_kwargs)
     assert boundary["fire"] is False
     assert boundary["reason"] == "di_5m"
 

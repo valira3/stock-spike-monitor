@@ -760,10 +760,20 @@
     } else {
       _orBreakSuffix = " \u00b7 OR only";
     }
+    // v6.2.0 \u2014 fast-boundary suffix. When the time-conditional 1-bar
+    // hold is enabled, append "1-bar pre-CUTOFF" so operators can see the
+    // active relaxation. When disabled, render "2-bar hold" to make the
+    // legacy spec-strict path explicit.
+    const _v620FastBoundary = !!(d.v620Flags && d.v620Flags.fast_boundary_enabled);
+    const _v620FastBoundaryCutoff = (d.v620Flags && typeof d.v620Flags.fast_boundary_cutoff_et === "string")
+      ? d.v620Flags.fast_boundary_cutoff_et : "10:30";
+    const _fastBoundarySuffix = _v620FastBoundary
+      ? (" \u00b7 1-bar pre-" + _v620FastBoundaryCutoff)
+      : " \u00b7 2-bar hold";
     let p2bState; let p2bVal;
-    if (d.orb === true)       { p2bState = "pass"; p2bVal = "two consec" + _orBreakSuffix; }
-    else if (d.orb === false) { p2bState = "fail"; p2bVal = "hold" + _orBreakSuffix; }
-    else                       { p2bState = "pend"; p2bVal = "\u2014" + _orBreakSuffix; }
+    if (d.orb === true)       { p2bState = "pass"; p2bVal = "two consec" + _orBreakSuffix + _fastBoundarySuffix; }
+    else if (d.orb === false) { p2bState = "fail"; p2bVal = "hold" + _orBreakSuffix + _fastBoundarySuffix; }
+    else                       { p2bState = "pend"; p2bVal = "\u2014" + _orBreakSuffix + _fastBoundarySuffix; }
 
     // Phase 2 \u00b7 Volume \u2014 1m volume \u2265 100% of 55-bar avg.
     let p2vState; let p2vVal;
@@ -811,10 +821,17 @@
     if (_emaSuffix) p3aVal = p3aVal + _emaSuffix;
 
     // Phase 3 \u00b7 Momentum \u2014 5m ADX > 20 (proxied by entry1_fired).
+    // v6.2.0 \u2014 append the active Entry-1 DI threshold so operators can
+    // see the new looser hurdle (default 22 since v6.2.0; previously 25).
     let p3mState; let p3mVal;
     if (d.adx === true)       { p3mState = "pass"; p3mVal = "fired"; }
     else if (d.adx === false) { p3mState = "fail"; p3mVal = "blocked"; }
     else                       { p3mState = "pend"; p3mVal = "\u2014"; }
+    const _v620Di = (d.v620Flags && typeof d.v620Flags.entry1_di_threshold === "number")
+      ? d.v620Flags.entry1_di_threshold : null;
+    if (_v620Di !== null) {
+      p3mVal = p3mVal + " \u00b7 DI\u2265" + _v620Di.toFixed(0);
+    }
 
     // Alarm A1 Loss (vAA-1 SENT-A_LOSS) \u00b7 Per-position $ stop. Only meaningful when in position.
     const sen = (d.p4 && d.p4.sentinel) || {};
@@ -926,6 +943,16 @@
     if (_wxDir === "up")        { pLwState = _wxDiv ? "warn" : "pass"; pLwVal = _wxDiv ? "long (diverges)" : "long"; }
     else if (_wxDir === "down") { pLwState = _wxDiv ? "warn" : "pass"; pLwVal = _wxDiv ? "short (diverges)" : "short"; }
     else                         { pLwState = "pend"; pLwVal = "flat"; }
+    // v6.2.0 — local OR-break leg suffix. When the divergence override
+    // path admits an OR-break leg (ticker has cleared OR by k×ATR even
+    // when QQQ permit closes), surface that as a card-text decoration so
+    // operators see why the override may fire on a divergence.
+    const _v620LocalOrBreak = !!(d.v620Flags && d.v620Flags.local_or_break_enabled);
+    const _v620LocalOrK = (d.v620Flags && typeof d.v620Flags.local_or_break_k === "number")
+      ? d.v620Flags.local_or_break_k : 0;
+    if (_v620LocalOrBreak && _v620LocalOrK > 0) {
+      pLwVal = pLwVal + " \u00b7 OR+" + _v620LocalOrK.toFixed(2) + "\u00d7ATR leg";
+    }
     const pLwMetrics = _metricsHtml([
       ["Local 5m close", _fmtNum(wx.last_close_5m, 2)],
       ["Local 5m EMA9",  _fmtNum(wx.ema9_5m, 2)],
@@ -1347,6 +1374,10 @@
     // Defaults to a conservative all-off shape so a missing v610_flags
     // block (older deploys) renders as legacy.
     const v610Flags = (s && s.v610_flags) || {};
+    // v6.2.0 \u2014 entry-loosening feature flags. Same shape pattern as
+    // v610_flags; missing block degrades to legacy text on the Local
+    // Weather, Boundary, and Momentum cards.
+    const v620Flags = (s && s.v620_flags) || {};
 
     const rowsHtml = [];
     tickers.forEach((tkr) => {
@@ -1354,7 +1385,7 @@
         tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
         longPermit, shortPermit,
         perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
-        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF, v610Flags: v610Flags }
+        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF, v610Flags: v610Flags, v620Flags: v620Flags }
       );
       rowsHtml.push(built.tableRows);
     });
@@ -2525,6 +2556,8 @@
     const showAlarmF  = visibilityOpts.showAlarmF  !== false;
     // v6.1.1 \u2014 v6.1.0 strategy flag block.
     const v610Flags   = visibilityOpts.v610Flags || {};
+    // v6.2.0 \u2014 entry-loosening flag block.
+    const v620Flags   = visibilityOpts.v620Flags || {};
     const p2 = idx.p2[tkr] || null;
     // v5.21.0 — sma_stack is nested in the phase2 row dict.
     const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
@@ -2757,6 +2790,9 @@
             // v6.1.1 \u2014 strategy flags decorate Phase 2 Boundary + Phase 3
             // Authority cards with active OR-break / EMA-confirm state.
             v610Flags: v610Flags,
+            // v6.2.0 \u2014 entry-loosening flags decorate Local Weather,
+            // Boundary, and Momentum cards.
+            v620Flags: v620Flags,
           })
         // v5.23.2 \u2014 expanded-row scan order: component-state cards
         // (process state at-a-glance) \u2192 sentinel alarm strip (live
