@@ -154,13 +154,14 @@ def test_entry_1_no_nhod_fails():
     assert r["reason"] == "no_extreme_print"
 
 
-def test_entry_1_di_5m_24_fails():
+def test_entry_1_di_5m_below_threshold_fails():
+    # v6.2.0: ENTRY_1_DI_THRESHOLD is 22.0. di_5m=21.0 fails di_5m gate.
     r = eot.evaluate_entry_1(
         eot.SIDE_LONG,
         permit_open=True,
         volume_bucket_ok=True,
         boundary_hold_ok=True,
-        di_5m=24.0,
+        di_5m=21.0,
         di_1m=26.0,
         is_nhod_or_nlod=True,
     )
@@ -168,13 +169,14 @@ def test_entry_1_di_5m_24_fails():
     assert r["reason"] == "di_5m"
 
 
-def test_entry_1_di_5m_25_exactly_fails_strict():
+def test_entry_1_di_5m_at_threshold_exactly_fails_strict():
+    # v6.2.0: gate is strict `>` so di_5m exactly at threshold (22.0) fails.
     r = eot.evaluate_entry_1(
         eot.SIDE_LONG,
         permit_open=True,
         volume_bucket_ok=True,
         boundary_hold_ok=True,
-        di_5m=25.0,
+        di_5m=eot.ENTRY_1_DI_THRESHOLD,
         di_1m=26.0,
         is_nhod_or_nlod=True,
     )

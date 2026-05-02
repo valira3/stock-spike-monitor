@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.2.0 — 2026-05-01 — entry-gate loosening: local OR-break leg + time-conditional 1-bar boundary + DI threshold 25→22
+
+### Why
+The TSLA 5/1 case study and the 7,113-row entry-gate forensics sweep (`/home/user/workspace/v611_roi_research/entry_gate_forensics.md`) flagged three gates that systematically rejected entries that would have profited:
+
+1. **Local override (divergence permit)** — 1,798 rejections at `evaluate_local_override` when the QQQ permit closed even though the per-ticker tape had cleared the opening-range high/low by a meaningful ATR multiple. 49.4% of those rejections would have profited; the long subset (AVGO/GOOG/AMZN-style breakouts) won 64% with mean +$0.79/share.
+2. **Boundary hold pre-10:30 ET** — AMZN 09:36–09:51 had 16 boundary-hold rejections (`BOUNDARY_HOLD_REQUIRED_CLOSES = 2` blocking the second confirming bar in the opening 15 minutes). 100% would have profited; mean +$7.30/share. The 2-bar requirement is correct mid-day but punishes the highest-edge window of the session.
+3. **ENTRY_1 DI threshold (25.0)** — TSLA 5/1 alone had 44 di_5m rejections, 100% of which would have profited. The same gate also blocked AVGO/GOOG/AMZN entries on 5/1. Forensics show the marginal entries between 22 ≤ DI < 25 retain the same edge as DI ≥ 25 with no degradation in win rate.
+
+Three anti-recommendations (held the line, did NOT loosen): 5m ADX > 20 (strongest edge gate, mean MAE 4.06 ATR on rejections), `anchor_misaligned` (28% win rate among rejections — real filter), STRIKE-CAP-3 (risk control, not an alpha gate).
+
+### What
+
+**#A — Local override OR-break leg** (`engine/local_weather.py`, `broker/orders.py`)
+- New constants: `V620_LOCAL_OR_BREAK_ENABLED = True`, `V620_LOCAL_OR_BREAK_K = 0.25`.
+- New helper `_or_break_leg(side, last, or_high, or_low, atr_pm)`: returns True iff `last ≥ or_high + k×atr_pm` (long) or `last ≤ or_low − k×atr_pm` (short).
+- `classify_local_weather`, `_check_direction`, and `evaluate_local_override` threaded with three new kwargs: `or_high`, `or_low`, `atr_pm`. Result struct grew an `or_break_aligned` boolean. When the legacy EMA9 / AVWAP / DI legs all pass the override fires on its existing reason; when only the OR-break leg fires, reason is `"open_or_break"` so the prod log line distinguishes the new path.
+- `broker/orders.py` (~line 285) plumbs `or_high=or_high_val`, `or_low=or_low_val`, `atr_pm=tg._v610_compute_pm_atr(ticker)` through to `evaluate_local_override`. Backward compatible — when those values are `None`, the OR-break leg is silently skipped and the legacy 3-leg path is unchanged.
+
+**#B — Time-conditional 1-bar boundary hold pre-10:30 ET** (`v5_10_1_integration.py`, `broker/orders.py`)
+- New constants: `V620_FAST_BOUNDARY_ENABLED = True`, `V620_FAST_BOUNDARY_CUTOFF_HHMM_ET = "10:30"`.
+- New helper `_v620_fast_boundary_active(now_et)`: returns True when the wall-clock ET time is before the cutoff.
+- `evaluate_boundary_hold_gate()` signature gained `now_et=None` kwarg. When fast-boundary active, the gate uses `required_closes=1`; otherwise it falls back to `eot.BOUNDARY_HOLD_REQUIRED_CLOSES = 2` (unchanged spec value, asserted by `tests/test_spec_v15_conformance.py:96`).
+- `broker/orders.py` (~line 499) passes `now_et=now_et` (already defined at line 102) into the boundary-hold call. No spec constant changed — only the gate caller relaxes pre-cutoff.
+
+**#D — Generic ENTRY_1 DI threshold 25 → 22** (`eye_of_tiger.py`)
+- `ENTRY_1_DI_THRESHOLD: 25.0 → 22.0` (line 30). Generic, NOT symbol-specific. Comment block cites TSLA 5/1 forensics (44 di_5m rejections, 100% would-have-profited) and confirms the same gate blocked AVGO/GOOG/AMZN.
+
+**Dashboard surfacing** (`dashboard_server.py`, `dashboard_static/app.js`)
+- New `/api/state` block `v620_flags`: `{local_or_break_enabled, local_or_break_k, fast_boundary_enabled, fast_boundary_cutoff_et, entry1_di_threshold}`. Defensively read from `engine.local_weather`, `v5_10_1_integration`, and `eye_of_tiger`; falls back to safe defaults if any module is missing (mirrors v610_flags pattern).
+- **Local Weather card** (Phase 1): val text appends ` · OR+0.25×ATR leg` when `local_or_break_enabled` and `local_or_break_k > 0`. Operators see when the divergence override has the OR-break path armed.
+- **Boundary card** (Phase 2): val text appends ` · 1-bar pre-10:30` when fast-boundary active, ` · 2-bar hold` when off. Cutoff is read from `v620_flags.fast_boundary_cutoff_et` (configurable without UI change).
+- **Momentum card** (Phase 3, ENTRY_1): val text appends ` · DI≥22` (or whatever threshold is live). Threshold is read from `v620_flags.entry1_di_threshold`.
+- Plumbing mirrors v6.1.1: `s.v620_flags → v620Flags` parsed once in `renderPermitMatrix`, threaded through `_pmtxBuildRow` via the existing `visibilityOpts` dict, into the card data object, and consumed by the existing card builders. Zero new DOM, zero new endpoints, zero new function signatures.
+
+### Tests
+Per minor-release rule (second-component bump), targeted re-run only:
+- `tests/test_eye_of_tiger.py` (DI threshold sanity)
+- `tests/test_spec_v15_conformance.py` (asserts `BOUNDARY_HOLD_REQUIRED_CLOSES == 2` — still 2; only the caller relaxes pre-10:30, spec constant unchanged → must still pass)
+- Local-weather tests if any
+
+### Caveats / rollback
+- All three loosenings are gated by module-level `V620_*` flags. Setting any flag to `False` fully reverts that path (the new kwargs default to `None` so the legacy logic re-engages cleanly).
+- The OR-break leg is a strict ADDITION — never blocks a trade that would have fired under the legacy 3-leg path. Only effect is widening the divergence-override admit set.
+- The fast-boundary path uses `required_closes=1` only when `now_et` is supplied AND before cutoff; legacy callers passing no `now_et` see the spec-strict 2-bar path.
+- Spec constants (`BOUNDARY_HOLD_REQUIRED_CLOSES`, `ENTRY_1_DI_THRESHOLD` indirectly via reads) are unchanged where conformance tests pin them; only the live runtime constant is bumped where forensics justified it.
+- Anti-recommendations (5m ADX, anchor_misaligned, STRIKE-CAP-3) explicitly NOT loosened — see Why.
+
+---
+
 ## v6.1.1 — 2026-05-01 — dashboard-only: surface v6.1.0 strategy in expanded matrix cards
 
 ### Why

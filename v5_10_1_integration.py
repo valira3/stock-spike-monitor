@@ -249,17 +249,65 @@ def record_latest_1m_close(ticker: str, closes: list) -> bool:
     return True
 
 
+# v6.2.0 \u2014 time-conditional boundary hold. Pre-10:30 ET we relax
+# the requirement from 2 closed 1m bars to 1 so early-session breakouts
+# are not missed waiting for the second confirmation candle. The 5/1
+# TSLA replay shows ~24 of the 09:35-10:25 BOUNDARY:not_satisfied
+# rejections sat on a clean uptrend the bot then chased post-11:35.
+# AMZN on the same morning logged 16 such rejections, 100% would-have-
+# profited, mean +$7.30/share (forensics report).
+V620_FAST_BOUNDARY_ENABLED: bool = True
+V620_FAST_BOUNDARY_CUTOFF_HHMM_ET: str = "10:30"
+
+
+def _v620_fast_boundary_active(now_et) -> bool:
+    """Return True if the 1-bar boundary relaxation is currently in
+    effect. Window is [09:35 ET, V620_FAST_BOUNDARY_CUTOFF). The flag
+    must also be ON. Failure-tolerant: any malformed input degrades to
+    False (i.e. fall back to the spec-strict 2-bar hold).
+    """
+    if not V620_FAST_BOUNDARY_ENABLED:
+        return False
+    if now_et is None:
+        return False
+    try:
+        hh, mm = V620_FAST_BOUNDARY_CUTOFF_HHMM_ET.split(":")
+        cutoff_h = int(hh)
+        cutoff_m = int(mm)
+        t = now_et.time()
+    except Exception:
+        return False
+    cutoff_minutes = cutoff_h * 60 + cutoff_m
+    cur_minutes = t.hour * 60 + t.minute
+    # Lower bound is the OR window end (09:36) \u2014 boundary hold is
+    # not even meaningful before then. Practically the gate is only
+    # called after market open so a simple upper bound is sufficient.
+    return cur_minutes < cutoff_minutes
+
+
 def evaluate_boundary_hold_gate(
     ticker: str,
     side: str,
     or_high: Optional[float],
     or_low: Optional[float],
+    now_et=None,
 ) -> dict:
     """Per-ticker, per-side Boundary Hold check. Emits [V5100-BOUNDARY]
     on state changes only. Returns the raw evaluator dict.
+
+    v6.2.0 \u2014 when ``now_et`` is supplied AND fast-boundary is
+    active (pre-10:30 ET window), we require only 1 closed 1m bar
+    strictly outside the boundary instead of the spec-strict 2. After
+    10:30 ET (or when ``now_et`` is omitted) we keep the 2-bar hold.
     """
     closes = list(_last_1m_closes.get(ticker, []))
-    res = eot.evaluate_boundary_hold(side, or_high, or_low, closes)
+    if _v620_fast_boundary_active(now_et):
+        required = 1
+    else:
+        required = eot.BOUNDARY_HOLD_REQUIRED_CLOSES
+    res = eot.evaluate_boundary_hold(
+        side, or_high, or_low, closes, required_closes=required
+    )
     key = (ticker, side)
     prev = _last_boundary_hold.get(key)
     cur = bool(res.get("hold"))

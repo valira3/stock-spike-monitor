@@ -995,11 +995,44 @@ def snapshot() -> dict[str, Any]:
             "or_break_k": v610_or_break_k,
             "late_or_enabled": v610_late_or,
         }
+        # v6.2.0 \u2014 entry-loosening flags. Same surface pattern as the
+        # v6.1.0 block; defaults to all-off so a missing v620_flags key in
+        # /api/state simply degrades the dashboard suffixes to legacy.
+        try:
+            from engine import local_weather as _lw_mod
+            v620_local_or_break = bool(getattr(_lw_mod, "V620_LOCAL_OR_BREAK_ENABLED", False))
+            v620_local_or_break_k = float(getattr(_lw_mod, "V620_LOCAL_OR_BREAK_K", 0.0) or 0.0)
+        except Exception:
+            v620_local_or_break = False
+            v620_local_or_break_k = 0.0
+        try:
+            from v5_10_1_integration import (
+                V620_FAST_BOUNDARY_ENABLED as _v620_fb,
+                V620_FAST_BOUNDARY_CUTOFF_HHMM_ET as _v620_fb_cutoff,
+            )
+            v620_fast_boundary = bool(_v620_fb)
+            v620_fast_boundary_cutoff = str(_v620_fb_cutoff)
+        except Exception:
+            v620_fast_boundary = False
+            v620_fast_boundary_cutoff = "10:30"
+        try:
+            import eye_of_tiger as _eot_mod
+            v620_di_threshold = float(getattr(_eot_mod, "ENTRY_1_DI_THRESHOLD", 25.0))
+        except Exception:
+            v620_di_threshold = 25.0
+        v620_flags = {
+            "local_or_break_enabled": v620_local_or_break,
+            "local_or_break_k": v620_local_or_break_k,
+            "fast_boundary_enabled": v620_fast_boundary,
+            "fast_boundary_cutoff_et": v620_fast_boundary_cutoff,
+            "entry1_di_threshold": v620_di_threshold,
+        }
 
         return {
             "ok": True,
             "version": version,
             "v610_flags": v610_flags,
+            "v620_flags": v620_flags,
             "server_time": now_iso,
             "server_time_label": now_label,
             "portfolio": {

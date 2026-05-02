@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.1.1"
+BOT_VERSION = "6.2.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,27 +97,31 @@ BOT_VERSION = "6.1.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.1.1 dashboard-only patch:\n"
-    "surface v6.1.0 strategy in\n"
-    "existing expanded matrix\n"
-    "cards, no algo changes.\n"
-    "Alarm F card now shows\n"
-    "active ATR multiple plus\n"
-    "dollar width when WIDE/\n"
-    "TIGHT stage is armed.\n"
-    "Phase 2 Boundary card now\n"
-    "shows OR-only when gate\n"
-    "dormant or k-multiplier\n"
-    "+ late-OR when active.\n"
-    "Phase 3 Authority card\n"
-    "shows EMA 2-bar / lunch\n"
-    "suppression suffix when\n"
-    "the v6.1.0 flags are on.\n"
-    "/api/state now ships a\n"
-    "v610_flags block with\n"
-    "atr_trail / ema_confirm\n"
-    "/ or_break / late_or\n"
-    "booleans plus or_break_k."
+    "v6.2.0 entry-gate loosening:\n"
+    "three forensics-backed\n"
+    "relaxations of the entry\n"
+    "matrix to recover trades\n"
+    "that would have profited.\n"
+    "(A) Local override now\n"
+    "admits an OR-break leg:\n"
+    "if the ticker has cleared\n"
+    "OR by k\u00d7ATR, divergence\n"
+    "override fires even when\n"
+    "the QQQ permit closes.\n"
+    "(B) Boundary hold drops\n"
+    "from 2-bar to 1-bar pre-\n"
+    "10:30 ET (configurable\n"
+    "cutoff). Post-cutoff\n"
+    "reverts to spec 2-bar.\n"
+    "(D) ENTRY_1 DI threshold\n"
+    "25 -> 22 (generic, not\n"
+    "symbol-specific).\n"
+    "Dashboard cards surface\n"
+    "all three via v620_flags\n"
+    "on /api/state and card-\n"
+    "text suffixes on Local\n"
+    "Weather, Boundary, and\n"
+    "Momentum tiles."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
