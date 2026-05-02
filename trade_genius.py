@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.2.0"
+BOT_VERSION = "6.3.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,31 +97,29 @@ BOT_VERSION = "6.2.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.2.0 entry-gate loosening:\n"
-    "three forensics-backed\n"
-    "relaxations of the entry\n"
-    "matrix to recover trades\n"
-    "that would have profited.\n"
-    "(A) Local override now\n"
-    "admits an OR-break leg:\n"
-    "if the ticker has cleared\n"
-    "OR by k\u00d7ATR, divergence\n"
-    "override fires even when\n"
-    "the QQQ permit closes.\n"
-    "(B) Boundary hold drops\n"
-    "from 2-bar to 1-bar pre-\n"
-    "10:30 ET (configurable\n"
-    "cutoff). Post-cutoff\n"
-    "reverts to spec 2-bar.\n"
-    "(D) ENTRY_1 DI threshold\n"
-    "25 -> 22 (generic, not\n"
-    "symbol-specific).\n"
-    "Dashboard cards surface\n"
-    "all three via v620_flags\n"
-    "on /api/state and card-\n"
-    "text suffixes on Local\n"
-    "Weather, Boundary, and\n"
-    "Momentum tiles."
+    "v6.3.0 Sentinel B noise-\n"
+    "cross filter. Forensics:\n"
+    "Apr 27-May 1 backtest had\n"
+    "Sentinel B at -$278 with\n"
+    "a 6% win rate vs Sentinel\n"
+    "A at +$259 / 70% wins.\n"
+    "Sixteen of 17 B losers\n"
+    "closed within -0.05% to\n"
+    "-0.37% adverse - all 1m\n"
+    "noise. Filter requires\n"
+    "adverse drawdown to clear\n"
+    "0.10\u00d7ATR(1m) before the\n"
+    "5m EMA-cross exit can\n"
+    "fire. Position sits out\n"
+    "(no counter reset) when\n"
+    "blocked - waits for the\n"
+    "move to confirm or for\n"
+    "the cross to flip. New\n"
+    "v630_flags on /api/state.\n"
+    "Local Weather card and\n"
+    "B Trend Death sentinel\n"
+    "cell append a noise\u22650.10\n"
+    "\u00d7ATR suffix when active."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

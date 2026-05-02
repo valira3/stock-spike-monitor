@@ -164,6 +164,26 @@ _ema_cross_pending: dict[str, int] = {}
 # === end v6.1.0 ema-cross confirmation state ===
 
 
+# === v6.3.0 \u2014 Sentinel B noise-cross filter ===
+# Weekly backtest Apr 27\u2014May 1 found Sentinel B had 6% win-rate /
+# -$277 across 17 fires, vs Sentinel A 70% / +$259. The 16 losers all
+# closed at -0.05% to -0.37% adverse \u2014 within typical 1m noise. The
+# noise-cross filter gates the v6.1.0 2-bar EMA exit on a minimum ATR-
+# scaled adverse move from entry. Sit-out (don't reset counter) when
+# adverse < k\u00d7ATR; the counter keeps tracking until the move is
+# either confirmed by price OR the cross condition naturally resets.
+V630_NOISE_CROSS_FILTER_ENABLED: bool = True
+# Minimum adverse-move-from-entry, expressed as a multiple of the
+# latest 1m ATR. 0.10 was chosen because the 16 EMA-cross losers in
+# the Apr 27\u2014May 1 sweep averaged 0.19% adverse \u2014 the typical
+# 1m ATR for the universe is around 0.30\u20140.50% so 0.10\u00d7ATR
+# (\u2248 0.03\u20140.05% adverse) admits roughly the bottom 80% of
+# noise crosses while letting the deepest-conviction structural
+# crosses fire normally.
+V630_NOISE_CROSS_ATR_K: float = 0.10
+# === end v6.3.0 noise-cross filter ===
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -627,6 +647,14 @@ def check_alarm_b(
     # now_et: datetime in America/New_York used for lunch-chop suppression.
     # When None the suppression check is skipped (treats as outside window).
     now_et: "datetime | None" = None,
+    # v6.3.0 \u2014 noise-cross filter inputs. When all three are supplied AND
+    # ``V630_NOISE_CROSS_FILTER_ENABLED`` is True, the v6.1.0 stateful path
+    # gates the exit on a minimum adverse move from entry of
+    # ``V630_NOISE_CROSS_ATR_K \u00d7 last_1m_atr``. When any input is None
+    # the filter is bypassed (back-compat).
+    entry_price: float | None = None,
+    current_price: float | None = None,
+    last_1m_atr: float | None = None,
 ) -> list[SentinelAction]:
     """Evaluate Alarm B for one position.
 
@@ -702,6 +730,24 @@ def check_alarm_b(
 
         if count < 2:
             return []
+
+        # v6.3.0 noise-cross filter \u2014 require min adverse move from entry.
+        # Sit out when price has not yet moved k\u00d7ATR against entry. The
+        # counter is intentionally NOT reset; the next bar will re-evaluate.
+        if (
+            V630_NOISE_CROSS_FILTER_ENABLED
+            and entry_price is not None
+            and current_price is not None
+            and last_1m_atr is not None
+            and last_1m_atr > 0
+        ):
+            if side == SIDE_LONG:
+                adverse = entry_price - current_price
+            else:  # SHORT
+                adverse = current_price - entry_price
+            min_adverse = V630_NOISE_CROSS_ATR_K * last_1m_atr
+            if adverse < min_adverse:
+                return []
 
         # Two or more consecutive cross bars confirmed \u2014 fire the exit.
         if side == SIDE_LONG:
@@ -1243,6 +1289,10 @@ def evaluate_sentinel(
         confirm_bars=alarm_b_confirm_bars,
         position_id=position_id,
         now_et=now_et,
+        # v6.3.0 noise-cross filter \u2014 entry/current/atr already in scope.
+        entry_price=entry_price,
+        current_price=current_price,
+        last_1m_atr=last_1m_atr,
     )
     result.alarms.extend(b_fired)
 
