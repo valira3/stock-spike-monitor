@@ -1027,12 +1027,27 @@ def snapshot() -> dict[str, Any]:
             "fast_boundary_cutoff_et": v620_fast_boundary_cutoff,
             "entry1_di_threshold": v620_di_threshold,
         }
+        # v6.3.0 \u2014 Sentinel B noise-cross filter. Same surface pattern.
+        # Defaults to off so a missing v630_flags key in /api/state degrades
+        # the dashboard EMA-shield card suffix to legacy.
+        try:
+            from engine import sentinel as _sent_mod
+            v630_noise_enabled = bool(getattr(_sent_mod, "V630_NOISE_CROSS_FILTER_ENABLED", False))
+            v630_noise_atr_k = float(getattr(_sent_mod, "V630_NOISE_CROSS_ATR_K", 0.0) or 0.0)
+        except Exception:
+            v630_noise_enabled = False
+            v630_noise_atr_k = 0.0
+        v630_flags = {
+            "noise_cross_filter_enabled": v630_noise_enabled,
+            "noise_cross_atr_k": v630_noise_atr_k,
+        }
 
         return {
             "ok": True,
             "version": version,
             "v610_flags": v610_flags,
             "v620_flags": v620_flags,
+            "v630_flags": v630_flags,
             "server_time": now_iso,
             "server_time_label": now_label,
             "portfolio": {

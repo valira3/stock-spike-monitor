@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.2.0 · May 2026 — **Entry-gate loosening: local OR-break leg + time-conditional 1-bar boundary + DI threshold 25→22**
+> **Version:** v6.3.0 · May 2026 — **Sentinel B noise-cross filter: gate the EMA-cross exit on adverse ≥ 0.10×ATR(1m) from entry**
 >
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each
@@ -110,7 +110,7 @@
 >   Authority card shows EMA 2-bar / lunch suppression. New
 >   `/api/state.v610_flags` block. Per minor-release rule, no
 >   ARCHITECTURE / PDF update on this patch.
-> - **v6.2.0** (2026-05-01, this release) — entry-gate loosening:
+> - **v6.2.0** (2026-05-01) — entry-gate loosening:
 >   three forensics-backed relaxations of the entry matrix to
 >   recover trades that the 7,113-row entry-gate forensics sweep
 >   showed would have profited. (A) **Local override OR-break leg**
@@ -138,6 +138,97 @@
 >   zero new endpoints). All three loosenings behind module-level
 >   `V620_*` flags for instant rollback. See
 >   "v6.2.0 — Entry-gate loosening" subsection below.
+> - **v6.3.0** (2026-05-01, this release) — Sentinel B noise-cross
+>   filter. The Apr 27 – May 1 weekly backtest split MtM-adjusted
+>   P&L by sentinel: A (per-position $ stop / 1m flash) **+$258.97 /
+>   70% wins** vs B (5m close-vs-9-EMA cross) **−$277.52 / 6% wins**.
+>   Sixteen of 17 B losers closed at adverse −0.05% to −0.37% — all
+>   within typical 1m noise. Fix: gate the v6.1.0 2-bar EMA-cross
+>   exit on a minimum adverse move of `V630_NOISE_CROSS_ATR_K ×
+>   last_1m_atr` (k = 0.10) from entry. New constants in
+>   `engine/sentinel.py`: `V630_NOISE_CROSS_FILTER_ENABLED = True`,
+>   `V630_NOISE_CROSS_ATR_K = 0.10`. `check_alarm_b` signature
+>   gained `entry_price`, `current_price`, `last_1m_atr` kwargs;
+>   when all three are present and atr > 0, the v6.1.0 stateful
+>   path sits out (does **NOT** reset the counter) when adverse
+>   < k×ATR. The position waits for either price to confirm the
+>   move or the cross condition to flip naturally. `evaluate_sentinel`
+>   threads the new params; `broker/positions.py` already passed
+>   them so the fix flows to prod with no caller change required.
+>   Dashboard surface: new `/api/state.v630_flags` block
+>   (`{noise_cross_filter_enabled, noise_cross_atr_k}`); Local
+>   Weather card and the B Trend Death sentinel-strip cell append
+>   a `· noise≥0.10×ATR` suffix. See "v6.3.0 — Sentinel B noise-
+>   cross filter" subsection below.
+>
+> ## v6.3.0 — Sentinel B noise-cross filter
+>
+> **Why.** The Apr 27 – May 1 weekly backtest
+> (`/home/user/workspace/v620_week_backtest/report.md`) split
+> realised P&L by sentinel and found Sentinel B was the bleed:
+>
+> | Sentinel | Trades | P&L | Win rate |
+> |---|---:|---:|---:|
+> | A (per-position $ stop / 1m flash) | 20 | **+$258.97** | **70%** |
+> | B (5m close vs 9-EMA cross) | 17 | **−$277.52** | **6%** |
+>
+> Forensic review of the 16 EMA-cross losers found every one closed
+> at adverse moves of −0.05% to −0.37% — entirely within 1m noise.
+> The 5m close ticked under the 5m 9-EMA by a hair, the cross fired
+> the exit, and price recovered the next minute or two.
+>
+> **What.** Filter logic is in `engine/sentinel.py`:
+>
+> ```
+> V630_NOISE_CROSS_FILTER_ENABLED: bool  = True
+> V630_NOISE_CROSS_ATR_K:         float = 0.10
+> ```
+>
+> Inside the v6.1.0 stateful path of `check_alarm_b`, after the
+> 2-bar count check passes, the function now requires:
+>
+> - LONG:  `(entry_price − current_price) ≥ k × last_1m_atr`
+> - SHORT: `(current_price − entry_price) ≥ k × last_1m_atr`
+>
+> When the threshold is not met the function returns `[]` **without**
+> resetting `_ema_cross_pending[position_id]`. This is the load-
+> bearing behaviour: the position waits, and the cross still fires
+> the moment price either confirms the move or reverts past the cross
+> threshold (which then resets the counter via the existing False-
+> branch). The filter is bypassed when any of `entry_price`,
+> `current_price`, or `last_1m_atr` is None or when ATR ≤ 0 — this
+> keeps cold-start / stale-data paths safe.
+>
+> **k = 0.10 sizing.** The 16 losers averaged 0.19% adverse at exit;
+> a typical 1m ATR on the watched megacaps is 0.30–0.50%. 0.10 × ATR
+> ≈ 0.03–0.05% adverse → admits roughly the bottom 80% of noise-
+> crosses while the structural conviction crosses still fire normally.
+>
+> **Plumbing.** `evaluate_sentinel` was updated to thread
+> `entry_price`, `current_price`, `last_1m_atr` through to
+> `check_alarm_b`. `broker/positions.py:_run_sentinel` already
+> calls `evaluate_sentinel(entry_price=entry_p,
+> current_price=current_price, last_1m_atr=last_1m_atr, ...)` so
+> the fix flows to production code automatically.
+>
+> **Dashboard surface** (mirrors the v6.1.1 / v6.2.0 patterns):
+>
+> - `dashboard_server.py:/api/state` payload gained a `v630_flags`
+>   block alongside `v620_flags`. Reads the constants via
+>   `getattr(engine.sentinel, ...)` with safe defaults so older
+>   deploys / partial syncs degrade to legacy text.
+> - `dashboard_static/app.js` (Local Weather card, ~line 956):
+>   appends ` · noise≥0.10×ATR` to the value text alongside the
+>   existing v6.2.0 OR-break leg suffix.
+> - `dashboard_static/app.js` (B Trend Death sentinel cell, ~line
+>   3076): appends the same suffix to the
+>   `close=… / ema=… / Δ=…` value, so on every expanded titan
+>   card the operator can see the active threshold without diving
+>   into /api/state.
+>
+> Tests: `tests/test_sentinel_v630_noise_cross.py` (10 cases —
+> LONG/SHORT, above/below threshold, None/zero ATR bypass paths,
+> counter-no-reset semantics across consecutive blocked bars).
 >
 > ## Reconcile state machine — v6.0.7
 >

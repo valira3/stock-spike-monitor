@@ -953,6 +953,17 @@
     if (_v620LocalOrBreak && _v620LocalOrK > 0) {
       pLwVal = pLwVal + " \u00b7 OR+" + _v620LocalOrK.toFixed(2) + "\u00d7ATR leg";
     }
+    // v6.3.0 \u2014 noise-cross filter active suffix on the Local Weather
+    // card. The filter sits in front of the EMA-cross exit on Sentinel B
+    // (require adverse drawdown >= k\u00d7ATR before the cross can fire),
+    // so the operator-facing weather card is the right place to surface
+    // it alongside the existing OR-break leg suffix.
+    const _v630NoiseCross = !!(d.v630Flags && d.v630Flags.noise_cross_filter_enabled);
+    const _v630NoiseK = (d.v630Flags && typeof d.v630Flags.noise_cross_atr_k === "number")
+      ? d.v630Flags.noise_cross_atr_k : 0;
+    if (_v630NoiseCross && _v630NoiseK > 0) {
+      pLwVal = pLwVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
+    }
     const pLwMetrics = _metricsHtml([
       ["Local 5m close", _fmtNum(wx.last_close_5m, 2)],
       ["Local 5m EMA9",  _fmtNum(wx.ema9_5m, 2)],
@@ -1378,6 +1389,10 @@
     // v610_flags; missing block degrades to legacy text on the Local
     // Weather, Boundary, and Momentum cards.
     const v620Flags = (s && s.v620_flags) || {};
+    // v6.3.0 \u2014 Sentinel B noise-cross filter flags. Surfaced as a
+    // suffix on the B Trend Death sentinel cell and the Local Weather
+    // card so operators can see the active noise threshold at a glance.
+    const v630Flags = (s && s.v630_flags) || {};
 
     const rowsHtml = [];
     tickers.forEach((tkr) => {
@@ -1385,7 +1400,7 @@
         tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
         longPermit, shortPermit,
         perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
-        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF, v610Flags: v610Flags, v620Flags: v620Flags }
+        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF, v610Flags: v610Flags, v620Flags: v620Flags, v630Flags: v630Flags }
       );
       rowsHtml.push(built.tableRows);
     });
@@ -2558,6 +2573,8 @@
     const v610Flags   = visibilityOpts.v610Flags || {};
     // v6.2.0 \u2014 entry-loosening flag block.
     const v620Flags   = visibilityOpts.v620Flags || {};
+    // v6.3.0 \u2014 Sentinel B noise-cross filter flag block.
+    const v630Flags   = visibilityOpts.v630Flags || {};
     const p2 = idx.p2[tkr] || null;
     // v5.21.0 — sma_stack is nested in the phase2 row dict.
     const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
@@ -2683,6 +2700,10 @@
       showAlarmD: showAlarmD,
       showAlarmE: showAlarmE,
       showAlarmF: showAlarmF,
+      // v6.3.0 \u2014 forward the noise-cross filter block so the
+      // B Trend Death cell can append a "\u00b7 noise\u22650.10\u00d7ATR" suffix
+      // when the v630 filter is active.
+      v630Flags: v630Flags,
     });
     const proxHasDetail = !!(prox && (
       typeof prox.price === "number"
@@ -2793,6 +2814,9 @@
             // v6.2.0 \u2014 entry-loosening flags decorate Local Weather,
             // Boundary, and Momentum cards.
             v620Flags: v620Flags,
+            // v6.3.0 \u2014 Sentinel B noise-cross filter flags decorate
+            // the Local Weather card and the B Trend Death sentinel cell.
+            v630Flags: v630Flags,
           })
         // v5.23.2 \u2014 expanded-row scan order: component-state cards
         // (process state at-a-glance) \u2192 sentinel alarm strip (live
@@ -2984,6 +3008,14 @@
     const showAlarmD = (opts.showAlarmD !== false);
     const showAlarmE = (opts.showAlarmE !== false);
     const showAlarmF = (opts.showAlarmF !== false);
+    // v6.3.0 \u2014 noise-cross filter flag block. When enabled and atr_k > 0,
+    // append a "\u00b7 noise\u22650.10\u00d7ATR" suffix to the B Trend Death cell
+    // value so the operator can see the active threshold without diving
+    // into /api/state. Defaults to off when block is missing (older deploys).
+    const _v630Flags = opts.v630Flags || {};
+    const _v630NoiseCross = !!_v630Flags.noise_cross_filter_enabled;
+    const _v630NoiseK = (typeof _v630Flags.noise_cross_atr_k === "number")
+      ? _v630Flags.noise_cross_atr_k : 0;
     const sen = (p4 && p4.sentinel) || {};
 
     // --- Cell A1: Loss ---
@@ -3041,10 +3073,17 @@
       bTrend.triggered = false; // legacy sentinel does not record a triggered flag
     }
     const bState = _pmtxAlarmStateClass(bTrend, "b_trend_death");
-    const bVal   = (bClose !== null && bEma9 !== null)
+    let bVal   = (bClose !== null && bEma9 !== null)
       ? ("close=" + _pmtxNum(bClose) + " / ema=" + _pmtxNum(bEma9) +
          (bDelta !== null ? " / \u0394=" + _pmtxNum(bDelta) : ""))
       : "\u2014";
+    // v6.3.0 \u2014 surface the active noise-cross threshold so the operator
+    // can see at a glance that an EMA cross will only fire after adverse
+    // drawdown clears k\u00d7ATR (1m). Filter sits in front of the cross
+    // and does NOT reset the counter when blocked.
+    if (_v630NoiseCross && _v630NoiseK > 0 && bVal !== "\u2014") {
+      bVal = bVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
+    }
 
     // --- Cell F: Chandelier Trail (v5.30.0) ---
     // Alarm F (engine.alarm_f_trail) ratchets a stop on top of the live
