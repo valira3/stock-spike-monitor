@@ -402,13 +402,14 @@ def test_min_bars_before_arm_blocks_early_arming(monkeypatch):
 
 
 def test_constants_match_spec_defaults():
-    # v5.28.0 tuned defaults (from Apr 30 backtest sweep). Original
-    # conservative defaults (S2=2.0R, WIDE=3.0, TIGHT=2.0, S3=1.5*ATR)
-    # are documented in v528 research doc \u00a76.4 for reference.
+    # v6.4.0 tightened defaults (from Apr 27\u2013May 1 sweep): WIDE 2.0\u21921.5,
+    # TIGHT 1.0\u21920.7. v5.28.0 tuned baseline was WIDE=2.0/TIGHT=1.0;
+    # original conservative pre-v5.28 defaults (S2=2.0R, WIDE=3.0, TIGHT=2.0,
+    # S3=1.5*ATR) are documented in v528 research doc \u00a76.4 for reference.
     assert BE_ARM_R_MULT == 1.0
     assert STAGE2_ARM_R_MULT == 1.0
-    assert WIDE_MULT == 2.0
-    assert TIGHT_MULT == 1.0
+    assert WIDE_MULT == 1.5
+    assert TIGHT_MULT == 0.7
     assert ATR_PERIOD == 14
     assert MIN_BARS_BEFORE_ARM == 3
 

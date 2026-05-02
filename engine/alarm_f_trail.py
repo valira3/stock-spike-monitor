@@ -58,10 +58,13 @@ ATR_PERIOD: int = 14
 
 # Chandelier multipliers \u2014 wide first, tight after Stage 3 arms.
 # v5.28.0 sweep showed WIDE/TIGHT width has minimal effect on which trades
-# fire F_EXIT; the 2.0/1.0 pair gives the cleanest exit prints without
-# whipsawing on intra-bar noise.
-WIDE_MULT: float = 2.0
-TIGHT_MULT: float = 1.0
+# fire F_EXIT in B-on world; v6.4.0 sweep (Apr 27\u2013May 1, 5 days, B
+# disabled) showed 1.5/0.7 outperforms 2.0/1.0 by +$152/wk by tightening
+# Stage 2 sooner once Alarm B no longer cuts trades early. The pair stays
+# loose enough to survive entry-bar noise (MIN_BARS_BEFORE_ARM=3 still
+# guards the first 3 bars).
+WIDE_MULT: float = 1.5
+TIGHT_MULT: float = 0.7
 
 # Never arm in the first N bars after entry (avoid entry-bar noise).
 MIN_BARS_BEFORE_ARM: int = 3

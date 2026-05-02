@@ -89,6 +89,9 @@ def test_v631_position_id_threads_into_evaluate_sentinel(monkeypatch):
     if check_alarm_b enters the position_id path, which requires
     broker/positions.py to forward position_id to evaluate_sentinel.
     """
+    # v6.4.0: B is disabled by default; this test asserts B path wiring,
+    # so force-enable for the test.
+    monkeypatch.setattr(sentinel_mod, "ALARM_B_ENABLED", True)
     from broker import positions as broker_positions
 
     pos = _build_position("v631-test-pid-A")

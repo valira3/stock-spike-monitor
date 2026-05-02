@@ -958,10 +958,27 @@
     // (require adverse drawdown >= k\u00d7ATR before the cross can fire),
     // so the operator-facing weather card is the right place to surface
     // it alongside the existing OR-break leg suffix.
+    //
+    // v6.4.0 \u2014 when Alarm B is fully disabled (ALARM_B_ENABLED=false),
+    // the noise-cross suffix is misleading (it implies the cross can still
+    // fire). In that case suppress noise\u2265k\u00d7ATR and instead surface
+    // the active Chandelier multipliers (chand 1.5/0.7) which are the new
+    // primary trail-out signal once B no longer evaluates.
     const _v630NoiseCross = !!(d.v630Flags && d.v630Flags.noise_cross_filter_enabled);
     const _v630NoiseK = (d.v630Flags && typeof d.v630Flags.noise_cross_atr_k === "number")
       ? d.v630Flags.noise_cross_atr_k : 0;
-    if (_v630NoiseCross && _v630NoiseK > 0) {
+    const _v640AlarmB = !!(d.v640Flags && d.v640Flags.alarm_b_enabled);
+    const _v640ChandWide = (d.v640Flags && typeof d.v640Flags.chandelier_wide_mult === "number")
+      ? d.v640Flags.chandelier_wide_mult : 0;
+    const _v640ChandTight = (d.v640Flags && typeof d.v640Flags.chandelier_tight_mult === "number")
+      ? d.v640Flags.chandelier_tight_mult : 0;
+    if (_v640AlarmB && _v630NoiseCross && _v630NoiseK > 0) {
+      pLwVal = pLwVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
+    } else if (!_v640AlarmB && _v640ChandWide > 0 && _v640ChandTight > 0) {
+      pLwVal = pLwVal + " \u00b7 chand " + _v640ChandWide.toFixed(1) +
+               "/" + _v640ChandTight.toFixed(1);
+    } else if (_v630NoiseCross && _v630NoiseK > 0) {
+      // Defensive fallback: pre-v6.4.0 deploys (no v640Flags block).
       pLwVal = pLwVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
     }
     const pLwMetrics = _metricsHtml([
@@ -1393,6 +1410,12 @@
     // suffix on the B Trend Death sentinel cell and the Local Weather
     // card so operators can see the active noise threshold at a glance.
     const v630Flags = (s && s.v630_flags) || {};
+    // v6.4.0 \u2014 Alarm B disable + Chandelier multiplier tightening flags.
+    // Same surface pattern as the v6.3.0 block. Used by the B Trend Death
+    // sentinel cell (renders DISABLED state when alarm_b_enabled=false) and
+    // by the Local Weather card suffix (chand 1.5/0.7 instead of
+    // noise\u2265k\u00d7ATR when B is off).
+    const v640Flags = (s && s.v640_flags) || {};
 
     const rowsHtml = [];
     tickers.forEach((tkr) => {
@@ -1400,7 +1423,7 @@
         tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
         longPermit, shortPermit,
         perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
-        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF, v610Flags: v610Flags, v620Flags: v620Flags, v630Flags: v630Flags }
+        { showVolume: showVolume, showAlarmC: showAlarmC, showAlarmD: showAlarmD, showAlarmE: showAlarmE, showAlarmF: showAlarmF, v610Flags: v610Flags, v620Flags: v620Flags, v630Flags: v630Flags, v640Flags: v640Flags }
       );
       rowsHtml.push(built.tableRows);
     });
@@ -2575,6 +2598,8 @@
     const v620Flags   = visibilityOpts.v620Flags || {};
     // v6.3.0 \u2014 Sentinel B noise-cross filter flag block.
     const v630Flags   = visibilityOpts.v630Flags || {};
+    // v6.4.0 \u2014 Alarm B disable + Chandelier multiplier flag block.
+    const v640Flags   = visibilityOpts.v640Flags || {};
     const p2 = idx.p2[tkr] || null;
     // v5.21.0 — sma_stack is nested in the phase2 row dict.
     const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
@@ -2704,6 +2729,9 @@
       // B Trend Death cell can append a "\u00b7 noise\u22650.10\u00d7ATR" suffix
       // when the v630 filter is active.
       v630Flags: v630Flags,
+      // v6.4.0 \u2014 forward Alarm B / Chandelier flag block so the
+      // B Trend Death cell renders the DISABLED state when B is off.
+      v640Flags: v640Flags,
     });
     const proxHasDetail = !!(prox && (
       typeof prox.price === "number"
@@ -2817,6 +2845,10 @@
             // v6.3.0 \u2014 Sentinel B noise-cross filter flags decorate
             // the Local Weather card and the B Trend Death sentinel cell.
             v630Flags: v630Flags,
+            // v6.4.0 \u2014 Alarm B disable + Chandelier multiplier flags.
+            // The component grid surfaces an ALARM_B_ENABLED line on the
+            // Strategy panel and tints the B Trend Death card DISABLED.
+            v640Flags: v640Flags,
           })
         // v5.23.2 \u2014 expanded-row scan order: component-state cards
         // (process state at-a-glance) \u2192 sentinel alarm strip (live
@@ -3016,6 +3048,14 @@
     const _v630NoiseCross = !!_v630Flags.noise_cross_filter_enabled;
     const _v630NoiseK = (typeof _v630Flags.noise_cross_atr_k === "number")
       ? _v630Flags.noise_cross_atr_k : 0;
+    // v6.4.0 \u2014 Alarm B disable flag. When alarm_b_enabled=false, render
+    // the B Trend Death cell in a DISABLED state regardless of live close /
+    // EMA9 values: the alarm function is not called server-side so the
+    // armed/triggered booleans are stale. Pre-v6.4.0 deploys default to
+    // True for safety (preserves legacy rendering).
+    const _v640Flags = opts.v640Flags || {};
+    const _v640AlarmBEnabled = (typeof _v640Flags.alarm_b_enabled === "boolean")
+      ? _v640Flags.alarm_b_enabled : true;
     const sen = (p4 && p4.sentinel) || {};
 
     // --- Cell A1: Loss ---
@@ -3072,16 +3112,28 @@
       bTrend.armed     = (bClose !== null && bEma9 !== null);
       bTrend.triggered = false; // legacy sentinel does not record a triggered flag
     }
-    const bState = _pmtxAlarmStateClass(bTrend, "b_trend_death");
+    let bState = _pmtxAlarmStateClass(bTrend, "b_trend_death");
     let bVal   = (bClose !== null && bEma9 !== null)
       ? ("close=" + _pmtxNum(bClose) + " / ema=" + _pmtxNum(bEma9) +
          (bDelta !== null ? " / \u0394=" + _pmtxNum(bDelta) : ""))
       : "\u2014";
-    // v6.3.0 \u2014 surface the active noise-cross threshold so the operator
-    // can see at a glance that an EMA cross will only fire after adverse
-    // drawdown clears k\u00d7ATR (1m). Filter sits in front of the cross
-    // and does NOT reset the counter when blocked.
-    if (_v630NoiseCross && _v630NoiseK > 0 && bVal !== "\u2014") {
+    // v6.4.0 \u2014 when ALARM_B_ENABLED=false the alarm is not evaluated;
+    // override the cell to a DISABLED state with a clear label and skip the
+    // v6.3.0 noise-cross suffix (which would imply the cross can still fire).
+    // The state class "disabled" maps to a dim grey pill in app.css and is
+    // already used by the C/D/E cells when those alarms are bypassed.
+    if (!_v640AlarmBEnabled) {
+      // v6.4.0 \u2014 reuse the existing "idle" cell theme (dim grey) plus an
+      // explicit textual marker so the operator can immediately see the
+      // alarm is not evaluating server-side. Avoid inventing a new CSS
+      // class so existing skins keep working without a stylesheet change.
+      bState = "idle";
+      bVal = "DISABLED \u00b7 ALARM_B_ENABLED=false";
+    } else if (_v630NoiseCross && _v630NoiseK > 0 && bVal !== "\u2014") {
+      // v6.3.0 \u2014 surface the active noise-cross threshold so the operator
+      // can see at a glance that an EMA cross will only fire after adverse
+      // drawdown clears k\u00d7ATR (1m). Filter sits in front of the cross
+      // and does NOT reset the counter when blocked.
       bVal = bVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
     }
 

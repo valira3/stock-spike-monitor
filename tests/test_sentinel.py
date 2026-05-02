@@ -12,6 +12,7 @@ from collections import deque
 
 import pytest
 
+import engine.sentinel as sentinel_mod
 from engine.sentinel import (
     ALARM_A_HARD_LOSS_DOLLARS,
     EXIT_REASON_ALARM_A,
@@ -197,13 +198,16 @@ def test_alarm_b_skipped_when_ema9_unseeded():
 # ---------------------------------------------------------------------------
 
 
-def test_alarms_a_and_b_fire_independently_in_same_tick():
+def test_alarms_a_and_b_fire_independently_in_same_tick(monkeypatch):
     """Construct a scenario where BOTH A and B trip on the same tick.
 
     The spec emphasizes "These Alarms are NOT a sequence." This test
     is the parallel-not-sequential guarantee: both must appear in the
     SentinelResult, not just whichever evaluator runs first.
     """
+    # v6.4.0: B is disabled by default in prod; this test asserts B-fires
+    # semantics so we force-enable for the duration of the test.
+    monkeypatch.setattr(sentinel_mod, "ALARM_B_ENABLED", True)
     history = new_pnl_history()
     record_pnl(history, ts=1000.0, pnl=0.0)
 
@@ -224,12 +228,14 @@ def test_alarms_a_and_b_fire_independently_in_same_tick():
     assert "A_FLASH" in codes, f"expected A_FLASH in {codes}"
 
 
-def test_one_exit_reason_even_with_multiple_alarms():
+def test_one_exit_reason_even_with_multiple_alarms(monkeypatch):
     """If A and B both fire, ``exit_reason`` returns exactly one code.
 
     The downstream broker emits one exit order \u2014 but the full alarm
     list is preserved for telemetry.
     """
+    # v6.4.0: B-fires test \u2014 force-enable B.
+    monkeypatch.setattr(sentinel_mod, "ALARM_B_ENABLED", True)
     history = new_pnl_history()
     record_pnl(history, ts=1000.0, pnl=0.0)
     result = evaluate_sentinel(
@@ -265,8 +271,10 @@ def test_evaluate_sentinel_no_fire_at_clean_state():
     assert result.exit_reason is None
 
 
-def test_evaluate_sentinel_only_b_fires_when_a_quiet():
+def test_evaluate_sentinel_only_b_fires_when_a_quiet(monkeypatch):
     """Alarm B must fire even when A is silent. Independence test."""
+    # v6.4.0: B-fires test \u2014 force-enable B.
+    monkeypatch.setattr(sentinel_mod, "ALARM_B_ENABLED", True)
     history = new_pnl_history()
     record_pnl(history, ts=1000.0, pnl=-50.0)
     result = evaluate_sentinel(
@@ -298,8 +306,10 @@ def test_pnl_history_is_bounded():
 
 
 @pytest.mark.parametrize("side", [SIDE_LONG, SIDE_SHORT])
-def test_a_and_b_fire_for_both_sides(side):
+def test_a_and_b_fire_for_both_sides(side, monkeypatch):
     """Spec rule mirrors: the same semantics apply long and short."""
+    # v6.4.0: B-fires test \u2014 force-enable B.
+    monkeypatch.setattr(sentinel_mod, "ALARM_B_ENABLED", True)
     history = new_pnl_history()
     record_pnl(history, ts=1000.0, pnl=0.0)
     if side == SIDE_LONG:
