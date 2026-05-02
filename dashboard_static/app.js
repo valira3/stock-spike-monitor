@@ -3345,9 +3345,12 @@
     // v6.4.2 — post-loss cooldown chip + popover. Reads s.v642_flags and
     // s.active_cooldowns (both added in dashboard_server.h_state). Chip
     // is hidden entirely when the feature is disabled
-    // (post_loss_cooldown_min == 0); dim when no cooldowns active; lit
+    // (both sides == 0); dim when no cooldowns active; lit
     // amber with a count when 1+ (ticker, side) pairs are cooling down.
     // Each row in the popover shows TICKER side (loss $X) MM:SS left.
+    // v6.4.3 — long/short windows can differ. Chip badge shows compact
+    // summary: "·30m" if symmetric, "·S30m" if only short, "·L15/S30m"
+    // if both differ.
     try {
       const cdChip = document.getElementById("tg-cooldown-chip");
       if (cdChip) {
@@ -3355,6 +3358,28 @@
         const cdEnabled = !!v642.post_loss_cooldown_enabled;
         const cdMin = (typeof v642.post_loss_cooldown_min === "number")
           ? v642.post_loss_cooldown_min : 30;
+        const cdMinLong = (typeof v642.post_loss_cooldown_min_long === "number")
+          ? v642.post_loss_cooldown_min_long : cdMin;
+        const cdMinShort = (typeof v642.post_loss_cooldown_min_short === "number")
+          ? v642.post_loss_cooldown_min_short : cdMin;
+        // Compact badge string
+        let badgeText, detailText;
+        if (cdMinLong > 0 && cdMinShort > 0 && cdMinLong === cdMinShort) {
+          badgeText  = "\u00b7" + cdMinLong + "m";
+          detailText = "Window: " + cdMinLong + " min (long & short)";
+        } else if (cdMinLong > 0 && cdMinShort > 0) {
+          badgeText  = "\u00b7L" + cdMinLong + "/S" + cdMinShort + "m";
+          detailText = "Windows: long " + cdMinLong + " min, short " + cdMinShort + " min";
+        } else if (cdMinShort > 0) {
+          badgeText  = "\u00b7S" + cdMinShort + "m";
+          detailText = "Window: short only, " + cdMinShort + " min (long disabled)";
+        } else if (cdMinLong > 0) {
+          badgeText  = "\u00b7L" + cdMinLong + "m";
+          detailText = "Window: long only, " + cdMinLong + " min (short disabled)";
+        } else {
+          badgeText  = "\u00b7off";
+          detailText = "Cooldown disabled";
+        }
         const cds = (s && Array.isArray(s.active_cooldowns)) ? s.active_cooldowns : [];
         const cdCountEl = document.getElementById("tg-cooldown-count");
         const cdWinEl   = document.getElementById("tg-cooldown-window");
@@ -3365,21 +3390,21 @@
         } else {
           cdChip.style.display = "inline-flex";
           if (cdCountEl) cdCountEl.textContent = String(cds.length);
-          if (cdWinEl)   cdWinEl.textContent   = "\u00b7" + cdMin + "m";
-          if (cdWinDet)  cdWinDet.textContent  = "Window: " + cdMin + " min after each loss";
+          if (cdWinEl)   cdWinEl.textContent   = badgeText;
+          if (cdWinDet)  cdWinDet.textContent  = detailText;
           if (cds.length > 0) {
             cdChip.style.background   = "#2a1d05";
             cdChip.style.borderColor  = "#7c5a14";
             cdChip.style.color        = "#fbbf24";
             cdChip.setAttribute("title",
               cds.length + " active post-loss cooldown" + (cds.length === 1 ? "" : "s") +
-              " (" + cdMin + "-min window) \u2014 click for details");
+              " \u2014 " + detailText + " \u2014 click for details");
           } else {
             cdChip.style.background   = "#10151c";
             cdChip.style.borderColor  = "#1f2937";
             cdChip.style.color        = "#5b6572";
             cdChip.setAttribute("title",
-              "No active post-loss cooldowns (" + cdMin + "-min window) \u2014 click for details");
+              "No active post-loss cooldowns \u2014 " + detailText + " \u2014 click for details");
           }
           if (cdListEl) {
             if (cds.length === 0) {

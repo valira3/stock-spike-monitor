@@ -1077,19 +1077,37 @@ def snapshot() -> dict[str, Any]:
         # trade_genius.get_active_cooldowns(). Defaults to a safe empty
         # state so a missing v642_flags / active_cooldowns key in
         # /api/state degrades the dashboard chip to hidden.
+        # v6.4.3 \u2014 long/short windows now resolve independently. The
+        # legacy post_loss_cooldown_min field is preserved for back-compat
+        # (older dashboard clients keep working) and reflects whichever
+        # side is currently active, preferring the larger non-zero window.
         try:
-            from eye_of_tiger import POST_LOSS_COOLDOWN_MIN as _v642_cd_min
-            v642_cooldown_min = int(_v642_cd_min)
+            from eye_of_tiger import (
+                POST_LOSS_COOLDOWN_MIN_LONG as _v643_cd_long,
+                POST_LOSS_COOLDOWN_MIN_SHORT as _v643_cd_short,
+            )
+            v643_cd_long = int(_v643_cd_long)
+            v643_cd_short = int(_v643_cd_short)
         except Exception:
-            v642_cooldown_min = 30
+            v643_cd_long, v643_cd_short = 0, 30
         try:
             import trade_genius as _v642_tg
             v642_active = list(_v642_tg.get_active_cooldowns())
         except Exception:
             v642_active = []
+        # Legacy single-window field: prefer the active non-zero side; if
+        # both are on, take the larger; if both off, 0.
+        if v643_cd_long > 0 and v643_cd_short > 0:
+            v642_legacy_min = max(v643_cd_long, v643_cd_short)
+        else:
+            v642_legacy_min = v643_cd_long or v643_cd_short
         v642_flags = {
-            "post_loss_cooldown_min": v642_cooldown_min,
-            "post_loss_cooldown_enabled": v642_cooldown_min > 0,
+            "post_loss_cooldown_min": v642_legacy_min,
+            "post_loss_cooldown_min_long": v643_cd_long,
+            "post_loss_cooldown_min_short": v643_cd_short,
+            "post_loss_cooldown_enabled": (v643_cd_long > 0) or (v643_cd_short > 0),
+            "long_enabled": v643_cd_long > 0,
+            "short_enabled": v643_cd_short > 0,
             "active_count": len(v642_active),
         }
 

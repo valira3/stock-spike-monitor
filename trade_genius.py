@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.4.2"
+BOT_VERSION = "6.4.3"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,34 +97,30 @@ BOT_VERSION = "6.4.2"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.4.2 post-loss cooldown:\n"
-    "after a stop-out, block\n"
-    "new entries on same\n"
-    "(ticker, side) for 30 min.\n"
-    "Apr 27\u2013May 1 backtest:\n"
-    "three same-side same-tkr\n"
-    "reentries within 30 min of\n"
-    "a stop \u2014 TSLA, META, AMZN\n"
-    "shorts \u2014 ALL three lost\n"
-    "again. Clean chase pattern\n"
-    "3-for-3 losers. Adding\n"
-    "30-min cooldown captures\n"
-    "all three (+$107/wk lift)\n"
-    "without blocking productive\n"
-    "post-WIN reentry chains\n"
-    "(NVDA, MSFT, ORCL).\n"
-    "Configurable env\n"
-    "POST_LOSS_COOLDOWN_MIN\n"
-    "(default 30; 0 disables).\n"
-    "Engine: record on losing\n"
-    "close, veto in\n"
-    "execute_breakout. Surfaced\n"
-    "on dashboard: header CD\n"
-    "chip + popover w/ each\n"
-    "(ticker, side, MM:SS).\n"
-    "Reset cross-day in\n"
-    "reset_daily_state. Patch:\n"
-    "no architecture/PDF."
+    "v6.4.3 asymmetric cooldown:\n"
+    "longs OFF (default 0 min),\n"
+    "shorts 30 min. Apr 27\u2013May 1\n"
+    "sweep: long-side gate cost\n"
+    "NFLX +$45 x2 and TSLA +$97\n"
+    "= forgone +$187/wk. Short\n"
+    "side keeps the 3-for-3\n"
+    "chase saves (TSLA, META,\n"
+    "AMZN, +$107/wk). Net L0/S30\n"
+    "= +$1,436.80/wk vs v6.4.2\n"
+    "+$1,250.02 (+$187/wk lift).\n"
+    "New envs:\n"
+    "POST_LOSS_COOLDOWN_MIN_LONG\n"
+    "POST_LOSS_COOLDOWN_MIN_SHORT\n"
+    "Legacy MIN still honored\n"
+    "as fallback for both sides.\n"
+    "/api/state v642_flags adds\n"
+    "long_min, short_min,\n"
+    "long_enabled, short_enabled.\n"
+    "Dashboard chip badge:\n"
+    "\u00b730m symmetric,\n"
+    "\u00b7S30m short-only,\n"
+    "\u00b7L15/S30m if both differ.\n"
+    "Patch: no architecture/PDF."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -4276,23 +4272,32 @@ def _now_utc() -> datetime:
 
 def record_post_loss_cooldown(ticker: str, side: str, pnl: float, exit_ts_utc=None) -> None:
     """v6.4.2 \u2014 record a stop-out so the next entry on (ticker, side) is gated.
+    v6.4.3 \u2014 cooldown window is now per-side (POST_LOSS_COOLDOWN_MIN_LONG /
+    _SHORT). Default longs OFF (0 min), shorts 30 min. The Apr 27\u2013May 1
+    sweep showed long-side cooldowns block more legitimate winners than
+    chase losses on this universe.
 
     Called from broker.orders.close_breakout for any losing exit (pnl < 0).
-    No-op when POST_LOSS_COOLDOWN_MIN <= 0 (operator disabled the feature).
+    No-op when the active side's window <= 0 (operator disabled that side).
     Side is normalized to lowercase ('long'/'short'). Existing entry for the
     same key is overwritten so back-to-back losses extend the cooldown from
     the most recent stop \u2014 the chase pattern we want to break is exactly
     the back-to-back case.
     """
-    try:
-        from eye_of_tiger import POST_LOSS_COOLDOWN_MIN as _cd_min
-        cd_min = int(_cd_min)
-    except Exception:
-        cd_min = 30
-    if cd_min <= 0 or pnl is None or pnl >= 0:
+    if pnl is None or pnl >= 0:
         return
     side_norm = (side or "").strip().lower()
     if side_norm not in ("long", "short"):
+        return
+    try:
+        if side_norm == "long":
+            from eye_of_tiger import POST_LOSS_COOLDOWN_MIN_LONG as _cd_min
+        else:
+            from eye_of_tiger import POST_LOSS_COOLDOWN_MIN_SHORT as _cd_min
+        cd_min = int(_cd_min)
+    except Exception:
+        cd_min = 0 if side_norm == "long" else 30
+    if cd_min <= 0:
         return
     loss_ts = exit_ts_utc or _now_utc()
     until = loss_ts + timedelta(minutes=cd_min)

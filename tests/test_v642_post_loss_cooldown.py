@@ -126,6 +126,8 @@ def test_get_active_cooldowns_shape(monkeypatch):
 
 
 def test_is_in_post_loss_cooldown_auto_prunes(monkeypatch):
+    # v6.4.3: long-side defaults to 0 (off). Re-enable for this test.
+    monkeypatch.setattr(eot, "POST_LOSS_COOLDOWN_MIN_LONG", 30)
     loss_ts = datetime(2026, 5, 2, 14, 30, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(tg, "_now_utc", lambda: loss_ts)
     tg.record_post_loss_cooldown("NVDA", "long", pnl=-15.0)
@@ -161,8 +163,12 @@ def test_side_normalization_uppercase(monkeypatch):
 
 
 def test_record_no_op_when_disabled(monkeypatch):
-    """POST_LOSS_COOLDOWN_MIN=0 disables the feature: record is a no-op."""
+    """Both per-side windows = 0 disables the feature: record is a no-op.
+    v6.4.3: the recorder reads POST_LOSS_COOLDOWN_MIN_LONG / _SHORT, so we
+    patch both. The legacy POST_LOSS_COOLDOWN_MIN is no longer the gate."""
     monkeypatch.setattr(eot, "POST_LOSS_COOLDOWN_MIN", 0)
+    monkeypatch.setattr(eot, "POST_LOSS_COOLDOWN_MIN_LONG", 0)
+    monkeypatch.setattr(eot, "POST_LOSS_COOLDOWN_MIN_SHORT", 0)
     tg.record_post_loss_cooldown("META", "short", pnl=-30.0)
     assert tg._post_loss_cooldown == {}
     assert tg._check_post_loss_cooldown("META", "short") is True

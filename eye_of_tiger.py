@@ -68,13 +68,43 @@ STOP_PCT_SHORT = 0.003  # 30bp \u2014 short stop = entry * (1 + 0.003)
 # three on the sample (+$107/wk lift) without blocking productive
 # post-WIN re-entry chains (NVDA shorts, MSFT shorts, ORCL longs).
 #
-# Configurable via env (default 30); operators can disable by setting
-# POST_LOSS_COOLDOWN_MIN=0.
+# v6.4.3 \u2014 asymmetric per-side cooldowns. Apr 27\u2013May 1 sweep at
+# /home/user/workspace/v642_cooldown_sweep/report.md showed the long-side
+# cooldown blocks more legitimate winners than chase losses (NFLX +$45 x2,
+# TSLA +$97). Default longs OFF, shorts 30 min. Mirrors v6.4.1 stops
+# asymmetry: shorts have larger per-share variance and chase harder on this
+# universe; longs ride momentum back up after a stop.
+#
+# Resolution order for each side:
+#   1. POST_LOSS_COOLDOWN_MIN_LONG   / _SHORT  (per-side override)
+#   2. POST_LOSS_COOLDOWN_MIN                  (legacy single-window fallback)
+#   3. baked-in default: long=0 (off), short=30
+# 0 disables that side.
 import os as _os
-try:
-    POST_LOSS_COOLDOWN_MIN = int(_os.getenv("POST_LOSS_COOLDOWN_MIN", "30"))
-except ValueError:
-    POST_LOSS_COOLDOWN_MIN = 30
+
+
+def _read_int(env_name, default):
+    try:
+        v = _os.getenv(env_name)
+        return int(v) if v is not None else default
+    except ValueError:
+        return default
+
+
+# Legacy alias \u2014 still read by older callers; resolves to the SHORT default
+# so a v6.4.2 operator who set POST_LOSS_COOLDOWN_MIN=15 keeps that as a
+# baseline for both sides until they upgrade.
+POST_LOSS_COOLDOWN_MIN = _read_int("POST_LOSS_COOLDOWN_MIN", 30)
+
+# Per-side overrides (v6.4.3 default: long=off, short=30)
+POST_LOSS_COOLDOWN_MIN_LONG = _read_int(
+    "POST_LOSS_COOLDOWN_MIN_LONG",
+    _read_int("POST_LOSS_COOLDOWN_MIN", 0),
+)
+POST_LOSS_COOLDOWN_MIN_SHORT = _read_int(
+    "POST_LOSS_COOLDOWN_MIN_SHORT",
+    _read_int("POST_LOSS_COOLDOWN_MIN", 30),
+)
 
 SOVEREIGN_BRAKE_DOLLARS = -500.0
 VELOCITY_FUSE_PCT = 0.01
