@@ -738,12 +738,18 @@ def execute_breakout(ticker, current_price, side):
     # The R-2 dollar-rail backstop in engine.sentinel.evaluate_sentinel
     # remains unchanged \u2014 a runaway move that beats the price stop
     # in absolute $ terms still trips R-2 as the deeper safety net.
-    from eye_of_tiger import STOP_PCT_OF_ENTRY
+    # v6.4.1 \u2014 asymmetric long/short stop pcts. STOP_PCT_LONG (50bp,
+    # unchanged from v5.31.4) for longs; STOP_PCT_SHORT (30bp, new) for
+    # shorts based on the Apr 27\u2013May 1 sweep that showed +$262/wk lift
+    # from tighter short stops. STOP_PCT_OF_ENTRY is preserved as a
+    # back-compat alias (= STOP_PCT_LONG) for any external caller.
+    from eye_of_tiger import STOP_PCT_LONG, STOP_PCT_SHORT
 
-    _pct = float(STOP_PCT_OF_ENTRY)
     if cfg.side.is_long:
+        _pct = float(STOP_PCT_LONG)
         stop_price = round(current_price * (1.0 - _pct), 2)
     else:
+        _pct = float(STOP_PCT_SHORT)
         stop_price = round(current_price * (1.0 + _pct), 2)
     _stop_capped = False
     _stop_baseline = stop_price
