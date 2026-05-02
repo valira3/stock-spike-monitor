@@ -128,6 +128,14 @@ ALARM_B_CONFIRM_BARS: int = 2
 ALARM_C_ENABLED: bool = False
 ALARM_D_ENABLED: bool = False
 
+# v6.4.0 \u2014 Alarm B (EMA9 cross) gated off by default. Apr 27\u2013May 1 sweep:
+# B-off + Chandelier 1.5/0.7 swung the week +$217.93 (+$831.50 \u2192 +$1,049.43,
+# 60 pairs, WR 45.2%\u219261.7%). Avg trade $11\u2192$17, avg hold 41m\u219262m. The
+# noise-cross filter and stateful counter remain in place; they're zero-cost
+# when B is disabled and ready if a future release flips the flag back on.
+# Set True (or monkeypatch in tests) to restore B firing.
+ALARM_B_ENABLED: bool = False
+
 # ---------------------------------------------------------------------------
 # v6.1.0 \u2014 ATR-scaled trailing stop feature flag
 # ---------------------------------------------------------------------------
@@ -1277,24 +1285,27 @@ def evaluate_sentinel(
     )
     result.alarms.extend(a_stop_fired)
 
-    # Alarm B \u2014 always evaluated, independent of A. v5.27.0 widens
-    # the cross to 2-bar confirm by default; spec-strict 1-bar fires
-    # only when caller explicitly passes ``alarm_b_confirm_bars=1``.
-    b_fired = check_alarm_b(
-        side=side,
-        last_5m_close=last_5m_close,
-        last_5m_ema9=last_5m_ema9,
-        prev_5m_close=prev_5m_close,
-        prev_5m_ema9=prev_5m_ema9,
-        confirm_bars=alarm_b_confirm_bars,
-        position_id=position_id,
-        now_et=now_et,
-        # v6.3.0 noise-cross filter \u2014 entry/current/atr already in scope.
-        entry_price=entry_price,
-        current_price=current_price,
-        last_1m_atr=last_1m_atr,
-    )
-    result.alarms.extend(b_fired)
+    # Alarm B \u2014 v6.4.0 gated off by default (``ALARM_B_ENABLED=False``).
+    # When disabled the function is not called at all so no state is mutated
+    # and no log lines are emitted. v5.27.0 widens the cross to 2-bar confirm
+    # by default; spec-strict 1-bar fires only when caller explicitly passes
+    # ``alarm_b_confirm_bars=1``.
+    if ALARM_B_ENABLED:
+        b_fired = check_alarm_b(
+            side=side,
+            last_5m_close=last_5m_close,
+            last_5m_ema9=last_5m_ema9,
+            prev_5m_close=prev_5m_close,
+            prev_5m_ema9=prev_5m_ema9,
+            confirm_bars=alarm_b_confirm_bars,
+            position_id=position_id,
+            now_et=now_et,
+            # v6.3.0 noise-cross filter \u2014 entry/current/atr already in scope.
+            entry_price=entry_price,
+            current_price=current_price,
+            last_1m_atr=last_1m_atr,
+        )
+        result.alarms.extend(b_fired)
 
     # Alarm C \u2014 v5.28.0 gated off by default (``ALARM_C_ENABLED=False``).
     # Ablation showed C tightens a stop that the harness can't fire from,
@@ -1418,6 +1429,7 @@ __all__ = [
     "EXIT_REASON_ALARM_D",
     "EXIT_REASON_ALARM_F",
     "EXIT_REASON_ALARM_F_EXIT",
+    "ALARM_B_ENABLED",
     "ALARM_C_ENABLED",
     "ALARM_D_ENABLED",
     "ALARM_E_ENABLED",

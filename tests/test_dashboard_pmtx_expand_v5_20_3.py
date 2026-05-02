@@ -164,7 +164,8 @@ def test_position_only_cards_show_off_when_no_position():
     assert helper_idx >= 0
     # v5.21.0: bumped window from 5000 to 6500 to cover expanded alarm logic.
     # v6.1.1: bumped to 7500 for v610_flags suffix logic on Phase 2 + Phase 3 cards.
-    helper_block = src[helper_idx : helper_idx + 7500]
+    # v6.4.0: bumped to 9000 for v640Flags threading + B-cell DISABLED branch.
+    helper_block = src[helper_idx : helper_idx + 9000]
     # Both alarms must short-circuit on `!d.pos`.
     no_pos_branches = helper_block.count("if (!d.pos)")
     assert no_pos_branches >= 2, (
@@ -180,7 +181,8 @@ def test_strikes_card_reflects_strike_counter_states():
     # v5.21.0: alarm A/B sections expanded with vAA-1 fallback logic;
     # bumped window from 5000 to 6500 to accommodate the larger function body.
     # v6.1.1: bumped to 7500 for v610_flags suffix logic on Phase 2 + Phase 3 cards.
-    helper_block = src[helper_idx : helper_idx + 7500]
+    # v6.4.0: bumped to 9000 for v640Flags threading + B-cell DISABLED branch.
+    helper_block = src[helper_idx : helper_idx + 9000]
     assert '"inpos"' in helper_block
     assert '"locked"' in helper_block
     assert '"used"' in helper_block

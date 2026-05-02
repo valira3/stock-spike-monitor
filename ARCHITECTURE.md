@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.3.0 · May 2026 — **Sentinel B noise-cross filter: gate the EMA-cross exit on adverse ≥ 0.10×ATR(1m) from entry**
+> **Version:** v6.4.0 · May 2026 — **Disable Sentinel B by default; tighten Alarm F Chandelier multipliers to 1.5/0.7. Apr 27–May 1 sweep: +$217.93/wk vs baseline, win rate 45%→62%.**
 >
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each
@@ -160,6 +160,139 @@
 >   Weather card and the B Trend Death sentinel-strip cell append
 >   a `· noise≥0.10×ATR` suffix. See "v6.3.0 — Sentinel B noise-
 >   cross filter" subsection below.
+> - **v6.3.1** (2026-05-01) — wire `position_id` + `now_et` into
+>   `evaluate_sentinel` so v6.1.0 stateful counter actually keys
+>   per-position. Patch only — no architecture changes.
+> - **v6.3.2** (2026-05-01) — three small backtest infra fixes that
+>   were warping every backtest run since v5.0: (1) add
+>   `v5_lock_all_tracks` (was referenced by EOD/daily-breaker but
+>   never defined; calls were silently swallowed by try/except);
+>   (2) move `after_close` from 15:55 to 16:00 ET so the engine
+>   manages the full final 5-minute bucket; (3) derive `now_ts`
+>   from harness clock `_tg()._now_et()` instead of `_time.time()`
+>   so Alarm A velocity is deterministic in backtest, also fixes a
+>   v6.3.1 typo (`_tg().now_et()` → `_tg()._now_et()`) leaving
+>   v6.1.0 lunch suppression dead. Patch only — no architecture
+>   changes.
+> - **v6.4.0** (2026-05-01, this release) — disable Sentinel B by
+>   default + tighten Alarm F Chandelier multipliers. Apr 27 – May 1
+>   replay-only sweep across 6 configurations × 5 days replaced
+>   Sentinel B with progressively tighter F-trail variants. Winning
+>   config (`disable_b_tight_F`): **+$1,049.43 vs +$831.50 baseline
+>   (+$217.93/wk, +26%), 60 pairs vs 73, win rate 45.2% → 61.7%.**
+>   The win mechanism is *not* extra F-EXIT firings (only one F-EXIT
+>   fired all week); it is letting trades survive to the
+>   per-position $ stop (Alarm A) without B's EMA-cross prematurely
+>   cutting them. Avg trade $11→$17, avg hold 41m→62m, AVGO swung
+>   +$140 (worst baseline → positive). Two-knob change in
+>   `engine/`: (1) `ALARM_B_ENABLED: bool = False` constant in
+>   `engine/sentinel.py` — `evaluate_sentinel` now skips the
+>   `check_alarm_b` call entirely when False (no log lines, no
+>   state mutation); the v6.1.0 stateful counter and v6.3.0
+>   noise-cross filter remain in code, zero-cost when B is off and
+>   ready if a future release flips the flag back on. (2) Alarm F
+>   `WIDE_MULT: 2.0 → 1.5` and `TIGHT_MULT: 1.0 → 0.7` in
+>   `engine/alarm_f_trail.py`. Stage 2 arms sooner once B no longer
+>   cuts trades early; `MIN_BARS_BEFORE_ARM=3` still guards the
+>   first three bars from entry-bar noise. Dashboard surface: new
+>   `/api/state.v640_flags` block (`{alarm_b_enabled,
+>   chandelier_wide_mult, chandelier_tight_mult}`); B Trend Death
+>   sentinel-strip cell renders DISABLED state when B is off; Local
+>   Weather card suffix swaps `· noise≥0.10×ATR` for
+>   `· chand 1.5/0.7` so operators see the active trail config
+>   instead of a stale noise threshold. EOD harness fix
+>   (`backtest/replay_v511_full.py`) ports up the `eod_close@15:49
+>   ET` invocation that the smoke-test scheduler suppresses, so
+>   replay tail-positions no longer persist as `stuck-EOD`. See
+>   "v6.4.0 — Disable Sentinel B + tighten Chandelier" subsection
+>   below.
+>
+> ## v6.4.0 — Disable Sentinel B + tighten Chandelier
+>
+> **Why.** A 6-config × 5-day replay sweep (Apr 27 – May 1) using
+> the v6.3.2 baseline showed Sentinel B continued to bleed P&L
+> even after the v6.3.0 noise-cross filter:
+>
+> | Config | Week P&L | Pairs | WR | Δ vs baseline |
+> |---|---:|---:|---:|---:|
+> | baseline (v6.3.2) | +$831.50 | 73 | 45.2% | — |
+> | disable_b | +$998.09 | 60 | 61.7% | +$166.59 |
+> | b_3bar / b_5bar | +$831.50 | 73 | 45.2% | $0 (no-op) |
+> | disable_b_wide_F (2.5/1.5) | +$897.75 | 59 | 59.3% | +$66.25 |
+> | **disable_b_tight_F (1.5/0.7)** | **+$1,049.43** | **60** | **61.7%** | **+$217.93** |
+>
+> The `b_3bar` / `b_5bar` rows were byte-identical to baseline
+> because the v6.1.0 stateful EMA-cross path hardcodes `count >= 2`
+> and ignores the `confirm_bars` argument; the legacy path treats
+> any value `>= 2` identically. The only meaningful lever is a
+> full B disable.
+>
+> **What changes.**
+>
+> 1. `engine/sentinel.py` — new module-level constant
+>    `ALARM_B_ENABLED: bool = False`, mirroring the existing
+>    `ALARM_C_ENABLED` / `ALARM_D_ENABLED` pattern. The Alarm B
+>    block in `evaluate_sentinel` now reads:
+>
+>    ```python
+>    if ALARM_B_ENABLED:
+>        b_fired = check_alarm_b(...)
+>        result.alarms.extend(b_fired)
+>    ```
+>
+>    No log lines, no `_ema_cross_pending` state mutation, no
+>    forensic-emission overhead when disabled. `check_alarm_b`,
+>    the noise-cross filter, and `_ema_cross_pending` all remain
+>    in the code so a future release can flip the flag back on
+>    without a rewrite. Tests can monkeypatch the constant per case.
+>
+> 2. `engine/alarm_f_trail.py` — `WIDE_MULT: 2.0 → 1.5` and
+>    `TIGHT_MULT: 1.0 → 0.7`. Same Stage-2/Stage-3 transition logic;
+>    only the multipliers change. `MIN_BARS_BEFORE_ARM=3` keeps the
+>    first three bars protected.
+>
+> 3. `dashboard_server.py` `/api/state` — new `v640_flags` block
+>    next to `v610_flags` / `v620_flags` / `v630_flags`:
+>
+>    ```json
+>    {"alarm_b_enabled": false, "chandelier_wide_mult": 1.5,
+>     "chandelier_tight_mult": 0.7}
+>    ```
+>
+>    `feature_flags_block` also gains `alarm_b_enabled` so the KPI
+>    pill row can show the new toggle alongside C/D/E/F.
+>
+> 4. `dashboard_static/app.js` — `v640Flags` pickup at the same
+>    site as `v630Flags`. The B Trend Death sentinel-strip cell
+>    renders the existing `idle` (dim) theme with a clear
+>    `DISABLED · ALARM_B_ENABLED=false` value when off, instead of
+>    stale close/EMA9 deltas. The Local Weather card suffix swaps:
+>    `· noise≥0.10×ATR` (when B was on with the v6.3.0 filter)
+>    becomes `· chand 1.5/0.7` (when B is off and the Chandelier
+>    trail is the new primary B-side exit signal).
+>
+> 5. `backtest/replay_v511_full.py` — explicit `eod_close()`
+>    invocation when sim-clock crosses `15:49 ET`. Production fires
+>    this via the scheduler thread; `SSM_SMOKE_TEST=1` disables
+>    the scheduler, so the harness loop must call it directly.
+>    Without this, any position still open at `end_dt` was left
+>    in `tg.positions` and persisted as `stuck-EOD`, distorting
+>    every replay's tail. Aligns with `broker.lifecycle.EOD_FLUSH_ET`.
+>
+> **Why not noisier signals?** The sweep tested two
+> `confirm_bars` variants (3-bar, 5-bar) which were no-ops because
+> of the dead `count >= 2` path; the only working `b` lever is a
+> full disable. Tightening F further (`disable_b_wide_F` =
+> 2.5/1.5) underperformed `1.5/0.7` by **−$152/wk**, indicating
+> the Stage-2 chandelier benefits from being closer to price
+> rather than further from it once Sentinel B is no longer
+> chopping winners.
+>
+> **Rollback.** Flip `ALARM_B_ENABLED = True` and revert
+> `WIDE_MULT/TIGHT_MULT` to `2.0/1.0` in two file edits, no
+> migration. Dashboard degrades gracefully: pre-v6.4.0 deploys
+> render as legacy because every JS reader uses
+> `(d.v640Flags && ...)` guards.
 >
 > ## v6.3.0 — Sentinel B noise-cross filter
 >

@@ -923,6 +923,12 @@ def snapshot() -> dict[str, Any]:
         try:
             from engine import sentinel as _sen
 
+            # v6.4.0 \u2014 ALARM_B_ENABLED is the new module-level toggle for
+            # the EMA9-cross alarm. Defaults False to match production; the
+            # frontend renders the B Trend Death cell as DISABLED when off.
+            # Pre-v6.4.0 builds did not export the symbol, so getattr falls
+            # back to True (B was always evaluated) for safety.
+            alarm_b_enabled = bool(getattr(_sen, "ALARM_B_ENABLED", True))
             alarm_c_enabled = bool(getattr(_sen, "ALARM_C_ENABLED", False))
             alarm_d_enabled = bool(getattr(_sen, "ALARM_D_ENABLED", False))
             alarm_e_enabled = bool(getattr(_sen, "ALARM_E_ENABLED", False))
@@ -930,6 +936,7 @@ def snapshot() -> dict[str, Any]:
             # module imports (i.e. the runtime knows what F is).
             alarm_f_enabled = True
         except Exception:
+            alarm_b_enabled = True
             alarm_c_enabled = False
             alarm_d_enabled = False
             alarm_e_enabled = False
@@ -942,6 +949,7 @@ def snapshot() -> dict[str, Any]:
             volume_gate_enabled = False
         feature_flags_block = {
             "volume_gate_enabled": volume_gate_enabled,
+            "alarm_b_enabled": alarm_b_enabled,
             "alarm_c_enabled": alarm_c_enabled,
             "alarm_d_enabled": alarm_d_enabled,
             "alarm_e_enabled": alarm_e_enabled,
@@ -1041,6 +1049,28 @@ def snapshot() -> dict[str, Any]:
             "noise_cross_filter_enabled": v630_noise_enabled,
             "noise_cross_atr_k": v630_noise_atr_k,
         }
+        # v6.4.0 \u2014 Alarm B disable + Chandelier multiplier tightening.
+        # Same surface pattern as v610/v620/v630. Defaults match the new
+        # production constants (B off, 1.5/0.7) so a missing v640_flags key
+        # in /api/state degrades the dashboard B-cell + Local Weather suffix
+        # to the new legacy.
+        try:
+            from engine import sentinel as _sent_mod
+            v640_alarm_b = bool(getattr(_sent_mod, "ALARM_B_ENABLED", False))
+        except Exception:
+            v640_alarm_b = False
+        try:
+            from engine import alarm_f_trail as _f_mod
+            v640_chand_wide = float(getattr(_f_mod, "WIDE_MULT", 1.5) or 0.0)
+            v640_chand_tight = float(getattr(_f_mod, "TIGHT_MULT", 0.7) or 0.0)
+        except Exception:
+            v640_chand_wide = 1.5
+            v640_chand_tight = 0.7
+        v640_flags = {
+            "alarm_b_enabled": v640_alarm_b,
+            "chandelier_wide_mult": v640_chand_wide,
+            "chandelier_tight_mult": v640_chand_tight,
+        }
 
         return {
             "ok": True,
@@ -1048,6 +1078,7 @@ def snapshot() -> dict[str, Any]:
             "v610_flags": v610_flags,
             "v620_flags": v620_flags,
             "v630_flags": v630_flags,
+            "v640_flags": v640_flags,
             "server_time": now_iso,
             "server_time_label": now_label,
             "portfolio": {

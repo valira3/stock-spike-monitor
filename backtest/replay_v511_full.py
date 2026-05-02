@@ -967,9 +967,38 @@ def run_replay(
 
     cur = start_dt
     minutes = 0
+    eod_fired = False
+    # Harness EOD trigger: production fires eod_close via the scheduler
+    # thread at 15:49 ET. SSM_SMOKE_TEST=1 disables the scheduler, so the
+    # replay loop must invoke it explicitly. Without this, any position
+    # still open at end_dt is left in tg.positions and persisted to
+    # paper_state as 'stuck-EOD'. Aligns with broker.lifecycle.EOD_FLUSH_ET
+    # (15:49 ET, HH:MM precision).
+    eod_trigger_hhmm = (15, 49)
     while cur <= end_dt:
         clock.now = cur
         cb.ticks.append(cur)
+        # v6.4.0 harness EOD invocation. Fires once when sim clock
+        # crosses 15:49 ET. _eod_align_to_spec returns 0 immediately
+        # because the host wall-clock is past 15:49:59 ET (we run
+        # backtests after market close). fetch_1min_bars inside
+        # eod_close reads from the harness bar store at clock.now.
+        if (not eod_fired) and (cur.hour, cur.minute) >= eod_trigger_hhmm:
+            try:
+                from broker.lifecycle import eod_close as _harness_eod_close
+                _harness_eod_close()
+            except Exception as _eod_err:
+                logger.warning("harness eod_close failed: %s", _eod_err)
+                cb.errors.append(
+                    {
+                        "executor": "replay_driver",
+                        "code": "EOD_CLOSE_EXCEPTION",
+                        "severity": "error",
+                        "summary": f"eod_close crashed at {cur.isoformat()}",
+                        "detail": f"{type(_eod_err).__name__}: {str(_eod_err)[:200]}",
+                    }
+                )
+            eod_fired = True
         # Trigger OR collection once at/after 09:36 ET on the simulated
         # clock. Production schedules collect_or() at 09:35 ET via the
         # scheduler thread; the harness drives scan_loop directly so
