@@ -280,6 +280,7 @@ def check_breakout(ticker, side):
         # tagged so we can audit how often the override fires in prod.
         try:
             from engine.local_weather import evaluate_local_override
+
             _local_reg = (tg._TICKER_REGIME or {}).get(ticker.upper()) or {}
             _local_di = tg.v5_di_1m_5m(ticker) or {}
             # v6.2.0 \u2014 plumb OR edges + pre-market ATR so the override
@@ -369,7 +370,7 @@ def check_breakout(ticker, side):
                 _v610_atr = tg._v610_compute_pm_atr(ticker)
                 if _v610_atr is not None and _v610_atr > 0:
                     boundary_high = or_high_val + _v610_k * _v610_atr
-                    boundary_low  = or_low_val  - _v610_k * _v610_atr
+                    boundary_low = or_low_val - _v610_k * _v610_atr
         except Exception as _v610_e:
             tg.logger.debug(
                 "[V610-OR-BREAK] boundary adjustment error %s: %s",
@@ -877,6 +878,17 @@ def execute_breakout(ticker, current_price, side):
             )
         except Exception:
             pass
+    # v6.4.4 \u2014 simulated-time entry stamp for the min-hold gate.
+    # ``_entry_ts_utc`` (above) uses ``_utc_now_iso()`` which is NOT
+    # patched by the backtest harness, so in replay it's wallclock and
+    # cannot be diffed against ``_now_et()`` (which IS harness-patched).
+    # ``_v644_entry_now_et_iso`` carries the harness-aware timestamp so
+    # broker.positions:_v644_position_hold_seconds can compute a real
+    # hold delta in both prod (wallclock) and backtest (simulated).
+    try:
+        _v644_entry_now_et_iso = tg._now_et().isoformat()
+    except Exception:
+        _v644_entry_now_et_iso = None
     pos = {
         "entry_price": current_price,
         "shares": shares,
@@ -887,6 +899,7 @@ def execute_breakout(ticker, current_price, side):
         "entry_count": entry_num,
         "entry_time": now_str,
         "entry_ts_utc": _entry_ts_utc,
+        "v644_entry_now_et_iso": _v644_entry_now_et_iso,
         "entry_id": _entry_id,
         "strike_num": _v570_strike_num,
         "date": now_date,

@@ -89,7 +89,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.4.3"
+BOT_VERSION = "6.4.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -97,30 +97,24 @@ BOT_VERSION = "6.4.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.4.3 asymmetric cooldown:\n"
-    "longs OFF (default 0 min),\n"
-    "shorts 30 min. Apr 27\u2013May 1\n"
-    "sweep: long-side gate cost\n"
-    "NFLX +$45 x2 and TSLA +$97\n"
-    "= forgone +$187/wk. Short\n"
-    "side keeps the 3-for-3\n"
-    "chase saves (TSLA, META,\n"
-    "AMZN, +$107/wk). Net L0/S30\n"
-    "= +$1,436.80/wk vs v6.4.2\n"
-    "+$1,250.02 (+$187/wk lift).\n"
-    "New envs:\n"
-    "POST_LOSS_COOLDOWN_MIN_LONG\n"
-    "POST_LOSS_COOLDOWN_MIN_SHORT\n"
-    "Legacy MIN still honored\n"
-    "as fallback for both sides.\n"
-    "/api/state v642_flags adds\n"
-    "long_min, short_min,\n"
-    "long_enabled, short_enabled.\n"
-    "Dashboard chip badge:\n"
-    "\u00b730m symmetric,\n"
-    "\u00b7S30m short-only,\n"
-    "\u00b7L15/S30m if both differ.\n"
-    "Patch: no architecture/PDF."
+    "v6.4.4 min-hold gate:\n"
+    "block PRICE_STOP under 10m\n"
+    "from entry. Devi 84day_sip:\n"
+    "266/269 under-10m exits hit\n"
+    "the 50bp Alarm-A protective\n"
+    "stop for -$6,649 (vs total\n"
+    "+$13,235). R-2 -$500, daily\n"
+    "circuit -$1,500, Alarm-A\n"
+    "flash >1%/min, B/D/F still\n"
+    "fire normally. Targeted: a\n"
+    "stop hit at hold<10m logs\n"
+    "[V644-MIN-HOLD] and waits.\n"
+    "Flag _V644_MIN_HOLD_GATE_\n"
+    "ENABLED + _V644_MIN_HOLD_\n"
+    "SECONDS=600 in sentinel.py\n"
+    "for monkeypatch / kill-\n"
+    "switch. Patch release: no\n"
+    "architecture/PDF rebuild."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

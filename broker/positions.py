@@ -18,8 +18,10 @@ from broker.orders import check_breakout  # noqa: F401
 from engine.alarm_f_trail import TrailState, atr_from_bars
 from engine.bars import compute_5m_ohlc_and_ema9
 from engine.momentum_state import ADXTrendWindow, DivergenceMemory, TradeHVP
+from engine import sentinel as _sentinel_mod
 from engine.sentinel import (
     ALARM_B_CONFIRM_BARS,
+    EXIT_REASON_PRICE_STOP,
     SIDE_LONG as _SENTINEL_SIDE_LONG,
     SIDE_SHORT as _SENTINEL_SIDE_SHORT,
     evaluate_sentinel,
@@ -201,6 +203,50 @@ def _tg():
 
 
 logger = logging.getLogger(__name__)
+
+
+def _v644_position_hold_seconds(pos) -> float | None:
+    """Seconds since position entry, harness-clock aware.
+
+    Prefers ``pos["v644_entry_now_et_iso"]`` (set in broker/orders.py at
+    fill time using ``tg._now_et()``) so backtests on a monkey-patched
+    BacktestClock return deterministic values. Falls back to
+    ``pos["entry_ts_utc"]`` when the v6.4.4 field is absent (old
+    positions hydrated from a pre-v6.4.4 paper-state snapshot, or any
+    code path that creates a position without going through the
+    standard fill site). In prod the two fields are within microseconds
+    of each other; in backtest only the v6.4.4 field is harness-aware.
+
+    Returns None when no entry timestamp is available, parsing fails,
+    or the resulting delta is negative (clock skew / wallclock-vs-
+    simulated mismatch). Callers must treat None as "do not gate" so a
+    clock outage cannot silently disable a real protective stop.
+    """
+    from datetime import datetime as _dt
+
+    def _parse(s):
+        if not s:
+            return None
+        s = str(s)
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            return _dt.fromisoformat(s)
+        except Exception:
+            return None
+
+    entry_dt = _parse(pos.get("v644_entry_now_et_iso")) or _parse(pos.get("entry_ts_utc"))
+    if entry_dt is None:
+        return None
+    try:
+        now_dt = _tg()._now_et()
+    except Exception:
+        return None
+    try:
+        delta = (now_dt - entry_dt).total_seconds()
+    except Exception:
+        return None
+    return float(delta) if delta >= 0 else None
 
 
 def _run_sentinel(ticker, side, pos, current_price, bars):
@@ -560,6 +606,29 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
         # Priority: if A or B fired, full exit overrides any C
         # stop-tighten on the same tick (don't ratchet before closing).
         if result.has_full_exit:
+            # v6.4.4 \u2014 min-hold gate. Block the 50 bp Alarm-A protective
+            # stop (EXIT_REASON_PRICE_STOP) under 10 minutes from entry.
+            # Devi 84day_2026_sip: 266/269 under-10min pairs exit on this
+            # alarm for -$6,649. Deeper rails (R-2 -$500, daily circuit
+            # -$1,500, Alarm-A flash >1%/min, Alarm-B EMA, Alarm-D HVP,
+            # Alarm-F chandelier) emit different exit reasons and still
+            # fire normally, so the suppression is targeted.
+            if (
+                getattr(_sentinel_mod, "_V644_MIN_HOLD_GATE_ENABLED", True)
+                and result.exit_reason == EXIT_REASON_PRICE_STOP
+            ):
+                hold_seconds = _v644_position_hold_seconds(pos)
+                min_hold = int(getattr(_sentinel_mod, "_V644_MIN_HOLD_SECONDS", 600))
+                if hold_seconds is not None and hold_seconds < min_hold:
+                    logger.info(
+                        "[V644-MIN-HOLD] %s %s blocked PRICE_STOP "
+                        "hold=%ds<%ds; deeper rails still armed",
+                        ticker,
+                        side,
+                        int(hold_seconds),
+                        min_hold,
+                    )
+                    return None
             return result.exit_reason
 
         # Alarm C / Alarm F stop-tighten path \u2014 merge by side-aware
