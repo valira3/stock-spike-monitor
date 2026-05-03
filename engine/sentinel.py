@@ -168,6 +168,11 @@ _V644_MIN_HOLD_SECONDS: int = 600
 # at the 10-min mark, accounting for $-2,500 (vs $-715 if cut at 75bp).
 _V651_DEEP_STOP_ENABLED: bool = True
 _V651_DEEP_STOP_PCT: float = 0.0075  # 75 bp
+# 84-day SIP backtest split: deep-stop net +$340 on longs, -$455 on
+# shorts (mean-revert behavior). Default to long-only firing; flip to
+# False once shorts get an asymmetric tweak in a later release.
+# (em-dash escape used per project rule for new .py lines.)
+_V651_DEEP_STOP_LONG_ONLY: bool = True
 
 SIDE_LONG = "LONG"
 SIDE_SHORT = "SHORT"
@@ -1470,6 +1475,7 @@ __all__ = [
     "_V644_MIN_HOLD_SECONDS",
     "_V651_DEEP_STOP_ENABLED",
     "_V651_DEEP_STOP_PCT",
+    "_V651_DEEP_STOP_LONG_ONLY",
     "EXIT_REASON_V651_DEEP_STOP",
     "PNL_HISTORY_MAXLEN",
     "RATCHET_STOP_PCT",

@@ -626,7 +626,16 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
                     deep_stop_enabled = getattr(
                         _sentinel_mod, "_V651_DEEP_STOP_ENABLED", True
                     )
-                    if deep_stop_enabled:
+                    # v6.5.1 long-only refinement. The 84-day SIP
+                    # backtest showed deep-stop helped longs (+$340)
+                    # but hurt shorts (-$455) because shorts mean-revert
+                    # more often at -75 bp. Gate-fire only on longs.
+                    deep_long_only = getattr(
+                        _sentinel_mod, "_V651_DEEP_STOP_LONG_ONLY", True
+                    )
+                    if deep_stop_enabled and (
+                        not deep_long_only or side == _SENTINEL_SIDE_LONG
+                    ):
                         deep_pct = float(
                             getattr(_sentinel_mod, "_V651_DEEP_STOP_PCT", 0.0075)
                         )

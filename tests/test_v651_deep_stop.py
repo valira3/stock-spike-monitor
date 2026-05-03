@@ -162,10 +162,13 @@ def test_deep_stop_long_breach_inside_window(patched_broker):
 # ---------------------------------------------------------------------------
 
 
-def test_deep_stop_short_breach_inside_window(patched_broker):
+def test_deep_stop_short_breach_inside_window_blocked_long_only(patched_broker):
     """Short entry @100, mark=100.80 (+0.80%) at hold=120s.
 
-    Mark is above entry * (1 + 0.0075) = 100.75, so deep-stop fires.
+    With _V651_DEEP_STOP_LONG_ONLY=True (default), shorts do NOT fire the
+    deep-stop, so the v6.4.4 gate still blocks the 50bp PRICE_STOP and
+    returns None. The 84-day backtest showed deep-stop hurt shorts (-$455
+    via early cuts on mean-reverting trades), hence the long-only default.
     """
     bp = patched_broker(EXIT_REASON_PRICE_STOP, hold_seconds=120)
     pos = _make_position(entry_price=100.0)
@@ -176,9 +179,36 @@ def test_deep_stop_short_breach_inside_window(patched_broker):
         current_price=100.80,
         bars=_make_bars(),
     )
-    assert out == EXIT_REASON_V651_DEEP_STOP, (
-        "v6.5.1: short at +0.80%% inside window must return EXIT_REASON_V651_DEEP_STOP; got %r" % (out,)
+    assert out is None, (
+        "v6.5.1 long-only: short at +0.80%% inside window must NOT fire "
+        "deep-stop (gate blocks as normal); got %r" % (out,)
     )
+
+
+def test_deep_stop_short_breach_when_long_only_disabled(patched_broker):
+    """With _V651_DEEP_STOP_LONG_ONLY=False, shorts also fire deep-stop.
+
+    This guards the override path so we can flip back if a future
+    refinement adds asymmetric short handling.
+    """
+    import engine.sentinel as sentinel_mod
+    orig = sentinel_mod._V651_DEEP_STOP_LONG_ONLY
+    sentinel_mod._V651_DEEP_STOP_LONG_ONLY = False
+    try:
+        bp = patched_broker(EXIT_REASON_PRICE_STOP, hold_seconds=120)
+        pos = _make_position(entry_price=100.0)
+        out = bp._run_sentinel(
+            ticker="TEST",
+            side=bp._SENTINEL_SIDE_SHORT,
+            pos=pos,
+            current_price=100.80,
+            bars=_make_bars(),
+        )
+        assert out == EXIT_REASON_V651_DEEP_STOP, (
+            "With LONG_ONLY=False, short at +0.80%% must fire deep-stop; got %r" % (out,)
+        )
+    finally:
+        sentinel_mod._V651_DEEP_STOP_LONG_ONLY = orig
 
 
 # ---------------------------------------------------------------------------
