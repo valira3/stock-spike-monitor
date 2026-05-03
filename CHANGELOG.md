@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.6.1 (2026-05-05) — production hardening patch (FMP key, kill-switch unification, weather-tick typo, release notes refresh) + test cleanup
+
+Patch release. Beck implementation. Quinn QA. No architecture/PDF rebuild (K>0).
+
+### Fix C-A — Remove hardcoded FMP API key fallback
+- `trade_genius.py:125`: removed `os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")` default.
+  Now raises `RuntimeError` at startup if `FMP_API_KEY` env var is unset.
+- **Action required (out-of-band):** previously committed key `VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV`
+  must be rotated by Val/Devon. Set new key in Railway before deploying this build.
+
+### Fix C-B — Unify kill-switch threshold
+- `trade_genius.py:499`: `DAILY_LOSS_LIMIT_DOLLARS` now reads `DAILY_LOSS_LIMIT` env var
+  (default `-1500`), matching System B circuit breaker at line ~2124. Both systems
+  now share the same tunable threshold; cross-reference comments added at both sites.
+  Resolves audit N1 (undocumented divergence) and C-B (kill-switch bypassable).
+
+### Fix W-D — `_ticker_weather_tick_all` typo
+- `trade_genius.py:1261`: `long_positions` (undefined) replaced with `positions`
+  (module global `dict`). Open-position tickers outside `TRADE_TICKERS` now
+  correctly get weather cache refresh.
+
+### Fix W-H — `CURRENT_MAIN_NOTE` refresh
+- `trade_genius.py:100–114`: updated note from stale v6.4.4 description to current
+  v6.6.0 production state (ingest gate, v6.5.1 deep-stop, v6.4.4 min-hold).
+
+### Test additions
+- `tests/test_v6_6_1_hardening.py`: unit tests for C-B (both constants resolve same
+  float when `DAILY_LOSS_LIMIT` is set) and W-D (`_ticker_weather_tick_all` adds
+  open-position tickers outside `TRADE_TICKERS` to active set).
+
+### Test pruning
+- Stale tests removed: see `/home/user/workspace/v660_qa_audit/v6_6_1_test_pruning.md`
+  for full rationale. Deletion criteria: symbol no longer exists in codebase AND
+  CHANGELOG confirms feature removal.
+
+### Version bump
+- `BOT_VERSION`: `6.6.0` → `6.6.1` in both `trade_genius.py` and `bot_version.py`.
+
+---
+
 ## v6.6.0 (2026-05-04) — Ingest Hardening: SLA monitoring, gap-fill verification, trading gate
 
 Minor release. Product spec: Priya. Architecture: Aria. Implementation: Beck. QA: Quinn.
