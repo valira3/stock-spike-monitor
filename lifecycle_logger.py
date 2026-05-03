@@ -38,7 +38,7 @@ EVENT_TYPES = (
     "REASON",
 )
 
-DEFAULT_DATA_DIR = "/data/lifecycle"
+DEFAULT_DATA_DIR = os.environ.get("LIFECYCLE_DIR") or (os.environ.get("TG_DATA_ROOT", "/data") + "/lifecycle")
 _POSITION_ID_RE = re.compile(r"^[A-Z0-9._-]+_\d{8}T\d{6}Z_(long|short)$")
 
 

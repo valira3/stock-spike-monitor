@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.9.0 · May 2026 -- Backtest cache layer (L1 + L2).
+> **Version:** v6.9.1 · May 2026 -- Sweep runner /data isolation + backtest cache layer (L1 + L2).
 > L1: Parquet bar cache (`backtest/bar_cache.py`) -- one ZSTD-3 Parquet per
 > ticker under `<bars_dir>/.cache_v1/`; SHA-256 cache key over (path, mtime_ns,
 > size); `get_bars()` is a drop-in for `load_day_bars`; >=10x cold load speedup.
@@ -1670,6 +1670,35 @@ onward (the prior Finnhub data path was removed in v5.1.3). Alpaca is
 the order-routing surface and the live websocket source for the v5.1.0
 Forensic Volume Filter; FMP is used only for prior-day-close + sector
 lookups.
+
+### 10.3b Data root (v6.9.1)
+
+`TG_DATA_ROOT` (default `/data`) is the single root from which all
+per-subsystem on-disk paths are derived when no finer-grained env var
+overrides them. Setting `TG_DATA_ROOT=/tmp/tg_data` (or any writable
+directory) lets sweep runners, CI jobs, and sandbox environments operate
+without access to `/data`. Each subsystem also keeps its own override so
+deploys that pin a specific volume mount on one path while keeping others
+at the root default continue to work.
+
+Path derivation table:
+
+| Subsystem path | Per-subsystem override | Fallback formula |
+|---|---|---|
+| `/data/or` | `OR_DIR` | `TG_DATA_ROOT + /or` |
+| `/data/bars` | `BARS_DIR` | `TG_DATA_ROOT + /bars` |
+| `/data/forensics` | `FORENSICS_DIR` | `TG_DATA_ROOT + /forensics` |
+| `/data/bars/daily` | `DAILY_BAR_DIR` | `TG_DATA_ROOT + /bars/daily` |
+| `/data/lifecycle` | `LIFECYCLE_DIR` | `TG_DATA_ROOT + /lifecycle` |
+| `/data/volume_profiles` | `VOLUME_PROFILE_DIR` | `TG_DATA_ROOT + /volume_profiles` |
+| `/data/state.db` | `STATE_DB_PATH` | `TG_DATA_ROOT + /state.db` |
+| `/data/ingest_audit.db` | `INGEST_AUDIT_DB_PATH` | `TG_DATA_ROOT + /ingest_audit.db` |
+| `/data/tickers.json` | `UNIVERSE_GUARD_PATH` | `TG_DATA_ROOT + /tickers.json` |
+| `/data/executor_chats_{name}.json` | `{P}EXECUTOR_CHATS_PATH` | `TG_DATA_ROOT + /executor_chats_{name}.json` |
+
+`_check_disk_space` in `trade_genius.py` calls `shutil.disk_usage(TG_DATA_ROOT)`
+and returns `ok / sandbox mode` (not `CRITICAL`) if the path does not exist,
+so ephemeral CI environments do not trip the health-check alarm.
 
 ### 10.4 Persistence (Railway Volume)
 

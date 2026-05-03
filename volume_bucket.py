@@ -31,7 +31,7 @@ VOLUME_BUCKET_THRESHOLD_RATIO = 1.00
 VOLUME_BUCKET_COLD_START_PASSTHROUGH = True
 VOLUME_BUCKET_REFRESH_HHMM_ET = "09:29"
 
-DEFAULT_BARS_DIR = "/data/bars"
+DEFAULT_BARS_DIR = os.environ.get("BARS_DIR") or (os.environ.get("TG_DATA_ROOT", "/data") + "/bars")
 
 
 def _is_weekend(d: date) -> bool:

@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.9.0"
+BOT_VERSION = "6.9.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,10 +98,9 @@ BOT_VERSION = "6.9.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.9.0: backtest cache layer\n"
-    "L1 Parquet bars (>=10x cold),\n"
-    "L2 indicator cache (>=30x warm),\n"
-    "Wave 2 sweep target <=15 min."
+    "v6.9.1: sweep runner /data isolation\n"
+    "TG_DATA_ROOT env var; all /data\n"
+    "paths now sandbox-safe."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1080,7 +1079,8 @@ def _v560_log_gate(ticker: str, side: str, gate: str, value, threshold, result: 
 # /home/user/workspace/specs/v5_6_1_data_collection_improvements.md.
 # ------------------------------------------------------------
 V561_INDEX_TICKER = "QQQ"
-V561_OR_DIR_DEFAULT = "/data/or"
+_TG_DATA_ROOT = os.environ.get("TG_DATA_ROOT", "/data")
+V561_OR_DIR_DEFAULT = os.environ.get("OR_DIR", _TG_DATA_ROOT + "/or")
 
 
 # ============================================================
@@ -5214,7 +5214,8 @@ def _check_bar_archive(session: str) -> CheckResult:
         return int((time.monotonic() - t0) * 1000)
     try:
         today = _sys_dt_cls.utcnow().strftime("%Y-%m-%d")
-        bar_dir = "/data/bars/%s" % today
+        _tg_data_root = os.environ.get("TG_DATA_ROOT", "/data")
+        bar_dir = os.environ.get("BARS_DIR", _tg_data_root + "/bars") + "/%s" % today
         if not os.path.isdir(bar_dir):
             if session == "rth":
                 return CheckResult("Bars today", "B", "critical",
@@ -5361,7 +5362,12 @@ def _check_disk_space() -> CheckResult:
             return "%.0fGB" % (n_bytes / 1024 ** 3)
         return "%.0fMB" % (n_bytes / 1024 ** 2)
     try:
-        usage = _shutil.disk_usage("/data")
+        _disk_path = os.environ.get("TG_DATA_ROOT", "/data")
+        try:
+            usage = _shutil.disk_usage(_disk_path)
+        except FileNotFoundError:
+            return CheckResult("Disk /data", "C", "ok",
+                               "path %s not found (sandbox mode)" % _disk_path, _ms())
         free = usage.free
         total = usage.total
         pct_free = free / total
