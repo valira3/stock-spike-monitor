@@ -1,16 +1,24 @@
-"""v6.9.0 \u2014 L2 indicator precompute cache for the backtest data layer.
+"""v6.9.2 \u2014 L2 indicator precompute cache: per-day files + in-process LRU.
 
 Caches per-ticker per-date indicator values so sweep variants that
 change only entry/exit logic (not indicator params) skip recomputation
 entirely.
 
-Cache layout
-------------
-  <bars_dir>/.indcache_v1/<TICKER>__<params_hash>.parquet
+Cache layout (v2)
+-----------------
+  <bars_dir>/.indcache_v2/<TICKER>__<params_hash>/<YYYY-MM-DD>.parquet
+  <bars_dir>/.indcache_v2/<TICKER>__<params_hash>.meta.json
 
-One Parquet per (ticker, indicator-set). The params_hash is a
-SHA-256 over:
-  (bar_cache_key, indicator_set_version, canonical params JSON)
+One directory per (ticker, indicator-set); one Parquet per date inside
+that directory. Matches the P0 per-day fix applied to bar_cache (v6.9.2)
+to eliminate the full-file scans caused by the v6.9.0 single-file layout.
+
+LRU (L3 in-process cache)
+--------------------------
+get_indicators() is wrapped with functools.lru_cache(maxsize=4096).
+Cache key: (str(bars_dir), ticker, date, tuple(sorted(indicators)),
+            canonical_params_str). After the first disk read within a
+process, subsequent calls are ~microsecond dict lookups.
 
 Cached indicators (pure functions of bars + static params)
 ----------------------------------------------------------
@@ -28,6 +36,7 @@ Public API
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -44,7 +53,10 @@ logger = logging.getLogger("trade_genius")
 
 # Increment this version string to invalidate ALL indicator caches
 # whenever indicator computation logic changes.
-INDICATOR_SET_VERSION = "v1"
+INDICATOR_SET_VERSION = "v2"
+
+# Cache directory name (v2 \u2014 invalidates v6.9.0 .indcache_v1 automatically)
+_IND_CACHE_DIR_NAME = ".indcache_v2"
 
 
 # ---------------------------------------------------------------------------
@@ -53,11 +65,15 @@ INDICATOR_SET_VERSION = "v1"
 
 
 def _indcache_root(bars_dir: Path) -> Path:
-    return bars_dir / ".indcache_v1"
+    override = os.environ.get("SSM_IND_CACHE_DIR")
+    if override:
+        return Path(override)
+    return bars_dir / _IND_CACHE_DIR_NAME
 
 
-def _ind_parquet_path(bars_dir: Path, ticker: str, params_hash: str) -> Path:
-    return _indcache_root(bars_dir) / f"{ticker.upper()}__{params_hash}.parquet"
+def _ind_parquet_path(bars_dir: Path, ticker: str, params_hash: str, date: str) -> Path:
+    """Per-day indicator Parquet: .indcache_v2/<TICKER>__<hash>/<date>.parquet"""
+    return _indcache_root(bars_dir) / f"{ticker.upper()}__{params_hash}" / f"{date}.parquet"
 
 
 def _ind_meta_path(bars_dir: Path, ticker: str, params_hash: str) -> Path:
@@ -99,7 +115,7 @@ def _read_ind_meta(path: Path) -> dict:
 def _write_ind_meta(path: Path, key: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"key": key}, fh)
+        json.dump({"key": key, "ind_version": INDICATOR_SET_VERSION}, fh)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +391,7 @@ def _build_indicator_cache(
     params: dict,
     params_hash: str,
 ) -> dict[str, list[Any]]:
-    """Compute indicators from bars and persist to Parquet."""
+    """Compute indicators from bars and persist to per-day Parquet."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -406,7 +422,7 @@ def _build_indicator_cache(
             )
 
     table = pa.table(col_data)
-    pp = _ind_parquet_path(bars_dir, ticker, params_hash)
+    pp = _ind_parquet_path(bars_dir, ticker, params_hash, date)
     pp.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(
         table,
@@ -422,7 +438,6 @@ def _build_indicator_cache(
         len(bars),
     )
 
-    # Filter to requested date (entire ticker cache is stored per-file)
     return {ind: computed.get(ind, [None] * len(bars)) for ind in indicators}
 
 
@@ -433,18 +448,18 @@ def _read_indicator_cache(
     indicators: list[str],
     params_hash: str,
 ) -> dict[str, list[Any]] | None:
-    """Read cached indicators for (ticker, date, params_hash).
+    """Read per-day cached indicators for (ticker, date, params_hash).
 
-    Returns None if file missing or date has no rows.
+    Returns None if file missing.
     """
     import pyarrow.parquet as pq
 
-    pp = _ind_parquet_path(bars_dir, ticker, params_hash)
+    pp = _ind_parquet_path(bars_dir, ticker, params_hash, date)
     if not pp.is_file():
         return None
 
     try:
-        table = pq.read_table(str(pp), filters=[("date", "=", date)])
+        table = pq.read_table(str(pp))
     except Exception as exc:
         logger.warning("[ind_cache] read error %s %s: %s", ticker, date, exc)
         return None
@@ -467,8 +482,45 @@ def _read_indicator_cache(
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=4096)
+def _lru_read_indicators(
+    bars_dir_str: str,
+    ticker_up: str,
+    date: str,
+    indicators_key: tuple[str, ...],
+    params_str: str,
+) -> tuple[tuple[str, tuple[Any, ...]], ...]:
+    """LRU-cached disk read for (bars_dir, ticker, date, indicators, params).
+
+    Returns an immutable nested tuple so results are safe to share.
+    Outer tuple: ((indicator_name, (value, ...)), ...)
+    """
+    bars_dir = Path(bars_dir_str)
+    indicators = list(indicators_key)
+    params = json.loads(params_str)
+    params_hash = _compute_params_hash(bars_dir, ticker_up, indicators, params)
+
+    cached = _read_indicator_cache(bars_dir, ticker_up, date, indicators, params_hash)
+    if cached is not None:
+        return tuple((k, tuple(v)) for k, v in cached.items())
+
+    # Cache miss \u2014 compute + persist
+    t0 = time.perf_counter()
+    result = _build_indicator_cache(
+        bars_dir, ticker_up, date, indicators, params, params_hash
+    )
+    elapsed = time.perf_counter() - t0
+    logger.debug(
+        "[ind_cache] computed ticker=%s date=%s in %.3fs",
+        ticker_up,
+        date,
+        elapsed,
+    )
+    return tuple((k, tuple(v)) for k, v in result.items())
+
+
 def get_indicators(
-    bars_dir: Path | str,
+    bars_dir: "Path | str",
     ticker: str,
     date: str,
     indicators: list[str],
@@ -477,7 +529,8 @@ def get_indicators(
     """Return aligned per-bar indicator values for (ticker, date).
 
     Length matches bar count for that ticker/date. Cache miss triggers
-    computation + persistence; subsequent calls are Parquet reads.
+    computation + persistence; subsequent calls return from in-process LRU
+    (no disk I/O after first access within the process).
 
     Args:
         bars_dir:   root bars directory.
@@ -495,23 +548,15 @@ def get_indicators(
     bars_dir = Path(bars_dir)
     ticker_up = ticker.upper()
     params = params or {}
-    params_hash = _compute_params_hash(bars_dir, ticker_up, indicators, params)
 
-    # Try cache hit first
-    cached = _read_indicator_cache(bars_dir, ticker_up, date, indicators, params_hash)
-    if cached is not None:
-        return cached
+    indicators_key = tuple(sorted(indicators))
+    params_str = json.dumps(params, sort_keys=True, separators=(",", ":"))
 
-    # Cache miss \u2014 compute + persist
-    t0 = time.perf_counter()
-    result = _build_indicator_cache(
-        bars_dir, ticker_up, date, indicators, params, params_hash
+    raw = _lru_read_indicators(
+        str(bars_dir), ticker_up, date, indicators_key, params_str
     )
-    elapsed = time.perf_counter() - t0
-    logger.debug(
-        "[ind_cache] computed ticker=%s date=%s in %.3fs",
-        ticker_up,
-        date,
-        elapsed,
-    )
-    return result
+    # raw is tuple of (name, values_tuple); reconstruct the requested order
+    raw_dict = {k: list(v) for k, v in raw}
+
+    # Ensure all requested indicators are present (may be absent if bars empty)
+    return {ind: raw_dict.get(ind, []) for ind in indicators}

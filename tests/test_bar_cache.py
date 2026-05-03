@@ -1,4 +1,4 @@
-"""Tests for backtest/bar_cache.py (v6.9.0 L1 Parquet bar cache).
+"""Tests for backtest/bar_cache.py (v6.9.2 L1 Parquet bar cache).
 
 Rules: zero em-dashes (literal or escaped). All paths use tmp_path.
 """
@@ -18,6 +18,7 @@ from backtest.bar_cache import (
     _ensure_cache,
     _meta_path,
     _parquet_path,
+    _CACHE_DIR_NAME,
     _source_files_for_ticker,
     get_bars,
 )
@@ -80,7 +81,7 @@ def _build_fixture(tmp_path: Path, date: str = "2026-04-28") -> Path:
 
 def test_cache_miss_builds_parquet(tmp_path: pytest.TempPathFactory) -> None:
     bars_dir = _build_fixture(tmp_path)
-    pp = _parquet_path(bars_dir, "AAPL")
+    pp = _parquet_path(bars_dir, "AAPL", "2026-04-28")
     assert not pp.exists(), "Parquet should not exist before first call"
     bars = get_bars(bars_dir, "AAPL", "2026-04-28")
     assert pp.exists(), "Parquet must be created on cache miss"
@@ -96,7 +97,7 @@ def test_cache_hit_skips_jsonl(tmp_path: pytest.TempPathFactory) -> None:
     bars_dir = _build_fixture(tmp_path)
     # Warm the cache
     bars_first = get_bars(bars_dir, "AAPL", "2026-04-28")
-    pp = _parquet_path(bars_dir, "AAPL")
+    pp = _parquet_path(bars_dir, "AAPL", "2026-04-28")
     assert pp.exists()
 
     # Patch _load_jsonl to fail if called (should not be on cache hit)
@@ -118,7 +119,7 @@ def test_stale_cache_rebuilds(tmp_path: pytest.TempPathFactory) -> None:
     bars_dir = _build_fixture(tmp_path)
     # Warm cache
     get_bars(bars_dir, "AAPL", "2026-04-28")
-    pp = _parquet_path(bars_dir, "AAPL")
+    pp = _parquet_path(bars_dir, "AAPL", "2026-04-28")
     mtime_before = pp.stat().st_mtime
 
     # Wait slightly and touch source file to invalidate cache key

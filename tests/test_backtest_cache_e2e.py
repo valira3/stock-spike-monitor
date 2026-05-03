@@ -58,7 +58,7 @@ def test_cold_and_warm_summaries_identical(tmp_path: Path) -> None:
     shutil.copytree(str(FIXTURE_DIR), str(bars_dir))
 
     # --- Cold run (no Parquet cache yet) ---
-    cache_dir = bars_dir / ".cache_v1"
+    cache_dir = bars_dir / ".cache_v2"
     assert not cache_dir.exists(), "Cache must not exist before cold run"
 
     t_cold_start = time.perf_counter()
@@ -67,7 +67,7 @@ def test_cold_and_warm_summaries_identical(tmp_path: Path) -> None:
 
     # Parquet should now exist for at least one ticker
     assert cache_dir.exists(), "Cache dir must be created after cold run"
-    parquets = list(cache_dir.glob("*.parquet"))
+    parquets = list(cache_dir.glob("**/*.parquet"))
     assert parquets, "At least one Parquet file must exist after cold run"
 
     # --- Warm run (Parquet cache present) ---
