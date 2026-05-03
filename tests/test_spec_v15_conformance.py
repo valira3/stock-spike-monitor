@@ -408,7 +408,10 @@ def test_v15_wire_in_scaled_a_tier_yields_starter_shares():
 
 
 def test_v15_wire_in_scaled_a_lower_boundary_25():
-    """Boundary: 1m DI = 25.0 is inclusive of SCALED_A range."""
+    """v6.8.0 C3: 1m DI = 25.0 is still inside SCALED_A range [22, 30].
+
+    P3_SCALED_A_DI_LO changed 25->22; 25.0 remains in range.
+    """
     decision = _eval_with_wire_in_args(side="LONG", di_5m=28.0, di_1m=25.0, starter_shares=100)
     assert decision.size_label == "SCALED_A"
 
@@ -422,10 +425,14 @@ def test_v15_wire_in_scaled_a_upper_boundary_30():
 
 
 def test_v15_wire_in_wait_below_scaled_range_aborts_entry():
-    """v15.0: 1m DI < 25 with held=0 → WAIT (live path defensively aborts)."""
+    """v15.0/v6.8.0 C3: 1m DI=20 < 22 (new floor) -> WAIT.
+
+    v6.8.0 C3 lowered P3_SCALED_A_DI_LO from 25.0 to 22.0. DI=20.0
+    is still below the new floor and must yield WAIT.
+    """
     decision = _eval_with_wire_in_args(side="LONG", di_5m=28.0, di_1m=20.0, starter_shares=100)
     assert decision.size_label == "WAIT", (
-        f"1m DI=20 (<25) must yield WAIT, got {decision.size_label}"
+        f"1m DI=20 (below 22.0 new floor) must yield WAIT, got {decision.size_label}"
     )
     assert decision.shares_to_buy == 0
 

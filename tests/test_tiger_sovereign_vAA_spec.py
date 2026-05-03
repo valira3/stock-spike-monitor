@@ -208,10 +208,13 @@ def test_l_p3_full_di_gt_30_enters_full_size():
 
 
 def test_l_p3_scaled_a_di_in_25_30_enters_50pct():
-    """25 <= 1m DI+ <= 30 \\u2192 Scaled-A 50%."""
+    """v6.8.0 C3: 22 <= 1m DI+ <= 30 -> Scaled-A 50%%.
+
+    P3_SCALED_A_DI_LO lowered 25->22. Test covers 22-25 and 25-30 range.
+    """
     from eye_of_tiger import evaluate_strike_sizing
 
-    for di_1m in (25.0, 27.5, 30.0):
+    for di_1m in (22.0, 22.5, 25.0, 27.5, 30.0):
         decision = evaluate_strike_sizing(
             side="LONG",
             di_5m=27.0,

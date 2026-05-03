@@ -168,11 +168,12 @@ _V644_MIN_HOLD_SECONDS: int = 600
 # at the 10-min mark, accounting for $-2,500 (vs $-715 if cut at 75bp).
 _V651_DEEP_STOP_ENABLED: bool = True
 _V651_DEEP_STOP_PCT: float = 0.0075  # 75 bp
-# 84-day SIP backtest split: deep-stop net +$340 on longs, -$455 on
-# shorts (mean-revert behavior). Default to long-only firing; flip to
-# False once shorts get an asymmetric tweak in a later release.
-# (em-dash escape used per project rule for new .py lines.)
-_V651_DEEP_STOP_LONG_ONLY: bool = True
+# v6.8.0 C1: extended deep-stop to shorts — W-E fix (STOP_MARKET routing)
+# is prerequisite. Original long-only default was conservative; no
+# forensic exclusion rationale found in v651_implementation_log.md.
+# Short P&L is majority of total P&L in 63-day SIP; TSLA/NVDA/NFLX/AVGO
+# are highest-variance names on the short side.
+_V651_DEEP_STOP_LONG_ONLY: bool = False
 
 SIDE_LONG = "LONG"
 SIDE_SHORT = "SHORT"

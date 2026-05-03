@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.8.0 (2026-05-03) -- entry ROI quick wins (W-E, C1, C2, C3)
+
+Minor release. Beck implementation.
+
+### W-E fix: V651 deep-stop routes to STOP_MARKET (broker/order_types.py)
+- Audit finding W-E (v6.6.0): `EXIT_REASON_V651_DEEP_STOP` was not
+  in `_STOP_REASONS`, causing the unknown-reason fallback to return
+  `MARKET` instead of `STOP_MARKET` in the live broker bridge.
+- Added `REASON_V651_DEEP_STOP = "sentinel_v651_deep_stop"` constant
+  and registered it in `_STOP_REASONS`. `order_type_for_reason` now
+  correctly returns `STOP_MARKET` for deep-stop exits on both sides.
+- Test: `tests/test_v680_entry_roi.py::test_we_deep_stop_routes_stop_market`.
+
+### C1: Short deep-stop enabled (engine/sentinel.py)
+- Prerequisite: W-E fix above.
+- Flipped `_V651_DEEP_STOP_LONG_ONLY = True -> False`. Shorts now
+  receive 75 bp blow-through protection during the 10-min hold window,
+  symmetric with longs.
+- Rationale: LONG_ONLY was a conservative default with no forensic
+  exclusion justification (v651_implementation_log.md). Shorts are the
+  majority of P&L in 63-day SIP; TSLA/NVDA/NFLX/AVGO are the
+  highest-variance names. Monitor short WR in [10,30m] bucket post-deploy.
+- Test: `test_deep_stop_short_breach_when_long_only_disabled` already
+  covers the LONG_ONLY=False path; updated docstring reflects new default.
+
+### C2: Per-ticker side blocklist (trade_genius.py, broker/orders.py)
+- Added module-level `TICKER_SIDE_BLOCKLIST: dict[str, list[str]]` in
+  `trade_genius.py` (default: `{"META": ["SHORT"], "AMZN": ["SHORT"]}`).
+- Env-overridable via `TICKER_SIDE_BLOCKLIST` JSON env var; set to `{}`
+  to disable entirely.
+- `broker/orders.py:check_breakout`: early return `(False, None)` with
+  debug log "ticker_side_blocked" when side is in the blocklist for ticker.
+- Evidence: META short 84-day WR 38.6%%; AMZN short 44%% (v650 recs).
+  Conservative estimate +$280-$1,500.
+- Test: `tests/test_v680_entry_roi.py` (blocked/not-blocked/env-override).
+
+### C3: P3 sizing floor 25.0 -> 22.0 (eye_of_tiger.py)
+- Changed `P3_SCALED_A_DI_LO = 25.0 -> 22.0` to align the SCALED_A
+  tier lower bound with the Entry-1 DI gate (lowered from 25->22 in
+  v6.2.0; P3 was not updated at the time).
+- DI 22-25 entries previously fell to legacy 50%% starter with no
+  SCALED_A path and no Entry-2 eligibility. v6.2.0 AVGO/GOOG/AMZN
+  DI 22-25 showed 64%% WR / +$0.79 mean in spec.
+- Test: `tests/test_v680_entry_roi.py::test_c3_p3_floor_22`.
+
+### Tests
+- New file: `tests/test_v680_entry_roi.py` covering W-E, C1, C2, C3.
+
+---
+
 ## v6.7.3 (2026-05-03) — dashboard 127.0.0.1 fix, header BOT_VERSION, extended-hours testing, every-2hr schedule
 
 Patch release. Beck implementation.

@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.7.3"
+BOT_VERSION = "6.8.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,14 +98,10 @@ BOT_VERSION = "6.7.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.7.2 disk check percentage-based\n"
-    "order RT skip non-RTH,\n"
-    "dashboard login flow,\n"
-    "TRADEGENIUS_OWNER_IDS fix,\n"
-    "ingest_config Dockerfile COPY.\n"
-    "v6.7.0: expanded /test (15\n"
-    "checks), 5-block executor,\n"
-    "CheckResult dataclass."
+    "v6.8.0: entry ROI quick wins\n"
+    "C1 short deep-stop enabled,\n"
+    "C2 side blocklist META/AMZN,\n"
+    "C3 P3 floor 22, W-E fixed."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -943,6 +939,21 @@ PHASE2_TWO_CONSECUTIVE_1M_CLOSES = True
 PHASE2_CONSECUTIVE_1M_REQUIRED  = 2
 DI_PLUS_ENTRY2_THRESHOLD        = 30
 DI_MINUS_ENTRY2_THRESHOLD       = 30
+
+# ============================================================
+# v6.8.0 C2 \u2014 Per-ticker side blocklist
+# ============================================================
+# Tickers mapped to sides blocked from new entries. META/AMZN shorts
+# blocked: 84-day SIP WR 38.6%% / 43.8%% vs 52-54%% long (v650 recs).
+# Env-override: set TICKER_SIDE_BLOCKLIST to a JSON object, e.g.
+#   TICKER_SIDE_BLOCKLIST='{"META":["SHORT"],"AMZN":["SHORT"]}'
+# Flip to {} to disable entirely.
+TICKER_SIDE_BLOCKLIST: dict[str, list[str]] = json.loads(
+    os.getenv(
+        "TICKER_SIDE_BLOCKLIST",
+        '{"META": ["SHORT"], "AMZN": ["SHORT"]}',
+    )
+)
 
 # ============================================================
 # v6.1.0 \u2014 ATR-normalized OR-break entry gate (#3)
