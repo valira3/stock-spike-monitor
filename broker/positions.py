@@ -620,6 +620,46 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
                 hold_seconds = _v644_position_hold_seconds(pos)
                 min_hold = int(getattr(_sentinel_mod, "_V644_MIN_HOLD_SECONDS", 600))
                 if hold_seconds is not None and hold_seconds < min_hold:
+                    # v6.5.1 \u2014 deep-stop check. If price has blown through
+                    # _V651_DEEP_STOP_PCT past entry, override the gate and
+                    # exit immediately to cap blow-through losses.
+                    deep_stop_enabled = getattr(
+                        _sentinel_mod, "_V651_DEEP_STOP_ENABLED", True
+                    )
+                    # v6.5.1 long-only refinement. The 84-day SIP
+                    # backtest showed deep-stop helped longs (+$340)
+                    # but hurt shorts (-$455) because shorts mean-revert
+                    # more often at -75 bp. Gate-fire only on longs.
+                    deep_long_only = getattr(
+                        _sentinel_mod, "_V651_DEEP_STOP_LONG_ONLY", True
+                    )
+                    if deep_stop_enabled and (
+                        not deep_long_only or side == _SENTINEL_SIDE_LONG
+                    ):
+                        deep_pct = float(
+                            getattr(_sentinel_mod, "_V651_DEEP_STOP_PCT", 0.0075)
+                        )
+                        _entry_p = float(entry_p) if entry_p else 0.0
+                        _mark_p = float(current_price) if current_price else 0.0
+                        if _entry_p > 0 and _mark_p > 0:
+                            if side == _SENTINEL_SIDE_LONG:
+                                deep_breached = _mark_p <= _entry_p * (1.0 - deep_pct)
+                            else:
+                                deep_breached = _mark_p >= _entry_p * (1.0 + deep_pct)
+                            if deep_breached:
+                                logger.warning(
+                                    "[V651-DEEP-STOP] %s %s breached %.2f%% "
+                                    "(mark=%.4f entry=%.4f hold=%ds<%ds)",
+                                    ticker,
+                                    side,
+                                    deep_pct * 100,
+                                    _mark_p,
+                                    _entry_p,
+                                    int(hold_seconds),
+                                    min_hold,
+                                )
+                                return _sentinel_mod.EXIT_REASON_V651_DEEP_STOP
+                    # No deep-stop breach \u2014 apply gate as before
                     logger.info(
                         "[V644-MIN-HOLD] %s %s blocked PRICE_STOP "
                         "hold=%ds<%ds; deeper rails still armed",

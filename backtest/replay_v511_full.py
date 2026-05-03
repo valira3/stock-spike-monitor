@@ -49,6 +49,10 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 CDT = ZoneInfo("America/Chicago")
 
+# Sentinel for the per-tick fetch cache to memoize None returns
+# (without confusing them with cache misses).
+_SENTINEL_NONE = object()
+
 logger = logging.getLogger("backtest.replay_v511")
 
 
@@ -360,13 +364,34 @@ def install_record_only_layers(
     # after this function returns via `tg._harness_bars_owner`.
     _bars_owner = {"bars": None, "clock": clock}
 
+    # Per-tick cache: (ticker, clock_minute_iso) -> result dict.
+    # Profiling 2026-04-30 showed _harness_fetch_1min_bars dominates
+    # at ~60% of replay wall clock (75s of 126s). Underlying data
+    # only changes once per minute, but the function is called ~145x
+    # per ticker per tick (gate snapshot, sentinel, entry checks,
+    # exit rails, AVWAP, ADX, DI). Cache by clock.now to amortize.
+    _bar_cache: dict = {}
+    _bar_cache_key = {"minute": None}
+
     def _harness_fetch_1min_bars(ticker: str):
-        bars = (_bars_owner["bars"] or {}).get(ticker.upper()) or []
+        # Invalidate cache when clock advances
+        cur_minute = clock.now
+        if _bar_cache_key["minute"] != cur_minute:
+            _bar_cache.clear()
+            _bar_cache_key["minute"] = cur_minute
+        t_up = ticker.upper()
+        cached = _bar_cache.get(t_up)
+        if cached is not None:
+            return cached if cached is not _SENTINEL_NONE else None
+
+        bars = (_bars_owner["bars"] or {}).get(t_up) or []
         if not bars:
+            _bar_cache[t_up] = _SENTINEL_NONE
             return None
-        cutoff = clock.now.astimezone(timezone.utc)
+        cutoff = cur_minute.astimezone(timezone.utc)
         visible = [b for b in bars if b["_dt"] <= cutoff]
         if not visible:
+            _bar_cache[t_up] = _SENTINEL_NONE
             return None
         opens = [b.get("open") for b in visible]
         highs = [b.get("high") for b in visible]
@@ -394,7 +419,7 @@ def install_record_only_layers(
         # fall back to the first bar's open as a stand-in. Production paths
         # that strictly need PDC will short-circuit, which is fine for replay.
         first_open = next((o for o in opens if o is not None), last_close)
-        return {
+        result = {
             "timestamps": timestamps,
             "opens": opens,
             "highs": highs,
@@ -404,6 +429,8 @@ def install_record_only_layers(
             "current_price": last_close or 0.0,
             "pdc": first_open or 0.0,
         }
+        _bar_cache[t_up] = result
+        return result
 
     def _harness_get_fmp_quote(ticker: str):
         bars = _harness_fetch_1min_bars(ticker)
