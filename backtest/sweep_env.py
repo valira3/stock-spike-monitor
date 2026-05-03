@@ -102,10 +102,34 @@ def build_sweep_env(
     env["PAPER_STATE_PATH"] = str(isolate_dir / "paper_state.json")
     env["PAPER_LOG_PATH"] = str(isolate_dir / "paper_trade.log")
 
-    # Step 4 \u2014 data root
+    # Step 4 -- data root + all derived path vars so every subsystem
+    # that reads an env var (STATE_DB_PATH, BAR_ARCHIVE_BASE, etc.) lands
+    # under the correct writable tree without touching /data.
+    # v6.9.4: derived paths are set here once; subsystem defaults then
+    # pick them up automatically via os.environ.get().
     env["TG_DATA_ROOT"] = str(tg_data_root)
 
-    # Step 5 \u2014 per-variant overrides
+    _derived: dict[str, Path] = {
+        "STATE_DB_PATH":        tg_data_root / "state.db",
+        "BAR_ARCHIVE_BASE":     tg_data_root / "bars",
+        "UNIVERSE_GUARD_PATH":  tg_data_root / "tickers.json",
+        "INGEST_AUDIT_DB_PATH": tg_data_root / "ingest_audit.db",
+        "VOLUME_PROFILE_DIR":   tg_data_root / "volume_profiles",
+        "OR_DIR":               tg_data_root / "or",
+        "FORENSICS_DIR":        tg_data_root / "forensics",
+        "TRADE_LOG_PATH":       tg_data_root / "trade_log.jsonl",
+        "SSM_BAR_CACHE_DIR":    tg_data_root / "bar_cache",
+    }
+    for key, dpath in _derived.items():
+        env[key] = str(dpath)
+        # mkdir for directory-type paths; file-type paths get their
+        # parent directory created so the file can be written on first use.
+        if dpath.suffix == "":
+            dpath.mkdir(parents=True, exist_ok=True)
+        else:
+            dpath.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 5 -- per-variant overrides
     if extra:
         env.update(extra)
 

@@ -108,7 +108,7 @@ class VolumeBucketBaseline:
     """Per-ticker, per-minute-of-day rolling 55-day volume baseline.
 
     Usage:
-        bb = VolumeBucketBaseline(base_dir="/data/bars")
+        bb = VolumeBucketBaseline()  # base_dir defaults from BAR_ARCHIVE_BASE / TG_DATA_ROOT
         bb.refresh(today=date.today())          # called at startup + 9:29 ET
         bb.check("AAPL", "09:35", 12500)        # -> {gate: PASS|FAIL|COLDSTART, ...}
     """
