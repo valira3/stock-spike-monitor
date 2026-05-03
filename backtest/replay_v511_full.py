@@ -454,6 +454,46 @@ def install_record_only_layers(
     # the layers are installed.
     tg._harness_bars_owner = _bars_owner
 
+    # Per-tick caches for DI/ADX/tiger_di.
+    # tiger_di, v5_di_1m_5m, and v5_adx_1m_5m are each called multiple
+    # times per tick per ticker (from _update_gate_snapshot, check_breakout,
+    # manage_positions, sentinel, forensic snapshot). All three are pure
+    # functions of (ticker, clock.now) \u2014 cache by ticker, invalidate on
+    # clock advance. Profiling showed these three accounted for ~35% of
+    # replay wall-clock via repeated _resample_to_5min_ohlc_buckets and
+    # _compute_di/_compute_adx calls.
+    _di_adx_cache: dict = {}
+    _di_adx_cache_minute: list = [None]  # mutable box
+    # Distinct object used as a cache-miss sentinel; never returned
+    # to callers. Using a single shared sentinel is correct because
+    # cache entries are stored as (key -> value-or-_SENTINEL_NONE) and
+    # the sentinel is only tested with `is`, not equality.
+    _DI_MISS = object()
+
+    def _make_ticker_cache(orig_fn):
+        """Return a per-tick per-ticker memoizer for a fn(ticker)->result."""
+        fn_name = orig_fn.__name__
+
+        def _cached(ticker: str):
+            cur_minute = clock.now
+            if _di_adx_cache_minute[0] != cur_minute:
+                _di_adx_cache.clear()
+                _di_adx_cache_minute[0] = cur_minute
+            key = (fn_name, ticker.upper())
+            cached_val = _di_adx_cache.get(key, _DI_MISS)
+            if cached_val is not _DI_MISS:
+                return cached_val
+            result = orig_fn(ticker)
+            _di_adx_cache[key] = result
+            return result
+        _cached.__name__ = fn_name
+        return _cached
+
+    for _fn_name in ("tiger_di", "v5_di_1m_5m", "v5_adx_1m_5m"):
+        _orig = getattr(tg, _fn_name, None)
+        if _orig is not None:
+            setattr(tg, _fn_name, _make_ticker_cache(_orig))
+
     # Telegram.
     if hasattr(tg, "send_telegram"):
         tg.send_telegram = lambda msg, *a, **kw: telegram_layer.send(msg)
