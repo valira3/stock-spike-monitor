@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.9.3 (2026-05-04) -- sweep runner hardening
+
+Patch release. Beck implementation.
+
+### Motivation
+Three consecutive Wave 2 sweep failures were caused by silent failure modes
+that a 10-second smoke check would have caught immediately:
+
+- **v6.9.0**: cache regression produced output slower than the JSONL baseline;
+  no smoke check existed so the sweep completed and results were silently
+  invalidated.
+- **v6.9.1**: /data permission errors caused workers to report `FAIL pnl=?`
+  for hundreds of days with no abort; the sweep ran to completion producing
+  useless results.
+- **v6.9.2**: missing `FMP_API_KEY` caused a hard-fail at import, writing
+  empty `raw/*.json` files; again no abort, silent failure.
+
+### New module: backtest/sweep_env.py
+- `REQUIRED_ENV` dict: three guard keys (`SSM_SMOKE_TEST`, `TELEGRAM_BOT_TOKEN`,
+  `FMP_API_KEY`) that every sweep subprocess must have set.
+- `build_sweep_env(*, isolate_dir, tg_data_root, extra)`: constructs a
+  hermetic subprocess env. Copies `os.environ`, overwrites `REQUIRED_ENV`,
+  sets `PAPER_STATE_PATH` + `PAPER_LOG_PATH` under `isolate_dir`, sets
+  `TG_DATA_ROOT`. Raises `ValueError` if either directory is missing.
+- `preflight_smoke(*, workdir, bars_dir, sample_date, env, timeout_sec)`: runs
+  `replay_v511_full` on ONE sample day before the sweep fans out. Hard-fails
+  (`RuntimeError`) on: nonzero returncode, missing/empty output JSON, missing
+  `summary.entries` or `summary.exits`, or stderr containing `'Traceback'`
+  or `'Permission denied'`. Logs first 50 lines of stderr on failure.
+
+### New file: backtest/sweep_runner_template.py
+- Canonical copy-paste skeleton for new sweep runners showing the
+  `build_sweep_env` + `preflight_smoke` + `ProcessPoolExecutor` pattern.
+- Includes `--max-empty-streak` kill switch: aborts a variant if more than
+  `MAX_EMPTY_STREAK` (default 3) consecutive days return empty/failed results.
+- Does NOT modify the frozen v651 runner (historic record).
+
+### Files changed
+- `backtest/sweep_env.py` (new)
+- `backtest/sweep_runner_template.py` (new)
+- `bot_version.py` + `trade_genius.BOT_VERSION` \u2192 6.9.3
+- `ARCHITECTURE.md` (sweep env helper documented)
+
+### Tests
+- `tests/test_sweep_env.py`: 11 tests (10 spec cases + 1 extra empty-json
+  path) covering all `build_sweep_env` and `preflight_smoke` contracts.
+
+---
+
 ## v6.9.2 (2026-05-04) -- backtest cache repartition + LRU
 
 Patch release. Beck implementation.
