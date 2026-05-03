@@ -95,6 +95,19 @@ def check_breakout(ticker, side):
     if tg._scan_paused:
         return False, None
 
+    # v6.8.0 C2 \u2014 per-ticker side blocklist. Config lives in
+    # trade_genius.TICKER_SIDE_BLOCKLIST; env-overridable via JSON.
+    # Checked before any heavy gate logic to short-circuit cheaply.
+    _side_str = (side.name if hasattr(side, "name") else str(side)).upper()
+    _blocklist = getattr(tg, "TICKER_SIDE_BLOCKLIST", {})
+    if _side_str in _blocklist.get(str(ticker).upper(), []):
+        import logging as _log_c2
+        _log_c2.getLogger(__name__).debug(
+            "[C2] ticker_side_blocked: %s %s", ticker, _side_str
+        )
+        return False, None
+
+
     # v5.31.0 \u2014 forensic decision-stack latency timer. Captures the
     # wall-time cost of the gate stack from entry through emission.
     _decision_start = _time_orders.monotonic()

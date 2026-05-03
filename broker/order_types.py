@@ -5,6 +5,10 @@ exits emit LIMIT orders at +/- 0.5% from current. A_LOSS (R-2 hard
 stop, -$500) is a STOP MARKET. EOD flush + Daily Circuit Breaker emit
 MARKET orders. Stage-1 / Stage-3 Titan-Grip harvest constants from
 v5.16.0 are deleted (dead code).
+
+v6.8.0 W-E fix: EXIT_REASON_V651_DEEP_STOP routes to STOP_MARKET.
+Previously the unknown-reason fallback returned MARKET (audit finding
+W-E, v6.6.0). Added to _STOP_REASONS alongside R-2 and price-rail.
 """
 
 from __future__ import annotations
@@ -30,6 +34,9 @@ REASON_HVP_LOCK: str = "HVP_LOCK"
 REASON_DIVERGENCE_TRAP: str = "DIVERGENCE_TRAP"
 REASON_EOD: str = "EOD"
 REASON_CIRCUIT_BREAKER: str = "DAILY_LOSS_LIMIT"
+# v6.8.0 W-E fix — deep-stop blow-through rail (V651) must route to
+# STOP_MARKET, not fall through to the unknown-reason MARKET fallback.
+REASON_V651_DEEP_STOP: str = "sentinel_v651_deep_stop"
 
 # RULING #1: sentinel A-A / A-B / A-D defensive exits use LIMIT (not
 # STOP MARKET, not MARKET). HVP_LOCK and DIVERGENCE_TRAP are also
@@ -52,6 +59,7 @@ _STOP_REASONS = frozenset(
         REASON_R2_HARD_STOP,
         REASON_PRICE_STOP,
         REASON_VELOCITY_RATCHET,
+        REASON_V651_DEEP_STOP,  # v6.8.0 W-E fix
     }
 )
 
@@ -139,6 +147,7 @@ __all__ = [
     "REASON_DIVERGENCE_TRAP",
     "REASON_EOD",
     "REASON_CIRCUIT_BREAKER",
+    "REASON_V651_DEEP_STOP",
     "compute_sentinel_limit_price",
     "order_type_for_reason",
     "submit_exit",

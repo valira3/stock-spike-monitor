@@ -724,7 +724,7 @@ def transition_phase_to_extraction(state: dict) -> dict:
 
 P3_AUTH_DI_THRESHOLD = 25.0  # 5m DMI master anchor (strict >)
 P3_FULL_DI_THRESHOLD = 30.0  # 1m DI for FULL / add-on (strict >)
-P3_SCALED_A_DI_LO = 25.0  # 1m DI lower bound for SCALED_A (inclusive)
+P3_SCALED_A_DI_LO = 22.0  # v6.8.0 C3: aligned with Entry-1 gate (was 25.0)
 P3_SCALED_A_DI_HI = 30.0  # 1m DI upper bound for SCALED_A (inclusive)
 
 SIZE_LABEL_FULL = "FULL"

@@ -165,24 +165,29 @@ def test_deep_stop_long_breach_inside_window(patched_broker):
 def test_deep_stop_short_breach_inside_window_blocked_long_only(patched_broker):
     """Short entry @100, mark=100.80 (+0.80%) at hold=120s.
 
-    With _V651_DEEP_STOP_LONG_ONLY=True (default), shorts do NOT fire the
-    deep-stop, so the v6.4.4 gate still blocks the 50bp PRICE_STOP and
-    returns None. The 84-day backtest showed deep-stop hurt shorts (-$455
-    via early cuts on mean-reverting trades), hence the long-only default.
+    When _V651_DEEP_STOP_LONG_ONLY is patched back to True (not the
+    v6.8.0 default of False), shorts must NOT fire the deep-stop -- the
+    v6.4.4 gate blocks the PRICE_STOP and returns None. v6.8.0 C1 sets
+    LONG_ONLY=False; this test guards the override path.
     """
-    bp = patched_broker(EXIT_REASON_PRICE_STOP, hold_seconds=120)
-    pos = _make_position(entry_price=100.0)
-    out = bp._run_sentinel(
-        ticker="TEST",
-        side=bp._SENTINEL_SIDE_SHORT,
-        pos=pos,
-        current_price=100.80,
-        bars=_make_bars(),
-    )
-    assert out is None, (
-        "v6.5.1 long-only: short at +0.80%% inside window must NOT fire "
-        "deep-stop (gate blocks as normal); got %r" % (out,)
-    )
+    import engine.sentinel as sentinel_mod
+    sentinel_mod._V651_DEEP_STOP_LONG_ONLY = True  # v6.8.0: default is False; patch for this guard test
+    try:
+        bp = patched_broker(EXIT_REASON_PRICE_STOP, hold_seconds=120)
+        pos = _make_position(entry_price=100.0)
+        out = bp._run_sentinel(
+            ticker="TEST",
+            side=bp._SENTINEL_SIDE_SHORT,
+            pos=pos,
+            current_price=100.80,
+            bars=_make_bars(),
+        )
+        assert out is None, (
+            "v6.5.1 long-only override: short at +0.80%% inside window must NOT fire "
+            "deep-stop when LONG_ONLY=True; got %r" % (out,)
+        )
+    finally:
+        sentinel_mod._V651_DEEP_STOP_LONG_ONLY = False  # restore v6.8.0 default
 
 
 def test_deep_stop_short_breach_when_long_only_disabled(patched_broker):

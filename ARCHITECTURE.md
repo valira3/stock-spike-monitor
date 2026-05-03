@@ -1,6 +1,10 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.7.0 · May 2026 -- Expanded /test system health check: 15 critical-component checks across 5 blocks (Broker, Streaming, State, Risk, Observability). Scheduled at 8:20 and 8:31 CT; manual via Telegram /test.
+> **Version:** v6.8.0 · May 2026 -- Entry ROI quick wins: W-E fix routes
+> V651 deep-stop exits to STOP_MARKET (was MARKET, audit finding W-E);
+> C1 extends deep-stop to short side (_V651_DEEP_STOP_LONG_ONLY=False);
+> C2 adds TICKER_SIDE_BLOCKLIST (META/AMZN shorts blocked, env-configurable);
+> C3 aligns P3 sizing floor with Entry-1 gate (P3_SCALED_A_DI_LO 25.0->22.0).
 >
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each
