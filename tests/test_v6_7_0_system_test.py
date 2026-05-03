@@ -512,29 +512,65 @@ class TestCheckPaperStateParity(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestCheckDiskSpace(unittest.TestCase):
-    def test_critical_under_1gb(self):
-        mock_usage = MagicMock()
-        mock_usage.free = int(0.8 * 1024 ** 3)
-        with patch("shutil.disk_usage", return_value=mock_usage):
-            cr = tg._check_disk_space()
-        self.assertEqual(cr.severity, "critical")
-        self.assertIn("< 1GB", cr.message)
+    # v6.7.2: thresholds are now percentage-based (CRITICAL <5%, WARN <15%)
 
-    def test_warn_under_5gb(self):
+    def test_ok_50pct_free(self):
+        # 50% free on a 434 MB volume
+        total = 434 * 1024 * 1024
         mock_usage = MagicMock()
-        mock_usage.free = int(3.5 * 1024 ** 3)
-        with patch("shutil.disk_usage", return_value=mock_usage):
-            cr = tg._check_disk_space()
-        self.assertEqual(cr.severity, "warn")
-        self.assertIn("< 5GB", cr.message)
-
-    def test_ok_over_5gb(self):
-        mock_usage = MagicMock()
-        mock_usage.free = int(8.4 * 1024 ** 3)
+        mock_usage.free = total // 2
+        mock_usage.total = total
         with patch("shutil.disk_usage", return_value=mock_usage):
             cr = tg._check_disk_space()
         self.assertEqual(cr.severity, "ok")
+        self.assertIn("50.0%", cr.message)
         self.assertIn("free", cr.message)
+
+    def test_warn_10pct_free(self):
+        # 10% free on a 434 MB volume
+        total = 434 * 1024 * 1024
+        mock_usage = MagicMock()
+        mock_usage.free = int(total * 0.10)
+        mock_usage.total = total
+        with patch("shutil.disk_usage", return_value=mock_usage):
+            cr = tg._check_disk_space()
+        self.assertEqual(cr.severity, "warn")
+        self.assertIn("10.0%", cr.message)
+        self.assertIn("filling up", cr.message)
+
+    def test_critical_3pct_free(self):
+        # 3% free on a 434 MB volume
+        total = 434 * 1024 * 1024
+        mock_usage = MagicMock()
+        mock_usage.free = int(total * 0.03)
+        mock_usage.total = total
+        with patch("shutil.disk_usage", return_value=mock_usage):
+            cr = tg._check_disk_space()
+        self.assertEqual(cr.severity, "critical")
+        self.assertIn("3.0%", cr.message)
+        self.assertIn("critically full", cr.message)
+
+    def test_format_mb_on_small_volume(self):
+        # 500 MB total volume -> format in MB
+        total = 500 * 1024 * 1024
+        mock_usage = MagicMock()
+        mock_usage.free = int(total * 0.50)
+        mock_usage.total = total
+        with patch("shutil.disk_usage", return_value=mock_usage):
+            cr = tg._check_disk_space()
+        self.assertIn("MB", cr.message)
+        self.assertNotIn("GB", cr.message)
+
+    def test_format_gb_on_large_volume(self):
+        # 100 GB total volume -> format in GB
+        total = 100 * 1024 * 1024 * 1024
+        mock_usage = MagicMock()
+        mock_usage.free = int(total * 0.50)
+        mock_usage.total = total
+        with patch("shutil.disk_usage", return_value=mock_usage):
+            cr = tg._check_disk_space()
+        self.assertIn("GB", cr.message)
+        self.assertNotIn("MB", cr.message)
 
 
 # ---------------------------------------------------------------------------

@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.7.1"
+BOT_VERSION = "6.7.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,7 +98,7 @@ BOT_VERSION = "6.7.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.7.1 /test bug fixes (4):\n"
+    "v6.7.2 disk check percentage-based\n"
     "order RT skip non-RTH,\n"
     "dashboard login flow,\n"
     "TRADEGENIUS_OWNER_IDS fix,\n"
@@ -5296,21 +5296,33 @@ def _check_paper_state_parity() -> CheckResult:
 
 
 def _check_disk_space() -> CheckResult:
-    """Check 10 \u2014 Disk space on /data. CRITICAL <1GB; WARN <5GB (D-11)."""
+    """Check 10 \u2014 Disk space on /data. CRITICAL <5%% free; WARN <15%% free (D-11)."""
     t0 = time.monotonic()
     def _ms():
         return int((time.monotonic() - t0) * 1000)
+    def _fmt(n_bytes, total_bytes):
+        """Return human-friendly size string scaled to GB or MB."""
+        if total_bytes >= 1024 ** 3:
+            return "%.0fGB" % (n_bytes / 1024 ** 3)
+        return "%.0fMB" % (n_bytes / 1024 ** 2)
     try:
         usage = _shutil.disk_usage("/data")
-        free_gb = usage.free / (1024 ** 3)
-        if free_gb < 1.0:
+        free = usage.free
+        total = usage.total
+        pct_free = free / total
+        free_s = _fmt(free, total)
+        total_s = _fmt(total, total)
+        pct_s = pct_free * 100
+        if pct_free < 0.05:
             return CheckResult("Disk /data", "C", "critical",
-                               "%.1fGB free (< 1GB \u2014 writes may fail)" % free_gb, _ms())
-        if free_gb < 5.0:
+                               "%s free of %s (%.1f%%) \u2014 disk critically full" % (
+                                   free_s, total_s, pct_s), _ms())
+        if pct_free < 0.15:
             return CheckResult("Disk /data", "C", "warn",
-                               "%.1fGB free (< 5GB)" % free_gb, _ms())
+                               "%s free of %s (%.1f%%) \u2014 disk filling up" % (
+                                   free_s, total_s, pct_s), _ms())
         return CheckResult("Disk /data", "C", "ok",
-                           "%.1fGB free" % free_gb, _ms())
+                           "%s free of %s (%.1f%%)" % (free_s, total_s, pct_s), _ms())
     except Exception as exc:
         return CheckResult("Disk /data", "C", "critical",
                            "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
@@ -5389,7 +5401,7 @@ def _check_dashboard() -> CheckResult:
             data=login_data,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "TradeGenius-SysTest/6.7.1",
+                "User-Agent": "TradeGenius-SysTest/6.7.2",
                 "Origin": base_url,
             },
         )
@@ -5405,7 +5417,7 @@ def _check_dashboard() -> CheckResult:
                                "login failed \u2014 HTTP %d" % login_status, _ms())
         state_req = _sysurlreq.Request(
             base_url + "/api/state",
-            headers={"User-Agent": "TradeGenius-SysTest/6.7.1"},
+            headers={"User-Agent": "TradeGenius-SysTest/6.7.2"},
         )
         with opener.open(state_req, timeout=3) as resp:
             if resp.status == 200:
