@@ -1,3 +1,7 @@
+# v6.9.0: pyarrow added to requirements.txt for Parquet bar/indicator cache.
+# See requirements.txt -- adding here as a comment since this project
+# uses requirements.txt as the primary dependency manifest.
+
 [tool.ruff]
 # v5.8.4: minimal ruff config so preflight.sh's [5/5] format check
 # tolerates the pre-v5.8.4 codebase. The legacy `trade_genius.py`

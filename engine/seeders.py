@@ -1,4 +1,11 @@
-"""v5.26.0 \u2014 engine.seeders (spec-strict).
+"""v5.26.0 / v6.9.0 \u2014 engine.seeders (spec-strict).
+
+v6.9.0 note: opening range and premarket indicators for backtest sweeps
+are available via ``backtest.indicator_cache.get_indicators`` (L2 cache)
+using indicator names ``or5_high``, ``or5_low``, ``or30_high``,
+``or30_low``, ``pm_high``, ``pm_low``, ``pm_range``. The live
+``seed_opening_range`` path (Alpaca historical 1m bars) is unchanged.
+
 
 Stage 3 of the Tiger Sovereign v15.0 spec-strict cut deleted all
 non-spec seeder helpers: QQQ Regime Shield seed/tick, DI buffer seed,

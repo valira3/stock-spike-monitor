@@ -191,7 +191,7 @@ def test_current_main_note_describes_v660():
     note = tg.CURRENT_MAIN_NOTE
     # Accept v6.6.0, v6.6.1, v6.7.0, or any later release note.
     has_recent_version = any(
-        v in note for v in ("v6.6.0", "v6.6.1", "v6.7.0", "v6.8", "v7.")
+        v in note for v in ("v6.6.0", "v6.6.1", "v6.7.0", "v6.8", "v6.9", "v7.")
     )
     assert has_recent_version, (
         "CURRENT_MAIN_NOTE should mention a recent release (v6.6.0+); got: %r" % note

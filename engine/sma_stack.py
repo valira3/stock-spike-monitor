@@ -1,5 +1,8 @@
 # engine/sma_stack.py
-# v6.0.1 \u2014 Daily SMA stack computation, restored after the v5.26.0
+# v6.0.1 / v6.9.0 \u2014 Daily SMA stack computation, restored after the v5.26.0
+# v6.9.0: EMA series for backtest sweeps are available via
+# ``backtest.indicator_cache.get_indicators`` (L2 cache). This module's
+# ``compute_sma_stack`` is unchanged and used only for daily closes.
 # Stage-1 spec-strict cut. Pure logic: takes a list of daily closes and
 # returns the fully-formed dashboard payload that
 # ``_pmtxSmaStackPanel`` in dashboard_static/app.js consumes. No
