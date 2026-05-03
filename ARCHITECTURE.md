@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.9.2 · May 2026 -- Backtest cache repartition + LRU (P0+P1 of v6.9.0 perf fix).
+> **Version:** v6.9.3 · May 2026 -- Sweep runner hardening (preflight smoke check + hermetic env).
 >
 > **Backtest cache layer (v6.9.2):**
 > L1: Per-day Parquet bar cache (`backtest/bar_cache.py`) -- layout
@@ -1712,6 +1712,40 @@ Path derivation table:
 `_check_disk_space` in `trade_genius.py` calls `shutil.disk_usage(TG_DATA_ROOT)`
 and returns `ok / sandbox mode` (not `CRITICAL`) if the path does not exist,
 so ephemeral CI environments do not trip the health-check alarm.
+
+### 10.3c Sweep env helper (v6.9.3)
+
+`backtest/sweep_env.py` is the canonical source of hermetic subprocess
+environments for all sweep runners. It exists to prevent the three silent
+failure modes that invalidated consecutive Wave 2 sweeps (v6.9.0–6.9.2).
+
+**`REQUIRED_ENV`** — module-level dict of three guard keys that every sweep
+subprocess must have. Injected unconditionally by `build_sweep_env`:
+
+| Key | Value | Guards against |
+|---|---|---|
+| `SSM_SMOKE_TEST` | `"1"` | scheduler / Telegram import side-effects |
+| `TELEGRAM_BOT_TOKEN` | `"000:fake"` | token-present check without hitting API |
+| `FMP_API_KEY` | `"sweep_dummy_key"` | hard-fail at import when key absent (v6.9.2) |
+
+**`build_sweep_env(*, isolate_dir, tg_data_root, extra)`** — builds a full
+env dict from `os.environ`, overlays `REQUIRED_ENV`, sets
+`PAPER_STATE_PATH` / `PAPER_LOG_PATH` under `isolate_dir` (per-worker
+isolation, v6.9.1 fix), sets `TG_DATA_ROOT`, then layers `extra` last.
+Raises `ValueError` if either directory is absent so callers get a loud
+error at setup time rather than a silent failure inside the worker.
+
+**`preflight_smoke(*, workdir, bars_dir, sample_date, env, timeout_sec)`**
+— runs a single-day `replay_v511_full` replay before fanning out the full
+day grid. Raises `RuntimeError` (aborting the sweep) on: nonzero exit code,
+missing or empty output JSON, missing `summary.entries` / `summary.exits`
+keys, or stderr containing `'Traceback'` / `'Permission denied'`. Logs
+first 50 lines of stderr on failure for immediate forensic context.
+
+**`backtest/sweep_runner_template.py`** — canonical copy-paste skeleton
+for new sweep runners: `build_sweep_env` + `preflight_smoke` +
+`ProcessPoolExecutor` + empty-streak kill switch (`MAX_EMPTY_STREAK=3`).
+Do not modify the frozen v651 runner; use this template for every new wave.
 
 ### 10.4 Persistence (Railway Volume)
 
