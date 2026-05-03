@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.6.0 (2026-05-04) — Ingest Hardening: SLA monitoring, gap-fill verification, trading gate
+
+Minor release. Product spec: Priya. Architecture: Aria. Implementation: Beck. QA: Quinn.
+All 9 decisions locked and ratified by Val (P1–P4, A1–A5). Ships as `dry_run`; enforce flip in v6.6.1 requires Val+Devi+Reese sign-off.
+
+### Pillar A — SLA Monitoring
+
+- New `ingest_config.py`: all tunable SLA and gate constants with env-var overrides (Decision A1). Defaults: `last_bar_age_s>300→RED`, `open_gaps>2→RED`.
+- New `ingest/sla.py`: `SLAThreshold`, `SLAMetric`, `IngestHealthState` data classes; `SLACollector` with `update_global_stats()`, `record_backfill_completed()`, `record_gaps_detected()`. RTH window check `_is_rth()` (Decision P3: 09:30–16:00 ET). Surfaced on `/api/state.ingest_status.ingest_health`.
+- `ingest/algo_plus.py` `_update_ingest_stats()`: propagates to SLA collector on each stats update. `_ingest_health_snapshot()`: extended with `ingest_health`, `gap_audit`, `gate_override_active` keys (additive, backward-compatible).
+
+### Pillar B — Gap-Fill Verification
+
+- New `ingest/audit.py`: `AuditLog` class; `/data/ingest_audit.db` SQLite schema (`ingest_gap_audit`, `ingest_gate_decisions`); WAL mode; 180-day retention prune (Decision P4). Separate from `state.db` (Decision A2).
+- `ingest/algo_plus.py` `_backfill()`: added `_backfill_start` elapsed timer; `AuditLog.record_backfill_completed()` + `_verify_gap_closed()` called inline after every backfill (Decision A3 — one extra archive read per gap). Gap status transitions: `open→backfilling→closed` or `missing`.
+- `trade_genius.py` `gap_detect_task()`: `AuditLog.record_gap_detected()` + `record_gap_enqueued()` per gap; SLA gap count update; daily retention prune via `AuditLog.prune_old_rows()`.
+
+### Pillar C — Trading Gate
+
+- New `engine/ingest_gate.py`: `GateDecision`, `_TickerGateState`; `evaluate_gate()` function. Two-state only: ALLOW/BLOCK (Decision P2 — no Yellow action; half-size cap deferred to v6.7.0). Hysteresis: 5 min RED→BLOCK, 2 min GREEN→ALLOW (Decision A4). RTH-only: outside 09:30–16:00 ET, always ALLOW.
+- `broker/orders.py` `execute_breakout()`: gate check immediately after post-loss cooldown (line ~735). Fail-open: exceptions → allow. `dry_run` mode logs `[INGEST-GATE] DRY_RUN BLOCK` but never returns early (Decision A5, v6.6.0 default).
+- Gate ceiling: 20 min REST_ONLY before BLOCK (Decision P1 — hard ceiling; exact N calibrated from Monday cron data).
+- Manual override: `SSM_INGEST_GATE_DISABLED=1` or `SSM_INGEST_GATE_MODE=off` bypasses gate globally; all overridden decisions logged with `overridden=True`.
+
+### Version bump
+
+- `BOT_VERSION`: `6.5.2` → `6.6.0` in both `trade_genius.py` and `bot_version.py`.
+- `ARCHITECTURE.md`: section §18b added.
+
+---
+
 ## v6.5.2 (2026-05-03) — Infra patches: aggregator hardening + harness 3× speedup
 
 Tooling-only release. **No production behavior change** — `trade_genius.py`,

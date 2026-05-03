@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.5.2"
+BOT_VERSION = "6.6.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -5282,11 +5282,35 @@ def gap_detect_task() -> None:
                 total_gaps += len(gaps)
                 if _worker is not None:
                     for gap_start, gap_end in gaps:
+                        # v6.6.0 Pillar B: record gap detected + enqueued (Decision A3)
+                        try:
+                            from ingest.audit import AuditLog as _AL
+                            _AL.record_gap_detected(
+                                ticker, gap_start, gap_end
+                            )
+                            _AL.record_gap_enqueued(ticker, gap_start)
+                        except Exception as _ae:
+                            logger.debug("[GAP] audit write failed: %s", _ae)
+                        # v6.6.0 Pillar A: update gap count in SLA collector
+                        try:
+                            from ingest.sla import record_gaps_detected as _sla_gaps
+                            _sla_gaps(ticker, 1)
+                        except Exception:
+                            pass
                         _worker.enqueue(ticker, gap_start, gap_end)
             except Exception as _ge:
                 logger.debug("[GAP] detect error for %s: %s", ticker, _ge)
         if total_gaps:
             logger.info("[GAP] gap_detect_task: %d gap(s) enqueued for backfill", total_gaps)
+        # v6.6.0 Pillar B: audit retention prune (Decision P4: 180 days), once per day
+        try:
+            _today_et = _now_et().date()
+            if getattr(gap_detect_task, "_last_audit_prune_date", None) != _today_et:
+                from ingest.audit import AuditLog as _AL
+                _AL.prune_old_rows()
+                gap_detect_task._last_audit_prune_date = _today_et  # type: ignore[attr-defined]
+        except Exception as _pe:
+            logger.debug("[GAP] audit prune failed: %s", _pe)
     except Exception as e:
         logger.warning("[GAP] gap_detect_task failed: %s", e)
 

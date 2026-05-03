@@ -368,6 +368,7 @@ class RestBackfillWorker:
 
     def _backfill(self, ticker: str, start_ts: datetime, end_ts: datetime) -> None:
         """Fetch bars for (ticker, start_ts, end_ts) and write new ones only."""
+        _backfill_start = time.time()  # v6.6.0: elapsed timer for SLA
         if not self._key or not self._secret:
             return
         try:
@@ -445,6 +446,61 @@ class RestBackfillWorker:
                         written, ticker,
                         start_ts.isoformat(), end_ts.isoformat())
 
+        # v6.6.0 Pillar B: record backfill completion + inline verification (Decision A3)
+        _elapsed_s = time.time() - _backfill_start
+        try:
+            from ingest.audit import AuditLog as _AL
+            _AL.record_backfill_completed(
+                ticker=ticker,
+                gap_start=start_ts,
+                gap_end=end_ts,
+                bars_written=written,
+            )
+            _verify_gap_closed(ticker, start_ts, end_ts)
+        except Exception as _ae:
+            logger.debug("[INGEST] audit record failed: %s", _ae)
+
+        # v6.6.0 Pillar A: record backfill latency for SLA
+        try:
+            from ingest.sla import record_backfill_completed as _sla_backfill
+            _sla_backfill(ticker, start_ts, end_ts, written, _elapsed_s)
+        except Exception:
+            pass
+
+
+def _verify_gap_closed(
+    ticker: str,
+    start_ts: "datetime",
+    end_ts: "datetime",
+) -> None:
+    """Re-scan the archive after backfill and update audit status.
+
+    Decision A3: inline verification — one extra archive read per gap.
+    Sets status to 'closed' if all minutes covered, else 'missing'.
+    """
+    try:
+        date_str = start_ts.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        existing_ts = _read_ts_set(ticker, date_str)
+        from datetime import timedelta as _td
+        expected_ts = set()
+        cur = start_ts.astimezone(timezone.utc)
+        end_utc = end_ts.astimezone(timezone.utc)
+        while cur < end_utc:
+            expected_ts.add(cur.isoformat())
+            cur = cur + _td(minutes=1)
+        gaps_remaining = len(expected_ts - existing_ts)
+        status = "closed" if gaps_remaining == 0 else "missing"
+        from ingest.audit import AuditLog as _AL
+        _AL.record_verification(ticker=ticker, gap_start=start_ts, status=status)
+        if status == "missing":
+            logger.warning(
+                "[INGEST] gap verification MISSING for %s (%s -> %s): "
+                "%d minute(s) still absent after backfill",
+                ticker, start_ts.isoformat(), end_ts.isoformat(), gaps_remaining,
+            )
+    except Exception as e:
+        logger.debug("[INGEST] _verify_gap_closed error for %s: %s", ticker, e)
+
 
 # ---------------------------------------------------------------------------
 # AlgoPlusIngest orchestrator
@@ -464,6 +520,15 @@ _ingest_stats_lock = threading.Lock()
 def _update_ingest_stats(**kwargs: object) -> None:
     with _ingest_stats_lock:
         _ingest_stats.update(kwargs)
+    # v6.6.0 Pillar A: propagate stats to SLA collector (Decision A1)
+    try:
+        from ingest.sla import update_global_stats as _sla_update
+        _sla_update(
+            last_bar_age_s=_health.last_bar_age_s(),
+            open_gaps_today=kwargs.get("open_gaps_today"),
+        )
+    except Exception:
+        pass
 
 
 class AlgoPlusIngest:
@@ -671,5 +736,26 @@ def _ingest_health_snapshot() -> dict:
         snap["bars_today"] = _count_bars_today(today)
     except Exception:
         snap["bars_today"] = 0
+
+    # v6.6.0 Pillar A: embed ingest_health from SLA collector
+    try:
+        from ingest.sla import get_health_snapshot as _sla_snap
+        snap["ingest_health"] = _sla_snap()
+    except Exception:
+        snap["ingest_health"] = {"global": {"color": "green"}, "gate_mode": "dry_run"}
+
+    # v6.6.0 Pillar B: embed gap_audit summary
+    try:
+        from ingest.audit import AuditLog as _AL
+        snap["gap_audit"] = _AL.daily_summary()
+    except Exception:
+        snap["gap_audit"] = {}
+
+    # v6.6.0 Pillar C: embed gate override state
+    import os as _os
+    snap["gate_override_active"] = (
+        _os.environ.get("SSM_INGEST_GATE_DISABLED") == "1"
+        or _os.environ.get("SSM_INGEST_GATE_MODE", "dry_run") == "off"
+    )
 
     return snap

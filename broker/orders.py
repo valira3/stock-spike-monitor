@@ -732,6 +732,26 @@ def execute_breakout(ticker, current_price, side):
     if not tg._check_post_loss_cooldown(ticker, _side_label):
         return
 
+    # v6.6.0 Pillar C — ingest gate check (after post-loss cooldown, before order build)
+    # Decision P2: two-state only (ALLOW/BLOCK). Default dry_run=True; never blocks in v6.6.0.
+    # Decision A5: enforce flip requires Val+Devi+Reese sign-off via v6.6.1.
+    try:
+        from engine.ingest_gate import evaluate_gate as _eval_gate
+        _gate = _eval_gate(ticker)
+        if _gate.decision == "block":
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "[INGEST-GATE] %s entry for %s: %s (mode=%s)",
+                "DRY_RUN" if _gate.gate_mode == "dry_run" else "ENFORCED",
+                ticker, _gate.reason, _gate.gate_mode,
+            )
+            if _gate.gate_mode == "enforce":
+                return  # hard block (v6.6.1+ only after sign-off)
+            # dry_run: log above, allow through
+    except Exception as _ge:
+        import logging as _lg
+        _lg.getLogger(__name__).debug("[INGEST-GATE] gate check failed (fail-open): %s", _ge)
+
     now_et = tg._now_et()
     limit_price = round(current_price + cfg.limit_offset, 2)
     or_dict = getattr(tg, cfg.or_attr)
