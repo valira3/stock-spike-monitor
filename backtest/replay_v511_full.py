@@ -91,7 +91,19 @@ def _parse_ts(ts: str | None) -> datetime | None:
 
 
 def load_day_bars(bars_dir: Path, date_str: str, ticker: str) -> list[dict]:
-    """Load pre-market + RTH 1m bars for `ticker` on `date_str`."""
+    """Load pre-market + RTH 1m bars for `ticker` on `date_str`.
+
+    v6.9.0: delegates to bar_cache.get_bars (L1 Parquet cache) for
+    faster repeated reads. Falls back to direct JSONL parse if pyarrow
+    is unavailable so the harness remains functional without the optional
+    dependency.
+    """
+    try:
+        from backtest.bar_cache import get_bars as _get_bars_cached
+        return _get_bars_cached(bars_dir, ticker, date_str)
+    except ImportError:
+        pass
+    # Fallback: direct JSONL parse (pre-v6.9.0 path)
     rth = _load_jsonl(bars_dir / date_str / f"{ticker}.jsonl")
     pre = _load_jsonl(bars_dir / date_str / "premarket" / f"{ticker}.jsonl")
     bars = list(pre) + list(rth)

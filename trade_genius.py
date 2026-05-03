@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.8.0"
+BOT_VERSION = "6.9.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,10 +98,10 @@ BOT_VERSION = "6.8.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.8.0: entry ROI quick wins\n"
-    "C1 short deep-stop enabled,\n"
-    "C2 side blocklist META/AMZN,\n"
-    "C3 P3 floor 22, W-E fixed."
+    "v6.9.0: backtest cache layer\n"
+    "L1 Parquet bars (>=10x cold),\n"
+    "L2 indicator cache (>=30x warm),\n"
+    "Wave 2 sweep target <=15 min."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.9.0 (2026-05-03) -- backtest cache layer (L1 Parquet bars + L2 indicators)
+
+Minor release. Beck implementation.
+
+### L1 -- Parquet bar cache (backtest/bar_cache.py)
+- One Parquet file per ticker (ZSTD-3) under `<bars_dir>/.cache_v1/`.
+- Cache key: SHA-256 of (path, mtime_ns, size) for all source JSONL files;
+  auto-invalidates on any source change.
+- `get_bars(bars_dir, ticker, date)` is a drop-in for `load_day_bars`;
+  `build_all(bars_dir)` pre-builds all tickers via CLI.
+- `backtest/replay_v511_full.load_day_bars` delegates to `get_bars`;
+  falls back to direct JSONL parse if pyarrow is unavailable.
+- Cold load target: >=10x faster vs JSONL on 84-day corpus.
+
+### L2 -- Indicator precompute cache (backtest/indicator_cache.py)
+- One Parquet per (ticker, params_hash) under `<bars_dir>/.indcache_v1/`.
+- Covers: ATR(14), ATR(20), EMA9/20/50, VWAP, OR-5m/OR-30m, premarket
+  high/low/range, session boundary markers.
+- Cache key: SHA-256 of (bar_cache_key, indicator_set_version, params JSON);
+  invalidates if bars OR indicator definitions OR params change.
+- `get_indicators(bars_dir, ticker, date, indicators, params)` returns
+  aligned per-bar lists; sweep variants reuse L2 when indicator params
+  are unchanged.
+- Warm end-to-end target: >=30x faster vs uncached baseline.
+
+### Engine module annotations
+- `engine/scan.py`, `engine/sma_stack.py`, `engine/seeders.py`: docstring
+  annotations pointing backtest callers to `indicator_cache.get_indicators`
+  for pre-warmed indicator data. Live code paths unchanged.
+
+### Tests
+- `tests/test_bar_cache.py`: miss/hit/stale/bit-exact/empty/key-change.
+- `tests/test_indicator_cache.py`: miss/hit/param-change/all-indicators/empty.
+- `tests/test_backtest_cache_e2e.py`: cold+warm replay summary identity.
+
+### Dependencies
+- `pyarrow` added to `pyproject.toml` (ZSTD Parquet I/O).
+
+---
+
 ## v6.8.0 (2026-05-03) -- entry ROI quick wins (W-E, C1, C2, C3)
 
 Minor release. Beck implementation.

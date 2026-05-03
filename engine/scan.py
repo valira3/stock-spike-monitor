@@ -1,4 +1,10 @@
-"""v5.26.0 \u2014 engine.scan: per-minute scan loop (spec-strict).
+"""v5.26.0 / v6.9.0 \u2014 engine.scan: per-minute scan loop (spec-strict).
+
+v6.9.0 note: backtest-mode callers may pre-warm indicator state using
+``backtest.indicator_cache.get_indicators`` (L2 cache) before driving
+the scan loop. The live code path is unchanged; ``get_indicators``
+is a pure-read call that returns cached Parquet data and does not
+affect process state.
 
 Stage 3 of the Tiger Sovereign v15.0 spec-strict cut deleted Volume
 Bucket / Volume-Baseline / Permit-state observability, regime-shield

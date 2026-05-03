@@ -28,3 +28,6 @@ aiohttp>=3.9,<4.0
 
 # ── Alpaca executor SDK (v4.0.0-alpha — TradeGeniusVal) ──────
 alpaca-py==0.43.2
+
+# -- Parquet bar/indicator cache (v6.9.0 backtest cache layer) -------
+pyarrow>=15.0

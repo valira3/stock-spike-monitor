@@ -1,10 +1,13 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.8.0 · May 2026 -- Entry ROI quick wins: W-E fix routes
-> V651 deep-stop exits to STOP_MARKET (was MARKET, audit finding W-E);
-> C1 extends deep-stop to short side (_V651_DEEP_STOP_LONG_ONLY=False);
-> C2 adds TICKER_SIDE_BLOCKLIST (META/AMZN shorts blocked, env-configurable);
-> C3 aligns P3 sizing floor with Entry-1 gate (P3_SCALED_A_DI_LO 25.0->22.0).
+> **Version:** v6.9.0 · May 2026 -- Backtest cache layer (L1 + L2).
+> L1: Parquet bar cache (`backtest/bar_cache.py`) -- one ZSTD-3 Parquet per
+> ticker under `<bars_dir>/.cache_v1/`; SHA-256 cache key over (path, mtime_ns,
+> size); `get_bars()` is a drop-in for `load_day_bars`; >=10x cold load speedup.
+> L2: Indicator precompute cache (`backtest/indicator_cache.py`) -- per-(ticker,
+> params_hash) Parquet under `<bars_dir>/.indcache_v1/`; covers ATR14/20, EMA9/20/50,
+> VWAP, OR-5m/OR-30m, premarket H/L/range, session boundary; >=30x warm e2e.
+> Wave 2 (11-run C4+C5+C7+C10 sweep) target wall: <=15 min (was ~60 min).
 >
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each
@@ -3509,3 +3512,51 @@ On CRITICAL failure the footer shows: `N CRITICAL, M WARN -- see logs`
 and each failing check emits exactly one `[ERROR] [SYS-TEST] Block X: ...` log line.
 
 *Last refresh: May 2026, against `BOT_VERSION = "6.7.0"`.*
+
+---
+
+## §19. v6.9.0 -- Backtest Cache Layer
+
+**Goal:** cut Wave 2 sweep wall from ~15 min to ~2 min by caching the
+84-day SIP corpus once per sweep series.
+
+### L1 -- Parquet bar cache (`backtest/bar_cache.py`)
+
+- **Cache root:** `<bars_dir>/.cache_v1/`
+- **One Parquet per ticker** covering the full date range:
+  `<cache_root>/<TICKER>.parquet`
+- **Schema:** `ts (str ISO-8601)`, `date (str)`, `session (str: pre|rth)`,
+  `open/high/low/close (float64)`, `volume (int64)`, `vw (float64)`,
+  `n (int64)`, `_extras (str JSON passthrough)`
+- **Compression:** ZSTD level 3.
+- **Cache key:** SHA-256 of (path, mtime_ns, size) for all source JSONL
+  files for that ticker; stored in sidecar `<TICKER>.parquet.meta.json`.
+- **Public API:** `get_bars(bars_dir, ticker, date) -> list[dict]` --
+  drop-in for `replay_v511_full.load_day_bars`; `build_all(bars_dir)` for
+  CLI pre-build.
+- **Integration:** `load_day_bars` delegates to `get_bars`; fallback to
+  direct JSONL parse if `pyarrow` not installed.
+
+### L2 -- Indicator precompute cache (`backtest/indicator_cache.py`)
+
+- **Cache root:** `<bars_dir>/.indcache_v1/`
+- **One Parquet per (ticker, params_hash):**
+  `<cache_root>/<TICKER>__<params_hash>.parquet`
+- **Indicators covered (pure functions of bars + static params):**
+  ATR(14), ATR(20), EMA9, EMA20, EMA50, VWAP rolling,
+  OR high/low (9:30-9:35, 9:30-10:00 ET), premarket high/low/range,
+  session boundary markers.
+- **Cache key:** SHA-256 of (bar_cache_key, indicator_set_version,
+  canonical params JSON). Invalidates if bars, indicator logic, or
+  params change.
+- **Public API:** `get_indicators(bars_dir, ticker, date, indicators,
+  params) -> dict[str, list[float]]`
+- **Sweep reuse:** variants changing only entry/exit logic (C5, C7, C10)
+  get full L2 reuse; variants changing indicator params get a cache miss
+  only on the changed indicator.
+
+### Engine module annotations
+
+`engine/scan.py`, `engine/sma_stack.py`, `engine/seeders.py` carry
+docstring annotations directing backtest callers to
+`indicator_cache.get_indicators`. Live engine code paths are unchanged.
