@@ -255,7 +255,7 @@ class TestCheckPositionsParity(unittest.TestCase):
 
 class TestCheckOrderRoundTrip(unittest.TestCase):
     def test_no_creds_skip(self):
-        with patch("trade_genius._is_rth_ct", return_value=True),              patch.dict(os.environ, {
+        with patch.object(tg, "_market_session", return_value="rth"),              patch.dict(os.environ, {
                  "VAL_ALPACA_PAPER_KEY": "", "GENE_ALPACA_PAPER_KEY": "",
                  "VAL_ALPACA_PAPER_SECRET": "", "GENE_ALPACA_PAPER_SECRET": "",
              }):
@@ -264,7 +264,7 @@ class TestCheckOrderRoundTrip(unittest.TestCase):
         self.assertIn("no creds", cr.message)
 
     def test_accidental_fill_warn(self):
-        with patch("trade_genius._is_rth_ct", return_value=True),              patch.dict(os.environ, {
+        with patch.object(tg, "_market_session", return_value="rth"),              patch.dict(os.environ, {
                  "VAL_ALPACA_PAPER_KEY": "k", "VAL_ALPACA_PAPER_SECRET": "s",
              }):
             try:
@@ -301,7 +301,7 @@ class TestCheckWsHealth(unittest.TestCase):
         mock_health.last_bar_age_s.return_value = 5.0
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health), \
              patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
-            cr = tg._check_ws_health(rth=True)
+            cr = tg._check_ws_health("rth")
         self.assertEqual(cr.severity, "ok")
         self.assertIn("connected", cr.message)
 
@@ -311,7 +311,7 @@ class TestCheckWsHealth(unittest.TestCase):
         mock_health.last_bar_age_s.return_value = None
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health), \
              patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
-            cr = tg._check_ws_health(rth=True)
+            cr = tg._check_ws_health("rth")
         self.assertEqual(cr.severity, "critical")
         self.assertIn("disconnected", cr.message)
 
@@ -321,7 +321,7 @@ class TestCheckWsHealth(unittest.TestCase):
         mock_health.last_bar_age_s.return_value = 60.0
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health), \
              patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
-            cr = tg._check_ws_health(rth=True)
+            cr = tg._check_ws_health("rth")
         self.assertEqual(cr.severity, "warn")
 
     def test_stale_over_90s_critical(self):
@@ -330,7 +330,7 @@ class TestCheckWsHealth(unittest.TestCase):
         mock_health.last_bar_age_s.return_value = 120.0
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health), \
              patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
-            cr = tg._check_ws_health(rth=True)
+            cr = tg._check_ws_health("rth")
         self.assertEqual(cr.severity, "critical")
 
     def test_outside_rth_info_regardless(self):
@@ -339,9 +339,9 @@ class TestCheckWsHealth(unittest.TestCase):
         mock_health.last_bar_age_s.return_value = 9999.0
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health), \
              patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
-            cr = tg._check_ws_health(rth=False)
+            cr = tg._check_ws_health("off")
         self.assertEqual(cr.severity, "info")
-        self.assertIn("non-RTH", cr.message)
+        self.assertIn("markets closed", cr.message)
 
 
 # ---------------------------------------------------------------------------
@@ -351,20 +351,20 @@ class TestCheckWsHealth(unittest.TestCase):
 class TestCheckBarArchive(unittest.TestCase):
     def test_dir_missing_rth_critical(self):
         with patch("os.path.isdir", return_value=False):
-            cr = tg._check_bar_archive(rth=True)
+            cr = tg._check_bar_archive("rth")
         self.assertEqual(cr.severity, "critical")
         self.assertIn("missing", cr.message)
 
     def test_dir_missing_non_rth_info(self):
         with patch("os.path.isdir", return_value=False):
-            cr = tg._check_bar_archive(rth=False)
+            cr = tg._check_bar_archive("off")
         self.assertEqual(cr.severity, "info")
-        self.assertIn("non-RTH", cr.message)
+        self.assertIn("markets closed", cr.message)
 
     def test_dir_exists_0_files_rth_warn(self):
         with patch("os.path.isdir", return_value=True), \
              patch("os.listdir", return_value=[]):
-            cr = tg._check_bar_archive(rth=True)
+            cr = tg._check_bar_archive("rth")
         self.assertEqual(cr.severity, "warn")
         self.assertIn("0 files", cr.message)
 
@@ -373,7 +373,7 @@ class TestCheckBarArchive(unittest.TestCase):
              patch("os.listdir", return_value=["f1.jsonl", "f2.jsonl"]), \
              patch("os.path.isfile", return_value=True), \
              patch("os.path.getsize", return_value=2_000_000):
-            cr = tg._check_bar_archive(rth=True)
+            cr = tg._check_bar_archive("rth")
         self.assertEqual(cr.severity, "ok")
         self.assertIn("files", cr.message)
 
@@ -387,7 +387,7 @@ class TestCheckAlgoplusLiveness(unittest.TestCase):
         mock_health = MagicMock()
         mock_health.last_bar_age_s.return_value = 10.0
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health):
-            cr = tg._check_algoplus_liveness(rth=True)
+            cr = tg._check_algoplus_liveness("rth")
         self.assertEqual(cr.severity, "ok")
         self.assertIn("tick", cr.message)
 
@@ -395,7 +395,7 @@ class TestCheckAlgoplusLiveness(unittest.TestCase):
         mock_health = MagicMock()
         mock_health.last_bar_age_s.return_value = 120.0
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health):
-            cr = tg._check_algoplus_liveness(rth=True)
+            cr = tg._check_algoplus_liveness("rth")
         self.assertEqual(cr.severity, "critical")
         self.assertIn("stale", cr.message)
 
@@ -403,9 +403,9 @@ class TestCheckAlgoplusLiveness(unittest.TestCase):
         mock_health = MagicMock()
         mock_health.last_bar_age_s.return_value = 9999.0
         with patch.object(tg.ingest_algo_plus, "get_health", return_value=mock_health):
-            cr = tg._check_algoplus_liveness(rth=False)
+            cr = tg._check_algoplus_liveness("off")
         self.assertEqual(cr.severity, "info")
-        self.assertIn("non-RTH", cr.message)
+        self.assertIn("markets closed", cr.message)
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +778,7 @@ class TestFormatSystemTestBody(unittest.TestCase):
             _make_cr("Mode", "D", "info", "paper"),
             _make_cr("Dashboard", "E", "ok", "shadow_data_status=live"),
             _make_cr("Telegram", "E", "ok", "owner_id set"),
-            _make_cr("Version", "E", "ok", "6.7.0 parity"),
+            _make_cr("Version", "E", "ok", "%s parity" % tg.BOT_VERSION),
         ])
 
     def test_all_ok_footer(self):
@@ -811,7 +811,7 @@ class TestFormatSystemTestBody(unittest.TestCase):
 
     def test_version_label(self):
         body = tg._format_system_test_body("8:20 CT", self._all_ok_results(), 1.0)
-        self.assertIn("v6.7.0", body)
+        self.assertIn("v%s" % tg.BOT_VERSION, body)
         self.assertIn("8:20 CT", body)
 
 

@@ -1,5 +1,5 @@
 """
-TradeGenius v3.5.1 — Eye of the Tiger 2.0 (paper book)
+TradeGenius v3.5.1 \u2014 Eye of the Tiger 2.0 (paper book)
 ===========================================================================
 ORB Momentum Breakout + Wounded Buffalo Short on a user-defined ticker
 universe. Paper book only; live execution arrives in v4.0.0 via the
@@ -74,11 +74,11 @@ from telegram.ext import (
 # ============================================================
 TELEGRAM_TOKEN          = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID                 = os.getenv("CHAT_ID")
-# v3.4.41 — treat empty string as unset so Railway vars left blank still
+# v3.4.41 \u2014 treat empty string as unset so Railway vars left blank still
 # fall back to the hardcoded owner ID.
 _RH_OWNER_DEFAULT       = "5165570192"
 
-# v3.6.0 — Telegram owner whitelist. Every Telegram update is checked
+# v3.6.0 \u2014 Telegram owner whitelist. Every Telegram update is checked
 # against this set by a group=-1 TypeHandler before any other handler
 # fires; non-owners are silently dropped (no reply, server-side log only).
 # Comma-separated Telegram user ids (positive integers), NOT chat ids.
@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.7.2"
+BOT_VERSION = "6.7.3"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -109,7 +109,7 @@ CURRENT_MAIN_NOTE = (
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
-# Backwards-compat alias — any remaining references default to main.
+# Backwards-compat alias \u2014 any remaining references default to main.
 RELEASE_NOTE = MAIN_RELEASE_NOTE
 
 FMP_API_KEY = os.getenv("FMP_API_KEY")
@@ -266,12 +266,12 @@ CDT = ZoneInfo("America/Chicago")   # user display timezone
 
 
 def _now_et() -> datetime:
-    """Current time in ET — for market-hour gate logic only."""
+    """Current time in ET \u2014 for market-hour gate logic only."""
     return datetime.now(timezone.utc).astimezone(ET)
 
 
 def _now_cdt() -> datetime:
-    """Current time in CDT — for all user-facing display."""
+    """Current time in CDT \u2014 for all user-facing display."""
     return datetime.now(timezone.utc).astimezone(CDT)
 
 
@@ -316,7 +316,7 @@ def _parse_time_to_cdt(ts):
             return cdt_dt.strftime("%H:%M")
         except Exception:
             pass
-    # HH:MM:SS or HH:MM — already local (CDT), just truncate
+    # HH:MM:SS or HH:MM \u2014 already local (CDT), just truncate
     parts = ts.split(":")
     if len(parts) >= 2:
         return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
@@ -335,7 +335,7 @@ def _is_today(ts_str: str) -> bool:
         return False
 
 
-# ── Matplotlib (optional — graceful skip if not installed) ──────────────
+# ── Matplotlib (optional \u2014 graceful skip if not installed) ──────────────
 try:
     import matplotlib
     matplotlib.use('Agg')
@@ -353,7 +353,7 @@ if MATPLOTLIB_AVAILABLE:
             fig, ax = plt.subplots()
             plt.close(fig)
         except Exception as e:
-            # v4.1.2: don't swallow silently — a broken matplotlib install
+            # v4.1.2: don't swallow silently \u2014 a broken matplotlib install
             # will make `/dayreport` fail later, and a DEBUG line here gives
             # the operator a breadcrumb when chart generation explodes.
             logger.debug("matplotlib warmup failed: %s", e)
@@ -421,9 +421,9 @@ _SHORT_REASON = {
 # ============================================================
 PAPER_LOG              = os.getenv("PAPER_LOG_PATH", "investment.log")
 PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
-# v3.4.27 — persistent trade log. Default path is a sibling of the
+# v3.4.27 \u2014 persistent trade log. Default path is a sibling of the
 # paper state file so it lands on the same volume automatically. The
-# file is append-only JSONL — one closed trade per line. Survives
+# file is append-only JSONL \u2014 one closed trade per line. Survives
 # redeploys when written to the mounted volume.
 TRADE_LOG_FILE         = os.getenv(
     "TRADE_LOG_PATH",
@@ -458,7 +458,7 @@ def paper_log(msg: str):
 #   - TICKERS and TRADE_TICKERS stay as module-level mutable
 #     lists so every `for t in TICKERS` loop picks up changes
 #     without plumbing a getter through ~25 call sites.
-#   - SPY and QQQ are PINNED — they drive the Sovereign Regime
+#   - SPY and QQQ are PINNED \u2014 they drive the Sovereign Regime
 #     shield and the RSI regime classifier. They can be added
 #     by the defaults but can never be removed via /remove.
 #   - TRADE_TICKERS is kept in sync via _rebuild_trade_tickers()
@@ -611,7 +611,7 @@ def _normalise_ticker(sym) -> str:
 
 
 def _rebuild_trade_tickers() -> None:
-    """Sync TRADE_TICKERS with TICKERS — in place.
+    """Sync TRADE_TICKERS with TICKERS \u2014 in place.
     Must run after every mutation of TICKERS so the scan loop,
     RSI regime classifier, and dashboard snapshot see the same
     tradable set.
@@ -624,7 +624,7 @@ def _rebuild_trade_tickers() -> None:
 
 def _load_tickers_file() -> list:
     """Read TICKERS_FILE and return a normalised, de-duplicated,
-    order-preserving list. Fail-soft — any error returns [].
+    order-preserving list. Fail-soft \u2014 any error returns [].
     """
     try:
         if not os.path.exists(TICKERS_FILE):
@@ -763,22 +763,22 @@ def _fill_metrics_for_ticker(ticker: str) -> dict:
     """Populate every metric a newly-added ticker needs so the very
     next scan cycle can evaluate it without cold-starting any data.
 
-    v3.4.33: thorough fill — primes PDC (dual source), OR high/low
+    v3.4.33: thorough fill \u2014 primes PDC (dual source), OR high/low
     (post-09:35 ET), a warm-up RSI snapshot, and a liveness probe on
     1-minute bars. Returns a dict describing what was filled; the
     caller uses this to tell the user exactly what is ready and what
     is still pending.
 
     Keys in the returned dict:
-      bars    : bool  — 1-minute bars are reachable for this symbol
-      pdc     : bool  — previous-day close cached in pdc[ticker]
-      pdc_src : str   — 'fmp' | 'bars' | 'none'
-      or      : bool  — opening range populated (high and low)
-      or_pending : bool — we're pre-09:35 ET; collect_or() will fill
-      rsi     : bool  — RSI warm-up value computed (not cached, just
+      bars    : bool  \u2014 1-minute bars are reachable for this symbol
+      pdc     : bool  \u2014 previous-day close cached in pdc[ticker]
+      pdc_src : str   \u2014 'fmp' | 'bars' | 'none'
+      or      : bool  \u2014 opening range populated (high and low)
+      or_pending : bool \u2014 we're pre-09:35 ET; collect_or() will fill
+      rsi     : bool  \u2014 RSI warm-up value computed (not cached, just
                         proves the bar history is long enough)
-      rsi_val : float | None — the warm-up value, for display only
-      errors  : list[str]    — human-readable problems, truncated
+      rsi_val : float | None \u2014 the warm-up value, for display only
+      errors  : list[str]    \u2014 human-readable problems, truncated
                                to short phrases by the caller
     """
     filled = {
@@ -796,7 +796,7 @@ def _fill_metrics_for_ticker(ticker: str) -> dict:
                                    second=0, microsecond=0)
     past_or_window = now_et >= or_window_end
 
-    # 1) PDC via FMP quote — works any time of day, including pre-open.
+    # 1) PDC via FMP quote \u2014 works any time of day, including pre-open.
     try:
         q = get_fmp_quote(ticker)
         if q and q.get("previousClose"):
@@ -823,7 +823,7 @@ def _fill_metrics_for_ticker(ticker: str) -> dict:
                 filled["pdc"] = True
                 filled["pdc_src"] = "bars"
 
-            # OR fill — only if we're past 09:35 ET.
+            # OR fill \u2014 only if we're past 09:35 ET.
             if past_or_window:
                 open_ts = int(or_window_end.replace(hour=9, minute=30)
                               .timestamp())
@@ -848,7 +848,7 @@ def _fill_metrics_for_ticker(ticker: str) -> dict:
                     filled["errors"].append(
                         "no bars in 09:30\u201309:35")
             else:
-                # Pre-09:35 is not an error — explicitly flag pending.
+                # Pre-09:35 is not an error \u2014 explicitly flag pending.
                 filled["or_pending"] = True
 
         else:
@@ -896,7 +896,7 @@ def remove_ticker(sym: str) -> dict:
 
     Pinned tickers (SPY, QQQ) are always refused.
     Open positions on the removed ticker keep managing until they
-    close — this only stops new entries from being opened.
+    close \u2014 this only stops new entries from being opened.
     """
     t = _normalise_ticker(sym)
     if not t:
@@ -910,7 +910,7 @@ def remove_ticker(sym: str) -> dict:
     TICKERS.remove(t)
     _rebuild_trade_tickers()
     _save_tickers_file()
-    # Leave or_high/or_low/pdc entries behind — any still-open
+    # Leave or_high/or_low/pdc entries behind \u2014 any still-open
     # position on this ticker relies on them to manage exits.
     logger.info("ticker removed: %s", t)
     # v5.6.1 D6 \u2014 [WATCHLIST_REMOVE] hook for replay reconstruction.
@@ -923,7 +923,7 @@ def remove_ticker(sym: str) -> dict:
     return {"ok": True, "removed": True, "ticker": t,
             "had_open": bool(open_long or open_short)}
 
-# v3.4.45 — paper sizing is now dollar-based like RH. SHARES is kept
+# v3.4.45 \u2014 paper sizing is now dollar-based like RH. SHARES is kept
 # as a legacy fallback only (used when price is unavailable in test
 # paths). Production entries call paper_shares_for(price) instead.
 SHARES         = 10
@@ -945,7 +945,7 @@ DI_PLUS_ENTRY2_THRESHOLD        = 30
 DI_MINUS_ENTRY2_THRESHOLD       = 30
 
 # ============================================================
-# v6.1.0 — ATR-normalized OR-break entry gate (#3)
+# v6.1.0 \u2014 ATR-normalized OR-break entry gate (#3)
 # ============================================================
 # Master feature flag. False -> fall back to fixed-cents path (legacy).
 _V610_ATR_OR_BREAK_ENABLED: bool = False
@@ -978,12 +978,12 @@ _v610_late_or_low: dict = {}         # ticker -> float
 # GLOBAL STATE
 # ============================================================
 
-# OR data — populated at 09:35 ET
+# OR data \u2014 populated at 09:35 ET
 or_high: dict = {}                  # ticker -> OR high price
 or_low: dict = {}                   # ticker -> OR low price (Wounded Buffalo)
 pdc: dict = {}                      # ticker -> previous day close
 or_collected_date: str = ""         # date string, prevents re-collection
-# v4.0.3-beta — per-ticker counter of OR staleness SKIPs this session.
+# v4.0.3-beta \u2014 per-ticker counter of OR staleness SKIPs this session.
 # Exposed in /api/state so silent "OR vs live drift" failures are
 # visible without tailing Railway logs.
 or_stale_skip_count: dict = {}      # ticker -> int
@@ -2056,8 +2056,8 @@ TRADE_HISTORY_MAX = 500
 
 # Short positions (Wounded Buffalo strategy)
 short_positions: dict = {}           # paper short: {ticker: {entry_price, shares, stop, trail_stop, trail_active, entry_time, date, side}}
-daily_short_entry_count: dict = {}   # {ticker: int} — resets daily, separate from long count
-daily_short_entry_date: str = ""     # v4.7.0 — mirror of daily_entry_date for shorts
+daily_short_entry_count: dict = {}   # {ticker: int} \u2014 resets daily, separate from long count
+daily_short_entry_date: str = ""     # v4.7.0 \u2014 mirror of daily_entry_date for shorts
 short_trade_history: list = []       # max 500 closed paper shorts
 
 # v5.0.0 \u2014 Tiger/Buffalo two-stage state-machine tracks. Per-ticker per-
@@ -2129,7 +2129,7 @@ class MarketMode:
 
 _current_mode: str = MarketMode.CLOSED
 
-# v3.4.21 — per-ticker entry-gate snapshot for dashboard rendering.
+# v3.4.21 \u2014 per-ticker entry-gate snapshot for dashboard rendering.
 # Populated by _update_gate_snapshot() on every scan cycle.
 # Shape: {ticker: {
 #     "side": "LONG"|"SHORT",
@@ -2271,7 +2271,7 @@ def _update_gate_snapshot(ticker):
 
 
 # ============================================================
-# v3.4.47 — Eye of the Tiger 2.0 helpers
+# v3.4.47 \u2014 Eye of the Tiger 2.0 helpers
 # ============================================================
 
 def _resample_to_5min_ohlc(timestamps, opens, highs, lows, closes):
@@ -2854,7 +2854,7 @@ def _tiger_two_bar_short(closes, or_l):
 
 
 # ============================================================
-# v6.1.0 — ATR-normalized OR-break helpers
+# v6.1.0 \u2014 ATR-normalized OR-break helpers
 # ============================================================
 
 def _v610_compute_pm_atr(ticker: str) -> "float | None":
@@ -3043,7 +3043,7 @@ def _v610_late_or_break_short(closes: list, ticker: str) -> bool:
 
 def _compute_today_realized_pnl() -> float:
     """Realized P&L today across longs + shorts for the paper portfolio.
-    Unrealized P&L is excluded on purpose — we want the number that
+    Unrealized P&L is excluded on purpose \u2014 we want the number that
     drives the DAILY_LOSS_LIMIT halt, which is realized-only.
 
     Storage asymmetry (critical): long SELLs go to paper_trades with
@@ -3088,9 +3088,9 @@ def _refresh_market_mode():
     return
 
 
-# Scan pause (Feature 8) — user-set via Telegram /pause /resume.
+# Scan pause (Feature 8) \u2014 user-set via Telegram /pause /resume.
 _scan_paused: bool = False
-# Auto-idle flag — True when scan_loop is short-circuiting because it's
+# Auto-idle flag \u2014 True when scan_loop is short-circuiting because it's
 # outside market hours (weekends, pre-09:35, post-15:55). Updated at the
 # top of every scan cycle, independent of market hours, so the dashboard
 # banner reflects reality after the close instead of sticking on POWER.
@@ -3127,35 +3127,35 @@ user_config: dict = {"trading_mode": "paper"}
 # ============================================================
 
 # ============================================================
-# v3.4.27 — PERSISTENT TRADE LOG (append-only JSONL)
+# v3.4.27 \u2014 PERSISTENT TRADE LOG (append-only JSONL)
 # ============================================================
 # Every closed trade (longs via close_position, shorts via
 # close_short_position, and their TP counterparts) writes one JSON
 # line to TRADE_LOG_FILE. The file lives on the Railway volume so it
-# survives redeploys. Append-only — never rewritten, never rotated
+# survives redeploys. Append-only \u2014 never rewritten, never rotated
 # (a year of typical volume is ~3 MB).
 #
 # Schema (v1):
-#   schema_version: int       — 1
-#   bot_version:    str       — BOT_VERSION at write time
-#   date:           str       — YYYY-MM-DD (trade close date, ET)
-#   portfolio:      str       — "paper" | "tp"
+#   schema_version: int       \u2014 1
+#   bot_version:    str       \u2014 BOT_VERSION at write time
+#   date:           str       \u2014 YYYY-MM-DD (trade close date, ET)
+#   portfolio:      str       \u2014 "paper" | "tp"
 #   ticker:         str
-#   side:           str       — "LONG" | "SHORT"
+#   side:           str       \u2014 "LONG" | "SHORT"
 #   shares:         int
 #   entry_price:    float
 #   exit_price:     float
-#   entry_time:     str       — HH:MM:SS or ISO (as stored)
-#   exit_time:      str       — ISO-8601 UTC
+#   entry_time:     str       \u2014 HH:MM:SS or ISO (as stored)
+#   exit_time:      str       \u2014 ISO-8601 UTC
 #   hold_seconds:   float|null
-#   pnl:            float     — signed dollars
-#   pnl_pct:        float     — signed percent (0.23 = +0.23%)
-#   reason:         str       — EOD | TRAIL | STOP | RETRO_CAP |
+#   pnl:            float     \u2014 signed dollars
+#   pnl_pct:        float     \u2014 signed percent (0.23 = +0.23%)
+#   reason:         str       \u2014 EOD | TRAIL | STOP | RETRO_CAP |
 #                               RED_CANDLE | POLARITY_SHIFT |
 #                               HARD_EJECT_TIGER | forensic_stop |
 #                               per_trade_brake | be_stop | ema_trail |
 #                               velocity_fuse | ...
-#   entry_num:      int       — add-on index (longs only; 1 for shorts)
+#   entry_num:      int       \u2014 add-on index (longs only; 1 for shorts)
 #   trail_active_at_exit:   bool|null
 #   trail_stop_at_exit:     float|null
 #   trail_anchor_at_exit:   float|null  (trail_high for long, trail_low for short)
@@ -3210,7 +3210,7 @@ def trade_log_append(row):
 
     Best-effort: failures are logged and swallowed, never raised. The
     lock guards against the (rare) case of two close paths firing at
-    once — writes are atomic at the OS level for small lines on
+    once \u2014 writes are atomic at the OS level for small lines on
     POSIX, but the lock keeps log order deterministic and protects
     the _trade_log_last_error surface from races.
     """
@@ -3240,7 +3240,7 @@ def trade_log_append(row):
         _trade_log_last_error = f"{type(e).__name__}: {e}"
         logger.error(
             "[TRADE_LOG] append failed (%s). Path=%s. Trade still "
-            "executed — only persistence failed.",
+            "executed \u2014 only persistence failed.",
             e, TRADE_LOG_FILE,
         )
         return False
@@ -3250,7 +3250,7 @@ def trade_log_read_tail(limit=500, since_date=None, portfolio=None):
     """Read the tail of the trade log, optionally filtered.
 
     Returns a list of dicts, newest-last (same order as on disk).
-    Filtering is applied AFTER reading — trade log is small enough
+    Filtering is applied AFTER reading \u2014 trade log is small enough
     that this is fine. Failures return an empty list; never raises.
 
     Args:
@@ -3322,7 +3322,7 @@ def send_telegram(text, chat_id=None):
                     status = resp.status
                 if status == 429:
                     wait = 2 ** attempt
-                    logger.warning("Telegram 429 — sleeping %ds", wait)
+                    logger.warning("Telegram 429 \u2014 sleeping %ds", wait)
                     time.sleep(wait)
                     continue
                 time.sleep(0.3)
@@ -3330,7 +3330,7 @@ def send_telegram(text, chat_id=None):
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     wait = 2 ** attempt
-                    logger.warning("Telegram 429 — sleeping %ds", wait)
+                    logger.warning("Telegram 429 \u2014 sleeping %ds", wait)
                     time.sleep(wait)
                     continue
                 logger.error("Telegram send error (attempt %d): %s", attempt + 1, e)
@@ -3907,7 +3907,7 @@ def get_last_1min_close(ticker):
     if len(closes) >= 2:
         return closes[-2]          # last completed bar
     if len(closes) == 1:
-        return closes[-1]          # only one bar — best we have
+        return closes[-1]          # only one bar \u2014 best we have
     return None
 
 
@@ -3933,7 +3933,7 @@ def get_fmp_quote(ticker):
     return None
 
 
-# v4.0.3-beta — env-tunable staleness guard threshold. The old 1.5%
+# v4.0.3-beta \u2014 env-tunable staleness guard threshold. The old 1.5%
 # fired for routine intraday moves on volatile names (OKLO, QBTS,
 # LEU regularly drift >5% within a session) which killed every
 # signal. 5% is a real "something's broken" guard, not a "normal
@@ -3967,7 +3967,7 @@ def _entry_bar_volume(volumes, lookback=5):
 
     Returns (vol, ready):
       - (vol, True)  when a valid bar was found
-      - (0,   False) when every candidate bar was null/zero — caller
+      - (0,   False) when every candidate bar was null/zero \u2014 caller
                      must treat this as DATA NOT READY, NOT as low-vol.
 
     Failure-closed: a DATA NOT READY result must cause the caller to
@@ -4235,7 +4235,7 @@ def collect_or():
 
 
 # ============================================================
-# v3.4.34 — AVWAP fully removed
+# v3.4.34 \u2014 AVWAP fully removed
 # ============================================================
 # The AVWAP entry gates (check_entry, check_short_entry), the
 # regime-change alert, the breadth observer (_classify_breadth),
@@ -4263,7 +4263,7 @@ def collect_or():
 
 
 # ============================================================
-# v4.7.0 — Shared helpers for long/short entry symmetry
+# v4.7.0 \u2014 Shared helpers for long/short entry symmetry
 # ============================================================
 def _ticker_today_realized_pnl(ticker: str) -> float:
     """Sum today's realized P&L for `ticker` from long+short closed trades."""
@@ -4278,7 +4278,7 @@ def _ticker_today_realized_pnl(ticker: str) -> float:
     return pnl
 
 
-# v5.13.0 PR-5 SHARED-CUTOFF / SHARED-HUNT — single source of truth for the
+# v5.13.0 PR-5 SHARED-CUTOFF / SHARED-HUNT \u2014 single source of truth for the
 # new-position cutoff (15:44:59 ET) lives in engine/timing.py. This wrapper
 # adds the [SHARED-CUTOFF] log line and integrates with the entry path.
 from engine.timing import (
@@ -4293,7 +4293,7 @@ def _check_new_position_cutoff(ticker: str) -> bool:
     """SHARED-CUTOFF gate: returns True if a NEW position may still be opened.
 
     At/after 15:44:59 ET, this returns False and emits a structured log line.
-    Existing positions are NOT touched here — sentinel/ratchet manage them
+    Existing positions are NOT touched here \u2014 sentinel/ratchet manage them
     through SHARED-EOD (15:49:59 ET).
     """
     now_et = _now_et()
@@ -4428,7 +4428,7 @@ def _check_daily_loss_limit(ticker: str) -> bool:
     global _trading_halted, _trading_halted_reason
 
     if _trading_halted:
-        logger.info("Trading halted — skipping entry for %s", ticker)
+        logger.info("Trading halted \u2014 skipping entry for %s", ticker)
         return False
 
     now_et = _now_et()
@@ -4572,7 +4572,7 @@ def _check_daily_loss_limit(ticker: str) -> bool:
         limit_fmt = "%.2f" % effective_limit
         _trading_halted_reason = "Daily loss limit hit: $%s" % pnl_fmt
         halt_msg = (
-            "STOP Trading halted — daily loss limit hit\n"
+            "STOP Trading halted \u2014 daily loss limit hit\n"
             "Today P&L: $%s\n"
             "Limit: $%s\n"
             "No new entries until tomorrow."
@@ -4788,7 +4788,7 @@ def send_eod_report():
 # WEEKLY DIGEST (Feature 9)
 # ============================================================
 def send_weekly_digest():
-    """Weekly digest — Sunday 18:00 ET. Paper only."""
+    """Weekly digest \u2014 Sunday 18:00 ET. Paper only."""
     SEP = "\u2500" * 34
     now_et = _now_et()
     cutoff = now_et - timedelta(days=7)
@@ -4908,17 +4908,39 @@ _system_test_last_result: "tuple" = ()
 _system_test_last_ts: float = 0.0
 
 
+def _market_session() -> str:
+    """Return 'rth' | 'extended' | 'off' based on US/Central market hours.
+
+    RTH:      08:30\u201315:00 CT Mon\u2013Fri
+    EXTENDED: 03:00\u201308:30 CT and 15:00\u201319:00 CT Mon\u2013Fri
+    OFF:      overnight and weekends
+    """
+    from zoneinfo import ZoneInfo
+    try:
+        import datetime as _dt_mod; now_ct = _dt_mod.datetime.now(ZoneInfo("America/Chicago"))
+        if now_ct.weekday() >= 5:  # Sat/Sun
+            return "off"
+        h, m = now_ct.hour, now_ct.minute
+        minutes = h * 60 + m
+        rth_start, rth_end = 8 * 60 + 30, 15 * 60  # 08:30 \u2014 15:00 CT
+        pre_start = 3 * 60                           # 03:00 CT
+        post_end = 19 * 60                           # 19:00 CT
+        if rth_start <= minutes < rth_end:
+            return "rth"
+        if pre_start <= minutes < rth_start or rth_end <= minutes < post_end:
+            return "extended"
+        return "off"
+    except Exception:
+        return "off"
+
+
 def _is_rth_ct() -> bool:
     """Return True if current time is within RTH (08:30\u201315:00 US/Central).
 
     Product spec D-03: RTH = 08:30:00\u201315:00:00 US/Central, inclusive.
+    Shim for backward compatibility \u2014 delegates to _market_session().
     """
-    try:
-        now_ct = datetime.now(CDT)
-        now_m = now_ct.hour * 60 + now_ct.minute
-        return (8 * 60 + 30) <= now_m < (15 * 60)
-    except Exception:
-        return False
+    return _market_session() == "rth"
 
 
 def _safe_check(name: str, block: str, fn, timeout_s: float = 3.0) -> CheckResult:
@@ -5037,9 +5059,10 @@ def _check_order_round_trip() -> CheckResult:
     t0 = time.monotonic()
     def _ms():
         return int((time.monotonic() - t0) * 1000)
-    if not _is_rth_ct():
+    _ort_session = _market_session()
+    if _ort_session == "off":
         return CheckResult("Order round-trip", "A", "skip",
-                           "skipped (non-RTH \u2014 IOC requires market hours)", _ms())
+                           "skipped (overnight/weekend \u2014 markets closed)", _ms())
     key = (os.getenv("VAL_ALPACA_PAPER_KEY", "").strip()
            or os.getenv("GENE_ALPACA_PAPER_KEY", "").strip())
     secret = (os.getenv("VAL_ALPACA_PAPER_SECRET", "").strip()
@@ -5068,11 +5091,14 @@ def _check_order_round_trip() -> CheckResult:
         except Exception:
             logger.warning("[SYS-TEST] Block A: SPY bid unavailable, using fallback limit $1.00")
 
+        _tif_choice = _TIF.IOC if _ort_session == "rth" else _TIF.DAY
+        # RTH: IOC (self-cancels); EXTENDED: DAY (Alpaca rejects IOC outside market hours)
+
         req = _LOR(
             symbol="SPY",
             qty=1,
             side=_OS.BUY,
-            time_in_force=_TIF.IOC,
+            time_in_force=_tif_choice,
             limit_price=limit_price,
         )
         order = tc.submit_order(req)
@@ -5129,11 +5155,11 @@ def _check_order_round_trip() -> CheckResult:
 # Block B \u2014 Streaming & Ingest
 # ---------------------------------------------------------------------------
 
-def _check_ws_health(rth: bool) -> CheckResult:
+def _check_ws_health(session: str) -> CheckResult:
     """Check 4 \u2014 WebSocket connection state via ingest_algo_plus health.
 
-    RTH: WARN if last bar 30\u201390s, CRITICAL if >90s or disconnected.
-    Outside RTH: INFO regardless (D-01).
+    RTH/EXTENDED: WARN if last bar 30\u201390s, CRITICAL if >90s or disconnected.
+    OFF: INFO only (markets closed).
     """
     t0 = time.monotonic()
     def _ms():
@@ -5145,10 +5171,11 @@ def _check_ws_health(rth: bool) -> CheckResult:
         age_str = ("%ds ago" % age_s) if age_s is not None else "unknown"
         connected = (ws_state == ingest_algo_plus.LIVE)
 
-        if not rth:
+        if session == "off":
             conn_str = "connected" if connected else "disconnected"
             return CheckResult("WS", "B", "info",
-                               "%s, last bar %s (non-RTH)" % (conn_str, age_str), _ms())
+                               "%s, last bar %s (markets closed)" % (conn_str, age_str), _ms())
+        # RTH and EXTENDED: same thresholds (streams should be live in pre/post)
         if not connected:
             return CheckResult("WS", "B", "critical", "disconnected", _ms())
         if age is None or age <= 30:
@@ -5164,10 +5191,12 @@ def _check_ws_health(rth: bool) -> CheckResult:
                            "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
 
 
-def _check_bar_archive(rth: bool) -> CheckResult:
+def _check_bar_archive(session: str) -> CheckResult:
     """Check 5 \u2014 Bar archive write today (/data/bars/<utc_date>).
 
-    RTH: CRITICAL if dir missing; WARN if 0 files. Outside RTH: INFO.
+    RTH: CRITICAL if dir missing, WARN if 0 files.
+    EXTENDED: WARN if dir missing (might be early pre-market).
+    OFF: INFO only.
     """
     t0 = time.monotonic()
     def _ms():
@@ -5176,19 +5205,25 @@ def _check_bar_archive(rth: bool) -> CheckResult:
         today = _sys_dt_cls.utcnow().strftime("%Y-%m-%d")
         bar_dir = "/data/bars/%s" % today
         if not os.path.isdir(bar_dir):
-            if rth:
+            if session == "rth":
                 return CheckResult("Bars today", "B", "critical",
                                    "missing %s" % bar_dir, _ms())
+            if session == "extended":
+                return CheckResult("Bars today", "B", "warn",
+                                   "%s not found (may be early pre-market)" % bar_dir, _ms())
             return CheckResult("Bars today", "B", "info",
-                               "%s not found (non-RTH)" % bar_dir, _ms())
+                               "%s not found (markets closed)" % bar_dir, _ms())
         files = [f for f in os.listdir(bar_dir) if os.path.isfile(os.path.join(bar_dir, f))]
         n_files = len(files)
         if n_files == 0:
-            if rth:
+            if session == "rth":
                 return CheckResult("Bars today", "B", "warn",
                                    "dir exists, 0 files", _ms())
+            if session == "extended":
+                return CheckResult("Bars today", "B", "warn",
+                                   "dir exists, 0 files (extended hours)", _ms())
             return CheckResult("Bars today", "B", "info",
-                               "%s \u2014 0 files (non-RTH)" % bar_dir, _ms())
+                               "%s \u2014 0 files (markets closed)" % bar_dir, _ms())
         total_bytes = sum(os.path.getsize(os.path.join(bar_dir, f)) for f in files)
         if total_bytes >= 1_048_576:
             size_str = "%.1fMB" % (total_bytes / 1_048_576)
@@ -5201,10 +5236,12 @@ def _check_bar_archive(rth: bool) -> CheckResult:
                            "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
 
 
-def _check_algoplus_liveness(rth: bool) -> CheckResult:
+def _check_algoplus_liveness(session: str) -> CheckResult:
     """Check 6 \u2014 AlgoPlus ingest worker liveness via last_bar_age_s.
 
-    RTH: CRITICAL if >60s stale (D-02). Outside RTH: INFO.
+    RTH: CRITICAL if >60s stale (D-02).
+    EXTENDED: WARN if >120s stale (slacker threshold for lower pre/post volume).
+    OFF: INFO only.
     """
     t0 = time.monotonic()
     def _ms():
@@ -5213,9 +5250,16 @@ def _check_algoplus_liveness(rth: bool) -> CheckResult:
         age = ingest_algo_plus.get_health().last_bar_age_s()
         age_s = int(age) if age is not None else None
         age_str = ("%ds ago" % age_s) if age_s is not None else "unknown"
-        if not rth:
+        if session == "off":
             return CheckResult("AlgoPlus", "B", "info",
-                               "tick %s (non-RTH)" % age_str, _ms())
+                               "tick %s (markets closed)" % age_str, _ms())
+        if session == "extended":
+            if age is None or age > 120:
+                return CheckResult("AlgoPlus", "B", "warn",
+                                   "stale %s (extended hours)" % age_str, _ms())
+            return CheckResult("AlgoPlus", "B", "ok",
+                               "tick %s" % age_str, _ms())
+        # RTH
         if age is None or age > 60:
             return CheckResult("AlgoPlus", "B", "critical",
                                "stale %s \u2014 ingest worker may be dead" % age_str, _ms())
@@ -5373,7 +5417,7 @@ def _check_mode() -> CheckResult:
 def _check_dashboard() -> CheckResult:
     """Check 13 \u2014 Dashboard /api/state reachability (auth-aware).
 
-    Uses http://localhost:{DASHBOARD_PORT} (D-14).
+    Uses http://127.0.0.1:{DASHBOARD_PORT} (D-14) \u2014 avoids urllib single-label-host cookie bug.
     Login flow: POST /login with DASHBOARD_PASSWORD, capture session cookie,
     then GET /api/state.
     Skip if DASHBOARD_PASSWORD env var is unset.
@@ -5389,7 +5433,7 @@ def _check_dashboard() -> CheckResult:
         return CheckResult("Dashboard", "E", "skip",
                            "skipped (no dashboard password)", _ms())
     port = int(os.getenv("DASHBOARD_PORT", "8080") or "8080")
-    base_url = "http://localhost:%d" % port
+    base_url = "http://127.0.0.1:%d" % port
     try:
         import urllib.parse as _uparse
         import http.cookiejar as _cj
@@ -5401,7 +5445,7 @@ def _check_dashboard() -> CheckResult:
             data=login_data,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "TradeGenius-SysTest/6.7.2",
+                "User-Agent": "TradeGenius-SysTest/6.7.3",
                 "Origin": base_url,
             },
         )
@@ -5521,7 +5565,7 @@ def _format_system_test_body(label: str, results, elapsed_s: float) -> str:
     n_critical = sum(1 for r in results if r.severity == "critical")
     n_warn = sum(1 for r in results if r.severity == "warn")
 
-    parts = ["\U0001f9ea System Test [%s] v6.7.0" % label, SEP]
+    parts = ["\U0001f9ea System Test [%s] v%s" % (label, BOT_VERSION), SEP]
     for block_label, block_id in blocks:
         block_results = [r for r in results if r.block == block_id]
         if not block_results:
@@ -5582,7 +5626,8 @@ def _run_system_test_sync_v2(label: str, force: bool = False) -> str:
         _system_test_running = True
 
     t_start = time.monotonic()
-    rth = _is_rth_ct()
+    session = _market_session()
+    rth = (session == "rth")  # bool shim for checks still using rth (check 2)
 
     def _block_a():
         r1 = _safe_check("Alpaca account", "A", _check_alpaca_account, timeout_s=5.0)
@@ -5592,9 +5637,9 @@ def _run_system_test_sync_v2(label: str, force: bool = False) -> str:
         return [r1, r2, r3]
 
     def _block_b():
-        r4 = _safe_check("WS", "B", lambda: _check_ws_health(rth))
-        r5 = _safe_check("Bars today", "B", lambda: _check_bar_archive(rth))
-        r6 = _safe_check("AlgoPlus", "B", lambda: _check_algoplus_liveness(rth))
+        r4 = _safe_check("WS", "B", lambda: _check_ws_health(session))
+        r5 = _safe_check("Bars today", "B", lambda: _check_bar_archive(session))
+        r6 = _safe_check("AlgoPlus", "B", lambda: _check_algoplus_liveness(session))
         r7 = _safe_check("Ingest gate", "B", _check_ingest_gate)
         return [r4, r5, r6, r7]
 
@@ -5649,8 +5694,8 @@ def _run_system_test_sync_v2(label: str, force: bool = False) -> str:
 
     except Exception as _oe:
         logger.error("[SYS-TEST] orchestrator failed: %s", _oe)
-        return "\U0001f9ea System Test [%s] v6.7.0\n\u274c orchestrator error: %s" % (
-            label, str(_oe)[:80])
+        return "\U0001f9ea System Test [%s] v%s\n\u274c orchestrator error: %s" % (
+            label, BOT_VERSION, str(_oe)[:80])
     finally:
         with _system_test_lock:
             _system_test_running = False
@@ -5773,7 +5818,7 @@ class _ProdCallbacks:
 # ============================================================
 def reset_daily_state():
     """Reset OR data and daily counts for new trading day.
-    (v3.4.34: AVWAP reset removed — AVWAP state no longer tracked.)
+    (v3.4.34: AVWAP reset removed \u2014 AVWAP state no longer tracked.)
     """
     global or_collected_date, daily_entry_date, _trading_halted, _trading_halted_reason
     global daily_short_entry_count, daily_short_entry_date
@@ -5787,7 +5832,7 @@ def reset_daily_state():
         pdc.clear()
         or_stale_skip_count.clear()
         or_collected_date = ""
-        # v6.1.0 — clear ATR OR-break session state alongside OR data.
+        # v6.1.0 \u2014 clear ATR OR-break session state alongside OR data.
         _v610_pm_atr.clear()
         _v610_or_break_fired.clear()
         _v610_late_or_high.clear()
@@ -5957,7 +6002,7 @@ def gap_detect_task() -> None:
 # SCHEDULER THREAD
 # ============================================================
 def scheduler_thread():
-    """Background scheduler — all times in ET."""
+    """Background scheduler \u2014 all times in ET."""
     DAY_NAMES = [
         "monday", "tuesday", "wednesday", "thursday",
         "friday", "saturday", "sunday",
@@ -5978,9 +6023,21 @@ def scheduler_thread():
     # retries deleted (non-spec). 09:30 reset, 09:35 OR collect, R-4
     # 15:49 EOD flush retained.
     JOBS = [
-        ("daily", "09:20", lambda: _fire_system_test("8:20 CT")),
+        # v6.7.3: system-test fires every 2h from 03:00 to 19:00 CT (Mon-Fri).
+        # Scheduler times are in ET (Eastern), equal to CT+1 during CDT
+        # (UTC-5, approx Mar-Nov). During CST (CT=ET, Nov-Mar) these fire
+        # 1h late -- acceptable drift for a monitoring heartbeat.
+        # "daily" entries run weekdays only (weekday() < 5 per scheduler match logic).
+        ("daily", "08:00", lambda: _fire_system_test("3:00 CT (pre-open)")),
+        ("daily", "10:00", lambda: _fire_system_test("5:00 CT")),
+        ("daily", "12:00", lambda: _fire_system_test("7:00 CT")),
+        ("daily", "14:00", lambda: _fire_system_test("9:00 CT")),
+        ("daily", "16:00", lambda: _fire_system_test("11:00 CT")),
+        ("daily", "18:00", lambda: _fire_system_test("13:00 CT")),
+        ("daily", "20:00", lambda: _fire_system_test("15:00 CT (RTH close)")),
+        ("daily", "22:00", lambda: _fire_system_test("17:00 CT")),
+        ("daily", "00:00", lambda: _fire_system_test("19:00 CT (post-close)")),
         ("daily", "09:30", reset_daily_state),
-        ("daily", "09:31", lambda: _fire_system_test("8:31 CT")),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
@@ -5990,7 +6047,7 @@ def scheduler_thread():
         ("sunday", "18:00", send_weekly_digest),
     ]
 
-    logger.info("Scheduler started — market times ET, display CDT (UTC offset: %s)",
+    logger.info("Scheduler started \u2014 market times ET, display CDT (UTC offset: %s)",
                 datetime.now(timezone.utc).strftime("%z"))
 
     while True:
@@ -6030,7 +6087,7 @@ def scheduler_thread():
             except Exception as e:
                 logger.warning("persistence.prune_fired failed: %s", e)
 
-        # Scan loop — every SCAN_INTERVAL seconds
+        # Scan loop \u2014 every SCAN_INTERVAL seconds
         elapsed = (now_et - last_scan).total_seconds()
         if elapsed >= SCAN_INTERVAL:
             last_scan = now_et
@@ -6047,7 +6104,7 @@ def scheduler_thread():
                     detail=f"{type(e).__name__}: {str(e)[:200]}",
                 )
 
-        # Periodic state save — every 5 minutes
+        # Periodic state save \u2014 every 5 minutes
         state_elapsed = (now_et - last_state_save).total_seconds() / 60
         if state_elapsed >= 5:
             last_state_save = now_et
@@ -6069,9 +6126,9 @@ def scheduler_thread():
 # HEALTH CHECK (keep Railway deployment alive)
 # ============================================================
 def health_ping():
-    """Periodic health check log line — keeps the process visible."""
+    """Periodic health check log line \u2014 keeps the process visible."""
     while True:
-        logger.debug("Health ping — alive")
+        logger.debug("Health ping \u2014 alive")
         time.sleep(300)
 
 
@@ -6130,7 +6187,7 @@ def _compute_streak(history):
 
 
 def _dashboard_sync():
-    """Build dashboard text (blocking I/O — run in executor)."""
+    """Build dashboard text (blocking I/O \u2014 run in executor)."""
     SEP = "\u2500" * 34
     now_et = _now_et()
     time_cdt = _now_cdt().strftime("%I:%M %p CDT")
@@ -6144,7 +6201,7 @@ def _dashboard_sync():
     )
     market_status = "OPEN" if in_hours else "CLOSED"
 
-    # Index filters — fetch live prices
+    # Index filters \u2014 fetch live prices
     spy_bars = fetch_1min_bars("SPY")
     qqq_bars = fetch_1min_bars("QQQ")
     spy_price = spy_bars["current_price"] if spy_bars else 0.0
@@ -6161,7 +6218,7 @@ def _dashboard_sync():
         SEP,
     ]
 
-    # Paper portfolio only — Day P&L includes long SELLs + short COVERs
+    # Paper portfolio only \u2014 Day P&L includes long SELLs + short COVERs
     n_pos = len(positions) + len(short_positions)
     _, _, day_pnl, _, _, _ = _today_pnl_breakdown()
 
@@ -6218,7 +6275,7 @@ def _dashboard_sync():
 
 
 def _status_text_sync():
-    """Build full status text (blocking I/O — run in executor)."""
+    """Build full status text (blocking I/O \u2014 run in executor)."""
     now_et = _now_et()
     sep = "\u2500" * 34
 
@@ -6483,12 +6540,12 @@ def _build_positions_text():
 
 
 # ============================================================
-# /trade_log COMMAND — last 10 persistent-log entries (v3.4.27)
+# /trade_log COMMAND \u2014 last 10 persistent-log entries (v3.4.27)
 # ============================================================
 
 
 # ============================================================
-# /tp_sync COMMAND — TradersPost broker sync status (v3.4.15)
+# /tp_sync COMMAND \u2014 TradersPost broker sync status (v3.4.15)
 # ============================================================
 
 
@@ -6498,7 +6555,7 @@ def _build_positions_text():
 
 
 # ============================================================
-# /mode COMMAND — market mode classifier (observation only)
+# /mode COMMAND \u2014 market mode classifier (observation only)
 # ============================================================
 
 
@@ -6517,7 +6574,7 @@ def _build_positions_text():
 # ============================================================
 
 # Window in seconds during which a "Confirm" tap is accepted after the
-# /reset command was issued. Beyond this, the callback is rejected — this
+# /reset command was issued. Beyond this, the callback is rejected \u2014 this
 # prevents scrolling up to an old /reset message tomorrow and tapping
 # Confirm by accident.
 RESET_CONFIRM_WINDOW_SEC = 60
@@ -6566,7 +6623,7 @@ RESET_CONFIRM_WINDOW_SEC = 60
 
 
 # ============================================================
-# /menu COMMAND — Quick tap-grid
+# /menu COMMAND \u2014 Quick tap-grid
 # ============================================================
 
 
@@ -6579,12 +6636,12 @@ RESET_CONFIRM_WINDOW_SEC = 60
 
 
 # ============================================================
-# /ticker COMMAND  (v3.4.33 — unified add/remove/list)
+# /ticker COMMAND  (v3.4.33 \u2014 unified add/remove/list)
 # ============================================================
 # One command with sub-switches:
-#   /ticker list         — show the tracked universe
-#   /ticker add SYM      — add + prime PDC/OR/RSI/bars
-#   /ticker remove SYM   — drop (SPY/QQQ are pinned, refused)
+#   /ticker list         \u2014 show the tracked universe
+#   /ticker add SYM      \u2014 add + prime PDC/OR/RSI/bars
+#   /ticker remove SYM   \u2014 drop (SPY/QQQ are pinned, refused)
 #
 # Back-compat aliases registered as hidden handlers so any saved
 # shortcuts still work:
@@ -6648,7 +6705,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("retighten", "Retighten stops to 0.75% cap"),
     BotCommand("trade_log", "Last 10 closed trades (persistent)"),
     BotCommand("ticker", "Ticker: list | add SYM | remove SYM"),
-    # v3.4.38 — Robinhood live-trading kill switch.
+    # v3.4.38 \u2014 Robinhood live-trading kill switch.
     BotCommand("rh_status", "Robinhood kill-switch state"),
     BotCommand("rh_enable", "Enable Robinhood live trading"),
     BotCommand("rh_disable", "Disable Robinhood live trading"),
@@ -6656,9 +6713,9 @@ MAIN_BOT_COMMANDS = [
 ]
 
 # TP bot: main bot's commands plus /rh_sync (Robinhood-only).
-# v3.4.38 — kill-switch commands (rh_enable/disable/status) are main-bot
+# v3.4.38 \u2014 kill-switch commands (rh_enable/disable/status) are main-bot
 # only, so strip them from the TP menu.
-# v3.4.44 — /tp_sync popup entry removed (duplicate of /rh_sync); the
+# v3.4.44 \u2014 /tp_sync popup entry removed (duplicate of /rh_sync); the
 # typed /tp_sync handler stays as a silent alias so saved shortcuts work.
 _RH_KILL_SWITCH_CMDS = {"rh_enable", "rh_disable", "rh_status"}
 TP_BOT_COMMANDS = [
@@ -6722,7 +6779,7 @@ try:
 except Exception as _uge:
     logger.error("[UNIVERSE_GUARD] startup check crashed: %s", _uge, exc_info=True)
 
-# v3.4.32 — load the editable ticker universe from tickers.json
+# v3.4.32 \u2014 load the editable ticker universe from tickers.json
 # before anything else so load_paper_state() and retighten see the
 # right TICKERS list (e.g. if a newly-added QBTS already has an
 # open paper position persisted from a previous session). Note
@@ -6738,7 +6795,7 @@ _init_tickers()
 load_paper_state()
 
 # Live dashboard (read-only web UI). Env-gated: off unless DASHBOARD_PASSWORD is set.
-# Runs in its own thread with its own asyncio loop — never touches PTB's loop.
+# Runs in its own thread with its own asyncio loop \u2014 never touches PTB's loop.
 try:
     import dashboard_server
     dashboard_server.start_in_thread()
@@ -6767,7 +6824,7 @@ try:
 except Exception as _ff_err:
     logger.warning("[STARTUP] feature_flags read failed: %s", _ff_err)
 
-# Smoke-test guard — lets smoke_test.py import this module without booting
+# Smoke-test guard \u2014 lets smoke_test.py import this module without booting
 # the Telegram client, scheduler, OR-collector, or dashboard. The test
 # script sets SSM_SMOKE_TEST=1 before import. This is the ONLY place
 # where that env var is read.
