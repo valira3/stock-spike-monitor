@@ -18,6 +18,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY trade_genius.py .
+COPY bot_version.py .
 COPY telegram_commands.py .
 COPY paper_state.py .
 COPY side.py .

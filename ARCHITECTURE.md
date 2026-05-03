@@ -3408,3 +3408,62 @@ v6.6.0 hardens the always-on Algo Plus ingest layer introduced in v6.5.0 across 
 - **v6.6.1 (future):** Flip `SSM_INGEST_GATE_MODE=enforce` in Railway after written sign-off from Devi (data validation), Reese (cost ceiling), and Val (ratification). No code change required.
 
 *Last refresh: May 2026, against `BOT_VERSION = "6.6.0"`.*
+
+---
+
+## System Health Test (v6.7.0)
+
+The `/test` Telegram command and the 8:20/8:31 CT scheduler calls run 15 checks
+covering every component that can silently break production trading.
+
+### 15 Checks
+
+| # | Name | Block | Severity | RTH-gated? |
+|---|------|-------|----------|------------|
+| 1 | Alpaca account reachability | A | CRITICAL | No |
+| 2 | Alpaca positions parity | A | CRITICAL (RTH) / WARN (non-RTH) / skip (paper) | Partial |
+| 3 | Order round-trip (SPY IOC) | A | CRITICAL | No |
+| 4 | WS connection state | B | CRITICAL (RTH) / INFO (non-RTH) | Partial |
+| 5 | Bar archive today | B | CRITICAL/WARN (RTH) / INFO (non-RTH) | Partial |
+| 6 | AlgoPlus ingest liveness | B | CRITICAL (RTH) / INFO (non-RTH) | Partial |
+| 7 | Ingest gate state | B | INFO always | No |
+| 8 | SQLite reachability | C | CRITICAL | No |
+| 9 | paper_state JSON parity | C | CRITICAL | No |
+| 10 | Disk space on /data | C | CRITICAL/WARN | No |
+| 11 | Kill-switch posture | D | CRITICAL / INFO | No |
+| 12 | Trading mode | D | INFO | No |
+| 13 | Dashboard /api/state | E | WARN | No |
+| 14 | Telegram config sanity | E | CRITICAL | No |
+| 15 | Version parity | E | CRITICAL | No |
+
+### Orchestrator Design
+
+- `CheckResult` dataclass: `name, block, severity, message, duration_ms`.
+- `_safe_check(name, block, fn, timeout_s)`: timeout enforcement + exception catch.
+- `_run_system_test_sync_v2(label)`: 5 block-runners submitted to
+  `ThreadPoolExecutor(max_workers=5)`. Checks within a block run sequentially.
+  RTH computed once at entry; all checks share the same RTH bool.
+- Single logging emission point in the orchestrator: `[ERROR] [SYS-TEST]` for
+  critical, `[WARNING] [SYS-TEST]` for warn, silence for ok/info/skip (D2).
+- Concurrency guard: `_system_test_running` + `_system_test_lock`. Concurrent call
+  returns cached result with staleness note.
+- `_run_system_test_sync(label)` preserved as one-line shim for scheduler call sites.
+
+### RTH Window
+
+08:30:00 \u2013 15:00:00 US/Central (America/Chicago), inclusive. Computed via `CDT`
+ZoneInfo in `_is_rth_ct()`. Outside RTH: Checks 4/5/6 \u2192 INFO; Check 2 \u2192 WARN.
+
+### Thresholds (locked, PRODUCT_SPEC.md)
+
+| Check | Threshold |
+|-------|-----------|
+| Disk CRITICAL | < 1 GB free |
+| Disk WARN | < 5 GB free |
+| WS WARN | last bar 30\u201390s (RTH) |
+| WS CRITICAL | last bar > 90s or disconnected (RTH) |
+| AlgoPlus CRITICAL | last tick > 60s (RTH) |
+| paper_state parity | delta > $0.01 |
+| Order round-trip limit | bid \xd7 0.90, floor-cent, min $1.00 |
+
+*Last refresh: May 2026, against `BOT_VERSION = "6.7.0"`.*

@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.6.1"
+BOT_VERSION = "6.7.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,14 +98,14 @@ BOT_VERSION = "6.6.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.6.0 ingest hardening (dry_run):\n"
-    "SLA gate ALLOW/BLOCK, 5/2-min\n"
-    "hysteresis, RTH-only, separate\n"
-    "ingest_audit.db (180-day).\n"
-    "v6.5.1: long-only deep-stop\n"
-    "(-0.75%) in min_hold window.\n"
-    "v6.4.4: PRICE_STOP<10m blocked;\n"
-    "R-2/Alarm B/F unblocked."
+    "v6.7.0 expanded /test (15 checks):\n"
+    "broker, streaming, state,\n"
+    "risk, observability blocks.\n"
+    "CheckResult dataclass, parallel\n"
+    "5-block ThreadPoolExecutor.\n"
+    "v6.6.1: FMP key hardening,\n"
+    "kill-switch unification,\n"
+    "ingest gate dry_run default."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -4871,84 +4871,739 @@ def send_weekly_digest():
 
 
 # ============================================================
-# SYSTEM HEALTH TEST
+# SYSTEM HEALTH TEST v6.7.0
 # ============================================================
-def _run_system_test_sync(label: str) -> None:
-    """Run system health checks and send report (blocking I/O — run in executor)."""
-    SEP = "\u2500" * 30
-    issues = 0
-    lines = []
+#
+# Architecture per ARCHITECTURE.md (Aria, 2025-05-03):
+#   - All checks live here; telegram_commands.py calls _run_system_test_sync_v2.
+#   - CheckResult dataclass carries per-check severity + rendered line.
+#   - 5-block parallel execution via ThreadPoolExecutor(max_workers=5).
+#   - Single logging emission point: orchestrator only.
+#   - Concurrency guard: _system_test_running flag + _system_test_lock.
+#
+# Product spec per PRODUCT_SPEC.md (Priya, 2025-01-30): LOCKED.
 
-    # A. FMP API check
+import math as _math
+import shutil as _shutil
+import urllib.request as _sysurlreq
+from concurrent.futures import ThreadPoolExecutor as _SysThreadPool
+from dataclasses import dataclass as _sys_dataclass
+from datetime import datetime as _sys_dt_cls
+
+
+@_sys_dataclass
+class CheckResult:
+    """Per-check result returned by every _check_* function."""
+    name: str          # e.g. "Alpaca account"
+    block: str         # "A" | "B" | "C" | "D" | "E"
+    severity: str      # "ok" | "info" | "warn" | "critical" | "skip"
+    message: str       # rendered line for Telegram output
+    duration_ms: int   # wall-clock time for the check
+
+
+# --- Concurrency guard (D-16) ---
+_system_test_running: bool = False
+_system_test_lock = threading.Lock()
+_system_test_last_result: "tuple" = ()
+_system_test_last_ts: float = 0.0
+
+
+def _is_rth_ct() -> bool:
+    """Return True if current time is within RTH (08:30\u201315:00 US/Central).
+
+    Product spec D-03: RTH = 08:30:00\u201315:00:00 US/Central, inclusive.
+    """
     try:
-        spy_q = get_fmp_quote("SPY")
-        qqq_q = get_fmp_quote("QQQ")
-        spy_price = float(spy_q.get("price", 0)) if spy_q else 0
-        qqq_price = float(qqq_q.get("price", 0)) if qqq_q else 0
-        if spy_price > 0 and qqq_price > 0:
-            lines.append(
-                "FMP: \u2705 SPY $%.2f | QQQ $%.2f" % (spy_price, qqq_price)
+        now_ct = datetime.now(CDT)
+        now_m = now_ct.hour * 60 + now_ct.minute
+        return (8 * 60 + 30) <= now_m < (15 * 60)
+    except Exception:
+        return False
+
+
+def _safe_check(name: str, block: str, fn, timeout_s: float = 3.0) -> CheckResult:
+    """Run fn(), enforce timeout_s, return CheckResult.
+
+    On exception or timeout \u2014 severity='critical', message=exception string.
+    Individual check callables must NOT log; the orchestrator is the single
+    logging emission point (ARCHITECTURE.md \u00a76).
+    """
+    import concurrent.futures as _cf
+    t0 = time.monotonic()
+    with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+        fut = _ex.submit(fn)
+        try:
+            result = fut.result(timeout=timeout_s)
+            return result
+        except _cf.TimeoutError:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return CheckResult(
+                name=name, block=block, severity="critical",
+                message="timed out after %.0fs" % timeout_s,
+                duration_ms=elapsed,
             )
-        else:
-            issues += 1
-            lines.append("FMP: \u274c no price data")
-    except Exception as exc:
-        issues += 1
-        lines.append("FMP: \u274c %s" % exc)
+        except Exception as exc:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return CheckResult(
+                name=name, block=block, severity="critical",
+                message="%s: %s" % (type(exc).__name__, str(exc)[:80]),
+                duration_ms=elapsed,
+            )
 
-    # B. State health check
+
+# ---------------------------------------------------------------------------
+# Block A \u2014 Broker checks
+# ---------------------------------------------------------------------------
+
+def _check_alpaca_account() -> CheckResult:
+    """Check 1 \u2014 Alpaca account reachability (PRODUCT_SPEC Check 1)."""
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    key = (os.getenv("VAL_ALPACA_PAPER_KEY", "").strip()
+           or os.getenv("GENE_ALPACA_PAPER_KEY", "").strip())
+    secret = (os.getenv("VAL_ALPACA_PAPER_SECRET", "").strip()
+              or os.getenv("GENE_ALPACA_PAPER_SECRET", "").strip())
+    if not key or not secret:
+        return CheckResult("Alpaca account", "A", "critical",
+                           "unreachable \u2014 Alpaca creds absent", _ms())
     try:
-        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
-            ps = json.load(f)
-        p_cash = ps.get("paper_cash", 0)
-        lines.append(
-            "State: \u2705 paper $%s"
-            % format(int(p_cash), ",")
+        from alpaca.trading.client import TradingClient as _ATC  # type: ignore
+        tc = _ATC(key, secret, paper=True)
+        acct = tc.get_account()
+        blocked = getattr(acct, "account_blocked", False)
+        bp = float(getattr(acct, "buying_power", 0) or 0)
+        if blocked:
+            return CheckResult("Alpaca account", "A", "critical",
+                               "account_blocked=True", _ms())
+        return CheckResult("Alpaca account", "A", "ok",
+                           "buying_power $%s" % format(bp, ",.2f"), _ms())
+    except Exception as exc:
+        return CheckResult("Alpaca account", "A", "critical",
+                           "unreachable \u2014 %s: %s" % (type(exc).__name__, str(exc)[:80]),
+                           _ms())
+
+
+def _check_alpaca_positions_parity(rth: bool) -> CheckResult:
+    """Check 2 \u2014 Alpaca positions parity vs internal positions dict.
+
+    Paper mode: skip (positions only on paper book, no live broker comparison).
+    Shadow/live mode RTH: CRITICAL on mismatch; non-RTH: WARN.
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    mode = user_config.get("trading_mode", "paper")
+    if mode == "paper":
+        return CheckResult("Alpaca positions", "A", "skip",
+                           "\u23ed skipped (paper mode)", _ms())
+    key = (os.getenv("VAL_ALPACA_PAPER_KEY", "").strip()
+           or os.getenv("GENE_ALPACA_PAPER_KEY", "").strip())
+    secret = (os.getenv("VAL_ALPACA_PAPER_SECRET", "").strip()
+              or os.getenv("GENE_ALPACA_PAPER_SECRET", "").strip())
+    if not key or not secret:
+        return CheckResult("Alpaca positions", "A", "skip",
+                           "\u23ed skipped (no creds)", _ms())
+    try:
+        from alpaca.trading.client import TradingClient as _ATC  # type: ignore
+        tc = _ATC(key, secret, paper=True)
+        alpaca_pos = tc.get_all_positions()
+        alpaca_n = len(alpaca_pos)
+        internal_n = len(positions) + len(short_positions)
+        if alpaca_n == internal_n:
+            return CheckResult("Alpaca positions", "A", "ok",
+                               "parity (%d=%d)" % (alpaca_n, internal_n), _ms())
+        if rth:
+            return CheckResult("Alpaca positions", "A", "critical",
+                               "mismatch \u2014 Alpaca=%d, internal=%d" % (alpaca_n, internal_n),
+                               _ms())
+        return CheckResult("Alpaca positions", "A", "warn",
+                           "mismatch \u2014 Alpaca=%d, internal=%d (non-RTH)" % (alpaca_n, internal_n),
+                           _ms())
+    except Exception as exc:
+        return CheckResult("Alpaca positions", "A", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+def _check_order_round_trip() -> CheckResult:
+    """Check 3 \u2014 Alpaca order round-trip (SPY IOC limit far below bid).
+
+    Symbol: SPY (D-06). Limit = bid*0.90 floor-cent, min $1.00 (D-07).
+    IOC self-cancels; explicit cancel is belt-and-suspenders (D-08).
+    Accidental fill: submit offsetting market sell; mark WARN not CRITICAL (D-09).
+    Skip if creds absent (D-10).
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    key = (os.getenv("VAL_ALPACA_PAPER_KEY", "").strip()
+           or os.getenv("GENE_ALPACA_PAPER_KEY", "").strip())
+    secret = (os.getenv("VAL_ALPACA_PAPER_SECRET", "").strip()
+              or os.getenv("GENE_ALPACA_PAPER_SECRET", "").strip())
+    if not key or not secret:
+        return CheckResult("Order round-trip", "A", "skip",
+                           "\u23ed skipped (no creds)", _ms())
+    try:
+        from alpaca.trading.client import TradingClient as _ATC  # type: ignore
+        from alpaca.trading.requests import LimitOrderRequest as _LOR  # type: ignore
+        from alpaca.trading.requests import MarketOrderRequest as _MOR  # type: ignore
+        from alpaca.trading.enums import OrderSide as _OS, TimeInForce as _TIF  # type: ignore
+        import time as _tm
+
+        tc = _ATC(key, secret, paper=True)
+
+        # Determine limit price: bid * 0.90, floor to cent, min $1.00 (D-07)
+        limit_price = 1.00
+        try:
+            spy_q = get_fmp_quote("SPY")
+            bid = float(spy_q.get("bid", 0) or spy_q.get("price", 0) or 0) if spy_q else 0
+            if bid > 0:
+                limit_price = max(1.00, _math.floor(bid * 0.90 * 100) / 100)
+            else:
+                logger.warning("[SYS-TEST] Block A: SPY bid unavailable, using fallback limit $1.00")
+        except Exception:
+            logger.warning("[SYS-TEST] Block A: SPY bid unavailable, using fallback limit $1.00")
+
+        req = _LOR(
+            symbol="SPY",
+            qty=1,
+            side=_OS.BUY,
+            time_in_force=_TIF.IOC,
+            limit_price=limit_price,
         )
+        order = tc.submit_order(req)
+        order_id = str(order.id)
+
+        # Poll up to 3s for terminal status (D-08): 100ms intervals, max 30 polls
+        deadline = _tm.monotonic() + 3.0
+        final_status = None
+        while _tm.monotonic() < deadline:
+            o = tc.get_order_by_id(order_id)
+            st = str(getattr(o, "status", "")).lower()
+            if st in ("canceled", "cancelled", "filled"):
+                final_status = st
+                break
+            _tm.sleep(0.10)
+
+        # Belt-and-suspenders explicit cancel
+        try:
+            tc.cancel_order_by_id(order_id)
+        except Exception:
+            pass
+
+        if final_status in ("canceled", "cancelled"):
+            return CheckResult("Order round-trip", "A", "ok",
+                               "%dms" % _ms(), _ms())
+        if final_status == "filled":
+            # Accidental fill \u2014 submit offsetting market sell (D-09)
+            try:
+                sell_req = _MOR(
+                    symbol="SPY", qty=1, side=_OS.SELL,
+                    time_in_force=_TIF.DAY,
+                )
+                sell_order = tc.submit_order(sell_req)
+                logger.error(
+                    "[SYS-TEST] ACCIDENTAL FILL \u2014 submitted offsetting sell, order_id=%s",
+                    sell_order.id,
+                )
+            except Exception as sell_exc:
+                logger.error(
+                    "[SYS-TEST] ACCIDENTAL FILL \u2014 offsetting sell failed: %s", sell_exc,
+                )
+            return CheckResult("Order round-trip", "A", "warn",
+                               "filled unexpectedly \u2014 offsetting sell submitted", _ms())
+        # Timeout: status not terminal within 3s
+        return CheckResult("Order round-trip", "A", "critical",
+                           "status not terminal in 3s (last=%s)" % (final_status or "unknown"),
+                           _ms())
     except Exception as exc:
-        issues += 1
-        lines.append("State: \u274c %s" % exc)
+        return CheckResult("Order round-trip", "A", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
 
-    # C. Positions count
-    n_paper = len(positions) + len(short_positions)
-    lines.append("Pos: %d paper" % n_paper)
 
-    # D. Scanner health
-    if _last_scan_time is None:
-        lines.append("Scanner: \u23f8 Not started")
-    else:
-        age = (datetime.now(timezone.utc) - _last_scan_time).total_seconds()
-        if age < 90:
-            lines.append("Scanner: \u2705 Active (%ds ago)" % int(age))
+# ---------------------------------------------------------------------------
+# Block B \u2014 Streaming & Ingest
+# ---------------------------------------------------------------------------
+
+def _check_ws_health(rth: bool) -> CheckResult:
+    """Check 4 \u2014 WebSocket connection state via ingest_algo_plus health.
+
+    RTH: WARN if last bar 30\u201390s, CRITICAL if >90s or disconnected.
+    Outside RTH: INFO regardless (D-01).
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        ws_state = ingest_algo_plus.get_health().get()
+        age = ingest_algo_plus.get_health().last_bar_age_s()
+        age_s = int(age) if age is not None else None
+        age_str = ("%ds ago" % age_s) if age_s is not None else "unknown"
+        connected = (ws_state == ingest_algo_plus.LIVE)
+
+        if not rth:
+            conn_str = "connected" if connected else "disconnected"
+            return CheckResult("WS", "B", "info",
+                               "%s, last bar %s (non-RTH)" % (conn_str, age_str), _ms())
+        if not connected:
+            return CheckResult("WS", "B", "critical", "disconnected", _ms())
+        if age is None or age <= 30:
+            return CheckResult("WS", "B", "ok",
+                               "connected, last bar %s" % age_str, _ms())
+        if age <= 90:
+            return CheckResult("WS", "B", "warn",
+                               "connected but stale \u2014 last bar %s" % age_str, _ms())
+        return CheckResult("WS", "B", "critical",
+                           "stale %s \u2014 feed may be dropped" % age_str, _ms())
+    except Exception as exc:
+        return CheckResult("WS", "B", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+def _check_bar_archive(rth: bool) -> CheckResult:
+    """Check 5 \u2014 Bar archive write today (/data/bars/<utc_date>).
+
+    RTH: CRITICAL if dir missing; WARN if 0 files. Outside RTH: INFO.
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        today = _sys_dt_cls.utcnow().strftime("%Y-%m-%d")
+        bar_dir = "/data/bars/%s" % today
+        if not os.path.isdir(bar_dir):
+            if rth:
+                return CheckResult("Bars today", "B", "critical",
+                                   "missing %s" % bar_dir, _ms())
+            return CheckResult("Bars today", "B", "info",
+                               "%s not found (non-RTH)" % bar_dir, _ms())
+        files = [f for f in os.listdir(bar_dir) if os.path.isfile(os.path.join(bar_dir, f))]
+        n_files = len(files)
+        if n_files == 0:
+            if rth:
+                return CheckResult("Bars today", "B", "warn",
+                                   "dir exists, 0 files", _ms())
+            return CheckResult("Bars today", "B", "info",
+                               "%s \u2014 0 files (non-RTH)" % bar_dir, _ms())
+        total_bytes = sum(os.path.getsize(os.path.join(bar_dir, f)) for f in files)
+        if total_bytes >= 1_048_576:
+            size_str = "%.1fMB" % (total_bytes / 1_048_576)
         else:
-            mins = int(age) // 60
-            secs = int(age) % 60
-            issues += 1
-            lines.append(
-                "Scanner: \u274c STALLED (%dm %ds ago)" % (mins, secs)
-            )
+            size_str = "%.1fKB" % (total_bytes / 1024)
+        return CheckResult("Bars today", "B", "ok",
+                           "%s \u2014 %d files, %s" % (bar_dir, n_files, size_str), _ms())
+    except Exception as exc:
+        return CheckResult("Bars today", "B", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
 
-    # E. OR status — only for 8:31 CT label
-    if label == "8:31 CT":
-        n_or = sum(1 for t in TRADE_TICKERS if t in or_high)
-        lines.append("ORs set: %d / %d tickers" % (n_or, len(TRADE_TICKERS)))
 
-    # Build message
-    if issues == 0:
-        footer = "\u2705 All systems GO"
+def _check_algoplus_liveness(rth: bool) -> CheckResult:
+    """Check 6 \u2014 AlgoPlus ingest worker liveness via last_bar_age_s.
+
+    RTH: CRITICAL if >60s stale (D-02). Outside RTH: INFO.
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        age = ingest_algo_plus.get_health().last_bar_age_s()
+        age_s = int(age) if age is not None else None
+        age_str = ("%ds ago" % age_s) if age_s is not None else "unknown"
+        if not rth:
+            return CheckResult("AlgoPlus", "B", "info",
+                               "tick %s (non-RTH)" % age_str, _ms())
+        if age is None or age > 60:
+            return CheckResult("AlgoPlus", "B", "critical",
+                               "stale %s \u2014 ingest worker may be dead" % age_str, _ms())
+        return CheckResult("AlgoPlus", "B", "ok",
+                           "tick %s" % age_str, _ms())
+    except Exception as exc:
+        return CheckResult("AlgoPlus", "B", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+def _check_ingest_gate() -> CheckResult:
+    """Check 7 \u2014 Ingest gate dry_run state. INFO always \u2014 no logging (D2)."""
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        from engine.ingest_gate import _resolve_gate_mode as _rgm
+        mode = _rgm()
+        dry = (mode == "dry_run")
+        return CheckResult("Ingest gate", "B", "info",
+                           "dry_run=%s" % dry, _ms())
+    except Exception as exc:
+        return CheckResult("Ingest gate", "B", "info",
+                           "gate mode unreadable: %s" % str(exc)[:60], _ms())
+
+
+# ---------------------------------------------------------------------------
+# Block C \u2014 State & Persistence
+# ---------------------------------------------------------------------------
+
+def _check_sqlite_reachable() -> CheckResult:
+    """Check 8 \u2014 SQLite reachability via v5_long_tracks table.
+
+    Note: shadow_positions was removed in v5.x; v5_long_tracks is the active
+    positions-persistence table. Check verifies DB reachability as intended.
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        import persistence as _pers
+        conn = _pers._conn()
+        row = conn.execute("SELECT COUNT(*) FROM v5_long_tracks LIMIT 1").fetchone()
+        count = row[0] if row else 0
+        return CheckResult("SQLite", "C", "ok",
+                           "positions=%s" % format(count, ","), _ms())
+    except Exception as exc:
+        return CheckResult("SQLite", "C", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+def _check_paper_state_parity() -> CheckResult:
+    """Check 9 \u2014 paper_state JSON vs in-memory paper_cash consistency.
+
+    CRITICAL if delta > $0.01 (D-12). JSON is the persisted snapshot;
+    in-memory paper_cash is the live value. Delta >$0.01 indicates a
+    mid-write failure or desync.
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as _f:
+            ps = json.load(_f)
+        json_cash = float(ps.get("paper_cash", 0))
+        mem_cash = float(paper_cash)
+        delta = abs(json_cash - mem_cash)
+        if delta > 0.01:
+            return CheckResult("paper_state parity", "C", "critical",
+                               "delta $%.4f \u2014 JSON=$%.2f, SQLite=$%.2f" % (
+                                   delta, json_cash, mem_cash),
+                               _ms())
+        return CheckResult("paper_state parity", "C", "ok",
+                           "$%.2f" % json_cash, _ms())
+    except Exception as exc:
+        return CheckResult("paper_state parity", "C", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+def _check_disk_space() -> CheckResult:
+    """Check 10 \u2014 Disk space on /data. CRITICAL <1GB; WARN <5GB (D-11)."""
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        usage = _shutil.disk_usage("/data")
+        free_gb = usage.free / (1024 ** 3)
+        if free_gb < 1.0:
+            return CheckResult("Disk /data", "C", "critical",
+                               "%.1fGB free (< 1GB \u2014 writes may fail)" % free_gb, _ms())
+        if free_gb < 5.0:
+            return CheckResult("Disk /data", "C", "warn",
+                               "%.1fGB free (< 5GB)" % free_gb, _ms())
+        return CheckResult("Disk /data", "C", "ok",
+                           "%.1fGB free" % free_gb, _ms())
+    except Exception as exc:
+        return CheckResult("Disk /data", "C", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+# ---------------------------------------------------------------------------
+# Block D \u2014 Risk Controls
+# ---------------------------------------------------------------------------
+
+def _check_kill_switch() -> CheckResult:
+    """Check 11 \u2014 Kill-switch posture. CRITICAL if halted; INFO otherwise (D-13)."""
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        halted = bool(_trading_halted)
+        reason = str(_trading_halted_reason) if _trading_halted_reason else "none"
+        limit = float(DAILY_LOSS_LIMIT_DOLLARS)
+        pnl = float(_v570_daily_realized_pnl)
+        if halted:
+            return CheckResult("Kill-switch", "D", "critical",
+                               "HALTED \u2014 reason: %s" % reason, _ms())
+        return CheckResult("Kill-switch", "D", "info",
+                           "limit=-$%s, realized=%+.2f, halted=False" % (
+                               format(abs(int(limit)), ","), pnl), _ms())
+    except Exception as exc:
+        return CheckResult("Kill-switch", "D", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+def _check_mode() -> CheckResult:
+    """Check 12 \u2014 Trading mode (paper / shadow / live). INFO always."""
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        mode = user_config.get("trading_mode", "paper")
+        return CheckResult("Mode", "D", "info", str(mode), _ms())
+    except Exception as exc:
+        return CheckResult("Mode", "D", "info",
+                           "unreadable: %s" % str(exc)[:60], _ms())
+
+
+# ---------------------------------------------------------------------------
+# Block E \u2014 Observability
+# ---------------------------------------------------------------------------
+
+def _check_dashboard() -> CheckResult:
+    """Check 13 \u2014 Dashboard /api/state reachability.
+
+    Uses http://localhost:{DASHBOARD_PORT}/api/state (D-14).
+    WARN if unreachable \u2014 dashboard is observability, not trading-critical.
+    DASHBOARD_PORT env var; default 8080.
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    port = int(os.getenv("DASHBOARD_PORT", "8080") or "8080")
+    url = "http://localhost:%d/api/state" % port
+    try:
+        req = _sysurlreq.Request(
+            url, headers={"User-Agent": "TradeGenius-SysTest/6.7.0"}
+        )
+        with _sysurlreq.urlopen(req, timeout=3) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read())
+                ingest_st = data.get("ingest_status", {}) if isinstance(data, dict) else {}
+                sds = ingest_st.get("status", "unknown") if isinstance(ingest_st, dict) else "unknown"
+                return CheckResult("Dashboard", "E", "ok",
+                                   "shadow_data_status=%s" % sds, _ms())
+            return CheckResult("Dashboard", "E", "warn",
+                               "HTTP %d" % resp.status, _ms())
+    except Exception as exc:
+        err = str(exc)[:60]
+        return CheckResult("Dashboard", "E", "warn",
+                           "unreachable \u2014 %s" % err, _ms())
+
+
+def _check_telegram_config() -> CheckResult:
+    """Check 14 \u2014 TELEGRAM_OWNER_CHAT_ID is set and castable to int.
+
+    CRITICAL if missing or non-integer. Do NOT log the actual value (privacy).
+    """
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    val = os.getenv("TELEGRAM_OWNER_CHAT_ID", "").strip()
+    if not val:
+        return CheckResult("Telegram", "E", "critical",
+                           "TELEGRAM_OWNER_CHAT_ID missing or invalid", _ms())
+    try:
+        int(val)
+        return CheckResult("Telegram", "E", "ok", "owner_id set", _ms())
+    except ValueError:
+        return CheckResult("Telegram", "E", "critical",
+                           "TELEGRAM_OWNER_CHAT_ID missing or invalid", _ms())
+
+
+def _check_version_parity() -> CheckResult:
+    """Check 15 \u2014 bot_version.BOT_VERSION == trade_genius.BOT_VERSION."""
+    t0 = time.monotonic()
+    def _ms():
+        return int((time.monotonic() - t0) * 1000)
+    try:
+        import bot_version as _bv
+        bv = str(_bv.BOT_VERSION)
+        tv = str(BOT_VERSION)
+        if bv == tv:
+            return CheckResult("Version", "E", "ok",
+                               "%s parity" % tv, _ms())
+        return CheckResult("Version", "E", "critical",
+                           "mismatch \u2014 bot_version=%s, trade_genius=%s" % (bv, tv), _ms())
+    except Exception as exc:
+        return CheckResult("Version", "E", "critical",
+                           "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
+
+
+# ---------------------------------------------------------------------------
+# Rendering helpers
+# ---------------------------------------------------------------------------
+
+_SYSCHECK_ICONS = {
+    "ok": "\u2705",
+    "warn": "\u26a0\ufe0f",
+    "critical": "\u274c",
+    "info": "\u24d8",
+    "skip": "\u23ed",
+}
+
+
+def _render_check(cr: CheckResult) -> str:
+    """Render a single CheckResult as a Telegram display line."""
+    icon = _SYSCHECK_ICONS.get(cr.severity, "\u2753")
+    msg = cr.message
+    if len(msg) > 120:
+        msg = msg[:119] + "\u2026"
+    return "  %s: %s %s" % (cr.name, icon, msg)
+
+
+def _format_system_test_body(label: str, results, elapsed_s: float) -> str:
+    """Format the full Telegram message from a sequence of CheckResults.
+
+    Structure per PRODUCT_SPEC.md output format section.
+    """
+    SEP = "\u2500" * 30
+    blocks = [
+        ("Block A \u2014 Broker", "A"),
+        ("Block B \u2014 Streaming", "B"),
+        ("Block C \u2014 State", "C"),
+        ("Block D \u2014 Risk", "D"),
+        ("Block E \u2014 Obs", "E"),
+    ]
+    n_critical = sum(1 for r in results if r.severity == "critical")
+    n_warn = sum(1 for r in results if r.severity == "warn")
+
+    parts = ["\U0001f9ea System Test [%s] v6.7.0" % label, SEP]
+    for block_label, block_id in blocks:
+        block_results = [r for r in results if r.block == block_id]
+        if not block_results:
+            continue
+        parts.append(block_label)
+        for cr in block_results:
+            parts.append(_render_check(cr))
+        parts.append("")
+    # Remove trailing blank line before separator
+    while parts and parts[-1] == "":
+        parts.pop()
+    parts.append(SEP)
+
+    if n_critical > 0:
+        parts.append("\U0001f6d1 %d CRITICAL, %d WARN \u2014 see logs" % (n_critical, n_warn))
+    elif n_warn > 0:
+        parts.append("\u26a0\ufe0f %d WARN \u2014 see logs" % n_warn)
     else:
-        footer = "\u26a0\ufe0f %d issue(s) found \u2014 check logs" % issues
+        parts.append("\u2705 All systems GO  (took %.1fs)" % elapsed_s)
 
-    body = "\n".join(lines)
-    msg = (
-        "\U0001f9ea System Test [%s]\n"
-        "%s\n"
-        "%s\n"
-        "%s\n"
-        "%s"
-    ) % (label, SEP, body, SEP, footer)
+    body = "\n".join(parts)
+    # Hard cap: 3800 chars (D-15)
+    if len(body) > 3800:
+        body = body[:3790] + "\n[\u2026output truncated \u2014 see logs]"
+    return body
 
-    send_telegram(msg)
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+def _run_system_test_sync_v2(label: str, force: bool = False) -> str:
+    """Main orchestrator for the expanded system health test (v6.7.0).
+
+    Runs 15 checks across 5 blocks in parallel (ThreadPoolExecutor, 5 workers,
+    one per block). Checks within a block run sequentially.
+    Returns formatted Telegram body string.
+
+    Concurrency: if a run is already in progress, returns cached result with
+    a staleness note prepended (ARCHITECTURE.md section 4).
+    RTH is computed once at orchestrator entry so all checks agree on
+    market-hours status for a single run.
+    """
+    global _system_test_running, _system_test_last_result, _system_test_last_ts
+
+    with _system_test_lock:
+        if _system_test_running and not force:
+            age = time.time() - _system_test_last_ts
+            if _system_test_last_result:
+                cached_body = _format_system_test_body(
+                    label, _system_test_last_result, 0.0
+                )
+                return (
+                    "\u26a0\ufe0f Showing cached result from %.0fs ago \u2014 test in progress\n\n"
+                    % age
+                ) + cached_body
+            return "\u23f3 System test already in progress \u2014 try again in ~15s."
+        _system_test_running = True
+
+    t_start = time.monotonic()
+    rth = _is_rth_ct()
+
+    def _block_a():
+        r1 = _safe_check("Alpaca account", "A", _check_alpaca_account, timeout_s=5.0)
+        r2 = _safe_check("Alpaca positions", "A",
+                         lambda: _check_alpaca_positions_parity(rth), timeout_s=5.0)
+        r3 = _safe_check("Order round-trip", "A", _check_order_round_trip, timeout_s=5.0)
+        return [r1, r2, r3]
+
+    def _block_b():
+        r4 = _safe_check("WS", "B", lambda: _check_ws_health(rth))
+        r5 = _safe_check("Bars today", "B", lambda: _check_bar_archive(rth))
+        r6 = _safe_check("AlgoPlus", "B", lambda: _check_algoplus_liveness(rth))
+        r7 = _safe_check("Ingest gate", "B", _check_ingest_gate)
+        return [r4, r5, r6, r7]
+
+    def _block_c():
+        r8 = _safe_check("SQLite", "C", _check_sqlite_reachable)
+        r9 = _safe_check("paper_state parity", "C", _check_paper_state_parity)
+        r10 = _safe_check("Disk /data", "C", _check_disk_space)
+        return [r8, r9, r10]
+
+    def _block_d():
+        r11 = _safe_check("Kill-switch", "D", _check_kill_switch)
+        r12 = _safe_check("Mode", "D", _check_mode)
+        return [r11, r12]
+
+    def _block_e():
+        r13 = _safe_check("Dashboard", "E", _check_dashboard)
+        r14 = _safe_check("Telegram", "E", _check_telegram_config)
+        r15 = _safe_check("Version", "E", _check_version_parity)
+        return [r13, r14, r15]
+
+    try:
+        with _SysThreadPool(max_workers=5) as _pool:
+            fa = _pool.submit(_block_a)
+            fb = _pool.submit(_block_b)
+            fc = _pool.submit(_block_c)
+            fd = _pool.submit(_block_d)
+            fe = _pool.submit(_block_e)
+            ra = fa.result(timeout=14)
+            rb = fb.result(timeout=14)
+            rc = fc.result(timeout=14)
+            rd = fd.result(timeout=14)
+            re_ = fe.result(timeout=14)
+
+        results = tuple(ra + rb + rc + rd + re_)
+        elapsed = time.monotonic() - t_start
+
+        # Single logging emission point (ARCHITECTURE.md section 6)
+        for r in results:
+            if r.severity == "critical":
+                logger.error("[SYS-TEST] Block %s: %s \u2014 %s", r.block, r.name, r.message)
+            elif r.severity == "warn":
+                logger.warning("[SYS-TEST] Block %s: %s \u2014 %s", r.block, r.name, r.message)
+            # ok / info / skip: no log line (D2 \u2014 avoid noise)
+
+        body = _format_system_test_body(label, results, elapsed)
+
+        with _system_test_lock:
+            _system_test_last_result = results
+            _system_test_last_ts = time.time()
+
+        return body
+
+    except Exception as _oe:
+        logger.error("[SYS-TEST] orchestrator failed: %s", _oe)
+        return "\U0001f9ea System Test [%s] v6.7.0\n\u274c orchestrator error: %s" % (
+            label, str(_oe)[:80])
+    finally:
+        with _system_test_lock:
+            _system_test_running = False
+
+
+def _run_system_test_sync(label: str) -> None:
+    """Backward-compat shim \u2014 calls v2 orchestrator and sends to Telegram.
+
+    Preserved so scheduler call sites at lines 5341/5343 need no changes.
+    """
+    body = _run_system_test_sync_v2(label)
+    send_telegram(body)
 
 
 def _fire_system_test(label: str) -> None:
@@ -4961,83 +5616,9 @@ def _fire_system_test(label: str) -> None:
             executor="main",
             code="SYSTEM_TEST_FAILED",
             severity="error",
-            summary=f"System test failed: {label}",
-            detail=f"{type(exc).__name__}: {exc}",
+            summary="System test failed: %s" % label,
+            detail="%s: %s" % (type(exc).__name__, exc),
         )
-
-
-def _test_fmp():
-    """Test FMP API — returns status string."""
-    try:
-        spy_q = get_fmp_quote("SPY")
-        qqq_q = get_fmp_quote("QQQ")
-        spy_price = float(spy_q.get("price", 0)) if spy_q else 0
-        qqq_price = float(qqq_q.get("price", 0)) if qqq_q else 0
-        if spy_price > 0 and qqq_price > 0:
-            return "\u2705 SPY $%.2f | QQQ $%.2f" % (spy_price, qqq_price)
-        return "\u274c no price data"
-    except Exception as exc:
-        return "\u274c %s" % exc
-
-
-def _test_state():
-    """Test state files — returns status string."""
-    try:
-        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as f:
-            ps = json.load(f)
-        p_cash = ps.get("paper_cash", 0)
-        return "\u2705 paper $%s" % format(int(p_cash), ",")
-    except Exception as exc:
-        return "\u274c %s" % exc
-
-
-def _test_positions():
-    """Test positions — returns status string."""
-    n_paper = len(positions) + len(short_positions)
-    return "%d paper" % n_paper
-
-
-def _test_scanner():
-    """Test scanner health — returns status string."""
-    if _last_scan_time is None:
-        return "\u23f8 Not started"
-    age = (datetime.now(timezone.utc) - _last_scan_time).total_seconds()
-    if age < 90:
-        return "\u2705 Active (%ds ago)" % int(age)
-    mins = int(age) // 60
-    secs = int(age) % 60
-    return "\u274c STALLED (%dm %ds ago)" % (mins, secs)
-
-
-def _build_test_progress(results):
-    """Format the interactive test progress message."""
-    SEP = "\u2500" * 30
-    steps = [
-        ("FMP API", "fmp"),
-        ("State files", "state"),
-        ("Positions", "pos"),
-        ("Scanner", "scanner"),
-    ]
-    body_lines = []
-    for label, key in steps:
-        status = results.get(key, "\u23f3")
-        body_lines.append("  %-12s %s" % (label + ":", status))
-    body = "\n".join(body_lines)
-
-    issues = 0
-    for key in ("fmp", "fhb", "state", "scanner"):
-        val = results.get(key, "")
-        if val.startswith("\u274c"):
-            issues += 1
-
-    if all(k in results for _, k in steps):
-        if issues == 0:
-            footer = "\u2705 All systems GO"
-        else:
-            footer = "\u26a0\ufe0f %d issue(s) found \u2014 check logs" % issues
-        return "\U0001f9ea System Test [Manual]\n%s\n%s\n%s\n%s" % (SEP, body, SEP, footer)
-
-    return "\U0001f9ea System Test [Manual]\n%s\n%s" % (SEP, body)
 
 
 # v5.10.1 \u2014 _tiger_hard_eject_check retired. Section V (Triple-Lock stops)
