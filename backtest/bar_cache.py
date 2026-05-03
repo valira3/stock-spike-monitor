@@ -1,12 +1,16 @@
-"""v6.9.2 \u2014 L1 Parquet bar cache: per-day files + in-process LRU.
+"""v6.9.5 -- L1 Parquet bar cache: per-day files + in-process LRU.
 
 Replaces the v6.9.0 single-file-per-ticker layout that forced a full
 84-day Parquet scan for every 1-day request (12-15x regression vs JSONL).
 
+v6.9.5 change: _cache_root() respects SSM_BAR_CACHE_DIR env var so sweep
+workers can write cache files to a writable path even when bars_dir is a
+read-only canonical SIP directory.
+
 Cache layout (v2)
 -----------------
-  <bars_dir>/.cache_v2/<TICKER>/<YYYY-MM-DD>.parquet
-  <bars_dir>/.cache_v2/<TICKER>.meta.json
+  <cache_root>/<TICKER>/<YYYY-MM-DD>.parquet   (cache_root = SSM_BAR_CACHE_DIR or bars_dir/.cache_v2)
+  <cache_root>/<TICKER>.meta.json
 
 Each Parquet contains ONLY the bars for that (ticker, date) pair
 (pre-market + RTH combined, sorted by ts). A single-day read opens
