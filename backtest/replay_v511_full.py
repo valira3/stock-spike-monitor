@@ -614,6 +614,14 @@ class RecordOnlyCallbacks:
     fetch_calls: list[str] = field(default_factory=list)
     ticks: list[datetime] = field(default_factory=list)
 
+    # Per-tick bar cache for RecordOnlyCallbacks.fetch_1min_bars.
+    # Data only changes when clock advances; cache by (ticker, clock.now)
+    # to amortize the bar-slice construction across repeated callbacks
+    # calls per tick (scan_loop calls once per ticker, _per_ticker_tick
+    # calls once more per ticker \u2014 both share this cache).
+    _cb_bar_cache: dict = field(default_factory=dict)
+    _cb_bar_cache_minute: Any = field(default=None)
+
     # ---- Clock -------------------------------------------------------
     def now_et(self) -> datetime:
         return self.clock.now_et()
@@ -624,10 +632,22 @@ class RecordOnlyCallbacks:
     # ---- Market data -------------------------------------------------
     def fetch_1min_bars(self, ticker: str) -> Any:
         self.fetch_calls.append(ticker)
-        all_bars = self.bars_by_ticker.get(ticker.upper()) or []
-        cutoff = self.clock.now.astimezone(timezone.utc)
+        # Per-tick cache: underlying bar data only changes when the
+        # clock advances to the next minute. Invalidate and rebuild
+        # on clock advance; return the cached slice otherwise.
+        cur_minute = self.clock.now
+        if self._cb_bar_cache_minute != cur_minute:
+            self._cb_bar_cache.clear()
+            self._cb_bar_cache_minute = cur_minute
+        t_up = ticker.upper()
+        cached = self._cb_bar_cache.get(t_up)
+        if cached is not None:
+            return cached if cached is not _SENTINEL_NONE else None
+        all_bars = self.bars_by_ticker.get(t_up) or []
+        cutoff = cur_minute.astimezone(timezone.utc)
         visible = [b for b in all_bars if b["_dt"] <= cutoff]
         if not visible:
+            self._cb_bar_cache[t_up] = _SENTINEL_NONE
             return None
         opens = [b.get("open") for b in visible]
         highs = [b.get("high") for b in visible]
@@ -651,7 +671,7 @@ class RecordOnlyCallbacks:
             vols.append(iv)
         timestamps = [int(b["_dt"].timestamp()) for b in visible]
         last_close = next((c for c in reversed(closes) if c is not None), None)
-        return {
+        result = {
             "current_price": last_close,
             "opens": opens,
             "highs": highs,
@@ -660,6 +680,8 @@ class RecordOnlyCallbacks:
             "volumes": vols,
             "timestamps": timestamps,
         }
+        self._cb_bar_cache[t_up] = result
+        return result
 
     # ---- Position store ----------------------------------------------
     def get_position(self, ticker: str, side: str) -> dict | None:
