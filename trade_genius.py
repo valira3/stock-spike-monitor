@@ -5281,7 +5281,7 @@ def _check_paper_state_parity() -> CheckResult:
         delta = abs(json_cash - mem_cash)
         if delta > 0.01:
             return CheckResult("paper_state parity", "C", "critical",
-                               "delta $%.4f \u2014 JSON=$%.2f, SQLite=$%.2f" % (
+                               "delta $%.4f \u2014 JSON=$%.2f, mem=$%.2f" % (
                                    delta, json_cash, mem_cash),
                                _ms())
         return CheckResult("paper_state parity", "C", "ok",
