@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.7.2 (2026-05-04) — disk check percentage-based (5%/15% free)
+
+Patch release. Beck implementation.
+
+### fix(system_test): disk threshold percentage-based (Val: small volumes were perma-CRITICAL)
+- `_check_disk_space()`: replaced absolute 1\u202fGB CRITICAL / 5\u202fGB WARN thresholds with
+  percentage-of-total checks: CRITICAL when free < 5% of total; WARN when free < 15% of total.
+- Added inline `_fmt()` helper that scales units to GB for volumes \u22651\u202fGB, MB otherwise.
+- Message format: `"<free> free of <total> (<pct>%) — disk critically full"` / `"... — disk filling up"` / OK.
+- Motivation: Railway /data volume is 434\u202fMB total; the old 1\u202fGB floor made the check
+  permanently CRITICAL even with 286\u202fMB (66%) free. Val: “There is no way this is an issue
+  right now with so much space left.”
+- Tests: 4 new cases (50%\u202fok, 10%\u202fwarn, 3%\u202fcritical, GB/MB format scaling).
+
+---
+
 ## v6.7.1 (2026-05-03) — system test bug fixes (order RT non-RTH, dashboard auth, telegram env, ingest_config import)
 
 Patch release. Beck implementation.
