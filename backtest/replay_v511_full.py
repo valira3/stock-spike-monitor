@@ -454,6 +454,117 @@ def install_record_only_layers(
     # the layers are installed.
     tg._harness_bars_owner = _bars_owner
 
+    # Per-tick caches for DI/ADX/tiger_di.
+    # tiger_di, v5_di_1m_5m, and v5_adx_1m_5m are each called multiple
+    # times per tick per ticker (from _update_gate_snapshot, check_breakout,
+    # manage_positions, sentinel, forensic snapshot). All three are pure
+    # functions of (ticker, clock.now) \u2014 cache by ticker, invalidate on
+    # clock advance. Profiling showed these three accounted for ~35% of
+    # replay wall-clock via repeated _resample_to_5min_ohlc_buckets and
+    # _compute_di/_compute_adx calls.
+    _di_adx_cache: dict = {}
+    _di_adx_cache_minute: list = [None]  # mutable box
+    # Distinct object used as a cache-miss sentinel; never returned
+    # to callers. Using a single shared sentinel is correct because
+    # cache entries are stored as (key -> value-or-_SENTINEL_NONE) and
+    # the sentinel is only tested with `is`, not equality.
+    _DI_MISS = object()
+
+    def _make_ticker_cache(orig_fn):
+        """Return a per-tick per-ticker memoizer for a fn(ticker)->result."""
+        fn_name = orig_fn.__name__
+
+        def _cached(ticker: str):
+            cur_minute = clock.now
+            if _di_adx_cache_minute[0] != cur_minute:
+                _di_adx_cache.clear()
+                _di_adx_cache_minute[0] = cur_minute
+            key = (fn_name, ticker.upper())
+            cached_val = _di_adx_cache.get(key, _DI_MISS)
+            if cached_val is not _DI_MISS:
+                return cached_val
+            result = orig_fn(ticker)
+            _di_adx_cache[key] = result
+            return result
+        _cached.__name__ = fn_name
+        return _cached
+
+    for _fn_name in ("tiger_di", "v5_di_1m_5m", "v5_adx_1m_5m"):
+        _orig = getattr(tg, _fn_name, None)
+        if _orig is not None:
+            setattr(tg, _fn_name, _make_ticker_cache(_orig))
+
+    # Per-tick cache for _resample_to_5min_ohlc_buckets.
+    # v5_di_1m_5m, v5_adx_1m_5m, and tiger_di each call this function
+    # independently, each passing the same bar lists (from the per-tick
+    # fetch cache). Caching by (id(ts), id(highs), id(lows), id(closes))
+    # avoids triple-resampling the same bars on every tick; all four ids
+    # are stable within a tick because the bars dict is the same cached
+    # object from _harness_fetch_1min_bars. Cache is invalidated per tick.
+    _resample_orig5 = getattr(tg, "_resample_to_5min_ohlc_buckets", None)
+    if _resample_orig5 is not None:
+        _rs_cache: dict = {}
+        _rs_cache_minute: list = [None]
+        _RS_MISS = object()
+
+        def _harness_resample_5m(timestamps, highs, lows, closes):
+            cur_minute = clock.now
+            if _rs_cache_minute[0] != cur_minute:
+                _rs_cache.clear()
+                _rs_cache_minute[0] = cur_minute
+            # Key on identity of all four input lists; these come from
+            # the same cached bars dict so ids are unique per ticker
+            # and stable for the duration of the tick.
+            key = (id(timestamps), id(highs), id(lows), id(closes))
+            val = _rs_cache.get(key, _RS_MISS)
+            if val is not _RS_MISS:
+                return val
+            result = _resample_orig5(timestamps, highs, lows, closes)
+            _rs_cache[key] = result
+            return result
+
+        tg._resample_to_5min_ohlc_buckets = _harness_resample_5m
+
+    # Per-tick cache for compute_5m_ohlc_and_ema9.
+    # Called by _ticker_weather_tick (once per ticker per tick), by
+    # _qqq_weather_tick (once per tick), and by _run_sentinel (once per
+    # open position per tick). All pass the same bars dict (from the
+    # per-tick fetch cache) for the same ticker within a tick, so
+    # id(bars) is a stable cache key for the duration of the tick.
+    # We patch both tg._engine_compute_5m_ohlc_and_ema9 (used by
+    # trade_genius.py) and broker.positions.compute_5m_ohlc_and_ema9
+    # (imported directly into broker.positions at module load time).
+    try:
+        import engine.bars as _engine_bars_mod
+        import broker.positions as _broker_pos_mod
+        _5m_orig = _engine_bars_mod.compute_5m_ohlc_and_ema9
+        _5m_cache: dict = {}
+        _5m_cache_minute: list = [None]  # mutable box
+        _5M_MISS = object()
+
+        def _harness_compute_5m(bars, pdc=None):
+            """Per-tick memoizer for compute_5m_ohlc_and_ema9(bars, pdc).
+            Keyed on (id(bars), pdc) and invalidated on clock advance.
+            id(bars) is stable within a tick because fetch_1min_bars
+            returns the same cached dict object per (ticker, tick).
+            """
+            cur_minute = clock.now
+            if _5m_cache_minute[0] != cur_minute:
+                _5m_cache.clear()
+                _5m_cache_minute[0] = cur_minute
+            key = (id(bars), pdc)
+            val = _5m_cache.get(key, _5M_MISS)
+            if val is not _5M_MISS:
+                return val
+            result = _5m_orig(bars, pdc)
+            _5m_cache[key] = result
+            return result
+
+        tg._engine_compute_5m_ohlc_and_ema9 = _harness_compute_5m
+        _broker_pos_mod.compute_5m_ohlc_and_ema9 = _harness_compute_5m
+    except Exception:
+        pass  # non-critical; silently degrade
+
     # Telegram.
     if hasattr(tg, "send_telegram"):
         tg.send_telegram = lambda msg, *a, **kw: telegram_layer.send(msg)
@@ -614,6 +725,14 @@ class RecordOnlyCallbacks:
     fetch_calls: list[str] = field(default_factory=list)
     ticks: list[datetime] = field(default_factory=list)
 
+    # Per-tick bar cache for RecordOnlyCallbacks.fetch_1min_bars.
+    # Data only changes when clock advances; cache by (ticker, clock.now)
+    # to amortize the bar-slice construction across repeated callbacks
+    # calls per tick (scan_loop calls once per ticker, _per_ticker_tick
+    # calls once more per ticker \u2014 both share this cache).
+    _cb_bar_cache: dict = field(default_factory=dict)
+    _cb_bar_cache_minute: Any = field(default=None)
+
     # ---- Clock -------------------------------------------------------
     def now_et(self) -> datetime:
         return self.clock.now_et()
@@ -624,10 +743,22 @@ class RecordOnlyCallbacks:
     # ---- Market data -------------------------------------------------
     def fetch_1min_bars(self, ticker: str) -> Any:
         self.fetch_calls.append(ticker)
-        all_bars = self.bars_by_ticker.get(ticker.upper()) or []
-        cutoff = self.clock.now.astimezone(timezone.utc)
+        # Per-tick cache: underlying bar data only changes when the
+        # clock advances to the next minute. Invalidate and rebuild
+        # on clock advance; return the cached slice otherwise.
+        cur_minute = self.clock.now
+        if self._cb_bar_cache_minute != cur_minute:
+            self._cb_bar_cache.clear()
+            self._cb_bar_cache_minute = cur_minute
+        t_up = ticker.upper()
+        cached = self._cb_bar_cache.get(t_up)
+        if cached is not None:
+            return cached if cached is not _SENTINEL_NONE else None
+        all_bars = self.bars_by_ticker.get(t_up) or []
+        cutoff = cur_minute.astimezone(timezone.utc)
         visible = [b for b in all_bars if b["_dt"] <= cutoff]
         if not visible:
+            self._cb_bar_cache[t_up] = _SENTINEL_NONE
             return None
         opens = [b.get("open") for b in visible]
         highs = [b.get("high") for b in visible]
@@ -651,7 +782,7 @@ class RecordOnlyCallbacks:
             vols.append(iv)
         timestamps = [int(b["_dt"].timestamp()) for b in visible]
         last_close = next((c for c in reversed(closes) if c is not None), None)
-        return {
+        result = {
             "current_price": last_close,
             "opens": opens,
             "highs": highs,
@@ -660,6 +791,8 @@ class RecordOnlyCallbacks:
             "volumes": vols,
             "timestamps": timestamps,
         }
+        self._cb_bar_cache[t_up] = result
+        return result
 
     # ---- Position store ----------------------------------------------
     def get_position(self, ticker: str, side: str) -> dict | None:
