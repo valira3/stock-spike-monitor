@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.9.5 -- bar_cache.py honors SSM_BAR_CACHE_DIR for hermetic sweep cache (fixes PermissionError on read-only canonical bars dir)
+
+Patch release. Beck implementation.
+
+---
+
 ## v6.9.4 (2026-05-05) -- complete /data isolation
 
 Patch release. Beck implementation.
