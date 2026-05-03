@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.5.2 (2026-05-03) — Infra patches: aggregator hardening + harness 3× speedup
+
+Tooling-only release. **No production behavior change** — `trade_genius.py`,
+engine, broker, and ingest are untouched.
+
+- **#319** — `scripts/aggregate.py` is now self-relocating via
+  `ROOT = Path(__file__).resolve().parent` (no more hardcoded paths).
+  New `exit_reason` field added to `pairs.json`. Output bit-for-bit
+  identical to prior aggregator runs.
+- **#320** — Backtest harness round-2 profiling. Three per-tick caches
+  in `backtest/replay_v511_full.py` (`RecordOnlyCallbacks.fetch_1min_bars`,
+  `tiger_di`/`v5_di_1m_5m`/`v5_adx_1m_5m`, `_resample_to_5min_ohlc_buckets`
+  + `compute_5m_ohlc_and_ema9`). 83-day backtest wall time:
+  **30.6 min → 10.0 min (3.06× speedup)**. Output bit-for-bit identical
+  to v6.5.1 across audited days.
+
+---
+
 ## v6.5.1 (2026-05-03) — Long-only deep-stop during min_hold window
 
 - Added v6.5.1 deep-stop rail that fires at -0.75% on **longs only**
