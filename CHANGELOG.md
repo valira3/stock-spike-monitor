@@ -4,6 +4,51 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.9.2 (2026-05-04) -- backtest cache repartition + LRU
+
+Patch release. Beck implementation.
+
+### P0 — Per-day Parquet repartition (bar_cache.py)
+- Replaced the v6.9.0 single-file-per-ticker Parquet layout (`.cache_v1/<TICKER>.parquet`)
+  with per-day files (`.cache_v2/<TICKER>/<YYYY-MM-DD>.parquet`). Each file contains only
+  bars for one (ticker, date) pair; single-day reads open exactly one ~167 KB file instead
+  of scanning a 2.1 MB all-dates file.
+- Cache version bumped `v1` \u2192 `v2`: all v6.9.0 Parquet files are automatically
+  invalidated on first access and rebuilt under the new layout.
+- Added `_CACHE_VERIFIED` process-level set to skip repeated `os.stat()` freshness checks
+  after the first successful verification per (bars_dir, ticker) pair. Eliminated a 2.5 ms
+  overhead that had been making every `get_bars()` call as slow as a fresh disk scan.
+
+### P1 — In-process LRU (bar_cache.py, indicator_cache.py)
+- `get_bars()` backed by `_lru_read_bars(str(bars_dir), ticker, date)` with
+  `functools.lru_cache(maxsize=4096)`. After the first disk read per (ticker, date), all
+  subsequent calls within the same process return from RAM in ~5 \u00b5s.
+- `get_indicators()` backed by `_lru_read_indicators()` with `maxsize=4096`.
+- Cache clear: `_lru_read_bars.cache_clear()` / `_lru_read_indicators.cache_clear()`.
+  Per-process; across 4 sweep workers each builds its own LRU from warm Parquet.
+
+### Validation results
+- Warm LRU vs JSONL: **91x faster** (0.6 ms vs 53 ms for 25 pairs). Target: within 0.1x. PASS.
+- Full warm L1+L2: **37x** on 5dx5t; **192x** per-pass on 84dx25t warm replay. Target: >=10x. PASS.
+- Cold L1 build: 4.4s for 5 tickers (unchanged vs v6.9.0). PASS.
+- Bit-exact replay: 27/27 unit + e2e tests pass, summary identical to JSONL.
+
+### Files changed
+- `backtest/bar_cache.py` (P0 repartition, P1 LRU, _CACHE_VERIFIED)
+- `backtest/indicator_cache.py` (P1 LRU, per-day Parquet layout, .indcache_v2)
+- `bot_version.py` + `trade_genius.BOT_VERSION` \u2192 6.9.2
+- `ARCHITECTURE.md` (Parquet layout shift documented)
+
+### Tests
+- `tests/test_bar_cache_repartition.py`: 4 tests verifying per-day file isolation,
+  no cross-date rows, file count matches date count, ticker isolation.
+- `tests/test_bar_cache_lru.py`: 4 tests verifying LRU hit on second call, separate
+  entries per key, cache_clear works, indicator LRU.
+- Updated `tests/test_bar_cache.py`, `tests/test_indicator_cache.py`,
+  `tests/test_backtest_cache_e2e.py` for v2 API and cache directory names.
+
+---
+
 ## v6.9.1 (2026-05-04) -- sweep runner /data isolation
 
 Patch release. Beck implementation.

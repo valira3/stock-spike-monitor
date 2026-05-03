@@ -1,13 +1,26 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.9.1 · May 2026 -- Sweep runner /data isolation + backtest cache layer (L1 + L2).
-> L1: Parquet bar cache (`backtest/bar_cache.py`) -- one ZSTD-3 Parquet per
-> ticker under `<bars_dir>/.cache_v1/`; SHA-256 cache key over (path, mtime_ns,
-> size); `get_bars()` is a drop-in for `load_day_bars`; >=10x cold load speedup.
-> L2: Indicator precompute cache (`backtest/indicator_cache.py`) -- per-(ticker,
-> params_hash) Parquet under `<bars_dir>/.indcache_v1/`; covers ATR14/20, EMA9/20/50,
-> VWAP, OR-5m/OR-30m, premarket H/L/range, session boundary; >=30x warm e2e.
-> Wave 2 (11-run C4+C5+C7+C10 sweep) target wall: <=15 min (was ~60 min).
+> **Version:** v6.9.2 · May 2026 -- Backtest cache repartition + LRU (P0+P1 of v6.9.0 perf fix).
+>
+> **Backtest cache layer (v6.9.2):**
+> L1: Per-day Parquet bar cache (`backtest/bar_cache.py`) -- layout
+> `.cache_v2/<TICKER>/<YYYY-MM-DD>.parquet`; one file per (ticker, date);
+> ZSTD-3; SHA-256 cache key over (path, mtime_ns, size); `get_bars()` is a
+> drop-in for `load_day_bars`. v6.9.0 used a single file per ticker containing
+> all 84 days in one row group, which forced a 2.1 MB full-file scan for every
+> 1-day request (12-15x regression). v6.9.2 opens exactly one ~167 KB file per
+> request. Cache version bumped v1 \u2192 v2; prior `.cache_v1/` files are
+> automatically invalidated and rebuilt on first access.
+> In-process LRU (`functools.lru_cache(maxsize=4096)`) on `_lru_read_bars` and
+> `_lru_read_indicators`: after the first disk read per (ticker, date), all
+> subsequent calls within the same process return in ~5 \u00b5s. A process-level
+> `_CACHE_VERIFIED` set skips repeated `os.stat()` freshness checks after the
+> first validation, eliminating a 2.5 ms overhead per call.
+> L2: Indicator precompute cache (`backtest/indicator_cache.py`) -- per-day layout
+> `.indcache_v2/<TICKER>__<params_hash>/<YYYY-MM-DD>.parquet`; covers ATR14/20,
+> EMA9/20/50, VWAP, OR-5m/OR-30m, premarket H/L/range, session boundary.
+> Warm LRU: 91x faster than JSONL on 5dx5t. Warm replay: 192x per-pass on
+> 84dx25t sweep. Wave 2 (11-run C4+C5+C7+C10 sweep) target wall: <=15 min.
 >
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each

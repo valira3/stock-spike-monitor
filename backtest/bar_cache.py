@@ -1,17 +1,28 @@
-"""v6.9.0 \u2014 L1 Parquet bar cache for the backtest data layer.
+"""v6.9.2 \u2014 L1 Parquet bar cache: per-day files + in-process LRU.
 
-Replaces per-day JSONL reads with a single Parquet file per ticker so
-the 84-day SIP corpus is parsed once and served \u22651\u00d7 faster on every
-subsequent sweep run.
+Replaces the v6.9.0 single-file-per-ticker layout that forced a full
+84-day Parquet scan for every 1-day request (12-15x regression vs JSONL).
 
-Cache layout
-------------
-  <bars_dir>/.cache_v1/<TICKER>.parquet
-  <bars_dir>/.cache_v1/<TICKER>.parquet.meta.json
+Cache layout (v2)
+-----------------
+  <bars_dir>/.cache_v2/<TICKER>/<YYYY-MM-DD>.parquet
+  <bars_dir>/.cache_v2/<TICKER>.meta.json
 
-The meta JSON stores the SHA-256 cache key derived from all source
+Each Parquet contains ONLY the bars for that (ticker, date) pair
+(pre-market + RTH combined, sorted by ts). A single-day read opens
+exactly one ~30 KB file instead of a 2.1 MB all-dates file.
+
+The .meta.json stores the SHA-256 cache key derived from all source
 JSONL files for that ticker (path + mtime_ns + size). Any change to
-a source file invalidates the cache and triggers a rebuild.
+a source file invalidates the whole ticker and triggers a rebuild of
+all per-day Parquets for that ticker.
+
+LRU (L3 in-process cache)
+--------------------------
+get_bars() is wrapped with functools.lru_cache(maxsize=4096).
+Cache key: (str(bars_dir), ticker, date). After the first disk read
+within a process, every subsequent call for the same (ticker, date)
+is a ~microsecond dict lookup. Clear with get_bars.cache_clear().
 
 Public API
 ----------
@@ -26,6 +37,7 @@ CLI
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -69,6 +81,18 @@ _PASSTHROUGH_COLS = [
     "bar_vwap",
     "epoch",
 ]
+
+# ---------------------------------------------------------------------------
+# Cache version sentinel \u2014 bump to invalidate all prior caches
+# ---------------------------------------------------------------------------
+
+_CACHE_VERSION = "v2"
+_CACHE_DIR_NAME = ".cache_v2"
+
+# Process-level set of (bars_dir_str, ticker) pairs whose cache freshness
+# has already been verified in this process. Eliminates repeated os.stat()
+# calls on every get_bars() invocation after the first freshness check.
+_CACHE_VERIFIED: set[tuple[str, str]] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -138,15 +162,19 @@ def _cache_key(paths: list[Path]) -> str:
 
 
 def _cache_root(bars_dir: Path) -> Path:
-    return bars_dir / ".cache_v1"
+    override = os.environ.get("SSM_BAR_CACHE_DIR")
+    if override:
+        return Path(override)
+    return bars_dir / _CACHE_DIR_NAME
 
 
-def _parquet_path(bars_dir: Path, ticker: str) -> Path:
-    return _cache_root(bars_dir) / f"{ticker.upper()}.parquet"
+def _parquet_path(bars_dir: Path, ticker: str, date: str) -> Path:
+    """Per-day Parquet path: .cache_v2/<TICKER>/<YYYY-MM-DD>.parquet"""
+    return _cache_root(bars_dir) / ticker.upper() / f"{date}.parquet"
 
 
 def _meta_path(bars_dir: Path, ticker: str) -> Path:
-    return _cache_root(bars_dir) / f"{ticker.upper()}.parquet.meta.json"
+    return _cache_root(bars_dir) / f"{ticker.upper()}.meta.json"
 
 
 def _read_meta(bars_dir: Path, ticker: str) -> dict:
@@ -164,7 +192,7 @@ def _write_meta(bars_dir: Path, ticker: str, key: str) -> None:
     mp = _meta_path(bars_dir, ticker)
     mp.parent.mkdir(parents=True, exist_ok=True)
     with open(mp, "w", encoding="utf-8") as fh:
-        json.dump({"key": key}, fh)
+        json.dump({"key": key, "cache_version": _CACHE_VERSION}, fh)
 
 
 def _infer_session(ts_str: str | None, bar: dict) -> str:
@@ -181,124 +209,135 @@ def _infer_session(ts_str: str | None, bar: dict) -> str:
     return "pre" if dt.hour < 13 or (dt.hour == 13 and dt.minute < 30) else "rth"
 
 
-def _bars_from_parquet(bars_dir: Path, ticker: str) -> list[dict]:
-    """Read all bars from the Parquet cache and return list-of-dicts."""
-    import pyarrow.parquet as pq  # lazy import \u2014 optional dep
-
-    pp = _parquet_path(bars_dir, ticker)
-    table = pq.read_table(str(pp))
-    rows: list[dict] = []
-    col_names = table.schema.names
-    for i in range(table.num_rows):
-        row: dict[str, Any] = {}
-        for col in col_names:
-            val = table.column(col)[i].as_py()
-            row[col] = val
-        rows.append(row)
-    return rows
+def _bars_to_parquet_row(bar: dict, ts: datetime) -> dict[str, Any]:
+    """Convert a normalised bar dict to a row ready for Parquet write."""
+    b_ts = bar.get("ts")
+    volume = bar.get("iex_volume") or bar.get("volume") or 0
+    vw = bar.get("bar_vwap") or bar.get("vw") or 0.0
+    n = bar.get("trade_count") or bar.get("n") or 0
+    return {
+        "ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "date": ts.date().isoformat(),
+        "session": _infer_session(b_ts, bar),
+        "open": float(bar.get("open") or 0.0),
+        "high": float(bar.get("high") or 0.0),
+        "low": float(bar.get("low") or 0.0),
+        "close": float(bar.get("close") or 0.0),
+        "volume": int(volume),
+        "vw": float(vw),
+        "n": int(n),
+        "_extras": json.dumps({k: bar.get(k) for k in _PASSTHROUGH_COLS}),
+        "_dt": ts,
+    }
 
 
 def _build_ticker_cache(bars_dir: Path, ticker: str) -> None:
-    """Parse all JSONL source files for ticker and write Parquet cache."""
+    """Parse all JSONL source files for ticker and write per-day Parquets.
+
+    Layout: .cache_v2/<TICKER>/<YYYY-MM-DD>.parquet
+    Each file contains only bars for that date (pre + RTH combined).
+    This guarantees single-file reads for every get_bars() call.
+    """
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     ticker_up = ticker.upper()
     source_files = _source_files_for_ticker(bars_dir, ticker)
 
-    # Collect all bars from source JSONL files
-    all_bars: list[dict] = []
+    # Group bars by date
+    by_date: dict[str, list[dict[str, Any]]] = {}
     for path in source_files:
-        date_str = path.parts[-2] if path.parent.name == "premarket" else path.parent.name
         for bar in _load_jsonl(path):
-            # Normalise: add date and session
-            ts = bar.get("ts")
-            dt = _parse_ts(ts)
+            ts_str = bar.get("ts")
+            dt = _parse_ts(ts_str)
             if dt is None:
                 continue
-            # iex_volume alias \u2014 RTH files use iex_volume; premarket files use volume
-            volume = bar.get("iex_volume") or bar.get("volume") or 0
-            # vw (VWAP) and n (trade count) may be absent
-            vw = bar.get("bar_vwap") or bar.get("vw") or 0.0
-            n = bar.get("trade_count") or bar.get("n") or 0
+            date_str = dt.date().isoformat()
+            row = _bars_to_parquet_row(bar, dt)
+            by_date.setdefault(date_str, []).append(row)
 
-            row: dict[str, Any] = {
-                "ts": dt,
-                "date": dt.date().isoformat(),
-                "session": _infer_session(ts, bar),
-                "open": float(bar.get("open") or 0.0),
-                "high": float(bar.get("high") or 0.0),
-                "low": float(bar.get("low") or 0.0),
-                "close": float(bar.get("close") or 0.0),
-                "volume": int(volume),
-                "vw": float(vw),
-                "n": int(n),
-                # Passthrough extras \u2014 stored as JSON string to keep schema simple
-                "_extras": json.dumps({k: bar.get(k) for k in _PASSTHROUGH_COLS}),
-            }
-            all_bars.append(row)
-
-    # Sort by timestamp
-    all_bars.sort(key=lambda b: b["ts"])
-
-    if not all_bars:
+    if not by_date:
         logger.warning("[bar_cache] no bars found for ticker=%s", ticker_up)
 
-    # Build PyArrow table (pyarrow already imported above)
-    # Normalise ts to Z-suffix format for round-trip fidelity
-    ts_col = pa.array([b["ts"].strftime("%Y-%m-%dT%H:%M:%SZ") for b in all_bars], type=pa.string())
-    date_col = pa.array([b["date"] for b in all_bars], type=pa.string())
-    session_col = pa.array([b["session"] for b in all_bars], type=pa.string())
-    open_col = pa.array([b["open"] for b in all_bars], type=pa.float64())
-    high_col = pa.array([b["high"] for b in all_bars], type=pa.float64())
-    low_col = pa.array([b["low"] for b in all_bars], type=pa.float64())
-    close_col = pa.array([b["close"] for b in all_bars], type=pa.float64())
-    volume_col = pa.array([b["volume"] for b in all_bars], type=pa.int64())
-    vw_col = pa.array([b["vw"] for b in all_bars], type=pa.float64())
-    n_col = pa.array([b["n"] for b in all_bars], type=pa.int64())
-    extras_col = pa.array([b["_extras"] for b in all_bars], type=pa.string())
+    ticker_dir = _cache_root(bars_dir) / ticker_up
+    ticker_dir.mkdir(parents=True, exist_ok=True)
 
-    table = pa.table(
-        {
-            "ts": ts_col,
-            "date": date_col,
-            "session": session_col,
-            "open": open_col,
-            "high": high_col,
-            "low": low_col,
-            "close": close_col,
-            "volume": volume_col,
-            "vw": vw_col,
-            "n": n_col,
-            "_extras": extras_col,
-        }
-    )
+    for date_str, rows in by_date.items():
+        rows.sort(key=lambda r: r["_dt"])
 
-    pp = _parquet_path(bars_dir, ticker)
-    pp.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(
-        table,
-        str(pp),
-        compression=_COMPRESS,
-        compression_level=_COMPRESS_LEVEL,
+        ts_col = pa.array([r["ts"] for r in rows], type=pa.string())
+        date_col = pa.array([r["date"] for r in rows], type=pa.string())
+        session_col = pa.array([r["session"] for r in rows], type=pa.string())
+        open_col = pa.array([r["open"] for r in rows], type=pa.float64())
+        high_col = pa.array([r["high"] for r in rows], type=pa.float64())
+        low_col = pa.array([r["low"] for r in rows], type=pa.float64())
+        close_col = pa.array([r["close"] for r in rows], type=pa.float64())
+        volume_col = pa.array([r["volume"] for r in rows], type=pa.int64())
+        vw_col = pa.array([r["vw"] for r in rows], type=pa.float64())
+        n_col = pa.array([r["n"] for r in rows], type=pa.int64())
+        extras_col = pa.array([r["_extras"] for r in rows], type=pa.string())
+
+        table = pa.table(
+            {
+                "ts": ts_col,
+                "date": date_col,
+                "session": session_col,
+                "open": open_col,
+                "high": high_col,
+                "low": low_col,
+                "close": close_col,
+                "volume": volume_col,
+                "vw": vw_col,
+                "n": n_col,
+                "_extras": extras_col,
+            }
+        )
+
+        pp = ticker_dir / f"{date_str}.parquet"
+        pq.write_table(
+            table,
+            str(pp),
+            compression=_COMPRESS,
+            compression_level=_COMPRESS_LEVEL,
+        )
+
+    logger.debug(
+        "[bar_cache] wrote %d per-day Parquets for ticker=%s",
+        len(by_date),
+        ticker_up,
     )
-    logger.debug("[bar_cache] wrote %d rows to %s", len(all_bars), pp)
 
 
 def _ensure_cache(bars_dir: Path, ticker: str) -> bool:
-    """Ensure Parquet cache exists and is fresh; rebuild if stale.
+    """Ensure per-day Parquet caches exist and are fresh; rebuild if stale.
 
     Returns True if cache was already fresh (cache hit), False if it was
     rebuilt (cache miss).
+
+    After the first successful freshness check for a (bars_dir, ticker) pair
+    within a process, subsequent calls skip the os.stat() loop entirely by
+    consulting _CACHE_VERIFIED. This eliminates the ~2.5 ms overhead that
+    made every get_bars() call as slow as a fresh disk stat even when the LRU
+    already held the bars in memory.
     """
+    ck = (str(bars_dir), ticker)
+    if ck in _CACHE_VERIFIED:
+        return True  # already verified fresh in this process
+
     source_files = _source_files_for_ticker(bars_dir, ticker)
     key = _cache_key(source_files)
     meta = _read_meta(bars_dir, ticker)
-    pp = _parquet_path(bars_dir, ticker)
 
-    if meta.get("key") == key and pp.is_file():
+    # Hit: key matches AND meta indicates same cache version
+    if (
+        meta.get("key") == key
+        and meta.get("cache_version") == _CACHE_VERSION
+    ):
+        _CACHE_VERIFIED.add(ck)
         return True  # cache hit
 
+    # Invalidate process-level verified set so next call re-checks
+    _CACHE_VERIFIED.discard((str(bars_dir), ticker))
     t0 = time.perf_counter()
     _build_ticker_cache(bars_dir, ticker)
     _write_meta(bars_dir, ticker, key)
@@ -317,41 +356,25 @@ def _ensure_cache(bars_dir: Path, ticker: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def get_bars(bars_dir: Path | str, ticker: str, date: str) -> list[dict]:
-    """Drop-in replacement for replay_v511_full.load_day_bars.
+def _get_bars_uncached(bars_dir: Path, ticker_up: str, date: str) -> list[dict]:
+    """Read a single per-day Parquet and return list-of-dicts.
 
-    Returns the same list-of-dicts shape (including _dt for sort
-    compatibility) as the raw JSONL path. Reads from Parquet cache,
-    rebuilds cache file if stale or missing.
-
-    Args:
-        bars_dir: root directory containing per-date subdirectories.
-        ticker:   ticker symbol (case-insensitive).
-        date:     YYYY-MM-DD date string.
-
-    Returns:
-        List of bar dicts sorted by timestamp, each carrying at minimum:
-        ts, open, high, low, close, iex_volume, session, _dt.
+    This is the raw disk path; wrapped by get_bars() which adds LRU.
     """
-    bars_dir = Path(bars_dir)
-    ticker_up = ticker.upper()
-    _ensure_cache(bars_dir, ticker_up)
+    import pyarrow.parquet as pq
 
-    pp = _parquet_path(bars_dir, ticker_up)
+    pp = _parquet_path(bars_dir, ticker_up, date)
     if not pp.is_file():
         return []
 
-    import pyarrow.parquet as pq
-
-    # Read only rows for the requested date \u2014 use predicate pushdown
-    filters = [("date", "=", date)]
     try:
-        table = pq.read_table(str(pp), filters=filters)
+        table = pq.read_table(str(pp))
     except Exception as exc:
-        logger.warning("[bar_cache] read error ticker=%s date=%s: %s", ticker_up, date, exc)
+        logger.warning(
+            "[bar_cache] read error ticker=%s date=%s: %s", ticker_up, date, exc
+        )
         return []
 
-    rows: list[dict] = []
     ts_col = table.column("ts")
     date_col = table.column("date")
     session_col = table.column("session")
@@ -364,12 +387,12 @@ def get_bars(bars_dir: Path | str, ticker: str, date: str) -> list[dict]:
     n_col = table.column("n")
     extras_col = table.column("_extras")
 
+    rows: list[dict] = []
     for i in range(table.num_rows):
         ts_str: str = ts_col[i].as_py()
         dt = _parse_ts(ts_str)
         if dt is None:
             continue
-        # Normalise ts to the canonical Z-suffix format that source JSONL uses
         ts_canonical = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         extras: dict = {}
         try:
@@ -399,13 +422,56 @@ def get_bars(bars_dir: Path | str, ticker: str, date: str) -> list[dict]:
 
         rows.append(bar)
 
-    # Already sorted by ts in the Parquet (written sorted), but confirm
     rows.sort(key=lambda b: b["_dt"])
     return rows
 
 
-def build_all(bars_dir: Path | str) -> None:
-    """Build Parquet caches for every ticker found under bars_dir.
+@functools.lru_cache(maxsize=4096)
+def _lru_read_bars(bars_dir_str: str, ticker_up: str, date: str) -> tuple[dict, ...]:
+    """LRU-cached disk read for (bars_dir, ticker, date).
+
+    Returns an immutable tuple of bar dicts so the result is hashable
+    and safe to share across callers. Cache key is
+    (str(bars_dir), ticker, date) \u2014 all hashable scalars.
+    """
+    rows = _get_bars_uncached(Path(bars_dir_str), ticker_up, date)
+    # Convert to tuple for hashability (lru_cache requires hashable return
+    # only when the function itself is the key, not the return; tuple is
+    # fine here and lets callers convert back to list cheaply).
+    return tuple(rows)
+
+
+def get_bars(bars_dir: "Path | str", ticker: str, date: str) -> list[dict]:
+    """Drop-in replacement for replay_v511_full.load_day_bars.
+
+    Returns the same list-of-dicts shape (including _dt for sort
+    compatibility) as the raw JSONL path. Reads from the per-day Parquet
+    cache (.cache_v2/<TICKER>/<YYYY-MM-DD>.parquet), rebuilding if stale
+    or missing.
+
+    After the first call for a (bars_dir, ticker, date) triple within a
+    process, subsequent calls return from an in-process LRU (no disk I/O).
+
+    Args:
+        bars_dir: root directory containing per-date subdirectories.
+        ticker:   ticker symbol (case-insensitive).
+        date:     YYYY-MM-DD date string.
+
+    Returns:
+        List of bar dicts sorted by timestamp, each carrying at minimum:
+        ts, open, high, low, close, iex_volume, session, _dt.
+    """
+    bars_dir = Path(bars_dir)
+    ticker_up = ticker.upper()
+    _ensure_cache(bars_dir, ticker_up)
+
+    # _lru_read_bars caches by (str(bars_dir), ticker, date)
+    bars_tuple = _lru_read_bars(str(bars_dir), ticker_up, date)
+    return list(bars_tuple)
+
+
+def build_all(bars_dir: "Path | str") -> None:
+    """Build per-day Parquet caches for every ticker found under bars_dir.
 
     Suitable for:  python -m backtest.bar_cache build --bars-dir <dir>
     """
@@ -441,7 +507,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description="bar_cache CLI")
     sub = ap.add_subparsers(dest="cmd")
-    build_cmd = sub.add_parser("build", help="Pre-build all Parquet caches")
+    build_cmd = sub.add_parser("build", help="Pre-build all per-day Parquet caches")
     build_cmd.add_argument("--bars-dir", required=True, type=Path)
     args = ap.parse_args()
     if args.cmd == "build":

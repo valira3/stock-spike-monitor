@@ -1,4 +1,4 @@
-"""Tests for backtest/indicator_cache.py (v6.9.0 L2 indicator cache).
+"""Tests for backtest/indicator_cache.py (v6.9.2 L2 indicator cache).
 
 Rules: zero em-dashes (literal or escaped). All paths use tmp_path.
 """
@@ -101,7 +101,7 @@ def test_cache_miss_computes_and_persists(tmp_path: Path) -> None:
     date = "2026-04-28"
     indicators = ["ema9", "atr14"]
     params_hash = _compute_params_hash(bars_dir, "AAPL", indicators, {})
-    pp = _ind_parquet_path(bars_dir, "AAPL", params_hash)
+    pp = _ind_parquet_path(bars_dir, "AAPL", params_hash, date)
 
     assert not pp.exists(), "Parquet must not exist before first call"
     result = get_indicators(bars_dir, "AAPL", date, indicators)
