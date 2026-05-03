@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.7.1 (2026-05-03) — system test bug fixes (order RT non-RTH, dashboard auth, telegram env, ingest_config import)
+
+Patch release. Beck implementation.
+
+### Fix 1: Order round-trip non-RTH skip (trade_genius.py)
+- `_check_order_round_trip()`: added `_is_rth_ct()` guard at function entry.
+  Outside RTH returns `CheckResult(severity="skip", message="skipped (non-RTH — IOC requires market hours)")`.
+  Alpaca rejects IOC orders outside market hours; the check was incorrectly firing CRITICAL on
+  every non-RTH /test invocation. Inside RTH: existing CRITICAL-on-failure logic unchanged.
+
+### Fix 2: Dashboard 401 — auth-aware login flow (trade_genius.py)
+- `_check_dashboard()`: replaced bare `/api/state` GET with a full login flow.
+  POSTs `/login` with `DASHBOARD_PASSWORD` env var, captures session cookie via `HTTPCookieProcessor`,
+  then GETs `/api/state`. If `DASHBOARD_PASSWORD` is unset: severity=skip. If login fails (wrong
+  password, 5xx, connection error): severity=critical. If `/api/state` non-200 after login: severity=warn.
+  URL remains `localhost:{DASHBOARD_PORT}` per PRODUCT_SPEC.md D-14.
+
+### Fix 3: Telegram env var — TRADEGENIUS_OWNER_IDS (trade_genius.py)
+- `_check_telegram_config()`: was checking non-existent `TELEGRAM_OWNER_CHAT_ID`. Production
+  uses `TRADEGENIUS_OWNER_IDS` (comma-separated integer user IDs, same var read by the bot
+  at `trade_genius.py:87`). Check now validates all entries parse as integers; reports count.
+  CRITICAL if var is absent or contains no parseable entries.
+
+### Fix 4: ingest_config.py missing from Docker image (Dockerfile)
+- `Dockerfile`: added `COPY ingest_config.py .` after the `ingest/` package copy.
+  `engine/ingest_gate.py` does `import ingest_config` at module scope; the root-level
+  `ingest_config.py` was never copied into the container, causing `_check_ingest_gate()`
+  to catch `ModuleNotFoundError: No module named 'ingest_config'` on every /test run.
+  The import in `trade_genius.py` (`from engine.ingest_gate import _resolve_gate_mode`)
+  is already correct; only the Dockerfile COPY was missing.
+
+### Tests
+- New file: `tests/test_v6_7_1_system_test.py` (19 tests, all pass).
+  Classes: `TestCheckOrderRoundTripNonRTH`, `TestCheckDashboardAuthAware`,
+  `TestCheckTelegramConfigOwnerIds`, `TestCheckIngestGateImport`.
+
+### Disk diagnosis (informational)
+- Railway `/data` volume: 434 MB total, 138 MB used (32% full at SSH time).
+- Dominant consumer: `/data/signal_log.jsonl` at 124 MB (unbounded append log).
+- Bar archive: 5 days, 5.4 MB total, ~1 MB/day avg.
+- State DB: 488 KB (healthy).
+- Recommendation: (a) upsize volume to 2 GB, (b) add signal_log.jsonl rotation at 50 MB,
+  (c) 90-day bar retention cron. See disk_summary.md for full report.
+
+---
+
 ## v6.7.0 (2026-05-10) — expanded /test system health check (15 critical-component checks)
 
 Minor release. Beck implementation. Devon review suggested (test order touches paper Alpaca).

@@ -255,18 +255,18 @@ class TestCheckPositionsParity(unittest.TestCase):
 
 class TestCheckOrderRoundTrip(unittest.TestCase):
     def test_no_creds_skip(self):
-        with patch.dict(os.environ, {
-            "VAL_ALPACA_PAPER_KEY": "", "GENE_ALPACA_PAPER_KEY": "",
-            "VAL_ALPACA_PAPER_SECRET": "", "GENE_ALPACA_PAPER_SECRET": "",
-        }):
+        with patch("trade_genius._is_rth_ct", return_value=True),              patch.dict(os.environ, {
+                 "VAL_ALPACA_PAPER_KEY": "", "GENE_ALPACA_PAPER_KEY": "",
+                 "VAL_ALPACA_PAPER_SECRET": "", "GENE_ALPACA_PAPER_SECRET": "",
+             }):
             cr = tg._check_order_round_trip()
         self.assertEqual(cr.severity, "skip")
         self.assertIn("no creds", cr.message)
 
     def test_accidental_fill_warn(self):
-        with patch.dict(os.environ, {
-            "VAL_ALPACA_PAPER_KEY": "k", "VAL_ALPACA_PAPER_SECRET": "s"
-        }):
+        with patch("trade_genius._is_rth_ct", return_value=True),              patch.dict(os.environ, {
+                 "VAL_ALPACA_PAPER_KEY": "k", "VAL_ALPACA_PAPER_SECRET": "s",
+             }):
             try:
                 import alpaca.trading.client as _atc
                 import alpaca.trading.requests as _atr
@@ -605,20 +605,28 @@ class TestCheckMode(unittest.TestCase):
 class TestCheckDashboard(unittest.TestCase):
     def test_unreachable_warn(self):
         import urllib.error
-        with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError("refused")):
+        mock_opener = MagicMock()
+        mock_opener.open.side_effect = [MagicMock(status=302), ConnectionRefusedError("refused")]
+        with patch.dict(os.environ, {"DASHBOARD_PASSWORD": "testpw"}),              patch("urllib.request.build_opener", return_value=mock_opener):
             cr = tg._check_dashboard()
         self.assertEqual(cr.severity, "warn")
         self.assertIn("unreachable", cr.message)
 
     def test_200_ok(self):
-        mock_resp = MagicMock()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_resp.status = 200
-        mock_resp.read.return_value = json.dumps(
+        login_resp = MagicMock()
+        login_resp.__enter__ = lambda s: s
+        login_resp.__exit__ = MagicMock(return_value=False)
+        login_resp.status = 302
+        state_resp = MagicMock()
+        state_resp.__enter__ = lambda s: s
+        state_resp.__exit__ = MagicMock(return_value=False)
+        state_resp.status = 200
+        state_resp.read.return_value = json.dumps(
             {"ingest_status": {"status": "live"}}
         ).encode()
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        mock_opener = MagicMock()
+        mock_opener.open.side_effect = [login_resp, state_resp]
+        with patch.dict(os.environ, {"DASHBOARD_PASSWORD": "testpw"}),              patch("urllib.request.build_opener", return_value=mock_opener):
             cr = tg._check_dashboard()
         self.assertEqual(cr.severity, "ok")
         self.assertIn("shadow_data_status=live", cr.message)
@@ -630,23 +638,28 @@ class TestCheckDashboard(unittest.TestCase):
 
 class TestCheckTelegramConfig(unittest.TestCase):
     def test_valid_int_ok(self):
-        with patch.dict(os.environ, {"TELEGRAM_OWNER_CHAT_ID": "5165570192"}):
+        env = dict(os.environ)
+        env.pop("TELEGRAM_OWNER_CHAT_ID", None)
+        env["TRADEGENIUS_OWNER_IDS"] = "5165570192"
+        with patch.dict(os.environ, env, clear=True):
             cr = tg._check_telegram_config()
         self.assertEqual(cr.severity, "ok")
-        self.assertIn("owner_id set", cr.message)
+        self.assertIn("owner_ids set", cr.message)
 
     def test_missing_critical(self):
         env = dict(os.environ)
+        env.pop("TRADEGENIUS_OWNER_IDS", None)
         env.pop("TELEGRAM_OWNER_CHAT_ID", None)
         with patch.dict(os.environ, env, clear=True):
-            # ensure it's truly absent
-            os.environ.pop("TELEGRAM_OWNER_CHAT_ID", None)
             cr = tg._check_telegram_config()
         self.assertEqual(cr.severity, "critical")
         self.assertIn("missing or invalid", cr.message)
 
     def test_non_integer_critical(self):
-        with patch.dict(os.environ, {"TELEGRAM_OWNER_CHAT_ID": "not-an-int"}):
+        env = dict(os.environ)
+        env.pop("TRADEGENIUS_OWNER_IDS", None)
+        env["TRADEGENIUS_OWNER_IDS"] = "not-an-int"
+        with patch.dict(os.environ, env, clear=True):
             cr = tg._check_telegram_config()
         self.assertEqual(cr.severity, "critical")
         self.assertIn("missing or invalid", cr.message)
