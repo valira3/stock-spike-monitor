@@ -2974,7 +2974,7 @@ def _intraday_build_lifecycle(ticker: str, day: str) -> dict:
     out = {"entries": [], "exits": [], "trail_series": [], "open": []}
     if not sym:
         return out
-    base = _P("/data/forensics") / day
+    base = _P(os.environ.get("FORENSICS_DIR") or (os.environ.get("TG_DATA_ROOT", "/data") + "/forensics")) / day
 
     def _load_jsonl(path: _P) -> list[dict]:
         rows: list[dict] = []

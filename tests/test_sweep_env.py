@@ -246,3 +246,71 @@ class TestPreflightSmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Tests for v6.9.4 derived path env vars (Tests 11-17)
+# ---------------------------------------------------------------------------
+
+class TestDerivedPathEnvVars(unittest.TestCase):
+    """v6.9.4 -- verify all derived path vars are set and directories created."""
+
+    def setUp(self):
+        import tempfile
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _build(self, **kw):
+        isolate_dir = self.tmp / "iso"
+        isolate_dir.mkdir(parents=True, exist_ok=True)
+        tg_data_root = self.tmp / "root"
+        tg_data_root.mkdir(parents=True, exist_ok=True)
+        return build_sweep_env(isolate_dir=isolate_dir, tg_data_root=tg_data_root, **kw)
+
+    # Test 11 -- STATE_DB_PATH derived correctly
+    def test_state_db_path_derived(self):
+        env = self._build()
+        root = self.tmp / "root"
+        self.assertEqual(env["STATE_DB_PATH"], str(root / "state.db"))
+
+    # Test 12 -- BAR_ARCHIVE_BASE derived correctly
+    def test_bar_archive_base_derived(self):
+        env = self._build()
+        root = self.tmp / "root"
+        self.assertEqual(env["BAR_ARCHIVE_BASE"], str(root / "bars"))
+
+    # Test 13 -- UNIVERSE_GUARD_PATH derived correctly
+    def test_universe_guard_path_derived(self):
+        env = self._build()
+        root = self.tmp / "root"
+        self.assertEqual(env["UNIVERSE_GUARD_PATH"], str(root / "tickers.json"))
+
+    # Test 14 -- TRADE_LOG_PATH derived correctly
+    def test_trade_log_path_derived(self):
+        env = self._build()
+        root = self.tmp / "root"
+        self.assertEqual(env["TRADE_LOG_PATH"], str(root / "trade_log.jsonl"))
+
+    # Test 15 -- OR_DIR and FORENSICS_DIR derived correctly
+    def test_or_dir_forensics_dir_derived(self):
+        env = self._build()
+        root = self.tmp / "root"
+        self.assertEqual(env["OR_DIR"], str(root / "or"))
+        self.assertEqual(env["FORENSICS_DIR"], str(root / "forensics"))
+
+    # Test 16 -- directory-type paths are created on disk
+    def test_directory_paths_created_on_disk(self):
+        env = self._build()
+        for key in ("BAR_ARCHIVE_BASE", "VOLUME_PROFILE_DIR", "OR_DIR", "FORENSICS_DIR"):
+            p = Path(env[key])
+            self.assertTrue(p.is_dir(), f"{key} dir not created: {p}")
+
+    # Test 17 -- file-type path parents are created on disk
+    def test_file_path_parents_created_on_disk(self):
+        env = self._build()
+        for key in ("STATE_DB_PATH", "UNIVERSE_GUARD_PATH", "TRADE_LOG_PATH", "INGEST_AUDIT_DB_PATH"):
+            p = Path(env[key])
+            self.assertTrue(p.parent.is_dir(), f"{key} parent dir not created: {p.parent}")

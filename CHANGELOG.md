@@ -4,6 +4,61 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.9.4 (2026-05-05) -- complete /data isolation
+
+Patch release. Beck implementation.
+
+### Motivation
+v6.9.1 partially refactored hardcoded `/data` paths to use `TG_DATA_ROOT`,
+but missed several subsystems. Wave 2 sweeps produced structurally valid
+summary stats but emitted 54k+ permission warnings per run AND had an empty
+`trades` array (trade_log writes silently failed due to unresolved `/data`
+default).
+
+### Changes
+
+**backtest/sweep_env.py** -- derived path env vars (v6.9.4 extension)
+- `build_sweep_env()` now also derives and sets `STATE_DB_PATH`,
+  `BAR_ARCHIVE_BASE`, `UNIVERSE_GUARD_PATH`, `INGEST_AUDIT_DB_PATH`,
+  `VOLUME_PROFILE_DIR`, `OR_DIR`, `FORENSICS_DIR`, `TRADE_LOG_PATH`,
+  and `SSM_BAR_CACHE_DIR` -- all pointing under `tg_data_root`.
+- All directory-type paths are created via `mkdir(parents=True, exist_ok=True)`
+  at env-construction time so subsystems never hit "parent dir missing" errors.
+
+**persistence.py**
+- `STATE_DB_PATH` default now falls through `TG_DATA_ROOT` instead of
+  hardcoded `/data/state.db`.
+- `_log_write_error()` helper: logs `PermissionError` at `DEBUG` level when
+  `SSM_SMOKE_TEST=1`, `WARNING` otherwise. Eliminates the 54k warning flood.
+
+**bar_archive.py**
+- `DEFAULT_BASE_DIR` and `DEFAULT_DAILY_BAR_DIR` now resolve via
+  `BAR_ARCHIVE_BASE > TG_DATA_ROOT > /data` at module import time.
+- `write_bar()` and `write_daily_bar()`: `PermissionError` is suppressed to
+  `DEBUG` under `SSM_SMOKE_TEST=1`; all other exceptions keep `WARNING`.
+
+**trade_genius.py** -- UNIVERSE_GUARD write guard
+- `_write()` inner function: `PermissionError` is now suppressed to `DEBUG`
+  under `SSM_SMOKE_TEST=1` instead of always logging at `ERROR`.
+
+**dashboard_server.py**
+- Forensics base dir now resolves via `FORENSICS_DIR > TG_DATA_ROOT + /forensics`
+  instead of hardcoded `/data/forensics`.
+
+### Tests
+
+- `tests/test_sweep_env.py` (Tests 11-17): verify all derived path env vars
+  are set correctly and directories are created on disk.
+- `tests/test_data_root_coverage.py` (new): smoke test spawns a single replay
+  subprocess with `TG_DATA_ROOT` pointing at a tmp dir; asserts exit 0, no
+  `Permission denied` in stderr, `TRADE_LOG_PATH` under `TG_DATA_ROOT`.
+
+### Smoke test result
+- Exit: 0 | Permission denied in stderr: 0 | entries: 32 | exits: 21 |
+  pnl_pairs: 21 | trade_log.jsonl written under TG_DATA_ROOT: yes
+
+---
+
 ## v6.9.3 (2026-05-04) -- sweep runner hardening
 
 Patch release. Beck implementation.

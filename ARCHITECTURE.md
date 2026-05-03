@@ -1713,13 +1713,13 @@ Path derivation table:
 and returns `ok / sandbox mode` (not `CRITICAL`) if the path does not exist,
 so ephemeral CI environments do not trip the health-check alarm.
 
-### 10.3c Sweep env helper (v6.9.3)
+### 10.3c Sweep env helper (v6.9.4)
 
 `backtest/sweep_env.py` is the canonical source of hermetic subprocess
 environments for all sweep runners. It exists to prevent the three silent
-failure modes that invalidated consecutive Wave 2 sweeps (v6.9.0–6.9.2).
+failure modes that invalidated consecutive Wave 2 sweeps (v6.9.0-6.9.2).
 
-**`REQUIRED_ENV`** — module-level dict of three guard keys that every sweep
+**`REQUIRED_ENV`** -- module-level dict of three guard keys that every sweep
 subprocess must have. Injected unconditionally by `build_sweep_env`:
 
 | Key | Value | Guards against |
@@ -1728,12 +1728,34 @@ subprocess must have. Injected unconditionally by `build_sweep_env`:
 | `TELEGRAM_BOT_TOKEN` | `"000:fake"` | token-present check without hitting API |
 | `FMP_API_KEY` | `"sweep_dummy_key"` | hard-fail at import when key absent (v6.9.2) |
 
-**`build_sweep_env(*, isolate_dir, tg_data_root, extra)`** — builds a full
+**`build_sweep_env(*, isolate_dir, tg_data_root, extra)`** -- builds a full
 env dict from `os.environ`, overlays `REQUIRED_ENV`, sets
 `PAPER_STATE_PATH` / `PAPER_LOG_PATH` under `isolate_dir` (per-worker
-isolation, v6.9.1 fix), sets `TG_DATA_ROOT`, then layers `extra` last.
+isolation, v6.9.1 fix), sets `TG_DATA_ROOT`, derives and sets all
+subsystem path env vars (v6.9.4), then layers `extra` last.
 Raises `ValueError` if either directory is absent so callers get a loud
 error at setup time rather than a silent failure inside the worker.
+
+**v6.9.4 derived path env vars** -- `build_sweep_env` now derives and sets
+the following env vars under `tg_data_root`, creating directories as needed:
+
+| Env var | Path under tg_data_root | Consumer |
+|---|---|---|
+| `STATE_DB_PATH` | `state.db` | `persistence.py` SQLite store |
+| `BAR_ARCHIVE_BASE` | `bars/` | `bar_archive.py`, `ingest/algo_plus.py` |
+| `UNIVERSE_GUARD_PATH` | `tickers.json` | `trade_genius.py` universe guard |
+| `INGEST_AUDIT_DB_PATH` | `ingest_audit.db` | `ingest/audit.py` |
+| `VOLUME_PROFILE_DIR` | `volume_profiles/` | `volume_profile.py` |
+| `OR_DIR` | `or/` | `trade_genius.py` OR-break leg |
+| `FORENSICS_DIR` | `forensics/` | `forensic_capture.py`, dashboard |
+| `TRADE_LOG_PATH` | `trade_log.jsonl` | `trade_genius.py` trade log |
+| `SSM_BAR_CACHE_DIR` | `bar_cache/` | `backtest/bar_cache.py` |
+
+**SSM_SMOKE_TEST permission warning suppression (v6.9.4)** -- when
+`SSM_SMOKE_TEST=1`, `PermissionError` from write operations in
+`persistence.py`, `bar_archive.py`, and `trade_genius.py` (UNIVERSE_GUARD)
+is logged at `DEBUG` level instead of `WARNING`/`ERROR`. This eliminates
+the 54k warning flood per sweep day that was masking real errors.
 
 **`preflight_smoke(*, workdir, bars_dir, sample_date, env, timeout_sec)`**
 — runs a single-day `replay_v511_full` replay before fanning out the full

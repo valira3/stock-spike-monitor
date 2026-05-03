@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.9.3"
+BOT_VERSION = "6.9.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -693,6 +693,13 @@ def _ensure_universe_consistency() -> None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(envelope, indent=2))
+        except PermissionError as we:
+            # v6.9.4 -- suppress to DEBUG under SSM_SMOKE_TEST to avoid
+            # the 54k warning flood per sweep day. Prod keeps ERROR level.
+            if os.environ.get("SSM_SMOKE_TEST") == "1":
+                logger.debug("[UNIVERSE_GUARD] write failed: %s", we)
+            else:
+                logger.error("[UNIVERSE_GUARD] write failed: %s", we)
         except Exception as we:
             logger.error("[UNIVERSE_GUARD] write failed: %s", we)
 

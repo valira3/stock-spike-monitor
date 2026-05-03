@@ -37,7 +37,11 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------
-STATE_DB_PATH = os.getenv("STATE_DB_PATH", "/data/state.db")
+# v6.9.4 -- default falls back through TG_DATA_ROOT so sweep workers
+# that set TG_DATA_ROOT but not STATE_DB_PATH still land under the
+# correct writable tree instead of the hardcoded /data mount.
+_TG_DATA_ROOT_DEFAULT = os.environ.get("TG_DATA_ROOT", "/data")
+STATE_DB_PATH = os.getenv("STATE_DB_PATH", _TG_DATA_ROOT_DEFAULT + "/state.db")
 
 _LONG_PREFIX = "long:"
 _SHORT_PREFIX = "short:"
@@ -54,10 +58,23 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _log_write_error(msg: str, *args) -> None:
+    """v6.9.4 -- log PermissionError at DEBUG under SSM_SMOKE_TEST to
+    avoid the 54k warning flood per sweep day. Real prod keeps WARNING."""
+    if os.environ.get("SSM_SMOKE_TEST") == "1":
+        logger.debug(msg, *args)
+    else:
+        logger.warning(msg, *args)
+
+
 def _connect(path: str) -> sqlite3.Connection:
     parent = os.path.dirname(path) or "."
     try:
         os.makedirs(parent, exist_ok=True)
+    except PermissionError as e:
+        # v6.9.4 -- in smoke-test mode suppress the 54k warning flood;
+        # real prod keeps WARNING level for visibility.
+        _log_write_error("persistence: could not mkdir %s: %s", parent, e)
     except OSError as e:
         logger.warning("persistence: could not mkdir %s: %s", parent, e)
     conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)

@@ -22,7 +22,10 @@ from pathlib import Path
 
 logger = logging.getLogger("trade_genius.bar_archive")
 
-DEFAULT_BASE_DIR = "/data/bars"
+# v6.9.4 -- resolve default from BAR_ARCHIVE_BASE > TG_DATA_ROOT > /data.
+# Callers that pass base_dir= explicitly are unaffected.
+_TG_DATA_ROOT = os.environ.get("TG_DATA_ROOT", "/data")
+DEFAULT_BASE_DIR = os.environ.get("BAR_ARCHIVE_BASE", _TG_DATA_ROOT + "/bars")
 DEFAULT_RETAIN_DAYS = 90
 
 # Schema fields a bar SHOULD carry. Missing fields are written as null.
@@ -109,12 +112,19 @@ def write_bar(
         with open(file_path, "a", encoding="utf-8") as fh:
             fh.write(line)
         return str(file_path)
+    except PermissionError as e:
+        # v6.9.4 -- suppress to DEBUG in smoke-test mode to avoid 54k warning flood.
+        if os.environ.get("SSM_SMOKE_TEST") == "1":
+            logger.debug("[BAR-ARCHIVE] write_bar %s failed: %s", ticker, e)
+        else:
+            logger.warning("[BAR-ARCHIVE] write_bar %s failed: %s", ticker, e)
+        return None
     except Exception as e:
         logger.warning("[BAR-ARCHIVE] write_bar %s failed: %s", ticker, e)
         return None
 
 
-DEFAULT_DAILY_BAR_DIR = "/data/bars/daily"
+DEFAULT_DAILY_BAR_DIR = os.environ.get("BAR_ARCHIVE_BASE", _TG_DATA_ROOT + "/bars") + "/daily"
 
 
 def _normalise_daily_bar(bar: dict) -> dict:
@@ -155,6 +165,13 @@ def write_daily_bar(
         with open(file_path, "a", encoding="utf-8") as fh:
             fh.write(line)
         return str(file_path)
+    except PermissionError as e:
+        # v6.9.4 -- suppress to DEBUG in smoke-test mode.
+        if os.environ.get("SSM_SMOKE_TEST") == "1":
+            logger.debug("[BAR-ARCHIVE] write_daily_bar %s failed: %s", ticker, e)
+        else:
+            logger.warning("[BAR-ARCHIVE] write_daily_bar %s failed: %s", ticker, e)
+        return None
     except Exception as e:
         logger.warning("[BAR-ARCHIVE] write_daily_bar %s failed: %s", ticker, e)
         return None
