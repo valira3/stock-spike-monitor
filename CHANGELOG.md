@@ -4,16 +4,25 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v6.5.1 (2026-05-XX) — Deep-stop during min_hold window
+## v6.5.1 (2026-05-03) — Long-only deep-stop during min_hold window
 
-- Added v6.5.1 deep-stop rail that fires at -0.75% (long) / +0.75% (short)
+- Added v6.5.1 deep-stop rail that fires at -0.75% on **longs only**
   during the v6.4.4 min_hold blocking window. The 50 bp protective rail
   remains blocked under 10 minutes (preserving the +$1.7k v6.4.4 lift),
-  but blow-throughs past -0.75% now exit immediately instead of being
-  forced to ride to t=10min.
+  but long blow-throughs past -0.75% now exit immediately instead of
+  being forced to ride to t=10min.
+- Symmetric variant (longs+shorts) regressed -$115 over 83 days due to
+  short-side mean reversion being interrupted; long-only refinement
+  (default) keeps the long lift while preserving short performance.
 - New exit reason: sentinel_v651_deep_stop
-- New tunables: _V651_DEEP_STOP_ENABLED, _V651_DEEP_STOP_PCT
-- Backtest: caps 30 forced-hold losers, est. +$715 84-day lift (bound).
+- New tunables: _V651_DEEP_STOP_ENABLED (default True), _V651_DEEP_STOP_PCT
+  (default 0.0075), _V651_DEEP_STOP_LONG_ONLY (default True)
+- Backtest harness: per-tick (ticker, clock_minute) bar cache delivers
+  6.3× speedup on `_harness_fetch_1min_bars` (single-day 126s → 20s).
+- 83-day SIP backtest (2026-01-02 → 2026-04-30): **+$16,346** vs v6.5.0
+  baseline +$14,948 (+$1,398, +9.4%); 1,394 pairs; 54.7% WR; long side
+  +$9,206 (+$1,398 vs v6.5.0); short side unchanged at +$7,140; 25 deep-
+  stops fired.
 
 ---
 
