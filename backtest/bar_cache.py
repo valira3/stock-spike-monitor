@@ -1,4 +1,4 @@
-"""v6.9.5 -- L1 Parquet bar cache: per-day files + in-process LRU.
+"""v6.9.6 -- L1 Parquet bar cache: per-day files + in-process LRU.
 
 Replaces the v6.9.0 single-file-per-ticker layout that forced a full
 84-day Parquet scan for every 1-day request (12-15x regression vs JSONL).
@@ -6,6 +6,10 @@ Replaces the v6.9.0 single-file-per-ticker layout that forced a full
 v6.9.5 change: _cache_root() respects SSM_BAR_CACHE_DIR env var so sweep
 workers can write cache files to a writable path even when bars_dir is a
 read-only canonical SIP directory.
+
+v6.9.6 change: _build_ticker_cache and _ensure_cache are confirmed to route
+all cache path construction through _cache_root(). No write touches bars_dir
+when SSM_BAR_CACHE_DIR is set.
 
 Cache layout (v2)
 -----------------
