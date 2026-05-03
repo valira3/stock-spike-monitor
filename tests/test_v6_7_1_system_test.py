@@ -32,20 +32,19 @@ class TestCheckOrderRoundTripNonRTH(unittest.TestCase):
     """v6.7.1 Fix 1: IOC orders rejected outside RTH -- check must skip."""
 
     def test_non_rth_returns_skip(self):
-        """Outside RTH: severity must be skip regardless of creds."""
-        with patch("trade_genius._is_rth_ct", return_value=False), \
+        """Outside RTH (off session): severity must be skip regardless of creds."""
+        with patch.object(tg, "_market_session", return_value="off"), \
              patch.dict(os.environ, {
                  "VAL_ALPACA_PAPER_KEY": "key123",
                  "VAL_ALPACA_PAPER_SECRET": "secret123",
              }):
             cr = tg._check_order_round_trip()
         self.assertEqual(cr.severity, "skip")
-        self.assertIn("non-RTH", cr.message)
-        self.assertIn("IOC", cr.message)
+        self.assertIn("markets closed", cr.message)
 
     def test_non_rth_skip_even_without_creds(self):
-        """Non-RTH skip fires before the creds check."""
-        with patch("trade_genius._is_rth_ct", return_value=False), \
+        """Off session skip fires before the creds check."""
+        with patch.object(tg, "_market_session", return_value="off"), \
              patch.dict(os.environ, {
                  "VAL_ALPACA_PAPER_KEY": "",
                  "GENE_ALPACA_PAPER_KEY": "",
@@ -54,11 +53,11 @@ class TestCheckOrderRoundTripNonRTH(unittest.TestCase):
              }):
             cr = tg._check_order_round_trip()
         self.assertEqual(cr.severity, "skip")
-        self.assertIn("non-RTH", cr.message)
+        self.assertIn("markets closed", cr.message)
 
     def test_rth_alpaca_api_error_is_critical(self):
         """Inside RTH: an Alpaca APIError must produce critical severity."""
-        with patch("trade_genius._is_rth_ct", return_value=True), \
+        with patch.object(tg, "_market_session", return_value="rth"), \
              patch.dict(os.environ, {
                  "VAL_ALPACA_PAPER_KEY": "k",
                  "VAL_ALPACA_PAPER_SECRET": "s",
@@ -79,7 +78,7 @@ class TestCheckOrderRoundTripNonRTH(unittest.TestCase):
 
     def test_rth_no_creds_skip(self):
         """Inside RTH: no creds still produces skip (existing behavior)."""
-        with patch("trade_genius._is_rth_ct", return_value=True), \
+        with patch.object(tg, "_market_session", return_value="rth"), \
              patch.dict(os.environ, {
                  "VAL_ALPACA_PAPER_KEY": "",
                  "GENE_ALPACA_PAPER_KEY": "",

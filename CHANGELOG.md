@@ -4,6 +4,66 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.7.3 (2026-05-03) — dashboard 127.0.0.1 fix, header BOT_VERSION, extended-hours testing, every-2hr schedule
+
+Patch release. Beck implementation.
+
+### Fix 1: Dashboard 401 — urllib single-label-host cookie bug (trade_genius.py)
+- Root cause confirmed via SSH: Python’s `urllib.request` cookiejar stores cookies with
+  `domain="localhost.local"` for single-label hostnames per RFC 2965. When the next request
+  goes to `localhost`, the domain doesn’t match and the cookie is omitted, causing /api/state
+  to return 401.
+- `_check_dashboard()`: changed `base_url = "http://localhost:{port}"` to
+  `base_url = "http://127.0.0.1:{port}"`. IP literals bypass the single-label-host quirk.
+  User-Agent string bumped to `TradeGenius-SysTest/6.7.3`.
+- Test: `TestDashboard127::test_request_uses_127_not_localhost` asserts no URL targets `localhost`.
+
+### Fix 2: Telegram header shows hardcoded v6.7.0 (trade_genius.py)
+- `_format_system_test_body()`: replaced hardcoded `"v6.7.0"` in the header line and
+  orchestrator-error fallback with `BOT_VERSION` constant. Header now reflects the
+  runtime version and will auto-update with future bumps.
+- Tests: `TestHeaderBotVersion` (3 cases): header contains `BOT_VERSION`, not `v6.7.0`,
+  and reflects a patched version at runtime.
+
+### Fix 3: Extended-hours support — tri-state market session (trade_genius.py)
+- Added `_market_session() -> str` returning `"rth" | "extended" | "off"` using
+  `zoneinfo.ZoneInfo("America/Chicago")` (DST-aware). RTH: 08:30–15:00 CT Mon–Fri;
+  EXTENDED: 03:00–08:30 and 15:00–19:00 CT Mon–Fri; OFF: all other times.
+- `_is_rth_ct()` kept as a 1-line shim: `return _market_session() == "rth"`.
+- **Check 3 (order round-trip):** OFF → skip "overnight/weekend — markets closed";
+  EXTENDED → use DAY order type (Alpaca rejects IOC outside market hours);
+  RTH → IOC as before.
+- **Check 4 (WS health):** OFF → info "markets closed"; RTH/EXTENDED → same thresholds
+  (30s warn, 90s critical — streams should be live in pre/post).
+- **Check 5 (bars today):** RTH → critical on missing dir; EXTENDED → warn on missing dir
+  (may be early pre-market); OFF → info.
+- **Check 6 (AlgoPlus):** RTH → critical if >60s stale; EXTENDED → warn if >120s stale
+  (lower pre/post volume); OFF → info.
+- Orchestrator now computes `session = _market_session()` once at entry and passes it
+  to all four block-B checks (replacing the `rth` bool).
+
+### Fix 4: Scheduler — every-2hr system-test firings 03:00–19:00 CT (trade_genius.py)
+- Replaced the two legacy entries (`09:20` and `09:31` ET) with 9 bi-hourly firings:
+  08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00, 00:00 ET
+  (equivalent to 03:00, 05:00, 07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00 CT during CDT).
+  All marked `"daily"` so they run weekdays only (weekday < 5 per scheduler match logic).
+  During CST (Nov–Mar), times fire 1h late — acceptable drift for a monitoring heartbeat.
+- Tests: `TestSchedulerFirings` (6 cases): 9 firings registered, pre-open/post-close/RTH-close
+  labels present, old 8:20/8:31 labels absent.
+
+### Tests
+- New file: `tests/test_v6_7_3_extended_hours.py` (41 tests, all pass).
+  Classes: `TestMarketSession` (13 boundary tests), `TestDashboard127`, `TestHeaderBotVersion`,
+  `TestOrderRoundTripSession`, `TestWsHealthSession`, `TestBarArchiveSession`,
+  `TestAlgoplusSession`, `TestSchedulerFirings`.
+- Updated `tests/test_v6_7_0_system_test.py`: `non-RTH` → `markets closed` message assertions,
+  `rth=False/True` → `"off"/"rth"` string args, header version assertion updated to `BOT_VERSION`,
+  `_is_rth_ct` patches → `_market_session` `patch.object` calls.
+- Updated `tests/test_v6_7_1_system_test.py`: order round-trip `_is_rth_ct` patches →
+  `_market_session` `patch.object` calls, message assertions updated to `markets closed`.
+
+---
+
 ## v6.7.2 (2026-05-04) — disk check percentage-based (5%/15% free)
 
 Patch release. Beck implementation.
