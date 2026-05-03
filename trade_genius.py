@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.7.0"
+BOT_VERSION = "6.7.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,14 +98,14 @@ BOT_VERSION = "6.7.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.7.0 expanded /test (15 checks):\n"
-    "broker, streaming, state,\n"
-    "risk, observability blocks.\n"
-    "CheckResult dataclass, parallel\n"
-    "5-block ThreadPoolExecutor.\n"
-    "v6.6.1: FMP key hardening,\n"
-    "kill-switch unification,\n"
-    "ingest gate dry_run default."
+    "v6.7.1 /test bug fixes (4):\n"
+    "order RT skip non-RTH,\n"
+    "dashboard login flow,\n"
+    "TRADEGENIUS_OWNER_IDS fix,\n"
+    "ingest_config Dockerfile COPY.\n"
+    "v6.7.0: expanded /test (15\n"
+    "checks), 5-block executor,\n"
+    "CheckResult dataclass."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -5032,10 +5032,14 @@ def _check_order_round_trip() -> CheckResult:
     IOC self-cancels; explicit cancel is belt-and-suspenders (D-08).
     Accidental fill: submit offsetting market sell; mark WARN not CRITICAL (D-09).
     Skip if creds absent (D-10).
+    Skip if non-RTH \u2014 Alpaca rejects IOC orders outside market hours (D-11).
     """
     t0 = time.monotonic()
     def _ms():
         return int((time.monotonic() - t0) * 1000)
+    if not _is_rth_ct():
+        return CheckResult("Order round-trip", "A", "skip",
+                           "skipped (non-RTH \u2014 IOC requires market hours)", _ms())
     key = (os.getenv("VAL_ALPACA_PAPER_KEY", "").strip()
            or os.getenv("GENE_ALPACA_PAPER_KEY", "").strip())
     secret = (os.getenv("VAL_ALPACA_PAPER_SECRET", "").strip()
@@ -5355,22 +5359,55 @@ def _check_mode() -> CheckResult:
 # ---------------------------------------------------------------------------
 
 def _check_dashboard() -> CheckResult:
-    """Check 13 \u2014 Dashboard /api/state reachability.
+    """Check 13 \u2014 Dashboard /api/state reachability (auth-aware).
 
-    Uses http://localhost:{DASHBOARD_PORT}/api/state (D-14).
-    WARN if unreachable \u2014 dashboard is observability, not trading-critical.
-    DASHBOARD_PORT env var; default 8080.
+    Uses http://localhost:{DASHBOARD_PORT} (D-14).
+    Login flow: POST /login with DASHBOARD_PASSWORD, capture session cookie,
+    then GET /api/state.
+    Skip if DASHBOARD_PASSWORD env var is unset.
+    CRITICAL if login fails (wrong password / 5xx).
+    WARN if /api/state returns non-200 after successful login.
+    WARN if dashboard is unreachable.
     """
     t0 = time.monotonic()
     def _ms():
         return int((time.monotonic() - t0) * 1000)
+    pw = os.getenv("DASHBOARD_PASSWORD", "").strip()
+    if not pw:
+        return CheckResult("Dashboard", "E", "skip",
+                           "skipped (no dashboard password)", _ms())
     port = int(os.getenv("DASHBOARD_PORT", "8080") or "8080")
-    url = "http://localhost:%d/api/state" % port
+    base_url = "http://localhost:%d" % port
     try:
-        req = _sysurlreq.Request(
-            url, headers={"User-Agent": "TradeGenius-SysTest/6.7.0"}
+        import urllib.parse as _uparse
+        import http.cookiejar as _cj
+        cookie_jar = _cj.CookieJar()
+        opener = _sysurlreq.build_opener(_sysurlreq.HTTPCookieProcessor(cookie_jar))
+        login_data = _uparse.urlencode({"password": pw}).encode("utf-8")
+        login_req = _sysurlreq.Request(
+            base_url + "/login",
+            data=login_data,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "TradeGenius-SysTest/6.7.1",
+                "Origin": base_url,
+            },
         )
-        with _sysurlreq.urlopen(req, timeout=3) as resp:
+        try:
+            with opener.open(login_req, timeout=5) as login_resp:
+                login_status = login_resp.status
+        except Exception as login_exc:
+            login_status_str = str(login_exc)[:80]
+            return CheckResult("Dashboard", "E", "critical",
+                               "login failed \u2014 %s" % login_status_str, _ms())
+        if login_status >= 400:
+            return CheckResult("Dashboard", "E", "critical",
+                               "login failed \u2014 HTTP %d" % login_status, _ms())
+        state_req = _sysurlreq.Request(
+            base_url + "/api/state",
+            headers={"User-Agent": "TradeGenius-SysTest/6.7.1"},
+        )
+        with opener.open(state_req, timeout=3) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read())
                 ingest_st = data.get("ingest_status", {}) if isinstance(data, dict) else {}
@@ -5386,23 +5423,33 @@ def _check_dashboard() -> CheckResult:
 
 
 def _check_telegram_config() -> CheckResult:
-    """Check 14 \u2014 TELEGRAM_OWNER_CHAT_ID is set and castable to int.
+    """Check 14 \u2014 TRADEGENIUS_OWNER_IDS is set and contains at least one valid int.
 
-    CRITICAL if missing or non-integer. Do NOT log the actual value (privacy).
+    Production env var is TRADEGENIUS_OWNER_IDS (comma-separated user IDs).
+    The old TELEGRAM_OWNER_CHAT_ID name was incorrect \u2014 that var is never set.
+    CRITICAL if missing or contains no parseable integer entries.
+    Do NOT log the actual values (privacy).
     """
     t0 = time.monotonic()
     def _ms():
         return int((time.monotonic() - t0) * 1000)
-    val = os.getenv("TELEGRAM_OWNER_CHAT_ID", "").strip()
-    if not val:
+    raw = os.getenv("TRADEGENIUS_OWNER_IDS", "").strip()
+    if not raw:
         return CheckResult("Telegram", "E", "critical",
-                           "TELEGRAM_OWNER_CHAT_ID missing or invalid", _ms())
-    try:
-        int(val)
-        return CheckResult("Telegram", "E", "ok", "owner_id set", _ms())
-    except ValueError:
+                           "TRADEGENIUS_OWNER_IDS missing or invalid", _ms())
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    valid = []
+    for p in parts:
+        try:
+            int(p)
+            valid.append(p)
+        except ValueError:
+            pass
+    if not valid:
         return CheckResult("Telegram", "E", "critical",
-                           "TELEGRAM_OWNER_CHAT_ID missing or invalid", _ms())
+                           "TRADEGENIUS_OWNER_IDS missing or invalid", _ms())
+    return CheckResult("Telegram", "E", "ok",
+                       "owner_ids set (%d)" % len(valid), _ms())
 
 
 def _check_version_parity() -> CheckResult:

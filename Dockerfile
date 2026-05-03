@@ -87,6 +87,10 @@ COPY executors/ ./executors/
 # ingest.algo_plus as ingest_algo_plus). Holds AlgoPlusIngest,
 # BarAssembler, ConnectionHealth, GapDetector, RestBackfillWorker.
 COPY ingest/ ./ingest/
+# v6.6.0 — ingest_config.py (root-level tunable constants used by
+# engine/ingest_gate.py and ingest/sla.py). Missing this COPY causes
+# ModuleNotFoundError: ingest_config when /test checks the ingest gate.
+COPY ingest_config.py .
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .
