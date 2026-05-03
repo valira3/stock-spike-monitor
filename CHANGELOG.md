@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.9.7 -- env-wire C4 OR-break constants for Wave 2 sweepability
+
+Wave 2's C4 parameter sweep needs to vary `_V610_ATR_OR_BREAK_ENABLED` and
+`V610_OR_BREAK_K` per-replay without patching source. Both constants now read
+from environment variables (`_V610_ATR_OR_BREAK_ENABLED=1` enables the flag;
+`V610_OR_BREAK_K=<float>` overrides the multiplier). Defaults are unchanged
+(False and 0.25), so existing deployments are unaffected.
+
+Patch release. Beck implementation.
+
+---
+
 ## v6.9.6 -- bar_cache build paths actually honor SSM_BAR_CACHE_DIR (fix v6.9.5 incomplete)
 
 v6.9.6 -- bar_cache.py: route _build_ticker_cache and _ensure_cache through _cache_root() helper (v6.9.5 added the helper but missed the call sites that actually fail in production sweeps).

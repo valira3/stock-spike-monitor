@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.9.6"
+BOT_VERSION = "6.9.7"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -965,11 +965,11 @@ TICKER_SIDE_BLOCKLIST: dict[str, list[str]] = json.loads(
 # v6.1.0 \u2014 ATR-normalized OR-break entry gate (#3)
 # ============================================================
 # Master feature flag. False -> fall back to fixed-cents path (legacy).
-_V610_ATR_OR_BREAK_ENABLED: bool = False
+_V610_ATR_OR_BREAK_ENABLED: bool = os.getenv("_V610_ATR_OR_BREAK_ENABLED", "0") == "1"
 
 # Multiplier k: break fires when price > OR_high + k * ATR_pre_market.
 # Symmetric for short (below OR_low - k * ATR).
-V610_OR_BREAK_K: float = 0.25
+V610_OR_BREAK_K: float = float(os.getenv("V610_OR_BREAK_K", "0.25"))
 
 # Late-OR re-evaluation window: 11:00-12:00 ET. Only fires when the
 # standard 09:30-10:30 window never triggered for that ticker.
