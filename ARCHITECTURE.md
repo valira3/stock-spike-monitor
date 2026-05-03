@@ -3345,3 +3345,66 @@ Three independent module-level flags: `V620_LOCAL_OR_BREAK_ENABLED`, `V620_FAST_
 ---
 
 *Last refresh: May 2026, against `BOT_VERSION = "6.5.0"`.*
+
+---
+
+## §18b. v6.6.0 — Ingest Hardening (May 2026)
+
+**Product spec:** `v6_6_0_product_spec.md` (Priya). **Architecture doc:** `v6_6_0_architecture.md` (Aria). All 9 decisions (P1–P4, A1–A5) are locked and ratified by Val.
+
+### Overview
+
+v6.6.0 hardens the always-on Algo Plus ingest layer introduced in v6.5.0 across three pillars:
+
+- **Pillar A — SLA Monitoring:** Formal SLA metrics (last_bar_age_s, open_gaps_today, backfill_queue_depth, backfill_lag_s) with GREEN/YELLOW/RED thresholds. RTH-only enforcement (09:30–16:00 ET). Surfaced on `/api/state.ingest_status.ingest_health`.
+- **Pillar B — Gap-Fill Verification:** Every `RestBackfillWorker._backfill()` call triggers an inline re-scan (Decision A3) immediately after writing bars. Gap lifecycle (open → backfilling → closed/missing) is persisted in `/data/ingest_audit.db`.
+- **Pillar C — Trading Gate:** Per-ticker two-state gate (ALLOW/BLOCK) with hysteresis (5 min RED→BLOCK, 2 min GREEN→ALLOW). Fires in `execute_breakout()` after post-loss cooldown. Ships as `dry_run` only in v6.6.0; `enforce` flip requires Val+Devi+Reese sign-off (Decision A5).
+
+### New Files
+
+| File | Lines | Role |
+|---|---|---|
+| `ingest_config.py` | ~100 | All SLA + gate tunable constants; env-var overrides at import time (Decision A1) |
+| `ingest/sla.py` | ~311 | SLAThreshold, SLAMetric, IngestHealthState; SLA classifier; get_health_state(); RTH check |
+| `ingest/audit.py` | ~406 | AuditLog; ingest_audit.db schema; gap lifecycle + gate decision persistence (Decision A2) |
+| `engine/ingest_gate.py` | ~288 | GateDecision, _TickerGateState; evaluate_gate(); two-state hysteresis (Decision A4) |
+| `tests/test_ingest_sla.py` | — | SLA threshold + color derivation unit tests |
+| `tests/test_ingest_gate.py` | — | Gate hysteresis + dry_run unit tests |
+| `tests/test_gap_audit.py` | — | AuditLog DB lifecycle unit tests |
+| `tests/test_gate_smoke.py` | — | Gate smoke: enforce mode, green ingest → allow |
+
+### Modified Files
+
+| File | Change |
+|---|---|
+| `ingest/algo_plus.py` | `_backfill()`: adds `_backfill_start` timer, AuditLog calls, `_verify_gap_closed()` inline; `_update_ingest_stats()`: propagates to SLA collector; `_ingest_health_snapshot()`: adds `ingest_health`, `gap_audit`, `gate_override_active` keys |
+| `broker/orders.py` | `execute_breakout()`: adds ingest gate check after post-loss cooldown (fails open; dry_run never returns early) |
+| `trade_genius.py` | `gap_detect_task()`: adds AuditLog.record_gap_detected/enqueued calls, SLA gap count update, daily retention prune |
+| `bot_version.py` | `BOT_VERSION = "6.5.2" → "6.6.0"` |
+| `CHANGELOG.md` | v6.6.0 entry |
+
+### Storage
+
+- **`/data/ingest_audit.db`** (new, Decision A2): two tables: `ingest_gap_audit` (gap lifecycle, 180-day retention) and `ingest_gate_decisions` (gate allow/block log, 180-day retention). WAL mode. `state.db` is untouched.
+- **Retention:** 180 calendar days for both audit tables (Decision P4). Bar archive retention unchanged at 90 days.
+
+### Locked Decisions
+
+| # | Decision | Implementation |
+|---|---|---|
+| P1 | Gate ceiling 20 min | `GATE_REST_ONLY_CEILING_S=1200` in `ingest_config.py` |
+| P2 | Two-state only (no Yellow action) | `engine/ingest_gate.py`: only `"allow"` and `"block"` decisions; no half-size logic |
+| P3 | RTH-only enforcement (09:30–16:00 ET) | `_is_rth()` in `ingest/sla.py`; gate returns green outside RTH |
+| P4 | 180-day audit retention | `AUDIT_RETENTION_DAYS=180`; prune in `gap_detect_task()` via `AuditLog.prune_old_rows()` |
+| A1 | SLA defaults: last_bar_age_s>300→RED, open_gaps>2→RED | `ingest_config.py` constants |
+| A2 | Separate `/data/ingest_audit.db` | `ingest/audit.py` opens its own SQLite connection |
+| A3 | Inline verification (one extra read per gap) | `_verify_gap_closed()` called from `_backfill()` |
+| A4 | Hysteresis: 5 min RED→BLOCK, 2 min GREEN→ALLOW | `_update_ticker_gate_state()` in `engine/ingest_gate.py` |
+| A5 | dry_run in v6.6.0; enforce needs Val+Devi+Reese | `SSM_INGEST_GATE_MODE=dry_run` default; enforce path gated in code |
+
+### Rollout
+
+- **v6.6.0 (this PR):** `SSM_INGEST_GATE_MODE=dry_run`. Gate evaluates and logs BLOCK decisions but never prevents a trade. Collects data for Monday calibration.
+- **v6.6.1 (future):** Flip `SSM_INGEST_GATE_MODE=enforce` in Railway after written sign-off from Devi (data validation), Reese (cost ceiling), and Val (ratification). No code change required.
+
+*Last refresh: May 2026, against `BOT_VERSION = "6.6.0"`.*
