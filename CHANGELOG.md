@@ -4,6 +4,58 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.7.0 (2026-05-10) — expanded /test system health check (15 critical-component checks)
+
+Minor release. Beck implementation. Devon review suggested (test order touches paper Alpaca).
+ARCHITECTURE.md updated. PDF refresh pending (Drew assigned).
+
+### Feature: 15-check system health test
+- `trade_genius.py`: `CheckResult` dataclass (name, block, severity, message, duration_ms).
+- 15 sync check functions covering all critical components:
+  - Block A (Broker): Alpaca account reachability, positions parity, order round-trip (SPY IOC).
+  - Block B (Streaming): WS connection state, bar archive today, AlgoPlus liveness, ingest gate.
+  - Block C (State): SQLite reachability, paper_state JSON parity, disk space on /data.
+  - Block D (Risk): kill-switch posture, trading mode.
+  - Block E (Observability): dashboard /api/state, Telegram config sanity, version parity.
+- `_safe_check()` wrapper: catches exceptions, enforces per-check timeout, returns
+  severity=critical on exception/timeout.
+- `_run_system_test_sync_v2()`: main orchestrator. ThreadPoolExecutor(max_workers=5),
+  one worker per block, sequential within each block. RTH computed once at entry.
+  Single logging emission point: `[ERROR] [SYS-TEST]` on critical, `[WARNING] [SYS-TEST]`
+  on warn, silence on ok/info/skip (D2).
+- Concurrency guard: module-level `_system_test_running` flag + `_system_test_lock`.
+  Second call while running returns cached result with staleness note.
+- `_run_system_test_sync(label)` preserved as one-line shim for scheduler call sites.
+- RTH window: 08:30–15:00 US/Central. Checks 4/5/6 downgrade to INFO outside RTH.
+  Check 2 downgrades to WARN outside RTH. All others run at full severity.
+- Disk thresholds: CRITICAL <1GB, WARN <5GB (D-11).
+- Order round-trip: SPY IOC at bid-10%, min $1.00; accidental fill triggers
+  offsetting market sell and WARN (not CRITICAL).
+- Output format: block-grouped, status line per spec, hard cap 3800 chars (D-15).
+
+### telegram_commands.py
+- `cmd_test`: replaced 4-step helper calls with single `_run_system_test_sync_v2("manual")`
+  via `run_in_executor`. Single final edit pattern preserved.
+- Removed imports: `_build_test_progress`, `_test_fmp`, `_test_positions`, `_test_scanner`,
+  `_test_state` (all deleted from trade_genius.py per ARCHITECTURE.md).
+- Added import: `_run_system_test_sync_v2`.
+
+### Version bump
+- `trade_genius.py`: `BOT_VERSION` 6.6.1 → 6.7.0.
+- `bot_version.py`: `BOT_VERSION` 6.6.1 → 6.7.0.
+- `CURRENT_MAIN_NOTE` refreshed to v6.7.0.
+
+### Tests
+- `tests/test_v6_7_0_system_test.py`: 20+ unit tests covering all 15 checks
+  and orchestrator behavior (concurrency rejection, exception→critical,
+  RTH downgrade, mode skipping, logging assertions).
+
+### Docs
+- `ARCHITECTURE.md`: added System Health Test section (15 checks + orchestrator).
+- `trade_genius_algo.pdf`: PDF refresh pending — Drew assigned.
+
+---
+
 ## v6.6.1 (2026-05-05) — production hardening patch (FMP key, kill-switch unification, weather-tick typo, release notes refresh) + test cleanup
 
 Patch release. Beck implementation. Quinn QA. No architecture/PDF rebuild (K>0).
