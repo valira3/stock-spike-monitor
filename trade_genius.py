@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.6.0"
+BOT_VERSION = "6.6.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,31 +98,23 @@ BOT_VERSION = "6.6.0"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.4.4 min-hold gate:\n"
-    "block PRICE_STOP under 10m\n"
-    "from entry. Devi 84day_sip:\n"
-    "266/269 under-10m exits hit\n"
-    "the 50bp Alarm-A protective\n"
-    "stop for -$6,649 (vs total\n"
-    "+$13,235). R-2 -$500, daily\n"
-    "circuit -$1,500, Alarm-A\n"
-    "flash >1%/min, B/D/F still\n"
-    "fire normally. Targeted: a\n"
-    "stop hit at hold<10m logs\n"
-    "[V644-MIN-HOLD] and waits.\n"
-    "Flag _V644_MIN_HOLD_GATE_\n"
-    "ENABLED + _V644_MIN_HOLD_\n"
-    "SECONDS=600 in sentinel.py\n"
-    "for monkeypatch / kill-\n"
-    "switch. Patch release: no\n"
-    "architecture/PDF rebuild."
+    "v6.6.0 ingest hardening (dry_run):\n"
+    "SLA gate ALLOW/BLOCK, 5/2-min\n"
+    "hysteresis, RTH-only, separate\n"
+    "ingest_audit.db (180-day).\n"
+    "v6.5.1: long-only deep-stop\n"
+    "(-0.75%) in min_hold window.\n"
+    "v6.4.4: PRICE_STOP<10m blocked;\n"
+    "R-2/Alarm B/F unblocked."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
 # Backwards-compat alias — any remaining references default to main.
 RELEASE_NOTE = MAIN_RELEASE_NOTE
 
-FMP_API_KEY = os.getenv("FMP_API_KEY", "VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV")
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+if not FMP_API_KEY:
+    raise RuntimeError("FMP_API_KEY env var is required but not set")
 
 # Human-readable exit reason labels.
 # v5.9.3: LORDS_LEFT* / BULL_VACUUM* keys removed. The Sovereign Regime
@@ -494,7 +486,10 @@ TICKERS_DEFAULT = [
 ]
 
 # Section VI Daily Circuit Breaker.
-DAILY_LOSS_LIMIT_DOLLARS: float = -1500.0
+# v6.6.1 (C-B fix): reads DAILY_LOSS_LIMIT env var so both kill-switch systems
+# use the same threshold. See also DAILY_LOSS_LIMIT at line ~2116 (Feature 2
+# circuit breaker). Both constants MUST stay in sync; change via env var only.
+DAILY_LOSS_LIMIT_DOLLARS: float = float(os.getenv("DAILY_LOSS_LIMIT", "-1500"))
 TICKERS_MAX = 40            # sanity upper bound to protect cycle budget
 TICKER_SYM_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,7}$")
 
@@ -1253,7 +1248,7 @@ def _ticker_weather_tick_all() -> None:
             if t:
                 active.add(t.upper())
         try:
-            for t in (long_positions or {}).keys():
+            for t in (positions or {}).keys():  # v6.6.1 W-D fix: was long_positions (undefined)
                 if t:
                     active.add(t.upper())
         except Exception:
@@ -2112,7 +2107,10 @@ def v5_lock_all_tracks(reason: str) -> int:
     return n
 
 
-# Daily loss limit (Feature 2)
+# Daily loss limit (Feature 2 / System B realized+MTM circuit breaker).
+# v6.6.1 (C-B fix): same DAILY_LOSS_LIMIT env var as DAILY_LOSS_LIMIT_DOLLARS
+# at line ~499 (System A realized-only kill-switch). Both constants MUST stay
+# in sync; change via env var only. Resolves audit N1 + C-B.
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-1500"))
 _trading_halted: bool = False
 _trading_halted_reason: str = ""
