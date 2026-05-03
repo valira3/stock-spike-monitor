@@ -147,7 +147,8 @@ class TradeGeniusBase:
         # /data/executor_chats_<name>.json on Railway). Updated whenever
         # an owner DMs this executor bot (see _record_owner_chat hooked
         # into _auth_guard). Trade confirmations fan out to every entry.
-        default_chats_path = f"/data/executor_chats_{self.NAME.lower()}.json"
+        _tg_data_root = os.environ.get("TG_DATA_ROOT", "/data")
+        default_chats_path = f"{_tg_data_root}/executor_chats_{self.NAME.lower()}.json"
         self._owner_chats_path = (
             os.getenv(p + "EXECUTOR_CHATS_PATH", "").strip() or default_chats_path
         )

@@ -41,7 +41,7 @@ from pathlib import Path
 
 logger = logging.getLogger("trade_genius.forensic_capture")
 
-DEFAULT_BASE_DIR = "/data/forensics"
+DEFAULT_BASE_DIR = os.environ.get("FORENSICS_DIR") or (os.environ.get("TG_DATA_ROOT", "/data") + "/forensics")
 
 
 def _today_str(today: date | None = None) -> str:
@@ -492,7 +492,7 @@ def write_macro_snapshot(
 # ---------------------------------------------------------------------
 
 
-DEFAULT_DAILY_BAR_DIR = "/data/bars/daily"
+DEFAULT_DAILY_BAR_DIR = os.environ.get("DAILY_BAR_DIR") or (os.environ.get("TG_DATA_ROOT", "/data") + "/bars/daily")
 
 
 def write_daily_bar(

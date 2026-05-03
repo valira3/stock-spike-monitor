@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.9.1 (2026-05-04) -- sweep runner /data isolation
+
+Patch release. Beck implementation.
+
+### TG_DATA_ROOT -- single root override for all /data paths
+- Added `TG_DATA_ROOT` env var (default `/data`). All previously hardcoded
+  `/data/*` paths now derive from this root, eliminating `[Errno 13] Permission
+  denied: '/data'` failures in sandbox and CI sweep runners.
+- Per-subsystem env vars remain as fine-grained overrides on top of
+  `TG_DATA_ROOT`: `OR_DIR`, `BARS_DIR`, `FORENSICS_DIR`, `DAILY_BAR_DIR`,
+  `LIFECYCLE_DIR`, `UNIVERSE_GUARD_PATH`, `INGEST_AUDIT_DB_PATH`,
+  `VOLUME_PROFILE_DIR`, `STATE_DB_PATH`, `<PREFIX>EXECUTOR_CHATS_PATH`.
+- `trade_genius._check_disk_space`: wrapped `shutil.disk_usage` inner call
+  in `try/except FileNotFoundError`; returns `"ok" / sandbox mode` instead
+  of `CRITICAL` when the data root does not exist (e.g. ephemeral CI).
+
+### Files changed
+- `trade_genius.py` (V561_OR_DIR_DEFAULT, _check_bar_archive, _check_disk_space)
+- `volume_bucket.py` (DEFAULT_BARS_DIR)
+- `forensic_capture.py` (DEFAULT_BASE_DIR, DEFAULT_DAILY_BAR_DIR)
+- `lifecycle_logger.py` (DEFAULT_DATA_DIR)
+- `executors/base.py` (default_chats_path)
+- `bot_version.py` + `trade_genius.BOT_VERSION` → 6.9.1
+- `ARCHITECTURE.md` (TG_DATA_ROOT section added)
+
+### Tests
+- `tests/test_v6_9_1_data_isolation.py`: per-subsystem env-var override for
+  all six path sources; disk-check sandbox fallback.
+
+---
+
 ## v6.9.0 (2026-05-03) -- backtest cache layer (L1 Parquet bars + L2 indicators)
 
 Minor release. Beck implementation.
