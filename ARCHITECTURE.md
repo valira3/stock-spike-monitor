@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.4.0 · May 2026 — **Disable Sentinel B by default; tighten Alarm F Chandelier multipliers to 1.5/0.7. Apr 27–May 1 sweep: +$217.93/wk vs baseline, win rate 45%→62%.**
+> **Version:** v6.7.0 · May 2026 -- Expanded /test system health check: 15 critical-component checks across 5 blocks (Broker, Streaming, State, Risk, Observability). Scheduled at 8:20 and 8:31 CT; manual via Telegram /test.
 >
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each
@@ -3413,6 +3413,14 @@ v6.6.0 hardens the always-on Algo Plus ingest layer introduced in v6.5.0 across 
 
 ## System Health Test (v6.7.0)
 
+**Purpose:** Provides a single sub-15-second signal covering every component that
+can silently break production trading. Triggered manually via `/test` in Telegram
+or automatically by the scheduler at 8:20 CT (pre-open check) and 8:31 CT
+(post-open confirmation). A clean run at 8:20 CT is the green light for RTH.
+CRITICAL failures emit `[ERROR] [SYS-TEST]` log lines picked up by the 8:35 CT
+morning cron log-grep. WARN failures emit `[WARNING] [SYS-TEST]`. INFO results
+are Telegram-only (no log noise).
+
 The `/test` Telegram command and the 8:20/8:31 CT scheduler calls run 15 checks
 covering every component that can silently break production trading.
 
@@ -3464,6 +3472,36 @@ ZoneInfo in `_is_rth_ct()`. Outside RTH: Checks 4/5/6 \u2192 INFO; Check 2 \u219
 | WS CRITICAL | last bar > 90s or disconnected (RTH) |
 | AlgoPlus CRITICAL | last tick > 60s (RTH) |
 | paper_state parity | delta > $0.01 |
-| Order round-trip limit | bid \xd7 0.90, floor-cent, min $1.00 |
+| Order round-trip limit | bid x 0.90, floor-cent, min $1.00 |
+
+### Sample Passing Output
+
+```
+System Test [8:20-pre-RTH] v6.7.0
+Block A -- Broker
+  Alpaca account: OK buying_power $25,341.22
+  Alpaca positions: OK parity (3=3)
+  Order round-trip: OK 287ms
+Block B -- Streaming
+  WS: OK connected, last bar 2s ago
+  Bars today: OK /data/bars/2026-05-03 -- 28 files, 4.2MB
+  AlgoPlus: OK tick 1s ago
+  Ingest gate: INFO dry_run=True
+Block C -- State
+  SQLite: OK shadow_positions=1,247
+  paper_state parity: OK $24,512.18
+  Disk /data: OK 8.4GB free
+Block D -- Risk
+  Kill-switch: INFO limit=-$1,500, realized=+$0.00, halted=False
+  Mode: INFO paper
+Block E -- Obs
+  Dashboard: OK shadow_data_status=live
+  Telegram: OK owner_id set
+  Version: OK 6.7.0 parity
+All systems GO  (took 8.3s)
+```
+
+On CRITICAL failure the footer shows: `N CRITICAL, M WARN -- see logs`
+and each failing check emits exactly one `[ERROR] [SYS-TEST] Block X: ...` log line.
 
 *Last refresh: May 2026, against `BOT_VERSION = "6.7.0"`.*
