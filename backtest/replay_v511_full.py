@@ -494,6 +494,77 @@ def install_record_only_layers(
         if _orig is not None:
             setattr(tg, _fn_name, _make_ticker_cache(_orig))
 
+    # Per-tick cache for _resample_to_5min_ohlc_buckets.
+    # v5_di_1m_5m, v5_adx_1m_5m, and tiger_di each call this function
+    # independently, each passing the same bar lists (from the per-tick
+    # fetch cache). Caching by (id(ts), id(highs), id(lows), id(closes))
+    # avoids triple-resampling the same bars on every tick; all four ids
+    # are stable within a tick because the bars dict is the same cached
+    # object from _harness_fetch_1min_bars. Cache is invalidated per tick.
+    _resample_orig5 = getattr(tg, "_resample_to_5min_ohlc_buckets", None)
+    if _resample_orig5 is not None:
+        _rs_cache: dict = {}
+        _rs_cache_minute: list = [None]
+        _RS_MISS = object()
+
+        def _harness_resample_5m(timestamps, highs, lows, closes):
+            cur_minute = clock.now
+            if _rs_cache_minute[0] != cur_minute:
+                _rs_cache.clear()
+                _rs_cache_minute[0] = cur_minute
+            # Key on identity of all four input lists; these come from
+            # the same cached bars dict so ids are unique per ticker
+            # and stable for the duration of the tick.
+            key = (id(timestamps), id(highs), id(lows), id(closes))
+            val = _rs_cache.get(key, _RS_MISS)
+            if val is not _RS_MISS:
+                return val
+            result = _resample_orig5(timestamps, highs, lows, closes)
+            _rs_cache[key] = result
+            return result
+
+        tg._resample_to_5min_ohlc_buckets = _harness_resample_5m
+
+    # Per-tick cache for compute_5m_ohlc_and_ema9.
+    # Called by _ticker_weather_tick (once per ticker per tick), by
+    # _qqq_weather_tick (once per tick), and by _run_sentinel (once per
+    # open position per tick). All pass the same bars dict (from the
+    # per-tick fetch cache) for the same ticker within a tick, so
+    # id(bars) is a stable cache key for the duration of the tick.
+    # We patch both tg._engine_compute_5m_ohlc_and_ema9 (used by
+    # trade_genius.py) and broker.positions.compute_5m_ohlc_and_ema9
+    # (imported directly into broker.positions at module load time).
+    try:
+        import engine.bars as _engine_bars_mod
+        import broker.positions as _broker_pos_mod
+        _5m_orig = _engine_bars_mod.compute_5m_ohlc_and_ema9
+        _5m_cache: dict = {}
+        _5m_cache_minute: list = [None]  # mutable box
+        _5M_MISS = object()
+
+        def _harness_compute_5m(bars, pdc=None):
+            """Per-tick memoizer for compute_5m_ohlc_and_ema9(bars, pdc).
+            Keyed on (id(bars), pdc) and invalidated on clock advance.
+            id(bars) is stable within a tick because fetch_1min_bars
+            returns the same cached dict object per (ticker, tick).
+            """
+            cur_minute = clock.now
+            if _5m_cache_minute[0] != cur_minute:
+                _5m_cache.clear()
+                _5m_cache_minute[0] = cur_minute
+            key = (id(bars), pdc)
+            val = _5m_cache.get(key, _5M_MISS)
+            if val is not _5M_MISS:
+                return val
+            result = _5m_orig(bars, pdc)
+            _5m_cache[key] = result
+            return result
+
+        tg._engine_compute_5m_ohlc_and_ema9 = _harness_compute_5m
+        _broker_pos_mod.compute_5m_ohlc_and_ema9 = _harness_compute_5m
+    except Exception:
+        pass  # non-critical; silently degrade
+
     # Telegram.
     if hasattr(tg, "send_telegram"):
         tg.send_telegram = lambda msg, *a, **kw: telegram_layer.send(msg)
