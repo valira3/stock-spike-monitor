@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.11.14"
+BOT_VERSION = "6.14.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.11.14"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.11.14: STOP_PCT + ATR trail\n"
-    "env-overridable. All defaults\n"
-    "unchanged \u2014 set in env."
+    "v6.14.0: volume gate live.\n"
+    "Cancel-first entry guard\n"
+    "vs Alpaca wash-trade race."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

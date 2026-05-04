@@ -1,6 +1,86 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.11.0 · May 2026 -- C25: SPY Regime-B Short Amplification.
+> **Version:** v6.14.0 · May 2026 -- Volume gate fix end-to-end + cancel-first entry guard.
+>
+> **v6.14.0 volume gate plumbing (issue #354):** The Section II.1 55-day
+> Institutional Oomph baseline never populated correctly from production
+> SIP feed bars because three structural data bugs compounded: (a)
+> `ingest/algo_plus.py` hardcoded `et_bucket=None` on both REST backfill
+> and websocket `_on_bar` paths so every persisted bar lacked the
+> per-minute key the baseline reader keys on; (b) the bar archive
+> persisted only `iex_volume` (~3% of total US equity volume; SIP-sourced
+> bars carry zero in this field) and never persisted the SIP-aggregate
+> `volume`; (c) only six days of bar history existed on disk vs. the
+> 55-day lookback window. Fix shipped in three coordinated patches:
+> `ingest/algo_plus.py` adds `_compute_et_bucket(ts)` helper (UTC ->
+> RTH `"HHMM"` ET, returns None outside 09:30-16:00 ET) and populates
+> both `et_bucket` and `total_volume` on every bar written to the
+> archive; `bar_archive.py` adds `total_volume` to `BAR_SCHEMA_FIELDS`
+> between `close` and `iex_volume`; `volume_bucket.py` reads
+> `bar.get("total_volume")` first with `iex_volume` fallback (so legacy
+> IEX-era bars on disk still contribute) and skips zero-volume entries
+> entirely. The one-shot `tools/backfill_bar_archive.py` populates
+> `/data/bars` from the canonical 84-day SIP archive at
+> `/home/user/workspace/canonical_backtest_data/84day_2026_sip/replay_layout/`
+> with the v6.14.0 field shape (`volume` -> `total_volume`, recomputed
+> `et_bucket`, `n` -> `trade_count`, `vw` -> `bar_vwap`,
+> `_feed` -> `feed_source`); idempotent on `ts` against existing JSONL.
+> Rollout sequence: merge -> auto-deploy -> ssh-run backfill -> wait one
+> RTH session -> verify `bb.days_available > 30` for all 12 prod
+> tickers -> THEN flip `VOLUME_GATE_ENABLED=true`. The data plumbing
+> fix and the on/off toggle are deliberately shipped in separate
+> releases. End-to-end coverage in `tests/test_v6_14_0_volume_gate_e2e.py`
+> (6 tests) asserts the chain produces a numeric `ratio_to_55bar_avg`
+> (the v15-spec field name the 10:00 ET conditional path keys on),
+> `total_volume` wins over `iex_volume` when both are present, and
+> zero-volume bars do not poison the rolling mean.
+>
+> **v6.14.0 cancel-first entry guard (issue #357):** On 2026-05-04
+> 13:56:54 UTC, an Alpaca paper order for GOOG was rejected with
+> `40310000 "potential wash trade detected"` referencing existing
+> order `d93911e6`. The bot had covered a short at 13:56:52.443, then
+> submitted a new short entry at 13:56:53.658 -- the covering order
+> was still working in Alpaca's book when the new opposite-side
+> entry hit. v6.14.0 adds a `_cancel_first_guard(ticker, side)`
+> helper in `broker/orders.py` invoked at the top of
+> `execute_breakout()` immediately after the v6.11.13
+> `POST_EXIT_SAME_TICKER_COOLDOWN_SEC` check. Flow per entry: query
+> Alpaca via `tc.get_orders(filter=GetOrdersRequest(status=OPEN,
+> symbols=[ticker]))`; identify any open order whose side opposes
+> the new entry (open SELL when entering LONG; open BUY when
+> entering SHORT); cancel each via `tc.cancel_order_by_id`; poll
+> `tc.get_order_by_id` every 100 ms until each id reaches a terminal
+> status (`canceled`, `filled`, `expired`, `rejected`, `replaced`,
+> `done_for_day`) or `CANCEL_ACK_TIMEOUT_MS` (default 1500 ms via
+> `eye_of_tiger.CANCEL_ACK_TIMEOUT_MS`) elapses. On timeout the entry
+> is skipped with a `[V6140-CANCEL-FIRST]` warning rather than fired
+> into a known wash-trade race. Any unexpected broker error
+> (`get_orders` raises, SDK missing, etc.) is logged and the helper
+> fails open -- the v6.11.13 cooldown remains as defense-in-depth so
+> the entry path is never bricked by a transient hiccup. The helper
+> is a no-op (returns True) when no Alpaca creds are configured
+> (replay, smoke tests, missing env), giving byte-identical replay
+> output and a verified $0.00 P/L delta on three sample dates of the
+> 84-day SIP corpus. The v6.13.0 cancel-first spec at
+> `specs/v6_13_0_cancel_first_entry.md` proposes an
+> `_open_broker_orders` registry maintained via Alpaca trade-updates
+> websocket; v6.14.0 takes the simpler synchronous-poll path
+> because no `TradingStream` wiring exists in the codebase today.
+> Direct round-trip is 30-150 ms; for the 12-ticker prod universe
+> firing roughly one entry per minute the additional API load is
+> negligible. Coverage in `tests/test_v6_14_0_cancel_first.py` (7
+> tests) asserts no-op when no broker, no-cancel when no opposing
+> orders, same-side orders left alone, opposing orders cancelled
+> and polled until terminal, ack-timeout returns False so caller
+> skips, multi-order cancel waits for all acks, and broker errors
+> fail open. Once cancel-first is verified live for one full RTH
+> session with zero 40310000 rejects,
+> `POST_EXIT_SAME_TICKER_COOLDOWN_SEC=0` can be set via Railway env
+> to recover the +$13 K backtest delta without a code change.
+>
+> **v6.11.0 baseline (still active for short-side amplification):** C25
+> SPY Regime-B Short Amplification ships unchanged from v6.11.0 through
+> v6.14.0. See section below.
 >
 > **Backtest cache layer (v6.9.2):**
 > L1: Per-day Parquet bar cache (`backtest/bar_cache.py`) -- layout

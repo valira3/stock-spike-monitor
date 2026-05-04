@@ -53,6 +53,190 @@ def _tg():
     return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
 
 
+# v6.14.0 \u2014 cancel-first entry guard.
+#
+# Before submitting a new entry on a ticker, query Alpaca for any open order
+# on that symbol, cancel any with the opposite side, and poll for the cancel
+# ack. Eliminates the wash-trade race (Alpaca error 40310000) on flat-and-
+# reverse paths where the prior covering / closing order is still working
+# in the broker's book when the new opposite-side entry hits.
+#
+# Returns True when it is safe to proceed with the new entry, False when
+# the entry should be skipped (cancel-ack timeout or hard broker error).
+# No-op (returns True) when no broker client is configured (replay,
+# smoke tests, missing creds, anything paper-only). Safe to call from
+# any context.
+#
+# Polls every 100 ms; default budget 1500 ms via
+# ``eye_of_tiger.CANCEL_ACK_TIMEOUT_MS``. Alpaca normally acks in 50-300 ms.
+
+_CANCEL_FIRST_POLL_INTERVAL_MS: int = 100
+_CANCEL_FIRST_TERMINAL_STATUSES = frozenset(
+    {"canceled", "filled", "expired", "rejected", "replaced", "done_for_day"}
+)
+
+
+def _build_cancel_first_client():
+    """Construct a paper Alpaca TradingClient from env, or return None.
+
+    Mirrors the lazy pattern used by the preflight checks in
+    ``trade_genius._check_alpaca_account``. Returns None on any failure
+    so the caller can no-op cleanly in replay / smoke / missing-creds
+    paths.
+    """
+    import os as _os_cf
+
+    key = (
+        _os_cf.getenv("VAL_ALPACA_PAPER_KEY", "").strip()
+        or _os_cf.getenv("GENE_ALPACA_PAPER_KEY", "").strip()
+    )
+    secret = (
+        _os_cf.getenv("VAL_ALPACA_PAPER_SECRET", "").strip()
+        or _os_cf.getenv("GENE_ALPACA_PAPER_SECRET", "").strip()
+    )
+    if not key or not secret:
+        return None
+    try:
+        from alpaca.trading.client import TradingClient as _ATC  # type: ignore
+        return _ATC(key, secret, paper=True)
+    except Exception:
+        return None
+
+
+def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) -> bool:
+    """Cancel any open opposite-side order on ``ticker`` before a new entry.
+
+    Parameters
+    ----------
+    ticker:
+        Symbol about to receive a new entry.
+    new_side_label:
+        ``"long"`` or ``"short"`` \u2014 the side of the entry the caller
+        is about to submit. Any open order on the *opposite* side is
+        treated as a wash-trade hazard and cancelled.
+    broker_client:
+        Pre-built Alpaca TradingClient. When ``None``, a client is
+        constructed lazily from env. Tests inject a mock here.
+
+    Returns
+    -------
+    bool
+        ``True`` when it is safe to proceed (no opposing orders, or
+        all opposing orders cancelled). ``False`` only when the cancel
+        ack did not arrive within the configured budget \u2014 the caller
+        must skip the entry. Any unexpected broker error is logged and
+        treated as ``True`` (fail-open) so the entry path is never
+        bricked by a transient broker hiccup; the existing v6.11.13
+        ``POST_EXIT_SAME_TICKER_COOLDOWN_SEC`` cooldown remains as
+        defense-in-depth.
+    """
+    tg = _tg()
+    logger = _orders_logger
+
+    tc = broker_client if broker_client is not None else _build_cancel_first_client()
+    if tc is None:
+        # Replay path / no creds / paper-only smoke. Safe no-op.
+        return True
+
+    try:
+        from alpaca.trading.requests import GetOrdersRequest  # type: ignore
+        from alpaca.trading.enums import QueryOrderStatus  # type: ignore
+    except Exception as _imp_exc:
+        logger.warning(
+            "[V6140-CANCEL-FIRST] %s: alpaca SDK not importable (%s); fail-open",
+            ticker, _imp_exc,
+        )
+        return True
+
+    try:
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker])
+        open_orders = tc.get_orders(filter=req) or []
+    except Exception as _ge:
+        logger.warning(
+            "[V6140-CANCEL-FIRST] %s: get_orders failed (%s); fail-open",
+            ticker, _ge,
+        )
+        return True
+
+    target = (new_side_label or "").strip().lower()
+    opposing = []
+    for o in open_orders:
+        try:
+            o_side = getattr(getattr(o, "side", None), "value", None) or ""
+        except Exception:
+            o_side = ""
+        o_side = str(o_side).strip().lower()
+        # Alpaca side enum values: "buy" (long) and "sell" (short / cover).
+        # An opposing-side hazard for a new LONG is any open SELL order;
+        # for a new SHORT, any open BUY order.
+        is_opposing = (
+            (target == "long" and o_side == "sell")
+            or (target == "short" and o_side == "buy")
+        )
+        if is_opposing:
+            opposing.append(o)
+
+    if not opposing:
+        return True
+
+    # Read timeout from eye_of_tiger lazily so test patches take effect.
+    try:
+        from eye_of_tiger import CANCEL_ACK_TIMEOUT_MS as _timeout_ms  # type: ignore
+    except Exception:
+        _timeout_ms = 1500
+
+    cancel_ids = []
+    for o in opposing:
+        oid = getattr(o, "id", None)
+        if oid is None:
+            continue
+        try:
+            tc.cancel_order_by_id(str(oid))
+            cancel_ids.append(str(oid))
+            logger.info(
+                "[V6140-CANCEL-FIRST] %s: cancel issued for opposing order %s (side=%s)",
+                ticker, oid, getattr(getattr(o, "side", None), "value", "?"),
+            )
+        except Exception as _ce:
+            logger.warning(
+                "[V6140-CANCEL-FIRST] %s: cancel_order_by_id(%s) failed: %s",
+                ticker, oid, _ce,
+            )
+
+    if not cancel_ids:
+        return True
+
+    deadline = _time_orders.monotonic() + (max(int(_timeout_ms), 0) / 1000.0)
+    poll_s = _CANCEL_FIRST_POLL_INTERVAL_MS / 1000.0
+    pending = set(cancel_ids)
+    while pending and _time_orders.monotonic() < deadline:
+        for oid in list(pending):
+            try:
+                status_obj = tc.get_order_by_id(oid)
+                status = getattr(getattr(status_obj, "status", None), "value", None) \
+                    or str(getattr(status_obj, "status", "") or "")
+            except Exception:
+                status = ""
+            if str(status).strip().lower() in _CANCEL_FIRST_TERMINAL_STATUSES:
+                pending.discard(oid)
+        if pending:
+            _time_orders.sleep(poll_s)
+
+    if pending:
+        logger.warning(
+            "[V6140-CANCEL-FIRST] %s: cancel-ack timeout for %d/%d orders "
+            "(timeout=%dms); skipping entry",
+            ticker, len(pending), len(cancel_ids), int(_timeout_ms),
+        )
+        return False
+
+    logger.info(
+        "[V6140-CANCEL-FIRST] %s: %d opposing order(s) cancelled, entry cleared",
+        ticker, len(cancel_ids),
+    )
+    return True
+
+
 # v5.15.0 vAA-1 \u2014 spec rules ORDER-LIMIT-PRICE-LONG / -SHORT.
 # Strike entries cross the spread by 0.10% (LONG) / -0.10% (SHORT)
 # to favour fills while bounding slippage. The Sentinel STOP MARKET
@@ -803,8 +987,19 @@ def execute_breakout(ticker, current_price, side):
     # protective stop. Without this, an instant flat-and-reverse can race
     # against Alpaca's wash-trade detector (error 40310000) and reject the
     # entry. Per-ticker (not per-side) because the wash reject fires on any
-    # opposite-side open order on the symbol.
+    # opposite-side open order on the symbol. v6.14.0 adds an active
+    # cancel-first guard below; this cooldown is retained as defense-in-
+    # depth and may be relaxed via env once cancel-first is verified live.
     if not tg._check_post_exit_cooldown(ticker):
+        return
+
+    # v6.14.0 \u2014 cancel-first entry guard. Before sending this entry to
+    # the broker, cancel any opposing-side open order on this ticker and
+    # wait for the cancel ack (CANCEL_ACK_TIMEOUT_MS, default 1500 ms).
+    # No-op in replay / paper-only / no-creds contexts (helper returns
+    # True). On cancel-ack timeout the entry is skipped rather than
+    # fired into a known wash-trade race.
+    if not _cancel_first_guard(ticker, _side_label):
         return
 
     # v6.6.0 Pillar C — ingest gate check (after post-loss cooldown, before order build)

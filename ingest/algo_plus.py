@@ -36,6 +36,16 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
+# v6.14.0 \u2014 ZoneInfo for et_bucket computation from UTC timestamps. The
+# stdlib zoneinfo module (Py 3.9+) handles DST transitions correctly; the
+# fallback returns None on import failure so the rest of the ingest path
+# stays operational even on stripped-down images.
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _ET_TZ = _ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover - defensive
+    _ET_TZ = None
+
 logger = logging.getLogger("ingest.algo_plus")
 
 # ---------------------------------------------------------------------------
@@ -44,6 +54,56 @@ logger = logging.getLogger("ingest.algo_plus")
 _BACKOFF_SCHEDULE = [5, 10, 20, 40, 80, 160, 300]
 
 GAP_THRESHOLD_MINUTES = 3  # gaps of >= 3 consecutive missing 1-min bars trigger backfill
+
+
+# ---------------------------------------------------------------------------
+# v6.14.0 \u2014 et_bucket helper
+# ---------------------------------------------------------------------------
+
+def _compute_et_bucket(ts) -> Optional[str]:
+    """Return the RTH minute bucket for a bar timestamp as 'HHMM' (ET).
+
+    Accepts a datetime or an ISO 8601 string. Returns None for any value
+    outside RTH (9:30:00 ET through 15:59:59 ET, plus the 16:00 close
+    print) or for any input we cannot parse. The caller writes the field
+    as null in those cases, which volume_bucket.py treats as 'skip this
+    bar for the baseline'.
+
+    v6.14.0 fix: prior to v6.14.0 the SIP ingest left et_bucket = None on
+    every bar, which silently dropped 83% of today's bars from the volume
+    baseline. See issue #354.
+    """
+    if _ET_TZ is None:
+        return None
+    try:
+        if isinstance(ts, datetime):
+            ts_utc = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+        else:
+            s = str(ts).strip()
+            if not s:
+                return None
+            # Accept '...Z' and offset-aware ISO strings.
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            ts_utc = datetime.fromisoformat(s)
+            if ts_utc.tzinfo is None:
+                ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    try:
+        ts_et = ts_utc.astimezone(_ET_TZ)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    h, m = ts_et.hour, ts_et.minute
+    # RTH: 9:30 \u2014 15:59, plus the 16:00 closing print bar.
+    in_rth = (
+        (h == 9 and m >= 30)
+        or (10 <= h <= 15)
+        or (h == 16 and m == 0)
+    )
+    if not in_rth:
+        return None
+    return f"{h:02d}{m:02d}"
 
 
 def _backoff(attempt: int) -> float:
@@ -419,12 +479,25 @@ class RestBackfillWorker:
                 ts_str = ts_obj.isoformat()
                 if ts_str in existing_ts:
                     continue
+                # v6.14.0 \u2014 capture SIP-aggregated total volume from the
+                # Alpaca bar (.volume on REST and WS bar objects) and the
+                # ET minute-of-day bucket so the volume baseline can index
+                # off both. iex_volume is preserved as a legacy nullable
+                # field (was always None on the SIP path; kept so that
+                # historical bars on disk still parse).
+                _vol_raw = getattr(b, "volume", None)
+                try:
+                    _vol = float(_vol_raw) if _vol_raw is not None else None
+                except (TypeError, ValueError):
+                    _vol = None
                 bar_dict = {
                     "ts": ts_str,
+                    "et_bucket": _compute_et_bucket(ts_obj),
                     "open": float(getattr(b, "open", 0) or 0),
                     "high": float(getattr(b, "high", 0) or 0),
                     "low": float(getattr(b, "low", 0) or 0),
                     "close": float(getattr(b, "close", 0) or 0),
+                    "total_volume": _vol,
                     "iex_volume": None,
                     "iex_sip_ratio_used": None,
                     "bid": None,
@@ -620,12 +693,23 @@ class AlgoPlusIngest:
                 ticker = str(getattr(bar, "symbol", "")).upper()
                 if not ticker:
                     return
+                # v6.14.0 \u2014 capture SIP-aggregated total volume + ET
+                # minute bucket on the live WS path. See REST backfill
+                # path above for the matching change. Issue #354.
+                _ts_raw = getattr(bar, "timestamp", None)
+                _vol_raw = getattr(bar, "volume", None)
+                try:
+                    _vol = float(_vol_raw) if _vol_raw is not None else None
+                except (TypeError, ValueError):
+                    _vol = None
                 bar_dict = {
-                    "ts": getattr(bar, "timestamp", None),
+                    "ts": _ts_raw,
+                    "et_bucket": _compute_et_bucket(_ts_raw),
                     "open": float(getattr(bar, "open", 0) or 0),
                     "high": float(getattr(bar, "high", 0) or 0),
                     "low": float(getattr(bar, "low", 0) or 0),
                     "close": float(getattr(bar, "close", 0) or 0),
+                    "total_volume": _vol,
                     "iex_volume": None,
                     "iex_sip_ratio_used": None,
                     "bid": None,

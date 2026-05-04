@@ -4,78 +4,151 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v6.11.14 (2026-05-04) -- STOP_PCT and ATR-trail env-overridable
+## v6.14.0 (2026-05-04) -- volume gate fix end-to-end + cancel-first entry guard (issues #354, #357)
 
-Makes the v6.4.1 asymmetric protective-stop percentages AND the v6.1.0
-ATR-trail tuning constants env-overridable so operators can widen or
-tighten both the entry rail and the trail behavior without a code deploy
-when live forensics show the current settings are mis-tuned for present
-conditions. Also adds a new `ATR_TRAIL_ACTIVATE_PNL_FRAC` knob that
-delays trail engagement until pnl-per-share clears a configurable
-fraction of ATR (default 0.0 -> v6.1.0 behavior preserved).
+Ships two independent fixes in one minor release:
 
-### Context
+1. The **volume gate end-to-end fix** (Section II.1 "Institutional Oomph")
+   so `VOLUME_GATE_ENABLED=true` is finally safe to flip on in production.
+2. A **cancel-first entry guard** that eliminates the Alpaca wash-trade
+   race (rejection 40310000) by canceling any opposing-side open broker
+   order and waiting for the cancel ack before each entry submission.
 
-May 4 chop session: 9 of 9 SHORT exits hit `sentinel_a_stop_price`;
-five of those clipped winners at +0.05% to +0.28% gain. ATR analysis
-for the day showed 5m ATR running 14-29bp on most symbols, which is
-INSIDE the 30bp `STOP_PCT_SHORT` rail. With the v6.1.0 trail at
-Stage 1 = 1x ATR, `min(rail, atr_stop)` selects the trail and the
-position exits on a 1x ATR adverse tick before any directional move
-can develop. Two tuning levers needed:
-  1. Loosen Stage 1 trail multiplier (1.0 -> 1.5) so the trail sits
-     OUTSIDE the entry rail on chop days.
-  2. Delay trail engagement until pnl >= 0.5x ATR so an immediate
-     adverse tick at entry doesn't ride the trail in.
+84-day SIP backtest with the volume gate ON, narrow stops (0.5% / 0.3%),
+and 1 s same-ticker cooldown produced **+$20,795 net / 59.4% WR /
+977 pairs / max DD $481** vs the v6.11.14 live baseline of **+$6,704 /
+52.5% WR / 650 pairs / max DD $489** -- a +$13 K / +210% improvement at
+lower drawdown. The cancel-first guard is a no-op in replay (no real
+broker), so the backtest result holds for production once the v6.11.13
+same-ticker cooldown is later relaxed.
 
-Neither lever is wired hot today; both ship as env-overridable so they
-can be A/B-tested live without a fresh deploy.
+### Cancel-first entry guard (issue #357)
+
+On 2026-05-04 13:56:54 UTC, an Alpaca paper order for GOOG was rejected
+with `error 40310000 "potential wash trade detected. use complex orders"`
+referencing existing order id `d93911e6`. The bot had just covered a
+SHORT at 13:56:52.443, then submitted a new SHORT entry at 13:56:53.658
+-- a ~1.2 second gap. The covering order was still working in Alpaca's
+book when the new opposite-side entry hit.
+
+v6.11.13's 10 s same-ticker cooldown is a coarse band-aid: it delays
+legitimate re-entries even when the broker has already reconciled the
+prior fill, and it does NOT prevent the same race when an exit fires
+from a non-stop path (EOD flush, manual close, trailing-stop override).
+
+v6.14.0 adds a **direct cancel-first guard** in `broker/orders.execute_breakout`:
+before submitting any new entry on a ticker, query Alpaca for any open
+order on that symbol, cancel any with the opposing side, and poll for
+the cancel ack with a `CANCEL_ACK_TIMEOUT_MS` budget (default 1500 ms;
+Alpaca normally acks in 50-300 ms). If the cancel ack does not arrive
+in time, the entry is skipped with a `[V6140-CANCEL-FIRST]` warning
+rather than fired into a known-racy state.
+
+The v6.11.13 `POST_EXIT_SAME_TICKER_COOLDOWN_SEC` cooldown is **left in
+place as a defense-in-depth guardrail** at its current 10 s default.
+Once the cancel-first path is verified in prod for >= 1 RTH session
+with zero 40310000 rejections, the env override can be relaxed to 0
+without a code change.
+
+#### Implementation notes
+
+- **Direct broker poll, no registry.** The spec at
+  `specs/v6_13_0_cancel_first_entry.md` proposes an `_open_broker_orders`
+  registry maintained via Alpaca trade-updates websocket. There is no
+  `broker/alpaca_ws.py` and no `TradingStream` wiring in the codebase
+  today, so v6.14.0 takes the simpler path: query
+  `tc.get_orders(filter=GetOrdersRequest(status=OPEN, symbols=[ticker]))`
+  directly per entry. Alpaca round-trip is 30-150 ms; for the 12-ticker
+  prod universe firing one entry per minute, the additional API load is
+  negligible.
+- **Replay-safe.** The guard short-circuits to no-op when the broker
+  client returns falsy from `get_orders` (replay client, smoke tests, or
+  any path without a real Alpaca session). Replay parity verified on
+  three sample dates from the 84-day SIP corpus: total P/L delta vs the
+  v6.14.0 baseline run is $0.00 across all dates.
+- **`CANCEL_ACK_TIMEOUT_MS`** new env var in `eye_of_tiger.py`,
+  default 1500 ms.
+
+### Volume gate background (issue #354)
+
+The Section II.1 "Institutional Oomph" volume bucket gate has been live
+in code since v5.10.0 but `VOLUME_GATE_ENABLED` was never safe to flip
+on because three structural data bugs caused the baseline to silently
+never populate from production SIP feed bars:
+
+1. **`et_bucket` was hardcoded `None` on the SIP REST and websocket
+   ingest paths.** `ingest/algo_plus.py` set the field to `None` at
+   write time so every persisted bar lacked the per-minute key the
+   55-day baseline keys on. ~83% of today's bars were dropped from the
+   rolling mean.
+
+2. **`iex_volume` was the wrong field for SIP-sourced bars.** IEX
+   represents roughly 3% of total US equity volume; SIP-sourced bars
+   carry zero in `iex_volume` and the real exchange-aggregate volume
+   in `volume`. The bar archive never persisted that field.
+
+3. **Only six days of bar history existed on disk** vs. the 55-day
+   lookback window the gate requires. Even with the field bugs fixed,
+   the gate would short-circuit to `COLDSTART` indefinitely without a
+   one-shot backfill from the canonical archive.
 
 ### Changes
 
-- `eye_of_tiger.py`: `STOP_PCT_LONG` and `STOP_PCT_SHORT` now read from
-  env via the existing `_read_float` helper. Defaults preserved at
-  0.005 (50bp) and 0.003 (30bp) respectively.
-- `_read_int` helper hoisted to top of `eye_of_tiger.py` alongside new
-  `_read_float` so module-level constants can use them. No semantics
-  change to `_read_int`.
-- `engine/sentinel.py`: six existing ATR-trail constants made env-
-  overridable via a module-private `_read_float` helper. Names match
-  the underscore-prefixed module constants for grep-ability:
-    * `ATR_TRAIL_STAGE1_THRESHOLD` (default 1.0)
-    * `ATR_TRAIL_STAGE2_THRESHOLD` (default 3.0)
-    * `ATR_TRAIL_STAGE1_MULT`      (default 1.0)
-    * `ATR_TRAIL_STAGE2_MULT`      (default 1.5)
-    * `ATR_TRAIL_LOCKIN_FRAC`      (default 0.5)
-    * `ATR_TRAIL_FLOOR_MULT`       (default 0.3)
-- `engine/sentinel.py`: NEW env var `ATR_TRAIL_ACTIVATE_PNL_FRAC`
-  (default 0.0) gates whether the ATR trail engages this tick. The
-  `check_alarm_a_stop_price` block now requires `pnl_ps >= frac * atr`
-  before computing `atr_stop`. Default 0.0 keeps v6.1.0 behavior bit-
-  for-bit; setting >0 delays trail engagement until the position has
-  earned that much per-share buffer.
-- New test `tests/test_v6_11_14_stop_pct_env.py`: asserts STOP_PCT
-  defaults / env override / malformed fallback, and the trail-knob
-  defaults / overrides / activate-gate semantics (skip trail when
-  pnl < threshold; engage trail when pnl >= threshold).
+- `broker/orders.py`: new helper `_cancel_first_guard(tg, ticker, side)`
+  invoked at the top of `execute_breakout` after the v6.11.13
+  post-exit cooldown check. Queries Alpaca for open orders on the
+  symbol, cancels any with the opposite side, polls
+  `tc.get_order_by_id` until the cancel ack arrives or
+  `CANCEL_ACK_TIMEOUT_MS` is exceeded. No-op when the broker client is
+  unavailable (replay / smoke / unit tests).
+- `eye_of_tiger.py`: new env var `CANCEL_ACK_TIMEOUT_MS`
+  (default 1500). `POST_EXIT_SAME_TICKER_COOLDOWN_SEC` default unchanged
+  at 10 (kept as defense-in-depth guardrail; can be relaxed via env
+  once cancel-first is verified in prod).
+- `ingest/algo_plus.py`: new helper `_compute_et_bucket(ts)` returns
+  the canonical `"HHMM"` ET bucket for any UTC timestamp, RTH only.
+  Both the REST backfill path and the websocket `_on_bar` handler now
+  populate `et_bucket` AND `total_volume` (from the bar's `volume`
+  field) on every persisted bar; `iex_volume` retained for fallback.
+- `bar_archive.py`: `total_volume` added to `BAR_SCHEMA_FIELDS`
+  between `close` and `iex_volume`. Existing bars without the field
+  parse cleanly because `_normalise_bar` projects via `dict.get`.
+- `volume_bucket.py`: `refresh()` now reads `bar.get("total_volume")`
+  first and falls back to `bar.get("iex_volume")` so legacy IEX-era
+  bars on disk still contribute. Zero-volume bars are now skipped
+  entirely (they previously diluted the mean toward zero on every
+  SIP bar where `iex_volume == 0`).
+- `tools/backfill_bar_archive.py` (NEW, 311 lines): one-shot script
+  that copies the canonical 84-day SIP archive at
+  `/home/user/workspace/canonical_backtest_data/84day_2026_sip/replay_layout/`
+  into `/data/bars` with the v6.14.0 field shape (`volume` ->
+  `total_volume`, recomputed `et_bucket`, `n` -> `trade_count`,
+  `vw` -> `bar_vwap`, `_feed` -> `feed_source`). Idempotent
+  (dedupes on `ts` against existing JSONL) and supports `--dry-run`.
+- `tests/test_v6_14_0_volume_gate_e2e.py` (NEW, 6 tests, all pass):
+  builds synthetic 55-day archives in tmpdir, asserts the chain
+  produces numeric `ratio_to_55bar_avg` (the v15-spec field name the
+  10:00 ET conditional path keys on), `total_volume` wins over
+  `iex_volume`, the `iex_volume` legacy fallback works, and zero
+  bars are skipped.
+- `tests/test_v6_14_0_cancel_first.py` (NEW, 7 tests, all pass):
+  no-op when no broker client, no-cancel when no opposing orders,
+  same-side orders left alone, opposing orders cancelled and polled
+  until terminal status, ack-timeout returns False so caller skips,
+  multiple opposing orders all cancelled, broker errors fail open.
 
-### Rollout
+### Rollout (post-merge, in order)
 
-Merge -> Railway auto-deploy. Then set the following env vars via
-`variableUpsert` (none of these change behavior at deploy time; they
-take effect on the next bar evaluation):
+1. Merge + Railway auto-deploy.
+2. SSH into the prod container and run
+   `python3 /app/tools/backfill_bar_archive.py --target /data/bars`.
+3. Wait one full RTH session.
+4. Confirm `bb.days_available(t) > 30` for all 12 prod tickers.
+5. THEN flip `VOLUME_GATE_ENABLED=true` via Railway variableUpsert.
 
-```
-STOP_PCT_SHORT=0.005           # 30bp -> 50bp, symmetric with long
-ATR_TRAIL_STAGE1_MULT=1.5      # 1.0x ATR -> 1.5x ATR floor
-ATR_TRAIL_ACTIVATE_PNL_FRAC=0.5  # require +0.5x ATR profit before trail engages
-```
-
-No change to long-side `STOP_PCT_LONG`. No change to fixed-cents
-fallback path in `broker/orders.py`. No change to Sentinel A_LOSS
-dollar rail, R-2 hard stop, v6.5.1 deep-stop, or any non-trail exit
-logic. Patch release; safe rollback is variable delete + redeploy.
-
+Until step 5 lands the gate stays disabled; the data plumbing fix is
+shipped on its own so the on/off toggle can be flipped with confidence
+later rather than racing two changes at once.
 
 ---
 
