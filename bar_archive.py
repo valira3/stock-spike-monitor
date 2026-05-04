@@ -26,7 +26,18 @@ logger = logging.getLogger("trade_genius.bar_archive")
 # Callers that pass base_dir= explicitly are unaffected.
 _TG_DATA_ROOT = os.environ.get("TG_DATA_ROOT", "/data")
 DEFAULT_BASE_DIR = os.environ.get("BAR_ARCHIVE_BASE", _TG_DATA_ROOT + "/bars")
-DEFAULT_RETAIN_DAYS = 90
+# v6.14.2 \u2014 bar archive retention is env-overridable. The 55-day
+# volume_bucket lookback needs ~80 calendar days of safety margin, so
+# the legacy 90-day default sometimes leaves us with only 53 trading
+# days available when the window grazes a holiday cluster (e.g.
+# Presidents Day + March break). Set BAR_ARCHIVE_RETAIN_DAYS to widen
+# the window. Cleanup runs once per day at EOD via broker.lifecycle,
+# so a higher value just costs slightly more disk \u2014 the seeded
+# archive is roughly 1.3 MB / trading day across the 12 prod tickers.
+try:
+    DEFAULT_RETAIN_DAYS = int(os.environ.get("BAR_ARCHIVE_RETAIN_DAYS") or 90)
+except ValueError:
+    DEFAULT_RETAIN_DAYS = 90
 
 # Schema fields a bar SHOULD carry. Missing fields are written as null.
 # v5.31.0 \u2014 added trade_count + bar_vwap (Alpaca-only fields; Yahoo-
