@@ -1685,17 +1685,18 @@
     }
     const bars = _isMobile() ? _resample5m(rawBars) : rawBars;
 
-    // v5.23.3 — X axis spans 8:00 ET (=7am CT, et_min=480) to 18:00 ET
-    // (=5pm CT, et_min=1080). Window covers the full 7am-5pm CT user
-    // request: late premarket + RTH + early postmarket.
-    // v6.0.0 — X window is now driven by the per-canvas chart state so
-    // wheel/drag events can zoom/pan without rebuilding the payload.
+    // v6.11.8 — X axis spans 4:00 ET (=3am CT, et_min=240) to 20:00 ET
+    // (=7pm CT, et_min=1200). Covers the FULL US equities pre-market
+    // (04:00–09:30 ET) and post-market (16:00–20:00 ET) windows so
+    // overnight / extended-hours moves are visible on the dashboard.
+    // (v5.23.3 used 480/1080 = 8am ET / 18:00 ET = late-premarket only.)
+    // v6.0.0 — X window is per-canvas state so wheel/drag pan-zoom works.
     const _vs = _chartGetState(canvas);
-    let X_MIN = (typeof _vs.xMin === "number") ? _vs.xMin : 480;
-    let X_MAX = (typeof _vs.xMax === "number") ? _vs.xMax : 1080;
+    let X_MIN = (typeof _vs.xMin === "number") ? _vs.xMin : 240;
+    let X_MAX = (typeof _vs.xMax === "number") ? _vs.xMax : 1200;
     if (X_MAX - X_MIN < 30) X_MAX = X_MIN + 30; // floor at 30 min
-    if (X_MIN < 480) X_MIN = 480;
-    if (X_MAX > 1080) X_MAX = 1080;
+    if (X_MIN < 240) X_MIN = 240;
+    if (X_MAX > 1200) X_MAX = 1200;
     _vs.xMin = X_MIN; _vs.xMax = X_MAX;
     // Y axis: tight envelope around prices + OR levels (visible window).
     // v6.0.0 — Y is now scoped to bars within [X_MIN, X_MAX] so zoomed
@@ -1738,9 +1739,17 @@
       ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y);
     }
     ctx.stroke();
+    // v6.11.8 — vertical separators at RTH open (9:30 ET=570) and
+    // RTH close (16:00 ET=960). Premarket sits left of 570, postmarket
+    // sits right of 960. Only drawn when the window includes them.
     ctx.strokeStyle = "#3a4a5c";
     ctx.beginPath();
-    ctx.moveTo(xOf(570), PAD_T); ctx.lineTo(xOf(570), PAD_T + priceH);
+    if (570 >= X_MIN && 570 <= X_MAX) {
+      ctx.moveTo(xOf(570), PAD_T); ctx.lineTo(xOf(570), PAD_T + priceH);
+    }
+    if (960 >= X_MIN && 960 <= X_MAX) {
+      ctx.moveTo(xOf(960), PAD_T); ctx.lineTo(xOf(960), PAD_T + priceH);
+    }
     ctx.stroke();
 
     // Y axis labels (5 ticks).
@@ -1752,16 +1761,18 @@
       const y = yOf(p);
       ctx.fillText("$" + p.toFixed(2), PAD_L - 6, y + 4);
     }
-    // X axis labels in CT (operator's local TZ): 7am, 8:30, 12:00, 3:00, 5pm.
-    // Mapping ET→CT is -1h: 8am ET=7am CT, 9:30 ET=8:30 CT, 13:00 ET=12 CT,
-    // 16:00 ET=3pm CT, 18:00 ET=5pm CT.
+    // v6.11.8 — X axis labels in CT (operator's local TZ) for the full
+    // 4am ET–8pm ET window. Mapping ET→CT is -1h: 4am ET=3am CT,
+    // 8am ET=7am CT, 9:30 ET=8:30 CT (RTH open separator), 13:00 ET=12 CT,
+    // 16:00 ET=3pm CT (RTH close), 20:00 ET=7pm CT.
     ctx.textAlign = "center";
     const xTicks = [
+      {m: 240,  l: "3am"},
       {m: 480,  l: "7am"},
       {m: 570,  l: "8:30"},
       {m: 780,  l: "12pm"},
       {m: 960,  l: "3pm"},
-      {m: 1080, l: "5pm"},
+      {m: 1200, l: "7pm"},
     ];
     for (const t of xTicks) {
       ctx.fillText(t.l, xOf(t.m), cssH - 6);

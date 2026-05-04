@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.8 (2026-05-04) -- UI full pre/post range + session-aware WS staleness
+
+### Three fixes
+
+**1. Charts show the full pre-market and post-market range.**
+
+Dashboard intraday chart was clamping the X axis to 480-1080 minutes ET
+(8:00 AM - 6:00 PM ET), which cut off the early pre-market hours and
+clipped after-hours. Widened to 240-1200 minutes ET (4:00 AM - 8:00 PM
+ET, the full Alpaca extended-hours window). Added X-tick labels at 3am,
+7am, 8:30, 12pm, 3pm, 7pm CT and a vertical separator at 16:00 ET
+alongside the existing 9:30 ET line.
+
+Files: `dashboard_static/app.js` (axis + ticks), `dashboard_server.py`
+(`_intraday_fetch_alpaca_bars` widened from `hour=8/18` to `hour=4/20`,
+`_INTRADAY_WINDOW_START/END_ET_MIN` constants updated to 240/1200,
+docstrings refreshed).
+
+**2. WS staleness threshold is now session-aware.**
+
+v6.11.7 `/test` flagged `WS: connected but stale -- last bar 34s ago`
+at 6:41 AM CT (7:41 AM ET pre-market). That's normal: pre/post bars are
+legitimately sparse, and the IEX feed can be quiet 1-2 minutes between
+trades on low-volume days. The 30s/90s RTH thresholds were firing in
+EXTENDED hours where they don't apply.
+
+New thresholds (matches AlgoPlus convention):
+- RTH (unchanged): OK <=30s, WARN <=90s, CRITICAL >90s
+- EXTENDED:        OK <=120s, WARN <=240s, CRITICAL >240s
+- CLOSED: WS not expected, only flagged if last_bar > 1h.
+
+Files: `trade_genius.py` (lines 5211-5252).
+
+**3. Tests updated for new thresholds.**
+
+`tests/test_v6_7_3_extended_hours.py`:
+- Removed `test_extended_stale_60s_warn` (60s now OK in EXTENDED).
+- Added `test_extended_60s_ok_v6118` (60s should be OK now).
+- Added `test_extended_stale_180s_warn_v6118`.
+- Added `test_extended_300s_critical_v6118`.
+
+### Why ship
+
+Val saw a WARN at 6:41 AM that wasn't actionable (pre-market sparseness
+is expected) and asked for the chart to show the full pre/post range so
+he can see the whole session at a glance. Both fixes are pure UI/UX
+polish -- no behavior change to entries, exits, or position sizing.
+
+---
+
 ## v6.11.7 (2026-05-04) -- Critical: smoke-test guard must be __main__ only
 
 ### What broke (within hours of v6.11.6 going live)

@@ -2548,12 +2548,20 @@ _INTRADAY_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})")
 # expands several rows or refreshes the dashboard.
 _INTRADAY_FETCH_CACHE: dict = {}
 _INTRADAY_FETCH_TTL_S = 60.0
-_INTRADAY_WINDOW_START_ET_MIN = 8 * 60  # 08:00 ET = 7:00 CT
-_INTRADAY_WINDOW_END_ET_MIN = 18 * 60  # 18:00 ET = 17:00 CT
+# v6.11.8 \u2014 widened from 08:00\u201318:00 ET to 04:00\u201320:00 ET
+# (full pre/post-market). Currently informational; the actual fetch
+# bounds live in _intraday_fetch_alpaca_bars and the display bounds
+# live in dashboard_static/app.js (X_MIN=240, X_MAX=1200).
+_INTRADAY_WINDOW_START_ET_MIN = 4 * 60   # 04:00 ET = 3:00 CT
+_INTRADAY_WINDOW_END_ET_MIN = 20 * 60    # 20:00 ET = 19:00 CT
 
 
 def _intraday_fetch_alpaca_bars(ticker: str, day: str) -> list[dict]:
-    """Pull 1m bars 8am\u201318:00 ET for `ticker` on `day` from Alpaca.
+    """Pull 1m bars 4:00\u201320:00 ET for `ticker` on `day` from Alpaca.
+
+    v6.11.8 widened the window from 8am\u201318:00 ET (late-premarket only)
+    to the full 04:00\u201320:00 ET extended-hours range so dashboard
+    charts can render the entire pre-market and post-market sessions.
 
     Returns dicts in the same shape as the on-disk archive
     ({open,high,low,close,iex_volume,ts}) so downstream helpers can
@@ -2583,8 +2591,9 @@ def _intraday_fetch_alpaca_bars(ticker: str, day: str) -> list[dict]:
         # ET so we anchor the request to ET boundaries and let Alpaca
         # return UTC timestamps.
         d = datetime.strptime(day, "%Y-%m-%d")
-        start_et = d.replace(hour=8, minute=0, tzinfo=et)
-        end_et = d.replace(hour=18, minute=0, tzinfo=et) + timedelta(minutes=1)
+        # v6.11.8 \u2014 4:00 ET to 20:00 ET covers full pre/post sessions.
+        start_et = d.replace(hour=4, minute=0, tzinfo=et)
+        end_et = d.replace(hour=20, minute=0, tzinfo=et) + timedelta(minutes=1)
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
             timeframe=TimeFrame.Minute,
@@ -2640,7 +2649,11 @@ def _intraday_fetch_alpaca_bars(ticker: str, day: str) -> list[dict]:
 
 
 def _intraday_load_today_bars(ticker: str, day: str) -> list[dict]:
-    """Return 8am\u201318:00 ET 1m bars for `ticker` on `day`.
+    """Return 04:00\u201320:00 ET 1m bars for `ticker` on `day`.
+
+    v6.11.8 widened the window from 8am\u201318:00 ET to cover the full
+    extended-hours range (pre-market 04:00\u201309:30 ET and post-market
+    16:00\u201320:00 ET).
 
     Strategy:
     1. Try the live Alpaca historical fetcher (covers premarket +
