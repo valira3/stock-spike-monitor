@@ -277,12 +277,29 @@ class TestWsHealthSession(unittest.TestCase):
             cr = tg._check_ws_health("extended")
         self.assertEqual(cr.severity, "ok")
 
-    def test_extended_stale_60s_warn(self):
+    def test_extended_60s_ok_v6118(self):
+        # v6.11.8: EXTENDED tolerates up to 120s before WARN (sparse pre/post bars).
         with patch.object(tg.ingest_algo_plus, "get_health",
                           return_value=self._mock_health("LIVE", 60.0)), \
              patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
             cr = tg._check_ws_health("extended")
+        self.assertEqual(cr.severity, "ok")
+
+    def test_extended_stale_180s_warn_v6118(self):
+        # v6.11.8: EXTENDED warns between 120 and 240s.
+        with patch.object(tg.ingest_algo_plus, "get_health",
+                          return_value=self._mock_health("LIVE", 180.0)), \
+             patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
+            cr = tg._check_ws_health("extended")
         self.assertEqual(cr.severity, "warn")
+
+    def test_extended_300s_critical_v6118(self):
+        # v6.11.8: EXTENDED criticals beyond 240s.
+        with patch.object(tg.ingest_algo_plus, "get_health",
+                          return_value=self._mock_health("LIVE", 300.0)), \
+             patch.object(tg.ingest_algo_plus, "LIVE", "LIVE"):
+            cr = tg._check_ws_health("extended")
+        self.assertEqual(cr.severity, "critical")
 
     def test_extended_disconnected_critical(self):
         with patch.object(tg.ingest_algo_plus, "get_health",

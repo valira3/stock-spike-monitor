@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.11.7"
+BOT_VERSION = "6.11.8"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.11.7"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.11.7: smoke guard fix\n"
-    "only set env on CLI path,\n"
-    "prod telegram resumes."
+    "v6.11.8: charts + WS\n"
+    "full pre/post range,\n"
+    "WS pre/post 120s tol."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -5211,8 +5211,14 @@ def _check_order_round_trip() -> CheckResult:
 def _check_ws_health(session: str) -> CheckResult:
     """Check 4 \u2014 WebSocket connection state via ingest_algo_plus health.
 
-    RTH/EXTENDED: WARN if last bar 30\u201390s, CRITICAL if >90s or disconnected.
-    OFF: INFO only (markets closed).
+    RTH      : OK <=30s, WARN <=90s, CRITICAL >90s or disconnected.
+    EXTENDED : OK <=120s, WARN <=240s, CRITICAL >240s or disconnected.
+               Pre/post-market volume is much sparser \u2014 IEX feed can
+               legitimately go 1\u20132 minutes between trades on a single
+               ticker (especially in the 4:00\u20137:00 ET window). The
+               peer AlgoPlus liveness check already uses 120s for
+               EXTENDED; v6.11.8 aligns the WS check.
+    OFF      : INFO only (markets closed).
     """
     t0 = time.monotonic()
     def _ms():
@@ -5228,13 +5234,17 @@ def _check_ws_health(session: str) -> CheckResult:
             conn_str = "connected" if connected else "disconnected"
             return CheckResult("WS", "B", "info",
                                "%s, last bar %s (markets closed)" % (conn_str, age_str), _ms())
-        # RTH and EXTENDED: same thresholds (streams should be live in pre/post)
         if not connected:
             return CheckResult("WS", "B", "critical", "disconnected", _ms())
-        if age is None or age <= 30:
+        # v6.11.8 \u2014 session-aware thresholds; EXTENDED tolerates sparse pre/post bars.
+        if session == "extended":
+            ok_s, warn_s = 120, 240
+        else:
+            ok_s, warn_s = 30, 90
+        if age is None or age <= ok_s:
             return CheckResult("WS", "B", "ok",
                                "connected, last bar %s" % age_str, _ms())
-        if age <= 90:
+        if age <= warn_s:
             return CheckResult("WS", "B", "warn",
                                "connected but stale \u2014 last bar %s" % age_str, _ms())
         return CheckResult("WS", "B", "critical",
