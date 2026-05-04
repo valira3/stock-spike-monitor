@@ -246,6 +246,7 @@ def _phase2_block(m, tickers: list[str]) -> list[dict]:
     rows: list[dict] = []
     if not tickers:
         return rows
+    now_et = None
     try:
         now_et = m._now_et()
         minute_hhmm = now_et.strftime("%H%M")
@@ -257,9 +258,27 @@ def _phase2_block(m, tickers: list[str]) -> list[dict]:
         vol_enabled = bool(getattr(_ff, "VOLUME_GATE_ENABLED", False))
     except Exception:
         vol_enabled = False
+    # v6.14.7: pass the just-closed bucket as `prev_minute_hhmm` so the
+    # call signature matches `_v510._vol_bucket_per_ticker` (added in
+    # v5.20.5). The previous 3-arg call was raising TypeError silently,
+    # which the bare-except below caught and reduced to `vol = {}`,
+    # pinning every ticker's `vol_gate_status` to COLD on the dashboard
+    # chip even after v6.14.4 / v6.14.5 / v6.14.6 fixed every other
+    # volume surface. See volume_profile.previous_session_bucket for
+    # how `_v510._snapshot` derives the same value upstream.
+    prev_minute_hhmm: str | None = None
+    if now_et is not None:
+        try:
+            from volume_profile import previous_session_bucket as _prev_b
+
+            prev_minute_hhmm = _prev_b(now_et)
+        except Exception:
+            prev_minute_hhmm = None
     try:
         if minute_hhmm:
-            vol = _v510._vol_bucket_per_ticker(m, list(tickers), minute_hhmm)
+            vol = _v510._vol_bucket_per_ticker(
+                m, list(tickers), minute_hhmm, prev_minute_hhmm
+            )
         else:
             vol = {}
     except Exception:
