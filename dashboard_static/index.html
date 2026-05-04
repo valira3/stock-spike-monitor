@@ -54,9 +54,10 @@
        the post-loss cooldown window. Click/hover surfaces the per-row
        breakdown via the popover below. -->
   <button type="button" id="tg-cooldown-chip" class="tg-cooldown-chip tg-cd-off" aria-haspopup="true" aria-expanded="false" title="Post-loss timeouts — click for details" style="display:none;align-items:center;gap:4px;margin-left:6px;padding:2px 8px;border-radius:999px;background:#10151c;border:1px solid #1f2937;color:#5b6572;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:10px;cursor:pointer">
-    <span style="font-size:9px;letter-spacing:0.06em">TO</span>
+    <span style="font-size:9px;letter-spacing:0.06em">TO:</span>
     <span id="tg-cooldown-count" style="font-variant-numeric:tabular-nums">0</span>
-    <span id="tg-cooldown-window" style="color:#5b6572;font-size:9px">·L:0/S:0m</span>
+    <!-- v6.11.11 — window summary collapsed; details live in popover. -->
+    <span id="tg-cooldown-window" style="display:none;color:#5b6572;font-size:9px">·L:0/S:0m</span>
   </button>
   <div id="tg-cooldown-pop" role="dialog" aria-label="Active post-loss cooldowns" style="display:none;position:absolute;top:46px;right:120px;z-index:9999;min-width:280px;max-width:360px;background:#0d1117;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,0.45);font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11px;color:#e7ecf3">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><span style="color:#fbbf24;font-weight:600">Post-loss timeouts</span><button type="button" id="tg-cooldown-close" aria-label="Close" style="background:transparent;border:0;color:#8a96a7;font-size:14px;cursor:pointer;padding:0 4px">&times;</button></div>
@@ -66,7 +67,7 @@
   </div>
   <span id="tg-live-pill" title="Live status — pulsing dot means /api/state is responding; countdown shows seconds until next scan" style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:3px 10px 3px 8px;background:#10151c;border:1px solid #1f2937;border-radius:999px;font-size:11px;color:#8a96a7;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace">
     <span id="h-pulse" title="Heartbeat — pulses on every /api/state poll" style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block" class="pulse"></span>
-    <span style="color:#e7ecf3">LIVE</span>
+    <span style="color:#e7ecf3">L</span>
     <span id="h-tick" style="color:#5b6572;font-variant-numeric:tabular-nums" title="Seconds until next scan loop iteration" aria-label="next scan countdown">&mdash;</span>
   </span>
   <!-- v4.11.0 — per-executor health pill. Tap to expand last 10 errors.

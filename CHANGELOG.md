@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.11 (2026-05-04) -- tab 📄 Paper marker; TO: <count> pill; LIVE -> L
+
+Three small dashboard polish items Val flagged after v6.11.10.
+
+### 1. Val/Gene tabs use the same paper marker as Main
+
+Main tab has shown `📄 Paper` since v4.x. v6.11.10 used `✓ P` (amber)
+for Val/Gene paper mode, which didn't match. Aligned both: paper now
+renders `📄 Paper` on Val/Gene too. Live shortened to just `✓ L`
+(green) per Val's preference. Disabled stays `✗` (dim grey).
+
+- `📄 Paper` = enabled, paper broker (matches Main tab)
+- `✓ L`     = enabled, live broker
+- `✗`        = disabled
+
+Files: `dashboard_static/app.js` (`renderHeader`, `renderBadge`).
+
+### 2. TO pill simplified to `TO: <count>`
+
+The v6.11.10 pill rendered `TO 0 ·L:0/S:30m` — a duplicate of the
+popover detail. Trimmed to `TO: <count>` where `<count>` is the
+number of (ticker, side) pairs currently in cooldown
+(`s.active_cooldowns.length`, sums long + short). Window detail
+(L:_/S:_m) is now popover-only via `#tg-cooldown-window-detail`.
+
+The `#tg-cooldown-window` span is kept in the DOM (display:none) so
+legacy JS hooks still resolve.
+
+Files: `dashboard_static/index.html`.
+
+### 3. Top-right LIVE pill -> just `L`
+
+`LIVE` heartbeat label shrunk to `L`. The pulsing green dot already
+communicates liveness; the word duplicated it. Saves brand-row
+width on mobile (the iPhone screenshot triggered this).
+
+Files: `dashboard_static/index.html`.
+
+### Operator config note
+
+This release includes a Railway env var change (no code): set
+`POST_LOSS_COOLDOWN_MIN_LONG=30` to restore symmetrical 30/30
+cooldowns. The dashboard's `long_enabled` flag is derived from this
+value (>0 = enabled), so the pill will reflect the change on next
+poll.
+
+---
+
 ## v6.11.10 (2026-05-04) -- TO pill; chart X seed 4am-8pm ET; tab L/P mode marker
 
 Three follow-ups Val flagged after the v6.11.9 deploy on 2026-05-04 morning.
