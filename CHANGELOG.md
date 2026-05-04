@@ -4,6 +4,81 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.14 (2026-05-04) -- STOP_PCT and ATR-trail env-overridable
+
+Makes the v6.4.1 asymmetric protective-stop percentages AND the v6.1.0
+ATR-trail tuning constants env-overridable so operators can widen or
+tighten both the entry rail and the trail behavior without a code deploy
+when live forensics show the current settings are mis-tuned for present
+conditions. Also adds a new `ATR_TRAIL_ACTIVATE_PNL_FRAC` knob that
+delays trail engagement until pnl-per-share clears a configurable
+fraction of ATR (default 0.0 -> v6.1.0 behavior preserved).
+
+### Context
+
+May 4 chop session: 9 of 9 SHORT exits hit `sentinel_a_stop_price`;
+five of those clipped winners at +0.05% to +0.28% gain. ATR analysis
+for the day showed 5m ATR running 14-29bp on most symbols, which is
+INSIDE the 30bp `STOP_PCT_SHORT` rail. With the v6.1.0 trail at
+Stage 1 = 1x ATR, `min(rail, atr_stop)` selects the trail and the
+position exits on a 1x ATR adverse tick before any directional move
+can develop. Two tuning levers needed:
+  1. Loosen Stage 1 trail multiplier (1.0 -> 1.5) so the trail sits
+     OUTSIDE the entry rail on chop days.
+  2. Delay trail engagement until pnl >= 0.5x ATR so an immediate
+     adverse tick at entry doesn't ride the trail in.
+
+Neither lever is wired hot today; both ship as env-overridable so they
+can be A/B-tested live without a fresh deploy.
+
+### Changes
+
+- `eye_of_tiger.py`: `STOP_PCT_LONG` and `STOP_PCT_SHORT` now read from
+  env via the existing `_read_float` helper. Defaults preserved at
+  0.005 (50bp) and 0.003 (30bp) respectively.
+- `_read_int` helper hoisted to top of `eye_of_tiger.py` alongside new
+  `_read_float` so module-level constants can use them. No semantics
+  change to `_read_int`.
+- `engine/sentinel.py`: six existing ATR-trail constants made env-
+  overridable via a module-private `_read_float` helper. Names match
+  the underscore-prefixed module constants for grep-ability:
+    * `ATR_TRAIL_STAGE1_THRESHOLD` (default 1.0)
+    * `ATR_TRAIL_STAGE2_THRESHOLD` (default 3.0)
+    * `ATR_TRAIL_STAGE1_MULT`      (default 1.0)
+    * `ATR_TRAIL_STAGE2_MULT`      (default 1.5)
+    * `ATR_TRAIL_LOCKIN_FRAC`      (default 0.5)
+    * `ATR_TRAIL_FLOOR_MULT`       (default 0.3)
+- `engine/sentinel.py`: NEW env var `ATR_TRAIL_ACTIVATE_PNL_FRAC`
+  (default 0.0) gates whether the ATR trail engages this tick. The
+  `check_alarm_a_stop_price` block now requires `pnl_ps >= frac * atr`
+  before computing `atr_stop`. Default 0.0 keeps v6.1.0 behavior bit-
+  for-bit; setting >0 delays trail engagement until the position has
+  earned that much per-share buffer.
+- New test `tests/test_v6_11_14_stop_pct_env.py`: asserts STOP_PCT
+  defaults / env override / malformed fallback, and the trail-knob
+  defaults / overrides / activate-gate semantics (skip trail when
+  pnl < threshold; engage trail when pnl >= threshold).
+
+### Rollout
+
+Merge -> Railway auto-deploy. Then set the following env vars via
+`variableUpsert` (none of these change behavior at deploy time; they
+take effect on the next bar evaluation):
+
+```
+STOP_PCT_SHORT=0.005           # 30bp -> 50bp, symmetric with long
+ATR_TRAIL_STAGE1_MULT=1.5      # 1.0x ATR -> 1.5x ATR floor
+ATR_TRAIL_ACTIVATE_PNL_FRAC=0.5  # require +0.5x ATR profit before trail engages
+```
+
+No change to long-side `STOP_PCT_LONG`. No change to fixed-cents
+fallback path in `broker/orders.py`. No change to Sentinel A_LOSS
+dollar rail, R-2 hard stop, v6.5.1 deep-stop, or any non-trail exit
+logic. Patch release; safe rollback is variable delete + redeploy.
+
+
+---
+
 ## v6.11.13 (2026-05-04) -- same-ticker post-exit cooldown (wash-trade fix)
 
 Production hit Alpaca error `40310000 "potential wash trade detected"` on

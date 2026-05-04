@@ -19,8 +19,33 @@ in trade_genius.py.
 
 from __future__ import annotations
 
+import os as _os
 from datetime import datetime, time as dtime, timezone
 from typing import Optional
+
+
+# ---------------------------------------------------------------------
+# v6.11.14 \u2014 env-read helpers hoisted to the top so module-level
+# constants can be env-overridable. Behavior unchanged when the env
+# vars are absent.
+# ---------------------------------------------------------------------
+
+
+def _read_int(env_name, default):
+    try:
+        v = _os.getenv(env_name)
+        return int(v) if v is not None else default
+    except ValueError:
+        return default
+
+
+def _read_float(env_name, default):
+    try:
+        v = _os.getenv(env_name)
+        return float(v) if v is not None else default
+    except ValueError:
+        return default
+
 
 # ---------------------------------------------------------------------
 # Section I/IX configuration (locked defaults)
@@ -56,8 +81,12 @@ STOP_PCT_OF_ENTRY = 0.005  # 0.5%% \u2014 long stop = entry * 0.995 (v6.4.1: sho
 # 50bp baseline) lifted weekly P&L by +$262 (+30%) without hurting longs.
 # 25bp was too tight (chopped out on noise). 30bp is the empirical sweet
 # spot. Long pct unchanged at 50bp.
-STOP_PCT_LONG = 0.005   # 50bp \u2014 long stop = entry * (1 - 0.005)
-STOP_PCT_SHORT = 0.003  # 30bp \u2014 short stop = entry * (1 + 0.003)
+# v6.11.14 \u2014 made env-overridable so an operator can widen the rail
+# without a code deploy when chop-day forensics show the 30bp short
+# stop is getting clipped by 1m noise. Defaults preserved (long=50bp,
+# short=30bp) so absent env vars keep current production behavior.
+STOP_PCT_LONG = _read_float("STOP_PCT_LONG", 0.005)   # 50bp default
+STOP_PCT_SHORT = _read_float("STOP_PCT_SHORT", 0.003)  # 30bp default
 
 # v6.4.2 \u2014 post-loss cooldown. After a stop-out (any losing exit), block
 # new entries on the same (ticker, side) for POST_LOSS_COOLDOWN_MIN minutes.
@@ -80,15 +109,6 @@ STOP_PCT_SHORT = 0.003  # 30bp \u2014 short stop = entry * (1 + 0.003)
 #   2. POST_LOSS_COOLDOWN_MIN                  (legacy single-window fallback)
 #   3. baked-in default: long=0 (off), short=30
 # 0 disables that side.
-import os as _os
-
-
-def _read_int(env_name, default):
-    try:
-        v = _os.getenv(env_name)
-        return int(v) if v is not None else default
-    except ValueError:
-        return default
 
 
 # Legacy alias \u2014 still read by older callers; resolves to the SHORT default
