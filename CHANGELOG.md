@@ -4,6 +4,40 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.10.0 -- Wave 2 entry-ROI ship: C5 fast-boundary 12:00 + C10 short cooldown 60 min
+
+### Why
+
+Wave 2 sweep (Devi WAVE2_PLAN) tested four candidates (C4, C5, C7, C10) on canonical SIP corpora against scaled entry-ROI thresholds. Two candidates clear the gate and ship as new defaults; two do not.
+
+### What
+
+- **C5**: `V620_FAST_BOUNDARY_CUTOFF_HHMM_ET` default `"10:30"` -> `"12:00"` in `v5_10_1_integration.py`.
+- **C10**: `POST_LOSS_COOLDOWN_MIN_SHORT` default `30` -> `60` in `eye_of_tiger.py`.
+
+### Evidence
+
+- **C5 (84d SIP sweep):** cutoff=12:00 delivered +$593/84d vs 10:30 baseline, 56.67% overall WR, 58.11% WR in the 10:30-12:00 window (clears the 58% spec gate). cutoff=11:00 produced only +$13/84d -- no-ship.
+- **C10 (30d v6.9.7 sweep):** S=60 delivered +$504/30d, 55.0% WR, 1,123 entries. Best of the tested set {S=15, S=30, S=45, S=60}; clears the scaled +$71/30d threshold by 7x.
+
+### No-ship
+
+- **C4** (ATR-OR-break filter): all three K values produced negative lift on the 30d v6.9.7 corpus -- K=0.15 -$230, K=0.25 -$331, K=0.40 -$257. Defaults remain `_V610_ATR_OR_BREAK_ENABLED=False`. No further action.
+- **C7** (post-gate damping): feature was speced but `_V645_POST_GATE_DAMP_BARS` does not exist in the codebase. Deferred to Wave 2b; requires re-design and implementation before sweep.
+
+### Forward-compatibility notes
+
+- C10 env var `POST_LOSS_COOLDOWN_MIN_SHORT` remains overrideable; set it in your `.env` to revert or experiment.
+- C5 cutoff is a hardcoded module-level constant in `v5_10_1_integration.py`; env-wiring is followup work.
+
+### Tests
+
+3 new tests in `tests/test_v6100_defaults.py`: `test_c5_default_cutoff_is_12_00`, `test_c10_default_cooldown_is_60`, `test_c10_env_override_still_works`.
+
+Minor release. Devi + Val sign-off.
+
+---
+
 ## v6.9.7 -- env-wire C4 OR-break constants for Wave 2 sweepability
 
 Wave 2's C4 parameter sweep needs to vary `_V610_ATR_OR_BREAK_ENABLED` and

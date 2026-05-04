@@ -22,6 +22,8 @@
 > Warm LRU: 91x faster than JSONL on 5dx5t. Warm replay: 192x per-pass on
 > 84dx25t sweep. Wave 2 (11-run C4+C5+C7+C10 sweep) target wall: <=15 min.
 >
+> **Wave 2 results (May 2026):** C5 12:00 cutoff and C10 60-min short cooldown shipped. C4 ATR-OR-break filter no-ship (negative lift across all tested K). C7 post-gate damping deferred (feature was speced but never implemented; requires re-design before sweep).
+>
 > **v6.0.x release timeline (backfill, May 2026):** the v6.0.x line
 > is a stability series after the v5.x algorithm consolidation. Each
 > release in this series is small, focused, and ships hot to prod.
@@ -142,7 +144,7 @@
 >   `"open_or_break"` distinguishes the new path. (B)
 >   **Time-conditional 1-bar boundary hold pre-10:30 ET** in
 >   `v5_10_1_integration.py:evaluate_boundary_hold_gate` — when
->   wall-clock ET < `V620_FAST_BOUNDARY_CUTOFF_HHMM_ET = "10:30"`,
+>   wall-clock ET < `V620_FAST_BOUNDARY_CUTOFF_HHMM_ET = "12:00"`,
 >   the gate uses `required_closes=1`; post-cutoff reverts to the
 >   spec 2-bar (`eot.BOUNDARY_HOLD_REQUIRED_CLOSES`). The spec
 >   constant is unchanged — only the gate caller relaxes — so
@@ -766,7 +768,10 @@ ratio = 1.00, cold-start = pass-through with rate-limited log; Boundary
 Hold = 2 consecutive 1m closes strictly outside the 5m OR; DI period =
 **15** (Gene-canonical, not Wilder 14); all DI/NHOD comparisons strict
 `>`; daily circuit breaker = `-$1500`; sovereign brake = `-$500` (uses
-`<=`); velocity fuse = `> 1.0%` strict; EOD flush = 15:59:50 ET.
+`<=`); velocity fuse = `> 1.0%` strict; EOD flush = 15:59:50 ET;
+post-loss cooldown: LONG = 0 min (env `POST_LOSS_COOLDOWN_MIN_LONG`),
+SHORT = **60 min** (env `POST_LOSS_COOLDOWN_MIN_SHORT`; updated from 30 min
+in v6.10.0 per 30d Wave 2 C10 sweep).
 
 **Cold-start caveat.** Until the `/data/bars/<YYYY-MM-DD>/<TICKER>.jsonl`
 archive carries 55 trading days for a given ticker, that ticker's
@@ -3419,7 +3424,7 @@ New constants `V620_LOCAL_OR_BREAK_ENABLED = True`, `V620_LOCAL_OR_BREAK_K = 0.2
 
 `v5_10_1_integration.py`, `broker/orders.py`.
 
-New constants `V620_FAST_BOUNDARY_ENABLED = True`, `V620_FAST_BOUNDARY_CUTOFF_HHMM_ET = "10:30"`. New helper `_v620_fast_boundary_active(now_et)` returns True when wall-clock ET is before cutoff. `evaluate_boundary_hold_gate()` signature gained `now_et=None`; uses `required_closes=1` when fast-boundary active, else falls back to `eot.BOUNDARY_HOLD_REQUIRED_CLOSES = 2`.
+New constants `V620_FAST_BOUNDARY_ENABLED = True`, `V620_FAST_BOUNDARY_CUTOFF_HHMM_ET = "12:00"` (default updated to 12:00 in v6.10.0; was "10:30" at original v6.2.0 ship). New helper `_v620_fast_boundary_active(now_et)` returns True when wall-clock ET is before cutoff. `evaluate_boundary_hold_gate()` signature gained `now_et=None`; uses `required_closes=1` when fast-boundary active, else falls back to `eot.BOUNDARY_HOLD_REQUIRED_CLOSES = 2`.
 
 `broker/orders.py:499` passes `now_et=now_et` (already defined at line 102) into the call. The spec constant is unchanged — only the gate caller relaxes — so `tests/test_spec_v15_conformance.py:96` (`== 2` assertion) still passes.
 
