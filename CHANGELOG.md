@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.10 (2026-05-04) -- TO pill; chart X seed 4am-8pm ET; tab L/P mode marker
+
+Three follow-ups Val flagged after the v6.11.9 deploy on 2026-05-04 morning.
+
+### 1. Cooldown pill label `TIMEOUT` -> `TO`
+
+The v6.11.9 rename made the pill clearer but ate the available width on
+the brand row. Shrunk the label to `TO` (still keyed off the
+`#tg-cooldown-chip` button); badge and popover behavior unchanged.
+
+Files: `dashboard_static/index.html`.
+
+### 2. Chart X seed snapped back to 4am-8pm ET
+
+The full-session window constants `_CHART_FULL_X_MIN` /
+`_CHART_FULL_X_MAX` were still 480 / 1080 (= 8:00 ET / 18:00 ET) from
+the v5.23.3 era. The downstream pan/zoom clamp at the top of
+`_drawIntradayChart` already enforced 240 / 1200 (= 4:00 ET / 20:00 ET),
+but the seed values fed `_chartGetState` so freshly-mounted canvases
+still rendered with the legacy 8am-6pm range until the user touched
+them. Updated the seed constants to 240 / 1200 to match the runtime
+clamp and the v6.11.8 documented intent ("X axis spans 4:00 ET to
+20:00 ET"). Persisted view state is in-memory only and resets on
+reload, so the next page load picks up the new seed.
+
+Files: `dashboard_static/app.js`.
+
+### 3. Val/Gene tabs surface live/paper mode (`L`/`P`) again
+
+v6.11.9 collapsed mode into the tooltip-only `title=` attribute.
+Restored a visible mode marker next to the `✓` so the tab strip
+shows both "enabled" and "which broker":
+
+- `✓ L` = enabled, live broker (bright green)
+- `✓ P` = enabled, paper broker (amber #fbbf24)
+- `✗`   = disabled (dim grey)
+
+Both `renderHeader()` (initial paint from `s.executors_status`) and
+`renderBadge()` (per-executor poll keeps the badge accurate for
+executors that flip mid-session) now write the same two-span format
+via `innerHTML`. Tooltip preserved.
+
+Files: `dashboard_static/app.js`.
+
+---
+
 ## v6.11.9 (2026-05-04) -- Dashboard polish: tab marks, timeout pill, premarket countdown, chart Y
 
 Four follow-ups Val flagged after the v6.11.8 deploy on 2026-05-04 morning.
