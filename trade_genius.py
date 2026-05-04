@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.11.1"
+BOT_VERSION = "6.11.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.11.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.11.1: pre-market readiness check\n"
-    "04:30 ET cron; 14-check health gate;\n"
-    "/test shows premkt results."
+    "v6.11.2: dashboard auth fix\n"
+    "forward spike_session via Cookie\n"
+    "header; /test no longer 401s."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -5448,6 +5448,33 @@ def _check_mode() -> CheckResult:
 # Block E \u2014 Observability
 # ---------------------------------------------------------------------------
 
+class _SystestNoRedirect(_sysurlreq.HTTPRedirectHandler):
+    """Suppress 302 redirect-following on the dashboard /login response.
+
+    h_login returns 302 -> /. Without this handler, urllib follows the
+    redirect to /, which 1) wastes a round-trip and 2) on the way back
+    the cookie-jar may try to attach the just-set Secure cookie to a
+    plain-http GET / and silently drop it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _systest_extract_session_cookie(set_cookie_headers) -> str:
+    """Pull `spike_session=<value>` from a list of Set-Cookie header values.
+
+    Returns just the `name=value` pair, suitable for a Cookie request header.
+    Returns empty string if not found.
+    """
+    for raw in set_cookie_headers or []:
+        # Each Set-Cookie header is `name=value; Path=/; Secure; HttpOnly; ...`.
+        first_pair = (raw.split(";", 1)[0] or "").strip()
+        if first_pair.startswith("spike_session="):
+            return first_pair
+    return ""
+
+
 def _check_dashboard() -> CheckResult:
     """Check 13 \u2014 Dashboard /api/state reachability (auth-aware).
 
@@ -5455,9 +5482,14 @@ def _check_dashboard() -> CheckResult:
     Login flow: POST /login with DASHBOARD_PASSWORD, capture session cookie,
     then GET /api/state.
     Skip if DASHBOARD_PASSWORD env var is unset.
-    CRITICAL if login fails (wrong password / 5xx).
+    CRITICAL if login fails (wrong password / 5xx) OR no spike_session cookie
+    is issued.
     WARN if /api/state returns non-200 after successful login.
     WARN if dashboard is unreachable.
+
+    v6.11.2: forwards the spike_session cookie via an explicit Cookie header
+    instead of relying on http.cookiejar (which strips Secure cookies on
+    plain-http loopback requests, causing /api/state to 401).
     """
     t0 = time.monotonic()
     def _ms():
@@ -5471,41 +5503,81 @@ def _check_dashboard() -> CheckResult:
     try:
         import urllib.parse as _uparse
         import http.cookiejar as _cj
+        # v6.11.2 \u2014 cookie-jar fix.
+        # The dashboard sets spike_session with secure=True (correct for the
+        # public https deployment). When this in-process check hits the
+        # loopback bind on plain http://127.0.0.1, urllib's CookieJar refuses
+        # to attach a Secure cookie to a non-https request, so /api/state
+        # comes back 401 and the check reports "unreachable \u2014 HTTP 401".
+        # Fix: capture Set-Cookie ourselves and forward only the name=value
+        # pair via a manual Cookie header. Same wire effect as the browser,
+        # no security regression on the public site.
         cookie_jar = _cj.CookieJar()
-        opener = _sysurlreq.build_opener(_sysurlreq.HTTPCookieProcessor(cookie_jar))
+        opener = _sysurlreq.build_opener(
+            _sysurlreq.HTTPCookieProcessor(cookie_jar),
+            _SystestNoRedirect(),
+        )
         login_data = _uparse.urlencode({"password": pw}).encode("utf-8")
         login_req = _sysurlreq.Request(
             base_url + "/login",
             data=login_data,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "TradeGenius-SysTest/6.7.3",
+                "User-Agent": "TradeGenius-SysTest/6.11.2",
                 "Origin": base_url,
+                "Referer": base_url + "/",
             },
         )
+        login_status = 0
+        set_cookie_hdrs = []  # type: list
         try:
             with opener.open(login_req, timeout=5) as login_resp:
                 login_status = login_resp.status
+                # aiohttp.HTTPFound -> 302; reading headers off the raw
+                # response keeps us independent of the CookieJar.
+                set_cookie_hdrs = login_resp.headers.get_all("Set-Cookie") or []
+        except _sysurlreq.HTTPError as login_http_exc:
+            # 302 redirects raised when followed; we suppress redirect via
+            # _SystestNoRedirect, so this should not fire for 3xx. Real 4xx/5xx
+            # still lands here.
+            login_status = login_http_exc.code
+            try:
+                set_cookie_hdrs = login_http_exc.headers.get_all("Set-Cookie") or []
+            except Exception:
+                set_cookie_hdrs = []
         except Exception as login_exc:
             login_status_str = str(login_exc)[:80]
             return CheckResult("Dashboard", "E", "critical",
                                "login failed \u2014 %s" % login_status_str, _ms())
-        if login_status >= 400:
+        # Treat 200 (legacy) and 302 (current HTTPFound) as success;
+        # anything 4xx/5xx is a real failure.
+        if login_status >= 400 or login_status == 0:
             return CheckResult("Dashboard", "E", "critical",
                                "login failed \u2014 HTTP %d" % login_status, _ms())
+        cookie_pair = _systest_extract_session_cookie(set_cookie_hdrs)
+        if not cookie_pair:
+            return CheckResult("Dashboard", "E", "critical",
+                               "login ok but no spike_session cookie set", _ms())
         state_req = _sysurlreq.Request(
             base_url + "/api/state",
-            headers={"User-Agent": "TradeGenius-SysTest/6.7.2"},
+            headers={
+                "User-Agent": "TradeGenius-SysTest/6.11.2",
+                "Cookie": cookie_pair,
+            },
         )
-        with opener.open(state_req, timeout=3) as resp:
-            if resp.status == 200:
-                data = json.loads(resp.read())
-                ingest_st = data.get("ingest_status", {}) if isinstance(data, dict) else {}
-                sds = ingest_st.get("status", "unknown") if isinstance(ingest_st, dict) else "unknown"
-                return CheckResult("Dashboard", "E", "ok",
-                                   "shadow_data_status=%s" % sds, _ms())
+        try:
+            with opener.open(state_req, timeout=3) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read())
+                    ingest_st = data.get("ingest_status", {}) if isinstance(data, dict) else {}
+                    sds = ingest_st.get("status", "unknown") if isinstance(ingest_st, dict) else "unknown"
+                    return CheckResult("Dashboard", "E", "ok",
+                                       "shadow_data_status=%s" % sds, _ms())
+                return CheckResult("Dashboard", "E", "warn",
+                                   "HTTP %d" % resp.status, _ms())
+        except _sysurlreq.HTTPError as state_http_exc:
             return CheckResult("Dashboard", "E", "warn",
-                               "HTTP %d" % resp.status, _ms())
+                               "HTTP %d" % state_http_exc.code, _ms())
     except Exception as exc:
         err = str(exc)[:60]
         return CheckResult("Dashboard", "E", "warn",
