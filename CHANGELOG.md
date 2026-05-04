@@ -4,6 +4,49 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.7 (2026-05-04) -- phase2 vol-gate chip uses real PASS/FAIL
+
+Patch release. Fixes a silent TypeError in `_phase2_block` that has
+been pinning every ticker's `vol_gate_status` chip to `COLD` on the
+dashboard since v5.20.5 (the v5.10.6 helper signature change).
+
+**Root cause.** `v5_13_2_snapshot._phase2_block` was calling
+`_v510._vol_bucket_per_ticker(m, tickers, minute_hhmm)` with 3
+positional args, but v5.20.5 added a required 4th arg
+(`prev_minute_hhmm`). The TypeError was caught by a bare-except that
+reduced `vol` to `{}`, so each ticker's `vb.get("state")` defaulted
+to `"COLDSTART"` and mapped to `"COLD"` regardless of the real
+baseline result. v6.14.4 / v6.14.5 / v6.14.6 each fixed a different
+volume surface (engine refresh, current_1m_vol read, extended-hours
+bucketing) but the dashboard chip was downstream of all of them and
+rendered COLD anyway.
+
+The symptom Val noticed today after the v6.14.6 + extended-hours
+backfill: the in-row volume cells showed real `current=`, `base=`,
+`ratio=`, `days=55/55`, but the chip color stayed yellow (COLD)
+instead of red (FAIL) or green (PASS).
+
+**Fix.** Mirror the same `prev_minute_hhmm` derivation that
+`v5_10_6_snapshot._snapshot` already performs upstream: import
+`volume_profile.previous_session_bucket`, compute the just-closed
+bucket from `now_et`, and pass it as the 4th arg. The bare-except
+stays as a defence-in-depth; if any future signature change breaks
+the contract, the dashboard still degrades to COLD instead of
+crashing `/api/state`.
+
+**Tests.** `tests/test_v6_14_7_phase2_vol_gate_status.py` covers:
+- The 4-arg call signature is honoured (regression for the silent
+  TypeError -- captures the call kwargs and asserts both
+  `minute_hhmm` and `prev_minute_hhmm` are present).
+- PASS / FAIL / COLDSTART vb.states map to PASS / FAIL / COLD
+  vol_gate_status (the dashboard chip vocabulary).
+- VOLUME_GATE_ENABLED=False overrides every vb.state to OFF (the
+  v5.20.6 bypass-warming behaviour preserved).
+
+**No PDF.** Patch release. ARCHITECTURE.md unchanged.
+
+---
+
 ## v6.14.6 (2026-05-04) -- extended-hours buckets, volume-feed pill rewire, charts at 7am CT
 
 Patch release bundling three related dashboard / data fixes that
