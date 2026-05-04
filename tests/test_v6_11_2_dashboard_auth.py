@@ -29,6 +29,8 @@ import threading
 import unittest
 from pathlib import Path
 
+import pytest
+
 # trade_genius's import-time env guards. Same shape as test_v6_7_1_system_test.
 os.environ.setdefault("SSM_SMOKE_TEST", "1")
 os.environ.setdefault("FMP_API_KEY", "test_key_for_ci")
@@ -261,6 +263,7 @@ def _aiohttp_available() -> bool:
 class TestPremarketDashboardCheckE2E(unittest.TestCase):
     """End-to-end on the premarket_check side (the easier import surface)."""
 
+    @pytest.mark.slow
     def test_dashboard_check_passes_with_secure_cookie(self):
         from scripts import premarket_check
 
@@ -281,6 +284,7 @@ class TestPremarketDashboardCheckE2E(unittest.TestCase):
             "expected PASS, got %r (detail=%r)" % (result["status"], result.get("detail")),
         )
 
+    @pytest.mark.slow
     def test_dashboard_check_warns_on_missing_v611_window(self):
         from scripts import premarket_check
 
@@ -312,6 +316,7 @@ class TestPremarketDashboardCheckE2E(unittest.TestCase):
 class TestSystestDashboardCheckE2E(unittest.TestCase):
     """End-to-end on the trade_genius._check_dashboard side."""
 
+    @pytest.mark.slow
     def test_check_dashboard_ok_with_secure_cookie(self):
         # Defer trade_genius import: it's a 7000-line module.
         import trade_genius
@@ -326,6 +331,7 @@ class TestSystestDashboardCheckE2E(unittest.TestCase):
                          "expected ok, got %r (msg=%r)" % (cr.severity, cr.message))
         self.assertIn("shadow_data_status=live", cr.message)
 
+    @pytest.mark.slow
     def test_check_dashboard_critical_on_wrong_password(self):
         import trade_genius
 

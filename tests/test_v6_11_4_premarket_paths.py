@@ -29,6 +29,8 @@ import threading
 import unittest
 from pathlib import Path
 
+import pytest
+
 # Match the import-time env shape of test_v6_11_2_dashboard_auth.
 os.environ.setdefault("SSM_SMOKE_TEST", "1")
 os.environ.setdefault("FMP_API_KEY", "test_key_for_ci")
@@ -267,6 +269,7 @@ def _aiohttp_available() -> bool:
 class TestDashboardVersionKey(unittest.TestCase):
     """Bug 2: read `version` (not `bot_version`) from /api/state."""
 
+    @pytest.mark.slow
     def test_dashboard_passes_when_version_key_matches(self):
         from scripts import premarket_check
 
@@ -289,6 +292,7 @@ class TestDashboardVersionKey(unittest.TestCase):
             premarket_check.BOT_VERSION_EXPECTED,
         )
 
+    @pytest.mark.slow
     def test_dashboard_warns_when_only_legacy_bot_version_key_present(self):
         # This is the scenario that produced the v6.11.3 false alarm:
         # dashboard ONLY emits `bot_version`, no `version`. After v6.11.4
@@ -392,6 +396,7 @@ class _MethodCaptureAlpacaServer:
 class TestAlpacaClockUsesGet(unittest.TestCase):
     """Bug 3: must use GET against /v2/clock; HEAD returns 405."""
 
+    @pytest.mark.slow
     def test_check_time_sync_issues_get(self):
         from scripts import premarket_check
 

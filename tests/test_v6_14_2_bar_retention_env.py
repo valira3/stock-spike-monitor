@@ -80,4 +80,10 @@ def test_bot_version_is_6_14_2():
     if "bot_version" in sys.modules:
         del sys.modules["bot_version"]
     import bot_version
-    assert bot_version.BOT_VERSION == "6.14.2"
+    # Originally pinned 6.14.2; relaxed to a 6.14.x lower bound so future
+    # patch bumps in the same minor line do not break this version-pin
+    # parity check. Strict equality is enforced by the CHANGELOG <-> code
+    # consistency check in scripts/preflight.sh.
+    parts = bot_version.BOT_VERSION.split(".")
+    assert (int(parts[0]), int(parts[1])) >= (6, 14)
+    assert int(parts[2]) >= 2

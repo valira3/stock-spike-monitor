@@ -23,6 +23,8 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Module-level setup: import trade_genius as a module (not __main__)
 # ---------------------------------------------------------------------------
@@ -763,6 +765,7 @@ class TestSafeCheck(unittest.TestCase):
         self.assertEqual(cr.severity, "critical")
         self.assertIn("boom", cr.message)
 
+    @pytest.mark.slow
     def test_timeout_becomes_critical(self):
         def _fn():
             time.sleep(5)

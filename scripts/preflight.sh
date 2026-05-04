@@ -31,9 +31,39 @@ if [ -n "$BASE_REF" ]; then
 fi
 
 echo "[1/6] pytest..."
+# v6.14.4 -- preflight runs the FAST lane: pytest-xdist parallelism
+# and slow-marker skip. The 11 tests in the @pytest.mark.slow group
+# (subprocess replay smoke, aiohttp E2E dashboard checks, intentional
+# sleep-in-safe_check timeout assertion) account for ~70s of the
+# pre-v6.14.4 wall time. They still run on demand:
+#
+#   SLOW=1 bash scripts/preflight.sh   -- include slow tests
+#   pytest -m slow tests/ test_*.py    -- ONLY the slow tests
+#
+# pytest-xdist falls back to sequential mode automatically if not
+# installed, so the script stays portable. Install with:
+#   pip install pytest-xdist
+SKIP_SLOW="${SLOW:-0}"
+if [ "$SKIP_SLOW" = "1" ]; then
+  PYTEST_SKIP_SLOW=0
+else
+  PYTEST_SKIP_SLOW=1
+fi
+XDIST_ARGS=""
+if python3 -c "import xdist" >/dev/null 2>&1; then
+  XDIST_ARGS="-n auto"
+fi
 # Run any test_*.py (root level legacy + tests/ dir). -q for terse output.
+# Single invocation only -- the previous `2>/dev/null || pytest` fallback
+# caused pytest to run twice on every failure (~2x wall on red runs).
+# pytest auto-discovers test_*.py at the repo root, so passing both
+# `tests/` and `test_*.py` is redundant when `tests/` is present.
+PYTEST_TARGETS="tests/"
+if ls test_*.py >/dev/null 2>&1; then
+  PYTEST_TARGETS="$PYTEST_TARGETS test_*.py"
+fi
 if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
-  pytest -q tests/ test_*.py 2>/dev/null || pytest -q
+  PYTEST_SKIP_SLOW=$PYTEST_SKIP_SLOW pytest -q $XDIST_ARGS $PYTEST_TARGETS
 else
   echo "  (no tests found)"
 fi

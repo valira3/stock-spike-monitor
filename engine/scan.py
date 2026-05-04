@@ -130,6 +130,16 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception:
         logger.exception("_refresh_market_mode failed (observation only)")
 
+    # v6.14.4 \u2014 wire the volume_bucket baseline refresh into the live
+    # scan loop. The hook itself self-guards (no-op before 09:29 ET, and
+    # idempotent within a single session via _baseline_refreshed_for_date).
+    # Prior to this release the function was exported but never invoked,
+    # so the baseline stayed empty and the dashboard sat in COLDSTART.
+    try:
+        eot_glue.refresh_volume_baseline_if_needed(now_et)
+    except Exception:
+        logger.exception("refresh_volume_baseline_if_needed failed")
+
     is_weekend = now_et.weekday() >= 5
     before_open = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35)
     # v6.3.2 \u2014 hard cutoff moved 15:55 \u2192 16:00 ET so the engine

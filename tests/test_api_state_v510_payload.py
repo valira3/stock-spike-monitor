@@ -66,6 +66,7 @@ def test_api_state_carries_v510_top_level_fields(smoke_module):
     assert isinstance(snap["per_position_v510"], dict)
 
 
+@pytest.mark.slow
 def test_api_state_per_ticker_v510_shape(smoke_module):
     tg, ds = smoke_module
     snap = ds.snapshot()
