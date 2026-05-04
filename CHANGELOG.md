@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.10.2 -- Revert C10 short cooldown 60 -> 30 (long/short symmetry)
+
+### Why
+
+84d v6.10.1 SIP validation (workspace/v6_10_0_validation/c10_84d_validation_report.md)
+showed `POST_LOSS_COOLDOWN_MIN_SHORT=30` and `=60` produce bit-identical PnL on the
+current 10-ticker universe ($12,145.02 / 54.49% WR / 1,314 pairs / 564 short pairs / $5,348.68
+short PnL -- exactly the same per-day, per-ticker, per-pair). Diagnostic across all 83 days:
+zero same-ticker short re-entries land within 120 min of a same-ticker short loss exit, so the
+cooldown gate is recording losses but never blocking. The +$504/30d lift that justified the
+v6.10.0 ship was sweep noise from incidental state-path divergence on v6.9.6, not a real
+cooldown effect. Reverting 60 -> 30 keeps the short side symmetric with the long side
+(LONG = 0 disabled, SHORT = 30 was the v6.4.3 baseline). Operators can still env-override
+via `POST_LOSS_COOLDOWN_MIN_SHORT` if a future strategy/universe makes the gate matter.
+
+### What
+
+- `eye_of_tiger.py`: `POST_LOSS_COOLDOWN_MIN_SHORT` default `60` -> `30` (the legacy fallback
+  via `POST_LOSS_COOLDOWN_MIN`).
+- `tests/test_v6100_defaults.py`: renamed `test_c10_default_cooldown_is_60` ->
+  `test_c10_default_cooldown_is_30`; assertion flipped 60 -> 30; module + test docstrings
+  document the v6.10.2 revert and link the validation report.
+- `ARCHITECTURE.md`: updated the post-loss-cooldown line in the v5.10.0 architecture pin to
+  reflect SHORT = 30 with the v6.10.0 -> v6.10.2 history captured inline.
+- `bot_version.py` + `trade_genius.py`: `BOT_VERSION` 6.10.1 -> 6.10.2 (parity check).
+
+### Evidence
+
+84d sweep summary: `workspace/v6_10_0_validation/c10_84d_sweep/{S30,S60}/summary.json`.
+Eligibility analysis: `workspace/v6_10_0_validation/c10_cooldown_eligibility.py` -- 261 short
+losses, zero re-entries within 120 min. Full report:
+`workspace/v6_10_0_validation/c10_84d_validation_report.md`.
+
+Incidental finding (filed for follow-up, no action this PR): replay harness monkey-patches
+`tg._now_et` and `tg._now_cdt` but not `tg._now_utc`, which the cooldown system uses for
+window arithmetic. Doesn't matter today (no events to block) but if a future change introduces
+same-ticker re-entries, replay would over-enforce vs live. Tracked in the post-session todo.
+
+---
+
 ## v6.10.1 -- Hotfix: ingest WebSocket feed enum fix (DataFeed.SIP, ends worker crash loop)
 
 ### Why

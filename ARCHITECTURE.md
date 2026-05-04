@@ -770,8 +770,13 @@ Hold = 2 consecutive 1m closes strictly outside the 5m OR; DI period =
 `>`; daily circuit breaker = `-$1500`; sovereign brake = `-$500` (uses
 `<=`); velocity fuse = `> 1.0%` strict; EOD flush = 15:59:50 ET;
 post-loss cooldown: LONG = 0 min (env `POST_LOSS_COOLDOWN_MIN_LONG`),
-SHORT = **60 min** (env `POST_LOSS_COOLDOWN_MIN_SHORT`; updated from 30 min
-in v6.10.0 per 30d Wave 2 C10 sweep).
+SHORT = **30 min** (env `POST_LOSS_COOLDOWN_MIN_SHORT`; v6.10.0 raised
+this 30 -> 60 per the 30d Wave 2 C10 sweep, but v6.10.2 reverted to 30
+after the 84d v6.10.1 SIP validation showed S=30 and S=60 produce
+bit-identical PnL on the current 10-ticker universe -- the cooldown
+gate has zero same-ticker short re-entry events to act on, so the
+original 30d lift was sweep noise; reverting to 30 keeps long/short
+symmetric).
 
 **Cold-start caveat.** Until the `/data/bars/<YYYY-MM-DD>/<TICKER>.jsonl`
 archive carries 55 trading days for a given ticker, that ticker's
