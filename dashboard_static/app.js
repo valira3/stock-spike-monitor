@@ -4168,11 +4168,9 @@
 
   function renderBadge(name, data) {
     // v6.11.9 — simplified to a single ✓ / ✗ mark in the tab heading.
-    // v6.11.10 — added L/P mode mark next to the ✓ so live vs paper
-    // is visible without hovering. Format mirrors renderHeader():
-    //   ✓ L  = enabled, live broker (bright green)
-    //   ✓ P  = enabled, paper broker (amber)
-    //   ✗    = disabled (dim grey)
+    // v6.11.10 — added L/P mode mark next to the ✓.
+    // v6.11.11 — align with Main tab format. Paper -> "📄 Paper"
+    // (matches Main); live -> just "✓ L"; disabled stays ✗.
     // renderHeader() also writes this badge from s.executors_status as
     // a faster initial paint; this per-executor poll keeps it accurate
     // for executors that go offline mid-session.
@@ -4187,14 +4185,13 @@
       return;
     }
     const mode = (data.mode === "live") ? "live" : "paper";
-    const isLive = (mode === "live");
-    const modeMark = isLive ? "L" : "P";
-    const modeColor = isLive ? "#34d399" : "#fbbf24";
-    el.innerHTML =
-      '<span style="color:#34d399">\u2713</span>' +
-      '<span style="color:' + modeColor +
-      ';font-size:9.5px;margin-left:3px;font-weight:600;letter-spacing:0.04em">' +
-      modeMark + '</span>';
+    if (mode === "live") {
+      el.innerHTML =
+        '<span style="color:#34d399">\u2713</span>' +
+        '<span style="color:#34d399;font-size:9.5px;margin-left:3px;font-weight:600;letter-spacing:0.04em">L</span>';
+    } else {
+      el.innerHTML = '\ud83d\udcc4 <span style="color:#5b6572">Paper</span>';
+    }
     el.style.color = "";
     el.setAttribute("title", `${label} executor enabled (${mode} mode)`);
   }
