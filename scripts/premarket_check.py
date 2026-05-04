@@ -35,7 +35,7 @@ from typing import Any
 # Constants
 # ---------------------------------------------------------------------------
 SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.11.2"
+BOT_VERSION_EXPECTED = "6.11.3"
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5
