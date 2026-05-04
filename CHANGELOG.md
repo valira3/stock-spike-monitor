@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.1 (2026-05-04) -- restore engine.feature_flags shim so dashboard shows volume gate state
+
+Patch release. Adds back the tiny `engine/feature_flags.py` module that
+was removed in v5.26.0. Several callers still expect
+`from engine import feature_flags` to resolve and read
+`VOLUME_GATE_ENABLED` off it:
+
+* `dashboard_server` `feature_flags` block (drives Permit Matrix volume
+  column / card visibility) -- silently fell back to `False` when the
+  module was missing, so even after `VOLUME_GATE_ENABLED=true` was set
+  on Railway in v6.14.0 the dashboard kept the column hidden.
+* `trade_genius.py` startup banner.
+* `eye_of_tiger.evaluate_volume_gate` legacy v5.10.x path (the new
+  vAA-1 time-conditional path is unaffected because it does not
+  consult this flag).
+* `v5_13_2_snapshot` per-ticker Phase 2 row builder (the `OFF` override
+  in `vol_gate_status`).
+
+The shim reads `VOLUME_GATE_ENABLED` from the process environment at
+import time and is otherwise a no-op. Production behaviour for the
+gate evaluator (eye_of_tiger.evaluate_volume_gate) is unchanged because
+the vAA-1 path takes precedence and is flag-independent. The user-
+visible effect is that the dashboard Permit Matrix now correctly shows
+the Volume column / card when the env var is `true`, matching prior
+UI designs.
+
+No trading-logic changes. Backtest parity is untouched. Patch release
+so `trade_genius_algo.pdf` is not regenerated.
+
+### Files
+
+* `engine/feature_flags.py` -- NEW (45 lines, single bool flag).
+* `bot_version.py`, `trade_genius.py` -- BOT_VERSION 6.14.0 -> 6.14.1, CURRENT_MAIN_NOTE rewritten.
+* `tests/test_v6_14_1_feature_flags_shim.py` -- NEW (4 tests: default, true, 1, false).
+
+---
+
 ## v6.14.0 (2026-05-04) -- volume gate fix end-to-end + cancel-first entry guard (issues #354, #357)
 
 Ships two independent fixes in one minor release:
