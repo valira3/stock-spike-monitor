@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.11.4"
+BOT_VERSION = "6.11.5"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.11.4"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.11.4: premarket_check fixes\n"
-    "sys.path /app, version key,\n"
-    "Alpaca clock GET (was HEAD)."
+    "v6.11.5: order roundtrip fix\n"
+    "cancel-first in extended,\n"
+    "poll 8s, log last status."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -5132,26 +5132,40 @@ def _check_order_round_trip() -> CheckResult:
         order = tc.submit_order(req)
         order_id = str(order.id)
 
-        # Poll up to 3s for terminal status (D-08): 100ms intervals, max 30 polls
-        deadline = _tm.monotonic() + 3.0
+        # v6.11.5: explicit cancel-first for EXTENDED (DAY TIF won't self-cancel),
+        # then poll up to 8s for terminal status. Track last_seen_status for diagnosis.
+        # RTH (IOC) self-cancels at the venue, so cancel may be a no-op there.
+        if _ort_session != "rth":
+            try:
+                tc.cancel_order_by_id(order_id)
+            except Exception:
+                pass  # may race with already-terminal status
+
+        # Poll up to 8s for terminal status (D-08 \u2192 v6.11.5): 200ms intervals.
+        # 3s was too tight for paper round-trips during extended hours.
+        deadline = _tm.monotonic() + 8.0
         final_status = None
+        last_seen_status = None
         while _tm.monotonic() < deadline:
             o = tc.get_order_by_id(order_id)
             st = str(getattr(o, "status", "")).lower()
-            if st in ("canceled", "cancelled", "filled"):
+            if st:
+                last_seen_status = st
+            if st in ("canceled", "cancelled", "filled", "expired", "rejected"):
                 final_status = st
                 break
-            _tm.sleep(0.10)
+            _tm.sleep(0.20)
 
-        # Belt-and-suspenders explicit cancel
-        try:
-            tc.cancel_order_by_id(order_id)
-        except Exception:
-            pass
+        # Belt-and-suspenders explicit cancel for RTH (idempotent)
+        if _ort_session == "rth":
+            try:
+                tc.cancel_order_by_id(order_id)
+            except Exception:
+                pass
 
-        if final_status in ("canceled", "cancelled"):
+        if final_status in ("canceled", "cancelled", "expired", "rejected"):
             return CheckResult("Order round-trip", "A", "ok",
-                               "%dms" % _ms(), _ms())
+                               "%dms (status=%s)" % (_ms(), final_status), _ms())
         if final_status == "filled":
             # Accidental fill \u2014 submit offsetting market sell (D-09)
             try:
@@ -5170,9 +5184,9 @@ def _check_order_round_trip() -> CheckResult:
                 )
             return CheckResult("Order round-trip", "A", "warn",
                                "filled unexpectedly \u2014 offsetting sell submitted", _ms())
-        # Timeout: status not terminal within 3s
+        # Timeout: status not terminal within 8s. Report the actual last-seen status.
         return CheckResult("Order round-trip", "A", "critical",
-                           "status not terminal in 3s (last=%s)" % (final_status or "unknown"),
+                           "status not terminal in 8s (last=%s)" % (last_seen_status or "unknown"),
                            _ms())
     except Exception as exc:
         return CheckResult("Order round-trip", "A", "critical",
@@ -5739,7 +5753,7 @@ def _run_system_test_sync_v2(label: str, force: bool = False) -> str:
         r1 = _safe_check("Alpaca account", "A", _check_alpaca_account, timeout_s=5.0)
         r2 = _safe_check("Alpaca positions", "A",
                          lambda: _check_alpaca_positions_parity(rth), timeout_s=5.0)
-        r3 = _safe_check("Order round-trip", "A", _check_order_round_trip, timeout_s=5.0)
+        r3 = _safe_check("Order round-trip", "A", _check_order_round_trip, timeout_s=12.0)
         return [r1, r2, r3]
 
     def _block_b():
