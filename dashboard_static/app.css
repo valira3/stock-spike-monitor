@@ -1900,3 +1900,26 @@
   .pmtx-detail-row .pmtx-sma-table { max-width: 100%; }
   .pmtx-detail-row .pmtx-sma-table { table-layout: fixed; width: 100%; }
 }
+
+/* v6.11.12 — brand-row mobile compaction. The flat 10px gap between
+   every pill (logo, name, version, TO chip, L heartbeat, health,
+   clock) consumed ~60-70px on iPhone-width viewports, pushing the
+   clock + ET suffix past the right edge even after v6.11.11 shrunk
+   LIVE -> L. Tighten gap and padding on narrow widths; the desktop
+   spacing stays exactly the same. */
+@media (max-width: 480px) {
+  #tg-brand-row.tg-brand-row {
+    gap: 5px;
+    padding: 6px 8px;
+  }
+  /* Remove the extra margin-left on the TO chip so it doesn't double
+     up with the new 5px row gap. */
+  #tg-brand-row.tg-brand-row #tg-cooldown-chip {
+    margin-left: 0;
+  }
+  /* Slightly shrink the clock so HH:MM fits even with TO + L pills
+     on the same line. */
+  #tg-brand-row.tg-brand-row #tg-brand-clock {
+    font-size: 12.5px;
+  }
+}
