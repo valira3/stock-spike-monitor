@@ -1600,12 +1600,12 @@
   // window per ticker in a plain dict that survives canvas destruction,
   // and seed each freshly-mounted canvas from it. Hover/wired stay
   // per-canvas (transient UI state).
-  // v6.11.10 — full session window: 04:00 ET (et_min=240) to 20:00 ET
-  // (et_min=1200). Earlier 480/1080 seed snapped fresh canvases to
-  // 8:00–18:00 ET on first render, hiding pre-market and the last
-  // 2 hours of post-market. Downstream clamps already enforce this
-  // 240/1200 envelope for pan/zoom.
-  const _CHART_FULL_X_MIN = 240;
+  // v6.14.6: chart session window: 08:00 ET (07:00 CT, et_min=480)
+  // to 20:00 ET (et_min=1200). Val's preference is to start charts at
+  // 7am CT so the visible window emphasizes the pre-open hour and full
+  // RTH+post-market without empty 04:00-07:00 ET dead-space. Downstream
+  // clamps enforce this 480/1200 envelope for pan/zoom.
+  const _CHART_FULL_X_MIN = 480;
   const _CHART_FULL_X_MAX = 1200;
   const _chartViewState = new WeakMap();
   const _chartViewByTkr = {};

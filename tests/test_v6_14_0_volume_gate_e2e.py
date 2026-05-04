@@ -192,9 +192,15 @@ def test_e2e_zero_volume_bars_skipped(tmp_path):
 
 
 def test_e2e_compute_et_bucket_rth_minutes():
-    """``_compute_et_bucket`` returns canonical HHMM strings during
-    RTH and None outside of it. The baseline reader's ``_bucket_key``
-    must accept these without modification.
+    """``_compute_et_bucket`` returns canonical HHMM strings during the
+    full extended session (04:00-19:59 ET) and None outside of it. The
+    baseline reader's ``_bucket_key`` must accept these without
+    modification.
+
+    v6.14.6 update: pre-market (04:00-09:29) and post-market
+    (16:01-19:59) buckets are now accepted. The previous RTH-only
+    contract was relaxed so the volume baseline can index extended
+    hours; see CHANGELOG.md.
     """
     # 14:35 UTC on a weekday in May is 10:35 ET (EDT).
     ts = datetime(2026, 5, 4, 14, 35, 0, tzinfo=timezone.utc)
@@ -206,13 +212,21 @@ def test_e2e_compute_et_bucket_rth_minutes():
     bucket_iso = _compute_et_bucket("2026-05-04T13:30:00+00:00")
     assert bucket_iso == "0930", f"expected '0930' for the open, got {bucket_iso!r}"
 
-    # 09:29 ET is pre-RTH and must be rejected.
+    # v6.14.6: 09:29 ET is now ACCEPTED (pre-market).
     pre = _compute_et_bucket(datetime(2026, 5, 4, 13, 29, 0, tzinfo=timezone.utc))
-    assert pre is None, f"pre-RTH must return None, got {pre!r}"
+    assert pre == "0929", f"pre-market 09:29 must now return '0929', got {pre!r}"
 
-    # 16:01 ET is post-close and must be rejected.
+    # v6.14.6: 16:01 ET is now ACCEPTED (post-market).
     post = _compute_et_bucket(datetime(2026, 5, 4, 20, 1, 0, tzinfo=timezone.utc))
-    assert post is None, f"post-close must return None, got {post!r}"
+    assert post == "1601", f"post-market 16:01 must now return '1601', got {post!r}"
+
+    # 03:59 ET is BEFORE the extended session and must still be rejected.
+    too_early = _compute_et_bucket(datetime(2026, 5, 4, 7, 59, 0, tzinfo=timezone.utc))
+    assert too_early is None, f"03:59 ET must return None, got {too_early!r}"
+
+    # 20:00 ET is AFTER the extended session and must still be rejected.
+    too_late = _compute_et_bucket(datetime(2026, 5, 5, 0, 0, 0, tzinfo=timezone.utc))
+    assert too_late is None, f"20:00 ET must return None, got {too_late!r}"
 
 
 def test_e2e_chain_uses_compute_et_bucket_path(tmp_path):

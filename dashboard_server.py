@@ -820,6 +820,39 @@ def _v611_regime_snapshot() -> dict:
         }
 
 
+def _ingest_volume_feed_status(m) -> str:
+    """v6.14.5 \u2014 derive the dashboard volume-feed pill from the live
+    ingest_algo_plus.ConnectionHealth singleton.
+
+    The legacy `m.VOLUME_FEED_AVAILABLE` flag was the previous source of
+    truth, but the v5.14.0 shadow retirement deleted the writer and the
+    rename PR only updated the reader. The actual SIP bar stream is
+    owned by `ingest.algo_plus`, which exposes a thread-safe
+    ConnectionHealth state machine (CONNECTING / LIVE / DEGRADED /
+    RECONNECTING / REST_ONLY).
+
+    Returns one of:
+      - "live"               -- ingest is in LIVE
+      - "disabled_no_creds"  -- any other state OR import failure
+
+    The function never raises so a missing module, an aborted import,
+    or a corrupted singleton cannot crash /api/state.
+    """
+    try:
+        import ingest.algo_plus as _iap
+        state = _iap.get_health().get()
+        if state == _iap.LIVE:
+            return "live"
+        return "disabled_no_creds"
+    except Exception:
+        # Backwards compat: fall back to the legacy flag if for any
+        # reason ingest_algo_plus is unavailable in this image.
+        try:
+            return "live" if bool(getattr(m, "VOLUME_FEED_AVAILABLE", False)) else "disabled_no_creds"
+        except Exception:
+            return "disabled_no_creds"
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -1257,11 +1290,19 @@ def snapshot() -> dict[str, Any]:
             # directly so the pill updates on every SSE / state poll
             # tick without a separate /api/errors round-trip.
             "errors": _errors_snapshot_safe("main"),
-            # The underlying volume_profile WS feed is still required by the
-            # live engine, so we keep a status indicator (just renamed).
-            "volume_feed_status": (
-                "live" if bool(getattr(m, "VOLUME_FEED_AVAILABLE", False)) else "disabled_no_creds"
-            ),
+            # v6.14.5 \u2014 wire the volume_feed_status pill to the real
+            # ingest health surface (ingest_algo_plus.get_health). The
+            # legacy `m.VOLUME_FEED_AVAILABLE` flag was renamed in
+            # v5.14.0 ("shadow strategy retirement") and never re-set
+            # by any live code, so the pill was permanently pinned to
+            # "disabled_no_creds" even when SIP bars were streaming
+            # cleanly. ConnectionHealth.get() returns one of CONNECTING
+            # / LIVE / DEGRADED / RECONNECTING / REST_ONLY; we map
+            # LIVE \u2192 "live" and everything else to "disabled_no_creds"
+            # for the existing two-state pill, with the original
+            # getattr fallback preserved so a stale image without
+            # ingest_algo_plus loaded does not crash /api/state.
+            "volume_feed_status": _ingest_volume_feed_status(m),
             # v5.10.6 \u2014 Eye-of-the-Tiger live state surface for the
             # dashboard's v5.10 panel. See v5_10_6_snapshot.py for the
             # field schema. Kept for backward compatibility \u2014 the

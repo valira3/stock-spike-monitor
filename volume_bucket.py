@@ -133,13 +133,18 @@ def _read_bars_for_day(base_dir: str, day: date, ticker: str) -> Iterable[dict]:
 
 
 def _bucket_key(et_bucket: str | int | None) -> str | None:
-    """Normalise a bar's `et_bucket` to canonical 'HH:MM' (RTH only).
+    """Normalise a bar's `et_bucket` to canonical 'HH:MM'.
 
     Accepts:
       - 'HHMM' (e.g. '0930') \u2014 the format bar_archive writes
       - 'HH:MM'              \u2014 idempotent
       - int 930              \u2014 backwards-compat
-    Rejects pre/post-market buckets (returns None).
+
+    v6.14.6: extended-hours support. Accepts the full Alpaca extended
+    session 04:00\u201319:59 ET so the volume baseline can index
+    pre-market (04:00\u201309:29) and post-market (16:00\u201319:59)
+    minutes alongside RTH. Returns None for buckets outside the
+    04:00\u201319:59 ET envelope.
     """
     if et_bucket is None:
         return None
@@ -153,11 +158,9 @@ def _bucket_key(et_bucket: str | int | None) -> str | None:
         return None
     hh = int(s[:2])
     mm = int(s[2:])
-    if hh < 9 or hh > 15:
+    if mm < 0 or mm > 59:
         return None
-    if hh == 9 and mm < 30:
-        return None
-    if hh == 15 and mm > 59:
+    if hh < 4 or hh > 19:
         return None
     return f"{hh:02d}:{mm:02d}"
 

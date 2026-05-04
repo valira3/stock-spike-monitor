@@ -61,17 +61,21 @@ GAP_THRESHOLD_MINUTES = 3  # gaps of >= 3 consecutive missing 1-min bars trigger
 # ---------------------------------------------------------------------------
 
 def _compute_et_bucket(ts) -> Optional[str]:
-    """Return the RTH minute bucket for a bar timestamp as 'HHMM' (ET).
+    """Return the extended-session minute bucket for a bar timestamp as 'HHMM' (ET).
 
     Accepts a datetime or an ISO 8601 string. Returns None for any value
-    outside RTH (9:30:00 ET through 15:59:59 ET, plus the 16:00 close
-    print) or for any input we cannot parse. The caller writes the field
-    as null in those cases, which volume_bucket.py treats as 'skip this
-    bar for the baseline'.
+    outside the Alpaca extended-hours window (04:00:00 ET through
+    19:59:59 ET) or for any input we cannot parse. The caller writes the
+    field as null in those cases, which volume_bucket.py treats as 'skip
+    this bar for the baseline'.
 
     v6.14.0 fix: prior to v6.14.0 the SIP ingest left et_bucket = None on
     every bar, which silently dropped 83% of today's bars from the volume
     baseline. See issue #354.
+
+    v6.14.6: extend coverage from RTH-only (09:30\u201316:00) to the full
+    Alpaca extended session 04:00\u201319:59 ET so the volume baseline can
+    index pre-market and post-market minutes alongside RTH.
     """
     if _ET_TZ is None:
         return None
@@ -95,13 +99,11 @@ def _compute_et_bucket(ts) -> Optional[str]:
     except Exception:  # pragma: no cover - defensive
         return None
     h, m = ts_et.hour, ts_et.minute
-    # RTH: 9:30 \u2014 15:59, plus the 16:00 closing print bar.
-    in_rth = (
-        (h == 9 and m >= 30)
-        or (10 <= h <= 15)
-        or (h == 16 and m == 0)
-    )
-    if not in_rth:
+    # Extended session: 04:00 \u2014 19:59 ET. Spans pre-market
+    # (04:00\u201309:29), RTH (09:30\u201315:59), the 16:00 closing print,
+    # and post-market (16:01\u201319:59).
+    in_extended = 4 <= h <= 19 and 0 <= m <= 59
+    if not in_extended:
         return None
     return f"{h:02d}{m:02d}"
 
