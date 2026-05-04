@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.1 (2026-05-04) -- Pre-market readiness check (Phase 1)
+
+- New: scripts/premarket_check.py -- 14-check market-readiness gate
+- New: tests/test_v611_1_premarket_check.py
+- Designed for daily 04:30 ET cron invocation via railway ssh
+- Output artifact: /data/preflight/<date>.json (future v6.12.0 startup gate input)
+- Telegram /test command now also runs the pre-market checks on demand
+  (existing 15-check system health test preserved; new checks appended)
+- Phase 2 (deferred): live replay smoke; Phase 3 (deferred): startup-gate env var
+
+---
+
 ## v6.11.0 (2026-05-XX) -- C25: SPY Regime-B Short Amplification
 
 ### What
