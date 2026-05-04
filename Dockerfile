@@ -93,6 +93,14 @@ COPY ingest/ ./ingest/
 # engine/ingest_gate.py and ingest/sla.py). Missing this COPY causes
 # ModuleNotFoundError: ingest_config when /test checks the ingest gate.
 COPY ingest_config.py .
+# v6.11.3 -- scripts/ package (pre-market readiness check, Phase 1).
+# Missing this COPY makes the 04:30 ET cron fail with FileNotFoundError
+# (script literally not in the container) and silently breaks the
+# Telegram /test pre-market section since telegram_commands swallows
+# the ImportError. v6.11.1 shipped without this COPY; v6.11.2 was
+# correctly built but the auth fix never executed in production for
+# the same reason. Going forward this directory must ship.
+COPY scripts/ ./scripts/
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
 COPY dashboard_server.py .

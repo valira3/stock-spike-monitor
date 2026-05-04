@@ -4,6 +4,53 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.3 (2026-05-04) -- Ship scripts/ in container image
+
+### What
+
+- Bug: production container is missing `/app/scripts/` entirely. `ls /app/scripts`
+  returns `No such file or directory`. Same on every deploy since v6.11.1.
+- Effect 1: the 04:30 ET pre-market readiness cron would have failed every
+  weekday morning the moment it tried to invoke
+  `python3 /app/scripts/premarket_check.py` over `railway ssh`. (The cron
+  was scheduled for the next firing at the time this was caught.)
+- Effect 2: Telegram `/test` silently swallowed the ImportError because
+  `telegram_commands.py` wraps the `from scripts.premarket_check import ...`
+  in a `try/except` with non-fatal logging. So `/test` returned its
+  pre-v6.11.1 15-check body without the new pre-market section, with no
+  user-visible error.
+- Effect 3: v6.11.2's dashboard auth fix would never have executed in
+  production for the same reason -- the script that consumes it isn't there.
+
+### Root cause
+
+The Dockerfile already lists every individual root-level .py file with an
+explicit `COPY` directive (the v5.10.1 contract). v6.11.1 added
+`scripts/__init__.py` and `scripts/premarket_check.py` but never appended
+the matching `COPY scripts/ ./scripts/`.
+
+The existing startup-smoke test catches drift between `trade_genius.py`'s
+top-level imports and Dockerfile COPY lines, but `scripts.premarket_check`
+is only imported by `telegram_commands.py`, lazily, behind a try/except --
+so the contract gap was invisible.
+
+### Fix
+
+- `Dockerfile`: append `COPY scripts/ ./scripts/` after the v6.6.0
+  `ingest_config.py` block.
+- `tests/test_v6_11_3_dockerfile_scripts.py` (new): asserts the COPY
+  directive exists and that both `scripts/premarket_check.py` and
+  `scripts/__init__.py` are present in the repo. Mirrors the existing
+  Dockerfile-COPY contract pattern from `tests/test_startup_smoke.py`.
+
+### Verification
+
+- Repro pre-fix: `railway ssh ... "ls /app/scripts"` -> No such file or directory.
+- Post-fix: COPY directive present, regression test green.
+- Patch release: no PDF / ARCHITECTURE.md update.
+
+---
+
 ## v6.11.2 (2026-05-04) -- Dashboard auth hotfix (/test no longer 401s)
 
 ### What
