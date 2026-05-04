@@ -126,6 +126,77 @@ def _import_glue():
         return None
 
 
+def _build_archive_volume_lookup():
+    """Return a callable mapping ticker -> latest archived bar volume.
+
+    v6.14.5 -- the v5.14.0 shadow retirement removed the volume_profile
+    WS consumer that previously fed `current_1m_vol`. Nothing replaced
+    it on the dashboard read path, so the field went silently to 0 for
+    every ticker on every tick. The live ingest pipeline
+    (ingest.algo_plus.BarAssembler -> bar_archive.write_bar) keeps
+    writing one minute bar per ticker per tick to
+    `/data/bars/<YYYY-MM-DD>/<TICKER>.jsonl` with `total_volume`
+    populated, so we use that file as the source of truth for
+    "latest minute volume".
+
+    Returns a closure that reads the last non-empty line of today's
+    file for each ticker, parses it lazily, and yields the bar's
+    `total_volume`. Cached for the lifetime of one snapshot call so
+    repeated calls within a single `/api/state` build don't re-read
+    files. Returns 0 on any error so a missing file or parse failure
+    cannot break the snapshot.
+    """
+    import json as _json
+    import os as _os
+    from datetime import datetime as _dt
+    from pathlib import Path as _P
+
+    base = _os.environ.get("BAR_ARCHIVE_BASE")
+    if not base:
+        tg_root = _os.environ.get("TG_DATA_ROOT", "/data")
+        base = tg_root + "/bars"
+    today = _dt.utcnow().strftime("%Y-%m-%d")
+    day_dir = _P(base) / today
+    cache: dict[str, int] = {}
+
+    def _last_volume(ticker: str) -> int:
+        sym = ticker.upper()
+        if sym in cache:
+            return cache[sym]
+        v = 0
+        fp = day_dir / (sym + ".jsonl")
+        try:
+            if fp.exists():
+                # Read the last non-empty line. For typical RTH+EXT
+                # volume on these tickers a file is well under 1 MB,
+                # so reading it once per snapshot is cheap; the per-
+                # snapshot cache makes this O(1) amortised across the
+                # 10-ticker loop.
+                with open(fp, "rb") as fh:
+                    fh.seek(0, 2)
+                    end = fh.tell()
+                    chunk_size = min(end, 4096)
+                    fh.seek(end - chunk_size)
+                    tail = fh.read().decode("utf-8", errors="ignore")
+                lines = [ln for ln in tail.splitlines() if ln.strip()]
+                if lines:
+                    bar = _json.loads(lines[-1])
+                    raw = bar.get("total_volume")
+                    if raw is None:
+                        raw = bar.get("iex_volume")
+                    if raw is not None:
+                        try:
+                            v = int(float(raw))
+                        except (TypeError, ValueError):
+                            v = 0
+        except Exception:
+            v = 0
+        cache[sym] = v
+        return v
+
+    return _last_volume
+
+
 def _vol_bucket_per_ticker(
     m, tickers: list[str], minute_hhmm: str, prev_minute_hhmm: str | None
 ) -> dict:
@@ -143,6 +214,16 @@ def _vol_bucket_per_ticker(
     out: dict = {}
     glue = _import_glue()
     consumer = getattr(m, "_ws_consumer", None)
+    # v6.14.5 \u2014 the legacy volume_profile WS consumer was retired
+    # in v5.14.0 ("shadow strategy retirement"). Nothing has populated
+    # `m._ws_consumer` since, so this getattr always returns None and
+    # `current_1m_vol` was hard-pinned to 0 across the entire dashboard.
+    # Fall back to reading the most recent archived bar from the live
+    # SIP ingest path (ingest.algo_plus -> bar_archive.write_bar). The
+    # archive is the canonical write target for every minute bar and
+    # already carries `total_volume`, so it works for both RTH and the
+    # extended-hours session that Val watches in the late afternoon.
+    archive_volume = _build_archive_volume_lookup() if consumer is None else None
     try:
         if glue is not None:
             bb = glue.get_volume_baseline()
@@ -164,6 +245,8 @@ def _vol_bucket_per_ticker(
         try:
             if consumer is not None and lookup_bucket:
                 cur_v = int(consumer.current_volume(t, lookup_bucket) or 0)
+            elif archive_volume is not None:
+                cur_v = int(archive_volume(t) or 0)
         except Exception:
             cur_v = 0
         gate = "COLDSTART"

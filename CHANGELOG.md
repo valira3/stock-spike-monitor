@@ -4,6 +4,65 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.5 (2026-05-04) -- dashboard reads `current_1m_vol` from the bar archive
+
+Patch release. `v5_10_6_snapshot._vol_bucket_per_ticker` now falls
+back to reading the most recent archived bar's `total_volume` from
+`/data/bars/<today>/<TICKER>.jsonl` when the legacy `_ws_consumer`
+attribute is missing on `trade_genius` (which has been the case since
+v5.14.0).
+
+**Why now.** Val noticed the dashboard showed `Current vol: 0` for
+every ticker, including during the late-afternoon extended-hours
+session when the SIP feed clearly carries volume. The bar archive
+proved the live ingest path was healthy: `tail -1 AAPL.jsonl` showed
+`total_volume=429` on a 21:35 UTC bar written seconds before. The
+source of the 0 was the dashboard read path: `_vol_bucket_per_ticker`
+looked up `consumer = getattr(m, "_ws_consumer", None)` and only
+returned a non-zero `current_1m_vol` when `consumer is not None`.
+
+The v5.14.0 "shadow strategy retirement" deleted the entire
+volume_profile WS init block that previously populated
+`_ws_consumer`, but only the dashboard pill rename
+(`SHADOW_DATA_AVAILABLE` -> `VOLUME_FEED_AVAILABLE`) made it into
+the PR. The actual `current_1m_vol` consumer-read in
+`v5_10_6_snapshot.py` was untouched, so it has been silently
+returning 0 for every minute, every ticker, since v5.14.0 deployed
+on 2026-04-29 (8 trading days of zeros). The volume gate itself runs
+on a separate `volume_bucket.check()` path inside the engine that
+reads bars directly off disk, so trading was unaffected -- this was
+a pure dashboard regression.
+
+**Fix.** New helper `_build_archive_volume_lookup()` in
+`v5_10_6_snapshot.py` reads the last non-empty line of today's per-
+ticker bar archive file, parses `total_volume` (falling back to
+`iex_volume` for legacy bars), and caches the result for the lifetime
+of one snapshot call so the 10-ticker loop is O(1) amortised file
+reads. `_vol_bucket_per_ticker` calls this helper exactly when
+`consumer is None`, preserving the original code path for any future
+WS consumer revival.
+
+The lookup uses `BAR_ARCHIVE_BASE` then `TG_DATA_ROOT/bars` then
+`/data/bars` so it works in production, in replay sandboxes, and in
+test fixtures with `monkeypatch.setenv`. It returns 0 on any error
+(missing file, malformed JSON, missing field), so a stale or
+corrupt archive cannot crash `/api/state`.
+
+Files touched:
+* `v5_10_6_snapshot.py` -- new `_build_archive_volume_lookup()` helper
+  (~70 lines including docstring), 4-line wire-up in
+  `_vol_bucket_per_ticker`
+* `bot_version.py` -- `BOT_VERSION = "6.14.5"`
+* `trade_genius.py` -- `BOT_VERSION` mirror, `CURRENT_MAIN_NOTE`
+  updated
+* `scripts/premarket_check.py` -- `BOT_VERSION_EXPECTED = "6.14.5"`
+* `tests/test_v6_14_5_archive_volume_lookup.py` -- 8 cases (helper
+  unit tests + end-to-end through `_vol_bucket_per_ticker`)
+
+No PDF regeneration (patch release).
+
+---
+
 ## v6.14.4 (2026-05-04) -- wire volume_bucket baseline refresh into the live scan loop
 
 Patch release. `engine.scan.scan_loop` now calls
