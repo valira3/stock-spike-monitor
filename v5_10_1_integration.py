@@ -257,7 +257,7 @@ def record_latest_1m_close(ticker: str, closes: list) -> bool:
 # AMZN on the same morning logged 16 such rejections, 100% would-have-
 # profited, mean +$7.30/share (forensics report).
 V620_FAST_BOUNDARY_ENABLED: bool = True
-V620_FAST_BOUNDARY_CUTOFF_HHMM_ET: str = "10:30"
+V620_FAST_BOUNDARY_CUTOFF_HHMM_ET: str = "12:00"
 
 
 def _v620_fast_boundary_active(now_et) -> bool:
