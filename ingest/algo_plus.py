@@ -592,6 +592,7 @@ class AlgoPlusIngest:
         """Connect WebSocket, subscribe to tickers, block until disconnect."""
         try:
             from alpaca.data.live import StockDataStream  # type: ignore
+            from alpaca.data.enums import DataFeed  # type: ignore
         except ImportError:
             logger.warning("[INGEST] alpaca-py StockDataStream unavailable; REST_ONLY mode")
             _health.set(REST_ONLY)
@@ -608,7 +609,7 @@ class AlgoPlusIngest:
         stream = StockDataStream(
             api_key=self._key,
             secret_key=self._secret,
-            feed="sip",
+            feed=DataFeed.SIP,
         )
         self._stream = stream
 

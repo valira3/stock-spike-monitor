@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.10.1 -- Hotfix: ingest WebSocket feed enum fix (DataFeed.SIP, ends worker crash loop)
+
+### Why
+
+Since v6.5.0 (commit be303bb, 2026-05-02), `ingest/algo_plus.py:_run_ws_ingest` passed `feed="sip"` (a raw string) to `StockDataStream()`. alpaca-py calls `feed.value` internally and expects a `DataFeed` enum member; the string has no `.value` attribute. This caused every WebSocket connection attempt to crash with `'str' object has no attribute 'value'`, keeping the ingest worker in a crash loop and the connection health stuck at `DEGRADED -> REST_ONLY`. Production logs at deployment `da91e397` confirm `[INGEST] worker crashed (attempt 8): 'str' object has no attribute 'value'` and `shadow_data_status: degraded` continuously since the v6.5.0 deploy.
+
+### What
+
+- `ingest/algo_plus.py`: added `from alpaca.data.enums import DataFeed` to the try-import block in `_run_ws_ingest`.
+- `ingest/algo_plus.py`: changed `feed="sip"` to `feed=DataFeed.SIP` in the `StockDataStream()` constructor call.
+- `DataFeed.SIP` confirmed present in the installed alpaca-py SDK (`['IEX', 'SIP', 'DELAYED_SIP', 'OTC', 'BOATS', 'OVERNIGHT']`).
+
+### Evidence
+
+Production logs at deployment `da91e397` show `[INGEST] worker crashed (attempt 8): 'str' object has no attribute 'value'` and `ConnectionHealth: CONNECTING -> DEGRADED -> REST_ONLY` loop. Dashboard `shadow_data_status: degraded` since v6.5.0 deploy 2026-05-02.
+
+---
+
 ## v6.10.0 -- Wave 2 entry-ROI ship: C5 fast-boundary 12:00 + C10 short cooldown 60 min
 
 ### Why
