@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.11.3"
+BOT_VERSION = "6.11.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.11.3"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.11.3: ship scripts/ in image\n"
-    "Dockerfile COPY scripts/ \u2014 unblocks\n"
-    "04:30 cron + v6.11.2 auth fix."
+    "v6.11.4: premarket_check fixes\n"
+    "sys.path /app, version key,\n"
+    "Alpaca clock GET (was HEAD)."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
