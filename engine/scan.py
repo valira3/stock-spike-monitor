@@ -150,6 +150,13 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     # previous narrow 09:29:30\u201309:35 single-tick warm-up.
     _pre_open_window = now_et.hour == 8 or (now_et.hour == 9 and now_et.minute < 35)
     if before_open and _pre_open_window:
+        # v6.11.9 — also stamp _last_scan_time during the pre-open
+        # warm-up window so the dashboard's "next scan in Ns" countdown
+        # ticks instead of showing "♻ --" all morning. The scan loop
+        # genuinely runs every SCAN_INTERVAL seconds during this window
+        # to archive QQQ + per-ticker premarket bars; the live pill
+        # should reflect that.
+        tg._last_scan_time = datetime.now(timezone.utc)
         try:
             tg._clear_cycle_bar_cache()
             _qqq_pre = callbacks.fetch_1min_bars(tg.V561_INDEX_TICKER)

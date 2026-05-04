@@ -4,6 +4,91 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.9 (2026-05-04) -- Dashboard polish: tab marks, timeout pill, premarket countdown, chart Y
+
+Four follow-ups Val flagged after the v6.11.8 deploy on 2026-05-04 morning.
+
+### 1. Val/Gene status moved off the brand row, onto the tab headings
+
+The two pill-shaped "Val —" / "Gene off" chips that lived on the second
+brand row are gone. The same enabled/disabled signal
+(`s.executors_status`) now drives a `✓` (green) or `✗` (dim grey) mark
+inside each Val / Gene tab heading on the third row. Mode (live vs
+paper) is preserved in the tab's `title` tooltip rather than crowding
+the tab strip with "🟢 Live" / "📄 Paper" labels.
+
+The brand-row chip DOM nodes are kept (display:none) so existing JS
+hooks (`tg-exec-chip-val` / `tg-exec-chip-gene`) keep functioning if a
+future release wants the chips back.
+
+Files: `dashboard_static/index.html`, `dashboard_static/app.js`
+(both `renderHeader` and `renderBadge`).
+
+### 2. Cooldown pill renamed "TIMEOUT" and always shows both L/S
+
+The v6.4.2 chip used to render `·30m` when long and short timeouts
+were equal, or `·S30m` when only one side was enabled — which made
+it look like only one timeout was configured. Val asked for "just
+timeouts", showing both sides explicitly.
+
+New format: `·L:<long>/S:<short>m` (zeros allowed). Live config of
+`L=0, S=30` (long disabled, short 30 min) now renders as
+`TIMEOUT 0 ·L:0/S:30m`. Popover heading and detail strings updated
+to match ("Post-loss timeouts", "Timeouts: long 0 min, short 30 min").
+
+Files: `dashboard_static/index.html`, `dashboard_static/app.js`.
+
+### 3. Live countdown ticks during pre-market warm-up
+
+Before v6.11.9, `♻ --` was rendered all morning because
+`engine.scan.scan_loop` only stamped `tg._last_scan_time` after 9:35 ET
+(start of the RTH branch). The pre-open warm-up branch (8:00–9:35 ET)
+run every 60s for bar archiving but never updated the timestamp, so
+`/api/state.gates.next_scan_sec` came back as `None` and the dashboard
+live pill showed no countdown.
+
+Fix: also stamp `tg._last_scan_time = datetime.now(timezone.utc)` at
+the top of the pre-open archive branch. Post-close (>=16:00 ET) still
+leaves the stamp untouched so the countdown correctly shows `♻ --`
+overnight.
+
+Files: `engine/scan.py`. New tests:
+`tests/test_v6_11_9_preopen_countdown.py` covers the pre-open stamp,
+the RTH stamp (regression guard), and the after-close non-stamp.
+
+### 4. Chart Y-axis no longer dominated by stale OR levels
+
+In screenshot from 2026-05-04 07:03 CT, the NFLX intraday chart had
+the candles squashed into the bottom 5–10% of the plot, bleeding into
+the X-axis labels. Root cause: `payload.or_high`/`or_low` carried
+*previous-session* OR values (94.7 / 93.94) before today's OR window
+(09:30–09:35 ET) had closed, while live price was 91.5–92. Y range was
+forced to include the stale OR band, leaving no room for the actual
+price action.
+
+Fix:
+
+- Server now stamps `or_fresh: true` on `/api/intraday/<ticker>` only
+  when `m.or_collected_date` matches today (ET).
+- Dashboard skips both the Y widening and the dashed OR-high/low line
+  drawing when `or_fresh` is false. After 09:35 ET the chart looks
+  exactly as before.
+
+Also fixed: edge-tick labels (`3am` left, `7pm` right) no longer get
+clipped on narrow mobile canvases — they now render with `textAlign:
+left` / `right` instead of centered.
+
+Files: `dashboard_server.py` (`_intraday_build_payload`),
+`dashboard_static/app.js` (`_drawIntradayChart`).
+
+### Why ship
+
+All four are pure UI/server-side polish requested directly from the
+live 7am dashboard. No change to entries, exits, position sizing,
+risk, or any algo path. Safe patch-level release.
+
+---
+
 ## v6.11.8 (2026-05-04) -- UI full pre/post range + session-aware WS staleness
 
 ### Three fixes

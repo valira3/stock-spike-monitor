@@ -3205,6 +3205,7 @@ def _intraday_build_payload(ticker: str) -> dict:
     # synthetic-prefix seed can engage on thin-premarket tickers.
     or_high = None
     or_low = None
+    or_fresh = False  # v6.11.9 — True only when OR was collected for today.
     pdc = None
     sess_hod = None
     sess_lod = None
@@ -3215,6 +3216,17 @@ def _intraday_build_payload(ticker: str) -> dict:
         or_high = float(v) if v is not None else None
         v = ol.get(ticker.upper())
         or_low = float(v) if v is not None else None
+        # v6.11.9 — OR is freshly-collected when m.or_collected_date == today
+        # (ET). Before 09:35 ET, this is the previous session's stamp and
+        # the chart treats or_high/low as stale (do not widen Y, do not
+        # draw the dashed lines).
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            _today_et = datetime.now(_ZI("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            _today_et = day
+        _or_date = str(getattr(m, "or_collected_date", "") or "")
+        or_fresh = bool(_or_date) and _or_date == _today_et
         # v5.31.0 \u2014 PDC + session HOD/LOD for the new chart reference lines.
         _pdc_d = getattr(m, "pdc", {}) or {}
         _hod_d = getattr(m, "_v570_session_hod", {}) or {}
@@ -3297,6 +3309,7 @@ def _intraday_build_payload(ticker: str) -> dict:
         "bars": bars_out,
         "or_high": or_high,
         "or_low": or_low,
+        "or_fresh": or_fresh,  # v6.11.9 — frontend skips OR widen/draw if False.
         "pdc": pdc,
         "sess_hod": sess_hod,
         "sess_lod": sess_lod,

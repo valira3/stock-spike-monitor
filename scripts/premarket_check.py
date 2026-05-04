@@ -61,7 +61,7 @@ if __name__ == "__main__":
 # Constants
 # ---------------------------------------------------------------------------
 SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.11.8"
+BOT_VERSION_EXPECTED = "6.11.9"
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5
