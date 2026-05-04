@@ -38,16 +38,74 @@ def _is_weekend(d: date) -> bool:
     return d.weekday() >= 5
 
 
+# v6.14.3 \u2014 US equity-market full-closure holidays. The previous
+# implementation only skipped weekends, so a 55-trading-day lookback
+# that grazed Presidents Day or Good Friday silently lost 1\u20132 days
+# of baseline coverage and pinned days_available at 53/54, keeping
+# vol_bucket.state in COLDSTART forever. This list covers the dates
+# the archive will plausibly need (current year +/- 1) and is
+# intentionally conservative \u2014 unknown dates default to "trading
+# day" so a missing entry never causes a false skip.
+#
+# Source: NYSE published holiday schedule. Half-days (1pm close on
+# day-after-Thanksgiving, July 3 / Christmas Eve when adjacent) are
+# NOT skipped \u2014 they still produce a 09:30 bar so the baseline
+# still gets a sample.
+_US_MARKET_HOLIDAYS: frozenset[date] = frozenset({
+    # 2025
+    date(2025, 1, 1),    # New Year's Day
+    date(2025, 1, 20),   # MLK Jr. Day
+    date(2025, 2, 17),   # Presidents Day
+    date(2025, 4, 18),   # Good Friday
+    date(2025, 5, 26),   # Memorial Day
+    date(2025, 6, 19),   # Juneteenth
+    date(2025, 7, 4),    # Independence Day
+    date(2025, 9, 1),    # Labor Day
+    date(2025, 11, 27),  # Thanksgiving
+    date(2025, 12, 25),  # Christmas
+    # 2026
+    date(2026, 1, 1),    # New Year's Day
+    date(2026, 1, 19),   # MLK Jr. Day
+    date(2026, 2, 16),   # Presidents Day
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 5, 25),   # Memorial Day
+    date(2026, 6, 19),   # Juneteenth
+    date(2026, 7, 3),    # Independence Day (observed; Jul 4 is Sat)
+    date(2026, 9, 7),    # Labor Day
+    date(2026, 11, 26),  # Thanksgiving
+    date(2026, 12, 25),  # Christmas
+    # 2027
+    date(2027, 1, 1),    # New Year's Day
+    date(2027, 1, 18),   # MLK Jr. Day
+    date(2027, 2, 15),   # Presidents Day
+    date(2027, 3, 26),   # Good Friday
+    date(2027, 5, 31),   # Memorial Day
+    date(2027, 6, 18),   # Juneteenth (observed; Jun 19 is Sat)
+    date(2027, 7, 5),    # Independence Day (observed; Jul 4 is Sun)
+    date(2027, 9, 6),    # Labor Day
+    date(2027, 11, 25),  # Thanksgiving
+    date(2027, 12, 24),  # Christmas (observed; Dec 25 is Sat)
+})
+
+
+def _is_us_market_holiday(d: date) -> bool:
+    """Return True iff `d` is a known US equity full-closure holiday.
+    Unknown dates return False (treat as a trading day).
+    """
+    return d in _US_MARKET_HOLIDAYS
+
+
 def _trading_days_back(end: date, n: int) -> list[date]:
     """Return the most recent `n` trading days strictly before `end`,
-    skipping weekends. Holidays are not modelled separately \u2014 the
-    archive simply has no file for that date so it gets skipped at
-    read time.
+    skipping weekends and known US equity-market full-closure
+    holidays. Earlier versions skipped only weekends, which caused
+    the volume_bucket lookback to under-count by 1\u20132 days whenever
+    Presidents Day or Good Friday landed inside the window.
     """
     out: list[date] = []
     d = end - timedelta(days=1)
     while len(out) < n and (end - d).days < 365:
-        if not _is_weekend(d):
+        if not _is_weekend(d) and not _is_us_market_holiday(d):
             out.append(d)
         d = d - timedelta(days=1)
     return out
