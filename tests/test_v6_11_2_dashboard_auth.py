@@ -265,7 +265,10 @@ class TestPremarketDashboardCheckE2E(unittest.TestCase):
         from scripts import premarket_check
 
         # Use the actual BOT_VERSION_EXPECTED so version-parity passes.
+        # v6.11.4: dashboard /api/state emits the field as `version`,
+        # not `bot_version`. Both keys included for forward-compat.
         payload = {
+            "version": premarket_check.BOT_VERSION_EXPECTED,
             "bot_version": premarket_check.BOT_VERSION_EXPECTED,
             "spy_regime_today": "B",
             "v611_window": {"enabled": True, "start_hhmm": "10:00", "end_hhmm": "11:00"},
@@ -282,6 +285,7 @@ class TestPremarketDashboardCheckE2E(unittest.TestCase):
         from scripts import premarket_check
 
         payload = {
+            "version": premarket_check.BOT_VERSION_EXPECTED,
             "bot_version": premarket_check.BOT_VERSION_EXPECTED,
             "spy_regime_today": "A",
             # v611_window absent -> WARN per existing logic

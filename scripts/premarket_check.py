@@ -31,11 +31,22 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+# v6.11.4 \u2014 ensure /app is on sys.path so we can import bot_version,
+# spy_regime, broker, etc. when invoked as `python3 /app/scripts/premarket_check.py`.
+# Without this, sys.path[0] is /app/scripts/ and every cross-package import
+# fails with ModuleNotFoundError. Idempotent: only inserts if /app exists
+# and is not already on the path. Local-dev invocations (`python3
+# scripts/premarket_check.py` from repo root) already have the repo root
+# on sys.path so this is a no-op there.
+_TG_APP_ROOT = "/app"
+if os.path.isdir(_TG_APP_ROOT) and _TG_APP_ROOT not in sys.path:
+    sys.path.insert(0, _TG_APP_ROOT)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.11.3"
+BOT_VERSION_EXPECTED = "6.11.4"
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5
@@ -640,12 +651,15 @@ def check_dashboard_state() -> dict:
             return _result(name, "WARN",
                            "/api/state returned non-dict",
                            _ms_since(t0))
-        bv = data.get("bot_version", "")
+        # v6.11.4 \u2014 dashboard /api/state emits the field as `version`,
+        # not `bot_version`. Reading the wrong key surfaced as
+        # "bot_version='' (expected '6.11.3')" WARN in v6.11.3.
+        bv = data.get("version", "")
         has_spy = "spy_regime_today" in data
         has_v611 = "v611_window" in data
         issues = []
         if bv != BOT_VERSION_EXPECTED:
-            issues.append("bot_version=%r (expected %r)" % (bv, BOT_VERSION_EXPECTED))
+            issues.append("version=%r (expected %r)" % (bv, BOT_VERSION_EXPECTED))
         if not has_spy:
             issues.append("spy_regime_today missing")
         if not has_v611:
@@ -657,7 +671,7 @@ def check_dashboard_state() -> dict:
                            {"bot_version": bv, "has_spy_regime_today": has_spy,
                             "has_v611_window": has_v611})
         return _result(name, "PASS",
-                       "bot_version=%s spy_regime_today=yes v611_window=yes" % bv,
+                       "version=%s spy_regime_today=yes v611_window=yes" % bv,
                        _ms_since(t0),
                        {"bot_version": bv})
     except Exception as exc:
@@ -718,10 +732,13 @@ def check_time_sync() -> dict:
         return _result(name, "SKIP",
                        "no Alpaca credentials -- skipped (uptime=%.0fs)" % uptime_s,
                        _ms_since(t0), {"uptime_s": int(uptime_s)})
+    # v6.11.4 \u2014 Alpaca /v2/clock rejects HEAD with 405 Method Not Allowed.
+    # Use GET; the response body is small (~80 bytes) and we only need the
+    # Date header for the drift comparison.
     req = urllib.request.Request(
         _ALPACA_CLOCK_URL,
         headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
-        method="HEAD",
+        method="GET",
     )
     try:
         local_before = time.time()

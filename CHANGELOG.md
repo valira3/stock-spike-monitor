@@ -4,6 +4,67 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.4 (2026-05-04) -- Pre-market check import-path + dashboard key + Alpaca clock fixes
+
+### What
+
+The v6.11.3 ship of `scripts/` into the image was correct, but on its first
+live run (the 04:30 ET cron on Mon May 4) the script returned
+`overall_status=FAIL` because of three independent bugs in
+`scripts/premarket_check.py` that had never been exercised in prod before:
+
+1. **`ModuleNotFoundError`** for `bot_version`, `spy_regime`, and `broker.orders`.
+   When invoked as `python3 /app/scripts/premarket_check.py`, Python sets
+   `sys.path[0]` to `/app/scripts/`, so cross-package imports of root-level
+   modules at `/app/*` all fail. This broke `process_alive`, `version_parity`,
+   `module_imports`, `persistence_reachable`, `bar_archive_yesterday`,
+   `alpaca_auth_paper`, `alpaca_auth_live`, `classifier_smoke`, and
+   `sizing_helper_smoke` (the first hard-fail short-circuits 6 of these to SKIP).
+
+2. **`dashboard_state` WARN** with `bot_version='' (expected '6.11.3')`. The
+   dashboard's `/api/state` JSON exposes the version as the key `version`,
+   not `bot_version`, so the check was reading an absent key and always
+   reporting empty. Cosmetic but drowns the signal.
+
+3. **`time_sync` WARN** with `HTTP Error 405: Method Not Allowed`. Alpaca's
+   `/v2/clock` endpoint rejects HEAD requests; the script needs to use GET.
+
+### Fix
+
+- `scripts/premarket_check.py`:
+  - Insert `/app` at `sys.path[0]` (idempotent, guarded on directory existence)
+    so cross-package imports work regardless of invocation directory.
+  - Read `data.get("version", "")` instead of `data.get("bot_version", "")`
+    in `check_dashboard_state()`; update the matching detail strings.
+  - Switch `check_time_sync()` from `method="HEAD"` to `method="GET"`.
+  - Bump `BOT_VERSION_EXPECTED` to `"6.11.4"`.
+- `bot_version.py` + `trade_genius.py` BOT_VERSION -> `6.11.4`.
+- `CURRENT_MAIN_NOTE` updated.
+
+### Regression tests
+
+`tests/test_v6_11_4_premarket_paths.py` (new):
+
+- Asserts the script source contains the `sys.path.insert(0, "/app")` guard
+  and runs before the first cross-package import.
+- Asserts `check_dashboard_state` reads the `version` key from a stub JSON
+  payload (not `bot_version`), via a real aiohttp stub server with a
+  Secure cookie -- exercises the v6.11.2 cookie-forward path end-to-end.
+- Asserts `check_time_sync` issues a GET (not HEAD), verified by capturing
+  the request method on a stub server.
+
+### Files touched
+
+- `scripts/premarket_check.py` (3 fixes + version expected)
+- `bot_version.py`
+- `trade_genius.py` (BOT_VERSION + CURRENT_MAIN_NOTE)
+- `CHANGELOG.md`
+- `tests/test_v6_11_4_premarket_paths.py` (new)
+
+Patch release; no `ARCHITECTURE.md` or `trade_genius_algo.pdf` update.
+
+---
+
 ## v6.11.3 (2026-05-04) -- Ship scripts/ in container image
 
 ### What
