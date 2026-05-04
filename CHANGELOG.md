@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.4 (2026-05-04) -- wire volume_bucket baseline refresh into the live scan loop
+
+Patch release. `engine.scan.scan_loop` now calls
+`v5_10_1_integration.refresh_volume_baseline_if_needed(now_et)` once per
+cycle, immediately after `tg._refresh_market_mode()` and before the
+weekend / pre-open short-circuits.
+
+**Why now.** Diagnosing the persistent COLDSTART after v6.14.3 surfaced
+a latent wiring bug. The refresh hook has been exported from
+`v5_10_1_integration.py` since v5.10.1, lives in `__all__`, and is
+covered by `tests/test_startup_smoke.py`. **Nothing in production ever
+called it.** A repo-wide grep returned exactly two non-test references
+(the definition itself and the `__all__` export) plus the smoke test --
+zero callers in `trade_genius.py`, `engine/scan.py`, `engine/callbacks.py`,
+or any module on the live scan path.
+
+Consequence: the `VolumeBucketBaseline` singleton was instantiated
+lazily by `dashboard_server`'s `/api/state` snapshot but never
+refreshed, so `days_available_per_ticker` stayed `{}` and every gate
+check hit the cold-start passthrough. The dashboard correctly showed
+`vol_bucket.state=COLDSTART, days=0` -- it was telling the truth about
+the in-process state. The v6.14.2 retention bump and the v6.14.3
+holiday-aware lookback fixed two real bugs but neither could move the
+dashboard, because the refresh side that consumes those fixes was
+never invoked.
+
+**Fix.** Two-line wire-up in `engine/scan.py` at the top of
+`scan_loop`, wrapped in a try/except that logs and swallows so a
+refresh failure cannot crash the scan loop:
+
+```python
+try:
+    eot_glue.refresh_volume_baseline_if_needed(now_et)
+except Exception:
+    logger.exception("refresh_volume_baseline_if_needed failed")
+```
+
+The hook self-guards (no-op before 09:29 ET, idempotent within a
+session via `_baseline_refreshed_for_date`), so wiring it into every
+cycle is correct: it fires exactly once per session at or after 09:29
+ET, and is a cheap dictionary check on every other tick.
+
+**Recovery semantics.** With the call in place, recovery from a missed
+09:29 refresh is automatic -- `_baseline_refreshed_for_date` is only
+stamped on a successful `refresh()`, so any subsequent tick retries.
+Process restarts also reset the flag, so a redeploy after 09:29 ET
+fires the refresh on the first scan tick. Today's redeploy at 16:45
+ET will populate the baseline against the 84 day-dirs already on disk
+and flip the dashboard out of COLDSTART within seconds.
+
+Files touched:
+* `engine/scan.py` -- 6 new lines (try/except + comment) at top of `scan_loop`
+* `bot_version.py` -- `BOT_VERSION = "6.14.4"`
+* `trade_genius.py` -- `BOT_VERSION` mirror, `CURRENT_MAIN_NOTE` updated
+* `tests/test_v6_14_4_scan_refresh_wired.py` -- 3 cases (call-once, exception swallow, weekend tick still fires)
+* `tests/test_v6_14_2_bar_retention_env.py` -- relax version-pin to `>=6.14.2`
+* `tests/test_v6_14_3_market_holidays.py` -- relax version-pin to `>=6.14.3`
+
+No PDF regeneration (patch release).
+
+---
+
 ## v6.14.3 (2026-05-04) -- volume_bucket lookback respects US market holidays
 
 Patch release. `volume_bucket._trading_days_back` now skips known US

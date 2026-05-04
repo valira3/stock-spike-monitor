@@ -21,6 +21,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -61,6 +63,7 @@ class TestDataRootCoverage(unittest.TestCase):
     def tearDown(self):
         self._tmpdir.cleanup()
 
+    @pytest.mark.slow
     @unittest.skipUnless(_BARS_DIR.is_dir(), "canonical bars dir not present; skipping smoke test")
     def test_replay_no_permission_denied(self):
         """Replay exits 0 with no 'Permission denied' in stderr."""

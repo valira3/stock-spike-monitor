@@ -28,14 +28,33 @@ def pytest_configure(config):
         "markers",
         "spec_gap(pr, rule_id): Test for spec rule not yet implemented; closed by named PR.",
     )
+    # v6.14.4: slow marker. Tests in this group are skipped by default
+    # in scripts/preflight.sh (which sets PYTEST_SKIP_SLOW=1) so the
+    # per-PR fast path runs in seconds rather than minutes. CI and
+    # explicit `pytest -m slow` invocations still execute them. The 11
+    # currently-marked tests collectively account for ~70s of the
+    # previous ~90s preflight wall time; subprocess-based replay,
+    # aiohttp E2E setup/teardown, and intentional sleep-then-timeout
+    # safe_check assertions dominate that budget.
+    config.addinivalue_line(
+        "markers",
+        "slow: Test takes >= 1s wall; skipped by default in preflight (set PYTEST_SKIP_SLOW=0 to include).",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--run-spec-gaps"):
-        return
     skip_spec_gap = pytest.mark.skip(
-        reason="spec_gap: rule scheduled for a later PR in the vAA-1 migration; pass --run-spec-gaps to execute"
+        reason="spec_gap: rule scheduled for a later PR in the vAA-1 migration; pass --run-spec-gaps to execute",
     )
+    skip_slow = pytest.mark.skip(
+        reason="slow: skipped by default in preflight; set PYTEST_SKIP_SLOW=0 or run `pytest -m slow` to include.",
+    )
+    skip_spec_gaps_enabled = not config.getoption("--run-spec-gaps")
+    import os
+    skip_slow_enabled = os.environ.get("PYTEST_SKIP_SLOW", "0") == "1"
+
     for item in items:
-        if item.get_closest_marker("spec_gap") is not None:
+        if skip_spec_gaps_enabled and item.get_closest_marker("spec_gap") is not None:
             item.add_marker(skip_spec_gap)
+        if skip_slow_enabled and item.get_closest_marker("slow") is not None:
+            item.add_marker(skip_slow)
