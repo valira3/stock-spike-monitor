@@ -4,6 +4,61 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.6 (2026-05-04) -- extended-hours buckets, volume-feed pill rewire, charts at 7am CT
+
+Patch release bundling three related dashboard / data fixes that
+landed together because they all converge on the same surface (the
+extended-hours volume picture Val sees on the dashboard).
+
+**1. `volume_feed_status` pill rewired.** The pill in the top-right
+corner of the dashboard had been pinned at `disabled_no_creds` since
+v5.14.0 even when the SIP feed was streaming cleanly. Root cause is
+the same v5.14.0 "shadow strategy retirement" rename that bit us in
+v6.14.5: the writer for `m.VOLUME_FEED_AVAILABLE` was deleted but
+the reader in `dashboard_server.snapshot()` was not. New helper
+`_ingest_volume_feed_status(m)` derives the pill from
+`ingest.algo_plus.get_health()`, mapping `LIVE` -> `"live"` and
+every other state (`CONNECTING` / `DEGRADED` / `RECONNECTING` /
+`REST_ONLY`) to `"disabled_no_creds"`. The legacy `getattr` fallback
+is preserved so a stale image without `ingest.algo_plus` loaded does
+not crash `/api/state`.
+
+**2. Extended-hours bucket support.** `volume_bucket._bucket_key`
+and `ingest.algo_plus._compute_et_bucket` now accept the full
+Alpaca extended session 04:00-19:59 ET instead of RTH only. This
+lets the rolling 55-day volume baseline index pre-market
+(04:00-09:29) and post-market (16:00-19:59) minutes alongside RTH.
+Val's specific complaint: "there should be volume even in after
+hours" -- correct, and now visible on the dashboard. Before today,
+the ingest dropped pre/post-market bars on the floor (`et_bucket =
+None`) so the baseline could only see RTH minutes. Backfill of 84
+day-dirs across 12 tickers with extended-hours SIP bars is a
+separate operation that follows the same `/tmp/backfill_apr27.py`
+pattern proven on 2026-04-27.
+
+**3. Chart x-axis at 7am CT.** `_CHART_FULL_X_MIN` in
+`dashboard_static/app.js` shifted from `240` (04:00 ET) to `480`
+(08:00 ET = 07:00 CT) so freshly-mounted canvases default to a
+window that emphasises the pre-open hour and full RTH+post-market
+without the empty 04:00-07:00 ET dead-space. Pan/zoom clamps still
+allow scrolling out to 04:00 ET if needed via the existing
+`_CHART_FULL_X_MAX` envelope (kept at `1200` = 20:00 ET).
+
+**Tests.** `tests/test_v6_14_6_volume_feed_status.py` exercises the
+pill helper across every `ConnectionHealth` state plus the
+import-error fallback. `tests/test_v6_14_6_extended_hours_bucket.py`
+covers `_bucket_key` and `_compute_et_bucket` boundaries: 04:00 ET
+(accept), 09:29 ET (accept, was reject), 09:30 ET (accept), 15:59
+ET (accept), 16:00 ET (accept), 16:01 ET (accept, was reject),
+19:59 ET (accept), 20:00 ET (reject), 03:59 ET (reject). Existing
+v6.14.0 e2e test `test_e2e_compute_et_bucket_rth_minutes` updated
+to reflect the new contract.
+
+**No PDF.** Patch release. ARCHITECTURE.md unchanged -- the bucket
+widening is a contract relaxation, not a new component.
+
+---
+
 ## v6.14.5 (2026-05-04) -- dashboard reads `current_1m_vol` from the bar archive
 
 Patch release. `v5_10_6_snapshot._vol_bucket_per_ticker` now falls
