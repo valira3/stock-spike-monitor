@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.12 (2026-05-04) -- brand-row mobile compaction
+
+Val screenshot showed the brand row clock (`07:45 ET`) clipping the
+right edge of the iPhone viewport even after v6.11.11 shrunk LIVE -> L.
+The flat 10px gap between every pill (logo, name, version, TO, L
+heartbeat, health, clock) consumed ~60-70px of horizontal space.
+
+### 1. Tighter brand-row spacing on narrow viewports
+
+New `@media (max-width: 480px)` block in `app.css`:
+
+- `#tg-brand-row` gap `10px` -> `5px`, padding `8px 16px` -> `6px 8px`.
+- `#tg-cooldown-chip` margin-left zeroed (was 6px on top of the row gap).
+- `#tg-brand-clock` font-size `14px` -> `12.5px`.
+
+Desktop spacing unchanged.
+
+Files: `dashboard_static/index.html` (added `.tg-brand-row` class for
+the selector hook), `dashboard_static/app.css` (new media block).
+
+### 2. Drop "ET" tz suffix on narrow phones
+
+`__tgTickClock` already dropped the `:SS` segment at <=480px (v6.0.7).
+Extended to also drop the `tz` token at the same breakpoint, so
+mobile renders `HH:MM` (no `ET`). Desktop still renders
+`HH:MM:SS ET`. Trading is US-only so the suffix is decorative.
+
+Files: `dashboard_static/app.js` (`window.__tgTickClock`).
+
+---
+
 ## v6.11.11 (2026-05-04) -- tab 📄 Paper marker; TO: <count> pill; LIVE -> L
 
 Three small dashboard polish items Val flagged after v6.11.10.

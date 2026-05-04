@@ -3704,9 +3704,14 @@
     // every page card to the right and clipped Today's Trades and
     // the Permit Matrix STRIKES/State columns. Dropping the :SS
     // segment recovers ~21px and brings the row inside the viewport.
+    // v6.11.12 — also drop the "ET" tz suffix on narrow phones.
+    // After v6.11.10/11 added the TO pill (bigger now) and brand
+    // version string, even "HH:MM ET" plus the TO chip pushed past
+    // the viewport. The clock context is implied by the dashboard
+    // (US-only) so the suffix is decorative on mobile.
     const narrow = window.matchMedia && window.matchMedia("(max-width: 480px)").matches;
     const t = narrow ? `${hh}:${mm}` : `${hh}:${mm}:${ss}`;
-    el.textContent = tz ? `${t} ${tz}` : t;
+    el.textContent = (tz && !narrow) ? `${t} ${tz}` : t;
   };
   setInterval(window.__tgTickClock, 1000);
   window.__tgTickClock();

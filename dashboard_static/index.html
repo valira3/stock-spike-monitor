@@ -26,7 +26,15 @@
      strip and the tab switcher so it is visible on every tab. Carries the
      shared LIVE pill + "scan in Ns" countdown so the status indicator is
      identical regardless of which tab (Main / Val / Gene) is active. -->
-<div id="tg-brand-row" style="display:flex;align-items:center;gap:10px;background:#0a0d12;border-bottom:1px solid #1f2937;padding:8px 16px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;flex-wrap:wrap">
+<!-- v6.11.12 — brand-row gap/padding tightened on narrow phones via
+     CSS class. The previous flat 10px gap + 8px/16px padding produced
+     gaps of ~10px between every pill (logo → name → version → TO →
+     L pulse → health → clock). On the iPhone view that ate ~60-70px
+     of horizontal space, pushing the clock+ET suffix off-screen even
+     after v6.11.11 shrunk LIVE→L. The .tg-brand-row class below is
+     overridden in the @media (max-width: 480px) block at the top of
+     the document so cloud-CDN'd pages don't need a JS reflow. -->
+<div id="tg-brand-row" class="tg-brand-row" style="display:flex;align-items:center;gap:10px;background:#0a0d12;border-bottom:1px solid #1f2937;padding:8px 16px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;flex-wrap:wrap">
   <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="TradeGenius" style="width:22px;height:22px;color:#7dd3fc;flex-shrink:0">
     <path d="M3 22 L11 22 L15 10 L19 22 L29 22" stroke-linecap="round" stroke-linejoin="round"/>
     <circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/>
