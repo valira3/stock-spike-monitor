@@ -42,21 +42,26 @@ _TG_APP_ROOT = "/app"
 if os.path.isdir(_TG_APP_ROOT) and _TG_APP_ROOT not in sys.path:
     sys.path.insert(0, _TG_APP_ROOT)
 
-# v6.11.6 \u2014 trade_genius.py runs full bot startup at module load time
-# (telegram polling, scheduler, ingest threads, executors) UNLESS
-# SSM_SMOKE_TEST=1 is set. Without this guard, every invocation of
-# premarket_check.py inside the live container spawned a SECOND bot
-# polling the same Telegram tokens, producing 409 Conflict storms that
-# cascaded across both prod polling and any concurrent /test calls.
-# Set BEFORE any import of trade_genius (check_version_parity,
-# check_module_imports, etc.). Idempotent.
-os.environ.setdefault("SSM_SMOKE_TEST", "1")
+# v6.11.7 \u2014 SSM_SMOKE_TEST guard MUST only fire on the CLI / cron path,
+# never on the import path. v6.11.6 set the env var unconditionally at
+# module import time, which polluted the live process: trade_genius.py
+# imports telegram_commands early, telegram_commands imports
+# scripts.premarket_check at top level (for /test integration), so the
+# setdefault ran during prod boot and made trade_genius take the
+# smoke-test branch \u2014 dashboard up, Telegram polling never started.
+#
+# When invoked as __main__ (railway ssh / cron), set the guard BEFORE
+# any trade_genius import so we don't spawn a second bot in the same
+# container. When imported (by telegram_commands), do not touch env.
+# Idempotent: setdefault only sets if unset.
+if __name__ == "__main__":
+    os.environ.setdefault("SSM_SMOKE_TEST", "1")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.11.6"
+BOT_VERSION_EXPECTED = "6.11.7"
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5

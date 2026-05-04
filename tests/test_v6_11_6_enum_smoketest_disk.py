@@ -214,17 +214,25 @@ class TestDiskSpacePercentage(unittest.TestCase):
 
 
 class TestVersionParityV6116(unittest.TestCase):
+    """Forward-compat: assert v6.11.x parity, not hardcoded 6.11.6."""
     def test_bot_version_is_6_11_6(self):
         import bot_version
-        self.assertEqual(bot_version.BOT_VERSION, "6.11.6")
-        self.assertEqual(tg.BOT_VERSION, "6.11.6")
+        self.assertTrue(
+            bot_version.BOT_VERSION.startswith("6.11."),
+            f"BOT_VERSION must be on 6.11.x line, got {bot_version.BOT_VERSION}",
+        )
+        self.assertEqual(tg.BOT_VERSION, bot_version.BOT_VERSION)
 
     def test_premarket_check_expected_version_matches(self):
+        import bot_version
         repo_root = os.path.dirname(os.path.abspath(tg.__file__))
         path = os.path.join(repo_root, "scripts", "premarket_check.py")
         with open(path) as f:
             src = f.read()
-        self.assertIn('BOT_VERSION_EXPECTED = "6.11.6"', src)
+        self.assertIn(
+            f'BOT_VERSION_EXPECTED = "{bot_version.BOT_VERSION}"',
+            src,
+        )
 
 
 if __name__ == "__main__":
