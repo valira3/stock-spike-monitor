@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from broker.order_types import order_type_for_reason
+import logging as _logging_orders
+_orders_logger = _logging_orders.getLogger("trade_genius")
 
 # v5.26.0 \u2014 broker.stops module deleted. R-2 -$500 hard stop is
 # computed inline in execute_breakout per Tiger Sovereign v15.0
@@ -714,6 +716,55 @@ def paper_shares_for(price: float) -> int:
     return max(1, int(dollars // price))
 
 
+
+
+# ---------------------------------------------------------------------------
+# v6.11.0 -- C25 SPY Regime-B Short Amplification sizing helper.
+# ---------------------------------------------------------------------------
+def _maybe_apply_regime_b_short_amp(
+    *,
+    cfg,
+    shares: int,
+    ticker: str,
+    now_et,
+    regime,
+    scale: float,
+    arm_hhmm_et: str,
+    disarm_hhmm_et: str,
+) -> int:
+    """Scale short-side shares on SPY regime-B days inside the [arm, disarm) window.
+
+    Returns unmodified shares for any of: long side, outside window,
+    non-regime-B, or feature disabled. Window is half-open: arm is
+    inclusive, disarm is exclusive.
+    """
+    try:
+        from eye_of_tiger import V611_REGIME_B_ENABLED as _v611_en
+    except Exception:
+        return shares
+    if not _v611_en:
+        return shares
+    if cfg.side.is_long:
+        return shares
+    arm_h, arm_m = (int(x) for x in arm_hhmm_et.split(":"))
+    dis_h, dis_m = (int(x) for x in disarm_hhmm_et.split(":"))
+    now_minutes = now_et.hour * 60 + now_et.minute
+    arm_minutes = arm_h * 60 + arm_m
+    dis_minutes = dis_h * 60 + dis_m
+    if now_minutes < arm_minutes or now_minutes >= dis_minutes:
+        return shares  # outside [arm, disarm) window
+    if not regime.is_regime_b():
+        return shares
+    new_shares = max(1, int(round(shares * scale)))
+    _orders_logger.info(
+        "[V611-AMP] %s side=SHORT regime=B scale=%.2fx shares %d -> %d",
+        ticker,
+        scale,
+        shares,
+        new_shares,
+    )
+    return new_shares
+
 def execute_breakout(ticker, current_price, side):
     """Side-parameterized entry executor.
 
@@ -864,6 +915,26 @@ def execute_breakout(ticker, current_price, side):
         shares = starter_shares
         _v15_size_label = "FULL"
         _v15_size_reason = "sizing eval error \u2014 fell back to legacy starter"
+    # v6.11.0 -- C25: apply regime-B short amplification after v15 sizing.
+    try:
+        from eye_of_tiger import (
+            V611_REGIME_B_SHORT_SCALE_MULT as _v611_scale,
+            V611_REGIME_B_SHORT_ARM_HHMM_ET as _v611_arm,
+            V611_REGIME_B_SHORT_DISARM_HHMM_ET as _v611_disarm,
+        )
+        from trade_genius import _SPY_REGIME as _v611_regime, _now_et as _v611_now_et
+        shares = _maybe_apply_regime_b_short_amp(
+            cfg=cfg,
+            shares=shares,
+            ticker=ticker,
+            now_et=_v611_now_et(),
+            regime=_v611_regime,
+            scale=_v611_scale,
+            arm_hhmm_et=_v611_arm,
+            disarm_hhmm_et=_v611_disarm,
+        )
+    except Exception as _v611_amp_err:
+        tg.logger.warning("[V611-AMP] sizing helper error: %s", _v611_amp_err)
     notional = current_price * shares
     if shares <= 0:
         if cfg.side.is_long:

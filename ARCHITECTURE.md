@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.9.3 · May 2026 -- Sweep runner hardening (preflight smoke check + hermetic env).
+> **Version:** v6.11.0 · May 2026 -- C25: SPY Regime-B Short Amplification.
 >
 > **Backtest cache layer (v6.9.2):**
 > L1: Per-day Parquet bar cache (`backtest/bar_cache.py`) -- layout
@@ -3668,3 +3668,88 @@ and each failing check emits exactly one `[ERROR] [SYS-TEST] Block X: ...` log l
 `engine/scan.py`, `engine/sma_stack.py`, `engine/seeders.py` carry
 docstring annotations directing backtest callers to
 `indicator_cache.get_indicators`. Live engine code paths are unchanged.
+
+---
+
+## §20. v6.11.0 -- C25: SPY Regime-B Short Amplification
+
+**Goal:** harvest the regime-B short-side edge (+60.78% WR / +$14.43/pair across
+232 short pairs in the 84d v6.10.0 SIP corpus) by scaling short-side position
+size 1.5x on SPY regime-B days within the [10:00, 11:00) ET window.
+
+### Regime classification (`spy_regime.py`)
+
+- Mirrors `qqq_regime.py` pattern. Class `SpyRegime`. No external I/O.
+- Two price anchors captured via `tick(now_et, spy_price)`:
+  - `spy_open_930`: first bar in `[09:30:00, 09:31:00)` ET.
+  - `spy_close_1000`: first bar in `[10:00:00, 10:01:00)` ET.
+- At 10:00 ET, computes `ret_pct = (close_1000 - open_930) / open_930 * 100`.
+- Five bands (strict-both-sides on B per spec test-11):
+  - A: `ret <= -0.50`
+  - B: `-0.50 < ret < -0.15` (moderately down)
+  - C: `-0.15 <= ret <= +0.15` (flat)
+  - D: `+0.15 < ret <= +0.50`
+  - E: `ret > +0.50`
+- Feed gap (missing 09:30 anchor at 10:00): regime stays `None`, C25 fails closed.
+- `daily_reset()` called from `reset_daily_state()` in `trade_genius.py`.
+- Log tag: `[V611-REGIME-B]` at classification time.
+
+### Env-var contract (`eye_of_tiger.py`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `V611_REGIME_B_ENABLED` | `"1"` | Feature kill-switch. Set `"0"` to no-op. |
+| `V611_REGIME_B_SHORT_SCALE_MULT` | `"1.5"` | Position-size multiplier on amp. |
+| `V611_REGIME_B_SHORT_ARM_HHMM_ET` | `"10:00"` | Amp window start (inclusive). |
+| `V611_REGIME_B_SHORT_DISARM_HHMM_ET` | `"11:00"` | Amp window end (exclusive). |
+| `V611_REGIME_B_LOWER_PCT` | `"-0.50"` | Band-B lower boundary (strict). |
+| `V611_REGIME_B_UPPER_PCT` | `"-0.15"` | Band-B upper boundary (strict). |
+
+### Sizing helper (`broker/orders.py`)
+
+Helper `_maybe_apply_regime_b_short_amp(*, cfg, shares, ticker, now_et, regime,
+scale, arm_hhmm_et, disarm_hhmm_et)`:
+
+- Called AFTER the v15-sizing tier decision, BEFORE `notional = current_price * shares`.
+- Window `[arm, disarm)` is half-open: arm-inclusive, disarm-exclusive.
+- Returns unmodified shares for: long side, outside window, non-regime-B, disabled.
+- Log tag: `[V611-AMP]` on every amplified entry.
+
+### Wire points
+
+- `trade_genius.py` line ~1100: `import spy_regime; _SPY_REGIME = spy_regime.SpyRegime()`
+- `trade_genius.py` `_qqq_weather_tick()`: calls `_SPY_REGIME.tick(_now_et(), spy_price)`
+  inside the existing SPY price fetch block (fail-safe try/except).
+- `trade_genius.py` `reset_daily_state()`: calls `_SPY_REGIME.daily_reset()`.
+- `trade_genius.py` STARTUP SUMMARY: logs `regime_b_amp`, `mult`, `arm`, `disarm`.
+
+### Dashboard fields (`/api/state`)
+
+```json
+"spy_regime_today": {
+  "regime": "B",
+  "spy_open_930": 685.71,
+  "spy_close_1000": 684.27,
+  "ret_pct": -0.21,
+  "classified_at": "2026-05-04T14:00:00Z"
+},
+"v611_regime_b_active": true,
+"v611_window": {"arm": "10:00", "disarm": "11:00"}
+```
+
+`v611_regime_b_active` is `true` only when regime==B AND current ET time is
+inside `[arm, disarm)`. Frontend (`app.js`) surfaces SPY 9:30, SPY 10:00,
+SPY 30m %, regime letter, and C25 amp state in the Phase 1 Weather block.
+
+### Validation
+
+- 84d SIP backtest (v2 [10:00, 11:00), 1.5x): **+$683 vs $12,145 baseline (+5.6%)**
+- Amp pool: 108 pairs / 61.11% WR / +$12.65 mean $/pair
+- Bootstrap P(delta<0)=0.10%; 95% CI [+$151, +$1,274]
+- Walk-forward H1/H2: +$511 / +$173 (same sign, per-pair drift 23%)
+- Sources: `c25_v2_results.json`, `c25_intraday_stability.json`
+
+### Rollback
+
+Set `V611_REGIME_B_ENABLED=0` in Railway. The feature becomes a complete
+no-op without code revert.

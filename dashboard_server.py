@@ -755,6 +755,71 @@ def _executors_status_snapshot(m) -> dict:
     return out
 
 
+
+def _v611_regime_snapshot() -> dict:
+    """v6.11.0 -- C25 SPY regime + amp window fields for /api/state.
+
+    Wrapped in try/except so any bug here can never tank the full
+    /api/state response (mirrors the existing defensive pattern).
+    """
+    try:
+        import trade_genius as _tg
+        import eye_of_tiger as _eot
+
+        _sr = getattr(_tg, "_SPY_REGIME", None)
+        if _sr is None:
+            raise AttributeError("_SPY_REGIME not found on trade_genius")
+
+        regime = _sr.current_regime()
+        spy_open = _sr.spy_open_930
+        spy_close = _sr.spy_close_1000
+        ret_pct = _sr.spy_30m_return_pct
+        classified_at = getattr(_sr, "_classified_at", None)
+
+        arm_hhmm = str(getattr(_eot, "V611_REGIME_B_SHORT_ARM_HHMM_ET", "10:00"))
+        disarm_hhmm = str(getattr(_eot, "V611_REGIME_B_SHORT_DISARM_HHMM_ET", "11:00"))
+        enabled = bool(getattr(_eot, "V611_REGIME_B_ENABLED", True))
+
+        # Determine if the amp window is currently active.
+        v611_active = False
+        try:
+            if enabled and regime == "B":
+                _now = _tg._now_et()
+                _arm_h, _arm_m = (int(x) for x in arm_hhmm.split(":"))
+                _dis_h, _dis_m = (int(x) for x in disarm_hhmm.split(":"))
+                _now_min = _now.hour * 60 + _now.minute
+                _arm_min = _arm_h * 60 + _arm_m
+                _dis_min = _dis_h * 60 + _dis_m
+                v611_active = _arm_min <= _now_min < _dis_min
+        except Exception:
+            pass
+
+        return {
+            "spy_regime_today": {
+                "regime": regime,
+                "spy_open_930": spy_open,
+                "spy_close_1000": spy_close,
+                "ret_pct": ret_pct,
+                "classified_at": classified_at,
+            },
+            "v611_regime_b_active": v611_active,
+            "v611_window": {"arm": arm_hhmm, "disarm": disarm_hhmm},
+        }
+    except Exception as _e:
+        logger.warning("[V611] dashboard regime snapshot error: %s", _e)
+        return {
+            "spy_regime_today": {
+                "regime": None,
+                "spy_open_930": None,
+                "spy_close_1000": None,
+                "ret_pct": None,
+                "classified_at": None,
+            },
+            "v611_regime_b_active": False,
+            "v611_window": {"arm": "10:00", "disarm": "11:00"},
+        }
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -1230,6 +1295,8 @@ def snapshot() -> dict[str, Any]:
             # Fields: status, last_bar_age_s, open_gaps_today,
             #   bars_today, ws_state.
             "ingest_status": ingest_status,
+            # v6.11.0 -- C25 SPY regime + amp window state.
+            **_v611_regime_snapshot(),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)

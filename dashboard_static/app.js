@@ -1075,6 +1075,13 @@
         ? (sip.qqq_current_price > sip.qqq_avwap_0930 ? "above" : "below")
         : null]);
     }
+    // v6.11.0 -- C25 SPY regime rows (defensive: degrade to null if backend older).
+    const spyReg = (d && d.spy_regime_today) ? d.spy_regime_today : {};
+    _p3aRows.push(["SPY 9:30",    _fmtNum(spyReg.spy_open_930, 2)]);
+    _p3aRows.push(["SPY 10:00",   _fmtNum(spyReg.spy_close_1000, 2)]);
+    _p3aRows.push(["SPY 30m %",   (spyReg.ret_pct != null) ? (spyReg.ret_pct >= 0 ? "+" : "") + spyReg.ret_pct.toFixed(2) + "%" : null]);
+    _p3aRows.push(["SPY regime",  spyReg.regime || null]);
+    _p3aRows.push(["C25 amp",     (d && d.v611_regime_b_active) ? "ACTIVE (1.5x short)" : "idle"]);
     const p3aMetrics = _metricsHtml(_p3aRows);
 
     // v5.22.0 \u2014 Momentum card: when in position, only show the

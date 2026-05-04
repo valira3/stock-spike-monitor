@@ -159,3 +159,64 @@ to print the verbatim v15.0 spec for each gate
 (`renderPermitMatrix._pmtxBuildRow` in `dashboard_static/app.js`)
 so operators can compare \"what the engine says\" to \"what the spec
 says\" without leaving the UI.
+
+---
+
+## ADDENDUM C25 (v6.11.0) -- SPY Regime-B Short Amplification
+
+### Motivation
+
+When SPY's first-30-minute return falls in the moderately-down band
+(-0.50% to -0.15%, exclusive on both ends), short-side entries show
+a disproportionate edge: 60.78% WR / +$14.43/pair across 232 pairs in
+the 84d v6.10.0 SIP corpus vs 46-55% WR on other bands. The intraday
+stability finding confirms the edge concentrates in the first hour
+post-classification (61.11% WR, 108 pairs, [10:00, 11:00) ET) and
+collapses after 11:00 ET as regime-B days mean-revert.
+
+### Short-side sizing branch (C25)
+
+After the v15.0 tier decision (FULL / SCALED_A / WAIT) and before
+`notional = current_price * shares`, the helper
+`_maybe_apply_regime_b_short_amp` in `broker/orders.py` applies:
+
+```
+if V611_REGIME_B_ENABLED
+   AND side == SHORT
+   AND regime == B
+   AND now_et in [arm, disarm):    # half-open; arm=10:00, disarm=11:00 ET
+    shares = max(1, round(shares * V611_REGIME_B_SHORT_SCALE_MULT))
+```
+
+Default scale is 1.5x. Long entries are never affected. Regime=None
+(feed gap or pre-classification) fails closed (no amplification).
+
+### Regime classification
+
+`spy_regime.SpyRegime` captures SPY price at 09:30 and 10:00 ET each
+session and classifies into one of five bands:
+
+- **A** (deep down): ret <= -0.50%
+- **B** (moderately down): -0.50% < ret < -0.15%  [amp target]
+- **C** (flat): -0.15% <= ret <= +0.15%
+- **D** (moderately up): +0.15% < ret <= +0.50%
+- **E** (deep up): ret > +0.50%
+
+Log tag `[V611-REGIME-B]` fires once at 10:00 ET classification.
+Log tag `[V611-AMP]` fires at every amplified entry.
+
+### Rollback
+
+`V611_REGIME_B_ENABLED=0` -- complete no-op, no code revert needed.
+
+### Implementation map
+
+| Rule | Source |
+|---|---|
+| Regime classification | `spy_regime.SpyRegime.tick()` / `classify()` |
+| Env-var defaults | `eye_of_tiger.py` V611_REGIME_B_* block |
+| Sizing amplifier | `broker/orders.py._maybe_apply_regime_b_short_amp` |
+| Daily reset | `trade_genius.py.reset_daily_state` -> `_SPY_REGIME.daily_reset()` |
+| SPY price feed | `trade_genius.py._qqq_weather_tick` existing SPY 1m fetch |
+| Dashboard fields | `dashboard_server.py._v611_regime_snapshot()` |
+| Frontend rows | `dashboard_static/app.js` _p3aRows SPY regime block |

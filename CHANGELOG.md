@@ -4,6 +4,74 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.0 (2026-05-XX) -- C25: SPY Regime-B Short Amplification
+
+### What
+
+- **New:** `spy_regime.py` -- 5-band (A/B/C/D/E) SPY 30-minute return classifier
+  mirroring `qqq_regime.py` pattern. Captures 09:30 open and 10:00 close anchors
+  each session; computes `ret_pct`; classifies into band at 10:00 ET. Fails closed
+  on feed gaps.
+- **New:** short-side position size x1.5 on SPY regime-B days inside the
+  `[10:00, 11:00)` ET window (half-open; arm inclusive, disarm exclusive).
+- **New:** 6 `V611_REGIME_B_*` env vars for full runtime override (see below).
+- **New:** dashboard surfaces SPY 9:30, SPY 10:00, SPY 30m %, regime letter,
+  and C25 amp state in Phase 1 Weather block.
+- **Bump:** `BOT_VERSION = "6.11.0"` in both `trade_genius.py` and `bot_version.py`.
+
+### Env-var contract
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `V611_REGIME_B_ENABLED` | `"1"` | Kill-switch: `"0"` disables completely |
+| `V611_REGIME_B_SHORT_SCALE_MULT` | `"1.5"` | Size multiplier |
+| `V611_REGIME_B_SHORT_ARM_HHMM_ET` | `"10:00"` | Window open (inclusive) |
+| `V611_REGIME_B_SHORT_DISARM_HHMM_ET` | `"11:00"` | Window close (exclusive) |
+| `V611_REGIME_B_LOWER_PCT` | `"-0.50"` | Band-B lower boundary (strict) |
+| `V611_REGIME_B_UPPER_PCT` | `"-0.15"` | Band-B upper boundary (strict) |
+
+### Validation
+
+- 84d SIP backtest (v2 [10:00, 11:00), 1.5x): **+$683 vs $12,145 baseline (+5.6%)**
+- Amp pool: 108 pairs / 61.11% WR / +$12.65 mean $/pair
+- Bootstrap P(delta<0)=0.10%; 95% CI [+$151, +$1,274]
+- Walk-forward H1/H2: +$511 / +$173 (same sign, per-pair drift 23%)
+- Window choice rationale: [10:00, 11:00) chosen over wider/narrower variants --
+  sweep + intraday-stability data in
+  `workspace/v6_10_0_validation/c25_v2_results.json`
+- 10 of 24 regime-B days reverse up by EOD; post-11:00 edge collapses to ~45% WR.
+  Window restriction preserves lift.
+
+### Files touched
+
+- **New:** `spy_regime.py`
+- **New:** `tests/test_v611_regime_b.py` (13 tests pass, 1 skipped replay)
+- **Modified:** `eye_of_tiger.py` -- 6 V611 env vars
+- **Modified:** `trade_genius.py` -- init, tick, daily-reset, startup-summary, version bump
+- **Modified:** `broker/orders.py` -- `_maybe_apply_regime_b_short_amp` helper + call site
+- **Modified:** `dashboard_server.py` -- `_v611_regime_snapshot()` + snapshot dict
+- **Modified:** `dashboard_static/app.js` -- 5 SPY regime rows in P1 Weather block
+- **Modified:** `ARCHITECTURE.md` -- version pin + §20 C25 section
+- **Modified:** `STRATEGY.md` -- C25 short-side branch documented
+- **Modified/Regenerated:** `trade_genius_algo.pdf` -- reflects C25 addition
+- **Modified:** `CHANGELOG.md` -- this entry
+
+### Rollback
+
+Set `V611_REGIME_B_ENABLED=0` in Railway. Complete no-op without code revert.
+
+### Known caveats / follow-ups
+
+- v4 sub-window [10:30, 11:00) alone is slightly negative (-$30, n=23). Acceptable
+  cost for larger v2 sample size and tighter H1/H2 stability.
+- ORCL concentration risk: 4 of 10 worst regime-B short losses are ORCL. At 1.5x
+  worst-day touches -$135 (was -$90). Per-ticker exclusion list filed as v6.12.0.
+- 84d replay integration test skipped (expensive): run via `scripts/replay_84d.py`
+  post-merge; assert post-amp delta in [+$673, +$693].
+- PDF regenerated from updated `STRATEGY.md` via `scripts/build_algo_pdf.py`.
+
+---
+
 ## v6.10.2 -- Revert C10 short cooldown 60 -> 30 (long/short symmetry)
 
 ### Why
