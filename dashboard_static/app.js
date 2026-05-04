@@ -1600,8 +1600,13 @@
   // window per ticker in a plain dict that survives canvas destruction,
   // and seed each freshly-mounted canvas from it. Hover/wired stay
   // per-canvas (transient UI state).
-  const _CHART_FULL_X_MIN = 480;
-  const _CHART_FULL_X_MAX = 1080;
+  // v6.11.10 — full session window: 04:00 ET (et_min=240) to 20:00 ET
+  // (et_min=1200). Earlier 480/1080 seed snapped fresh canvases to
+  // 8:00–18:00 ET on first render, hiding pre-market and the last
+  // 2 hours of post-market. Downstream clamps already enforce this
+  // 240/1200 envelope for pan/zoom.
+  const _CHART_FULL_X_MIN = 240;
+  const _CHART_FULL_X_MAX = 1200;
   const _chartViewState = new WeakMap();
   const _chartViewByTkr = {};
   function _chartTkrKey(canvas) {
@@ -3371,17 +3376,29 @@
         }
       }
       // (2) Tab-heading badge — the new visible surface in v6.11.9.
+      // v6.11.10 — also surface live/paper mode next to the ✓ so the
+      // tab strip shows both "enabled" and "which broker". Format:
+      //   ✓ L  = enabled, live broker (bright green)
+      //   ✓ P  = enabled, paper broker (amber)
+      //   ✗    = disabled (dim grey)
       const badge = document.getElementById(`tg-badge-${name}`);
       if (badge) {
         if (enabled) {
-          badge.textContent = "\u2713";
-          badge.style.color = "#34d399"; // green
+          const isLive = (mode === "live");
+          const modeMark = isLive ? "L" : "P";
+          const modeColor = isLive ? "#34d399" : "#fbbf24";
+          badge.innerHTML =
+            '<span style="color:#34d399">\u2713</span>' +
+            '<span style="color:' + modeColor +
+            ';font-size:9.5px;margin-left:3px;font-weight:600;letter-spacing:0.04em">' +
+            modeMark + '</span>';
+          badge.style.color = ""; // colors are per-span now
           badge.setAttribute(
             "title",
             `${label} executor enabled${mode ? ` (${mode} mode)` : ""}`
           );
         } else {
-          badge.textContent = "\u2717";
+          badge.innerHTML = "\u2717";
           badge.style.color = "#9aa6b2"; // dim grey
           badge.setAttribute(
             "title",
@@ -4151,9 +4168,11 @@
 
   function renderBadge(name, data) {
     // v6.11.9 — simplified to a single ✓ / ✗ mark in the tab heading.
-    // The executor's mode (Live vs Paper) is still surfaced via the
-    // tooltip/title so it's one click away without crowding the tab
-    // strip. Replaces the previous "🟢 Live" / "📄 Paper" / "off" labels.
+    // v6.11.10 — added L/P mode mark next to the ✓ so live vs paper
+    // is visible without hovering. Format mirrors renderHeader():
+    //   ✓ L  = enabled, live broker (bright green)
+    //   ✓ P  = enabled, paper broker (amber)
+    //   ✗    = disabled (dim grey)
     // renderHeader() also writes this badge from s.executors_status as
     // a faster initial paint; this per-executor poll keeps it accurate
     // for executors that go offline mid-session.
@@ -4161,15 +4180,22 @@
     if (!el) return;
     const label = name.charAt(0).toUpperCase() + name.slice(1);
     if (!data || data.enabled === false) {
-      el.textContent = "\u2717";
+      el.innerHTML = "\u2717";
       el.style.color = "#9aa6b2";
       el.setAttribute("title",
         `${label} executor disabled (missing PAPER_KEY or *_ENABLED=0)`);
       return;
     }
-    el.textContent = "\u2713";
-    el.style.color = "#34d399";
     const mode = (data.mode === "live") ? "live" : "paper";
+    const isLive = (mode === "live");
+    const modeMark = isLive ? "L" : "P";
+    const modeColor = isLive ? "#34d399" : "#fbbf24";
+    el.innerHTML =
+      '<span style="color:#34d399">\u2713</span>' +
+      '<span style="color:' + modeColor +
+      ';font-size:9.5px;margin-left:3px;font-weight:600;letter-spacing:0.04em">' +
+      modeMark + '</span>';
+    el.style.color = "";
     el.setAttribute("title", `${label} executor enabled (${mode} mode)`);
   }
 
