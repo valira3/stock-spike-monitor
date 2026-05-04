@@ -30,9 +30,20 @@ All values are spec-literal: change the spec, change THIS file
 
 from __future__ import annotations
 
+import os as _os
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Deque, Iterable, Optional
+
+
+# v6.11.14 \u2014 env-read helper for module-level trail constants. Returns
+# the supplied default when the env var is absent or unparseable.
+def _read_float(env_name, default):
+    try:
+        v = _os.getenv(env_name)
+        return float(v) if v is not None else default
+    except ValueError:
+        return default
 
 from engine.alarm_f_trail import (
     EXIT_REASON_ALARM_F,
@@ -515,13 +526,26 @@ def check_alarm_a(
 # v6.1.0 \u2014 enhanced with ATR-scaled 3-stage trailing stop with profit-protect ratchet
 # ---------------------------------------------------------------------------
 
-# v6.1.0 stage thresholds (multiples of ATR)
-_ATR_TRAIL_STAGE1_THRESHOLD: float = 1.0  # pnl_per_share < 1x ATR  -> 1.0x trail
-_ATR_TRAIL_STAGE2_THRESHOLD: float = 3.0  # pnl_per_share < 3x ATR  -> 1.5x trail
-_ATR_TRAIL_STAGE1_MULT: float = 1.0
-_ATR_TRAIL_STAGE2_MULT: float = 1.5
-_ATR_TRAIL_LOCKIN_FRAC: float = 0.5  # Stage 3: give back at most 50%% of peak profit
-_ATR_TRAIL_FLOOR_MULT: float = 0.3  # absolute floor: never tighter than 0.3x ATR
+# v6.1.0 stage thresholds (multiples of ATR).
+#
+# v6.11.14 \u2014 made env-overridable so an operator can widen the Stage 1
+# trail without a code deploy when chop-day forensics show the 1x-ATR
+# trail is engaging instantly on low-range tickers (5m ATR < entry rail).
+# Defaults preserved so absent env vars keep current production behavior.
+_ATR_TRAIL_STAGE1_THRESHOLD: float = _read_float("ATR_TRAIL_STAGE1_THRESHOLD", 1.0)
+_ATR_TRAIL_STAGE2_THRESHOLD: float = _read_float("ATR_TRAIL_STAGE2_THRESHOLD", 3.0)
+_ATR_TRAIL_STAGE1_MULT: float = _read_float("ATR_TRAIL_STAGE1_MULT", 1.0)
+_ATR_TRAIL_STAGE2_MULT: float = _read_float("ATR_TRAIL_STAGE2_MULT", 1.5)
+_ATR_TRAIL_LOCKIN_FRAC: float = _read_float("ATR_TRAIL_LOCKIN_FRAC", 0.5)
+_ATR_TRAIL_FLOOR_MULT: float = _read_float("ATR_TRAIL_FLOOR_MULT", 0.3)
+
+# v6.11.14 \u2014 trail-active gate. Trail does not engage until the
+# position is at least this many ATRs in profit. Default 0.0 preserves
+# v6.1.0 behavior (trail goes live the instant a position opens). Set
+# to e.g. 0.5 to delay activation until the position has banked half
+# an ATR of profit, preventing the trail from clipping winners that
+# barely cleared the entry stop on noise.
+_ATR_TRAIL_ACTIVATE_PNL_FRAC: float = _read_float("ATR_TRAIL_ACTIVATE_PNL_FRAC", 0.0)
 
 
 def _compute_atr_trail_distance(
@@ -622,7 +646,12 @@ def check_alarm_a_stop_price(
             pnl_ps = float(position_pnl_per_share)
             peak_ps = float(peak_open_profit_per_share)
             ep = float(entry_price)
-            if atr_f > 0.0:
+            # v6.11.14 \u2014 trail-active gate. Skip the trail entirely when
+            # the position has not yet earned ACTIVATE_PNL_FRAC * ATR of
+            # profit per share. Default 0.0 preserves v6.1.0 behavior
+            # (trail goes live immediately).
+            activate_threshold = _ATR_TRAIL_ACTIVATE_PNL_FRAC * atr_f
+            if atr_f > 0.0 and pnl_ps >= activate_threshold:
                 trail_dist = _compute_atr_trail_distance(atr_f, pnl_ps, peak_ps)
                 # Ratchet the ATR-computed stop: never move it against the
                 # position direction \u2014 only tighten (raise for long, lower for
