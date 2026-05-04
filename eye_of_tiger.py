@@ -106,6 +106,26 @@ POST_LOSS_COOLDOWN_MIN_SHORT = _read_int(
     _read_int("POST_LOSS_COOLDOWN_MIN", 30),
 )
 
+# v6.11.13 \u2014 same-ticker post-exit cooldown (broker-plumbing guardrail).
+# Independent of POST_LOSS_COOLDOWN_MIN (which is about avoiding revenge
+# trades on losers). This window applies to ALL exits regardless of P/L,
+# and exists to give the broker time to reconcile the prior protective
+# stop order before a new entry on the same ticker is submitted.
+#
+# Without this gate, a stop-triggered cover and an immediate re-entry
+# inside the same second can race against Alpaca's wash-trade detector
+# (error 40310000 "opposite side market/stop order exists") even though
+# the bot's internal state shows the position closed. Empirically the
+# broker-side reconciliation gap is 200-800 ms; 10 s is generous and
+# never delays a real strike-2/3 re-entry (boundary holds need 2 min
+# of consecutive bars anyway).
+#
+# Set to 0 to disable. Per-ticker only \u2014 NOT per-side, because the
+# wash reject is triggered by ANY opposite open order on the symbol.
+POST_EXIT_SAME_TICKER_COOLDOWN_SEC = _read_int(
+    "POST_EXIT_SAME_TICKER_COOLDOWN_SEC", 10
+)
+
 SOVEREIGN_BRAKE_DOLLARS = -500.0
 VELOCITY_FUSE_PCT = 0.01
 

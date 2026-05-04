@@ -4,6 +4,49 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.13 (2026-05-04) -- same-ticker post-exit cooldown (wash-trade fix)
+
+Production hit Alpaca error `40310000 "potential wash trade detected"` on
+GOOG: a SHORT stop fired at 13:56:52 (clean $13.78 win), and a new SHORT
+entry submitted ~1.2 s later got rejected because the prior protective
+stop order (`d93911e6`) was still working in Alpaca's book. The bot's
+internal state showed the position closed; the broker's book disagreed.
+
+Band-aid hotfix: 10 s same-ticker post-exit cooldown that gates ANY new
+entry on a ticker (either side) for 10 s after ANY exit (winner or loser).
+Independent of the existing post-loss cooldown, which is about avoiding
+revenge trades on losers; this one is about giving the broker time to
+reconcile order book state.
+
+Real fix (cancel-first-then-enter ordering protocol) specced in
+`specs/v6_13_0_cancel_first_entry.md` and queued for v6.13.0.
+
+### Changes
+
+- New env var `POST_EXIT_SAME_TICKER_COOLDOWN_SEC` (default 10, 0 to
+  disable) in `eye_of_tiger.py`.
+- New per-ticker registry `_post_exit_cooldown` in `trade_genius.py` with
+  helpers `record_post_exit_cooldown`, `is_in_post_exit_cooldown`,
+  `_check_post_exit_cooldown`. Cleared by `reset_daily_state` (cross-day
+  prune mirrors the v6.4.2 post-loss cooldown pattern).
+- Entry gate hooked in `broker/orders.execute_breakout` AFTER the v6.4.2
+  post-loss cooldown gate. Logs `[V61113-EXIT-CD] BLOCK` on veto.
+- Exit hook in `broker/orders.close_breakout` calls
+  `record_post_exit_cooldown` for EVERY exit (winner OR loser). Logs
+  `[V61113-EXIT-CD] RECORD` on insert.
+
+### Why 10 s and not longer
+
+Empirically the broker-side reconciliation gap is 200-800 ms; 10 s is
+generous. Strike-2 / strike-3 re-entries need 2 minutes of consecutive
+boundary-hold bars anyway, so 10 s never delays a real re-entry.
+
+Files: `bot_version.py`, `trade_genius.py`, `eye_of_tiger.py`,
+`broker/orders.py`, `specs/v6_13_0_cancel_first_entry.md` (new),
+`CHANGELOG.md`.
+
+---
+
 ## v6.11.12 (2026-05-04) -- brand-row mobile compaction
 
 Val screenshot showed the brand row clock (`07:45 ET`) clipping the

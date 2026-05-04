@@ -796,6 +796,17 @@ def execute_breakout(ticker, current_price, side):
     if not tg._check_post_loss_cooldown(ticker, _side_label):
         return
 
+    # v6.11.13 \u2014 same-ticker post-exit cooldown (broker-plumbing guardrail).
+    # Independent of post-loss cooldown above. After ANY exit on this ticker
+    # (winner OR loser), block re-entry for POST_EXIT_SAME_TICKER_COOLDOWN_SEC
+    # seconds (default 10) so the broker has time to reconcile the prior
+    # protective stop. Without this, an instant flat-and-reverse can race
+    # against Alpaca's wash-trade detector (error 40310000) and reject the
+    # entry. Per-ticker (not per-side) because the wash reject fires on any
+    # opposite-side open order on the symbol.
+    if not tg._check_post_exit_cooldown(ticker):
+        return
+
     # v6.6.0 Pillar C — ingest gate check (after post-loss cooldown, before order build)
     # Decision P2: two-state only (ALLOW/BLOCK). Default dry_run=True; never blocks in v6.6.0.
     # Decision A5: enforce flip requires Val+Devi+Reese sign-off via v6.6.1.
@@ -1431,6 +1442,16 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
         tg.record_post_loss_cooldown(ticker, _cooldown_side, float(pnl_val))
     except Exception:
         # Cooldown is a guardrail \u2014 never let it block an exit from settling.
+        pass
+
+    # v6.11.13 \u2014 record same-ticker post-exit cooldown for EVERY exit
+    # (winner OR loser). 10 s window (env-tunable) lets the broker clear the
+    # prior protective stop before a re-entry is attempted. Logs a
+    # [V61113-EXIT-CD] RECORD line. No-op when env sets the window to 0.
+    try:
+        tg.record_post_exit_cooldown(ticker, exit_reason=str(reason or ""))
+    except Exception:
+        # Guardrail \u2014 never let it block an exit from settling.
         pass
     now_et = tg._now_et()
     now_hhmm = tg._now_cdt().strftime("%H:%M CDT")
