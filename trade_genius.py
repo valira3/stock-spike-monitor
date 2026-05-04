@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.10.2"
+BOT_VERSION = "6.11.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -1101,6 +1101,10 @@ _QQQ_REGIME = qqq_regime.QQQRegime()
 _QQQ_REGIME_SEEDED = False
 _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
 
+# v6.11.0 \u2014 SPY Regime Classifier (C25 short amplification gate).
+import spy_regime  # noqa: E402
+_SPY_REGIME = spy_regime.SpyRegime()
+
 # v5.31.5 \u2014 per-stock local weather cache. Mirrors _QQQ_REGIME but
 # keyed by ticker so the local-override gate can read each stock's own
 # 5m close + EMA9 (and the dashboard can render the per-stock Weather
@@ -1178,6 +1182,12 @@ def _qqq_weather_tick():
                     _spy_last_v = _spy_bars.get("current_price")
             except Exception:
                 pass
+            # v6.11.0 \u2014 advance SPY regime classifier for C25 amp gate.
+            try:
+                if _spy_last_v is not None:
+                    _SPY_REGIME.tick(_now_et(), _spy_last_v)
+            except Exception as _spy_reg_err:
+                logger.warning("[V611] spy_regime tick error: %s", _spy_reg_err)
             _write_macro(
                 ts_utc=_utc_now_iso(),
                 qqq_last=_qqq_last_v,
@@ -5944,6 +5954,12 @@ def reset_daily_state():
     # v5.13.9 \u2014 _regime_bullish reset removed alongside the retired
     # PDC regime alert. v5.26.0 \u2014 RSI regime classifier deleted.
 
+    # v6.11.0 \u2014 C25 SPY regime daily reset so each session classifies fresh.
+    try:
+        _SPY_REGIME.daily_reset()
+    except Exception:
+        logger.exception("reset_daily_state: _SPY_REGIME.daily_reset failed")
+
 
 # ============================================================
 # v6.5.0 M-5 \u2014 GAP DETECT TASK
@@ -6847,6 +6863,20 @@ try:
     )
 except Exception as _ff_err:
     logger.warning("[STARTUP] feature_flags read failed: %s", _ff_err)
+# v6.11.0 -- C25 regime-B amp startup surface.
+try:
+    from eye_of_tiger import (
+        V611_REGIME_B_ENABLED as _v611_enabled,
+        V611_REGIME_B_SHORT_SCALE_MULT as _v611_mult,
+        V611_REGIME_B_SHORT_ARM_HHMM_ET as _v611_arm,
+        V611_REGIME_B_SHORT_DISARM_HHMM_ET as _v611_disarm,
+    )
+    logger.info(
+        "[V611] regime_b_amp=%s mult=%.2fx arm=%s disarm=%s",
+        _v611_enabled, _v611_mult, _v611_arm, _v611_disarm,
+    )
+except Exception as _v611_err:
+    logger.warning("[V611] startup summary failed: %s", _v611_err)
 
 # Smoke-test guard \u2014 lets smoke_test.py import this module without booting
 # the Telegram client, scheduler, OR-collector, or dashboard. The test

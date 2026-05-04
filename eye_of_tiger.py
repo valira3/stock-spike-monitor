@@ -843,3 +843,14 @@ def evaluate_strike_sizing(
         0,
         f"1m DI {di1:.2f} below {P3_SCALED_A_DI_LO} (no tier match)",
     )
+
+
+# ---------------------------------------------------------------------------
+# v6.11.0 -- C25 SPY Regime-B Short Amplification env-var contract.
+# ---------------------------------------------------------------------------
+V611_REGIME_B_SHORT_SCALE_MULT = float(_os.getenv("V611_REGIME_B_SHORT_SCALE_MULT", "1.5"))
+V611_REGIME_B_SHORT_ARM_HHMM_ET = _os.getenv("V611_REGIME_B_SHORT_ARM_HHMM_ET", "10:00")
+V611_REGIME_B_SHORT_DISARM_HHMM_ET = _os.getenv("V611_REGIME_B_SHORT_DISARM_HHMM_ET", "11:00")
+V611_REGIME_B_LOWER_PCT = float(_os.getenv("V611_REGIME_B_LOWER_PCT", "-0.50"))
+V611_REGIME_B_UPPER_PCT = float(_os.getenv("V611_REGIME_B_UPPER_PCT", "-0.15"))
+V611_REGIME_B_ENABLED = _os.getenv("V611_REGIME_B_ENABLED", "1") == "1"

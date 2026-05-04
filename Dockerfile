@@ -27,6 +27,8 @@ COPY error_state.py .
 COPY tiger_buffalo_v5.py .
 # v5.9.0 — QQQ Regime Shield (5m EMA3/EMA9 cross) module.
 COPY qqq_regime.py .
+# v6.11.0 — SPY Regime Classifier (C25 short amplification gate).
+COPY spy_regime.py .
 # v5.10.0 — Eye-of-the-Tiger pure-function evaluators + volume baseline.
 # v5.10.1 — Live-hot-path integration glue (orchestrator).
 # Missing these COPY lines is what crash-looped the v5.10.1 Railway
