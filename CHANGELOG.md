@@ -4,6 +4,49 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.3 (2026-05-04) -- volume_bucket lookback respects US market holidays
+
+Patch release. `volume_bucket._trading_days_back` now skips known US
+equity-market full-closure holidays in addition to weekends.
+
+**Why now.** v6.14.2 made `BAR_ARCHIVE_RETAIN_DAYS` env-overridable
+and we re-seeded the archive back to 2026-01-02 expecting
+`days_available` to clear the 55-day threshold. It did not, because
+`_trading_days_back(today=2026-05-04, n=55)` walked the calendar
+weekday-only and produced a 55-weekday window that included
+**Presidents Day (2026-02-16)** and **Good Friday (2026-04-03)** --
+both full closures with no bar files. AAPL et al pinned at
+`days_available=53`, the gate stayed in COLDSTART, and the dashboard
+kept reporting cold-start state even with infinite retention.
+
+**Fix.** Added `_US_MARKET_HOLIDAYS` (frozenset of `date` covering
+2025-2027 NYSE full closures) and `_is_us_market_holiday(d)`. The
+window walker now skips both weekends and known holidays, so the
+55th trading day actually lands on a date with a `09:30` bar. With
+2026-05-04 as `today`, the lookback now reaches 2026-02-13 (instead
+of 2026-02-16), and AAPL through ORCL all return
+`days_available=55` immediately on next refresh.
+
+**Half-days.** The day-after-Thanksgiving and adjacent July 3 /
+Christmas Eve early-close days are NOT skipped -- they still publish
+a 09:30 bar so the baseline gets a sample. Only full closures count.
+
+**Forward-compatibility.** Holiday set is enumerated for 2025-2027.
+Unknown dates default to "trading day" so a missing entry never
+causes a false skip; the worst-case behaviour is identical to v6.14.2
+for years past the table.
+
+Files touched:
+* `volume_bucket.py` -- `_US_MARKET_HOLIDAYS`, `_is_us_market_holiday`,
+  updated `_trading_days_back` docstring + skip predicate.
+* `bot_version.py`, `trade_genius.py` -- BOT_VERSION 6.14.2 -> 6.14.3;
+  CURRENT_MAIN_NOTE updated (Telegram 34-char rule preserved).
+* `tests/test_v6_14_3_market_holidays.py` -- 8 cases covering the
+  holiday set, the no-holidays-in-window invariant, the
+  Presidents-Day-skip case, and the unknown-future-date fallback.
+
+---
+
 ## v6.14.2 (2026-05-04) -- BAR_ARCHIVE_RETAIN_DAYS env override
 
 Patch release. Makes `bar_archive.DEFAULT_RETAIN_DAYS` env-overridable
