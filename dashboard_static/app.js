@@ -1707,10 +1707,20 @@
       if (typeof b.l === "number") yMin = Math.min(yMin, b.l);
       if (typeof b.h === "number") yMax = Math.max(yMax, b.h);
     }
+    // v6.11.9 — Only widen Y to OR high/low once the OR window has closed
+    // (>= 09:35 ET). Before that, payload.or_high/low can carry stale
+    // values from the previous session, which forces premarket candles
+    // into a sliver at the bottom of the plot (overflow into X-axis
+    // labels). The server stamps `or_fresh: true` when m.or_collected_date
+    // matches today (ET); fall back to false-on-missing for safety so
+    // an older server build never widens Y to stale OR levels.
     const oh = (typeof payload.or_high === "number") ? payload.or_high : null;
     const ol = (typeof payload.or_low === "number") ? payload.or_low : null;
-    if (oh !== null) { yMin = Math.min(yMin, oh); yMax = Math.max(yMax, oh); }
-    if (ol !== null) { yMin = Math.min(yMin, ol); yMax = Math.max(yMax, ol); }
+    const _orFresh = !!payload.or_fresh;
+    if (_orFresh) {
+      if (oh !== null) { yMin = Math.min(yMin, oh); yMax = Math.max(yMax, oh); }
+      if (ol !== null) { yMin = Math.min(yMin, ol); yMax = Math.max(yMax, ol); }
+    }
     if (!isFinite(yMin) || !isFinite(yMax)) return;
     const yPad = (yMax - yMin) * 0.08 || 0.5;
     yMin -= yPad; yMax += yPad;
@@ -1765,29 +1775,36 @@
     // 4am ET–8pm ET window. Mapping ET→CT is -1h: 4am ET=3am CT,
     // 8am ET=7am CT, 9:30 ET=8:30 CT (RTH open separator), 13:00 ET=12 CT,
     // 16:00 ET=3pm CT (RTH close), 20:00 ET=7pm CT.
-    ctx.textAlign = "center";
+    // v6.11.9 — align edge ticks (3am at left edge, 7pm at right edge)
+    // to their respective borders so they don't get clipped on narrow
+    // mobile canvases. Interior ticks stay centered.
     const xTicks = [
-      {m: 240,  l: "3am"},
-      {m: 480,  l: "7am"},
-      {m: 570,  l: "8:30"},
-      {m: 780,  l: "12pm"},
-      {m: 960,  l: "3pm"},
-      {m: 1200, l: "7pm"},
+      {m: 240,  l: "3am",  align: "left"},
+      {m: 480,  l: "7am",  align: "center"},
+      {m: 570,  l: "8:30", align: "center"},
+      {m: 780,  l: "12pm", align: "center"},
+      {m: 960,  l: "3pm",  align: "center"},
+      {m: 1200, l: "7pm",  align: "right"},
     ];
     for (const t of xTicks) {
+      ctx.textAlign = t.align;
       ctx.fillText(t.l, xOf(t.m), cssH - 6);
     }
+    ctx.textAlign = "center";
 
     // OR high/low horizontal lines.
+    // v6.11.9 — only draw if `_orFresh` (post 09:35 ET). Pre-RTH OR
+    // values can be carry-overs from the previous session and would
+    // render miles above today's price action.
     ctx.lineWidth = 1.5;
-    if (oh !== null) {
+    if (_orFresh && oh !== null) {
       ctx.strokeStyle = "#e5b85c";
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
       ctx.moveTo(PAD_L, yOf(oh)); ctx.lineTo(PAD_L + plotW, yOf(oh));
       ctx.stroke();
     }
-    if (ol !== null) {
+    if (_orFresh && ol !== null) {
       ctx.strokeStyle = "#e5b85c";
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
@@ -3327,37 +3344,50 @@
     // (added in dashboard_server._executors_status_snapshot) and lights
     // up one chip per executor when its bootstrap returned a non-None
     // instance. Dim chip = disabled (missing PAPER_KEY or *_ENABLED=0).
+    // v6.11.9 — the brand-row chips are now hidden (display:none on
+    // #tg-exec-chips). The same enabled/disabled signal drives the
+    // ✓ / ✗ mark inside each Val / Gene tab heading instead
+    // (#tg-badge-val / #tg-badge-gene). The chip DOM is still kept
+    // up-to-date so future tooltips / a11y readers can use the same
+    // hook without a JS rewrite if Val ever wants the chips back.
     const execStatus = (s && s.executors_status) || {};
     ["val", "gene"].forEach((name) => {
       const chip = document.getElementById(`tg-exec-chip-${name}`);
-      if (!chip) return;
       const entry = execStatus[name] || { enabled: false, mode: null };
       const enabled = !!entry.enabled;
       const mode = entry.mode || "";
-      const mark = chip.querySelector(".tg-exec-mark");
       const label = name.charAt(0).toUpperCase() + name.slice(1);
-      if (enabled) {
-        chip.classList.remove("tg-exec-off");
-        chip.classList.add("tg-exec-on");
-        chip.style.background = "#0f2417";
-        chip.style.borderColor = "#1f5c3a";
-        chip.style.color = "#34d399";
-        if (mark) mark.textContent = "\u2713";
-        chip.setAttribute(
-          "title",
-          `${label} executor enabled${mode ? ` (${mode} mode)` : ""}`
-        );
-      } else {
-        chip.classList.remove("tg-exec-on");
-        chip.classList.add("tg-exec-off");
-        chip.style.background = "#10151c";
-        chip.style.borderColor = "#1f2937";
-        chip.style.color = "#5b6572";
-        if (mark) mark.textContent = "\u2014";
-        chip.setAttribute(
-          "title",
-          `${label} executor disabled (missing PAPER_KEY or *_ENABLED=0)`
-        );
+      // (1) Hidden brand-row chip — update for back-compat / future use.
+      if (chip) {
+        const mark = chip.querySelector(".tg-exec-mark");
+        if (enabled) {
+          chip.classList.remove("tg-exec-off");
+          chip.classList.add("tg-exec-on");
+          if (mark) mark.textContent = "\u2713";
+        } else {
+          chip.classList.remove("tg-exec-on");
+          chip.classList.add("tg-exec-off");
+          if (mark) mark.textContent = "\u2014";
+        }
+      }
+      // (2) Tab-heading badge — the new visible surface in v6.11.9.
+      const badge = document.getElementById(`tg-badge-${name}`);
+      if (badge) {
+        if (enabled) {
+          badge.textContent = "\u2713";
+          badge.style.color = "#34d399"; // green
+          badge.setAttribute(
+            "title",
+            `${label} executor enabled${mode ? ` (${mode} mode)` : ""}`
+          );
+        } else {
+          badge.textContent = "\u2717";
+          badge.style.color = "#9aa6b2"; // dim grey
+          badge.setAttribute(
+            "title",
+            `${label} executor disabled (missing PAPER_KEY or *_ENABLED=0)`
+          );
+        }
       }
     });
     // v6.4.2 — post-loss cooldown chip + popover. Reads s.v642_flags and
@@ -3380,23 +3410,31 @@
           ? v642.post_loss_cooldown_min_long : cdMin;
         const cdMinShort = (typeof v642.post_loss_cooldown_min_short === "number")
           ? v642.post_loss_cooldown_min_short : cdMin;
-        // Compact badge string
+        // v6.11.9 — always show both long and short timeouts explicitly.
+        // "L:30 / S:30m" when symmetric, "L:0 / S:30m" when one side is
+        // disabled. Previously we collapsed equal sides to "·30m" and
+        // dropped the disabled side entirely ("·S30m"), which made it
+        // look like only one timeout was active when in fact both were
+        // configured — just one was set to 0. Val asked for the pill to
+        // show "just time outs" so the operator can read both knobs at
+        // a glance without opening the popover.
+        // Badge format: "·L:<n>/S:<n>m" (zeros allowed). When BOTH sides
+        // are 0 the chip stays hidden via cdEnabled=false anyway.
         let badgeText, detailText;
-        if (cdMinLong > 0 && cdMinShort > 0 && cdMinLong === cdMinShort) {
-          badgeText  = "\u00b7" + cdMinLong + "m";
-          detailText = "Window: " + cdMinLong + " min (long & short)";
+        const _Lstr = String(cdMinLong | 0);
+        const _Sstr = String(cdMinShort | 0);
+        badgeText = "\u00b7L:" + _Lstr + "/S:" + _Sstr + "m";
+        if (cdMinLong === cdMinShort && cdMinLong > 0) {
+          detailText = "Timeouts: long & short " + cdMinLong + " min";
         } else if (cdMinLong > 0 && cdMinShort > 0) {
-          badgeText  = "\u00b7L" + cdMinLong + "/S" + cdMinShort + "m";
-          detailText = "Windows: long " + cdMinLong + " min, short " + cdMinShort + " min";
+          detailText = "Timeouts: long " + cdMinLong + " min, short " + cdMinShort + " min";
         } else if (cdMinShort > 0) {
-          badgeText  = "\u00b7S" + cdMinShort + "m";
-          detailText = "Window: short only, " + cdMinShort + " min (long disabled)";
+          detailText = "Timeouts: long disabled, short " + cdMinShort + " min";
         } else if (cdMinLong > 0) {
-          badgeText  = "\u00b7L" + cdMinLong + "m";
-          detailText = "Window: long only, " + cdMinLong + " min (short disabled)";
+          detailText = "Timeouts: long " + cdMinLong + " min, short disabled";
         } else {
           badgeText  = "\u00b7off";
-          detailText = "Cooldown disabled";
+          detailText = "Timeouts disabled";
         }
         const cds = (s && Array.isArray(s.active_cooldowns)) ? s.active_cooldowns : [];
         const cdCountEl = document.getElementById("tg-cooldown-count");
@@ -4112,20 +4150,27 @@
   }
 
   function renderBadge(name, data) {
+    // v6.11.9 — simplified to a single ✓ / ✗ mark in the tab heading.
+    // The executor's mode (Live vs Paper) is still surfaced via the
+    // tooltip/title so it's one click away without crowding the tab
+    // strip. Replaces the previous "🟢 Live" / "📄 Paper" / "off" labels.
+    // renderHeader() also writes this badge from s.executors_status as
+    // a faster initial paint; this per-executor poll keeps it accurate
+    // for executors that go offline mid-session.
     const el = $$("tg-badge-" + name);
     if (!el) return;
+    const label = name.charAt(0).toUpperCase() + name.slice(1);
     if (!data || data.enabled === false) {
-      el.textContent = "off";
-      el.style.color = "#5b6572";
+      el.textContent = "\u2717";
+      el.style.color = "#9aa6b2";
+      el.setAttribute("title",
+        `${label} executor disabled (missing PAPER_KEY or *_ENABLED=0)`);
       return;
     }
-    if (data.mode === "live") {
-      el.textContent = "\ud83d\udfe2 Live";
-      el.style.color = "#34d399";
-    } else {
-      el.textContent = "\ud83d\udcc4 Paper";
-      el.style.color = "#8a96a7";
-    }
+    el.textContent = "\u2713";
+    el.style.color = "#34d399";
+    const mode = (data.mode === "live") ? "live" : "paper";
+    el.setAttribute("title", `${label} executor enabled (${mode} mode)`);
   }
 
   // Render helpers shared across Val/Gene. These mirror the formatters
