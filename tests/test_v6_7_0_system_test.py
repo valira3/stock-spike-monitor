@@ -641,8 +641,18 @@ class TestCheckMode(unittest.TestCase):
 class TestCheckDashboard(unittest.TestCase):
     def test_unreachable_warn(self):
         import urllib.error
+        # v6.11.2: login_resp must surface Set-Cookie so the cookie-forward
+        # path can run; the second open() raises to produce the unreachable.
+        login_resp = MagicMock()
+        login_resp.__enter__ = lambda s: s
+        login_resp.__exit__ = MagicMock(return_value=False)
+        login_resp.status = 302
+        login_resp.headers = MagicMock()
+        login_resp.headers.get_all = MagicMock(return_value=[
+            "spike_session=test-token; Path=/; HttpOnly; Secure",
+        ])
         mock_opener = MagicMock()
-        mock_opener.open.side_effect = [MagicMock(status=302), ConnectionRefusedError("refused")]
+        mock_opener.open.side_effect = [login_resp, ConnectionRefusedError("refused")]
         with patch.dict(os.environ, {"DASHBOARD_PASSWORD": "testpw"}),              patch("urllib.request.build_opener", return_value=mock_opener):
             cr = tg._check_dashboard()
         self.assertEqual(cr.severity, "warn")
@@ -653,6 +663,11 @@ class TestCheckDashboard(unittest.TestCase):
         login_resp.__enter__ = lambda s: s
         login_resp.__exit__ = MagicMock(return_value=False)
         login_resp.status = 302
+        # v6.11.2: forward Set-Cookie via headers.get_all for the cookie-jar bypass.
+        login_resp.headers = MagicMock()
+        login_resp.headers.get_all = MagicMock(return_value=[
+            "spike_session=test-token; Path=/; HttpOnly; Secure; SameSite=Strict",
+        ])
         state_resp = MagicMock()
         state_resp.__enter__ = lambda s: s
         state_resp.__exit__ = MagicMock(return_value=False)

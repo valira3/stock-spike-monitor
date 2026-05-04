@@ -107,11 +107,20 @@ class TestCheckDashboardAuthAware(unittest.TestCase):
         self.assertIn("no dashboard password", cr.message)
 
     def _make_login_ok_opener(self, state_data):
-        """Return a mock opener that succeeds login and returns state_data."""
+        """Return a mock opener that succeeds login and returns state_data.
+
+        v6.11.2: login response must expose Set-Cookie via headers.get_all
+        because _check_dashboard now forwards spike_session via an explicit
+        Cookie header (the cookie-jar Secure-flag bypass).
+        """
         login_resp = MagicMock()
         login_resp.__enter__ = lambda s: s
         login_resp.__exit__ = MagicMock(return_value=False)
         login_resp.status = 302
+        login_resp.headers = MagicMock()
+        login_resp.headers.get_all = MagicMock(return_value=[
+            "spike_session=test-token; Path=/; HttpOnly; Secure; SameSite=Strict",
+        ])
 
         state_resp = MagicMock()
         state_resp.__enter__ = lambda s: s
@@ -164,6 +173,11 @@ class TestCheckDashboardAuthAware(unittest.TestCase):
         login_resp.__enter__ = lambda s: s
         login_resp.__exit__ = MagicMock(return_value=False)
         login_resp.status = 302
+        # v6.11.2: must surface the session cookie via Set-Cookie header.
+        login_resp.headers = MagicMock()
+        login_resp.headers.get_all = MagicMock(return_value=[
+            "spike_session=test-token; Path=/; HttpOnly; Secure; SameSite=Strict",
+        ])
 
         state_resp = MagicMock()
         state_resp.__enter__ = lambda s: s

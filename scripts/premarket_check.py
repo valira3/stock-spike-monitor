@@ -35,7 +35,7 @@ from typing import Any
 # Constants
 # ---------------------------------------------------------------------------
 SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.11.1"
+BOT_VERSION_EXPECTED = "6.11.2"
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5
@@ -543,8 +543,32 @@ def check_sizing_helper_smoke() -> dict:
                        _ms_since(t0))
 
 
+class _PreflightNoRedirect(urllib.request.HTTPRedirectHandler):
+    """Suppress 302 redirect-following on dashboard /login (v6.11.2)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _extract_session_cookie(set_cookie_headers) -> str:
+    """Pull `spike_session=<value>` out of Set-Cookie header values.
+
+    Returns just `name=value` for use as a Cookie request header.
+    Empty string if not found.
+    """
+    for raw in set_cookie_headers or []:
+        first_pair = (raw.split(";", 1)[0] or "").strip()
+        if first_pair.startswith("spike_session="):
+            return first_pair
+    return ""
+
+
 def check_dashboard_state() -> dict:
-    """Check 11 -- HTTP login + /api/state validation (soft fail)."""
+    """Check 11 -- HTTP login + /api/state validation (soft fail).
+
+    v6.11.2: forwards spike_session via an explicit Cookie header to
+    bypass http.cookiejar Secure-flag stripping on plain-http loopback.
+    """
     t0 = time.monotonic()
     name = "dashboard_state"
     pw = os.environ.get("DASHBOARD_PASSWORD", "").strip()
@@ -559,7 +583,8 @@ def check_dashboard_state() -> dict:
         import urllib.parse as _uparse
         cookie_jar = _cj.CookieJar()
         opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(cookie_jar)
+            urllib.request.HTTPCookieProcessor(cookie_jar),
+            _PreflightNoRedirect(),
         )
         login_data = _uparse.urlencode({"password": pw}).encode("utf-8")
         login_req = urllib.request.Request(
@@ -567,24 +592,43 @@ def check_dashboard_state() -> dict:
             data=login_data,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "TradeGenius-PreMarket/6.11.1",
+                "User-Agent": "TradeGenius-PreMarket/6.11.2",
                 "Origin": base_url,
+                "Referer": base_url + "/",
             },
         )
+        login_code = 0
+        set_cookie_hdrs = []  # type: list
         try:
             with opener.open(login_req, timeout=5) as r:
                 login_code = r.status
+                set_cookie_hdrs = r.headers.get_all("Set-Cookie") or []
+        except urllib.request.HTTPError as http_exc:
+            login_code = http_exc.code
+            try:
+                set_cookie_hdrs = http_exc.headers.get_all("Set-Cookie") or []
+            except Exception:
+                set_cookie_hdrs = []
         except Exception as exc:
             return _result(name, "WARN",
                            "login failed: %s" % str(exc)[:80],
                            _ms_since(t0))
-        if login_code >= 400:
+        # 200 (legacy) and 302 (HTTPFound) both = success.
+        if login_code >= 400 or login_code == 0:
             return _result(name, "WARN",
                            "login returned HTTP %d" % login_code,
                            _ms_since(t0))
+        cookie_pair = _extract_session_cookie(set_cookie_hdrs)
+        if not cookie_pair:
+            return _result(name, "WARN",
+                           "login ok but no spike_session cookie set",
+                           _ms_since(t0))
         state_req = urllib.request.Request(
             base_url + "/api/state",
-            headers={"User-Agent": "TradeGenius-PreMarket/6.11.1"},
+            headers={
+                "User-Agent": "TradeGenius-PreMarket/6.11.2",
+                "Cookie": cookie_pair,
+            },
         )
         with opener.open(state_req, timeout=5) as r:
             if r.status != 200:

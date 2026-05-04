@@ -4,6 +4,49 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.2 (2026-05-04) -- Dashboard auth hotfix (/test no longer 401s)
+
+### What
+
+- Bug: `/test` and `premarket_check.py` reported `Dashboard: ⚠ unreachable -- HTTP Error 401: Unauthorized`
+  even when the dashboard was healthy.
+- Root cause: dashboard sets `spike_session` cookie with `Secure=True` (correct for the public
+  https deployment). The in-process check hits the local bind on plain `http://127.0.0.1:8080`,
+  and `http.cookiejar.CookieJar` correctly refuses to forward Secure cookies over plain http
+  -- so `/api/state` arrives without a session cookie and returns 401.
+- v6.7.3 already fixed an adjacent `localhost` -> `127.0.0.1` issue but did not address the
+  Secure-flag stripping. Reproduced live: login returns 200 + valid Set-Cookie; /api/state 401.
+
+### Fix
+
+- `_check_dashboard()` in `trade_genius.py` and `check_dashboard_state()` in
+  `scripts/premarket_check.py` now read `Set-Cookie` headers off the login response directly
+  and forward `spike_session=<value>` as an explicit `Cookie:` request header on /api/state.
+  This produces the same wire effect as a browser without depending on the cookie jar's
+  Secure-flag enforcement.
+- Added `_SystestNoRedirect` / `_PreflightNoRedirect` to suppress redirect-following on /login
+  (h_login returns HTTPFound 302; following the redirect is unnecessary and risks the cookie
+  being dropped on the GET / round-trip).
+- Treat both 200 (legacy) and 302 (current HTTPFound) login responses as success.
+- Critical-fail explicitly if /login returns no `spike_session` cookie at all -- previously
+  this masked as a generic /api/state 401.
+
+### Files
+
+- trade_genius.py (+ `_SystestNoRedirect`, `_systest_extract_session_cookie`, refactored `_check_dashboard`)
+- scripts/premarket_check.py (+ `_PreflightNoRedirect`, `_extract_session_cookie`, refactored `check_dashboard_state`)
+- bot_version.py (6.11.1 -> 6.11.2)
+- tests/test_v6_11_2_dashboard_auth.py (new -- regression for cookie-jar Secure-flag issue)
+
+### Verification
+
+- Reproduced live against the production container: pre-fix /api/state -> 401; post-fix path
+  forwards cookie correctly.
+- Patch release: no PDF / ARCHITECTURE.md update (per standing rule).
+- 7 pre-existing test failures on main remain pre-existing.
+
+---
+
 ## v6.11.1 (2026-05-04) -- Pre-market readiness check (Phase 1)
 
 - New: scripts/premarket_check.py -- 14-check market-readiness gate
