@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.7 (2026-05-04) -- Critical: smoke-test guard must be __main__ only
+
+### What broke (within hours of v6.11.6 going live)
+
+All Telegram commands stopped working. Dashboard still served and showed
+v6.11.6, but `/test`, `/status`, etc. did nothing -- bot never received
+updates.
+
+### Root cause
+
+v6.11.6 set `os.environ.setdefault("SSM_SMOKE_TEST", "1")` at module top
+level in `scripts/premarket_check.py`. The intent was: when premarket
+is invoked via `railway ssh`, set SSM_SMOKE_TEST=1 BEFORE its own
+`import trade_genius`, so importing trade_genius does not boot a second
+bot in the SSH session.
+
+The boot path for the LIVE process is:
+
+1. Container starts `python trade_genius.py`.
+2. `trade_genius.py` line 6874 imports `telegram_commands`.
+3. `telegram_commands.py` lines 109-110 import `scripts.premarket_check`
+   at module top level (so /test can append a pre-market section).
+4. `scripts.premarket_check` runs the top-level `os.environ.setdefault`
+   and sets `SSM_SMOKE_TEST=1` in the live process env.
+5. `trade_genius.py` line 6982 reads `SSM_SMOKE_TEST="1"` and takes the
+   smoke-test branch: skips catch-up, scheduler, AND Telegram polling.
+6. Container blocks on `while True: sleep(60)`. Dashboard daemon thread
+   keeps serving (correctly), but no bot.
+
+Log signature confirming this in deploy `5f1555e8`:
+```
+SSM_SMOKE_TEST=1 \u2014 skipping catch-up, scheduler, and Telegram loop
+SSM_SMOKE_TEST=1 \u2014 blocking on idle loop to keep web server alive
+```
+yet the container env had no SSM_SMOKE_TEST set.
+
+### Fix
+
+`scripts/premarket_check.py` -- guard the setdefault with
+`if __name__ == "__main__":` so it only fires on the CLI / cron
+invocation path, never on the import path.
+
+The `railway ssh ...premarket_check.py --in-container` path still gets
+the protection because that invocation makes `__name__ == "__main__"`.
+The `from scripts.premarket_check import run_all_checks` path used by
+`/test` no longer pollutes the env -- and it does not need to, because
+trade_genius is already loaded in `sys.modules` (the calling process IS
+the live bot), so re-importing is a no-op.
+
+### Tests
+
+`tests/test_v6_11_7_smoke_guard_main_only.py` (4 tests):
+1. AST check: `os.environ.setdefault("SSM_SMOKE_TEST", ...)` MUST NOT
+   appear at module top level in `scripts/premarket_check.py`.
+2. AST check: it MUST appear inside an `if __name__ == "__main__":`
+   block.
+3. End-to-end subprocess check: with a clean env, importing
+   `scripts.premarket_check` must NOT set SSM_SMOKE_TEST.
+4. Forward-compat version parity (`bot_version` and
+   `BOT_VERSION_EXPECTED`).
+
+v6.11.6 version-parity tests made forward-compat (was hardcoded
+`6.11.6`).
+
+### Verification
+
+Full preflight: 1208 passed, 1 skipped, 7 baseline failures (unchanged).
+
+---
+
 ## v6.11.6 (2026-05-04) -- Order status enum fix + premarket smoke-test guard + percentage disk thresholds
 
 ### What
