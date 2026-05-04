@@ -42,11 +42,21 @@ _TG_APP_ROOT = "/app"
 if os.path.isdir(_TG_APP_ROOT) and _TG_APP_ROOT not in sys.path:
     sys.path.insert(0, _TG_APP_ROOT)
 
+# v6.11.6 \u2014 trade_genius.py runs full bot startup at module load time
+# (telegram polling, scheduler, ingest threads, executors) UNLESS
+# SSM_SMOKE_TEST=1 is set. Without this guard, every invocation of
+# premarket_check.py inside the live container spawned a SECOND bot
+# polling the same Telegram tokens, producing 409 Conflict storms that
+# cascaded across both prod polling and any concurrent /test calls.
+# Set BEFORE any import of trade_genius (check_version_parity,
+# check_module_imports, etc.). Idempotent.
+os.environ.setdefault("SSM_SMOKE_TEST", "1")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.11.5"
+BOT_VERSION_EXPECTED = "6.11.6"
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5
@@ -65,9 +75,13 @@ _ALPACA_LIVE_URL = "https://api.alpaca.markets/v2/account"
 _ALPACA_DATA_URL = "https://data.alpaca.markets/v2/stocks/AAPL/trades/latest?feed=sip"
 _ALPACA_CLOCK_URL = "https://api.alpaca.markets/v2/clock"
 
-# Minimum free disk space thresholds (bytes).
-_DISK_WARN_BYTES = 1_000_000_000   # 1 GB
-_DISK_FAIL_BYTES = 100_000_000     # 100 MB
+# Minimum free disk space thresholds.
+# v6.11.6: Railway volumes for TradeGenius are 433MB total, so the original
+# absolute 1GB warn threshold can never be satisfied. Use percentage-based
+# thresholds instead, with absolute floors as a safety net for huge volumes.
+_DISK_WARN_PCT_FREE = 15.0    # warn below 15% free
+_DISK_FAIL_PCT_FREE = 5.0     # fail below 5% free
+_DISK_FAIL_BYTES_FLOOR = 50_000_000   # 50 MB hard floor (any volume size)
 
 # Maximum drift (seconds) before time-sync check warns / fails.
 _TIME_DRIFT_WARN_S = 5
@@ -697,18 +711,29 @@ def check_disk_space() -> dict:
                            _ms_since(t0))
         parts = lines[-1].split()
         # df -B1 output: Filesystem 1B-blocks Used Available Use% Mounted
+        total_bytes = int(parts[1])
         free_bytes = int(parts[3])
-        if free_bytes < _DISK_FAIL_BYTES:
+        pct_free = (free_bytes / total_bytes * 100.0) if total_bytes > 0 else 0.0
+        free_mb = free_bytes // 1_000_000
+        total_mb = total_bytes // 1_000_000
+        meta = {
+            "free_bytes": free_bytes,
+            "total_bytes": total_bytes,
+            "pct_free": round(pct_free, 1),
+        }
+        if free_bytes < _DISK_FAIL_BYTES_FLOOR or pct_free < _DISK_FAIL_PCT_FREE:
             return _result(name, "FAIL",
-                           "only %dMB free (< 100MB critical)" % (free_bytes // 1_000_000),
-                           _ms_since(t0), {"free_bytes": free_bytes})
-        if free_bytes < _DISK_WARN_BYTES:
+                           "%dMB free of %dMB (%.1f%% < %.0f%% critical)" % (
+                               free_mb, total_mb, pct_free, _DISK_FAIL_PCT_FREE),
+                           _ms_since(t0), meta)
+        if pct_free < _DISK_WARN_PCT_FREE:
             return _result(name, "WARN",
-                           "%dMB free (< 1GB warning)" % (free_bytes // 1_000_000),
-                           _ms_since(t0), {"free_bytes": free_bytes})
+                           "%dMB free of %dMB (%.1f%% < %.0f%% warning)" % (
+                               free_mb, total_mb, pct_free, _DISK_WARN_PCT_FREE),
+                           _ms_since(t0), meta)
         return _result(name, "PASS",
-                       "%dMB free" % (free_bytes // 1_000_000),
-                       _ms_since(t0), {"free_bytes": free_bytes})
+                       "%dMB free of %dMB (%.1f%%)" % (free_mb, total_mb, pct_free),
+                       _ms_since(t0), meta)
     except Exception as exc:
         return _result(name, "WARN",
                        "df error: %s: %s" % (type(exc).__name__, exc),

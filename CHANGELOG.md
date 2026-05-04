@@ -4,6 +4,73 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.6 (2026-05-04) -- Order status enum fix + premarket smoke-test guard + percentage disk thresholds
+
+### What
+
+Three fixes from the post-v6.11.5 `/test` and 4:30 AM cron run:
+
+1. **Order round-trip still failed with `last=orderstatus.canceled`.**
+   Alpaca's typed client returns `OrderStatus` enums whose `str()`
+   produces `"OrderStatus.CANCELED"`, and v6.11.5's lowercased compare
+   against `{"canceled", "filled", ...}` missed it. Block A reported
+   `status not terminal in 8s (last=orderstatus.canceled)` even though
+   the order had clearly canceled.
+
+2. **Telegram Conflict storm + second bot in container.** Every
+   `railway ssh ...premarket_check.py` invocation was importing
+   `trade_genius` at top level, which boots the full bot (telegram
+   polling, scheduler, ingest, executors). Two bots, same token, both
+   long-polling -> 409 Conflict storm in prod logs.
+
+3. **Disk threshold was a fixed 1GB on a 433MB Railway volume.** The
+   premarket disk check could never clear WARN regardless of actual
+   utilization (saw `disk_space 428MB` with 4% used).
+
+### Fixed
+
+1. **`trade_genius.py` `_check_order_round_trip`:** added
+   `_normalize_status()` that does `str(raw).lower().rsplit(".", 1)[-1]`
+   so `OrderStatus.CANCELED` -> `canceled`. Both `last_seen_status` and
+   the terminal-status check now use the normalized value. Plain strings
+   ("filled", "FILLED") still work unchanged.
+
+2. **`scripts/premarket_check.py`:** added
+   `os.environ.setdefault("SSM_SMOKE_TEST", "1")` BEFORE any
+   `import trade_genius`. With smoke-test mode the bot's polling /
+   scheduler / executors don't start, so SSH-driven preflight runs no
+   longer spawn a second bot.
+
+3. **`scripts/premarket_check.py` disk check:** replaced fixed-byte
+   thresholds with percentage-of-free:
+   - `_DISK_WARN_PCT_FREE = 15.0`
+   - `_DISK_FAIL_PCT_FREE = 5.0`
+   - `_DISK_FAIL_BYTES_FLOOR = 50_000_000` (50MB safety floor for tiny
+     volumes).
+   Reports both percentage and absolute bytes in detail.
+
+### Tests
+
+`tests/test_v6_11_6_enum_smoketest_disk.py` (14 tests):
+- 6 enum normalization (OrderStatus.CANCELED / FILLED / EXPIRED /
+  REJECTED, plain string, uppercase plain).
+- 1 SSM_SMOKE_TEST guard ordering (setdefault before any
+  `import trade_genius`).
+- 5 disk percentage scenarios (PASS / WARN / FAIL by pct, FAIL by
+  bytes-floor, Railway-volume-shape).
+- 2 version parity (`bot_version`, `BOT_VERSION_EXPECTED`).
+
+`tests/test_v6_11_5_order_roundtrip.py::TestVersionParityV6115` updated
+to forward-compat (assert `BOT_VERSION` starts with `6.11.` and matches
+between `bot_version`, `trade_genius`, and `premarket_check`).
+
+### Verification
+
+Full preflight: 1203 passed, 1 skipped, 8 failed (all 8 are pre-existing
+baseline failures, unchanged by this PR).
+
+---
+
 ## v6.11.5 (2026-05-04) -- Order round-trip fix (cancel-first in extended, poll 8s, log last status)
 
 ### What

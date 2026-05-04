@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.11.5"
+BOT_VERSION = "6.11.6"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.11.5"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.11.5: order roundtrip fix\n"
-    "cancel-first in extended,\n"
-    "poll 8s, log last status."
+    "v6.11.6: order status fix\n"
+    "normalize Alpaca enum,\n"
+    "smoke-test guard, % disk."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -5143,12 +5143,23 @@ def _check_order_round_trip() -> CheckResult:
 
         # Poll up to 8s for terminal status (D-08 \u2192 v6.11.5): 200ms intervals.
         # 3s was too tight for paper round-trips during extended hours.
+        # v6.11.6: Alpaca's typed client returns OrderStatus enums whose
+        # str() is 'OrderStatus.CANCELED' (uppercase, prefixed). Normalize
+        # by taking the trailing token after the last '.' and lowercasing.
+        # Without this, polling never matched terminal states and always
+        # timed out reporting last=orderstatus.canceled.
+        def _normalize_status(raw):  # type: ignore[no-untyped-def]
+            s = str(raw).lower().strip()
+            if not s:
+                return ""
+            return s.rsplit(".", 1)[-1]  # 'orderstatus.canceled' -> 'canceled'
+
         deadline = _tm.monotonic() + 8.0
         final_status = None
         last_seen_status = None
         while _tm.monotonic() < deadline:
             o = tc.get_order_by_id(order_id)
-            st = str(getattr(o, "status", "")).lower()
+            st = _normalize_status(getattr(o, "status", ""))
             if st:
                 last_seen_status = st
             if st in ("canceled", "cancelled", "filled", "expired", "rejected"):
