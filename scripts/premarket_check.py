@@ -46,7 +46,7 @@ if os.path.isdir(_TG_APP_ROOT) and _TG_APP_ROOT not in sys.path:
 # Constants
 # ---------------------------------------------------------------------------
 SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.11.4"
+BOT_VERSION_EXPECTED = "6.11.5"
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5

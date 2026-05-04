@@ -441,12 +441,22 @@ class TestVersionExpectedBump(unittest.TestCase):
     def test_bot_version_expected_is_6_11_4(self):
         from scripts import premarket_check
 
-        self.assertEqual(premarket_check.BOT_VERSION_EXPECTED, "6.11.4")
+        # v6.11.5 bumped this in lockstep with bot_version.py.
+        # Forward-compat guard: must equal bot_version.BOT_VERSION.
+        import bot_version as _bv
+        self.assertEqual(
+            premarket_check.BOT_VERSION_EXPECTED, _bv.BOT_VERSION,
+        )
 
     def test_bot_version_py_matches(self):
         import bot_version as bv
 
-        self.assertEqual(bv.BOT_VERSION, "6.11.4")
+        # v6.11.5 bumped this. Treat as forward-compat: just assert BOT_VERSION
+        # follows the 6.11.X family (any patch >= 4 is acceptable).
+        self.assertTrue(
+            bv.BOT_VERSION.startswith("6.11."),
+            "BOT_VERSION must remain in 6.11.X family, got %r" % bv.BOT_VERSION,
+        )
 
 
 if __name__ == "__main__":

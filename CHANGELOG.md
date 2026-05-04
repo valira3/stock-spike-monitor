@@ -4,6 +4,77 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.11.5 (2026-05-04) -- Order round-trip fix (cancel-first in extended, poll 8s, log last status)
+
+### What
+
+Block A `Order round-trip` in the `/test` system check returned
+`status not terminal in 3s (last=unknown)` on every invocation, including
+v6.11.4 with healthy WS and dashboard. Three independent bugs:
+
+1. **EXTENDED hours used DAY TIF orders that don't self-cancel.** RTH IOC
+   self-cancels at the venue, but outside RTH the order sits as `accepted`
+   waiting for the open. The cancel call happened **after** the polling
+   loop, so polling always timed out before terminal status.
+
+2. **3s polling deadline too tight.** Alpaca paper submit + cancel + status
+   propagation can take 2-5s. Zero margin.
+
+3. **`last=unknown` was a lie.** `final_status` only got set when status hit
+   `canceled/cancelled/filled`. Any other status (including the actual
+   terminal-but-overlooked `expired`/`rejected`) caused the loop to exit
+   with `final_status=None`, and the error message reported `unknown`
+   instead of the real last-observed Alpaca state.
+
+### Why
+
+Makes the order round-trip check actually pass during pre-market and
+extended-hours `/test` runs, and makes the failure mode debuggable when it
+does time out.
+
+### How
+
+`trade_genius.py:5132-5189`:
+- **Cancel-first in extended hours**: `tc.cancel_order_by_id` runs
+  immediately after submit, before the poll, so the polling loop confirms
+  the cancel landed.
+- **Poll deadline 3s -> 8s**, polling interval 100ms -> 200ms.
+- **Outer `_safe_check` timeout 5s -> 12s** to accommodate the inner 8s
+  deadline plus submit overhead.
+- **`last_seen_status` tracked separately** from `final_status`. Timeout
+  error reports the actual last status seen (e.g., `last=accepted`), not
+  `unknown`.
+- **`expired` and `rejected` treated as terminal-OK** for the smoke test:
+  any terminal state proves the API path works.
+
+### Live ops side-fix
+
+Disk WARN in pre-market check (286M free, <1GB threshold) traced to
+orphaned `/data/signal_log.jsonl`: 124MB, last write 2026-04-15, **zero
+references in the codebase**. Deleted on the running container during
+diagnosis. Disk usage 33% -> 4%. No code change needed.
+
+### Versions bumped
+
+- `bot_version.py`: 6.11.4 -> 6.11.5
+- `trade_genius.py` BOT_VERSION: 6.11.4 -> 6.11.5
+- `scripts/premarket_check.py` BOT_VERSION_EXPECTED: 6.11.4 -> 6.11.5
+
+### Tests
+
+New `tests/test_v6_11_5_order_roundtrip.py` (9 tests, all pass) covers
+cancel-first in extended, RTH cancel, off-session skip, last-seen-status
+on timeout, expired/rejected as terminal-OK, outer timeout >= 12s, and
+version parity across all three files.
+
+Updated `tests/test_v6_11_4_premarket_paths.py` to use forward-compat
+version-parity assertion (`BOT_VERSION_EXPECTED == bot_version.BOT_VERSION`,
+not hardcoded `'6.11.4'`).
+
+Preflight: 1190 passed, 7 pre-existing failures (matches baseline).
+
+---
+
 ## v6.11.4 (2026-05-04) -- Pre-market check import-path + dashboard key + Alpaca clock fixes
 
 ### What
