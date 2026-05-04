@@ -156,7 +156,16 @@ class VolumeBucketBaseline:
                         key = _bucket_key(bar.get("et_bucket"))
                         if key is None:
                             continue
-                        v = bar.get("iex_volume")
+                        # v6.14.0 \u2014 prefer total_volume (SIP-aggregated)
+                        # over the legacy iex_volume field. The latter
+                        # carries 0 on every SIP-sourced bar (IEX is ~3%
+                        # of total US equity volume), which silently
+                        # nulls the baseline. iex_volume is kept as a
+                        # fallback so historical IEX-era bars on disk
+                        # still contribute to the baseline. Issue #354.
+                        v = bar.get("total_volume")
+                        if v is None:
+                            v = bar.get("iex_volume")
                         if v is None:
                             continue
                         try:
@@ -164,6 +173,11 @@ class VolumeBucketBaseline:
                         except (TypeError, ValueError):
                             continue
                         if vf < 0.0:
+                            continue
+                        # Skip zero-volume readings entirely; they pollute
+                        # the rolling mean and are almost always missing
+                        # data rather than a real flat minute.
+                        if vf == 0.0:
                             continue
                         sums.setdefault(ticker, {}).setdefault(key, 0.0)
                         counts.setdefault(ticker, {}).setdefault(key, 0)

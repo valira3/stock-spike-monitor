@@ -142,9 +142,25 @@ POST_LOSS_COOLDOWN_MIN_SHORT = _read_int(
 #
 # Set to 0 to disable. Per-ticker only \u2014 NOT per-side, because the
 # wash reject is triggered by ANY opposite open order on the symbol.
+#
+# v6.14.0 keeps the 10s default as a defense-in-depth guardrail behind
+# the new cancel-first-then-enter guard (see broker/orders.execute_breakout
+# and `_open_broker_orders` registry). Once the cancel-first path is
+# verified in prod for one full RTH session with zero 40310000 rejects,
+# this can be lowered to 0 via Railway env var.
 POST_EXIT_SAME_TICKER_COOLDOWN_SEC = _read_int(
     "POST_EXIT_SAME_TICKER_COOLDOWN_SEC", 10
 )
+
+# v6.14.0 \u2014 cancel-first-then-enter timeout. When a new entry on a
+# ticker would race against a still-open opposite-side protective order,
+# the entry path issues `cancel_order` for the opposing order(s) and
+# polls broker state for up to this many milliseconds before submitting
+# the new entry. Empirically, Alpaca acks cancels in 50-300 ms; 1500 ms
+# leaves 5x safety margin while still keeping the entry latency bounded.
+# If timeout hits, the entry is SKIPPED rather than risk a 40310000
+# rejection or an orphaned-position outcome.
+CANCEL_ACK_TIMEOUT_MS = _read_int("CANCEL_ACK_TIMEOUT_MS", 1500)
 
 SOVEREIGN_BRAKE_DOLLARS = -500.0
 VELOCITY_FUSE_PCT = 0.01
