@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.2 (2026-05-04) -- BAR_ARCHIVE_RETAIN_DAYS env override
+
+Patch release. Makes `bar_archive.DEFAULT_RETAIN_DAYS` env-overridable
+via `BAR_ARCHIVE_RETAIN_DAYS`, defaulting to the legacy 90 when unset
+or when the value cannot be parsed as int.
+
+**Why now.** The volume_bucket baseline (vAA-1) needs `>= 55` trading
+days of bar history per ticker before it leaves COLDSTART. With the
+hardcoded `retain_days=90`, the daily EOD cleanup in
+`broker/lifecycle.py` (call site: `tg.bar_archive.cleanup_old_dirs(
+retain_days=90)`) was leaving us with only 53 trading days available
+after the Presidents Day + March break holiday cluster -- below the
+55-day threshold, so the gate stayed in COLDSTART and the dashboard
+reported `volume_feed_status` issues even after v6.14.1 fixed the
+feature_flags shim. Operators can now set
+`BAR_ARCHIVE_RETAIN_DAYS=150` (or higher) on Railway to widen the
+retention window and let cold-start finish.
+
+**Disk impact.** The seeded archive is roughly 1.3 MB / trading day
+across the 12 prod tickers, so 150 days is ~200 MB.
+
+**Compatibility.** Default behaviour is identical when the env var is
+unset (90 days). A bogus value (e.g. `BAR_ARCHIVE_RETAIN_DAYS=abc`)
+falls back to 90 with no exception.
+
+Files touched:
+* `bar_archive.py` -- env-overridable `DEFAULT_RETAIN_DAYS`.
+* `bot_version.py`, `trade_genius.py` -- BOT_VERSION 6.14.1 -> 6.14.2;
+  CURRENT_MAIN_NOTE updated (Telegram 34-char rule preserved).
+* `tests/test_v6_14_2_bar_retention_env.py` -- subprocess-isolated
+  cases: unset (=90), explicit value (=120), bogus value (=90).
+
+Safe to deploy alongside an env upsert of `BAR_ARCHIVE_RETAIN_DAYS=150`
+and a re-seed of older bar dates back to ~2026-01-02.
+
+---
+
 ## v6.14.1 (2026-05-04) -- restore engine.feature_flags shim so dashboard shows volume gate state
 
 Patch release. Adds back the tiny `engine/feature_flags.py` module that

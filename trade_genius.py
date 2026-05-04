@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.14.1"
+BOT_VERSION = "6.14.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.14.1"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.14.1: feature_flags shim.\n"
-    "Volume gate visible on UI\n"
-    "Permit Matrix shows column."
+    "v6.14.2: bar retain env var.\n"
+    "BAR_ARCHIVE_RETAIN_DAYS sets\n"
+    "window; volume gate ready."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
