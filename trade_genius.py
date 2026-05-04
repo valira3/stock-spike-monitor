@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.11.12"
+BOT_VERSION = "6.11.13"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -98,9 +98,9 @@ BOT_VERSION = "6.11.12"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v6.11.12: brand row\n"
-    "mobile fit -- tight gap,\n"
-    "drop ET on phones."
+    "v6.11.13: 10s same-ticker\n"
+    "post-exit cooldown -- fixes\n"
+    "Alpaca wash-trade reject."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -3138,6 +3138,14 @@ _last_scan_time = None           # datetime (UTC), updated each scan cycle
 # See eye_of_tiger.POST_LOSS_COOLDOWN_MIN for the configurable window.
 _post_loss_cooldown: dict = {}  # (ticker, side) -> {"until_utc": dt, "loss_pnl": float, "loss_ts_utc": dt}
 
+# v6.11.13 \u2014 same-ticker post-exit cooldown (broker-plumbing guardrail).
+# Per-ticker (not per-side) registry. After ANY exit on a ticker, the next
+# entry on the SAME ticker (either side) is gated for
+# POST_EXIT_SAME_TICKER_COOLDOWN_SEC seconds. Default 10 s; set to 0 to
+# disable. Sized at most by the active universe (~12 tickers in prod).
+# Cleared by reset_daily_state alongside the other cooldown registries.
+_post_exit_cooldown: dict = {}  # ticker -> {"until_utc": dt, "exit_ts_utc": dt, "exit_reason": str}
+
 # User config
 user_config: dict = {"trading_mode": "paper"}
 
@@ -4381,6 +4389,72 @@ def record_post_loss_cooldown(ticker: str, side: str, pnl: float, exit_ts_utc=No
         ticker, side_norm, float(pnl),
         until.strftime("%Y-%m-%dT%H:%M:%SZ"), cd_min,
     )
+
+
+def record_post_exit_cooldown(ticker: str, exit_reason: str = "", exit_ts_utc=None) -> None:
+    """v6.11.13 \u2014 record a post-exit broker-reconciliation window.
+
+    Called from broker.orders.close_breakout for EVERY exit (winner OR
+    loser) so a subsequent entry on the same ticker waits for the broker
+    to clear the prior protective stop. Window is
+    POST_EXIT_SAME_TICKER_COOLDOWN_SEC seconds; <= 0 disables.
+
+    Per-ticker only (not per-side). Alpaca's wash-trade detector
+    (40310000) fires when an opposite-side market/stop is open on the
+    symbol regardless of which side we're trying to enter, so a per-side
+    gate would not catch the bug.
+    """
+    try:
+        from eye_of_tiger import POST_EXIT_SAME_TICKER_COOLDOWN_SEC as _cd_sec
+        cd_sec = int(_cd_sec)
+    except Exception:
+        cd_sec = 10
+    if cd_sec <= 0:
+        return
+    exit_ts = exit_ts_utc or _now_utc()
+    until = exit_ts + timedelta(seconds=cd_sec)
+    _post_exit_cooldown[ticker] = {
+        "until_utc": until,
+        "exit_ts_utc": exit_ts,
+        "exit_reason": str(exit_reason or ""),
+    }
+    logger.info(
+        "[V61113-EXIT-CD] RECORD ticker=%s reason=%s until_utc=%s window_sec=%d",
+        ticker, exit_reason or "unknown",
+        until.strftime("%Y-%m-%dT%H:%M:%SZ"), cd_sec,
+    )
+
+
+def is_in_post_exit_cooldown(ticker: str):
+    """v6.11.13 \u2014 return entry dict if `ticker` is currently inside the
+    post-exit broker-reconciliation window, else None. Auto-prunes
+    expired entries on read.
+    """
+    entry = _post_exit_cooldown.get(ticker)
+    if not entry:
+        return None
+    now = _now_utc()
+    if entry["until_utc"] <= now:
+        _post_exit_cooldown.pop(ticker, None)
+        return None
+    return entry
+
+
+def _check_post_exit_cooldown(ticker: str) -> bool:
+    """v6.11.13 entry gate: returns True if entry may proceed, False while
+    a recent exit on `ticker` is still inside the broker-reconciliation
+    window. Logs a [V61113-EXIT-CD] BLOCK line on veto.
+    """
+    entry = is_in_post_exit_cooldown(ticker)
+    if not entry:
+        return True
+    now = _now_utc()
+    remaining = max(0, int((entry["until_utc"] - now).total_seconds()))
+    logger.info(
+        "[V61113-EXIT-CD] BLOCK ticker=%s reason=%s remaining_sec=%d action=BLOCK_ENTRY",
+        ticker, entry.get("exit_reason") or "unknown", remaining,
+    )
+    return False
 
 
 def is_in_post_loss_cooldown(ticker: str, side: str):
@@ -6057,6 +6131,29 @@ def reset_daily_state():
             )
     except Exception:
         logger.exception("reset_daily_state: _post_loss_cooldown prune failed")
+
+    # v6.11.13 \u2014 same-ticker post-exit cooldown registry. Same cross-day
+    # cleanup rationale: yesterday's last exit at 15:54 should not gate
+    # today's first 09:30 entry on the same ticker. Drop any entry whose
+    # exit timestamp predates today's session open. Live entries (until_utc
+    # in the future from intraday exits) are auto-pruned by
+    # is_in_post_exit_cooldown on read.
+    try:
+        stale_xc = [
+            t for t, v in list(_post_exit_cooldown.items())
+            if v is not None
+            and v.get("exit_ts_utc") is not None
+            and v["exit_ts_utc"].astimezone(ET) < session_open_et
+        ]
+        for t in stale_xc:
+            _post_exit_cooldown.pop(t, None)
+        if stale_xc:
+            logger.info(
+                "reset_daily_state: pruned %d stale _post_exit_cooldown entries",
+                len(stale_xc),
+            )
+    except Exception:
+        logger.exception("reset_daily_state: _post_exit_cooldown prune failed")
 
     # v5.13.9 \u2014 _regime_bullish reset removed alongside the retired
     # PDC regime alert. v5.26.0 \u2014 RSI regime classifier deleted.
