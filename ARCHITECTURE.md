@@ -3753,3 +3753,87 @@ SPY 30m %, regime letter, and C25 amp state in the Phase 1 Weather block.
 
 Set `V611_REGIME_B_ENABLED=0` in Railway. The feature becomes a complete
 no-op without code revert.
+
+---
+
+## §21. Pre-market Readiness Check (v6.11.1)
+
+**Goal:** validate that the live production bot is healthy 5 hours before market open,
+giving Val time to intervene if a check fails before the 09:30 ET bell.
+
+### Cron schedule
+
+Daily at **04:30 ET** on weekdays, invoked via `railway ssh`:
+```
+python3 /app/scripts/premarket_check.py --in-container --json
+```
+The cron itself is created separately via `pplx-tool schedule_cron` after the
+v6.11.1 Railway deploy completes (out of scope for this PR).
+
+### Script: `scripts/premarket_check.py`
+
+Standalone Python script (stdlib only). Two execution modes:
+- `--in-container` (default): direct filesystem + module-import access inside Railway.
+- `--remote`: Phase 1 stub -- errors with "use --in-container via railway ssh".
+
+### 14 checks performed (in order)
+
+Hard failures (FAIL -> overall FAIL, exit 1; fail-fast through check 7):
+
+1. **process_alive** -- `bot_version` importable; `state.db` last write < 24h.
+2. **version_parity** -- `bot_version.BOT_VERSION == trade_genius.BOT_VERSION`.
+3. **module_imports** -- all 17 critical modules import cleanly.
+4. **persistence_reachable** -- `state.db` opens; expected tables present.
+5. **bar_archive_yesterday** -- last-trading-day bar directory non-empty (>= 5 files).
+6. **alpaca_auth_paper** -- paper API credentials validate (200 + `account_number`).
+7. **alpaca_auth_live** -- live API credentials validate (SKIP if not configured).
+
+Soft failures (WARN -> overall WARN if no FAILs; always run):
+
+8. **alpaca_data_feed_recent_trade** -- AAPL latest trade < 1h old.
+9. **classifier_smoke** -- `SpyRegime` + `QQQRegime` classify synthetic bars.
+10. **sizing_helper_smoke** -- `_maybe_apply_regime_b_short_amp` all 6 branches correct.
+11. **dashboard_state** -- `/api/state` reachable; `spy_regime_today` + `v611_window` present.
+12. **disk_space** -- `>= 1 GB` free on `/data` (WARN); `>= 100 MB` (FAIL).
+13. **time_sync** -- local clock vs Alpaca `Date` header drift `<= 5s` (WARN `> 5s`, FAIL `> 30s`).
+14. **cron_introspection** -- SKIP in-container (no Railway API token available).
+15. **replay_smoke** -- SKIP (Phase 2 candidate).
+
+### Output artifact
+
+Written to `/data/preflight/<UTC_date>.json` after each cron run. JSON shape:
+```json
+{
+  "version": "1",
+  "timestamp_utc": "2026-05-04T08:30:00Z",
+  "bot_version": "6.11.1",
+  "overall_status": "PASS",
+  "n_pass": 12, "n_warn": 1, "n_fail": 0, "n_skip": 2,
+  "elapsed_total_ms": 1234,
+  "checks": [...]
+}
+```
+On-demand invocation: the Telegram `/test` command runs the same checks
+(with `write_artifact=False` so the daily artifact is preserved).
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | PASS    |
+| 1    | FAIL    |
+| 2    | WARN    |
+
+### Future hook
+
+v6.12.0 will gate live-session actions on PASS: the bot reads
+`/data/preflight/<today>.json` at startup and refuses to arm if
+`overall_status != "PASS"`. (Controlled by a `V612_STARTUP_GATE` env var.)
+
+### Callable Python API
+
+```python
+from scripts.premarket_check import run_all_checks, format_for_telegram
+result = run_all_checks(in_container=True, write_artifact=False)
+text = format_for_telegram(result)   # compact Telegram-ready string (< 3500 chars)
+```

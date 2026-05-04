@@ -97,21 +97,54 @@ from telegram_ui.commands import (
 from telegram_ui.menu import _build_menu_keyboard, _menu_button  # v5.11.1 PR 3
 
 
+# v6.11.1 — pre-market check integration. Optional: if import fails,
+# cmd_test continues with the existing 15-check body only.
+_premarket_check_available = False
+try:
+    import sys as _sys
+    import os as _os
+    _tg_root = _os.path.dirname(_os.path.abspath(__file__))
+    if _tg_root not in _sys.path:
+        _sys.path.insert(0, _tg_root)
+    from scripts.premarket_check import format_for_telegram as _fmt_premarket
+    from scripts.premarket_check import run_all_checks as _run_premarket
+    _premarket_check_available = True
+except Exception as _pmc_import_err:
+    logger.debug("cmd_test: pre-market check import failed (non-fatal): %s", _pmc_import_err)
+
+
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /test command \u2014 run v6.7.0 expanded system health test (15 checks).
+    """Handle /test command — v6.7.0 15-check system health test plus v6.11.1
+    pre-market readiness check (14 checks, appended after a separator).
 
     Single final edit pattern preserved from v5.1.5 to avoid Telegram
-    editMessageText rate-limit races. The full 15-check run happens in an
-    executor thread (blocking I/O) and returns a pre-formatted body string.
+    editMessageText rate-limit races. Both suites run in executor threads
+    (blocking I/O). Pre-market check failure never breaks the existing output.
     """
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
     prog = await update.message.reply_text(
-        "\U0001f9ea Running system test\u2026 (up to 15s)"
+        "\U0001f9ea Running system test\u2026 (up to 25s)"
     )
 
     loop = asyncio.get_event_loop()
     body = await loop.run_in_executor(None, lambda: _run_system_test_sync_v2("manual"))
+
+    # v6.11.1 — append pre-market check results. write_artifact=False preserves
+    # the daily /data/preflight/<date>.json written by the 04:30 ET cron.
+    if _premarket_check_available:
+        try:
+            pmc_result = await loop.run_in_executor(
+                None,
+                lambda: _run_premarket(in_container=True, write_artifact=False),
+            )
+            pmc_body = _fmt_premarket(pmc_result)
+            body = body + "\n\n---\n\n" + pmc_body
+        except Exception as _pmc_err:
+            body = body + "\n\n---\n\n[ERR] Pre-market check raised: %s: %s" % (
+                type(_pmc_err).__name__, str(_pmc_err)[:120]
+            )
+            logger.warning("cmd_test: pre-market check raised: %s", _pmc_err)
 
     # Single final edit. TelegramBadRequest covers "message is not
     # modified" no-ops; any other failure falls back to reply_text.
@@ -126,7 +159,6 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e2:
             logger.warning("cmd_test: reply_text fallback also failed: %s", e2)
     logger.info("CMD test completed in %.2fs", asyncio.get_event_loop().time() - t0)
-
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show categorized command list.
@@ -160,7 +192,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n"
         "System\n"
         "  /monitoring  Pause/resume scan\n"
-        "  /test        Health check\n"
+        "  /test        Health + premkt\n"
         "  /menu        Quick tap menu\n"
         "\n"
         "Reference\n"
