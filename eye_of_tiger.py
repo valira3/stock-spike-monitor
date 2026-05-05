@@ -363,7 +363,9 @@ def evaluate_volume_bucket(
             # cold-start: insufficient archive history \u2192 pass-through.
             return True
         try:
-            return float(ratio) >= 1.0
+            import volume_bucket as _vb
+            threshold = float(getattr(_vb, "VOLUME_BUCKET_THRESHOLD_RATIO", 1.0))
+            return float(ratio) >= threshold
         except (TypeError, ValueError):
             return False
 

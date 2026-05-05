@@ -27,7 +27,7 @@ from typing import Iterable
 logger = logging.getLogger("trade_genius.volume_bucket")
 
 VOLUME_BUCKET_LOOKBACK_DAYS = 55
-VOLUME_BUCKET_THRESHOLD_RATIO = 1.00
+VOLUME_BUCKET_THRESHOLD_RATIO = float(os.environ.get("VOLUME_BUCKET_THRESHOLD_RATIO", "1.00"))
 VOLUME_BUCKET_COLD_START_PASSTHROUGH = True
 # v6.14.8 \u2014 refresh moved from 09:29 ET to 04:00 ET (pre-market open) so
 # the baseline is loaded for the entire pre-market session, not only the
