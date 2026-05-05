@@ -38,11 +38,18 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# v6.15.3 \u2014 default base dir for the bar archive backfill, mirroring
+# bar_archive.DEFAULT_BASE_DIR. Kept independent so this module has no
+# import dependency on bar_archive.
+_TG_DATA_ROOT = os.environ.get("TG_DATA_ROOT", "/data")
+_DEFAULT_BARS_BASE = os.environ.get("BAR_ARCHIVE_BASE", _TG_DATA_ROOT + "/bars")
 
 # ---------------------------------------------------------------------------
 # Module-level constants (defaults; also used directly by tests).
@@ -122,6 +129,136 @@ class SpyRegime:
         self.spy_30m_return_pct = None
         self.regime = None
         self._classified_at = None
+
+    def backfill_from_bars(
+        self,
+        now_et,
+        bars_path: Optional[str] = None,
+    ) -> bool:
+        """v6.15.3 \u2014 reconstruct today's regime anchors from the SPY
+        bar archive after a process restart.
+
+        Reads ``/data/bars/<YYYY-MM-DD>/SPY.jsonl`` and looks for the
+        bars stamped ``et_bucket='0930'`` and ``et_bucket='1000'``. If
+        both are present, populates ``spy_open_930`` / ``spy_close_1000``
+        from their ``close`` prices and runs ``_classify`` so
+        ``current_regime()`` returns the correct band immediately.
+
+        Why this exists: the in-memory singleton is wiped on every
+        Railway deploy / pod restart. Pre-v6.15.3, a deploy at 12:01 CDT
+        (e.g. shipping a hotfix mid-session) permanently lost today's
+        09:30 anchor \u2014 ``tick()`` only captures during the
+        ``hh==9 mm==30`` window, which had already passed. The 2026-05-05
+        v6.15.0 / v6.15.1 / v6.15.2 deploy storm hit exactly this
+        pathology and left ``regime=None`` for the rest of the session.
+
+        Behaviour:
+          - No-op if anchors are already set.
+          - No-op if SPY archive file for ``today`` is missing.
+          - Best-effort: any parse / IO failure logs WARN and returns False.
+          - Returns True iff classification succeeded.
+
+        ``bars_path`` may be passed for tests; defaults to today's SPY
+        archive at ``$BAR_ARCHIVE_BASE/<YYYY-MM-DD>/SPY.jsonl`` (mirrors
+        ``bar_archive.write_bar``).
+        """
+        # Already classified \u2014 nothing to do.
+        if self.regime is not None:
+            return False
+        # Both anchors already present \u2014 leave alone (caller can
+        # invoke _classify directly if needed).
+        if self.spy_open_930 is not None and self.spy_close_1000 is not None:
+            return False
+
+        if bars_path is None:
+            try:
+                today = now_et.strftime("%Y-%m-%d")
+            except Exception:
+                logger.warning("[V6153-BACKFILL] now_et.strftime failed")
+                return False
+            bars_path = os.path.join(_DEFAULT_BARS_BASE, today, "SPY.jsonl")
+
+        if not os.path.exists(bars_path):
+            logger.info(
+                "[V6153-BACKFILL] no SPY archive at %s \u2014 skipping",
+                bars_path,
+            )
+            return False
+
+        anchor_0930: Optional[float] = None
+        anchor_1000: Optional[float] = None
+        n_lines = 0
+        n_parsed = 0
+        try:
+            with open(bars_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    n_lines += 1
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        bar = json.loads(line)
+                    except (ValueError, TypeError):
+                        # Malformed line \u2014 skip but keep scanning.
+                        continue
+                    n_parsed += 1
+                    bucket = bar.get("et_bucket")
+                    if bucket is None:
+                        continue
+                    bucket_s = str(bucket).strip()
+                    close = bar.get("close")
+                    if close is None:
+                        continue
+                    try:
+                        close_f = float(close)
+                    except (TypeError, ValueError):
+                        continue
+                    if close_f <= 0:
+                        continue
+                    if bucket_s == "0930" and anchor_0930 is None:
+                        anchor_0930 = close_f
+                    elif bucket_s == "1000" and anchor_1000 is None:
+                        anchor_1000 = close_f
+                    if anchor_0930 is not None and anchor_1000 is not None:
+                        break
+        except OSError as e:
+            logger.warning(
+                "[V6153-BACKFILL] read failed for %s: %s",
+                bars_path, e,
+            )
+            return False
+
+        if anchor_0930 is None and anchor_1000 is None:
+            logger.info(
+                "[V6153-BACKFILL] no 0930/1000 buckets in %s "
+                "(lines=%d parsed=%d)",
+                bars_path, n_lines, n_parsed,
+            )
+            return False
+
+        # Adopt whichever anchors we found; only classify when BOTH are
+        # present, mirroring the live tick() contract.
+        if self.spy_open_930 is None and anchor_0930 is not None:
+            self.spy_open_930 = anchor_0930
+        if self.spy_close_1000 is None and anchor_1000 is not None:
+            self.spy_close_1000 = anchor_1000
+
+        if self.spy_open_930 is not None and self.spy_close_1000 is not None:
+            self._classify(now_et)
+            logger.info(
+                "[V6153-BACKFILL] recovered regime=%s from %s "
+                "(spy_open_930=%.4f spy_close_1000=%.4f)",
+                self.regime, bars_path,
+                self.spy_open_930, self.spy_close_1000,
+            )
+            return self.regime is not None
+
+        logger.info(
+            "[V6153-BACKFILL] partial anchors from %s: 0930=%s 1000=%s "
+            "\u2014 waiting for live ticks",
+            bars_path, self.spy_open_930, self.spy_close_1000,
+        )
+        return False
 
     # ------------------------------------------------------------------
     # Internal helpers
