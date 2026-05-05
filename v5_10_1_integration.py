@@ -23,13 +23,32 @@ spec section VII.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timezone
 from typing import Optional
 
 import eye_of_tiger as eot
 import volume_bucket as vb
 
 logger = logging.getLogger("trade_genius.v5_10_1")
+
+
+def _parse_refresh_hhmm_et() -> tuple[int, int]:
+    """Parse VOLUME_BUCKET_REFRESH_HHMM_ET (\"HH:MM\") into (hour, minute).
+
+    Defaults to (4, 0) if the constant is malformed; the gate stays
+    fail-closed (will not fire before the hardcoded fallback time).
+    """
+    raw = getattr(vb, "VOLUME_BUCKET_REFRESH_HHMM_ET", "04:00")
+    try:
+        hh, mm = raw.split(":", 1)
+        return int(hh), int(mm)
+    except Exception:
+        logger.warning(
+            "[V5100-VOLBUCKET] malformed VOLUME_BUCKET_REFRESH_HHMM_ET=%r, "
+            "using 04:00 fallback",
+            raw,
+        )
+        return 4, 0
 
 
 # ---------------------------------------------------------------------
@@ -39,6 +58,11 @@ logger = logging.getLogger("trade_genius.v5_10_1")
 
 _volume_baseline: Optional[vb.VolumeBucketBaseline] = None
 _baseline_refreshed_for_date: Optional[date] = None
+# v6.14.8 \u2014 self-heal rate-limit. Stamped (UTC) every time we attempt
+# a recovery refresh. Compared against
+# vb.VOLUME_BUCKET_SELF_HEAL_INTERVAL_SEC so a wedged scan loop cannot
+# spam refreshes faster than once per interval.
+_last_self_heal_attempt_utc: Optional[datetime] = None
 
 # {ticker: [last 1m close, ...]} \u2014 newest last; capped at 4 entries.
 _last_1m_closes: dict[str, list[float]] = {}
@@ -74,23 +98,76 @@ def get_volume_baseline() -> vb.VolumeBucketBaseline:
     return _volume_baseline
 
 
-def refresh_volume_baseline_if_needed(now_et: datetime) -> bool:
-    """Call once per scan cycle. Refreshes the baseline at 9:29 ET on
-    each new session (Val 28c spec). Returns True if a refresh ran.
+def _baseline_is_empty(baseline: vb.VolumeBucketBaseline) -> bool:
+    """v6.14.8 \u2014 True iff every ticker reports days_available=0.
+
+    A non-empty per-ticker map with all zeros means refresh ran but
+    found no archive coverage (Val\u2019s \u201c0/55 days available\u201d symptom).
+    An empty map means refresh has never been called yet \u2014 the gate
+    handles that path separately.
     """
-    global _baseline_refreshed_for_date
+    per_ticker = baseline.days_available_per_ticker
+    if not per_ticker:
+        return True
+    return all(v == 0 for v in per_ticker.values())
+
+
+def refresh_volume_baseline_if_needed(now_et: datetime) -> bool:
+    """Call once per scan cycle. Refreshes the rolling volume baseline
+    on the first scan tick at-or-after VOLUME_BUCKET_REFRESH_HHMM_ET
+    (default 04:00 ET, v6.14.8) on each new session.
+
+    Self-heal (v6.14.8): if the scheduled refresh has already fired for
+    today but the in-memory baseline is empty (every ticker has
+    days_available=0), trigger a recovery refresh, rate-limited to once
+    per VOLUME_BUCKET_SELF_HEAL_INTERVAL_SEC. This rescues sessions
+    where the 04:00 ET refresh ran before the bar archive had been
+    populated for the lookback window.
+
+    Returns True iff a refresh actually ran (scheduled or recovery).
+    """
+    global _baseline_refreshed_for_date, _last_self_heal_attempt_utc
     today = now_et.date()
-    # Refresh window: from 09:29:00 onward each session, exactly once.
-    if _baseline_refreshed_for_date == today:
+    refresh_h, refresh_m = _parse_refresh_hhmm_et()
+
+    # ---- Scheduled path: first tick at-or-after refresh time today ----
+    if _baseline_refreshed_for_date != today:
+        if now_et.hour < refresh_h or (
+            now_et.hour == refresh_h and now_et.minute < refresh_m
+        ):
+            return False
+        try:
+            get_volume_baseline().refresh(today=today)
+        except Exception as e:
+            logger.warning("[V5100-VOLBUCKET] refresh error: %s", e)
+            return False
+        _baseline_refreshed_for_date = today
+        return True
+
+    # ---- Self-heal path: scheduled refresh already ran today ----
+    baseline = get_volume_baseline()
+    if not _baseline_is_empty(baseline):
         return False
-    if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 29):
+
+    now_utc = datetime.now(timezone.utc)
+    interval = getattr(vb, "VOLUME_BUCKET_SELF_HEAL_INTERVAL_SEC", 60)
+    if (
+        _last_self_heal_attempt_utc is not None
+        and (now_utc - _last_self_heal_attempt_utc).total_seconds() < interval
+    ):
         return False
+    _last_self_heal_attempt_utc = now_utc
+
+    logger.warning(
+        "[V5100-VOLBUCKET-RECOVERY] baseline empty after scheduled "
+        "refresh, retrying (interval=%ds)",
+        interval,
+    )
     try:
-        get_volume_baseline().refresh(today=today)
+        baseline.refresh(today=today)
     except Exception as e:
-        logger.warning("[V5100-VOLBUCKET] refresh error: %s", e)
+        logger.warning("[V5100-VOLBUCKET-RECOVERY] retry error: %s", e)
         return False
-    _baseline_refreshed_for_date = today
     return True
 
 

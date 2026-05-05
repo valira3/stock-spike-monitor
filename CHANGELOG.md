@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.8 (2026-05-05) -- pre-market vol-baseline refresh + self-heal
+
+Patch release. Fixes the `0/55 days available` pre-market dashboard
+symptom and hardens the rolling baseline against archive-population
+races.
+
+**What changed.**
+
+1. **Refresh time moved 09:29 ET to 04:00 ET.** `volume_bucket.py`
+   now exposes `VOLUME_BUCKET_REFRESH_HHMM_ET` (default `"04:00"`)
+   and `v5_10_1_integration.refresh_volume_baseline_if_needed` reads
+   that constant instead of the previous hardcoded `(9, 29)` literal.
+   The first scan tick at-or-after 04:00 ET fires the refresh, so
+   the entire pre-market window evaluates against a real baseline
+   rather than the cold-start passthrough.
+
+2. **Self-heal recovery refresh.** If the scheduled refresh has
+   already fired for today but `days_available_per_ticker` is empty
+   or all-zero, every subsequent scan tick attempts a recovery
+   refresh, rate-limited to once per
+   `VOLUME_BUCKET_SELF_HEAL_INTERVAL_SEC` (default 60 s). Recovery
+   attempts emit `[V5100-VOLBUCKET-RECOVERY]` for forensic capture.
+   The scheduled-path `[V5100-VOLBUCKET]` log signature is unchanged.
+
+**Why.** v6.14.0 fixed the data plumbing (`total_volume`, archive
+backfill). v6.14.7 unpinned the dashboard chip from COLDSTART. But
+the in-memory baseline still refreshed at 09:29 ET, one minute before
+RTH open, so any pre-market dashboard read (04:00 to 09:29 ET) hit a
+baseline that had not loaded for the new session and reported
+`days_available=0/55`. Val confirmed live 2026-05-05 at 05:14 UTC.
+
+**Backtests are unaffected.** The replay path seeds the baseline
+directly via `VolumeBucketBaseline.refresh(today=...)` and never
+reaches this gate.
+
+**Coverage.** `tests/test_v6_14_8_vol_baseline_refresh.py` (5 tests):
+gate boundary at 03:59:59 vs 04:00:00 ET, self-heal trigger when all
+tickers report `days_available=0`, self-heal rate-limit holds inside
+the 60 s window, idempotency under repeated ticks at 04:30 ET with a
+healthy baseline.
+
+**Files.** `volume_bucket.py` (constants), `v5_10_1_integration.py`
+(refresh gate + self-heal branch), `trade_genius.py` (BOT_VERSION,
+CURRENT_MAIN_NOTE), `bot_version.py` (BOT_VERSION), `ARCHITECTURE.md`
+(header + release note), `tests/test_v6_14_8_vol_baseline_refresh.py`.
+
+---
+
 ## v6.14.7 (2026-05-04) -- phase2 vol-gate chip uses real PASS/FAIL
 
 Patch release. Fixes a silent TypeError in `_phase2_block` that has

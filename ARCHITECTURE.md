@@ -1,6 +1,6 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.14.0 · May 2026 -- Volume gate fix end-to-end + cancel-first entry guard.
+> **Version:** v6.14.8 · May 2026 -- Volume baseline pre-market refresh + self-heal.
 >
 > **v6.14.0 volume gate plumbing (issue #354):** The Section II.1 55-day
 > Institutional Oomph baseline never populated correctly from production
@@ -77,6 +77,37 @@
 > session with zero 40310000 rejects,
 > `POST_EXIT_SAME_TICKER_COOLDOWN_SEC=0` can be set via Railway env
 > to recover the +$13 K backtest delta without a code change.
+>
+> **v6.14.8 vol-baseline pre-market refresh + self-heal:** v6.14.0
+> moved the volume baseline data plumbing onto `total_volume` and
+> v6.14.7 made the dashboard chip stop pinning to COLDSTART, but the
+> baseline itself still refreshed at 09:29 ET -- one minute before RTH
+> open. Pre-market dashboard reads (04:00-09:29 ET) therefore hit a
+> baseline that had not yet loaded for the new session, showing
+> `days_available=0/55` for every ticker. v6.14.8 makes two changes in
+> the rolling baseline lifecycle: (1) `volume_bucket.py` exposes
+> `VOLUME_BUCKET_REFRESH_HHMM_ET` (now `"04:00"`) and the gate in
+> `v5_10_1_integration.refresh_volume_baseline_if_needed` reads the
+> constant instead of the previous hardcoded `(9, 29)` literal so the
+> first scan tick at-or-after 04:00 ET fires the refresh; the entire
+> pre-market window evaluates against a real baseline rather than the
+> cold-start passthrough. (2) Self-heal: if the scheduled refresh has
+> already fired for today but `days_available_per_ticker` is empty or
+> all-zero (e.g., the 04:00 refresh ran before the bar archive had
+> been populated for the lookback window), every subsequent scan tick
+> attempts a recovery refresh, rate-limited to once per
+> `VOLUME_BUCKET_SELF_HEAL_INTERVAL_SEC` (default 60 s). Recovery
+> attempts emit `[V5100-VOLBUCKET-RECOVERY]` for forensic capture; the
+> scheduled-path `[V5100-VOLBUCKET]` log signature is unchanged.
+> Backtests are unaffected -- the replay path seeds the baseline
+> directly via `VolumeBucketBaseline.refresh(today=...)` and never
+> reaches this gate. Coverage in
+> `tests/test_v6_14_8_vol_baseline_refresh.py` (4 tests): gate returns
+> False at 03:59:59 ET and True at 04:00:00 ET; self-heal fires when
+> all tickers report `days_available=0`; second self-heal call within
+> the rate-limit window returns False; idempotency under repeated
+> ticks at 04:30 ET with a healthy baseline holds at exactly one
+> refresh.
 >
 > **v6.11.0 baseline (still active for short-side amplification):** C25
 > SPY Regime-B Short Amplification ships unchanged from v6.11.0 through
