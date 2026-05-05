@@ -15,13 +15,12 @@ import volume_bucket as vb
 
 
 def _trading_days_back(today: date, n: int) -> list[date]:
-    out = []
-    d = today - timedelta(days=1)
-    while len(out) < n:
-        if d.weekday() < 5:
-            out.append(d)
-        d -= timedelta(days=1)
-    return out
+    # v6.14.3: production volume_bucket._trading_days_back skips both
+    # weekends AND US market holidays. Tests must use the same helper
+    # so generated bar coverage matches what the baseline counts as
+    # "days available" (otherwise a 55-day weekend-only window grazes
+    # Presidents Day or Good Friday and pins days_available at 53).
+    return vb._trading_days_back(today, n)
 
 
 def _write_bar(base: Path, day: date, ticker: str, et_bucket: str, volume: int):

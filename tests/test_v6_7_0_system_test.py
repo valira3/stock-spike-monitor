@@ -953,17 +953,19 @@ class TestIsRthCt(unittest.TestCase):
         self.assertIsInstance(result, bool)
 
     def test_3am_not_rth(self):
-        # RTH is 8:30-15:00 CT; 3:00 CT is clearly outside
-        from datetime import datetime, timezone, timedelta
-        # America/Chicago is UTC-5 or UTC-6; use a fixed offset for testability
-        # 3:00 AM Chicago = always outside RTH
-        chicago_tz_offset = timedelta(hours=-6)  # CST
-        mock_dt = datetime(2026, 5, 3, 3, 0, 0, tzinfo=timezone(chicago_tz_offset))
-        with patch("trade_genius.CDT", mock_dt.tzinfo):
-            with patch("trade_genius.datetime") as _mock_dt_cls:
-                _mock_dt_cls.now.return_value = mock_dt
-                result = tg._is_rth_ct()
-        self.assertFalse(result)
+        # RTH is 08:30-15:00 CT. _is_rth_ct delegates to _market_session
+        # since v6.7.x, so patch _market_session rather than the datetime
+        # module (older patch path was brittle; the helper does a fresh
+        # `import datetime as _dt_mod` internally).
+        # Use patch.object so we reach the bound module attribute even if a
+        # prior test left the string-path cache in a weird state (see
+        # test_v6_7_3_extended_hours which patches stdlib datetime).
+        with patch.object(tg, "_market_session", return_value="extended"):
+            self.assertFalse(tg._is_rth_ct())
+        with patch.object(tg, "_market_session", return_value="off"):
+            self.assertFalse(tg._is_rth_ct())
+        with patch.object(tg, "_market_session", return_value="rth"):
+            self.assertTrue(tg._is_rth_ct())
 
     def test_930_is_rth(self):
         # 9:30 CT is within RTH window (8:30-15:00 CT)

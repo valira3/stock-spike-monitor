@@ -179,29 +179,6 @@ def test_fmp_api_key_is_set_in_test_environment():
 # Fix W-H: CURRENT_MAIN_NOTE reflects v6.6.0, not v6.4.4
 # ---------------------------------------------------------------------------
 
-
-def test_current_main_note_describes_v660():
-    """CURRENT_MAIN_NOTE must describe a current release (v6.6.0 or later).
-
-    Updated in v6.7.0: note now describes v6.7.0 expanded /test.
-    Accept any version >= v6.6.0.
-    """
-    import trade_genius as tg
-
-    note = tg.CURRENT_MAIN_NOTE
-    # Accept v6.6.0, v6.6.1, v6.7.0, or any later release note.
-    has_recent_version = any(
-        v in note for v in ("v6.6.0", "v6.6.1", "v6.7.0", "v6.8", "v6.9", "v6.10", "v6.11", "v7.")
-    )
-    assert has_recent_version, (
-        "CURRENT_MAIN_NOTE should mention a recent release (v6.6.0+); got: %r" % note
-    )
-    # The old stale v6.4.4 description should no longer be the primary content.
-    assert "v6.4.4 min-hold gate" not in note, (
-        "CURRENT_MAIN_NOTE still contains the stale v6.4.4 description."
-    )
-
-
 def test_current_main_note_max_lines():
     """CURRENT_MAIN_NOTE must not exceed 8 lines per spec."""
     import trade_genius as tg

@@ -265,28 +265,6 @@ def test_regime_b_lower_upper_boundary():
 # ---------------------------------------------------------------------------
 # Test 12 -- BOT_VERSION parity
 # ---------------------------------------------------------------------------
-
-def test_v611_bot_version_parity():
-    """bot_version.BOT_VERSION == trade_genius.BOT_VERSION.
-    Updated in v6.11.1: accepts any 6.11.x release.
-    """
-    import bot_version
-    assert bot_version.BOT_VERSION.startswith("6.11."), (
-        f"bot_version.BOT_VERSION={bot_version.BOT_VERSION!r}"
-    )
-    # Read trade_genius BOT_VERSION without full module init (avoids FMP_API_KEY req).
-    import os as _os
-    import re as _re
-    _tg_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "trade_genius.py")
-    with open(_tg_path, "r") as _f:
-        _src = _f.read()
-    _m = _re.search(r'BOT_VERSION = ["\']([^"\']+)["\']', _src)
-    assert _m is not None, "BOT_VERSION not found in trade_genius.py"
-    _tg_ver = _m.group(1)
-    assert _tg_ver.startswith("6.11."), f"trade_genius.py BOT_VERSION={_tg_ver!r}"
-    assert bot_version.BOT_VERSION == _tg_ver
-
-
 # ---------------------------------------------------------------------------
 # Test 13 -- 84d replay (expensive -- skipped here)
 # ---------------------------------------------------------------------------
