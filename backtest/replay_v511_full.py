@@ -165,6 +165,18 @@ class BacktestClock:
     def now_cdt(self) -> datetime:
         return self.now.astimezone(CDT)
 
+    def now_utc(self) -> datetime:
+        # v6.15.5 \u2014 the bar_archive / volume_bucket future-bar guard
+        # detects "are we under the replay harness?" by checking that
+        # tg._now_utc is bound to a clock-like object. Without this
+        # method (and the matching tg._now_utc patch in
+        # install_record_only_layers) every write_bar / cleanup call
+        # inside the replay loop falls back to wall-clock
+        # datetime.utcnow(), partitions bars under the real-world
+        # today, and prunes pre-(today minus 90d) seed bars.
+        from datetime import timezone as _tz
+        return self.now.astimezone(_tz.utc)
+
 
 # ---------------------------------------------------------------------------
 # Step 3 \u2014 record-only broker layer
@@ -366,6 +378,10 @@ def install_record_only_layers(
     # Clock.
     tg._now_et = clock.now_et
     tg._now_cdt = clock.now_cdt
+    # v6.15.5 \u2014 also expose the simulated UTC clock so bar_archive /
+    # volume_bucket can detect the replay harness and partition bars
+    # by simulated date instead of wall clock.
+    tg._now_utc = clock.now_utc
 
     # Bar fetch \u2014 the engine's `fetch_1min_bars` is called from many
     # sites in trade_genius (gate snapshot, position management, exit

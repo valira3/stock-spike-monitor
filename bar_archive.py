@@ -84,9 +84,58 @@ DAILY_BAR_SCHEMA_FIELDS = (
 )
 
 
+def _replay_clock_today() -> date | None:
+    """v6.15.5 \u2014 return the simulated today when running under the
+    replay harness; None otherwise.
+
+    The backtest harness monkey-patches ``trade_genius._now_utc`` (and
+    ``_now_et``) to read from BacktestClock. Without this hook, every
+    call into write_bar / cleanup_old_dirs / _today_str inside the
+    replay loop falls back to ``datetime.utcnow()`` and writes to the
+    wall-clock-dated partition, leaking real-world today into the
+    archive (and triggering the 90-day cleanup against the wall clock
+    instead of the replay clock).
+
+    The check is intentionally defensive \u2014 if trade_genius is not
+    importable yet (boot ordering) or _now_utc is the unpatched real
+    function, we return None and callers fall back to wall clock.
+    """
+    try:
+        import sys as _sys
+        tg = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+        if tg is None:
+            return None
+        fn = getattr(tg, "_now_utc", None)
+        if fn is None:
+            return None
+        # Heuristic: the harness patches tg._now_utc onto BacktestClock
+        # via clock.now_utc_method (the patcher sets a different qualname
+        # than the module-level _now_utc). The simplest signal is that
+        # the function is bound to a BacktestClock-like object \u2014 we
+        # detect that by checking that the function's __self__ has a
+        # ``now`` attribute. Wall-clock _now_utc() is a free function
+        # with no __self__.
+        owner = getattr(fn, "__self__", None)
+        if owner is None:
+            return None
+        if not hasattr(owner, "now"):
+            return None
+        result = fn()
+        if result is None:
+            return None
+        return result.date()
+    except Exception:
+        return None
+
+
 def _today_str(today: date | None = None) -> str:
     if today is None:
-        today = datetime.utcnow().date()
+        # v6.15.5 \u2014 prefer the replay clock when running under the
+        # backtest harness so write_bar partitions bars by simulated
+        # date instead of real wall-clock today. Outside replay this
+        # path is a no-op (returns None) and we fall back to utcnow().
+        replay_today = _replay_clock_today()
+        today = replay_today if replay_today is not None else datetime.utcnow().date()
     return today.strftime("%Y-%m-%d")
 
 

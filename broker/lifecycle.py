@@ -263,10 +263,17 @@ def eod_close():
         tg.v5_lock_all_tracks("eod")
     except Exception:
         logger.exception("v5_lock_all_tracks failed (eod)")
-    # v5.5.2 \u2014 enforce 90-day retention on the bar archive once per
+    # v5.5.2 \u2014 enforce N-day retention on the bar archive once per
     # day at EOD. Failure-tolerant; never raises.
+    # v6.15.5 \u2014 honour BAR_ARCHIVE_RETAIN_DAYS env (was hardcoded
+    # to 90, ignoring the env var). Backtest sweeps that pre-seed the
+    # archive with > 90 calendar days of history were getting their
+    # seed silently pruned at the first replay EOD and falling back
+    # to COLDSTART for the early corpus dates. The bar_archive module
+    # already exposes the resolved value as DEFAULT_RETAIN_DAYS.
     try:
-        deleted = tg.bar_archive.cleanup_old_dirs(retain_days=90)
+        retain = getattr(tg.bar_archive, "DEFAULT_RETAIN_DAYS", 90)
+        deleted = tg.bar_archive.cleanup_old_dirs(retain_days=retain)
         if deleted:
             logger.info("[V510-BAR] retention cleanup removed %d dated dirs", len(deleted))
     except Exception as e:
