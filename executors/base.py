@@ -684,6 +684,45 @@ class TradeGeniusBase:
         """
         self._last_action_ts[ticker] = time.monotonic()
 
+    @staticmethod
+    def _extract_filled_qty(order, requested_qty: int) -> int:
+        """v6.15.1 \u2014 read the realized fill quantity off an Alpaca order ack.
+
+        Used after IOC LIMIT entry submits, which are terminal by the
+        time submit_order returns: the ack carries the final
+        ``filled_qty`` (full fill, partial fill, or 0 when the limit was
+        not marketable). Pre-v6.15.1 the entry path booked
+        ``requested_qty`` into the position row regardless of the actual
+        fill, so a 24-share request that filled 18 left a stop sized
+        against 24 \u2014 Alpaca then returned 40410000 on the missing 6
+        shares. Reading the broker's truth here keeps the local row
+        honest from t=0 instead of waiting for the post-action
+        reconcile to overwrite it.
+
+        Behaviour:
+          - Reads ``order.filled_qty`` if present and numeric.
+          - Returns int, clamped to ``[0, requested_qty]`` (defensive
+            against a broker bug or test mock returning > requested).
+          - On any parse failure (missing attr, non-numeric, None),
+            falls back to ``requested_qty`` so MARKET / DAY paths and
+            unit-test mocks that don't set ``filled_qty`` keep their
+            pre-v6.15.1 behaviour.
+        """
+        if order is None:
+            return int(requested_qty)
+        raw = getattr(order, "filled_qty", None)
+        if raw is None:
+            return int(requested_qty)
+        try:
+            filled = int(float(raw))
+        except (TypeError, ValueError):
+            return int(requested_qty)
+        if filled < 0:
+            return 0
+        if filled > int(requested_qty):
+            return int(requested_qty)
+        return filled
+
     def _record_position(self, ticker: str, side: str, qty: int, entry_price: float) -> None:
         """Stamp an executor-side record after a successful submit."""
         self.positions[ticker] = {
@@ -1361,8 +1400,27 @@ class TradeGeniusBase:
                 req, order_descr = _build_entry_request("LONG", qty, coid)
                 order = self._submit_order_idempotent(client, req, coid)
                 oid = getattr(order, "id", "?")
-                self._record_position(ticker, "LONG", qty, price)
-                msg = f"\u2705 {label}: {ticker} BUY {qty} shares @ {order_descr} (order_id={oid})"
+                # v6.15.1 \u2014 IOC LIMIT acks carry filled_qty terminal.
+                # Book the ACTUAL fill into the position row so a stop
+                # signal ~ms later does not size against phantom shares.
+                filled_qty = self._extract_filled_qty(order, qty)
+                if filled_qty == 0:
+                    msg = (
+                        f"\u26a0\ufe0f {label}: {ticker} LONG IOC unfilled "
+                        f"(requested={qty}, filled=0, order_id={oid}) "
+                        f"\u2014 no position recorded"
+                    )
+                    logger.warning("[%s] [V6151-PARTIAL] %s", self.NAME, msg)
+                    self._send_own_telegram(msg)
+                    return
+                if filled_qty < qty:
+                    logger.warning(
+                        "[%s] [V6151-PARTIAL] %s LONG partial fill: "
+                        "requested=%d filled=%d order_id=%s",
+                        self.NAME, ticker, qty, filled_qty, oid,
+                    )
+                self._record_position(ticker, "LONG", filled_qty, price)
+                msg = f"\u2705 {label}: {ticker} BUY {filled_qty} shares @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
                 # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
@@ -1376,8 +1434,25 @@ class TradeGeniusBase:
                 req, order_descr = _build_entry_request("SHORT", qty, coid)
                 order = self._submit_order_idempotent(client, req, coid)
                 oid = getattr(order, "id", "?")
-                self._record_position(ticker, "SHORT", qty, price)
-                msg = f"\u2705 {label}: {ticker} SELL {qty} shares short @ {order_descr} (order_id={oid})"
+                # v6.15.1 \u2014 same partial-fill handling as LONG above.
+                filled_qty = self._extract_filled_qty(order, qty)
+                if filled_qty == 0:
+                    msg = (
+                        f"\u26a0\ufe0f {label}: {ticker} SHORT IOC unfilled "
+                        f"(requested={qty}, filled=0, order_id={oid}) "
+                        f"\u2014 no position recorded"
+                    )
+                    logger.warning("[%s] [V6151-PARTIAL] %s", self.NAME, msg)
+                    self._send_own_telegram(msg)
+                    return
+                if filled_qty < qty:
+                    logger.warning(
+                        "[%s] [V6151-PARTIAL] %s SHORT partial fill: "
+                        "requested=%d filled=%d order_id=%s",
+                        self.NAME, ticker, qty, filled_qty, oid,
+                    )
+                self._record_position(ticker, "SHORT", filled_qty, price)
+                msg = f"\u2705 {label}: {ticker} SELL {filled_qty} shares short @ {order_descr} (order_id={oid})"
                 logger.info(msg)
                 self._send_own_telegram(msg)
                 # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
