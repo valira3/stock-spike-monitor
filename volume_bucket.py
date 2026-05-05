@@ -121,13 +121,69 @@ def _trading_days_back(end: date, n: int) -> list[date]:
     return out
 
 
+def _replay_clock_now_utc() -> datetime | None:
+    """v6.15.5 \u2014 defense-in-depth: return BacktestClock now-UTC if
+    the replay harness has patched it, else None.
+
+    Used by ``_read_bars_for_day`` to filter out any bar whose ``ts``
+    is in the future relative to the simulated clock. Belt-and-braces
+    against any code path that might land a future-dated bar in the
+    archive (a misconfigured seed, a wall-clock write_bar, etc.).
+    Outside replay (``__self__`` is None), returns None and the
+    caller emits every bar unfiltered.
+    """
+    try:
+        import sys as _sys
+        tg = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+        if tg is None:
+            return None
+        fn = getattr(tg, "_now_utc", None)
+        if fn is None:
+            return None
+        owner = getattr(fn, "__self__", None)
+        if owner is None or not hasattr(owner, "now"):
+            return None
+        return fn()
+    except Exception:
+        return None
+
+
+def _parse_bar_ts(bar: dict) -> datetime | None:
+    """v6.15.5 \u2014 best-effort UTC parse of a bar's ``ts`` field.
+    Returns None on parse failure (caller must treat that as 'unknown'
+    and pass the bar through to preserve legacy behaviour).
+    """
+    ts = bar.get("ts") if bar is not None else None
+    if not ts:
+        return None
+    try:
+        s = str(ts).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            from datetime import timezone as _tz
+            dt = dt.replace(tzinfo=_tz.utc)
+        return dt
+    except (TypeError, ValueError):
+        return None
+
+
 def _read_bars_for_day(base_dir: str, day: date, ticker: str) -> Iterable[dict]:
     """Yield bar dicts for a single (day, ticker). Missing file or
     parse errors yield nothing.
+
+    v6.15.5 \u2014 when running under the replay harness, drop any bar
+    whose ``ts`` is strictly greater than the BacktestClock's current
+    UTC moment. This is defence-in-depth against future-dated bars
+    accidentally landing in the archive (seed contamination, a
+    wall-clock-keyed write_bar, etc.). Outside replay this branch is
+    a no-op (cutoff is None).
     """
     fp = Path(base_dir) / day.strftime("%Y-%m-%d") / f"{ticker.upper()}.jsonl"
     if not fp.exists():
         return
+    cutoff = _replay_clock_now_utc()
     try:
         with open(fp, "r", encoding="utf-8") as fh:
             for ln in fh:
@@ -135,9 +191,18 @@ def _read_bars_for_day(base_dir: str, day: date, ticker: str) -> Iterable[dict]:
                 if not ln:
                     continue
                 try:
-                    yield json.loads(ln)
+                    bar = json.loads(ln)
                 except json.JSONDecodeError:
                     continue
+                if cutoff is not None:
+                    bar_ts = _parse_bar_ts(bar)
+                    # If parse fails, pass the bar through (legacy
+                    # bars without a parsable ts must not break the
+                    # baseline). If it parses and is in the future,
+                    # drop it.
+                    if bar_ts is not None and bar_ts > cutoff:
+                        continue
+                yield bar
     except OSError:
         return
 
