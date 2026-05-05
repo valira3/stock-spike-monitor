@@ -60,9 +60,12 @@ def test_extract_filled_qty_partial(base_cls):
 
 
 def test_extract_filled_qty_zero_fill(base_cls):
-    """IOC limit unfilled \u2014 ack carries filled_qty=0."""
+    """IOC limit unfilled \u2014 ack carries filled_qty=0.
+    v6.15.2 \u2014 zero-fill is only terminal when the order was IOC,
+    so we pass an IOC-tagged req to lock in v6.15.1 semantics."""
     order = types.SimpleNamespace(id="o1", filled_qty="0")
-    assert base_cls._extract_filled_qty(order, 24) == 0
+    ioc_req = types.SimpleNamespace(time_in_force="IOC")
+    assert base_cls._extract_filled_qty(order, 24, req=ioc_req) == 0
 
 
 def test_extract_filled_qty_missing_attr_legacy_mock(base_cls):
