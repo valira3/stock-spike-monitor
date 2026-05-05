@@ -93,15 +93,17 @@ def test_trading_days_back_skips_holiday_at_start():
     assert days == [date(2026, 4, 2)]
 
 
-def test_bot_version_is_6_14_3():
-    """Version-pin parity check (matches the per-version tests on main)."""
+def test_bot_version_is_6_14_3_or_newer():
+    """Version-pin parity check (matches the per-version tests on main).
+
+    Originally pinned 6.14.3; relaxed to a 6.14.3-or-newer floor so
+    future minor/major bumps (e.g. 6.15.0 broker fidelity) do not break
+    this parity check. Strict equality is enforced by the CHANGELOG
+    <-> code consistency check in scripts/preflight.sh.
+    """
     if "bot_version" in sys.modules:
         del sys.modules["bot_version"]
     import bot_version
-    # Originally pinned 6.14.3; relaxed to a 6.14.x lower bound so future
-    # patch bumps in the same minor line do not break this version-pin
-    # parity check. Strict equality is enforced by the CHANGELOG <-> code
-    # consistency check in scripts/preflight.sh.
     parts = bot_version.BOT_VERSION.split(".")
-    assert (int(parts[0]), int(parts[1])) >= (6, 14)
-    assert int(parts[2]) >= 3
+    major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+    assert (major, minor, patch) >= (6, 14, 3)

@@ -7,7 +7,7 @@ Covers:
     fires a SentinelAction with EXIT_REASON_PRICE_STOP
   * evaluate_sentinel wires the new alarm into the tick result
   * SentinelResult.has_full_exit and exit_reason recognise the new code
-  * broker.order_types routes EXIT_REASON_PRICE_STOP to STOP_MARKET
+  * broker.order_types routes EXIT_REASON_PRICE_STOP to STOP_LIMIT (v6.15.0)
 
 The new sub-alarm sits next to A_LOSS on the same Alarm A rail. The
 price rail typically fires first in a slow drift scenario where the
@@ -262,15 +262,22 @@ def test_r2_hard_stop_outranks_price_stop():
 # ---------------------------------------------------------------------------
 
 
-def test_price_stop_routes_to_stop_market():
-    """REASON_PRICE_STOP must map to STOP_MARKET, like R-2."""
+def test_price_stop_routes_to_stop_limit():
+    """v6.15.0 \u2014 REASON_PRICE_STOP now maps to STOP_LIMIT (was STOP_MARKET).
+
+    The protective price-rail stop is the dominant exit reason on a
+    typical session and STOP_MARKET routinely slipped 0.5\u20131%% past
+    the trigger in fast tape. STOP_LIMIT with a 30bps slip cap closes
+    the gap to Alpaca's account P/L. R-2 hard stop and the velocity
+    ratchet stay STOP_MARKET (test_r2_routes_to_stop_market below).
+    """
     from broker.order_types import (
-        ORDER_TYPE_STOP_MARKET,
+        ORDER_TYPE_STOP_LIMIT,
         REASON_PRICE_STOP,
         order_type_for_reason,
     )
 
-    assert order_type_for_reason(REASON_PRICE_STOP) == ORDER_TYPE_STOP_MARKET
+    assert order_type_for_reason(REASON_PRICE_STOP) == ORDER_TYPE_STOP_LIMIT
 
 
 def test_price_stop_constant_matches_sentinel():

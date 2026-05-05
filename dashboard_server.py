@@ -893,6 +893,33 @@ def snapshot() -> dict[str, Any]:
             unreal_sum += row["unrealized"]
         day_pnl = realized + unreal_sum
 
+        # v6.15.0 \u2014 broker-side (Alpaca) running P/L for parity with
+        # the live account. The bot persists ``trade_log.jsonl`` (closed
+        # round-trips) plus ``open_pnl.jsonl`` (a snapshot per sentinel
+        # tick of unrealized P/L per open Alpaca position). Sum gives a
+        # number that should track Alpaca's day P/L; reconciliation
+        # gaps are now visible without leaving the dashboard.
+        broker_closed_today = 0.0
+        try:
+            for t in getattr(m, "trade_log", []) or []:
+                if t.get("date") == today:
+                    broker_closed_today += float(t.get("pnl", 0.0) or 0.0)
+        except Exception:
+            broker_closed_today = 0.0
+        broker_open_pnl = 0.0
+        broker_open_n = 0
+        broker_open_ts = None
+        try:
+            from broker.open_pnl import read_latest_open_pnl
+            rec = read_latest_open_pnl()
+            if rec is not None:
+                broker_open_pnl = float(rec.get("total_unrealized") or 0.0)
+                broker_open_n = int(rec.get("n_open") or 0)
+                broker_open_ts = rec.get("ts_utc")
+        except Exception:
+            pass
+        broker_day_pnl = broker_closed_today + broker_open_pnl
+
         # v3.4.29 — Sovereign Regime Shield live state for the dashboard.
         sovereign = _sovereign_regime_snapshot(m)
 
@@ -1252,6 +1279,14 @@ def snapshot() -> dict[str, Any]:
                 "day_pnl": day_pnl,
                 "day_pnl_realized": realized,
                 "day_pnl_unrealized": unreal_sum,
+                # v6.15.0 \u2014 broker (Alpaca) view, separate from the
+                # paper-book numbers above. Closed comes from
+                # trade_log.jsonl, open from open_pnl.jsonl.
+                "broker_day_pnl": broker_day_pnl,
+                "broker_closed": broker_closed_today,
+                "broker_open_pnl": broker_open_pnl,
+                "broker_open_n": broker_open_n,
+                "broker_open_ts": broker_open_ts,
             },
             "positions": _serialize_positions(longs, shorts, prices),
             # v5.5.7 \u2014 paper executor's most recent emitted signal
