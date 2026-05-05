@@ -536,8 +536,12 @@ def check_breakout(ticker, side):
             )
             return False, None
 
-    # v5.26.0 \u2014 Volume Bucket gate (Section II.1) deleted. BL-3 / BU-3
-    # are BYPASSED per spec amendment 2026-04-30.
+    # v5.26.0 \u2014 BL-3 / BU-3 (volume bucket gate, Section II.1) were
+    # BYPASSED per spec amendment 2026-04-30. v6.14.10 reverses that:
+    # the live evaluation is now wired in below at the entry-1 decision
+    # call via tg.eot_glue.evaluate_volume_bucket_live(ticker, now_et,
+    # bars). VOLUME_GATE_LIVE_ENFORCE=false in env disables enforcement
+    # without flipping VOLUME_GATE_ENABLED (which the dashboard reads).
 
     # v15.0 SPEC Permission Ladder:
     #   Strike 1 \u2014 2x consecutive 1m close above ORH (long) / below ORL (short).
@@ -834,11 +838,28 @@ def check_breakout(ticker, side):
                 _alarm_e_err,
             )
 
+    # v6.14.10 \u2014 wire the live volume-bucket evaluator. Returns
+    # ok=True for every non-FAIL path (disabled, live-enforce-off,
+    # pre-10am, coldstart, no-bucket, pass) so the gate can only
+    # *reject* trades when the spec demands it. FAIL is logged inside
+    # the helper as [V6_14_10-VOLGATE-FAIL].
+    try:
+        _vol_res = tg.eot_glue.evaluate_volume_bucket_live(
+            ticker, now_et, bars
+        )
+        _vol_ok = bool(_vol_res.get("ok", True))
+    except Exception as _vol_err:
+        tg.logger.warning(
+            "[V6_14_10-VOLGATE-ERR] %s eval error: %s; passing",
+            ticker, _vol_err,
+        )
+        _vol_ok = True
+
     entry1_decision = tg.eot_glue.evaluate_entry_1_decision(
         ticker,
         side_label,
         permit_open=True,
-        volume_bucket_ok=True,
+        volume_bucket_ok=_vol_ok,
         boundary_hold_ok=True,
         di_5m=di_5m,
         di_1m=di_1m,

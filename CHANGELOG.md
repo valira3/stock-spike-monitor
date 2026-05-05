@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.10 (2026-05-05) -- live volume-gate wired into entry path
+
+Patch release. Reverses the v5.26.0 spec amendment that BYPASSED the
+BL-3 / BU-3 Volume Bucket gate in the production entry path. The gate
+is now evaluated live at every entry-1 decision via the new helper
+`v5_10_1_integration.evaluate_volume_bucket_live(ticker, now_et, bars)`,
+whose `ok` flag is passed straight through to
+`evaluate_entry_1_decision(volume_bucket_ok=...)`.
+
+**What changed.**
+
+1. **`broker/orders.py:check_breakout`** \u2014 the hardcoded
+   `volume_bucket_ok=True` argument to `evaluate_entry_1_decision`
+   is replaced with a runtime call to the new live evaluator. A
+   try/except passes the gate when the helper itself errors so a
+   bug in the gate cannot block all entries.
+
+2. **`v5_10_1_integration.evaluate_volume_bucket_live`** \u2014 new
+   helper that mirrors the dashboard\'s bucket-and-volume lookup so
+   prod and dashboard cannot disagree. Returns `ok=True` for every
+   non-FAIL path: `VOLUME_GATE_ENABLED=False`, `VOLUME_GATE_LIVE_ENFORCE=false`,
+   pre-10:00 ET, no resolvable bucket, baseline COLDSTART, and PASS.
+   `gate=FAIL` is the only rejection path; FAIL emits a forensic
+   `[V6_14_10-VOLGATE-FAIL]` log line.
+
+3. **`VOLUME_GATE_LIVE_ENFORCE`** \u2014 new isolation knob. Set to
+   `false` to disable live enforcement without touching
+   `VOLUME_GATE_ENABLED` (which the dashboard chip also reads).
+   Default behavior: enforce.
+
+4. **`tests/test_v6_14_10_vol_gate_live.py`** \u2014 8 unit tests
+   covering disabled, live-enforce-off, pre-10am, no-bucket,
+   coldstart, pass, fail, and bars=None paths.
+
+**Spec note.** v5.26.0 (2026-04-30) amendment that retired BL-3/BU-3
+is hereby reversed; the bypass comment block at `broker/orders.py:539`
+is updated to reflect the rewire. Section II.1 is live again.
+
+**Backtest impact.** The replay path runs `check_breakout` via
+`broker/lifecycle.check_entry`, so backtests now exercise the same
+gate as prod. Same-day, same-config replays remain bit-identical
+(verified with 4x 2026-01-28 reruns at 0.85: $-157.52 every time).
+Earlier sweep variance was traced to per-slot bar-archive carry-over
+across days within a variant, not to non-determinism inside the
+replay engine.
+
+---
+
 ## v6.14.9 (2026-05-05) -- volume-gate threshold env-tunable
 
 Patch release. Wires the existing `VOLUME_BUCKET_THRESHOLD_RATIO`
