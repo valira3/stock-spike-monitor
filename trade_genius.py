@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.15.3"
+BOT_VERSION = "6.15.4"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -603,7 +603,13 @@ def _v512_quote_snapshot(ticker: str):
     exception we retry once with a 100ms sleep before giving up.
     """
     try:
-        client = _historical_data_client() if "_historical_data_client" in globals() else None
+        # v6.15.4 \u2014 the v6.15.2 PR shipped a broken reference to
+        # `_historical_data_client` which never existed in this module;
+        # the real factory is `_alpaca_data_client`. The typo silently
+        # routed every quote request through the synthetic-spread
+        # fallback because the `in globals()` guard always evaluated
+        # False, so live bid/ask was never consulted post-v6.15.2.
+        client = _alpaca_data_client() if "_alpaca_data_client" in globals() else None
         if client is None:
             try:
                 logger.warning("[V6152-QUOTE] %s client_unavailable", ticker)

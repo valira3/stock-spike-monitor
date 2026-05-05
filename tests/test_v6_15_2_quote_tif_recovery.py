@@ -170,7 +170,7 @@ def test_synthetic_quote_non_numeric_returns_none(tg_module):
 
 def test_quote_snapshot_logs_client_unavailable(tg_module, caplog):
     """No data client \u2192 [V6152-QUOTE] client_unavailable WARN."""
-    # _historical_data_client returning None already simulated by the
+    # _alpaca_data_client returning None already simulated by the
     # test environment (no real Alpaca credentials in SMOKE mode).
     caplog.set_level("WARNING")
     bid, ask = tg_module._v512_quote_snapshot("AAPL")
@@ -199,7 +199,7 @@ def test_quote_snapshot_retries_on_api_error(tg_module, monkeypatch, caplog):
             return {"AAPL": types.SimpleNamespace(bid_price=283.74, ask_price=284.02)}
 
     flaky = _FlakyClient()
-    monkeypatch.setattr(tg_module, "_historical_data_client", lambda: flaky, raising=False)
+    monkeypatch.setattr(tg_module, "_alpaca_data_client", lambda: flaky, raising=False)
 
     bid, ask = tg_module._v512_quote_snapshot("AAPL")
     assert flaky.calls == 2, "must have retried once after the 502"
@@ -215,7 +215,7 @@ def test_quote_snapshot_logs_no_record(tg_module, monkeypatch, caplog):
         def get_stock_latest_quote(self, _req):
             return {}
 
-    monkeypatch.setattr(tg_module, "_historical_data_client", lambda: _EmptyClient(), raising=False)
+    monkeypatch.setattr(tg_module, "_alpaca_data_client", lambda: _EmptyClient(), raising=False)
     bid, ask = tg_module._v512_quote_snapshot("AAPL")
     assert (bid, ask) == (None, None)
     assert any("no_record" in r.getMessage() for r in caplog.records)
@@ -229,7 +229,7 @@ def test_quote_snapshot_logs_non_positive(tg_module, monkeypatch, caplog):
         def get_stock_latest_quote(self, _req):
             return {"AAPL": types.SimpleNamespace(bid_price=0.0, ask_price=283.50)}
 
-    monkeypatch.setattr(tg_module, "_historical_data_client", lambda: _ZeroClient(), raising=False)
+    monkeypatch.setattr(tg_module, "_alpaca_data_client", lambda: _ZeroClient(), raising=False)
     bid, ask = tg_module._v512_quote_snapshot("AAPL")
     assert (bid, ask) == (None, None)
     assert any("non_positive" in r.getMessage() for r in caplog.records)
@@ -242,7 +242,7 @@ def test_quote_snapshot_happy_path(tg_module, monkeypatch):
         def get_stock_latest_quote(self, _req):
             return {"AAPL": types.SimpleNamespace(bid_price=283.74, ask_price=284.02)}
 
-    monkeypatch.setattr(tg_module, "_historical_data_client", lambda: _GoodClient(), raising=False)
+    monkeypatch.setattr(tg_module, "_alpaca_data_client", lambda: _GoodClient(), raising=False)
     bid, ask = tg_module._v512_quote_snapshot("AAPL")
     assert bid == 283.74 and ask == 284.02
 
