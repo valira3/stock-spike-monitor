@@ -268,6 +268,141 @@ def evaluate_volume_bucket_gate(
 
 
 # ---------------------------------------------------------------------
+# v6.14.10 \u2014 Live volume-bucket gate (Section II.1, vAA-1)
+# ---------------------------------------------------------------------
+#
+# History: v5.26.0 spec amendment (2026-04-30) BYPASSED the BL-3/BU-3
+# Volume Bucket gate in the production entry path; broker/orders.py
+# hardcoded ``volume_bucket_ok=True`` when calling
+# ``evaluate_entry_1_decision``. The dashboard kept reading the gate
+# state for display, but no live entry could be rejected on volume.
+#
+# v6.14.10 reverses the bypass behind a new env knob
+# ``VOLUME_GATE_LIVE_ENFORCE`` (default True). The evaluator below
+# mirrors the dashboard's bucket-and-archive-volume lookup so prod
+# and dashboard can never disagree about whether a given tick passes
+# the gate. vAA-1 spec rules are honoured exactly:
+#
+#   * VOLUME_GATE_ENABLED False  -> True   (kill switch)
+#   * VOLUME_GATE_LIVE_ENFORCE False -> True (kill switch, layer 2)
+#   * now_et < 10:00 ET          -> True   (spec L-P2-S3 / S-P2-S3)
+#   * baseline COLDSTART          -> True   (insufficient history)
+#   * gate PASS                   -> True
+#   * gate FAIL                   -> False  (the only rejection path)
+#
+# Entries inherit ``VOLUME_BUCKET_THRESHOLD_RATIO`` from
+# ``volume_bucket.py`` exactly as the dashboard does; setting that env
+# var lower (e.g. 0.85) admits trades the strict 1.00 default would
+# reject.
+
+
+def evaluate_volume_bucket_live(
+    ticker: str,
+    now_et: datetime,
+    bars: dict | None,
+) -> dict:
+    """Live entry-path volume-bucket evaluator (v6.14.10).
+
+    Returns a dict with keys:
+        ok: bool          - True means "gate open, do not reject".
+        reason: str       - human-readable status (passthrough, pass,
+                            fail, coldstart, disabled, no_bucket, etc).
+        gate: str | None  - raw bb.check() gate when evaluated, else None.
+        ratio: float|None - raw ratio when evaluated.
+        bucket: str|None  - just-closed bucket key when evaluated.
+
+    The caller in broker/orders.py uses ``ok`` directly as the
+    ``volume_bucket_ok`` argument to ``evaluate_entry_1_decision``.
+    Every non-FAIL path returns ok=True so the gate can only
+    *reject* trades when the spec demands it (post-10:00 ET, with
+    sufficient baseline coverage, and ratio strictly under the
+    configured threshold).
+    """
+    import os as _os
+    from engine import feature_flags as _ff
+
+    # Layer 1: spec-level kill switch (also gates the dashboard chip).
+    if not _ff.VOLUME_GATE_ENABLED:
+        return {"ok": True, "reason": "disabled", "gate": None,
+                "ratio": None, "bucket": None}
+
+    # Layer 2: v6.14.10 isolation knob \u2014 lets us flip live enforcement
+    # off without touching VOLUME_GATE_ENABLED (which the dashboard
+    # also reads). Default True so the gate enforces by default.
+    enforce_raw = _os.environ.get("VOLUME_GATE_LIVE_ENFORCE")
+    if enforce_raw is not None:
+        if enforce_raw.strip().lower() not in {"1", "true", "yes", "on"}:
+            return {"ok": True, "reason": "live_enforce_off",
+                    "gate": None, "ratio": None, "bucket": None}
+
+    # vAA-1 spec L-P2-S3 / S-P2-S3: pre-10:00 ET auto-pass.
+    if now_et is None or now_et.time() < dtime(10, 0):
+        return {"ok": True, "reason": "pre_10am_passthrough",
+                "gate": None, "ratio": None, "bucket": None}
+
+    # Resolve the just-closed bucket key from now_et. The vAA-1 path
+    # compares against the minute that JUST closed, never the still-
+    # forming minute, so the WS bar (or archive bar) is fully written.
+    try:
+        from volume_profile import previous_session_bucket as _prev_b
+        bucket = _prev_b(now_et)
+    except Exception:
+        bucket = None
+    if not bucket:
+        return {"ok": True, "reason": "no_bucket", "gate": None,
+                "ratio": None, "bucket": None}
+
+    # Resolve the bar volume for that bucket. Two sources, in order:
+    #   1. The fetched 1m bars dict (already in hand inside
+    #      check_breakout). The most recent fully-closed bar is
+    #      bars["volumes"][-2] when bars["volumes"][-1] is the still-
+    #      forming minute. Fall back to [-1] when only one bar exists
+    #      or the last entry is a clean close.
+    #   2. The bar archive (same path the dashboard uses), so prod and
+    #      dashboard can never disagree.
+    cv: int = 0
+    try:
+        if bars is not None:
+            vols = bars.get("volumes") or []
+            if len(vols) >= 2 and vols[-2] is not None:
+                cv = int(float(vols[-2]))
+            elif len(vols) >= 1 and vols[-1] is not None:
+                cv = int(float(vols[-1]))
+    except (TypeError, ValueError):
+        cv = 0
+
+    bb = get_volume_baseline()
+    res = bb.check(ticker, bucket, cv)
+    gate = res.get("gate")
+    ratio = res.get("ratio")
+
+    # Spec-mandated cold-start passthrough \u2014 never fail-closed when the
+    # baseline simply has not collected enough history yet.
+    if gate == "COLDSTART":
+        return {"ok": True, "reason": "coldstart", "gate": gate,
+                "ratio": ratio, "bucket": bucket}
+
+    if gate == "PASS":
+        return {"ok": True, "reason": "pass", "gate": gate,
+                "ratio": ratio, "bucket": bucket}
+
+    # gate == FAIL \u2014 the only rejection path. Log forensically so we
+    # can audit which tickers/buckets get rejected in prod.
+    try:
+        logger.info(
+            "[V6_14_10-VOLGATE-FAIL] ticker=%s bucket=%s ratio=%s "
+            "threshold=%s current_vol=%s",
+            ticker, bucket, _fmt(ratio),
+            _fmt(getattr(vb, "VOLUME_BUCKET_THRESHOLD_RATIO", 1.0)),
+            cv,
+        )
+    except Exception:
+        pass
+    return {"ok": False, "reason": "fail", "gate": gate,
+            "ratio": ratio, "bucket": bucket}
+
+
+# ---------------------------------------------------------------------
 # Section II.2 \u2014 Boundary Hold
 # ---------------------------------------------------------------------
 
@@ -697,6 +832,7 @@ __all__ = [
     "evaluate_section_i",
     "maybe_log_permit_state",
     "evaluate_volume_bucket_gate",
+    "evaluate_volume_bucket_live",
     "record_1m_close",
     "record_latest_1m_close",
     "evaluate_boundary_hold_gate",
