@@ -385,17 +385,29 @@ def test_executor_exit_idempotent_on_40410000(monkeypatch):
 
 
 def test_executor_exit_propagates_real_alpaca_errors(monkeypatch):
-    """Errors that are NOT 40410000 must still surface as a Telegram error."""
+    """Errors that are NOT 40410000 must still surface as a Telegram error.
+
+    v6.15.0 \u2014 the close path now submits typed order requests (or, when
+    prerequisites are missing, falls through to the legacy
+    ``client.close_position``). The contract verified here is the
+    error-propagation behaviour, not the underlying call shape: any
+    non-40410000 exception raised on the way out must surface as a
+    \u274c Telegram message rather than be silently swallowed.
+    """
     inst, _submits, _closes, _raise = _make_executor(monkeypatch)
     inst._record_position("AAPL", "LONG", 18, 270.0)
 
     telegrams: list = []
     inst._send_own_telegram = lambda msg: telegrams.append(msg)  # type: ignore
 
-    def _boom(_t):
+    def _boom(_client, _req, _coid):
         raise Exception("500 Internal Server Error")
 
-    inst._ensure_client().close_position = _boom  # type: ignore
+    # v6.15.0 \u2014 the unknown reason "STOP" routes to MARKET, which now
+    # builds a MarketOrderRequest and goes through _submit_order_idempotent
+    # rather than client.close_position. Patch the new submission point
+    # so the 500 surfaces.
+    inst._submit_order_idempotent = _boom  # type: ignore
 
     inst._on_signal(
         {

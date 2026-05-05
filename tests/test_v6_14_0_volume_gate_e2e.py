@@ -41,13 +41,10 @@ PROD_TICKERS = (
 
 
 def _trading_days_back(today: date, n: int) -> list[date]:
-    out: list[date] = []
-    d = today - timedelta(days=1)
-    while len(out) < n:
-        if d.weekday() < 5:
-            out.append(d)
-        d -= timedelta(days=1)
-    return out
+    # v6.14.3: production helper skips weekends AND US market holidays.
+    # Match production's definition so test coverage matches what
+    # VolumeBucketBaseline.refresh actually counts.
+    return vb._trading_days_back(today, n)
 
 
 def _write_v614_bar(

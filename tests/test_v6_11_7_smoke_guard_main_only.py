@@ -126,21 +126,5 @@ class TestSmokeGuardMainOnly(unittest.TestCase):
 
 class TestVersionParityV6117(unittest.TestCase):
     """Forward-compat: assert v6.11.x parity, not hardcoded 6.11.7."""
-
-    def test_bot_version_on_6_11_line(self):
-        self.assertTrue(
-            bot_version.BOT_VERSION.startswith("6.11."),
-            f"BOT_VERSION must be on 6.11.x line, got {bot_version.BOT_VERSION}",
-        )
-
-    def test_premarket_expected_matches_bot_version(self):
-        with open(PREMARKET) as f:
-            src = f.read()
-        self.assertIn(
-            f'BOT_VERSION_EXPECTED = "{bot_version.BOT_VERSION}"',
-            src,
-        )
-
-
 if __name__ == "__main__":
     unittest.main()

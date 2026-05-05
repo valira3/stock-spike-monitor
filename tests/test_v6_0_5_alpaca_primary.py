@@ -215,7 +215,12 @@ def test_alpaca_path_window_includes_premarket(tg, monkeypatch):
     et = ZoneInfo("America/New_York")
     start_et = captured["start"].astimezone(et)
     end_et = captured["end"].astimezone(et)
-    assert start_et.hour == 8 and start_et.minute == 0
+    # v6.0.5 originally pinned start to 08:00 ET. Post-v6.0.6 the window
+    # was widened to 04:00 ET (full pre-market 04:00-09:30 + after-hours
+    # 16:00-20:00) per trade_genius._fetch_1min_bars_alpaca. The contract
+    # this test guards is "window starts at-or-before pre-market open",
+    # not the literal 08:00 cutoff.
+    assert start_et.hour <= 8 and start_et.minute == 0
     assert end_et.hour >= 18  # 18:00 ET + 1m
 
 

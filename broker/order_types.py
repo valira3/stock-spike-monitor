@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 ORDER_TYPE_LIMIT: str = "LIMIT"
 ORDER_TYPE_STOP_MARKET: str = "STOP_MARKET"
+ORDER_TYPE_STOP_LIMIT: str = "STOP_LIMIT"  # v6.15.0 broker fidelity
 ORDER_TYPE_MARKET: str = "MARKET"
 
 # v5.26.0 reason codes. Sentinel-driven exits (A-A flash loss, A-B 5m
@@ -51,15 +52,25 @@ _LIMIT_REASONS = frozenset(
     }
 )
 
-# R-2 hard stop and the velocity ratchet stay STOP MARKET. v5.31.4
-# adds the price-rail protective stop here \u2014 same order type, same
-# semantics (immediate market-close on cross).
+# R-2 hard stop and the velocity ratchet stay STOP MARKET. v6.15.0
+# moves REASON_PRICE_STOP (sentinel_a_stop_price) to STOP_LIMIT \u2014 the
+# protective-rail stop is the dominant exit reason on a typical Val
+# session and STOP_MARKET fills routinely slip 0.5\u20131% past the trigger
+# in fast tape; STOP_LIMIT with a 30bps slip cap closes the gap to
+# Alpaca's account P/L.
 _STOP_REASONS = frozenset(
     {
         REASON_R2_HARD_STOP,
-        REASON_PRICE_STOP,
         REASON_VELOCITY_RATCHET,
         REASON_V651_DEEP_STOP,  # v6.8.0 W-E fix
+    }
+)
+
+# v6.15.0 \u2014 protective-rail price stop routes to STOP_LIMIT with a
+# bounded slip cap. See compute_stop_limit_price below.
+_STOP_LIMIT_REASONS = frozenset(
+    {
+        REASON_PRICE_STOP,
     }
 )
 
@@ -92,15 +103,40 @@ def order_type_for_reason(reason: str) -> str:
 
     Unknown reasons fall back to MARKET (matching legacy behavior of
     ``client.close_position``). RULING #1 routes A-A / A-B / A-D
-    through LIMIT.
+    through LIMIT. v6.15.0 adds STOP_LIMIT for sentinel_a_stop_price.
     """
     if reason in _LIMIT_REASONS:
         return ORDER_TYPE_LIMIT
+    if reason in _STOP_LIMIT_REASONS:
+        return ORDER_TYPE_STOP_LIMIT
     if reason in _STOP_REASONS:
         return ORDER_TYPE_STOP_MARKET
     if reason in _MARKET_REASONS:
         return ORDER_TYPE_MARKET
     return ORDER_TYPE_MARKET
+
+
+def compute_stop_limit_price(side: str, stop_price: float, slip_bps: int = 30) -> float:
+    """v6.15.0 \u2014 limit-price companion for STOP_LIMIT exits.
+
+    Once the stop is triggered we want a tight band the broker can
+    cross to fill, but no farther \u2014 a STOP_MARKET in fast tape can
+    routinely fill 0.5\u20131%% past the trigger. ``slip_bps`` (basis
+    points; 30 == 0.30%%) bounds the worst-case fill.
+
+    LONG  exit (selling) \u2192 limit BELOW the stop, accepting up to slip.
+    SHORT exit (buying)  \u2192 limit ABOVE the stop, accepting up to slip.
+    """
+    s = (side or "").strip().upper()
+    sp = float(stop_price)
+    if sp <= 0:
+        raise ValueError(f"compute_stop_limit_price: stop_price must be > 0, got {stop_price}")
+    bps = float(slip_bps) / 10_000.0
+    if s == "LONG":
+        return sp * (1.0 - bps)
+    if s == "SHORT":
+        return sp * (1.0 + bps)
+    raise ValueError(f"compute_stop_limit_price: unknown side {side!r}")
 
 
 def compute_sentinel_limit_price(side: str, bid: float, ask: float) -> float:
@@ -136,6 +172,7 @@ __all__ = [
     "ExitOrder",
     "ORDER_TYPE_LIMIT",
     "ORDER_TYPE_MARKET",
+    "ORDER_TYPE_STOP_LIMIT",
     "ORDER_TYPE_STOP_MARKET",
     "REASON_ALARM_A",
     "REASON_ALARM_B",
@@ -149,6 +186,7 @@ __all__ = [
     "REASON_CIRCUIT_BREAKER",
     "REASON_V651_DEEP_STOP",
     "compute_sentinel_limit_price",
+    "compute_stop_limit_price",
     "order_type_for_reason",
     "submit_exit",
 ]

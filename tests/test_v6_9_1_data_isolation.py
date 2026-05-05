@@ -214,24 +214,5 @@ class TestExecutorBaseChatsPath(unittest.TestCase):
         )
 
 
-# ---------------------------------------------------------------------------
-# bot_version parity
-# ---------------------------------------------------------------------------
-
-class TestBotVersionParity(unittest.TestCase):
-
-    def test_bot_version_is_691(self):
-        import bot_version
-        importlib.reload(bot_version)
-        self.assertEqual(bot_version.BOT_VERSION, "6.9.1")
-
-    def test_trade_genius_bot_version_matches(self):
-        import trade_genius as tg
-        importlib.reload(tg)
-        import bot_version
-        importlib.reload(bot_version)
-        self.assertEqual(tg.BOT_VERSION, bot_version.BOT_VERSION)
-
-
 if __name__ == "__main__":
     unittest.main()

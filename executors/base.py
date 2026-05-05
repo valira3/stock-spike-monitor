@@ -186,6 +186,11 @@ class TradeGeniusBase:
         # NOT a real divergence. Tracked here, not on the dict, so cleared
         # rows do not lose the timestamp.
         self._last_action_ts: dict = {}
+        # v6.15.0 \u2014 last open_pnl snapshot wall-clock (monotonic).
+        # Throttles broker.open_pnl.snapshot_open_pnl to one call per
+        # OPEN_PNL_SNAPSHOT_MIN_INTERVAL seconds so a burst of signals
+        # from a multi-ticker tick does not hammer get_all_positions.
+        self._last_open_pnl_ts: float = 0.0
         # v5.5.10 \u2014 rehydrate from state.db BEFORE
         # _reconcile_broker_positions runs (called from start()) so a
         # plain reboot during a live session sees persisted == broker
@@ -697,18 +702,161 @@ class TradeGeniusBase:
         self._stamp_action(ticker)
 
     def _close_position_idempotent(self, client, ticker: str, label: str, reason: str) -> None:
-        """Close a position on Alpaca, swallowing the 40410000 \"position
-        not found\" error as a benign no-op.
+        """Close a position on Alpaca with the spec-mandated order type.
+
+        v6.15.0 \u2014 honour ``broker.order_types.order_type_for_reason``:
+          - LIMIT (sentinel A-A / A-B / A-D / HVP / DIVERGENCE) IOC at
+            +/- 0.5%% of bid/ask per RULING #1.
+          - STOP_LIMIT (sentinel_a_stop_price) at the tracked stop with
+            a 30bps slip cap (compute_stop_limit_price).
+          - STOP_MARKET (R-2 hard stop, velocity ratchet, V651 deep
+            stop) at the tracked stop.
+          - MARKET (EOD, daily-loss circuit breaker) immediately.
+        Falls through to the legacy market-close path on any builder
+        failure or missing prerequisite (no quote, no stop, etc.) so a
+        transient data outage never silently skips a real exit.
 
         v5.24.0 \u2014 Alpaca returns ``{"code":40410000}`` whenever you
         ask it to close a position that no longer exists (already sold,
         or never opened on this account). With three executors plus
         the paper book, harmless races (e.g. an executor lagging the
         EOD flatten) used to surface as red \u274c ticks on Telegram.
-        We now treat 40410000 as success: drop the local + persisted
-        row and log a quiet info-level line. Any OTHER error still
-        propagates to ``_on_signal``\u2019s outer ``except`` so real
-        Alpaca outages still page the operator.
+        We treat 40410000 as success: drop the local + persisted row
+        and log a quiet info-level line. Any OTHER error still
+        propagates so real Alpaca outages still page the operator.
+        """
+        from broker.order_types import (
+            ORDER_TYPE_LIMIT,
+            ORDER_TYPE_STOP_LIMIT,
+            ORDER_TYPE_STOP_MARKET,
+            ORDER_TYPE_MARKET,
+            order_type_for_reason,
+            compute_sentinel_limit_price,
+            compute_stop_limit_price,
+        )
+
+        order_type = order_type_for_reason(reason)
+        pos = self.positions.get(ticker) or {}
+        side = pos.get("side")
+        qty = int(pos.get("qty") or 0)
+        stop_px = pos.get("stop")
+
+        try:
+            from alpaca.trading.requests import (
+                MarketOrderRequest,
+                LimitOrderRequest,
+                StopOrderRequest,
+                StopLimitOrderRequest,
+            )
+            from alpaca.trading.enums import OrderSide, TimeInForce
+        except Exception:
+            logger.exception("[%s] alpaca imports failed on close, falling back", self.NAME)
+            return self._legacy_close_position_idempotent(client, ticker, label, reason)
+
+        if qty <= 0 or side not in ("LONG", "SHORT"):
+            return self._legacy_close_position_idempotent(client, ticker, label, reason)
+
+        exit_side = OrderSide.SELL if side == "LONG" else OrderSide.BUY
+        coid = self._build_client_order_id(ticker, f"EXIT_{side}")
+
+        req = None
+        descr = "market"
+        try:
+            if order_type == ORDER_TYPE_LIMIT:
+                tg_mod = _tg()
+                bid = ask = None
+                if tg_mod is not None and hasattr(tg_mod, "_v512_quote_snapshot"):
+                    bid, ask = tg_mod._v512_quote_snapshot(ticker)
+                if bid and ask and bid > 0 and ask > 0:
+                    limit_px = compute_sentinel_limit_price(side, float(bid), float(ask))
+                    req = LimitOrderRequest(
+                        symbol=ticker,
+                        qty=qty,
+                        side=exit_side,
+                        time_in_force=TimeInForce.IOC,
+                        client_order_id=coid,
+                        limit_price=round(float(limit_px), 2),
+                    )
+                    descr = f"limit @ {round(float(limit_px), 2)} IOC (bid={bid:.4f},ask={ask:.4f})"
+            elif order_type == ORDER_TYPE_STOP_LIMIT:
+                if stop_px and float(stop_px) > 0:
+                    lim_px = compute_stop_limit_price(side, float(stop_px), 30)
+                    req = StopLimitOrderRequest(
+                        symbol=ticker,
+                        qty=qty,
+                        side=exit_side,
+                        time_in_force=TimeInForce.DAY,
+                        client_order_id=coid,
+                        stop_price=round(float(stop_px), 2),
+                        limit_price=round(float(lim_px), 2),
+                    )
+                    descr = (
+                        f"stop_limit stop={round(float(stop_px), 2)} "
+                        f"lim={round(float(lim_px), 2)} (30bps slip cap)"
+                    )
+            elif order_type == ORDER_TYPE_STOP_MARKET:
+                if stop_px and float(stop_px) > 0:
+                    req = StopOrderRequest(
+                        symbol=ticker,
+                        qty=qty,
+                        side=exit_side,
+                        time_in_force=TimeInForce.DAY,
+                        client_order_id=coid,
+                        stop_price=round(float(stop_px), 2),
+                    )
+                    descr = f"stop_market stop={round(float(stop_px), 2)}"
+        except Exception:
+            logger.exception("[%s] v6.15.0 exit-build raised, falling back to MARKET", self.NAME)
+            req = None
+
+        if req is None:
+            # MARKET reasons (EOD, circuit breaker) and any builder
+            # failure (missing quote / stop / unknown side). Build an
+            # explicit MARKET order so we still get an order_id back
+            # for forensics rather than a fire-and-forget close_position.
+            req = MarketOrderRequest(
+                symbol=ticker,
+                qty=qty,
+                side=exit_side,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=coid,
+            )
+            descr = "market"
+
+        try:
+            order = self._submit_order_idempotent(client, req, coid)
+        except Exception as exc:
+            msg = str(exc)
+            if "40410000" in msg or "position not found" in msg.lower():
+                logger.info(
+                    "[%s] CLOSE %s \u2014 already flat on broker (%s)",
+                    self.NAME,
+                    ticker,
+                    reason,
+                )
+                self._remove_position(ticker)
+                self._stamp_action(ticker)
+                return
+            raise
+
+        self._remove_position(ticker)
+        # v6.0.7 \u2014 mark the eventual-consistency window so the
+        # immediate post-EXIT reconcile does not graft a phantom row.
+        self._stamp_action(ticker)
+        oid = getattr(order, "id", "?")
+        ok = f"\u2705 {label}: {ticker} CLOSE {qty}sh @ {descr} ({reason}) order_id={oid}"
+        logger.info(ok)
+        self._send_own_telegram(ok)
+
+    def _legacy_close_position_idempotent(
+        self, client, ticker: str, label: str, reason: str
+    ) -> None:
+        """Pre-v6.15.0 fallback: blind ``client.close_position`` (MARKET).
+
+        Used only when the v6.15.0 path cannot build a typed request \u2014
+        e.g. position row missing side/qty, or alpaca request classes
+        unimportable. Preserved verbatim from v6.14.10 so the rare
+        fallback still flattens cleanly.
         """
         try:
             client.close_position(ticker)
@@ -722,16 +870,12 @@ class TradeGeniusBase:
                     reason,
                 )
                 self._remove_position(ticker)
-                # v6.0.7 \u2014 even on the 404 fast-path the broker may need
-                # a moment before its book reflects flat; mark the window.
                 self._stamp_action(ticker)
                 return
             raise
         self._remove_position(ticker)
-        # v6.0.7 \u2014 mark the eventual-consistency window for this ticker
-        # so the immediate post-EXIT reconcile does not graft a phantom row.
         self._stamp_action(ticker)
-        ok = f"\u2705 {label}: {ticker} CLOSE ({reason})"
+        ok = f"\u2705 {label}: {ticker} CLOSE ({reason}) [legacy]"
         logger.info(ok)
         self._send_own_telegram(ok)
 
@@ -1113,6 +1257,21 @@ class TradeGeniusBase:
             )
             return
 
+        # v6.15.0 \u2014 best-effort open-P/L snapshot to /data/open_pnl.jsonl
+        # so the dashboard can show closed + open as a single number that
+        # matches Alpaca's portfolio_value. Throttled to one call per
+        # ~30 s; failures are silent (the dashboard tolerates a stale
+        # or missing file).
+        try:
+            now_mono = time.monotonic()
+            if (now_mono - self._last_open_pnl_ts) >= 30.0:
+                self._last_open_pnl_ts = now_mono
+                from broker.open_pnl import snapshot_open_pnl
+                from bot_version import BOT_VERSION as _bv
+                snapshot_open_pnl(client, _bv)
+        except Exception:
+            logger.debug("[%s] open_pnl snapshot raised (non-fatal)", self.NAME, exc_info=True)
+
         try:
             from alpaca.trading.requests import (
                 MarketOrderRequest,
@@ -1148,11 +1307,14 @@ class TradeGeniusBase:
                             symbol=ticker,
                             qty=qty,
                             side=order_side,
-                            time_in_force=TimeInForce.DAY,
+                            # v6.15.0 \u2014 marketable LIMITs use IOC so a
+                            # stale or partially-filled order never sits
+                            # on the book and fragments on liquidity hits.
+                            time_in_force=TimeInForce.IOC,
                             client_order_id=coid,
                             limit_price=round(float(limit_px), 2),
                         ),
-                        f"limit @ {round(float(limit_px), 2)} (bid={bid:.4f},ask={ask:.4f})",
+                        f"limit @ {round(float(limit_px), 2)} IOC (bid={bid:.4f},ask={ask:.4f})",
                     )
                 logger.warning(
                     "[%s] %s %s no bid/ask available, falling back to MARKET",

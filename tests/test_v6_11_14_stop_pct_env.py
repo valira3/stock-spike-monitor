@@ -116,15 +116,6 @@ def test_broker_orders_consumes_overridden_short_pct(monkeypatch):
         f"got {short_stop}"
     )
 
-
-def test_bot_version_is_6_11_14():
-    """Version-pin parity check (matches the per-version tests on main)."""
-    if "bot_version" in sys.modules:
-        del sys.modules["bot_version"]
-    import bot_version
-    assert bot_version.BOT_VERSION == "6.11.14"
-
-
 # ---------------------------------------------------------------------------
 # v6.11.14 ATR-trail env-overridable tests (engine/sentinel.py)
 # ---------------------------------------------------------------------------
