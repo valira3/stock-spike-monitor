@@ -685,28 +685,62 @@ class TradeGeniusBase:
         self._last_action_ts[ticker] = time.monotonic()
 
     @staticmethod
-    def _extract_filled_qty(order, requested_qty: int) -> int:
-        """v6.15.1 \u2014 read the realized fill quantity off an Alpaca order ack.
+    def _is_ioc_request(req) -> bool:
+        """v6.15.2 \u2014 detect whether a submitted order request was IOC.
 
-        Used after IOC LIMIT entry submits, which are terminal by the
-        time submit_order returns: the ack carries the final
-        ``filled_qty`` (full fill, partial fill, or 0 when the limit was
-        not marketable). Pre-v6.15.1 the entry path booked
-        ``requested_qty`` into the position row regardless of the actual
-        fill, so a 24-share request that filled 18 left a stop sized
-        against 24 \u2014 Alpaca then returned 40410000 on the missing 6
-        shares. Reading the broker's truth here keeps the local row
-        honest from t=0 instead of waiting for the post-action
-        reconcile to overwrite it.
+        Only IOC orders are terminal at the moment ``submit_order``
+        returns; their ack carries the final fill state. MARKET/DAY,
+        GTC, and other TIFs return an ``accepted`` / ``pending_new``
+        ack with ``filled_qty=0`` and the fill propagates a beat
+        later. Treating those as 'unfilled' would silently drop live
+        orders from local tracking while leaving them open on Alpaca.
+
+        Best-effort: if ``time_in_force`` isn't readable, return
+        False so the caller falls back to the legacy 'trust the
+        request' qty path.
+        """
+        if req is None:
+            return False
+        tif = getattr(req, "time_in_force", None)
+        if tif is None:
+            return False
+        # alpaca-py exposes TimeInForce.IOC as the enum, but tests
+        # may pass a plain string. Match either via .value or repr.
+        val = getattr(tif, "value", None) or str(tif)
+        return str(val).lower().endswith("ioc")
+
+    @staticmethod
+    def _extract_filled_qty(order, requested_qty: int, *, req=None) -> int:
+        """v6.15.1 / v6.15.2 \u2014 realized fill qty off an Alpaca order ack.
+
+        Used after entry submits to keep the local position row honest
+        about what actually filled. Pre-v6.15.1 the entry path booked
+        the REQUESTED qty regardless of actual fill, so a 24-share
+        request that filled 18 left a stop sized against 24 (Alpaca
+        then returned 40410000 on the missing 6 shares).
+
+        v6.15.2 \u2014 ``filled_qty=0`` is only treated as terminal when
+        the order's ``time_in_force`` is IOC. For MARKET/DAY/GTC/etc.,
+        Alpaca's synchronous submit ack returns the order in
+        ``accepted`` / ``pending_new`` with ``filled_qty=0`` and the
+        fill propagates a beat later \u2014 trusting that 0 would
+        silently abort live orders that fill milliseconds afterwards.
+        Pass ``req`` to enable TIF detection; without it the helper
+        keeps v6.15.1 semantics (legacy callers untouched).
 
         Behaviour:
-          - Reads ``order.filled_qty`` if present and numeric.
-          - Returns int, clamped to ``[0, requested_qty]`` (defensive
-            against a broker bug or test mock returning > requested).
-          - On any parse failure (missing attr, non-numeric, None),
-            falls back to ``requested_qty`` so MARKET / DAY paths and
-            unit-test mocks that don't set ``filled_qty`` keep their
-            pre-v6.15.1 behaviour.
+          - ``order is None`` or no ``filled_qty`` attr \u2192 fall
+            back to ``requested_qty`` (legacy mock compat).
+          - non-numeric ``filled_qty`` \u2192 fall back to requested.
+          - ``filled_qty == 0`` AND ``req`` looks IOC \u2192 return 0
+            (true zero-fill, abort the entry).
+          - ``filled_qty == 0`` AND ``req`` is NOT IOC (MARKET/DAY) or
+            ``req`` is missing \u2192 fall back to ``requested_qty``
+            (the MARKET fill is still pending; the post-action
+            reconcile will sync to broker truth).
+          - ``0 < filled_qty <= requested_qty`` \u2192 return that.
+          - ``filled_qty > requested_qty`` \u2192 clamp to requested.
+          - ``filled_qty < 0`` \u2192 clamp to 0.
         """
         if order is None:
             return int(requested_qty)
@@ -720,6 +754,10 @@ class TradeGeniusBase:
         if filled < 0:
             return 0
         if filled > int(requested_qty):
+            return int(requested_qty)
+        if filled == 0 and not TradeGeniusBase._is_ioc_request(req):
+            # MARKET/DAY ack returns 0 before the fill propagates.
+            # Trust the request; the post-action reconcile heals.
             return int(requested_qty)
         return filled
 
@@ -1328,7 +1366,13 @@ class TradeGeniusBase:
         # ORDER-LIMIT-PRICE-LONG / -SHORT. Falls back to MARKET on any
         # quote-fetch failure so a transient data outage never silently
         # skips a Strike fire \u2014 the entry signal must still fill.
-        def _build_entry_request(side_label: str, qty: int, coid: str):
+        # v6.15.2 \u2014 when the real quote is null we synthesize a 5bps
+        # spread anchored on the signal's last-trade price so we still
+        # emit a marketable IOC LIMIT instead of an unbounded MARKET. The
+        # AAPL incident showed the silent MARKET fallback combined with
+        # v6.15.1's IOC-zero-fill abort can drop a live order from local
+        # tracking; keeping the LIMIT path alive avoids both halves.
+        def _build_entry_request(side_label: str, qty: int, coid: str, *, price: float = 0.0):
             order_side = OrderSide.BUY if side_label == "LONG" else OrderSide.SELL
             try:
                 from broker.orders import compute_strike_limit_price
@@ -1337,6 +1381,24 @@ class TradeGeniusBase:
                 bid = ask = None
                 if tg_mod is not None and hasattr(tg_mod, "_v512_quote_snapshot"):
                     bid, ask = tg_mod._v512_quote_snapshot(ticker)
+                # v6.15.2 \u2014 if the real quote is null/non-positive,
+                # try a synthetic spread off the signal price BEFORE the
+                # MARKET fallback, so we still ship an IOC LIMIT.
+                if (bid is None or ask is None or bid <= 0 or ask <= 0) and price and price > 0:
+                    if tg_mod is not None and hasattr(tg_mod, "_v512_synthetic_quote"):
+                        try:
+                            sb, sa = tg_mod._v512_synthetic_quote(ticker, float(price))
+                            if sb and sa and sb > 0 and sa > 0:
+                                logger.warning(
+                                    "[%s] [V6152-QUOTE] %s synthetic quote anchor=%.4f bid=%.4f ask=%.4f",
+                                    self.NAME, ticker, float(price), float(sb), float(sa),
+                                )
+                                bid, ask = sb, sa
+                        except Exception as _qe:
+                            logger.warning(
+                                "[%s] [V6152-QUOTE] %s synthetic quote raised: %s",
+                                self.NAME, ticker, _qe,
+                            )
                 if bid is not None and ask is not None and bid > 0 and ask > 0:
                     limit_px = compute_strike_limit_price(
                         side=side_label, ask=float(ask), bid=float(bid)
@@ -1397,21 +1459,34 @@ class TradeGeniusBase:
                 if qty <= 0:
                     return
                 coid = self._build_client_order_id(ticker, "LONG")
-                req, order_descr = _build_entry_request("LONG", qty, coid)
+                req, order_descr = _build_entry_request("LONG", qty, coid, price=price)
                 order = self._submit_order_idempotent(client, req, coid)
                 oid = getattr(order, "id", "?")
                 # v6.15.1 \u2014 IOC LIMIT acks carry filled_qty terminal.
-                # Book the ACTUAL fill into the position row so a stop
-                # signal ~ms later does not size against phantom shares.
-                filled_qty = self._extract_filled_qty(order, qty)
+                # v6.15.2 \u2014 pass req so MARKET/DAY filled_qty=0 (still
+                # pending broker-side) is NOT mistaken for a true zero
+                # fill; only IOC zeros are terminal.
+                filled_qty = self._extract_filled_qty(order, qty, req=req)
                 if filled_qty == 0:
+                    # v6.15.2 \u2014 even on a true IOC zero-fill, run the
+                    # post-action reconcile in case Alpaca propagated a
+                    # late fill that the synchronous ack missed. Without
+                    # this, late-grafted fills sit on the broker book
+                    # with no local row \u2014 the AAPL incident pattern.
                     msg = (
                         f"\u26a0\ufe0f {label}: {ticker} LONG IOC unfilled "
                         f"(requested={qty}, filled=0, order_id={oid}) "
-                        f"\u2014 no position recorded"
+                        f"\u2014 reconciling against broker"
                     )
-                    logger.warning("[%s] [V6151-PARTIAL] %s", self.NAME, msg)
+                    logger.warning("[%s] [V6152-ZEROFILL] %s", self.NAME, msg)
                     self._send_own_telegram(msg)
+                    try:
+                        self._reconcile_position_with_broker(ticker, expect="present")
+                    except Exception:
+                        logger.exception(
+                            "[%s] [V6152-ZEROFILL] reconcile raised on %s LONG",
+                            self.NAME, ticker,
+                        )
                     return
                 if filled_qty < qty:
                     logger.warning(
@@ -1431,19 +1506,27 @@ class TradeGeniusBase:
                 if qty <= 0:
                     return
                 coid = self._build_client_order_id(ticker, "SHORT")
-                req, order_descr = _build_entry_request("SHORT", qty, coid)
+                req, order_descr = _build_entry_request("SHORT", qty, coid, price=price)
                 order = self._submit_order_idempotent(client, req, coid)
                 oid = getattr(order, "id", "?")
                 # v6.15.1 \u2014 same partial-fill handling as LONG above.
-                filled_qty = self._extract_filled_qty(order, qty)
+                # v6.15.2 \u2014 TIF-aware filled_qty + post-action reconcile.
+                filled_qty = self._extract_filled_qty(order, qty, req=req)
                 if filled_qty == 0:
                     msg = (
                         f"\u26a0\ufe0f {label}: {ticker} SHORT IOC unfilled "
                         f"(requested={qty}, filled=0, order_id={oid}) "
-                        f"\u2014 no position recorded"
+                        f"\u2014 reconciling against broker"
                     )
-                    logger.warning("[%s] [V6151-PARTIAL] %s", self.NAME, msg)
+                    logger.warning("[%s] [V6152-ZEROFILL] %s", self.NAME, msg)
                     self._send_own_telegram(msg)
+                    try:
+                        self._reconcile_position_with_broker(ticker, expect="present")
+                    except Exception:
+                        logger.exception(
+                            "[%s] [V6152-ZEROFILL] reconcile raised on %s SHORT",
+                            self.NAME, ticker,
+                        )
                     return
                 if filled_qty < qty:
                     logger.warning(

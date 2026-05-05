@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.15.1"
+BOT_VERSION = "6.15.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -552,24 +552,113 @@ def _v512_log_entry_extension(
         logger.warning("[V510-ENTRY] emit error %s: %s", ticker, e)
 
 
+# v6.15.2 \u2014 synthetic quote spread (basis-points half-width) used
+# when the real Alpaca quote is unavailable. 5 bps each side keeps the
+# resulting LIMIT marketable for the 12 mega-cap tickers we trade
+# without crossing too aggressively into the book.
+_V6152_SYNTHETIC_QUOTE_BPS = 5.0
+
+
+def _v512_synthetic_quote(ticker: str, anchor_price: float):
+    """v6.15.2 \u2014 synthesize a (bid, ask) pair around `anchor_price`.
+
+    Used when `_v512_quote_snapshot` returns (None, None) but we still
+    have a usable last-trade price from the signal event. Returning a
+    synthetic spread keeps the IOC LIMIT path alive instead of falling
+    back to an unbounded MARKET order \u2014 the AAPL 2026-05-05 incident
+    showed that the MARKET fallback, combined with v6.15.1's IOC
+    zero-fill abort, drops live orders from local tracking.
+
+    Spread is `_V6152_SYNTHETIC_QUOTE_BPS` basis points either side
+    (default 5 bps = 0.05%, so a $283.88 anchor yields ~283.74 / 284.02).
+    Returns (None, None) on any input failure so the caller treats it as
+    'no synthetic available' and proceeds to MARKET fallback.
+    """
+    try:
+        ap = float(anchor_price)
+        if ap <= 0:
+            return (None, None)
+        half = ap * (_V6152_SYNTHETIC_QUOTE_BPS / 10000.0)
+        bid = ap - half
+        ask = ap + half
+        if bid <= 0 or ask <= 0 or bid >= ask:
+            return (None, None)
+        return (bid, ask)
+    except Exception as e:
+        try:
+            logger.warning("[V6152-QUOTE] %s synthetic anchor failed: %s", ticker, e)
+        except Exception:
+            pass
+        return (None, None)
+
+
 def _v512_quote_snapshot(ticker: str):
-    """Return (bid, ask) for `ticker`, or (None, None) on failure. The
-    Alpaca data client is not always reachable from tests, so we treat
-    any exception as "no quote available"."""
+    """Return (bid, ask) for `ticker`, or (None, None) on failure.
+
+    v6.15.2 \u2014 every failure path now logs a WARN with a tagged
+    `[V6152-QUOTE]` prefix so we can see in production logs which
+    failure mode is hitting (the AAPL incident was diagnosed only
+    after pulling apart 500 lines of logs that said nothing about why
+    the quote was null). On a transient `get_stock_latest_quote`
+    exception we retry once with a 100ms sleep before giving up.
+    """
     try:
         client = _historical_data_client() if "_historical_data_client" in globals() else None
         if client is None:
+            try:
+                logger.warning("[V6152-QUOTE] %s client_unavailable", ticker)
+            except Exception:
+                pass
             return (None, None)
         from alpaca.data.requests import StockLatestQuoteRequest  # type: ignore
         req = StockLatestQuoteRequest(symbol_or_symbols=ticker)
-        q = client.get_stock_latest_quote(req)
+        q = None
+        last_err = None
+        for attempt in (1, 2):
+            try:
+                q = client.get_stock_latest_quote(req)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                try:
+                    logger.warning(
+                        "[V6152-QUOTE] %s api_error attempt=%d: %s",
+                        ticker, attempt, e,
+                    )
+                except Exception:
+                    pass
+                if attempt == 1:
+                    try:
+                        time.sleep(0.1)
+                    except Exception:
+                        pass
+        if q is None or last_err is not None:
+            return (None, None)
         rec = q.get(ticker) if isinstance(q, dict) else None
         if rec is None:
+            try:
+                logger.warning("[V6152-QUOTE] %s no_record", ticker)
+            except Exception:
+                pass
             return (None, None)
         bid = getattr(rec, "bid_price", None)
         ask = getattr(rec, "ask_price", None)
+        if bid is None or ask is None or bid <= 0 or ask <= 0:
+            try:
+                logger.warning(
+                    "[V6152-QUOTE] %s non_positive bid=%s ask=%s",
+                    ticker, bid, ask,
+                )
+            except Exception:
+                pass
+            return (None, None)
         return (bid, ask)
-    except Exception:
+    except Exception as e:
+        try:
+            logger.warning("[V6152-QUOTE] %s unexpected_error: %s", ticker, e)
+        except Exception:
+            pass
         return (None, None)
 
 
