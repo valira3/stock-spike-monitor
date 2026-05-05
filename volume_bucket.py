@@ -29,7 +29,17 @@ logger = logging.getLogger("trade_genius.volume_bucket")
 VOLUME_BUCKET_LOOKBACK_DAYS = 55
 VOLUME_BUCKET_THRESHOLD_RATIO = 1.00
 VOLUME_BUCKET_COLD_START_PASSTHROUGH = True
-VOLUME_BUCKET_REFRESH_HHMM_ET = "09:29"
+# v6.14.8 \u2014 refresh moved from 09:29 ET to 04:00 ET (pre-market open) so
+# the baseline is loaded for the entire pre-market session, not only the
+# 60s before RTH. Eliminates the 5h dashboard COLDSTART window and lets
+# extended-hours volume gate evaluations (04:00 to 9:29 ET) actually run
+# against a real baseline instead of the cold-start passthrough.
+VOLUME_BUCKET_REFRESH_HHMM_ET = "04:00"
+# v6.14.8 \u2014 self-heal retry interval. If the in-memory baseline is empty
+# (all tickers report days_available=0) at any point after the scheduled
+# refresh has fired, the integration layer triggers a re-refresh, rate
+# limited to once per this many seconds.
+VOLUME_BUCKET_SELF_HEAL_INTERVAL_SEC = 60
 
 DEFAULT_BARS_DIR = os.environ.get("BARS_DIR") or (os.environ.get("TG_DATA_ROOT", "/data") + "/bars")
 
