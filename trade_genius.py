@@ -90,7 +90,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.15.2"
+BOT_VERSION = "6.15.3"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -1193,6 +1193,12 @@ _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
 # v6.11.0 \u2014 SPY Regime Classifier (C25 short amplification gate).
 import spy_regime  # noqa: E402
 _SPY_REGIME = spy_regime.SpyRegime()
+# v6.15.3 \u2014 once-per-process latch so the bar-archive backfill is only
+# attempted on the first _qqq_weather_tick after cold start. The backfill
+# is a no-op when the regime is already classified, but the file IO check
+# is wasted work after the first invocation \u2014 the latch keeps the hot
+# loop clean.
+_SPY_REGIME_BACKFILL_ATTEMPTED = False
 
 # v5.31.5 \u2014 per-stock local weather cache. Mirrors _QQQ_REGIME but
 # keyed by ticker so the local-override gate can read each stock's own
@@ -1272,6 +1278,19 @@ def _qqq_weather_tick():
             except Exception:
                 pass
             # v6.11.0 \u2014 advance SPY regime classifier for C25 amp gate.
+            # v6.15.3 \u2014 on the first weather tick of the process,
+            # try to backfill today's 09:30/10:00 anchors from the SPY
+            # bar archive. Closes the deploy-storm hole where a mid-
+            # session restart loses the in-memory anchors and leaves
+            # regime=None for the rest of the day (see 2026-05-05).
+            global _SPY_REGIME_BACKFILL_ATTEMPTED
+            try:
+                if not _SPY_REGIME_BACKFILL_ATTEMPTED:
+                    _SPY_REGIME_BACKFILL_ATTEMPTED = True
+                    if _SPY_REGIME.regime is None:
+                        _SPY_REGIME.backfill_from_bars(_now_et())
+            except Exception as _spy_bf_err:
+                logger.warning("[V6153-BACKFILL] spy_regime backfill error: %s", _spy_bf_err)
             try:
                 if _spy_last_v is not None:
                     _SPY_REGIME.tick(_now_et(), _spy_last_v)
@@ -6252,6 +6271,14 @@ def reset_daily_state():
         _SPY_REGIME.daily_reset()
     except Exception:
         logger.exception("reset_daily_state: _SPY_REGIME.daily_reset failed")
+    # v6.15.3 \u2014 reset the cold-start backfill latch so a long-running
+    # process gets a fresh attempt at the next session boundary (e.g. if
+    # the bar archive was repaired overnight).
+    try:
+        global _SPY_REGIME_BACKFILL_ATTEMPTED
+        _SPY_REGIME_BACKFILL_ATTEMPTED = False
+    except Exception:
+        logger.exception("reset_daily_state: _SPY_REGIME_BACKFILL_ATTEMPTED reset failed")
 
 
 # ============================================================
