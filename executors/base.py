@@ -1187,8 +1187,80 @@ class TradeGeniusBase:
             )
         self._persist_position(ticker)
 
+    def _emit_zerofill_reconcile_followup(
+        self,
+        *,
+        label: str,
+        ticker: str,
+        side: str,
+        requested_qty: int,
+        order_id: str,
+    ) -> None:
+        """v6.15.6 \u2014 follow-up Telegram after a V6152-ZEROFILL
+        reconcile so the initial \"unfilled, reconciling against
+        broker\" warning is never the last word.
+
+        Reads ``self.positions[ticker]`` immediately after
+        ``_reconcile_position_with_broker`` returns and emits one of
+        three outcomes:
+
+          * GRAFTED \u2014 reconcile found a late fill on the broker
+            book (synchronous IOC ack returned 0 but the fill
+            propagated milliseconds later). The position is now
+            tracked locally, sourced from POST_RECONCILE.
+
+          * SYNCED \u2014 a local row already existed and reconcile
+            updated qty / entry from broker truth. Rare on the
+            ZEROFILL path (we just tried to open) but possible if
+            the row was rehydrated from state.db mid-cycle.
+
+          * FLAT \u2014 reconcile confirmed the broker is flat. This
+            is the true zero-fill case (limit really did not cross),
+            and no position exists. The local row was either dropped
+            or never created.
+
+        We deliberately keep the follow-up to a single line each so
+        Val's notifications remain mobile-friendly. The initial
+        warning carried the why (limit did not cross / late fill
+        ambiguity); this carries the what (definitive outcome).
+        """
+        try:
+            existing = self.positions.get(ticker)
+            if existing:
+                qty = int(existing.get("qty") or 0)
+                entry_px = float(existing.get("entry_price") or 0.0)
+                src = str(existing.get("source") or "")
+                if src == "POST_RECONCILE":
+                    msg = (
+                        f"\u2705 {label}: {ticker} {side} reconcile grafted "
+                        f"late fill (qty={qty} @ ${entry_px:.2f}, "
+                        f"order_id={order_id})"
+                    )
+                else:
+                    msg = (
+                        f"\u2705 {label}: {ticker} {side} reconcile synced "
+                        f"(qty={qty} @ ${entry_px:.2f}, "
+                        f"order_id={order_id})"
+                    )
+            else:
+                msg = (
+                    f"\u2705 {label}: {ticker} {side} reconcile confirmed "
+                    f"flat \u2014 true zerofill, no position "
+                    f"(requested={requested_qty}, order_id={order_id})"
+                )
+            logger.info("[%s] [V6156-ZEROFILL-FOLLOWUP] %s", self.NAME, msg)
+            self._send_own_telegram(msg)
+        except Exception:
+            # Follow-up is informational \u2014 must never raise into
+            # the entry path. Swallow and rely on the existing
+            # WARNING-level reconcile log lines for forensics.
+            logger.exception(
+                "[%s] [V6156-ZEROFILL-FOLLOWUP] failed for %s %s",
+                self.NAME, ticker, side,
+            )
+
     def _reconcile_broker_positions(self) -> None:
-        """Run once at boot. Pull broker positions, graft any orphans.
+        """Run once at boot. Pull broker positions, graft any orphans."
 
         v5.5.10 reframe: this runs AFTER _load_persisted_positions has
         rehydrated self.positions from state.db, so it becomes a true
@@ -1480,6 +1552,13 @@ class TradeGeniusBase:
                     )
                     logger.warning("[%s] [V6152-ZEROFILL] %s", self.NAME, msg)
                     self._send_own_telegram(msg)
+                    # v6.15.6 \u2014 emit a follow-up Telegram with the
+                    # reconcile outcome so the initial ZEROFILL warning
+                    # is never the last word. Without this, Val sees
+                    # "unfilled, reconciling..." and has no confirmation
+                    # whether the reconcile grafted a late fill, found
+                    # the broker truly flat, or hit an inconclusive
+                    # state. See _emit_zerofill_reconcile_followup.
                     try:
                         self._reconcile_position_with_broker(ticker, expect="present")
                     except Exception:
@@ -1487,6 +1566,10 @@ class TradeGeniusBase:
                             "[%s] [V6152-ZEROFILL] reconcile raised on %s LONG",
                             self.NAME, ticker,
                         )
+                    self._emit_zerofill_reconcile_followup(
+                        label=label, ticker=ticker, side="LONG",
+                        requested_qty=qty, order_id=oid,
+                    )
                     return
                 if filled_qty < qty:
                     logger.warning(
@@ -1520,6 +1603,8 @@ class TradeGeniusBase:
                     )
                     logger.warning("[%s] [V6152-ZEROFILL] %s", self.NAME, msg)
                     self._send_own_telegram(msg)
+                    # v6.15.6 \u2014 emit reconcile-outcome follow-up; see
+                    # the LONG path above for rationale.
                     try:
                         self._reconcile_position_with_broker(ticker, expect="present")
                     except Exception:
@@ -1527,6 +1612,10 @@ class TradeGeniusBase:
                             "[%s] [V6152-ZEROFILL] reconcile raised on %s SHORT",
                             self.NAME, ticker,
                         )
+                    self._emit_zerofill_reconcile_followup(
+                        label=label, ticker=ticker, side="SHORT",
+                        requested_qty=qty, order_id=oid,
+                    )
                     return
                 if filled_qty < qty:
                     logger.warning(
