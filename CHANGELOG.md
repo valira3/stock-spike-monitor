@@ -4,6 +4,58 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.14.9 (2026-05-05) -- volume-gate threshold env-tunable
+
+Patch release. Wires the existing `VOLUME_BUCKET_THRESHOLD_RATIO`
+constant in `volume_bucket.py` to read from an environment variable
+of the same name (default `"1.00"` -- live behavior unchanged) and
+updates the vAA-1 evaluator in `eye_of_tiger.py` to read the
+run-time module attribute instead of comparing against a hardcoded
+`1.0` literal.
+
+**What changed.**
+
+1. **`volume_bucket.VOLUME_BUCKET_THRESHOLD_RATIO`** is now
+   `float(os.environ.get("VOLUME_BUCKET_THRESHOLD_RATIO", "1.00"))`
+   instead of a hardcoded `1.00`. `os` was already imported in the
+   module so no new imports were added.
+
+2. **`eye_of_tiger.evaluate_volume_bucket`** vAA-1 path now reads
+   `volume_bucket.VOLUME_BUCKET_THRESHOLD_RATIO` (via
+   `getattr(_vb, "VOLUME_BUCKET_THRESHOLD_RATIO", 1.0)`) instead of
+   the previous `float(ratio) >= 1.0` literal. This keeps the
+   evaluator decoupled from the constant's storage so unit tests
+   that patch the module attribute continue to work.
+
+**Why.** An 84-day SIP backtest sweep across thresholds 0.95, 0.90,
+0.85, 0.80 (`v6148_volgate_sweep`) showed every relaxed threshold
+beats the strict 1.00 baseline by +$663 to +$1,179 over the
+period, with 0.85 the sweet spot at +$1,179 / +5.7% lift, same
+$545 max drawdown, and a 57.75% win rate. Shipping the env-knob to
+main unblocks live tuning via Railway `variableUpsert` without
+requiring a code deploy each time we want to test a new value.
+
+**Default behavior unchanged.** With no `VOLUME_BUCKET_THRESHOLD_RATIO`
+set in the environment, the constant evaluates to `1.00` exactly as
+before. Live prod is unaffected until the variable is explicitly
+set on Railway.
+
+**Files touched.**
+
+- `volume_bucket.py` -- 1-line constant change.
+- `eye_of_tiger.py` -- 3-line evaluator change to read the module attr.
+- `bot_version.py`, `trade_genius.py` -- BOT_VERSION 6.14.8 -> 6.14.9.
+- `trade_genius.py` -- CURRENT_MAIN_NOTE refreshed.
+- `CHANGELOG.md` -- this entry.
+
+**Tests.** Existing `tests/test_v6_14_0_volume_gate_e2e.py` patches
+the module attribute and continues to pass; new
+`tests/test_v6_14_9_vol_gate_threshold_env.py` covers the env-var
+read, default fallback, and evaluator behavior at non-default
+thresholds.
+
+---
+
 ## v6.14.8 (2026-05-05) -- pre-market vol-baseline refresh + self-heal
 
 Patch release. Fixes the `0/55 days available` pre-market dashboard
