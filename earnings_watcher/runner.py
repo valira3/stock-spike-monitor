@@ -44,6 +44,7 @@ from earnings_watcher.signals import (
     filter_bars_for_session,
     determine_session,
     quality_score,
+    pre_entry_volatility_ok,
 )
 from earnings_watcher.sizing import (
     DMI_HARD_STOP,
@@ -242,6 +243,15 @@ def evaluate_and_size(
     # Step 4: cap on late-session entry index
     if DMI_MAX_ENTRY_IDX is not None and bo["idx"] > DMI_MAX_ENTRY_IDX:
         logger.debug("[EW-RUNNER] skip ticker=%s reason=idx_too_late idx=%d", ticker, bo["idx"])
+        return None
+
+    # Step 4b (v6.18.0): pre-entry volatility veto.
+    # Tickers swinging > DMI_PRE_ENTRY_BAR_MOVE_MAX inside one minute are
+    # vulnerable to gap-through stops (see MNST 2026-02-26).
+    pe_ok, pe_max = pre_entry_volatility_ok(sess_bars, bo["idx"])
+    if not pe_ok:
+        logger.info("[EW-RUNNER] skip ticker=%s reason=pre_entry_volatility max_move=%.4f",
+                    ticker, pe_max)
         return None
 
     direction = bo["direction"]

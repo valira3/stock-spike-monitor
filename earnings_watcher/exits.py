@@ -1,10 +1,17 @@
-"""v6.16.1 \u2014 earnings_watcher.exits: live-position exit logic.
+"""v6.18.0 \u2014 earnings_watcher.exits: live-position exit logic.
 
 Implements evaluate_exit() which mirrors simulate_runaway() from
 earnings_watcher_spec/replay/decision_engine.py using the same
 v4-locked risk constants:
   hard_stop=DMI_HARD_STOP, trail_trigger=DMI_TRAIL_TRIGGER,
   trail_pct=DMI_TRAIL_PCT, time_stop_min=DMI_TIME_STOP_MIN.
+
+v6.18.0 change: hard_stop branch now evaluates the bar's worst-case
+price (low for longs, high for shorts) instead of the close. Single-bar
+gap-throughs (e.g., MNST 2026-02-26 dropped from +0.60% to -4.79% in one
+minute) previously triggered the stop only at the close, realizing
+-4.79% on a 3% stop. Trail/peak/trough math still uses close to avoid
+intrabar whipsaws on noisy wicks.
 
 Hard boundary: MUST NOT import from eye_of_tiger or trade_genius.
 """
@@ -22,6 +29,13 @@ from earnings_watcher.sizing import (
 from earnings_watcher.signals import filter_bars_for_session
 
 logger = logging.getLogger("earnings_watcher")
+
+
+# v6.18.0: bar following entry is a "discovery" bar; its wick can be wide
+# and untradeable (e.g., NTNX 2026-02-25 bar +1 ranged 36.60 -> 45.30 on the
+# breakout itself, then closed +15%). Use close-only on the first bar after
+# entry to avoid a stale-quote wick falsely tripping the hard stop.
+DMI_BAR_LOW_STOP_MIN_ELAPSED = 2
 
 
 def evaluate_exit(
@@ -75,6 +89,21 @@ def evaluate_exit(
     close_px = float(current_bar["close"])
     chg = (close_px - entry_px) / entry_px * sign
 
+    # v6.18.0: worst-case intrabar move for hard-stop only.
+    # For longs the bar low is the worst; for shorts the bar high is the worst.
+    # Falls back to close when low/high are missing (live partial bars).
+    # Skip the bar-low check for the first DMI_BAR_LOW_STOP_MIN_ELAPSED bars
+    # post-entry: the discovery bar's wick is not a tradeable fill price.
+    use_bar_low = elapsed_minutes >= DMI_BAR_LOW_STOP_MIN_ELAPSED
+    if use_bar_low:
+        if direction == "long":
+            adverse_px = float(current_bar.get("low", close_px))
+        else:
+            adverse_px = float(current_bar.get("high", close_px))
+        worst_chg = (adverse_px - entry_px) / entry_px * sign
+    else:
+        worst_chg = chg
+
     # ---- update running peaks in-place so caller can persist them ----
     if chg > peak_pct:
         position_state["peak_pct"] = chg
@@ -98,10 +127,13 @@ def evaluate_exit(
                         position_state.get("ticker", "?"), ts, chg)
             return True, "session_end"
 
-    # ---- hard stop ----
-    if chg <= -DMI_HARD_STOP:
-        logger.info("[EW-EXIT] hard_stop ticker=%s chg=%.4f threshold=%.4f",
-                    position_state.get("ticker", "?"), chg, -DMI_HARD_STOP)
+    # ---- hard stop (v6.18.0: bar-low for longs, bar-high for shorts) ----
+    if worst_chg <= -DMI_HARD_STOP:
+        logger.info("[EW-EXIT] hard_stop ticker=%s worst_chg=%.4f close_chg=%.4f threshold=%.4f",
+                    position_state.get("ticker", "?"), worst_chg, chg, -DMI_HARD_STOP)
+        # Record the realized stop price as the threshold itself; caller will
+        # use this for fill modeling (intrabar fills happen ~at the stop level).
+        position_state["hard_stop_intrabar"] = True
         return True, "hard_stop"
 
     # ---- trail logic ----
