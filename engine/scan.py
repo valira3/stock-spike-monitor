@@ -34,6 +34,7 @@ import v5_10_1_integration as eot_glue
 import volume_profile
 
 from engine.callbacks import EngineCallbacks
+from engine.extended_universe import effective_scan_tickers
 
 logger = logging.getLogger("trade_genius")
 
@@ -172,7 +173,12 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
             _qqq_pre = callbacks.fetch_1min_bars(tg.V561_INDEX_TICKER)
             if _qqq_pre:
                 tg._v561_archive_qqq_bar(_qqq_pre)
-            for _t_pre in tg.TRADE_TICKERS:
+            # v7.1.0: pre-open warm-up uses the dynamic extended-hours universe
+            # so earnings reporters get bar archive seeded before the bell
+            # if the feature flag is on. RTH branch falls back to TRADE_TICKERS.
+            _pre_open_session = "extended"
+            _pre_open_tickers = effective_scan_tickers(_pre_open_session)
+            for _t_pre in _pre_open_tickers:
                 try:
                     _b_pre = callbacks.fetch_1min_bars(_t_pre)
                     if not _b_pre:
@@ -351,13 +357,22 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         logger.info("SCAN CYCLE done in %.2fs (paused, manage only)", time.time() - cycle_start)
         return
 
-    for ticker in tg.TRADE_TICKERS:
+    # v7.1.0: session-aware ticker iteration. RTH unchanged (returns
+    # TRADE_TICKERS); extended hours optionally returns the prod core
+    # plus today's earnings reporters when the feature flag is on.
+    try:
+        _session = tg._market_session()
+    except Exception:
+        _session = "rth"
+    _scan_universe = effective_scan_tickers(_session)
+    for ticker in _scan_universe:
         _per_ticker_tick(callbacks, ticker)
 
     logger.info(
-        "SCAN CYCLE done in %.2fs, %d tickers",
+        "SCAN CYCLE done in %.2fs, %d tickers (session=%s)",
         time.time() - cycle_start,
-        len(tg.TRADE_TICKERS),
+        len(_scan_universe),
+        _session,
     )
 
 

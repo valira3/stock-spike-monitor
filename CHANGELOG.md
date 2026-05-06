@@ -4,6 +4,78 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.1.0 (2026-05-06) -- Dynamic extended-hours universe overlay
+
+Feature release. Adds an opt-in earnings-driven ticker overlay that activates
+only during extended hours (pre-market 03:00–08:30 CT and post-market
+15:00–19:00 CT). RTH behavior is unchanged.
+
+### What's new
+
+* `engine/extended_universe.py` — new module that returns the effective
+  scan universe per session. RTH session returns plain `TRADE_TICKERS`
+  (the 12-ticker prod core). Extended session returns the prod core plus
+  today's earnings reporters (BMO + AMC) from FMP, filtered to
+  `market_cap >= $10B` and `avg_vol >= 100K` (reuses the existing
+  `earnings_watcher.data_sources.get_today_earnings_universe` filter).
+* `engine/scan.py` — the per-cycle ticker iteration and the pre-open
+  warm-up loop now route through `effective_scan_tickers(session)` instead
+  of iterating `tg.TRADE_TICKERS` directly. New log tag
+  `SCAN CYCLE done in Xs, N tickers (session=...)` exposes the active
+  session per cycle.
+
+### Behavior
+
+* Feature-flagged behind `EXTENDED_HOURS_DYNAMIC_UNIVERSE_ENABLED` (default
+  `false`). When false, scan iterates `TRADE_TICKERS` exactly as before —
+  pure no-op deploy. Flip to `true` in Railway env to activate.
+* Overlay capped by `EXTENDED_HOURS_OVERLAY_MAX` (default 18), so the
+  total extended-hours universe stays ≤ 30 tickers and well under the
+  `TICKERS_MAX = 40` sanity cap.
+* Module-level cache with 1h TTL keyed on UTC date. Hourly refresh during
+  extended sessions; auto-invalidates at the Wed→Thu rollover.
+* `TRADE_TICKERS` and `/data/tickers.json` are NEVER mutated. Dashboard,
+  Telegram, broker lifecycle, and UNIVERSE_GUARD all keep showing the
+  prod 12.
+* Every external-call failure mode (FMP timeout, missing key, Alpaca
+  outage, malformed cache, import error) falls back to the prod core,
+  so the bot keeps trading the 12 even if the earnings calendar is down.
+
+### Tests (15 new, all pass)
+
+`tests/test_v7_1_0_extended_universe.py` covers:
+
+* Flag off → prod core in every session
+* Flag on, RTH → prod core (overlay never fires in RTH)
+* Flag on, extended → prod core + overlay (BMO first, then AMC)
+* Overlay deduplicates against prod core (NVDA reports → still appears once)
+* Overlay capped at `EXTENDED_HOURS_OVERLAY_MAX`
+* Ticker normalization (case + whitespace)
+* Empty earnings calendar → prod core only
+* Earnings source raises → fall back to prod core
+* `earnings_watcher` import fails → fall back to prod core
+* Empty prod core + empty overlay → returns `[]` without crashing
+* Cache hit within TTL: 3 calls → 1 fetch
+* Cache expires after TTL
+* Cache invalidates on UTC date rollover
+* Off session returns prod core (defensive)
+
+All 27 prior scan-adjacent tests still pass
+(`test_v6_14_4_scan_refresh_wired`, `test_universe_guard`,
+`test_v7_0_7_spy_regime_tick_wiring`, `test_v7_0_6_spy_regime_backfill_wiring`,
+`test_v6_11_9_preopen_countdown`).
+
+### Deploy plan
+
+1. Merge → deploy lands as no-op (flag default false).
+2. Verify `[V710-OVERLAY]` log tag does NOT appear (flag still off).
+3. Set `EXTENDED_HOURS_DYNAMIC_UNIVERSE_ENABLED=1` in Railway env.
+4. Watch first extended-hours scan cycle: should log
+   `SCAN CYCLE done in Xs, N tickers (session=extended)` with N > 12,
+   and `[V710-OVERLAY] date=YYYY-MM-DD bmo=A amc=B overlay=C core=12`.
+
+---
+
 ## v7.0.7 (2026-05-06) -- SPY regime backtest parity (tick decoupling + canonical archive bucket backfill)
 
 Backtest-parity fix. Following v7.0.6 which fixed the SPY regime backfill wiring
