@@ -77,7 +77,7 @@ _ew_runner = None
 if EARNINGS_WATCHER_ENABLED:
     try:
         from earnings_watcher import runner as _ew_runner
-        print("[EW] earnings_watcher enabled (v6.17.0)", file=_ew_sys.stderr, flush=True)
+        print("[EW] earnings_watcher enabled (v6.18.0)", file=_ew_sys.stderr, flush=True)
     except Exception as _ew_exc:
         print("[EW] import failed, disabling: %s" % _ew_exc, file=_ew_sys.stderr, flush=True)
         EARNINGS_WATCHER_ENABLED = False

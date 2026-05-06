@@ -867,7 +867,7 @@ def _earnings_watcher_snapshot() -> dict:
 
     out = {
         "enabled": _os.environ.get("EARNINGS_WATCHER_ENABLED", "0") == "1",
-        "version": "6.17.0",
+        "version": "6.18.0",
         "current_window": "closed",
         "universe_size": 0,
         "last_cycle": None,
