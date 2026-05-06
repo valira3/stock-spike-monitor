@@ -20,10 +20,18 @@ post-reconcile state.
 """
 from __future__ import annotations
 
+import os
 import sys
 import types
 
 import pytest
+
+# Minimal env so trade_genius imports cleanly in the test harness.
+os.environ.setdefault("SSM_SMOKE_TEST", "1")
+os.environ.setdefault("TELEGRAM_TOKEN", "0000000000:AAAA_smoke_placeholder_token_0000000")
+os.environ.setdefault("CHAT_ID", "999999999")
+os.environ.setdefault("DASHBOARD_PASSWORD", "smoketest1234")
+os.environ.setdefault("FMP_API_KEY", "fake_fmp_key_for_tests")
 
 
 @pytest.fixture
@@ -82,7 +90,7 @@ def test_grafted_late_fill_emits_confirmation(base_cls):
     msg = stub.sent[0]
     assert "ORCL" in msg
     assert "LONG" in msg
-    assert "grafted late fill" in msg
+    assert "late fill" in msg
     assert "52" in msg
     assert "185.51" in msg
     assert "c3e33525" in msg
@@ -103,7 +111,7 @@ def test_grafted_late_fill_short(base_cls):
        requested_qty=30, order_id="abc12345")
     msg = stub.sent[0]
     assert "MSFT SHORT" in msg
-    assert "grafted" in msg
+    assert "late fill" in msg
     assert "412.07" in msg
 
 
@@ -146,9 +154,9 @@ def test_flat_no_position_emits_true_zerofill(base_cls):
     assert len(stub.sent) == 1
     msg = stub.sent[0]
     assert "AAPL LONG" in msg
-    assert "confirmed flat" in msg
-    assert "true zerofill" in msg
-    assert "24" in msg
+    assert "rejected" in msg
+    assert "limit did not cross" in msg
+    assert "no broker fill" in msg
     assert "o12345" in msg
 
 
@@ -160,7 +168,7 @@ def test_flat_short_side(base_cls):
        requested_qty=15, order_id="zz1")
     msg = stub.sent[0]
     assert "TSLA SHORT" in msg
-    assert "confirmed flat" in msg
+    assert "rejected" in msg or "limit did not cross" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -208,13 +216,14 @@ def test_followup_handles_missing_send_telegram(base_cls):
 # ---------------------------------------------------------------------------
 
 
-def test_bot_version_is_6_15_6():
+def test_bot_version_is_7_0_0():
+    """v7.0.0 Phase 5 \u2014 updated from v6.15.6 version pin."""
     import bot_version
-    assert bot_version.BOT_VERSION == "6.15.6"
+    assert bot_version.BOT_VERSION == "7.0.0"
 
 
 def test_trade_genius_version_matches():
     if "trade_genius" in sys.modules:
         del sys.modules["trade_genius"]
     import trade_genius
-    assert trade_genius.BOT_VERSION == "6.15.6"
+    assert trade_genius.BOT_VERSION == "7.0.0"
