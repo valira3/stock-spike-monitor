@@ -191,6 +191,10 @@ class TradeGeniusBase:
         # OPEN_PNL_SNAPSHOT_MIN_INTERVAL seconds so a burst of signals
         # from a multi-ticker tick does not hammer get_all_positions.
         self._last_open_pnl_ts: float = 0.0
+        # v7.0.0 Phase 5 \u2014 AON mode, set by _probe_aon_support() in start().
+        # Defaulting to "software" here so tests that skip start() still
+        # exercise the safe fallback path.
+        self._aon_mode: str = "software"
         # v5.5.10 \u2014 rehydrate from state.db BEFORE
         # _reconcile_broker_positions runs (called from start()) so a
         # plain reboot during a live session sees persisted == broker
@@ -1187,6 +1191,38 @@ class TradeGeniusBase:
             )
         self._persist_position(ticker)
 
+    def _probe_aon_support(self) -> str:
+        """v7.0.0 \u2014 boot-time probe to detect native Alpaca AON support.
+
+        Attempts to construct a LimitOrderRequest with all_or_none=True
+        AND verify the flag survives model_dump() round-trip. On alpaca-py
+        0.43.2, pydantic silently drops unknown kwargs at construction
+        (model_fields has no all_or_none, model_config has no extra=allow),
+        so a TypeError-only sentry returns a false positive that disables
+        the software fallback. The round-trip check engages software AON
+        until alpaca-py adds the field natively.
+
+        Returns "native" only if the constructed request serializes the
+        all_or_none flag; "software" otherwise (TypeError, silent drop,
+        or any exception).
+        """
+        try:
+            from alpaca.trading.requests import LimitOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce
+            req = LimitOrderRequest(
+                symbol="SPY", qty=1, side=OrderSide.BUY,
+                time_in_force=TimeInForce.IOC, limit_price=1.00,
+                all_or_none=True,
+            )
+            dumped = req.model_dump()
+            if not dumped.get("all_or_none"):
+                return "software"
+            return "native"
+        except TypeError:
+            return "software"
+        except Exception:
+            return "software"
+
     def _emit_zerofill_reconcile_followup(
         self,
         *,
@@ -1195,67 +1231,64 @@ class TradeGeniusBase:
         side: str,
         requested_qty: int,
         order_id: str,
+        reconcile_raised: bool = False,
     ) -> None:
-        """v6.15.6 \u2014 follow-up Telegram after a V6152-ZEROFILL
-        reconcile so the initial \"unfilled, reconciling against
-        broker\" warning is never the last word.
+        """v7.0.0 (was v6.15.6) \u2014 single-message Telegram after a
+        V6152-ZEROFILL reconcile. Collapses the prior two-ping pattern
+        (initial \u26a0\ufe0f \"reconciling\" + follow-up outcome) into ONE
+        final message per entry.
 
         Reads ``self.positions[ticker]`` immediately after
         ``_reconcile_position_with_broker`` returns and emits one of
-        three outcomes:
+        four outcomes:
 
+          * RECONCILE-RAISED \u2014 reconcile raised an exception;
+            cannot determine broker state.
           * GRAFTED \u2014 reconcile found a late fill on the broker
             book (synchronous IOC ack returned 0 but the fill
-            propagated milliseconds later). The position is now
-            tracked locally, sourced from POST_RECONCILE.
-
+            propagated milliseconds later). \u2705 with (late fill) suffix.
           * SYNCED \u2014 a local row already existed and reconcile
             updated qty / entry from broker truth. Rare on the
-            ZEROFILL path (we just tried to open) but possible if
-            the row was rehydrated from state.db mid-cycle.
-
-          * FLAT \u2014 reconcile confirmed the broker is flat. This
-            is the true zero-fill case (limit really did not cross),
-            and no position exists. The local row was either dropped
-            or never created.
-
-        We deliberately keep the follow-up to a single line each so
-        Val's notifications remain mobile-friendly. The initial
-        warning carried the why (limit did not cross / late fill
-        ambiguity); this carries the what (definitive outcome).
+            ZEROFILL path.
+          * FLAT \u2014 reconcile confirmed the broker is flat. True
+            zero-fill case (limit really did not cross).
         """
         try:
             existing = self.positions.get(ticker)
-            if existing:
+            if reconcile_raised:
+                msg = (
+                    f"\u26a0\ufe0f {label}: {ticker} {side} reconcile inconclusive "
+                    f"\u2014 verify on broker (order_id={order_id})"
+                )
+            elif existing:
                 qty = int(existing.get("qty") or 0)
                 entry_px = float(existing.get("entry_price") or 0.0)
                 src = str(existing.get("source") or "")
-                if src == "POST_RECONCILE":
+                if src == "POST_RECONCILE" and qty > 0:
                     msg = (
-                        f"\u2705 {label}: {ticker} {side} reconcile grafted "
-                        f"late fill (qty={qty} @ ${entry_px:.2f}, "
-                        f"order_id={order_id})"
+                        f"\u2705 {label}: {ticker} {side} {qty} @ ${entry_px:.2f} "
+                        f"(late fill, order_id={order_id})"
                     )
                 else:
+                    # Synced pre-existing row (rare on ZEROFILL path)
                     msg = (
-                        f"\u2705 {label}: {ticker} {side} reconcile synced "
-                        f"(qty={qty} @ ${entry_px:.2f}, "
-                        f"order_id={order_id})"
+                        f"\u2705 {label}: {ticker} {side} synced "
+                        f"(qty={qty} @ ${entry_px:.2f}, order_id={order_id})"
                     )
             else:
                 msg = (
-                    f"\u2705 {label}: {ticker} {side} reconcile confirmed "
-                    f"flat \u2014 true zerofill, no position "
-                    f"(requested={requested_qty}, order_id={order_id})"
+                    f"\u26a0\ufe0f {label}: {ticker} {side} rejected "
+                    f"\u2014 limit did not cross "
+                    f"(no broker fill, order_id={order_id})"
                 )
-            logger.info("[%s] [V6156-ZEROFILL-FOLLOWUP] %s", self.NAME, msg)
+            logger.warning("[%s] [V700-ZEROFILL-FOLLOWUP] %s", self.NAME, msg)
             self._send_own_telegram(msg)
         except Exception:
             # Follow-up is informational \u2014 must never raise into
             # the entry path. Swallow and rely on the existing
             # WARNING-level reconcile log lines for forensics.
             logger.exception(
-                "[%s] [V6156-ZEROFILL-FOLLOWUP] failed for %s %s",
+                "[%s] [V700-ZEROFILL-FOLLOWUP] failed for %s %s",
                 self.NAME, ticker, side,
             )
 
@@ -1475,18 +1508,24 @@ class TradeGeniusBase:
                     limit_px = compute_strike_limit_price(
                         side=side_label, ask=float(ask), bid=float(bid)
                     )
+                    # v7.0.0 Phase 5 \u2014 native AON: pass all_or_none=True
+                    # when the SDK probe at boot confirmed it accepts the kwarg.
+                    # Software mode: construct without it (existing behavior).
+                    _limit_kwargs: dict = dict(
+                        symbol=ticker,
+                        qty=qty,
+                        side=order_side,
+                        # v6.15.0 \u2014 marketable LIMITs use IOC so a
+                        # stale or partially-filled order never sits
+                        # on the book and fragments on liquidity hits.
+                        time_in_force=TimeInForce.IOC,
+                        client_order_id=coid,
+                        limit_price=round(float(limit_px), 2),
+                    )
+                    if self._aon_mode == "native":
+                        _limit_kwargs["all_or_none"] = True
                     return (
-                        LimitOrderRequest(
-                            symbol=ticker,
-                            qty=qty,
-                            side=order_side,
-                            # v6.15.0 \u2014 marketable LIMITs use IOC so a
-                            # stale or partially-filled order never sits
-                            # on the book and fragments on liquidity hits.
-                            time_in_force=TimeInForce.IOC,
-                            client_order_id=coid,
-                            limit_price=round(float(limit_px), 2),
-                        ),
+                        LimitOrderRequest(**_limit_kwargs),
                         f"limit @ {round(float(limit_px), 2)} IOC (bid={bid:.4f},ask={ask:.4f})",
                     )
                 logger.warning(
@@ -1540,28 +1579,22 @@ class TradeGeniusBase:
                 # fill; only IOC zeros are terminal.
                 filled_qty = self._extract_filled_qty(order, qty, req=req)
                 if filled_qty == 0:
-                    # v6.15.2 \u2014 even on a true IOC zero-fill, run the
-                    # post-action reconcile in case Alpaca propagated a
-                    # late fill that the synchronous ack missed. Without
-                    # this, late-grafted fills sit on the broker book
-                    # with no local row \u2014 the AAPL incident pattern.
+                    # v7.0.0 Phase 5 \u2014 quiet ZEROFILL: suppress the
+                    # initial \u26a0\ufe0f \"unfilled, reconciling...\" ping.
+                    # Forensic WARNING log unchanged; only Telegram surface
+                    # collapses to a single final message after reconcile.
                     msg = (
                         f"\u26a0\ufe0f {label}: {ticker} LONG IOC unfilled "
                         f"(requested={qty}, filled=0, order_id={oid}) "
                         f"\u2014 reconciling against broker"
                     )
                     logger.warning("[%s] [V6152-ZEROFILL] %s", self.NAME, msg)
-                    self._send_own_telegram(msg)
-                    # v6.15.6 \u2014 emit a follow-up Telegram with the
-                    # reconcile outcome so the initial ZEROFILL warning
-                    # is never the last word. Without this, Val sees
-                    # "unfilled, reconciling..." and has no confirmation
-                    # whether the reconcile grafted a late fill, found
-                    # the broker truly flat, or hit an inconclusive
-                    # state. See _emit_zerofill_reconcile_followup.
+                    # NOTE: first telegram suppressed per v7.0.0 spec D.
+                    _reconcile_raised = False
                     try:
                         self._reconcile_position_with_broker(ticker, expect="present")
                     except Exception:
+                        _reconcile_raised = True
                         logger.exception(
                             "[%s] [V6152-ZEROFILL] reconcile raised on %s LONG",
                             self.NAME, ticker,
@@ -1569,21 +1602,64 @@ class TradeGeniusBase:
                     self._emit_zerofill_reconcile_followup(
                         label=label, ticker=ticker, side="LONG",
                         requested_qty=qty, order_id=oid,
+                        reconcile_raised=_reconcile_raised,
                     )
                     return
-                if filled_qty < qty:
+                _aon_partial_notified = False
+                if self._aon_mode == "software" and 0 < filled_qty < qty:
+                    # v7.0.0 Phase 5 \u2014 software AON partial fill.
+                    # Per Val 2026-05-06: keep the partial alive and let
+                    # normal sentinels manage it. Do NOT force-flatten.
+                    # The \u26a0\ufe0f message here REPLACES the normal \u2705
+                    # confirmation below (single-message contract).
+                    logger.warning(
+                        "[%s] [V700-AON-SOFTWARE] %s LONG partial %d/%d "
+                        "\u2014 keeping partial, engine will manage",
+                        self.NAME, ticker, filled_qty, qty,
+                    )
+                    msg = (
+                        f"\u26a0\ufe0f {label}: {ticker} LONG partial "
+                        f"{filled_qty}/{qty} \u2014 keeping partial, "
+                        f"sentinels engaged (order_id={oid})"
+                    )
+                    logger.warning("[%s] [V700-AON-SOFTWARE] %s", self.NAME, msg)
+                    self._send_own_telegram(msg)
+                    _aon_partial_notified = True
+                    # Fall through to _record_position with filled_qty.
+                elif filled_qty < qty:
                     logger.warning(
                         "[%s] [V6151-PARTIAL] %s LONG partial fill: "
                         "requested=%d filled=%d order_id=%s",
                         self.NAME, ticker, qty, filled_qty, oid,
                     )
                 self._record_position(ticker, "LONG", filled_qty, price)
-                msg = f"\u2705 {label}: {ticker} BUY {filled_qty} shares @ {order_descr} (order_id={oid})"
-                logger.info(msg)
-                self._send_own_telegram(msg)
+                if not _aon_partial_notified:
+                    msg = f"\u2705 {label}: {ticker} BUY {filled_qty} shares @ {order_descr} (order_id={oid})"
+                    logger.info(msg)
+                    self._send_own_telegram(msg)
                 # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
                 # with eventual-consistency-aware grace window.
                 self._reconcile_position_with_broker(ticker, expect="present")
+                # v7.0.0 Phase 4 \u2014 book confirmed fill into this executor's
+                # PortfolioBook so val/gene track their own positions, ratchets,
+                # and day-P&L independently of main. Best-effort: never block
+                # trading on bookkeeping failure.
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id = self.NAME.lower()
+                    _pb = PORTFOLIOS.get(_book_id)
+                    _pb.record_entry_with_fill(
+                        ticker=ticker,
+                        side="LONG",
+                        fill_price=price,
+                        shares=filled_qty,
+                        entry_count=1,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book record_entry_with_fill LONG skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
             elif kind == "ENTRY_SHORT":
                 qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
@@ -1596,18 +1672,22 @@ class TradeGeniusBase:
                 # v6.15.2 \u2014 TIF-aware filled_qty + post-action reconcile.
                 filled_qty = self._extract_filled_qty(order, qty, req=req)
                 if filled_qty == 0:
+                    # v7.0.0 Phase 5 \u2014 quiet ZEROFILL: suppress the
+                    # initial \u26a0\ufe0f \"unfilled, reconciling...\" ping.
+                    # Forensic WARNING log unchanged; only Telegram surface
+                    # collapses to a single final message after reconcile.
                     msg = (
                         f"\u26a0\ufe0f {label}: {ticker} SHORT IOC unfilled "
                         f"(requested={qty}, filled=0, order_id={oid}) "
                         f"\u2014 reconciling against broker"
                     )
                     logger.warning("[%s] [V6152-ZEROFILL] %s", self.NAME, msg)
-                    self._send_own_telegram(msg)
-                    # v6.15.6 \u2014 emit reconcile-outcome follow-up; see
-                    # the LONG path above for rationale.
+                    # NOTE: first telegram suppressed per v7.0.0 spec D.
+                    _reconcile_raised = False
                     try:
                         self._reconcile_position_with_broker(ticker, expect="present")
                     except Exception:
+                        _reconcile_raised = True
                         logger.exception(
                             "[%s] [V6152-ZEROFILL] reconcile raised on %s SHORT",
                             self.NAME, ticker,
@@ -1615,21 +1695,62 @@ class TradeGeniusBase:
                     self._emit_zerofill_reconcile_followup(
                         label=label, ticker=ticker, side="SHORT",
                         requested_qty=qty, order_id=oid,
+                        reconcile_raised=_reconcile_raised,
                     )
                     return
-                if filled_qty < qty:
+                _aon_partial_notified = False
+                if self._aon_mode == "software" and 0 < filled_qty < qty:
+                    # v7.0.0 Phase 5 \u2014 software AON partial fill.
+                    # Per Val 2026-05-06: keep the partial alive and let
+                    # normal sentinels manage it. Do NOT force-flatten.
+                    # The \u26a0\ufe0f message here REPLACES the normal \u2705
+                    # confirmation below (single-message contract).
+                    logger.warning(
+                        "[%s] [V700-AON-SOFTWARE] %s SHORT partial %d/%d "
+                        "\u2014 keeping partial, engine will manage",
+                        self.NAME, ticker, filled_qty, qty,
+                    )
+                    msg = (
+                        f"\u26a0\ufe0f {label}: {ticker} SHORT partial "
+                        f"{filled_qty}/{qty} \u2014 keeping partial, "
+                        f"sentinels engaged (order_id={oid})"
+                    )
+                    logger.warning("[%s] [V700-AON-SOFTWARE] %s", self.NAME, msg)
+                    self._send_own_telegram(msg)
+                    _aon_partial_notified = True
+                    # Fall through to _record_position with filled_qty.
+                elif filled_qty < qty:
                     logger.warning(
                         "[%s] [V6151-PARTIAL] %s SHORT partial fill: "
                         "requested=%d filled=%d order_id=%s",
                         self.NAME, ticker, qty, filled_qty, oid,
                     )
                 self._record_position(ticker, "SHORT", filled_qty, price)
-                msg = f"\u2705 {label}: {ticker} SELL {filled_qty} shares short @ {order_descr} (order_id={oid})"
-                logger.info(msg)
-                self._send_own_telegram(msg)
+                if not _aon_partial_notified:
+                    msg = f"\u2705 {label}: {ticker} SELL {filled_qty} shares short @ {order_descr} (order_id={oid})"
+                    logger.info(msg)
+                    self._send_own_telegram(msg)
                 # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
                 # with eventual-consistency-aware grace window.
                 self._reconcile_position_with_broker(ticker, expect="present")
+                # v7.0.0 Phase 4 \u2014 book confirmed fill into this executor's
+                # PortfolioBook (symmetric with ENTRY_LONG path above).
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id = self.NAME.lower()
+                    _pb = PORTFOLIOS.get(_book_id)
+                    _pb.record_entry_with_fill(
+                        ticker=ticker,
+                        side="SHORT",
+                        fill_price=price,
+                        shares=filled_qty,
+                        entry_count=1,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book record_entry_with_fill SHORT skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
                 # v5.24.0 \u2014 ``state.db.executor_positions`` (loaded
                 # into ``self.positions`` on boot, kept in sync via
@@ -1648,11 +1769,54 @@ class TradeGeniusBase:
                         ticker,
                     )
                     return
+                # v7.0.0 Phase 4 \u2014 capture pre-close ratchet extremes
+                # from the PortfolioBook before the position is removed,
+                # so record_exit can update the session ratchet correctly.
+                _exit_side = "SHORT" if kind == "EXIT_SHORT" else "LONG"
+                _exit_leg_extreme: float | None = None
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id_exit = self.NAME.lower()
+                    _pb_exit = PORTFOLIOS.get(_book_id_exit)
+                    _bpos = (
+                        _pb_exit.short_positions.get(ticker.upper())
+                        if _exit_side == "SHORT"
+                        else _pb_exit.positions.get(ticker.upper())
+                    )
+                    if _bpos is not None:
+                        _exit_leg_extreme = _bpos.get("v531_max_favorable_price")
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book pre-exit capture skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
                 self._close_position_idempotent(client, ticker, label, reason)
                 # v5.25.0 / v6.0.7 \u2014 confirm flat on broker, with grace
                 # to ride out Alpaca's eventual-consistency window so we
                 # do not graft a phantom row from a still-pending close.
                 self._reconcile_position_with_broker(ticker, expect="flat")
+                # v7.0.0 Phase 4 \u2014 update this executor's PortfolioBook
+                # ratchet and remove the position row. Symmetric with
+                # the ENTRY bookkeeping above; best-effort try/except.
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id_exit2 = self.NAME.lower()
+                    _pb_exit2 = PORTFOLIOS.get(_book_id_exit2)
+                    if _exit_side == "LONG":
+                        _pb_exit2.record_exit(
+                            ticker, "LONG", leg_high=_exit_leg_extreme
+                        )
+                        _pb_exit2.positions.pop(ticker.upper(), None)
+                    else:
+                        _pb_exit2.record_exit(
+                            ticker, "SHORT", leg_low=_exit_leg_extreme
+                        )
+                        _pb_exit2.short_positions.pop(ticker.upper(), None)
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book record_exit skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
             elif kind == "EOD_CLOSE_ALL":
                 client.close_all_positions(cancel_orders=True)
                 # v5.5.10 \u2014 wipe every local + persisted row.
@@ -1996,6 +2160,12 @@ class TradeGeniusBase:
         # Try to build the alpaca client eagerly so startup logs surface
         # missing/bad creds; failures are already caught + logged.
         self._ensure_client()
+        # v7.0.0 Phase 5 \u2014 AON probe: detect whether the current Alpaca
+        # SDK accepts all_or_none=True on LimitOrderRequest (native mode)
+        # or falls back to software partial detection. Logged once per
+        # executor at INFO level for ops visibility.
+        self._aon_mode = self._probe_aon_support()
+        logger.info("[V700-AON] %s mode=%s", self.NAME, self._aon_mode)
         # v5.2.1 \u2014 reconcile broker-side positions into self.positions
         # before the scan loop starts so orphan trades (broker accepted
         # but client timed out on a prior boot) get managed as normal.

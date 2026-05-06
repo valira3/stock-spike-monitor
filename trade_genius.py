@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.18.0"
+BOT_VERSION = "7.0.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -435,6 +435,16 @@ _SHORT_REASON = {
 # ============================================================
 PAPER_LOG              = os.getenv("PAPER_LOG_PATH", "investment.log")
 PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
+# v7.0.0 Phase 3 -- canonical per-book state path for the main portfolio.
+# Default: replace "paper_state.json" with "paper_state_main.json" in the
+# same directory. Overridable via PAPER_STATE_MAIN_PATH env var.
+PAPER_STATE_MAIN_FILE  = os.getenv(
+    "PAPER_STATE_MAIN_PATH",
+    os.path.join(
+        os.path.dirname(PAPER_STATE_FILE) or ".",
+        "paper_state_main.json",
+    ),
+)
 # v3.4.27 \u2014 persistent trade log. Default path is a sibling of the
 # paper state file so it lands on the same volume automatically. The
 # file is append-only JSONL \u2014 one closed trade per line. Survives
@@ -2275,6 +2285,36 @@ def v5_lock_all_tracks(reason: str) -> int:
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-1500"))
 _trading_halted: bool = False
 _trading_halted_reason: str = ""
+
+# ------------------------------------------------------------
+# v7.0.0 Phase 3 -- PORTFOLIOS registry. Three books (main, val, gene)
+# are unconditionally registered at import. Main is identity-bound to
+# the module-level globals below so all existing callers keep working.
+# Val and Gene are dormant in-memory containers; Phase 4 wires fanout.
+# Scalar globals (paper_cash, _trading_halted, _trading_halted_reason,
+# daily_entry_date, daily_short_entry_date) remain authoritative here.
+# ------------------------------------------------------------
+from engine.portfolio_book import (  # noqa: E402
+    PORTFOLIOS,
+    PORTFOLIO_MAIN,
+)
+_MAIN_BOOK = PORTFOLIOS.get(PORTFOLIO_MAIN)
+_MAIN_BOOK.positions = positions
+_MAIN_BOOK.short_positions = short_positions
+_MAIN_BOOK.daily_entry_count = daily_entry_count
+_MAIN_BOOK.daily_short_entry_count = daily_short_entry_count
+_MAIN_BOOK.paper_trades = paper_trades
+_MAIN_BOOK.paper_all_trades = paper_all_trades
+_MAIN_BOOK.trade_history = trade_history
+_MAIN_BOOK.short_trade_history = short_trade_history
+_MAIN_BOOK.v5_long_tracks = v5_long_tracks
+_MAIN_BOOK.v5_short_tracks = v5_short_tracks
+_MAIN_BOOK.v5_active_direction = v5_active_direction
+
+# v7.0.0 Phase 4 -- bridge sizing config into main book so size_for()
+# and paper_shares_for() draw from the same env-driven value.
+# PAPER_DOLLARS_PER_ENTRY is defined earlier in this module (line ~1056).
+_MAIN_BOOK.config.dollars_per_entry = float(PAPER_DOLLARS_PER_ENTRY)
 
 # ============================================================
 # MARKET MODE (DELETED v5.26.0 \u2014 non-spec scaffolding)
@@ -7246,6 +7286,11 @@ _init_tickers()
 # v15.0. load_paper_state() still required \u2014 it restores open
 # positions from the prior session.
 load_paper_state()
+
+# v7.0.0 Phase 2B: the Phase 1 re-bind workaround is no longer needed.
+# paper_state.py now uses .clear() + .update() on v5_long_tracks,
+# v5_short_tracks, and v5_active_direction, so dict identity is preserved
+# across load_paper_state() calls and _MAIN_BOOK stays correctly bound.
 
 # Live dashboard (read-only web UI). Env-gated: off unless DASHBOARD_PASSWORD is set.
 # Runs in its own thread with its own asyncio loop \u2014 never touches PTB's loop.

@@ -4,6 +4,60 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.0 (2026-05-06) -- per-portfolio independent books (Main + Val + Gene)
+
+First major-version bump since v6.x. Splits the single global state into
+three fully independent portfolio books that all share the live RTH signal
+bus but track positions, stops, ratchets, and P/L separately. Lays the
+groundwork for multi-account paper/live/gene-experiment fan-out without
+cross-contamination.
+
+### What's new
+
+- **PortfolioBook facade** (`engine/portfolio_book.py`): owns `v5_long_tracks`,
+  `v5_short_tracks`, `_chandelier_state`, `_trailing_state`, and the
+  re-entry ratchet HOD/LOD per ticker. Identity-bound to the legacy
+  `_MAIN_BOOK` so existing `paper_state.py` `.clear()+.update()` rebinding
+  still works.
+- **Three registered books** at boot: `main` (live), `val` (paper mirror),
+  `gene` (experiment slot). Each has its own equity, sentinels, and
+  ratchet state.
+- **Eugene's ratchet rule (E.5):** "2nd and 3rd strikes have to be on a
+  new HOD (long) or LOD (short)." Re-entries within the same RTH session
+  now require a fresh extreme; entry #1 is unaffected.
+- **AON (all-or-none) entries:** orders submit with `all_or_none=True`
+  via a runtime probe of alpaca-py 0.43.2's `model_dump()` round-trip.
+  If the broker silently drops the flag, software-AON sentinels engage
+  and keep partial position with stop active (per Val's revision
+  2026-05-06 -- partial fills don't force-flatten anymore).
+- **Quiet ZEROFILL messaging:** zero-fill broker responses are now logged
+  at WARNING + suppressed from Telegram unless persistent.
+- **Chandelier reset:** re-entries reset to `STAGE_BREAKEVEN` (1) not
+  `STAGE_INACTIVE` (0) -- immediate BE+1c protection on every re-entry.
+- **Dashboard `portfolios` map:** `/api/state` now exposes
+  `portfolios.{main,val,gene}` with per-book equity, day P/L, positions,
+  and trades_today. Dashboard strip and TRAIL pill polish to match.
+
+### Audit + replay
+
+- v700 cumulative test suite: **147/147 pass** (3.8s, down from 24s after
+  reconcile-sleep monkeypatch).
+- Full smoke: 1621/1628 (only 7 pre-existing non-v700 failures, baseline
+  stable).
+- 1-day replay 2026-05-01: **+$90.70 P/L, 60% WR, 9 long / 6 short**,
+  Eugene's ratchet verified on ORCL/TSLA (LONG) and AAPL/NFLX (SHORT).
+
+### Known caveats deferred
+
+- `record_entry_with_fill` still uses signal price not
+  `order.filled_avg_price` for val/gene (Phase 4 deferred).
+- Fanout is passive listener, not active intercept (single-universe
+  equivalent for now).
+- Val/gene ratchet EOD reset only clears main book.
+- Legacy `portfolio` key schema mismatch deferred to v7.1.0.
+
+---
+
 ## v6.17.0 (2026-05-05) -- earnings_watcher idempotency hotfix + dashboard panel
 
 Two changes shipped together for tomorrow's first full BMO + AMC

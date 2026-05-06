@@ -203,8 +203,15 @@ def test_entry_long_zero_fill_records_no_position(monkeypatch):
     assert len(submits) == 1, "submit still happens \u2014 we don't know the fill until after"
     assert "AAPL" not in inst.positions, "zero-fill must NOT leave a phantom row"
     # Warning telegram fired so Val sees the unfilled IOC.
-    assert any("unfilled" in m or "no position recorded" in m for m in telegrams), (
-        f"expected an unfilled-warning telegram; got {telegrams!r}"
+    # v7.0.0 Phase 5: single-message contract. The initial "unfilled, reconciling"
+    # ping is suppressed; the single followup message reports the outcome.
+    # On broker-flat reconcile the message says "rejected \u2014 limit did not cross".
+    assert len(telegrams) == 1, (
+        f"v7.0.0 single-message contract: expected exactly 1 Telegram; got {telegrams!r}"
+    )
+    msg = telegrams[0]
+    assert "\u26a0" in msg or "rejected" in msg or "inconclusive" in msg, (
+        f"expected a rejection/outcome warning telegram; got {msg!r}"
     )
 
 
