@@ -4,6 +4,69 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.4 (2026-05-06) -- val/gene Today's Trades pnl + side detection
+
+Dashboard-only fix. Today's Trades on the Val and Gene tabs were showing a `\u2014`
+in the P&L tail on every closing row, and every BUY-side fill was rendered as a
+LONG entry even when the position was actually a short cover or a short open.
+
+### Root cause
+
+`/api/executor/<name>` (in `dashboard_server.py`) built `todays_trades` directly
+from the raw Alpaca order list. Two problems:
+
+1. Every fill was emitted with `side="LONG"` regardless of whether it was a
+   short open (a `sell` from flat) or a short cover (a `buy` against an open
+   short). The frontend reads `t.side` for the LONG/SHORT colour coding and
+   for the row badge, so SHORT entries showed the LONG action chip and COVER
+   exits were classified as plain SELLs.
+2. The payload never carried `pnl` or `pnl_pct` on closing rows. Alpaca's order
+   list reports each fill independently, with no pairing to the opening fill,
+   so the realized P&L tail and the running win-rate stayed at `\u2014` no matter
+   what closed.
+
+Main's tab works because `_today_trades()` reads `paper_trades` and
+`short_trade_history` -- engine state that already carries `pnl`/`pnl_pct` on
+the stored COVER row and synthesises a SHORT entry row from `entry_*`. Val and
+Gene have no such engine state to read; their state lives only in Alpaca.
+
+### Fix
+
+The executor builder now:
+
+1. Normalises every Alpaca fill (date, time, sym, qty, price, side_str), then
+   sorts chronologically.
+2. Walks fills in time order and maintains a per-symbol open-lot book
+   (`{side, lots: [[qty, entry_px], ...]}`).
+3. Decides OPEN vs CLOSE at each fill: a fill opens when the symbol is flat OR
+   the fill side matches the existing open side (a stack-on add); it closes
+   when the fill is opposite the open side.
+4. On closes, pops FIFO lots up to the close qty, computes
+   `pnl = (exit \u2212 avg_entry) * shares` for LONG (and the inverse for SHORT),
+   plus `pnl_pct`. Both fields are attached to the trade row, along with
+   `entry_price` (for the trade-row tooltip / future detail view).
+5. Emits `action="BUY"|"SHORT"` for opens and `"SELL"|"COVER"` for closes,
+   with `side` set to the actual position side (LONG / SHORT).
+
+This matches the row shape produced by Main's `_today_trades`, so the existing
+frontend `renderExecTrades()` template renders P&L, percent, side colouring,
+and the running win-rate identically across all three tabs.
+
+### Tests
+
+`tests/test_v7_0_4_exec_trades_pairing.py`:
+
+- LONG round-trip pairs to a SELL row with positive `pnl` / `pnl_pct`.
+- SHORT round-trip (sell-from-flat then buy-back) emits a SHORT entry then a
+  COVER with the inverse-direction P&L.
+- Stack-on adds (BUY then BUY same symbol) average the entry basis FIFO.
+- Partial close (SELL fewer shares than the open) leaves a residual lot and
+  prices pnl off the FIFO front.
+- Side flip (LONG closed-out then SHORT opened on the same symbol) flips the
+  book without contaminating the new entry's basis.
+
+---
+
 ## v7.0.3 (2026-05-06) -- dashboard val/gene parity + mobile positions overflow
 
 Dashboard-only release. Two visual fixes shipped together so the val and gene

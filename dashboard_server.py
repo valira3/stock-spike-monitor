@@ -2400,6 +2400,147 @@ def _get_executor(name: str):
     return getattr(m, attr, None)
 
 
+def _pair_executor_fills(raw_fills: list[dict]) -> list[dict]:
+    """Pair closing Alpaca fills against opening fills FIFO per symbol.
+
+    v7.0.4 \u2014 the per-executor /api/executor/<name> payload sources its
+    `todays_trades` directly from Alpaca's order list, which carries one fill
+    per row with no pairing. Main's tab has it easy: TradeGenius engine state
+    (paper_trades, short_trade_history) already stores pnl/pnl_pct/entry_price
+    on the closing row. Val and Gene have no such engine state to read, so
+    we re-do the pairing here, in pure Python, before serialisation.
+
+    Input: a list of pre-normalised fill dicts, each with:
+        side_str ("buy"|"sell"), sym, qty, price, ftime, fiso, fdate.
+
+    Output: a list of trade-row dicts in the shape the frontend
+    `renderExecTrades()` expects, matching Main's `_today_trades` row shape:
+        OPEN rows  -> action in {BUY, SHORT},  side, shares, qty, price,
+                     avg_fill_price, cost, time, filled_at, date.
+        CLOSE rows -> action in {SELL, COVER}, side (the original open side),
+                     plus pnl, pnl_pct, entry_price, exit_price.
+
+    Pairing rules:
+    - A fill OPENS the position when the symbol is flat OR the fill side
+      matches the existing open side (a stack-on add).
+    - A fill CLOSES when its side is opposite the open side. The closer
+      pops FIFO open lots up to its qty; pnl is `(exit - avg_entry) * qty`
+      for LONG and `(avg_entry - exit) * qty` for SHORT.
+    - When a SHORT is closed and a LONG opens on the same symbol later in
+      the same day (or vice versa), the side flag flips only after the
+      close zeroes out the lot list, so the new lot's basis isn't mixed in.
+    - Fills with qty<=0 or empty symbol are skipped upstream; this helper
+      assumes the caller already filtered them.
+
+    Pure / no I/O: takes a list of dicts, returns a list of dicts.
+    """
+    fills = sorted(raw_fills, key=lambda r: r.get("fiso", ""))
+    open_lots: dict = {}
+
+    def _take_lots(sym: str, want: float) -> list:
+        book = open_lots.get(sym)
+        if not book or not book.get("lots"):
+            return []
+        taken = []
+        remaining = want
+        while remaining > 1e-9 and book["lots"]:
+            lot_qty, lot_px = book["lots"][0]
+            if lot_qty <= remaining + 1e-9:
+                taken.append((lot_qty, lot_px))
+                remaining -= lot_qty
+                book["lots"].pop(0)
+            else:
+                taken.append((remaining, lot_px))
+                book["lots"][0] = [lot_qty - remaining, lot_px]
+                remaining = 0.0
+        if not book["lots"]:
+            book["side"] = None
+        return taken
+
+    out: list[dict] = []
+    for f in fills:
+        sym = f["sym"]
+        qty = float(f["qty"])
+        price = f.get("price")
+        side_str = f["side_str"]
+        book = open_lots.setdefault(sym, {"side": None, "lots": []})
+        cur_side = book.get("side")
+        opens = (
+            cur_side is None
+            or (cur_side == "LONG" and side_str == "buy")
+            or (cur_side == "SHORT" and side_str == "sell")
+        )
+        if opens:
+            new_side = "LONG" if side_str == "buy" else "SHORT"
+            book["side"] = new_side
+            if price is not None:
+                book["lots"].append([qty, price])
+            action = "BUY" if new_side == "LONG" else "SHORT"
+            cost = (qty * price) if (price is not None) else None
+            out.append({
+                "action": action,
+                "ticker": sym,
+                "symbol": sym,
+                "side": new_side,
+                "shares": qty,
+                "qty": qty,
+                "price": price,
+                "avg_fill_price": price,
+                "cost": cost,
+                "time": f.get("ftime"),
+                "filled_at": f.get("fiso"),
+                "date": f.get("fdate"),
+            })
+        else:
+            lots = _take_lots(sym, qty)
+            open_side = cur_side or ("LONG" if side_str == "sell" else "SHORT")
+            action = "SELL" if open_side == "LONG" else "COVER"
+            pnl = None
+            pnl_pct = None
+            avg_entry = None
+            if lots and price is not None:
+                paired_qty = sum(q for q, _ in lots)
+                cost_basis = sum(q * px for q, px in lots)
+                if paired_qty > 0:
+                    avg_entry = cost_basis / paired_qty
+                    if open_side == "LONG":
+                        pnl = (price - avg_entry) * paired_qty
+                        if avg_entry:
+                            pnl_pct = (price / avg_entry - 1.0) * 100.0
+                    else:
+                        pnl = (avg_entry - price) * paired_qty
+                        if price:
+                            pnl_pct = (avg_entry / price - 1.0) * 100.0
+                    pnl = round(pnl, 2)
+                    if pnl_pct is not None:
+                        pnl_pct = round(pnl_pct, 2)
+            cost = (qty * price) if (price is not None) else None
+            row: dict = {
+                "action": action,
+                "ticker": sym,
+                "symbol": sym,
+                "side": open_side,
+                "shares": qty,
+                "qty": qty,
+                "price": price,
+                "avg_fill_price": price,
+                "exit_price": price,
+                "cost": cost,
+                "time": f.get("ftime"),
+                "filled_at": f.get("fiso"),
+                "date": f.get("fdate"),
+            }
+            if avg_entry is not None:
+                row["entry_price"] = round(avg_entry, 4)
+            if pnl is not None:
+                row["pnl"] = pnl
+            if pnl_pct is not None:
+                row["pnl_pct"] = pnl_pct
+            out.append(row)
+    out.sort(key=lambda t: t.get("filled_at") or "")
+    return out
+
+
 def _executor_snapshot(name: str) -> dict:
     """Build the JSON payload for one per-executor tab.
 
@@ -2572,7 +2713,13 @@ def _executor_snapshot(name: str) -> dict:
                 orders = client.get_orders(filter=req) or []
             except Exception:
                 orders = []
-            trades_out = []
+            # v7.0.4 \u2014 normalize fills first, then pair closes against
+            # opens FIFO per symbol so SELL/COVER rows carry pnl + pnl_pct
+            # the same way Main's _today_trades does. Without this the
+            # Val/Gene Today's Trades panel rendered every close row with
+            # a "\u2014" P&L and "\u2014" win-rate even when realized P&L was
+            # available, since Alpaca's order list doesn't include pairing.
+            raw_fills = []
             for o in orders:
                 try:
                     filled_at = getattr(o, "filled_at", None)
@@ -2605,39 +2752,30 @@ def _executor_snapshot(name: str) -> dict:
                         continue
                     side_raw = getattr(getattr(o, "side", None), "value", "") or ""
                     side_str = str(side_raw).lower()
-                    action = (
-                        "BUY"
-                        if side_str == "buy"
-                        else ("SELL" if side_str == "sell" else side_str.upper())
-                    )
                     sym = str(getattr(o, "symbol", "") or "")
                     qty = float(getattr(o, "filled_qty", 0) or getattr(o, "qty", 0) or 0)
+                    if qty <= 0 or not sym:
+                        continue
                     fap = getattr(o, "filled_avg_price", None)
                     try:
                         price = float(fap) if fap is not None else None
                     except Exception:
                         price = None
-                    cost = (qty * price) if (price is not None) else None
-                    trades_out.append(
-                        {
-                            "action": action,
-                            "ticker": sym,
-                            "symbol": sym,
-                            "side": "LONG",
-                            "shares": qty,
-                            "qty": qty,
-                            "price": price,
-                            "avg_fill_price": price,
-                            "cost": cost,
-                            "time": ftime,
-                            "filled_at": fiso,
-                            "date": fdate,
-                        }
-                    )
+                    raw_fills.append({
+                        "side_str": side_str,  # "buy" | "sell"
+                        "sym": sym,
+                        "qty": qty,
+                        "price": price,
+                        "ftime": ftime,
+                        "fiso": fiso,
+                        "fdate": fdate,
+                    })
                 except Exception:
                     continue
-            trades_out.sort(key=lambda t: t.get("filled_at", ""))
-            payload["todays_trades"] = trades_out
+
+            # Pair fills FIFO per symbol so closes carry pnl + pnl_pct
+            # and SHORT entries / COVER exits are classified correctly.
+            payload["todays_trades"] = _pair_executor_fills(raw_fills)
         except Exception as te:
             logger.warning("executor %s todays_trades fetch failed: %s", name, te)
             payload["todays_trades"] = []
