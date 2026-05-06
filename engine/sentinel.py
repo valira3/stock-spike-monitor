@@ -169,7 +169,16 @@ ALARM_E_ENABLED: bool = False
 # ``has_full_exit`` short-circuit. Flag exists so the gate can be
 # disabled via monkeypatch without a deploy.
 _V644_MIN_HOLD_GATE_ENABLED: bool = True
-_V644_MIN_HOLD_SECONDS: int = 600
+# v7.0.5 \u2014 default lowered from 600 to 120 after 84-day SIP sweep showed
+# the gate's net cost is $-1,908 / 84d at 600s vs the optimum at ~120s
+# (peak +$1,908; mh=0/60/120 ≈ tied at top, mh=180 starts bending back).
+# Wired to env so prod can be tuned without a deploy. Keeping 120s rather
+# than 0s preserves a small chandelier-warmup buffer (the trail rarely
+# ratchets above entry under T+60-90s anyway).
+try:
+    _V644_MIN_HOLD_SECONDS: int = int(_os.getenv("V644_MIN_HOLD_SEC", "120"))
+except (TypeError, ValueError):
+    _V644_MIN_HOLD_SECONDS = 120
 
 # v6.5.1 \u2014 deep-stop during min_hold window. The 50 bp protective rail
 # is blocked under 10 minutes from entry (v6.4.4 gate). When mark blows
