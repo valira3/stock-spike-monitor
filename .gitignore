@@ -6,3 +6,4 @@ dashboard_secret.key
 paper_state.json
 debug_replay.py
 trade_log.jsonl
+paper_state_main.json

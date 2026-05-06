@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.1 (2026-05-06) -- per-book post-loss cooldown registry
+
+Hotfix on top of v7.0.0 to make the val/gene strip cooldown counters in the
+dashboard show real numbers when those books trade. Before this, the
+post-loss cooldown registry was a single module-level dict on `trade_genius`,
+so a loss on val (or gene, once they're trading) wouldn't show up under the
+val/gene tabs and could leak into main's gating logic.
+
+**Changes**
+
+- `engine/portfolio_book.PortfolioBook` now owns `_post_loss_cooldown` and
+  `_post_exit_cooldown` dicts, plus the matching `record_post_loss`,
+  `is_in_post_loss_cooldown`, `record_post_exit`, `in_post_exit_cooldown`,
+  `get_active_cooldowns`, and `prune_expired_cooldowns` methods.
+- `trade_genius.record_post_loss_cooldown` / `record_post_exit_cooldown` /
+  `is_in_post_loss_cooldown` / `is_in_post_exit_cooldown` /
+  `get_active_cooldowns` gained a keyword-only `portfolio_id="main"` arg
+  and route through `PORTFOLIOS.get(portfolio_id).<method>()`. Default
+  `"main"` preserves the legacy module-global identity so existing callers
+  (notably `broker/orders.close_breakout`) need zero code changes.
+- `trade_genius._MAIN_BOOK._post_loss_cooldown` and `._post_exit_cooldown`
+  are identity-bound to the module-global dicts immediately after the main
+  book is constructed, so writes through either path are visible through
+  the other.
+- `dashboard_server._build_portfolio_strip` now reads each book's own
+  `_post_loss_cooldown` directly (no `pid == "main"` special case).
+- `/api/state` adds `v642_flags.active_cooldowns_by_portfolio` mapping each
+  portfolio_id to its active-cooldown list for per-tab UI panels.
+- 8 new tests in `tests/test_v7_0_1_cooldown_split.py` covering legacy
+  routing, cross-book isolation, explicit `portfolio_id` kwarg, side
+  normalization, dashboard strip helper, and EOD prune.
+
+No behavior change on main: 1-day replay against 2026-05-01 produces the
+same 25 entries / 15 exits / +$90.70 P/L as the v7.0.0 baseline.
+
+---
+
 ## v7.0.0 (2026-05-06) -- per-portfolio independent books (Main + Val + Gene)
 
 First major-version bump since v6.x. Splits the single global state into
