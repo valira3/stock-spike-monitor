@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.16.0 (2026-05-05) -- DMI sizing helpers in isolated earnings_watcher/ module (Phase 1 PR #1)
+
+Phase 1 PR #1 of 4. Adds the v4 portfolio-relative DMI sizing helpers
+in a NEW top-level package, `earnings_watcher/`, fully isolated from
+the RTH core (`eye_of_tiger.py`, `trade_genius.py` scan loop). No
+wiring changes -- helpers are observe-only until PR #2.
+
+**Hard isolation boundary.** `earnings_watcher/*` MUST NOT import from
+`eye_of_tiger` or mutate RTH state. RTH core MUST NOT import from
+`earnings_watcher`. Top-level wiring lives behind a feature flag in
+`trade_genius.py` only (PR #2+).
+
+**What ships.**
+
+1. `earnings_watcher/sizing.py` -- DMI_* constants +
+   `dmi_conviction_multiplier()` (piecewise 1x..3x curve) +
+   `dmi_sized_notional()` (10% base, 30% per-position cap, 50%
+   portfolio exposure cap with proportional scaling).
+2. `earnings_watcher/__init__.py` -- package docstring + public API
+   re-exports.
+3. `tests/earnings_watcher/test_sizing.py` -- 8 unit tests, all green.
+
+Calibrated on the Phase 0 replay corpus (400 events, 27 trades, 51.9%
+hit, $17,916 net, 6 of 6 gates pass at $100k portfolio). Linear scaling
+proven $25k -> $200k. See
+`earnings_watcher_spec/replay/EXPONENTIAL_CAPTURE.md`.
+
+**Risk: none.** Pure additive, no production callers. Version bump only.
+
+---
+
+
 ## v6.14.10 (2026-05-05) -- live volume-gate wired into entry path
 
 Patch release. Reverses the v5.26.0 spec amendment that BYPASSED the
