@@ -77,7 +77,7 @@ _ew_runner = None
 if EARNINGS_WATCHER_ENABLED:
     try:
         from earnings_watcher import runner as _ew_runner
-        print("[EW] earnings_watcher enabled (v6.16.2)", file=_ew_sys.stderr, flush=True)
+        print("[EW] earnings_watcher enabled (v6.17.0)", file=_ew_sys.stderr, flush=True)
     except Exception as _ew_exc:
         print("[EW] import failed, disabling: %s" % _ew_exc, file=_ew_sys.stderr, flush=True)
         EARNINGS_WATCHER_ENABLED = False
@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.16.3"
+BOT_VERSION = "6.17.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
