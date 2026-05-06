@@ -1584,6 +1584,26 @@ class TradeGeniusBase:
                 # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
                 # with eventual-consistency-aware grace window.
                 self._reconcile_position_with_broker(ticker, expect="present")
+                # v7.0.0 Phase 4 \u2014 book confirmed fill into this executor's
+                # PortfolioBook so val/gene track their own positions, ratchets,
+                # and day-P&L independently of main. Best-effort: never block
+                # trading on bookkeeping failure.
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id = self.NAME.lower()
+                    _pb = PORTFOLIOS.get(_book_id)
+                    _pb.record_entry_with_fill(
+                        ticker=ticker,
+                        side="LONG",
+                        fill_price=price,
+                        shares=filled_qty,
+                        entry_count=1,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book record_entry_with_fill LONG skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
             elif kind == "ENTRY_SHORT":
                 qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
@@ -1630,6 +1650,24 @@ class TradeGeniusBase:
                 # v5.25.0 / v6.0.7 \u2014 sync local row from broker book
                 # with eventual-consistency-aware grace window.
                 self._reconcile_position_with_broker(ticker, expect="present")
+                # v7.0.0 Phase 4 \u2014 book confirmed fill into this executor's
+                # PortfolioBook (symmetric with ENTRY_LONG path above).
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id = self.NAME.lower()
+                    _pb = PORTFOLIOS.get(_book_id)
+                    _pb.record_entry_with_fill(
+                        ticker=ticker,
+                        side="SHORT",
+                        fill_price=price,
+                        shares=filled_qty,
+                        entry_count=1,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book record_entry_with_fill SHORT skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
                 # v5.24.0 \u2014 ``state.db.executor_positions`` (loaded
                 # into ``self.positions`` on boot, kept in sync via
@@ -1648,11 +1686,54 @@ class TradeGeniusBase:
                         ticker,
                     )
                     return
+                # v7.0.0 Phase 4 \u2014 capture pre-close ratchet extremes
+                # from the PortfolioBook before the position is removed,
+                # so record_exit can update the session ratchet correctly.
+                _exit_side = "SHORT" if kind == "EXIT_SHORT" else "LONG"
+                _exit_leg_extreme: float | None = None
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id_exit = self.NAME.lower()
+                    _pb_exit = PORTFOLIOS.get(_book_id_exit)
+                    _bpos = (
+                        _pb_exit.short_positions.get(ticker.upper())
+                        if _exit_side == "SHORT"
+                        else _pb_exit.positions.get(ticker.upper())
+                    )
+                    if _bpos is not None:
+                        _exit_leg_extreme = _bpos.get("v531_max_favorable_price")
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book pre-exit capture skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
                 self._close_position_idempotent(client, ticker, label, reason)
                 # v5.25.0 / v6.0.7 \u2014 confirm flat on broker, with grace
                 # to ride out Alpaca's eventual-consistency window so we
                 # do not graft a phantom row from a still-pending close.
                 self._reconcile_position_with_broker(ticker, expect="flat")
+                # v7.0.0 Phase 4 \u2014 update this executor's PortfolioBook
+                # ratchet and remove the position row. Symmetric with
+                # the ENTRY bookkeeping above; best-effort try/except.
+                try:
+                    from engine.portfolio_book import PORTFOLIOS
+                    _book_id_exit2 = self.NAME.lower()
+                    _pb_exit2 = PORTFOLIOS.get(_book_id_exit2)
+                    if _exit_side == "LONG":
+                        _pb_exit2.record_exit(
+                            ticker, "LONG", leg_high=_exit_leg_extreme
+                        )
+                        _pb_exit2.positions.pop(ticker.upper(), None)
+                    else:
+                        _pb_exit2.record_exit(
+                            ticker, "SHORT", leg_low=_exit_leg_extreme
+                        )
+                        _pb_exit2.short_positions.pop(ticker.upper(), None)
+                except Exception:
+                    logger.debug(
+                        "[%s] per-book record_exit skipped: %s",
+                        self.NAME, ticker, exc_info=True,
+                    )
             elif kind == "EOD_CLOSE_ALL":
                 client.close_all_positions(cancel_orders=True)
                 # v5.5.10 \u2014 wipe every local + persisted row.

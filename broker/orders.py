@@ -944,10 +944,20 @@ def paper_shares_for(price: float) -> int:
     """
     if price <= 0:
         return 0
-    from eye_of_tiger import ENTRY_1_SIZE_PCT
-
-    dollars = _tg().PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT
-    return max(1, int(dollars // price))
+    # v7.0.0 Phase 4: delegate to main book's size_for() so sizing is
+    # driven by PortfolioConfig.dollars_per_entry (env-bridged on boot).
+    # Legacy fallback ensures tests and import-time callers keep working.
+    try:
+        from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+        from eye_of_tiger import ENTRY_1_SIZE_PCT
+        return PORTFOLIOS.get(PORTFOLIO_MAIN).size_for(
+            ticker="?", price=price, entry_size_pct=ENTRY_1_SIZE_PCT,
+        )
+    except Exception:
+        # Fallback to legacy path on any import error.
+        from eye_of_tiger import ENTRY_1_SIZE_PCT
+        dollars = _tg().PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT
+        return max(1, int(dollars // price))
 
 
 

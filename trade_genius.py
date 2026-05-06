@@ -2311,6 +2311,11 @@ _MAIN_BOOK.v5_long_tracks = v5_long_tracks
 _MAIN_BOOK.v5_short_tracks = v5_short_tracks
 _MAIN_BOOK.v5_active_direction = v5_active_direction
 
+# v7.0.0 Phase 4 -- bridge sizing config into main book so size_for()
+# and paper_shares_for() draw from the same env-driven value.
+# PAPER_DOLLARS_PER_ENTRY is defined earlier in this module (line ~1056).
+_MAIN_BOOK.config.dollars_per_entry = float(PAPER_DOLLARS_PER_ENTRY)
+
 # ============================================================
 # MARKET MODE (DELETED v5.26.0 \u2014 non-spec scaffolding)
 # ============================================================
