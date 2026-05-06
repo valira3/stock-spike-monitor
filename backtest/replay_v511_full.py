@@ -1341,6 +1341,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--output", default=None, help="Write JSON report to this path (else stdout text)"
     )
+    p.add_argument(
+        "--min-hold-sec",
+        type=int,
+        default=None,
+        help="Override engine.sentinel._V644_MIN_HOLD_SECONDS for this run (test/sweep lever)",
+    )
     return p
 
 
@@ -1354,6 +1360,9 @@ def main(argv: list[str] | None = None) -> int:
         force=True,
     )
     args = _build_parser().parse_args(argv)
+    if args.min_hold_sec is not None:
+        import engine.sentinel as _sentinel_mod
+        _sentinel_mod._V644_MIN_HOLD_SECONDS = int(args.min_hold_sec)
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     sh, sm = (int(x) for x in args.start.split(":"))
     eh, em = (int(x) for x in args.end.split(":"))

@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.5 (2026-05-06) -- V644 min-hold default lowered from 600s to 120s
+
+Production tuning change. The V644 minimum-hold gate (which blocks the 50bp
+protective stop under N seconds from entry) had its default lowered from 600s
+to 120s, and the constant is now read from `V644_MIN_HOLD_SEC` env so prod can
+be tuned without a deploy.
+
+### Sweep evidence (84-day SIP corpus, 12 prod tickers, v7.0.4 harness)
+
+| variant | net P/L (84d) | pairs | WR | delta vs 600s |
+|---|---:|---:|---:|---:|
+| baseline (600s) | $20,313.38 | 1,285 | 58.21% | -- |
+| mh=0 | $22,148.76 | 1,291 | 57.78% | +$1,835 |
+| mh=60 | $22,148.76 | 1,291 | 57.78% | +$1,835 |
+| **mh=120** | **$22,221.47** | 1,292 | 57.82% | **+$1,908** |
+| mh=180 | $22,033.31 | 1,291 | 57.94% | +$1,720 |
+
+Curve peaks at ~120s. Below 60s the gate is dormant (the chandelier rail
+rarely ratchets above entry under T+60-90s anyway). Above 120s the curve
+bends back toward the 600s baseline as the gate starts blocking exits that
+should have fired.
+
+### Wiring
+
+`engine/sentinel.py:172`: `_V644_MIN_HOLD_SECONDS` now reads `V644_MIN_HOLD_SEC`
+env var (default 120). Falls back to 120 on a malformed value. The original
+gate was hardcoded at 600 with no env reader; the sweep that surfaced the
+lift used a `--min-hold-sec` CLI flag added to the replay harness in this PR.
+
+### Backtest harness change
+
+`backtest/replay_v511_full.py`: added `--min-hold-sec N` CLI flag that flips
+`engine.sentinel._V644_MIN_HOLD_SECONDS` before `run_replay`. Lets future
+sweeps tune this lever without setting env per-subprocess.
+
+---
+
 ## v7.0.4 (2026-05-06) -- val/gene Today's Trades pnl + side detection
 
 Dashboard-only fix. Today's Trades on the Val and Gene tabs were showing a `\u2014`
