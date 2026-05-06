@@ -4,6 +4,57 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.16.1 (2026-05-05) -- earnings_watcher live wiring (Phase 1 PR #2)
+
+Phase 1 PR #2 of 4. Wires the v4 NHOD + Wilder DMI engine into live
+paper trading via the new `earnings_watcher/` package from v6.16.0.
+Activated via `EARNINGS_WATCHER_ENABLED=1` Railway env var (default
+off; the deployed binary is identical to v6.16.0 until the flag is
+set).
+
+**Hard isolation preserved.** `earnings_watcher/*` does not import
+from `eye_of_tiger` or `trade_genius`. RTH core does not import from
+`earnings_watcher`. The wiring layer in `trade_genius.py` is the only
+crossing point and is fully behind the feature flag.
+
+**What ships.**
+
+1. `earnings_watcher/signals.py` -- Wilder DMI + ADX + NHOD breakout
+   detector (1:1 port from `decision_engine.py`).
+2. `earnings_watcher/exits.py` -- live-position exit logic
+   (hard_stop / trail / time / session_end).
+3. `earnings_watcher/data_sources.py` -- FMP earnings calendar +
+   Alpaca SIP->IEX bar fetch + universe filter (cap >= $10B,
+   ADV >= 100k).
+4. `earnings_watcher/state.py` -- atomic JSON persistence for
+   `open_positions` and `evaluated_today`; `/data` -> `/tmp` fallback.
+5. `earnings_watcher/runner.py` -- `run_window_cycle()` orchestration
+   that re-evaluates every 60s during the active window
+   (pre-market 04:00-09:29 ET, after-hours 16:00-20:00 ET) with
+   per-(date, window, ticker) idempotency.
+6. `trade_genius.py` -- minute-by-minute window cycle hook in
+   `scheduler_thread()`, behind `EARNINGS_WATCHER_ENABLED`.
+7. Tests: 49 passing + 4 skipped (cred-gated).
+
+**Why minute-by-minute, not single-shot.** BMO earnings release
+between 06:00-09:00 ET; AMC release 16:05-16:30 ET. The DMI engine
+needs 25+ minute-bars after release to compute Wilder smoothing. The
+window-cycle loop re-evaluates every 60s; idempotency ensures one
+signal max per ticker per window.
+
+**Replay sanity:** 5/5 events match the Phase 0 replay corpus
+(`results.csv`) on conviction, di_plus, and adx within
+floating-point tolerance. Notional differs (replay used fixed $2,500
+base; live uses 10% portfolio-relative per Phase 1 spec).
+
+**Risk: bounded.** 30% per-position cap, 50% portfolio exposure cap,
+3% hard stop, paper trading only. Pre-market BMO matches Phase 0
+calibration; AH window is unvalidated and will be observed before any
+gate tightening in PR #3.
+
+---
+
+
 ## v6.16.0 (2026-05-05) -- DMI sizing helpers in isolated earnings_watcher/ module (Phase 1 PR #1)
 
 Phase 1 PR #1 of 4. Adds the v4 portfolio-relative DMI sizing helpers
