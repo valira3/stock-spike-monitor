@@ -24,6 +24,50 @@ DMI_MIN_VOL = 100_000           # absolute floor on breakout-bar volume
 DMI_LONG_ONLY = True            # short-side hit rate too low on Phase 0 corpus
 DMI_MAX_ENTRY_IDX = 90          # skip late-session breakouts
 
+# v6.18.0 pre-entry volatility guard.
+# Reject signals whose pre-entry tape contains any single-bar |close-to-close|
+# move exceeding DMI_PRE_ENTRY_BAR_MOVE_MAX. Catches the run-up volatility
+# that preceded MNST 2026-02-26's gap-through stop-out (~$300 saved).
+DMI_PRE_ENTRY_LOOKBACK = 10     # bars before entry to scan
+DMI_PRE_ENTRY_BAR_MOVE_MAX = 0.025  # 2.5% single-bar move = veto
+
+
+def pre_entry_volatility_ok(
+    sess_bars: List[Dict[str, Any]],
+    entry_idx: int,
+    lookback: int = DMI_PRE_ENTRY_LOOKBACK,
+    max_move: float = DMI_PRE_ENTRY_BAR_MOVE_MAX,
+) -> tuple:
+    """v6.18.0 \u2014 reject signals whose pre-entry tape is too choppy.
+
+    Scans the `lookback` bars immediately preceding `entry_idx` and computes
+    the largest |close-to-close| pct move. If any single-bar move exceeds
+    `max_move`, the signal is vetoed.
+
+    Rationale: tickers that are already swinging \u00b13% inside one minute
+    are vulnerable to the MNST-style gap-through where the bar low sails
+    past the hard-stop level before any exit can fire. Pre-filtering them
+    out is much cheaper than tightening the stop.
+
+    Returns (ok, max_observed_move). ok is False when the signal should
+    be skipped.
+    """
+    if entry_idx <= 0 or not sess_bars:
+        return True, 0.0
+    start = max(1, entry_idx - lookback)
+    max_abs = 0.0
+    for i in range(start, entry_idx):
+        prev_close = float(sess_bars[i - 1]["close"])
+        cur_close = float(sess_bars[i]["close"])
+        if prev_close <= 0:
+            continue
+        move = abs(cur_close - prev_close) / prev_close
+        if move > max_abs:
+            max_abs = move
+    if max_abs > max_move:
+        return False, max_abs
+    return True, max_abs
+
 
 # ---------------------------------------------------------------------------
 # Wilder DMI (ADX / DI+ / DI-)
