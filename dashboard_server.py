@@ -853,6 +853,90 @@ def _ingest_volume_feed_status(m) -> str:
             return "disabled_no_creds"
 
 
+def _earnings_watcher_snapshot() -> dict:
+    """v6.17.0 \u2014 read EW last_cycle.json + open positions for /api/state.
+
+    Returns a dict with: enabled, version, current_window, universe_size,
+    last_cycle (with skip_reasons), open_positions. Never raises \u2014 a
+    missing file or parse error degrades to enabled=false.
+    """
+    import json as _json
+    import os as _os
+    from datetime import datetime as _dt, timezone as _tz
+    from pathlib import Path as _Path
+
+    out = {
+        "enabled": _os.environ.get("EARNINGS_WATCHER_ENABLED", "0") == "1",
+        "version": "6.17.0",
+        "current_window": "closed",
+        "universe_size": 0,
+        "last_cycle": None,
+        "open_positions": [],
+    }
+
+    # current_window derivation (ET): premarket 04:00\u201309:29, afterhours 16:00\u201320:00
+    try:
+        try:
+            from zoneinfo import ZoneInfo as _Zi
+            _now_et = _dt.now(_Zi("America/New_York"))
+        except Exception:
+            _now_et = _dt.now(_tz.utc).replace(tzinfo=None)
+        _mins = _now_et.hour * 60 + _now_et.minute
+        if 240 <= _mins < 570:
+            out["current_window"] = "premarket"
+        elif 570 <= _mins < 960:
+            out["current_window"] = "rth_idle"
+        elif 960 <= _mins < 1200:
+            out["current_window"] = "afterhours"
+        else:
+            out["current_window"] = "closed"
+    except Exception:
+        pass
+
+    base = _os.environ.get("TG_DATA_ROOT", "/data")
+    ew_dir = _Path(base) / "earnings_watcher"
+
+    # last_cycle.json (signal pulse + skip_reasons)
+    try:
+        lc = ew_dir / "last_cycle.json"
+        if lc.exists():
+            data = _json.loads(lc.read_text())
+            out["last_cycle"] = {
+                "window": data.get("window"),
+                "ts_utc": data.get("ts_utc"),
+                "date": data.get("date"),
+                "universe_size": data.get("universe_size", 0),
+                "evaluated": data.get("evaluated", 0),
+                "signals": data.get("signals", 0),
+                "orders_filled": data.get("orders_filled", 0),
+                "exits": data.get("exits", 0),
+                "skip_reasons": data.get("skip_reasons", {}),
+            }
+            out["universe_size"] = data.get("universe_size", 0)
+    except Exception:
+        pass
+
+    # open_positions.json (live trades managed by EW)
+    try:
+        op = ew_dir / "open_positions.json"
+        if op.exists():
+            positions = _json.loads(op.read_text()) or {}
+            for tkr, p in positions.items():
+                out["open_positions"].append({
+                    "ticker": tkr,
+                    "side": p.get("side"),
+                    "entry_px": p.get("entry_px"),
+                    "qty": p.get("qty"),
+                    "notional": p.get("notional"),
+                    "conv": p.get("conv"),
+                    "entry_ts_utc": p.get("entry_ts_utc"),
+                })
+    except Exception:
+        pass
+
+    return out
+
+
 def snapshot() -> dict[str, Any]:
     """Build the full read-only snapshot. Must never raise."""
     m = _ssm()
@@ -1373,6 +1457,9 @@ def snapshot() -> dict[str, Any]:
             "ingest_status": ingest_status,
             # v6.11.0 -- C25 SPY regime + amp window state.
             **_v611_regime_snapshot(),
+            # v6.17.0 \u2014 earnings_watcher panel surface. Reads
+            # last_cycle.json + open_positions.json from /data/earnings_watcher.
+            "earnings_watcher": _earnings_watcher_snapshot(),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)

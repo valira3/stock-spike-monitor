@@ -224,6 +224,21 @@
       </div>
     </section>
 
+    <!-- v6.17.0 — Earnings Watcher panel. Surfaces EW window status,
+         universe size, last cycle telemetry (skip_reasons), and any
+         currently-open EW positions. Reads from /api/state.earnings_watcher. -->
+    <section class="grid">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title" title="Earnings Watcher — pre/post-market DMI runaway-capture engine. Shows current window, last cycle stats, and open EW positions.">Earnings Watcher<span class="count" id="ew-window-pill" title="Current EW window">· —</span></span>
+          <span class="chip" id="ew-summary-chip" title="Last cycle: evaluated / signals / orders">—</span>
+        </div>
+        <div class="card-body flush" id="ew-body">
+          <div class="empty">Earnings Watcher not enabled.</div>
+        </div>
+      </div>
+    </section>
+
     <!-- v5.23.0 — Today's trades panel. The companion 'Last signal' card
          was retired here (it was usually empty after a redeploy and
          the trade log already carries the same entry/exit info with

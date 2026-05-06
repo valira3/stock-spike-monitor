@@ -1,4 +1,16 @@
-"""v6.16.1 \u2014 earnings_watcher.runner: orchestration loop.
+"""v6.17.0 \u2014 earnings_watcher.runner: orchestration loop.
+
+v6.17.0 changes:
+  - Idempotency fix: bias_misaligned and no_session skips no longer mark a
+    ticker as evaluated. FMP populates epsActual only after the company
+    publishes (often 5\u201310 min into the window), so retry-on-next-cycle
+    is required. Other skip reasons (no_dmi_breakout, idx_too_late, sizing)
+    remain terminal for the window.
+  - Cycle telemetry: run_window_cycle and run_exit_cycle now write
+    /data/earnings_watcher/last_cycle.json so the dashboard can surface
+    skip_reasons, evaluated count, signals count, current window, etc.
+
+Original v6.16.1 docstring follows.
 
 Entry points called from trade_genius.py (behind EARNINGS_WATCHER_ENABLED flag):
   - run_window_cycle(window)  -> Dict   (every 60 s during active windows; window='premarket'|'afterhours')
@@ -81,6 +93,80 @@ def _is_extended_hours(dt: datetime) -> bool:
     pre_market = (4 * 60) <= total < (9 * 60 + 30)
     after_hours = (16 * 60) <= total < (20 * 60)
     return pre_market or after_hours
+
+
+# ---------------------------------------------------------------------------
+# v6.17.0 helpers: skip-reason classifier + last-cycle telemetry writer
+# ---------------------------------------------------------------------------
+
+# Skip reasons that may resolve later in the same window (FMP populates
+# epsActual after the company publishes; bar-history grows minute-by-minute).
+# These do NOT mark the ticker as evaluated; the runner retries next cycle.
+_RETRYABLE_SKIPS = {"bias_misaligned_long", "bias_misaligned_bearish", "no_session"}
+
+
+def _classify_skip_reason(
+    equity: Optional[float],
+    ticker: str,
+    bars: List[Dict[str, Any]],
+    event_meta: Dict[str, Any],
+    open_dmi_exposure: float,
+) -> tuple:
+    """Re-derive why evaluate_and_size returned None.
+
+    Mirrors the gate order in evaluate_and_size. Returns (kind, reason)
+    where kind is 'retry' or 'terminal' and reason is the canonical
+    skip-reason string for telemetry.
+    """
+    if not bars:
+        return ("terminal", "no_bars")
+
+    session = determine_session(bars)
+    if session == "mixed" and event_meta.get("session") in ("bmo", "amc"):
+        session = event_meta["session"]
+    if session in ("unknown", "mixed"):
+        return ("retry", "no_session")
+
+    sess_bars = filter_bars_for_session(bars, session)
+    if len(sess_bars) < 25:
+        return ("terminal", "too_few_session_bars")
+
+    bo = find_nhod_dmi_breakout(sess_bars)
+    if bo is None:
+        return ("terminal", "no_dmi_breakout")
+
+    if DMI_MAX_ENTRY_IDX is not None and bo["idx"] > DMI_MAX_ENTRY_IDX:
+        return ("terminal", "idx_too_late")
+
+    direction = bo["direction"]
+    qs = quality_score(event_meta)
+    if direction == "long" and qs["bias"] != "bullish":
+        return ("retry", "bias_misaligned_long")
+    if direction == "short" and qs["bias"] != "bearish":
+        return ("retry", "bias_misaligned_bearish")
+
+    # Reached sizing \u2014 terminal regardless of outcome
+    return ("terminal", "sizing_zero_or_capped")
+
+
+def _write_last_cycle(summary: Dict[str, Any]) -> None:
+    """Persist last-cycle telemetry under the EW data dir for dashboard read.
+
+    Best-effort: any IO error is logged at WARNING and swallowed so a
+    transient FS issue never breaks the trading loop.
+    """
+    try:
+        import json
+        from pathlib import Path
+        base = os.environ.get("TG_DATA_ROOT", "/data")
+        ew_dir = Path(base) / "earnings_watcher"
+        ew_dir.mkdir(parents=True, exist_ok=True)
+        out = ew_dir / "last_cycle.json"
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(json.dumps(summary, default=str))
+        tmp.replace(out)
+    except Exception as exc:
+        logger.warning("[EW-RUNNER] _write_last_cycle failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +566,7 @@ def run_window_cycle(window: str) -> dict:
     already_evaluated = set(get_evaluated_tickers(today_str, window))
 
     evaluated = skipped_evaluated = skipped_open = signals = orders_submitted = orders_filled = 0
+    skip_reasons: Dict[str, int] = {}  # v6.17.0 \u2014 telemetry for dashboard
 
     for ticker in tickers:
         # Skip tickers already open as positions
@@ -501,6 +588,7 @@ def run_window_cycle(window: str) -> dict:
         if len(bars) < 25:
             logger.debug("[EW-RUNNER] window_cycle insufficient_bars ticker=%s bars=%d window=%s",
                          ticker, len(bars), window)
+            skip_reasons["insufficient_bars"] = skip_reasons.get("insufficient_bars", 0) + 1
             continue
 
         event_meta = event_map.get(ticker, {"ticker": ticker})
@@ -508,13 +596,29 @@ def run_window_cycle(window: str) -> dict:
 
         intent = evaluate_and_size(equity, ticker, bars, event_meta, open_exposure)
 
-        # Mark as evaluated regardless of signal outcome (no double-fire)
+        if intent is None:
+            # v6.17.0 \u2014 classify the skip. Retry-able skips (bias_misaligned,
+            # no_session) do NOT mark the ticker as evaluated, because FMP may
+            # populate epsActual mid-window after the company publishes.
+            kind, reason = _classify_skip_reason(
+                equity, ticker, bars, event_meta, open_exposure
+            )
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            if kind == "terminal":
+                mark_ticker_evaluated(today_str, window, ticker)
+                already_evaluated.add(ticker)
+                evaluated += 1
+            else:
+                logger.debug(
+                    "[EW-RUNNER] window_cycle retry-able skip ticker=%s reason=%s",
+                    ticker, reason,
+                )
+            continue
+
+        # Signal fired: terminal-mark and proceed
         mark_ticker_evaluated(today_str, window, ticker)
         already_evaluated.add(ticker)
         evaluated += 1
-
-        if intent is None:
-            continue
         signals += 1
 
         result = submit_dmi_order(intent, paper=True)
@@ -538,15 +642,21 @@ def run_window_cycle(window: str) -> dict:
     exits = manage_open_positions()
     summary = {
         "cycle": f"window_{window}",
+        "window": window,
+        "ts_utc": now_utc.isoformat(),
+        "date": today_str,
+        "universe_size": len(tickers),
         "evaluated": evaluated,
         "skipped_evaluated": skipped_evaluated,
         "skipped_open": skipped_open,
+        "skip_reasons": skip_reasons,
         "signals": signals,
         "orders_submitted": orders_submitted,
         "orders_filled": orders_filled,
         "exits": exits,
     }
     logger.info("[EW-RUNNER] run_window_cycle done window=%s: %s", window, summary)
+    _write_last_cycle(summary)
     return summary
 
 

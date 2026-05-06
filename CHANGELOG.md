@@ -4,6 +4,58 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.17.0 (2026-05-05) -- earnings_watcher idempotency hotfix + dashboard panel
+
+Two changes shipped together for tomorrow's first full BMO + AMC
+window on the live paper account.
+
+### 1. Idempotency hotfix (functional)
+
+v6.16.x ran `mark_ticker_evaluated` after every `evaluate_and_size`
+call regardless of outcome, on the assumption that a skip is a
+terminal decision for the window. That assumption broke for the
+`bias_misaligned` and `no_session` skips: FMP populates `epsActual`
+only *after* the company publishes its earnings release (5\u201310 min
+lag is normal, sometimes more). Pre-publish, every long signal
+would fail the bias check (score=0 -> bias=neutral), the ticker
+would be permanently locked out of the window, and even if FMP
+populated 90 seconds later the next cycle would skip with
+`already_evaluated`. Net effect: silently suppressed entries on
+every BMO opener.
+
+Fix: `run_window_cycle` now classifies the None return via
+`_classify_skip_reason(\u2026)`. Skips marked `retry` (currently
+`bias_misaligned_long`, `bias_misaligned_bearish`, `no_session`)
+do NOT mark the ticker as evaluated; everything else
+(`no_dmi_breakout`, `idx_too_late`, `too_few_session_bars`,
+`sizing_zero_or_capped`, `no_bars`) remains terminal as before.
+
+This only affects when a ticker can re-enter the evaluation loop;
+the Phase 0-locked signal math, sizing, and exit logic are
+untouched.
+
+### 2. Dashboard panel (operator visibility)
+
+The dashboard had no `earnings_watcher` surface. Added:
+
+- `dashboard_server._earnings_watcher_snapshot()` reads
+  `/data/earnings_watcher/last_cycle.json` and `open_positions.json`
+  and shapes a defensive block for `/api/state.earnings_watcher`.
+- `runner._write_last_cycle(\u2026)` persists a small telemetry blob
+  at the end of each `run_window_cycle`. New summary fields:
+  `window`, `ts_utc`, `date`, `universe_size`, `skip_reasons`.
+- `dashboard_static/index.html` + `app.js`: new "Earnings Watcher"
+  card on Main with current window pill, eval/sig/ord chip, header
+  strip, open-positions table, and a skip-reasons row. The
+  `bias_misaligned_*` chips render in accent color so an operator
+  can spot "FMP hasn't populated yet" at a glance \u2014 the single
+  most diagnostic field for the new strategy.
+
+No schema changes for existing fields; the new key degrades to
+`enabled=false` if the data dir is missing.
+
+---
+
 ## v6.16.3 (2026-05-05) -- FMP cache poisoning hotfix
 
 The v6.16.2 deploy revealed a real production bug during the

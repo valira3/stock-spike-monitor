@@ -3552,6 +3552,100 @@
   // so the field was almost always null even when positions were
   // open. Card removed from Main, Val, and Gene tabs.
 
+  // v6.17.0 — Earnings Watcher panel renderer. Reads s.earnings_watcher
+  // and paints window/universe/skip_reasons/open_positions into #ew-body.
+  // Self-contained — if the block is missing the panel shows "not enabled".
+  function renderEarningsWatcher(s) {
+    const ew = (s && s.earnings_watcher) || null;
+    const body = document.getElementById("ew-body");
+    const pill = document.getElementById("ew-window-pill");
+    const chip = document.getElementById("ew-summary-chip");
+    if (!body) return;
+
+    if (!ew || !ew.enabled) {
+      body.innerHTML = '<div class="empty">Earnings Watcher not enabled.</div>';
+      if (pill) pill.textContent = "\u00b7 off";
+      if (chip) chip.textContent = "\u2014";
+      return;
+    }
+
+    const window_ = ew.current_window || "closed";
+    const lc = ew.last_cycle || null;
+    const positions = ew.open_positions || [];
+    const universeSize = ew.universe_size || 0;
+
+    if (pill) pill.textContent = "\u00b7 " + window_;
+
+    if (chip) {
+      if (lc) {
+        const ev = lc.evaluated || 0;
+        const sig = lc.signals || 0;
+        const ord_ = lc.orders_filled || 0;
+        chip.textContent = ev + " eval / " + sig + " sig / " + ord_ + " ord";
+      } else {
+        chip.textContent = "no cycle yet";
+      }
+    }
+
+    let html = "";
+
+    // Header strip: window | universe | last cycle ts
+    html += '<div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:14px;flex-wrap:wrap;font-size:12px">';
+    html += '<span><strong>window</strong>: ' + escapeHtml(window_) + '</span>';
+    html += '<span><strong>universe</strong>: ' + universeSize + '</span>';
+    html += '<span><strong>version</strong>: ' + escapeHtml(ew.version || "?") + '</span>';
+    if (lc && lc.ts_utc) {
+      html += '<span><strong>last cycle</strong>: ' + escapeHtml(String(lc.ts_utc).replace("T", " ").replace("+00:00", " UTC")) + '</span>';
+    }
+    html += '</div>';
+
+    // Open positions row
+    if (positions.length) {
+      html += '<div style="padding:8px 10px;border-bottom:1px solid var(--border)">';
+      html += '<div style="font-weight:600;margin-bottom:4px;font-size:12px">Open EW positions (' + positions.length + ')</div>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted)">';
+      html += '<th>Ticker</th><th>Side</th><th>Entry</th><th>Qty</th><th>Notional</th><th>Conv</th><th>Entry ts</th>';
+      html += '</tr></thead><tbody>';
+      for (const p of positions) {
+        html += '<tr>';
+        html += '<td><strong>' + escapeHtml(p.ticker || "") + '</strong></td>';
+        html += '<td>' + escapeHtml(p.side || "") + '</td>';
+        html += '<td>' + (p.entry_px != null ? Number(p.entry_px).toFixed(2) : "\u2014") + '</td>';
+        html += '<td>' + (p.qty || "\u2014") + '</td>';
+        html += '<td>' + (p.notional != null ? "$" + Number(p.notional).toLocaleString() : "\u2014") + '</td>';
+        html += '<td>' + (p.conv != null ? Number(p.conv).toFixed(2) : "\u2014") + '</td>';
+        html += '<td style="color:var(--muted)">' + escapeHtml(String(p.entry_ts_utc || "").replace("T", " ").slice(0, 19)) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    // Skip reasons (the diagnostic field)
+    if (lc && lc.skip_reasons && Object.keys(lc.skip_reasons).length) {
+      html += '<div style="padding:8px 10px">';
+      html += '<div style="font-weight:600;margin-bottom:4px;font-size:12px">Last cycle skip reasons</div>';
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px">';
+      const entries = Object.entries(lc.skip_reasons).sort((a, b) => b[1] - a[1]);
+      for (const [reason, count] of entries) {
+        const isBias = String(reason).indexOf("bias_") === 0;
+        const bg = isBias ? "var(--surface-2)" : "var(--surface-1)";
+        const color = isBias ? "var(--accent, #f59e0b)" : "var(--text)";
+        html += '<span style="background:' + bg + ';color:' + color + ';padding:2px 8px;border-radius:10px;border:1px solid var(--border)">';
+        html += escapeHtml(reason) + ' \u00b7 ' + count;
+        html += '</span>';
+      }
+      html += '</div></div>';
+    } else if (lc) {
+      html += '<div style="padding:8px 10px;color:var(--muted);font-size:12px">No skips this cycle.</div>';
+    } else if (window_ === "closed" || window_ === "rth_idle") {
+      html += '<div style="padding:8px 10px;color:var(--muted);font-size:12px">Outside EW windows. Pre-market opens at 4:00 AM ET, after-hours at 4:00 PM ET.</div>';
+    } else {
+      html += '<div style="padding:8px 10px;color:var(--muted);font-size:12px">Waiting for first cycle\u2026</div>';
+    }
+
+    body.innerHTML = html;
+  }
+
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
@@ -3575,6 +3669,7 @@
     renderNextScanCountdown(s);
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
+    try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
     // v4.11.0 — health pill bound to Main when active.
     try { applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] }); } catch (e) {}
   }
