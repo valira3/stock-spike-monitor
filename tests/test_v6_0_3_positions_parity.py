@@ -28,18 +28,16 @@ def _slice_main_positions(js: str) -> str:
 
 
 def _slice_exec_positions(js: str) -> str:
-    # The Val/Gene positions renderer lives inside renderExecutor. The
-    # 'Avg Entry' header text is unique to that block (Main uses 'Entry').
-    # Walk back from there to the executor pos-body region marker (the
-    # 'Open positions card' comment is placed once per renderer) and
-    # forward through the close + footer. We need the wider slice so the
-    # cross-state lookup helpers (_stopBySym etc.) are inside.
-    needle = "Avg Entry"
-    idx = js.find(needle)
-    assert idx != -1, "executor positions block not found"
-    head = js.rfind("Open positions card", 0, idx)
+    # The Val/Gene positions renderer lives inside renderExecutor. As of
+    # v7.0.3 it uses Main's exact header text (Ticker / Side / Sh / Entry /
+    # Mark / Stop / Unreal. / %), so we can no longer key off a divergent
+    # 'Avg Entry' needle. Locate the block by the unique 'Open positions
+    # card' comment that opens it and the 'Cash / BP / Invested / Shorted
+    # footer' comment that closes it -- both are still present in the
+    # exec renderer and unique to it.
+    head = js.find("Open positions card")
     assert head != -1, "executor pos-body region start not found"
-    tail = js.find("Cash / BP / Invested / Shorted footer", idx)
+    tail = js.find("Cash / BP / Invested / Shorted footer", head)
     assert tail != -1, "executor positions block end not found"
     return js[head:tail]
 
@@ -95,12 +93,13 @@ def test_main_positions_percent_handles_missing_data():
 
 def test_exec_positions_table_has_stop_header():
     js = _slice_exec_positions(_read())
-    # Headers in order: Ticker, Side, Qty, Avg Entry, Mark, Stop,
-    # Unrealized, %.
+    # v7.0.3: Val/Gene now use Main's exact header text. Headers in order:
+    # Ticker, Side, Sh, Entry, Mark, Stop, Unreal., %.
     assert ">Ticker<" in js, "Exec: Ticker header missing"
-    assert ">Avg Entry<" in js, "Exec: Avg Entry header missing"
+    assert ">Sh<" in js, "Exec: Sh header missing"
+    assert ">Entry<" in js, "Exec: Entry header missing"
     assert ">Stop<" in js, "Exec: Stop header missing (parity break)"
-    assert ">Unrealized<" in js, "Exec: Unrealized header missing"
+    assert ">Unreal.<" in js, "Exec: Unreal. header missing"
     assert ">%<" in js, "Exec: % header missing"
 
 
