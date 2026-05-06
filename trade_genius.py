@@ -2276,6 +2276,28 @@ DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "-1500"))
 _trading_halted: bool = False
 _trading_halted_reason: str = ""
 
+# ------------------------------------------------------------
+# v7.0.0 Phase 1 — _MAIN_BOOK is a parallel container holding the same
+# mutable references as the module-level globals declared above.
+# Subsequent phases migrate callsites to access state through the book.
+# Scalar globals (paper_cash, _trading_halted, _trading_halted_reason,
+# daily_entry_date, daily_short_entry_date) remain authoritative here;
+# Phase 2 will consolidate those writes into the book.
+# ------------------------------------------------------------
+from engine.portfolio_book import PortfolioBook as _PortfolioBook  # noqa: E402
+_MAIN_BOOK: _PortfolioBook = _PortfolioBook(portfolio_id="main")
+_MAIN_BOOK.positions = positions
+_MAIN_BOOK.short_positions = short_positions
+_MAIN_BOOK.daily_entry_count = daily_entry_count
+_MAIN_BOOK.daily_short_entry_count = daily_short_entry_count
+_MAIN_BOOK.paper_trades = paper_trades
+_MAIN_BOOK.paper_all_trades = paper_all_trades
+_MAIN_BOOK.trade_history = trade_history
+_MAIN_BOOK.short_trade_history = short_trade_history
+_MAIN_BOOK.v5_long_tracks = v5_long_tracks
+_MAIN_BOOK.v5_short_tracks = v5_short_tracks
+_MAIN_BOOK.v5_active_direction = v5_active_direction
+
 # ============================================================
 # MARKET MODE (DELETED v5.26.0 \u2014 non-spec scaffolding)
 # ============================================================
@@ -7246,6 +7268,15 @@ _init_tickers()
 # v15.0. load_paper_state() still required \u2014 it restores open
 # positions from the prior session.
 load_paper_state()
+
+# v7.0.0 Phase 1 — re-bind _MAIN_BOOK to the dicts that load_paper_state()
+# may have replaced with fresh objects (v5_long_tracks, v5_short_tracks,
+# v5_active_direction). Other collections are mutated in-place by
+# load_paper_state (clear+update/extend) so their identity is preserved;
+# these three are always re-assigned to brand-new dicts by paper_state.py.
+_MAIN_BOOK.v5_long_tracks = v5_long_tracks
+_MAIN_BOOK.v5_short_tracks = v5_short_tracks
+_MAIN_BOOK.v5_active_direction = v5_active_direction
 
 # Live dashboard (read-only web UI). Env-gated: off unless DASHBOARD_PASSWORD is set.
 # Runs in its own thread with its own asyncio loop \u2014 never touches PTB's loop.
