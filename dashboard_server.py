@@ -166,6 +166,333 @@ def _chandelier_stage(pos: dict) -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# v7.0.0 Phase 6 — TRAIL pill state helpers (spec F).
+# ---------------------------------------------------------------------------
+
+def _compute_trail_pill_state(pos: dict) -> dict | None:
+    """Return TRAIL pill state dict or None.
+
+    Computes one of four outcomes from existing position fields:
+    - None: no effective stop set, or mark is unavailable
+    - {status: 'armed', hold_remaining_sec: None}: stop set, mark hasn't crossed
+    - {status: 'breached_hold', hold_remaining_sec: N}: mark crossed but
+      v644_hold_seconds is blocking exit
+    - {status: 'breached_firing', hold_remaining_sec: 0}: mark crossed and
+      min-hold expired, position is in cover queue
+
+    Pure computation — never raises.
+    """
+    try:
+        effective_stop = (
+            pos.get("effective_stop")
+            or pos.get("stop")
+            or pos.get("trail_stop")
+        )
+        mark = (
+            pos.get("mark")
+            or pos.get("current_price")
+            or pos.get("last_price")
+        )
+        if effective_stop is None or mark is None:
+            return None
+        eff = _safe_float(effective_stop)
+        mk = _safe_float(mark)
+        if eff is None or mk is None:
+            return None
+        side = str(pos.get("side", "LONG")).upper()
+        if side == "LONG":
+            breached = mk < eff
+        else:
+            breached = mk > eff
+        if not breached:
+            return {"status": "armed", "hold_remaining_sec": None}
+        v644 = int(pos.get("v644_hold_seconds") or 0)
+        if v644 > 0:
+            return {"status": "breached_hold", "hold_remaining_sec": v644}
+        return {"status": "breached_firing", "hold_remaining_sec": 0}
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# v7.0.0 Phase 6 — Per-portfolio strip + block builders (spec G + H).
+# ---------------------------------------------------------------------------
+
+def _build_portfolio_strip(book, executor=None) -> dict:
+    """Build the strip sub-object for a single portfolio block.
+
+    Returned shape::
+
+        {
+            "cooldowns": {"long": N, "short": N, "total": N},
+            "errors": {"count": N, "last": str | None},
+            "positions": N,
+            "day_pnl": float,
+            "state": "active" | "halted_daily_loss" | "paused" | "disabled",
+        }
+
+    main reads cooldown + error registries from tg globals;
+    val/gene cooldown stubs to 0 for Phase 6 (v7.1 wires per-book registry).
+    Best-effort: never raises.
+    """
+    pid = getattr(book, "portfolio_id", "unknown")
+    try:
+        # --- state ---
+        if not getattr(book.config, "enabled", True):
+            state = "disabled"
+        elif book.daily_halted():
+            state = "halted_daily_loss"
+        elif pid == "main":
+            try:
+                import trade_genius as _tg_strip
+                _sp = bool(
+                    getattr(_tg_strip, "_scan_paused", False)
+                    or getattr(_tg_strip, "_scan_idle_hours", False)
+                )
+            except Exception:
+                _sp = False
+            state = "paused" if _sp else "active"
+        else:
+            state = "active"
+
+        # --- cooldowns ---
+        if pid == "main":
+            try:
+                import trade_genius as _tg_cd
+                _plc = getattr(_tg_cd, "_post_loss_cooldown", {}) or {}
+                _pec = getattr(_tg_cd, "_post_exit_cooldown", {}) or {}
+                long_cd = sum(
+                    1 for k in _plc if isinstance(k, tuple) and len(k) == 2
+                    and str(k[1]).upper() == "LONG"
+                )
+                short_cd = sum(
+                    1 for k in _plc if isinstance(k, tuple) and len(k) == 2
+                    and str(k[1]).upper() == "SHORT"
+                )
+            except Exception:
+                long_cd = 0
+                short_cd = 0
+        else:
+            # v7.1 will wire per-book cooldown registry.
+            long_cd = 0
+            short_cd = 0
+
+        cooldowns = {"long": long_cd, "short": short_cd, "total": long_cd + short_cd}
+
+        # --- errors ---
+        if pid == "main":
+            err_snap = _errors_snapshot_safe("main")
+            err_count = int(err_snap.get("count", 0) or 0)
+            entries = err_snap.get("entries") or []
+            err_last = entries[-1].get("message") if entries else None
+        elif executor is not None:
+            exec_name = str(getattr(executor, "NAME", pid)).lower()
+            err_snap = _errors_snapshot_safe(exec_name)
+            err_count = int(err_snap.get("count", 0) or 0)
+            entries = err_snap.get("entries") or []
+            err_last = entries[-1].get("message") if entries else None
+        else:
+            err_count = 0
+            err_last = None
+
+        errors = {"count": err_count, "last": err_last}
+
+        # --- positions + day_pnl come from the outer block; stub 0 here ---
+        pos_count = (
+            len(getattr(book, "positions", {}) or {})
+            + len(getattr(book, "short_positions", {}) or {})
+        )
+
+        return {
+            "cooldowns": cooldowns,
+            "errors": errors,
+            "positions": pos_count,
+            "day_pnl": 0.0,   # overwritten by _build_portfolio_block after assembly
+            "state": state,
+        }
+    except Exception:
+        return {
+            "cooldowns": {"long": 0, "short": 0, "total": 0},
+            "errors": {"count": 0, "last": None},
+            "positions": 0,
+            "day_pnl": 0.0,
+            "state": "unknown",
+        }
+
+
+_PORTFOLIO_BLOCK_STUB = {
+    "portfolio_id": "unknown",
+    "equity": 0.0,
+    "day_pnl": 0.0,
+    "positions": [],
+    "trades_today": [],
+    "strip": {
+        "cooldowns": {"long": 0, "short": 0, "total": 0},
+        "errors": {"count": 0, "last": None},
+        "positions": 0,
+        "day_pnl": 0.0,
+        "state": "unknown",
+    },
+}
+
+
+def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> dict:
+    """Build per-portfolio JSON block for /api/state (spec H).
+
+    book:     PortfolioBook instance from PORTFOLIOS.get(id).
+    executor: optional TradeGeniusVal/Gene instance for broker-side data.
+              None for main (uses tg module globals).
+    prices:   price cache dict passed down from snapshot() caller.
+
+    Returns a dict with portfolio_id, equity, day_pnl, positions,
+    trades_today, strip.  Never raises.
+    """
+    if book is None:
+        return dict(_PORTFOLIO_BLOCK_STUB)
+    pid = getattr(book, "portfolio_id", "unknown")
+    stub = dict(_PORTFOLIO_BLOCK_STUB)
+    stub["portfolio_id"] = pid
+    stub["strip"] = dict(stub["strip"])
+    try:
+        _px = prices if prices is not None else {}
+        if pid == "main":
+            m = _ssm()
+            longs = dict(getattr(m, "positions", {}) or {})
+            shorts = dict(getattr(m, "short_positions", {}) or {})
+            paper_cash = float(getattr(m, "paper_cash", 0.0))
+            long_mv, short_liab, equity = _equity(paper_cash, longs, shorts, _px)
+            try:
+                today_s = m._now_et().strftime("%Y-%m-%d")
+            except Exception:
+                today_s = ""
+            realized = 0.0
+            for t in getattr(m, "paper_trades", []) or []:
+                if t.get("date") == today_s and t.get("action") == "SELL":
+                    realized += float(t.get("pnl", 0.0) or 0.0)
+            for t in getattr(m, "short_trade_history", []) or []:
+                if t.get("date") == today_s:
+                    realized += float(t.get("pnl", 0.0) or 0.0)
+            unreal = sum(
+                r.get("unrealized", 0.0)
+                for r in _serialize_positions(longs, shorts, _px)
+            )
+            day_pnl = realized + unreal
+            positions_list = _serialize_positions(longs, shorts, _px)
+            trades_today = _today_trades()
+        else:
+            # val / gene: derive from book's own trade_history.
+            try:
+                m2 = _ssm()
+                today_s = m2._now_et().strftime("%Y-%m-%d")
+            except Exception:
+                today_s = ""
+            day_pnl = sum(
+                float(t.get("pnl", 0) or 0)
+                for t in (getattr(book, "trade_history", []) or [])
+                if t.get("date") == today_s
+            ) + sum(
+                float(t.get("pnl", 0) or 0)
+                for t in (getattr(book, "short_trade_history", []) or [])
+                if t.get("date") == today_s
+            )
+            equity = float(
+                getattr(book.config, "portfolio_equity_floor", 100_000.0)
+            ) + day_pnl
+            longs_b = getattr(book, "positions", {}) or {}
+            shorts_b = getattr(book, "short_positions", {}) or {}
+            positions_list = _serialize_positions(longs_b, shorts_b, _px)
+            trades_today = [
+                t for t in (
+                    (getattr(book, "trade_history", []) or [])
+                    + (getattr(book, "short_trade_history", []) or [])
+                )
+                if t.get("date") == today_s
+            ]
+
+        strip = _build_portfolio_strip(book, executor)
+        strip["day_pnl"] = day_pnl
+
+        return {
+            "portfolio_id": pid,
+            "equity": equity,
+            "day_pnl": day_pnl,
+            "positions": positions_list,
+            "trades_today": trades_today,
+            "strip": strip,
+        }
+    except Exception:
+        stub["portfolio_id"] = pid
+        return stub
+
+
+def _build_portfolios_map(prices: dict | None = None) -> dict:
+    """Build the top-level portfolios map for /api/state (spec H).
+
+    Returns {"main": {...}, "val": {...}, "gene": {...}}.
+    Each book is wrapped in its own try/except so one failing book
+    never prevents the others from serializing.
+    """
+    _px = prices if prices is not None else {}
+    result: dict = {}
+    try:
+        from engine.portfolio_book import (
+            PORTFOLIOS,
+            PORTFOLIO_MAIN,
+            PORTFOLIO_VAL,
+            PORTFOLIO_GENE,
+        )
+        try:
+            import trade_genius as _tg_pm
+            val_exec = getattr(_tg_pm, "val_executor", None)
+            gene_exec = getattr(_tg_pm, "gene_executor", None)
+        except Exception:
+            val_exec = None
+            gene_exec = None
+
+        for pid, exec_ in (
+            (PORTFOLIO_MAIN, None),
+            (PORTFOLIO_VAL, val_exec),
+            (PORTFOLIO_GENE, gene_exec),
+        ):
+            try:
+                book = PORTFOLIOS.get(pid)
+                result[pid] = _build_portfolio_block(book, executor=exec_, prices=_px)
+            except Exception:
+                result[pid] = {
+                    "portfolio_id": pid,
+                    "equity": 0.0,
+                    "day_pnl": 0.0,
+                    "positions": [],
+                    "trades_today": [],
+                    "strip": {
+                        "cooldowns": {"long": 0, "short": 0, "total": 0},
+                        "errors": {"count": 0, "last": None},
+                        "positions": 0,
+                        "day_pnl": 0.0,
+                        "state": "unknown",
+                    },
+                }
+    except Exception:
+        for pid in ("main", "val", "gene"):
+            if pid not in result:
+                result[pid] = {
+                    "portfolio_id": pid,
+                    "equity": 0.0,
+                    "day_pnl": 0.0,
+                    "positions": [],
+                    "trades_today": [],
+                    "strip": {
+                        "cooldowns": {"long": 0, "short": 0, "total": 0},
+                        "errors": {"count": 0, "last": None},
+                        "positions": 0,
+                        "day_pnl": 0.0,
+                        "state": "unknown",
+                    },
+                }
+    return result
+
+
 def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
     rows: list[dict] = []
     for tkr, p in longs.items():
@@ -198,13 +525,20 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         if phase_v510 not in ("A", "B", "C"):
             phase_v510 = "A"
         sb_distance = (unreal + 500.0) if isinstance(unreal, (int, float)) else None
+        _long_mark = px_f if px_f is not None else entry
+        _long_trail_pill = _compute_trail_pill_state({
+            "effective_stop": effective_stop,
+            "mark": _long_mark,
+            "side": "LONG",
+            "v644_hold_seconds": p.get("v644_hold_seconds"),
+        })
         rows.append(
             {
                 "ticker": tkr,
                 "side": "LONG",
                 "shares": shares,
                 "entry": entry,
-                "mark": px_f if px_f is not None else entry,
+                "mark": _long_mark,
                 "stop": hard_stop,
                 "trail_active": trail_active,
                 "trail_stop": trail_stop,
@@ -217,6 +551,7 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "phase": phase_v510,
                 "sovereign_brake_distance_dollars": sb_distance,
                 "entry_2_fired": bool(p.get("v5104_entry2_fired")),
+                "trail_pill": _long_trail_pill,
             }
         )
     for tkr, p in shorts.items():
@@ -235,13 +570,20 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         if phase_v510 not in ("A", "B", "C"):
             phase_v510 = "A"
         sb_distance = (unreal + 500.0) if isinstance(unreal, (int, float)) else None
+        _short_mark = px_f if px_f is not None else entry
+        _short_trail_pill = _compute_trail_pill_state({
+            "effective_stop": effective_stop,
+            "mark": _short_mark,
+            "side": "SHORT",
+            "v644_hold_seconds": p.get("v644_hold_seconds"),
+        })
         rows.append(
             {
                 "ticker": tkr,
                 "side": "SHORT",
                 "shares": shares,
                 "entry": entry,
-                "mark": px_f if px_f is not None else entry,
+                "mark": _short_mark,
                 "stop": hard_stop,
                 "trail_active": trail_active,
                 "trail_stop": trail_stop,
@@ -254,6 +596,7 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "phase": phase_v510,
                 "sovereign_brake_distance_dollars": sb_distance,
                 "entry_2_fired": bool(p.get("v5104_entry2_fired")),
+                "trail_pill": _short_trail_pill,
             }
         )
     return rows
@@ -1397,6 +1740,14 @@ def snapshot() -> dict[str, Any]:
                 "broker_open_n": broker_open_n,
                 "broker_open_ts": broker_open_ts,
             },
+            # v7.0.0 Phase 6 — per-portfolio map (spec H).
+            # Three books: main, val, gene.  Each carries equity, day_pnl,
+            # positions, trades_today, and a strip sub-object.
+            # "portfolio" (above) is preserved as back-compat alias for
+            # portfolios.main; removal deferred to v7.1.0 per open-questions §4.
+            # Each block is independently best-effort — a crash in one book
+            # never prevents the other two from serializing.
+            "portfolios": _build_portfolios_map(prices),
             "positions": _serialize_positions(longs, shorts, prices),
             # v5.5.7 \u2014 paper executor's most recent emitted signal
             # for the Main-tab LAST SIGNAL card. Same shape as the
