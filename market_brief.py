@@ -240,9 +240,9 @@ def _fmt_pct(last: float, prev: float) -> str:
     return "%s%.2f%%" % (sign, pct)
 
 
-def _build_macro_block() -> str:
-    """Section 2: SPY / QQQ / VIX / ES with pre-market %change."""
-    quotes = _yahoo_batch(list(MACRO_SYMBOLS))
+def _render_macro(quotes: Dict[str, Dict[str, float]]) -> str:
+    """Section 2 renderer \u2014 takes pre-fetched quotes so the narrative
+    can reuse the same numbers without a second network round-trip."""
     lines = ["Macro"]
     if not quotes:
         lines.append("  (macro feed unavailable)")
@@ -269,22 +269,21 @@ def _build_macro_block() -> str:
     return "\n".join(lines)
 
 
-def _build_movers_block(pm: List[str], ah: List[str], api_key: str) -> str:
-    """Section 3: top abs-%change movers among today's EW universe.
+def _movers_rows(
+    pm: List[str], ah: List[str], api_key: str
+) -> List[Tuple[str, float, float, float]]:
+    """Section 3 fetcher \u2014 returns sorted (ticker, last, prev, vol) rows.
 
-    Capped at MAX_PREMARKET_TICKERS lookups (BMO first, then AMC fill-in)
-    and MAX_MOVERS_SHOWN displayed. Volume is shown when FMP returns it.
+    Capped at MAX_PREMARKET_TICKERS lookups (BMO first, then AMC fill-in).
+    The list is sorted by abs %change desc so the renderer just slices it.
     """
-    lines = ["Pre-market movers (EW universe)"]
     if not api_key:
-        lines.append("  (FMP_API_KEY not set)")
-        return "\n".join(lines)
+        return []
     universe = list(dict.fromkeys((pm or []) + (ah or [])))[:MAX_PREMARKET_TICKERS]
     if not universe:
-        lines.append("  (no EW universe today)")
-        return "\n".join(lines)
+        return []
 
-    rows: List[Tuple[str, float, float, float]] = []  # (ticker, last, prev, vol)
+    rows: List[Tuple[str, float, float, float]] = []
     workers = min(len(universe), MOVERS_THREADS)
     try:
         with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -305,11 +304,22 @@ def _build_movers_block(pm: List[str], ah: List[str], api_key: str) -> str:
     except Exception as exc:
         logger.warning("market_brief: movers fetch failed: %s", exc)
 
+    rows.sort(key=lambda r: abs((r[1] - r[2]) / r[2]) if r[2] else 0.0, reverse=True)
+    return rows
+
+
+def _render_movers(
+    rows: List[Tuple[str, float, float, float]],
+    api_key_present: bool = True,
+) -> str:
+    """Section 3 renderer \u2014 takes pre-fetched movers list."""
+    lines = ["Pre-market movers (EW universe)"]
+    if not api_key_present:
+        lines.append("  (FMP_API_KEY not set)")
+        return "\n".join(lines)
     if not rows:
         lines.append("  (no live quotes available)")
         return "\n".join(lines)
-
-    rows.sort(key=lambda r: abs((r[1] - r[2]) / r[2]) if r[2] else 0.0, reverse=True)
     for t, last, prev, vol in rows[:MAX_MOVERS_SHOWN]:
         pct = _fmt_pct(last, prev)
         if vol >= 1_000_000:
@@ -336,29 +346,52 @@ def _classify_econ_impact(row: Dict[str, Any]) -> int:
     return base
 
 
-def _build_catalysts_block(api_key: str) -> str:
-    """Section 4: earnings count for today + ranked US economic events."""
-    lines = ["Catalysts today"]
+def _catalysts_rows(api_key: str) -> Dict[str, Any]:
+    """Section 4 fetcher \u2014 returns ``{earnings_total, earnings_bmo,
+    earnings_amc, econ_top}`` with already-ranked top econ rows. The
+    raw econ rows are kept in the dict so the narrative can scan their
+    impact + timestamp without re-fetching.
+    """
+    out: Dict[str, Any] = {
+        "api_key_present": bool(api_key),
+        "earnings_total": 0,
+        "earnings_bmo": 0,
+        "earnings_amc": 0,
+        "econ_top": [],
+    }
     if not api_key:
-        lines.append("  (FMP_API_KEY not set)")
-        return "\n".join(lines)
-
+        return out
     today = _today_iso_et()
 
-    # Earnings calendar \u2014 just count, optionally split BMO/AMC if FMP
-    # supplies the timing field. The EW universe block already names them.
     earn_url = FMP_EARN_URL.format(d=today, k=api_key)
     earn = _http_get_json(earn_url) or []
-    n_total = len(earn) if isinstance(earn, list) else 0
-    n_bmo = 0
-    n_amc = 0
     if isinstance(earn, list):
+        out["earnings_total"] = len(earn)
         for row in earn:
             tm = (row.get("time") or "").lower()
             if "bmo" in tm or "before" in tm:
-                n_bmo += 1
+                out["earnings_bmo"] += 1
             elif "amc" in tm or "after" in tm:
-                n_amc += 1
+                out["earnings_amc"] += 1
+
+    econ_url = FMP_ECON_URL.format(d=today, k=api_key)
+    econ = _http_get_json(econ_url) or []
+    if isinstance(econ, list) and econ:
+        econ_sorted = sorted(econ, key=_classify_econ_impact, reverse=True)
+        out["econ_top"] = [r for r in econ_sorted if _classify_econ_impact(r) >= 2][:4]
+    return out
+
+
+def _render_catalysts(data: Dict[str, Any]) -> str:
+    """Section 4 renderer."""
+    lines = ["Catalysts today"]
+    if not data.get("api_key_present"):
+        lines.append("  (FMP_API_KEY not set)")
+        return "\n".join(lines)
+
+    n_total = int(data.get("earnings_total") or 0)
+    n_bmo = int(data.get("earnings_bmo") or 0)
+    n_amc = int(data.get("earnings_amc") or 0)
     if n_bmo or n_amc:
         lines.append(
             "  Earnings: %d total (BMO %d / AMC %d)" % (n_total, n_bmo, n_amc)
@@ -366,42 +399,234 @@ def _build_catalysts_block(api_key: str) -> str:
     else:
         lines.append("  Earnings: %d total" % n_total)
 
-    # Economic calendar \u2014 top 4 ranked by impact + US-weight.
-    econ_url = FMP_ECON_URL.format(d=today, k=api_key)
-    econ = _http_get_json(econ_url) or []
-    if isinstance(econ, list) and econ:
-        econ_sorted = sorted(econ, key=_classify_econ_impact, reverse=True)
-        top = [r for r in econ_sorted if _classify_econ_impact(r) >= 2][:4]
-        if top:
-            lines.append("  Econ:")
-            for row in top:
-                event = (row.get("event") or row.get("name") or "?")[:48]
-                country = row.get("country") or "?"
-                impact = row.get("impact") or ""
-                ts = row.get("date") or row.get("time") or ""
-                # Show local CT time if FMP gives an ISO timestamp.
-                t_disp = ""
+    top = data.get("econ_top") or []
+    if top:
+        lines.append("  Econ:")
+        for row in top:
+            event = (row.get("event") or row.get("name") or "?")[:48]
+            country = row.get("country") or "?"
+            impact = row.get("impact") or ""
+            ts = row.get("date") or row.get("time") or ""
+            t_disp = ""
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
                 try:
-                    dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                    try:
-                        from zoneinfo import ZoneInfo
-
-                        dt_ct = dt.astimezone(ZoneInfo("America/Chicago"))
-                        t_disp = dt_ct.strftime("%H:%M CT")
-                    except Exception:
-                        t_disp = dt.strftime("%H:%M UTC")
+                    from zoneinfo import ZoneInfo
+                    dt_ct = dt.astimezone(ZoneInfo("America/Chicago"))
+                    t_disp = dt_ct.strftime("%H:%M CT")
                 except Exception:
-                    t_disp = str(ts)[-5:] if ts else ""
-                impact_tag = ("[%s]" % impact[0].upper()) if impact else ""
-                lines.append(
-                    "    %s %s %s %s" % (t_disp or "--:--", country, impact_tag, event)
-                )
-        else:
-            lines.append("  Econ: no high-impact events")
+                    t_disp = dt.strftime("%H:%M UTC")
+            except Exception:
+                t_disp = str(ts)[-5:] if ts else ""
+            impact_tag = ("[%s]" % impact[0].upper()) if impact else ""
+            lines.append(
+                "    %s %s %s %s" % (t_disp or "--:--", country, impact_tag, event)
+            )
     else:
-        lines.append("  Econ: feed unavailable")
-
+        lines.append("  Econ: no high-impact events")
     return "\n".join(lines)
+
+
+# ---- Narrative ---------------------------------------------------------
+#
+# Deterministic, rule-based read of the gathered numbers \u2014 NOT an LLM
+# call. Stable, fast, auditable, no extra dependency. The narrative
+# reasons over four signals:
+#
+#   1. SPY pre-market drift  -> early bias for the day; the V611 SPY
+#      regime classifier itself only fires at 10:00 ET on the actual
+#      9:30->10:00 30-minute return, so we deliberately do NOT claim
+#      a regime band here \u2014 just an early read.
+#   2. VIX level + delta     -> volatility expectation; high VIX flips
+#      the algo to defensive (slower scans, tighter stops in practice).
+#   3. EW universe size      -> how busy earnings_watcher will be at
+#      market open (BMO names trigger right at 8:30 CT).
+#   4. Top movers magnitude  -> any name that has already moved >5%
+#      pre-market is at risk of being a gap-and-fade entry.
+#
+# Every branch returns a 1-line bullet. The narrative caps at ~6 lines.
+
+# Volatility thresholds
+_VIX_QUIET = 14.0     # below this, expect calm session
+_VIX_ELEVATED = 20.0  # above this, expect chop / trap risk
+_VIX_HIGH = 25.0      # above this, expect heavy whipsaws
+
+# Pre-market SPY drift bands (mirroring V611 regime grammar so the
+# narrative\u2019s vocabulary matches the dashboard once 10:00 fires).
+_SPY_GAP_UP = 0.50    # pct
+_SPY_GAP_DOWN = -0.50
+_SPY_FLAT = 0.15
+
+_MOVER_GAP_RISK_PCT = 5.0  # |%change| at or above this is gap-fade risk
+
+
+def _classify_macro(macro: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
+    """Pull SPY pre-market drift, VIX level/delta into a small dict.
+
+    Returns a dict with keys ``spy_pct``, ``qqq_pct``, ``vix_last``,
+    ``vix_pct`` \u2014 any field that could not be computed is None.
+    """
+    out: Dict[str, Any] = {
+        "spy_pct": None, "qqq_pct": None, "vix_last": None, "vix_pct": None,
+    }
+    spy = macro.get("SPY")
+    if spy and spy["prev_close"]:
+        out["spy_pct"] = (spy["last"] - spy["prev_close"]) / spy["prev_close"] * 100.0
+    qqq = macro.get("QQQ")
+    if qqq and qqq["prev_close"]:
+        out["qqq_pct"] = (qqq["last"] - qqq["prev_close"]) / qqq["prev_close"] * 100.0
+    vix = macro.get("^VIX")
+    if vix:
+        out["vix_last"] = vix["last"]
+        if vix["prev_close"]:
+            out["vix_pct"] = (vix["last"] - vix["prev_close"]) / vix["prev_close"] * 100.0
+    return out
+
+
+def _build_narrative(
+    macro: Dict[str, Dict[str, float]],
+    movers: List[Tuple[str, float, float, float]],
+    pm: List[str],
+    ah: List[str],
+    catalysts_top: List[Dict[str, Any]],
+) -> str:
+    """Section 5: TradeGenius likely-actions narrative.
+
+    All inputs are raw outputs from the other section builders so the
+    narrative shares the same evidence the user is already looking at.
+    Bullets are emitted in priority order: regime first, vol second,
+    EW load third, mover risk fourth, catalyst risk last.
+    """
+    bullets: List[str] = []
+    m = _classify_macro(macro)
+
+    spy_pct = m["spy_pct"]
+    vix_last = m["vix_last"]
+    vix_pct = m["vix_pct"]
+
+    # 1) Regime read (pre-market hint, not a V611 commitment).
+    if spy_pct is None:
+        bullets.append(
+            "\u2022 SPY pre-market unread \u2014 V611 regime will classify at 10:00 ET; "
+            "hold to defaults until then."
+        )
+    elif spy_pct >= _SPY_GAP_UP:
+        bullets.append(
+            "\u2022 SPY +%.2f%% pre-market \u2014 long bias; expect ORB-breakout "
+            "longs to fire first if the open holds. Regime locks at 10:00 ET."
+            % spy_pct
+        )
+    elif spy_pct <= _SPY_GAP_DOWN:
+        bullets.append(
+            "\u2022 SPY %.2f%% pre-market \u2014 short bias; Wounded Buffalo / "
+            "regime-B short amplification likely if 9:30\u201310:00 follows through."
+            % spy_pct
+        )
+    elif abs(spy_pct) <= _SPY_FLAT:
+        bullets.append(
+            "\u2022 SPY flat (%.2f%%) pre-market \u2014 chop risk; expect lower "
+            "entry counts until a directional break after OR."
+            % spy_pct
+        )
+    else:
+        bullets.append(
+            "\u2022 SPY %+.2f%% pre-market \u2014 mild drift; default scan posture, "
+            "watch OR for confirmation." % spy_pct
+        )
+
+    # 2) Volatility regime.
+    if vix_last is not None:
+        if vix_last >= _VIX_HIGH:
+            bullets.append(
+                "\u2022 VIX %.1f (high) \u2014 expect wide ranges and stop-runs; "
+                "trailing stops will trigger early. Consider /monitoring pause if "
+                "signals look forced." % vix_last
+            )
+        elif vix_last >= _VIX_ELEVATED:
+            bullets.append(
+                "\u2022 VIX %.1f (elevated) \u2014 chop more likely; spreads on EW "
+                "names will widen at the open." % vix_last
+            )
+        elif vix_last <= _VIX_QUIET:
+            bullets.append(
+                "\u2022 VIX %.1f (quiet) \u2014 trend persistence likely; chandelier "
+                "trails will give names room to run." % vix_last
+            )
+        # else: normal vol \u2014 no bullet, keep narrative tight.
+
+    # 3) EW load.
+    n_pm = len(pm or [])
+    n_ah = len(ah or [])
+    if n_pm >= 30:
+        bullets.append(
+            "\u2022 EW heavy: %d BMO names today \u2014 expect a busy 8:30 CT "
+            "window with multiple parallel evaluations." % n_pm
+        )
+    elif n_pm >= 10:
+        bullets.append(
+            "\u2022 EW: %d BMO names \u2014 normal cadence at the open." % n_pm
+        )
+    elif n_pm == 0 and n_ah == 0:
+        bullets.append(
+            "\u2022 EW universe empty today \u2014 only RTH (eye_of_tiger) signals "
+            "will fire."
+        )
+
+    # 4) Mover gap-fade risk \u2014 only if any name has moved hard.
+    big_movers = []
+    for t, last, prev, _vol in (movers or []):
+        if not prev:
+            continue
+        pct = (last - prev) / prev * 100.0
+        if abs(pct) >= _MOVER_GAP_RISK_PCT:
+            big_movers.append((t, pct))
+    if big_movers:
+        big_movers.sort(key=lambda r: abs(r[1]), reverse=True)
+        names = ", ".join(
+            "%s %+.1f%%" % (t, p) for t, p in big_movers[:3]
+        )
+        bullets.append(
+            "\u2022 Gap-fade watch: %s \u2014 large pre-market moves are at risk "
+            "of stop-running their initial entries." % names
+        )
+
+    # 5) Catalyst risk \u2014 only if a high-impact item lands inside RTH.
+    rth_high_impact = []
+    for row in catalysts_top or []:
+        impact = (row.get("impact") or "").lower()
+        if impact != "high":
+            continue
+        ts_raw = row.get("date") or row.get("time") or ""
+        # Parse ISO timestamp; if it falls inside 8:30\u201315:00 CT, flag it.
+        try:
+            dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            try:
+                from zoneinfo import ZoneInfo
+                dt_ct = dt.astimezone(ZoneInfo("America/Chicago"))
+            except Exception:
+                dt_ct = dt
+            hh, mm = dt_ct.hour, dt_ct.minute
+            inside_rth = (8, 30) <= (hh, mm) <= (15, 0)
+            if inside_rth:
+                rth_high_impact.append(
+                    (dt_ct.strftime("%H:%M CT"), (row.get("event") or "event")[:40])
+                )
+        except Exception:
+            continue
+    if rth_high_impact:
+        first = rth_high_impact[0]
+        bullets.append(
+            "\u2022 Catalyst risk: %s %s \u2014 expect a vol spike; algo trails "
+            "may trigger faster around the print." % (first[0], first[1])
+        )
+
+    if not bullets:
+        bullets.append(
+            "\u2022 No standout signals \u2014 default scan posture; let the algo "
+            "work."
+        )
+
+    return "TradeGenius read\n" + "\n".join("  " + b for b in bullets)
 
 
 # ---- Top-level builder --------------------------------------------------
@@ -430,16 +655,24 @@ def build_market_brief(
     if bot_version:
         header += "  (v%s)" % bot_version
 
+    # Fetch macro/movers/catalysts ONCE so the narrative can reuse the
+    # raw numbers without re-hitting the network.
+    macro_quotes = _yahoo_batch(list(MACRO_SYMBOLS))
+    movers = _movers_rows(pm, ah, fmp_api_key)
+    catalysts = _catalysts_rows(fmp_api_key)
+
     parts = [
         header,
         SEP,
         _build_universe_block(pm, ah),
         SEP,
-        _build_macro_block(),
+        _render_macro(macro_quotes),
         SEP,
-        _build_movers_block(pm, ah, fmp_api_key),
+        _render_movers(movers, api_key_present=bool(fmp_api_key)),
         SEP,
-        _build_catalysts_block(fmp_api_key),
+        _render_catalysts(catalysts),
+        SEP,
+        _build_narrative(macro_quotes, movers, pm, ah, catalysts.get("econ_top") or []),
     ]
 
     elapsed = time.time() - t0
