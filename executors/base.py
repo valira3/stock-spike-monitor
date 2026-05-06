@@ -1194,24 +1194,29 @@ class TradeGeniusBase:
     def _probe_aon_support(self) -> str:
         """v7.0.0 \u2014 boot-time probe to detect native Alpaca AON support.
 
-        Attempts to construct a LimitOrderRequest with all_or_none=True.
-        If the SDK raises TypeError, returns "software" (fallback path).
-        Any other exception also returns "software" for safety.
-        Returns "native" when construction succeeds without exception.
+        Attempts to construct a LimitOrderRequest with all_or_none=True
+        AND verify the flag survives model_dump() round-trip. On alpaca-py
+        0.43.2, pydantic silently drops unknown kwargs at construction
+        (model_fields has no all_or_none, model_config has no extra=allow),
+        so a TypeError-only sentry returns a false positive that disables
+        the software fallback. The round-trip check engages software AON
+        until alpaca-py adds the field natively.
 
-        Note: some SDK versions silently drop unknown kwargs (pydantic
-        model_extra not configured). The spec designates a simple
-        TypeError sentry as sufficient for Phase 5 \u2014 no secondary
-        verification required.
+        Returns "native" only if the constructed request serializes the
+        all_or_none flag; "software" otherwise (TypeError, silent drop,
+        or any exception).
         """
         try:
             from alpaca.trading.requests import LimitOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
-            LimitOrderRequest(
+            req = LimitOrderRequest(
                 symbol="SPY", qty=1, side=OrderSide.BUY,
                 time_in_force=TimeInForce.IOC, limit_price=1.00,
                 all_or_none=True,
             )
+            dumped = req.model_dump()
+            if not dumped.get("all_or_none"):
+                return "software"
             return "native"
         except TypeError:
             return "software"

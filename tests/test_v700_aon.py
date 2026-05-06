@@ -38,6 +38,25 @@ os.environ.setdefault("DASHBOARD_PASSWORD", "smoketest1234")
 os.environ.setdefault("FMP_API_KEY", "fake_fmp_key_for_tests")
 
 
+def _reload_trade_genius_clean() -> None:
+    """v7.0.0 audit fix \u2014 clear trade_genius AND engine.portfolio_book from
+    sys.modules before re-importing.
+
+    Without this, the PORTFOLIOS singleton in engine.portfolio_book retains
+    its identity across re-imports, so when trade_genius re-executes its
+    `_MAIN_BOOK.positions = positions` rebinding, downstream test modules
+    that captured `tg.positions` at import time end up with a stale dict
+    reference. Clearing both modules forces a fully fresh book registry on
+    each fixture invocation, eliminating the 13 cross-test failures in
+    test_v700_phase1_book_facade.py.
+    """
+    for mod_name in list(sys.modules.keys()):
+        if mod_name == "trade_genius" or mod_name.startswith("trade_genius."):
+            del sys.modules[mod_name]
+        elif mod_name == "engine.portfolio_book" or mod_name.startswith("engine.portfolio_book."):
+            del sys.modules[mod_name]
+
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -46,8 +65,7 @@ os.environ.setdefault("FMP_API_KEY", "fake_fmp_key_for_tests")
 @pytest.fixture
 def base_cls(monkeypatch):
     monkeypatch.setenv("SSM_SMOKE_TEST", "1")
-    if "trade_genius" in sys.modules:
-        del sys.modules["trade_genius"]
+    _reload_trade_genius_clean()
     import trade_genius  # noqa: F401
     from executors import TradeGeniusBase
     return TradeGeniusBase
@@ -58,9 +76,15 @@ def _make_executor(monkeypatch, *, filled_qty: str, aon_mode: str = "software"):
     monkeypatch.setenv("SSM_SMOKE_TEST", "1")
     monkeypatch.setenv("TEST_ALPACA_PAPER_KEY", "dummy_paper_key")
     monkeypatch.setenv("TEST_ALPACA_PAPER_SECRET", "dummy_paper_secret")
-    if "trade_genius" in sys.modules:
-        del sys.modules["trade_genius"]
+    _reload_trade_genius_clean()
     import trade_genius  # noqa: F401
+    # Speed-up: zero out reconcile retry sleeps + grace window (default
+    # 0.6s sleep x ~7 retries within a 4s grace = ~4s per dispatch test).
+    # Author note (line 71 of executors/base.py): "Both are module-level
+    # so smoke tests can monkey-patch them to 0."
+    import executors.base as _exec_base
+    monkeypatch.setattr(_exec_base, "RECONCILE_RETRY_SLEEP", 0.0, raising=False)
+    monkeypatch.setattr(_exec_base, "RECONCILE_GRACE_SECONDS", 0.0, raising=False)
     from executors import TradeGeniusBase
 
     class _StubExec(TradeGeniusBase):
@@ -121,16 +145,55 @@ def _make_executor(monkeypatch, *, filled_qty: str, aon_mode: str = "software"):
 
 
 def test_probe_returns_native_when_sdk_accepts(base_cls, monkeypatch):
-    """SDK accepts all_or_none=True without raising \u2192 mode=native."""
+    """SDK accepts all_or_none=True AND the flag survives model_dump \u2192 native.
+
+    Audit fix: the probe must verify the flag round-trips through
+    model_dump(). On alpaca-py 0.43.2, pydantic silently drops
+    all_or_none, so the probe must return 'software' until alpaca-py
+    adds the field. We simulate a hypothetical future SDK that supports
+    the field by patching LimitOrderRequest to a stub whose model_dump
+    includes all_or_none.
+    """
+    import alpaca.trading.requests as atr
+
+    captured_kwargs: dict = {}
+
+    class _NativeAONLOR:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+        def model_dump(self):
+            return dict(captured_kwargs)
+
+    monkeypatch.setattr(atr, "LimitOrderRequest", _NativeAONLOR, raising=False)
     inst = object.__new__(base_cls)
     result = inst._probe_aon_support()
-    # Current alpaca-py 0.43.2 does not raise TypeError on extra kwargs.
-    assert result in ("native", "software"), f"unexpected: {result!r}"
-    # Document the actual finding: 0.43.2 silently accepts the kwarg.
-    # The probe correctly returns native (no TypeError raised).
     assert result == "native", (
-        "alpaca-py 0.43.2 silently accepts all_or_none=True without TypeError; "
-        "probe should return 'native' per spec"
+        f"probe should return 'native' when SDK round-trips all_or_none; got {result!r}"
+    )
+
+
+def test_probe_returns_software_when_sdk_silently_drops_flag(base_cls, monkeypatch):
+    """Audit fix \u2014 alpaca-py 0.43.2 silently drops all_or_none from
+    model_dump() (pydantic ignores unknown kwargs). The probe must detect
+    this via round-trip check and fall back to software AON, otherwise
+    no AON enforcement reaches the broker.
+    """
+    import alpaca.trading.requests as atr
+
+    class _SilentDropLOR:
+        def __init__(self, **kwargs):
+            # Accept anything but never persist all_or_none (matches 0.43.2).
+            self._kept = {k: v for k, v in kwargs.items() if k != "all_or_none"}
+
+        def model_dump(self):
+            return dict(self._kept)
+
+    monkeypatch.setattr(atr, "LimitOrderRequest", _SilentDropLOR, raising=False)
+    inst = object.__new__(base_cls)
+    result = inst._probe_aon_support()
+    assert result == "software", (
+        f"probe must return 'software' when all_or_none is silently dropped; got {result!r}"
     )
 
 
@@ -182,8 +245,7 @@ def test_native_mode_limit_request_has_all_or_none(monkeypatch):
     monkeypatch.setenv("SSM_SMOKE_TEST", "1")
     monkeypatch.setenv("TEST_ALPACA_PAPER_KEY", "dummy_paper_key")
     monkeypatch.setenv("TEST_ALPACA_PAPER_SECRET", "dummy_paper_secret")
-    if "trade_genius" in sys.modules:
-        del sys.modules["trade_genius"]
+    _reload_trade_genius_clean()
     import trade_genius  # noqa: F401
     from executors import TradeGeniusBase
 
@@ -248,7 +310,7 @@ def test_native_mode_limit_request_has_all_or_none(monkeypatch):
     tg_mod.register_signal_listener = lambda _: None  # type: ignore
     tg_mod._v512_quote_snapshot = lambda ticker: (99.90, 100.10)  # type: ignore
     tg_mod._utc_now_iso = lambda: "2026-05-06T15:00:00Z"  # type: ignore
-    sys.modules["trade_genius"] = tg_mod
+    monkeypatch.setitem(sys.modules, "trade_genius", tg_mod)
 
     inst._on_signal({
         "kind": "ENTRY_LONG",
@@ -272,8 +334,7 @@ def test_software_mode_limit_request_no_all_or_none(monkeypatch):
     monkeypatch.setenv("SSM_SMOKE_TEST", "1")
     monkeypatch.setenv("TEST_ALPACA_PAPER_KEY", "dummy_paper_key")
     monkeypatch.setenv("TEST_ALPACA_PAPER_SECRET", "dummy_paper_secret")
-    if "trade_genius" in sys.modules:
-        del sys.modules["trade_genius"]
+    _reload_trade_genius_clean()
     import trade_genius  # noqa: F401
     from executors import TradeGeniusBase
 
@@ -331,7 +392,7 @@ def test_software_mode_limit_request_no_all_or_none(monkeypatch):
     tg_mod.register_signal_listener = lambda _: None  # type: ignore
     tg_mod._v512_quote_snapshot = lambda ticker: (99.90, 100.10)  # type: ignore
     tg_mod._utc_now_iso = lambda: "2026-05-06T15:00:00Z"  # type: ignore
-    sys.modules["trade_genius"] = tg_mod
+    monkeypatch.setitem(sys.modules, "trade_genius", tg_mod)
 
     inst._on_signal({
         "kind": "ENTRY_LONG",
@@ -480,8 +541,7 @@ def test_start_logs_v700_aon_line(monkeypatch, caplog):
     monkeypatch.setenv("SSM_SMOKE_TEST", "1")
     monkeypatch.setenv("TEST_ALPACA_PAPER_KEY", "dummy_key")
     monkeypatch.setenv("TEST_ALPACA_PAPER_SECRET", "dummy_secret")
-    if "trade_genius" in sys.modules:
-        del sys.modules["trade_genius"]
+    _reload_trade_genius_clean()
 
     import trade_genius  # noqa: F401
     from executors import TradeGeniusBase

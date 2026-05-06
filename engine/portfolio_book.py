@@ -153,7 +153,7 @@ class PortfolioBook:
                          in Phase 2.
             **kwargs:    Reserved for future per-phase extensions.
         """
-        from engine.alarm_f_trail import STAGE_INACTIVE, TrailState
+        from engine.alarm_f_trail import STAGE_BREAKEVEN, TrailState
 
         ticker_u = str(ticker).upper()
         side_u = str(side).upper()
@@ -175,8 +175,13 @@ class PortfolioBook:
         old_stage = getattr(old_state, "stage", None) if old_state else None
 
         # Build the fresh trail state seeded to entry_price.
+        # Per spec section E: re-entries arm at STAGE_BREAKEVEN so a fresh
+        # leg has immediate BE+1c protection rather than waiting
+        # MIN_BARS_BEFORE_ARM bars from STAGE_INACTIVE. This is the
+        # corrective for the AVGO incident.
         fresh = TrailState.fresh()
         fresh.peak_close = float(entry_price)
+        fresh.stage = STAGE_BREAKEVEN
 
         # Stamp the fresh state onto the position dict if it exists.
         if pos is not None:
@@ -189,7 +194,7 @@ class PortfolioBook:
         old_peak_str = f"{old_peak:.2f}" if old_peak is not None else "None"
         new_peak_str = f"{float(entry_price):.2f}"
         old_stage_str = str(old_stage) if old_stage is not None else "None"
-        new_stage_str = str(STAGE_INACTIVE)
+        new_stage_str = str(STAGE_BREAKEVEN)
 
         logger.info(
             "[V700-CHANDELIER-RESET] %s %s %s \u2014 peak_close %s -> %s, stage %s -> %s",

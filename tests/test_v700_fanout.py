@@ -51,6 +51,7 @@ def _load_portfolio_book():
     # alarm system loaded.
     class _FakeTrailState:
         STAGE_INACTIVE = 0
+        STAGE_BREAKEVEN = 1
         peak_close: float = 0.0
         stage: int = 0
 
@@ -64,6 +65,7 @@ def _load_portfolio_book():
     fake_trail = types.ModuleType("engine.alarm_f_trail")
     fake_trail.TrailState = _FakeTrailState
     fake_trail.STAGE_INACTIVE = 0
+    fake_trail.STAGE_BREAKEVEN = 1
     sys.modules["engine.alarm_f_trail"] = fake_trail
 
     spec = importlib.util.spec_from_file_location(
@@ -77,8 +79,27 @@ def _load_portfolio_book():
 
 @pytest.fixture()
 def pb():
-    """Fresh portfolio_book module for each test."""
-    return _load_portfolio_book()
+    """Fresh portfolio_book module for each test.
+
+    Audit fix \u2014 restore the original engine.portfolio_book and
+    engine.alarm_f_trail modules in sys.modules after each test. Without
+    teardown, downstream tests (notably test_v700_phase1_book_facade) see
+    the standalone-loaded class while tg._MAIN_BOOK was created from the
+    original class, breaking isinstance assertions.
+    """
+    saved = {
+        k: sys.modules.get(k)
+        for k in ("engine.portfolio_book", "engine.alarm_f_trail")
+    }
+    mod = _load_portfolio_book()
+    try:
+        yield mod
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
 
 
 # ---------------------------------------------------------------------------

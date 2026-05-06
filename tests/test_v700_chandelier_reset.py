@@ -29,6 +29,7 @@ import pytest  # noqa: E402
 from engine.alarm_f_trail import (  # noqa: E402
     STAGE_CHANDELIER_TIGHT,
     STAGE_INACTIVE,
+    STAGE_BREAKEVEN,
     TrailState,
 )
 from engine.portfolio_book import PortfolioBook  # noqa: E402
@@ -87,8 +88,15 @@ def test_record_entry_resets_peak_close_to_entry_price(book):
     )
 
 
-def test_record_entry_resets_stage_to_inactive(book):
-    """Stage must be STAGE_INACTIVE (0) after record_entry."""
+def test_record_entry_resets_stage_to_breakeven(book):
+    """Stage must be STAGE_BREAKEVEN (1) after record_entry.
+
+    Audit fix \u2014 spec section E says re-entries arm at STAGE_BREAKEVEN
+    (immediate BE+1c protection) rather than STAGE_INACTIVE. The original
+    AVGO incident this spec was designed to prevent involved an
+    unprotected re-entry; resetting to STAGE_INACTIVE would leave the
+    fresh leg with no stop for MIN_BARS_BEFORE_ARM bars.
+    """
     stale = _avgo_stale_trail()
     book.short_positions["AVGO"] = {
         "entry_price": 419.57,
@@ -100,8 +108,8 @@ def test_record_entry_resets_stage_to_inactive(book):
     book.record_entry(ticker="AVGO", side="SHORT", entry_price=419.57, entry_count=3)
 
     ts = book.short_positions["AVGO"]["trail_state"]
-    assert ts.stage == STAGE_INACTIVE, (
-        f"stage should be STAGE_INACTIVE ({STAGE_INACTIVE}), got {ts.stage}"
+    assert ts.stage == STAGE_BREAKEVEN, (
+        f"stage should be STAGE_BREAKEVEN ({STAGE_BREAKEVEN}), got {ts.stage}"
     )
 
 
@@ -172,7 +180,7 @@ def test_record_entry_long_side(book):
 
     ts = book.positions["AAPL"]["trail_state"]
     assert ts.peak_close == pytest.approx(285.07)
-    assert ts.stage == STAGE_INACTIVE
+    assert ts.stage == STAGE_BREAKEVEN
     assert ts.bars_seen == 0
     assert ts.last_atr is None
 
@@ -191,7 +199,7 @@ def test_record_entry_when_no_existing_trail_state(book):
     ts = book.positions["NVDA"]["trail_state"]
     assert isinstance(ts, TrailState)
     assert ts.peak_close == pytest.approx(900.00)
-    assert ts.stage == STAGE_INACTIVE
+    assert ts.stage == STAGE_BREAKEVEN
 
 
 def test_record_entry_when_position_not_yet_in_dict(book):
@@ -203,7 +211,7 @@ def test_record_entry_when_position_not_yet_in_dict(book):
     )
     assert isinstance(result, TrailState)
     assert result.peak_close == pytest.approx(420.00)
-    assert result.stage == STAGE_INACTIVE
+    assert result.stage == STAGE_BREAKEVEN
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +243,7 @@ def test_record_entry_emits_v700_chandelier_reset_log(book, caplog):
     # Old peak (418.18) and new peak (419.57) must both appear
     assert "418.18" in msg
     assert "419.57" in msg
-    # Old stage (3) and new stage (0 = STAGE_INACTIVE) must both appear
+    # Old stage (3) and new stage (1 = STAGE_BREAKEVEN) must both appear
     assert "stage" in msg.lower()
 
 
@@ -266,7 +274,8 @@ def test_record_entry_emits_log_for_first_entry_no_prior_state(book, caplog):
 
 def test_record_entry_trail_state_equivalent_to_fresh(book):
     """The stamped trail_state after record_entry should match TrailState.fresh()
-    except that peak_close is seeded to entry_price (not None)."""
+    except that peak_close is seeded to entry_price (not None) AND stage is
+    promoted to STAGE_BREAKEVEN per audit-fix spec section E."""
     book.short_positions["AVGO"] = {
         "entry_price": 419.57,
         "shares": 24,
@@ -279,8 +288,9 @@ def test_record_entry_trail_state_equivalent_to_fresh(book):
     ts = book.short_positions["AVGO"]["trail_state"]
     fresh = TrailState.fresh()
 
-    # Everything except peak_close (seeded) must match TrailState.fresh() defaults.
-    assert ts.stage == fresh.stage
+    # peak_close is seeded; stage is promoted to STAGE_BREAKEVEN; everything else matches fresh().
+    assert ts.stage == STAGE_BREAKEVEN
+    assert fresh.stage == STAGE_INACTIVE  # sanity: fresh() default unchanged
     assert ts.stage2_arm_favorable == fresh.stage2_arm_favorable
     assert ts.stage2_arm_atr == fresh.stage2_arm_atr
     assert ts.last_proposed_stop == fresh.last_proposed_stop
