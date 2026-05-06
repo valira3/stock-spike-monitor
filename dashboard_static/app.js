@@ -4334,7 +4334,12 @@
 
     <section class="grid">
       <div class="card">
-        <div class="card-head"><span class="card-title">Today's trades<span class="count" data-f="trades-count">\u00b7 \u2014</span></span><span class="chip" data-f="trades-realized">\u2014</span></div>
+        <div class="card-head">
+          <span class="card-title" title="All fills (opens + closes) recorded today, newest first">Today's trades<span class="count" data-f="trades-count">\u00b7 \u2014</span></span>
+          <span class="chip" data-f="trades-realized">\u2014</span>
+        </div>
+        <!-- v7.0.3 \u2014 one-line daily summary parity with Main. -->
+        <div class="trades-summary" data-f="trades-summary">\u2014</div>
         <div class="card-body flush" data-f="trades-body">
           <div class="empty">No trades today.</div>
         </div>
@@ -4480,27 +4485,71 @@
     const hm = s.match(/^\d{1,2}:\d{2}/);
     return hm ? hm[0] : s;
   }
+  // v7.0.3 \u2014 mirrors Main's computeTradesSummary so the per-executor
+  // 'opens / closes / realized / win-rate' line is identical to Main's.
+  // BUY|SHORT count as opens; SELL|COVER count as closes (closes are the
+  // only rows that may carry a pnl number).
+  function computeTradesSummaryExec(trades) {
+    let opens = 0, closes = 0, wins = 0, realized = 0, have_pnl = 0;
+    for (const t of (trades || [])) {
+      const act = (t.action || "").toUpperCase();
+      const isOpen = (act === "BUY" || act === "SHORT");
+      const isClose = (act === "SELL" || act === "COVER");
+      if (isOpen) opens += 1;
+      else if (isClose) {
+        closes += 1;
+        if (typeof t.pnl === "number" && isFinite(t.pnl)) {
+          realized += t.pnl;
+          have_pnl += 1;
+          if (t.pnl > 0) wins += 1;
+        }
+      }
+    }
+    const win_rate = have_pnl > 0 ? (wins / have_pnl) : null;
+    return { opens, closes, wins, realized, have_pnl, win_rate };
+  }
+
   function renderExecTrades(panel, data, disabled) {
     const body = execField(panel, "trades-body");
     const count = execField(panel, "trades-count");
     const chip = execField(panel, "trades-realized");
+    const sumEl = execField(panel, "trades-summary");
     const trades = (data && Array.isArray(data.todays_trades)) ? data.todays_trades : [];
     if (count) count.textContent = "\u00b7 " + (disabled ? "\u2014" : trades.length);
 
-    // Chip: running realized P&L (only SELL rows may carry pnl).
-    let realized = 0, havePnl = 0;
-    for (const t of trades) {
-      if (typeof t.pnl === "number" && isFinite(t.pnl)) { realized += t.pnl; havePnl += 1; }
-    }
+    // v7.0.3 \u2014 use the same summary calc Main uses so opens/closes
+    // counts match and the chip aggregate is identical.
+    const summary = computeTradesSummaryExec(trades);
     if (chip) {
-      if (disabled || !havePnl) {
+      if (disabled || summary.have_pnl === 0) {
         chip.textContent = "\u2014";
         chip.className = "chip chip-neut";
       } else {
-        chip.textContent = fmtUsd(realized);
-        chip.className = "chip " + (realized > 0 ? "chip-ok" : (realized < 0 ? "chip-down" : "chip-neut"));
+        chip.textContent = fmtUsd(summary.realized);
+        chip.className = "chip " + (summary.realized > 0 ? "chip-ok" : (summary.realized < 0 ? "chip-down" : "chip-neut"));
       }
     }
+
+    // v7.0.3 \u2014 inline summary line above the table (parity with Main).
+    if (sumEl) {
+      if (disabled) {
+        sumEl.innerHTML = '<span class="ts-seg">\u2014</span>';
+      } else if (!trades.length) {
+        sumEl.innerHTML = '<span class="ts-seg" title="No buy or sell fills have been recorded today">No fills yet today.</span>';
+      } else {
+        const realCls = summary.have_pnl === 0 ? "na"
+                      : (summary.realized > 0 ? "up" : (summary.realized < 0 ? "down" : ""));
+        const realTxt = summary.have_pnl === 0 ? "\u2014" : fmtUsd(summary.realized);
+        const wrTxt   = summary.win_rate === null ? "\u2014"
+                      : (Math.round(summary.win_rate * 100) + "%");
+        sumEl.innerHTML =
+          `<span class="ts-seg" title="Number of opening fills today (BUY for long, SHORT for short)"><span class="ts-val">${summary.opens}</span> open${summary.opens===1?"":"s"}</span>` +
+          `<span class="ts-seg" title="Number of closing fills today (SELL for long, COVER for short)"><span class="ts-val">${summary.closes}</span> close${summary.closes===1?"":"s"}</span>` +
+          `<span class="ts-seg" title="Sum of realized P&L from closed pairs today, after commissions">realized <span class="ts-val ${realCls}">${realTxt}</span></span>` +
+          `<span class="ts-seg" title="Win rate among closed pairs today (winners / total closed)">win <span class="ts-val">${wrTxt}</span></span>`;
+      }
+    }
+
     if (!body) return;
     if (disabled) {
       body.innerHTML = `<div class="empty">\u2014</div>`;
@@ -4513,22 +4562,26 @@
     const rows = trades.map((t) => {
       const tm = fmtTradeTimeExec(t.filled_at || t.time || t.entry_time);
       const act = (t.action || "").toUpperCase();
-      const isBuy = act === "BUY";
-      const isSell = act === "SELL";
+      // v7.0.3 \u2014 classify by open vs close so SHORT/COVER pairs are
+      // colored correctly (previously only BUY/SELL were recognized; a
+      // SHORT fill rendered as a buy-style chip and COVER fills with pnl
+      // were ignored by the running tail).
+      const isOpen = (act === "BUY" || act === "SHORT");
+      const isClose = (act === "SELL" || act === "COVER");
       const sym = t.ticker || t.symbol || "\u2014";
       const shares = t.shares ?? t.qty;
       const px = t.price ?? t.avg_fill_price ?? t.entry_price ?? t.exit_price;
-      const actCls = isSell ? "act-sell" : "act-buy";
+      const actCls = isClose ? "act-sell" : "act-buy";
       const actLbl = act || "\u2014";
       let tailHtml = "\u2014";
-      if (isBuy) {
+      if (isOpen) {
         const cost = (typeof t.cost === "number" && isFinite(t.cost))
           ? t.cost
           : ((typeof shares === "number" && typeof px === "number") ? shares * px : null);
         tailHtml = cost !== null
           ? `<span class="trade-cost">${fmtUsd(cost)}</span>`
           : `<span class="trade-cost">\u2014</span>`;
-      } else if (isSell) {
+      } else if (isClose) {
         const pnl = (typeof t.pnl === "number" && isFinite(t.pnl)) ? t.pnl : null;
         const pnlPct = (typeof t.pnl_pct === "number" && isFinite(t.pnl_pct)) ? t.pnl_pct : null;
         if (pnl !== null) {
@@ -4702,43 +4755,48 @@
           const _trailArmed = !!_mp.trail_active || _chStage >= 1;
           _stopBySym[_mp.ticker] = { eff: _eff, trail: _trailArmed };
         }
+        // v7.0.3 \u2014 match Main's positions <table> shape exactly: no
+        // inline styles, semantic classes (.ticker .mark .side-* etc.),
+        // header tooltips. Field names differ because /api/executor/<name>
+        // is broker-shape (symbol/qty/avg_entry/unrealized_pnl/...) vs Main's
+        // engine-shape (ticker/shares/entry/unrealized/...) but the rendered
+        // columns and styling are identical.
         const rows = positions.map(p => {
-          const upok = (Number(p.unrealized_pnl) || 0) >= 0;
-          const color = upok ? "var(--up)" : "var(--down)";
           const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
+          const markCls = p.side === "SHORT" ? "mark-short" : "mark-long";
+          const pnlCls = (Number(p.unrealized_pnl) || 0) >= 0 ? "delta-up" : "delta-down";
+          const dotTitle = (p.side === "SHORT") ? "Open short position" : "Open long position";
           const _stopInfo = _stopBySym[p.symbol] || null;
           let _stopTxt = "\u2014";
           if (_stopInfo && Number.isFinite(_stopInfo.eff)) {
             _stopTxt = fmtNum(_stopInfo.eff, 2);
             if (_stopInfo.trail) {
-              _stopTxt += ` <span class="trail-badge" title="Trail stop is armed">TRAIL</span>`;
+              _stopTxt += ` <span class="trail-badge" title="Trail stop is armed \u2014 the effective stop now follows price, not the original hard stop">TRAIL</span>`;
             }
           }
-          return `<tr>
-            <td style="padding:6px 10px">${esc(p.symbol)}</td>
-            <td style="padding:6px 10px" class="${sideCls}">${esc(p.side)}</td>
-            <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.qty, 0)}</td>
-            <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.avg_entry, 2)}</td>
-            <td class="mono" style="padding:6px 10px;text-align:right">${fmtNum(p.current_price, 2)}</td>
-            <td class="mono" style="padding:6px 10px;text-align:right">${_stopTxt}</td>
-            <td class="mono" style="padding:6px 10px;text-align:right;color:${color}">${fmtUsd(p.unrealized_pnl)}</td>
-            <td class="mono" style="padding:6px 10px;text-align:right;color:${color}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
+          return `<tr data-pos-ticker="${esc(p.symbol)}">
+            <td><span class="ticker">${esc(p.symbol)} <span class="mark ${markCls}" title="${esc(dotTitle)}">\u25cf</span></span></td>
+            <td><span class="${sideCls}">${esc(p.side)}</span></td>
+            <td class="right">${fmtNum(p.qty, 0)}</td>
+            <td class="right">${fmtNum(p.avg_entry, 2)}</td>
+            <td class="right">${fmtNum(p.current_price, 2)}</td>
+            <td class="right">${_stopTxt}</td>
+            <td class="right ${pnlCls}">${fmtUsd(p.unrealized_pnl)}</td>
+            <td class="right ${pnlCls}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
           </tr>`;
         }).join("");
-        posBody.innerHTML = `
-          <table style="width:100%;border-collapse:collapse;font-size:12.5px">
-            <thead><tr style="color:var(--text-dim);text-transform:uppercase;font-size:10px;letter-spacing:.08em;border-bottom:1px solid var(--border)">
-              <th style="text-align:left;padding:8px 10px">Ticker</th>
-              <th style="text-align:left;padding:8px 10px">Side</th>
-              <th style="text-align:right;padding:8px 10px">Qty</th>
-              <th style="text-align:right;padding:8px 10px">Avg Entry</th>
-              <th style="text-align:right;padding:8px 10px">Mark</th>
-              <th style="text-align:right;padding:8px 10px" title="Effective stop from the engine (Main state). TRAIL badge means the trail stop is armed.">Stop</th>
-              <th style="text-align:right;padding:8px 10px">Unrealized</th>
-              <th style="text-align:right;padding:8px 10px">%</th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>`;
+        posBody.innerHTML = `<table>
+          <thead><tr>
+            <th title="Symbol \u00b7 colored dot shows side (green = long, red = short)">Ticker</th>
+            <th title="LONG = bought to open. SHORT = sold to open.">Side</th>
+            <th class="right" title="Number of shares">Sh</th>
+            <th class="right" title="Average fill price when the position opened">Entry</th>
+            <th class="right" title="Latest mark price">Mark</th>
+            <th class="right" title="Effective stop from the engine (Main state). TRAIL badge means the trail stop is armed.">Stop</th>
+            <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
+            <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
+          </tr></thead>
+          <tbody>${rows}</tbody></table>`;
       }
     }
 

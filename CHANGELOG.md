@@ -4,6 +4,93 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.3 (2026-05-06) -- dashboard val/gene parity + mobile positions overflow
+
+Dashboard-only release. Two visual fixes shipped together so the val and gene
+portfolio tabs become indistinguishable from Main, and so the open-positions
+table stops overflowing the viewport on phones across all three tabs.
+
+### 1. Val/Gene open-positions + today's-trades match Main
+
+Before this, the per-executor tabs had their own divergent table markup:
+
+- Open positions table used inline styles (`width:100%;border-collapse:...`)
+  and a barebones row template lacking Main's side-dot mark and ticker class.
+- Today's trades had no `trades-summary` line above the rows (Main's
+  opens / closes / realized / win-rate one-liner).
+- Trade rows only classified `BUY` as opens and `SELL` as closes, so SHORT
+  entries rendered with buy-style chips and COVER fills with a `pnl` field
+  were invisible to the running realized total.
+
+v7.0.3 collapses all three to Main's exact behaviour:
+
+- Val/Gene positions render as a plain `<table>` (no inline styles), reuse
+  the same `.ticker .mark .side-long .side-short .delta-up .delta-down`
+  classes Main uses, carry the green/red side dot, and use Main's column
+  header tooltips. Field mapping is preserved (Alpaca payload uses
+  `symbol`/`qty`/`avg_entry`/`unrealized_pnl`/`unrealized_pnl_pct`); only
+  the markup is unified. The Stop column still cross-references
+  `window.__tgLastState.positions[ticker].effective_stop` from Main and
+  surfaces the same TRAIL badge when armed.
+- Val/Gene `execSkeleton` now emits a `trades-summary` div above the rows.
+  `renderExecTrades` populates it with the same opens / closes / realized /
+  win-rate breakdown Main shows, computed from the same `BUY|SHORT` /
+  `SELL|COVER` classification.
+- Trade rows in the per-executor tabs now use Main's `isOpen` / `isClose`
+  semantics so SHORT entries get the open-style chip and COVER fills with
+  pnl flow into the running realized total.
+
+### 2. Mobile open-positions overflow fix (all three tabs)
+
+Main's positions table has 8 columns (Ticker, Side, Sh, Entry, Mark, Stop,
+Unreal., %); on a 360-380px iPhone viewport the rightmost columns clipped
+off-screen because `.card-body.flush` deliberately doesn't scroll
+horizontally (the Permit Matrix table owns its own scroller and the v5.21.0
+fix dropped the redundant outer overflow-x to avoid double scrollbars).
+
+New responsive rules in `dashboard_static/app.css` apply to BOTH
+`#pos-body table` (Main) and `[data-f="pos-body"] table` (Val/Gene):
+
+- `<= 640px`: drop the redundant `%` column (the Unreal. $ cell already
+  conveys direction + magnitude with matching color), tighten cell padding
+  from 7px 8px to 6px 6px so the remaining 7 columns fit cleanly.
+- `<= 400px`: also drop the `Mark` column. Stop and Unreal. (the
+  operationally important cells) keep their full digits and the TRAIL
+  badge is preserved on the Stop cell.
+
+### Tests
+
+- `tests/test_v6_0_3_positions_parity.py` updated: the executor-block
+  slicer no longer keys off the now-removed `Avg Entry` header; it locates
+  the block via the `Open positions card` comment + `Cash / BP /
+  Invested / Shorted footer` boundaries instead. Header assertions
+  updated to match Main's `Sh` / `Entry` / `Unreal.` text. Column-count
+  assertion (8 in both) preserved.
+- New `tests/test_v7_0_3_dashboard_parity.py` covers: trades-summary
+  skeleton present in execSkeleton, computeTradesSummaryExec definition,
+  SHORT/COVER classification in renderExecTrades row template, mobile CSS
+  rules target both `#pos-body` and `[data-f="pos-body"]`.
+
+### Files touched
+
+- `dashboard_static/app.js` (val/gene positions table markup, trades
+  skeleton, trades summary renderer, BUY/SELL -> open/close)
+- `dashboard_static/app.css` (`<= 640px` and `<= 400px` rules for
+  positions tables on both Main and Val/Gene)
+- `bot_version.py`, `trade_genius.py` -> 7.0.3
+- `tests/test_v6_0_3_positions_parity.py` (slicer + header assertions)
+- `tests/test_v7_0_3_dashboard_parity.py` (new)
+
+### Out of scope
+
+- Phase A/B/C badge and click-to-Titan are intentionally NOT replicated on
+  Val/Gene. Phase is an engine-side concept (Main's per-ticker state
+  machine), not present on the broker payload; Val/Gene Permit Matrix
+  click-routing already works through their own panel-scoped query.
+- No change to /api/state or /api/executor payloads. Wire-format stable.
+
+---
+
 ## v7.0.2 (2026-05-06) -- per-book live Alpaca equity + recursive strike unlock
 
 Two independent changes shipped in one release.

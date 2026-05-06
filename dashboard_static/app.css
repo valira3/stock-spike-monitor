@@ -356,6 +356,27 @@
     .trade-row .tr-act .act-badge { padding: 1px 4px; font-size: 9.5px; letter-spacing: 0.02em; }
     .trade-pnl .pnl-pct { font-size: 10px; margin-left: 3px; }
     .trades-summary { font-size: 11px; gap: 2px 10px; padding: 7px 12px; }
+
+    /* v7.0.3 \u2014 Open positions table on phones: drop the redundant %
+       column (Unreal. $ already conveys direction + magnitude) and tighten
+       cell padding so the 7 remaining columns fit without horizontal
+       overflow. The selector targets BOTH Main (#pos-body table) and
+       Val/Gene (data-f="pos-body" table) so all three portfolio tabs are
+       fixed by the same rule. */
+    #pos-body table th:nth-child(8),
+    #pos-body table td:nth-child(8),
+    [data-f="pos-body"] table th:nth-child(8),
+    [data-f="pos-body"] table td:nth-child(8) {
+      display: none;
+    }
+    #pos-body table thead th,
+    #pos-body table tbody td,
+    [data-f="pos-body"] table thead th,
+    [data-f="pos-body"] table tbody td {
+      padding: 6px 6px;
+    }
+    #pos-body table .ticker .mark,
+    [data-f="pos-body"] table .ticker .mark { margin-left: 1px; }
   }
 
   /* v4.2.2 \u2014 <400px: drop the unit-price column so pnl/cost stays intact. */
@@ -365,6 +386,18 @@
       grid-template-areas: "time sym qty act tail";
     }
     .trade-row .tr-price { display: none; }
+
+    /* v7.0.3 \u2014 At iPhone-mini width (~375px) drop the Mark column too
+       so the Stop + Unreal. cells (the operationally important ones) keep
+       their full digits without forcing a horizontal scroll. The Stop cell
+       carries its own TRAIL badge so the trail-armed signal is preserved.
+       Both Main (#pos-body) and Val/Gene (data-f="pos-body") are covered. */
+    #pos-body table th:nth-child(5),
+    #pos-body table td:nth-child(5),
+    [data-f="pos-body"] table th:nth-child(5),
+    [data-f="pos-body"] table td:nth-child(5) {
+      display: none;
+    }
   }
 
   /* Small phone (≤380px): tighter KPI text */
