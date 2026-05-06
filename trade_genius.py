@@ -64,18 +64,24 @@ import telegram_ui  # noqa: E402
 # missing Dockerfile COPY surfaces as ImportError at boot.
 import broker  # noqa: E402
 
-# v6.16.1 — earnings_watcher: pre/post-market DMI runaway-capture engine.
+# v6.16.1 \u2014 earnings_watcher: pre/post-market DMI runaway-capture engine.
 # Gated behind EARNINGS_WATCHER_ENABLED=1 env var. The RTH core is NOT
-# touched; this is a pure add-on. Import failures are caught and logged;
+# touched; this is a pure add-on. Import failures are caught and printed
+# to stderr (logger is not yet initialized at this point in the module);
 # the flag is set to False so the bot continues running without it.
+# v6.16.2 hotfix: switched logger.info/error to sys.stderr prints to fix
+# NameError observed on deploy 99eb3bdb when the flag was set to 1.
+import sys as _ew_sys  # noqa: E402
 EARNINGS_WATCHER_ENABLED = os.getenv("EARNINGS_WATCHER_ENABLED", "0") == "1"
+_ew_runner = None
 if EARNINGS_WATCHER_ENABLED:
     try:
         from earnings_watcher import runner as _ew_runner
-        logger.info("[EW] earnings_watcher enabled (v6.16.1)")
+        print("[EW] earnings_watcher enabled (v6.16.2)", file=_ew_sys.stderr, flush=True)
     except Exception as _ew_exc:
-        logger.error("[EW] import failed, disabling: %s", _ew_exc)
+        print("[EW] import failed, disabling: %s" % _ew_exc, file=_ew_sys.stderr, flush=True)
         EARNINGS_WATCHER_ENABLED = False
+        _ew_runner = None
 
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
@@ -103,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.16.1"
+BOT_VERSION = "6.16.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
