@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.16.2 (2026-05-05) -- earnings_watcher deploy hotfix
+
+Deploy 99eb3bdb (v6.16.1 with `EARNINGS_WATCHER_ENABLED=1`) crashed at
+boot with two stacked errors. This release fixes both.
+
+1. **Dockerfile**: missing `COPY earnings_watcher/ ./earnings_watcher/`
+   caused `ModuleNotFoundError: No module named 'earnings_watcher'`.
+   Added the COPY directive next to the other v6.x package copies.
+2. **trade_genius.py**: the `EARNINGS_WATCHER_ENABLED` import block
+   ran around line ~75, before `logger` was initialized at line 153,
+   so any import-failure path crashed with `NameError: name 'logger'
+   is not defined`. Switched `logger.info` / `logger.error` to
+   `print(..., file=sys.stderr, flush=True)` so the import block can
+   stay near the other top-level imports without an ordering dance.
+
+No functional change to the earnings_watcher engine itself; the
+phase-1 wiring code from v6.16.1 is unchanged.
+
+---
+
 ## v6.16.1 (2026-05-05) -- earnings_watcher live wiring (Phase 1 PR #2)
 
 Phase 1 PR #2 of 4. Wires the v4 NHOD + Wilder DMI engine into live

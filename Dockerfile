@@ -89,6 +89,12 @@ COPY executors/ ./executors/
 # ingest.algo_plus as ingest_algo_plus). Holds AlgoPlusIngest,
 # BarAssembler, ConnectionHealth, GapDetector, RestBackfillWorker.
 COPY ingest/ ./ingest/
+# v6.16.2 \u2014 earnings_watcher/ package (Phase 1 NHOD+DMI pre/post-market
+# capture engine; gated behind EARNINGS_WATCHER_ENABLED env var). Missing
+# this COPY would crash trade_genius at boot when the flag is set
+# (ModuleNotFoundError: earnings_watcher), as observed on deploy 99eb3bdb.
+COPY earnings_watcher/ ./earnings_watcher/
+
 # v6.6.0 — ingest_config.py (root-level tunable constants used by
 # engine/ingest_gate.py and ingest/sla.py). Missing this COPY causes
 # ModuleNotFoundError: ingest_config when /test checks the ingest gate.
