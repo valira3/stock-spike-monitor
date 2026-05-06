@@ -4,6 +4,59 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.6 (2026-05-06) -- SPY regime backfill wiring fix
+
+Production bug fix. The v6.15.3 `backfill_from_bars` cold-start recovery for the
+SPY regime classifier was structurally unable to fire in production. On 2026-05-06
+the dashboard showed `spy_regime_today.regime=null` for the entire RTH session,
+even though the SPY bar archive at `/data/bars/2026-05-06/SPY.jsonl` had both
+required anchors (0930 close=728.08, 1000 close=729.83). The `V6153-BACKFILL`
+log marker was completely absent from the deployment logs.
+
+### Root cause -- three structural bugs at the call site
+
+The backfill was wired into `_qqq_weather_tick` with three layered conditions
+that all had to align for it to fire, and they often didn't:
+
+1. **Single-shot latch** (`_SPY_REGIME_BACKFILL_ATTEMPTED`) burned on the first
+   tick regardless of outcome. A premarket first-tick (before the 0930 anchor
+   exists in the archive) returned False but already burned the latch, locking
+   the deploy out of regime classification for the whole session.
+2. **Buried under the QQQ-bucket-advance branch.** The backfill could only fire
+   when the QQQ 5m bucket had just rolled. After-hours and during slow QQQ
+   periods the branch early-returned and the backfill was never reached.
+3. **Silent `except: pass`** on the surrounding macro-snapshot block buried any
+   `forensic_capture` import or write failure together with the backfill,
+   leaving zero log evidence of the failure.
+
+The `tests/test_v6_15_3_spy_regime_backfill.py` suite has 13 unit tests that
+all passed -- they covered `backfill_from_bars` in isolation, but never tested
+that the call site actually fires it. Classic wiring bug under unit-tested code.
+
+### Fix
+
+- Extract `_spy_regime_maybe_backfill()` to module-level in `trade_genius.py`,
+  decoupled from `_qqq_weather_tick`.
+- Idempotent: returns immediately if `_SPY_REGIME.regime is not None`. Steady-
+  state cost is one attribute read.
+- Self-retries every cycle while regime is None. Single-shot latch removed.
+- Wired into `engine/scan.py` as a top-level cycle hook next to the weather
+  tick, with its own try/except so a backfill failure can't break the cycle.
+- Replaced the silent `except: pass` on the macro-snapshot block with a logged
+  WARNING so future failures here are visible.
+- New `tests/test_v7_0_6_spy_regime_backfill_wiring.py` (8 tests) verifies the
+  call site actually fires the backfill, including a regression test that
+  asserts `_SPY_REGIME_BACKFILL_ATTEMPTED` stays gone.
+
+### Files changed
+
+- `trade_genius.py`: extract `_spy_regime_maybe_backfill`; remove latch + reset
+- `engine/scan.py`: add cycle hook call after `_qqq_weather_tick`
+- `tests/test_v7_0_6_spy_regime_backfill_wiring.py`: 8 wiring tests
+- `bot_version.py` / `trade_genius.py`: 7.0.5 -> 7.0.6
+
+---
+
 ## v7.0.5 (2026-05-06) -- V644 min-hold default lowered from 600s to 120s
 
 Production tuning change. The V644 minimum-hold gate (which blocks the 50bp

@@ -266,6 +266,17 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception as _e:
         logger.warning("[regime] cycle hook error: %s", _e)
 
+    # v7.0.6 \u2014 SPY regime backfill on its own cadence. Idempotent
+    # (no-op once classified) and decoupled from the QQQ bucket-advance
+    # branch so a mid-session restart can recover the 09:30/10:00 anchors
+    # on the very next scan cycle. The previous nesting inside
+    # _qqq_weather_tick's macro-snapshot try silently dropped the backfill
+    # whenever forensic_capture or a wrapping condition failed.
+    try:
+        tg._spy_regime_maybe_backfill()
+    except Exception as _e:
+        logger.warning("[regime] spy backfill cycle hook error: %s", _e)
+
     # v5.31.5 \u2014 per-stock local weather cache for the local-override
     # gate and the dashboard's per-stock Weather card. Walks active
     # tickers (TRADE_TICKERS plus open positions) and refreshes each
