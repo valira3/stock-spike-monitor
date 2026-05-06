@@ -20,6 +20,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY trade_genius.py .
 COPY bot_version.py .
 COPY telegram_commands.py .
+# v6.18.0 — daily pre-open market brief module (used by /brief command,
+# main-menu Brief button, and 07:00 CT scheduler entry). Missing this COPY
+# causes ModuleNotFoundError: market_brief in cmd_brief and silently
+# disables the daily auto-send.
+COPY market_brief.py .
 COPY paper_state.py .
 COPY side.py .
 COPY error_state.py .
