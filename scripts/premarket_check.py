@@ -60,8 +60,21 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SCRIPT_VERSION = "1"
-BOT_VERSION_EXPECTED = "6.14.7"
+SCRIPT_VERSION = "2"
+
+# v6.18.0: read the expected version dynamically from bot_version.BOT_VERSION
+# rather than a stale literal. Previous behavior pinned this to '6.14.7' and
+# emitted a spurious WARN every release until someone remembered to bump it
+# (caught after the v6.18.0 ship: dashboard correctly returned '6.18.0' but
+# the literal here was still '6.14.7').
+#
+# Falls back to the empty string if bot_version can't be imported, which
+# preserves the original behavior of flagging the mismatch.
+try:
+    from bot_version import BOT_VERSION as _BOT_VERSION
+    BOT_VERSION_EXPECTED = _BOT_VERSION
+except Exception:
+    BOT_VERSION_EXPECTED = ""
 
 # Minimum .jsonl files expected in yesterday's bar directory.
 BAR_FILE_MIN = 5
