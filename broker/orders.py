@@ -1265,6 +1265,27 @@ def execute_breakout(ticker, current_price, side):
     positions_dict[ticker] = pos
     daily_count[ticker] = entry_num
 
+    # v7.0.0 Phase 2A \u2014 chandelier reset on entry boundary (AVGO bug fix).
+    # Reset trail state so a fresh entry never inherits peak_close / stage
+    # from a prior leg on the same (ticker, side). Best-effort: a failure
+    # here must NOT block the trade path (trail will self-heal lazily on
+    # the first sentinel tick if record_entry is unavailable).
+    try:
+        tg._MAIN_BOOK.record_entry(
+            ticker=ticker,
+            side=_v570_side_label,
+            entry_price=float(current_price),
+            entry_count=int(entry_num),
+        )
+    except Exception as _re_err:
+        try:
+            tg.logger.warning(
+                "[V700-CHANDELIER-RESET] record_entry failed %s %s: %s",
+                ticker, _v570_side_label, _re_err,
+            )
+        except Exception:
+            pass
+
     # v5.15.1 vAA-1 \u2014 SENT-D HVP lock fill hook. Install (or re-seed)
     # the per-(ticker, side) TradeHVP at Strike open with the live
     # 5m ADX so subsequent sentinel ticks can detect a >25% decay

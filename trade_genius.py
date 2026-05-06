@@ -7269,14 +7269,10 @@ _init_tickers()
 # positions from the prior session.
 load_paper_state()
 
-# v7.0.0 Phase 1 — re-bind _MAIN_BOOK to the dicts that load_paper_state()
-# may have replaced with fresh objects (v5_long_tracks, v5_short_tracks,
-# v5_active_direction). Other collections are mutated in-place by
-# load_paper_state (clear+update/extend) so their identity is preserved;
-# these three are always re-assigned to brand-new dicts by paper_state.py.
-_MAIN_BOOK.v5_long_tracks = v5_long_tracks
-_MAIN_BOOK.v5_short_tracks = v5_short_tracks
-_MAIN_BOOK.v5_active_direction = v5_active_direction
+# v7.0.0 Phase 2B: the Phase 1 re-bind workaround is no longer needed.
+# paper_state.py now uses .clear() + .update() on v5_long_tracks,
+# v5_short_tracks, and v5_active_direction, so dict identity is preserved
+# across load_paper_state() calls and _MAIN_BOOK stays correctly bound.
 
 # Live dashboard (read-only web UI). Env-gated: off unless DASHBOARD_PASSWORD is set.
 # Runs in its own thread with its own asyncio loop \u2014 never touches PTB's loop.

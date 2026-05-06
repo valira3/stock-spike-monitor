@@ -243,17 +243,21 @@ def load_paper_state():
         try:
             from tiger_buffalo_v5 import load_track as _v5_load, DIR_LONG, DIR_SHORT
 
-            tg.v5_long_tracks = {
-                t: _v5_load(s, DIR_LONG) for t, s in persistence.load_all_tracks("long").items()
-            }
-            tg.v5_short_tracks = {
-                t: _v5_load(s, DIR_SHORT) for t, s in persistence.load_all_tracks("short").items()
-            }
+            # v7.0.0 Phase 2B: use .clear() + .update() to preserve dict identity
+            # so _MAIN_BOOK.v5_long_tracks stays bound to the same object after load.
+            tg.v5_long_tracks.clear()
+            tg.v5_long_tracks.update(
+                {t: _v5_load(s, DIR_LONG) for t, s in persistence.load_all_tracks("long").items()}
+            )
+            tg.v5_short_tracks.clear()
+            tg.v5_short_tracks.update(
+                {t: _v5_load(s, DIR_SHORT) for t, s in persistence.load_all_tracks("short").items()}
+            )
         except Exception as v5e:
             logger.warning("v5 SQLite restore failed: %s", v5e)
-            tg.v5_long_tracks = {}
-            tg.v5_short_tracks = {}
-        tg.v5_active_direction = {}
+            tg.v5_long_tracks.clear()
+            tg.v5_short_tracks.clear()
+        tg.v5_active_direction.clear()
         _state_loaded = True
         return
 
@@ -346,17 +350,27 @@ def load_paper_state():
 
             sql_long = persistence.load_all_tracks("long")
             sql_short = persistence.load_all_tracks("short")
-            tg.v5_long_tracks = {t: load_track(sql_long.get(t), DIR_LONG) for t in sql_long}
-            tg.v5_short_tracks = {t: load_track(sql_short.get(t), DIR_SHORT) for t in sql_short}
-            tg.v5_active_direction = dict(state.get("v5_active_direction", {}) or {})
+            # v7.0.0 Phase 2B: .clear() + .update() to preserve dict identity.
+            tg.v5_long_tracks.clear()
+            tg.v5_long_tracks.update(
+                {t: load_track(sql_long.get(t), DIR_LONG) for t in sql_long}
+            )
+            tg.v5_short_tracks.clear()
+            tg.v5_short_tracks.update(
+                {t: load_track(sql_short.get(t), DIR_SHORT) for t in sql_short}
+            )
+            tg.v5_active_direction.clear()
+            tg.v5_active_direction.update(
+                dict(state.get("v5_active_direction", {}) or {})
+            )
         except Exception as v5e:
             logger.warning(
                 "v5 tracks restore failed: %s \u2014 starting clean",
                 v5e,
             )
-            tg.v5_long_tracks = {}
-            tg.v5_short_tracks = {}
-            tg.v5_active_direction = {}
+            tg.v5_long_tracks.clear()
+            tg.v5_short_tracks.clear()
+            tg.v5_active_direction.clear()
 
         # Reset daily counts if saved on a different day
         today = tg._now_et().strftime("%Y-%m-%d")
@@ -409,10 +423,11 @@ def load_paper_state():
         tg._scan_paused = False
         tg._trading_halted = False
         tg._trading_halted_reason = ""
-        # v5: clear tracks on a recovery reset.
-        tg.v5_long_tracks = {}
-        tg.v5_short_tracks = {}
-        tg.v5_active_direction = {}
+        # v5: clear tracks on a recovery reset. v7.0.0 Phase 2B: .clear() to
+        # preserve dict identity so _MAIN_BOOK.v5_* stays bound to same objects.
+        tg.v5_long_tracks.clear()
+        tg.v5_short_tracks.clear()
+        tg.v5_active_direction.clear()
         _state_loaded = True
 
 
@@ -435,9 +450,10 @@ def _do_reset_paper():
     # v5.0.0 \u2014 reset Tiger/Buffalo tracks on a paper-book reset.
     # v5.1.8: tracks live in SQLite; replace_all_tracks with empty
     # dicts is what actually clears the persisted store.
-    tg.v5_long_tracks = {}
-    tg.v5_short_tracks = {}
-    tg.v5_active_direction = {}
+    # v7.0.0 Phase 2B: .clear() to preserve dict identity.
+    tg.v5_long_tracks.clear()
+    tg.v5_short_tracks.clear()
+    tg.v5_active_direction.clear()
     try:
         persistence.replace_all_tracks({}, {})
     except Exception as e:
