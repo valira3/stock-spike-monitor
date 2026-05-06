@@ -159,3 +159,82 @@ def update_position(ticker: str, **kwargs: Any) -> None:
     positions[ticker].update(kwargs)
     positions[ticker]["last_update_ts"] = _now_utc_iso()
     save_open_positions(positions)
+
+
+# ---------------------------------------------------------------------------
+# evaluated_today — per-window idempotency cache
+# ---------------------------------------------------------------------------
+# Schema: {date_iso: {window: [ticker, ...]}}
+# Stored in /data/earnings_watcher/evaluated_today.json (same fallback logic).
+
+_EVAL_PATH_CANDIDATES = [
+    "/data/earnings_watcher/evaluated_today.json",
+    "/tmp/earnings_watcher/evaluated_today.json",
+]
+
+
+def _eval_path() -> Path:
+    for candidate in _EVAL_PATH_CANDIDATES:
+        p = Path(candidate)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            probe = p.parent / ".write_probe_eval"
+            probe.write_text("ok")
+            probe.unlink()
+            return p
+        except OSError:
+            continue
+    fallback = Path("/tmp/evaluated_today_ew.json")
+    logger.warning("[EW-STATE] eval path unwritable, falling back to %s", fallback)
+    return fallback
+
+
+def _load_evaluated_today() -> dict:
+    """Load evaluated_today dict from disk. Returns {} on error."""
+    p = _eval_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception as exc:
+        logger.warning("[EW-STATE] load_evaluated_today error: %s", exc)
+        return {}
+
+
+def _save_evaluated_today(d: dict) -> None:
+    """Atomic write of evaluated_today dict to disk."""
+    p = _eval_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = str(p) + ".tmp"
+        Path(tmp).write_text(json.dumps(d, indent=2))
+        os.replace(tmp, str(p))
+    except Exception as exc:
+        logger.warning("[EW-STATE] save_evaluated_today error: %s", exc)
+
+
+def get_evaluated_tickers(date_iso: str, window: str) -> list:
+    """Return list of tickers already evaluated in this date/window."""
+    data = _load_evaluated_today()
+    return list(data.get(date_iso, {}).get(window, []))
+
+
+def mark_ticker_evaluated(date_iso: str, window: str, ticker: str) -> None:
+    """Add ticker to the evaluated set for date/window. Idempotent."""
+    data = _load_evaluated_today()
+    data.setdefault(date_iso, {}).setdefault(window, [])
+    if ticker not in data[date_iso][window]:
+        data[date_iso][window].append(ticker)
+    _save_evaluated_today(data)
+
+
+def clear_window_evaluated(date_iso: str, window: str) -> None:
+    """Clear the evaluated list for a given date/window (call at window start)."""
+    data = _load_evaluated_today()
+    if date_iso in data and window in data[date_iso]:
+        data[date_iso][window] = []
+    _save_evaluated_today(data)
+    logger.info("[EW-STATE] cleared evaluated_today date=%s window=%s", date_iso, window)

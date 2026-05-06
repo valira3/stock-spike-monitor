@@ -1,9 +1,10 @@
 """v6.16.1 \u2014 earnings_watcher.runner: orchestration loop.
 
 Entry points called from trade_genius.py (behind EARNINGS_WATCHER_ENABLED flag):
-  - run_premarket_cycle()   -> Dict   (04:00 ET, BMO tickers)
-  - run_afterhours_cycle()  -> Dict   (16:00 ET, AMC tickers)
-  - run_exit_cycle()        -> Dict   (every 60 s during active windows)
+  - run_window_cycle(window)  -> Dict   (every 60 s during active windows; window='premarket'|'afterhours')
+  - run_premarket_cycle()     -> Dict   (thin wrapper -> run_window_cycle('premarket'))
+  - run_afterhours_cycle()    -> Dict   (thin wrapper -> run_window_cycle('afterhours'))
+  - run_exit_cycle()          -> Dict   (every 60 s during active windows)
 
 Internal helpers (also importable for tests):
   - evaluate_and_size(equity, ticker, bars, event_meta, open_dmi_exposure) -> Optional[Dict]
@@ -53,6 +54,9 @@ from earnings_watcher.state import (
     add_position,
     remove_position,
     update_position,
+    get_evaluated_tickers,
+    mark_ticker_evaluated,
+    clear_window_evaluated,
 )
 
 
@@ -386,78 +390,12 @@ def _submit_exit_order(ticker: str, pos: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def run_premarket_cycle() -> Dict[str, Any]:
-    """Top-level entry for the 04:00 ET pre-market BMO cycle.
+    """Thin wrapper around run_window_cycle('premarket') for backward compatibility.
 
-    For each BMO ticker:
-      1. fetch bars from 04:00 ET to now
-      2. evaluate_and_size
-      3. submit order, track in state
-
-    Returns summary dict.
+    Retained for tests and any external callers that import this function directly.
+    The canonical entry point is run_window_cycle('premarket').
     """
-    logger.info("[EW-RUNNER] run_premarket_cycle start")
-    now_utc = datetime.now(timezone.utc)
-    # 04:00 ET = approx 08:00 UTC (EDT); use a fixed offset here
-    today_str = now_utc.strftime("%Y-%m-%d")
-    start_utc = datetime.fromisoformat(f"{today_str}T08:00:00+00:00")
-
-    equity = get_account_equity()
-    positions = load_open_positions()
-    open_exposure = sum(
-        float(p.get("notional", 0)) for p in positions.values()
-    )
-
-    bmo_tickers, _ = get_today_earnings_universe(today_str)
-    calendar = get_earnings_calendar(today_str)
-    event_map: Dict[str, Dict[str, Any]] = {
-        ev["ticker"]: ev for ev in calendar
-    }
-
-    evaluated = signals = orders_submitted = orders_filled = 0
-
-    for ticker in bmo_tickers:
-        if ticker in positions:
-            logger.debug("[EW-RUNNER] premarket skip ticker=%s reason=already_open", ticker)
-            continue
-        evaluated += 1
-        bars = fetch_minute_bars(ticker, start_utc, now_utc)
-        event_meta = event_map.get(ticker, {"ticker": ticker})
-        event_meta.setdefault("session", "bmo")
-
-        intent = evaluate_and_size(equity, ticker, bars, event_meta, open_exposure)
-        if intent is None:
-            continue
-        signals += 1
-
-        result = submit_dmi_order(intent, paper=True)
-        orders_submitted += 1
-        if result.get("filled_qty", 0) > 0:
-            orders_filled += 1
-
-        if result.get("status") not in ("error", "skipped_zero_qty"):
-            add_position(
-                ticker,
-                entry_px=intent["limit_price"],
-                entry_ts_utc=now_utc.isoformat(),
-                qty=intent["qty"],
-                side=intent["direction"],
-                notional=intent["notional"],
-                conv=intent["conv"],
-                order_id=result.get("order_id", ""),
-            )
-            open_exposure += intent["notional"]
-
-    exits = manage_open_positions()
-    summary = {
-        "cycle": "premarket",
-        "evaluated": evaluated,
-        "signals": signals,
-        "orders_submitted": orders_submitted,
-        "orders_filled": orders_filled,
-        "exits": exits,
-    }
-    logger.info("[EW-RUNNER] run_premarket_cycle done: %s", summary)
-    return summary
+    return run_window_cycle("premarket")
 
 
 # ---------------------------------------------------------------------------
@@ -465,45 +403,116 @@ def run_premarket_cycle() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def run_afterhours_cycle() -> Dict[str, Any]:
-    """Top-level entry for the 16:00 ET after-hours AMC cycle.
+    """Thin wrapper around run_window_cycle('afterhours') for backward compatibility.
 
-    For each AMC ticker:
-      1. fetch bars from 16:00 ET to now (approx 20:00 UTC)
-      2. evaluate_and_size
-      3. submit order, track in state
-
-    Returns summary dict.
+    Retained for tests and any external callers that import this function directly.
+    The canonical entry point is run_window_cycle('afterhours').
     """
-    logger.info("[EW-RUNNER] run_afterhours_cycle start")
+    return run_window_cycle("afterhours")
+
+
+
+# ---------------------------------------------------------------------------
+# run_window_cycle (idempotent, minute-by-minute)
+# ---------------------------------------------------------------------------
+
+# Module-level sentinel: tracks whether this is the first call of a window
+# so we can clear the evaluated_today cache exactly once per window start.
+_last_window_key: str = ""  # "{date_iso}:{window}"
+
+
+def run_window_cycle(window: str) -> dict:
+    """Re-evaluate every ticker in the given window every 60 s.
+
+    Idempotent guard: a ticker that has already been evaluated and produced a
+    signal (or was skipped for any reason) earlier in the same window will NOT
+    be re-submitted.  The evaluated_today cache is reset once at the start of
+    each new window (first call of that window for that date).
+
+    Parameters
+    ----------
+    window : str
+        Either 'premarket' (04:00-09:29 ET, BMO tickers) or
+        'afterhours' (16:00-20:00 ET, AMC tickers).
+
+    Returns
+    -------
+    dict
+        Summary with keys: cycle, evaluated, skipped_evaluated,
+        skipped_open, signals, orders_submitted, orders_filled, exits.
+    """
+    global _last_window_key
+
     now_utc = datetime.now(timezone.utc)
-    today_str = now_utc.strftime("%Y-%m-%d")
-    # 16:00 ET = 20:00 UTC (EDT)
-    start_utc = datetime.fromisoformat(f"{today_str}T20:00:00+00:00")
+    now_et = _et_now()
+    today_str = now_et.strftime("%Y-%m-%d")
+    window_key = f"{today_str}:{window}"
+
+    # --- Window-start reset: clear evaluated list once per window per day ---
+    if window_key != _last_window_key:
+        _last_window_key = window_key
+        clear_window_evaluated(today_str, window)
+        logger.info("[EW-RUNNER] run_window_cycle window=%s date=%s START (cleared evaluated cache)",
+                    window, today_str)
+
+    logger.debug("[EW-RUNNER] run_window_cycle window=%s date=%s tick", window, today_str)
+
+    # Bar fetch start time: 04:00 ET = 08:00 UTC (EDT), 16:00 ET = 20:00 UTC (EDT)
+    if window == "premarket":
+        start_utc = datetime.fromisoformat(f"{today_str}T08:00:00+00:00")
+    else:
+        start_utc = datetime.fromisoformat(f"{today_str}T20:00:00+00:00")
 
     equity = get_account_equity()
     positions = load_open_positions()
-    open_exposure = sum(
-        float(p.get("notional", 0)) for p in positions.values()
-    )
+    open_exposure = sum(float(p.get("notional", 0)) for p in positions.values())
 
-    _, amc_tickers = get_today_earnings_universe(today_str)
+    if window == "premarket":
+        tickers, _ = get_today_earnings_universe(today_str)
+        default_session = "bmo"
+    else:
+        _, tickers = get_today_earnings_universe(today_str)
+        default_session = "amc"
+
     calendar = get_earnings_calendar(today_str)
-    event_map: Dict[str, Dict[str, Any]] = {
-        ev["ticker"]: ev for ev in calendar
-    }
+    event_map: Dict[str, Dict[str, Any]] = {ev["ticker"]: ev for ev in calendar}
 
-    evaluated = signals = orders_submitted = orders_filled = 0
+    already_evaluated = set(get_evaluated_tickers(today_str, window))
 
-    for ticker in amc_tickers:
+    evaluated = skipped_evaluated = skipped_open = signals = orders_submitted = orders_filled = 0
+
+    for ticker in tickers:
+        # Skip tickers already open as positions
         if ticker in positions:
-            logger.debug("[EW-RUNNER] ah skip ticker=%s reason=already_open", ticker)
+            logger.debug("[EW-RUNNER] window_cycle skip ticker=%s reason=already_open", ticker)
+            skipped_open += 1
             continue
-        evaluated += 1
+
+        # Skip tickers already evaluated this window (idempotency guard)
+        if ticker in already_evaluated:
+            logger.debug("[EW-RUNNER] window_cycle skip ticker=%s reason=already_evaluated window=%s",
+                         ticker, window)
+            skipped_evaluated += 1
+            continue
+
         bars = fetch_minute_bars(ticker, start_utc, now_utc)
+
+        # Require at least 25 bars (DMI + ADX warmup)
+        if len(bars) < 25:
+            logger.debug("[EW-RUNNER] window_cycle insufficient_bars ticker=%s bars=%d window=%s",
+                         ticker, len(bars), window)
+            continue
+
         event_meta = event_map.get(ticker, {"ticker": ticker})
-        event_meta.setdefault("session", "amc")
+        event_meta.setdefault("session", default_session)
 
         intent = evaluate_and_size(equity, ticker, bars, event_meta, open_exposure)
+
+        # Mark as evaluated regardless of signal outcome (no double-fire)
+        mark_ticker_evaluated(today_str, window, ticker)
+        already_evaluated.add(ticker)
+        evaluated += 1
+
         if intent is None:
             continue
         signals += 1
@@ -528,14 +537,16 @@ def run_afterhours_cycle() -> Dict[str, Any]:
 
     exits = manage_open_positions()
     summary = {
-        "cycle": "afterhours",
+        "cycle": f"window_{window}",
         "evaluated": evaluated,
+        "skipped_evaluated": skipped_evaluated,
+        "skipped_open": skipped_open,
         "signals": signals,
         "orders_submitted": orders_submitted,
         "orders_filled": orders_filled,
         "exits": exits,
     }
-    logger.info("[EW-RUNNER] run_afterhours_cycle done: %s", summary)
+    logger.info("[EW-RUNNER] run_window_cycle done window=%s: %s", window, summary)
     return summary
 
 

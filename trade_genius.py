@@ -6424,13 +6424,14 @@ def scheduler_thread():
         ("daily", "15:49", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
-        # v6.16.1 \u2014 earnings_watcher BMO/AMC cycles (only fire if flag enabled)
-        ("daily", "04:00", lambda: _ew_runner.run_premarket_cycle() if EARNINGS_WATCHER_ENABLED else None),
-        ("daily", "16:00", lambda: _ew_runner.run_afterhours_cycle() if EARNINGS_WATCHER_ENABLED else None),
+        # v6.16.1 — earnings_watcher: single-shot entries REMOVED.
+        # BMO/AMC cycles driven by the minute-by-minute window loop below.
     ]
 
     # v6.16.1 \u2014 earnings_watcher exit monitoring tracker
     last_ew_exit_check = _now_et()
+    # v6.16.1 — earnings_watcher window cycle tracker (minute-by-minute)
+    last_ew_window_check = _now_et() - timedelta(seconds=61)
 
     logger.info("Scheduler started \u2014 market times ET, display CDT (UTC offset: %s)",
                 datetime.now(timezone.utc).strftime("%z"))
@@ -6511,6 +6512,20 @@ def scheduler_thread():
                 _ew_runner.run_exit_cycle()
             except Exception as e:
                 logger.warning("[EW] exit cycle error: %s", e)
+
+        # v6.16.1 — earnings_watcher window cycle: re-evaluate every 60 s
+        # during active pre-market (04:00-09:29 ET) and after-hours (16:00-20:00 ET) windows
+        if EARNINGS_WATCHER_ENABLED:
+            now_hhmm = now_et.strftime("%H:%M")
+            in_premarket = "04:00" <= now_hhmm <= "09:29" and now_et.weekday() < 5
+            in_afterhours = "16:00" <= now_hhmm <= "20:00" and now_et.weekday() < 5
+            if (in_premarket or in_afterhours) and (now_et - last_ew_window_check).total_seconds() >= 60:
+                last_ew_window_check = now_et
+                try:
+                    window = "premarket" if in_premarket else "afterhours"
+                    _ew_runner.run_window_cycle(window)
+                except Exception as e:
+                    logger.warning("[EW] window cycle error: %s", e)
 
         time.sleep(30)
 

@@ -212,3 +212,79 @@ def test_evaluate_and_size_intent_structure():
                      "conv", "di_plus", "adx", "reason"}
     for k in required_keys:
         assert k in result, f"Missing key: {k}"
+
+
+# ---------------------------------------------------------------------------
+# test_runner_idempotency — run_window_cycle must not double-fire
+# ---------------------------------------------------------------------------
+
+def _make_sufficient_bars(n: int = 32) -> List[Dict[str, Any]]:
+    """AMC-window bars sufficient for DMI warmup (>= 25) but producing no signal."""
+    return [_bar(i, 100.0 + i * 0.01, volume=5_000) for i in range(n)]
+
+
+def test_runner_idempotency(tmp_path, monkeypatch):
+    """Call run_window_cycle('premarket') twice.
+
+    The second call must NOT re-submit an order for a ticker that was already
+    evaluated in the first call, even if the mock would return a signal.
+
+    Setup:
+    - patch fetch_minute_bars to return 32 flat bars (no DMI breakout -> no signal)
+    - patch get_account_equity to return 100_000
+    - patch get_today_earnings_universe to return (['AAPL'], [])
+    - patch get_earnings_calendar to return []
+    - patch submit_dmi_order to record calls
+    - patch load_open_positions to return {}
+    - redirect evaluated_today state to tmp_path
+
+    After first call: AAPL is marked as evaluated (no signal, but was processed).
+    After second call: AAPL must be in already_evaluated and skipped entirely.
+    submit_dmi_order must never be called (no signal fires), and the second call
+    must report skipped_evaluated=1.
+    """
+    import earnings_watcher.runner as runner_mod
+    import earnings_watcher.state as state_mod
+
+    # Redirect state files to tmp_path so tests don't pollute /data or /tmp
+    eval_file = tmp_path / "evaluated_today.json"
+    pos_file = tmp_path / "open_positions.json"
+
+    monkeypatch.setattr(state_mod, "_eval_path", lambda: eval_file)
+    monkeypatch.setattr(state_mod, "_path", lambda: pos_file)
+
+    # Reset the module-level window key so first call is always a fresh window
+    monkeypatch.setattr(runner_mod, "_last_window_key", "")
+
+    # 32 flat bars — no DMI breakout, but enough bars to pass the 25-bar gate
+    flat_bars = _make_sufficient_bars(32)
+
+    submit_calls: List[Dict] = []
+
+    with patch.multiple(
+        "earnings_watcher.runner",
+        fetch_minute_bars=MagicMock(return_value=flat_bars),
+        get_account_equity=MagicMock(return_value=100_000.0),
+        get_today_earnings_universe=MagicMock(return_value=(["AAPL"], [])),
+        get_earnings_calendar=MagicMock(return_value=[]),
+        submit_dmi_order=MagicMock(side_effect=lambda intent, paper=True: submit_calls.append(intent) or {"order_id": "x", "status": "accepted", "filled_qty": 1}),
+        manage_open_positions=MagicMock(return_value=0),
+    ):
+        # First call: AAPL has >= 25 bars but no breakout -> no signal -> marked evaluated
+        result1 = runner_mod.run_window_cycle("premarket")
+        assert result1["evaluated"] == 1, f"expected 1 evaluated, got {result1}"
+        assert result1["skipped_evaluated"] == 0
+
+        # Second call: AAPL already in evaluated_today -> must be skipped entirely
+        result2 = runner_mod.run_window_cycle("premarket")
+        assert result2["skipped_evaluated"] == 1, (
+            f"second call should skip AAPL as already_evaluated, got {result2}"
+        )
+        assert result2["evaluated"] == 0, (
+            f"second call should not re-evaluate AAPL, got {result2}"
+        )
+
+    # submit_dmi_order must never be called (no signal from flat bars)
+    assert len(submit_calls) == 0, (
+        f"submit_dmi_order should not be called for flat bars, was called {len(submit_calls)} time(s)"
+    )
