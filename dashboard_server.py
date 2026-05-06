@@ -333,6 +333,77 @@ _PORTFOLIO_BLOCK_STUB = {
 }
 
 
+# v7.0.2 \u2014 per-book Alpaca account snapshot for live equity in val/gene
+# strips. Each book resolves its own ``<PID>_ALPACA_PAPER_KEY`` /
+# ``_SECRET`` env pair; if either is missing OR the API call fails, the
+# caller falls back to the legacy ``portfolio_equity_floor + day_pnl``
+# math. Snapshots are cached ~30s per pid to keep /api/state polling
+# (every 2s on the dashboard) from hammering Alpaca.
+_ALPACA_ACCT_CACHE: dict = {}
+_ALPACA_ACCT_TTL_S = 30.0
+
+
+def _alpaca_account_for_book(pid: str) -> dict | None:
+    """Fetch (cached) Alpaca paper account for a book.
+
+    Resolves ``<PID>_ALPACA_PAPER_KEY`` and ``<PID>_ALPACA_PAPER_SECRET``
+    from env (case-insensitive on the pid \u2014 we uppercase). Returns a
+    dict with ``equity``, ``cash``, ``last_equity`` (all float) and
+    ``buying_power`` if the call succeeds. Returns ``None`` when:
+      - either env var is missing/blank
+      - the alpaca-py import fails
+      - the API call raises
+      - the account is blocked
+
+    Callers MUST treat ``None`` as "no live equity available, fall back".
+
+    Cached for ``_ALPACA_ACCT_TTL_S`` seconds per pid; cache stores
+    successful snapshots only \u2014 failures are NOT cached so a
+    transient Alpaca blip recovers on the next poll.
+    """
+    if not pid:
+        return None
+    pid_norm = str(pid).strip().lower()
+    if not pid_norm or pid_norm == "main":
+        # main never uses this path; it reads m.paper_cash directly.
+        return None
+
+    now = time.monotonic()
+    cached = _ALPACA_ACCT_CACHE.get(pid_norm)
+    if cached is not None:
+        ts, snap = cached
+        if (now - ts) < _ALPACA_ACCT_TTL_S:
+            return snap
+
+    pid_up = pid_norm.upper()
+    key = (os.getenv("%s_ALPACA_PAPER_KEY" % pid_up, "") or "").strip()
+    secret = (os.getenv("%s_ALPACA_PAPER_SECRET" % pid_up, "") or "").strip()
+    # Treat trivially-short values (e.g. ``GENE_ALPACA_KEY=' '``) as unset.
+    if len(key) < 8 or len(secret) < 16:
+        return None
+
+    try:
+        from alpaca.trading.client import TradingClient as _ATC  # type: ignore
+        tc = _ATC(key, secret, paper=True)
+        acct = tc.get_account()
+        if getattr(acct, "account_blocked", False):
+            return None
+        snap = {
+            "equity": float(getattr(acct, "equity", 0) or 0),
+            "cash": float(getattr(acct, "cash", 0) or 0),
+            "last_equity": float(getattr(acct, "last_equity", 0) or 0),
+            "buying_power": float(getattr(acct, "buying_power", 0) or 0),
+        }
+        _ALPACA_ACCT_CACHE[pid_norm] = (now, snap)
+        return snap
+    except Exception as exc:
+        logger.debug(
+            "[v7.0.2] alpaca account fetch failed for %s: %s: %s",
+            pid_norm, type(exc).__name__, str(exc)[:120],
+        )
+        return None
+
+
 def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> dict:
     """Build per-portfolio JSON block for /api/state (spec H).
 
@@ -392,9 +463,25 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
                 for t in (getattr(book, "short_trade_history", []) or [])
                 if t.get("date") == today_s
             )
-            equity = float(
-                getattr(book.config, "portfolio_equity_floor", 100_000.0)
-            ) + day_pnl
+            # v7.0.2 \u2014 prefer live Alpaca account equity for val/gene
+            # over the static ``portfolio_equity_floor + day_pnl``
+            # baseline. Falls back silently when creds are missing or
+            # Alpaca is unreachable so the strip never blanks out.
+            _acct = _alpaca_account_for_book(pid)
+            if _acct is not None:
+                equity = float(_acct.get("equity", 0.0) or 0.0)
+                # Prefer Alpaca's own day_pnl (equity \u2212 last_equity)
+                # when both fields are non-zero; otherwise keep the
+                # trade_history-derived day_pnl above so the strip still
+                # renders during pre-market when Alpaca's last_equity
+                # may not have rolled.
+                _last = float(_acct.get("last_equity", 0.0) or 0.0)
+                if equity > 0.0 and _last > 0.0:
+                    day_pnl = equity - _last
+            else:
+                equity = float(
+                    getattr(book.config, "portfolio_equity_floor", 100_000.0)
+                ) + day_pnl
             longs_b = getattr(book, "positions", {}) or {}
             shorts_b = getattr(book, "short_positions", {}) or {}
             positions_list = _serialize_positions(longs_b, shorts_b, _px)

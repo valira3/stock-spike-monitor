@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.0.1"
+BOT_VERSION = "7.0.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -1630,6 +1630,15 @@ def _v561_log_trade_closed(
             daily_realized_pnl = _v570_record_trade_close(pnl_dollars)
         except Exception:
             daily_realized_pnl = float(pnl_dollars or 0.0)
+    # v7.0.2 \u2014 fold this exit's P/L into the per-strike running
+    # total so the recursive strike-unlock predicate has fresh data
+    # before the next strike_entry_allowed check fires. Failure-
+    # tolerant: a record bug must never block the [TRADE_CLOSED]
+    # log line.
+    try:
+        _v702_record_strike_pnl(ticker, int(strike_num or 0), float(pnl_dollars or 0.0))
+    except Exception:
+        pass
     logger.info(
         "[TRADE_CLOSED] ticker=%s side=%s entry_id=%s "
         "entry_ts=%s entry_price=%.4f "
@@ -1699,6 +1708,14 @@ def _v561_log_watchlist_remove(ticker: str, reason: str = "manual",
 # strikes per day total. STRIKE-FLAT-GATE remains per-side.
 _v570_strike_counts: dict = {}   # key=ticker -> int
 _v570_strike_date: str = ""
+
+# v7.0.2 \u2014 per-ticker per-strike running P/L. Maps
+# (ticker_upper, strike_num) -> running sum of pnl_dollars across
+# every TRADE_CLOSED for that strike. Recursive strike-unlock rule
+# (v7.0.2): when checking strike_entry_allowed for strike N+1 on a
+# ticker, every closed strike 1..N must have sum > 0. Resets at the
+# session boundary alongside _v570_strike_counts.
+_v570_strike_pnl: dict = {}      # key=(ticker, strike_num) -> float
 
 # Per-ticker per-day session HOD/LOD tracker. Seeded from the
 # first 9:30 ET print onward. Pre-market values do NOT seed.
@@ -1804,6 +1821,10 @@ def _v570_reset_if_new_session() -> None:
     today = _v570_session_today_str()
     if _v570_strike_date != today:
         _v570_strike_counts.clear()
+        # v7.0.2 \u2014 wipe per-strike P/L history at the session
+        # boundary so the recursive unlock rule starts each day with
+        # a clean slate (no carryover of yesterday's positive runs).
+        _v570_strike_pnl.clear()
         _v570_strike_date = today
         # v5.15.1 vAA-1 \u2014 wipe sentinel-loop momentum state at the
         # session boundary alongside the strike counters. Clears
@@ -1871,11 +1892,16 @@ def _v570_record_entry(ticker: str, side: str = "") -> int:
     v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 ``side`` is accepted for
     call-site compatibility but ignored: long+short entries on the
     same ticker share one counter (per-ticker cap of 3 total).
+
+    v7.0.2 \u2014 the cap is lifted recursively when every closed strike
+    on this ticker has P/L > 0. The defensive raise is now driven by
+    the same predicate as the entry gate: a strike beyond 3 is only
+    allowed when ``_v702_all_closed_strikes_positive`` is True.
     """
     _v570_reset_if_new_session()
     key = ticker.upper()
     cur = int(_v570_strike_counts.get(key, 0))
-    if cur >= 3:
+    if cur >= 3 and not _v702_all_closed_strikes_positive(key):
         raise RuntimeError("STRIKE-CAP-3 reached")
     new_n = cur + 1
     _v570_strike_counts[key] = new_n
@@ -1921,6 +1947,59 @@ def _v570_strike_must_be_flat(
         return True
 
 
+def _v702_record_strike_pnl(ticker: str, strike_num: int,
+                            pnl_dollars: float) -> float:
+    """v7.0.2 \u2014 accumulate a TRADE_CLOSED's P/L into the per-strike
+    running total for ``(ticker, strike_num)`` and return the new sum.
+
+    Called from ``_v561_log_trade_closed`` so every exit (full or
+    partial) folds into the strike's net P/L. Multiple partial exits
+    on the same strike are summed; the strike's final P/L is the
+    last value written before the next strike's entries arrive.
+
+    Failure-tolerant: any exception is swallowed and the recorded
+    sum is best-effort. The recursive-unlock check downstream
+    treats an absent strike entry as "not yet closed" \u2014 i.e. the
+    cap stays at 3 \u2014 which is the safe default.
+    """
+    try:
+        sym = (ticker or "").strip().upper()
+        sn = int(strike_num or 0)
+        if not sym or sn <= 0:
+            return 0.0
+        _v570_reset_if_new_session()
+        key = (sym, sn)
+        new_sum = float(_v570_strike_pnl.get(key, 0.0)) + float(pnl_dollars or 0.0)
+        _v570_strike_pnl[key] = new_sum
+        return new_sum
+    except Exception:
+        return 0.0
+
+
+def _v702_all_closed_strikes_positive(ticker: str) -> bool:
+    """v7.0.2 \u2014 True iff every closed strike 1..N on ``ticker``
+    today has net P/L strictly > 0, where N is the current per-ticker
+    strike count.
+
+    Returns False if N == 0 (no closed strikes \u2014 nothing to
+    extrapolate from), if any strike has no recorded P/L (defensive:
+    treat as not-yet-finalized), or if any closed strike has P/L <= 0.
+    """
+    sym = (ticker or "").strip().upper()
+    if not sym:
+        return False
+    n = _v570_strike_count(sym)
+    if n <= 0:
+        return False
+    for k in range(1, n + 1):
+        pnl = _v570_strike_pnl.get((sym, k))
+        if pnl is None:
+            return False
+        if float(pnl) <= 0.0:
+            return False
+    return True
+
+
 def strike_entry_allowed(
     ticker: str,
     side: str,
@@ -1930,7 +2009,8 @@ def strike_entry_allowed(
 
     Returns False when EITHER:
       * the per-ticker Strike count has already reached 3 today
-        (STRIKE-CAP-3 \u2014 long+short combined), OR
+        AND any closed strike has P/L <= 0 (STRIKE-CAP-3 with the
+        v7.0.2 recursive unlock relaxation \u2014 long+short combined), OR
       * a prior Strike on this side still holds shares > 0
         (STRIKE-FLAT-GATE \u2014 still per-side).
 
@@ -1940,9 +2020,18 @@ def strike_entry_allowed(
     v5.19.1 vAA-1 ULTIMATE Decision 1 \u2014 cap is per-ticker; the
     flat gate stays per-side because long and short positions are
     independent (you can be flat long while holding short).
+
+    v7.0.2 \u2014 the per-ticker cap of 3 is now lifted recursively when
+    every closed strike on the ticker has finished with P/L > 0.
+    Strike 4 fires iff strikes 1+2+3 all closed positive; strike 5
+    iff 1..4 closed positive; etc. Any non-positive close re-anchors
+    the cap at the current count (no further strikes that day).
     """
     if _v570_strike_count(ticker) >= 3:
-        return False
+        # v7.0.2 \u2014 recursive unlock when every closed strike was a
+        # winner. STRIKE-FLAT-GATE still applies below.
+        if not _v702_all_closed_strikes_positive(ticker):
+            return False
     return _v570_strike_must_be_flat(ticker, side, positions=positions)
 
 
