@@ -146,6 +146,68 @@ locked from the previous cover, so chandelier trail snapped to $419.56
 Add `[V700-CHANDELIER-RESET] AVGO SHORT entry#3 \u2014 peak_close 418.18 → 419.57,
 stage 3 → 1` log line so it's auditable.
 
+### E.5 — Re-entry HOD/LOD ratchet (Eugene's rule)
+
+**Bug:** when a `(ticker, side)` position is opened and closed multiple times
+in the same session, the next Entry-1 only requires a fresh HOD/LOD relative
+to the OR window — not relative to the **prior leg's extreme**. This permits
+re-entry stacking inside the same price band. Today (2026-05-06):
+
+- AVGO SHORT: 6 separate `entry_num=1` events between 13:41:43 and 13:47:04 ET
+  at fills 431.72 → 431.26 → 431.05 → 430.91 → 430.19 → 429.36. Each was a
+  fresh LOD vs. OR low, but the ratchet was sliding only $0.10–$0.50 per leg.
+  Six positions in 6 minutes inside a $2.36 band.
+- NFLX LONG (single leg today, but same shape risk): entered 14:31:09 ET at
+  $88.40, stopped out 14:50:29 at $87.95 for -$50.56. If a second leg had been
+  permitted on a fresh-but-marginal HOD shortly after the stop-out, it would
+  have averaged into a worse fill on the same downtrend.
+
+**Eugene's rule (verbatim, 2026-05-06 09:51 CDT):**
+
+> 2nd and 3rd strikes have to be on a new HOD (long) or LOD (short).
+
+**Fix:** introduce a per-`(portfolio_id, ticker, side)` **session ratchet**
+that tracks the most-favorable extreme across ALL prior legs of the day:
+
+- `prior_legs_max_high_long: dict[(portfolio_id, ticker), float]` — highest
+  intra-leg high seen across all closed long legs today.
+- `prior_legs_min_low_short: dict[(portfolio_id, ticker), float]` — lowest
+  intra-leg low seen across all closed short legs today.
+- On each leg close (`record_exit`), update the ratchet with that leg's high
+  (long) or low (short).
+
+**Gate change** in `evaluate_entry_1`:
+
+When `prior_legs_max_high_long[(pid, ticker)]` exists for a LONG attempt, the
+fresh-extreme requirement strengthens from "new HOD vs OR" to "new HOD beyond
+prior_legs_max_high_long." Same for shorts vs `prior_legs_min_low_short`.
+
+New rejection reason on Entry 1 when the ratchet bites:
+```
+[SKIP] ticker=AVGO reason=V5100_ENTRY1:re_entry_ratchet ts=... \
+       detail=current_low=430.19 prior_min_low=430.91 (need < prior min)
+```
+
+This lets the FIRST leg fire on standard `is_nhod_or_nlod`. Re-entries 2, 3, ...
+N must each push the day's extreme strictly past every prior leg's extreme,
+not just past the OR boundary.
+
+**Edge cases:**
+- Different portfolio books have separate ratchets (Val and Main can each take
+  Leg 1; the ratchet is per-book).
+- Entry 2 (scale-in) is unaffected — it already enforces
+  `fresh_nhod_or_nlod` past Entry-1 HWM and is intra-leg, not inter-leg.
+- The ratchet resets at EOD (clears with `paper_state` daily reset).
+
+**Test:** `tests/test_v700_re_entry_ratchet.py`
+- Open + close LONG leg 1 with intra-leg high $431.72.
+- Attempt Entry 1 again with current_high=$431.20 (lower than ratchet) →
+  REJECT with `re_entry_ratchet`.
+- Attempt Entry 1 with current_high=$432.00 (higher) → PASS.
+- Repeat for SHORT.
+- Verify ratchet is per-(portfolio_id, ticker): book A's ratchet does not
+  block book B's first leg.
+
 ### F — Dashboard polish: TRAIL pill state-aware
 
 **Bug:** TRAIL pill shows green even when the trail is breached and only
@@ -206,13 +268,19 @@ market-wide, identical for all books).
    behavior change).
 2. **Phase 2 — re-key cooldowns + sentinel state + chandelier** by
    `(portfolio_id, ticker, side)`. Still 1 book. Includes E (chandelier reset).
-3. **Phase 3 — register Main + Val + Gene** behind `PER_PORTFOLIO_BOOKS_ENABLED`
-   feature flag. Migrate existing `paper_state.json` → `paper_state_main.json`.
-4. **Phase 4 — fanout layer + per-book sizing + per-book config**. Includes
+3. **Phase 2.5 — re-entry HOD/LOD ratchet** (E.5). Adds the per-book
+   `prior_legs_max_high_long` / `prior_legs_min_low_short` ratchet on the
+   `PortfolioBook`, updates `record_exit` to refresh it, and tightens
+   `evaluate_entry_1` to require breaking past the ratchet (not just OR) on
+   any leg after the first. Behavior change — ships without flag.
+4. **Phase 3 — register Main + Val + Gene**. Migrate existing
+   `paper_state.json` → `paper_state_main.json` (additive). No flag — books
+   are live from this commit; signal flow stays single-book until Phase 4.
+5. **Phase 4 — fanout layer + per-book sizing + per-book config**. Includes
    broker-fill-price as entry baseline.
-5. **Phase 5 — AON entries** (C) + **quiet messaging** (D). Touches the same
+6. **Phase 5 — AON entries** (C) + **quiet messaging** (D). Touches the same
    entry path, ship together.
-6. **Phase 6 — `/api/state` portfolios map + per-portfolio strip + TRAIL state
+7. **Phase 6 — `/api/state` portfolios map + per-portfolio strip + TRAIL state
    polish** (F + G + H).
 
 ## Tests (new files)
@@ -227,6 +295,10 @@ market-wide, identical for all books).
   → 1 ⚠️; reconcile-raises → 1 ⚠️; full fill → 1 ✅; partial → 1 ⚠️ closed.
 - `tests/test_v700_chandelier_reset.py` — same `(ticker, side)` re-entry resets
   peak_close to new entry, stage to 1, atr_baseline to None.
+- `tests/test_v700_re_entry_ratchet.py` — leg 1 closes with intra-leg high X;
+  leg 2 attempt below X rejects with `re_entry_ratchet`; leg 2 above X passes.
+  Same for shorts (intra-leg low). Ratchet is per-(portfolio_id, ticker):
+  book A's ratchet does not block book B's first leg.
 - `tests/test_v700_dashboard_shape.py` — `/api/state` returns `portfolios` map
   with all 3 IDs; legacy `portfolio` matches `portfolios.main`; each book has
   `strip` sub-object; TRAIL state computed from stop/mark/hold.
