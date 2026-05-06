@@ -257,24 +257,20 @@ def _build_portfolio_strip(book, executor=None) -> dict:
             state = "active"
 
         # --- cooldowns ---
-        if pid == "main":
-            try:
-                import trade_genius as _tg_cd
-                _plc = getattr(_tg_cd, "_post_loss_cooldown", {}) or {}
-                _pec = getattr(_tg_cd, "_post_exit_cooldown", {}) or {}
-                long_cd = sum(
-                    1 for k in _plc if isinstance(k, tuple) and len(k) == 2
-                    and str(k[1]).upper() == "LONG"
-                )
-                short_cd = sum(
-                    1 for k in _plc if isinstance(k, tuple) and len(k) == 2
-                    and str(k[1]).upper() == "SHORT"
-                )
-            except Exception:
-                long_cd = 0
-                short_cd = 0
-        else:
-            # v7.1 will wire per-book cooldown registry.
+        # v7.0.1: every book has its own _post_loss_cooldown dict (main's
+        # is identity-bound to the trade_genius module global, so legacy
+        # callers stay green). Read directly from the book passed in.
+        try:
+            _plc = getattr(book, "_post_loss_cooldown", {}) or {}
+            long_cd = sum(
+                1 for k in _plc if isinstance(k, tuple) and len(k) == 2
+                and str(k[1]).upper() == "LONG"
+            )
+            short_cd = sum(
+                1 for k in _plc if isinstance(k, tuple) and len(k) == 2
+                and str(k[1]).upper() == "SHORT"
+            )
+        except Exception:
             long_cd = 0
             short_cd = 0
 
@@ -1670,8 +1666,20 @@ def snapshot() -> dict[str, Any]:
         try:
             import trade_genius as _v642_tg
             v642_active = list(_v642_tg.get_active_cooldowns())
+            # v7.0.1: per-portfolio breakdown for the per-book strip and
+            # tab-level cooldown panels. Main is identical to v642_active
+            # above; val/gene start empty and populate as those books take
+            # losses through the fanout layer.
+            try:
+                v701_active_by_pid = {
+                    _pid: list(_v642_tg.get_active_cooldowns(portfolio_id=_pid))
+                    for _pid in ("main", "val", "gene")
+                }
+            except Exception:
+                v701_active_by_pid = {"main": v642_active, "val": [], "gene": []}
         except Exception:
             v642_active = []
+            v701_active_by_pid = {"main": [], "val": [], "gene": []}
         # Legacy single-window field: prefer the active non-zero side; if
         # both are on, take the larger; if both off, 0.
         if v643_cd_long > 0 and v643_cd_short > 0:
@@ -1719,6 +1727,7 @@ def snapshot() -> dict[str, Any]:
             "v640_flags": v640_flags,
             "v642_flags": v642_flags,
             "active_cooldowns": v642_active,
+            "active_cooldowns_by_portfolio": v701_active_by_pid,
             "server_time": now_iso,
             "server_time_label": now_label,
             "portfolio": {

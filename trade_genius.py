@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.0.0"
+BOT_VERSION = "7.0.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -3319,6 +3319,13 @@ _post_loss_cooldown: dict = {}  # (ticker, side) -> {"until_utc": dt, "loss_pnl"
 # Cleared by reset_daily_state alongside the other cooldown registries.
 _post_exit_cooldown: dict = {}  # ticker -> {"until_utc": dt, "exit_ts_utc": dt, "exit_reason": str}
 
+# v7.0.1 -- identity-bind main book's cooldown dicts to the module globals.
+# The per-book dicts are the authoritative storage; the module-level names
+# remain so all legacy callers (broker/orders, dashboard_server, paper_state)
+# keep working unchanged. Mutating either side is observable from the other.
+_MAIN_BOOK._post_loss_cooldown = _post_loss_cooldown
+_MAIN_BOOK._post_exit_cooldown = _post_exit_cooldown
+
 # User config
 user_config: dict = {"trading_mode": "paper"}
 
@@ -4520,7 +4527,14 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def record_post_loss_cooldown(ticker: str, side: str, pnl: float, exit_ts_utc=None) -> None:
+def record_post_loss_cooldown(
+    ticker: str,
+    side: str,
+    pnl: float,
+    exit_ts_utc=None,
+    *,
+    portfolio_id: str = "main",
+) -> None:
     """v6.4.2 \u2014 record a stop-out so the next entry on (ticker, side) is gated.
     v6.4.3 \u2014 cooldown window is now per-side (POST_LOSS_COOLDOWN_MIN_LONG /
     _SHORT). Default longs OFF (0 min), shorts 30 min. The Apr 27\u2013May 1
@@ -4534,37 +4548,26 @@ def record_post_loss_cooldown(ticker: str, side: str, pnl: float, exit_ts_utc=No
     the most recent stop \u2014 the chase pattern we want to break is exactly
     the back-to-back case.
     """
-    if pnl is None or pnl >= 0:
-        return
-    side_norm = (side or "").strip().lower()
-    if side_norm not in ("long", "short"):
-        return
+    # v7.0.1: route to the named book's registry. Default 'main' preserves
+    # the legacy module-global dict identity so dashboard / paper_state
+    # callsites that read _post_loss_cooldown directly are unchanged.
     try:
-        if side_norm == "long":
-            from eye_of_tiger import POST_LOSS_COOLDOWN_MIN_LONG as _cd_min
-        else:
-            from eye_of_tiger import POST_LOSS_COOLDOWN_MIN_SHORT as _cd_min
-        cd_min = int(_cd_min)
+        from engine.portfolio_book import PORTFOLIOS
+        book = PORTFOLIOS.get(portfolio_id)
     except Exception:
-        cd_min = 0 if side_norm == "long" else 30
-    if cd_min <= 0:
-        return
-    loss_ts = exit_ts_utc or _now_utc()
-    until = loss_ts + timedelta(minutes=cd_min)
-    _post_loss_cooldown[(ticker, side_norm)] = {
-        "until_utc": until,
-        "loss_pnl": float(pnl),
-        "loss_ts_utc": loss_ts,
-    }
-    logger.info(
-        "[V642-COOLDOWN] RECORD ticker=%s side=%s loss_pnl=$%.2f "
-        "until_utc=%s window_min=%d",
-        ticker, side_norm, float(pnl),
-        until.strftime("%Y-%m-%dT%H:%M:%SZ"), cd_min,
-    )
+        # Defensive: if the registry isn't reachable, fall through to the
+        # main book's module global so we never silently swallow a loss.
+        book = _MAIN_BOOK
+    book.record_post_loss(ticker, side, pnl, exit_ts_utc=exit_ts_utc)
 
 
-def record_post_exit_cooldown(ticker: str, exit_reason: str = "", exit_ts_utc=None) -> None:
+def record_post_exit_cooldown(
+    ticker: str,
+    exit_reason: str = "",
+    exit_ts_utc=None,
+    *,
+    portfolio_id: str = "main",
+) -> None:
     """v6.11.13 \u2014 record a post-exit broker-reconciliation window.
 
     Called from broker.orders.close_breakout for EVERY exit (winner OR
@@ -4578,37 +4581,42 @@ def record_post_exit_cooldown(ticker: str, exit_reason: str = "", exit_ts_utc=No
     gate would not catch the bug.
     """
     try:
-        from eye_of_tiger import POST_EXIT_SAME_TICKER_COOLDOWN_SEC as _cd_sec
-        cd_sec = int(_cd_sec)
+        from engine.portfolio_book import PORTFOLIOS
+        book = PORTFOLIOS.get(portfolio_id)
     except Exception:
-        cd_sec = 10
-    if cd_sec <= 0:
-        return
-    exit_ts = exit_ts_utc or _now_utc()
-    until = exit_ts + timedelta(seconds=cd_sec)
-    _post_exit_cooldown[ticker] = {
-        "until_utc": until,
-        "exit_ts_utc": exit_ts,
-        "exit_reason": str(exit_reason or ""),
-    }
-    logger.info(
-        "[V61113-EXIT-CD] RECORD ticker=%s reason=%s until_utc=%s window_sec=%d",
-        ticker, exit_reason or "unknown",
-        until.strftime("%Y-%m-%dT%H:%M:%SZ"), cd_sec,
-    )
+        book = _MAIN_BOOK
+    book.record_post_exit(ticker, exit_reason=exit_reason, exit_ts_utc=exit_ts_utc)
+    # Preserve the legacy log line shape so log-greppers (dashboards, alerts)
+    # don't break on the rename.
+    entry = book._post_exit_cooldown.get(ticker)
+    if entry is not None:
+        logger.info(
+            "[V61113-EXIT-CD] RECORD ticker=%s reason=%s until_utc=%s window_sec=%d",
+            ticker, exit_reason or "unknown",
+            entry["until_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            int((entry["until_utc"] - entry["exit_ts_utc"]).total_seconds()),
+        )
 
 
-def is_in_post_exit_cooldown(ticker: str):
+def is_in_post_exit_cooldown(ticker: str, *, portfolio_id: str = "main"):
     """v6.11.13 \u2014 return entry dict if `ticker` is currently inside the
     post-exit broker-reconciliation window, else None. Auto-prunes
     expired entries on read.
+
+    v7.0.1: routes to the named book's registry. Default 'main' preserves
+    legacy behavior since main's registry IS the module-global dict.
     """
-    entry = _post_exit_cooldown.get(ticker)
+    try:
+        from engine.portfolio_book import PORTFOLIOS
+        book = PORTFOLIOS.get(portfolio_id)
+    except Exception:
+        book = _MAIN_BOOK
+    entry = book._post_exit_cooldown.get(ticker)
     if not entry:
         return None
     now = _now_utc()
     if entry["until_utc"] <= now:
-        _post_exit_cooldown.pop(ticker, None)
+        book._post_exit_cooldown.pop(ticker, None)
         return None
     return entry
 
@@ -4630,20 +4638,19 @@ def _check_post_exit_cooldown(ticker: str) -> bool:
     return False
 
 
-def is_in_post_loss_cooldown(ticker: str, side: str):
+def is_in_post_loss_cooldown(ticker: str, side: str, *, portfolio_id: str = "main"):
     """v6.4.2 \u2014 return entry dict if (ticker, side) is currently cooling
     down, else None. Auto-prunes expired entries.
+
+    v7.0.1: routes to the named book's registry. Default 'main' preserves
+    legacy behavior since main's registry IS the module-global dict.
     """
-    side_norm = (side or "").strip().lower()
-    key = (ticker, side_norm)
-    entry = _post_loss_cooldown.get(key)
-    if not entry:
-        return None
-    now = _now_utc()
-    if entry["until_utc"] <= now:
-        _post_loss_cooldown.pop(key, None)
-        return None
-    return entry
+    try:
+        from engine.portfolio_book import PORTFOLIOS
+        book = PORTFOLIOS.get(portfolio_id)
+    except Exception:
+        book = _MAIN_BOOK
+    return book.is_in_post_loss_cooldown(ticker, side)
 
 
 def _check_post_loss_cooldown(ticker: str, side: str) -> bool:
@@ -4664,32 +4671,20 @@ def _check_post_loss_cooldown(ticker: str, side: str) -> bool:
     return False
 
 
-def get_active_cooldowns() -> list:
+def get_active_cooldowns(*, portfolio_id: str = "main") -> list:
     """v6.4.2 \u2014 snapshot of currently-active post-loss cooldowns for the
     dashboard. Auto-prunes expired entries on read. Returns a list of dicts
     safe to JSON-serialize via /api/state.
+
+    v7.0.1: routes to the named book's registry. Default 'main' preserves
+    legacy behavior since main's registry IS the module-global dict.
     """
-    now = _now_utc()
-    out = []
-    for key in list(_post_loss_cooldown.keys()):
-        entry = _post_loss_cooldown.get(key)
-        if not entry:
-            continue
-        if entry["until_utc"] <= now:
-            _post_loss_cooldown.pop(key, None)
-            continue
-        ticker, side = key
-        remaining_sec = max(0, int((entry["until_utc"] - now).total_seconds()))
-        out.append({
-            "ticker": ticker,
-            "side": side,
-            "until_utc": entry["until_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "remaining_sec": remaining_sec,
-            "loss_pnl": round(float(entry.get("loss_pnl", 0)), 2),
-            "loss_ts_utc": entry["loss_ts_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-        })
-    out.sort(key=lambda r: r["remaining_sec"])
-    return out
+    try:
+        from engine.portfolio_book import PORTFOLIOS
+        book = PORTFOLIOS.get(portfolio_id)
+    except Exception:
+        book = _MAIN_BOOK
+    return book.get_active_cooldowns()
 
 
 def _check_daily_loss_limit(ticker: str) -> bool:
