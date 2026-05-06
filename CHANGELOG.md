@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v6.16.3 (2026-05-05) -- FMP cache poisoning hotfix
+
+The v6.16.2 deploy revealed a real production bug during the
+end-to-end dry-run before tomorrow's first BMO window:
+`_get_fmp_market_cap` was caching `cap=None` for every error path,
+including transient 429 / 5xx / network errors. The cache then
+persisted to `/data/earnings_watcher/universe_cache.json` for 24 h
+via `_save_universe_cache`, so a single 429 burst on FMP's free tier
+silently dropped real BMO names (DIS, UBER, SNAP, CVS, FTNT, AUR,
+MDGL, KTOS, NRG, HST, O, RGLD, AXON, MELI, FLEX, MAR, etc.) from
+the trading universe for the entire next day.
+
+Fix: the helper now distinguishes a definitive empty FMP response
+(items=[] -> cache None) from a transient error (429 / 5xx / network
+/ JSON parse -> do NOT cache). It also retries once on a transient
+error with a 750 ms backoff and adds a 50 ms throttle between
+successful calls to stay under the FMP burst limit. The poisoned
+cache file from the v6.16.2 dry-run was wiped on the live container
+before deploying this fix.
+
+No functional change to signals / sizing / exits.
+
+---
+
 ## v6.16.2 (2026-05-05) -- earnings_watcher deploy hotfix
 
 Deploy 99eb3bdb (v6.16.1 with `EARNINGS_WATCHER_ENABLED=1`) crashed at

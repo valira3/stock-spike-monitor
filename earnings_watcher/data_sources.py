@@ -258,7 +258,24 @@ def _save_universe_cache(data: Dict[str, Any]) -> None:
 
 
 def _get_fmp_market_cap(ticker: str, cache: Dict[str, Any]) -> Optional[float]:
-    """Return market cap for ticker via FMP company profile. Uses in-memory cache."""
+    """Return market cap for ticker via FMP company profile. Uses in-memory cache.
+
+    v6.16.3 hotfix: previously every error path (429, timeout, 5xx, JSON parse)
+    cached cap=None for the ticker, which then persisted to disk for 24 h via
+    _save_universe_cache. On the May 5 2026 evening dry-run roughly half of
+    the FMP /profile calls hit a 429 burst limit and the cache was poisoned
+    with null caps for real BMO names (DIS, UBER, SNAP, CVS, FTNT, AUR,
+    MDGL, KTOS, NRG, HST, O, RGLD, AXON, MELI, FLEX, MAR, etc.). The next
+    universe walk then short-circuited on the cache hit and silently dropped
+    those names from the trading universe.
+
+    Fix: distinguish transient errors (429, 5xx, network/timeout) from a
+    definitive empty FMP response. Transient errors are NOT cached so the
+    next call can re-attempt; only an explicit \"FMP returned an empty list
+    or no mktCap field\" outcome is cached as cap=None. Also adds one retry
+    on 429 with a 750 ms backoff and a 50 ms throttle between successful
+    calls to stay under the FMP burst limit.
+    """
     if ticker in cache:
         return cache[ticker].get("market_cap")
 
@@ -270,18 +287,49 @@ def _get_fmp_market_cap(ticker: str, cache: Dict[str, Any]) -> Optional[float]:
     url = (
         f"https://financialmodelingprep.com/stable/profile?symbol={ticker}&apikey={key}"
     )
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        raw = resp.json()
+
+    def _attempt() -> Tuple[Optional[float], bool]:
+        """Return (market_cap, is_definitive). is_definitive=False means the
+        result is transient and MUST NOT be cached."""
+        try:
+            resp = requests.get(url, timeout=10)
+        except requests.exceptions.RequestException as exc:
+            logger.warning("[EW-DATA] FMP profile transient error ticker=%s: %s",
+                           ticker, exc)
+            return None, False
+        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+            logger.warning("[EW-DATA] FMP profile transient http=%s ticker=%s",
+                           resp.status_code, ticker)
+            return None, False
+        try:
+            resp.raise_for_status()
+            raw = resp.json()
+        except Exception as exc:
+            logger.warning("[EW-DATA] FMP profile parse error ticker=%s: %s",
+                           ticker, exc)
+            return None, False
         items = raw if isinstance(raw, list) else [raw]
-        if items:
-            cap = items[0].get("mktCap") or items[0].get("marketCap") or items[0].get("mktcap")
-            cache[ticker] = {"market_cap": float(cap) if cap else None}
-            return cache[ticker]["market_cap"]
-    except Exception as exc:
-        logger.warning("[EW-DATA] FMP profile error ticker=%s: %s", ticker, exc)
-    cache[ticker] = {"market_cap": None}
+        if not items:
+            return None, True  # definitive: FMP says no profile
+        cap = (items[0].get("mktCap") or items[0].get("marketCap")
+               or items[0].get("mktcap"))
+        return (float(cap) if cap else None), True
+
+    cap, definitive = _attempt()
+    if not definitive:
+        # One retry with backoff for 429 / 5xx / network blips.
+        time.sleep(0.75)
+        cap, definitive = _attempt()
+
+    if definitive:
+        cache[ticker] = {"market_cap": cap}
+        # Light throttle so the next ticker doesn't immediately burst.
+        time.sleep(0.05)
+        return cap
+
+    # Still transient after one retry: do NOT poison the cache. The caller
+    # treats None as \"unknown -> exclude\" for this run, but the cache stays
+    # empty so the next universe walk gets a fresh attempt.
     return None
 
 
