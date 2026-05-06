@@ -3552,20 +3552,54 @@
   // so the field was almost always null even when positions were
   // open. Card removed from Main, Val, and Gene tabs.
 
-  // v6.17.0 — Earnings Watcher panel renderer. Reads s.earnings_watcher
-  // and paints window/universe/skip_reasons/open_positions into #ew-body.
-  // Self-contained — if the block is missing the panel shows "not enabled".
+  // v6.18.0 — Earnings Watcher panel renderer.
+  //
+  // Header is intentionally compact (2-3 lines):
+  //   line 1: title + window pill + status chip
+  //   line 2: headline metrics (watched / evaluated / signals / fills)
+  //   line 3: expand-disclosure caret ("▸ details")
+  //
+  // Full detail (cycle telemetry, watched tickers, skip reasons, open
+  // positions table) lives in #ew-details and is hidden by default.
+  // Click on the card head toggles aria-expanded + the hidden attribute.
+  //
+  // Self-contained — if any DOM hook is missing the rest still runs.
   function renderEarningsWatcher(s) {
     const ew = (s && s.earnings_watcher) || null;
-    const body = document.getElementById("ew-body");
+    const head = document.getElementById("ew-card-head");
+    const body = document.getElementById("ew-details");
     const pill = document.getElementById("ew-window-pill");
-    const chip = document.getElementById("ew-summary-chip");
+    const statusChip = document.getElementById("ew-status-chip");
+    const summaryLine = document.getElementById("ew-summary-line");
     if (!body) return;
 
+    // Wire the click-to-expand once. The handler is idempotent — adding
+    // it on every render would compound, so we track via a data flag.
+    if (head && !head.dataset.ewWired) {
+      const toggle = () => {
+        const expanded = head.getAttribute("aria-expanded") === "true";
+        head.setAttribute("aria-expanded", expanded ? "false" : "true");
+        body.hidden = expanded;
+        const disc = document.getElementById("ew-disclosure");
+        if (disc) disc.innerHTML = (expanded ? "\u25b8" : "\u25be") + " details";
+      };
+      head.addEventListener("click", toggle);
+      head.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      });
+      head.style.cursor = "pointer";
+      head.dataset.ewWired = "1";
+    }
+
+    // OFF / not enabled
     if (!ew || !ew.enabled) {
-      body.innerHTML = '<div class="empty">Earnings Watcher not enabled.</div>';
       if (pill) pill.textContent = "\u00b7 off";
-      if (chip) chip.textContent = "\u2014";
+      if (statusChip) statusChip.textContent = "OFF";
+      if (summaryLine) summaryLine.textContent = "Earnings Watcher disabled (set EARNINGS_WATCHER_ENABLED=1).";
+      body.innerHTML = '<div class="empty">Earnings Watcher not enabled.</div>';
       return;
     }
 
@@ -3573,57 +3607,115 @@
     const lc = ew.last_cycle || null;
     const positions = ew.open_positions || [];
     const universeSize = ew.universe_size || 0;
+    const watched = ew.watched_today || null;
+    const watchedTickers = (function () {
+      if (!watched) return [];
+      if (window_ === "premarket") return watched.premarket || [];
+      if (window_ === "afterhours") return watched.afterhours || [];
+      // outside a window: prefer the most recent populated list
+      const ah = watched.afterhours || [];
+      const pm = watched.premarket || [];
+      return ah.length ? ah : pm;
+    })();
 
+    // ---- Header line 1: window pill ----
     if (pill) pill.textContent = "\u00b7 " + window_;
 
-    if (chip) {
-      if (lc) {
-        const ev = lc.evaluated || 0;
-        const sig = lc.signals || 0;
-        const ord_ = lc.orders_filled || 0;
-        chip.textContent = ev + " eval / " + sig + " sig / " + ord_ + " ord";
+    // ---- Header line 1: status chip ----
+    // PASS = at least one cycle ran today; WAITING = enabled but no cycle yet
+    // (typical at startup or outside windows); LIVE = open positions present.
+    if (statusChip) {
+      if (positions.length) {
+        statusChip.textContent = positions.length + " LIVE";
+        statusChip.style.background = "rgba(16, 185, 129, 0.15)";
+        statusChip.style.color = "var(--up, #10b981)";
+      } else if (lc) {
+        statusChip.textContent = "READY";
+        statusChip.style.background = "";
+        statusChip.style.color = "";
       } else {
-        chip.textContent = "no cycle yet";
+        statusChip.textContent = "WAITING";
+        statusChip.style.background = "";
+        statusChip.style.color = "var(--text-dim)";
       }
     }
 
+    // ---- Header line 2: one-line summary ----
+    if (summaryLine) {
+      const parts = [];
+      parts.push(universeSize + " watched");
+      if (lc) {
+        parts.push((lc.evaluated || 0) + " evaluated");
+        parts.push((lc.signals || 0) + " sig");
+        parts.push((lc.orders_filled || 0) + " fill");
+        if (lc.exits) parts.push(lc.exits + " exit");
+      } else {
+        parts.push("no cycle yet today");
+      }
+      if (positions.length) parts.push(positions.length + " open");
+      summaryLine.textContent = parts.join(" \u00b7 ");
+    }
+
+    // ---- Expandable body ----
     let html = "";
 
-    // Header strip: window | universe | last cycle ts
-    html += '<div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:14px;flex-wrap:wrap;font-size:12px">';
-    html += '<span><strong>window</strong>: ' + escapeHtml(window_) + '</span>';
-    html += '<span><strong>universe</strong>: ' + universeSize + '</span>';
-    html += '<span><strong>version</strong>: ' + escapeHtml(ew.version || "?") + '</span>';
+    // Telemetry strip
+    html += '<div style="padding:10px 12px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));gap:8px 14px;font-size:12px">';
+    html += _ewTelem("Window", window_);
+    html += _ewTelem("Universe", String(universeSize));
+    html += _ewTelem("Evaluated", lc ? String(lc.evaluated || 0) : "\u2014");
+    html += _ewTelem("Skipped (eval)", lc ? String(lc.skipped_evaluated || 0) : "\u2014");
+    html += _ewTelem("Signals", lc ? String(lc.signals || 0) : "\u2014");
+    html += _ewTelem("Orders filled", lc ? String(lc.orders_filled || 0) : "\u2014");
+    html += _ewTelem("Exits", lc ? String(lc.exits || 0) : "\u2014");
+    html += _ewTelem("Version", ew.version || "?");
     if (lc && lc.ts_utc) {
-      html += '<span><strong>last cycle</strong>: ' + escapeHtml(String(lc.ts_utc).replace("T", " ").replace("+00:00", " UTC")) + '</span>';
+      html += _ewTelem("Last cycle", String(lc.ts_utc).replace("T", " ").replace("+00:00", " UTC").slice(0, 19));
     }
     html += '</div>';
 
-    // Open positions row
+    // Open positions table
     if (positions.length) {
-      html += '<div style="padding:8px 10px;border-bottom:1px solid var(--border)">';
-      html += '<div style="font-weight:600;margin-bottom:4px;font-size:12px">Open EW positions (' + positions.length + ')</div>';
+      html += '<div style="padding:8px 12px;border-bottom:1px solid var(--border)">';
+      html += '<div style="font-weight:600;margin-bottom:6px;font-size:12px">Open EW positions (' + positions.length + ')</div>';
       html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted)">';
-      html += '<th>Ticker</th><th>Side</th><th>Entry</th><th>Qty</th><th>Notional</th><th>Conv</th><th>Entry ts</th>';
+      html += '<th style="padding:2px 6px 2px 0">Ticker</th><th style="padding:2px 6px">Side</th><th style="padding:2px 6px">Entry</th><th style="padding:2px 6px">Qty</th><th style="padding:2px 6px">Notional</th><th style="padding:2px 6px">Conv</th><th style="padding:2px 0 2px 6px">Entry ts</th>';
       html += '</tr></thead><tbody>';
       for (const p of positions) {
         html += '<tr>';
-        html += '<td><strong>' + escapeHtml(p.ticker || "") + '</strong></td>';
-        html += '<td>' + escapeHtml(p.side || "") + '</td>';
-        html += '<td>' + (p.entry_px != null ? Number(p.entry_px).toFixed(2) : "\u2014") + '</td>';
-        html += '<td>' + (p.qty || "\u2014") + '</td>';
-        html += '<td>' + (p.notional != null ? "$" + Number(p.notional).toLocaleString() : "\u2014") + '</td>';
-        html += '<td>' + (p.conv != null ? Number(p.conv).toFixed(2) : "\u2014") + '</td>';
-        html += '<td style="color:var(--muted)">' + escapeHtml(String(p.entry_ts_utc || "").replace("T", " ").slice(0, 19)) + '</td>';
+        html += '<td style="padding:2px 6px 2px 0"><strong>' + escapeHtml(p.ticker || "") + '</strong></td>';
+        html += '<td style="padding:2px 6px">' + escapeHtml(p.side || "") + '</td>';
+        html += '<td style="padding:2px 6px">' + (p.entry_px != null ? Number(p.entry_px).toFixed(2) : "\u2014") + '</td>';
+        html += '<td style="padding:2px 6px">' + (p.qty || "\u2014") + '</td>';
+        html += '<td style="padding:2px 6px">' + (p.notional != null ? "$" + Number(p.notional).toLocaleString() : "\u2014") + '</td>';
+        html += '<td style="padding:2px 6px">' + (p.conv != null ? Number(p.conv).toFixed(2) : "\u2014") + '</td>';
+        html += '<td style="padding:2px 0 2px 6px;color:var(--muted)">' + escapeHtml(String(p.entry_ts_utc || "").replace("T", " ").slice(0, 19)) + '</td>';
         html += '</tr>';
       }
       html += '</tbody></table></div>';
     }
 
-    // Skip reasons (the diagnostic field)
+    // Watched today (the "what's being watched" answer)
+    if (watchedTickers.length) {
+      const MAX_SHOW = 30;
+      const shown = watchedTickers.slice(0, MAX_SHOW);
+      const more = watchedTickers.length - shown.length;
+      html += '<div style="padding:8px 12px;border-bottom:1px solid var(--border)">';
+      html += '<div style="font-weight:600;margin-bottom:6px;font-size:12px">Watched today \u00b7 ' + watchedTickers.length + ' tickers</div>';
+      html += '<div style="display:flex;gap:4px;flex-wrap:wrap;font-size:11px">';
+      for (const t of shown) {
+        html += '<span style="background:var(--surface-1);color:var(--text);padding:2px 7px;border-radius:10px;border:1px solid var(--border);font-family:var(--font-mono, monospace)">' + escapeHtml(t) + '</span>';
+      }
+      if (more > 0) {
+        html += '<span style="color:var(--text-dim);padding:2px 4px">+' + more + ' more</span>';
+      }
+      html += '</div></div>';
+    }
+
+    // Skip reasons
     if (lc && lc.skip_reasons && Object.keys(lc.skip_reasons).length) {
-      html += '<div style="padding:8px 10px">';
-      html += '<div style="font-weight:600;margin-bottom:4px;font-size:12px">Last cycle skip reasons</div>';
+      html += '<div style="padding:8px 12px">';
+      html += '<div style="font-weight:600;margin-bottom:6px;font-size:12px">Last cycle skip reasons</div>';
       html += '<div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px">';
       const entries = Object.entries(lc.skip_reasons).sort((a, b) => b[1] - a[1]);
       for (const [reason, count] of entries) {
@@ -3636,14 +3728,59 @@
       }
       html += '</div></div>';
     } else if (lc) {
-      html += '<div style="padding:8px 10px;color:var(--muted);font-size:12px">No skips this cycle.</div>';
+      html += '<div style="padding:8px 12px;color:var(--muted);font-size:12px">No skips this cycle.</div>';
     } else if (window_ === "closed" || window_ === "rth_idle") {
-      html += '<div style="padding:8px 10px;color:var(--muted);font-size:12px">Outside EW windows. Pre-market opens at 4:00 AM ET, after-hours at 4:00 PM ET.</div>';
+      html += '<div style="padding:8px 12px;color:var(--muted);font-size:12px">Outside EW windows. Pre-market opens at 4:00 AM ET, after-hours at 4:00 PM ET.</div>';
     } else {
-      html += '<div style="padding:8px 10px;color:var(--muted);font-size:12px">Waiting for first cycle\u2026</div>';
+      html += '<div style="padding:8px 12px;color:var(--muted);font-size:12px">Waiting for first cycle\u2026</div>';
     }
 
     body.innerHTML = html;
+  }
+
+  // Helper: render one labeled telemetry cell.
+  function _ewTelem(label, value) {
+    return '<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);margin-bottom:1px">' +
+      escapeHtml(label) +
+      '</div><div class="mono" style="font-size:13px;color:var(--text)">' +
+      escapeHtml(value) +
+      '</div></div>';
+  }
+
+  // v6.18.0 — relocate the EW <section> based on current_window.
+  //   premarket / afterhours / closed -> just below #pos-body's section
+  //                                      (so it sits right under Open positions)
+  //   rth_idle (RTH)                  -> bottom of <main>
+  //
+  // Idempotent: only moves if the current parent/sibling differs from
+  // the desired anchor.
+  function positionEarningsWatcherCard(s) {
+    const sect = document.getElementById("ew-section");
+    if (!sect || !sect.parentNode) return;
+    const win = ((s && s.earnings_watcher && s.earnings_watcher.current_window) || "closed");
+    const isRth = (win === "rth_idle");
+
+    const main = sect.parentNode;  // the <main> container
+    if (!main) return;
+
+    if (isRth) {
+      // Move to last child of main if not already there.
+      if (main.lastElementChild !== sect) {
+        main.appendChild(sect);
+      }
+    } else {
+      // Move to right after the Open positions section. Find that
+      // section by walking up from #pos-body to its enclosing <section>.
+      const posBody = document.getElementById("pos-body");
+      if (!posBody) return;
+      let posSection = posBody;
+      while (posSection && posSection.tagName !== "SECTION") posSection = posSection.parentNode;
+      if (!posSection || posSection.parentNode !== main) return;
+      const target = posSection.nextSibling;
+      // Already in the right spot? bail.
+      if (sect.previousElementSibling === posSection) return;
+      main.insertBefore(sect, target);
+    }
   }
 
   function renderAll(s) {
@@ -3670,6 +3807,7 @@
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
     try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
+    try { positionEarningsWatcherCard(s); } catch (e) { /* never break Main */ }
     // v4.11.0 — health pill bound to Main when active.
     try { applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] }); } catch (e) {}
   }
