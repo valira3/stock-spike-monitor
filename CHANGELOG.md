@@ -4,6 +4,104 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.2 (2026-05-06) -- per-book live Alpaca equity + recursive strike unlock
+
+Two independent changes shipped in one release.
+
+### 1. Per-book live Alpaca equity on val/gene strips
+
+Follow-on to v7.0.1. Before this, the val and gene portfolio strips on the
+dashboard always showed a static $100,000 baseline (the
+`portfolio_equity_floor`) plus that book's own `trade_history` day P/L. Once
+Val hooked his own paper account up via `VAL_ALPACA_PAPER_KEY` /
+`VAL_ALPACA_PAPER_SECRET`, the dashboard had no path to surface the real
+broker equity, even though the rest of the system was already trading
+through that account.
+
+- `dashboard_server._alpaca_account_for_book(pid)` resolves
+  `<PID>_ALPACA_PAPER_KEY` / `<PID>_ALPACA_PAPER_SECRET` and returns a
+  cached snapshot of `equity`, `cash`, `last_equity`, and `buying_power`.
+  Cached for 30 seconds per pid so the 2s `/api/state` poll never hammers
+  Alpaca; failures are NOT cached so transient blips recover next poll.
+- `dashboard_server._build_portfolio_block` val/gene branch now prefers
+  `_acct.equity` over the static floor when an Alpaca snapshot is
+  available. Day P/L is derived from `equity - last_equity` when both are
+  non-zero, else falls back to the trade_history sum (preserves render in
+  edge cases like brand-new accounts where `last_equity` is 0).
+- Graceful fallback to the legacy floor + day_pnl math when:
+  - `<PID>_ALPACA_PAPER_KEY` / `_SECRET` are unset or trivially short
+    (e.g. Gene's current `GENE_ALPACA_KEY=' '` placeholder);
+  - the `alpaca-py` import fails;
+  - the `get_account()` call raises;
+  - the account is `account_blocked`.
+- The `main` book is unaffected: its equity is still the
+  `paper_cash + long_mv - short_liab` math driven by the in-process
+  paper-trading state.
+
+Operational notes:
+- Val's strip will now show his real Alpaca paper equity / day P/L once
+  v7.0.2 deploys (creds already set in Railway).
+- Gene's strip will continue showing the static $100k baseline until
+  Val provisions `GENE_ALPACA_PAPER_KEY` and `GENE_ALPACA_PAPER_SECRET`
+  on Railway (currently only a 1-char `GENE_ALPACA_KEY` placeholder is
+  set).
+
+### 2. Recursive strike unlock when all closed strikes are positive
+
+Layered on top of v5.19.1's STRIKE-CAP-3. The default per-ticker cap of
+3 strikes per day still applies, but it lifts recursively when every
+closed strike on the ticker has finished with net P/L strictly > 0.
+
+- `_v570_strike_pnl: dict[(ticker_upper, strike_num)] -> float` accumulates
+  every TRADE_CLOSED's `pnl_dollars` into the matching strike's running
+  total. Multiple partial exits sum into one strike's net P/L.
+- `_v702_all_closed_strikes_positive(ticker)` returns True iff strikes
+  1..N (where N = current per-ticker strike count) all have recorded
+  P/L > 0. Returns False on N == 0, on any missing strike, or on any
+  P/L <= 0 (breakeven $0 does NOT count as positive).
+- `strike_entry_allowed`: the `>= 3` block now skips when
+  `_v702_all_closed_strikes_positive` is True, allowing strike 4 (and 5,
+  6, ... while every closed strike stays positive).
+- `_v570_record_entry`: the matching defensive raise (`STRIKE-CAP-3 reached`)
+  is gated by the same predicate so the hot path agrees with the gate.
+- `_v561_log_trade_closed`: now folds each exit's `pnl_dollars` into
+  `_v702_record_strike_pnl(ticker, strike_num, pnl_dollars)` so the
+  predicate has fresh data before the next entry check fires.
+- Session boundary: `_v570_reset_if_new_session` clears `_v570_strike_pnl`
+  alongside `_v570_strike_counts` so yesterday's positive run does not
+  seed today's unlock state.
+- STRIKE-FLAT-GATE is unchanged and still applies independently.
+
+Design notes:
+- Strict `> 0` (not `>= 0`): a $0.00 close re-anchors the cap.
+- Recursive (not one-shot): strike 5 unlocks after 1..4 positive,
+  strike 6 after 1..5 positive, etc. Mirrors the v5.7.0 "unlimited Titan
+  strikes" philosophy but gated on actual P/L evidence per attempt.
+- Per-ticker (long+short combined): matches the existing STRIKE-CAP-3
+  scope. A ticker that mixed a positive long strike and a positive
+  short strike has "all closed strikes positive".
+- No env flag: behavior is hard-on by request.
+
+### Tests added
+
+- `tests/test_v7_0_2_alpaca_per_book_equity.py` (11 tests): helper
+  resolution, cache, exception path, integration with
+  `_build_portfolio_block`.
+- `tests/test_v7_0_2_strike_recursion.py` (13 tests): cap preserved
+  when no closes recorded, blocked on any negative or zero close,
+  unlocks on three winners, recursive 4 -> 5, breaks on first
+  negative after unlock, partial-exit accumulation (positive and
+  negative), per-ticker isolation, long+short share history,
+  session-boundary reset, defensive validation, missing-pnl
+  fail-safe.
+
+Files touched: `bot_version.py`, `trade_genius.py`,
+`dashboard_server.py`, `CHANGELOG.md`,
+`tests/test_v7_0_2_alpaca_per_book_equity.py`,
+`tests/test_v7_0_2_strike_recursion.py`.
+
+---
+
 ## v7.0.1 (2026-05-06) -- per-book post-loss cooldown registry
 
 Hotfix on top of v7.0.0 to make the val/gene strip cooldown counters in the
