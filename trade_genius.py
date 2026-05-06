@@ -64,6 +64,19 @@ import telegram_ui  # noqa: E402
 # missing Dockerfile COPY surfaces as ImportError at boot.
 import broker  # noqa: E402
 
+# v6.16.1 — earnings_watcher: pre/post-market DMI runaway-capture engine.
+# Gated behind EARNINGS_WATCHER_ENABLED=1 env var. The RTH core is NOT
+# touched; this is a pure add-on. Import failures are caught and logged;
+# the flag is set to False so the bot continues running without it.
+EARNINGS_WATCHER_ENABLED = os.getenv("EARNINGS_WATCHER_ENABLED", "0") == "1"
+if EARNINGS_WATCHER_ENABLED:
+    try:
+        from earnings_watcher import runner as _ew_runner
+        logger.info("[EW] earnings_watcher enabled (v6.16.1)")
+    except Exception as _ew_exc:
+        logger.error("[EW] import failed, disabling: %s", _ew_exc)
+        EARNINGS_WATCHER_ENABLED = False
+
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
     CommandHandler, ContextTypes, TypeHandler,
@@ -6411,7 +6424,13 @@ def scheduler_thread():
         ("daily", "15:49", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
+        # v6.16.1 \u2014 earnings_watcher BMO/AMC cycles (only fire if flag enabled)
+        ("daily", "04:00", lambda: _ew_runner.run_premarket_cycle() if EARNINGS_WATCHER_ENABLED else None),
+        ("daily", "16:00", lambda: _ew_runner.run_afterhours_cycle() if EARNINGS_WATCHER_ENABLED else None),
     ]
+
+    # v6.16.1 \u2014 earnings_watcher exit monitoring tracker
+    last_ew_exit_check = _now_et()
 
     logger.info("Scheduler started \u2014 market times ET, display CDT (UTC offset: %s)",
                 datetime.now(timezone.utc).strftime("%z"))
@@ -6484,6 +6503,14 @@ def scheduler_thread():
             threading.Thread(
                 target=gap_detect_task, daemon=True, name="gap_detect"
             ).start()
+
+        # v6.16.1 \u2014 earnings_watcher exit cycle: runs every 60 s
+        if EARNINGS_WATCHER_ENABLED and (now_et - last_ew_exit_check).total_seconds() >= 60:
+            last_ew_exit_check = now_et
+            try:
+                _ew_runner.run_exit_cycle()
+            except Exception as e:
+                logger.warning("[EW] exit cycle error: %s", e)
 
         time.sleep(30)
 
