@@ -1280,3 +1280,42 @@ async def cmd_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Unknown sub-command — show usage.
     await update.message.reply_text(_TICKER_USAGE, reply_markup=_menu_button())
+
+
+# v6.18.0 \u2014 daily market-expectations brief
+async def cmd_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pre-open market brief: EW universe, macro snapshot, movers, catalysts.
+
+    Builder lives in market_brief.py so the same payload can be fired from
+    the daily 7:00 CT scheduler entry without going through the Telegram
+    command surface.
+    """
+    t0 = asyncio.get_event_loop().time()
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    prog = await update.message.reply_text("\u23f3 Building brief...")
+    loop = asyncio.get_event_loop()
+    try:
+        from market_brief import build_market_brief
+
+        text = await loop.run_in_executor(
+            None, build_market_brief, BOT_VERSION, os.environ.get("FMP_API_KEY", "")
+        )
+    except Exception as exc:
+        logger.exception("cmd_brief: build failed")
+        try:
+            await prog.edit_text("\u26a0\ufe0f Brief failed: %s" % str(exc)[:120])
+        except Exception:
+            pass
+        return
+    try:
+        if len(text) > 3800:
+            await prog.delete()
+            await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
+        else:
+            await prog.edit_text(text, reply_markup=_menu_button())
+    except Exception:
+        try:
+            await update.message.reply_text(text, reply_markup=_menu_button())
+        except Exception:
+            pass
+    logger.info("CMD brief completed in %.2fs", asyncio.get_event_loop().time() - t0)
