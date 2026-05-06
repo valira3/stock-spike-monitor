@@ -160,6 +160,84 @@ def _rehydrate_runtime_caches(pos_map):
         )
 
 
+# ---------------------------------------------------------------------------
+# v7.0.0 Phase 2.5 \u2014 ratchet serialize / restore helpers
+# ---------------------------------------------------------------------------
+
+def _get_main_book():
+    """Return the PORTFOLIO_MAIN PortfolioBook (lazy import, never raises)."""
+    try:
+        from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+        return PORTFOLIOS.get(PORTFOLIO_MAIN)
+    except Exception:
+        return None
+
+
+def _ratchet_long_for_save() -> dict:
+    """Serialize prior_legs_max_high_long to a JSON-safe dict.
+
+    Tuple keys (portfolio_id, ticker) become lists in JSON;
+    _ratchet_restore converts them back on load.
+    """
+    book = _get_main_book()
+    if book is None:
+        return {}
+    try:
+        # Use str(key) as the JSON key so round-tripping is unambiguous.
+        # Format: "portfolio_id|TICKER" for easy parsing on load.
+        return {
+            "%s|%s" % (k[0], k[1]): v
+            for k, v in book.prior_legs_max_high_long.items()
+        }
+    except Exception:
+        return {}
+
+
+def _ratchet_short_for_save() -> dict:
+    """Serialize prior_legs_min_low_short to a JSON-safe dict."""
+    book = _get_main_book()
+    if book is None:
+        return {}
+    try:
+        return {
+            "%s|%s" % (k[0], k[1]): v
+            for k, v in book.prior_legs_min_low_short.items()
+        }
+    except Exception:
+        return {}
+
+
+def _ratchet_restore(state: dict) -> None:
+    """Restore ratchet dicts from a loaded state dict.
+
+    Uses .clear() + .update() to preserve dict identity on the book
+    so any direct references remain valid after a mid-day restart.
+    """
+    book = _get_main_book()
+    if book is None:
+        return
+    try:
+        raw_long = state.get("ratchet_long") or {}
+        raw_short = state.get("ratchet_short") or {}
+
+        def _parse_kv(raw: dict) -> dict:
+            out = {}
+            for k_str, v in raw.items():
+                try:
+                    pid, ticker = k_str.split("|", 1)
+                    out[(pid, ticker)] = float(v)
+                except Exception:
+                    pass
+            return out
+
+        book.prior_legs_max_high_long.clear()
+        book.prior_legs_max_high_long.update(_parse_kv(raw_long))
+        book.prior_legs_min_low_short.clear()
+        book.prior_legs_min_low_short.update(_parse_kv(raw_short))
+    except Exception as _re:
+        logger.warning("ratchet_restore failed: %s", _re)
+
+
 def save_paper_state():
     """Persist paper trading + strategy state to disk. Thread-safe, atomic."""
     tg = _tg()
@@ -226,6 +304,12 @@ def save_paper_state():
             # from the slower 5-minute cadence here. v5_active_direction
             # is small + cheap and stays in JSON.
             "v5_active_direction": dict(getattr(tg, "v5_active_direction", {})),
+            # v7.0.0 Phase 2.5 \u2014 persist ratchet dicts so they survive a
+            # mid-day restart.  Keys are (portfolio_id, ticker) tuples;
+            # json.dump serializes them as lists, load_paper_state restores
+            # them back to tuples.
+            "ratchet_long": _ratchet_long_for_save(),
+            "ratchet_short": _ratchet_short_for_save(),
             "saved_at": tg._utc_now_iso(),
         }
         # v7.0.0 Phase 3 -- write to the new canonical path (paper_state_main.json).
@@ -422,6 +506,12 @@ def load_paper_state():
             tg.v5_short_tracks.clear()
             tg.v5_active_direction.clear()
 
+        # v7.0.0 Phase 2.5 \u2014 restore ratchet dicts (survive mid-day restart).
+        # Must happen BEFORE the daily-reset check so the dicts are populated
+        # for the same-day case; the daily-reset block below will clear them
+        # when the saved date differs from today.
+        _ratchet_restore(state)
+
         # Reset daily counts if saved on a different day
         today = tg._now_et().strftime("%Y-%m-%d")
         if tg.daily_entry_date != today:
@@ -430,6 +520,11 @@ def load_paper_state():
             tg.paper_trades.clear()
             tg._trading_halted = False
             tg._trading_halted_reason = ""
+            # v7.0.0 Phase 2.5 \u2014 new trading day: reset ratchet dicts.
+            _book = _get_main_book()
+            if _book is not None:
+                _book.prior_legs_max_high_long.clear()
+                _book.prior_legs_min_low_short.clear()
 
         _state_loaded = True
         logger.info(
@@ -508,4 +603,9 @@ def _do_reset_paper():
         persistence.replace_all_tracks({}, {})
     except Exception as e:
         logger.warning("paper reset: SQLite track clear failed: %s", e)
+    # v7.0.0 Phase 2.5 \u2014 reset ratchet dicts on full paper-book reset.
+    _book = _get_main_book()
+    if _book is not None:
+        _book.prior_legs_max_high_long.clear()
+        _book.prior_legs_min_low_short.clear()
     save_paper_state()

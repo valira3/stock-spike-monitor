@@ -74,6 +74,15 @@ class PortfolioBook:
         self.v5_short_tracks: dict = {}
         self.v5_active_direction: dict = {}
 
+        # --- v7.0.0 Phase 2.5: per-book session ratchet dicts (Eugene's rule) ---
+        # Keys: (portfolio_id, ticker).  Cleared on EOD daily reset via paper_state.
+        # prior_legs_max_high_long[key] = highest intra-leg high across all closed
+        # LONG legs today for (portfolio_id, ticker).
+        # prior_legs_min_low_short[key] = lowest intra-leg low across all closed
+        # SHORT legs today for (portfolio_id, ticker).
+        self.prior_legs_max_high_long: dict[tuple[str, str], float] = {}
+        self.prior_legs_min_low_short: dict[tuple[str, str], float] = {}
+
         # --- Scalar fields (Phase 1: kept as module-level globals in trade_genius; ---
         # --- these mirror defaults; authoritative values live in trade_genius.py)  ---
         self.daily_entry_date: str = ""
@@ -166,6 +175,110 @@ class PortfolioBook:
         )
 
         return fresh
+
+    # ------------------------------------------------------------------
+    # v7.0.0 Phase 2.5: session ratchet \u2014 Eugene's re-entry HOD/LOD rule.
+    # record_exit updates the ratchet after each leg closes.
+    # re_entry_ratchet_ok gates a new Entry-1 attempt.
+    # ------------------------------------------------------------------
+
+    def record_exit(
+        self,
+        ticker: str,
+        side: str,
+        leg_high: Optional[float] = None,
+        leg_low: Optional[float] = None,
+    ) -> None:
+        """Update the session ratchet after a leg closes.
+
+        For LONG legs, track the running maximum of each leg's intra-bar high
+        (via leg_high = v531_max_favorable_price on exit).  For SHORT legs,
+        track the running minimum of each leg's intra-bar low.  Idempotent;
+        no-ops gracefully when the relevant extreme is None.
+
+        Args:
+            ticker:   Ticker symbol (case-insensitive).
+            side:     'LONG' or 'SHORT' (case-insensitive).
+            leg_high: Intra-leg high for a LONG position (v531_max_favorable_price).
+            leg_low:  Intra-leg low for a SHORT position (v531_max_favorable_price).
+        """
+        ticker_u = str(ticker).upper()
+        side_u = str(side).upper()
+        key = (self.portfolio_id, ticker_u)
+
+        if side_u == "LONG" and leg_high is not None:
+            prior = self.prior_legs_max_high_long.get(key)
+            new = max(prior, float(leg_high)) if prior is not None else float(leg_high)
+            self.prior_legs_max_high_long[key] = new
+            logger.info(
+                "[V700-RATCHET] %s LONG ratchet %.2f -> %.2f (leg_high=%.2f)",
+                ticker_u,
+                prior if prior is not None else float("nan"),
+                new,
+                float(leg_high),
+            )
+        elif side_u == "SHORT" and leg_low is not None:
+            prior = self.prior_legs_min_low_short.get(key)
+            new = min(prior, float(leg_low)) if prior is not None else float(leg_low)
+            self.prior_legs_min_low_short[key] = new
+            logger.info(
+                "[V700-RATCHET] %s SHORT ratchet %.2f -> %.2f (leg_low=%.2f)",
+                ticker_u,
+                prior if prior is not None else float("nan"),
+                new,
+                float(leg_low),
+            )
+        # If the relevant extreme is None, no-op (defensive).
+
+    def re_entry_ratchet_ok(
+        self,
+        ticker: str,
+        side: str,
+        current_high: Optional[float] = None,
+        current_low: Optional[float] = None,
+    ) -> tuple:
+        """Check whether a new Entry-1 clears the session ratchet.
+
+        For the first leg of the day (no prior ratchet), always returns
+        (True, None) so standard NHOD/NLOD logic governs.  For subsequent
+        legs the new extreme must push strictly past every prior leg's
+        extreme: current_high > prior_max_high (LONG) or current_low <
+        prior_min_low (SHORT).
+
+        Returns:
+            (True, None) if the gate passes or cannot be evaluated.
+            (False, detail_str) if the gate rejects the entry.
+        """
+        ticker_u = str(ticker).upper()
+        side_u = str(side).upper()
+        key = (self.portfolio_id, ticker_u)
+
+        if side_u == "LONG":
+            ratchet = self.prior_legs_max_high_long.get(key)
+            if ratchet is None:
+                return (True, None)  # first leg \u2014 no prior ratchet
+            if current_high is None:
+                return (True, None)  # can't check; pass through defensively
+            if float(current_high) > ratchet:
+                return (True, None)
+            return (
+                False,
+                "current_high=%.2f prior_max_high=%.2f" % (float(current_high), ratchet),
+            )
+        elif side_u == "SHORT":
+            ratchet = self.prior_legs_min_low_short.get(key)
+            if ratchet is None:
+                return (True, None)  # first leg \u2014 no prior ratchet
+            if current_low is None:
+                return (True, None)  # can't check; pass through defensively
+            if float(current_low) < ratchet:
+                return (True, None)
+            return (
+                False,
+                "current_low=%.2f prior_min_low=%.2f" % (float(current_low), ratchet),
+            )
+        # Unknown side \u2014 pass through defensively.
+        return (True, None)
 
 # ---------------------------------------------------------------------------
 # v7.0.0 Phase 3 -- PortfolioRegistry

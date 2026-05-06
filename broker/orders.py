@@ -416,7 +416,7 @@ def check_breakout(ticker, side):
 
     or_edge_val = or_dict[ticker]
     pdc_val_e = tg.pdc[ticker]
-    # v6.1.0 — ATR-normalized OR-break check (replaces fixed-cents tiger-2-bar).
+    # v6.1.0 \u2014 ATR-normalized OR-break check (replaces fixed-cents tiger-2-bar).
     # When _V610_ATR_OR_BREAK_ENABLED is True, break uses k*ATR threshold.
     # Legacy _tiger_two_bar_long/short is preserved as the fallback path.
     if cfg.side.is_long:
@@ -556,7 +556,7 @@ def check_breakout(ticker, side):
         boundary_high = _sess_hod if _sess_hod is not None else or_high_val
         boundary_low = _sess_lod if _sess_lod is not None else or_low_val
     else:
-        # v6.1.0 — Strike 1: apply ATR-normalized threshold when enabled.
+        # v6.1.0 \u2014 Strike 1: apply ATR-normalized threshold when enabled.
         # The boundary hold gate compares closes strictly against boundary_high
         # (LONG) / boundary_low (SHORT).  Shifting the boundary by k*ATR
         # tightens or loosens the required extension before firing.
@@ -581,7 +581,7 @@ def check_breakout(ticker, side):
                 _v610_e,
             )
 
-    # v6.1.0 — late-OR window: update the late-OR range when inside
+    # v6.1.0 \u2014 late-OR window: update the late-OR range when inside
     # 11:00-12:00 ET and the standard break has not yet fired.
     try:
         if getattr(tg, "V610_LATE_OR_ENABLED", False):
@@ -855,6 +855,35 @@ def check_breakout(ticker, side):
         )
         _vol_ok = True
 
+    # v7.0.0 Phase 2.5 \u2014 ratchet gate (Eugene's rule).
+    # Placed AFTER the volume gate and BEFORE evaluate_entry_1_decision.
+    # The first leg of the day passes through (no prior ratchet);
+    # subsequent Entry-1 attempts must push current_high (LONG) or
+    # current_low (SHORT) strictly past every prior leg's extreme.
+    try:
+        _highs_r = (bars or {}).get("highs") or []
+        _lows_r  = (bars or {}).get("lows") or []
+        _cur_high_for_ratchet = _highs_r[-1] if _highs_r else current_price
+        _cur_low_for_ratchet  = _lows_r[-1]  if _lows_r  else current_price
+        from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+        _ratchet_book_e1 = PORTFOLIOS.get(PORTFOLIO_MAIN)
+        _ratchet_ok, _ratchet_detail = _ratchet_book_e1.re_entry_ratchet_ok(
+            ticker, side_label,
+            current_high=_cur_high_for_ratchet,
+            current_low=_cur_low_for_ratchet,
+        )
+    except Exception:
+        _ratchet_ok, _ratchet_detail = True, None
+    if not _ratchet_ok:
+        tg._v561_log_skip(
+            ticker=ticker,
+            reason="V5100_ENTRY1:re_entry_ratchet",
+            ts_utc=tg._utc_now_iso(),
+            gate_state=None,
+        )
+        _emit_decision("SKIP:V5100_ENTRY1:re_entry_ratchet")
+        return False, None
+
     entry1_decision = tg.eot_glue.evaluate_entry_1_decision(
         ticker,
         side_label,
@@ -888,7 +917,7 @@ def check_breakout(ticker, side):
         )
     except Exception:
         pass
-    # v6.1.0 — mark standard OR break as fired for this ticker so the
+    # v6.1.0 \u2014 mark standard OR break as fired for this ticker so the
     # late-OR window (V610_LATE_OR_ENABLED) does not re-evaluate.
     try:
         tg._v610_or_break_fired[ticker] = True
@@ -1023,7 +1052,7 @@ def execute_breakout(ticker, current_price, side):
     if not _cancel_first_guard(ticker, _side_label):
         return
 
-    # v6.6.0 Pillar C — ingest gate check (after post-loss cooldown, before order build)
+    # v6.6.0 Pillar C \u2014 ingest gate check (after post-loss cooldown, before order build)
     # Decision P2: two-state only (ALLOW/BLOCK). Default dry_run=True; never blocks in v6.6.0.
     # Decision A5: enforce flip requires Val+Devi+Reese sign-off via v6.6.1.
     try:
@@ -1658,6 +1687,21 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
         _clear_trade_hvp(ticker, _close_side_label)
     except Exception:
         pass
+
+    # v7.0.0 Phase 2.5 \u2014 record this leg's extreme into the session ratchet
+    # so subsequent Entry-1 attempts must push past the prior leg's extreme
+    # (Eugene's rule: 2nd and 3rd strikes have to be on a new HOD/LOD).
+    try:
+        from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+        _ratchet_book = PORTFOLIOS.get(PORTFOLIO_MAIN)
+        _max_fav = pos.get("v531_max_favorable_price")
+        if cfg.side.is_long:
+            _ratchet_book.record_exit(ticker, "LONG", leg_high=_max_fav)
+        else:
+            _ratchet_book.record_exit(ticker, "SHORT", leg_low=_max_fav)
+    except Exception:
+        pass  # never let ratchet bookkeeping block an exit
+
     entry_price = pos["entry_price"]
     shares = pos["shares"]
     pnl_val = cfg.realized_pnl(entry_price, price, shares)
