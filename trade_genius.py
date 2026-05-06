@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.0.5"
+BOT_VERSION = "7.0.6"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -1228,12 +1228,15 @@ _QQQ_REGIME_LAST_BUCKET = None  # epoch_seconds // 300 of last seen close
 # v6.11.0 \u2014 SPY Regime Classifier (C25 short amplification gate).
 import spy_regime  # noqa: E402
 _SPY_REGIME = spy_regime.SpyRegime()
-# v6.15.3 \u2014 once-per-process latch so the bar-archive backfill is only
-# attempted on the first _qqq_weather_tick after cold start. The backfill
-# is a no-op when the regime is already classified, but the file IO check
-# is wasted work after the first invocation \u2014 the latch keeps the hot
-# loop clean.
-_SPY_REGIME_BACKFILL_ATTEMPTED = False
+# v7.0.6 \u2014 backfill is now idempotent (no-op once regime is
+# classified) and called on its own cadence from engine.scan, so no
+# single-shot latch is needed. The previous _SPY_REGIME_BACKFILL_ATTEMPTED
+# latch was load-bearing in a bad way: a premarket first-tick (before the
+# 0930 anchor existed in the archive) would burn the latch on a False
+# return and lock the deploy out of regime classification for the whole
+# session. The fix: gate on `_SPY_REGIME.regime is None` instead, which
+# self-disables once classification succeeds and self-retries every cycle
+# until then. See bug analysis on PR introducing _spy_regime_maybe_backfill.
 
 # v5.31.5 \u2014 per-stock local weather cache. Mirrors _QQQ_REGIME but
 # keyed by ticker so the local-override gate can read each stock's own
@@ -1313,19 +1316,11 @@ def _qqq_weather_tick():
             except Exception:
                 pass
             # v6.11.0 \u2014 advance SPY regime classifier for C25 amp gate.
-            # v6.15.3 \u2014 on the first weather tick of the process,
-            # try to backfill today's 09:30/10:00 anchors from the SPY
-            # bar archive. Closes the deploy-storm hole where a mid-
-            # session restart loses the in-memory anchors and leaves
-            # regime=None for the rest of the day (see 2026-05-05).
-            global _SPY_REGIME_BACKFILL_ATTEMPTED
-            try:
-                if not _SPY_REGIME_BACKFILL_ATTEMPTED:
-                    _SPY_REGIME_BACKFILL_ATTEMPTED = True
-                    if _SPY_REGIME.regime is None:
-                        _SPY_REGIME.backfill_from_bars(_now_et())
-            except Exception as _spy_bf_err:
-                logger.warning("[V6153-BACKFILL] spy_regime backfill error: %s", _spy_bf_err)
+            # v7.0.6 \u2014 backfill moved to its own cycle hook
+            # (_spy_regime_maybe_backfill) so it runs on every scan cycle
+            # regardless of whether the QQQ 5m bucket has rolled and
+            # regardless of whether forensic_capture imports cleanly. The
+            # backfill itself is idempotent (no-op once regime is set).
             try:
                 if _spy_last_v is not None:
                     _SPY_REGIME.tick(_now_et(), _spy_last_v)
@@ -1343,10 +1338,45 @@ def _qqq_weather_tick():
                 breadth=globals().get("_current_breadth"),
                 rsi_regime=globals().get("_current_rsi_regime"),
             )
-        except Exception:
-            pass
+        except Exception as _macro_err:
+            # v7.0.6 \u2014 was 'except: pass' which silently buried any
+            # macro snapshot or import failure (and previously buried the
+            # backfill alongside it). Log at WARNING so a real failure is
+            # visible in Railway logs without breaking the scan cycle.
+            logger.warning(
+                "[macro] snapshot/regime tick error: %s", _macro_err
+            )
     except Exception as _e:
         logger.warning("[regime] qqq weather tick error: %s", _e)
+
+
+def _spy_regime_maybe_backfill():
+    """v7.0.6 \u2014 idempotent SPY regime backfill cycle hook.
+
+    Called once per scan cycle from engine.scan. Returns immediately if
+    the regime is already classified, so the steady-state cost is one
+    attribute read. When the regime IS None (cold start, mid-session
+    deploy, daily reset), attempts to reconstruct today's 09:30 + 10:00
+    anchors from the SPY bar archive at $BAR_ARCHIVE_BASE/<date>/SPY.jsonl.
+
+    Why this exists separately from _qqq_weather_tick: prior to v7.0.6
+    the backfill was nested inside the QQQ-bucket-advance branch AND
+    inside the macro-snapshot try, AND gated on a single-shot latch.
+    All three conditions had to align for the backfill to fire, and
+    they often didn't (see the 2026-05-06 production miss where the
+    log marker was completely absent for the entire session).
+
+    Self-disables once classification succeeds. Logs every transition
+    via the V6153-BACKFILL marker.
+    """
+    try:
+        if _SPY_REGIME.regime is not None:
+            return  # already classified \u2014 nothing to do
+        _SPY_REGIME.backfill_from_bars(_now_et())
+    except Exception as _spy_bf_err:
+        logger.warning(
+            "[V6153-BACKFILL] spy_regime backfill error: %s", _spy_bf_err
+        )
 
 
 _v590_qqq_regime_tick = _qqq_weather_tick
@@ -6450,18 +6480,13 @@ def reset_daily_state():
     # PDC regime alert. v5.26.0 \u2014 RSI regime classifier deleted.
 
     # v6.11.0 \u2014 C25 SPY regime daily reset so each session classifies fresh.
+    # v7.0.6 \u2014 the cold-start backfill latch was removed; the new
+    # _spy_regime_maybe_backfill cycle hook is idempotent and self-retries
+    # whenever regime is None, so no extra reset bookkeeping is needed here.
     try:
         _SPY_REGIME.daily_reset()
     except Exception:
         logger.exception("reset_daily_state: _SPY_REGIME.daily_reset failed")
-    # v6.15.3 \u2014 reset the cold-start backfill latch so a long-running
-    # process gets a fresh attempt at the next session boundary (e.g. if
-    # the bar archive was repaired overnight).
-    try:
-        global _SPY_REGIME_BACKFILL_ATTEMPTED
-        _SPY_REGIME_BACKFILL_ATTEMPTED = False
-    except Exception:
-        logger.exception("reset_daily_state: _SPY_REGIME_BACKFILL_ATTEMPTED reset failed")
 
 
 # ============================================================
