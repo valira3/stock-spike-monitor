@@ -64,6 +64,19 @@ import telegram_ui  # noqa: E402
 # missing Dockerfile COPY surfaces as ImportError at boot.
 import broker  # noqa: E402
 
+# v6.16.1 — earnings_watcher: pre/post-market DMI runaway-capture engine.
+# Gated behind EARNINGS_WATCHER_ENABLED=1 env var. The RTH core is NOT
+# touched; this is a pure add-on. Import failures are caught and logged;
+# the flag is set to False so the bot continues running without it.
+EARNINGS_WATCHER_ENABLED = os.getenv("EARNINGS_WATCHER_ENABLED", "0") == "1"
+if EARNINGS_WATCHER_ENABLED:
+    try:
+        from earnings_watcher import runner as _ew_runner
+        logger.info("[EW] earnings_watcher enabled (v6.16.1)")
+    except Exception as _ew_exc:
+        logger.error("[EW] import failed, disabling: %s", _ew_exc)
+        EARNINGS_WATCHER_ENABLED = False
+
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
     CommandHandler, ContextTypes, TypeHandler,
@@ -90,7 +103,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "6.16.0"
+BOT_VERSION = "6.16.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -6411,7 +6424,14 @@ def scheduler_thread():
         ("daily", "15:49", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
+        # v6.16.1 — earnings_watcher: single-shot entries REMOVED.
+        # BMO/AMC cycles driven by the minute-by-minute window loop below.
     ]
+
+    # v6.16.1 \u2014 earnings_watcher exit monitoring tracker
+    last_ew_exit_check = _now_et()
+    # v6.16.1 — earnings_watcher window cycle tracker (minute-by-minute)
+    last_ew_window_check = _now_et() - timedelta(seconds=61)
 
     logger.info("Scheduler started \u2014 market times ET, display CDT (UTC offset: %s)",
                 datetime.now(timezone.utc).strftime("%z"))
@@ -6484,6 +6504,28 @@ def scheduler_thread():
             threading.Thread(
                 target=gap_detect_task, daemon=True, name="gap_detect"
             ).start()
+
+        # v6.16.1 \u2014 earnings_watcher exit cycle: runs every 60 s
+        if EARNINGS_WATCHER_ENABLED and (now_et - last_ew_exit_check).total_seconds() >= 60:
+            last_ew_exit_check = now_et
+            try:
+                _ew_runner.run_exit_cycle()
+            except Exception as e:
+                logger.warning("[EW] exit cycle error: %s", e)
+
+        # v6.16.1 — earnings_watcher window cycle: re-evaluate every 60 s
+        # during active pre-market (04:00-09:29 ET) and after-hours (16:00-20:00 ET) windows
+        if EARNINGS_WATCHER_ENABLED:
+            now_hhmm = now_et.strftime("%H:%M")
+            in_premarket = "04:00" <= now_hhmm <= "09:29" and now_et.weekday() < 5
+            in_afterhours = "16:00" <= now_hhmm <= "20:00" and now_et.weekday() < 5
+            if (in_premarket or in_afterhours) and (now_et - last_ew_window_check).total_seconds() >= 60:
+                last_ew_window_check = now_et
+                try:
+                    window = "premarket" if in_premarket else "afterhours"
+                    _ew_runner.run_window_cycle(window)
+                except Exception as e:
+                    logger.warning("[EW] window cycle error: %s", e)
 
         time.sleep(30)
 
