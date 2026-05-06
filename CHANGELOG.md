@@ -4,6 +4,109 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.0.7 (2026-05-06) -- SPY regime backtest parity (tick decoupling + canonical archive bucket backfill)
+
+Backtest-parity fix. Following v7.0.6 which fixed the SPY regime backfill wiring
+in production, this release fixes the SAME class of architectural bug for the
+backtest replay path \u2014 plus a one-time canonical-archive data fix.
+
+### Three blockers found in the replay harness, all repaired
+
+1. **`_SPY_REGIME.tick()` was nested inside `_qqq_weather_tick`'s
+   QQQ-bucket-advance branch.** The tick fires only when a 5m QQQ bucket rolls.
+   In production this works because pre-market QQQ buckets stream via websocket,
+   so the 09:30 RTH bucket appears as a roll. In replay the canonical archive
+   is RTH-only (390 bars per day, 09:30 to 16:00) \u2014 at 09:30 the first 5m
+   bucket is still forming, `compute_5m_ohlc_and_ema9` drops the forming bucket,
+   returns None, and `_qqq_weather_tick` early-returns. The first SPY tick
+   lands at 09:35, past the 09:30 anchor capture window. **Fix:** extract
+   `_spy_regime_maybe_tick()` as a module-level function and wire it from
+   `engine.scan.scan_loop` on its own per-cycle cadence (mirrors the v7.0.6
+   backfill split). Idempotent and self-skips once classified, so live behavior
+   is unchanged.
+
+2. **`scan_loop` early-returns at `before_open` (now_et < 09:35 ET) before any
+   cycle hooks fire.** Even after the tick decoupling, the 09:30 capture minute
+   was still missed because the scan loop returned in the pre-open branch.
+   **Fix:** wire both `_spy_regime_maybe_tick()` and `_spy_regime_maybe_backfill()`
+   into the pre-open branch BEFORE its early return, so the 09:30 RTH-archive
+   scan also calls them. Both are idempotent, fail-closed, and self-skip
+   outside their capture windows.
+
+3. **Canonical replay archive had `et_bucket: null` on every bar.** The
+   v6.15.3 backfill scans for `bucket=='0930'` / `'1000'` in the SPY JSONL,
+   so even after the wiring fix above, an unclassified mid-session restart
+   could not recover anchors from the archive during replay (every match
+   missed). **Fix:** new tool `tools/backfill_canonical_et_bucket.py` walks
+   every `replay_layout/<date>/<TICKER>.jsonl`, recomputes `et_bucket` from
+   `ts` using the production helper `ingest.algo_plus._compute_et_bucket`,
+   and rewrites in place. Idempotent. The writable copy of the canonical
+   archive lives at `canonical_backtest_data_v707/replay_layout/`; one-time
+   bucket backfill applied (2,075 files, ~809k bars touched).
+
+### Replay default start time moved 09:35 -> 09:30 ET
+
+`backtest.replay_v511_full.run_replay` default `start_hhmm` changed from
+`(9, 35)` to `(9, 30)` so the live `tick()` path's `hh==9 mm==30` anchor capture
+branch can actually fire during replay. Pre-OR scans (09:30 to 09:35) are
+no-ops at the entry-gate level (`or_not_set`), and `collect_or` still seeds at
+09:36 via the explicit harness call \u2014 so the new window is a strict
+superset of the old with zero spurious entries.
+
+### Impact
+
+Before this release, every backtest sweep run since v6.11.0 (when the V611
+regime-B short-amplification gate was introduced) had `_SPY_REGIME.regime=None`
+for the entire 84-day corpus. The V611 amplification gate at
+`broker/orders.py:1000` (`if not regime.is_regime_b(): return shares`) was
+silently inactive in every short-pair sweep variant, biasing all short P/L
+results low vs production. Backtest-vs-live parity is now restored.
+
+### Tests
+
+- New: `tests/test_v7_0_7_spy_regime_tick_wiring.py` (9 tests)
+  - Module-level function existence + idempotency under classified state.
+  - Fail-closed under fetch exceptions and missing/empty bars.
+  - Wiring guard: `engine.scan` must call the new tick AND existing backfill
+    hooks BOTH inside the pre-open branch AND after the RTH guards.
+  - Replay default `start_hhmm` regression guard.
+  - Canonical bucket backfill tool existence + helper-reuse guard.
+- Existing v7.0.6 wiring tests: 8 pass.
+- Existing v6.15.3 backfill unit tests: 13 pass.
+- Existing v6.11.0 regime-B suite: 12 pass, 1 skip (live-only).
+- Smoke replay on 2026-03-09 (regime-B day, post-DST): `_SPY_REGIME.regime=B`,
+  `spy_open_930=667.45`, `spy_close_1000=664.28`, return -0.475%, `is_regime_b()=True`.
+  Pre-fix the same replay produced `regime=None`.
+
+### Files changed
+
+- `trade_genius.py` -- new `_spy_regime_maybe_tick()` module function
+- `engine/scan.py` -- wire tick + backfill into pre-open branch (in addition
+  to the existing post-RTH-guard wiring)
+- `backtest/replay_v511_full.py` -- default `start_hhmm` (9,35) -> (9,30)
+- `tools/backfill_canonical_et_bucket.py` -- new one-shot bucket backfill
+- `tests/test_v7_0_7_spy_regime_tick_wiring.py` -- 9 new wiring tests
+- `bot_version.py` / `trade_genius.py` -- 7.0.6 -> 7.0.7
+- `CHANGELOG.md` -- this entry
+
+### Operational notes
+
+- The canonical archive itself remains read-only at
+  `/home/user/workspace/canonical_backtest_data/84day_2026_sip/replay_layout/`.
+  The bucket-backfilled writable copy is at
+  `/home/user/workspace/canonical_backtest_data_v707/replay_layout/`.
+  Backtest runners should point `--bars-dir` at the v707 copy going forward;
+  the `tradegenius-backtest-runner` skill needs a one-line update to switch
+  the default canonical path. (Tracked separately; this PR does not touch the
+  skill file.)
+- No production behavior change is expected. The new pre-open hook calls fire
+  during the 08:00 to 09:35 window when the live bot is already streaming
+  premarket QQQ buckets; the SPY tick at 09:30 was already firing via the
+  QQQ-roll path. The pre-open hook is therefore a redundant safety net in
+  prod and the primary fix in backtest. Idempotent on both sides.
+
+---
+
 ## v7.0.6 (2026-05-06) -- SPY regime backfill wiring fix
 
 Production bug fix. The v6.15.3 `backfill_from_bars` cold-start recovery for the

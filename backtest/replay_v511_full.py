@@ -1097,10 +1097,19 @@ def run_replay(
     tickers: list[str] | None = None,
     bars_dir: Path | str = Path("/home/user/workspace/today_bars"),
     *,
-    start_hhmm: tuple[int, int] = (9, 35),
+    start_hhmm: tuple[int, int] = (9, 30),
     end_hhmm: tuple[int, int] = (15, 55),
 ) -> ReplayResult:
-    """Drive `engine.scan.scan_loop` per-minute over an archived day."""
+    """Drive `engine.scan.scan_loop` per-minute over an archived day.
+
+    v7.0.7 \u2014 default start moved from (9, 35) to (9, 30) so the
+    live SPY regime ``tick()`` path (which requires ``hh==9 mm==30``
+    to capture ``spy_open_930``) actually fires during replay. Pre-OR
+    scans (09:30 to 09:35) are no-ops at the entry-gate level
+    (``or_not_set``) and ``collect_or`` still seeds at 09:36 via the
+    explicit harness call below, so this is a strict superset of the
+    old window with no spurious entries.
+    """
     bars_dir = Path(bars_dir)
     tickers = list(tickers or DEFAULT_TICKERS)
     universe = tickers + ["QQQ", "SPY"]

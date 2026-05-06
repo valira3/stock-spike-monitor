@@ -232,6 +232,22 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                     logger.warning("[bar] preopen %s: %s", _t_pre, _e_pre)
         except Exception as _e_pre_outer:
             logger.warning("[scan] preopen cycle hook error: %s", _e_pre_outer)
+        # v7.0.7 \u2014 SPY regime tick + backfill before pre-open early
+        # return. The 09:30 anchor capture window falls inside the pre-
+        # open scan path (now_et.minute < 35) which historically returned
+        # before any cycle hooks. The SPY tick hook is idempotent and
+        # self-skips outside the 09:30 / 10:00 capture minutes; calling
+        # it here means a 09:30 RTH-archive scan in production captures
+        # spy_open_930 on the very first eligible cycle, and a backtest
+        # replay starting at 09:30 ET sees the same anchor capture.
+        try:
+            tg._spy_regime_maybe_tick()
+        except Exception as _e:
+            logger.warning("[regime] preopen spy tick error: %s", _e)
+        try:
+            tg._spy_regime_maybe_backfill()
+        except Exception as _e:
+            logger.warning("[regime] preopen spy backfill error: %s", _e)
         return
 
     if before_open or after_close:
@@ -276,6 +292,24 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         tg._spy_regime_maybe_backfill()
     except Exception as _e:
         logger.warning("[regime] spy backfill cycle hook error: %s", _e)
+
+    # v7.0.7 \u2014 SPY regime tick on its own per-minute cadence. Same
+    # rationale as the v7.0.6 backfill split: previously the SPY tick
+    # was nested inside _qqq_weather_tick's QQQ-bucket-advance branch,
+    # which fires only when a 5m bucket rolls. In production that
+    # worked because pre-market QQQ buckets stream via websocket so the
+    # 09:30 RTH bucket is a roll. In backtest replay the canonical
+    # archive is RTH-only (390 bars), the first 5m bucket is still
+    # forming at 09:30 (compute_5m_ohlc_and_ema9 drops the forming
+    # bucket), so the QQQ-roll path's first tick lands at 09:35 \u2014
+    # past the 09:30 anchor capture window. Wiring the tick onto its
+    # own hook makes the live tick() path actually fire at 09:30
+    # without changing live behavior (idempotent, self-skips once
+    # classified).
+    try:
+        tg._spy_regime_maybe_tick()
+    except Exception as _e:
+        logger.warning("[regime] spy tick cycle hook error: %s", _e)
 
     # v5.31.5 \u2014 per-stock local weather cache for the local-override
     # gate and the dashboard's per-stock Weather card. Walks active

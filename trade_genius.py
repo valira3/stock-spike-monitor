@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.0.6"
+BOT_VERSION = "7.0.7"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -1377,6 +1377,43 @@ def _spy_regime_maybe_backfill():
         logger.warning(
             "[V6153-BACKFILL] spy_regime backfill error: %s", _spy_bf_err
         )
+
+
+def _spy_regime_maybe_tick():
+    """v7.0.7 \u2014 per-cycle SPY regime tick decoupled from QQQ buckets.
+
+    Called once per scan cycle from engine.scan. Fetches the latest SPY
+    1m bar's current price and calls ``_SPY_REGIME.tick(now_et, price)``.
+    The tick itself is idempotent: it only writes ``spy_open_930`` /
+    ``spy_close_1000`` when those slots are still None and the clock
+    matches the exact 09:30 / 10:00 capture minute, then classifies.
+
+    Why this exists separately from ``_qqq_weather_tick``: in production
+    the SPY tick worked because pre-market QQQ buckets streamed via
+    websocket, so by 09:30 ET the QQQ 5m bucket roll fired and pulled
+    the SPY tick along with it. In backtest replay the canonical archive
+    is RTH-only (390 bars, 09:30\u201316:00). At 09:30 the first 5m bucket
+    is still forming and ``compute_5m_ohlc_and_ema9`` returns None
+    (drops the newest forming bucket; needs >=2 closed buckets). So the
+    QQQ-roll path's first tick lands at 09:35 \u2014 too late to capture
+    ``spy_open_930``. Wiring the SPY tick onto its own per-minute hook
+    fixes this without touching the live behavior.
+
+    Fail-closed: any exception is logged and swallowed so a transient
+    fetch error can't break the scan cycle.
+    """
+    try:
+        if _SPY_REGIME.regime is not None:
+            return
+        spy_bars = fetch_1min_bars("SPY")
+        if not spy_bars:
+            return
+        spy_last = spy_bars.get("current_price")
+        if spy_last is None:
+            return
+        _SPY_REGIME.tick(_now_et(), spy_last)
+    except Exception as _spy_tk_err:
+        logger.warning("[V611] spy_regime cycle tick error: %s", _spy_tk_err)
 
 
 _v590_qqq_regime_tick = _qqq_weather_tick
