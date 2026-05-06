@@ -201,6 +201,8 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("menu", telegram_commands.cmd_menu))
     # v3.4.32 \u2014 runtime ticker universe management
     app.add_handler(CommandHandler("ticker", telegram_commands.cmd_ticker))
+    # v6.18.0 \u2014 daily pre-open market expectations brief
+    app.add_handler(CommandHandler("brief", telegram_commands.cmd_brief))
 
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))

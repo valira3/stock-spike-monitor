@@ -6073,6 +6073,40 @@ def _fire_system_test(label: str) -> None:
         )
 
 
+# v6.18.0 \u2014 daily pre-open market expectations brief.
+#
+# We register the job at TWO ET times (07:00 and 08:00) because
+# 07:00 CT == 08:00 ET during CDT (~Mar-Nov) but == 07:00 ET during
+# CST (~Nov-Mar). Each registered firing self-gates by checking the
+# real CT hour, so exactly one fires per weekday year-round.
+def _fire_market_brief() -> None:
+    """Build and send the market brief if (and only if) the wall clock in
+    America/Chicago is currently 07:xx. The double registration in JOBS
+    plus this gate makes the daily fire DST-safe.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        now_ct = datetime.now(ZoneInfo("America/Chicago"))
+    except Exception:
+        # If zoneinfo is unavailable assume the scheduler matched on a
+        # CT-equivalent ET wall time and fire \u2014 better than skipping.
+        now_ct = None
+    if now_ct is not None and now_ct.hour != 7:
+        logger.info("market_brief: skipping fire (CT hour=%s, not 7)", now_ct.hour)
+        return
+    try:
+        from market_brief import build_market_brief
+        body = build_market_brief(BOT_VERSION, FMP_API_KEY)
+        send_telegram(body)
+        logger.info("market_brief: sent (%d chars)", len(body))
+    except Exception as exc:
+        logger.exception("market_brief: build/send failed")
+        try:
+            send_telegram("\u26a0\ufe0f Market brief failed: %s" % str(exc)[:120])
+        except Exception:
+            pass
+
+
 # v5.10.1 \u2014 _tiger_hard_eject_check retired. Section V (Triple-Lock stops)
 # in eye_of_tiger.py owns all exit decisions; legacy DI<25 hard-eject and
 # REHUNT_VOL_CONFIRM watches are deleted.
@@ -6422,6 +6456,10 @@ def scheduler_thread():
         ("daily", "20:00", lambda: _fire_system_test("15:00 CT (RTH close)")),
         ("daily", "22:00", lambda: _fire_system_test("17:00 CT")),
         ("daily", "00:00", lambda: _fire_system_test("19:00 CT (post-close)")),
+        # v6.18.0 \u2014 pre-open market brief at 07:00 CT (DST-safe via the
+        # gate inside _fire_market_brief; only the matching ET wall fires).
+        ("daily", "07:00", _fire_market_brief),
+        ("daily", "08:00", _fire_market_brief),
         ("daily", "09:30", reset_daily_state),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
@@ -7102,6 +7140,7 @@ _TICKER_USAGE = (
 #   /positions, /eod, /or_now, /tickers, /add_ticker, /remove_ticker.
 MAIN_BOT_COMMANDS = [
     BotCommand("dashboard", "Full market snapshot"),
+    BotCommand("brief", "Pre-open market brief"),
     BotCommand("status", "Open positions + P&L"),
     BotCommand("perf", "Performance stats (optional date)"),
     BotCommand("price", "Live quote for a ticker"),
