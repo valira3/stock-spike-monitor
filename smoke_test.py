@@ -1571,12 +1571,17 @@ def run_local() -> int:
         import json
 
         saved_file = m.PAPER_STATE_FILE
+        saved_main_file = getattr(m, "PAPER_STATE_MAIN_FILE", None)
         saved_date = m.daily_short_entry_date
         saved_loaded = paper_state._state_loaded
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
                 tmp_path = f.name
+            # v7.0.0 Phase 3: save_paper_state writes to PAPER_STATE_MAIN_FILE.
+            # Point both FILE attrs at the same tmp path so the round-trip test
+            # exercises the same file without depending on the default derivation.
             m.PAPER_STATE_FILE = tmp_path
+            m.PAPER_STATE_MAIN_FILE = tmp_path
             paper_state._state_loaded = True
             m.daily_short_entry_date = "2026-04-24"
             m.save_paper_state()
@@ -1596,6 +1601,8 @@ def run_local() -> int:
             except Exception:
                 pass
             m.PAPER_STATE_FILE = saved_file
+            if saved_main_file is not None:
+                m.PAPER_STATE_MAIN_FILE = saved_main_file
             m.daily_short_entry_date = saved_date
             paper_state._state_loaded = saved_loaded
 

@@ -435,6 +435,16 @@ _SHORT_REASON = {
 # ============================================================
 PAPER_LOG              = os.getenv("PAPER_LOG_PATH", "investment.log")
 PAPER_STATE_FILE       = os.getenv("PAPER_STATE_PATH", "paper_state.json")
+# v7.0.0 Phase 3 -- canonical per-book state path for the main portfolio.
+# Default: replace "paper_state.json" with "paper_state_main.json" in the
+# same directory. Overridable via PAPER_STATE_MAIN_PATH env var.
+PAPER_STATE_MAIN_FILE  = os.getenv(
+    "PAPER_STATE_MAIN_PATH",
+    os.path.join(
+        os.path.dirname(PAPER_STATE_FILE) or ".",
+        "paper_state_main.json",
+    ),
+)
 # v3.4.27 \u2014 persistent trade log. Default path is a sibling of the
 # paper state file so it lands on the same volume automatically. The
 # file is append-only JSONL \u2014 one closed trade per line. Survives
@@ -2277,15 +2287,18 @@ _trading_halted: bool = False
 _trading_halted_reason: str = ""
 
 # ------------------------------------------------------------
-# v7.0.0 Phase 1 — _MAIN_BOOK is a parallel container holding the same
-# mutable references as the module-level globals declared above.
-# Subsequent phases migrate callsites to access state through the book.
+# v7.0.0 Phase 3 -- PORTFOLIOS registry. Three books (main, val, gene)
+# are unconditionally registered at import. Main is identity-bound to
+# the module-level globals below so all existing callers keep working.
+# Val and Gene are dormant in-memory containers; Phase 4 wires fanout.
 # Scalar globals (paper_cash, _trading_halted, _trading_halted_reason,
-# daily_entry_date, daily_short_entry_date) remain authoritative here;
-# Phase 2 will consolidate those writes into the book.
+# daily_entry_date, daily_short_entry_date) remain authoritative here.
 # ------------------------------------------------------------
-from engine.portfolio_book import PortfolioBook as _PortfolioBook  # noqa: E402
-_MAIN_BOOK: _PortfolioBook = _PortfolioBook(portfolio_id="main")
+from engine.portfolio_book import (  # noqa: E402
+    PORTFOLIOS,
+    PORTFOLIO_MAIN,
+)
+_MAIN_BOOK = PORTFOLIOS.get(PORTFOLIO_MAIN)
 _MAIN_BOOK.positions = positions
 _MAIN_BOOK.short_positions = short_positions
 _MAIN_BOOK.daily_entry_count = daily_entry_count

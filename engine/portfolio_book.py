@@ -14,7 +14,11 @@ Phase 2 adds:
     identity is preserved across load_paper_state() calls.
 
 Phase 3 will register Main + Val + Gene books behind the
-PER_PORTFOLIO_BOOKS_ENABLED feature flag.
+Phase 3 registers Main + Val + Gene as three PortfolioBook instances
+inside a PortfolioRegistry. All three are unconditionally available at
+import time. Main remains identity-bound to trade_genius module globals
+so existing callers are unchanged. Val and Gene are dormant in-memory
+containers; Phase 4 wires the fanout layer and executors.
 """
 
 from __future__ import annotations
@@ -23,6 +27,16 @@ import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# v7.0.0 Phase 3 -- canonical portfolio identifiers
+# ---------------------------------------------------------------------------
+
+PORTFOLIO_MAIN = "main"
+PORTFOLIO_VAL = "val"
+PORTFOLIO_GENE = "gene"
+
+ALL_PORTFOLIO_IDS: tuple = (PORTFOLIO_MAIN, PORTFOLIO_VAL, PORTFOLIO_GENE)
 
 
 class PortfolioBook:
@@ -152,3 +166,51 @@ class PortfolioBook:
         )
 
         return fresh
+
+# ---------------------------------------------------------------------------
+# v7.0.0 Phase 3 -- PortfolioRegistry
+#
+# Holds all three PortfolioBook instances (main, val, gene).
+# All books are unconditionally registered at import time.
+# Main is identity-bound to trade_genius module globals in
+# trade_genius.py so every existing callsite keeps working unchanged.
+# Val and Gene are dormant in-memory containers until Phase 4 wires
+# the fanout layer and their Alpaca executors.
+# ---------------------------------------------------------------------------
+
+
+class PortfolioRegistry:
+    """Registry of PortfolioBook instances for the three active portfolios.
+
+    Phase 3 usage: all three books (main, val, gene) are registered at
+    module load. Only main has live state; val and gene hold empty
+    in-memory dicts until Phase 4 activates the fanout layer.
+    """
+
+    def __init__(self) -> None:
+        self._books: dict[str, PortfolioBook] = {}
+
+    def register(self, portfolio_id: str) -> "PortfolioBook":
+        """Create and register a PortfolioBook if not already present."""
+        if portfolio_id not in self._books:
+            self._books[portfolio_id] = PortfolioBook(portfolio_id=portfolio_id)
+        return self._books[portfolio_id]
+
+    def get(self, portfolio_id: str) -> "PortfolioBook":
+        """Return the registered book for portfolio_id."""
+        return self._books[portfolio_id]
+
+    def all(self) -> "dict[str, PortfolioBook]":
+        """Return a shallow copy of the id -> book mapping."""
+        return dict(self._books)
+
+    def main(self) -> "PortfolioBook":
+        """Convenience accessor for the main portfolio book."""
+        return self._books[PORTFOLIO_MAIN]
+
+
+# Module-level singleton: three books registered unconditionally.
+PORTFOLIOS: PortfolioRegistry = PortfolioRegistry()
+PORTFOLIOS.register(PORTFOLIO_MAIN)
+PORTFOLIOS.register(PORTFOLIO_VAL)
+PORTFOLIOS.register(PORTFOLIO_GENE)

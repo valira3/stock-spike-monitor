@@ -30,6 +30,7 @@ def _tg():
 
 import json
 import logging
+import shutil
 import os
 import threading
 import time
@@ -42,6 +43,30 @@ logger = logging.getLogger(__name__)
 # Owned state \u2014 moved out of trade_genius in v4.6.0.
 _paper_save_lock = threading.Lock()
 _state_loaded = False
+
+
+def _resolve_main_path(tg) -> str:
+    """Return the canonical write path for the main portfolio state file.
+
+    Resolution order:
+    1. If PAPER_STATE_MAIN_FILE is explicitly set on the tg module (either
+       via the PAPER_STATE_MAIN_PATH env var at import time, or via a direct
+       attribute assignment in tests/fixtures), use it as-is.
+    2. Otherwise derive from the current PAPER_STATE_FILE value by inserting
+       "_main" before the .json suffix. This means that a bare monkey-patch
+       of PAPER_STATE_FILE (without touching PAPER_STATE_MAIN_FILE) still
+       produces a predictable main path next to the legacy file.
+    """
+    import os as _os
+    explicit = getattr(tg, "PAPER_STATE_MAIN_FILE", None)
+    if explicit:
+        return explicit
+    # Fallback derivation (PAPER_STATE_MAIN_FILE not present on this module).
+    legacy = tg.PAPER_STATE_FILE
+    derived_dir = _os.path.dirname(legacy) or "."
+    derived_name = _os.path.splitext(_os.path.basename(legacy))[0] + "_main.json"
+    return _os.path.join(derived_dir, derived_name)
+
 
 
 # v6.0.4 \u2014 Sentinel persistence rehydration.
@@ -203,11 +228,14 @@ def save_paper_state():
             "v5_active_direction": dict(getattr(tg, "v5_active_direction", {})),
             "saved_at": tg._utc_now_iso(),
         }
-        tmp = tg.PAPER_STATE_FILE + ".tmp"
+        # v7.0.0 Phase 3 -- write to the new canonical path (paper_state_main.json).
+        # Legacy paper_state.json is kept as a read-only rollback; saves go to main.
+        _main_path = _resolve_main_path(tg)
+        tmp = _main_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, default=str)
-            os.replace(tmp, tg.PAPER_STATE_FILE)
+            os.replace(tmp, _main_path)
             try:
                 persistence.replace_all_tracks(
                     dict(getattr(tg, "v5_long_tracks", {})),
@@ -215,7 +243,7 @@ def save_paper_state():
                 )
             except Exception as v5e:
                 logger.error("save_paper_state: SQLite track sync failed: %s", v5e)
-            logger.debug("Paper state saved -> %s (%.3fs)", tg.PAPER_STATE_FILE, time.time() - t0)
+            logger.debug("Paper state saved -> %s (%.3fs)", _main_path, time.time() - t0)
         except Exception as e:
             logger.error("save_paper_state failed: %s", e)
 
@@ -233,10 +261,32 @@ def load_paper_state():
     except Exception as e:
         logger.warning("persistence init failed: %s", e)
 
-    if not os.path.exists(tg.PAPER_STATE_FILE):
+    # v7.0.0 Phase 3 -- resolve canonical path for this boot.
+    # If paper_state_main.json exists: read it directly.
+    # If only legacy paper_state.json exists: copy it forward and read
+    # the copy. Subsequent saves go to paper_state_main.json exclusively.
+    # Legacy file is kept as a rollback artifact; it is never deleted.
+    _main_path = _resolve_main_path(tg)
+    _legacy_path = tg.PAPER_STATE_FILE
+    if not os.path.exists(_main_path) and os.path.exists(_legacy_path):
+        logger.info(
+            "[V700-MIGRATE] copying %s -> %s",
+            _legacy_path,
+            _main_path,
+        )
+        try:
+            shutil.copy2(_legacy_path, _main_path)
+        except Exception as _mig_err:
+            logger.warning(
+                "[V700-MIGRATE] copy failed: %s -- will read from legacy path",
+                _mig_err,
+            )
+            _main_path = _legacy_path
+
+    if not os.path.exists(_main_path):
         tg.paper_log(
             "No saved state at %s. Starting fresh $%.0f."
-            % (tg.PAPER_STATE_FILE, tg.PAPER_STARTING_CAPITAL)
+            % (_main_path, tg.PAPER_STARTING_CAPITAL)
         )
         # Pull any v5 tracks already in SQLite (e.g. left over from a
         # previous run whose JSON file was rotated away).
@@ -262,7 +312,7 @@ def load_paper_state():
         return
 
     try:
-        with open(tg.PAPER_STATE_FILE, "r", encoding="utf-8") as f:
+        with open(_main_path, "r", encoding="utf-8") as f:
             state = json.load(f)
 
         tg.paper_cash = float(state.get("paper_cash", tg.PAPER_STARTING_CAPITAL))
