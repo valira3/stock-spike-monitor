@@ -897,6 +897,9 @@ def _earnings_watcher_snapshot() -> dict:
     ew_dir = _Path(base) / "earnings_watcher"
 
     # last_cycle.json (signal pulse + skip_reasons)
+    # v6.18.0 \u2014 surface the full cycle telemetry (skipped_evaluated,
+    # skipped_open, orders_submitted) so the dashboard can show why a
+    # cycle produced 0 signals without round-tripping to the container.
     try:
         lc = ew_dir / "last_cycle.json"
         if lc.exists():
@@ -907,12 +910,34 @@ def _earnings_watcher_snapshot() -> dict:
                 "date": data.get("date"),
                 "universe_size": data.get("universe_size", 0),
                 "evaluated": data.get("evaluated", 0),
+                "skipped_evaluated": data.get("skipped_evaluated", 0),
+                "skipped_open": data.get("skipped_open", 0),
                 "signals": data.get("signals", 0),
+                "orders_submitted": data.get("orders_submitted", 0),
                 "orders_filled": data.get("orders_filled", 0),
                 "exits": data.get("exits", 0),
                 "skip_reasons": data.get("skip_reasons", {}),
             }
             out["universe_size"] = data.get("universe_size", 0)
+    except Exception:
+        pass
+
+    # v6.18.0 \u2014 evaluated_today.json: list of tickers actually pulled
+    # into the cycle this session, broken out by window. Lets the dashboard
+    # answer "what's being watched right now?" instead of just a count.
+    try:
+        et = ew_dir / "evaluated_today.json"
+        if et.exists():
+            ed = _json.loads(et.read_text())
+            # Shape: { "YYYY-MM-DD": { "premarket": [...], "afterhours": [...] } }
+            if isinstance(ed, dict) and ed:
+                latest_date = sorted(ed.keys())[-1]
+                day = ed.get(latest_date) or {}
+                out["watched_today"] = {
+                    "date": latest_date,
+                    "premarket": list(day.get("premarket") or [])[:120],
+                    "afterhours": list(day.get("afterhours") or [])[:120],
+                }
     except Exception:
         pass
 

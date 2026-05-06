@@ -224,16 +224,32 @@
       </div>
     </section>
 
-    <!-- v6.17.0 — Earnings Watcher panel. Surfaces EW window status,
-         universe size, last cycle telemetry (skip_reasons), and any
-         currently-open EW positions. Reads from /api/state.earnings_watcher. -->
-    <section class="grid">
+    <!-- v6.18.0 — Earnings Watcher panel.
+         Header is a compact 2-3 line summary (title row, headline metrics,
+         expand toggle). Full body (watched tickers, cycle telemetry, skip
+         reasons, open EW positions) lives inside #ew-details, hidden by
+         default and toggled by the entire .card-head being a clickable
+         disclosure (aria-expanded). Reads from /api/state.earnings_watcher.
+
+         Repositioning: app.js (positionEarningsWatcherCard) moves this
+         <section> based on current_window:
+           - premarket / afterhours / closed -> just below #pos-body section
+           - rth_idle (RTH)                  -> bottom of <main>
+         The id="ew-section" anchor is what the JS targets. -->
+    <section class="grid" id="ew-section">
       <div class="card">
-        <div class="card-head">
-          <span class="card-title" title="Earnings Watcher — pre/post-market DMI runaway-capture engine. Shows current window, last cycle stats, and open EW positions.">Earnings Watcher<span class="count" id="ew-window-pill" title="Current EW window">· —</span></span>
-          <span class="chip" id="ew-summary-chip" title="Last cycle: evaluated / signals / orders">—</span>
+        <div class="card-head ew-card-head" id="ew-card-head" role="button" tabindex="0" aria-expanded="false" aria-controls="ew-details" title="Click to expand Earnings Watcher details">
+          <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span class="card-title">Earnings Watcher</span>
+              <span class="count" id="ew-window-pill" title="Current EW window">&middot; &mdash;</span>
+              <span class="chip" id="ew-status-chip" title="PASS / WAITING / OFF">&mdash;</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--text-muted);line-height:1.35" id="ew-summary-line">&mdash;</div>
+          </div>
+          <span class="ew-disclosure" id="ew-disclosure" aria-hidden="true" style="font-size:11px;color:var(--text-dim);user-select:none;flex-shrink:0;margin-left:8px">&#9656; details</span>
         </div>
-        <div class="card-body flush" id="ew-body">
+        <div class="card-body flush" id="ew-details" hidden>
           <div class="empty">Earnings Watcher not enabled.</div>
         </div>
       </div>
