@@ -290,6 +290,7 @@ def propose_stop(
     entry_price: float,
     atr_value: Optional[float],
     current_stop_price: Optional[float],
+    last_close: Optional[float] = None,
 ) -> Optional[float]:
     """Return the proposed Alarm F stop, or ``None`` if no proposal.
 
@@ -300,6 +301,15 @@ def propose_stop(
 
     Only returned if it is strictly tighter than ``current_stop_price``
     (caller-side check is duplicated for safety).
+
+    v7.2.6 safety floor: when ``last_close`` is provided, refuse to
+    propose a stop that already sits on the wrong side of the most
+    recent close (LONG: stop \u2265 close; SHORT: stop \u2264 close).
+    A stop on the wrong side of the mark fires instantly the next time
+    the broker sees a quote, which is never desired \u2014 it is always
+    a symptom of stale trail state (Entry-2 top-up inheritance, gap, or
+    bad seed). Returning None here preserves the existing stop and
+    lets the trail re-anchor on a future tick.
     """
     if state.stage == STAGE_INACTIVE:
         return None
@@ -347,6 +357,17 @@ def propose_stop(
         if side_u == SIDE_LONG and proposed <= cs:
             return None
         if side_u == SIDE_SHORT and (cs > 0 and proposed >= cs):
+            return None
+
+    # v7.2.6 safety floor: never propose a stop on the wrong side of
+    # the current mark. The buffer mirrors the BE pad so a stop is at
+    # least one BE_PAD away from the mark on the protective side.
+    if last_close is not None:
+        lc = float(last_close)
+        _safety_pad = max(BE_PAD_FLOOR, BE_PAD_PCT * abs(float(entry_price)))
+        if side_u == SIDE_LONG and proposed >= lc - _safety_pad:
+            return None
+        if side_u == SIDE_SHORT and proposed <= lc + _safety_pad:
             return None
 
     # Persist the ratchet anchor.

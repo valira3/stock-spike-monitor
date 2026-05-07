@@ -909,6 +909,31 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
     pos["v5104_entry2_ts_utc"] = now_iso
     pos["v5104_entry2_fired"] = True
 
+    # v7.2.6 \u2014 Entry-2 re-anchors the position's average entry. The
+    # Alarm-F TrailState carried from Entry-1 has a peak_close, stage,
+    # bars_seen, and last_proposed_stop computed against the OLD
+    # entry_price; reusing them produces a BE candidate (entry+pad) that
+    # may sit on the wrong side of the current mark and fire instantly.
+    # Reset the trail so it re-arms naturally against the new average
+    # entry. Both the dict-shaped state (broker path) and the dataclass
+    # (sentinel path) get cleared; whichever the engine creates next
+    # tick will start fresh.
+    try:
+        from engine.alarm_f_trail import TrailState as _TrailState
+
+        pos["trail_state"] = _TrailState.fresh()
+    except Exception:
+        pos.pop("trail_state", None)
+    # Also clear any dict-shaped trail bookkeeping that other paths read.
+    for _k in (
+        "alarm_f_state",
+        "alarm_f_peak_close",
+        "alarm_f_stage",
+        "alarm_f_last_proposed_stop",
+        "alarm_f_bars_seen",
+    ):
+        pos.pop(_k, None)
+
     try:
         logger.info(
             "[V5100-ENTRY] ticker=%s side=%s entry_num=2 di_1m=%s "

@@ -138,24 +138,27 @@ def test_be_arm_requires_full_1R(monkeypatch):
     assert state.stage == STAGE_BREAKEVEN
 
 
-def test_be_proposed_stop_is_entry_plus_one_cent_long():
+def test_be_proposed_stop_is_entry_plus_pad_long():
+    # v7.2.4: pad scales with price (max($0.01, 5bp * entry)).
+    # entry=$100 -> pad = max(0.01, 0.0005*100) = $0.05 -> BE = $100.05.
     state = TrailState.fresh()
     state.stage = STAGE_BREAKEVEN
     state.peak_close = 105.0
     proposed = propose_stop(
         state=state, side=SIDE_LONG, entry_price=100.0, atr_value=None, current_stop_price=99.0
     )
-    assert proposed == 100.01
+    assert proposed == 100.05
 
 
-def test_be_proposed_stop_is_entry_minus_one_cent_short():
+def test_be_proposed_stop_is_entry_minus_pad_short():
+    # v7.2.4 mirror: SHORT pad sits BELOW entry. entry=$100 -> $99.95.
     state = TrailState.fresh()
     state.stage = STAGE_BREAKEVEN
     state.peak_close = 95.0
     proposed = propose_stop(
         state=state, side=SIDE_SHORT, entry_price=100.0, atr_value=None, current_stop_price=101.0
     )
-    assert proposed == 99.99
+    assert proposed == 99.95
 
 
 def test_stop_monotonic_long_random_walk():
