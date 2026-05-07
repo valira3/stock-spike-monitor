@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.2.8 (2026-05-07) -- TRAIL pill frontend honors backend gate
+
+Follow-up to v7.2.7. The backend `_compute_trail_pill_state` helper was
+correctly returning `null` for fresh entries where the stop still equaled
+the original 1R hard stop, but the dashboard frontend (`app.js`) had its
+own legacy armed-flag computed from `chandelier_stage >= 1` and ignored
+the backend's `trail_pill` field entirely. Result: TSLA SHORT (Entry-2,
+Stage 1 BE-arm only) still rendered the TRAIL pill on the live
+dashboard at 11:13 AM CT despite v7.2.7 shipping at 10:00 AM CT.
+
+### What changed
+
+* `dashboard_static/app.js` (Main positions table, ~L280): trail badge
+  now renders only when `p.trail_pill && p.trail_pill.status` is truthy.
+  Backend has already evaluated trail-tightened criteria.
+* `dashboard_static/app.js` (Per-portfolio executor table, ~L4760):
+  same fix applied to the `_stopBySym` lookup table that drives the
+  fallback positions table for non-Main portfolios.
+* No backend changes; helper logic from v7.2.7 unchanged.
+
+### Why this slipped
+
+v7.2.7 PR #405 reviewed and tested the server-side helper end-to-end
+but didn't grep `app.js` for parallel armed-flag logic. The frontend
+code still carried v6.0.6 comments about chandelier_stage >= 1.
+
+---
+
 ## v7.2.7 (2026-05-07) -- Trail pill only renders when trail has tightened
 
 UX bugfix. The dashboard TRAIL pill was rendering as `armed` whenever a position had ANY effective stop and the mark hadn't crossed it -- including the moment of entry, when the stop equals the original 1R hard stop and the trail hasn't done anything yet. Operator confusion: "trail pill = trail is doing something" but the pill said `armed` even at fresh entries (TSLA Entry-2 case showed pill armed with stop unchanged from initial).
