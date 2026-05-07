@@ -69,6 +69,15 @@ TIGHT_MULT: float = 0.7
 # Never arm in the first N bars after entry (avoid entry-bar noise).
 MIN_BARS_BEFORE_ARM: int = 3
 
+# v7.2.4 \u2014 Stage-1 BE pad. Original spec used a flat $0.01 lock-in,
+# but on volatile names a 1\u00a2 pad is inside one tick of bid/ask noise
+# and triggers an immediate flush on any retracement. Pad is now
+# max($0.01, BE_PAD_PCT * entry) so it scales with price. 5bp default
+# survives normal microstructure noise while still locking near
+# breakeven once Stage 1 has armed (i.e. after >= 1R favorable).
+BE_PAD_PCT: float = 0.0005  # 5bp
+BE_PAD_FLOOR: float = 0.01  # $0.01 minimum
+
 # Stage codes
 STAGE_INACTIVE: int = 0
 STAGE_BREAKEVEN: int = 1
@@ -298,11 +307,15 @@ def propose_stop(
     side_u = str(side).upper()
     candidates: list[float] = []
 
-    # Stage 1 BE+1c, always available once stage >= 1.
+    # Stage 1 BE+pad, always available once stage >= 1. v7.2.4: pad is
+    # max(BE_PAD_FLOOR, BE_PAD_PCT * entry) so it scales with price.
+    # LONG locks pad ABOVE entry (stop fires on retrace below pad);
+    # SHORT locks pad BELOW entry (stop fires on rally above pad).
+    _be_pad = max(BE_PAD_FLOOR, BE_PAD_PCT * abs(float(entry_price)))
     if side_u == SIDE_LONG:
-        candidates.append(round(float(entry_price) + 0.01, 4))
+        candidates.append(round(float(entry_price) + _be_pad, 4))
     else:
-        candidates.append(round(float(entry_price) - 0.01, 4))
+        candidates.append(round(float(entry_price) - _be_pad, 4))
 
     # Stage 2/3 chandelier (only if peak_close + ATR are both ready).
     if (
