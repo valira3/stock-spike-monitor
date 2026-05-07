@@ -709,6 +709,14 @@ def run_window_cycle(window: str) -> dict:
         logger.info("[EW-RUNNER] run_window_cycle window=%s date=%s START (cleared evaluated cache)",
                     window, today_str)
 
+    # v7.2.3: graft any orphan EW positions (opened pre-boot or by older
+    # versions without the bridge) into all 3 PortfolioBooks. Idempotent.
+    try:
+        from earnings_watcher.portfolio_bridge import reconcile_ew_books_with_state
+        reconcile_ew_books_with_state()
+    except Exception as _exc:
+        logger.warning("[EW-RUNNER] reconcile call failed: %s", _exc)
+
     logger.debug("[EW-RUNNER] run_window_cycle window=%s date=%s tick", window, today_str)
 
     # Bar fetch start time: 04:00 ET = 08:00 UTC (EDT), 16:00 ET = 20:00 UTC (EDT)
@@ -928,5 +936,12 @@ def run_exit_cycle() -> Dict[str, Any]:
     Returns summary dict with exits count.
     """
     logger.debug("[EW-RUNNER] run_exit_cycle")
+    # v7.2.3: graft any orphan EW positions before the exit pass so the
+    # dashboard sees them on the exit-only path too. Idempotent.
+    try:
+        from earnings_watcher.portfolio_bridge import reconcile_ew_books_with_state
+        reconcile_ew_books_with_state()
+    except Exception as _exc:
+        logger.warning("[EW-RUNNER] reconcile call failed in exit cycle: %s", _exc)
     exits = manage_open_positions()
     return {"cycle": "exit", "exits": exits}

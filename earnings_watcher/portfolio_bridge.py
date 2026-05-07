@@ -541,6 +541,150 @@ def select_alpaca_creds(portfolio_id: str = "val") -> Tuple[str, str, bool]:
     return key, secret, mode == "paper"
 
 
+def reconcile_ew_books_with_state() -> int:
+    """Back-fill orphan EW positions into all 3 PortfolioBooks.
+
+    Why this exists: ``record_ew_entry`` only fans into the books for
+    entries that occur after v7.2.2 boot. Any EW position that was
+    opened before boot (or by a prior version that didn't have the
+    bridge) lives only in /data/earnings_watcher/open_positions.json
+    and never reaches the dashboard's positions/trades_today surface.
+
+    This reconciler reads the EW state file and grafts any missing
+    rows into ``book.positions`` / ``book.short_positions`` for all 3
+    books, tagged with ``source=EW_*`` and ``ew=True`` so the dashboard
+    can render the same EW badge it does for fresh entries.
+
+    Idempotent: rows already present in a book are left alone
+    (we never overwrite live executor state). Returns the count of
+    grafts performed across all books.
+
+    Called at the top of run_window_cycle; failure is logged and
+    swallowed so it never blocks the trading path.
+    """
+    n_grafts = 0
+    try:
+        from earnings_watcher.state import load_open_positions
+        ew_positions = load_open_positions() or {}
+        if not ew_positions:
+            return 0
+
+        books = _all_books()
+        if not books:
+            return 0
+
+        try:
+            import trade_genius as tg
+        except Exception:
+            tg = None  # type: ignore
+
+        today = _today_et()
+
+        for ticker_raw, ewp in ew_positions.items():
+            try:
+                ticker = str(ticker_raw or "").upper()
+                if not ticker:
+                    continue
+                side_raw = str(ewp.get("side") or "long").lower()
+                long_side = side_raw == "long"
+                qty = int(ewp.get("qty") or 0)
+                entry_price = float(ewp.get("entry_px") or 0.0)
+                if qty <= 0 or entry_price <= 0:
+                    continue
+
+                strategy = str(ewp.get("strategy") or "dmi").lower()
+                source_tag = _SOURCE_BY_STRATEGY.get(strategy, "EW_DMI")
+                label = _LABEL_BY_STRATEGY.get(strategy, "ew_dmi")
+                entry_iso = ewp.get("entry_ts_utc") or _utc_now_iso()
+                # Convert UTC ISO to CDT HH:MM for entry_time field.
+                entry_time = ""
+                try:
+                    from datetime import datetime as _dt
+                    _ent = _dt.fromisoformat(str(entry_iso).replace("Z", "+00:00"))
+                    entry_time = _ent.astimezone(
+                        ZoneInfo("America/Chicago")
+                    ).strftime("%H:%M CDT")
+                except Exception:
+                    entry_time = _now_cdt_hhmm()
+
+                pos_dict = {
+                    "ticker": ticker,
+                    "side": "LONG" if long_side else "SHORT",
+                    "qty": qty,
+                    "shares": qty,
+                    "entry_price": entry_price,
+                    "entry_ts_utc": entry_iso,
+                    "entry_time": entry_time,
+                    "entry_count": 1,
+                    "date": today,
+                    "source": source_tag,
+                    "strategy": label,
+                    "stop": None,
+                    "trail": None,
+                    "notional": float(ewp.get("notional") or qty * entry_price),
+                    "ew": True,
+                    "reconciled": True,
+                }
+
+                # Graft into each book if not already present.
+                for book in books:
+                    pid = getattr(book, "portfolio_id", "?")
+                    try:
+                        target_dict = (book.short_positions if not long_side
+                                       else book.positions)
+                        if ticker in target_dict:
+                            # Already tracked in this book -- leave it alone.
+                            # (executor-managed RTH rows take precedence.)
+                            continue
+                        target_dict[ticker] = dict(pos_dict)
+                        try:
+                            book.record_entry(
+                                ticker=ticker,
+                                side="LONG" if long_side else "SHORT",
+                                entry_price=entry_price,
+                                entry_count=1,
+                            )
+                        except Exception:
+                            pass
+                        n_grafts += 1
+                        logger.info(
+                            "[EW-RECONCILE] grafted ticker=%s side=%s qty=%d "
+                            "entry=%.4f book=%s strategy=%s",
+                            ticker, "LONG" if long_side else "SHORT",
+                            qty, entry_price, pid, label,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[EW-RECONCILE] graft error book=%s ticker=%s: %s",
+                            pid, ticker, exc,
+                        )
+
+                # Mirror into trade_genius module globals so the legacy
+                # main view (_today_trades, _live_positions) sees it too.
+                if tg is not None:
+                    try:
+                        if long_side:
+                            if ticker not in (tg.positions or {}):
+                                tg.positions[ticker] = dict(pos_dict)
+                        else:
+                            if ticker not in (tg.short_positions or {}):
+                                tg.short_positions[ticker] = dict(pos_dict)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.warning(
+                    "[EW-RECONCILE] per-ticker error ticker=%s: %s",
+                    ticker_raw, exc,
+                )
+
+        if n_grafts > 0:
+            logger.info("[EW-RECONCILE] cycle complete grafted=%d", n_grafts)
+        return n_grafts
+    except Exception as exc:
+        logger.warning("[EW-RECONCILE] top-level error: %s", exc)
+        return 0
+
+
 def resolve_ew_target_portfolio() -> str:
     """Return the EW target portfolio id.
 
