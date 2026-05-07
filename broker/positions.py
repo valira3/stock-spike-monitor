@@ -558,6 +558,17 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             initial_stop_price=pos.get("initial_stop"),
             position_id=_v631_position_id,
             now_et=_v631_now_et,
+            # v7.5.0 \u2014 Early-Ditch needs the entry timestamp to
+            # compute (now - entry) seconds. Prefer ``v644_entry_now_et_iso``
+            # (the harness-aware simulated-clock stamp) over ``entry_ts_utc``
+            # (which uses _utc_now_iso() and is wallclock in backtest, not
+            # diffable against the simulated ``now_ts``). Fall back to
+            # ``entry_ts_utc`` for prod (where they are equivalent) and
+            # for old positions written before v6.4.4 added the field.
+            entry_ts_utc=(
+                pos.get("v644_entry_now_et_iso")
+                or pos.get("entry_ts_utc")
+            ),
         )
         # v5.13.6 \u2014 emit lifecycle PHASE4 events on state changes
         # (best-effort, no-op when logger absent).
