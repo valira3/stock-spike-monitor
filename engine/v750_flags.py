@@ -10,7 +10,10 @@ a small dollar threshold within the first N seconds after entry, on the
 theory that a trade that goes immediately and materially red has lost the
 edge that justified the entry.
 
-Defaults are conservative (90s window, $10 red) and can be tuned via env.
+Defaults are conservative (120s window, $10 red) and can be tuned via env.
+Rationale: sentinel evaluates on a 1-minute bar cadence, so a 90s window
+only straddles a single bar (age=60s) \u2014 too narrow to catch positions
+that go red on the second bar at age=120s. 120s covers the first two bars.
 """
 from __future__ import annotations
 import os
@@ -37,7 +40,7 @@ def _env_float(name: str, default: float) -> float:
 V750_EARLY_DITCH_ENABLED: bool = _env_bool("V750_EARLY_DITCH_ENABLED", False)
 
 # Window (seconds since entry) inside which the filter is active.
-V750_EARLY_DITCH_WINDOW_SEC: float = _env_float("V750_EARLY_DITCH_WINDOW_SEC", 90.0)
+V750_EARLY_DITCH_WINDOW_SEC: float = _env_float("V750_EARLY_DITCH_WINDOW_SEC", 120.0)
 
 # Unrealized loss in DOLLARS that triggers the early ditch.
 # A position whose unrealized_pnl is <= -V750_EARLY_DITCH_RED_DOLLARS inside
