@@ -222,10 +222,10 @@ _ema_cross_pending: dict[str, int] = {}
 # === end v6.1.0 ema-cross confirmation state ===
 
 
-# === v7.3.0 — stop-price hysteresis state ===
+# === v7.3.0 \u2014 stop-price hysteresis state ===
 # 83-day clean baseline forensics: 487 trades exit in <15min via
 # sentinel_a_stop_price; 193 of those (40%) close at less than 0.45%
-# adverse — shallower than the configured 0.5% STOP_PCT_OF_ENTRY —
+# adverse \u2014 shallower than the configured 0.5% STOP_PCT_OF_ENTRY \u2014
 # costing -$4,798. That damage is bid/ask noise + intrabar wicks
 # tripping the single-tick price-stop. The hysteresis layer requires
 # N consecutive 1m closes beyond the stop level before firing, with
@@ -255,7 +255,7 @@ _V730_STOP_DEEP_FRAC: float = float(
 # is responsible for cleanup; stale entries are harmless because the
 # position_id is unique per entry).
 _stop_cross_pending: dict[str, int] = {}
-# Per-position last seen 1m bar timestamp — prevents double-counting
+# Per-position last seen 1m bar timestamp \u2014 prevents double-counting
 # when evaluate_sentinel is called multiple times within the same
 # 1m bar window (e.g., live mode tick-by-tick). Increment only when
 # the 1m close timestamp advances.

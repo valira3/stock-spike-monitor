@@ -13,20 +13,29 @@ Acceptance criteria for the hysteresis layer:
 """
 from __future__ import annotations
 
-import os
-import importlib
-
 import pytest
 
 
 @pytest.fixture
 def sentinel_module(monkeypatch):
-    """Reload engine.sentinel with hysteresis enabled and 2-bar default."""
-    monkeypatch.setenv("V730_STOP_HYSTERESIS_ENABLED", "1")
-    monkeypatch.setenv("V730_STOP_HYSTERESIS_BARS", "2")
-    monkeypatch.setenv("V730_STOP_DEEP_FRAC", "0.0075")
+    """Patch engine.sentinel hysteresis knobs without reloading the module.
+
+    Earlier versions of this fixture used ``importlib.reload(s)`` which
+    spawned a second copy of the engine.sentinel module. Other test
+    files that had already done ``from engine.sentinel import X`` then
+    held bound references to the OLD module's dicts, while the reloaded
+    module had its own. The split caused
+    ``test_alarm_d_does_not_fire_when_peak_below_safety_floor`` in
+    tests/test_sentinel.py to fail when run after this file because
+    _SESSION_5M_ADX_HWM existed in two copies.
+
+    Patching the module-level constants directly avoids the reload and
+    keeps a single module copy.
+    """
     import engine.sentinel as s
-    importlib.reload(s)
+    monkeypatch.setattr(s, "_V730_STOP_HYSTERESIS_ENABLED", True)
+    monkeypatch.setattr(s, "_V730_STOP_HYSTERESIS_BARS", 2)
+    monkeypatch.setattr(s, "_V730_STOP_DEEP_FRAC", 0.0075)
     # Clear per-test state so positions don't leak between tests.
     s._stop_cross_pending.clear()
     s._stop_cross_last_ts.clear()
@@ -209,9 +218,8 @@ def test_no_double_count_within_same_bar(sentinel_module):
 
 def test_feature_flag_disabled_restores_legacy(monkeypatch):
     """V730_STOP_HYSTERESIS_ENABLED=0 restores single-tick behavior."""
-    monkeypatch.setenv("V730_STOP_HYSTERESIS_ENABLED", "0")
     import engine.sentinel as s
-    importlib.reload(s)
+    monkeypatch.setattr(s, "_V730_STOP_HYSTERESIS_ENABLED", False)
     fired = s.check_alarm_a_stop_price(
         side="LONG", current_price=99.49, current_stop_price=99.50,
         entry_price=100.00, position_id="x",
@@ -223,10 +231,9 @@ def test_feature_flag_disabled_restores_legacy(monkeypatch):
 
 def test_hysteresis_bars_one_restores_legacy(monkeypatch):
     """V730_STOP_HYSTERESIS_BARS=1 also restores single-tick behavior."""
-    monkeypatch.setenv("V730_STOP_HYSTERESIS_ENABLED", "1")
-    monkeypatch.setenv("V730_STOP_HYSTERESIS_BARS", "1")
     import engine.sentinel as s
-    importlib.reload(s)
+    monkeypatch.setattr(s, "_V730_STOP_HYSTERESIS_ENABLED", True)
+    monkeypatch.setattr(s, "_V730_STOP_HYSTERESIS_BARS", 1)
     fired = s.check_alarm_a_stop_price(
         side="LONG", current_price=99.49, current_stop_price=99.50,
         entry_price=100.00, position_id="x",
