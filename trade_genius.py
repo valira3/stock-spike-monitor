@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.2.4"
+BOT_VERSION = "7.2.5"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -789,10 +789,13 @@ def _save_tickers_file() -> bool:
 def _ensure_universe_consistency() -> None:
     """v5.8.0 \u2014 prevent /data/tickers.json from lagging code's UNIVERSE.
 
-    Compares the on-disk persisted ticker list against the canonical
-    code-side TICKERS_DEFAULT. If the file is missing, corrupt, or has
-    drifted, it is rewritten to match code. Emits the new
-    [UNIVERSE_GUARD] log tag for post-deploy smoke-check observability.
+    v7.2.5 \u2014 superset semantics. The on-disk file is now treated as a
+    SUPERSET of TICKERS_DEFAULT: code-side defaults must always be
+    present (top up if missing), but any extra ticker added manually
+    (Telegram /ticker add, /api, hot-patch) is preserved across restarts.
+    Previously this function rewrote disk to match code exactly, which
+    silently deleted runtime additions on every boot. Manual additions
+    are now sticky until explicitly removed via remove_ticker().
 
     Tolerant of both supported on-disk formats:
       - flat JSON list:        ["AAPL", "MSFT", ...]
@@ -806,7 +809,7 @@ def _ensure_universe_consistency() -> None:
     # UNIVERSE_GUARD_PATH env var lets tests redirect the persistent
     # path to a tmp file. Production always reads the default.
     path = Path(os.getenv("UNIVERSE_GUARD_PATH", "/data/tickers.json"))
-    expected = sorted(set(TICKERS_DEFAULT))
+    code_defaults = set(TICKERS_DEFAULT)
 
     def _write(payload_list):
         envelope = {
@@ -828,11 +831,12 @@ def _ensure_universe_consistency() -> None:
             logger.error("[UNIVERSE_GUARD] write failed: %s", we)
 
     if not path.exists():
+        seed = sorted(code_defaults)
         logger.warning(
             "[UNIVERSE_GUARD] %s missing, writing %d tickers",
-            path, len(expected),
+            path, len(seed),
         )
-        _write(expected)
+        _write(seed)
         return
 
     try:
@@ -840,24 +844,31 @@ def _ensure_universe_consistency() -> None:
         items = raw.get("tickers") if isinstance(raw, dict) else raw
         if not isinstance(items, list):
             raise ValueError("tickers payload is not a list")
-        on_disk = sorted({str(s).upper() for s in items if str(s).strip()})
+        on_disk = {str(s).upper() for s in items if str(s).strip()}
     except Exception as e:
+        seed = sorted(code_defaults)
         logger.error(
-            "[UNIVERSE_GUARD] %s corrupt (%s), rewriting", path, e,
+            "[UNIVERSE_GUARD] %s corrupt (%s), rewriting to defaults", path, e,
         )
-        _write(expected)
+        _write(seed)
         return
 
-    if on_disk != expected:
+    # v7.2.5 \u2014 superset semantics: top up any missing code defaults but
+    # never delete extras (manual additions). Compute union and only
+    # rewrite when the union differs from disk (i.e. defaults missing).
+    union = sorted(on_disk | code_defaults)
+    missing_defaults = sorted(code_defaults - on_disk)
+    extras = sorted(on_disk - code_defaults)
+    if missing_defaults:
         logger.warning(
-            "[UNIVERSE_GUARD] DRIFT detected: disk=%s code=%s \u2014 rewriting to code",
-            on_disk, expected,
+            "[UNIVERSE_GUARD] topping up missing defaults=%s (preserved extras=%s)",
+            missing_defaults, extras,
         )
-        _write(expected)
+        _write(union)
     else:
         logger.info(
-            "[UNIVERSE_GUARD] universe consistent (%d tickers)",
-            len(expected),
+            "[UNIVERSE_GUARD] universe consistent (%d tickers, %d extras=%s)",
+            len(union), len(extras), extras,
         )
 
 
