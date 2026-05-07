@@ -42,6 +42,9 @@ COPY spy_regime.py .
 # scripts/preflight.sh dockerfile-mirror check.
 COPY eye_of_tiger.py .
 COPY volume_bucket.py .
+# v7.2.1 — backfill 1m bars for newly-promoted RTH tickers so volume_bucket
+# does not COLDSTART. Missing this COPY would silently disable warmup.
+COPY volume_warmup.py .
 COPY v5_10_1_integration.py .
 # v5.10.6 \u2014 dashboard /api/state v5.10 panel helper. Missing this COPY
 # would crash dashboard_server's snapshot() with ModuleNotFoundError.
