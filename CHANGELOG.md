@@ -4,6 +4,25 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.2.7 (2026-05-07) -- Trail pill only renders when trail has tightened
+
+UX bugfix. The dashboard TRAIL pill was rendering as `armed` whenever a position had ANY effective stop and the mark hadn't crossed it -- including the moment of entry, when the stop equals the original 1R hard stop and the trail hasn't done anything yet. Operator confusion: "trail pill = trail is doing something" but the pill said `armed` even at fresh entries (TSLA Entry-2 case showed pill armed with stop unchanged from initial).
+
+### What changed
+
+* `dashboard_server.py:_compute_trail_pill_state` -- pill returns `None` unless the trail has actually tightened the protective stop. Tightening is detected via any of:
+  * legacy: `trail_active=True` AND `trail_stop` is set
+  * Alarm-F: `chandelier_stage >= 2` (Stage 2 has armed and `propose_stop` has produced a chandelier candidate)
+  * explicit override: `trail_tightened=True`
+* Both call sites (`_long_trail_pill`, `_short_trail_pill`) now pass `trail_active`, `trail_stop`, and `chandelier_stage` into the helper.
+
+### Tests
+
+* Updated 4 existing tests in `tests/test_v700_dashboard_shape.py` to include `chandelier_stage=2` (still represent "trail tightened" scenarios).
+* New tests: stage 0 hides pill; stage 1 (BE-arm only, TSLA replay) hides pill; legacy path (`trail_active`+`trail_stop`) renders pill; explicit `trail_tightened` override renders pill.
+
+---
+
 ## v7.2.6 (2026-05-07) -- Reset trail state on Entry-2 + propose_stop wrong-side floor
 
 Bugfix release. Fixes the NVDA -$22.77 instant-flush incident on 2026-05-07: Entry-2 top-up averaged the entry price but reused the position dict, so the Alarm-F `TrailState` (stage, peak_close, bars_seen, last_proposed_stop) carried forward from Entry-1. `propose_stop` then anchored BE+pad against the NEW averaged entry while the trail thought it was already armed; with the mark already adverse vs the new entry, the proposed stop sat ABOVE the mark and fired on the next quote.

@@ -239,13 +239,15 @@ def test_trail_pill_none_no_stop(smoke_modules):
 
 
 def test_trail_pill_armed_long(smoke_modules):
-    """_compute_trail_pill_state returns 'armed' for LONG when mark > stop."""
+    """_compute_trail_pill_state returns 'armed' for LONG when mark > stop
+    AND the trail has actually tightened (chandelier_stage >= 2)."""
     tg, ds = smoke_modules
     result = ds._compute_trail_pill_state({
         "effective_stop": 148.0,
         "mark": 152.0,
         "side": "LONG",
         "v644_hold_seconds": 0,
+        "chandelier_stage": 2,  # v7.2.7: trail tightened
     })
     assert result is not None
     assert result["status"] == "armed", f"expected armed, got {result}"
@@ -253,26 +255,30 @@ def test_trail_pill_armed_long(smoke_modules):
 
 
 def test_trail_pill_armed_short(smoke_modules):
-    """_compute_trail_pill_state returns 'armed' for SHORT when mark < stop."""
+    """_compute_trail_pill_state returns 'armed' for SHORT when mark < stop
+    AND the trail has actually tightened."""
     tg, ds = smoke_modules
     result = ds._compute_trail_pill_state({
         "effective_stop": 505.0,
         "mark": 498.0,
         "side": "SHORT",
         "v644_hold_seconds": 0,
+        "chandelier_stage": 2,  # v7.2.7: trail tightened
     })
     assert result is not None
     assert result["status"] == "armed", f"expected armed for SHORT below stop, got {result}"
 
 
 def test_trail_pill_breached_hold(smoke_modules):
-    """_compute_trail_pill_state returns 'breached_hold' when hold > 0."""
+    """_compute_trail_pill_state returns 'breached_hold' when hold > 0
+    AND the trail has actually tightened."""
     tg, ds = smoke_modules
     result = ds._compute_trail_pill_state({
         "effective_stop": 150.0,
-        "mark": 147.0,   # below stop \u2014 breached
+        "mark": 147.0,   # below stop -> breached
         "side": "LONG",
         "v644_hold_seconds": 180,
+        "chandelier_stage": 2,  # v7.2.7: trail tightened
     })
     assert result is not None
     assert result["status"] == "breached_hold", f"expected breached_hold, got {result}"
@@ -280,17 +286,86 @@ def test_trail_pill_breached_hold(smoke_modules):
 
 
 def test_trail_pill_breached_firing(smoke_modules):
-    """_compute_trail_pill_state returns 'breached_firing' when hold == 0."""
+    """_compute_trail_pill_state returns 'breached_firing' when hold == 0
+    AND the trail has actually tightened."""
     tg, ds = smoke_modules
     result = ds._compute_trail_pill_state({
         "effective_stop": 150.0,
-        "mark": 148.5,   # below stop \u2014 breached
+        "mark": 148.5,   # below stop -> breached
         "side": "LONG",
         "v644_hold_seconds": 0,
+        "chandelier_stage": 2,  # v7.2.7: trail tightened
     })
     assert result is not None
     assert result["status"] == "breached_firing", f"expected breached_firing, got {result}"
     assert result["hold_remaining_sec"] == 0
+
+
+# ---------------------------------------------------------------------------
+# v7.2.7: pill is None until the trail has actually tightened
+# ---------------------------------------------------------------------------
+
+def test_trail_pill_none_when_stage_inactive(smoke_modules):
+    """v7.2.7: stage 0 (no trail engaged) -> pill is None even if mark above stop."""
+    tg, ds = smoke_modules
+    result = ds._compute_trail_pill_state({
+        "effective_stop": 148.0,
+        "mark": 152.0,
+        "side": "LONG",
+        "v644_hold_seconds": 0,
+        "chandelier_stage": 0,
+    })
+    assert result is None, f"stage 0 should hide pill, got {result}"
+
+
+def test_trail_pill_none_when_only_be_armed(smoke_modules):
+    """v7.2.7 (TSLA replay): stage 1 (BE armed) but stop still equals
+    initial entry stop -> pill is None. Trail hasn't actually moved."""
+    tg, ds = smoke_modules
+    # TSLA: entry 414.81, stop 412.74 (1R below), mark 414.81, stage=1.
+    result = ds._compute_trail_pill_state({
+        "effective_stop": 412.74,
+        "mark": 414.81,
+        "side": "LONG",
+        "v644_hold_seconds": 0,
+        "chandelier_stage": 1,
+        "trail_active": False,
+        "trail_stop": None,
+    })
+    assert result is None, f"stage 1 with no proposal should hide pill, got {result}"
+
+
+def test_trail_pill_armed_when_legacy_trail_active(smoke_modules):
+    """v7.2.7: legacy path -- trail_active=True with trail_stop set is
+    sufficient to render the pill (Alarm-F may not be in play)."""
+    tg, ds = smoke_modules
+    result = ds._compute_trail_pill_state({
+        "effective_stop": 149.5,
+        "mark": 152.0,
+        "side": "LONG",
+        "v644_hold_seconds": 0,
+        "chandelier_stage": 0,
+        "trail_active": True,
+        "trail_stop": 149.5,
+    })
+    assert result is not None
+    assert result["status"] == "armed"
+
+
+def test_trail_pill_armed_when_explicit_tightened_flag(smoke_modules):
+    """v7.2.7: trail_tightened=True override is honored even if stage 0
+    and legacy flag are both off (escape hatch for hot paths)."""
+    tg, ds = smoke_modules
+    result = ds._compute_trail_pill_state({
+        "effective_stop": 148.0,
+        "mark": 152.0,
+        "side": "LONG",
+        "v644_hold_seconds": 0,
+        "chandelier_stage": 0,
+        "trail_tightened": True,
+    })
+    assert result is not None
+    assert result["status"] == "armed"
 
 
 # ---------------------------------------------------------------------------
