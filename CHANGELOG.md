@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.2.6 (2026-05-07) -- Reset trail state on Entry-2 + propose_stop wrong-side floor
+
+Bugfix release. Fixes the NVDA -$22.77 instant-flush incident on 2026-05-07: Entry-2 top-up averaged the entry price but reused the position dict, so the Alarm-F `TrailState` (stage, peak_close, bars_seen, last_proposed_stop) carried forward from Entry-1. `propose_stop` then anchored BE+pad against the NEW averaged entry while the trail thought it was already armed; with the mark already adverse vs the new entry, the proposed stop sat ABOVE the mark and fired on the next quote.
+
+### What changed
+
+* `broker/positions.py:_v5104_maybe_fire_entry_2` -- on Entry-2 fill, set `pos["trail_state"] = TrailState.fresh()` and clear any dict-shaped trail bookkeeping. Trail re-arms naturally against the new averaged entry.
+* `engine/alarm_f_trail.py:propose_stop` -- new optional `last_close` parameter. When provided, refuse to propose a stop on the wrong side of the mark (LONG: stop >= mark - pad; SHORT: stop <= mark + pad). Defensive safety net against any future stale trail state, not just Entry-2.
+* `engine/sentinel.py:check_alarm_f` -- passes `last_close` (already in scope) through to `propose_stop`.
+
+### Tests
+
+* New `tests/test_v7_2_6_entry2_trail_reset.py` (8 tests) -- NVDA replay (LONG safety floor), SHORT mirror, well-clear positives, backwards compat without `last_close`, `TrailState.fresh()` invariants, pad scaling sanity.
+* Updated 2 stale assertions in `tests/test_v5_28_0.py` (entry=$100 BE pad is now $0.05, not $0.01 -- left over from v7.2.4 pad-scaling).
+* Full alarm-F + sentinel + trail + universe + v7 suite: 34 passed.
+
+---
+
 ## v7.1.0 (2026-05-06) -- Dynamic extended-hours universe overlay
 
 Feature release. Adds an opt-in earnings-driven ticker overlay that activates

@@ -1235,12 +1235,15 @@ def check_alarm_f(
         )
 
     # 2. Stop tighten \u2014 always evaluated (propose tighter active stop).
+    # v7.2.6: pass last_close so propose_stop can refuse a stop sitting
+    # on the wrong side of the current mark (Entry-2 top-up safety net).
     proposed = _f_propose_stop(
         state=state,
         side=side,
         entry_price=float(entry_price),
         atr_value=atr_value,
         current_stop_price=current_stop_price,
+        last_close=float(last_close),
     )
     if proposed is not None:
         actions.append(
