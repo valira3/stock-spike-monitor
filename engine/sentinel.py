@@ -55,6 +55,12 @@ from engine.alarm_f_trail import (
     update_trail as _f_update_trail,
 )
 from engine.momentum_state import TradeHVP
+from engine.v750_flags import (
+    EXIT_REASON_V750_EARLY_DITCH,
+    V750_EARLY_DITCH_ENABLED,
+    V750_EARLY_DITCH_RED_DOLLARS,
+    V750_EARLY_DITCH_WINDOW_SEC,
+)
 from engine.velocity_ratchet import (
     EXIT_REASON_VELOCITY_RATCHET,
     RATCHET_STOP_PCT,
@@ -103,6 +109,12 @@ EXIT_REASON_ALARM_D: str = "sentinel_d_adx_decline"
 # dollar rail. The price rail typically fires first in a slow drift
 # scenario where the dollar threshold has not yet been reached.
 EXIT_REASON_PRICE_STOP: str = "sentinel_a_stop_price"
+# v7.5.0 — Early-Ditch (Filter #3). Fires when a fresh position goes
+# meaningfully red within a short window after entry. Re-exported here
+# from engine.v750_flags so that downstream callers and tests that
+# already do ``from engine.sentinel import EXIT_REASON_*`` get it for
+# free. Keep the canonical string identical to the v750_flags module.
+_EXIT_REASON_V750_EARLY_DITCH: str = EXIT_REASON_V750_EARLY_DITCH
 # v6.5.1 \u2014 deep-stop rail that fires during the v6.4.4 min_hold
 # blocking window when price blows through 75 bp past entry. Bypasses
 # the gate so blow-through losses are capped without disabling it.
@@ -354,6 +366,7 @@ class SentinelResult:
                 EXIT_REASON_ALARM_B,
                 EXIT_REASON_ALARM_D,
                 EXIT_REASON_ALARM_F_EXIT,
+                EXIT_REASON_V750_EARLY_DITCH,
             ):
                 return True
         return False
@@ -373,6 +386,16 @@ class SentinelResult:
         """
         if not self.alarms:
             return None
+        # v7.5.0 — Early-Ditch sits at the top of the priority stack.
+        # Rationale: by construction it can only fire inside the first
+        # V750_EARLY_DITCH_WINDOW_SEC seconds, so any other rail that
+        # would also report this tick (R-2, A_STOP_PRICE, etc.) was
+        # already breached almost-instantly post-entry. Calling it
+        # ``v750_early_ditch`` instead of bucketing into A_STOP gives
+        # us clean attribution in the post-mortem.
+        for a in self.alarms:
+            if a.reason == EXIT_REASON_V750_EARLY_DITCH:
+                return EXIT_REASON_V750_EARLY_DITCH
         for a in self.alarms:
             if a.reason == EXIT_REASON_R2_HARD_STOP:
                 return EXIT_REASON_R2_HARD_STOP
@@ -1466,6 +1489,11 @@ def evaluate_sentinel(
     # v6.1.0 \u2014 pass-through to check_alarm_b stateful counter path.
     position_id: str | None = None,
     now_et: "datetime | None" = None,
+    # v7.5.0 \u2014 Early-Ditch (Filter #3). ISO-8601 entry timestamp;
+    # used to compute (now_ts - entry_ts) in seconds. Optional. When
+    # None or unparseable the early-ditch check silently no-ops, so
+    # legacy callers and tests that don't pass it still work.
+    entry_ts_utc: str | None = None,
 ) -> SentinelResult:
     """Evaluate ALL sentinel alarms for one position on one tick.
 
@@ -1487,6 +1515,41 @@ def evaluate_sentinel(
     ADX window has not seeded yet).
     """
     result = SentinelResult()
+
+    # v7.5.0 \u2014 Early-Ditch (Filter #3).
+    # Hooks BEFORE every other alarm so attribution stays clean. By
+    # design only fires inside V750_EARLY_DITCH_WINDOW_SEC of entry
+    # AND only when unrealized P/L crosses the small dollar threshold.
+    # Silent no-op when:
+    #   * the master flag is OFF,
+    #   * entry_ts_utc is missing or unparseable,
+    #   * unrealized_pnl >= -threshold (still green or barely red),
+    #   * we're past the window.
+    if V750_EARLY_DITCH_ENABLED and entry_ts_utc:
+        try:
+            from datetime import datetime as _dt
+
+            _entry_dt = _dt.fromisoformat(str(entry_ts_utc).replace("Z", "+00:00"))
+            _entry_epoch = _entry_dt.timestamp()
+            _age_sec = float(now_ts) - _entry_epoch
+            if (
+                0.0 <= _age_sec <= V750_EARLY_DITCH_WINDOW_SEC
+                and unrealized_pnl <= -abs(V750_EARLY_DITCH_RED_DOLLARS)
+            ):
+                result.alarms.append(
+                    SentinelAction(
+                        alarm="V750_EARLY_DITCH",
+                        reason=EXIT_REASON_V750_EARLY_DITCH,
+                        detail=(
+                            f"red=${unrealized_pnl:.2f} age={_age_sec:.1f}s "
+                            f"window={V750_EARLY_DITCH_WINDOW_SEC:.0f}s "
+                            f"thresh=${V750_EARLY_DITCH_RED_DOLLARS:.2f}"
+                        ),
+                    )
+                )
+        except (TypeError, ValueError):
+            # entry_ts_utc was malformed \u2014 don't crash the tick.
+            pass
 
     # Alarm A \u2014 always evaluated. v5.27.0: when the caller supplies
     # ``portfolio_value`` (positive float), the per-trade hard-loss

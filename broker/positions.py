@@ -558,6 +558,10 @@ def _run_sentinel(ticker, side, pos, current_price, bars):
             initial_stop_price=pos.get("initial_stop"),
             position_id=_v631_position_id,
             now_et=_v631_now_et,
+            # v7.5.0 \u2014 Early-Ditch needs the entry timestamp to
+            # compute (now - entry) seconds. ``entry_ts_utc`` is set
+            # on the position dict by the entry path; pass through.
+            entry_ts_utc=pos.get("entry_ts_utc"),
         )
         # v5.13.6 \u2014 emit lifecycle PHASE4 events on state changes
         # (best-effort, no-op when logger absent).
