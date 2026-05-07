@@ -56,6 +56,7 @@ from earnings_watcher.sizing import (
 )
 from earnings_watcher.exits import evaluate_exit, compute_elapsed_minutes
 from earnings_watcher.exits_atr import evaluate_exit_atr
+from earnings_watcher.rth_promotion import maybe_promote as _ew_maybe_promote_rth
 from earnings_watcher.signals_pmr import (
     evaluate_and_size_pmr,
     classify_pmr_skip,
@@ -541,7 +542,7 @@ STRATEGIES: Dict[str, Dict[str, Any]] = {
         ),
         "classifier": _classify_pmr_skip_adapter,
         "windows": ("premarket",),
-        "min_bars": 60,
+        "min_bars": 5,
         "default_on": False,
     },
     "pmc": {
@@ -550,7 +551,7 @@ STRATEGIES: Dict[str, Dict[str, Any]] = {
         ),
         "classifier": _classify_pmc_skip_adapter,
         "windows": ("afterhours",),
-        "min_bars": 30,
+        "min_bars": 5,
         "default_on": False,
     },
 }
@@ -792,6 +793,14 @@ def run_window_cycle(window: str) -> dict:
         evaluated += 1
         signals += 1
         signals_by_strat[chosen_strat] = signals_by_strat.get(chosen_strat, 0) + 1
+
+        # v7.2.1 \u2014 RTH promotion: PMR/PMC fires above the conv threshold get
+        # added to the next applicable RTH session's universe for one day.
+        # Best-effort; never blocks signal flow.
+        try:
+            _ew_maybe_promote_rth(intent, now_utc=now_utc)
+        except Exception as exc:
+            logger.warning("[EW-RUNNER] rth_promotion failed ticker=%s: %s", ticker, exc)
 
         result = submit_dmi_order(intent, paper=True)
         orders_submitted += 1

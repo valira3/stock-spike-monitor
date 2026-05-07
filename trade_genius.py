@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.2.0"
+BOT_VERSION = "7.2.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -865,6 +865,11 @@ def _init_tickers() -> None:
     """Populate TICKERS from disk on startup; fall back to defaults
     (which include the pinned SPY/QQQ). Always ensures the
     pinned symbols are present no matter what was on disk.
+
+    v7.2.1 \u2014 also merges any tickers promoted by EW (PMR/PMC) for today.
+    Promoted tickers are warmed (volume archive backfill) so the volume
+    gate evaluates them on the very next scan instead of falling through
+    cold-start passthrough.
     """
     from_disk = _load_tickers_file()
     base = from_disk if from_disk else list(TICKERS_DEFAULT)
@@ -872,6 +877,27 @@ def _init_tickers() -> None:
     for p in TICKERS_PINNED:
         if p not in base:
             base.append(p)
+
+    # v7.2.1 \u2014 EW -> RTH promotion merge. Best-effort, non-blocking.
+    promoted_added: list = []
+    try:
+        from earnings_watcher.rth_promotion import get_promotions_for as _ew_get_promotions
+        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        promoted = _ew_get_promotions(today_iso)
+        for sym in promoted:
+            s = _normalise_ticker(sym) if sym else None
+            if s and s not in base:
+                base.append(s)
+                promoted_added.append(s)
+        if promoted:
+            logger.info(
+                "[EW-RTH-PROMOTION] merge today=%s found=%d added=%d (already_present=%d)",
+                today_iso, len(promoted), len(promoted_added),
+                len(promoted) - len(promoted_added),
+            )
+    except Exception as exc:
+        logger.warning("[EW-RTH-PROMOTION] merge failed: %s", exc)
+
     # Cap at TICKERS_MAX just in case a hand-edited file went wild.
     base = base[:TICKERS_MAX]
     TICKERS.clear()
@@ -883,6 +909,29 @@ def _init_tickers() -> None:
         _save_tickers_file()
     logger.info("Ticker universe loaded: %d tickers (%s)",
                 len(TICKERS), ", ".join(TICKERS))
+
+    # v7.2.1 \u2014 warm volume history for the promoted tickers so the
+    # volume_bucket gate evaluates them on the first scan instead of
+    # COLDSTARTing. Done after TICKERS is published so a slow Alpaca
+    # response cannot delay universe init.
+    if promoted_added:
+        try:
+            from volume_warmup import warmup_ticker as _ew_warmup_ticker
+            for s in promoted_added:
+                try:
+                    res = _ew_warmup_ticker(s)
+                    logger.info(
+                        "[EW-RTH-PROMOTION] volume_warmup ticker=%s seeded=%d bars=%d errors=%d",
+                        s, res.get("days_seeded", 0),
+                        res.get("bars_written", 0), len(res.get("errors") or []),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[EW-RTH-PROMOTION] volume_warmup ticker=%s failed: %s",
+                        s, exc,
+                    )
+        except Exception as exc:
+            logger.warning("[EW-RTH-PROMOTION] warmup module import failed: %s", exc)
 
 
 def _fill_metrics_for_ticker(ticker: str) -> dict:
@@ -1007,8 +1056,22 @@ def add_ticker(sym: str) -> dict:
     _rebuild_trade_tickers()
     _save_tickers_file()
     metrics = _fill_metrics_for_ticker(t)
-    logger.info("ticker added: %s (pdc=%s or=%s)",
-                t, metrics["pdc"], metrics["or"])
+    # v7.2.1 \u2014 warm volume archive so volume_bucket gate doesn't COLDSTART
+    # on the next scan. Best-effort; metrics dict carries summary.
+    try:
+        from volume_warmup import warmup_ticker as _ew_warmup_ticker
+        warm = _ew_warmup_ticker(t)
+        metrics["volume_warmup"] = {
+            "days_seeded": warm.get("days_seeded", 0),
+            "bars_written": warm.get("bars_written", 0),
+            "errors": len(warm.get("errors") or []),
+        }
+    except Exception as exc:
+        logger.warning("volume_warmup %s failed: %s", t, exc)
+        metrics["volume_warmup"] = {"error": str(exc)[:80]}
+    logger.info("ticker added: %s (pdc=%s or=%s warm=%s)",
+                t, metrics["pdc"], metrics["or"],
+                metrics.get("volume_warmup", {}))
     # v5.6.1 D6 \u2014 [WATCHLIST_ADD] hook for replay universe-reconstruction.
     try:
         _v561_log_watchlist_add(t, reason="manual")
