@@ -1375,6 +1375,10 @@ def check_alarm_f(
     # 2. Stop tighten \u2014 always evaluated (propose tighter active stop).
     # v7.2.6: pass last_close so propose_stop can refuse a stop sitting
     # on the wrong side of the current mark (Entry-2 top-up safety net).
+    # v7.4.0: pass r_per_share so the MFE-ratchet candidate (default
+    # OFF) can gate on +1R favorable. r_dollars and shares are both
+    # already validated > 0 above, so this is safe.
+    _r_per_share_v740 = float(r_dollars) / float(shares)
     proposed = _f_propose_stop(
         state=state,
         side=side,
@@ -1382,6 +1386,7 @@ def check_alarm_f(
         atr_value=atr_value,
         current_stop_price=current_stop_price,
         last_close=float(last_close),
+        r_per_share=_r_per_share_v740,
     )
     if proposed is not None:
         actions.append(

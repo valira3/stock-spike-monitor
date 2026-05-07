@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.3.0"
+BOT_VERSION = "7.4.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -4790,6 +4790,41 @@ def record_post_loss_cooldown(
         book = _MAIN_BOOK
     book.record_post_loss(ticker, side, pnl, exit_ts_utc=exit_ts_utc)
 
+    # EXPERIMENT: intraday loss-streak kill switch (env-gated).
+    # When LOSS_STREAK_KILL_N losses occur within LOSS_STREAK_KILL_WINDOW_MIN
+    # minutes, halt trading for the rest of the session. Off by default.
+    try:
+        import os as _os_streak
+        import datetime as _dt_streak
+        _streak_kill_n = int(_os_streak.environ.get("LOSS_STREAK_KILL_N", "0") or "0")
+        _streak_kill_win = float(_os_streak.environ.get("LOSS_STREAK_KILL_WINDOW_MIN", "30") or "30")
+        if _streak_kill_n > 0 and float(pnl) < 0:
+            global _loss_streak_log, _trading_halted, _trading_halted_reason
+            try:
+                _loss_streak_log
+            except NameError:
+                _loss_streak_log = []
+            _now_ts = exit_ts_utc if exit_ts_utc else _dt_streak.datetime.now(_dt_streak.timezone.utc)
+            if isinstance(_now_ts, str):
+                _now_ts = _dt_streak.datetime.fromisoformat(_now_ts.replace("Z", "+00:00"))
+            _loss_streak_log.append(_now_ts)
+            # prune outside window
+            _cutoff = _now_ts - _dt_streak.timedelta(minutes=_streak_kill_win)
+            _loss_streak_log = [t for t in _loss_streak_log if t >= _cutoff]
+            if len(_loss_streak_log) >= _streak_kill_n and not _trading_halted:
+                _trading_halted = True
+                _trading_halted_reason = (
+                    "loss_streak_kill: " + str(len(_loss_streak_log))
+                    + " losses in last " + str(_streak_kill_win) + "min"
+                )
+                try:
+                    logger.warning("[STREAK_KILL] %s", _trading_halted_reason)
+                except Exception:
+                    pass
+    except Exception:
+        # Never let the experimental gate take down a real trade record.
+        pass
+
 
 def record_post_exit_cooldown(
     ticker: str,
@@ -6522,6 +6557,13 @@ def reset_daily_state():
 
     _trading_halted = False
     _trading_halted_reason = ""
+    # EXPERIMENT: clear loss-streak log at the daily reset so prior day's
+    # losses don't carry forward into the new session.
+    try:
+        global _loss_streak_log
+        _loss_streak_log = []
+    except Exception:
+        pass
 
     # Cross-day cooldown pruning: _last_exit_time persists across restarts,
     # so yesterday's 15:54 exit would keep today's 09:35 first-5-min entry

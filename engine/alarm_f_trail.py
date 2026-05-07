@@ -47,8 +47,9 @@ from typing import Iterable, Optional
 # while winners still have momentum; Stage 3 follows quickly to lock the
 # bulk of the move. Original conservative defaults are preserved in the
 # spec doc for reference.
-BE_ARM_R_MULT: float = 1.0
-STAGE2_ARM_R_MULT: float = 1.0
+import os as _os_env
+BE_ARM_R_MULT: float = float(_os_env.environ.get("BE_ARM_R_MULT", "1.0"))
+STAGE2_ARM_R_MULT: float = float(_os_env.environ.get("STAGE2_ARM_R_MULT", "1.0"))
 # After Stage 2 arms, tighten when favorable advances by this many ATRs
 # beyond the stage-2 arm price.
 STAGE3_ARM_ATR_MULT: float = 0.5
@@ -77,6 +78,19 @@ MIN_BARS_BEFORE_ARM: int = 3
 # breakeven once Stage 1 has armed (i.e. after >= 1R favorable).
 BE_PAD_PCT: float = 0.0005  # 5bp
 BE_PAD_FLOOR: float = 0.01  # $0.01 minimum
+
+# v7.4.0 \u2014 MFE-Ratchet Trail (Lever #3, default OFF).
+#
+# Once favorable >= V740_MFE_RATCHET_ARM_R * 1R, propose a stop at
+# entry + V740_MFE_RATCHET_FRAC * (peak_close - entry)  for LONG
+# entry - V740_MFE_RATCHET_FRAC * (entry - peak_close)  for SHORT
+# This locks a fraction of the run while keeping the existing
+# BE+pad / chandelier / one-way ratchet machinery intact \u2014 the
+# side-aware max/min in propose_stop picks whichever candidate is
+# tightest. Designed to stack on v7.3.0 stop-price hysteresis.
+V740_MFE_RATCHET_ENABLED: bool = _os_env.environ.get("V740_MFE_RATCHET_ENABLED", "0").lower() in ("1", "true", "yes")
+V740_MFE_RATCHET_ARM_R: float = float(_os_env.environ.get("V740_MFE_RATCHET_ARM_R", "1.0"))
+V740_MFE_RATCHET_FRAC: float = float(_os_env.environ.get("V740_MFE_RATCHET_FRAC", "0.5"))
 
 # Stage codes
 STAGE_INACTIVE: int = 0
@@ -291,6 +305,7 @@ def propose_stop(
     atr_value: Optional[float],
     current_stop_price: Optional[float],
     last_close: Optional[float] = None,
+    r_per_share: Optional[float] = None,
 ) -> Optional[float]:
     """Return the proposed Alarm F stop, or ``None`` if no proposal.
 
@@ -338,6 +353,29 @@ def propose_stop(
             candidates.append(round(float(state.peak_close) - mult * float(atr_value), 4))
         else:
             candidates.append(round(float(state.peak_close) + mult * float(atr_value), 4))
+
+    # v7.4.0 \u2014 MFE-Ratchet candidate (Lever #3, default OFF).
+    # Once favorable >= V740_MFE_RATCHET_ARM_R * 1R, lock in a fraction
+    # of the run as a stop floor. The side-aware max/min below picks
+    # whichever candidate is tightest; the existing one-way ratchet
+    # via last_proposed_stop ensures the floor never decays. Disabled
+    # entirely when the env flag is off OR when r_per_share is unknown
+    # (so legacy callers retain identical behaviour).
+    if (
+        V740_MFE_RATCHET_ENABLED
+        and r_per_share is not None
+        and r_per_share > 0.0
+        and state.peak_close is not None
+    ):
+        favorable = _favorable(side_u, float(entry_price), float(state.peak_close))
+        arm_threshold = V740_MFE_RATCHET_ARM_R * float(r_per_share)
+        if favorable >= arm_threshold:
+            run = float(state.peak_close) - float(entry_price) if side_u == SIDE_LONG else float(entry_price) - float(state.peak_close)
+            lock = V740_MFE_RATCHET_FRAC * run
+            if side_u == SIDE_LONG:
+                candidates.append(round(float(entry_price) + lock, 4))
+            else:
+                candidates.append(round(float(entry_price) - lock, 4))
 
     # Previously proposed F stop \u2014 enforces the one-way ratchet.
     if state.last_proposed_stop is not None:
