@@ -782,8 +782,15 @@ def transition_phase_to_extraction(state: dict) -> dict:
 
 P3_AUTH_DI_THRESHOLD = 25.0  # 5m DMI master anchor (strict >)
 P3_FULL_DI_THRESHOLD = 30.0  # 1m DI for FULL / add-on (strict >)
-P3_SCALED_A_DI_LO = 22.0  # v6.8.0 C3: aligned with Entry-1 gate (was 25.0)
+# v15.0 SPEC lines 46/64: Scaled Strike triggers on 1m DI between 25 and 30.
+# When V15_SCALED_DI_FLOOR_ENABLED is on (default in this fork) the floor
+# is bumped from the v6.8.0 relaxation (22.0) back to the spec floor (25.0).
+# The active floor is resolved at call time inside ``evaluate_strike_sizing``
+# so smoke / unit tests can monkeypatch ``engine.v15_flags`` cleanly.
+P3_SCALED_A_DI_LO = 22.0  # v6.8.0 C3 baseline; v15 may override to 25.0
 P3_SCALED_A_DI_HI = 30.0  # 1m DI upper bound for SCALED_A (inclusive)
+# v15.0 SPEC lines 43/61: "Momentum Check: 5m ADX > 20".
+P3_MOMENTUM_ADX_5M_DEFAULT = 20.0
 
 SIZE_LABEL_FULL = "FULL"
 SIZE_LABEL_SCALED_A = "SCALED_A"
@@ -828,6 +835,7 @@ def evaluate_strike_sizing(
     intended_shares: int,
     held_shares_this_strike: int = 0,
     alarm_e_blocked: bool = False,
+    adx_5m: float | None = None,
 ) -> StrikeSizingDecision:
     """Pure decision: how big a Strike entry should fire (or whether to wait).
 
@@ -856,9 +864,46 @@ def evaluate_strike_sizing(
             SIZE_LABEL_WAIT, 0, f"5m DI {di_5m} <= {P3_AUTH_DI_THRESHOLD} (anchor fail)"
         )
 
+    # v15.0 SPEC lines 43/61 \u2014 Momentum Check: 5m ADX > 20.
+    # When V15_REQUIRE_5M_ADX_20 is on (default in this fork) and the
+    # caller supplies adx_5m, suppress entries below threshold. Missing
+    # ADX (None) during warmup degrades to WAIT (consistent with the
+    # existing missing-DI behaviour above).
+    try:
+        from engine.v15_flags import (
+            V15_REQUIRE_5M_ADX_20 as _v15_adx_on,
+            V15_MOMENTUM_ADX_5M_MIN as _v15_adx_min,
+        )
+    except Exception:
+        _v15_adx_on = False
+        _v15_adx_min = P3_MOMENTUM_ADX_5M_DEFAULT
+    if _v15_adx_on:
+        if adx_5m is None:
+            return StrikeSizingDecision(
+                SIZE_LABEL_WAIT, 0, "5m ADX is None (v15 momentum gate)"
+            )
+        if float(adx_5m) <= float(_v15_adx_min):
+            return StrikeSizingDecision(
+                SIZE_LABEL_WAIT,
+                0,
+                f"5m ADX {adx_5m} <= {_v15_adx_min} (v15 momentum gate)",
+            )
+
     if di_1m is None:
         return StrikeSizingDecision(SIZE_LABEL_WAIT, 0, "1m DI is None")
     di1 = float(di_1m)
+
+    # v15.0 SPEC lines 46/64 \u2014 Scaled Strike DI floor. Resolve the
+    # active floor at call time so unit tests can flip the flag cleanly.
+    try:
+        from engine.v15_flags import (
+            V15_SCALED_DI_FLOOR_ENABLED as _v15_scaled_on,
+            V15_SCALED_DI_FLOOR as _v15_scaled_floor,
+        )
+    except Exception:
+        _v15_scaled_on = False
+        _v15_scaled_floor = P3_SCALED_A_DI_LO
+    scaled_lo = float(_v15_scaled_floor) if _v15_scaled_on else P3_SCALED_A_DI_LO
 
     held = max(0, int(held_shares_this_strike))
 
@@ -890,16 +935,16 @@ def evaluate_strike_sizing(
             intended,
             f"FULL 1m DI {di1:.2f} > {P3_FULL_DI_THRESHOLD}",
         )
-    if P3_SCALED_A_DI_LO <= di1 <= P3_SCALED_A_DI_HI:
+    if scaled_lo <= di1 <= P3_SCALED_A_DI_HI:
         return StrikeSizingDecision(
             SIZE_LABEL_SCALED_A,
             intended // 2,
-            f"SCALED_A 1m DI {di1:.2f} in [{P3_SCALED_A_DI_LO},{P3_SCALED_A_DI_HI}]",
+            f"SCALED_A 1m DI {di1:.2f} in [{scaled_lo},{P3_SCALED_A_DI_HI}]",
         )
     return StrikeSizingDecision(
         SIZE_LABEL_WAIT,
         0,
-        f"1m DI {di1:.2f} below {P3_SCALED_A_DI_LO} (no tier match)",
+        f"1m DI {di1:.2f} below {scaled_lo} (no tier match)",
     )
 
 

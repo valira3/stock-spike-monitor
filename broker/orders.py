@@ -1137,6 +1137,10 @@ def execute_breakout(ticker, current_price, side):
         else:
             _v15_di_5m = _di_streams.get("di_minus_5m")
             _v15_di_1m = _di_streams.get("di_minus_1m")
+        # v15.0 SPEC lines 43/61 \u2014 supply 5m ADX so the spec momentum
+        # gate (5m ADX > 20) can be enforced inside ``evaluate_strike_sizing``.
+        _adx_streams = tg.v5_adx_1m_5m(ticker) if hasattr(tg, "v5_adx_1m_5m") else {}
+        _v15_adx_5m = _adx_streams.get("adx_5m") if isinstance(_adx_streams, dict) else None
         _v15_decision = _v15_eval_sizing(
             side="LONG" if cfg.side.is_long else "SHORT",
             di_5m=_v15_di_5m,
@@ -1145,6 +1149,7 @@ def execute_breakout(ticker, current_price, side):
             intended_shares=int(starter_shares) * 2,
             held_shares_this_strike=0,
             alarm_e_blocked=False,
+            adx_5m=_v15_adx_5m,
         )
         _v15_size_label = _v15_decision.size_label
         _v15_size_reason = _v15_decision.reason

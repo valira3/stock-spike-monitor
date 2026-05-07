@@ -158,7 +158,17 @@ ALARM_B_ENABLED: bool = False
 # compat). Flip off via monkeypatch in tests or env override if shadow data
 # shows regression before a full rollback is warranted.
 _V610_ATR_TRAIL_ENABLED: bool = True
+# v15.0 SPEC lines 30 + 83: divergence detected while a position is open
+# ratchets STOP MARKET to current price \u00b1 0.25%. Default OFF in v7.x to
+# preserve historical behaviour; the v15 fork flips this on at import via
+# ``engine.v15_flags.V15_ALARM_E_POST_ENABLED``.
 ALARM_E_ENABLED: bool = False
+try:
+    from engine.v15_flags import V15_ALARM_E_POST_ENABLED as _v15_alarm_e_post
+    if _v15_alarm_e_post:
+        ALARM_E_ENABLED = True
+except Exception:
+    pass
 
 # v6.4.4 \u2014 min-hold gate on PRICE_STOP (Alarm-A protective stop).
 # Devi 84day_2026_sip analysis: 266/269 under-10min pairs exit on

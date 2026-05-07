@@ -35,10 +35,19 @@ import trade_genius as tg  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _clean_session():
+def _clean_session(monkeypatch):
     """Reset all session-scoped strike state between tests so a prior
     test never leaves a partially-populated _v570_strike_pnl that
-    leaks into the next one's unlock decision."""
+    leaks into the next one's unlock decision.
+
+    v15 fork note: V15_HARD_STRIKE_CAP defaults ON in this branch and
+    short-circuits the v7.0.2 recursive unlock. The recursion is still
+    a valid v7.x behaviour that we want to keep tested as the legacy
+    path \u2014 disable the v15 hard cap for the duration of these
+    tests so the v7.0.2 contract remains exercised.
+    """
+    from engine import v15_flags as _vf
+    monkeypatch.setattr(_vf, "V15_HARD_STRIKE_CAP", False)
     tg._v570_strike_counts.clear()
     tg._v570_strike_pnl.clear()
     tg._v570_strike_date = tg._v570_session_today_str()

@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.4.0"
+BOT_VERSION = "15.0.0-experimental"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -2169,6 +2169,16 @@ def strike_entry_allowed(
     the cap at the current count (no further strikes that day).
     """
     if _v570_strike_count(ticker) >= 3:
+        # v15.0 SPEC line 21: "Maximum 3 Strikes per ticker per day."
+        # When V15_HARD_STRIKE_CAP is on (default in this fork) the
+        # v7.0.2 recursive-unlock relaxation is disabled \u2014 strike
+        # count >= 3 is a hard stop regardless of closed-strike P/L.
+        try:
+            from engine.v15_flags import V15_HARD_STRIKE_CAP as _v15_hard_cap
+        except Exception:
+            _v15_hard_cap = True
+        if _v15_hard_cap:
+            return False
         # v7.0.2 \u2014 recursive unlock when every closed strike was a
         # winner. STRIKE-FLAT-GATE still applies below.
         if not _v702_all_closed_strikes_positive(ticker):
