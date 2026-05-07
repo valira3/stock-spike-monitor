@@ -47,9 +47,15 @@ from typing import Iterable, Optional
 # while winners still have momentum; Stage 3 follows quickly to lock the
 # bulk of the move. Original conservative defaults are preserved in the
 # spec doc for reference.
+# v7.4.0-fixup: revert undocumented env scope-creep on BE_ARM_R_MULT
+# and STAGE2_ARM_R_MULT. The v7.4.0 commit silently exposed these as
+# env-overridable but the commit message only advertised V740_* knobs;
+# accidentally setting them in prod could disarm BE entirely. If you
+# want a sweep lever here, reintroduce explicitly under a V74x_* prefix
+# with a doc'd commit. Plain constants restored.
 import os as _os_env
-BE_ARM_R_MULT: float = float(_os_env.environ.get("BE_ARM_R_MULT", "1.0"))
-STAGE2_ARM_R_MULT: float = float(_os_env.environ.get("STAGE2_ARM_R_MULT", "1.0"))
+BE_ARM_R_MULT: float = 1.0
+STAGE2_ARM_R_MULT: float = 1.0
 # After Stage 2 arms, tighten when favorable advances by this many ATRs
 # beyond the stage-2 arm price.
 STAGE3_ARM_ATR_MULT: float = 0.5
@@ -367,11 +373,15 @@ def propose_stop(
         and r_per_share > 0.0
         and state.peak_close is not None
     ):
+        # v7.4.0-fixup: ``favorable`` already equals the run distance
+        # by construction of ``_favorable`` (peak_close - entry for
+        # LONG, entry - peak_close for SHORT). The original code re-
+        # derived ``run`` with the same formula. Use ``favorable``
+        # directly to keep the invariant explicit.
         favorable = _favorable(side_u, float(entry_price), float(state.peak_close))
         arm_threshold = V740_MFE_RATCHET_ARM_R * float(r_per_share)
         if favorable >= arm_threshold:
-            run = float(state.peak_close) - float(entry_price) if side_u == SIDE_LONG else float(entry_price) - float(state.peak_close)
-            lock = V740_MFE_RATCHET_FRAC * run
+            lock = V740_MFE_RATCHET_FRAC * favorable
             if side_u == SIDE_LONG:
                 candidates.append(round(float(entry_price) + lock, 4))
             else:

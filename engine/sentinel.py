@@ -733,10 +733,15 @@ def check_alarm_a_stop_price(
     # legacy single-tick path below. Even when active, a deep-breach
     # override fires immediately when |cp - sp| / entry exceeds
     # _V730_STOP_DEEP_FRAC \u2014 this caps the downside on gap-throughs.
+    # v7.3.0-fixup: also require last_1m_close_ts so the anti-double-
+    # count guard is meaningful. Without a bar timestamp we cannot tell
+    # 'same bar tick-by-tick' from 'next bar' \u2014 fall back to the
+    # single-tick path rather than count incorrectly.
     hysteresis_active: bool = (
         _V730_STOP_HYSTERESIS_ENABLED
         and position_id is not None
         and last_1m_close is not None
+        and last_1m_close_ts is not None
         and _V730_STOP_HYSTERESIS_BARS > 1
     )
     deep_breach: bool = False
@@ -770,29 +775,28 @@ def check_alarm_a_stop_price(
             trail_tag = " atr_trail=1" if atr_trail_active else ""
             if hysteresis_active and not deep_breach:
                 # Bar-confirmation path: increment counter only when the
-                # 1m close timestamp advances (prevents tick-by-tick
-                # double-counting in live mode), and only when the close
-                # itself \u2014 not the live mark \u2014 is beyond the stop.
+                # 1m close timestamp strictly advances (prevents tick-
+                # by-tick double-counting in live mode), and only when
+                # the close itself \u2014 not the live mark \u2014 is beyond
+                # the stop. last_1m_close_ts is guaranteed non-None
+                # here by hysteresis_active.
                 close_beyond = float(last_1m_close) <= sp
                 last_seen = _stop_cross_last_ts.get(position_id)
                 ts_advanced = (
-                    last_1m_close_ts is None
-                    or last_seen is None
+                    last_seen is None
                     or float(last_1m_close_ts) > float(last_seen)
                 )
                 if close_beyond and ts_advanced:
                     n = _stop_cross_pending.get(position_id, 0) + 1
                     _stop_cross_pending[position_id] = n
-                    if last_1m_close_ts is not None:
-                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+                    _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
                     if n >= _V730_STOP_HYSTERESIS_BARS:
                         fired.append(_build_action("LONG", trail_tag,
                             f" hyst_bars={n}"))
                 elif not close_beyond:
                     # Close pulled back inside the stop; reset counter.
                     _stop_cross_pending[position_id] = 0
-                    if last_1m_close_ts is not None:
-                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+                    _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
                 # else: same bar, close still beyond \u2014 no double-count.
             else:
                 # Legacy single-tick path OR deep-breach override.
@@ -802,25 +806,23 @@ def check_alarm_a_stop_price(
         if cp >= sp:
             trail_tag = " atr_trail=1" if atr_trail_active else ""
             if hysteresis_active and not deep_breach:
+                # See LONG branch above for the ts_advanced rationale.
                 close_beyond = float(last_1m_close) >= sp
                 last_seen = _stop_cross_last_ts.get(position_id)
                 ts_advanced = (
-                    last_1m_close_ts is None
-                    or last_seen is None
+                    last_seen is None
                     or float(last_1m_close_ts) > float(last_seen)
                 )
                 if close_beyond and ts_advanced:
                     n = _stop_cross_pending.get(position_id, 0) + 1
                     _stop_cross_pending[position_id] = n
-                    if last_1m_close_ts is not None:
-                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+                    _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
                     if n >= _V730_STOP_HYSTERESIS_BARS:
                         fired.append(_build_action("SHORT", trail_tag,
                             f" hyst_bars={n}"))
                 elif not close_beyond:
                     _stop_cross_pending[position_id] = 0
-                    if last_1m_close_ts is not None:
-                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+                    _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
             else:
                 hyst_tag = " deep_breach=1" if deep_breach else ""
                 fired.append(_build_action("SHORT", trail_tag, hyst_tag))
@@ -1068,6 +1070,23 @@ def reset_ema_cross_pending(position_id: str | None = None) -> None:
 
 
 # === end v6.1.0 ema-cross confirmation helpers ===
+
+
+def reset_stop_cross_pending(position_id: str | None = None) -> None:
+    """Reset the v7.3.0 stop-price hysteresis counter (mirror of
+    ``reset_ema_cross_pending``).
+
+    When called with a ``position_id``, only that position's counter
+    and last-seen-ts are cleared (use on position close). When called
+    with no argument (or ``None``), both module-level dicts are cleared
+    (use in tests or at session reset).
+    """
+    if position_id is None:
+        _stop_cross_pending.clear()
+        _stop_cross_last_ts.clear()
+    else:
+        _stop_cross_pending.pop(position_id, None)
+        _stop_cross_last_ts.pop(position_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1700,4 +1719,11 @@ __all__ = [
     "_V610_LUNCH_SUPPRESSION_ENABLED",
     "_ema_cross_pending",
     "reset_ema_cross_pending",
+    # v7.3.0 stop-hysteresis exports
+    "_V730_STOP_HYSTERESIS_ENABLED",
+    "_V730_STOP_HYSTERESIS_BARS",
+    "_V730_STOP_DEEP_FRAC",
+    "_stop_cross_pending",
+    "_stop_cross_last_ts",
+    "reset_stop_cross_pending",
 ]

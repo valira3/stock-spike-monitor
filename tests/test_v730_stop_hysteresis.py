@@ -258,3 +258,57 @@ def test_no_fire_when_close_inside_stop_but_mark_outside(sentinel_module):
     assert len(fired) == 0
     # Counter should not have advanced since the close wasn't beyond.
     assert sentinel_module._stop_cross_pending.get(pid, 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# v7.3.0-fixup: anti-double-count guard requires last_1m_close_ts.
+# Without it we cannot tell same-bar tick-by-tick from next-bar advance,
+# so the function falls back to the legacy single-tick path rather
+# than counting blindly (the previous permissive 'is None means
+# advanced' rule silently disabled the guard).
+# ---------------------------------------------------------------------------
+def test_missing_close_ts_falls_back_to_single_tick(sentinel_module):
+    """position_id + last_1m_close present but last_1m_close_ts None
+    must fall back to legacy single-tick fire (not enter the broken
+    'always advanced' code path)."""
+    pid = "LONG:AAPL:no_ts"
+    fired = sentinel_module.check_alarm_a_stop_price(
+        side="LONG", current_price=99.49, current_stop_price=99.50,
+        entry_price=100.00, position_id=pid,
+        last_1m_close=99.49, last_1m_close_ts=None,
+    )
+    # Single-tick legacy path: fires immediately.
+    assert len(fired) == 1
+    # No counter touched because hysteresis is inactive when ts missing.
+    assert pid not in sentinel_module._stop_cross_pending
+
+
+# ---------------------------------------------------------------------------
+# v7.3.0-fixup: cleanup helper mirrors reset_ema_cross_pending().
+# ---------------------------------------------------------------------------
+def test_reset_stop_cross_pending_per_position(sentinel_module):
+    """Per-position reset clears both dicts for that position only."""
+    sentinel_module._stop_cross_pending["a"] = 2
+    sentinel_module._stop_cross_pending["b"] = 1
+    sentinel_module._stop_cross_last_ts["a"] = 1000.0
+    sentinel_module._stop_cross_last_ts["b"] = 1001.0
+
+    sentinel_module.reset_stop_cross_pending("a")
+
+    assert "a" not in sentinel_module._stop_cross_pending
+    assert "a" not in sentinel_module._stop_cross_last_ts
+    assert sentinel_module._stop_cross_pending.get("b") == 1
+    assert sentinel_module._stop_cross_last_ts.get("b") == 1001.0
+
+
+def test_reset_stop_cross_pending_all(sentinel_module):
+    """No-arg reset clears both dicts entirely."""
+    sentinel_module._stop_cross_pending["a"] = 2
+    sentinel_module._stop_cross_pending["b"] = 1
+    sentinel_module._stop_cross_last_ts["a"] = 1000.0
+    sentinel_module._stop_cross_last_ts["b"] = 1001.0
+
+    sentinel_module.reset_stop_cross_pending()
+
+    assert sentinel_module._stop_cross_pending == {}
+    assert sentinel_module._stop_cross_last_ts == {}
