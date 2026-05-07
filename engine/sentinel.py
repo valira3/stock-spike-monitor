@@ -222,6 +222,47 @@ _ema_cross_pending: dict[str, int] = {}
 # === end v6.1.0 ema-cross confirmation state ===
 
 
+# === v7.3.0 — stop-price hysteresis state ===
+# 83-day clean baseline forensics: 487 trades exit in <15min via
+# sentinel_a_stop_price; 193 of those (40%) close at less than 0.45%
+# adverse — shallower than the configured 0.5% STOP_PCT_OF_ENTRY —
+# costing -$4,798. That damage is bid/ask noise + intrabar wicks
+# tripping the single-tick price-stop. The hysteresis layer requires
+# N consecutive 1m closes beyond the stop level before firing, with
+# a deep-breach override for catastrophic moves.
+#
+# Feature flag: env-overridable so the legacy single-tick path can
+# be restored without code changes (set V730_STOP_HYSTERESIS_ENABLED=0).
+_V730_STOP_HYSTERESIS_ENABLED: bool = (
+    str(_os.environ.get("V730_STOP_HYSTERESIS_ENABLED", "1")).strip().lower()
+    not in ("", "0", "false", "off", "no")
+)
+# Number of consecutive 1m closes beyond the stop required to fire.
+# 1 = legacy single-tick behavior; 2 = require two-bar confirmation.
+_V730_STOP_HYSTERESIS_BARS: int = int(
+    _os.environ.get("V730_STOP_HYSTERESIS_BARS", "2")
+)
+# Deep-breach override: if the live mark exceeds the stop by more than
+# this fraction of entry, fire immediately (no waiting). Caps the
+# downside on gap-throughs and flash moves. 0.0075 = 0.75% (1.5x the
+# nominal 0.5% stop). Set to a very large value to disable the override.
+_V730_STOP_DEEP_FRAC: float = float(
+    _os.environ.get("V730_STOP_DEEP_FRAC", "0.0075")
+)
+# Per-position counter keyed by position_id. Tracks consecutive 1m
+# bar closes that have crossed the stop. Resets to 0 when a close
+# pulls back inside the stop, or when the position closes (the caller
+# is responsible for cleanup; stale entries are harmless because the
+# position_id is unique per entry).
+_stop_cross_pending: dict[str, int] = {}
+# Per-position last seen 1m bar timestamp — prevents double-counting
+# when evaluate_sentinel is called multiple times within the same
+# 1m bar window (e.g., live mode tick-by-tick). Increment only when
+# the 1m close timestamp advances.
+_stop_cross_last_ts: dict[str, float] = {}
+# === end v7.3.0 stop-hysteresis state ===
+
+
 # === v6.3.0 \u2014 Sentinel B noise-cross filter ===
 # Weekly backtest Apr 27\u2014May 1 found Sentinel B had 6% win-rate /
 # -$277 across 17 fires, vs Sentinel A 70% / +$259. The 16 losers all
@@ -606,6 +647,16 @@ def check_alarm_a_stop_price(
     position_pnl_per_share: float | None = None,
     peak_open_profit_per_share: float | None = None,
     entry_price: float | None = None,
+    # v7.3.0 \u2014 stop-price hysteresis. When position_id + last_1m_close
+    # are both supplied AND _V730_STOP_HYSTERESIS_ENABLED is True, the
+    # function requires _V730_STOP_HYSTERESIS_BARS consecutive 1m bar
+    # closes beyond the stop before firing. A deep-breach override
+    # (_V730_STOP_DEEP_FRAC of entry_price) fires immediately on
+    # catastrophic moves regardless of bar count. Sits out silently
+    # (legacy single-tick path) when any required input is missing.
+    position_id: str | None = None,
+    last_1m_close: float | None = None,
+    last_1m_close_ts: float | None = None,
 ) -> list[SentinelAction]:
     """Evaluate the v5.31.4 price-based protective stop.
 
@@ -676,29 +727,116 @@ def check_alarm_a_stop_price(
         except (TypeError, ValueError):
             pass  # fall through to fixed-cents path
 
+    # v7.3.0 \u2014 stop-price hysteresis. Active iff the feature flag is on,
+    # the caller supplied a position_id (state key), AND a last_1m_close
+    # (the bar to confirm against). When inactive, falls through to the
+    # legacy single-tick path below. Even when active, a deep-breach
+    # override fires immediately when |cp - sp| / entry exceeds
+    # _V730_STOP_DEEP_FRAC \u2014 this caps the downside on gap-throughs.
+    hysteresis_active: bool = (
+        _V730_STOP_HYSTERESIS_ENABLED
+        and position_id is not None
+        and last_1m_close is not None
+        and _V730_STOP_HYSTERESIS_BARS > 1
+    )
+    deep_breach: bool = False
+    if hysteresis_active and entry_price is not None:
+        try:
+            ep_for_deep = float(entry_price)
+            if ep_for_deep > 0.0:
+                if side == SIDE_LONG and cp <= sp:
+                    deep_breach = (sp - cp) / ep_for_deep >= _V730_STOP_DEEP_FRAC
+                elif side == SIDE_SHORT and cp >= sp:
+                    deep_breach = (cp - sp) / ep_for_deep >= _V730_STOP_DEEP_FRAC
+        except (TypeError, ValueError):
+            pass
+
     fired: list[SentinelAction] = []
+
+    def _build_action(_side_tag: str, _trail_tag: str, _hyst_tag: str) -> SentinelAction:
+        op = "<=" if _side_tag == "LONG" else ">="
+        return SentinelAction(
+            alarm="A_STOP_PRICE",
+            reason=EXIT_REASON_PRICE_STOP,
+            detail=(
+                f"side={_side_tag} mark={cp:.4f} {op} stop={sp:.4f}"
+                f"{_trail_tag}{_hyst_tag}"
+            ),
+            detail_stop_price=sp,
+        )
+
     if side == SIDE_LONG:
         if cp <= sp:
             trail_tag = " atr_trail=1" if atr_trail_active else ""
-            fired.append(
-                SentinelAction(
-                    alarm="A_STOP_PRICE",
-                    reason=EXIT_REASON_PRICE_STOP,
-                    detail=(f"side=LONG mark={cp:.4f} <= stop={sp:.4f}{trail_tag}"),
-                    detail_stop_price=sp,
+            if hysteresis_active and not deep_breach:
+                # Bar-confirmation path: increment counter only when the
+                # 1m close timestamp advances (prevents tick-by-tick
+                # double-counting in live mode), and only when the close
+                # itself \u2014 not the live mark \u2014 is beyond the stop.
+                close_beyond = float(last_1m_close) <= sp
+                last_seen = _stop_cross_last_ts.get(position_id)
+                ts_advanced = (
+                    last_1m_close_ts is None
+                    or last_seen is None
+                    or float(last_1m_close_ts) > float(last_seen)
                 )
-            )
+                if close_beyond and ts_advanced:
+                    n = _stop_cross_pending.get(position_id, 0) + 1
+                    _stop_cross_pending[position_id] = n
+                    if last_1m_close_ts is not None:
+                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+                    if n >= _V730_STOP_HYSTERESIS_BARS:
+                        fired.append(_build_action("LONG", trail_tag,
+                            f" hyst_bars={n}"))
+                elif not close_beyond:
+                    # Close pulled back inside the stop; reset counter.
+                    _stop_cross_pending[position_id] = 0
+                    if last_1m_close_ts is not None:
+                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+                # else: same bar, close still beyond \u2014 no double-count.
+            else:
+                # Legacy single-tick path OR deep-breach override.
+                hyst_tag = " deep_breach=1" if deep_breach else ""
+                fired.append(_build_action("LONG", trail_tag, hyst_tag))
     elif side == SIDE_SHORT:
         if cp >= sp:
             trail_tag = " atr_trail=1" if atr_trail_active else ""
-            fired.append(
-                SentinelAction(
-                    alarm="A_STOP_PRICE",
-                    reason=EXIT_REASON_PRICE_STOP,
-                    detail=(f"side=SHORT mark={cp:.4f} >= stop={sp:.4f}{trail_tag}"),
-                    detail_stop_price=sp,
+            if hysteresis_active and not deep_breach:
+                close_beyond = float(last_1m_close) >= sp
+                last_seen = _stop_cross_last_ts.get(position_id)
+                ts_advanced = (
+                    last_1m_close_ts is None
+                    or last_seen is None
+                    or float(last_1m_close_ts) > float(last_seen)
                 )
-            )
+                if close_beyond and ts_advanced:
+                    n = _stop_cross_pending.get(position_id, 0) + 1
+                    _stop_cross_pending[position_id] = n
+                    if last_1m_close_ts is not None:
+                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+                    if n >= _V730_STOP_HYSTERESIS_BARS:
+                        fired.append(_build_action("SHORT", trail_tag,
+                            f" hyst_bars={n}"))
+                elif not close_beyond:
+                    _stop_cross_pending[position_id] = 0
+                    if last_1m_close_ts is not None:
+                        _stop_cross_last_ts[position_id] = float(last_1m_close_ts)
+            else:
+                hyst_tag = " deep_breach=1" if deep_breach else ""
+                fired.append(_build_action("SHORT", trail_tag, hyst_tag))
+    else:
+        return fired
+
+    # If the live mark pulled back inside the stop, reset the bar
+    # counter so a fresh cross starts at zero. (Only meaningful when
+    # hysteresis_active and there's a tracked counter; harmless
+    # otherwise.)
+    if hysteresis_active and not fired:
+        if side == SIDE_LONG and cp > sp:
+            _stop_cross_pending.pop(position_id, None)
+        elif side == SIDE_SHORT and cp < sp:
+            _stop_cross_pending.pop(position_id, None)
+
     return fired
 
 
@@ -1352,10 +1490,20 @@ def evaluate_sentinel(
     # the per-position protective stop set at entry by broker/orders.py
     # (entry \u00d7 (1 \u2213 STOP_PCT_OF_ENTRY)). Sits out silently when
     # either price input is missing.
+    # v7.3.0 \u2014 plumb position_id + last_1m_close (already in scope from
+    # the Alarm F params below) into the price-stop check so the bar-
+    # confirmation hysteresis can engage. entry_price (already in scope
+    # for Alarm F) carries through for the deep-breach override.
+    # last_1m_close_ts: prefer the explicit now_ts (the caller's bar
+    # timestamp) when present; the function tolerates None.
     a_stop_fired = check_alarm_a_stop_price(
         side=side,
         current_price=current_price,
         current_stop_price=current_stop_price,
+        entry_price=entry_price,
+        position_id=position_id,
+        last_1m_close=last_1m_close,
+        last_1m_close_ts=now_ts,
     )
     result.alarms.extend(a_stop_fired)
 
