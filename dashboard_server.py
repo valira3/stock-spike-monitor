@@ -173,15 +173,30 @@ def _chandelier_stage(pos: dict) -> int:
 def _compute_trail_pill_state(pos: dict) -> dict | None:
     """Return TRAIL pill state dict or None.
 
-    Computes one of four outcomes from existing position fields:
-    - None: no effective stop set, or mark is unavailable
-    - {status: 'armed', hold_remaining_sec: None}: stop set, mark hasn't crossed
-    - {status: 'breached_hold', hold_remaining_sec: N}: mark crossed but
-      v644_hold_seconds is blocking exit
-    - {status: 'breached_firing', hold_remaining_sec: 0}: mark crossed and
-      min-hold expired, position is in cover queue
+    v7.2.7: the pill only renders when the TRAIL has actually moved
+    the protective stop tighter than the original entry hard stop. Stage 1
+    (BE-arm) by itself is NOT enough: if the chandelier has armed but no
+    proposal has been written (stop still equals the entry's initial 1R
+    hard stop), the pill is hidden. Matches operator expectation
+    "trail pill = trail is doing something".
 
-    Pure computation — never raises.
+    A stop is considered tightened when ANY of the following hold:
+      * legacy path: trail_active=True and trail_stop is set
+      * Alarm-F path: chandelier_stage >= 2 (Stage 2 has armed and
+        propose_stop has produced a chandelier candidate)
+      * explicit override: trail_tightened=True (caller-driven for hot
+        paths that already know)
+
+    Computes one of four outcomes from existing position fields:
+    - None: no tightening has occurred, or no effective stop / mark
+    - {status: 'armed', hold_remaining_sec: None}: trail tightened, mark
+      hasn't crossed
+    - {status: 'breached_hold', hold_remaining_sec: N}: trail tightened,
+      mark crossed but v644_hold_seconds is blocking exit
+    - {status: 'breached_firing', hold_remaining_sec: 0}: trail tightened,
+      mark crossed and min-hold expired, position is in cover queue
+
+    Pure computation; never raises.
     """
     try:
         effective_stop = (
@@ -200,6 +215,20 @@ def _compute_trail_pill_state(pos: dict) -> dict | None:
         mk = _safe_float(mark)
         if eff is None or mk is None:
             return None
+
+        # v7.2.7 gate: only render when the trail has actually tightened.
+        trail_active = bool(pos.get("trail_active", False))
+        trail_stop = _safe_float(pos.get("trail_stop"))
+        legacy_tightened = trail_active and (trail_stop is not None)
+        try:
+            chandelier_stage = int(pos.get("chandelier_stage") or 0)
+        except (TypeError, ValueError):
+            chandelier_stage = 0
+        alarm_f_tightened = chandelier_stage >= 2
+        explicit_tightened = bool(pos.get("trail_tightened", False))
+        if not (legacy_tightened or alarm_f_tightened or explicit_tightened):
+            return None
+
         side = str(pos.get("side", "LONG")).upper()
         if side == "LONG":
             breached = mk < eff
@@ -614,6 +643,10 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
             "mark": _long_mark,
             "side": "LONG",
             "v644_hold_seconds": p.get("v644_hold_seconds"),
+            # v7.2.7 \u2014 pill only renders when trail has actually tightened.
+            "trail_active": trail_active,
+            "trail_stop": trail_stop,
+            "chandelier_stage": chandelier_stage,
         })
         rows.append(
             {
@@ -659,6 +692,10 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
             "mark": _short_mark,
             "side": "SHORT",
             "v644_hold_seconds": p.get("v644_hold_seconds"),
+            # v7.2.7 \u2014 pill only renders when trail has actually tightened.
+            "trail_active": trail_active,
+            "trail_stop": trail_stop,
+            "chandelier_stage": chandelier_stage,
         })
         rows.append(
             {
