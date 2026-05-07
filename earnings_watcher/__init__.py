@@ -39,6 +39,31 @@ from earnings_watcher.sizing import (
     dmi_sized_notional,
 )
 
+# v7.2.0: PMR + PMC + ATR-trail exits
+from earnings_watcher.signals_pmr import (
+    PMR_BASE_NOTIONAL_PCT,
+    PMR_CONVICTION_SIZE_MAX,
+    evaluate_and_size_pmr,
+    find_pmr_breakout,
+    pmr_sized_notional,
+    classify_pmr_skip,
+)
+from earnings_watcher.signals_pmc import (
+    PMC_BASE_NOTIONAL_PCT,
+    PMC_CONVICTION_SIZE_MAX,
+    evaluate_and_size_pmc,
+    find_pmc_breakout,
+    pmc_sized_notional,
+    classify_pmc_skip,
+)
+from earnings_watcher.exits_atr import (
+    ATR_HARD_STOP_MULT,
+    ATR_TRAIL_TRIGGER_MULT,
+    ATR_TRAIL_PCT_MULT,
+    ATR_TIME_STOP_MIN,
+    evaluate_exit_atr,
+)
+
 __all__ = [
     "DMI_BASE_NOTIONAL_PCT",
     "DMI_CONVICTION_SIZE_MAX",
@@ -51,4 +76,22 @@ __all__ = [
     "DMI_TRAIL_TRIGGER",
     "dmi_conviction_multiplier",
     "dmi_sized_notional",
+    # v7.2.0
+    "PMR_BASE_NOTIONAL_PCT",
+    "PMR_CONVICTION_SIZE_MAX",
+    "evaluate_and_size_pmr",
+    "find_pmr_breakout",
+    "pmr_sized_notional",
+    "classify_pmr_skip",
+    "PMC_BASE_NOTIONAL_PCT",
+    "PMC_CONVICTION_SIZE_MAX",
+    "evaluate_and_size_pmc",
+    "find_pmc_breakout",
+    "pmc_sized_notional",
+    "classify_pmc_skip",
+    "ATR_HARD_STOP_MULT",
+    "ATR_TRAIL_TRIGGER_MULT",
+    "ATR_TRAIL_PCT_MULT",
+    "ATR_TIME_STOP_MIN",
+    "evaluate_exit_atr",
 ]

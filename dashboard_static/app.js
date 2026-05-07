@@ -3666,6 +3666,19 @@
     html += _ewTelem("Evaluated", lc ? String(lc.evaluated || 0) : "\u2014");
     html += _ewTelem("Skipped (eval)", lc ? String(lc.skipped_evaluated || 0) : "\u2014");
     html += _ewTelem("Signals", lc ? String(lc.signals || 0) : "\u2014");
+    // v7.2.0: per-strategy signal counts (DMI / PMR / PMC)
+    if (lc && lc.signals_by_strategy) {
+      const sbs = lc.signals_by_strategy || {};
+      html += _ewTelem("DMI sig", String(sbs.dmi || 0));
+      html += _ewTelem("PMR sig", String(sbs.pmr || 0));
+      html += _ewTelem("PMC sig", String(sbs.pmc || 0));
+    }
+    if (lc && (lc.conflicts || 0) > 0) {
+      html += _ewTelem("Conflicts", String(lc.conflicts));
+    }
+    if (lc && Array.isArray(lc.active_strategies) && lc.active_strategies.length) {
+      html += _ewTelem("Active", lc.active_strategies.join(",").toUpperCase());
+    }
     html += _ewTelem("Orders filled", lc ? String(lc.orders_filled || 0) : "\u2014");
     html += _ewTelem("Exits", lc ? String(lc.exits || 0) : "\u2014");
     html += _ewTelem("Version", ew.version || "?");
