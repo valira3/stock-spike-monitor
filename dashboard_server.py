@@ -1291,9 +1291,22 @@ def _earnings_watcher_snapshot() -> dict:
     from datetime import datetime as _dt, timezone as _tz
     from pathlib import Path as _Path
 
+    # v7.2.2 -- read EW version from bot_version.py instead of hardcoding,
+    # so the dashboard always reflects the actual deployed version.
+    _ew_version = "unknown"
+    try:
+        from bot_version import BOT_VERSION as _bv  # type: ignore
+        _ew_version = str(_bv)
+    except Exception:
+        try:
+            import trade_genius as _tg_mod  # type: ignore
+            _ew_version = str(getattr(_tg_mod, "BOT_VERSION", "unknown"))
+        except Exception:
+            _ew_version = "unknown"
+
     out = {
         "enabled": _os.environ.get("EARNINGS_WATCHER_ENABLED", "0") == "1",
-        "version": "6.18.0",
+        "version": _ew_version,
         "current_window": "closed",
         "universe_size": 0,
         "last_cycle": None,

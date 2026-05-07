@@ -57,6 +57,10 @@ from earnings_watcher.sizing import (
 from earnings_watcher.exits import evaluate_exit, compute_elapsed_minutes
 from earnings_watcher.exits_atr import evaluate_exit_atr
 from earnings_watcher.rth_promotion import maybe_promote as _ew_maybe_promote_rth
+from earnings_watcher.portfolio_bridge import (
+    record_ew_entry as _bridge_record_entry,
+    record_ew_exit as _bridge_record_exit,
+)
 from earnings_watcher.signals_pmr import (
     evaluate_and_size_pmr,
     classify_pmr_skip,
@@ -350,10 +354,23 @@ def submit_dmi_order(intent: Dict[str, Any], paper: bool = True) -> Dict[str, An
         from alpaca.trading.requests import LimitOrderRequest  # type: ignore
         from alpaca.trading.enums import OrderSide, TimeInForce  # type: ignore
 
-        key = os.getenv("VAL_ALPACA_PAPER_KEY", "")
-        secret = os.getenv("VAL_ALPACA_PAPER_SECRET", "")
+        # v7.2.2 -- route through portfolio_bridge.select_alpaca_creds so EW
+        # respects the EW_PORTFOLIO env (val|gene|main) and the destination
+        # book's mode (paper|live). Falls back to Val paper if the named
+        # creds are missing, so this can't accidentally route to live.
+        try:
+            from earnings_watcher.portfolio_bridge import (
+                resolve_ew_target_portfolio,
+                select_alpaca_creds,
+            )
+            _pid = resolve_ew_target_portfolio()
+            key, secret, _is_paper = select_alpaca_creds(_pid)
+            paper = bool(_is_paper)
+        except Exception:
+            key = os.getenv("VAL_ALPACA_PAPER_KEY", "")
+            secret = os.getenv("VAL_ALPACA_PAPER_SECRET", "")
         if not key or not secret:
-            raise EnvironmentError("VAL_ALPACA_PAPER_KEY/SECRET not set")
+            raise EnvironmentError("EW Alpaca creds unresolvable (val/gene/main)")
 
         client = TradingClient(key, secret, paper=paper)
 
@@ -440,7 +457,40 @@ def manage_open_positions(open_intents: Optional[Dict[str, Any]] = None) -> int:
             should_exit, reason = evaluate_exit(pos, latest_bar, elapsed)
         if should_exit:
             logger.info("[EW-RUNNER] exit ticker=%s reason=%s", ticker, reason)
+            # v7.2.2 -- capture exit_px BEFORE submitting so the dashboard
+            # records the same price the broker sees. Use the latest bar
+            # close as the synthetic fill price (market exits typically
+            # fill within a tick of close in extended hours).
+            _exit_px = 0.0
+            try:
+                _exit_px = float(latest_bar.get("close") or latest_bar.get("c") or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                _exit_px = 0.0
             _submit_exit_order(ticker, pos)
+            # Fan the exit into all 3 PortfolioBooks. Side mapping:
+            # EW state stores 'long'/'short'; bridge expects 'LONG'/'SHORT'.
+            try:
+                _side_u = ("LONG" if str(pos.get("side", "long")).lower() == "long"
+                           else "SHORT")
+                _bridge_record_exit(
+                    ticker=ticker,
+                    side=_side_u,
+                    exit_price=_exit_px,
+                    reason=reason,
+                    pos={
+                        "shares": int(pos.get("qty", 0)),
+                        "qty": int(pos.get("qty", 0)),
+                        "entry_price": float(pos.get("entry_px", 0.0)),
+                        "entry_ts_utc": pos.get("entry_ts_utc", ""),
+                        "entry_time": pos.get("entry_time", ""),
+                        "entry_count": int(pos.get("entry_count", 1)),
+                        "strategy": pos.get("strategy", "ew_dmi"),
+                        "source": pos.get("source", "EW_DMI"),
+                    },
+                )
+            except Exception as _bridge_exc:
+                logger.warning("[EW-BRIDGE] exit fanout error ticker=%s: %s",
+                               ticker, _bridge_exc)
             remove_position(ticker)
             exits += 1
         else:
@@ -473,12 +523,22 @@ def _submit_exit_order(ticker: str, pos: Dict[str, Any]) -> None:
         from alpaca.trading.requests import MarketOrderRequest  # type: ignore
         from alpaca.trading.enums import OrderSide, TimeInForce  # type: ignore
 
-        key = os.getenv("VAL_ALPACA_PAPER_KEY", "")
-        secret = os.getenv("VAL_ALPACA_PAPER_SECRET", "")
+        try:
+            from earnings_watcher.portfolio_bridge import (
+                resolve_ew_target_portfolio,
+                select_alpaca_creds,
+            )
+            _pid = resolve_ew_target_portfolio()
+            key, secret, _is_paper = select_alpaca_creds(_pid)
+            _paper = bool(_is_paper)
+        except Exception:
+            key = os.getenv("VAL_ALPACA_PAPER_KEY", "")
+            secret = os.getenv("VAL_ALPACA_PAPER_SECRET", "")
+            _paper = True
         if not key or not secret:
-            raise EnvironmentError("VAL_ALPACA_PAPER_KEY/SECRET not set")
+            raise EnvironmentError("EW Alpaca creds unresolvable (val/gene/main)")
 
-        client = TradingClient(key, secret, paper=True)
+        client = TradingClient(key, secret, paper=_paper)
         now_et = _et_now()
         ext_hours = _is_extended_hours(now_et)
 
@@ -822,6 +882,17 @@ def run_window_cycle(window: str) -> dict:
                 atr_5min=float(intent.get("atr_5min", 0.0)),
             )
             open_exposure += intent["notional"]
+            # v7.2.2 -- fan the fill into all 3 PortfolioBooks so trades_today,
+            # positions, and day_pnl populate on the dashboard. Bridge
+            # never raises into the trading path.
+            try:
+                _bridge_record_entry(
+                    {**intent, "strategy": intent.get("strategy", chosen_strat)},
+                    fill_price=intent["limit_price"],
+                )
+            except Exception as _bridge_exc:
+                logger.warning("[EW-BRIDGE] entry fanout error ticker=%s: %s",
+                               ticker, _bridge_exc)
 
     exits = manage_open_positions()
     summary = {
