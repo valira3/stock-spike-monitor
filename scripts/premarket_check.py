@@ -135,26 +135,45 @@ def _ms_since(t0: float) -> int:
 # ---------------------------------------------------------------------------
 
 def check_process_alive() -> dict:
-    """Check 1 -- bot_version import + state.db last-write recency."""
+    """Check 1 -- bot_version import + recency of any persisted-state file.
+
+    During pre-market hours the RTH state.db can sit untouched while the
+    earnings_watcher path actively writes paper_state_main.json. We treat
+    proof-of-life as the most recent mtime across state.db,
+    paper_state_main.json, and the legacy paper_state.json.
+    """
     t0 = time.monotonic()
     name = "process_alive"
     try:
         import bot_version as bv
         ver = str(bv.BOT_VERSION)
-        db_path = Path(STATE_DB_PATH)
-        if not db_path.exists():
-            return _result(name, "FAIL", "state.db missing at %s" % db_path, _ms_since(t0),
-                           {"bot_version": ver})
-        age_s = time.time() - db_path.stat().st_mtime
+        candidates = [
+            ("state.db",              Path(STATE_DB_PATH)),
+            ("paper_state_main.json", Path(_TG_DATA_ROOT) / "paper_state_main.json"),
+            ("paper_state.json",      Path(_TG_DATA_ROOT) / "paper_state.json"),
+        ]
+        present = [(n, p, p.stat().st_mtime) for (n, p) in candidates if p.exists()]
+        if not present:
+            return _result(name, "FAIL",
+                           "no state files present under %s" % _TG_DATA_ROOT,
+                           _ms_since(t0), {"bot_version": ver})
+        # Pick the freshest mtime as proof-of-life.
+        fresh_name, fresh_path, fresh_mtime = max(present, key=lambda r: r[2])
+        age_s = time.time() - fresh_mtime
         age_h = age_s / 3600.0
         if age_s > 86400:
             return _result(name, "FAIL",
-                           "state.db last write %.1fh ago (>24h)" % age_h,
-                           _ms_since(t0), {"bot_version": ver, "db_age_s": int(age_s)})
+                           "freshest state file %s last write %.1fh ago (>24h)" % (
+                               fresh_name, age_h),
+                           _ms_since(t0),
+                           {"bot_version": ver, "fresh_file": fresh_name,
+                            "fresh_age_s": int(age_s)})
         status = "WARN" if age_s > 21600 else "PASS"
-        detail = "state.db last write %.1fh ago -- bot_version=%s" % (age_h, ver)
+        detail = "%s last write %.1fh ago -- bot_version=%s" % (
+            fresh_name, age_h, ver)
         return _result(name, status, detail, _ms_since(t0),
-                       {"bot_version": ver, "db_age_s": int(age_s)})
+                       {"bot_version": ver, "fresh_file": fresh_name,
+                        "fresh_age_s": int(age_s)})
     except Exception as exc:
         return _result(name, "FAIL", "exception: %s: %s" % (type(exc).__name__, exc),
                        _ms_since(t0))

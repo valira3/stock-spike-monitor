@@ -5779,20 +5779,29 @@ def _check_paper_state_parity() -> CheckResult:
     CRITICAL if delta > $0.01 (D-12). JSON is the persisted snapshot;
     in-memory paper_cash is the live value. Delta >$0.01 indicates a
     mid-write failure or desync.
+
+    v7.0.0 Phase 3: read PAPER_STATE_MAIN_FILE (the canonical per-book
+    main-portfolio snapshot). The legacy paper_state.json is intentionally
+    frozen post-migration and would always show drift; if main is missing
+    we fall back to it for first-boot rollback safety.
     """
     t0 = time.monotonic()
     def _ms():
         return int((time.monotonic() - t0) * 1000)
     try:
-        with open(PAPER_STATE_FILE, "r", encoding="utf-8") as _f:
+        _path = PAPER_STATE_MAIN_FILE
+        if not os.path.exists(_path):
+            _path = PAPER_STATE_FILE
+        with open(_path, "r", encoding="utf-8") as _f:
             ps = json.load(_f)
         json_cash = float(ps.get("paper_cash", 0))
         mem_cash = float(paper_cash)
         delta = abs(json_cash - mem_cash)
         if delta > 0.01:
             return CheckResult("paper_state parity", "C", "critical",
-                               "delta $%.4f \u2014 JSON=$%.2f, mem=$%.2f" % (
-                                   delta, json_cash, mem_cash),
+                               "delta $%.4f \u2014 %s=$%.2f, mem=$%.2f" % (
+                                   delta, os.path.basename(_path),
+                                   json_cash, mem_cash),
                                _ms())
         return CheckResult("paper_state parity", "C", "ok",
                            "$%.2f" % json_cash, _ms())
