@@ -77,18 +77,50 @@ def test_corrupt_json_is_rewritten(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------
-# Case 3: drift detected \u2014 guard rewrites to match code.
+# Case 3: missing defaults \u2014 guard tops up but preserves extras.
+# v7.2.5: superset semantics. The guard no longer deletes manually-
+# added tickers; it only ensures all code-side defaults are present.
 # --------------------------------------------------------------------
-def test_drift_is_rewritten_to_match_code(tmp_path, monkeypatch):
+def test_missing_defaults_are_topped_up_and_extras_preserved(tmp_path, monkeypatch):
     target = _redirect(monkeypatch, tmp_path)
-    # Stale list: missing several Titans, includes a stale ticker.
-    stale = ["AAPL", "MSFT", "OLDCO"]
-    target.write_text(json.dumps({"tickers": stale}))
-    assert _read_tickers(target) != _expected()
+    # Disk: missing several defaults, plus one manually-added ticker.
+    on_disk = ["AAPL", "MSFT", "DDOG"]
+    target.write_text(json.dumps({"tickers": on_disk}))
 
     trade_genius._ensure_universe_consistency()
 
-    assert _read_tickers(target) == _expected()
+    final = _read_tickers(target)
+    # All code defaults must now be present.
+    for sym in _expected():
+        assert sym in final, f"{sym} missing from union"
+    # The manual addition must survive.
+    assert "DDOG" in final, "manual extra was dropped (regression)"
+
+
+# --------------------------------------------------------------------
+# Case 3b: disk is a strict superset of defaults \u2014 guard does NOT
+# rewrite (mtime preserved). Pure-extras case.
+# --------------------------------------------------------------------
+def test_extras_only_disk_is_not_rewritten(tmp_path, monkeypatch):
+    target = _redirect(monkeypatch, tmp_path)
+    payload = {
+        "tickers": _expected() + ["DDOG", "CRWD"],
+        "updated_utc": "test",
+        "bot_version": "test",
+    }
+    target.write_text(json.dumps(payload))
+    original_mtime = target.stat().st_mtime
+    time.sleep(0.05)
+
+    trade_genius._ensure_universe_consistency()
+
+    final = _read_tickers(target)
+    assert "DDOG" in final and "CRWD" in final
+    for sym in _expected():
+        assert sym in final
+    assert target.stat().st_mtime == original_mtime, (
+        "guard rewrote a file whose disk was already a superset of defaults"
+    )
 
 
 # --------------------------------------------------------------------
