@@ -885,35 +885,49 @@ class RecordOnlyCallbacks:
             return (False, None)
 
     # ---- Order execution \u2014 delegate to real tg + record -------------
+    # v7.3.0 \u2014 record AFTER delegation, gated by position-dict membership.
+    # Previously the harness recorded entries before calling tg.execute_entry,
+    # which meant any prod-side guard that returned early (e.g.,
+    # V730_FIRST_N_MIN_BLOCK, V730_SKIP_REGIME_C, post-loss cooldown,
+    # daily-loss-limit, new-position cutoff) still got reported as a phantom
+    # entry in the harness's pnl_pairs. The phantom would then FIFO-pair
+    # against a later real exit, contaminating backtest P&L. Now we record
+    # only after tg has actually inserted the position into its dict.
     def execute_entry(self, ticker: str, price: float) -> None:
-        # Record the harness-level entry first so the report has it
-        # even if the real execute_entry raises mid-flight.
-        self.entries.append(
-            {
-                "ts": self.clock.now.isoformat(),
-                "ticker": ticker,
-                "side": "long",
-                "price": float(price),
-            }
-        )
         try:
             self.tg.execute_entry(ticker, price)
         except Exception as e:
             logger.debug("execute_entry(%s) raised: %s", ticker, e)
+        # Only record if prod actually opened the position. Use entry_price
+        # from the live position dict so the harness report matches the
+        # actual fill (post any internal price adjustments) rather than the
+        # snapshot price the gate observed.
+        pos = self.tg.positions.get(ticker)
+        if pos is not None:
+            self.entries.append(
+                {
+                    "ts": self.clock.now.isoformat(),
+                    "ticker": ticker,
+                    "side": "long",
+                    "price": float(pos.get("entry_price", price)),
+                }
+            )
 
     def execute_short_entry(self, ticker: str, price: float) -> None:
-        self.short_entries.append(
-            {
-                "ts": self.clock.now.isoformat(),
-                "ticker": ticker,
-                "side": "short",
-                "price": float(price),
-            }
-        )
         try:
             self.tg.execute_short_entry(ticker, price)
         except Exception as e:
             logger.debug("execute_short_entry(%s) raised: %s", ticker, e)
+        pos = self.tg.short_positions.get(ticker)
+        if pos is not None:
+            self.short_entries.append(
+                {
+                    "ts": self.clock.now.isoformat(),
+                    "ticker": ticker,
+                    "side": "short",
+                    "price": float(pos.get("entry_price", price)),
+                }
+            )
 
     def execute_exit(self, ticker: str, side: str, price: float, reason: str) -> None:
         self.exits.append(
