@@ -55,6 +55,15 @@ from earnings_watcher.sizing import (
     dmi_conviction_multiplier,
 )
 from earnings_watcher.exits import evaluate_exit, compute_elapsed_minutes
+from earnings_watcher.exits_atr import evaluate_exit_atr
+from earnings_watcher.signals_pmr import (
+    evaluate_and_size_pmr,
+    classify_pmr_skip,
+)
+from earnings_watcher.signals_pmc import (
+    evaluate_and_size_pmc,
+    classify_pmc_skip,
+)
 from earnings_watcher.data_sources import (
     fetch_minute_bars,
     get_account_equity,
@@ -421,7 +430,13 @@ def manage_open_positions(open_intents: Optional[Dict[str, Any]] = None) -> int:
         # elapsed_minutes: count of 1-min bars since entry
         elapsed = max(0, int((now_utc - entry_dt).total_seconds() / 60))
 
-        should_exit, reason = evaluate_exit(pos, latest_bar, elapsed)
+        # v7.2.0: dispatch to ATR exit policy for PMR/PMC positions; legacy DMI
+        # positions (and any without an explicit exit_policy) keep evaluate_exit.
+        exit_policy = pos.get("exit_policy", "dmi_legacy")
+        if exit_policy == "atr_trail":
+            should_exit, reason = evaluate_exit_atr(pos, latest_bar, elapsed)
+        else:
+            should_exit, reason = evaluate_exit(pos, latest_bar, elapsed)
         if should_exit:
             logger.info("[EW-RUNNER] exit ticker=%s reason=%s", ticker, reason)
             _submit_exit_order(ticker, pos)
@@ -479,6 +494,88 @@ def _submit_exit_order(ticker: str, pos: Dict[str, Any]) -> None:
                     ticker, side, qty, order_id)
     except Exception as exc:
         logger.warning("[EW-ORDER-ERROR] exit ticker=%s error: %s", ticker, exc)
+
+
+# ---------------------------------------------------------------------------
+# v7.2.0 \u2014 Strategy registry
+# ---------------------------------------------------------------------------
+# Each strategy provides:
+#   evaluator(equity, ticker, bars, event_meta, open_exposure) -> Optional[intent]
+#   classifier(equity, ticker, bars, event_meta, open_exposure) -> (kind, reason)
+#   windows: tuple of windows it runs in
+#   min_bars: minimum bars before evaluator is called
+#   default_on: bool default for EW_STRATEGY_<NAME>_ENABLED
+# Conflict resolution at the per-ticker level (same cycle):
+#   * same direction → highest conv wins
+#   * opposite directions → skip both, log conflict
+# DMI defaults ON for parity with prod. PMR/PMC default OFF until backtest validates.
+
+def _strategy_enabled(name: str, default_on: bool) -> bool:
+    raw = os.environ.get(f"EW_STRATEGY_{name.upper()}_ENABLED")
+    if raw is None:
+        return default_on
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _classify_pmr_skip_adapter(equity, ticker, bars, event_meta, open_exposure):
+    return classify_pmr_skip(bars)
+
+
+def _classify_pmc_skip_adapter(equity, ticker, bars, event_meta, open_exposure):
+    return classify_pmc_skip(bars)
+
+
+STRATEGIES: Dict[str, Dict[str, Any]] = {
+    "dmi": {
+        "evaluator": lambda equity, ticker, bars, ev, oe: evaluate_and_size(
+            equity, ticker, bars, ev, oe
+        ),
+        "classifier": _classify_skip_reason,
+        "windows": ("premarket", "afterhours"),
+        "min_bars": 25,
+        "default_on": True,
+    },
+    "pmr": {
+        "evaluator": lambda equity, ticker, bars, ev, oe: evaluate_and_size_pmr(
+            equity, ticker, bars, ev, oe
+        ),
+        "classifier": _classify_pmr_skip_adapter,
+        "windows": ("premarket",),
+        "min_bars": 60,
+        "default_on": False,
+    },
+    "pmc": {
+        "evaluator": lambda equity, ticker, bars, ev, oe: evaluate_and_size_pmc(
+            equity, ticker, bars, ev, oe
+        ),
+        "classifier": _classify_pmc_skip_adapter,
+        "windows": ("afterhours",),
+        "min_bars": 30,
+        "default_on": False,
+    },
+}
+
+
+def _resolve_intent_conflict(
+    intents_by_strat: Dict[str, Optional[Dict[str, Any]]],
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Pick a single (strategy, intent) when multiple strategies fire on a ticker.
+
+    Rules:
+      * No firing intents → (None, None).
+      * One firing intent → that one.
+      * Multiple, all same direction → highest conv wins.
+      * Multiple, opposite directions → (None, None); caller logs conflict.
+    """
+    fired = [(s, i) for s, i in intents_by_strat.items() if i is not None]
+    if not fired:
+        return None, None
+    if len(fired) == 1:
+        return fired[0]
+    directions = {i.get("direction") for _, i in fired}
+    if len(directions) > 1:
+        return None, None
+    return max(fired, key=lambda si: float(si[1].get("conv", 0.0)))
 
 
 # ---------------------------------------------------------------------------
@@ -573,10 +670,23 @@ def run_window_cycle(window: str) -> dict:
     calendar = get_earnings_calendar(today_str)
     event_map: Dict[str, Dict[str, Any]] = {ev["ticker"]: ev for ev in calendar}
 
-    already_evaluated = set(get_evaluated_tickers(today_str, window))
+    # v7.2.0: per-strategy evaluated cache (each strategy has its own bucket)
+    active_strategies: List[str] = [
+        s for s, cfg in STRATEGIES.items()
+        if window in cfg["windows"] and _strategy_enabled(s, cfg["default_on"])
+    ]
+    already_evaluated_by_strat: Dict[str, set] = {
+        s: set(get_evaluated_tickers(today_str, window, s)) for s in active_strategies
+    }
+    logger.info(
+        "[EW-RUNNER] window=%s active_strategies=%s",
+        window, active_strategies,
+    )
 
     evaluated = skipped_evaluated = skipped_open = signals = orders_submitted = orders_filled = 0
-    skip_reasons: Dict[str, int] = {}  # v6.17.0 \u2014 telemetry for dashboard
+    conflicts = 0
+    skip_reasons: Dict[str, int] = {}  # v6.17.0 telemetry for dashboard
+    signals_by_strat: Dict[str, int] = {s: 0 for s in active_strategies}
 
     for ticker in tickers:
         # Skip tickers already open as positions
@@ -585,51 +695,103 @@ def run_window_cycle(window: str) -> dict:
             skipped_open += 1
             continue
 
-        # Skip tickers already evaluated this window (idempotency guard)
-        if ticker in already_evaluated:
-            logger.debug("[EW-RUNNER] window_cycle skip ticker=%s reason=already_evaluated window=%s",
-                         ticker, window)
+        # Per-strategy idempotency: only consider strategies that haven't yet
+        # evaluated this ticker this window.
+        candidate_strats = [
+            s for s in active_strategies
+            if ticker not in already_evaluated_by_strat[s]
+        ]
+        if not candidate_strats:
+            logger.debug("[EW-RUNNER] window_cycle skip ticker=%s reason=already_evaluated_all_strats",
+                         ticker)
             skipped_evaluated += 1
             continue
 
         bars = fetch_minute_bars(ticker, start_utc, now_utc)
 
-        # Require at least 25 bars (DMI + ADX warmup)
-        if len(bars) < 25:
-            logger.debug("[EW-RUNNER] window_cycle insufficient_bars ticker=%s bars=%d window=%s",
-                         ticker, len(bars), window)
-            skip_reasons["insufficient_bars"] = skip_reasons.get("insufficient_bars", 0) + 1
-            continue
+        # Per-strategy min-bars check + evaluator dispatch
+        intents_by_strat: Dict[str, Optional[Dict[str, Any]]] = {}
+        skip_classifications: Dict[str, tuple] = {}
+        for s in candidate_strats:
+            cfg = STRATEGIES[s]
+            if len(bars) < int(cfg["min_bars"]):
+                key = f"insufficient_bars_{s}"
+                skip_reasons[key] = skip_reasons.get(key, 0) + 1
+                # not enough bars yet: retry-able, do NOT mark evaluated
+                intents_by_strat[s] = None
+                skip_classifications[s] = ("retry", key)
+                continue
 
-        event_meta = event_map.get(ticker, {"ticker": ticker})
-        event_meta.setdefault("session", default_session)
+            event_meta = event_map.get(ticker, {"ticker": ticker})
+            event_meta.setdefault("session", default_session)
 
-        intent = evaluate_and_size(equity, ticker, bars, event_meta, open_exposure)
+            try:
+                intent = cfg["evaluator"](equity, ticker, bars, event_meta, open_exposure)
+            except Exception as exc:
+                logger.warning("[EW-RUNNER] evaluator error strategy=%s ticker=%s: %s",
+                               s, ticker, exc)
+                intent = None
+            intents_by_strat[s] = intent
+            if intent is None:
+                try:
+                    skip_classifications[s] = cfg["classifier"](
+                        equity, ticker, bars, event_meta, open_exposure
+                    )
+                except Exception:
+                    skip_classifications[s] = ("terminal", f"classifier_error_{s}")
+
+        chosen_strat, intent = _resolve_intent_conflict(intents_by_strat)
 
         if intent is None:
-            # v6.17.0 \u2014 classify the skip. Retry-able skips (bias_misaligned,
-            # no_session) do NOT mark the ticker as evaluated, because FMP may
-            # populate epsActual mid-window after the company publishes.
-            kind, reason = _classify_skip_reason(
-                equity, ticker, bars, event_meta, open_exposure
-            )
-            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
-            if kind == "terminal":
-                mark_ticker_evaluated(today_str, window, ticker)
-                already_evaluated.add(ticker)
-                evaluated += 1
-            else:
-                logger.debug(
-                    "[EW-RUNNER] window_cycle retry-able skip ticker=%s reason=%s",
-                    ticker, reason,
+            # No strategy fired. Process per-strategy skips.
+            fired_strats = [s for s, i in intents_by_strat.items() if i is not None]
+            if len(fired_strats) >= 2:
+                # Conflict (opposite directions): mark ALL firing strategies as terminal,
+                # log, and continue. This avoids re-evaluating both forever.
+                conflicts += 1
+                logger.info(
+                    "[EW-RUNNER] window_cycle conflict ticker=%s strategies=%s directions=%s",
+                    ticker, fired_strats,
+                    {s: intents_by_strat[s].get("direction") for s in fired_strats},
                 )
+                for s in fired_strats:
+                    mark_ticker_evaluated(today_str, window, ticker, s)
+                    already_evaluated_by_strat[s].add(ticker)
+                evaluated += 1
+                skip_reasons["conflict_opposite"] = skip_reasons.get("conflict_opposite", 0) + 1
+                continue
+            # No firing: each strategy was either retry-able or terminal-skipped.
+            any_terminal = False
+            for s, (kind, reason) in skip_classifications.items():
+                qualified = f"{s}.{reason}" if not reason.startswith(s) else reason
+                skip_reasons[qualified] = skip_reasons.get(qualified, 0) + 1
+                if kind == "terminal":
+                    mark_ticker_evaluated(today_str, window, ticker, s)
+                    already_evaluated_by_strat[s].add(ticker)
+                    any_terminal = True
+                else:
+                    logger.debug(
+                        "[EW-RUNNER] window_cycle retry-able skip ticker=%s strategy=%s reason=%s",
+                        ticker, s, reason,
+                    )
+            if any_terminal:
+                evaluated += 1
             continue
 
-        # Signal fired: terminal-mark and proceed
-        mark_ticker_evaluated(today_str, window, ticker)
-        already_evaluated.add(ticker)
+        # Signal fired (chosen_strat). Mark this strategy + any other strategies
+        # whose evaluators were called this cycle (terminal classification only).
+        mark_ticker_evaluated(today_str, window, ticker, chosen_strat)
+        already_evaluated_by_strat[chosen_strat].add(ticker)
+        for s in candidate_strats:
+            if s == chosen_strat:
+                continue
+            kind_reason = skip_classifications.get(s)
+            if kind_reason and kind_reason[0] == "terminal":
+                mark_ticker_evaluated(today_str, window, ticker, s)
+                already_evaluated_by_strat[s].add(ticker)
         evaluated += 1
         signals += 1
+        signals_by_strat[chosen_strat] = signals_by_strat.get(chosen_strat, 0) + 1
 
         result = submit_dmi_order(intent, paper=True)
         orders_submitted += 1
@@ -646,6 +808,9 @@ def run_window_cycle(window: str) -> dict:
                 notional=intent["notional"],
                 conv=intent["conv"],
                 order_id=result.get("order_id", ""),
+                strategy=intent.get("strategy", chosen_strat),
+                exit_policy=intent.get("exit_policy", "dmi_legacy"),
+                atr_5min=float(intent.get("atr_5min", 0.0)),
             )
             open_exposure += intent["notional"]
 
@@ -656,11 +821,14 @@ def run_window_cycle(window: str) -> dict:
         "ts_utc": now_utc.isoformat(),
         "date": today_str,
         "universe_size": len(tickers),
+        "active_strategies": active_strategies,
         "evaluated": evaluated,
         "skipped_evaluated": skipped_evaluated,
         "skipped_open": skipped_open,
         "skip_reasons": skip_reasons,
         "signals": signals,
+        "signals_by_strategy": signals_by_strat,
+        "conflicts": conflicts,
         "orders_submitted": orders_submitted,
         "orders_filled": orders_filled,
         "exits": exits,

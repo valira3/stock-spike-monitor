@@ -162,9 +162,10 @@ def update_position(ticker: str, **kwargs: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# evaluated_today — per-window idempotency cache
+# evaluated_today \u2014 per-window per-strategy idempotency cache (v7.2.0)
 # ---------------------------------------------------------------------------
-# Schema: {date_iso: {window: [ticker, ...]}}
+# v7.2.0 schema: {date_iso: {window: {strategy: [ticker, ...]}}}
+# Legacy schema: {date_iso: {window: [ticker, ...]}}  (auto-migrated under "dmi")
 # Stored in /data/earnings_watcher/evaluated_today.json (same fallback logic).
 
 _EVAL_PATH_CANDIDATES = [
@@ -189,8 +190,38 @@ def _eval_path() -> Path:
     return fallback
 
 
+def _migrate_legacy_schema(data: dict) -> dict:
+    """Migrate {date: {window: [tickers]}} -> {date: {window: {strategy: [tickers]}}}.
+
+    Legacy entries (pre-v7.2.0) collapse into the "dmi" strategy bucket.
+    Idempotent: returns data unchanged if already in v7.2.0 shape.
+    """
+    if not isinstance(data, dict):
+        return {}
+    changed = False
+    for date_iso, windows in list(data.items()):
+        if not isinstance(windows, dict):
+            data[date_iso] = {}
+            changed = True
+            continue
+        for window, payload in list(windows.items()):
+            if isinstance(payload, list):
+                # Legacy list → wrap as {"dmi": [...]}
+                data[date_iso][window] = {"dmi": list(payload)}
+                changed = True
+            elif not isinstance(payload, dict):
+                data[date_iso][window] = {}
+                changed = True
+    if changed:
+        logger.info("[EW-STATE] migrated evaluated_today legacy schema -> v7.2.0")
+    return data
+
+
 def _load_evaluated_today() -> dict:
-    """Load evaluated_today dict from disk. Returns {} on error."""
+    """Load evaluated_today dict from disk. Returns {} on error.
+
+    Auto-migrates pre-v7.2.0 (list-valued) entries to per-strategy dicts.
+    """
     p = _eval_path()
     if not p.exists():
         return {}
@@ -198,7 +229,7 @@ def _load_evaluated_today() -> dict:
         data = json.loads(p.read_text())
         if not isinstance(data, dict):
             return {}
-        return data
+        return _migrate_legacy_schema(data)
     except Exception as exc:
         logger.warning("[EW-STATE] load_evaluated_today error: %s", exc)
         return {}
@@ -216,25 +247,52 @@ def _save_evaluated_today(d: dict) -> None:
         logger.warning("[EW-STATE] save_evaluated_today error: %s", exc)
 
 
-def get_evaluated_tickers(date_iso: str, window: str) -> list:
-    """Return list of tickers already evaluated in this date/window."""
+def get_evaluated_tickers(date_iso: str, window: str, strategy: str = "dmi") -> list:
+    """Return tickers already evaluated in this date/window/strategy bucket."""
     data = _load_evaluated_today()
-    return list(data.get(date_iso, {}).get(window, []))
+    bucket = data.get(date_iso, {}).get(window, {})
+    if isinstance(bucket, dict):
+        return list(bucket.get(strategy, []))
+    # Defensive: legacy list survived migration somehow \u2014 treat as dmi.
+    if isinstance(bucket, list) and strategy == "dmi":
+        return list(bucket)
+    return []
 
 
-def mark_ticker_evaluated(date_iso: str, window: str, ticker: str) -> None:
-    """Add ticker to the evaluated set for date/window. Idempotent."""
+def mark_ticker_evaluated(
+    date_iso: str, window: str, ticker: str, strategy: str = "dmi"
+) -> None:
+    """Add ticker to the evaluated set for date/window/strategy. Idempotent."""
     data = _load_evaluated_today()
-    data.setdefault(date_iso, {}).setdefault(window, [])
-    if ticker not in data[date_iso][window]:
-        data[date_iso][window].append(ticker)
+    data.setdefault(date_iso, {}).setdefault(window, {}).setdefault(strategy, [])
+    bucket = data[date_iso][window][strategy]
+    if ticker not in bucket:
+        bucket.append(ticker)
     _save_evaluated_today(data)
 
 
-def clear_window_evaluated(date_iso: str, window: str) -> None:
-    """Clear the evaluated list for a given date/window (call at window start)."""
+def clear_window_evaluated(
+    date_iso: str, window: str, strategy: str | None = None
+) -> None:
+    """Clear evaluated list at window start.
+
+    If strategy is None, clears every strategy bucket for the window
+    (preserves the legacy single-call behavior that the runner uses to
+    reset all strategies at window start).
+    """
     data = _load_evaluated_today()
-    if date_iso in data and window in data[date_iso]:
-        data[date_iso][window] = []
+    windows = data.get(date_iso, {})
+    if window in windows:
+        if strategy is None:
+            windows[window] = {}
+        else:
+            bucket = windows[window]
+            if isinstance(bucket, dict):
+                bucket[strategy] = []
+            else:
+                windows[window] = {}
     _save_evaluated_today(data)
-    logger.info("[EW-STATE] cleared evaluated_today date=%s window=%s", date_iso, window)
+    logger.info(
+        "[EW-STATE] cleared evaluated_today date=%s window=%s strategy=%s",
+        date_iso, window, strategy or "*",
+    )
