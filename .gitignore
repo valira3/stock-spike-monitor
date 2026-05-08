@@ -1,5 +1,6 @@
 __pycache__/
 CODE_REVIEW.md
+.env
 
 *.log
 dashboard_secret.key

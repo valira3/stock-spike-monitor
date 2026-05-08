@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(FMP_API_KEY=VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV python *)",
+      "Bash(pip install *)",
+      "Bash(FMP_API_KEY=VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV SSM_SMOKE_TEST=1 TG_BACKTEST_MODE=1 python *)",
+      "Bash(pkill -f \"backtest.replay_v511_full\")",
+      "Bash(python *)",
+      "Bash(grep \"\\\\.py$\")",
+      "Bash(FMP_API_KEY=VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV SSM_SMOKE_TEST=1 TG_BACKTEST_MODE=1 BARS_DIR=./data python *)",
+      "Bash(pkill -f \"replay_v511_full\")"
+    ]
+  }
+}
