@@ -14,6 +14,40 @@ from broker.order_types import order_type_for_reason
 import logging as _logging_orders
 _orders_logger = _logging_orders.getLogger("trade_genius")
 
+# v7.6.0 — Filter #7 (post-v750 cooldown) and Filter #8 (opening delay).
+# Imports are best-effort so a missing flag module never blocks trading.
+try:
+    from engine.v770_flags import (
+        V770_POST_DITCH_COOLDOWN_ENABLED,
+        SKIP_REASON_V770_COOLDOWN,
+        record_v750_fire as _v770_record_fire,
+        is_in_cooldown as _v770_is_in_cooldown,
+    )
+except Exception:  # pragma: no cover — defensive fall-through
+    V770_POST_DITCH_COOLDOWN_ENABLED = False
+    SKIP_REASON_V770_COOLDOWN = "v770_post_ditch_cooldown"
+    def _v770_record_fire(*a, **kw):
+        return None
+    def _v770_is_in_cooldown(*a, **kw):
+        return (False, None)
+
+try:
+    from engine.v780_flags import (
+        V780_OPENING_DELAY_ENABLED,
+        SKIP_REASON_V780_OPENING_DELAY,
+        is_before_open_delay as _v780_is_before_open_delay,
+    )
+except Exception:  # pragma: no cover — defensive fall-through
+    V780_OPENING_DELAY_ENABLED = False
+    SKIP_REASON_V780_OPENING_DELAY = "v780_opening_delay"
+    def _v780_is_before_open_delay(*a, **kw):
+        return (False, None)
+
+try:
+    from engine.v750_flags import EXIT_REASON_V750_EARLY_DITCH as _V750_EXIT_REASON_FOR_V770
+except Exception:  # pragma: no cover — defensive
+    _V750_EXIT_REASON_FOR_V770 = "v750_early_ditch"
+
 # v5.26.0 \u2014 broker.stops module deleted. R-2 -$500 hard stop is
 # computed inline in execute_breakout per Tiger Sovereign v15.0
 # \u00a7Risk Rails.
@@ -883,6 +917,64 @@ def check_breakout(ticker, side):
         )
         _emit_decision("SKIP:V5100_ENTRY1:re_entry_ratchet")
         return False, None
+
+    # v7.8.0 — Filter #8: opening-bell entry delay. Block entries whose
+    # ET wall-clock time is before V780_OPENING_DELAY_UNTIL_ET (default
+    # 09:45 ET). Evaluated against the current UTC time so it tracks the
+    # actual decision moment regardless of bar timestamps.
+    try:
+        if V780_OPENING_DELAY_ENABLED:
+            _v780_blocked, _v780_et = _v780_is_before_open_delay(
+                datetime.now(timezone.utc)
+            )
+            if _v780_blocked:
+                tg._v561_log_skip(
+                    ticker=ticker,
+                    reason="V5100_ENTRY1:%s" % SKIP_REASON_V780_OPENING_DELAY,
+                    ts_utc=tg._utc_now_iso(),
+                    gate_state=None,
+                )
+                try:
+                    tg.logger.info(
+                        "[V780-OPENING-DELAY] ticker=%s side=%s et=%s blocked",
+                        ticker, side_label, _v780_et,
+                    )
+                except Exception:
+                    pass
+                _emit_decision("SKIP:V5100_ENTRY1:%s" % SKIP_REASON_V780_OPENING_DELAY)
+                return False, None
+    except Exception:
+        # Defensive: a Filter-8 error MUST NOT block legitimate trading.
+        pass
+
+    # v7.7.0 — Filter #7: post-v750 ticker cooldown. Block entries on
+    # (ticker, side) when a v750_early_ditch fired on the SAME (ticker,
+    # side) within the last V770_POST_DITCH_COOLDOWN_MIN minutes. The
+    # opposite side is intentionally still allowed.
+    try:
+        if V770_POST_DITCH_COOLDOWN_ENABLED:
+            _v770_blocked, _v770_remain = _v770_is_in_cooldown(
+                ticker, side_label, datetime.now(timezone.utc)
+            )
+            if _v770_blocked:
+                tg._v561_log_skip(
+                    ticker=ticker,
+                    reason="V5100_ENTRY1:%s" % SKIP_REASON_V770_COOLDOWN,
+                    ts_utc=tg._utc_now_iso(),
+                    gate_state=None,
+                )
+                try:
+                    tg.logger.info(
+                        "[V770-COOLDOWN] ticker=%s side=%s remaining=%.0fs blocked",
+                        ticker, side_label, float(_v770_remain or 0.0),
+                    )
+                except Exception:
+                    pass
+                _emit_decision("SKIP:V5100_ENTRY1:%s" % SKIP_REASON_V770_COOLDOWN)
+                return False, None
+    except Exception:
+        # Defensive: a Filter-7 error MUST NOT block legitimate trading.
+        pass
 
     entry1_decision = tg.eot_glue.evaluate_entry_1_decision(
         ticker,
@@ -1919,6 +2011,21 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
             pnl_dollars=round(pnl_val, 2) if pnl_val is not None else None,
             pnl_pct=round(pnl_pct, 2) if pnl_pct is not None else None,
         )
+    except Exception:
+        pass
+
+    # v7.7.0 — Filter #7: register v750_early_ditch fires for the
+    # post-v750 ticker cooldown. Best-effort — a registration error
+    # MUST NOT block close_breakout. Match canonical reason string.
+    try:
+        if str(reason or "").strip().lower() == str(
+            _V750_EXIT_REASON_FOR_V770
+        ).strip().lower():
+            _v770_record_fire(
+                ticker=ticker,
+                side=("LONG" if cfg.side.is_long else "SHORT"),
+                ts_utc=tg._utc_now_iso(),
+            )
     except Exception:
         pass
 
