@@ -1,0 +1,39 @@
+name: R2 Smoke Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify R2 credentials
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME:        ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          echo "Endpoint: $ENDPOINT"
+          echo "Bucket:   $R2_BUCKET_NAME"
+
+          echo "--- Listing bucket ---"
+          aws s3 ls "s3://$R2_BUCKET_NAME/" --endpoint-url "$ENDPOINT"
+
+          echo "--- Writing test object ---"
+          echo "smoke test $(date -u +%FT%TZ)" > /tmp/smoke.txt
+          aws s3 cp /tmp/smoke.txt \
+            "s3://$R2_BUCKET_NAME/_smoke/smoke.txt" \
+            --endpoint-url "$ENDPOINT"
+
+          echo "--- Reading test object ---"
+          aws s3 cp "s3://$R2_BUCKET_NAME/_smoke/smoke.txt" /tmp/readback.txt \
+            --endpoint-url "$ENDPOINT"
+          cat /tmp/readback.txt
+
+          echo "--- Cleaning up ---"
+          aws s3 rm "s3://$R2_BUCKET_NAME/_smoke/smoke.txt" \
+            --endpoint-url "$ENDPOINT"
+
+          echo "--- All four ops succeeded ---"
