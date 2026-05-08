@@ -1,4 +1,5 @@
 __pycache__/
+.claude/settings.local.json
 CODE_REVIEW.md
 
 *.log
