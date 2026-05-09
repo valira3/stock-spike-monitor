@@ -4,6 +4,103 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.3-experimental (2026-05-09) — Railway parallel + freezegun-leak source patches
+
+Combines two independent improvements:
+
+### A. Railway sweep worker: parallel variants
+
+`tools/railway_sweep_worker.py` now runs variants in parallel via
+`ThreadPoolExecutor` instead of a sequential loop. New env knob
+`RAILWAY_PARALLEL_VARIANTS` (default = legacy `RAILWAY_WORKERS`).
+Total active processes = `RAILWAY_PARALLEL_VARIANTS × SWEEP_WORKERS`,
+should ≤ vCPU count.
+
+On 24-vCPU Hobby Pro: `PARALLEL_VARIANTS=6 SWEEP_WORKERS=4` runs a
+5-variant STRIDE=1 batch in ~26 min (was ~4.5 hr serial).
+
+### B. Five freezegun-leak source patches
+
+The replay harness uses freezegun to pin wall-clock time during
+backtests because the engine has hidden direct-`datetime.now()` reads
+that bypass the `_now_et` / `_now_utc` helpers. freezegun adds ~5x
+overhead. Patching the leaks at the source lets us eventually drop
+freezegun entirely.
+
+Subagent audit found ~10 high-impact leaks. This PR patches the top 5:
+
+1. `trade_genius.py:6533` — `_is_extended_market_hours()` market-brief
+   gate. Was wall-clock leak; fired daily market-brief based on real
+   CT instead of replay CT.
+2. `trade_genius.py:5590` — `_nyse_session_state()` regime classifier.
+   Was wall-clock leak; classified RTH vs extended vs off based on
+   real CT weekday instead of replay weekday.
+3. `broker/orders.py:928` — `_v780_is_before_open_delay` direct call.
+   Was wall-clock leak; opening-delay gate fired based on real UTC
+   instead of replay UTC, affecting every entry decision.
+4. `engine/seeders.py:58` — `seed_opening_range()` window gate. Was
+   wall-clock leak; OR-seed window check used real ET instead of
+   replay ET, often skipping the seed in backtest.
+5. (no behavior change for `engine/v780_flags.py:103` and similar
+   "fallback when caller passes None" sites — fixed at the caller in
+   patch #3 above; pure utilities are kept defensive.)
+
+All patches preserve existing fallback behavior — if the harness
+helper raises (shouldn't happen under monkey-patched `_now_*`), the
+old wall-clock path runs.
+
+### What this enables
+
+- Future freezegun audit can drop `freezegun` entirely once all leaks
+  are patched. ~5x speedup per replay.
+- Combined with Railway parallelism, a 5-variant STRIDE=1 batch could
+  go from 53min (today) → 26min (Railway parallel) → 6min (no
+  freezegun + Railway parallel).
+
+### Operator action
+
+For Railway worker speedup: update `RAILWAY_PARALLEL_VARIANTS` and
+`SWEEP_WORKERS` env vars in the Railway service settings, redeploy.
+
+For freezegun removal: 5 more leaks remain (per subagent audit) before
+freezegun can be dropped. Tracked in follow-up issues.
+
+---
+
+## v7.8.2-experimental (2026-05-09) — Railway sweep worker: parallel variants
+
+`tools/railway_sweep_worker.py` now runs variants in parallel using
+`ThreadPoolExecutor`. Previously variants ran sequentially within a
+trigger batch, capping throughput at ~1 variant per 53min for STRIDE=1
+regardless of available vCPU.
+
+New env knob `RAILWAY_PARALLEL_VARIANTS` (default = legacy
+`RAILWAY_WORKERS`). Total active processes = `RAILWAY_PARALLEL_VARIANTS
+× SWEEP_WORKERS`, should ≤ vCPU count.
+
+### Sizing recipes (24-vCPU Hobby Pro)
+
+| Use case | Config | Active procs | 5-var STRIDE=1 wall |
+|---|---|---:|---:|
+| Small batches (≤6 variants) | `PARALLEL_VARIANTS=6 SWEEP_WORKERS=4` | 24 | ~26 min |
+| Medium (7-12 variants) | `PARALLEL_VARIANTS=12 SWEEP_WORKERS=2` | 24 | ~53 min for 12 |
+| Large grids (50+ variants) | `PARALLEL_VARIANTS=12 SWEEP_WORKERS=2` | 24 | ~3.5 hr for 50 |
+
+### Why threads (not processes)
+
+`run_variant` blocks on `subprocess.run` waiting for
+`lever_sweep_runner.py` to complete. The parent is mostly I/O-bound;
+threads are appropriate. The actual sweep work happens in the
+spawned subprocess (which itself uses `ProcessPoolExecutor` for
+the per-day inner loop).
+
+### Operator action
+
+Update `RAILWAY_PARALLEL_VARIANTS` and `SWEEP_WORKERS` env vars in
+the Railway sweep-worker service settings, then redeploy.
+
+---
+
 ## v7.8.1-experimental (2026-05-09) — Railway sweep-worker scaffold
 
 Adds a Railway-deployable sweep worker that processes lever-sweep

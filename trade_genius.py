@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.8.1-experimental"
+BOT_VERSION = "7.8.3-experimental"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -117,9 +117,9 @@ BOT_VERSION = "7.8.1-experimental"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v7.8.1: Railway sweep\n"
-    "worker scaffold +\n"
-    "Dockerfile + docs."
+    "v7.8.3: parallel Railway +\n"
+    "5 freezegun-leak source\n"
+    "patches. Faster + cleaner."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -5587,7 +5587,13 @@ def _market_session() -> str:
     """
     from zoneinfo import ZoneInfo
     try:
-        import datetime as _dt_mod; now_ct = _dt_mod.datetime.now(ZoneInfo("America/Chicago"))
+        # v7.8.3: route through _now_cdt so backtest replay clock applies.
+        # Was wall-clock leak; classified RTH vs extended vs off based on
+        # real CT weekday instead of replay weekday.
+        try:
+            now_ct = _now_cdt()
+        except Exception:
+            import datetime as _dt_mod; now_ct = _dt_mod.datetime.now(ZoneInfo("America/Chicago"))
         if now_ct.weekday() >= 5:  # Sat/Sun
             return "off"
         h, m = now_ct.hour, now_ct.minute
@@ -6529,12 +6535,16 @@ def _fire_market_brief() -> None:
     plus this gate makes the daily fire DST-safe.
     """
     try:
-        from zoneinfo import ZoneInfo
-        now_ct = datetime.now(ZoneInfo("America/Chicago"))
+        # v7.8.3: route through _now_cdt so backtest replay clock applies.
+        # Was wall-clock leak; fired the daily market-brief gate based on
+        # real Chicago time instead of replay time.
+        now_ct = _now_cdt()
     except Exception:
-        # If zoneinfo is unavailable assume the scheduler matched on a
-        # CT-equivalent ET wall time and fire \u2014 better than skipping.
-        now_ct = None
+        try:
+            from zoneinfo import ZoneInfo
+            now_ct = datetime.now(ZoneInfo("America/Chicago"))
+        except Exception:
+            now_ct = None
     if now_ct is not None and now_ct.hour != 7:
         logger.info("market_brief: skipping fire (CT hour=%s, not 7)", now_ct.hour)
         return
