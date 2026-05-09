@@ -8,7 +8,9 @@
       "Bash(python *)",
       "Bash(grep \"\\\\.py$\")",
       "Bash(FMP_API_KEY=VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV SSM_SMOKE_TEST=1 TG_BACKTEST_MODE=1 BARS_DIR=./data python *)",
-      "Bash(pkill -f \"replay_v511_full\")"
+      "Bash(pkill -f \"replay_v511_full\")",
+      "Bash(git restore *)",
+      "Bash(echo \".venv/\")"
     ]
   }
 }
