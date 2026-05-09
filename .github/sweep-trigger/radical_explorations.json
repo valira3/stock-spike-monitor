@@ -1,0 +1,44 @@
+{
+  "max_parallel": 10,
+  "variants": [
+    {"vid": "rad_baseline", "env": {}, "stride": "8"},
+
+    {"vid": "rad_shorts_off",
+     "env": {"TICKER_SIDE_BLOCKLIST": "{\"AAPL\":[\"SHORT\"],\"MSFT\":[\"SHORT\"],\"NVDA\":[\"SHORT\"],\"TSLA\":[\"SHORT\"],\"META\":[\"SHORT\"],\"GOOG\":[\"SHORT\"],\"AMZN\":[\"SHORT\"],\"AVGO\":[\"SHORT\"],\"NFLX\":[\"SHORT\"],\"ORCL\":[\"SHORT\"]}"},
+     "stride": "8"},
+
+    {"vid": "rad_longs_off",
+     "env": {"TICKER_SIDE_BLOCKLIST": "{\"AAPL\":[\"LONG\"],\"MSFT\":[\"LONG\"],\"NVDA\":[\"LONG\"],\"TSLA\":[\"LONG\"],\"META\":[\"LONG\"],\"GOOG\":[\"LONG\"],\"AMZN\":[\"LONG\"],\"AVGO\":[\"LONG\"],\"NFLX\":[\"LONG\"],\"ORCL\":[\"LONG\"]}"},
+     "stride": "8"},
+
+    {"vid": "rad_atr_s2_2",
+     "env": {"ATR_TRAIL_STAGE2_THRESHOLD": "2.0"},
+     "stride": "8"},
+
+    {"vid": "rad_lockin_03",
+     "env": {"ATR_TRAIL_LOCKIN_FRAC": "0.3"},
+     "stride": "8"},
+
+    {"vid": "rad_floor_05",
+     "env": {"ATR_TRAIL_FLOOR_MULT": "0.5"},
+     "stride": "8"},
+
+    {"vid": "rad_or_break_010",
+     "env": {"V610_OR_BREAK_K": "0.10"},
+     "stride": "8"},
+
+    {"vid": "rad_or_break_050",
+     "env": {"V610_OR_BREAK_K": "0.50"},
+     "stride": "8"},
+
+    {"vid": "rad_regime_off",
+     "env": {"V611_REGIME_B_ENABLED": "0"},
+     "stride": "8"},
+
+    {"vid": "rad_stack_best_stop_aggressive_lockin",
+     "env": {"STOP_PCT_LONG": "0.0025", "STOP_PCT_SHORT": "0.0045",
+             "ATR_TRAIL_STAGE2_THRESHOLD": "2.0",
+             "ATR_TRAIL_LOCKIN_FRAC": "0.3"},
+     "stride": "8"}
+  ]
+}
