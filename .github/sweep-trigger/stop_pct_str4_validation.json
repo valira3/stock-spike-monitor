@@ -1,0 +1,26 @@
+{
+  "max_parallel": 14,
+  "variants": [
+    {"vid": "v4_baseline", "env": {}, "stride": "4"},
+
+    {"vid": "v4_L20_S40", "env": {"STOP_PCT_LONG": "0.0020", "STOP_PCT_SHORT": "0.0040"}, "stride": "4"},
+    {"vid": "v4_L25_S40", "env": {"STOP_PCT_LONG": "0.0025", "STOP_PCT_SHORT": "0.0040"}, "stride": "4"},
+    {"vid": "v4_L25_S45", "env": {"STOP_PCT_LONG": "0.0025", "STOP_PCT_SHORT": "0.0045"}, "stride": "4"},
+    {"vid": "v4_L35_S40", "env": {"STOP_PCT_LONG": "0.0035", "STOP_PCT_SHORT": "0.0040"}, "stride": "4"},
+    {"vid": "v4_L35_S45", "env": {"STOP_PCT_LONG": "0.0035", "STOP_PCT_SHORT": "0.0045"}, "stride": "4"},
+    {"vid": "v4_L50_S45", "env": {"STOP_PCT_LONG": "0.0050", "STOP_PCT_SHORT": "0.0045"}, "stride": "4"},
+
+    {"vid": "v4_L25_S45_v730off",
+     "env": {"STOP_PCT_LONG": "0.0025", "STOP_PCT_SHORT": "0.0045", "V730_STOP_HYSTERESIS_ENABLED": "0"},
+     "stride": "4"},
+    {"vid": "v4_L50_S45_v730off",
+     "env": {"STOP_PCT_LONG": "0.0050", "STOP_PCT_SHORT": "0.0045", "V730_STOP_HYSTERESIS_ENABLED": "0"},
+     "stride": "4"},
+
+    {"vid": "v4_L25_S45_v730off_v770off",
+     "env": {"STOP_PCT_LONG": "0.0025", "STOP_PCT_SHORT": "0.0045",
+             "V730_STOP_HYSTERESIS_ENABLED": "0",
+             "V770_POST_DITCH_COOLDOWN_ENABLED": "0"},
+     "stride": "4"}
+  ]
+}

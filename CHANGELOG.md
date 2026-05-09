@@ -4,6 +4,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.0-experimental (2026-05-09) — premarket corpus + STRIDE=4 validation
+
+Two additions, bundled because they unlock each other:
+
+### 1. Premarket bars added to the corpus
+
+996 new `.jsonl` files at `data/<DATE>/premarket/<TICKER>.jsonl`
+covering the 81-date corpus × 12-ticker universe, pulled from Alpaca
+SIP feed by the v7.7.8 auto-trigger workflow. Format matches the
+existing RTH bars (`et_bucket` from "0400" upward, plus all the
+required price/volume fields).
+
+**Unlocks v7.7.0 DI seed measurement.** Previously the seed code was
+shipped but the corpus was RTH-only, so the seed was a no-op on every
+backtest. Now every replay will:
+
+* Read premarket bars at startup via `_seed_di_buffer_from_premarket`
+* Arm DI/ADX from minute zero instead of warming up to ~12:00 ET
+* Lift the structural shadow on V780 opening-delay sweeps
+* Lift the structural shadow on VOLUME_BUCKET threshold sweeps
+
+### 2. STRIDE=4 validation trigger
+
+`.github/sweep-trigger/stop_pct_str4_validation.json` — 10-variant
+batch validating the headline finding (long_30_short_40 = +$490
+ideal-fill) with both:
+
+* The new exit slippage model (v7.7.9, ~$200-300 cost expected)
+* The new premarket DI seed (v7.7.0, now actually firing)
+
+Variants include the top 6 stop-pct cells from the 2D grid plus
+3 stack-winner candidates that combine the best stop config with
+V730_off and V770_off.
+
+Fires automatically on merge via `lever-sweep-auto.yml`.
+
+---
+
 ## v7.7.9-experimental (2026-05-09) — backtest exit slippage
 
 Adds an exit-slippage model to the replay harness. **All backtest
