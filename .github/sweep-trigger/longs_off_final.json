@@ -1,0 +1,13 @@
+{
+  "max_parallel": 4,
+  "variants": [
+    {"vid": "lo_baseline_full", "env": {}, "stride": "1"},
+    {"vid": "lo_longs_off_full",
+     "env": {"TICKER_SIDE_BLOCKLIST": "{\"AAPL\":[\"LONG\"],\"MSFT\":[\"LONG\"],\"NVDA\":[\"LONG\"],\"TSLA\":[\"LONG\"],\"META\":[\"LONG\"],\"GOOG\":[\"LONG\"],\"AMZN\":[\"LONG\"],\"AVGO\":[\"LONG\"],\"NFLX\":[\"LONG\"],\"ORCL\":[\"LONG\"]}"},
+     "stride": "1"},
+    {"vid": "lo_longs_off_S45_full",
+     "env": {"TICKER_SIDE_BLOCKLIST": "{\"AAPL\":[\"LONG\"],\"MSFT\":[\"LONG\"],\"NVDA\":[\"LONG\"],\"TSLA\":[\"LONG\"],\"META\":[\"LONG\"],\"GOOG\":[\"LONG\"],\"AMZN\":[\"LONG\"],\"AVGO\":[\"LONG\"],\"NFLX\":[\"LONG\"],\"ORCL\":[\"LONG\"]}",
+             "STOP_PCT_SHORT": "0.0045"},
+     "stride": "1"}
+  ]
+}
