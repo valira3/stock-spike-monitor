@@ -4,6 +4,75 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.3-experimental (2026-05-09) — GitHub Actions lever-sweep harness
+
+Adds `.github/workflows/lever-sweep.yml` and a portable
+`tools/lever_sweep_runner.py` so backtest sweeps can run in parallel
+on GitHub Actions runners instead of serially on a local sandbox.
+
+### Why
+
+Local sweep throughput on a 2-vCPU sandbox: ~8 min per STRIDE=4 sweep
+(~21 dates), ~4 min per STRIDE=8 sweep (~11 dates), running serially.
+A 14-variant Batch A took ~50 min wall. Cloud runners with matrix
+parallelism cut that to ~5-10 min wall regardless of variant count
+(up to GitHub's 20-job concurrency limit on the free tier).
+
+### What changed
+
+* `.github/workflows/lever-sweep.yml` — new. `workflow_dispatch` input
+  `variants`: a JSON array of `{vid, env, stride}` objects. Each
+  variant fans out as its own matrix job. Each job:
+  - Checks out main (corpus is in `data/`).
+  - Installs `requirements.txt` + `freezegun`.
+  - Applies the variant's `env` overrides via a setup step that
+    writes to `GITHUB_ENV` (so subsequent steps see them — same-step
+    `GITHUB_ENV` writes are not visible to the writing step).
+  - Runs `tools/lever_sweep_runner.py`.
+  - Commits `summary.json` + `per_day/*.json` to the orphan
+    `sweep-results` branch under
+    `sweeps/run-<github_run_id>/<vid>/`. The result-commit step
+    retries with rebase to handle concurrent matrix pushes.
+
+* `tools/lever_sweep_runner.py` — new. Drop-in for the workspace
+  runner at `/home/user/workspace/baseline_sweep/run_baseline_sweep.py`
+  but with no external workspace path dependency. Reads corpus from
+  `<repo>/data`, writes output to `<cwd>/sweep_workspace/<VID>/`,
+  uses `/tmp/sweep_isolate/` for slot dirs (CI-friendly).
+  All env knobs preserved: `VID`, `DATES_STRIDE`, `MAX_DATES`,
+  `WARMUP_ENABLED`, `V15_FLAGS_ENABLED`, plus any `V73x` / `V74x` /
+  `V75x` / `V77x` / `V78x` PROD_BASE override the workflow injects.
+
+### Validation
+
+The portable runner is byte-equivalent to the workspace runner on
+identical config. Smoke run with `VID=portable_smoke DATES_STRIDE=8
+SWEEP_WORKERS=2` produced `net_pnl: -90.91, entries: 100, wr: 44.19` —
+matching `batch_a_baseline` (workspace runner, same config) exactly.
+
+### Result collection
+
+```
+git fetch origin sweep-results
+git checkout origin/sweep-results -- sweeps/run-<id>
+jq -r '. | "\(.variant)\t\(.net_pnl)\t\(.entries)\t\(.win_rate_pct)%"' \
+  sweeps/run-<id>/*/summary.json
+```
+
+### Setup notes for first use
+
+* No secrets needed for the lever-sweep workflow itself (corpus is
+  already in the repo).
+* `permissions: contents: write` on the workflow allows the matrix
+  jobs to push to `sweep-results`. The branch is created on first
+  run as an orphan.
+* For future workflows that need Alpaca / Polygon API access (e.g.
+  to capture premarket bars and validate the v7.7.0 DI seed), add
+  `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `POLYGON_API_KEY` as
+  repository Actions Secrets and reference via `${{ secrets.X }}`.
+
+---
+
 ## v7.7.2-experimental (2026-05-09) — source-level wall-clock-leak patches
 
 Routes three known wall-clock-bypass callsites through the patchable
