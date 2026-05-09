@@ -1,0 +1,74 @@
+{
+  "date": "2026-01-14",
+  "version": "7.8.0-experimental",
+  "minutes_processed": 381,
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-14T14:00:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "price": 335.69
+    }
+  ],
+  "exits": [],
+  "orders": [],
+  "cancellations": [],
+  "closes_raw": [],
+  "telegram_messages": [
+    {
+      "chat": "",
+      "message": "Opening Range Collected (2026-01-14):\n  AAPL  OR_H=261.82  OR_L=259.23  PDC=260.56\n  MSFT  OR_H=468.20  OR_L=466.00  PDC=469.50\n  NVDA  OR_H=184.46  OR_L=182.21  PDC=185.50\n  TSLA  OR_H=443.00  OR_L=439.01  PDC=446.60\n  META  OR_H=628.45  OR_L=623.80  PDC=630.00\n  GOOG  OR_H=335.35  OR_L=332.65  PDC=337.75\n  AMZN  OR_H=241.28  OR_L=239.14  PDC=241.50\n  AVGO  OR_H=350.69  OR_L=346.75  PDC=354.60\n  NFLX  OR_H=91.58  OR_L=90.30  PDC=91.11\n  ORCL  OR_H=201.71  OR_L=198.29  PDC=201.87\n  SPY  OR_H=691.72  OR_L=689.87  PDC=692.71\n  QQQ  OR_H=623.45  OR_L=620.53  PDC=625.10"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY GOOG  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $335.69  (limit $335.71)\nShares : 28   Cost: $9,399.32\nStop   : $334.01  (OR_High-$0.90)\nOR High: $335.35\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (616.80 vs 615.98)\n  QQQ 5m close > 09:30 AVWAP \u2717  (616.80 vs 617.14)\nTime   : 13:00 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT GOOG\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 28\nEntry  : $335.69  \u2192  $336.55\nCost   : $9,399.32  \u2192  $9,423.40\nP&L    : $+24.08  (+0.3%)\nReason : \ud83d\udd14 End of Day\nIn: 13:00:00   Out: 14:49 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "EOD CLOSE Complete\n  Trades: 1  W/L: 1/0\n  Day P&L: $+24.08\n  Cash: $100,024.08"
+    }
+  ],
+  "alerts": [],
+  "errors": [],
+  "pnl_pairs": [],
+  "summary": {
+    "entries": 1,
+    "exits": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_pnl": 0,
+    "total_pnl_per_share": 0,
+    "pairs_missing_shares": 0
+  },
+  "_clean_state_run": true,
+  "_universe_used": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL",
+    "SPY",
+    "QQQ"
+  ]
+}

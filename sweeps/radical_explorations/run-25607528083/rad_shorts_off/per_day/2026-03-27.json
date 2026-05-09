@@ -1,0 +1,59 @@
+{
+  "date": "2026-03-27",
+  "version": "7.8.0-experimental",
+  "minutes_processed": 381,
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [],
+  "exits": [],
+  "orders": [],
+  "cancellations": [],
+  "closes_raw": [],
+  "telegram_messages": [
+    {
+      "chat": "",
+      "message": "Opening Range Collected (2026-03-27):\n  AAPL  OR_H=255.10  OR_L=252.78  PDC=254.06\n  MSFT  OR_H=362.45  OR_L=359.30  PDC=367.00\n  NVDA  OR_H=170.62  OR_L=169.08  PDC=172.70\n  TSLA  OR_H=369.86  OR_L=363.96  PDC=375.30\n  META  OR_H=543.60  OR_L=535.91  PDC=551.98\n  GOOG  OR_H=278.86  OR_L=275.92  PDC=281.97\n  AMZN  OR_H=206.64  OR_L=203.54  PDC=208.11\n  AVGO  OR_H=307.50  OR_L=303.73  PDC=310.86\n  NFLX  OR_H=95.58  OR_L=93.82  PDC=93.40\n  ORCL  OR_H=141.00  OR_L=139.29  PDC=143.60\n  SPY  OR_H=642.66  OR_L=639.89  PDC=647.69\n  QQQ  OR_H=571.02  OR_L=568.08  PDC=575.19"
+    },
+    {
+      "chat": "",
+      "message": "EOD CLOSE Complete\n  Trades: 0  W/L: 0/0\n  Day P&L: $+0.00\n  Cash: $100,275.32"
+    }
+  ],
+  "alerts": [],
+  "errors": [],
+  "pnl_pairs": [],
+  "summary": {
+    "entries": 0,
+    "exits": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_pnl": 0,
+    "total_pnl_per_share": 0,
+    "pairs_missing_shares": 0
+  },
+  "_clean_state_run": true,
+  "_universe_used": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL",
+    "SPY",
+    "QQQ"
+  ]
+}
