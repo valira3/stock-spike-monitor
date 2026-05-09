@@ -240,13 +240,46 @@ def process_trigger(trigger_path: Path) -> None:
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    # Run variants sequentially within this batch (each sweep is itself
-    # parallel via SWEEP_WORKERS). Could be parallelized further but
-    # the lever_sweep_runner uses ProcessPoolExecutor internally.
+    # Run variants in parallel via ThreadPoolExecutor. Each variant
+    # spawns its own subprocess (lever_sweep_runner.py), so the parent
+    # is mostly waiting on subprocess.run -- threads are appropriate.
+    # Each subprocess uses ProcessPoolExecutor internally with
+    # SWEEP_WORKERS workers; total active processes = parallel_variants
+    # * SWEEP_WORKERS, must be sized to vCPU.
+    #
+    # Sizing examples on a 24-vCPU Railway plan:
+    #   parallel_variants=6,  SWEEP_WORKERS=4  -> 24 procs (best for
+    #                                              small batches: 6 vars
+    #                                              finish in ~26 min)
+    #   parallel_variants=12, SWEEP_WORKERS=2  -> 24 procs (best for
+    #                                              large batches: 12+
+    #                                              vars in ~53 min)
+    parallel_variants = max(1, int(os.environ.get(
+        "RAILWAY_PARALLEL_VARIANTS", str(RAILWAY_WORKERS))))
+    parallel_variants = min(parallel_variants, len(variants))
+    log.info("[%s] running %d variants with parallel_variants=%d",
+             name, len(variants), parallel_variants)
+
     results = []
-    for i, v in enumerate(variants, 1):
-        log.info("[%s] variant %d/%d", name, i, len(variants))
-        results.append(run_variant(v, name, output_root))
+    import concurrent.futures as _cf
+    with _cf.ThreadPoolExecutor(max_workers=parallel_variants) as ex:
+        futures = {
+            ex.submit(run_variant, v, name, output_root): v
+            for v in variants
+        }
+        completed = 0
+        for fut in _cf.as_completed(futures):
+            completed += 1
+            try:
+                r = fut.result()
+            except Exception as e:
+                v = futures[fut]
+                log.error("[%s/%s] threw: %s",
+                          name, v.get("vid", "?"), e)
+                r = {"vid": v.get("vid"), "rc": -99, "exc": str(e)}
+            results.append(r)
+            log.info("[%s] %d/%d variants complete (latest: %s)",
+                     name, completed, len(variants), r.get("vid"))
 
     summary = {
         "trigger": name,

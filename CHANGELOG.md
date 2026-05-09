@@ -4,6 +4,40 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.2-experimental (2026-05-09) — Railway sweep worker: parallel variants
+
+`tools/railway_sweep_worker.py` now runs variants in parallel using
+`ThreadPoolExecutor`. Previously variants ran sequentially within a
+trigger batch, capping throughput at ~1 variant per 53min for STRIDE=1
+regardless of available vCPU.
+
+New env knob `RAILWAY_PARALLEL_VARIANTS` (default = legacy
+`RAILWAY_WORKERS`). Total active processes = `RAILWAY_PARALLEL_VARIANTS
+× SWEEP_WORKERS`, should ≤ vCPU count.
+
+### Sizing recipes (24-vCPU Hobby Pro)
+
+| Use case | Config | Active procs | 5-var STRIDE=1 wall |
+|---|---|---:|---:|
+| Small batches (≤6 variants) | `PARALLEL_VARIANTS=6 SWEEP_WORKERS=4` | 24 | ~26 min |
+| Medium (7-12 variants) | `PARALLEL_VARIANTS=12 SWEEP_WORKERS=2` | 24 | ~53 min for 12 |
+| Large grids (50+ variants) | `PARALLEL_VARIANTS=12 SWEEP_WORKERS=2` | 24 | ~3.5 hr for 50 |
+
+### Why threads (not processes)
+
+`run_variant` blocks on `subprocess.run` waiting for
+`lever_sweep_runner.py` to complete. The parent is mostly I/O-bound;
+threads are appropriate. The actual sweep work happens in the
+spawned subprocess (which itself uses `ProcessPoolExecutor` for
+the per-day inner loop).
+
+### Operator action
+
+Update `RAILWAY_PARALLEL_VARIANTS` and `SWEEP_WORKERS` env vars in
+the Railway sweep-worker service settings, then redeploy.
+
+---
+
 ## v7.8.1-experimental (2026-05-09) — Railway sweep-worker scaffold
 
 Adds a Railway-deployable sweep worker that processes lever-sweep

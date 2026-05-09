@@ -11,7 +11,7 @@
    - Dockerfile path: `Dockerfile.sweep-worker`
    - Branch: `main`
 
-3. **Settings → Variables → add 9 env vars:**
+3. **Settings → Variables → add env vars:**
 
    | Variable | Value |
    |---|---|
@@ -22,8 +22,20 @@
    | `R2_BUCKET` | your R2 bucket name |
    | `R2_ACCESS_KEY_ID` | from existing R2 secrets |
    | `R2_SECRET_ACCESS_KEY` | same |
-   | `RAILWAY_WORKERS` | `4` |
+   | `RAILWAY_WORKERS` | `4` (legacy, kept for compat — see RAILWAY_PARALLEL_VARIANTS below) |
+   | `RAILWAY_PARALLEL_VARIANTS` | `6` (number of variants run simultaneously — set per CPU sizing below) |
+   | `SWEEP_WORKERS` | `4` (per-variant inner concurrency — set per CPU sizing below) |
    | `RAILWAY_POLL_INTERVAL_SEC` | `60` |
+
+   **Sizing for your plan**: total active processes = `RAILWAY_PARALLEL_VARIANTS × SWEEP_WORKERS`, should ≤ vCPU count.
+
+   On 24 vCPU / 24 GB Hobby Pro:
+
+   | Use case | Recommended config | Active procs | 5-var STRIDE=1 wall |
+   |---|---|---:|---:|
+   | Small batches (≤6 variants) | `PARALLEL_VARIANTS=6 SWEEP_WORKERS=4` | 24 | ~26 min |
+   | Medium batches (7-12 variants) | `PARALLEL_VARIANTS=12 SWEEP_WORKERS=2` | 24 | ~53 min for 12 |
+   | Large grids (50+ variants) | `PARALLEL_VARIANTS=12 SWEEP_WORKERS=2` | 24 | ~3.5 hr for 50 |
 
 4. **Settings → Usage Limits →** set spending cap **$10/mo**
 
