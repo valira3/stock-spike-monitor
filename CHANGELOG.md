@@ -4,6 +4,58 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.7-experimental (2026-05-09) — discovery infra: premarket pull + R2 + ALARM_A env
+
+Three independent additions, bundled because they all unblock parts
+of the discovery loop without touching strategy code paths.
+
+### 1. `engine/sentinel.py:80` — `ALARM_A_HARD_LOSS_DOLLARS` env-tunable
+
+Was: hardcoded `-500.0`.
+Now: `_read_float("ALARM_A_HARD_LOSS_DOLLARS", -500.0)` (same default).
+
+Why: an audit of the non-monotonic sizing sweep curve (10k=−$91 vs
+20k=−$201, when scaled-linear would predict −$182) traced the
+divergence to this hard floor. Positions at 2x notional hit the
+−$500 floor 2x faster, cascading into different entry-timing
+sequences and silently breaking sizing comparisons. With this
+env-tunable, a future sizing sweep can scale the floor proportionally
+(e.g. `PAPER_DOLLARS_PER_ENTRY=20000 ALARM_A_HARD_LOSS_DOLLARS=-1000`)
+to recover monotonicity.
+
+### 2. `.github/workflows/pull-premarket.yml` — Alpaca premarket bar pull
+
+Workflow_dispatch with date range and ticker list inputs. Uses
+`secrets.VAL_ALPACA_PAPER_KEY` / `_SECRET` to pull 04:00–09:30 ET
+1m bars from Alpaca's SIP feed across the corpus date range. Writes
+to `data/<DATE>/premarket/<TICKER>.jsonl` in the layout that
+`backtest/bar_cache.py:154` already supports. Commits to a
+`data-extensions/premarket` branch (orphan-safe).
+
+Why: the v7.7.0 DI seed code reads premarket bars from the local
+archive but the in-repo corpus is RTH-only. This workflow fills
+the gap so v7.7.0 becomes measurable AND every future sweep gets
+DI/ADX armed at 09:30 instead of warming up to ~12:00 ET.
+
+### 3. `.github/workflows/r2-export-results.yml` — Cloudflare R2 result mirror
+
+Workflow_dispatch. Uploads sweep summary.json (and optionally
+per_day/) from the `sweep-results` branch to a Cloudflare R2 bucket
+via boto3. Optional prune flag deletes the synced run dir from the
+git branch.
+
+Why: `sweep-results` grows unbounded (~150 files per 14-variant
+batch). R2 is cheaper, faster to query for many small JSONs, and
+keeps the repo clean. Read pattern documented in workflow comments.
+
+### Why not split into 3 PRs
+
+Each touches a different file, no behavior coupling. Bundling saves
+~3 PR cycles (CI + merge per round) and matches them as "discovery
+loop infrastructure" rather than independent shippable features.
+
+---
+
 ## v7.7.6-experimental (2026-05-09) — short-stop gradient sweep config
 
 Discovery loop iteration. Adds

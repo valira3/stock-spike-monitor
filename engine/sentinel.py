@@ -75,9 +75,14 @@ if TYPE_CHECKING:
 # Constants \u2014 spec-literal thresholds
 # ---------------------------------------------------------------------------
 
-# Alarm A_LOSS \u2014 absolute hard floor. Long unrealized P&L <= -$500 fires.
+# Alarm A_LOSS \u2014 absolute hard floor. Long unrealized P&L <= floor fires.
 # (vAA-1 rename: legacy A_one code replaced by A_LOSS; legacy strings deleted.)
-ALARM_A_HARD_LOSS_DOLLARS: float = -500.0
+# v7.7.7: env-tunable so backtest sizing sweeps can scale the floor with
+# PAPER_DOLLARS_PER_ENTRY. With the constant fixed at -$500, doubling
+# the position size made positions hit the floor 2x faster, cascading
+# into different entry-timing sequences and silently breaking sizing
+# comparisons. Default -500 preserves prior behavior.
+ALARM_A_HARD_LOSS_DOLLARS: float = _read_float("ALARM_A_HARD_LOSS_DOLLARS", -500.0)
 
 # Alarm A_FLASH \u2014 velocity. -1% over the last 60 seconds, measured as
 # (P&L_now - P&L_60s_ago) / position_value <= -0.01. The window is

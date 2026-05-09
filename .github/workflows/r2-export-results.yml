@@ -1,0 +1,109 @@
+name: Export sweep results to R2
+
+# Mirrors the sweep-results branch to a Cloudflare R2 bucket so the
+# branch doesn't grow unbounded. Each (run-id, vid) summary becomes
+# an object at sweep-results/<run-id>/<vid>/summary.json. Per-day
+# files are uploaded too if SYNC_PER_DAY=1.
+#
+# Storage saving: a 14-variant batch produces ~150 small JSON files
+# per run; over many rounds this bloats the orphan branch. R2 charges
+# only for storage size, no Class A operations on standard tier for
+# small JSON.
+#
+# Read pattern: from a Claude Code session or local shell:
+#   aws --endpoint-url=$R2_ENDPOINT s3 ls s3://$R2_BUCKET/sweep-results/
+#   aws --endpoint-url=$R2_ENDPOINT s3 cp s3://$R2_BUCKET/sweep-results/<run>/<vid>/summary.json -
+#
+# Trigger: workflow_dispatch (manual, not auto). Run after each batch
+# of cloud sweeps to flush results to R2 + (optionally) prune the git
+# branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Specific run-id to export (empty = all)'
+        required: false
+        default: ''
+      sync_per_day:
+        description: 'Also upload per_day/*.json (1=yes, 0=just summaries)'
+        required: false
+        default: '0'
+      prune_branch:
+        description: 'Delete the synced run dirs from sweep-results branch (1=yes)'
+        required: false
+        default: '0'
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sweep-results
+        uses: actions/checkout@v4
+        with:
+          ref: sweep-results
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install S3 deps
+        run: pip install boto3
+
+      - name: Sync to R2
+        env:
+          R2_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUN_ID: ${{ inputs.run_id }}
+          SYNC_PER_DAY: ${{ inputs.sync_per_day }}
+        run: |
+          python <<'EOF'
+          import os
+          import sys
+          from pathlib import Path
+
+          import boto3
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=os.environ["R2_ENDPOINT_URL"],
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+          )
+          bucket = os.environ["R2_BUCKET"]
+          run_id_filter = os.environ.get("RUN_ID", "").strip()
+          sync_per_day = os.environ.get("SYNC_PER_DAY", "0") == "1"
+
+          uploaded = 0
+          skipped = 0
+          for fp in Path("sweeps").rglob("*.json"):
+              if not sync_per_day and "per_day" in fp.parts:
+                  continue
+              if run_id_filter:
+                  parts = fp.parts
+                  if not any(f"run-{run_id_filter}" in p for p in parts):
+                      skipped += 1
+                      continue
+              key = f"sweep-results/{fp.as_posix()[len('sweeps/'):]}"
+              s3.upload_file(str(fp), bucket, key)
+              uploaded += 1
+          print(f"uploaded={uploaded} skipped={skipped}")
+          EOF
+
+      - name: Prune branch (optional)
+        if: ${{ inputs.prune_branch == '1' && inputs.run_id != '' }}
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "r2-export-bot"
+          git rm -rf "sweeps/run-${{ inputs.run_id }}" 2>/dev/null || true
+          git rm -rf "sweeps/*/run-${{ inputs.run_id }}" 2>/dev/null || true
+          git commit -m "prune run-${{ inputs.run_id }} from branch (synced to R2)" || exit 0
+          git push origin sweep-results
