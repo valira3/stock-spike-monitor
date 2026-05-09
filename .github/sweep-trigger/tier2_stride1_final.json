@@ -1,0 +1,15 @@
+{
+  "max_parallel": 4,
+  "variants": [
+    {"vid": "t2_baseline_full", "env": {}, "stride": "1"},
+    {"vid": "t2_L50_S45_v730off_full",
+     "env": {"STOP_PCT_LONG": "0.0050", "STOP_PCT_SHORT": "0.0045", "V730_STOP_HYSTERESIS_ENABLED": "0"},
+     "stride": "1"},
+    {"vid": "t2_L50_S45_full",
+     "env": {"STOP_PCT_LONG": "0.0050", "STOP_PCT_SHORT": "0.0045"},
+     "stride": "1"},
+    {"vid": "t2_L35_S40_full",
+     "env": {"STOP_PCT_LONG": "0.0035", "STOP_PCT_SHORT": "0.0040"},
+     "stride": "1"}
+  ]
+}
