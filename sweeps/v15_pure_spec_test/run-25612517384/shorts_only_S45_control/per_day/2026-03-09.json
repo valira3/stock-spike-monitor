@@ -1,0 +1,109 @@
+{
+  "date": "2026-03-09",
+  "version": "7.8.1-experimental",
+  "minutes_processed": 381,
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-09T10:13:00-04:00",
+      "ticker": "ORCL",
+      "side": "short",
+      "price": 146.635
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-09T10:16:00-04:00",
+      "ticker": "ORCL",
+      "side": "short",
+      "price": 147.1803025,
+      "reason": "v750_early_ditch",
+      "entry_price": 146.635,
+      "shares": 34
+    }
+  ],
+  "orders": [],
+  "cancellations": [],
+  "closes_raw": [
+    {
+      "ts": "2026-03-09T10:16:00-04:00",
+      "ticker": "ORCL",
+      "side": "short",
+      "exit_price": 147.1803025,
+      "exit_price_pre_slippage": 147.07,
+      "slippage_bps_applied": 7.5,
+      "reason": "v750_early_ditch",
+      "entry_price": 146.635,
+      "shares": 34,
+      "entry_ts_utc": "2026-03-09T14:13:00+00:00"
+    }
+  ],
+  "telegram_messages": [
+    {
+      "chat": "",
+      "message": "Opening Range Collected (2026-03-09):\n  AAPL  OR_H=257.02  OR_L=253.68  PDC=252.97\n  MSFT  OR_H=408.50  OR_L=404.22  PDC=402.99\n  NVDA  OR_H=178.16  OR_L=176.50  PDC=175.70\n  TSLA  OR_H=392.99  OR_L=389.50  PDC=389.66\n  META  OR_H=637.69  OR_L=631.24  PDC=636.60\n  GOOG  OR_H=296.70  OR_L=293.92  PDC=292.80\n  AMZN  OR_H=212.29  OR_L=210.07  PDC=209.37\n  AVGO  OR_H=331.28  OR_L=323.61  PDC=323.65\n  NFLX  OR_H=98.94  OR_L=97.65  PDC=97.59\n  ORCL  OR_H=151.99  OR_L=147.68  PDC=150.70\n  SPY  OR_H=667.63  OR_L=665.74  PDC=662.47\n  QQQ  OR_H=596.47  OR_L=594.03  PDC=590.51"
+    },
+    {
+      "chat": "",
+      "message": "\ud83e\ude78 SHORT ENTRY #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker   : ORCL\nEntry    : $146.63 (limit)\nShares   : 34   Proceeds: $4,985.59\nStop     : $147.29 (PDC+$0.90)\nOR Low   : $147.68\nSignal   : Wounded Buffalo \u2193\n  1m close < OR Low \u2713\n  2nd 1m close < OR Low \u2713\n  QQQ 5m close < 9-EMA \u2713  (593.08 vs 593.41)\n  QQQ 5m close < 09:30 AVWAP \u2713  (593.08 vs 593.30)\nTime     : 09:13 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c SHORT CLOSED\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker : ORCL\nShares : 34\nEntry  : $146.63  (total $4,985.59)\nCover  : $147.18  (total $5,004.13)\nP&L    : $-18.54  (-0.4%)\nReason : v750_early_ditch\nIn: 09:13:00   Out: 09:16 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "EOD CLOSE Complete\n  Trades: 1  W/L: 0/1\n  Day P&L: $-18.54\n  Cash: $100,210.12"
+    }
+  ],
+  "alerts": [],
+  "errors": [],
+  "pnl_pairs": [
+    {
+      "ticker": "ORCL",
+      "side": "short",
+      "entry_ts": "2026-03-09T10:13:00-04:00",
+      "exit_ts": "2026-03-09T10:16:00-04:00",
+      "entry_price": 146.635,
+      "exit_price": 147.1803025,
+      "shares": 34,
+      "pnl_per_share": -0.5453,
+      "pnl_dollars": -18.5403
+    }
+  ],
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 0,
+    "losses": 1,
+    "total_pnl": -18.5403,
+    "total_pnl_per_share": -0.5453,
+    "pairs_missing_shares": 0
+  },
+  "_clean_state_run": true,
+  "_universe_used": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL",
+    "SPY",
+    "QQQ"
+  ]
+}
