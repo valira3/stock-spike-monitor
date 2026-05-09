@@ -1,0 +1,6 @@
+{
+  "max_parallel": 1,
+  "variants": [
+    {"vid": "rw_smoke_baseline", "env": {}, "stride": "8"}
+  ]
+}
