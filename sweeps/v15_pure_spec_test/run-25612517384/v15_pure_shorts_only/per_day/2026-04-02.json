@@ -1,0 +1,74 @@
+{
+  "date": "2026-04-02",
+  "version": "7.8.1-experimental",
+  "minutes_processed": 381,
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-04-02T14:08:00-04:00",
+      "ticker": "TSLA",
+      "side": "short",
+      "price": 359.995
+    }
+  ],
+  "exits": [],
+  "orders": [],
+  "cancellations": [],
+  "closes_raw": [],
+  "telegram_messages": [
+    {
+      "chat": "",
+      "message": "Opening Range Collected (2026-04-02):\n  AAPL  OR_H=254.80  OR_L=251.51  PDC=252.26\n  MSFT  OR_H=367.61  OR_L=364.44  PDC=365.98\n  NVDA  OR_H=173.75  OR_L=171.92  PDC=172.14\n  TSLA  OR_H=367.50  OR_L=363.65  PDC=373.03\n  META  OR_H=566.75  OR_L=561.71  PDC=571.81\n  GOOG  OR_H=290.81  OR_L=287.85  PDC=288.00\n  AMZN  OR_H=207.62  OR_L=204.90  PDC=207.81\n  AVGO  OR_H=308.27  OR_L=303.58  PDC=307.35\n  NFLX  OR_H=96.54  OR_L=95.17  PDC=94.34\n  ORCL  OR_H=143.45  OR_L=140.78  PDC=143.39\n  SPY  OR_H=647.47  OR_L=646.17  PDC=648.01\n  QQQ  OR_H=575.29  OR_L=573.21  PDC=579.15"
+    },
+    {
+      "chat": "",
+      "message": "\ud83e\ude78 SHORT ENTRY #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker   : TSLA\nEntry    : $360.00 (limit)\nShares   : 13   Proceeds: $4,679.94\nStop     : $361.07 (PDC+$0.90)\nOR Low   : $363.65\nSignal   : Wounded Buffalo \u2193\n  1m close < OR Low \u2713\n  2nd 1m close < OR Low \u2713\n  QQQ 5m close < 9-EMA \u2717  (582.57 vs 582.48)\n  QQQ 5m close < 09:30 AVWAP \u2717  (582.57 vs 580.50)\nTime     : 13:08 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 SHORT CLOSED\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker : TSLA\nShares : 13\nEntry  : $360.00  (total $4,679.94)\nCover  : $359.91  (total $4,678.83)\nP&L    : $+1.10  (+0.0%)\nReason : \ud83d\udd14 End of Day\nIn: 13:08:00   Out: 14:49 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "EOD CLOSE Complete\n  Trades: 1  W/L: 1/0\n  Day P&L: $+1.10\n  Cash: $100,092.12"
+    }
+  ],
+  "alerts": [],
+  "errors": [],
+  "pnl_pairs": [],
+  "summary": {
+    "entries": 1,
+    "exits": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_pnl": 0,
+    "total_pnl_per_share": 0,
+    "pairs_missing_shares": 0
+  },
+  "_clean_state_run": true,
+  "_universe_used": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL",
+    "SPY",
+    "QQQ"
+  ]
+}
