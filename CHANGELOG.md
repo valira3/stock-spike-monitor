@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.4-experimental (2026-05-09) — workflow env-merge fix
+
+Bug fix for `.github/workflows/lever-sweep.yml`. The first 14-variant
+cloud Batch A (run-25604805581) returned baseline numbers for every
+V730/V740/V750/V770/cooldown variant, while the STOP_PCT/PAPER_DOLLARS
+variants worked correctly. Root cause: the "Run sweep" step had a
+step-level `env:` block declaring PROD_BASE defaults; step-level env
+beats `GITHUB_ENV` writes from prior steps, so the variant overrides
+applied via the "Apply variant env overrides" step were silently
+clobbered. Variants whose keys weren't in the step env (the working
+ones) escaped this trap.
+
+### Fix
+
+Move all PROD_BASE + STATIC env into a single
+"Apply PROD_BASE + variant env overrides" step that writes everything
+to `GITHUB_ENV` in this order:
+
+```
+{**STATIC, **PROD_BASE, **overrides}
+```
+
+So variant overrides win on duplicate keys. The runner step no longer
+has any `env:` block — it picks up everything from the merged
+environment.
+
+### Validation plan
+
+Re-trigger Batch A on the same 14 variants. Expected:
+- V730/V740/V750/V770/cooldown variants now show non-zero deltas
+  (matching the local Batch A run that already proved the env
+  override works locally).
+- STOP_PCT and PAPER_DOLLARS variants stay unchanged from
+  run-25604805581's results (they were working).
+
+### Side note: stop_short_loose40 is now the headline lever
+
+Even with the bug, run-25604805581's working variants surfaced
+`stop_short_loose40` (LONG 50bp, SHORT 40bp) at +$319.42 net P&L on
+11 dates — Δ +$410.33 vs baseline, and far better than the previous
+top candidate `stop_short_50` (sym 50bp/50bp, +$188.74). Indicates
+the gradient on short-side stop width keeps improving past 40bp,
+worth a dedicated sub-knob sweep.
+
+---
+
 ## v7.7.3-experimental (2026-05-09) — GitHub Actions lever-sweep harness
 
 Adds `.github/workflows/lever-sweep.yml` and a portable

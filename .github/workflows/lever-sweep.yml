@@ -70,67 +70,75 @@ jobs:
           pip install -r requirements.txt
           pip install freezegun
 
-      # Apply this variant's env overrides BEFORE the run step.
-      # Writing to GITHUB_ENV in this step makes them visible to the
-      # subsequent step (same-step GITHUB_ENV writes are NOT visible
-      # to the writing step's own process).
-      - name: Apply variant env overrides
+      # Write PROD_BASE defaults + this variant's overrides to GITHUB_ENV.
+      # Variant overrides are written LAST so they win on duplicate keys.
+      # Cannot put PROD_BASE in the next step's `env:` block because
+      # step-level env beats GITHUB_ENV writes from prior steps, which
+      # silently nullified V730/V740/V750/V770/cooldown overrides in
+      # run-25604805581. (See run history for the bug repro: those
+      # variants returned baseline numbers because the step env clobbered
+      # the GITHUB_ENV overrides.)
+      - name: Apply PROD_BASE + variant env overrides
         env:
+          VID: ${{ matrix.variant.vid }}
+          DATES_STRIDE: ${{ matrix.variant.stride }}
           VARIANT_ENV_JSON: ${{ toJSON(matrix.variant.env) }}
         run: |
           python <<'EOF'
           import json
           import os
+
+          PROD_BASE = {
+              "POST_LOSS_COOLDOWN_MIN": "30",
+              "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+              "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+              "VOLUME_GATE_ENABLED": "false",
+              "V730_STOP_HYSTERESIS_ENABLED": "1",
+              "V730_STOP_HYSTERESIS_BARS": "2",
+              "V730_STOP_DEEP_FRAC": "0.0075",
+              "V740_MFE_RATCHET_ENABLED": "1",
+              "V740_MFE_RATCHET_ARM_R": "1.0",
+              "V740_MFE_RATCHET_FRAC": "0.5",
+              "V750_EARLY_DITCH_ENABLED": "1",
+              "V750_EARLY_DITCH_WINDOW_SEC": "180",
+              "V750_EARLY_DITCH_RED_DOLLARS": "10",
+              "V770_POST_DITCH_COOLDOWN_ENABLED": "1",
+              "V770_POST_DITCH_COOLDOWN_MIN": "30",
+              "V780_OPENING_DELAY_ENABLED": "1",
+              "V780_OPENING_DELAY_UNTIL_ET": "09:45",
+              "V15_HARD_STRIKE_CAP": "1",
+              "V15_SCALED_DI_FLOOR_ENABLED": "1",
+              "V15_SCALED_DI_FLOOR": "25.0",
+              "V15_REQUIRE_5M_ADX_20": "1",
+              "V15_MOMENTUM_ADX_5M_MIN": "20.0",
+              "V15_ALARM_E_POST_ENABLED": "1",
+          }
+          STATIC = {
+              "VID": os.environ["VID"],
+              "DATES_STRIDE": os.environ["DATES_STRIDE"],
+              "WARMUP_ENABLED": "0",
+              "SWEEP_WORKERS": "2",
+              "SSM_SMOKE_TEST": "1",
+              "TELEGRAM_BOT_TOKEN": "000:fake",
+              "FMP_API_KEY": "sweep_dummy_key",
+              "LOG_LEVEL": "WARNING",
+          }
           raw = os.environ.get("VARIANT_ENV_JSON", "{}")
           overrides = json.loads(raw) if raw.strip() else {}
-          out = []
-          for k, v in overrides.items():
-              out.append(f"{k}={v}")
+
+          merged = {**STATIC, **PROD_BASE, **overrides}
           path = os.environ["GITHUB_ENV"]
           with open(path, "a") as fh:
-              for line in out:
-                  fh.write(line + "\n")
-          print(f"Applied {len(out)} env overrides")
+              for k, v in merged.items():
+                  fh.write(f"{k}={v}\n")
+          print(f"Applied: {len(STATIC)} static + {len(PROD_BASE)} prod_base + {len(overrides)} overrides")
+          if overrides:
+              print("Variant overrides: " + ", ".join(f"{k}={v}" for k, v in overrides.items()))
           EOF
 
+      # Runner step has NO env: block — env comes entirely from
+      # GITHUB_ENV writes in the previous step.
       - name: Run sweep
-        env:
-          VID: ${{ matrix.variant.vid }}
-          DATES_STRIDE: ${{ matrix.variant.stride }}
-          WARMUP_ENABLED: '0'
-          SWEEP_WORKERS: '2'  # ubuntu-latest is 2 vCPU
-          # PROD_BASE defaults (matches local runner).
-          # Variant overrides applied in the previous step win because
-          # the Python runner reads os.environ at startup and PROD_BASE
-          # entries already in env take precedence.
-          POST_LOSS_COOLDOWN_MIN: '30'
-          POST_LOSS_COOLDOWN_MIN_LONG: '30'
-          POST_LOSS_COOLDOWN_MIN_SHORT: '30'
-          VOLUME_GATE_ENABLED: 'false'
-          V730_STOP_HYSTERESIS_ENABLED: '1'
-          V730_STOP_HYSTERESIS_BARS: '2'
-          V730_STOP_DEEP_FRAC: '0.0075'
-          V740_MFE_RATCHET_ENABLED: '1'
-          V740_MFE_RATCHET_ARM_R: '1.0'
-          V740_MFE_RATCHET_FRAC: '0.5'
-          V750_EARLY_DITCH_ENABLED: '1'
-          V750_EARLY_DITCH_WINDOW_SEC: '180'
-          V750_EARLY_DITCH_RED_DOLLARS: '10'
-          V770_POST_DITCH_COOLDOWN_ENABLED: '1'
-          V770_POST_DITCH_COOLDOWN_MIN: '30'
-          V780_OPENING_DELAY_ENABLED: '1'
-          V780_OPENING_DELAY_UNTIL_ET: '09:45'
-          V15_HARD_STRIKE_CAP: '1'
-          V15_SCALED_DI_FLOOR_ENABLED: '1'
-          V15_SCALED_DI_FLOOR: '25.0'
-          V15_REQUIRE_5M_ADX_20: '1'
-          V15_MOMENTUM_ADX_5M_MIN: '20.0'
-          V15_ALARM_E_POST_ENABLED: '1'
-          # Sandbox dummies for replay
-          SSM_SMOKE_TEST: '1'
-          TELEGRAM_BOT_TOKEN: '000:fake'
-          FMP_API_KEY: 'sweep_dummy_key'
-          LOG_LEVEL: 'WARNING'
         run: python tools/lever_sweep_runner.py
 
       - name: Commit results to sweep-results branch
