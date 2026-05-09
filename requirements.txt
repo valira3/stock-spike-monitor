@@ -31,3 +31,9 @@ alpaca-py==0.43.2
 
 # -- Parquet bar/indicator cache (v6.9.0 backtest cache layer) -------
 pyarrow>=15.0
+
+# -- Replay harness wall-clock pin (v7.7.1, backtest-only) ----------
+# Pins datetime.now / datetime.utcnow / time.time to the simulated
+# clock during replay so backtest results are reproducible across
+# wall-clock runs. Production code is unaffected.
+freezegun>=1.5,<2.0

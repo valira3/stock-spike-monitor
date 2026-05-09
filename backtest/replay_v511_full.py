@@ -1188,6 +1188,28 @@ def run_replay(
     # 6) Step minute-by-minute through the session.
     import engine.scan as _engine_scan
 
+    # Freeze wall-clock at the simulated time to prevent leaks: many
+    # callsites in trade_genius / engine read datetime.now() / utcnow()
+    # / time.time() directly instead of going through tg._now_et /
+    # tg._now_utc (the BacktestClock-patched helpers). Those leaks made
+    # backtest results depend on the wall-clock hour the harness
+    # happened to run at \u2014 same code, same date, different P&L between
+    # 03:56 UTC and 11:00 UTC sweeps. freezegun pins datetime.now /
+    # datetime.utcnow / time.time to a controllable value; we advance
+    # it on each tick alongside clock.now.
+    try:
+        from freezegun import freeze_time as _freeze_time
+        _freezer_ctx = _freeze_time(start_dt.astimezone(timezone.utc),
+                                    tick=False)
+        # .start() returns the FrozenDateTimeFactory which has .move_to.
+        _freezer = _freezer_ctx.start()
+        _have_freezer = True
+    except ImportError:
+        logger.warning("freezegun not installed; replay will leak wall clock")
+        _freezer_ctx = None
+        _freezer = None
+        _have_freezer = False
+
     # Seed OR/pdc once when we cross 09:36 ET (mirrors the production
     # 09:35 ET scheduler kick that calls collect_or). The harness
     # bar-feed monkey-patch makes collect_or read replay bars rather
@@ -1206,6 +1228,8 @@ def run_replay(
     eod_trigger_hhmm = (15, 49)
     while cur <= end_dt:
         clock.now = cur
+        if _have_freezer and _freezer is not None:
+            _freezer.move_to(cur.astimezone(timezone.utc))
         cb.ticks.append(cur)
         # v6.4.0 harness EOD invocation. Fires once when sim clock
         # crosses 15:49 ET. _eod_align_to_spec returns 0 immediately
@@ -1258,6 +1282,12 @@ def run_replay(
             )
         minutes += 1
         cur = cur + timedelta(minutes=1)
+
+    if _have_freezer and _freezer_ctx is not None:
+        try:
+            _freezer_ctx.stop()
+        except Exception:
+            pass
 
     return ReplayResult(
         date=date_str,

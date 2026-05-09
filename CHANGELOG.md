@@ -4,6 +4,72 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.1-experimental (2026-05-09) — replay harness wall-clock pin
+
+Backtest-only fix. Pins `datetime.now()` / `datetime.utcnow()` /
+`time.time()` to the simulated `BacktestClock` time using `freezegun`.
+Production code is unaffected — the freeze is installed inside the
+replay harness only.
+
+### Why
+
+Backtest results were silently wall-clock-dependent. The same code,
+same date, same env produced different P&L between runs at different
+hours of the day:
+
+| Sweep | Wall-clock UTC | 2026-01-02 result |
+|---|---|---|
+| Original | 03:56 | 9 entries, -$14.58 |
+| 11:00 UTC repro | 11:00 | 0 entries, $0 |
+
+Root cause: many engine callsites (e.g. `_v570_session_today_str`,
+`volume_profile._utc_now`, scan-loop heartbeat timestamps) read
+`datetime.now()` directly instead of going through `tg._now_et` /
+`tg._now_utc` (the BacktestClock-patched helpers). The leaks anchor
+gates and refresh schedules to wall-clock instead of simulated time,
+so a sweep run at 03:56 UTC behaves differently from one at 11:00 UTC.
+
+### What changed
+
+* `backtest/replay_v511_full.py` — install `freezegun.freeze_time(...)`
+  at `start_dt` after `install_record_only_layers`, advance via
+  `factory.move_to(cur)` on each minute tick, stop the freezer when
+  the replay loop exits. No-op (with WARN log) if `freezegun` is not
+  installed.
+* `requirements.txt` — pin `freezegun>=1.5,<2.0`.
+
+### Validation
+
+Two single-day replays now produce byte-identical results to the
+original sweep at 03:56 UTC, despite running at 11:00+ UTC:
+
+| Date | Pre-fix (11:00 UTC) | With freezer (11:00 UTC) | Original sweep (03:56 UTC) |
+|---|---|---|---|
+| 2026-01-02 | 0 entries, $0.00 | **9 entries, -$14.58** | 9 entries, -$14.58 |
+| 2026-01-29 | 0 entries, $0.00 | **4 entries, +$76.61** | 4 entries, +$76.61 |
+
+### Forensic log
+
+* `freezegun not installed; replay will leak wall clock` — startup
+  warning when `freezegun` is missing. Replay still runs, just not
+  reproducibly.
+
+### Why this is a backtest-only fix
+
+The freeze is installed inside `backtest.replay_v511_full.replay_day`,
+not in `trade_genius` startup. Production never imports freezegun and
+keeps reading the real wall clock. This fix unlocks reliable P&L-lever
+sweeps on the existing corpus without touching any engine code.
+
+### Follow-up
+
+Surveying the 163 wall-clock reads across `trade_genius.py` /
+`engine/` / `volume_profile.py` etc. is now optional — freezegun
+covers all of them transparently. The leaks remain in prod-side code
+but only matter under replay, where they are now trapped.
+
+---
+
 ## v7.7.0-experimental (2026-05-09) — DI seed from today's premarket
 
 Restores DI/ADX seeding at startup, scoped to TODAY's premarket bars
