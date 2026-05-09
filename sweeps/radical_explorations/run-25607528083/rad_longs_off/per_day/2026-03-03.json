@@ -1,0 +1,109 @@
+{
+  "date": "2026-03-03",
+  "version": "7.8.0-experimental",
+  "minutes_processed": 381,
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-03T10:39:00-05:00",
+      "ticker": "TSLA",
+      "side": "short",
+      "price": 386.445
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-03T11:04:00-05:00",
+      "ticker": "TSLA",
+      "side": "short",
+      "price": 389.35179500000004,
+      "reason": "sentinel_a_stop_price",
+      "entry_price": 386.445,
+      "shares": 12
+    }
+  ],
+  "orders": [],
+  "cancellations": [],
+  "closes_raw": [
+    {
+      "ts": "2026-03-03T11:04:00-05:00",
+      "ticker": "TSLA",
+      "side": "short",
+      "exit_price": 389.35179500000004,
+      "exit_price_pre_slippage": 389.06,
+      "slippage_bps_applied": 7.5,
+      "reason": "sentinel_a_stop_price",
+      "entry_price": 386.445,
+      "shares": 12,
+      "entry_ts_utc": "2026-03-03T15:39:00+00:00"
+    }
+  ],
+  "telegram_messages": [
+    {
+      "chat": "",
+      "message": "Opening Range Collected (2026-03-03):\n  AAPL  OR_H=263.83  OR_L=261.21  PDC=261.42\n  MSFT  OR_H=399.18  OR_L=392.74  PDC=392.20\n  NVDA  OR_H=180.53  OR_L=177.99  PDC=176.63\n  TSLA  OR_H=396.34  OR_L=392.62  PDC=393.55\n  META  OR_H=655.90  OR_L=645.38  PDC=646.65\n  GOOG  OR_H=299.81  OR_L=296.70  PDC=301.30\n  AMZN  OR_H=204.71  OR_L=203.03  PDC=203.73\n  AVGO  OR_H=313.44  OR_L=307.40  PDC=310.00\n  NFLX  OR_H=97.77  OR_L=95.60  PDC=95.52\n  ORCL  OR_H=146.11  OR_L=144.00  PDC=144.76\n  SPY  OR_H=676.44  OR_L=674.12  PDC=677.74\n  QQQ  OR_H=598.56  OR_L=595.59  PDC=595.95"
+    },
+    {
+      "chat": "",
+      "message": "\ud83e\ude78 SHORT ENTRY #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker   : TSLA\nEntry    : $386.44 (limit)\nShares   : 12   Proceeds: $4,637.34\nStop     : $387.60 (PDC+$0.90)\nOR Low   : $392.62\nSignal   : Wounded Buffalo \u2193\n  1m close < OR Low \u2713\n  2nd 1m close < OR Low \u2713\n  QQQ 5m close < 9-EMA \u2713  (593.17 vs 594.07)\n  QQQ 5m close < 09:30 AVWAP \u2713  (593.17 vs 595.35)\nTime     : 09:39 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c SHORT CLOSED\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker : TSLA\nShares : 12\nEntry  : $386.44  (total $4,637.34)\nCover  : $389.35  (total $4,672.22)\nP&L    : $-34.88  (-0.8%)\nReason : sentinel_a_stop_price\nIn: 09:39:00   Out: 10:04 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "EOD CLOSE Complete\n  Trades: 1  W/L: 0/1\n  Day P&L: $-34.88\n  Cash: $99,791.61"
+    }
+  ],
+  "alerts": [],
+  "errors": [],
+  "pnl_pairs": [
+    {
+      "ticker": "TSLA",
+      "side": "short",
+      "entry_ts": "2026-03-03T10:39:00-05:00",
+      "exit_ts": "2026-03-03T11:04:00-05:00",
+      "entry_price": 386.445,
+      "exit_price": 389.35179500000004,
+      "shares": 12,
+      "pnl_per_share": -2.9068,
+      "pnl_dollars": -34.8815
+    }
+  ],
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 0,
+    "losses": 1,
+    "total_pnl": -34.8815,
+    "total_pnl_per_share": -2.9068,
+    "pairs_missing_shares": 0
+  },
+  "_clean_state_run": true,
+  "_universe_used": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL",
+    "SPY",
+    "QQQ"
+  ]
+}
