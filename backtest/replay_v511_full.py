@@ -1197,15 +1197,26 @@ def run_replay(
     # 03:56 UTC and 11:00 UTC sweeps. freezegun pins datetime.now /
     # datetime.utcnow / time.time to a controllable value; we advance
     # it on each tick alongside clock.now.
-    try:
-        from freezegun import freeze_time as _freeze_time
-        _freezer_ctx = _freeze_time(start_dt.astimezone(timezone.utc),
-                                    tick=False)
-        # .start() returns the FrozenDateTimeFactory which has .move_to.
-        _freezer = _freezer_ctx.start()
-        _have_freezer = True
-    except ImportError:
-        logger.warning("freezegun not installed; replay will leak wall clock")
+    # v7.7.2: source-level wall-clock-leak patches landed (V570 session
+    # helpers, _v561 OR persist, engine/scan bucket lookup) but verified
+    # incomplete \u2014 single-day repros without freezegun produce 0 entries
+    # vs 4 with freezegun. Until ALL leaks are tracked down, freezegun
+    # stays default-on as the belt-and-braces fix. Disable via
+    # REPLAY_USE_FREEZEGUN=0 only when explicitly debugging or when the
+    # leak hunt completes.
+    if os.environ.get("REPLAY_USE_FREEZEGUN", "1") == "1":
+        try:
+            from freezegun import freeze_time as _freeze_time
+            _freezer_ctx = _freeze_time(start_dt.astimezone(timezone.utc),
+                                        tick=False)
+            _freezer = _freezer_ctx.start()
+            _have_freezer = True
+        except ImportError:
+            logger.warning("freezegun not installed; replay will leak wall clock")
+            _freezer_ctx = None
+            _freezer = None
+            _have_freezer = False
+    else:
         _freezer_ctx = None
         _freezer = None
         _have_freezer = False

@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.2-experimental (2026-05-09) — source-level wall-clock-leak patches
+
+Routes three known wall-clock-bypass callsites through the patchable
+`_now_et()` / `_now_utc()` helpers so the backtest replay clock applies
+in production code paths it previously didn't:
+
+* `trade_genius._v570_session_today_str` — anchors V570 strike-cap and
+  daily P&L counters. Pre-fix used `datetime.now(tz=ET)` directly,
+  which made replay strike-cap counters key off the wall-clock day
+  instead of the simulated day.
+* `trade_genius._v570_is_session_open` — production weekday/9:30-ET
+  gate. Pre-fix returned False on weekend wall clocks even when the
+  simulated date was a weekday.
+* `trade_genius._v561_persist_or_snapshot` and
+  `_v561_maybe_persist_or_snapshots` — used `datetime.utcnow()` for the
+  OR snapshot directory key. Now route through `_now_utc()`.
+* `engine.scan` ws-tick path — replaced `datetime.now(tz=ET)` lookup
+  for `volume_profile.session_bucket` with `tg._now_et()`.
+
+### Verified incomplete
+
+A single-day replay without freezegun still produces 0 entries vs 4
+with freezegun on 2026-01-29 — these patches are necessary but not
+sufficient. freezegun stays default-on in the replay harness; toggle
+with `REPLAY_USE_FREEZEGUN=0` once the remaining leaks are tracked
+down. Production behaviour: unchanged (the patched helpers all use
+`_now_et()` / `_now_utc()` which in production return wall-clock as
+expected).
+
+### Knock-on
+
+The backtest harness now exposes `REPLAY_USE_FREEZEGUN` env knob
+(default `1`). Set to `0` after the leak hunt completes to recover
+the ~5x wall-time speedup of dropping freezegun.
+
+---
+
 ## v7.7.1-experimental (2026-05-09) — replay harness wall-clock pin
 
 Backtest-only fix. Pins `datetime.now()` / `datetime.utcnow()` /

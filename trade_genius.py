@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.7.1-experimental"
+BOT_VERSION = "7.7.2-experimental"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -117,9 +117,9 @@ BOT_VERSION = "7.7.1-experimental"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v7.7.1: backtest wall-\n"
-    "clock pin (freezegun).\n"
-    "Prod unchanged."
+    "v7.7.2: V570 / V561 /\n"
+    "scan now use _now_et.\n"
+    "Backtest leak partial."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1890,12 +1890,20 @@ _v570_rehydrated_for_date: str = ""
 
 
 def _v570_session_today_str() -> str:
-    """Today as ET date string \u2014 anchors the daily counters."""
+    """Today as ET date string \u2014 anchors the daily counters.
+
+    v7.7.2: route through _now_et() so the replay harness's BacktestClock
+    is honoured. Pre-fix this used datetime.now(tz=ET) directly, which
+    leaked wall-clock time during backtests and made strike-cap counters
+    key off the wrong simulated day.
+    """
     try:
-        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        return _now_et().strftime("%Y-%m-%d")
     except Exception:
-        now_et = datetime.utcnow()
-    return now_et.strftime("%Y-%m-%d")
+        try:
+            return datetime.now(tz=ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            return datetime.utcnow().strftime("%Y-%m-%d")
 
 
 def _v570_rehydrate_from_disk(today: str) -> None:
@@ -2224,11 +2232,20 @@ def _v570_update_session_hod_lod(
 
 
 def _v570_is_session_open() -> bool:
-    """True at/after 9:30 ET on a weekday."""
+    """True at/after 9:30 ET on a weekday.
+
+    v7.7.2: route through _now_et() so the replay clock applies. Pre-fix
+    used wall-clock datetime.now() which made backtest behaviour depend
+    on whether the harness happened to run on a weekend or before/after
+    market hours.
+    """
     try:
-        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        now_et = _now_et()
     except Exception:
-        return True
+        try:
+            now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        except Exception:
+            return True
     if now_et.weekday() >= 5:
         return False
     open_t = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -2355,7 +2372,8 @@ def _v561_persist_or_snapshot(
         sym = (ticker or "").strip().upper()
         if not sym:
             return None
-        day = today_utc or datetime.utcnow().strftime("%Y-%m-%d")
+        # v7.7.2: route through _now_utc so backtest replay clock applies.
+        day = today_utc or _now_utc().strftime("%Y-%m-%d")
         dir_path = Path(base_dir) / day
         dir_path.mkdir(parents=True, exist_ok=True)
         file_path = dir_path / f"{sym}.json"
@@ -2394,7 +2412,8 @@ def _v561_maybe_persist_or_snapshots(now_et=None) -> int:
         # Only fire after the OR window has closed (9:35 ET +).
         if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35):
             return 0
-        today_utc = datetime.utcnow().strftime("%Y-%m-%d")
+        # v7.7.2: route through _now_utc so backtest replay clock applies.
+        today_utc = _now_utc().strftime("%Y-%m-%d")
         # Universe = TRADE_TICKERS plus the index ticker (QQQ) since v5.6.1
         # archives QQQ bars and replay needs the matching OR snapshot to
         # validate the index G1 gate (QQQ has no OR_High/Low gate but the
