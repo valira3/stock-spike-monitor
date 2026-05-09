@@ -4,6 +4,245 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.3-experimental (2026-05-09) — GitHub Actions lever-sweep harness
+
+Adds `.github/workflows/lever-sweep.yml` and a portable
+`tools/lever_sweep_runner.py` so backtest sweeps can run in parallel
+on GitHub Actions runners instead of serially on a local sandbox.
+
+### Why
+
+Local sweep throughput on a 2-vCPU sandbox: ~8 min per STRIDE=4 sweep
+(~21 dates), ~4 min per STRIDE=8 sweep (~11 dates), running serially.
+A 14-variant Batch A took ~50 min wall. Cloud runners with matrix
+parallelism cut that to ~5-10 min wall regardless of variant count
+(up to GitHub's 20-job concurrency limit on the free tier).
+
+### What changed
+
+* `.github/workflows/lever-sweep.yml` — new. `workflow_dispatch` input
+  `variants`: a JSON array of `{vid, env, stride}` objects. Each
+  variant fans out as its own matrix job. Each job:
+  - Checks out main (corpus is in `data/`).
+  - Installs `requirements.txt` + `freezegun`.
+  - Applies the variant's `env` overrides via a setup step that
+    writes to `GITHUB_ENV` (so subsequent steps see them — same-step
+    `GITHUB_ENV` writes are not visible to the writing step).
+  - Runs `tools/lever_sweep_runner.py`.
+  - Commits `summary.json` + `per_day/*.json` to the orphan
+    `sweep-results` branch under
+    `sweeps/run-<github_run_id>/<vid>/`. The result-commit step
+    retries with rebase to handle concurrent matrix pushes.
+
+* `tools/lever_sweep_runner.py` — new. Drop-in for the workspace
+  runner at `/home/user/workspace/baseline_sweep/run_baseline_sweep.py`
+  but with no external workspace path dependency. Reads corpus from
+  `<repo>/data`, writes output to `<cwd>/sweep_workspace/<VID>/`,
+  uses `/tmp/sweep_isolate/` for slot dirs (CI-friendly).
+  All env knobs preserved: `VID`, `DATES_STRIDE`, `MAX_DATES`,
+  `WARMUP_ENABLED`, `V15_FLAGS_ENABLED`, plus any `V73x` / `V74x` /
+  `V75x` / `V77x` / `V78x` PROD_BASE override the workflow injects.
+
+### Validation
+
+The portable runner is byte-equivalent to the workspace runner on
+identical config. Smoke run with `VID=portable_smoke DATES_STRIDE=8
+SWEEP_WORKERS=2` produced `net_pnl: -90.91, entries: 100, wr: 44.19` —
+matching `batch_a_baseline` (workspace runner, same config) exactly.
+
+### Result collection
+
+```
+git fetch origin sweep-results
+git checkout origin/sweep-results -- sweeps/run-<id>
+jq -r '. | "\(.variant)\t\(.net_pnl)\t\(.entries)\t\(.win_rate_pct)%"' \
+  sweeps/run-<id>/*/summary.json
+```
+
+### Setup notes for first use
+
+* No secrets needed for the lever-sweep workflow itself (corpus is
+  already in the repo).
+* `permissions: contents: write` on the workflow allows the matrix
+  jobs to push to `sweep-results`. The branch is created on first
+  run as an orphan.
+* For future workflows that need Alpaca / Polygon API access (e.g.
+  to capture premarket bars and validate the v7.7.0 DI seed), add
+  `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `POLYGON_API_KEY` as
+  repository Actions Secrets and reference via `${{ secrets.X }}`.
+
+---
+
+## v7.7.2-experimental (2026-05-09) — source-level wall-clock-leak patches
+
+Routes three known wall-clock-bypass callsites through the patchable
+`_now_et()` / `_now_utc()` helpers so the backtest replay clock applies
+in production code paths it previously didn't:
+
+* `trade_genius._v570_session_today_str` — anchors V570 strike-cap and
+  daily P&L counters. Pre-fix used `datetime.now(tz=ET)` directly,
+  which made replay strike-cap counters key off the wall-clock day
+  instead of the simulated day.
+* `trade_genius._v570_is_session_open` — production weekday/9:30-ET
+  gate. Pre-fix returned False on weekend wall clocks even when the
+  simulated date was a weekday.
+* `trade_genius._v561_persist_or_snapshot` and
+  `_v561_maybe_persist_or_snapshots` — used `datetime.utcnow()` for the
+  OR snapshot directory key. Now route through `_now_utc()`.
+* `engine.scan` ws-tick path — replaced `datetime.now(tz=ET)` lookup
+  for `volume_profile.session_bucket` with `tg._now_et()`.
+
+### Verified incomplete
+
+A single-day replay without freezegun still produces 0 entries vs 4
+with freezegun on 2026-01-29 — these patches are necessary but not
+sufficient. freezegun stays default-on in the replay harness; toggle
+with `REPLAY_USE_FREEZEGUN=0` once the remaining leaks are tracked
+down. Production behaviour: unchanged (the patched helpers all use
+`_now_et()` / `_now_utc()` which in production return wall-clock as
+expected).
+
+### Knock-on
+
+The backtest harness now exposes `REPLAY_USE_FREEZEGUN` env knob
+(default `1`). Set to `0` after the leak hunt completes to recover
+the ~5x wall-time speedup of dropping freezegun.
+
+---
+
+## v7.7.1-experimental (2026-05-09) — replay harness wall-clock pin
+
+Backtest-only fix. Pins `datetime.now()` / `datetime.utcnow()` /
+`time.time()` to the simulated `BacktestClock` time using `freezegun`.
+Production code is unaffected — the freeze is installed inside the
+replay harness only.
+
+### Why
+
+Backtest results were silently wall-clock-dependent. The same code,
+same date, same env produced different P&L between runs at different
+hours of the day:
+
+| Sweep | Wall-clock UTC | 2026-01-02 result |
+|---|---|---|
+| Original | 03:56 | 9 entries, -$14.58 |
+| 11:00 UTC repro | 11:00 | 0 entries, $0 |
+
+Root cause: many engine callsites (e.g. `_v570_session_today_str`,
+`volume_profile._utc_now`, scan-loop heartbeat timestamps) read
+`datetime.now()` directly instead of going through `tg._now_et` /
+`tg._now_utc` (the BacktestClock-patched helpers). The leaks anchor
+gates and refresh schedules to wall-clock instead of simulated time,
+so a sweep run at 03:56 UTC behaves differently from one at 11:00 UTC.
+
+### What changed
+
+* `backtest/replay_v511_full.py` — install `freezegun.freeze_time(...)`
+  at `start_dt` after `install_record_only_layers`, advance via
+  `factory.move_to(cur)` on each minute tick, stop the freezer when
+  the replay loop exits. No-op (with WARN log) if `freezegun` is not
+  installed.
+* `requirements.txt` — pin `freezegun>=1.5,<2.0`.
+
+### Validation
+
+Two single-day replays now produce byte-identical results to the
+original sweep at 03:56 UTC, despite running at 11:00+ UTC:
+
+| Date | Pre-fix (11:00 UTC) | With freezer (11:00 UTC) | Original sweep (03:56 UTC) |
+|---|---|---|---|
+| 2026-01-02 | 0 entries, $0.00 | **9 entries, -$14.58** | 9 entries, -$14.58 |
+| 2026-01-29 | 0 entries, $0.00 | **4 entries, +$76.61** | 4 entries, +$76.61 |
+
+### Forensic log
+
+* `freezegun not installed; replay will leak wall clock` — startup
+  warning when `freezegun` is missing. Replay still runs, just not
+  reproducibly.
+
+### Why this is a backtest-only fix
+
+The freeze is installed inside `backtest.replay_v511_full.replay_day`,
+not in `trade_genius` startup. Production never imports freezegun and
+keeps reading the real wall clock. This fix unlocks reliable P&L-lever
+sweeps on the existing corpus without touching any engine code.
+
+### Follow-up
+
+Surveying the 163 wall-clock reads across `trade_genius.py` /
+`engine/` / `volume_profile.py` etc. is now optional — freezegun
+covers all of them transparently. The leaks remain in prod-side code
+but only matter under replay, where they are now trapped.
+
+---
+
+## v7.7.0-experimental (2026-05-09) — DI seed from today's premarket
+
+Restores DI/ADX seeding at startup, scoped to TODAY's premarket bars
+(04:00–09:29 ET) only. v5.26.0 deleted the prior-session seed as
+non-spec (stale-momentum bias from yesterday's PM session). This
+revival is spec-compatible: it reads only data the engine would have
+already consumed live during 04:00–09:30 if continuously running, so
+no cross-session staleness is introduced.
+
+### Why
+
+Without a seed, `tiger_di()` returns `(None, None)` until ~30 closed
+5m buckets accumulate from live ticks (~140 minutes after market
+open). On a Railway redeploy at 09:25 ET, every Entry-1 candidate is
+silently rejected with `[SKIP] reason=V15_MOMENTUM_ADX_5M:none` until
+~12:00, costing real P&L on redeploy days. The same dead zone exists
+in every backtest replay (each invocation is a cold Python process).
+
+### What changed
+
+* `trade_genius.py` — new `_seed_di_buffer_from_premarket(tickers,
+  today_et_date=None, base_dir=None)`. Reads
+  `$BAR_ARCHIVE_BASE/<today>/<TICKER>.jsonl`, filters to bars with
+  `et_bucket < "0930"`, resamples to 5m via the existing
+  `_resample_to_5min_ohlc_buckets`, and stores the result in
+  `_DI_SEED_CACHE[ticker]`. `tiger_di()` already merges seed + live
+  buckets keyed by `ts // 300`, so the seed is transparently
+  superseded as RTH bars arrive.
+* Wired at startup next to `_seed_opening_range_all`. Failure-tolerant:
+  any I/O / parse error logs WARN and leaves the cache untouched.
+* `backtest/replay_v511_full.py` — replay harness explicitly invokes
+  the seed after `install_record_only_layers`, passing
+  `base_dir=str(bars_dir)` so the function reads from the corpus root
+  instead of the empty per-slot bar archive. No-op when the corpus
+  has no premarket for the date (RTH-only datasets stay cold-start).
+* `tests/test_di_premarket_seed.py` — 6 contract tests: missing
+  day-dir / missing ticker / premarket seeded / RTH bars excluded /
+  flag disabled / bottom-line `tiger_di()` returns non-None.
+
+### Forensic log
+
+* `[DI-PMSEED] seeded=N skipped=N source=<path>` — once at startup.
+* `[DI-PMSEED] no archive day-dir at <path> — skipping` — when the
+  archive day-dir is missing (e.g. weekend boot).
+* `[DI-PMSEED] disabled by flag` — when `DI_PREMARKET_SEED_ENABLED=0`.
+
+### Env knobs
+
+* `DI_PREMARKET_SEED_ENABLED=1` (default ON). Set to `0` to disable
+  the seed and restore v5.26.0 cold-start behaviour.
+
+### Backtest validation
+
+Smoke against `archive/.../v707_vs_v728_replay/replay_layout/2026-05-06`
+(one of two corpus dates with real premarket bars):
+
+```
+[DI-PMSEED] seeded=9 skipped=0 source=.../2026-05-06
+GATE_EVAL ticker=MSFT ... di=True   # first scan, vs di=None pre-fix
+```
+
+The 81-day baseline corpus at `data/` has no premarket data, so it
+cannot validate the P&L impact of this fix. A separate measurement
+will be needed once a premarket-inclusive corpus is captured.
+
+---
+
 ## v7.2.8 (2026-05-07) -- TRAIL pill frontend honors backend gate
 
 Follow-up to v7.2.7. The backend `_compute_trail_pill_state` helper was

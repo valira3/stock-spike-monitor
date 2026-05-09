@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.6.0-experimental"
+BOT_VERSION = "7.7.3-experimental"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -117,9 +117,9 @@ BOT_VERSION = "7.6.0-experimental"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v7.2.0: PMR + PMC ext-hr\n"
-    "strategies + ATR-trail.\n"
-    "Default OFF (opt-in env)."
+    "v7.7.3: GH Actions sweep\n"
+    "harness + portable\n"
+    "runner. Cloud parallel."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -1890,12 +1890,20 @@ _v570_rehydrated_for_date: str = ""
 
 
 def _v570_session_today_str() -> str:
-    """Today as ET date string \u2014 anchors the daily counters."""
+    """Today as ET date string \u2014 anchors the daily counters.
+
+    v7.7.2: route through _now_et() so the replay harness's BacktestClock
+    is honoured. Pre-fix this used datetime.now(tz=ET) directly, which
+    leaked wall-clock time during backtests and made strike-cap counters
+    key off the wrong simulated day.
+    """
     try:
-        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        return _now_et().strftime("%Y-%m-%d")
     except Exception:
-        now_et = datetime.utcnow()
-    return now_et.strftime("%Y-%m-%d")
+        try:
+            return datetime.now(tz=ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            return datetime.utcnow().strftime("%Y-%m-%d")
 
 
 def _v570_rehydrate_from_disk(today: str) -> None:
@@ -2224,11 +2232,20 @@ def _v570_update_session_hod_lod(
 
 
 def _v570_is_session_open() -> bool:
-    """True at/after 9:30 ET on a weekday."""
+    """True at/after 9:30 ET on a weekday.
+
+    v7.7.2: route through _now_et() so the replay clock applies. Pre-fix
+    used wall-clock datetime.now() which made backtest behaviour depend
+    on whether the harness happened to run on a weekend or before/after
+    market hours.
+    """
     try:
-        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        now_et = _now_et()
     except Exception:
-        return True
+        try:
+            now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+        except Exception:
+            return True
     if now_et.weekday() >= 5:
         return False
     open_t = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -2355,7 +2372,8 @@ def _v561_persist_or_snapshot(
         sym = (ticker or "").strip().upper()
         if not sym:
             return None
-        day = today_utc or datetime.utcnow().strftime("%Y-%m-%d")
+        # v7.7.2: route through _now_utc so backtest replay clock applies.
+        day = today_utc or _now_utc().strftime("%Y-%m-%d")
         dir_path = Path(base_dir) / day
         dir_path.mkdir(parents=True, exist_ok=True)
         file_path = dir_path / f"{sym}.json"
@@ -2394,7 +2412,8 @@ def _v561_maybe_persist_or_snapshots(now_et=None) -> int:
         # Only fire after the OR window has closed (9:35 ET +).
         if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35):
             return 0
-        today_utc = datetime.utcnow().strftime("%Y-%m-%d")
+        # v7.7.2: route through _now_utc so backtest replay clock applies.
+        today_utc = _now_utc().strftime("%Y-%m-%d")
         # Universe = TRADE_TICKERS plus the index ticker (QQQ) since v5.6.1
         # archives QQQ bars and replay needs the matching OR snapshot to
         # validate the index G1 gate (QQQ has no OR_High/Low gate but the
@@ -2927,13 +2946,21 @@ def v5_adx_1m_5m(ticker):
 
 
 # ------------------------------------------------------------
-# DI seed buffer (v4.0.2-beta)
+# DI seed buffer (v4.0.2-beta; premarket-from-archive seed restored)
 # ------------------------------------------------------------
 # Without seeding, DI starts null on every boot and takes
 # ~DI_PERIOD*2 = ~30 closed 5m bars (75 min of live data) before
-# tiger_di() can return a non-null value. _seed_di_buffer() pulls
-# historical 5m bars from Alpaca at scanner startup so DI is armed
-# on the very first scan cycle.
+# tiger_di() can return a non-null value. On a Railway redeploy at
+# 09:25 ET this means every Entry-1 candidate is rejected with
+# `V15_MOMENTUM_ADX_5M:none` until ~12:00, costing real P&L.
+#
+# v5.26.0 deleted the prior-session seed as non-spec (stale-momentum
+# bias from yesterday's PM session). _seed_di_buffer_from_premarket
+# below is spec-compatible: it reads only TODAY's premarket bars
+# (04:00-09:29 ET) from the local bar archive, which is the same data
+# the engine consumes live during 04:00-09:30 when continuously
+# running. So this is "what would have been in the buffer if the
+# process had been up since 04:00", not yesterday's stale data.
 #
 # Storage: per-ticker list of closed 5m OHLC dicts, oldest-first.
 #   { ticker: [ {"bucket": int, "high": f, "low": f, "close": f}, ... ] }
@@ -2941,6 +2968,114 @@ def v5_adx_1m_5m(ticker):
 # bucket (= ts // 300), so as the live session accumulates the
 # seed is transparently superseded.
 _DI_SEED_CACHE: dict = {}
+
+
+def _di_premarket_seed_enabled() -> bool:
+    """Re-read on each call so unit tests can monkeypatch the env."""
+    return os.environ.get("DI_PREMARKET_SEED_ENABLED", "1") == "1"
+
+
+def _seed_di_buffer_from_premarket(
+    tickers,
+    today_et_date=None,
+    base_dir=None,
+):
+    """Populate _DI_SEED_CACHE from today's premarket bars in the
+    local bar archive at $BAR_ARCHIVE_BASE/<today>/<TICKER>.jsonl.
+
+    Reads bars with et_bucket < "0930" (premarket 04:00-09:29 ET),
+    resamples to 5m via _resample_to_5min_ohlc_buckets, and stores
+    the result in _DI_SEED_CACHE[ticker]. tiger_di already merges
+    seed + live buckets, so the seed is transparently superseded by
+    overlapping live RTH bars as the session progresses.
+
+    Failure-tolerant: any I/O / parse error logs WARN and leaves
+    that ticker's cache untouched. No bars in the file -> no seed
+    (matches a true cold start, e.g. weekends or pre-04:00 boots).
+
+    Returns dict with seeded_count, skipped_count, source_dir for
+    smoke-test assertions.
+    """
+    if not _di_premarket_seed_enabled():
+        logger.info("[DI-PMSEED] disabled by flag")
+        return {"seeded": 0, "skipped": 0, "source": None, "disabled": True}
+    if today_et_date is None:
+        today_et_date = _now_et().date()
+    if base_dir is None:
+        base_dir = bar_archive.DEFAULT_BASE_DIR
+    seeded = 0
+    skipped = 0
+    day_dir = Path(base_dir) / today_et_date.strftime("%Y-%m-%d")
+    if not day_dir.is_dir():
+        logger.info("[DI-PMSEED] no archive day-dir at %s \u2014 skipping", day_dir)
+        return {"seeded": 0, "skipped": 0, "source": str(day_dir)}
+    for ticker in tickers:
+        sym = (ticker or "").strip().upper()
+        if not sym:
+            continue
+        fp = day_dir / f"{sym}.jsonl"
+        if not fp.is_file():
+            skipped += 1
+            continue
+        timestamps: list[int] = []
+        highs: list[float] = []
+        lows: list[float] = []
+        closes: list[float] = []
+        try:
+            with open(fp, encoding="utf-8") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        bar = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    et_b = bar.get("et_bucket")
+                    if not (isinstance(et_b, str) and et_b < "0930"):
+                        continue
+                    ts_raw = bar.get("ts")
+                    if not isinstance(ts_raw, str):
+                        continue
+                    try:
+                        ts_dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    h = bar.get("high")
+                    lo = bar.get("low")
+                    c = bar.get("close")
+                    if h is None or lo is None or c is None:
+                        continue
+                    try:
+                        h_f = float(h)
+                        lo_f = float(lo)
+                        c_f = float(c)
+                    except (TypeError, ValueError):
+                        continue
+                    timestamps.append(int(ts_dt.timestamp()))
+                    highs.append(h_f)
+                    lows.append(lo_f)
+                    closes.append(c_f)
+        except OSError as e:
+            logger.warning("[DI-PMSEED] %s read failed: %s", sym, e)
+            skipped += 1
+            continue
+        if not timestamps:
+            skipped += 1
+            continue
+        buckets = _resample_to_5min_ohlc_buckets(timestamps, highs, lows, closes)
+        if not buckets:
+            skipped += 1
+            continue
+        _DI_SEED_CACHE[sym] = buckets
+        seeded += 1
+    logger.info(
+        "[DI-PMSEED] seeded=%d skipped=%d source=%s",
+        seeded,
+        skipped,
+        day_dir,
+    )
+    return {"seeded": seeded, "skipped": skipped, "source": str(day_dir)}
 
 
 def _alpaca_data_client():
@@ -7640,12 +7775,19 @@ else:
     except Exception:
         logger.exception("OR_SEED startup failed \u2014 continuing without seed")
 
+    # DI seed from today's premarket archive bars (04:00-09:29 ET).
+    # v5.26.0 deleted prior-session DI seeding as non-spec (stale-momentum
+    # bias from yesterday's PM session). This restored seed reads ONLY
+    # today's premarket \u2014 the same data a continuously-running engine
+    # would already have in its in-memory buffer at 09:30. Spec-compatible
+    # because no cross-session data is reused.
+    try:
+        _seed_di_buffer_from_premarket(list(TICKERS))
+    except Exception:
+        logger.exception("DI_PMSEED startup failed \u2014 continuing without seed")
+
     # Startup catch-up
     startup_catchup()
-
-    # v5.26.0 \u2014 DI seed from prior session deleted (non-spec). DI now
-    # warms up naturally from live ticks during RTH; entries that
-    # require DI authority simply wait for warmup per BS-1 / BF-1.
 
     # Background threads
     threading.Thread(target=scheduler_thread, daemon=True).start()

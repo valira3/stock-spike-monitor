@@ -415,7 +415,9 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         ts_iso = None
                     et_bucket: str | None = None
                     try:
-                        now_et = datetime.now(tz=ZoneInfo("America/New_York"))
+                        # v7.7.2: route through tg._now_et so backtest
+                        # replay clock applies (was wall-clock leak).
+                        now_et = tg._now_et()
                         et_bucket = volume_profile.session_bucket(now_et)
                     except Exception:
                         pass
