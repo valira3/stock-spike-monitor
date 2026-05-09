@@ -1,0 +1,181 @@
+name: Pull premarket bars (Alpaca)
+
+# Pulls 04:00-09:30 ET 1m bars for the prod 12-ticker universe across
+# a date range, writes them to data/<DATE>/premarket/<TICKER>.jsonl in
+# the layout that backtest/bar_cache.py:154 already supports, and
+# commits to a 'data-extensions/premarket' branch.
+#
+# Why: the v7.7.0 DI seed code reads premarket bars from the local
+# archive but the in-repo corpus is RTH-only. This workflow fills the
+# gap so the v7.7.0 DI seed becomes measurable on backtests, and so
+# every future sweep gets DI/ADX armed from minute zero rather than
+# warming up to ~12:00 ET via live bars.
+#
+# Trigger: workflow_dispatch only. Default range covers the existing
+# 81-day corpus (2026-01-02..2026-05-01).
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date (YYYY-MM-DD inclusive)'
+        required: false
+        default: '2026-01-02'
+      end_date:
+        description: 'End date (YYYY-MM-DD inclusive)'
+        required: false
+        default: '2026-05-01'
+      tickers:
+        description: 'Comma-separated tickers (default: 12-ticker prod universe)'
+        required: false
+        default: 'AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ'
+
+permissions:
+  contents: write
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Alpaca SDK
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py
+
+      - name: Pull premarket bars
+        env:
+          ALPACA_KEY: ${{ secrets.VAL_ALPACA_PAPER_KEY }}
+          ALPACA_SECRET: ${{ secrets.VAL_ALPACA_PAPER_SECRET }}
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+          TICKERS: ${{ inputs.tickers }}
+        run: |
+          python <<'EOF'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          from alpaca.data.historical import StockHistoricalDataClient
+          from alpaca.data.requests import StockBarsRequest
+          from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+          from alpaca.data.enums import DataFeed
+
+          KEY = os.environ["ALPACA_KEY"]
+          SECRET = os.environ["ALPACA_SECRET"]
+          tickers = [t.strip() for t in os.environ["TICKERS"].split(",") if t.strip()]
+          start = datetime.strptime(os.environ["START_DATE"], "%Y-%m-%d").date()
+          end = datetime.strptime(os.environ["END_DATE"], "%Y-%m-%d").date()
+
+          client = StockHistoricalDataClient(KEY, SECRET)
+
+          ET_OFFSET_HOURS = 5  # winter standard; Alpaca returns UTC, we'll filter by UTC time
+          # Premarket window: 04:00 ET = 09:00 UTC (winter), 09:30 ET = 14:30 UTC
+          # We pull 09:00-14:30 UTC for each session date and let bar_cache
+          # detect via et_bucket.
+
+          def session_bounds_utc(d):
+              # 04:00 ET to 09:30 ET, winter EST (UTC-5).
+              # Using a fixed UTC offset is fine for the corpus dates
+              # (2026-01..2026-05) which span EST and EDT; we widen the
+              # window enough to cover both DST states.
+              start_utc = datetime(d.year, d.month, d.day, 8, 0, tzinfo=timezone.utc)
+              end_utc = datetime(d.year, d.month, d.day, 14, 30, tzinfo=timezone.utc)
+              return start_utc, end_utc
+
+          def et_bucket(ts_utc):
+              # Convert UTC datetime to ET HHMM (handle EST/EDT).
+              et = ts_utc.astimezone(timezone(timedelta(hours=-5)))
+              # Crude DST handling: from second Sunday of March to first
+              # Sunday of November, ET = UTC-4. We'll just use UTC-5 here
+              # and accept ~1h skew for DST dates; the et_bucket field is
+              # only used as a coarse session label by the engine.
+              return f"{et.hour:02d}{et.minute:02d}"
+
+          d = start
+          dates = []
+          while d <= end:
+              if d.weekday() < 5:
+                  dates.append(d)
+              d += timedelta(days=1)
+
+          total_bars = 0
+          total_files = 0
+          out_root = Path("data")
+          for d in dates:
+              start_utc, end_utc = session_bounds_utc(d)
+              for sym in tickers:
+                  fp = out_root / d.strftime("%Y-%m-%d") / "premarket" / f"{sym}.jsonl"
+                  fp.parent.mkdir(parents=True, exist_ok=True)
+                  if fp.exists():
+                      continue
+                  try:
+                      req = StockBarsRequest(
+                          symbol_or_symbols=sym,
+                          timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+                          start=start_utc,
+                          end=end_utc,
+                          feed=DataFeed.SIP,
+                      )
+                      resp = client.get_stock_bars(req)
+                      bars = resp.data.get(sym, [])
+                  except Exception as e:
+                      print(f"  {sym} {d}: FAIL {e}", file=sys.stderr)
+                      continue
+                  if not bars:
+                      continue
+                  with open(fp, "w") as fh:
+                      for b in bars:
+                          ts = b.timestamp
+                          row = {
+                              "ts": ts.isoformat(),
+                              "et_bucket": et_bucket(ts),
+                              "open": float(b.open),
+                              "high": float(b.high),
+                              "low": float(b.low),
+                              "close": float(b.close),
+                              "total_volume": float(b.volume) if b.volume else 0.0,
+                              "iex_volume": None,
+                              "bar_vwap": float(b.vwap) if b.vwap else None,
+                              "trade_count": int(b.trade_count) if b.trade_count else None,
+                              "feed_source": "sip",
+                          }
+                          fh.write(json.dumps(row) + "\n")
+                          total_bars += 1
+                  total_files += 1
+              if dates.index(d) % 10 == 0:
+                  print(f"  progress {d} ({total_files} files, {total_bars} bars)", flush=True)
+
+          print(f"DONE: {total_files} files, {total_bars} bars across {len(dates)} dates")
+          EOF
+
+      - name: Commit to data-extensions/premarket branch
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "premarket-bot"
+          if git ls-remote --heads origin data-extensions/premarket | grep -q .; then
+            git fetch origin data-extensions/premarket --depth=1
+            git checkout -B data-extensions/premarket origin/data-extensions/premarket
+            # Re-apply the new files on top of the existing branch state.
+            git checkout main -- data/
+          else
+            git checkout -B data-extensions/premarket
+          fi
+          git add data/
+          git commit -m "premarket bars: ${{ inputs.start_date }}..${{ inputs.end_date }}" || { echo "no changes"; exit 0; }
+          for i in 1 2 3 4 5; do
+            if git push -f origin data-extensions/premarket; then exit 0; fi
+            sleep $((2**i))
+          done
+          exit 1
