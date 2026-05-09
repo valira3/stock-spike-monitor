@@ -11,8 +11,14 @@ name: Pull premarket bars (Alpaca)
 # every future sweep gets DI/ADX armed from minute zero rather than
 # warming up to ~12:00 ET via live bars.
 #
-# Trigger: workflow_dispatch only. Default range covers the existing
-# 81-day corpus (2026-01-02..2026-05-01).
+# Triggers:
+#   1. workflow_dispatch (UI/manual) with explicit start/end/tickers.
+#   2. on:push to .github/premarket-trigger/*.json on main. Trigger
+#      file's content overrides defaults. Lets the AI fire pulls
+#      without a UI click.
+#
+# Default range covers the existing 81-day corpus
+# (2026-01-02..2026-05-01).
 
 on:
   workflow_dispatch:
@@ -29,6 +35,10 @@ on:
         description: 'Comma-separated tickers (default: 12-ticker prod universe)'
         required: false
         default: 'AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ'
+  push:
+    branches: [main]
+    paths:
+      - '.github/premarket-trigger/**.json'
 
 permissions:
   contents: write
@@ -40,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 2  # need parent for diff on push events
 
       - uses: actions/setup-python@v5
         with:
@@ -52,13 +62,40 @@ jobs:
           python -m pip install --upgrade pip
           pip install alpaca-py
 
+      # Resolve parameters from either workflow_dispatch inputs or the
+      # most-recently-changed trigger file (push event).
+      - name: Resolve params
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "start=${{ inputs.start_date }}" >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end_date }}" >> "$GITHUB_OUTPUT"
+            echo "tickers=${{ inputs.tickers }}" >> "$GITHUB_OUTPUT"
+            echo "source=workflow_dispatch" >> "$GITHUB_OUTPUT"
+          else
+            CHANGED=$(git diff --name-only HEAD^ HEAD -- '.github/premarket-trigger/*.json' | tail -1)
+            if [ -z "$CHANGED" ]; then
+              echo "no premarket-trigger file changed; aborting"
+              exit 1
+            fi
+            echo "trigger file: $CHANGED"
+            START=$(jq -r '.start_date // "2026-01-02"' "$CHANGED")
+            END=$(jq -r '.end_date // "2026-05-01"' "$CHANGED")
+            TICKERS=$(jq -r '.tickers // "AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ"' "$CHANGED")
+            echo "start=$START" >> "$GITHUB_OUTPUT"
+            echo "end=$END" >> "$GITHUB_OUTPUT"
+            echo "tickers=$TICKERS" >> "$GITHUB_OUTPUT"
+            echo "source=$CHANGED" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved: start=$START end=$END tickers=$TICKERS"
+
       - name: Pull premarket bars
         env:
           ALPACA_KEY: ${{ secrets.VAL_ALPACA_PAPER_KEY }}
           ALPACA_SECRET: ${{ secrets.VAL_ALPACA_PAPER_SECRET }}
-          START_DATE: ${{ inputs.start_date }}
-          END_DATE: ${{ inputs.end_date }}
-          TICKERS: ${{ inputs.tickers }}
+          START_DATE: ${{ steps.params.outputs.start }}
+          END_DATE: ${{ steps.params.outputs.end }}
+          TICKERS: ${{ steps.params.outputs.tickers }}
         run: |
           python <<'EOF'
           import json
@@ -173,7 +210,7 @@ jobs:
             git checkout -B data-extensions/premarket
           fi
           git add data/
-          git commit -m "premarket bars: ${{ inputs.start_date }}..${{ inputs.end_date }}" || { echo "no changes"; exit 0; }
+          git commit -m "premarket bars: ${{ steps.params.outputs.start }}..${{ steps.params.outputs.end }} (source: ${{ steps.params.outputs.source }})" || { echo "no changes"; exit 0; }
           for i in 1 2 3 4 5; do
             if git push -f origin data-extensions/premarket; then exit 0; fi
             sleep $((2**i))
