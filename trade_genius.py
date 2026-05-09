@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.7.5-experimental"
+BOT_VERSION = "7.7.6-experimental"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -117,9 +117,9 @@ BOT_VERSION = "7.7.5-experimental"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v7.7.5: auto-trigger\n"
-    "lever sweeps via push\n"
-    "to sweep-trigger dir."
+    "v7.7.6: short-stop\n"
+    "gradient sweep config.\n"
+    "Discovery iteration."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE

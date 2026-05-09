@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.6-experimental (2026-05-09) — short-stop gradient sweep config
+
+Discovery loop iteration. Adds
+`.github/sweep-trigger/short_stop_gradient.json` to fan out 14
+variants spanning STOP_PCT_SHORT ∈ {30, 35, 40, 45, 50, 55, 60, 70,
+85, 100} bp plus three combined LONG-SHORT combos.
+
+Why: `stop_short_loose40` (LONG 50bp, SHORT 40bp) was the headline
+lever in `batch_a_r2`: +$319.42 net P&L on 11 dates, Δ +$410.33 vs
+baseline. This sweep maps the gradient at finer granularity to find
+the local optimum.
+
+Auto-fires on merge via `lever-sweep-auto.yml`.
+
+---
+
 ## v7.7.5-experimental (2026-05-09) — auto-trigger lever sweeps + first batch
 
 Adds:
