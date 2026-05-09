@@ -611,15 +611,64 @@ def install_record_only_layers(
     # through `tg.close_position` / `tg.close_short_position`. Wrap
     # both module attributes so every close (regardless of caller)
     # is captured into broker_layer.closes with full entry context.
+    #
+    # v7.7.9 \u2014 exit slippage. The replay previously assumed ideal fills
+    # at the engine's intended exit price; in reality Alpaca fills the
+    # next trade tick after a stop trips, with bid-ask spread cost on
+    # any market exit. Without this, all backtest results are upper
+    # bounds. The slippage model here is intentionally conservative
+    # (1.5bp base + 5bp stop kick + 1bp short penalty) and tunable via
+    # BACKTEST_SLIPPAGE_BPS / _STOP_KICK_BPS / _SHORT_PENALTY_BPS env.
+    # Set BACKTEST_SLIPPAGE_BPS=0 to recover ideal-fill behavior for
+    # comparability with pre-v7.7.9 sweep results.
+
+    _SLIPPAGE_STOP_REASONS = (
+        "STOP",
+        "sentinel_a_stop_price",
+        "sentinel_a_hard_loss",
+        "sentinel_f_chandelier_exit",
+        "sentinel_f_chandelier_trail",
+        "v750_early_ditch",
+        "v644_min_hold",
+        "v770_post_ditch_cooldown",
+    )
+
+    def _exit_slippage_bps(reason, side):
+        try:
+            base = float(os.environ.get("BACKTEST_SLIPPAGE_BPS", "1.5"))
+            stop_kick = float(os.environ.get("BACKTEST_SLIPPAGE_STOP_KICK_BPS", "5.0"))
+            short_pen = float(os.environ.get("BACKTEST_SLIPPAGE_SHORT_PENALTY_BPS", "1.0"))
+        except ValueError:
+            return 0.0
+        bps = base
+        r = (reason or "").lower()
+        if reason == "STOP" or any(r.startswith(s.lower()) for s in _SLIPPAGE_STOP_REASONS):
+            bps += stop_kick
+        if side == "short":
+            bps += short_pen
+        return bps
+
+    def _apply_exit_slippage(price, side, bps):
+        if price is None or bps == 0.0:
+            return price
+        factor = bps / 10000.0
+        # LONG exit (sell) hits the bid -> get less.
+        # SHORT exit (cover/buy) hits the ask -> pay more.
+        return price * (1.0 - factor) if side == "long" else price * (1.0 + factor)
+
     _orig_close_long = getattr(tg, "close_position", None)
     _orig_close_short = getattr(tg, "close_short_position", None)
 
     def _wrapped_close_position(ticker, price, reason="STOP", suppress_signal=False):
         # Snapshot the position BEFORE tg deletes it from the dict.
         pos_snap = position_store.positions.get(ticker)
+        bps = _exit_slippage_bps(reason, "long")
+        adjusted_price = _apply_exit_slippage(
+            float(price) if price is not None else None, "long", bps,
+        )
         try:
             res = (
-                _orig_close_long(ticker, price, reason, suppress_signal=suppress_signal)
+                _orig_close_long(ticker, adjusted_price, reason, suppress_signal=suppress_signal)
                 if _orig_close_long is not None
                 else None
             )
@@ -629,7 +678,9 @@ def install_record_only_layers(
                     "ts": clock.now.isoformat(),
                     "ticker": ticker,
                     "side": "long",
-                    "exit_price": float(price) if price is not None else None,
+                    "exit_price": float(adjusted_price) if adjusted_price is not None else None,
+                    "exit_price_pre_slippage": float(price) if price is not None else None,
+                    "slippage_bps_applied": bps,
                     "reason": reason,
                     "entry_price": (pos_snap or {}).get("entry_price"),
                     "shares": (pos_snap or {}).get("shares"),
@@ -641,9 +692,13 @@ def install_record_only_layers(
 
     def _wrapped_close_short_position(ticker, price, reason="STOP", suppress_signal=False):
         pos_snap = position_store.short_positions.get(ticker)
+        bps = _exit_slippage_bps(reason, "short")
+        adjusted_price = _apply_exit_slippage(
+            float(price) if price is not None else None, "short", bps,
+        )
         try:
             res = (
-                _orig_close_short(ticker, price, reason, suppress_signal=suppress_signal)
+                _orig_close_short(ticker, adjusted_price, reason, suppress_signal=suppress_signal)
                 if _orig_close_short is not None
                 else None
             )
@@ -653,7 +708,9 @@ def install_record_only_layers(
                     "ts": clock.now.isoformat(),
                     "ticker": ticker,
                     "side": "short",
-                    "exit_price": float(price) if price is not None else None,
+                    "exit_price": float(adjusted_price) if adjusted_price is not None else None,
+                    "exit_price_pre_slippage": float(price) if price is not None else None,
+                    "slippage_bps_applied": bps,
                     "reason": reason,
                     "entry_price": (pos_snap or {}).get("entry_price"),
                     "shares": (pos_snap or {}).get("shares"),

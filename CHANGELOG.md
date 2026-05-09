@@ -4,6 +4,83 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.9-experimental (2026-05-09) — backtest exit slippage
+
+Adds an exit-slippage model to the replay harness. **All backtest
+results from this point forward include realistic-fill slippage; all
+prior sweep numbers were ideal-fill upper bounds.**
+
+### Why
+
+The replay harness was assuming the engine's intended exit price
+equaled the actual fill. In reality, when a stop trips on Alpaca:
+- The first trade tick after the stop level becomes the fill, often
+  worse than the stop level by 1-15bp depending on speed of move.
+- Bid-ask spread costs ~1-2bp per leg even on liquid mega-caps.
+- Shorts pay an extra penalty when buying to cover, especially during
+  squeeze events where the ask gaps up.
+
+Without this, every sweep result was structurally optimistic.
+
+### Model
+
+Three env knobs, defaults conservative for our 12-ticker mega-cap
+universe in regular session:
+
+* `BACKTEST_SLIPPAGE_BPS` (default 1.5) — flat slippage on every exit
+* `BACKTEST_SLIPPAGE_STOP_KICK_BPS` (default 5.0) — extra on
+  stop-style exits (sentinel_a_*, sentinel_f_chandelier_*,
+  v750_early_ditch, v644_min_hold, v770_post_ditch_cooldown, default
+  "STOP" reason)
+* `BACKTEST_SLIPPAGE_SHORT_PENALTY_BPS` (default 1.0) — extra on
+  shorts (cover-side ask penalty)
+
+Applied per side:
+* LONG exit (sell) hits the bid → fill = price * (1 − bps/10000)
+* SHORT exit (cover/buy) hits the ask → fill = price * (1 + bps/10000)
+
+The harness records both `exit_price` (post-slippage, used for P&L)
+and `exit_price_pre_slippage` (the engine's intended price) on every
+close so per-day JSONs preserve the modeled fill mechanics.
+
+### How to recover ideal-fill behavior
+
+Set `BACKTEST_SLIPPAGE_BPS=0` (which forces the entire model to 0
+since the kick and penalty are additions to the base) for direct
+comparability with pre-v7.7.9 numbers.
+
+### Coverage gap
+
+Entry slippage is NOT modeled in this PR. Reasoning: across variants,
+entries fire at the same prices, so entry slippage is symmetric and
+doesn't change variant rankings — only absolute P&L. Adding entry
+slippage is a follow-up; for the discovery loop's purpose (finding
+the best lever config), exit slippage captures the differential
+correctly.
+
+### Estimated impact on prior findings
+
+For our typical 80-pair, $200-stock, 30-share workload over 11 dates:
+
+| Slippage cost | Effect on +$490 winner |
+|---|---:|
+| 1.5bp/fill flat | ~$144 → +$346 |
+| 1.5bp + 5bp stop kick | ~$264 → +$226 |
+| 3bp + 10bp stop kick | ~$528 → −$38 |
+
+The default config (~$264 cost expected) keeps top winners
+positive but ~50% smaller than ideal-fill numbers.
+
+### Validation plan
+
+1. Re-run the 2D stop-pct grid (PR #418 candidate — same variants
+   that produced +$490/+$560 ideal-fill) under default slippage.
+2. If all top candidates remain positive, promote the winner to
+   STRIDE=1 with slippage on.
+3. If sign flips, re-evaluate the headline finding.
+
+---
+
 ## v7.7.8-experimental (2026-05-09) — premarket-pull auto-trigger + first fire
 
 Adds the same `on: push: paths:` auto-trigger pattern to
