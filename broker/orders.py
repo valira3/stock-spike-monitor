@@ -924,9 +924,14 @@ def check_breakout(ticker, side):
     # actual decision moment regardless of bar timestamps.
     try:
         if V780_OPENING_DELAY_ENABLED:
-            _v780_blocked, _v780_et = _v780_is_before_open_delay(
-                datetime.now(timezone.utc)
-            )
+            # v7.8.3: route through tg._now_utc so backtest replay clock
+            # applies. Was wall-clock leak; opening-delay gate fired based
+            # on real UTC time instead of replay time.
+            try:
+                _v780_now_utc = tg._now_utc()
+            except Exception:
+                _v780_now_utc = datetime.now(timezone.utc)
+            _v780_blocked, _v780_et = _v780_is_before_open_delay(_v780_now_utc)
             if _v780_blocked:
                 tg._v561_log_skip(
                     ticker=ticker,

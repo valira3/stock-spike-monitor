@@ -55,7 +55,13 @@ def seed_opening_range(ticker):
         return result
 
     et = ZoneInfo("America/New_York")
-    now_et = datetime.now(et)
+    # v7.8.3: route through tg._now_et so backtest replay clock applies.
+    # Was wall-clock leak; OR-seed window gate fired based on real ET
+    # instead of replay ET, often skipping the seed in backtest.
+    try:
+        now_et = tg._now_et()
+    except Exception:
+        now_et = datetime.now(et)
     window_start = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     window_end = window_start + timedelta(minutes=tg.OR_WINDOW_MINUTES)
     if now_et < window_end:
