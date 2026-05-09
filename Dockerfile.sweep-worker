@@ -36,6 +36,24 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
 # Copy the worker entrypoint. Everything else is fetched at runtime.
 COPY tools/railway_sweep_worker.py /app/tools/railway_sweep_worker.py
 
+# v7.8.x — Railway-config-override stub. The repo's railway.json
+# hardcodes startCommand = "python trade_genius.py". When this image
+# is deployed as a non-prod service and Railway ignores our service-
+# specific config (see railway.sweep-worker.json), it falls back to
+# the default and tries to execute /app/trade_genius.py — which
+# doesn't exist in this image, causing a crash loop. The stub below
+# re-execs the real worker entrypoint regardless of how Railway
+# decides to invoke it. Cheap, robust, image-only.
+RUN printf '%s\n' \
+    '#!/usr/bin/env python3' \
+    '"""Stub: redirects any "python /app/trade_genius.py" invocation' \
+    'to the real Railway sweep worker entrypoint."""' \
+    'import os' \
+    'import sys' \
+    'os.execvp(sys.executable, [sys.executable, "/app/tools/railway_sweep_worker.py"])' \
+    > /app/trade_genius.py \
+    && chmod +x /app/trade_genius.py
+
 # Worker writes scratch / output to /tmp and clones repo to /workspace.
 RUN mkdir -p /workspace /tmp/railway_isolate /tmp/railway_output
 
