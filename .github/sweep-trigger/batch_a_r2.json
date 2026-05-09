@@ -1,0 +1,19 @@
+{
+  "max_parallel": 14,
+  "variants": [
+    {"vid": "baseline", "env": {}, "stride": "8"},
+    {"vid": "v750_off", "env": {"V750_EARLY_DITCH_ENABLED": "0"}, "stride": "8"},
+    {"vid": "v770_off", "env": {"V770_POST_DITCH_COOLDOWN_ENABLED": "0"}, "stride": "8"},
+    {"vid": "v740_off", "env": {"V740_MFE_RATCHET_ENABLED": "0"}, "stride": "8"},
+    {"vid": "v730_off", "env": {"V730_STOP_HYSTERESIS_ENABLED": "0"}, "stride": "8"},
+    {"vid": "cooldown_0", "env": {"POST_LOSS_COOLDOWN_MIN": "0", "POST_LOSS_COOLDOWN_MIN_LONG": "0", "POST_LOSS_COOLDOWN_MIN_SHORT": "0"}, "stride": "8"},
+    {"vid": "dollars_5k", "env": {"PAPER_DOLLARS_PER_ENTRY": "5000"}, "stride": "8"},
+    {"vid": "dollars_15k", "env": {"PAPER_DOLLARS_PER_ENTRY": "15000"}, "stride": "8"},
+    {"vid": "dollars_20k", "env": {"PAPER_DOLLARS_PER_ENTRY": "20000"}, "stride": "8"},
+    {"vid": "stop_30", "env": {"STOP_PCT_LONG": "0.003", "STOP_PCT_SHORT": "0.003"}, "stride": "8"},
+    {"vid": "stop_70", "env": {"STOP_PCT_LONG": "0.007", "STOP_PCT_SHORT": "0.007"}, "stride": "8"},
+    {"vid": "stop_100", "env": {"STOP_PCT_LONG": "0.010", "STOP_PCT_SHORT": "0.010"}, "stride": "8"},
+    {"vid": "stop_short_50", "env": {"STOP_PCT_LONG": "0.005", "STOP_PCT_SHORT": "0.005"}, "stride": "8"},
+    {"vid": "stop_short_loose40", "env": {"STOP_PCT_LONG": "0.005", "STOP_PCT_SHORT": "0.004"}, "stride": "8"}
+  ]
+}

@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.5-experimental (2026-05-09) — auto-trigger lever sweeps + first batch
+
+Adds:
+
+* `.github/workflows/lever-sweep-auto.yml` — fires the same lever-sweep
+  matrix when a JSON config is pushed to
+  `.github/sweep-trigger/<name>.json` on `main`. Lets the discovery
+  loop iterate without a human clicking "Run workflow" each time.
+  Uses a `resolve-variants` job that reads the most-recently-changed
+  trigger file and outputs the variants for the matrix.
+
+* `tools/poll_sweep_progress.sh` — restored from earlier work + handles
+  the new `sweeps/<trigger>/run-<id>/` layout produced by
+  auto-triggered runs alongside the original `sweeps/run-<id>/`
+  layout used by `workflow_dispatch` runs.
+
+* `.github/sweep-trigger/batch_a_r2.json` — first auto-fired sweep:
+  re-run of the 14-variant Batch A on the env-merge-fixed workflow
+  (#412 / v7.7.4). Expected to surface real deltas for
+  V730/V740/V750/V770/cooldown variants that were silently
+  clobbered by the prior bug.
+
+Workflow: `lever-sweep-auto.yml` consumes the changed trigger file and
+fans out one matrix job per variant. Results land in `sweep-results`
+branch under `sweeps/<trigger-name>/run-<id>/<vid>/`.
+
+Safety: `on: push: branches: [main]` only — fork PRs cannot fire
+matrix runs. Concurrent matrix pushes use retry-with-rebase like the
+existing workflow.
+
+---
+
 ## v7.7.4-experimental (2026-05-09) — workflow env-merge fix
 
 Bug fix for `.github/workflows/lever-sweep.yml`. The first 14-variant
