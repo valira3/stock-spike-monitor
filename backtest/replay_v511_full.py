@@ -1157,6 +1157,24 @@ def run_replay(
     # 4b) Wire the harness bar store into tg's record-only fetch_1min_bars.
     _tg._harness_bars_owner["bars"] = bars_by_ticker
 
+    # 4c) Seed DI cache from today's premarket bars in the corpus, mirroring
+    # the production startup path that v5.26.0 deleted and the
+    # premarket-from-archive seed restored. Production reads from
+    # $BAR_ARCHIVE_BASE; in the harness we read directly from --bars-dir
+    # (the corpus root), since the slot's bar archive isn't populated
+    # for "today" until the loop writes bars to it. No-op if the corpus
+    # has no premarket for this date (RTH-only datasets stay cold-start).
+    try:
+        seed_fn = getattr(_tg, "_seed_di_buffer_from_premarket", None)
+        if seed_fn is not None:
+            seed_fn(
+                tickers,
+                today_et_date=start_dt.date(),
+                base_dir=str(bars_dir),
+            )
+    except Exception as _seed_err:
+        logger.warning("harness DI premarket seed failed: %s", _seed_err)
+
     # 5) Build the callbacks.
     cb = RecordOnlyCallbacks(
         tg=_tg,

@@ -4,6 +4,73 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.0-experimental (2026-05-09) — DI seed from today's premarket
+
+Restores DI/ADX seeding at startup, scoped to TODAY's premarket bars
+(04:00–09:29 ET) only. v5.26.0 deleted the prior-session seed as
+non-spec (stale-momentum bias from yesterday's PM session). This
+revival is spec-compatible: it reads only data the engine would have
+already consumed live during 04:00–09:30 if continuously running, so
+no cross-session staleness is introduced.
+
+### Why
+
+Without a seed, `tiger_di()` returns `(None, None)` until ~30 closed
+5m buckets accumulate from live ticks (~140 minutes after market
+open). On a Railway redeploy at 09:25 ET, every Entry-1 candidate is
+silently rejected with `[SKIP] reason=V15_MOMENTUM_ADX_5M:none` until
+~12:00, costing real P&L on redeploy days. The same dead zone exists
+in every backtest replay (each invocation is a cold Python process).
+
+### What changed
+
+* `trade_genius.py` — new `_seed_di_buffer_from_premarket(tickers,
+  today_et_date=None, base_dir=None)`. Reads
+  `$BAR_ARCHIVE_BASE/<today>/<TICKER>.jsonl`, filters to bars with
+  `et_bucket < "0930"`, resamples to 5m via the existing
+  `_resample_to_5min_ohlc_buckets`, and stores the result in
+  `_DI_SEED_CACHE[ticker]`. `tiger_di()` already merges seed + live
+  buckets keyed by `ts // 300`, so the seed is transparently
+  superseded as RTH bars arrive.
+* Wired at startup next to `_seed_opening_range_all`. Failure-tolerant:
+  any I/O / parse error logs WARN and leaves the cache untouched.
+* `backtest/replay_v511_full.py` — replay harness explicitly invokes
+  the seed after `install_record_only_layers`, passing
+  `base_dir=str(bars_dir)` so the function reads from the corpus root
+  instead of the empty per-slot bar archive. No-op when the corpus
+  has no premarket for the date (RTH-only datasets stay cold-start).
+* `tests/test_di_premarket_seed.py` — 6 contract tests: missing
+  day-dir / missing ticker / premarket seeded / RTH bars excluded /
+  flag disabled / bottom-line `tiger_di()` returns non-None.
+
+### Forensic log
+
+* `[DI-PMSEED] seeded=N skipped=N source=<path>` — once at startup.
+* `[DI-PMSEED] no archive day-dir at <path> — skipping` — when the
+  archive day-dir is missing (e.g. weekend boot).
+* `[DI-PMSEED] disabled by flag` — when `DI_PREMARKET_SEED_ENABLED=0`.
+
+### Env knobs
+
+* `DI_PREMARKET_SEED_ENABLED=1` (default ON). Set to `0` to disable
+  the seed and restore v5.26.0 cold-start behaviour.
+
+### Backtest validation
+
+Smoke against `archive/.../v707_vs_v728_replay/replay_layout/2026-05-06`
+(one of two corpus dates with real premarket bars):
+
+```
+[DI-PMSEED] seeded=9 skipped=0 source=.../2026-05-06
+GATE_EVAL ticker=MSFT ... di=True   # first scan, vs di=None pre-fix
+```
+
+The 81-day baseline corpus at `data/` has no premarket data, so it
+cannot validate the P&L impact of this fix. A separate measurement
+will be needed once a premarket-inclusive corpus is captured.
+
+---
+
 ## v7.2.8 (2026-05-07) -- TRAIL pill frontend honors backend gate
 
 Follow-up to v7.2.7. The backend `_compute_trail_pill_state` helper was
