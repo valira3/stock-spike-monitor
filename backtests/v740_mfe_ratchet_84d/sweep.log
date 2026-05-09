@@ -1,0 +1,50 @@
+Loaded 83 dates: 2026-01-02 -> 2026-05-01
+
+=== START v740/frac_03 ===
+  V740_MFE_RATCHET_FRAC=0.3
+  Running 83 days with 2 workers...
+  FAIL 2026-01-02 rc=-1 streak=1 | TIMEOUT
+  FAIL 2026-01-05 rc=-1 streak=2 | TIMEOUT
+  PROGRESS 10/83 ok=8 pnl=531.44 elapsed=6.1min
+  PROGRESS 20/83 ok=18 pnl=1183.33 elapsed=7.7min
+  PROGRESS 30/83 ok=28 pnl=1573.86 elapsed=9.2min
+  PROGRESS 40/83 ok=38 pnl=862.12 elapsed=10.7min
+  PROGRESS 50/83 ok=48 pnl=-360.34 elapsed=12.3min
+  PROGRESS 60/83 ok=58 pnl=-596.60 elapsed=13.9min
+  PROGRESS 70/83 ok=68 pnl=1138.28 elapsed=15.5min
+  PROGRESS 80/83 ok=78 pnl=2053.72 elapsed=17.0min
+  PROGRESS 83/83 ok=81 pnl=1822.99 elapsed=17.5min
+
+=== DONE v740/frac_03: ok=81/83 pnl=1822.99 wr=51.8% wall=17.5min ===
+
+=== START v740/frac_05 ===
+  V740_MFE_RATCHET_FRAC=0.5
+  Running 83 days with 2 workers...
+  PROGRESS 10/83 ok=10 pnl=884.83 elapsed=1.5min
+  PROGRESS 20/83 ok=20 pnl=1554.39 elapsed=3.0min
+  PROGRESS 30/83 ok=30 pnl=1969.78 elapsed=4.6min
+  PROGRESS 40/83 ok=40 pnl=1421.79 elapsed=6.1min
+  PROGRESS 50/83 ok=50 pnl=185.21 elapsed=7.7min
+  PROGRESS 60/83 ok=60 pnl=-41.57 elapsed=9.2min
+  PROGRESS 70/83 ok=70 pnl=1693.31 elapsed=10.8min
+  PROGRESS 80/83 ok=80 pnl=2646.14 elapsed=12.5min
+  PROGRESS 83/83 ok=83 pnl=2431.32 elapsed=13.1min
+
+=== DONE v740/frac_05: ok=83/83 pnl=2431.32 wr=53.0% wall=13.1min ===
+
+=== START v740/frac_07 ===
+  V740_MFE_RATCHET_FRAC=0.7
+  Running 83 days with 2 workers...
+  PROGRESS 10/83 ok=10 pnl=841.88 elapsed=1.5min
+  PROGRESS 20/83 ok=20 pnl=1492.82 elapsed=3.0min
+  PROGRESS 30/83 ok=30 pnl=1904.35 elapsed=5.0min
+  PROGRESS 40/83 ok=40 pnl=1436.50 elapsed=6.5min
+  PROGRESS 50/83 ok=50 pnl=196.75 elapsed=8.0min
+  PROGRESS 60/83 ok=60 pnl=-99.98 elapsed=9.5min
+  PROGRESS 70/83 ok=70 pnl=1584.88 elapsed=11.2min
+  PROGRESS 80/83 ok=80 pnl=2543.74 elapsed=12.8min
+  PROGRESS 83/83 ok=83 pnl=2423.17 elapsed=13.2min
+
+=== DONE v740/frac_07: ok=83/83 pnl=2423.17 wr=53.6% wall=13.2min ===
+
+=== ALL DONE in 43.7 min ===

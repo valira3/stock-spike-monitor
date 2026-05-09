@@ -1,0 +1,324 @@
+Loaded 83 dates
+
+=== START v750_off ===
+  v750_off_slot0: warmup seeded 55 dirs
+  v750_off_slot1: warmup seeded 55 dirs
+  Running 83 days with 2 workers...
+  OK  2026-01-02 entries=24 pnl=310.36
+  OK  2026-01-05 entries=19 pnl=72.87
+  OK  2026-01-06 entries=23 pnl=16.09
+  OK  2026-01-07 entries=11 pnl=-57.02
+  OK  2026-01-08 entries=17 pnl=11.15
+  PROGRESS 5/83 ok=5 pnl=353.45 elapsed=1.0min
+  OK  2026-01-09 entries=17 pnl=337.50
+  OK  2026-01-12 entries=12 pnl=51.11
+  OK  2026-01-13 entries=7 pnl=-4.21
+  OK  2026-01-14 entries=22 pnl=112.15
+  OK  2026-01-15 entries=16 pnl=34.83
+  PROGRESS 10/83 ok=10 pnl=884.83 elapsed=1.5min
+  OK  2026-01-16 entries=17 pnl=-100.62
+  OK  2026-01-20 entries=17 pnl=66.75
+  OK  2026-01-21 entries=27 pnl=265.75
+  OK  2026-01-22 entries=19 pnl=-32.17
+  OK  2026-01-23 entries=17 pnl=265.88
+  PROGRESS 15/83 ok=15 pnl=1350.42 elapsed=2.3min
+  OK  2026-01-26 entries=17 pnl=-138.85
+  OK  2026-01-27 entries=19 pnl=-28.01
+  OK  2026-01-28 entries=17 pnl=-115.64
+  OK  2026-01-29 entries=18 pnl=731.99
+  OK  2026-01-30 entries=16 pnl=-245.52
+  PROGRESS 20/83 ok=20 pnl=1554.39 elapsed=2.9min
+  OK  2026-02-02 entries=17 pnl=149.64
+  OK  2026-02-03 entries=22 pnl=144.01
+  OK  2026-02-04 entries=22 pnl=-188.44
+  OK  2026-02-05 entries=17 pnl=-30.53
+  OK  2026-02-06 entries=12 pnl=-240.22
+  PROGRESS 25/83 ok=25 pnl=1388.86 elapsed=3.6min
+  OK  2026-02-09 entries=18 pnl=403.12
+  OK  2026-02-10 entries=18 pnl=136.06
+  OK  2026-02-11 entries=19 pnl=211.90
+  OK  2026-02-12 entries=23 pnl=-22.72
+  OK  2026-02-13 entries=12 pnl=-147.45
+  PROGRESS 30/83 ok=30 pnl=1969.78 elapsed=4.2min
+  OK  2026-02-17 entries=18 pnl=119.01
+  OK  2026-02-18 entries=12 pnl=-105.26
+  OK  2026-02-19 entries=17 pnl=-223.54
+  OK  2026-02-20 entries=20 pnl=104.97
+  OK  2026-02-23 entries=17 pnl=32.75
+  PROGRESS 35/83 ok=35 pnl=1897.71 elapsed=4.9min
+  OK  2026-02-24 entries=21 pnl=-444.10
+  OK  2026-02-25 entries=14 pnl=-5.54
+  OK  2026-02-26 entries=22 pnl=91.73
+  OK  2026-02-27 entries=18 pnl=-238.75
+  OK  2026-03-02 entries=23 pnl=120.74
+  PROGRESS 40/83 ok=40 pnl=1421.79 elapsed=5.5min
+  OK  2026-03-03 entries=13 pnl=103.80
+  OK  2026-03-04 entries=9 pnl=-92.80
+  OK  2026-03-05 entries=14 pnl=-267.88
+  OK  2026-03-06 entries=11 pnl=-35.40
+  OK  2026-03-09 entries=25 pnl=91.85
+  PROGRESS 45/83 ok=45 pnl=1221.36 elapsed=6.3min
+  OK  2026-03-10 entries=14 pnl=-421.82
+  OK  2026-03-11 entries=13 pnl=-332.97
+  OK  2026-03-12 entries=14 pnl=11.72
+  OK  2026-03-13 entries=21 pnl=136.20
+  OK  2026-03-16 entries=13 pnl=-429.29
+  PROGRESS 50/83 ok=50 pnl=185.21 elapsed=6.9min
+  OK  2026-03-17 entries=13 pnl=-0.59
+  OK  2026-03-18 entries=15 pnl=-118.92
+  OK  2026-03-19 entries=12 pnl=61.72
+  OK  2026-03-20 entries=18 pnl=-41.12
+  OK  2026-03-23 entries=10 pnl=19.33
+  PROGRESS 55/83 ok=55 pnl=105.63 elapsed=7.6min
+  OK  2026-03-24 entries=15 pnl=-199.34
+  OK  2026-03-25 entries=13 pnl=99.89
+  OK  2026-03-26 entries=20 pnl=146.85
+  OK  2026-03-27 entries=16 pnl=-141.21
+  OK  2026-03-30 entries=21 pnl=-53.39
+  PROGRESS 60/83 ok=60 pnl=-41.57 elapsed=8.2min
+  OK  2026-03-31 entries=29 pnl=278.51
+  OK  2026-04-01 entries=10 pnl=-185.20
+  OK  2026-04-02 entries=18 pnl=541.57
+  OK  2026-04-06 entries=15 pnl=36.44
+  OK  2026-04-07 entries=17 pnl=28.63
+  PROGRESS 65/83 ok=65 pnl=658.38 elapsed=9.0min
+  OK  2026-04-08 entries=13 pnl=328.37
+  OK  2026-04-09 entries=22 pnl=101.44
+  OK  2026-04-10 entries=16 pnl=12.97
+  OK  2026-04-13 entries=17 pnl=239.43
+  OK  2026-04-14 entries=19 pnl=352.72
+  PROGRESS 70/83 ok=70 pnl=1693.31 elapsed=9.6min
+  OK  2026-04-15 entries=21 pnl=493.76
+  OK  2026-04-16 entries=14 pnl=-184.16
+  OK  2026-04-17 entries=18 pnl=-47.83
+  OK  2026-04-20 entries=8 pnl=156.76
+  OK  2026-04-21 entries=20 pnl=76.56
+  PROGRESS 75/83 ok=75 pnl=2188.41 elapsed=10.4min
+  OK  2026-04-22 entries=12 pnl=175.50
+  OK  2026-04-23 entries=20 pnl=-255.30
+  OK  2026-04-24 entries=18 pnl=571.90
+  OK  2026-04-27 entries=16 pnl=-40.72
+  OK  2026-04-28 entries=16 pnl=6.34
+  PROGRESS 80/83 ok=80 pnl=2646.14 elapsed=11.0min
+  OK  2026-04-29 entries=16 pnl=-235.38
+  OK  2026-04-30 entries=20 pnl=39.35
+  OK  2026-05-01 entries=18 pnl=-18.79
+  PROGRESS 83/83 ok=83 pnl=2431.32 elapsed=11.5min
+
+=== DONE v750_off: ok=83/83 pnl=2431.32 wr=53.0% wall=11.5min ===
+
+=== START v750_w120_t5 ===
+  v750_w120_t5_slot0: warmup seeded 55 dirs
+  v750_w120_t5_slot1: warmup seeded 55 dirs
+  Running 83 days with 2 workers...
+  OK  2026-01-02 entries=25 pnl=224.12
+  OK  2026-01-05 entries=20 pnl=96.85
+  OK  2026-01-06 entries=24 pnl=-44.98
+  OK  2026-01-07 entries=11 pnl=2.96
+  OK  2026-01-08 entries=17 pnl=40.20
+  PROGRESS 5/83 ok=5 pnl=319.15 elapsed=0.7min
+  OK  2026-01-09 entries=18 pnl=340.20
+  OK  2026-01-12 entries=14 pnl=59.10
+  OK  2026-01-13 entries=8 pnl=-68.36
+  OK  2026-01-14 entries=22 pnl=132.10
+  OK  2026-01-15 entries=16 pnl=97.72
+  PROGRESS 10/83 ok=10 pnl=879.91 elapsed=1.3min
+  OK  2026-01-16 entries=17 pnl=-160.80
+  OK  2026-01-20 entries=18 pnl=139.12
+  OK  2026-01-21 entries=26 pnl=325.01
+  OK  2026-01-22 entries=20 pnl=22.17
+  OK  2026-01-23 entries=19 pnl=47.32
+  PROGRESS 15/83 ok=15 pnl=1252.72 elapsed=2.0min
+  OK  2026-01-26 entries=18 pnl=-45.47
+  OK  2026-01-27 entries=23 pnl=-85.85
+  OK  2026-01-28 entries=17 pnl=11.39
+  OK  2026-01-29 entries=20 pnl=547.43
+  OK  2026-01-30 entries=16 pnl=-263.11
+  PROGRESS 20/83 ok=20 pnl=1417.12 elapsed=2.6min
+  OK  2026-02-02 entries=18 pnl=184.86
+  OK  2026-02-03 entries=22 pnl=28.42
+  OK  2026-02-04 entries=22 pnl=57.03
+  OK  2026-02-05 entries=18 pnl=135.81
+  OK  2026-02-06 entries=12 pnl=-13.83
+  PROGRESS 25/83 ok=25 pnl=1809.42 elapsed=3.3min
+  OK  2026-02-09 entries=19 pnl=209.92
+  OK  2026-02-10 entries=18 pnl=-20.72
+  OK  2026-02-11 entries=19 pnl=225.03
+  OK  2026-02-12 entries=23 pnl=165.35
+  OK  2026-02-13 entries=12 pnl=-63.94
+  PROGRESS 30/83 ok=30 pnl=2325.06 elapsed=3.9min
+  OK  2026-02-17 entries=19 pnl=14.60
+  OK  2026-02-18 entries=13 pnl=-83.04
+  OK  2026-02-19 entries=17 pnl=-100.34
+  OK  2026-02-20 entries=21 pnl=-50.74
+  OK  2026-02-23 entries=20 pnl=-248.98
+  PROGRESS 35/83 ok=35 pnl=1856.56 elapsed=4.5min
+  OK  2026-02-24 entries=21 pnl=-144.54
+  OK  2026-02-25 entries=14 pnl=-22.96
+  OK  2026-02-26 entries=23 pnl=11.59
+  OK  2026-02-27 entries=18 pnl=-197.53
+  OK  2026-03-02 entries=23 pnl=23.96
+  PROGRESS 40/83 ok=40 pnl=1527.08 elapsed=5.1min
+  OK  2026-03-03 entries=14 pnl=160.80
+  OK  2026-03-04 entries=9 pnl=98.29
+  OK  2026-03-05 entries=15 pnl=-150.47
+  OK  2026-03-06 entries=11 pnl=-27.98
+  OK  2026-03-09 entries=24 pnl=43.39
+  PROGRESS 45/83 ok=45 pnl=1651.11 elapsed=5.9min
+  OK  2026-03-10 entries=14 pnl=-281.52
+  OK  2026-03-11 entries=13 pnl=-118.65
+  OK  2026-03-12 entries=15 pnl=-12.37
+  OK  2026-03-13 entries=21 pnl=323.19
+  OK  2026-03-16 entries=13 pnl=-132.40
+  PROGRESS 50/83 ok=50 pnl=1429.35 elapsed=6.4min
+  OK  2026-03-17 entries=13 pnl=102.67
+  OK  2026-03-18 entries=18 pnl=-148.55
+  OK  2026-03-19 entries=12 pnl=8.92
+  OK  2026-03-20 entries=18 pnl=23.01
+  OK  2026-03-24 entries=16 pnl=-115.08
+  PROGRESS 55/83 ok=55 pnl=1300.33 elapsed=7.2min
+  OK  2026-03-23 entries=10 pnl=19.33
+  OK  2026-03-25 entries=14 pnl=22.07
+  OK  2026-03-26 entries=20 pnl=143.04
+  OK  2026-03-27 entries=15 pnl=-97.52
+  OK  2026-03-30 entries=22 pnl=-55.56
+  PROGRESS 60/83 ok=60 pnl=1331.69 elapsed=7.7min
+  OK  2026-03-31 entries=29 pnl=144.00
+  OK  2026-04-01 entries=11 pnl=-45.51
+  OK  2026-04-02 entries=19 pnl=439.05
+  OK  2026-04-06 entries=16 pnl=-253.38
+  OK  2026-04-07 entries=17 pnl=169.41
+  PROGRESS 65/83 ok=65 pnl=1785.26 elapsed=8.5min
+  OK  2026-04-08 entries=13 pnl=152.10
+  OK  2026-04-09 entries=23 pnl=120.94
+  OK  2026-04-10 entries=17 pnl=-40.22
+  OK  2026-04-13 entries=18 pnl=275.37
+  OK  2026-04-14 entries=19 pnl=312.39
+  PROGRESS 70/83 ok=70 pnl=2605.85 elapsed=9.1min
+  OK  2026-04-15 entries=22 pnl=443.73
+  OK  2026-04-16 entries=14 pnl=-250.96
+  OK  2026-04-17 entries=17 pnl=44.35
+  OK  2026-04-20 entries=8 pnl=145.71
+  OK  2026-04-21 entries=20 pnl=139.83
+  PROGRESS 75/83 ok=75 pnl=3128.52 elapsed=9.9min
+  OK  2026-04-22 entries=13 pnl=85.44
+  OK  2026-04-23 entries=20 pnl=-268.84
+  OK  2026-04-24 entries=18 pnl=395.46
+  OK  2026-04-27 entries=16 pnl=-0.78
+  OK  2026-04-28 entries=16 pnl=-62.31
+  PROGRESS 80/83 ok=80 pnl=3277.50 elapsed=10.5min
+  OK  2026-04-29 entries=16 pnl=-141.42
+  OK  2026-04-30 entries=21 pnl=104.13
+  OK  2026-05-01 entries=17 pnl=-35.06
+  PROGRESS 83/83 ok=83 pnl=3205.15 elapsed=11.1min
+
+=== DONE v750_w120_t5: ok=83/83 pnl=3205.15 wr=39.3% wall=11.1min ===
+
+=== START v750_w180_t10 ===
+  v750_w180_t10_slot0: warmup seeded 55 dirs
+  v750_w180_t10_slot1: warmup seeded 55 dirs
+  Running 83 days with 2 workers...
+  OK  2026-01-05 entries=19 pnl=141.81
+  OK  2026-01-02 entries=25 pnl=394.99
+  OK  2026-01-06 entries=24 pnl=32.72
+  OK  2026-01-07 entries=11 pnl=-68.84
+  OK  2026-01-08 entries=17 pnl=60.64
+  PROGRESS 5/83 ok=5 pnl=561.32 elapsed=0.7min
+  OK  2026-01-09 entries=17 pnl=347.60
+  OK  2026-01-13 entries=7 pnl=-4.21
+  OK  2026-01-12 entries=13 pnl=215.64
+  OK  2026-01-14 entries=22 pnl=149.37
+  OK  2026-01-15 entries=16 pnl=131.70
+  PROGRESS 10/83 ok=10 pnl=1401.43 elapsed=1.3min
+  OK  2026-01-16 entries=17 pnl=0.48
+  OK  2026-01-20 entries=18 pnl=44.24
+  OK  2026-01-21 entries=27 pnl=268.72
+  OK  2026-01-22 entries=19 pnl=-3.03
+  OK  2026-01-23 entries=17 pnl=278.45
+  PROGRESS 15/83 ok=15 pnl=1990.29 elapsed=2.0min
+  OK  2026-01-26 entries=18 pnl=-22.34
+  OK  2026-01-27 entries=22 pnl=-113.05
+  OK  2026-01-28 entries=17 pnl=27.85
+  OK  2026-01-29 entries=20 pnl=460.65
+  OK  2026-01-30 entries=16 pnl=-371.82
+  PROGRESS 20/83 ok=20 pnl=1971.57 elapsed=2.6min
+  OK  2026-02-02 entries=19 pnl=129.02
+  OK  2026-02-03 entries=22 pnl=68.43
+  OK  2026-02-04 entries=22 pnl=54.72
+  OK  2026-02-05 entries=18 pnl=101.92
+  OK  2026-02-06 entries=12 pnl=-47.62
+  PROGRESS 25/83 ok=25 pnl=2278.03 elapsed=3.3min
+  OK  2026-02-09 entries=18 pnl=281.67
+  OK  2026-02-10 entries=18 pnl=108.63
+  OK  2026-02-11 entries=19 pnl=300.28
+  OK  2026-02-12 entries=23 pnl=62.69
+  OK  2026-02-13 entries=12 pnl=-113.99
+  PROGRESS 30/83 ok=30 pnl=2917.32 elapsed=3.9min
+  OK  2026-02-17 entries=18 pnl=150.68
+  OK  2026-02-18 entries=13 pnl=-95.14
+  OK  2026-02-19 entries=17 pnl=-107.10
+  OK  2026-02-20 entries=21 pnl=-77.82
+  OK  2026-02-23 entries=18 pnl=-58.86
+  PROGRESS 35/83 ok=35 pnl=2729.07 elapsed=4.5min
+  OK  2026-02-24 entries=21 pnl=-193.63
+  OK  2026-02-25 entries=14 pnl=-33.08
+  OK  2026-02-26 entries=23 pnl=-58.66
+  OK  2026-02-27 entries=17 pnl=-217.54
+  OK  2026-03-02 entries=23 pnl=-2.88
+  PROGRESS 40/83 ok=40 pnl=2223.29 elapsed=5.2min
+  OK  2026-03-03 entries=13 pnl=178.44
+  OK  2026-03-04 entries=9 pnl=71.80
+  OK  2026-03-05 entries=15 pnl=-183.87
+  OK  2026-03-06 entries=11 pnl=-37.61
+  OK  2026-03-09 entries=25 pnl=-12.45
+  PROGRESS 45/83 ok=45 pnl=2239.59 elapsed=5.9min
+  OK  2026-03-10 entries=14 pnl=-316.24
+  OK  2026-03-11 entries=13 pnl=-130.35
+  OK  2026-03-12 entries=14 pnl=28.79
+  OK  2026-03-13 entries=21 pnl=245.99
+  OK  2026-03-16 entries=13 pnl=-261.62
+  PROGRESS 50/83 ok=50 pnl=1806.15 elapsed=6.5min
+  OK  2026-03-17 entries=13 pnl=56.69
+  OK  2026-03-18 entries=17 pnl=-138.87
+  OK  2026-03-19 entries=12 pnl=81.08
+  OK  2026-03-20 entries=18 pnl=63.36
+  OK  2026-03-23 entries=10 pnl=19.33
+  PROGRESS 55/83 ok=55 pnl=1887.75 elapsed=7.2min
+  OK  2026-03-24 entries=16 pnl=-182.55
+  OK  2026-03-25 entries=14 pnl=11.17
+  OK  2026-03-26 entries=20 pnl=114.17
+  OK  2026-03-27 entries=15 pnl=-123.59
+  OK  2026-03-30 entries=22 pnl=-11.58
+  PROGRESS 60/83 ok=60 pnl=1695.36 elapsed=7.8min
+  OK  2026-03-31 entries=29 pnl=204.06
+  OK  2026-04-01 entries=11 pnl=-91.01
+  OK  2026-04-02 entries=19 pnl=425.89
+  OK  2026-04-06 entries=15 pnl=-88.92
+  OK  2026-04-07 entries=16 pnl=159.63
+  PROGRESS 65/83 ok=65 pnl=2305.02 elapsed=8.5min
+  OK  2026-04-08 entries=13 pnl=132.72
+  OK  2026-04-09 entries=22 pnl=180.49
+  OK  2026-04-10 entries=18 pnl=-95.32
+  OK  2026-04-13 entries=17 pnl=231.28
+  OK  2026-04-14 entries=19 pnl=286.09
+  PROGRESS 70/83 ok=70 pnl=3040.28 elapsed=9.2min
+  OK  2026-04-15 entries=23 pnl=361.98
+  OK  2026-04-16 entries=14 pnl=-295.07
+  OK  2026-04-17 entries=17 pnl=85.75
+  OK  2026-04-20 entries=8 pnl=59.21
+  OK  2026-04-21 entries=21 pnl=133.37
+  PROGRESS 75/83 ok=75 pnl=3385.53 elapsed=9.9min
+  OK  2026-04-22 entries=12 pnl=149.22
+  OK  2026-04-23 entries=20 pnl=-94.74
+  OK  2026-04-24 entries=18 pnl=601.00
+  OK  2026-04-27 entries=16 pnl=13.27
+  OK  2026-04-28 entries=16 pnl=-91.67
+  PROGRESS 80/83 ok=80 pnl=3962.60 elapsed=10.6min
+  OK  2026-04-29 entries=16 pnl=-133.10
+  OK  2026-04-30 entries=20 pnl=120.69
+  OK  2026-05-01 entries=17 pnl=69.76
+  PROGRESS 83/83 ok=83 pnl=4019.95 elapsed=11.0min
+
+=== DONE v750_w180_t10: ok=83/83 pnl=4019.95 wr=43.9% wall=11.0min ===
+
+=== ALL DONE in 33.6min ===

@@ -1,0 +1,73 @@
+{
+  "results": {
+    "baseline": [
+      {
+        "date": "2026-02-03",
+        "entries": 22,
+        "pairs": 22,
+        "wins": 12,
+        "losses": 10,
+        "pnl": 255.1318,
+        "full": 10,
+        "half": 12
+      },
+      {
+        "date": "2026-02-17",
+        "entries": 19,
+        "pairs": 18,
+        "wins": 10,
+        "losses": 8,
+        "pnl": 86.6698,
+        "full": 8,
+        "half": 10
+      },
+      {
+        "date": "2026-03-31",
+        "entries": 29,
+        "pairs": 24,
+        "wins": 15,
+        "losses": 9,
+        "pnl": 244.2976,
+        "full": 14,
+        "half": 10
+      }
+    ],
+    "armB": [
+      {
+        "date": "2026-02-03",
+        "entries": 22,
+        "pairs": 22,
+        "wins": 12,
+        "losses": 10,
+        "pnl": 225.4706,
+        "full": 19,
+        "half": 3
+      },
+      {
+        "date": "2026-02-17",
+        "entries": 19,
+        "pairs": 18,
+        "wins": 10,
+        "losses": 8,
+        "pnl": 133.234,
+        "full": 17,
+        "half": 1
+      },
+      {
+        "date": "2026-03-31",
+        "entries": 29,
+        "pairs": 24,
+        "wins": 15,
+        "losses": 9,
+        "pnl": 310.7905,
+        "full": 22,
+        "half": 2
+      }
+    ]
+  },
+  "totals": {
+    "baseline": 586.0992,
+    "armB": 669.4951,
+    "delta": 83.39589999999998
+  }
+}

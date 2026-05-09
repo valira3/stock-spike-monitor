@@ -1,0 +1,24 @@
+{
+  "sweep": "v730",
+  "variant": "stop_hysteresis",
+  "version": "v7.3.0",
+  "corpus": "83d_sip_v707",
+  "extras": {
+    "V730_STOP_HYSTERESIS_ENABLED": "1",
+    "V730_STOP_HYSTERESIS_BARS": "2",
+    "V730_STOP_DEEP_FRAC": "0.0075",
+    "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+    "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+    "VOLUME_GATE_ENABLED": "false"
+  },
+  "days_total": 83,
+  "days_run": 83,
+  "days_ok": 83,
+  "net_pnl_83d": 2249.66,
+  "entry_count": 1405,
+  "pnl_pair_count": 1272,
+  "wins": 661,
+  "losses": 611,
+  "win_rate": 51.97,
+  "wall_min": 12.0
+}

@@ -1,0 +1,65 @@
+{
+  "started_at": "2026-05-07T15:26:26+0000",
+  "version": "v7.3.0-experimental",
+  "corpus": "v707_83d_sip",
+  "dates_count": 83,
+  "variants": [
+    {
+      "variant": "baseline",
+      "version": "v7.3.0-experimental",
+      "corpus": "v707_83d_sip",
+      "extras": {
+        "POST_LOSS_COOLDOWN_MIN": "30",
+        "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+        "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+        "VOLUME_GATE_ENABLED": "true",
+        "VOLUME_BUCKET_THRESHOLD_RATIO": "0.85",
+        "POST_EXIT_SAME_TICKER_COOLDOWN_SEC": "1"
+      },
+      "days_total": 83,
+      "days_run": 83,
+      "days_ok": 82,
+      "net_pnl_84d": 21350.45,
+      "entry_count": 2617,
+      "pnl_pair_count": 1264,
+      "wins": 727,
+      "losses": 537,
+      "win_rate": 57.52,
+      "wall_min": 16.9
+    },
+    {
+      "variant": "skip_c",
+      "version": "v7.3.0-experimental",
+      "corpus": "v707_83d_sip",
+      "extras": {
+        "POST_LOSS_COOLDOWN_MIN": "30",
+        "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+        "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+        "VOLUME_GATE_ENABLED": "true",
+        "VOLUME_BUCKET_THRESHOLD_RATIO": "0.85",
+        "POST_EXIT_SAME_TICKER_COOLDOWN_SEC": "1"
+      },
+      "days_total": 83,
+      "days_run": 48,
+      "days_ok": 83,
+      "net_pnl_84d": 13904.95,
+      "entry_count": 1589,
+      "pnl_pair_count": 777,
+      "wins": 452,
+      "losses": 325,
+      "win_rate": 58.17,
+      "wall_min": 7.1
+    }
+  ],
+  "current_variant": null,
+  "progress": {
+    "variant": "skip_c",
+    "done": 80,
+    "total": 48,
+    "ok": 80,
+    "pnl": 12782.73,
+    "elapsed_min": 6.6
+  },
+  "finished_at": "2026-05-07T15:50:24+0000",
+  "total_wall_min": 24.0
+}

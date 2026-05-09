@@ -1,0 +1,37 @@
+Loaded 83 dates: 2026-01-02 -> 2026-05-01
+
+=== START baseline extras={'POST_LOSS_COOLDOWN_MIN': '30', 'POST_LOSS_COOLDOWN_MIN_LONG': '30', 'POST_LOSS_COOLDOWN_MIN_SHORT': '30', 'VOLUME_GATE_ENABLED': 'true', 'VOLUME_BUCKET_THRESHOLD_RATIO': '0.85', 'POST_EXIT_SAME_TICKER_COOLDOWN_SEC': '1'} ===
+  baseline_slot0: warmup seeded 0 date dirs
+  baseline_slot1: warmup seeded 0 date dirs
+  Running 83 days with 2 workers...
+  OK  2026-01-02 entries=35 pnl=547.94
+  OK  2026-01-05 entries=29 pnl=-43.84
+  OK  2026-01-06 entries=34 pnl=237.61
+  OK  2026-01-07 entries=28 pnl=281.93
+  OK  2026-01-08 entries=25 pnl=131.17
+  PROGRESS 5/83 ok=5 pnl=1154.80 elapsed=1.6min
+  OK  2026-01-09 entries=29 pnl=419.19
+  OK  2026-01-12 entries=29 pnl=481.98
+  OK  2026-01-13 entries=12 pnl=91.07
+  OK  2026-01-14 entries=35 pnl=484.46
+  OK  2026-01-15 entries=26 pnl=-17.68
+  PROGRESS 10/83 ok=10 pnl=2613.82 elapsed=2.9min
+  OK  2026-01-16 entries=21 pnl=-39.35
+  OK  2026-01-20 entries=63 pnl=161.98
+  OK  2026-01-21 entries=45 pnl=497.79
+  OK  2026-01-22 entries=31 pnl=286.77
+  OK  2026-01-23 entries=26 pnl=471.70
+  PROGRESS 15/83 ok=15 pnl=3992.71 elapsed=4.5min
+  OK  2026-01-26 entries=35 pnl=-107.07
+  OK  2026-01-27 entries=26 pnl=69.20
+  OK  2026-01-28 entries=35 pnl=402.31
+  OK  2026-01-29 entries=47 pnl=386.54
+  OK  2026-01-30 entries=33 pnl=69.31
+  PROGRESS 20/83 ok=20 pnl=4813.00 elapsed=6.1min
+  OK  2026-02-02 entries=24 pnl=316.20
+  OK  2026-02-03 entries=39 pnl=743.67
+  OK  2026-02-04 entries=42 pnl=510.30
+  OK  2026-02-05 entries=24 pnl=59.76
+  OK  2026-02-06 entries=38 pnl=170.49
+  PROGRESS 25/83 ok=25 pnl=6613.43 elapsed=7.7min
+  OK  2026-02-09 entries=39 pnl=785.34

@@ -1,0 +1,21 @@
+{
+  "variant": "static_12__blackout_dampen",
+  "universe": "static_12",
+  "earnings_layer": "blackout_dampen",
+  "roster_size": 12,
+  "extras_layer": {
+    "TG_EARNINGS_BLACKOUT": "1",
+    "TG_EARNINGS_DAMPEN": "1",
+    "TG_EARNINGS_DAMPEN_WINDOW": "5",
+    "TG_EARNINGS_DAMPEN_SCALE": "0.5",
+    "TG_EARNINGS_FIXTURE_PATH": "/home/user/workspace/v760_dynuni_sweep/earnings_fixture.json"
+  },
+  "days_total": 83,
+  "days_run": 83,
+  "days_ok": 83,
+  "net_pnl_84d": 3115.01,
+  "wins": 478,
+  "losses": 603,
+  "win_rate": 44.22,
+  "wall_min": 41.9
+}

@@ -1,0 +1,18 @@
+{
+  "tickers": [
+    "AAPL",
+    "AMZN",
+    "AVGO",
+    "GOOG",
+    "META",
+    "MSFT",
+    "NFLX",
+    "NVDA",
+    "ORCL",
+    "QQQ",
+    "SPY",
+    "TSLA"
+  ],
+  "updated_utc": "2026-05-07T17:42:04.562593+00:00",
+  "bot_version": "7.2.8"
+}

@@ -1,0 +1,5 @@
+{
+  "tickers": ["AAPL","MSFT","NVDA","TSLA","META","GOOG","AMZN","AVGO","NFLX","ORCL","SPY","QQQ","AMD","CRM","ADBE","INTC","QCOM","MU","PLTR","COIN","SHOP","UBER","ABNB","SNOW","DDOG","JPM","BAC","WMT","DIS","BA"],
+  "updated_utc": "2026-05-09T00:00:00.000000+00:00",
+  "bot_version": "7.6.0"
+}

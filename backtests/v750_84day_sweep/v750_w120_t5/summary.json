@@ -1,0 +1,26 @@
+{
+  "variant": "v750_w120_t5",
+  "extras": {
+    "POST_LOSS_COOLDOWN_MIN": "30",
+    "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+    "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+    "VOLUME_GATE_ENABLED": "false",
+    "V730_STOP_HYSTERESIS_ENABLED": "1",
+    "V730_STOP_HYSTERESIS_BARS": "2",
+    "V730_STOP_DEEP_FRAC": "0.0075",
+    "V740_MFE_RATCHET_ENABLED": "1",
+    "V740_MFE_RATCHET_ARM_R": "1.0",
+    "V740_MFE_RATCHET_FRAC": "0.5",
+    "V750_EARLY_DITCH_ENABLED": "1",
+    "V750_EARLY_DITCH_WINDOW_SEC": "120",
+    "V750_EARLY_DITCH_RED_DOLLARS": "5"
+  },
+  "days_total": 83,
+  "days_run": 83,
+  "days_ok": 83,
+  "net_pnl_84d": 3205.15,
+  "wins": 530,
+  "losses": 818,
+  "win_rate": 39.32,
+  "wall_min": 11.1
+}

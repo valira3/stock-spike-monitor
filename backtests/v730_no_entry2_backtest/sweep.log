@@ -1,0 +1,13 @@
+
+=== e1only ===
+  slot0: warmup seeded 55 date dirs
+  slot1: warmup seeded 55 date dirs
+  83/83 days to run
+  [5/83] 2026-01-08 OK entries=16 pairs=13 pnl=44.97 17.5s (elapsed 64.7s, fails=0)
+  [10/83] 2026-01-15 OK entries=18 pairs=15 pnl=-51.91 17.2s (elapsed 99.9s, fails=0)
+  [15/83] 2026-01-23 OK entries=17 pairs=17 pnl=302.34 17.6s (elapsed 149.1s, fails=0)
+  [20/83] 2026-01-30 OK entries=15 pairs=14 pnl=-194.58 17.9s (elapsed 190.4s, fails=0)
+  [25/83] 2026-02-06 OK entries=12 pairs=12 pnl=-218.11 18.6s (elapsed 238.5s, fails=0)
+  [30/83] 2026-02-13 OK entries=12 pairs=9 pnl=-135.76 17.2s (elapsed 275.9s, fails=0)
+  [35/83] 2026-02-23 OK entries=18 pairs=18 pnl=-75.22 16.5s (elapsed 324.2s, fails=0)
+  [40/83] 2026-03-02 OK entries=23 pairs=23 pnl=-26.48 18.5s (elapsed 362.3s, fails=0)

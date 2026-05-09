@@ -1,0 +1,23 @@
+{
+  "variant": "baseline",
+  "version": "v7.3.0-experimental",
+  "corpus": "v707_83d_sip",
+  "extras": {
+    "POST_LOSS_COOLDOWN_MIN": "30",
+    "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+    "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+    "VOLUME_GATE_ENABLED": "true",
+    "VOLUME_BUCKET_THRESHOLD_RATIO": "0.85",
+    "POST_EXIT_SAME_TICKER_COOLDOWN_SEC": "1"
+  },
+  "days_total": 83,
+  "days_run": 83,
+  "days_ok": 82,
+  "net_pnl_84d": 21350.45,
+  "entry_count": 2617,
+  "pnl_pair_count": 1264,
+  "wins": 727,
+  "losses": 537,
+  "win_rate": 57.52,
+  "wall_min": 16.9
+}

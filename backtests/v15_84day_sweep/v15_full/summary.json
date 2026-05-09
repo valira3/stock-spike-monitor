@@ -1,0 +1,29 @@
+{
+  "variant": "v15_full",
+  "extras": {
+    "POST_LOSS_COOLDOWN_MIN": "30",
+    "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+    "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+    "VOLUME_GATE_ENABLED": "false",
+    "V730_STOP_HYSTERESIS_ENABLED": "1",
+    "V730_STOP_HYSTERESIS_BARS": "2",
+    "V730_STOP_DEEP_FRAC": "0.0075",
+    "V740_MFE_RATCHET_ENABLED": "1",
+    "V740_MFE_RATCHET_ARM_R": "1.0",
+    "V740_MFE_RATCHET_FRAC": "0.5",
+    "V15_HARD_STRIKE_CAP": "1",
+    "V15_SCALED_DI_FLOOR_ENABLED": "1",
+    "V15_SCALED_DI_FLOOR": "25.0",
+    "V15_REQUIRE_5M_ADX_20": "1",
+    "V15_MOMENTUM_ADX_5M_MIN": "20.0",
+    "V15_ALARM_E_POST_ENABLED": "1"
+  },
+  "days_total": 83,
+  "days_run": 83,
+  "days_ok": 83,
+  "net_pnl_84d": 2255.69,
+  "wins": 651,
+  "losses": 591,
+  "win_rate": 52.42,
+  "wall_min": 11.6
+}

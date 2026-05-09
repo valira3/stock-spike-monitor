@@ -1,0 +1,67 @@
+Loaded 83 dates
+
+=== START static_12__none ===
+  static_12__none_slot0: warmup seeded 55 dirs
+  static_12__none_slot1: warmup seeded 55 dirs
+  static_12__none_slot2: warmup seeded 55 dirs
+  Resuming: skipping 79 already-completed days
+  Running 4 days with 3 workers...
+  PROG 4/4 ok=4 pnl=8.09 elapsed=0.9min
+=== DONE static_12__none: ok=4/83 pnl=8.09 wr=34.7% wall=0.9min ===
+
+=== START static_12__blackout ===
+  static_12__blackout_slot0: warmup seeded 55 dirs
+  static_12__blackout_slot1: warmup seeded 55 dirs
+  static_12__blackout_slot2: warmup seeded 55 dirs
+  Running 83 days with 3 workers...
+  PROG 10/83 ok=10 pnl=1139.62 elapsed=1.5min
+  PROG 20/83 ok=20 pnl=2066.99 elapsed=2.7min
+  PROG 30/83 ok=30 pnl=2837.24 elapsed=4.0min
+  PROG 40/83 ok=40 pnl=2403.06 elapsed=5.5min
+  PROG 50/83 ok=50 pnl=1874.18 elapsed=6.7min
+  PROG 60/83 ok=60 pnl=1708.28 elapsed=8.0min
+  PROG 70/83 ok=70 pnl=2536.73 elapsed=9.5min
+  PROG 80/83 ok=80 pnl=3157.07 elapsed=10.8min
+  PROG 83/83 ok=83 pnl=2940.40 elapsed=11.1min
+=== DONE static_12__blackout: ok=83/83 pnl=2940.40 wr=43.1% wall=11.1min ===
+
+=== START static_12__blackout_dampen ===
+  static_12__blackout_dampen_slot0: warmup seeded 55 dirs
+  static_12__blackout_dampen_slot1: warmup seeded 55 dirs
+  static_12__blackout_dampen_slot2: warmup seeded 55 dirs
+  Running 83 days with 3 workers...
+  PROG 10/83 ok=10 pnl=1139.62 elapsed=1.5min
+  PROG 20/83 ok=20 pnl=2359.09 elapsed=2.8min
+  PROG 30/83 ok=30 pnl=2866.46 elapsed=34.2min
+  PROG 40/83 ok=40 pnl=2421.11 elapsed=35.8min
+  PROG 50/83 ok=50 pnl=2048.08 elapsed=37.2min
+  PROG 60/83 ok=60 pnl=1882.18 elapsed=38.5min
+  PROG 70/83 ok=70 pnl=2661.19 elapsed=40.2min
+  PROG 80/83 ok=80 pnl=3323.23 elapsed=41.6min
+  PROG 83/83 ok=83 pnl=3115.01 elapsed=41.9min
+=== DONE static_12__blackout_dampen: ok=83/83 pnl=3115.01 wr=44.2% wall=41.9min ===
+
+=== START static_28__none ===
+  static_28__none_slot0: warmup seeded 55 dirs
+  static_28__none_slot1: warmup seeded 55 dirs
+  static_28__none_slot2: warmup seeded 55 dirs
+  Running 83 days with 3 workers...
+  PROG 10/83 ok=10 pnl=1102.93 elapsed=3.7min
+  PROG 20/83 ok=20 pnl=1501.94 elapsed=6.3min
+  PROG 30/83 ok=30 pnl=3013.00 elapsed=31.8min
+  PROG 40/83 ok=40 pnl=1990.80 elapsed=35.3min
+  PROG 50/83 ok=50 pnl=1150.07 elapsed=38.0min
+  PROG 60/83 ok=60 pnl=-196.54 elapsed=40.7min
+  PROG 70/83 ok=70 pnl=1196.93 elapsed=44.2min
+  PROG 80/83 ok=80 pnl=2420.99 elapsed=47.0min
+  PROG 83/83 ok=83 pnl=2339.46 elapsed=47.6min
+=== DONE static_28__none: ok=83/83 pnl=2339.46 wr=42.3% wall=47.6min ===
+
+=== START static_28__blackout ===
+  static_28__blackout_slot0: warmup seeded 55 dirs
+  static_28__blackout_slot1: warmup seeded 55 dirs
+  static_28__blackout_slot2: warmup seeded 55 dirs
+  Running 83 days with 3 workers...
+  PROG 10/83 ok=10 pnl=1065.78 elapsed=3.2min
+  PROG 20/83 ok=20 pnl=2249.27 elapsed=5.8min
+  PROG 30/83 ok=30 pnl=3500.86 elapsed=17.0min

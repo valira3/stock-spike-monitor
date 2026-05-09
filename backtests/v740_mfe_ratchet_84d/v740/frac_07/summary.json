@@ -1,0 +1,27 @@
+{
+  "sweep": "v740",
+  "variant": "frac_07",
+  "version": "v7.4.0",
+  "corpus": "83d_sip_v707",
+  "extras": {
+    "V730_STOP_HYSTERESIS_ENABLED": "1",
+    "V730_STOP_HYSTERESIS_BARS": "2",
+    "V730_STOP_DEEP_FRAC": "0.0075",
+    "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+    "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+    "VOLUME_GATE_ENABLED": "false",
+    "V740_MFE_RATCHET_ENABLED": "1",
+    "V740_MFE_RATCHET_ARM_R": "1.0",
+    "V740_MFE_RATCHET_FRAC": "0.7"
+  },
+  "days_total": 83,
+  "days_run": 83,
+  "days_ok": 83,
+  "net_pnl_83d": 2423.17,
+  "entry_count": 1415,
+  "pnl_pair_count": 1282,
+  "wins": 687,
+  "losses": 595,
+  "win_rate": 53.59,
+  "wall_min": 13.2
+}

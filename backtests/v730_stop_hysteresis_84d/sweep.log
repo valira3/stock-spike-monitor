@@ -1,0 +1,109 @@
+Loaded 83 dates: 2026-01-02 -> 2026-05-01
+
+=== START v730/stop_hysteresis ===
+  extras: {'V730_STOP_HYSTERESIS_ENABLED': '1', 'V730_STOP_HYSTERESIS_BARS': '2', 'V730_STOP_DEEP_FRAC': '0.0075', 'POST_LOSS_COOLDOWN_MIN_LONG': '30', 'POST_LOSS_COOLDOWN_MIN_SHORT': '30', 'VOLUME_GATE_ENABLED': 'false'}
+  Running 83 days with 2 workers...
+  OK  2026-01-02 entries=24 pnl=294.16
+  OK  2026-01-05 entries=19 pnl=38.99
+  OK  2026-01-06 entries=23 pnl=4.39
+  OK  2026-01-07 entries=11 pnl=-57.02
+  OK  2026-01-08 entries=16 pnl=43.40
+  PROGRESS 5/83 ok=5 pnl=323.92 streak=0 elapsed=1.0min
+  OK  2026-01-09 entries=17 pnl=337.50
+  OK  2026-01-12 entries=12 pnl=51.11
+  OK  2026-01-13 entries=7 pnl=-4.21
+  OK  2026-01-14 entries=22 pnl=190.80
+  OK  2026-01-15 entries=16 pnl=34.83
+  PROGRESS 10/83 ok=10 pnl=933.95 streak=0 elapsed=1.7min
+  OK  2026-01-16 entries=17 pnl=-100.62
+  OK  2026-01-20 entries=17 pnl=66.75
+  OK  2026-01-21 entries=27 pnl=250.35
+  OK  2026-01-22 entries=19 pnl=-32.17
+  OK  2026-01-23 entries=17 pnl=265.88
+  PROGRESS 15/83 ok=15 pnl=1384.14 streak=0 elapsed=2.4min
+  OK  2026-01-26 entries=17 pnl=-138.85
+  OK  2026-01-27 entries=19 pnl=-28.01
+  OK  2026-01-28 entries=17 pnl=-91.51
+  OK  2026-01-29 entries=18 pnl=713.99
+  OK  2026-01-30 entries=16 pnl=-251.12
+  PROGRESS 20/83 ok=20 pnl=1588.64 streak=0 elapsed=3.1min
+  OK  2026-02-02 entries=17 pnl=149.64
+  OK  2026-02-03 entries=22 pnl=156.96
+  OK  2026-02-04 entries=22 pnl=-233.55
+  OK  2026-02-05 entries=17 pnl=-47.70
+  OK  2026-02-06 entries=12 pnl=-240.22
+  PROGRESS 25/83 ok=25 pnl=1373.78 streak=0 elapsed=3.8min
+  OK  2026-02-09 entries=18 pnl=403.12
+  OK  2026-02-10 entries=18 pnl=136.06
+  OK  2026-02-11 entries=19 pnl=185.43
+  OK  2026-02-12 entries=23 pnl=-30.64
+  OK  2026-02-13 entries=12 pnl=-147.45
+  PROGRESS 30/83 ok=30 pnl=1920.30 streak=0 elapsed=4.5min
+  OK  2026-02-17 entries=18 pnl=103.83
+  OK  2026-02-18 entries=12 pnl=-105.26
+  OK  2026-02-19 entries=17 pnl=-223.54
+  OK  2026-02-20 entries=19 pnl=107.28
+  OK  2026-02-23 entries=17 pnl=-26.05
+  PROGRESS 35/83 ok=35 pnl=1776.56 streak=0 elapsed=5.2min
+  OK  2026-02-24 entries=21 pnl=-444.10
+  OK  2026-02-25 entries=14 pnl=-5.54
+  OK  2026-02-26 entries=22 pnl=91.73
+  OK  2026-02-27 entries=18 pnl=-238.75
+  OK  2026-03-02 entries=23 pnl=54.52
+  PROGRESS 40/83 ok=40 pnl=1234.42 streak=0 elapsed=5.8min
+  OK  2026-03-03 entries=13 pnl=103.80
+  OK  2026-03-04 entries=9 pnl=-92.80
+  OK  2026-03-05 entries=14 pnl=-267.88
+  OK  2026-03-06 entries=11 pnl=-35.40
+  OK  2026-03-09 entries=25 pnl=91.85
+  PROGRESS 45/83 ok=45 pnl=1033.99 streak=0 elapsed=6.6min
+  OK  2026-03-10 entries=14 pnl=-421.82
+  OK  2026-03-11 entries=13 pnl=-332.97
+  OK  2026-03-12 entries=14 pnl=11.72
+  OK  2026-03-13 entries=21 pnl=150.33
+  OK  2026-03-16 entries=13 pnl=-429.29
+  PROGRESS 50/83 ok=50 pnl=11.97 streak=0 elapsed=7.2min
+  OK  2026-03-17 entries=13 pnl=-0.59
+  OK  2026-03-18 entries=15 pnl=-118.92
+  OK  2026-03-19 entries=12 pnl=61.72
+  OK  2026-03-20 entries=18 pnl=-41.12
+  OK  2026-03-23 entries=10 pnl=19.33
+  PROGRESS 55/83 ok=55 pnl=-67.61 streak=0 elapsed=7.9min
+  OK  2026-03-24 entries=15 pnl=-200.99
+  OK  2026-03-25 entries=13 pnl=99.89
+  OK  2026-03-26 entries=20 pnl=139.01
+  OK  2026-03-27 entries=16 pnl=-137.39
+  OK  2026-03-30 entries=21 pnl=-65.87
+  PROGRESS 60/83 ok=60 pnl=-232.96 streak=0 elapsed=8.5min
+  OK  2026-03-31 entries=29 pnl=278.51
+  OK  2026-04-01 entries=10 pnl=-185.20
+  OK  2026-04-02 entries=18 pnl=541.57
+  OK  2026-04-06 entries=15 pnl=36.44
+  OK  2026-04-07 entries=17 pnl=28.63
+  PROGRESS 65/83 ok=65 pnl=466.99 streak=0 elapsed=9.3min
+  OK  2026-04-08 entries=13 pnl=328.37
+  OK  2026-04-09 entries=22 pnl=101.44
+  OK  2026-04-10 entries=16 pnl=12.97
+  OK  2026-04-13 entries=17 pnl=239.43
+  OK  2026-04-14 entries=19 pnl=352.72
+  PROGRESS 70/83 ok=70 pnl=1501.92 streak=0 elapsed=10.0min
+  OK  2026-04-15 entries=21 pnl=485.93
+  OK  2026-04-16 entries=14 pnl=-184.16
+  OK  2026-04-17 entries=18 pnl=-47.83
+  OK  2026-04-20 entries=8 pnl=156.76
+  OK  2026-04-21 entries=20 pnl=76.56
+  PROGRESS 75/83 ok=75 pnl=1989.19 streak=0 elapsed=10.8min
+  OK  2026-04-22 entries=12 pnl=175.50
+  OK  2026-04-23 entries=20 pnl=-203.75
+  OK  2026-04-24 entries=18 pnl=571.90
+  OK  2026-04-27 entries=16 pnl=-40.72
+  OK  2026-04-28 entries=16 pnl=-11.73
+  PROGRESS 80/83 ok=80 pnl=2480.39 streak=0 elapsed=11.5min
+  OK  2026-04-29 entries=16 pnl=-235.38
+  OK  2026-04-30 entries=20 pnl=59.25
+  OK  2026-05-01 entries=18 pnl=-54.61
+  PROGRESS 83/83 ok=83 pnl=2249.66 streak=0 elapsed=12.0min
+
+=== DONE v730/stop_hysteresis: ok=83/83 pnl=2249.66 wr=52.0% wall=12.0min ===
+
+=== ALL DONE in 12.0 min ===

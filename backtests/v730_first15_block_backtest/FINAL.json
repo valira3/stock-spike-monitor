@@ -1,0 +1,27 @@
+{
+  "started_at": "2026-05-07T15:59:05+0000",
+  "variants": [
+    {
+      "variant": "block15",
+      "extras": {
+        "POST_LOSS_COOLDOWN_MIN": "30",
+        "POST_LOSS_COOLDOWN_MIN_LONG": "30",
+        "POST_LOSS_COOLDOWN_MIN_SHORT": "30",
+        "VOLUME_GATE_ENABLED": "true",
+        "VOLUME_BUCKET_THRESHOLD_RATIO": "0.85",
+        "POST_EXIT_SAME_TICKER_COOLDOWN_SEC": "1",
+        "V730_FIRST_N_MIN_BLOCK": "15"
+      },
+      "days_total": 83,
+      "days_run": 83,
+      "days_ok": 83,
+      "net_pnl_84d": 30638.88,
+      "wins": 775,
+      "losses": 484,
+      "win_rate": 61.56,
+      "wall_min": 14.2
+    }
+  ],
+  "finished_at": "2026-05-07T16:13:19+0000",
+  "total_wall_min": 14.2
+}

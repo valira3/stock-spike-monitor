@@ -1,0 +1,46 @@
+
+=== baseline_clean ===
+  slot0: warmup seeded 55 date dirs
+  slot1: warmup seeded 55 date dirs
+  83/83 days to run
+  [5/83] 2026-01-08 OK entries=16 pairs=13 pnl=44.97 19.3s (elapsed 67.4s, fails=0)
+  [10/83] 2026-01-15 OK entries=18 pairs=15 pnl=-51.91 19.3s (elapsed 108.9s, fails=0)
+  [15/83] 2026-01-23 OK entries=17 pairs=17 pnl=302.34 20.8s (elapsed 159.2s, fails=0)
+  [20/83] 2026-01-30 OK entries=15 pairs=14 pnl=-194.58 19.8s (elapsed 204.0s, fails=0)
+  [25/83] 2026-02-06 OK entries=12 pairs=12 pnl=-218.11 20.3s (elapsed 254.5s, fails=0)
+  [30/83] 2026-02-13 OK entries=12 pairs=9 pnl=-135.76 17.9s (elapsed 295.8s, fails=0)
+  [35/83] 2026-02-23 OK entries=18 pairs=18 pnl=-75.22 17.6s (elapsed 342.7s, fails=0)
+  [40/83] 2026-03-02 OK entries=23 pairs=23 pnl=-26.48 18.5s (elapsed 382.9s, fails=0)
+  [45/83] 2026-03-09 OK entries=25 pairs=20 pnl=-64.38 20.0s (elapsed 435.8s, fails=0)
+  [50/83] 2026-03-16 OK entries=13 pairs=11 pnl=-241.08 19.7s (elapsed 476.3s, fails=0)
+  [55/83] 2026-03-23 OK entries=10 pairs=7 pnl=21.25 19.1s (elapsed 527.3s, fails=0)
+  [60/83] 2026-03-30 OK entries=22 pairs=22 pnl=-113.28 18.7s (elapsed 565.0s, fails=0)
+  [65/83] 2026-04-07 OK entries=18 pairs=17 pnl=-70.41 18.9s (elapsed 621.4s, fails=0)
+  [70/83] 2026-04-14 OK entries=19 pairs=17 pnl=340.42 19.3s (elapsed 661.8s, fails=0)
+  [75/83] 2026-04-21 OK entries=20 pairs=20 pnl=123.29 19.2s (elapsed 717.6s, fails=0)
+  [80/83] 2026-04-28 OK entries=16 pairs=14 pnl=5.34 19.6s (elapsed 759.1s, fails=0)
+  DONE baseline_clean: 83 done, 0 failed, wall 794.4s
+
+=== block15_clean ===
+  slot0: warmup seeded 55 date dirs
+  slot1: warmup seeded 55 date dirs
+  83/83 days to run
+  [5/83] 2026-01-08 OK entries=15 pairs=12 pnl=-45.49 17.6s (elapsed 50.6s, fails=0)
+  [10/83] 2026-01-15 OK entries=18 pairs=15 pnl=-90.71 17.9s (elapsed 87.0s, fails=0)
+  [15/83] 2026-01-23 OK entries=17 pairs=17 pnl=318.67 18.2s (elapsed 136.8s, fails=0)
+  [20/83] 2026-01-30 OK entries=13 pairs=12 pnl=-33.49 18.8s (elapsed 178.2s, fails=0)
+  [25/83] 2026-02-06 OK entries=11 pairs=11 pnl=-117.37 20.0s (elapsed 229.2s, fails=0)
+  [30/83] 2026-02-13 OK entries=11 pairs=8 pnl=-148.66 17.9s (elapsed 269.4s, fails=0)
+  [35/83] 2026-02-23 OK entries=18 pairs=18 pnl=-119.56 17.6s (elapsed 319.2s, fails=0)
+  [40/83] 2026-03-02 OK entries=23 pairs=23 pnl=-330.01 18.6s (elapsed 359.5s, fails=0)
+  [45/83] 2026-03-09 OK entries=24 pairs=19 pnl=-11.96 19.9s (elapsed 414.4s, fails=0)
+  [50/83] 2026-03-16 OK entries=12 pairs=10 pnl=-216.9 19.1s (elapsed 452.1s, fails=0)
+  [55/83] 2026-03-24 OK entries=15 pairs=15 pnl=-163.59 17.1s (elapsed 505.7s, fails=0)
+  [60/83] 2026-03-30 OK entries=20 pairs=20 pnl=-16.86 18.8s (elapsed 543.9s, fails=0)
+  [65/83] 2026-04-07 OK entries=18 pairs=17 pnl=-59.55 19.2s (elapsed 601.5s, fails=0)
+  [70/83] 2026-04-14 OK entries=19 pairs=17 pnl=333.44 19.4s (elapsed 641.2s, fails=0)
+  [75/83] 2026-04-21 OK entries=20 pairs=20 pnl=97.88 18.2s (elapsed 695.8s, fails=0)
+  [80/83] 2026-04-28 OK entries=14 pairs=12 pnl=-76.53 21.0s (elapsed 739.6s, fails=0)
+  DONE block15_clean: 83 done, 0 failed, wall 773.3s
+
+ALL DONE.

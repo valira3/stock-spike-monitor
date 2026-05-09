@@ -1,0 +1,15 @@
+{
+  "variant": "static_12__none",
+  "universe": "static_12",
+  "earnings_layer": "none",
+  "roster_size": 12,
+  "extras_layer": {},
+  "days_total": 83,
+  "days_run": 4,
+  "days_ok": 4,
+  "net_pnl_84d": 8.09,
+  "wins": 17,
+  "losses": 32,
+  "win_rate": 34.69,
+  "wall_min": 0.9
+}

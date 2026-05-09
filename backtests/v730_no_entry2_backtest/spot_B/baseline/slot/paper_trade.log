@@ -1,0 +1,58 @@
+2026-05-07 17:41:46,945 | BUY AMZN 48 @ $206.41 (limit $206.43) stop=$205.37 entry#1
+2026-05-07 17:41:47,302 | BUY NVDA 29 @ $168.87 (limit $168.89) stop=$168.02 entry#1
+2026-05-07 17:41:47,360 | BUY MSFT 13 @ $367.24 (limit $367.26) stop=$365.40 entry#1
+2026-05-07 17:41:47,423 | BUY META 8 @ $558.34 (limit $558.36) stop=$555.54 entry#1
+2026-05-07 17:41:47,453 | BUY TSLA 13 @ $365.13 (limit $365.15) stop=$363.30 entry#1
+2026-05-07 17:41:47,575 | BUY NFLX 52 @ $95.06 (limit $95.08) stop=$94.58 entry#1
+2026-05-07 17:41:47,675 | SELL NVDA 29 @ $169.61 reason=sentinel_a_stop_price pnl=$21.61 (0.4%)
+2026-05-07 17:41:47,677 | SELL TSLA 13 @ $363.06 reason=sentinel_a_stop_price pnl=$-26.84 (-0.6%)
+2026-05-07 17:41:47,679 | SELL NFLX 52 @ $94.44 reason=sentinel_a_stop_price pnl=$-32.24 (-0.7%)
+2026-05-07 17:41:47,859 | SELL META 8 @ $555.46 reason=sentinel_a_stop_price pnl=$-23.00 (-0.5%)
+2026-05-07 17:41:48,082 | BUY NVDA 58 @ $170.24 (limit $170.26) stop=$169.38 entry#2
+2026-05-07 17:41:48,121 | BUY GOOG 17 @ $280.79 (limit $280.81) stop=$279.39 entry#1
+2026-05-07 17:41:48,248 | BUY AVGO 16 @ $302.79 (limit $302.81) stop=$301.28 entry#1
+2026-05-07 17:41:48,515 | SELL MSFT 13 @ $365.30 reason=sentinel_a_stop_price pnl=$-25.23 (-0.5%)
+2026-05-07 17:41:48,674 | SELL NVDA 58 @ $170.79 reason=sentinel_a_stop_price pnl=$32.19 (0.3%)
+2026-05-07 17:41:48,986 | SELL AMZN 48 @ $205.34 reason=sentinel_a_stop_price pnl=$-51.12 (-0.5%)
+2026-05-07 17:41:49,340 | SELL AVGO 16 @ $301.04 reason=sentinel_a_stop_price pnl=$-28.00 (-0.6%)
+2026-05-07 17:41:50,274 | BUY NFLX 104 @ $95.19 (limit $95.21) stop=$94.72 entry#2
+2026-05-07 17:41:52,138 | BUY META 8 @ $558.86 (limit $558.88) stop=$556.07 entry#2
+2026-05-07 17:41:53,390 | BUY AAPL 38 @ $250.56 (limit $250.59) stop=$249.31 entry#1
+2026-05-07 17:41:53,484 | BUY NVDA 58 @ $171.69 (limit $171.71) stop=$170.83 entry#3
+2026-05-07 17:41:53,645 | SELL NFLX 104 @ $95.74 reason=sentinel_a_stop_price pnl=$56.68 (0.6%)
+2026-05-07 17:41:53,728 | SELL META 8 @ $564.99 reason=sentinel_a_stop_price pnl=$49.04 (1.1%)
+2026-05-07 17:41:53,817 | SELL NVDA 58 @ $173.06 reason=sentinel_a_stop_price pnl=$79.46 (0.8%)
+2026-05-07 17:41:53,875 | BUY META 8 @ $565.00 (limit $565.02) stop=$562.17 entry#3
+2026-05-07 17:41:53,906 | SELL GOOG 17 @ $283.44 reason=sentinel_a_stop_price pnl=$45.05 (0.9%)
+2026-05-07 17:41:54,001 | BUY TSLA 26 @ $370.51 (limit $370.53) stop=$368.66 entry#2
+2026-05-07 17:41:54,050 | BUY GOOG 34 @ $283.90 (limit $283.92) stop=$282.49 entry#2
+2026-05-07 17:41:54,081 | SELL AAPL 38 @ $252.60 reason=sentinel_a_stop_price pnl=$77.33 (0.8%)
+2026-05-07 17:41:54,222 | BUY AMZN 24 @ $208.25 (limit $208.27) stop=$207.21 entry#2
+2026-05-07 17:41:54,228 | BUY AVGO 32 @ $306.53 (limit $306.55) stop=$305.00 entry#2
+2026-05-07 17:41:54,240 | BUY ORCL 68 @ $144.44 (limit $144.47) stop=$143.72 entry#1
+2026-05-07 17:41:54,352 | BUY AAPL 38 @ $253.00 (limit $253.02) stop=$251.73 entry#2
+2026-05-07 17:41:54,439 | BUY MSFT 26 @ $368.44 (limit $368.46) stop=$366.60 entry#2
+2026-05-07 17:41:54,457 | BUY NFLX 102 @ $96.16 (limit $96.17) stop=$95.67 entry#3
+2026-05-07 17:41:54,691 | SELL AMZN 24 @ $208.75 reason=sentinel_f_chandelier_exit pnl=$12.00 (0.2%)
+2026-05-07 17:41:54,695 | SELL ORCL 68 @ $144.74 reason=sentinel_a_stop_price pnl=$20.06 (0.2%)
+2026-05-07 17:41:54,821 | SELL META 8 @ $567.08 reason=sentinel_a_stop_price pnl=$16.64 (0.4%)
+2026-05-07 17:41:54,824 | SELL GOOG 34 @ $285.01 reason=sentinel_a_stop_price pnl=$37.74 (0.4%)
+2026-05-07 17:41:54,867 | SELL NFLX 102 @ $95.64 reason=sentinel_a_stop_price pnl=$-52.02 (-0.5%)
+2026-05-07 17:41:54,970 | BUY GOOG 34 @ $285.58 (limit $285.60) stop=$284.16 entry#3
+2026-05-07 17:41:55,095 | BUY AMZN 46 @ $209.67 (limit $209.69) stop=$208.62 entry#3
+2026-05-07 17:41:55,106 | BUY ORCL 68 @ $145.77 (limit $145.79) stop=$145.04 entry#2
+2026-05-07 17:41:55,489 | SELL TSLA 26 @ $371.04 reason=sentinel_a_stop_price pnl=$13.78 (0.1%)
+2026-05-07 17:41:55,493 | SELL AVGO 32 @ $307.83 reason=sentinel_a_stop_price pnl=$41.60 (0.4%)
+2026-05-07 17:41:55,497 | SELL MSFT 26 @ $369.60 reason=sentinel_a_stop_price pnl=$30.16 (0.3%)
+2026-05-07 17:41:56,066 | SELL ORCL 68 @ $145.00 reason=sentinel_a_stop_price pnl=$-52.36 (-0.5%)
+2026-05-07 17:41:56,924 | SELL AMZN 46 @ $208.60 reason=sentinel_a_stop_price pnl=$-49.22 (-0.5%)
+2026-05-07 17:41:57,933 | BUY ORCL 68 @ $146.09 (limit $146.11) stop=$145.36 entry#3
+2026-05-07 17:41:59,182 | BUY TSLA 13 @ $372.39 (limit $372.41) stop=$370.53 entry#3
+2026-05-07 17:41:59,396 | BUY MSFT 13 @ $370.49 (limit $370.51) stop=$368.64 entry#3
+2026-05-07 17:41:59,578 | BUY AVGO 32 @ $309.28 (limit $309.30) stop=$307.73 entry#3
+2026-05-07 17:41:59,988 | SELL ORCL 68 @ $146.84 reason=sentinel_a_stop_price pnl=$50.99 (0.5%)
+2026-05-07 17:42:02,762 | SELL AAPL 38 @ $254.50 reason=EOD pnl=$57.00 (0.6%)
+2026-05-07 17:42:02,767 | SELL GOOG 34 @ $286.56 reason=EOD pnl=$33.32 (0.3%)
+2026-05-07 17:42:02,772 | SELL TSLA 13 @ $372.50 reason=EOD pnl=$1.37 (0.0%)
+2026-05-07 17:42:02,776 | SELL MSFT 13 @ $371.96 reason=EOD pnl=$19.13 (0.4%)
+2026-05-07 17:42:02,781 | SELL AVGO 32 @ $309.36 reason=EOD pnl=$2.56 (0.0%)

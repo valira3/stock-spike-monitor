@@ -1,0 +1,26 @@
+{
+  "date": "2026-03-04",
+  "version": "v7.3.0-experimental",
+  "minutes_processed": 0,
+  "tickers": [],
+  "entries": [],
+  "exits": [],
+  "orders": [],
+  "cancellations": [],
+  "closes_raw": [],
+  "telegram_messages": [],
+  "alerts": [],
+  "errors": [],
+  "pnl_pairs": [],
+  "summary": {
+    "entries": 0,
+    "exits": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_pnl": 0.0,
+    "total_pnl_per_share": 0.0,
+    "pairs_missing_shares": 0
+  },
+  "_clean_state_run": true,
+  "_v730_regime_c_skipped": true
+}

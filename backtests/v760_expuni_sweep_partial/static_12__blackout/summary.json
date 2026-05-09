@@ -1,0 +1,18 @@
+{
+  "variant": "static_12__blackout",
+  "universe": "static_12",
+  "earnings_layer": "blackout",
+  "roster_size": 12,
+  "extras_layer": {
+    "TG_EARNINGS_BLACKOUT": "1",
+    "TG_EARNINGS_FIXTURE_PATH": "/home/user/workspace/v760_dynuni_sweep/earnings_fixture.json"
+  },
+  "days_total": 83,
+  "days_run": 83,
+  "days_ok": 83,
+  "net_pnl_84d": 2940.4,
+  "wins": 461,
+  "losses": 608,
+  "win_rate": 43.12,
+  "wall_min": 11.1
+}

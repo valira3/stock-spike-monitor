@@ -1,0 +1,38 @@
+2026-05-07 17:47:38,718 | SHORT NFLX 132 @ $75.68 (limit $75.66) stop=$75.91 entry#1
+2026-05-07 17:47:38,825 | SHORT MSFT 12 @ $395.53 (limit $395.51) stop=$396.72 entry#1
+2026-05-07 17:47:38,846 | SHORT ORCL 32 @ $155.25 (limit $155.23) stop=$155.71 entry#1
+2026-05-07 17:47:38,868 | SHORT TSLA 12 @ $405.45 (limit $405.44) stop=$406.67 entry#1
+2026-05-07 17:47:38,917 | COVER NFLX 132 @ $75.64 reason=sentinel_a_stop_price pnl=$4.38 (0.0%)
+2026-05-07 17:47:38,964 | SHORT GOOG 32 @ $298.65 (limit $298.63) stop=$299.55 entry#1
+2026-05-07 17:47:39,004 | SHORT NFLX 132 @ $75.41 (limit $75.39) stop=$75.63 entry#2
+2026-05-07 17:47:39,146 | COVER ORCL 32 @ $154.94 reason=sentinel_a_stop_price pnl=$9.86 (0.2%)
+2026-05-07 17:47:39,221 | COVER MSFT 12 @ $396.84 reason=sentinel_a_stop_price pnl=$-15.72 (-0.3%)
+2026-05-07 17:47:39,228 | COVER GOOG 32 @ $299.58 reason=sentinel_a_stop_price pnl=$-29.79 (-0.3%)
+2026-05-07 17:47:39,234 | COVER NFLX 132 @ $75.67 reason=sentinel_a_stop_price pnl=$-34.32 (-0.3%)
+2026-05-07 17:47:39,242 | BUY AAPL 19 @ $259.59 (limit $259.61) stop=$258.29 entry#1
+2026-05-07 17:47:39,558 | SHORT ORCL 32 @ $153.73 (limit $153.71) stop=$154.20 entry#2
+2026-05-07 17:47:39,662 | COVER TSLA 12 @ $402.87 reason=sentinel_a_stop_price pnl=$31.08 (0.6%)
+2026-05-07 17:47:39,666 | COVER ORCL 32 @ $154.55 reason=sentinel_a_stop_price pnl=$-26.09 (-0.5%)
+2026-05-07 17:47:39,783 | BUY AVGO 30 @ $325.75 (limit $325.77) stop=$324.12 entry#1
+2026-05-07 17:47:39,862 | SELL AAPL 19 @ $260.37 reason=sentinel_a_stop_price pnl=$14.82 (0.3%)
+2026-05-07 17:47:39,865 | SELL AVGO 30 @ $323.75 reason=sentinel_a_stop_price pnl=$-60.00 (-0.6%)
+2026-05-07 17:47:39,944 | SHORT TSLA 12 @ $401.34 (limit $401.32) stop=$402.54 entry#2
+2026-05-07 17:47:40,626 | COVER TSLA 12 @ $402.85 reason=sentinel_a_stop_price pnl=$-18.12 (-0.4%)
+2026-05-07 17:47:40,893 | BUY AVGO 15 @ $327.62 (limit $327.64) stop=$325.98 entry#2
+2026-05-07 17:47:41,617 | SELL AVGO 15 @ $330.24 reason=sentinel_a_stop_price pnl=$39.30 (0.8%)
+2026-05-07 17:47:41,729 | BUY AVGO 15 @ $330.84 (limit $330.86) stop=$329.19 entry#3
+2026-05-07 17:47:41,761 | BUY NVDA 54 @ $184.07 (limit $184.09) stop=$183.15 entry#1
+2026-05-07 17:47:41,911 | BUY TSLA 24 @ $408.80 (limit $408.82) stop=$406.76 entry#1
+2026-05-07 17:47:43,228 | BUY AAPL 38 @ $261.41 (limit $261.43) stop=$260.10 entry#2
+2026-05-07 17:47:43,376 | SELL AVGO 15 @ $331.93 reason=sentinel_a_stop_price pnl=$16.34 (0.3%)
+2026-05-07 17:47:43,454 | SELL TSLA 24 @ $406.60 reason=sentinel_a_stop_price pnl=$-52.80 (-0.5%)
+2026-05-07 17:47:45,257 | SHORT ORCL 32 @ $153.24 (limit $153.22) stop=$153.70 entry#3
+2026-05-07 17:47:45,832 | COVER ORCL 32 @ $153.91 reason=sentinel_a_stop_price pnl=$-21.28 (-0.4%)
+2026-05-07 17:47:46,853 | SELL AAPL 38 @ $263.43 reason=sentinel_a_stop_price pnl=$76.76 (0.8%)
+2026-05-07 17:47:47,321 | BUY AAPL 36 @ $263.75 (limit $263.76) stop=$262.43 entry#3
+2026-05-07 17:47:47,409 | SELL NVDA 54 @ $185.03 reason=sentinel_a_stop_price pnl=$51.76 (0.5%)
+2026-05-07 17:47:47,681 | BUY NVDA 26 @ $185.66 (limit $185.69) stop=$184.74 entry#2
+2026-05-07 17:47:48,423 | SELL AAPL 36 @ $265.67 reason=sentinel_a_stop_price pnl=$69.30 (0.7%)
+2026-05-07 17:47:49,277 | BUY NFLX 64 @ $77.03 (limit $77.05) stop=$76.64 entry#1
+2026-05-07 17:47:50,370 | SELL NVDA 26 @ $186.87 reason=sentinel_a_stop_price pnl=$31.20 (0.6%)
+2026-05-07 17:47:54,145 | SELL NFLX 64 @ $76.92 reason=EOD pnl=$-6.72 (-0.1%)

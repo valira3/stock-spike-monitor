@@ -1,0 +1,47 @@
+{
+  "results": [
+    {
+      "date": "2026-02-12",
+      "summary": {
+        "entries": 23,
+        "exits": 23,
+        "wins": 12,
+        "losses": 11,
+        "total_pnl": 85.3708,
+        "total_pnl_per_share": 2.4691,
+        "pairs_missing_shares": 0
+      },
+      "skips": {},
+      "skip_lines": 0
+    },
+    {
+      "date": "2026-03-31",
+      "summary": {
+        "entries": 29,
+        "exits": 24,
+        "wins": 15,
+        "losses": 9,
+        "total_pnl": 244.2976,
+        "total_pnl_per_share": 9.0892,
+        "pairs_missing_shares": 0
+      },
+      "skips": {},
+      "skip_lines": 0
+    },
+    {
+      "date": "2026-02-17",
+      "summary": {
+        "entries": 19,
+        "exits": 18,
+        "wins": 10,
+        "losses": 8,
+        "total_pnl": 86.6698,
+        "total_pnl_per_share": 3.8326,
+        "pairs_missing_shares": 0
+      },
+      "skips": {},
+      "skip_lines": 0
+    }
+  ],
+  "aggregate": {}
+}
