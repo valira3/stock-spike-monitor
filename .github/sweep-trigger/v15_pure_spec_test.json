@@ -1,0 +1,62 @@
+{
+  "max_parallel": 8,
+  "variants": [
+    {"vid": "v15_baseline_prod", "env": {}, "stride": "4"},
+
+    {"vid": "v15_pure_default_stops",
+     "env": {
+       "V730_STOP_HYSTERESIS_ENABLED": "0",
+       "V740_MFE_RATCHET_ENABLED": "0",
+       "V750_EARLY_DITCH_ENABLED": "0",
+       "V770_POST_DITCH_COOLDOWN_ENABLED": "0",
+       "V780_OPENING_DELAY_ENABLED": "0",
+       "VOLUME_GATE_ENABLED": "true",
+       "VOLUME_BUCKET_THRESHOLD_RATIO": "1.00"
+     },
+     "stride": "4"},
+
+    {"vid": "v15_pure_100bp_stops",
+     "env": {
+       "V730_STOP_HYSTERESIS_ENABLED": "0",
+       "V740_MFE_RATCHET_ENABLED": "0",
+       "V750_EARLY_DITCH_ENABLED": "0",
+       "V770_POST_DITCH_COOLDOWN_ENABLED": "0",
+       "V780_OPENING_DELAY_ENABLED": "0",
+       "VOLUME_GATE_ENABLED": "true",
+       "VOLUME_BUCKET_THRESHOLD_RATIO": "1.00",
+       "STOP_PCT_LONG": "0.010",
+       "STOP_PCT_SHORT": "0.010"
+     },
+     "stride": "4"},
+
+    {"vid": "v15_pure_no_vol_gate",
+     "env": {
+       "V730_STOP_HYSTERESIS_ENABLED": "0",
+       "V740_MFE_RATCHET_ENABLED": "0",
+       "V750_EARLY_DITCH_ENABLED": "0",
+       "V770_POST_DITCH_COOLDOWN_ENABLED": "0",
+       "V780_OPENING_DELAY_ENABLED": "0"
+     },
+     "stride": "4"},
+
+    {"vid": "shorts_only_S45_control",
+     "env": {
+       "TICKER_SIDE_BLOCKLIST": "{\"AAPL\":[\"LONG\"],\"MSFT\":[\"LONG\"],\"NVDA\":[\"LONG\"],\"TSLA\":[\"LONG\"],\"META\":[\"LONG\"],\"GOOG\":[\"LONG\"],\"AMZN\":[\"LONG\"],\"AVGO\":[\"LONG\"],\"NFLX\":[\"LONG\"],\"ORCL\":[\"LONG\"]}",
+       "STOP_PCT_SHORT": "0.0045"
+     },
+     "stride": "4"},
+
+    {"vid": "v15_pure_shorts_only",
+     "env": {
+       "V730_STOP_HYSTERESIS_ENABLED": "0",
+       "V740_MFE_RATCHET_ENABLED": "0",
+       "V750_EARLY_DITCH_ENABLED": "0",
+       "V770_POST_DITCH_COOLDOWN_ENABLED": "0",
+       "V780_OPENING_DELAY_ENABLED": "0",
+       "VOLUME_GATE_ENABLED": "true",
+       "VOLUME_BUCKET_THRESHOLD_RATIO": "1.00",
+       "TICKER_SIDE_BLOCKLIST": "{\"AAPL\":[\"LONG\"],\"MSFT\":[\"LONG\"],\"NVDA\":[\"LONG\"],\"TSLA\":[\"LONG\"],\"META\":[\"LONG\"],\"GOOG\":[\"LONG\"],\"AMZN\":[\"LONG\"],\"AVGO\":[\"LONG\"],\"NFLX\":[\"LONG\"],\"ORCL\":[\"LONG\"]}"
+     },
+     "stride": "4"}
+  ]
+}
