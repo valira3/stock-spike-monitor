@@ -1,0 +1,46 @@
+# Lightweight image for the Railway sweep worker. Different from the
+# production Dockerfile (which builds the full bot) — this one just
+# needs python + the engine deps + git for repo poll + boto3 for R2.
+#
+# Build target: tools/railway_sweep_worker.py
+#
+# Deploy on Railway:
+#   - Service = "sweep-worker"
+#   - Build = Docker, dockerfile = Dockerfile.sweep-worker
+#   - Start command = python tools/railway_sweep_worker.py
+#   - Required env (set in Railway service config):
+#       GIT_REPO_URL, GIT_BRANCH=main, GITHUB_TOKEN
+#       R2_ENDPOINT_URL, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+#       RAILWAY_WORKERS=4 (or sized to plan vCPUs)
+
+FROM python:3.12-slim
+
+# git + build tools for any wheel-from-source deps in requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        build-essential \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install python deps. The requirements.txt comes from the repo root;
+# we cache this layer so subsequent code-only edits don't reinstall.
+# The worker also clones the repo at runtime to /workspace/repo, so
+# anything outside requirements.txt doesn't need to be baked in.
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
+    && pip install --no-cache-dir freezegun boto3
+
+# Copy the worker entrypoint. Everything else is fetched at runtime.
+COPY tools/railway_sweep_worker.py /app/tools/railway_sweep_worker.py
+
+# Worker writes scratch / output to /tmp and clones repo to /workspace.
+RUN mkdir -p /workspace /tmp/railway_isolate /tmp/railway_output
+
+ENV PYTHONUNBUFFERED=1 \
+    LOG_LEVEL=INFO \
+    SWEEP_REPO_DIR=/workspace/repo
+
+ENTRYPOINT ["python", "/app/tools/railway_sweep_worker.py"]

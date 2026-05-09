@@ -4,6 +4,64 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.1-experimental (2026-05-09) — Railway sweep-worker scaffold
+
+Adds a Railway-deployable sweep worker that processes lever-sweep
+batches in parallel with the GitHub Actions matrix workflow. Scoped
+for final-phase Tier-2 (STRIDE=1, full 81-day) mega-grid validations
+where the GH Actions free-tier 20-job concurrency cap matters.
+
+### Files added
+
+* `tools/railway_sweep_worker.py` — long-lived polling worker.
+  Polls main every `RAILWAY_POLL_INTERVAL_SEC`, lists
+  `.github/railway-sweep-trigger/*.json`, processes each unprocessed
+  trigger (by R2 marker check), uploads per-variant results to R2
+  under `sweep-results/railway/<trigger>/<vid>/`.
+* `Dockerfile.sweep-worker` — lightweight image (python + git + boto3).
+  Distinct from the prod Dockerfile to keep the sweep worker isolated
+  in container build, env, and dependency surface.
+* `docs/railway_sweep_worker.md` — deployment runbook + ops notes.
+
+### Why this exists
+
+GH Actions free tier caps at 20 concurrent jobs. For a 50-variant
+STRIDE=1 final-validation grid (33min wall each), that means 50/20×33
+≈ 80min wall. With Railway's Hobby plan (8 vCPU, run 4 in parallel
+per worker), same grid ≈ 50/4×33 ≈ 7hr but adds Railway-side
+parallelism. More importantly: reusable for continuous validation
+sweeps in the future (post-deploy regression checks, monthly mega-
+grids, etc).
+
+### Isolation from prod bot
+
+Designed for **a separate Railway service** in the same project as
+the prod bot:
+
+* Different Dockerfile (sweep worker doesn't bake the full bot stack)
+* Different env scope (read-only `GITHUB_TOKEN` + R2 keys; no
+  Alpaca live, no Telegram)
+* Different network surface (git fetch + R2 only)
+* Different lifecycle (paused worker has zero impact on trading)
+
+The trigger directory `.github/railway-sweep-trigger/` is invisible
+to the prod bot (engine doesn't read `.github/`).
+
+### How to deploy
+
+Full instructions in `docs/railway_sweep_worker.md`. Summary: new
+Railway service from this repo, Dockerfile = `Dockerfile.sweep-worker`,
+8 env vars (GIT_REPO_URL, GITHUB_TOKEN, R2_*), then drop trigger
+files into `.github/railway-sweep-trigger/`.
+
+### NOT yet active
+
+This PR ships the code but does NOT auto-deploy or auto-fire any
+sweep. The Railway service must be provisioned by the operator.
+Until that happens, all sweeps continue running on GH Actions.
+
+---
+
 ## v7.8.0-experimental (2026-05-09) — premarket corpus + STRIDE=4 validation
 
 Two additions, bundled because they unlock each other:
