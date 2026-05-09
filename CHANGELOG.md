@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.7.8-experimental (2026-05-09) — premarket-pull auto-trigger + first fire
+
+Adds the same `on: push: paths:` auto-trigger pattern to
+`pull-premarket.yml` that we use for lever sweeps. The workflow now
+fires when a JSON config is pushed to
+`.github/premarket-trigger/<name>.json` on main.
+
+The trigger file format:
+
+```json
+{
+  "start_date": "2026-01-02",
+  "end_date":   "2026-05-01",
+  "tickers":    "AAPL,MSFT,..."
+}
+```
+
+Includes `.github/premarket-trigger/full_corpus.json` so the merge of
+this PR fires the first pull immediately, no UI click required. Bars
+land on the `data-extensions/premarket` branch; merge that branch
+into main when ready to feed them into backtests.
+
+---
+
 ## v7.7.7-experimental (2026-05-09) — discovery infra: premarket pull + R2 + ALARM_A env
 
 Three independent additions, bundled because they all unblock parts
