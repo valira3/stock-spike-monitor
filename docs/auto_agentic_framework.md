@@ -89,6 +89,12 @@ ETA:     10:30am CT
 Add brief context if helpful (e.g. variants completed, top-3 results so far, current step). Don't spam if nothing meaningful has changed — but the user should never wonder "is it still running?" without a recent timestamped signal.
 *Established by: "Periodically (every 5 mins) provide progress update in time. Ie, processing 5 mins out of 55mins expected. ETA 10:30am CT"*
 
+**28. Keep Val aware.** The user's name is Val. Outbound progress communication is required at minimum every 5 minutes during active long-running work — even when rule #27's elapsed/ETA format doesn't apply (e.g. ETA unknown, multiple parallel tasks). At minimum: a one-line status confirming the current step, last result, and what's running. Silence longer than 5 minutes during active work is a process bug, not a feature. If genuinely idle (no work in flight, awaiting user direction), say so explicitly — silence is never an acceptable status.
+*Established by: "Keep Val aware of the progress. At least every 5 mins"*
+
+**29. Hang-check every 2 minutes.** Long-running processes (background bashes, GHA sweeps, local screens, monitors, subagents) get a liveness check every ~2 minutes: PID alive? output file growing? log timestamps advancing? CI status changing? Webhook events arriving? Detect hung processes early — better to catch a stalled monitor at the 2-minute mark than to find out at the 30-minute timeout. If a process is suspected hung: investigate (check the output file, ps, signal trace), don't passively wait.
+*Established by: "Check all long running processes every 2 mins to make sure nothing is stuck"*
+
 ---
 
 ## V. Cost / infrastructure
