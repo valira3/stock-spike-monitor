@@ -120,6 +120,47 @@
       <div class="kpi" title="Current market session: pre-market, regular hours (RTH), or after-hours"><span class="kpi-label">Session</span><span class="kpi-value" id="k-session" style="font-size:20px">—</span><span class="kpi-sub" id="k-session-sub">—</span></div>
     </section>
 
+    <!-- v7.20.0 — v10 ORB Day Status banner. Renders /api/state.v10
+         (config + day_status + risk_books). When live_mode=off this
+         banner shows a red "v10 OFF" pill so operators know the
+         strategy is in legacy fallback. -->
+    <section id="v10-day-status" class="v10-banner" style="margin:12px 16px;padding:14px 18px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+      <span style="font-weight:700;color:#7dd3fc;font-size:14px;letter-spacing:0.5px">v10 ORB</span>
+      <span id="v10-mode-pill" class="v10-pill" style="padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600">…</span>
+      <span class="v10-divider" style="color:#374151">|</span>
+      <span style="color:#9ca3af;font-size:12px">VIX</span>
+      <span id="v10-vix" style="color:#e5e7eb;font-weight:600">—</span>
+      <span id="v10-vix-pass" class="v10-pill v10-pass" style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600">—</span>
+      <span class="v10-divider" style="color:#374151">|</span>
+      <span style="color:#9ca3af;font-size:12px">Day</span>
+      <span id="v10-day-state" style="color:#e5e7eb;font-weight:600">—</span>
+      <span class="v10-divider" style="color:#374151">|</span>
+      <span style="color:#9ca3af;font-size:12px">Trades</span>
+      <span id="v10-trades-used" style="color:#e5e7eb;font-weight:600">—</span>
+      <span class="v10-divider" style="color:#374151">|</span>
+      <span style="color:#9ca3af;font-size:12px">Risk used</span>
+      <span id="v10-risk-used" style="color:#e5e7eb;font-weight:600">—</span>
+    </section>
+
+    <!-- v7.20.0 — v10 ORB Projection card. Renders /api/v10/projection
+         (canonical numbers from docs/v10_strategy_keystone.md +
+         live-computed account growth). Lets the operator compare
+         today's actual P&L to the in-sample headline at a glance. -->
+    <section id="v10-projection" class="v10-card" style="margin:12px 16px;padding:14px 18px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span style="font-weight:700;color:#7dd3fc;font-size:14px;letter-spacing:0.5px">v10 Projection (anchor: docs/v10_strategy_keystone.md)</span>
+        <span id="v10-proj-live-balance" style="color:#fbbf24;font-weight:700;font-size:14px;font-family:'JetBrains Mono',monospace">—</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:18px;font-size:12px;color:#9ca3af">
+        <div><span style="color:#9ca3af">CAGR (in-sample)</span> <span id="v10-proj-cagr" style="color:#22c55e;font-weight:700;font-family:'JetBrains Mono',monospace">—</span></div>
+        <div><span style="color:#9ca3af">Honest range</span> <span id="v10-proj-range" style="color:#e5e7eb;font-weight:600;font-family:'JetBrains Mono',monospace">—</span></div>
+        <div><span style="color:#9ca3af">Sharpe</span> <span id="v10-proj-sharpe" style="color:#e5e7eb;font-weight:600;font-family:'JetBrains Mono',monospace">—</span></div>
+        <div><span style="color:#9ca3af">Max DD</span> <span id="v10-proj-mdd" style="color:#e5e7eb;font-weight:600;font-family:'JetBrains Mono',monospace">—</span></div>
+        <div><span style="color:#9ca3af">Win rate</span> <span id="v10-proj-wr" style="color:#e5e7eb;font-weight:600;font-family:'JetBrains Mono',monospace">—</span></div>
+        <div><span style="color:#9ca3af">Live growth</span> <span id="v10-proj-growth" style="color:#22c55e;font-weight:700;font-family:'JetBrains Mono',monospace">—</span></div>
+      </div>
+    </section>
+
     <!-- v5.18.0 — Open positions runs full-width. Proximity card was
          retired and folded into the Permit Matrix as a Price · Distance
          column (price + bar shows how close each Titan is to its OR

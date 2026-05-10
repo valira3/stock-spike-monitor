@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.20.0 (2026-05-10) -- v10 ORB dashboard frontend MVP
+
+Twelfth PR in v10 rollout. Adds the highest-value v10 frontend
+surfaces: Day Status banner + Projection card. The legacy Weather
+Check + Permit Matrix continue to render their existing data (which
+will go stale once tiger_sovereign data stops emitting in PR14).
+Full Permit Matrix rewrite deferred to a future session per the
+architect's 20-25h estimate.
+
+### A. New surfaces in `dashboard_static/index.html`
+
+  - `#v10-day-status` banner (between KPI row and existing Weather
+    Check). Shows: LIVE/LEGACY/BOOT pill, VIX(D-1)/threshold + PASS/
+    FAIL pill, Day OK/BLOCKED state, total trades used/max, total
+    risk used/max across all portfolios.
+
+  - `#v10-projection` card. Shows: in-sample CAGR (43%), honest range
+    (5.5% to 70.4%), Sharpe (2.85), Max DD (5.03%), Win rate (57%) +
+    live-computed account balance and growth %.
+
+### B. New renderers in `dashboard_static/app.js`
+
+  - `renderV10DayStatus(s)` -- consumes s.v10 (config + day_status +
+    risk_books + day_states aggregated). Failure-tolerant: hides the
+    banner if the v10 block is absent.
+  - `renderV10Projection(p)` -- consumes /api/v10/projection payload.
+  - `initV10ProjectionPoll()` -- 60s poll loop for the projection card
+    (live-balance refresh).
+
+The renderers run alongside the existing Weather Check / Permit
+Matrix / Earnings Watcher renderers without colliding. Each is wrapped
+in try/catch so any single renderer's failure cannot break Main.
+
+### C. Visual style
+
+Matches existing dark theme: `#0d1117` card background, `#1f2937`
+borders, `#7dd3fc` accent for v10 brand label, `#22c55e` (positive)
+/ `#dc2626` (negative) / `#fbbf24` (highlight) semantic colors.
+JetBrains Mono for numbers, Satoshi sans for labels.
+
+Mobile-friendly: `flex-wrap` on the banner, responsive padding.
+
+### D. Test totals
+
+  v7.x strategy tests: **187/187 passing** + 4 skipped.
+  Frontend changes are visual-only; HTML/JS smoke-tested by the
+  existing `docker-boot` CI (returns 200 + valid JSON on /api/version).
+
+### Effect
+
+Dashboard's Main tab now shows v10 state at-a-glance. Operators can
+see whether v10 is live, whether the day passed VIX gate, total trades
++ risk used across all 3 portfolios, and live account growth vs the
+v10 backtest projections.
+
+The legacy Weather Check / Permit Matrix tiles continue to render
+their existing data; they will be retired or rewritten in a future
+PR (PR14: dead-code retirement, includes tiger_sovereign emission
+removal).
+
+---
+
 ## v7.19.0 (2026-05-10) -- v10 ORB dashboard backend (api/state v10 block)
 
 Eleventh PR in v10 rollout. Backend-only dashboard surface for v10
