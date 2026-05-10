@@ -4,6 +4,70 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.10.0 (2026-05-10) -- v10 ORB engine + exits
+
+Second PR in the v10 ORB rollout. Adds the public engine surface and
+the per-position exit evaluator. Still no live wiring -- this PR brings
+the pieces together and proves them with tests.
+
+### A. New modules
+
+  - `orb/engine.py`: `OrbEngine` class brings together state, risk
+    books, day gates. Public methods: `start_new_session()`,
+    `on_bar_arrival()`, `detect_breakout()`, `try_enter()`,
+    `evaluate_position_exit()`, `on_exit()`, `snapshot()`.
+
+  - `orb/exits.py`: `OrbPosition` dataclass + `evaluate()` per-bar
+    exit decision. Implements 1R/2.5R + move-to-BE-after-1R semantics
+    matching `tools/orb_backtest.py`. Pessimistic on simultaneous
+    target+stop touch (stop wins, modulo BE arming on the same bar).
+
+  - `make_position()` helper: derives target + 1R from entry + stop +
+    rr; raises ValueError on zero-risk geometry or bad side.
+
+### B. Multi-portfolio architecture validated
+
+`OrbEngine.__init__` accepts `portfolio_ids=["main", "val", "gene"]`
+and creates one `RiskBook` per portfolio. Per-portfolio FSM transitions
+are independent (test confirms: Main can be in_pos on AAPL while Val
+stays armed). Equity is per-portfolio (Main $100k, Val $50k, Gene $25k
+in tests).
+
+### C. Tests (`tests/strategy/`)
+
+  - `test_orb_exits.py` (16 tests): make_position geometry, BE-arm
+    state transitions, simultaneous target+stop bar (pessimistic),
+    long + short symmetry, EOD flush.
+
+  - `test_orb_engine.py` (17 tests): session lifecycle, OR window
+    bar accumulation + lock, range-band gate, breakout detection
+    (long + short), entry admission, exit + risk-ticket release,
+    re-entry after exit, per-day cap (5 trades), snapshot shape.
+
+  Total Phase 7.x tests: **95/95 passing** (62 from v7.9.0 + 33 new).
+
+### D. Forensic log schema (still reserved for PR3 wiring)
+
+The `[V79-ORB-*]` tags from v7.9.0 are still pending wiring in
+`engine/scan.py`. This PR does NOT touch the live scan loop yet --
+that's PR3 (v7.11.0).
+
+### Effect
+
+No production behavior change. The `OrbEngine` is fully testable in
+isolation but not yet attached to the live bar feed. PR3 will replace
+the `engine/scan.py:_per_ticker_tick` path with calls to `OrbEngine`,
+making v10 the live strategy.
+
+### Non-goals (deferred)
+
+  - Live wiring (PR3 v7.11.0)
+  - Tiger Sovereign retirement (PR7 v7.15.0)
+  - Dashboard /api/state v10 block (PR4 v7.12.0)
+  - Paper-fire smoke (PR6 v7.14.0)
+
+---
+
 ## v7.9.0 (2026-05-10) -- v10 ORB foundation: state machine + day gates + risk book
 
 First production-code PR for the v10 ORB anchor strategy
