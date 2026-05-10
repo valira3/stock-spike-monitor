@@ -1031,23 +1031,35 @@ def check_breakout(ticker, side):
     return True, bars
 
 
-def paper_shares_for(price: float) -> int:
+def paper_shares_for(price: float, ticker: str | None = None,
+                     portfolio_id: str = "main") -> int:
     """Dollar-sized paper order for Entry-1: floor(
     PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT / price), min 1.
     Returns 0 only when price <= 0 (invalid).
 
-    v3.4.45 \u2014 paper now sizes by notional like RH does, scaled to the
-    $100k paper book (default $10k/entry vs RH's $1.5k/$25k). This
-    fixes the old flat 10-share behavior that made $400 NVDA cost 80x
-    more risk per entry than $5 QBTS.
+    v7.18.0: when ORB_LIVE_MODE=1 AND ticker is provided AND v10 has
+    stashed a size for this (portfolio_id, ticker), use that. v10
+    sizing is driven by `risk_per_trade_pct * equity / risk_per_share`
+    capped at `max_trade_notional_pct` of equity -- exactly the math
+    in tools/orb_backtest.py. The stash is one-shot (popped on read).
 
-    v5.13.2 Track A \u2014 spec L-P3-S5 / S-P3-S5 says Entry-1 = 50% of the
-    full target. ENTRY_1_SIZE_PCT (eye_of_tiger) is now wired in here;
-    Entry-2 in broker/positions.py tops the position up to ~100% of
-    PAPER_DOLLARS_PER_ENTRY notional.
+    v3.4.45 \u2014 paper now sizes by notional like RH does, scaled to the
+    $100k paper book.
+
+    v5.13.2 Track A \u2014 spec L-P3-S5 says Entry-1 = 50% of the full target.
     """
     if price <= 0:
         return 0
+    # v7.18.0: v10 size override (if v10 stashed shares for this ticker)
+    if ticker is not None:
+        try:
+            from orb.live_runtime import consume_v10_size, is_live_mode_on
+            if is_live_mode_on():
+                v10_shares = consume_v10_size(portfolio_id, ticker)
+                if v10_shares is not None and v10_shares > 0:
+                    return int(v10_shares)
+        except Exception:
+            pass  # fall through to legacy
     # v7.0.0 Phase 4: delegate to main book's size_for() so sizing is
     # driven by PortfolioConfig.dollars_per_entry (env-bridged on boot).
     # Legacy fallback ensures tests and import-time callers keep working.
@@ -1227,7 +1239,9 @@ def execute_breakout(ticker, current_price, side):
     #   SCALED_A (1m DI in [25, 30])  \u2192 50% starter; Entry-2 may top up
     #   WAIT                          \u2192 don't enter (defensive: check_breakout's
     #                                    L-P3-AUTH gate already covers this)
-    starter_shares = paper_shares_for(current_price)
+    # v7.18.0: pass ticker so paper_shares_for can consult the v10
+    # size stash (filled by orb.live_runtime.stash_v10_size at admission)
+    starter_shares = paper_shares_for(current_price, ticker=ticker)
     shares = starter_shares
     _v15_size_label = "FULL"  # legacy default for telemetry
     _v15_size_reason = ""

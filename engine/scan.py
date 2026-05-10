@@ -715,6 +715,13 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 ticker, result.price, result.stop, result.target,
                 result.shares, result.ticket_id[:8],
             )
+            # v7.18.0: stash v10's computed shares for paper_shares_for
+            # to consume during execute_breakout. Ensures the broker uses
+            # v10's risk-per-trade sizing, not legacy dollars-per-entry.
+            try:
+                _orb_runtime.stash_v10_size("main", ticker, result.shares)
+            except Exception:
+                pass  # graceful: legacy sizing is the fallback
             try:
                 callbacks.execute_entry(ticker, result.price)
             except Exception as e:
@@ -759,6 +766,11 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 ticker, result.price, result.stop, result.target,
                 result.shares, result.ticket_id[:8],
             )
+            # v7.18.0: stash v10 shares for paper_shares_for handoff
+            try:
+                _orb_runtime.stash_v10_size("main", ticker, result.shares)
+            except Exception:
+                pass
             try:
                 callbacks.execute_short_entry(ticker, result.price)
             except Exception as e:

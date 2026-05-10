@@ -274,6 +274,38 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
     )
 
 
+# v7.18.0: v10 sizing handoff to broker.orders.paper_shares_for.
+#
+# Why: engine/scan.py:_orb_long_entry calls callbacks.execute_entry(ticker,
+# price) which routes through broker/lifecycle.execute_entry ->
+# broker/orders.execute_breakout. The latter computes shares via
+# paper_shares_for(price) -- the LEGACY sizing path that doesn't know about
+# v10's per-trade risk_per_trade_pct + max_concurrent_risk_dollars caps.
+#
+# This stash bridges the two: when v10 admits an entry, it stores the
+# computed shares here keyed by (portfolio_id, ticker). paper_shares_for
+# checks the stash FIRST when ORB_LIVE_MODE=1; if a fresh v10 size is
+# present, it uses that instead of legacy. The stash is one-shot per entry
+# (consume_v10_size pops the entry).
+_pending_v10_sizes: dict[tuple[str, str], int] = {}
+
+
+def stash_v10_size(portfolio_id: str, ticker: str, shares: int) -> None:
+    """Store v10's computed shares for an imminent execute_entry call."""
+    _pending_v10_sizes[(portfolio_id, ticker)] = int(shares)
+
+
+def consume_v10_size(portfolio_id: str, ticker: str) -> Optional[int]:
+    """Pop the stashed shares for a (portfolio_id, ticker). Returns None
+    if no v10 size was stashed (legacy fallback)."""
+    return _pending_v10_sizes.pop((portfolio_id, ticker), None)
+
+
+def peek_v10_size(portfolio_id: str, ticker: str) -> Optional[int]:
+    """Read without consuming (for diagnostics/tests)."""
+    return _pending_v10_sizes.get((portfolio_id, ticker))
+
+
 def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
                          bar_high: float, bar_low: float, bar_close: float,
                          bar_bucket_min: int) -> ExitResult:
