@@ -190,6 +190,12 @@ class ORBConfig:
     max_concurrent_risk_dollars: float = 500.0  # sum of open risk_dollars cap
     daily_loss_kill_pct: float = 0.5  # halt new entries after -0.5% intraday
     risk_per_trade_pct_default = 0.25  # see env override below
+    # v9 levers (un-tested, hypothesis-driven)
+    move_to_be_after_1r: bool = False    # bump stop to entry after 1R reached
+    partial_profit_at_1r: bool = False   # take half off at 1R, ride rest to RR
+    require_volume_confirm: bool = False # skip signals where signal-bar vol < 1x mean
+    volume_confirm_mult: float = 1.0     # multiplier on prior-day-mean vol for confirm
+    require_ema_align: bool = False      # only long if signal close > 200-EMA on 5m
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -229,6 +235,11 @@ class ORBConfig:
             # v9: daily loss kill tightened from 5.0% to 0.5% to match
             # user constraint of $500/day max loss.
             daily_loss_kill_pct=_envf("ORB_DAILY_LOSS_KILL_PCT", 0.5),
+            move_to_be_after_1r=_envs("ORB_MOVE_TO_BE_AFTER_1R", "0") == "1",
+            partial_profit_at_1r=_envs("ORB_PARTIAL_PROFIT_AT_1R", "0") == "1",
+            require_volume_confirm=_envs("ORB_REQUIRE_VOLUME_CONFIRM", "0") == "1",
+            volume_confirm_mult=_envf("ORB_VOLUME_CONFIRM_MULT", 1.0),
+            require_ema_align=_envs("ORB_REQUIRE_EMA_ALIGN", "0") == "1",
         )
 
 
@@ -291,6 +302,32 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         if side.upper() in blocked_sides:
             continue
 
+        # v9 lever: volume confirmation -- require signal candle's
+        # volume >= mult * mean(prior candles_5m). Skip if too quiet.
+        if cfg.require_volume_confirm:
+            prior = candles_5m[max(0, i - 12):i]  # last hour of 5m bars
+            if prior:
+                avg_vol = sum(c.volume for c in prior) / len(prior)
+                if sig.volume < cfg.volume_confirm_mult * avg_vol:
+                    continue
+
+        # v9 lever: 200-EMA alignment -- require signal close above
+        # (long) or below (short) the EMA(200) of all signal-eligible
+        # 5m candles up to and including the signal bar. We approximate
+        # 200-period EMA on the post-OR + pre-signal candles using the
+        # simple mean as a proxy when fewer than 200 candles available
+        # (this is a single-day backtest; EMA(200) is unreasonable on
+        # one day's data, but a daily directional filter using prior-
+        # day VWAP would be a better implementation -- not done here).
+        if cfg.require_ema_align:
+            ref_candles = candles_5m[: i + 1]
+            if ref_candles:
+                ema_proxy = sum(c.close for c in ref_candles) / len(ref_candles)
+                if side == "long" and sig.close <= ema_proxy:
+                    continue
+                if side == "short" and sig.close >= ema_proxy:
+                    continue
+
         entry_candle = candles_5m[i + 1]
         # Entry at next 5-min candle open with adverse slippage.
         raw_entry = entry_candle.open
@@ -334,6 +371,13 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         exit_price = None
         exit_reason = None
         exit_bkt = None
+        # v9 levers state -- only mutate the vars below (stop, target,
+        # remaining_shares) inside the loop based on cfg toggles.
+        be_moved = False  # has stop been bumped to break-even after 1R?
+        partial_taken = False  # has 50% been booked at 1R?
+        partial_pnl_dollars = 0.0  # P&L from the partial take, added to final
+        remaining_shares = shares
+        one_r_long = entry_price + risk if side == "long" else entry_price - risk
         for fb in forward_1m:
             # First check stop/target intra-bar (high/low pierce).
             if side == "long":
@@ -343,9 +387,21 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                     fill = max(fb.low, fill)
                     fill = min(fb.high, fill)
                     exit_price = fill
-                    exit_reason = "stop"
+                    exit_reason = "stop" if not be_moved else "be_stop"
                     exit_bkt = fb.bucket
                     break
+                # v9 lever: move stop to break-even after 1R reached.
+                if cfg.move_to_be_after_1r and (not be_moved) and fb.high >= one_r_long:
+                    stop = entry_price  # BE
+                    be_moved = True
+                # v9 lever: take partial profit at 1R (sell 50%).
+                if (cfg.partial_profit_at_1r and (not partial_taken)
+                        and fb.high >= one_r_long):
+                    half = remaining_shares // 2
+                    if half > 0:
+                        partial_pnl_dollars = (one_r_long - entry_price) * half
+                        remaining_shares -= half
+                        partial_taken = True
                 # Target hit: bar.high >= target -> fill at max(open, target)
                 if fb.high >= target:
                     fill = max(fb.open, target)
@@ -361,9 +417,22 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                     fill = max(fb.low, fill)
                     fill = min(fb.high, fill)
                     exit_price = fill
-                    exit_reason = "stop"
+                    exit_reason = "stop" if not be_moved else "be_stop"
                     exit_bkt = fb.bucket
                     break
+                # v9 lever: move stop to BE after 1R (short side mirror)
+                one_r_short = entry_price - risk
+                if cfg.move_to_be_after_1r and (not be_moved) and fb.low <= one_r_short:
+                    stop = entry_price
+                    be_moved = True
+                # v9 lever: partial profit at 1R (short)
+                if (cfg.partial_profit_at_1r and (not partial_taken)
+                        and fb.low <= one_r_short):
+                    half = remaining_shares // 2
+                    if half > 0:
+                        partial_pnl_dollars = (entry_price - one_r_short) * half
+                        remaining_shares -= half
+                        partial_taken = True
                 if fb.low <= target:
                     fill = min(fb.open, target)
                     fill = max(fb.low, fill)
@@ -400,7 +469,10 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             exit_price += slip
 
         pnl_per_share = (exit_price - entry_price) if side == "long" else (entry_price - exit_price)
-        pnl_dollars = pnl_per_share * shares
+        # v9 partial-profit: book the partial-fill P&L on the half taken
+        # at 1R, then remaining_shares ride to final exit.
+        runner_shares = remaining_shares if cfg.partial_profit_at_1r else shares
+        pnl_dollars = pnl_per_share * runner_shares + partial_pnl_dollars
 
         pairs.append({
             "ticker": ticker,
