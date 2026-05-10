@@ -689,11 +689,20 @@ def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
 
 def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     bars_for_mtm: dict | None) -> None:
-    """v10 ORB long-entry path. Uses the live runtime to decide.
+    """v10 ORB long-entry path -- per-portfolio fanout.
 
-    Logs every decision (admit / reject) with [V79-ORB-ENTRY] /
-    [V79-ORB-REJECT] tags. Per-portfolio fanout: each enabled portfolio
-    gets an independent admission attempt against its own RiskBook.
+    v7.23.0: iterates ALL enabled portfolios (Main / Val / Gene) and
+    runs check_entry independently for each. Each portfolio has its
+    own RiskBook + FSM so admissions are isolated.
+
+    Broker execution: only "main" routes through callbacks.execute_entry
+    (which is main-bound). Val and Gene admissions are tracked on
+    their LiveAdapter (position state, ticket id) and logged with
+    [V79-ORB-ENTRY] tags so dashboard/Telegram show consistent state.
+    Their actual broker orders are wired in a follow-up PR once the
+    Val/Gene executors expose a `fire_long(ticker, price, shares)`
+    surface; today their Alpaca keys are typically unset and the
+    executors are skipped at boot.
     """
     try:
         from engine.bars import compute_5m_ohlc_and_ema9
@@ -702,50 +711,66 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
             return  # no closed 5m bar yet
         five_min_close = _5m["closes"][-1]
         next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
-        equity = _resolve_portfolio_equity(tg, "main")
-        result = _orb_runtime.check_entry(
-            portfolio_id="main", ticker=ticker, side="long",
-            five_min_close=float(five_min_close), next_open=float(next_open),
-            equity=equity,
-        )
-        if result.ok:
-            logger.info(
-                "[V79-ORB-ENTRY] long %s portfolio=main "
-                "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
-                ticker, result.price, result.stop, result.target,
-                result.shares, result.ticket_id[:8],
+
+        # Resolve all enabled portfolio_ids from the live runtime
+        engine = _orb_runtime.get_engine()
+        if engine is None:
+            return
+        portfolio_ids = list(engine.portfolio_ids)
+
+        for pid in portfolio_ids:
+            equity = _resolve_portfolio_equity(tg, pid)
+            result = _orb_runtime.check_entry(
+                portfolio_id=pid, ticker=ticker, side="long",
+                five_min_close=float(five_min_close),
+                next_open=float(next_open),
+                equity=equity,
             )
-            # v7.18.0: stash v10's computed shares for paper_shares_for
-            # to consume during execute_breakout. Ensures the broker uses
-            # v10's risk-per-trade sizing, not legacy dollars-per-entry.
-            try:
-                _orb_runtime.stash_v10_size("main", ticker, result.shares)
-            except Exception:
-                pass  # graceful: legacy sizing is the fallback
-            try:
-                callbacks.execute_entry(ticker, result.price)
-            except Exception as e:
-                callbacks.report_error(
-                    executor="main",
-                    code="ORB_LONG_ENTRY_EXCEPTION",
-                    severity="error",
-                    summary=f"ORB long entry exception: {ticker}",
-                    detail=f"{type(e).__name__}: {str(e)[:200]}",
+            if result.ok:
+                logger.info(
+                    "[V79-ORB-ENTRY] long %s portfolio=%s "
+                    "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
+                    ticker, pid, result.price, result.stop, result.target,
+                    result.shares, result.ticket_id[:8],
                 )
-        elif result.reason_no and result.reason_no != "no_signal":
-            # Diagnostic log for non-trivial rejections (skip the chatty
-            # "no_signal" case to keep logs readable)
-            logger.debug(
-                "[V79-ORB-REJECT] long %s reason=%s",
-                ticker, result.reason_no,
-            )
+                # Stash size for the broker sizing handoff
+                try:
+                    _orb_runtime.stash_v10_size(pid, ticker, result.shares)
+                except Exception:
+                    pass
+                # Broker fire -- only main goes through the legacy
+                # callbacks.execute_entry path today. Val/Gene execution
+                # wiring is a follow-up PR.
+                if pid == "main":
+                    try:
+                        callbacks.execute_entry(ticker, result.price)
+                    except Exception as e:
+                        callbacks.report_error(
+                            executor="main",
+                            code="ORB_LONG_ENTRY_EXCEPTION",
+                            severity="error",
+                            summary=f"ORB long entry exception: {ticker}",
+                            detail=f"{type(e).__name__}: {str(e)[:200]}",
+                        )
+                else:
+                    logger.info(
+                        "[V79-ORB-ADMIT] %s long %s -- broker fire deferred "
+                        "(awaiting per-portfolio executor wiring)",
+                        pid, ticker,
+                    )
+            elif result.reason_no and result.reason_no != "no_signal":
+                logger.debug(
+                    "[V79-ORB-REJECT] long %s portfolio=%s reason=%s",
+                    ticker, pid, result.reason_no,
+                )
     except Exception as e:
         logger.warning("[V79-ORB] long entry error %s: %s", ticker, e)
 
 
 def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                      bars_for_mtm: dict | None) -> None:
-    """v10 ORB short-entry path. Mirrors _orb_long_entry."""
+    """v10 ORB short-entry path -- per-portfolio fanout. Mirror of
+    _orb_long_entry."""
     try:
         from engine.bars import compute_5m_ohlc_and_ema9
         _5m = compute_5m_ohlc_and_ema9(bars_for_mtm)
@@ -753,38 +778,50 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
             return
         five_min_close = _5m["closes"][-1]
         next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
-        equity = _resolve_portfolio_equity(tg, "main")
-        result = _orb_runtime.check_entry(
-            portfolio_id="main", ticker=ticker, side="short",
-            five_min_close=float(five_min_close), next_open=float(next_open),
-            equity=equity,
-        )
-        if result.ok:
-            logger.info(
-                "[V79-ORB-ENTRY] short %s portfolio=main "
-                "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
-                ticker, result.price, result.stop, result.target,
-                result.shares, result.ticket_id[:8],
+        engine = _orb_runtime.get_engine()
+        if engine is None:
+            return
+        portfolio_ids = list(engine.portfolio_ids)
+        for pid in portfolio_ids:
+            equity = _resolve_portfolio_equity(tg, pid)
+            result = _orb_runtime.check_entry(
+                portfolio_id=pid, ticker=ticker, side="short",
+                five_min_close=float(five_min_close),
+                next_open=float(next_open),
+                equity=equity,
             )
-            # v7.18.0: stash v10 shares for paper_shares_for handoff
-            try:
-                _orb_runtime.stash_v10_size("main", ticker, result.shares)
-            except Exception:
-                pass
-            try:
-                callbacks.execute_short_entry(ticker, result.price)
-            except Exception as e:
-                callbacks.report_error(
-                    executor="main",
-                    code="ORB_SHORT_ENTRY_EXCEPTION",
-                    severity="error",
-                    summary=f"ORB short entry exception: {ticker}",
-                    detail=f"{type(e).__name__}: {str(e)[:200]}",
+            if result.ok:
+                logger.info(
+                    "[V79-ORB-ENTRY] short %s portfolio=%s "
+                    "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
+                    ticker, pid, result.price, result.stop, result.target,
+                    result.shares, result.ticket_id[:8],
                 )
-        elif result.reason_no and result.reason_no != "no_signal":
-            logger.debug(
-                "[V79-ORB-REJECT] short %s reason=%s",
-                ticker, result.reason_no,
-            )
+                try:
+                    _orb_runtime.stash_v10_size(pid, ticker, result.shares)
+                except Exception:
+                    pass
+                if pid == "main":
+                    try:
+                        callbacks.execute_short_entry(ticker, result.price)
+                    except Exception as e:
+                        callbacks.report_error(
+                            executor="main",
+                            code="ORB_SHORT_ENTRY_EXCEPTION",
+                            severity="error",
+                            summary=f"ORB short entry exception: {ticker}",
+                            detail=f"{type(e).__name__}: {str(e)[:200]}",
+                        )
+                else:
+                    logger.info(
+                        "[V79-ORB-ADMIT] %s short %s -- broker fire deferred "
+                        "(awaiting per-portfolio executor wiring)",
+                        pid, ticker,
+                    )
+            elif result.reason_no and result.reason_no != "no_signal":
+                logger.debug(
+                    "[V79-ORB-REJECT] short %s portfolio=%s reason=%s",
+                    ticker, pid, result.reason_no,
+                )
     except Exception as e:
         logger.warning("[V79-ORB] short entry error %s: %s", ticker, e)
