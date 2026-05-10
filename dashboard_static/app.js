@@ -1180,7 +1180,7 @@
     function card(chip, name, desc, state, val, metrics) {
       return '<div class="pmtx-comp-card pmtx-comp-' + state + '">'
         +   '<div class="pmtx-comp-head">'
-        +     '<span class="pmtx-comp-chip">' + escapeHtml(chip) + '</span>'
+        +     '<span class="pmtx-comp-chip">' + esc(chip) + '</span>'
         +     '<span class="pmtx-comp-name">' + escapeHtml(name) + '</span>'
         +   '</div>'
         +   '<div class="pmtx-comp-desc">' + escapeHtml(desc) + '</div>'
@@ -3819,6 +3819,7 @@
     // v7.20.0 — v10 ORB Day Status banner. Renders s.v10 (config +
     // day_status + risk_books). Defensive: never breaks Main if v10
     // block is absent or runtime is unavailable.
+    try { renderKillSwitchBanner(s, "main"); } catch (e) { /* never break Main */ }
     try { renderV10DayStatus(s); } catch (e) { /* never break Main */ }
     try { renderV10TickerMatrix(s); } catch (e) { /* never break Main */ }
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
@@ -3991,6 +3992,8 @@
   if (typeof window !== "undefined") {
     window.__tgRenderWeatherCheck = renderWeatherCheck;
     window.__tgRenderPermitMatrix = renderPermitMatrix;
+    // (v7.40.0 kill-switch banner export lives in the next IIFE
+    // where renderKillSwitchBanner is defined.)
     // v5.31.4 — expose Session color helper to the per-executor IIFE
     // below. Defined inside this IIFE; without the bridge it's
     // unreachable from the second IIFE (where Val/Gene tabs render),
@@ -4273,6 +4276,9 @@
     const label = exec === "val" ? "Val" : "Gene";
     return `
 <div class="app">
+
+  <section class="killswitch-banner hide" data-f="ks-banner"
+           role="alert" aria-live="polite"></section>
 
   <main class="main">
 
@@ -4643,6 +4649,16 @@
     if (!panel) return;
     const label = name === "val" ? "Val" : "Gene";
     const disabled = !data || data.enabled === false;
+
+    // v7.40.0 -- kill-switch banner mirrors on Val/Gene from main /api/state
+    // so an operator switching tabs sees the same alert. The exec endpoint
+    // doesn't carry these flags, so we read from window.__tgLastState
+    // (the most recent main /api/state snapshot).
+    try {
+      var lastMain = window.__tgLastState;
+      var fn = window.__tgRenderKillSwitchBanner;
+      if (lastMain && typeof fn === "function") fn(lastMain, name);
+    } catch (e) { /* never break exec render */ }
 
     // Dim the whole panel when the executor is not configured so the
     // layout reads as "present but inert" rather than broken.
@@ -5172,6 +5188,160 @@
      /api/v10/projection (separate 60s poll for the static keystone numbers
      plus live account growth).
      ======================================================================== */
+
+  // ============================================================
+  // v7.40.0 -- kill-switch banner
+  //
+  // Reads several state surfaces to decide if any kill condition is
+  // active, then renders a single banner summarizing all of them.
+  // Each tab panel (main / val / gene) gets its own banner element
+  // so the operator sees the kill state on the panel they're
+  // currently viewing.
+  //
+  // Sources of kill state:
+  //   - s.gates.scan_paused           (operator-paused scan loop)
+  //   - s.gates.trading_halted        (legacy daily-loss halt)
+  //   - s.v10.day_status.block_day    (VIX kill, missing VIX)
+  //   - s.v10.risk_books[pid].daily_kill_triggered (v10 daily-kill)
+  //   - s.v10.live_mode === false     (ORB_LIVE_MODE=0 kill switch)
+  // ============================================================
+  // v7.40.0 -- expose for the exec render path (Val/Gene poll loop)
+  // which lives in a separate IIFE further below.
+  if (typeof window !== "undefined") {
+    // Will be assigned once the function declaration is hoisted below.
+    // We use a getter so the reference is resolved on first use.
+    Object.defineProperty(window, "__tgRenderKillSwitchBanner", {
+      get: function () { return renderKillSwitchBanner; },
+      configurable: true,
+    });
+  }
+
+  function renderKillSwitchBanner(s, target) {
+    // Local HTML-escape to avoid cross-IIFE dependency on `escapeHtml`.
+    function esc(v) {
+      return String(v == null ? "" : v)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+    var hostId = target === "main" ? "ks-banner-main" : null;
+    var banner = null;
+    if (hostId) {
+      banner = document.getElementById(hostId);
+    } else {
+      // val / gene panel: look up via [data-f="ks-banner"]
+      var panel = document.getElementById("tg-panel-" + target);
+      if (panel) banner = panel.querySelector('[data-f="ks-banner"]');
+    }
+    if (!banner) return;
+
+    var v10 = (s && s.v10) || {};
+    var gates = (s && s.gates) || {};
+    var conditions = [];
+
+    // 1. Operator paused the scan loop
+    if (gates.scan_paused) {
+      conditions.push({
+        title: "SCAN PAUSED",
+        detail: "Operator pause active. New entries blocked; existing positions still managed to exit.",
+        pid_chips: [],
+      });
+    }
+    // 2. Legacy daily-loss halt (pre-v10)
+    if (gates.trading_halted) {
+      conditions.push({
+        title: "TRADING HALTED",
+        detail: (gates.halt_reason || "Legacy daily-loss halt active."),
+        pid_chips: [],
+      });
+    }
+    // 3. v10 kill switch (ORB_LIVE_MODE=0)
+    if (v10 && v10.bootstrapped && v10.live_mode === false) {
+      conditions.push({
+        title: "V10 ORB DISABLED",
+        detail: "ORB_LIVE_MODE=0. v10 strategy fully off; legacy path active.",
+        pid_chips: [],
+      });
+    }
+    // 4. Day-level block from day_gates
+    var ds = v10.day_status || {};
+    if (ds.block_day) {
+      var reason = ds.block_reason || "unknown";
+      // VIX kill / missing_vix / earnings / etc.
+      conditions.push({
+        title: "DAY BLOCKED",
+        detail: "Day-level gate fired: " + reason +
+          ". No new entries on any ticker today.",
+        pid_chips: [],
+      });
+    }
+    // 5. Per-portfolio daily-loss kill
+    var rb = v10.risk_books || {};
+    var killed_pids = [];
+    var realized_total = 0;
+    var threshold_total = 0;
+    Object.keys(rb).sort().forEach(function (pid) {
+      var book = rb[pid] || {};
+      if (book.daily_kill_triggered) {
+        killed_pids.push({
+          pid: pid,
+          realized: book.realized_pnl_today || 0,
+          threshold: book.daily_kill_threshold || 0,
+        });
+        realized_total += (book.realized_pnl_today || 0);
+        threshold_total += (book.daily_kill_threshold || 0);
+      }
+    });
+    if (killed_pids.length > 0) {
+      conditions.push({
+        title: "DAILY-LOSS KILL ACTIVE",
+        detail: "v10 daily-loss kill triggered. New entries blocked; " +
+                "existing positions still managed to exit. ",
+        pid_chips: killed_pids.map(function (k) {
+          return k.pid.toUpperCase() + " $" +
+                 Math.round(k.realized).toLocaleString() +
+                 " / $" + Math.round(-k.threshold).toLocaleString();
+        }),
+      });
+    }
+
+    if (conditions.length === 0) {
+      banner.classList.add("hide");
+      banner.innerHTML = "";
+      return;
+    }
+    banner.classList.remove("hide");
+    // Synthesize the banner: combine all active conditions
+    var html = '<span class="ks-icon" aria-hidden="true">⚠</span>'
+             + '<div class="ks-text">';
+    conditions.forEach(function (c, i) {
+      var sep = (i > 0) ? ' · ' : '';
+      html += (i === 0
+                ? '<div class="ks-title">' + esc(c.title) + '</div>'
+                : '');
+      if (i === 0) {
+        html += '<div class="ks-detail">';
+      }
+      if (i > 0) {
+        html += sep + '<b>' + esc(c.title) + ':</b> ';
+      }
+      html += esc(c.detail);
+      if (c.pid_chips && c.pid_chips.length) {
+        html += ' ';
+        c.pid_chips.forEach(function (chip) {
+          html += '<span class="ks-portfolio-chip">'
+               + esc(chip) + '</span>';
+        });
+      }
+    });
+    html += '</div></div>';
+    html += '<div class="ks-actions">'
+         + '<button type="button" class="ks-btn" '
+         + 'onclick="window.scrollTo({top:document.body.scrollHeight,behavior:\'smooth\'})">'
+         + 'View activity</button>'
+         + '</div>';
+    banner.innerHTML = html;
+  }
 
   function renderV10DayStatus(s) {
     var v10 = s && s.v10;

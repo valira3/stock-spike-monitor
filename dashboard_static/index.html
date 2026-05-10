@@ -105,6 +105,16 @@
 <div id="tg-panel-main" class="tg-panel">
 <div class="app">
 
+  <!-- v7.40.0 -- kill-switch banner. Rendered by renderKillSwitchBanner(s)
+       in app.js. Visible only when one of: scan_paused, trading_halted,
+       v10.daily_kill_triggered for any portfolio, v10.day_status.block_day,
+       or ORB_LIVE_MODE=0. Zero pixels otherwise. Per-portfolio detail is
+       summarized when multiple portfolios are killed.
+       Each tab panel has its own banner host so the kill state shows on
+       Main / Val / Gene independently. -->
+  <section id="ks-banner-main" class="killswitch-banner hide"
+           role="alert" aria-live="polite"></section>
+
   <main class="main">
 
     <div class="banner hide" id="banner"></div>
