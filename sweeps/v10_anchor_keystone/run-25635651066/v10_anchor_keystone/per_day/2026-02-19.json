@@ -1,0 +1,65 @@
+{
+  "date": "2026-02-19",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-19T10:05:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 409.9549
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-19T15:55:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 410.3097,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-02-19T10:05:00-05:00",
+      "exit_ts": "2026-02-19T15:55:00-05:00",
+      "entry_price": 409.9549,
+      "exit_price": 410.3097,
+      "shares": 203,
+      "pnl_per_share": 0.3549,
+      "pnl_dollars": 72.0381,
+      "exit_reason": "eod",
+      "or_high": 409.54,
+      "or_low": 404.11,
+      "or_range_pct": 0.013347,
+      "stop_price": 403.905,
+      "risk_dollars": 1228.12
+    }
+  ],
+  "rejected_concurrent_cap": 24,
+  "kill_switch_fired": false,
+  "regime": null,
+  "regime_skip_day": false,
+  "regime_skip_reason": "",
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 72.0381,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

@@ -1,0 +1,95 @@
+{
+  "date": "2026-01-22",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-22T10:50:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 436.6182
+    },
+    {
+      "ts": "2026-01-22T10:55:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 437.7988
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-22T13:08:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 446.9127,
+      "reason": "target"
+    },
+    {
+      "ts": "2026-01-22T15:55:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 448.6306,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-01-22T10:50:00-05:00",
+      "exit_ts": "2026-01-22T13:08:00-05:00",
+      "entry_price": 436.6182,
+      "exit_price": 446.9127,
+      "shares": 174,
+      "pnl_per_share": 10.2945,
+      "pnl_dollars": 1791.2351,
+      "exit_reason": "target",
+      "or_high": 436.23,
+      "or_low": 432.6293,
+      "or_range_pct": 0.008288,
+      "stop_price": 436.6182,
+      "risk_dollars": 732.05
+    },
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-01-22T10:55:00-05:00",
+      "exit_ts": "2026-01-22T15:55:00-05:00",
+      "entry_price": 437.7988,
+      "exit_price": 448.6306,
+      "shares": 173,
+      "pnl_per_share": 10.8318,
+      "pnl_dollars": 1873.8984,
+      "exit_reason": "eod",
+      "or_high": 436.23,
+      "or_low": 432.6293,
+      "or_range_pct": 0.008288,
+      "stop_price": 437.7988,
+      "risk_dollars": 932.19
+    }
+  ],
+  "rejected_concurrent_cap": 8,
+  "kill_switch_fired": false,
+  "regime": null,
+  "regime_skip_day": false,
+  "regime_skip_reason": "",
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 3665.1335,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

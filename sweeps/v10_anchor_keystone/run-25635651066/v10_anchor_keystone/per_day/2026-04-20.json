@@ -1,0 +1,65 @@
+{
+  "date": "2026-04-20",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-04-20T10:05:00-05:00",
+      "ticker": "AVGO",
+      "side": "short",
+      "price": 399.9799
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-04-20T15:55:00-05:00",
+      "ticker": "AVGO",
+      "side": "short",
+      "exit_price": 399.1995,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AVGO",
+      "side": "short",
+      "entry_ts": "2026-04-20T10:05:00-05:00",
+      "exit_ts": "2026-04-20T15:55:00-05:00",
+      "entry_price": 399.9799,
+      "exit_price": 399.1995,
+      "shares": 213,
+      "pnl_per_share": 0.7804,
+      "pnl_dollars": 166.2235,
+      "exit_reason": "eod",
+      "or_high": 406.42,
+      "or_low": 401.35,
+      "or_range_pct": 0.012553,
+      "stop_price": 406.62,
+      "risk_dollars": 1414.35
+    }
+  ],
+  "rejected_concurrent_cap": 17,
+  "kill_switch_fired": false,
+  "regime": null,
+  "regime_skip_day": false,
+  "regime_skip_reason": "",
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 166.2235,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

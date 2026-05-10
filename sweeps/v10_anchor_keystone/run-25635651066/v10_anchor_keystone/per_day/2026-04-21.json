@@ -1,0 +1,95 @@
+{
+  "date": "2026-04-21",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-04-21T10:15:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 270.2569
+    },
+    {
+      "ts": "2026-04-21T10:20:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 269.9779
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-04-21T15:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "exit_price": 266.5849,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-04-21T15:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "exit_price": 266.5849,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AAPL",
+      "side": "short",
+      "entry_ts": "2026-04-21T10:15:00-05:00",
+      "exit_ts": "2026-04-21T15:55:00-05:00",
+      "entry_price": 270.2569,
+      "exit_price": 266.5849,
+      "shares": 316,
+      "pnl_per_share": 3.6721,
+      "pnl_dollars": 1160.3815,
+      "exit_reason": "eod",
+      "or_high": 272.8,
+      "or_low": 270.53,
+      "or_range_pct": 0.008356,
+      "stop_price": 270.2569,
+      "risk_dollars": 846.3
+    },
+    {
+      "ticker": "AAPL",
+      "side": "short",
+      "entry_ts": "2026-04-21T10:20:00-05:00",
+      "exit_ts": "2026-04-21T15:55:00-05:00",
+      "entry_price": 269.9779,
+      "exit_price": 266.5849,
+      "shares": 317,
+      "pnl_per_share": 3.3931,
+      "pnl_dollars": 1075.6003,
+      "exit_reason": "eod",
+      "or_high": 272.8,
+      "or_low": 270.53,
+      "or_range_pct": 0.008356,
+      "stop_price": 269.9779,
+      "risk_dollars": 937.39
+    }
+  ],
+  "rejected_concurrent_cap": 14,
+  "kill_switch_fired": false,
+  "regime": null,
+  "regime_skip_day": false,
+  "regime_skip_reason": "",
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 2235.9818,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

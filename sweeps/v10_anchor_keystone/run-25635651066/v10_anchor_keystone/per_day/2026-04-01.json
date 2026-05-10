@@ -1,0 +1,32 @@
+{
+  "date": "2026-04-01",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [],
+  "exits": [],
+  "pnl_pairs": [],
+  "rejected_concurrent_cap": 0,
+  "kill_switch_fired": false,
+  "regime": null,
+  "regime_skip_day": true,
+  "regime_skip_reason": "vix_high_25.2",
+  "summary": {
+    "entries": 0,
+    "exits": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_pnl": 0,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
