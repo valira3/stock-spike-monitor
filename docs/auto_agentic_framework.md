@@ -88,16 +88,22 @@ Every new lever ships with a one-line claim of which timestamp's data it consume
 **20. Times in Central Time.** All future report timestamps + ETAs in CT.
 *Established by: "I am in central time zone for future reports"*
 
-**27. Periodic timed progress updates.** During long-running work (sweeps, GHA matrices, multi-step compute jobs), surface a progress update every ~5 minutes with elapsed/expected/ETA in CT. Format:
+**27. Periodic timed progress updates.** During long-running work (sweeps, GHA matrices, multi-step compute jobs), surface a progress update every ~5 minutes with elapsed/expected/ETA in CT, step counter, and overall-loop ETA. Format:
 
 ```
-Progress: <step or job name>
-Elapsed: 5m of ~55m expected
-ETA:     10:30am CT
+Progress: <step or job name>          (step 3/20)
+Elapsed: 5m of ~55m expected for this step
+Step ETA:     10:30am CT
+Overall loop: ~3 of ~12 steps complete; full-loop ETA ~12:45pm CT
 ```
 
-Add brief context if helpful (e.g. variants completed, top-3 results so far, current step). Don't spam if nothing meaningful has changed — but the user should never wonder "is it still running?" without a recent timestamped signal.
-*Established by: "Periodically (every 5 mins) provide progress update in time. Ie, processing 5 mins out of 55mins expected. ETA 10:30am CT"*
+Required fields:
+- **Step counter** (`step N/M`) when the work is part of a known multi-step loop (research → audit → screen → cross-val → report → ...). If M is unknown, say so explicitly (`step 3/?`).
+- **This step's elapsed/expected/ETA** in CT.
+- **Overall loop estimate**: how many steps total in the current phase, how many done, and an ETA for the whole phase finishing in CT. If the loop is open-ended (research depth-of-search), state that explicitly and give a soft cap.
+
+Add brief context if helpful (e.g. variants completed, top-3 results so far, current sub-step). Don't spam if nothing meaningful has changed — but the user should never wonder "is it still running?" or "how much further?" without a recent timestamped signal.
+*Established by: "Periodically (every 5 mins) provide progress update in time. Ie, processing 5 mins out of 55mins expected. ETA 10:30am CT" + "Show step vs total steps expected (ie, step 1/20). Also add an estimate for a full completion of the overall loop"*
 
 **28. Keep Val aware.** The user's name is Val. Outbound progress communication is required at minimum every 5 minutes during active long-running work — even when rule #27's elapsed/ETA format doesn't apply (e.g. ETA unknown, multiple parallel tasks). At minimum: a one-line status confirming the current step, last result, and what's running. Silence longer than 5 minutes during active work is a process bug, not a feature. If genuinely idle (no work in flight, awaiting user direction), say so explicitly — silence is never an acceptable status.
 *Established by: "Keep Val aware of the progress. At least every 5 mins"*
