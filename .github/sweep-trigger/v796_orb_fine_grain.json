@@ -1,0 +1,71 @@
+{
+  "max_parallel": 6,
+  "variants": [
+    {"vid": "v796_orb_rr30_wide_block_META_long",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "15",
+       "ORB_RR": "3.0",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v796_orb_rr30_wide_block_META_short",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "15",
+       "ORB_RR": "3.0",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"SHORT\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v796_orb_rr30_wide_block_MSFT_long",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "15",
+       "ORB_RR": "3.0",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"MSFT\":[\"LONG\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v796_orb_rr30_wide_block_MSFT_short",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "15",
+       "ORB_RR": "3.0",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"MSFT\":[\"SHORT\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v796_orb_rr50_wide_block_META_MSFT",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "15",
+       "ORB_RR": "5.0",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v796_orb_rr30_wide_block_all_2trades",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "15",
+       "ORB_RR": "3.0",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "2",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"}
+  ]
+}
