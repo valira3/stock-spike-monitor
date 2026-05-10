@@ -1,0 +1,114 @@
+{
+  "date": "2026-01-30",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-30T10:45:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 193.224
+    },
+    {
+      "ts": "2026-01-30T09:50:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "price": 338.8908
+    },
+    {
+      "ts": "2026-01-30T09:55:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 242.3563
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-30T13:20:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 190.689,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-01-30T15:55:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "exit_price": 338.9092,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-01-30T13:18:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "exit_price": 238.2938,
+      "reason": "stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-01-30T10:45:00-05:00",
+      "exit_ts": "2026-01-30T13:20:00-05:00",
+      "entry_price": 193.224,
+      "exit_price": 190.689,
+      "shares": 414,
+      "pnl_per_share": -2.535,
+      "pnl_dollars": -1049.4981,
+      "exit_reason": "stop",
+      "or_high": 192.98,
+      "or_low": 190.9096,
+      "or_range_pct": 0.010786
+    },
+    {
+      "ticker": "GOOG",
+      "side": "long",
+      "entry_ts": "2026-01-30T09:50:00-05:00",
+      "exit_ts": "2026-01-30T15:55:00-05:00",
+      "entry_price": 338.8908,
+      "exit_price": 338.9092,
+      "shares": 155,
+      "pnl_per_share": 0.0183,
+      "pnl_dollars": 2.8412,
+      "exit_reason": "eod",
+      "or_high": 337.435,
+      "or_low": 332.64,
+      "or_range_pct": 0.014312
+    },
+    {
+      "ticker": "AMZN",
+      "side": "long",
+      "entry_ts": "2026-01-30T09:55:00-05:00",
+      "exit_ts": "2026-01-30T13:18:00-05:00",
+      "entry_price": 242.3563,
+      "exit_price": 238.2938,
+      "shares": 255,
+      "pnl_per_share": -4.0625,
+      "pnl_dollars": -1035.9421,
+      "exit_reason": "stop",
+      "or_high": 241.7,
+      "or_low": 238.57,
+      "or_range_pct": 0.013034
+    }
+  ],
+  "summary": {
+    "entries": 3,
+    "exits": 3,
+    "wins": 1,
+    "losses": 2,
+    "total_pnl": -2082.599,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
