@@ -230,6 +230,11 @@ class TestDispatchErrorLogging:
 
     def test_executor_fire_raise_logs_at_error_level(self, isolated_env,
                                                      caplog):
+        # engine.scan imports cleanly, but _v10_dispatch_executor_fire
+        # lazy-imports executors.bootstrap which pulls in
+        # executors.base -> telegram. Probe telegram first so the test
+        # skips cleanly in the sandbox without alpaca/telegram.
+        pytest.importorskip("telegram")
         try:
             from engine.scan import _v10_dispatch_executor_fire
         except (ModuleNotFoundError, ImportError) as e:
