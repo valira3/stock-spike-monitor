@@ -4,6 +4,70 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.5-experimental (2026-05-10) — Backtest harness: intra-bar stops + entry slippage + 3 wall-clock fixes
+
+Backtest-quality audit by a defensive subagent flagged 4 HIGH-severity
+findings that biased every prior sweep result. This release fixes all
+four. P&L magnitudes from any prior v7.8.x sweep should be considered
+upper-bound estimates until re-baselined on this release.
+
+### High-impact harness fixes
+
+1. **Intra-bar stop trigger modeling**
+   `backtest/replay_v511_full.py` — the engine evaluates stops as
+   `bar.close <= stop_price` (LONG) using `current_price`, which is the
+   close of the just-closed 1m bar. In production the stop fires
+   intra-bar at the moment price first crosses the level. The harness
+   now scans every open position at the start of each tick and, when
+   the just-closed bar's wick pierced the stop, injects a STOP_INTRABAR
+   close at the realistic intra-bar fill (clamped to the bar range).
+   This corrects the previously systematic miss-and-defer bias on
+   wick-and-recover bars. STOP_INTRABAR is added to the slippage
+   layer's stop-kick reason list so the 5bp adversarial slip applies.
+
+2. **Entry slippage**
+   `backtest/replay_v511_full.py` — entries previously filled at
+   `current_price` = bar close, a bias-free midpoint with no spread
+   cost. Now LONG entries fill at `close * (1 + bps/10000)` (ask) and
+   SHORT entries at `close * (1 - bps/10000)` (bid), default 1.5bp
+   base + 1bp short_pen. Tunable via `BACKTEST_ENTRY_SLIPPAGE_BPS` /
+   `BACKTEST_SLIPPAGE_SHORT_PENALTY_BPS`. `pos["entry_price"]` is
+   adjusted post-fill so all downstream P&L math (manage_positions,
+   sentinel, exit wrappers) reads the realistic ask/bid price.
+
+3. **EOD wall-clock sleep waste**
+   `backtest/replay_v511_full.py:1296` — eod_trigger changed from
+   `(15, 49)` to `(15, 50)`. `_eod_align_to_spec` short-circuits when
+   sim now >= EOD_FLUSH_ET (15:49:59); under freezegun the
+   production-default 15:49 trigger meant a real-wall-clock 59-second
+   `time.sleep()` per simulated day -- ~80 minutes wasted on an 80-day
+   sweep and a 600s subprocess-timeout risk in lever_sweep_runner.
+
+### Wall-clock leaks (decision-affecting under freezegun-off)
+
+4. `broker/orders.py:1782` — `_last_exit_time[ticker]` now routes
+   through `tg._now_utc()`. Was wall-clock leak; under freezegun-off
+   the cross-day cooldown bookkeeping would key off real wall clock.
+5. `broker/orders.py:1923` — `_hold_s` calculation now routes through
+   `tg._now_utc()`. Was wall-clock leak; under freezegun-off the
+   hold-seconds field in trade_log.jsonl would be measured against
+   real wall clock instead of simulated exit time.
+
+### What this means for prior results
+
+The +$12,400/yr "v15 pure spec + 100bp stops" headline from v7.8.3
+sweeps was computed on the biased harness. The bias direction:
+- Entry slippage was missing -> all P&L over-counted by ~3bp x 2
+  legs x avg notional per trade.
+- Intra-bar stops were missed -> some stop exits were deferred to
+  later bars at much worse prices. Direction depends on tape but
+  net bias was likely toward larger drawdowns.
+The two effects are partly offsetting in magnitude but operate on
+different trade subsets, so re-baselining is mandatory before
+declaring any deployment recommendation.
+
+---
+
 ## v7.8.4-experimental (2026-05-09) — V770 cooldown caller + 6 more freezegun-leak patches
 
 Continuation of the v7.8.3 freezegun-leak hunt. Patches the remaining

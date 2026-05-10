@@ -1779,7 +1779,14 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
 
     resolved_order_type = order_type_for_reason(reason)
 
-    tg._last_exit_time[ticker] = tg.datetime.now(timezone.utc)
+    # v7.8.5: route through tg._now_utc so the replay clock applies.
+    # Was wall-clock leak; under freezegun=off the cooldown bookkeeping
+    # would key off real wall clock instead of the simulated exit time.
+    try:
+        _last_exit_now = tg._now_utc()
+    except Exception:
+        _last_exit_now = tg.datetime.now(timezone.utc)
+    tg._last_exit_time[ticker] = _last_exit_now
 
     pos = positions_dict.pop(ticker)
     # v5.10.5 \u2014 Clear v5.10 phase state + 5m-bucket debounce on close
@@ -1920,7 +1927,15 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
             _ent_dt = tg.datetime.fromisoformat(_entry_iso)
             if _ent_dt.tzinfo is None:
                 _ent_dt = _ent_dt.replace(tzinfo=timezone.utc)
-            _hold_s = (tg.datetime.now(timezone.utc) - _ent_dt).total_seconds()
+            # v7.8.5: route through tg._now_utc so the replay clock
+            # applies. Was wall-clock leak; under freezegun=off the
+            # hold-seconds field in trade_log.jsonl would be measured
+            # against real wall clock instead of simulated exit time.
+            try:
+                _hold_now = tg._now_utc()
+            except Exception:
+                _hold_now = tg.datetime.now(timezone.utc)
+            _hold_s = (_hold_now - _ent_dt).total_seconds()
     except (TypeError, ValueError):
         _hold_s = None
     _log_row = {

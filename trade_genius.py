@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.8.4-experimental"
+BOT_VERSION = "7.8.5-experimental"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -117,9 +117,9 @@ BOT_VERSION = "7.8.4-experimental"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v7.8.4: V770 cooldown gate +\n"
-    "post-loss exit_ts route via\n"
-    "_now_utc. Replay-clean."
+    "v7.8.5: backtest harness fix:\n"
+    "intra-bar stop trigger +\n"
+    "entry slippage. Re-baseline."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
