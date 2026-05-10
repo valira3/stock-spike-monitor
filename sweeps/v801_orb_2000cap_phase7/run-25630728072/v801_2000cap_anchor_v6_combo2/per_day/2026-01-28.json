@@ -1,0 +1,92 @@
+{
+  "date": "2026-01-28",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-28T10:05:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 255.2668
+    },
+    {
+      "ts": "2026-01-28T10:30:00-05:00",
+      "ticker": "AMZN",
+      "side": "short",
+      "price": 244.7531
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-28T15:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "exit_price": 256.9641,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-01-28T15:55:00-05:00",
+      "ticker": "AMZN",
+      "side": "short",
+      "exit_price": 243.451,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AAPL",
+      "side": "short",
+      "entry_ts": "2026-01-28T10:05:00-05:00",
+      "exit_ts": "2026-01-28T15:55:00-05:00",
+      "entry_price": 255.2668,
+      "exit_price": 256.9641,
+      "shares": 293,
+      "pnl_per_share": -1.6972,
+      "pnl_dollars": -497.2908,
+      "exit_reason": "eod",
+      "or_high": 258.855,
+      "or_low": 255.73,
+      "or_range_pct": 0.012146,
+      "stop_price": 258.9826,
+      "risk_dollars": 1088.73
+    },
+    {
+      "ticker": "AMZN",
+      "side": "short",
+      "entry_ts": "2026-01-28T10:30:00-05:00",
+      "exit_ts": "2026-01-28T15:55:00-05:00",
+      "entry_price": 244.7531,
+      "exit_price": 243.451,
+      "shares": 306,
+      "pnl_per_share": 1.3021,
+      "pnl_dollars": 398.4356,
+      "exit_reason": "eod",
+      "or_high": 247.57,
+      "or_low": 245.08,
+      "or_range_pct": 0.010109,
+      "stop_price": 244.7531,
+      "risk_dollars": 899.43
+    }
+  ],
+  "rejected_concurrent_cap": 24,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 1,
+    "losses": 1,
+    "total_pnl": -98.8552,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

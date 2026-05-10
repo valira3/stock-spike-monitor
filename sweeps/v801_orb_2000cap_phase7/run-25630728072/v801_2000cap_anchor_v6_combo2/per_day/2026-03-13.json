@@ -1,0 +1,92 @@
+{
+  "date": "2026-03-13",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-13T10:05:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "price": 183.9845
+    },
+    {
+      "ts": "2026-03-13T10:10:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "price": 183.8996
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-13T15:55:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "exit_price": 180.068,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-03-13T15:55:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "exit_price": 180.068,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "short",
+      "entry_ts": "2026-03-13T10:05:00-05:00",
+      "exit_ts": "2026-03-13T15:55:00-05:00",
+      "entry_price": 183.9845,
+      "exit_price": 180.068,
+      "shares": 407,
+      "pnl_per_share": 3.9166,
+      "pnl_dollars": 1594.0428,
+      "exit_reason": "eod",
+      "or_high": 186.09,
+      "or_low": 184.415,
+      "or_range_pct": 0.009042,
+      "stop_price": 183.9845,
+      "risk_dollars": 894.36
+    },
+    {
+      "ticker": "NVDA",
+      "side": "short",
+      "entry_ts": "2026-03-13T10:10:00-05:00",
+      "exit_ts": "2026-03-13T15:55:00-05:00",
+      "entry_price": 183.8996,
+      "exit_price": 180.068,
+      "shares": 407,
+      "pnl_per_share": 3.8316,
+      "pnl_dollars": 1559.4685,
+      "exit_reason": "eod",
+      "or_high": 186.09,
+      "or_low": 184.415,
+      "or_range_pct": 0.009042,
+      "stop_price": 183.8996,
+      "risk_dollars": 928.92
+    }
+  ],
+  "rejected_concurrent_cap": 31,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 3153.5113,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
