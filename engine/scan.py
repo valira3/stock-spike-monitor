@@ -703,19 +703,31 @@ def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
 
 
 def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
-                                price: float, shares: int) -> None:
+                                price: float, shares: int,
+                                callbacks: "EngineCallbacks | None" = None,
+                                ) -> None:
     """v7.26.0 -- route a non-main v10 admission to its executor's fire_*.
 
-    Production-safe rollout: gated on ORB_PORTFOLIO_FIRE env flag.
-    Default "0" (off): the admission is logged as deferred, matching
-    pre-v7.26 behavior. Set to "1" after the 5-day paper-fire
-    observation window confirms admissions look correct.
+    Production-safe rollout: gated on BOTH ORB_LIVE_MODE and
+    ORB_PORTFOLIO_FIRE. Either off -> no broker call.
 
-    With the flag off, Val/Gene continue to mirror Main via the legacy
-    signal bus (executors.base.TradeGeniusBase._on_signal). With the
-    flag on, the executor fires on its OWN admission too. Within-minute
-    coid idempotency catches dupes; across-minute fires are independent.
+    v7.30.0: the ORB_LIVE_MODE gate was added here for kill-switch
+    consistency. Previously fire was gated only on ORB_PORTFOLIO_FIRE,
+    so an operator setting ORB_LIVE_MODE=0 to disable v10 strategy
+    could still see Val/Gene fire if PORTFOLIO_FIRE was on. Now both
+    must agree.
+
+    v7.30.0: also routes broker submit failures (e.g. Alpaca 5xx) to
+    callbacks.report_error so Telegram/dashboard see them instead of
+    only the log file.
     """
+    if not _orb_runtime.is_live_mode_on():
+        logger.info(
+            "[V79-ORB-ADMIT] %s %s %s -- broker fire suppressed "
+            "(ORB_LIVE_MODE=0; kill switch active)",
+            pid, side, ticker,
+        )
+        return
     if os.environ.get("ORB_PORTFOLIO_FIRE", "0") != "1":
         logger.info(
             "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
@@ -731,6 +743,17 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             "[V79-ORB-FIRE] %s %s %s get_executor raised: %s",
             pid, side, ticker, e,
         )
+        if callbacks is not None:
+            try:
+                callbacks.report_error(
+                    executor=pid,
+                    code="V10_FIRE_DISPATCH_LOOKUP",
+                    severity="error",
+                    summary=f"v10 fire dispatch lookup failed: {pid}",
+                    detail=f"{type(e).__name__}: {str(e)[:200]}",
+                )
+            except Exception:
+                logger.exception("[V79-ORB-FIRE] report_error failed")
         return
     if ex is None:
         logger.info(
@@ -739,11 +762,35 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             pid, side, ticker,
         )
         return
+
+    # v7.30.0: error callback escalates broker submit failures (5xx,
+    # timeouts, connection drops) through the standard report_error
+    # pipeline so Telegram/dashboard see them.
+    _err_cb = None
+    if callbacks is not None:
+        def _err_cb(name: str, side2: str, ticker2: str, shares2: int,
+                    exc: Exception) -> None:
+            try:
+                callbacks.report_error(
+                    executor=pid,
+                    code="V10_BROKER_FIRE_FAILED",
+                    severity="error",
+                    summary=f"v10 broker fire failed: {name} {side2} {ticker2}",
+                    detail=(
+                        f"{type(exc).__name__}: {str(exc)[:200]} "
+                        f"(qty={shares2}, pid={pid})"
+                    ),
+                )
+            except Exception:
+                logger.exception("[V79-ORB-FIRE] report_error failed")
+
     try:
         if side == "long":
-            ok = ex.fire_long(ticker, float(price), int(shares))
+            ok = ex.fire_long(ticker, float(price), int(shares),
+                              error_callback=_err_cb)
         else:
-            ok = ex.fire_short(ticker, float(price), int(shares))
+            ok = ex.fire_short(ticker, float(price), int(shares),
+                               error_callback=_err_cb)
         logger.info(
             "[V79-ORB-FIRE] %s %s %s qty=%d submitted=%s",
             pid, side, ticker, int(shares), ok,
@@ -753,6 +800,17 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             "[V79-ORB-FIRE] %s %s %s fire raised: %s",
             pid, side, ticker, e,
         )
+        if callbacks is not None:
+            try:
+                callbacks.report_error(
+                    executor=pid,
+                    code="V10_FIRE_DISPATCH_EXCEPTION",
+                    severity="error",
+                    summary=f"v10 fire dispatch raised: {pid} {side} {ticker}",
+                    detail=f"{type(e).__name__}: {str(e)[:200]}",
+                )
+            except Exception:
+                logger.exception("[V79-ORB-FIRE] report_error failed")
 
 
 def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
@@ -824,6 +882,7 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     _v10_dispatch_executor_fire(
                         pid=pid, side="long", ticker=ticker,
                         price=result.price, shares=result.shares,
+                        callbacks=callbacks,
                     )
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
@@ -883,6 +942,7 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     _v10_dispatch_executor_fire(
                         pid=pid, side="short", ticker=ticker,
                         price=result.price, shares=result.shares,
+                        callbacks=callbacks,
                     )
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(

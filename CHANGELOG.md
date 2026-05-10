@@ -4,6 +4,95 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.30.0 (2026-05-10) -- Kill-switch consistency + thread safety + error escalation (CRITICAL batch)
+
+Twenty-second PR in v10 rollout. Closes three CRITICAL findings from
+the deep production audit in a single batch:
+
+### A. Kill-switch consistency (`engine/scan.py:_v10_dispatch_executor_fire`)
+
+The dispatch previously gated only on `ORB_PORTFOLIO_FIRE`. An
+operator setting `ORB_LIVE_MODE=0` to disable the v10 strategy would
+still see Val/Gene fire broker orders if `PORTFOLIO_FIRE=1` -- a
+leaky rollback path. v7.30.0 adds an explicit
+`is_live_mode_on()` check BEFORE the portfolio-fire gate, so either
+flag off suppresses the broker call. Forensic:
+`[V79-ORB-ADMIT] ... -- broker fire suppressed (ORB_LIVE_MODE=0; kill
+switch active)`.
+
+### B. Thread safety on `orb/live_runtime.py`
+
+Two race conditions identified:
+
+1. **Module-level singletons** (`_engine`, `_adapters`, `_bootstrapped`)
+   were mutated without a lock. `bootstrap()` could be observed
+   mid-construction (e.g. `_engine` set but `_adapters` still None) by
+   the dashboard thread or a concurrent scan tick. v7.30.0 introduces
+   `_bootstrap_lock` (RLock) and a **local-then-swap** pattern: both
+   constructors must succeed BEFORE the globals are assigned. A
+   mid-construction exception now leaves the module in a clean "not
+   bootstrapped" state and the construction error propagates.
+
+2. **`_pending_v10_sizes` dict** is written by the scan thread
+   (`stash_v10_size`) and popped by the broker thread
+   (`consume_v10_size`). Python dicts are NOT thread-safe for
+   concurrent read+write. v7.30.0 adds `_sizes_lock` (RLock) and
+   guards `stash_v10_size` / `consume_v10_size` / `peek_v10_size`.
+
+### C. Broker fire error escalation
+
+`executors/base.py:_submit_v10_entry` was swallowing Alpaca 5xx /
+timeout / connection-drop exceptions silently (log only, returns
+False). No Telegram alert, no dashboard banner. v7.30.0:
+
+- `fire_long` / `fire_short` / `_submit_v10_entry` accept an optional
+  `error_callback(name, side, ticker, shares, exc)` kwarg.
+- The callback is invoked from inside the broker-submit `except`
+  block. Callback failures are caught locally and never propagate.
+- `engine/scan.py:_v10_dispatch_executor_fire` now accepts a
+  `callbacks` parameter, wraps `callbacks.report_error` into an
+  error callback, and threads it into `fire_long` / `fire_short`.
+- Both entry helpers (`_orb_long_entry` / `_orb_short_entry`) pass
+  `callbacks=callbacks` into the dispatch.
+
+Result: a broker 5xx during a Val/Gene v10 fire surfaces as a
+`V10_BROKER_FIRE_FAILED` error report (Telegram + dashboard error
+panel), not just a log line.
+
+### Tests
+
+11 new tests in `tests/strategy/test_orb_killswitch_threadsafety.py`:
+
+| Group | Coverage |
+|---|---|
+| Kill-switch (3) | LIVE_MODE=0 suppresses; both on fires; PORTFOLIO_FIRE=0 overrides |
+| Atomic bootstrap (2) | Partial init does NOT leak `_engine`; concurrent bootstrap calls serialize |
+| Sizes lock (2) | Basic stash/consume; concurrent 6-thread pound test |
+| Error callback (4) | Callback invoked on broker exception; callback failure swallowed; no-callback safe; end-to-end dispatch -> `report_error` |
+
+One pre-existing test updated
+(`test_orb_executor_fire.py::test_on_calls_fire_*`) to set
+`ORB_LIVE_MODE=1` (was relying on default-on) and to assert the new
+`error_callback=None` kwarg shape.
+
+**260 strategy tests pass** (was 249, +11 new). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.29.0 -> 7.30.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.30.0
+- `orb/live_runtime.py` -- `_bootstrap_lock` + `_sizes_lock` + atomic
+  bootstrap (local-then-swap) + guarded stash/consume/peek
+- `engine/scan.py` -- `is_live_mode_on()` gate + `callbacks` thread-
+  through + error_callback wiring
+- `executors/base.py` -- `fire_long` / `fire_short` /
+  `_submit_v10_entry` accept `error_callback`
+- `tests/strategy/test_orb_killswitch_threadsafety.py` -- new (11 tests)
+- `tests/strategy/test_orb_executor_fire.py` -- updated
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.29.0 (2026-05-10) -- Daily-loss kill switch enforcement (CRITICAL gap)
 
 Twenty-first PR in v10 rollout. Closes the largest CRITICAL gap from
