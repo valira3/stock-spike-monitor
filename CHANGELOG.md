@@ -4,6 +4,105 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.26.0 (2026-05-10) -- Val/Gene executor fire_long/fire_short surface
+
+Eighteenth PR in v10 rollout. Closes the per-portfolio executor wiring
+gap: Val and Gene now have a direct broker-fire surface that
+engine/scan.py routes per-portfolio v10 admissions through. Gated
+behind a default-OFF env flag so production behavior is unchanged
+until the operator opts in.
+
+### A. `executors/base.py` -- `fire_long` / `fire_short`
+
+New methods on `TradeGeniusBase`:
+
+```python
+ex.fire_long(ticker: str, price: float, shares: int) -> bool
+ex.fire_short(ticker: str, price: float, shares: int) -> bool
+```
+
+Returns True on submitted (or recognized as coid duplicate); False on
+no-op (no client, no shares, exception). Internally:
+
+- Builds a MARKET DAY order via Alpaca SDK (vs. legacy LIMIT IOC).
+  Reasoning: v10 sizing is risk-based -- the entry price is the
+  broker's fill, not the strategy's anchor. LIMIT IOC could short-fill
+  and break RiskBook accounting. MARKET DAY ensures the v10-computed
+  quantity fills (or rejects cleanly).
+- Uses `_build_client_order_id(ticker, "V10LONG"/"V10SHORT")` so v10
+  fires get a separate coid bucket from legacy ENTRY_LONG fires within
+  the same UTC minute.
+- Records the fill on `self.positions` via `_record_position` so
+  /status + dashboard surface the v10 entry.
+
+Forensic: `[V10-FIRE] submitted LONG AAPL qty=50 price=100.50
+coid=VAL-AAPL-... order_id=...`
+
+### B. `executors/bootstrap.py` -- `get_executor(portfolio_id)`
+
+New helper:
+
+```python
+get_executor("main")  -> None  (main is trade_genius itself)
+get_executor("val")   -> trade_genius.val_executor or None
+get_executor("gene")  -> trade_genius.gene_executor or None
+```
+
+Used by `engine/scan.py` to route per-portfolio admissions.
+
+### C. `engine/scan.py` -- `_v10_dispatch_executor_fire`
+
+New helper that replaces the previous `[V79-ORB-ADMIT] broker fire
+deferred` log block in `_orb_long_entry` / `_orb_short_entry`.
+
+Flow:
+  1. Read `ORB_PORTFOLIO_FIRE` env (default `"0"`).
+  2. If off: log deferred + return (back-compat with pre-v7.26).
+  3. If on: lookup `executors.bootstrap.get_executor(pid)`; call
+     `fire_long` / `fire_short`. Log `[V79-ORB-FIRE]`.
+  4. Swallow any exception from the executor side.
+
+### D. Production rollout plan
+
+Default `ORB_PORTFOLIO_FIRE=0` keeps Val / Gene mirroring Main via the
+legacy signal bus (`executors.base.TradeGeniusBase._on_signal`). After
+the 5-day paper-fire observation window from
+`docs/v10_retirement_plan.md` confirms per-portfolio admissions look
+correct, flip to `"1"` to enable per-portfolio fires.
+
+With the flag on, each portfolio fires on its OWN admissions
+(different equity, different RiskBook). Within-minute coid idempotency
+catches dupes; across-minute fires are independent.
+
+A follow-up PR (v7.27.x) adds a `target_executor` filter on
+`_on_signal` to suppress the legacy "everyone mirrors Main" broadcast
+once we've validated the direct-fire path.
+
+### Tests
+
+15 new tests in `tests/strategy/test_orb_executor_fire.py`:
+  - fire_long submits MARKET BUY with V10LONG coid
+  - fire_long no-ops on shares<=0 / no client / empty ticker
+  - fire_long swallows submit exceptions
+  - fire_short submits MARKET SELL with V10SHORT coid
+  - get_executor("main") -> None; "val" -> instance; unknown -> None
+  - dispatch off-by-default no-op; on calls fire_long/fire_short;
+    no-executor no-op; swallows exceptions
+
+225 strategy tests pass (was 210 -> +15 new).
+
+### Files
+
+- `bot_version.py` -- 7.25.0 -> 7.26.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.26.0
+- `executors/base.py` -- `fire_long` / `fire_short` / `_submit_v10_entry`
+- `executors/bootstrap.py` -- `get_executor`
+- `engine/scan.py` -- `_v10_dispatch_executor_fire` + wiring
+- `tests/strategy/test_orb_executor_fire.py` -- 15 new tests
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.25.0 (2026-05-10) -- v10 ORB scenario simulator + day-replay harness
 
 Seventeenth PR in v10 rollout. Adds the multi-layered verification

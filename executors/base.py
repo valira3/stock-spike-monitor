@@ -765,6 +765,104 @@ class TradeGeniusBase:
             return int(requested_qty)
         return filled
 
+    # ---------- v7.26.0: v10 ORB direct fire surface ----------
+    #
+    # Per-portfolio v10 admissions in engine/scan.py call these methods
+    # directly to fire broker orders -- bypassing the trade_genius._emit_signal
+    # bus that the legacy ENTRY_LONG / ENTRY_SHORT events ride. This is the
+    # piece that makes Val and Gene fire on their OWN admissions (different
+    # equity, different RiskBook), not just mirror Main's signals.
+    #
+    # Production-safe rollout: gated behind ORB_PORTFOLIO_FIRE env flag in
+    # engine/scan.py. Default OFF (0); set to "1" after the 5-day paper-fire
+    # observation window confirms the per-portfolio admissions look right.
+    # Until then, Val/Gene continue to mirror Main via _on_signal as before.
+    #
+    # Idempotency: coid is built with direction="V10LONG"/"V10SHORT" so v10
+    # fires get a separate coid bucket from legacy ENTRY_LONG ("LONG") fires
+    # within the same UTC minute. A double-fire (v10 admission + main bus
+    # broadcast) would land as two separate orders, each idempotent against
+    # itself -- _submit_order_idempotent handles within-bucket dupes.
+    def fire_long(self, ticker: str, price: float, shares: int) -> bool:
+        """Submit a LONG v10 entry directly to Alpaca.
+
+        Returns True if an order was submitted (or recognized as a coid
+        duplicate); False on no-op (no client, no shares, exception).
+        """
+        if shares <= 0:
+            return False
+        if not ticker:
+            return False
+        return self._submit_v10_entry(side="LONG", ticker=ticker,
+                                      price=price, shares=int(shares))
+
+    def fire_short(self, ticker: str, price: float, shares: int) -> bool:
+        """Submit a SHORT v10 entry directly to Alpaca. Mirror of fire_long."""
+        if shares <= 0:
+            return False
+        if not ticker:
+            return False
+        return self._submit_v10_entry(side="SHORT", ticker=ticker,
+                                      price=price, shares=int(shares))
+
+    def _submit_v10_entry(self, *, side: str, ticker: str,
+                          price: float, shares: int) -> bool:
+        """Shared body for fire_long / fire_short.
+
+        Uses MARKET DAY orders rather than the legacy LIMIT IOC path because
+        v10 sizing is risk-based (the entry price is the broker's fill, not
+        the strategy's anchor); LIMIT IOC could short-fill and break the
+        risk-cap accounting on the RiskBook. MARKET DAY ensures the full
+        v10-computed quantity fills (or rejects cleanly).
+        """
+        client = self._ensure_client()
+        if client is None:
+            logger.warning(
+                "[%s] [V10-FIRE] skip %s %s -- no alpaca client",
+                self.NAME, side, ticker,
+            )
+            return False
+        try:
+            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce
+        except Exception:
+            logger.exception("[%s] [V10-FIRE] alpaca imports failed",
+                             self.NAME)
+            return False
+        direction = f"V10{side}"  # V10LONG / V10SHORT (own coid bucket)
+        coid = self._build_client_order_id(ticker, direction)
+        order_side = OrderSide.BUY if side == "LONG" else OrderSide.SELL
+        req = MarketOrderRequest(
+            symbol=ticker, qty=int(shares), side=order_side,
+            time_in_force=TimeInForce.DAY,
+            client_order_id=coid,
+        )
+        try:
+            order = self._submit_order_idempotent(client, req, coid)
+        except Exception:
+            logger.exception(
+                "[%s] [V10-FIRE] submit failed %s %s qty=%d",
+                self.NAME, side, ticker, shares,
+            )
+            return False
+        oid = getattr(order, "id", "?")
+        logger.info(
+            "[%s] [V10-FIRE] submitted %s %s qty=%d price=%.4f "
+            "coid=%s order_id=%s",
+            self.NAME, side, ticker, shares, float(price or 0.0), coid, oid,
+        )
+        # Track on the executor's own positions map so /status + dashboard
+        # surface the v10 fire. Same shape as the legacy _on_signal path.
+        try:
+            self._record_position(ticker, side, int(shares),
+                                  float(price or 0.0))
+        except Exception:
+            logger.exception(
+                "[%s] [V10-FIRE] _record_position raised (non-fatal)",
+                self.NAME,
+            )
+        return True
+
     def _record_position(self, ticker: str, side: str, qty: int, entry_price: float) -> None:
         """Stamp an executor-side record after a successful submit."""
         self.positions[ticker] = {
