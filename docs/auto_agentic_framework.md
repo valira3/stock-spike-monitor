@@ -110,6 +110,25 @@ Operating rules for autonomous, quality work in this session and future sessions
 
 ---
 
+## VII. Notification discipline
+
+**26. Notify only on branch decisions.** Surface a question/notification to the user ONLY when an actual branch decision is required (incompatible options that need human judgement, irreversible action with material risk, ambiguous requirement that can't be resolved from context). Otherwise keep executing — no "want me to continue?", no progress preambles awaiting acknowledgement, no validation pings. Status updates land in the chat as natural side-effects of work; they do not require a response.
+*Established by: "Only notify me (app notification?) if I need to make a branch decisions. Otherwise, keep going"*
+
+What counts as a branch decision:
+- Trade-off between two viable strategies where the user's preference is unknown (e.g. "Should I optimize for compounding or constant-base?")
+- Destructive/irreversible action without prior authorization (force push, dropping a table)
+- Material spend (e.g. "Run 30-variant GHA sweep at $X cost?") if not pre-approved
+- Conflicting directives between current task and a prior rule
+
+What does NOT warrant a notification:
+- "I'm about to run the screen / merge / push" — just do it
+- "Phase 9 is done; shall I continue to Phase 10?" — yes, by default, continue
+- "CI passed" — don't ping; PR webhook will say so if subscribed
+- "I found a bug; fixing" — fix it and report after, not before
+
+---
+
 ## How to apply this framework
 
 When starting a new task or new phase:

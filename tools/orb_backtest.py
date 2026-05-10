@@ -208,6 +208,14 @@ class ORBConfig:
     # trade notional caps also scale with account. When OFF (default for
     # backwards compatibility), each day uses the static account value.
     compound_daily: bool = False
+    # v12 SPY/QQQ regime gate -- targets the 2025-11 OOS failure where
+    # mega-cap breakouts got faded under a choppy/down-trending index regime.
+    # When set, the index's own 30-min OR direction + magnitude become a
+    # day-level filter applied to all per-ticker candidate signals BEFORE
+    # the concurrent-risk gate.
+    regime_ticker: str = ""              # "SPY" | "QQQ" | "" (off)
+    regime_dir_align: bool = False       # only allow trades aligned with index OR direction
+    regime_min_or_bps: float = 0.0       # skip day if |index 30m-OR move| < this (bps); 0 = off
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -260,6 +268,9 @@ class ORBConfig:
             skip_first_5min=_envs("ORB_SKIP_FIRST_5MIN", "0") == "1",
             trailing_stop_pct=_envf("ORB_TRAILING_STOP_PCT", 0.0),
             compound_daily=_envs("ORB_COMPOUND_DAILY", "0") == "1",
+            regime_ticker=_envs("ORB_REGIME_TICKER", "").upper(),
+            regime_dir_align=_envs("ORB_REGIME_DIR_ALIGN", "0") == "1",
+            regime_min_or_bps=_envf("ORB_REGIME_MIN_OR_BPS", 0.0),
         )
 
 
@@ -743,6 +754,46 @@ def _bucket_to_iso(date: str, minutes: int) -> str:
     return f"{date}T{h:02d}:{m:02d}:00-05:00"  # ET (DST-naive)
 
 
+# ---------- v12 SPY/QQQ regime gate ----------
+def compute_regime(corpus_dir: Path, date: str, ticker: str,
+                   or_minutes: int) -> dict | None:
+    """Compute the day-level regime from an index ticker's 30-min OR.
+
+    Returns dict with keys:
+      direction: "LONG"  if OR_close > OR_open (uptrend bias)
+                 "SHORT" if OR_close < OR_open (downtrend bias)
+                 "FLAT"  if OR_close == OR_open
+      or_bps:    signed magnitude of (OR_close - OR_open)/OR_open in basis points
+                 (positive for uptrend, negative for downtrend)
+
+    Returns None if the index data isn't loadable or the OR is incomplete --
+    callers should treat None as "no regime info; do not gate" (fail-open).
+    """
+    try:
+        bars = load_day_bars(corpus_dir, date, ticker)
+    except Exception:
+        return None
+    if not bars:
+        return None
+    or_end = SESSION_START_ET + or_minutes
+    or_bars = [b for b in bars
+               if SESSION_START_ET <= b.bucket < or_end]
+    if not or_bars:
+        return None
+    or_open = or_bars[0].open
+    or_close = or_bars[-1].close
+    if or_open <= 0:
+        return None
+    or_bps = 10000.0 * (or_close - or_open) / or_open
+    if or_close > or_open:
+        direction = "LONG"
+    elif or_close < or_open:
+        direction = "SHORT"
+    else:
+        direction = "FLAT"
+    return {"direction": direction, "or_bps": or_bps}
+
+
 # ---------- driver ----------
 def discover_dates(corpus_dir: Path, year_prefix: str, tickers: list[str]) -> list[str]:
     out = []
@@ -776,6 +827,10 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     days_failed = 0
     tickers_failed = 0
     failures: list[dict] = []
+    # v12 regime-gate diagnostics: count days/signals filtered by the index gate
+    regime_days_skipped_flat = 0
+    regime_days_skipped_low_or = 0
+    regime_signals_dropped = 0
 
     for date in dates:
         # v11 compounding: at the start of each day, snapshot the running
@@ -784,28 +839,63 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         # update running_account. cfg is never mutated.
         current_account = running_account if cfg.compound_daily else starting_account
 
+        # v12 regime gate: compute index OR direction + magnitude once per
+        # day. Fail-open on missing data (treat as "no regime info"). The
+        # filter is applied AFTER candidate collection so per-ticker logic
+        # is unchanged when the gate is off.
+        regime = None
+        regime_skip_day = False
+        regime_skip_reason = ""
+        if cfg.regime_ticker:
+            regime = compute_regime(corpus_dir, date, cfg.regime_ticker,
+                                    cfg.or_minutes)
+            if regime is not None:
+                if regime["direction"] == "FLAT":
+                    regime_skip_day = True
+                    regime_skip_reason = "regime_flat"
+                    regime_days_skipped_flat += 1
+                elif (cfg.regime_min_or_bps > 0
+                      and abs(regime["or_bps"]) < cfg.regime_min_or_bps):
+                    regime_skip_day = True
+                    regime_skip_reason = "regime_low_or"
+                    regime_days_skipped_low_or += 1
+
         candidate_pairs: list[dict] = []
-        for tk in tickers:
-            try:
-                bars = load_day_bars(corpus_dir, date, tk)
-                if not bars:
-                    continue
-                pairs = run_ticker_day(date, tk, bars, cfg, current_account)
-                candidate_pairs.extend(pairs)
-            except (RuntimeError, AssertionError):
-                # Genuine bugs -- re-raise rather than silently dropping.
-                raise
-            except Exception as e:
-                tickers_failed += 1
-                if len(failures) < 10:
-                    failures.append({
-                        "date": date,
-                        "ticker": tk,
-                        "error_class": type(e).__name__,
-                        "error_msg": str(e),
-                    })
-                print(f"WARN {date} {tk}: {type(e).__name__}: {e}",
-                      file=sys.stderr)
+        if not regime_skip_day:
+            for tk in tickers:
+                try:
+                    bars = load_day_bars(corpus_dir, date, tk)
+                    if not bars:
+                        continue
+                    pairs = run_ticker_day(date, tk, bars, cfg, current_account)
+                    candidate_pairs.extend(pairs)
+                except (RuntimeError, AssertionError):
+                    # Genuine bugs -- re-raise rather than silently dropping.
+                    raise
+                except Exception as e:
+                    tickers_failed += 1
+                    if len(failures) < 10:
+                        failures.append({
+                            "date": date,
+                            "ticker": tk,
+                            "error_class": type(e).__name__,
+                            "error_msg": str(e),
+                        })
+                    print(f"WARN {date} {tk}: {type(e).__name__}: {e}",
+                          file=sys.stderr)
+
+        # v12 directional alignment: drop signals whose side doesn't match
+        # the regime. Applied after collection so the diagnostic count is
+        # accurate. When regime=None (no data) or regime_dir_align=False,
+        # this is a no-op. Note: candidate_pairs use lowercase side
+        # ("long"/"short") -- match case-insensitively.
+        if (cfg.regime_dir_align and regime is not None
+                and regime["direction"] in ("LONG", "SHORT")):
+            allowed_side = regime["direction"].lower()
+            kept = [p for p in candidate_pairs
+                    if str(p["side"]).lower() == allowed_side]
+            regime_signals_dropped += len(candidate_pairs) - len(kept)
+            candidate_pairs = kept
 
         # v9 portfolio-level constraints (re-baseline to $500/day cap):
         #   1. Concurrent risk-dollars cap: sum of open risk_dollars
@@ -901,6 +991,9 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             "pnl_pairs": day_pairs,
             "rejected_concurrent_cap": rejected,
             "kill_switch_fired": kill_active,
+            "regime": regime,
+            "regime_skip_day": regime_skip_day,
+            "regime_skip_reason": regime_skip_reason,
             "summary": {
                 "entries": n_entries, "exits": n_entries,
                 "wins": wins, "losses": losses,
@@ -937,6 +1030,13 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         "starting_account": round(starting_account, 2),
         "ending_account": round(running_account, 2) if cfg.compound_daily else round(starting_account + total_pnl, 2),
         "compound_daily": cfg.compound_daily,
+        # v12 regime-gate diagnostics
+        "regime_ticker": cfg.regime_ticker,
+        "regime_dir_align": cfg.regime_dir_align,
+        "regime_min_or_bps": cfg.regime_min_or_bps,
+        "regime_days_skipped_flat": regime_days_skipped_flat,
+        "regime_days_skipped_low_or": regime_days_skipped_low_or,
+        "regime_signals_dropped": regime_signals_dropped,
         "config": {
             "strategy": "orb_classical",
             "or_minutes": cfg.or_minutes,
