@@ -1,0 +1,2027 @@
+  :root {
+    --bg: #0a0d12;
+    --surface: #10151c;
+    --surface-2: #161d27;
+    --surface-3: #1e2633;
+    --border: #1f2937;
+    --border-strong: #2a3646;
+    --text: #e7ecf3;
+    --text-muted: #8a96a7;
+    --text-dim: #5b6572;
+    --accent: #7dd3fc;
+    --accent-dim: #1e3a4a;
+    --up: #34d399;
+    --up-dim: #0f2e23;
+    --down: #f87171;
+    --down-dim: #3a1414;
+    --warn: #fbbf24;
+    --warn-dim: #2e2410;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "Satoshi", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  /* v4.10.1 — drop overflow:hidden on the page root. v4.10.0 retained
+     it on desktop and only flipped it to auto on ≤900px, but on phones
+     the .app's `height:auto` + grid-template-rows:auto 1fr produced a
+     1fr ghost row that swallowed the lower sections (Today's Trades,
+     Observer, Log Tail) below the fold with no scroll context to reach
+     them. Letting html/body scroll naturally on every viewport fixes
+     mobile and remains a no-op on desktop because .app { height:100dvh }
+     already fills the viewport so the body has no overflow to scroll. */
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.005em;
+  }
+  .num, .mono, code, kbd, pre, table td, table th { font-variant-numeric: tabular-nums lining-nums; }
+  .mono, code, kbd { font-family: var(--mono); }
+
+  /* v5.20.7 — single-scroll architecture. Earlier desktop layout used
+     display:grid + height:100dvh on .app and overflow-y:auto on .main
+     to pin the header in an `auto` row while the rest scrolled inside
+     a `1fr` row. With sticky-header behavior gone the dual containers
+     produced a double-scrollbar feel (mouse wheel and trackpad both
+     hit the inner container first). The mobile breakpoint already
+     used display:block + overflow:visible; promoting that universally
+     gives the whole page a single, natural scroll. */
+  .app {
+    display: block;
+    height: auto;
+  }
+  .main {
+    padding: 18px 20px 32px;
+    display: flex; flex-direction: column; gap: 18px;
+    /* v3.4.30 — critical for mobile: let grid/flex descendants shrink
+       below their intrinsic content width so a single long string in a
+       card (e.g. the Sovereign Regime reason or a gate label) does not
+       inflate the parent .app grid track and blow past the viewport. */
+    min-width: 0;
+  }
+  /* Same min-width:0 escape hatch on sections + cards so nested
+     nowrap / min-content children stay within their track. */
+  .main > section { min-width: 0; }
+  .grid { min-width: 0; }
+  .grid > * { min-width: 0; }
+
+  /* Header brand block (left side) */
+  .h-brand { display: flex; align-items: center; gap: 10px; padding-right: 14px; border-right: 1px solid var(--border); }
+  .h-brand-mark { width: 22px; height: 22px; color: var(--accent); flex-shrink: 0; }
+  .h-brand-name { font-weight: 600; font-size: 13.5px; letter-spacing: -0.005em; color: var(--text); }
+  .h-brand-ver { font-size: 10.5px; color: var(--text-dim); margin-left: 6px; font-family: var(--mono); }
+
+  .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; border-bottom: 1px solid var(--border); }
+  .brand-mark { width: 28px; height: 28px; color: var(--accent); flex-shrink: 0; }
+  .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+  .brand-name { font-weight: 700; font-size: 14px; letter-spacing: -0.01em; }
+  .brand-ver { font-size: 11px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
+
+  .nav-section { display: flex; flex-direction: column; gap: 2px; }
+  .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); padding: 0 8px 6px; font-weight: 500; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 8px; border-radius: var(--radius-sm);
+    color: var(--text-muted); text-decoration: none; font-size: 13px; cursor: pointer;
+  }
+  .nav-item:hover { background: var(--surface-2); color: var(--text); }
+  .nav-item.active { background: var(--surface-3); color: var(--text); }
+  .nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+
+  .sidebar-footer {
+    margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim); line-height: 1.6;
+  }
+  .sidebar-footer a { color: var(--text-muted); text-decoration: none; }
+  .sidebar-footer a:hover { color: var(--text); }
+
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--up); animation: pulse 1.8s infinite; }
+  .pulse.off { background: var(--down); animation: none; }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(52, 211, 153, 0.55); }
+    70%  { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); }
+    100% { box-shadow: 0 0 0 0   rgba(52, 211, 153, 0); }
+  }
+  .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  /* v5.17.0 — 4-up KPI variant (Equity / Day P&L / Open / Session). The
+     legacy 6-up grid is preserved for the Val/Gene exec panels which
+     still render six tiles. The Main panel uses .kpi-row.kpi-row-4. */
+  .kpi-row.kpi-row-4 { grid-template-columns: repeat(4, 1fr); }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 500; }
+  .kpi-value { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; font-family: var(--mono); line-height: 1.1; }
+  .kpi-sub { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
+  .delta-up   { color: var(--up); }
+  .delta-down { color: var(--down); }
+  .delta-flat { color: var(--text-muted); }
+
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--sans); }
+  .chip-ok    { background: var(--up-dim);   color: var(--up); }
+  .chip-warn  { background: var(--warn-dim); color: var(--warn); }
+  .chip-down  { background: var(--down-dim); color: var(--down); }
+  .chip-neut  { background: var(--surface-3); color: var(--text-muted); }
+
+  .grid { display: grid; gap: 14px; }
+  .grid-2 { grid-template-columns: 2fr 1fr; }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex; flex-direction: column; min-width: 0;
+  }
+  .card-head {
+    display: flex; align-items: center;
+    padding: 11px 14px 10px;
+    border-bottom: 1px solid var(--border); gap: 10px;
+  }
+  .card-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; }
+  .card-title .count { color: var(--text-dim); font-weight: 400; margin-left: 6px; }
+  .card-body { padding: 12px 14px; }
+  .card-body.flush { padding: 0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 500; text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); font-family: var(--mono); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  td.right, th.right { text-align: right; }
+  td.center, th.center { text-align: center; }
+  .ticker { font-family: var(--sans); font-weight: 600; letter-spacing: 0; }
+  .ticker .mark { font-size: 9px; vertical-align: super; margin-left: 2px; font-weight: 700; }
+  .mark-long  { color: var(--up); }
+  .mark-short { color: var(--down); }
+  .side-long  { color: var(--up); font-weight: 600; }
+  .side-short { color: var(--down); font-weight: 600; }
+
+  /* v3.4.31 — Today's Trades card: summary line + richer per-row
+     layout. Keep all visual changes confined to this block so the
+     row template stays a simple grid on desktop + mobile. */
+  #trades-realized { margin-left: auto; }
+  .trades-summary {
+    padding: 8px 14px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; gap: 4px 14px;
+    min-width: 0;
+  }
+  .trades-summary .ts-seg { white-space: nowrap; }
+  .trades-summary .ts-val { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums lining-nums; }
+  .trades-summary .ts-val.up   { color: var(--up); }
+  .trades-summary .ts-val.down { color: var(--down); }
+  .trades-summary .ts-val.na   { color: var(--text-dim); }
+
+  /* BUY/SELL chip in the action cell. Mirrors the TRAIL badge
+     language (small, pill-shaped) but uses long/short hues. */
+  .act-badge {
+    display: inline-flex; align-items: center;
+    padding: 1px 6px; border-radius: 999px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+    font-family: var(--sans);
+  }
+  .act-buy  { background: var(--up-dim);   color: var(--up); }
+  .act-sell { background: var(--down-dim); color: var(--down); }
+
+  /* Realized P&L cell — shows both $ and % on SELL rows, stacked
+     on phones via the row-collapse media block below. */
+  .trade-pnl   { font-family: var(--mono); text-align: right; white-space: nowrap; }
+  .trade-pnl .pnl-pct { color: var(--text-dim); font-size: 11px; margin-left: 4px; }
+  .trade-pnl.up   { color: var(--up); }
+  .trade-pnl.up   .pnl-pct { color: var(--up); opacity: 0.75; }
+  .trade-pnl.down { color: var(--down); }
+  .trade-pnl.down .pnl-pct { color: var(--down); opacity: 0.75; }
+  .trade-cost { font-family: var(--mono); text-align: right; color: var(--text-dim); white-space: nowrap; }
+
+  /* v4.2.2 \u2014 Today's Trades single-line row. Column order:
+       time | sym | qty | act | tail (cost for BUY / pnl+pct for SELL) | unit price
+     Sized to fit a 375px iPhone viewport without wrap/scroll. tabular
+     numerals keep columns visually aligned down the list. */
+  .trades-list { display: flex; flex-direction: column; min-width: 0; }
+  .trade-row {
+    display: grid;
+    grid-template-columns: 42px minmax(44px, 1fr) 36px 46px minmax(88px, auto) auto;
+    grid-template-areas: "time sym qty act tail price";
+    align-items: center;
+    gap: 0 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .trade-row:last-child { border-bottom: none; }
+  .trade-row:hover { background: var(--surface-2); }
+  .trade-row .tr-time  { grid-area: time;  font-family: var(--mono); color: var(--text-dim); font-size: 11px; }
+  .trade-row .tr-sym   { grid-area: sym;   font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .trade-row .tr-qty   { grid-area: qty;   font-family: var(--mono); color: var(--text-muted); font-size: 11px; text-align: right; }
+  .trade-row .tr-act   { grid-area: act; }
+  .trade-row .tr-tail  { grid-area: tail;  font-family: var(--mono); text-align: right; white-space: nowrap; }
+  .trade-row .tr-price { grid-area: price; font-family: var(--mono); color: var(--text-dim); text-align: right; white-space: nowrap; font-size: 11px; min-width: 48px; }
+
+  /* v3.4.26 — TRAIL badge next to effective stop when trail is armed.
+     Small, subdued, readable. The warn tone signals "active overlay",
+     not danger. */
+  .trail-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    border-radius: 3px;
+    color: var(--warn);
+    background: rgba(240, 180, 60, 0.12);
+    border: 1px solid rgba(240, 180, 60, 0.35);
+    vertical-align: middle;
+  }
+
+  .prox-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .prox-row:last-child { border-bottom: none; }
+  .prox-row:hover { background: var(--surface-2); }
+  .prox-ticker { font-weight: 600; width: 58px; display: flex; align-items: center; gap: 4px; }
+  .prox-price { font-family: var(--mono); color: var(--text-muted); width: 72px; text-align: right; }
+  .prox-bar { flex: 1; height: 6px; background: var(--surface-3); border-radius: 3px; position: relative; overflow: hidden; }
+  .prox-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 3px; }
+  .prox-fill.warn { background: linear-gradient(90deg, var(--warn), var(--down)); }
+  .prox-fill.ok   { background: linear-gradient(90deg, var(--accent), var(--up)); }
+  .prox-pct { width: 110px; text-align: left; font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+
+  /* v5.17.0 — Permit-side chip on Proximity rows (Val/Gene exec panel).
+     The legacy .gate / .srs-* / .chip-srs-* / .tgate row CSS was retired
+     when Sovereign Regime Shield + Gates·entry-checks panels were dropped
+     from the executor tab; the only surviving piece is the .tgate-chip
+     pill, still used by execRenderPermitSideChip on Proximity. */
+  .tgate-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 500; font-family: var(--mono); }
+  .tgate-chip.on  { background: var(--up-dim);      color: var(--up); }
+  .tgate-chip.na  { background: var(--surface-3);   color: var(--text-dim); }
+
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 12.5px; }
+  .row .k { color: var(--text-muted); }
+  .row .v { font-family: var(--mono); }
+
+  .key-val-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; }
+  .key-val-grid dt { color: var(--text-muted); font-weight: 400; }
+  .key-val-grid dd { margin: 0; font-family: var(--mono); text-align: right; }
+
+  .empty { padding: 22px 14px; text-align: center; color: var(--text-dim); font-size: 12px; }
+
+  .banner {
+    background: var(--down-dim); color: var(--down);
+    border: 1px solid #7a2b2b; border-radius: var(--radius);
+    padding: 10px 14px; font-size: 12.5px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .banner.hide { display: none; }
+  .banner-ok { background: var(--warn-dim); color: var(--warn); border-color: #7a5a1a; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4759; }
+
+  /* ═════════════════════════════════════════════════════════
+     RESPONSIVE OVERRIDES — must come AFTER all base styles
+     ════════════════════════════════════════════════════════ */
+
+  /* Tablet (≤900px): page scrolls naturally; header wraps */
+  @media (max-width: 900px) {
+    /* v5.20.7 — base .app/.main are now display:block + page-level scroll
+       at every viewport. The phone overrides retain only padding/gap +
+       explicit display:block/overflow:visible as a defensive backstop in
+       case a future rule re-introduces the desktop grid scroll container. */
+    .app {
+      display: block;
+      height: auto;
+    }
+    .h-brand { padding-right: 10px; }
+    .h-brand-name { font-size: 12.5px; }
+    .main { padding: 12px 12px 28px; gap: 12px; overflow: visible; height: auto; }
+    .kpi-row { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    /* v5.17.0 — 4-up KPI row collapses to 2x2 at tablet width to keep
+       value typography readable. */
+    .kpi-row.kpi-row-4 { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* Phone (≤640px): stack KPIs 2-up, single-column grids, dense */
+  @media (max-width: 640px) {
+    .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .kpi { padding: 10px 12px; gap: 5px; }
+    .kpi-label { font-size: 10px; }
+    .kpi-value { font-size: 18px; }
+    .kpi-value[style*="font-size:20px"] { font-size: 14px !important; }
+    .kpi-sub { font-size: 10.5px; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; gap: 12px; }
+    .card-head { padding: 10px 12px; }
+    .card-title { font-size: 11px; }
+    .card-body { padding: 10px 12px; }
+    table { font-size: 11.5px; }
+    thead th, tbody td { padding: 7px 8px; }
+    /* v5.21.0: removed redundant overflow-x:auto on .card-body.flush at phone breakpoint.
+       Caused double horizontal scroll on iPhone (.pmtx-table-wrap already owns its own scroller).
+       Pre-dates v4.5.1 (commit 198ff3f), no longer needed. */
+    .prox-row { padding: 7px 12px; gap: 8px; font-size: 11.5px; }
+    .prox-ticker { width: 50px; }
+    .prox-price { width: 62px; }
+    .prox-pct { width: 100px; font-size: 10.5px; }
+    .key-val-grid { font-size: 11.5px; gap: 5px 12px; }
+
+    /* v4.2.2 \u2014 Today's Trades on phones: single line, fits 375px.
+       Aggressive: tighter gaps, smaller font, narrower time/qty cols,
+       shrunk action pill. Unit price drops below 400px; qty below 360px. */
+    .trade-row {
+      padding: 5px 8px;
+      font-size: 12px;
+      gap: 0 5px;
+      grid-template-columns: 38px minmax(40px, 1fr) 30px 42px minmax(74px, auto) auto;
+    }
+    .trade-row .tr-time { font-size: 10.5px; }
+    .trade-row .tr-qty  { font-size: 10.5px; }
+    .trade-row .tr-price { font-size: 10.5px; min-width: 38px; }
+    .trade-row .tr-act .act-badge { padding: 1px 4px; font-size: 9.5px; letter-spacing: 0.02em; }
+    .trade-pnl .pnl-pct { font-size: 10px; margin-left: 3px; }
+    .trades-summary { font-size: 11px; gap: 2px 10px; padding: 7px 12px; }
+
+    /* v7.0.3 \u2014 Open positions table on phones: drop the redundant %
+       column (Unreal. $ already conveys direction + magnitude) and tighten
+       cell padding so the 7 remaining columns fit without horizontal
+       overflow. The selector targets BOTH Main (#pos-body table) and
+       Val/Gene (data-f="pos-body" table) so all three portfolio tabs are
+       fixed by the same rule. */
+    #pos-body table th:nth-child(8),
+    #pos-body table td:nth-child(8),
+    [data-f="pos-body"] table th:nth-child(8),
+    [data-f="pos-body"] table td:nth-child(8) {
+      display: none;
+    }
+    #pos-body table thead th,
+    #pos-body table tbody td,
+    [data-f="pos-body"] table thead th,
+    [data-f="pos-body"] table tbody td {
+      padding: 6px 6px;
+    }
+    #pos-body table .ticker .mark,
+    [data-f="pos-body"] table .ticker .mark { margin-left: 1px; }
+  }
+
+  /* v4.2.2 \u2014 <400px: drop the unit-price column so pnl/cost stays intact. */
+  @media (max-width: 400px) {
+    .trade-row {
+      grid-template-columns: 38px minmax(40px, 1fr) 30px 42px minmax(74px, auto);
+      grid-template-areas: "time sym qty act tail";
+    }
+    .trade-row .tr-price { display: none; }
+
+    /* v7.0.3 \u2014 At iPhone-mini width (~375px) drop the Mark column too
+       so the Stop + Unreal. cells (the operationally important ones) keep
+       their full digits without forcing a horizontal scroll. The Stop cell
+       carries its own TRAIL badge so the trail-armed signal is preserved.
+       Both Main (#pos-body) and Val/Gene (data-f="pos-body") are covered. */
+    #pos-body table th:nth-child(5),
+    #pos-body table td:nth-child(5),
+    [data-f="pos-body"] table th:nth-child(5),
+    [data-f="pos-body"] table td:nth-child(5) {
+      display: none;
+    }
+  }
+
+  /* Small phone (≤380px): tighter KPI text */
+  @media (max-width: 380px) {
+    .kpi-value { font-size: 16px; }
+    /* v4.2.2 \u2014 clock stays; hide "scan in Ns" first so the
+       HH:MM:SS + tz label keeps its place on narrow phones. */
+    #h-tick { display: none; }
+    #tg-brand-clock { font-size: 13px; }
+  }
+
+  /* v4.11.0 — per-executor health pill in brand row.
+     Sits between #tg-live-pill and #tg-brand-clock. Tap toggles the
+     #tg-health-pop dropdown. Severity classes (h-green/h-warn/h-red) are
+     applied by JS via window.__tgApplyHealthPill so both IIFEs can call
+     in. The dot color is the only visible severity signal at the pill;
+     count is mono-tabular so widths stay stable as 0→9→10→… changes. */
+  .tg-health-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px 3px 8px;
+    background: #10151c; border: 1px solid #1f2937; border-radius: 999px;
+    font-size: 11px; color: #8a96a7;
+    font-family: var(--mono);
+    cursor: pointer; user-select: none;
+    transition: background 100ms ease, border-color 100ms ease;
+  }
+  .tg-health-pill:hover { background: #141a22; border-color: #2a3441; }
+  .tg-health-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .tg-health-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    display: inline-block; background: #34d399;
+    flex-shrink: 0;
+  }
+  .tg-health-count {
+    color: #e7ecf3; font-variant-numeric: tabular-nums;
+    min-width: 0.7em; text-align: right;
+  }
+  .tg-health-pill.h-green .tg-health-dot { background: #34d399; }
+  .tg-health-pill.h-warn  .tg-health-dot { background: #fbbf24; }
+  .tg-health-pill.h-red   .tg-health-dot { background: #ef4444; }
+  .tg-health-pill.h-warn  { border-color: #57451a; }
+  .tg-health-pill.h-red   { border-color: #5a1b1b; }
+  .tg-health-pop {
+    position: fixed;
+    top: auto; right: 16px;
+    width: min(420px, calc(100vw - 24px));
+    max-height: 60vh;
+    background: var(--surface, #10151c);
+    border: 1px solid var(--border, #1f2937);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+    z-index: 50;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .tg-health-pop-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border, #1f2937);
+    font-size: 12px; color: var(--text, #e7ecf3); font-weight: 600;
+  }
+  .tg-health-pop-head button {
+    background: transparent; border: none; color: var(--text-dim, #5b6572);
+    font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;
+  }
+  .tg-health-pop-head button:hover { color: var(--text, #e7ecf3); }
+  .tg-health-list {
+    overflow-y: auto; flex: 1 1 auto; padding: 4px 0;
+    font-family: var(--mono); font-size: 11px;
+  }
+  .tg-health-empty { padding: 14px; color: var(--text-dim, #5b6572); text-align: center; }
+  .tg-health-row {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border, #1f2937);
+    display: grid; gap: 4px;
+  }
+  .tg-health-row:last-child { border-bottom: none; }
+  .tg-health-row-top {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10.5px;
+  }
+  .tg-health-sev {
+    text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 1px 6px; border-radius: 999px; font-weight: 600;
+    font-size: 9.5px;
+  }
+  .tg-health-sev.warning { background: #57451a40; color: #fbbf24; }
+  .tg-health-sev.error,
+  .tg-health-sev.critical { background: #5a1b1b40; color: #ef4444; }
+  .tg-health-code { color: var(--text, #e7ecf3); font-weight: 600; }
+  .tg-health-ts { color: var(--text-dim, #5b6572); margin-left: auto; }
+  .tg-health-summary {
+    color: var(--text-muted, #8a96a7);
+    word-break: break-word; line-height: 1.4;
+  }
+
+  /* v4.3.1 \u2014 row-2 fits inline on iPhone (375px) without wrap.
+     Strategy: nowrap forces a single line; gap + font shrinks +
+     LIVE pill padding + version size are tuned so that logo +
+     TradeGenius + version + LIVE pill + clock all fit on one row.
+     Bands: 420/380/360 — progressively tighter.
+     v4.10.2 — lift the top breakpoint 420 → 500 so iPhone Pro Max
+     class viewports (414–430 px) also get nowrap. v4.10.1 still
+     wrapped on those because they fall above 420. The shrinks below
+     are gentle enough that we don't need a separate 500 band. */
+  @media (max-width: 500px) {
+    #tg-brand-row {
+      gap: 6px !important;
+      flex-wrap: nowrap !important;
+      padding: 8px 12px !important;
+    }
+    #tg-brand-ver { margin-left: 2px !important; }
+    #tg-live-pill {
+      gap: 6px !important;
+      padding: 3px 8px 3px 7px !important;
+      white-space: nowrap !important;
+    }
+    /* v4.11.2 — keep the inline countdown ("tick NNs") on one line
+       inside the LIVE pill on iPhone Pro Max class viewports. */
+    #h-tick { white-space: nowrap !important; }
+    .tg-health-pill {
+      gap: 5px;
+      padding: 3px 7px 3px 6px;
+    }
+    /* v4.11.2 — shrink clock so brand row fits at 390/430 with the
+       new health pill. v4.11.1 left it at 13px and ET was clipped. */
+    #tg-brand-clock { font-size: 11px !important; letter-spacing: 0; white-space: nowrap; }
+  }
+  /* v4.11.3 — close the 390 px gap. v4.11.2 fixed 430 (Pro Max) cleanly
+     but iPhone 13/14/15 standard (390 px) still clipped the clock at
+     `12:38:1…`. Tighten gap and shrink clock + version slug another notch.
+     Hard rule from Val: do NOT hide #h-tick (the 380 band still does, but
+     this 400 band keeps it visible) and do NOT drop the health-pill count. */
+  @media (max-width: 400px) {
+    /* v4.11.4 — trim horizontal padding from 10px to 6px to recover the
+       last 8 px and stop clipping the clock's `T` at 390 viewports. */
+    #tg-brand-row { gap: 4px !important; padding: 8px 6px !important; }
+    #tg-brand-ver { font-size: 9.5px !important; margin-left: 0 !important; }
+    #tg-live-pill { padding: 3px 7px 3px 6px !important; }
+    .tg-health-pill { gap: 4px; padding: 3px 6px; font-size: 10.5px; }
+    #tg-brand-clock { font-size: 10px !important; }
+  }
+  @media (max-width: 380px) {
+    #tg-brand-row {
+      gap: 6px !important;
+      padding: 8px 10px !important;
+    }
+    #tg-brand-ver { font-size: 9.5px !important; margin-left: 0 !important; }
+    .tg-health-pill { gap: 4px; padding: 3px 6px; font-size: 10.5px; }
+    #tg-brand-clock { font-size: 12px; }
+  }
+  @media (max-width: 360px) {
+    #tg-brand-row { gap: 5px !important; padding: 8px 8px !important; }
+    /* drop seconds; __tgTickClock reads this flag and renders HH:MM TZ */
+    .tg-health-pill { padding: 2px 5px; }
+    #tg-brand-clock { font-size: 12px; }
+  }
+
+  /* v4.2.2 \u2014 Today's Trades at <=360px: drop qty column too.
+     Row keeps one line with time/sym/action/pnl-or-cost. Unit price
+     was already hidden at <=400px. */
+  @media (max-width: 360px) {
+    .trade-row {
+      grid-template-columns: 36px minmax(40px, 1fr) 40px minmax(70px, auto);
+      grid-template-areas: "time sym act tail";
+    }
+    .trade-row .tr-qty { display: none; }
+  }
+
+  /* ─── v4.10.0 — index strip compact mode ────────────────────────────
+     On phones (≤640px) the SPY/QQQ/DIA/IWM/VIX strip can't fit price +
+     Δ$ + Δ% for all 5 symbols in 390px. We hide the absolute Δ$ column,
+     trim padding, and add scroll-snap so swipes settle on a clean item
+     boundary. Tabular nums keep widths stable while values change. */
+  .idx-strip { font-variant-numeric: tabular-nums lining-nums; }
+  .idx-strip.idx-compact .idx-chg { display: none; }
+  .idx-strip.idx-compact .idx-item {
+    padding: 0 8px !important;
+    scroll-snap-align: start;
+  }
+  .idx-strip.idx-compact { scroll-snap-type: x mandatory; }
+
+  /* v4.10.1 — defeat .grid-2's `align-items: stretch` so the empty
+     Open Positions card sizes to its (header + one-row strip) content
+     instead of stretching to match the Proximity card next to it.
+     Also pin min-heights to zero on the card and its body so any
+     intrinsic min-content height in the empty state can't keep the
+     card tall when JS sets #pos-body to display:none. */
+  .card.is-empty { align-self: start; min-height: 0; }
+  .card.is-empty .card-body { min-height: 0; }
+
+  /* ─── v4.10.0 — empty Open Positions card collapses to a single row ─
+     When positions.length === 0, JS hides the "No open positions." body
+     and shows a one-row condensed strip (Equity · Buying power · Cash).
+     Saves ~25% of desktop vertical real-estate during the off-hours +
+     paper-account-empty case. */
+  .port-strip-empty {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+    border-top: 1px solid var(--border); background: var(--surface-2);
+  }
+  .port-strip-empty .pse-cell {
+    padding: 8px 14px; border-right: 1px solid var(--border);
+  }
+  .port-strip-empty .pse-cell:last-child { border-right: none; }
+  .port-strip-empty .pse-label {
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); margin-bottom: 2px;
+  }
+  .port-strip-empty .pse-value {
+    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+  }
+
+  /* ─── v4.12.0 — ticker auto-marquee + after-hours badge ────────────
+     When the rendered items don't fit, JS adds .idx-marquee on the strip
+     and duplicates the .idx-track inner HTML so a single CSS animation
+     produces a seamless infinite scroll (translateX 0 → -50%, since two
+     identical copies are concatenated). When everything fits, JS leaves
+     .idx-marquee off and the track sits centered with no animation.
+     Pause on hover/focus/touch so a user can read a value mid-scroll.
+     prefers-reduced-motion: reduce — disable the animation and let the
+     user manually scroll the strip horizontally instead. */
+  .idx-strip { display: block; }
+  .idx-strip .idx-track {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    will-change: transform;
+  }
+  .idx-strip.idx-marquee .idx-track {
+    animation: idx-marquee-scroll 30s linear infinite;
+  }
+  .idx-strip.idx-marquee:hover  .idx-track,
+  .idx-strip.idx-marquee:focus-within .idx-track,
+  .idx-strip.idx-marquee.is-paused .idx-track {
+    animation-play-state: paused;
+  }
+  @keyframes idx-marquee-scroll {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+  /* No-marquee state: strip stays scrollable horizontally so values are
+     still reachable. With marquee on, hide overflow so the duplicated
+     copy can slide off-screen cleanly. */
+  .idx-strip:not(.idx-marquee) { overflow-x: auto; }
+  .idx-strip.idx-marquee       { overflow: hidden; }
+  /* AH badge: tiny pill that follows the percent. Amber so it reads
+     clearly against either green or red change colors. */
+  .idx-strip .idx-ah {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 4px;
+    border: 1px solid #5b4920;
+    border-radius: 3px;
+    background: #1f1707;
+    color: #f59e0b;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    vertical-align: 1px;
+  }
+  /* Compact phone width: narrower AH badge + tighter padding. */
+  .idx-strip.idx-compact .idx-ah {
+    margin-left: 4px;
+    padding: 0 3px;
+    font-size: 9px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .idx-strip.idx-marquee .idx-track { animation: none; }
+    .idx-strip.idx-marquee             { overflow-x: auto; }
+  }
+/* v5.10.6 — per-position Phase badges + Sovereign Brake distance chips.
+   The Eye-of-the-Tiger panel itself was retired in v5.13.2 (replaced by
+   the Tiger Sovereign Phase 1-4 panel below); these styles remain in
+   use by the Open Positions table renderer (renderPositions). */
+.eot-phase-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #1f2937;
+  color: #8a96a7;
+  margin-left: 6px;
+}
+.eot-phase-A { background: color-mix(in srgb, var(--text-muted) 30%, #10151c); color: var(--text-muted); }
+.eot-phase-B { background: color-mix(in srgb, var(--warn) 25%, #10151c); color: var(--warn); }
+.eot-phase-C { background: color-mix(in srgb, var(--up) 25%, #10151c); color: var(--up); }
+.eot-sb-green { color: var(--up); }
+.eot-sb-yellow { color: var(--warn); }
+.eot-sb-red { color: var(--down); }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   v5.17.0 — Permit Matrix + Weather Check + per-position Sentinel
+   ───────────────────────────────────────────────────────────────────
+   Replaces the legacy Tiger Sovereign Phase 1-4 vertical panel (and
+   the Observer + Gates·entry checks panels). Same data source — the
+   `tiger_sovereign` block in /api/state — pivoted to a per-Titan row
+   layout so the operator can read the entry checklist horizontally
+   for every ticker at a glance.
+
+   All colors and surfaces re-use the existing dashboard tokens
+   (--surface, --border, --up, --down, --warn, --accent) so the
+   matrix stays visually consistent with the rest of the app.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── Weather Check banner (Phase 1 verdict) ─────────────────────── */
+.pmtx-weather-section { margin-top: 0; }
+.pmtx-weather {
+  display: flex; align-items: stretch; gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  min-width: 0;
+}
+.pmtx-weather-pending { border-left-color: var(--text-dim); }
+.pmtx-weather-green   { border-left-color: var(--up); }
+.pmtx-weather-red     { border-left-color: var(--down); }
+.pmtx-weather-amber   { border-left-color: var(--warn); }
+
+.pmtx-weather-icon {
+  width: 38px; height: 38px; flex-shrink: 0;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  align-self: center;
+  font-family: var(--sans);
+}
+.pmtx-weather-green  .pmtx-weather-icon {
+  background: color-mix(in srgb, var(--up) 14%, var(--surface-2));
+  color: var(--up);
+}
+.pmtx-weather-red    .pmtx-weather-icon {
+  background: color-mix(in srgb, var(--down) 14%, var(--surface-2));
+  color: var(--down);
+}
+.pmtx-weather-amber  .pmtx-weather-icon {
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface-2));
+  color: var(--warn);
+}
+
+.pmtx-weather-body { flex: 1 1 auto; min-width: 0; }
+.pmtx-weather-eyebrow {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--text-dim); font-weight: 600;
+  margin-bottom: 3px;
+}
+.pmtx-weather-verdict {
+  font-size: 15px; font-weight: 700;
+  letter-spacing: -0.005em;
+  color: var(--text);
+}
+.pmtx-weather-green  .pmtx-weather-verdict { color: var(--up); }
+.pmtx-weather-red    .pmtx-weather-verdict { color: var(--down); }
+.pmtx-weather-amber  .pmtx-weather-verdict { color: var(--warn); }
+.pmtx-weather-detail {
+  font-size: 11.5px; color: var(--text-muted);
+  margin-top: 3px; line-height: 1.45;
+  font-family: var(--mono);
+  word-break: break-word;
+}
+.pmtx-weather-stats {
+  display: flex; gap: 16px;
+  align-items: center; flex-shrink: 0;
+  font-family: var(--mono);
+  border-left: 1px solid var(--border);
+  padding-left: 14px;
+}
+.pmtx-weather-stat {
+  display: flex; flex-direction: column;
+  font-size: 11px; color: var(--text-dim);
+  text-align: right; line-height: 1.3;
+}
+.pmtx-weather-stat-num {
+  color: var(--text); font-weight: 600; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Permit Matrix table (desktop) ──────────────────────────────── */
+.pmtx-table-wrap {
+  /* Allow horizontal scroll if a narrow viewport falls between the
+     desktop table and mobile-card breakpoints (e.g. embedded iframe).
+     v5.31.1 — overscroll-behavior on both axes (the prior `contain`
+     shorthand) trapped vertical wheel events when the cursor was over
+     the matrix: with overflow-x:auto the wrap is a scroll container,
+     and `contain` on the Y axis blocked wheel chaining up to the page
+     scroller, so the page would not scroll while hovering the matrix.
+     Scope containment to X only, and explicitly disable Y overflow so
+     the browser routes vertical wheel deltas to the page. */
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+}
+.pmtx-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 12.5px; min-width: 760px;
+}
+.pmtx-table thead th {
+  font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-dim);
+  font-weight: 600; text-align: center;
+  padding: 9px 6px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  position: sticky; top: 0; z-index: 1;
+}
+.pmtx-table thead th.pmtx-col-titan  { text-align: left;  padding-left: 14px; }
+.pmtx-table thead th.pmtx-col-state  { text-align: right; padding-right: 6px; }
+.pmtx-table thead th.pmtx-col-prox   { text-align: right; padding-right: 8px; width: 168px; }
+.pmtx-table thead th.pmtx-col-strike { width: 58px; }
+.pmtx-table thead th.pmtx-col-expand { width: 22px; padding-right: 10px; }
+/* v5.18.0 — row padding tightened from 11px 6px to 8px 8px to match
+   the original mockup density (~38px per row vs ~44px+ before). */
+.pmtx-table tbody td {
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: center; vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+.pmtx-table tbody tr:last-child td { border-bottom: none; }
+.pmtx-table tbody tr.pmtx-row { cursor: default; transition: background .15s; }
+.pmtx-table tbody tr.pmtx-row:not(.pmtx-row-static):hover { background: var(--surface-2); cursor: pointer; }
+.pmtx-table td.pmtx-col-titan  { text-align: left;  padding-left: 14px; }
+.pmtx-table td.pmtx-col-state  { text-align: right; padding-right: 6px; }
+.pmtx-table td.pmtx-col-prox   { text-align: right; padding-right: 8px; }
+.pmtx-table td.pmtx-col-strike { padding: 8px 4px; }
+.pmtx-table td.pmtx-col-expand { padding-right: 10px; color: var(--text-dim); }
+
+/* v5.31.5 — Per-stock Weather column. Lives at table position 2.
+   Glyphs: green up arrow (long-aligned), green down arrow (short-aligned),
+   muted x (no permit on either side), em-dash (warming up / flat). */
+.pmtx-table thead th.pmtx-col-weather { width: 56px; }
+.pmtx-table td.pmtx-col-weather       { width: 56px; padding: 8px 4px; }
+.pmtx-wx {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px;
+  font-weight: 700; font-size: 13px;
+  font-family: var(--sans);
+  line-height: 1;
+}
+.pmtx-wx-up   { background: color-mix(in srgb, var(--up)   18%, var(--surface-2)); color: var(--up);   }
+.pmtx-wx-down { background: color-mix(in srgb, var(--down) 18%, var(--surface-2)); color: var(--down); }
+.pmtx-wx-none { background: color-mix(in srgb, var(--down) 14%, var(--surface-2)); color: var(--down); }
+.pmtx-wx-flat { background: var(--surface-2); color: var(--text-dim); }
+
+/* v6.0.0 — Divergence marker. When local weather direction != global
+   QQQ direction, the glyph wears a small superscript asterisk and a
+   subtle 1px ring so operators can scan the column for contrarian
+   tickers. Star uses currentColor so it inherits the glyph color
+   (green for up/down, red for none, muted for flat). */
+.pmtx-wx-div {
+  outline: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  outline-offset: 0;
+}
+.pmtx-wx-star {
+  font-size: 9px;
+  line-height: 1;
+  margin-left: 2px;
+  margin-top: -6px;
+  color: currentColor;
+  font-weight: 800;
+}
+
+/* v6.0.0 — Trend mini-chart cell. SVG polyline of today's 1m closes,
+   colored by net direction since the open. Sized 80×24 so the column
+   stays compact alongside Dist. */
+.pmtx-table thead th.pmtx-col-mini { width: 96px; text-align: center; }
+.pmtx-table td.pmtx-col-mini       { width: 96px; padding: 6px 4px; text-align: center; }
+.pmtx-mini {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.pmtx-mini-up   { color: var(--up);   background: color-mix(in srgb, var(--up)   10%, var(--surface-2)); }
+.pmtx-mini-down { color: var(--down); background: color-mix(in srgb, var(--down) 10%, var(--surface-2)); }
+.pmtx-mini-flat { color: var(--text-dim); }
+.pmtx-mini-empty {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+/* Row tints follow Phase 1 permit: GO (any side permitted) gets a
+   faint green wash; BLOCK (3-of-3 strikes used and no open position)
+   gets a faint red wash. Matches the mockup's tr.permit-go /
+   tr.permit-block convention. */
+.pmtx-table tbody tr.pmtx-row-permit-go {
+  background: color-mix(in srgb, var(--up)   5%, transparent);
+}
+.pmtx-table tbody tr.pmtx-row-permit-go:hover {
+  background: color-mix(in srgb, var(--up)   8%, var(--surface-2));
+}
+.pmtx-table tbody tr.pmtx-row-permit-block {
+  background: color-mix(in srgb, var(--down) 5%, transparent);
+}
+.pmtx-table tbody tr.pmtx-row-permit-block:hover {
+  background: color-mix(in srgb, var(--down) 8%, var(--surface-2));
+}
+
+.pmtx-titan {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--sans);
+  /* v5.18.0 — single-line titan cell. Previous two-line layout
+     (name + meta) was deleted; State pill conveys the same info. */
+}
+.pmtx-titan-name {
+  font-weight: 700; font-size: 13px;
+  letter-spacing: -0.005em; color: var(--text);
+}
+/* Kept for backwards compatibility with any embedders that still
+   render a meta line; not used by the v5.18.0 main path. */
+.pmtx-titan-meta {
+  font-size: 10.5px; color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+/* Click-to-expand chevron in the trailing column. Rotates 90° when
+   the row is expanded. */
+.pmtx-expand-chev {
+  display: inline-block;
+  font-size: 14px; line-height: 1;
+  color: var(--text-dim);
+  transition: transform .15s ease, color .15s;
+}
+.pmtx-expand-chev.pmtx-expand-empty { opacity: 0.18; }
+.pmtx-row.pmtx-row-expanded .pmtx-expand-chev {
+  transform: rotate(90deg); color: var(--text);
+}
+
+/* Expand-on-click detail row. Hidden by default; .pmtx-detail-open
+   is toggled by the delegated click handler in renderPermitMatrix. */
+.pmtx-detail-row { display: none; }
+.pmtx-detail-row.pmtx-detail-open { display: table-row; }
+.pmtx-detail-row td {
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+  padding: 12px 14px 14px 36px !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-top: 1px dashed var(--border);
+}
+.pmtx-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px 18px;
+  margin-bottom: 6px;
+}
+.pmtx-detail-stat .l {
+  color: var(--text-dim); font-size: 9.5px;
+  text-transform: uppercase; letter-spacing: 0.07em;
+  font-family: var(--sans); margin-bottom: 2px;
+}
+.pmtx-detail-stat .v {
+  font-variant-numeric: tabular-nums; font-size: 12.5px;
+  font-family: var(--mono); color: var(--text);
+}
+@media (max-width: 720px) {
+  .pmtx-detail-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* v5.20.3 — Pipeline component card grid. Lives inside the expanded
+   permit-matrix detail row, immediately below the stats grid. Each
+   card represents one pipeline component (Phase 1/2/3, an alarm, or
+   the strike counter) and surfaces:
+     - phase chip (P1 / P2 / P3 / AL / POS)
+     - component name
+     - one-line short description (no verbose spec text)
+     - live state: status badge (PASS / FAIL / COLD / PEND / OFF /
+       SAFE / TRIP / IN POS / LOCKED / IDLE / USED) + numeric value
+   The grid auto-flows 4 cards/row at desktop, 3 at tablet, 2 at
+   narrow, 1 at mobile. Replaces the v5.20.0 spec-definitions <dl>. */
+.pmtx-comp-grid {
+  margin: 10px 0 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.pmtx-comp-head-line {
+  font-family: var(--sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.pmtx-comp-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.pmtx-comp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  min-height: 76px;
+}
+.pmtx-comp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pmtx-comp-chip {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  line-height: 1.1;
+}
+.pmtx-comp-name {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pmtx-comp-desc {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+.pmtx-comp-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+.pmtx-comp-badge {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  line-height: 1.1;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.pmtx-comp-val {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+/* State color tints. Card border + badge color reflect the verdict. */
+.pmtx-comp-pass    { border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-pass    .pmtx-comp-badge { background: color-mix(in srgb, #22c55e 22%, transparent); color: #22c55e; border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-fail    { border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-fail    .pmtx-comp-badge { background: color-mix(in srgb, #ef4444 22%, transparent); color: #ef4444; border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-warn    { border-color: color-mix(in srgb, #f59e0b 50%, var(--border)); }
+.pmtx-comp-warn    .pmtx-comp-badge { background: color-mix(in srgb, #f59e0b 22%, transparent); color: #f59e0b; border-color: color-mix(in srgb, #f59e0b 50%, var(--border)); }
+.pmtx-comp-pend    .pmtx-comp-badge { background: var(--surface-2); color: var(--text-dim); }
+.pmtx-comp-off     .pmtx-comp-badge { background: var(--surface-2); color: var(--text-dim); opacity: 0.65; }
+.pmtx-comp-off     { opacity: 0.7; }
+.pmtx-comp-safe    { border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-safe    .pmtx-comp-badge { background: color-mix(in srgb, #22c55e 22%, transparent); color: #22c55e; border-color: color-mix(in srgb, #22c55e 50%, var(--border)); }
+.pmtx-comp-trip    { border-color: color-mix(in srgb, #ef4444 60%, var(--border)); }
+.pmtx-comp-trip    .pmtx-comp-badge { background: color-mix(in srgb, #ef4444 28%, transparent); color: #ef4444; border-color: color-mix(in srgb, #ef4444 60%, var(--border)); }
+.pmtx-comp-inpos   { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+.pmtx-comp-inpos   .pmtx-comp-badge { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+.pmtx-comp-locked  { border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-locked  .pmtx-comp-badge { background: color-mix(in srgb, #ef4444 22%, transparent); color: #ef4444; border-color: color-mix(in srgb, #ef4444 50%, var(--border)); }
+.pmtx-comp-used    .pmtx-comp-badge { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #f59e0b; border-color: color-mix(in srgb, #f59e0b 40%, var(--border)); }
+.pmtx-comp-idle    .pmtx-comp-badge { background: var(--surface-2); color: var(--text-dim); }
+
+/* v5.20.5 — numeric metric rows beneath each card state badge.
+   Each row is a flex key/value line; missing values are dimmed. The
+   metric stack keeps card height bounded by capping visible rows at
+   eight and scrolling on overflow (cards are short-lived: P3-Mom and
+   P3-Auth pack the most rows). */
+.pmtx-comp-metrics {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* v5.20.6 — dropped max-height + overflow-y. The inner scrollbar was
+     fighting the page scroll on desktop and trapping the mouse wheel.
+     The longest stack is 6 rows (P1 Weather), which fits naturally
+     inside the card without any cap. */
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.pmtx-comp-metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.3;
+}
+.pmtx-comp-metric-key {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.pmtx-comp-metric-val {
+  color: var(--text);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+.pmtx-comp-metric-empty .pmtx-comp-metric-val {
+  color: var(--text-dim);
+  opacity: 0.55;
+}
+
+@media (max-width: 1024px) {
+  .pmtx-comp-cards { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 720px) {
+  .pmtx-comp-cards { grid-template-columns: repeat(2, 1fr); }
+  .pmtx-comp-card { min-height: 72px; padding: 7px 9px; }
+}
+/* v5.22.0 — On phone-class viewports the 4-card stack ate too much
+   vertical room (cards were ~76px each, so a column of cards filled
+   the screen). Tighten min-height, padding, fonts, and metric row
+   density so the expanded Titan fits comfortably on a 390px phone. */
+@media (max-width: 480px) {
+  .pmtx-comp-cards { grid-template-columns: 1fr; gap: 6px; }
+  .pmtx-comp-card  { min-height: 64px; padding: 6px 8px; gap: 3px; }
+  .pmtx-comp-name  { font-size: 11.5px; }
+  .pmtx-comp-desc  { font-size: 10px; }
+  .pmtx-comp-chip  { font-size: 8.5px; padding: 1px 4px; }
+  .pmtx-comp-badge { font-size: 9px; padding: 1px 5px; }
+  .pmtx-comp-val   { font-size: 10.5px; }
+  .pmtx-comp-metrics { font-size: 10px; padding-top: 4px; gap: 1px; }
+}
+@media (max-width: 390px) {
+  .pmtx-comp-card  { min-height: 60px; padding: 5px 7px; }
+  .pmtx-comp-name  { font-size: 11px; }
+  .pmtx-comp-desc  { font-size: 9.5px; }
+  .pmtx-comp-metrics { font-size: 9.5px; }
+}
+
+/* Price · Distance cell — folds the retired Proximity card into a
+   compact one-row glyph: live last + thin proximity bar + % to
+   nearest OR boundary. Bar fills as price approaches (0 distance →
+   100% bar). Tints amber inside 0.5%. */
+.pmtx-prox {
+  display: inline-grid;
+  grid-template-columns: 56px 56px auto;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  text-align: right;
+  width: 100%;
+}
+.pmtx-prox-price {
+  font-size: 11.5px; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.pmtx-prox-bar {
+  position: relative; height: 4px; border-radius: 2px;
+  background: var(--surface-2); overflow: hidden;
+}
+.pmtx-prox-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--up); border-radius: 2px;
+  transition: width .25s ease;
+}
+.pmtx-prox-fill.warn { background: var(--warn); }
+.pmtx-prox-pct {
+  font-size: 10.5px; color: var(--text-dim);
+  white-space: nowrap;
+}
+.pmtx-prox-pct.pmtx-prox-warn { color: var(--warn); }
+.pmtx-prox-empty {
+  color: var(--text-dim); font-family: var(--mono); font-size: 11px;
+}
+
+/* Gate cell: ✓ pass / ✕ fail / − pending */
+.pmtx-gate {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  font-size: 12px; font-weight: 700;
+  font-family: var(--sans);
+}
+.pmtx-gate-pass { background: color-mix(in srgb, var(--up)   18%, var(--surface-2)); color: var(--up);   }
+.pmtx-gate-fail { background: color-mix(in srgb, var(--down) 18%, var(--surface-2)); color: var(--down); }
+.pmtx-gate-pend { background: var(--surface-2); color: var(--text-dim); }
+.pmtx-gate-warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); color: var(--warn); }
+
+/* Strike Cap dots (3 per row, max) */
+.pmtx-strike-cap {
+  display: inline-flex; gap: 4px; align-items: center;
+  vertical-align: middle;
+}
+.pmtx-strike-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
+.pmtx-strike-dot.pmtx-strike-used   { background: var(--accent); border-color: var(--accent); }
+.pmtx-strike-dot.pmtx-strike-locked { background: var(--down);   border-color: var(--down); }
+
+/* State pill (IDLE / ARMED / IN POS / LOCKED) */
+.pmtx-state-pill {
+  display: inline-block;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  font-family: var(--sans);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.pmtx-state-idle   { color: var(--text-muted); }
+.pmtx-state-armed  {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
+}
+.pmtx-state-inpos  {
+  color: var(--up);
+  background: color-mix(in srgb, var(--up) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--up) 40%, var(--border));
+}
+.pmtx-state-locked {
+  color: var(--down);
+  background: color-mix(in srgb, var(--down) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--down) 40%, var(--border));
+}
+
+/* ─── Per-position Sentinel detail strip (rendered inline under the
+       matched row when a position is open). 6 cells in vAA-1:
+       A1 Loss · A2 Flash · B Trend Death · C Vel. Ratchet ·
+       D HVP Lock · E Div. Trap. v5.21.0 grid bumped from 5→6 columns. ─── */
+.pmtx-sentinel-row td {
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  padding: 0 0 10px 0 !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+/* v5.28.1 — wrapper around the sentinel strip plus optional "no open
+   position" banner. The strip itself stays the same six-cell grid; the
+   banner is a small, dim label that appears only when there is no live
+   position so users always see the alarm panel layout. */
+.pmtx-sentinel-strip-wrap {
+  display: flex; flex-direction: column;
+}
+.pmtx-sentinel-banner {
+  font-family: var(--sans);
+  font-size: 10px; line-height: 1.3;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 6px 14px 0;
+  margin: 0 4px;
+  opacity: 0.8;
+}
+.pmtx-sentinel-strip {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  padding: 8px 14px 6px;
+  margin: 0 4px;
+}
+@media (max-width: 720px) {
+  /* v5.21.0: on phone, 6 cells in one row gets too cramped.
+     Wrap to 3+3 grid so each cell keeps a readable width. */
+  .pmtx-sentinel-strip { grid-template-columns: repeat(3, 1fr); }
+}
+.pmtx-sentinel-cell {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 8px;
+  text-align: center;
+  display: flex; flex-direction: column; gap: 1px;
+  min-width: 0;
+}
+/* v5.22.0 — Traffic-light alarm states.
+   safe (green) = armed, comfortable distance from threshold
+   warn (yellow) = armed, within 25% of threshold (75% triggered)
+   trip (red) = triggered
+   idle (gray) = no position / no data — base styling already applies
+   The legacy .pmtx-sen-armed class is retained as an alias for warn so
+   any inline references during the deploy window keep their styling. */
+.pmtx-sentinel-cell.pmtx-sen-safe   { border-color: color-mix(in srgb, var(--up)   40%, var(--border)); }
+.pmtx-sentinel-cell.pmtx-sen-warn,
+.pmtx-sentinel-cell.pmtx-sen-armed  { border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+                                      background: color-mix(in srgb, var(--warn) 8%, var(--surface-2)); }
+.pmtx-sentinel-cell.pmtx-sen-trip   { border-color: color-mix(in srgb, var(--down) 40%, var(--border));
+                                      background: color-mix(in srgb, var(--down) 8%, var(--surface-2)); }
+.pmtx-sentinel-cell.pmtx-sen-idle   { opacity: 0.65; }
+.pmtx-sen-letter {
+  font-family: var(--sans);
+  font-size: 12px; font-weight: 800;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+.pmtx-sentinel-cell.pmtx-sen-safe  .pmtx-sen-letter { color: var(--up); }
+.pmtx-sentinel-cell.pmtx-sen-warn  .pmtx-sen-letter,
+.pmtx-sentinel-cell.pmtx-sen-armed .pmtx-sen-letter { color: var(--warn); }
+.pmtx-sentinel-cell.pmtx-sen-trip  .pmtx-sen-letter { color: var(--down); }
+.pmtx-sentinel-cell.pmtx-sen-idle  .pmtx-sen-letter { color: var(--text-dim); }
+.pmtx-sen-name {
+  font-size: 9px; line-height: 1.2;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-family: var(--sans);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pmtx-sen-val {
+  font-family: var(--mono); font-size: 10.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ─── Mobile: card-stack layout under 720 px ─────────────────────── */
+/* v5.18.1 \u2014 mobile responsive table.
+   The v5.18.0 separate `.pmtx-cards` stack is retired; the same
+   compact table renders at every viewport. On \u2264720px the
+   ADX, DI+ 5m, and Vol-confirm columns hide (their values are
+   already inside the click-to-expand detail row), and cell
+   padding/font tighten so 6 columns fit a 390px phone:
+     Titan | 5m ORB | Strikes | State | Price·Distance | chevron
+*/
+@media (max-width: 720px) {
+  .pmtx-table { font-size: 11.5px; min-width: 0; }
+  .pmtx-table thead th {
+    padding: 8px 4px; font-size: 8.5px; letter-spacing: 0.06em;
+  }
+  .pmtx-table tbody td { padding: 7px 4px; }
+  .pmtx-table thead th.pmtx-col-titan,
+  .pmtx-table td.pmtx-col-titan  { padding-left: 10px; }
+  .pmtx-table thead th.pmtx-col-prox  { width: auto; padding-right: 4px; }
+  .pmtx-table td.pmtx-col-prox       { padding-right: 4px; }
+  .pmtx-table thead th.pmtx-col-strike,
+  .pmtx-table td.pmtx-col-strike { width: 42px; padding: 7px 2px; }
+  .pmtx-table thead th.pmtx-col-state,
+  .pmtx-table td.pmtx-col-state  { padding-right: 2px; }
+  .pmtx-table thead th.pmtx-col-expand,
+  .pmtx-table td.pmtx-col-expand { padding-right: 6px; }
+  .pmtx-titan-name { font-size: 12.5px; }
+  .pmtx-state-pill { font-size: 9.5px; padding: 2px 6px; }
+  .pmtx-prox-price { width: 48px; font-size: 11px; }
+  .pmtx-prox-bar { width: 36px; }
+  .pmtx-prox-pct { font-size: 10px; }
+  /* v5.19.2 \u2014 mobile shows ALL 9 columns (parity with desktop).
+     The legacy \u2264720px display:none on ADX/DI\u00b1/Vol was removed
+     so operators don\u2019t have to expand the detail row to read those
+     gates. The .pmtx-table-wrap already has overflow-x: auto, and the
+     table\u2019s min-width: 760px lets the row scroll horizontally on
+     phones below ~760px CSS pixels. */
+  .pmtx-detail-row td { padding: 10px 12px 12px 14px !important; }
+  .pmtx-detail-grid { grid-template-columns: repeat(2, 1fr); gap: 8px 12px; }
+  /* Weather banner stays readable on a phone. */
+  .pmtx-weather { flex-wrap: wrap; gap: 10px; padding: 11px 14px; }
+  .pmtx-weather-stats {
+    border-left: none; padding-left: 0;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    width: 100%; gap: 14px;
+    justify-content: flex-start;
+  }
+  .pmtx-weather-stat { text-align: left; }
+}
+
+/* On viewports \u2264400px the row gets very tight; further trim. */
+@media (max-width: 400px) {
+  .pmtx-table { font-size: 11px; }
+  .pmtx-table thead th { padding: 7px 3px; font-size: 8px; }
+  .pmtx-table tbody td { padding: 6px 3px; }
+  .pmtx-titan-name { font-size: 12px; }
+  .pmtx-prox-bar { width: 28px; }
+  .pmtx-prox-price { width: 44px; font-size: 10.5px; }
+  .pmtx-prox-pct { font-size: 9.5px; }
+}
+
+/* The retired `.pmtx-cards` selector still appears in old class
+   strings on /api/state polls that race the v5.18.1 deploy; keep
+   the rule so an in-flight payload from v5.18.0 doesn\u2019t flash
+   a broken card stack mid-upgrade. After one /api/state cycle the
+   element is replaced by the table and these rules become inert. */
+.pmtx-cards { display: none; }
+
+/* ─── Last-trade tail in the desktop matrix (compact) ────────────── */
+.pmtx-last {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--text-dim); white-space: nowrap;
+}
+.pmtx-last.pmtx-pnl-up   { color: var(--up);   font-weight: 600; }
+.pmtx-last.pmtx-pnl-down { color: var(--down); font-weight: 600; }
+
+/* ─── Reuse: drop bottom border on rows immediately followed by a
+       sentinel-detail row so the strip visually attaches to its
+       parent position row. JS adds .pmtx-row-attached for this. ─── */
+.pmtx-row-attached td { border-bottom-color: transparent; }
+
+/* ─── v5.21.0: Daily SMA Stack panel (.pmtx-sma-*) ──────────────── */
+/* Sibling block inside .detail-inner, below the comp-strip.          */
+/* Color swatches match the chart: 12=white, 22=blue, 55=yellow,      */
+/* 100=green, 200=cyan.                                                */
+
+.pmtx-sma-section {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(8,14,28,0.55);
+  overflow: hidden;
+}
+
+.pmtx-sma-unavailable {
+  padding: 12px 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.pmtx-sma-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.pmtx-sma-kbd {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border-soft, rgba(35,49,82,0.55));
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pmtx-sma-help {
+  color: var(--text-dim);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 11px;
+}
+
+.pmtx-sma-stack-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  letter-spacing: 0.02em;
+  margin-left: auto;
+  text-transform: none;
+}
+
+.pmtx-sma-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.pmtx-sma-pill-bullish {
+  background: rgba(47,207,110,0.15);
+  color: #6bf09d;
+  border-color: rgba(47,207,110,0.4);
+}
+.pmtx-sma-pill-bullish .pmtx-sma-pill-dot {
+  background: var(--up, #2fcf6e);
+  box-shadow: 0 0 7px rgba(47,207,110,0.6);
+}
+
+.pmtx-sma-pill-bearish {
+  background: rgba(255,90,111,0.15);
+  color: #ff8d9c;
+  border-color: rgba(255,90,111,0.4);
+}
+.pmtx-sma-pill-bearish .pmtx-sma-pill-dot {
+  background: var(--down, #ff5a6f);
+  box-shadow: 0 0 7px rgba(255,90,111,0.6);
+}
+
+.pmtx-sma-pill-mixed {
+  background: rgba(245,185,74,0.13);
+  color: #f5cc7a;
+  border-color: rgba(245,185,74,0.4);
+}
+.pmtx-sma-pill-mixed .pmtx-sma-pill-dot {
+  background: var(--warn, #f5b94a);
+}
+
+.pmtx-sma-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.pmtx-sma-table thead th {
+  background: rgba(18,28,52,0.85);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.pmtx-sma-table thead th.pmtx-sma-label-col {
+  text-align: left;
+  padding-left: 14px;
+}
+
+.pmtx-sma-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.08);
+}
+
+/* Per-window swatch colors matching the chart */
+.pmtx-sma-sw-12  { background: #ffffff; }
+.pmtx-sma-sw-22  { background: #5aa9ff; }
+.pmtx-sma-sw-55  { background: #f5d75a; }
+.pmtx-sma-sw-100 { background: #4fd47a; }
+.pmtx-sma-sw-200 { background: #6fe0e8; }
+
+.pmtx-sma-table tbody td {
+  padding: 11px 8px;
+  text-align: center;
+  border-bottom: 1px solid var(--border-soft, rgba(35,49,82,0.55));
+  font-variant-numeric: tabular-nums;
+}
+
+.pmtx-sma-table tbody td.pmtx-sma-label-col {
+  text-align: left;
+  padding-left: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pmtx-sma-close-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.pmtx-sma-gate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pmtx-sma-gate-pass {
+  background: rgba(47,207,110,0.15);
+  color: var(--up, #2fcf6e);
+  border: 1px solid rgba(47,207,110,0.45);
+}
+
+.pmtx-sma-gate-fail {
+  background: rgba(255,90,111,0.13);
+  color: var(--down, #ff5a6f);
+  border: 1px solid rgba(255,90,111,0.45);
+}
+
+.pmtx-sma-delta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  display: block;
+}
+
+.pmtx-sma-delta-pos { color: rgba(111,224,165,0.85); }
+.pmtx-sma-delta-neg { color: rgba(255,141,156,0.85); }
+
+.pmtx-sma-none {
+  color: var(--text-dim);
+}
+
+.pmtx-sma-table tfoot td {
+  padding: 11px 14px;
+  background: rgba(18,28,52,0.6);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.pmtx-sma-order-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pmtx-sma-order-lbl {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10.5px;
+}
+
+.pmtx-sma-order-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(8,14,28,0.7);
+  border: 1px solid var(--border-soft, rgba(35,49,82,0.55));
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pmtx-sma-order-op {
+  color: var(--text-dim);
+  font-weight: 700;
+}
+
+.pmtx-sma-order-op-ok  { color: var(--up, #2fcf6e); }
+.pmtx-sma-order-op-bad { color: var(--down, #ff5a6f); }
+.pmtx-sma-order-op-neut { color: var(--text-dim); }
+
+.pmtx-sma-order-verdict {
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.pmtx-sma-order-verdict-bullish { color: var(--up, #2fcf6e); }
+.pmtx-sma-order-verdict-bearish { color: var(--down, #ff5a6f); }
+
+/* ─── End v5.21.0 Daily SMA Stack panel ─────────────────────────── */
+
+/* v5.23.0 — Intraday chart panel. Sits between the component-state    */
+/* grid and the SMA stack inside an expanded Titan detail row.         */
+/* Canvas fills the section width; height is fixed for desktop and     */
+/* collapses on mobile so the chart still fits inside the matrix       */
+/* row's vertical envelope. Section box mirrors the SMA section so     */
+/* the two read as siblings.                                            */
+
+.pmtx-intraday-section {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(8,14,28,0.55);
+  padding: 10px 14px 12px;
+}
+
+.pmtx-intraday-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.pmtx-intraday-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pmtx-intraday-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pmtx-intraday-canvas {
+  display: block;
+  width: 100%;
+  height: 320px;
+  border-radius: 8px;
+  background: #0e1318;
+}
+
+.pmtx-intraday-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pmtx-intraday-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pmtx-intraday-leg::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.pmtx-intraday-leg-or { color: #e5b85c; }
+.pmtx-intraday-leg-avwap { color: #7aa6ff; }
+.pmtx-intraday-leg-ema9 { color: #c084fc; }
+.pmtx-intraday-leg-entry { color: #3ec28f; }
+.pmtx-intraday-leg-exit { color: #e26a6a; }
+/* v6.0.0 — expanded legend so every layer the renderer paints is
+   labelled. The hint chip describes the new wheel/drag/dblclick UX. */
+.pmtx-intraday-leg-pdc { color: #b08bff; }
+.pmtx-intraday-leg-hod { color: #67c4d6; }
+.pmtx-intraday-leg-vol { color: #6c8595; }
+.pmtx-intraday-leg-sentinel { color: #ffb24a; }
+.pmtx-intraday-leg-trail { color: #f0c356; }
+.pmtx-intraday-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+  cursor: help;
+}
+.pmtx-intraday-canvas {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+@media (max-width: 720px) {
+  .pmtx-intraday-canvas {
+    height: 220px;
+  }
+  .pmtx-intraday-section {
+    padding: 8px 10px 10px;
+  }
+  .pmtx-intraday-legend {
+    gap: 8px;
+    font-size: 10px;
+  }
+}
+
+/* ════════════════════════════════════════════════════════
+   v6.0.7 — iPhone Pro Max (430 px) brand-row overflow + mobile UI
+   readability pass. Live measurement at 430×932 showed the brand row
+   content width totalled ≈500 px so #tg-brand-clock pushed body.
+   scrollWidth to 500: every card was shifted right and clipped on
+   the right edge (Today's Trades unit price, Permit Matrix STRIKES
+   dots + State pill, idx-strip ticker tail). The companion JS change
+   in app.js drops the :SS segment of the clock at <=480 px, freeing
+   ~21 px; the rules below tighten chip / pill / gap sizing for the
+   final ~50 px so the row sits cleanly inside 430 with no body
+   horizontal scroll. ═══════════════════════════════════════════════ */
+@media (max-width: 480px) {
+  /* Brand row — keep nowrap, push every chip into the smallest
+     readable size that still passes a touch-target audit. The 500-band
+     rule above already handles 430-class viewports but its sizing was
+     calibrated when the row had fewer chips (no Val/Gene exec chips,
+     no health pill). */
+  #tg-brand-row {
+    gap: 5px !important;
+    padding: 8px 10px !important;
+  }
+  #tg-brand-ver {
+    font-size: 9.5px !important;
+    margin-left: 0 !important;
+  }
+  /* Exec chips (Val ✓ / Gene —) compress significantly. The chip
+     glyph stays readable; only the surround padding shrinks. */
+  #tg-exec-chips {
+    gap: 3px !important;
+    font-size: 10px !important;
+  }
+  #tg-exec-chips .tg-exec-chip,
+  #tg-exec-chips > span {
+    padding: 1px 6px !important;
+    font-size: 10px !important;
+  }
+  #tg-live-pill {
+    padding: 3px 7px !important;
+    font-size: 10.5px !important;
+  }
+  .tg-health-pill {
+    padding: 2px 6px !important;
+    font-size: 10px !important;
+    gap: 4px !important;
+  }
+  /* Clock now renders HH:MM TZ (no seconds) per the JS rule above. */
+  #tg-brand-clock {
+    font-size: 10.5px !important;
+    letter-spacing: 0 !important;
+  }
+
+  /* Permit Matrix readability — the table-wrap retains overflow-x:auto
+     so the full 760 px row is reachable by swipe, but at 430 every
+     non-essential horizontal pixel was a tax. Trim cell padding once
+     more, drop the State pill border to flat fill (saves ~8 px), and
+     hint that the table scrolls with a soft fade on the right edge. */
+  .pmtx-table tbody td,
+  .pmtx-table thead th {
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+  .pmtx-table thead th.pmtx-col-titan,
+  .pmtx-table td.pmtx-col-titan {
+    padding-left: 8px;
+  }
+  .pmtx-state-pill {
+    border-width: 0 !important;
+    padding: 2px 5px !important;
+  }
+  /* Soft right-edge fade on the matrix wrap to signal scroll affordance.
+     Pure CSS, no JS hook — a sticky pseudo using mask-image keeps the
+     real cells unobstructed. */
+  .pmtx-table-wrap {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+            mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+  }
+  .pmtx-table-wrap.pmtx-fully-scrolled {
+    -webkit-mask-image: none;
+            mask-image: none;
+  }
+
+  /* General element sizing — tighten card padding so each card uses
+     more horizontal real estate for content. The card-body padding
+     was 12 px which on 430 leaves only 406 px for content. */
+  .card-head { padding: 9px 10px; }
+  .card-body { padding: 9px 10px; }
+  .card-title { font-size: 10.5px; }
+
+  /* KPI row 4-up: at 430 the existing 2-up wrap from the 640-band
+     applies (good) — just trim padding so the value typography breathes. */
+  .kpi { padding: 9px 10px; gap: 4px; }
+  .kpi-value { font-size: 17px; }
+  .kpi-sub { font-size: 10px; }
+}
+
+/* Specifically iPhone Pro Max class (430 px exact). The 480-band
+   above carries 90% of the work; this band only handles the last
+   couple of pixels for the four-tab nav strip + the trades summary
+   line, both of which were occasionally wrapping at exactly 430. */
+@media (max-width: 432px) {
+  .tg-tabs { gap: 8px; padding: 8px 10px; }
+  .tg-tab { padding: 7px 10px; font-size: 12px; }
+  .trades-summary {
+    font-size: 10.5px;
+    gap: 2px 8px;
+    padding: 6px 10px;
+  }
+}
+
+/* v6.0.8 - the expanded permit-matrix row's <td> uses colspan and was
+   rendering ~653 px wide on a 453 px iPhone viewport, clipping the
+   right edge of every component-card description (e.g. "Phase 2 entry
+   gate" was cut off after "Phase 2 entr"). Constrain the td and its
+   descendants so block-level children inside cannot push the row past
+   the visible viewport. The other media queries above shrink fonts
+   and gaps; this block fixes the actual width-overflow root cause. */
+@media (max-width: 480px) {
+  .pmtx-detail-row td {
+    max-width: 100vw;
+    box-sizing: border-box;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    padding: 10px 10px 12px 12px !important;
+  }
+  .pmtx-detail-row td > * { min-width: 0; max-width: 100%; }
+  .pmtx-detail-grid { min-width: 0; }
+  .pmtx-comp-cards { min-width: 0; }
+  .pmtx-comp-card { min-width: 0; }
+  .pmtx-comp-desc {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
+  }
+}
+
+/* v6.0.8.1 \u2014 v6.0.8's mobile expanded-detail rule didn't actually
+   shrink the <td> because table-cell width is driven by the parent
+   <table>'s layout (anchored to the wide collapsed-row column widths,
+   ~650 px), so max-width:100vw on the <td> alone is ignored by the
+   table layout algorithm. Live measurement on iPhone 13 (453 px
+   viewport) post-v6.0.8: td=653 px, .pmtx-comp-card=605 px, descriptions
+   still clipped. Fix: only on the EXPANDED detail row, switch the <td>
+   to display:block so it leaves the table layout, and pin it with
+   position:sticky; left:0 so it stays anchored to the viewport's left
+   edge as the user swipes the (still horizontally scrollable) collapsed
+   matrix above. width:calc(100vw - 24px) accounts for the page padding.
+   Verified live: td 653 \u2192 366 px, card 605 \u2192 318 px, all 8
+   component cards fit, intraday chart + SMA stack bounded, while the
+   collapsed permit rows above retain their swipe-to-see-ADX/DI/Vol
+   behavior (wrap overflow-x:auto and tableW unchanged when nothing is
+   expanded). */
+@media (max-width: 480px) {
+  tr.pmtx-detail-row.pmtx-detail-open > td {
+    display: block !important;
+    position: sticky !important;
+    left: 0 !important;
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    box-sizing: border-box !important;
+    padding: 10px 10px 12px 12px !important;
+  }
+  tr.pmtx-detail-row.pmtx-detail-open > td > * { min-width: 0; max-width: 100%; }
+  .pmtx-detail-row .pmtx-intraday-canvas,
+  .pmtx-detail-row .pmtx-sma-table { max-width: 100%; }
+  .pmtx-detail-row .pmtx-sma-table { table-layout: fixed; width: 100%; }
+}
+
+/* v6.11.12 — brand-row mobile compaction. The flat 10px gap between
+   every pill (logo, name, version, TO chip, L heartbeat, health,
+   clock) consumed ~60-70px on iPhone-width viewports, pushing the
+   clock + ET suffix past the right edge even after v6.11.11 shrunk
+   LIVE -> L. Tighten gap and padding on narrow widths; the desktop
+   spacing stays exactly the same. */
+@media (max-width: 480px) {
+  #tg-brand-row.tg-brand-row {
+    gap: 5px;
+    padding: 6px 8px;
+  }
+  /* Remove the extra margin-left on the TO chip so it doesn't double
+     up with the new 5px row gap. */
+  #tg-brand-row.tg-brand-row #tg-cooldown-chip {
+    margin-left: 0;
+  }
+  /* Slightly shrink the clock so HH:MM fits even with TO + L pills
+     on the same line. */
+  #tg-brand-row.tg-brand-row #tg-brand-clock {
+    font-size: 12.5px;
+  }
+}
+
+/* v7.27.0 -- v10 Ticker Matrix.
+   Hides the legacy Permit Matrix + Weather Check banner whenever
+   the v10 runtime is bootstrapped and live (body.v10-live class set
+   by renderV10DayStatus). Physical deletion of the legacy markup +
+   _pmtx* JS happens in v7.28.0 retirement. */
+body.v10-live .legacy-v10-hidden {
+  display: none !important;
+}
+
+#v10-tm-body {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #d1d5db;
+}
+#v10-tm-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+#v10-tm-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9ca3af;
+  background: #0a0d12;
+  border-bottom: 1px solid #1f2937;
+}
+#v10-tm-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #111827;
+}
+#v10-tm-table tr.v10-tm-blocked td {
+  color: #6b7280;
+}
+#v10-tm-table tr.v10-tm-in-pos td {
+  background: rgba(34, 197, 94, 0.08);
+}
+.v10-tm-phase {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.v10-tm-phase.warmup    { background: #1e3a5f; color: #93c5fd; }
+.v10-tm-phase.or_locked { background: #3b3a1f; color: #fcd34d; }
+.v10-tm-phase.armed     { background: #14532d; color: #86efac; }
+.v10-tm-phase.in_pos    { background: #16a34a; color: #ffffff; }
+.v10-tm-phase.closed    { background: #1f2937; color: #9ca3af; }
+.v10-tm-phase.blocked   { background: #7f1d1d; color: #fca5a5; }
+.v10-tm-pid {
+  font-size: 10px;
+  color: #6b7280;
+  margin-right: 4px;
+}
+@media (max-width: 720px) {
+  #v10-tm-table th,
+  #v10-tm-table td {
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+  #v10-tm-table th.v10-tm-col-or,
+  #v10-tm-table td.v10-tm-col-or {
+    display: none;
+  }
+}
