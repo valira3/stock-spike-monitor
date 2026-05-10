@@ -76,6 +76,16 @@ COPY backtest/ ./backtest/
 # ModuleNotFoundError: engine. Subsequent v5.11.x PRs append more
 # modules under engine/ (seeders, phase_machine, scan, callbacks).
 COPY engine/ ./engine/
+# v7.14.0 — v10 ORB strategy package (shadow mode in scan.py at this
+# point; live trading wiring lands in v7.15.0). Missing this COPY
+# would cause ModuleNotFoundError at trade_genius import time --
+# the same class of regression that crash-looped v5.10.1.
+COPY orb/ ./orb/
+# v7.13.0 — VIX daily history + earnings calendar consumed by the
+# orb runtime at session start.
+COPY data/external/ ./data/external/
+COPY tools/orb_earnings_calendar.py ./tools/orb_earnings_calendar.py
+COPY tools/orb_vix_loader.py ./tools/orb_vix_loader.py
 # v5.11.1 — telegram_ui/ package extraction (PR1: charts). Same rule:
 # missing this COPY would crash trade_genius at boot with
 # ModuleNotFoundError: telegram_ui. Subsequent v5.11.1 PRs append

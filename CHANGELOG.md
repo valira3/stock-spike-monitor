@@ -4,6 +4,73 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.14.0 (2026-05-10) -- v10 ORB shadow-mode wiring in engine/scan.py
+
+Sixth PR in v10 rollout. Wires the `orb.live_runtime` singleton into
+`engine/scan.py` in SHADOW MODE: the runtime sees every bar + builds
+OR window state + evaluates day gates IN PRODUCTION, but does NOT
+execute trades yet. Entry/exit routing stays on the legacy Tiger
+Sovereign path. PR7 (v7.15.0) flips the entry route.
+
+This is the textbook safe-rollout pattern: data flows through the new
+strategy in production so we can verify state via the dashboard before
+flipping the live execution switch.
+
+### A. Changes in `engine/scan.py`
+
+  1. Import `orb.live_runtime` at top of module
+  2. After per-ticker setup but before the per-ticker loop:
+     - Call `_orb_runtime.bootstrap()` if not already done
+     - Call `_orb_runtime.ensure_session_started(...)` once per day
+       with current VIX / opens / pdc / equity
+  3. Inside `_per_ticker_tick`, after the `canon_bar` is built and
+     archived, call `_orb_runtime.feed_bar(...)` with the same OHLCV
+     fields. Bucket integer is computed via `minutes_since_et_midnight`
+     (DST-aware).
+  4. Every hook is wrapped in try/except so a runtime exception cannot
+     break the legacy scan loop.
+
+### B. New forensic logs
+
+  - `[V79-ORB-WIRED] live=on bootstrap=ok` once per process
+  - `[V79-ORB-RESET] date=YYYY-MM-DD vix_d1=X block_day=...` per session
+  - `[V79-ORB-FEED]` per-ticker if feed_bar raises (defensive)
+
+### C. Tests (`tests/strategy/test_orb_scan_integration.py`)
+
+8 new integration tests:
+  - End-to-end: bootstrap -> ensure_session -> feed_bar; assert OR
+    window state mutates correctly
+  - Kill-switch: ORB_LIVE_MODE=0 makes feed_bar a no-op
+  - DST bucket correctness at 09:30 EDT (2026-04-30) + 09:30 EST
+    (2025-11-03), OR close at 10:00 ET, EOD at 15:55 ET
+  - 3 portfolios with independent equity ($100k / $50k / $25k)
+  - Session idempotent within-day
+
+### D. Test totals
+
+  v7.x strategy tests: **157/157 passing** + 4 skipped (the 4 are
+  trade_genius-import-required release-note tests; they pass in
+  production CI where the env vars are real).
+
+### Effect
+
+**Production behavior is unchanged for entries + exits.** The legacy
+Tiger Sovereign path still owns trade execution. The v10 runtime now
+sees the same data the production engine sees; its state can be
+inspected via the dashboard /api/state endpoint (PR8 will surface it).
+
+If `ORB_LIVE_MODE=0`, the runtime is bootstrapped but feed_bar is a
+no-op -- emergency rollback path validated by tests.
+
+### Next
+
+PR7 (v7.15.0) replaces the legacy entry route at scan.py:528-560 with
+a routing switch that calls `_orb_runtime.check_entry()`. PR8 swaps
+the exit path (replaces Tiger Sentinel A/B/C alarms).
+
+---
+
 ## v7.13.1 (2026-05-10) -- fix: telegram deploy banner showed stale release notes
 
 Hotfix for a bug spotted by Val on Telegram: the deploy banner header

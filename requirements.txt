@@ -18,6 +18,10 @@ pandas==3.0.1
 
 # ── Timezone ─────────────────────────────────────────────────
 pytz==2026.1.post1
+# v7.14.0 — zoneinfo backend for orb.live_runtime + engine.timing
+# (DST-aware ET bucket conversions). python:3.11-slim ships without
+# tzdata, so zoneinfo("America/New_York") raises without this.
+tzdata>=2024.1
 
 # ── HTML parsing (yfinance dep) ───────────────────────────────
 lxml>=5.0
