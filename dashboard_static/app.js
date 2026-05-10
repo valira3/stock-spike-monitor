@@ -3816,6 +3816,10 @@
     // Check + Permit Matrix). The next-scan countdown is the only
     // piece of the old gates renderer that survived.
     renderNextScanCountdown(s);
+    // v7.20.0 — v10 ORB Day Status banner. Renders s.v10 (config +
+    // day_status + risk_books). Defensive: never breaks Main if v10
+    // block is absent or runtime is unavailable.
+    try { renderV10DayStatus(s); } catch (e) { /* never break Main */ }
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
     try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
@@ -5160,4 +5164,141 @@
       fetchPositions();
     };
   })();
+
+  /* ========================================================================
+     v7.20.0 — v10 ORB Day Status banner + Projection card renderers.
+     Consumes /api/state.v10 (delivered as part of every state poll) and
+     /api/v10/projection (separate 60s poll for the static keystone numbers
+     plus live account growth).
+     ======================================================================== */
+
+  function renderV10DayStatus(s) {
+    var v10 = s && s.v10;
+    var banner = document.getElementById("v10-day-status");
+    if (!banner) return;
+    // Fail open: if v10 block is missing, hide the banner.
+    if (!v10 || v10.available === false) {
+      banner.style.display = "none";
+      return;
+    }
+    banner.style.display = "flex";
+
+    var modePill = document.getElementById("v10-mode-pill");
+    if (modePill) {
+      var liveOn = !!v10.live_mode;
+      var bootOk = !!v10.bootstrapped;
+      if (!bootOk) {
+        modePill.textContent = "BOOT";
+        modePill.style.background = "#374151";
+        modePill.style.color = "#e5e7eb";
+      } else if (liveOn) {
+        modePill.textContent = "LIVE";
+        modePill.style.background = "#16a34a";
+        modePill.style.color = "#fff";
+      } else {
+        modePill.textContent = "LEGACY";
+        modePill.style.background = "#dc2626";
+        modePill.style.color = "#fff";
+      }
+    }
+
+    var ds = v10.day_status || {};
+    var vixEl = document.getElementById("v10-vix");
+    var vixPassEl = document.getElementById("v10-vix-pass");
+    var dayStateEl = document.getElementById("v10-day-state");
+    var thr = ds.vix_threshold || 22.0;
+    var vix = ds.vix_d1_close;
+    if (vixEl) {
+      vixEl.textContent = (vix == null ? "n/a" : vix.toFixed(2)) + "/" + thr.toFixed(0);
+    }
+    if (vixPassEl) {
+      var pass = (vix == null) ? "?" : (vix > thr ? "FAIL" : "PASS");
+      vixPassEl.textContent = pass;
+      if (pass === "PASS") {
+        vixPassEl.style.background = "#16a34a"; vixPassEl.style.color = "#fff";
+      } else if (pass === "FAIL") {
+        vixPassEl.style.background = "#dc2626"; vixPassEl.style.color = "#fff";
+      } else {
+        vixPassEl.style.background = "#374151"; vixPassEl.style.color = "#e5e7eb";
+      }
+    }
+    if (dayStateEl) {
+      if (ds.block_day) {
+        dayStateEl.textContent = "BLOCKED (" + (ds.block_reason || "?") + ")";
+        dayStateEl.style.color = "#dc2626";
+      } else {
+        dayStateEl.textContent = "OK";
+        dayStateEl.style.color = "#22c55e";
+      }
+    }
+
+    // Trades + risk used (sum across portfolios)
+    var dayStates = v10.day_states || [];
+    var totalTrades = 0;
+    for (var i = 0; i < dayStates.length; i++) totalTrades += (dayStates[i].trades_today || 0);
+    var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
+    var tradesEl = document.getElementById("v10-trades-used");
+    if (tradesEl) tradesEl.textContent = totalTrades + "/" + maxTrades;
+
+    var riskUsed = 0;
+    var riskMax = 0;
+    var rb = v10.risk_books || {};
+    Object.keys(rb).forEach(function (pid) {
+      riskUsed += (rb[pid].open_risk || 0);
+      riskMax += (rb[pid].max_risk_dollars || 0);
+    });
+    var riskEl = document.getElementById("v10-risk-used");
+    if (riskEl) {
+      riskEl.textContent = "$" + Math.round(riskUsed) + " / $" + Math.round(riskMax);
+    }
+  }
+
+  function fmtPct(v, prec) {
+    if (v == null) return "—";
+    var p = (prec == null) ? 1 : prec;
+    return (v >= 0 ? "+" : "") + v.toFixed(p) + "%";
+  }
+  function fmtMoney(v) {
+    if (v == null) return "—";
+    return "$" + Math.round(v).toLocaleString();
+  }
+
+  function renderV10Projection(p) {
+    if (!p) return;
+    var setText = function (id, t) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = t;
+    };
+    setText("v10-proj-cagr", fmtPct(p.in_sample_cagr_pct, 1));
+    setText(
+      "v10-proj-range",
+      fmtPct(p.honest_cagr_low_pct, 1) + " to " + fmtPct(p.honest_cagr_high_pct, 1)
+    );
+    setText("v10-proj-sharpe", p.sharpe_ann == null ? "—" : p.sharpe_ann.toFixed(2));
+    setText("v10-proj-mdd", fmtPct(p.max_drawdown_pct, 2));
+    setText("v10-proj-wr", p.win_rate_pct == null ? "—" : p.win_rate_pct.toFixed(1) + "%");
+    setText("v10-proj-live-balance", fmtMoney(p.live_balance));
+    var growth = p.live_growth_pct;
+    setText("v10-proj-growth", fmtPct(growth, 2));
+    var growthEl = document.getElementById("v10-proj-growth");
+    if (growthEl) {
+      growthEl.style.color = growth == null
+        ? "#9ca3af"
+        : (growth >= 0 ? "#22c55e" : "#dc2626");
+    }
+  }
+
+  // 60-second poll for /api/v10/projection. Live-balance changes don't
+  // need to be sub-second; the keystone numbers are static.
+  (function initV10ProjectionPoll() {
+    var run = function () {
+      fetch("/api/v10/projection", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (p) { try { renderV10Projection(p); } catch (e) {} })
+        .catch(function () { /* silent */ });
+    };
+    run();
+    setInterval(run, 60000);
+  })();
+
 })();
