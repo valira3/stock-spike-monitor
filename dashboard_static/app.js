@@ -3820,6 +3820,7 @@
     // day_status + risk_books). Defensive: never breaks Main if v10
     // block is absent or runtime is unavailable.
     try { renderV10DayStatus(s); } catch (e) { /* never break Main */ }
+    try { renderV10TickerMatrix(s); } catch (e) { /* never break Main */ }
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
     try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
@@ -5179,9 +5180,18 @@
     // Fail open: if v10 block is missing, hide the banner.
     if (!v10 || v10.available === false) {
       banner.style.display = "none";
+      document.body.classList.remove("v10-live");
       return;
     }
     banner.style.display = "flex";
+    // v7.27.0: flag the body so .legacy-v10-hidden sections collapse.
+    // Set only when v10 is BOTH bootstrapped AND live-mode on; either
+    // false leaves the legacy Permit Matrix visible as a safety net.
+    if (v10.bootstrapped && v10.live_mode) {
+      document.body.classList.add("v10-live");
+    } else {
+      document.body.classList.remove("v10-live");
+    }
 
     var modePill = document.getElementById("v10-mode-pill");
     if (modePill) {
@@ -5307,6 +5317,107 @@
   function fmtMoney(v) {
     if (v == null) return "—";
     return "$" + Math.round(v).toLocaleString();
+  }
+
+  // v7.27.0 -- per-ticker FSM/OR matrix sourced from
+  // orb.live_runtime.snapshot() (s.v10.day_states + s.v10.or_windows).
+  // Renders the canonical v10 view. Hidden when v10 is not bootstrapped;
+  // the legacy Permit Matrix below covers the pre-v10 path until the
+  // v7.28.0 retirement removes it physically.
+  function renderV10TickerMatrix(s) {
+    var v10 = s && s.v10;
+    var section = document.getElementById("v10-ticker-matrix-section");
+    if (!section) return;
+    if (!v10 || v10.available === false || !v10.bootstrapped) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+
+    var dayStates = v10.day_states || [];
+    var orWindows = v10.or_windows || {};
+    var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
+    var portfolios = Object.keys(v10.risk_books || {}).sort();
+    var multiPid = portfolios.length > 1;
+
+    // Build (ticker -> phases-per-portfolio) index.
+    var byTicker = {};
+    for (var i = 0; i < dayStates.length; i++) {
+      var d = dayStates[i];
+      if (!byTicker[d.ticker]) byTicker[d.ticker] = {};
+      byTicker[d.ticker][d.portfolio_id || "main"] = d;
+    }
+    var tickers = Object.keys(byTicker).sort();
+    var countEl = document.getElementById("v10-tm-count");
+    if (countEl) countEl.textContent = "· " + tickers.length;
+
+    // Summary chip: count tickers in ARMED / IN_POS / BLOCKED states.
+    var nArmed = 0, nInPos = 0, nBlocked = 0;
+    for (var t = 0; t < tickers.length; t++) {
+      var perPid = byTicker[tickers[t]];
+      for (var pid in perPid) {
+        var ph = (perPid[pid].phase || "").toLowerCase();
+        if (ph === "armed") nArmed++;
+        else if (ph === "in_pos") nInPos++;
+        else if (ph.indexOf("blocked") === 0) nBlocked++;
+      }
+    }
+    var sumEl = document.getElementById("v10-tm-summary");
+    if (sumEl) {
+      sumEl.textContent = nArmed + " armed · " + nInPos + " in pos · " + nBlocked + " blocked";
+    }
+
+    var body = document.getElementById("v10-tm-body");
+    if (!body) return;
+    if (tickers.length === 0) {
+      body.innerHTML = '<div class="empty">Waiting for v10 session start...</div>';
+      return;
+    }
+
+    var rows = [];
+    rows.push('<table id="v10-tm-table"><thead><tr>'
+      + '<th>Ticker</th>'
+      + (multiPid ? '<th>Pid</th>' : '')
+      + '<th>Phase</th>'
+      + '<th class="v10-tm-col-or">OR (lo / hi / width%)</th>'
+      + '<th>Trades</th>'
+      + '<th>Reason</th>'
+      + '</tr></thead><tbody>');
+
+    for (var k = 0; k < tickers.length; k++) {
+      var tk = tickers[k];
+      var w = orWindows[tk] || {};
+      var orCell = (w.or_low != null && w.or_high != null)
+        ? (w.or_low.toFixed(2) + ' / ' + w.or_high.toFixed(2)
+            + ' / ' + ((w.or_width_pct || 0) * 100).toFixed(2) + '%')
+        : '—';
+      var perPid = byTicker[tk];
+      var pids = Object.keys(perPid).sort();
+      for (var p = 0; p < pids.length; p++) {
+        var pid2 = pids[p];
+        var d = perPid[pid2];
+        var phase = (d.phase || "").toLowerCase();
+        var rowCls = '';
+        if (phase === "in_pos") rowCls = 'v10-tm-in-pos';
+        else if (phase.indexOf("blocked") === 0) rowCls = 'v10-tm-blocked';
+        var phaseCls = phase.indexOf("blocked") === 0 ? "blocked" : phase;
+        var phaseTxt = phase.replace(/_/g, " ").toUpperCase();
+        var reason = d.block_reason || (d.in_position ? 'open ticket' : '');
+        var tradesCell = (d.trades_today || 0) + ' / ' + maxTrades;
+        rows.push('<tr class="' + rowCls + '">'
+          + (p === 0 ? '<td rowspan="' + pids.length + '">' + escapeHtml(tk) + '</td>' : '')
+          + (multiPid ? '<td><span class="v10-tm-pid">' + escapeHtml(pid2) + '</span></td>' : '')
+          + '<td><span class="v10-tm-phase ' + phaseCls + '">' + escapeHtml(phaseTxt) + '</span></td>'
+          + (p === 0
+              ? '<td class="v10-tm-col-or" rowspan="' + pids.length + '">' + escapeHtml(orCell) + '</td>'
+              : '')
+          + '<td>' + escapeHtml(tradesCell) + '</td>'
+          + '<td>' + escapeHtml(reason) + '</td>'
+          + '</tr>');
+      }
+    }
+    rows.push('</tbody></table>');
+    body.innerHTML = rows.join("");
   }
 
   function renderV10Projection(p) {

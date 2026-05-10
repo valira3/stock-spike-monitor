@@ -4,6 +4,84 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.27.0 (2026-05-10) -- v10 Ticker Matrix UI + legacy Permit Matrix hide
+
+Nineteenth PR in v10 rollout. Adds a v10-native per-ticker matrix to
+the dashboard sourced from `orb.live_runtime.snapshot()` and hides the
+legacy Permit Matrix + Weather Check banner whenever v10 is live.
+Physical deletion of the `_pmtx*` JS + `.pmtx-*` CSS is scheduled for
+v7.28.0 retirement; this PR is the visual handoff.
+
+### A. `dashboard_static/index.html`
+
+- New `<section id="v10-ticker-matrix-section">` placed directly
+  after the v10 day-status banner. Card head shows count + summary
+  chip; card body is empty until the runtime populates day_states.
+- Legacy weather-check + Permit Matrix sections gain a new
+  `.legacy-v10-hidden` class that the CSS rule collapses when
+  `body.v10-live` is set by `renderV10DayStatus`.
+
+### B. `dashboard_static/app.css`
+
+- `body.v10-live .legacy-v10-hidden { display: none !important }`.
+- `#v10-tm-table` styles (header, rows, in-pos highlight, blocked dim).
+- `.v10-tm-phase.{warmup,or_locked,armed,in_pos,closed,blocked}` color
+  chips matching the FSM states from `orb.state`.
+- Mobile breakpoint at 720px collapses the OR column.
+
+### C. `dashboard_static/app.js`
+
+- `renderV10DayStatus` now toggles `document.body.classList` with
+  `v10-live` based on `bootstrapped && live_mode`. Either false keeps
+  the legacy Permit Matrix visible as a safety net.
+- New `renderV10TickerMatrix(s)` renders an `<table>` keyed by
+  ticker x portfolio. Each row shows phase pill, OR low/high/width%
+  (locked), trades used / max, and block reason. Multi-portfolio rows
+  collapse the ticker + OR cells with `rowspan` so the matrix stays
+  compact when Val + Gene are enabled.
+- Wired into the existing render loop alongside `renderV10DayStatus`.
+
+### D. Tests
+
+6 new tests in `tests/strategy/test_v10_ticker_matrix_snapshot.py`:
+  - `day_states` shape (ticker, phase, trades_today, in_position,
+    block_reason, portfolio_id) present in snapshot
+  - `or_windows` shape (or_high, or_low, or_width_pct, locked) present
+  - `config.max_trades_per_day` present
+  - `risk_books` keyed by portfolio_id present
+  - VIX>threshold transitions all (portfolio, ticker) day_states to
+    a blocked phase
+  - End-to-end: feeding 30 OR bars locks the window and transitions
+    day_state past WARMUP
+
+These pin the snapshot contract the frontend depends on so a future
+refactor of `orb.engine` / `orb.state` cannot silently break the
+dashboard.
+
+### Production rollout
+
+The new matrix appears immediately on `body.v10-live`, which is set
+when `ORB_LIVE_MODE=1` (default in production since v7.15.0). The
+legacy Permit Matrix + Weather banner collapse via CSS at the same
+moment, so the dashboard switches with zero operator action. Setting
+`ORB_LIVE_MODE=0` restores the legacy view as a rollback path.
+
+### Files
+
+- `bot_version.py` -- 7.26.0 -> 7.27.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.27.0
+- `dashboard_static/index.html` -- v10 ticker matrix section + legacy
+  hide markers
+- `dashboard_static/app.css` -- v10 matrix styles + legacy hide rule
+- `dashboard_static/app.js` -- `renderV10TickerMatrix` + body.v10-live
+  toggle in `renderV10DayStatus`
+- `tests/strategy/test_v10_ticker_matrix_snapshot.py` -- 6 new tests
+- `CHANGELOG.md` -- this entry
+
+231 strategy tests pass (was 225 -> +6 new).
+
+---
+
 ## v7.26.0 (2026-05-10) -- Val/Gene executor fire_long/fire_short surface
 
 Eighteenth PR in v10 rollout. Closes the per-portfolio executor wiring

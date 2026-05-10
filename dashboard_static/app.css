@@ -1956,3 +1956,72 @@
     font-size: 12.5px;
   }
 }
+
+/* v7.27.0 -- v10 Ticker Matrix.
+   Hides the legacy Permit Matrix + Weather Check banner whenever
+   the v10 runtime is bootstrapped and live (body.v10-live class set
+   by renderV10DayStatus). Physical deletion of the legacy markup +
+   _pmtx* JS happens in v7.28.0 retirement. */
+body.v10-live .legacy-v10-hidden {
+  display: none !important;
+}
+
+#v10-tm-body {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #d1d5db;
+}
+#v10-tm-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+#v10-tm-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9ca3af;
+  background: #0a0d12;
+  border-bottom: 1px solid #1f2937;
+}
+#v10-tm-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #111827;
+}
+#v10-tm-table tr.v10-tm-blocked td {
+  color: #6b7280;
+}
+#v10-tm-table tr.v10-tm-in-pos td {
+  background: rgba(34, 197, 94, 0.08);
+}
+.v10-tm-phase {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.v10-tm-phase.warmup    { background: #1e3a5f; color: #93c5fd; }
+.v10-tm-phase.or_locked { background: #3b3a1f; color: #fcd34d; }
+.v10-tm-phase.armed     { background: #14532d; color: #86efac; }
+.v10-tm-phase.in_pos    { background: #16a34a; color: #ffffff; }
+.v10-tm-phase.closed    { background: #1f2937; color: #9ca3af; }
+.v10-tm-phase.blocked   { background: #7f1d1d; color: #fca5a5; }
+.v10-tm-pid {
+  font-size: 10px;
+  color: #6b7280;
+  margin-right: 4px;
+}
+@media (max-width: 720px) {
+  #v10-tm-table th,
+  #v10-tm-table td {
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+  #v10-tm-table th.v10-tm-col-or,
+  #v10-tm-table td.v10-tm-col-or {
+    display: none;
+  }
+}
