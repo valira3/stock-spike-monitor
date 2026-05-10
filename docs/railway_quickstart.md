@@ -23,21 +23,25 @@
    | `R2_ACCESS_KEY_ID` | from existing R2 secrets |
    | `R2_SECRET_ACCESS_KEY` | same |
    | `RAILWAY_WORKERS` | `4` (legacy, kept for compat — see RAILWAY_PARALLEL_VARIANTS below) |
-   | `RAILWAY_PARALLEL_VARIANTS` | `8` (number of variants run simultaneously — set per CPU sizing below) |
+   | `RAILWAY_PARALLEL_VARIANTS` | `6` (number of variants run simultaneously — set per CPU sizing below) |
    | `SWEEP_WORKERS` | `4` (per-variant inner concurrency — set per CPU sizing below) |
    | `RAILWAY_POLL_INTERVAL_SEC` | `60` |
 
    **Sizing for your plan**: total active processes = `RAILWAY_PARALLEL_VARIANTS × SWEEP_WORKERS`, should ≤ vCPU count.
 
-   On 32 vCPU / 32 GB **Pro plan** (current):
+   **Per-replica caps are 24 vCPU / 24 GB on every plan, including Pro.**
+   The Pro plan increases the *number* of replicas you can spin up
+   (up to 42), not the size of any single replica. The sweep worker
+   runs as a single replica with intra-process parallelism via
+   ProcessPoolExecutor, so the practical sizing ceiling is **24 active
+   processes** (e.g. `PARALLEL_VARIANTS=6 SWEEP_WORKERS=4`).
 
-   | Use case | Recommended config | Active procs | 5-var STRIDE=1 wall |
-   |---|---|---:|---:|
-   | Small batches (≤8 variants) | `PARALLEL_VARIANTS=8 SWEEP_WORKERS=4` | 32 | ~20 min |
-   | Medium batches (9-16 variants) | `PARALLEL_VARIANTS=16 SWEEP_WORKERS=2` | 32 | ~40 min for 16 |
-   | Large grids (50+ variants) | `PARALLEL_VARIANTS=16 SWEEP_WORKERS=2` | 32 | ~2.5 hr for 50 |
+   To go beyond 24 active processes you would need to add multi-
+   replica orchestration to `tools/railway_sweep_worker.py` (split
+   the variant queue across N replicas with a shared lock). That
+   isn't built today — file an issue if you want it.
 
-   On 24 vCPU / 24 GB Hobby Pro (legacy reference):
+   On 24 vCPU / 24 GB single replica (Hobby Pro AND Pro single-service):
 
    | Use case | Recommended config | Active procs | 5-var STRIDE=1 wall |
    |---|---|---:|---:|
