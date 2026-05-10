@@ -161,6 +161,25 @@
       </div>
     </section>
 
+    <!-- v7.27.0 -- v10 ORB Ticker Matrix. Per-ticker FSM state pulled
+         from orb.live_runtime.snapshot().day_states + or_windows.
+         Replaces the legacy Permit Matrix card on the v10 path; the
+         legacy card is hidden via the .v10-live body class flipped by
+         renderV10DayStatus when bootstrapped && live_mode. Physical
+         removal of the legacy _pmtx* JS/CSS is scheduled for v7.28.0
+         per docs/v10_retirement_plan.md. -->
+    <section class="grid" id="v10-ticker-matrix-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title" title="v10 ORB per-ticker matrix. Phase = FSM state; OR = opening range high/low/width; T = trades used today.">v10 Ticker Matrix<span class="count" id="v10-tm-count" title="Number of tickers in the v10 universe">· —</span></span>
+          <span class="chip" id="v10-tm-summary" title="Tickers armed / tickers blocked / tickers in position">—</span>
+        </div>
+        <div class="card-body flush" id="v10-tm-body">
+          <div class="empty">Waiting for v10 session start...</div>
+        </div>
+      </div>
+    </section>
+
     <!-- v5.18.0 — Open positions runs full-width. Proximity card was
          retired and folded into the Permit Matrix as a Price · Distance
          column (price + bar shows how close each Titan is to its OR
@@ -231,7 +250,7 @@
          set by JS based on the long/short permit combination.
          v5.19.4 — demoted to sit BELOW Open positions per operator request,
          so currently-held risk is the first thing on the page. -->
-    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
+    <section class="pmtx-weather-section legacy-v10-hidden" aria-label="Phase 1 weather check">
       <div class="pmtx-weather pmtx-weather-pending" id="pmtx-weather">
         <div class="pmtx-weather-icon" id="pmtx-weather-icon" aria-hidden="true">·</div>
         <div class="pmtx-weather-body">
@@ -252,8 +271,12 @@
          entries the ticker has used today (max 3 per STRIKE-CAP-3).
 
          Mobile: the table switches to a card-stack layout under 720 px
-         (one card per ticker, gates as labeled chip rows). -->
-    <section class="grid">
+         (one card per ticker, gates as labeled chip rows).
+
+         v7.27.0: hidden via .legacy-v10-hidden when body.v10-live is
+         set by renderV10DayStatus. Physical removal scheduled for
+         v7.28.0. -->
+    <section class="grid legacy-v10-hidden">
       <div class="card">
         <div class="card-head">
           <span class="card-title" title="Permit Matrix — per-Titan view of the Tiger Sovereign vAA-1 entry checklist. Columns are the Phase 2 / Phase 3 gates. ✓ = pass, ✕ = fail, − = not yet evaluated.">Permit Matrix<span class="count" id="pmtx-count" title="Number of Titans being tracked">· —</span></span>
