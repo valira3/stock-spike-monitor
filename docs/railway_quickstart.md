@@ -23,13 +23,21 @@
    | `R2_ACCESS_KEY_ID` | from existing R2 secrets |
    | `R2_SECRET_ACCESS_KEY` | same |
    | `RAILWAY_WORKERS` | `4` (legacy, kept for compat — see RAILWAY_PARALLEL_VARIANTS below) |
-   | `RAILWAY_PARALLEL_VARIANTS` | `6` (number of variants run simultaneously — set per CPU sizing below) |
+   | `RAILWAY_PARALLEL_VARIANTS` | `8` (number of variants run simultaneously — set per CPU sizing below) |
    | `SWEEP_WORKERS` | `4` (per-variant inner concurrency — set per CPU sizing below) |
    | `RAILWAY_POLL_INTERVAL_SEC` | `60` |
 
    **Sizing for your plan**: total active processes = `RAILWAY_PARALLEL_VARIANTS × SWEEP_WORKERS`, should ≤ vCPU count.
 
-   On 24 vCPU / 24 GB Hobby Pro:
+   On 32 vCPU / 32 GB **Pro plan** (current):
+
+   | Use case | Recommended config | Active procs | 5-var STRIDE=1 wall |
+   |---|---|---:|---:|
+   | Small batches (≤8 variants) | `PARALLEL_VARIANTS=8 SWEEP_WORKERS=4` | 32 | ~20 min |
+   | Medium batches (9-16 variants) | `PARALLEL_VARIANTS=16 SWEEP_WORKERS=2` | 32 | ~40 min for 16 |
+   | Large grids (50+ variants) | `PARALLEL_VARIANTS=16 SWEEP_WORKERS=2` | 32 | ~2.5 hr for 50 |
+
+   On 24 vCPU / 24 GB Hobby Pro (legacy reference):
 
    | Use case | Recommended config | Active procs | 5-var STRIDE=1 wall |
    |---|---|---:|---:|
