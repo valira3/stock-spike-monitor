@@ -4,6 +4,89 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.9.0 (2026-05-10) -- v10 ORB foundation: state machine + day gates + risk book
+
+First production-code PR for the v10 ORB anchor strategy
+(`docs/v10_strategy_keystone.md`). Pure new modules; no existing
+code paths altered. Forms the foundation for PR2-6 which will wire
+this into the live engine and dashboard.
+
+### A. New package: `orb/`
+
+Three modules with full unit test coverage (62 tests, all passing):
+
+  - `orb/state.py` -- two-layer state machine. `OrWindow` is market-
+    wide per-ticker (one OR window shared across all portfolios).
+    `TickerDayState` is per-portfolio per-ticker (each portfolio's
+    Main/Val/Gene FSM is independent). `OrbStateRegistry` owns both
+    and provides `reset_for_new_session()`, `lock_all_or_windows()`,
+    JSON snapshot helpers for the dashboard.
+
+  - `orb/risk_book.py` -- per-portfolio concurrent-risk admission
+    gate. Thread-safe `try_admit()` / `release()` API with atomic
+    cap enforcement. `RiskBookRegistry` provides per-portfolio
+    isolation (Main / Val / Gene each get their own RiskBook with
+    independent `$2k` concurrent risk + notional caps that scale
+    with each portfolio's equity).
+
+  - `orb/day_gates.py` -- pure-function `evaluate_day()` returning a
+    `DayGateResult` with VIX (market-wide), earnings (per-ticker),
+    gap (per-ticker), blocklist (per-ticker, per-side). Fail-open
+    by default for backtest parity; `fail_closed_on_missing_vix`
+    flag for live deployment.
+
+### B. Look-ahead audit per rule #7b
+
+Each module ships with explicit timestamp claims:
+
+  - `OrWindow.add_bar()` rejects bars at or after `or_end`. Half-
+    open `[09:30, 09:30+OR_minutes)`.
+  - `RiskBook.try_admit()` only consults current open positions
+    (no future data).
+  - `evaluate_day()` consumes only `vix_close_d1` (prior session
+    close) + earnings calendar (announced weeks ahead) + gap (prev
+    session close + today's 09:30 open). All causally clean.
+
+### C. Tests (`tests/strategy/test_orb_*`)
+
+  - `test_orb_state.py` -- 17 tests. OR window math, FSM transitions,
+    independent per-portfolio state, snapshot shape, session reset.
+  - `test_orb_risk_book.py` -- 19 tests including a 20-thread
+    concurrency stress test confirming exactly 5 admits + 15
+    rejects under a `$1000` cap with `$200/admit`.
+  - `test_orb_day_gates.py` -- 26 tests covering each gate in
+    isolation + combined v10 keystone config.
+
+  All 62 tests pass under `pytest`.
+
+### D. Forensic log schema (registered for PR2 wiring)
+
+Reserved `[V79-ORB-*]` log tag space:
+
+  - `[V79-ORB-RESET]    date=YYYY-MM-DD`
+  - `[V79-ORB-OR-LOCK]  ticker=X bars_seen=N orh=Y orl=Z width_pct=W`
+  - `[V79-ORB-GATE]     scope=day|ticker reason=...`
+  - `[V79-ORB-RISK-OK]  portfolio=X risk=$Y notional=$Z ticket=...`
+  - `[V79-ORB-RISK-NO]  portfolio=X reason=... attempted=$Y`
+
+These tags will be emitted in PR2 when the modules are wired into
+`engine/scan.py`. Documented here for forward compatibility.
+
+### Effect
+
+Foundation only: no production behavior change in this PR. PR2
+(v7.10.0) wires `orb_engine.py` + `orb_exits.py` into the per-ticker
+scan loop and replaces the existing entry/exit path.
+
+### Non-goals (deferred to later PRs)
+
+  - Live engine wiring (PR2)
+  - Tiger Sovereign retirement (PR3)
+  - Dashboard updates (PR4-5)
+  - Paper-fire validation + multi-layer smoke (PR6)
+
+---
+
 ## v7.8.9-experimental (2026-05-10) — Freezegun default OFF + Final Report v3
 
 ### A. Freezegun-leak hunt complete -- default flipped to OFF

@@ -1,0 +1,46 @@
+name: Strategy unit tests
+
+# Runs the orb/* unit-test suite under tests/strategy/. Independent
+# from the broader test suite (which has heavier dependency
+# requirements) to keep iteration cycles fast.
+#
+# Triggers:
+#   1. push to main / claude/* branches
+#   2. pull_request -> main
+#
+# Cost: ~30s per run.
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  pytest-strategy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest tzdata
+
+      - name: Run orb/* unit tests
+        run: |
+          python -m pytest tests/strategy/ -v --tb=short
