@@ -266,6 +266,19 @@ def run_variant(variant: dict, trigger_name: str, output_root: Path) -> dict:
                 "stderr_tail": proc.stderr[-2000:]}
 
     n_uploaded = upload_variant_results(trigger_name, vid, output_root)
+
+    # v7.8.6 part B -- read summary.json and inline it into the result
+    # so the status branch payload carries net_pnl / entries / wins /
+    # losses / win_rate without an R2 read on the observer side.
+    variant_summary = None
+    try:
+        summary_path = output_root / vid / "summary.json"
+        if summary_path.is_file():
+            variant_summary = json.loads(summary_path.read_text())
+    except Exception as e:
+        log.warning("[%s/%s] summary.json load failed: %s",
+                    trigger_name, vid, e)
+
     # v7.8.6 -- per-variant marker so a redeploy mid-sweep can resume.
     # Written ONLY after a clean upload, never on failure paths.
     mark_variant_processed(trigger_name, vid, {
@@ -273,9 +286,15 @@ def run_variant(variant: dict, trigger_name: str, output_root: Path) -> dict:
         "rc": 0,
         "uploaded": n_uploaded,
         "completed_at": _utc_now_iso(),
+        "summary": variant_summary,
     })
     log.info("[%s/%s] done, uploaded %d files", trigger_name, vid, n_uploaded)
-    return {"vid": vid, "rc": 0, "uploaded": n_uploaded}
+    return {
+        "vid": vid,
+        "rc": 0,
+        "uploaded": n_uploaded,
+        "summary": variant_summary,
+    }
 
 
 def push_status(trigger_name: str, status: dict) -> None:
@@ -417,7 +436,26 @@ def process_trigger(trigger_path: Path) -> None:
         if vid and is_variant_processed(name, vid):
             log.info("[%s/%s] resume: variant marker already in R2; skipping",
                      name, vid)
-            results.append({"vid": vid, "rc": 0, "resumed": True})
+            # v7.8.6 part B -- attempt to fetch the prior summary from
+            # the variant marker so resumed variants still surface their
+            # P&L numbers in the status branch payload. Failure here is
+            # cosmetic; the variant is already in R2.
+            prior_summary = None
+            try:
+                s3 = _r2_client()
+                obj = s3.get_object(
+                    Bucket=R2_BUCKET,
+                    Key=_r2_key_variant_marker(name, vid),
+                )
+                marker_body = json.loads(obj["Body"].read().decode("utf-8"))
+                prior_summary = marker_body.get("summary")
+            except Exception as e:
+                log.debug("[%s/%s] resume marker read failed: %s",
+                          name, vid, e)
+            results.append({
+                "vid": vid, "rc": 0, "resumed": True,
+                "summary": prior_summary,
+            })
         else:
             to_run.append(v)
 
@@ -481,7 +519,9 @@ def process_trigger(trigger_path: Path) -> None:
     }
     mark_processed(name, summary)
     # v7.8.6 -- final status push with the full summary, so observers
-    # can detect completion without a separate R2 read.
+    # can detect completion without a separate R2 read. Includes the
+    # per-variant summary.json contents inline so net_pnl / entries /
+    # win_rate are visible from the sweep-status branch alone.
     push_status(name, {
         "trigger": name, "phase": "done",
         "started_at": started_at,
@@ -495,7 +535,9 @@ def process_trigger(trigger_path: Path) -> None:
                 "vid": r.get("vid"),
                 "rc": r.get("rc"),
                 "uploaded": r.get("uploaded"),
+                "resumed": r.get("resumed", False),
                 "stderr_tail": r.get("stderr_tail"),
+                "summary": r.get("summary"),
             }
             for r in results
         ],
