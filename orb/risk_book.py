@@ -60,11 +60,15 @@ class RiskBook:
                  portfolio_id: str,
                  max_concurrent_risk_dollars: float = 2000.0,
                  equity: float = 100000.0,
-                 max_concurrent_notional_mult: float = 2.0) -> None:
+                 max_concurrent_notional_mult: float = 2.0,
+                 daily_loss_kill_pct: float = 2.0) -> None:
         self.portfolio_id = portfolio_id
         self._max_risk = float(max_concurrent_risk_dollars)
         self._equity = float(equity)
         self._max_notional_mult = float(max_concurrent_notional_mult)
+        self._daily_loss_kill_pct = float(daily_loss_kill_pct)
+        self._session_start_equity = float(equity)
+        self._realized_pnl_today: float = 0.0
         self._open_risk: float = 0.0
         self._open_notional: float = 0.0
         self._open_tickets: dict[str, _Ticket] = {}
@@ -73,6 +77,7 @@ class RiskBook:
         self.admit_count: int = 0
         self.reject_count: int = 0
         self.last_reject_reason: str = ""
+        self.daily_kill_triggered: bool = False
 
     # --- properties ---
 
@@ -111,6 +116,55 @@ class RiskBook:
         with self._lock:
             self._equity = float(new_equity)
 
+    # --- v7.29.0: daily-loss kill accounting ---
+
+    @property
+    def realized_pnl_today(self) -> float:
+        """Cumulative realized P&L on closed positions since the last
+        session-start reset."""
+        with self._lock:
+            return self._realized_pnl_today
+
+    @property
+    def session_start_equity(self) -> float:
+        """Equity at session start; used as the basis for the daily-loss
+        kill threshold."""
+        with self._lock:
+            return self._session_start_equity
+
+    @property
+    def daily_kill_threshold_dollars(self) -> float:
+        """Absolute realized-loss threshold above which entries are blocked.
+
+        Returns a positive number: realized_pnl_today <= -threshold blocks.
+        Computed as session_start_equity * daily_loss_kill_pct / 100.
+        """
+        with self._lock:
+            return self._session_start_equity * self._daily_loss_kill_pct / 100.0
+
+    def record_realized_pnl(self, pnl_dollars: float) -> bool:
+        """Accumulate a realized P&L into today's running total.
+
+        Returns True if THIS exit caused the daily-kill threshold to
+        cross (was-above, is-below). Used by the engine to log the
+        transition once.
+        """
+        with self._lock:
+            was_killed = self.daily_kill_triggered
+            self._realized_pnl_today += float(pnl_dollars)
+            if not was_killed:
+                threshold = self._session_start_equity * self._daily_loss_kill_pct / 100.0
+                if threshold > 0 and self._realized_pnl_today <= -threshold:
+                    self.daily_kill_triggered = True
+                    return True
+            return False
+
+    def is_daily_killed(self) -> bool:
+        """Cheap read of the kill state; used by try_admit + by the
+        engine entry path."""
+        with self._lock:
+            return self.daily_kill_triggered
+
     # --- admission ---
 
     def try_admit(self,
@@ -134,6 +188,15 @@ class RiskBook:
             if risk_dollars < 0 or notional < 0:
                 self.reject_count += 1
                 self.last_reject_reason = "negative_size"
+                return None
+            # v7.29.0: daily-loss kill -- atomic check inside the same lock
+            # so a concurrent record_realized_pnl can't sneak past.
+            if self.daily_kill_triggered:
+                self.reject_count += 1
+                self.last_reject_reason = (
+                    f"daily_kill (realized ${self._realized_pnl_today:.2f} "
+                    f"<= -${self._session_start_equity * self._daily_loss_kill_pct / 100.0:.2f})"
+                )
                 return None
             new_risk = self._open_risk + risk_dollars
             new_notional = self._open_notional + notional
@@ -181,17 +244,28 @@ class RiskBook:
 
     def reset_session(self) -> None:
         """Clear all open tickets. Call at session start to defensively
-        clear any stale tickets that may have leaked across a restart."""
+        clear any stale tickets that may have leaked across a restart.
+
+        v7.29.0: also resets per-session realized P&L and the
+        daily-kill flag, and snapshots session-start equity so the
+        daily-loss threshold is computed against the open of the
+        session (not against later MTM drift)."""
         with self._lock:
             self._open_tickets.clear()
             self._open_risk = 0.0
             self._open_notional = 0.0
+            self._realized_pnl_today = 0.0
+            self.daily_kill_triggered = False
+            self._session_start_equity = self._equity
 
     # --- snapshot (for /api/state) ---
 
     def snapshot(self) -> dict:
         """JSON-shaped snapshot of current risk-book state."""
         with self._lock:
+            kill_threshold = (
+                self._session_start_equity * self._daily_loss_kill_pct / 100.0
+            )
             return {
                 "portfolio_id": self.portfolio_id,
                 "equity": self._equity,
@@ -208,6 +282,12 @@ class RiskBook:
                     100.0 * self._open_risk / self._max_risk
                     if self._max_risk > 0 else 0.0
                 ),
+                # v7.29.0: daily-loss kill telemetry
+                "realized_pnl_today": self._realized_pnl_today,
+                "session_start_equity": self._session_start_equity,
+                "daily_kill_threshold": kill_threshold,
+                "daily_kill_triggered": self.daily_kill_triggered,
+                "daily_loss_kill_pct": self._daily_loss_kill_pct,
             }
 
 

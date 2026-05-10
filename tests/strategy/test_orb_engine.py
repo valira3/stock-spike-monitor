@@ -322,7 +322,19 @@ class TestTryEnterOnExit:
         assert adm2 is not None
 
     def test_max_trades_cap_blocks_after_n(self):
-        _cfg, eng = self._setup()
+        # Disable the daily-loss kill (v7.29.0) for this test so all 5
+        # stop-outs are reached before the cap fires; the kill is
+        # tested separately in test_orb_daily_kill.py.
+        cfg = make_config(daily_loss_kill_pct=0.0)
+        eng = OrbEngine(cfg, portfolio_ids=["main"])
+        eng.start_new_session(
+            date_iso="2026-01-02", tickers=["AAPL"],
+            vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        feed_or_window(eng, "AAPL", or_high=101.0, or_low=100.0)
         from orb.exits import ExitDecision, EXIT_STOP
         for i in range(5):
             sig = eng.detect_breakout(portfolio_id="main", ticker="AAPL",

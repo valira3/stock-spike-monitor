@@ -144,6 +144,7 @@ class OrbEngine:
                 max_concurrent_risk_dollars=cfg.max_concurrent_risk_dollars,
                 max_concurrent_notional_mult=cfg.max_concurrent_notional_mult,
                 equity=100_000.0,  # caller refresh via update_equity
+                daily_loss_kill_pct=cfg.daily_loss_kill_pct,
             )
 
         # Cached day-gate result (computed once per session)
@@ -333,6 +334,14 @@ class OrbEngine:
         to release the risk ticket.
         """
         cfg = self.cfg
+        if signal is None:
+            # Defensive: detect_breakout returns None when no breakout
+            # fires this tick. Callers should check, but tests have
+            # been observed to pass None through, and the v10
+            # daily-loss kill in v7.29.0 can transition the FSM
+            # between detect_breakout and try_enter such that the
+            # caller no longer has a signal to act on.
+            return None
         ds = self._state.get_day_state(signal.portfolio_id, signal.ticker)
         if not ds.can_enter(cfg.max_trades_per_day):
             return None
@@ -409,6 +418,12 @@ class OrbEngine:
 
         Position becomes eligible for re-entry on the same ticker if
         trades_today < max_trades_per_day.
+
+        v7.29.0: also records realized P&L into the RiskBook for the
+        daily-loss kill gate. If this exit causes the kill threshold to
+        cross, all (portfolio, ticker) FSM rows for this portfolio that
+        are currently armed/warmup transition to PHASE_BLOCKED_DAILY_KILL
+        so no further entries fire today.
         """
         rb = self._risk.get(pos.portfolio_id)
         if rb is not None and pos.risk_ticket_id:
@@ -418,11 +433,57 @@ class OrbEngine:
                 ticket = rb._open_tickets.get(pos.risk_ticket_id)
             if ticket is not None:
                 rb.release(ticket)
+        # v7.29.0: realized P&L accounting
+        kill_just_triggered = False
+        if rb is not None:
+            try:
+                exit_price = float(exit_decision.price)
+                entry_price = float(pos.entry_price)
+                shares = int(pos.shares or 0)
+                if pos.side == "long":
+                    pnl = shares * (exit_price - entry_price)
+                else:  # short
+                    pnl = shares * (entry_price - exit_price)
+                kill_just_triggered = rb.record_realized_pnl(pnl)
+            except Exception as e:
+                logger.warning(
+                    "[V79-ORB-KILL] pnl accounting failed pos=%s.%s: %s",
+                    pos.portfolio_id, pos.ticker, e,
+                )
         ds = self._state.get_day_state(pos.portfolio_id, pos.ticker)
         ds.in_position = False
         ds.trades_today += 1
         ds.last_exit_iso = exit_iso
         ds.transition(_state.PHASE_CLOSED)
+
+        # v7.29.0: if the kill just triggered, block all eligible
+        # (portfolio, ticker) rows for THIS portfolio so the next
+        # signal can't fire. Skip already-blocked / in-position rows.
+        if kill_just_triggered and rb is not None:
+            threshold = rb.daily_kill_threshold_dollars
+            logger.warning(
+                "[V79-ORB-KILL] daily-loss kill TRIGGERED portfolio=%s "
+                "realized=$%.2f threshold=-$%.2f",
+                pos.portfolio_id, rb.realized_pnl_today, threshold,
+            )
+            self._block_portfolio_for_daily_kill(pos.portfolio_id)
+
+    def _block_portfolio_for_daily_kill(self, portfolio_id: str) -> None:
+        """Transition every armed / warmup / closed FSM row for this
+        portfolio to PHASE_BLOCKED_DAILY_KILL. Leaves in-position rows
+        alone (the existing position is allowed to manage to its exit)
+        and skips already-blocked rows."""
+        for (pid, ticker), ds in self._state.day_states.items():
+            if pid != portfolio_id:
+                continue
+            if ds.is_blocked():
+                continue
+            if ds.phase == _state.PHASE_IN_POS:
+                continue
+            ds.transition(
+                _state.PHASE_BLOCKED_DAILY_KILL,
+                reason=f"daily_loss_kill portfolio={portfolio_id}",
+            )
 
     # --- snapshots / introspection ---
 

@@ -4,6 +4,104 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.29.0 (2026-05-10) -- Daily-loss kill switch enforcement (CRITICAL gap)
+
+Twenty-first PR in v10 rollout. Closes the largest CRITICAL gap from
+the deep production audit: `OrbConfig.daily_loss_kill_pct` (default
+2.0%) was parsed from env but never enforced. The backtest models the
+kill at `tools/orb_backtest.py:1327+`; the live path didn't — a day
+that had already lost 2% kept admitting new entries.
+
+### A. `orb/risk_book.py` -- per-portfolio realized P&L tracking
+
+`RiskBook` now carries:
+  - `_realized_pnl_today: float` -- running total
+  - `_session_start_equity: float` -- snapshot at session start
+  - `_daily_loss_kill_pct: float` -- threshold in pct
+  - `daily_kill_triggered: bool` -- one-way flag
+
+New API:
+  - `record_realized_pnl(pnl_dollars) -> bool` -- accumulate; returns
+    True only on the EXIT that just crossed the threshold (engine uses
+    this to fire the cascade transition once)
+  - `daily_kill_threshold_dollars` (property) -- absolute threshold
+  - `is_daily_killed()` -- cheap state read
+
+`try_admit` now rejects atomically under the lock if
+`daily_kill_triggered` is True (reject reason: `daily_kill (realized
+$X <= -$Y)`).
+
+`reset_session` clears the flag + zeros the running total + re-pins
+`session_start_equity` so the threshold tracks the new day's open.
+
+`snapshot()` exposes 5 new fields (`realized_pnl_today`,
+`session_start_equity`, `daily_kill_threshold`,
+`daily_kill_triggered`, `daily_loss_kill_pct`).
+
+### B. `orb/engine.py` -- exit accounting + FSM cascade
+
+`OrbEngine.__init__` now forwards `cfg.daily_loss_kill_pct` to each
+RiskBook on registration.
+
+`on_exit` computes realized P&L (`shares * (exit - entry)` for long,
+`shares * (entry - exit)` for short), calls `rb.record_realized_pnl`,
+and on a "just-triggered" return value transitions every eligible
+(portfolio, ticker) FSM row for THAT portfolio to
+`PHASE_BLOCKED_DAILY_KILL`. In-position rows are skipped so the
+existing exit logic still flattens; already-blocked rows are skipped.
+
+`try_enter` gains a defensive None-signal guard.
+
+Forensic: `[V79-ORB-KILL] daily-loss kill TRIGGERED portfolio=X
+realized=$-2361.60 threshold=-$2000.00` at warning level.
+
+### C. Tests
+
+17 new tests in `tests/strategy/test_orb_daily_kill.py`:
+
+RiskBook-level:
+  - default no kill / threshold math
+  - P&L accumulates correctly
+  - kill triggers exactly at threshold crossing
+  - "just-triggered" returns True only once
+  - `try_admit` rejects when killed
+  - `reset_session` clears the kill
+  - snapshot exposes kill state
+  - `daily_loss_kill_pct=0.0` disables the feature
+  - smoke test for concurrent admit + record under the lock
+
+Engine integration:
+  - long stop hit records correct realized P&L
+  - short stop hit records correct realized P&L
+  - winning trade records positive P&L
+  - cumulative loss across multiple trades triggers kill
+  - kill cascade blocks OTHER tickers on the same portfolio
+  - kill is isolated per portfolio (Main kill doesn't affect Val)
+  - kill does NOT block in-position rows
+  - session reset clears the kill
+  - winning then losing doesn't trigger prematurely
+
+One pre-existing test updated:
+`test_orb_engine.py::test_max_trades_cap_blocks_after_n` now passes
+`daily_loss_kill_pct=0.0` to exercise the 5-stop max-trades path; the
+kill is tested separately in the new suite.
+
+249 strategy tests pass (was 231, +18 new). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.28.0 -> 7.29.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.29.0
+- `orb/risk_book.py` -- daily-kill API + state + atomic gate
+- `orb/engine.py` -- on_exit P&L accounting + FSM cascade +
+  try_enter None guard
+- `tests/strategy/test_orb_daily_kill.py` -- new (17 tests)
+- `tests/strategy/test_orb_engine.py` -- one test pass
+  `daily_loss_kill_pct=0.0`
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.28.0 (2026-05-10) -- Docs refresh: CLAUDE.md + ARCHITECTURE.md v10 lead-in
 
 Twentieth PR in v10 rollout. Pure docs — no code change. Closes the
