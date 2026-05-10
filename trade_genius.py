@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.23.0"
+BOT_VERSION = "7.24.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -7932,6 +7932,23 @@ else:
     val_executor = build_val_executor()
     gene_executor = build_gene_executor()
     install_globals(val=val_executor, gene=gene_executor)
+
+    # v7.24.0: bootstrap the v10 ORB live runtime AFTER the executor
+    # registry is wired up. Previously this was deferred to the first
+    # scan tick (engine/scan.py), but doing it here eliminates a
+    # one-cycle delay where the first 09:30 bar arrives before the
+    # runtime is ready. Idempotent -- scan.py's bootstrap call becomes
+    # a no-op once we've already done it here.
+    try:
+        import orb.live_runtime as _orb_rt
+        _orb_rt.bootstrap()
+        logger.info(
+            "[V79-ORB-BOOT] live_mode=%s portfolios=%s",
+            _orb_rt.is_live_mode_on(),
+            ",".join(_orb_rt.get_engine().portfolio_ids if _orb_rt.get_engine() else []),
+        )
+    except Exception as _e_orb:
+        logger.warning("[V79-ORB-BOOT] startup failed (non-fatal): %s", _e_orb)
 
     logger.info("%s v%s started", BOT_NAME, BOT_VERSION)
     logger.info("[ENGINE] modules loaded: %s", ", ".join(engine.LOADED_MODULES))
