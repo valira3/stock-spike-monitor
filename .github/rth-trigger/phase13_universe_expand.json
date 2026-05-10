@@ -1,0 +1,6 @@
+{
+  "start_date": "2025-11-03",
+  "end_date": "2026-05-01",
+  "tickers": "BRK.B,JPM,V,JNJ,WMT,XOM,MA,HD,PG,COST,ABBV,CVX,KO",
+  "target_branch": "data-extensions/rth-expand"
+}
