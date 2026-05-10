@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Mapping, Optional
 
 from orb.engine import OrbConfig, OrbEngine
 from orb.live_adapter import LiveAdapter, LiveAdapterRegistry, EntryResult, ExitResult
@@ -217,6 +217,69 @@ def reset_session() -> None:
     _session_date = ""
     if _adapters is not None:
         _adapters.reset_all_sessions()
+
+
+# v7.24.0: intraday equity refresh.
+#
+# Why: ensure_session_started seeds each RiskBook with the per-portfolio
+# session-start equity. Throughout the day, mark-to-market gains/losses
+# move the portfolio's actual equity, but the RiskBook's _equity stays
+# frozen. The risk-cap math (max_concurrent_risk_dollars is absolute and
+# unaffected, but max_concurrent_notional = equity * max_notional_mult
+# IS affected) drifts from reality.
+#
+# Solution: scan.py calls refresh_equity_from_books() once per scan
+# cycle (~every 60s). It pulls each PortfolioBook.current_equity(prices)
+# and pushes via RiskBook.update_equity(). Cheap (no broker round-trip;
+# just paper_cash + MTM math we already do for the dashboard).
+#
+# Failure-tolerant: any exception is swallowed and a single warn log
+# emitted. The risk caps stay at their last-good values.
+def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
+                              ) -> dict[str, float]:
+    """Pull current per-portfolio equity from engine.portfolio_book and
+    push it into each RiskBook via update_equity().
+
+    Args:
+        prices: optional {ticker: float} for mark-to-market. Same shape
+            as PortfolioBook.current_equity expects. If None or missing
+            tickers, position.entry_price is used as fallback.
+
+    Returns:
+        {portfolio_id: equity} that was actually applied. Empty dict if
+        the runtime is not bootstrapped or PORTFOLIOS is unavailable.
+    """
+    if _engine is None:
+        return {}
+    try:
+        from engine.portfolio_book import PORTFOLIOS, ALL_PORTFOLIO_IDS
+    except Exception as e:
+        logger.debug("[V79-ORB-EQUITY] portfolio_book unavailable: %s", e)
+        return {}
+    applied: dict[str, float] = {}
+    for pid in ALL_PORTFOLIO_IDS:
+        book = PORTFOLIOS.get(pid)
+        if book is None:
+            continue
+        try:
+            eq = float(book.current_equity(prices))
+        except Exception as e:
+            logger.debug("[V79-ORB-EQUITY] %s current_equity failed: %s",
+                         pid, e)
+            try:
+                eq = float(getattr(book, "paper_cash", 0.0))
+            except Exception:
+                continue
+        rb = _engine._risk.get(pid)
+        if rb is None:
+            continue
+        try:
+            rb.update_equity(eq)
+            applied[pid] = eq
+        except Exception as e:
+            logger.debug("[V79-ORB-EQUITY] %s update_equity failed: %s",
+                         pid, e)
+    return applied
 
 
 # --- per-tick API for scan.py ---

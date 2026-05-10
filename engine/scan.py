@@ -433,6 +433,20 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception as _e:
         logger.warning("[V79-ORB-RESET] failed: %s", _e)
 
+    # v7.24.0: intraday equity refresh. Pulls each PortfolioBook's
+    # current_equity (paper_cash + MTM long_mv - short_liability) and
+    # pushes into each per-portfolio RiskBook so notional caps track
+    # reality across the session. Cheap, runs once per scan cycle.
+    try:
+        _refreshed = _orb_runtime.refresh_equity_from_books()
+        if _refreshed:
+            logger.debug(
+                "[V79-ORB-EQUITY] refreshed %s",
+                ",".join(f"{p}=${e:.0f}" for p, e in _refreshed.items()),
+            )
+    except Exception as _e:
+        logger.debug("[V79-ORB-EQUITY] refresh failed: %s", _e)
+
     for ticker in _scan_universe:
         _per_ticker_tick(callbacks, ticker)
 

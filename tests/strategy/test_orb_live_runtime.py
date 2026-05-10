@@ -346,3 +346,66 @@ class TestReset:
             equity_per_portfolio={"main": 100000.0},
         )
         assert ok
+
+
+# ------------------ intraday equity refresh (v7.24.0) ------------------
+
+
+class _StubBook:
+    def __init__(self, eq):
+        self._eq = float(eq)
+        self.paper_cash = float(eq)
+    def current_equity(self, prices=None):
+        return self._eq
+
+
+class TestRefreshEquityFromBooks:
+
+    def test_no_op_when_not_bootstrapped(self, isolated_env):
+        out = live_runtime.refresh_equity_from_books()
+        assert out == {}
+
+    def test_pushes_equity_into_each_riskbook(self, isolated_env, monkeypatch):
+        live_runtime.bootstrap()
+        # The runtime created RiskBooks with 100k each; intercept
+        # PORTFOLIOS to pretend mark-to-market has moved equity.
+        import engine.portfolio_book as pb
+        new_books = {"main": _StubBook(120000.0), "val": _StubBook(95000.0)}
+        monkeypatch.setattr(pb, "PORTFOLIOS", new_books)
+        monkeypatch.setattr(pb, "ALL_PORTFOLIO_IDS", list(new_books.keys()))
+        out = live_runtime.refresh_equity_from_books()
+        assert out.get("main") == 120000.0
+        eng = live_runtime.get_engine()
+        rb_main = eng._risk.get("main")
+        assert rb_main is not None
+        assert abs(rb_main.equity - 120000.0) < 0.01
+
+    def test_max_notional_tracks_new_equity(self, isolated_env, monkeypatch):
+        live_runtime.bootstrap()
+        eng = live_runtime.get_engine()
+        rb = eng._risk.get("main")
+        before = rb.max_notional
+        import engine.portfolio_book as pb
+        monkeypatch.setattr(pb, "PORTFOLIOS",
+                            {"main": _StubBook(50000.0)})
+        monkeypatch.setattr(pb, "ALL_PORTFOLIO_IDS", ["main"])
+        live_runtime.refresh_equity_from_books()
+        # max_concurrent_notional_mult defaults to 2.0 -> 100k cap
+        assert abs(rb.max_notional - 100000.0) < 0.01
+        assert rb.max_notional != before
+
+    def test_swallows_book_failure(self, isolated_env, monkeypatch):
+        """A misbehaving PortfolioBook should NOT explode the refresh."""
+        live_runtime.bootstrap()
+
+        class _Broken:
+            paper_cash = 88000.0
+            def current_equity(self, prices=None):
+                raise RuntimeError("simulated failure")
+
+        import engine.portfolio_book as pb
+        monkeypatch.setattr(pb, "PORTFOLIOS", {"main": _Broken()})
+        monkeypatch.setattr(pb, "ALL_PORTFOLIO_IDS", ["main"])
+        out = live_runtime.refresh_equity_from_books()
+        # Falls back to paper_cash
+        assert out.get("main") == 88000.0

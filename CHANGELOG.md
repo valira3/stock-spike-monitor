@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.24.0 (2026-05-10) -- v10 ORB bootstrap timing + intraday equity refresh
+
+Sixteenth PR in v10 rollout. Closes two of the gaps flagged in
+`docs/v10_retirement_plan.md` Phase A: (1) the v10 runtime was
+bootstrapped lazily on the first scan tick, leaving a one-cycle
+window where the 09:30 ET bar could arrive before the engine was
+ready; and (2) RiskBook equity was set once at session start and
+never refreshed, so notional caps drifted from reality across
+the day.
+
+### A. `trade_genius.py` -- bootstrap at startup
+
+`main()` now calls `orb.live_runtime.bootstrap()` immediately
+after `install_globals(...)` wires up the executor registry.
+Previously this was deferred to `engine/scan.py:scan_loop`. The
+scan-loop call is now a no-op (idempotent guard inside
+`bootstrap`), but it stays as a defensive fallback.
+
+Forensic: `[V79-ORB-BOOT] live_mode=... portfolios=...` is
+emitted at process start so we can confirm the runtime is live
+before the open.
+
+### B. `orb/live_runtime.py` -- `refresh_equity_from_books()`
+
+New helper that pulls each `PortfolioBook.current_equity()` and
+pushes it into the corresponding `RiskBook` via
+`update_equity()`. Cheap (no broker round-trip, just reads
+already-tracked paper_cash + MTM math). Failure-tolerant: a
+broken book falls back to `paper_cash`; a missing
+`portfolio_book` import returns an empty dict without crashing.
+
+### C. `engine/scan.py` -- per-cycle refresh wire-up
+
+`scan_loop` calls `refresh_equity_from_books()` once per scan
+cycle (~60s), right after the day-gate session-start block.
+This keeps each per-portfolio RiskBook's `max_notional`
+(`equity * max_concurrent_notional_mult`) tracking actual
+mark-to-market equity throughout the session. The
+`max_concurrent_risk_dollars` cap is absolute and unchanged; only
+the notional cap depends on equity.
+
+Forensic: `[V79-ORB-EQUITY] refreshed main=$X,val=$Y,gene=$Z`
+debug-level log per cycle when at least one book was refreshed.
+
+### D. Tests
+
+`tests/strategy/test_orb_live_runtime.py::TestRefreshEquityFromBooks`
+adds 4 tests: no-op-when-not-bootstrapped, push-into-each-riskbook,
+notional-cap-tracks-new-equity, swallows-book-failure (falls back
+to `paper_cash`). 191 strategy tests pass.
+
+### Files
+
+- `bot_version.py` -- 7.23.0 -> 7.24.0
+- `trade_genius.py` -- bootstrap call after install_globals
+- `orb/live_runtime.py` -- refresh_equity_from_books helper
+- `engine/scan.py` -- per-cycle equity refresh
+- `tests/strategy/test_orb_live_runtime.py` -- 4 new tests
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.23.0 (2026-05-10) -- v10 ORB per-portfolio entry routing + dashboard
 
 Fifteenth PR in v10 rollout. Closes the per-portfolio coverage gap:
