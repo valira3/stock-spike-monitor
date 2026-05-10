@@ -208,7 +208,9 @@ class TestV10DispatchExecutorFire:
         fake_ex.fire_short.assert_not_called()
 
     def test_on_calls_fire_long(self, monkeypatch):
+        # v7.30.0: dispatch now requires ORB_LIVE_MODE=1 too.
         dispatch = self._import_dispatch()
+        monkeypatch.setenv("ORB_LIVE_MODE", "1")
         monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
         fake_ex.fire_long.return_value = True
@@ -216,10 +218,16 @@ class TestV10DispatchExecutorFire:
                    return_value=fake_ex):
             dispatch(pid="val", side="long", ticker="AAPL",
                      price=100.0, shares=10)
-        fake_ex.fire_long.assert_called_once_with("AAPL", 100.0, 10)
+        # v7.30.0: dispatch now passes error_callback=None when no
+        # callbacks supplied.
+        fake_ex.fire_long.assert_called_once()
+        args, kwargs = fake_ex.fire_long.call_args
+        assert args == ("AAPL", 100.0, 10)
+        assert "error_callback" in kwargs
 
     def test_on_calls_fire_short(self, monkeypatch):
         dispatch = self._import_dispatch()
+        monkeypatch.setenv("ORB_LIVE_MODE", "1")
         monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
         fake_ex.fire_short.return_value = True
@@ -227,7 +235,10 @@ class TestV10DispatchExecutorFire:
                    return_value=fake_ex):
             dispatch(pid="gene", side="short", ticker="MSFT",
                      price=200.0, shares=5)
-        fake_ex.fire_short.assert_called_once_with("MSFT", 200.0, 5)
+        fake_ex.fire_short.assert_called_once()
+        args, kwargs = fake_ex.fire_short.call_args
+        assert args == ("MSFT", 200.0, 5)
+        assert "error_callback" in kwargs
 
     def test_on_no_executor_no_fire(self, monkeypatch):
         dispatch = self._import_dispatch()

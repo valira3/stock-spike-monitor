@@ -783,30 +783,43 @@ class TradeGeniusBase:
     # within the same UTC minute. A double-fire (v10 admission + main bus
     # broadcast) would land as two separate orders, each idempotent against
     # itself -- _submit_order_idempotent handles within-bucket dupes.
-    def fire_long(self, ticker: str, price: float, shares: int) -> bool:
+    def fire_long(self, ticker: str, price: float, shares: int,
+                  *, error_callback=None) -> bool:
         """Submit a LONG v10 entry directly to Alpaca.
 
         Returns True if an order was submitted (or recognized as a coid
         duplicate); False on no-op (no client, no shares, exception).
+
+        v7.30.0: optional `error_callback(name, side, ticker, shares,
+        exc)` is invoked when the broker submit raises so callers can
+        escalate via callbacks.report_error (Telegram / dashboard
+        alert). Without it, the failure is still logged but only
+        visible in the log file.
         """
         if shares <= 0:
             return False
         if not ticker:
             return False
         return self._submit_v10_entry(side="LONG", ticker=ticker,
-                                      price=price, shares=int(shares))
+                                      price=price, shares=int(shares),
+                                      error_callback=error_callback)
 
-    def fire_short(self, ticker: str, price: float, shares: int) -> bool:
-        """Submit a SHORT v10 entry directly to Alpaca. Mirror of fire_long."""
+    def fire_short(self, ticker: str, price: float, shares: int,
+                   *, error_callback=None) -> bool:
+        """Submit a SHORT v10 entry directly to Alpaca. Mirror of fire_long.
+
+        v7.30.0: optional `error_callback` -- see `fire_long` docstring."""
         if shares <= 0:
             return False
         if not ticker:
             return False
         return self._submit_v10_entry(side="SHORT", ticker=ticker,
-                                      price=price, shares=int(shares))
+                                      price=price, shares=int(shares),
+                                      error_callback=error_callback)
 
     def _submit_v10_entry(self, *, side: str, ticker: str,
-                          price: float, shares: int) -> bool:
+                          price: float, shares: int,
+                          error_callback=None) -> bool:
         """Shared body for fire_long / fire_short.
 
         Uses MARKET DAY orders rather than the legacy LIMIT IOC path because
@@ -839,11 +852,22 @@ class TradeGeniusBase:
         )
         try:
             order = self._submit_order_idempotent(client, req, coid)
-        except Exception:
+        except Exception as _exc:
             logger.exception(
                 "[%s] [V10-FIRE] submit failed %s %s qty=%d",
                 self.NAME, side, ticker, shares,
             )
+            # v7.30.0: escalate broker errors (5xx / timeout / conn
+            # drop) through the supplied callback. Failure of the
+            # callback itself must NOT raise out of the fire path.
+            if error_callback is not None:
+                try:
+                    error_callback(self.NAME, side, ticker,
+                                   int(shares), _exc)
+                except Exception:
+                    logger.exception(
+                        "[%s] [V10-FIRE] error_callback raised", self.NAME,
+                    )
             return False
         oid = getattr(order, "id", "?")
         logger.info(

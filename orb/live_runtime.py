@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Mapping, Optional
 
 from orb.engine import OrbConfig, OrbEngine
@@ -47,11 +48,24 @@ logger = logging.getLogger(__name__)
 
 
 # --- module-level singleton state ---
+#
+# v7.30.0: thread safety hardening.
+#   - `_bootstrap_lock` guards bootstrap() so a partial init from one
+#     thread can't be observed by another (e.g. _engine set but
+#     _adapters not). Bootstrap also commits via a local-then-swap
+#     pattern so a mid-construction exception leaves the module in a
+#     consistent "not bootstrapped" state.
+#   - `_sizes_lock` guards _pending_v10_sizes which is written by the
+#     scan thread (stash_v10_size) and read/popped by the broker
+#     thread (consume_v10_size). Python dicts are NOT thread-safe for
+#     concurrent read+write.
 
 _engine: Optional[OrbEngine] = None
 _adapters: Optional[LiveAdapterRegistry] = None
 _session_date: str = ""  # iso date when the current session was started; "" if not yet
 _bootstrapped: bool = False
+_bootstrap_lock = threading.RLock()
+_sizes_lock = threading.RLock()
 
 
 def is_live_mode_on() -> bool:
@@ -148,19 +162,37 @@ def bootstrap(*, force: bool = False) -> None:
 
     Called by trade_genius.py at process startup, after PORTFOLIOS is
     initialized.
+
+    v7.30.0: atomic + thread-safe.
+      - The lock prevents a concurrent scan-thread/telegram-thread
+        bootstrap race.
+      - The local-then-swap pattern ensures a mid-construction
+        exception (e.g. LiveAdapterRegistry blows up after OrbEngine
+        succeeds) leaves the module in a consistent "not bootstrapped"
+        state -- _engine and _adapters are only assigned once BOTH
+        constructors return successfully.
     """
     global _engine, _adapters, _bootstrapped
-    if _bootstrapped and not force:
-        return
-    cfg = _build_config_from_env()
-    portfolio_ids = _resolve_portfolio_ids()
-    earnings_fn = _resolve_earnings_fn()
-    _engine = OrbEngine(cfg, portfolio_ids=portfolio_ids,
-                        is_earnings_window_fn=earnings_fn)
-    _adapters = LiveAdapterRegistry(_engine)
-    _bootstrapped = True
-    logger.info("[V79-ORB-BOOT] portfolios=%s rr=%s or_min=%s vix_thr=%s",
-                portfolio_ids, cfg.rr, cfg.or_minutes, cfg.skip_vix_above)
+    with _bootstrap_lock:
+        if _bootstrapped and not force:
+            return
+        cfg = _build_config_from_env()
+        portfolio_ids = _resolve_portfolio_ids()
+        earnings_fn = _resolve_earnings_fn()
+        # Local-then-swap: build both, then publish atomically.
+        try:
+            _new_engine = OrbEngine(cfg, portfolio_ids=portfolio_ids,
+                                    is_earnings_window_fn=earnings_fn)
+            _new_adapters = LiveAdapterRegistry(_new_engine)
+        except Exception:
+            logger.exception("[V79-ORB-BOOT] construction failed; "
+                             "module state unchanged")
+            raise
+        _engine = _new_engine
+        _adapters = _new_adapters
+        _bootstrapped = True
+        logger.info("[V79-ORB-BOOT] portfolios=%s rr=%s or_min=%s vix_thr=%s",
+                    portfolio_ids, cfg.rr, cfg.or_minutes, cfg.skip_vix_above)
 
 
 def get_engine() -> Optional[OrbEngine]:
@@ -354,19 +386,30 @@ _pending_v10_sizes: dict[tuple[str, str], int] = {}
 
 
 def stash_v10_size(portfolio_id: str, ticker: str, shares: int) -> None:
-    """Store v10's computed shares for an imminent execute_entry call."""
-    _pending_v10_sizes[(portfolio_id, ticker)] = int(shares)
+    """Store v10's computed shares for an imminent execute_entry call.
+
+    v7.30.0: serialized via _sizes_lock so scan-thread writes don't
+    interleave with broker-thread pops on the same key.
+    """
+    with _sizes_lock:
+        _pending_v10_sizes[(portfolio_id, ticker)] = int(shares)
 
 
 def consume_v10_size(portfolio_id: str, ticker: str) -> Optional[int]:
     """Pop the stashed shares for a (portfolio_id, ticker). Returns None
-    if no v10 size was stashed (legacy fallback)."""
-    return _pending_v10_sizes.pop((portfolio_id, ticker), None)
+    if no v10 size was stashed (legacy fallback).
+
+    v7.30.0: serialized via _sizes_lock."""
+    with _sizes_lock:
+        return _pending_v10_sizes.pop((portfolio_id, ticker), None)
 
 
 def peek_v10_size(portfolio_id: str, ticker: str) -> Optional[int]:
-    """Read without consuming (for diagnostics/tests)."""
-    return _pending_v10_sizes.get((portfolio_id, ticker))
+    """Read without consuming (for diagnostics/tests).
+
+    v7.30.0: serialized via _sizes_lock."""
+    with _sizes_lock:
+        return _pending_v10_sizes.get((portfolio_id, ticker))
 
 
 def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
