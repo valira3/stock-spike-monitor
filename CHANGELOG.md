@@ -4,6 +4,23 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.7-experimental (2026-05-10) — Status push inlines summary.json
+
+Closes the last observability gap on top of v7.8.6. The status branch
+payload now carries each variant's `summary.json` contents inline
+(net_pnl / entries / wins / losses / win_rate_pct / config), so an
+observer (e.g. Claude Code session without R2 credentials) can read
+the full sweep result from `git show origin/sweep-status:status/<trigger>.json`
+alone -- no R2 read required.
+
+The per-variant marker in R2 also stores the inline summary, so
+resumed variants in subsequent runs surface their P&L numbers without
+re-running.
+
+`tools/railway_sweep_worker.py` only.
+
+---
+
 ## v7.8.6-experimental (2026-05-10) — Railway sweep-status feedback + per-variant resumability
 
 Two independent improvements to the Railway sweep worker. No bot
