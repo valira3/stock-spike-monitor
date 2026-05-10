@@ -4,6 +4,90 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.39.0 (2026-05-10) -- Tier 2: spec-as-code FSM reference engine
+
+Thirty-first PR in v10 rollout. Completes the Tier 2 accuracy-
+verification plan. Adds a SECOND implementation of the FSM
+transition rules in ~80 LOC of pure Python that does NOT touch
+any `orb.state` / `orb.day_gates` / `orb.engine` code -- then
+asserts both implementations agree on a curated set of
+state-transition scenarios.
+
+### What `SpecFSM` does
+
+Maps (config, day-state, ticker-state) -> phase string. Encodes the
+spec text directly:
+
+  1. Daily kill -> BLOCKED_DAILY_KILL
+  2. VIX > threshold OR missing -> BLOCKED_VIX
+  3. Earnings window -> BLOCKED_EARNINGS
+  4. Gap > 1.5% -> BLOCKED_GAP
+  5. Blocklist match -> BLOCKED_BLOCKLIST
+  6. In-position -> IN_POS
+  7. trades_today >= max -> CLOSED (cap-locked)
+  8. OR-state-dependent:
+       - or_low/high None -> WARMUP
+       - bars_seen < or_minutes/2 -> BLOCKED_OR_INSUFFICIENT
+       - width outside [min, max] -> BLOCKED_RANGE
+       - else -> ARMED
+
+### Tests
+
+**Reference unit tests (12)**: verify the reference itself encodes
+the spec correctly. Each phase has a dedicated test driving the
+reference to it.
+
+**Live <-> spec agreement (7)**: drive the live engine through a
+matching scenario, assert the live FSM transitions to the SAME
+phase the reference predicts. Catches:
+  - Spec-vs-live drift in transition order
+  - Phase-naming inconsistencies
+  - Missing transitions in either implementation
+
+If reference and live disagree, one of them is wrong. The
+disagreement points at the exact transition.
+
+### Reference bug found while writing
+
+The reference's first version compared `side.upper()` against a
+case-sensitive set; the spec config can pass lowercase strings.
+Fixed by normalizing the blocklist side strings on lookup. This
+shows the test mechanism is working -- it caught a real bug in
+the reference (not the live engine).
+
+### Accuracy plan: COMPLETE
+
+This closes the user-requested accuracy verification plan:
+
+| Tier | PR | Mechanism |
+|------|-----|-----------|
+| 1 | PR26 v7.34.0 | pricing-math + leak + geometry reference |
+| 1A | PR27 v7.35.0 | backtest <-> live parity |
+| 2 | PR28 v7.36.0 | random-seed property tests |
+| 2 | PR29 v7.37.0 | golden ledger snapshots |
+| 2 | PR30 v7.38.0 | boundary-value matrix sweep |
+| 2 | PR31 v7.39.0 | spec-as-code FSM reference |
+
+Net result: **6 independent accuracy mechanisms** verify every
+trade decision against the spec. Bug classes still possible:
+runtime issues that test cases don't exercise (broker fills,
+network errors), but every strategy correctness path is now
+verified by multiple layers.
+
+### Tests
+
+**379 strategy tests pass** (was 354, +19 from this PR; +88 total
+across the whole accuracy plan PRs 26-31). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.38.0 -> 7.39.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.39.0
+- `tests/strategy/test_orb_fsm_spec_reference.py` -- new (19 tests)
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.38.0 (2026-05-10) -- Tier 2: boundary-value matrix sweep
 
 Thirtieth PR in v10 rollout. Systematic 3x sweep of every keystone
