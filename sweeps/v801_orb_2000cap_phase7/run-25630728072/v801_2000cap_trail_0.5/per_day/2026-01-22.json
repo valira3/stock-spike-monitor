@@ -1,0 +1,92 @@
+{
+  "date": "2026-01-22",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-22T10:50:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 436.6182
+    },
+    {
+      "ts": "2026-01-22T10:10:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "price": 330.9217
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-22T13:08:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 446.9127,
+      "reason": "target"
+    },
+    {
+      "ts": "2026-01-22T15:55:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "exit_price": 331.0185,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-01-22T10:50:00-05:00",
+      "exit_ts": "2026-01-22T13:08:00-05:00",
+      "entry_price": 436.6182,
+      "exit_price": 446.9127,
+      "shares": 171,
+      "pnl_per_share": 10.2945,
+      "pnl_dollars": 1760.3517,
+      "exit_reason": "target",
+      "or_high": 436.23,
+      "or_low": 432.6293,
+      "or_range_pct": 0.008288,
+      "stop_price": 445.8164,
+      "risk_dollars": 719.43
+    },
+    {
+      "ticker": "GOOG",
+      "side": "short",
+      "entry_ts": "2026-01-22T10:10:00-05:00",
+      "exit_ts": "2026-01-22T15:55:00-05:00",
+      "entry_price": 330.9217,
+      "exit_price": 331.0185,
+      "shares": 226,
+      "pnl_per_share": -0.0968,
+      "pnl_dollars": -21.8687,
+      "exit_reason": "eod",
+      "or_high": 335.21,
+      "or_low": 331.3,
+      "or_range_pct": 0.011733,
+      "stop_price": 335.3755,
+      "risk_dollars": 1006.54
+    }
+  ],
+  "rejected_concurrent_cap": 18,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 1,
+    "losses": 1,
+    "total_pnl": 1738.483,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

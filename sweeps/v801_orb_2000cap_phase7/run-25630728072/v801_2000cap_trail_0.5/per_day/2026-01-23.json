@@ -1,0 +1,122 @@
+{
+  "date": "2026-01-23",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-23T11:25:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 450.7253
+    },
+    {
+      "ts": "2026-01-23T10:05:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 237.2083
+    },
+    {
+      "ts": "2026-01-23T10:10:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 237.2836
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-23T15:55:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 448.3207,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-01-23T11:16:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "exit_price": 238.952,
+      "reason": "be_stop"
+    },
+    {
+      "ts": "2026-01-23T11:23:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "exit_price": 238.9144,
+      "reason": "be_stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-01-23T11:25:00-05:00",
+      "exit_ts": "2026-01-23T15:55:00-05:00",
+      "entry_price": 450.7253,
+      "exit_price": 448.3207,
+      "shares": 166,
+      "pnl_per_share": -2.4045,
+      "pnl_dollars": -399.1507,
+      "exit_reason": "eod",
+      "or_high": 450.5,
+      "or_low": 444.04,
+      "or_range_pct": 0.014443,
+      "stop_price": 443.8146,
+      "risk_dollars": 1147.16
+    },
+    {
+      "ticker": "AMZN",
+      "side": "long",
+      "entry_ts": "2026-01-23T10:05:00-05:00",
+      "exit_ts": "2026-01-23T11:16:00-05:00",
+      "entry_price": 237.2083,
+      "exit_price": 238.952,
+      "shares": 316,
+      "pnl_per_share": 1.7436,
+      "pnl_dollars": 550.9918,
+      "exit_reason": "be_stop",
+      "or_high": 236.63,
+      "or_low": 234.57,
+      "or_range_pct": 0.008744,
+      "stop_price": 239.0715,
+      "risk_dollars": 871.2
+    },
+    {
+      "ticker": "AMZN",
+      "side": "long",
+      "entry_ts": "2026-01-23T10:10:00-05:00",
+      "exit_ts": "2026-01-23T11:23:00-05:00",
+      "entry_price": 237.2836,
+      "exit_price": 238.9144,
+      "shares": 316,
+      "pnl_per_share": 1.6308,
+      "pnl_dollars": 515.3291,
+      "exit_reason": "be_stop",
+      "or_high": 236.63,
+      "or_low": 234.57,
+      "or_range_pct": 0.008744,
+      "stop_price": 239.0339,
+      "risk_dollars": 894.98
+    }
+  ],
+  "rejected_concurrent_cap": 26,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 3,
+    "exits": 3,
+    "wins": 2,
+    "losses": 1,
+    "total_pnl": 667.1702,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

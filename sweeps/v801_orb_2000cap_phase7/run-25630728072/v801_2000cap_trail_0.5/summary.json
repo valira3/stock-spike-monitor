@@ -1,0 +1,55 @@
+{
+  "variant": "v801_2000cap_trail_0.5",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "earnings_layer": "none",
+  "days_planned": 83,
+  "days_ran": 83,
+  "days_resumed_skip": 0,
+  "days_ok": 83,
+  "days_failed": 0,
+  "net_pnl": 12546.27,
+  "entries": 131,
+  "exits": 131,
+  "wins": 72,
+  "losses": 59,
+  "win_rate_pct": 54.96,
+  "wall_min": 0,
+  "starting_account": 100000.0,
+  "ending_account": 112546.27,
+  "compound_daily": false,
+  "config": {
+    "strategy": "orb_classical",
+    "or_minutes": 30,
+    "rr": 2.5,
+    "stop_buffer_bps": 5.0,
+    "time_cutoff_et": "12:00",
+    "eod_cutoff_et": "15:55",
+    "range_min_pct": 0.003,
+    "range_max_pct": 0.025,
+    "volume_mult": 0.0,
+    "max_trades_per_day": 5,
+    "risk_per_trade_pct": 2.0,
+    "account": 100000.0,
+    "blocklist": {
+      "META": [
+        "LONG",
+        "SHORT"
+      ],
+      "MSFT": [
+        "LONG",
+        "SHORT"
+      ]
+    }
+  }
+}
