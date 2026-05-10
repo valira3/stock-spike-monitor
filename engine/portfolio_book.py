@@ -539,6 +539,34 @@ class PortfolioBook:
             self._post_exit_cooldown.pop(t, None)
         return (len(loss_stale), len(exit_stale))
 
+    def current_equity(self, prices: Optional[dict] = None) -> float:
+        """Return paper_cash + long_mv - short_liability for this book.
+
+        Args:
+            prices: optional {ticker: float} of latest mark prices. If a
+                ticker is not in the dict, its position.entry_price is used
+                as a fallback (zero-impact mark, no MTM change).
+
+        Returns:
+            float: current equity in dollars.
+
+        v7.13.0: factored out of trade_genius.py to give the v10 ORB live
+        runtime a per-portfolio sizing base for its compounding logic.
+        """
+        if prices is None:
+            prices = {}
+        long_mv = 0.0
+        for ticker, pos in self.positions.items():
+            px = prices.get(ticker, pos.get("entry_price", 0.0))
+            shares = pos.get("shares", 0)
+            long_mv += float(px) * float(shares)
+        short_liability = 0.0
+        for ticker, pos in self.short_positions.items():
+            px = prices.get(ticker, pos.get("entry_price", 0.0))
+            shares = pos.get("shares", 0)
+            short_liability += float(px) * float(shares)
+        return float(self.paper_cash) + long_mv - short_liability
+
     def daily_halted(self) -> bool:
         """True if this book hit its daily_loss_limit_dollars.
 

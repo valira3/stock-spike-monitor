@@ -90,6 +90,37 @@ def is_in_hunt_window(now: datetime | None = None) -> bool:
     return HUNT_START_ET <= t < HUNT_END_ET
 
 
+def minutes_since_et_midnight(ts_utc) -> int:
+    """Return minutes-since-midnight ET for a UTC timestamp.
+
+    Handles DST automatically via zoneinfo("America/New_York"). Used by
+    the v10 ORB live runtime (orb/live_runtime.py:feed_bar) to compute
+    the bar-bucket integer that the OR window add_bar() expects.
+
+    Args:
+        ts_utc: a timezone-aware datetime (UTC) OR a UNIX timestamp
+            (int/float seconds since epoch). Naive datetimes are
+            treated as UTC.
+
+    Returns:
+        int: hour*60 + minute in ET. Range [0, 1440).
+
+    Look-ahead audit: pure conversion of an already-known timestamp.
+    No future data consulted.
+    """
+    if isinstance(ts_utc, (int, float)):
+        dt = datetime.fromtimestamp(int(ts_utc), tz=timezone.utc)
+    elif isinstance(ts_utc, datetime):
+        if ts_utc.tzinfo is None:
+            dt = ts_utc.replace(tzinfo=timezone.utc)
+        else:
+            dt = ts_utc
+    else:
+        raise TypeError(f"unexpected ts type: {type(ts_utc).__name__}")
+    et = dt.astimezone(ET)
+    return et.hour * 60 + et.minute
+
+
 __all__ = [
     "ET",
     "NEW_POSITION_CUTOFF_ET",
@@ -101,4 +132,5 @@ __all__ = [
     "is_after_cutoff_et",
     "is_after_eod_et",
     "is_in_hunt_window",
+    "minutes_since_et_midnight",
 ]
