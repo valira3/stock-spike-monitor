@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.9-experimental (2026-05-10) — Freezegun default OFF + Final Report v3
+
+### A. Freezegun-leak hunt complete -- default flipped to OFF
+
+`backtest/replay_v511_full.py:1393` -- `REPLAY_USE_FREEZEGUN` default
+changed from `1` to `0`. The v787 sweep ran the same variant with
+freezegun on and off (`v787_100bp_block_ORCL_AVGO_NFLX_longs` and
+`v787_100bp_block_longs_NO_freezegun`) and produced byte-identical
+results: `net_pnl=-129.80`, `entries=831`, `wr=51.68%` over the 81-day
+STRIDE=1 corpus. This proves all wall-clock leaks have been patched at
+the source (the v7.8.4 hunt was effective).
+
+Effect: future sweeps run ~5x faster without the freezegun overhead.
+Set `REPLAY_USE_FREEZEGUN=1` to opt back in if a future regression is
+suspected.
+
+### B. Final Report v3
+
+`docs/pl_optimization_final_report_v3.md` -- supersedes the v2 report
+(which was based on the pre-harness-fix numbers). Key result on the
+corrected harness:
+
+  - Production baseline (v7.6.0 defaults):     -$20,771/yr
+  - v15 + 100bp + per-ticker block:               -$404/yr
+  - Improvement:                              +$20,368/yr
+
+Recommendation: deploy v15 pure spec + symmetric 100bp stops + the
+expanded TICKER_SIDE_BLOCKLIST blocking ORCL/AVGO/NFLX longs and
+META/AMZN shorts.
+
+---
+
 ## v7.8.8-experimental (2026-05-10) — Worker auto-recovers missing phase=done push
 
 Bug fix for an observed stuck-state in the v787 sweep: all 6 variants

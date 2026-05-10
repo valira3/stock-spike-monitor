@@ -1385,12 +1385,18 @@ def run_replay(
     # it on each tick alongside clock.now.
     # v7.7.2: source-level wall-clock-leak patches landed (V570 session
     # helpers, _v561 OR persist, engine/scan bucket lookup) but verified
-    # incomplete \u2014 single-day repros without freezegun produce 0 entries
-    # vs 4 with freezegun. Until ALL leaks are tracked down, freezegun
-    # stays default-on as the belt-and-braces fix. Disable via
-    # REPLAY_USE_FREEZEGUN=0 only when explicitly debugging or when the
-    # leak hunt completes.
-    if os.environ.get("REPLAY_USE_FREEZEGUN", "1") == "1":
+    # incomplete \u2014 single-day repros without freezegun produce 0
+    # entries vs 4 with freezegun.
+    #
+    # v7.8.9: leak hunt complete. v787 sweep ran the same variant with
+    # freezegun on and off (v787_100bp_block_ORCL_AVGO_NFLX_longs and
+    # v787_100bp_block_longs_NO_freezegun) and both produced byte-
+    # identical results: net_pnl=-129.80, entries=831, wr=51.68% over
+    # the 81-day STRIDE=1 corpus. We flip the default to OFF so all
+    # sweeps run without the ~5x freezegun overhead. Set
+    # REPLAY_USE_FREEZEGUN=1 to opt back in if a future regression is
+    # suspected.
+    if os.environ.get("REPLAY_USE_FREEZEGUN", "0") == "1":
         try:
             from freezegun import freeze_time as _freeze_time
             _freezer_ctx = _freeze_time(start_dt.astimezone(timezone.utc),
