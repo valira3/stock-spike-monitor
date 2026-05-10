@@ -1,0 +1,139 @@
+# Auto Agentic Rule Framework
+
+Operating rules for autonomous, quality work in this session and future sessions. Established 2026-05-10 across the v7.6.0 → ORB optimization workstream. Each rule cites the directive that established it.
+
+---
+
+## I. Autonomy
+
+**1. Run autonomously.** Don't wait for human action between sub-tasks. Keep advancing through the work in the loop.
+*Established by: "Do everything automatically", "Make the process completely hands off"*
+
+**2. Loop until complete.** Chain phase → phase → phase without pausing. Stop only on (a) deliverable shipped, (b) hard external blocker, or (c) ambiguous decision worth one well-formed question.
+*Established by: "Don't get stuck waiting for my action", "keep looping until complete"*
+
+**3. Always auto-commit and auto-merge** PRs once CI is green. No "should I merge?" questions. Pattern: open PR → wait CI → merge on green.
+*Established by: "Auto merge in the future", "Always auto commit"*
+
+**4. Don't wait passively.** Monitor signals (CI status, PR webhooks, sweep results) actively so we know progress in real-time. Use persistent monitors and event pollers.
+*Established by: "Make sure to monitor all signals so that we don't wait for nothing"*
+
+**5. Monitor / status reports** every 3 minutes minimum during long-running work. Show top-5 results so far + total variants run + mark in-progress with `*`.
+*Established by: "Reduce manager check in time to 3 mins", "running tally of the best 5 results so far with key KPIs"*
+
+---
+
+## II. Quality / scientific rigor
+
+**6. Sanity-check before declaring.** When numbers look extraordinary, verify math/logic before celebrating. Spawn an audit subagent if needed. Past examples: caught +$318k/yr as phantom-leverage; caught compounding's volatility drag.
+*Established by: "Double check the math/logic - those P&L seem too good to be true", "Make sure to run some sanity checks in between to ensure that we catch unrealistic scenarios"*
+
+**7. Audit-driven realism.** Phantom leverage, look-ahead bias, over-leverage, fee/slippage gaps — all need to be hunted before relying on backtest numbers. Realistic execution constraints baked into the harness.
+*Established by: "Update the strategy to be realistic"*
+
+**8. Industry research-grounded.** New levers should come from peer-reviewed or community-replicated literature (ATR stops, ADX, VWAP, Kelly sizing, etc.) not handwaved hypotheses. Spawn a research subagent for this.
+*Established by: "Identify any other potential levers we can use (again refer to industry research)"*
+
+**9. Local-first, GHA-confirm.** Cheap fast local screens (~5s/variant) eliminate weak candidates BEFORE expensive cloud sweeps (~10min/variant). Only top-N go to GHA for the official record.
+*Established by: "Before doing full sweeps, run quick local tests to eliminate highly unlikely candidates"*
+
+**10. Patch all bugs found in audit** before continuing. Don't carry known issues forward.
+*Established by: "Make sure that everything is patched"*
+
+**11. Account for compounding** in P&L projections. Position sizes scale with running balance day-to-day. Report both arithmetic ("constant base") and geometric ("compounding") returns.
+*Established by: "Are we accounting for compounding? Ie, all losses and wins compound to the next day's base portfolio"*
+
+---
+
+## III. Risk management
+
+**12. Honor the risk envelope** the user specifies (e.g. $500/day, $1500/day, $2000/day). Treat as a hard constraint not a soft target. Worst-day must stay within cap (modulo small slippage overshoot).
+*Established by: "We don't want to be in position to lose more than $500/day"*
+
+**13. Validate stability, not just headline P&L.** "Most stable in delivery of optimal value." Top-N variants ranked by stability metrics (Sharpe, max DD, per-ticker concentration, % profit days) NOT raw P&L alone.
+*Established by: "validate which ones would be the most stable in delivery of optimal value"*
+
+---
+
+## IV. Reporting
+
+**14. Show absolute revenue** (e.g. $X over N days, projected $Y/yr, ROI%) in addition to deltas vs baseline. Both frames in every report.
+*Established by: "show absolute revenue, not just delta", "Always show totals in absolute $ revenue as well as increments"*
+
+**15. Show deltas vs production baseline** (e.g. Δ vs −$20,771/yr prod) so deployment decision-makers see incremental impact.
+*Established by: "make sure that the report shows absolute revenue, not just delta" (implying both)*
+
+**16. Top-5 deliverable**: when iteration completes, deliver the top 5 variants ranked by combined P&L × stability score with full KPIs.
+*Established by: "Once done, present the best 5 variants"*
+
+**17. iPhone-friendly format** for periodic status reports: narrow (~36 chars wide), stacked rows, scannable hierarchy. No wide tables in monitor outputs.
+*Established by: "Make sure that it's in a format easily consumable on an iPhone"*
+
+**18. Mark in-progress runs with `*`** so the user sees what's still cooking.
+*Established by: "any current ones indicated by asterisk"*
+
+**19. Show the full report inline** in chat when a Final Report is published, not just a "see the file" reference.
+*Established by: "Show the report here as well when done"*
+
+**20. Times in Central Time.** All future report timestamps + ETAs in CT.
+*Established by: "I am in central time zone for future reports"*
+
+---
+
+## V. Cost / infrastructure
+
+**21. Prefer GitHub Actions over Railway** for the iteration cadence. GHA: 2,000 free minutes/month covers ~30 sweeps. Railway costs more for the same workload.
+*Established by: "This is too expensive. Let's go back to use GitHub actions"*
+
+---
+
+## VI. Execution architecture (multi-agent)
+
+**22. Multi-agent structure** for high-leverage tasks:
+- **Cross-checking**: spawn an independent reviewer/auditor agent when results look suspicious or a phase is critical. Don't trust a single chain of reasoning.
+- **Parallel research**: independent agents in parallel for non-overlapping work (research, audit, code review). Run via simultaneous tool calls.
+- **Refinement loops**: first-pass implementation → second-pass code review → third-pass polish, with different agents for fresh eyes.
+- **Specialized expertise**: code quality (architecture/patterns), strategy research (industry literature), data sanity (audit math/logic) — each as a focused subagent rather than one omnibus reasoner.
+*Established by: "Add a component for optimal and efficient execution. Best architecture and code quality, multi-agent structure for performance, cross checking and refinement"*
+
+**23. Code quality as first-class.** Modular files, single-responsibility functions, type hints where they help, no untested hot paths, no quiet duplication. Enforced by code-reviewer agent invocations on substantive changes.
+*Established by: "Best architecture and code quality"*
+
+**24. Optimal execution path.**
+- Parallelize where independent (multiple GHA jobs, multiple subagents, multiple local-screen variants).
+- Cheap-fast local screens before expensive cloud sweeps.
+- Idempotent + resumable workflows where in-flight failures cost real time/money.
+*Established by: "optimal and efficient execution"*
+
+**25. Loop until complete.** (Re-stated from rule #2 with emphasis under multi-agent context.) Chain across subagents and phases without stopping at intermediate milestones.
+*Established by: "keep looping until complete"*
+
+---
+
+## How to apply this framework
+
+When starting a new task or new phase:
+
+1. **Plan**: identify if multi-agent decomposition would help. Independent subtasks → parallel agents.
+2. **Execute**: follow rules I (autonomy), II (rigor), III (risk).
+3. **Validate**: spawn audit agent on extraordinary results. Cross-check.
+4. **Report**: per rule IV. Inline + persistent + iPhone-friendly cadence.
+5. **Commit + merge**: auto, no asking. Per rule 3.
+6. **Loop**: don't stop until deliverable shipped. Per rule 2/25.
+
+Failure modes the framework explicitly defends against:
+- ❌ Stopping at "I'm waiting for X" when X isn't actually a blocker
+- ❌ Trusting a backtest result without auditing realism
+- ❌ Spending GHA cycles on variants that local-screen would reject
+- ❌ Carrying known bugs forward into the next phase
+- ❌ Losing the $/yr ROI frame when comparing variants
+- ❌ Single-agent reasoning chains for complex/critical work
+
+---
+
+## Living document
+
+This framework evolves with the work. New rules added when the user provides new directives. Each rule cites the directive. Rules can be deprecated by a contradicting directive (with note).
+
+Last updated: 2026-05-10
+Maintained at: `docs/auto_agentic_framework.md`
