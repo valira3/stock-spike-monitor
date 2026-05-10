@@ -206,9 +206,10 @@ class TestEodNoPositions:
         )
         assert result is not None
         assert result.exit is False
-        # Reason should indicate no open position rather than an error
-        assert "no_open" in result.reason or result.reason == "" \
-            or "no_open_v10_position" in result.reason
+        # Tightened in v7.32.0: must be the exact "no_open_v10_position"
+        # sentinel; previously accepted three different reasons which
+        # masked accidental "live_mode_off" / "" matches.
+        assert result.reason == "no_open_v10_position"
 
 
 # ----- 6. VIX missing -> [V79-ORB-VIX] warning -------------------

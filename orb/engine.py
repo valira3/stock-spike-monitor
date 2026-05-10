@@ -434,17 +434,33 @@ class OrbEngine:
             if ticket is not None:
                 rb.release(ticket)
         # v7.29.0: realized P&L accounting
+        # v7.32.0: defensive validation -- a position with shares<=0 or
+        # entry/exit_price<=0 should NEVER reach on_exit (try_enter
+        # clamps shares to max(1, ...) and make_position requires
+        # entry != stop). But if a buggy caller passes one in, the kill
+        # gate would have been silently bypassed pre-v7.32 (P&L = 0).
+        # Now we WARN and skip the accounting so the bug surfaces.
         kill_just_triggered = False
         if rb is not None:
             try:
                 exit_price = float(exit_decision.price)
                 entry_price = float(pos.entry_price)
                 shares = int(pos.shares or 0)
-                if pos.side == "long":
-                    pnl = shares * (exit_price - entry_price)
-                else:  # short
-                    pnl = shares * (entry_price - exit_price)
-                kill_just_triggered = rb.record_realized_pnl(pnl)
+                if shares <= 0 or entry_price <= 0.0 or exit_price <= 0.0:
+                    logger.warning(
+                        "[V79-ORB-KILL] skipping P&L accounting -- "
+                        "malformed position pos=%s.%s entry=%.4f "
+                        "exit=%.4f shares=%d (kill gate may be bypassed; "
+                        "this should not happen in production)",
+                        pos.portfolio_id, pos.ticker,
+                        entry_price, exit_price, shares,
+                    )
+                else:
+                    if pos.side == "long":
+                        pnl = shares * (exit_price - entry_price)
+                    else:  # short
+                        pnl = shares * (entry_price - exit_price)
+                    kill_just_triggered = rb.record_realized_pnl(pnl)
             except Exception as e:
                 logger.warning(
                     "[V79-ORB-KILL] pnl accounting failed pos=%s.%s: %s",

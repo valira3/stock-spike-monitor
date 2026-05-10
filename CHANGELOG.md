@@ -4,6 +4,95 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.32.0 (2026-05-10) -- Re-audit fixes (2 CRIT + 2 MED + 4 LOW)
+
+Twenty-fourth PR in v10 rollout. Closes new findings from the re-audit
+run after PR21-23 landed:
+
+### CRITICAL
+
+1. **Memory-visibility race on `live_runtime.py` read paths** -- the
+   four entry points (`feed_bar`, `check_entry`, `check_exit`,
+   `check_exit_by_ticker`) plus `snapshot` were reading `_engine` /
+   `_adapters` without the bootstrap lock. A concurrent bootstrap
+   could (in theory) be observed mid-flight. Each read path now
+   `with _bootstrap_lock:` snapshots the reference into a local var
+   before dereferencing.
+
+2. **P&L math silently bypassed daily-kill threshold on malformed
+   positions** -- `OrbEngine.on_exit` computed `pnl = shares *
+   (exit - entry)` without validating that `shares > 0` and prices
+   are positive. A buggy position with `shares=0` would produce
+   `pnl=0` and silently NOT advance the running realized total. Now
+   logs a `[V79-ORB-KILL] skipping P&L accounting -- malformed
+   position` WARNING and skips the accounting (does not bypass the
+   gate). Should never fire in production but surfaces the bug if it
+   ever does.
+
+### MEDIUM
+
+3. **`_pending_v10_sizes` not cleared on `reset_session`** -- stale
+   stashed sizes from a prior session persisted across the reset.
+   `reset_session()` now clears the dict under `_sizes_lock`;
+   `_reset_for_testing` also clears it.
+
+4. **`_reset_for_testing` not lock-protected** -- aggressive parallel
+   test runners could observe a half-reset state. Now acquires both
+   `_bootstrap_lock` and `_sizes_lock`.
+
+### LOW
+
+5. **Dispatch fire-raised exceptions logged at WARNING** -- audit
+   noted these are executor bugs (not broker errors, which take the
+   `error_callback` path). Promoted to `logger.error(...,
+   exc_info=True)` so the traceback hits the log file even when
+   `callbacks` is None.
+
+6. **Unused `field` import in `orb/risk_book.py`** -- removed.
+
+7. **Weak assertion in `test_orb_coverage_gaps.py::test_eod_check_
+   with_no_open_positions_is_noop`** -- the original accepted three
+   reasons (`"no_open" in r.reason`, `r.reason == ""`,
+   `"no_open_v10_position" in r.reason`), masking accidental
+   `"live_mode_off"` / `""` matches. Now strict equality:
+   `result.reason == "no_open_v10_position"`.
+
+8. **VIX warning not re-fired on session restart mid-day** --
+   DEFERRED. The dashboard surfaces `block_day=true`; the
+   `[V79-ORB-VIX]` forensic is in the prior log. Re-firing on
+   restart needs a separate session-restart hook.
+
+### Tests
+
+12 new tests in `tests/strategy/test_orb_reaudit_fixes.py`:
+
+| Group | Coverage |
+|---|---|
+| Read-path snapshots (5) | each entry point no-ops cleanly after `_reset_for_testing` (no AttributeError on None) |
+| Defensive P&L (3) | `shares=0` and `entry_price=0` skip accounting with warning; well-formed position records normally |
+| Stash clear (2) | `reset_session` and `_reset_for_testing` clear `_pending_v10_sizes` |
+| Reset under load (1) | 50 reset+bootstrap cycles concurrent with 5000 stash calls -- no races |
+| Dispatch error logging (1) | fire-raised exception logs at ERROR with `exc_info` |
+
+**281 strategy tests pass** (was 269, +12 new). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.31.0 -> 7.32.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.32.0
+- `orb/live_runtime.py` -- snapshot pattern on 5 read paths;
+  `reset_session` clears `_pending_v10_sizes`; `_reset_for_testing`
+  acquires both locks
+- `orb/engine.py` -- defensive P&L validation in `on_exit`
+- `orb/risk_book.py` -- drop unused `field` import
+- `engine/scan.py` -- dispatch exception now logs at ERROR with
+  `exc_info=True`
+- `tests/strategy/test_orb_coverage_gaps.py` -- tighten weak assertion
+- `tests/strategy/test_orb_reaudit_fixes.py` -- new (12 tests)
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.31.0 (2026-05-10) -- VIX observability + missing-coverage tests (MEDIUM gaps)
 
 Twenty-third PR in v10 rollout. Closes the remaining MEDIUM gaps from
