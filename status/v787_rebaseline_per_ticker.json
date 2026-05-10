@@ -2,11 +2,11 @@
   "trigger": "v787_rebaseline_per_ticker",
   "phase": "running",
   "started_at": "2026-05-10T02:22:13.494072+00:00",
-  "updated_at": "2026-05-10T02:31:54.881043+00:00",
+  "updated_at": "2026-05-10T02:32:03.667369+00:00",
   "variants_total": 6,
-  "variants_completed": 1,
-  "variants_succeeded": 1,
+  "variants_completed": 2,
+  "variants_succeeded": 2,
   "variants_failed": 0,
-  "latest_vid": "v787_100bp_block_ORCL_AVGO_NFLX_longs",
+  "latest_vid": "v787_pure_110bp",
   "latest_rc": 0
 }
