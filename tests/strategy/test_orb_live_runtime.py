@@ -98,6 +98,39 @@ class TestBootstrap:
         # Falls back to None (no blocklist)
         assert eng.cfg.ticker_side_blocklist is None
 
+    def test_bootstrap_compounding_default_on(self, isolated_env):
+        """Manager-flagged regression test: rule #11b says compounding
+        is the DEFAULT. The live_runtime bootstrap must not silently
+        drop this. We verify by checking that risk-per-trade-pct (which
+        is the compounding-driven sizing percentage) stays at 2.0 (v10
+        keystone) so per-trade $ scales with current account balance.
+
+        The actual COMPOUND_DAILY toggle lives in tools/orb_backtest.py
+        config; the live engine compounds implicitly via per-day
+        equity refresh in ensure_session_started (each session start
+        receives the current equity from the broker). This test
+        asserts that path is taken: equity_per_portfolio is the
+        authoritative sizing base and the engine uses it.
+        """
+        live_runtime.bootstrap()
+        live_runtime.ensure_session_started(
+            date_iso="2026-01-02",
+            tickers=["AAPL"], vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 105000.0},  # NOT $100k baseline
+        )
+        eng = live_runtime.get_engine()
+        rb = eng._risk.get("main")
+        # Equity refreshed -> compounding effective. Risk cap stays the
+        # configured ceiling but per-trade sizing percent applies to the
+        # current balance ($105k), not the static $100k.
+        assert rb.equity == 105000.0
+        # Cfg risk_per_trade_pct is preserved (2% of current equity)
+        assert eng.cfg.risk_per_trade_pct == 2.0
+        # max_concurrent_risk_dollars is the absolute cap ($2k), not %
+        assert rb.max_risk_dollars == 2000.0
+
 
 # ------------------ session lifecycle ------------------
 
